@@ -40,7 +40,13 @@ import { createOpenAIChatGPTStreamingRequest } from './OpenAIChatGPT'
 import { openStreamingWithPreFirstByteRetry } from './streamResilience'
 import { persistToolResultsWithFallback } from './toolResultPersistence'
 // OpenAI OAuth is handled internally by OpenAIChatGPT module
-import { getDefaultMaxTurns, getSubagentEnabledTools, isOrchestratorEnabled } from '../../helpers/subagentToolSettings'
+import {
+  getSubagentEnabledTools,
+  isOrchestratorEnabled,
+  shouldForceSubagentOpenAIProvider,
+  shouldUseGlobalAgentModelForSubagentDefault,
+} from '../../helpers/subagentToolSettings'
+import { loadAgentSettings } from '../../helpers/agentSettingsStorage'
 import { DEFAULT_COMPACTION_SYSTEM_PROMPT, loadProviderSettings } from '../../helpers/providerSettingsStorage'
 import { getDefaultBashTimeoutMs, getDefaultToolCallTimeoutMs } from '../../helpers/toolExecutionSettings'
 import { updateToolEnabledState } from '../../helpers/toolSettingsStorage'
@@ -1158,6 +1164,42 @@ const executeBrowseWebLocally = async (
   }
 }
 
+const DEFAULT_SUBAGENT_MODEL = 'openai/gpt-5.1-codex-mini'
+const SUBAGENT_MAX_TURNS = 12
+
+const normalizeProviderSlug = (providerName: string | null | undefined): string =>
+  (providerName || '').toLowerCase().replace(/\s+/g, '')
+
+const isOpenAIChatGPTProvider = (providerName: string | null | undefined): boolean => {
+  const slug = normalizeProviderSlug(providerName)
+  return slug === 'openaichatgpt' || slug === 'openai(chatgpt)'
+}
+
+const resolveSubagentDefaults = async (
+  requestedModel: unknown,
+  currentProviderName?: string | null
+): Promise<{ model: string; provider?: 'openaichatgpt' }> => {
+  const normalizedRequestedModel = typeof requestedModel === 'string' ? requestedModel.trim() : ''
+
+  let defaultModel = DEFAULT_SUBAGENT_MODEL
+  if (shouldUseGlobalAgentModelForSubagentDefault()) {
+    try {
+      const agentSettings = await loadAgentSettings()
+      if (typeof agentSettings.model === 'string' && agentSettings.model.trim().length > 0) {
+        defaultModel = agentSettings.model.trim()
+      }
+    } catch (error) {
+      console.warn('[subagent] Failed to load global agent model for defaulting:', error)
+    }
+  }
+
+  const forceOpenAIProvider = shouldForceSubagentOpenAIProvider() && isOpenAIChatGPTProvider(currentProviderName)
+  return {
+    model: normalizedRequestedModel || defaultModel,
+    provider: forceOpenAIProvider ? 'openaichatgpt' : undefined,
+  }
+}
+
 /**
  * Simple subagent execution without tool calling (fallback when context not available)
  */
@@ -1170,13 +1212,16 @@ const executeSimpleSubagentCall = async (toolCall: any, accessToken: string | nu
     throw new Error('Subagent requires a prompt')
   }
 
+  const { model: resolvedModel, provider: resolvedProvider } = await resolveSubagentDefaults(model)
+
   try {
     const response = await createStreamingRequest('/generate/ephemeral', accessToken, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         prompt,
-        model: model || 'google/gemini-3-flash-preview',
+        provider: resolvedProvider,
+        model: resolvedModel,
         maxTokens: Math.min(maxTokens || 4096, 16384),
         temperature: temperature ?? 0.7,
         systemPrompt,
@@ -1385,8 +1430,6 @@ const executeSubagentCall = async (
     temperature,
     response_format,
     responseFormat,
-    maxTurns: requestedMaxTurns,
-    maxToolCalls: requestedMaxToolCalls,
     orchestratorMode = false,
     tools: requestedTools,
     inheritAutoApprove = true,
@@ -1400,23 +1443,17 @@ const executeSubagentCall = async (
   const { dispatch, getState, conversationId, parentMessageId, rootPath } = context
   const streamId = context.streamId
   const state = getState()
-
-  // Determine max turns (from args, localStorage, or default)
-  const maxTurns = Math.min(Math.max(requestedMaxTurns || getDefaultMaxTurns(), 1), 50)
-
-  // Determine max tool calls quota (orchestrator can specify, default 5)
-  const maxToolCalls = Math.min(Math.max(requestedMaxToolCalls || 5, 1), 50)
-  let totalToolCallsUsed = 0
+  const { model: resolvedModel, provider: resolvedProvider } = await resolveSubagentDefaults(
+    model,
+    state.chat.providerState.currentProvider
+  )
 
   // Get filtered tool definitions for this subagent
   const subagentTools = getSubagentToolDefinitions(orchestratorMode, requestedTools)
 
   // Generate unique session ID for this subagent invocation
   const subagentSessionId = uuidv4()
-
-  // Track execution for result formatting
-  const toolsExecuted: { name: string; success: boolean }[] = []
-  let turnsUsed = 0
+  let hadAnyToolActivity = false
 
   // Build conversation history for the subagent
   const conversationHistory: any[] = [{ role: 'user', content: prompt }]
@@ -1456,8 +1493,7 @@ const executeSubagentCall = async (
   // Agentic loop with hard limit
   let shouldContinue = true
   try {
-    for (let turn = 0; turn < maxTurns && shouldContinue; turn++) {
-      turnsUsed = turn + 1
+    for (let turn = 0; turn < SUBAGENT_MAX_TURNS && shouldContinue; turn++) {
 
       if (!isStreamActive()) {
         subagentAbortController.abort()
@@ -1470,7 +1506,8 @@ const executeSubagentCall = async (
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           messages: conversationHistory,
-          model: model || 'google/gemini-3-flash-preview',
+          provider: resolvedProvider,
+          model: resolvedModel,
           maxTokens: Math.min(maxTokens || 4096, 16384),
           temperature: temperature ?? 0.7,
           systemPrompt,
@@ -1675,11 +1712,7 @@ const executeSubagentCall = async (
           })
         }
 
-        // Track server-executed tools
-        for (const tr of serverToolResults) {
-          toolsExecuted.push({ name: tr.tool_name || 'server_tool', success: !tr.is_error })
-          totalToolCallsUsed++
-        }
+        hadAnyToolActivity = hadAnyToolActivity || serverToolResults.length > 0
 
         // Add server tool results to conversation history
         // The server already added the assistant message with tool_calls and executed them
@@ -1699,16 +1732,12 @@ const executeSubagentCall = async (
         continue
       }
 
-      // Process client tool calls with quota enforcement
+      // Process client tool calls
       const toolResults: any[] = []
 
-      // First, track any server-executed tool results (for mixed server+client tool calls)
       // Build a set of tool IDs that were already executed by the server
       const serverExecutedToolIds = new Set(serverToolResults.map(tr => tr.tool_use_id))
-      for (const tr of serverToolResults) {
-        toolsExecuted.push({ name: tr.tool_name || 'server_tool', success: !tr.is_error })
-        totalToolCallsUsed++
-      }
+      hadAnyToolActivity = hadAnyToolActivity || serverToolResults.length > 0
 
       // Filter out tool calls that were already executed by the server
       const clientToolCalls = turnToolCalls.filter(tc => !serverExecutedToolIds.has(tc.id))
@@ -1723,19 +1752,7 @@ const executeSubagentCall = async (
             content: 'Error: Nested subagent calls are not allowed.',
             is_error: true,
           })
-          toolsExecuted.push({ name: tc.name, success: false })
-          continue
-        }
-
-        // Check if quota exhausted
-        if (totalToolCallsUsed >= maxToolCalls) {
-          toolResults.push({
-            tool_use_id: tc.id,
-            content:
-              'TOOL_QUOTA_EXHAUSTED: You have reached the maximum number of tool calls allowed. Do not attempt any more tool calls. You must now summarize all findings gathered so far and provide your final response to complete your task.',
-            is_error: true,
-          })
-          toolsExecuted.push({ name: tc.name, success: false })
+          hadAnyToolActivity = true
           continue
         }
 
@@ -1768,8 +1785,7 @@ const executeSubagentCall = async (
             content: result,
             is_error: false,
           })
-          toolsExecuted.push({ name: tc.name, success: true })
-          totalToolCallsUsed++
+          hadAnyToolActivity = true
         } catch (err) {
           const errorMsg = err instanceof Error ? err.message : String(err)
           toolResults.push({
@@ -1777,7 +1793,7 @@ const executeSubagentCall = async (
             content: `Error: ${errorMsg}`,
             is_error: true,
           })
-          toolsExecuted.push({ name: tc.name, success: false })
+          hadAnyToolActivity = true
         }
       }
 
@@ -1833,12 +1849,7 @@ const executeSubagentCall = async (
       }
 
       lastAssistantMessageId = assistantMessageId
-      finalResponse = turnText // Keep last text in case we hit max turns
-
-      // Check if we've hit maxTurns - stop even if there are more tool calls
-      if (turnsUsed >= maxTurns) {
-        shouldContinue = false
-      }
+      finalResponse = turnText
     }
   } catch (error) {
     if (subagentAbortController.signal.aborted) {
@@ -1850,15 +1861,10 @@ const executeSubagentCall = async (
     unregisterAbortController()
   }
 
-  // Format return value
-  const toolSummary =
-    toolsExecuted.length > 0 ? toolsExecuted.map(t => `${t.name} (${t.success ? '✓' : '✗'})`).join(', ') : 'none'
-
   // Deterministic finalization: if tools ran but no text response, force one more turn
-  const hasTools = toolsExecuted.length > 0 || totalToolCallsUsed > 0
   const hasFinalText = typeof finalResponse === 'string' && finalResponse.trim().length > 0
 
-  if (hasTools && !hasFinalText && !subagentAbortController.signal.aborted) {
+  if (hadAnyToolActivity && !hasFinalText && !subagentAbortController.signal.aborted) {
     if (!isStreamActive()) {
       subagentAbortController.abort()
       throw new Error('Subagent aborted')
@@ -1876,7 +1882,8 @@ const executeSubagentCall = async (
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         messages: conversationHistory,
-        model: model || 'openai/gpt-5.1-codex-mini',
+        provider: resolvedProvider,
+        model: resolvedModel,
         maxTokens: Math.min(maxTokens || 1024, 4096),
         temperature: temperature ?? 0.3,
         systemPrompt,
@@ -1976,10 +1983,10 @@ const executeSubagentCall = async (
       ? `<thinking>\n${finalizeReasoning}\n</thinking>\n\n${finalizeText}`
       : finalizeText
     lastAssistantMessageId = finalizeMessageId
-    turnsUsed += 1
   }
 
-  return `## Subagent Response (session: ${subagentSessionId.slice(0, 8)})\n\n${finalResponse || 'No response generated'}\n\n---\nTurns: ${turnsUsed}/${maxTurns} | Tool calls: ${totalToolCallsUsed}/${maxToolCalls} | Tools: ${toolSummary}`
+  return finalResponse || 'No response generated'
+  // ${subagentSessionId.slice(0, 8)})\n\n${finalResponse || 'No response generated'}\n\n---\nTurns: ${turnsUsed}/${maxTurns} | Tool calls: ${totalToolCallsUsed}/${maxToolCalls} | Tools: ${toolSummary}`
 }
 
 /**
@@ -3019,6 +3026,7 @@ const executionMode = 'client'
                     currentTurnHistory.push(assistantMsg)
                   }
                 },
+                signal: controller.signal,
               }
             )
 
@@ -3529,6 +3537,7 @@ const executionMode = 'client'
                     currentTurnHistory.push(chunk.message)
                   }
                 },
+                signal: controller.signal,
               }
             )
 
@@ -5045,6 +5054,7 @@ const executionMode = 'client' // Prefer client execution for tools
                   currentTurnHistory.push(chunk.message)
                 }
               },
+              signal: controller.signal,
             }
           )
 
@@ -6271,6 +6281,7 @@ const executionMode = 'client'
                   currentTurnHistory.push(chunk.message)
                 }
               },
+              signal: controller.signal,
             }
           )
 

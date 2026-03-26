@@ -81,6 +81,48 @@ export const BUILTIN_TOOL_DEFINITIONS: SharedToolDefinition[] = [
     },
   },
   {
+    name: 'fetch_notes',
+    enabled: true,
+    description:
+      'Fetch top-level user notes or sibling branch notes from the current conversation. Default action returns top-level user note entries. Use action="siblings" with branchPointAncestorId to fetch same-level branch note entries under a branch point.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        action: {
+          type: 'string',
+          enum: ['top_level', 'siblings'],
+          description:
+            'Action to perform: "top_level" (default) returns top-level user note entries in the conversation. "siblings" returns sibling note entries whose parent_id equals branchPointAncestorId.',
+        },
+        branchPointAncestorId: {
+          type: 'string',
+          description: 'Required when action="siblings". Parent id shared by sibling branch-entry messages.',
+        },
+        limit: {
+          type: 'integer',
+          minimum: 1,
+          maximum: 200,
+          description: 'Maximum number of returned entries (default 50).',
+        },
+        includeEmpty: {
+          type: 'boolean',
+          description:
+            'Include entries even when note is empty/null. Default is false (note-bearing entries only).',
+        },
+        includeContentPreview: {
+          type: 'boolean',
+          description: 'If true, include a truncated content_preview for each returned entry.',
+        },
+        previewChars: {
+          type: 'integer',
+          minimum: 20,
+          maximum: 1200,
+          description: 'Maximum characters for content preview when includeContentPreview=true (default 180).',
+        },
+      },
+    },
+  },
+  {
     name: 'read_file',
     enabled: true,
     description:
@@ -658,7 +700,7 @@ export const BUILTIN_TOOL_DEFINITIONS: SharedToolDefinition[] = [
     name: 'subagent',
     enabled: true,
     description:
-      'Spawn an agentic sub-agent to perform complex tasks using tool calls. The subagent can use tools like read_file, ripgrep, browse_web etc. to accomplish tasks autonomously. Supports multi-turn execution with configurable tool access. Messages are persisted and can be reviewed. Use orchestratorMode=true to specify exact tools, or false to use pre-configured default tools.',
+      'Spawn an agentic sub-agent to perform complex tasks using tool calls. The subagent can use tools like read_file, ripgrep, browse_web etc. to accomplish tasks autonomously. Messages are persisted and can be reviewed. Use orchestratorMode=true to specify exact tools, or false to use pre-configured default tools.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -669,7 +711,7 @@ export const BUILTIN_TOOL_DEFINITIONS: SharedToolDefinition[] = [
         model: {
           type: 'string',
           description:
-            'Model to use for the subagent (e.g., "anthropic/claude-sonnet-4", "openai/gpt-4o", "google/gemini-2.0-flash"). Defaults to anthropic/claude-sonnet-4.',
+            'Model to use for the subagent (e.g., "anthropic/claude-sonnet-4", "openai/gpt-4o", "google/gemini-2.0-flash"). If omitted, defaults to the Global Agent model from Settings (or openai/gpt-5.1-codex-mini when unset).',
         },
         systemPrompt: {
           type: 'string',
@@ -686,13 +728,6 @@ export const BUILTIN_TOOL_DEFINITIONS: SharedToolDefinition[] = [
           minimum: 0,
           maximum: 2,
           description: 'Sampling temperature (0-2, default 0.7). Lower = more focused, higher = more creative.',
-        },
-        maxTurns: {
-          type: 'integer',
-          minimum: 1,
-          maximum: 50,
-          description:
-            'Maximum tool call rounds (default 10). Each turn = one LLM call + tool executions. Set lower for simple tasks.',
         },
         orchestratorMode: {
           type: 'boolean',

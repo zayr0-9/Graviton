@@ -195,8 +195,9 @@ function buildAssistantMessage(params: {
   text: string
   toolCalls: ToolCall[]
   contentBlocks: ContentBlock[]
+  partial?: boolean
 }): Message {
-  const { id, conversationId, parentId, modelName, text, toolCalls, contentBlocks } = params
+  const { id, conversationId, parentId, modelName, text, toolCalls, contentBlocks, partial = false } = params
   return {
     id,
     conversation_id: conversationId,
@@ -208,7 +209,7 @@ function buildAssistantMessage(params: {
     thinking_block: '',
     tool_calls: toolCalls,
     model_name: modelName,
-    partial: false,
+    partial,
     created_at: new Date().toISOString(),
     artifacts: [],
     pastedContext: [],
@@ -856,6 +857,7 @@ export async function createOpenAIChatGPTStreamingRequest(
   let assistantText = ''
   let assistantReasoning = ''
   let assistantMessageId: string | null = null
+  let completionEmitted = false
   const useGPT53StrictTextAssembly = shouldUseGPT53StrictTextAssembly(payload.modelName)
 
   // Tool call accumulator for incremental streaming
@@ -1114,6 +1116,76 @@ export async function createOpenAIChatGPTStreamingRequest(
     })
 
     return { toolCalls: finalToolCalls, contentBlocks: finalContentBlocks }
+  }
+
+  const emitCompleteMessage = (partial: boolean): boolean => {
+    if (completionEmitted) return false
+
+    if (!assistantMessageId) assistantMessageId = uuidv4()
+    const finalAssistantText = selectFinalAssistantText()
+    const { toolCalls: finalToolCalls, contentBlocks: finalContentBlocks } = buildFinalToolCalls()
+    const replayItems = getResponseOutputItemsForReplay()
+
+    if (finalAssistantText) {
+      finalContentBlocks.unshift({
+        type: 'text',
+        index: 0,
+        content: finalAssistantText,
+      })
+    }
+
+    if (assistantReasoning) {
+      finalContentBlocks.unshift({
+        type: 'thinking',
+        index: 0,
+        content: assistantReasoning,
+      })
+    }
+
+    if (replayItems.length > 0) {
+      finalContentBlocks.push({
+        type: 'responses_output_items',
+        index: finalContentBlocks.length,
+        items: replayItems,
+      } as any)
+    }
+
+    const hasMeaningfulContent =
+      finalAssistantText.trim().length > 0 || assistantReasoning.trim().length > 0 || finalToolCalls.length > 0
+
+    if (!hasMeaningfulContent) {
+      return false
+    }
+
+    const message = buildAssistantMessage({
+      id: assistantMessageId,
+      conversationId: payload.conversationId,
+      parentId: payload.parentId,
+      modelName: payload.modelName,
+      text: finalAssistantText,
+      toolCalls: finalToolCalls,
+      contentBlocks: finalContentBlocks,
+      partial,
+    })
+
+    if (assistantReasoning) {
+      message.thinking_block = assistantReasoning
+    }
+
+    if (replayItems.length > 0) {
+      ;(message as any).responses_output_items = replayItems
+    }
+
+    if (finalToolCalls.length > 0) {
+      console.log(
+        '[OpenAI ChatGPT] Parsed tool calls from responses API:',
+        finalToolCalls.map(tc => tc.name)
+      )
+    }
+
+    completionEmitted = true
+    onChunk({ type: 'complete', message })
+    return true
   }
 
   // Track reasoning fragments by stream key to avoid duplicate appends when both
@@ -1386,61 +1458,7 @@ export async function createOpenAIChatGPTStreamingRequest(
             completedResponseOutputItems = responseOutput
           }
 
-          // Response complete - build final message
-          if (!assistantMessageId) assistantMessageId = uuidv4()
-          const finalAssistantText = selectFinalAssistantText()
-
-          const { toolCalls: finalToolCalls, contentBlocks: finalContentBlocks } = buildFinalToolCalls()
-          const replayItems = getResponseOutputItemsForReplay()
-
-          if (finalAssistantText) {
-            finalContentBlocks.unshift({
-              type: 'text',
-              index: 0,
-              content: finalAssistantText,
-            })
-          }
-
-          if (assistantReasoning) {
-            finalContentBlocks.unshift({
-              type: 'thinking',
-              index: 0,
-              content: assistantReasoning,
-            })
-          }
-          if (replayItems.length > 0) {
-            finalContentBlocks.push({
-              type: 'responses_output_items',
-              index: finalContentBlocks.length,
-              items: replayItems,
-            } as any)
-          }
-
-          const message = buildAssistantMessage({
-            id: assistantMessageId,
-            conversationId: payload.conversationId,
-            parentId: payload.parentId,
-            modelName: payload.modelName,
-            text: finalAssistantText,
-            toolCalls: finalToolCalls,
-            contentBlocks: finalContentBlocks,
-          })
-
-          if (assistantReasoning) {
-            message.thinking_block = assistantReasoning
-          }
-          if (replayItems.length > 0) {
-            ;(message as any).responses_output_items = replayItems
-          }
-
-          if (finalToolCalls.length > 0) {
-            console.log(
-              '[OpenAI ChatGPT] Parsed tool calls from responses API:',
-              finalToolCalls.map(tc => tc.name)
-            )
-          }
-
-          onChunk({ type: 'complete', message })
+          emitCompleteMessage(false)
           continue
         }
 
@@ -1474,63 +1492,21 @@ export async function createOpenAIChatGPTStreamingRequest(
 
         // finish_reason - build final message
         if (choice.finish_reason) {
-          if (!assistantMessageId) assistantMessageId = uuidv4()
-          const finalAssistantText = selectFinalAssistantText()
-
-          const { toolCalls: finalToolCalls, contentBlocks: finalContentBlocks } = buildFinalToolCalls()
-          const replayItems = getResponseOutputItemsForReplay()
-
-          if (finalAssistantText) {
-            finalContentBlocks.unshift({
-              type: 'text',
-              index: 0,
-              content: finalAssistantText,
-            })
-          }
-
-          if (assistantReasoning) {
-            finalContentBlocks.unshift({
-              type: 'thinking',
-              index: 0,
-              content: assistantReasoning,
-            })
-          }
-          if (replayItems.length > 0) {
-            finalContentBlocks.push({
-              type: 'responses_output_items',
-              index: finalContentBlocks.length,
-              items: replayItems,
-            } as any)
-          }
-
-          const message = buildAssistantMessage({
-            id: assistantMessageId,
-            conversationId: payload.conversationId,
-            parentId: payload.parentId,
-            modelName: payload.modelName,
-            text: finalAssistantText,
-            toolCalls: finalToolCalls,
-            contentBlocks: finalContentBlocks,
-          })
-
-          if (assistantReasoning) {
-            message.thinking_block = assistantReasoning
-          }
-          if (replayItems.length > 0) {
-            ;(message as any).responses_output_items = replayItems
-          }
-
-          if (finalToolCalls.length > 0) {
-            console.log(
-              '[OpenAI ChatGPT] Parsed tool calls from responses API:',
-              finalToolCalls.map(tc => tc.name)
-            )
-          }
-
-          onChunk({ type: 'complete', message })
+          emitCompleteMessage(false)
         }
       }
     }
+
+    if (!completionEmitted) {
+      emitCompleteMessage(Boolean(signal?.aborted))
+    }
+  } catch (error) {
+    const isAbortError = (error instanceof Error && error.name === 'AbortError') || signal?.aborted
+    if (isAbortError) {
+      emitCompleteMessage(true)
+      return
+    }
+    throw error
   } finally {
     reader.releaseLock()
   }

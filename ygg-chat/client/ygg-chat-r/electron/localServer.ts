@@ -36,6 +36,7 @@ import { execute as executeCustomToolManager } from './tools/customToolManager.j
 import { deleteFile, safeDeleteFile } from './tools/deleteFile.js'
 import { extractDirectoryStructure } from './tools/directory.js'
 import { editFile } from './tools/editFile.js'
+import { execute as executeFetchNotes } from './tools/fetchNotes.js'
 import { globSearch } from './tools/glob.js'
 import { executeHermesAgent, getHermesSession, setHermesSession } from './tools/hermesAgent.js'
 import htmlRenderer from './tools/htmlRenderer.js'
@@ -619,6 +620,22 @@ function initializeBuiltInToolRegistry() {
 
   builtInTools.set('theme_manager', async args => {
     return await executeThemeManager(args)
+  })
+
+  builtInTools.set('fetch_notes', async (args, options) => {
+    return await executeFetchNotes(args, {
+      conversationId: options?.conversationId ?? null,
+      listMessagesByConversationId: conversationId => {
+        const getter = statements?.getMessagesByConversationId
+        if (!getter || typeof getter.all !== 'function') return []
+        return getter.all(conversationId)
+      },
+      listTopLevelUserMessagesByConversationId: conversationId => {
+        const getter = statements?.getTopLevelUserMessagesByConversationId
+        if (!getter || typeof getter.all !== 'function') return []
+        return getter.all(conversationId)
+      },
+    })
   })
 
   builtInTools.set('custom_tool_manager', async (args, options) => {
@@ -4417,7 +4434,7 @@ function setupServer() {
 
       const messages = db!
         .prepare(
-          'SELECT id, conversation_id, parent_id, role, model_name, tool_calls, created_at FROM messages ORDER BY created_at ASC'
+          'SELECT id, conversation_id, parent_id, role, model_name, tool_calls, content, plain_text_content, content_blocks, created_at FROM messages ORDER BY created_at ASC'
         )
         .all() as Array<{
         id: string
@@ -4426,6 +4443,9 @@ function setupServer() {
         role: string
         model_name: string | null
         tool_calls: string | null
+        content: string
+        plain_text_content: string | null
+        content_blocks: string | null
         created_at: string
       }>
 
@@ -4589,6 +4609,39 @@ function setupServer() {
       const totalPromptTokens = filteredProviderCosts.reduce((sum, row) => sum + toNumber(row.prompt_tokens), 0)
       const totalCompletionTokens = filteredProviderCosts.reduce((sum, row) => sum + toNumber(row.completion_tokens), 0)
       const totalReasoningTokens = filteredProviderCosts.reduce((sum, row) => sum + toNumber(row.reasoning_tokens), 0)
+      const totalCharacters = filteredMessages.reduce((sum, message) => {
+        let messageText = message.plain_text_content || message.content || ''
+
+        if (message.content_blocks) {
+          try {
+            const blocks = JSON.parse(message.content_blocks)
+            if (Array.isArray(blocks)) {
+              const blocksText = blocks
+                .map((block: any) => {
+                  if (!block || typeof block !== 'object') return ''
+                  if (block.type === 'text') return block.text || block.content || ''
+                  if (block.type === 'thinking') return block.thinking || block.content || ''
+                  if (block.type === 'tool_use') {
+                    const toolInput = typeof block.input === 'string' ? block.input : JSON.stringify(block.input || {})
+                    return `${block.name || 'tool'} ${toolInput}`
+                  }
+                  if (block.type === 'tool_result') return block.content || ''
+                  return block.content || block.text || block.thinking || ''
+                })
+                .join('\n')
+
+              if (blocksText) {
+                messageText = `${messageText}\n${blocksText}`.trim()
+              }
+            }
+          } catch {
+            // ignore malformed content_blocks
+          }
+        }
+
+        return sum + messageText.length
+      }, 0)
+      const estimatedTotalTokens = totalCharacters * 4
 
       const assistantMessageCount = filteredMessages.filter(message => message.role === 'assistant').length
       const assistantWithCost = filteredMessages.filter(
@@ -4875,6 +4928,7 @@ function setupServer() {
           conversationsCreated: scopedConversations.length,
           projectsCreated: scopedProjects.length,
           activeDays: Object.keys(messagesPerDay).length,
+          estimatedTotalTokens,
         },
         spend: {
           totals: {

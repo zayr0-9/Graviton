@@ -1,4 +1,4 @@
-import type { ContentBlock, StreamEvent, ToolCall } from '@/features/chats/chatTypes'
+﻿import type { ContentBlock, StreamEvent, ToolCall } from '@/features/chats/chatTypes'
 import type { ToolDefinition } from '@/features/chats/toolDefinitions'
 import type { RootState } from '@/store/store'
 import 'boxicons' // Types
@@ -16,10 +16,8 @@ import remarkMath from 'remark-math'
 import { AUTO_COMPACTION_NOTE, fetchMcpTools } from '../../features/chats/chatActions'
 import { chatSliceActions } from '../../features/chats/chatSlice'
 import { useAppDispatch } from '../../hooks/redux'
-import { useAuth } from '../../hooks/useAuth'
 import { useIsMobile } from '../../hooks/useMediaQuery'
 import { environment, localApi } from '../../utils/api'
-import { attachMessageBridge } from '../../utils/iframeBridge'
 import { Button } from '../Button/button'
 import { EditFileDiffView } from '../EditFileDiffView/EditFileDiffView'
 import { useHtmlIframeRegistry } from '../HtmlIframeRegistry/HtmlIframeRegistry'
@@ -34,6 +32,38 @@ import {
   getThemeModeColor,
   resolveRoleThemeKey,
 } from '../ThemeManager/themeConfig'
+import { HtmlIframe } from './HtmlIframe'
+import {
+  AGENT_RUN_CHEVRON_BASE_CLASS,
+  AGENT_RUN_PIP_CLASS,
+  buildToolCallGroupsFromBlocks,
+  buildToolCallGroupsFromStream,
+  COLLAPSED_CONTENT_WORD_LIMIT,
+  contentBlocksToEditableText,
+  editableTextToContentBlocks,
+  extractHtmlFromToolResult,
+  extractReasoningTextsFromResponsesOutputItems,
+  formatToolResultContent,
+  formatToolResultSummary,
+  LEGACY_TEXT_MARKDOWN_CLASS,
+  MESSAGE_IMAGE_CLASS,
+  MESSAGE_IMAGE_WRAPPER_CLASS,
+  normalizeReasoningTextForComparison,
+  parseMcpQualifiedName,
+  PROCESS_CARD_REASONING_WRAPPER_CLASS,
+  PROCESS_CARD_WRAPPER_CLASS,
+  PROCESS_PIP_BASE_CLASS,
+  PROCESS_RUN_GROUP_MIN_ITEMS,
+  REASONING_CHEVRON_BASE_CLASS,
+  REASONING_PIP_CLASS,
+  REASONING_TEXT_MARKDOWN_CLASS,
+  SHARED_TEXT_MARKDOWN_CLASS,
+  TOOL_CHEVRON_BASE_CLASS,
+  TOOL_HEADER_BUTTON_CLASS,
+  TOOL_NAME_BADGE_CLASS,
+  TOOL_SUCCESS_PIP_CLASS,
+  type ToolCallRenderGroup,
+} from './chatMessageShared'
 
 type MessageRole = 'user' | 'assistant' | 'system' | 'ex_agent' | 'tool'
 // Updated to use valid Tailwind classes
@@ -407,10 +437,6 @@ const MessageActions: React.FC<MessageActionsProps> = ({
   )
 }
 
-// Configuration for collapsed content display
-const COLLAPSED_CONTENT_WORD_LIMIT = 15
-const PROCESS_RUN_GROUP_MIN_ITEMS = 4
-
 type ProcessEntryType = 'tool' | 'reasoning'
 
 interface MessageRenderItem {
@@ -419,413 +445,6 @@ interface MessageRenderItem {
   processType?: ProcessEntryType
   ignoreForProcessRunGrouping?: boolean
   node: React.ReactNode
-}
-
-// Helper function to convert contentBlocks to editable text
-const contentBlocksToEditableText = (blocks: ContentBlock[] | undefined): string => {
-  if (!blocks || blocks.length === 0) return ''
-
-  return blocks
-    .sort((a, b) => a.index - b.index)
-    .map(block => {
-      if (block.type === 'text') {
-        return block.content
-      } else if (block.type === 'thinking') {
-        return `[THINKING]\n${block.content}\n[/THINKING]`
-      } else if (block.type === 'tool_use') {
-        return `[TOOL_USE: ${block.name}]\n${JSON.stringify(block.input, null, 2)}\n[/TOOL_USE]`
-      } else if (block.type === 'tool_result') {
-        const resultContent = typeof block.content === 'string' ? block.content : JSON.stringify(block.content, null, 2)
-        return `[TOOL_RESULT]\n${resultContent}\n[/TOOL_RESULT]`
-      }
-      return ''
-    })
-    .join('\n\n')
-}
-
-// Helper function to convert edited text back to contentBlocks
-// Robust parser that handles malformed input gracefully
-const editableTextToContentBlocks = (text: string): ContentBlock[] => {
-  if (!text || !text.trim()) {
-    return []
-  }
-
-  const blocks: ContentBlock[] = []
-  let currentIndex = 0
-
-  // Regex patterns for block detection - non-greedy and careful matching
-  const thinkingPattern = /\[THINKING\]([\s\S]*?)\[\/THINKING\]/g
-  const toolUsePattern = /\[TOOL_USE:\s*([^\]]+)\]([\s\S]*?)\[\/TOOL_USE\]/g
-  const toolResultPattern = /\[TOOL_RESULT\]([\s\S]*?)\[\/TOOL_RESULT\]/g
-
-  // Find all potential blocks with their positions
-  interface PotentialBlock {
-    type: 'thinking' | 'tool_use' | 'tool_result'
-    start: number
-    end: number
-    content: string
-    name?: string
-  }
-
-  const potentialBlocks: PotentialBlock[] = []
-
-  // Detect THINKING blocks
-  let match
-  thinkingPattern.lastIndex = 0
-  while ((match = thinkingPattern.exec(text)) !== null) {
-    potentialBlocks.push({
-      type: 'thinking',
-      start: match.index,
-      end: match.index + match[0].length,
-      content: match[1].trim(),
-    })
-  }
-
-  // Detect TOOL_USE blocks
-  toolUsePattern.lastIndex = 0
-  while ((match = toolUsePattern.exec(text)) !== null) {
-    const toolName = match[1].trim()
-    const toolInput = match[2].trim()
-
-    // Validate JSON - if invalid, skip this block (treat as plain text)
-    try {
-      JSON.parse(toolInput)
-      potentialBlocks.push({
-        type: 'tool_use',
-        start: match.index,
-        end: match.index + match[0].length,
-        name: toolName,
-        content: toolInput,
-      })
-    } catch (e) {
-      // Invalid JSON - skip this block, will be treated as plain text later
-    }
-  }
-
-  // Detect TOOL_RESULT blocks
-  toolResultPattern.lastIndex = 0
-  while ((match = toolResultPattern.exec(text)) !== null) {
-    potentialBlocks.push({
-      type: 'tool_result',
-      start: match.index,
-      end: match.index + match[0].length,
-      content: match[1].trim(),
-    })
-  }
-
-  // Sort blocks by position
-  potentialBlocks.sort((a, b) => a.start - b.start)
-
-  // Check for overlapping blocks (nested/malformed tags) - skip overlapping ones
-  const validBlocks: PotentialBlock[] = []
-  for (const block of potentialBlocks) {
-    let overlaps = false
-
-    for (const validBlock of validBlocks) {
-      // Check if blocks overlap
-      if (block.start < validBlock.end && block.end > validBlock.start) {
-        overlaps = true
-        break
-      }
-    }
-
-    if (!overlaps) {
-      validBlocks.push(block)
-    }
-  }
-
-  // Build final content blocks
-  let position = 0
-
-  for (const block of validBlocks) {
-    // Add plain text before this block
-    if (block.start > position) {
-      const plainText = text.substring(position, block.start).trim()
-      if (plainText) {
-        blocks.push({
-          type: 'text',
-          index: currentIndex++,
-          content: plainText,
-        })
-      }
-    }
-
-    // Add the structured block
-    if (block.type === 'thinking') {
-      blocks.push({
-        type: 'thinking',
-        index: currentIndex++,
-        content: block.content,
-      })
-    } else if (block.type === 'tool_use' && block.name) {
-      try {
-        blocks.push({
-          type: 'tool_use',
-          index: currentIndex++,
-          id: `tool_${Date.now()}_${currentIndex}`,
-          name: block.name,
-          input: JSON.parse(block.content),
-        })
-      } catch (e) {
-        // Shouldn't happen due to earlier validation, but as fallback treat as text
-        const textContent = text.substring(block.start, block.end)
-        blocks.push({
-          type: 'text',
-          index: currentIndex++,
-          content: textContent,
-        })
-      }
-    } else if (block.type === 'tool_result') {
-      // Try to parse content as JSON, otherwise use as string
-      let resultContent: any
-      try {
-        resultContent = JSON.parse(block.content)
-      } catch (e) {
-        resultContent = block.content
-      }
-
-      blocks.push({
-        type: 'tool_result',
-        index: currentIndex++,
-        tool_use_id: 'unknown_tool',
-        content: resultContent,
-        is_error: false,
-      })
-    }
-
-    position = block.end
-  }
-
-  // Add remaining plain text
-  if (position < text.length) {
-    const plainText = text.substring(position).trim()
-    if (plainText) {
-      blocks.push({
-        type: 'text',
-        index: currentIndex++,
-        content: plainText,
-      })
-    }
-  }
-
-  // If no blocks were created, return everything as plain text
-  if (blocks.length === 0) {
-    const trimmedText = text.trim()
-    if (trimmedText) {
-      return [
-        {
-          type: 'text',
-          index: 0,
-          content: trimmedText,
-        },
-      ]
-    }
-    return []
-  }
-
-  return blocks
-}
-
-interface ToolCallRenderGroup {
-  id: string
-  name?: string
-  args?: Record<string, any> | null
-  results: Array<{ content: any; is_error?: boolean }>
-  anchorIndex: number
-}
-
-const buildToolCallGroupsFromStream = (events?: StreamEvent[]) => {
-  if (!events || events.length === 0) return new Map<number, ToolCallRenderGroup>()
-
-  const groupsById = new Map<string, ToolCallRenderGroup>()
-  const mapByIndex = new Map<number, ToolCallRenderGroup>()
-
-  events.forEach((event, idx) => {
-    if (event.type === 'tool_call' && event.toolCall) {
-      const id = event.toolCall.id
-      if (!groupsById.has(id)) {
-        // New tool_call - create fresh group
-        groupsById.set(id, {
-          id,
-          name: event.toolCall.name,
-          args: event.toolCall.arguments,
-          results: [],
-          anchorIndex: idx,
-        })
-      } else {
-        // Group already exists (created by orphaned result arriving first)
-        // Update it with the tool_call metadata
-        const existingGroup = groupsById.get(id)!
-        existingGroup.name = event.toolCall.name
-        existingGroup.args = event.toolCall.arguments
-        existingGroup.anchorIndex = idx // Set anchor to tool_call position
-      }
-      // Map this index to the group (for deduplication)
-      mapByIndex.set(idx, groupsById.get(id)!)
-    } else if (event.type === 'tool_result' && event.toolResult) {
-      const target = groupsById.get(event.toolResult.tool_use_id)
-      if (target) {
-        // Normal case: tool_call already exists
-        target.results.push({ content: event.toolResult.content, is_error: event.toolResult.is_error })
-        // Always map result index to group (for skip logic in render)
-        mapByIndex.set(idx, target)
-      } else {
-        // Orphaned result (arrives before its tool_call)
-        // Create temporary group with special anchor marker
-        const orphanedGroup: ToolCallRenderGroup = {
-          id: event.toolResult.tool_use_id,
-          name: undefined, // Will be set when tool_call arrives
-          args: null, // Will be set when tool_call arrives
-          results: [{ content: event.toolResult.content, is_error: event.toolResult.is_error }],
-          anchorIndex: -1, // -1 = "don't render yet"
-        }
-        groupsById.set(event.toolResult.tool_use_id, orphanedGroup)
-        // Map result index to orphaned group (so it gets skipped in render loop)
-        mapByIndex.set(idx, orphanedGroup)
-      }
-    }
-  })
-
-  return mapByIndex
-}
-
-const buildToolCallGroupsFromBlocks = (blocks?: ContentBlock[]) => {
-  if (!blocks || blocks.length === 0) return new Map<number, ToolCallRenderGroup>()
-
-  const groupsById = new Map<string, ToolCallRenderGroup>()
-  const mapByIndex = new Map<number, ToolCallRenderGroup>()
-
-  blocks.forEach((block, idx) => {
-    if (block.type === 'tool_use') {
-      const id = block.id || `tool-${idx}`
-      if (!groupsById.has(id)) {
-        const group: ToolCallRenderGroup = {
-          id,
-          name: block.name,
-          args: block.input,
-          results: [],
-          anchorIndex: idx,
-        }
-        groupsById.set(id, group)
-        mapByIndex.set(idx, group)
-      }
-    } else if (block.type === 'tool_result') {
-      const id = block.tool_use_id || `tool-result-${idx}`
-      const target = groupsById.get(id)
-      if (target) {
-        target.results.push({ content: block.content, is_error: block.is_error })
-      } else {
-        const fallback: ToolCallRenderGroup = {
-          id,
-          name: 'Tool Result',
-          args: null,
-          results: [{ content: block.content, is_error: block.is_error }],
-          anchorIndex: idx,
-        }
-        mapByIndex.set(idx, fallback)
-      }
-    }
-  })
-
-  return mapByIndex
-}
-
-const formatToolResultContent = (content: any) => {
-  if (typeof content === 'string') return content
-  if (content == null) return ''
-  try {
-    return JSON.stringify(content, null, 2)
-  } catch {
-    return String(content)
-  }
-}
-
-const formatToolResultSummary = (content: any): string | null => {
-  try {
-    const data = typeof content === 'string' ? JSON.parse(content) : content
-    if (!data || typeof data !== 'object' || !('success' in data)) return null
-    return data.success ? 'success' : 'failure'
-  } catch {
-    return null
-  }
-}
-
-const normalizeReasoningTextForComparison = (text: string): string => text.replace(/\s+/g, ' ').trim()
-
-const extractReasoningTextsFromResponsesOutputItems = (items: any[]): string[] => {
-  const extracted: string[] = []
-
-  for (const item of items) {
-    if (!item || typeof item !== 'object' || item.type !== 'reasoning') continue
-
-    if (Array.isArray(item.content)) {
-      for (const part of item.content) {
-        if (part?.type === 'reasoning_text' && typeof part.text === 'string' && part.text.trim()) {
-          extracted.push(part.text)
-        }
-      }
-    }
-
-    if (Array.isArray(item.summary)) {
-      for (const part of item.summary) {
-        if (typeof part?.text === 'string' && part.text.trim()) {
-          extracted.push(part.text)
-        }
-      }
-    }
-  }
-
-  return extracted
-}
-
-const parseMcpQualifiedName = (qualifiedName: string) => {
-  const match = qualifiedName.match(/^mcp__([^_]+)__(.+)$/)
-  if (!match) return null
-  return { serverName: match[1], toolName: match[2] }
-}
-
-// Component to render HTML in an iframe using srcdoc for packaged Electron compatibility
-// Uses shared iframeBridge for consistent IPC support across Tool Manager and Inline Chat
-const HtmlIframe: React.FC<{ html: string; fullHeight?: boolean; toolName?: string | null }> = ({
-  html,
-  fullHeight = false,
-  toolName = null,
-}) => {
-  const { userId } = useAuth()
-  const userIdRef = useRef<string | null>(null)
-  const toolNameRef = useRef<string | null>(null)
-  const iframeRef = useRef<HTMLIFrameElement>(null)
-
-  useEffect(() => {
-    userIdRef.current = userId ?? null
-  }, [userId])
-
-  useEffect(() => {
-    toolNameRef.current = toolName ?? null
-  }, [toolName])
-
-  useEffect(() => {
-    const cleanup = attachMessageBridge(
-      () => iframeRef.current,
-      () => userIdRef.current,
-      () => ({ toolName: toolNameRef.current })
-    )
-    return cleanup
-  }, [])
-
-  return (
-    <iframe
-      ref={iframeRef}
-      srcDoc={html}
-      className={fullHeight ? 'w-full h-full bg-white' : 'w-full min-h-[800px] rounded-lg bg-white'}
-      style={{ border: 'none' }}
-      title='HTML Preview'
-      allow='fullscreen; accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share'
-      allowFullScreen
-      referrerPolicy='strict-origin-when-cross-origin'
-      sandbox='allow-scripts allow-same-origin allow-forms allow-popups allow-presentation'
-    />
-  )
 }
 
 const ChatMessage: React.FC<ChatMessageProps> = React.memo(
@@ -877,15 +496,13 @@ const ChatMessage: React.FC<ChatMessageProps> = React.memo(
     const [copied, setCopied] = useState(false)
     // Toggle visibility of the reasoning/thinking block
     const [showThinking, setShowThinking] = useState(false)
-    // Track expanded/collapsed state for tool calls, tool results, and reasoning blocks
+    // Track expanded/collapsed state for tool calls, reasoning blocks, and grouped runs
     const [expandedBlocks, setExpandedBlocks] = useState<{
       toolCalls: Set<string>
-      toolResults: Set<string>
       reasoning: Set<number>
       groupRuns: Set<string>
     }>({
       toolCalls: new Set(),
-      toolResults: new Set(),
       reasoning: new Set(),
       groupRuns: new Set(),
     })
@@ -1252,6 +869,41 @@ const ChatMessage: React.FC<ChatMessageProps> = React.memo(
       }
     }, [showExplainInput, getAdjustedExplainInputPosition])
 
+    // Click outside handler for explain input
+    useEffect(() => {
+      if (!showExplainInput) return
+
+      const handleClickOutside = (event: MouseEvent) => {
+        if (explainInputRef.current && !explainInputRef.current.contains(event.target as Node)) {
+          handleCancelExplainInput()
+        }
+      }
+
+      document.addEventListener('mousedown', handleClickOutside)
+
+      return () => {
+        document.removeEventListener('mousedown', handleClickOutside)
+      }
+    }, [showExplainInput])
+
+    // Focus explain textarea without scrolling the virtual list
+    useEffect(() => {
+      if (!showExplainInput) return
+      const focusTimer = window.setTimeout(() => {
+        const textarea = explainInputRef.current?.querySelector('textarea') as HTMLTextAreaElement | null
+        if (!textarea) return
+        try {
+          textarea.focus({ preventScroll: true })
+        } catch {
+          textarea.focus()
+        }
+      }, 0)
+
+      return () => {
+        window.clearTimeout(focusTimer)
+      }
+    }, [showExplainInput])
+
     const getEstimatedMoreMenuSize = useCallback(() => {
       if (typeof window === 'undefined') {
         return { width: 320, height: 440 }
@@ -1325,41 +977,6 @@ const ChatMessage: React.FC<ChatMessageProps> = React.memo(
         document.removeEventListener('mousedown', handleClickOutside)
       }
     }, [showMoreMenu])
-
-    // Click outside handler for explain input
-    useEffect(() => {
-      if (!showExplainInput) return
-
-      const handleClickOutside = (event: MouseEvent) => {
-        if (explainInputRef.current && !explainInputRef.current.contains(event.target as Node)) {
-          handleCancelExplainInput()
-        }
-      }
-
-      document.addEventListener('mousedown', handleClickOutside)
-
-      return () => {
-        document.removeEventListener('mousedown', handleClickOutside)
-      }
-    }, [showExplainInput])
-
-    // Focus explain textarea without scrolling the virtual list
-    useEffect(() => {
-      if (!showExplainInput) return
-      const focusTimer = window.setTimeout(() => {
-        const textarea = explainInputRef.current?.querySelector('textarea') as HTMLTextAreaElement | null
-        if (!textarea) return
-        try {
-          textarea.focus({ preventScroll: true })
-        } catch {
-          textarea.focus()
-        }
-      }, 0)
-
-      return () => {
-        window.clearTimeout(focusTimer)
-      }
-    }, [showExplainInput])
 
     // Close More menu when context menu opens to avoid conflicts
     useEffect(() => {
@@ -1570,13 +1187,31 @@ const ChatMessage: React.FC<ChatMessageProps> = React.memo(
 
     const styles = getRoleStyles()
 
-    // const formatTimestamp = (dateInput: string | Date) => {
-    //   const date = typeof dateInput === 'string' ? new Date(dateInput) : dateInput
-    //   if (isNaN(date.getTime())) {
-    //     return typeof dateInput === 'string' ? dateInput : ''
-    //   }
-    //   return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-    // }
+    const markdownCodeBlockBackgroundColor = customThemeEnabled
+      ? getThemeModeColor(customTheme.colors.markdownCodeBlockBg, isDarkMode)
+      : isDarkMode
+        ? '#171717'
+        : '#f3f4f6'
+    const markdownCodeBlockBorderColor = customThemeEnabled
+      ? getThemeModeColor(customTheme.colors.markdownCodeBlockBorder, isDarkMode)
+      : isDarkMode
+        ? 'rgba(255, 255, 255, 0.08)'
+        : 'rgba(0, 0, 0, 0.08)'
+    const markdownCodeBlockTextColor = customThemeEnabled
+      ? getThemeModeColor(customTheme.colors.markdownCodeBlockText, isDarkMode)
+      : isDarkMode
+        ? '#f3f4f6'
+        : '#111827'
+    const markdownInlineCodeBackgroundColor = customThemeEnabled
+      ? getThemeModeColor(customTheme.colors.markdownInlineCodeBg, isDarkMode)
+      : isDarkMode
+        ? '#262626'
+        : '#e5e7eb'
+    const markdownInlineCodeTextColor = customThemeEnabled
+      ? getThemeModeColor(customTheme.colors.markdownInlineCodeText, isDarkMode)
+      : isDarkMode
+        ? '#f5f5f5'
+        : '#111827'
 
     // Custom renderer for block code (<pre>) with a stable copy action and no overlay on top of selectable text
     const PreRenderer: React.FC<any> = ({ children, className, ...props }) => {
@@ -1601,8 +1236,17 @@ const ChatMessage: React.FC<ChatMessageProps> = React.memo(
       }
 
       return (
-        <div className='my-3 not-prose overflow-hidden rounded-2xl bg-gray-100 dark:bg-neutral-900 dark:border dark:border-neutral-700 shadow-[0px_0px_6px_0px_rgba(0,0,0,0.15)] dark:shadow-[0px_0px_16px_2px_rgba(0,0,0,0.45)]'>
-          <div className='flex items-center justify-end px-2 py-2 border-b border-black/5 dark:border-white/5'>
+        <div
+          className='my-3 not-prose overflow-hidden rounded-2xl border shadow-[0px_0px_6px_0px_rgba(0,0,0,0.15)] dark:shadow-[0px_0px_16px_2px_rgba(0,0,0,0.45)]'
+          style={{
+            backgroundColor: markdownCodeBlockBackgroundColor,
+            borderColor: markdownCodeBlockBorderColor,
+          }}
+        >
+          <div
+            className='flex items-center justify-end px-2 py-2 border-b'
+            style={{ borderColor: markdownCodeBlockBorderColor }}
+          >
             <Button
               type='button'
               onMouseDown={event => {
@@ -1622,7 +1266,8 @@ const ChatMessage: React.FC<ChatMessageProps> = React.memo(
           </div>
           <pre
             ref={preRef}
-            className={`not-prose thin-scrollbar m-0 overflow-auto bg-transparent p-3 text-[0.8em] text-gray-900 ring-0 outline-none select-text dark:text-neutral-100 ${className ?? ''}`}
+            className={`not-prose thin-scrollbar m-0 overflow-auto bg-transparent p-3 text-[0.8em] ring-0 outline-none select-text ${className ?? ''}`}
+            style={{ color: markdownCodeBlockTextColor, backgroundColor: 'transparent' }}
             {...props}
           >
             {children}
@@ -1631,8 +1276,67 @@ const ChatMessage: React.FC<ChatMessageProps> = React.memo(
       )
     }
 
+    const CodeRenderer: React.FC<any> = ({ inline, className, children, ...props }) => {
+      if (inline) {
+        return (
+          <code
+            className='inline rounded px-1 py-0.5 whitespace-pre-wrap'
+            style={{
+              backgroundColor: markdownInlineCodeBackgroundColor,
+              color: markdownInlineCodeTextColor,
+              boxDecorationBreak: 'clone',
+              WebkitBoxDecorationBreak: 'clone',
+            }}
+            {...props}
+          >
+            {children}
+          </code>
+        )
+      }
+
+      return (
+        <code className={className} {...props}>
+          {children}
+        </code>
+      )
+    }
+
+    const renderMarkdownNode = ({
+      key,
+      markdown,
+      className,
+      style,
+      id,
+    }: {
+      key: string
+      markdown: string
+      className: string
+      style?: React.CSSProperties
+      id?: string
+    }) => (
+      <div key={key} id={id} className={className} style={style}>
+        <ReactMarkdown
+          remarkPlugins={[remarkGfm, remarkMath]}
+          rehypePlugins={[[rehypeHighlight, { ignoreMissing: true }], rehypeKatex]}
+          components={{ pre: PreRenderer, code: CodeRenderer, a: MarkdownLink }}
+        >
+          {markdown}
+        </ReactMarkdown>
+      </div>
+    )
+
+    const renderImageNode = ({ key, url, onClick }: { key: string; url: string; onClick?: () => void }) => {
+      const imageClassName = onClick ? `${MESSAGE_IMAGE_CLASS} cursor-pointer` : MESSAGE_IMAGE_CLASS
+
+      return (
+        <div key={key} className={MESSAGE_IMAGE_WRAPPER_CLASS}>
+          <img src={url} alt='Generated image' className={imageClassName} onClick={onClick} loading='lazy' />
+        </div>
+      )
+    }
+
     // Toggle function for collapsible blocks
-    const toggleBlock = (type: 'toolCalls' | 'toolResults' | 'reasoning' | 'groupRuns', id: string | number) => {
+    const toggleBlock = (type: 'toolCalls' | 'reasoning' | 'groupRuns', id: string | number) => {
       setExpandedBlocks(prev => {
         const newState = { ...prev }
         const currentSet = prev[type]
@@ -1677,38 +1381,6 @@ const ChatMessage: React.FC<ChatMessageProps> = React.memo(
       // Short connective text (even if multiline) should not break an Agent Steps run.
       const words = trimmed.split(/\s+/).filter(Boolean)
       return words.length <= 12
-    }
-
-    const extractHtmlFromToolResult = (content: any): { html: string; toolName?: string | null } | null => {
-      if (!content) return null
-
-      let resolved = content
-      if (typeof resolved === 'string') {
-        try {
-          resolved = JSON.parse(resolved)
-        } catch {
-          return null
-        }
-      }
-      if (typeof resolved === 'object' && resolved !== null && 'html' in resolved) {
-        return {
-          html: (resolved as any).html,
-          toolName: (resolved as any).toolName ?? (resolved as any).tool_name ?? null,
-        }
-      }
-
-      if (
-        typeof resolved === 'object' &&
-        resolved !== null &&
-        (resolved as any).type === 'text/html' &&
-        typeof (resolved as any).content === 'string'
-      ) {
-        return {
-          html: (resolved as any).content,
-          toolName: (resolved as any).toolName ?? (resolved as any).tool_name ?? null,
-        }
-      }
-      return null
     }
 
     // Build a lookup map of HTML entries for on-demand registration.
@@ -1917,9 +1589,9 @@ const ChatMessage: React.FC<ChatMessageProps> = React.memo(
       if (isHtmlRenderer && typeof extractedHtml === 'string') {
         const htmlPreviewKey = `${id}-html-renderer-${group.id}`
         return (
-          <div key={toggleKey} className='relative pl-6 pb-4 ml-2 '>
+          <div key={toggleKey} className={PROCESS_CARD_WRAPPER_CLASS}>
             {/* Green pip indicator */}
-            <div className='absolute -left-[5px] top-1 w-2.5 h-2.5 rounded-full bg-emerald-500 shadow-[0_0_6px_rgba(16,185,129,0.4)]' />
+            <div className={TOOL_SUCCESS_PIP_CLASS} />
 
             {/* Tool header */}
             <div className='flex items-center gap-2 mb-2'>
@@ -1961,8 +1633,8 @@ const ChatMessage: React.FC<ChatMessageProps> = React.memo(
             reloadToken: mcpReloadTokens[reloadKey] || 0,
           }
           return (
-            <div key={toggleKey} className='relative pl-6 pb-4 ml-2 '>
-              <div className='absolute -left-[5px] top-1 w-2.5 h-2.5 rounded-full bg-emerald-500 shadow-[0_0_6px_rgba(16,185,129,0.4)]' />
+            <div key={toggleKey} className={PROCESS_CARD_WRAPPER_CLASS}>
+              <div className={TOOL_SUCCESS_PIP_CLASS} />
               <div className='flex items-center gap-2 mb-2 flex-wrap'>
                 <span className='font-mono text-xs bg-neutral-100  px-1.5 py-0.5 rounded border border-neutral-300 dark:border-neutral-700 text-neutral-600 dark:text-neutral-400'>
                   {group.name || 'mcp_app'}
@@ -2023,10 +1695,10 @@ const ChatMessage: React.FC<ChatMessageProps> = React.memo(
         const editResult = group.results.length > 0 ? group.results[0].content : {}
         const isEditFileSuccess = formatToolResultSummary(editResult) === 'success'
         return (
-          <div key={toggleKey} className='relative pl-6 pb-4 ml-2 '>
+          <div key={toggleKey} className={PROCESS_CARD_WRAPPER_CLASS}>
             {/* Status pip indicator - align with EditFileDiffView success logic */}
             <div
-              className={`absolute -left-[5px] top-1 w-2.5 h-2.5 rounded-full ${
+              className={`${PROCESS_PIP_BASE_CLASS} ${
                 isEditFileSuccess
                   ? 'bg-emerald-500 shadow-[0_0_6px_rgba(16,185,129,0.4)]'
                   : 'bg-red-500 shadow-[0_0_6px_rgba(239,68,68,0.4)]'
@@ -2055,10 +1727,10 @@ const ChatMessage: React.FC<ChatMessageProps> = React.memo(
       }
 
       return (
-        <div key={toggleKey} className='relative pl-6 pb-4 ml-2 '>
+        <div key={toggleKey} className={PROCESS_CARD_WRAPPER_CLASS}>
           {/* Status pip indicator - green for success/executing, red for error */}
           <div
-            className={`absolute -left-[5px] top-1 w-2.5 h-2.5 rounded-full ${
+            className={`${PROCESS_PIP_BASE_CLASS} ${
               hasResults && hasError
                 ? 'bg-red-500 shadow-[0_0_6px_rgba(239,68,68,0.4)]'
                 : 'bg-emerald-500 shadow-[0_0_6px_rgba(16,185,129,0.4)]'
@@ -2067,13 +1739,8 @@ const ChatMessage: React.FC<ChatMessageProps> = React.memo(
 
           {/* Tool header row */}
           <div className='flex items-center gap-2 flex-wrap'>
-            <button
-              onClick={() => handleExpandToggle(toggleKey, group)}
-              className='flex items-center gap-2 group/tool hover:opacity-80 transition-opacity cursor-pointer outline-none'
-            >
-              <span className='font-mono text-xs bg-neutral-100 dark:bg-neutral-900 px-1.5 py-0.5 rounded-xl border border-neutral-300 dark:border-neutral-700 text-neutral-600 dark:text-neutral-400 group-hover/tool:border-neutral-400 dark:group-hover/tool:border-neutral-600 transition-colors'>
-                {group.name || 'tool'}
-              </span>
+            <button onClick={() => handleExpandToggle(toggleKey, group)} className={TOOL_HEADER_BUTTON_CLASS}>
+              <span className={TOOL_NAME_BADGE_CLASS}>{group.name || 'tool'}</span>
               {/* Status indicator when collapsed */}
               {/* {!isExpanded && resultSummary && (
                 <span
@@ -2096,7 +1763,7 @@ const ChatMessage: React.FC<ChatMessageProps> = React.memo(
                 </span>
               )}
               <svg
-                className={`tool-chevron w-3.5 h-3.5 text-neutral-400 dark:text-neutral-600 group-hover/tool:text-neutral-500 dark:group-hover/tool:text-neutral-400 ${isExpanded ? 'open' : ''}`}
+                className={`${TOOL_CHEVRON_BASE_CLASS} ${isExpanded ? 'open' : ''}`}
                 fill='none'
                 viewBox='0 0 24 24'
                 stroke='currentColor'
@@ -2224,8 +1891,8 @@ const ChatMessage: React.FC<ChatMessageProps> = React.memo(
         kind: 'process',
         processType: 'reasoning',
         node: (
-          <div key={key} className='relative pl-6 pb-4 ml-2 '>
-            <div className='absolute -left-[5px] top-1 w-2.5 h-2.5 rounded-full bg-blue-500 shadow-[0_0_8px_rgba(59,130,246,0.3)]' />
+          <div key={key} className={PROCESS_CARD_WRAPPER_CLASS}>
+            <div className={REASONING_PIP_CLASS} />
 
             <button
               onClick={() => toggleBlock('reasoning', reasoningId)}
@@ -2240,7 +1907,7 @@ const ChatMessage: React.FC<ChatMessageProps> = React.memo(
                 </span>
               )}
               <svg
-                className={`tool-chevron w-3.5 h-3.5 text-neutral-400 dark:text-neutral-600 group-hover/reason:text-neutral-500 dark:group-hover/reason:text-neutral-400 ${isExpanded ? 'open' : ''}`}
+                className={`${REASONING_CHEVRON_BASE_CLASS} ${isExpanded ? 'open' : ''}`}
                 fill='none'
                 viewBox='0 0 24 24'
                 stroke='currentColor'
@@ -2251,18 +1918,12 @@ const ChatMessage: React.FC<ChatMessageProps> = React.memo(
 
             <div className={`tool-expand-container ${isExpanded ? 'open' : ''}`}>
               <div className='tool-expand-content pt-2'>
-                <div
-                  className='text-sm text-neutral-600 dark:text-neutral-400 leading-relaxed prose max-w-none dark:prose-invert'
-                  style={textContentStyle}
-                >
-                  <ReactMarkdown
-                    remarkPlugins={[remarkGfm, remarkMath]}
-                    rehypePlugins={[[rehypeHighlight, { ignoreMissing: true }], rehypeKatex]}
-                    components={{ pre: PreRenderer, a: MarkdownLink }}
-                  >
-                    {reasoningText}
-                  </ReactMarkdown>
-                </div>
+                {renderMarkdownNode({
+                  key: `${key}-reasoning-content`,
+                  markdown: reasoningText,
+                  className: REASONING_TEXT_MARKDOWN_CLASS,
+                  style: textContentStyle,
+                })}
               </div>
             </div>
           </div>
@@ -2327,8 +1988,8 @@ const ChatMessage: React.FC<ChatMessageProps> = React.memo(
           if (reasoningCount > 0) summaryParts.push(`${reasoningCount} reasoning`)
 
           rendered.push(
-            <div key={groupKey} className='relative pl-6 pb-4 ml-2 '>
-              <div className='absolute -left-[5px] top-1 w-2.5 h-2.5 rounded-full bg-violet-500 shadow-[0_0_8px_rgba(139,92,246,0.35)]' />
+            <div key={groupKey} className={PROCESS_CARD_WRAPPER_CLASS}>
+              <div className={AGENT_RUN_PIP_CLASS} />
               <button
                 onClick={() => toggleBlock('groupRuns', groupKey)}
                 className='flex items-center gap-2 group/run hover:opacity-80 transition-opacity cursor-pointer outline-none'
@@ -2338,11 +1999,11 @@ const ChatMessage: React.FC<ChatMessageProps> = React.memo(
                 </span>
                 {!isExpanded && summaryParts.length > 0 && (
                   <span className='text-xs text-neutral-500 dark:text-neutral-500 line-clamp-1 max-w-[300px]'>
-                    {summaryParts.join(' • ')}
+                    {summaryParts.join(' â€¢ ')}
                   </span>
                 )}
                 <svg
-                  className={`tool-chevron w-3.5 h-3.5 text-neutral-400 dark:text-neutral-600 group-hover/run:text-neutral-500 dark:group-hover/run:text-neutral-400 ${isExpanded ? 'open' : ''}`}
+                  className={`${AGENT_RUN_CHEVRON_BASE_CLASS} ${isExpanded ? 'open' : ''}`}
                   fill='none'
                   viewBox='0 0 24 24'
                   stroke='currentColor'
@@ -2420,21 +2081,12 @@ const ChatMessage: React.FC<ChatMessageProps> = React.memo(
               key: textKey,
               kind: 'other',
               ignoreForProcessRunGrouping: isProcessRunSeparatorText(accumulatedText),
-              node: (
-                <div
-                  key={textKey}
-                  className='prose max-w-none dark:prose-invert w-full text-[16px] sm:text-[16px] 2xl:text-[20px] 3xl:text-[21px]'
-                  style={textContentStyle}
-                >
-                  <ReactMarkdown
-                    remarkPlugins={[remarkGfm, remarkMath]}
-                    rehypePlugins={[[rehypeHighlight, { ignoreMissing: true }], rehypeKatex]}
-                    components={{ pre: PreRenderer, a: MarkdownLink }}
-                  >
-                    {accumulatedText}
-                  </ReactMarkdown>
-                </div>
-              ),
+              node: renderMarkdownNode({
+                key: textKey,
+                markdown: accumulatedText,
+                className: SHARED_TEXT_MARKDOWN_CLASS,
+                style: textContentStyle,
+              }),
             })
           }
 
@@ -2473,84 +2125,26 @@ const ChatMessage: React.FC<ChatMessageProps> = React.memo(
         }
 
         if (event.type === 'tool_call' && event.toolCall && event.complete) {
+          // Fallback path: if stream grouping did not produce an anchored group,
+          // still render via the shared tool-group card renderer.
           const toolCall = event.toolCall
-          const toggleKey = `tool-call-${toolCall.id}-${idx}`
-          const isExpanded = expandedBlocks.toolCalls.has(toggleKey)
-          const pathParam = extractPathParam(toolCall.arguments)
-          const isHtmlToolCall = (toolCall.name ?? '').toLowerCase() === 'html_renderer'
-          const isEditFileToolCall = (toolCall.name ?? '').toLowerCase() === 'edit_file'
-          const isEditFileToolCallSuccess = isEditFileToolCall && formatToolResultSummary(toolCall.result) === 'success'
-          const hasHtmlOutput = isHtmlToolCall || Boolean(extractHtmlFromToolResult(toolCall.result)?.html)
+          const fallbackGroup: ToolCallRenderGroup = {
+            id: toolCall.id,
+            name: toolCall.name,
+            args: toolCall.arguments,
+            results: toolCall.result ? [{ content: toolCall.result, is_error: false }] : [],
+            anchorIndex: idx,
+          }
+          const fallbackNode = renderToolCallGroupCard(fallbackGroup, `stream-fallback-${toolCall.id}-${idx}`)
 
-          items.push({
-            key: `tool-${toolCall.id}-${idx}`,
-            kind: 'process',
-            processType: 'tool',
-            node: (
-              <div key={`tool-${toolCall.id}-${idx}`} className='relative pl-6 pb-4 ml-2 '>
-                <div
-                  className={`absolute -left-[5px] top-1 w-2.5 h-2.5 rounded-full ${
-                    isEditFileToolCall
-                      ? isEditFileToolCallSuccess
-                        ? 'bg-emerald-500 shadow-[0_0_6px_rgba(16,185,129,0.4)]'
-                        : 'bg-red-500 shadow-[0_0_6px_rgba(239,68,68,0.4)]'
-                      : 'bg-emerald-500 shadow-[0_0_6px_rgba(16,185,129,0.4)]'
-                  }`}
-                />
-
-                <button
-                  onClick={() => toggleBlock('toolCalls', toggleKey)}
-                  className='flex items-center gap-2 group/tool hover:opacity-80 transition-opacity cursor-pointer outline-none'
-                >
-                  <span className='font-mono text-xs bg-neutral-100 dark:bg-neutral-900 px-1.5 py-0.5 rounded-xl border border-neutral-300 dark:border-neutral-700 text-neutral-600 dark:text-neutral-400 group-hover/tool:border-neutral-400 dark:group-hover/tool:border-neutral-600 transition-colors'>
-                    {toolCall.name || 'tool'}
-                  </span>
-                  {!isExpanded && pathParam && (
-                    <span
-                      className='text-[10px] text-neutral-500 dark:text-neutral-500 max-w-[200px] overflow-hidden whitespace-nowrap'
-                      style={{ direction: 'rtl', textOverflow: 'ellipsis' }}
-                    >
-                      {pathParam}
-                    </span>
-                  )}
-                  <svg
-                    className={`tool-chevron w-3.5 h-3.5 text-neutral-400 dark:text-neutral-600 group-hover/tool:text-neutral-500 dark:group-hover/tool:text-neutral-400 ${isExpanded ? 'open' : ''}`}
-                    fill='none'
-                    viewBox='0 0 24 24'
-                    stroke='currentColor'
-                  >
-                    <path strokeLinecap='round' strokeLinejoin='round' strokeWidth={2} d='M9 5l7 7-7 7' />
-                  </svg>
-                </button>
-
-                <div className={`tool-expand-container ${isExpanded ? 'open' : ''}`}>
-                  <div className='tool-expand-content pt-3'>
-                    {!hasHtmlOutput && toolCall.arguments && Object.keys(toolCall.arguments).length > 0 && (
-                      <div className='border-l-2 border-neutral-300/50 dark:border-neutral-700/50 pl-4 py-1 mb-2 font-mono text-[11px] text-neutral-500 dark:text-neutral-500 leading-relaxed'>
-                        {Object.entries(toolCall.arguments).map(([key, value]) => (
-                          <div key={key} className='break-all'>
-                            <span className='text-neutral-400 dark:text-neutral-600'>{key}:</span>{' '}
-                            <span className='text-neutral-600 dark:text-neutral-400'>
-                              {typeof value === 'object' ? JSON.stringify(value) : String(value)}
-                            </span>
-                          </div>
-                        ))}
-                      </div>
-                    )}
-
-                    {toolCall.result && (
-                      <div className='border-l-2 border-neutral-300/50 dark:border-neutral-700/50 pl-4 py-1 font-mono text-[11px] text-neutral-500 dark:text-neutral-500 leading-relaxed whitespace-pre-wrap break-words'>
-                        {toolCall.result}
-                        <span className='text-neutral-400 dark:text-neutral-600 italic mt-1 block text-[10px] tracking-tight'>
-                          completed
-                        </span>
-                      </div>
-                    )}
-                  </div>
-                </div>
-              </div>
-            ),
-          })
+          if (fallbackNode) {
+            items.push({
+              key: `stream-fallback-tool-${toolCall.id}-${idx}`,
+              kind: 'process',
+              processType: 'tool',
+              node: fallbackNode,
+            })
+          }
           idx += 1
           continue
         }
@@ -2560,16 +2154,11 @@ const ChatMessage: React.FC<ChatMessageProps> = React.memo(
           items.push({
             key: imageKey,
             kind: 'other',
-            node: (
-              <div key={imageKey} className='my-3 mx-1'>
-                <img
-                  src={event.url}
-                  alt='Generated image'
-                  className='max-w-full max-h-96 object-contain rounded-lg shadow-md'
-                  loading='lazy'
-                />
-              </div>
-            ),
+            node: renderImageNode({
+              key: imageKey,
+              url: event.url,
+              onClick: () => handleArtifactClick(event.url),
+            }),
           })
         }
 
@@ -2621,21 +2210,12 @@ const ChatMessage: React.FC<ChatMessageProps> = React.memo(
             key: textKey,
             kind: 'other',
             ignoreForProcessRunGrouping: isProcessRunSeparatorText(rawText),
-            node: (
-              <div
-                key={textKey}
-                className='prose sm:px-1 max-w-none dark:prose-invert w-full text-[16px] sm:text-[16px] 2xl:text-[20px] 3xl:text-[21px] mt-2'
-                style={textContentStyle}
-              >
-                <ReactMarkdown
-                  remarkPlugins={[remarkGfm, remarkMath]}
-                  rehypePlugins={[[rehypeHighlight, { ignoreMissing: true }], rehypeKatex]}
-                  components={{ pre: PreRenderer, a: MarkdownLink }}
-                >
-                  {rawText}
-                </ReactMarkdown>
-              </div>
-            ),
+            node: renderMarkdownNode({
+              key: textKey,
+              markdown: rawText,
+              className: SHARED_TEXT_MARKDOWN_CLASS,
+              style: textContentStyle,
+            }),
           })
           idx += 1
           continue
@@ -2718,17 +2298,11 @@ const ChatMessage: React.FC<ChatMessageProps> = React.memo(
           items.push({
             key: imageKey,
             kind: 'other',
-            node: (
-              <div key={imageKey} className='my-3 mx-1'>
-                <img
-                  src={block.url}
-                  alt='Generated image'
-                  className='max-w-full max-h-96 object-contain rounded-lg shadow-md'
-                  onClick={() => handleArtifactClick(block.url)}
-                  loading='lazy'
-                />
-              </div>
-            ),
+            node: renderImageNode({
+              key: imageKey,
+              url: block.url,
+              onClick: () => handleArtifactClick(block.url),
+            }),
           })
           idx += 1
           continue
@@ -2754,7 +2328,7 @@ const ChatMessage: React.FC<ChatMessageProps> = React.memo(
       <div
         id={`message-${id}`}
         ref={messageRef}
-        className={`group px-0 sm:px-2 md:px-2 mb-0 sm:mb-0 md:mb-0 ${styles.container} ${contextHighlightClass} ${width} transition-[background-color,opacity] duration-200 rounded-md hover:bg-opacity-80 ${isCompactionSummary ? 'border border-emerald-300/50 dark:border-emerald-600/50 bg-emerald-50/40 dark:bg-emerald-900/10' : ''} ${className ?? ''}`}
+        className={`group px-0 sm:px-2 md:px-2 ${styles.container} ${contextHighlightClass} ${width}  ${role === 'user' ? 'mt-4' : ''} transition-[background-color,opacity] duration-200 rounded-md hover:bg-opacity-80 ${isCompactionSummary ? 'border border-emerald-300/50 dark:border-emerald-600/50 bg-emerald-50/40 dark:bg-emerald-900/10' : ''} ${className ?? ''}`}
         style={styles.containerStyle}
         onContextMenu={handleContextMenu}
         onMouseEnter={() => setIsHovering(true)}
@@ -2763,7 +2337,7 @@ const ChatMessage: React.FC<ChatMessageProps> = React.memo(
         onTouchStart={handleMobileMessageActivate}
       >
         {isCompactionSummary && (
-          <div className='inline-flex mt-4 items-center gap-2 py-[3px] px-2.5 bg-emerald-100/70 dark:bg-emerald-900/40 border border-emerald-300/70 dark:border-emerald-700 rounded-md mb-3'>
+          <div className='inline-flex mt-4 items-center gap-2 py-[3px] px-2.5 bg-emerald-100/70 dark:bg-emerald-900/40 border border-emerald-300/70 dark:border-emerald-700 rounded-md'>
             <div className='w-1.5 h-1.5 rounded-full bg-emerald-500' />
             <span className='font-mono text-[11px] uppercase tracking-[0.08em] text-emerald-700 dark:text-emerald-300'>
               Compaction Summary
@@ -2773,7 +2347,7 @@ const ChatMessage: React.FC<ChatMessageProps> = React.memo(
 
         {/* Header with role */}
         {role === 'user' && (
-          <div className='inline-flex mt-8 items-center gap-2 py-[3px] px-2.5 bg-white/[0.03] border border-white/[0.08] rounded-md mb-3 backdrop-blur cursor-default transition-all duration-200'>
+          <div className='inline-flex mt-6 items-center gap-2 pt-[3px] px-2.5 bg-white/[0.03] border border-white/[0.08] rounded-md mb-3 backdrop-blur cursor-default transition-all duration-200'>
             <div className='w-1 h-1 rounded-full bg-neutral-500 shadow-[0_0_8px_rgba(115,115,115,0.4)]'></div>
             <span
               className={`font-mono text-[11px] uppercase tracking-[0.1em] ${styles.role || 'text-neutral-500'}`}
@@ -2814,9 +2388,9 @@ const ChatMessage: React.FC<ChatMessageProps> = React.memo(
 
             {/* Reasoning / thinking block */}
             {typeof thinking === 'string' && thinking.trim().length > 0 && (
-              <div className='relative pl-6 pb-4 ml-2 mb-2 '>
+              <div className={PROCESS_CARD_REASONING_WRAPPER_CLASS}>
                 {/* Blue pip indicator for reasoning */}
-                <div className='absolute -left-[5px] top-1 w-2.5 h-2.5 rounded-full bg-blue-500 shadow-[0_0_8px_rgba(59,130,246,0.3)]' />
+                <div className={REASONING_PIP_CLASS} />
 
                 {/* Reasoning header */}
                 <button
@@ -2834,7 +2408,7 @@ const ChatMessage: React.FC<ChatMessageProps> = React.memo(
                     </span>
                   )}
                   <svg
-                    className={`tool-chevron w-3.5 h-3.5 text-neutral-400 dark:text-neutral-600 group-hover/reason:text-neutral-500 dark:group-hover/reason:text-neutral-400 ${showThinking ? 'open' : ''}`}
+                    className={`${REASONING_CHEVRON_BASE_CLASS} ${showThinking ? 'open' : ''}`}
                     fill='none'
                     viewBox='0 0 24 24'
                     stroke='currentColor'
@@ -2846,19 +2420,13 @@ const ChatMessage: React.FC<ChatMessageProps> = React.memo(
                 {/* Expandable content */}
                 <div className={`tool-expand-container ${showThinking ? 'open' : ''}`}>
                   <div className='tool-expand-content pt-2'>
-                    <div
-                      id={`reasoning-content-${id}`}
-                      className='text-sm text-neutral-600 dark:text-neutral-400 leading-relaxed prose max-w-none dark:prose-invert'
-                      style={textContentStyle}
-                    >
-                      <ReactMarkdown
-                        remarkPlugins={[remarkGfm, remarkMath]}
-                        rehypePlugins={[[rehypeHighlight, { ignoreMissing: true }], rehypeKatex]}
-                        components={{ pre: PreRenderer, a: MarkdownLink }}
-                      >
-                        {thinking}
-                      </ReactMarkdown>
-                    </div>
+                    {renderMarkdownNode({
+                      key: `legacy-reasoning-${id}`,
+                      id: `reasoning-content-${id}`,
+                      markdown: thinking,
+                      className: REASONING_TEXT_MARKDOWN_CLASS,
+                      style: textContentStyle,
+                    })}
                   </div>
                 </div>
               </div>
@@ -2900,20 +2468,14 @@ const ChatMessage: React.FC<ChatMessageProps> = React.memo(
         ) : (
           <>
             {/* Display mode - only show if no contentBlocks or streamEvents present (to avoid duplication) */}
-            {(!contentBlocks || contentBlocks.length === 0) && (!streamEvents || streamEvents.length === 0) && (
-              <div
-                className='prose px-4 py-2 sm:px-1 max-w-none dark:prose-invert w-full text-[16px] md:text-[14px] lg:text-[14px] xl:text-[16px] 2xl:text-[20px] 3xl:text-[20px] 4xl:text-[20px]'
-                style={textContentStyle}
-              >
-                <ReactMarkdown
-                  remarkPlugins={[remarkGfm, remarkMath]}
-                  rehypePlugins={[[rehypeHighlight, { ignoreMissing: true }], rehypeKatex]}
-                  components={{ pre: PreRenderer, a: MarkdownLink }}
-                >
-                  {content}
-                </ReactMarkdown>
-              </div>
-            )}
+            {(!contentBlocks || contentBlocks.length === 0) &&
+              (!streamEvents || streamEvents.length === 0) &&
+              renderMarkdownNode({
+                key: `legacy-content-${id}`,
+                markdown: content,
+                className: LEGACY_TEXT_MARKDOWN_CLASS,
+                style: textContentStyle,
+              })}
           </>
         )}
         {/* {hasContent && modelName && role !== 'user' && (
@@ -3027,7 +2589,7 @@ const ChatMessage: React.FC<ChatMessageProps> = React.memo(
         )}
 
         {role === 'user' && (
-          <div className='h-px w-full bg-gradient-to-r from-transparent via-neutral-500/30 to-transparent mb-8'></div>
+          <div className='h-px w-full bg-gradient-to-r from-transparent via-neutral-500/30 to-transparent mb-4'></div>
         )}
 
         {/* Edit instructions */}

@@ -818,6 +818,7 @@ body {
 }
 
 .mobile-composer {
+  position: relative;
   display: grid;
   grid-template-columns: 1fr auto;
   gap: 8px;
@@ -825,6 +826,15 @@ body {
   background: #ffffff;
   border: 0;
   border-top: 1px solid var(--border-subtle);
+}
+
+.mobile-composer-disabled-overlay {
+  position: absolute;
+  inset: 0;
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+  z-index: 3;
 }
 
 .mobile-composer textarea {
@@ -2462,4 +2472,46 @@ body {
 .m-edit-msg.error {
   color: color-mix(in srgb, var(--tool-error) 75%, var(--text));
   background: color-mix(in srgb, var(--tool-error) 10%, transparent);
+}
+
+.mobile-blocked-modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 2000;
+  background: color-mix(in srgb, var(--overlay) 92%, transparent);
+  border: 0;
+  padding: 0;
+}
+
+.mobile-blocked-modal {
+  position: fixed;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  z-index: 2001;
+  width: min(92vw, 420px);
+  border-radius: 14px;
+  border: 1px solid var(--border);
+  background: var(--panel-elevated);
+  box-shadow: 0 30px 80px -35px rgba(0, 0, 0, 0.55);
+  padding: 14px;
+  display: grid;
+  gap: 12px;
+}
+
+.mobile-blocked-modal h3 {
+  margin: 0;
+  font-size: 16px;
+}
+
+.mobile-blocked-modal p {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.45;
+  color: var(--text-soft);
+}
+
+.mobile-blocked-modal-actions {
+  display: flex;
+  justify-content: flex-end;
 }

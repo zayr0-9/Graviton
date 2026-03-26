@@ -6,6 +6,7 @@ import { MessageList } from './components/MessageList'
 import { MessageTreeDrawer } from './components/MessageTreeDrawer'
 import { MobileHeader } from './components/MobileHeader'
 import { ProjectConversationTree } from './components/ProjectConversationTree'
+import { Button } from './components/ui'
 import { buildRenderItemsForMessage } from './messageParser'
 import type {
   HeadlessSseEvent,
@@ -325,6 +326,7 @@ export const App: React.FC = () => {
   const [branchSourceMessage, setBranchSourceMessage] = useState<MobileMessage | null>(null)
   const [sending, setSending] = useState(false)
   const [streamingState, setStreamingState] = useState<StreamingState | null>(null)
+  const [composerBlockModal, setComposerBlockModal] = useState<{ title: string; message: string } | null>(null)
   const [openAiConnected, setOpenAiConnected] = useState(false)
   const [openRouterConnected, setOpenRouterConnected] = useState(false)
   const [openAiBusy, setOpenAiBusy] = useState(false)
@@ -393,6 +395,50 @@ export const App: React.FC = () => {
   const selectedProviderRequiresAuth = selectedProvider === 'openaichatgpt' || selectedProvider === 'openrouter'
   const selectedProviderAuthenticated =
     selectedProvider === 'openaichatgpt' ? openAiConnected : selectedProvider === 'openrouter' ? openRouterConnected : true
+
+  const composerDisabledReason = useMemo(() => {
+    if (!selectedUserId) {
+      return {
+        title: 'No user profile selected',
+        message: 'Please select a user profile first. Open settings in the header and choose a profile.',
+      }
+    }
+
+    if (!activeConversationId) {
+      return {
+        title: 'No active conversation',
+        message:
+          'Your conversation is not ready yet. Open Projects & Conversations and select one, or create a new conversation.',
+      }
+    }
+
+    if (selectedProviderRequiresAuth && !selectedProviderAuthenticated) {
+      const providerLabel = selectedProvider === 'openaichatgpt' ? 'OpenAI' : 'OpenRouter'
+      return {
+        title: `${providerLabel} is not connected`,
+        message: `This provider requires authentication. Open Settings and sign in to ${providerLabel}, then try again.`,
+      }
+    }
+
+    return null
+  }, [
+    selectedUserId,
+    activeConversationId,
+    selectedProviderRequiresAuth,
+    selectedProviderAuthenticated,
+    selectedProvider,
+  ])
+
+  const handleComposerDisabledInteract = useCallback(() => {
+    if (!composerDisabledReason) return
+    setComposerBlockModal(composerDisabledReason)
+  }, [composerDisabledReason])
+
+  useEffect(() => {
+    if (!composerDisabledReason && composerBlockModal) {
+      setComposerBlockModal(null)
+    }
+  }, [composerDisabledReason, composerBlockModal])
 
   useEffect(() => {
     setConversationSystemPromptInput(activeProject?.system_prompt || activeConversation?.system_prompt || '')
@@ -1309,7 +1355,8 @@ export const App: React.FC = () => {
             : undefined
         }
         onCancelBranch={branchSourceMessage ? handleCancelBranch : undefined}
-        disabled={!activeConversationId || !selectedUserId || (selectedProviderRequiresAuth && !selectedProviderAuthenticated)}
+        disabled={Boolean(composerDisabledReason)}
+        onDisabledInteract={handleComposerDisabledInteract}
       />
 
       <FilePathPickerModal
@@ -1329,6 +1376,26 @@ export const App: React.FC = () => {
         onSelectMessage={handleSelectTreeNode}
         onClose={() => setIsTreeDrawerOpen(false)}
       />
+
+      {composerBlockModal ? (
+        <>
+          <button
+            type='button'
+            aria-label='Close composer blocked dialog'
+            className='mobile-blocked-modal-backdrop'
+            onClick={() => setComposerBlockModal(null)}
+          />
+          <section className='mobile-blocked-modal' role='dialog' aria-modal='true' aria-label='Composer blocked'>
+            <h3>{composerBlockModal.title}</h3>
+            <p>{composerBlockModal.message}</p>
+            <div className='mobile-blocked-modal-actions'>
+              <Button onClick={() => setComposerBlockModal(null)} size='sm'>
+                Got it
+              </Button>
+            </div>
+          </section>
+        </>
+      ) : null}
     </main>
   )
 }

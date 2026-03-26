@@ -41,19 +41,15 @@ async function pathExists(targetPath: string): Promise<boolean> {
   }
 }
 
-async function copyMissingTree(sourcePath: string, targetPath: string): Promise<void> {
+async function syncBundledTree(sourcePath: string, targetPath: string): Promise<void> {
   const sourceStats = await fsPromises.stat(sourcePath)
 
   if (sourceStats.isDirectory()) {
     await fsPromises.mkdir(targetPath, { recursive: true })
     const entries = await fsPromises.readdir(sourcePath, { withFileTypes: true })
     for (const entry of entries) {
-      await copyMissingTree(path.join(sourcePath, entry.name), path.join(targetPath, entry.name))
+      await syncBundledTree(path.join(sourcePath, entry.name), path.join(targetPath, entry.name))
     }
-    return
-  }
-
-  if (await pathExists(targetPath)) {
     return
   }
 
@@ -128,14 +124,14 @@ export async function ensureManagedHooksInitialized(): Promise<string> {
     const sourceFile = path.join(bundledHooksDir, fileName)
     const targetFile = path.join(managedHooksDir, fileName)
     if (await pathExists(sourceFile)) {
-      await copyMissingTree(sourceFile, targetFile)
+      await syncBundledTree(sourceFile, targetFile)
     }
   }
 
   const bundledHooksScriptsDir = path.join(bundledHooksDir, 'hooks')
   const targetHooksScriptsDir = path.join(managedHooksDir, 'hooks')
   if (await pathExists(bundledHooksScriptsDir)) {
-    await copyMissingTree(bundledHooksScriptsDir, targetHooksScriptsDir)
+    await syncBundledTree(bundledHooksScriptsDir, targetHooksScriptsDir)
   }
 
   return managedHooksDir

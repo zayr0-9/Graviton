@@ -131,6 +131,8 @@ export const Heimdall: React.FC<HeimdallProps> = ({
   const queryClient = useQueryClient()
   const selectedNodes = useSelector((state: RootState) => state.chat.selectedNodes)
   const currentPathIds = useSelector((state: RootState) => state.chat.conversation.currentPath)
+  const currentConversationId = useSelector((state: RootState) => state.chat.conversation.currentConversationId)
+  const streamingRoot = useSelector((state: RootState) => state.chat.streaming)
   // const selectedProject = useSelector(selectSelectedProject)
   const allMessages = useSelector((state: RootState) => state.chat.conversation.messages)
   // Get current conversation to access project_id
@@ -2398,6 +2400,7 @@ export const Heimdall: React.FC<HeimdallProps> = ({
     return parentMap
   }, [positions])
 
+  const heimdallNodeIdSet = useMemo(() => new Set(Object.keys(positions)), [positions])
   const visiblePositionIdSet = useMemo(() => new Set(Object.keys(visiblePositions)), [visiblePositions])
 
   const handleNodeMouseEnter = useCallback(
@@ -2659,6 +2662,55 @@ export const Heimdall: React.FC<HeimdallProps> = ({
   const heimdallNotePillBorderColor = customThemeEnabled
     ? getThemeModeColor(customTheme.colors.heimdallNotePillBorder, isDarkMode)
     : 'rgba(0,0,0,0.18)'
+  const heimdallNodeHoverModalBackgroundColor = customThemeEnabled
+    ? getThemeModeColor(customTheme.colors.heimdallNodeHoverModalBg, isDarkMode)
+    : isDarkMode
+      ? '#262626'
+      : '#fafafa'
+  const heimdallNodeHoverModalBorderColor = customThemeEnabled
+    ? getThemeModeColor(customTheme.colors.heimdallNodeHoverModalBorder, isDarkMode)
+    : isDarkMode
+      ? '#404040'
+      : '#e7e5e4'
+  const heimdallNodeHoverModalTextColor = customThemeEnabled
+    ? getThemeModeColor(customTheme.colors.heimdallNodeHoverModalText, isDarkMode)
+    : isDarkMode
+      ? '#e7e5e4'
+      : '#292524'
+  const heimdallNodeHoverModalTitleTextColor = customThemeEnabled
+    ? getThemeModeColor(customTheme.colors.heimdallNodeHoverModalTitleText, isDarkMode)
+    : heimdallNodeHoverModalTextColor
+  const heimdallNoteDialogBackgroundColor = customThemeEnabled
+    ? getThemeModeColor(customTheme.colors.heimdallNoteDialogBg, isDarkMode)
+    : isDarkMode
+      ? '#09090b'
+      : '#fafafa'
+  const heimdallNoteDialogBorderColor = customThemeEnabled
+    ? getThemeModeColor(customTheme.colors.heimdallNoteDialogBorder, isDarkMode)
+    : isDarkMode
+      ? '#404040'
+      : '#e7e5e4'
+  const heimdallNoteDialogTitleTextColor = customThemeEnabled
+    ? getThemeModeColor(customTheme.colors.heimdallNoteDialogTitleText, isDarkMode)
+    : isDarkMode
+      ? '#e7e5e4'
+      : '#292524'
+  const heimdallNoteDialogButtonBackgroundColor = customThemeEnabled
+    ? getThemeModeColor(customTheme.colors.heimdallNoteDialogButtonBg, isDarkMode)
+    : 'transparent'
+  const heimdallNoteDialogButtonBorderColor = customThemeEnabled
+    ? getThemeModeColor(customTheme.colors.heimdallNoteDialogButtonBorder, isDarkMode)
+    : isDarkMode
+      ? '#57534e'
+      : '#d6d3d1'
+  const heimdallNoteDialogButtonTextColor = customThemeEnabled
+    ? getThemeModeColor(customTheme.colors.heimdallNoteDialogButtonText, isDarkMode)
+    : isDarkMode
+      ? '#d6d3d1'
+      : '#57534e'
+  const heimdallNoteDialogCloseButtonTextColor = customThemeEnabled
+    ? getThemeModeColor(customTheme.colors.heimdallNoteDialogCloseButtonText, isDarkMode)
+    : '#a8a29e'
 
   const getNotePillColors = useCallback(
     (noteColor?: string | null) => {
@@ -2679,6 +2731,79 @@ export const Heimdall: React.FC<HeimdallProps> = ({
     [heimdallNotePillBackgroundColor, heimdallNotePillBorderColor, heimdallNotePillTextColor]
   )
 
+  const activeBranchIndicatorsByNodeId = useMemo(() => {
+    const targetConversationId = conversationId ?? currentConversationId
+    const targetConversationKey = targetConversationId != null ? String(targetConversationId) : null
+
+    const resolveVisibleAnchorNodeId = (messageId: MessageId | string | number | null | undefined): string | null => {
+      if (messageId == null) return null
+
+      let cursorId: string | null = String(messageId)
+      const visited = new Set<string>()
+
+      while (cursorId && !visited.has(cursorId)) {
+        visited.add(cursorId)
+
+        if (heimdallNodeIdSet.has(cursorId)) {
+          return cursorId
+        }
+
+        const parentId = messageById.get(cursorId)?.parent_id
+        cursorId = parentId == null ? null : String(parentId)
+      }
+
+      return null
+    }
+
+    const latestByBranch = new Map<string, { streamId: string; createdAt: string; anchorNodeId: string }>()
+
+    for (const streamId of streamingRoot.activeIds) {
+      const stream = streamingRoot.byId[streamId]
+      if (!stream?.active) continue
+
+      if (targetConversationKey != null) {
+        if (stream.conversationId == null || String(stream.conversationId) !== targetConversationKey) {
+          continue
+        }
+      }
+
+      const anchorMessageId =
+        stream.streamingMessageId ?? stream.messageId ?? stream.lineage.originMessageId ?? stream.lineage.rootMessageId
+      const anchorNodeId = resolveVisibleAnchorNodeId(anchorMessageId)
+      if (!anchorNodeId) continue
+
+      const branchKey = String(
+        stream.lineage.rootMessageId ?? stream.lineage.originMessageId ?? stream.messageId ?? stream.streamingMessageId ?? streamId
+      )
+      const nextItem = {
+        streamId,
+        createdAt: stream.createdAt,
+        anchorNodeId,
+      }
+
+      const existing = latestByBranch.get(branchKey)
+      if (!existing || nextItem.createdAt > existing.createdAt) {
+        latestByBranch.set(branchKey, nextItem)
+      }
+    }
+
+    const byNodeId = new Map<string, Array<{ branchKey: string; streamId: string }>>()
+
+    latestByBranch.forEach((item, branchKey) => {
+      const existingForNode = byNodeId.get(item.anchorNodeId) || []
+      existingForNode.push({ branchKey, streamId: item.streamId })
+      byNodeId.set(item.anchorNodeId, existingForNode)
+    })
+
+    byNodeId.forEach(indicators => {
+      indicators.sort((a, b) => a.streamId.localeCompare(b.streamId))
+    })
+
+    return byNodeId
+  }, [conversationId, currentConversationId, heimdallNodeIdSet, messageById, streamingRoot.activeIds, streamingRoot.byId])
+
+  const activeBranchIndicatorColors = useMemo(() => getNotePillColors(), [getNotePillColors])
+
   const renderNodes = (): JSX.Element[] => {
     return Object.values(visiblePositions).map(({ x, y, node }) => {
       const isExpanded = !compactMode || node.id === focusedNodeId
@@ -2696,6 +2821,8 @@ export const Heimdall: React.FC<HeimdallProps> = ({
       const subagentNodes = subagentMapByParent[String(node.id)] || []
       const subagentCount = subagentNodes.length
       const showSubagentBadge = subagentCount > 0 && node.sender === 'user'
+      const activeBranchIndicators = activeBranchIndicatorsByNodeId.get(String(node.id)) || []
+      const hasActiveBranchIndicator = activeBranchIndicators.length > 0
 
       if (isExpanded) {
         // Render full node
@@ -2900,6 +3027,43 @@ export const Heimdall: React.FC<HeimdallProps> = ({
                 </g>
               )
             })()}
+            {hasActiveBranchIndicator && (
+              <g style={{ pointerEvents: 'none', userSelect: 'none' }}>
+                {activeBranchIndicators.map((indicator, index) => {
+                  const indicatorRadius = 8
+                  const gap = 4
+                  const totalWidth =
+                    activeBranchIndicators.length * indicatorRadius * 2 + (activeBranchIndicators.length - 1) * gap
+                  const rightPadding = 10
+                  const startX = nodeWidth - rightPadding - totalWidth
+                  const cx = startX + indicatorRadius + index * (indicatorRadius * 2 + gap)
+                  const cy = nodeHeight + 8
+
+                  return (
+                    <g key={indicator.branchKey}>
+                      <circle
+                        cx={cx}
+                        cy={cy}
+                        r={indicatorRadius + 1.5}
+                        fill='none'
+                        stroke={activeBranchIndicatorColors.stroke}
+                        strokeWidth='1'
+                        className='animate-pulse opacity-60'
+                      />
+                      <circle
+                        cx={cx}
+                        cy={cy}
+                        r={indicatorRadius}
+                        style={{ fill: activeBranchIndicatorColors.fill }}
+                        stroke={activeBranchIndicatorColors.stroke}
+                        strokeWidth='1'
+                        className='animate-pulse-slow'
+                      />
+                    </g>
+                  )
+                })}
+              </g>
+            )}
           </g>
         )
       } else {
@@ -3047,6 +3211,42 @@ export const Heimdall: React.FC<HeimdallProps> = ({
                 </g>
               )
             })()}
+            {hasActiveBranchIndicator && (
+              <g style={{ pointerEvents: 'none', userSelect: 'none' }}>
+                {activeBranchIndicators.map((indicator, index) => {
+                  const indicatorRadius = 3.5
+                  const gap = 3
+                  const totalWidth =
+                    activeBranchIndicators.length * indicatorRadius * 2 + (activeBranchIndicators.length - 1) * gap
+                  const startX = x - totalWidth / 2
+                  const cx = startX + indicatorRadius + index * (indicatorRadius * 2 + gap)
+                  const cy = y + circleRadius * 2 + 9
+
+                  return (
+                    <g key={indicator.branchKey}>
+                      <circle
+                        cx={cx}
+                        cy={cy}
+                        r={indicatorRadius + 1.5}
+                        fill='none'
+                        stroke={activeBranchIndicatorColors.stroke}
+                        strokeWidth='1'
+                        className='animate-pulse opacity-60'
+                      />
+                      <circle
+                        cx={cx}
+                        cy={cy}
+                        r={indicatorRadius}
+                        style={{ fill: activeBranchIndicatorColors.fill }}
+                        stroke={activeBranchIndicatorColors.stroke}
+                        strokeWidth='1'
+                        className='animate-pulse-slow'
+                      />
+                    </g>
+                  )
+                })}
+              </g>
+            )}
             {/* Add a small indicator for branch nodes */}
             {/* {node.children && node.children.length > 1 && (
               <circle
@@ -3539,18 +3739,19 @@ export const Heimdall: React.FC<HeimdallProps> = ({
 
           return (
             <div
-              className={`absolute bg-neutral-50 dark:bg-neutral-800 text-stone-800 dark:text-stone-200 p-4 rounded-lg shadow-xl z-20 no-scrollbar ${
-                compactMode ? 'border-2 border-gray-600' : ''
-              }`}
+              className={`absolute p-4 rounded-lg shadow-xl z-20 no-scrollbar ${compactMode ? 'border-2' : 'border'}`}
               style={{
                 left: Math.max(10, leftPos),
                 top: Math.max(mousePosition.y + 10, 10),
                 maxWidth: `${popupWidth}px`,
                 maxHeight: hasImage ? '600px' : '450px',
                 overflow: 'auto',
+                backgroundColor: heimdallNodeHoverModalBackgroundColor,
+                borderColor: heimdallNodeHoverModalBorderColor,
+                color: heimdallNodeHoverModalTextColor,
               }}
             >
-              <div className='text-sm text-stone-800 bg-neutral-50 dark:bg-neutral-800 dark:text-stone-200 mb-2 font-medium'>
+              <div className='text-sm mb-2 font-medium' style={{ color: heimdallNodeHoverModalTitleTextColor }}>
                 {selectedNode.sender === 'user' ? 'User' : selectedNode.sender === 'ex_agent' ? 'Agent' : 'Assistant'}
               </div>
               {(() => {
@@ -3717,15 +3918,18 @@ export const Heimdall: React.FC<HeimdallProps> = ({
           }}
         >
           <div
-            className='bg-neutral-50 dark:bg-neutral-800 text-stone-800 dark:text-stone-200 p-4 rounded-lg shadow-xl border border-stone-200 dark:border-neutral-700'
+            className='p-4 rounded-lg shadow-xl border no-scrollbar'
             data-heimdall-wheel-exempt='true'
             style={{
               width: `${NOTE_PREVIEW_WIDTH}px`,
               maxHeight: `${NOTE_PREVIEW_MAX_HEIGHT}px`,
               overflow: 'auto',
+              backgroundColor: heimdallNodeHoverModalBackgroundColor,
+              borderColor: heimdallNodeHoverModalBorderColor,
+              color: heimdallNodeHoverModalTextColor,
             }}
           >
-            <div className='text-sm font-medium mb-2 text-amber-700 dark:text-amber-300'>
+            <div className='text-sm font-medium mb-2' style={{ color: heimdallNodeHoverModalTitleTextColor }}>
               {hoveredNote.sender === 'user'
                 ? 'User Note'
                 : hoveredNote.sender === 'ex_agent'
@@ -3952,10 +4156,13 @@ export const Heimdall: React.FC<HeimdallProps> = ({
 
       {showNoteDialog && noteDialogPos && noteMessageId !== null && (
         <div
-          className='note-dialog-container absolute z-40 w-96 bg-neutral-50 dark:bg-yBlack-900 border border-stone-200 dark:border-neutral-700 rounded-2xl shadow-lg'
+          className='note-dialog-container absolute z-40 w-96 border rounded-2xl no-scrollbar shadow-lg'
           style={{
             left: Math.max(8, Math.min(noteDialogPos.x, Math.max(0, dimensions.width - 400))),
             top: Math.max(8, Math.min(noteDialogPos.y, Math.max(0, dimensions.height - 300))),
+            backgroundColor: heimdallNoteDialogBackgroundColor,
+            borderColor: heimdallNoteDialogBorderColor,
+            color: heimdallNoteDialogButtonTextColor,
           }}
           onMouseDown={e => e.stopPropagation()}
           data-heimdall-wheel-exempt='true'
@@ -3963,7 +4170,7 @@ export const Heimdall: React.FC<HeimdallProps> = ({
           <div className='px-2 py-2'>
             <div className='flex justify-between items-start mb-2 mx-1 gap-2'>
               <div className='flex flex-col gap-2 min-w-0'>
-                <h3 className='text-sm font-medium text-stone-800 dark:text-stone-200'>
+                <h3 className='text-sm font-medium' style={{ color: heimdallNoteDialogTitleTextColor }}>
                   {(() => {
                     const message = getCurrentMessage(noteMessageId)
                     const hasNote = message?.note && message.note.trim().length > 0
@@ -3988,7 +4195,8 @@ export const Heimdall: React.FC<HeimdallProps> = ({
                   <button
                     type='button'
                     onClick={() => customColorInputRef.current?.click()}
-                    className='w-5 h-5 rounded-full border border-stone-300 dark:border-stone-600 text-[10px] leading-none flex items-center justify-center bg-gradient-to-r from-red-500 via-yellow-400 to-blue-500'
+                    className='w-5 h-5 rounded-full border text-[10px] leading-none flex items-center justify-center bg-gradient-to-r from-red-500 via-yellow-400 to-blue-500'
+                    style={{ borderColor: heimdallNoteDialogButtonBorderColor }}
                     title='Pick custom color'
                     aria-label='Pick custom color'
                   >
@@ -3997,7 +4205,12 @@ export const Heimdall: React.FC<HeimdallProps> = ({
                   <button
                     type='button'
                     onClick={() => handleNoteColorChange(null)}
-                    className='text-[11px] px-2 py-0.5 rounded-full border border-stone-300 dark:border-stone-600 text-stone-600 dark:text-stone-300 hover:bg-stone-100 dark:hover:bg-neutral-800'
+                    className='text-[11px] px-2 py-0.5 rounded-full border hover:bg-stone-100 dark:hover:bg-neutral-800'
+                    style={{
+                      backgroundColor: heimdallNoteDialogButtonBackgroundColor,
+                      borderColor: heimdallNoteDialogButtonBorderColor,
+                      color: heimdallNoteDialogButtonTextColor,
+                    }}
                     title='Use default note pill color'
                   >
                     Default
@@ -4014,7 +4227,8 @@ export const Heimdall: React.FC<HeimdallProps> = ({
               </div>
               <button
                 onClick={handleCloseNoteDialog}
-                className='text-stone-400 hover:text-stone-600 dark:hover:text-stone-200 active:scale-95'
+                className='active:scale-95'
+                style={{ color: heimdallNoteDialogCloseButtonTextColor }}
                 title='Close'
               >
                 ✕

@@ -1,8 +1,8 @@
 import React, { useEffect, useRef, useState } from 'react'
 import ReactMarkdown from 'react-markdown'
+import { useNavigate } from 'react-router-dom'
 import rehypeHighlight from 'rehype-highlight'
 import rehypeKatex from 'rehype-katex'
-import { useNavigate } from 'react-router-dom'
 import remarkGfm from 'remark-gfm'
 import remarkMath from 'remark-math'
 import changelogMarkdown from '../../CHANGELOG.md?raw'
@@ -15,6 +15,7 @@ import {
   useCustomChatTheme,
   useHtmlDarkMode,
 } from '../components/ThemeManager/themeConfig'
+import { isCommunityMode, LOCAL_AUTH_USER_ID } from '../config/runtimeMode'
 import { chatSliceActions, selectProviderState } from '../features/chats'
 import { fetchCustomTools, fetchTools, updateToolEnabled } from '../features/chats/chatActions'
 import { clearTokens as clearOpenAITokens, isOpenAIAuthenticated } from '../features/chats/openaiOAuth'
@@ -34,8 +35,8 @@ import {
 } from '../helpers/chatReasoningSettingsStorage'
 import { loadShowTokenUsageBar, saveShowTokenUsageBar } from '../helpers/chatUiSettingsStorage'
 import {
-  applyAppFontSettings,
   AppFontSettings,
+  applyAppFontSettings,
   clearStoredLocalFont,
   FONT_SETTINGS_CHANGE_EVENT,
   hasStoredLocalFont,
@@ -72,6 +73,12 @@ import {
   ToolExecutionSettings,
 } from '../helpers/toolExecutionSettings'
 import {
+  loadSubagentToolSettings,
+  saveSubagentToolSettings,
+  SUBAGENT_TOOL_SETTINGS_CHANGE_EVENT,
+  SubagentToolSettings,
+} from '../helpers/subagentToolSettings'
+import {
   addCustomVideo,
   BackgroundColorSettings,
   BackgroundMode,
@@ -89,7 +96,6 @@ import {
   updateCustomVideoTextColorMode,
   VIDEO_BACKGROUND_CHANGE_EVENT,
 } from '../helpers/videoBackgroundStorage'
-import { isCommunityMode, LOCAL_AUTH_USER_ID } from '../config/runtimeMode'
 import { useAppDispatch, useAppSelector } from '../hooks/redux'
 import { useAuth } from '../hooks/useAuth'
 import { useModels } from '../hooks/useQueries'
@@ -175,15 +181,15 @@ const Settings: React.FC = () => {
   const [activeVideoId, setActiveVideoId] = useState<string | null>(() => loadActiveCustomVideoId())
   const [backgroundMode, setBackgroundMode] = useState<BackgroundMode>(() => loadBackgroundMode())
   const [backgroundColors, setBackgroundColors] = useState<BackgroundColorSettings>(() => loadBackgroundColors())
-  const effectiveBackgroundColors = customThemeEnabled
-    ? customTheme.colors.appBackgroundColor
-    : backgroundColors
+  const effectiveBackgroundColors = customThemeEnabled ? customTheme.colors.appBackgroundColor : backgroundColors
   const [uploading, setUploading] = useState(false)
   const [googleConnecting, setGoogleConnecting] = useState(false)
   const [googleDisconnecting, setGoogleDisconnecting] = useState(false)
   const [googleDriveStatus, setGoogleDriveStatus] = useState<GoogleDriveStatus | null>(null)
   const [statusMessage, setStatusMessage] = useState<StatusMessage | null>(null)
-  const [remoteBaseUrlInput, setRemoteBaseUrlInput] = useState<string>(() => loadRemoteServerSettings().remoteBaseUrl ?? '')
+  const [remoteBaseUrlInput, setRemoteBaseUrlInput] = useState<string>(
+    () => loadRemoteServerSettings().remoteBaseUrl ?? ''
+  )
   const [detectedLocalServerOrigin, setDetectedLocalServerOrigin] = useState<string>('')
   const [localUsers, setLocalUsers] = useState<LocalUserSummary[]>([])
   const [localUsersLoading, setLocalUsersLoading] = useState(false)
@@ -236,6 +242,7 @@ const Settings: React.FC = () => {
   const [loopIntervalTouched, setLoopIntervalTouched] = useState(false)
   const [agentSettingsLoading, setAgentSettingsLoading] = useState(true)
   const [agentSettingsSaving, setAgentSettingsSaving] = useState(false)
+  const [subagentSettings, setSubagentSettings] = useState<SubagentToolSettings>(() => loadSubagentToolSettings())
   const { data: openRouterModelsData } = useModels('OpenRouter')
   const compactionProviderForModels = providerSettings.compactionProvider || providers.currentProvider || 'OpenRouter'
   const { data: compactionModelsData } = useModels(compactionProviderForModels)
@@ -245,6 +252,10 @@ const Settings: React.FC = () => {
   const remoteQrCodeImageUrl = effectiveRemoteMobileUrl
     ? `https://api.qrserver.com/v1/create-qr-code/?size=220x220&data=${encodeURIComponent(effectiveRemoteMobileUrl)}`
     : null
+  const subagentDefaultModelPreview =
+    typeof agentSettings.model === 'string' && agentSettings.model.trim().length > 0
+      ? agentSettings.model.trim()
+      : 'openai/gpt-5.1-codex-mini'
 
   const readBraveApiKeyFromSecureStore = async (): Promise<string | null> => {
     const braveSecretsApi = window.electronAPI?.secrets?.braveSearch
@@ -339,6 +350,16 @@ const Settings: React.FC = () => {
     window.addEventListener(PROVIDER_SETTINGS_CHANGE_EVENT, handleProviderSettingsChange as EventListener)
     return () =>
       window.removeEventListener(PROVIDER_SETTINGS_CHANGE_EVENT, handleProviderSettingsChange as EventListener)
+  }, [])
+
+  useEffect(() => {
+    const handleSubagentSettingsChange = (e: CustomEvent<SubagentToolSettings>) => {
+      setSubagentSettings(e.detail)
+    }
+
+    window.addEventListener(SUBAGENT_TOOL_SETTINGS_CHANGE_EVENT, handleSubagentSettingsChange as EventListener)
+    return () =>
+      window.removeEventListener(SUBAGENT_TOOL_SETTINGS_CHANGE_EVENT, handleSubagentSettingsChange as EventListener)
   }, [])
 
   useEffect(() => {
@@ -713,6 +734,48 @@ const Settings: React.FC = () => {
     }
 
     showStatus({ type: 'success', text: 'OpenRouter temperature updated.' })
+  }
+
+  const persistSubagentSettings = (nextSettings: SubagentToolSettings, successText: string) => {
+    saveSubagentToolSettings(nextSettings)
+    setSubagentSettings(nextSettings)
+    showStatus({ type: 'success', text: successText })
+  }
+
+  const handleSubagentOrchestratorToggle = () => {
+    persistSubagentSettings(
+      {
+        ...subagentSettings,
+        orchestratorEnabled: !subagentSettings.orchestratorEnabled,
+      },
+      subagentSettings.orchestratorEnabled
+        ? 'Subagent orchestrator disabled (tool calls off).'
+        : 'Subagent orchestrator enabled (tool calls on).'
+    )
+  }
+
+  const handleSubagentForceOpenAIToggle = () => {
+    persistSubagentSettings(
+      {
+        ...subagentSettings,
+        forceOpenAIProviderWhenChatGPTSelected: !subagentSettings.forceOpenAIProviderWhenChatGPTSelected,
+      },
+      !subagentSettings.forceOpenAIProviderWhenChatGPTSelected
+        ? 'Subagent now forces OpenAI provider when chat provider is OpenAI (ChatGPT).'
+        : 'Subagent no longer forces OpenAI provider from chat provider state.'
+    )
+  }
+
+  const handleSubagentUseGlobalModelToggle = () => {
+    persistSubagentSettings(
+      {
+        ...subagentSettings,
+        useGlobalAgentModelAsDefault: !subagentSettings.useGlobalAgentModelAsDefault,
+      },
+      !subagentSettings.useGlobalAgentModelAsDefault
+        ? 'Subagent now defaults to Global Agent model when tool call omits model.'
+        : 'Subagent will no longer default to Global Agent model when model is omitted.'
+    )
   }
 
   // Tool handlers
@@ -1492,8 +1555,8 @@ const Settings: React.FC = () => {
             >
               CHANGELOG
             </button>
-            <Button variant='acrylic' onClick={() => navigate('/homepage')} className='group'>
-              <p className='transition-transform duration-100 group-active:scale-95'>Back to Home</p>
+            <Button variant='acrylic' onClick={() => navigate(-1)} className='group'>
+              <p className='transition-transform duration-100 group-active:scale-95'>Back</p>
             </Button>
           </div>
         </header>
@@ -1591,9 +1654,7 @@ const Settings: React.FC = () => {
         <section className='rounded-2xl border border-neutral-200 mica p-6 shadow-lg shadow-neutral-200/30 dark:border-neutral-800 dark:shadow-black/20'>
           <div className='flex flex-col gap-1'>
             <h2 className='text-xl font-semibold text-stone-900 dark:text-stone-100 mb-2'>Chat Interface</h2>
-            <p className='text-sm text-stone-500 dark:text-stone-200'>
-              Control optional chat UI elements.
-            </p>
+            <p className='text-sm text-stone-500 dark:text-stone-200'>Control optional chat UI elements.</p>
           </div>
 
           <div className='mt-4 flex flex-col gap-4'>
@@ -1661,7 +1722,8 @@ const Settings: React.FC = () => {
               />
               <p className='text-base font-medium text-stone-900 dark:text-stone-100'>Local Font Upload</p>
               <p className='text-sm text-stone-500 dark:text-stone-400'>
-                Upload <code>.woff2</code>, <code>.ttf</code>, or <code>.otf</code> (max {formatSize(MAX_FONT_UPLOAD_SIZE_BYTES)}).
+                Upload <code>.woff2</code>, <code>.ttf</code>, or <code>.otf</code> (max{' '}
+                {formatSize(MAX_FONT_UPLOAD_SIZE_BYTES)}).
               </p>
               <div className='flex flex-wrap items-center gap-2'>
                 <Button
@@ -1734,10 +1796,20 @@ const Settings: React.FC = () => {
                   >
                     Clear
                   </Button>
-                  <Button variant='outline2' size='small' onClick={handleOpenRemoteMobileUi} disabled={!effectiveRemoteMobileUrl}>
+                  <Button
+                    variant='outline2'
+                    size='small'
+                    onClick={handleOpenRemoteMobileUi}
+                    disabled={!effectiveRemoteMobileUrl}
+                  >
                     Open Mobile UI
                   </Button>
-                  <Button variant='outline2' size='small' onClick={handleCopyRemoteMobileUi} disabled={!effectiveRemoteMobileUrl}>
+                  <Button
+                    variant='outline2'
+                    size='small'
+                    onClick={handleCopyRemoteMobileUi}
+                    disabled={!effectiveRemoteMobileUrl}
+                  >
                     Copy URL
                   </Button>
                 </div>
@@ -1829,7 +1901,6 @@ const Settings: React.FC = () => {
                 </div>
               )}
 
-
               <div className='flex flex-col gap-2 pt-2 border-t border-stone-200 dark:border-stone-700'>
                 <div>
                   <p className='text-base font-medium text-stone-900 dark:text-stone-100'>Auto-Compaction Provider</p>
@@ -1852,7 +1923,10 @@ const Settings: React.FC = () => {
                   onChange={handleCompactionModelChange}
                   options={[
                     { value: '', label: 'Use provider default/current model' },
-                    ...((compactionModelsData?.models || []).map(model => ({ value: model.name, label: model.name })) as any[]),
+                    ...((compactionModelsData?.models || []).map(model => ({
+                      value: model.name,
+                      label: model.name,
+                    })) as any[]),
                   ]}
                   placeholder='Use provider default/current model'
                   className='max-w-xl'
@@ -1949,6 +2023,99 @@ const Settings: React.FC = () => {
         {import.meta.env.VITE_ENVIRONMENT === 'electron' && (
           <section className='rounded-2xl border border-neutral-200 mica p-6 shadow-lg shadow-neutral-200/30 dark:border-neutral-800 dark:shadow-black/20'>
             <div className='flex flex-col gap-1'>
+              <h2 className='text-xl font-semibold text-stone-900 dark:text-stone-100 mb-2'>Subagent</h2>
+              <p className='text-sm text-stone-500 dark:text-stone-200'>
+                Configure default subagent behavior used by the <code>subagent</code> tool.
+              </p>
+            </div>
+
+            <div className='mt-4 flex flex-col gap-4'>
+              <div className='flex items-center justify-between'>
+                <div>
+                  <p className='text-base font-medium text-stone-900 dark:text-stone-100'>Enable Orchestrator Tool Calls</p>
+                  <p className='text-sm text-stone-500 dark:text-stone-400'>
+                    Controls whether subagents can execute tools at all.
+                  </p>
+                </div>
+                <button
+                  onClick={handleSubagentOrchestratorToggle}
+                  className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${
+                    subagentSettings.orchestratorEnabled
+                      ? 'bg-emerald-500 dark:bg-emerald-600'
+                      : 'bg-stone-300 dark:bg-stone-600'
+                  }`}
+                >
+                  <span
+                    className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
+                      subagentSettings.orchestratorEnabled ? 'translate-x-6' : 'translate-x-1'
+                    }`}
+                  />
+                </button>
+              </div>
+
+              <div className='flex items-center justify-between pt-2 border-t border-stone-200 dark:border-stone-700'>
+                <div>
+                  <p className='text-base font-medium text-stone-900 dark:text-stone-100'>
+                    Force OpenAI Provider for ChatGPT Parent
+                  </p>
+                  <p className='text-sm text-stone-500 dark:text-stone-400'>
+                    When current chat provider is <code>OpenAI (ChatGPT)</code>, subagent calls set provider to OpenAI.
+                  </p>
+                </div>
+                <button
+                  onClick={handleSubagentForceOpenAIToggle}
+                  className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${
+                    subagentSettings.forceOpenAIProviderWhenChatGPTSelected
+                      ? 'bg-emerald-500 dark:bg-emerald-600'
+                      : 'bg-stone-300 dark:bg-stone-600'
+                  }`}
+                >
+                  <span
+                    className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
+                      subagentSettings.forceOpenAIProviderWhenChatGPTSelected ? 'translate-x-6' : 'translate-x-1'
+                    }`}
+                  />
+                </button>
+              </div>
+
+              <div className='flex items-center justify-between pt-2 border-t border-stone-200 dark:border-stone-700'>
+                <div>
+                  <p className='text-base font-medium text-stone-900 dark:text-stone-100'>
+                    Default to Global Agent Model
+                  </p>
+                  <p className='text-sm text-stone-500 dark:text-stone-400'>
+                    If subagent tool call omits <code>model</code>, use Global Agent model from Settings.
+                  </p>
+                  <p className='text-xs text-stone-500 dark:text-stone-400 mt-1'>
+                    Current fallback model: <code>{subagentDefaultModelPreview}</code>
+                  </p>
+                </div>
+                <button
+                  onClick={handleSubagentUseGlobalModelToggle}
+                  className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${
+                    subagentSettings.useGlobalAgentModelAsDefault
+                      ? 'bg-emerald-500 dark:bg-emerald-600'
+                      : 'bg-stone-300 dark:bg-stone-600'
+                  }`}
+                >
+                  <span
+                    className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
+                      subagentSettings.useGlobalAgentModelAsDefault ? 'translate-x-6' : 'translate-x-1'
+                    }`}
+                  />
+                </button>
+              </div>
+
+              <p className='text-xs text-stone-500 dark:text-stone-400 pt-2 border-t border-stone-200 dark:border-stone-700'>
+                Note: subagent turn/tool quota args and verbose return summary have been removed for a simpler output.
+              </p>
+            </div>
+          </section>
+        )}
+
+        {import.meta.env.VITE_ENVIRONMENT === 'electron' && (
+          <section className='rounded-2xl border border-neutral-200 mica p-6 shadow-lg shadow-neutral-200/30 dark:border-neutral-800 dark:shadow-black/20'>
+            <div className='flex flex-col gap-1'>
               <h2 className='text-xl font-semibold text-stone-900 dark:text-stone-100 mb-2'>API Keys</h2>
               <p className='text-sm text-stone-500 dark:text-stone-200'>
                 Store local tool credentials securely in your OS keychain via keytar.
@@ -2008,7 +2175,9 @@ const Settings: React.FC = () => {
         {import.meta.env.VITE_ENVIRONMENT === 'electron' && (
           <section className='rounded-2xl border border-neutral-200 mica p-6 shadow-lg shadow-neutral-200/30 dark:border-neutral-800 dark:shadow-black/20'>
             <div className='flex flex-col gap-1'>
-              <h2 className='text-xl font-semibold text-stone-900 dark:text-stone-100 mb-2'>Local Ownership Migration</h2>
+              <h2 className='text-xl font-semibold text-stone-900 dark:text-stone-100 mb-2'>
+                Local Ownership Migration
+              </h2>
               <p className='text-sm text-stone-500 dark:text-stone-200'>
                 Manually move local project/conversation ownership from one user ID to another.
               </p>
@@ -2025,9 +2194,7 @@ const Settings: React.FC = () => {
                   disabled={localUsersLoading || localUsers.length === 0 || migratingOwnership}
                   className='max-w-2xl'
                 />
-                <p className='text-xs text-stone-500 dark:text-stone-400 break-all'>
-                  Source ID: {fromUserId || '—'}
-                </p>
+                <p className='text-xs text-stone-500 dark:text-stone-400 break-all'>Source ID: {fromUserId || '—'}</p>
               </div>
 
               <div className='flex flex-col gap-2'>
@@ -2801,7 +2968,8 @@ const Settings: React.FC = () => {
             })}
           </div>
           <p className='mt-4 text-xs text-stone-500 dark:text-stone-400'>
-            Solid colors automatically switch with the theme, and you can set either theme to transparent. When you’re ready for motion, switch back to video wallpapers.
+            Solid colors automatically switch with the theme, and you can set either theme to transparent. When you’re
+            ready for motion, switch back to video wallpapers.
           </p>
         </section>
 

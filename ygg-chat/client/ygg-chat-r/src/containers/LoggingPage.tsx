@@ -19,7 +19,15 @@ import { isCommunityMode } from '../config/runtimeMode'
 import { type LoggingFilters, useCloudLoggingAnalytics, useLocalLoggingAnalytics } from '../hooks/useLoggingAnalytics'
 import { environment } from '../utils/api'
 
-const RANGE_OPTIONS = [7, 30, 90]
+const RANGE_OPTIONS = [
+  { label: 'Last 7 days', value: 7 },
+  { label: 'Last 30 days', value: 30 },
+  { label: 'Last 90 days', value: 90 },
+  { label: 'Last 120 days', value: 120 },
+  { label: 'Last 180 days', value: 180 },
+  { label: 'Last 365 days', value: 365 },
+  { label: 'All', value: 9999 },
+] as const
 
 type StorageView = 'cloud' | 'local'
 
@@ -105,6 +113,13 @@ const LoggingPage: React.FC = () => {
     return [
       { label: 'Net Credits Consumed', value: formatNumber(data.summary.netCreditsConsumed) },
       { label: 'Messages', value: integerFormatter.format(data.summary.messagesTotal || 0) },
+      {
+        label: 'Total Tokens (est.)',
+        value:
+          typeof data.summary.estimatedTotalTokens === 'number'
+            ? integerFormatter.format(data.summary.estimatedTotalTokens)
+            : '—',
+      },
       { label: 'Conversations', value: integerFormatter.format(data.summary.conversationsCreated || 0) },
       { label: 'Projects', value: integerFormatter.format(data.summary.projectsCreated || 0) },
       { label: 'Active Days', value: integerFormatter.format(data.summary.activeDays || 0) },
@@ -193,7 +208,7 @@ const LoggingPage: React.FC = () => {
     .map(([name, value]) => ({ name, value, color: TOOL_STATUS_COLORS[name] || '#94a3b8' }))
     .filter(item => item.value > 0)
 
-  const toolDailyChartData = (data?.tools.jobs.daily || []).slice(-Math.min(filters.rangeDays, 30))
+  const toolDailyChartData = (data?.tools.jobs.daily || []).slice(-Math.min(filters.rangeDays, 365))
   const uniqueToolsCount = Math.max(toolJobRows.length, requestedByNameEntries.length)
   const hasToolVolumeData = toolVolumeChartData.length > 0
   const hasToolFailureData = toolFailureChartData.length > 0
@@ -230,10 +245,10 @@ const LoggingPage: React.FC = () => {
           </div>
           <button
             type='button'
-            onClick={() => navigate('/homepage')}
+            onClick={() => navigate(-1)}
             className='px-4 py-2 rounded-lg bg-neutral-100 text-white dark:bg-neutral-800 dark:text-neutral-100 dark:border dark:border-neutral-700 text-sm font-medium'
           >
-            Back Home
+            Back
           </button>
         </div>
 
@@ -246,13 +261,13 @@ const LoggingPage: React.FC = () => {
                 value={filters.rangeDays}
                 onChange={e => setFilter('rangeDays', Number(e.target.value))}
               >
-                {RANGE_OPTIONS.map(day => (
+                {RANGE_OPTIONS.map(option => (
                   <option
                     className='bg-white text-neutral-900 dark:bg-neutral-950 dark:text-neutral-100'
-                    key={day}
-                    value={day}
+                    key={option.value}
+                    value={option.value}
                   >
-                    Last {day} days
+                    {option.label}
                   </option>
                 ))}
               </select>

@@ -1,30 +1,24 @@
 // Subagent Tool Settings Storage
-// Persists subagent tool configuration to localStorage
+// Persists subagent configuration to localStorage
 
 const STORAGE_KEY = 'ygg_subagent_tool_settings'
+export const SUBAGENT_TOOL_SETTINGS_CHANGE_EVENT = 'ygg-subagent-tool-settings-change'
 
 export interface SubagentToolSettings {
   enabledTools: string[] // Tool names enabled for subagent when orchestratorMode=false
-  defaultMaxTurns: number // Default max turns if not specified
   orchestratorEnabled: boolean // Whether subagent can use tools (orchestrator mode)
+  forceOpenAIProviderWhenChatGPTSelected: boolean // Force provider=openaichatgpt when parent chat provider is OpenAI(ChatGPT)
+  useGlobalAgentModelAsDefault: boolean // Use Global Agent model from Settings as subagent default model when tool call omits model
 }
 
 // Default configuration for non-orchestrator mode
-export const DEFAULT_SUBAGENT_TOOLS = [
-  'read_file',
-  'read_files',
-  'glob',
-  'ripgrep',
-  'browse_web',
-  'brave_search',
-]
-
-export const DEFAULT_MAX_TURNS = 10
+export const DEFAULT_SUBAGENT_TOOLS = ['read_file', 'read_files', 'glob', 'ripgrep', 'browse_web', 'brave_search']
 
 const DEFAULT_SETTINGS: SubagentToolSettings = {
   enabledTools: DEFAULT_SUBAGENT_TOOLS,
-  defaultMaxTurns: DEFAULT_MAX_TURNS,
   orchestratorEnabled: true, // Subagent can use tools by default
+  forceOpenAIProviderWhenChatGPTSelected: true,
+  useGlobalAgentModelAsDefault: true,
 }
 
 /**
@@ -37,8 +31,10 @@ export function loadSubagentToolSettings(): SubagentToolSettings {
     const parsed = JSON.parse(stored) as Partial<SubagentToolSettings>
     return {
       enabledTools: parsed.enabledTools ?? DEFAULT_SETTINGS.enabledTools,
-      defaultMaxTurns: parsed.defaultMaxTurns ?? DEFAULT_SETTINGS.defaultMaxTurns,
       orchestratorEnabled: parsed.orchestratorEnabled ?? DEFAULT_SETTINGS.orchestratorEnabled,
+      forceOpenAIProviderWhenChatGPTSelected:
+        parsed.forceOpenAIProviderWhenChatGPTSelected ?? DEFAULT_SETTINGS.forceOpenAIProviderWhenChatGPTSelected,
+      useGlobalAgentModelAsDefault: parsed.useGlobalAgentModelAsDefault ?? DEFAULT_SETTINGS.useGlobalAgentModelAsDefault,
     }
   } catch {
     return { ...DEFAULT_SETTINGS }
@@ -51,6 +47,9 @@ export function loadSubagentToolSettings(): SubagentToolSettings {
 export function saveSubagentToolSettings(settings: SubagentToolSettings): void {
   try {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(settings))
+    if (typeof window !== 'undefined') {
+      window.dispatchEvent(new CustomEvent(SUBAGENT_TOOL_SETTINGS_CHANGE_EVENT, { detail: settings }))
+    }
   } catch (error) {
     console.error('[SubagentToolSettings] Failed to save settings:', error)
   }
@@ -70,23 +69,6 @@ export function getSubagentEnabledTools(): string[] {
 export function setSubagentEnabledTools(tools: string[]): void {
   const settings = loadSubagentToolSettings()
   settings.enabledTools = tools
-  saveSubagentToolSettings(settings)
-}
-
-/**
- * Get the default max turns setting
- */
-export function getDefaultMaxTurns(): number {
-  const settings = loadSubagentToolSettings()
-  return settings.defaultMaxTurns
-}
-
-/**
- * Set the default max turns setting
- */
-export function setDefaultMaxTurns(maxTurns: number): void {
-  const settings = loadSubagentToolSettings()
-  settings.defaultMaxTurns = Math.max(1, Math.min(50, maxTurns))
   saveSubagentToolSettings(settings)
 }
 
@@ -115,4 +97,41 @@ export function toggleOrchestratorEnabled(): boolean {
   settings.orchestratorEnabled = !settings.orchestratorEnabled
   saveSubagentToolSettings(settings)
   return settings.orchestratorEnabled
+}
+
+/**
+ * Whether subagent calls should force provider=openaichatgpt when the parent provider is OpenAI(ChatGPT)
+ */
+export function shouldForceSubagentOpenAIProvider(): boolean {
+  return loadSubagentToolSettings().forceOpenAIProviderWhenChatGPTSelected
+}
+
+export function setForceSubagentOpenAIProvider(enabled: boolean): void {
+  const settings = loadSubagentToolSettings()
+  settings.forceOpenAIProviderWhenChatGPTSelected = enabled
+  saveSubagentToolSettings(settings)
+}
+
+/**
+ * Whether subagent should default to Global Agent model when the tool call omits model
+ */
+export function shouldUseGlobalAgentModelForSubagentDefault(): boolean {
+  return loadSubagentToolSettings().useGlobalAgentModelAsDefault
+}
+
+export function setUseGlobalAgentModelForSubagentDefault(enabled: boolean): void {
+  const settings = loadSubagentToolSettings()
+  settings.useGlobalAgentModelAsDefault = enabled
+  saveSubagentToolSettings(settings)
+}
+
+// Deprecated compatibility exports (maxTurns is no longer user-configurable)
+export const DEFAULT_MAX_TURNS = 10
+
+export function getDefaultMaxTurns(): number {
+  return DEFAULT_MAX_TURNS
+}
+
+export function setDefaultMaxTurns(_maxTurns: number): void {
+  // Intentionally no-op. Kept for backwards compatibility with legacy callers/tests.
 }

@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { HtmlIframeSlot, McpAppIframeSlot, useHtmlIframeRegistry } from '../HtmlIframeRegistry/HtmlIframeRegistry'
+import { getThemeModeColor, useCustomChatTheme, useHtmlDarkMode } from '../ThemeManager/themeConfig'
 
 // Ghost Pill Button Component
 const GhostPill: React.FC<{
@@ -10,6 +11,7 @@ const GhostPill: React.FC<{
   disabled?: boolean
   danger?: boolean
   className?: string
+  style?: React.CSSProperties
   'aria-label'?: string
   'aria-pressed'?: boolean
 }> = ({ children, onClick, active, disabled, danger, className = '', ...props }) => (
@@ -45,6 +47,7 @@ const GhostPillIcon: React.FC<{
   disabled?: boolean
   danger?: boolean
   className?: string
+  style?: React.CSSProperties
   'aria-label'?: string
   'aria-pressed'?: boolean
 }> = ({ children, onClick, active, disabled, danger, className = '', ...props }) => (
@@ -106,6 +109,8 @@ export const HtmlToolsModal: React.FC = () => {
   const [dockWidthPx, setDockWidthPx] = useState<number | null>(null)
   const [isDockResizing, setIsDockResizing] = useState(false)
   const [fullscreenKey, setFullscreenKey] = useState<string | null>(null)
+  const { theme: customTheme, enabled: customThemeEnabled } = useCustomChatTheme()
+  const isDarkMode = useHtmlDarkMode()
   const [showFullscreenSettings, setShowFullscreenSettings] = useState(false)
   const [showFullscreenTabMenu, setShowFullscreenTabMenu] = useState<string | null>(null)
   const [tabMenuPosition, setTabMenuPosition] = useState<{ top: number; left: number } | null>(null)
@@ -122,6 +127,50 @@ export const HtmlToolsModal: React.FC = () => {
     const maxWidth = Math.max(minWidth, window.innerWidth - 320)
     return Math.min(Math.max(width, minWidth), maxWidth)
   }, [])
+
+  const htmlToolsModalSurfaceBg = customThemeEnabled
+    ? getThemeModeColor(customTheme.colors.htmlToolsModalSurfaceBg, isDarkMode)
+    : undefined
+  const htmlToolsModalSurfaceBorder = customThemeEnabled
+    ? getThemeModeColor(customTheme.colors.htmlToolsModalSurfaceBorder, isDarkMode)
+    : undefined
+  const htmlToolsModalPanelMutedBg = customThemeEnabled
+    ? getThemeModeColor(customTheme.colors.htmlToolsModalPanelMutedBg, isDarkMode)
+    : undefined
+  const htmlToolsModalButtonBg = customThemeEnabled
+    ? getThemeModeColor(customTheme.colors.htmlToolsModalButtonBg, isDarkMode)
+    : undefined
+  const htmlToolsModalButtonBorder = customThemeEnabled
+    ? getThemeModeColor(customTheme.colors.htmlToolsModalButtonBorder, isDarkMode)
+    : undefined
+  const htmlToolsModalButtonText = customThemeEnabled
+    ? getThemeModeColor(customTheme.colors.htmlToolsModalButtonText, isDarkMode)
+    : undefined
+  const htmlToolsModalButtonActiveBg = customThemeEnabled
+    ? getThemeModeColor(customTheme.colors.htmlToolsModalButtonActiveBg, isDarkMode)
+    : undefined
+  const htmlToolsModalButtonActiveBorder = customThemeEnabled
+    ? getThemeModeColor(customTheme.colors.htmlToolsModalButtonActiveBorder, isDarkMode)
+    : undefined
+  const htmlToolsModalButtonActiveText = customThemeEnabled
+    ? getThemeModeColor(customTheme.colors.htmlToolsModalButtonActiveText, isDarkMode)
+    : undefined
+
+  const buttonStyle = customThemeEnabled
+    ? {
+        backgroundColor: htmlToolsModalButtonBg,
+        borderColor: htmlToolsModalButtonBorder,
+        color: htmlToolsModalButtonText,
+      }
+    : undefined
+
+  const activeButtonStyle = customThemeEnabled
+    ? {
+        backgroundColor: htmlToolsModalButtonActiveBg,
+        borderColor: htmlToolsModalButtonActiveBorder,
+        color: htmlToolsModalButtonActiveText,
+      }
+    : undefined
 
   const entries = registry.entries
   const activeEntries = useMemo(() => entries.filter(entry => entry.status === 'active'), [entries])
@@ -377,6 +426,7 @@ export const HtmlToolsModal: React.FC = () => {
               active={isFavorite}
               aria-pressed={isFavorite}
               aria-label={isFavorite ? 'Unfavorite tool output' : 'Favorite tool output'}
+              style={isFavorite ? activeButtonStyle : buttonStyle}
             >
               <i
                 className={`bx ${isFavorite ? 'bxs-star text-amber-500 dark:text-amber-400' : 'bx-star'} text-sm`}
@@ -386,6 +436,7 @@ export const HtmlToolsModal: React.FC = () => {
             <GhostPillIcon
               onClick={() => (isHibernated ? registry.restoreEntry(entry.key) : registry.hibernateEntry(entry.key))}
               aria-label={isHibernated ? 'Restore tool output' : 'Hibernate tool output'}
+              style={buttonStyle}
             >
               <i className={`bx ${isHibernated ? 'bx-play' : 'bx-moon'} text-sm`} aria-hidden='true' />
             </GhostPillIcon>
@@ -399,6 +450,7 @@ export const HtmlToolsModal: React.FC = () => {
                     ? 'Exit fullscreen tool output'
                     : 'Enter fullscreen tool output'
               }
+              style={isFullscreen ? activeButtonStyle : buttonStyle}
             >
               <i className={`bx ${isFullscreen ? 'bx-exit-fullscreen' : 'bx-fullscreen'} text-sm`} aria-hidden='true' />
             </GhostPillIcon>
@@ -412,6 +464,7 @@ export const HtmlToolsModal: React.FC = () => {
                   }))
                 }
                 aria-label={isCollapsed ? 'Expand tool output' : 'Collapse tool output'}
+                style={isCollapsed ? buttonStyle : activeButtonStyle}
               >
                 <i className={`bx ${isCollapsed ? 'bx-chevron-down' : 'bx-chevron-up'} text-sm`} aria-hidden='true' />
               </GhostPillIcon>
@@ -495,7 +548,17 @@ export const HtmlToolsModal: React.FC = () => {
       : null
 
   const headerContent = (
-    <header className='flex items-center justify-between px-4 py-3 border-b border-neutral-200 dark:border-white/[0.03] relative z-[1451]'>
+    <header
+      className='flex items-center justify-between px-4 py-3 border-b border-neutral-200 dark:border-white/[0.03] relative z-[1451]'
+      style={
+        customThemeEnabled
+          ? {
+              borderColor: htmlToolsModalSurfaceBorder,
+              backgroundColor: htmlToolsModalPanelMutedBg,
+            }
+          : undefined
+      }
+    >
       <div className='min-w-0'>
         <h2 className='text-lg font-medium text-neutral-900 dark:text-white tracking-tight leading-none truncate'>Task Manager</h2>
         {!useIconOnlyHeaderButtons && (
@@ -509,6 +572,7 @@ export const HtmlToolsModal: React.FC = () => {
             active={showFavorites}
             aria-pressed={showFavorites}
             aria-label={showFavorites ? 'Hide favorite tools' : 'Show favorite tools'}
+            style={showFavorites ? activeButtonStyle : buttonStyle}
           >
             <i
               className={`bx ${showFavorites ? 'bxs-star text-amber-500 dark:text-amber-400' : 'bx-star'}`}
@@ -521,6 +585,7 @@ export const HtmlToolsModal: React.FC = () => {
             active={showFavorites}
             aria-pressed={showFavorites}
             aria-label={showFavorites ? 'Hide favorite tools' : 'Show favorite tools'}
+            style={showFavorites ? activeButtonStyle : buttonStyle}
           >
             <i
               className={`bx ${showFavorites ? 'bxs-star text-amber-500 dark:text-amber-400' : 'bx-star'}`}
@@ -536,6 +601,7 @@ export const HtmlToolsModal: React.FC = () => {
             active={showHibernated}
             aria-pressed={showHibernated}
             aria-label={showHibernated ? 'Hide hibernated tools' : 'Show hibernated tools'}
+            style={showHibernated ? activeButtonStyle : buttonStyle}
           >
             <i className='bx bx-moon' aria-hidden='true' />
           </GhostPillIcon>
@@ -545,6 +611,7 @@ export const HtmlToolsModal: React.FC = () => {
             active={showHibernated}
             aria-pressed={showHibernated}
             aria-label={showHibernated ? 'Hide hibernated tools' : 'Show hibernated tools'}
+            style={showHibernated ? activeButtonStyle : buttonStyle}
           >
             <i className='bx bx-moon' aria-hidden='true' />
             Hibernated{hibernatedEntries.length > 0 ? ` (${hibernatedEntries.length})` : ''}
@@ -560,6 +627,7 @@ export const HtmlToolsModal: React.FC = () => {
             active={isRightDocked}
             aria-pressed={isRightDocked}
             aria-label={isRightDocked ? 'Undock tool viewer' : 'Dock tool viewer to right half'}
+            style={isRightDocked ? activeButtonStyle : buttonStyle}
           >
             <i className={`bx ${isRightDocked ? 'bx-exit-fullscreen' : 'bx-sidebar'} text-sm`} aria-hidden='true' />
           </GhostPillIcon>
@@ -569,6 +637,7 @@ export const HtmlToolsModal: React.FC = () => {
             active={isRightDocked}
             aria-pressed={isRightDocked}
             aria-label={isRightDocked ? 'Undock tool viewer' : 'Dock tool viewer to right half'}
+            style={isRightDocked ? activeButtonStyle : buttonStyle}
           >
             <i className={`bx ${isRightDocked ? 'bx-exit-fullscreen' : 'bx-sidebar'} text-sm`} aria-hidden='true' />
             {isRightDocked ? 'Undock' : 'Dock Right'}
@@ -580,10 +649,11 @@ export const HtmlToolsModal: React.FC = () => {
           active={showLimits}
           aria-pressed={showLimits}
           aria-label={showLimits ? 'Hide tool limits' : 'Show tool limits'}
+          style={showLimits ? activeButtonStyle : buttonStyle}
         >
           <i className='bx bx-slider-alt text-sm' aria-hidden='true' />
         </GhostPillIcon>
-        <GhostPillIcon onClick={handleClose} danger aria-label='Close tool viewer'>
+        <GhostPillIcon onClick={handleClose} danger aria-label='Close tool viewer' style={buttonStyle}>
           <i className='bx bx-x text-lg' aria-hidden='true' />
         </GhostPillIcon>
       </div>
@@ -591,7 +661,17 @@ export const HtmlToolsModal: React.FC = () => {
   )
 
   const limitsContent = showLimits && (
-    <div className='border-b border-neutral-200 dark:border-white/[0.03] px-4 py-3 relative z-[1451] bg-neutral-50 dark:bg-black/20'>
+    <div
+      className='border-b border-neutral-200 dark:border-white/[0.03] px-4 py-3 relative z-[1451] bg-neutral-50 dark:bg-black/20'
+      style={
+        customThemeEnabled
+          ? {
+              borderColor: htmlToolsModalSurfaceBorder,
+              backgroundColor: htmlToolsModalPanelMutedBg,
+            }
+          : undefined
+      }
+    >
       <div className='grid gap-4 sm:grid-cols-2 lg:grid-cols-3 text-xs'>
         <label className='flex flex-col gap-1.5'>
           <span className='font-mono text-[10px] uppercase tracking-[0.15em] text-neutral-500'>Max live iframes</span>
@@ -665,7 +745,17 @@ export const HtmlToolsModal: React.FC = () => {
     viewMode === 'tabs' ? (
       <div className='flex-1 flex flex-col overflow-hidden'>
         {/* Tool tab bar */}
-        <div className='shrink-0 px-4 py-2 bg-neutral-50 dark:bg-black/20 border-b border-neutral-200 dark:border-white/[0.03] overflow-x-auto thin-scrollbar relative z-[1451]'>
+        <div
+          className='shrink-0 px-4 py-2 bg-neutral-50 dark:bg-black/20 border-b border-neutral-200 dark:border-white/[0.03] overflow-x-auto thin-scrollbar relative z-[1451]'
+          style={
+            customThemeEnabled
+              ? {
+                  borderColor: htmlToolsModalSurfaceBorder,
+                  backgroundColor: htmlToolsModalPanelMutedBg,
+                }
+              : undefined
+          }
+        >
           <div className='flex gap-2'>
             {activeEntries.map(entry => (
               <button
@@ -684,6 +774,7 @@ export const HtmlToolsModal: React.FC = () => {
                       : 'bg-neutral-100 border-neutral-200 text-neutral-600 hover:bg-neutral-200 hover:text-neutral-900 dark:bg-white/[0.02] dark:border-white/[0.05] dark:text-neutral-500 dark:hover:bg-white/[0.05] dark:hover:text-white'
                   }
                 `}
+                style={activeKey === entry.key ? activeButtonStyle : buttonStyle}
               >
                 {displayLabels.get(entry.key) ?? resolveEntryLabel(entry)}
               </button>
@@ -715,7 +806,17 @@ export const HtmlToolsModal: React.FC = () => {
         </div>
         {/* Favorites panel */}
         {showFavorites && (
-          <div className='shrink-0 border-t border-amber-200 dark:border-amber-500/20 bg-neutral-50/80 dark:bg-amber-500/[0.03] p-3 max-h-[40vh] overflow-y-auto space-y-3 relative z-[1451]'>
+          <div
+            className='shrink-0 border-t border-amber-200 dark:border-amber-500/20 bg-neutral-50/80 dark:bg-amber-500/[0.03] p-3 max-h-[40vh] overflow-y-auto space-y-3 relative z-[1451]'
+            style={
+              customThemeEnabled
+                ? {
+                    borderColor: htmlToolsModalSurfaceBorder,
+                    backgroundColor: htmlToolsModalPanelMutedBg,
+                  }
+                : undefined
+            }
+          >
             <div className='font-mono text-[10px] uppercase tracking-[0.15em] text-amber-600 dark:text-amber-500 flex items-center gap-2'>
               <i className='bx bxs-star' aria-hidden='true' />
               Favorite tools (never removed or hibernated)
@@ -733,7 +834,17 @@ export const HtmlToolsModal: React.FC = () => {
         )}
         {/* Hibernated panel */}
         {showHibernated && (
-          <div className='shrink-0 border-t border-neutral-200 dark:border-white/[0.03] bg-neutral-50 dark:bg-black/20 p-3 max-h-[40vh] overflow-y-auto space-y-3 relative z-[1451]'>
+          <div
+            className='shrink-0 border-t border-neutral-200 dark:border-white/[0.03] bg-neutral-50 dark:bg-black/20 p-3 max-h-[40vh] overflow-y-auto space-y-3 relative z-[1451]'
+            style={
+              customThemeEnabled
+                ? {
+                    borderColor: htmlToolsModalSurfaceBorder,
+                    backgroundColor: htmlToolsModalPanelMutedBg,
+                  }
+                : undefined
+            }
+          >
             <div className='font-mono text-[10px] uppercase tracking-[0.15em] text-neutral-500'>Hibernated tools</div>
             {hibernatedEntries.length === 0 ? (
               <div className='font-mono text-xs text-neutral-500 dark:text-neutral-600'>No hibernated tools.</div>
@@ -755,7 +866,17 @@ export const HtmlToolsModal: React.FC = () => {
           activeEntries.map(entry => <React.Fragment key={entry.key}>{renderEntry(entry)}</React.Fragment>)
         )}
         {showFavorites && (
-          <div className='border-t border-amber-200 dark:border-amber-500/20 bg-amber-50 dark:bg-amber-500/[0.03] pt-3 space-y-3 relative z-[1451]'>
+          <div
+            className='border-t border-amber-200 dark:border-amber-500/20 bg-amber-50 dark:bg-amber-500/[0.03] pt-3 space-y-3 relative z-[1451]'
+            style={
+              customThemeEnabled
+                ? {
+                    borderColor: htmlToolsModalSurfaceBorder,
+                    backgroundColor: htmlToolsModalPanelMutedBg,
+                  }
+                : undefined
+            }
+          >
             <div className='font-mono text-[10px] uppercase tracking-[0.15em] text-amber-600 dark:text-amber-500 flex items-center gap-2'>
               <i className='bx bxs-star' aria-hidden='true' />
               Favorite tools (never removed or hibernated)
@@ -772,7 +893,17 @@ export const HtmlToolsModal: React.FC = () => {
           </div>
         )}
         {showHibernated && (
-          <div className='border-t border-neutral-200 dark:border-white/[0.03] bg-neutral-50 dark:bg-black/20 pt-3 space-y-3 relative z-[1451]'>
+          <div
+            className='border-t border-neutral-200 dark:border-white/[0.03] bg-neutral-50 dark:bg-black/20 pt-3 space-y-3 relative z-[1451]'
+            style={
+              customThemeEnabled
+                ? {
+                    borderColor: htmlToolsModalSurfaceBorder,
+                    backgroundColor: htmlToolsModalPanelMutedBg,
+                  }
+                : undefined
+            }
+          >
             <div className='font-mono text-[10px] uppercase tracking-[0.15em] text-neutral-500'>Hibernated tools</div>
             {hibernatedEntries.length === 0 ? (
               <div className='font-mono text-xs text-neutral-500 dark:text-neutral-600'>No hibernated tools.</div>
@@ -789,10 +920,24 @@ export const HtmlToolsModal: React.FC = () => {
     return (
       <div
         className='fixed inset-0 z-[1400] flex flex-col bg-white/98 dark:bg-[rgba(15,15,15,0.98)] backdrop-blur-[32px]'
-        style={{ paddingTop: 'var(--titlebar-height, 0px)', boxSizing: 'border-box' }}
+        style={{
+          paddingTop: 'var(--titlebar-height, 0px)',
+          boxSizing: 'border-box',
+          ...(customThemeEnabled ? { backgroundColor: htmlToolsModalSurfaceBg } : {}),
+        }}
       >
         {/* Minimalistic titlebar with tabs */}
-        <div className='flex items-center h-10 px-3 bg-transparent shrink-0 app-region-drag border-b border-neutral-200 dark:border-white/[0.03]'>
+        <div
+          className='flex items-center h-10 px-3 bg-transparent shrink-0 app-region-drag border-b border-neutral-200 dark:border-white/[0.03]'
+          style={
+            customThemeEnabled
+              ? {
+                  borderColor: htmlToolsModalSurfaceBorder,
+                  backgroundColor: htmlToolsModalPanelMutedBg,
+                }
+              : undefined
+          }
+        >
           {/* Tabs - scrollable horizontally */}
           <div className='flex-1 flex items-center gap-1.5 overflow-x-auto no-scrollbar app-region-no-drag'>
             {activeEntries.map(entry => {
@@ -814,6 +959,7 @@ export const HtmlToolsModal: React.FC = () => {
                           : 'bg-transparent border-transparent text-neutral-500 hover:bg-neutral-100 dark:hover:bg-white/[0.03] hover:text-neutral-700 dark:hover:text-neutral-300'
                       }
                     `}
+                    style={isActive ? activeButtonStyle : buttonStyle}
                   >
                     <span className='flex items-center gap-1.5'>
                       {entry.favorite && <i className='bx bxs-star text-amber-500 dark:text-amber-400 text-[10px]' />}
@@ -848,6 +994,12 @@ export const HtmlToolsModal: React.FC = () => {
                         style={{
                           top: `${tabMenuPosition.top}px`,
                           left: `${tabMenuPosition.left}px`,
+                          ...(customThemeEnabled
+                            ? {
+                                borderColor: htmlToolsModalSurfaceBorder,
+                                backgroundColor: htmlToolsModalSurfaceBg,
+                              }
+                            : {}),
                         }}
                       >
                         <button
@@ -913,6 +1065,7 @@ export const HtmlToolsModal: React.FC = () => {
                 data-settings-trigger
                 onClick={() => setShowFullscreenSettings(!showFullscreenSettings)}
                 className='p-1.5 rounded-full hover:bg-neutral-200 dark:hover:bg-white/[0.05] text-neutral-500 hover:text-neutral-900 dark:hover:text-white transition-colors'
+                style={buttonStyle}
               >
                 <i className='bx bx-cog text-sm' />
               </button>
@@ -924,6 +1077,12 @@ export const HtmlToolsModal: React.FC = () => {
                     style={{
                       top: `${(document.querySelector('[data-settings-trigger]') as HTMLElement)?.getBoundingClientRect().bottom ?? 44}px`,
                       right: `${window.innerWidth - ((document.querySelector('[data-settings-trigger]') as HTMLElement)?.getBoundingClientRect().right ?? 100)}px`,
+                      ...(customThemeEnabled
+                        ? {
+                            borderColor: htmlToolsModalSurfaceBorder,
+                            backgroundColor: htmlToolsModalSurfaceBg,
+                          }
+                        : {}),
                     }}
                   >
                     <div className='px-3 py-1.5 font-mono text-[10px] uppercase tracking-[0.15em] text-neutral-500 dark:text-neutral-600'>
@@ -984,6 +1143,7 @@ export const HtmlToolsModal: React.FC = () => {
               type='button'
               onClick={closeHomepageFullscreen}
               className='p-1.5 rounded-full hover:bg-red-50 dark:hover:bg-red-500/10 text-neutral-500 hover:text-red-600 dark:hover:text-red-400 transition-colors'
+              style={buttonStyle}
             >
               <i className='bx bx-x text-lg' />
             </button>
@@ -1063,7 +1223,20 @@ export const HtmlToolsModal: React.FC = () => {
           />
         )}
         {/* Fullscreen viewer */}
-        <div className={modalPanelClassName} role='dialog' aria-modal='true' aria-label='HTML tool viewer'>
+        <div
+          className={modalPanelClassName}
+          role='dialog'
+          aria-modal='true'
+          aria-label='HTML tool viewer'
+          style={
+            customThemeEnabled
+              ? {
+                  backgroundColor: htmlToolsModalSurfaceBg,
+                  borderColor: htmlToolsModalSurfaceBorder,
+                }
+              : undefined
+          }
+        >
           {headerContent}
           {limitsContent}
           {mainContent}

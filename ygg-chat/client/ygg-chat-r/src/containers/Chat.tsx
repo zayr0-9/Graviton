@@ -42,7 +42,14 @@ import {
   StreamingAnimationType,
   StreamingLoadingAnimation,
 } from '../components/SettingsPane/SendButtonAnimationSettings'
-import { getThemeModeColor, useCustomChatTheme, useHtmlDarkMode } from '../components/ThemeManager/themeConfig'
+import {
+  getThemeModeColor,
+  saveCustomChatTheme,
+  setCustomChatThemeEnabled,
+  type CustomChatTheme,
+  useCustomChatTheme,
+  useHtmlDarkMode,
+} from '../components/ThemeManager/themeConfig'
 import { isCommunityMode } from '../config/runtimeMode'
 import {
   abortGeneration,
@@ -54,7 +61,6 @@ import {
   editMessageWithBranching,
   initializeUserAndConversation,
   Message,
-  refreshCurrentPathAfterDelete,
   resolveAttachmentUrl,
   respondToToolPermission,
   respondToToolPermissionAndEnableAll,
@@ -187,6 +193,27 @@ type VirtualRenderRow =
     }
 
 type BenchAction = 'on' | 'off' | 'status' | 'export' | 'reset'
+type ThemeDemoAction = 'on' | 'off'
+
+type ThemeListItem = {
+  id: string
+  fileName: string
+  name: string
+  modifiedAt: string
+}
+
+type ThemeManagerListResult = {
+  success?: boolean
+  error?: string
+  themes?: ThemeListItem[]
+}
+
+type ThemeManagerReadResult = {
+  success?: boolean
+  error?: string
+  exists?: boolean
+  theme?: CustomChatTheme
+}
 
 type BenchEvent = {
   ts: number
@@ -248,6 +275,8 @@ const COMPOSER_SLASH_COMMANDS = [
   'bench status',
   'bench export',
   'bench reset',
+  'theme-demo on',
+  'theme-demo off',
 ]
 const CROSS_MESSAGE_PROCESS_GROUP_MIN_MESSAGES = 3
 const DERIVED_RENDER_CACHE_LIMIT = 40
@@ -256,6 +285,7 @@ const VIRTUAL_ROWS_FEATURE_FLAG = 'chat:virtualRowsV2'
 const BENCH_MAX_SAMPLES = 3000
 const BENCH_MAX_EVENTS = 1200
 const BENCH_SCROLL_ACTIVE_WINDOW_MS = 140
+const THEME_DEMO_INTERVAL_MS = 500
 
 const VIRTUAL_ROW_BASE_STYLE: React.CSSProperties = {
   position: 'absolute',
@@ -401,6 +431,13 @@ const parseBenchAction = (command: string): BenchAction | null => {
   const match = normalized.match(/^bench(?:[\s-]+(on|off|status|export|reset))?$/)
   if (!match) return null
   return (match[1] as BenchAction | undefined) ?? 'status'
+}
+
+const parseThemeDemoAction = (command: string): ThemeDemoAction | null => {
+  const normalized = command.trim().toLowerCase().replace(/^\/+/g, '').replace(/\s+/g, ' ')
+  const match = normalized.match(/^theme-demo(?:[\s-]+(on|off))$/)
+  if (!match) return null
+  return match[1] as ThemeDemoAction
 }
 
 const isLikelyProcessAnnotationText = (text: string): boolean => {
@@ -683,8 +720,8 @@ function Chat() {
       {/* <div className='text-sm text-neutral-700 dark:text-neutral-200'>Subscribe now for access to all 400+ models</div> */}
       <Button
         variant='outline2'
-        size='medium'
-        className='w-full text-[13px] sm:text-[13px] md:text-[13px] lg:text-[14px] 2xl:text-[16px] 3xl:text-[18px] 4xl:text-[20px] text-neutral-500 dark:text-neutral-200'
+        size='small'
+        className='w-full text-[13px]  text-neutral-500 dark:text-neutral-200'
         onClick={() => navigate('/payment')}
       >
         Subscribe now for access to all 400+ models
@@ -964,6 +1001,12 @@ function Chat() {
   const benchLatestVirtualRowCountRef = useRef(0)
   const benchLatestConversationIdRef = useRef<string | null>(null)
 
+  const themeDemoEnabledRef = useRef(false)
+  const themeDemoIntervalRef = useRef<number | null>(null)
+  const themeDemoApplyingRef = useRef(false)
+  const themeDemoThemeIdsRef = useRef<string[]>([])
+  const themeDemoThemeIndexRef = useRef(0)
+
   const composerSlashCommands = COMPOSER_SLASH_COMMANDS
   const isElectronEnv = useMemo(
     () =>
@@ -1160,6 +1203,125 @@ function Chat() {
     [appendBenchEvent, benchEnabled, clearBenchData, exportBenchReport, setBenchEnabledState, showBenchNotice]
   )
 
+  const clearThemeDemoInterval = useCallback(() => {
+    if (themeDemoIntervalRef.current != null) {
+      window.clearInterval(themeDemoIntervalRef.current)
+      themeDemoIntervalRef.current = null
+    }
+  }, [])
+
+  const stopThemeDemo = useCallback(() => {
+    clearThemeDemoInterval()
+    themeDemoEnabledRef.current = false
+    themeDemoApplyingRef.current = false
+    themeDemoThemeIdsRef.current = []
+    themeDemoThemeIndexRef.current = 0
+  }, [clearThemeDemoInterval])
+
+  const applyThemeById = useCallback(async (themeId: string): Promise<boolean> => {
+    try {
+      const data = await localApi.post<{ result?: ThemeManagerReadResult }>('/tools/execute', {
+        toolName: 'theme_manager',
+        args: {
+          action: 'read',
+          name: themeId,
+        },
+      })
+
+      const result = data?.result
+      if (!result?.success || !result.exists || !result.theme) {
+        console.warn('[ThemeDemo] Theme read failed', {
+          themeId,
+          error: result?.error,
+        })
+        return false
+      }
+
+      saveCustomChatTheme(result.theme)
+      setCustomChatThemeEnabled(true)
+      return true
+    } catch (error) {
+      console.warn('[ThemeDemo] Failed to apply theme', {
+        themeId,
+        error: error instanceof Error ? error.message : String(error),
+      })
+      return false
+    }
+  }, [])
+
+  const runThemeDemoTick = useCallback(async () => {
+    if (!themeDemoEnabledRef.current || themeDemoApplyingRef.current) return
+
+    const themeIds = themeDemoThemeIdsRef.current
+    if (themeIds.length === 0) {
+      stopThemeDemo()
+      return
+    }
+
+    const index = themeDemoThemeIndexRef.current % themeIds.length
+    const themeId = themeIds[index]
+
+    themeDemoApplyingRef.current = true
+    try {
+      await applyThemeById(themeId)
+      if (themeDemoEnabledRef.current) {
+        themeDemoThemeIndexRef.current = (index + 1) % themeIds.length
+      }
+    } finally {
+      themeDemoApplyingRef.current = false
+    }
+  }, [applyThemeById, stopThemeDemo])
+
+  const handleThemeDemoAction = useCallback(
+    async (action: ThemeDemoAction): Promise<ComposerSlashCommandResult> => {
+      if (action === 'off') {
+        stopThemeDemo()
+        return { handled: true, clearInput: true }
+      }
+
+      stopThemeDemo()
+
+      try {
+        const data = await localApi.post<{ result?: ThemeManagerListResult }>('/tools/execute', {
+          toolName: 'theme_manager',
+          args: {
+            action: 'list',
+          },
+        })
+
+        const result = data?.result
+        if (!result?.success) {
+          console.warn('[ThemeDemo] Unable to list custom themes', result?.error)
+          return { handled: true, clearInput: true }
+        }
+
+        const themeIds = (result.themes || []).map(theme => theme.id).filter(Boolean)
+        if (themeIds.length === 0) {
+          console.warn('[ThemeDemo] No saved custom themes available to cycle.')
+          return { handled: true, clearInput: true }
+        }
+
+        themeDemoThemeIdsRef.current = themeIds
+        themeDemoThemeIndexRef.current = 0
+        themeDemoEnabledRef.current = true
+
+        await runThemeDemoTick()
+
+        if (themeDemoEnabledRef.current) {
+          themeDemoIntervalRef.current = window.setInterval(() => {
+            void runThemeDemoTick()
+          }, THEME_DEMO_INTERVAL_MS)
+        }
+      } catch (error) {
+        console.warn('[ThemeDemo] Failed to start theme demo', error)
+        stopThemeDemo()
+      }
+
+      return { handled: true, clearInput: true }
+    },
+    [runThemeDemoTick, stopThemeDemo]
+  )
+
   const handleManualCompactifyCommand = useCallback(async (): Promise<ComposerSlashCommandResult> => {
     if (!currentConversationId) {
       console.warn('[ManualCompaction] skipped: missing conversation id')
@@ -1276,9 +1438,14 @@ function Chat() {
         return handleBenchAction(benchAction)
       }
 
+      const themeDemoAction = parseThemeDemoAction(rawCommand)
+      if (themeDemoAction) {
+        return handleThemeDemoAction(themeDemoAction)
+      }
+
       return { handled: false }
     },
-    [handleBenchAction, handleManualCompactifyCommand]
+    [handleBenchAction, handleManualCompactifyCommand, handleThemeDemoAction]
   )
 
   useEffect(() => {
@@ -1286,8 +1453,9 @@ function Chat() {
       if (benchStatusTimeoutRef.current != null) {
         window.clearTimeout(benchStatusTimeoutRef.current)
       }
+      stopThemeDemo()
     }
-  }, [])
+  }, [stopThemeDemo])
 
   // useEffect(() => {
   //   if (!isElectronEnv) return
@@ -1855,6 +2023,41 @@ function Chat() {
     }
 
     return rowIndexByMessageId
+  }, [messageRenderRows])
+
+  const assistantContainerClassByMessageId = useMemo(() => {
+    const classByMessageId = new Map<string, string>()
+
+    for (let index = 0; index < messageRenderRows.length; index++) {
+      const row = messageRenderRows[index]
+      if (row.kind !== 'message' || row.message.role !== 'assistant') {
+        continue
+      }
+
+      const previousRow = index > 0 ? messageRenderRows[index - 1] : null
+      const nextRow = index < messageRenderRows.length - 1 ? messageRenderRows[index + 1] : null
+
+      const startsAssistantBlock = previousRow?.kind === 'message' && previousRow.message.role === 'user'
+      const endsAssistantBlock = nextRow == null || (nextRow.kind === 'message' && nextRow.message.role === 'user')
+
+      const radiusClassName = startsAssistantBlock && endsAssistantBlock
+        ? '!rounded-md'
+        : startsAssistantBlock
+          ? '!rounded-none !rounded-t-md'
+          : endsAssistantBlock
+            ? '!rounded-none !rounded-b-md'
+            : '!rounded-none'
+
+      const containerClassName = [startsAssistantBlock ? 'pt-4' : '', endsAssistantBlock ? 'pb-4' : '', radiusClassName]
+        .filter(Boolean)
+        .join(' ')
+
+      if (containerClassName) {
+        classByMessageId.set(String(row.message.id), containerClassName)
+      }
+    }
+
+    return classByMessageId
   }, [messageRenderRows])
 
   const findMessageRowIndex = useCallback(
@@ -2496,11 +2699,11 @@ function Chat() {
 
   // Sort conversations by updated_at descending for the Select dropdown
   const sortedConversations = useMemo(() => {
-    const projectId = selectedProject?.id || currentConversation?.project_id
+    const projectId = projectIdFromUrl || selectedProject?.id || currentConversation?.project_id
     if (!projectId) return []
 
     return [...projectConversations].sort((a, b) => new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime())
-  }, [projectConversations, selectedProject?.id, currentConversation?.project_id])
+  }, [projectConversations, projectIdFromUrl, selectedProject?.id, currentConversation?.project_id])
 
   // Resizable split-pane state
   const containerRef = useRef<HTMLDivElement>(null)
@@ -2565,6 +2768,52 @@ function Chat() {
     : undefined
   const streamingAnimationThemeColor = customThemeEnabled
     ? getThemeModeColor(customTheme.colors.streamingAnimationColor, isDarkMode)
+    : undefined
+  const composerToggleActiveStyle = customThemeEnabled
+    ? {
+        backgroundColor: getThemeModeColor(customTheme.colors.composerToggleActiveBg, isDarkMode),
+        borderColor: getThemeModeColor(customTheme.colors.composerToggleActiveBorder, isDarkMode),
+        color: getThemeModeColor(customTheme.colors.composerToggleActiveText, isDarkMode),
+      }
+    : undefined
+  const authModalBackdropColor = customThemeEnabled
+    ? getThemeModeColor(customTheme.colors.authModalBackdrop, isDarkMode)
+    : 'rgba(0, 0, 0, 0.5)'
+  const authModalSurfaceBackgroundColor = customThemeEnabled
+    ? getThemeModeColor(customTheme.colors.authModalSurfaceBg, isDarkMode)
+    : isDarkMode
+      ? '#09090b'
+      : '#ffffff'
+  const authModalTitleTextColor = customThemeEnabled
+    ? getThemeModeColor(customTheme.colors.authModalTitleText, isDarkMode)
+    : isDarkMode
+      ? '#f5f5f5'
+      : '#171717'
+  const authModalBodyTextColor = customThemeEnabled
+    ? getThemeModeColor(customTheme.colors.authModalBodyText, isDarkMode)
+    : isDarkMode
+      ? '#d4d4d8'
+      : '#525252'
+  const authModalPrimaryButtonStyle = customThemeEnabled
+    ? {
+        backgroundColor: getThemeModeColor(customTheme.colors.authModalPrimaryButtonBg, isDarkMode),
+        borderColor: getThemeModeColor(customTheme.colors.authModalPrimaryButtonBorder, isDarkMode),
+        color: getThemeModeColor(customTheme.colors.authModalPrimaryButtonText, isDarkMode),
+      }
+    : undefined
+  const authModalSecondaryButtonStyle = customThemeEnabled
+    ? {
+        backgroundColor: getThemeModeColor(customTheme.colors.authModalSecondaryButtonBg, isDarkMode),
+        borderColor: getThemeModeColor(customTheme.colors.authModalSecondaryButtonBorder, isDarkMode),
+        color: getThemeModeColor(customTheme.colors.authModalSecondaryButtonText, isDarkMode),
+      }
+    : undefined
+  const authModalDangerButtonStyle = customThemeEnabled
+    ? {
+        backgroundColor: getThemeModeColor(customTheme.colors.authModalDangerButtonBg, isDarkMode),
+        borderColor: getThemeModeColor(customTheme.colors.authModalDangerButtonBorder, isDarkMode),
+        color: getThemeModeColor(customTheme.colors.authModalDangerButtonText, isDarkMode),
+      }
     : undefined
 
   const [chatInputBorderAnimation, setChatInputBorderAnimation] = useState<ChatInputBorderAnimationType>(
@@ -3562,7 +3811,13 @@ function Chat() {
   const handleComposerSlashCommandSelect = useCallback(
     (command: string): ComposerSlashCommandResult | void => {
       const normalized = command.trim().toLowerCase().replace(/^\/+/, '')
-      if (normalized !== 'status-openai' && normalized !== 'compactify' && !parseBenchAction(command)) {
+      const isKnownSlashCommand =
+        normalized === 'status-openai' ||
+        normalized === 'compactify' ||
+        parseBenchAction(command) != null ||
+        parseThemeDemoAction(command) != null
+
+      if (!isKnownSlashCommand) {
         return { handled: false }
       }
 
@@ -3606,8 +3861,12 @@ function Chat() {
       const trimmedInputValue = localInputValue.trim()
       const normalizedInput = trimmedInputValue.toLowerCase().replace(/^\/+/, '')
       const slashBenchAction = parseBenchAction(trimmedInputValue)
+      const slashThemeDemoAction = parseThemeDemoAction(trimmedInputValue)
       const isKnownSlashCommand =
-        normalizedInput === 'status-openai' || normalizedInput === 'compactify' || slashBenchAction != null
+        normalizedInput === 'status-openai' ||
+        normalizedInput === 'compactify' ||
+        slashBenchAction != null ||
+        slashThemeDemoAction != null
 
       if (trimmedInputValue.startsWith('/') && isKnownSlashCommand) {
         void runComposerCommand(trimmedInputValue).then(result => {
@@ -3626,20 +3885,6 @@ function Chat() {
         // Check if this is a retrigger scenario (empty input + last message is user)
         const isRetrigger =
           !hasLocalInput && displayMessages.length > 0 && displayMessages[displayMessages.length - 1]?.role === 'user'
-
-        console.log('[AutoCompaction][send] invoked', {
-          conversationId: currentConversationId,
-          canSendLocal,
-          hermesMode,
-          hermesModeAvailable,
-          isRetrigger,
-          hasLocalInput,
-          trimmedInputLength: trimmedInputValue.length,
-          streamActive: streamState.active,
-          compactingCurrentConversation: isCurrentConversationCompacting,
-          globalSending: sendingState.sending,
-          globalCompacting: sendingState.compacting,
-        })
 
         // Hermes mode routes messages to the local Hermes bridge endpoint.
         if (hermesMode && hermesModeAvailable) {
@@ -4378,7 +4623,7 @@ function Chat() {
   // }
 
   const performDelete = useCallback(
-    (id: string) => {
+    async (id: string) => {
       const messageId = parseId(id)
       // console.log('[Chat] performDelete called:', {
       //   messageId,
@@ -4386,20 +4631,34 @@ function Chat() {
       //   conversationStorageMode,
       // })
       dispatch(chatSliceActions.messageDeleted(messageId))
-      if (currentConversationId) {
-        dispatch(
+
+      if (!currentConversationId) {
+        return
+      }
+
+      try {
+        await dispatch(
           deleteMessage({ id: messageId, conversationId: currentConversationId, storageMode: conversationStorageMode })
-        )
-        dispatch(refreshCurrentPathAfterDelete({ conversationId: currentConversationId, messageId }))
+        ).unwrap()
+      } catch (error) {
+        console.error('[Chat] Failed to delete message:', error)
+      } finally {
+        await queryClient.invalidateQueries({
+          queryKey: ['conversations', currentConversationId, 'messages'],
+        })
+        await queryClient.refetchQueries({
+          queryKey: ['conversations', currentConversationId, 'messages'],
+          type: 'active',
+        })
       }
     },
-    [dispatch, currentConversationId, conversationStorageMode]
+    [dispatch, currentConversationId, conversationStorageMode, queryClient]
   )
 
   const handleRequestDelete = useCallback(
     (id: string) => {
       if (!confirmDel) {
-        performDelete(id)
+        void performDelete(id)
       } else {
         setPendingDeleteId(id)
       }
@@ -4414,7 +4673,7 @@ function Chat() {
 
   const confirmDeleteModal = () => {
     if (dontAskAgain) setconfirmDel(false)
-    if (pendingDeleteId) performDelete(pendingDeleteId)
+    if (pendingDeleteId) void performDelete(pendingDeleteId)
     closeDeleteModal()
   }
 
@@ -5431,6 +5690,7 @@ function Chat() {
                           isProcessBridgeSourceMessage && Array.isArray(contentBlocks)
                             ? contentBlocks.filter(block => !isProcessContentBlock(block))
                             : contentBlocks
+                        const assistantContainerClassName = assistantContainerClassByMessageId.get(String(msg.id))
 
                         return (
                           <VirtualizedRowContainer
@@ -5463,6 +5723,7 @@ function Chat() {
                               customTheme={customTheme}
                               customThemeEnabled={customThemeEnabled}
                               isDarkMode={isDarkMode}
+                              className={assistantContainerClassName}
                               onEdit={handleMessageEdit}
                               onBranch={handleMessageBranch}
                               onDelete={handleRequestDelete}
@@ -6121,9 +6382,12 @@ function Chat() {
                           onClick={() => dispatch(chatSliceActions.toolAutoApproveToggled())}
                           className={
                             toolAutoApprove
-                              ? 'text-orange-700 dark:text-orange-400 bg-orange-50 dark:bg-orange-900/20 border-orange-300 dark:border-orange-700/50 dark:hover:bg-white/5'
-                              : 'text-neutral-600 dark:text-neutral-200 border-neutral-200 dark:border-neutral-700/50 dark:hover:bg-white/5'
+                              ? customThemeEnabled
+                                ? 'dark:hover:bg-white/5'
+                                : 'text-orange-700 dark:text-orange-400 bg-orange-50 dark:bg-orange-900/20 dark:hover:bg-white/5'
+                              : 'text-neutral-600 dark:text-neutral-200 dark:hover:bg-white/5'
                           }
+                          style={toolAutoApprove && customThemeEnabled ? composerToggleActiveStyle : undefined}
                           title={
                             toolAutoApprove
                               ? 'Auto-approving tools (click to disable)'
@@ -6142,8 +6406,13 @@ function Chat() {
                           onClick={() => dispatch(chatSliceActions.operationModeToggled())}
                           className={
                             operationMode === 'plan'
-                              ? 'text-fuchsia-700 dark:text-fuchsia-300 bg-blue-50 dark:bg-blue-900/30 border-fuchsia-200 dark:border-fuchsia-700/60 hover:bg-blue-100 dark:hover:bg-white/5'
-                              : 'text-orange-700 dark:text-orange-400 bg-orange-50 dark:bg-orange-900/20 border-orange-300 dark:border-orange-700/50 hover:bg-orange-100 dark:hover:bg-white/5'
+                              ? 'text-fuchsia-700 dark:text-fuchsia-300 bg-blue-50 dark:bg-blue-900/30 hover:bg-blue-100 dark:hover:bg-white/5'
+                              : customThemeEnabled
+                                ? 'hover:bg-neutral-100 dark:hover:bg-white/5'
+                                : 'text-orange-700 dark:text-orange-400 bg-orange-50 dark:bg-orange-900/20 hover:bg-orange-100 dark:hover:bg-white/5'
+                          }
+                          style={
+                            operationMode !== 'plan' && customThemeEnabled ? composerToggleActiveStyle : undefined
                           }
                           title={
                             operationMode === 'plan'
@@ -6476,17 +6745,19 @@ function Chat() {
       {/* OpenRouter login required modal */}
       {openRouterLoginRequiredModalOpen && (
         <div
-          className='fixed inset-0 z-[100] flex items-center justify-center bg-black/50'
+          className='fixed inset-0 z-[100] flex items-center justify-center'
           onClick={closeOpenRouterLoginRequiredModal}
+          style={{ backgroundColor: authModalBackdropColor }}
         >
           <div
-            className='bg-white dark:bg-yBlack-900 rounded-lg shadow-xl p-6 w-[90%] max-w-md'
+            className='rounded-lg shadow-xl p-6 w-[90%] max-w-md'
             onClick={e => e.stopPropagation()}
+            style={{ backgroundColor: authModalSurfaceBackgroundColor }}
           >
-            <h3 className='text-[20px] font-semibold mb-3 text-neutral-900 dark:text-neutral-100'>
+            <h3 className='text-[20px] font-semibold mb-3' style={{ color: authModalTitleTextColor }}>
               Sign in required for Yggdrasil models
             </h3>
-            <p className='text-[14px] text-neutral-700 dark:text-neutral-300 mb-6'>
+            <p className='text-[14px] mb-6' style={{ color: authModalBodyTextColor }}>
               you need to sign in with github or google account to access Yggdrasil models, logging in will merge your
               local and yggdrasil account, you wont lose any info
             </p>
@@ -6495,6 +6766,7 @@ function Chat() {
                 variant='outline2'
                 className='bg-emerald-600 hover:bg-emerald-700 border-emerald-700 text-white active:scale-90'
                 onClick={confirmOpenRouterLoginRequired}
+                style={authModalPrimaryButtonStyle}
               >
                 Ok
               </Button>
@@ -6506,15 +6778,19 @@ function Chat() {
       {/* OpenAI ChatGPT Login Modal */}
       {openaiLoginModalOpen && (
         <div
-          className='fixed inset-0 z-[100] flex items-center justify-center bg-black/50'
+          className='fixed inset-0 z-[100] flex items-center justify-center'
           onClick={closeOpenaiLoginModal}
+          style={{ backgroundColor: authModalBackdropColor }}
         >
           <div
-            className='bg-white dark:bg-yBlack-900 rounded-lg shadow-xl p-6 w-[90%] max-w-md'
+            className='rounded-lg shadow-xl p-6 w-[90%] max-w-md'
             onClick={e => e.stopPropagation()}
+            style={{ backgroundColor: authModalSurfaceBackgroundColor }}
           >
-            <h3 className='text-[20px] font-semibold mb-2 text-neutral-900 dark:text-neutral-100'>Sign in to OpenAI</h3>
-            <p className='text-[14px] text-neutral-600 dark:text-neutral-400 mb-4'>
+            <h3 className='text-[20px] font-semibold mb-2' style={{ color: authModalTitleTextColor }}>
+              Sign in to OpenAI
+            </h3>
+            <p className='text-[14px] mb-4' style={{ color: authModalBodyTextColor }}>
               Use your ChatGPT Plus or Pro subscription to access GPT-4o and GPT-5 models locally.
             </p>
 
@@ -6526,13 +6802,19 @@ function Chat() {
                   <span className='text-green-700 dark:text-green-300 text-sm'>You are signed in to OpenAI</span>
                 </div>
                 <div className='flex justify-end gap-2'>
-                  <Button variant='outline2' onClick={closeOpenaiLoginModal} className='active:scale-90'>
+                  <Button
+                    variant='outline2'
+                    onClick={closeOpenaiLoginModal}
+                    className='active:scale-90'
+                    style={authModalSecondaryButtonStyle}
+                  >
                     Cancel
                   </Button>
                   <Button
                     variant='outline2'
                     className='bg-red-600 hover:bg-red-700 border-red-700 text-white active:scale-90'
                     onClick={handleOpenaiLogout}
+                    style={authModalDangerButtonStyle}
                   >
                     Sign Out
                   </Button>
@@ -6543,6 +6825,7 @@ function Chat() {
                       dispatch(chatSliceActions.providerSelected('OpenAI (ChatGPT)'))
                       closeOpenaiLoginModal()
                     }}
+                    style={authModalPrimaryButtonStyle}
                   >
                     Continue
                   </Button>
@@ -6559,7 +6842,7 @@ function Chat() {
                 )}
 
                 <div className='space-y-3'>
-                  <div className='text-sm text-neutral-700 dark:text-neutral-300'>
+                  <div className='text-sm' style={{ color: authModalBodyTextColor }}>
                     <strong>Step 1:</strong> Click the button below to sign in with your OpenAI account in your browser.
                   </div>
                   <Button
@@ -6567,6 +6850,7 @@ function Chat() {
                     className='w-full bg-neutral-800 hover:bg-neutral-900 border-neutral-700 text-white active:scale-98'
                     onClick={handleOpenaiLogin}
                     disabled={!openaiAuthFlow}
+                    style={authModalPrimaryButtonStyle}
                   >
                     <i className='bx bx-link-external mr-2'></i>
                     Open OpenAI Login
@@ -6574,13 +6858,18 @@ function Chat() {
                 </div>
 
                 <div className='space-y-3'>
-                  <div className='text-sm text-neutral-700 dark:text-neutral-300'>
+                  <div className='text-sm' style={{ color: authModalBodyTextColor }}>
                     <strong>Step 2:</strong> After completing sign-in in your browser, click the button below.
                   </div>
                 </div>
 
                 <div className='flex justify-end gap-2 mt-6'>
-                  <Button variant='outline2' onClick={closeOpenaiLoginModal} className='active:scale-90'>
+                  <Button
+                    variant='outline2'
+                    onClick={closeOpenaiLoginModal}
+                    className='active:scale-90'
+                    style={authModalSecondaryButtonStyle}
+                  >
                     Cancel
                   </Button>
                   <Button
@@ -6588,6 +6877,7 @@ function Chat() {
                     className='bg-emerald-600 hover:bg-emerald-700 border-emerald-700 text-white active:scale-90'
                     onClick={handleOpenaiAuthCallback}
                     disabled={!openaiAuthFlow || openaiAuthLoading}
+                    style={authModalPrimaryButtonStyle}
                   >
                     {openaiAuthLoading ? (
                       <>

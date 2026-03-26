@@ -11,6 +11,7 @@ import {
 } from '../../features/ideContext/ideContextSelectors'
 import { useIdeContext } from '../../hooks/useIdeContext'
 import type { RootState } from '../../store/store'
+import { getThemeModeColor, useCustomChatTheme, useHtmlDarkMode } from '../ThemeManager/themeConfig'
 
 type textAreaState = 'default' | 'error' | 'disabled'
 // Accept any Tailwind width/max-width class combination (e.g. "w-full max-w-3xl").
@@ -116,7 +117,7 @@ export const InputTextArea: React.FC<TextAreaProps> = ({
   showCharCount = false,
   showHelp = true,
   outline = false,
-  onProcessMessage,
+  onProcessMessage, // redundant with onChange but included for backward compatibility for now
   variant = 'primary',
   slashCommands,
   onSlashCommandSelect,
@@ -169,6 +170,8 @@ export const InputTextArea: React.FC<TextAreaProps> = ({
     ? `${ideSelectionPath}:${currentSelection.startLine}-${currentSelection.endLine}`
     : null
   const [showContextAddedNotice, setShowContextAddedNotice] = useState(false)
+  const { theme: customTheme, enabled: customThemeEnabled } = useCustomChatTheme()
+  const isDarkMode = useHtmlDarkMode()
 
   const handleAddContextClick = () => {
     if (!onAddCurrentIdeContext || !hasIdeContextSelection) return
@@ -642,47 +645,6 @@ export const InputTextArea: React.FC<TextAreaProps> = ({
     setShowFileList(filtered.length > 0)
   }, [activeMention, localMentionableFiles])
 
-  // const replaceFileMentionsWithContent = useCallback(
-  //   (message: string): string => {
-  //     if (!message || typeof message !== 'string') {
-  //       return message || ''
-  //     }
-
-  //     let processedMessage = message
-
-  //     // Find all @filename mentions in the message
-  //     const mentionRegex = /@(\S+)/g
-  //     const mentions = [...message.matchAll(mentionRegex)]
-
-  //     for (const mention of mentions) {
-  //       const fileName = mention[1]
-  //       const fullMention = mention[0]
-
-  //       // Find the corresponding file content in selectedFilesForChat
-  //       const fileContent = selectedFilesForChat.find(file => {
-  //         const fileNameFromPath = file.path.split('/').pop() || file.relativePath.split('/').pop()
-  //         return fileNameFromPath === fileName
-  //       })
-
-  //       if (fileContent && fileContent.contents) {
-  //         // Replace the @filename with the actual file content
-  //         const replacement = `\n\n--- File: ${fileContent.relativePath} ---\n${fileContent.contents}\n--- End of ${fileContent.relativePath} ---\n\n`
-  //         processedMessage = processedMessage.replace(fullMention, replacement)
-  //       }
-  //     }
-
-  //     return processedMessage
-  //   },
-  //   [selectedFilesForChat]
-  // )
-
-  // Pass the processing function to parent component via callback
-  // useEffect(() => {
-  //   if (onProcessMessage) {
-  //     onProcessMessage(replaceFileMentionsWithContent)
-  //   }
-  // }, [onProcessMessage, selectedFilesForChat])
-
   const variantStyles = {
     primary:
       'text-stone-900 dark:text-stone-200 placeholder-neutral-700 dark:placeholder-neutral-200 border-secondary-600 outline-none focus:border-secondary-600 focus:ring-1 focus:ring-opacity-50 dark:focus:ring-secondary-600',
@@ -706,6 +668,62 @@ export const InputTextArea: React.FC<TextAreaProps> = ({
         error: `${baseStyles} bg-gray-800 text-stone-800 dark:text-stone-200 placeholder-neutral-700 dark:placeholder-neutral-200 border-red-500 outline-none focus:border-red-400 focus:ring-2 focus:ring-red-500 focus:ring-opacity-50`,
         disabled: `${baseStyles} bg-gray-900 text-stone-800 dark:text-stone-200 border-gray-700 placeholder-neutral-700 dark:placeholder-neutral-200 cursor-not-allowed`,
       }
+
+  const ideContextPillStyle = customThemeEnabled
+    ? {
+        backgroundColor: getThemeModeColor(customTheme.colors.ideContextPillBg, isDarkMode),
+        borderColor: getThemeModeColor(customTheme.colors.ideContextPillBorder, isDarkMode),
+        color: getThemeModeColor(customTheme.colors.ideContextPillText, isDarkMode),
+      }
+    : undefined
+
+  const ideContextAddButtonStyle = customThemeEnabled
+    ? {
+        backgroundColor: getThemeModeColor(customTheme.colors.ideContextAddButtonBg, isDarkMode),
+        borderColor: getThemeModeColor(customTheme.colors.ideContextAddButtonBorder, isDarkMode),
+        color: getThemeModeColor(customTheme.colors.ideContextAddButtonText, isDarkMode),
+      }
+    : undefined
+
+  const ideContextPreviewStyle = customThemeEnabled
+    ? {
+        backgroundColor: getThemeModeColor(customTheme.colors.ideContextPreviewBg, isDarkMode),
+        borderColor: getThemeModeColor(customTheme.colors.ideContextPreviewBorder, isDarkMode),
+      }
+    : undefined
+
+  const ideContextPreviewFileTextStyle = customThemeEnabled
+    ? {
+        color: getThemeModeColor(customTheme.colors.ideContextPreviewFileText, isDarkMode),
+      }
+    : undefined
+
+  const ideContextPreviewCodeTextStyle = customThemeEnabled
+    ? {
+        color: getThemeModeColor(customTheme.colors.ideContextPreviewCodeText, isDarkMode),
+      }
+    : undefined
+
+  const ideContextSelectedPillStyle = customThemeEnabled
+    ? {
+        backgroundColor: getThemeModeColor(customTheme.colors.ideContextSelectedPillBg, isDarkMode),
+        borderColor: getThemeModeColor(customTheme.colors.ideContextSelectedPillBorder, isDarkMode),
+        color: getThemeModeColor(customTheme.colors.ideContextSelectedPillText, isDarkMode),
+      }
+    : undefined
+
+  const ideContextClearButtonStyle = customThemeEnabled
+    ? {
+        borderColor: getThemeModeColor(customTheme.colors.ideContextClearButtonBorder, isDarkMode),
+        color: getThemeModeColor(customTheme.colors.ideContextClearButtonText, isDarkMode),
+      }
+    : undefined
+
+  const ideContextAddedTextStyle = customThemeEnabled
+    ? {
+        color: getThemeModeColor(customTheme.colors.ideContextAddedText, isDarkMode),
+      }
+    : undefined
 
   return (
     <div className={`flex flex-col gap-0`}>
@@ -784,26 +802,36 @@ export const InputTextArea: React.FC<TextAreaProps> = ({
           <div className='mb-2 mt-1 ml-1 flex flex-wrap items-center gap-2'>
             {hasIdeContextSelection && (
               <div className='group relative inline-flex max-w-full items-center gap-1'>
-                <span className='inline-flex items-center rounded-full border dark:border-orange-400/60 border-blue-400/60 bg-blue-100/80 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide dark:border-orange-500/60 dark:bg-neutral-900/40 text:neutral-100 dark:text-neutral-200'>
+                <span
+                  className='inline-flex items-center rounded-full border dark:border-orange-400/60 border-blue-400/60 bg-blue-100/80 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide dark:border-orange-500/60 dark:bg-neutral-900/40 text-neutral-900 dark:text-neutral-200'
+                  style={ideContextPillStyle}
+                >
                   ide context detected
                 </span>
                 <button
                   type='button'
                   onClick={handleAddContextClick}
                   className='inline-flex mt-0.5 h-5.5 w-5.5 items-center justify-center rounded-full border border-blue-400/60 dark:border-orange-400/70 bg-blue-100/80 dark:bg-transparent text-xs font-bold text-neutral-900 hover:bg-orange-300/80 dark:border-orange-500/60 dark:bg-neutral-800/60 dark:text-orange-100 dark:hover:bg-orange-700/70'
+                  style={ideContextAddButtonStyle}
                   title='Add this IDE context to message context list'
                   aria-label='Add IDE context'
                 >
                   +
                 </button>
 
-                <div className='pointer-events-none thin-scrollbar absolute bottom-full left-0 z-50 mb-2 hidden w-[24rem] max-w-[90vw] rounded-md bg-neutral-100/80 dark:bg-neutral-50/95 p-2 shadow-sm group-hover:block dark:border-orange-500/40 dark:bg-neutral-900/95'>
+                <div
+                  className='pointer-events-none thin-scrollbar absolute bottom-full left-0 z-50 mb-2 hidden w-[24rem] max-w-[90vw] rounded-md border bg-neutral-100/80 dark:bg-neutral-50/95 p-2 shadow-sm group-hover:block dark:border-orange-500/40 dark:bg-neutral-900/95'
+                  style={ideContextPreviewStyle}
+                >
                   {ideSelectionLocation && (
-                    <div className='mb-1 text-[10px] font-semibold text-orange-900 dark:text-orange-200'>
+                    <div className='mb-1 text-[10px] font-semibold text-orange-900 dark:text-orange-200' style={ideContextPreviewFileTextStyle}>
                       {ideSelectionLocation}
                     </div>
                   )}
-                  <pre className='max-h-40 overflow-y-auto whitespace-pre-wrap break-words font-mono text-[11px] leading-relaxed text-orange-950 dark:text-orange-100'>
+                  <pre
+                    className='max-h-40 overflow-y-auto whitespace-pre-wrap break-words font-mono text-[11px] leading-relaxed text-orange-950 dark:text-orange-100'
+                    style={ideContextPreviewCodeTextStyle}
+                  >
                     {ideSelectionPreview}
                   </pre>
                 </div>
@@ -811,7 +839,9 @@ export const InputTextArea: React.FC<TextAreaProps> = ({
             )}
 
             {showContextAddedNotice && (
-              <span className='text-[10px] font-semibold text-blue-700 dark:text-orange-300'>context added</span>
+              <span className='text-[10px] font-semibold text-blue-700 dark:text-orange-300' style={ideContextAddedTextStyle}>
+                context added
+              </span>
             )}
 
             {selectedIdeContextItems.length > 0 && (
@@ -819,7 +849,8 @@ export const InputTextArea: React.FC<TextAreaProps> = ({
                 {selectedIdeContextItems.map(item => (
                   <span
                     key={item.id}
-                    className='inline-flex items-center rounded-full shadow-sm dark:bg-orange-100/70 px-2 py-0.5 text-[11px] text-neutral-900 dark:border-orange-500/40 dark:bg-transparent dark:text-orange-100'
+                    className='inline-flex items-center rounded-full border shadow-sm dark:bg-orange-100/70 px-2 py-0.5 text-[11px] text-neutral-900 dark:border-orange-500/40 dark:bg-transparent dark:text-orange-100'
+                    style={ideContextSelectedPillStyle}
                     title={item.label}
                   >
                     {item.label}
@@ -832,6 +863,7 @@ export const InputTextArea: React.FC<TextAreaProps> = ({
               type='button'
               onClick={handleClearIdeContextsClick}
               className='ml-auto inline-flex items-center mr-2 rounded-full border border-neutral-400/70 px-2 py-0.25 text-[10px] font-semibold uppercase tracking-wide text-neutral-700 hover:bg-neutral-200/70 dark:border-orange-500/40 dark:text-orange-100 dark:hover:bg-orange-700/40'
+              style={ideContextClearButtonStyle}
               title='Clear detected and added IDE contexts'
               aria-label='Clear IDE contexts'
             >

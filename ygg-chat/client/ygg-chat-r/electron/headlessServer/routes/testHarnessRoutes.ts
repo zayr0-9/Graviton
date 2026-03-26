@@ -1,7 +1,8 @@
-import type { Express } from 'express'
+import type { Express, Request } from 'express'
 import { existsSync, readFileSync } from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { customToolRegistry } from '../../tools/customToolLoader.js'
 import { TEST_HARNESS_CLIENT_JS } from './testHarnessClientScript.js'
 
 const loadTestHarnessHtml = (): string => {
@@ -42,6 +43,21 @@ interface RegisterTestHarnessRoutesDeps {
   getDefaultTools?: () => Array<{ name: string; description?: string; inputSchema?: Record<string, any> }>
 }
 
+const shouldIncludeCustomTools = (req: Request): boolean => {
+  const raw = req.query?.includeCustomTools
+  const value = Array.isArray(raw) ? raw[0] : raw
+  if (value == null) return true
+  return !['0', 'false', 'no'].includes(String(value).trim().toLowerCase())
+}
+
+const resolveCustomToolNameSet = (): Set<string> => {
+  try {
+    return new Set(customToolRegistry.getDefinitions().map(def => def.name))
+  } catch {
+    return new Set()
+  }
+}
+
 export function registerTestHarnessRoutes(app: Express, deps: RegisterTestHarnessRoutesDeps): void {
   app.get('/headless/openai-test', (_req, res) => {
     res.status(200).setHeader('Content-Type', 'text/html; charset=utf-8')
@@ -55,12 +71,17 @@ export function registerTestHarnessRoutes(app: Express, deps: RegisterTestHarnes
     res.send(TEST_HARNESS_CLIENT_JS)
   })
 
-  app.get('/api/headless/ephemeral/tools', (_req, res) => {
-    const tools = (deps.getDefaultTools?.() || []).map(tool => ({
-      name: tool.name,
-      description: tool.description || '',
-      inputSchema: tool.inputSchema || { type: 'object', properties: {} },
-    }))
+  app.get('/api/headless/ephemeral/tools', (req, res) => {
+    const includeCustomTools = shouldIncludeCustomTools(req)
+    const customToolNames = includeCustomTools ? new Set<string>() : resolveCustomToolNameSet()
+
+    const tools = (deps.getDefaultTools?.() || [])
+      .filter(tool => tool?.name && (includeCustomTools || !customToolNames.has(tool.name)))
+      .map(tool => ({
+        name: tool.name,
+        description: tool.description || '',
+        inputSchema: tool.inputSchema || { type: 'object', properties: {} },
+      }))
 
     res.json({ success: true, count: tools.length, tools })
   })

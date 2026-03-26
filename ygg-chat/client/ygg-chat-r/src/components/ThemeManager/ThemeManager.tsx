@@ -281,9 +281,117 @@ export const ThemeManager: React.FC = () => {
         | 'actionPopoverBorder'
         | 'sendButtonAnimationColor'
         | 'streamingAnimationColor'
+        | 'composerToggleActiveBg'
+        | 'composerToggleActiveBorder'
+        | 'composerToggleActiveText'
         | 'heimdallNotePillBg'
         | 'heimdallNotePillText'
-        | 'heimdallNotePillBorder',
+        | 'heimdallNotePillBorder'
+        | 'heimdallNodeHoverModalBg'
+        | 'heimdallNodeHoverModalBorder'
+        | 'heimdallNodeHoverModalText'
+        | 'heimdallNodeHoverModalTitleText'
+        | 'heimdallNoteDialogBg'
+        | 'heimdallNoteDialogBorder'
+        | 'heimdallNoteDialogTitleText'
+        | 'heimdallNoteDialogButtonBg'
+        | 'heimdallNoteDialogButtonBorder'
+        | 'heimdallNoteDialogButtonText'
+        | 'heimdallNoteDialogCloseButtonText'
+        | 'ideContextPillBg'
+        | 'ideContextPillBorder'
+        | 'ideContextPillText'
+        | 'ideContextAddButtonBg'
+        | 'ideContextAddButtonBorder'
+        | 'ideContextAddButtonText'
+        | 'ideContextPreviewBg'
+        | 'ideContextPreviewBorder'
+        | 'ideContextPreviewFileText'
+        | 'ideContextPreviewCodeText'
+        | 'ideContextSelectedPillBg'
+        | 'ideContextSelectedPillBorder'
+        | 'ideContextSelectedPillText'
+        | 'ideContextClearButtonBorder'
+        | 'ideContextClearButtonText'
+        | 'ideContextAddedText'
+        | 'toolJobsModalBackdrop'
+        | 'toolJobsModalBg'
+        | 'toolJobsModalBorder'
+        | 'toolJobsPanelBg'
+        | 'toolJobsPanelBorder'
+        | 'toolJobsPrimaryText'
+        | 'toolJobsSecondaryText'
+        | 'toolJobsMutedText'
+        | 'toolJobsCodeBg'
+        | 'toolJobsCodeText'
+        | 'toolJobsErrorBg'
+        | 'toolJobsErrorBorder'
+        | 'toolJobsErrorText'
+        | 'toolJobsLiveBadgeBg'
+        | 'toolJobsLiveBadgeText'
+        | 'toolJobsLiveDot'
+        | 'toolJobsProgressTrack'
+        | 'toolJobsProgressPending'
+        | 'toolJobsProgressRunning'
+        | 'toolJobsProgressCompleted'
+        | 'toolJobsProgressFailed'
+        | 'toolJobsStatusPendingBg'
+        | 'toolJobsStatusPendingText'
+        | 'toolJobsStatusRunningBg'
+        | 'toolJobsStatusRunningText'
+        | 'toolJobsStatusCompletedBg'
+        | 'toolJobsStatusCompletedText'
+        | 'toolJobsStatusFailedBg'
+        | 'toolJobsStatusFailedText'
+        | 'toolJobsStatusCancelledBg'
+        | 'toolJobsStatusCancelledText'
+        | 'toolJobsStatusActiveWorkersBg'
+        | 'toolJobsStatusActiveWorkersText'
+        | 'toolPermissionDialogBg'
+        | 'toolPermissionDialogBorder'
+        | 'toolPermissionDialogTitleText'
+        | 'toolPermissionDialogToolNameText'
+        | 'toolPermissionDialogBadgeBg'
+        | 'toolPermissionDialogBadgeText'
+        | 'toolPermissionDialogCommandBg'
+        | 'toolPermissionDialogCommandLabelText'
+        | 'toolPermissionDialogCommandText'
+        | 'toolPermissionDialogDenyButtonBg'
+        | 'toolPermissionDialogDenyButtonBorder'
+        | 'toolPermissionDialogDenyButtonText'
+        | 'toolPermissionDialogAllowButtonBg'
+        | 'toolPermissionDialogAllowButtonBorder'
+        | 'toolPermissionDialogAllowButtonText'
+        | 'toolPermissionDialogAllowAllButtonBg'
+        | 'toolPermissionDialogAllowAllButtonBorder'
+        | 'toolPermissionDialogAllowAllButtonText'
+        | 'authModalBackdrop'
+        | 'authModalSurfaceBg'
+        | 'authModalTitleText'
+        | 'authModalBodyText'
+        | 'authModalPrimaryButtonBg'
+        | 'authModalPrimaryButtonBorder'
+        | 'authModalPrimaryButtonText'
+        | 'authModalSecondaryButtonBg'
+        | 'authModalSecondaryButtonBorder'
+        | 'authModalSecondaryButtonText'
+        | 'authModalDangerButtonBg'
+        | 'authModalDangerButtonBorder'
+        | 'authModalDangerButtonText'
+        | 'htmlToolsModalSurfaceBg'
+        | 'htmlToolsModalSurfaceBorder'
+        | 'htmlToolsModalPanelMutedBg'
+        | 'htmlToolsModalButtonBg'
+        | 'htmlToolsModalButtonBorder'
+        | 'htmlToolsModalButtonText'
+        | 'htmlToolsModalButtonActiveBg'
+        | 'htmlToolsModalButtonActiveBorder'
+        | 'htmlToolsModalButtonActiveText'
+        | 'markdownCodeBlockBg'
+        | 'markdownCodeBlockBorder'
+        | 'markdownCodeBlockText'
+        | 'markdownInlineCodeBg'
+        | 'markdownInlineCodeText',
       mode: 'light' | 'dark',
       nextValue: string
     ) => {
@@ -543,6 +651,574 @@ export const ThemeManager: React.FC = () => {
               label='Streaming loading animation color'
               value={theme.colors.streamingAnimationColor}
               onChange={(mode, value) => handleChatSurfaceChange('streamingAnimationColor', mode, value)}
+            />
+            <PairEditor
+              label='Composer active toggle background (Allow all / Agent)'
+              value={theme.colors.composerToggleActiveBg}
+              onChange={(mode, value) => handleChatSurfaceChange('composerToggleActiveBg', mode, value)}
+            />
+            <PairEditor
+              label='Composer active toggle border (Allow all / Agent)'
+              value={theme.colors.composerToggleActiveBorder}
+              onChange={(mode, value) => handleChatSurfaceChange('composerToggleActiveBorder', mode, value)}
+            />
+            <PairEditor
+              label='Composer active toggle text (Allow all / Agent)'
+              value={theme.colors.composerToggleActiveText}
+              onChange={(mode, value) => handleChatSurfaceChange('composerToggleActiveText', mode, value)}
+            />
+          </div>
+
+          <div className='space-y-3'>
+            <h4 className='text-sm font-semibold text-stone-700 dark:text-stone-200'>Markdown code blocks + inline code</h4>
+            <PairEditor
+              label='Code block surface background'
+              value={theme.colors.markdownCodeBlockBg}
+              onChange={(mode, value) => handleChatSurfaceChange('markdownCodeBlockBg', mode, value)}
+            />
+            <PairEditor
+              label='Code block border'
+              value={theme.colors.markdownCodeBlockBorder}
+              onChange={(mode, value) => handleChatSurfaceChange('markdownCodeBlockBorder', mode, value)}
+            />
+            <PairEditor
+              label='Code block plain text'
+              value={theme.colors.markdownCodeBlockText}
+              onChange={(mode, value) => handleChatSurfaceChange('markdownCodeBlockText', mode, value)}
+            />
+            <PairEditor
+              label='Inline code background'
+              value={theme.colors.markdownInlineCodeBg}
+              onChange={(mode, value) => handleChatSurfaceChange('markdownInlineCodeBg', mode, value)}
+            />
+            <PairEditor
+              label='Inline code text'
+              value={theme.colors.markdownInlineCodeText}
+              onChange={(mode, value) => handleChatSurfaceChange('markdownInlineCodeText', mode, value)}
+            />
+          </div>
+
+          <div className='space-y-3'>
+            <h4 className='text-sm font-semibold text-stone-700 dark:text-stone-200'>Heimdall node + note modals</h4>
+            <PairEditor
+              label='Node hover modal background'
+              value={theme.colors.heimdallNodeHoverModalBg}
+              onChange={(mode, value) => handleChatSurfaceChange('heimdallNodeHoverModalBg', mode, value)}
+            />
+            <PairEditor
+              label='Node hover modal border'
+              value={theme.colors.heimdallNodeHoverModalBorder}
+              onChange={(mode, value) => handleChatSurfaceChange('heimdallNodeHoverModalBorder', mode, value)}
+            />
+            <PairEditor
+              label='Node hover modal body text'
+              value={theme.colors.heimdallNodeHoverModalText}
+              onChange={(mode, value) => handleChatSurfaceChange('heimdallNodeHoverModalText', mode, value)}
+            />
+            <PairEditor
+              label='Node hover modal title text'
+              value={theme.colors.heimdallNodeHoverModalTitleText}
+              onChange={(mode, value) => handleChatSurfaceChange('heimdallNodeHoverModalTitleText', mode, value)}
+            />
+            <PairEditor
+              label='Edit note modal background'
+              value={theme.colors.heimdallNoteDialogBg}
+              onChange={(mode, value) => handleChatSurfaceChange('heimdallNoteDialogBg', mode, value)}
+            />
+            <PairEditor
+              label='Edit note modal border'
+              value={theme.colors.heimdallNoteDialogBorder}
+              onChange={(mode, value) => handleChatSurfaceChange('heimdallNoteDialogBorder', mode, value)}
+            />
+            <PairEditor
+              label='Edit note modal title text'
+              value={theme.colors.heimdallNoteDialogTitleText}
+              onChange={(mode, value) => handleChatSurfaceChange('heimdallNoteDialogTitleText', mode, value)}
+            />
+            <PairEditor
+              label='Edit note modal button background'
+              value={theme.colors.heimdallNoteDialogButtonBg}
+              onChange={(mode, value) => handleChatSurfaceChange('heimdallNoteDialogButtonBg', mode, value)}
+            />
+            <PairEditor
+              label='Edit note modal button border'
+              value={theme.colors.heimdallNoteDialogButtonBorder}
+              onChange={(mode, value) => handleChatSurfaceChange('heimdallNoteDialogButtonBorder', mode, value)}
+            />
+            <PairEditor
+              label='Edit note modal button text'
+              value={theme.colors.heimdallNoteDialogButtonText}
+              onChange={(mode, value) => handleChatSurfaceChange('heimdallNoteDialogButtonText', mode, value)}
+            />
+            <PairEditor
+              label='Edit note modal close icon color'
+              value={theme.colors.heimdallNoteDialogCloseButtonText}
+              onChange={(mode, value) => handleChatSurfaceChange('heimdallNoteDialogCloseButtonText', mode, value)}
+            />
+          </div>
+
+          <div className='space-y-3'>
+            <h4 className='text-sm font-semibold text-stone-700 dark:text-stone-200'>IDE context pills (Input)</h4>
+            <PairEditor
+              label='Detected context pill background'
+              value={theme.colors.ideContextPillBg}
+              onChange={(mode, value) => handleChatSurfaceChange('ideContextPillBg', mode, value)}
+            />
+            <PairEditor
+              label='Detected context pill border'
+              value={theme.colors.ideContextPillBorder}
+              onChange={(mode, value) => handleChatSurfaceChange('ideContextPillBorder', mode, value)}
+            />
+            <PairEditor
+              label='Detected context pill text'
+              value={theme.colors.ideContextPillText}
+              onChange={(mode, value) => handleChatSurfaceChange('ideContextPillText', mode, value)}
+            />
+            <PairEditor
+              label='Add-context button background'
+              value={theme.colors.ideContextAddButtonBg}
+              onChange={(mode, value) => handleChatSurfaceChange('ideContextAddButtonBg', mode, value)}
+            />
+            <PairEditor
+              label='Add-context button border'
+              value={theme.colors.ideContextAddButtonBorder}
+              onChange={(mode, value) => handleChatSurfaceChange('ideContextAddButtonBorder', mode, value)}
+            />
+            <PairEditor
+              label='Add-context button text'
+              value={theme.colors.ideContextAddButtonText}
+              onChange={(mode, value) => handleChatSurfaceChange('ideContextAddButtonText', mode, value)}
+            />
+            <PairEditor
+              label='Hover preview modal background'
+              value={theme.colors.ideContextPreviewBg}
+              onChange={(mode, value) => handleChatSurfaceChange('ideContextPreviewBg', mode, value)}
+            />
+            <PairEditor
+              label='Hover preview modal border'
+              value={theme.colors.ideContextPreviewBorder}
+              onChange={(mode, value) => handleChatSurfaceChange('ideContextPreviewBorder', mode, value)}
+            />
+            <PairEditor
+              label='Hover preview file/location text'
+              value={theme.colors.ideContextPreviewFileText}
+              onChange={(mode, value) => handleChatSurfaceChange('ideContextPreviewFileText', mode, value)}
+            />
+            <PairEditor
+              label='Hover preview code text'
+              value={theme.colors.ideContextPreviewCodeText}
+              onChange={(mode, value) => handleChatSurfaceChange('ideContextPreviewCodeText', mode, value)}
+            />
+            <PairEditor
+              label='Selected context pill background'
+              value={theme.colors.ideContextSelectedPillBg}
+              onChange={(mode, value) => handleChatSurfaceChange('ideContextSelectedPillBg', mode, value)}
+            />
+            <PairEditor
+              label='Selected context pill border'
+              value={theme.colors.ideContextSelectedPillBorder}
+              onChange={(mode, value) => handleChatSurfaceChange('ideContextSelectedPillBorder', mode, value)}
+            />
+            <PairEditor
+              label='Selected context pill text'
+              value={theme.colors.ideContextSelectedPillText}
+              onChange={(mode, value) => handleChatSurfaceChange('ideContextSelectedPillText', mode, value)}
+            />
+            <PairEditor
+              label='Clear button border'
+              value={theme.colors.ideContextClearButtonBorder}
+              onChange={(mode, value) => handleChatSurfaceChange('ideContextClearButtonBorder', mode, value)}
+            />
+            <PairEditor
+              label='Clear button text'
+              value={theme.colors.ideContextClearButtonText}
+              onChange={(mode, value) => handleChatSurfaceChange('ideContextClearButtonText', mode, value)}
+            />
+            <PairEditor
+              label='"Context added" text color'
+              value={theme.colors.ideContextAddedText}
+              onChange={(mode, value) => handleChatSurfaceChange('ideContextAddedText', mode, value)}
+            />
+          </div>
+
+          <div className='space-y-3'>
+            <h4 className='text-sm font-semibold text-stone-700 dark:text-stone-200'>Tool Jobs modal</h4>
+            <PairEditor
+              label='Modal backdrop'
+              value={theme.colors.toolJobsModalBackdrop}
+              onChange={(mode, value) => handleChatSurfaceChange('toolJobsModalBackdrop', mode, value)}
+            />
+            <PairEditor
+              label='Modal surface background'
+              value={theme.colors.toolJobsModalBg}
+              onChange={(mode, value) => handleChatSurfaceChange('toolJobsModalBg', mode, value)}
+            />
+            <PairEditor
+              label='Modal surface border'
+              value={theme.colors.toolJobsModalBorder}
+              onChange={(mode, value) => handleChatSurfaceChange('toolJobsModalBorder', mode, value)}
+            />
+            <PairEditor
+              label='Panel/card background'
+              value={theme.colors.toolJobsPanelBg}
+              onChange={(mode, value) => handleChatSurfaceChange('toolJobsPanelBg', mode, value)}
+            />
+            <PairEditor
+              label='Panel/card border'
+              value={theme.colors.toolJobsPanelBorder}
+              onChange={(mode, value) => handleChatSurfaceChange('toolJobsPanelBorder', mode, value)}
+            />
+            <PairEditor
+              label='Primary text'
+              value={theme.colors.toolJobsPrimaryText}
+              onChange={(mode, value) => handleChatSurfaceChange('toolJobsPrimaryText', mode, value)}
+            />
+            <PairEditor
+              label='Secondary text'
+              value={theme.colors.toolJobsSecondaryText}
+              onChange={(mode, value) => handleChatSurfaceChange('toolJobsSecondaryText', mode, value)}
+            />
+            <PairEditor
+              label='Muted/meta text'
+              value={theme.colors.toolJobsMutedText}
+              onChange={(mode, value) => handleChatSurfaceChange('toolJobsMutedText', mode, value)}
+            />
+            <PairEditor
+              label='Code block background'
+              value={theme.colors.toolJobsCodeBg}
+              onChange={(mode, value) => handleChatSurfaceChange('toolJobsCodeBg', mode, value)}
+            />
+            <PairEditor
+              label='Code block text'
+              value={theme.colors.toolJobsCodeText}
+              onChange={(mode, value) => handleChatSurfaceChange('toolJobsCodeText', mode, value)}
+            />
+            <PairEditor
+              label='Error section background'
+              value={theme.colors.toolJobsErrorBg}
+              onChange={(mode, value) => handleChatSurfaceChange('toolJobsErrorBg', mode, value)}
+            />
+            <PairEditor
+              label='Error section border'
+              value={theme.colors.toolJobsErrorBorder}
+              onChange={(mode, value) => handleChatSurfaceChange('toolJobsErrorBorder', mode, value)}
+            />
+            <PairEditor
+              label='Error text'
+              value={theme.colors.toolJobsErrorText}
+              onChange={(mode, value) => handleChatSurfaceChange('toolJobsErrorText', mode, value)}
+            />
+            <PairEditor
+              label='Live badge background'
+              value={theme.colors.toolJobsLiveBadgeBg}
+              onChange={(mode, value) => handleChatSurfaceChange('toolJobsLiveBadgeBg', mode, value)}
+            />
+            <PairEditor
+              label='Live badge text'
+              value={theme.colors.toolJobsLiveBadgeText}
+              onChange={(mode, value) => handleChatSurfaceChange('toolJobsLiveBadgeText', mode, value)}
+            />
+            <PairEditor
+              label='Live badge dot'
+              value={theme.colors.toolJobsLiveDot}
+              onChange={(mode, value) => handleChatSurfaceChange('toolJobsLiveDot', mode, value)}
+            />
+            <PairEditor
+              label='Progress track'
+              value={theme.colors.toolJobsProgressTrack}
+              onChange={(mode, value) => handleChatSurfaceChange('toolJobsProgressTrack', mode, value)}
+            />
+            <PairEditor
+              label='Progress pending color'
+              value={theme.colors.toolJobsProgressPending}
+              onChange={(mode, value) => handleChatSurfaceChange('toolJobsProgressPending', mode, value)}
+            />
+            <PairEditor
+              label='Progress running color'
+              value={theme.colors.toolJobsProgressRunning}
+              onChange={(mode, value) => handleChatSurfaceChange('toolJobsProgressRunning', mode, value)}
+            />
+            <PairEditor
+              label='Progress completed color'
+              value={theme.colors.toolJobsProgressCompleted}
+              onChange={(mode, value) => handleChatSurfaceChange('toolJobsProgressCompleted', mode, value)}
+            />
+            <PairEditor
+              label='Progress failed color'
+              value={theme.colors.toolJobsProgressFailed}
+              onChange={(mode, value) => handleChatSurfaceChange('toolJobsProgressFailed', mode, value)}
+            />
+            <PairEditor
+              label='Status pending badge background'
+              value={theme.colors.toolJobsStatusPendingBg}
+              onChange={(mode, value) => handleChatSurfaceChange('toolJobsStatusPendingBg', mode, value)}
+            />
+            <PairEditor
+              label='Status pending badge text'
+              value={theme.colors.toolJobsStatusPendingText}
+              onChange={(mode, value) => handleChatSurfaceChange('toolJobsStatusPendingText', mode, value)}
+            />
+            <PairEditor
+              label='Status running badge background'
+              value={theme.colors.toolJobsStatusRunningBg}
+              onChange={(mode, value) => handleChatSurfaceChange('toolJobsStatusRunningBg', mode, value)}
+            />
+            <PairEditor
+              label='Status running badge text'
+              value={theme.colors.toolJobsStatusRunningText}
+              onChange={(mode, value) => handleChatSurfaceChange('toolJobsStatusRunningText', mode, value)}
+            />
+            <PairEditor
+              label='Status completed badge background'
+              value={theme.colors.toolJobsStatusCompletedBg}
+              onChange={(mode, value) => handleChatSurfaceChange('toolJobsStatusCompletedBg', mode, value)}
+            />
+            <PairEditor
+              label='Status completed badge text'
+              value={theme.colors.toolJobsStatusCompletedText}
+              onChange={(mode, value) => handleChatSurfaceChange('toolJobsStatusCompletedText', mode, value)}
+            />
+            <PairEditor
+              label='Status failed badge background'
+              value={theme.colors.toolJobsStatusFailedBg}
+              onChange={(mode, value) => handleChatSurfaceChange('toolJobsStatusFailedBg', mode, value)}
+            />
+            <PairEditor
+              label='Status failed badge text'
+              value={theme.colors.toolJobsStatusFailedText}
+              onChange={(mode, value) => handleChatSurfaceChange('toolJobsStatusFailedText', mode, value)}
+            />
+            <PairEditor
+              label='Status cancelled badge background'
+              value={theme.colors.toolJobsStatusCancelledBg}
+              onChange={(mode, value) => handleChatSurfaceChange('toolJobsStatusCancelledBg', mode, value)}
+            />
+            <PairEditor
+              label='Status cancelled badge text'
+              value={theme.colors.toolJobsStatusCancelledText}
+              onChange={(mode, value) => handleChatSurfaceChange('toolJobsStatusCancelledText', mode, value)}
+            />
+            <PairEditor
+              label='Status active workers badge background'
+              value={theme.colors.toolJobsStatusActiveWorkersBg}
+              onChange={(mode, value) => handleChatSurfaceChange('toolJobsStatusActiveWorkersBg', mode, value)}
+            />
+            <PairEditor
+              label='Status active workers badge text'
+              value={theme.colors.toolJobsStatusActiveWorkersText}
+              onChange={(mode, value) => handleChatSurfaceChange('toolJobsStatusActiveWorkersText', mode, value)}
+            />
+          </div>
+
+          <div className='space-y-3'>
+            <h4 className='text-sm font-semibold text-stone-700 dark:text-stone-200'>Tool permission prompt</h4>
+            <PairEditor
+              label='Dialog background'
+              value={theme.colors.toolPermissionDialogBg}
+              onChange={(mode, value) => handleChatSurfaceChange('toolPermissionDialogBg', mode, value)}
+            />
+            <PairEditor
+              label='Dialog border'
+              value={theme.colors.toolPermissionDialogBorder}
+              onChange={(mode, value) => handleChatSurfaceChange('toolPermissionDialogBorder', mode, value)}
+            />
+            <PairEditor
+              label='Title text'
+              value={theme.colors.toolPermissionDialogTitleText}
+              onChange={(mode, value) => handleChatSurfaceChange('toolPermissionDialogTitleText', mode, value)}
+            />
+            <PairEditor
+              label='Tool name text'
+              value={theme.colors.toolPermissionDialogToolNameText}
+              onChange={(mode, value) => handleChatSurfaceChange('toolPermissionDialogToolNameText', mode, value)}
+            />
+            <PairEditor
+              label='Tool badge background'
+              value={theme.colors.toolPermissionDialogBadgeBg}
+              onChange={(mode, value) => handleChatSurfaceChange('toolPermissionDialogBadgeBg', mode, value)}
+            />
+            <PairEditor
+              label='Tool badge text'
+              value={theme.colors.toolPermissionDialogBadgeText}
+              onChange={(mode, value) => handleChatSurfaceChange('toolPermissionDialogBadgeText', mode, value)}
+            />
+            <PairEditor
+              label='Command preview background'
+              value={theme.colors.toolPermissionDialogCommandBg}
+              onChange={(mode, value) => handleChatSurfaceChange('toolPermissionDialogCommandBg', mode, value)}
+            />
+            <PairEditor
+              label='Command label text'
+              value={theme.colors.toolPermissionDialogCommandLabelText}
+              onChange={(mode, value) => handleChatSurfaceChange('toolPermissionDialogCommandLabelText', mode, value)}
+            />
+            <PairEditor
+              label='Command text'
+              value={theme.colors.toolPermissionDialogCommandText}
+              onChange={(mode, value) => handleChatSurfaceChange('toolPermissionDialogCommandText', mode, value)}
+            />
+            <PairEditor
+              label='Deny button background'
+              value={theme.colors.toolPermissionDialogDenyButtonBg}
+              onChange={(mode, value) => handleChatSurfaceChange('toolPermissionDialogDenyButtonBg', mode, value)}
+            />
+            <PairEditor
+              label='Deny button border'
+              value={theme.colors.toolPermissionDialogDenyButtonBorder}
+              onChange={(mode, value) => handleChatSurfaceChange('toolPermissionDialogDenyButtonBorder', mode, value)}
+            />
+            <PairEditor
+              label='Deny button text'
+              value={theme.colors.toolPermissionDialogDenyButtonText}
+              onChange={(mode, value) => handleChatSurfaceChange('toolPermissionDialogDenyButtonText', mode, value)}
+            />
+            <PairEditor
+              label='Allow once button background'
+              value={theme.colors.toolPermissionDialogAllowButtonBg}
+              onChange={(mode, value) => handleChatSurfaceChange('toolPermissionDialogAllowButtonBg', mode, value)}
+            />
+            <PairEditor
+              label='Allow once button border'
+              value={theme.colors.toolPermissionDialogAllowButtonBorder}
+              onChange={(mode, value) => handleChatSurfaceChange('toolPermissionDialogAllowButtonBorder', mode, value)}
+            />
+            <PairEditor
+              label='Allow once button text'
+              value={theme.colors.toolPermissionDialogAllowButtonText}
+              onChange={(mode, value) => handleChatSurfaceChange('toolPermissionDialogAllowButtonText', mode, value)}
+            />
+            <PairEditor
+              label='Always allow button background'
+              value={theme.colors.toolPermissionDialogAllowAllButtonBg}
+              onChange={(mode, value) => handleChatSurfaceChange('toolPermissionDialogAllowAllButtonBg', mode, value)}
+            />
+            <PairEditor
+              label='Always allow button border'
+              value={theme.colors.toolPermissionDialogAllowAllButtonBorder}
+              onChange={(mode, value) => handleChatSurfaceChange('toolPermissionDialogAllowAllButtonBorder', mode, value)}
+            />
+            <PairEditor
+              label='Always allow button text'
+              value={theme.colors.toolPermissionDialogAllowAllButtonText}
+              onChange={(mode, value) => handleChatSurfaceChange('toolPermissionDialogAllowAllButtonText', mode, value)}
+            />
+          </div>
+
+          <div className='space-y-3'>
+            <h4 className='text-sm font-semibold text-stone-700 dark:text-stone-200'>Auth modals (Chat)</h4>
+            <PairEditor
+              label='Modal backdrop'
+              value={theme.colors.authModalBackdrop}
+              onChange={(mode, value) => handleChatSurfaceChange('authModalBackdrop', mode, value)}
+            />
+            <PairEditor
+              label='Modal surface background'
+              value={theme.colors.authModalSurfaceBg}
+              onChange={(mode, value) => handleChatSurfaceChange('authModalSurfaceBg', mode, value)}
+            />
+            <PairEditor
+              label='Modal title text'
+              value={theme.colors.authModalTitleText}
+              onChange={(mode, value) => handleChatSurfaceChange('authModalTitleText', mode, value)}
+            />
+            <PairEditor
+              label='Modal body text'
+              value={theme.colors.authModalBodyText}
+              onChange={(mode, value) => handleChatSurfaceChange('authModalBodyText', mode, value)}
+            />
+            <PairEditor
+              label='Primary button background'
+              value={theme.colors.authModalPrimaryButtonBg}
+              onChange={(mode, value) => handleChatSurfaceChange('authModalPrimaryButtonBg', mode, value)}
+            />
+            <PairEditor
+              label='Primary button border'
+              value={theme.colors.authModalPrimaryButtonBorder}
+              onChange={(mode, value) => handleChatSurfaceChange('authModalPrimaryButtonBorder', mode, value)}
+            />
+            <PairEditor
+              label='Primary button text'
+              value={theme.colors.authModalPrimaryButtonText}
+              onChange={(mode, value) => handleChatSurfaceChange('authModalPrimaryButtonText', mode, value)}
+            />
+            <PairEditor
+              label='Secondary button background'
+              value={theme.colors.authModalSecondaryButtonBg}
+              onChange={(mode, value) => handleChatSurfaceChange('authModalSecondaryButtonBg', mode, value)}
+            />
+            <PairEditor
+              label='Secondary button border'
+              value={theme.colors.authModalSecondaryButtonBorder}
+              onChange={(mode, value) => handleChatSurfaceChange('authModalSecondaryButtonBorder', mode, value)}
+            />
+            <PairEditor
+              label='Secondary button text'
+              value={theme.colors.authModalSecondaryButtonText}
+              onChange={(mode, value) => handleChatSurfaceChange('authModalSecondaryButtonText', mode, value)}
+            />
+            <PairEditor
+              label='Danger button background'
+              value={theme.colors.authModalDangerButtonBg}
+              onChange={(mode, value) => handleChatSurfaceChange('authModalDangerButtonBg', mode, value)}
+            />
+            <PairEditor
+              label='Danger button border'
+              value={theme.colors.authModalDangerButtonBorder}
+              onChange={(mode, value) => handleChatSurfaceChange('authModalDangerButtonBorder', mode, value)}
+            />
+            <PairEditor
+              label='Danger button text'
+              value={theme.colors.authModalDangerButtonText}
+              onChange={(mode, value) => handleChatSurfaceChange('authModalDangerButtonText', mode, value)}
+            />
+          </div>
+
+          <div className='space-y-3'>
+            <h4 className='text-sm font-semibold text-stone-700 dark:text-stone-200'>Task Manager modal (HTML tools)</h4>
+            <PairEditor
+              label='Modal surface background'
+              value={theme.colors.htmlToolsModalSurfaceBg}
+              onChange={(mode, value) => handleChatSurfaceChange('htmlToolsModalSurfaceBg', mode, value)}
+            />
+            <PairEditor
+              label='Modal border'
+              value={theme.colors.htmlToolsModalSurfaceBorder}
+              onChange={(mode, value) => handleChatSurfaceChange('htmlToolsModalSurfaceBorder', mode, value)}
+            />
+            <PairEditor
+              label='Muted panel background'
+              value={theme.colors.htmlToolsModalPanelMutedBg}
+              onChange={(mode, value) => handleChatSurfaceChange('htmlToolsModalPanelMutedBg', mode, value)}
+            />
+            <PairEditor
+              label='Button background'
+              value={theme.colors.htmlToolsModalButtonBg}
+              onChange={(mode, value) => handleChatSurfaceChange('htmlToolsModalButtonBg', mode, value)}
+            />
+            <PairEditor
+              label='Button border'
+              value={theme.colors.htmlToolsModalButtonBorder}
+              onChange={(mode, value) => handleChatSurfaceChange('htmlToolsModalButtonBorder', mode, value)}
+            />
+            <PairEditor
+              label='Button text'
+              value={theme.colors.htmlToolsModalButtonText}
+              onChange={(mode, value) => handleChatSurfaceChange('htmlToolsModalButtonText', mode, value)}
+            />
+            <PairEditor
+              label='Active button background'
+              value={theme.colors.htmlToolsModalButtonActiveBg}
+              onChange={(mode, value) => handleChatSurfaceChange('htmlToolsModalButtonActiveBg', mode, value)}
+            />
+            <PairEditor
+              label='Active button border'
+              value={theme.colors.htmlToolsModalButtonActiveBorder}
+              onChange={(mode, value) => handleChatSurfaceChange('htmlToolsModalButtonActiveBorder', mode, value)}
+            />
+            <PairEditor
+              label='Active button text'
+              value={theme.colors.htmlToolsModalButtonActiveText}
+              onChange={(mode, value) => handleChatSurfaceChange('htmlToolsModalButtonActiveText', mode, value)}
             />
           </div>
 

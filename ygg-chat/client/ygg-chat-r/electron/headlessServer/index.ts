@@ -29,6 +29,7 @@ type InferenceToolDefinition = { name: string; description?: string; inputSchema
 
 const HEADLESS_RUNTIME_BUILTIN_TOOL_NAMES = new Set([
   'todo_list',
+  'fetch_notes',
   'read_file',
   'read_file_continuation',
   'read_files',

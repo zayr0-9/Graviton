@@ -1,7 +1,8 @@
 import express from 'express'
 import type { AddressInfo } from 'node:net'
 import type { Server } from 'node:http'
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { customToolRegistry } from '../../../tools/customToolLoader.js'
 import { registerCapabilityRoutes } from '../capabilityRoutes.js'
 
 describe('registerCapabilityRoutes', () => {
@@ -23,6 +24,7 @@ describe('registerCapabilityRoutes', () => {
   })
 
   afterEach(async () => {
+    vi.restoreAllMocks()
     await new Promise<void>((resolve, reject) => {
       appServer.close(error => {
         if (error) reject(error)
@@ -47,5 +49,36 @@ describe('registerCapabilityRoutes', () => {
     expect(v1Payload.apiVersion).toBe('v1')
     expect(legacyPayload.chat.operations).toContain('send')
     expect(v1Payload.tools.map((tool: any) => tool.name)).toContain('read_file')
+  })
+
+  it('omits custom tool definitions when includeCustomTools=false', async () => {
+    vi.spyOn(customToolRegistry, 'getDefinitions').mockReturnValue([
+      { name: 'my_custom_tool', description: 'Custom', enabled: true } as any,
+    ])
+
+    const app = express()
+    registerCapabilityRoutes(app, {
+      getDefaultTools: () => [
+        { name: 'read_file', description: 'Read file' },
+        { name: 'my_custom_tool', description: 'Custom tool' },
+      ],
+    })
+
+    const server = app.listen(0)
+    const address = server.address() as AddressInfo
+    const scopedBaseUrl = `http://127.0.0.1:${address.port}`
+
+    const res = await fetch(`${scopedBaseUrl}/api/headless/capabilities?includeCustomTools=false`)
+    const payload = (await res.json()) as any
+
+    expect(res.status).toBe(200)
+    expect(payload.tools.map((tool: any) => tool.name)).toEqual(['read_file'])
+
+    await new Promise<void>((resolve, reject) => {
+      server.close(error => {
+        if (error) reject(error)
+        else resolve()
+      })
+    })
   })
 })

@@ -306,7 +306,7 @@ export const mobileApi = {
   },
 
   async getCapabilities(): Promise<any> {
-    return jsonFetch('/api/headless/capabilities', { method: 'GET' })
+    return jsonFetch('/api/headless/capabilities?includeCustomTools=false', { method: 'GET' })
   },
 
   async getProviderModels(userId?: string | null): Promise<MobileProviderModelInfo[]> {
@@ -333,7 +333,7 @@ export const mobileApi = {
     const payload = await jsonFetch<{
       success?: boolean
       tools?: Array<{ name?: string; description?: string; inputSchema?: Record<string, unknown> }>
-    }>('/api/headless/ephemeral/tools', { method: 'GET' })
+    }>('/api/headless/ephemeral/tools?includeCustomTools=false', { method: 'GET' })
 
     const tools = Array.isArray(payload?.tools) ? payload.tools : []
     return tools

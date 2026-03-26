@@ -6,6 +6,7 @@ interface ComposerProps {
   onChange: (value: string) => void
   onSubmit: () => void
   disabled?: boolean
+  onDisabledInteract?: () => void
   sending?: boolean
   isBranching?: boolean
   branchLabel?: string
@@ -20,6 +21,7 @@ export const Composer: React.FC<ComposerProps> = ({
   onChange,
   onSubmit,
   disabled = false,
+  onDisabledInteract,
   sending = false,
   isBranching = false,
   branchLabel,
@@ -80,6 +82,15 @@ export const Composer: React.FC<ComposerProps> = ({
       <Button onClick={onSubmit} disabled={disabled || sending || !value.trim()}>
         {sending ? 'Stop' : isBranching ? 'Send Branch' : 'Send'}
       </Button>
+
+      {disabled && onDisabledInteract ? (
+        <button
+          type='button'
+          className='mobile-composer-disabled-overlay'
+          onClick={onDisabledInteract}
+          aria-label='Composer is disabled. Show reason'
+        />
+      ) : null}
     </div>
   )
 }

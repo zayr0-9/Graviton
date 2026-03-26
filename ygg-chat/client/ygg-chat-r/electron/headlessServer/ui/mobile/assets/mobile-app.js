@@ -49266,7 +49266,7 @@ var mobileApi = {
     };
   },
   async getCapabilities() {
-    return jsonFetch("/api/headless/capabilities", { method: "GET" });
+    return jsonFetch("/api/headless/capabilities?includeCustomTools=false", { method: "GET" });
   },
   async getProviderModels(userId) {
     const query = typeof userId === "string" && userId.trim() ? `?userId=${encodeURIComponent(userId.trim())}` : "";
@@ -49279,7 +49279,7 @@ var mobileApi = {
     })) : [];
   },
   async listInferenceTools() {
-    const payload = await jsonFetch("/api/headless/ephemeral/tools", { method: "GET" });
+    const payload = await jsonFetch("/api/headless/ephemeral/tools?includeCustomTools=false", { method: "GET" });
     const tools = Array.isArray(payload?.tools) ? payload.tools : [];
     return tools.filter(
       (tool) => Boolean(tool && typeof tool.name === "string" && tool.name.trim())
@@ -49543,6 +49543,7 @@ var Composer = ({
   onChange,
   onSubmit,
   disabled = false,
+  onDisabledInteract,
   sending = false,
   isBranching = false,
   branchLabel,
@@ -49583,7 +49584,15 @@ var Composer = ({
         }
       }
     }
-  ), /* @__PURE__ */ import_react7.default.createElement(Button, { onClick: onSubmit, disabled: disabled || sending || !value.trim() }, sending ? "Stop" : isBranching ? "Send Branch" : "Send"));
+  ), /* @__PURE__ */ import_react7.default.createElement(Button, { onClick: onSubmit, disabled: disabled || sending || !value.trim() }, sending ? "Stop" : isBranching ? "Send Branch" : "Send"), disabled && onDisabledInteract ? /* @__PURE__ */ import_react7.default.createElement(
+    "button",
+    {
+      type: "button",
+      className: "mobile-composer-disabled-overlay",
+      onClick: onDisabledInteract,
+      "aria-label": "Composer is disabled. Show reason"
+    }
+  ) : null);
 };
 
 // electron/headlessServer/ui/mobile/src/components/FilePathPickerModal.tsx
@@ -65612,6 +65621,7 @@ var App = () => {
   const [branchSourceMessage, setBranchSourceMessage] = (0, import_react34.useState)(null);
   const [sending, setSending] = (0, import_react34.useState)(false);
   const [streamingState, setStreamingState] = (0, import_react34.useState)(null);
+  const [composerBlockModal, setComposerBlockModal] = (0, import_react34.useState)(null);
   const [openAiConnected, setOpenAiConnected] = (0, import_react34.useState)(false);
   const [openRouterConnected, setOpenRouterConnected] = (0, import_react34.useState)(false);
   const [openAiBusy, setOpenAiBusy] = (0, import_react34.useState)(false);
@@ -65664,6 +65674,43 @@ var App = () => {
   }, [providerModels, selectedProvider, modelName]);
   const selectedProviderRequiresAuth = selectedProvider === "openaichatgpt" || selectedProvider === "openrouter";
   const selectedProviderAuthenticated = selectedProvider === "openaichatgpt" ? openAiConnected : selectedProvider === "openrouter" ? openRouterConnected : true;
+  const composerDisabledReason = (0, import_react34.useMemo)(() => {
+    if (!selectedUserId) {
+      return {
+        title: "No user profile selected",
+        message: "Please select a user profile first. Open settings in the header and choose a profile."
+      };
+    }
+    if (!activeConversationId) {
+      return {
+        title: "No active conversation",
+        message: "Your conversation is not ready yet. Open Projects & Conversations and select one, or create a new conversation."
+      };
+    }
+    if (selectedProviderRequiresAuth && !selectedProviderAuthenticated) {
+      const providerLabel = selectedProvider === "openaichatgpt" ? "OpenAI" : "OpenRouter";
+      return {
+        title: `${providerLabel} is not connected`,
+        message: `This provider requires authentication. Open Settings and sign in to ${providerLabel}, then try again.`
+      };
+    }
+    return null;
+  }, [
+    selectedUserId,
+    activeConversationId,
+    selectedProviderRequiresAuth,
+    selectedProviderAuthenticated,
+    selectedProvider
+  ]);
+  const handleComposerDisabledInteract = (0, import_react34.useCallback)(() => {
+    if (!composerDisabledReason) return;
+    setComposerBlockModal(composerDisabledReason);
+  }, [composerDisabledReason]);
+  (0, import_react34.useEffect)(() => {
+    if (!composerDisabledReason && composerBlockModal) {
+      setComposerBlockModal(null);
+    }
+  }, [composerDisabledReason, composerBlockModal]);
   (0, import_react34.useEffect)(() => {
     setConversationSystemPromptInput(activeProject?.system_prompt || activeConversation?.system_prompt || "");
     setConversationContextInput(activeProject?.context || activeConversation?.conversation_context || "");
@@ -66437,7 +66484,8 @@ ${nextPath}`;
       isBranching: Boolean(branchSourceMessage),
       branchLabel: branchSourceMessage ? `Branching from message ${branchSourceMessage.id.slice(0, 8)}\u2026 (new parent = previous message)` : void 0,
       onCancelBranch: branchSourceMessage ? handleCancelBranch : void 0,
-      disabled: !activeConversationId || !selectedUserId || selectedProviderRequiresAuth && !selectedProviderAuthenticated
+      disabled: Boolean(composerDisabledReason),
+      onDisabledInteract: handleComposerDisabledInteract
     }
   ), /* @__PURE__ */ import_react34.default.createElement(
     FilePathPickerModal,
@@ -66459,7 +66507,15 @@ ${nextPath}`;
       onSelectMessage: handleSelectTreeNode,
       onClose: () => setIsTreeDrawerOpen(false)
     }
-  ));
+  ), composerBlockModal ? /* @__PURE__ */ import_react34.default.createElement(import_react34.default.Fragment, null, /* @__PURE__ */ import_react34.default.createElement(
+    "button",
+    {
+      type: "button",
+      "aria-label": "Close composer blocked dialog",
+      className: "mobile-blocked-modal-backdrop",
+      onClick: () => setComposerBlockModal(null)
+    }
+  ), /* @__PURE__ */ import_react34.default.createElement("section", { className: "mobile-blocked-modal", role: "dialog", "aria-modal": "true", "aria-label": "Composer blocked" }, /* @__PURE__ */ import_react34.default.createElement("h3", null, composerBlockModal.title), /* @__PURE__ */ import_react34.default.createElement("p", null, composerBlockModal.message), /* @__PURE__ */ import_react34.default.createElement("div", { className: "mobile-blocked-modal-actions" }, /* @__PURE__ */ import_react34.default.createElement(Button, { onClick: () => setComposerBlockModal(null), size: "sm" }, "Got it")))) : null);
 };
 
 // electron/headlessServer/ui/mobile/src/main.tsx

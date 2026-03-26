@@ -84,6 +84,11 @@ describe.sequential('theme_manager tool', () => {
     expect(readResult.exists).toBe(true)
     expect(readResult.theme?.colors.chatPanelBg.light).toBe('#f8f5ef')
     expect(readResult.theme?.colors.heimdallNodes.ex_agent.visibleStroke.dark).toBe('#ea580c')
+    // Ensure newly added theme surfaces are persisted/sanitized by the tool schema.
+    expect(readResult.theme?.colors.ideContextPreviewBg.dark).toBe('rgba(10, 10, 10, 0.95)')
+    expect(readResult.theme?.colors.toolJobsModalBorder.dark).toBe('#262626')
+    expect(readResult.theme?.colors.authModalSurfaceBg.dark).toBe('#09090b')
+    expect(readResult.theme?.colors.htmlToolsModalButtonActiveText.light).toBe('#171717')
 
     const deleteResult = await execute({ action: 'delete', name: 'solar-fog' })
     expect(deleteResult.success).toBe(true)

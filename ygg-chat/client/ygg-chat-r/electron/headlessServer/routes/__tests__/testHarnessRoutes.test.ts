@@ -1,7 +1,8 @@
 import express from 'express'
 import type { Server } from 'node:http'
 import type { AddressInfo } from 'node:net'
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { customToolRegistry } from '../../../tools/customToolLoader.js'
 import { registerTestHarnessRoutes } from '../testHarnessRoutes.js'
 
 describe('registerTestHarnessRoutes', () => {
@@ -24,6 +25,7 @@ describe('registerTestHarnessRoutes', () => {
   })
 
   afterEach(async () => {
+    vi.restoreAllMocks()
     await new Promise<void>((resolve, reject) => {
       appServer.close(error => {
         if (error) reject(error)
@@ -65,5 +67,37 @@ describe('registerTestHarnessRoutes', () => {
     expect(payload.success).toBe(true)
     expect(payload.count).toBe(2)
     expect(payload.tools.map((tool: any) => tool.name)).toEqual(['read_file', 'ripgrep'])
+  })
+
+  it('can omit custom tool definitions when includeCustomTools=false', async () => {
+    vi.spyOn(customToolRegistry, 'getDefinitions').mockReturnValue([
+      { name: 'my_custom_tool', description: 'Custom tool', enabled: true } as any,
+    ])
+
+    const app = express()
+    app.use(express.json())
+    registerTestHarnessRoutes(app, {
+      getDefaultTools: () => [
+        { name: 'read_file', description: 'Read a file' },
+        { name: 'my_custom_tool', description: 'Custom tool' },
+      ],
+    })
+
+    const server = app.listen(0)
+    const address = server.address() as AddressInfo
+    const scopedBaseUrl = `http://127.0.0.1:${address.port}`
+
+    const res = await fetch(`${scopedBaseUrl}/api/headless/ephemeral/tools?includeCustomTools=false`)
+    const payload = (await res.json()) as any
+
+    expect(res.status).toBe(200)
+    expect(payload.tools.map((tool: any) => tool.name)).toEqual(['read_file'])
+
+    await new Promise<void>((resolve, reject) => {
+      server.close(error => {
+        if (error) reject(error)
+        else resolve()
+      })
+    })
   })
 })

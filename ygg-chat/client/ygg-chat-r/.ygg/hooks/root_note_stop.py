@@ -100,6 +100,8 @@ def main():
             return
 
         root_message_id = _safe_text(lineage.get('root_message_id'))
+        current_message_id = _safe_text(payload.get('message_id'))
+        current_parent_id = _safe_text(payload.get('parent_id'))
         last_user_message_id = _safe_text(turn.get('last_user_message_id'))
         last_assistant_message_id = _safe_text(turn.get('last_assistant_message_id'))
         last_assistant_text = _safe_text(payload.get('last_assistant_message'))
@@ -111,21 +113,111 @@ def main():
 
         message_by_id = {str(m.get('id')): m for m in messages if isinstance(m, dict) and m.get('id') is not None}
 
+        def _root_from(message_id):
+            current = message_by_id.get(_safe_text(message_id))
+            visited = set()
+            while isinstance(current, dict):
+                current_id = _safe_text(current.get('id'))
+                if not current_id or current_id in visited:
+                    break
+                visited.add(current_id)
+                parent_id = current.get('parent_id')
+                if parent_id is None:
+                    return current
+                current = message_by_id.get(str(parent_id))
+            return None
+
         root_message = message_by_id.get(root_message_id)
+        if root_message is None:
+            # Prefer deriving root from the current message, then from known turn ids.
+            # This is important for top-level messages where lineage.root_message_id may be missing.
+            root_message = (
+                _root_from(current_message_id)
+                or _root_from(last_user_message_id)
+                or _root_from(last_assistant_message_id)
+            )
+
+        if root_message is None and current_parent_id:
+            root_message = _root_from(current_parent_id)
+
         if root_message is None:
             root_candidates = [m for m in messages if isinstance(m, dict) and m.get('parent_id') is None]
             root_message = root_candidates[0] if root_candidates else None
 
         if not root_message:
-            _emit_debug('skipped: root message not found')
+            _emit_debug(
+                f'skipped: root message not found root_id={root_message_id or "<none>"} current={current_message_id or "<none>"}'
+            )
             return
 
         root_message_id = str(root_message.get('id'))
 
-        preferred_anchor_id = last_user_message_id
-        note_anchor_message = message_by_id.get(preferred_anchor_id) if preferred_anchor_id else None
+        def _ancestor_chain_from(message_id):
+            current = message_by_id.get(_safe_text(message_id))
+            visited = set()
+            chain = []
+            while isinstance(current, dict):
+                current_id = _safe_text(current.get('id'))
+                if not current_id or current_id in visited:
+                    break
+                visited.add(current_id)
+                chain.append(current)
+                parent_id = current.get('parent_id')
+                if parent_id is None:
+                    break
+                current = message_by_id.get(str(parent_id))
+            return chain
+
+        def _is_user_message(message):
+            return isinstance(message, dict) and _safe_text(message.get('role')).lower() == 'user'
+
+        def _child_count(parent_message_id):
+            parent_message_id = _safe_text(parent_message_id)
+            if not parent_message_id:
+                return 0
+            return sum(1 for item in messages if isinstance(item, dict) and _safe_text(item.get('parent_id')) == parent_message_id)
+
+        def _branch_anchor_from(message_id):
+            chain = _ancestor_chain_from(message_id)
+            branching_user_candidates = []
+
+            # Branch top for the current route = the oldest user message on this path
+            # whose parent has multiple children. Walking tip->root collects all nested
+            # branch entries; we want the highest/top-most one, not the nearest one.
+            for candidate in chain:
+                if not _is_user_message(candidate):
+                    continue
+                parent_id = candidate.get('parent_id')
+                if parent_id is None:
+                    continue
+                if _child_count(parent_id) > 1:
+                    branching_user_candidates.append(candidate)
+
+            if branching_user_candidates:
+                return branching_user_candidates[-1]
+
+            # Fallback for non-branched paths: oldest user message on the current path.
+            for candidate in reversed(chain):
+                if _is_user_message(candidate):
+                    return candidate
+            return None
+
+        path_anchor_id = last_user_message_id or current_parent_id or current_message_id or last_assistant_message_id
+        note_anchor_message = _branch_anchor_from(path_anchor_id)
+
         if note_anchor_message is None:
-            note_anchor_message = root_message
+            note_anchor_message = root_message if _is_user_message(root_message) else None
+
+        if note_anchor_message is None:
+            preferred_anchor_id = last_user_message_id or current_parent_id or current_message_id
+            fallback_message = message_by_id.get(preferred_anchor_id) if preferred_anchor_id else None
+            note_anchor_message = fallback_message if _is_user_message(fallback_message) else None
+
+        if note_anchor_message is None:
+            _emit_debug(
+                f'skipped: no user note anchor found path_anchor={path_anchor_id or "<none>"} root={root_message_id or "<none>"}'
+            )
+            return
 
         note_anchor_message_id = str(note_anchor_message.get('id'))
         anchor_message_content = _safe_text(note_anchor_message.get('content'))

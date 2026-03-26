@@ -44,6 +44,7 @@ export interface LoggingDashboardResponse {
     conversationsCreated: number
     projectsCreated: number
     activeDays: number
+    estimatedTotalTokens?: number
   }
   spend: {
     totals?: {

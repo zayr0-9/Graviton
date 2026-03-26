@@ -127,8 +127,9 @@ function buildAssistantMessage(params: {
   text: string
   toolCalls: ToolCall[]
   contentBlocks: ContentBlock[]
+  partial?: boolean
 }): Message {
-  const { id, conversationId, parentId, modelName, text, toolCalls, contentBlocks } = params
+  const { id, conversationId, parentId, modelName, text, toolCalls, contentBlocks, partial = false } = params
   return {
     id,
     conversation_id: conversationId,
@@ -140,7 +141,7 @@ function buildAssistantMessage(params: {
     thinking_block: '',
     tool_calls: toolCalls,
     model_name: modelName,
-    partial: false,
+    partial,
     created_at: new Date().toISOString(),
     artifacts: [],
     pastedContext: [],
@@ -150,6 +151,7 @@ function buildAssistantMessage(params: {
 
 export interface LmStudioStreamHandlers {
   onChunk: (chunk: any) => void
+  signal?: AbortSignal
 }
 
 export interface LmStudioRequestPayload {
@@ -171,7 +173,7 @@ export async function createLmStudioStreamingRequest(
   handlers: LmStudioStreamHandlers,
   baseUrl = DEFAULT_LMSTUDIO_BASE
 ) {
-  const { onChunk } = handlers
+  const { onChunk, signal } = handlers
 
   // Get built-in tools from payload or getToolsForAI
   // Custom tools are accessed via custom_tool_manager, not sent with initial context
@@ -192,8 +194,12 @@ export async function createLmStudioStreamingRequest(
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
+      signal,
     })
   } catch (e) {
+    if ((e instanceof Error && e.name === 'AbortError') || signal?.aborted) {
+      return
+    }
     throw new Error(`LM Studio not reachable at ${baseUrl}: ${e instanceof Error ? e.message : String(e)}`)
   }
 
@@ -208,12 +214,97 @@ export async function createLmStudioStreamingRequest(
   // Accumulators for final message
   let assistantText = ''
   let assistantReasoning = ''
-  // let assistantToolCalls: ToolCall[] = []
-  // const contentBlocks: ContentBlock[] = []
   let assistantMessageId: string | null = null
+  let completionEmitted = false
 
   // Tool call accumulator for incremental streaming
   const toolCallAccumulators = new Map<number, ToolCallAccumulator>()
+
+  const buildFinalMessage = (partial: boolean): Message | null => {
+    if (!assistantMessageId) assistantMessageId = uuidv4()
+
+    // Build final tool calls from accumulators (with complete arguments)
+    const finalToolCalls: ToolCall[] = []
+    const finalContentBlocks: ContentBlock[] = []
+
+    toolCallAccumulators.forEach((acc, index) => {
+      // Parse arguments JSON if possible
+      let parsedArgs: any = acc.arguments
+      try {
+        if (acc.arguments) {
+          parsedArgs = JSON.parse(acc.arguments)
+        }
+      } catch {
+        // Keep as string if not valid JSON
+      }
+
+      finalToolCalls.push({
+        id: acc.id,
+        name: acc.name,
+        arguments: parsedArgs,
+        status: 'pending',
+      })
+
+      finalContentBlocks.push({
+        type: 'tool_use',
+        index,
+        id: acc.id,
+        name: acc.name,
+        input: parsedArgs,
+      })
+    })
+
+    if (assistantText) {
+      finalContentBlocks.unshift({
+        type: 'text',
+        index: 0,
+        content: assistantText,
+      })
+    }
+
+    if (assistantReasoning) {
+      finalContentBlocks.unshift({
+        type: 'thinking',
+        index: 0,
+        content: assistantReasoning,
+      })
+    }
+
+    const hasMeaningfulContent =
+      assistantText.trim().length > 0 || assistantReasoning.trim().length > 0 || finalToolCalls.length > 0
+
+    if (!hasMeaningfulContent) {
+      return null
+    }
+
+    const message = buildAssistantMessage({
+      id: assistantMessageId,
+      conversationId: payload.conversationId,
+      parentId: payload.parentId,
+      modelName: payload.modelName,
+      text: assistantText,
+      toolCalls: finalToolCalls,
+      contentBlocks: finalContentBlocks,
+      partial,
+    })
+
+    if (assistantReasoning) {
+      message.thinking_block = assistantReasoning
+    }
+
+    return message
+  }
+
+  const emitComplete = (partial: boolean): boolean => {
+    if (completionEmitted) return false
+
+    const message = buildFinalMessage(partial)
+    if (!message) return false
+
+    completionEmitted = true
+    onChunk({ type: 'complete', message })
+    return true
+  }
 
   try {
     while (true) {
@@ -235,7 +326,7 @@ export async function createLmStudioStreamingRequest(
         let parsed: LmStudioStreamChunk | null = null
         try {
           parsed = JSON.parse(dataStr)
-        } catch (e) {
+        } catch {
           continue
         }
         if (!parsed?.choices || parsed.choices.length === 0) continue
@@ -243,14 +334,10 @@ export async function createLmStudioStreamingRequest(
         const choice = parsed.choices[0]
         const delta = choice.delta || choice
 
-        // Tool calls delta - accumulate incrementally
-        // Don't emit tool_call events during streaming since arguments are incomplete
-        // They will be included in the final complete message with full arguments
         if (delta?.tool_calls) {
           processToolCallDeltas(delta.tool_calls, toolCallAccumulators)
         }
 
-        // Text delta (OpenAI-style delta.content)
         if (delta?.content) {
           const textDelta = typeof delta.content === 'string' ? delta.content : ''
           if (textDelta) {
@@ -259,7 +346,6 @@ export async function createLmStudioStreamingRequest(
           }
         }
 
-        // Reasoning delta (some models use this for chain-of-thought)
         if (delta?.reasoning) {
           const reasoningDelta = typeof delta.reasoning === 'string' ? delta.reasoning : ''
           if (reasoningDelta) {
@@ -268,79 +354,22 @@ export async function createLmStudioStreamingRequest(
           }
         }
 
-        // finish_reason - build final message with accumulated tool calls
         if (choice.finish_reason) {
-          if (!assistantMessageId) assistantMessageId = uuidv4()
-
-          // Build final tool calls from accumulators (with complete arguments)
-          const finalToolCalls: ToolCall[] = []
-          const finalContentBlocks: ContentBlock[] = []
-
-          toolCallAccumulators.forEach((acc, index) => {
-            // Parse arguments JSON if possible
-            let parsedArgs: any = acc.arguments
-            try {
-              if (acc.arguments) {
-                parsedArgs = JSON.parse(acc.arguments)
-              }
-            } catch {
-              // Keep as string if not valid JSON
-            }
-
-            finalToolCalls.push({
-              id: acc.id,
-              name: acc.name,
-              arguments: parsedArgs,
-              status: 'pending',
-            })
-
-            finalContentBlocks.push({
-              type: 'tool_use',
-              index,
-              id: acc.id,
-              name: acc.name,
-              input: parsedArgs,
-            })
-          })
-
-          // Add text block if there's text content
-          if (assistantText) {
-            finalContentBlocks.unshift({
-              type: 'text',
-              index: 0,
-              content: assistantText,
-            })
-          }
-
-          // Add thinking block to content_blocks if there's reasoning content
-          // This is needed for persistence - when loaded from DB, contentBlocks are rendered
-          if (assistantReasoning) {
-            finalContentBlocks.unshift({
-              type: 'thinking',
-              index: 0,
-              content: assistantReasoning,
-            })
-          }
-
-          const message = buildAssistantMessage({
-            id: assistantMessageId,
-            conversationId: payload.conversationId,
-            parentId: payload.parentId,
-            modelName: payload.modelName,
-            text: assistantText,
-            toolCalls: finalToolCalls,
-            contentBlocks: finalContentBlocks,
-          })
-
-          // Add reasoning to thinking_block if present
-          if (assistantReasoning) {
-            message.thinking_block = assistantReasoning
-          }
-
-          onChunk({ type: 'complete', message })
+          emitComplete(false)
         }
       }
     }
+
+    if (!completionEmitted) {
+      emitComplete(Boolean(signal?.aborted))
+    }
+  } catch (error) {
+    const isAbortError = (error instanceof Error && error.name === 'AbortError') || signal?.aborted
+    if (isAbortError) {
+      emitComplete(true)
+      return
+    }
+    throw error
   } finally {
     reader.releaseLock()
   }

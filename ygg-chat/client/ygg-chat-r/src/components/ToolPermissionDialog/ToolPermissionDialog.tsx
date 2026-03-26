@@ -1,5 +1,6 @@
 import React from 'react'
 import { ToolCall } from '../../features/chats/chatTypes'
+import { getThemeModeColor, useCustomChatTheme, useHtmlDarkMode } from '../ThemeManager/themeConfig'
 
 interface ToolPermissionDialogProps {
   toolCall: ToolCall
@@ -15,29 +16,145 @@ export const ToolPermissionDialog: React.FC<ToolPermissionDialogProps> = ({
   onAllowAll,
 }) => {
   const formattedArgs = JSON.stringify(toolCall.arguments, null, 2)
+  const { theme: customTheme, enabled: customThemeEnabled } = useCustomChatTheme()
+  const isDarkMode = useHtmlDarkMode()
+
+  const dialogBgColor = customThemeEnabled
+    ? getThemeModeColor(customTheme.colors.toolPermissionDialogBg, isDarkMode)
+    : isDarkMode
+      ? '#171717'
+      : 'rgba(245, 245, 245, 0.85)'
+  const dialogBorderColor = customThemeEnabled
+    ? getThemeModeColor(customTheme.colors.toolPermissionDialogBorder, isDarkMode)
+    : isDarkMode
+      ? '#404040'
+      : 'rgba(229, 229, 229, 0.9)'
+  const titleTextColor = customThemeEnabled
+    ? getThemeModeColor(customTheme.colors.toolPermissionDialogTitleText, isDarkMode)
+    : isDarkMode
+      ? '#f5f5f5'
+      : '#262626'
+  const toolNameTextColor = customThemeEnabled
+    ? getThemeModeColor(customTheme.colors.toolPermissionDialogToolNameText, isDarkMode)
+    : isDarkMode
+      ? '#fb923c'
+      : '#2563eb'
+  const badgeBgColor = customThemeEnabled
+    ? getThemeModeColor(customTheme.colors.toolPermissionDialogBadgeBg, isDarkMode)
+    : isDarkMode
+      ? '#262626'
+      : '#e5e5e5'
+  const badgeTextColor = customThemeEnabled
+    ? getThemeModeColor(customTheme.colors.toolPermissionDialogBadgeText, isDarkMode)
+    : isDarkMode
+      ? '#a3a3a3'
+      : '#737373'
+  const commandBgColor = customThemeEnabled
+    ? getThemeModeColor(customTheme.colors.toolPermissionDialogCommandBg, isDarkMode)
+    : isDarkMode
+      ? '#000000'
+      : '#f5f5f5'
+  const commandLabelTextColor = customThemeEnabled
+    ? getThemeModeColor(customTheme.colors.toolPermissionDialogCommandLabelText, isDarkMode)
+    : isDarkMode
+      ? '#737373'
+      : '#525252'
+  const commandTextColor = customThemeEnabled
+    ? getThemeModeColor(customTheme.colors.toolPermissionDialogCommandText, isDarkMode)
+    : isDarkMode
+      ? '#d4d4d8'
+      : '#1d4ed8'
+
+  const denyButtonBgColor = customThemeEnabled
+    ? getThemeModeColor(customTheme.colors.toolPermissionDialogDenyButtonBg, isDarkMode)
+    : isDarkMode
+      ? 'rgba(127, 29, 29, 0.9)'
+      : '#dc2626'
+  const denyButtonBorderColor = customThemeEnabled
+    ? getThemeModeColor(customTheme.colors.toolPermissionDialogDenyButtonBorder, isDarkMode)
+    : isDarkMode
+      ? 'rgba(159, 18, 57, 0.8)'
+      : '#b91c1c'
+  const denyButtonTextColor = customThemeEnabled
+    ? getThemeModeColor(customTheme.colors.toolPermissionDialogDenyButtonText, isDarkMode)
+    : '#e5e7eb'
+
+  const allowButtonBgColor = customThemeEnabled
+    ? getThemeModeColor(customTheme.colors.toolPermissionDialogAllowButtonBg, isDarkMode)
+    : isDarkMode
+      ? 'rgba(38, 38, 38, 0.95)'
+      : '#e5e5e5'
+  const allowButtonBorderColor = customThemeEnabled
+    ? getThemeModeColor(customTheme.colors.toolPermissionDialogAllowButtonBorder, isDarkMode)
+    : isDarkMode
+      ? '#525252'
+      : '#d4d4d4'
+  const allowButtonTextColor = customThemeEnabled
+    ? getThemeModeColor(customTheme.colors.toolPermissionDialogAllowButtonText, isDarkMode)
+    : isDarkMode
+      ? '#f5f5f5'
+      : '#262626'
+
+  const allowAllButtonBgColor = customThemeEnabled
+    ? getThemeModeColor(customTheme.colors.toolPermissionDialogAllowAllButtonBg, isDarkMode)
+    : isDarkMode
+      ? 'rgba(38, 38, 38, 0.95)'
+      : '#e5e5e5'
+  const allowAllButtonBorderColor = customThemeEnabled
+    ? getThemeModeColor(customTheme.colors.toolPermissionDialogAllowAllButtonBorder, isDarkMode)
+    : isDarkMode
+      ? '#525252'
+      : '#d4d4d4'
+  const allowAllButtonTextColor = customThemeEnabled
+    ? getThemeModeColor(customTheme.colors.toolPermissionDialogAllowAllButtonText, isDarkMode)
+    : isDarkMode
+      ? '#fdba74'
+      : '#1e40af'
 
   return (
-    <div className='mx-1 rounded-[16px] bg-neutral-100/85 py-1 px-1.5 shadow-[0_3px_5px_0px_rgba(0,0,0,0.05)] dark:shadow-[0_7px_12px_0px_rgba(0,0,0,0.25)] backdrop-blur-sm animate-in slide-in-from-bottom-2 fade-in duration-200 dark:border-neutral-700 dark:bg-neutral-900'>
+    <div
+      className='mx-1 rounded-[16px] py-1 px-1.5 shadow-[0_3px_5px_0px_rgba(0,0,0,0.05)] dark:shadow-[0_7px_12px_0px_rgba(0,0,0,0.25)] backdrop-blur-sm animate-in slide-in-from-bottom-2 fade-in duration-200 border'
+      style={{
+        backgroundColor: dialogBgColor,
+        borderColor: dialogBorderColor,
+      }}
+    >
       {/* Header */}
       <div className='flex items-center px-1'>
         <div className='min-w-0 flex flex-1 mb-1 items-center gap-2'>
-          <h3 className='text-sm font-mono text-neutral-800 dark:text-neutral-100'>Permission requested</h3>
-          <span className='truncate font-mono text-blue-600 dark:text-orange-400'>{toolCall.name}</span>
+          <h3 className='text-sm font-mono' style={{ color: titleTextColor }}>
+            Permission requested
+          </h3>
+          <span className='truncate font-mono' style={{ color: toolNameTextColor }}>
+            {toolCall.name}
+          </span>
         </div>
 
-        <div className='rounded-md bg-neutral-200 px-2 py-0.5 text-[10px] uppercase tracking-[0.08em] text-neutral-500 dark:bg-neutral-800 dark:text-neutral-400'>
+        <div
+          className='rounded-md px-2 py-0.5 text-[10px] uppercase tracking-[0.08em]'
+          style={{
+            backgroundColor: badgeBgColor,
+            color: badgeTextColor,
+          }}
+        >
           tool
         </div>
       </div>
 
       {/* Terminal-style command preview */}
-      <div className='relative mt-1 overflow-y-auto rounded-lg bg-neutral-100 dark:bg-black px-3 py-2 thin-scrollbar dark:border-neutral-700 sm:max-h-8 md:max-h-10 lg:max-h-18 xl:max-h-28 2xl:max-h-32'>
-        <div className='pointer-events-none font-mono absolute right-0 top-2 text-[12px] uppercase tracking-[0.14em] text-neutral-600'>
+      <div
+        className='relative mt-1 overflow-y-auto rounded-lg px-3 py-2 thin-scrollbar sm:max-h-8 md:max-h-10 lg:max-h-18 xl:max-h-28 2xl:max-h-32'
+        style={{ backgroundColor: commandBgColor }}
+      >
+        <div
+          className='pointer-events-none font-mono absolute right-0 top-2 text-[12px] uppercase tracking-[0.14em]'
+          style={{ color: commandLabelTextColor }}
+        >
           COMMAND
         </div>
 
-        <pre className='whitespace-pre-wrap break-all text-[10px] leading-5 text-neutral-300 font-mono'>
-          <span className='text-blue-700 dark:text-neutral-300'>{formattedArgs}</span>
+        <pre className='whitespace-pre-wrap break-all text-[10px] leading-5 font-mono'>
+          <span style={{ color: commandTextColor }}>{formattedArgs}</span>
         </pre>
       </div>
 
@@ -46,21 +163,36 @@ export const ToolPermissionDialog: React.FC<ToolPermissionDialogProps> = ({
         <button
           type='button'
           onClick={onDeny}
-          className='rounded-lg bg-red-600 dark:bg-red-900/90 px-2.5 py-1.5 text-[11px] font-medium text-neutral-200 transition-colors hover:bg-red-800'
+          className='rounded-lg border px-2.5 py-1.5 text-[11px] font-medium transition-all hover:brightness-95'
+          style={{
+            backgroundColor: denyButtonBgColor,
+            borderColor: denyButtonBorderColor,
+            color: denyButtonTextColor,
+          }}
         >
           Deny
         </button>
         <button
           type='button'
           onClick={onGrant}
-          className='rounded-lg bg-neutral-200 dark:bg-neutral-300 px-2.5 py-1.5 text-[11px] font-medium text-neutral-800 transition-colors hover:bg-neutral-50 dark:bg-neutral-800/90 dark:text-neutral-100 dark:hover:bg-neutral-700'
+          className='rounded-lg border px-2.5 py-1.5 text-[11px] font-medium transition-all hover:brightness-95'
+          style={{
+            backgroundColor: allowButtonBgColor,
+            borderColor: allowButtonBorderColor,
+            color: allowButtonTextColor,
+          }}
         >
           Allow Once
         </button>
         <button
           type='button'
           onClick={onAllowAll}
-          className='rounded-lg bg-neutral-200 dark:bg-neutral-800/90 px-2.5 py-1.5 text-[11px] font-medium hover:bg-neutral-50 text-blue-800 dark:text-orange-300 transition-colors dark:hover:bg-neutral-700'
+          className='rounded-lg border px-2.5 py-1.5 text-[11px] font-medium transition-all hover:brightness-95'
+          style={{
+            backgroundColor: allowAllButtonBgColor,
+            borderColor: allowAllButtonBorderColor,
+            color: allowAllButtonTextColor,
+          }}
         >
           Always Allow
         </button>

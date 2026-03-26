@@ -16,6 +16,7 @@ export interface CreateMessageInput {
   contentBlocks?: any[] | null
   thinkingBlock?: string | null
   note?: string | null
+  noteColor?: string | null
   exAgentSessionId?: string | null
   exAgentType?: string | null
 }
@@ -46,6 +47,7 @@ export class MessageRepo {
       input.toolCallId ?? null,
       input.modelName ?? 'unknown',
       input.note ?? null,
+      input.noteColor ?? null,
       input.exAgentSessionId ?? null,
       input.exAgentType ?? null,
       JSON.stringify(input.contentBlocks ?? null),

@@ -6,6 +6,7 @@ import { useJobStats, useToolJobs } from '../../hooks/useToolJobs'
 import type { PaginatedConversationsResponse } from '../../hooks/useQueries'
 import { Job, toolJobManager } from '../../services/ToolJobManager'
 import { Button } from '../Button/button'
+import { getThemeModeColor, useCustomChatTheme, useHtmlDarkMode } from '../ThemeManager/themeConfig'
 
 type ToolJobsModalProps = {
   isOpen: boolean
@@ -24,8 +25,120 @@ const formatElapsedTime = (startedAt: string | null): string => {
   return formatDistance(new Date(startedAt), new Date(), { includeSeconds: true })
 }
 
+type ToolJobsThemeColors = {
+  enabled: boolean
+  modalBackdrop: string
+  modalBg: string
+  modalBorder: string
+  panelBg: string
+  panelBorder: string
+  primaryText: string
+  secondaryText: string
+  mutedText: string
+  codeBg: string
+  codeText: string
+  errorBg: string
+  errorBorder: string
+  errorText: string
+  liveBadgeBg: string
+  liveBadgeText: string
+  liveDot: string
+  progressTrack: string
+  progress: {
+    pending: string
+    running: string
+    completed: string
+    failed: string
+  }
+  status: {
+    pending: { bg: string; text: string }
+    running: { bg: string; text: string }
+    completed: { bg: string; text: string }
+    failed: { bg: string; text: string }
+    cancelled: { bg: string; text: string }
+    activeWorkers: { bg: string; text: string }
+  }
+}
+
+const useToolJobsThemeColors = (): ToolJobsThemeColors => {
+  const { theme: customTheme, enabled } = useCustomChatTheme()
+  const isDarkMode = useHtmlDarkMode()
+  const pick = (customColor: { light: string; dark: string }, fallback: string) =>
+    enabled ? getThemeModeColor(customColor, isDarkMode) : fallback
+
+  return {
+    enabled,
+    modalBackdrop: pick(customTheme.colors.toolJobsModalBackdrop, 'rgba(0, 0, 0, 0.6)'),
+    modalBg: pick(customTheme.colors.toolJobsModalBg, isDarkMode ? 'oklch(20.5% 0 0)' : '#ffffff'),
+    modalBorder: pick(customTheme.colors.toolJobsModalBorder, isDarkMode ? '#262626' : '#e5e5e5'),
+    panelBg: pick(customTheme.colors.toolJobsPanelBg, isDarkMode ? 'rgba(23, 23, 23, 0.6)' : 'rgba(250, 250, 250, 0.8)'),
+    panelBorder: pick(customTheme.colors.toolJobsPanelBorder, isDarkMode ? '#262626' : '#e5e5e5'),
+    primaryText: pick(customTheme.colors.toolJobsPrimaryText, isDarkMode ? '#fafafa' : '#171717'),
+    secondaryText: pick(customTheme.colors.toolJobsSecondaryText, isDarkMode ? '#a3a3a3' : '#525252'),
+    mutedText: pick(customTheme.colors.toolJobsMutedText, isDarkMode ? '#a3a3a3' : '#737373'),
+    codeBg: pick(customTheme.colors.toolJobsCodeBg, isDarkMode ? '#262626' : '#f5f5f5'),
+    codeText: pick(customTheme.colors.toolJobsCodeText, isDarkMode ? '#e5e5e5' : '#262626'),
+    errorBg: pick(customTheme.colors.toolJobsErrorBg, isDarkMode ? 'rgba(127, 29, 29, 0.2)' : 'rgba(255, 241, 242, 0.85)'),
+    errorBorder: pick(customTheme.colors.toolJobsErrorBorder, isDarkMode ? '#9f1239' : '#fecdd3'),
+    errorText: pick(customTheme.colors.toolJobsErrorText, isDarkMode ? '#fda4af' : '#be123c'),
+    liveBadgeBg: pick(customTheme.colors.toolJobsLiveBadgeBg, isDarkMode ? 'rgba(6, 78, 59, 0.3)' : 'rgba(209, 250, 229, 1)'),
+    liveBadgeText: pick(customTheme.colors.toolJobsLiveBadgeText, isDarkMode ? '#a7f3d0' : '#047857'),
+    liveDot: pick(customTheme.colors.toolJobsLiveDot, isDarkMode ? '#34d399' : '#10b981'),
+    progressTrack: pick(customTheme.colors.toolJobsProgressTrack, isDarkMode ? '#262626' : '#e5e5e5'),
+    progress: {
+      pending: pick(customTheme.colors.toolJobsProgressPending, '#f59e0b'),
+      running: pick(customTheme.colors.toolJobsProgressRunning, isDarkMode ? '#60a5fa' : '#3b82f6'),
+      completed: pick(customTheme.colors.toolJobsProgressCompleted, isDarkMode ? '#34d399' : '#10b981'),
+      failed: pick(customTheme.colors.toolJobsProgressFailed, isDarkMode ? '#fb7185' : '#f43f5e'),
+    },
+    status: {
+      pending: {
+        bg: pick(customTheme.colors.toolJobsStatusPendingBg, isDarkMode ? 'rgba(120, 53, 15, 0.35)' : '#fef3c7'),
+        text: pick(customTheme.colors.toolJobsStatusPendingText, isDarkMode ? '#fde68a' : '#b45309'),
+      },
+      running: {
+        bg: pick(customTheme.colors.toolJobsStatusRunningBg, isDarkMode ? 'rgba(30, 58, 138, 0.35)' : '#dbeafe'),
+        text: pick(customTheme.colors.toolJobsStatusRunningText, isDarkMode ? '#bfdbfe' : '#1d4ed8'),
+      },
+      completed: {
+        bg: pick(customTheme.colors.toolJobsStatusCompletedBg, isDarkMode ? 'rgba(6, 78, 59, 0.35)' : '#d1fae5'),
+        text: pick(customTheme.colors.toolJobsStatusCompletedText, isDarkMode ? '#a7f3d0' : '#047857'),
+      },
+      failed: {
+        bg: pick(customTheme.colors.toolJobsStatusFailedBg, isDarkMode ? 'rgba(136, 19, 55, 0.35)' : '#ffe4e6'),
+        text: pick(customTheme.colors.toolJobsStatusFailedText, isDarkMode ? '#fecdd3' : '#be123c'),
+      },
+      cancelled: {
+        bg: pick(customTheme.colors.toolJobsStatusCancelledBg, isDarkMode ? '#262626' : '#e5e5e5'),
+        text: pick(customTheme.colors.toolJobsStatusCancelledText, isDarkMode ? '#e5e5e5' : '#404040'),
+      },
+      activeWorkers: {
+        bg: pick(customTheme.colors.toolJobsStatusActiveWorkersBg, isDarkMode ? 'rgba(30, 58, 138, 0.35)' : '#dbeafe'),
+        text: pick(customTheme.colors.toolJobsStatusActiveWorkersText, isDarkMode ? '#bfdbfe' : '#1d4ed8'),
+      },
+    },
+  }
+}
+
+const resolveStatusTheme = (status: string, themeColors: ToolJobsThemeColors) => {
+  switch (status) {
+    case 'running':
+      return themeColors.status.running
+    case 'completed':
+      return themeColors.status.completed
+    case 'failed':
+      return themeColors.status.failed
+    case 'cancelled':
+      return themeColors.status.cancelled
+    case 'pending':
+    default:
+      return themeColors.status.pending
+  }
+}
+
 const JobDetailsModal: React.FC<JobDetailsModalProps> = ({ job, conversationTitle, isOpen, onClose }) => {
   const [elapsedTime, setElapsedTime] = useState<string>('—')
+  const themeColors = useToolJobsThemeColors()
 
   // Update elapsed time every second for running jobs
   useEffect(() => {
@@ -42,18 +155,26 @@ const JobDetailsModal: React.FC<JobDetailsModalProps> = ({ job, conversationTitl
 
   if (!isOpen || !job) return null
 
-  const statusColor = statusColors[job.status] || statusColors.pending
+  const statusColor = resolveStatusTheme(job.status, themeColors)
 
   return (
-    <div className='fixed inset-0 z-[60] flex items-center justify-center bg-black/60 backdrop-blur-sm animate-in fade-in duration-200'>
-      <div className='bg-white dark:bg-yBlack-900 rounded-2xl shadow-2xl border border-neutral-200 dark:border-neutral-800 p-6 w-full max-w-3xl mx-4 max-h-[85vh] overflow-hidden flex flex-col animate-in slide-in-from-bottom-4 duration-300'>
+    <div
+      className='fixed inset-0 z-[60] flex items-center justify-center backdrop-blur-sm animate-in fade-in duration-200'
+      style={{ backgroundColor: themeColors.modalBackdrop }}
+    >
+      <div
+        className='rounded-2xl shadow-2xl border p-6 w-full max-w-3xl mx-4 max-h-[85vh] overflow-hidden flex flex-col animate-in slide-in-from-bottom-4 duration-300'
+        style={{ backgroundColor: themeColors.modalBg, borderColor: themeColors.modalBorder }}
+      >
         <div className='flex items-start justify-between gap-4 mb-4'>
           <div>
-            <h3 className='text-xl font-semibold text-neutral-900 dark:text-neutral-50 flex items-center gap-2'>
+            <h3 className='text-xl font-semibold flex items-center gap-2' style={{ color: themeColors.primaryText }}>
               <i className='bx bx-detail text-blue-500' aria-hidden='true'></i>
               Job Details
             </h3>
-            <p className='text-sm text-neutral-600 dark:text-neutral-400 mt-1'>{job.toolName}</p>
+            <p className='text-sm mt-1' style={{ color: themeColors.secondaryText }}>
+              {job.toolName}
+            </p>
           </div>
           <Button variant='outline2' size='medium' onClick={onClose}>
             <i className='bx bx-x text-lg' aria-hidden='true'></i>
@@ -64,19 +185,30 @@ const JobDetailsModal: React.FC<JobDetailsModalProps> = ({ job, conversationTitl
         <div className='overflow-y-auto flex-1 space-y-4 pr-1'>
           {/* Status & Priority */}
           <div className='grid grid-cols-2 gap-3'>
-            <div className='rounded-lg border border-neutral-200 dark:border-neutral-800 bg-neutral-50/80 dark:bg-neutral-900/60 p-3'>
-              <div className='text-xs text-neutral-500 dark:text-neutral-400 mb-1'>Status</div>
-              <span className={`px-2 py-1 rounded-full text-xs font-medium ${statusColor}`}>{job.status}</span>
+            <div className='rounded-lg border p-3'
+              style={{ backgroundColor: themeColors.panelBg, borderColor: themeColors.panelBorder }}>
+              <div className='text-xs mb-1'
+                style={{ color: themeColors.mutedText }}>Status</div>
+              <span
+                className='px-2 py-1 rounded-full text-xs font-medium'
+                style={{ backgroundColor: statusColor.bg, color: statusColor.text }}
+              >
+                {job.status}
+              </span>
             </div>
-            <div className='rounded-lg border border-neutral-200 dark:border-neutral-800 bg-neutral-50/80 dark:bg-neutral-900/60 p-3'>
-              <div className='text-xs text-neutral-500 dark:text-neutral-400 mb-1'>Priority</div>
+            <div className='rounded-lg border p-3'
+              style={{ backgroundColor: themeColors.panelBg, borderColor: themeColors.panelBorder }}>
+              <div className='text-xs mb-1'
+                style={{ color: themeColors.mutedText }}>Priority</div>
               <span className='text-sm font-medium text-neutral-900 dark:text-neutral-50'>{job.priority}</span>
             </div>
           </div>
 
           {/* Time Info */}
-          <div className='rounded-lg border border-neutral-200 dark:border-neutral-800 bg-neutral-50/80 dark:bg-neutral-900/60 p-3'>
-            <div className='text-xs text-neutral-500 dark:text-neutral-400 mb-2'>Timing</div>
+          <div className='rounded-lg border p-3'
+              style={{ backgroundColor: themeColors.panelBg, borderColor: themeColors.panelBorder }}>
+            <div className='text-xs mb-2'
+              style={{ color: themeColors.mutedText }}>Timing</div>
             <div className='grid grid-cols-2 gap-2 text-sm'>
               <div>
                 <span className='text-neutral-600 dark:text-neutral-400'>Created: </span>
@@ -106,8 +238,10 @@ const JobDetailsModal: React.FC<JobDetailsModalProps> = ({ job, conversationTitl
           </div>
 
           {/* Conversation & Message */}
-          <div className='rounded-lg border border-neutral-200 dark:border-neutral-800 bg-neutral-50/80 dark:bg-neutral-900/60 p-3'>
-            <div className='text-xs text-neutral-500 dark:text-neutral-400 mb-2'>Context</div>
+          <div className='rounded-lg border p-3'
+              style={{ backgroundColor: themeColors.panelBg, borderColor: themeColors.panelBorder }}>
+            <div className='text-xs mb-2'
+              style={{ color: themeColors.mutedText }}>Context</div>
             <div className='space-y-2 text-sm'>
               {conversationTitle && (
                 <div>
@@ -131,24 +265,30 @@ const JobDetailsModal: React.FC<JobDetailsModalProps> = ({ job, conversationTitl
           </div>
 
           {/* Tool Input */}
-          <div className='rounded-lg border border-neutral-200 dark:border-neutral-800 bg-neutral-50/80 dark:bg-neutral-900/60 p-3'>
-            <div className='text-xs text-neutral-500 dark:text-neutral-400 mb-2 flex items-center gap-1'>
+          <div className='rounded-lg border p-3'
+              style={{ backgroundColor: themeColors.panelBg, borderColor: themeColors.panelBorder }}>
+            <div className='text-xs mb-2 flex items-center gap-1'
+              style={{ color: themeColors.mutedText }}>
               <i className='bx bx-right-arrow-alt' aria-hidden='true'></i>
               Tool Input (Args)
             </div>
-            <pre className='text-xs bg-neutral-100 dark:bg-neutral-800 rounded-lg p-3 overflow-x-auto max-h-48 overflow-y-auto text-neutral-800 dark:text-neutral-200'>
+            <pre className='text-xs rounded-lg p-3 overflow-x-auto max-h-48 overflow-y-auto'
+              style={{ backgroundColor: themeColors.codeBg, color: themeColors.codeText }}>
               {JSON.stringify(job.args, null, 2)}
             </pre>
           </div>
 
           {/* Tool Output */}
-          <div className='rounded-lg border border-neutral-200 dark:border-neutral-800 bg-neutral-50/80 dark:bg-neutral-900/60 p-3'>
-            <div className='text-xs text-neutral-500 dark:text-neutral-400 mb-2 flex items-center gap-1'>
+          <div className='rounded-lg border p-3'
+              style={{ backgroundColor: themeColors.panelBg, borderColor: themeColors.panelBorder }}>
+            <div className='text-xs mb-2 flex items-center gap-1'
+              style={{ color: themeColors.mutedText }}>
               <i className='bx bx-left-arrow-alt' aria-hidden='true'></i>
               Tool Output (Result)
             </div>
             {job.result !== null ? (
-              <pre className='text-xs bg-neutral-100 dark:bg-neutral-800 rounded-lg p-3 overflow-x-auto max-h-48 overflow-y-auto text-neutral-800 dark:text-neutral-200'>
+              <pre className='text-xs rounded-lg p-3 overflow-x-auto max-h-48 overflow-y-auto'
+              style={{ backgroundColor: themeColors.codeBg, color: themeColors.codeText }}>
                 {typeof job.result === 'string' ? job.result : JSON.stringify(job.result, null, 2)}
               </pre>
             ) : (
@@ -160,12 +300,18 @@ const JobDetailsModal: React.FC<JobDetailsModalProps> = ({ job, conversationTitl
 
           {/* Error (if any) */}
           {job.error && (
-            <div className='rounded-lg border border-rose-200 dark:border-rose-800 bg-rose-50/80 dark:bg-rose-900/20 p-3'>
-              <div className='text-xs text-rose-500 dark:text-rose-400 mb-2 flex items-center gap-1'>
+            <div
+              className='rounded-lg border p-3'
+              style={{ backgroundColor: themeColors.errorBg, borderColor: themeColors.errorBorder }}
+            >
+              <div className='text-xs mb-2 flex items-center gap-1' style={{ color: themeColors.errorText }}>
                 <i className='bx bx-error-circle' aria-hidden='true'></i>
                 Error
               </div>
-              <pre className='text-xs bg-rose-100 dark:bg-rose-900/40 rounded-lg p-3 overflow-x-auto max-h-32 overflow-y-auto text-rose-800 dark:text-rose-200'>
+              <pre
+                className='text-xs rounded-lg p-3 overflow-x-auto max-h-32 overflow-y-auto'
+                style={{ backgroundColor: themeColors.codeBg, color: themeColors.errorText }}
+              >
                 {job.error}
               </pre>
             </div>
@@ -173,11 +319,13 @@ const JobDetailsModal: React.FC<JobDetailsModalProps> = ({ job, conversationTitl
 
           {/* Progress */}
           {(job.status === 'running' || job.status === 'pending') && (
-            <div className='rounded-lg border border-neutral-200 dark:border-neutral-800 bg-neutral-50/80 dark:bg-neutral-900/60 p-3'>
-              <div className='text-xs text-neutral-500 dark:text-neutral-400 mb-2'>Progress</div>
+            <div className='rounded-lg border p-3'
+              style={{ backgroundColor: themeColors.panelBg, borderColor: themeColors.panelBorder }}>
+              <div className='text-xs mb-2'
+              style={{ color: themeColors.mutedText }}>Progress</div>
               <div className='flex items-center gap-3'>
                 <div className='flex-1'>
-                  <ProgressBar value={job.progress ?? 0} status={job.status} />
+                  <ProgressBar value={job.progress ?? 0} status={job.status} themeColors={themeColors} />
                 </div>
                 <span className='text-sm font-medium text-neutral-900 dark:text-neutral-50'>{job.progress ?? 0}%</span>
               </div>
@@ -188,8 +336,10 @@ const JobDetailsModal: React.FC<JobDetailsModalProps> = ({ job, conversationTitl
           )}
 
           {/* Job ID & Metadata */}
-          <div className='rounded-lg border border-neutral-200 dark:border-neutral-800 bg-neutral-50/80 dark:bg-neutral-900/60 p-3'>
-            <div className='text-xs text-neutral-500 dark:text-neutral-400 mb-2'>Identifiers</div>
+          <div className='rounded-lg border p-3'
+              style={{ backgroundColor: themeColors.panelBg, borderColor: themeColors.panelBorder }}>
+            <div className='text-xs mb-2'
+              style={{ color: themeColors.mutedText }}>Identifiers</div>
             <div className='space-y-1 text-sm'>
               <div>
                 <span className='text-neutral-600 dark:text-neutral-400'>Job ID: </span>
@@ -213,34 +363,31 @@ const JobDetailsModal: React.FC<JobDetailsModalProps> = ({ job, conversationTitl
   )
 }
 
-const statusColors: Record<string, string> = {
-  pending: 'bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-200',
-  running: 'bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-200',
-  completed: 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-200',
-  failed: 'bg-rose-100 text-rose-700 dark:bg-rose-900/30 dark:text-rose-200',
-  cancelled: 'bg-neutral-200 text-neutral-700 dark:bg-neutral-800 dark:text-neutral-200',
-}
-
-const ProgressBar: React.FC<{ value: number; status: string }> = ({ value, status }) => {
+const ProgressBar: React.FC<{ value: number; status: string; themeColors: ToolJobsThemeColors }> = ({
+  value,
+  status,
+  themeColors,
+}) => {
   const pct = Math.min(100, Math.max(0, value || 0))
   const color =
     status === 'failed'
-      ? 'bg-rose-500'
+      ? themeColors.progress.failed
       : status === 'completed'
-        ? 'bg-emerald-500'
+        ? themeColors.progress.completed
         : status === 'running'
-          ? 'bg-blue-500'
-          : 'bg-amber-500'
+          ? themeColors.progress.running
+          : themeColors.progress.pending
 
   return (
-    <div className='w-full h-2 rounded-full bg-neutral-200 dark:bg-neutral-800 overflow-hidden'>
-      <div className={`${color} h-full transition-all duration-200`} style={{ width: `${pct}%` }} />
+    <div className='w-full h-2 rounded-full overflow-hidden' style={{ backgroundColor: themeColors.progressTrack }}>
+      <div className='h-full transition-all duration-200' style={{ width: `${pct}%`, backgroundColor: color }} />
     </div>
   )
 }
 
 export const ToolJobsModal: React.FC<ToolJobsModalProps> = ({ isOpen, onClose }) => {
   const queryClient = useQueryClient()
+  const themeColors = useToolJobsThemeColors()
   const { jobs, loading, error } = useToolJobs()
   const { stats, loading: statsLoading } = useJobStats()
   const [cancelling, setCancelling] = useState<Set<string>>(new Set())
@@ -316,16 +463,33 @@ export const ToolJobsModal: React.FC<ToolJobsModalProps> = ({ isOpen, onClose })
   if (!isOpen) return null
 
   return (
-    <div className='fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm animate-in fade-in duration-200'>
-      <div className='bg-white dark:bg-yBlack-900 rounded-2xl shadow-2xl border border-neutral-200 dark:border-neutral-800 p-6 w-full max-w-5xl mx-4 animate-in slide-in-from-bottom-4 duration-300'>
+    <div
+      className='fixed inset-0 z-50 flex items-center justify-center backdrop-blur-sm animate-in fade-in duration-200'
+      style={{ backgroundColor: themeColors.modalBackdrop }}
+    >
+      <div
+        className='rounded-2xl shadow-2xl border p-6 w-full max-w-5xl mx-4 animate-in slide-in-from-bottom-4 duration-300'
+        style={{ backgroundColor: themeColors.modalBg, borderColor: themeColors.modalBorder }}
+      >
         <div className='flex items-start justify-between gap-4 mb-4'>
           <div>
-            <h2 className='text-2xl font-semibold text-neutral-900 dark:text-neutral-50'>Tool Jobs</h2>
-            <p className='text-sm text-neutral-600 dark:text-neutral-400'>Live status from the orchestrator</p>
+            <h2 className='text-2xl font-semibold' style={{ color: themeColors.primaryText }}>
+              Tool Jobs
+            </h2>
+            <p className='text-sm' style={{ color: themeColors.secondaryText }}>
+              Live status from the orchestrator
+            </p>
           </div>
           <div className='flex items-center gap-2'>
-            <div className='flex items-center gap-1 text-xs px-2 py-1 rounded-full bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-200'>
-              <span className='w-2 h-2 rounded-full bg-emerald-500 animate-pulse' aria-hidden='true'></span>
+            <div
+              className='flex items-center gap-1 text-xs px-2 py-1 rounded-full'
+              style={{ backgroundColor: themeColors.liveBadgeBg, color: themeColors.liveBadgeText }}
+            >
+              <span
+                className='w-2 h-2 rounded-full animate-pulse'
+                style={{ backgroundColor: themeColors.liveDot }}
+                aria-hidden='true'
+              ></span>
               Live
             </div>
             <Button variant='outline2' size='medium' onClick={onClose}>
@@ -344,22 +508,39 @@ export const ToolJobsModal: React.FC<ToolJobsModalProps> = ({ isOpen, onClose })
               completed: 'Completed',
               failed: 'Failed',
             }
-            const badge = statusColors[key] || 'bg-neutral-200 text-neutral-700'
+            const badge = resolveStatusTheme(key, themeColors)
             return (
               <div
                 key={key}
-                className='rounded-xl border border-neutral-200 dark:border-neutral-800 bg-neutral-50/80 dark:bg-neutral-900/60 p-3 flex items-center gap-3'
+                className='rounded-xl border p-3 flex items-center gap-3'
+                style={{ backgroundColor: themeColors.panelBg, borderColor: themeColors.panelBorder }}
               >
-                <div className={`px-3 py-1 rounded-full text-xs font-medium ${badge}`}>{labels[key]}</div>
-                <div className='text-xl font-semibold text-neutral-900 dark:text-neutral-50'>{value}</div>
+                <div
+                  className='px-3 py-1 rounded-full text-xs font-medium'
+                  style={{ backgroundColor: badge.bg, color: badge.text }}
+                >
+                  {labels[key]}
+                </div>
+                <div className='text-xl font-semibold' style={{ color: themeColors.primaryText }}>
+                  {value}
+                </div>
               </div>
             )
           })}
-          <div className='rounded-xl border border-neutral-200 dark:border-neutral-800 bg-neutral-50/80 dark:bg-neutral-900/60 p-3 flex items-center gap-3'>
-            <div className='px-3 py-1 rounded-full text-xs font-medium bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-200'>
+          <div
+            className='rounded-xl border p-3 flex items-center gap-3'
+            style={{ backgroundColor: themeColors.panelBg, borderColor: themeColors.panelBorder }}
+          >
+            <div
+              className='px-3 py-1 rounded-full text-xs font-medium'
+              style={{
+                backgroundColor: themeColors.status.activeWorkers.bg,
+                color: themeColors.status.activeWorkers.text,
+              }}
+            >
               Active workers
             </div>
-            <div className='text-xl font-semibold text-neutral-900 dark:text-neutral-50'>
+            <div className='text-xl font-semibold' style={{ color: themeColors.primaryText }}>
               {statsLoading ? '—' : (stats?.activeWorkers ?? 0)}
             </div>
           </div>
@@ -368,7 +549,7 @@ export const ToolJobsModal: React.FC<ToolJobsModalProps> = ({ isOpen, onClose })
         {error ? <div className='mb-4 text-sm text-rose-500'>Failed to load jobs: {error.message}</div> : null}
 
         {loading && jobs.length === 0 ? (
-          <div className='flex items-center gap-2 text-neutral-600 dark:text-neutral-300 text-sm mb-2'>
+          <div className='flex items-center gap-2 text-sm mb-2' style={{ color: themeColors.secondaryText }}>
             <i className='bx bx-loader-alt bx-spin text-lg' aria-hidden='true'></i>
             Loading jobs...
           </div>
@@ -376,13 +557,13 @@ export const ToolJobsModal: React.FC<ToolJobsModalProps> = ({ isOpen, onClose })
 
         <div className='space-y-3 max-h-[60vh] overflow-y-auto pr-1'>
           {jobs.length === 0 ? (
-            <div className='text-neutral-600 dark:text-neutral-300 text-sm flex items-center gap-2'>
+            <div className='text-sm flex items-center gap-2' style={{ color: themeColors.secondaryText }}>
               <i className='bx bx-check-circle text-lg text-emerald-500' aria-hidden='true'></i>
               No jobs yet. Trigger a tool to see it here.
             </div>
           ) : (
             jobs.map(job => {
-              const color = statusColors[job.status] || statusColors.pending
+              const color = resolveStatusTheme(job.status, themeColors)
               const started = job.startedAt ? formatDistanceToNow(new Date(job.startedAt), { addSuffix: true }) : '—'
               const created = job.createdAt ? formatDistanceToNow(new Date(job.createdAt), { addSuffix: true }) : '—'
               const duration =
@@ -396,25 +577,38 @@ export const ToolJobsModal: React.FC<ToolJobsModalProps> = ({ isOpen, onClose })
               return (
                 <div
                   key={job.id}
-                  className='rounded-xl border border-neutral-200 dark:border-neutral-800 bg-white/70 dark:bg-neutral-900/80 p-4 shadow-sm'
+                  className='rounded-xl border p-4 shadow-sm'
+                  style={{ backgroundColor: themeColors.panelBg, borderColor: themeColors.panelBorder }}
                 >
                   <div className='flex flex-wrap items-start justify-between gap-3'>
                     <div className='flex flex-col gap-1'>
                       <div className='flex items-center gap-2'>
-                        <span className={`px-2 py-1 rounded-full text-xs font-medium ${color}`}>{job.status}</span>
-                        <span className='text-sm text-neutral-600 dark:text-neutral-400'>Priority {job.priority}</span>
+                        <span
+                          className='px-2 py-1 rounded-full text-xs font-medium'
+                          style={{ backgroundColor: color.bg, color: color.text }}
+                        >
+                          {job.status}
+                        </span>
+                        <span className='text-sm' style={{ color: themeColors.secondaryText }}>
+                          Priority {job.priority}
+                        </span>
                       </div>
-                      <div className='text-base font-semibold text-neutral-900 dark:text-neutral-50'>
+                      <div className='text-base font-semibold' style={{ color: themeColors.primaryText }}>
                         {job.toolName}
                       </div>
-                      <div className='text-xs text-neutral-500 dark:text-neutral-400'>
+                      <div className='text-xs' style={{ color: themeColors.mutedText }}>
                         Created {created} {started !== '—' ? `· Started ${started}` : ''} · {duration}
                       </div>
                       {job.progressMessage ? (
-                        <div className='text-xs text-neutral-600 dark:text-neutral-300'>{job.progressMessage}</div>
+                        <div className='text-xs' style={{ color: themeColors.secondaryText }}>
+                          {job.progressMessage}
+                        </div>
                       ) : null}
                     </div>
-                    <div className='flex flex-col items-end gap-2 text-xs text-neutral-500 dark:text-neutral-400 break-all'>
+                    <div
+                      className='flex flex-col items-end gap-2 text-xs break-all'
+                      style={{ color: themeColors.mutedText }}
+                    >
                       <div className='text-right'>
                         <div>ID: {job.id}</div>
                         {job.conversationId ? <div>Conversation: {job.conversationId}</div> : null}
@@ -456,7 +650,7 @@ export const ToolJobsModal: React.FC<ToolJobsModalProps> = ({ isOpen, onClose })
                     </div>
                   </div>
                   <div className='mt-3'>
-                    <ProgressBar value={job.progress ?? 0} status={job.status} />
+                    <ProgressBar value={job.progress ?? 0} status={job.status} themeColors={themeColors} />
                   </div>
                 </div>
               )
@@ -465,7 +659,7 @@ export const ToolJobsModal: React.FC<ToolJobsModalProps> = ({ isOpen, onClose })
         </div>
 
         {runningJobs.length > 0 ? (
-          <div className='mt-4 text-xs text-neutral-500 dark:text-neutral-400'>
+          <div className='mt-4 text-xs' style={{ color: themeColors.mutedText }}>
             {runningJobs.length} job{runningJobs.length === 1 ? '' : 's'} running or pending.
           </div>
         ) : null}
