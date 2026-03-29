@@ -103,20 +103,22 @@ jobs:
           VERSION="${GITHUB_REF_NAME#v}"
           CHANGELOG_FILE="ygg-chat/client/ygg-chat-r/CHANGELOG.md"
           RELEASE_NOTES_FILE="$RUNNER_TEMP/release-notes.md"
+          RAW_RELEASE_NOTES_FILE="${RELEASE_NOTES_FILE}.raw"
 
-          if [ ! -f "${CHANGELOG_FILE}" ]; then
-            echo "ERROR: ${CHANGELOG_FILE} not found"
-            exit 1
+          : > "${RAW_RELEASE_NOTES_FILE}"
+
+          if [ -f "${CHANGELOG_FILE}" ]; then
+            awk -v ver="${VERSION}" '
+              $0 ~ "^## \\[" ver "\\]" || $0 ~ "^## " ver "([[:space:]-]|$)" {
+                in_section = 1
+                next
+              }
+              in_section && /^## / { exit }
+              in_section { print }
+            ' "${CHANGELOG_FILE}" > "${RAW_RELEASE_NOTES_FILE}" || true
+          else
+            echo "WARNING: ${CHANGELOG_FILE} not found; using fallback release notes"
           fi
-
-          awk -v ver="${VERSION}" '
-            $0 ~ "^## \\[" ver "\\]" || $0 ~ "^## " ver "([[:space:]-]|$)" {
-              in_section = 1
-              next
-            }
-            in_section && /^## / { exit }
-            in_section { print }
-          ' "${CHANGELOG_FILE}" > "${RELEASE_NOTES_FILE}.raw"
 
           awk '
             BEGIN { started = 0 }
@@ -125,14 +127,14 @@ jobs:
               started = 1
               print
             }
-          ' "${RELEASE_NOTES_FILE}.raw" > "${RELEASE_NOTES_FILE}"
+          ' "${RAW_RELEASE_NOTES_FILE}" > "${RELEASE_NOTES_FILE}" || true
 
-          if ! grep -q '[^[:space:]]' "${RELEASE_NOTES_FILE}"; then
-            echo "ERROR: No changelog entry found for version ${VERSION} in ${CHANGELOG_FILE}"
-            exit 1
+          if ! grep -q '[^[:space:]]' "${RELEASE_NOTES_FILE}" 2>/dev/null; then
+            printf 'Release %s\n\nAutomated release build.\nChangelog entry missing, empty, or malformed, so fallback release notes were used.\n' "${VERSION}" > "${RELEASE_NOTES_FILE}"
+            echo "WARNING: No usable changelog entry found for version ${VERSION}; using fallback release notes"
+          else
+            echo "Release notes extracted to ${RELEASE_NOTES_FILE}"
           fi
-
-          echo "Release notes extracted to ${RELEASE_NOTES_FILE}"
 
       - name: Build ${{ matrix.os }}
         run: |
@@ -323,15 +325,22 @@ jobs:
           VERSION="${GITHUB_REF_NAME#v}"
           CHANGELOG_FILE="ygg-chat/client/ygg-chat-r/CHANGELOG.md"
           RELEASE_NOTES_FILE="$RUNNER_TEMP/release-notes.md"
+          RAW_RELEASE_NOTES_FILE="${RELEASE_NOTES_FILE}.raw"
 
-          awk -v ver="${VERSION}" '
-            $0 ~ "^## \\[" ver "\\]" || $0 ~ "^## " ver "([[:space:]-]|$)" {
-              in_section = 1
-              next
-            }
-            in_section && /^## / { exit }
-            in_section { print }
-          ' "${CHANGELOG_FILE}" > "${RELEASE_NOTES_FILE}.raw"
+          : > "${RAW_RELEASE_NOTES_FILE}"
+
+          if [ -f "${CHANGELOG_FILE}" ]; then
+            awk -v ver="${VERSION}" '
+              $0 ~ "^## \\[" ver "\\]" || $0 ~ "^## " ver "([[:space:]-]|$)" {
+                in_section = 1
+                next
+              }
+              in_section && /^## / { exit }
+              in_section { print }
+            ' "${CHANGELOG_FILE}" > "${RAW_RELEASE_NOTES_FILE}" || true
+          else
+            echo "WARNING: ${CHANGELOG_FILE} not found; using fallback release notes"
+          fi
 
           awk '
             BEGIN { started = 0 }
@@ -340,11 +349,13 @@ jobs:
               started = 1
               print
             }
-          ' "${RELEASE_NOTES_FILE}.raw" > "${RELEASE_NOTES_FILE}"
+          ' "${RAW_RELEASE_NOTES_FILE}" > "${RELEASE_NOTES_FILE}" || true
 
-          if ! grep -q '[^[:space:]]' "${RELEASE_NOTES_FILE}"; then
-            echo "ERROR: No changelog entry found for version ${VERSION}"
-            exit 1
+          if ! grep -q '[^[:space:]]' "${RELEASE_NOTES_FILE}" 2>/dev/null; then
+            printf 'Release %s\n\nAutomated release build.\nChangelog entry missing, empty, or malformed, so fallback release notes were used.\n' "${VERSION}" > "${RELEASE_NOTES_FILE}"
+            echo "WARNING: No usable changelog entry found for version ${VERSION}; using fallback release notes"
+          else
+            echo "Release notes extracted to ${RELEASE_NOTES_FILE}"
           fi
 
           echo "RELEASE_NOTES_FILE=${RELEASE_NOTES_FILE}" >> "$GITHUB_ENV"
