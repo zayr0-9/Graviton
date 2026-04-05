@@ -721,6 +721,7 @@ const Settings: React.FC = () => {
         accountId: data.accountId,
       })
 
+      dispatch(chatSliceActions.providerSelected('OpenAI (ChatGPT)'))
       closeOpenaiLoginModal()
       showStatus({ type: 'success', text: 'Signed in to OpenAI ChatGPT.' })
     } catch (error) {

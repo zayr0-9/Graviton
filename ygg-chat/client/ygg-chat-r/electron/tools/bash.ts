@@ -22,6 +22,8 @@ function getDefaultSuccessCodes(command: string): number[] {
 }
 
 export interface BashOptions {
+  /** Brief human-readable explanation of why this bash command is being run */
+  description?: string
   cwd?: string
   env?: NodeJS.ProcessEnv
   input?: string

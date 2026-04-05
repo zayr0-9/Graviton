@@ -1171,18 +1171,18 @@ describe('editFile read/edit validation coordination', () => {
     expect(await harness.readFile('validation-pass.txt')).toBe('version=2\n')
   })
 
-  it('fails with stale expected hash after external mutation', async () => {
+  it('allows edits when only the expected hash is stale', async () => {
     const harness = await createToolFsHarness()
-    await harness.writeFile('validation-hash-fail.txt', 'alpha=old\n')
-    const absolutePath = harness.absolutePath('validation-hash-fail.txt')
-    const readResult = await readTextFile('validation-hash-fail.txt', {
+    await harness.writeFile('validation-hash-pass.txt', 'alpha=old\n')
+    const absolutePath = harness.absolutePath('validation-hash-pass.txt')
+    const readResult = await readTextFile('validation-hash-pass.txt', {
       cwd: harness.workspaceDir,
       includeHash: true,
     })
 
     await fs.writeFile(absolutePath, 'alpha=changed\n', 'utf8')
 
-    const result = await editFile('validation-hash-fail.txt', 'replace', {
+    const result = await editFile('validation-hash-pass.txt', 'replace', {
       searchPattern: 'changed',
       replacement: 'updated',
       validateContent: true,
@@ -1190,10 +1190,9 @@ describe('editFile read/edit validation coordination', () => {
       cwd: harness.workspaceDir,
     })
 
-    expect(result.success).toBe(false)
-    expect(result.message).toContain('Validation failed')
-    expect(result.validation?.reason).toContain('Content hash mismatch')
-    expect(await harness.readFile('validation-hash-fail.txt')).toBe('alpha=changed\n')
+    expect(result.success).toBe(true)
+    expect(result.validation).toBeUndefined()
+    expect(await harness.readFile('validation-hash-pass.txt')).toBe('alpha=updated\n')
   })
 
   it('bypasses stale hash when validateContent is false', async () => {

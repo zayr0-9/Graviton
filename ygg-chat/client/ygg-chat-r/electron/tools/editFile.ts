@@ -18,8 +18,8 @@ export interface EditFileOptions {
   interpretSearchEscapes?: boolean // Interpret \n, \t, etc. in search patterns (default: true)
   interpretReplacementEscapes?: boolean // Interpret \n, \t, etc. in replacement text (default: false)
   operationMode?: 'plan' | 'execute'
-  validateContent?: boolean // Validate file hasn't changed since read (default: true)
-  expectedHash?: string // Expected content hash from previous read
+  validateContent?: boolean // Validate file hasn't changed since read using metadata checks (default: true)
+  expectedHash?: string // Optional advisory content hash from previous read; mismatches do not block edits
   expectedMetadata?: FileMetadata // Expected file metadata from previous read
   cwd?: string // Workspace directory for path resolution and restriction
   approxStartLine?: number // Optional approximate start line hint for replace_first windowed matching
@@ -848,9 +848,7 @@ function calculateHash(content: string): string {
 function shouldValidateAgainstExpectations(options: EditFileOptions, validateContent: boolean): boolean {
   if (!validateContent) return false
 
-  return Boolean(
-    options.expectedHash || options.expectedMetadata?.lastModified || options.expectedMetadata?.inode !== undefined
-  )
+  return Boolean(options.expectedMetadata?.lastModified || options.expectedMetadata?.inode !== undefined)
 }
 
 function estimateTextSizeBytes(content: string, encoding: BufferEncoding): number {
@@ -1050,29 +1048,18 @@ async function validateFileContent(
     return { valid: true }
   }
 
-  const needsHashCheck = Boolean(options.expectedHash)
+  const expectedHash = options.expectedHash
+  const actualHash = expectedHash ? calculateHash(content) : undefined
   const expectedModified = options.expectedMetadata?.lastModified
   const expectedInode = options.expectedMetadata?.inode
 
-  if (!needsHashCheck && !expectedModified && expectedInode === undefined) {
-    return { valid: true }
-  }
-
-  const currentHash = needsHashCheck ? calculateHash(content) : undefined
-
-  // Check hash if provided
-  if (needsHashCheck && currentHash !== options.expectedHash) {
-    return {
-      valid: false,
-      reason: 'Content hash mismatch - file may have been modified',
-      expectedHash: options.expectedHash,
-      actualHash: currentHash,
-    }
-  }
-
-  // Hash-only validation does not require a filesystem stat call.
   if (!expectedModified && expectedInode === undefined) {
-    return { valid: true }
+    return {
+      valid: true,
+      expectedHash,
+      actualHash,
+      reason: expectedHash && actualHash !== expectedHash ? 'Content hash mismatch ignored' : undefined,
+    }
   }
 
   const stats = await fs.promises.stat(absolutePath)

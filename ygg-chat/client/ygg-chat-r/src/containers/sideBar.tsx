@@ -508,26 +508,8 @@ const SideBar: React.FC<SideBarProps> = ({
     })
   }, [projectNameById, searchedTopLevelMessages])
 
-  // Drawer collapse state with localStorage persistence and mobile-first default
-  const [isCollapsed, setIsCollapsed] = useState<boolean>(() => {
-    try {
-      if (typeof window === 'undefined') return false
-
-      const stored = localStorage.getItem('sidebar:collapsed')
-
-      // If user has a stored preference, use it
-      if (stored !== null) {
-        return stored === 'true'
-      }
-
-      // Otherwise, default to collapsed on mobile, expanded on desktop
-      // Use window.innerWidth for initial state since hook isn't available in initializer
-      return window.innerWidth < 768
-    } catch {
-      return false
-    }
-  })
-  const [isExpandPortalOpen, setIsExpandPortalOpen] = useState(false)
+  // Floating-only sidebar: keep the rail mounted and use the portal as the only full sidebar UI.
+  const [isExpandPortalOpen, setIsExpandPortalOpen] = useState(true)
   const [portalLeftOffset, setPortalLeftOffset] = useState(SIDEBAR_RAIL_WIDTH_PX + SIDEBAR_PORTAL_GAP_PX)
   const [expandPortalWidth, setExpandPortalWidth] = useState(SIDEBAR_PORTAL_MAX_WIDTH_PX)
   const [previewPortalLeftOffset, setPreviewPortalLeftOffset] = useState(
@@ -546,15 +528,6 @@ const SideBar: React.FC<SideBarProps> = ({
     const saved = localStorage.getItem('theme')
     return saved === 'dark' ? 'Dark' : saved === 'light' ? 'Light' : saved === 'system' ? 'System' : 'System'
   })
-
-  // Persist collapse state
-  useEffect(() => {
-    try {
-      localStorage.setItem('sidebar:collapsed', String(isCollapsed))
-    } catch (storageError) {
-      console.warn('Failed to persist sidebar collapse state:', storageError)
-    }
-  }, [isCollapsed])
 
   // Apply theme immediately when user toggles preference
   useEffect(() => {
@@ -675,14 +648,6 @@ const SideBar: React.FC<SideBarProps> = ({
   }, [closeExpandPortal, isExpandPortalOpen, location.pathname])
 
   useEffect(() => {
-    if (!isCollapsed && isExpandPortalOpen) {
-      setIsExpandPortalOpen(false)
-      setHoveredPreviewConversation(null)
-      clearHoverPreviewCloseTimeout()
-    }
-  }, [clearHoverPreviewCloseTimeout, isCollapsed, isExpandPortalOpen])
-
-  useEffect(() => {
     if (!isProjectsTab && searchQuery) {
       setSearchQuery('')
       clearSearch()
@@ -738,7 +703,7 @@ const SideBar: React.FC<SideBarProps> = ({
 
   const handleConversationHoverStart = useCallback(
     (conversation: Conversation) => {
-      if (!isCollapsed || !isExpandPortalOpen) return
+      if (!isExpandPortalOpen) return
       if (conversation.storage_mode !== 'local') {
         setHoveredPreviewConversation(null)
         return
@@ -747,7 +712,7 @@ const SideBar: React.FC<SideBarProps> = ({
       clearHoverPreviewCloseTimeout()
       setHoveredPreviewConversation(conversation)
     },
-    [clearHoverPreviewCloseTimeout, isCollapsed, isExpandPortalOpen]
+    [clearHoverPreviewCloseTimeout, isExpandPortalOpen]
   )
 
   const handleConversationHoverEnd = useCallback(() => {
@@ -796,7 +761,7 @@ const SideBar: React.FC<SideBarProps> = ({
     (projectId: string) => {
       const normalizedProjectId = String(projectId)
 
-      if (isCollapsed && !isExpandPortalOpen) {
+      if (!isExpandPortalOpen) {
         setExpandedProjectIds(prev => (prev.includes(normalizedProjectId) ? prev : [normalizedProjectId, ...prev]))
         openExpandPortal()
         return
@@ -808,7 +773,7 @@ const SideBar: React.FC<SideBarProps> = ({
           : [...prev, normalizedProjectId]
       )
     },
-    [isCollapsed, isExpandPortalOpen, openExpandPortal]
+    [isExpandPortalOpen, openExpandPortal]
   )
 
   const handleDeleteSidebarProject = useCallback(
@@ -1351,33 +1316,20 @@ const SideBar: React.FC<SideBarProps> = ({
   }
 
   const handleToggleSidebar = useCallback(() => {
-    if (isCollapsed) {
-      if (isExpandPortalOpen) {
-        closeExpandPortal(false)
-        return
-      }
-
-      openExpandPortal()
+    if (isExpandPortalOpen) {
+      closeExpandPortal(false)
       return
     }
 
-    setIsCollapsed(true)
-  }, [closeExpandPortal, isCollapsed, isExpandPortalOpen, openExpandPortal])
+    openExpandPortal()
+  }, [closeExpandPortal, isExpandPortalOpen, openExpandPortal])
 
-  const showExpandedPortal = isCollapsed && isExpandPortalOpen
+  const showExpandedPortal = isExpandPortalOpen
   const hoveredPreviewConversationId = hoveredPreviewConversation?.id ?? null
   const shouldShowConversationPreviewPortal =
     showExpandedPortal && hoveredPreviewConversation?.storage_mode === 'local' && !!hoveredPreviewConversationId
-  const sidebarToggleAriaLabel = isCollapsed
-    ? showExpandedPortal
-      ? 'Close sidebar panel'
-      : 'Open sidebar panel'
-    : 'Collapse sidebar'
-  const sidebarToggleIconClass = isCollapsed
-    ? showExpandedPortal
-      ? 'bx-chevron-left'
-      : 'bx-chevron-right'
-    : 'bx-chevron-left'
+  const sidebarToggleAriaLabel = showExpandedPortal ? 'Close sidebar panel' : 'Open sidebar panel'
+  const sidebarToggleIconClass = showExpandedPortal ? 'bx-chevron-left' : 'bx-chevron-right'
 
   const {
     data: topLevelUserPreviewMessages = [],
@@ -1403,31 +1355,26 @@ const SideBar: React.FC<SideBarProps> = ({
     <>
       <aside
         ref={sidebarRef}
-        className={`acrylic-subtle-2 relative z-10 ${isWeb ? 'h-[100vh]' : 'h-full'} flex flex-col flex-shrink-0 overflow-hidden bg-transparent shadow-sm transition-[width] duration-200 ease-out dark:bg-transparent ${isCollapsed ? 'w-12' : 'w-64 md:w-64 lg:w-70 xl:w-80'} ${className}`}
-        aria-label={isProjectsTab ? 'Projects and conversations' : 'Favorite conversations'}
+        className={`acrylic-subtle-2 relative z-10 ${isWeb ? 'h-[100vh]' : 'h-full'} flex w-12 flex-col flex-shrink-0 overflow-hidden bg-transparent shadow-sm dark:bg-transparent ${className}`}
+        aria-label='Sidebar rail'
       >
-        <div className='flex items-center justify-between py-3 my-1 md:py-2.5 lg:p-1 xl:p-1 2xl:px-1 2xl:py-2'>
-          {!isCollapsed && (
-            <h2 className='text-[14px] md:text-[16px] lg:text-[16px] xl:text-[16px] 2xl:text-[18px] 3xl:text-[20px] 4xl:text-[22px] pl-2 font-semibold text-neutral-700 dark:text-neutral-200 truncate'>
-              {isProjectsTab ? 'Projects' : 'Favorites'}
-            </h2>
-          )}
+        <div className='flex items-center justify-center py-3 my-1 md:py-2.5 lg:p-1 xl:p-1 2xl:px-1 2xl:py-2'>
           <Button
             ref={expandButtonRef}
             variant='acrylic'
             size='circle'
             rounded='full'
             onClick={handleToggleSidebar}
-            className={`${isCollapsed ? 'mx-auto' : 'mr-2'} transition-transform duration-200 hover:scale-103 p-2`}
+            className='mx-auto p-2 transition-transform duration-200 hover:scale-103'
             aria-label={sidebarToggleAriaLabel}
-            aria-haspopup={isCollapsed ? 'dialog' : undefined}
-            aria-expanded={isCollapsed ? showExpandedPortal : undefined}
+            aria-haspopup='dialog'
+            aria-expanded={showExpandedPortal}
           >
             <i className={`bx ${sidebarToggleIconClass} text-lg`} aria-hidden='true'></i>
           </Button>
         </div>
 
-        {renderSidebarBody(isCollapsed, false, hoveredPreviewConversationId)}
+        {renderSidebarBody(true, false, hoveredPreviewConversationId)}
       </aside>
 
       {typeof document !== 'undefined' &&

@@ -3058,20 +3058,20 @@ const RightBar: React.FC<RightBarProps> = ({
                   </Button>
                 </div>
               ) : (
-                <div className='flex flex-col gap-3'>
+                <div className='space-y-4'>
                   {gitActionFeedback && (
                     <div
-                      className={`rounded-lg border px-3 py-2 text-xs ${
+                      className={`px-2 py-1 text-xs ${
                         gitActionFeedback.type === 'success'
-                          ? 'bg-neutral-50/80 text-emerald-700 dark:bg-neutral-500/10 dark:text-emerald-200'
-                          : 'bg-neutral-50/80 text-rose-700 dark:bg-neutral-500/10 dark:text-rose-200'
+                          ? 'text-emerald-700 dark:text-emerald-200'
+                          : 'text-rose-700 dark:text-rose-200'
                       }`}
                     >
                       <div className='flex items-start justify-between gap-2'>
                         <span>{gitActionFeedback.message}</span>
                         <button
                           onClick={() => setGitActionFeedback(null)}
-                          className='text-current opacity-70 hover:opacity-100'
+                          className='text-current opacity-60 transition-opacity hover:opacity-100'
                           title='Dismiss'
                         >
                           <i className='bx bx-x text-sm' />
@@ -3080,55 +3080,46 @@ const RightBar: React.FC<RightBarProps> = ({
                     </div>
                   )}
 
-                  <div className='min-w-0 overflow-hidden rounded-xl border border-neutral-200 bg-white/70 p-3 dark:border-neutral-800 dark:bg-neutral-900/40'>
-                    <div className='flex flex-wrap items-start justify-between gap-2'>
+                  <div className='min-w-0 px-2 py-1'>
+                    <div className='flex flex-wrap items-start justify-between gap-3'>
                       <div className='min-w-0 flex-1'>
                         <div className='flex min-w-0 flex-wrap items-center gap-2'>
-                          <i className='bx bx-git-repo-forked shrink-0 text-base text-neutral-600 dark:text-neutral-300' />
+                          <i className='bx bx-git-repo-forked shrink-0 text-sm text-neutral-500 dark:text-neutral-400' />
                           <span className='min-w-0 truncate text-sm font-semibold text-neutral-900 dark:text-neutral-100'>
                             {gitSummary.repoName}
                           </span>
-                          {gitSummary.isClean ? (
-                            <span className='shrink-0 rounded-full border border-emerald-300 bg-emerald-50 px-2 py-0.5 text-[10px] font-medium text-emerald-700 dark:border-emerald-500/40 dark:bg-emerald-500/10 dark:text-emerald-200'>
-                              Clean
-                            </span>
-                          ) : (
-                            <span className='shrink-0 rounded-full border border-amber-300 bg-amber-50 px-2 py-0.5 text-[10px] font-medium text-amber-700 dark:border-amber-500/40 dark:bg-amber-500/10 dark:text-amber-200'>
-                              Dirty
-                            </span>
-                          )}
+                          <span
+                            className={`shrink-0 text-[10px] font-medium ${
+                              gitSummary.isClean
+                                ? 'text-emerald-600 dark:text-emerald-300'
+                                : 'text-amber-600 dark:text-amber-300'
+                            }`}
+                          >
+                            {gitSummary.isClean ? 'Clean' : 'Changes'}
+                          </span>
                         </div>
-                        <div className='mt-1 text-[11px] text-neutral-500 dark:text-neutral-400 break-all'>
+                        <div className='mt-1 break-all text-[11px] text-neutral-500 dark:text-neutral-400'>
                           {gitSummary.repoRoot}
                         </div>
-                        <div className='mt-2 flex min-w-0 flex-wrap items-center gap-1.5 text-[11px] text-neutral-600 dark:text-neutral-300'>
-                          <span className='max-w-full truncate rounded-full border border-neutral-200 px-2 py-0.5 dark:border-neutral-700'>
-                            branch: {gitSummary.currentBranch || 'detached HEAD'}
-                          </span>
-                          {gitSummary.headShortSha && (
-                            <span className='shrink-0 rounded-full border border-neutral-200 px-2 py-0.5 dark:border-neutral-700'>
-                              {gitSummary.headShortSha}
-                            </span>
-                          )}
+                        <div className='mt-2 flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-[11px] text-neutral-500 dark:text-neutral-400'>
+                          <span className='max-w-full truncate'>branch: {gitSummary.currentBranch || 'detached HEAD'}</span>
+                          {gitSummary.headShortSha && <span className='shrink-0'>{gitSummary.headShortSha}</span>}
                           {gitSummary.upstreamBranch && (
-                            <span className='max-w-full truncate rounded-full border border-neutral-200 px-2 py-0.5 dark:border-neutral-700'>
-                              {gitSummary.upstreamBranch}
-                            </span>
+                            <span className='max-w-full truncate'>{gitSummary.upstreamBranch}</span>
                           )}
                           {(gitSummary.ahead > 0 || gitSummary.behind > 0) && (
-                            <span className='shrink-0 rounded-full border border-neutral-200 px-2 py-0.5 dark:border-neutral-700'>
+                            <span className='shrink-0'>
                               ↑{gitSummary.ahead} ↓{gitSummary.behind}
                             </span>
                           )}
                         </div>
                       </div>
-                      <div className='flex w-full flex-wrap gap-2 sm:w-auto sm:flex-shrink-0'>
-                        <Button
-                          variant='outline2'
-                          size='small'
+                      <div className='flex shrink-0 items-center gap-2'>
+                        <button
+                          type='button'
                           onClick={() => void refetchGitOverview()}
                           disabled={isFetchingGitOverview || isGitBusy}
-                          className='px-2'
+                          className='inline-flex h-7 w-7 items-center justify-center rounded-md border border-neutral-200 text-neutral-500 transition-colors hover:bg-neutral-100 hover:text-neutral-800 disabled:opacity-50 dark:border-neutral-800 dark:text-neutral-400 dark:hover:bg-neutral-900 dark:hover:text-neutral-200'
                           aria-label={
                             isFetchingGitOverview ? 'Refreshing repository overview' : 'Refresh repository overview'
                           }
@@ -3137,16 +3128,15 @@ const RightBar: React.FC<RightBarProps> = ({
                           }
                         >
                           <i
-                            className={`bx ${isFetchingGitOverview ? 'bx-loader-circle animate-spin' : 'bx-refresh'} text-base`}
+                            className={`bx ${isFetchingGitOverview ? 'bx-loader-circle animate-spin' : 'bx-refresh'} text-sm`}
                             aria-hidden='true'
                           />
-                        </Button>
-                        <Button
-                          variant='outline2'
-                          size='small'
+                        </button>
+                        <button
+                          type='button'
                           onClick={() => void handleGitStageAll()}
                           disabled={gitSummary.changedFilesCount === 0 || gitStageFilesMutation.isPending}
-                          className='px-2'
+                          className='inline-flex h-7 w-7 items-center justify-center rounded-md border border-neutral-200 text-neutral-500 transition-colors hover:bg-neutral-100 hover:text-neutral-800 disabled:opacity-50 dark:border-neutral-800 dark:text-neutral-400 dark:hover:bg-neutral-900 dark:hover:text-neutral-200'
                           aria-label={
                             gitStageFilesMutation.isPending ? 'Staging all changed files' : 'Stage all changed files'
                           }
@@ -3155,67 +3145,50 @@ const RightBar: React.FC<RightBarProps> = ({
                           }
                         >
                           <i
-                            className={`bx ${gitStageFilesMutation.isPending ? 'bx-loader-circle animate-spin' : 'bx-upload'} text-base`}
+                            className={`bx ${gitStageFilesMutation.isPending ? 'bx-loader-circle animate-spin' : 'bx-upload'} text-sm`}
                             aria-hidden='true'
                           />
-                        </Button>
+                        </button>
                       </div>
                     </div>
 
-                    <div className='mt-3 grid grid-cols-2 gap-2 text-[11px]'>
-                      <div className='rounded-lg border border-neutral-200 px-2 py-2 dark:border-neutral-800'>
-                        <div className='text-neutral-500 dark:text-neutral-400'>Changed</div>
-                        <div className='text-sm font-semibold text-neutral-900 dark:text-neutral-100'>
+                    <div className='mt-3 flex flex-wrap gap-x-4 gap-y-1 text-[11px]'>
+                      <span className='text-neutral-500 dark:text-neutral-400'>
+                        Changed{' '}
+                        <span className='font-semibold text-neutral-900 dark:text-neutral-100'>
                           {gitSummary.changedFilesCount}
-                        </div>
-                      </div>
-                      <div className='rounded-lg border border-neutral-200 px-2 py-2 dark:border-neutral-800'>
-                        <div className='text-neutral-500 dark:text-neutral-400'>Staged</div>
-                        <div className='text-sm font-semibold text-neutral-900 dark:text-neutral-100'>
+                        </span>
+                      </span>
+                      <span className='text-neutral-500 dark:text-neutral-400'>
+                        Staged{' '}
+                        <span className='font-semibold text-neutral-900 dark:text-neutral-100'>
                           {gitSummary.stagedCount}
-                        </div>
-                      </div>
-                      <div className='rounded-lg border border-neutral-200 px-2 py-2 dark:border-neutral-800'>
-                        <div className='text-neutral-500 dark:text-neutral-400'>Unstaged</div>
-                        <div className='mt-1 flex items-center justify-between gap-2'>
-                          <div className='text-sm font-semibold text-neutral-900 dark:text-neutral-100'>
-                            {gitSummary.unstagedCount}
-                          </div>
-                          <Button
-                            variant='outline2'
-                            size='small'
-                            onClick={() => void handleGitStageAll()}
-                            disabled={
-                              (gitSummary.unstagedCount === 0 && gitSummary.untrackedCount === 0) ||
-                              gitStageFilesMutation.isPending
-                            }
-                            className='px-2 py-0.5 text-[10px]'
-                            title={
-                              gitStageFilesMutation.isPending ? 'Staging all changed files' : 'Stage all changed files'
-                            }
-                          >
-                            {gitStageFilesMutation.isPending ? 'Staging...' : 'Stage all'}
-                          </Button>
-                        </div>
-                      </div>
-                      <div className='rounded-lg border border-neutral-200 px-2 py-2 dark:border-neutral-800'>
-                        <div className='text-neutral-500 dark:text-neutral-400'>Untracked</div>
-                        <div className='text-sm font-semibold text-neutral-900 dark:text-neutral-100'>
+                        </span>
+                      </span>
+                      <span className='text-neutral-500 dark:text-neutral-400'>
+                        Unstaged{' '}
+                        <span className='font-semibold text-neutral-900 dark:text-neutral-100'>
+                          {gitSummary.unstagedCount}
+                        </span>
+                      </span>
+                      <span className='text-neutral-500 dark:text-neutral-400'>
+                        Untracked{' '}
+                        <span className='font-semibold text-neutral-900 dark:text-neutral-100'>
                           {gitSummary.untrackedCount}
-                        </div>
-                      </div>
+                        </span>
+                      </span>
                     </div>
 
                     {gitSummary.remoteUrl && (
-                      <div className='mt-3 text-[11px] text-neutral-500 dark:text-neutral-400 break-all'>
+                      <div className='mt-3 break-all text-[11px] text-neutral-500 dark:text-neutral-400'>
                         remote: {gitSummary.remoteUrl}
                       </div>
                     )}
                   </div>
 
-                  <div className='rounded-xl border border-neutral-200 bg-white/70 p-3 dark:border-neutral-800 dark:bg-neutral-900/40'>
+                  <div className='border-t border-neutral-200/70 px-2 pt-4 dark:border-neutral-800/70'>
                     <div className='mb-2 flex items-center justify-between gap-2'>
-                      <h3 className='text-xs font-semibold uppercase tracking-[0.18em] text-neutral-500 dark:text-neutral-400'>
+                      <h3 className='text-[11px] font-semibold uppercase tracking-[0.16em] text-neutral-500 dark:text-neutral-400'>
                         Changes
                       </h3>
                       <span className='text-[11px] text-neutral-500 dark:text-neutral-400'>
@@ -3223,45 +3196,47 @@ const RightBar: React.FC<RightBarProps> = ({
                       </span>
                     </div>
 
-                    <div className='space-y-2'>
-                      {gitStatusSections.every(section => section.files.length === 0) ? (
-                        <div className='text-xs text-neutral-500 dark:text-neutral-400'>Working tree is clean.</div>
-                      ) : (
-                        gitStatusSections.map(section => (
-                          <div
-                            key={section.key}
-                            className='rounded-lg border border-neutral-200/80 p-2 dark:border-neutral-800'
-                          >
-                            <div className='mb-2 flex items-center justify-between gap-2'>
-                              <span className='text-xs font-medium text-neutral-800 dark:text-neutral-200'>
-                                {section.label}
-                              </span>
+                    {gitStatusSections.every(section => section.files.length === 0) ? (
+                      <div className='text-xs text-neutral-500 dark:text-neutral-400'>Working tree is clean.</div>
+                    ) : (
+                      <div className='space-y-3'>
+                        {gitStatusSections.map(section => (
+                          <div key={section.key}>
+                            <div className='mb-1 flex items-center justify-between gap-2'>
                               <div className='flex items-center gap-2'>
-                                {section.key === 'unstaged' && (
-                                  <Button
-                                    variant='outline2'
-                                    size='small'
-                                    onClick={() => void handleGitStageAll()}
-                                    disabled={
-                                      (gitSummary.unstagedCount === 0 && gitSummary.untrackedCount === 0) ||
-                                      gitStageFilesMutation.isPending
-                                    }
-                                    className='px-2 py-0.5 text-[10px]'
-                                    title={
-                                      gitStageFilesMutation.isPending
-                                        ? 'Staging all changed files'
-                                        : 'Stage all changed files'
-                                    }
-                                  >
-                                    {gitStageFilesMutation.isPending ? 'Staging...' : 'Stage all'}
-                                  </Button>
-                                )}
-                                <span
-                                  className={`rounded-full border px-2 py-0.5 text-[10px] font-medium ${section.badgeClass}`}
-                                >
+                                <span className='text-xs font-medium text-neutral-800 dark:text-neutral-200'>
+                                  {section.label}
+                                </span>
+                                <span className={`rounded-full px-1.5 py-0.5 text-[10px] font-medium ${section.badgeClass}`}>
                                   {section.files.length}
                                 </span>
                               </div>
+                              {section.key === 'unstaged' && (
+                                <button
+                                  type='button'
+                                  onClick={() => void handleGitStageAll()}
+                                  disabled={
+                                    (gitSummary.unstagedCount === 0 && gitSummary.untrackedCount === 0) ||
+                                    gitStageFilesMutation.isPending
+                                  }
+                                  className='inline-flex h-6 w-6 items-center justify-center rounded-md border border-neutral-200 text-neutral-500 transition-colors hover:bg-neutral-100 hover:text-neutral-800 disabled:opacity-50 dark:border-neutral-800 dark:text-neutral-400 dark:hover:bg-neutral-900 dark:hover:text-neutral-200'
+                                  title={
+                                    gitStageFilesMutation.isPending
+                                      ? 'Staging all changed files'
+                                      : 'Stage all changed files'
+                                  }
+                                  aria-label={
+                                    gitStageFilesMutation.isPending
+                                      ? 'Staging all changed files'
+                                      : 'Stage all changed files'
+                                  }
+                                >
+                                  <i
+                                    className={`bx ${gitStageFilesMutation.isPending ? 'bx-loader-circle animate-spin' : 'bx-upload'} text-[12px]`}
+                                    aria-hidden='true'
+                                  />
+                                </button>
+                              )}
                             </div>
 
                             {section.files.length === 0 ? (
@@ -3271,7 +3246,7 @@ const RightBar: React.FC<RightBarProps> = ({
                                 className={
                                   section.key === 'staged' || section.key === 'unstaged' || section.key === 'untracked'
                                     ? 'max-h-56 space-y-1 overflow-y-auto pr-1 thin-scrollbar'
-                                    : 'space-y-2'
+                                    : 'space-y-1.5'
                                 }
                               >
                                 {section.files.map(file => {
@@ -3282,156 +3257,118 @@ const RightBar: React.FC<RightBarProps> = ({
                                       : section.key === 'untracked'
                                         ? Boolean(selectedGitDiff?.untracked)
                                         : !selectedGitDiff?.staged && !selectedGitDiff?.untracked)
+                                  const fileStatusDescription = file.isDeleted
+                                    ? 'Deleted'
+                                    : file.isRenamed
+                                      ? 'Renamed'
+                                      : file.untracked
+                                        ? 'Untracked'
+                                        : file.conflicted
+                                          ? 'Conflict requires resolution'
+                                          : section.key === 'staged'
+                                            ? 'Staged'
+                                            : 'Modified in working tree'
+                                  const normalizedRelativePath = normalizeRelativeGitPath(
+                                    file.relativePath || file.displayPath || file.path
+                                  )
+                                  const fileName = getFileName(normalizedRelativePath || file.displayPath || file.path)
+                                  const fileDirectoryPath = normalizedRelativePath.replace(/\/?[^/]+$/, '') || '.'
 
-                                  return section.key === 'staged' ||
-                                    section.key === 'unstaged' ||
-                                    section.key === 'untracked' ? (
+                                  return (
                                     <div
                                       key={`${section.key}-${file.relativePath}`}
-                                      className={`group relative min-w-0 overflow-hidden rounded-md border transition-colors ${
+                                      className={`group relative min-w-0 rounded-lg px-1 py-1 transition-colors ${
                                         isSelected
-                                          ? 'border-sky-300 bg-sky-50/70 dark:border-sky-500/50 dark:bg-sky-500/10'
-                                          : 'border-transparent bg-neutral-50/70 dark:bg-neutral-950/30'
+                                          ? 'bg-sky-50/60 dark:bg-sky-500/10'
+                                          : 'hover:bg-neutral-100/60 dark:hover:bg-neutral-900/40'
                                       }`}
                                     >
-                                      <button
-                                        onClick={() => handleSelectGitDiff(file, section.key === 'staged')}
-                                        className='flex w-full min-w-0 items-center gap-2 px-2 py-1.5 pr-24 text-left'
-                                        title={file.displayPath}
-                                      >
-                                        <span className='shrink-0 rounded-md border border-neutral-200 bg-white px-1.5 py-0.5 text-[10px] font-semibold text-neutral-600 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-300'>
+                                      <div className='flex items-start gap-2'>
+                                        <span className='mt-0.5 inline-flex h-5 shrink-0 items-center rounded-full bg-neutral-100 px-1.5 text-[9px] font-semibold leading-none text-neutral-600 dark:bg-neutral-800 dark:text-neutral-300'>
                                           {file.code}
                                         </span>
-                                        <span className='block min-w-0 truncate text-xs font-medium text-neutral-800 dark:text-neutral-200'>
-                                          {file.displayPath}
-                                        </span>
-                                      </button>
-                                      <div
-                                        className={`absolute inset-y-0 right-0 flex items-center gap-1 px-1.5 pl-6 opacity-0 transition-opacity duration-150 group-hover:opacity-100 group-focus-within:opacity-100 ${
-                                          isSelected
-                                            ? 'bg-gradient-to-l from-sky-50/95 via-sky-50/90 to-transparent dark:from-sky-500/15 dark:via-sky-500/10'
-                                            : 'bg-gradient-to-l from-white/95 via-white/90 to-transparent dark:from-neutral-900/95 dark:via-neutral-900/85'
-                                        }`}
-                                      >
-                                        <button
-                                          onClick={() => openGitDiffTab(file, section.key === 'staged')}
-                                          className='inline-flex h-6 w-6 items-center justify-center rounded-full border border-neutral-200 text-neutral-700 transition-colors hover:bg-neutral-100 dark:border-neutral-700 dark:text-neutral-200 dark:hover:bg-neutral-800'
-                                          aria-label='Open diff'
-                                          title='Open diff'
-                                        >
-                                          <i className='bx bx-git-compare text-[12px]' aria-hidden='true' />
-                                        </button>
-                                        {!file.isDeleted && !isWeb && (
+                                        <div className='min-w-0 flex-1 pr-28'>
                                           <button
-                                            onClick={() =>
-                                              void openFileEditor(file.path, { relativePath: file.relativePath })
-                                            }
-                                            className='inline-flex h-6 w-6 items-center justify-center rounded-full border border-neutral-200 text-neutral-700 transition-colors hover:bg-neutral-100 dark:border-neutral-700 dark:text-neutral-200 dark:hover:bg-neutral-800'
-                                            aria-label='Open file'
-                                            title='Open file'
+                                            onClick={() => handleSelectGitDiff(file, section.key === 'staged')}
+                                            className='w-full min-w-0 text-left'
+                                            title={normalizedRelativePath || file.displayPath}
                                           >
-                                            <i className='bx bx-file text-[12px]' aria-hidden='true' />
+                                            <div className='flex min-w-0 items-center gap-1.5'>
+                                              <span
+                                                className={`truncate text-xs font-medium ${
+                                                  isSelected
+                                                    ? 'text-sky-700 dark:text-sky-200'
+                                                    : 'text-neutral-800 dark:text-neutral-200'
+                                                }`}
+                                              >
+                                                {fileName}
+                                              </span>
+                                              <span className='truncate text-[10px] text-neutral-500 dark:text-neutral-400'>
+                                                {fileDirectoryPath}
+                                              </span>
+                                            </div>
+                                            <div className='mt-0.5 truncate text-[10px] text-neutral-500 dark:text-neutral-400'>
+                                              {fileStatusDescription}
+                                            </div>
                                           </button>
-                                        )}
-                                        {onFilePathInsert && (
+                                        </div>
+                                        <div className='pointer-events-none absolute inset-y-0 right-1 flex items-center gap-1 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100'>
                                           <button
-                                            onClick={() => onFilePathInsert(file.path)}
-                                            className='inline-flex h-6 w-6 items-center justify-center rounded-full border border-neutral-200 text-neutral-700 transition-colors hover:bg-neutral-100 dark:border-neutral-700 dark:text-neutral-200 dark:hover:bg-neutral-800'
-                                            aria-label='Insert path'
-                                            title='Insert path'
+                                            type='button'
+                                            onClick={() => openGitDiffTab(file, section.key === 'staged')}
+                                            className='pointer-events-auto inline-flex h-6 w-6 items-center justify-center rounded-md text-neutral-500 transition-colors hover:bg-neutral-200/70 hover:text-neutral-800 dark:text-neutral-400 dark:hover:bg-neutral-800/70 dark:hover:text-neutral-200'
+                                            aria-label='Open diff'
+                                            title='Open diff'
                                           >
-                                            <i className='bx bx-export text-[12px]' aria-hidden='true' />
-                                          </button>
-                                        )}
-                                        {section.key === 'staged' ? (
-                                          <button
-                                            onClick={() => void handleGitUnstageFile(file)}
-                                            disabled={gitUnstageFilesMutation.isPending}
-                                            className='inline-flex h-6 w-6 items-center justify-center rounded-full border border-neutral-200 text-neutral-700 transition-colors hover:bg-neutral-100 disabled:opacity-60 dark:border-neutral-700 dark:text-neutral-200 dark:hover:bg-neutral-800'
-                                            aria-label='Unstage file'
-                                            title='Unstage file'
-                                          >
-                                            <i className='bx bx-download text-[12px]' aria-hidden='true' />
-                                          </button>
-                                        ) : (
-                                          <button
-                                            onClick={() => void handleGitStageFile(file)}
-                                            disabled={gitStageFilesMutation.isPending}
-                                            className='inline-flex h-6 w-6 items-center justify-center rounded-full border border-neutral-200 text-neutral-700 transition-colors hover:bg-neutral-100 disabled:opacity-60 dark:border-neutral-700 dark:text-neutral-200 dark:hover:bg-neutral-800'
-                                            aria-label='Stage file'
-                                            title='Stage file'
-                                          >
-                                            <i className='bx bx-upload text-[12px]' aria-hidden='true' />
-                                          </button>
-                                        )}
-                                      </div>
-                                    </div>
-                                  ) : (
-                                    <div
-                                      key={`${section.key}-${file.relativePath}`}
-                                      className={`min-w-0 overflow-hidden rounded-lg border px-2 py-2 transition-colors ${
-                                        isSelected
-                                          ? 'border-sky-300 bg-sky-50/70 dark:border-sky-500/50 dark:bg-sky-500/10'
-                                          : 'border-transparent bg-neutral-50/70 dark:bg-neutral-950/30'
-                                      }`}
-                                    >
-                                      <div className='flex min-w-0 flex-wrap items-start gap-2'>
-                                        <button
-                                          onClick={() => handleSelectGitDiff(file, false)}
-                                          className='min-w-0 flex-1 text-left'
-                                        >
-                                          <div className='flex min-w-0 items-center gap-2'>
-                                            <span className='shrink-0 rounded-md border border-neutral-200 bg-white px-1.5 py-0.5 text-[10px] font-semibold text-neutral-600 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-300'>
-                                              {file.code}
-                                            </span>
-                                            <span className='block min-w-0 truncate text-xs font-medium text-neutral-800 dark:text-neutral-200 overflow-left'>
-                                              {file.displayPath}
-                                            </span>
-                                          </div>
-                                          <div className='mt-1 break-words text-[11px] text-neutral-500 dark:text-neutral-400'>
-                                            {file.isDeleted
-                                              ? 'Deleted'
-                                              : file.isRenamed
-                                                ? 'Renamed'
-                                                : file.untracked
-                                                  ? 'Untracked'
-                                                  : file.conflicted
-                                                    ? 'Conflict requires resolution'
-                                                    : 'Modified in working tree'}
-                                          </div>
-                                        </button>
-                                        <div className='flex w-full flex-wrap gap-1.5 sm:w-auto sm:flex-col sm:flex-shrink-0'>
-                                          <button
-                                            onClick={() => openGitDiffTab(file, false)}
-                                            className='rounded-md border border-neutral-200 px-2 py-1 text-[10px] text-neutral-700 transition-colors hover:bg-neutral-100 dark:border-neutral-700 dark:text-neutral-200 dark:hover:bg-neutral-800'
-                                          >
-                                            Open Diff
+                                            <i className='bx bx-git-compare text-[12px]' aria-hidden='true' />
                                           </button>
                                           {!file.isDeleted && !isWeb && (
                                             <button
+                                              type='button'
                                               onClick={() =>
                                                 void openFileEditor(file.path, { relativePath: file.relativePath })
                                               }
-                                              className='rounded-md border border-neutral-200 px-2 py-1 text-[10px] text-neutral-700 transition-colors hover:bg-neutral-100 dark:border-neutral-700 dark:text-neutral-200 dark:hover:bg-neutral-800'
+                                              className='pointer-events-auto inline-flex h-6 w-6 items-center justify-center rounded-md text-neutral-500 transition-colors hover:bg-neutral-200/70 hover:text-neutral-800 dark:text-neutral-400 dark:hover:bg-neutral-800/70 dark:hover:text-neutral-200'
+                                              aria-label='Open file'
+                                              title='Open file'
                                             >
-                                              Open
+                                              <i className='bx bx-file text-[12px]' aria-hidden='true' />
                                             </button>
                                           )}
                                           {onFilePathInsert && (
                                             <button
+                                              type='button'
                                               onClick={() => onFilePathInsert(file.path)}
-                                              className='rounded-md border border-neutral-200 px-2 py-1 text-[10px] text-neutral-700 transition-colors hover:bg-neutral-100 dark:border-neutral-700 dark:text-neutral-200 dark:hover:bg-neutral-800'
+                                              className='pointer-events-auto inline-flex h-6 w-6 items-center justify-center rounded-md text-neutral-500 transition-colors hover:bg-neutral-200/70 hover:text-neutral-800 dark:text-neutral-400 dark:hover:bg-neutral-800/70 dark:hover:text-neutral-200'
+                                              aria-label='Insert path'
+                                              title='Insert path'
                                             >
-                                              Insert
+                                              <i className='bx bx-export text-[12px]' aria-hidden='true' />
                                             </button>
                                           )}
-                                          <button
-                                            onClick={() => void handleGitStageFile(file)}
-                                            disabled={gitStageFilesMutation.isPending}
-                                            className='rounded-md border border-neutral-200 px-2 py-1 text-[10px] text-neutral-700 transition-colors hover:bg-neutral-100 disabled:opacity-60 dark:border-neutral-700 dark:text-neutral-200 dark:hover:bg-neutral-800'
-                                          >
-                                            Stage
-                                          </button>
+                                          {section.key === 'staged' ? (
+                                            <button
+                                              type='button'
+                                              onClick={() => void handleGitUnstageFile(file)}
+                                              disabled={gitUnstageFilesMutation.isPending}
+                                              className='pointer-events-auto inline-flex h-6 w-6 items-center justify-center rounded-md text-neutral-500 transition-colors hover:bg-neutral-200/70 hover:text-neutral-800 disabled:opacity-50 dark:text-neutral-400 dark:hover:bg-neutral-800/70 dark:hover:text-neutral-200'
+                                              aria-label='Unstage file'
+                                              title='Unstage file'
+                                            >
+                                              <i className='bx bx-download text-[12px]' aria-hidden='true' />
+                                            </button>
+                                          ) : (
+                                            <button
+                                              type='button'
+                                              onClick={() => void handleGitStageFile(file)}
+                                              disabled={gitStageFilesMutation.isPending}
+                                              className='pointer-events-auto inline-flex h-6 w-6 items-center justify-center rounded-md text-neutral-500 transition-colors hover:bg-neutral-200/70 hover:text-neutral-800 disabled:opacity-50 dark:text-neutral-400 dark:hover:bg-neutral-800/70 dark:hover:text-neutral-200'
+                                              aria-label='Stage file'
+                                              title='Stage file'
+                                            >
+                                              <i className='bx bx-upload text-[12px]' aria-hidden='true' />
+                                            </button>
+                                          )}
                                         </div>
                                       </div>
                                     </div>
@@ -3440,14 +3377,14 @@ const RightBar: React.FC<RightBarProps> = ({
                               </div>
                             )}
                           </div>
-                        ))
-                      )}
-                    </div>
+                        ))}
+                      </div>
+                    )}
                   </div>
 
-                  <div className='rounded-xl border border-neutral-200 bg-white/70 p-3 dark:border-neutral-800 dark:bg-neutral-900/40'>
+                  <div className='border-t border-neutral-200/70 px-2 pt-4 dark:border-neutral-800/70'>
                     <div className='mb-2 flex items-center justify-between gap-2'>
-                      <h3 className='text-xs font-semibold uppercase tracking-[0.18em] text-neutral-500 dark:text-neutral-400'>
+                      <h3 className='text-[11px] font-semibold uppercase tracking-[0.16em] text-neutral-500 dark:text-neutral-400'>
                         Diff Preview
                       </h3>
                       {selectedGitDiff && (
@@ -3462,8 +3399,8 @@ const RightBar: React.FC<RightBarProps> = ({
                         Select a changed file, then open its diff in the Monaco dock.
                       </div>
                     ) : (
-                      <div className='space-y-2'>
-                        <div className='text-xs text-neutral-700 dark:text-neutral-200'>
+                      <div className='space-y-1.5'>
+                        <div className='text-xs font-medium text-neutral-700 dark:text-neutral-200'>
                           {selectedGitStatusFile.displayPath}
                         </div>
                         <div className='text-[11px] text-neutral-500 dark:text-neutral-400'>
@@ -3471,34 +3408,38 @@ const RightBar: React.FC<RightBarProps> = ({
                           place.
                         </div>
                         <div className='flex flex-wrap gap-2'>
-                          <Button
-                            variant='outline2'
-                            size='small'
+                          <button
+                            type='button'
                             onClick={() => openGitDiffTab(selectedGitStatusFile, Boolean(selectedGitDiff.staged))}
+                            className='inline-flex h-7 w-7 items-center justify-center rounded-md border border-neutral-200 text-neutral-500 transition-colors hover:bg-neutral-100 hover:text-neutral-800 dark:border-neutral-800 dark:text-neutral-400 dark:hover:bg-neutral-900 dark:hover:text-neutral-200'
+                            title='Open diff'
+                            aria-label='Open diff'
                           >
-                            Open diff in dock
-                          </Button>
+                            <i className='bx bx-git-compare text-sm' aria-hidden='true' />
+                          </button>
                           {!selectedGitStatusFile.isDeleted && !isWeb && (
-                            <Button
-                              variant='outline2'
-                              size='small'
+                            <button
+                              type='button'
                               onClick={() =>
                                 void openFileEditor(selectedGitStatusFile.path, {
                                   relativePath: selectedGitStatusFile.relativePath,
                                 })
                               }
+                              className='inline-flex h-7 w-7 items-center justify-center rounded-md border border-neutral-200 text-neutral-500 transition-colors hover:bg-neutral-100 hover:text-neutral-800 dark:border-neutral-800 dark:text-neutral-400 dark:hover:bg-neutral-900 dark:hover:text-neutral-200'
+                              title='Open file'
+                              aria-label='Open file'
                             >
-                              Open file
-                            </Button>
+                              <i className='bx bx-file text-sm' aria-hidden='true' />
+                            </button>
                           )}
                         </div>
                       </div>
                     )}
                   </div>
 
-                  <div className='rounded-xl border border-neutral-200 bg-white/70 p-3 dark:border-neutral-800 dark:bg-neutral-900/40'>
+                  <div className='border-t border-neutral-200/70 px-2 pt-4 dark:border-neutral-800/70'>
                     <div className='mb-2 flex items-center justify-between gap-2'>
-                      <h3 className='text-xs font-semibold uppercase tracking-[0.18em] text-neutral-500 dark:text-neutral-400'>
+                      <h3 className='text-[11px] font-semibold uppercase tracking-[0.16em] text-neutral-500 dark:text-neutral-400'>
                         Branches
                       </h3>
                       <span className='text-[11px] text-neutral-500 dark:text-neutral-400'>
@@ -3517,50 +3458,52 @@ const RightBar: React.FC<RightBarProps> = ({
                           }
                         }}
                         placeholder='new-branch-name'
-                        className='flex-1 rounded-lg border border-neutral-200 bg-white px-2 py-1.5 text-sm text-neutral-900 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-100'
+                        className='flex-1 rounded-md border border-transparent bg-neutral-100/70 px-2 py-1.5 text-sm text-neutral-900 focus:border-neutral-300 focus:bg-white dark:bg-neutral-900/60 dark:text-neutral-100 dark:focus:border-neutral-700 dark:focus:bg-neutral-900'
                       />
-                      <Button
-                        variant='outline2'
-                        size='small'
+                      <button
+                        type='button'
                         onClick={() => void handleGitCreateBranch()}
                         disabled={!newGitBranchName.trim() || gitCreateBranchMutation.isPending}
+                        className='inline-flex h-8 w-8 items-center justify-center rounded-md border border-neutral-200 text-neutral-500 transition-colors hover:bg-neutral-100 hover:text-neutral-800 disabled:opacity-50 dark:border-neutral-800 dark:text-neutral-400 dark:hover:bg-neutral-900 dark:hover:text-neutral-200'
+                        title={gitCreateBranchMutation.isPending ? 'Creating branch' : 'Create branch'}
+                        aria-label={gitCreateBranchMutation.isPending ? 'Creating branch' : 'Create branch'}
                       >
-                        {gitCreateBranchMutation.isPending ? 'Creating...' : 'Create'}
-                      </Button>
+                        <i
+                          className={`bx ${gitCreateBranchMutation.isPending ? 'bx-loader-circle animate-spin' : 'bx-git-branch'} text-sm`}
+                          aria-hidden='true'
+                        />
+                      </button>
                     </div>
 
-                    <div className='space-y-2'>
+                    <div className='space-y-1.5'>
                       {displayedLocalBranches.length === 0 ? (
                         <div className='text-xs text-neutral-500 dark:text-neutral-400'>No local branches.</div>
                       ) : (
                         displayedLocalBranches.map(branch => (
-                          <div
-                            key={branch.name}
-                            className='flex items-center justify-between gap-2 rounded-lg border border-neutral-200 px-2 py-2 dark:border-neutral-800'
-                          >
+                          <div key={branch.name} className='flex items-center justify-between gap-3 px-1 py-1.5'>
                             <div className='min-w-0 flex-1'>
                               <div className='flex items-center gap-2'>
                                 <span className='truncate text-xs font-medium text-neutral-800 dark:text-neutral-200'>
                                   {branch.name}
                                 </span>
                                 {branch.current && (
-                                  <span className='rounded-full border border-sky-300 bg-sky-50 px-2 py-0.5 text-[10px] font-medium text-sky-700 dark:border-sky-500/40 dark:bg-sky-500/10 dark:text-sky-200'>
+                                  <span className='text-[10px] font-medium text-sky-600 dark:text-sky-300'>
                                     current
                                   </span>
                                 )}
                               </div>
-                              <div className='mt-1 text-[11px] text-neutral-500 dark:text-neutral-400'>
+                              <div className='mt-0.5 text-[11px] text-neutral-500 dark:text-neutral-400'>
                                 {branch.shortHash || '----'} {branch.relativeDate ? `• ${branch.relativeDate}` : ''}
                               </div>
                             </div>
-                            <Button
-                              variant='outline2'
-                              size='small'
+                            <button
+                              type='button'
                               onClick={() => void handleGitCheckoutBranch(branch)}
                               disabled={branch.current || gitCheckoutBranchMutation.isPending}
+                              className='shrink-0 text-[11px] font-medium text-neutral-500 transition-colors hover:text-neutral-800 disabled:opacity-50 dark:text-neutral-400 dark:hover:text-neutral-200'
                             >
-                              {branch.current ? 'On branch' : 'Checkout'}
-                            </Button>
+                              {branch.current ? 'Current' : 'Checkout'}
+                            </button>
                           </div>
                         ))
                       )}
@@ -3571,7 +3514,7 @@ const RightBar: React.FC<RightBarProps> = ({
                         <div className='mb-2 text-[11px] font-medium uppercase tracking-[0.14em] text-neutral-500 dark:text-neutral-400'>
                           Remote
                         </div>
-                        <div className='space-y-1.5'>
+                        <div className='space-y-1'>
                           {displayedRemoteBranches.map(branch => (
                             <div key={branch.name} className='text-[11px] text-neutral-600 dark:text-neutral-300'>
                               {branch.name}
@@ -3582,9 +3525,9 @@ const RightBar: React.FC<RightBarProps> = ({
                     )}
                   </div>
 
-                  <div className='rounded-xl border border-neutral-200 bg-white/70 p-3 dark:border-neutral-800 dark:bg-neutral-900/40'>
+                  <div className='border-t border-neutral-200/70 px-2 pt-4 dark:border-neutral-800/70'>
                     <div className='mb-2 flex items-center justify-between gap-2'>
-                      <h3 className='text-xs font-semibold uppercase tracking-[0.18em] text-neutral-500 dark:text-neutral-400'>
+                      <h3 className='text-[11px] font-semibold uppercase tracking-[0.16em] text-neutral-500 dark:text-neutral-400'>
                         Commit Graph
                       </h3>
                       <span className='text-[11px] text-neutral-500 dark:text-neutral-400'>
@@ -3594,17 +3537,17 @@ const RightBar: React.FC<RightBarProps> = ({
                     {displayedCommitGraphLines.length === 0 ? (
                       <div className='text-xs text-neutral-500 dark:text-neutral-400'>No commit graph available.</div>
                     ) : (
-                      <div className='overflow-hidden rounded-lg border border-neutral-200 bg-neutral-950/95 dark:border-neutral-800'>
-                        <pre className='max-h-72 overflow-auto px-3 py-3 text-[11px] leading-5 text-emerald-100 no-scrollbar whitespace-pre-wrap break-words font-mono'>
+                      <div className='overflow-hidden rounded-lg bg-neutral-950/95'>
+                        <pre className='max-h-72 overflow-auto px-3 py-3 font-mono text-[11px] leading-5 text-emerald-100 no-scrollbar whitespace-pre-wrap break-words'>
                           {displayedCommitGraphLines.join('\n')}
                         </pre>
                       </div>
                     )}
                   </div>
 
-                  <div className='rounded-xl border border-neutral-200 bg-white/70 p-3 dark:border-neutral-800 dark:bg-neutral-900/40'>
+                  <div className='border-t border-neutral-200/70 px-2 pt-4 dark:border-neutral-800/70'>
                     <div className='mb-2 flex items-center justify-between gap-2'>
-                      <h3 className='text-xs font-semibold uppercase tracking-[0.18em] text-neutral-500 dark:text-neutral-400'>
+                      <h3 className='text-[11px] font-semibold uppercase tracking-[0.16em] text-neutral-500 dark:text-neutral-400'>
                         Recent Commits
                       </h3>
                       <span className='text-[11px] text-neutral-500 dark:text-neutral-400'>
@@ -3614,21 +3557,18 @@ const RightBar: React.FC<RightBarProps> = ({
                     {displayedGitCommits.length === 0 ? (
                       <div className='text-xs text-neutral-500 dark:text-neutral-400'>No commits available.</div>
                     ) : (
-                      <div className='space-y-2'>
+                      <div className='space-y-1.5'>
                         {displayedGitCommits.map((commit: GitCommit) => (
-                          <div
-                            key={commit.hash}
-                            className='rounded-lg border border-neutral-200 px-2 py-2 dark:border-neutral-800'
-                          >
+                          <div key={commit.hash} className='px-1 py-1.5'>
                             <div className='flex items-center gap-2'>
-                              <span className='rounded-md border border-neutral-200 bg-neutral-50 px-1.5 py-0.5 text-[10px] font-semibold text-neutral-700 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-300'>
+                              <span className='font-mono text-[10px] font-semibold text-neutral-500 dark:text-neutral-400'>
                                 {commit.shortHash}
                               </span>
                               <span className='truncate text-xs font-medium text-neutral-800 dark:text-neutral-200'>
                                 {commit.subject}
                               </span>
                             </div>
-                            <div className='mt-1 text-[11px] text-neutral-500 dark:text-neutral-400'>
+                            <div className='mt-0.5 text-[10px] text-neutral-500 dark:text-neutral-400'>
                               {commit.author} • {commit.relativeDate}
                               {commit.decorations ? ` • ${commit.decorations}` : ''}
                             </div>
@@ -3641,11 +3581,11 @@ const RightBar: React.FC<RightBarProps> = ({
               )
             ) : activeTab === 'terminal' ? (
               <div className='space-y-3'>
-                <div className='rounded-xl border border-neutral-200 bg-white/70 p-3 dark:border-neutral-800 dark:bg-neutral-900/40'>
+                <div className='px-2 py-1'>
                   <div className='flex items-start justify-between gap-3'>
-                    <div>
-                      <h3 className='text-xs font-semibold uppercase tracking-[0.18em] text-neutral-500 dark:text-neutral-400'>
-                        Terminal Sessions
+                    <div className='min-w-0 flex-1'>
+                      <h3 className='text-[11px] font-semibold uppercase tracking-[0.16em] text-neutral-500 dark:text-neutral-400'>
+                        Terminal
                       </h3>
                       <div className='mt-1 text-sm font-semibold text-neutral-900 dark:text-neutral-100'>
                         {openTerminalTabs.length} tab{openTerminalTabs.length === 1 ? '' : 's'} •{' '}
@@ -3653,98 +3593,104 @@ const RightBar: React.FC<RightBarProps> = ({
                         running
                       </div>
                       <div className='mt-1 text-[11px] text-neutral-500 dark:text-neutral-400'>
-                        Launch multiple local shells and restore them on next app launch.
+                        Launch local shells and reopen them on next app launch.
                       </div>
                     </div>
-                    <Button
-                      variant='outline2'
-                      size='small'
+                    <button
+                      type='button'
                       onClick={() => openNewTerminalDock()}
                       disabled={isWeb || !(currentPath || ccCwd)}
+                      className='text-[11px] font-medium text-neutral-500 transition-colors hover:text-neutral-800 disabled:opacity-50 dark:text-neutral-400 dark:hover:text-neutral-200'
                     >
-                      New terminal
-                    </Button>
+                      New
+                    </button>
                   </div>
 
-                  <div className='mt-3 flex flex-wrap gap-2'>
-                    <Button
-                      variant='outline2'
-                      size='small'
+                  <div className='mt-2 flex flex-wrap gap-x-3 gap-y-1'>
+                    <button
+                      type='button'
                       onClick={() => openNewTerminalDock(currentPath || ccCwd)}
                       disabled={isWeb || !(currentPath || ccCwd)}
+                      className='text-[11px] font-medium text-neutral-500 transition-colors hover:text-neutral-800 disabled:opacity-50 dark:text-neutral-400 dark:hover:text-neutral-200'
                     >
-                      Open in current path
-                    </Button>
+                      Current path
+                    </button>
                     {ccCwd && currentPath && currentPath !== ccCwd && (
-                      <Button variant='outline2' size='small' onClick={() => openNewTerminalDock(ccCwd)}>
-                        Open in root
-                      </Button>
+                      <button
+                        type='button'
+                        onClick={() => openNewTerminalDock(ccCwd)}
+                        className='text-[11px] font-medium text-neutral-500 transition-colors hover:text-neutral-800 dark:text-neutral-400 dark:hover:text-neutral-200'
+                      >
+                        Root
+                      </button>
                     )}
                     {activeTerminalDock && (
-                      <Button
-                        variant='outline2'
-                        size='small'
+                      <button
+                        type='button'
                         onClick={() => setActiveDockTabId(getTerminalDockTabId(activeTerminalDock.id))}
+                        className='text-[11px] font-medium text-neutral-500 transition-colors hover:text-neutral-800 dark:text-neutral-400 dark:hover:text-neutral-200'
                       >
-                        Focus active dock
-                      </Button>
+                        Focus active
+                      </button>
                     )}
                   </div>
                 </div>
 
-                <div className='rounded-xl border border-neutral-200 bg-white/70 p-3 dark:border-neutral-800 dark:bg-neutral-900/40'>
-                  <h3 className='text-xs font-semibold uppercase tracking-[0.18em] text-neutral-500 dark:text-neutral-400'>
+                <div className='border-t border-neutral-200/70 px-2 pt-4 dark:border-neutral-800/70'>
+                  <h3 className='text-[11px] font-semibold uppercase tracking-[0.16em] text-neutral-500 dark:text-neutral-400'>
                     Preferences
                   </h3>
-                  <div className='mt-3 space-y-2'>
+                  <div className='mt-2 divide-y divide-neutral-200/70 dark:divide-neutral-800/70'>
                     <button
+                      type='button'
                       onClick={() =>
                         setTerminalPreferences(current => ({
                           ...current,
                           restoreSessionsOnLaunch: !current.restoreSessionsOnLaunch,
                         }))
                       }
-                      className='flex w-full items-center justify-between rounded-lg border border-neutral-200 px-3 py-2 text-left dark:border-neutral-800'
+                      className='group flex w-full items-start justify-between gap-3 py-1.5 text-left'
                     >
-                      <div>
-                        <div className='text-sm font-medium text-neutral-900 dark:text-neutral-100'>
+                      <div className='min-w-0'>
+                        <div className='text-[11px] font-medium text-neutral-900 dark:text-neutral-100'>
                           Restore sessions on launch
                         </div>
-                        <div className='text-[11px] text-neutral-500 dark:text-neutral-400'>
+                        <div className='mt-0.5 text-[10px] text-neutral-500 dark:text-neutral-400'>
                           Reopen saved terminal tabs after restarting Electron.
                         </div>
                       </div>
-                      <span className='text-xs font-semibold text-neutral-700 dark:text-neutral-200'>
+                      <span className='inline-flex shrink-0 items-center justify-center rounded-full bg-neutral-100 px-1.5 py-0.5 text-[10px] font-medium text-neutral-500 transition-transform duration-150 group-hover:scale-110 group-focus-visible:scale-110 dark:bg-neutral-800 dark:text-neutral-400'>
                         {terminalPreferences.restoreSessionsOnLaunch ? 'On' : 'Off'}
                       </span>
                     </button>
                     <button
+                      type='button'
                       onClick={() =>
                         setTerminalPreferences(current => ({
                           ...current,
                           persistHistory: !current.persistHistory,
                         }))
                       }
-                      className='flex w-full items-center justify-between rounded-lg border border-neutral-200 px-3 py-2 text-left dark:border-neutral-800'
+                      className='group flex w-full items-start justify-between gap-3 py-1.5 text-left'
                     >
-                      <div>
-                        <div className='text-sm font-medium text-neutral-900 dark:text-neutral-100'>
+                      <div className='min-w-0'>
+                        <div className='text-[11px] font-medium text-neutral-900 dark:text-neutral-100'>
                           Persist shell history
                         </div>
-                        <div className='text-[11px] text-neutral-500 dark:text-neutral-400'>
+                        <div className='mt-0.5 text-[10px] text-neutral-500 dark:text-neutral-400'>
                           Save each terminal buffer so restored tabs show previous output.
                         </div>
                       </div>
-                      <span className='text-xs font-semibold text-neutral-700 dark:text-neutral-200'>
+                      <span className='inline-flex shrink-0 items-center justify-center rounded-full bg-neutral-100 px-1.5 py-0.5 text-[10px] font-medium text-neutral-500 transition-transform duration-150 group-hover:scale-110 group-focus-visible:scale-110 dark:bg-neutral-800 dark:text-neutral-400'>
                         {terminalPreferences.persistHistory ? 'On' : 'Off'}
                       </span>
                     </button>
                   </div>
                 </div>
 
-                <div className='rounded-xl border border-neutral-200 bg-white/70 p-3 dark:border-neutral-800 dark:bg-neutral-900/40'>
+                <div className='border-t border-neutral-200/70 px-2 pt-4 dark:border-neutral-800/70'>
                   <div className='mb-2 flex items-center justify-between gap-2'>
-                    <h3 className='text-xs font-semibold uppercase tracking-[0.18em] text-neutral-500 dark:text-neutral-400'>
+                    <h3 className='text-[11px] font-semibold uppercase tracking-[0.16em] text-neutral-500 dark:text-neutral-400'>
                       Open Tabs
                     </h3>
                     <span className='text-[11px] text-neutral-500 dark:text-neutral-400'>
@@ -3754,78 +3700,105 @@ const RightBar: React.FC<RightBarProps> = ({
 
                   {openTerminalTabs.length === 0 ? (
                     <div className='text-xs text-neutral-500 dark:text-neutral-400'>
-                      No terminal tabs yet. Launch one from the file browser header or the button above.
+                      No terminal tabs yet. Launch one from above.
                     </div>
                   ) : (
-                    <div className='space-y-2'>
+                    <div className='divide-y divide-neutral-200/70 dark:divide-neutral-800/70'>
                       {openTerminalTabs.map(tab => {
                         const tabDockId = getTerminalDockTabId(tab.id)
                         const isFocused = activeDockTabId === tabDockId
+                        const statusLabel =
+                          tab.status === 'open'
+                            ? 'running'
+                            : tab.status === 'launching'
+                              ? 'launching'
+                              : tab.status === 'error'
+                                ? 'error'
+                                : tab.exitCode == null
+                                  ? 'closed'
+                                  : `exit ${tab.exitCode}`
+                        const statusClassName =
+                          tab.status === 'open'
+                            ? 'text-emerald-600 dark:text-emerald-300'
+                            : tab.status === 'launching'
+                              ? 'text-amber-600 dark:text-amber-300'
+                              : tab.status === 'error'
+                                ? 'text-rose-600 dark:text-rose-300'
+                                : 'text-neutral-500 dark:text-neutral-400'
+
                         return (
                           <div
                             key={tab.id}
-                            className={`rounded-lg border px-3 py-2 ${
+                            className={`px-1 py-1.5 transition-colors ${
                               isFocused
-                                ? 'border-violet-300 bg-violet-50/60 dark:border-violet-500/40 dark:bg-violet-500/10'
-                                : 'border-neutral-200 dark:border-neutral-800'
+                                ? 'rounded-lg bg-violet-50/60 dark:bg-violet-500/10'
+                                : 'hover:bg-neutral-100/60 dark:hover:bg-neutral-900/40'
                             }`}
                           >
                             <div className='flex items-start justify-between gap-3'>
                               <button
+                                type='button'
                                 onClick={() => {
                                   dispatch(uiActions.rightBarExpanded())
                                   setActiveDockTabId(tabDockId)
                                 }}
                                 className='min-w-0 flex-1 text-left'
                               >
-                                <div className='flex items-center gap-2'>
-                                  <span className='truncate text-sm font-medium text-neutral-900 dark:text-neutral-100'>
+                                <div className='flex min-w-0 items-center gap-2'>
+                                  <span className='truncate text-[11px] font-medium text-neutral-900 dark:text-neutral-100'>
                                     {tab.title}
                                   </span>
-                                  <span className='rounded-full border border-neutral-200 px-2 py-0.5 text-[10px] text-neutral-600 dark:border-neutral-700 dark:text-neutral-300'>
-                                    {tab.status === 'open'
-                                      ? 'running'
-                                      : tab.status === 'launching'
-                                        ? 'launching'
-                                        : tab.status === 'error'
-                                          ? 'error'
-                                          : tab.exitCode == null
-                                            ? 'closed'
-                                            : `exit ${tab.exitCode}`}
+                                  <span className={`shrink-0 text-[10px] font-medium ${statusClassName}`}>
+                                    {statusLabel}
                                   </span>
+                                  {isFocused && (
+                                    <span className='shrink-0 text-[10px] font-medium text-violet-600 dark:text-violet-300'>
+                                      focused
+                                    </span>
+                                  )}
                                 </div>
                                 <div
-                                  className='mt-1 truncate text-[11px] text-neutral-500 dark:text-neutral-400'
+                                  className='mt-0.5 truncate text-[10px] text-neutral-500 dark:text-neutral-400'
                                   title={tab.cwd}
                                 >
                                   {tab.cwd}
+                                  {tab.history
+                                    ? ` • ${Math.min(tab.history.length, TERMINAL_HISTORY_LIMIT).toLocaleString()} chars`
+                                    : ''}
                                 </div>
-                                {tab.history && (
-                                  <div className='mt-1 text-[11px] text-neutral-500 dark:text-neutral-400'>
-                                    buffer {Math.min(tab.history.length, TERMINAL_HISTORY_LIMIT).toLocaleString()} chars
-                                  </div>
-                                )}
                               </button>
-                              <div className='flex flex-wrap justify-end gap-1.5'>
-                                <Button
-                                  variant='outline2'
-                                  size='small'
+                              <div className='mt-0.5 flex shrink-0 flex-wrap items-center justify-end gap-x-2 gap-y-1'>
+                                <button
+                                  type='button'
                                   onClick={() => {
                                     dispatch(uiActions.rightBarExpanded())
                                     setActiveDockTabId(tabDockId)
                                   }}
+                                  className='text-[10px] font-medium text-neutral-500 transition-colors hover:text-neutral-800 dark:text-neutral-400 dark:hover:text-neutral-200'
                                 >
                                   Focus
-                                </Button>
-                                <Button variant='outline2' size='small' onClick={() => restartTerminalDock(tab.id)}>
+                                </button>
+                                <button
+                                  type='button'
+                                  onClick={() => restartTerminalDock(tab.id)}
+                                  className='text-[10px] font-medium text-neutral-500 transition-colors hover:text-neutral-800 dark:text-neutral-400 dark:hover:text-neutral-200'
+                                >
                                   Restart
-                                </Button>
-                                <Button variant='outline2' size='small' onClick={() => clearTerminalDockBuffer(tab.id)}>
+                                </button>
+                                <button
+                                  type='button'
+                                  onClick={() => clearTerminalDockBuffer(tab.id)}
+                                  className='text-[10px] font-medium text-neutral-500 transition-colors hover:text-neutral-800 dark:text-neutral-400 dark:hover:text-neutral-200'
+                                >
                                   Clear
-                                </Button>
-                                <Button variant='outline2' size='small' onClick={() => closeTerminalDock(tab.id)}>
+                                </button>
+                                <button
+                                  type='button'
+                                  onClick={() => closeTerminalDock(tab.id)}
+                                  className='text-[10px] font-medium text-neutral-500 transition-colors hover:text-rose-600 dark:text-neutral-400 dark:hover:text-rose-300'
+                                >
                                   Close
-                                </Button>
+                                </button>
                               </div>
                             </div>
                           </div>

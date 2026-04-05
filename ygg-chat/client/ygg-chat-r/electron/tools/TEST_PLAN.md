@@ -21,11 +21,11 @@ Create a test file with known content for testing.
 - Verification should pass
 - Edit should succeed
 
-## Test 4: Edit with Stale Content Detection
+## Test 4: Edit with Stale Hash
 - Read a file
 - Modify the file externally
-- Attempt to edit with old hash
-- Validation should fail with "Content hash mismatch" error
+- Attempt to edit with old hash only
+- Edit should still succeed because hash mismatches are advisory
 
 ## Test 5: Line Ending Preservation
 - Create files with CRLF and LF line endings
@@ -42,6 +42,6 @@ Create a test file with known content for testing.
 All tests should pass, demonstrating:
 - ✅ No phantom content in read results
 - ✅ Metadata tracking works correctly
-- ✅ Content validation prevents stale edits
+- ✅ Metadata validation prevents stale edits while stale hashes remain advisory
 - ✅ Line endings preserved accurately
 - ✅ Backward compatibility maintained

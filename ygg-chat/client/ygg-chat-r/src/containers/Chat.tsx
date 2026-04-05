@@ -6160,83 +6160,78 @@ function Chat() {
             )}
             {branchFileMutationData.latestByPath.length > 0 && (
               <div
-                className={`mx-2 ${latestTodoList && latestTodoList.items && latestTodoList.items.length > 0 ? 'mt-1' : toolCallPermissionRequest ? 'mt-1' : 'mt-2'} mb-1 px-2 py-1 rounded-[16px] bg-neutral-100/80 dark:bg-neutral-800/50 border border-neutral-200 dark:border-neutral-700`}
+                className={`mx-2 ${latestTodoList && latestTodoList.items && latestTodoList.items.length > 0 ? 'mt-1' : toolCallPermissionRequest ? 'mt-1' : 'mt-2'} mb-1 px-1 py-1`}
               >
                 <div className='flex items-center justify-between gap-3'>
                   <span className='min-w-0 flex items-center gap-1.5 text-xs font-medium text-neutral-600 dark:text-neutral-400'>
-                    <i className='bx bx-file text-xl shrink-0'></i>
+                    <i className='bx bx-file text-base shrink-0'></i>
                     <span className='truncate text-[12px]'>Modified Files</span>
-                    {workspaceMutationsCollapsed && (
-                      <span className='ml-1 shrink-0 text-[10px] text-neutral-400 dark:text-neutral-500'>
-                        ({branchFileMutationData.latestByPath.length} file
-                        {branchFileMutationData.latestByPath.length === 1 ? '' : 's'})
-                      </span>
-                    )}
-                  </span>
-                  <div className='flex shrink-0 items-center gap-2'>
-                    <span className='text-[10px] text-neutral-400 dark:text-neutral-500'>
+                    <span className='shrink-0 text-[10px] text-neutral-400 dark:text-neutral-500'>
                       {branchFileMutationData.latestByPath.length} file
                       {branchFileMutationData.latestByPath.length === 1 ? '' : 's'}
                     </span>
+                  </span>
+                  <div className='flex shrink-0 items-center gap-2'>
                     <button
                       type='button'
                       onClick={handleOpenWorkspaceMutationDiffs}
-                      className='flex items-center gap-1 rounded-lg border border-neutral-200 px-2 py-1 text-[10px] font-medium text-neutral-600 transition-colors hover:bg-neutral-200 dark:border-neutral-700 dark:text-neutral-300 dark:hover:bg-neutral-700'
+                      className='text-[10px] font-medium text-neutral-500 transition-colors hover:text-neutral-700 dark:text-neutral-400 dark:hover:text-neutral-200'
                       title='Open modified files in Git diff'
                     >
-                      <i className='bx bx-git-compare text-xs' />
-                      <span>Diffs</span>
+                      Diffs
                     </button>
                     <button
                       onClick={() => setWorkspaceMutationsCollapsed(!workspaceMutationsCollapsed)}
-                      className='mt-1 rounded-lg px-2 py-0.5 transition-colors hover:bg-neutral-200 dark:hover:bg-neutral-700'
+                      className='rounded-md px-1 py-0.5 text-neutral-500 transition-colors hover:text-neutral-700 dark:text-neutral-400 dark:hover:text-neutral-200'
                       title={workspaceMutationsCollapsed ? 'Expand modified files' : 'Collapse modified files'}
                     >
                       <i
-                        className={`bx ${workspaceMutationsCollapsed ? 'bx-chevron-down' : 'bx-chevron-up'} text-sm text-neutral-500`}
+                        className={`bx ${workspaceMutationsCollapsed ? 'bx-chevron-down' : 'bx-chevron-up'} text-sm`}
                       ></i>
                     </button>
                   </div>
                 </div>
                 {!workspaceMutationsCollapsed && (
-                  <ul className='mt-1.5 space-y-1 max-h-40 overflow-y-auto pb-1 pr-1 thin-scrollbar'>
+                  <ul className='mt-1.5 space-y-1 max-h-40 overflow-y-auto pr-1 thin-scrollbar'>
                     {branchFileMutationData.latestByPath.map(summary => {
                       const latestMutation = summary.latestMutation
                       const fileName = getWorkspaceFileBaseName(summary.path)
                       return (
                         <li
                           key={`workspace-summary-${summary.path}`}
-                          className='rounded-xl border border-neutral-200/70 bg-white/60 px-2 py-1.5 dark:border-neutral-700/70 dark:bg-neutral-900/30'
+                          className='px-1 py-1'
                         >
                           <div className='flex items-start gap-2'>
                             <span
-                              className={`shrink-0 rounded-full px-1.5 py-0.5 text-[9px] font-semibold ${getWorkspaceMutationBadgeClassName(latestMutation.operation)}`}
+                              className={`mt-0.5 inline-flex h-5 shrink-0 items-center rounded-full px-1.5 text-[9px] font-semibold leading-none ${getWorkspaceMutationBadgeClassName(latestMutation.operation)}`}
                             >
                               {getWorkspaceMutationLabel(latestMutation.operation)}
                             </span>
                             <div className='min-w-0 flex-1'>
-                              <div className='flex items-center gap-1.5'>
-                                <span className='truncate text-xs font-medium text-neutral-800 dark:text-neutral-100'>
-                                  {fileName}
-                                </span>
-                                {summary.mutationCount > 1 && (
-                                  <span className='shrink-0 text-[10px] text-neutral-400 dark:text-neutral-500'>
-                                    ×{summary.mutationCount}
+                              <div className='flex items-center justify-between gap-2'>
+                                <div className='min-w-0 flex items-center gap-1.5'>
+                                  <span className='truncate text-xs font-medium text-neutral-800 dark:text-neutral-100'>
+                                    {fileName}
                                   </span>
-                                )}
+                                  {summary.mutationCount > 1 && (
+                                    <span className='shrink-0 text-[10px] text-neutral-400 dark:text-neutral-500'>
+                                      ×{summary.mutationCount}
+                                    </span>
+                                  )}
+                                </div>
+                                <button
+                                  type='button'
+                                  onClick={() => handleOpenWorkspaceMutationDiffForPath(summary.path)}
+                                  className='shrink-0 text-[10px] font-medium text-neutral-500 transition-colors hover:text-neutral-700 dark:text-neutral-400 dark:hover:text-neutral-200'
+                                  title={`Open diff for ${fileName}`}
+                                >
+                                  Diff
+                                </button>
                               </div>
-                              <div className='truncate text-[10px] text-neutral-500 dark:text-neutral-400'>
+                              <div className='mt-0.5 truncate text-[10px] text-neutral-500 dark:text-neutral-400'>
                                 {summary.path}
                               </div>
                             </div>
-                            <button
-                              type='button'
-                              onClick={() => handleOpenWorkspaceMutationDiffForPath(summary.path)}
-                              className='shrink-0 rounded-lg border border-neutral-200 px-2 py-1 text-[10px] font-medium text-neutral-600 transition-colors hover:bg-neutral-200 dark:border-neutral-700 dark:text-neutral-300 dark:hover:bg-neutral-700'
-                              title={`Open diff for ${fileName}`}
-                            >
-                              Diff
-                            </button>
                           </div>
                         </li>
                       )

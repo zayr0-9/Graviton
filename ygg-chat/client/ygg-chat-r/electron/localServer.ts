@@ -664,10 +664,14 @@ function initializeBuiltInToolRegistry() {
   })
 
   builtInTools.set('bash', async (args, { rootPath }) => {
-    const { command, cwd, env, timeoutMs, maxOutputChars } = args
+    const { command, description, cwd, env, timeoutMs, maxOutputChars } = args
     if (!command) throw new Error('command is required')
+    if (typeof description !== 'string' || !description.trim()) {
+      throw new Error('description is required')
+    }
     const finalCwd = validateAndResolvePath(cwd, rootPath)
     return await runBashCommand(command, {
+      description: description.trim(),
       cwd: finalCwd,
       env,
       timeoutMs,

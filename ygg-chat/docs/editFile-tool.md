@@ -29,9 +29,9 @@ Each helper performs its own path handling, optional validation, backup creation
 - If `options.cwd` is set, it verifies that the target file lives inside the workspace and returns an access-denied result otherwise.
 
 ### Validation
-- `validateFileContent()` can compare the current file hash or modification time against `expectedHash` / `expectedMetadata` supplied via `options`.
-- If validation fails, editing is aborted and a descriptive error is returned.
-- Validation runs before any modification and uses SHA-256 hashing to detect content drift.
+- `validateFileContent()` enforces file identity / modification-time checks from `expectedMetadata` when `validateContent` is enabled.
+- `expectedHash` is accepted for compatibility and surfaced in validation details when available, but a hash mismatch no longer blocks the edit.
+- If metadata validation fails, editing is aborted and a descriptive error is returned.
 
 ### Backup
 - Passing `options.createBackup` writes the original content to `<file>.backup.<iso-timestamp>` before replacing/appending.
@@ -70,7 +70,7 @@ Failure responses explain the issue (e.g., not in workspace, pattern not found, 
 
 ## Usage Notes
 - Prefer `editFile()` over manual `fs` writes to leverage workspace safety and matching resilience.
-- Supply `expectedHash`/`expectedMetadata` when chaining edits to ensure no concurrent modifications slip by.
+- Prefer `expectedMetadata` when chaining edits to guard against concurrent modifications. `expectedHash` is optional and advisory.
 - Use `operationMode: 'plan'` when you need to describe changes without mutating files.
 - Indentation preservation works best when the replacement text mirrors the original structure (same number of lines, reasonable indentation cues).
 

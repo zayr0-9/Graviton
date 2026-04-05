@@ -342,11 +342,11 @@ export const BUILTIN_TOOL_DEFINITIONS: SharedToolDefinition[] = [
         encoding: { type: 'string', description: 'File encoding (default utf8)' },
         validateContent: {
           type: 'boolean',
-          description: 'Validate file has not changed since read using hash/metadata (default true)',
+          description: 'Validate file has not changed since read using metadata checks when provided (default true)',
         },
         expectedHash: {
           type: 'string',
-          description: 'Expected SHA256 content hash from read_file for validation. Prevents editing if file changed.',
+          description: 'Optional SHA256 content hash from read_file. Accepted for compatibility, but mismatches do not block editing.',
         },
         expectedMetadata: {
           type: 'object',
@@ -411,7 +411,7 @@ export const BUILTIN_TOOL_DEFINITIONS: SharedToolDefinition[] = [
               },
               expectedHash: {
                 type: 'string',
-                description: 'Expected SHA256 content hash from read_file for validation. Prevents editing if file changed.',
+                description: 'Optional SHA256 content hash from read_file. Accepted for compatibility, but mismatches do not block editing.',
               },
               expectedMetadata: {
                 type: 'object',
@@ -544,6 +544,11 @@ export const BUILTIN_TOOL_DEFINITIONS: SharedToolDefinition[] = [
       type: 'object',
       properties: {
         command: { type: 'string', description: 'Shell command to execute' },
+        description: {
+          type: 'string',
+          description:
+            'Brief human-readable explanation of what the command is for. Required so humans can quickly understand the purpose of the bash call without parsing the command itself.',
+        },
         cwd: { type: 'string', description: 'Working directory for the command' },
         env: {
           type: 'object',
@@ -564,7 +569,7 @@ export const BUILTIN_TOOL_DEFINITIONS: SharedToolDefinition[] = [
           description: 'Optional limit on total captured output characters (default 20000)',
         },
       },
-      required: ['command'],
+      required: ['command', 'description'],
     },
   },
   {

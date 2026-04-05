@@ -1,8 +1,8 @@
 ![Banner](docs/assets/images/banner2.png)
 
-# Yggdrasil
+# Graviton
 
-Yggdrasil is a **local-first AI workspace** and an **agent harness**:
+Graviton is a **local-first AI workspace** and an **agent harness**:
 it can **read & write files**, **search code**, **run shell commands**, and **invoke tools**—while also supporting **parallel + branching workflows** and **stateful inline apps**.
 
 > Core thesis: **LLMs work best with iterative workflows**
@@ -13,7 +13,7 @@ it can **read & write files**, **search code**, **run shell commands**, and **in
 
 ### 1) Parallel + branching workflows (Heimdall tree)
 
-Humans don’t solve problems linearly. Yggdrasil is built around **branching conversations** and **tree navigation** so you can explore tangents, test alternatives, and keep clean context boundaries.
+Humans don’t solve problems linearly. Graviton is built around **branching conversations** and **tree navigation** so you can explore tangents, test alternatives, and keep clean context boundaries.
 
 - **Every edit is a branch** (no history loss)
 - **Non-linear exploration** without context pollution
@@ -48,11 +48,11 @@ https://github.com/user-attachments/assets/4593e725-6635-45e4-b245-31c8d39a33cc
 
 ### 4) Persistent background agent (Beta)
 
-In desktop mode, Yggdrasil supports a persistent “global agent” loop that can run queued work in the background via the same chat/tool stack (with explicit permission gates).
+In desktop mode, Graviton supports a persistent “global agent” loop that can run queued work in the background via the same chat/tool stack (with explicit permission gates).
 
 ### 5) A builder ecosystem (custom tools + MCP + skills)
 
-Yggdrasil includes:
+Graviton includes:
 
 - built-in tools (file ops, search, shell, etc.)
 - **custom tools** (drop-in tool folders, create your own)
@@ -69,23 +69,23 @@ The companion VS Code extension provides seamless workspace integration:
 - Insert file contents into chat using the `@` symbol
 - Add selected context from IDE
 
-Get the extension from the [VS Code Marketplace](https://marketplace.visualstudio.com/items?itemName=YggdrasilAI97.yggdrasil-extension).
+Get the extension from the [VS Code Marketplace](https://marketplace.visualstudio.com/items?itemName=GravitonAI97.yggdrasil-extension).
 
-## The Vision Behind Yggdrasil
+## The Vision Behind Graviton
 
-Born from frustration with linear LLM interfaces that fail to match human thinking patterns, Yggdrasil represents a fundamental shift in how we interact with AI systems.
+Born from frustration with linear LLM interfaces that fail to match human thinking patterns, Graviton represents a fundamental shift in how we interact with AI systems.
 
 ### Preserving Thought History
 
-Our conversations with AI systems contain valuable records of how we think, reason and solve problems. Yggdrasil transforms these interactions into navigable mind maps, showing how you approach any topic.
+Our conversations with AI systems contain valuable records of how we think, reason and solve problems. Graviton transforms these interactions into navigable mind maps, showing how you approach any topic.
 
 ### Addressing the Documentation Crisis
 
-Traditional programming preserved change history through version control and documentation. With AI-generated code often discarded in chat conversations, we're losing crucial development context. Yggdrasil provides proper logging and easy access to AI usage history.
+Traditional programming preserved change history through version control and documentation. With AI-generated code often discarded in chat conversations, we're losing crucial development context. Graviton provides proper logging and easy access to AI usage history.
 
 ### Superior Learning Tool
 
-By encapsulating different topics into isolated branches, Yggdrasil prevents both:
+By encapsulating different topics into isolated branches, Graviton prevents both:
 
 - **Context pollution** for the LLM
 - **Visual pollution** for the user
@@ -93,18 +93,18 @@ By encapsulating different topics into isolated branches, Yggdrasil prevents bot
 
 This creates cleaner, more focused learning experiences.
 
-Our back-and-forth conversations with AI systems generate valuable data that's currently being wasted. Yggdrasil's mission is to help users better visualize and manage this conversation data, transforming ephemeral chat into persistent, navigable knowledge structures.
+Our back-and-forth conversations with AI systems generate valuable data that's currently being wasted. Graviton's mission is to help users better visualize and manage this conversation data, transforming ephemeral chat into persistent, navigable knowledge structures.
 
 ## Future
 
-This project has grown a bit too much and I think it would do better as an opensource project. I see the future of Yggdrasil as a layer running on top of windows/mac/linux, an abstraction fully automated with an agent.
+This project has grown a bit too much and I think it would do better as an opensource project. I see the future of Graviton as a layer running on top of windows/mac/linux, an abstraction fully automated with an agent.
 Each user can with a prompt, adjust the UI/UX of their app, make it more productive for themselves, or easier to use for someone with visual impairment for example.
 
 Bespoke software, for everyone.
 
 ## Current Status
 
-Yggdrasil is now out of beta. It is pretty stable in its main operation. If you encounter any bug or have a feature request, please open an issue on GitHub.
+Graviton is now out of beta. It is pretty stable in its main operation. If you encounter any bug or have a feature request, please open an issue on GitHub.
 
 I would love to have feedback and contributions from the community.
 
