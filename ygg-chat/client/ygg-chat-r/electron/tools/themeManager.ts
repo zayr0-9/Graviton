@@ -40,6 +40,30 @@ export interface CustomChatTheme {
     settingsSolidColorSectionBg: ThemeColorPair
     appBackgroundColor: ThemeColorPair
     settingsPaneBodyBg: ThemeColorPair
+    settingsCustomThemesCardBg: ThemeColorPair
+    settingsCustomThemesCardBorder: ThemeColorPair
+    settingsCustomThemesAccentBg: ThemeColorPair
+    settingsCustomThemesAccentText: ThemeColorPair
+    settingsCustomThemesTitleText: ThemeColorPair
+    settingsCustomThemesBodyText: ThemeColorPair
+    settingsCustomThemesCodeBg: ThemeColorPair
+    settingsCustomThemesCodeText: ThemeColorPair
+    settingsCustomThemesPanelBorder: ThemeColorPair
+    settingsCustomThemesInnerCardBg: ThemeColorPair
+    settingsCustomThemesInnerCardBorder: ThemeColorPair
+    settingsCustomThemesBadgeBg: ThemeColorPair
+    settingsCustomThemesBadgeText: ThemeColorPair
+    settingsCustomThemesButtonBg: ThemeColorPair
+    settingsCustomThemesButtonBorder: ThemeColorPair
+    settingsCustomThemesButtonText: ThemeColorPair
+    settingsCustomThemesEmptyStateBg: ThemeColorPair
+    settingsCustomThemesEmptyStateBorder: ThemeColorPair
+    settingsCustomThemesListBg: ThemeColorPair
+    settingsCustomThemesListBorder: ThemeColorPair
+    settingsCustomThemesListItemTitleText: ThemeColorPair
+    settingsCustomThemesListItemMetaText: ThemeColorPair
+    settingsCustomThemesPrimaryButtonBg: ThemeColorPair
+    settingsCustomThemesPrimaryButtonText: ThemeColorPair
     chatInputAreaBorder: ThemeColorPair
     chatProgressBarFill: ThemeColorPair
     actionPopoverBorder: ThemeColorPair
@@ -240,6 +264,102 @@ export const createDefaultCustomChatTheme = (): CustomChatTheme => ({
     settingsPaneBodyBg: {
       light: 'oklch(97% 0 0)',
       dark: 'oklch(18% 0 0)',
+    },
+    settingsCustomThemesCardBg: {
+      light: 'rgba(255, 255, 255, 0.7)',
+      dark: 'rgba(23, 23, 23, 0.2)',
+    },
+    settingsCustomThemesCardBorder: {
+      light: 'rgba(229, 229, 229, 0.9)',
+      dark: 'rgba(64, 64, 64, 0.9)',
+    },
+    settingsCustomThemesAccentBg: {
+      light: '#ede9fe',
+      dark: 'rgba(139, 92, 246, 0.15)',
+    },
+    settingsCustomThemesAccentText: {
+      light: '#7c3aed',
+      dark: '#c4b5fd',
+    },
+    settingsCustomThemesTitleText: {
+      light: '#44403c',
+      dark: '#e7e5e4',
+    },
+    settingsCustomThemesBodyText: {
+      light: '#737373',
+      dark: '#a3a3a3',
+    },
+    settingsCustomThemesCodeBg: {
+      light: 'rgba(229, 229, 229, 0.7)',
+      dark: '#262626',
+    },
+    settingsCustomThemesCodeText: {
+      light: '#525252',
+      dark: '#d4d4d8',
+    },
+    settingsCustomThemesPanelBorder: {
+      light: 'rgba(229, 229, 229, 0.8)',
+      dark: 'rgba(64, 64, 64, 0.8)',
+    },
+    settingsCustomThemesInnerCardBg: {
+      light: 'rgba(250, 250, 250, 0.8)',
+      dark: 'rgba(23, 23, 23, 0.3)',
+    },
+    settingsCustomThemesInnerCardBorder: {
+      light: '#e5e5e5',
+      dark: '#404040',
+    },
+    settingsCustomThemesBadgeBg: {
+      light: 'rgba(229, 229, 229, 0.8)',
+      dark: '#262626',
+    },
+    settingsCustomThemesBadgeText: {
+      light: '#737373',
+      dark: '#a3a3a3',
+    },
+    settingsCustomThemesButtonBg: {
+      light: '#ffffff',
+      dark: 'rgba(38, 38, 38, 0.8)',
+    },
+    settingsCustomThemesButtonBorder: {
+      light: '#d4d4d4',
+      dark: '#525252',
+    },
+    settingsCustomThemesButtonText: {
+      light: '#404040',
+      dark: '#e5e5e5',
+    },
+    settingsCustomThemesEmptyStateBg: {
+      light: 'rgba(250, 250, 250, 0.8)',
+      dark: 'rgba(23, 23, 23, 0.3)',
+    },
+    settingsCustomThemesEmptyStateBorder: {
+      light: '#d4d4d4',
+      dark: '#404040',
+    },
+    settingsCustomThemesListBg: {
+      light: 'rgba(250, 250, 250, 0.7)',
+      dark: 'rgba(10, 10, 10, 0.3)',
+    },
+    settingsCustomThemesListBorder: {
+      light: '#e5e5e5',
+      dark: '#404040',
+    },
+    settingsCustomThemesListItemTitleText: {
+      light: '#171717',
+      dark: '#f5f5f5',
+    },
+    settingsCustomThemesListItemMetaText: {
+      light: '#737373',
+      dark: '#a3a3a3',
+    },
+    settingsCustomThemesPrimaryButtonBg: {
+      light: '#3b82f6',
+      dark: '#2563eb',
+    },
+    settingsCustomThemesPrimaryButtonText: {
+      light: '#ffffff',
+      dark: '#ffffff',
     },
     chatInputAreaBorder: {
       light: 'rgba(194, 65, 12, 0.7)',
@@ -809,6 +929,102 @@ export const sanitizeCustomTheme = (value: unknown): CustomChatTheme => {
       ),
       appBackgroundColor: readColorPair(rawColors.appBackgroundColor, defaults.colors.appBackgroundColor),
       settingsPaneBodyBg: readColorPair(rawColors.settingsPaneBodyBg, defaults.colors.settingsPaneBodyBg),
+      settingsCustomThemesCardBg: readColorPair(
+        rawColors.settingsCustomThemesCardBg,
+        defaults.colors.settingsCustomThemesCardBg
+      ),
+      settingsCustomThemesCardBorder: readColorPair(
+        rawColors.settingsCustomThemesCardBorder,
+        defaults.colors.settingsCustomThemesCardBorder
+      ),
+      settingsCustomThemesAccentBg: readColorPair(
+        rawColors.settingsCustomThemesAccentBg,
+        defaults.colors.settingsCustomThemesAccentBg
+      ),
+      settingsCustomThemesAccentText: readColorPair(
+        rawColors.settingsCustomThemesAccentText,
+        defaults.colors.settingsCustomThemesAccentText
+      ),
+      settingsCustomThemesTitleText: readColorPair(
+        rawColors.settingsCustomThemesTitleText,
+        defaults.colors.settingsCustomThemesTitleText
+      ),
+      settingsCustomThemesBodyText: readColorPair(
+        rawColors.settingsCustomThemesBodyText,
+        defaults.colors.settingsCustomThemesBodyText
+      ),
+      settingsCustomThemesCodeBg: readColorPair(
+        rawColors.settingsCustomThemesCodeBg,
+        defaults.colors.settingsCustomThemesCodeBg
+      ),
+      settingsCustomThemesCodeText: readColorPair(
+        rawColors.settingsCustomThemesCodeText,
+        defaults.colors.settingsCustomThemesCodeText
+      ),
+      settingsCustomThemesPanelBorder: readColorPair(
+        rawColors.settingsCustomThemesPanelBorder,
+        defaults.colors.settingsCustomThemesPanelBorder
+      ),
+      settingsCustomThemesInnerCardBg: readColorPair(
+        rawColors.settingsCustomThemesInnerCardBg,
+        defaults.colors.settingsCustomThemesInnerCardBg
+      ),
+      settingsCustomThemesInnerCardBorder: readColorPair(
+        rawColors.settingsCustomThemesInnerCardBorder,
+        defaults.colors.settingsCustomThemesInnerCardBorder
+      ),
+      settingsCustomThemesBadgeBg: readColorPair(
+        rawColors.settingsCustomThemesBadgeBg,
+        defaults.colors.settingsCustomThemesBadgeBg
+      ),
+      settingsCustomThemesBadgeText: readColorPair(
+        rawColors.settingsCustomThemesBadgeText,
+        defaults.colors.settingsCustomThemesBadgeText
+      ),
+      settingsCustomThemesButtonBg: readColorPair(
+        rawColors.settingsCustomThemesButtonBg,
+        defaults.colors.settingsCustomThemesButtonBg
+      ),
+      settingsCustomThemesButtonBorder: readColorPair(
+        rawColors.settingsCustomThemesButtonBorder,
+        defaults.colors.settingsCustomThemesButtonBorder
+      ),
+      settingsCustomThemesButtonText: readColorPair(
+        rawColors.settingsCustomThemesButtonText,
+        defaults.colors.settingsCustomThemesButtonText
+      ),
+      settingsCustomThemesEmptyStateBg: readColorPair(
+        rawColors.settingsCustomThemesEmptyStateBg,
+        defaults.colors.settingsCustomThemesEmptyStateBg
+      ),
+      settingsCustomThemesEmptyStateBorder: readColorPair(
+        rawColors.settingsCustomThemesEmptyStateBorder,
+        defaults.colors.settingsCustomThemesEmptyStateBorder
+      ),
+      settingsCustomThemesListBg: readColorPair(
+        rawColors.settingsCustomThemesListBg,
+        defaults.colors.settingsCustomThemesListBg
+      ),
+      settingsCustomThemesListBorder: readColorPair(
+        rawColors.settingsCustomThemesListBorder,
+        defaults.colors.settingsCustomThemesListBorder
+      ),
+      settingsCustomThemesListItemTitleText: readColorPair(
+        rawColors.settingsCustomThemesListItemTitleText,
+        defaults.colors.settingsCustomThemesListItemTitleText
+      ),
+      settingsCustomThemesListItemMetaText: readColorPair(
+        rawColors.settingsCustomThemesListItemMetaText,
+        defaults.colors.settingsCustomThemesListItemMetaText
+      ),
+      settingsCustomThemesPrimaryButtonBg: readColorPair(
+        rawColors.settingsCustomThemesPrimaryButtonBg,
+        defaults.colors.settingsCustomThemesPrimaryButtonBg
+      ),
+      settingsCustomThemesPrimaryButtonText: readColorPair(
+        rawColors.settingsCustomThemesPrimaryButtonText,
+        defaults.colors.settingsCustomThemesPrimaryButtonText
+      ),
       chatInputAreaBorder: readColorPair(rawColors.chatInputAreaBorder, defaults.colors.chatInputAreaBorder),
       chatProgressBarFill: readColorPair(rawColors.chatProgressBarFill, defaults.colors.chatProgressBarFill),
       actionPopoverBorder: readColorPair(rawColors.actionPopoverBorder, defaults.colors.actionPopoverBorder),

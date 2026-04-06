@@ -17,6 +17,7 @@ import {
   validateCommunityAppUpload,
 } from '../services/appStore'
 import { environment } from '../utils/api'
+import { getThemeModeColor, useCustomChatTheme, useHtmlDarkMode } from '../components/ThemeManager/themeConfig'
 
 type AppStoreModalProps = {
   open: boolean
@@ -126,6 +127,8 @@ const collectInstalledToolIndex = (tools: Array<{ name?: string; sourcePath?: st
 
 export const AppStoreModal: React.FC<AppStoreModalProps> = ({ open, onClose }) => {
   const isElectron = environment === 'electron'
+  const { theme: customTheme, enabled: customThemeEnabled } = useCustomChatTheme()
+  const isDarkMode = useHtmlDarkMode()
   const navigate = useNavigate()
   const uploadRequiresCloudLogin = isCommunityMode
   const dispatch = useAppDispatch()
@@ -577,6 +580,61 @@ export const AppStoreModal: React.FC<AppStoreModalProps> = ({ open, onClose }) =
   const activeLoading = storeTab === 'first-party' ? firstPartyLoading : communityLoading
   const activeError = storeTab === 'first-party' ? firstPartyError : communityError
 
+  const themedAppStoreStyles = customThemeEnabled
+    ? {
+        backdrop: getThemeModeColor(customTheme.colors.authModalBackdrop, isDarkMode),
+        modalBg: getThemeModeColor(customTheme.colors.settingsPaneBodyBg, isDarkMode),
+        modalBorder: getThemeModeColor(customTheme.colors.settingsCustomThemesCardBorder, isDarkMode),
+        titleText: getThemeModeColor(customTheme.colors.settingsCustomThemesTitleText, isDarkMode),
+        bodyText: getThemeModeColor(customTheme.colors.settingsCustomThemesBodyText, isDarkMode),
+        panelBg: getThemeModeColor(customTheme.colors.settingsCustomThemesCardBg, isDarkMode),
+        panelBorder: getThemeModeColor(customTheme.colors.settingsCustomThemesCardBorder, isDarkMode),
+        innerPanelBg: getThemeModeColor(customTheme.colors.settingsCustomThemesInnerCardBg, isDarkMode),
+        innerPanelBorder: getThemeModeColor(customTheme.colors.settingsCustomThemesInnerCardBorder, isDarkMode),
+        badgeBg: getThemeModeColor(customTheme.colors.settingsCustomThemesBadgeBg, isDarkMode),
+        badgeText: getThemeModeColor(customTheme.colors.settingsCustomThemesBadgeText, isDarkMode),
+        codeBg: getThemeModeColor(customTheme.colors.settingsCustomThemesCodeBg, isDarkMode),
+        codeText: getThemeModeColor(customTheme.colors.settingsCustomThemesCodeText, isDarkMode),
+        buttonBg: getThemeModeColor(customTheme.colors.settingsCustomThemesButtonBg, isDarkMode),
+        buttonBorder: getThemeModeColor(customTheme.colors.settingsCustomThemesButtonBorder, isDarkMode),
+        buttonText: getThemeModeColor(customTheme.colors.settingsCustomThemesButtonText, isDarkMode),
+        primaryButtonBg: getThemeModeColor(customTheme.colors.settingsCustomThemesPrimaryButtonBg, isDarkMode),
+        primaryButtonText: getThemeModeColor(customTheme.colors.settingsCustomThemesPrimaryButtonText, isDarkMode),
+        tabActiveBg: getThemeModeColor(customTheme.colors.composerToggleActiveBg, isDarkMode),
+        tabActiveBorder: getThemeModeColor(customTheme.colors.composerToggleActiveBorder, isDarkMode),
+        tabActiveText: getThemeModeColor(customTheme.colors.composerToggleActiveText, isDarkMode),
+        emptyStateBg: getThemeModeColor(customTheme.colors.settingsCustomThemesEmptyStateBg, isDarkMode),
+        emptyStateBorder: getThemeModeColor(customTheme.colors.settingsCustomThemesEmptyStateBorder, isDarkMode),
+        selectedCardBg: getThemeModeColor(customTheme.colors.ideContextPillBg, isDarkMode),
+        selectedCardBorder: getThemeModeColor(customTheme.colors.ideContextPillBorder, isDarkMode),
+        selectedCardText: getThemeModeColor(customTheme.colors.ideContextPillText, isDarkMode),
+        listBg: getThemeModeColor(customTheme.colors.settingsCustomThemesListBg, isDarkMode),
+        listBorder: getThemeModeColor(customTheme.colors.settingsCustomThemesListBorder, isDarkMode),
+        listItemTitleText: getThemeModeColor(customTheme.colors.settingsCustomThemesListItemTitleText, isDarkMode),
+        listItemMetaText: getThemeModeColor(customTheme.colors.settingsCustomThemesListItemMetaText, isDarkMode),
+        errorBg: getThemeModeColor(customTheme.colors.toolJobsErrorBg, isDarkMode),
+        errorBorder: getThemeModeColor(customTheme.colors.toolJobsErrorBorder, isDarkMode),
+        errorText: getThemeModeColor(customTheme.colors.toolJobsErrorText, isDarkMode),
+        successBg: getThemeModeColor(customTheme.colors.toolJobsStatusCompletedBg, isDarkMode),
+        successText: getThemeModeColor(customTheme.colors.toolJobsStatusCompletedText, isDarkMode),
+        warningBg: getThemeModeColor(customTheme.colors.toolJobsStatusPendingBg, isDarkMode),
+        warningText: getThemeModeColor(customTheme.colors.toolJobsStatusPendingText, isDarkMode),
+        infoBg: getThemeModeColor(customTheme.colors.toolJobsStatusRunningBg, isDarkMode),
+        infoText: getThemeModeColor(customTheme.colors.toolJobsStatusRunningText, isDarkMode),
+        linkText: getThemeModeColor(customTheme.colors.toolPermissionDialogToolNameText, isDarkMode),
+        primaryText: getThemeModeColor(customTheme.colors.toolJobsPrimaryText, isDarkMode),
+        secondaryText: getThemeModeColor(customTheme.colors.toolJobsSecondaryText, isDarkMode),
+        mutedText: getThemeModeColor(customTheme.colors.toolJobsMutedText, isDarkMode),
+        primaryButtonBorder: getThemeModeColor(customTheme.colors.authModalPrimaryButtonBorder, isDarkMode),
+        secondaryButtonBg: getThemeModeColor(customTheme.colors.authModalSecondaryButtonBg, isDarkMode),
+        secondaryButtonBorder: getThemeModeColor(customTheme.colors.authModalSecondaryButtonBorder, isDarkMode),
+        secondaryButtonText: getThemeModeColor(customTheme.colors.authModalSecondaryButtonText, isDarkMode),
+        dangerButtonBg: getThemeModeColor(customTheme.colors.authModalDangerButtonBg, isDarkMode),
+        dangerButtonBorder: getThemeModeColor(customTheme.colors.authModalDangerButtonBorder, isDarkMode),
+        dangerButtonText: getThemeModeColor(customTheme.colors.authModalDangerButtonText, isDarkMode),
+      }
+    : null
+
   if (!open) return null
 
   return (
@@ -584,23 +642,50 @@ export const AppStoreModal: React.FC<AppStoreModalProps> = ({ open, onClose }) =
       <div
         className='fixed inset-0 z-[60] bg-neutral-300/50 dark:bg-neutral-900/20 bg-opacity-50 backdrop-blur-sm'
         onClick={onClose}
+        style={themedAppStoreStyles ? { backgroundColor: themedAppStoreStyles.backdrop } : undefined}
       />
 
       <div className='py-2 w-full max-w-6xl'>
         <div
           className='relative z-[70] mx-4 rounded-3xl px-8 lg:px-10 py-4 lg:py-6 dark:border-1 dark:border-neutral-900 bg-neutral-100 dark:bg-yBlack-900 shadow-lg overflow-y-scroll no-scrollbar transition-all duration-300 ease-in-out h-[80vh]'
           onClick={e => e.stopPropagation()}
-          style={{ scrollbarGutter: 'stable' }}
+          style={{
+            scrollbarGutter: 'stable',
+            ...(themedAppStoreStyles
+              ? {
+                  backgroundColor: themedAppStoreStyles.modalBg,
+                  borderColor: themedAppStoreStyles.modalBorder,
+                }
+              : {}),
+          }}
         >
           <div className='flex flex-wrap items-center justify-between gap-4 mb-3 py-4'>
             <div>
-              <h2 className='text-2xl font-semibold text-stone-800 dark:text-stone-200'>App Store</h2>
-              <p className='text-sm text-neutral-500 dark:text-neutral-400'>
+              <h2
+                className='text-2xl font-semibold text-stone-800 dark:text-stone-200'
+                style={themedAppStoreStyles ? { color: themedAppStoreStyles.titleText } : undefined}
+              >
+                App Store
+              </h2>
+              <p
+                className='text-sm text-neutral-500 dark:text-neutral-400'
+                style={themedAppStoreStyles ? { color: themedAppStoreStyles.bodyText } : undefined}
+              >
                 {storeTab === 'first-party'
                   ? 'Browse and install first-party tools.'
                   : 'Explore community apps shared by other creators.'}
               </p>
-              <div className='mt-3 inline-flex items-center gap-1 rounded-lg border border-neutral-200 dark:border-neutral-700 bg-white/70 dark:bg-neutral-900/60 p-1'>
+              <div
+                className='mt-3 inline-flex items-center gap-1 rounded-lg border border-neutral-200 dark:border-neutral-700 bg-white/70 dark:bg-neutral-900/60 p-1'
+                style={
+                  themedAppStoreStyles
+                    ? {
+                        backgroundColor: themedAppStoreStyles.innerPanelBg,
+                        borderColor: themedAppStoreStyles.innerPanelBorder,
+                      }
+                    : undefined
+                }
+              >
                 <button
                   onClick={() => setStoreTab('first-party')}
                   className={`px-3 py-1 rounded-md text-xs font-semibold uppercase tracking-wide transition-colors ${
@@ -608,6 +693,17 @@ export const AppStoreModal: React.FC<AppStoreModalProps> = ({ open, onClose }) =
                       ? 'bg-neutral-200 dark:bg-neutral-700 text-neutral-900 dark:text-neutral-100'
                       : 'text-neutral-500 dark:text-neutral-400 hover:text-neutral-800 dark:hover:text-neutral-200'
                   }`}
+                  style={
+                    themedAppStoreStyles
+                      ? storeTab === 'first-party'
+                        ? {
+                            backgroundColor: themedAppStoreStyles.tabActiveBg,
+                            borderColor: themedAppStoreStyles.tabActiveBorder,
+                            color: themedAppStoreStyles.tabActiveText,
+                          }
+                        : { color: themedAppStoreStyles.bodyText }
+                      : undefined
+                  }
                 >
                   First-party
                 </button>
@@ -618,13 +714,34 @@ export const AppStoreModal: React.FC<AppStoreModalProps> = ({ open, onClose }) =
                       ? 'bg-neutral-200 dark:bg-neutral-700 text-neutral-900 dark:text-neutral-100'
                       : 'text-neutral-500 dark:text-neutral-400 hover:text-neutral-800 dark:hover:text-neutral-200'
                   }`}
+                  style={
+                    themedAppStoreStyles
+                      ? storeTab === 'community'
+                        ? {
+                            backgroundColor: themedAppStoreStyles.tabActiveBg,
+                            borderColor: themedAppStoreStyles.tabActiveBorder,
+                            color: themedAppStoreStyles.tabActiveText,
+                          }
+                        : { color: themedAppStoreStyles.bodyText }
+                      : undefined
+                  }
                 >
                   Community
                 </button>
               </div>
             </div>
             <div className='flex items-center gap-2'>
-              <div className='flex items-center gap-1 rounded-lg border border-neutral-200 dark:border-neutral-700 bg-white/70 dark:bg-neutral-900/60 p-1'>
+              <div
+                className='flex items-center gap-1 rounded-lg border border-neutral-200 dark:border-neutral-700 bg-white/70 dark:bg-neutral-900/60 p-1'
+                style={
+                  themedAppStoreStyles
+                    ? {
+                        backgroundColor: themedAppStoreStyles.innerPanelBg,
+                        borderColor: themedAppStoreStyles.innerPanelBorder,
+                      }
+                    : undefined
+                }
+              >
                 <button
                   onClick={() => setViewMode('grid')}
                   className={`px-2 py-1 rounded-md text-sm transition-colors ${
@@ -632,6 +749,17 @@ export const AppStoreModal: React.FC<AppStoreModalProps> = ({ open, onClose }) =
                       ? 'bg-neutral-200 dark:bg-neutral-700 text-neutral-900 dark:text-neutral-100'
                       : 'text-neutral-500 dark:text-neutral-400 hover:text-neutral-800 dark:hover:text-neutral-200'
                   }`}
+                  style={
+                    themedAppStoreStyles
+                      ? viewMode === 'grid'
+                        ? {
+                            backgroundColor: themedAppStoreStyles.tabActiveBg,
+                            borderColor: themedAppStoreStyles.tabActiveBorder,
+                            color: themedAppStoreStyles.tabActiveText,
+                          }
+                        : { color: themedAppStoreStyles.bodyText }
+                      : undefined
+                  }
                   aria-label='Grid view'
                 >
                   <i className='bx bxs-grid-alt text-lg'></i>
@@ -643,12 +771,28 @@ export const AppStoreModal: React.FC<AppStoreModalProps> = ({ open, onClose }) =
                       ? 'bg-neutral-200 dark:bg-neutral-700 text-neutral-900 dark:text-neutral-100'
                       : 'text-neutral-500 dark:text-neutral-400 hover:text-neutral-800 dark:hover:text-neutral-200'
                   }`}
+                  style={
+                    themedAppStoreStyles
+                      ? viewMode === 'list'
+                        ? {
+                            backgroundColor: themedAppStoreStyles.tabActiveBg,
+                            borderColor: themedAppStoreStyles.tabActiveBorder,
+                            color: themedAppStoreStyles.tabActiveText,
+                          }
+                        : { color: themedAppStoreStyles.bodyText }
+                      : undefined
+                  }
                   aria-label='List view'
                 >
                   <i className='bx bx-list-ul text-lg'></i>
                 </button>
               </div>
-              <button onClick={onClose} className='p-1 rounded-md transition-colors' aria-label='Close app store'>
+              <button
+                onClick={onClose}
+                className='p-1 rounded-md transition-colors'
+                aria-label='Close app store'
+                style={themedAppStoreStyles ? { color: themedAppStoreStyles.bodyText } : undefined}
+              >
                 <i className='bx bx-x text-2xl text-gray-600 dark:text-gray-400 active:scale-95'></i>
               </button>
             </div>
@@ -663,16 +807,45 @@ export const AppStoreModal: React.FC<AppStoreModalProps> = ({ open, onClose }) =
               )}
 
               {storeTab === 'community' && (
-                <div className='rounded-xl border border-neutral-200/70 bg-white/70 px-4 py-3 text-sm text-neutral-600 dark:border-neutral-700 dark:bg-neutral-900/60 dark:text-neutral-300'>
+                <div
+                  className='rounded-xl border border-neutral-200/70 bg-white/70 px-4 py-3 text-sm text-neutral-600 dark:border-neutral-700 dark:bg-neutral-900/60 dark:text-neutral-300'
+                  style={
+                    themedAppStoreStyles
+                      ? {
+                          backgroundColor: themedAppStoreStyles.panelBg,
+                          borderColor: themedAppStoreStyles.panelBorder,
+                          color: themedAppStoreStyles.bodyText,
+                        }
+                      : undefined
+                  }
+                >
                   Community apps are user-submitted and not reviewed. Install only what you trust.
                 </div>
               )}
 
               {storeTab === 'community' && (
-                <div className='rounded-2xl border border-neutral-200/70 dark:border-neutral-700 bg-white/70 dark:bg-neutral-900/60 p-4 space-y-3'>
+                <div
+                  className='rounded-2xl border border-neutral-200/70 dark:border-neutral-700 bg-white/70 dark:bg-neutral-900/60 p-4 space-y-3'
+                  style={
+                    themedAppStoreStyles
+                      ? {
+                          backgroundColor: themedAppStoreStyles.panelBg,
+                          borderColor: themedAppStoreStyles.panelBorder,
+                        }
+                      : undefined
+                  }
+                >
                   <div>
-                    <h3 className='text-sm font-semibold text-neutral-800 dark:text-neutral-100'>Upload a community app</h3>
-                    <p className='text-xs text-neutral-500 dark:text-neutral-400'>
+                    <h3
+                      className='text-sm font-semibold text-neutral-800 dark:text-neutral-100'
+                      style={themedAppStoreStyles ? { color: themedAppStoreStyles.titleText } : undefined}
+                    >
+                      Upload a community app
+                    </h3>
+                    <p
+                      className='text-xs text-neutral-500 dark:text-neutral-400'
+                      style={themedAppStoreStyles ? { color: themedAppStoreStyles.bodyText } : undefined}
+                    >
                       Zip must contain a single top-level tool folder with definition.json, description.json, and
                       index.js.
                     </p>
@@ -693,7 +866,18 @@ export const AppStoreModal: React.FC<AppStoreModalProps> = ({ open, onClose }) =
                   )}
 
                   {uploadValidation && (
-                    <div className='rounded-lg border border-neutral-200/70 dark:border-neutral-700 bg-neutral-50/80 dark:bg-neutral-950/30 p-3 text-xs text-neutral-600 dark:text-neutral-300 space-y-2'>
+                    <div
+                      className='rounded-lg border border-neutral-200/70 dark:border-neutral-700 bg-neutral-50/80 dark:bg-neutral-950/30 p-3 text-xs text-neutral-600 dark:text-neutral-300 space-y-2'
+                      style={
+                        themedAppStoreStyles
+                          ? {
+                              backgroundColor: themedAppStoreStyles.innerPanelBg,
+                              borderColor: themedAppStoreStyles.innerPanelBorder,
+                              color: themedAppStoreStyles.bodyText,
+                            }
+                          : undefined
+                      }
+                    >
                       <div className='flex items-center justify-between gap-3'>
                         <span className='uppercase tracking-[0.12em] text-[10px] text-neutral-400'>Tool ID</span>
                         <span className='font-mono text-xs text-neutral-700 dark:text-neutral-200'>
@@ -736,6 +920,15 @@ export const AppStoreModal: React.FC<AppStoreModalProps> = ({ open, onClose }) =
                       onClick={handleUploadSubmit}
                       disabled={!isElectron || uploadRequiresCloudLogin || !uploadValidation || uploadStatus?.type === 'uploading'}
                       className='px-4 py-2 text-xs bg-blue-500 text-white rounded-lg hover:bg-blue-600 disabled:opacity-50 disabled:cursor-not-allowed transition-colors'
+                      style={
+                        themedAppStoreStyles
+                          ? {
+                              backgroundColor: themedAppStoreStyles.primaryButtonBg,
+                              borderColor: themedAppStoreStyles.primaryButtonBorder,
+                              color: themedAppStoreStyles.primaryButtonText,
+                            }
+                          : undefined
+                      }
                     >
                       {uploadStatus?.type === 'uploading' ? 'Uploading...' : 'Upload to Community'}
                     </button>
@@ -755,6 +948,15 @@ export const AppStoreModal: React.FC<AppStoreModalProps> = ({ open, onClose }) =
                           resetUploadState()
                         }}
                         className='px-3 py-2 text-xs rounded-lg border border-neutral-200 dark:border-neutral-700 text-neutral-600 dark:text-neutral-300 hover:border-neutral-300 dark:hover:border-neutral-500 transition-colors'
+                        style={
+                          themedAppStoreStyles
+                            ? {
+                                backgroundColor: themedAppStoreStyles.buttonBg,
+                                borderColor: themedAppStoreStyles.buttonBorder,
+                                color: themedAppStoreStyles.buttonText,
+                              }
+                            : undefined
+                        }
                       >
                         Clear
                       </button>
@@ -834,7 +1036,18 @@ export const AppStoreModal: React.FC<AppStoreModalProps> = ({ open, onClose }) =
               )}
 
               {!activeLoading && !activeError && activeApps.length === 0 && (
-                <div className='rounded-xl border border-neutral-200/70 bg-white/70 px-4 py-6 text-sm text-neutral-500 dark:border-neutral-700 dark:bg-neutral-900/60 dark:text-neutral-400'>
+                <div
+                  className='rounded-xl border border-neutral-200/70 bg-white/70 px-4 py-6 text-sm text-neutral-500 dark:border-neutral-700 dark:bg-neutral-900/60 dark:text-neutral-400'
+                  style={
+                    themedAppStoreStyles
+                      ? {
+                          backgroundColor: themedAppStoreStyles.emptyStateBg,
+                          borderColor: themedAppStoreStyles.emptyStateBorder,
+                          color: themedAppStoreStyles.bodyText,
+                        }
+                      : undefined
+                  }
+                >
                   No apps published yet.
                 </div>
               )}
@@ -869,6 +1082,20 @@ export const AppStoreModal: React.FC<AppStoreModalProps> = ({ open, onClose }) =
                             ? 'border-blue-400 bg-blue-50/60 dark:bg-blue-500/10 shadow-sm'
                             : 'border-neutral-200/70 dark:border-neutral-700 bg-white/70 dark:bg-neutral-900/60'
                         } ${viewMode === 'list' ? 'w-full flex flex-col gap-4 min-h-[120px]' : 'flex flex-col gap-4 min-h-[150px]'}`}
+                        style={
+                          themedAppStoreStyles
+                            ? isSelected
+                              ? {
+                                  backgroundColor: themedAppStoreStyles.selectedCardBg,
+                                  borderColor: themedAppStoreStyles.selectedCardBorder,
+                                  color: themedAppStoreStyles.selectedCardText,
+                                }
+                              : {
+                                  backgroundColor: themedAppStoreStyles.listBg,
+                                  borderColor: themedAppStoreStyles.listBorder,
+                                }
+                            : undefined
+                        }
                       >
                         <div className='flex items-start gap-4 min-w-0'>
                           {iconUrl ? (
@@ -887,17 +1114,60 @@ export const AppStoreModal: React.FC<AppStoreModalProps> = ({ open, onClose }) =
                               className={`text-sm font-semibold text-neutral-900 dark:text-neutral-100 ${
                                 viewMode === 'grid' ? 'line-clamp-2 break-words' : 'truncate'
                               }`}
+                              style={
+                                themedAppStoreStyles
+                                  ? {
+                                      color: isSelected
+                                        ? themedAppStoreStyles.selectedCardText
+                                        : themedAppStoreStyles.listItemTitleText,
+                                    }
+                                  : undefined
+                              }
                             >
                               {displayName}
                             </p>
-                            <p className='text-xs text-neutral-500 dark:text-neutral-400 line-clamp-2'>{summary}</p>
+                            <p
+                              className='text-xs text-neutral-500 dark:text-neutral-400 line-clamp-2'
+                              style={
+                                themedAppStoreStyles
+                                  ? {
+                                      color: isSelected
+                                        ? themedAppStoreStyles.selectedCardText
+                                        : themedAppStoreStyles.listItemMetaText,
+                                    }
+                                  : undefined
+                              }
+                            >
+                              {summary}
+                            </p>
                           </div>
                         </div>
-                        <div className='mt-2 flex flex-wrap items-center gap-2 text-xs text-neutral-400 dark:text-neutral-500'>
+                        <div
+                          className='mt-2 flex flex-wrap items-center gap-2 text-xs text-neutral-400 dark:text-neutral-500'
+                          style={
+                            themedAppStoreStyles
+                              ? {
+                                  color: isSelected
+                                    ? themedAppStoreStyles.selectedCardText
+                                    : themedAppStoreStyles.listItemMetaText,
+                                }
+                              : undefined
+                          }
+                        >
                           <span className='truncate flex-1 min-w-0'>{publisher}</span>
                           <span className='flex items-center flex-wrap gap-2 ml-auto'>
                             {app.source === 'community' && (
-                              <span className='px-2 py-0.5 rounded-full bg-indigo-100/70 dark:bg-indigo-500/10 text-indigo-700 dark:text-indigo-300 text-[10px] font-semibold uppercase tracking-wide'>
+                              <span
+                                className='px-2 py-0.5 rounded-full bg-indigo-100/70 dark:bg-indigo-500/10 text-indigo-700 dark:text-indigo-300 text-[10px] font-semibold uppercase tracking-wide'
+                                style={
+                                  themedAppStoreStyles
+                                    ? {
+                                        backgroundColor: themedAppStoreStyles.badgeBg,
+                                        color: themedAppStoreStyles.badgeText,
+                                      }
+                                    : undefined
+                                }
+                              >
                                 Community
                               </span>
                             )}
@@ -926,37 +1196,60 @@ export const AppStoreModal: React.FC<AppStoreModalProps> = ({ open, onClose }) =
               </div>
             </div>
 
-            <div className='rounded-2xl border border-neutral-200/70 dark:border-neutral-700 bg-white/70 dark:bg-neutral-900/60 p-5 h-fit'>
+            <div
+              className='rounded-2xl border border-neutral-200/70 dark:border-neutral-700 bg-white/70 dark:bg-neutral-900/60 p-5 h-fit'
+              style={
+                themedAppStoreStyles
+                  ? {
+                      backgroundColor: themedAppStoreStyles.panelBg,
+                      borderColor: themedAppStoreStyles.panelBorder,
+                    }
+                  : undefined
+              }
+            >
               {selectedApp ? (
                 <>
                   <div className='flex items-start justify-between gap-4'>
                     <div>
-                      <h3 className='text-xl font-semibold text-neutral-900 dark:text-neutral-100'>
+                      <h3
+                        className='text-xl font-semibold text-neutral-900 dark:text-neutral-100'
+                        style={themedAppStoreStyles ? { color: themedAppStoreStyles.titleText } : undefined}
+                      >
                         {getAppDisplayName(selectedApp)}
                       </h3>
-                      <p className='text-sm text-neutral-500 dark:text-neutral-400'>
+                      <p
+                        className='text-sm text-neutral-500 dark:text-neutral-400'
+                        style={themedAppStoreStyles ? { color: themedAppStoreStyles.bodyText } : undefined}
+                      >
                         {selectedApp.source === 'community'
                           ? selectedApp.uploader?.username || selectedApp.uploader?.id || 'Uploader not listed'
                           : selectedApp.description.publisher || 'Publisher not listed'}
                       </p>
                     </div>
-                    <span className='text-xs font-mono uppercase tracking-[0.15em] text-neutral-400'>
+                    <span
+                      className='text-xs font-mono uppercase tracking-[0.15em] text-neutral-400'
+                      style={themedAppStoreStyles ? { color: themedAppStoreStyles.mutedText } : undefined}
+                    >
                       {selectedApp.source === 'community'
                         ? 'Community'
                         : selectedApp.description.category || 'Tool'}
                     </span>
                   </div>
 
-                  <p className='mt-4 text-sm text-neutral-600 dark:text-neutral-300'>
+                  <p
+                    className='mt-4 text-sm text-neutral-600 dark:text-neutral-300'
+                    style={themedAppStoreStyles ? { color: themedAppStoreStyles.secondaryText } : undefined}
+                  >
                     {getAppSummary(selectedApp.description)}
                   </p>
 
-                  <div className='mt-4 grid grid-cols-2 gap-3 text-xs text-neutral-500 dark:text-neutral-400'>
+                  <div
+                    className='mt-4 grid grid-cols-2 gap-3 text-xs text-neutral-500 dark:text-neutral-400'
+                    style={themedAppStoreStyles ? { color: themedAppStoreStyles.bodyText } : undefined}
+                  >
                     <div>
                       <p className='uppercase tracking-[0.12em] text-[10px]'>Version</p>
-                      <p className='text-sm text-neutral-700 dark:text-neutral-200'>
-                        {selectedApp.description.version || 'n/a'}
-                      </p>
+                      <p className='text-sm text-neutral-700 dark:text-neutral-200'>{selectedApp.description.version || 'n/a'}</p>
                       {selectedAppUpdateInfo && (
                         <p className='text-[11px] text-blue-600 dark:text-blue-300'>
                           Installed: {selectedAppUpdateInfo.installedVersion}
@@ -965,15 +1258,11 @@ export const AppStoreModal: React.FC<AppStoreModalProps> = ({ open, onClose }) =
                     </div>
                     <div>
                       <p className='uppercase tracking-[0.12em] text-[10px]'>Size</p>
-                      <p className='text-sm text-neutral-700 dark:text-neutral-200'>
-                        {formatSize(selectedApp.description.size)}
-                      </p>
+                      <p className='text-sm text-neutral-700 dark:text-neutral-200'>{formatSize(selectedApp.description.size)}</p>
                     </div>
                     <div>
                       <p className='uppercase tracking-[0.12em] text-[10px]'>Package</p>
-                      <p className='text-sm text-neutral-700 dark:text-neutral-200 truncate'>
-                        {selectedApp.zipName || 'default'}
-                      </p>
+                      <p className='text-sm text-neutral-700 dark:text-neutral-200 truncate'>{selectedApp.zipName || 'default'}</p>
                     </div>
                     <div>
                       <p className='uppercase tracking-[0.12em] text-[10px]'>Updated</p>
@@ -997,6 +1286,7 @@ export const AppStoreModal: React.FC<AppStoreModalProps> = ({ open, onClose }) =
                           target='_blank'
                           rel='noreferrer'
                           className='text-sm text-blue-600 dark:text-blue-400 hover:underline truncate block'
+                          style={themedAppStoreStyles ? { color: themedAppStoreStyles.linkText } : undefined}
                         >
                           View repository
                         </a>
@@ -1010,6 +1300,14 @@ export const AppStoreModal: React.FC<AppStoreModalProps> = ({ open, onClose }) =
                         <span
                           key={tag}
                           className='px-2 py-1 text-xs rounded-full bg-neutral-200/70 dark:bg-neutral-800 text-neutral-600 dark:text-neutral-300'
+                          style={
+                            themedAppStoreStyles
+                              ? {
+                                  backgroundColor: themedAppStoreStyles.badgeBg,
+                                  color: themedAppStoreStyles.badgeText,
+                                }
+                              : undefined
+                          }
                         >
                           {tag}
                         </span>
@@ -1032,6 +1330,15 @@ export const AppStoreModal: React.FC<AppStoreModalProps> = ({ open, onClose }) =
                             onClick={() => void handleInstall(selectedApp, 'update')}
                             disabled={!isElectron || isActionInProgress}
                             className='px-4 py-2 text-sm bg-blue-500 text-white rounded-lg hover:bg-blue-600 disabled:opacity-50 disabled:cursor-not-allowed transition-colors flex items-center gap-2'
+                            style={
+                              themedAppStoreStyles
+                                ? {
+                                    backgroundColor: themedAppStoreStyles.primaryButtonBg,
+                                    borderColor: themedAppStoreStyles.primaryButtonBorder,
+                                    color: themedAppStoreStyles.primaryButtonText,
+                                  }
+                                : undefined
+                            }
                           >
                             {isUpdating ? (
                               <>
@@ -1058,6 +1365,21 @@ export const AppStoreModal: React.FC<AppStoreModalProps> = ({ open, onClose }) =
                               ? 'border border-red-300 dark:border-red-500/40 text-red-600 dark:text-red-300 hover:bg-red-50 dark:hover:bg-red-500/10'
                               : 'bg-red-500 text-white hover:bg-red-600'
                           }`}
+                          style={
+                            themedAppStoreStyles
+                              ? selectedAppHasUpdate
+                                ? {
+                                    backgroundColor: themedAppStoreStyles.secondaryButtonBg,
+                                    borderColor: themedAppStoreStyles.dangerButtonBorder,
+                                    color: themedAppStoreStyles.dangerButtonText,
+                                  }
+                                : {
+                                    backgroundColor: themedAppStoreStyles.dangerButtonBg,
+                                    borderColor: themedAppStoreStyles.dangerButtonBorder,
+                                    color: themedAppStoreStyles.dangerButtonText,
+                                  }
+                              : undefined
+                          }
                         >
                           {isUninstalling ? (
                             <>
@@ -1077,6 +1399,15 @@ export const AppStoreModal: React.FC<AppStoreModalProps> = ({ open, onClose }) =
                         onClick={() => void handleInstall()}
                         disabled={!isElectron || isActionInProgress}
                         className='px-4 py-2 text-sm bg-blue-500 text-white rounded-lg hover:bg-blue-600 disabled:opacity-50 disabled:cursor-not-allowed transition-colors flex items-center gap-2'
+                        style={
+                          themedAppStoreStyles
+                            ? {
+                                backgroundColor: themedAppStoreStyles.primaryButtonBg,
+                                borderColor: themedAppStoreStyles.primaryButtonBorder,
+                                color: themedAppStoreStyles.primaryButtonText,
+                              }
+                            : undefined
+                        }
                       >
                         {isInstalling ? (
                           <>
@@ -1097,6 +1428,7 @@ export const AppStoreModal: React.FC<AppStoreModalProps> = ({ open, onClose }) =
                         target='_blank'
                         rel='noreferrer'
                         className='text-sm text-neutral-500 dark:text-neutral-400 hover:text-neutral-800 dark:hover:text-neutral-200 transition-colors'
+                        style={themedAppStoreStyles ? { color: themedAppStoreStyles.bodyText } : undefined}
                       >
                         View description
                       </a>
@@ -1112,6 +1444,15 @@ export const AppStoreModal: React.FC<AppStoreModalProps> = ({ open, onClose }) =
                           ? 'text-green-600 dark:text-green-400'
                           : 'text-neutral-500 dark:text-neutral-400'
                       }`}
+                      style={
+                        themedAppStoreStyles
+                          ? actionStatus.type === 'error'
+                            ? { color: themedAppStoreStyles.errorText }
+                            : actionStatus.type === 'success'
+                            ? { color: themedAppStoreStyles.successText }
+                            : { color: themedAppStoreStyles.bodyText }
+                          : undefined
+                      }
                     >
                       {actionStatus.type === 'working' && <i className='bx bx-loader-alt animate-spin'></i>}
                       {actionStatus.type === 'success' && <i className='bx bx-check-circle'></i>}
@@ -1121,11 +1462,23 @@ export const AppStoreModal: React.FC<AppStoreModalProps> = ({ open, onClose }) =
                   )}
 
                   {actionStatus?.restartRequired && (
-                    <div className='mt-3 flex flex-wrap items-center gap-3 text-xs text-neutral-500 dark:text-neutral-400'>
+                    <div
+                      className='mt-3 flex flex-wrap items-center gap-3 text-xs text-neutral-500 dark:text-neutral-400'
+                      style={themedAppStoreStyles ? { color: themedAppStoreStyles.bodyText } : undefined}
+                    >
                       <span>Restart Yggdrasil to finish installation.</span>
                       <button
                         onClick={handleRestart}
                         className='px-3 py-1.5 rounded-lg border border-neutral-200 dark:border-neutral-700 text-xs text-neutral-700 dark:text-neutral-200 hover:border-blue-300 hover:text-blue-600 transition-colors'
+                        style={
+                          themedAppStoreStyles
+                            ? {
+                                backgroundColor: themedAppStoreStyles.buttonBg,
+                                borderColor: themedAppStoreStyles.buttonBorder,
+                                color: themedAppStoreStyles.buttonText,
+                              }
+                            : undefined
+                        }
                       >
                         Restart now
                       </button>
@@ -1133,7 +1486,12 @@ export const AppStoreModal: React.FC<AppStoreModalProps> = ({ open, onClose }) =
                   )}
                 </>
               ) : (
-                <div className='text-sm text-neutral-500 dark:text-neutral-400'>Select an app to see details.</div>
+                <div
+                  className='text-sm text-neutral-500 dark:text-neutral-400'
+                  style={themedAppStoreStyles ? { color: themedAppStoreStyles.bodyText } : undefined}
+                >
+                  Select an app to see details.
+                </div>
               )}
             </div>
           </div>

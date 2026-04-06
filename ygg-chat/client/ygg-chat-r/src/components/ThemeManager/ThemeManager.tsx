@@ -278,6 +278,30 @@ export const ThemeManager: React.FC = () => {
         | 'settingsSolidColorSectionBg'
         | 'appBackgroundColor'
         | 'settingsPaneBodyBg'
+        | 'settingsCustomThemesCardBg'
+        | 'settingsCustomThemesCardBorder'
+        | 'settingsCustomThemesAccentBg'
+        | 'settingsCustomThemesAccentText'
+        | 'settingsCustomThemesTitleText'
+        | 'settingsCustomThemesBodyText'
+        | 'settingsCustomThemesCodeBg'
+        | 'settingsCustomThemesCodeText'
+        | 'settingsCustomThemesPanelBorder'
+        | 'settingsCustomThemesInnerCardBg'
+        | 'settingsCustomThemesInnerCardBorder'
+        | 'settingsCustomThemesBadgeBg'
+        | 'settingsCustomThemesBadgeText'
+        | 'settingsCustomThemesButtonBg'
+        | 'settingsCustomThemesButtonBorder'
+        | 'settingsCustomThemesButtonText'
+        | 'settingsCustomThemesEmptyStateBg'
+        | 'settingsCustomThemesEmptyStateBorder'
+        | 'settingsCustomThemesListBg'
+        | 'settingsCustomThemesListBorder'
+        | 'settingsCustomThemesListItemTitleText'
+        | 'settingsCustomThemesListItemMetaText'
+        | 'settingsCustomThemesPrimaryButtonBg'
+        | 'settingsCustomThemesPrimaryButtonText'
         | 'chatInputAreaBorder'
         | 'chatProgressBarFill'
         | 'actionPopoverBorder'
@@ -616,6 +640,127 @@ export const ThemeManager: React.FC = () => {
               label='Settings pane full body background'
               value={theme.colors.settingsPaneBodyBg}
               onChange={(mode, value) => handleChatSurfaceChange('settingsPaneBodyBg', mode, value)}
+            />
+            <h4 className='pt-2 text-sm font-semibold text-stone-700 dark:text-stone-200'>Saved custom themes panel</h4>
+            <PairEditor
+              label='Panel card background'
+              value={theme.colors.settingsCustomThemesCardBg}
+              onChange={(mode, value) => handleChatSurfaceChange('settingsCustomThemesCardBg', mode, value)}
+            />
+            <PairEditor
+              label='Panel card border'
+              value={theme.colors.settingsCustomThemesCardBorder}
+              onChange={(mode, value) => handleChatSurfaceChange('settingsCustomThemesCardBorder', mode, value)}
+            />
+            <PairEditor
+              label='Panel accent icon background'
+              value={theme.colors.settingsCustomThemesAccentBg}
+              onChange={(mode, value) => handleChatSurfaceChange('settingsCustomThemesAccentBg', mode, value)}
+            />
+            <PairEditor
+              label='Panel accent icon text'
+              value={theme.colors.settingsCustomThemesAccentText}
+              onChange={(mode, value) => handleChatSurfaceChange('settingsCustomThemesAccentText', mode, value)}
+            />
+            <PairEditor
+              label='Panel title text'
+              value={theme.colors.settingsCustomThemesTitleText}
+              onChange={(mode, value) => handleChatSurfaceChange('settingsCustomThemesTitleText', mode, value)}
+            />
+            <PairEditor
+              label='Panel body text'
+              value={theme.colors.settingsCustomThemesBodyText}
+              onChange={(mode, value) => handleChatSurfaceChange('settingsCustomThemesBodyText', mode, value)}
+            />
+            <PairEditor
+              label='Panel code badge background'
+              value={theme.colors.settingsCustomThemesCodeBg}
+              onChange={(mode, value) => handleChatSurfaceChange('settingsCustomThemesCodeBg', mode, value)}
+            />
+            <PairEditor
+              label='Panel code badge text'
+              value={theme.colors.settingsCustomThemesCodeText}
+              onChange={(mode, value) => handleChatSurfaceChange('settingsCustomThemesCodeText', mode, value)}
+            />
+            <PairEditor
+              label='Expanded panel divider border'
+              value={theme.colors.settingsCustomThemesPanelBorder}
+              onChange={(mode, value) => handleChatSurfaceChange('settingsCustomThemesPanelBorder', mode, value)}
+            />
+            <PairEditor
+              label='Enable theme card background'
+              value={theme.colors.settingsCustomThemesInnerCardBg}
+              onChange={(mode, value) => handleChatSurfaceChange('settingsCustomThemesInnerCardBg', mode, value)}
+            />
+            <PairEditor
+              label='Enable theme card border'
+              value={theme.colors.settingsCustomThemesInnerCardBorder}
+              onChange={(mode, value) => handleChatSurfaceChange('settingsCustomThemesInnerCardBorder', mode, value)}
+            />
+            <PairEditor
+              label='Badge background'
+              value={theme.colors.settingsCustomThemesBadgeBg}
+              onChange={(mode, value) => handleChatSurfaceChange('settingsCustomThemesBadgeBg', mode, value)}
+            />
+            <PairEditor
+              label='Badge text'
+              value={theme.colors.settingsCustomThemesBadgeText}
+              onChange={(mode, value) => handleChatSurfaceChange('settingsCustomThemesBadgeText', mode, value)}
+            />
+            <PairEditor
+              label='Secondary button background'
+              value={theme.colors.settingsCustomThemesButtonBg}
+              onChange={(mode, value) => handleChatSurfaceChange('settingsCustomThemesButtonBg', mode, value)}
+            />
+            <PairEditor
+              label='Secondary button border'
+              value={theme.colors.settingsCustomThemesButtonBorder}
+              onChange={(mode, value) => handleChatSurfaceChange('settingsCustomThemesButtonBorder', mode, value)}
+            />
+            <PairEditor
+              label='Secondary button text'
+              value={theme.colors.settingsCustomThemesButtonText}
+              onChange={(mode, value) => handleChatSurfaceChange('settingsCustomThemesButtonText', mode, value)}
+            />
+            <PairEditor
+              label='Empty state background'
+              value={theme.colors.settingsCustomThemesEmptyStateBg}
+              onChange={(mode, value) => handleChatSurfaceChange('settingsCustomThemesEmptyStateBg', mode, value)}
+            />
+            <PairEditor
+              label='Empty state border'
+              value={theme.colors.settingsCustomThemesEmptyStateBorder}
+              onChange={(mode, value) => handleChatSurfaceChange('settingsCustomThemesEmptyStateBorder', mode, value)}
+            />
+            <PairEditor
+              label='Saved themes list background'
+              value={theme.colors.settingsCustomThemesListBg}
+              onChange={(mode, value) => handleChatSurfaceChange('settingsCustomThemesListBg', mode, value)}
+            />
+            <PairEditor
+              label='Saved themes list border'
+              value={theme.colors.settingsCustomThemesListBorder}
+              onChange={(mode, value) => handleChatSurfaceChange('settingsCustomThemesListBorder', mode, value)}
+            />
+            <PairEditor
+              label='Saved theme title text'
+              value={theme.colors.settingsCustomThemesListItemTitleText}
+              onChange={(mode, value) => handleChatSurfaceChange('settingsCustomThemesListItemTitleText', mode, value)}
+            />
+            <PairEditor
+              label='Saved theme meta text'
+              value={theme.colors.settingsCustomThemesListItemMetaText}
+              onChange={(mode, value) => handleChatSurfaceChange('settingsCustomThemesListItemMetaText', mode, value)}
+            />
+            <PairEditor
+              label='Primary apply button background'
+              value={theme.colors.settingsCustomThemesPrimaryButtonBg}
+              onChange={(mode, value) => handleChatSurfaceChange('settingsCustomThemesPrimaryButtonBg', mode, value)}
+            />
+            <PairEditor
+              label='Primary apply button text'
+              value={theme.colors.settingsCustomThemesPrimaryButtonText}
+              onChange={(mode, value) => handleChatSurfaceChange('settingsCustomThemesPrimaryButtonText', mode, value)}
             />
             <PairEditor
               label='Chat input area border'

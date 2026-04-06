@@ -53,6 +53,9 @@ import {
   useGlobalAgentStreamBuffer,
   useRemoveGlobalAgentQueuedTask,
 } from '../hooks/useQueries'
+import { resolveLanguageInfo } from '../lib/lsp/languageIds'
+import { lspClientPool } from '../lib/lsp/lspClientPool'
+import { onTrackedModelContentChange, releaseModel, retainModel, setModelContent } from '../lib/lsp/modelRegistry'
 import { globalAgentLoop, GlobalAgentSchedulePreset, GlobalAgentState, GlobalAgentTaskSchedule } from '../services'
 import type { RootState } from '../store/store'
 import { localApi } from '../utils/api'
@@ -86,6 +89,40 @@ type FileEditorState = {
   loading: boolean
   saving: boolean
   error: string | null
+}
+
+type LspResolveState = {
+  available: boolean
+  filePath: string
+  fileUri: string
+  lspLanguageId: string | null
+  serverId: string | null
+  sessionKey: string | null
+  workspacePath: string | null
+  workspaceUri: string | null
+  command: string | null
+  commandSource: string | null
+  args: string[]
+  reason?: string | null
+}
+
+type LspSessionState = {
+  sessionKey: string
+  serverId: string
+  workspacePath: string
+  workspaceUri: string
+  status: 'idle' | 'starting' | 'running' | 'stopped' | 'error'
+  pid: number | null
+  command: string | null
+  commandSource: string | null
+  args: string[]
+  attachedClientId: string | null
+  attached: boolean
+  lastActivityAt: string | null
+  startedAt: string | null
+  lastError: string | null
+  restartCount: number
+  stderrTail: string[]
 }
 
 type GitDiffTabState = {
@@ -170,7 +207,8 @@ const normalizeRelativeGitPath = (value: string | null | undefined): string =>
     .replace(/\/+/g, '/')
     .replace(/\/+$/, '')
 
-const isLikelyAbsolutePath = (value: string | null | undefined): boolean => /^(?:[a-zA-Z]:[\\/]|\\\\|\/)/.test(String(value || '').trim())
+const isLikelyAbsolutePath = (value: string | null | undefined): boolean =>
+  /^(?:[a-zA-Z]:[\\/]|\\\\|\/)/.test(String(value || '').trim())
 
 const getDefaultGitDiffStagedView = (
   file: Pick<GitStatusFile, 'staged' | 'unstaged' | 'untracked' | 'conflicted'>
@@ -414,6 +452,13 @@ const RightBar: React.FC<RightBarProps> = ({
       : null
   )
   const [activeFileEditorPath, setActiveFileEditorPath] = useState<string | null>(null)
+  const [isLspStatusPanelOpen, setIsLspStatusPanelOpen] = useState(false)
+  const [lspResolveState, setLspResolveState] = useState<LspResolveState | null>(null)
+  const [lspSessionsState, setLspSessionsState] = useState<LspSessionState[]>([])
+  const [lspStatusLoading, setLspStatusLoading] = useState(false)
+  const [lspStatusError, setLspStatusError] = useState<string | null>(null)
+  const [lspStatusRefreshNonce, setLspStatusRefreshNonce] = useState(0)
+  const openFileEditorsRef = useRef<FileEditorState[]>([])
   const fileEditorRequestIdRef = useRef<Record<string, number>>({})
   const terminalLaunchRequestIdRef = useRef<Record<string, number>>({})
   const restoredTerminalTabsRef = useRef<Set<string>>(new Set())
@@ -451,6 +496,13 @@ const RightBar: React.FC<RightBarProps> = ({
         : null,
     [activeDockTabId, openBrowserTabs]
   )
+  const activeLspSession = useMemo(
+    () =>
+      lspResolveState?.sessionKey
+        ? (lspSessionsState.find(session => session.sessionKey === lspResolveState.sessionKey) ?? null)
+        : null,
+    [lspResolveState?.sessionKey, lspSessionsState]
+  )
   const isEditorDirty = activeFileEditor ? activeFileEditor.content !== activeFileEditor.savedContent : false
   const hasAnyDirtyEditors = openFileEditors.some(editor => editor.content !== editor.savedContent)
   const hasDockTabs =
@@ -460,6 +512,93 @@ const RightBar: React.FC<RightBarProps> = ({
     openBrowserTabs.length > 0
   const isEditorDockOpen = !isCollapsed && hasDockTabs && !!activeDockTabId
   const monacoTheme = isDarkMode ? 'vs-dark' : 'vs'
+
+  useEffect(() => {
+    openFileEditorsRef.current = openFileEditors
+  }, [openFileEditors])
+
+  useEffect(() => {
+    if (isWeb || !isLspStatusPanelOpen || !activeFileEditor?.path) {
+      if (!isLspStatusPanelOpen) {
+        setLspStatusLoading(false)
+        setLspStatusError(null)
+      }
+      return
+    }
+
+    let cancelled = false
+
+    const loadLspStatus = async () => {
+      setLspStatusLoading(true)
+      setLspStatusError(null)
+
+      try {
+        const [resolveResponse, sessionsResponse] = await Promise.all([
+          localApi.get<LspResolveState>(`/lsp/resolve?path=${encodeURIComponent(activeFileEditor.path)}`, {
+            cache: 'no-store',
+          }),
+          localApi.get<{ sessions?: LspSessionState[] }>('/lsp/sessions', {
+            cache: 'no-store',
+          }),
+        ])
+
+        if (cancelled) return
+        setLspResolveState(resolveResponse)
+        setLspSessionsState(Array.isArray(sessionsResponse?.sessions) ? sessionsResponse.sessions : [])
+      } catch (error) {
+        if (cancelled) return
+        setLspStatusError(error instanceof Error ? error.message : 'Failed to load LSP status.')
+      } finally {
+        if (!cancelled) {
+          setLspStatusLoading(false)
+        }
+      }
+    }
+
+    void loadLspStatus()
+    const intervalId = window.setInterval(() => {
+      void loadLspStatus()
+    }, 5000)
+
+    return () => {
+      cancelled = true
+      window.clearInterval(intervalId)
+    }
+  }, [activeFileEditor?.path, isLspStatusPanelOpen, isWeb, lspStatusRefreshNonce])
+
+  useEffect(() => {
+    const subscription = onTrackedModelContentChange(({ filePath, content }) => {
+      setOpenFileEditors(prev => {
+        let changed = false
+        const nextEditors = prev.map(editor => {
+          if (editor.path !== filePath || editor.content === content) {
+            return editor
+          }
+          changed = true
+          return {
+            ...editor,
+            content,
+          }
+        })
+
+        return changed ? nextEditors : prev
+      })
+    })
+
+    return () => {
+      subscription.dispose()
+    }
+  }, [])
+
+  useEffect(() => {
+    return () => {
+      for (const editor of openFileEditorsRef.current) {
+        releaseModel(editor.path)
+        void lspClientPool.didCloseDocument(editor.path)
+      }
+    }
+  }, [])
+
   const maxResizableSidebarWidth = useMemo(() => {
     if (parentContainerWidth == null || parentContainerWidth <= 0) return RIGHT_BAR_MAX_WIDTH_PX
 
@@ -1515,6 +1654,11 @@ const RightBar: React.FC<RightBarProps> = ({
     []
   )
 
+  const closeFileEditorResources = useCallback((filePath: string) => {
+    releaseModel(filePath)
+    void lspClientPool.didCloseDocument(filePath)
+  }, [])
+
   const confirmDiscardSingleEditor = useCallback(
     (filePath: string) => {
       const editor = openFileEditors.find(item => item.path === filePath)
@@ -1535,6 +1679,7 @@ const RightBar: React.FC<RightBarProps> = ({
 
       const relativePath = deriveEditorRelativePath(filePath, options?.relativePath)
       const existingEditor = openFileEditors.find(editor => editor.path === filePath)
+      const languageInfo = resolveLanguageInfo(filePath)
       dispatch(uiActions.rightBarExpanded())
       setActiveFileEditorPath(filePath)
       setActiveDockTabId(getFileDockTabId(filePath))
@@ -1548,6 +1693,7 @@ const RightBar: React.FC<RightBarProps> = ({
       }
 
       if (!existingEditor) {
+        retainModel(filePath, '', languageInfo.monacoLanguageId)
         setOpenFileEditors(prev => [
           ...prev,
           {
@@ -1582,6 +1728,8 @@ const RightBar: React.FC<RightBarProps> = ({
           saving: false,
           error: null,
         }))
+        setModelContent(filePath, content)
+        void lspClientPool.didOpenDocument(filePath, content)
       } catch (error) {
         if (fileEditorRequestIdRef.current[filePath] !== requestId) return
         updateOpenFileEditor(filePath, editor => ({
@@ -1601,6 +1749,7 @@ const RightBar: React.FC<RightBarProps> = ({
     (nextValue: string) => {
       if (!activeFileEditorPath) return
       updateOpenFileEditor(activeFileEditorPath, editor => ({ ...editor, content: nextValue }))
+      void lspClientPool.didChangeDocument(activeFileEditorPath, nextValue)
     },
     [activeFileEditorPath, updateOpenFileEditor]
   )
@@ -1981,6 +2130,7 @@ const RightBar: React.FC<RightBarProps> = ({
       if (!confirmDiscardSingleEditor(filePath)) return
 
       fileEditorRequestIdRef.current[filePath] = (fileEditorRequestIdRef.current[filePath] || 0) + 1
+      closeFileEditorResources(filePath)
       const remainingEditors = openFileEditors.filter(editor => editor.path !== filePath)
       const removedTabId = getFileDockTabId(filePath)
       setOpenFileEditors(remainingEditors)
@@ -1996,7 +2146,15 @@ const RightBar: React.FC<RightBarProps> = ({
         return fallbackIndex >= 0 ? (remainingDockTabs[fallbackIndex] ?? null) : null
       })
     },
-    [buildDockTabIds, confirmDiscardSingleEditor, openBrowserTabs, openFileEditors, openGitDiffTabs, openTerminalTabs]
+    [
+      buildDockTabIds,
+      closeFileEditorResources,
+      confirmDiscardSingleEditor,
+      openBrowserTabs,
+      openFileEditors,
+      openGitDiffTabs,
+      openTerminalTabs,
+    ]
   )
 
   const closeGitDiffTab = useCallback(
@@ -2084,13 +2242,14 @@ const RightBar: React.FC<RightBarProps> = ({
       }
     })
     fileEditorRequestIdRef.current = {}
+    openFileEditors.forEach(editor => closeFileEditorResources(editor.path))
     setOpenFileEditors([])
     setOpenGitDiffTabs([])
     setOpenTerminalTabs([])
     setOpenBrowserTabs([])
     setActiveFileEditorPath(null)
     setActiveDockTabId(null)
-  }, [confirmCollapseDirtyEditors, openTerminalTabs])
+  }, [closeFileEditorResources, confirmCollapseDirtyEditors, openFileEditors, openTerminalTabs])
 
   const saveFileEditor = useCallback(async () => {
     if (
@@ -2121,6 +2280,7 @@ const RightBar: React.FC<RightBarProps> = ({
         saving: false,
         error: null,
       }))
+      void lspClientPool.didSaveDocument(activeFileEditor.path, activeFileEditor.content)
     } catch (error) {
       updateOpenFileEditor(activeFileEditor.path, editor => ({
         ...editor,
@@ -2129,6 +2289,185 @@ const RightBar: React.FC<RightBarProps> = ({
       }))
     }
   }, [activeFileEditor, isWeb, updateOpenFileEditor])
+
+  const refreshLspStatusPanel = useCallback(() => {
+    setLspStatusRefreshNonce(prev => prev + 1)
+  }, [])
+
+  const restartActiveLspSession = useCallback(async () => {
+    if (isWeb || !lspResolveState?.serverId || !lspResolveState.workspacePath) return
+
+    setLspStatusLoading(true)
+    setLspStatusError(null)
+    try {
+      await localApi.post('/lsp/restart', {
+        serverId: lspResolveState.serverId,
+        workspacePath: lspResolveState.workspacePath,
+      })
+      refreshLspStatusPanel()
+    } catch (error) {
+      setLspStatusError(error instanceof Error ? error.message : 'Failed to restart LSP session.')
+      setLspStatusLoading(false)
+    }
+  }, [isWeb, lspResolveState?.serverId, lspResolveState?.workspacePath, refreshLspStatusPanel])
+
+  const shutdownActiveLspSession = useCallback(async () => {
+    if (isWeb || !lspResolveState?.serverId || !lspResolveState.workspacePath) return
+
+    setLspStatusLoading(true)
+    setLspStatusError(null)
+    try {
+      await localApi.post('/lsp/shutdown', {
+        serverId: lspResolveState.serverId,
+        workspacePath: lspResolveState.workspacePath,
+      })
+      refreshLspStatusPanel()
+    } catch (error) {
+      setLspStatusError(error instanceof Error ? error.message : 'Failed to stop LSP session.')
+      setLspStatusLoading(false)
+    }
+  }, [isWeb, lspResolveState?.serverId, lspResolveState?.workspacePath, refreshLspStatusPanel])
+
+  const activeLspStatusTone = !lspResolveState?.available
+    ? 'border-amber-300 bg-amber-50 text-amber-700 dark:border-amber-900/60 dark:bg-amber-950/40 dark:text-amber-200'
+    : activeLspSession?.status === 'running'
+      ? 'border-emerald-300 bg-emerald-50 text-emerald-700 dark:border-emerald-900/60 dark:bg-emerald-950/40 dark:text-emerald-200'
+      : activeLspSession?.status === 'error'
+        ? 'border-rose-300 bg-rose-50 text-rose-700 dark:border-rose-900/60 dark:bg-rose-950/40 dark:text-rose-200'
+        : 'border-sky-300 bg-sky-50 text-sky-700 dark:border-sky-900/60 dark:bg-sky-950/40 dark:text-sky-200'
+
+  const activeLspStatusLabel = !activeFileEditor
+    ? 'LSP'
+    : !lspResolveState
+      ? 'LSP idle'
+      : !lspResolveState.available
+        ? 'LSP unavailable'
+        : activeLspSession?.status
+          ? `LSP ${activeLspSession.status}`
+          : 'LSP ready'
+
+  const activeLspStatusPanel = activeFileEditor ? (
+    <div className='space-y-3 px-4 py-3 text-xs text-neutral-700 dark:text-neutral-200'>
+      <div className='flex flex-wrap items-center justify-between gap-2'>
+        <div>
+          <div className='text-sm font-semibold text-neutral-800 dark:text-neutral-100'>Language Server</div>
+          <div className='mt-0.5 text-[11px] text-neutral-500 dark:text-neutral-400'>
+            {activeFileEditor.relativePath || activeFileEditor.path}
+          </div>
+        </div>
+        <div className='flex flex-wrap items-center gap-2'>
+          <span className={`rounded-full border px-2.5 py-1 font-medium ${activeLspStatusTone}`}>
+            {activeLspStatusLabel}
+          </span>
+          <Button variant='outline2' size='small' onClick={refreshLspStatusPanel} disabled={lspStatusLoading}>
+            Refresh
+          </Button>
+          <Button
+            variant='outline2'
+            size='small'
+            onClick={() => setIsLspStatusPanelOpen(false)}
+            disabled={lspStatusLoading}
+          >
+            Hide
+          </Button>
+        </div>
+      </div>
+
+      {lspStatusError ? (
+        <div className='rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-rose-700 dark:border-rose-900/50 dark:bg-rose-950/40 dark:text-rose-200'>
+          {lspStatusError}
+        </div>
+      ) : null}
+
+      <dl className='grid grid-cols-1 gap-x-4 gap-y-2 md:grid-cols-2'>
+        <div>
+          <dt className='text-[11px] uppercase tracking-wide text-neutral-500 dark:text-neutral-400'>Server</dt>
+          <dd className='mt-0.5 break-all'>{lspResolveState?.serverId || 'N/A'}</dd>
+        </div>
+        <div>
+          <dt className='text-[11px] uppercase tracking-wide text-neutral-500 dark:text-neutral-400'>Language</dt>
+          <dd className='mt-0.5 break-all'>{lspResolveState?.lspLanguageId || 'N/A'}</dd>
+        </div>
+        <div>
+          <dt className='text-[11px] uppercase tracking-wide text-neutral-500 dark:text-neutral-400'>Workspace</dt>
+          <dd className='mt-0.5 break-all'>{lspResolveState?.workspacePath || 'N/A'}</dd>
+        </div>
+        <div>
+          <dt className='text-[11px] uppercase tracking-wide text-neutral-500 dark:text-neutral-400'>Command</dt>
+          <dd className='mt-0.5 break-all'>
+            {activeLspSession?.command || lspResolveState?.command || 'Unavailable'}
+            {activeLspSession?.pid ? ` (pid ${activeLspSession.pid})` : ''}
+          </dd>
+        </div>
+        <div>
+          <dt className='text-[11px] uppercase tracking-wide text-neutral-500 dark:text-neutral-400'>Session</dt>
+          <dd className='mt-0.5 break-all'>{activeLspSession?.sessionKey || lspResolveState?.sessionKey || 'N/A'}</dd>
+        </div>
+        <div>
+          <dt className='text-[11px] uppercase tracking-wide text-neutral-500 dark:text-neutral-400'>Attached</dt>
+          <dd className='mt-0.5'>{activeLspSession ? (activeLspSession.attached ? 'Yes' : 'No') : 'N/A'}</dd>
+        </div>
+      </dl>
+
+      {lspResolveState?.reason ? (
+        <div className='rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-amber-700 dark:border-amber-900/50 dark:bg-amber-950/40 dark:text-amber-200'>
+          {lspResolveState.reason}
+        </div>
+      ) : null}
+
+      {activeLspSession ? (
+        <div className='flex flex-wrap items-center gap-2'>
+          <Button
+            variant='outline2'
+            size='small'
+            onClick={() => void restartActiveLspSession()}
+            disabled={lspStatusLoading}
+          >
+            Restart session
+          </Button>
+          <Button
+            variant='outline2'
+            size='small'
+            onClick={() => void shutdownActiveLspSession()}
+            disabled={lspStatusLoading}
+          >
+            Stop session
+          </Button>
+          <span className='text-[11px] text-neutral-500 dark:text-neutral-400'>
+            {activeLspSession.lastActivityAt ? `Last activity: ${activeLspSession.lastActivityAt}` : 'No activity yet'}
+          </span>
+        </div>
+      ) : null}
+
+      {activeLspSession?.lastError ? (
+        <div className='rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-rose-700 dark:border-rose-900/50 dark:bg-rose-950/40 dark:text-rose-200'>
+          {activeLspSession.lastError}
+        </div>
+      ) : null}
+
+      {Array.isArray(activeLspSession?.stderrTail) && activeLspSession.stderrTail.length > 0 ? (
+        <div>
+          <div className='mb-1 text-[11px] uppercase tracking-wide text-neutral-500 dark:text-neutral-400'>
+            stderr tail
+          </div>
+          <pre className='max-h-40 overflow-auto rounded-lg bg-neutral-950 px-3 py-2 text-[11px] text-neutral-100'>
+            {activeLspSession.stderrTail.slice(-12).join('\n')}
+          </pre>
+        </div>
+      ) : null}
+    </div>
+  ) : null
+
+  const activeFileEditorTabToolbar = activeFileEditor ? (
+    <div className='flex items-center gap-2'>
+      <span className={`rounded-full border px-2.5 py-1 text-[11px] font-medium ${activeLspStatusTone}`}>
+        {activeLspStatusLabel}
+      </span>
+      <Button variant='outline2' size='small' onClick={() => setIsLspStatusPanelOpen(prev => !prev)}>
+        {isLspStatusPanelOpen ? 'Hide LSP' : 'LSP'}
+      </Button>
+    </div>
+  ) : null
 
   const scheduleSummary = useMemo(() => {
     if (!scheduleEnabled) return 'Schedule: Off'
@@ -2566,13 +2905,13 @@ const RightBar: React.FC<RightBarProps> = ({
         <>
           {/* Toggle Button */}
           <div className='flex items-center justify-between py-3 my-1 md:py-2.5 lg:p-1 xl:p-1 2xl:px-1 2xl:py-2'>
-            <div className='flex items-center gap-2'>
+            <div className={`flex items-center gap-2 ${isCollapsed ? 'mx-auto' : 'mx-1'}`}>
               <Button
                 variant='outline2'
                 size='circle'
                 rounded='full'
                 onClick={toggleCollapse}
-                className={`${isCollapsed ? 'mx-auto' : 'ml-0'} mb-2 transition-transform duration-200 hover:scale-103 px-2 py-2 acrylic-ultra-light-nb-3`}
+                className={`${isCollapsed ? 'mx-auto' : 'ml-0'} mb-2 transition-transform duration-200 hover:scale-103 px-2 py-2 bg-white shadow-[inset_0_0px_3px_rgba(0,0,0,0.16)]`}
                 aria-label={isCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}
               >
                 <i
@@ -2662,6 +3001,8 @@ const RightBar: React.FC<RightBarProps> = ({
                   onClose={closeMonacoDock}
                   onSelectTab={selectDockTab}
                   onCloseTab={closeDockTab}
+                  tabToolbar={activeFileEditorTabToolbar}
+                  statusPanel={isLspStatusPanelOpen ? activeLspStatusPanel : null}
                   onSelectionChange={handleMonacoSelectionChange}
                 />
               ) : activeGitDiffTab ? (
@@ -3102,7 +3443,9 @@ const RightBar: React.FC<RightBarProps> = ({
                           {gitSummary.repoRoot}
                         </div>
                         <div className='mt-2 flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-[11px] text-neutral-500 dark:text-neutral-400'>
-                          <span className='max-w-full truncate'>branch: {gitSummary.currentBranch || 'detached HEAD'}</span>
+                          <span className='max-w-full truncate'>
+                            branch: {gitSummary.currentBranch || 'detached HEAD'}
+                          </span>
                           {gitSummary.headShortSha && <span className='shrink-0'>{gitSummary.headShortSha}</span>}
                           {gitSummary.upstreamBranch && (
                             <span className='max-w-full truncate'>{gitSummary.upstreamBranch}</span>
@@ -3207,7 +3550,9 @@ const RightBar: React.FC<RightBarProps> = ({
                                 <span className='text-xs font-medium text-neutral-800 dark:text-neutral-200'>
                                   {section.label}
                                 </span>
-                                <span className={`rounded-full px-1.5 py-0.5 text-[10px] font-medium ${section.badgeClass}`}>
+                                <span
+                                  className={`rounded-full px-1.5 py-0.5 text-[10px] font-medium ${section.badgeClass}`}
+                                >
                                   {section.files.length}
                                 </span>
                               </div>

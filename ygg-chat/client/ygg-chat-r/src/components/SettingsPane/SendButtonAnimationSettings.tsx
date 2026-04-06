@@ -1,4 +1,5 @@
 import React, { useCallback, useMemo, useRef, useState } from 'react'
+import type { SettingsSectionThemeColors } from './settingsSectionTheme'
 import './SendButtonAnimations.css'
 
 export type SendButtonAnimationType =
@@ -297,20 +298,8 @@ const buildStreamingStyle = (
     '--stream-duration': `${baseDuration}s`,
     '--stream-cell-size': mode === 'preview' ? '8px' : '10px',
     '--stream-gap': mode === 'preview' ? '4px' : '5px',
-    '--stream-width': isOrbitRings
-      ? mode === 'preview'
-        ? '96px'
-        : '112px'
-      : mode === 'preview'
-        ? '148px'
-        : '182px',
-    '--stream-height': isOrbitRings
-      ? mode === 'preview'
-        ? '30px'
-        : '36px'
-      : mode === 'preview'
-        ? '18px'
-        : '22px',
+    '--stream-width': isOrbitRings ? (mode === 'preview' ? '96px' : '112px') : mode === 'preview' ? '148px' : '182px',
+    '--stream-height': isOrbitRings ? (mode === 'preview' ? '30px' : '36px') : mode === 'preview' ? '18px' : '22px',
     '--stream-columns': isOrbitRings ? '1' : '12',
   } as React.CSSProperties
 }
@@ -333,10 +322,12 @@ const StreamingAnimationVisual: React.FC<{
           <div
             key={index}
             className='stream-col'
-            style={{
-              ['--i' as string]: index,
-              animationDelay: `${index * 0.05}s`,
-            } as React.CSSProperties}
+            style={
+              {
+                ['--i' as string]: index,
+                animationDelay: `${index * 0.05}s`,
+              } as React.CSSProperties
+            }
           >
             <span className='stream-bit top'></span>
             <span className='stream-bit bottom'></span>
@@ -370,10 +361,12 @@ const StreamingAnimationVisual: React.FC<{
         <span
           key={index}
           className='stream-cell'
-          style={{
-            ['--i' as string]: index,
-            animationDelay: `${index * 0.05}s`,
-          } as React.CSSProperties}
+          style={
+            {
+              ['--i' as string]: index,
+              animationDelay: `${index * 0.05}s`,
+            } as React.CSSProperties
+          }
         ></span>
       ))}
     </div>
@@ -385,34 +378,48 @@ const SettingColorRow: React.FC<{
   selectedColor: string
   onSelectColor: (color: string) => void
   colorPickerRef: React.RefObject<HTMLInputElement>
-}> = ({ label = 'Color', selectedColor, onSelectColor, colorPickerRef }) => (
+  sectionThemeColors?: SettingsSectionThemeColors | null
+}> = ({ label = 'Color', selectedColor, onSelectColor, colorPickerRef, sectionThemeColors = null }) => (
   <div className='space-y-2'>
-    <span className='text-xs font-medium text-neutral-600 dark:text-neutral-400'>{label}</span>
-    <div className='flex items-center gap-2 flex-wrap'>
-      {TAILWIND_COLORS.map(color => (
-        <button
-          key={color.value}
-          onClick={() => onSelectColor(color.value)}
-          className={`w-7 h-7 rounded-lg border-2 transition-all hover:scale-110 ${
-            selectedColor === color.value
-              ? 'border-blue-500 ring-2 ring-blue-500/30'
-              : 'border-neutral-300 dark:border-neutral-600'
-          }`}
-          style={{ backgroundColor: color.value }}
-          title={color.name}
-        />
-      ))}
+    <span
+      className='text-xs font-medium text-neutral-600 dark:text-neutral-100'
+      style={sectionThemeColors ? { color: sectionThemeColors.bodyText } : undefined}
+    >
+      {label}
+    </span>
+    <div className='flex flex-wrap items-center gap-2'>
+      {TAILWIND_COLORS.map(color => {
+        const isSelected = selectedColor === color.value
+
+        return (
+          <button
+            key={color.value}
+            type='button'
+            onClick={() => onSelectColor(color.value)}
+            className='flex h-8 w-8 items-center justify-center rounded-lg transition-all duration-150 hover:scale-105 active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-violet-400/60 dark:focus-visible:ring-violet-500/40'
+            style={{
+              backgroundColor: color.value,
+              boxShadow: isSelected
+                ? `0 0 0 2px ${sectionThemeColors?.primaryButtonBg ?? '#3b82f6'}`
+                : color.value.toLowerCase() === '#ffffff'
+                  ? 'inset 0 0 0 1px rgba(15, 23, 42, 0.12)'
+                  : 'inset 0 0 0 1px rgba(255, 255, 255, 0.18)',
+            }}
+            title={color.name}
+          />
+        )
+      })}
       <button
+        type='button'
         onClick={() => colorPickerRef.current?.click()}
-        className={`w-7 h-7 rounded-lg border-2 transition-all hover:scale-110 flex items-center justify-center ${
-          !TAILWIND_COLORS.some(color => color.value === selectedColor)
-            ? 'border-blue-500 ring-2 ring-blue-500/30'
-            : 'border-neutral-300 dark:border-neutral-600'
-        }`}
+        className='flex h-8 w-8 items-center justify-center rounded-lg transition-all duration-150 hover:scale-105 active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-violet-400/60 dark:focus-visible:ring-violet-500/40'
         style={{
           background: !TAILWIND_COLORS.some(color => color.value === selectedColor)
             ? selectedColor
             : 'conic-gradient(red, yellow, lime, aqua, blue, magenta, red)',
+          boxShadow: !TAILWIND_COLORS.some(color => color.value === selectedColor)
+            ? `0 0 0 2px ${sectionThemeColors?.primaryButtonBg ?? '#3b82f6'}`
+            : 'inset 0 0 0 1px rgba(255, 255, 255, 0.22)',
         }}
         title='Custom color'
       >
@@ -428,7 +435,13 @@ const SettingColorRow: React.FC<{
   </div>
 )
 
-export const SendButtonAnimationSettings: React.FC = () => {
+type SendButtonAnimationSettingsProps = {
+  sectionThemeColors?: SettingsSectionThemeColors | null
+}
+
+export const SendButtonAnimationSettings: React.FC<SendButtonAnimationSettingsProps> = ({
+  sectionThemeColors = null,
+}) => {
   const [sendButtonExpanded, setSendButtonExpanded] = useState(false)
   const [streamingExpanded, setStreamingExpanded] = useState(false)
   const [selectedSendButtonAnimation, setSelectedSendButtonAnimation] =
@@ -487,170 +500,331 @@ export const SendButtonAnimationSettings: React.FC = () => {
   const isDarkModePreview =
     typeof document !== 'undefined' ? document.documentElement.classList.contains('dark') : false
   const activeStreamingPreviewColor = isDarkModePreview ? selectedStreamingDarkColor : selectedStreamingLightColor
+  const sectionCardStyle = sectionThemeColors
+    ? {
+        backgroundColor: sectionThemeColors.cardBg,
+        borderColor: sectionThemeColors.cardBorder,
+      }
+    : undefined
+  const innerCardStyle = sectionThemeColors
+    ? {
+        backgroundColor: sectionThemeColors.innerCardBg,
+        borderColor: sectionThemeColors.innerCardBorder,
+      }
+    : undefined
+  const badgeStyle = sectionThemeColors
+    ? {
+        backgroundColor: sectionThemeColors.badgeBg,
+        color: sectionThemeColors.badgeText,
+      }
+    : undefined
+  const titleStyle = sectionThemeColors ? { color: sectionThemeColors.titleText } : undefined
+  const bodyStyle = sectionThemeColors ? { color: sectionThemeColors.bodyText } : undefined
+  const buttonStyle = sectionThemeColors
+    ? {
+        backgroundColor: sectionThemeColors.buttonBg,
+        color: sectionThemeColors.buttonText,
+      }
+    : undefined
+  const previewSurfaceStyle = sectionThemeColors
+    ? {
+        backgroundColor: sectionThemeColors.codeBg,
+        color: sectionThemeColors.codeText,
+      }
+    : undefined
+  const selectedCardStyle = sectionThemeColors
+    ? {
+        backgroundColor: sectionThemeColors.primaryButtonBg,
+        color: sectionThemeColors.primaryButtonText,
+      }
+    : undefined
+  const defaultCardStyle = sectionThemeColors ? { backgroundColor: sectionThemeColors.listBg } : undefined
+  const selectedTextStyle = sectionThemeColors ? { color: sectionThemeColors.primaryButtonText } : undefined
+  const itemTitleStyle = sectionThemeColors ? { color: sectionThemeColors.listItemTitleText } : undefined
+  const itemMetaStyle = sectionThemeColors ? { color: sectionThemeColors.listItemMetaText } : undefined
 
   return (
-    <div className='space-y-4'>
-      <div className='space-y-2'>
+    <div className='space-y-3'>
+      <div className='overflow-hidden rounded-2xl bg-neutral-50/70 dark:bg-neutral-900/10' style={sectionCardStyle}>
         <button
           type='button'
-          onClick={() => setSendButtonExpanded(!sendButtonExpanded)}
-          className='w-full flex items-center justify-between py-2'
+          onClick={() => setSendButtonExpanded(prev => !prev)}
+          className='group flex w-full items-start justify-between gap-3 rounded-2xl px-3 py-3 text-left transition-all duration-150 hover:bg-neutral-100/80 active:scale-[0.99] active:bg-neutral-200/70 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-violet-400/60 dark:hover:bg-black/10 dark:active:bg-neutral-800/60 dark:focus-visible:ring-violet-500/40'
         >
-          <span className='text-md font-medium text-stone-700 dark:text-stone-200'>Send Button Animation</span>
-          <div className='flex items-center gap-2'>
+          <div className='flex min-w-0 items-start gap-3'>
             <div
-              className='w-5 h-5 rounded border border-neutral-300 dark:border-neutral-600'
-              style={{ backgroundColor: selectedSendButtonColor }}
+              className='mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-violet-100 text-violet-600 dark:bg-violet-500/15 dark:text-violet-300'
+              style={
+                sectionThemeColors
+                  ? {
+                      backgroundColor: sectionThemeColors.accentBg,
+                      color: sectionThemeColors.accentText,
+                    }
+                  : undefined
+              }
+            >
+              <i className='bx bx-paper-plane text-lg' />
+            </div>
+            <div className='min-w-0'>
+              <p className='text-sm font-medium text-stone-700 dark:text-neutral-100' style={titleStyle}>
+                Send Button Animation
+              </p>
+              <p className='mt-0.5 text-xs text-neutral-500 dark:text-neutral-100' style={bodyStyle}>
+                Choose the animation shown in the send button while the assistant is generating.
+              </p>
+            </div>
+          </div>
+          <div className='flex shrink-0 items-center gap-2'>
+            <div
+              className='h-4 w-4 rounded-md'
+              style={{
+                backgroundColor: selectedSendButtonColor,
+                boxShadow:
+                  selectedSendButtonColor.toLowerCase() === '#ffffff'
+                    ? 'inset 0 0 0 1px rgba(15, 23, 42, 0.12)'
+                    : 'inset 0 0 0 1px rgba(255, 255, 255, 0.18)',
+              }}
             />
-            <span className='text-xs text-neutral-500 dark:text-neutral-400'>{selectedSendButtonAnimationName}</span>
-            <i className={`bx ${sendButtonExpanded ? 'bx-chevron-up' : 'bx-chevron-down'} text-lg text-neutral-500`}></i>
+            <span
+              className='hidden rounded-full bg-neutral-200/80 px-2 py-0.5 text-[10px] font-medium uppercase tracking-[0.08em] text-neutral-500 dark:bg-neutral-800 dark:text-neutral-100 sm:inline-flex'
+              style={badgeStyle}
+            >
+              {selectedSendButtonAnimationName}
+            </span>
+            <i
+              className={`bx bx-chevron-down shrink-0 text-2xl text-neutral-500 dark:text-neutral-100 transition-transform duration-200 ${sendButtonExpanded ? 'rotate-180' : ''}`}
+              style={bodyStyle}
+            />
           </div>
         </button>
 
         {sendButtonExpanded && (
-          <div className='pt-2 space-y-4'>
-            <p className='text-xs text-neutral-500 dark:text-neutral-400'>
-              Choose an animation to display inside the send button while the AI is generating a response.
-            </p>
-
-            <SettingColorRow
-              selectedColor={selectedSendButtonColor}
-              onSelectColor={handleSelectSendButtonColor}
-              colorPickerRef={sendButtonColorPickerRef}
-            />
+          <div className='space-y-3 px-3 pb-3 pt-1'>
+            <div className='rounded-xl bg-neutral-100/70 px-3 py-3 dark:bg-neutral-900/25' style={innerCardStyle}>
+              <SettingColorRow
+                selectedColor={selectedSendButtonColor}
+                onSelectColor={handleSelectSendButtonColor}
+                colorPickerRef={sendButtonColorPickerRef}
+                sectionThemeColors={sectionThemeColors}
+              />
+            </div>
 
             <div className='space-y-2'>
-              <span className='text-xs font-medium text-neutral-600 dark:text-neutral-400'>Animation Style</span>
-              <div className='grid grid-cols-5 gap-3'>
-                {SEND_BUTTON_ANIMATIONS.map(animation => (
-                  <button
-                    key={animation.id}
-                    onClick={() => handleSelectSendButtonAnimation(animation.id)}
-                    className={`flex flex-col items-center gap-2 p-3 rounded-xl border transition-all duration-150 ${
-                      selectedSendButtonAnimation === animation.id
-                        ? 'border-blue-500 bg-blue-50 dark:bg-blue-900/20'
-                        : 'border-neutral-200 dark:border-neutral-700 hover:border-neutral-300 dark:hover:border-neutral-600 hover:bg-neutral-50 dark:hover:bg-neutral-800'
-                    }`}
-                    title={animation.name}
-                  >
-                    <SendButtonPreview animationType={animation.id} bgColor={selectedSendButtonColor} />
-                    <span className='text-xs text-neutral-600 dark:text-neutral-400 text-center truncate w-full'>
-                      {animation.name}
-                    </span>
-                  </button>
-                ))}
+              <span className='text-xs font-medium text-neutral-600 dark:text-neutral-100' style={bodyStyle}>
+                Animation Style
+              </span>
+              <div className='grid grid-cols-2 gap-3 sm:grid-cols-3 xl:grid-cols-5'>
+                {SEND_BUTTON_ANIMATIONS.map(animation => {
+                  const isSelected = selectedSendButtonAnimation === animation.id
+
+                  return (
+                    <button
+                      key={animation.id}
+                      type='button'
+                      onClick={() => handleSelectSendButtonAnimation(animation.id)}
+                      className={`flex flex-col items-center gap-2 rounded-xl px-3 py-3 text-center text-neutral-700 dark:text-neutral-100 transition-all duration-150 hover:bg-white/80 active:scale-[0.98] active:bg-white/90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-violet-400/60 dark:hover:bg-neutral-900/40 dark:active:bg-neutral-900/50 dark:focus-visible:ring-violet-500/40 ${
+                        isSelected
+                          ? 'bg-blue-500/10 text-blue-700 dark:bg-blue-500/15 dark:text-blue-100'
+                          : 'bg-neutral-100/70 dark:bg-neutral-900/25'
+                      }`}
+                      style={isSelected ? selectedCardStyle : defaultCardStyle}
+                      title={animation.name}
+                    >
+                      <div className='rounded-xl px-3 py-3' style={previewSurfaceStyle}>
+                        <SendButtonPreview animationType={animation.id} bgColor={selectedSendButtonColor} />
+                      </div>
+                      <span
+                        className='w-full truncate text-xs font-medium'
+                        style={isSelected ? selectedTextStyle : itemTitleStyle}
+                      >
+                        {animation.name}
+                      </span>
+                    </button>
+                  )
+                })}
               </div>
             </div>
           </div>
         )}
       </div>
 
-      <div className='space-y-2'>
+      <div className='overflow-hidden rounded-2xl bg-neutral-50/70 dark:bg-neutral-900/10' style={sectionCardStyle}>
         <button
           type='button'
-          onClick={() => setStreamingExpanded(!streamingExpanded)}
-          className='w-full flex items-center justify-between py-2'
+          onClick={() => setStreamingExpanded(prev => !prev)}
+          className='group flex w-full items-start justify-between gap-3 rounded-2xl px-3 py-3 text-left transition-all duration-150 hover:bg-neutral-100/80 active:scale-[0.99] active:bg-neutral-200/70 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-violet-400/60 dark:hover:bg-black/10 dark:active:bg-neutral-800/60 dark:focus-visible:ring-violet-500/40'
         >
-          <span className='text-md font-medium text-stone-700 dark:text-stone-200'>Streaming Animation</span>
-          <div className='flex items-center gap-2'>
-            <div className='flex items-center gap-1'>
+          <div className='flex min-w-0 items-start gap-3'>
+            <div
+              className='mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-violet-100 text-violet-600 dark:bg-violet-500/15 dark:text-violet-300'
+              style={
+                sectionThemeColors
+                  ? {
+                      backgroundColor: sectionThemeColors.accentBg,
+                      color: sectionThemeColors.accentText,
+                    }
+                  : undefined
+              }
+            >
+              <i className='bx bx-loader-circle text-lg' />
+            </div>
+            <div className='min-w-0'>
+              <p className='text-sm font-medium text-stone-700 dark:text-neutral-100' style={titleStyle}>
+                Streaming Animation
+              </p>
+              <p className='mt-0.5 text-xs text-neutral-500 dark:text-neutral-100' style={bodyStyle}>
+                Pick the animation shown below a live assistant message while it streams.
+              </p>
+            </div>
+          </div>
+          <div className='flex shrink-0 items-center gap-2'>
+            <div className='hidden items-center gap-1 sm:flex'>
               <div
-                className='w-4 h-4 rounded border border-neutral-300 dark:border-neutral-600'
-                style={{ backgroundColor: selectedStreamingLightColor }}
+                className='h-4 w-4 rounded-md'
+                style={{
+                  backgroundColor: selectedStreamingLightColor,
+                  boxShadow:
+                    selectedStreamingLightColor.toLowerCase() === '#ffffff'
+                      ? 'inset 0 0 0 1px rgba(15, 23, 42, 0.12)'
+                      : 'inset 0 0 0 1px rgba(255, 255, 255, 0.18)',
+                }}
                 title='Light mode color'
               />
               <div
-                className='w-4 h-4 rounded border border-neutral-300 dark:border-neutral-600'
-                style={{ backgroundColor: selectedStreamingDarkColor }}
+                className='h-4 w-4 rounded-md'
+                style={{
+                  backgroundColor: selectedStreamingDarkColor,
+                  boxShadow:
+                    selectedStreamingDarkColor.toLowerCase() === '#ffffff'
+                      ? 'inset 0 0 0 1px rgba(15, 23, 42, 0.12)'
+                      : 'inset 0 0 0 1px rgba(255, 255, 255, 0.18)',
+                }}
                 title='Dark mode color'
               />
             </div>
-            <span className='text-xs text-neutral-500 dark:text-neutral-400'>
+            <span
+              className='hidden rounded-full bg-neutral-200/80 px-2 py-0.5 text-[10px] font-medium uppercase tracking-[0.08em] text-neutral-500 dark:bg-neutral-800 dark:text-neutral-100 sm:inline-flex'
+              style={badgeStyle}
+            >
               {selectedStreamingAnimationName} · {selectedStreamingSpeed.toFixed(1)}×
             </span>
-            <i className={`bx ${streamingExpanded ? 'bx-chevron-up' : 'bx-chevron-down'} text-lg text-neutral-500`}></i>
+            <i
+              className={`bx bx-chevron-down shrink-0 text-2xl text-neutral-500 dark:text-neutral-100 transition-transform duration-200 ${streamingExpanded ? 'rotate-180' : ''}`}
+              style={bodyStyle}
+            />
           </div>
         </button>
 
         {streamingExpanded && (
-          <div className='pt-2 space-y-4'>
-            <p className='text-xs text-neutral-500 dark:text-neutral-400'>
-              Pick the animation shown below the live assistant message while streaming. You can tune its color and speed.
-            </p>
-
-            <div className='grid grid-cols-1 md:grid-cols-2 gap-4'>
-              <SettingColorRow
-                label='Light Mode Color'
-                selectedColor={selectedStreamingLightColor}
-                onSelectColor={handleSelectStreamingLightColor}
-                colorPickerRef={streamingLightColorPickerRef}
-              />
-              <SettingColorRow
-                label='Dark Mode Color'
-                selectedColor={selectedStreamingDarkColor}
-                onSelectColor={handleSelectStreamingDarkColor}
-                colorPickerRef={streamingDarkColorPickerRef}
-              />
-            </div>
-
-            <div className='space-y-2'>
-              <div className='flex items-center justify-between'>
-                <span className='text-xs font-medium text-neutral-600 dark:text-neutral-400'>Speed</span>
-                <span className='text-xs font-mono text-neutral-500 dark:text-neutral-400'>
-                  {selectedStreamingSpeed.toFixed(1)}×
-                </span>
-              </div>
-              <div className='flex items-center gap-4'>
-                <span className='text-xs text-neutral-500 dark:text-neutral-500 w-8'>0.5×</span>
-                <input
-                  type='range'
-                  min={0.5}
-                  max={2}
-                  step={0.1}
-                  value={selectedStreamingSpeed}
-                  onChange={e => handleStreamingSpeedChange(Number.parseFloat(e.target.value))}
-                  className='flex-1 h-2 bg-neutral-200 dark:bg-neutral-700 rounded-lg appearance-none cursor-pointer accent-blue-500'
+          <div className='space-y-3 px-3 pb-3 pt-1'>
+            <div className='grid grid-cols-1 gap-3 md:grid-cols-2'>
+              <div className='rounded-xl bg-neutral-100/70 px-3 py-3 dark:bg-neutral-900/25' style={innerCardStyle}>
+                <SettingColorRow
+                  label='Light Mode Color'
+                  selectedColor={selectedStreamingLightColor}
+                  onSelectColor={handleSelectStreamingLightColor}
+                  colorPickerRef={streamingLightColorPickerRef}
+                  sectionThemeColors={sectionThemeColors}
                 />
-                <span className='text-xs text-neutral-500 dark:text-neutral-500 w-8'>2.0×</span>
-                <button
-                  type='button'
-                  onClick={() => handleStreamingSpeedChange(1)}
-                  className={`px-3 py-1.5 rounded-lg text-sm text-neutral-600 dark:text-neutral-400 hover:text-neutral-800 dark:hover:text-neutral-200 hover:bg-neutral-100 dark:hover:bg-neutral-700 transition-colors ${selectedStreamingSpeed === 1 ? 'invisible' : ''}`}
-                  title='Reset speed'
-                >
-                  Reset
-                </button>
+              </div>
+              <div className='rounded-xl bg-neutral-100/70 px-3 py-3 dark:bg-neutral-900/25' style={innerCardStyle}>
+                <SettingColorRow
+                  label='Dark Mode Color'
+                  selectedColor={selectedStreamingDarkColor}
+                  onSelectColor={handleSelectStreamingDarkColor}
+                  colorPickerRef={streamingDarkColorPickerRef}
+                  sectionThemeColors={sectionThemeColors}
+                />
+              </div>
+            </div>
+
+            <div className='rounded-xl bg-neutral-100/70 px-3 py-3 dark:bg-neutral-900/25' style={innerCardStyle}>
+              <div className='space-y-2'>
+                <div className='flex items-center justify-between gap-3'>
+                  <span className='text-xs font-medium text-neutral-600 dark:text-neutral-100' style={bodyStyle}>
+                    Speed
+                  </span>
+                  <span className='text-xs font-mono text-neutral-500 dark:text-neutral-100' style={bodyStyle}>
+                    {selectedStreamingSpeed.toFixed(1)}×
+                  </span>
+                </div>
+                <div className='flex items-center gap-3'>
+                  <span className='w-8 shrink-0 text-xs text-neutral-500 dark:text-neutral-100' style={bodyStyle}>
+                    0.5×
+                  </span>
+                  <input
+                    type='range'
+                    min={0.5}
+                    max={2}
+                    step={0.1}
+                    value={selectedStreamingSpeed}
+                    onChange={e => handleStreamingSpeedChange(Number.parseFloat(e.target.value))}
+                    className='h-2 flex-1 cursor-pointer appearance-none rounded-lg bg-neutral-200 dark:bg-neutral-700'
+                    style={
+                      sectionThemeColors
+                        ? {
+                            backgroundColor: sectionThemeColors.codeBg,
+                            accentColor: sectionThemeColors.primaryButtonBg,
+                          }
+                        : undefined
+                    }
+                  />
+                  <span className='w-8 shrink-0 text-xs text-neutral-500 dark:text-neutral-100' style={bodyStyle}>
+                    2.0×
+                  </span>
+                  <button
+                    type='button'
+                    onClick={() => handleStreamingSpeedChange(1)}
+                    className={`inline-flex shrink-0 items-center rounded-lg px-3 py-1.5 text-sm font-medium text-neutral-700 dark:text-neutral-100 transition-all duration-150 hover:bg-neutral-200 active:scale-[0.98] active:bg-neutral-300 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-violet-400/60 dark:hover:bg-neutral-700 dark:active:bg-neutral-700/90 dark:focus-visible:ring-violet-500/40 ${selectedStreamingSpeed === 1 ? 'invisible' : ''}`}
+                    style={buttonStyle}
+                    title='Reset speed'
+                  >
+                    Reset
+                  </button>
+                </div>
               </div>
             </div>
 
             <div className='space-y-2'>
-              <span className='text-xs font-medium text-neutral-600 dark:text-neutral-400'>Animation Style</span>
-              <div className='grid grid-cols-2 gap-3'>
-                {STREAMING_ANIMATIONS.map(animation => (
-                  <button
-                    key={animation.id}
-                    onClick={() => handleSelectStreamingAnimation(animation.id)}
-                    className={`flex flex-col items-start gap-3 p-3 rounded-xl border text-left transition-all duration-150 ${
-                      selectedStreamingAnimation === animation.id
-                        ? 'border-blue-500 bg-blue-50 dark:bg-blue-900/20'
-                        : 'border-neutral-200 dark:border-neutral-700 hover:border-neutral-300 dark:hover:border-neutral-600 hover:bg-neutral-50 dark:hover:bg-neutral-800'
-                    }`}
-                    title={animation.name}
-                  >
-                    <div className='w-full rounded-xl border border-neutral-200/70 dark:border-neutral-700/70 bg-white dark:bg-neutral-950/70 px-3 py-3 overflow-hidden shadow-sm dark:shadow-none'>
-                      <StreamingAnimationVisual
-                        animationType={animation.id}
-                        color={activeStreamingPreviewColor}
-                        speed={selectedStreamingSpeed}
-                        mode='preview'
-                      />
-                    </div>
-                    <div className='space-y-1'>
-                      <div className='text-sm font-medium text-neutral-700 dark:text-neutral-200'>{animation.name}</div>
-                      <div className='text-xs text-neutral-500 dark:text-neutral-400'>{animation.description}</div>
-                    </div>
-                  </button>
-                ))}
+              <span className='text-xs font-medium text-neutral-600 dark:text-neutral-100' style={bodyStyle}>
+                Animation Style
+              </span>
+              <div className='grid grid-cols-1 gap-3 lg:grid-cols-2'>
+                {STREAMING_ANIMATIONS.map(animation => {
+                  const isSelected = selectedStreamingAnimation === animation.id
+
+                  return (
+                    <button
+                      key={animation.id}
+                      type='button'
+                      onClick={() => handleSelectStreamingAnimation(animation.id)}
+                      className={`flex flex-col items-start gap-3 rounded-xl px-3 py-3 text-left text-neutral-700 dark:text-neutral-100 transition-all duration-150 hover:bg-white/80 active:scale-[0.98] active:bg-white/90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-violet-400/60 dark:hover:bg-neutral-900/40 dark:active:bg-neutral-900/50 dark:focus-visible:ring-violet-500/40 ${
+                        isSelected
+                          ? 'bg-blue-500/10 text-blue-700 dark:bg-blue-500/15 dark:text-blue-100'
+                          : 'bg-neutral-100/70 dark:bg-neutral-900/25'
+                      }`}
+                      style={isSelected ? selectedCardStyle : defaultCardStyle}
+                      title={animation.name}
+                    >
+                      <div className='w-full overflow-hidden rounded-xl px-3 py-3' style={previewSurfaceStyle}>
+                        <StreamingAnimationVisual
+                          animationType={animation.id}
+                          color={activeStreamingPreviewColor}
+                          speed={selectedStreamingSpeed}
+                          mode='preview'
+                        />
+                      </div>
+                      <div className='space-y-1'>
+                        <div className='text-sm font-medium' style={isSelected ? selectedTextStyle : itemTitleStyle}>
+                          {animation.name}
+                        </div>
+                        <div className='text-xs' style={isSelected ? selectedTextStyle : itemMetaStyle}>
+                          {animation.description}
+                        </div>
+                      </div>
+                    </button>
+                  )
+                })}
               </div>
             </div>
           </div>

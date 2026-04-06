@@ -1,4 +1,5 @@
 import React, { useCallback, useMemo, useRef, useState } from 'react'
+import type { SettingsSectionThemeColors } from './settingsSectionTheme'
 import './ChatInputBorderAnimations.css'
 
 export type ChatInputBorderAnimationType = 'none' | 'digital-breath' | 'data-wave' | 'orbit-rings' | 'shard-sweep'
@@ -116,34 +117,48 @@ const SettingColorRow: React.FC<{
   selectedColor: string
   onSelectColor: (color: string) => void
   colorPickerRef: React.RefObject<HTMLInputElement>
-}> = ({ label, selectedColor, onSelectColor, colorPickerRef }) => (
+  sectionThemeColors?: SettingsSectionThemeColors | null
+}> = ({ label, selectedColor, onSelectColor, colorPickerRef, sectionThemeColors = null }) => (
   <div className='space-y-2'>
-    <span className='text-xs font-medium text-neutral-600 dark:text-neutral-400'>{label}</span>
-    <div className='flex items-center gap-2 flex-wrap'>
-      {TAILWIND_COLORS.map(color => (
-        <button
-          key={color.value}
-          onClick={() => onSelectColor(color.value)}
-          className={`w-7 h-7 rounded-lg border-2 transition-all hover:scale-110 ${
-            selectedColor === color.value
-              ? 'border-blue-500 ring-2 ring-blue-500/30'
-              : 'border-neutral-300 dark:border-neutral-600'
-          }`}
-          style={{ backgroundColor: color.value }}
-          title={color.name}
-        />
-      ))}
+    <span
+      className='text-xs font-medium text-neutral-600 dark:text-neutral-100'
+      style={sectionThemeColors ? { color: sectionThemeColors.bodyText } : undefined}
+    >
+      {label}
+    </span>
+    <div className='flex flex-wrap items-center gap-2'>
+      {TAILWIND_COLORS.map(color => {
+        const isSelected = selectedColor === color.value
+
+        return (
+          <button
+            key={color.value}
+            type='button'
+            onClick={() => onSelectColor(color.value)}
+            className='flex h-8 w-8 items-center justify-center rounded-lg transition-all duration-150 hover:scale-105 active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-violet-400/60 dark:focus-visible:ring-violet-500/40'
+            style={{
+              backgroundColor: color.value,
+              boxShadow: isSelected
+                ? `0 0 0 2px ${sectionThemeColors?.primaryButtonBg ?? '#3b82f6'}`
+                : color.value.toLowerCase() === '#ffffff'
+                  ? 'inset 0 0 0 1px rgba(15, 23, 42, 0.12)'
+                  : 'inset 0 0 0 1px rgba(255, 255, 255, 0.18)',
+            }}
+            title={color.name}
+          />
+        )
+      })}
       <button
+        type='button'
         onClick={() => colorPickerRef.current?.click()}
-        className={`w-7 h-7 rounded-lg border-2 transition-all hover:scale-110 flex items-center justify-center ${
-          !TAILWIND_COLORS.some(color => color.value === selectedColor)
-            ? 'border-blue-500 ring-2 ring-blue-500/30'
-            : 'border-neutral-300 dark:border-neutral-600'
-        }`}
+        className='flex h-8 w-8 items-center justify-center rounded-lg transition-all duration-150 hover:scale-105 active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-violet-400/60 dark:focus-visible:ring-violet-500/40'
         style={{
           background: !TAILWIND_COLORS.some(color => color.value === selectedColor)
             ? selectedColor
             : 'conic-gradient(red, yellow, lime, aqua, blue, magenta, red)',
+          boxShadow: !TAILWIND_COLORS.some(color => color.value === selectedColor)
+            ? `0 0 0 2px ${sectionThemeColors?.primaryButtonBg ?? '#3b82f6'}`
+            : 'inset 0 0 0 1px rgba(255, 255, 255, 0.22)',
         }}
         title='Custom color'
       >
@@ -184,7 +199,13 @@ const ChatInputBorderPreview: React.FC<{
   )
 }
 
-export const ChatInputBorderAnimationSettings: React.FC = () => {
+type ChatInputBorderAnimationSettingsProps = {
+  sectionThemeColors?: SettingsSectionThemeColors | null
+}
+
+export const ChatInputBorderAnimationSettings: React.FC<ChatInputBorderAnimationSettingsProps> = ({
+  sectionThemeColors = null,
+}) => {
   const [expanded, setExpanded] = useState(false)
   const [selectedAnimation, setSelectedAnimation] = useState<ChatInputBorderAnimationType>(
     getStoredChatInputBorderAnimation
@@ -214,80 +235,174 @@ export const ChatInputBorderAnimationSettings: React.FC = () => {
     [selectedAnimation]
   )
 
+  const sectionCardStyle = sectionThemeColors
+    ? {
+        backgroundColor: sectionThemeColors.cardBg,
+        borderColor: sectionThemeColors.cardBorder,
+      }
+    : undefined
+  const innerCardStyle = sectionThemeColors
+    ? {
+        backgroundColor: sectionThemeColors.innerCardBg,
+        borderColor: sectionThemeColors.innerCardBorder,
+      }
+    : undefined
+  const badgeStyle = sectionThemeColors
+    ? {
+        backgroundColor: sectionThemeColors.badgeBg,
+        color: sectionThemeColors.badgeText,
+      }
+    : undefined
+  const titleStyle = sectionThemeColors ? { color: sectionThemeColors.titleText } : undefined
+  const bodyStyle = sectionThemeColors ? { color: sectionThemeColors.bodyText } : undefined
+  const previewSurfaceStyle = sectionThemeColors
+    ? {
+        backgroundColor: sectionThemeColors.codeBg,
+        color: sectionThemeColors.codeText,
+      }
+    : undefined
+  const selectedCardStyle = sectionThemeColors
+    ? {
+        backgroundColor: sectionThemeColors.primaryButtonBg,
+        color: sectionThemeColors.primaryButtonText,
+      }
+    : undefined
+  const defaultCardStyle = sectionThemeColors ? { backgroundColor: sectionThemeColors.listBg } : undefined
+  const selectedTextStyle = sectionThemeColors ? { color: sectionThemeColors.primaryButtonText } : undefined
+  const itemTitleStyle = sectionThemeColors ? { color: sectionThemeColors.listItemTitleText } : undefined
+  const itemMetaStyle = sectionThemeColors ? { color: sectionThemeColors.listItemMetaText } : undefined
+
   return (
-    <div className='space-y-2'>
+    <div className='overflow-hidden rounded-2xl bg-neutral-50/70 dark:bg-neutral-900/10' style={sectionCardStyle}>
       <button
         type='button'
-        onClick={() => setExpanded(!expanded)}
-        className='w-full flex items-center justify-between py-2'
+        onClick={() => setExpanded(prev => !prev)}
+        className='group flex w-full items-start justify-between gap-3 rounded-2xl px-3 py-3 text-left transition-all duration-150 hover:bg-neutral-100/80 active:scale-[0.99] active:bg-neutral-200/70 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-violet-400/60 dark:hover:bg-black/10
+        dark:active:bg-neutral-800/60 dark:focus-visible:ring-violet-500/40'
       >
-        <span className='text-md font-medium text-stone-700 dark:text-stone-200'>Chat Input Border Animation</span>
-        <div className='flex items-center gap-2'>
-          <div className='flex items-center gap-1'>
+        <div className='flex min-w-0 items-start gap-3'>
+          <div
+            className='mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-violet-100 text-violet-600 dark:bg-violet-500/15 dark:text-violet-300'
+            style={
+              sectionThemeColors
+                ? {
+                    backgroundColor: sectionThemeColors.accentBg,
+                    color: sectionThemeColors.accentText,
+                  }
+                : undefined
+            }
+          >
+            <i className='bx bx-square-rounded text-lg' />
+          </div>
+          <div className='min-w-0'>
+            <p className='text-sm font-medium text-stone-700 dark:text-neutral-100' style={titleStyle}>
+              Chat Input Border Animation
+            </p>
+            <p className='mt-0.5 text-xs text-neutral-500 dark:text-neutral-100' style={bodyStyle}>
+              Animate the composer border in chat mode while keeping the overall surface minimal.
+            </p>
+          </div>
+        </div>
+        <div className='flex shrink-0 items-center gap-2'>
+          <div className='hidden items-center gap-1 sm:flex'>
             <div
-              className='w-4 h-4 rounded border border-neutral-300 dark:border-neutral-600'
-              style={{ backgroundColor: selectedLightColor }}
+              className='h-4 w-4 rounded-md'
+              style={{
+                backgroundColor: selectedLightColor,
+                boxShadow:
+                  selectedLightColor.toLowerCase() === '#ffffff'
+                    ? 'inset 0 0 0 1px rgba(15, 23, 42, 0.12)'
+                    : 'inset 0 0 0 1px rgba(255, 255, 255, 0.18)',
+              }}
               title='Light mode color'
             />
             <div
-              className='w-4 h-4 rounded border border-neutral-300 dark:border-neutral-600'
-              style={{ backgroundColor: selectedDarkColor }}
+              className='h-4 w-4 rounded-md'
+              style={{
+                backgroundColor: selectedDarkColor,
+                boxShadow:
+                  selectedDarkColor.toLowerCase() === '#ffffff'
+                    ? 'inset 0 0 0 1px rgba(15, 23, 42, 0.12)'
+                    : 'inset 0 0 0 1px rgba(255, 255, 255, 0.18)',
+              }}
               title='Dark mode color'
             />
           </div>
-          <span className='text-xs text-neutral-500 dark:text-neutral-400'>{selectedAnimationName}</span>
-          <i className={`bx ${expanded ? 'bx-chevron-up' : 'bx-chevron-down'} text-lg text-neutral-500`}></i>
+          <span
+            className='hidden rounded-full bg-neutral-200/80 px-2 py-0.5 text-[10px] font-medium uppercase tracking-[0.08em] text-neutral-500 dark:bg-neutral-800 dark:text-neutral-100 sm:inline-flex'
+            style={badgeStyle}
+          >
+            {selectedAnimationName}
+          </span>
+          <i
+            className={`bx bx-chevron-down shrink-0 text-2xl text-neutral-500 dark:text-neutral-100 transition-transform duration-200 ${expanded ? 'rotate-180' : ''}`}
+            style={bodyStyle}
+          />
         </div>
       </button>
 
       {expanded && (
-        <div className='pt-2 space-y-4'>
-          <p className='text-xs text-neutral-500 dark:text-neutral-400'>
-            Animate the composer border in chat mode. Plan mode keeps its own static border style.
-          </p>
-
-          <div className='grid grid-cols-1 md:grid-cols-2 gap-4'>
-            <SettingColorRow
-              label='Light Mode Color'
-              selectedColor={selectedLightColor}
-              onSelectColor={handleSelectLightColor}
-              colorPickerRef={lightColorPickerRef}
-            />
-            <SettingColorRow
-              label='Dark Mode Color'
-              selectedColor={selectedDarkColor}
-              onSelectColor={handleSelectDarkColor}
-              colorPickerRef={darkColorPickerRef}
-            />
+        <div className='space-y-3 px-3 pb-3 pt-1'>
+          <div className='grid grid-cols-1 gap-3 md:grid-cols-2'>
+            <div className='rounded-xl bg-neutral-100/70 px-3 py-3 dark:bg-neutral-900/25' style={innerCardStyle}>
+              <SettingColorRow
+                label='Light Mode Color'
+                selectedColor={selectedLightColor}
+                onSelectColor={handleSelectLightColor}
+                colorPickerRef={lightColorPickerRef}
+                sectionThemeColors={sectionThemeColors}
+              />
+            </div>
+            <div className='rounded-xl bg-neutral-100/70 px-3 py-3 dark:bg-neutral-900/25' style={innerCardStyle}>
+              <SettingColorRow
+                label='Dark Mode Color'
+                selectedColor={selectedDarkColor}
+                onSelectColor={handleSelectDarkColor}
+                colorPickerRef={darkColorPickerRef}
+                sectionThemeColors={sectionThemeColors}
+              />
+            </div>
           </div>
 
           <div className='space-y-2'>
-            <span className='text-xs font-medium text-neutral-600 dark:text-neutral-400'>Animation Style</span>
-            <div className='grid grid-cols-1 sm:grid-cols-2 gap-3'>
-              {CHAT_INPUT_BORDER_ANIMATIONS.map(animation => (
-                <button
-                  key={animation.id}
-                  onClick={() => handleSelectAnimation(animation.id)}
-                  className={`flex flex-col items-start gap-3 p-3 rounded-xl border text-left transition-all duration-150 ${
-                    selectedAnimation === animation.id
-                      ? 'border-blue-500 bg-blue-50 dark:bg-blue-900/20'
-                      : 'border-neutral-200 dark:border-neutral-700 hover:border-neutral-300 dark:hover:border-neutral-600 hover:bg-neutral-50 dark:hover:bg-neutral-800'
-                  }`}
-                  title={animation.name}
-                >
-                  <div className='w-full rounded-xl border border-neutral-200/70 dark:border-neutral-700/70 bg-white dark:bg-neutral-950/70 px-3 py-3 overflow-hidden shadow-sm dark:shadow-none'>
-                    <ChatInputBorderPreview
-                      animationType={animation.id}
-                      lightColor={selectedLightColor}
-                      darkColor={selectedDarkColor}
-                    />
-                  </div>
-                  <div className='space-y-1'>
-                    <div className='text-sm font-medium text-neutral-700 dark:text-neutral-200'>{animation.name}</div>
-                    <div className='text-xs text-neutral-500 dark:text-neutral-400'>{animation.description}</div>
-                  </div>
-                </button>
-              ))}
+            <span className='text-xs font-medium text-neutral-600 dark:text-neutral-100' style={bodyStyle}>
+              Animation Style
+            </span>
+            <div className='grid grid-cols-1 gap-3 sm:grid-cols-2'>
+              {CHAT_INPUT_BORDER_ANIMATIONS.map(animation => {
+                const isSelected = selectedAnimation === animation.id
+
+                return (
+                  <button
+                    key={animation.id}
+                    type='button'
+                    onClick={() => handleSelectAnimation(animation.id)}
+                    className={`flex flex-col items-start gap-3 rounded-xl px-3 py-3 text-left text-neutral-700 dark:text-neutral-100 transition-all duration-150 hover:bg-white/80 active:scale-[0.98] active:bg-white/90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-violet-400/60 dark:hover:bg-neutral-900/40 dark:active:bg-neutral-900/50 dark:focus-visible:ring-violet-500/40 ${
+                      isSelected
+                        ? 'bg-blue-500/10 text-blue-700 dark:bg-blue-500/15 dark:text-blue-100'
+                        : 'bg-neutral-100/70 dark:bg-neutral-900/25'
+                    }`}
+                    style={isSelected ? selectedCardStyle : defaultCardStyle}
+                    title={animation.name}
+                  >
+                    <div className='w-full overflow-hidden rounded-xl px-3 py-3' style={previewSurfaceStyle}>
+                      <ChatInputBorderPreview
+                        animationType={animation.id}
+                        lightColor={selectedLightColor}
+                        darkColor={selectedDarkColor}
+                      />
+                    </div>
+                    <div className='space-y-1'>
+                      <div className='text-sm font-medium' style={isSelected ? selectedTextStyle : itemTitleStyle}>
+                        {animation.name}
+                      </div>
+                      <div className='text-xs' style={isSelected ? selectedTextStyle : itemMetaStyle}>
+                        {animation.description}
+                      </div>
+                    </div>
+                  </button>
+                )
+              })}
             </div>
           </div>
         </div>

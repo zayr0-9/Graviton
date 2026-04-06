@@ -56,7 +56,7 @@ export const Button = React.forwardRef<HTMLButtonElement, ButtonProps>(
       outline:
         'border-2 border-neutral-400 text-neutral-700 dark:text-neutral-300 hover:bg-neutral-200 dark:hover:bg-neutral-800',
       outline2:
-        ' dark:bg-transparent text-neutral-700 dark:text-neutral-300 hover:bg-neutral-100 dark:hover:bg-neutral-800/40',
+        ' dark:bg-transparent text-neutral-700 dark:text-neutral-300 hover:bg-neutral-300/20 dark:hover:bg-white/5',
       danger:
         'bg-rose-400 dark:bg-yPink-700 dark:border-2 dark:border-yPink-200 text-white dark:hover:bg-yPink-600 hover:bg-rose-500 focus:ring-red-500',
       liquid: 'button-liquid bg-transparent text-neutral-700 dark:text-neutral-300',

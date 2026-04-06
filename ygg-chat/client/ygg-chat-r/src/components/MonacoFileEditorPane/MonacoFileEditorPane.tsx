@@ -1,7 +1,11 @@
 import React, { useCallback, useEffect, useMemo, useRef } from 'react'
 import Editor from '@monaco-editor/react'
 import type * as MonacoEditor from 'monaco-editor'
+import { ensureMonacoLspBootstrap } from '../Monaco/MonacoLspBootstrap'
 import type { SelectionInfo } from '../../features/ideContext'
+import { resolveLanguageInfo } from '../../lib/lsp/languageIds'
+import { getModel } from '../../lib/lsp/modelRegistry'
+import { toFileUriString } from '../../lib/lsp/uri'
 import { Button } from '../Button/button'
 import { getDockTabIndicatorClasses, getDockTabKindLabel, getDockTabToneClasses } from '../dockTabStyles'
 
@@ -31,48 +35,11 @@ interface MonacoFileEditorPaneProps {
   onSelectTab: (tabId: string) => void
   onCloseTab: (tabId: string) => void
   tabToolbar?: React.ReactNode
+  statusPanel?: React.ReactNode
   onSelectionChange?: (selection: SelectionInfo | null) => void
 }
 
-const extensionLanguageMap: Record<string, string> = {
-  js: 'javascript',
-  mjs: 'javascript',
-  cjs: 'javascript',
-  jsx: 'javascript',
-  ts: 'typescript',
-  tsx: 'typescript',
-  css: 'css',
-  scss: 'scss',
-  less: 'less',
-  html: 'html',
-  htm: 'html',
-  json: 'json',
-  md: 'markdown',
-  py: 'python',
-  sh: 'shell',
-  bash: 'shell',
-  yml: 'yaml',
-  yaml: 'yaml',
-  xml: 'xml',
-  sql: 'sql',
-  go: 'go',
-  rs: 'rust',
-  java: 'java',
-  c: 'c',
-  h: 'cpp',
-  cpp: 'cpp',
-  cc: 'cpp',
-  hpp: 'cpp',
-  txt: 'plaintext',
-}
-
-const detectLanguage = (filePath: string | null): string => {
-  if (!filePath) return 'plaintext'
-  const dotIndex = filePath.lastIndexOf('.')
-  if (dotIndex === -1 || dotIndex === filePath.length - 1) return 'plaintext'
-  const extension = filePath.slice(dotIndex + 1).toLowerCase()
-  return extensionLanguageMap[extension] || 'plaintext'
-}
+ensureMonacoLspBootstrap()
 
 export const MonacoFileEditorPane: React.FC<MonacoFileEditorPaneProps> = ({
   filePath,
@@ -91,13 +58,16 @@ export const MonacoFileEditorPane: React.FC<MonacoFileEditorPaneProps> = ({
   onSelectTab,
   onCloseTab,
   tabToolbar,
+  statusPanel,
   onSelectionChange,
 }) => {
   const editorRef = useRef<MonacoEditor.editor.IStandaloneCodeEditor | null>(null)
   const selectionListenersRef = useRef<MonacoEditor.IDisposable[]>([])
   const saveStateRef = useRef({ loading, isSaving, isDirty, onSave })
   const selectionStateRef = useRef({ filePath, relativePath, onSelectionChange })
-  const language = useMemo(() => detectLanguage(filePath), [filePath])
+  const languageInfo = useMemo(() => resolveLanguageInfo(filePath), [filePath])
+  const language = languageInfo.monacoLanguageId
+  const modelPath = useMemo(() => (filePath ? toFileUriString(filePath) : undefined), [filePath])
 
   const emitCurrentSelection = useCallback((editor: MonacoEditor.editor.IStandaloneCodeEditor | null) => {
     const currentEditor = editor ?? editorRef.current
@@ -303,9 +273,11 @@ export const MonacoFileEditorPane: React.FC<MonacoFileEditorPaneProps> = ({
         </div>
       ) : null}
 
+      {statusPanel ? <div className='border-b border-neutral-200 dark:border-neutral-800'>{statusPanel}</div> : null}
+
       <div className={`relative min-h-0 flex-1 ${theme === 'vs-dark' ? 'bg-[#1e1e1e]' : 'bg-[#ffffff]'}`}>
         <Editor
-          path={filePath ?? undefined}
+          path={modelPath}
           theme={theme}
           language={language}
           value={value}
@@ -313,6 +285,10 @@ export const MonacoFileEditorPane: React.FC<MonacoFileEditorPaneProps> = ({
           height='100%'
           onMount={(editor, monaco) => {
             editorRef.current = editor
+            const existingModel = filePath ? getModel(filePath) : null
+            if (existingModel) {
+              editor.setModel(existingModel)
+            }
             console.log('[MonacoIdeSelection][Pane] mounted', {
               filePath,
               relativePath,
@@ -367,6 +343,11 @@ export const MonacoFileEditorPane: React.FC<MonacoFileEditorPaneProps> = ({
             smoothScrolling: true,
             scrollBeyondLastLine: false,
             tabSize: 2,
+            fixedOverflowWidgets: true,
+            hover: {
+              enabled: true,
+              sticky: true,
+            },
           }}
         />
 

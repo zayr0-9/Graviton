@@ -3,6 +3,8 @@ import * as fs from 'fs'
 import * as path from 'path'
 import { isManagedToolPath } from '../utils/managedToolPaths.js'
 import { isWSLPath, resolveToWindowsPath } from '../utils/wslBridge.js'
+import { lspManager } from '../lsp/LspManager.js'
+import type { LspFileContext } from '../lsp/types.js'
 import { FileMetadata, readTextFile } from './readFile.js'
 
 const FULL_FILE_READ_MAX_BYTES = Number.MAX_SAFE_INTEGER
@@ -69,6 +71,7 @@ export interface EditFileResult {
   attemptedStrategies?: string[] // For debugging failed matches
   validation?: FileValidationResult // Validation result if performed
   lineInfo?: EditFileLineInfo // Real file line metadata for the displayed diff hunk
+  lspContext?: LspFileContext
 }
 
 export interface MultiEditItem {
@@ -114,6 +117,39 @@ async function readFullTextFileForEdit(filePath: string, cwd?: string) {
   }
 
   return fileData
+}
+
+async function resolveLspContextFilePath(filePath: string, cwd?: string): Promise<string | null> {
+  if (isWSLPath(filePath) || (cwd && isWSLPath(cwd))) {
+    return null
+  }
+
+  const basePath = cwd || process.cwd()
+  return path.isAbsolute(filePath) ? path.resolve(filePath) : path.resolve(basePath, filePath)
+}
+
+async function collectEditFailureLspContext(filePath: string, cwd?: string): Promise<LspFileContext | undefined> {
+  try {
+    const resolvedPath = await resolveLspContextFilePath(filePath, cwd)
+    if (!resolvedPath) return undefined
+    return (await lspManager.collectFileContext(resolvedPath)) || undefined
+  } catch {
+    return undefined
+  }
+}
+
+async function enrichEditFileResultWithLspContext(
+  result: EditFileResult,
+  filePath: string,
+  cwd?: string
+): Promise<EditFileResult> {
+  if (result.success) return result
+  const lspContext = await collectEditFailureLspContext(filePath, cwd)
+  if (!lspContext) return result
+  return {
+    ...result,
+    lspContext,
+  }
 }
 
 function resolveEscapeHandling(options: EditFileOptions) {
@@ -224,13 +260,17 @@ export async function editFileSearchReplace(
     if (shouldValidateAgainstExpectations(options, validateContent)) {
       validation = await validateFileContent(fsPath, originalContent, options)
       if (!validation.valid) {
-        return {
-          success: false,
-          sizeBytes: fileData.sizeBytes,
-          replacements: 0,
-          message: `Validation failed: ${validation.reason}`,
-          validation,
-        }
+        return await enrichEditFileResultWithLspContext(
+          {
+            success: false,
+            sizeBytes: fileData.sizeBytes,
+            replacements: 0,
+            message: `Validation failed: ${validation.reason}`,
+            validation,
+          },
+          filePath,
+          options.cwd
+        )
       }
     }
 
@@ -252,13 +292,17 @@ export async function editFileSearchReplace(
     attemptedStrategies = matchResult.attemptedStrategies
 
     if (!matchResult.found) {
-      return {
-        success: false,
-        sizeBytes: fileData.sizeBytes,
-        replacements: 0,
-        message: `Search pattern not found in file. Attempted strategies: ${attemptedStrategies.join(', ')}`,
-        attemptedStrategies,
-      }
+      return await enrichEditFileResultWithLspContext(
+        {
+          success: false,
+          sizeBytes: fileData.sizeBytes,
+          replacements: 0,
+          message: `Search pattern not found in file. Attempted strategies: ${attemptedStrategies.join(', ')}`,
+          attemptedStrategies,
+        },
+        filePath,
+        options.cwd
+      )
     }
 
     matchStrategy = matchResult.strategy
@@ -335,12 +379,16 @@ export async function editFileSearchReplace(
       lineInfo,
     }
   } catch (error: any) {
-    return {
-      success: false,
-      sizeBytes: 0,
-      replacements: 0,
-      message: `Error editing file: ${error.message}`,
-    }
+    return await enrichEditFileResultWithLspContext(
+      {
+        success: false,
+        sizeBytes: 0,
+        replacements: 0,
+        message: `Error editing file: ${error.message}`,
+      },
+      filePath,
+      options.cwd
+    )
   }
 }
 
@@ -429,13 +477,17 @@ export async function editFileSearchReplaceFirst(
     if (shouldValidateAgainstExpectations(options, validateContent)) {
       validation = await validateFileContent(fsPath, originalContent, options)
       if (!validation.valid) {
-        return {
-          success: false,
-          sizeBytes: fileData.sizeBytes,
-          replacements: 0,
-          message: `Validation failed: ${validation.reason}`,
-          validation,
-        }
+        return await enrichEditFileResultWithLspContext(
+          {
+            success: false,
+            sizeBytes: fileData.sizeBytes,
+            replacements: 0,
+            message: `Validation failed: ${validation.reason}`,
+            validation,
+          },
+          filePath,
+          options.cwd
+        )
       }
     }
 
@@ -455,13 +507,17 @@ export async function editFileSearchReplaceFirst(
     )
 
     if (!matchResult.found) {
-      return {
-        success: false,
-        sizeBytes: fileData.sizeBytes,
-        replacements: 0,
-        message: `Search pattern not found in file. Attempted strategies: ${matchResult.attemptedStrategies.join(', ')}`,
-        attemptedStrategies: matchResult.attemptedStrategies,
-      }
+      return await enrichEditFileResultWithLspContext(
+        {
+          success: false,
+          sizeBytes: fileData.sizeBytes,
+          replacements: 0,
+          message: `Search pattern not found in file. Attempted strategies: ${matchResult.attemptedStrategies.join(', ')}`,
+          attemptedStrategies: matchResult.attemptedStrategies,
+        },
+        filePath,
+        options.cwd
+      )
     }
 
     // Apply indentation preservation if enabled and using non-exact match
@@ -511,12 +567,16 @@ export async function editFileSearchReplaceFirst(
       lineInfo,
     }
   } catch (error: any) {
-    return {
-      success: false,
-      sizeBytes: 0,
-      replacements: 0,
-      message: `Error editing file: ${error.message}`,
-    }
+    return await enrichEditFileResultWithLspContext(
+      {
+        success: false,
+        sizeBytes: 0,
+        replacements: 0,
+        message: `Error editing file: ${error.message}`,
+      },
+      filePath,
+      options.cwd
+    )
   }
 }
 
@@ -618,12 +678,16 @@ export async function appendToFile(
       lineInfo,
     }
   } catch (error: any) {
-    return {
-      success: false,
-      sizeBytes: 0,
-      replacements: 0,
-      message: `Error appending to file: ${error.message}`,
-    }
+    return await enrichEditFileResultWithLspContext(
+      {
+        success: false,
+        sizeBytes: 0,
+        replacements: 0,
+        message: `Error appending to file: ${error.message}`,
+      },
+      filePath,
+      options.cwd
+    )
   }
 }
 

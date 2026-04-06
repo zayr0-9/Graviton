@@ -22,6 +22,7 @@ import {
 } from '../ThemeManager/themeConfig'
 import { ChatInputBorderAnimationSettings } from './ChatInputBorderAnimationSettings'
 import { SendButtonAnimationSettings } from './SendButtonAnimationSettings'
+import { useSettingsSectionThemeColors } from './settingsSectionTheme'
 import { ToolsSettings } from './ToolsSettings'
 
 type SettingsPaneProps = {
@@ -159,6 +160,7 @@ export const SettingsPane: React.FC<SettingsPaneProps> = ({ open, onClose }) => 
   const settingsPaneBodyBackgroundColor = customThemeEnabled
     ? getThemeModeColor(customTheme.colors.settingsPaneBodyBg, isDarkMode)
     : undefined
+  const savedCustomThemesColors = useSettingsSectionThemeColors()
   const isWebMode = import.meta.env.VITE_ENVIRONMENT === 'web'
 
   const [attachmentTarget, setAttachmentTarget] = useState<'system' | 'context'>('system')
@@ -1029,14 +1031,21 @@ ${block}`
             <div className='flex items-center gap-2'>
               <button
                 onClick={() => setAppStoreOpen(true)}
-                className='p-1 rounded-md transition-colors'
+                className='p-1 rounded-md transition-all duration-200 hover:scale-95 active:scale-100'
                 aria-label='Open App Store'
                 title='App Store'
               >
-                <i className='bx bx-store-alt text-2xl text-gray-600 dark:text-gray-400 active:scale-95'></i>
+                <span className='relative text-xl font-semibold leading-none text-gray-600 dark:text-neutral-200'>
+                  {' '}
+                  APP STORE{' '}
+                </span>
               </button>
-              <button onClick={onClose} className='p-1 rounded-md transition-colors' aria-label='Close settings'>
-                <i className='bx bx-x text-2xl text-gray-600 dark:text-gray-400 active:scale-95'></i>
+              <button
+                onClick={onClose}
+                className='p-1 rounded-md leading-none transition-colors'
+                aria-label='Close settings'
+              >
+                <i className='bx bx-x text-3xl text-gray-600 dark:text-gray-400 active:scale-95'></i>
               </button>
             </div>
           </div>
@@ -1254,87 +1263,260 @@ ${block}`
 
             {/* Font Size Section */}
             <div className='space-y-2'>
-              <div className='flex items-center justify-between'>
-                <span className='text-sm font-medium text-stone-700 dark:text-stone-200'>Message Font Size</span>
-                <span className='text-sm font-mono text-neutral-600 dark:text-neutral-400'>
-                  {fontSizeOffset === 0 ? 'Default' : `${fontSizeOffset > 0 ? '+' : ''}${fontSizeOffset}px`}
-                </span>
-              </div>
-              <div className='flex items-center gap-4'>
-                <span className='text-xs text-neutral-500 dark:text-neutral-500 w-6'>-8</span>
-                <input
-                  type='range'
-                  min={-8}
-                  max={16}
-                  step={1}
-                  value={fontSizeOffset}
-                  onChange={e => handleFontSizeChange(parseInt(e.target.value, 10))}
-                  className='flex-1 h-2 bg-neutral-200 dark:bg-neutral-700 rounded-lg appearance-none cursor-pointer accent-blue-500'
-                />
-                <span className='text-xs text-neutral-500 dark:text-neutral-500 w-6'>+16</span>
-                <button
-                  type='button'
-                  onClick={() => handleFontSizeChange(0)}
-                  className={`px-3 py-1.5 rounded-lg text-sm text-neutral-600 dark:text-neutral-400 hover:text-neutral-800 dark:hover:text-neutral-200 hover:bg-neutral-100 dark:hover:bg-neutral-700 transition-colors ${fontSizeOffset === 0 ? 'invisible' : ''}`}
-                  title='Reset to default'
-                >
-                  Reset
-                </button>
+              <div
+                className='overflow-hidden rounded-2xl bg-neutral-50/70 dark:bg-neutral-900/10'
+                style={
+                  savedCustomThemesColors
+                    ? {
+                        backgroundColor: savedCustomThemesColors.cardBg,
+                        borderColor: savedCustomThemesColors.cardBorder,
+                      }
+                    : undefined
+                }
+              >
+                <div className='flex flex-col gap-3 px-3 py-3 sm:flex-row sm:items-start sm:justify-between'>
+                  <div className='flex min-w-0 items-start gap-3'>
+                    <div
+                      className='mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-sky-100 text-sky-600 dark:bg-sky-500/15 dark:text-sky-300'
+                      style={
+                        savedCustomThemesColors
+                          ? {
+                              backgroundColor: savedCustomThemesColors.accentBg,
+                              color: savedCustomThemesColors.accentText,
+                            }
+                          : undefined
+                      }
+                    >
+                      <i className='bx bx-text text-lg' />
+                    </div>
+                    <div className='min-w-0'>
+                      <p
+                        className='text-sm font-medium text-stone-700 dark:text-neutral-100'
+                        style={savedCustomThemesColors ? { color: savedCustomThemesColors.titleText } : undefined}
+                      >
+                        Message font size
+                      </p>
+                      <p
+                        className='mt-0.5 text-xs text-neutral-500 dark:text-neutral-100'
+                        style={savedCustomThemesColors ? { color: savedCustomThemesColors.bodyText } : undefined}
+                      >
+                        Adjust the base font size used for chat messages.
+                      </p>
+                    </div>
+                  </div>
+                  <span
+                    className='inline-flex w-fit shrink-0 rounded-full bg-neutral-200/80 px-2.5 py-1 text-[11px] font-medium uppercase tracking-[0.08em] text-neutral-500 dark:bg-neutral-800 dark:text-neutral-100'
+                    style={
+                      savedCustomThemesColors
+                        ? {
+                            backgroundColor: savedCustomThemesColors.badgeBg,
+                            color: savedCustomThemesColors.badgeText,
+                          }
+                        : undefined
+                    }
+                  >
+                    {fontSizeOffset === 0 ? 'Default' : `${fontSizeOffset > 0 ? '+' : ''}${fontSizeOffset}px`}
+                  </span>
+                </div>
+
+                <div className='px-3 pb-3 pt-1'>
+                  <div
+                    className='flex items-center gap-3 rounded-xl bg-neutral-100/70 px-3 py-3 dark:bg-neutral-900/25'
+                    style={
+                      savedCustomThemesColors
+                        ? {
+                            backgroundColor: savedCustomThemesColors.innerCardBg,
+                            borderColor: savedCustomThemesColors.innerCardBorder,
+                          }
+                        : undefined
+                    }
+                  >
+                    <span
+                      className='w-7 shrink-0 text-xs text-neutral-500 dark:text-neutral-100'
+                      style={savedCustomThemesColors ? { color: savedCustomThemesColors.bodyText } : undefined}
+                    >
+                      -8
+                    </span>
+                    <input
+                      type='range'
+                      min={-8}
+                      max={16}
+                      step={1}
+                      value={fontSizeOffset}
+                      onChange={e => handleFontSizeChange(parseInt(e.target.value, 10))}
+                      className='h-2 flex-1 cursor-pointer appearance-none rounded-lg bg-neutral-200 dark:bg-neutral-700'
+                      style={
+                        savedCustomThemesColors
+                          ? {
+                              backgroundColor: savedCustomThemesColors.codeBg,
+                              accentColor: savedCustomThemesColors.primaryButtonBg,
+                            }
+                          : undefined
+                      }
+                    />
+                    <span
+                      className='w-8 shrink-0 text-xs text-neutral-500 dark:text-neutral-100'
+                      style={savedCustomThemesColors ? { color: savedCustomThemesColors.bodyText } : undefined}
+                    >
+                      +16
+                    </span>
+                    <button
+                      type='button'
+                      onClick={() => handleFontSizeChange(0)}
+                      className={`inline-flex shrink-0 items-center rounded-lg px-3 py-1.5 text-sm font-medium text-neutral-700 dark:text-neutral-100 transition-all duration-150 hover:bg-neutral-200 active:scale-[0.98] active:bg-neutral-300 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-violet-400/60 dark:hover:bg-neutral-700 dark:active:bg-neutral-700/90 dark:focus-visible:ring-violet-500/40 ${fontSizeOffset === 0 ? 'invisible' : ''}`}
+                      style={
+                        savedCustomThemesColors
+                          ? {
+                              backgroundColor: savedCustomThemesColors.buttonBg,
+                              color: savedCustomThemesColors.buttonText,
+                            }
+                          : undefined
+                      }
+                      title='Reset to default'
+                    >
+                      Reset
+                    </button>
+                  </div>
+                </div>
               </div>
             </div>
 
             {/* Process Step Grouping Section */}
             <div className='space-y-2'>
-              <div className='flex items-center justify-between rounded-lg border border-neutral-200 dark:border-neutral-700 bg-neutral-50 dark:bg-neutral-800/40 px-3 py-2'>
-                <div className='pr-4'>
-                  <p className='text-sm font-medium text-stone-700 dark:text-stone-200'>
-                    Group continuous reasoning/tool steps
-                  </p>
-                  <p className='text-xs text-neutral-500 dark:text-neutral-400'>
-                    Collapse long chains of agent reasoning and tool calls into one expandable section.
-                  </p>
+              <div
+                className='overflow-hidden rounded-2xl bg-neutral-50/70 dark:bg-neutral-900/10'
+                style={
+                  savedCustomThemesColors
+                    ? {
+                        backgroundColor: savedCustomThemesColors.cardBg,
+                        borderColor: savedCustomThemesColors.cardBorder,
+                      }
+                    : undefined
+                }
+              >
+                <div className='flex items-start justify-between gap-3 px-3 py-3'>
+                  <div className='flex min-w-0 items-start gap-3'>
+                    <div
+                      className='mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-emerald-100 text-emerald-600 dark:bg-emerald-500/15 dark:text-emerald-300'
+                      style={
+                        savedCustomThemesColors
+                          ? {
+                              backgroundColor: savedCustomThemesColors.accentBg,
+                              color: savedCustomThemesColors.accentText,
+                            }
+                          : undefined
+                      }
+                    >
+                      <i className='bx bx-git-branch text-lg' />
+                    </div>
+                    <div className='min-w-0 pr-3'>
+                      <p
+                        className='text-sm font-medium text-stone-700 dark:text-neutral-100'
+                        style={savedCustomThemesColors ? { color: savedCustomThemesColors.titleText } : undefined}
+                      >
+                        Group continuous reasoning/tool steps
+                      </p>
+                      <p
+                        className='mt-0.5 text-xs text-neutral-500 dark:text-neutral-100'
+                        style={savedCustomThemesColors ? { color: savedCustomThemesColors.bodyText } : undefined}
+                      >
+                        Collapse long chains of agent reasoning and tool calls into one expandable section.
+                      </p>
+                    </div>
+                  </div>
+                  <button
+                    type='button'
+                    onClick={() => handleGroupToolReasoningRunsChange(!groupToolReasoningRuns)}
+                    className='rounded-lg p-1.5 text-neutral-500 dark:text-neutral-100 transition-all duration-150 hover:bg-neutral-200/90 active:scale-95 active:bg-neutral-300/80 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-violet-400/60 dark:hover:bg-neutral-700/80 dark:active:bg-neutral-700 dark:focus-visible:ring-violet-500/40'
+                    style={
+                      savedCustomThemesColors
+                        ? {
+                            backgroundColor: savedCustomThemesColors.buttonBg,
+                            color: savedCustomThemesColors.buttonText,
+                          }
+                        : undefined
+                    }
+                    title={groupToolReasoningRuns ? 'Disable grouping' : 'Enable grouping'}
+                    aria-pressed={groupToolReasoningRuns}
+                  >
+                    <i
+                      className={`bx ${groupToolReasoningRuns ? 'bx-toggle-right' : 'bx-toggle-left'} text-2xl`}
+                      style={
+                        groupToolReasoningRuns && savedCustomThemesColors
+                          ? { color: savedCustomThemesColors.primaryButtonBg }
+                          : undefined
+                      }
+                    ></i>
+                  </button>
                 </div>
-                <button
-                  type='button'
-                  onClick={() => handleGroupToolReasoningRunsChange(!groupToolReasoningRuns)}
-                  className='p-1.5 rounded hover:bg-neutral-200 dark:hover:bg-neutral-700 transition-colors'
-                  title={groupToolReasoningRuns ? 'Disable grouping' : 'Enable grouping'}
-                  aria-pressed={groupToolReasoningRuns}
-                >
-                  <i
-                    className={`bx ${groupToolReasoningRuns ? 'bx-toggle-right text-green-500' : 'bx-toggle-left text-neutral-400'} text-xl`}
-                  ></i>
-                </button>
               </div>
             </div>
 
             {/* Send Button Animation Section */}
             <div className='space-y-2'>
-              <SendButtonAnimationSettings />
+              <SendButtonAnimationSettings sectionThemeColors={savedCustomThemesColors} />
             </div>
 
             {/* Chat Input Border Animation Section */}
             <div className='space-y-2'>
-              <ChatInputBorderAnimationSettings />
+              <ChatInputBorderAnimationSettings sectionThemeColors={savedCustomThemesColors} />
             </div>
 
             {/* Custom Theme Section */}
             <div className='space-y-2'>
-              <div className='overflow-hidden rounded-xl border border-neutral-200/90 dark:border-neutral-700/90 bg-white/70 dark:bg-neutral-900/20 shadow-sm'>
+              <div
+                className='overflow-hidden rounded-2xl bg-neutral-50/70 dark:bg-neutral-900/10'
+                style={
+                  savedCustomThemesColors
+                    ? {
+                        backgroundColor: savedCustomThemesColors.cardBg,
+                        borderColor: savedCustomThemesColors.cardBorder,
+                      }
+                    : undefined
+                }
+              >
                 <button
                   type='button'
                   onClick={() => setSavedThemesExpanded(prev => !prev)}
-                  className='group flex w-full items-start justify-between gap-3 px-3 py-3 text-left transition-colors hover:bg-neutral-50/90 dark:hover:bg-neutral-800/40'
+                  className='group flex w-full items-start justify-between gap-3 rounded-2xl px-3 py-3 text-left transition-all duration-150 hover:bg-neutral-100/80 active:scale-[0.99] active:bg-neutral-200/70 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-violet-400/60 dark:hover:bg-black/10 dark:active:bg-neutral-800/60 dark:focus-visible:ring-violet-500/40'
                 >
                   <div className='flex min-w-0 items-start gap-3'>
-                    <div className='mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-violet-100 text-violet-600 dark:bg-violet-500/15 dark:text-violet-300'>
+                    <div
+                      className='mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-violet-100 text-violet-600 dark:bg-violet-500/15 dark:text-violet-300'
+                      style={
+                        savedCustomThemesColors
+                          ? {
+                              backgroundColor: savedCustomThemesColors.accentBg,
+                              color: savedCustomThemesColors.accentText,
+                            }
+                          : undefined
+                      }
+                    >
                       <i className='bx bx-palette text-lg' />
                     </div>
                     <div className='min-w-0'>
-                      <p className='text-sm font-medium text-stone-700 dark:text-stone-200'>Saved custom themes</p>
-                      <p className='mt-0.5 text-xs text-neutral-500 dark:text-neutral-400'>
+                      <p
+                        className='text-sm font-medium text-stone-700 dark:text-stone-200'
+                        style={savedCustomThemesColors ? { color: savedCustomThemesColors.titleText } : undefined}
+                      >
+                        Saved custom themes
+                      </p>
+                      <p
+                        className='mt-0.5 text-xs text-neutral-500 dark:text-neutral-400'
+                        style={savedCustomThemesColors ? { color: savedCustomThemesColors.bodyText } : undefined}
+                      >
                         Browse and apply theme files from{' '}
-                        <code className='rounded bg-neutral-200/70 px-1 py-0.5 font-mono text-[11px] text-neutral-600 dark:bg-neutral-800 dark:text-neutral-300'>
+                        <code
+                          className='rounded bg-neutral-200/70 px-1 py-0.5 font-mono text-[11px] text-neutral-600 dark:bg-neutral-800 dark:text-neutral-300'
+                          style={
+                            savedCustomThemesColors
+                              ? {
+                                  backgroundColor: savedCustomThemesColors.codeBg,
+                                  color: savedCustomThemesColors.codeText,
+                                }
+                              : undefined
+                          }
+                        >
                           .ygg/custom-themes
                         </code>
                         .
@@ -1343,27 +1525,59 @@ ${block}`
                   </div>
                   <i
                     className={`bx bx-chevron-down mt-2 shrink-0 text-2xl text-neutral-500 dark:text-neutral-400 transition-transform duration-200 ${savedThemesExpanded ? 'rotate-180' : ''}`}
+                    style={savedCustomThemesColors ? { color: savedCustomThemesColors.bodyText } : undefined}
                   />
                 </button>
 
                 {savedThemesExpanded && (
-                  <div className='space-y-3 border-t border-neutral-200/80 px-4 py-3 dark:border-neutral-700/80'>
-                    <div className='flex flex-wrap items-center justify-between gap-3 rounded-xl border border-neutral-200 bg-neutral-50/80 px-3 py-3 dark:border-neutral-700 dark:bg-neutral-900/30'>
+                  <div
+                    className='space-y-3 px-3 pb-3 pt-1'
+                    style={savedCustomThemesColors ? { borderColor: savedCustomThemesColors.panelBorder } : undefined}
+                  >
+                    <div
+                      className='flex flex-wrap items-center justify-between gap-3 rounded-xl bg-neutral-100/70 px-3 py-3 dark:bg-neutral-900/25'
+                      style={
+                        savedCustomThemesColors
+                          ? {
+                              backgroundColor: savedCustomThemesColors.innerCardBg,
+                              borderColor: savedCustomThemesColors.innerCardBorder,
+                            }
+                          : undefined
+                      }
+                    >
                       <div className='min-w-0'>
                         <div className='flex flex-wrap items-center gap-2'>
-                          <p className='text-sm font-medium text-stone-700 dark:text-stone-200'>Enable custom theme</p>
-                          <span className='rounded-full bg-neutral-200/80 px-2 py-0.5 text-[10px] font-medium uppercase tracking-[0.08em] text-neutral-500 dark:bg-neutral-800 dark:text-neutral-400'>
+                          <p
+                            className='text-sm font-medium text-stone-700 dark:text-stone-200'
+                            style={savedCustomThemesColors ? { color: savedCustomThemesColors.titleText } : undefined}
+                          >
+                            Enable custom theme
+                          </p>
+                          <span
+                            className='rounded-full bg-neutral-200/80 px-2 py-0.5 text-[10px] font-medium uppercase tracking-[0.08em] text-neutral-500 dark:bg-neutral-800 dark:text-neutral-400'
+                            style={
+                              savedCustomThemesColors
+                                ? {
+                                    backgroundColor: savedCustomThemesColors.badgeBg,
+                                    color: savedCustomThemesColors.badgeText,
+                                  }
+                                : undefined
+                            }
+                          >
                             {customTheme.name || 'Current theme'}
                           </span>
                         </div>
-                        <p className='mt-1 text-xs text-neutral-500 dark:text-neutral-400'>
+                        <p
+                          className='mt-1 text-xs text-neutral-500 dark:text-neutral-400'
+                          style={savedCustomThemesColors ? { color: savedCustomThemesColors.bodyText } : undefined}
+                        >
                           Apply your current edited or selected theme across chat and Heimdall.
                         </p>
                       </div>
                       <button
                         type='button'
                         onClick={() => setCustomChatThemeEnabled(!customThemeEnabled)}
-                        className='p-1.5 rounded-lg hover:bg-neutral-200 dark:hover:bg-neutral-700 transition-colors'
+                        className='rounded-lg p-1.5 transition-all duration-150 hover:bg-neutral-200/90 active:scale-95 active:bg-neutral-300/80 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-violet-400/60 dark:hover:bg-neutral-700/80 dark:active:bg-neutral-700 dark:focus-visible:ring-violet-500/40'
                         title={customThemeEnabled ? 'Disable custom theme' : 'Enable custom theme'}
                         aria-pressed={customThemeEnabled}
                       >
@@ -1374,7 +1588,10 @@ ${block}`
                     </div>
 
                     <div className='flex flex-wrap items-center justify-between gap-3'>
-                      <p className='text-xs text-neutral-500 dark:text-neutral-400'>
+                      <p
+                        className='text-xs text-neutral-500 dark:text-neutral-400'
+                        style={savedCustomThemesColors ? { color: savedCustomThemesColors.bodyText } : undefined}
+                      >
                         {savedThemesLoading && savedThemes.length === 0
                           ? 'Loading saved themes…'
                           : `${savedThemes.length} saved theme${savedThemes.length === 1 ? '' : 's'} available`}
@@ -1383,7 +1600,16 @@ ${block}`
                         type='button'
                         onClick={fetchSavedThemes}
                         disabled={savedThemesLoading}
-                        className='inline-flex items-center gap-1.5 rounded-lg border border-neutral-300 bg-white px-3 py-1.5 text-xs font-medium text-neutral-700 shadow-sm transition-colors hover:bg-neutral-50 disabled:opacity-50 dark:border-neutral-600 dark:bg-neutral-800/80 dark:text-neutral-200 dark:hover:bg-neutral-700'
+                        className='inline-flex items-center gap-1.5 rounded-lg bg-neutral-100 px-3 py-1.5 text-xs font-medium text-neutral-700 transition-all duration-150 hover:bg-neutral-200 active:scale-[0.98] active:bg-neutral-300 disabled:opacity-50 dark:bg-neutral-800/80 dark:text-neutral-200 dark:hover:bg-neutral-700 dark:active:bg-neutral-700/90'
+                        style={
+                          savedCustomThemesColors
+                            ? {
+                                backgroundColor: savedCustomThemesColors.buttonBg,
+                                borderColor: savedCustomThemesColors.buttonBorder,
+                                color: savedCustomThemesColors.buttonText,
+                              }
+                            : undefined
+                        }
                       >
                         <i
                           className={`bx ${savedThemesLoading ? 'bx-loader-alt animate-spin' : 'bx-refresh'} text-sm`}
@@ -1393,51 +1619,101 @@ ${block}`
                     </div>
 
                     {savedThemesError && (
-                      <div className='rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-xs text-rose-700 dark:border-rose-900/60 dark:bg-rose-950/30 dark:text-rose-300'>
+                      <div className='rounded-lg bg-rose-50 px-3 py-2 text-xs text-rose-700 dark:bg-rose-950/30 dark:text-rose-300'>
                         {savedThemesError}
                       </div>
                     )}
 
                     {savedThemesLoading && savedThemes.length === 0 && !savedThemesError ? (
-                      <div className='flex items-center gap-2 rounded-lg border border-neutral-200 bg-neutral-50 px-3 py-3 text-sm text-neutral-500 dark:border-neutral-700 dark:bg-neutral-900/30 dark:text-neutral-400'>
+                      <div className='flex items-center gap-2 rounded-lg bg-neutral-100/80 px-3 py-3 text-sm text-neutral-500 dark:bg-neutral-900/30 dark:text-neutral-400'>
                         <i className='bx bx-loader-alt animate-spin text-base' />
                         Loading saved themes...
                       </div>
                     ) : savedThemes.length === 0 && !savedThemesError ? (
-                      <div className='rounded-xl border border-dashed border-neutral-300 bg-neutral-50/80 px-4 py-6 text-center dark:border-neutral-700 dark:bg-neutral-900/30'>
+                      <div
+                        className='rounded-xl bg-neutral-100/70 px-4 py-6 text-center dark:bg-neutral-900/25'
+                        style={
+                          savedCustomThemesColors
+                            ? {
+                                backgroundColor: savedCustomThemesColors.emptyStateBg,
+                                borderColor: savedCustomThemesColors.emptyStateBorder,
+                              }
+                            : undefined
+                        }
+                      >
                         <div className='mx-auto mb-2 flex h-10 w-10 items-center justify-center rounded-full bg-neutral-200/80 text-neutral-500 dark:bg-neutral-800 dark:text-neutral-400'>
                           <i className='bx bx-folder-open text-lg' />
                         </div>
-                        <p className='text-sm font-medium text-neutral-700 dark:text-neutral-200'>
+                        <p
+                          className='text-sm font-medium text-neutral-700 dark:text-neutral-200'
+                          style={savedCustomThemesColors ? { color: savedCustomThemesColors.titleText } : undefined}
+                        >
                           No saved themes yet
                         </p>
-                        <p className='mt-1 text-xs text-neutral-500 dark:text-neutral-400'>
+                        <p
+                          className='mt-1 text-xs text-neutral-500 dark:text-neutral-400'
+                          style={savedCustomThemesColors ? { color: savedCustomThemesColors.bodyText } : undefined}
+                        >
                           Theme JSON files saved to .ygg/custom-themes will appear here.
                         </p>
                       </div>
                     ) : (
-                      <div className='max-h-60 overflow-y-auto rounded-xl border border-neutral-200 bg-neutral-50/70 pr-1 dark:border-neutral-700 dark:bg-neutral-950/30'>
+                      <div
+                        className='max-h-60 overflow-y-auto rounded-xl bg-neutral-100/60 pr-1 dark:bg-neutral-950/20 thin-scrollbar'
+                        style={
+                          savedCustomThemesColors
+                            ? {
+                                backgroundColor: savedCustomThemesColors.listBg,
+                                borderColor: savedCustomThemesColors.listBorder,
+                              }
+                            : undefined
+                        }
+                      >
                         <div className='divide-y divide-neutral-200 dark:divide-neutral-800'>
                           {savedThemes.map(themeItem => (
                             <div
                               key={themeItem.id}
-                              className='flex flex-col gap-3 px-3 py-3 transition-colors hover:bg-white/90 dark:hover:bg-neutral-900/50 sm:flex-row sm:items-center sm:justify-between'
+                              className='flex flex-col gap-3 rounded-xl px-3 py-3 transition-all duration-150 hover:bg-white/80 active:bg-white/90 dark:hover:bg-neutral-900/50 dark:active:bg-neutral-900/60 sm:flex-row sm:items-center sm:justify-between'
                             >
                               <div className='min-w-0 flex-1'>
                                 <div className='flex items-start gap-3'>
-                                  <div className='mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-neutral-200 bg-white text-neutral-500 dark:border-neutral-700 dark:bg-neutral-900/80 dark:text-neutral-300'>
+                                  <div className='mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-white/80 text-neutral-500 dark:bg-neutral-900/70 dark:text-neutral-300'>
                                     <i className='bx bx-file-blank text-lg' />
                                   </div>
                                   <div className='min-w-0 flex-1'>
                                     <div className='flex flex-wrap items-center gap-2'>
-                                      <p className='truncate text-sm font-medium text-neutral-900 dark:text-neutral-100'>
+                                      <p
+                                        className='truncate text-sm font-medium text-neutral-900 dark:text-neutral-100'
+                                        style={
+                                          savedCustomThemesColors
+                                            ? { color: savedCustomThemesColors.listItemTitleText }
+                                            : undefined
+                                        }
+                                      >
                                         {themeItem.name}
                                       </p>
-                                      <span className='rounded-full bg-neutral-200/80 px-2 py-0.5 text-[10px] font-medium uppercase tracking-[0.08em] text-neutral-500 dark:bg-neutral-800 dark:text-neutral-400'>
+                                      <span
+                                        className='rounded-full bg-neutral-200/80 px-2 py-0.5 text-[10px] font-medium uppercase tracking-[0.08em] text-neutral-500 dark:bg-neutral-800 dark:text-neutral-400'
+                                        style={
+                                          savedCustomThemesColors
+                                            ? {
+                                                backgroundColor: savedCustomThemesColors.badgeBg,
+                                                color: savedCustomThemesColors.badgeText,
+                                              }
+                                            : undefined
+                                        }
+                                      >
                                         JSON
                                       </span>
                                     </div>
-                                    <div className='mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-[11px] text-neutral-500 dark:text-neutral-400'>
+                                    <div
+                                      className='mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-[11px] text-neutral-500 dark:text-neutral-400'
+                                      style={
+                                        savedCustomThemesColors
+                                          ? { color: savedCustomThemesColors.listItemMetaText }
+                                          : undefined
+                                      }
+                                    >
                                       <span className='max-w-full truncate'>{themeItem.fileName}</span>
                                       <span className='hidden text-neutral-300 dark:text-neutral-600 sm:inline'>•</span>
                                       <span>{new Date(themeItem.modifiedAt).toLocaleString()}</span>
@@ -1449,7 +1725,15 @@ ${block}`
                                 type='button'
                                 onClick={() => handleApplySavedTheme(themeItem.id)}
                                 disabled={applyingThemeId === themeItem.id}
-                                className='inline-flex shrink-0 items-center justify-center gap-1.5 rounded-lg bg-blue-500 px-3 py-2 text-xs font-medium text-white shadow-sm transition-colors hover:bg-blue-600 disabled:opacity-50'
+                                className='inline-flex shrink-0 items-center justify-center gap-1.5 rounded-lg bg-blue-500 px-3 py-2 text-xs font-medium text-white transition-all duration-150 hover:bg-blue-600 active:scale-[0.98] active:bg-blue-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400/60 disabled:opacity-50 dark:focus-visible:ring-blue-500/40'
+                                style={
+                                  savedCustomThemesColors
+                                    ? {
+                                        backgroundColor: savedCustomThemesColors.primaryButtonBg,
+                                        color: savedCustomThemesColors.primaryButtonText,
+                                      }
+                                    : undefined
+                                }
                               >
                                 <i
                                   className={`bx ${applyingThemeId === themeItem.id ? 'bx-loader-alt animate-spin' : 'bx-check'} text-sm`}

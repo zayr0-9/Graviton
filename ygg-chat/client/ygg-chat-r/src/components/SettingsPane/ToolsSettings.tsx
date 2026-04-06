@@ -5,6 +5,7 @@ import { fetchCustomTools, fetchTools, updateToolEnabled } from '../../features/
 import { getAllTools } from '../../features/chats/toolDefinitions'
 import { useAppDispatch } from '../../hooks/redux'
 import { localApi } from '../../utils/api'
+import { useSettingsSectionThemeColors } from './settingsSectionTheme'
 
 export const ToolsSettings: React.FC = () => {
   const dispatch = useAppDispatch()
@@ -18,6 +19,7 @@ export const ToolsSettings: React.FC = () => {
   const [customToolsPath, setCustomToolsPath] = useState<string | null>(null)
   const [reloadingTools, setReloadingTools] = useState(false)
   const wslDistro = localStorage.getItem('ygg_wsl_distro') || ''
+  const sectionThemeColors = useSettingsSectionThemeColors()
 
   const isWebMode = import.meta.env.VITE_ENVIRONMENT === 'web'
 
@@ -130,8 +132,60 @@ export const ToolsSettings: React.FC = () => {
   }
 
   if (!tools || tools.length === 0) {
-    return <div className='text-gray-500 dark:text-gray-400 text-sm'>Loading tools...</div>
+    return (
+      <div
+        className='text-sm text-gray-500 dark:text-gray-400'
+        style={sectionThemeColors ? { color: sectionThemeColors.bodyText } : undefined}
+      >
+        Loading tools...
+      </div>
+    )
   }
+
+  const cardStyle = sectionThemeColors
+    ? {
+        backgroundColor: sectionThemeColors.cardBg,
+        borderColor: sectionThemeColors.cardBorder,
+      }
+    : undefined
+  const innerCardStyle = sectionThemeColors
+    ? {
+        backgroundColor: sectionThemeColors.innerCardBg,
+        borderColor: sectionThemeColors.innerCardBorder,
+      }
+    : undefined
+  const titleStyle = sectionThemeColors ? { color: sectionThemeColors.titleText } : undefined
+  const bodyStyle = sectionThemeColors ? { color: sectionThemeColors.bodyText } : undefined
+  const badgeStyle = sectionThemeColors
+    ? {
+        backgroundColor: sectionThemeColors.badgeBg,
+        color: sectionThemeColors.badgeText,
+      }
+    : undefined
+  const buttonStyle = sectionThemeColors
+    ? {
+        backgroundColor: sectionThemeColors.buttonBg,
+        borderColor: sectionThemeColors.buttonBorder,
+        color: sectionThemeColors.buttonText,
+      }
+    : undefined
+  const codeStyle = sectionThemeColors
+    ? {
+        backgroundColor: sectionThemeColors.codeBg,
+        color: sectionThemeColors.codeText,
+      }
+    : undefined
+  const activeStyle = sectionThemeColors
+    ? {
+        backgroundColor: sectionThemeColors.primaryButtonBg,
+        color: sectionThemeColors.primaryButtonText,
+      }
+    : undefined
+  const listStyle = sectionThemeColors
+    ? {
+        backgroundColor: sectionThemeColors.listBg,
+      }
+    : undefined
 
   return (
     <div className='space-y-4 sm:space-y-6 lg:space-y-10 pb-16'>
@@ -212,14 +266,18 @@ export const ToolsSettings: React.FC = () => {
           <div className='space-y-2 sm:space-y-3 lg:space-y-4'>
             {/* Tool List Header */}
             <div className='flex items-end justify-between'>
-              <span className='font-mono border rounded-lg p-1 border-neutral-200 dark:border-white/10 text-[14px] sm:text-[14px] lg:text-[14px] text-neutral-400 dark:text-neutral-600 uppercase tracking-[0.1em] sm:tracking-[0.15em]'>
-                Individual Nodes
+              <span
+                className='rounded-lg px-2 py-1 font-mono text-[14px] uppercase tracking-[0.1em] text-neutral-400 sm:tracking-[0.15em] dark:text-neutral-200'
+                style={badgeStyle}
+              >
+                TOOLS
               </span>
               <div className='flex items-center gap-2 sm:gap-3 lg:gap-4'>
                 <button
                   onClick={handleReloadTools}
                   disabled={reloadingTools}
-                  className='font-mono  border rounded-lg p-1 border-neutral-200 dark:border-white/10 text-[14px] sm:text-[14px] lg:text-[14px] text-neutral-400 dark:text-neutral-600 uppercase tracking-[0.1em] sm:tracking-[0.15em] hover:text-blue-500 dark:hover:text-blue-400 transition-colors cursor-pointer flex items-center gap-1 sm:gap-1.5'
+                  className='flex cursor-pointer items-center gap-1 rounded-lg px-2 py-1 font-mono text-[14px] uppercase tracking-[0.1em] transition-all duration-150 hover:bg-neutral-200 active:scale-[0.98] active:bg-neutral-300 disabled:opacity-50 sm:gap-1.5 sm:tracking-[0.15em] dark:hover:bg-neutral-700 dark:active:bg-neutral-700/90'
+                  style={buttonStyle}
                 >
                   {reloadingTools && (
                     <svg
@@ -235,7 +293,8 @@ export const ToolsSettings: React.FC = () => {
                 </button>
                 <button
                   onClick={handleOpenCustomToolsFolder}
-                  className='font-mono border rounded-lg p-1 border-neutral-200 dark:border-white/10 text-[14px] sm:text-[14px] lg:text-[14px] text-neutral-400 dark:text-neutral-600 uppercase tracking-[0.1em] sm:tracking-[0.15em] hover:text-blue-500 dark:hover:text-blue-400 transition-colors cursor-pointer'
+                  className='cursor-pointer rounded-lg px-2 py-1 font-mono text-[14px] uppercase tracking-[0.1em] transition-all duration-150 hover:bg-neutral-200 active:scale-[0.98] active:bg-neutral-300 sm:tracking-[0.15em] dark:hover:bg-neutral-700 dark:active:bg-neutral-700/90'
+                  style={buttonStyle}
                 >
                   + Custom Apps
                 </button>
@@ -244,9 +303,12 @@ export const ToolsSettings: React.FC = () => {
 
             {/* Custom Tools Help View */}
             {showCustomToolsHelp && (
-              <div className='bg-amber-50 dark:bg-neutral-800 border border-amber-200 dark:border-white/10 rounded-xl sm:rounded-2xl p-3 sm:p-4 lg:p-5 mb-1 sm:mb-2'>
-                <div className='flex items-start justify-between mb-2 sm:mb-3 lg:mb-4'>
-                  <h4 className='text-xs sm:text-sm lg:text-[15px] font-medium text-amber-800 dark:text-amber-200 flex items-center gap-1.5 sm:gap-2'>
+              <div className='mb-1 rounded-xl p-3 sm:mb-2 sm:rounded-2xl sm:p-4 lg:p-5' style={innerCardStyle}>
+                <div className='mb-2 flex items-start justify-between sm:mb-3 lg:mb-4'>
+                  <h4
+                    className='flex items-center gap-1.5 text-xs font-medium text-amber-800 sm:gap-2 sm:text-sm lg:text-[15px] dark:text-amber-200'
+                    style={titleStyle}
+                  >
                     <svg
                       className='w-4 h-4 sm:w-[18px] sm:h-[18px] lg:w-5 lg:h-5'
                       fill='none'
@@ -260,7 +322,8 @@ export const ToolsSettings: React.FC = () => {
                   </h4>
                   <button
                     onClick={() => setShowCustomToolsHelp(false)}
-                    className='text-amber-600 dark:text-neutral-500 hover:text-amber-800 dark:hover:text-neutral-300 transition-colors'
+                    className='rounded-lg p-1 transition-all duration-150 hover:bg-neutral-200 active:scale-95 active:bg-neutral-300 dark:hover:bg-neutral-700 dark:active:bg-neutral-700/90'
+                    style={buttonStyle}
                   >
                     <svg
                       className='w-4 h-4 sm:w-[18px] sm:h-[18px] lg:w-5 lg:h-5'
@@ -274,14 +337,20 @@ export const ToolsSettings: React.FC = () => {
                   </button>
                 </div>
 
-                <div className='text-[11px] sm:text-xs lg:text-sm text-amber-700 dark:text-neutral-400 space-y-2 sm:space-y-3 lg:space-y-4'>
+                <div
+                  className='space-y-2 text-[11px] text-amber-700 sm:space-y-3 sm:text-xs lg:space-y-4 lg:text-sm dark:text-neutral-400'
+                  style={bodyStyle}
+                >
                   <p>Custom tools let you extend the AI's capabilities with your own functionality.</p>
 
                   <div>
-                    <p className='font-medium mb-1 sm:mb-2 text-amber-800 dark:text-neutral-300'>
+                    <p className='mb-1 font-medium text-amber-800 sm:mb-2 dark:text-neutral-300' style={titleStyle}>
                       Directory Structure:
                     </p>
-                    <code className='block bg-amber-100 dark:bg-neutral-900 rounded-lg sm:rounded-xl px-2 sm:px-3 lg:px-4 py-2 sm:py-2.5 lg:py-3 text-[10px] sm:text-[11px] lg:text-xs font-mono text-amber-800 dark:text-neutral-400 border border-amber-200 dark:border-white/5'>
+                    <code
+                      className='block rounded-lg px-2 py-2 font-mono text-[10px] text-amber-800 sm:rounded-xl sm:px-3 sm:py-2.5 sm:text-[11px] lg:px-4 lg:py-3 lg:text-xs dark:text-neutral-400'
+                      style={codeStyle}
+                    >
                       {customToolsPath || 'custom-tools/'}
                       <br />
                       &nbsp;&nbsp;my_tool/
@@ -293,8 +362,13 @@ export const ToolsSettings: React.FC = () => {
                   </div>
 
                   <div>
-                    <p className='font-medium mb-1 sm:mb-2 text-amber-800 dark:text-neutral-300'>definition.json:</p>
-                    <code className='block bg-amber-100 dark:bg-neutral-900 rounded-lg sm:rounded-xl px-2 sm:px-3 lg:px-4 py-2 sm:py-2.5 lg:py-3 text-[10px] sm:text-[11px] lg:text-xs font-mono whitespace-pre text-amber-800 dark:text-neutral-400 border border-amber-200 dark:border-white/5 overflow-x-auto'>
+                    <p className='mb-1 font-medium text-amber-800 sm:mb-2 dark:text-neutral-300' style={titleStyle}>
+                      definition.json:
+                    </p>
+                    <code
+                      className='block overflow-x-auto whitespace-pre rounded-lg px-2 py-2 font-mono text-[10px] text-amber-800 sm:rounded-xl sm:px-3 sm:py-2.5 sm:text-[11px] lg:px-4 lg:py-3 lg:text-xs dark:text-neutral-400'
+                      style={codeStyle}
+                    >
                       {`{
   "name": "my_tool",
   "enabled": true,
@@ -311,8 +385,13 @@ export const ToolsSettings: React.FC = () => {
                   </div>
 
                   <div>
-                    <p className='font-medium mb-1 sm:mb-2 text-amber-800 dark:text-neutral-300'>index.js:</p>
-                    <code className='block bg-amber-100 dark:bg-neutral-900 rounded-lg sm:rounded-xl px-2 sm:px-3 lg:px-4 py-2 sm:py-2.5 lg:py-3 text-[10px] sm:text-[11px] lg:text-xs font-mono whitespace-pre text-amber-800 dark:text-neutral-400 border border-amber-200 dark:border-white/5 overflow-x-auto'>
+                    <p className='mb-1 font-medium text-amber-800 sm:mb-2 dark:text-neutral-300' style={titleStyle}>
+                      index.js:
+                    </p>
+                    <code
+                      className='block overflow-x-auto whitespace-pre rounded-lg px-2 py-2 font-mono text-[10px] text-amber-800 sm:rounded-xl sm:px-3 sm:py-2.5 sm:text-[11px] lg:px-4 lg:py-3 lg:text-xs dark:text-neutral-400'
+                      style={codeStyle}
+                    >
                       {`export async function execute(args, options) {
   // Your tool logic here
   return { success: true, result: "..." };
@@ -320,7 +399,10 @@ export const ToolsSettings: React.FC = () => {
                     </code>
                   </div>
 
-                  <div className='bg-amber-100 dark:bg-neutral-900 rounded-lg sm:rounded-xl px-2 sm:px-3 lg:px-4 py-2 sm:py-2.5 lg:py-3 flex items-center gap-2 sm:gap-3 border border-amber-200 dark:border-white/5'>
+                  <div
+                    className='flex items-center gap-2 rounded-lg px-2 py-2 sm:gap-3 sm:rounded-xl sm:px-3 sm:py-2.5 lg:px-4 lg:py-3'
+                    style={codeStyle}
+                  >
                     <svg
                       className='w-4 h-4 sm:w-[18px] sm:h-[18px] lg:w-5 lg:h-5 text-amber-600 dark:text-amber-500 flex-shrink-0'
                       fill='none'
@@ -330,7 +412,7 @@ export const ToolsSettings: React.FC = () => {
                     >
                       <path d='M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15' />
                     </svg>
-                    <span className='font-medium text-amber-800 dark:text-amber-400'>
+                    <span className='font-medium text-amber-800 dark:text-amber-400' style={titleStyle}>
                       Restart the app after adding or modifying custom tools.
                     </span>
                   </div>
@@ -376,10 +458,18 @@ export const ToolsSettings: React.FC = () => {
                     </div>
                     {/* Tool Meta */}
                     <div className='min-w-0'>
-                      <h3 className='text-xs sm:text-[13px] lg:text-[15px] font-medium text-neutral-800 dark:text-neutral-200 truncate'>
+                      <h3
+                        className='truncate text-xs font-medium text-neutral-800 sm:text-[13px] lg:text-[15px] dark:text-neutral-200'
+                        style={
+                          tool.enabled ? { color: sectionThemeColors?.primaryButtonText ?? undefined } : titleStyle
+                        }
+                      >
                         {tool.name.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase())}
                       </h3>
-                      <p className='text-[10px] sm:text-[11px] lg:text-xs text-neutral-500 dark:text-neutral-500 mt-0 sm:mt-0.5 max-w-[150px] sm:max-w-[250px] lg:max-w-[400px] truncate'>
+                      <p
+                        className='mt-0 max-w-[150px] truncate text-[10px] text-neutral-500 sm:mt-0.5 sm:max-w-[250px] sm:text-[11px] lg:max-w-[400px] lg:text-xs dark:text-neutral-500'
+                        style={tool.enabled ? { color: sectionThemeColors?.primaryButtonText ?? undefined } : bodyStyle}
+                      >
                         {tool.description}
                       </p>
                     </div>
@@ -387,7 +477,10 @@ export const ToolsSettings: React.FC = () => {
 
                   {/* Status Indicator */}
                   <div className='flex items-center gap-2 sm:gap-4 lg:gap-6 flex-shrink-0'>
-                    <span className='font-mono text-[8px] sm:text-[9px] lg:text-[10px] text-neutral-400 dark:text-neutral-600 uppercase hidden sm:block'>
+                    <span
+                      className='hidden font-mono text-[8px] uppercase text-neutral-400 sm:block sm:text-[9px] lg:text-[10px] dark:text-neutral-600'
+                      style={tool.enabled ? { color: sectionThemeColors?.primaryButtonText ?? undefined } : bodyStyle}
+                    >
                       {tool.isCustom ? 'Custom' : 'Plugin'}
                     </span>
                     <div

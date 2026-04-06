@@ -122,11 +122,14 @@ export const ToolPermissionDialog: React.FC<ToolPermissionDialogProps> = ({
       {/* Header */}
       <div className='flex items-center px-1'>
         <div className='min-w-0 flex flex-1 mb-1 items-center gap-2'>
-          <h3 className='text-sm font-mono' style={{ color: titleTextColor }}>
+          <h3 className='text-sm' style={{ color: titleTextColor }}>
             Permission requested
           </h3>
-          <span className='truncate font-mono' style={{ color: toolNameTextColor }}>
-            {toolCall.name}
+          <span
+            className='truncate rounded-md text-[10px] px-2 py-0.5 leading-none mt-0.5 tracking-[0.08em]'
+            style={{ color: toolNameTextColor, backgroundColor: badgeBgColor }}
+          >
+            {toolCall.name.replace(/_/g, ' ').toUpperCase()}
           </span>
         </div>
 

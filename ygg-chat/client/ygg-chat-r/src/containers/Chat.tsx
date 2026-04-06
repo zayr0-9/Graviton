@@ -6186,21 +6186,23 @@ function Chat() {
                       title={workspaceMutationsCollapsed ? 'Expand modified files' : 'Collapse modified files'}
                     >
                       <i
-                        className={`bx ${workspaceMutationsCollapsed ? 'bx-chevron-down' : 'bx-chevron-up'} text-sm`}
+                        className={`bx ${workspaceMutationsCollapsed ? 'bx-chevron-down' : 'bx-chevron-up'} text-sm transition-transform duration-300 ease-in-out`}
                       ></i>
                     </button>
                   </div>
                 </div>
-                {!workspaceMutationsCollapsed && (
-                  <ul className='mt-1.5 space-y-1 max-h-40 overflow-y-auto pr-1 thin-scrollbar'>
+                <div
+                  className={`overflow-hidden transition-[max-height,opacity,margin] duration-300 ease-in-out ${
+                    workspaceMutationsCollapsed ? 'mt-0 max-h-0 opacity-0' : 'mt-1.5 max-h-44 opacity-100'
+                  }`}
+                  aria-hidden={workspaceMutationsCollapsed}
+                >
+                  <ul className='space-y-1 max-h-40 overflow-y-auto pr-1 thin-scrollbar'>
                     {branchFileMutationData.latestByPath.map(summary => {
                       const latestMutation = summary.latestMutation
                       const fileName = getWorkspaceFileBaseName(summary.path)
                       return (
-                        <li
-                          key={`workspace-summary-${summary.path}`}
-                          className='px-1 py-1'
-                        >
+                        <li key={`workspace-summary-${summary.path}`} className='px-1 py-1'>
                           <div className='flex items-start gap-2'>
                             <span
                               className={`mt-0.5 inline-flex h-5 shrink-0 items-center rounded-full px-1.5 text-[9px] font-semibold leading-none ${getWorkspaceMutationBadgeClassName(latestMutation.operation)}`}
@@ -6237,7 +6239,7 @@ function Chat() {
                       )
                     })}
                   </ul>
-                )}
+                </div>
               </div>
             )}
             {showOpenAIUsagePanel && (

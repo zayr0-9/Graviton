@@ -18,6 +18,12 @@ import { isManagedToolPath } from './utils/managedToolPaths.js'
 
 // Tool imports
 import { registerHeadlessServerRoutes } from './headlessServer/index.js'
+import {
+  handleLspWebSocketUpgrade,
+  initializeLspLocalServer,
+  registerLspRoutes,
+  shutdownLspLocalServer,
+} from './lsp/localServerIntegration.js'
 import { listManagedHooks, setManagedHookEnabled } from './hooks/hookManager.js'
 import { runHookRequest } from './hooks/hookRunner.js'
 import { registerLocalOperationsRoutes } from './localOperations.js'
@@ -1981,7 +1987,22 @@ function broadcastExtensionsOverview() {
 function initializeWebSocketServer(serverInstance: any) {
   // console.log('[LocalServer] Initializing WebSocket Server on /ide-context')
 
-  wss = new WebSocketServer({ server: serverInstance, path: '/ide-context' })
+  wss = new WebSocketServer({ noServer: true })
+
+  serverInstance.on('upgrade', (request: any, socket: any, head: Buffer) => {
+    const url = new URL(request.url || '/', `http://${request.headers.host || '127.0.0.1'}`)
+
+    if (url.pathname === '/ide-context') {
+      wss!.handleUpgrade(request, socket, head, ws => {
+        wss!.emit('connection', ws, request)
+      })
+      return
+    }
+
+    if (handleLspWebSocketUpgrade(request, socket, head)) {
+      return
+    }
+  })
 
   wss.on('connection', (ws, request) => {
     const url = new URL(request.url!, `http://${request.headers.host}`)
@@ -2180,6 +2201,7 @@ function setupServer() {
   registerLocalOperationsRoutes(app)
   registerSkillRoutes(app)
   registerMcpRoutes(app)
+  registerLspRoutes(app)
 
   // ============================================================================
   // Global Agent Settings
@@ -8145,6 +8167,7 @@ export async function startLocalServer(
 
         // Initialize WebSocket Server after HTTP server is running
         initializeWebSocketServer(server)
+        initializeLspLocalServer(server)
 
         const serverUrl = `http://${host}:${actualPort}`
         if (candidatePort !== preferredPort) {
@@ -8205,34 +8228,7 @@ export function stopLocalServer(): Promise<void> {
       oauthCallbackServer = null
     }
 
-    if (server) {
-      // Close WebSocket server first
-      if (wss) {
-        wss.close(() => {
-          console.log('[LocalServer] WebSocket server closed')
-        })
-        wss = null
-        // Also close all client connections
-        clients.forEach(client => {
-          if (client.ws.readyState === WebSocket.OPEN) {
-            client.ws.close()
-          }
-        })
-        clients.clear()
-        extensionsMap.clear()
-      }
-
-      server.close(() => {
-        console.log('[LocalServer] Server stopped')
-        if (db) {
-          db.close()
-          db = null
-        }
-        server = null
-        currentDbPath = null
-        resolve()
-      })
-    } else {
+    const finalizeWithoutServer = () => {
       if (db) {
         db.close()
         db = null
@@ -8243,6 +8239,44 @@ export function stopLocalServer(): Promise<void> {
       wss = null
       resolve()
     }
+
+    const closeIdeContextWebSocketServer = () => {
+      if (!wss) return
+      wss.close(() => {
+        console.log('[LocalServer] WebSocket server closed')
+      })
+      wss = null
+      clients.forEach(client => {
+        if (client.ws.readyState === WebSocket.OPEN) {
+          client.ws.close()
+        }
+      })
+      clients.clear()
+      extensionsMap.clear()
+    }
+
+    shutdownLspLocalServer()
+      .catch(error => {
+        console.error('[LocalServer] Failed to shutdown LSP local server:', error)
+      })
+      .finally(() => {
+        if (server) {
+          closeIdeContextWebSocketServer()
+          server.close(() => {
+            console.log('[LocalServer] Server stopped')
+            if (db) {
+              db.close()
+              db = null
+            }
+            server = null
+            currentDbPath = null
+            resolve()
+          })
+          return
+        }
+
+        finalizeWithoutServer()
+      })
   })
 }
 
