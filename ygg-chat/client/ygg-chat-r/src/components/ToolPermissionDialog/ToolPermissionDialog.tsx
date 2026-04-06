@@ -16,6 +16,10 @@ export const ToolPermissionDialog: React.FC<ToolPermissionDialogProps> = ({
   onAllowAll,
 }) => {
   const formattedArgs = JSON.stringify(toolCall.arguments, null, 2)
+  const bashDescription =
+    toolCall.name === 'bash' && typeof toolCall.arguments?.description === 'string'
+      ? toolCall.arguments.description.trim()
+      : ''
   const { theme: customTheme, enabled: customThemeEnabled } = useCustomChatTheme()
   const isDarkMode = useHtmlDarkMode()
 
@@ -131,6 +135,11 @@ export const ToolPermissionDialog: React.FC<ToolPermissionDialogProps> = ({
           >
             {toolCall.name.replace(/_/g, ' ').toUpperCase()}
           </span>
+          {bashDescription && (
+            <span className='min-w-0 truncate text-[11px] mt-0.5' style={{ color: badgeTextColor }} title={bashDescription}>
+              {bashDescription}
+            </span>
+          )}
         </div>
 
         <div

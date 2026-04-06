@@ -6,6 +6,7 @@ import { v4 as uuidv4 } from 'uuid'
 import { ConversationId, MessageId, ToolDefinition as SharedToolDefinition } from '../../../../../shared/types'
 import { ContentBlock, Message, ToolCall } from './chatTypes'
 import { CHATGPT_BASE_URL, CHATGPT_CODEX_ENDPOINT, getValidTokens } from './openaiOAuth'
+import { openStreamingWithPreFirstByteRetry } from './streamResilience'
 import { getToolsForAI } from './toolDefinitions'
 
 // Map internal ToolDefinition -> OpenAI tool schema
@@ -842,17 +843,14 @@ export async function createOpenAIChatGPTStreamingRequest(
   const allTools = payload.tools || getToolsForAI()
   const tools = mapTools(allTools)
 
-  console.log('[OpenAI ChatGPT] Total tools count:', allTools.length)
-  console.log('[OpenAI ChatGPT] Model:', payload.modelName)
-
   // Transform messages to ChatGPT format
   const input = transformMessagesForChatGPT(payload.messages)
 
   // Attach image inputs (if provided) to the latest user message for multimodal models
   const inputWithImages = appendImageAttachmentsToLatestUserMessage(input, payload.attachmentsBase64)
-  if (Array.isArray(payload.attachmentsBase64) && payload.attachmentsBase64.length > 0) {
-    console.log('[OpenAI ChatGPT] Image attachments provided:', payload.attachmentsBase64.length)
-  }
+  // if (Array.isArray(payload.attachmentsBase64) && payload.attachmentsBase64.length > 0) {
+  //   console.log('[OpenAI ChatGPT] Image attachments provided:', payload.attachmentsBase64.length)
+  // }
 
   // Build request body - use system prompt as instructions
   const body = buildCodexRequestBody(
@@ -867,20 +865,26 @@ export async function createOpenAIChatGPTStreamingRequest(
   // Build URL for Codex endpoint
   const url = `${CHATGPT_BASE_URL}${CHATGPT_CODEX_ENDPOINT}`
 
-  let res: Response
+  let streamOpen: Awaited<ReturnType<typeof openStreamingWithPreFirstByteRetry>>
   try {
-    res = await fetch(url, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${tokens.accessToken}`,
-        'chatgpt-account-id': tokens.accountId,
-        'OpenAI-Beta': 'responses=experimental',
-        originator: 'opencode',
-        accept: 'text/event-stream',
-      },
-      body: JSON.stringify(body),
-      signal,
+    streamOpen = await openStreamingWithPreFirstByteRetry({
+      endpoint: url,
+      conversationId: String(payload.conversationId),
+      parentSignal: signal,
+      openAttempt: attemptSignal =>
+        fetch(url, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${tokens.accessToken}`,
+            'chatgpt-account-id': tokens.accountId,
+            'OpenAI-Beta': 'responses=experimental',
+            originator: 'opencode',
+            accept: 'text/event-stream',
+          },
+          body: JSON.stringify(body),
+          signal: attemptSignal,
+        }),
     })
   } catch (e) {
     if (e instanceof Error && e.name === 'AbortError') {
@@ -889,7 +893,8 @@ export async function createOpenAIChatGPTStreamingRequest(
     throw new Error(`ChatGPT API not reachable: ${e instanceof Error ? e.message : String(e)}`)
   }
 
-  if (!res.ok || !res.body) {
+  const res = streamOpen.response
+  if (!res.ok) {
     const errorText = await res.text().catch(() => '')
     console.error('[OpenAI ChatGPT] Request failed:', res.status, errorText)
 
@@ -904,7 +909,12 @@ export async function createOpenAIChatGPTStreamingRequest(
     throw new Error(`ChatGPT request failed: HTTP ${res.status}`)
   }
 
-  const reader = res.body.getReader()
+  const reader = streamOpen.reader
+  if (!reader) {
+    throw new Error('ChatGPT backend returned no readable stream body')
+  }
+
+  let pendingRead = streamOpen.firstRead
   const decoder = new TextDecoder()
   let buffer = ''
 
@@ -1503,7 +1513,8 @@ export async function createOpenAIChatGPTStreamingRequest(
 
   try {
     while (true) {
-      const { done, value } = await reader.read()
+      const { done, value } = pendingRead ?? (await reader.read())
+      pendingRead = null
       if (done) break
 
       buffer += decoder.decode(value, { stream: true })

@@ -303,7 +303,17 @@ export function useIdeContext(): UseIdeContextReturn {
               }
 
               if ('currentSelection' in projectState) {
-                globalDispatch(setCurrentSelection(projectState.currentSelection || null))
+                if (isRealExtensionResponse) {
+                  globalDispatch(setCurrentSelection(projectState.currentSelection || null))
+                } else {
+                  console.log(
+                    '[MonacoIdeSelection][useIdeContext] ignoring fallback currentSelection update from non-extension context response',
+                    {
+                      messageType: message.type,
+                      hasCurrentSelection: Boolean(projectState?.currentSelection?.selectedText?.trim?.()),
+                    }
+                  )
+                }
               }
               break
             }

@@ -65,97 +65,133 @@ export const MonacoFileEditorPane: React.FC<MonacoFileEditorPaneProps> = ({
   const selectionListenersRef = useRef<MonacoEditor.IDisposable[]>([])
   const saveStateRef = useRef({ loading, isSaving, isDirty, onSave })
   const selectionStateRef = useRef({ filePath, relativePath, onSelectionChange })
+  const lastSelectionRef = useRef<SelectionInfo | null>(null)
   const languageInfo = useMemo(() => resolveLanguageInfo(filePath), [filePath])
   const language = languageInfo.monacoLanguageId
   const modelPath = useMemo(() => (filePath ? toFileUriString(filePath) : undefined), [filePath])
 
-  const emitCurrentSelection = useCallback((editor: MonacoEditor.editor.IStandaloneCodeEditor | null) => {
-    const currentEditor = editor ?? editorRef.current
-    const {
-      filePath: currentFilePath,
-      relativePath: currentRelativePath,
-      onSelectionChange: currentOnSelectionChange,
-    } = selectionStateRef.current
-
-    if (!currentOnSelectionChange) {
-      console.log('[MonacoIdeSelection][Pane] skip emit: no onSelectionChange handler', {
+  const emitCurrentSelection = useCallback(
+    (
+      editor: MonacoEditor.editor.IStandaloneCodeEditor | null,
+      options?: { allowClear?: boolean; reason?: string }
+    ) => {
+      const currentEditor = editor ?? editorRef.current
+      const {
         filePath: currentFilePath,
         relativePath: currentRelativePath,
-      })
-      return
-    }
+        onSelectionChange: currentOnSelectionChange,
+      } = selectionStateRef.current
+      const allowClear = options?.allowClear ?? false
+      const reason = options?.reason ?? 'unknown'
 
-    if (!currentEditor || !currentFilePath) {
-      console.log('[MonacoIdeSelection][Pane] emit null: missing editor or filePath', {
-        hasEditor: Boolean(currentEditor),
+      const maybeEmitClear = (
+        clearReason: string,
+        details: Record<string, unknown> = {}
+      ) => {
+        const hasTextFocus = currentEditor?.hasTextFocus?.() ?? false
+        const lastSelection = lastSelectionRef.current
+        const sameFileAsLastSelection = lastSelection?.filePath === currentFilePath
+        const shouldClear = allowClear && hasTextFocus && sameFileAsLastSelection
+
+        console.log(
+          shouldClear
+            ? '[MonacoIdeSelection][Pane] emit null: authoritative clear'
+            : '[MonacoIdeSelection][Pane] preserve previous selection: non-authoritative empty state',
+          {
+            reason,
+            clearReason,
+            allowClear,
+            hasTextFocus,
+            currentFilePath,
+            lastSelectionFilePath: lastSelection?.filePath ?? null,
+            sameFileAsLastSelection,
+            ...details,
+          }
+        )
+
+        if (!shouldClear) return
+
+        lastSelectionRef.current = null
+        currentOnSelectionChange?.(null)
+      }
+
+      if (!currentOnSelectionChange) {
+        console.log('[MonacoIdeSelection][Pane] skip emit: no onSelectionChange handler', {
+          filePath: currentFilePath,
+          relativePath: currentRelativePath,
+          reason,
+        })
+        return
+      }
+
+      if (!currentEditor || !currentFilePath) {
+        maybeEmitClear('missing editor or filePath', {
+          hasEditor: Boolean(currentEditor),
+          relativePath: currentRelativePath,
+        })
+        return
+      }
+
+      const model = currentEditor.getModel()
+      const selection = currentEditor.getSelection()
+
+      if (!model || !selection) {
+        maybeEmitClear('missing model or selection', {
+          hasModel: Boolean(model),
+          hasSelection: Boolean(selection),
+        })
+        return
+      }
+
+      if (selection.isEmpty()) {
+        maybeEmitClear('empty selection', {
+          startLine: selection.startLineNumber,
+          endLine: selection.endLineNumber,
+          startColumn: selection.startColumn,
+          endColumn: selection.endColumn,
+        })
+        return
+      }
+
+      const selectedText = model.getValueInRange(selection)
+      if (!selectedText.trim()) {
+        maybeEmitClear('whitespace-only selection', {
+          length: selectedText.length,
+          startLine: selection.startLineNumber,
+          endLine: selection.endLineNumber,
+        })
+        return
+      }
+
+      const payload: SelectionInfo = {
         filePath: currentFilePath,
-        relativePath: currentRelativePath,
-      })
-      currentOnSelectionChange(null)
-      return
-    }
-
-    const model = currentEditor.getModel()
-    const selection = currentEditor.getSelection()
-
-    if (!model || !selection) {
-      console.log('[MonacoIdeSelection][Pane] emit null: missing model or selection', {
-        hasModel: Boolean(model),
-        hasSelection: Boolean(selection),
-        filePath: currentFilePath,
-      })
-      currentOnSelectionChange(null)
-      return
-    }
-
-    if (selection.isEmpty()) {
-      console.log('[MonacoIdeSelection][Pane] emit null: empty selection', {
-        filePath: currentFilePath,
+        relativePath: currentRelativePath?.trim() || currentFilePath.split(/[\\/]/).pop() || currentFilePath,
+        selectedText,
         startLine: selection.startLineNumber,
         endLine: selection.endLineNumber,
-        startColumn: selection.startColumn,
-        endColumn: selection.endColumn,
+        startChar: selection.startColumn,
+        endChar: selection.endColumn,
+        timestamp: new Date().toISOString(),
+      }
+
+      lastSelectionRef.current = payload
+
+      console.log('[MonacoIdeSelection][Pane] emit selection', {
+        reason,
+        filePath: payload.filePath,
+        relativePath: payload.relativePath,
+        startLine: payload.startLine,
+        endLine: payload.endLine,
+        startChar: payload.startChar,
+        endChar: payload.endChar,
+        length: payload.selectedText.length,
+        preview: payload.selectedText.slice(0, 120),
       })
-      currentOnSelectionChange(null)
-      return
-    }
 
-    const selectedText = model.getValueInRange(selection)
-    if (!selectedText.trim()) {
-      console.log('[MonacoIdeSelection][Pane] emit null: whitespace-only selection', {
-        filePath: currentFilePath,
-        length: selectedText.length,
-        startLine: selection.startLineNumber,
-        endLine: selection.endLineNumber,
-      })
-      currentOnSelectionChange(null)
-      return
-    }
-
-    const payload: SelectionInfo = {
-      filePath: currentFilePath,
-      relativePath: currentRelativePath?.trim() || currentFilePath.split(/[\\/]/).pop() || currentFilePath,
-      selectedText,
-      startLine: selection.startLineNumber,
-      endLine: selection.endLineNumber,
-      startChar: selection.startColumn,
-      endChar: selection.endColumn,
-      timestamp: new Date().toISOString(),
-    }
-
-    console.log('[MonacoIdeSelection][Pane] emit selection', {
-      filePath: payload.filePath,
-      relativePath: payload.relativePath,
-      startLine: payload.startLine,
-      endLine: payload.endLine,
-      startChar: payload.startChar,
-      endChar: payload.endChar,
-      length: payload.selectedText.length,
-      preview: payload.selectedText.slice(0, 120),
-    })
-
-    currentOnSelectionChange(payload)
-  }, [])
+      currentOnSelectionChange(payload)
+    },
+    []
+  )
 
   useEffect(() => {
     saveStateRef.current = { loading, isSaving, isDirty, onSave }
@@ -168,7 +204,7 @@ export const MonacoFileEditorPane: React.FC<MonacoFileEditorPaneProps> = ({
   useEffect(() => {
     const rafId = window.requestAnimationFrame(() => {
       editorRef.current?.layout()
-      emitCurrentSelection(editorRef.current)
+      emitCurrentSelection(editorRef.current, { reason: 'lifecycle-sync' })
     })
 
     return () => {
@@ -180,7 +216,6 @@ export const MonacoFileEditorPane: React.FC<MonacoFileEditorPaneProps> = ({
     return () => {
       selectionListenersRef.current.forEach(listener => listener.dispose())
       selectionListenersRef.current = []
-      selectionStateRef.current.onSelectionChange?.(null)
     }
   }, [])
 
@@ -305,12 +340,12 @@ export const MonacoFileEditorPane: React.FC<MonacoFileEditorPaneProps> = ({
                   startColumn: event.selection.startColumn,
                   endColumn: event.selection.endColumn,
                 })
-                emitCurrentSelection(editor)
+                emitCurrentSelection(editor, { allowClear: true, reason: 'cursor-selection-change' })
               }),
               editor.onMouseUp(() => {
                 console.log('[MonacoIdeSelection][Pane] onMouseUp', { filePath })
                 window.requestAnimationFrame(() => {
-                  emitCurrentSelection(editor)
+                  emitCurrentSelection(editor, { reason: 'mouse-up-sync' })
                 })
               }),
               editor.onKeyUp(event => {
@@ -319,7 +354,7 @@ export const MonacoFileEditorPane: React.FC<MonacoFileEditorPaneProps> = ({
                   keyCode: event.keyCode,
                 })
                 window.requestAnimationFrame(() => {
-                  emitCurrentSelection(editor)
+                  emitCurrentSelection(editor, { reason: 'key-up-sync' })
                 })
               }),
             ]
@@ -331,7 +366,7 @@ export const MonacoFileEditorPane: React.FC<MonacoFileEditorPaneProps> = ({
             })
             window.requestAnimationFrame(() => {
               editor.layout()
-              emitCurrentSelection(editor)
+              emitCurrentSelection(editor, { reason: 'mount-sync' })
             })
           }}
           onChange={next => onChange(next ?? '')}

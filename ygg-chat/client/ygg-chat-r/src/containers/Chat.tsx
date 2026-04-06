@@ -3,6 +3,7 @@ import { useVirtualizer } from '@tanstack/react-virtual'
 import 'boxicons' // Types
 import 'boxicons/css/boxicons.min.css'
 import { AnimatePresence, motion } from 'framer-motion'
+import { MoreVertical, RefreshCw, Settings } from 'lucide-react'
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { batch } from 'react-redux'
 import { useLocation, useNavigate, useParams } from 'react-router-dom'
@@ -5671,7 +5672,7 @@ function Chat() {
                   }}
                   title='Sync / Refresh'
                 >
-                  <i className='bx bx-refresh text-lg' aria-hidden='true'></i>
+                  <RefreshCw className='h-4 w-4' strokeWidth={2.25} aria-hidden='true' />
                 </Button>
 
                 <div ref={optionsRef} className='relative'>
@@ -5683,7 +5684,7 @@ function Chat() {
                     onClick={() => setOptionsOpen(!optionsOpen)}
                     title='Settings'
                   >
-                    <i className='bx bx-dots-vertical-rounded text-lg' aria-hidden='true'></i>
+                    <MoreVertical className='h-4 w-4' strokeWidth={3} aria-hidden='true' />
                   </Button>
                   {optionsOpen && (
                     <div className='absolute right-0 top-full mt-1 z-50 bg-white/90 dark:bg-neutral-900/90 backdrop-blur-[12px] border border-black/[0.08] dark:border-white/[0.08] rounded-xl shadow-[0_10px_30px_-10px_rgba(0,0,0,0.3)] w-max'>
@@ -6510,11 +6511,12 @@ function Chat() {
                   }}
                   title='Chat Settings'
                 >
-                  <i
-                    className={`bx bx-cog text-[22px] ${spinSettings ? 'animate-[spin_0.6s_linear_1]' : ''}`}
+                  <Settings
+                    className={`h-5 w-5 ${spinSettings ? 'animate-[spin_0.6s_linear_1]' : ''}`}
+                    strokeWidth={2.25}
                     aria-hidden='true'
                     onAnimationEnd={() => setSpinSettings(false)}
-                  ></i>
+                  />
                 </button>
                 <div className='flex items-center gap-1 flex-nowrap min-w-0 flex-1'>
                   {import.meta.env.VITE_ENVIRONMENT === 'electron' && extensions.length > 0 && (

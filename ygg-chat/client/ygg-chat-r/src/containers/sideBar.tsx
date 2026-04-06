@@ -1,6 +1,7 @@
 import { useQueryClient } from '@tanstack/react-query'
 import { AnimatePresence, motion } from 'framer-motion'
 import React, { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { BarChart3, Monitor, Moon, PanelLeftClose, PanelLeftOpen, Settings, Sun, User } from 'lucide-react'
 import { createPortal } from 'react-dom'
 import { useLocation, useNavigate } from 'react-router-dom'
 import { ConversationId, Project } from '../../../../shared/types'
@@ -1058,7 +1059,14 @@ const SideBar: React.FC<SideBarProps> = ({
       {
         key: 'theme',
         label: themeMode,
-        iconClass: themeMode === 'System' ? 'bx-desktop' : themeMode === 'Dark' ? 'bx-moon' : 'bx-sun',
+        icon:
+          themeMode === 'System' ? (
+            <Monitor className='h-5 w-5' aria-hidden='true' />
+          ) : themeMode === 'Dark' ? (
+            <Moon className='h-5 w-5' aria-hidden='true' />
+          ) : (
+            <Sun className='h-5 w-5' aria-hidden='true' />
+          ),
         onClick: cycleTheme,
         title: `Theme: ${themeMode} (click to change)`,
         ariaLabel: `Theme: ${themeMode}`,
@@ -1066,7 +1074,7 @@ const SideBar: React.FC<SideBarProps> = ({
       {
         key: 'logging',
         label: 'Logging',
-        iconClass: 'bx-line-chart',
+        icon: <BarChart3 className='h-5 w-5' strokeWidth={2.25} aria-hidden='true' />,
         onClick: () => navigate('/logging'),
         title: 'Open logging',
         ariaLabel: 'Open logging',
@@ -1074,7 +1082,7 @@ const SideBar: React.FC<SideBarProps> = ({
       {
         key: 'profile',
         label: 'Profile',
-        iconClass: 'bx-user-circle',
+        icon: <User className='h-5 w-5' strokeWidth={2.25} aria-hidden='true' />,
         onClick: () => navigate('/payment'),
         title: 'Open profile',
         ariaLabel: 'Open profile',
@@ -1082,7 +1090,7 @@ const SideBar: React.FC<SideBarProps> = ({
       {
         key: 'settings',
         label: 'Settings',
-        iconClass: 'bx-cog',
+        icon: <Settings className='h-5 w-5' strokeWidth={2.25} aria-hidden='true' />,
         onClick: () => navigate('/settings'),
         title: 'Open settings',
         ariaLabel: 'Open settings',
@@ -1097,8 +1105,8 @@ const SideBar: React.FC<SideBarProps> = ({
     hoveredConversationId: ConversationId | null = null
   ) => {
     const actionIconShellClass = renderCollapsed
-      ? 'acrylic-light flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-transparent text-neutral-700 dark:bg-transparent dark:text-neutral-300 dark:outline dark:outline-1 dark:outline-neutral-400/15'
-      : 'flex h-10 w-10 shrink-0 items-center justify-center rounded-full border border-neutral-200/80 bg-neutral-50 text-neutral-700 dark:border-neutral-700/70 dark:bg-neutral-900 dark:text-neutral-300'
+      ? 'flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-transparent dark:bg-transparent dark:text-neutral-300 text-white'
+      : 'flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-transparent dark:bg-neutral-900 dark:text-neutral-300 text-neutral-100'
 
     return (
       <>
@@ -1289,7 +1297,7 @@ const SideBar: React.FC<SideBarProps> = ({
         </div>
 
         {renderCollapsed && (
-          <div className=' px-1 py-2'>
+          <div className='px-0.5 py-2'>
             {sidebarActions.map(action => (
               <button
                 key={action.key}
@@ -1299,13 +1307,10 @@ const SideBar: React.FC<SideBarProps> = ({
                 aria-label={action.ariaLabel}
                 className='group flex w-full items-center justify-center rounded-3xl px-0 py-1.5 transition-colors'
               >
-                <span className={actionIconShellClass}>
-                  <i
-                    className={`bx ${action.iconClass} block text-[22px] leading-none transition-transform duration-100 ${
-                      action.key === 'theme' ? 'group-active:scale-90' : 'group-hover:scale-108 group-active:scale-95'
-                    }`}
-                    aria-hidden='true'
-                  ></i>
+                <span
+                  className={`${actionIconShellClass} transition-transform duration-100 group-hover:scale-105 group-active:scale-95`}
+                >
+                  {action.icon}
                 </span>
               </button>
             ))}
@@ -1329,7 +1334,11 @@ const SideBar: React.FC<SideBarProps> = ({
   const shouldShowConversationPreviewPortal =
     showExpandedPortal && hoveredPreviewConversation?.storage_mode === 'local' && !!hoveredPreviewConversationId
   const sidebarToggleAriaLabel = showExpandedPortal ? 'Close sidebar panel' : 'Open sidebar panel'
-  const sidebarToggleIconClass = showExpandedPortal ? 'bx-chevron-left' : 'bx-chevron-right'
+  const sidebarToggleIcon = showExpandedPortal ? (
+    <PanelLeftClose className='h-5 w-5' strokeWidth={2.25} aria-hidden='true' />
+  ) : (
+    <PanelLeftOpen className='h-5 w-5' strokeWidth={2.25} aria-hidden='true' />
+  )
 
   const {
     data: topLevelUserPreviewMessages = [],
@@ -1361,7 +1370,7 @@ const SideBar: React.FC<SideBarProps> = ({
         <div className='flex items-center justify-center py-3 my-1 md:py-2.5 lg:p-1 xl:p-1 2xl:px-1 2xl:py-2'>
           <Button
             ref={expandButtonRef}
-            variant='acrylic'
+            variant='outline2'
             size='circle'
             rounded='full'
             onClick={handleToggleSidebar}
@@ -1370,7 +1379,7 @@ const SideBar: React.FC<SideBarProps> = ({
             aria-haspopup='dialog'
             aria-expanded={showExpandedPortal}
           >
-            <i className={`bx ${sidebarToggleIconClass} text-lg`} aria-hidden='true'></i>
+            {sidebarToggleIcon}
           </Button>
         </div>
 
@@ -1462,7 +1471,9 @@ const SideBar: React.FC<SideBarProps> = ({
                             <h3 className='text-sm font-semibold text-neutral-800 dark:text-neutral-100 truncate'>
                               {hoveredPreviewConversation?.title || 'Untitled conversation'}
                             </h3>
-                            <p className='text-[11px] text-neutral-500 dark:text-neutral-400'>Top-level user messages</p>
+                            <p className='text-[11px] text-neutral-500 dark:text-neutral-400'>
+                              Top-level user messages
+                            </p>
                           </div>
 
                           <div className='relative'>
@@ -1588,7 +1599,13 @@ const SideBar: React.FC<SideBarProps> = ({
               )}
             </div>
             <div className='flex gap-3 justify-end mt-4'>
-              <Button variant='outline2' size='circle' rounded='full' className='group' onClick={() => setShowMoveModal(false)}>
+              <Button
+                variant='outline2'
+                size='circle'
+                rounded='full'
+                className='group'
+                onClick={() => setShowMoveModal(false)}
+              >
                 <p className='transition-transform duration-100 group-active:scale-95'>Cancel</p>
               </Button>
             </div>

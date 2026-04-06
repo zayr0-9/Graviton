@@ -142,12 +142,7 @@ export const ToolsSettings: React.FC = () => {
     )
   }
 
-  const cardStyle = sectionThemeColors
-    ? {
-        backgroundColor: sectionThemeColors.cardBg,
-        borderColor: sectionThemeColors.cardBorder,
-      }
-    : undefined
+
   const innerCardStyle = sectionThemeColors
     ? {
         backgroundColor: sectionThemeColors.innerCardBg,
@@ -175,17 +170,7 @@ export const ToolsSettings: React.FC = () => {
         color: sectionThemeColors.codeText,
       }
     : undefined
-  const activeStyle = sectionThemeColors
-    ? {
-        backgroundColor: sectionThemeColors.primaryButtonBg,
-        color: sectionThemeColors.primaryButtonText,
-      }
-    : undefined
-  const listStyle = sectionThemeColors
-    ? {
-        backgroundColor: sectionThemeColors.listBg,
-      }
-    : undefined
+
 
   return (
     <div className='space-y-4 sm:space-y-6 lg:space-y-10 pb-16'>
