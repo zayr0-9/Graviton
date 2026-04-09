@@ -1,7 +1,7 @@
 {
   "name": "ygg-chat",
   "version": "1.0.0",
-  "description": "Full stack LLM frontend",
+  "description": "Hyper Agent",
   "private": true,
   "workspaces": [
     "client/ygg-chat-r"
