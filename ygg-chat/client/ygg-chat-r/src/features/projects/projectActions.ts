@@ -1,12 +1,12 @@
 import { createAsyncThunk } from '@reduxjs/toolkit'
 import { Project, StorageMode } from '../../../../../shared/types'
-import { isCommunityMode } from '../../config/runtimeMode'
+import { isCommunityMode, isElectronMode } from '../../config/runtimeMode'
 import { apiCall, localApi, environment, shouldUseLocalApi } from '../../utils/api'
 import { ThunkExtraArgument } from '../../store/thunkExtra'
 import { RootState } from '../../store/store'
 import { dualSync } from '../../lib/sync/dualSyncManager'
 
-const isElectronCommunityMode = () => environment === 'electron' && isCommunityMode
+const isElectronCommunityMode = () => isElectronMode && isCommunityMode
 
 // Fetch all projects
 export const fetchProjects = createAsyncThunk<Project[], void, { extra: ThunkExtraArgument }>(

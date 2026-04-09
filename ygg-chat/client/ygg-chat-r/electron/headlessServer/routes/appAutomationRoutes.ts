@@ -394,6 +394,16 @@ export function registerAppAutomationRoutes(app: Express, deps: AppAutomationRou
         return
       }
 
+      // Ensure user exists before creating project (FK constraint)
+      const existingUser = db.prepare('SELECT id FROM users WHERE id = ?').get(user_id)
+      if (!existingUser) {
+        db.prepare('INSERT INTO users (id, username, created_at) VALUES (?, ?, ?)').run(
+          user_id,
+          `local-user-${user_id.substring(0, 8)}`,
+          new Date().toISOString()
+        )
+      }
+
       const projectId = id || uuidv4()
       const now = new Date().toISOString()
 

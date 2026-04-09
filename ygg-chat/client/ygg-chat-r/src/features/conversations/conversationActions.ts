@@ -2,7 +2,7 @@ import { createAsyncThunk } from '@reduxjs/toolkit'
 import type { ConversationId, ProjectId } from '../../../../../shared/types'
 import { RootState } from '../../store/store'
 import { ThunkExtraArgument } from '../../store/thunkExtra'
-import { isCommunityMode } from '../../config/runtimeMode'
+import { isCommunityMode, isElectronMode } from '../../config/runtimeMode'
 import {
   api,
   localApi,
@@ -20,7 +20,7 @@ import { convContextSet, systemPromptSet } from './conversationSlice'
 import { Conversation } from './conversationTypes'
 import { dualSync } from '../../lib/sync/dualSyncManager'
 
-const isElectronCommunityMode = () => environment === 'electron' && isCommunityMode
+const isElectronCommunityMode = () => isElectronMode && isCommunityMode
 
 // Fetch conversations for current user
 // Note: fetchRecentModels has been migrated to React Query (see useRecentModels in hooks/useQueries.ts)

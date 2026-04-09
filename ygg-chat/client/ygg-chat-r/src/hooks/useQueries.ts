@@ -18,12 +18,12 @@ import type { Message, Model } from '../features/chats/chatTypes'
 import { fetchLmStudioModels } from '../features/chats/LMStudio'
 import { getOpenAIChatGPTModels } from '../features/chats/openaiOAuth'
 import type { Conversation } from '../features/conversations/conversationTypes'
-import { isCommunityMode } from '../config/runtimeMode'
+import { isCommunityMode, isElectronMode } from '../config/runtimeMode'
 import { api, environment, localApi } from '../utils/api'
 import { getFavoritedModels } from '../utils/favorites'
 import { useAuth } from './useAuth'
 
-const isElectronCommunityMode = () => environment === 'electron' && isCommunityMode
+const isElectronCommunityMode = () => isElectronMode && isCommunityMode
 
 /**
  * Fetch all projects for the current user, sorted by latest conversation
