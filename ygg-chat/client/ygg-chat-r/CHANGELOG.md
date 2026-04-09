@@ -12,6 +12,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
+## [0.1.86] - 2026-04-04
+
+### Added
+
+- Added fetch chats, and Internal Link tool, to work as agent memory, and let you navigate
+- Beta LSP integration with code editor
+
+### Changed
+
+- Switched several icons from box to lucid
+
+### Fixed
+
+- Linux background was transparent, causing it to become white, should be solid color now.
+- Fixed reasoning disappearence due to OAI responses shape change
+
 ## [0.1.85] - 2026-04-04
 
 ### Added
@@ -143,8 +159,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 - Fixed iframe-adjacent resize “stuck drag” behavior by introducing iframe-safe drag shields during active resize interactions.
 - Applied the resize drag fix in both split panes:
-  - Chat view (Heimdall separator in `Chat.tsx`)
-  - HTML Tools docked modal separator (`HtmlToolsModal.tsx`)
+- Chat view (Heimdall separator in `Chat.tsx`)
+- HTML Tools docked modal separator (`HtmlToolsModal.tsx`)
 
 ## [0.1.75] - 2026-02-14
 
