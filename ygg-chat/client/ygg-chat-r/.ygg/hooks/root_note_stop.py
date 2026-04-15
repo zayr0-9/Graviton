@@ -2,7 +2,7 @@ import json
 import sys
 from urllib import request, error
 
-MODEL = 'gpt-5.1-codex-mini'
+MODEL = 'gpt-5.4-mini'
 PROVIDER = 'openai'
 
 SYSTEM_PROMPT = '''You maintain a concise running branch note for a conversation path.
@@ -35,9 +35,25 @@ def _json_request(url, method='GET', payload=None, timeout=20):
     if payload is not None:
         data = json.dumps(payload).encode('utf-8')
     req = request.Request(url, data=data, headers=headers, method=method)
-    with request.urlopen(req, timeout=timeout) as resp:
-        body = resp.read().decode('utf-8')
-        return json.loads(body) if body else {}
+    try:
+        with request.urlopen(req, timeout=timeout) as resp:
+            body = resp.read().decode('utf-8')
+            return json.loads(body) if body else {}
+    except error.HTTPError as http_error:
+        error_body = ''
+        try:
+            error_body = http_error.read().decode('utf-8', errors='replace')
+        except Exception:
+            error_body = ''
+
+        details = {
+            'url': url,
+            'method': method,
+            'status': getattr(http_error, 'code', '?'),
+            'reason': getattr(http_error, 'reason', '?'),
+            'body': error_body[:4000],
+        }
+        raise RuntimeError(f'_json_request HTTPError: {json.dumps(details, ensure_ascii=False)}') from http_error
 
 
 def _safe_text(value):

@@ -12,6 +12,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
+## [0.1.90]
+
+### Changed
+
+- remote server uses main app codex token
+
+### Fixed
+
+- codex 5.1 mini is defunct, switched to gpt 5.4 mini for summaries
+
 ## [0.1.89]
 
 ### Added

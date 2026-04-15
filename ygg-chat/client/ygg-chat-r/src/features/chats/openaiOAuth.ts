@@ -445,30 +445,66 @@ export function shouldRefreshToken(expiresAt: number): boolean {
 // Storage key for tokens
 const OPENAI_TOKENS_KEY = 'openai_chatgpt_tokens'
 
-// Save tokens to localStorage
+// Save tokens to localStorage and mirror to Electron storage when available
 export function saveTokens(tokens: OpenAITokens): void {
   localStorage.setItem(OPENAI_TOKENS_KEY, JSON.stringify(tokens))
+
+  if (typeof window !== 'undefined' && window.electronAPI?.storage?.set) {
+    void window.electronAPI.storage.set(OPENAI_TOKENS_KEY, tokens).catch(error => {
+      console.error('Failed to mirror OpenAI tokens to Electron storage:', error)
+    })
+  }
 }
 
-// Load tokens from localStorage
+// Load tokens from localStorage, falling back to Electron storage when available
 export function loadTokens(): OpenAITokens | null {
   try {
     const stored = localStorage.getItem(OPENAI_TOKENS_KEY)
-    if (!stored) return null
-    return JSON.parse(stored) as OpenAITokens
+    if (stored) {
+      return JSON.parse(stored) as OpenAITokens
+    }
+  } catch {
+    return null
+  }
+
+  return null
+}
+
+export async function loadTokensFromElectronStorage(): Promise<OpenAITokens | null> {
+  if (typeof window === 'undefined' || !window.electronAPI?.storage?.get) {
+    return null
+  }
+
+  try {
+    const stored = await window.electronAPI.storage.get(OPENAI_TOKENS_KEY)
+    if (!stored || typeof stored !== 'object') return null
+
+    const tokens = stored as OpenAITokens
+    if (!tokens.accessToken || !tokens.refreshToken || !tokens.accountId || !tokens.expiresAt) {
+      return null
+    }
+
+    localStorage.setItem(OPENAI_TOKENS_KEY, JSON.stringify(tokens))
+    return tokens
   } catch {
     return null
   }
 }
 
-// Clear tokens from localStorage
+// Clear tokens from localStorage and Electron storage when available
 export function clearTokens(): void {
   localStorage.removeItem(OPENAI_TOKENS_KEY)
+
+  if (typeof window !== 'undefined' && window.electronAPI?.storage?.set) {
+    void window.electronAPI.storage.set(OPENAI_TOKENS_KEY, null).catch(error => {
+      console.error('Failed to clear mirrored OpenAI tokens from Electron storage:', error)
+    })
+  }
 }
 
 // Get valid tokens (refresh if needed)
 export async function getValidTokens(): Promise<OpenAITokens | null> {
-  const tokens = loadTokens()
+  const tokens = loadTokens() || (await loadTokensFromElectronStorage())
   if (!tokens) return null
 
   if (shouldRefreshToken(tokens.expiresAt)) {
@@ -591,6 +627,11 @@ export async function fetchOpenAIUsageStatus(): Promise<OpenAIUsageResult> {
 // Check if user is authenticated with OpenAI
 export function isOpenAIAuthenticated(): boolean {
   const tokens = loadTokens()
+  return tokens !== null && tokens.accessToken !== ''
+}
+
+export async function isOpenAIAuthenticatedAsync(): Promise<boolean> {
+  const tokens = loadTokens() || (await loadTokensFromElectronStorage())
   return tokens !== null && tokens.accessToken !== ''
 }
 

@@ -4,7 +4,7 @@ import { mcpManager } from '../mcp/mcpManager.js'
 import { customToolRegistry } from '../tools/customToolLoader.js'
 import { toolOrchestrator } from '../tools/orchestrator/index.js'
 import { BUILTIN_TOOL_DEFINITIONS } from '../../../../shared/builtinToolDefinitions.js'
-import { syncOpenRouterTokenFromElectronSession } from './providers/electronAppAuth.js'
+import { syncOpenAiChatGptTokenFromElectronStorage, syncOpenRouterTokenFromElectronSession } from './providers/electronAppAuth.js'
 import { ProviderTokenStore } from './providers/tokenStore.js'
 import { registerCapabilityRoutes } from './routes/capabilityRoutes.js'
 import { registerChatRoutes } from './routes/chatRoutes.js'
@@ -118,6 +118,7 @@ const resolveDefaultInferenceTools = (): InferenceToolDefinition[] => {
 
 function bootstrapHeadlessProviderTokens(tokenStore: ProviderTokenStore): void {
   syncOpenRouterTokenFromElectronSession(tokenStore)
+  syncOpenAiChatGptTokenFromElectronStorage(tokenStore)
 }
 
 const sleep = (ms: number): Promise<void> =>
