@@ -221,6 +221,17 @@ def main():
                     continue
                 parent_id = candidate.get('parent_id')
                 if parent_id is None:
+                    # Root-level branches have no parent to count children from.
+                    # Treat multiple root user messages in the same conversation as
+                    # a branch set and allow the current root user message to be the
+                    # note anchor.
+                    root_user_count = sum(
+                        1
+                        for item in messages
+                        if _is_user_message(item) and item.get('parent_id') is None
+                    )
+                    if root_user_count > 1:
+                        return candidate
                     continue
                 if _child_count(parent_id) > 1:
                     return candidate
