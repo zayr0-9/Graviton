@@ -275,6 +275,10 @@ const Settings: React.FC = () => {
   const [agentSettingsLoading, setAgentSettingsLoading] = useState(true)
   const [agentSettingsSaving, setAgentSettingsSaving] = useState(false)
   const [subagentSettings, setSubagentSettings] = useState<SubagentToolSettings>(() => loadSubagentToolSettings())
+  const [subagentMaxTurnsInput, setSubagentMaxTurnsInput] = useState<string>(() =>
+    String(loadSubagentToolSettings().maxTurns)
+  )
+  const [subagentMaxTurnsTouched, setSubagentMaxTurnsTouched] = useState(false)
   const [hermesRuntimeSettings, setHermesRuntimeSettings] = useState<HermesRuntimeSettings>(() =>
     loadHermesRuntimeSettings()
   )
@@ -291,7 +295,7 @@ const Settings: React.FC = () => {
   const subagentDefaultModelPreview =
     typeof agentSettings.model === 'string' && agentSettings.model.trim().length > 0
       ? agentSettings.model.trim()
-      : 'openai/gpt-5.1-codex-mini'
+      : 'openai/gpt-5.3-codex'
   const isWindowsElectron = electronPlatform === 'win32'
 
   const handleLogout = async () => {
@@ -439,12 +443,15 @@ const Settings: React.FC = () => {
   useEffect(() => {
     const handleSubagentSettingsChange = (e: CustomEvent<SubagentToolSettings>) => {
       setSubagentSettings(e.detail)
+      if (!subagentMaxTurnsTouched) {
+        setSubagentMaxTurnsInput(String(e.detail.maxTurns))
+      }
     }
 
     window.addEventListener(SUBAGENT_TOOL_SETTINGS_CHANGE_EVENT, handleSubagentSettingsChange as EventListener)
     return () =>
       window.removeEventListener(SUBAGENT_TOOL_SETTINGS_CHANGE_EVENT, handleSubagentSettingsChange as EventListener)
-  }, [])
+  }, [subagentMaxTurnsTouched])
 
   useEffect(() => {
     const handleHermesRuntimeSettingsChange = (e: CustomEvent<HermesRuntimeSettings>) => {
@@ -1075,6 +1082,27 @@ const Settings: React.FC = () => {
     }
   }
 
+  const commitSubagentMaxTurnsChange = (value: string) => {
+    const parsed = Number(value)
+    if (!Number.isFinite(parsed) || parsed <= 0) {
+      setSubagentMaxTurnsTouched(false)
+      setSubagentMaxTurnsInput(String(subagentSettings.maxTurns))
+      showStatus({ type: 'error', text: 'Subagent max turns must be a positive number.' })
+      return
+    }
+
+    const maxTurns = Math.floor(parsed)
+    persistSubagentSettings(
+      {
+        ...subagentSettings,
+        maxTurns,
+      },
+      `Subagent max turns updated to ${maxTurns}.`
+    )
+    setSubagentMaxTurnsTouched(false)
+    setSubagentMaxTurnsInput(String(maxTurns))
+  }
+
   const handleSubagentOrchestratorToggle = () => {
     persistSubagentSettings(
       {
@@ -1493,6 +1521,11 @@ const Settings: React.FC = () => {
   }, [toolExecutionSettings.bashTimeoutMs, bashTimeoutTouched])
 
   useEffect(() => {
+    if (subagentMaxTurnsTouched) return
+    setSubagentMaxTurnsInput(String(subagentSettings.maxTurns))
+  }, [subagentSettings.maxTurns, subagentMaxTurnsTouched])
+
+  useEffect(() => {
     if (!isChangelogOpen) return
 
     const handleKeyDown = (event: KeyboardEvent) => {
@@ -1574,6 +1607,11 @@ const Settings: React.FC = () => {
   const handleBashTimeoutInputChange = (value: string) => {
     setBashTimeoutInput(value)
     setBashTimeoutTouched(true)
+  }
+
+  const handleSubagentMaxTurnsInputChange = (value: string) => {
+    setSubagentMaxTurnsInput(value)
+    setSubagentMaxTurnsTouched(true)
   }
 
   const handleWorkDirectoryInputChange = (value: string) => {
@@ -2605,7 +2643,30 @@ const Settings: React.FC = () => {
             </div>
 
             <div className='mt-4 flex flex-col gap-4'>
-              <div className='flex items-center justify-between'>
+              <div className='flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between'>
+                <div>
+                  <p className='text-base font-medium text-stone-900 dark:text-stone-100'>Subagent Max Turns</p>
+                  <p className='text-sm text-stone-500 dark:text-stone-400'>
+                    Maximum model/tool loop turns for one subagent invocation.
+                  </p>
+                </div>
+                <input
+                  type='number'
+                  min={1}
+                  step={1}
+                  value={subagentMaxTurnsInput}
+                  onChange={e => handleSubagentMaxTurnsInputChange(e.target.value)}
+                  onBlur={e => commitSubagentMaxTurnsChange(e.target.value)}
+                  onKeyDown={e => {
+                    if (e.key === 'Enter') {
+                      e.currentTarget.blur()
+                    }
+                  }}
+                  className='w-32 rounded-lg border border-stone-200 bg-white px-3 py-2 text-sm text-stone-900 shadow-sm focus:outline-none focus:ring-2 focus:ring-emerald-400 dark:border-stone-700 dark:bg-zinc-900 dark:text-stone-100'
+                />
+              </div>
+
+              <div className='flex items-center justify-between pt-2 border-t border-stone-200 dark:border-stone-700'>
                 <div>
                   <p className='text-base font-medium text-stone-900 dark:text-stone-100'>
                     Enable Orchestrator Tool Calls

@@ -18,6 +18,8 @@ import { startLocalServer, stopLocalServer } from './localServer.js'
 import { ensureManagedCustomToolsInitialized } from './tools/customToolLoader.js'
 import { ensureManagedThemesInitialized } from './tools/themeManager.js'
 import { detectPathType, getWSLCommandArgs, isWindows } from './utils/wslBridge.js'
+import { OpenAiChatgptProvider } from './headlessServer/providers/openaiChatgptProvider.js'
+import { getValidTokens, clearTokens as clearOpenAIStoredTokens, fetchOpenAIUsageStatus } from './openaiChatgptOAuth.js'
 
 // Destructure autoUpdater from CommonJS module (ESM/CJS interop)
 const { autoUpdater } = autoUpdaterPkg
@@ -2194,3 +2196,118 @@ function toggleCompactMode() {
   }
   return compactMode
 }
+
+// Electron-side OpenAI ChatGPT streaming bridge. Renderer never receives raw OAuth tokens.
+const activeOpenAIStreams = new Map<string, { aborted: boolean }>()
+
+function openAIStorageAdapter() {
+  return {
+    get: (key: string) => getFromStore(key),
+    set: (key: string, value: any) => setInStore(key, value),
+    delete: (key: string) => deleteFromStore(key),
+  }
+}
+
+function sendOpenAIStreamEvent(sender: Electron.WebContents, streamId: string, chunk: any): void {
+  if (!sender.isDestroyed()) {
+    sender.send('openai:chatgpt:stream-event', { streamId, chunk })
+  }
+}
+
+ipcMain.handle('openai:chatgpt:isAuthenticated', async () => {
+  const tokens = await getValidTokens(openAIStorageAdapter())
+  return Boolean(tokens?.accessToken)
+})
+
+ipcMain.handle('openai:chatgpt:clearTokens', async () => {
+  clearOpenAIStoredTokens(openAIStorageAdapter())
+  return { success: true }
+})
+
+ipcMain.handle('openai:chatgpt:usage', async () => {
+  return fetchOpenAIUsageStatus(openAIStorageAdapter())
+})
+
+ipcMain.handle('openai:chatgpt:stream-start', async (event, payload: any) => {
+  const streamId = `openai_${Date.now()}_${Math.random().toString(16).slice(2)}`
+  const state = { aborted: false }
+  activeOpenAIStreams.set(streamId, state)
+
+  void (async () => {
+    try {
+      const provider = new OpenAiChatgptProvider({
+        tokenStore: {
+          get: () => null,
+          getLatest: () => null,
+          upsert: () => {},
+          delete: () => {},
+        } as any,
+      })
+      const tokens = await getValidTokens(openAIStorageAdapter())
+      if (!tokens) {
+        throw new Error('OpenAI authentication required. Please sign in with your ChatGPT Plus/Pro account.')
+      }
+      const output = await provider.generate(
+        {
+          modelName: payload.modelName,
+          systemPrompt: payload.systemPrompt || '',
+          history: Array.isArray(payload.messages) ? payload.messages : [],
+          userContent: '',
+          accessToken: tokens.accessToken,
+          accountId: tokens.accountId,
+          tools: Array.isArray(payload.tools) ? payload.tools.map((tool: any) => ({ name: tool.name, description: tool.description, inputSchema: tool.inputSchema || tool.parameters })) : [],
+          railwayTurn: {
+            conversationId: String(payload.conversationId || ''),
+            parentId: payload.parentId ?? null,
+            think: payload.think,
+            attachmentsBase64: payload.attachmentsBase64 ?? null,
+            imageConfig: payload.imageConfig,
+            reasoningConfig: payload.reasoningConfig,
+            isElectron: true,
+          },
+        },
+        chunk => {
+          if (!state.aborted) sendOpenAIStreamEvent(event.sender, streamId, chunk)
+        }
+      )
+      if (!state.aborted) {
+        sendOpenAIStreamEvent(event.sender, streamId, {
+          type: 'complete',
+          message: {
+            id: payload.assistantMessageId || streamId,
+            conversation_id: payload.conversationId,
+            parent_id: payload.parentId ?? null,
+            children_ids: [],
+            role: 'assistant',
+            content: output.content,
+            content_plain_text: output.content,
+            thinking_block: output.reasoning || '',
+            tool_calls: output.toolCalls || [],
+            model_name: payload.modelName,
+            partial: false,
+            created_at: new Date().toISOString(),
+            artifacts: [],
+            pastedContext: [],
+            content_blocks: output.contentBlocks || [],
+            responses_output_items: output.raw?.responses_output_items,
+          },
+        })
+      }
+    } catch (error) {
+      if (!state.aborted) {
+        sendOpenAIStreamEvent(event.sender, streamId, { type: 'error', error: error instanceof Error ? error.message : String(error) })
+      }
+    } finally {
+      activeOpenAIStreams.delete(streamId)
+    }
+  })()
+
+  return { success: true, streamId }
+})
+
+ipcMain.handle('openai:chatgpt:stream-abort', async (_event, streamId: string) => {
+  const state = activeOpenAIStreams.get(streamId)
+  if (state) state.aborted = true
+  activeOpenAIStreams.delete(streamId)
+  return { success: true }
+})

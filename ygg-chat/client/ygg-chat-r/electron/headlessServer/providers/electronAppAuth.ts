@@ -7,6 +7,8 @@ export type StoredElectronAuthSession = {
   user?: { id?: string | null } | null
   session?: {
     access_token?: string | null
+    refresh_token?: string | null
+    expires_at?: number | string | null
     user?: { id?: string | null } | null
   } | null
 }
@@ -54,7 +56,7 @@ function extractOpenAiAccountId(accessToken: string | null | undefined): string 
 
 function normalizeExpiresAt(value: number | string | null | undefined): string | null {
   if (typeof value === 'number' && Number.isFinite(value)) {
-    return new Date(value).toISOString()
+    return new Date(value < 10_000_000_000 ? value * 1000 : value).toISOString()
   }
 
   if (typeof value === 'string') {
@@ -72,7 +74,7 @@ function normalizeExpiresAt(value: number | string | null | undefined): string |
   return null
 }
 
-export function readElectronAppAuthSession(): { userId: string | null; accessToken: string | null } {
+export function readElectronAppAuthSession(): { userId: string | null; accessToken: string | null; refreshToken: string | null; expiresAt: string | null } {
   try {
     const store = new Conf({
       projectName: 'ygg-chat-r',
@@ -82,14 +84,19 @@ export function readElectronAppAuthSession(): { userId: string | null; accessTok
     const authSession = (store.get('auth_session') ?? null) as StoredElectronAuthSession | null
     const userId = String(authSession?.userId || authSession?.user?.id || authSession?.session?.user?.id || '').trim() || null
     const accessToken = normalizeAuthorizationToken(authSession?.accessToken || authSession?.session?.access_token)
+    const refreshToken =
+      typeof authSession?.session?.refresh_token === 'string' && authSession.session.refresh_token.trim()
+        ? authSession.session.refresh_token.trim()
+        : null
+    const expiresAt = normalizeExpiresAt(authSession?.session?.expires_at ?? decodeJwtPayload(accessToken)?.exp * 1000)
 
     if (!userId || !accessToken || accessToken === 'electron-local-token') {
-      return { userId: null, accessToken: null }
+      return { userId: null, accessToken: null, refreshToken: null, expiresAt: null }
     }
 
-    return { userId, accessToken }
+    return { userId, accessToken, refreshToken, expiresAt }
   } catch {
-    return { userId: null, accessToken: null }
+    return { userId: null, accessToken: null, refreshToken: null, expiresAt: null }
   }
 }
 
@@ -132,16 +139,80 @@ export function readElectronOpenAiChatGptTokens(): {
   }
 }
 
-export function syncOpenRouterTokenFromElectronSession(tokenStore: ProviderTokenStore): void {
-  const { userId, accessToken } = readElectronAppAuthSession()
+function getSupabaseRefreshConfig(): { url: string; anonKey: string } | null {
+  const url = String(process.env.VITE_SUPABASE_URL || process.env.SUPABASE_URL || '').replace(/\/+$/, '')
+  const anonKey = String(process.env.VITE_SUPABASE_ANON_KEY || process.env.SUPABASE_ANON_KEY || '')
+  return url && anonKey ? { url, anonKey } : null
+}
+
+function shouldRefresh(expiresAt: string | null, skewMs = 5 * 60 * 1000): boolean {
+  if (!expiresAt) return false
+  const expiresMs = new Date(expiresAt).getTime()
+  return Number.isFinite(expiresMs) && expiresMs - Date.now() <= skewMs
+}
+
+async function refreshElectronAppAuthSession(refreshToken: string): Promise<StoredElectronAuthSession | null> {
+  const config = getSupabaseRefreshConfig()
+  if (!config) return null
+
+  const response = await fetch(`${config.url}/auth/v1/token?grant_type=refresh_token`, {
+    method: 'POST',
+    headers: {
+      apikey: config.anonKey,
+      Authorization: `Bearer ${config.anonKey}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ refresh_token: refreshToken }),
+  })
+
+  if (!response.ok) return null
+
+  const payload = (await response.json().catch(() => null)) as any
+  if (!payload?.access_token) return null
+
+  const store = new Conf({ projectName: 'ygg-chat-r', configFileMode: 0o600 })
+  const current = (store.get('auth_session') ?? null) as StoredElectronAuthSession | null
+  const nextSession = {
+    ...(current?.session || {}),
+    ...payload,
+    access_token: payload.access_token,
+    refresh_token: payload.refresh_token || refreshToken,
+    expires_at:
+      typeof payload.expires_at === 'number'
+        ? payload.expires_at
+        : typeof payload.expires_in === 'number'
+          ? Math.floor(Date.now() / 1000) + payload.expires_in
+          : current?.session?.expires_at,
+  }
+  const next: StoredElectronAuthSession = {
+    ...(current || {}),
+    accessToken: payload.access_token,
+    userId: current?.userId || current?.user?.id || nextSession.user?.id || null,
+    user: current?.user || nextSession.user || null,
+    session: nextSession,
+  }
+
+  ;(store as any).set?.('auth_session', next)
+  return next
+}
+
+export async function syncOpenRouterTokenFromElectronSession(tokenStore: ProviderTokenStore): Promise<void> {
+  let record = readElectronAppAuthSession()
+
+  if (record.refreshToken && shouldRefresh(record.expiresAt)) {
+    await refreshElectronAppAuthSession(record.refreshToken).catch(() => null)
+    record = readElectronAppAuthSession()
+  }
+
+  const { userId, accessToken, refreshToken, expiresAt } = record
   if (!userId || !accessToken) return
 
   tokenStore.upsert({
     provider: 'openrouter',
     userId,
     accessToken,
-    refreshToken: null,
-    expiresAt: null,
+    refreshToken,
+    expiresAt,
     accountId: null,
   })
 }

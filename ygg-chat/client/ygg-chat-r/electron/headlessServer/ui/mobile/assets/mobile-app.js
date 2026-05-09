@@ -64601,13 +64601,15 @@ var MessageBubble = ({
   isBranchTarget = false,
   currentUserId = null,
   rootPath = null,
+  agentTextFontSizePx,
   onBranchUserMessage,
   onDeleteUserMessage
 }) => {
   const renderItems = (0, import_react28.useMemo)(() => buildRenderItemsForMessage(message), [message]);
+  const textStyle = message.role === "assistant" && typeof agentTextFontSizePx === "number" ? { "--mobile-agent-text-font-size": `${agentTextFontSizePx}px` } : void 0;
   return /* @__PURE__ */ import_react28.default.createElement("article", { className: `mobile-message ${message.role}${isBranchTarget ? " branch-target" : ""}` }, /* @__PURE__ */ import_react28.default.createElement("header", { className: "mobile-message-header" }, /* @__PURE__ */ import_react28.default.createElement("span", { className: "mobile-message-role" }, roleLabel(message.role)), isStreaming ? /* @__PURE__ */ import_react28.default.createElement(Badge, { className: "mobile-streaming-badge" }, "streaming") : null), /* @__PURE__ */ import_react28.default.createElement("div", { className: "mobile-message-body" }, renderItems.length === 0 ? /* @__PURE__ */ import_react28.default.createElement("div", { className: "mobile-empty-text" }, "(no content)") : null, renderItems.map((item) => {
     if (item.type === "text") {
-      return /* @__PURE__ */ import_react28.default.createElement("div", { key: item.key, className: "mobile-message-text markdown-body" }, /* @__PURE__ */ import_react28.default.createElement(Markdown, { remarkPlugins: [remarkGfm] }, item.text));
+      return /* @__PURE__ */ import_react28.default.createElement("div", { key: item.key, className: "mobile-message-text markdown-body", style: textStyle }, /* @__PURE__ */ import_react28.default.createElement(Markdown, { remarkPlugins: [remarkGfm] }, item.text));
     }
     if (item.type === "reasoning") {
       return /* @__PURE__ */ import_react28.default.createElement(ReasoningCard, { key: item.key, text: item.text });
@@ -64644,6 +64646,7 @@ var MessageList = ({
   userActionsDisabled = false,
   currentUserId = null,
   rootPath = null,
+  agentTextFontSizePx,
   onBranchUserMessage,
   onDeleteUserMessage
 }) => {
@@ -64695,12 +64698,22 @@ var MessageList = ({
           isBranchTarget: branchTargetMessageId !== null && String(branchTargetMessageId) === String(message.id),
           currentUserId,
           rootPath,
+          agentTextFontSizePx,
           onBranchUserMessage,
           onDeleteUserMessage
         }
       )
     );
-  }), streamingMessage ? /* @__PURE__ */ import_react29.default.createElement(MessageBubble, { message: streamingMessage, isStreaming: true, currentUserId, rootPath }) : null);
+  }), streamingMessage ? /* @__PURE__ */ import_react29.default.createElement(
+    MessageBubble,
+    {
+      message: streamingMessage,
+      isStreaming: true,
+      currentUserId,
+      rootPath,
+      agentTextFontSizePx
+    }
+  ) : null);
 };
 
 // electron/headlessServer/ui/mobile/src/components/MessageTreeDrawer.tsx
@@ -65167,6 +65180,10 @@ var MobileHeader = ({
   modelName,
   modelOptions,
   statusText,
+  agentTextFontSizePx,
+  minAgentTextFontSizePx,
+  maxAgentTextFontSizePx,
+  onAgentTextFontSizeChange,
   users,
   selectedUserId,
   onProviderChange,
@@ -65291,7 +65308,19 @@ var MobileHeader = ({
         disabled: selectorsDisabled,
         compact: true
       }
-    )), /* @__PURE__ */ import_react33.default.createElement("div", { className: "mobile-settings-auth-row" }, /* @__PURE__ */ import_react33.default.createElement(Badge, { className: `mobile-auth-pill ${authStatus.className}`, variant: "outline" }, authStatus.label), providerName === "openaichatgpt" ? !openAiAuthenticated ? /* @__PURE__ */ import_react33.default.createElement(import_react33.default.Fragment, null, /* @__PURE__ */ import_react33.default.createElement(Button, { onClick: onOpenAiLoginStart, disabled: openAiBusy, variant: "secondary", size: "sm" }, "Sign in OpenAI"), /* @__PURE__ */ import_react33.default.createElement(
+    )), /* @__PURE__ */ import_react33.default.createElement("section", { className: "mobile-settings-font-zoom", "aria-label": "Assistant text zoom" }, /* @__PURE__ */ import_react33.default.createElement("div", { className: "mobile-settings-font-zoom-header" }, /* @__PURE__ */ import_react33.default.createElement("span", null, "Agent text zoom"), /* @__PURE__ */ import_react33.default.createElement("strong", null, agentTextFontSizePx, "px")), /* @__PURE__ */ import_react33.default.createElement("div", { className: "mobile-settings-font-zoom-row" }, /* @__PURE__ */ import_react33.default.createElement("span", { "aria-hidden": "true" }, "A"), /* @__PURE__ */ import_react33.default.createElement(
+      Input,
+      {
+        type: "range",
+        min: minAgentTextFontSizePx,
+        max: maxAgentTextFontSizePx,
+        step: 1,
+        value: agentTextFontSizePx,
+        onChange: (event) => onAgentTextFontSizeChange(Number(event.target.value)),
+        "aria-label": "Agent message text font size",
+        className: "mobile-settings-font-zoom-slider"
+      }
+    ), /* @__PURE__ */ import_react33.default.createElement("span", { "aria-hidden": "true" }, "A")), /* @__PURE__ */ import_react33.default.createElement("p", null, "Controls the font size for assistant text responses.")), /* @__PURE__ */ import_react33.default.createElement("div", { className: "mobile-settings-auth-row" }, /* @__PURE__ */ import_react33.default.createElement(Badge, { className: `mobile-auth-pill ${authStatus.className}`, variant: "outline" }, authStatus.label), providerName === "openaichatgpt" ? !openAiAuthenticated ? /* @__PURE__ */ import_react33.default.createElement(import_react33.default.Fragment, null, /* @__PURE__ */ import_react33.default.createElement(Button, { onClick: onOpenAiLoginStart, disabled: openAiBusy, variant: "secondary", size: "sm" }, "Sign in OpenAI"), /* @__PURE__ */ import_react33.default.createElement(
       Button,
       {
         onClick: onOpenAiLoginComplete,
@@ -65511,8 +65540,12 @@ var createStreamingState = () => ({
 var projectKey = (projectId) => projectId || "__none__";
 var MOBILE_LAST_USER_STORAGE_KEY = "mobile:lastUserId";
 var MOBILE_LAST_PROVIDER_STORAGE_KEY = "mobile:lastProvider";
+var MOBILE_AGENT_TEXT_FONT_SIZE_STORAGE_KEY = "mobile:agentTextFontSizePx";
 var mobileLastConversationStorageKey = (userId) => `mobile:lastConversationId:${userId}`;
 var DEFAULT_PROVIDER = "openaichatgpt";
+var DEFAULT_AGENT_TEXT_FONT_SIZE_PX = 14;
+var MIN_AGENT_TEXT_FONT_SIZE_PX = 12;
+var MAX_AGENT_TEXT_FONT_SIZE_PX = 24;
 var readStorageValue = (key) => {
   if (typeof window === "undefined") return null;
   try {
@@ -65541,6 +65574,15 @@ var normalizeCwd = (value) => {
 var normalizeProviderName = (value) => {
   if (value === "openrouter" || value === "lmstudio" || value === "openaichatgpt") return value;
   return DEFAULT_PROVIDER;
+};
+var clampAgentTextFontSize = (value) => {
+  if (!Number.isFinite(value)) return DEFAULT_AGENT_TEXT_FONT_SIZE_PX;
+  return Math.min(MAX_AGENT_TEXT_FONT_SIZE_PX, Math.max(MIN_AGENT_TEXT_FONT_SIZE_PX, Math.round(value)));
+};
+var readAgentTextFontSize = () => {
+  const storedValue = readStorageValue(MOBILE_AGENT_TEXT_FONT_SIZE_STORAGE_KEY);
+  if (!storedValue) return DEFAULT_AGENT_TEXT_FONT_SIZE_PX;
+  return clampAgentTextFontSize(Number(storedValue));
 };
 var getDefaultModelForProvider = (provider, providers) => {
   const match = providers.find((item) => item.name === provider);
@@ -65701,6 +65743,7 @@ var App = () => {
   const [providerModels, setProviderModels] = (0, import_react35.useState)([]);
   const [modelName, setModelName] = (0, import_react35.useState)("gpt-5.4");
   const [statusText, setStatusText] = (0, import_react35.useState)("Loading\u2026");
+  const [agentTextFontSizePx, setAgentTextFontSizePx] = (0, import_react35.useState)(readAgentTextFontSize);
   const [users, setUsers] = (0, import_react35.useState)([]);
   const [selectedUserId, setSelectedUserId] = (0, import_react35.useState)(() => readStorageValue(MOBILE_LAST_USER_STORAGE_KEY));
   const [projects, setProjects] = (0, import_react35.useState)([]);
@@ -66196,6 +66239,9 @@ ${nextPath}`;
     writeStorageValue(MOBILE_LAST_PROVIDER_STORAGE_KEY, selectedProvider);
   }, [selectedProvider]);
   (0, import_react35.useEffect)(() => {
+    writeStorageValue(MOBILE_AGENT_TEXT_FONT_SIZE_STORAGE_KEY, String(agentTextFontSizePx));
+  }, [agentTextFontSizePx]);
+  (0, import_react35.useEffect)(() => {
     const models = providerModels.find((provider) => provider.name === selectedProvider)?.models || [];
     if (models.length === 0) return;
     if (models.includes(modelName)) return;
@@ -66511,6 +66557,10 @@ ${nextPath}`;
       modelName,
       modelOptions: availableModelOptions,
       statusText,
+      agentTextFontSizePx,
+      minAgentTextFontSizePx: MIN_AGENT_TEXT_FONT_SIZE_PX,
+      maxAgentTextFontSizePx: MAX_AGENT_TEXT_FONT_SIZE_PX,
+      onAgentTextFontSizeChange: (value) => setAgentTextFontSizePx(clampAgentTextFontSize(value)),
       users,
       selectedUserId,
       onProviderChange: setSelectedProvider,
@@ -66575,6 +66625,7 @@ ${nextPath}`;
       userActionsDisabled: sending || !activeConversationId || !selectedUserId,
       currentUserId: selectedUserId,
       rootPath: activeProjectCwd,
+      agentTextFontSizePx,
       onBranchUserMessage: handleBranchUserMessage,
       onDeleteUserMessage: handleDeleteUserMessage
     }

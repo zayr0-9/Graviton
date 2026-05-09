@@ -1811,6 +1811,51 @@ export const Heimdall: React.FC<HeimdallProps> = ({
     }
   }, [applyZoomAtPoint])
 
+  // Expand a visual selection to include hidden messages that sit between selected visible nodes.
+  // This keeps filtering as a rendering-only concern: tool-only/empty nodes can be hidden,
+  // but actions on a selected branch still receive the complete message chain.
+  const expandSelectionToHiddenBranchMessages = (selectedVisibleIds: MessageId[]): MessageId[] => {
+    if (selectedVisibleIds.length <= 1 || !Array.isArray(allMessages) || allMessages.length === 0) {
+      return selectedVisibleIds
+    }
+
+    const selectedSet = new Set(selectedVisibleIds.map(id => String(id)))
+    const expandedSet = new Set<string>(selectedSet)
+    const messageByIdForSelection = new Map(allMessages.map(message => [String(message.id), message]))
+
+    selectedVisibleIds.forEach(id => {
+      const pathToSelectedAncestor: string[] = []
+      let cursorId: string | null = String(id)
+      const visited = new Set<string>()
+
+      while (cursorId && !visited.has(cursorId)) {
+        visited.add(cursorId)
+        pathToSelectedAncestor.push(cursorId)
+
+        const parentId = messageByIdForSelection.get(cursorId)?.parent_id
+        if (parentId == null) break
+
+        const parentKey = String(parentId)
+        if (selectedSet.has(parentKey)) {
+          pathToSelectedAncestor.push(parentKey)
+          pathToSelectedAncestor.forEach(pathId => expandedSet.add(pathId))
+          break
+        }
+
+        cursorId = parentKey
+      }
+    })
+
+    const expandedIds: MessageId[] = []
+    allMessages.forEach(message => {
+      if (expandedSet.has(String(message.id))) {
+        expandedIds.push(message.id)
+      }
+    })
+
+    return expandedIds
+  }
+
   // Function to determine which nodes are within the selection rectangle
   const getNodesInSelectionRectangle = (): MessageId[] => {
     const selectedNodeIds: MessageId[] = []
@@ -1872,8 +1917,9 @@ export const Heimdall: React.FC<HeimdallProps> = ({
     flushPendingInteractionFrame()
 
     if (isSelecting) {
-      // Calculate which nodes are within the selection rectangle
-      const selectedNodeIds = getNodesInSelectionRectangle()
+      // Calculate visible nodes within the selection rectangle, then include hidden
+      // messages that are between those visible nodes in the real message tree.
+      const selectedNodeIds = expandSelectionToHiddenBranchMessages(getNodesInSelectionRectangle())
       // Replace selection with nodes from this drag (no branch filtering)
       dispatch(chatSliceActions.nodesSelected(selectedNodeIds))
       setIsSelecting(false)
@@ -4215,23 +4261,31 @@ export const Heimdall: React.FC<HeimdallProps> = ({
                                 // Tool use block
                                 if (block.type === 'tool_use') {
                                   return (
-                                    <div
+                                    <details
                                       key={blockIdx}
-                                      className='border-l-2 border-blue-400 dark:border-blue-600 pl-3 py-2'
+                                      className='group border-l-2 border-blue-400 dark:border-blue-600 pl-3 py-2'
                                     >
-                                      <div className='flex items-center gap-2 mb-1'>
+                                      <summary className='flex cursor-pointer list-none items-center gap-2 mb-1 select-none [&::-webkit-details-marker]:hidden'>
+                                        <svg
+                                          className='h-3 w-3 text-blue-600 dark:text-blue-400 transition-transform group-open:rotate-90'
+                                          fill='none'
+                                          viewBox='0 0 24 24'
+                                          stroke='currentColor'
+                                        >
+                                          <path strokeLinecap='round' strokeLinejoin='round' strokeWidth={2} d='M9 5l7 7-7 7' />
+                                        </svg>
                                         <span className='text-[10px] font-semibold text-blue-600 dark:text-blue-400 uppercase tracking-wider'>
                                           Tool: {block.name}
                                         </span>
-                                      </div>
+                                      </summary>
                                       {block.input && (
-                                        <pre className='text-[11px] text-stone-600 dark:text-stone-400 bg-stone-100 dark:bg-neutral-800 p-2 rounded overflow-x-auto max-h-40 thin-scrollbar'>
+                                        <pre className='mt-2 text-[11px] text-stone-600 dark:text-stone-400 bg-stone-100 dark:bg-neutral-800 p-2 rounded overflow-x-auto max-h-40 thin-scrollbar'>
                                           {typeof block.input === 'string'
                                             ? block.input
                                             : JSON.stringify(block.input, null, 2)}
                                         </pre>
                                       )}
-                                    </div>
+                                    </details>
                                   )
                                 }
 
@@ -4243,40 +4297,56 @@ export const Heimdall: React.FC<HeimdallProps> = ({
                                       ? block.content
                                       : JSON.stringify(block.content, null, 2)
                                   return (
-                                    <div
+                                    <details
                                       key={blockIdx}
-                                      className={`border-l-2 ${isError ? 'border-red-400 dark:border-red-600' : 'border-emerald-400 dark:border-emerald-600'} pl-3 py-2`}
+                                      className={`group border-l-2 ${isError ? 'border-red-400 dark:border-red-600' : 'border-emerald-400 dark:border-emerald-600'} pl-3 py-2`}
                                     >
-                                      <div className='flex items-center gap-2 mb-1'>
+                                      <summary className='flex cursor-pointer list-none items-center gap-2 mb-1 select-none [&::-webkit-details-marker]:hidden'>
+                                        <svg
+                                          className={`h-3 w-3 transition-transform group-open:rotate-90 ${isError ? 'text-red-600 dark:text-red-400' : 'text-emerald-600 dark:text-emerald-400'}`}
+                                          fill='none'
+                                          viewBox='0 0 24 24'
+                                          stroke='currentColor'
+                                        >
+                                          <path strokeLinecap='round' strokeLinejoin='round' strokeWidth={2} d='M9 5l7 7-7 7' />
+                                        </svg>
                                         <span
                                           className={`text-[10px] font-semibold uppercase tracking-wider ${isError ? 'text-red-600 dark:text-red-400' : 'text-emerald-600 dark:text-emerald-400'}`}
                                         >
                                           {isError ? 'Error' : 'Result'}
                                         </span>
-                                      </div>
-                                      <pre className='text-[11px] text-stone-600 dark:text-stone-400 bg-stone-100 dark:bg-neutral-800 p-2 rounded overflow-x-auto max-h-60 whitespace-pre-wrap break-words thin-scrollbar'>
+                                      </summary>
+                                      <pre className='mt-2 text-[11px] text-stone-600 dark:text-stone-400 bg-stone-100 dark:bg-neutral-800 p-2 rounded overflow-x-auto max-h-60 whitespace-pre-wrap break-words thin-scrollbar'>
                                         {content}
                                       </pre>
-                                    </div>
+                                    </details>
                                   )
                                 }
 
                                 // Thinking block
                                 if (block.type === 'thinking' && block.content) {
                                   return (
-                                    <div
+                                    <details
                                       key={blockIdx}
-                                      className='border-l-2 border-purple-400 dark:border-purple-600 pl-3 py-2 bg-purple-50/50 dark:bg-purple-900/10 rounded-r'
+                                      className='group border-l-2 border-purple-400 dark:border-purple-600 pl-3 py-2 bg-purple-50/50 dark:bg-purple-900/10 rounded-r'
                                     >
-                                      <div className='flex items-center gap-2 mb-1'>
+                                      <summary className='flex cursor-pointer list-none items-center gap-2 mb-1 select-none [&::-webkit-details-marker]:hidden'>
+                                        <svg
+                                          className='h-3 w-3 text-purple-600 dark:text-purple-400 transition-transform group-open:rotate-90'
+                                          fill='none'
+                                          viewBox='0 0 24 24'
+                                          stroke='currentColor'
+                                        >
+                                          <path strokeLinecap='round' strokeLinejoin='round' strokeWidth={2} d='M9 5l7 7-7 7' />
+                                        </svg>
                                         <span className='text-[10px] font-semibold text-purple-600 dark:text-purple-400 uppercase tracking-wider'>
                                           Thinking
                                         </span>
-                                      </div>
-                                      <div className='prose prose-sm dark:prose-invert max-w-none text-stone-600 dark:text-stone-400 prose-p:my-1'>
+                                      </summary>
+                                      <div className='mt-2 prose prose-sm dark:prose-invert max-w-none text-stone-600 dark:text-stone-400 prose-p:my-1'>
                                         <ReactMarkdown remarkPlugins={[remarkGfm]}>{block.content}</ReactMarkdown>
                                       </div>
-                                    </div>
+                                    </details>
                                   )
                                 }
 

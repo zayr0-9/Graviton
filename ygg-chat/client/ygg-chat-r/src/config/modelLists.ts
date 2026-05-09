@@ -11,7 +11,7 @@ export const TOP_MODELS: string[] = [
   'anthropic/claude-opus-4.5',
   'anthropic/claude-3.5-haiku',
   // OpenAI
-  'openai/gpt-5.1-codex-max',
+  'openai/gpt-5.5',
   'openai/gpt-4o-mini',
   'openai/gpt-5-mini',
   'openai/o1-mini',
@@ -39,18 +39,18 @@ export const NEW_MODELS: string[] = [
 
 // Models optimized for coding tasks
 export const CODING_MODELS: string[] = [
-  'openai/gpt-5.1-codex-max',
+  'openai/gpt-5.5',
   'anthropic/claude-opus-4.5',
   'anthropic/claude-sonnet-4.5',
-  'openai/gpt-5.1-codex-mini',
+  'openai/gpt-5.3-codex',
   'google/gemini-3-flash-preview',
   'google/gemini-3-pro-preview',
 ]
 
 // Models optimized for research tasks
 export const RESEARCH_MODELS: string[] = [
-  'openai/gpt-5.2-pro',
-  'openai/gpt-5.2',
+  'openai/gpt-5.5-pro',
+  'openai/gpt-5.5',
   'google/gemini-3-flash-preview',
   'google/gemini-3-pro-preview',
 ]

@@ -326,12 +326,12 @@ export function useConversationsInfinite(enabled: boolean = true) {
  * Cache key: ['conversations', 'project', projectId]
  *
  * Refetch behavior:
- * - ConversationPage: Always refetch to show latest project conversations
- * - Other pages: Never refetch (uses cache)
+ * - Always refetch when the hook mounts so expanding a project in the sidebar fetches
+ *   the latest conversations instead of serving stale cached project conversations.
  *
  * @returns Query result with data, isLoading, isRefetching, and refetch function for manual refresh
  */
-export function useConversationsByProject(projectId: ProjectId | null) {
+export function useConversationsByProject(projectId: ProjectId | null, enabled: boolean = true) {
   const { accessToken, userId } = useAuth()
   // const location = useLocation()
 
@@ -376,10 +376,10 @@ export function useConversationsByProject(projectId: ProjectId | null) {
 
       return api.get<Conversation[]>(`/conversations/project/${projectId}`, accessToken)
     },
-    enabled: !!projectId && !!accessToken,
-    staleTime: 5 * 60 * 1000, // Project conversations don't change often, 5 minute cache
-    // refetchOnMount: isConversationPage ? 'always' : false, // Force fresh data on ConversationPage
-    refetchOnMount: true,
+    enabled: enabled && !!projectId && !!accessToken,
+    staleTime: 0,
+    // Always refetch on mount so sidebar project expansion fetches fresh server data.
+    refetchOnMount: 'always',
     refetchOnReconnect: false,
     refetchOnWindowFocus: false, // Don't refetch when user switches tabs
   })

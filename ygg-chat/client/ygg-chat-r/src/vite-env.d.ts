@@ -108,6 +108,14 @@ interface ElectronAPI {
     readFile: (filePath: string, encoding?: BufferEncoding) => Promise<{ success: boolean; content?: string; error?: string } | string>
     writeFile: (filePath: string, content: string, encoding?: BufferEncoding) => Promise<{ success: boolean; error?: string }>
   }
+  openaiChatGPT: {
+    streamStart: (payload: any) => Promise<{ success: boolean; streamId?: string; error?: string }>
+    streamAbort: (streamId: string) => Promise<{ success: boolean; error?: string }>
+    isAuthenticated: () => Promise<boolean>
+    clearTokens: () => Promise<{ success: boolean; error?: string }>
+    usage: () => Promise<any>
+    onStreamEvent: (callback: (payload: { streamId: string; chunk: any }) => void) => () => void
+  }
   autoUpdater: {
     check: () => Promise<{ success: boolean; error?: string }>
     installNow: () => Promise<{ success: boolean; error?: string }>

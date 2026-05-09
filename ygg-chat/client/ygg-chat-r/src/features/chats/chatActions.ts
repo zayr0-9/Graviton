@@ -43,6 +43,7 @@ import { persistToolResultsWithFallback } from './toolResultPersistence'
 // OpenAI OAuth is handled internally by OpenAIChatGPT module
 import {
   getSubagentEnabledTools,
+  getSubagentMaxTurns,
   isOrchestratorEnabled,
   shouldUseGlobalAgentModelForSubagentDefault,
 } from '../../helpers/subagentToolSettings'
@@ -1168,8 +1169,7 @@ const executeBrowseWebLocally = async (
   }
 }
 
-const DEFAULT_SUBAGENT_MODEL = 'openai/gpt-5.1-codex-mini'
-const SUBAGENT_MAX_TURNS = 12
+const DEFAULT_SUBAGENT_MODEL = 'openai/gpt-5.3-codex'
 
 const normalizeProviderSlug = (providerName: string | null | undefined): string =>
   (providerName || '').toLowerCase().replace(/\s+/g, '')
@@ -1258,7 +1258,7 @@ const executeSimpleSubagentCall = async (
         prompt,
         provider: resolvedProvider,
         model: resolvedModel,
-        maxTokens: Math.min(maxTokens || 4096, 16384),
+        maxTokens,
         temperature: temperature ?? 0.7,
         systemPrompt,
         response_format: effectiveResponseFormat,
@@ -1283,7 +1283,7 @@ const executeSimpleSubagentCall = async (
         prompt,
         provider: resolvedProvider,
         model: resolvedModel,
-        maxTokens: Math.min(maxTokens || 4096, 16384),
+        maxTokens,
         temperature: temperature ?? 0.7,
         systemPrompt,
         response_format: effectiveResponseFormat,
@@ -1466,6 +1466,108 @@ const getSubagentToolDefinitions = (
     .map(convertToServerToolFormat)
 }
 
+const parseMaybeJson = <T,>(value: any, fallback: T): T => {
+  if (value == null) return fallback
+  if (typeof value !== 'string') return value as T
+
+  try {
+    return JSON.parse(value) as T
+  } catch {
+    return fallback
+  }
+}
+
+const normalizeToolCallsForSubagentHistory = (rawToolCalls: any[]): any[] => {
+  return rawToolCalls
+    .map(tc => {
+      const id = tc?.id
+      const name =
+        typeof tc?.name === 'string'
+          ? tc.name
+          : typeof tc?.function?.name === 'string'
+            ? tc.function.name
+            : ''
+
+      const rawArgs = tc?.arguments ?? tc?.input ?? tc?.function?.arguments ?? {}
+      const argsString = typeof rawArgs === 'string' ? rawArgs : JSON.stringify(rawArgs)
+
+      if (!id || !name) return null
+
+      return {
+        id,
+        type: 'function',
+        function: { name, arguments: argsString },
+      }
+    })
+    .filter(Boolean)
+}
+
+const getCachedSubagentSessionMessages = (
+  queryClient: QueryClient | null | undefined,
+  conversationId: string,
+  sessionId: string
+): Message[] => {
+  const cached = queryClient?.getQueryData<{ messages: Message[]; tree: any }>([
+    'conversations',
+    conversationId,
+    'messages',
+  ])
+
+  const messages = Array.isArray(cached?.messages) ? cached.messages : []
+
+  return messages
+    .filter(message =>
+      String(message.conversation_id) === String(conversationId) &&
+      message.role === 'ex_agent' &&
+      message.ex_agent_type === 'subagent' &&
+      message.ex_agent_session_id === sessionId
+    )
+    .sort((a, b) => new Date(a.created_at || 0).getTime() - new Date(b.created_at || 0).getTime())
+}
+
+const isSubagentUserPromptMessage = (_message: Message, blocks: any[], index: number): boolean => {
+  if (index === 0) return true
+  if (!Array.isArray(blocks)) return false
+  return blocks.some(block => block?.type === 'text' && block?.subagent_role === 'user_prompt')
+}
+
+const reconstructSubagentConversationHistory = (messages: Message[]): any[] => {
+  const history: any[] = []
+
+  messages.forEach((message, index) => {
+    const content = message.content || ''
+    const blocks = parseMaybeJson<any[]>(message.content_blocks, [])
+    const rawToolCalls = parseMaybeJson<any[]>(message.tool_calls, [])
+    const toolCalls = Array.isArray(rawToolCalls) ? rawToolCalls : []
+
+    if (isSubagentUserPromptMessage(message, blocks, index)) {
+      history.push({ role: 'user', content })
+      return
+    }
+
+    const toolCallsForHistory = toolCalls.length > 0 ? normalizeToolCallsForSubagentHistory(toolCalls) : []
+
+    history.push({
+      role: 'assistant',
+      content,
+      ...(toolCallsForHistory.length > 0 ? { tool_calls: toolCallsForHistory } : {}),
+    })
+
+    if (Array.isArray(blocks)) {
+      for (const block of blocks) {
+        if (block?.type !== 'tool_result') continue
+        history.push({
+          role: 'tool',
+          tool_call_id: block.tool_use_id,
+          content: typeof block.content === 'string' ? block.content : JSON.stringify(block.content ?? ''),
+        })
+      }
+    }
+  })
+
+  return history
+}
+
 /**
  * Execute subagent tool with full agentic capabilities.
  * Supports multi-turn tool execution, message persistence, and configurable tool access.
@@ -1481,6 +1583,7 @@ const executeSubagentCall = async (
     streamId?: string
     rootPath: string | null
     callerProvider?: string | null
+    queryClient?: QueryClient | null
   }
 ): Promise<string> => {
   const args = toolCall.arguments || {}
@@ -1495,6 +1598,8 @@ const executeSubagentCall = async (
     orchestratorMode = false,
     tools: requestedTools,
     inheritAutoApprove = true,
+    sessionId,
+    resume = false,
   } = args
   const effectiveResponseFormat = response_format ?? responseFormat
 
@@ -1514,28 +1619,43 @@ const executeSubagentCall = async (
   // Get filtered tool definitions for this subagent
   const subagentTools = getSubagentToolDefinitions(orchestratorMode, requestedTools)
 
-  // Generate unique session ID for this subagent invocation
-  const subagentSessionId = uuidv4()
+  const requestedSessionId = typeof sessionId === 'string' && sessionId.trim().length > 0 ? sessionId.trim() : null
+  const shouldResume = resume === true && !!requestedSessionId
+  const subagentSessionId = shouldResume ? requestedSessionId! : uuidv4()
   let hadAnyToolActivity = false
 
-  // Build conversation history for the subagent
-  const conversationHistory: any[] = [{ role: 'user', content: prompt }]
+  const priorMessages = shouldResume
+    ? getCachedSubagentSessionMessages(context.queryClient, conversationId, subagentSessionId)
+    : []
+
+  if (shouldResume && priorMessages.length === 0) {
+    throw new Error(
+      `Cannot resume subagent session ${subagentSessionId}: no cached messages found. Open or reload this conversation first, then retry.`
+    )
+  }
+
+  const conversationHistory: any[] = shouldResume
+    ? [...reconstructSubagentConversationHistory(priorMessages), { role: 'user', content: prompt }]
+    : [{ role: 'user', content: prompt }]
 
   // Persist subagent user prompt message to local storage
   const promptMessageId = uuidv4()
   const storageMode = state.conversations.items.find(c => c.id === conversationId)?.storage_mode
   const isLocalMode = shouldUseLocalApi(storageMode)
+  const lastPriorMessage = priorMessages[priorMessages.length - 1] ?? null
+  const promptParentId = shouldResume && lastPriorMessage ? String(lastPriorMessage.id) : parentMessageId
 
   if (isLocalMode) {
     try {
       await localApi.post('/sync/message', {
         id: promptMessageId,
         conversation_id: conversationId,
-        parent_id: parentMessageId,
+        parent_id: promptParentId,
         role: 'ex_agent',
         content: prompt,
         ex_agent_type: 'subagent',
         ex_agent_session_id: subagentSessionId,
+        content_blocks: JSON.stringify([{ type: 'text', content: prompt, subagent_role: 'user_prompt' }]),
         created_at: new Date().toISOString(),
       })
     } catch (err) {
@@ -1553,10 +1673,11 @@ const executeSubagentCall = async (
     return getState().chat.streaming.byId[streamId]?.active ?? false
   }
 
-  // Agentic loop with hard limit
+  // Agentic loop with user-configurable hard limit
+  const subagentMaxTurns = getSubagentMaxTurns()
   let shouldContinue = true
   try {
-    for (let turn = 0; turn < SUBAGENT_MAX_TURNS && shouldContinue; turn++) {
+    for (let turn = 0; turn < subagentMaxTurns && shouldContinue; turn++) {
 
       if (!isStreamActive()) {
         subagentAbortController.abort()
@@ -1568,7 +1689,7 @@ const executeSubagentCall = async (
         messages: conversationHistory,
         provider: resolvedProvider,
         model: resolvedModel,
-        maxTokens: Math.min(maxTokens || 4096, 16384),
+        maxTokens,
         temperature: temperature ?? 0.7,
         systemPrompt,
         response_format: effectiveResponseFormat,
@@ -1867,6 +1988,7 @@ const executeSubagentCall = async (
               conversationId,
               messageId: assistantMessageId,
               accessToken,
+              queryClient: context.queryClient ?? null,
             })
           } else {
             // Show permission dialog
@@ -1874,6 +1996,7 @@ const executeSubagentCall = async (
               conversationId,
               messageId: assistantMessageId,
               accessToken,
+              queryClient: context.queryClient ?? null,
             })
           }
 
@@ -1978,7 +2101,7 @@ const executeSubagentCall = async (
       messages: conversationHistory,
       provider: resolvedProvider,
       model: resolvedModel,
-      maxTokens: Math.min(maxTokens || 1024, 4096),
+      maxTokens,
       temperature: temperature ?? 0.3,
       systemPrompt,
       tools: undefined, // Force no tool calls for finalization
@@ -2125,6 +2248,7 @@ export const executeLocalTool = async (
     timeoutMs?: number
     accessToken?: string | null
     callerProvider?: string | null
+    queryClient?: QueryClient | null
     // For subagent execution
     dispatch?: any
     getState?: () => RootState
@@ -2151,6 +2275,7 @@ export const executeLocalTool = async (
       streamId: context.streamId,
       rootPath,
       callerProvider: context.callerProvider,
+      queryClient: context.queryClient ?? null,
     })
   }
 

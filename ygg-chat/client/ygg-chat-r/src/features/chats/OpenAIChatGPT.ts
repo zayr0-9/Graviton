@@ -9,6 +9,23 @@ import { CHATGPT_BASE_URL, CHATGPT_CODEX_ENDPOINT, getValidTokens } from './open
 import { openStreamingWithPreFirstByteRetry } from './streamResilience'
 import { getToolsForAI } from './toolDefinitions'
 
+const AUTO_COMPACTION_NOTE = '__auto_compaction_summary__'
+const AUTO_COMPACTION_SUMMARY_RESUME_LINE = 'Following is summary of the session, you have to resume the work.'
+
+function isAutoCompactionSummaryMessage(msg: any): boolean {
+  if (!msg) return false
+  if (msg.note === AUTO_COMPACTION_NOTE) return true
+
+  const content =
+    typeof msg.content === 'string'
+      ? msg.content
+      : typeof msg.content_plain_text === 'string'
+        ? msg.content_plain_text
+        : ''
+
+  return msg.role === 'system' && content.trim().startsWith(AUTO_COMPACTION_SUMMARY_RESUME_LINE)
+}
+
 // Map internal ToolDefinition -> OpenAI tool schema
 function mapTools(tools: SharedToolDefinition[]) {
   return tools
@@ -25,37 +42,21 @@ function mapTools(tools: SharedToolDefinition[]) {
 function normalizeModel(model: string): string {
   const m = model.toLowerCase().replace(/\s+/g, '-')
 
-  // GPT-5.5 variants
   if (m.includes('gpt-5.5-pro')) return 'gpt-5.5-pro'
   if (m.includes('gpt-5.5')) return 'gpt-5.5'
-
-  // GPT-5.4 variants
   if (m.includes('gpt-5.4-mini')) return 'gpt-5.4-mini'
   if (m.includes('gpt-5.4-pro')) return 'gpt-5.4-pro'
   if (m.includes('gpt-5.4')) return 'gpt-5.4'
-
-  // GPT-5.3 Codex variants
   if (m.includes('gpt-5.3-codex')) return 'gpt-5.3-codex'
 
-  // GPT-5.2 Codex variants
-  if (m.includes('gpt-5.2-codex')) return 'gpt-5.2-codex'
-  if (m.includes('gpt-5.2')) return 'gpt-5.2'
+  // Retired ChatGPT Codex models: route stale saved/default selections to an available Codex model.
+  if (m.includes('gpt-5.2') || m.includes('gpt-5.1') || m.includes('gpt-5-codex') || m.includes('codex-mini-latest')) {
+    return 'gpt-5.3-codex'
+  }
 
-  // GPT-5.1 variants
-  if (m.includes('gpt-5.1-codex-max')) return 'gpt-5.1-codex-max'
-  if (m.includes('gpt-5.1-codex-mini')) return 'gpt-5.1-codex-mini'
-  if (m.includes('gpt-5.1-codex')) return 'gpt-5.1-codex'
-  if (m.includes('gpt-5.1')) return 'gpt-5.1'
+  if (m.includes('gpt-5')) return 'gpt-5.5'
+  if (m.includes('gpt-4o')) return 'gpt-5.4-mini'
 
-  // Legacy GPT-5.0 → GPT-5.1
-  if (m.includes('gpt-5-codex-mini') || m.includes('codex-mini-latest')) return 'gpt-5.1-codex-mini'
-  if (m.includes('gpt-5-codex')) return 'gpt-5.1-codex'
-  if (m.includes('gpt-5')) return 'gpt-5.1'
-
-  // GPT-4o
-  if (m.includes('gpt-4o')) return 'gpt-5.1-codex-mini'
-
-  // Default
   return model
 }
 
@@ -584,7 +585,20 @@ function transformMessagesForChatGPT(messages: any[]): any[] {
   // Transform each message
   for (const msg of messages) {
     if (msg.role === 'system') {
-      // System prompts are sent via instructions for the Codex backend
+      if (isAutoCompactionSummaryMessage(msg)) {
+        const compactionContent = toUserInputContent(msg)
+        if (compactionContent.length > 0) {
+          input.push({
+            type: 'message',
+            role: 'developer',
+            content: compactionContent,
+          })
+        }
+      }
+
+      // Regular system prompts are sent via instructions for the Codex backend.
+      // Auto-compaction summaries are persisted as system messages too, but they are
+      // branch history and must remain model-visible after compaction.
       continue
     } else if (msg.role === 'developer') {
       const developerContent = toUserInputContent(msg)
@@ -836,6 +850,40 @@ export async function createOpenAIChatGPTStreamingRequest(
   handlers: OpenAIChatGPTStreamHandlers
 ) {
   const { onChunk, signal } = handlers
+
+  if (typeof window !== 'undefined' && window.electronAPI?.openaiChatGPT?.streamStart) {
+    const assistantMessageId = uuidv4()
+    if (signal?.aborted) return
+    onChunk({ type: 'generation_started', messageId: assistantMessageId })
+    const started = await window.electronAPI.openaiChatGPT.streamStart({ ...payload, assistantMessageId })
+    if (!started?.success || !started.streamId) {
+      throw new Error(started?.error || 'Failed to start Electron OpenAI ChatGPT stream')
+    }
+    let cleanup: (() => void) | null = null
+    await new Promise<void>((resolve, reject) => {
+      const abort = () => {
+        void window.electronAPI?.openaiChatGPT?.streamAbort(started.streamId!)
+        cleanup?.()
+        resolve()
+      }
+      if (signal?.aborted) return abort()
+      signal?.addEventListener('abort', abort, { once: true })
+      cleanup = window.electronAPI!.openaiChatGPT.onStreamEvent(({ streamId, chunk }) => {
+        if (streamId !== started.streamId || signal?.aborted) return
+        if (chunk?.type === 'error') {
+          cleanup?.()
+          reject(new Error(chunk.error || 'OpenAI ChatGPT stream failed'))
+          return
+        }
+        onChunk(chunk)
+        if (chunk?.type === 'complete') {
+          cleanup?.()
+          resolve()
+        }
+      })
+    })
+    return
+  }
 
   // Get valid tokens (refreshes if needed)
   const tokens = await getValidTokens()

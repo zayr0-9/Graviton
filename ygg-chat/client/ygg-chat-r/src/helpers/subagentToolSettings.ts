@@ -9,16 +9,38 @@ export interface SubagentToolSettings {
   orchestratorEnabled: boolean // Whether subagent can use tools (orchestrator mode)
   forceOpenAIProviderWhenChatGPTSelected: boolean // Force provider=openaichatgpt when parent chat provider is OpenAI(ChatGPT)
   useGlobalAgentModelAsDefault: boolean // Use Global Agent model from Settings as subagent default model when tool call omits model
+  maxTurns: number // Maximum model/tool loop turns for one subagent invocation
+}
+
+export const DEFAULT_SUBAGENT_MAX_TURNS = 120
+
+const normalizeMaxTurns = (value: unknown): number => {
+  const parsed = Number(value)
+  if (!Number.isFinite(parsed) || parsed <= 0) return DEFAULT_SUBAGENT_MAX_TURNS
+  return Math.floor(parsed)
 }
 
 // Default configuration for non-orchestrator mode
-export const DEFAULT_SUBAGENT_TOOLS = ['read_file', 'read_files', 'glob', 'ripgrep', 'browse_web', 'brave_search']
+export const DEFAULT_SUBAGENT_TOOLS = [
+  'read_file',
+  'read_files',
+  'glob',
+  'ripgrep',
+  'browse_web',
+  'brave_search',
+  'edit_file',
+  'multi_edit',
+  'create_file',
+  'delete_file',
+  'bash',
+]
 
 const DEFAULT_SETTINGS: SubagentToolSettings = {
   enabledTools: DEFAULT_SUBAGENT_TOOLS,
   orchestratorEnabled: true, // Subagent can use tools by default
   forceOpenAIProviderWhenChatGPTSelected: true,
   useGlobalAgentModelAsDefault: true,
+  maxTurns: DEFAULT_SUBAGENT_MAX_TURNS,
 }
 
 /**
@@ -35,6 +57,7 @@ export function loadSubagentToolSettings(): SubagentToolSettings {
       forceOpenAIProviderWhenChatGPTSelected:
         parsed.forceOpenAIProviderWhenChatGPTSelected ?? DEFAULT_SETTINGS.forceOpenAIProviderWhenChatGPTSelected,
       useGlobalAgentModelAsDefault: parsed.useGlobalAgentModelAsDefault ?? DEFAULT_SETTINGS.useGlobalAgentModelAsDefault,
+      maxTurns: normalizeMaxTurns(parsed.maxTurns ?? DEFAULT_SETTINGS.maxTurns),
     }
   } catch {
     return { ...DEFAULT_SETTINGS }
@@ -125,13 +148,23 @@ export function setUseGlobalAgentModelForSubagentDefault(enabled: boolean): void
   saveSubagentToolSettings(settings)
 }
 
-// Deprecated compatibility exports (maxTurns is no longer user-configurable)
-export const DEFAULT_MAX_TURNS = 10
-
-export function getDefaultMaxTurns(): number {
-  return DEFAULT_MAX_TURNS
+export function getSubagentMaxTurns(): number {
+  return loadSubagentToolSettings().maxTurns
 }
 
-export function setDefaultMaxTurns(_maxTurns: number): void {
-  // Intentionally no-op. Kept for backwards compatibility with legacy callers/tests.
+export function setSubagentMaxTurns(maxTurns: number): void {
+  const settings = loadSubagentToolSettings()
+  settings.maxTurns = normalizeMaxTurns(maxTurns)
+  saveSubagentToolSettings(settings)
+}
+
+// Deprecated compatibility exports
+export const DEFAULT_MAX_TURNS = DEFAULT_SUBAGENT_MAX_TURNS
+
+export function getDefaultMaxTurns(): number {
+  return getSubagentMaxTurns()
+}
+
+export function setDefaultMaxTurns(maxTurns: number): void {
+  setSubagentMaxTurns(maxTurns)
 }

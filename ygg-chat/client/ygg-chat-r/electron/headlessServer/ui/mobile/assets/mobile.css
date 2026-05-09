@@ -43,6 +43,7 @@
   --tree-node-active-tip-stroke: #1d4ed8;
   --tree-node-text: #0f172a;
   --tree-node-branch-count: #1d4ed8;
+  --mobile-agent-text-font-size: 14px;
 }
 
 :root[data-theme='light'] {
@@ -530,6 +531,59 @@ body {
   color: var(--muted);
 }
 
+.mobile-settings-font-zoom {
+  border: 1px solid var(--border-subtle);
+  border-radius: 16px;
+  background: color-mix(in srgb, var(--panel) 88%, transparent);
+  padding: 12px 14px;
+  display: grid;
+  gap: 9px;
+}
+
+.mobile-settings-font-zoom-header,
+.mobile-settings-font-zoom-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.mobile-settings-font-zoom-header span {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+  font-weight: 600;
+}
+
+.mobile-settings-font-zoom-header strong {
+  color: var(--text);
+  font-size: 13px;
+}
+
+.mobile-settings-font-zoom-row span:first-child {
+  font-size: 12px;
+}
+
+.mobile-settings-font-zoom-row span:last-child {
+  font-size: 20px;
+  font-weight: 650;
+}
+
+.mobile-settings-font-zoom-slider.ui-input {
+  min-width: 0;
+  flex: 1;
+  min-height: 28px;
+  padding: 0;
+  accent-color: var(--accent);
+}
+
+.mobile-settings-font-zoom p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 11px;
+}
+
 .mobile-settings-auth-row {
   border-top: 1px solid var(--border-subtle);
   padding-top: 12px;
@@ -765,6 +819,10 @@ body {
   display: flex;
   flex-direction: column;
   gap: 9px;
+}
+
+.mobile-message.assistant .mobile-message-text {
+  font-size: var(--mobile-agent-text-font-size, 14px);
 }
 
 .mobile-message-text {

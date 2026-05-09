@@ -37,6 +37,7 @@ import { skillRegistry } from './skills/skillLoader.js'
 import { execute as executeSkillManager } from './skills/skillManager.js'
 import { registerSkillRoutes } from './skills/skillRoutes.js'
 import { runBashCommand } from './tools/bash.js'
+import { runPowerShellCommand } from './tools/powershell.js'
 import { braveSearch } from './tools/braveSearch.js'
 import { browseWeb } from './tools/browseWeb.js'
 import { CCResponse, executeClaudeCode, getAvailableSlashCommands, getSession, setSession } from './tools/claudeCode.js'
@@ -457,6 +458,7 @@ const UTILITY_RUNTIME_TOOL_WHITELIST = new Set<string>([
   'glob',
   'ripgrep',
   'bash',
+  'powershell',
   'html_renderer',
 ])
 
@@ -680,6 +682,22 @@ function initializeBuiltInToolRegistry() {
     }
     const finalCwd = validateAndResolvePath(cwd, rootPath)
     return await runBashCommand(command, {
+      description: description.trim(),
+      cwd: finalCwd,
+      env,
+      timeoutMs,
+      maxOutputChars,
+    })
+  })
+
+  builtInTools.set('powershell', async (args, { rootPath }) => {
+    const { command, description, cwd, env, timeoutMs, maxOutputChars } = args
+    if (!command) throw new Error('command is required')
+    if (typeof description !== 'string' || !description.trim()) {
+      throw new Error('description is required')
+    }
+    const finalCwd = validateAndResolvePath(cwd, rootPath)
+    return await runPowerShellCommand(command, {
       description: description.trim(),
       cwd: finalCwd,
       env,
@@ -912,6 +930,7 @@ const HERMES_YGG_EXPOSED_BUILTIN_TOOL_NAMES = new Set([
   'brave_search',
   'browse_web',
   'bash',
+  'powershell',
   'html_renderer',
   'theme_manager',
   'custom_tool_manager',
@@ -3644,6 +3663,22 @@ function setupServer() {
     // Return hardcoded list of ChatGPT models available with Plus/Pro subscription
     const models = [
       {
+        id: 'gpt-5.5',
+        name: 'GPT-5.5',
+        displayName: 'GPT-5.5',
+        description: 'Latest GPT-5.5 frontier model for professional work',
+        contextLength: 400000,
+        maxCompletionTokens: 128000,
+      },
+      {
+        id: 'gpt-5.5-pro',
+        name: 'GPT-5.5 Pro',
+        displayName: 'GPT-5.5 Pro',
+        description: 'Version of GPT-5.5 that produces smarter and more precise responses',
+        contextLength: 400000,
+        maxCompletionTokens: 128000,
+      },
+      {
         id: 'gpt-5.4',
         name: 'GPT-5.4',
         displayName: 'GPT-5.4',
@@ -3673,46 +3708,6 @@ function setupServer() {
         displayName: 'GPT-5.3 Codex',
         description: 'Latest GPT-5.3 Codex model for coding tasks',
         contextLength: 400000,
-        maxCompletionTokens: 16384,
-      },
-      {
-        id: 'gpt-5.2-codex',
-        name: 'GPT-5.2 Codex',
-        displayName: 'GPT-5.2 Codex',
-        description: 'Latest GPT-5.2 Codex model for coding tasks',
-        contextLength: 400000,
-        maxCompletionTokens: 16384,
-      },
-      {
-        id: 'gpt-5.2',
-        name: 'GPT-5.2',
-        displayName: 'GPT-5.2',
-        description: 'GPT-5.2 general model',
-        contextLength: 400000,
-        maxCompletionTokens: 16384,
-      },
-      {
-        id: 'gpt-5.1-codex-max',
-        name: 'GPT-5.1 Codex Max',
-        displayName: 'GPT-5.1 Codex Max',
-        description: 'GPT-5.1 Codex Max for complex coding',
-        contextLength: 200000,
-        maxCompletionTokens: 16384,
-      },
-      {
-        id: 'gpt-5.1-codex',
-        name: 'GPT-5.1 Codex',
-        displayName: 'GPT-5.1 Codex',
-        description: 'GPT-5.1 Codex for coding tasks',
-        contextLength: 200000,
-        maxCompletionTokens: 16384,
-      },
-      {
-        id: 'gpt-5.1',
-        name: 'GPT-5.1',
-        displayName: 'GPT-5.1',
-        description: 'GPT-5.1 general model',
-        contextLength: 200000,
         maxCompletionTokens: 16384,
       },
       {

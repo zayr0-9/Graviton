@@ -150,6 +150,18 @@ contextBridge.exposeInMainWorld('electronAPI', {
       timeout?: number
     }) => ipcRenderer.invoke('http:request', options),
   },
+  openaiChatGPT: {
+    streamStart: (payload: any) => ipcRenderer.invoke('openai:chatgpt:stream-start', payload),
+    streamAbort: (streamId: string) => ipcRenderer.invoke('openai:chatgpt:stream-abort', streamId),
+    isAuthenticated: () => ipcRenderer.invoke('openai:chatgpt:isAuthenticated'),
+    clearTokens: () => ipcRenderer.invoke('openai:chatgpt:clearTokens'),
+    usage: () => ipcRenderer.invoke('openai:chatgpt:usage'),
+    onStreamEvent: (callback: (payload: any) => void) => {
+      const listener = (_event: any, payload: any) => callback(payload)
+      ipcRenderer.on('openai:chatgpt:stream-event', listener)
+      return () => ipcRenderer.removeListener('openai:chatgpt:stream-event', listener)
+    },
+  },
   titleBar: {
     setOverlay: (payload: { color?: string; symbolColor?: string; height?: number }) =>
       ipcRenderer.invoke('titlebar:set-overlay', payload),

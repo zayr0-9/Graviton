@@ -8,6 +8,7 @@ const { mockConfGet } = vi.hoisted(() => ({
 vi.mock('conf', () => ({
   default: vi.fn().mockImplementation(() => ({
     get: mockConfGet,
+    set: vi.fn(),
   })),
 }))
 
@@ -30,17 +31,19 @@ describe('electronAppAuth', () => {
     expect(readElectronAppAuthSession()).toEqual({
       userId: 'user-123',
       accessToken: 'latest-app-token',
+      refreshToken: null,
+      expiresAt: null,
     })
   })
 
-  it('syncs the latest Electron auth session into the openrouter token store', () => {
+  it('syncs the latest Electron auth session into the openrouter token store', async () => {
     const tokenStore = new ProviderTokenStore()
     mockConfGet.mockReturnValue({
       userId: 'user-123',
       accessToken: 'fresh-token',
     })
 
-    syncOpenRouterTokenFromElectronSession(tokenStore)
+    await syncOpenRouterTokenFromElectronSession(tokenStore)
 
     expect(tokenStore.get('openrouter', 'user-123')).toMatchObject({
       provider: 'openrouter',
@@ -49,14 +52,36 @@ describe('electronAppAuth', () => {
     })
   })
 
-  it('ignores placeholder local tokens', () => {
+  it('preserves refresh token and JWT expiration metadata when syncing OpenRouter token', async () => {
+    const tokenStore = new ProviderTokenStore()
+    mockConfGet.mockReturnValue({
+      userId: 'user-123',
+      session: {
+        access_token: 'fresh-token',
+        refresh_token: 'refresh-token',
+        expires_at: 4102444800,
+      },
+    })
+
+    await syncOpenRouterTokenFromElectronSession(tokenStore)
+
+    expect(tokenStore.get('openrouter', 'user-123')).toMatchObject({
+      provider: 'openrouter',
+      userId: 'user-123',
+      accessToken: 'fresh-token',
+      refreshToken: 'refresh-token',
+      expiresAt: '2100-01-01T00:00:00.000Z',
+    })
+  })
+
+  it('ignores placeholder local tokens', async () => {
     const tokenStore = new ProviderTokenStore()
     mockConfGet.mockReturnValue({
       userId: 'user-123',
       accessToken: 'electron-local-token',
     })
 
-    syncOpenRouterTokenFromElectronSession(tokenStore)
+    await syncOpenRouterTokenFromElectronSession(tokenStore)
 
     expect(tokenStore.get('openrouter', 'user-123')).toBeNull()
   })

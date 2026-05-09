@@ -43,8 +43,12 @@ const projectKey = (projectId: string | null | undefined) => projectId || '__non
 
 const MOBILE_LAST_USER_STORAGE_KEY = 'mobile:lastUserId'
 const MOBILE_LAST_PROVIDER_STORAGE_KEY = 'mobile:lastProvider'
+const MOBILE_AGENT_TEXT_FONT_SIZE_STORAGE_KEY = 'mobile:agentTextFontSizePx'
 const mobileLastConversationStorageKey = (userId: string) => `mobile:lastConversationId:${userId}`
 const DEFAULT_PROVIDER: MobileProviderName = 'openaichatgpt'
+const DEFAULT_AGENT_TEXT_FONT_SIZE_PX = 14
+const MIN_AGENT_TEXT_FONT_SIZE_PX = 12
+const MAX_AGENT_TEXT_FONT_SIZE_PX = 24
 
 const readStorageValue = (key: string): string | null => {
   if (typeof window === 'undefined') return null
@@ -78,6 +82,17 @@ const normalizeCwd = (value: string | null | undefined): string | null => {
 const normalizeProviderName = (value: string | null | undefined): MobileProviderName => {
   if (value === 'openrouter' || value === 'lmstudio' || value === 'openaichatgpt') return value
   return DEFAULT_PROVIDER
+}
+
+const clampAgentTextFontSize = (value: number): number => {
+  if (!Number.isFinite(value)) return DEFAULT_AGENT_TEXT_FONT_SIZE_PX
+  return Math.min(MAX_AGENT_TEXT_FONT_SIZE_PX, Math.max(MIN_AGENT_TEXT_FONT_SIZE_PX, Math.round(value)))
+}
+
+const readAgentTextFontSize = (): number => {
+  const storedValue = readStorageValue(MOBILE_AGENT_TEXT_FONT_SIZE_STORAGE_KEY)
+  if (!storedValue) return DEFAULT_AGENT_TEXT_FONT_SIZE_PX
+  return clampAgentTextFontSize(Number(storedValue))
 }
 
 const getDefaultModelForProvider = (provider: MobileProviderName, providers: MobileProviderModelInfo[]): string => {
@@ -298,6 +313,7 @@ export const App: React.FC = () => {
   const [providerModels, setProviderModels] = useState<MobileProviderModelInfo[]>([])
   const [modelName, setModelName] = useState('gpt-5.4')
   const [statusText, setStatusText] = useState('Loading…')
+  const [agentTextFontSizePx, setAgentTextFontSizePx] = useState(readAgentTextFontSize)
 
   const [users, setUsers] = useState<LocalUserProfile[]>([])
   const [selectedUserId, setSelectedUserId] = useState<string | null>(() => readStorageValue(MOBILE_LAST_USER_STORAGE_KEY))
@@ -900,6 +916,10 @@ export const App: React.FC = () => {
   }, [selectedProvider])
 
   useEffect(() => {
+    writeStorageValue(MOBILE_AGENT_TEXT_FONT_SIZE_STORAGE_KEY, String(agentTextFontSizePx))
+  }, [agentTextFontSizePx])
+
+  useEffect(() => {
     const models = providerModels.find(provider => provider.name === selectedProvider)?.models || []
     if (models.length === 0) return
     if (models.includes(modelName)) return
@@ -1277,6 +1297,10 @@ export const App: React.FC = () => {
         modelName={modelName}
         modelOptions={availableModelOptions}
         statusText={statusText}
+        agentTextFontSizePx={agentTextFontSizePx}
+        minAgentTextFontSizePx={MIN_AGENT_TEXT_FONT_SIZE_PX}
+        maxAgentTextFontSizePx={MAX_AGENT_TEXT_FONT_SIZE_PX}
+        onAgentTextFontSizeChange={value => setAgentTextFontSizePx(clampAgentTextFontSize(value))}
         users={users}
         selectedUserId={selectedUserId}
         onProviderChange={setSelectedProvider}
@@ -1339,6 +1363,7 @@ export const App: React.FC = () => {
         userActionsDisabled={sending || !activeConversationId || !selectedUserId}
         currentUserId={selectedUserId}
         rootPath={activeProjectCwd}
+        agentTextFontSizePx={agentTextFontSizePx}
         onBranchUserMessage={handleBranchUserMessage}
         onDeleteUserMessage={handleDeleteUserMessage}
       />

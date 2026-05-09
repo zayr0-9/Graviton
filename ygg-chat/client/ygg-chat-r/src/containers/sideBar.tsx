@@ -763,20 +763,26 @@ const SideBar: React.FC<SideBarProps> = ({
   const handleToggleProjectExpansion = useCallback(
     (projectId: string) => {
       const normalizedProjectId = String(projectId)
+      const projectConversationsQueryKey = ['conversations', 'project', normalizedProjectId]
 
       if (!isExpandPortalOpen) {
+        queryClient.invalidateQueries({ queryKey: projectConversationsQueryKey, refetchType: 'none' })
         setExpandedProjectIds(prev => (prev.includes(normalizedProjectId) ? prev : [normalizedProjectId, ...prev]))
         openExpandPortal()
         return
       }
 
-      setExpandedProjectIds(prev =>
-        prev.includes(normalizedProjectId)
-          ? prev.filter(id => id !== normalizedProjectId)
-          : [...prev, normalizedProjectId]
-      )
+      setExpandedProjectIds(prev => {
+        const isCurrentlyExpanded = prev.includes(normalizedProjectId)
+
+        if (!isCurrentlyExpanded) {
+          queryClient.invalidateQueries({ queryKey: projectConversationsQueryKey, refetchType: 'none' })
+        }
+
+        return isCurrentlyExpanded ? prev.filter(id => id !== normalizedProjectId) : [...prev, normalizedProjectId]
+      })
     },
-    [isExpandPortalOpen, openExpandPortal]
+    [isExpandPortalOpen, openExpandPortal, queryClient]
   )
 
   const handleDeleteSidebarProject = useCallback(

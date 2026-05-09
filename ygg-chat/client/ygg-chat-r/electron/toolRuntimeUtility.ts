@@ -1,5 +1,6 @@
 import path from 'path'
 import { runBashCommand } from './tools/bash.js'
+import { runPowerShellCommand } from './tools/powershell.js'
 import { createTextFile } from './tools/createFile.js'
 import { deleteFile, safeDeleteFile } from './tools/deleteFile.js'
 import { extractDirectoryStructure } from './tools/directory.js'
@@ -293,6 +294,22 @@ function initializeBuiltInToolRegistry(): void {
     }
     const finalCwd = validateAndResolvePath(cwd, rootPath)
     return await runBashCommand(command, {
+      description: description.trim(),
+      cwd: finalCwd,
+      env,
+      timeoutMs,
+      maxOutputChars,
+    })
+  })
+
+  builtInTools.set('powershell', async (args, { rootPath }) => {
+    const { command, description, cwd, env, timeoutMs, maxOutputChars } = args
+    if (!command) throw new Error('command is required')
+    if (typeof description !== 'string' || !description.trim()) {
+      throw new Error('description is required')
+    }
+    const finalCwd = validateAndResolvePath(cwd, rootPath)
+    return await runPowerShellCommand(command, {
       description: description.trim(),
       cwd: finalCwd,
       env,

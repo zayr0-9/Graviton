@@ -15,6 +15,7 @@ interface MessageBubbleProps {
   isBranchTarget?: boolean
   currentUserId?: string | null
   rootPath?: string | null
+  agentTextFontSizePx?: number
   onBranchUserMessage?: (message: MobileMessage) => void
   onDeleteUserMessage?: (message: MobileMessage) => void
 }
@@ -34,10 +35,15 @@ export const MessageBubble: React.FC<MessageBubbleProps> = ({
   isBranchTarget = false,
   currentUserId = null,
   rootPath = null,
+  agentTextFontSizePx,
   onBranchUserMessage,
   onDeleteUserMessage,
 }) => {
   const renderItems = useMemo(() => buildRenderItemsForMessage(message), [message])
+  const textStyle =
+    message.role === 'assistant' && typeof agentTextFontSizePx === 'number'
+      ? ({ '--mobile-agent-text-font-size': `${agentTextFontSizePx}px` } as React.CSSProperties)
+      : undefined
 
   return (
     <article className={`mobile-message ${message.role}${isBranchTarget ? ' branch-target' : ''}`}>
@@ -52,7 +58,7 @@ export const MessageBubble: React.FC<MessageBubbleProps> = ({
         {renderItems.map(item => {
           if (item.type === 'text') {
             return (
-              <div key={item.key} className='mobile-message-text markdown-body'>
+              <div key={item.key} className='mobile-message-text markdown-body' style={textStyle}>
                 <ReactMarkdown remarkPlugins={[remarkGfm]}>{item.text}</ReactMarkdown>
               </div>
             )

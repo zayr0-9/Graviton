@@ -11,6 +11,7 @@ interface MessageListProps {
   userActionsDisabled?: boolean
   currentUserId?: string | null
   rootPath?: string | null
+  agentTextFontSizePx?: number
   onBranchUserMessage?: (message: MobileMessage) => void
   onDeleteUserMessage?: (message: MobileMessage) => void
 }
@@ -24,6 +25,7 @@ export const MessageList: React.FC<MessageListProps> = ({
   userActionsDisabled = false,
   currentUserId = null,
   rootPath = null,
+  agentTextFontSizePx,
   onBranchUserMessage,
   onDeleteUserMessage,
 }) => {
@@ -83,6 +85,7 @@ export const MessageList: React.FC<MessageListProps> = ({
               }
               currentUserId={currentUserId}
               rootPath={rootPath}
+              agentTextFontSizePx={agentTextFontSizePx}
               onBranchUserMessage={onBranchUserMessage}
               onDeleteUserMessage={onDeleteUserMessage}
             />
@@ -91,7 +94,13 @@ export const MessageList: React.FC<MessageListProps> = ({
       })}
 
       {streamingMessage ? (
-        <MessageBubble message={streamingMessage} isStreaming currentUserId={currentUserId} rootPath={rootPath} />
+        <MessageBubble
+          message={streamingMessage}
+          isStreaming
+          currentUserId={currentUserId}
+          rootPath={rootPath}
+          agentTextFontSizePx={agentTextFontSizePx}
+        />
       ) : null}
     </div>
   )

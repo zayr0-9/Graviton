@@ -44,6 +44,7 @@ const HEADLESS_RUNTIME_BUILTIN_TOOL_NAMES = new Set([
   'brave_search',
   'browse_web',
   'bash',
+  'powershell',
   'html_renderer',
   'theme_manager',
   'custom_tool_manager',

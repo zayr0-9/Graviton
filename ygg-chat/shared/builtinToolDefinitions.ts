@@ -652,6 +652,43 @@ export const BUILTIN_TOOL_DEFINITIONS: SharedToolDefinition[] = [
     },
   },
   {
+    name: 'powershell',
+    enabled: true,
+    description:
+      'Run native PowerShell commands inside the workspace. Intended for Windows-specific shell syntax and tooling. On non-Windows platforms this uses pwsh when available.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        command: { type: 'string', description: 'PowerShell command to execute' },
+        description: {
+          type: 'string',
+          description:
+            'Brief human-readable explanation of what the command is for. Required so humans can quickly understand the purpose of the PowerShell call without parsing the command itself.',
+        },
+        cwd: { type: 'string', description: 'Working directory for the command' },
+        env: {
+          type: 'object',
+          additionalProperties: { type: 'string' },
+          description:
+            'Environment variables as key-value object. Example: {"NODE_ENV": "production", "DEBUG": "true"}',
+        },
+        timeoutMs: {
+          type: 'integer',
+          minimum: 100,
+          maximum: 120000,
+          description: 'Optional timeout in milliseconds (default 0 meaning no timeout)',
+        },
+        maxOutputChars: {
+          type: 'integer',
+          minimum: 100,
+          maximum: 500000,
+          description: 'Optional limit on total captured output characters (default 20000)',
+        },
+      },
+      required: ['command', 'description'],
+    },
+  },
+  {
     name: 'html_renderer',
     enabled: true,
     description:
@@ -882,12 +919,6 @@ export const BUILTIN_TOOL_DEFINITIONS: SharedToolDefinition[] = [
           type: 'string',
           description: 'Optional system prompt to set the subagent behavior/persona.',
         },
-        maxTokens: {
-          type: 'integer',
-          minimum: 1,
-          maximum: 16384,
-          description: 'Maximum tokens for the response (default 4096, max 16384).',
-        },
         temperature: {
           type: 'number',
           minimum: 0,
@@ -909,6 +940,16 @@ export const BUILTIN_TOOL_DEFINITIONS: SharedToolDefinition[] = [
           type: 'boolean',
           description:
             'If true, inherit parent auto-approve setting for tool calls. If false, always require approval for subagent tool calls. Default: true.',
+        },
+        sessionId: {
+          type: 'string',
+          description:
+            'Optional existing subagent session id to resume. Only used when resume=true. Phase 1 resume requires the conversation messages to already be loaded in the frontend cache.',
+        },
+        resume: {
+          type: 'boolean',
+          description:
+            'If true and sessionId is provided, continue an existing persisted subagent session instead of starting a new one.',
         },
       },
       required: ['prompt'],

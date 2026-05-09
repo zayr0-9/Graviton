@@ -305,12 +305,12 @@ export class OpenRouterProvider implements HeadlessProvider {
     this.remoteApiBase = deps.remoteApiBase
   }
 
-  private resolveAuth(input: ProviderGenerateInput): string {
+  private async resolveAuth(input: ProviderGenerateInput): Promise<string> {
     const directToken = normalizeAuthorizationToken(input.accessToken)
     if (directToken) return directToken
 
     if (this.tokenStore) {
-      syncOpenRouterTokenFromElectronSession(this.tokenStore)
+      await syncOpenRouterTokenFromElectronSession(this.tokenStore)
       const stored = input.userId ? this.tokenStore.get('openrouter', input.userId) : this.tokenStore.getLatest('openrouter')
       const storedToken = normalizeAuthorizationToken(stored?.accessToken)
       if (storedToken) return storedToken
@@ -330,7 +330,7 @@ export class OpenRouterProvider implements HeadlessProvider {
       throw new Error('Railway chat context missing for OpenRouter provider (conversationId required).')
     }
 
-    const accessToken = this.resolveAuth(input)
+    const accessToken = await this.resolveAuth(input)
     const history = normalizeHistory(input.history || [])
     const tools = toServerToolFormat(input.tools)
     const remoteApiBase = getRemoteApiBase(this.remoteApiBase)

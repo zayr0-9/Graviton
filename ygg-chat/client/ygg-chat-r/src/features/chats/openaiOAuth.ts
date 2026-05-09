@@ -25,50 +25,31 @@ type CodexModelFamily =
   | 'gpt-5.5'
   | 'gpt-5.4'
   | 'gpt-5.3-codex'
-  | 'gpt-5.2-codex'
-  | 'gpt-5.1-codex-mini'
   | 'codex-max'
   | 'codex'
-  | 'gpt-5.2'
-  | 'gpt-5.1'
 
 const CODEX_PROMPT_FILES: Record<CodexModelFamily, string> = {
-  // GPT-5.5 currently reuses the GPT-5.2 general prompt in codex-rs/core.
   'gpt-5.5': 'gpt_5_2_prompt.md',
-  // GPT-5.4 currently reuses the GPT-5.2 general prompt in codex-rs/core.
   'gpt-5.4': 'gpt_5_2_prompt.md',
-  // GPT-5.3 Codex currently shares the GPT-5.2 Codex instruction prompt in codex-rs/core.
   'gpt-5.3-codex': 'gpt-5.2-codex_prompt.md',
-  'gpt-5.2-codex': 'gpt-5.2-codex_prompt.md',
-  'gpt-5.1-codex-mini': 'gpt_5_codex_prompt.md',
   'codex-max': 'gpt-5.1-codex-max_prompt.md',
   codex: 'gpt_5_codex_prompt.md',
-  'gpt-5.2': 'gpt_5_2_prompt.md',
-  'gpt-5.1': 'gpt_5_1_prompt.md',
 }
 
 const CODEX_CACHE_KEYS: Record<CodexModelFamily, string> = {
   'gpt-5.5': 'openai_codex_instructions_gpt-5.5',
   'gpt-5.4': 'openai_codex_instructions_gpt-5.4',
   'gpt-5.3-codex': 'openai_codex_instructions_gpt-5.3-codex',
-  'gpt-5.2-codex': 'openai_codex_instructions_gpt-5.2-codex',
-  'gpt-5.1-codex-mini': 'openai_codex_instructions_gpt-5.1-codex-mini',
   'codex-max': 'openai_codex_instructions_codex-max',
   codex: 'openai_codex_instructions_codex',
-  'gpt-5.2': 'openai_codex_instructions_gpt-5.2',
-  'gpt-5.1': 'openai_codex_instructions_gpt-5.1',
 }
 
 const CODEX_CACHE_META_KEYS: Record<CodexModelFamily, string> = {
   'gpt-5.5': 'openai_codex_instructions_gpt-5.5_meta',
   'gpt-5.4': 'openai_codex_instructions_gpt-5.4_meta',
   'gpt-5.3-codex': 'openai_codex_instructions_gpt-5.3-codex_meta',
-  'gpt-5.2-codex': 'openai_codex_instructions_gpt-5.2-codex_meta',
-  'gpt-5.1-codex-mini': 'openai_codex_instructions_gpt-5.1-codex-mini_meta',
   'codex-max': 'openai_codex_instructions_codex-max_meta',
   codex: 'openai_codex_instructions_codex_meta',
-  'gpt-5.2': 'openai_codex_instructions_gpt-5.2_meta',
-  'gpt-5.1': 'openai_codex_instructions_gpt-5.1_meta',
 }
 
 interface CodexInstructionsMeta {
@@ -135,32 +116,14 @@ function getCodexModelFamily(model: string): CodexModelFamily {
   const normalized = (model || '')
     .toLowerCase()
     .replace(/\s+/g, '-')
-  if (normalized.includes('gpt-5.5') || normalized.includes('gpt 5.5')) {
-    return 'gpt-5.5'
-  }
-  if (normalized.includes('gpt-5.4') || normalized.includes('gpt 5.4')) {
-    return 'gpt-5.4'
-  }
-  if (normalized.includes('gpt-5.3-codex')) {
-    return 'gpt-5.3-codex'
-  }
-  if (normalized.includes('gpt-5.2-codex') || normalized.includes('gpt 5.2 codex')) {
-    return 'gpt-5.2-codex'
-  }
-  if (normalized.includes('gpt-5.1-codex-mini') || normalized.includes('gpt 5.1 codex mini')) {
-    return 'gpt-5.1-codex-mini'
-  }
-  if (normalized.includes('codex-max') || normalized.includes('codex max')) {
-    return 'codex-max'
-  }
-  if (normalized.includes('codex') || normalized.startsWith('codex-')) {
-    return 'codex'
-  }
-  if (normalized.includes('gpt-5.2') || normalized.includes('gpt 5.2')) {
-    return 'gpt-5.2'
-  }
-  return 'gpt-5.1'
+  if (normalized.includes('gpt-5.5') || normalized.includes('gpt 5.5')) return 'gpt-5.5'
+  if (normalized.includes('gpt-5.4') || normalized.includes('gpt 5.4')) return 'gpt-5.4'
+  if (normalized.includes('gpt-5.3-codex')) return 'gpt-5.3-codex'
+  if (normalized.includes('codex-max') || normalized.includes('codex max')) return 'codex-max'
+  if (normalized.includes('codex') || normalized.startsWith('codex-')) return 'codex'
+  return 'gpt-5.5'
 }
+
 
 async function getLatestCodexReleaseTag(): Promise<string> {
   try {
@@ -501,6 +464,11 @@ export async function loadTokensFromElectronStorage(): Promise<OpenAITokens | nu
 
 // Clear tokens from localStorage and Electron storage when available
 export function clearTokens(): void {
+  if (typeof window !== 'undefined' && window.electronAPI?.openaiChatGPT?.clearTokens) {
+    void window.electronAPI.openaiChatGPT.clearTokens().catch(error => {
+      console.error('Failed to clear Electron OpenAI tokens:', error)
+    })
+  }
   localStorage.removeItem(OPENAI_TOKENS_KEY)
 
   if (typeof window !== 'undefined' && window.electronAPI?.storage?.set) {
@@ -573,6 +541,9 @@ function parseUsageWindow(windowData: any, headerPercent: string | null): OpenAI
 }
 
 export async function fetchOpenAIUsageStatus(): Promise<OpenAIUsageResult> {
+  if (typeof window !== 'undefined' && window.electronAPI?.openaiChatGPT?.usage) {
+    return window.electronAPI.openaiChatGPT.usage() as Promise<OpenAIUsageResult>
+  }
   const tokens = await getValidTokens()
   if (!tokens) {
     return {
@@ -635,10 +606,16 @@ export async function fetchOpenAIUsageStatus(): Promise<OpenAIUsageResult> {
 // Check if user is authenticated with OpenAI
 export function isOpenAIAuthenticated(): boolean {
   const tokens = loadTokens()
-  return tokens !== null && tokens.accessToken !== ''
+  if (tokens !== null && tokens.accessToken !== '') return true
+  // Electron is authoritative now, but this synchronous UI helper cannot await IPC.
+  // Auth status will refresh through async calls after sign-in/usage checks.
+  return false
 }
 
 export async function isOpenAIAuthenticatedAsync(): Promise<boolean> {
+  if (typeof window !== 'undefined' && window.electronAPI?.openaiChatGPT?.isAuthenticated) {
+    return window.electronAPI.openaiChatGPT.isAuthenticated()
+  }
   const tokens = loadTokens() || (await loadTokensFromElectronStorage())
   return tokens !== null && tokens.accessToken !== ''
 }
@@ -722,54 +699,6 @@ export const CHATGPT_MODELS = [
     displayName: 'GPT-5.3 Codex',
     description: 'Latest GPT-5.3 Codex model for coding tasks',
     contextLength: 400000,
-    maxCompletionTokens: 16384,
-  },
-  {
-    id: 'gpt-5.2-codex',
-    name: 'GPT-5.2 Codex',
-    displayName: 'GPT-5.2 Codex',
-    description: 'Latest GPT-5.2 Codex model for coding tasks',
-    contextLength: 400000,
-    maxCompletionTokens: 16384,
-  },
-  {
-    id: 'gpt-5.2',
-    name: 'GPT-5.2',
-    displayName: 'GPT-5.2',
-    description: 'GPT-5.2 general model',
-    contextLength: 400000,
-    maxCompletionTokens: 16384,
-  },
-  {
-    id: 'gpt-5.1-codex-max',
-    name: 'GPT-5.1 Codex Max',
-    displayName: 'GPT-5.1 Codex Max',
-    description: 'GPT-5.1 Codex Max for complex coding',
-    contextLength: 200000,
-    maxCompletionTokens: 16384,
-  },
-  {
-    id: 'gpt-5.1-codex-mini',
-    name: 'GPT-5.1 Codex Mini',
-    displayName: 'GPT-5.1 Codex Mini',
-    description: 'GPT-5.1 Codex Mini for faster coding tasks',
-    contextLength: 200000,
-    maxCompletionTokens: 16384,
-  },
-  {
-    id: 'gpt-5.1-codex',
-    name: 'GPT-5.1 Codex',
-    displayName: 'GPT-5.1 Codex',
-    description: 'GPT-5.1 Codex for coding tasks',
-    contextLength: 200000,
-    maxCompletionTokens: 16384,
-  },
-  {
-    id: 'gpt-5.1',
-    name: 'GPT-5.1',
-    displayName: 'GPT-5.1',
-    description: 'GPT-5.1 general model',
-    contextLength: 200000,
     maxCompletionTokens: 16384,
   },
   {

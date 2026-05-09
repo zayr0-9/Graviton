@@ -284,6 +284,7 @@ const OPENAI_LOCALLY_SUPPORTED_BUILTIN_TOOL_NAMES = new Set<string>([
   'brave_search',
   'ripgrep',
   'bash',
+  'powershell',
   'html_renderer',
   'glob',
   'browse_web',

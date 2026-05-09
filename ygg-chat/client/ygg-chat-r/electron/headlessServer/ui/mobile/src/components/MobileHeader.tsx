@@ -11,6 +11,10 @@ interface MobileHeaderProps {
   modelName: string
   modelOptions: string[]
   statusText: string
+  agentTextFontSizePx: number
+  minAgentTextFontSizePx: number
+  maxAgentTextFontSizePx: number
+  onAgentTextFontSizeChange: (value: number) => void
   users: LocalUserProfile[]
   selectedUserId: string | null
   onProviderChange: (value: MobileProviderName) => void
@@ -58,6 +62,10 @@ export const MobileHeader: React.FC<MobileHeaderProps> = ({
   modelName,
   modelOptions,
   statusText,
+  agentTextFontSizePx,
+  minAgentTextFontSizePx,
+  maxAgentTextFontSizePx,
+  onAgentTextFontSizeChange,
   users,
   selectedUserId,
   onProviderChange,
@@ -221,6 +229,28 @@ export const MobileHeader: React.FC<MobileHeaderProps> = ({
                     compact
                   />
                 </div>
+
+                <section className='mobile-settings-font-zoom' aria-label='Assistant text zoom'>
+                  <div className='mobile-settings-font-zoom-header'>
+                    <span>Agent text zoom</span>
+                    <strong>{agentTextFontSizePx}px</strong>
+                  </div>
+                  <div className='mobile-settings-font-zoom-row'>
+                    <span aria-hidden='true'>A</span>
+                    <Input
+                      type='range'
+                      min={minAgentTextFontSizePx}
+                      max={maxAgentTextFontSizePx}
+                      step={1}
+                      value={agentTextFontSizePx}
+                      onChange={event => onAgentTextFontSizeChange(Number(event.target.value))}
+                      aria-label='Agent message text font size'
+                      className='mobile-settings-font-zoom-slider'
+                    />
+                    <span aria-hidden='true'>A</span>
+                  </div>
+                  <p>Controls the font size for assistant text responses.</p>
+                </section>
 
                 <div className='mobile-settings-auth-row'>
                   <Badge className={`mobile-auth-pill ${authStatus.className}`} variant='outline'>
