@@ -2291,6 +2291,7 @@ ipcMain.handle('openai:chatgpt:stream-start', async (event, payload: any) => {
             pastedContext: [],
             content_blocks: output.contentBlocks || [],
             responses_output_items: output.raw?.responses_output_items,
+            generatedImagesDirectoryHint: output.raw?.generatedImagesDirectoryHint,
           },
         })
       }

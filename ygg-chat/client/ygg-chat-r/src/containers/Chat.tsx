@@ -7,7 +7,6 @@ import { MoreVertical, RefreshCw, Settings } from 'lucide-react'
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { batch } from 'react-redux'
 import { useLocation, useNavigate, useParams } from 'react-router-dom'
-import { estimateTokenCount } from 'tokenx'
 import { ConversationId, ImageConfig, MessageId, ReasoningConfig } from '../../../../shared/types'
 import {
   ActionPopover,
@@ -55,6 +54,7 @@ import { isCommunityMode } from '../config/runtimeMode'
 import {
   abortGeneration,
   AUTO_COMPACTION_NOTE,
+  GENERATED_IMAGE_PATH_HINT_NOTE,
   blobToDataURL,
   chatSliceActions,
   compactBranch,
@@ -88,6 +88,7 @@ import {
   updateConversationTitle,
 } from '../features/chats'
 import type { ContentBlock, ToolCall } from '../features/chats/chatTypes'
+import { estimateContentBlocksForContext, safeEstimateTokenCount } from '../features/chats/contextTokenEstimate'
 import {
   extractBranchFileMutations,
   type WorkspaceMutationOperation,
@@ -1923,9 +1924,9 @@ function Chat() {
     }
   }, [])
 
-  // Filtered messages for virtualization - removes nulls and invalid IDs
-  const filteredMessages = useMemo(() => {
-    return displayMessages.filter(msg => msg && msg.id != null)
+  // Filtered messages for virtualization - removes nulls, invalid IDs, and model-only generated-image hints.
+  const renderableMessages = useMemo(() => {
+    return displayMessages.filter(msg => msg && msg.id != null && msg.note !== GENERATED_IMAGE_PATH_HINT_NOTE)
   }, [displayMessages])
 
   const [groupToolReasoningRuns, setGroupToolReasoningRuns] = useState<boolean>(() => {
@@ -1954,39 +1955,39 @@ function Chat() {
   const parsedMessageDataCacheRef = useRef<Map<string, Map<MessageId, ParsedMessageData>>>(new Map())
   const messageRenderRowsCacheRef = useRef<Map<string, MessageRenderRow[]>>(new Map())
 
-  const filteredMessagesSignature = useMemo(
+  const renderableMessagesSignature = useMemo(
     () =>
-      filteredMessages
+      renderableMessages
         .map(msg => {
           const updatedAt = (msg as Message & { updated_at?: string }).updated_at ?? msg.created_at
           const artifactCount = Array.isArray(msg.artifacts) ? msg.artifacts.length : 0
           return `${msg.id}:${updatedAt}:a${artifactCount}`
         })
         .join('|'),
-    [filteredMessages]
+    [renderableMessages]
   )
 
   // Parse message payloads once per message-list change so row props remain stable while typing.
   const parsedMessageDataById = useMemo(() => {
-    const cacheKey = filteredMessagesSignature
+    const cacheKey = renderableMessagesSignature
     const cached = parsedMessageDataCacheRef.current.get(cacheKey)
     if (cached) return cached
 
     const parsedById = new Map<MessageId, ParsedMessageData>()
-    for (const msg of filteredMessages) {
+    for (const msg of renderableMessages) {
       parsedById.set(msg.id, parseMessageDataForRender(msg))
     }
 
     setLimitedCacheEntry(parsedMessageDataCacheRef.current, cacheKey, parsedById)
     return parsedById
-  }, [filteredMessages, filteredMessagesSignature])
+  }, [renderableMessages, renderableMessagesSignature])
 
   const messageRenderRows = useMemo<MessageRenderRow[]>(() => {
     const deriveStart = typeof performance !== 'undefined' ? performance.now() : Date.now()
     const debugProcessGrouping =
       typeof window !== 'undefined' && window.localStorage.getItem('chat:debugProcessGrouping') === 'true'
 
-    const rowsCacheKey = `${groupToolReasoningRuns ? 'grouped' : 'plain'}|${filteredMessagesSignature}`
+    const rowsCacheKey = `${groupToolReasoningRuns ? 'grouped' : 'plain'}|${renderableMessagesSignature}`
     if (!debugProcessGrouping) {
       const cachedRows = messageRenderRowsCacheRef.current.get(rowsCacheKey)
       if (cachedRows) {
@@ -2092,7 +2093,7 @@ function Chat() {
     }
 
     if (!groupToolReasoningRuns) {
-      const plainRows = filteredMessages.map(msg => ({
+      const plainRows = renderableMessages.map(msg => ({
         kind: 'message' as const,
         id: msg.id,
         message: msg,
@@ -2113,8 +2114,8 @@ function Chat() {
     const rows: MessageRenderRow[] = []
     let index = 0
 
-    while (index < filteredMessages.length) {
-      const msg = filteredMessages[index]
+    while (index < renderableMessages.length) {
+      const msg = renderableMessages[index]
       if (!msg) {
         index += 1
         continue
@@ -2132,8 +2133,8 @@ function Chat() {
 
       const runMessages: Message[] = []
       let cursor = index
-      while (cursor < filteredMessages.length) {
-        const candidate = filteredMessages[cursor]
+      while (cursor < renderableMessages.length) {
+        const candidate = renderableMessages[cursor]
         if (!candidate || !isProcessOnlyAssistantStep(candidate)) {
           break
         }
@@ -2153,7 +2154,7 @@ function Chat() {
         }
 
         let bridgedMessageId: MessageId | undefined
-        const trailingCandidate = filteredMessages[cursor]
+        const trailingCandidate = renderableMessages[cursor]
         if (trailingCandidate && (trailingCandidate.role === 'assistant' || trailingCandidate.role === 'ex_agent')) {
           const trailingParsed = parsedMessageDataById.get(trailingCandidate.id) ?? EMPTY_PARSED_MESSAGE_DATA
           const trailingHasProcessSignal = hasProcessSignal(trailingCandidate, trailingParsed)
@@ -2221,15 +2222,15 @@ function Chat() {
     }
 
     return rows
-  }, [filteredMessages, filteredMessagesSignature, groupToolReasoningRuns, parsedMessageDataById])
+  }, [renderableMessages, renderableMessagesSignature, groupToolReasoningRuns, parsedMessageDataById])
 
   const messageById = useMemo(() => {
     const map = new Map<string, Message>()
-    for (const msg of filteredMessages) {
+    for (const msg of renderableMessages) {
       map.set(String(msg.id), msg)
     }
     return map
-  }, [filteredMessages])
+  }, [renderableMessages])
 
   const messageRowIndexByMessageId = useMemo(() => {
     const rowIndexByMessageId = new Map<string, number>()
@@ -2416,10 +2417,10 @@ function Chat() {
   ])
 
   useEffect(() => {
-    benchLatestMessageCountRef.current = filteredMessages.length
+    benchLatestMessageCountRef.current = renderableMessages.length
     benchLatestVirtualRowCountRef.current = virtualRows.length
     benchLatestConversationIdRef.current = currentConversationId != null ? String(currentConversationId) : null
-  }, [currentConversationId, filteredMessages.length, virtualRows.length])
+  }, [currentConversationId, renderableMessages.length, virtualRows.length])
 
   // Virtualizer for efficient message list rendering
   const virtualizer = useVirtualizer({
@@ -2441,7 +2442,7 @@ function Chat() {
       deriveMs: virtualizationMetricsRef.current.lastRowDeriveMs,
       baseRows: virtualizationMetricsRef.current.lastRenderRowsCount,
     })
-  }, [virtualRows.length, filteredMessagesSignature, virtualRowsV2Enabled])
+  }, [virtualRows.length, renderableMessagesSignature, virtualRowsV2Enabled])
 
   const scrollToMessageRowIndex = useCallback(
     (targetIndex: number, align: 'start' | 'center' | 'end' | 'auto' = 'start'): boolean => {
@@ -2479,7 +2480,7 @@ function Chat() {
         deriveMs,
       })
     }
-  }, [appendBenchEvent, benchEnabled, filteredMessagesSignature, virtualRows.length])
+  }, [appendBenchEvent, benchEnabled, renderableMessagesSignature, virtualRows.length])
 
   useEffect(() => {
     if (!benchEnabled) {
@@ -2633,11 +2634,21 @@ function Chat() {
   const selectedModel = useSelectedModel(providers.currentProvider)
   const models = modelsData?.models || []
 
-  // Helper to check if selected model is an image generation model
+  // Helper to check if selected model can use image generation controls.
+  // OpenAI ChatGPT uses the hosted Responses image_generation tool, so image controls can be shown
+  // for that provider even when the selected chat model itself is not a dedicated image model.
   const isImageGenerationModel = useMemo(() => {
     const modelName = selectedModel?.name?.toLowerCase() || ''
-    return modelName.includes('gemini-3-pro-image-preview') || modelName.includes('gemini-2.5-flash-image')
-  }, [selectedModel?.name])
+    const providerName = providers.currentProvider?.toLowerCase() || ''
+    const isOpenAIChatGPTProvider = providerName === 'openai (chatgpt)' || providerName === 'openaichatgpt'
+
+    return (
+      modelName.includes('gemini-3-pro-image-preview') ||
+      modelName.includes('gemini-2.5-flash-image') ||
+      modelName.includes('gpt-image') ||
+      (isOpenAIChatGPTProvider && /\b(gpt-|codex|chatgpt)/i.test(modelName))
+    )
+  }, [providers.currentProvider, selectedModel?.name])
   // Conversation title editing
   const currentConversation = useAppSelector(
     currentConversationId ? makeSelectConversationById(currentConversationId) : () => null
@@ -3692,7 +3703,7 @@ function Chat() {
   useEffect(() => {
     if (selectionScrollCauseRef.current === 'user' && selectedPath && selectedPath.length > 0) {
       const targetId = focusedChatMessageId
-      // Find the index of the target message in filteredMessages for virtualizer
+      // Find the index of the target message in renderableMessages for virtualizer
       const targetIndex = findMessageRowIndex(targetId)
 
       if (targetIndex !== -1) {
@@ -3724,7 +3735,7 @@ function Chat() {
       userScrolledDuringStreamRef.current = true
     }
 
-    // Find the index of the target message in filteredMessages for virtualizer
+    // Find the index of the target message in renderableMessages for virtualizer
     const targetIndex = findMessageRowIndex(focusedChatMessageId)
 
     if (targetIndex !== -1) {
@@ -3771,22 +3782,22 @@ function Chat() {
   }, [])
 
   const visibilityInputsRef = useRef<{
-    filteredMessages: Message[]
+    renderableMessages: Message[]
     virtualRows: VirtualRenderRow[]
     isToolOrReasoningOnly: (msg: Message) => boolean
   }>({
-    filteredMessages,
+    renderableMessages,
     virtualRows,
     isToolOrReasoningOnly,
   })
 
   useEffect(() => {
     visibilityInputsRef.current = {
-      filteredMessages,
+      renderableMessages,
       virtualRows,
       isToolOrReasoningOnly,
     }
-  }, [filteredMessages, virtualRows, isToolOrReasoningOnly])
+  }, [renderableMessages, virtualRows, isToolOrReasoningOnly])
 
   // Track the most visible message using virtualizer's virtual items on scroll
   // Since elements are virtualized, we compute visibility based on scroll position
@@ -3796,7 +3807,7 @@ function Chat() {
 
     const updateVisibleMessage = () => {
       const {
-        filteredMessages: currentMessages,
+        renderableMessages: currentMessages,
         virtualRows: currentVirtualRows,
         isToolOrReasoningOnly: isExcluded,
       } = visibilityInputsRef.current
@@ -3881,7 +3892,7 @@ function Chat() {
 
   useEffect(() => {
     updateVisibleMessageRef.current?.()
-  }, [filteredMessagesSignature, virtualRows])
+  }, [renderableMessagesSignature, virtualRows])
 
   // If URL contains a #messageId fragment, capture it once
   // const location = useLocation() // Moved to top
@@ -4422,20 +4433,6 @@ function Chat() {
             }
 
             void (async () => {
-              const safeEstimateTokenCount = (value: unknown): number => {
-                if (value == null) return 0
-                if (typeof value === 'string') {
-                  return value.length > 0 ? estimateTokenCount(value) : 0
-                }
-
-                try {
-                  const serialized = JSON.stringify(value)
-                  return serialized ? estimateTokenCount(serialized) : 0
-                } catch {
-                  return 0
-                }
-              }
-
               const usageStartIndex = latestCompaction.index >= 0 ? latestCompaction.index : 0
               const usageMessages = displayMessages.slice(usageStartIndex)
               const compactionSourceMessages = (
@@ -4452,7 +4449,7 @@ function Chat() {
               usageMessages.forEach(message => {
                 if (!message) return
                 messageTokens += safeEstimateTokenCount(message.content)
-                messageTokens += safeEstimateTokenCount((message as any).content_blocks)
+                messageTokens += estimateContentBlocksForContext((message as any).content_blocks)
                 messageTokens += safeEstimateTokenCount((message as any).tool_calls)
               })
 
@@ -5458,22 +5455,6 @@ function Chat() {
   // Calculate context usage from displayed messages (current branch).
   // Includes project/conversation prompts + message content + nested content_blocks/tool_calls.
   const tokenUsage = useMemo(() => {
-    const safeEstimateTokenCount = (value: unknown): number => {
-      if (value == null) return 0
-      if (typeof value === 'string') {
-        if (value.length === 0) return 0
-        return estimateTokenCount(value)
-      }
-
-      try {
-        const serialized = JSON.stringify(value)
-        if (!serialized) return 0
-        return estimateTokenCount(serialized)
-      } catch {
-        return 0
-      }
-    }
-
     let promptAndContextTokens = 0
     let messageTokens = 0
 
@@ -5498,7 +5479,7 @@ function Chat() {
       if (!msg) return
 
       const contentTokens = safeEstimateTokenCount(msg.content)
-      const contentBlockTokens = safeEstimateTokenCount((msg as any).content_blocks)
+      const contentBlockTokens = estimateContentBlocksForContext((msg as any).content_blocks)
       const toolCallTokens = safeEstimateTokenCount((msg as any).tool_calls)
 
       // This ensures messages with empty content but non-empty content_blocks/tool_calls are counted.

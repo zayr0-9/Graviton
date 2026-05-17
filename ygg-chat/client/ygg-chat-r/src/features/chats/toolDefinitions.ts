@@ -279,6 +279,7 @@ const OPENAI_LOCALLY_SUPPORTED_BUILTIN_TOOL_NAMES = new Set<string>([
   'read_file_continuation',
   'create_file',
   'delete_file',
+  'view_image',
   'edit_file',
   'multi_edit',
   'brave_search',

@@ -33,6 +33,7 @@ function getManagedToolRoots(usePosix: boolean): string[] {
   if (userDataPath) {
     addRoot(path.join(userDataPath, '.ygg'))
     addRoot(path.join(userDataPath, 'custom-tools'))
+    addRoot(path.join(userDataPath, 'generated_images'))
   }
 
   const hooksDir = process.env.YGG_HOOKS_DIRECTORY?.trim()

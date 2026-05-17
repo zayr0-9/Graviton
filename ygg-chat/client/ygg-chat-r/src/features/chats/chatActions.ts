@@ -1,7 +1,7 @@
 import { createAsyncThunk } from '@reduxjs/toolkit'
 import type { QueryClient } from '@tanstack/react-query'
 import { v4 as uuidv4 } from 'uuid'
-import { estimateTokenCount } from 'tokenx'
+import { estimateContentBlocksForContext, safeEstimateTokenCount } from './contextTokenEstimate'
 import { ConversationId, MessageId } from '../../../../../shared/types'
 import { isCommunityMode } from '../../config/runtimeMode'
 import { getDefaultUserSystemPromptFromCache } from '../../hooks/useQueries'
@@ -745,7 +745,38 @@ const buildToolNameMap = (history: Message[]): Map<string, string> => {
   return map
 }
 
+const extractViewImagePayload = (content: any): { imageUrl: string; detail?: 'high' | 'original' } | null => {
+  let resolved = content
+  if (typeof resolved === 'string') {
+    try {
+      resolved = JSON.parse(resolved.trim())
+    } catch {
+      return null
+    }
+  }
+
+  if (!resolved || typeof resolved !== 'object') return null
+  const directImageUrl = typeof resolved.image_url === 'string' ? resolved.image_url : null
+  const contentItems = Array.isArray(resolved.content) ? resolved.content : []
+  const imageItem = contentItems.find(
+    (item: any) => item?.type === 'input_image' && typeof item?.image_url === 'string'
+  )
+  const imageUrl = directImageUrl || imageItem?.image_url || null
+  if (!imageUrl || !/^data:image\//i.test(imageUrl)) return null
+
+  const rawDetail = typeof resolved.detail === 'string' ? resolved.detail : imageItem?.detail
+  return { imageUrl, detail: rawDetail === 'original' ? 'original' : 'high' }
+}
+
 const sanitizeToolResultContentForModel = (content: any, toolName?: string | null): any => {
+  const normalizedToolName = typeof toolName === 'string' ? toolName.trim() : ''
+  if (normalizedToolName === 'view_image') {
+    const viewImage = extractViewImagePayload(content)
+    if (viewImage) {
+      return [{ type: 'input_image', image_url: viewImage.imageUrl, detail: viewImage.detail }]
+    }
+  }
+
   const htmlPayload = extractHtmlPayload(content)
   if (htmlPayload?.html) {
     const resolvedName = toolName ?? htmlPayload.toolName ?? null
@@ -1078,10 +1109,61 @@ const shouldContinueFromStopHook = async (params: {
 
 export const AUTO_COMPACTION_NOTE = '__auto_compaction_summary__'
 export const AUTO_COMPACTION_SUMMARY_RESUME_LINE = 'Following is summary of the session, you have to resume the work.'
+export const GENERATED_IMAGE_PATH_HINT_NOTE = '__generated_image_path_hint__'
 
 const isAutoCompactionSummaryMessage = (msg: Message | undefined | null): boolean => {
   if (!msg) return false
   return typeof msg.note === 'string' && msg.note === AUTO_COMPACTION_NOTE
+}
+
+const isGeneratedImagePathHintMessage = (msg: Message | undefined | null): boolean => {
+  if (!msg) return false
+  return typeof msg.note === 'string' && msg.note === GENERATED_IMAGE_PATH_HINT_NOTE
+}
+
+const getGeneratedImagesDirectoryHint = (): { dir: string | null; pattern: string | null } => {
+  const explicit = (typeof window !== 'undefined' ? (window as any).__YGG_APP_USER_DATA : null) || null
+  const userDataPath = typeof explicit === 'string' ? explicit.trim() : ''
+  if (!userDataPath) return { dir: null, pattern: null }
+  const separator = userDataPath.includes('\\') ? '\\' : '/'
+  const dir = `${userDataPath.replace(/[\\/]+$/, '')}${separator}generated_images`
+  return { dir, pattern: `${dir}${separator}img-0001.<ext>` }
+}
+
+const createGeneratedImagePathHintContent = (
+  filePaths?: string[] | null,
+  directoryHint?: { dir?: string | null; pattern?: string | null } | null
+): string | null => {
+  const uniquePaths = Array.from(
+    new Set((filePaths || []).filter((value): value is string => typeof value === 'string' && value.trim().length > 0))
+  )
+  if (uniquePaths.length === 0) return null
+
+  const splitPath = (filePath: string): { dir: string; name: string } => {
+    const normalized = filePath.trim()
+    const separatorIndex = Math.max(normalized.lastIndexOf('\\'), normalized.lastIndexOf('/'))
+    if (separatorIndex < 0) return { dir: '', name: normalized }
+    return { dir: normalized.slice(0, separatorIndex), name: normalized.slice(separatorIndex + 1) }
+  }
+
+  if (uniquePaths.length === 1) {
+    const { dir, name } = splitPath(uniquePaths[0])
+    return (
+      `Image was saved as ${name}${dir ? ` in ${dir}` : ''}.` +
+      '\n\nIf you need to inspect a generated image by path, use the view_image tool with the saved file path. ' +
+      'Leave the original generated image file in place unless the user explicitly asks you to delete or move it.'
+    )
+  }
+
+  const firstDir = splitPath(uniquePaths[0]).dir
+  const sameDir = firstDir && uniquePaths.every(filePath => splitPath(filePath).dir === firstDir)
+  return (
+    (sameDir
+      ? `Generated images were saved in ${firstDir}:\n${uniquePaths.map(filePath => `- ${splitPath(filePath).name}`).join('\n')}`
+      : `Generated image files were saved locally:\n${uniquePaths.map(filePath => `- ${filePath}`).join('\n')}`) +
+    '\n\nIf you need to inspect a generated image by path, use the view_image tool with the saved file path. ' +
+    'Leave the original generated image file in place unless the user explicitly asks you to delete or move it.'
+  )
 }
 
 const ensureCompactionSummaryResumeLine = (content: string | null | undefined): string => {
@@ -1117,6 +1199,103 @@ const appendCompactionSummaryToOpenAIChatGPTHistory = (target: any[], msg: Messa
   if (!content) return false
   target.push({ role: 'developer', content })
   return true
+}
+
+const appendGeneratedImagePathHintToOpenAIChatGPTHistory = (target: any[], msg: Message | undefined | null): boolean => {
+  if (!isGeneratedImagePathHintMessage(msg)) return false
+  const content = typeof msg?.content === 'string' ? msg.content : typeof msg?.content_plain_text === 'string' ? msg.content_plain_text : ''
+  if (!content.trim()) return false
+  target.push({ role: 'developer', content })
+  return true
+}
+
+const syncAssistantMessageLocallyAndGetGeneratedImagePaths = async (params: {
+  message: Message
+  conversationId: ConversationId
+  authUserId: string | null | undefined
+  selectedProjectId?: string | null
+  storageMode?: string | null
+  logPrefix: string
+}): Promise<string[]> => {
+  try {
+    const syncResult = await localApi.post<{ generatedImageFilePaths?: string[] }>('/sync/message', {
+      ...params.message,
+      conversation_id: params.conversationId,
+      children_ids: params.message.children_ids || [],
+      content_blocks: params.message.content_blocks || [],
+      tool_calls: params.message.tool_calls || [],
+      user_id: params.authUserId,
+      owner_id: params.authUserId,
+      project_id: params.selectedProjectId || null,
+      storage_mode: params.storageMode,
+    })
+    return Array.isArray(syncResult?.generatedImageFilePaths) ? syncResult.generatedImageFilePaths : []
+  } catch (err) {
+    console.error(`[${params.logPrefix}] Failed to sync assistant message:`, err)
+    return []
+  }
+}
+
+const persistGeneratedImagePathHintMessage = async (
+  params: {
+    dispatch: any
+    queryClient: any
+    conversationId: ConversationId
+    parentId: MessageId | null
+    modelName: string | null | undefined
+    authUserId: string | null | undefined
+    selectedProjectId?: string | null
+    storageMode?: string | null
+    filePaths?: string[] | null
+    directoryHint?: { dir?: string | null; pattern?: string | null } | null
+  }
+): Promise<Message | null> => {
+  const filePaths = params.filePaths || []
+  const content = createGeneratedImagePathHintContent(filePaths, params.directoryHint)
+  if (!content) return null
+
+  const hintMessage: Message = {
+    id: uuidv4(),
+    conversation_id: params.conversationId,
+    parent_id: params.parentId,
+    children_ids: [],
+    role: 'system',
+    content,
+    content_plain_text: content,
+    thinking_block: '',
+    tool_calls: [],
+    content_blocks: [],
+    created_at: new Date().toISOString(),
+    model_name: params.modelName || 'generated-image-path-hint',
+    partial: false,
+    artifacts: [],
+    pastedContext: [],
+    note: GENERATED_IMAGE_PATH_HINT_NOTE,
+  }
+
+  params.dispatch(chatSliceActions.messageAdded(hintMessage))
+  params.dispatch(chatSliceActions.messageBranchCreated({ newMessage: hintMessage }))
+  updateMessageCache(params.queryClient, params.conversationId, hintMessage)
+
+  if (import.meta.env.VITE_ENVIRONMENT === 'electron') {
+    try {
+      await localApi.post('/sync/message', {
+        ...hintMessage,
+        conversation_id: params.conversationId,
+        children_ids: hintMessage.children_ids,
+        content_blocks: hintMessage.content_blocks,
+        tool_calls: hintMessage.tool_calls,
+        user_id: params.authUserId,
+        owner_id: params.authUserId,
+        project_id: params.selectedProjectId || null,
+        storage_mode: params.storageMode,
+      })
+    } catch (err) {
+      console.error('[GeneratedImagePathHint] Failed to sync generated image path hint locally:', err)
+    }
+  }
+
+  return hintMessage
 }
 
 const trimHistoryToLatestCompaction = (messages: Array<Message | undefined>): Message[] => {
@@ -3461,6 +3640,8 @@ const executionMode = 'client'
                 chatgptMessages.push(assistantMsg)
               } else if (appendCompactionSummaryToOpenAIChatGPTHistory(chatgptMessages, m)) {
                 continue
+              } else if (appendGeneratedImagePathHintToOpenAIChatGPTHistory(chatgptMessages, m)) {
+                continue
               } else if (m.role === 'tool' && m.tool_call_id) {
                 const toolName = toolNameById.get(m.tool_call_id)
                 const sanitizedContent = sanitizeToolResultContentForModel(m.content, toolName ?? null)
@@ -3493,7 +3674,7 @@ const executionMode = 'client'
                 reasoningConfig,
               },
               {
-                onChunk: chunk => {
+                onChunk: async chunk => {
                   if (controller?.signal.aborted || !(getState().chat.streaming.byId[streamId]?.active ?? false)) {
                     return
                   }
@@ -3503,23 +3684,39 @@ const executionMode = 'client'
                     dispatch(chatSliceActions.messageAdded(assistantMsg))
                     dispatch(chatSliceActions.messageBranchCreated({ newMessage: assistantMsg }))
                     updateMessageCache(extra.queryClient, conversationId, assistantMsg)
-                    localApi
-                      .post('/sync/message', {
-                        ...assistantMsg,
-                        conversation_id: conversationId,
-                        children_ids: assistantMsg.children_ids || [],
-                        content_blocks: assistantMsg.content_blocks || [],
-                        tool_calls: assistantMsg.tool_calls || [],
-                        user_id: auth.userId,
-                        owner_id: auth.userId,
-                        project_id: selectedProject?.id || null,
-                        storage_mode: storageMode,
-                      })
-                      .catch(err =>
-                        console.error('[sendMessage][openai-chatgpt repeat] Failed to sync assistant message:', err)
-                      )
+                    const syncGeneratedImagePaths = await syncAssistantMessageLocallyAndGetGeneratedImagePaths({
+                      message: assistantMsg,
+                      conversationId,
+                      authUserId: auth.userId,
+                      selectedProjectId: selectedProject?.id || null,
+                      storageMode,
+                      logPrefix: 'sendMessage][openai-chatgpt repeat',
+                    })
                     messageId = assistantMsg.id
                     currentTurnHistory.push(assistantMsg)
+                    const generatedImagePaths = Array.isArray((assistantMsg as any).generatedImageFilePaths)
+                      ? Array.from(new Set([...((assistantMsg as any).generatedImageFilePaths as string[]), ...syncGeneratedImagePaths]))
+                      : syncGeneratedImagePaths
+                    const imageBlocks = Array.isArray((assistantMsg as any).content_blocks)
+                      ? (assistantMsg as any).content_blocks.filter((block: any) => block?.type === 'image')
+                      : []
+                    if (imageBlocks.length > 0) {
+                      const hintMessage = await persistGeneratedImagePathHintMessage({
+                        dispatch,
+                        queryClient: extra.queryClient,
+                        conversationId,
+                        parentId: assistantMsg.id,
+                        modelName,
+                        authUserId: auth.userId,
+                        selectedProjectId: selectedProject?.id || null,
+                        storageMode,
+                        filePaths: generatedImagePaths,
+                        directoryHint: (assistantMsg as any).generatedImagesDirectoryHint,
+                      })
+                      if (hintMessage) {
+                        currentTurnHistory.push(hintMessage)
+                      }
+                    }
                     // Keep current streaming UI until the next generation_started event clears it.
                   }
                 },
@@ -3980,6 +4177,8 @@ const executionMode = 'client'
                 chatgptMessages.push(assistantMsg)
               } else if (appendCompactionSummaryToOpenAIChatGPTHistory(chatgptMessages, m)) {
                 continue
+              } else if (appendGeneratedImagePathHintToOpenAIChatGPTHistory(chatgptMessages, m)) {
+                continue
               } else if (m.role === 'tool' && m.tool_call_id) {
                 const toolName = toolNameById.get(m.tool_call_id)
                 const sanitizedContent = sanitizeToolResultContentForModel(m.content, toolName ?? null)
@@ -4012,7 +4211,7 @@ const executionMode = 'client'
                 reasoningConfig,
               },
               {
-                onChunk: chunk => {
+                onChunk: async chunk => {
                   if (controller?.signal.aborted || !(getState().chat.streaming.byId[streamId]?.active ?? false)) {
                     return
                   }
@@ -4024,24 +4223,40 @@ const executionMode = 'client'
                     // Sync to React Query cache
                     updateMessageCache(extra.queryClient, conversationId, chunk.message)
                     // Sync directly to local SQLite
-                    localApi
-                      .post('/sync/message', {
-                        ...chunk.message,
-                        conversation_id: conversationId,
-                        children_ids: chunk.message.children_ids || [],
-                        content_blocks: chunk.message.content_blocks || [],
-                        tool_calls: chunk.message.tool_calls || [],
-                        user_id: auth.userId,
-                        owner_id: auth.userId,
-                        project_id: selectedProject?.id || null,
-                        storage_mode: storageMode,
-                      })
-                      .catch(err =>
-                        console.error('[sendMessage][openai-chatgpt] Failed to sync assistant message:', err)
-                      )
+                    const syncGeneratedImagePaths = await syncAssistantMessageLocallyAndGetGeneratedImagePaths({
+                      message: chunk.message,
+                      conversationId,
+                      authUserId: auth.userId,
+                      selectedProjectId: selectedProject?.id || null,
+                      storageMode,
+                      logPrefix: 'sendMessage][openai-chatgpt',
+                    })
                       messageId = chunk.message.id
                       currentTurnContent = ''
                       currentTurnHistory.push(chunk.message)
+                      const generatedImagePaths = Array.isArray((chunk.message as any).generatedImageFilePaths)
+                        ? Array.from(new Set([...((chunk.message as any).generatedImageFilePaths as string[]), ...syncGeneratedImagePaths]))
+                        : syncGeneratedImagePaths
+                      const imageBlocks = Array.isArray((chunk.message as any).content_blocks)
+                        ? (chunk.message as any).content_blocks.filter((block: any) => block?.type === 'image')
+                        : []
+                      if (imageBlocks.length > 0) {
+                        const hintMessage = await persistGeneratedImagePathHintMessage({
+                          dispatch,
+                          queryClient: extra.queryClient,
+                          conversationId,
+                          parentId: chunk.message.id,
+                          modelName,
+                          authUserId: auth.userId,
+                          selectedProjectId: selectedProject?.id || null,
+                          storageMode,
+                          filePaths: generatedImagePaths,
+                          directoryHint: (chunk.message as any).generatedImagesDirectoryHint,
+                        })
+                        if (hintMessage) {
+                          currentTurnHistory.push(hintMessage)
+                        }
+                      }
                       // Keep current streaming UI until the next generation_started event clears it.
                   }
                 },
@@ -5043,22 +5258,6 @@ export const editMessageWithBranching = createAsyncThunk<
         throw new Error('No model selected')
       }
 
-      const safeEstimateTokenCount = (value: unknown): number => {
-        if (value == null) return 0
-        if (typeof value === 'string') {
-          if (value.length === 0) return 0
-          return estimateTokenCount(value)
-        }
-
-        try {
-          const serialized = JSON.stringify(value)
-          if (!serialized) return 0
-          return estimateTokenCount(serialized)
-        } catch {
-          return 0
-        }
-      }
-
       const resolvedModel =
         modelsData?.models?.find(model => model.name === modelName) || modelsData?.selected || modelsData?.default || null
       const branchContextLimit = resolvedModel?.contextLength || 128_000
@@ -5073,7 +5272,7 @@ export const editMessageWithBranching = createAsyncThunk<
       currentPathMessages.forEach(message => {
         if (!message) return
         messageTokens += safeEstimateTokenCount(message.content)
-        messageTokens += safeEstimateTokenCount((message as any).content_blocks)
+        messageTokens += estimateContentBlocksForContext((message as any).content_blocks)
         messageTokens += safeEstimateTokenCount((message as any).tool_calls)
       })
 
@@ -5595,6 +5794,8 @@ const executionMode = 'client' // Prefer client execution for tools
               chatgptMessages.push(assistantMsg)
             } else if (appendCompactionSummaryToOpenAIChatGPTHistory(chatgptMessages, m)) {
               continue
+            } else if (appendGeneratedImagePathHintToOpenAIChatGPTHistory(chatgptMessages, m)) {
+              continue
             } else if (m.role === 'tool' && m.tool_call_id) {
               const toolName = toolNameById.get(m.tool_call_id)
               const sanitizedContent = sanitizeToolResultContentForModel(m.content, toolName ?? null)
@@ -5617,7 +5818,7 @@ const executionMode = 'client' // Prefer client execution for tools
               tools: getToolsForOpenAIChatGPT(),
             },
             {
-              onChunk: chunk => {
+              onChunk: async chunk => {
                 if (controller?.signal.aborted || !(getState().chat.streaming.byId[streamId]?.active ?? false)) {
                   return
                 }
@@ -5627,23 +5828,39 @@ const executionMode = 'client' // Prefer client execution for tools
                   dispatch(chatSliceActions.messageAdded(assistantMsg))
                   dispatch(chatSliceActions.messageBranchCreated({ newMessage: assistantMsg }))
                   updateMessageCache(extra.queryClient, conversationId, assistantMsg)
-                  localApi
-                    .post('/sync/message', {
-                      ...assistantMsg,
-                      conversation_id: conversationId,
-                      children_ids: assistantMsg.children_ids || [],
-                      content_blocks: assistantMsg.content_blocks || [],
-                      tool_calls: assistantMsg.tool_calls || [],
-                      user_id: auth.userId,
-                      owner_id: auth.userId,
-                      project_id: selectedProject?.id || null,
-                      storage_mode: storageMode,
-                    })
-                    .catch(err =>
-                      console.error('[editMessageWithBranching][openai-chatgpt] Failed to sync assistant message:', err)
-                    )
+                  const syncGeneratedImagePaths = await syncAssistantMessageLocallyAndGetGeneratedImagePaths({
+                    message: assistantMsg,
+                    conversationId,
+                    authUserId: auth.userId,
+                    selectedProjectId: selectedProject?.id || null,
+                    storageMode,
+                    logPrefix: 'editMessageWithBranching][openai-chatgpt',
+                  })
                     messageId = assistantMsg.id
                     currentTurnHistory.push(assistantMsg)
+                    const generatedImagePaths = Array.isArray((assistantMsg as any).generatedImageFilePaths)
+                      ? Array.from(new Set([...((assistantMsg as any).generatedImageFilePaths as string[]), ...syncGeneratedImagePaths]))
+                      : syncGeneratedImagePaths
+                    const imageBlocks = Array.isArray((assistantMsg as any).content_blocks)
+                      ? (assistantMsg as any).content_blocks.filter((block: any) => block?.type === 'image')
+                      : []
+                    if (imageBlocks.length > 0) {
+                      const hintMessage = await persistGeneratedImagePathHintMessage({
+                        dispatch,
+                        queryClient: extra.queryClient,
+                        conversationId,
+                        parentId: assistantMsg.id,
+                        modelName,
+                        authUserId: auth.userId,
+                        selectedProjectId: selectedProject?.id || null,
+                        storageMode,
+                        filePaths: generatedImagePaths,
+                        directoryHint: (assistantMsg as any).generatedImagesDirectoryHint,
+                      })
+                      if (hintMessage) {
+                        currentTurnHistory.push(hintMessage)
+                      }
+                    }
                     // Keep current streaming UI until the next generation_started event clears it.
                 }
               },
@@ -6812,6 +7029,8 @@ const executionMode = 'client'
               chatgptMessages.push(assistantMsg)
             } else if (appendCompactionSummaryToOpenAIChatGPTHistory(chatgptMessages, m)) {
               continue
+            } else if (appendGeneratedImagePathHintToOpenAIChatGPTHistory(chatgptMessages, m)) {
+              continue
             } else if (m.role === 'tool' && m.tool_call_id) {
               const toolName = toolNameById.get(m.tool_call_id)
               const sanitizedContent = sanitizeToolResultContentForModel(m.content, toolName ?? null)
@@ -6834,7 +7053,7 @@ const executionMode = 'client'
               tools: getToolsForOpenAIChatGPT(),
             },
             {
-              onChunk: chunk => {
+              onChunk: async chunk => {
                 if (controller?.signal.aborted || !(getState().chat.streaming.byId[streamId]?.active ?? false)) {
                   return
                 }
@@ -6843,23 +7062,39 @@ const executionMode = 'client'
                   const assistantMsg = chunk.message
                   dispatch(chatSliceActions.messageBranchCreated({ newMessage: assistantMsg }))
                   updateMessageCache(extra.queryClient, conversationId, assistantMsg)
-                  localApi
-                    .post('/sync/message', {
-                      ...assistantMsg,
-                      conversation_id: conversationId,
-                      children_ids: assistantMsg.children_ids || [],
-                      content_blocks: assistantMsg.content_blocks || [],
-                      tool_calls: assistantMsg.tool_calls || [],
-                      user_id: auth.userId,
-                      owner_id: auth.userId,
-                      project_id: selectedProject?.id || null,
-                      storage_mode: storageMode,
-                    })
-                    .catch(err =>
-                      console.error('[sendMessageToBranch][openai-chatgpt] Failed to sync assistant message:', err)
-                    )
+                  const syncGeneratedImagePaths = await syncAssistantMessageLocallyAndGetGeneratedImagePaths({
+                    message: assistantMsg,
+                    conversationId,
+                    authUserId: auth.userId,
+                    selectedProjectId: selectedProject?.id || null,
+                    storageMode,
+                    logPrefix: 'sendMessageToBranch][openai-chatgpt',
+                  })
                     messageId = assistantMsg.id
                     currentTurnHistory.push(assistantMsg)
+                    const generatedImagePaths = Array.isArray((assistantMsg as any).generatedImageFilePaths)
+                      ? Array.from(new Set([...((assistantMsg as any).generatedImageFilePaths as string[]), ...syncGeneratedImagePaths]))
+                      : syncGeneratedImagePaths
+                    const imageBlocks = Array.isArray((assistantMsg as any).content_blocks)
+                      ? (assistantMsg as any).content_blocks.filter((block: any) => block?.type === 'image')
+                      : []
+                    if (imageBlocks.length > 0) {
+                      const hintMessage = await persistGeneratedImagePathHintMessage({
+                        dispatch,
+                        queryClient: extra.queryClient,
+                        conversationId,
+                        parentId: assistantMsg.id,
+                        modelName,
+                        authUserId: auth.userId,
+                        selectedProjectId: selectedProject?.id || null,
+                        storageMode,
+                        filePaths: generatedImagePaths,
+                        directoryHint: (assistantMsg as any).generatedImagesDirectoryHint,
+                      })
+                      if (hintMessage) {
+                        currentTurnHistory.push(hintMessage)
+                      }
+                    }
                     // Keep current streaming UI until the next generation_started event clears it.
                 }
               },

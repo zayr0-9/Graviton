@@ -12,6 +12,26 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
+## [0.1.94] - 2026-05-17
+
+### Added
+
+- Added OpenAI web search support for ChatGPT/Codex conversations.
+- Added OpenAI image generation support.
+- Added image viewing support so assistants can inspect locally saved generated images when needed.
+
+### Changed
+
+- Generated images are now saved locally with simpler filenames like `img-0001.png`.
+- Follow-up chats can better remember where generated images were saved.
+- Improved context estimation for chats that include generated images.
+
+### Fixed
+
+- Fixed generated images sometimes not appearing or not being saved.
+- Fixed image-heavy chats incorrectly using too much context.
+- Fixed generated-image helper messages showing up in the visible chat timeline.
+
 ## [0.1.90]
 
 ### Changed

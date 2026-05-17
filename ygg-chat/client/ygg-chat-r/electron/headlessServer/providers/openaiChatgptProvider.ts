@@ -1,3 +1,4 @@
+import path from 'path'
 import WebSocket from 'ws'
 import {
   CHATGPT_BASE_URL,
@@ -407,6 +408,7 @@ function appendImageAttachmentsToLatestUserMessage(input: any[], attachmentsBase
 
 const AUTO_COMPACTION_NOTE = '__auto_compaction_summary__'
 const AUTO_COMPACTION_SUMMARY_RESUME_LINE = 'Following is summary of the session, you have to resume the work.'
+const GENERATED_IMAGE_PATH_HINT_NOTE = '__generated_image_path_hint__'
 
 function getMessageTextContent(msg: any): string {
   const content = typeof msg?.content === 'string' ? msg.content : ''
@@ -422,6 +424,10 @@ function isAutoCompactionSummaryMessage(msg: any): boolean {
     (msg.role === 'system' || msg.role === 'developer') &&
     text.startsWith(AUTO_COMPACTION_SUMMARY_RESUME_LINE)
   )
+}
+
+function isGeneratedImagePathHintMessage(msg: any): boolean {
+  return Boolean(msg && msg.note === GENERATED_IMAGE_PATH_HINT_NOTE)
 }
 
 function toOutputTextContent(value: any): Array<{ type: 'output_text'; text: string }> {
@@ -545,6 +551,24 @@ function normalizeResponseOutputItemsForReplay(items: any[]): any[] {
       if (typeof item.outputIndex === 'number') reasoningItem.output_index = item.outputIndex
       if ((item as any).encrypted_content) reasoningItem.encrypted_content = (item as any).encrypted_content
       normalized.push(reasoningItem)
+      continue
+    }
+
+    if (item.type === 'image_generation_call') {
+      const result = typeof item.result === 'string' ? item.result : ''
+      if (!result.trim()) continue
+
+      const imageItem: any = {
+        type: 'image_generation_call',
+        status: typeof item.status === 'string' ? item.status : 'completed',
+        result,
+      }
+      if (typeof item.id === 'string') imageItem.id = item.id
+      if (typeof item.revised_prompt === 'string') imageItem.revised_prompt = item.revised_prompt
+      if (typeof item.output_index === 'number') imageItem.output_index = item.output_index
+      if (typeof item.outputIndex === 'number') imageItem.output_index = item.outputIndex
+      normalized.push(imageItem)
+      continue
     }
   }
 
@@ -596,6 +620,9 @@ function transformMessagesForCodex(history: any[], fallbackUserContent: string):
 
   for (const msg of history || []) {
     if (msg?.role === 'system' || msg?.role === 'developer') {
+      if (msg?.role === 'system' && !isAutoCompactionSummaryMessage(msg) && !isGeneratedImagePathHintMessage(msg)) {
+        continue
+      }
       const content = toInputTextContent(getMessageTextContent(msg))
       if (content.length) {
         input.push({ type: 'message', role: 'developer', content })
@@ -618,6 +645,13 @@ function transformMessagesForCodex(history: any[], fallbackUserContent: string):
       for (const item of storedResponseItems) {
         if (item?.type === 'reasoning') {
           input.push(item)
+          continue
+        }
+
+        if (item?.type === 'image_generation_call') {
+          if (typeof item.result === 'string' && item.result.trim().length > 0) {
+            input.push(item)
+          }
           continue
         }
 
@@ -672,7 +706,7 @@ function transformMessagesForCodex(history: any[], fallbackUserContent: string):
         input.push({
           type: 'function_call_output',
           call_id: callId,
-          output: typeof sanitized === 'string' ? sanitized : JSON.stringify(sanitized ?? null),
+          output: typeof sanitized === 'string' ? sanitized : sanitized ?? null,
         })
       }
 
@@ -689,7 +723,7 @@ function transformMessagesForCodex(history: any[], fallbackUserContent: string):
       input.push({
         type: 'function_call_output',
         call_id: callId,
-        output: typeof sanitized === 'string' ? sanitized : JSON.stringify(sanitized ?? null),
+        output: typeof sanitized === 'string' ? sanitized : sanitized ?? null,
       })
       continue
     }
@@ -718,6 +752,13 @@ function mapTools(tools: ProviderToolDefinition[]): any[] {
     }))
 }
 
+function getGeneratedImagesDirectoryHint(): { dir: string | null; pattern: string | null } {
+  const userDataPath = process.env.YGG_APP_USER_DATA?.trim()
+  if (!userDataPath) return { dir: null, pattern: null }
+  const dir = path.join(userDataPath, 'generated_images')
+  return { dir, pattern: path.join(dir, 'img-0001.<ext>') }
+}
+
 function hasImageGenerationIntent(input: ProviderGenerateInput): boolean {
   const imageConfig = input.railwayTurn?.imageConfig
   if (imageConfig && typeof imageConfig === 'object' && Object.keys(imageConfig).length > 0) return true
@@ -731,6 +772,11 @@ function hasImageGenerationIntent(input: ProviderGenerateInput): boolean {
     .join('\n')}`
 
   return /\b(generate|create|make|draw|edit|render)\b[\s\S]{0,80}\b(image|picture|photo|illustration|icon|logo|sprite|asset)\b/i.test(text)
+}
+
+function getMimeTypeFromDataUrl(url: string): string {
+  const match = /^data:([^;,]+)/i.exec(url)
+  return match?.[1] || 'image/png'
 }
 
 function extractImageDataUrlFromOutputItem(item: any): string | null {
@@ -752,7 +798,7 @@ function extractImageBlocksFromResponseItems(items: any[]): any[] {
     blocks.push({
       type: 'image',
       url,
-      mimeType: url.startsWith('data:image/') ? url.slice(5, url.indexOf(';') > 0 ? url.indexOf(';') : undefined) : 'image/png',
+      mimeType: url.startsWith('data:image/') ? getMimeTypeFromDataUrl(url) : 'image/png',
     })
   }
 
@@ -860,6 +906,7 @@ function createCodexEventParser(params: { emit?: ProviderStreamEventHandler; mod
   const callByItemId = new Map<string, { id: string; name: string; arguments: string; outputIndex?: number; seq: number }>()
   const responseOutputItemsById = new Map<string, { id: string; type?: string; role?: string; phase?: string; outputIndex?: number; seq: number }>()
   const responseTextByItem = new Map<string, { text: string; outputIndex?: number; seq: number; fromDone: boolean }>()
+  const imageGenerationItemsById = new Map<string, any>()
   const reasoningByKey = new Map<string, string>()
   let callSeq = 0
   let responseSeq = 0
@@ -924,7 +971,8 @@ function createCodexEventParser(params: { emit?: ProviderStreamEventHandler; mod
       return { type: 'message', id: item.id, role: item.role || 'assistant', phase: item.phase, output_index: item.outputIndex, content: [{ type: 'output_text', text }] }
     }).filter(Boolean)
     const fallbackFunctionCalls = Array.from(callByItemId.values()).sort((a, b) => (typeof a.outputIndex === 'number' && typeof b.outputIndex === 'number') ? a.outputIndex - b.outputIndex : typeof a.outputIndex === 'number' ? -1 : typeof b.outputIndex === 'number' ? 1 : a.seq - b.seq).map(call => ({ type: 'function_call', call_id: call.id, name: call.name, arguments: call.arguments || '', output_index: call.outputIndex })).filter(call => call.call_id && call.name)
-    return normalizeResponseOutputItemsForReplay([...fallbackMessages, ...fallbackFunctionCalls])
+    const fallbackImages = Array.from(imageGenerationItemsById.values())
+    return normalizeResponseOutputItemsForReplay([...fallbackMessages, ...fallbackFunctionCalls, ...fallbackImages])
   }
   const handle = (parsed: any) => {
     if (!parsed) return
@@ -936,6 +984,16 @@ function createCodexEventParser(params: { emit?: ProviderStreamEventHandler; mod
         const outputIndex = typeof item.output_index === 'number' ? item.output_index : typeof item.outputIndex === 'number' ? item.outputIndex : existing?.outputIndex
         if (existing) { existing.id = item.call_id || item.id; existing.name = item.name || existing.name; existing.arguments = item.arguments ?? existing.arguments; existing.outputIndex = outputIndex }
         else callByItemId.set(item.id, { id: item.call_id || item.id, name: item.name || '', arguments: item.arguments || '', outputIndex, seq: callSeq++ })
+      }
+      if (item?.type === 'image_generation_call' && item?.id) {
+        imageGenerationItemsById.set(item.id, item)
+        console.log('[OpenAI ChatGPT] image_generation_call output item', {
+          eventType: parsed.type,
+          id: item.id,
+          status: item.status,
+          hasResult: typeof item.result === 'string' && item.result.trim().length > 0,
+          resultLength: typeof item.result === 'string' ? item.result.length : 0,
+        })
       }
       if (parsed.type === 'response.output_item.done') {
         if (item?.type === 'message' && item?.id) {
@@ -969,7 +1027,24 @@ function createCodexEventParser(params: { emit?: ProviderStreamEventHandler; mod
   }
   const finish = (): CodexParsedOutput => {
     const normalizedCompletedOutputItems = normalizeResponseOutputItemsForReplay(completedOutputItems || [])
-    const responseOutputItems = normalizedCompletedOutputItems.length > 0 ? normalizedCompletedOutputItems : buildFallbackResponseOutputItems()
+    const fallbackOutputItems = buildFallbackResponseOutputItems()
+    const completedImageIds = new Set(
+      normalizedCompletedOutputItems
+        .filter((item: any) => item?.type === 'image_generation_call' && typeof item?.id === 'string')
+        .map((item: any) => item.id)
+    )
+    const missingFallbackImages = fallbackOutputItems.filter(
+      (item: any) => item?.type === 'image_generation_call' && (!item.id || !completedImageIds.has(item.id))
+    )
+    const responseOutputItems =
+      normalizedCompletedOutputItems.length > 0
+        ? [...normalizedCompletedOutputItems, ...missingFallbackImages]
+        : fallbackOutputItems
+    console.log('[OpenAI ChatGPT] response output summary', {
+      completedOutputCount: completedOutputItems?.length || 0,
+      normalizedOutputTypes: responseOutputItems.map((item: any) => item?.type).filter(Boolean),
+      imageGenerationCount: responseOutputItems.filter((item: any) => item?.type === 'image_generation_call').length,
+    })
     return { text: selectFinalTextFromReplayItems(responseOutputItems, streamedText, useGPT53StrictTextAssembly), reasoning: selectReasoningFromReplayItems(responseOutputItems, streamedReasoning), toolCalls: extractToolCallsFromReplayItems(responseOutputItems), responseOutputItems }
   }
   return { handle, finish }
@@ -1524,10 +1599,29 @@ export class OpenAiChatgptProvider implements HeadlessProvider {
       enableImageGeneration: hasImageGenerationIntent(input),
     })
     const requestTools = [...mapTools(input.tools || []), ...hostedTools]
+    console.log('[OpenAI ChatGPT] request setup', {
+      model: normalizeModel(input.modelName),
+      hostedTools: hostedTools.map((tool: any) => tool?.type).filter(Boolean),
+      functionToolCount: (input.tools || []).length,
+      totalToolCount: requestTools.length,
+      imageIntent: hasImageGenerationIntent(input),
+      imageConfig: input.railwayTurn?.imageConfig,
+    })
     const transformedInput = appendImageAttachmentsToLatestUserMessage(
       transformMessagesForCodex(input.history || [], input.userContent),
       input.railwayTurn?.attachmentsBase64 ?? null
     )
+    console.log('[OpenAI ChatGPT] transformed input summary', {
+      itemCount: transformedInput.length,
+      itemTypes: transformedInput.map((item: any) => item?.type).filter(Boolean),
+      imageGenerationCount: transformedInput.filter((item: any) => item?.type === 'image_generation_call').length,
+      imageGenerationResultLengths: transformedInput
+        .filter((item: any) => item?.type === 'image_generation_call')
+        .map((item: any) => (typeof item.result === 'string' ? item.result.length : 0)),
+      hasGeneratedImagePathHint: transformedInput.some(
+        (item: any) => item?.type === 'message' && item?.role === 'developer' && JSON.stringify(item?.content || '').includes('generated_images')
+      ),
+    })
     const requestBody = {
       model: normalizeModel(input.modelName),
       instructions: input.systemPrompt && input.systemPrompt.trim() ? input.systemPrompt : 'You are ChatGPT.',
@@ -1599,6 +1693,13 @@ export class OpenAiChatgptProvider implements HeadlessProvider {
       })
     }
     const contentBlocks: any[] = []
+    console.log('[OpenAI ChatGPT] parsed result summary', {
+      textLength: parsed.text?.length || 0,
+      reasoningLength: parsed.reasoning?.length || 0,
+      toolCallCount: parsed.toolCalls?.length || 0,
+      responseOutputTypes: parsed.responseOutputItems.map((item: any) => item?.type).filter(Boolean),
+      imageGenerationCount: parsed.responseOutputItems.filter((item: any) => item?.type === 'image_generation_call').length,
+    })
 
     if (parsed.reasoning) {
       contentBlocks.push({ type: 'thinking', content: parsed.reasoning })
@@ -1609,6 +1710,11 @@ export class OpenAiChatgptProvider implements HeadlessProvider {
     }
 
     const imageBlocks = extractImageBlocksFromResponseItems(parsed.responseOutputItems)
+    console.log('[OpenAI ChatGPT] normalized image blocks', {
+      count: imageBlocks.length,
+      mimeTypes: imageBlocks.map(block => block.mimeType),
+      urlLengths: imageBlocks.map(block => (typeof block.url === 'string' ? block.url.length : 0)),
+    })
     for (const imageBlock of imageBlocks) {
       contentBlocks.push(imageBlock)
       emit?.({ type: 'chunk', part: 'image', url: imageBlock.url, mimeType: imageBlock.mimeType })
@@ -1637,6 +1743,7 @@ export class OpenAiChatgptProvider implements HeadlessProvider {
       contentBlocks,
       raw: {
         responses_output_items: parsed.responseOutputItems,
+        generatedImagesDirectoryHint: getGeneratedImagesDirectoryHint(),
       },
     }
   }

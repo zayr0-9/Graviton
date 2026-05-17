@@ -24,6 +24,7 @@ export { default as chatReducer, chatSliceActions } from './chatSlice'
 // Model fetching thunks (fetchModels, fetchModelsForCurrentProvider, etc.) have been migrated to React Query
 export {
   AUTO_COMPACTION_NOTE,
+  GENERATED_IMAGE_PATH_HINT_NOTE,
   abortGeneration,
   abortStreaming,
   deleteMessage,

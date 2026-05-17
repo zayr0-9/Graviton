@@ -378,6 +378,34 @@ export const BUILTIN_TOOL_DEFINITIONS: SharedToolDefinition[] = [
     },
   },
   {
+    name: 'view_image',
+    enabled: true,
+    description:
+      'View a local image from the filesystem. Use this when given a full filepath to an image, including generated_images paths, and you need to inspect it visually. Returns an input_image data URL for the model plus metadata. Do not use for non-image files.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        path: { type: 'string', description: 'Local filesystem path to an image file, absolute or relative to cwd/workspace.' },
+        cwd: {
+          type: 'string',
+          description: 'Optional working directory used to resolve relative paths. Must stay within workspace scope when provided.',
+        },
+        detail: {
+          type: 'string',
+          enum: ['high', 'original'],
+          description: 'Image detail hint. Use high by default; use original only when exact pixel-level detail is needed.',
+        },
+        maxBytes: {
+          type: 'integer',
+          minimum: 1,
+          maximum: 20971520,
+          description: 'Optional maximum image file size in bytes. Defaults to 20MB.',
+        },
+      },
+      required: ['path'],
+    },
+  },
+  {
     name: 'edit_file',
     enabled: true,
     description:

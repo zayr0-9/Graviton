@@ -89,7 +89,39 @@ export function buildToolNameMap(history: any[]): Map<string, string> {
   return map
 }
 
+function extractViewImagePayload(content: any): { imageUrl: string; detail?: 'high' | 'original' } | null {
+  let resolved = content
+  if (typeof resolved === 'string') {
+    const parsed = parseJson(resolved.trim())
+    if (parsed == null) return null
+    resolved = parsed
+  }
+
+  if (!resolved || typeof resolved !== 'object') return null
+
+  const directImageUrl = typeof resolved.image_url === 'string' ? resolved.image_url : null
+  const contentItems = Array.isArray(resolved.content) ? resolved.content : []
+  const imageItem = contentItems.find(
+    (item: any) => item?.type === 'input_image' && typeof item?.image_url === 'string'
+  )
+
+  const imageUrl = directImageUrl || imageItem?.image_url || null
+  if (!imageUrl || !/^data:image\//i.test(imageUrl)) return null
+
+  const rawDetail = typeof resolved.detail === 'string' ? resolved.detail : imageItem?.detail
+  const detail = rawDetail === 'original' ? 'original' : 'high'
+  return { imageUrl, detail }
+}
+
 export function sanitizeToolResultContentForModel(content: any, toolName?: string | null): any {
+  const normalizedToolName = typeof toolName === 'string' ? toolName.trim() : ''
+  if (normalizedToolName === 'view_image') {
+    const viewImage = extractViewImagePayload(content)
+    if (viewImage) {
+      return [{ type: 'input_image', image_url: viewImage.imageUrl, detail: viewImage.detail }]
+    }
+  }
+
   const htmlPayload = extractHtmlPayload(content)
   if (htmlPayload?.html) {
     const resolvedName = toolName ?? htmlPayload.toolName ?? null

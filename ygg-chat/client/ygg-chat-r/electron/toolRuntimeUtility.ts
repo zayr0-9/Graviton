@@ -10,6 +10,7 @@ import htmlRenderer from './tools/htmlRenderer.js'
 import { readFileContinuation, readTextFile } from './tools/readFile.js'
 import { readMultipleTextFiles } from './tools/readFiles.js'
 import { ripgrepSearch } from './tools/ripgrep.js'
+import { viewImage } from './tools/viewImage.js'
 import { customToolRegistry } from './tools/customToolLoader.js'
 import type { ToolExecutionOptions, UtilityRuntimeRequest, UtilityRuntimeResponse } from './tools/runtime/protocol.js'
 import { isManagedToolPath } from './utils/managedToolPaths.js'
@@ -245,6 +246,13 @@ function initializeBuiltInToolRegistry(): void {
       includeSizes,
     })
     return { success: true, structure, path: dirPath }
+  })
+
+  builtInTools.set('view_image', async (args, { rootPath }) => {
+    const { path: imagePath, cwd, detail, maxBytes } = args
+    if (!imagePath) throw new Error('path is required')
+    const effectiveCwd = resolveToolWorkspaceCwd(cwd, rootPath)
+    return await viewImage(imagePath, { cwd: effectiveCwd, detail, maxBytes })
   })
 
   builtInTools.set('glob', async (args, { rootPath }) => {

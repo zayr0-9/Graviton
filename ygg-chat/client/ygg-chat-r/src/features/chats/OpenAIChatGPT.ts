@@ -11,6 +11,7 @@ import { getToolsForAI } from './toolDefinitions'
 
 const AUTO_COMPACTION_NOTE = '__auto_compaction_summary__'
 const AUTO_COMPACTION_SUMMARY_RESUME_LINE = 'Following is summary of the session, you have to resume the work.'
+const GENERATED_IMAGE_PATH_HINT_NOTE = '__generated_image_path_hint__'
 
 function isAutoCompactionSummaryMessage(msg: any): boolean {
   if (!msg) return false
@@ -24,6 +25,10 @@ function isAutoCompactionSummaryMessage(msg: any): boolean {
         : ''
 
   return msg.role === 'system' && content.trim().startsWith(AUTO_COMPACTION_SUMMARY_RESUME_LINE)
+}
+
+function isGeneratedImagePathHintMessage(msg: any): boolean {
+  return Boolean(msg && msg.note === GENERATED_IMAGE_PATH_HINT_NOTE)
 }
 
 // Map internal ToolDefinition -> OpenAI tool schema
@@ -141,6 +146,8 @@ interface ChatGPTResponseOutputItem {
   name?: string
   output_index?: number
   outputIndex?: number
+  result?: string
+  revised_prompt?: string
   summary?: Array<{
     type?: string
     text?: string
@@ -554,6 +561,24 @@ function normalizeResponseOutputItemsForReplay(items: any[]): any[] {
       if (typeof item.outputIndex === 'number') reasoningItem.output_index = item.outputIndex
       if ((item as any).encrypted_content) reasoningItem.encrypted_content = (item as any).encrypted_content
       normalized.push(reasoningItem)
+      continue
+    }
+
+    if (item.type === 'image_generation_call') {
+      const result = typeof item.result === 'string' ? item.result : ''
+      if (!result.trim()) continue
+
+      const imageItem: any = {
+        type: 'image_generation_call',
+        status: typeof item.status === 'string' ? item.status : 'completed',
+        result,
+      }
+      if (typeof item.id === 'string') imageItem.id = item.id
+      if (typeof item.revised_prompt === 'string') imageItem.revised_prompt = item.revised_prompt
+      if (typeof item.output_index === 'number') imageItem.output_index = item.output_index
+      if (typeof item.outputIndex === 'number') imageItem.output_index = item.outputIndex
+      normalized.push(imageItem)
+      continue
     }
   }
 
@@ -585,13 +610,13 @@ function transformMessagesForChatGPT(messages: any[]): any[] {
   // Transform each message
   for (const msg of messages) {
     if (msg.role === 'system') {
-      if (isAutoCompactionSummaryMessage(msg)) {
-        const compactionContent = toUserInputContent(msg)
-        if (compactionContent.length > 0) {
+      if (isAutoCompactionSummaryMessage(msg) || isGeneratedImagePathHintMessage(msg)) {
+        const developerContent = toUserInputContent(msg)
+        if (developerContent.length > 0) {
           input.push({
             type: 'message',
             role: 'developer',
-            content: compactionContent,
+            content: developerContent,
           })
         }
       }
@@ -636,6 +661,13 @@ function transformMessagesForChatGPT(messages: any[]): any[] {
 
         if (item?.type === 'reasoning') {
           input.push(item)
+          continue
+        }
+
+        if (item?.type === 'image_generation_call') {
+          if (typeof item.result === 'string' && item.result.trim().length > 0) {
+            input.push(item)
+          }
           continue
         }
 

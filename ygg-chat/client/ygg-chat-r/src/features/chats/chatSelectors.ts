@@ -338,12 +338,39 @@ export const selectDisplayMessages = createSelector(
 
     const displayableMessages = shouldShowExAgent ? messages : messages.filter(message => message.role !== 'ex_agent')
 
+    const appendLinearHiddenSystemDescendants = (selected: typeof displayableMessages): typeof displayableMessages => {
+      if (selected.length === 0) return selected
+      const selectedIds = new Set(selected.map(message => String(message.id)))
+      const byParent = new Map<string, typeof displayableMessages>()
+      for (const message of displayableMessages) {
+        if (message.parent_id == null || message.role !== 'system') continue
+        const key = String(message.parent_id)
+        const existing = byParent.get(key)
+        if (existing) existing.push(message)
+        else byParent.set(key, [message])
+      }
+
+      const expanded = [...selected]
+      let cursor = selected[selected.length - 1]
+      while (cursor) {
+        const children = (byParent.get(String(cursor.id)) || [])
+          .filter(child => !selectedIds.has(String(child.id)))
+          .sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime())
+        if (children.length !== 1) break
+        const child = children[0]
+        expanded.push(child)
+        selectedIds.add(String(child.id))
+        cursor = child
+      }
+      return expanded
+    }
+
     if (Array.isArray(currentPath) && currentPath.length > 0) {
       const byId = new Map(displayableMessages.map(m => [m.id, m]))
       const selected = currentPath
         .map(id => byId.get(id))
         .filter((m): m is (typeof displayableMessages)[number] => Boolean(m))
-      if (selected.length > 0) return selected
+      if (selected.length > 0) return appendLinearHiddenSystemDescendants(selected)
 
       const pathSet = new Set(currentPath)
       const filtered = displayableMessages.filter(m => pathSet.has(m.id))

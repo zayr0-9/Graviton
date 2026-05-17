@@ -58,6 +58,7 @@ import { JobFilter, JobOptions, toolOrchestrator } from './tools/orchestrator/in
 import { readFileContinuation, readTextFile } from './tools/readFile.js'
 import { readMultipleTextFiles } from './tools/readFiles.js'
 import { ripgrepSearch } from './tools/ripgrep.js'
+import { viewImage } from './tools/viewImage.js'
 import { UtilityToolRuntimeHost } from './tools/runtime/UtilityToolRuntimeHost.js'
 import { execute as executeThemeManager } from './tools/themeManager.js'
 import { createTodoList, editTodoList, listTodoLists, readTodoList } from './tools/todoMd.js'
@@ -455,6 +456,7 @@ const UTILITY_RUNTIME_TOOL_WHITELIST = new Set<string>([
   'multi_edit',
   'delete_file',
   'directory',
+  'view_image',
   'glob',
   'ripgrep',
   'bash',
@@ -621,6 +623,13 @@ function initializeBuiltInToolRegistry() {
       includeSizes,
     })
     return { success: true, structure, path: dirPath }
+  })
+
+  builtInTools.set('view_image', async (args, { rootPath }) => {
+    const { path: imagePath, cwd, detail, maxBytes } = args
+    if (!imagePath) throw new Error('path is required')
+    const effectiveCwd = resolveToolWorkspaceCwd(cwd, rootPath)
+    return await viewImage(imagePath, { cwd: effectiveCwd, detail, maxBytes })
   })
 
   builtInTools.set('glob', async (args, { rootPath }) => {
@@ -925,6 +934,7 @@ const HERMES_YGG_EXPOSED_BUILTIN_TOOL_NAMES = new Set([
   'multi_edit',
   'delete_file',
   'directory',
+  'view_image',
   'glob',
   'ripgrep',
   'brave_search',
@@ -1520,6 +1530,17 @@ function initializeLocalDatabase(dbPath: string) {
       FOREIGN KEY (message_id) REFERENCES messages(id) ON DELETE CASCADE
     )
   `)
+
+  try {
+    const attachmentColumns = db.prepare(`PRAGMA table_info(message_attachments)`).all() as { name: string }[]
+    const attachmentColumnNames = new Set(attachmentColumns.map(col => col.name))
+    if (!attachmentColumnNames.has('short_id')) {
+      db.exec(`ALTER TABLE message_attachments ADD COLUMN short_id TEXT`)
+    }
+    db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_message_attachments_short_id ON message_attachments(short_id) WHERE short_id IS NOT NULL`)
+  } catch (error) {
+    console.warn('[LocalServer] Failed to migrate message_attachments table:', error)
+  }
 
   db.exec(`
     CREATE TABLE IF NOT EXISTS message_attachment_links (
@@ -2214,11 +2235,12 @@ function initializeLocalDatabase(dbPath: string) {
 
     // Attachments
     upsertAttachment: db.prepare(`
-        INSERT INTO message_attachments (id, message_id, kind, mime_type, storage, url, file_path, width, height, size_bytes, sha256, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO message_attachments (id, message_id, kind, mime_type, storage, url, file_path, width, height, size_bytes, sha256, created_at, short_id)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(id) DO UPDATE SET
           url = excluded.url,
-          file_path = excluded.file_path
+          file_path = excluded.file_path,
+          short_id = COALESCE(excluded.short_id, message_attachments.short_id)
       `),
     linkAttachment: db.prepare(`
         INSERT OR IGNORE INTO message_attachment_links (id, message_id, attachment_id, created_at)
@@ -2233,6 +2255,7 @@ function initializeLocalDatabase(dbPath: string) {
       `),
     getAttachmentById: db.prepare('SELECT * FROM message_attachments WHERE id = ?'),
     getAttachmentBySha256: db.prepare('SELECT * FROM message_attachments WHERE sha256 = ?'),
+    getAttachmentByShortId: db.prepare('SELECT * FROM message_attachments WHERE short_id = ?'),
 
     // Provider Cost
     upsertProviderCost: db.prepare(`
@@ -2365,6 +2388,41 @@ function ensureConversationExists(conversationId: string, userId: string, projec
 }
 
 // Helper to save generated images from image-generating models to local storage
+function getGeneratedImageExtension(mimeType: string): string {
+  const normalized = (mimeType || 'image/png').toLowerCase().split(';')[0].trim()
+  if (normalized === 'image/jpeg' || normalized === 'image/jpg') return 'jpg'
+  if (normalized === 'image/svg+xml') return 'svg'
+  return normalized.startsWith('image/') ? normalized.slice('image/'.length) || 'png' : 'png'
+}
+
+function createGeneratedImageShortId(): string {
+  if (!db) return `img-${Date.now()}`
+  const row = db.prepare(`
+    SELECT short_id FROM message_attachments
+    WHERE short_id LIKE 'img-%'
+    ORDER BY CAST(substr(short_id, 5) AS INTEGER) DESC
+    LIMIT 1
+  `).get() as { short_id?: string | null } | undefined
+  const last = typeof row?.short_id === 'string' ? Number.parseInt(row.short_id.replace(/^img-/, ''), 10) : 0
+  const next = Number.isFinite(last) ? last + 1 : 1
+  return `img-${String(next).padStart(4, '0')}`
+}
+
+function extractGeneratedImageFilePathsFromContentBlocks(contentBlocks: any): string[] {
+  const parsed = typeof contentBlocks === 'string' ? (() => {
+    try { return JSON.parse(contentBlocks) } catch { return [] }
+  })() : contentBlocks
+  if (!Array.isArray(parsed)) return []
+
+  const paths: string[] = []
+  for (const block of parsed) {
+    if (!block || typeof block !== 'object') continue
+    const candidate = typeof block.filePath === 'string' ? block.filePath : typeof block.file_path === 'string' ? block.file_path : null
+    if (candidate && block.type === 'image') paths.push(candidate)
+  }
+  return Array.from(new Set(paths))
+}
+
 async function saveGeneratedImage(
   messageId: string,
   imageUrl: string,
@@ -2376,6 +2434,12 @@ async function saveGeneratedImage(
   }
 
   try {
+    console.log('[LocalServer] Saving generated image', {
+      messageId,
+      mimeType,
+      sourceType: imageUrl.startsWith('data:') ? 'data-url' : 'url',
+      sourceLength: imageUrl.length,
+    })
     // Download the image
     const response = await fetch(imageUrl)
     if (!response.ok) {
@@ -2388,35 +2452,40 @@ async function saveGeneratedImage(
     // Calculate SHA256 for deduplication
     const sha256 = crypto.createHash('sha256').update(buffer).digest('hex')
 
-    // Determine file extension and path
-    const ext = mimeType.split('/')[1] || 'png'
-    const fileName = `${sha256}.${ext}`
+    const now = new Date().toISOString()
+
+    // Check if attachment with this sha256 already exists (deduplication)
+    const existingAttachment = statements.getAttachmentBySha256.get(sha256) as
+      | { id: string; file_path: string; short_id?: string | null }
+      | undefined
+
+    const ext = getGeneratedImageExtension(mimeType)
     const imagesDir = path.join(path.dirname(currentDbPath), 'generated_images')
-    const filePath = path.join(imagesDir, fileName)
 
     // Ensure directory exists
     if (!fs.existsSync(imagesDir)) {
       fs.mkdirSync(imagesDir, { recursive: true })
     }
 
-    // Write file (skip if already exists - deduplication)
-    if (!fs.existsSync(filePath)) {
-      fs.writeFileSync(filePath, buffer)
-    }
-
-    const now = new Date().toISOString()
-
-    // Check if attachment with this sha256 already exists (deduplication)
-    const existingAttachment = statements.getAttachmentBySha256.get(sha256) as
-      | { id: string; file_path: string }
-      | undefined
-
     let attachmentId: string
+    let shortId = typeof existingAttachment?.short_id === 'string' && existingAttachment.short_id.trim()
+      ? existingAttachment.short_id.trim()
+      : createGeneratedImageShortId()
+    let filePath = path.join(imagesDir, `${shortId}.${ext}`)
 
     if (existingAttachment) {
-      // Reuse existing attachment - just create a link to it
+      // Reuse existing attachment metadata, but prefer the short generated-image path.
       attachmentId = existingAttachment.id
+      if (typeof existingAttachment.file_path === 'string' && existingAttachment.file_path.trim()) {
+        filePath = existingAttachment.file_path
+      }
     } else {
+      while (fs.existsSync(filePath)) {
+        shortId = createGeneratedImageShortId()
+        filePath = path.join(imagesDir, `${shortId}.${ext}`)
+      }
+      fs.writeFileSync(filePath, buffer)
+
       // Create new attachment record
       attachmentId = uuidv4()
       statements.upsertAttachment.run(
@@ -2431,12 +2500,33 @@ async function saveGeneratedImage(
         null, // height
         buffer.length,
         sha256,
-        now
+        now,
+        shortId
       )
     }
 
     // Link attachment to message (INSERT OR IGNORE handles duplicate links gracefully)
     statements.linkAttachment.run(uuidv4(), messageId, attachmentId, now)
+
+    try {
+      const messageRow = db.prepare('SELECT content_blocks FROM messages WHERE id = ?').get(messageId) as { content_blocks?: string | null } | undefined
+      const blocks = messageRow?.content_blocks ? JSON.parse(messageRow.content_blocks) : []
+      if (Array.isArray(blocks)) {
+        let changed = false
+        const updatedBlocks = blocks.map((block: any) => {
+          if (block?.type === 'image' && typeof block.url === 'string' && block.url === imageUrl) {
+            changed = true
+            return { ...block, filePath, file_path: filePath, attachmentId, attachment_id: attachmentId, shortId, short_id: shortId, sha256 }
+          }
+          return block
+        })
+        if (changed) {
+          db.prepare('UPDATE messages SET content_blocks = ? WHERE id = ?').run(JSON.stringify(updatedBlocks), messageId)
+        }
+      }
+    } catch (metadataError) {
+      console.warn('[LocalServer] Failed to annotate generated image content block with file path:', metadataError)
+    }
 
     return { filePath, attachmentId }
   } catch (error) {
@@ -3927,7 +4017,7 @@ function setupServer() {
   })
 
   // Sync Message
-  app.post('/api/sync/message', (req, res) => {
+  app.post('/api/sync/message', async (req, res) => {
     try {
       const {
         id,
@@ -4067,19 +4157,58 @@ function setupServer() {
         }
       }
 
-      // Process any image content_blocks and save them locally
+      // Process any image content_blocks and save them locally before responding so the
+      // caller can persist an exact generated-image path hint instead of a generic folder pattern.
+      const generatedImageFilePathsSet = new Set<string>(extractGeneratedImageFilePathsFromContentBlocks(content_blocks))
       const parsedBlocks = typeof content_blocks === 'string' ? JSON.parse(content_blocks) : content_blocks
       if (Array.isArray(parsedBlocks)) {
         const imageBlocks = parsedBlocks.filter((block: any) => block.type === 'image' && block.url)
-        for (const imageBlock of imageBlocks) {
-          // Save image asynchronously (don't block response)
-          saveGeneratedImage(id, imageBlock.url, imageBlock.mimeType || 'image/png').catch(err => {
-            console.error('[LocalServer] Failed to save generated image:', err)
+        if (imageBlocks.length > 0) {
+          console.log('[LocalServer] Found generated image blocks to save', {
+            messageId: id,
+            count: imageBlocks.length,
+            mimeTypes: imageBlocks.map((block: any) => block.mimeType || 'image/png'),
+            urlTypes: imageBlocks.map((block: any) =>
+              typeof block.url === 'string' && block.url.startsWith('data:') ? 'data-url' : 'url'
+            ),
           })
         }
+        for (const imageBlock of imageBlocks) {
+          const existingPath =
+            typeof imageBlock.filePath === 'string'
+              ? imageBlock.filePath
+              : typeof imageBlock.file_path === 'string'
+                ? imageBlock.file_path
+                : null
+          if (existingPath && existingPath.trim()) {
+            generatedImageFilePathsSet.add(existingPath.trim())
+            continue
+          }
+
+          try {
+            const result = await saveGeneratedImage(id, imageBlock.url, imageBlock.mimeType || 'image/png')
+            console.log('[LocalServer] Generated image save result', {
+              messageId: id,
+              saved: Boolean(result),
+              filePath: result?.filePath,
+              attachmentId: result?.attachmentId,
+            })
+            if (result?.filePath) {
+              generatedImageFilePathsSet.add(result.filePath)
+            }
+          } catch (err) {
+            console.error('[LocalServer] Failed to save generated image:', err)
+          }
+        }
+      } else if (content_blocks) {
+        console.warn('[LocalServer] content_blocks was not an array; generated image save skipped', {
+          messageId: id,
+          contentBlocksType: typeof content_blocks,
+        })
       }
 
-      res.json({ success: true, id })
+      const generatedImageFilePaths = Array.from(generatedImageFilePathsSet)
+      res.json({ success: true, id, generatedImageFilePaths })
     } catch (error) {
       console.error('[LocalServer] ❌ Error syncing message:', error)
       res.status(500).json({ error: 'Failed to sync message' })
@@ -4139,7 +4268,8 @@ function setupServer() {
             height || null,
             size_bytes || null,
             sha256,
-            created_at || new Date().toISOString()
+            created_at || new Date().toISOString(),
+            null
           )
         }
         // If existingAttachment.id === id, do nothing (already exists with same ID)
@@ -4157,7 +4287,8 @@ function setupServer() {
           height || null,
           size_bytes || null,
           sha256 || null,
-          created_at || new Date().toISOString()
+          created_at || new Date().toISOString(),
+          null
         )
       }
 
@@ -4261,7 +4392,8 @@ function setupServer() {
               null, // height
               buffer.length,
               sha256,
-              now
+              now,
+              null
             )
           }
 
