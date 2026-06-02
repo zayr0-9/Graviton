@@ -1,7 +1,7 @@
 {
   "name": "graviton",
   "private": true,
-  "version": "0.1.96",
+  "version": "0.1.98",
   "type": "module",
   "main": "electron/main.mjs",
   "overrides": {},
@@ -30,6 +30,7 @@
     "package:electron": "electron-builder"
   },
   "dependencies": {
+    "@ai-sdk/amazon-bedrock": "^4.0.111",
     "@ai-sdk/openai": "^3.0.65",
     "@dagrejs/dagre": "^1.1.5",
     "@hyper-labs/hyper-router": "file:hyper-labs-hyper-router-0.1.5.tgz",

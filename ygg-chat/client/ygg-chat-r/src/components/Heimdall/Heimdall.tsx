@@ -26,6 +26,10 @@ import { useIsMobile } from '../../hooks/useMediaQuery'
 import type { RootState } from '../../store/store'
 import { parseId } from '../../utils/helpers'
 import stripMarkdownToText from '../../utils/markdownStripper'
+import {
+  HEIMDALL_NOTE_PREVIEW_HOVER_PADDING_ENABLED_CHANGE_EVENT,
+  loadHeimdallNotePreviewHoverPaddingEnabled,
+} from '../../helpers/chatUiSettingsStorage'
 // import { MarkdownLink } from '../MarkdownLink/MarkdownLink'
 import { environment, localApi } from '../../utils/api'
 import { DeleteConfirmModal } from '../DeleteConfirmModal/DeleteConfirmModal'
@@ -275,6 +279,26 @@ export const Heimdall: React.FC<HeimdallProps> = ({
       return false
     }
   })
+
+  const [notePreviewHoverPaddingEnabled, setNotePreviewHoverPaddingEnabled] = useState<boolean>(() =>
+    loadHeimdallNotePreviewHoverPaddingEnabled()
+  )
+
+  useEffect(() => {
+    const handleNotePreviewHoverPaddingChange = (event: CustomEvent<boolean>) => {
+      setNotePreviewHoverPaddingEnabled(event.detail)
+    }
+
+    window.addEventListener(
+      HEIMDALL_NOTE_PREVIEW_HOVER_PADDING_ENABLED_CHANGE_EVENT,
+      handleNotePreviewHoverPaddingChange as EventListener
+    )
+    return () =>
+      window.removeEventListener(
+        HEIMDALL_NOTE_PREVIEW_HOVER_PADDING_ENABLED_CHANGE_EVENT,
+        handleNotePreviewHoverPaddingChange as EventListener
+      )
+  }, [])
 
   const toggleHeatmapMode = useCallback(() => {
     setHeatmapMode(prev => {
@@ -4079,30 +4103,34 @@ export const Heimdall: React.FC<HeimdallProps> = ({
             </div>
           )
         })()}
-      {hoveredNote && (
-        <div
-          className='absolute z-30'
-          data-heimdall-wheel-exempt='true'
-          onMouseEnter={handleNotePreviewEnter}
-          onMouseLeave={handleNotePreviewLeave}
-          style={{
-            left: Math.max(
-              10,
-              Math.min(
-                hoveredNote.x + 10 - NOTE_PREVIEW_HOVER_PADDING,
-                dimensions.width - (NOTE_PREVIEW_WIDTH + NOTE_PREVIEW_HOVER_PADDING * 2) - 10
-              )
-            ),
-            top: Math.max(
-              10,
-              Math.min(
-                hoveredNote.y + 10 - NOTE_PREVIEW_HOVER_PADDING,
-                dimensions.height - (NOTE_PREVIEW_MAX_HEIGHT + NOTE_PREVIEW_HOVER_PADDING * 2) - 10
-              )
-            ),
-            padding: `${NOTE_PREVIEW_HOVER_PADDING}px`,
-          }}
-        >
+      {hoveredNote &&
+        (() => {
+          const notePreviewHoverPadding = notePreviewHoverPaddingEnabled ? NOTE_PREVIEW_HOVER_PADDING : 0
+
+          return (
+            <div
+              className='absolute z-30'
+              data-heimdall-wheel-exempt='true'
+              onMouseEnter={handleNotePreviewEnter}
+              onMouseLeave={handleNotePreviewLeave}
+              style={{
+                left: Math.max(
+                  10,
+                  Math.min(
+                    hoveredNote.x + 10 - notePreviewHoverPadding,
+                    dimensions.width - (NOTE_PREVIEW_WIDTH + notePreviewHoverPadding * 2) - 10
+                  )
+                ),
+                top: Math.max(
+                  10,
+                  Math.min(
+                    hoveredNote.y + 10 - notePreviewHoverPadding,
+                    dimensions.height - (NOTE_PREVIEW_MAX_HEIGHT + notePreviewHoverPadding * 2) - 10
+                  )
+                ),
+                padding: `${notePreviewHoverPadding}px`,
+              }}
+            >
           <div
             className='p-4 rounded-lg shadow-xl border no-scrollbar'
             data-heimdall-wheel-exempt='true'
@@ -4129,7 +4157,8 @@ export const Heimdall: React.FC<HeimdallProps> = ({
             </div>
           </div>
         </div>
-      )}
+          )
+        })()}
       {/* Note dialog */}
       {/* Subagent Calls Modal */}
       {subagentPanel &&

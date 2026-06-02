@@ -126,4 +126,22 @@ describe('registerEphemeralGenerateRoutes', () => {
     expect(payload.provider).toBe('openrouter')
     expect(payload.message?.content).toBe('hi')
   })
+
+  it('ephemeral chat routes explicit bedrock requests through local bedrock handling', async () => {
+    const res = await fetch(`${baseUrl}/api/headless/ephemeral/chat`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        provider: 'bedrock',
+        content: 'hello',
+        modelName: 'anthropic.claude-3-5-sonnet-20241022-v2:0',
+        history: [],
+      }),
+    })
+
+    expect(res.status).toBe(500)
+    const payload = (await res.json()) as any
+    expect(payload.success).toBe(false)
+    expect(payload.error).toContain('AWS Bedrock credentials missing')
+  })
 })

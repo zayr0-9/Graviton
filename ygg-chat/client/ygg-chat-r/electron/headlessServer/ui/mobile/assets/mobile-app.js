@@ -28,9 +28,9 @@ var __toESM = (mod, isNodeMode, target) => (target = mod != null ? __create(__ge
   mod
 ));
 
-// node_modules/react/cjs/react.production.js
+// ../../node_modules/react/cjs/react.production.js
 var require_react_production = __commonJS({
-  "node_modules/react/cjs/react.production.js"(exports) {
+  "../../node_modules/react/cjs/react.production.js"(exports) {
     "use strict";
     var REACT_ELEMENT_TYPE = /* @__PURE__ */ Symbol.for("react.transitional.element");
     var REACT_PORTAL_TYPE = /* @__PURE__ */ Symbol.for("react.portal");
@@ -469,9 +469,9 @@ var require_react_production = __commonJS({
   }
 });
 
-// node_modules/react/index.js
+// ../../node_modules/react/index.js
 var require_react = __commonJS({
-  "node_modules/react/index.js"(exports, module) {
+  "../../node_modules/react/index.js"(exports, module) {
     "use strict";
     if (true) {
       module.exports = require_react_production();
@@ -481,9 +481,9 @@ var require_react = __commonJS({
   }
 });
 
-// node_modules/scheduler/cjs/scheduler.production.js
+// ../../node_modules/scheduler/cjs/scheduler.production.js
 var require_scheduler_production = __commonJS({
-  "node_modules/scheduler/cjs/scheduler.production.js"(exports) {
+  "../../node_modules/scheduler/cjs/scheduler.production.js"(exports) {
     "use strict";
     function push2(heap, node2) {
       var index3 = heap.length;
@@ -754,9 +754,9 @@ var require_scheduler_production = __commonJS({
   }
 });
 
-// node_modules/scheduler/index.js
+// ../../node_modules/scheduler/index.js
 var require_scheduler = __commonJS({
-  "node_modules/scheduler/index.js"(exports, module) {
+  "../../node_modules/scheduler/index.js"(exports, module) {
     "use strict";
     if (true) {
       module.exports = require_scheduler_production();
@@ -766,9 +766,9 @@ var require_scheduler = __commonJS({
   }
 });
 
-// node_modules/react-dom/cjs/react-dom.production.js
+// ../../node_modules/react-dom/cjs/react-dom.production.js
 var require_react_dom_production = __commonJS({
-  "node_modules/react-dom/cjs/react-dom.production.js"(exports) {
+  "../../node_modules/react-dom/cjs/react-dom.production.js"(exports) {
     "use strict";
     var React24 = require_react();
     function formatProdErrorMessage(code4) {
@@ -915,9 +915,9 @@ var require_react_dom_production = __commonJS({
   }
 });
 
-// node_modules/react-dom/index.js
+// ../../node_modules/react-dom/index.js
 var require_react_dom = __commonJS({
-  "node_modules/react-dom/index.js"(exports, module) {
+  "../../node_modules/react-dom/index.js"(exports, module) {
     "use strict";
     function checkDCE() {
       if (typeof __REACT_DEVTOOLS_GLOBAL_HOOK__ === "undefined" || typeof __REACT_DEVTOOLS_GLOBAL_HOOK__.checkDCE !== "function") {
@@ -941,9 +941,9 @@ var require_react_dom = __commonJS({
   }
 });
 
-// node_modules/react-dom/cjs/react-dom-client.production.js
+// ../../node_modules/react-dom/cjs/react-dom-client.production.js
 var require_react_dom_client_production = __commonJS({
-  "node_modules/react-dom/cjs/react-dom-client.production.js"(exports) {
+  "../../node_modules/react-dom/cjs/react-dom-client.production.js"(exports) {
     "use strict";
     var Scheduler = require_scheduler();
     var React24 = require_react();
@@ -12682,9 +12682,9 @@ var require_react_dom_client_production = __commonJS({
   }
 });
 
-// node_modules/react-dom/client.js
+// ../../node_modules/react-dom/client.js
 var require_client = __commonJS({
-  "node_modules/react-dom/client.js"(exports, module) {
+  "../../node_modules/react-dom/client.js"(exports, module) {
     "use strict";
     function checkDCE() {
       if (typeof __REACT_DEVTOOLS_GLOBAL_HOOK__ === "undefined" || typeof __REACT_DEVTOOLS_GLOBAL_HOOK__.checkDCE !== "function") {
@@ -12946,9 +12946,9 @@ var require_cjs3 = __commonJS({
   }
 });
 
-// node_modules/react/cjs/react-jsx-runtime.production.js
+// ../../node_modules/react/cjs/react-jsx-runtime.production.js
 var require_react_jsx_runtime_production = __commonJS({
-  "node_modules/react/cjs/react-jsx-runtime.production.js"(exports) {
+  "../../node_modules/react/cjs/react-jsx-runtime.production.js"(exports) {
     "use strict";
     var REACT_ELEMENT_TYPE = /* @__PURE__ */ Symbol.for("react.transitional.element");
     var REACT_FRAGMENT_TYPE = /* @__PURE__ */ Symbol.for("react.fragment");
@@ -12976,9 +12976,9 @@ var require_react_jsx_runtime_production = __commonJS({
   }
 });
 
-// node_modules/react/jsx-runtime.js
+// ../../node_modules/react/jsx-runtime.js
 var require_jsx_runtime = __commonJS({
-  "node_modules/react/jsx-runtime.js"(exports, module) {
+  "../../node_modules/react/jsx-runtime.js"(exports, module) {
     "use strict";
     if (true) {
       module.exports = require_react_jsx_runtime_production();
@@ -49273,7 +49273,7 @@ var mobileApi = {
     const payload = await jsonFetch(`/api/provider-auth/models${query}`, { method: "GET" });
     return Array.isArray(payload?.providers) ? payload.providers.filter(
       (provider) => Boolean(
-        provider && (provider.name === "openaichatgpt" || provider.name === "openrouter" || provider.name === "lmstudio" || provider.name === "zai")
+        provider && (provider.name === "openaichatgpt" || provider.name === "openrouter" || provider.name === "lmstudio" || provider.name === "zai" || provider.name === "bedrock")
       )
     ).map((provider) => ({
       name: provider.name,
@@ -49319,6 +49319,9 @@ var mobileApi = {
   async getZaiTokenStatus(userId) {
     return this.getProviderTokenStatus("zai", userId);
   },
+  async getBedrockTokenStatus(userId) {
+    return this.getProviderTokenStatus("bedrock", userId);
+  },
   async getRuntimeAppAuth() {
     const session = await readRuntimeAppSession();
     return {
@@ -49340,6 +49343,9 @@ var mobileApi = {
   },
   async clearZaiToken(userId) {
     await this.clearProviderToken("zai", userId);
+  },
+  async clearBedrockToken(userId) {
+    await this.clearProviderToken("bedrock", userId);
   },
   async startOpenAiOAuth() {
     const payload = await jsonFetch(
@@ -49399,6 +49405,15 @@ var mobileApi = {
   },
   async storeZaiToken(params) {
     await jsonFetch("/api/provider-auth/zai/token", {
+      method: "POST",
+      body: JSON.stringify({
+        userId: params.userId,
+        accessToken: params.accessToken
+      })
+    });
+  },
+  async storeBedrockToken(params) {
+    await jsonFetch("/api/provider-auth/bedrock/token", {
       method: "POST",
       body: JSON.stringify({
         userId: params.userId,
@@ -49494,7 +49509,7 @@ var import_react7 = __toESM(require_react(), 1);
 // electron/headlessServer/ui/mobile/src/components/ui/badge.tsx
 var import_react = __toESM(require_react(), 1);
 
-// node_modules/clsx/dist/clsx.mjs
+// ../../node_modules/clsx/dist/clsx.mjs
 function r(e) {
   var t, f, n = "";
   if ("string" == typeof e || "number" == typeof e) n += e;
@@ -49620,7 +49635,7 @@ var import_react_dom2 = __toESM(require_react_dom(), 1);
 var import_react19 = __toESM(require_react(), 1);
 var import_react_dom = __toESM(require_react_dom(), 1);
 
-// node_modules/@monaco-editor/loader/lib/es/_virtual/_rollupPluginBabelHelpers.js
+// ../../node_modules/@monaco-editor/loader/lib/es/_virtual/_rollupPluginBabelHelpers.js
 function _arrayLikeToArray(r2, a) {
   (null == a || a > r2.length) && (a = r2.length);
   for (var e = 0, n = Array(a); e < a; e++) n[e] = r2[e];
@@ -49723,7 +49738,7 @@ function _unsupportedIterableToArray(r2, a) {
   }
 }
 
-// node_modules/state-local/lib/es/state-local.js
+// ../../node_modules/state-local/lib/es/state-local.js
 function _defineProperty2(obj, key, value) {
   if (key in obj) {
     Object.defineProperty(obj, key, {
@@ -49885,14 +49900,14 @@ var index = {
 };
 var state_local_default = index;
 
-// node_modules/@monaco-editor/loader/lib/es/config/index.js
+// ../../node_modules/@monaco-editor/loader/lib/es/config/index.js
 var config = {
   paths: {
     vs: "https://cdn.jsdelivr.net/npm/monaco-editor@0.55.1/min/vs"
   }
 };
 
-// node_modules/@monaco-editor/loader/lib/es/utils/curry.js
+// ../../node_modules/@monaco-editor/loader/lib/es/utils/curry.js
 function curry2(fn) {
   return function curried() {
     var _this = this;
@@ -49908,12 +49923,12 @@ function curry2(fn) {
   };
 }
 
-// node_modules/@monaco-editor/loader/lib/es/utils/isObject.js
+// ../../node_modules/@monaco-editor/loader/lib/es/utils/isObject.js
 function isObject2(value) {
   return {}.toString.call(value).includes("Object");
 }
 
-// node_modules/@monaco-editor/loader/lib/es/validators/index.js
+// ../../node_modules/@monaco-editor/loader/lib/es/validators/index.js
 function validateConfig(config3) {
   if (!config3) errorHandler2("configIsRequired");
   if (!isObject2(config3)) errorHandler2("configType");
@@ -49944,7 +49959,7 @@ var validators2 = {
   config: validateConfig
 };
 
-// node_modules/@monaco-editor/loader/lib/es/utils/compose.js
+// ../../node_modules/@monaco-editor/loader/lib/es/utils/compose.js
 var compose2 = function compose3() {
   for (var _len = arguments.length, fns = new Array(_len), _key = 0; _key < _len; _key++) {
     fns[_key] = arguments[_key];
@@ -49956,7 +49971,7 @@ var compose2 = function compose3() {
   };
 };
 
-// node_modules/@monaco-editor/loader/lib/es/utils/deepMerge.js
+// ../../node_modules/@monaco-editor/loader/lib/es/utils/deepMerge.js
 function merge(target, source) {
   Object.keys(source).forEach(function(key) {
     if (source[key] instanceof Object) {
@@ -49968,7 +49983,7 @@ function merge(target, source) {
   return _objectSpread2(_objectSpread2({}, target), source);
 }
 
-// node_modules/@monaco-editor/loader/lib/es/utils/makeCancelable.js
+// ../../node_modules/@monaco-editor/loader/lib/es/utils/makeCancelable.js
 var CANCELATION_MESSAGE = {
   type: "cancelation",
   msg: "operation is manually canceled"
@@ -49986,7 +50001,7 @@ function makeCancelable(promise) {
   }, wrappedPromise;
 }
 
-// node_modules/@monaco-editor/loader/lib/es/loader/index.js
+// ../../node_modules/@monaco-editor/loader/lib/es/loader/index.js
 var _excluded = ["monaco"];
 var _state$create = state_local_default.create({
   config,
@@ -50099,7 +50114,7 @@ var loader = {
   __getMonacoInstance
 };
 
-// node_modules/@monaco-editor/react/dist/index.mjs
+// ../../node_modules/@monaco-editor/react/dist/index.mjs
 var import_react8 = __toESM(require_react(), 1);
 var import_react9 = __toESM(require_react(), 1);
 var import_react10 = __toESM(require_react(), 1);

@@ -35,6 +35,7 @@ import {
   SendMessagePayload,
   ToolDefinition,
 } from './chatTypes'
+import { createBedrockStreamingRequest } from './Bedrock'
 import { createLmStudioStreamingRequest } from './LMStudio'
 import { createOpenAIChatGPTStreamingRequest } from './OpenAIChatGPT'
 import { createZaiStreamingRequest } from './Zai'
@@ -54,7 +55,11 @@ import { DEFAULT_COMPACTION_SYSTEM_PROMPT, loadProviderSettings } from '../../he
 import { getDefaultBashTimeoutMs, getDefaultToolCallTimeoutMs } from '../../helpers/toolExecutionSettings'
 import { updateToolEnabledState } from '../../helpers/toolSettingsStorage'
 import { generateStreamId, inferStreamTypeFromId, STREAM_PRUNE_DELAY } from './streamHelpers'
-import sysPromptConfig from './sys_prompt.json'
+import {
+  assertToolAllowedForOperationMode,
+  buildOperationModeSystemPrompt,
+  filterToolsForOperationMode,
+} from './operationModeSystemPrompt'
 import {
   getAllTools,
   getToolsForAI,
@@ -1423,7 +1428,7 @@ const DEFAULT_SUBAGENT_MODEL = 'openai/gpt-5.3-codex'
 const normalizeProviderSlug = (providerName: string | null | undefined): string =>
   (providerName || '').toLowerCase().replace(/\s+/g, '')
 
-type SubagentInheritedProvider = 'openaichatgpt' | 'openrouter' | 'lmstudio' | 'zai'
+type SubagentInheritedProvider = 'openaichatgpt' | 'openrouter' | 'lmstudio' | 'zai' | 'bedrock'
 
 const resolveInheritedSubagentProvider = (
   callerProviderName: string | null | undefined
@@ -1433,6 +1438,7 @@ const resolveInheritedSubagentProvider = (
   if (slug === 'openrouter') return 'openrouter'
   if (slug === 'lmstudio') return 'lmstudio'
   if (slug === 'zai' || slug === 'z.ai' || slug === 'glm') return 'zai'
+  if (slug === 'bedrock' || slug === 'awsbedrock' || slug === 'aws-bedrock' || slug === 'amazonbedrock' || slug === 'amazon-bedrock') return 'bedrock'
   return undefined
 }
 
@@ -2722,10 +2728,10 @@ const executeToolWithPermissionCheck = async (
     callerProvider: context?.provider ?? null,
   }
 
-  // Always resolve operation mode at execution time so Chat/Agent toggles apply mid-stream.
-  const runToolWithLiveOperationMode = async () => {
-    const liveOperationMode = readLiveState().chat.operationMode ?? operationMode
-    return await executeLocalTool(effectiveToolCall, rootPath, liveOperationMode, extendedContext)
+  // Use the operation mode captured for this send/tool loop for predictable safety behavior.
+  const runToolWithCapturedOperationMode = async () => {
+    assertToolAllowedForOperationMode(effectiveToolCall, operationMode)
+    return await executeLocalTool(effectiveToolCall, rootPath, operationMode, extendedContext)
   }
 
   try {
@@ -2768,7 +2774,7 @@ const executeToolWithPermissionCheck = async (
 
     let result: any
     if (shouldBypassToolPermission(effectiveToolCall)) {
-      result = await runToolWithLiveOperationMode()
+      result = await runToolWithCapturedOperationMode()
     } else {
       const permissionDecision = await requestToolPermissionDecision(dispatch, readLiveState, effectiveToolCall)
 
@@ -2776,7 +2782,7 @@ const executeToolWithPermissionCheck = async (
         throw new Error('Tool execution denied by user')
       }
 
-      result = await runToolWithLiveOperationMode()
+      result = await runToolWithCapturedOperationMode()
     }
 
     if (context?.enableHooks) {
@@ -2931,6 +2937,7 @@ export const compactBranch = createAsyncThunk<
       const providerSlug = provider.toLowerCase().replace(/\s+/g, '')
       const isLmStudio = providerSlug === 'lmstudio'
       const isOpenAIChatGPT = providerSlug === 'openaichatgpt' || providerSlug === 'openai(chatgpt)'
+      const isBedrock = /^(bedrock|awsbedrock|aws-bedrock|amazonbedrock|amazon-bedrock)$/.test(providerSlug)
       const isZai =
         providerSlug === 'z.ai/glm' || providerSlug === 'zai/glm' || providerSlug === 'zai' || providerSlug === 'glm'
 
@@ -3022,8 +3029,8 @@ export const compactBranch = createAsyncThunk<
             },
           }
         )
-      } else if (isOpenAIChatGPT || isZai) {
-        await (isZai ? createZaiStreamingRequest : createOpenAIChatGPTStreamingRequest)(
+      } else if (isOpenAIChatGPT || isZai || isBedrock) {
+        await (isBedrock ? createBedrockStreamingRequest : isZai ? createZaiStreamingRequest : createOpenAIChatGPTStreamingRequest)(
           {
             conversationId,
             parentId: parentMessageId,
@@ -3033,7 +3040,7 @@ export const compactBranch = createAsyncThunk<
               { role: 'system', content: compactionSystemPrompt },
               { role: 'user', content: compactionUserPrompt },
             ],
-            ...(isZai ? { userId: auth.userId } : {}),
+            ...(isZai || isBedrock ? { userId: auth.userId } : {}),
             tools: [],
           },
           {
@@ -3259,36 +3266,26 @@ export const sendMessage = createAsyncThunk<
       const appProvider = providerRaw.toLowerCase()
       const providerSlug = appProvider.replace(/\s+/g, '')
       const serverProvider =
-        providerSlug === 'google' ? 'gemini' : /^(zai|glm|z\.ai)(\/glm)?$/.test(providerSlug) ? 'zai' : providerSlug
+        providerSlug === 'google' ? 'gemini' : /^(zai|glm|z\.ai)(\/glm)?$/.test(providerSlug) ? 'zai' : /^(bedrock|awsbedrock|aws-bedrock|amazonbedrock|amazon-bedrock)$/.test(providerSlug) ? 'bedrock' : providerSlug
       const openRouterTemperature = resolveOpenRouterTemperature(providerSlug)
       const isLmStudio = providerSlug === 'lmstudio'
       const isOpenAIChatGPT = providerSlug === 'openaichatgpt' || providerSlug === 'openai(chatgpt)'
+      const isBedrock = /^(bedrock|awsbedrock|aws-bedrock|amazonbedrock|amazon-bedrock)$/.test(providerSlug)
       const isZai =
         providerSlug === 'z.ai/glm' || providerSlug === 'zai/glm' || providerSlug === 'zai' || providerSlug === 'glm'
       // Gather any image drafts (base64) captured before send start so UI can clear immediately.
       const attachmentsBase64 = preSendAttachmentsBase64
 
-      // Combine system prompts in order: user default > project > conversation
+      // Combine mode, user default, project, and conversation system prompts.
       const selectedProject = selectSelectedProject(state)
-      let systemPrompt = ''
-
-      // 1. First, check for default user system prompt from React Query cache
+      const operationModeAtSend = state.chat.operationMode
       const defaultUserPrompt = getDefaultUserSystemPromptFromCache(extra.queryClient, auth.userId)
-      if (defaultUserPrompt?.content) {
-        systemPrompt = defaultUserPrompt.content
-      }
-
-      // 2. Then add project system prompt
-      if (selectedProject?.system_prompt) {
-        if (systemPrompt) systemPrompt += '\n\n'
-        systemPrompt += selectedProject.system_prompt
-      }
-
-      // 3. Finally add conversation-specific system prompt
-      if (state.conversations.systemPrompt) {
-        if (systemPrompt) systemPrompt += '\n\n'
-        systemPrompt += state.conversations.systemPrompt
-      }
+      const systemPrompt = buildOperationModeSystemPrompt({
+        operationMode: operationModeAtSend,
+        defaultUserPrompt: defaultUserPrompt?.content,
+        projectPrompt: selectedProject?.system_prompt,
+        conversationPrompt: state.conversations.systemPrompt,
+      })
       const projectContext = selectedProject?.context || null
       const conversationContextSource = state.conversations.convContext || null
       const combinedContext =
@@ -3304,8 +3301,6 @@ export const sendMessage = createAsyncThunk<
       // Keep cwd for tool execution context only (do not inject cwd into system prompt)
       const payloadCwd = typeof cwd === 'string' ? cwd.trim() : (cwd ?? null)
       const effectiveToolRootPath = payloadCwd || conversationMeta?.cwd || state.ideContext.workspace?.rootPath || null
-      // Append custom tools explanation to system prompt
-      systemPrompt = systemPrompt + '\n\n' + sysPromptConfig.customToolsPrompt
       const baseSystemPrompt = systemPrompt
 
       // Determine execution mode
@@ -3360,10 +3355,11 @@ export const sendMessage = createAsyncThunk<
         const shouldUseLmStudio = isElectronMode && isLmStudio
         const shouldUseOpenAIChatGPT = isElectronMode && isOpenAIChatGPT
         const shouldUseZai = isElectronMode && isZai
+        const shouldUseBedrock = isElectronMode && isBedrock
 
         // For LM Studio or OpenAI ChatGPT, synthesize the user message locally on the first turn so history is not empty
         if (
-          (shouldUseLmStudio || shouldUseOpenAIChatGPT || shouldUseZai) &&
+          (shouldUseLmStudio || shouldUseOpenAIChatGPT || shouldUseZai || shouldUseBedrock) &&
           turnCount === 1 &&
           currentTurnContent &&
           currentTurnContent.trim()
@@ -3422,8 +3418,8 @@ export const sendMessage = createAsyncThunk<
           })
 
           // Directly persist to local SQLite for LM Studio/OpenAI ChatGPT (dualSync skips local-only records)
-          if ((shouldUseLmStudio || shouldUseOpenAIChatGPT || shouldUseZai) && isElectronMode) {
-            const providerLabel = shouldUseLmStudio ? 'lmstudio' : shouldUseZai ? 'zai' : 'openai-chatgpt'
+          if ((shouldUseLmStudio || shouldUseOpenAIChatGPT || shouldUseZai || shouldUseBedrock) && isElectronMode) {
+            const providerLabel = shouldUseLmStudio ? 'lmstudio' : shouldUseZai ? 'zai' : shouldUseBedrock ? 'bedrock' : 'openai-chatgpt'
             localApi
               .post('/sync/message', {
                 ...newUserMessage,
@@ -3452,7 +3448,9 @@ export const sendMessage = createAsyncThunk<
               ? 'sendMessage/lmstudio'
               : shouldUseZai
                 ? 'sendMessage/zai'
-                : 'sendMessage/openai-chatgpt',
+                : shouldUseBedrock
+                  ? 'sendMessage/bedrock'
+                  : 'sendMessage/openai-chatgpt',
           })
 
           // CRITICAL: Update parent to user message ID so assistant reply is parented correctly
@@ -3512,7 +3510,7 @@ export const sendMessage = createAsyncThunk<
                 modelName,
                 systemPrompt,
                 messages: lmMessages,
-                tools: getAllTools(),
+                tools: filterToolsForOperationMode(getAllTools(), operationModeAtSend),
               },
               {
                 onChunk: chunk => {
@@ -3568,7 +3566,7 @@ export const sendMessage = createAsyncThunk<
 
             if (pendingToolCalls.length > 0 && isStreamActive) {
               const rootPath = effectiveToolRootPath
-              const operationMode = state.chat.operationMode
+              const operationMode = operationModeAtSend
               const toolResultBlocks: any[] = []
               let successfulTool = false
 
@@ -3681,7 +3679,7 @@ export const sendMessage = createAsyncThunk<
           }
 
           // OpenAI ChatGPT / Z.AI: handle repeat locally via headless provider
-          if (shouldUseOpenAIChatGPT || shouldUseZai) {
+          if (shouldUseOpenAIChatGPT || shouldUseZai || shouldUseBedrock) {
             const toolNameById = buildToolNameMap(currentTurnHistory)
             const chatgptMessages: any[] = []
             if (systemPrompt && systemPrompt.trim()) {
@@ -3742,17 +3740,20 @@ export const sendMessage = createAsyncThunk<
               chatgptMessages.push({ role: 'user', content: currentTurnContent })
             }
 
-            await (shouldUseZai ? createZaiStreamingRequest : createOpenAIChatGPTStreamingRequest)(
+            await (shouldUseBedrock ? createBedrockStreamingRequest : shouldUseZai ? createZaiStreamingRequest : createOpenAIChatGPTStreamingRequest)(
               {
                 conversationId,
                 parentId: parent,
                 modelName,
                 systemPrompt,
                 messages: chatgptMessages,
-                ...(shouldUseZai
+                ...(shouldUseZai || shouldUseBedrock
                   ? { userId: auth.userId, think }
                   : { attachmentsBase64: turnCount === 1 ? attachmentsBase64 : undefined, reasoningConfig, serviceTier }),
-                tools: shouldUseZai ? getAllTools() : getToolsForOpenAIChatGPT(),
+                tools: filterToolsForOperationMode(
+                  shouldUseZai || shouldUseBedrock ? getAllTools() : getToolsForOpenAIChatGPT(),
+                  operationModeAtSend
+                ),
               },
               {
                 onChunk: async chunk => {
@@ -3829,7 +3830,7 @@ export const sendMessage = createAsyncThunk<
 
             if (pendingToolCalls.length > 0 && isStreamActive) {
               const rootPath = effectiveToolRootPath
-              const operationMode = state.chat.operationMode
+              const operationMode = operationModeAtSend
               const toolResultBlocks: any[] = []
               let successfulTool = false
 
@@ -4013,7 +4014,7 @@ export const sendMessage = createAsyncThunk<
                 imageConfig,
                 reasoningConfig,
                 serviceTier,
-                tools: getToolsForAI(),
+                tools: filterToolsForOperationMode(getToolsForAI(), operationModeAtSend),
               }),
               signal: controller.signal,
             },
@@ -4081,7 +4082,7 @@ export const sendMessage = createAsyncThunk<
                 modelName,
                 systemPrompt,
                 messages: lmMessages,
-                tools: getAllTools(),
+                tools: filterToolsForOperationMode(getAllTools(), operationModeAtSend),
               },
               {
                 onChunk: chunk => {
@@ -4123,7 +4124,7 @@ export const sendMessage = createAsyncThunk<
 
             if (pendingToolCalls.length > 0 && isStreamActive) {
               const rootPath = effectiveToolRootPath
-              const operationMode = state.chat.operationMode
+              const operationMode = operationModeAtSend
               const toolResultBlocks: any[] = []
               let successfulTool = false
 
@@ -4245,7 +4246,7 @@ export const sendMessage = createAsyncThunk<
           }
 
           // OpenAI ChatGPT: handle locally via OAuth tokens (personal use only)
-          if (shouldUseOpenAIChatGPT || shouldUseZai) {
+          if (shouldUseOpenAIChatGPT || shouldUseZai || shouldUseBedrock) {
             const toolNameById = buildToolNameMap(currentTurnHistory)
             const chatgptMessages: any[] = []
             if (systemPrompt && systemPrompt.trim()) {
@@ -4300,17 +4301,20 @@ export const sendMessage = createAsyncThunk<
               chatgptMessages.push({ role: 'user', content: currentTurnContent })
             }
 
-            await (shouldUseZai ? createZaiStreamingRequest : createOpenAIChatGPTStreamingRequest)(
+            await (shouldUseBedrock ? createBedrockStreamingRequest : shouldUseZai ? createZaiStreamingRequest : createOpenAIChatGPTStreamingRequest)(
               {
                 conversationId,
                 parentId: parent,
                 modelName,
                 systemPrompt,
                 messages: chatgptMessages,
-                ...(shouldUseZai
+                ...(shouldUseZai || shouldUseBedrock
                   ? { userId: auth.userId, think }
                   : { attachmentsBase64: turnCount === 1 ? attachmentsBase64 : undefined, reasoningConfig, serviceTier }),
-                tools: shouldUseZai ? getAllTools() : getToolsForOpenAIChatGPT(),
+                tools: filterToolsForOperationMode(
+                  shouldUseZai || shouldUseBedrock ? getAllTools() : getToolsForOpenAIChatGPT(),
+                  operationModeAtSend
+                ),
               },
               {
                 onChunk: async chunk => {
@@ -4391,7 +4395,7 @@ export const sendMessage = createAsyncThunk<
 
             if (pendingToolCalls.length > 0 && isStreamActive) {
               const rootPath = effectiveToolRootPath
-              const operationMode = state.chat.operationMode
+              const operationMode = operationModeAtSend
               const toolResultBlocks: any[] = []
               let successfulTool = false
 
@@ -4591,7 +4595,7 @@ export const sendMessage = createAsyncThunk<
                 imageConfig,
                 reasoningConfig,
                 serviceTier,
-                tools: getToolsForAI(),
+                tools: filterToolsForOperationMode(getToolsForAI(), operationModeAtSend),
               }),
               signal: controller.signal,
             },
@@ -4888,7 +4892,7 @@ export const sendMessage = createAsyncThunk<
 
             // Get rootPath from conversation cwd first, falling back to IDE context
             const rootPath = effectiveToolRootPath
-            const operationMode = state.chat.operationMode
+            const operationMode = operationModeAtSend
             // console.log(`🛠️ [chatActions] rootPath passed to tool: ${rootPath}`)
             let successfulDesktopTool = false
             let successfulBrowseWeb = false
@@ -5301,34 +5305,24 @@ export const editMessageWithBranching = createAsyncThunk<
       const appProvider = providerRaw.toLowerCase()
       const providerSlug = appProvider.replace(/\s+/g, '')
       const serverProvider =
-        providerSlug === 'google' ? 'gemini' : /^(zai|glm|z\.ai)(\/glm)?$/.test(providerSlug) ? 'zai' : providerSlug
+        providerSlug === 'google' ? 'gemini' : /^(zai|glm|z\.ai)(\/glm)?$/.test(providerSlug) ? 'zai' : /^(bedrock|awsbedrock|aws-bedrock|amazonbedrock|amazon-bedrock)$/.test(providerSlug) ? 'bedrock' : providerSlug
       const openRouterTemperature = resolveOpenRouterTemperature(providerSlug)
       const isLmStudio = providerSlug === 'lmstudio'
       const isOpenAIChatGPT = providerSlug === 'openaichatgpt' || providerSlug === 'openai(chatgpt)'
+      const isBedrock = /^(bedrock|awsbedrock|aws-bedrock|amazonbedrock|amazon-bedrock)$/.test(providerSlug)
       const isZai =
         providerSlug === 'z.ai/glm' || providerSlug === 'zai/glm' || providerSlug === 'zai' || providerSlug === 'glm'
 
-      // Combine system prompts in order: user default > project > conversation
+      // Combine mode, user default, project, and conversation system prompts.
       const selectedProject = selectSelectedProject(state)
-      let systemPrompt = ''
-
-      // 1. First, check for default user system prompt from React Query cache
+      const operationModeAtSend = state.chat.operationMode
       const defaultUserPrompt = getDefaultUserSystemPromptFromCache(extra.queryClient, auth.userId)
-      if (defaultUserPrompt?.content) {
-        systemPrompt = defaultUserPrompt.content
-      }
-
-      // 2. Then add project system prompt
-      if (selectedProject?.system_prompt) {
-        if (systemPrompt) systemPrompt += '\n\n'
-        systemPrompt += selectedProject.system_prompt
-      }
-
-      // 3. Finally add conversation-specific system prompt
-      if (state.conversations.systemPrompt) {
-        if (systemPrompt) systemPrompt += '\n\n'
-        systemPrompt += state.conversations.systemPrompt
-      }
+      const systemPrompt = buildOperationModeSystemPrompt({
+        operationMode: operationModeAtSend,
+        defaultUserPrompt: defaultUserPrompt?.content,
+        projectPrompt: selectedProject?.system_prompt,
+        conversationPrompt: state.conversations.systemPrompt,
+      })
       const projectContext = selectedProject?.context || null
       const conversationContextSource = state.conversations.convContext || null
       const combinedContext =
@@ -5507,8 +5501,6 @@ export const editMessageWithBranching = createAsyncThunk<
       // Keep cwd for tool execution context only (do not inject cwd into system prompt)
       const payloadCwd = typeof cwd === 'string' ? cwd.trim() : (cwd ?? null)
       const effectiveToolRootPath = payloadCwd || conversationMeta?.cwd || state.ideContext.workspace?.rootPath || null
-      // Append custom tools explanation to system prompt
-      systemPrompt = systemPrompt + '\n\n' + sysPromptConfig.customToolsPrompt
       const baseSystemPrompt = systemPrompt
 
       // Determine execution mode
@@ -5540,6 +5532,7 @@ export const editMessageWithBranching = createAsyncThunk<
       const shouldUseLmStudio = isElectronMode && isLmStudio
       const shouldUseOpenAIChatGPT = isElectronMode && isOpenAIChatGPT
       const shouldUseZai = isElectronMode && isZai
+        const shouldUseBedrock = isElectronMode && isBedrock
 
       while (continueTurn && turnCount < MAX_TURNS) {
         turnCount++
@@ -5648,7 +5641,7 @@ export const editMessageWithBranching = createAsyncThunk<
               modelName,
               systemPrompt,
               messages: lmMessages,
-              tools: getToolsForAI(),
+              tools: filterToolsForOperationMode(getToolsForAI(), operationModeAtSend),
             },
             {
               onChunk: chunk => {
@@ -5689,7 +5682,7 @@ export const editMessageWithBranching = createAsyncThunk<
 
           if (pendingToolCalls.length > 0 && isStreamActive) {
             const rootPath = effectiveToolRootPath
-            const operationMode = state.chat.operationMode
+            const operationMode = operationModeAtSend
             const toolResultBlocks: any[] = []
             let successfulTool = false
 
@@ -5801,7 +5794,7 @@ export const editMessageWithBranching = createAsyncThunk<
         }
 
         // OpenAI ChatGPT branch: handle locally via OAuth tokens
-        if (shouldUseOpenAIChatGPT || shouldUseZai) {
+        if (shouldUseOpenAIChatGPT || shouldUseZai || shouldUseBedrock) {
           const toolNameById = buildToolNameMap(currentTurnHistory)
           // Synthesize user message locally on first turn
           if (turnCount === 1 && currentTurnContent && currentTurnContent.trim()) {
@@ -5943,17 +5936,20 @@ export const editMessageWithBranching = createAsyncThunk<
             }
           }
 
-          await (shouldUseZai ? createZaiStreamingRequest : createOpenAIChatGPTStreamingRequest)(
+          await (shouldUseBedrock ? createBedrockStreamingRequest : shouldUseZai ? createZaiStreamingRequest : createOpenAIChatGPTStreamingRequest)(
             {
               conversationId,
               parentId: activeParentId,
               modelName,
               systemPrompt,
               messages: chatgptMessages,
-              ...(shouldUseZai
+              ...(shouldUseZai || shouldUseBedrock
                 ? { userId: auth.userId, think }
                 : { attachmentsBase64: turnCount === 1 ? attachmentsBase64 : undefined, serviceTier }),
-              tools: shouldUseZai ? getAllTools() : getToolsForOpenAIChatGPT(),
+              tools: filterToolsForOperationMode(
+                  shouldUseZai || shouldUseBedrock ? getAllTools() : getToolsForOpenAIChatGPT(),
+                  operationModeAtSend
+                ),
             },
             {
               onChunk: async chunk => {
@@ -6030,7 +6026,7 @@ export const editMessageWithBranching = createAsyncThunk<
 
           if (pendingToolCalls.length > 0 && isStreamActive) {
             const rootPath = effectiveToolRootPath
-            const operationMode = state.chat.operationMode
+            const operationMode = operationModeAtSend
             const toolResultBlocks: any[] = []
             let successfulTool = false
 
@@ -6206,7 +6202,7 @@ export const editMessageWithBranching = createAsyncThunk<
               isBranch: true,
               storageMode,
               isElectron: isElectronMode,
-              tools: getToolsForAI(),
+              tools: filterToolsForOperationMode(getToolsForAI(), operationModeAtSend),
             }),
             signal: controller.signal,
           },
@@ -6509,7 +6505,7 @@ export const editMessageWithBranching = createAsyncThunk<
             // 2. Execute tools and append tool_result blocks to assistant message
             const toolResultBlocks: any[] = []
             const rootPath = effectiveToolRootPath
-            const operationMode = state.chat.operationMode
+            const operationMode = operationModeAtSend
 
             let successfulDesktopTool = false
             let successfulBrowseWeb = false
@@ -6736,10 +6732,11 @@ export const sendMessageToBranch = createAsyncThunk<
       const appProvider = providerRaw.toLowerCase()
       const providerSlug = appProvider.replace(/\s+/g, '')
       const serverProvider =
-        providerSlug === 'google' ? 'gemini' : /^(zai|glm|z\.ai)(\/glm)?$/.test(providerSlug) ? 'zai' : providerSlug
+        providerSlug === 'google' ? 'gemini' : /^(zai|glm|z\.ai)(\/glm)?$/.test(providerSlug) ? 'zai' : /^(bedrock|awsbedrock|aws-bedrock|amazonbedrock|amazon-bedrock)$/.test(providerSlug) ? 'bedrock' : providerSlug
       const openRouterTemperature = resolveOpenRouterTemperature(providerSlug)
       const isLmStudio = providerSlug === 'lmstudio'
       const isOpenAIChatGPT = providerSlug === 'openaichatgpt' || providerSlug === 'openai(chatgpt)'
+      const isBedrock = /^(bedrock|awsbedrock|aws-bedrock|amazonbedrock|amazon-bedrock)$/.test(providerSlug)
       const isZai =
         providerSlug === 'z.ai/glm' || providerSlug === 'zai/glm' || providerSlug === 'zai' || providerSlug === 'glm'
       const attachmentsBase64 = preSendAttachmentsBase64
@@ -6759,11 +6756,13 @@ export const sendMessageToBranch = createAsyncThunk<
       // Use React Query cache as fallback for storage mode detection (handles local conversations not yet in Redux)
       const storageMode = conversationMeta?.storage_mode || getStorageModeFromCache(extra.queryClient, conversationId)
       // Keep cwd for tool execution context only (do not inject cwd into system prompt)
-      let effectiveSystemPrompt = systemPrompt
+      const operationModeAtSend = state.chat.operationMode
+      const effectiveSystemPrompt = buildOperationModeSystemPrompt({
+        operationMode: operationModeAtSend,
+        basePrompt: systemPrompt,
+      })
       const payloadCwd = typeof cwd === 'string' ? cwd.trim() : (cwd ?? null)
       const effectiveToolRootPath = payloadCwd || conversationMeta?.cwd || state.ideContext.workspace?.rootPath || null
-      // Append custom tools explanation to system prompt
-      effectiveSystemPrompt = (effectiveSystemPrompt || '') + '\n\n' + sysPromptConfig.customToolsPrompt
       const baseSystemPrompt = effectiveSystemPrompt
 
       // Determine execution mode
@@ -6824,6 +6823,7 @@ export const sendMessageToBranch = createAsyncThunk<
       const shouldUseLmStudio = isElectronMode && isLmStudio
       const shouldUseOpenAIChatGPT = isElectronMode && isOpenAIChatGPT
       const shouldUseZai = isElectronMode && isZai
+        const shouldUseBedrock = isElectronMode && isBedrock
 
       while (continueTurn && turnCount < MAX_TURNS) {
         turnCount++
@@ -6929,7 +6929,7 @@ export const sendMessageToBranch = createAsyncThunk<
               modelName,
               systemPrompt: effectiveSystemPrompt || '',
               messages: lmMessages,
-              tools: getToolsForAI(),
+              tools: filterToolsForOperationMode(getToolsForAI(), operationModeAtSend),
             },
             {
               onChunk: chunk => {
@@ -6969,7 +6969,7 @@ export const sendMessageToBranch = createAsyncThunk<
 
           if (pendingToolCalls.length > 0 && isStreamActive) {
             const rootPath = effectiveToolRootPath
-            const operationMode = state.chat.operationMode
+            const operationMode = operationModeAtSend
             const toolResultBlocks: any[] = []
             let successfulTool = false
 
@@ -7081,7 +7081,7 @@ export const sendMessageToBranch = createAsyncThunk<
         }
 
         // OpenAI ChatGPT branch: handle locally via OAuth tokens
-        if (shouldUseOpenAIChatGPT || shouldUseZai) {
+        if (shouldUseOpenAIChatGPT || shouldUseZai || shouldUseBedrock) {
           const toolNameById = buildToolNameMap(currentTurnHistory)
           // Synthesize user message locally on first turn
           if (turnCount === 1 && currentTurnContent && currentTurnContent.trim()) {
@@ -7204,17 +7204,20 @@ export const sendMessageToBranch = createAsyncThunk<
             }
           }
 
-          await (shouldUseZai ? createZaiStreamingRequest : createOpenAIChatGPTStreamingRequest)(
+          await (shouldUseBedrock ? createBedrockStreamingRequest : shouldUseZai ? createZaiStreamingRequest : createOpenAIChatGPTStreamingRequest)(
             {
               conversationId,
               parentId: currentParentId,
               modelName,
               systemPrompt: effectiveSystemPrompt || '',
               messages: chatgptMessages,
-              ...(shouldUseZai
+              ...(shouldUseZai || shouldUseBedrock
                 ? { userId: auth.userId, think }
                 : { attachmentsBase64: turnCount === 1 ? attachmentsBase64 : undefined, serviceTier }),
-              tools: shouldUseZai ? getAllTools() : getToolsForOpenAIChatGPT(),
+              tools: filterToolsForOperationMode(
+                  shouldUseZai || shouldUseBedrock ? getAllTools() : getToolsForOpenAIChatGPT(),
+                  operationModeAtSend
+                ),
             },
             {
               onChunk: async chunk => {
@@ -7290,7 +7293,7 @@ export const sendMessageToBranch = createAsyncThunk<
 
           if (pendingToolCalls.length > 0 && isStreamActive) {
             const rootPath = effectiveToolRootPath
-            const operationMode = state.chat.operationMode
+            const operationMode = operationModeAtSend
             const toolResultBlocks: any[] = []
             let successfulTool = false
 
@@ -7424,7 +7427,7 @@ export const sendMessageToBranch = createAsyncThunk<
               isBranch: true,
               storageMode,
               isElectron: isElectronMode,
-              tools: getToolsForAI(),
+              tools: filterToolsForOperationMode(getToolsForAI(), operationModeAtSend),
             }),
             signal: controller.signal,
           },
@@ -7690,7 +7693,7 @@ export const sendMessageToBranch = createAsyncThunk<
             // 2. Execute tools and append tool_result blocks to assistant message
             const toolResultBlocks: any[] = []
             const rootPath = effectiveToolRootPath
-            const operationMode = state.chat.operationMode
+            const operationMode = operationModeAtSend
 
             let successfulDesktopTool = false
             let successfulBrowseWeb = false

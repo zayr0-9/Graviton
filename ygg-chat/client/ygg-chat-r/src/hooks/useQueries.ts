@@ -999,6 +999,39 @@ export function useModels(provider: string | null) {
         }
       }
 
+      if (
+        normalizedSlug === 'bedrock' ||
+        normalizedSlug === 'awsbedrock' ||
+        normalizedSlug === 'aws/bedrock' ||
+        normalizedSlug === 'aws-bedrock' ||
+        normalizedSlug === 'amazonbedrock' ||
+        normalizedSlug === 'amazon-bedrock' ||
+        normalizedSlug === 'amazon/bedrock'
+      ) {
+        const models = [
+          'anthropic.claude-3-5-sonnet-20241022-v2:0',
+          'anthropic.claude-3-5-haiku-20241022-v1:0',
+          'anthropic.claude-3-sonnet-20240229-v1:0',
+          'anthropic.claude-3-haiku-20240307-v1:0',
+        ].map(name => ({
+          ...stringToModel(name),
+          contextLength: 200000,
+          inputTokenLimit: 200000,
+          outputTokenLimit: 8192,
+          thinking: false,
+        }))
+        const defaultModel = models[0] || stringToModel('anthropic.claude-3-5-sonnet-20241022-v2:0')
+        const storedSelection = getStoredSelectedModel()
+        const selectedModel = storedSelection ? models.find(m => m.name === storedSelection.name) || defaultModel : defaultModel
+
+        return {
+          models,
+          default: defaultModel,
+          selected: selectedModel,
+          userIsFreeTier: false,
+        }
+      }
+
       // OpenAI ChatGPT - local models (uses user's ChatGPT Plus/Pro subscription)
       if (normalizedSlug === 'openai(chatgpt)' || normalizedSlug === 'openaichatgpt') {
         const models = getOpenAIChatGPTModels() as Model[]

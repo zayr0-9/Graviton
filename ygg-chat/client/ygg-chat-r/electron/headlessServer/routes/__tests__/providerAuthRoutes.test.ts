@@ -90,6 +90,31 @@ describe('registerProviderAuthRoutes', () => {
     expect(tokenStore.get('openrouter', 'u2')).toBeNull()
   })
 
+  it('stores and clears bedrock credential records', async () => {
+    const credentials = JSON.stringify({
+      region: 'us-east-1',
+      accessKeyId: 'akid',
+      secretAccessKey: 'secret',
+    })
+    const putToken = await postJson(baseUrl, '/api/provider-auth/bedrock/token', {
+      userId: 'u-bedrock',
+      accessToken: credentials,
+    })
+    expect(putToken.status).toBe(200)
+
+    const getToken = await fetch(`${baseUrl}/api/provider-auth/bedrock/token?userId=u-bedrock`)
+    expect(getToken.status).toBe(200)
+    const tokenPayload = (await getToken.json()) as any
+    expect(tokenPayload.success).toBe(true)
+    expect(tokenPayload.hasToken).toBe(true)
+    expect(tokenPayload.token).toBeUndefined()
+    expect(tokenStore.get('bedrock', 'u-bedrock')?.accessToken).toBe(credentials)
+
+    const delToken = await deleteRequest(baseUrl, '/api/provider-auth/bedrock/token?userId=u-bedrock')
+    expect(delToken.status).toBe(200)
+    expect(tokenStore.get('bedrock', 'u-bedrock')).toBeNull()
+  })
+
   it('fetches live openrouter model listing from remote when token is stored', async () => {
     tokenStore.upsert({
       provider: 'openrouter',
@@ -143,5 +168,9 @@ describe('registerProviderAuthRoutes', () => {
     expect(providerNames).toContain('openaichatgpt')
     expect(providerNames).toContain('openrouter')
     expect(providerNames).toContain('lmstudio')
+    expect(providerNames).toContain('zai')
+    expect(providerNames).toContain('bedrock')
+    const bedrockProvider = payload.providers.find((provider: any) => provider.name === 'bedrock')
+    expect(bedrockProvider?.models).toContain('anthropic.claude-3-5-sonnet-20241022-v2:0')
   })
 })

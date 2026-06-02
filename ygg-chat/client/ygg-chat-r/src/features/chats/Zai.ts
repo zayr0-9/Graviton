@@ -15,6 +15,7 @@ export interface ZaiRequestPayload {
   systemPrompt: string
   messages: any[]
   userId?: string | null
+  provider?: 'zai' | 'bedrock'
   think?: boolean
   temperature?: number
   tools?: SharedToolDefinition[]
@@ -103,7 +104,7 @@ export async function createZaiStreamingRequest(payload: ZaiRequestPayload, hand
   await onChunk({ type: 'generation_started', messageId: assistantMessageId })
 
   const response = await localApi.post<any>('/headless/ephemeral/chat', {
-    provider: 'zai',
+    provider: payload.provider || 'zai',
     modelName: payload.modelName,
     content: '',
     history: payload.messages,
@@ -115,7 +116,7 @@ export async function createZaiStreamingRequest(payload: ZaiRequestPayload, hand
   })
 
   if (signal?.aborted) return
-  if (response?.success === false) throw new Error(response.error || 'Z.AI request failed')
+  if (response?.success === false) throw new Error(response.error || (payload.provider === 'bedrock' ? 'AWS Bedrock request failed' : 'Z.AI request failed'))
 
   const text = typeof response?.message?.content === 'string' ? response.message.content : typeof response?.content === 'string' ? response.content : ''
   const reasoning = typeof response?.reasoning === 'string' ? response.reasoning : ''

@@ -930,6 +930,11 @@ type CodexParsedOutput = {
   responseId?: string
   responseItemsAdded: any[]
   usage?: OpenAiResponseUsage
+  debug?: {
+    eventCounts: Record<string, number>
+    outputItemCount: number
+    addedItemCount: number
+  }
 }
 
 function numberOrZero(value: unknown): number {
@@ -938,6 +943,105 @@ function numberOrZero(value: unknown): number {
 
 function isOpenAiPromptCacheLoggingEnabled(): boolean {
   return /^(1|true|yes|on)$/i.test(process.env.YGG_OPENAI_PROMPT_CACHE_LOGS || '')
+}
+
+function createOpenAiChatgptTraceId(input: ProviderGenerateInput): string {
+  const base = input.railwayTurn?.conversationId?.trim() || input.userId || 'ygg-chat'
+  return `${base}:${Date.now().toString(36)}:${Math.random().toString(36).slice(2, 8)}`
+}
+
+function previewForLog(value: unknown, maxLength = 600): string {
+  const raw = typeof value === 'string' ? value : JSON.stringify(value)
+  if (!raw) return ''
+  return raw.length > maxLength ? `${raw.slice(0, maxLength)}...<truncated:${raw.length}>` : raw
+}
+
+function summarizeContentPart(part: any): Record<string, unknown> {
+  if (!part || typeof part !== 'object') return { type: typeof part }
+  const type = typeof part.type === 'string' ? part.type : 'unknown'
+  if (type === 'input_text' || type === 'output_text' || type === 'text') {
+    const text = typeof part.text === 'string' ? part.text : typeof part.content === 'string' ? part.content : ''
+    return { type, textLength: text.length }
+  }
+  if (type === 'input_image' || type === 'image_url' || type === 'image') {
+    const imageUrl = part.image_url || part.imageUrl || part.url || part.dataUrl
+    return { type, hasImageUrl: typeof imageUrl === 'string' && imageUrl.length > 0 }
+  }
+  return { type }
+}
+
+function summarizeInputItem(item: any): Record<string, unknown> {
+  if (!item || typeof item !== 'object') return { type: typeof item }
+  const content = Array.isArray(item.content) ? item.content : []
+  return {
+    type: item.type,
+    role: item.role,
+    contentParts: content.length,
+    contentSummary: content.slice(0, 6).map(summarizeContentPart),
+  }
+}
+
+function summarizeOpenAiChatgptRequestBody(body: any): Record<string, unknown> {
+  const inputItems = Array.isArray(body?.input) ? body.input : []
+  const tools = Array.isArray(body?.tools) ? body.tools : []
+  return {
+    model: body?.model,
+    stream: body?.stream,
+    store: body?.store,
+    serviceTier: body?.service_tier,
+    promptCacheKey: body?.prompt_cache_key,
+    promptCacheRetention: body?.prompt_cache_retention || 'in_memory',
+    hasPreviousResponseId: typeof body?.previous_response_id === 'string' && body.previous_response_id.length > 0,
+    previousResponseId: body?.previous_response_id,
+    instructionLength: typeof body?.instructions === 'string' ? body.instructions.length : 0,
+    inputItems: inputItems.length,
+    inputSummary: inputItems.slice(0, 12).map(summarizeInputItem),
+    tools: tools.length,
+    toolNames: tools.map((tool: any) => tool?.name || tool?.function?.name || tool?.type).filter(Boolean),
+    toolChoice: body?.tool_choice,
+    parallelToolCalls: body?.parallel_tool_calls,
+    include: body?.include,
+    reasoning: body?.reasoning,
+  }
+}
+
+function summarizeParsedOpenAiChatgptOutput(parsed: CodexParsedOutput): Record<string, unknown> {
+  return {
+    responseId: parsed.responseId,
+    textLength: parsed.text.length,
+    reasoningLength: parsed.reasoning.length,
+    toolCalls: parsed.toolCalls.length,
+    toolCallNames: parsed.toolCalls.map(call => call.name),
+    responseOutputItems: parsed.responseOutputItems.length,
+    responseItemsAdded: parsed.responseItemsAdded.length,
+    outputItemTypes: parsed.responseOutputItems.map((item: any) => item?.type).filter(Boolean),
+    usage: parsed.usage,
+    eventCounts: parsed.debug?.eventCounts,
+  }
+}
+
+function summarizeOpenAiEvent(parsed: any): Record<string, unknown> {
+  const item = parsed?.item
+  const response = parsed?.response
+  return {
+    type: parsed?.type,
+    itemId: parsed?.item_id || parsed?.itemId || parsed?.id || item?.id,
+    itemType: item?.type,
+    itemRole: item?.role,
+    itemPhase: item?.phase,
+    outputIndex: parsed?.output_index ?? parsed?.outputIndex ?? item?.output_index ?? item?.outputIndex,
+    deltaLength: typeof parsed?.delta === 'string' ? parsed.delta.length : undefined,
+    textLength: typeof parsed?.text === 'string' ? parsed.text.length : undefined,
+    responseId: response?.id,
+    responseStatus: response?.status,
+    responseError: response?.error,
+    incompleteDetails: response?.incomplete_details,
+  }
+}
+
+function logOpenAiChatgpt(level: 'info' | 'warn' | 'error', message: string, details?: Record<string, unknown>) {
+  const logger = level === 'error' ? console.error : level === 'warn' ? console.warn : console.info
+  logger(`[OpenAI ChatGPT] ${message}`, details || {})
 }
 
 function logOpenAiPromptCacheUsage(params: {
@@ -983,8 +1087,8 @@ function logOpenAiPromptCacheUsage(params: {
   })
 }
 
-function createCodexEventParser(params: { emit?: ProviderStreamEventHandler; modelName: string }) {
-  const { emit, modelName } = params
+function createCodexEventParser(params: { emit?: ProviderStreamEventHandler; modelName: string; traceId?: string }) {
+  const { emit, modelName, traceId } = params
   const useGPT53StrictTextAssembly = shouldUseGPT53StrictTextAssembly(modelName)
   let streamedText = ''
   let streamedReasoning = ''
@@ -1003,6 +1107,7 @@ function createCodexEventParser(params: { emit?: ProviderStreamEventHandler; mod
   const responseTextByItem = new Map<string, { text: string; outputIndex?: number; seq: number; fromDone: boolean }>()
   const imageGenerationItemsById = new Map<string, any>()
   const reasoningByKey = new Map<string, string>()
+  const eventCounts = new Map<string, number>()
   let callSeq = 0
   let responseSeq = 0
 
@@ -1131,6 +1236,12 @@ function createCodexEventParser(params: { emit?: ProviderStreamEventHandler; mod
   }
   const handle = (parsed: any) => {
     if (!parsed) return
+    const eventType = typeof parsed.type === 'string' ? parsed.type : 'unknown'
+    eventCounts.set(eventType, (eventCounts.get(eventType) || 0) + 1)
+    logOpenAiChatgpt('info', 'stream event', {
+      traceId,
+      ...summarizeOpenAiEvent(parsed),
+    })
     if (parsed.type === 'response.output_item.added' || parsed.type === 'response.output_item.done') {
       const item = parsed.item
       mergeOutputItem(item)
@@ -1260,7 +1371,7 @@ function createCodexEventParser(params: { emit?: ProviderStreamEventHandler; mod
       normalizedCompletedOutputItems.length > 0
         ? [...normalizedCompletedOutputItems, ...missingFallbackImages]
         : fallbackOutputItems
-    return {
+    const output = {
       text: selectFinalTextFromReplayItems(responseOutputItems, streamedText, useGPT53StrictTextAssembly),
       reasoning: selectReasoningFromReplayItems(responseOutputItems, streamedReasoning),
       toolCalls: extractToolCallsFromReplayItems(responseOutputItems),
@@ -1268,7 +1379,17 @@ function createCodexEventParser(params: { emit?: ProviderStreamEventHandler; mod
       responseId: completedResponseId,
       responseItemsAdded: normalizeResponseOutputItemsForReplay(addedResponseItems),
       usage: completedUsage,
+      debug: {
+        eventCounts: Object.fromEntries(eventCounts.entries()),
+        outputItemCount: responseOutputItems.length,
+        addedItemCount: addedResponseItems.length,
+      },
     }
+    logOpenAiChatgpt('info', 'parser finish', {
+      traceId,
+      ...summarizeParsedOpenAiChatgptOutput(output),
+    })
+    return output
   }
   return { handle, finish }
 }
@@ -1278,17 +1399,25 @@ async function readCodexSseOutput(params: {
   firstRead?: ReadableStreamReadResult<Uint8Array> | null
   emit?: ProviderStreamEventHandler
   modelName: string
+  traceId?: string
 }): Promise<CodexParsedOutput> {
   /* legacy parser body retained but bypassed below */
-  const parser = createCodexEventParser({ emit: params.emit, modelName: params.modelName })
+  const parser = createCodexEventParser({ emit: params.emit, modelName: params.modelName, traceId: params.traceId })
   const decoder = new TextDecoder()
   let buffer = ''
   let pendingRead: ReadableStreamReadResult<Uint8Array> | null = params.firstRead ?? null
+  let chunkCount = 0
+  let byteCount = 0
+  let dataEventCount = 0
+  let doneMarkerSeen = false
+  logOpenAiChatgpt('info', 'SSE parser start', { traceId: params.traceId, hasFirstRead: Boolean(params.firstRead) })
   while (true) {
     const readResult = pendingRead ?? (await params.reader.read())
     pendingRead = null
     const { done, value } = readResult
     if (done) break
+    chunkCount++
+    byteCount += value?.byteLength || 0
     buffer += decoder.decode(value, { stream: true })
     const lines = buffer.split('\n')
     buffer = lines.pop() || ''
@@ -1296,15 +1425,36 @@ async function readCodexSseOutput(params: {
       const trimmed = line.trim()
       if (!trimmed.startsWith('data:')) continue
       const payload = trimmed.slice(5).trim()
-      if (!payload || payload === '[DONE]') continue
+      if (!payload) continue
+      if (payload === '[DONE]') {
+        doneMarkerSeen = true
+        logOpenAiChatgpt('info', 'SSE done marker', { traceId: params.traceId })
+        continue
+      }
+      dataEventCount++
       try {
         parser.handle(JSON.parse(payload))
       } catch (error) {
-        if (error instanceof SyntaxError) continue
+        if (error instanceof SyntaxError) {
+          logOpenAiChatgpt('warn', 'SSE JSON parse failed', {
+            traceId: params.traceId,
+            error: error.message,
+            payloadPreview: previewForLog(payload),
+          })
+          continue
+        }
         throw error
       }
     }
   }
+  logOpenAiChatgpt('info', 'SSE reader ended', {
+    traceId: params.traceId,
+    chunkCount,
+    byteCount,
+    dataEventCount,
+    doneMarkerSeen,
+    trailingBufferLength: buffer.length,
+  })
   return parser.finish()
 }
 
@@ -1314,13 +1464,21 @@ async function readCodexWebSocketOutput(params: {
   body: any
   emit?: ProviderStreamEventHandler
   modelName: string
+  traceId?: string
   timeoutMs?: number
 }): Promise<CodexParsedOutput> {
-  const parser = createCodexEventParser({ emit: params.emit, modelName: params.modelName })
+  const parser = createCodexEventParser({ emit: params.emit, modelName: params.modelName, traceId: params.traceId })
   const wsEndpoint = params.endpoint.replace(/^https:/i, 'wss:').replace(/^http:/i, 'ws:')
+  logOpenAiChatgpt('info', 'WebSocket connect', {
+    traceId: params.traceId,
+    endpoint: wsEndpoint,
+    timeoutMs: params.timeoutMs ?? 120000,
+  })
   return await new Promise<CodexParsedOutput>((resolve, reject) => {
     let settled = false
     let completed = false
+    let messageCount = 0
+    let byteCount = 0
     const ws = new WebSocket(wsEndpoint, { headers: params.headers, perMessageDeflate: true })
     const finish = () => {
       if (settled) return
@@ -1329,7 +1487,15 @@ async function readCodexWebSocketOutput(params: {
       try {
         ws.close()
       } catch {}
-      resolve(parser.finish())
+      const parsed = parser.finish()
+      logOpenAiChatgpt('info', 'WebSocket finished', {
+        traceId: params.traceId,
+        completed,
+        messageCount,
+        byteCount,
+        ...summarizeParsedOpenAiChatgptOutput(parsed),
+      })
+      resolve(parsed)
     }
     const fail = (error: any) => {
       if (settled) return
@@ -1338,6 +1504,14 @@ async function readCodexWebSocketOutput(params: {
       try {
         ws.close()
       } catch {}
+      logOpenAiChatgpt('error', 'WebSocket failed', {
+        traceId: params.traceId,
+        completed,
+        messageCount,
+        byteCount,
+        error: error instanceof Error ? error.message : String(error),
+        stack: error instanceof Error ? error.stack : undefined,
+      })
       reject(error instanceof Error ? error : new Error(String(error)))
     }
     const timer = setTimeout(() => fail(new Error('OpenAI websocket idle timeout')), params.timeoutMs ?? 120000)
@@ -1346,13 +1520,20 @@ async function readCodexWebSocketOutput(params: {
     }
     ws.on('open', () => {
       bumpTimer()
+      logOpenAiChatgpt('info', 'WebSocket open; sending response.create', {
+        traceId: params.traceId,
+        request: summarizeOpenAiChatgptRequestBody(params.body),
+      })
       ws.send(JSON.stringify({ type: 'response.create', ...params.body }), err => {
         if (err) fail(err)
+        else logOpenAiChatgpt('info', 'WebSocket response.create sent', { traceId: params.traceId })
       })
     })
     ws.on('message', data => {
       bumpTimer()
       const text = typeof data === 'string' ? data : Buffer.isBuffer(data) ? data.toString('utf8') : data.toString()
+      messageCount++
+      byteCount += Buffer.byteLength(text, 'utf8')
       try {
         const parsed = JSON.parse(text)
         parser.handle(parsed)
@@ -1361,11 +1542,25 @@ async function readCodexWebSocketOutput(params: {
           finish()
         }
       } catch (error) {
+        logOpenAiChatgpt('error', 'WebSocket message handling failed', {
+          traceId: params.traceId,
+          error: error instanceof Error ? error.message : String(error),
+          payloadPreview: previewForLog(text),
+        })
         fail(error)
       }
     })
     ws.on('error', fail)
-    ws.on('close', (_code, reason) => {
+    ws.on('close', (code, reason) => {
+      logOpenAiChatgpt('warn', 'WebSocket close', {
+        traceId: params.traceId,
+        code,
+        reason: reason?.length ? reason.toString() : '',
+        completed,
+        settled,
+        messageCount,
+        byteCount,
+      })
       if (settled) return
       if (completed) finish()
       else fail(new Error(`OpenAI websocket closed before completion${reason?.length ? `: ${reason.toString()}` : ''}`))
@@ -1845,7 +2040,26 @@ export class OpenAiChatgptProvider implements HeadlessProvider {
   }
 
   async generate(input: ProviderGenerateInput, emit?: ProviderStreamEventHandler): Promise<ProviderGenerateOutput> {
+    const traceId = createOpenAiChatgptTraceId(input)
+    const startedAt = Date.now()
+    logOpenAiChatgpt('info', 'generate start', {
+      traceId,
+      requestedModel: input.modelName,
+      normalizedModel: normalizeModel(input.modelName),
+      userId: input.userId,
+      conversationId: input.railwayTurn?.conversationId,
+      hasAccessTokenInput: Boolean(input.accessToken),
+      hasAccountIdInput: Boolean(input.accountId),
+      historyItems: Array.isArray(input.history) ? input.history.length : 0,
+      toolDefinitions: Array.isArray(input.tools) ? input.tools.length : 0,
+      hasUserContent: typeof input.userContent === 'string' && input.userContent.length > 0,
+    })
     const auth = await this.resolveAuth(input)
+    logOpenAiChatgpt('info', 'auth resolved', {
+      traceId,
+      accountId: auth.accountId,
+      accessTokenLength: auth.accessToken.length,
+    })
 
     const hostedTools = createOpenAIHostedTools({
       config: input.railwayTurn?.openaiHostedTools,
@@ -1862,7 +2076,8 @@ export class OpenAiChatgptProvider implements HeadlessProvider {
         )
 
     const serviceTier = input.railwayTurn?.serviceTier === 'priority' ? 'priority' : undefined
-    const promptCacheKey = input.railwayTurn?.conversationId?.trim() || undefined
+    const requestId = input.railwayTurn?.conversationId?.trim() || traceId || 'ygg-chat'
+    const promptCacheKey = input.railwayTurn?.conversationId?.trim() || requestId
     const promptCacheRetention = input.railwayTurn?.promptCacheRetention === '24h' ? '24h' : 'in_memory'
     const requestBody = {
       model: normalizeModel(input.modelName),
@@ -1879,6 +2094,9 @@ export class OpenAiChatgptProvider implements HeadlessProvider {
       },
       service_tier: serviceTier,
       prompt_cache_key: promptCacheKey,
+      client_metadata: {
+        'x-codex-installation-id': promptCacheKey,
+      },
       ...(promptCacheRetention === '24h' ? { prompt_cache_retention: '24h' } : {}),
       stream: true,
     }
@@ -1893,54 +2111,116 @@ export class OpenAiChatgptProvider implements HeadlessProvider {
     const endpoint = `${CHATGPT_BASE_URL}${CHATGPT_CODEX_ENDPOINT}`
     let parsed: CodexParsedOutput
 
+    logOpenAiChatgpt('info', 'request prepared', {
+      traceId,
+      endpoint,
+      hostedTools: hostedTools.length,
+      mappedTools: requestTools.length - hostedTools.length,
+      incrementalToolOutput: Boolean(incrementalToolOutput),
+      incrementalToolOutputItems: incrementalToolOutput?.length,
+      attachmentsBase64: Array.isArray(input.railwayTurn?.attachmentsBase64)
+        ? input.railwayTurn?.attachmentsBase64.length
+        : 0,
+      request: summarizeOpenAiChatgptRequestBody(effectiveRequestBody),
+    })
+
     try {
+      logOpenAiChatgpt('info', 'transport attempt WebSocket', { traceId, endpoint })
       parsed = await readCodexWebSocketOutput({
         endpoint,
         headers: {
           Authorization: `Bearer ${auth.accessToken}`,
-          'chatgpt-account-id': auth.accountId,
+          'ChatGPT-Account-ID': auth.accountId,
           'OpenAI-Beta': 'responses_websockets=2026-02-06',
-          originator: 'opencode',
-          'x-client-request-id': input.railwayTurn?.conversationId || 'ygg-chat',
+          originator: 'codex_cli_rs',
+          'x-client-request-id': requestId,
         },
         body: effectiveRequestBody,
         emit,
         modelName: input.modelName,
+        traceId,
       })
     } catch (websocketError) {
-      console.warn('[OpenAI ChatGPT] WebSocket transport failed; falling back to HTTP/SSE:', websocketError)
+      logOpenAiChatgpt('warn', 'WebSocket transport failed; falling back to HTTP/SSE', {
+        traceId,
+        error: websocketError instanceof Error ? websocketError.message : String(websocketError),
+        stack: websocketError instanceof Error ? websocketError.stack : undefined,
+      })
       const streamOpen = await openStreamingWithPreFirstByteRetry({
         endpoint,
-        openAttempt: signal =>
-          fetch(endpoint, {
+        openAttempt: async (signal, attempt) => {
+          logOpenAiChatgpt('info', 'HTTP/SSE fetch attempt', { traceId, endpoint, attempt })
+          const response = await fetch(endpoint, {
             method: 'POST',
             headers: {
               'Content-Type': 'application/json',
               Authorization: `Bearer ${auth.accessToken}`,
-              'chatgpt-account-id': auth.accountId,
-              'OpenAI-Beta': 'responses=experimental',
-              originator: 'opencode',
+              'ChatGPT-Account-ID': auth.accountId,
+              originator: 'codex_cli_rs',
+              'x-client-request-id': requestId,
               accept: 'text/event-stream',
             },
             body: JSON.stringify(effectiveRequestBody),
             signal,
-          }),
+          })
+          logOpenAiChatgpt('info', 'HTTP/SSE fetch response', {
+            traceId,
+            attempt,
+            ok: response.ok,
+            status: response.status,
+            statusText: response.statusText,
+            contentType: response.headers.get('content-type'),
+          })
+          return response
+        },
       })
 
       if (!streamOpen.response.ok) {
         const text = await streamOpen.response.text().catch(() => '')
+        logOpenAiChatgpt('error', 'HTTP/SSE non-OK response body', {
+          traceId,
+          status: streamOpen.response.status,
+          statusText: streamOpen.response.statusText,
+          bodyPreview: previewForLog(text, 2000),
+        })
         throw new Error(`ChatGPT backend request failed (${streamOpen.response.status}): ${text}`)
       }
 
       if (!streamOpen.reader) {
+        logOpenAiChatgpt('error', 'HTTP/SSE missing reader', {
+          traceId,
+          status: streamOpen.response.status,
+          contentType: streamOpen.response.headers.get('content-type'),
+        })
         throw new Error('ChatGPT backend returned no readable stream body')
       }
 
+      logOpenAiChatgpt('info', 'HTTP/SSE stream opened', {
+        traceId,
+        attempt: streamOpen.attempt,
+        firstReadDone: streamOpen.firstRead?.done,
+        firstReadBytes: streamOpen.firstRead?.value?.byteLength || 0,
+      })
       parsed = await readCodexSseOutput({
         reader: streamOpen.reader,
         firstRead: streamOpen.firstRead,
         emit,
         modelName: input.modelName,
+        traceId,
+      })
+    }
+
+    logOpenAiChatgpt('info', 'transport parsed output', {
+      traceId,
+      elapsedMs: Date.now() - startedAt,
+      ...summarizeParsedOpenAiChatgptOutput(parsed),
+    })
+
+    if (!parsed.text.trim() && parsed.toolCalls.length === 0 && parsed.responseOutputItems.length === 0) {
+      logOpenAiChatgpt('warn', 'parsed output is empty', {
+        traceId,
+        eventCounts: parsed.debug?.eventCounts,
+        usage: parsed.usage,
       })
     }
 
@@ -1992,7 +2272,7 @@ export class OpenAiChatgptProvider implements HeadlessProvider {
       })
     }
 
-    return {
+    const output = {
       content: parsed.text,
       reasoning: parsed.reasoning || undefined,
       toolCalls: parsed.toolCalls,
@@ -2007,5 +2287,15 @@ export class OpenAiChatgptProvider implements HeadlessProvider {
         generatedImagesDirectoryHint: getGeneratedImagesDirectoryHint(),
       },
     }
+    logOpenAiChatgpt('info', 'generate finish', {
+      traceId,
+      elapsedMs: Date.now() - startedAt,
+      contentLength: output.content.length,
+      reasoningLength: output.reasoning?.length || 0,
+      toolCalls: output.toolCalls.length,
+      contentBlocks: output.contentBlocks.length,
+      rawResponseId: output.raw.response_id,
+    })
+    return output
   }
 }

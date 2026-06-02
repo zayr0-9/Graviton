@@ -22,6 +22,12 @@
       "name": "Z.AI / GLM",
       "url": "https://api.z.ai",
       "description": "Z.AI GLM models via local BYOK headless provider"
+    },
+
+    "bedrock": {
+      "name": "Amazon Bedrock",
+      "url": "https://aws.amazon.com/bedrock/",
+      "description": "AWS Bedrock models via local BYOK headless provider"
     }
   }
 }

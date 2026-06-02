@@ -36,7 +36,7 @@ const cloneTools = (tools: ToolDefinition[]): ToolDefinition[] =>
 const isElectronEnvironment =
   (typeof __IS_ELECTRON__ !== 'undefined' && __IS_ELECTRON__) || import.meta.env.VITE_ENVIRONMENT === 'electron'
 
-const webHiddenProviders = new Set(['OpenAI (ChatGPT)', 'LM Studio', 'Z.AI / GLM'])
+const webHiddenProviders = new Set(['OpenAI (ChatGPT)', 'LM Studio', 'Z.AI / GLM', 'Amazon Bedrock'])
 const communityAllowedProviders = new Set(['LM Studio', 'OpenAI (ChatGPT)', 'OpenRouter', 'Z.AI / GLM'])
 
 const getAvailableProviders = () => {

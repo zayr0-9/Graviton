@@ -35,8 +35,10 @@ import {
 } from '../helpers/chatReasoningSettingsStorage'
 import {
   loadAutoCompactionEnabled,
+  loadHeimdallNotePreviewHoverPaddingEnabled,
   loadShowTokenUsageBar,
   saveAutoCompactionEnabled,
+  saveHeimdallNotePreviewHoverPaddingEnabled,
   saveShowTokenUsageBar,
 } from '../helpers/chatUiSettingsStorage'
 import {
@@ -68,6 +70,18 @@ import {
   loadHermesRuntimeSettings,
   saveHermesRuntimeSettings,
 } from '../helpers/hermesRuntimeSettingsStorage'
+import {
+  addChatModePrompt,
+  DEFAULT_CHAT_MODE_PROMPT_ID,
+  deleteChatModePrompt,
+  getDefaultChatModePrompt,
+  loadOperationModePromptSettings,
+  OPERATION_MODE_PROMPT_SETTINGS_CHANGE_EVENT,
+  OperationModePromptSettings,
+  resetChatModePromptSelectionToDefault,
+  selectChatModePrompt,
+  updateChatModePrompt,
+} from '../helpers/operationModePromptStorage'
 import {
   DEFAULT_LMSTUDIO_BASE_URL,
   loadProviderSettings,
@@ -229,6 +243,13 @@ const Settings: React.FC = () => {
   const [zaiApiKeyConfigured, setZaiApiKeyConfigured] = useState(false)
   const [zaiApiKeyLoading, setZaiApiKeyLoading] = useState(import.meta.env.VITE_ENVIRONMENT === 'electron')
   const [zaiApiKeySaving, setZaiApiKeySaving] = useState(false)
+  const [bedrockRegionInput, setBedrockRegionInput] = useState('us-east-1')
+  const [bedrockAccessKeyIdInput, setBedrockAccessKeyIdInput] = useState('')
+  const [bedrockSecretAccessKeyInput, setBedrockSecretAccessKeyInput] = useState('')
+  const [bedrockSessionTokenInput, setBedrockSessionTokenInput] = useState('')
+  const [bedrockCredentialsConfigured, setBedrockCredentialsConfigured] = useState(false)
+  const [bedrockCredentialsLoading, setBedrockCredentialsLoading] = useState(import.meta.env.VITE_ENVIRONMENT === 'electron')
+  const [bedrockCredentialsSaving, setBedrockCredentialsSaving] = useState(false)
   const [openRouterTemperatureInput, setOpenRouterTemperatureInput] = useState<string>(() => {
     const configured = loadProviderSettings().openRouterTemperature
     return typeof configured === 'number' ? String(configured) : ''
@@ -259,8 +280,16 @@ const Settings: React.FC = () => {
   const [chatReasoningSettings, setChatReasoningSettings] = useState<ChatReasoningSettings>(() =>
     loadChatReasoningSettings()
   )
+  const [operationModePromptSettings, setOperationModePromptSettings] = useState<OperationModePromptSettings>(() =>
+    loadOperationModePromptSettings()
+  )
+  const [chatModePromptNameInput, setChatModePromptNameInput] = useState('')
+  const [chatModePromptInput, setChatModePromptInput] = useState('')
   const [showTokenUsageBar, setShowTokenUsageBar] = useState<boolean>(() => loadShowTokenUsageBar())
   const [autoCompactionEnabled, setAutoCompactionEnabled] = useState<boolean>(() => loadAutoCompactionEnabled())
+  const [heimdallNotePreviewHoverPaddingEnabled, setHeimdallNotePreviewHoverPaddingEnabled] = useState<boolean>(() =>
+    loadHeimdallNotePreviewHoverPaddingEnabled()
+  )
   const [browserSettings, setBrowserSettings] = useState<BrowserSettings>(() => loadBrowserSettings())
   const [agentSettings, setAgentSettings] = useState<AgentSettings>({
     heartbeatTime: null,
@@ -300,6 +329,14 @@ const Settings: React.FC = () => {
     typeof agentSettings.model === 'string' && agentSettings.model.trim().length > 0
       ? agentSettings.model.trim()
       : 'openai/gpt-5.3-codex'
+  const defaultChatModePrompt = getDefaultChatModePrompt()
+  const selectedChatModePrompt =
+    operationModePromptSettings.selectedChatPromptId === DEFAULT_CHAT_MODE_PROMPT_ID
+      ? defaultChatModePrompt
+      : operationModePromptSettings.chatPrompts.find(
+          prompt => prompt.id === operationModePromptSettings.selectedChatPromptId
+        ) ?? defaultChatModePrompt
+  const isDefaultChatModePromptSelected = selectedChatModePrompt.id === DEFAULT_CHAT_MODE_PROMPT_ID
   const isWindowsElectron = electronPlatform === 'win32'
 
   const handleLogout = async () => {
@@ -553,6 +590,41 @@ const Settings: React.FC = () => {
   }, [userId])
 
   useEffect(() => {
+    if (import.meta.env.VITE_ENVIRONMENT !== 'electron') {
+      setBedrockCredentialsLoading(false)
+      return
+    }
+
+    let active = true
+    const effectiveUserId = userId || LOCAL_AUTH_USER_ID
+
+    localApi
+      .get<{ success?: boolean; hasToken?: boolean }>(
+        `/provider-auth/bedrock/token?userId=${encodeURIComponent(effectiveUserId)}`
+      )
+      .then(status => {
+        if (!active) return
+        setBedrockCredentialsConfigured(Boolean(status?.hasToken))
+        setBedrockAccessKeyIdInput('')
+        setBedrockSecretAccessKeyInput('')
+        setBedrockSessionTokenInput('')
+      })
+      .catch(error => {
+        if (active) {
+          console.error('Failed to load Amazon Bedrock credential status:', error)
+          setBedrockCredentialsConfigured(false)
+        }
+      })
+      .finally(() => {
+        if (active) setBedrockCredentialsLoading(false)
+      })
+
+    return () => {
+      active = false
+    }
+  }, [userId])
+
+  useEffect(() => {
     if (openRouterTemperatureTouched) return
     const configured = providerSettings.openRouterTemperature
     setOpenRouterTemperatureInput(typeof configured === 'number' ? String(configured) : '')
@@ -567,6 +639,11 @@ const Settings: React.FC = () => {
     if (compactionSystemPromptTouched) return
     setCompactionSystemPromptInput(providerSettings.compactionSystemPrompt)
   }, [providerSettings.compactionSystemPrompt, compactionSystemPromptTouched])
+
+  useEffect(() => {
+    setChatModePromptNameInput(selectedChatModePrompt.name)
+    setChatModePromptInput(selectedChatModePrompt.prompt)
+  }, [selectedChatModePrompt.id, selectedChatModePrompt.name, selectedChatModePrompt.prompt])
 
   useEffect(() => {
     const handleToolExecutionSettingsChange = (e: CustomEvent<ToolExecutionSettings>) => {
@@ -591,6 +668,22 @@ const Settings: React.FC = () => {
       window.removeEventListener(
         CHAT_REASONING_SETTINGS_CHANGE_EVENT,
         handleChatReasoningSettingsChange as EventListener
+      )
+  }, [])
+
+  useEffect(() => {
+    const handleOperationModePromptSettingsChange = (e: CustomEvent<OperationModePromptSettings>) => {
+      setOperationModePromptSettings(e.detail)
+    }
+
+    window.addEventListener(
+      OPERATION_MODE_PROMPT_SETTINGS_CHANGE_EVENT,
+      handleOperationModePromptSettingsChange as EventListener
+    )
+    return () =>
+      window.removeEventListener(
+        OPERATION_MODE_PROMPT_SETTINGS_CHANGE_EVENT,
+        handleOperationModePromptSettingsChange as EventListener
       )
   }, [])
 
@@ -848,6 +941,70 @@ const Settings: React.FC = () => {
       showStatus({ type: 'error', text: error instanceof Error ? error.message : 'Failed to delete Z.AI API key.' })
     } finally {
       setZaiApiKeySaving(false)
+    }
+  }
+
+  const handleSaveBedrockCredentials = async () => {
+    const region = bedrockRegionInput.trim()
+    const accessKeyId = bedrockAccessKeyIdInput.trim()
+    const secretAccessKey = bedrockSecretAccessKeyInput.trim()
+    const sessionToken = bedrockSessionTokenInput.trim()
+
+    if (!region || !accessKeyId || !secretAccessKey) {
+      showStatus({
+        type: 'error',
+        text: 'Enter an AWS region, access key ID, and secret access key before saving Bedrock credentials.',
+      })
+      return
+    }
+
+    const effectiveUserId = userId || LOCAL_AUTH_USER_ID
+    setBedrockCredentialsSaving(true)
+    try {
+      await localApi.post('/provider-auth/bedrock/token', {
+        userId: effectiveUserId,
+        accessToken: JSON.stringify({
+          region,
+          accessKeyId,
+          secretAccessKey,
+          ...(sessionToken ? { sessionToken } : {}),
+        }),
+      })
+      setBedrockRegionInput(region)
+      setBedrockAccessKeyIdInput('')
+      setBedrockSecretAccessKeyInput('')
+      setBedrockSessionTokenInput('')
+      setBedrockCredentialsConfigured(true)
+      showStatus({ type: 'success', text: 'Amazon Bedrock credentials saved locally.' })
+    } catch (error) {
+      console.error('Failed to save Amazon Bedrock credentials:', error)
+      showStatus({
+        type: 'error',
+        text: error instanceof Error ? error.message : 'Failed to save Amazon Bedrock credentials.',
+      })
+    } finally {
+      setBedrockCredentialsSaving(false)
+    }
+  }
+
+  const handleDeleteBedrockCredentials = async () => {
+    const effectiveUserId = userId || LOCAL_AUTH_USER_ID
+    setBedrockCredentialsSaving(true)
+    try {
+      await localApi.delete(`/provider-auth/bedrock/token?userId=${encodeURIComponent(effectiveUserId)}`)
+      setBedrockAccessKeyIdInput('')
+      setBedrockSecretAccessKeyInput('')
+      setBedrockSessionTokenInput('')
+      setBedrockCredentialsConfigured(false)
+      showStatus({ type: 'success', text: 'Amazon Bedrock credentials removed.' })
+    } catch (error) {
+      console.error('Failed to delete Amazon Bedrock credentials:', error)
+      showStatus({
+        type: 'error',
+        text: error instanceof Error ? error.message : 'Failed to delete Amazon Bedrock credentials.',
+      })
+    } finally {
+      setBedrockCredentialsSaving(false)
     }
   }
 
@@ -1389,6 +1546,46 @@ const Settings: React.FC = () => {
     })
   }
 
+  const handleChatModePromptSelect = (promptId: string) => {
+    const saved = selectChatModePrompt(promptId)
+    setOperationModePromptSettings(saved)
+    showStatus({ type: 'success', text: 'Chat Mode prompt selected.' })
+  }
+
+  const handleSaveNewChatModePrompt = () => {
+    const saved = addChatModePrompt(chatModePromptNameInput, chatModePromptInput)
+    setOperationModePromptSettings(saved)
+    showStatus({ type: 'success', text: 'Chat Mode prompt saved.' })
+  }
+
+  const handleUpdateChatModePrompt = () => {
+    if (isDefaultChatModePromptSelected) {
+      handleSaveNewChatModePrompt()
+      return
+    }
+    const saved = updateChatModePrompt(selectedChatModePrompt.id, {
+      name: chatModePromptNameInput,
+      prompt: chatModePromptInput,
+    })
+    setOperationModePromptSettings(saved)
+    showStatus({ type: 'success', text: 'Chat Mode prompt updated.' })
+  }
+
+  const handleDeleteChatModePrompt = (promptId: string = selectedChatModePrompt.id) => {
+    if (promptId === DEFAULT_CHAT_MODE_PROMPT_ID) return
+    const confirmed = window.confirm('Delete this saved Chat Mode prompt?')
+    if (!confirmed) return
+    const saved = deleteChatModePrompt(promptId)
+    setOperationModePromptSettings(saved)
+    showStatus({ type: 'success', text: 'Chat Mode prompt deleted.' })
+  }
+
+  const handleResetChatModePromptToDefault = () => {
+    const saved = resetChatModePromptSelectionToDefault()
+    setOperationModePromptSettings(saved)
+    showStatus({ type: 'success', text: 'Chat Mode prompt reset to default.' })
+  }
+
   const handleAutoCompactionToggle = () => {
     const nextValue = !autoCompactionEnabled
     saveAutoCompactionEnabled(nextValue)
@@ -1396,6 +1593,18 @@ const Settings: React.FC = () => {
     showStatus({
       type: 'success',
       text: nextValue ? 'Auto compaction enabled in Chat.' : 'Auto compaction disabled in Chat.',
+    })
+  }
+
+  const handleHeimdallNotePreviewHoverPaddingToggle = () => {
+    const nextValue = !heimdallNotePreviewHoverPaddingEnabled
+    saveHeimdallNotePreviewHoverPaddingEnabled(nextValue)
+    setHeimdallNotePreviewHoverPaddingEnabled(nextValue)
+    showStatus({
+      type: 'success',
+      text: nextValue
+        ? 'Heimdall note preview hover padding enabled.'
+        : 'Heimdall note preview hover padding disabled.',
     })
   }
 
@@ -2140,6 +2349,116 @@ const Settings: React.FC = () => {
                 />
               </button>
             </div>
+
+            <div className='flex items-center justify-between pt-2 border-t border-stone-200 dark:border-stone-700'>
+              <div>
+                <p className='text-base font-medium text-stone-900 dark:text-stone-100'>Heimdall Note Hover Padding</p>
+                <p className='text-sm text-stone-500 dark:text-stone-400'>
+                  Add an invisible hover buffer around note previews so you can move from a note pill to its preview
+                  without it closing.
+                </p>
+              </div>
+              <button
+                onClick={handleHeimdallNotePreviewHoverPaddingToggle}
+                className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${
+                  heimdallNotePreviewHoverPaddingEnabled
+                    ? 'bg-emerald-500 dark:bg-emerald-600'
+                    : 'bg-stone-300 dark:bg-stone-600'
+                }`}
+              >
+                <span
+                  className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
+                    heimdallNotePreviewHoverPaddingEnabled ? 'translate-x-6' : 'translate-x-1'
+                  }`}
+                />
+              </button>
+            </div>
+          </div>
+        </section>
+
+        <section className='rounded-2xl border border-neutral-200 mica p-6 shadow-lg shadow-neutral-200/30 dark:border-neutral-800 dark:shadow-black/20'>
+          <div className='flex flex-col gap-1'>
+            <h2 className='text-xl font-semibold text-stone-900 dark:text-stone-100 mb-2'>Chat Mode Prompt</h2>
+            <p className='text-sm text-stone-500 dark:text-stone-200'>
+              Used when the composer is in Chat Mode. Chat Mode is read-only/planning-oriented.
+            </p>
+          </div>
+
+          <div className='mt-4 flex flex-col gap-4'>
+            <div className='flex flex-col gap-2'>
+              <p className='text-base font-medium text-stone-900 dark:text-stone-100'>Active Prompt</p>
+              <Select
+                value={selectedChatModePrompt.id}
+                onChange={handleChatModePromptSelect}
+                options={[
+                  { value: defaultChatModePrompt.id, label: `${defaultChatModePrompt.name} (Default)` },
+                  ...operationModePromptSettings.chatPrompts.map(prompt => ({ value: prompt.id, label: prompt.name })),
+                ]}
+                className='max-w-xl'
+              />
+            </div>
+
+            <div className='flex flex-col gap-2 pt-2 border-t border-stone-200 dark:border-stone-700'>
+              <label className='text-sm font-medium text-stone-700 dark:text-stone-200'>Prompt Name</label>
+              <input
+                type='text'
+                value={chatModePromptNameInput}
+                onChange={e => setChatModePromptNameInput(e.target.value)}
+                className='w-full rounded-lg border border-stone-200 bg-white px-3 py-2 text-sm text-stone-900 shadow-sm focus:outline-none focus:ring-2 focus:ring-emerald-400 dark:border-stone-700 dark:bg-zinc-900 dark:text-stone-100'
+              />
+              <label className='text-sm font-medium text-stone-700 dark:text-stone-200'>Prompt</label>
+              <textarea
+                value={chatModePromptInput}
+                onChange={e => setChatModePromptInput(e.target.value)}
+                rows={8}
+                className='w-full rounded-lg border border-stone-200 bg-white px-3 py-2 text-sm text-stone-900 shadow-sm focus:outline-none focus:ring-2 focus:ring-emerald-400 dark:border-stone-700 dark:bg-zinc-900 dark:text-stone-100'
+              />
+              <div className='flex flex-wrap gap-2'>
+                <Button onClick={handleSaveNewChatModePrompt}>Save as New</Button>
+                <Button onClick={handleUpdateChatModePrompt}>
+                  {isDefaultChatModePromptSelected ? 'Save Default as Custom' : 'Update Saved Prompt'}
+                </Button>
+                {!isDefaultChatModePromptSelected && (
+                  <Button variant='secondary' onClick={() => handleDeleteChatModePrompt()}>
+                    Delete
+                  </Button>
+                )}
+                <Button variant='secondary' onClick={handleResetChatModePromptToDefault}>
+                  Reset to Default
+                </Button>
+              </div>
+            </div>
+
+            <div className='flex flex-col gap-2 pt-2 border-t border-stone-200 dark:border-stone-700'>
+              <p className='text-base font-medium text-stone-900 dark:text-stone-100'>Saved Prompts</p>
+              <div className='flex flex-col gap-2'>
+                <div className='flex items-center justify-between rounded-lg border border-stone-200 px-3 py-2 text-sm dark:border-stone-700'>
+                  <span className='text-stone-800 dark:text-stone-100'>{defaultChatModePrompt.name}</span>
+                  <span className='text-xs text-stone-500 dark:text-stone-400'>
+                    {selectedChatModePrompt.id === defaultChatModePrompt.id ? 'Selected default' : 'Default'}
+                  </span>
+                </div>
+                {operationModePromptSettings.chatPrompts.map(prompt => (
+                  <div
+                    key={prompt.id}
+                    className='flex flex-wrap items-center justify-between gap-2 rounded-lg border border-stone-200 px-3 py-2 text-sm dark:border-stone-700'
+                  >
+                    <span className='text-stone-800 dark:text-stone-100'>{prompt.name}</span>
+                    <div className='flex items-center gap-2'>
+                      {selectedChatModePrompt.id === prompt.id && (
+                        <span className='text-xs text-emerald-600 dark:text-emerald-400'>Selected</span>
+                      )}
+                      <Button variant='secondary' onClick={() => handleChatModePromptSelect(prompt.id)}>
+                        Select
+                      </Button>
+                      <Button variant='secondary' onClick={() => handleDeleteChatModePrompt(prompt.id)}>
+                        Delete
+                      </Button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
           </div>
         </section>
 
@@ -2443,6 +2762,88 @@ const Settings: React.FC = () => {
                     Clear key
                   </Button>
                 </div>
+              </div>
+
+              <div className='flex flex-col gap-2 pt-2 border-t border-stone-200 dark:border-stone-700'>
+                <div>
+                  <p className='text-base font-medium text-stone-900 dark:text-stone-100'>Amazon Bedrock Credentials</p>
+                  <p className='text-sm text-stone-500 dark:text-stone-400'>
+                    Store AWS Bedrock credentials locally for the Amazon Bedrock headless provider. You can also use AWS_REGION, AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, and optional AWS_SESSION_TOKEN environment variables.
+                  </p>
+                </div>
+                <div className='flex flex-wrap items-center gap-2'>
+                  <span
+                    className={`text-xs px-2 py-1 rounded-full border ${
+                      bedrockCredentialsConfigured
+                        ? 'bg-emerald-50 border-emerald-200 text-emerald-700 dark:bg-emerald-900/30 dark:border-emerald-700 dark:text-emerald-300'
+                        : 'bg-stone-100 border-stone-200 text-stone-600 dark:bg-stone-800 dark:border-stone-700 dark:text-stone-300'
+                    }`}
+                  >
+                    {bedrockCredentialsLoading ? 'Checking…' : bedrockCredentialsConfigured ? 'Credentials saved' : 'No stored credentials'}
+                  </span>
+                  <input
+                    type='text'
+                    value={bedrockRegionInput}
+                    placeholder='AWS region, e.g. us-east-1'
+                    onChange={e => setBedrockRegionInput(e.target.value)}
+                    className='w-full max-w-xs rounded-lg border border-stone-200 bg-white px-3 py-2 text-sm text-stone-900 shadow-sm focus:outline-none focus:ring-2 focus:ring-emerald-400 dark:border-stone-700 dark:bg-zinc-900 dark:text-stone-100'
+                  />
+                  <input
+                    type='password'
+                    value={bedrockAccessKeyIdInput}
+                    placeholder={bedrockCredentialsConfigured ? 'Enter new access key ID to replace' : 'AWS access key ID'}
+                    onChange={e => setBedrockAccessKeyIdInput(e.target.value)}
+                    className='w-full max-w-md rounded-lg border border-stone-200 bg-white px-3 py-2 text-sm text-stone-900 shadow-sm focus:outline-none focus:ring-2 focus:ring-emerald-400 dark:border-stone-700 dark:bg-zinc-900 dark:text-stone-100'
+                  />
+                  <input
+                    type='password'
+                    value={bedrockSecretAccessKeyInput}
+                    placeholder={bedrockCredentialsConfigured ? 'Enter new secret access key to replace' : 'AWS secret access key'}
+                    onChange={e => setBedrockSecretAccessKeyInput(e.target.value)}
+                    onKeyDown={e => {
+                      if (e.key === 'Enter') {
+                        void handleSaveBedrockCredentials()
+                      }
+                    }}
+                    className='w-full max-w-md rounded-lg border border-stone-200 bg-white px-3 py-2 text-sm text-stone-900 shadow-sm focus:outline-none focus:ring-2 focus:ring-emerald-400 dark:border-stone-700 dark:bg-zinc-900 dark:text-stone-100'
+                  />
+                  <input
+                    type='password'
+                    value={bedrockSessionTokenInput}
+                    placeholder='AWS session token (optional)'
+                    onChange={e => setBedrockSessionTokenInput(e.target.value)}
+                    onKeyDown={e => {
+                      if (e.key === 'Enter') {
+                        void handleSaveBedrockCredentials()
+                      }
+                    }}
+                    className='w-full max-w-md rounded-lg border border-stone-200 bg-white px-3 py-2 text-sm text-stone-900 shadow-sm focus:outline-none focus:ring-2 focus:ring-emerald-400 dark:border-stone-700 dark:bg-zinc-900 dark:text-stone-100'
+                  />
+                  <Button
+                    variant='outline2'
+                    size='small'
+                    onClick={handleSaveBedrockCredentials}
+                    disabled={
+                      bedrockCredentialsSaving ||
+                      !bedrockRegionInput.trim() ||
+                      !bedrockAccessKeyIdInput.trim() ||
+                      !bedrockSecretAccessKeyInput.trim()
+                    }
+                  >
+                    {bedrockCredentialsConfigured ? 'Replace credentials' : 'Save credentials'}
+                  </Button>
+                  <Button
+                    variant='outline2'
+                    size='small'
+                    onClick={handleDeleteBedrockCredentials}
+                    disabled={bedrockCredentialsSaving || !bedrockCredentialsConfigured}
+                  >
+                    Clear credentials
+                  </Button>
+                </div>
+                <p className='text-xs text-stone-500 dark:text-stone-400'>
+                  Stored credentials are saved as a JSON credential payload in the local provider token store for this user.
+                </p>
               </div>
 
               <div className='flex flex-col gap-2 pt-2 border-t border-stone-200 dark:border-stone-700'>

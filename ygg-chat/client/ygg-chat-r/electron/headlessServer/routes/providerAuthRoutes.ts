@@ -14,6 +14,12 @@ const DEFAULT_OPENROUTER_MODELS = [
   'google/gemini-2.5-flash',
 ]
 const DEFAULT_ZAI_MODELS = ['glm-5.1', 'glm-4.6']
+const DEFAULT_BEDROCK_MODELS = [
+  'anthropic.claude-3-5-sonnet-20241022-v2:0',
+  'anthropic.claude-3-5-haiku-20241022-v1:0',
+  'anthropic.claude-3-sonnet-20240229-v1:0',
+  'anthropic.claude-3-haiku-20240307-v1:0',
+]
 
 function getRemoteApiBase(): string {
   const raw = process.env.YGG_API_URL || process.env.VITE_API_URL || DEFAULT_REMOTE_API_BASE
@@ -117,7 +123,7 @@ export function registerProviderAuthRoutes(app: Express, deps: RegisterProviderA
     }
   }
 
-  const registerTokenRoutes = (providerSlug: 'openai' | 'openrouter' | 'zai', providerKey: string, opts?: { deriveAccountId?: boolean }) => {
+  const registerTokenRoutes = (providerSlug: 'openai' | 'openrouter' | 'zai' | 'bedrock', providerKey: string, opts?: { deriveAccountId?: boolean }) => {
     app.post(`/api/provider-auth/${providerSlug}/token`, (req, res) => {
       const payload = normalizePayload(req.body)
 
@@ -176,6 +182,7 @@ export function registerProviderAuthRoutes(app: Express, deps: RegisterProviderA
   registerTokenRoutes('openai', 'openaichatgpt', { deriveAccountId: true })
   registerTokenRoutes('openrouter', 'openrouter')
   registerTokenRoutes('zai', 'zai')
+  registerTokenRoutes('bedrock', 'bedrock')
 
   app.get('/api/provider-auth/models', async (req, res) => {
     const userId = String(req.query.userId ?? req.query.user_id ?? '').trim()
@@ -225,6 +232,10 @@ export function registerProviderAuthRoutes(app: Express, deps: RegisterProviderA
         {
           name: 'zai',
           models: DEFAULT_ZAI_MODELS,
+        },
+        {
+          name: 'bedrock',
+          models: DEFAULT_BEDROCK_MODELS,
         },
       ],
     })

@@ -12,6 +12,9 @@ describe('provider routing', () => {
     expect(normalizeProviderRoute('openai')).toBe('openaichatgpt')
     expect(normalizeProviderRoute('z.ai')).toBe('zai')
     expect(normalizeProviderRoute('glm')).toBe('zai')
+    expect(normalizeProviderRoute('bedrock')).toBe('bedrock')
+    expect(normalizeProviderRoute('aws-bedrock')).toBe('bedrock')
+    expect(normalizeProviderRoute('amazon bedrock')).toBe('bedrock')
     expect(normalizeProviderRoute('unknown-provider')).toBe('openaichatgpt')
   })
 
@@ -54,6 +57,18 @@ describe('provider routing', () => {
         userContent: 'hi',
       })
     ).rejects.toThrow('Z.AI API key missing')
+  })
+
+  it('routes bedrock through hyper-router provider and fails fast when auth is missing', async () => {
+    const router = new ProviderRouter()
+
+    await expect(
+      router.generate('bedrock', {
+        modelName: 'anthropic.claude-3-5-sonnet-20241022-v2:0',
+        history: [],
+        userContent: 'hi',
+      })
+    ).rejects.toThrow('AWS Bedrock credentials missing')
   })
 
   it('openai provider fails fast when auth is missing', async () => {

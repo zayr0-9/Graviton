@@ -30,7 +30,7 @@ type BridgeContext = {
   getToolContext?: () => ToolContext | null
 }
 
-type GenerationProvider = 'openrouter' | 'openaichatgpt' | 'lmstudio' | 'zai'
+type GenerationProvider = 'openrouter' | 'openaichatgpt' | 'lmstudio' | 'zai' | 'bedrock'
 
 type GenerationStreamResult = {
   text: string
@@ -42,6 +42,14 @@ function normalizeGenerationProvider(provider: string): GenerationProvider | nul
   if (normalized === 'openrouter') return 'openrouter'
   if (normalized === 'lmstudio') return 'lmstudio'
   if (normalized === 'zai' || normalized === 'z.ai' || normalized === 'glm') return 'zai'
+  if (
+    normalized === 'bedrock' ||
+    normalized === 'aws' ||
+    normalized === 'awsbedrock' ||
+    normalized === 'aws-bedrock' ||
+    normalized === 'amazonbedrock' ||
+    normalized === 'amazon-bedrock'
+  ) return 'bedrock'
   if (normalized === 'openai' || normalized === 'openaichatgpt' || normalized === 'openai(chatgpt)') {
     return 'openaichatgpt'
   }
@@ -56,6 +64,7 @@ function resolveGenerationProvider(modelName: string, provider?: string): Genera
   if (/^(gpt-|o1|o3|o4)/i.test(modelName)) return 'openaichatgpt'
   if (/lmstudio|local-model/i.test(modelName)) return 'lmstudio'
   if (/^(glm-|zai|z\.ai)/i.test(modelName)) return 'zai'
+  if (/^(bedrock|aws|awsbedrock|aws-bedrock|amazonbedrock|amazon-bedrock)\//i.test(modelName) || /^anthropic\.claude-/i.test(modelName)) return 'bedrock'
   return 'openrouter'
 }
 

@@ -1,6 +1,7 @@
 import type { Express } from 'express'
 import { normalizeAuthorizationToken, syncOpenRouterTokenFromElectronSession } from '../providers/electronAppAuth.js'
 import { LmStudioProvider } from '../providers/lmStudioProvider.js'
+import { HyperRouterBedrockProvider } from '../providers/hyperRouterBedrockProvider.js'
 import { HyperRouterZaiProvider } from '../providers/hyperRouterZaiProvider.js'
 import { OpenAiChatgptProvider } from '../providers/openaiChatgptProvider.js'
 import type { ProviderGenerateOutput, ProviderToolDefinition } from '../providers/openRouterProvider.js'
@@ -85,6 +86,7 @@ function inferEphemeralProvider(body: any): ProviderRoute {
     if (prefix === 'openai' || prefix === 'openaichatgpt') return 'openaichatgpt'
     if (prefix === 'lmstudio') return 'lmstudio'
     if (prefix === 'zai' || prefix === 'glm' || prefix === 'z.ai') return 'zai'
+    if (prefix === 'bedrock' || prefix === 'aws' || prefix === 'aws-bedrock' || prefix === 'amazon-bedrock') return 'bedrock'
     return 'openrouter'
   }
 
@@ -92,7 +94,7 @@ function inferEphemeralProvider(body: any): ProviderRoute {
 }
 
 function normalizeModelName(rawModelName: any, provider: ProviderRoute): string {
-  const fallback = provider === 'lmstudio' ? 'local-model' : provider === 'openrouter' ? 'openai/gpt-4o-mini' : provider === 'zai' ? 'glm-5.1' : 'gpt-5.4'
+  const fallback = provider === 'lmstudio' ? 'local-model' : provider === 'openrouter' ? 'openai/gpt-4o-mini' : provider === 'zai' ? 'glm-5.1' : provider === 'bedrock' ? process.env.AWS_BEDROCK_MODEL || 'anthropic.claude-3-5-sonnet-20241022-v2:0' : 'gpt-5.4'
   const raw = typeof rawModelName === 'string' && rawModelName.trim() ? rawModelName.trim() : fallback
 
   if (provider === 'openaichatgpt') {
@@ -105,6 +107,10 @@ function normalizeModelName(rawModelName: any, provider: ProviderRoute): string 
 
   if (provider === 'zai') {
     return raw.replace(/^(zai|glm|z\.ai)\//i, '') || fallback
+  }
+
+  if (provider === 'bedrock') {
+    return raw.replace(/^(bedrock|aws|aws-bedrock|amazon-bedrock)\//i, '') || fallback
   }
 
   return raw
@@ -147,8 +153,8 @@ function buildSuccessPayload(provider: ProviderRoute, modelName: string, upstrea
 }
 
 async function runLocalProviderGenerate(
-  providerName: 'openaichatgpt' | 'lmstudio' | 'zai',
-  provider: OpenAiChatgptProvider | LmStudioProvider | HyperRouterZaiProvider,
+  providerName: 'openaichatgpt' | 'lmstudio' | 'zai' | 'bedrock',
+  provider: OpenAiChatgptProvider | LmStudioProvider | HyperRouterZaiProvider | HyperRouterBedrockProvider,
   body: any
 ) {
   const parsed = buildEphemeralGenerateInput(body)
@@ -180,7 +186,7 @@ async function runLocalProviderGenerate(
 
   return {
     status: 200 as const,
-    payload: buildSuccessPayload(providerName, parsed.modelName, providerName === 'lmstudio' || providerName === 'zai' ? 'chat_completions' : 'responses', generated),
+    payload: buildSuccessPayload(providerName, parsed.modelName, providerName === 'lmstudio' || providerName === 'zai' || providerName === 'bedrock' ? 'chat_completions' : 'responses', generated),
   }
 }
 
@@ -342,7 +348,8 @@ function registerEphemeralChatHandler(
   tokenStore: ProviderTokenStore,
   openAiProvider: OpenAiChatgptProvider,
   lmStudioProvider: LmStudioProvider,
-  zaiProvider: HyperRouterZaiProvider
+  zaiProvider: HyperRouterZaiProvider,
+  bedrockProvider: HyperRouterBedrockProvider
 ): void {
   app.post('/api/headless/ephemeral/chat', async (req, res) => {
     try {
@@ -356,7 +363,9 @@ function registerEphemeralChatHandler(
             ? await runLocalProviderGenerate('lmstudio', lmStudioProvider, body)
             : provider === 'zai'
               ? await runLocalProviderGenerate('zai', zaiProvider, body)
-              : await runLocalProviderGenerate('openaichatgpt', openAiProvider, body)
+              : provider === 'bedrock'
+                ? await runLocalProviderGenerate('bedrock', bedrockProvider, body)
+                : await runLocalProviderGenerate('openaichatgpt', openAiProvider, body)
 
       if ('error' in result) {
         res.status(result.status).json({ success: false, error: result.error })
@@ -415,8 +424,9 @@ export function registerEphemeralGenerateRoutes(app: Express, deps: RegisterEphe
   const openAiProvider = new OpenAiChatgptProvider({ tokenStore: deps.tokenStore })
   const lmStudioProvider = new LmStudioProvider()
   const zaiProvider = new HyperRouterZaiProvider({ tokenStore: deps.tokenStore })
+  const bedrockProvider = new HyperRouterBedrockProvider({ tokenStore: deps.tokenStore })
 
   registerDirectOpenAiGenerateHandler(app, '/api/headless/provider/openai/responses', openAiProvider)
-  registerEphemeralChatHandler(app, deps.tokenStore, openAiProvider, lmStudioProvider, zaiProvider)
+  registerEphemeralChatHandler(app, deps.tokenStore, openAiProvider, lmStudioProvider, zaiProvider, bedrockProvider)
   registerYggHookGenerateRoute(app, openAiProvider)
 }

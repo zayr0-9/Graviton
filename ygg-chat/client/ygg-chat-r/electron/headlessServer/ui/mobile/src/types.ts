@@ -118,7 +118,7 @@ export type MobileLocalFileEntry = LocalFileEntry
 export type MobileLocalFileListingResponse = LocalFileListingResponse
 export type MobileLocalFileSearchResponse = LocalFileSearchResponse
 
-export type MobileProviderName = 'openaichatgpt' | 'openrouter' | 'lmstudio' | 'zai'
+export type MobileProviderName = 'openaichatgpt' | 'openrouter' | 'lmstudio' | 'zai' | 'bedrock'
 
 export interface MobileProviderModelInfo {
   name: MobileProviderName

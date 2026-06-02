@@ -325,7 +325,8 @@ export const mobileApi = {
                   (provider.name === 'openaichatgpt' ||
                     provider.name === 'openrouter' ||
                     provider.name === 'lmstudio' ||
-                    provider.name === 'zai')
+                    provider.name === 'zai' ||
+                    provider.name === 'bedrock')
               )
           )
           .map(provider => ({
@@ -367,7 +368,7 @@ export const mobileApi = {
     })
   },
 
-  async getProviderTokenStatus(provider: 'openai' | 'openrouter' | 'zai', userId: string): Promise<{ hasToken: boolean }> {
+  async getProviderTokenStatus(provider: 'openai' | 'openrouter' | 'zai' | 'bedrock', userId: string): Promise<{ hasToken: boolean }> {
     const payload = await jsonFetch<{ success: boolean; hasToken?: boolean }>(
       `/api/provider-auth/${provider}/token?userId=${encodeURIComponent(userId)}`,
       { method: 'GET' }
@@ -387,6 +388,10 @@ export const mobileApi = {
     return this.getProviderTokenStatus('zai', userId)
   },
 
+  async getBedrockTokenStatus(userId: string): Promise<{ hasToken: boolean }> {
+    return this.getProviderTokenStatus('bedrock', userId)
+  },
+
   async getRuntimeAppAuth(): Promise<{ hasToken: boolean; accessToken: string | null; userId: string | null }> {
     const session = await readRuntimeAppSession()
     return {
@@ -396,7 +401,7 @@ export const mobileApi = {
     }
   },
 
-  async clearProviderToken(provider: 'openai' | 'openrouter' | 'zai', userId: string): Promise<void> {
+  async clearProviderToken(provider: 'openai' | 'openrouter' | 'zai' | 'bedrock', userId: string): Promise<void> {
     await jsonFetch(`/api/provider-auth/${provider}/token?userId=${encodeURIComponent(userId)}`, {
       method: 'DELETE',
     })
@@ -412,6 +417,10 @@ export const mobileApi = {
 
   async clearZaiToken(userId: string): Promise<void> {
     await this.clearProviderToken('zai', userId)
+  },
+
+  async clearBedrockToken(userId: string): Promise<void> {
+    await this.clearProviderToken('bedrock', userId)
   },
 
   async startOpenAiOAuth(): Promise<{ authUrl: string; state: string }> {
@@ -507,6 +516,19 @@ export const mobileApi = {
     accessToken: string
   }): Promise<void> {
     await jsonFetch('/api/provider-auth/zai/token', {
+      method: 'POST',
+      body: JSON.stringify({
+        userId: params.userId,
+        accessToken: params.accessToken,
+      }),
+    })
+  },
+
+  async storeBedrockToken(params: {
+    userId: string
+    accessToken: string
+  }): Promise<void> {
+    await jsonFetch('/api/provider-auth/bedrock/token', {
       method: 'POST',
       body: JSON.stringify({
         userId: params.userId,

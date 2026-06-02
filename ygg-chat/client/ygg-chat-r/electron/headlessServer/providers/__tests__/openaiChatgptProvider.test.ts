@@ -27,11 +27,18 @@ describe('OpenAiChatgptProvider', () => {
 
     const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation(async (_input, init) => {
       const body = JSON.parse(String(init?.body || '{}'))
+      const headers = new Headers(init?.headers as any)
       expect(body.parallel_tool_calls).toBe(true)
+      expect(body.prompt_cache_key).toEqual(expect.stringMatching(/^ygg-chat:/))
+      expect(body.client_metadata).toEqual({ 'x-codex-installation-id': body.prompt_cache_key })
+      expect(headers.get('ChatGPT-Account-ID')).toBe('acct-1')
+      expect(headers.get('originator')).toBe('codex_cli_rs')
+      expect(headers.get('x-client-request-id')).toBe(body.prompt_cache_key)
 
       return {
         ok: true,
         status: 200,
+        headers: new Headers({ 'content-type': 'text/event-stream' }),
         body: createSseStream([
           {
             type: 'response.output_item.added',
@@ -156,6 +163,7 @@ describe('OpenAiChatgptProvider', () => {
     vi.spyOn(globalThis, 'fetch').mockResolvedValue({
       ok: true,
       status: 200,
+      headers: new Headers({ 'content-type': 'text/event-stream' }),
       body: createSseStream([
         {
           type: 'response.incomplete',
