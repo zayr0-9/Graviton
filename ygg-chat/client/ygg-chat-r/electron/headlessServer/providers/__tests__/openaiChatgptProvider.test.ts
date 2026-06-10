@@ -21,10 +21,12 @@ describe('OpenAiChatgptProvider', () => {
     delete process.env.OPENAI_ACCESS_TOKEN
     delete process.env.OPENAI_CHATGPT_ACCOUNT_ID
     delete process.env.YGG_OPENAI_CHATGPT_DEBUG_LOGS
+    delete process.env.YGG_CODEX_DEV_LOGS
   })
 
   it('enables parallel tool calls and preserves final_answer text for gpt-5.3-codex', async () => {
     process.env.OPENAI_CHATGPT_ACCESS_TOKEN = 'header.eyJodHRwczovL2FwaS5vcGVuYWkuY29tL2F1dGgiOnsiY2hhdGdwdF9hY2NvdW50X2lkIjoiYWNjdC0xIn19.sig'
+    process.env.YGG_CODEX_DEV_LOGS = 'true'
 
     const infoSpy = vi.spyOn(console, 'info').mockImplementation(() => {})
 

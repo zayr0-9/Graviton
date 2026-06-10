@@ -863,6 +863,10 @@ function isOpenAiChatgptDebugLoggingEnabled(): boolean {
   return /^(1|true|yes|on)$/i.test(process.env.YGG_OPENAI_CHATGPT_DEBUG_LOGS || '')
 }
 
+function isCodexDevLoggingEnabled(): boolean {
+  return /^(1|true|yes|on)$/i.test(process.env.YGG_CODEX_DEV_LOGS || '')
+}
+
 function createOpenAiChatgptTraceId(input: ProviderGenerateInput): string {
   const base = input.railwayTurn?.conversationId?.trim() || input.userId || 'ygg-chat'
   return `${base}:${Date.now().toString(36)}:${Math.random().toString(36).slice(2, 8)}`
@@ -973,8 +977,7 @@ function logCodexUsage(params: {
   hasPreviousResponseId?: boolean
   usage?: OpenAiResponseUsage
 }) {
-  // Keep Codex usage logs always-on for now. If this gets too noisy, gate this with an env var.
-  // if (!/^(1|true|yes|on)$/i.test(process.env.YGG_CODEX_USAGE_LOGS || '')) return
+  if (!isCodexDevLoggingEnabled()) return
 
   const usage = params.usage
   if (!usage) return

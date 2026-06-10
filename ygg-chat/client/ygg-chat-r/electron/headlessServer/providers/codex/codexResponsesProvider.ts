@@ -5,6 +5,10 @@ import { parseCodexWebSocketResponse } from './codexWebsocket.js'
 import type { CodexGenerateInput, CodexGenerateResult, CodexProviderOptions, CodexResponsesTransport } from './types.js'
 import { CODEX_BASE_URL, CODEX_ORIGINATOR } from './types.js'
 
+function isCodexDevLoggingEnabled(): boolean {
+  return /^(1|true|yes|on)$/i.test(process.env.YGG_CODEX_DEV_LOGS || '')
+}
+
 export class CodexResponsesProvider {
   private readonly options: CodexProviderOptions
   private readonly fetchImpl: typeof fetch
@@ -57,7 +61,7 @@ export class CodexResponsesProvider {
       input: parts.input,
       tools: parts.tools,
     })
-    console.info('[Codex Request Shape]', diagnostics)
+    if (isCodexDevLoggingEnabled()) console.info('[Codex Request Shape]', diagnostics)
 
     const transport = this.resolveTransport()
     const parsed =
