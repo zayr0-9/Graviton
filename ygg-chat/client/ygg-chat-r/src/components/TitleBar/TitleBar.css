@@ -52,6 +52,11 @@
   padding-right: 12px;
 }
 
+/* Linux uses Electron's native window-controls overlay; reserve the right edge. */
+.titlebar-linux .titlebar-controls {
+  padding-right: 132px;
+}
+
 .titlebar-title {
   font-size: 13px;
   font-weight: 500;
@@ -282,8 +287,13 @@
     padding-left: 78px;
   }
 
-  .titlebar-mac .titlebar-remote-pill {
+  .titlebar-mac .titlebar-remote-pill,
+  .titlebar-linux .titlebar-remote-pill {
     display: none;
+  }
+
+  .titlebar-linux .titlebar-controls {
+    padding-right: 120px;
   }
 }
 

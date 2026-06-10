@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react'
 import { Badge } from './ui'
 import { EditToolDiffView } from './EditToolDiffView'
+import { PlanMdToolView } from './PlanMdToolView'
 import { CustomToolIframe } from './CustomToolIframe'
 import type { ToolGroup, ToolResultLike } from '../types'
 import { extractHtmlFromToolResult, toReadableToolResult } from '../messageParser'
@@ -72,6 +73,11 @@ const normalizeToolName = (name: string | undefined): string =>
 const isEditLikeTool = (name: string | undefined): boolean => {
   const normalized = normalizeToolName(name)
   return normalized === 'edit_file' || normalized === 'editfile' || normalized === 'multi_edit'
+}
+
+const isPlanMdDisplayTool = (name: string | undefined, args: Record<string, unknown> | undefined): boolean => {
+  const normalized = normalizeToolName(name)
+  return normalized === 'plan_md' && String(args?.action || '').toLowerCase() === 'display'
 }
 
 const humanizeToolName = (name: string | null | undefined): string => {
@@ -169,9 +175,11 @@ export const ToolCallCard: React.FC<ToolCallCardProps> = ({
 }) => {
   const normalizedToolName = useMemo(() => normalizeToolName(group.name), [group.name])
   const isEditTool = useMemo(() => isEditLikeTool(group.name), [group.name])
+  const isPlanMdDisplay = useMemo(() => isPlanMdDisplayTool(group.name, group.args), [group.name, group.args])
   const isHtmlRendererTool = normalizedToolName === 'html_renderer'
   const editResult = useMemo(() => parseResultObject(group.results[0]?.content), [group.results])
   const hasEditToolView = isEditTool && Boolean(group.args)
+  const hasPlanMdDisplayView = isPlanMdDisplay && Boolean(group.args)
   const hasHtmlResult = useMemo(() => group.results.some(result => Boolean(extractHtmlFromToolResult(result.content)?.html)), [group.results])
 
   const rendererHtmlFromArgs = useMemo(() => {
@@ -187,13 +195,15 @@ export const ToolCallCard: React.FC<ToolCallCardProps> = ({
     return Object.keys(rest).length > 0 ? rest : undefined
   }, [group.args, isHtmlRendererTool])
 
-  const [expanded, setExpanded] = useState(defaultExpanded || hasEditToolView || hasHtmlResult || Boolean(rendererHtmlFromArgs))
+  const [expanded, setExpanded] = useState(
+    defaultExpanded || hasEditToolView || hasPlanMdDisplayView || hasHtmlResult || Boolean(rendererHtmlFromArgs)
+  )
   const [openIframeByResultIndex, setOpenIframeByResultIndex] = useState<Record<number, boolean>>({})
   const [fullscreenIframeByResultIndex, setFullscreenIframeByResultIndex] = useState<Record<number, boolean>>({})
 
   useEffect(() => {
-    if (hasEditToolView || hasHtmlResult || Boolean(rendererHtmlFromArgs)) setExpanded(true)
-  }, [hasEditToolView, hasHtmlResult, rendererHtmlFromArgs])
+    if (hasEditToolView || hasPlanMdDisplayView || hasHtmlResult || Boolean(rendererHtmlFromArgs)) setExpanded(true)
+  }, [hasEditToolView, hasPlanMdDisplayView, hasHtmlResult, rendererHtmlFromArgs])
 
   useEffect(() => {
     if (!hasHtmlResult) {
@@ -284,6 +294,8 @@ export const ToolCallCard: React.FC<ToolCallCardProps> = ({
               result={group.results[0]?.content ?? {}}
               className='mobile-editfile-view'
             />
+          ) : hasPlanMdDisplayView ? (
+            <PlanMdToolView args={group.args} result={group.results[0]?.content ?? {}} />
           ) : (
             <>
               {displayArgs && Object.keys(displayArgs).length > 0 ? (

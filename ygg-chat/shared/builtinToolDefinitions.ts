@@ -52,6 +52,73 @@ export const BUILTIN_TOOL_DEFINITIONS: SharedToolDefinition[] = [
     },
   },
   {
+    name: 'plan_md',
+    enabled: true,
+    description:
+      'Create, list, read, edit, display, or clarify Markdown plans stored in the project .ygg/plans directory. Use clarify to ask the user structured planning questions with selectable options plus a manual answer option; the user answers are returned as the tool result so the model can continue.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        action: {
+          type: 'string',
+          enum: ['create', 'list', 'read', 'edit', 'display', 'clarify'],
+          description:
+            'Action to perform: create writes a new Markdown plan; list shows recent plans; read returns one plan; edit replaces matching lines; display shows a plan to the user; clarify asks the user interactive questions and returns their answers.',
+        },
+        name: {
+          type: 'string',
+          description: 'Plan name. Required for read, edit, and display; optional for create.',
+        },
+        content: {
+          type: 'string',
+          description: 'Markdown content for the create action.',
+        },
+        search: {
+          type: 'string',
+          description: 'For edit action: line substring to find. Every line containing this text is replaced.',
+        },
+        replacement: {
+          type: 'string',
+          description: 'For edit action: full replacement line.',
+        },
+        cwd: {
+          type: 'string',
+          description: 'Workspace directory whose .ygg/plans directory stores plan files.',
+        },
+        questions: {
+          type: 'array',
+          description:
+            'Clarification questions for the user before final plan output. Used only with action=clarify. Each question may provide options; the UI will always include a manual answer option.',
+          items: {
+            type: 'object',
+            properties: {
+              id: { type: 'string' },
+              question: { type: 'string' },
+              description: { type: 'string' },
+              manualLabel: { type: 'string' },
+              options: {
+                type: 'array',
+                items: {
+                  type: 'object',
+                  properties: {
+                    id: { type: 'string' },
+                    label: { type: 'string' },
+                    description: { type: 'string' },
+                  },
+                  required: ['label'],
+                  additionalProperties: false,
+                },
+              },
+            },
+            required: ['question'],
+            additionalProperties: false,
+          },
+        },
+      },
+      required: ['action'],
+    },
+  },
+  {
     name: 'theme_manager',
     enabled: true,
     description:

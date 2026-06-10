@@ -1,7 +1,7 @@
 {
   "name": "graviton",
   "private": true,
-  "version": "0.1.99",
+  "version": "0.2.2",
   "description": "YggChat desktop client",
   "homepage": "https://yggchat.com",
   "author": {
@@ -22,6 +22,7 @@
     "rebuild:client": "npx @electron/rebuild -f -w better-sqlite3 -w keytar -w node-pty -v 38.8.4",
     "build:win": "npm run build:electron && npm run build:electron:main && electron-builder --win",
     "build:linux": "npm run build:electron && npm run build:electron:main && electron-builder --linux",
+    "dogfoodlinux": "./scripts/dogfoodlinux.sh",
     "build:mac": "npm run build:electron && npm run build:electron:main && electron-builder --mac",
     "build:all": "npm run build:electron && npm run build:electron:main && electron-builder --win --linux",
     "lint": "eslint .",

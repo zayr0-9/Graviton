@@ -89,3 +89,5 @@ ygg-chat/server/src/data/yggdrasil.db
 ygg-chat/server/src/data/uploads/*node_modules/
 .gitnexus
 .qubit
+.agents
+.codex

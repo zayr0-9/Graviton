@@ -62,6 +62,7 @@ import { viewImage } from './tools/viewImage.js'
 import { UtilityToolRuntimeHost } from './tools/runtime/UtilityToolRuntimeHost.js'
 import { execute as executeThemeManager } from './tools/themeManager.js'
 import { createTodoList, editTodoList, listTodoLists, readTodoList } from './tools/todoMd.js'
+import { executePlanMd } from './tools/planMd.js'
 
 /**
  * Validates and resolves a path to ensure it's within the allowed rootPath scope.
@@ -746,6 +747,10 @@ function initializeBuiltInToolRegistry() {
 
   builtInTools.set('theme_manager', async args => {
     return await executeThemeManager(args)
+  })
+
+  builtInTools.set('plan_md', async (args, { rootPath }) => {
+    return await executePlanMd(args, rootPath)
   })
 
   builtInTools.set('fetch_notes', async (args, options) => {

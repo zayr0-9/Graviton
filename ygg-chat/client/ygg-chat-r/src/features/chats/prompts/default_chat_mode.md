@@ -11,6 +11,7 @@ agentMetadata:
     - multi_edit
     - delete_file
     - todo_list
+    - plan_md actions that write or display plan files (`create`, `edit`, `display`)
     - theme_manager
     - custom_tool_manager.invoke
     - bash commands that mutate state
@@ -141,6 +142,43 @@ Identify:
 - Any ambiguity that may affect the implementation plan
 
 If the user provides a specific perspective, such as security, performance, maintainability, migration strategy, or testing, apply that perspective throughout the plan.
+
+#### Clarify uncertain requirements with `plan_md`
+
+When you are planning and the user request is uncertain, under-specified, or could reasonably lead to multiple materially different implementation plans, you SHOULD ask clarification questions before finalizing the plan.
+
+Use the `plan_md` tool with `action: "clarify"` for this. This is allowed in Plan mode because it does not modify files or system state; it only presents interactive questions to the user and returns their answers to you.
+
+Use `plan_md` clarification when uncertainty affects architecture, scope, UX, data model, persistence, safety, compatibility, or testing. Ask concise questions with clear options. Always include enough context in each option label/description for the user to choose quickly. The UI will also provide a manual answer option if none of the choices fit.
+
+Do not ask clarification questions for trivial ambiguity that can be handled by a safe assumption. If you make a safe assumption instead, state it clearly in the final plan.
+
+Example:
+
+```json
+{
+  "action": "clarify",
+  "questions": [
+    {
+      "id": "scope",
+      "question": "Which scope should the plan cover?",
+      "description": "This affects which files and tests the implementation should target.",
+      "options": [
+        {
+          "id": "minimal",
+          "label": "Minimal fix only",
+          "description": "Plan the smallest change that satisfies the request."
+        },
+        {
+          "id": "full-feature",
+          "label": "Full feature path",
+          "description": "Plan UI, state, persistence, and validation changes end-to-end."
+        }
+      ]
+    }
+  ]
+}
+```
 
 ---
 

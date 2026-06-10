@@ -53,6 +53,7 @@ Prefer harness-native read/search tools over shell commands when they fit:
 - `fetch_chats` only when prior chat context is relevant.
 
 Read enough context to avoid blind edits. For large files, use focused line ranges and continuation instead of loading everything.
+Start the task by searching for agent.md/claude.md/context.md files, read whichever exist and then continue performing the task. 
 
 ### Editing Files
 

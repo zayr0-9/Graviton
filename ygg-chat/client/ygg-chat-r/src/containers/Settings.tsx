@@ -268,6 +268,7 @@ const Settings: React.FC = () => {
   const [openaiAuthFlow, setOpenaiAuthFlow] = useState<{ url: string; verifier: string; state: string } | null>(null)
   const [openaiAuthError, setOpenaiAuthError] = useState<string | null>(null)
   const [openaiAuthLoading, setOpenaiAuthLoading] = useState(false)
+  const [openaiAuthPolling, setOpenaiAuthPolling] = useState(false)
   const [toolExecutionSettings, setToolExecutionSettings] = useState<ToolExecutionSettings>(() =>
     loadToolExecutionSettings()
   )
@@ -814,6 +815,78 @@ const Settings: React.FC = () => {
     setOpenaiAuthFlow(null)
     setOpenaiAuthError(null)
     setOpenaiAuthLoading(false)
+    setOpenaiAuthPolling(false)
+  }
+
+  const openOpenaiAuthUrl = async (url: string) => {
+    if (window.electronAPI?.auth?.openExternal) {
+      try {
+        await window.electronAPI.auth.openExternal(url)
+        return
+      } catch (error) {
+        console.error('Failed to open browser:', error)
+        setOpenaiAuthError('Failed to open browser. Please copy the URL manually.')
+        return
+      }
+    }
+
+    window.open(url, '_blank')
+  }
+
+  const completeOpenaiAuthFlow = async (
+    state: string,
+    options: { silentPending?: boolean; suppressErrors?: boolean } = {}
+  ): Promise<'success' | 'pending' | 'error'> => {
+    setOpenaiAuthLoading(true)
+    if (!options.silentPending) {
+      setOpenaiAuthError(null)
+    }
+
+    try {
+      const data = await localApi.post<{
+        pending?: boolean
+        success?: boolean
+        error?: string
+        accessToken?: string
+        refreshToken?: string
+        expiresAt?: number
+        accountId?: string
+      }>('/openai/auth/complete', { state })
+
+      if (data.pending) {
+        if (!options.silentPending) {
+          setOpenaiAuthError('Please complete the sign-in in your browser first.')
+        }
+        return 'pending'
+      }
+
+      if (!data.success || !data.accessToken || !data.refreshToken || !data.expiresAt || !data.accountId) {
+        if (!options.suppressErrors) {
+          setOpenaiAuthError(data.error || 'Authentication failed. Please try again.')
+        }
+        return 'error'
+      }
+
+      saveTokens({
+        accessToken: data.accessToken,
+        refreshToken: data.refreshToken,
+        expiresAt: data.expiresAt,
+        accountId: data.accountId,
+      })
+
+      dispatch(chatSliceActions.providerSelected('OpenAI (ChatGPT)'))
+      closeOpenaiLoginModal()
+      showStatus({ type: 'success', text: 'Signed in to OpenAI ChatGPT.' })
+      return 'success'
+    } catch (error) {
+      console.error('OpenAI auth callback error:', error)
+      if (!options.suppressErrors) {
+        setOpenaiAuthError('Authentication failed. Please try again.')
+      }
+      return 'error'
+    } finally {
+      setOpenaiAuthLoading(false)
+    }
   }
 
   const handleOpenAIChatGPTSignIn = async () => {
@@ -825,6 +898,7 @@ const Settings: React.FC = () => {
         setOpenaiAuthFlow({ url: data.authUrl, verifier: '', state: data.state })
         setOpenaiAuthError(null)
         setOpenaiLoginModalOpen(true)
+        void openOpenaiAuthUrl(data.authUrl)
         return
       }
 
@@ -840,65 +914,54 @@ const Settings: React.FC = () => {
 
   const handleOpenaiLogin = async () => {
     if (!openaiAuthFlow) return
-
-    if (window.electronAPI?.auth?.openExternal) {
-      try {
-        await window.electronAPI.auth.openExternal(openaiAuthFlow.url)
-      } catch (error) {
-        console.error('Failed to open browser:', error)
-        setOpenaiAuthError('Failed to open browser. Please copy the URL manually.')
-      }
-    } else {
-      window.open(openaiAuthFlow.url, '_blank')
-    }
+    await openOpenaiAuthUrl(openaiAuthFlow.url)
   }
 
-  const handleOpenaiAuthCallback = async () => {
-    if (!openaiAuthFlow) return
+  useEffect(() => {
+    if (!openaiLoginModalOpen || !openaiAuthFlow?.state) return
 
-    setOpenaiAuthLoading(true)
-    setOpenaiAuthError(null)
+    let cancelled = false
+    let inFlight = false
+    const state = openaiAuthFlow.state
+    const startedAt = Date.now()
+    const timeoutMs = 2 * 60 * 1000
+    const pollIntervalMs = 1500
 
-    try {
-      const data = await localApi.post<{
-        pending?: boolean
-        success?: boolean
-        error?: string
-        accessToken?: string
-        refreshToken?: string
-        expiresAt?: number
-        accountId?: string
-      }>('/openai/auth/complete', { state: openaiAuthFlow.state })
+    setOpenaiAuthPolling(true)
 
-      if (data.pending) {
-        setOpenaiAuthError('Please complete the sign-in in your browser first, then click this button again.')
-        setOpenaiAuthLoading(false)
+    const poll = async () => {
+      if (cancelled || inFlight) return
+      inFlight = true
+
+      const result = await completeOpenaiAuthFlow(state, { silentPending: true, suppressErrors: true })
+      inFlight = false
+
+      if (cancelled || result === 'success') return
+
+      if (result === 'error') {
+        setOpenaiAuthPolling(false)
+        setOpenaiAuthError('Authentication failed or expired. Please restart sign-in and try again.')
         return
       }
 
-      if (!data.success) {
-        setOpenaiAuthError(data.error || 'Authentication failed. Please try again.')
-        setOpenaiAuthLoading(false)
+      if (Date.now() - startedAt >= timeoutMs) {
+        setOpenaiAuthPolling(false)
+        setOpenaiAuthError('Sign-in is taking longer than expected. Finish in your browser or open the sign-in page again.')
         return
       }
 
-      saveTokens({
-        accessToken: data.accessToken,
-        refreshToken: data.refreshToken,
-        expiresAt: data.expiresAt,
-        accountId: data.accountId,
-      })
-
-      dispatch(chatSliceActions.providerSelected('OpenAI (ChatGPT)'))
-      closeOpenaiLoginModal()
-      showStatus({ type: 'success', text: 'Signed in to OpenAI ChatGPT.' })
-    } catch (error) {
-      console.error('OpenAI auth callback error:', error)
-      setOpenaiAuthError('Authentication failed. Please try again.')
-    } finally {
-      setOpenaiAuthLoading(false)
+      window.setTimeout(poll, pollIntervalMs)
     }
-  }
+
+    const initialPollDelay = window.setTimeout(poll, 1000)
+
+    return () => {
+      cancelled = true
+      window.clearTimeout(initialPollDelay)
+    }
+    // Polling intentionally captures the completion handler for this OAuth state only.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [openaiLoginModalOpen, openaiAuthFlow?.state])
 
   const handleOpenAIChatGPTSignOut = () => {
     clearOpenAITokens()
@@ -4330,36 +4393,27 @@ const Settings: React.FC = () => {
                   </div>
                 )}
 
-                <div className='space-y-3'>
-                  <div className='text-sm text-stone-700 dark:text-stone-300'>
-                    <strong>Step 1:</strong> Click below to sign in with your OpenAI account in your browser.
+                <div className='rounded-lg border border-emerald-200 bg-emerald-50 p-3 dark:border-emerald-900/50 dark:bg-emerald-900/20'>
+                  <div className='flex items-center gap-2 text-sm text-emerald-800 dark:text-emerald-200'>
+                    {(openaiAuthPolling || openaiAuthLoading) && (
+                      <i className='bx bx-loader-alt animate-spin text-lg text-emerald-600 dark:text-emerald-300'></i>
+                    )}
+                    <span>
+                      Complete the sign-in in your browser. Ygg Chat will finish automatically when OAuth completes.
+                    </span>
                   </div>
-                  <Button
-                    variant='outline2'
-                    className='w-full border-neutral-700 bg-neutral-800 text-white hover:bg-neutral-900 active:scale-98'
-                    onClick={handleOpenaiLogin}
-                  >
-                    Open Browser to Sign In
-                  </Button>
-                </div>
-
-                <div className='space-y-3'>
-                  <div className='text-sm text-stone-700 dark:text-stone-300'>
-                    <strong>Step 2:</strong> After finishing in your browser, click below to complete sign-in.
-                  </div>
-                  <Button
-                    variant='outline2'
-                    className='w-full border-emerald-700 bg-emerald-600 text-white hover:bg-emerald-700 active:scale-98'
-                    onClick={handleOpenaiAuthCallback}
-                    disabled={openaiAuthLoading}
-                  >
-                    {openaiAuthLoading ? 'Completing Sign In...' : 'Complete Sign In'}
-                  </Button>
                 </div>
 
                 <div className='flex justify-end gap-2'>
                   <Button variant='outline2' onClick={closeOpenaiLoginModal}>
                     Cancel
+                  </Button>
+                  <Button
+                    variant='outline2'
+                    className='border-neutral-700 bg-neutral-800 text-white hover:bg-neutral-900 active:scale-98'
+                    onClick={handleOpenaiLogin}
+                  >
+                    Open Browser Again
                   </Button>
                 </div>
               </div>

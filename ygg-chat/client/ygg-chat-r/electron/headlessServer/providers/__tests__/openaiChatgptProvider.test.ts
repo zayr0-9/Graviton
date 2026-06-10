@@ -20,10 +20,13 @@ describe('OpenAiChatgptProvider', () => {
     delete process.env.OPENAI_CHATGPT_ACCESS_TOKEN
     delete process.env.OPENAI_ACCESS_TOKEN
     delete process.env.OPENAI_CHATGPT_ACCOUNT_ID
+    delete process.env.YGG_OPENAI_CHATGPT_DEBUG_LOGS
   })
 
   it('enables parallel tool calls and preserves final_answer text for gpt-5.3-codex', async () => {
     process.env.OPENAI_CHATGPT_ACCESS_TOKEN = 'header.eyJodHRwczovL2FwaS5vcGVuYWkuY29tL2F1dGgiOnsiY2hhdGdwdF9hY2NvdW50X2lkIjoiYWNjdC0xIn19.sig'
+
+    const infoSpy = vi.spyOn(console, 'info').mockImplementation(() => {})
 
     const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation(async (_input, init) => {
       const body = JSON.parse(String(init?.body || '{}'))
@@ -86,6 +89,14 @@ describe('OpenAiChatgptProvider', () => {
           {
             type: 'response.completed',
             response: {
+              id: 'resp-1',
+              usage: {
+                input_tokens: 100,
+                input_tokens_details: { cached_tokens: 40 },
+                output_tokens: 25,
+                output_tokens_details: { reasoning_tokens: 5 },
+                total_tokens: 125,
+              },
               output: [
                 {
                   id: 'msg-commentary',
@@ -154,6 +165,23 @@ describe('OpenAiChatgptProvider', () => {
         part: 'text',
         delta: expect.stringContaining('assistant to=functions.read_file'),
       })
+    )
+    expect(infoSpy).toHaveBeenCalledWith(
+      '[Codex Usage]',
+      expect.objectContaining({
+        model: 'gpt-5.3-codex',
+        responseId: 'resp-1',
+        inputTokens: 100,
+        cachedInputTokens: 40,
+        uncachedInputTokens: 60,
+        cacheHitRate: '40.00%',
+        outputTokens: 25,
+        reasoningTokens: 5,
+        totalTokens: 125,
+      })
+    )
+    expect(infoSpy.mock.calls).not.toEqual(
+      expect.arrayContaining([[expect.stringContaining('[OpenAI ChatGPT] stream event'), expect.anything()]])
     )
   })
 

@@ -69,6 +69,11 @@ import {
   updateToolEnabled as updateToolEnabledInDefinitions,
 } from './toolDefinitions'
 import { runChatHook, type ChatHookLineage, type ChatHookTurnContext } from './chatHookClient'
+import {
+  normalizePlanClarificationQuestions,
+  type PlanClarificationAnswer,
+  type PlanClarificationResult,
+} from './planToolTypes'
 
 // TODO: Import when conversations feature is available
 // import { conversationActions } from '../conversations'
@@ -112,9 +117,14 @@ const shouldBypassToolPermission = (toolCall: any): boolean => {
   const toolName = typeof toolCall?.name === 'string' ? toolCall.name : ''
   if (!toolName) return false
   if (TOOL_PERMISSION_ALWAYS_BYPASS.has(toolName)) return true
-  if (toolName !== 'custom_tool_manager') return false
 
   const args = getToolCallArgsObject(toolCall)
+  if (toolName === 'plan_md') {
+    return args?.action === 'clarify'
+  }
+
+  if (toolName !== 'custom_tool_manager') return false
+
   const action = typeof args?.action === 'string' ? args.action.trim().toLowerCase() : ''
   if (!action) return false
   return action !== 'invoke' && CUSTOM_TOOL_MANAGER_BYPASS_ACTIONS.has(action)
@@ -2529,6 +2539,18 @@ export const executeLocalTool = async (
     })
   }
 
+  // Renderer-interactive plan clarification must not be submitted to the Electron job runner.
+  if (isPlanClarifyToolCall(preparedToolCall)) {
+    if (!context?.dispatch || !context?.getState) {
+      throw new Error('plan_md clarify requires renderer dispatch context')
+    }
+    return await requestPlanClarification(context.dispatch, preparedToolCall, {
+      conversationId: context.conversationId,
+      messageId: context.messageId,
+      streamId: context.streamId,
+    })
+  }
+
   // Non-electron: only allow browse_web, otherwise bail
   if (!isElectronEnvironment) {
     if (preparedToolCall?.name === 'browse_web') {
@@ -2666,6 +2688,48 @@ export const executeToolAsJobAndWait = async (
 }
 
 let pendingPermissionResolve: ((allowed: boolean) => void) | null = null
+let pendingPlanClarificationResolve: ((response: { cancelled?: boolean; answers?: PlanClarificationAnswer[] }) => void) | null = null
+
+const isPlanClarifyToolCall = (toolCall: any): boolean => {
+  if (toolCall?.name !== 'plan_md') return false
+  const args = getToolCallArgsObject(toolCall)
+  return args?.action === 'clarify'
+}
+
+const requestPlanClarification = async (
+  dispatch: any,
+  toolCall: any,
+  context?: {
+    conversationId?: string
+    messageId?: string
+    streamId?: string
+  }
+): Promise<PlanClarificationResult> => {
+  const args = getToolCallArgsObject(toolCall)
+  const questions = normalizePlanClarificationQuestions(args?.questions)
+  const requestId = `plan-clarify-${context?.streamId || context?.messageId || context?.conversationId || 'run'}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+
+  dispatch(
+    chatSliceActions.planClarificationRequested({
+      id: requestId,
+      questions,
+      conversationId: context?.conversationId,
+      messageId: context?.messageId,
+      streamId: context?.streamId,
+      toolCallId: typeof toolCall?.id === 'string' ? toolCall.id : undefined,
+    })
+  )
+
+  const response = await new Promise<{ cancelled?: boolean; answers?: PlanClarificationAnswer[] }>(resolve => {
+    pendingPlanClarificationResolve = resolve
+  })
+
+  if (response.cancelled) {
+    return { clarified: false, cancelled: true, questions: questions.length, answers: [] }
+  }
+
+  return { clarified: true, questions: questions.length, answers: response.answers || [] }
+}
 
 const requestToolPermissionDecision = async (
   dispatch: any,
@@ -9756,6 +9820,29 @@ export const respondToToolPermission = createAsyncThunk<void, boolean, { state: 
       pendingPermissionResolve = null
     }
     dispatch(chatSliceActions.toolPermissionResponded())
+  }
+)
+
+export const respondToPlanClarification = createAsyncThunk<
+  void,
+  PlanClarificationAnswer[],
+  { state: RootState; extra: ThunkExtraArgument }
+>('chat/respondToPlanClarification', async (answers, { dispatch }) => {
+  if (pendingPlanClarificationResolve) {
+    pendingPlanClarificationResolve({ answers })
+    pendingPlanClarificationResolve = null
+  }
+  dispatch(chatSliceActions.planClarificationResponded())
+})
+
+export const cancelPlanClarification = createAsyncThunk<void, void, { state: RootState; extra: ThunkExtraArgument }>(
+  'chat/cancelPlanClarification',
+  async (_, { dispatch }) => {
+    if (pendingPlanClarificationResolve) {
+      pendingPlanClarificationResolve({ cancelled: true })
+      pendingPlanClarificationResolve = null
+    }
+    dispatch(chatSliceActions.planClarificationResponded())
   }
 )
 

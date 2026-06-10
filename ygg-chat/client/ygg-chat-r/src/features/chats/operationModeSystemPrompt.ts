@@ -52,6 +52,7 @@ const CHAT_MODE_ALLOWED_TOOL_NAMES = new Set([
   'finance',
   'glob',
   'internalLink',
+  'plan_md',
   'read_file',
   'read_file_continuation',
   'read_files',

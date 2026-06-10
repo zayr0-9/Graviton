@@ -32,6 +32,8 @@ export {
   fetchCCSlashCommands,
   getCCSessionInfo,
   refreshCurrentPathAfterDelete,
+  respondToPlanClarification,
+  cancelPlanClarification,
   respondToToolPermission,
   respondToToolPermissionAndEnableAll,
   compactBranch,

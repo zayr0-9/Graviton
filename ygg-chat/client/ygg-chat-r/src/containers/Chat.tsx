@@ -17,6 +17,7 @@ import {
   Heimdall,
   InputTextArea,
   ModelSelectControl,
+  PlanClarificationPanel,
   Select,
   SettingsPane,
   TextField,
@@ -54,6 +55,7 @@ import { isCommunityMode } from '../config/runtimeMode'
 import {
   abortGeneration,
   AUTO_COMPACTION_NOTE,
+  cancelPlanClarification,
   GENERATED_IMAGE_PATH_HINT_NOTE,
   blobToDataURL,
   chatSliceActions,
@@ -63,6 +65,7 @@ import {
   initializeUserAndConversation,
   Message,
   resolveAttachmentUrl,
+  respondToPlanClarification,
   respondToToolPermission,
   respondToToolPermissionAndEnableAll,
   selectCcCwd,
@@ -89,6 +92,7 @@ import {
   updateMessage,
 } from '../features/chats'
 import type { ContentBlock, ToolCall } from '../features/chats/chatTypes'
+import type { PlanClarificationAnswer } from '../features/chats/planToolTypes'
 import { estimateContentBlocksForContext, safeEstimateTokenCount } from '../features/chats/contextTokenEstimate'
 import {
   extractBranchFileMutations,
@@ -1054,6 +1058,7 @@ function Chat() {
   const conversationMessages = useAppSelector(selectConversationMessages)
   const displayMessages = useAppSelector(selectDisplayMessages)
   const toolCallPermissionRequest = useAppSelector(state => state.chat.toolCallPermissionRequest)
+  const planClarificationRequest = useAppSelector(state => state.chat.planClarificationRequest)
   const toolAutoApprove = useAppSelector(state => state.chat.toolAutoApprove)
   const showFreeTierModal = useAppSelector(state => state.chat.freeTier.showLimitModal)
   // const freeGenerationsRemaining = useAppSelector(state => state.chat.freeTier.freeGenerationsRemaining)
@@ -1228,6 +1233,7 @@ function Chat() {
   // const [openaiCallbackInput, setOpenaiCallbackInput] = useState('')
   const [openaiAuthError, setOpenaiAuthError] = useState<string | null>(null)
   const [openaiAuthLoading, setOpenaiAuthLoading] = useState(false)
+  const [openaiAuthPolling, setOpenaiAuthPolling] = useState(false)
   const [showOpenAIUsagePanel, setShowOpenAIUsagePanel] = useState(false)
   const [openAIUsageData, setOpenAIUsageData] = useState<OpenAIUsageSnapshot | null>(null)
   const [openAIUsageLoading, setOpenAIUsageLoading] = useState(false)
@@ -4238,6 +4244,21 @@ function Chat() {
     [dispatch, extensions, requestContext, setCcCwdFromSystem]
   )
   // Provider selection handler with OpenAI auth check
+  const openOpenaiAuthUrl = useCallback(async (url: string) => {
+    if (window.electronAPI?.auth?.openExternal) {
+      try {
+        await window.electronAPI.auth.openExternal(url)
+        return
+      } catch (error) {
+        console.error('Failed to open browser:', error)
+        setOpenaiAuthError('Failed to open browser. Please copy the URL manually.')
+        return
+      }
+    }
+
+    window.open(url, '_blank')
+  }, [])
+
   const handleProviderSelect = useCallback(
     async (providerName: string) => {
       if (providerName === 'OpenRouter' && isCommunityMode) {
@@ -4257,6 +4278,7 @@ function Chat() {
             setOpenaiAuthError(null)
             // setOpenaiCallbackInput('')
             setOpenaiLoginModalOpen(true)
+            void openOpenaiAuthUrl(data.authUrl)
           } else {
             throw new Error(data.error || 'Failed to start OAuth flow')
           }
@@ -4269,7 +4291,7 @@ function Chat() {
       }
       dispatch(chatSliceActions.providerSelected(providerName))
     },
-    [dispatch]
+    [dispatch, openOpenaiAuthUrl]
   )
 
   const handleComposerSlashCommandSelect = useCallback(
@@ -5138,30 +5160,22 @@ function Chat() {
     // setOpenaiCallbackInput('')
     setOpenaiAuthError(null)
     setOpenaiAuthLoading(false)
+    setOpenaiAuthPolling(false)
   }
 
   const handleOpenaiLogin = async () => {
     if (!openaiAuthFlow) return
-
-    // Open the authorization URL in the default browser
-    if (window.electronAPI?.auth?.openExternal) {
-      try {
-        await window.electronAPI.auth.openExternal(openaiAuthFlow.url)
-      } catch (error) {
-        console.error('Failed to open browser:', error)
-        setOpenaiAuthError('Failed to open browser. Please copy the URL manually.')
-      }
-    } else {
-      // Fallback: open in new tab (web mode, though this provider is Electron-only)
-      window.open(openaiAuthFlow.url, '_blank')
-    }
+    await openOpenaiAuthUrl(openaiAuthFlow.url)
   }
 
-  const handleOpenaiAuthCallback = async () => {
-    if (!openaiAuthFlow) return
-
+  const completeOpenaiAuthFlow = async (
+    state: string,
+    options: { silentPending?: boolean; suppressErrors?: boolean } = {}
+  ): Promise<'success' | 'pending' | 'error'> => {
     setOpenaiAuthLoading(true)
-    setOpenaiAuthError(null)
+    if (!options.silentPending) {
+      setOpenaiAuthError(null)
+    }
 
     try {
       // Retrieve tokens from server using state (server already exchanged the code)
@@ -5173,18 +5187,20 @@ function Chat() {
         refreshToken?: string
         expiresAt?: number
         accountId?: string
-      }>('/openai/auth/complete', { state: openaiAuthFlow.state })
+      }>('/openai/auth/complete', { state })
 
       if (data.pending) {
-        setOpenaiAuthError('Please complete the sign-in in your browser first, then click this button again.')
-        setOpenaiAuthLoading(false)
-        return
+        if (!options.silentPending) {
+          setOpenaiAuthError('Please complete the sign-in in your browser first.')
+        }
+        return 'pending'
       }
 
-      if (!data.success) {
-        setOpenaiAuthError(data.error || 'Authentication failed. Please try again.')
-        setOpenaiAuthLoading(false)
-        return
+      if (!data.success || !data.accessToken || !data.refreshToken || !data.expiresAt || !data.accountId) {
+        if (!options.suppressErrors) {
+          setOpenaiAuthError(data.error || 'Authentication failed. Please try again.')
+        }
+        return 'error'
       }
 
       // Save tokens to localStorage using the openaiOAuth module
@@ -5199,13 +5215,63 @@ function Chat() {
       // Successfully authenticated, select the provider
       dispatch(chatSliceActions.providerSelected('OpenAI (ChatGPT)'))
       closeOpenaiLoginModal()
+      return 'success'
     } catch (error) {
       console.error('OpenAI auth callback error:', error)
-      setOpenaiAuthError('Authentication failed. Please try again.')
+      if (!options.suppressErrors) {
+        setOpenaiAuthError('Authentication failed. Please try again.')
+      }
+      return 'error'
     } finally {
       setOpenaiAuthLoading(false)
     }
   }
+
+  useEffect(() => {
+    if (!openaiLoginModalOpen || !openaiAuthFlow?.state) return
+
+    let cancelled = false
+    let inFlight = false
+    const state = openaiAuthFlow.state
+    const startedAt = Date.now()
+    const timeoutMs = 2 * 60 * 1000
+    const pollIntervalMs = 1500
+
+    setOpenaiAuthPolling(true)
+
+    const poll = async () => {
+      if (cancelled || inFlight) return
+      inFlight = true
+
+      const result = await completeOpenaiAuthFlow(state, { silentPending: true, suppressErrors: true })
+      inFlight = false
+
+      if (cancelled || result === 'success') return
+
+      if (result === 'error') {
+        setOpenaiAuthPolling(false)
+        setOpenaiAuthError('Authentication failed or expired. Please restart sign-in and try again.')
+        return
+      }
+
+      if (Date.now() - startedAt >= timeoutMs) {
+        setOpenaiAuthPolling(false)
+        setOpenaiAuthError('Sign-in is taking longer than expected. Finish in your browser or open the sign-in page again.')
+        return
+      }
+
+      window.setTimeout(poll, pollIntervalMs)
+    }
+
+    const initialPollDelay = window.setTimeout(poll, 1000)
+
+    return () => {
+      cancelled = true
+      window.clearTimeout(initialPollDelay)
+    }
+    // Polling intentionally captures the completion handler for this OAuth state only.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [openaiLoginModalOpen, openaiAuthFlow?.state])
 
   const handleOpenaiLogout = () => {
     clearOpenAITokens()
@@ -6258,6 +6324,13 @@ function Chat() {
                 onGrant={() => dispatch(respondToToolPermission(true))}
                 onDeny={() => dispatch(respondToToolPermission(false))}
                 onAllowAll={() => dispatch(respondToToolPermissionAndEnableAll())}
+              />
+            )}
+            {planClarificationRequest && (
+              <PlanClarificationPanel
+                request={planClarificationRequest}
+                onSubmit={(answers: PlanClarificationAnswer[]) => dispatch(respondToPlanClarification(answers))}
+                onCancel={() => dispatch(cancelPlanClarification())}
               />
             )}
             {/* Todo List Display - shows latest todo_list tool result */}
@@ -7420,25 +7493,14 @@ function Chat() {
                   </div>
                 )}
 
-                <div className='space-y-3'>
-                  <div className='text-sm' style={{ color: authModalBodyTextColor }}>
-                    <strong>Step 1:</strong> Click the button below to sign in with your OpenAI account in your browser.
-                  </div>
-                  <Button
-                    variant='outline2'
-                    className='w-full bg-neutral-800 hover:bg-neutral-900 border-neutral-700 text-white active:scale-98'
-                    onClick={handleOpenaiLogin}
-                    disabled={!openaiAuthFlow}
-                    style={authModalPrimaryButtonStyle}
-                  >
-                    <i className='bx bx-link-external mr-2'></i>
-                    Open OpenAI Login
-                  </Button>
-                </div>
-
-                <div className='space-y-3'>
-                  <div className='text-sm' style={{ color: authModalBodyTextColor }}>
-                    <strong>Step 2:</strong> After completing sign-in in your browser, click the button below.
+                <div className='rounded-lg border border-emerald-200 bg-emerald-50 p-3 dark:border-emerald-900/50 dark:bg-emerald-900/20'>
+                  <div className='flex items-center gap-2 text-sm text-emerald-800 dark:text-emerald-200'>
+                    {(openaiAuthPolling || openaiAuthLoading) && (
+                      <i className='bx bx-loader-alt animate-spin text-lg text-emerald-600 dark:text-emerald-300'></i>
+                    )}
+                    <span>
+                      Complete the sign-in in your browser. Ygg Chat will finish automatically when OAuth completes.
+                    </span>
                   </div>
                 </div>
 
@@ -7453,19 +7515,13 @@ function Chat() {
                   </Button>
                   <Button
                     variant='outline2'
-                    className='bg-emerald-600 hover:bg-emerald-700 border-emerald-700 text-white active:scale-90'
-                    onClick={handleOpenaiAuthCallback}
-                    disabled={!openaiAuthFlow || openaiAuthLoading}
+                    className='bg-neutral-800 hover:bg-neutral-900 border-neutral-700 text-white active:scale-90'
+                    onClick={handleOpenaiLogin}
+                    disabled={!openaiAuthFlow}
                     style={authModalPrimaryButtonStyle}
                   >
-                    {openaiAuthLoading ? (
-                      <>
-                        <i className='bx bx-loader-alt animate-spin mr-2'></i>
-                        Verifying...
-                      </>
-                    ) : (
-                      'Complete Sign In'
-                    )}
+                    <i className='bx bx-link-external mr-2'></i>
+                    Open Browser Again
                   </Button>
                 </div>
               </div>

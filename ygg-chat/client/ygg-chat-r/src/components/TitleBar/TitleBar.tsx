@@ -52,7 +52,7 @@ export const TitleBar = () => {
         setIsElectron(info.isElectron)
 
         // Add padding to app content when we render an in-app title bar.
-        if (info.isElectron && (info.platform === 'win32' || info.platform === 'darwin')) {
+        if (info.isElectron && (info.platform === 'win32' || info.platform === 'darwin' || info.platform === 'linux')) {
           document.body.classList.add('has-titlebar')
         }
 
@@ -73,10 +73,11 @@ export const TitleBar = () => {
 
   const isWindows = platform === 'win32'
   const isMac = platform === 'darwin'
+  const isLinux = platform === 'linux'
 
-  // Render custom title bar content on Windows and macOS only.
-  // macOS keeps native traffic lights; Windows uses custom window controls.
-  if (!isElectron || (!isWindows && !isMac)) {
+  // Render custom title bar content on desktop Electron platforms.
+  // macOS and Linux keep native window controls; Windows uses custom controls.
+  if (!isElectron || (!isWindows && !isMac && !isLinux)) {
     return null
   }
 
@@ -151,7 +152,11 @@ export const TitleBar = () => {
   }
 
   return (
-    <div className={`titlebar ${isMac ? 'titlebar-mac' : 'titlebar-windows'} ${isChatPage ? 'titlebar-chat' : ''}`}>
+    <div
+      className={`titlebar ${isMac ? 'titlebar-mac' : isLinux ? 'titlebar-linux' : 'titlebar-windows'} ${
+        isChatPage ? 'titlebar-chat' : ''
+      }`}
+    >
       <div className='titlebar-drag-region'>
         <div className='titlebar-nav-controls'>
           <button className='titlebar-control-button titlebar-nav-button' onClick={() => navigate(-1)} title='Go Back'>

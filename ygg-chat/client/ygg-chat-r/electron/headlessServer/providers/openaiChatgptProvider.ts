@@ -941,8 +941,8 @@ function numberOrZero(value: unknown): number {
   return typeof value === 'number' && Number.isFinite(value) ? value : 0
 }
 
-function isOpenAiPromptCacheLoggingEnabled(): boolean {
-  return /^(1|true|yes|on)$/i.test(process.env.YGG_OPENAI_PROMPT_CACHE_LOGS || '')
+function isOpenAiChatgptDebugLoggingEnabled(): boolean {
+  return /^(1|true|yes|on)$/i.test(process.env.YGG_OPENAI_CHATGPT_DEBUG_LOGS || '')
 }
 
 function createOpenAiChatgptTraceId(input: ProviderGenerateInput): string {
@@ -1040,29 +1040,23 @@ function summarizeOpenAiEvent(parsed: any): Record<string, unknown> {
 }
 
 function logOpenAiChatgpt(level: 'info' | 'warn' | 'error', message: string, details?: Record<string, unknown>) {
+  if (level === 'info' && !isOpenAiChatgptDebugLoggingEnabled()) return
   const logger = level === 'error' ? console.error : level === 'warn' ? console.warn : console.info
   logger(`[OpenAI ChatGPT] ${message}`, details || {})
 }
 
-function logOpenAiPromptCacheUsage(params: {
+function logCodexUsage(params: {
   model: string
   responseId?: string
   promptCacheKey?: string
   promptCacheRetention: 'in_memory' | '24h'
   usage?: OpenAiResponseUsage
 }) {
-  if (!isOpenAiPromptCacheLoggingEnabled()) return
+  // Keep Codex usage logs always-on for now. If this gets too noisy, gate this with an env var.
+  // if (!/^(1|true|yes|on)$/i.test(process.env.YGG_CODEX_USAGE_LOGS || '')) return
 
   const usage = params.usage
-  if (!usage) {
-    console.info('[OpenAI Prompt Cache] usage missing', {
-      model: params.model,
-      responseId: params.responseId,
-      promptCacheKey: params.promptCacheKey,
-      promptCacheRetention: params.promptCacheRetention,
-    })
-    return
-  }
+  if (!usage) return
 
   const inputTokens = numberOrZero(usage.input_tokens)
   const cachedInputTokens = numberOrZero(usage.input_tokens_details?.cached_tokens)
@@ -1072,7 +1066,7 @@ function logOpenAiPromptCacheUsage(params: {
   const uncachedInputTokens = Math.max(inputTokens - cachedInputTokens, 0)
   const cacheHitRate = inputTokens > 0 ? cachedInputTokens / inputTokens : 0
 
-  console.info('[OpenAI Prompt Cache]', {
+  console.info('[Codex Usage]', {
     model: params.model,
     responseId: params.responseId,
     promptCacheKey: params.promptCacheKey,
@@ -2224,7 +2218,7 @@ export class OpenAiChatgptProvider implements HeadlessProvider {
       })
     }
 
-    if (incrementalToolOutput && isOpenAiPromptCacheLoggingEnabled()) {
+    if (incrementalToolOutput && isOpenAiChatgptDebugLoggingEnabled()) {
       console.info('[OpenAI Responses Continuation]', {
         model: requestBody.model,
         previousResponseId,
@@ -2232,7 +2226,7 @@ export class OpenAiChatgptProvider implements HeadlessProvider {
       })
     }
 
-    logOpenAiPromptCacheUsage({
+    logCodexUsage({
       model: requestBody.model,
       responseId: parsed.responseId,
       promptCacheKey,

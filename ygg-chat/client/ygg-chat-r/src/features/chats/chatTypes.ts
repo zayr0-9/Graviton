@@ -1,4 +1,5 @@
 import { BaseMessage, BaseModel, ConversationId, ImageConfig, MessageId, OpenAIServiceTier, ReasoningConfig } from '../../../../../shared/types'
+import type { PlanClarificationRequest } from './planToolTypes'
 
 // Message types (shared with conversations)
 export interface Message extends BaseMessage {
@@ -341,6 +342,7 @@ export interface ChatState {
   attachments: AttachmentsState
   tools: tools[]
   toolCallPermissionRequest: ToolCallPermissionRequest | null
+  planClarificationRequest: PlanClarificationRequest | null
   toolAutoApprove: boolean
   operationMode: OperationMode
   ccSlashCommands: string[]

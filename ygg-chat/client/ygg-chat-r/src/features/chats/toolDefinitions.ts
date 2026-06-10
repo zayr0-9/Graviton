@@ -270,6 +270,7 @@ export const getToolsForAI = (): ToolDefinition[] => {
 // This prevents server-only tools like search_history from being advertised on the OpenAI route.
 const OPENAI_LOCALLY_SUPPORTED_BUILTIN_TOOL_NAMES = new Set<string>([
   'todo_list',
+  'plan_md',
   'theme_manager',
   'fetch_notes',
   'fetch_chats',

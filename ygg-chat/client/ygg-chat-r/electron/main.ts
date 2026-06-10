@@ -550,7 +550,14 @@ function createWindow() {
             visualEffectState: 'active',
           }
         : {
-            titleBarStyle: 'default', // Native title bar for Linux (safest)
+            // Linux can use Electron's native window-controls overlay so our in-app
+            // title bar is visible without stacking below the OS title bar.
+            titleBarStyle: 'hidden',
+            titleBarOverlay: {
+              color: '#00000000',
+              symbolColor: nativeTheme.shouldUseDarkColors ? '#f2f4f7' : '#111827',
+              height: 40,
+            },
           }),
     show: false, // Don't show until ready
   })

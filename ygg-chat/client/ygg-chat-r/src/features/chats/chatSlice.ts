@@ -180,6 +180,7 @@ const makeInitialState = (): ChatState => {
     },
     tools: cloneTools(toolDefinitions),
     toolCallPermissionRequest: null,
+    planClarificationRequest: null,
     toolAutoApprove: false,
     operationMode: 'plan',
     ccSlashCommands: [],
@@ -981,6 +982,14 @@ export const chatSlice = createSlice({
 
     toolPermissionResponded: state => {
       state.toolCallPermissionRequest = null
+    },
+
+    planClarificationRequested: (state, action: PayloadAction<import('./planToolTypes').PlanClarificationRequest>) => {
+      state.planClarificationRequest = action.payload
+    },
+
+    planClarificationResponded: state => {
+      state.planClarificationRequest = null
     },
 
     toolAutoApproveEnabled: state => {
