@@ -6,13 +6,17 @@ export async function parseCodexSseResponse(response: Response, options: CodexRe
     const text = await response.text().catch(() => '')
     throw new Error(`ChatGPT backend request failed (${response.status}): ${text}`)
   }
-  if (!response.body) return parseCodexSseText(await response.text(), options)
+  if (!response.body && !options.reader) return parseCodexSseText(await response.text(), options)
   const state = createCodexResponseParseState(options)
   const decoder = new TextDecoder()
-  const reader = response.body.getReader()
+  const reader = options.reader || response.body?.getReader()
+  if (!reader) throw new Error('ChatGPT backend request returned no readable stream body')
   let buffer = ''
+  let pendingRead = options.firstRead ?? null
   for (;;) {
-    const { value, done } = await reader.read()
+    const readResult = pendingRead ?? (await reader.read())
+    pendingRead = null
+    const { value, done } = readResult
     if (done) break
     buffer += decoder.decode(value, { stream: true }).replace(/\r\n/g, '\n')
     const frames = buffer.split(/\n\n+/)

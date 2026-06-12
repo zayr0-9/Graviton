@@ -2218,7 +2218,7 @@ function toggleCompactMode() {
 }
 
 // Electron-side OpenAI ChatGPT streaming bridge. Renderer never receives raw OAuth tokens.
-const activeOpenAIStreams = new Map<string, { aborted: boolean }>()
+const activeOpenAIStreams = new Map<string, { aborted: boolean; controller: AbortController }>()
 
 function openAIStorageAdapter() {
   return {
@@ -2250,7 +2250,7 @@ ipcMain.handle('openai:chatgpt:usage', async () => {
 
 ipcMain.handle('openai:chatgpt:stream-start', async (event, payload: any) => {
   const streamId = `openai_${Date.now()}_${Math.random().toString(16).slice(2)}`
-  const state = { aborted: false }
+  const state = { aborted: false, controller: new AbortController() }
   activeOpenAIStreams.set(streamId, state)
 
   void (async () => {
@@ -2276,6 +2276,7 @@ ipcMain.handle('openai:chatgpt:stream-start', async (event, payload: any) => {
           accessToken: tokens.accessToken,
           accountId: tokens.accountId,
           tools: Array.isArray(payload.tools) ? payload.tools.map((tool: any) => ({ name: tool.name, description: tool.description, inputSchema: tool.inputSchema || tool.parameters })) : [],
+          signal: state.controller.signal,
           railwayTurn: {
             conversationId: String(payload.conversationId || ''),
             parentId: payload.parentId ?? null,
@@ -2319,11 +2320,11 @@ ipcMain.handle('openai:chatgpt:stream-start', async (event, payload: any) => {
         })
       }
     } catch (error) {
-      console.error('[OpenAIChatGPTBridgeMain] stream failed', {
-        streamId,
-        error: error instanceof Error ? error.message : String(error),
-      })
       if (!state.aborted) {
+        console.error('[OpenAIChatGPTBridgeMain] stream failed', {
+          streamId,
+          error: error instanceof Error ? error.message : String(error),
+        })
         sendOpenAIStreamEvent(event.sender, streamId, { type: 'error', error: error instanceof Error ? error.message : String(error) })
       }
     } finally {
@@ -2336,7 +2337,10 @@ ipcMain.handle('openai:chatgpt:stream-start', async (event, payload: any) => {
 
 ipcMain.handle('openai:chatgpt:stream-abort', async (_event, streamId: string) => {
   const state = activeOpenAIStreams.get(streamId)
-  if (state) state.aborted = true
+  if (state) {
+    state.aborted = true
+    state.controller.abort()
+  }
   activeOpenAIStreams.delete(streamId)
   return { success: true }
 })

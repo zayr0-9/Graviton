@@ -958,6 +958,13 @@ export async function createOpenAIChatGPTStreamingRequest(
         if (signal?.aborted) return
         if (chunk?.type === 'error') {
           cleanup?.()
+          if (emitPartialComplete()) {
+            console.warn('[OpenAIChatGPTBridge] completed with partial content after stream error', {
+              error: chunk.error || 'OpenAI ChatGPT stream failed',
+            })
+            resolve()
+            return
+          }
           reject(new Error(chunk.error || 'OpenAI ChatGPT stream failed'))
           return
         }

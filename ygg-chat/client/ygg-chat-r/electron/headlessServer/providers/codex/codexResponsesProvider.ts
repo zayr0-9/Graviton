@@ -1,6 +1,7 @@
 import { randomUUID } from 'crypto'
 import { toCodexRequestParts, buildCodexRequestDiagnostics } from './codexRequestItems.js'
 import { parseCodexSseResponse } from './codexSse.js'
+import { openStreamingWithPreFirstByteRetry } from '../streamResilience.js'
 import { parseCodexWebSocketResponse } from './codexWebsocket.js'
 import type { CodexGenerateInput, CodexGenerateResult, CodexProviderOptions, CodexResponsesTransport } from './types.js'
 import { CODEX_BASE_URL, CODEX_ORIGINATOR } from './types.js'
@@ -85,13 +86,26 @@ export class CodexResponsesProvider {
 
   private async generateHttp(input: CodexGenerateInput, headers: Headers, body: Record<string, any>) {
     input.signal?.throwIfAborted()
-    const response = await this.fetchImpl(this.responsesUrl(), {
-      method: 'POST',
-      headers,
-      body: JSON.stringify(body),
-      ...(input.signal ? { signal: input.signal } : {}),
+    const url = this.responsesUrl()
+    const streamOpen = await openStreamingWithPreFirstByteRetry({
+      endpoint: new URL(url).pathname,
+      streamId: input.runId || input.sessionId || null,
+      parentSignal: input.signal,
+      policy: { maxRetries: 3 },
+      openAttempt: signal =>
+        this.fetchImpl(url, {
+          method: 'POST',
+          headers,
+          body: JSON.stringify(body),
+          signal,
+        }),
     })
-    return await parseCodexSseResponse(response, { emit: input.emit, modelName: input.model })
+    return await parseCodexSseResponse(streamOpen.response, {
+      emit: input.emit,
+      modelName: input.model,
+      reader: streamOpen.reader,
+      firstRead: streamOpen.firstRead,
+    })
   }
 
   private async generateWebSocket(input: CodexGenerateInput, headers: Headers, body: Record<string, any>) {

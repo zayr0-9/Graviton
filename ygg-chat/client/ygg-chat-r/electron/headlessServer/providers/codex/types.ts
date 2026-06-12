@@ -87,6 +87,8 @@ export type CodexResponseParseOptions = {
   strictFinalAnswerText?: boolean
   onReasoningDelta?: (delta: string) => void
   onTextDelta?: (delta: string) => void
+  reader?: ReadableStreamDefaultReader<Uint8Array> | null
+  firstRead?: ReadableStreamReadResult<Uint8Array> | null
 }
 
 export type CodexRequestDiagnostics = {

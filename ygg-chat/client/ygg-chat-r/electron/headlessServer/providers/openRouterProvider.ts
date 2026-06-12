@@ -45,6 +45,7 @@ export interface ProviderGenerateInput {
   think?: boolean
   temperature?: number
   railwayTurn?: ProviderRailwayTurnInput | null
+  signal?: AbortSignal
 }
 
 export interface ProviderToolCall {

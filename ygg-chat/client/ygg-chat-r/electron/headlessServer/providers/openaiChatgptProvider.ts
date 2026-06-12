@@ -1989,6 +1989,7 @@ export class OpenAiChatgptProvider implements HeadlessProvider {
       tools: input.tools || [],
       sessionId,
       runId: requestId,
+      signal: input.signal,
       emit,
     })
 

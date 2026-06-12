@@ -363,4 +363,64 @@ describe('OpenAiChatgptProvider', () => {
       })
     ).rejects.toThrow('Provider stopped early')
   })
+
+  it('retries ChatGPT HTTP stream setup three times before succeeding', async () => {
+    vi.useFakeTimers()
+    process.env.OPENAI_CHATGPT_ACCESS_TOKEN = 'header.eyJodHRwczovL2FwaS5vcGVuYWkuY29tL2F1dGgiOnsiY2hhdGdwdF9hY2NvdW50X2lkIjoiYWNjdC00In19.sig'
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})
+
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation(async () => {
+      if (fetchMock.mock.calls.length <= 3) {
+        throw new TypeError('fetch failed')
+      }
+
+      return {
+        ok: true,
+        status: 200,
+        headers: new Headers({ 'content-type': 'text/event-stream' }),
+        body: createSseStream([
+          {
+            type: 'response.completed',
+            response: {
+              id: 'resp-retried',
+              output: [
+                {
+                  id: 'msg-final',
+                  type: 'message',
+                  role: 'assistant',
+                  phase: 'final_answer',
+                  output_index: 0,
+                  content: [{ type: 'output_text', text: 'Recovered after retries' }],
+                },
+              ],
+            },
+          },
+        ]),
+        text: async () => '',
+      } as any
+    })
+
+    const provider = new OpenAiChatgptProvider()
+    const promise = provider.generate({
+      modelName: 'gpt-5.5',
+      history: [],
+      userContent: 'hello',
+    })
+
+    await vi.runAllTimersAsync()
+    const result = await promise
+
+    expect(fetchMock).toHaveBeenCalledTimes(4)
+    expect(result.content).toBe('Recovered after retries')
+    expect(warnSpy).toHaveBeenCalledTimes(3)
+    expect(warnSpy).toHaveBeenCalledWith(
+      '[headless-stream-resilience] pre-first-byte retry event',
+      expect.objectContaining({
+        endpoint: '/backend-api/codex/responses',
+        maxRetries: 3,
+        failureClass: 'request_error',
+        error: 'fetch failed',
+      })
+    )
+  })
 })
