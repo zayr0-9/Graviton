@@ -37,6 +37,10 @@ interface SelectProps {
   totalOptionsCount?: number
   /** z-index applied to the dropdown portal container */
   dropdownZIndex?: number
+  /** Minimum pixel width for the dropdown portal. Defaults to trigger width. */
+  dropdownMinWidth?: number
+  /** Pixel width added to the trigger width for the dropdown portal. Defaults to model select expansion. */
+  dropdownWidthOffset?: number
 }
 
 const DROPDOWN_LIMIT = 25
@@ -62,6 +66,8 @@ export const Select: React.FC<SelectProps> = ({
   onExpandClick,
   totalOptionsCount,
   dropdownZIndex = DEFAULT_SELECT_DROPDOWN_Z_INDEX,
+  dropdownMinWidth,
+  dropdownWidthOffset,
 }) => {
   const [open, setOpen] = useState(false)
   const [activeIndex, setActiveIndex] = useState<number>(-1)
@@ -92,13 +98,21 @@ export const Select: React.FC<SelectProps> = ({
     const maxH = Math.max(160, Math.min(460, available))
     setListMaxHeight(Number.isFinite(maxH) ? maxH : 280)
 
+    const left = modelSelect ? rect.left - 5 : rect.left
+    const widthOffset = dropdownWidthOffset ?? (modelSelect ? 80 : 0)
+    const desiredWidth = Math.max(rect.width + widthOffset, dropdownMinWidth ?? 0)
+    const viewportPadding = 8
+    const maxWidth = Math.max(rect.width, window.innerWidth - viewportPadding * 2)
+    const width = Math.min(desiredWidth, maxWidth)
+    const adjustedLeft = Math.min(Math.max(viewportPadding, left), Math.max(viewportPadding, window.innerWidth - width - viewportPadding))
+
     setDropdownPosition({
       top: shouldOpenUp ? undefined : rect.bottom + 4,
       bottom: shouldOpenUp ? window.innerHeight - rect.top + 4 : undefined,
-      left: modelSelect ? rect.left - 5 : rect.left,
-      width: modelSelect ? rect.width + 80 : rect.width,
+      left: adjustedLeft,
+      width,
     })
-  }, [modelSelect])
+  }, [dropdownMinWidth, dropdownWidthOffset, modelSelect])
 
   // Toggle favorite status and persist to localStorage
   const toggleFavorite = useCallback(
@@ -263,12 +277,12 @@ export const Select: React.FC<SelectProps> = ({
   }
 
   return (
-    <div className={`relative ${className}`}>
+    <div className={`relative ${className}`} data-open={open ? 'true' : 'false'}>
       <Button
         ref={btnRef}
         variant={blur === 'high' ? 'outline2' : 'outline2'}
         size='medium'
-        className={`w-full justify-between ${sizeClass}`}
+        className={`w-full min-w-0 justify-between ${sizeClass}`}
         aria-haspopup='listbox'
         aria-expanded={open}
         onClick={() => {
@@ -280,10 +294,10 @@ export const Select: React.FC<SelectProps> = ({
         disabled={disabled}
         title={selected?.label}
       >
-        <span className='truncate overflow-left text-left flex-1 text-[12px] text-neutral-500 dark:text-neutral-200'>
+        <span className='min-w-0 truncate overflow-left text-left flex-1 text-[12px] text-neutral-500 dark:text-neutral-200'>
           {selected ? selected.label : placeholder}
         </span>
-        <i className={`bx bx-chevron-down transition-transform ${open ? 'rotate-180' : ''}`} aria-hidden='true' />
+        <i className={`bx bx-chevron-down shrink-0 transition-transform ${open ? 'rotate-180' : ''}`} aria-hidden='true' />
       </Button>
 
       {open &&

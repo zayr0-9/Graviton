@@ -6735,7 +6735,7 @@ function Chat() {
             {/* Controls row */}
             <div className='flex items-center justify-between gap-0 flex-wrap'>
               {/* Left side controls */}
-              <div className='flex items-center min-w-0 flex-1'>
+              <div className='flex items-center min-w-0 flex-1 overflow-hidden'>
                 <button
                   className='pt-1.5 px-2 rounded-lg text-neutral-500 dark:text-neutral-400 hover:text-neutral-800 dark:hover:text-neutral-200 hover:bg-white/10 dark:hover:bg-white/5 transition-all duration-200'
                   onClick={() => {
@@ -6751,7 +6751,7 @@ function Chat() {
                     onAnimationEnd={() => setSpinSettings(false)}
                   />
                 </button>
-                <div className='flex items-center gap-1 flex-nowrap min-w-0 flex-1'>
+                <div className='flex items-center gap-1 flex-nowrap min-w-0 flex-1 overflow-hidden'>
                   {import.meta.env.VITE_ENVIRONMENT === 'electron' && extensions.length > 0 && (
                     <Select
                       value={selectedExtensionId || ''}
@@ -6780,9 +6780,10 @@ function Chat() {
                       options={providers.providers.map(p => p.name)}
                       placeholder='Select a provider...'
                       disabled={providers.providers.length === 0}
-                      className='flex-1 basis-0 min-w-0 max-w-[200px] transition-transform duration-60 active:scale-97'
+                      className='w-[94px] min-w-[42px] max-w-[180px] shrink transition-[width,transform] duration-150 hover:w-[180px] focus-within:w-[180px] data-[open=true]:w-[180px] active:scale-97'
                       searchBarVisible={true}
                       size='large'
+                      dropdownMinWidth={220}
                     />
                   )}
                   <ModelSelectControl
@@ -6791,7 +6792,7 @@ function Chat() {
                     onChange={handleModelSelect}
                     placeholder='Select a model...'
                     blur='low'
-                    className='flex-1 basis-0 min-w-0 max-w-[200px] transition-transform duration-60 active:scale-99 rounded-4xl'
+                    className='w-[120px] min-w-[42px] max-w-[170px] shrink transition-[width,transform] duration-150 hover:w-[170px] focus-within:w-[170px] data-[open=true]:w-[170px] active:scale-99 rounded-4xl'
                     showFilters={true}
                     footerContent={modelSelectFooter}
                   />

@@ -101,12 +101,12 @@ Use:
 
 ### Batching Certain Read-Only Calls
 
-If the `multi_call` tool is available and you are confident about the exact read-only calls you need, batch them to reduce round trips. Good candidates include:
+If the `multi_call` tool is available and you are confident about the exact read-only calls you need, batch them to reduce round trips. By default it runs calls sequentially. For independent read-only calls whose inputs do not depend on one another, you may pass `parallel: true`; parallel execution is capped at `maxConcurrency` 4. Good candidates include:
 - `glob` + `ripgrep` combinations for initial code discovery
 - several `read_file` or `read_files` calls for known files/ranges
 - `read_file_continuation` calls when paginating known large files
 
-Use `multi_call` only when you are certain the calls are safe and useful. If you are uncertain about the next step, need to inspect one result before deciding the next call, or a call may require user judgment, prefer a single tool call. Never use `multi_call` to bypass read-only constraints or to hide risky operations.
+Use `multi_call` only when you are certain the calls are safe and useful. If later calls depend on earlier results, keep the default sequential behavior. Do not use `parallel: true` for interactive clarification or calls requiring user judgment. If you are uncertain about the next step or need to inspect one result before deciding the next call, prefer a single tool call. Never use `multi_call` to bypass read-only constraints or to hide risky operations.
 
 ### Shell Commands
 
