@@ -272,7 +272,7 @@ export const BUILTIN_TOOL_DEFINITIONS: SharedToolDefinition[] = [
     name: 'multi_call',
     enabled: true,
     description:
-      'Execute multiple tool calls sequentially in one tool invocation. Each nested call is { tool, args } and uses normal yggchat permission checks, hooks, operation-mode restrictions, and job execution. Nested multi_call is not supported.',
+      'Execute multiple tool calls sequentially by default, or in bounded parallel mode when requested. Each nested call is { tool, args } and uses normal yggchat permission checks, hooks, operation-mode restrictions, and job execution. Nested multi_call is not supported.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -280,7 +280,7 @@ export const BUILTIN_TOOL_DEFINITIONS: SharedToolDefinition[] = [
           type: 'array',
           minItems: 1,
           description:
-            'Ordered list of tool calls to execute sequentially. Each call should specify a tool name and optional args object.',
+            'Ordered list of tool calls to execute. Results preserve this order. Each call should specify a tool name and optional args object.',
           items: {
             type: 'object',
             properties: {
@@ -300,6 +300,18 @@ export const BUILTIN_TOOL_DEFINITIONS: SharedToolDefinition[] = [
             },
             additionalProperties: false,
           },
+        },
+        parallel: {
+          type: 'boolean',
+          description:
+            'If true, run independent nested calls concurrently using a bounded queue. Defaults to false.',
+        },
+        maxConcurrency: {
+          type: 'integer',
+          minimum: 1,
+          maximum: 4,
+          description:
+            'Maximum number of nested calls to run at once in parallel mode. Defaults to 4 and is capped at 4.',
         },
         stopOnError: {
           type: 'boolean',

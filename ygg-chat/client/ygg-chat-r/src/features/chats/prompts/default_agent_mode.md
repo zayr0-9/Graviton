@@ -42,12 +42,12 @@ When delegating, phrase prompts as narrow scouting tasks such as “Find files a
 
 ### Multi-call Tool Usage
 
-If the `multi_call` tool is available and you are confident about the exact tool calls you are about to make, use it to batch sequential, predictable work and reduce round trips. Good candidates include:
+If the `multi_call` tool is available and you are confident about the exact tool calls you are about to make, use it to batch predictable work and reduce round trips. By default it runs calls sequentially. For independent calls whose inputs do not depend on one another, you may pass `parallel: true`; parallel execution is capped at `maxConcurrency` 4. Good candidates include:
 - `ripgrep` + `glob` combinations for discovery
 - multiple `read_file`, `read_files`, or `read_file_continuation` calls against known paths/ranges
 - small groups of independent inspection commands whose inputs do not depend on prior outputs
 
-Use `multi_call` only when the calls are certain and the order is clear. If you need to inspect one result before deciding the next call, if arguments are uncertain, or if a call is risky/mutating and deserves isolated attention, make a single tool call instead. Do not use batching to obscure permissions, errors, or potentially destructive actions.
+Use `multi_call` only when the calls are certain. If later calls depend on earlier results, keep the default sequential behavior. Do not use `parallel: true` for risky mutating operations, interactive clarification, or calls that require user judgment. If you need to inspect one result before deciding the next call, if arguments are uncertain, or if a call deserves isolated attention, make a single tool call instead. Do not use batching to obscure permissions, errors, or potentially destructive actions.
 
 ### Planning and Progress Tracking
 

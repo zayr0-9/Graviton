@@ -1517,6 +1517,27 @@ const buildMultiCallFailureResult = (
   error,
 })
 
+const MAX_MULTI_CALL_CONCURRENCY = 4
+
+type MultiCallExecutionContext = {
+  conversationId?: string
+  messageId?: string
+  streamId?: string
+  priority?: 'low' | 'normal' | 'high' | 'critical'
+  timeoutMs?: number
+  accessToken?: string | null
+  callerProvider?: string | null
+  queryClient?: QueryClient | null
+  subagentDepth?: number
+  dispatch?: any
+  getState?: () => RootState
+  enableHooks?: boolean
+  provider?: string | null
+  model?: string | null
+  operation?: 'send' | 'branch' | 'edit-branch'
+  onHookAdditionalContext?: (value: string) => void
+}
+
 const summarizeMultiCallResults = (
   callsLength: number,
   results: MultiCallItemResult[],
@@ -1524,17 +1545,17 @@ const summarizeMultiCallResults = (
 ): MultiCallResult => {
   const completed = results.filter(entry => entry.ok).length
   const failed = results.length - completed
-  const latest = results[results.length - 1]
+  const firstFailure = results.find(entry => !entry.ok)
 
   return {
     success: failed === 0,
     message:
       failed === 0
         ? `Successfully processed ${results.length} multi_call item(s).`
-        : stoppedEarly && latest
-          ? `Multi-call stopped after failure at item ${latest.index + 1}${latest.tool ? ` (${latest.tool})` : ''}: ${
-              latest.error || 'unknown error'
-            }`
+        : stoppedEarly && firstFailure
+          ? `Multi-call stopped after failure at item ${firstFailure.index + 1}${
+              firstFailure.tool ? ` (${firstFailure.tool})` : ''
+            }: ${firstFailure.error || 'unknown error'}`
           : `Processed ${results.length} multi_call item(s) with ${failed} failure(s).`,
     results,
     completed,
@@ -1543,28 +1564,157 @@ const summarizeMultiCallResults = (
   }
 }
 
+const resolveMultiCallMaxConcurrency = (value: unknown): number => {
+  const parsed = typeof value === 'number' ? value : typeof value === 'string' ? Number(value) : Number.NaN
+  if (!Number.isFinite(parsed)) return MAX_MULTI_CALL_CONCURRENCY
+  return Math.max(1, Math.min(MAX_MULTI_CALL_CONCURRENCY, Math.floor(parsed)))
+}
+
+const executeMultiCallItem = async (
+  index: number,
+  call: any,
+  parentToolCall: any,
+  rootPath: string | null,
+  operationMode: OperationMode,
+  context: MultiCallExecutionContext
+): Promise<MultiCallItemResult> => {
+  const nestedToolName = getMultiCallToolName(call)
+  const nestedArgs = getMultiCallItemArgs(call)
+
+  if (!nestedToolName) {
+    return buildMultiCallFailureResult(index, '', 'tool is required for each multi_call item')
+  }
+  if (nestedToolName === 'multi_call') {
+    return buildMultiCallFailureResult(index, nestedToolName, 'Nested multi_call is not supported')
+  }
+  if (!nestedArgs) {
+    return buildMultiCallFailureResult(index, nestedToolName, 'args must be an object when provided')
+  }
+
+  try {
+    const nestedToolCall = {
+      id: `${typeof parentToolCall?.id === 'string' ? parentToolCall.id : 'multi_call'}-${index}-${nestedToolName}`,
+      name: nestedToolName,
+      arguments: nestedArgs,
+    }
+    const nestedResult = await executeToolWithPermissionCheck(
+      context.dispatch,
+      context.getState,
+      nestedToolCall,
+      rootPath,
+      operationMode,
+      {
+        conversationId: context.conversationId,
+        messageId: context.messageId,
+        streamId: context.streamId,
+        priority: context.priority,
+        timeoutMs: context.timeoutMs,
+        accessToken: context.accessToken,
+        queryClient: context.queryClient,
+        enableHooks: context.enableHooks,
+        provider: context.provider ?? context.callerProvider ?? null,
+        model: context.model,
+        operation: context.operation,
+        onHookAdditionalContext: context.onHookAdditionalContext,
+      }
+    )
+    const ok = !isToolResultFailurePayload(nestedResult)
+    return {
+      index,
+      tool: nestedToolName,
+      ok,
+      data: nestedResult,
+      ...(ok ? {} : { error: getToolResultErrorMessage(nestedResult) || 'Tool returned success=false' }),
+    }
+  } catch (error) {
+    return buildMultiCallFailureResult(index, nestedToolName, error instanceof Error ? error.message : String(error))
+  }
+}
+
+const shouldForceSequentialMultiCall = (calls: any[], context: MultiCallExecutionContext): boolean => {
+  const toolAutoApprove = context.getState?.().chat.toolAutoApprove === true
+
+  for (const call of calls) {
+    const nestedToolName = getMultiCallToolName(call)
+    const nestedArgs = getMultiCallItemArgs(call)
+    if (!nestedToolName || !nestedArgs) continue
+
+    if (nestedToolName === 'plan_md' && nestedArgs.action === 'clarify') {
+      return true
+    }
+
+    if (!toolAutoApprove && !shouldBypassToolPermission({ name: nestedToolName, arguments: nestedArgs })) {
+      return true
+    }
+  }
+
+  return false
+}
+
+const executeMultiCallSequentially = async (
+  calls: any[],
+  stopOnError: boolean,
+  toolCall: any,
+  rootPath: string | null,
+  operationMode: OperationMode,
+  context: MultiCallExecutionContext
+): Promise<MultiCallResult> => {
+  const results: MultiCallItemResult[] = []
+
+  for (const [index, call] of calls.entries()) {
+    const result = await executeMultiCallItem(index, call, toolCall, rootPath, operationMode, context)
+    results.push(result)
+
+    if (!result.ok && stopOnError) {
+      return summarizeMultiCallResults(calls.length, results, true)
+    }
+  }
+
+  return summarizeMultiCallResults(calls.length, results, false)
+}
+
+const executeMultiCallInParallel = async (
+  calls: any[],
+  maxConcurrency: number,
+  stopOnError: boolean,
+  toolCall: any,
+  rootPath: string | null,
+  operationMode: OperationMode,
+  context: MultiCallExecutionContext
+): Promise<MultiCallResult> => {
+  const results: Array<MultiCallItemResult | undefined> = new Array(calls.length)
+  let nextIndex = 0
+  let stoppedEarly = false
+
+  const worker = async () => {
+    while (true) {
+      if (stoppedEarly) return
+
+      const index = nextIndex
+      nextIndex += 1
+      if (index >= calls.length) return
+
+      const result = await executeMultiCallItem(index, calls[index], toolCall, rootPath, operationMode, context)
+      results[index] = result
+
+      if (!result.ok && stopOnError) {
+        stoppedEarly = true
+        return
+      }
+    }
+  }
+
+  const workerCount = Math.min(maxConcurrency, calls.length)
+  await Promise.all(Array.from({ length: workerCount }, () => worker()))
+
+  return summarizeMultiCallResults(calls.length, results.filter(Boolean) as MultiCallItemResult[], stoppedEarly)
+}
+
 const executeMultiCallTool = async (
   toolCall: any,
   rootPath: string | null,
   operationMode: OperationMode,
-  context: {
-    conversationId?: string
-    messageId?: string
-    streamId?: string
-    priority?: 'low' | 'normal' | 'high' | 'critical'
-    timeoutMs?: number
-    accessToken?: string | null
-    callerProvider?: string | null
-    queryClient?: QueryClient | null
-    subagentDepth?: number
-    dispatch?: any
-    getState?: () => RootState
-    enableHooks?: boolean
-    provider?: string | null
-    model?: string | null
-    operation?: 'send' | 'branch' | 'edit-branch'
-    onHookAdditionalContext?: (value: string) => void
-  } = {}
+  context: MultiCallExecutionContext = {}
 ): Promise<MultiCallResult> => {
   if (!context.dispatch || !context.getState) {
     throw new Error('multi_call requires renderer dispatch context')
@@ -1584,68 +1734,21 @@ const executeMultiCallTool = async (
   }
 
   const stopOnError = args?.stopOnError !== false
-  const results: MultiCallItemResult[] = []
+  const parallel = args?.parallel === true && !shouldForceSequentialMultiCall(calls, context)
 
-  for (const [index, call] of calls.entries()) {
-    const nestedToolName = getMultiCallToolName(call)
-    const nestedArgs = getMultiCallItemArgs(call)
-
-    if (!nestedToolName) {
-      results.push(buildMultiCallFailureResult(index, '', 'tool is required for each multi_call item'))
-    } else if (nestedToolName === 'multi_call') {
-      results.push(buildMultiCallFailureResult(index, nestedToolName, 'Nested multi_call is not supported'))
-    } else if (!nestedArgs) {
-      results.push(buildMultiCallFailureResult(index, nestedToolName, 'args must be an object when provided'))
-    } else {
-      try {
-        const nestedToolCall = {
-          id: `${typeof toolCall?.id === 'string' ? toolCall.id : 'multi_call'}-${index}-${nestedToolName}`,
-          name: nestedToolName,
-          arguments: nestedArgs,
-        }
-        const nestedResult = await executeToolWithPermissionCheck(
-          context.dispatch,
-          context.getState,
-          nestedToolCall,
-          rootPath,
-          operationMode,
-          {
-            conversationId: context.conversationId,
-            messageId: context.messageId,
-            streamId: context.streamId,
-            priority: context.priority,
-            timeoutMs: context.timeoutMs,
-            accessToken: context.accessToken,
-            queryClient: context.queryClient,
-            enableHooks: context.enableHooks,
-            provider: context.provider ?? context.callerProvider ?? null,
-            model: context.model,
-            operation: context.operation,
-            onHookAdditionalContext: context.onHookAdditionalContext,
-          }
-        )
-        const ok = !isToolResultFailurePayload(nestedResult)
-        results.push({
-          index,
-          tool: nestedToolName,
-          ok,
-          data: nestedResult,
-          ...(ok ? {} : { error: getToolResultErrorMessage(nestedResult) || 'Tool returned success=false' }),
-        })
-      } catch (error) {
-        results.push(
-          buildMultiCallFailureResult(index, nestedToolName, error instanceof Error ? error.message : String(error))
-        )
-      }
-    }
-
-    const latest = results[results.length - 1]
-    if (latest && !latest.ok && stopOnError) {
-      return summarizeMultiCallResults(calls.length, results, true)
-    }
+  if (!parallel) {
+    return executeMultiCallSequentially(calls, stopOnError, toolCall, rootPath, operationMode, context)
   }
 
-  return summarizeMultiCallResults(calls.length, results, false)
+  return executeMultiCallInParallel(
+    calls,
+    resolveMultiCallMaxConcurrency(args?.maxConcurrency),
+    stopOnError,
+    toolCall,
+    rootPath,
+    operationMode,
+    context
+  )
 }
 
 /**
