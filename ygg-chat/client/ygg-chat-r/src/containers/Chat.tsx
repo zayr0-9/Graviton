@@ -102,7 +102,12 @@ import {
 } from '../features/chats'
 import type { ContentBlock, ImageDraftTarget, StreamUndoSummary, ToolCall } from '../features/chats/chatTypes'
 import type { PlanClarificationAnswer } from '../features/chats/planToolTypes'
-import { estimateContentBlocksForContext, safeEstimateTokenCount } from '../features/chats/contextTokenEstimate'
+import {
+  estimateContentBlocksForContext,
+  resolveContextTokens,
+  safeEstimateTokenCount,
+} from '../features/chats/contextTokenEstimate'
+import { isOpenAIProvider } from '../../../../shared/contextUsage'
 import {
   extractBranchFileMutations,
   type WorkspaceMutationOperation,
@@ -1075,6 +1080,7 @@ function Chat() {
   const providers = useAppSelector(selectProviderState)
   const currentProviderSlug = (providers.currentProvider || '').toLowerCase().replace(/\s+/g, '')
   const isOpenAIChatGPTProvider = currentProviderSlug === 'openaichatgpt' || currentProviderSlug === 'openai(chatgpt)'
+  const isOpenAIContextProvider = isOpenAIProvider(providers.currentProvider)
   const openAIServiceTier: OpenAIServiceTier | undefined =
     isOpenAIChatGPTProvider && fastServiceTierEnabled ? 'priority' : undefined
   const messageInput = useAppSelector(selectMessageInput)
@@ -3466,6 +3472,15 @@ function Chat() {
         color: getThemeModeColor(customTheme.colors.settingsCustomThemesButtonText, isDarkMode),
       }
     : undefined
+  const contextUsagePopoverBackgroundColor = customThemeEnabled
+    ? getThemeModeColor(customTheme.colors.settingsCustomThemesInnerCardBg, isDarkMode)
+    : undefined
+  const contextUsagePopoverStyle: React.CSSProperties | undefined = contextUsagePopoverBackgroundColor
+    ? {
+        backgroundColor: contextUsagePopoverBackgroundColor,
+        color: getThemeModeColor(customTheme.colors.settingsCustomThemesBodyText, isDarkMode),
+      }
+    : undefined
   const sendButtonAnimationThemeColor = customThemeEnabled
     ? getThemeModeColor(customTheme.colors.sendButtonAnimationColor, isDarkMode)
     : undefined
@@ -4897,7 +4912,15 @@ function Chat() {
                 messageTokens += safeEstimateTokenCount((message as any).tool_calls)
               })
 
-              const totalContextTokens = promptAndContextTokens + messageTokens
+              const estimatedContextTokens = promptAndContextTokens + messageTokens
+              const resolvedContext = resolveContextTokens({
+                providerName: providers.currentProvider,
+                estimatedTokens:
+                  estimatedContextTokens +
+                  (isOpenAIProvider(providers.currentProvider) ? safeEstimateTokenCount(contentWithIdeContext) : 0),
+                messages: usageMessages,
+              })
+              const totalContextTokens = resolvedContext.effectiveTokens
               const usdValue = (currentUser?.cached_current_credits ?? 0) / 100
               const totalContextLimit = selectedModel?.contextLength || 128_000
               const promptCostPer1K = selectedModel?.promptCost ?? 0
@@ -5760,18 +5783,37 @@ function Chat() {
                 ? { kind: 'branch', messageId: branchTargetMessageId }
                 : { kind: 'composer' }
 
-            dispatch(chatSliceActions.imageDraftsAppended({ drafts, target }))
+            void (async () => {
+              try {
+                const result = await localApi.post<{ attachments?: Array<{ id: string; file_path: string; sha256: string }> }>(
+                  '/local/attachments/prepare-base64',
+                  { attachments: drafts }
+                )
+                const saved = Array.isArray(result?.attachments) ? result.attachments : []
+                if (saved.length !== drafts.length) throw new Error('Incomplete attachment persistence result')
+                const preparedDrafts = drafts.map((draft, index) => ({
+                  ...draft,
+                  filePath: saved[index].file_path,
+                  attachmentId: saved[index].id,
+                  sha256: saved[index].sha256,
+                }))
+                dispatch(chatSliceActions.imageDraftsAppended({ drafts: preparedDrafts, target }))
 
-            // During branch editing, attach previews only to the explicitly edited message.
-            // Do not fall back to focusedChatMessageId; focus is navigation state, not an attachment target.
-            if (branchTargetMessageId != null) {
-              dispatch(
-                chatSliceActions.messageArtifactsAppended({
-                  messageId: branchTargetMessageId,
-                  artifacts: drafts.map(d => d.dataUrl),
-                })
-              )
-            }
+                // During branch editing, attach previews only to the explicitly edited message.
+                // Do not fall back to focusedChatMessageId; focus is navigation state, not an attachment target.
+                if (branchTargetMessageId != null) {
+                  dispatch(
+                    chatSliceActions.messageArtifactsAppended({
+                      messageId: branchTargetMessageId,
+                      artifacts: preparedDrafts.map(d => d.dataUrl),
+                    })
+                  )
+                }
+              } catch (err) {
+                console.error('Failed to persist selected images locally', err)
+              }
+            })()
+
           })
           .catch(err => console.error('Failed to read selected images', err))
       }
@@ -6008,10 +6050,20 @@ function Chat() {
       messageTokens += contentTokens + contentBlockTokens + toolCallTokens
     })
 
+    const estimatedContextTokens = promptAndContextTokens + messageTokens
+    const resolvedContext = resolveContextTokens({
+      providerName: providers.currentProvider,
+      estimatedTokens: estimatedContextTokens,
+      messages: displayMessages.slice(startIndex),
+    })
+
     return {
       promptAndContextTokens,
       messageTokens,
-      totalContextTokens: promptAndContextTokens + messageTokens,
+      estimatedContextTokens,
+      totalContextTokens: resolvedContext.effectiveTokens,
+      reportedUsage: resolvedContext.reportedUsage,
+      source: resolvedContext.source,
     }
   }, [
     displayMessages,
@@ -6019,6 +6071,7 @@ function Chat() {
     selectedProject?.context,
     currentConversation?.system_prompt,
     currentConversation?.conversation_context,
+    providers.currentProvider,
   ])
 
   // Calculate total context budget (single combined budget for easier interpretation).
@@ -7098,7 +7151,7 @@ function Chat() {
             <div className='composer-controls-row relative z-10 mt-2 flex items-center justify-between gap-3'>
                 {/* Left side controls */}
                 <div
-                  className={`composer-controls-left group relative flex h-10 xl:h-12 min-w-0 flex-[0_1_58%] max-w-[58%] cursor-pointer items-center overflow-hidden rounded-full ${leftControlsBorderClasses} bg-neutral-100/40 px-2 py-1 md:py-1 xl:py-1.5 backdrop-blur-xl transition-all duration-300 dark:bg-neutral-900/40`}
+                  className={`composer-controls-left group relative z-20 flex h-10 xl:h-12 min-w-0 flex-[0_1_58%] max-w-[58%] cursor-pointer items-center overflow-visible rounded-full ${leftControlsBorderClasses} bg-neutral-100/40 px-2 py-1 md:py-1 xl:py-1.5 backdrop-blur-xl transition-all duration-300 dark:bg-neutral-900/40`}
                   style={leftControlsTokenTintStyle}
                 >
                   <button
@@ -7166,8 +7219,11 @@ function Chat() {
                     />
                   </div>
                   {showTokenUsageBar && showTokenUsageHoverDetails && (
-                    <div className='absolute left-1/2 bottom-full z-50 mb-2 -translate-x-1/2 opacity-0 invisible transition-all duration-200 group-hover:opacity-100 group-hover:visible'>
-                      <div className='rounded-lg bg-neutral-100 px-3 py-2 text-black shadow-lg whitespace-nowrap dark:bg-neutral-900 dark:text-white'>
+                    <div className='pointer-events-none absolute bottom-full left-1/2 z-[60] mb-2 w-max max-w-[calc(100vw-2rem)] -translate-x-1/2 translate-y-1 opacity-0 invisible transition-all duration-200 group-hover:translate-y-0 group-hover:opacity-100 group-hover:visible group-focus-within:translate-y-0 group-focus-within:opacity-100 group-focus-within:visible'>
+                      <div
+                        className='rounded-2xl bg-white/70 px-3 py-2.5 text-black whitespace-nowrap backdrop-blur-2xl dark:bg-neutral-900/70 dark:text-white'
+                        style={contextUsagePopoverStyle}
+                      >
                         <div className='flex items-center gap-2 text-xs'>
                           <span className='text-blue-700 dark:text-blue-400'>Context:</span>
                           <span>
@@ -7175,24 +7231,43 @@ function Chat() {
                             {tokenLimits.totalBudget.toLocaleString()}
                           </span>
                         </div>
-                        <div className='mt-1 flex items-center gap-2 text-xs'>
-                          <span className='text-neutral-700 dark:text-neutral-300'>Messages:</span>
-                          <span>{tokenUsage.messageTokens.toLocaleString()}</span>
-                        </div>
-                        <div className='mt-1 flex items-center gap-2 text-xs'>
-                          <span className='text-neutral-700 dark:text-neutral-300'>Prompts + Context:</span>
-                          <span>{tokenUsage.promptAndContextTokens.toLocaleString()}</span>
-                        </div>
-                        <div className='mt-1 flex items-center gap-2 text-xs'>
-                          <span className='text-neutral-700 dark:text-neutral-300'>Model window:</span>
-                          <span>{tokenLimits.totalContextLimit.toLocaleString()}</span>
-                        </div>
-                        <div className='mt-1 flex items-center gap-2 text-xs'>
-                          <span className='text-neutral-900 dark:text-neutral-200'>Credits:</span>
-                          <span>{(current_credits * 100).toFixed(3)}</span>
-                        </div>
+                        {tokenUsage.reportedUsage && (
+                          <>
+                            <div className='mt-1 flex items-center gap-2 text-xs'>
+                              <span className='text-neutral-700 dark:text-neutral-300'>OpenAI reported:</span>
+                              <span>{tokenUsage.reportedUsage.usedTokens.toLocaleString()}</span>
+                            </div>
+                            <div className='mt-1 flex items-center gap-2 text-xs'>
+                              <span className='text-neutral-700 dark:text-neutral-300'>Cached input:</span>
+                              <span>{tokenUsage.reportedUsage.cachedInputTokens.toLocaleString()}</span>
+                            </div>
+                          </>
+                        )}
+                        {!isOpenAIContextProvider && (
+                          <>
+                            <div className='mt-1 flex items-center gap-2 text-xs'>
+                              <span className='text-neutral-700 dark:text-neutral-300'>Messages:</span>
+                              <span>{tokenUsage.messageTokens.toLocaleString()}</span>
+                            </div>
+                            <div className='mt-1 flex items-center gap-2 text-xs'>
+                              <span className='text-neutral-700 dark:text-neutral-300'>Prompts + Context:</span>
+                              <span>{tokenUsage.promptAndContextTokens.toLocaleString()}</span>
+                            </div>
+                            <div className='mt-1 flex items-center gap-2 text-xs'>
+                              <span className='text-neutral-700 dark:text-neutral-300'>Model window:</span>
+                              <span>{tokenLimits.totalContextLimit.toLocaleString()}</span>
+                            </div>
+                            <div className='mt-1 flex items-center gap-2 text-xs'>
+                              <span className='text-neutral-900 dark:text-neutral-200'>Credits:</span>
+                              <span>{(current_credits * 100).toFixed(3)}</span>
+                            </div>
+                          </>
+                        )}
                         {/* Tooltip Arrow */}
-                        <div className='absolute left-1/2 top-full h-0 w-0 -translate-x-1/2 border-x-4 border-t-4 border-x-transparent border-t-neutral-800 dark:border-t-neutral-900' />
+                        <div
+                          className='absolute left-1/2 top-full h-2 w-2 -translate-x-1/2 -translate-y-1 rotate-45 bg-white/80 dark:bg-neutral-900/80'
+                          style={contextUsagePopoverBackgroundColor ? { backgroundColor: contextUsagePopoverBackgroundColor } : undefined}
+                        />
                       </div>
                     </div>
                   )}

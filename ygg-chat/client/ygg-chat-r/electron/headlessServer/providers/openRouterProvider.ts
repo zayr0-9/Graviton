@@ -1,4 +1,5 @@
 import type { HeadlessStreamEvent } from '../contracts/headlessApi.js'
+import type { OpenAIContextUsage } from '../../../../../shared/contextUsage.js'
 import { normalizeAuthorizationToken, syncOpenRouterTokenFromElectronSession } from './electronAppAuth.js'
 import { buildToolNameMap, sanitizeToolResultContentForModel } from './toolResultSanitizer.js'
 import { openStreamingWithPreFirstByteRetry } from './streamResilience.js'
@@ -62,6 +63,7 @@ export interface ProviderGenerateOutput {
   reasoning?: string
   toolCalls?: ProviderToolCall[]
   contentBlocks?: any[]
+  contextUsage?: OpenAIContextUsage
   raw?: any
 }
 

@@ -1,3 +1,5 @@
+import type { OpenAIContextUsage } from '../../../../../shared/contextUsage.js'
+
 export type HeadlessChatOperation = 'send' | 'repeat' | 'branch' | 'edit-branch'
 
 export interface HeadlessMessageRequest {
@@ -67,6 +69,7 @@ export type HeadlessStreamEvent =
   | { type: 'chunk'; part: 'image'; url: string; mimeType?: string }
   | { type: 'chunk'; part: 'tool_call'; toolCall: any }
   | { type: 'chunk'; part: 'tool_result'; toolResult: any }
+  | { type: 'context_usage'; usage: OpenAIContextUsage }
   | { type: 'assistant_message_persisted'; message: any }
   | { type: 'complete'; message: any; providerError?: boolean }
   | {

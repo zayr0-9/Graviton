@@ -305,6 +305,60 @@ describeIfSqlite('ToolLoopService model-facing tool result sanitization', () => 
     db.close()
   })
 
+  it('persists compact view_image metadata while sending only typed modelContent to continuation history', async () => {
+    const providerRouter = new FakeProviderRouter()
+    providerRouter.enqueue({
+      content: '',
+      toolCalls: [{ id: 'call-image', name: 'view_image', arguments: { path: '/tmp/image.png' } }],
+      contentBlocks: [{ type: 'tool_use', id: 'call-image', name: 'view_image', input: { path: '/tmp/image.png' } }],
+    })
+    providerRouter.enqueue({ content: 'I can see the image.' })
+
+    const dataUrl = `data:image/png;base64,${'a'.repeat(2048)}`
+    const service = new ToolLoopService({
+      messageRepo,
+      providerRouter: providerRouter as unknown as ProviderRouter,
+      executeTool: async () => ({
+        success: true,
+        displayContent: '[Image: image/png, 1.5 KB, detail=high]',
+        persistedContent: {
+          success: true,
+          path: '/tmp/image.png',
+          mimeType: 'image/png',
+          sizeBytes: 1536,
+          detail: 'high',
+          summary: '[Image: image/png, 1.5 KB, detail=high]',
+        },
+        modelContent: [{ type: 'input_image', image_url: dataUrl, detail: 'high' }],
+      }),
+      maxTurns: 4,
+    })
+
+    await service.run({
+      provider: 'openaichatgpt',
+      modelName: 'gpt-5.1-codex-mini',
+      conversationId: 'c1',
+      assistantParentId: null,
+      history: [],
+      userContent: 'inspect the image',
+    })
+
+    const messages = statements.getMessagesByConversationId.all('c1') as any[]
+    const firstAssistant = messages.find((msg: any) => msg.role === 'assistant' && msg.content === '')
+    const firstBlocks = JSON.parse(firstAssistant.content_blocks || '[]') as any[]
+    const persistedToolResult = firstBlocks.find((block: any) => block.type === 'tool_result' && block.tool_use_id === 'call-image')
+    expect(persistedToolResult.content).toContain('/tmp/image.png')
+    expect(persistedToolResult.content).not.toContain('base64')
+    expect(persistedToolResult.content).not.toContain(dataUrl)
+
+    const continuationToolMessage = providerRouter.calls[1].input.history.find(
+      (entry: any) => entry.role === 'tool' && entry.tool_call_id === 'call-image'
+    )
+    expect(JSON.parse(continuationToolMessage.content)).toEqual([
+      { type: 'input_image', image_url: dataUrl, detail: 'high' },
+    ])
+  })
+
   it('keeps raw plan_md display content persisted while sending only modelContent to continuation history', async () => {
     const providerRouter = new FakeProviderRouter()
     providerRouter.enqueue({

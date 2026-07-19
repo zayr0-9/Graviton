@@ -29,7 +29,9 @@ import type { RootState } from '../../store/store'
 import { parseId } from '../../utils/helpers'
 import stripMarkdownToText from '../../utils/markdownStripper'
 import {
+  HEIMDALL_MESSAGE_PREVIEW_HOVER_PADDING_ENABLED_CHANGE_EVENT,
   HEIMDALL_NOTE_PREVIEW_HOVER_PADDING_ENABLED_CHANGE_EVENT,
+  loadHeimdallMessagePreviewHoverPaddingEnabled,
   loadHeimdallNotePreviewHoverPaddingEnabled,
 } from '../../helpers/chatUiSettingsStorage'
 // import { MarkdownLink } from '../MarkdownLink/MarkdownLink'
@@ -305,6 +307,7 @@ export const Heimdall: React.FC<HeimdallProps> = ({
   const [isCullingFrozen, setIsCullingFrozen] = useState<boolean>(false)
   const [dimensions, setDimensions] = useState<{ width: number; height: number }>({ width: 0, height: 0 })
   const [selectedNode, setSelectedNode] = useState<ChatNode | null>(null)
+  const messagePreviewCloseTimeoutRef = useRef<number | null>(null)
   const [subagentPanel, setSubagentPanel] = useState<{ parentId: string; x: number; y: number } | null>(null)
   const [subagentModalData, setSubagentModalData] = useState<{
     parentId: string
@@ -389,6 +392,9 @@ export const Heimdall: React.FC<HeimdallProps> = ({
   const [notePreviewHoverPaddingEnabled, setNotePreviewHoverPaddingEnabled] = useState<boolean>(() =>
     loadHeimdallNotePreviewHoverPaddingEnabled()
   )
+  const [messagePreviewHoverPaddingEnabled, setMessagePreviewHoverPaddingEnabled] = useState<boolean>(() =>
+    loadHeimdallMessagePreviewHoverPaddingEnabled()
+  )
 
   useEffect(() => {
     const handleNotePreviewHoverPaddingChange = (event: CustomEvent<boolean>) => {
@@ -403,6 +409,22 @@ export const Heimdall: React.FC<HeimdallProps> = ({
       window.removeEventListener(
         HEIMDALL_NOTE_PREVIEW_HOVER_PADDING_ENABLED_CHANGE_EVENT,
         handleNotePreviewHoverPaddingChange as EventListener
+      )
+  }, [])
+
+  useEffect(() => {
+    const handleMessagePreviewHoverPaddingChange = (event: CustomEvent<boolean>) => {
+      setMessagePreviewHoverPaddingEnabled(event.detail)
+    }
+
+    window.addEventListener(
+      HEIMDALL_MESSAGE_PREVIEW_HOVER_PADDING_ENABLED_CHANGE_EVENT,
+      handleMessagePreviewHoverPaddingChange as EventListener
+    )
+    return () =>
+      window.removeEventListener(
+        HEIMDALL_MESSAGE_PREVIEW_HOVER_PADDING_ENABLED_CHANGE_EVENT,
+        handleMessagePreviewHoverPaddingChange as EventListener
       )
   }, [])
 
@@ -743,7 +765,9 @@ export const Heimdall: React.FC<HeimdallProps> = ({
   const NOTE_PREVIEW_WIDTH = 320
   const NOTE_PREVIEW_MAX_HEIGHT = 280
   const NOTE_PREVIEW_HOVER_PADDING = 18
+  const MESSAGE_PREVIEW_HOVER_PADDING = 18
   const NOTE_PREVIEW_CLOSE_DELAY_MS = 180
+  const MESSAGE_PREVIEW_CLOSE_DELAY_MS = 180
 
   const getNoteBadgeMetrics = (noteText?: string) => {
     const rawNote = noteText || ''
@@ -1033,6 +1057,9 @@ export const Heimdall: React.FC<HeimdallProps> = ({
     return () => {
       if (notePreviewCloseTimeoutRef.current !== null) {
         window.clearTimeout(notePreviewCloseTimeoutRef.current)
+      }
+      if (messagePreviewCloseTimeoutRef.current !== null) {
+        window.clearTimeout(messagePreviewCloseTimeoutRef.current)
       }
     }
   }, [])
@@ -2768,8 +2795,24 @@ export const Heimdall: React.FC<HeimdallProps> = ({
   const visiblePositionValues = useMemo(() => visiblePositionEntries.map(([, pos]) => pos), [visiblePositionEntries])
   const visiblePositionIdSet = useMemo(() => new Set(visiblePositionEntries.map(([id]) => id)), [visiblePositionEntries])
 
+  const clearMessagePreviewCloseTimeout = useCallback(() => {
+    if (messagePreviewCloseTimeoutRef.current !== null) {
+      window.clearTimeout(messagePreviewCloseTimeoutRef.current)
+      messagePreviewCloseTimeoutRef.current = null
+    }
+  }, [])
+
+  const scheduleCloseMessagePreview = useCallback(() => {
+    clearMessagePreviewCloseTimeout()
+    messagePreviewCloseTimeoutRef.current = window.setTimeout(() => {
+      setSelectedNode(null)
+      messagePreviewCloseTimeoutRef.current = null
+    }, MESSAGE_PREVIEW_CLOSE_DELAY_MS)
+  }, [clearMessagePreviewCloseTimeout])
+
   const handleNodeMouseEnter = useCallback(
     (e: React.MouseEvent<SVGElement>) => {
+      clearMessagePreviewCloseTimeout()
       const nodeId = getNodeIdFromTarget(e.target)
       if (!nodeId) return
       const pos = positions[nodeId]
@@ -2785,12 +2828,20 @@ export const Heimdall: React.FC<HeimdallProps> = ({
         })
       }
     },
-    [getNodeIdFromTarget, positions]
+    [clearMessagePreviewCloseTimeout, getNodeIdFromTarget, positions]
   )
 
   const handleNodeMouseLeave = useCallback(() => {
-    setSelectedNode(null)
-  }, [])
+    scheduleCloseMessagePreview()
+  }, [scheduleCloseMessagePreview])
+
+  const handleMessagePreviewEnter = useCallback(() => {
+    clearMessagePreviewCloseTimeout()
+  }, [clearMessagePreviewCloseTimeout])
+
+  const handleMessagePreviewLeave = useCallback(() => {
+    scheduleCloseMessagePreview()
+  }, [scheduleCloseMessagePreview])
 
   const renderConnections = (): JSX.Element[] => {
     const connections: JSX.Element[] = []
@@ -3862,11 +3913,14 @@ export const Heimdall: React.FC<HeimdallProps> = ({
       getHeatmapNodeColors,
       handleNodeMouseEnter,
       handleNodeMouseLeave,
+      handleMessagePreviewEnter,
+      handleMessagePreviewLeave,
       handleSubagentBadgeClick,
       handleNoteBadgeHover,
       handleNoteBadgeLeave,
       handleNoteBadgeClick,
       getCurrentMessage,
+      messagePreviewHoverPaddingEnabled,
     ]
   )
 
@@ -4534,20 +4588,45 @@ export const Heimdall: React.FC<HeimdallProps> = ({
           // Ensure popup fits in viewport horizontally, with some padding
           const leftPos = Math.min(mousePosition.x + 10, dimensions.width - popupWidth - 20)
 
+          const messagePreviewHoverPadding = messagePreviewHoverPaddingEnabled ? MESSAGE_PREVIEW_HOVER_PADDING : 0
+          const popupMaxHeight = hasImage ? 600 : 450
+
           return (
             <div
-              className={`absolute p-4 rounded-lg shadow-xl z-20 no-scrollbar ${compactMode ? 'border-2' : 'border'}`}
+              className='absolute z-20'
+              data-heimdall-wheel-exempt='true'
+              onMouseEnter={handleMessagePreviewEnter}
+              onMouseLeave={handleMessagePreviewLeave}
               style={{
-                left: Math.max(10, leftPos),
-                top: Math.max(mousePosition.y + 10, 10),
-                maxWidth: `${popupWidth}px`,
-                maxHeight: hasImage ? '600px' : '450px',
-                overflow: 'auto',
-                backgroundColor: heimdallNodeHoverModalBackgroundColor,
-                borderColor: heimdallNodeHoverModalBorderColor,
-                color: heimdallNodeHoverModalTextColor,
+                left: Math.max(
+                  10,
+                  Math.min(
+                    leftPos - messagePreviewHoverPadding,
+                    dimensions.width - (popupWidth + messagePreviewHoverPadding * 2) - 10
+                  )
+                ),
+                top: Math.max(
+                  10,
+                  Math.min(
+                    mousePosition.y + 10 - messagePreviewHoverPadding,
+                    dimensions.height - (popupMaxHeight + messagePreviewHoverPadding * 2) - 10
+                  )
+                ),
+                padding: `${messagePreviewHoverPadding}px`,
               }}
             >
+              <div
+                className={`p-4 rounded-lg shadow-xl no-scrollbar ${compactMode ? 'border-2' : 'border'}`}
+                data-heimdall-wheel-exempt='true'
+                style={{
+                  width: `${popupWidth}px`,
+                  maxHeight: `${popupMaxHeight}px`,
+                  overflow: 'auto',
+                  backgroundColor: heimdallNodeHoverModalBackgroundColor,
+                  borderColor: heimdallNodeHoverModalBorderColor,
+                  color: heimdallNodeHoverModalTextColor,
+                }}
+              >
               <div className='text-sm mb-2 font-medium' style={{ color: heimdallNodeHoverModalTitleTextColor }}>
                 {selectedNode.sender === 'user' ? 'User' : selectedNode.sender === 'ex_agent' ? 'Agent' : 'Assistant'}
               </div>
@@ -4687,6 +4766,7 @@ export const Heimdall: React.FC<HeimdallProps> = ({
                   </div>
                 )
               })()}
+              </div>
             </div>
           )
         })()}

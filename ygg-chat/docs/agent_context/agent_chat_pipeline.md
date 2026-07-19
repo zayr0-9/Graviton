@@ -67,3 +67,10 @@ Typical send flow:
 - `agent_local_tools_runtime.md`
 - `summary_system_context.md`
 - `stream_block_context.md`
+
+## OpenAI Context Usage
+
+- OpenAI/Codex `response.completed.response.usage` is normalized at the shared provider boundary and attached to assistant messages as `context_usage` plus an `openai_context_usage` content block.
+- Renderer IPC and the headless tool loop both consume `OpenAiChatgptProvider`; each completed provider/tool turn replaces the previous usage snapshot rather than being summed.
+- This authoritative calculation applies only to the OpenAI provider. Other providers retain Graviton's existing `tokenx` message/prompt estimation.
+- The renderer remains conservative by using the greater of provider-reported usage and its local estimate. Auto-compaction retains the existing 85% model-context threshold.

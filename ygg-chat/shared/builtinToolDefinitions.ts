@@ -533,7 +533,7 @@ export const BUILTIN_TOOL_DEFINITIONS: SharedToolDefinition[] = [
     name: 'view_image',
     enabled: true,
     description:
-      'View a local image from the filesystem. Use this when given a full filepath to an image, including generated_images paths, and you need to inspect it visually. Returns an input_image data URL for the model plus metadata. Do not use for non-image files.',
+      'View a local image from the filesystem. Use this when given a full filepath to an image, including saved user-attachment and generated_images paths, and you need to inspect it visually. Returns an input_image data URL for the model plus metadata. Do not use for non-image files.',
     inputSchema: {
       type: 'object',
       properties: {

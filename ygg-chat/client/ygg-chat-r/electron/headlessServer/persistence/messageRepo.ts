@@ -1,4 +1,5 @@
 import { v4 as uuidv4 } from 'uuid'
+import type { OpenAIContextUsage } from '../../../../../shared/contextUsage.js'
 
 interface MessageRepoDeps {
   db: any
@@ -14,6 +15,7 @@ export interface CreateMessageInput {
   toolCalls?: any[] | null
   toolCallId?: string | null
   contentBlocks?: any[] | null
+  contextUsage?: OpenAIContextUsage | null
   thinkingBlock?: string | null
   note?: string | null
   noteColor?: string | null
@@ -72,7 +74,8 @@ export class MessageRepo {
       this.db.prepare('UPDATE projects SET updated_at = ? WHERE id = ?').run(now, conversation.project_id)
     }
 
-    return this.statements.getMessageById.get(messageId)
+    const createdMessage = this.statements.getMessageById.get(messageId) as any
+    return input.contextUsage ? { ...createdMessage, context_usage: input.contextUsage } : createdMessage
   }
 
   updateAssistantToolState(

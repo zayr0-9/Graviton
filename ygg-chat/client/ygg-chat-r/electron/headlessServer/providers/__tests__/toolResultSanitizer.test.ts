@@ -54,3 +54,24 @@ describe('sanitizeToolResultContentForModel', () => {
   })
 })
 
+
+
+describe('view_image model-facing content', () => {
+  it('passes through split-channel typed image content without wrapping it as text', () => {
+    const modelContent = [{ type: 'input_image', image_url: 'data:image/png;base64,aGVsbG8=', detail: 'high' }]
+
+    expect(sanitizeToolResultContentForModel(modelContent, 'view_image')).toEqual(modelContent)
+  })
+
+  it('continues to read legacy duplicated view_image results', () => {
+    const result = sanitizeToolResultContentForModel(
+      {
+        image_url: 'data:image/png;base64,aGVsbG8=',
+        content: [{ type: 'input_image', image_url: 'data:image/png;base64,aGVsbG8=', detail: 'original' }],
+      },
+      'view_image'
+    )
+
+    expect(result).toEqual([{ type: 'input_image', image_url: 'data:image/png;base64,aGVsbG8=', detail: 'original' }])
+  })
+})

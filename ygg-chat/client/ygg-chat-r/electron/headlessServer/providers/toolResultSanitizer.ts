@@ -98,6 +98,13 @@ function extractViewImagePayload(content: any): { imageUrl: string; detail?: 'hi
   }
 
   if (!resolved || typeof resolved !== 'object') return null
+  if (Array.isArray(resolved)) {
+    const imageItem = resolved.find(
+      (item: any) => item?.type === 'input_image' && typeof item?.image_url === 'string' && /^data:image\//i.test(item.image_url)
+    )
+    if (!imageItem) return null
+    return { imageUrl: imageItem.image_url, detail: imageItem.detail === 'original' ? 'original' : 'high' }
+  }
 
   const directImageUrl = typeof resolved.image_url === 'string' ? resolved.image_url : null
   const contentItems = Array.isArray(resolved.content) ? resolved.content : []
@@ -131,6 +138,13 @@ function extractPlanModelContent(content: any, toolName?: string | null): string
 
 export function sanitizeToolResultContentForModel(content: any, toolName?: string | null): any {
   const normalizedToolName = typeof toolName === 'string' ? toolName.trim() : ''
+
+  if (Array.isArray(content)) {
+    const imageParts = content.filter(
+      item => item?.type === 'input_image' && typeof item?.image_url === 'string' && /^data:image\//i.test(item.image_url)
+    )
+    if (normalizedToolName === 'view_image' && imageParts.length > 0) return imageParts
+  }
   const planModelContent = extractPlanModelContent(content, normalizedToolName)
   if (planModelContent) return planModelContent
 

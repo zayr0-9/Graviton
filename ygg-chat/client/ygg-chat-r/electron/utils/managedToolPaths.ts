@@ -34,6 +34,9 @@ function getManagedToolRoots(usePosix: boolean): string[] {
     addRoot(path.join(userDataPath, '.ygg'))
     addRoot(path.join(userDataPath, 'custom-tools'))
     addRoot(path.join(userDataPath, 'generated_images'))
+    // User-provided image attachments are intentionally viewable by the model via view_image.
+    // Keep this narrow rather than allowing the entire Electron user-data directory.
+    addRoot(path.join(userDataPath, 'user_images'))
   }
 
   const hooksDir = process.env.YGG_HOOKS_DIRECTORY?.trim()

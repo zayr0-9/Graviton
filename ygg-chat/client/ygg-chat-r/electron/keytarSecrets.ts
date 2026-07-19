@@ -59,7 +59,7 @@ async function getKeytar(): Promise<KeytarModule> {
   }
 }
 
-async function getSecret(account: string): Promise<string | null> {
+export async function getSecureSecret(account: string): Promise<string | null> {
   const keytar = await getKeytar()
 
   for (const serviceName of KEYTAR_SERVICE_NAMES) {
@@ -79,7 +79,7 @@ async function getSecret(account: string): Promise<string | null> {
   return null
 }
 
-async function setSecret(account: string, value: string): Promise<void> {
+export async function setSecureSecret(account: string, value: string): Promise<void> {
   const normalized = value.trim()
   if (!normalized) {
     throw new Error('Secret value cannot be empty')
@@ -88,7 +88,7 @@ async function setSecret(account: string, value: string): Promise<void> {
   await keytar.setPassword(KEYTAR_PRIMARY_SERVICE_NAME, account, normalized)
 }
 
-async function deleteSecret(account: string): Promise<boolean> {
+export async function deleteSecureSecret(account: string): Promise<boolean> {
   const keytar = await getKeytar()
   let deleted = false
 
@@ -105,7 +105,7 @@ async function deleteSecret(account: string): Promise<boolean> {
 }
 
 export async function getBraveApiKey(): Promise<string | null> {
-  return await getSecret(BRAVE_SEARCH_API_KEY_ACCOUNT)
+  return await getSecureSecret(BRAVE_SEARCH_API_KEY_ACCOUNT)
 }
 
 export async function hasBraveApiKey(): Promise<boolean> {
@@ -114,9 +114,9 @@ export async function hasBraveApiKey(): Promise<boolean> {
 }
 
 export async function setBraveApiKey(value: string): Promise<void> {
-  await setSecret(BRAVE_SEARCH_API_KEY_ACCOUNT, value)
+  await setSecureSecret(BRAVE_SEARCH_API_KEY_ACCOUNT, value)
 }
 
 export async function deleteBraveApiKey(): Promise<boolean> {
-  return await deleteSecret(BRAVE_SEARCH_API_KEY_ACCOUNT)
+  return await deleteSecureSecret(BRAVE_SEARCH_API_KEY_ACCOUNT)
 }

@@ -10,6 +10,9 @@ export const CHAT_UI_ADDED_FILES_PILLS_VISIBILITY_CHANGE_EVENT = 'chatUi:addedFi
 export const HEIMDALL_NOTE_PREVIEW_HOVER_PADDING_ENABLED_KEY = 'heimdall:notePreviewHoverPaddingEnabled'
 export const HEIMDALL_NOTE_PREVIEW_HOVER_PADDING_ENABLED_CHANGE_EVENT =
   'heimdall:notePreviewHoverPaddingEnabledChange'
+export const HEIMDALL_MESSAGE_PREVIEW_HOVER_PADDING_ENABLED_KEY = 'heimdall:messagePreviewHoverPaddingEnabled'
+export const HEIMDALL_MESSAGE_PREVIEW_HOVER_PADDING_ENABLED_CHANGE_EVENT =
+  'heimdall:messagePreviewHoverPaddingEnabledChange'
 
 export const loadShowTokenUsageBar = (): boolean => {
   try {
@@ -99,6 +102,26 @@ export const saveHeimdallNotePreviewHoverPaddingEnabled = (enabled: boolean): vo
     localStorage.setItem(HEIMDALL_NOTE_PREVIEW_HOVER_PADDING_ENABLED_KEY, String(enabled))
     window.dispatchEvent(
       new CustomEvent<boolean>(HEIMDALL_NOTE_PREVIEW_HOVER_PADDING_ENABLED_CHANGE_EVENT, { detail: enabled })
+    )
+  } catch {
+    // no-op
+  }
+}
+
+export const loadHeimdallMessagePreviewHoverPaddingEnabled = (): boolean => {
+  try {
+    const stored = localStorage.getItem(HEIMDALL_MESSAGE_PREVIEW_HOVER_PADDING_ENABLED_KEY)
+    return stored !== null ? stored === 'true' : true
+  } catch {
+    return true
+  }
+}
+
+export const saveHeimdallMessagePreviewHoverPaddingEnabled = (enabled: boolean): void => {
+  try {
+    localStorage.setItem(HEIMDALL_MESSAGE_PREVIEW_HOVER_PADDING_ENABLED_KEY, String(enabled))
+    window.dispatchEvent(
+      new CustomEvent<boolean>(HEIMDALL_MESSAGE_PREVIEW_HOVER_PADDING_ENABLED_CHANGE_EVENT, { detail: enabled })
     )
   } catch {
     // no-op

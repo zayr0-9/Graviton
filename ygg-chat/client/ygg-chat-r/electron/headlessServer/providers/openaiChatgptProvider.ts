@@ -7,6 +7,7 @@ import {
 } from '../../openaiChatgptOAuth.js'
 import type { ProviderTokenStore } from './tokenStore.js'
 import { CodexResponsesProvider, toCodexMessages } from './codex/index.js'
+import { normalizeOpenAIContextUsage, openAIContextUsageBlock } from '../../../../../shared/contextUsage.js'
 import { buildToolNameMap, sanitizeToolResultContentForModel } from './toolResultSanitizer.js'
 import type {
   HeadlessProvider,
@@ -2135,9 +2136,14 @@ export class OpenAiChatgptProvider implements HeadlessProvider {
       usage: parsed.usage,
     })
 
+    const contextUsage = normalizeOpenAIContextUsage(parsed.usage, {
+      model,
+      responseId: parsed.responseId,
+    })
     const normalizedReasoning = canonicalReasoningText([parsed.reasoningContent || ''])
     const responseOutputItems = stripDuplicateReasoningTextFromResponseItems(parsed.outputItems || [], normalizedReasoning)
     const contentBlocks: any[] = []
+    if (contextUsage) contentBlocks.push(openAIContextUsageBlock(contextUsage))
     if (normalizedReasoning) contentBlocks.push({ type: 'thinking', content: normalizedReasoning })
     if (parsed.content) contentBlocks.push({ type: 'text', content: parsed.content })
 
@@ -2160,6 +2166,7 @@ export class OpenAiChatgptProvider implements HeadlessProvider {
       reasoning: normalizedReasoning || undefined,
       toolCalls: parsed.toolCalls,
       contentBlocks,
+      ...(contextUsage ? { contextUsage } : {}),
       raw: {
         responses_output_items: responseOutputItems,
         response_items_added: parsed.responseItemsAdded || [],

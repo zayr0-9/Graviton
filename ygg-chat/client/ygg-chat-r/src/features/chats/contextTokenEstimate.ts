@@ -1,4 +1,10 @@
 import { estimateTokenCount } from 'tokenx'
+import {
+  effectiveOpenAIContextTokens,
+  extractOpenAIContextUsageFromBlocks,
+  type OpenAIContextUsage,
+} from '../../../../../shared/contextUsage'
+import type { Message } from './chatTypes'
 
 const IMAGE_PAYLOAD_OMITTED_PLACEHOLDER = '[image payload omitted from token estimate]'
 
@@ -22,37 +28,38 @@ function isImageDataUrl(value: unknown): boolean {
 }
 
 function sanitizeImagePayloads(value: any): { value: any; changed: boolean } {
-  if (!value || typeof value !== 'object') return { value, changed: false }
-
   let changed = false
+
   const sanitizeBlock = (block: any): any => {
-    if (!block || typeof block !== 'object') return block
-
-    if (Array.isArray(block)) {
-      const next = block.map(item => sanitizeBlock(item))
-      return next
+    if (isImageDataUrl(block)) {
+      changed = true
+      return IMAGE_PAYLOAD_OMITTED_PLACEHOLDER
     }
+    if (!block || typeof block !== 'object') return block
+    if (Array.isArray(block)) return block.map(item => sanitizeBlock(item))
 
-    const next: any = { ...block }
+    const next: any = {}
+    for (const [key, child] of Object.entries(block)) {
+      if (key === 'result' && block.type === 'image_generation_call' && typeof child === 'string' && child.trim()) {
+        next[key] = IMAGE_PAYLOAD_OMITTED_PLACEHOLDER
+        changed = true
+        continue
+      }
 
-    if (next.type === 'image') {
-      for (const key of ['url', 'dataUrl', 'image_url', 'imageUrl']) {
-        if (isImageDataUrl(next[key])) {
-          next[key] = IMAGE_PAYLOAD_OMITTED_PLACEHOLDER
-          changed = true
+      // Legacy tool results may contain a JSON string with nested image data URLs.
+      if (typeof child === 'string' && (key === 'content' || key === 'output') && child.trim().startsWith('{')) {
+        try {
+          const parsed = JSON.parse(child)
+          const sanitized = sanitizeBlock(parsed)
+          next[key] = sanitized === parsed ? child : JSON.stringify(sanitized)
+          continue
+        } catch {
+          // Keep malformed/non-JSON strings unchanged.
         }
       }
-    }
 
-    if (next.type === 'image_generation_call' && typeof next.result === 'string' && next.result.trim().length > 0) {
-      next.result = IMAGE_PAYLOAD_OMITTED_PLACEHOLDER
-      changed = true
+      next[key] = sanitizeBlock(child)
     }
-
-    if (next.type === 'responses_output_items' && Array.isArray(next.items)) {
-      next.items = next.items.map((item: any) => sanitizeBlock(item))
-    }
-
     return next
   }
 
@@ -84,4 +91,37 @@ export function estimateContentBlocksForContext(blocks: unknown): number {
   }
 
   return safeEstimateTokenCount(sanitized.value)
+}
+
+export function latestOpenAIContextUsage(messages: Array<Message | null | undefined>): OpenAIContextUsage | null {
+  for (let index = messages.length - 1; index >= 0; index--) {
+    const message = messages[index]
+    if (!message || message.role !== 'assistant') continue
+    const direct = message.context_usage
+    if (direct && typeof direct === 'object' && !Array.isArray(direct) && direct.provider === 'openai') {
+      return direct as OpenAIContextUsage
+    }
+    const fromBlocks = extractOpenAIContextUsageFromBlocks(message.content_blocks)
+    if (fromBlocks) return fromBlocks
+  }
+  return null
+}
+
+export function resolveContextTokens(params: {
+  providerName: unknown
+  estimatedTokens: number
+  messages: Array<Message | null | undefined>
+}): { effectiveTokens: number; reportedUsage: OpenAIContextUsage | null; source: 'reported' | 'estimated' } {
+  const providerName = typeof params.providerName === 'string' ? params.providerName.trim().toLowerCase().replace(/\s+/g, '') : ''
+  const isOpenAI = providerName === 'openai' || providerName === 'openaichatgpt' || providerName === 'openai(chatgpt)'
+  if (!isOpenAI) {
+    return { effectiveTokens: Math.max(0, params.estimatedTokens), reportedUsage: null, source: 'estimated' }
+  }
+
+  const reportedUsage = latestOpenAIContextUsage(params.messages)
+  return {
+    effectiveTokens: effectiveOpenAIContextTokens(reportedUsage, params.estimatedTokens),
+    reportedUsage,
+    source: reportedUsage ? 'reported' : 'estimated',
+  }
 }

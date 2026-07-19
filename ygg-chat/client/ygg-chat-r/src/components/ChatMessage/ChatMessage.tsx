@@ -16,6 +16,11 @@ import remarkGfm from 'remark-gfm'
 import remarkMath from 'remark-math'
 import { AUTO_COMPACTION_NOTE, fetchMcpTools } from '../../features/chats/chatActions'
 import { chatSliceActions } from '../../features/chats/chatSlice'
+import {
+  appendAttachedImagePathMetadata,
+  extractAttachedImagePaths,
+  stripAttachedImagePathMetadata,
+} from '../../features/chats/attachedImagePaths'
 import { useAppDispatch } from '../../hooks/redux'
 import { useIsMobile } from '../../hooks/useMediaQuery'
 import { environment, localApi } from '../../utils/api'
@@ -673,7 +678,11 @@ const ChatMessage: React.FC<ChatMessageProps> = React.memo(
     const customThemeEnabled =
       typeof customThemeEnabledProp === 'boolean' ? customThemeEnabledProp : getCustomChatThemeEnabled()
     const [editingState, setEditingState] = useState(isEditing)
-    const [editContent, setEditContent] = useState(content)
+    const visibleContent = useMemo(
+      () => (role === 'user' ? stripAttachedImagePathMetadata(content) : content),
+      [content, role]
+    )
+    const [editContent, setEditContent] = useState(visibleContent)
     const [editMode, setEditMode] = useState<'edit' | 'branch'>('edit')
     const [copied, setCopied] = useState(false)
     // Toggle visibility of the reasoning/thinking block
@@ -760,13 +769,13 @@ const ChatMessage: React.FC<ChatMessageProps> = React.memo(
           : undefined
 
     const hasContent = useMemo(() => {
-      const hasSimpleContent = content && content.trim().length > 0
+      const hasSimpleContent = visibleContent && visibleContent.trim().length > 0
       const hasBlockContent =
         contentBlocks &&
         contentBlocks.some(b => (b.type === 'text' && b.content && b.content.trim().length > 0) || b.type === 'image')
 
       return hasSimpleContent || hasBlockContent
-    }, [content, contentBlocks])
+    }, [visibleContent, contentBlocks])
 
     const canBranchMessage = role === 'user' || (role === 'assistant' && messageData?.parent_id == null)
 
@@ -774,7 +783,7 @@ const ChatMessage: React.FC<ChatMessageProps> = React.memo(
       dispatch(chatSliceActions.editingBranchSet(false))
       setEditingState(true)
       // Use contentBlocks if available, otherwise use simple content
-      setEditContent(contentBlocks && contentBlocks.length > 0 ? contentBlocksToEditableText(contentBlocks) : content)
+      setEditContent(contentBlocks && contentBlocks.length > 0 ? stripAttachedImagePathMetadata(contentBlocksToEditableText(contentBlocks)) : visibleContent)
       setEditMode('edit')
       onEditingStateChange?.(id, true, 'edit')
     }
@@ -783,7 +792,7 @@ const ChatMessage: React.FC<ChatMessageProps> = React.memo(
       dispatch(chatSliceActions.editingBranchSet(true))
       setEditingState(true)
       // Use contentBlocks if available, otherwise use simple content
-      setEditContent(contentBlocks && contentBlocks.length > 0 ? contentBlocksToEditableText(contentBlocks) : content)
+      setEditContent(contentBlocks && contentBlocks.length > 0 ? stripAttachedImagePathMetadata(contentBlocksToEditableText(contentBlocks)) : visibleContent)
       setEditMode('branch')
       onEditingStateChange?.(id, true, 'branch')
     }
@@ -797,11 +806,11 @@ const ChatMessage: React.FC<ChatMessageProps> = React.memo(
         return
       }
 
-      if (onEdit && trimmedContent !== content) {
+      if (onEdit && trimmedContent !== visibleContent) {
         // Convert edited text back to contentBlocks if original had contentBlocks
         const newContentBlocks =
           contentBlocks && contentBlocks.length > 0 ? editableTextToContentBlocks(trimmedContent) : undefined
-        onEdit(id, trimmedContent, newContentBlocks)
+        onEdit(id, appendAttachedImagePathMetadata(trimmedContent, extractAttachedImagePaths(content)), newContentBlocks)
       }
       dispatch(chatSliceActions.editingBranchSet(false))
       setEditingState(false)
@@ -813,7 +822,11 @@ const ChatMessage: React.FC<ChatMessageProps> = React.memo(
         // Convert edited text back to contentBlocks if original had contentBlocks
         const newContentBlocks =
           contentBlocks && contentBlocks.length > 0 ? editableTextToContentBlocks(editContent.trim()) : undefined
-        onBranch(id, editContent.trim(), newContentBlocks)
+        onBranch(
+          id,
+          appendAttachedImagePathMetadata(editContent.trim(), extractAttachedImagePaths(content)),
+          newContentBlocks
+        )
       }
       dispatch(chatSliceActions.editingBranchSet(false))
       // Clear only drafts owned by this branch edit after branching is initiated.
@@ -823,7 +836,7 @@ const ChatMessage: React.FC<ChatMessageProps> = React.memo(
     }
 
     const handleCancel = () => {
-      setEditContent(content)
+      setEditContent(visibleContent)
       dispatch(chatSliceActions.editingBranchSet(false))
       if (editMode === 'branch') {
         dispatch(chatSliceActions.imageDraftsCleared({ target: { kind: 'branch', messageId: id } }))
@@ -887,7 +900,7 @@ const ChatMessage: React.FC<ChatMessageProps> = React.memo(
       }
 
       if (onCopy) {
-        onCopy(content)
+        onCopy(visibleContent)
       }
 
       // Get rendered HTML from the message element for rich paste support
@@ -901,7 +914,7 @@ const ChatMessage: React.FC<ChatMessageProps> = React.memo(
         }
       }
 
-      const ok = await copyRichText(content, html)
+      const ok = await copyRichText(visibleContent, html)
       if (ok) {
         setCopied(true)
         setTimeout(() => setCopied(false), 1500)
@@ -2748,7 +2761,8 @@ const ChatMessage: React.FC<ChatMessageProps> = React.memo(
         }
 
         if (block.type === 'text') {
-          const rawText = typeof block.content === 'string' ? block.content : ''
+          const blockText = typeof block.content === 'string' ? block.content : ''
+          const rawText = role === 'user' ? stripAttachedImagePathMetadata(blockText) : blockText
           if (!rawText.trim()) {
             idx += 1
             continue
@@ -3018,7 +3032,7 @@ const ChatMessage: React.FC<ChatMessageProps> = React.memo(
               (!streamEvents || streamEvents.length === 0) &&
               renderMarkdownNode({
                 key: `legacy-content-${id}`,
-                markdown: content,
+                markdown: visibleContent,
                 className: LEGACY_TEXT_MARKDOWN_CLASS,
                 style: messageContentStyle,
               })}

@@ -294,6 +294,10 @@ export interface ImageDraft {
   name: string
   type: string
   size: number
+  /** Durable Electron-local attachment metadata, populated before a message is sent. */
+  filePath?: string
+  attachmentId?: string
+  sha256?: string
 }
 
 export type ImageDraftTarget =

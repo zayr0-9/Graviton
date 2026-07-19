@@ -36,6 +36,7 @@ import {
   ToolDefinition,
 } from './chatTypes'
 import { createBedrockStreamingRequest } from './Bedrock'
+import { appendAttachedImagePathMetadata, stripAttachedImagePathMetadata } from './attachedImagePaths'
 import { createLmStudioStreamingRequest } from './LMStudio'
 import { createOpenAIChatGPTStreamingRequest } from './OpenAIChatGPT'
 import { createZaiStreamingRequest } from './Zai'
@@ -475,7 +476,58 @@ const getDraftsForTarget = (
   return state.chat.composition.imageDrafts || []
 }
 
-type LocalAttachmentDraft = { dataUrl: string; name?: string; type?: string; size?: number }
+type LocalAttachmentDraft = {
+  dataUrl: string
+  name?: string
+  type?: string
+  size?: number
+  filePath?: string
+  attachmentId?: string
+  sha256?: string
+}
+
+type PreparedLocalAttachment = {
+  id: string
+  file_path: string
+  sha256: string
+  mime_type: string
+  size_bytes: number
+}
+
+const prepareLocalAttachmentsForModel = async (
+  attachments: LocalAttachmentDraft[] | null,
+  contextLabel: string
+): Promise<LocalAttachmentDraft[] | null> => {
+  if (!attachments?.length) return attachments
+  try {
+    const result = await localApi.post<{ attachments?: PreparedLocalAttachment[] }>('/local/attachments/prepare-base64', { attachments })
+    const prepared = Array.isArray(result?.attachments) ? result.attachments : []
+    if (prepared.length !== attachments.length) throw new Error('Local attachment preparation returned an incomplete result')
+    return attachments.map((attachment, index) => ({
+      ...attachment,
+      filePath: prepared[index].file_path,
+      attachmentId: prepared[index].id,
+      sha256: prepared[index].sha256,
+    }))
+  } catch (err) {
+    console.error(`[${contextLabel}] Failed to prepare local attachments:`, err)
+    throw new Error('Failed to save attached image locally before sending the message')
+  }
+}
+
+const linkPreparedLocalAttachmentsToMessage = async (
+  messageId: MessageId,
+  attachments: LocalAttachmentDraft[] | null,
+  contextLabel: string
+): Promise<void> => {
+  const attachmentIds = Array.from(new Set((attachments || []).map(attachment => attachment.attachmentId).filter(Boolean) as string[]))
+  if (!attachmentIds.length) return
+  try {
+    await localApi.post('/local/attachments/link', { messageId, attachmentIds })
+  } catch (err) {
+    console.error(`[${contextLabel}] Failed to link prepared local attachments:`, err)
+  }
+}
 
 const persistMessageToLocalForAttachments = async ({
   message,
@@ -522,7 +574,15 @@ const saveLocalBase64AttachmentsForMessage = async ({
   storageMode?: string | null
   contextLabel: string
 }): Promise<void> => {
-  if (storageMode !== 'local' || !attachments || attachments.length === 0) return
+  if (!attachments || attachments.length === 0) return
+
+  const preparedAttachmentIds = attachments.map(attachment => attachment.attachmentId).filter(Boolean)
+  if (preparedAttachmentIds.length > 0) {
+    await linkPreparedLocalAttachmentsToMessage(messageId, attachments, contextLabel)
+    return
+  }
+
+  if (storageMode !== 'local') return
 
   try {
     await localApi.post('/local/attachments/save-base64', {
@@ -894,6 +954,13 @@ const extractViewImagePayload = (content: any): { imageUrl: string; detail?: 'hi
   }
 
   if (!resolved || typeof resolved !== 'object') return null
+  if (Array.isArray(resolved)) {
+    const imageItem = resolved.find(
+      (item: any) => item?.type === 'input_image' && typeof item?.image_url === 'string' && /^data:image\//i.test(item.image_url)
+    )
+    if (!imageItem) return null
+    return { imageUrl: imageItem.image_url, detail: imageItem.detail === 'original' ? 'original' : 'high' }
+  }
   const directImageUrl = typeof resolved.image_url === 'string' ? resolved.image_url : null
   const contentItems = Array.isArray(resolved.content) ? resolved.content : []
   const imageItem = contentItems.find(
@@ -924,8 +991,37 @@ const extractPlanModelContent = (content: any, toolName?: string | null): string
   return typeof modelContent === 'string' && modelContent.trim() ? modelContent : null
 }
 
+const getToolResultPersistedContent = (result: any): any => {
+  if (!result || typeof result !== 'object' || Array.isArray(result)) return result
+  if (Object.prototype.hasOwnProperty.call(result, 'persistedContent')) return result.persistedContent
+  if (Object.prototype.hasOwnProperty.call(result, 'displayContent')) return result.displayContent
+  return result
+}
+
+const getToolResultModelContent = (result: any): any => {
+  if (!result || typeof result !== 'object' || Array.isArray(result)) return getToolResultPersistedContent(result)
+  if (Object.prototype.hasOwnProperty.call(result, 'modelContent')) return result.modelContent
+  return getToolResultPersistedContent(result)
+}
+
+const serializeToolResultContent = (content: any): string => {
+  if (typeof content === 'string') return content
+  try {
+    return JSON.stringify(content ?? null)
+  } catch {
+    return String(content)
+  }
+}
+
 const sanitizeToolResultContentForModel = (content: any, toolName?: string | null): any => {
   const normalizedToolName = typeof toolName === 'string' ? toolName.trim() : ''
+
+  if (Array.isArray(content)) {
+    const imageParts = content.filter(
+      item => item?.type === 'input_image' && typeof item?.image_url === 'string' && /^data:image\//i.test(item.image_url)
+    )
+    if (normalizedToolName === 'view_image' && imageParts.length > 0) return imageParts
+  }
   const planModelContent = extractPlanModelContent(content, normalizedToolName)
   if (planModelContent) return planModelContent
 
@@ -2379,7 +2475,7 @@ const executeToolWithPermissionCheck = async (
         state: readLiveState(),
         queryClient: context.queryClient ?? null,
       })
-      const serializedResult = typeof result === 'string' ? result : JSON.stringify(result)
+      const serializedResult = serializeToolResultContent(getToolResultPersistedContent(result))
       const postToolHook = await runChatHook({
         event: 'PostToolUse',
         conversationId: hookMetadata.conversationId,
@@ -2801,7 +2897,15 @@ export const sendMessage = createAsyncThunk<
     const preSendState = getState() as RootState
     const preSendDrafts = getDraftsForTarget(preSendState, { kind: 'composer' })
     const preSendAttachmentsBase64 = preSendDrafts.length
-      ? preSendDrafts.map(d => ({ dataUrl: d.dataUrl, name: d.name, type: d.type, size: d.size }))
+      ? preSendDrafts.map(d => ({
+        dataUrl: d.dataUrl,
+        name: d.name,
+        type: d.type,
+        size: d.size,
+        filePath: d.filePath,
+        attachmentId: d.attachmentId,
+        sha256: d.sha256,
+      }))
       : null
     const preSendSelectedFilesForChat = preSendState.ideContext.selectedFilesForChat || []
 
@@ -2871,7 +2975,7 @@ export const sendMessage = createAsyncThunk<
       const isZai =
         providerSlug === 'z.ai/glm' || providerSlug === 'zai/glm' || providerSlug === 'zai' || providerSlug === 'glm'
       // Gather any image drafts (base64) captured before send start so UI can clear immediately.
-      const attachmentsBase64 = preSendAttachmentsBase64
+      const attachmentsBase64 = await prepareLocalAttachmentsForModel(preSendAttachmentsBase64, 'image attachments')
 
       // Combine mode, user default, project, and conversation system prompts.
       const selectedProject = selectSelectedProject(state)
@@ -2943,6 +3047,12 @@ export const sendMessage = createAsyncThunk<
           memoryContexts.projectName
         )
         pendingHookContextForNextTurn.length = 0
+        if (turnCount === 1) {
+          currentTurnContent = appendAttachedImagePathMetadata(
+            currentTurnContent,
+            (attachmentsBase64 || []).map(attachment => attachment.filePath)
+          )
+        }
 
         // Check if streaming was aborted by user (check this specific stream)
         const streamingActive = getState().chat.streaming.byId[streamId]?.active ?? false
@@ -3052,7 +3162,7 @@ export const sendMessage = createAsyncThunk<
             conversationId,
             storageMode,
             parentId: newUserMessage.parent_id,
-            content: newUserMessage.content_plain_text || input.content,
+            content: stripAttachedImagePathMetadata(newUserMessage.content_plain_text || input.content),
             contextLabel: shouldUseLmStudio
               ? 'sendMessage/lmstudio'
               : shouldUseZai
@@ -3181,6 +3291,7 @@ export const sendMessage = createAsyncThunk<
 
               for (const toolCall of pendingToolCalls) {
                 let content: string
+                let modelContent: any
                 let isError = false
 
                 try {
@@ -3210,11 +3321,13 @@ export const sendMessage = createAsyncThunk<
                         appendHookAdditionalContext(pendingHookContextForNextTurn, value),
                     }
                   )
-                  content = typeof result === 'string' ? result : JSON.stringify(result)
+                  content = serializeToolResultContent(getToolResultPersistedContent(result))
+                  modelContent = getToolResultModelContent(result)
                   successfulTool = true
                 } catch (error) {
                   isError = true
                   content = error instanceof Error ? error.message : String(error)
+                  modelContent = content
                 }
 
                 const toolResultBlock = {
@@ -3241,7 +3354,7 @@ export const sendMessage = createAsyncThunk<
                     conversationId,
                     lastMsg.id,
                     toolCall.id,
-                    stringifyToolResultContentForModel(content, toolCall?.name)
+                    stringifyToolResultContentForModel(modelContent ?? content, toolCall?.name)
                   )
                 )
               }
@@ -3459,6 +3572,7 @@ export const sendMessage = createAsyncThunk<
 
               for (const toolCall of pendingToolCalls) {
                 let content: string
+                let modelContent: any
                 let isError = false
                 try {
                   const result = await executeToolWithPermissionCheck(
@@ -3487,11 +3601,13 @@ export const sendMessage = createAsyncThunk<
                         appendHookAdditionalContext(pendingHookContextForNextTurn, value),
                     }
                   )
-                  content = typeof result === 'string' ? result : JSON.stringify(result)
+                  content = serializeToolResultContent(getToolResultPersistedContent(result))
+                  modelContent = getToolResultModelContent(result)
                   successfulTool = true
                 } catch (error) {
                   isError = true
                   content = error instanceof Error ? error.message : String(error)
+                  modelContent = content
                 }
 
                 toolResultBlocks.push({
@@ -3517,7 +3633,7 @@ export const sendMessage = createAsyncThunk<
                     conversationId,
                     lastMsg.id,
                     toolCall.id,
-                    stringifyToolResultContentForModel(content, toolCall?.name)
+                    stringifyToolResultContentForModel(modelContent ?? content, toolCall?.name)
                   )
                 )
               }
@@ -3767,6 +3883,7 @@ export const sendMessage = createAsyncThunk<
 
               for (const toolCall of pendingToolCalls) {
                 let content: string
+                let modelContent: any
                 let isError = false
 
                 try {
@@ -3796,11 +3913,13 @@ export const sendMessage = createAsyncThunk<
                         appendHookAdditionalContext(pendingHookContextForNextTurn, value),
                     }
                   )
-                  content = typeof result === 'string' ? result : JSON.stringify(result)
+                  content = serializeToolResultContent(getToolResultPersistedContent(result))
+                  modelContent = getToolResultModelContent(result)
                   successfulTool = true
                 } catch (error) {
                   isError = true
                   content = error instanceof Error ? error.message : String(error)
+                  modelContent = content
                 }
 
                 const toolResultBlock = {
@@ -3833,7 +3952,7 @@ export const sendMessage = createAsyncThunk<
                     conversationId,
                     lastMsg.id,
                     toolCall.id,
-                    stringifyToolResultContentForModel(content, toolCall?.name)
+                    stringifyToolResultContentForModel(modelContent ?? content, toolCall?.name)
                   )
                 )
               }
@@ -4052,6 +4171,7 @@ export const sendMessage = createAsyncThunk<
 
               for (const toolCall of pendingToolCalls) {
                 let content: string
+                let modelContent: any
                 let isError = false
 
                 try {
@@ -4081,11 +4201,13 @@ export const sendMessage = createAsyncThunk<
                         appendHookAdditionalContext(pendingHookContextForNextTurn, value),
                     }
                   )
-                  content = typeof result === 'string' ? result : JSON.stringify(result)
+                  content = serializeToolResultContent(getToolResultPersistedContent(result))
+                  modelContent = getToolResultModelContent(result)
                   successfulTool = true
                 } catch (error) {
                   isError = true
                   content = error instanceof Error ? error.message : String(error)
+                  modelContent = content
                   console.error('[OpenAIChatGPTToolLoop][sendMessage] tool execution failed', {
                     streamId,
                     toolCallId: toolCall?.id,
@@ -4124,7 +4246,7 @@ export const sendMessage = createAsyncThunk<
                     conversationId,
                     lastMsg.id,
                     toolCall.id,
-                    stringifyToolResultContentForModel(content, toolCall?.name)
+                    stringifyToolResultContentForModel(modelContent ?? content, toolCall?.name)
                   )
                 )
               }
@@ -4361,7 +4483,7 @@ export const sendMessage = createAsyncThunk<
                   }
 
                   // Save image attachments only after the user message exists in local SQLite.
-                  if (storageMode === 'local' && attachmentsBase64 && attachmentsBase64.length > 0) {
+                  if (attachmentsBase64 && attachmentsBase64.length > 0) {
                     const localMessageSynced = await persistMessageToLocalForAttachments({
                       message: chunk.message,
                       conversationId,
@@ -4402,7 +4524,9 @@ export const sendMessage = createAsyncThunk<
                     conversationId,
                     storageMode,
                     parentId: chunk.message.parent_id ?? parent ?? null,
-                    content: chunk.message?.content_plain_text || chunk.message?.content || input.content,
+                    content: stripAttachedImagePathMetadata(
+                      chunk.message?.content_plain_text || chunk.message?.content || input.content
+                    ),
                     contextLabel: 'sendMessage',
                   })
                 }
@@ -4584,6 +4708,7 @@ export const sendMessage = createAsyncThunk<
 
             for (const toolCall of pendingToolCalls) {
               let content: string
+              let modelContent: any
               let isError = false
 
               try {
@@ -4613,7 +4738,8 @@ export const sendMessage = createAsyncThunk<
                   }
                 )
 
-                content = typeof result === 'string' ? result : JSON.stringify(result)
+                content = serializeToolResultContent(getToolResultPersistedContent(result))
+                modelContent = getToolResultModelContent(result)
                 if (isElectronEnvironment) {
                   successfulDesktopTool = true
                 } else if (toolCall?.name === 'browse_web') {
@@ -4622,6 +4748,7 @@ export const sendMessage = createAsyncThunk<
               } catch (error) {
                 isError = true
                 content = error instanceof Error ? error.message : String(error)
+                modelContent = content
               }
 
               const toolResultBlock = {
@@ -4632,6 +4759,14 @@ export const sendMessage = createAsyncThunk<
               }
 
               toolResultBlocks.push(toolResultBlock)
+              currentTurnHistory.push(
+                createToolResultMessage(
+                  conversationId,
+                  messageId,
+                  toolCall.id,
+                  stringifyToolResultContentForModel(modelContent ?? content, toolCall?.name)
+                )
+              )
 
               // Inform UI of tool result for real-time display
               dispatch(
@@ -5081,12 +5216,20 @@ export const editMessageWithBranching = createAsyncThunk<
       const combinedArtifacts = Array.from(new Set([...existingMinusDeleted, ...draftDataUrls]))
 
       // Build attachmentsBase64 with full metadata like sendMessage does
-      const attachmentsBase64 = combinedArtifacts.length
+      const attachmentDrafts = combinedArtifacts.length
         ? combinedArtifacts.map(dataUrl => {
             // Try to find matching draft for full metadata
             const matchingDraft = drafts.find(d => d.dataUrl === dataUrl)
             if (matchingDraft) {
-              return { dataUrl, name: matchingDraft.name, type: matchingDraft.type, size: matchingDraft.size }
+              return {
+                dataUrl,
+                name: matchingDraft.name,
+                type: matchingDraft.type,
+                size: matchingDraft.size,
+                filePath: matchingDraft.filePath,
+                attachmentId: matchingDraft.attachmentId,
+                sha256: matchingDraft.sha256,
+              }
             }
             // For existing artifacts (data URLs), extract type from the data URL
             const typeMatch = dataUrl.match(/^data:([^;]+);/)
@@ -5094,6 +5237,7 @@ export const editMessageWithBranching = createAsyncThunk<
             return { dataUrl, name: 'image', type: mimeType, size: 0 }
           })
         : null
+      const attachmentsBase64 = await prepareLocalAttachmentsForModel(attachmentDrafts, 'edit message image attachments')
 
       // Before sending, reflect current image drafts in the UI by appending them
       // to the artifacts of the message being branched from.
@@ -5279,6 +5423,12 @@ export const editMessageWithBranching = createAsyncThunk<
           memoryContexts.projectName
         )
         pendingHookContextForNextTurn.length = 0
+        if (turnCount === 1) {
+          currentTurnContent = appendAttachedImagePathMetadata(
+            currentTurnContent,
+            (attachmentsBase64 || []).map(attachment => attachment.filePath)
+          )
+        }
         let streamReader: ReadableStreamDefaultReader<Uint8Array> | null = null
         let firstRead: ReadableStreamReadResult<Uint8Array> | null = null
 
@@ -5310,20 +5460,23 @@ export const editMessageWithBranching = createAsyncThunk<
             updateMessageCache(extra.queryClient, conversationId, newUserMessage)
             dispatch(chatSliceActions.optimisticBranchMessageCleared())
 
-            // Sync to local SQLite
-            localApi
-              .post('/sync/message', {
-                ...newUserMessage,
-                conversation_id: conversationId,
-                children_ids: newUserMessage.children_ids,
-                content_blocks: newUserMessage.content_blocks,
-                tool_calls: newUserMessage.tool_calls,
-                user_id: auth.userId,
-                owner_id: auth.userId,
-                project_id: selectedProject?.id || null,
-                storage_mode: storageMode,
+            // Persist the message before linking its already-saved image attachment records.
+            const localMessageSynced = await persistMessageToLocalForAttachments({
+              message: newUserMessage,
+              conversationId,
+              storageMode,
+              userId: auth.userId,
+              projectId: selectedProject?.id || null,
+              contextLabel: 'editMessageWithBranching/lmstudio',
+            })
+            if (localMessageSynced) {
+              await saveLocalBase64AttachmentsForMessage({
+                messageId: newUserMessage.id,
+                attachments: attachmentsBase64,
+                storageMode,
+                contextLabel: 'editMessageWithBranching/lmstudio',
               })
-              .catch(err => console.error('[editMessageWithBranching][lmstudio] Failed to sync user message:', err))
+            }
 
             userMessage = newUserMessage
             dispatch(
@@ -5437,6 +5590,7 @@ export const editMessageWithBranching = createAsyncThunk<
 
             for (const toolCall of pendingToolCalls) {
               let content: string
+              let modelContent: any
               let isError = false
 
               try {
@@ -5464,11 +5618,13 @@ export const editMessageWithBranching = createAsyncThunk<
                     onHookAdditionalContext: value => appendHookAdditionalContext(pendingHookContextForNextTurn, value),
                   }
                 )
-                content = typeof result === 'string' ? result : JSON.stringify(result)
+                content = serializeToolResultContent(getToolResultPersistedContent(result))
+                modelContent = getToolResultModelContent(result)
                 successfulTool = true
               } catch (error) {
                 isError = true
                 content = error instanceof Error ? error.message : String(error)
+                modelContent = content
               }
 
               const toolResultBlock = {
@@ -5495,7 +5651,7 @@ export const editMessageWithBranching = createAsyncThunk<
                     conversationId,
                     lastMsg.id,
                     toolCall.id,
-                    stringifyToolResultContentForModel(content, toolCall?.name)
+                    stringifyToolResultContentForModel(modelContent ?? content, toolCall?.name)
                   )
                 )
             }
@@ -5794,6 +5950,7 @@ export const editMessageWithBranching = createAsyncThunk<
 
             for (const toolCall of pendingToolCalls) {
               let content: string
+              let modelContent: any
               let isError = false
               try {
                 const result = await executeToolWithPermissionCheck(
@@ -5820,11 +5977,13 @@ export const editMessageWithBranching = createAsyncThunk<
                     onHookAdditionalContext: value => appendHookAdditionalContext(pendingHookContextForNextTurn, value),
                   }
                 )
-                content = typeof result === 'string' ? result : JSON.stringify(result)
+                content = serializeToolResultContent(getToolResultPersistedContent(result))
+                modelContent = getToolResultModelContent(result)
                 successfulTool = true
               } catch (error) {
                 isError = true
                 content = error instanceof Error ? error.message : String(error)
+                modelContent = content
               }
 
               toolResultBlocks.push({
@@ -5850,7 +6009,7 @@ export const editMessageWithBranching = createAsyncThunk<
                     conversationId,
                     lastMsg.id,
                     toolCall.id,
-                    stringifyToolResultContentForModel(content, toolCall?.name)
+                    stringifyToolResultContentForModel(modelContent ?? content, toolCall?.name)
                   )
                 )
             }
@@ -6074,7 +6233,7 @@ export const editMessageWithBranching = createAsyncThunk<
                   }
 
                   // Save image attachments only after the user message exists in local SQLite.
-                  if (storageMode === 'local' && attachmentsBase64 && attachmentsBase64.length > 0) {
+                  if (attachmentsBase64 && attachmentsBase64.length > 0) {
                     const localMessageSynced = await persistMessageToLocalForAttachments({
                       message: chunk.message,
                       conversationId,
@@ -6100,7 +6259,9 @@ export const editMessageWithBranching = createAsyncThunk<
                     conversationId,
                     storageMode,
                     parentId: chunk.message.parent_id ?? activeParentId ?? null,
-                    content: chunk.message?.content_plain_text || chunk.message?.content || newContent,
+                    content: stripAttachedImagePathMetadata(
+                      chunk.message?.content_plain_text || chunk.message?.content || newContent
+                    ),
                     contextLabel: 'editMessageWithBranching',
                     skip: true,
                   })
@@ -6303,6 +6464,7 @@ export const editMessageWithBranching = createAsyncThunk<
 
             for (const toolCall of pendingToolCalls) {
               let content: string
+              let modelContent: any
               let isError = false
 
               try {
@@ -6332,7 +6494,8 @@ export const editMessageWithBranching = createAsyncThunk<
                   }
                 )
 
-                content = typeof result === 'string' ? result : JSON.stringify(result)
+                content = serializeToolResultContent(getToolResultPersistedContent(result))
+                modelContent = getToolResultModelContent(result)
                 if (isElectronEnvironment) {
                   successfulDesktopTool = true
                 } else if (toolCall?.name === 'browse_web') {
@@ -6341,6 +6504,7 @@ export const editMessageWithBranching = createAsyncThunk<
               } catch (error) {
                 isError = true
                 content = error instanceof Error ? error.message : String(error)
+                modelContent = content
               }
 
               const toolResultBlock = {
@@ -6351,6 +6515,14 @@ export const editMessageWithBranching = createAsyncThunk<
               }
 
               toolResultBlocks.push(toolResultBlock)
+              currentTurnHistory.push(
+                createToolResultMessage(
+                  conversationId,
+                  messageId,
+                  toolCall.id,
+                  stringifyToolResultContentForModel(modelContent ?? content, toolCall?.name)
+                )
+              )
 
               // Inform UI of tool result
               dispatch(
@@ -6518,7 +6690,15 @@ export const sendMessageToBranch = createAsyncThunk<
     const preSendState = getState() as RootState
     const preSendDrafts = getDraftsForTarget(preSendState, { kind: 'branch', messageId: parentId })
     const preSendAttachmentsBase64 = preSendDrafts.length
-      ? preSendDrafts.map(d => ({ dataUrl: d.dataUrl, name: d.name, type: d.type, size: d.size }))
+      ? preSendDrafts.map(d => ({
+        dataUrl: d.dataUrl,
+        name: d.name,
+        type: d.type,
+        size: d.size,
+        filePath: d.filePath,
+        attachmentId: d.attachmentId,
+        sha256: d.sha256,
+      }))
       : null
     const preSendSelectedFilesForChat = preSendState.ideContext.selectedFilesForChat || []
 
@@ -6573,7 +6753,7 @@ export const sendMessageToBranch = createAsyncThunk<
       const isBedrock = /^(bedrock|awsbedrock|aws-bedrock|amazonbedrock|amazon-bedrock)$/.test(providerSlug)
       const isZai =
         providerSlug === 'z.ai/glm' || providerSlug === 'zai/glm' || providerSlug === 'zai' || providerSlug === 'glm'
-      const attachmentsBase64 = preSendAttachmentsBase64
+      const attachmentsBase64 = await prepareLocalAttachmentsForModel(preSendAttachmentsBase64, 'image attachments')
 
       // Retrieve project and conversation context to send with branch message
       const selectedProject = selectSelectedProject(state)
@@ -6674,6 +6854,12 @@ export const sendMessageToBranch = createAsyncThunk<
           memoryContexts.projectName
         )
         pendingHookContextForNextTurn.length = 0
+        if (turnCount === 1) {
+          currentTurnContent = appendAttachedImagePathMetadata(
+            currentTurnContent,
+            (attachmentsBase64 || []).map(attachment => attachment.filePath)
+          )
+        }
         let streamReader: ReadableStreamDefaultReader<Uint8Array> | null = null
         let firstRead: ReadableStreamReadResult<Uint8Array> | null = null
 
@@ -6703,20 +6889,23 @@ export const sendMessageToBranch = createAsyncThunk<
             dispatch(chatSliceActions.messageBranchCreated({ newMessage: newUserMessage }))
             updateMessageCache(extra.queryClient, conversationId, newUserMessage)
 
-            // Sync to local SQLite
-            localApi
-              .post('/sync/message', {
-                ...newUserMessage,
-                conversation_id: conversationId,
-                children_ids: newUserMessage.children_ids,
-                content_blocks: newUserMessage.content_blocks,
-                tool_calls: newUserMessage.tool_calls,
-                user_id: auth.userId,
-                owner_id: auth.userId,
-                project_id: selectedProject?.id || null,
-                storage_mode: storageMode,
+            // Persist the message before linking its already-saved image attachment records.
+            const localMessageSynced = await persistMessageToLocalForAttachments({
+              message: newUserMessage,
+              conversationId,
+              storageMode,
+              userId: auth.userId,
+              projectId: selectedProject?.id || null,
+              contextLabel: 'sendMessageToBranch/lmstudio',
+            })
+            if (localMessageSynced) {
+              await saveLocalBase64AttachmentsForMessage({
+                messageId: newUserMessage.id,
+                attachments: attachmentsBase64,
+                storageMode,
+                contextLabel: 'sendMessageToBranch/lmstudio',
               })
-              .catch(err => console.error('[sendMessageToBranch][lmstudio] Failed to sync user message:', err))
+            }
 
             userMessage = newUserMessage
             dispatch(
@@ -6828,6 +7017,7 @@ export const sendMessageToBranch = createAsyncThunk<
 
             for (const toolCall of pendingToolCalls) {
               let content: string
+              let modelContent: any
               let isError = false
 
               try {
@@ -6855,11 +7045,13 @@ export const sendMessageToBranch = createAsyncThunk<
                     onHookAdditionalContext: value => appendHookAdditionalContext(pendingHookContextForNextTurn, value),
                   }
                 )
-                content = typeof result === 'string' ? result : JSON.stringify(result)
+                content = serializeToolResultContent(getToolResultPersistedContent(result))
+                modelContent = getToolResultModelContent(result)
                 successfulTool = true
               } catch (error) {
                 isError = true
                 content = error instanceof Error ? error.message : String(error)
+                modelContent = content
               }
 
               const toolResultBlock = {
@@ -6886,7 +7078,7 @@ export const sendMessageToBranch = createAsyncThunk<
                     conversationId,
                     lastMsg.id,
                     toolCall.id,
-                    stringifyToolResultContentForModel(content, toolCall?.name)
+                    stringifyToolResultContentForModel(modelContent ?? content, toolCall?.name)
                   )
                 )
             }
@@ -7165,6 +7357,7 @@ export const sendMessageToBranch = createAsyncThunk<
 
             for (const toolCall of pendingToolCalls) {
               let content: string
+              let modelContent: any
               let isError = false
               try {
                 const result = await executeToolWithPermissionCheck(
@@ -7191,11 +7384,13 @@ export const sendMessageToBranch = createAsyncThunk<
                     onHookAdditionalContext: value => appendHookAdditionalContext(pendingHookContextForNextTurn, value),
                   }
                 )
-                content = typeof result === 'string' ? result : JSON.stringify(result)
+                content = serializeToolResultContent(getToolResultPersistedContent(result))
+                modelContent = getToolResultModelContent(result)
                 successfulTool = true
               } catch (error) {
                 isError = true
                 content = error instanceof Error ? error.message : String(error)
+                modelContent = content
               }
 
               toolResultBlocks.push({
@@ -7221,7 +7416,7 @@ export const sendMessageToBranch = createAsyncThunk<
                     conversationId,
                     lastMsg.id,
                     toolCall.id,
-                    stringifyToolResultContentForModel(content, toolCall?.name)
+                    stringifyToolResultContentForModel(modelContent ?? content, toolCall?.name)
                   )
                 )
             }
@@ -7399,7 +7594,7 @@ export const sendMessageToBranch = createAsyncThunk<
                   }
 
                   // Save image attachments only after the user message exists in local SQLite.
-                  if (storageMode === 'local' && attachmentsBase64 && attachmentsBase64.length > 0) {
+                  if (attachmentsBase64 && attachmentsBase64.length > 0) {
                     const localMessageSynced = await persistMessageToLocalForAttachments({
                       message: chunk.message,
                       conversationId,
@@ -7423,7 +7618,9 @@ export const sendMessageToBranch = createAsyncThunk<
                     conversationId,
                     storageMode,
                     parentId: chunk.message.parent_id ?? currentParentId ?? null,
-                    content: chunk.message?.content_plain_text || chunk.message?.content || content,
+                    content: stripAttachedImagePathMetadata(
+                      chunk.message?.content_plain_text || chunk.message?.content || content
+                    ),
                     contextLabel: 'sendMessageToBranch',
                     skip: true,
                   })
@@ -7599,6 +7796,7 @@ export const sendMessageToBranch = createAsyncThunk<
 
             for (const toolCall of pendingToolCalls) {
               let content: string
+              let modelContent: any
               let isError = false
 
               try {
@@ -7628,7 +7826,8 @@ export const sendMessageToBranch = createAsyncThunk<
                   }
                 )
 
-                content = typeof result === 'string' ? result : JSON.stringify(result)
+                content = serializeToolResultContent(getToolResultPersistedContent(result))
+                modelContent = getToolResultModelContent(result)
                 if (isElectronEnvironment) {
                   successfulDesktopTool = true
                 } else if (toolCall?.name === 'browse_web') {
@@ -7637,6 +7836,7 @@ export const sendMessageToBranch = createAsyncThunk<
               } catch (error) {
                 isError = true
                 content = error instanceof Error ? error.message : String(error)
+                modelContent = content
               }
 
               const toolResultBlock = {
@@ -7647,6 +7847,14 @@ export const sendMessageToBranch = createAsyncThunk<
               }
 
               toolResultBlocks.push(toolResultBlock)
+              currentTurnHistory.push(
+                createToolResultMessage(
+                  conversationId,
+                  messageId,
+                  toolCall.id,
+                  stringifyToolResultContentForModel(modelContent ?? content, toolCall?.name)
+                )
+              )
 
               // Inform UI of tool result
               dispatch(

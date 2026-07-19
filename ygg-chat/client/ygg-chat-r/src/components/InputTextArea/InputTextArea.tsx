@@ -15,6 +15,7 @@ import { type DirectoryFileEntry, useDirectoryFileSearch, useDirectoryFiles } fr
 import type { RootState } from '../../store/store'
 import { getThemeModeColor, useCustomChatTheme, useHtmlDarkMode } from '../ThemeManager/themeConfig'
 import { readLocalMentionFile } from '../../utils/readLocalMentionFile'
+import { localApi } from '../../utils/api'
 import { rankFileMatches } from '../../../shared/fileMatchRanking'
 import { CHAT_NORMAL_TEXT_SIZE_CLASS, getChatFontSizeOffsetStyle } from '../ChatMessage/chatMessageShared'
 
@@ -478,7 +479,27 @@ export const InputTextArea: React.FC<TextAreaProps> = ({
       }))
     )
       .then(drafts => {
-        dispatch(chatSliceActions.imageDraftsAppended({ drafts, target: imageDraftTarget }))
+        void (async () => {
+          try {
+            const result = await localApi.post<{ attachments?: Array<{ id: string; file_path: string; sha256: string }> }>(
+              '/local/attachments/prepare-base64',
+              { attachments: drafts }
+            )
+            const saved = Array.isArray(result?.attachments) ? result.attachments : []
+            if (saved.length !== drafts.length) throw new Error('Incomplete attachment persistence result')
+            dispatch(chatSliceActions.imageDraftsAppended({
+              drafts: drafts.map((draft, index) => ({
+                ...draft,
+                filePath: saved[index].file_path,
+                attachmentId: saved[index].id,
+                sha256: saved[index].sha256,
+              })),
+              target: imageDraftTarget,
+            }))
+          } catch (err) {
+            console.error('Failed to persist image attachments locally', err)
+          }
+        })()
       })
       .catch(err => console.error('Failed to read dropped images', err))
   }
@@ -515,7 +536,27 @@ export const InputTextArea: React.FC<TextAreaProps> = ({
         }>
 
         if (drafts.length > 0) {
-          dispatch(chatSliceActions.imageDraftsAppended({ drafts, target: imageDraftTarget }))
+          void (async () => {
+            try {
+              const result = await localApi.post<{ attachments?: Array<{ id: string; file_path: string; sha256: string }> }>(
+                '/local/attachments/prepare-base64',
+                { attachments: drafts }
+              )
+              const saved = Array.isArray(result?.attachments) ? result.attachments : []
+              if (saved.length !== drafts.length) throw new Error('Incomplete attachment persistence result')
+              dispatch(chatSliceActions.imageDraftsAppended({
+                drafts: drafts.map((draft, index) => ({
+                  ...draft,
+                  filePath: saved[index].file_path,
+                  attachmentId: saved[index].id,
+                  sha256: saved[index].sha256,
+                })),
+                target: imageDraftTarget,
+              }))
+            } catch (err) {
+              console.error('Failed to persist image attachments locally', err)
+            }
+          })()
         }
       })
       .catch(err => console.error('Failed to read pasted images', err))

@@ -1,15 +1,23 @@
 # Agent Context Index
 
-Last reviewed: 2026-06-16
+Last reviewed: 2026-07-11
 
 This directory contains subsystem-specific context files for agents working in `ygg-chat`.
+
+## Supported Runtime Scope
+
+- This repository targets the **local Electron application only**.
+- Do not preserve, add, test, or plan web-mode behavior in this repository unless the user explicitly requests it.
+- Do not add web fallbacks or branch new implementation logic on `VITE_ENVIRONMENT === 'web'`; web support lives in a separate repository.
+- Treat Electron main/preload, the renderer, the local Express server, local SQLite persistence, and local/headless tool execution as the supported runtime surface.
+- Existing web-mode code may remain for now when unrelated, but it is not a compatibility constraint for new changes and should not drive architecture or validation decisions.
 
 Start here, then open the smallest relevant subsystem context file before editing code. These docs are intentionally operational: they point to entry files, runtime constraints, data flow, invariants, and validation commands.
 
 ## Core
 
 - `agent_project_overview.md` - repository layout, workspace scripts, runtime map, and how to use the context set.
-- `agent_runtime_modes.md` - web, local, Electron, and headless runtime behaviour.
+- `agent_runtime_modes.md` - legacy runtime map; for this repository, apply the local-Electron-only scope above.
 
 ## Chat
 
@@ -25,6 +33,7 @@ Start here, then open the smallest relevant subsystem context file before editin
 - `agent_tool_registry.md` - built-in, custom, and MCP tool definitions visible to model/runtime.
 - `agent_local_tools_runtime.md` - Electron tool implementations, execution routes, utility host, and tests.
 - `agent_custom_tools.md` - custom tool loading, definition format, RPC/UI tools, managed paths.
+- `agent_mcp.md` - MCP transports, configuration, remote OAuth, credential persistence, routes, and validation.
 
 ## Agent Runtime
 
@@ -48,7 +57,7 @@ This MVP set deliberately covers the highest-risk agent-editing surfaces first. 
 
 - `agent_context_compaction_memory.md`
 
-Potential future context topics that do not yet have dedicated files in this checkout include branching conversations, projects/conversations/messages, providers/models, auth/provider tokens, MCP, subagents orchestration, local storage sync, frontend app shell, settings/preferences, theme UI, IDE/LSP context, and workspace mutations.
+Potential future context topics that do not yet have dedicated files in this checkout include branching conversations, projects/conversations/messages, providers/models, auth/provider tokens, subagents orchestration, local storage sync, frontend app shell, settings/preferences, theme UI, IDE/LSP context, and workspace mutations.
 
 ## Maintenance Rules
 

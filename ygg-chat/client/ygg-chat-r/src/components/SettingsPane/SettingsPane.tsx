@@ -14,6 +14,7 @@ import {
   Maximize2,
   Palette,
   Paperclip,
+  Pencil,
   Play,
   Plus,
   RefreshCw,
@@ -290,7 +291,10 @@ export const SettingsPane: React.FC<SettingsPaneProps> = ({ open, onClose }) => 
       headers?: Record<string, string>
       oauth?: {
         tokenEndpointAuthMethod?: 'client_secret_post' | 'none'
+        clientId?: string
+        scopes?: string[]
         hasClientId?: boolean
+        hasClientSecret?: boolean
         hasAccessToken?: boolean
         hasRefreshToken?: boolean
         expiresAt?: number
@@ -322,6 +326,20 @@ export const SettingsPane: React.FC<SettingsPaneProps> = ({ open, onClose }) => 
     'client_secret_post'
   )
   const [mcpActionStatus, setMcpActionStatus] = useState<{ type: 'success' | 'error'; message: string } | null>(null)
+  const [editingMcpServerName, setEditingMcpServerName] = useState<string | null>(null)
+  const [mcpEditSaving, setMcpEditSaving] = useState(false)
+  const [editServerTransport, setEditServerTransport] = useState<'stdio' | 'http'>('stdio')
+  const [editServerCommand, setEditServerCommand] = useState('')
+  const [editServerArgs, setEditServerArgs] = useState('')
+  const [editServerEnvText, setEditServerEnvText] = useState('')
+  const [editServerStdioFraming, setEditServerStdioFraming] = useState<'content-length' | 'newline-json'>('content-length')
+  const [editServerUrl, setEditServerUrl] = useState('')
+  const [editServerHeadersText, setEditServerHeadersText] = useState('')
+  const [editServerOauthClientId, setEditServerOauthClientId] = useState('')
+  const [editServerOauthClientSecret, setEditServerOauthClientSecret] = useState('')
+  const [editServerOauthAccessToken, setEditServerOauthAccessToken] = useState('')
+  const [editServerOauthScopes, setEditServerOauthScopes] = useState('')
+  const [editServerOauthTokenAuthMethod, setEditServerOauthTokenAuthMethod] = useState<'client_secret_post' | 'none'>('client_secret_post')
 
   // Font size offset state (persisted to localStorage)
   const [fontSizeOffset, setFontSizeOffset] = useState<number>(() => {
@@ -967,6 +985,122 @@ export const SettingsPane: React.FC<SettingsPaneProps> = ({ open, onClose }) => 
     newServerOauthClientSecret,
     newServerOauthScopes,
     newServerOauthTokenAuthMethod,
+    fetchMcpServers,
+    dispatch,
+  ])
+
+  const beginEditMcpServer = useCallback((server: (typeof mcpServers)[number]) => {
+    const transport = server.transport || server.type || (server.url ? 'http' : 'stdio')
+    setEditingMcpServerName(server.name)
+    setEditServerTransport(transport)
+    setEditServerCommand(server.command || '')
+    setEditServerArgs((server.args || []).join(' '))
+    setEditServerEnvText(server.env ? JSON.stringify(server.env, null, 2) : '')
+    setEditServerStdioFraming(server.stdioFraming || 'content-length')
+    setEditServerUrl(server.url || '')
+    // Header values are redacted by the API. Blank means preserve existing headers.
+    setEditServerHeadersText('')
+    setEditServerOauthClientId(server.oauth?.clientId || '')
+    setEditServerOauthClientSecret('')
+    setEditServerOauthAccessToken('')
+    setEditServerOauthScopes((server.oauth?.scopes || []).join(' '))
+    setEditServerOauthTokenAuthMethod(server.oauth?.tokenEndpointAuthMethod || 'client_secret_post')
+    setMcpActionStatus(null)
+  }, [])
+
+  const handleUpdateMcpServer = useCallback(async () => {
+    if (!editingMcpServerName) return
+
+    let parsedEnv: Record<string, string> | undefined
+    let parsedHeaders: Record<string, string> | undefined
+    try {
+      if (editServerEnvText.trim()) {
+        const value = JSON.parse(editServerEnvText)
+        if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('Environment variables')
+        parsedEnv = Object.fromEntries(Object.entries(value).map(([key, item]) => [key, String(item)]))
+      }
+      if (editServerHeadersText.trim()) {
+        const value = JSON.parse(editServerHeadersText)
+        if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('Headers')
+        parsedHeaders = Object.fromEntries(Object.entries(value).map(([key, item]) => [key, String(item)]))
+      }
+    } catch (error) {
+      const field = error instanceof Error && error.message === 'Headers' ? 'Headers' : 'Environment variables'
+      setMcpActionStatus({ type: 'error', message: `${field} must be a valid JSON object` })
+      return
+    }
+
+    const oauthScopes = editServerOauthScopes.split(/[,\s]+/).map(scope => scope.trim()).filter(Boolean)
+    const oauth = editServerTransport === 'http'
+      ? {
+          clientId: editServerOauthClientId.trim() || undefined,
+          clientSecret: editServerOauthClientSecret.trim() || undefined,
+          accessToken: editServerOauthAccessToken.trim() || undefined,
+          scopes: oauthScopes.length > 0 ? oauthScopes : undefined,
+          tokenEndpointAuthMethod: editServerOauthTokenAuthMethod,
+        }
+      : undefined
+
+    if (editServerTransport === 'stdio' && !editServerCommand.trim()) {
+      setMcpActionStatus({ type: 'error', message: 'Command is required for stdio MCP servers' })
+      return
+    }
+    if (editServerTransport === 'http' && !editServerUrl.trim()) {
+      setMcpActionStatus({ type: 'error', message: 'URL is required for remote MCP servers' })
+      return
+    }
+
+    setMcpEditSaving(true)
+    try {
+      const payload = editServerTransport === 'http'
+        ? {
+            transport: 'http' as const,
+            type: 'http' as const,
+            url: editServerUrl.trim(),
+            ...(parsedHeaders ? { headers: parsedHeaders } : {}),
+            oauth,
+          }
+        : {
+            transport: 'stdio' as const,
+            type: 'stdio' as const,
+            command: editServerCommand.trim(),
+            args: editServerArgs.trim().split(/\s+/).filter(Boolean),
+            env: parsedEnv || {},
+            stdioFraming: editServerStdioFraming,
+          }
+      const data = await localApi.put<{ success?: boolean; error?: string }>(
+        `/mcp/servers/${encodeURIComponent(editingMcpServerName)}`,
+        payload
+      )
+      if (!data.success) {
+        setMcpActionStatus({ type: 'error', message: data.error || 'Failed to update server' })
+        return
+      }
+      setEditingMcpServerName(null)
+      setMcpActionStatus({ type: 'success', message: `Server "${editingMcpServerName}" updated` })
+      await fetchMcpServers()
+      await localApi.post('/mcp/refresh-tools')
+      dispatch(fetchMcpTools())
+      setTimeout(() => setMcpActionStatus(null), 3000)
+    } catch {
+      setMcpActionStatus({ type: 'error', message: 'Failed to update server' })
+    } finally {
+      setMcpEditSaving(false)
+    }
+  }, [
+    editingMcpServerName,
+    editServerTransport,
+    editServerCommand,
+    editServerArgs,
+    editServerEnvText,
+    editServerStdioFraming,
+    editServerUrl,
+    editServerHeadersText,
+    editServerOauthClientId,
+    editServerOauthClientSecret,
+    editServerOauthAccessToken,
+    editServerOauthScopes,
+    editServerOauthTokenAuthMethod,
     fetchMcpServers,
     dispatch,
   ])
@@ -3101,7 +3235,7 @@ ${block}`
                         {mcpServers.map(server => (
                           <div
                             key={server.name}
-                            className='flex items-center justify-between gap-3 rounded-2xl bg-neutral-50/70 p-3 dark:bg-neutral-800/50'
+                            className='flex flex-wrap items-center justify-between gap-3 rounded-2xl bg-neutral-50/70 p-3 dark:bg-neutral-800/50'
                           >
                             <div className='flex-1 min-w-0'>
                               <div className='flex items-center gap-2'>
@@ -3178,6 +3312,14 @@ ${block}`
                               </button>
                               <button
                                 type='button'
+                                onClick={() => beginEditMcpServer(server)}
+                                className={iconButtonClass}
+                                title='Edit server details and authentication'
+                              >
+                                <Pencil {...lucideIconProps} />
+                              </button>
+                              <button
+                                type='button'
                                 onClick={() => handleRemoveMcpServer(server.name)}
                                 className={`${iconButtonClass} hover:text-red-500 dark:hover:text-red-300`}
                                 title='Remove server'
@@ -3185,6 +3327,51 @@ ${block}`
                                 <Trash2 {...lucideIconProps} />
                               </button>
                             </div>
+                            {editingMcpServerName === server.name && (
+                              <div className='w-full space-y-3 border-t border-neutral-200 pt-3 dark:border-neutral-700'>
+                                {editServerTransport === 'stdio' ? (
+                                  <>
+                                    <input value={editServerCommand} onChange={e => setEditServerCommand(e.target.value)} placeholder='Command' className={inputSurfaceClass} />
+                                    <input value={editServerArgs} onChange={e => setEditServerArgs(e.target.value)} placeholder='Arguments (space-separated)' className={inputSurfaceClass} />
+                                    <textarea value={editServerEnvText} onChange={e => setEditServerEnvText(e.target.value)} placeholder='Environment variables (JSON)' rows={3} className={inputSurfaceClass} />
+                                    <select value={editServerStdioFraming} onChange={e => setEditServerStdioFraming(e.target.value as 'content-length' | 'newline-json')} className={inputSurfaceClass}>
+                                      <option value='content-length'>content-length (standard MCP)</option>
+                                      <option value='newline-json'>newline-json</option>
+                                    </select>
+                                  </>
+                                ) : (
+                                  <>
+                                    <div className='space-y-1'>
+                                      <label className='text-xs font-medium text-neutral-600 dark:text-neutral-400'>Remote URL</label>
+                                      <input value={editServerUrl} onChange={e => setEditServerUrl(e.target.value)} className={inputSurfaceClass} />
+                                    </div>
+                                    <div className='space-y-1'>
+                                      <label className='text-xs font-medium text-neutral-600 dark:text-neutral-400'>Replace Headers (JSON, optional)</label>
+                                      <textarea value={editServerHeadersText} onChange={e => setEditServerHeadersText(e.target.value)} placeholder='Leave blank to preserve existing headers, or enter {"Authorization":"Bearer new-token"}' rows={3} className={inputSurfaceClass} />
+                                      <p className='text-[11px] text-neutral-500 dark:text-neutral-400'>Existing values are hidden. Enter JSON only when replacing all static headers.</p>
+                                    </div>
+                                    <input value={editServerOauthClientId} onChange={e => setEditServerOauthClientId(e.target.value)} placeholder='OAuth client ID (optional)' className={inputSurfaceClass} />
+                                    <input type='password' value={editServerOauthClientSecret} onChange={e => setEditServerOauthClientSecret(e.target.value)} placeholder={server.oauth?.hasClientSecret ? 'New client secret (blank preserves existing)' : 'OAuth client secret (optional)'} className={inputSurfaceClass} />
+                                    <div className='space-y-1'>
+                                      <label className='text-xs font-medium text-neutral-600 dark:text-neutral-400'>New OAuth Bearer Access Token (optional)</label>
+                                      <input type='password' value={editServerOauthAccessToken} onChange={e => setEditServerOauthAccessToken(e.target.value)} placeholder={server.oauth?.hasAccessToken ? 'Blank preserves current token' : 'Paste access token'} className={inputSurfaceClass} />
+                                      <p className='text-[11px] text-neutral-500 dark:text-neutral-400'>Stored securely. Replacing it clears the old expiry so it can be used immediately.</p>
+                                    </div>
+                                    <input value={editServerOauthScopes} onChange={e => setEditServerOauthScopes(e.target.value)} placeholder='OAuth scopes (space or comma separated)' className={inputSurfaceClass} />
+                                    <select value={editServerOauthTokenAuthMethod} onChange={e => setEditServerOauthTokenAuthMethod(e.target.value as 'client_secret_post' | 'none')} className={inputSurfaceClass}>
+                                      <option value='client_secret_post'>client_secret_post</option>
+                                      <option value='none'>none (public client)</option>
+                                    </select>
+                                  </>
+                                )}
+                                <div className='flex items-center gap-2'>
+                                  <button type='button' onClick={handleUpdateMcpServer} disabled={mcpEditSaving} className='rounded-2xl bg-blue-500 px-3 py-1.5 text-sm text-white transition-colors hover:bg-blue-600 disabled:opacity-50'>
+                                    {mcpEditSaving ? 'Saving…' : 'Save Changes'}
+                                  </button>
+                                  <button type='button' onClick={() => setEditingMcpServerName(null)} disabled={mcpEditSaving} className={smallPillButtonClass}>Cancel</button>
+                                </div>
+                              </div>
+                            )}
                           </div>
                         ))}
                       </div>

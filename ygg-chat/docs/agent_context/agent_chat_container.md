@@ -283,3 +283,7 @@ When adding new persistent UI settings, prefer helper modules in `src/helpers/*S
 - `agent_message_storage_shape.md`
 - `agent_local_tools_runtime.md`
 - `agent_hooks_system.md`
+
+## OpenAI Context Meter
+
+`Chat.tsx` resolves context from the selected branch after its latest auto-compaction marker. For OpenAI only, it prefers the latest assistant `context_usage` snapshot while keeping the local `tokenx` estimate as a conservative floor and for pending input. For every other provider, the context bar and 85% auto-compaction gate continue using the existing estimate unchanged. Never select usage from a sibling branch or sum usage across OpenAI tool turns.

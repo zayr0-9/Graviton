@@ -122,12 +122,26 @@ function parseJsonArray(value: any): any[] {
   return []
 }
 
+function getToolResultPersistedContent(result: any): any {
+  if (!result || typeof result !== 'object' || Array.isArray(result)) return result
+  if (Object.prototype.hasOwnProperty.call(result, 'persistedContent')) return result.persistedContent
+  if (Object.prototype.hasOwnProperty.call(result, 'displayContent')) return result.displayContent
+  return result
+}
+
+function getToolResultModelContent(result: any): any {
+  if (!result || typeof result !== 'object' || Array.isArray(result)) return getToolResultPersistedContent(result)
+  if (Object.prototype.hasOwnProperty.call(result, 'modelContent')) return result.modelContent
+  return getToolResultPersistedContent(result)
+}
+
 function toToolResultContent(result: any): string {
-  if (typeof result === 'string') return result
+  const persistedContent = getToolResultPersistedContent(result)
+  if (typeof persistedContent === 'string') return persistedContent
   try {
-    return JSON.stringify(result)
+    return JSON.stringify(persistedContent)
   } catch {
-    return String(result)
+    return String(persistedContent)
   }
 }
 
@@ -304,6 +318,9 @@ export class ToolLoopService {
         throw error
       }
 
+      if (output.contextUsage) {
+        emit({ type: 'context_usage', usage: output.contextUsage })
+      }
       if (output.reasoning && !streamedReasoningDuringTurn) {
         emit({ type: 'chunk', part: 'reasoning', delta: output.reasoning })
       }
@@ -328,6 +345,7 @@ export class ToolLoopService {
         modelName: input.modelName,
         toolCalls: assistantToolCalls,
         contentBlocks: assistantContentBlocks,
+        contextUsage: output.contextUsage,
       })
 
       lastAssistantMessage = assistantMessage
@@ -377,6 +395,7 @@ export class ToolLoopService {
         })
 
         let toolResultContent = ''
+        let modelToolResultContent: any = ''
         let toolError = false
         const startedAt = Date.now()
 
@@ -394,6 +413,7 @@ export class ToolLoopService {
           })
 
           toolResultContent = toToolResultContent(result)
+          modelToolResultContent = getToolResultModelContent(result)
           toolError = false
 
           emit({
@@ -406,6 +426,7 @@ export class ToolLoopService {
         } catch (error) {
           toolError = true
           toolResultContent = error instanceof Error ? error.message : String(error)
+          modelToolResultContent = toolResultContent
 
           emit({
             type: 'tool_execution',
@@ -439,7 +460,7 @@ export class ToolLoopService {
         history.push({
           role: 'tool',
           tool_call_id: toolCall.id,
-          content: toModelToolResultContent(toolResultContent, toolCall.name),
+          content: toModelToolResultContent(modelToolResultContent, toolCall.name),
         })
       }
 

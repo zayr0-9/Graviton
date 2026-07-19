@@ -41,6 +41,8 @@ Use this when changing:
 - Mutating operations should be explicit and auditable.
 - Shell tools must avoid hanging interactive commands and should capture bounded output.
 - Tool result shapes should remain stable for ChatMessage/tool rendering.
+- Large/model-only tool payloads use split channels: `displayContent`/`persistedContent` stay compact, while ephemeral `modelContent` is used only for the immediate provider continuation. Never persist `modelContent` in chat history, tool-job rows, hooks, or logs.
+- `view_image` returns compact path/MIME/size metadata for display and persistence, with exactly one typed `input_image` data URL in ephemeral `modelContent`.
 - Background jobs need status transitions: pending -> running -> completed/failed/cancelled.
 
 ## Gotchas

@@ -271,3 +271,7 @@ Renderer-side fallback `buildTreeFromMessages()` in `chatActions.ts` can build a
 - `agent_chat_streaming_state.md`
 - `agent_electron_main_local_server.md`
 - `agent_headless_server.md`
+
+## Provider Context Metadata
+
+OpenAI assistant messages may include nullable `context_usage`, a normalized provider-reported token snapshot. The same snapshot is also stored as an `openai_context_usage` content block for compatibility with existing SQLite message persistence. Consumers must scope it to the selected parent/child branch and ignore snapshots before the latest `__auto_compaction_summary__` marker. Non-OpenAI messages continue to use estimate-only context accounting.

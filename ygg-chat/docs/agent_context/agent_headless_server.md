@@ -50,6 +50,7 @@ Use this when changing:
 - SSE event schema changes need matching mobile/test harness updates.
 - Persistence repos should own DB details; routes/services should not scatter SQL logic.
 - Tool loop behaviour should remain compatible with desktop stream/tool semantics where possible.
+- For split-channel tool results, persist and stream only compact `persistedContent`; send ephemeral `modelContent` only in continuation history.
 
 ## Testing and Validation
 
@@ -65,3 +66,9 @@ Manual harness: `http://localhost:<local-server-port>/headless/openai-test` when
 - `agent_runtime_modes.md`
 - `agent_chat_pipeline.md`
 - `agent_local_tools_runtime.md`
+
+## OpenAI Context Usage
+
+- `OpenAiChatgptProvider` normalizes Codex usage and `ToolLoopService` emits a `context_usage` SSE event for every completed OpenAI provider turn.
+- Usage snapshots replace one another across full-replay tool continuations; they are not cumulative.
+- Assistant messages carry the snapshot in `context_usage` and in a structured content block so local persistence and renderer reloads retain it without changing other-provider behavior.

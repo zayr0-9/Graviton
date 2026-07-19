@@ -28,6 +28,8 @@ describe('isManagedToolPath', () => {
     expect(isManagedToolPath(path.join(userData, '.ygg', 'custom-themes', 'cotton-candy-dream.json'), false)).toBe(true)
     expect(isManagedToolPath(path.join(userData, 'custom-tools', 'my-tool', 'definition.json'), false)).toBe(true)
     expect(isManagedToolPath(path.join(userData, 'generated_images', 'abc123.png'), false)).toBe(true)
+    expect(isManagedToolPath(path.join(userData, 'user_images', 'abc123.png'), false)).toBe(true)
+    expect(isManagedToolPath(path.join(userData, 'local-sync.db'), false)).toBe(false)
     expect(isManagedToolPath(path.join(userData, 'outside.txt'), false)).toBe(false)
   })
 

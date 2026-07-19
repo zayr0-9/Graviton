@@ -39,11 +39,13 @@ import {
 } from '../helpers/chatReasoningSettingsStorage'
 import {
   loadAutoCompactionEnabled,
+  loadHeimdallMessagePreviewHoverPaddingEnabled,
   loadHeimdallNotePreviewHoverPaddingEnabled,
   loadShowAddedFilesPills,
   loadShowTokenUsageBar,
   loadShowTokenUsageHoverDetails,
   saveAutoCompactionEnabled,
+  saveHeimdallMessagePreviewHoverPaddingEnabled,
   saveHeimdallNotePreviewHoverPaddingEnabled,
   saveShowAddedFilesPills,
   saveShowTokenUsageBar,
@@ -430,6 +432,9 @@ const Settings: React.FC = () => {
   const [showAddedFilesPills, setShowAddedFilesPills] = useState<boolean>(() => loadShowAddedFilesPills())
   const [heimdallNotePreviewHoverPaddingEnabled, setHeimdallNotePreviewHoverPaddingEnabled] = useState<boolean>(() =>
     loadHeimdallNotePreviewHoverPaddingEnabled()
+  )
+  const [heimdallMessagePreviewHoverPaddingEnabled, setHeimdallMessagePreviewHoverPaddingEnabled] = useState<boolean>(() =>
+    loadHeimdallMessagePreviewHoverPaddingEnabled()
   )
   const [browserSettings, setBrowserSettings] = useState<BrowserSettings>(() => loadBrowserSettings())
   const [subagentSettings, setSubagentSettings] = useState<SubagentToolSettings>(() => loadSubagentToolSettings())
@@ -1851,6 +1856,18 @@ const Settings: React.FC = () => {
     })
   }
 
+  const handleHeimdallMessagePreviewHoverPaddingToggle = () => {
+    const nextValue = !heimdallMessagePreviewHoverPaddingEnabled
+    saveHeimdallMessagePreviewHoverPaddingEnabled(nextValue)
+    setHeimdallMessagePreviewHoverPaddingEnabled(nextValue)
+    showStatus({
+      type: 'success',
+      text: nextValue
+        ? 'Heimdall message preview hover padding enabled.'
+        : 'Heimdall message preview hover padding disabled.',
+    })
+  }
+
   const handleBrowserGuestDevToolsToggle = () => {
     const saved = saveBrowserSettings({
       ...browserSettings,
@@ -2541,6 +2558,24 @@ const Settings: React.FC = () => {
               >
                 <span
                   className={settingsToggleKnobClass(heimdallNotePreviewHoverPaddingEnabled)}
+                />
+              </button>
+            </div>
+
+            <div className='flex items-center justify-between pt-2 pt-2'>
+              <div>
+                <p className='text-base font-medium text-stone-900 dark:text-stone-100'>Heimdall Message Hover Padding</p>
+                <p className='text-sm text-stone-500 dark:text-stone-400'>
+                  Add an invisible hover buffer around message previews so you can move from a message node to its preview
+                  without it closing.
+                </p>
+              </div>
+              <button
+                onClick={handleHeimdallMessagePreviewHoverPaddingToggle}
+                className={settingsToggleClass(heimdallMessagePreviewHoverPaddingEnabled)}
+              >
+                <span
+                  className={settingsToggleKnobClass(heimdallMessagePreviewHoverPaddingEnabled)}
                 />
               </button>
             </div>

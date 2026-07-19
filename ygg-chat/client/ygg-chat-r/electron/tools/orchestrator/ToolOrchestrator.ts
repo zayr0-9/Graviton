@@ -624,8 +624,22 @@ export class ToolOrchestrator {
     }
   }
 
+  private serializeResultForPersistence(result: any): string | null {
+    if (!result) return null
+    const compactResult =
+      result && typeof result === 'object' && !Array.isArray(result)
+        ? Object.prototype.hasOwnProperty.call(result, 'persistedContent')
+          ? result.persistedContent
+          : Object.prototype.hasOwnProperty.call(result, 'displayContent')
+            ? result.displayContent
+            : result
+        : result
+    return JSON.stringify(compactResult)
+  }
+
   /**
-   * Persist job to database
+   * Persist job to database. Model-only payloads stay in memory only until the
+   * execute-and-wait caller consumes them.
    */
   private persistJob(job: Job): void {
     if (!this.db || !this.config.persistJobs) return
@@ -639,7 +653,7 @@ export class ToolOrchestrator {
           job.status,
           job.startedAt,
           job.completedAt,
-          job.result ? JSON.stringify(job.result) : null,
+          this.serializeResultForPersistence(job.result),
           job.error,
           job.progress,
           job.progressMessage,
@@ -666,7 +680,7 @@ export class ToolOrchestrator {
           job.createdAt,
           job.startedAt,
           job.completedAt,
-          job.result ? JSON.stringify(job.result) : null,
+          this.serializeResultForPersistence(job.result),
           job.error,
           job.progress,
           job.progressMessage

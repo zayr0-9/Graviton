@@ -281,8 +281,25 @@ export interface ToolExecutionOptions {
   streamId?: string | null
 }
 
+export interface ToolModelImageContent {
+  type: 'input_image'
+  image_url: string
+  detail?: 'high' | 'original'
+}
+
+/**
+ * Optional split-channel result fields for tools with large/model-only payloads.
+ * displayContent and persistedContent must stay compact. modelContent is ephemeral
+ * provider input and must never be written to chat history, hooks, or logs.
+ */
+export interface SplitToolResultContent {
+  displayContent?: unknown
+  persistedContent?: unknown
+  modelContent?: string | ToolModelImageContent[]
+}
+
 // Tool result interface
-export interface ToolResult {
+export interface ToolResult extends SplitToolResultContent {
   success: boolean
   error?: string
   [key: string]: any

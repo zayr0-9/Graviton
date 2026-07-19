@@ -4,6 +4,7 @@
 import { Express } from 'express'
 import { toolOrchestrator } from '../tools/orchestrator/index.js'
 import { mcpManager, McpServerConfig, type McpOAuthConfig } from './mcpManager.js'
+import { toMcpExecutionResult } from './mcpToolResult.js'
 
 // Helper function to refresh MCP tools with the orchestrator
 async function refreshMcpToolsWithOrchestrator(): Promise<number> {
@@ -18,16 +19,7 @@ async function refreshMcpToolsWithOrchestrator(): Promise<number> {
     toolOrchestrator.registerTool(qualifiedName, async (args, _options) => {
       try {
         const mcpResult = await mcpManager.callTool(qualifiedName, args)
-        const textContent = mcpResult.content
-          .filter(c => c.type === 'text')
-          .map(c => c.text)
-          .join('\n')
-        return {
-          success: !mcpResult.isError,
-          content: mcpResult.content,
-          text: textContent,
-          error: mcpResult.isError ? textContent : undefined,
-        }
+        return toMcpExecutionResult(mcpResult)
       } catch (error) {
         console.error(`[McpRoutes] MCP tool execution error (${qualifiedName}):`, error)
         return {
@@ -78,6 +70,15 @@ function parseOAuthConfig(raw: unknown): McpOAuthConfig | undefined {
     scopes = scopesRaw.map(scope => scope.trim()).filter(Boolean)
   }
 
+  const clientModeRaw = source.clientMode
+  let clientMode: 'configured' | 'dynamic' | undefined
+  if (clientModeRaw !== undefined && clientModeRaw !== null && clientModeRaw !== '') {
+    if (clientModeRaw !== 'configured' && clientModeRaw !== 'dynamic') {
+      throw new Error('"oauth.clientMode" must be "configured" or "dynamic"')
+    }
+    clientMode = clientModeRaw
+  }
+
   const tokenEndpointAuthMethodRaw = source.tokenEndpointAuthMethod
   let tokenEndpointAuthMethod: 'client_secret_post' | 'none' | undefined
   if (tokenEndpointAuthMethodRaw !== undefined && tokenEndpointAuthMethodRaw !== null && tokenEndpointAuthMethodRaw !== '') {
@@ -98,6 +99,8 @@ function parseOAuthConfig(raw: unknown): McpOAuthConfig | undefined {
     clientId: asString('clientId'),
     clientSecret: asString('clientSecret'),
     tokenEndpointAuthMethod,
+    clientMode,
+    registeredRedirectUri: asString('registeredRedirectUri'),
     accessToken: asString('accessToken'),
     refreshToken: asString('refreshToken'),
     expiresAt: asNumber('expiresAt'),
@@ -113,7 +116,10 @@ function sanitizeOAuthForResponse(oauth: McpOAuthConfig | undefined): Record<str
     tokenEndpoint: oauth.tokenEndpoint,
     registrationEndpoint: oauth.registrationEndpoint,
     scopes: oauth.scopes,
+    clientId: oauth.clientId,
     tokenEndpointAuthMethod: oauth.tokenEndpointAuthMethod,
+    clientMode: oauth.clientMode,
+    registeredRedirectUri: oauth.registeredRedirectUri,
     hasClientId: Boolean(oauth.clientId),
     hasClientSecret: Boolean(oauth.clientSecret),
     hasAccessToken: Boolean(oauth.accessToken),

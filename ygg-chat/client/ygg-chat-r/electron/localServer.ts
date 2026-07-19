@@ -32,6 +32,7 @@ import { registerLocalOperationsRoutes } from './localOperations.js'
 import { localAnalyticsWorkerClient } from './localAnalyticsWorkerClient.js'
 import { createToolsStatements, initializeToolsSchema, pruneOldTools, registerToolsRoutes } from './localToolsRoutes.js'
 import { mcpManager } from './mcp/mcpManager.js'
+import { toMcpExecutionResult } from './mcp/mcpToolResult.js'
 import { registerMcpRoutes } from './mcp/mcpRoutes.js'
 import { registerProxyRoutes } from './proxyGateway.js'
 import { skillRegistry } from './skills/skillLoader.js'
@@ -4660,6 +4661,91 @@ function setupServer() {
     }
   })
 
+  // Persist image drafts before their user message exists. This gives the model a durable
+  // path it can pass to view_image during the first generation turn.
+  app.post('/api/local/attachments/prepare-base64', (req, res) => {
+    try {
+      const { attachments } = req.body as {
+        attachments: Array<{ dataUrl: string; name?: string; type?: string; size?: number }>
+      }
+      if (!Array.isArray(attachments) || attachments.length === 0) {
+        res.status(400).json({ error: 'attachments array required' })
+        return
+      }
+      if (!db || !statements || !currentDbPath) {
+        res.status(500).json({ error: 'Database not initialized' })
+        return
+      }
+
+      const imagesDir = path.join(path.dirname(currentDbPath), 'user_images')
+      fs.mkdirSync(imagesDir, { recursive: true })
+      const savedAttachments: Array<{ id: string; file_path: string; sha256: string; mime_type: string; size_bytes: number }> = []
+
+      for (const attachment of attachments) {
+        const matches = typeof attachment.dataUrl === 'string' && attachment.dataUrl.match(/^data:([^;]+);base64,(.+)$/)
+        if (!matches || !matches[1].startsWith('image/')) {
+          res.status(400).json({ error: 'attachments must be image base64 data URLs' })
+          return
+        }
+        const mimeType = matches[1].toLowerCase()
+        const buffer = Buffer.from(matches[2], 'base64')
+        if (buffer.length === 0 || buffer.length > 20 * 1024 * 1024) {
+          res.status(400).json({ error: 'attachment image must be between 1 byte and 20 MB' })
+          return
+        }
+        const sha256 = crypto.createHash('sha256').update(buffer).digest('hex')
+        const extByMime: Record<string, string> = {
+          'image/png': 'png', 'image/jpeg': 'jpg', 'image/webp': 'webp', 'image/gif': 'gif', 'image/bmp': 'bmp', 'image/avif': 'avif',
+        }
+        const ext = extByMime[mimeType]
+        if (!ext) {
+          res.status(400).json({ error: `unsupported image MIME type: ${mimeType}` })
+          return
+        }
+        const filePath = path.join(imagesDir, `${sha256}.${ext}`)
+        if (!fs.existsSync(filePath)) fs.writeFileSync(filePath, buffer)
+        const existing = statements.getAttachmentBySha256.get(sha256) as { id: string; file_path: string } | undefined
+        const attachmentId = existing?.id || uuidv4()
+        const persistedPath = existing?.file_path || filePath
+        if (!existing) {
+          statements.upsertAttachment.run(
+            attachmentId, null, 'image', mimeType, 'file', null, persistedPath, null, null, buffer.length, sha256,
+            new Date().toISOString(), null
+          )
+        }
+        savedAttachments.push({ id: attachmentId, file_path: persistedPath, sha256, mime_type: mimeType, size_bytes: buffer.length })
+      }
+      res.json({ success: true, attachments: savedAttachments })
+    } catch (error) {
+      console.error('[LocalServer] Error preparing base64 attachments:', error)
+      res.status(500).json({ error: 'Failed to prepare attachments' })
+    }
+  })
+
+  // Link already-persisted attachment records once the user message has been created.
+  app.post('/api/local/attachments/link', (req, res) => {
+    try {
+      const { messageId, attachmentIds } = req.body as { messageId: string; attachmentIds: string[] }
+      if (!messageId || !Array.isArray(attachmentIds) || attachmentIds.length === 0) {
+        res.status(400).json({ error: 'messageId and attachmentIds array required' })
+        return
+      }
+      if (!statements || !statements.getMessageById.get(messageId)) {
+        res.status(409).json({ error: 'message_not_found', messageId })
+        return
+      }
+      const now = new Date().toISOString()
+      for (const attachmentId of new Set(attachmentIds)) {
+        if (!statements.getAttachmentById.get(attachmentId)) continue
+        statements.linkAttachment.run(uuidv4(), messageId, attachmentId, now)
+      }
+      res.json({ success: true })
+    } catch (error) {
+      console.error('[LocalServer] Error linking prepared attachments:', error)
+      res.status(500).json({ error: 'Failed to link attachments' })
+    }
+  })
+
   // Save base64 image attachments for a message (used by local-only mode)
   app.post('/api/local/attachments/save-base64', (req, res) => {
     try {
@@ -5444,17 +5530,7 @@ function setupServer() {
         } else {
           try {
             const mcpResult = await mcpManager.callTool(normalizedToolName, parsedArgs)
-            // Convert MCP result to standard ToolResult format
-            const textContent = mcpResult.content
-              .filter(c => c.type === 'text')
-              .map(c => c.text)
-              .join('\n')
-            result = {
-              success: !mcpResult.isError,
-              content: mcpResult.content,
-              text: textContent,
-              error: mcpResult.isError ? textContent : undefined,
-            }
+            result = toMcpExecutionResult(mcpResult) as ToolResult
           } catch (mcpError) {
             console.error(`[LocalServer] MCP tool error:`, mcpError)
             result = { success: false, error: mcpError instanceof Error ? mcpError.message : String(mcpError) }
@@ -10509,17 +10585,7 @@ export async function startLocalServer(
         toolOrchestrator.registerTool(qualifiedName, async (args, _options) => {
           try {
             const mcpResult = await mcpManager.callTool(qualifiedName, args)
-            // Convert MCP result to standard ToolResult format
-            const textContent = mcpResult.content
-              .filter(c => c.type === 'text')
-              .map(c => c.text)
-              .join('\n')
-            return {
-              success: !mcpResult.isError,
-              content: mcpResult.content,
-              text: textContent,
-              error: mcpResult.isError ? textContent : undefined,
-            }
+            return toMcpExecutionResult(mcpResult)
           } catch (error) {
             console.error(`[LocalServer] MCP tool execution error (${qualifiedName}):`, error)
             return {

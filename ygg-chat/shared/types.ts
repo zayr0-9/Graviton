@@ -1,3 +1,5 @@
+import type { OpenAIContextUsage } from './contextUsage'
+
 // This file contains types shared between client and server
 
 // UUID-based ID types for Supabase compatibility
@@ -49,6 +51,8 @@ export interface BaseMessage {
   // content_blocks can be string (SQLite) or parsed object/array (Supabase)
   // Structured content with thinking, tool_use, tool_result, text blocks
   content_blocks?: string | any
+  /** Latest OpenAI/Codex provider-reported context snapshot for this assistant turn. */
+  context_usage?: OpenAIContextUsage | string | null
   content: string
   content_plain_text: string
   parent_id?: MessageId | null

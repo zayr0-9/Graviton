@@ -27,8 +27,17 @@ export interface ViewImageResult {
   mimeType: string
   detail: 'high' | 'original'
   sizeBytes: number
-  image_url: string
-  content: Array<{
+  displayContent: string
+  persistedContent: {
+    success: true
+    path: string
+    mimeType: string
+    detail: 'high' | 'original'
+    sizeBytes: number
+    summary: string
+  }
+  /** Ephemeral provider input. Tool loops must not persist or display this field. */
+  modelContent: Array<{
     type: 'input_image'
     image_url: string
     detail: 'high' | 'original'
@@ -116,6 +125,15 @@ export async function viewImage(inputPath: string, options: ViewImageOptions = {
 
   const detail = options.detail === 'original' ? 'original' : 'high'
   const imageUrl = `data:${mimeType};base64,${bytes.toString('base64')}`
+  const summary = `[Image: ${mimeType}, ${(bytes.length / 1024).toFixed(1)} KB, detail=${detail}]`
+  const persistedContent = {
+    success: true as const,
+    path: resolvedPath,
+    mimeType,
+    detail,
+    sizeBytes: bytes.length,
+    summary,
+  }
 
   return {
     success: true,
@@ -123,8 +141,10 @@ export async function viewImage(inputPath: string, options: ViewImageOptions = {
     mimeType,
     detail,
     sizeBytes: bytes.length,
-    image_url: imageUrl,
-    content: [{ type: 'input_image', image_url: imageUrl, detail }],
+    displayContent: summary,
+    persistedContent,
+    // Keep exactly one Base64 copy, explicitly isolated for the immediate model turn.
+    modelContent: [{ type: 'input_image', image_url: imageUrl, detail }],
   }
 }
 

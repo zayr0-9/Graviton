@@ -11,13 +11,14 @@ import {
 } from '../../utils/mcpApps'
 import type { ToolDefinition } from '../../features/chats/toolDefinitions'
 import { getMcpTools } from '../../features/chats/toolDefinitions'
+import { normalizeMcpAppToolResult, type McpAppToolResultEnvelope } from '../../utils/mcpAppToolResult'
 
 type McpAppIframeProps = {
   serverName: string
   qualifiedToolName: string
   resourceUri: string
   toolArgs?: Record<string, any> | null
-  toolResult?: { content: any; is_error?: boolean } | null
+  toolResult?: McpAppToolResultEnvelope | null
   toolDefinition?: ToolDefinition
   className?: string
   reloadToken?: number
@@ -47,26 +48,6 @@ const MCP_APP_MIME_TYPE = 'text/html;profile=mcp-app'
 const BASE_ALLOW =
   'fullscreen; accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share'
 
-const normalizeToolResult = (result?: { content: any; is_error?: boolean } | null) => {
-  if (!result) return null
-  const payload: any = {}
-  if (result.is_error) payload.isError = true
-  const raw = result.content
-  if (raw && typeof raw === 'object' && Array.isArray(raw.content)) {
-    return { ...raw, ...payload }
-  }
-  if (Array.isArray(raw)) {
-    return { content: raw, ...payload }
-  }
-  if (typeof raw === 'string') {
-    return { content: [{ type: 'text', text: raw }], ...payload }
-  }
-  if (raw && typeof raw === 'object') {
-    return { content: [{ type: 'text', text: JSON.stringify(raw) }], ...payload }
-  }
-  return { content: [{ type: 'text', text: String(raw ?? '') }], ...payload }
-}
-
 const buildHostContext = (toolDefinition?: ToolDefinition, fallbackToolName?: string) => {
   const isDark = document.documentElement.classList.contains('dark')
   const theme = isDark ? 'dark' : 'light'
@@ -90,7 +71,10 @@ const buildHostContext = (toolDefinition?: ToolDefinition, fallbackToolName?: st
     timeZone,
     userAgent: typeof navigator !== 'undefined' ? navigator.userAgent : undefined,
     displayMode: 'inline',
-    availableDisplayModes: ['inline'],
+    containerDimensions: {
+      width: typeof window !== 'undefined' ? window.innerWidth : undefined,
+      maxHeight: 600,
+    },
   }
 }
 
@@ -161,7 +145,7 @@ export const McpAppIframe: React.FC<McpAppIframeProps> = ({
   const sendToolResult = useCallback(
     (result: { content: any; is_error?: boolean } | null) => {
       if (!result) return
-      const normalized = normalizeToolResult(result)
+      const normalized = normalizeMcpAppToolResult(result)
       if (!normalized) return
       const hash = JSON.stringify(normalized)
       if (lastResultHashRef.current === hash) return
@@ -257,7 +241,7 @@ export const McpAppIframe: React.FC<McpAppIframeProps> = ({
       switch (request.method) {
         case 'ui/initialize': {
           const result = {
-            protocolVersion: '2025-06-18',
+            protocolVersion: request.params?.protocolVersion || '2025-06-18',
             hostCapabilities: buildHostCapabilities(uiMeta),
             hostInfo: { name: 'ygg-chat', version: '1.0.0' },
             hostContext,
@@ -476,7 +460,7 @@ export const McpAppIframe: React.FC<McpAppIframeProps> = ({
       allow={allowAttr}
       allowFullScreen
       referrerPolicy='strict-origin-when-cross-origin'
-      sandbox='allow-scripts allow-same-origin allow-forms allow-popups allow-presentation'
+      sandbox='allow-scripts allow-same-origin'
     />
   )
 }
