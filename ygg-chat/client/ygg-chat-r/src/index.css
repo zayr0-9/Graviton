@@ -42,10 +42,17 @@
   font-family: 'JetBrains Mono', monospace;
 }
 
+:root {
+  --ygg-motion-ease-emphasized: cubic-bezier(0.22, 1, 0.36, 1);
+  --ygg-motion-duration-fast: 150ms;
+  --ygg-motion-duration-standard: 180ms;
+  --ygg-motion-duration-layout: 260ms;
+}
+
 .reveal {
   opacity: 0;
-  transform: translateY(30px);
-  transition: all 0.8s cubic-bezier(0.2, 0.8, 0.2, 1);
+  transform: translateY(24px);
+  transition: opacity 0.5s var(--ygg-motion-ease-emphasized), transform 0.5s var(--ygg-motion-ease-emphasized);
   will-change: opacity, transform;
 }
 
@@ -315,7 +322,7 @@ body.ygg-no-select * {
 }
 
 .animate-pulse-slow {
-  animation: ygg-pulse 4s ease-in-out infinite;
+  animation: ygg-pulse 4.8s ease-in-out infinite;
 }
 
 /* Color cycling animation for Heimdall currentPath line */
@@ -552,7 +559,7 @@ html {
 }
 
 .smooth-height {
-  transition: height 0.3s ease-out;
+  transition: height var(--ygg-motion-duration-layout) var(--ygg-motion-ease-emphasized);
   overflow: hidden;
 }
 
@@ -569,7 +576,7 @@ html {
   grid-template-rows: 0fr;
   min-width: 0;
   max-width: 100%;
-  transition: grid-template-rows 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  transition: grid-template-rows var(--ygg-motion-duration-layout) var(--ygg-motion-ease-emphasized);
   overflow: hidden;
 }
 
@@ -583,7 +590,7 @@ html {
   max-width: 100%;
   overflow-wrap: anywhere;
   opacity: 0;
-  transition: opacity 0.2s ease;
+  transition: opacity var(--ygg-motion-duration-standard) var(--ygg-motion-ease-emphasized);
 }
 
 .tool-expand-container.open .tool-expand-content {
@@ -592,7 +599,7 @@ html {
 
 /* Tool call chevron rotation */
 .tool-chevron {
-  transition: transform 0.2s ease;
+  transition: transform var(--ygg-motion-duration-fast) var(--ygg-motion-ease-emphasized);
 }
 
 .tool-chevron.open {
@@ -1069,5 +1076,30 @@ html {
 
   .composer-controls-left-selectors {
     display: none;
+  }
+}
+
+
+/* Motion accessibility: retain state contrast while removing decorative displacement and looping effects. */
+@media (prefers-reduced-motion: reduce) {
+  .reveal,
+  .reveal.active {
+    transform: none;
+    transition-duration: 1ms;
+  }
+
+  .animate-pulse-slow,
+  .animate-color-cycle,
+  .animate-stroke-pulse,
+  .animate-scale-in,
+  .animate-menuEntrance {
+    animation: none !important;
+  }
+
+  .smooth-height,
+  .tool-expand-container,
+  .tool-expand-content,
+  .tool-chevron {
+    transition-duration: 1ms !important;
   }
 }

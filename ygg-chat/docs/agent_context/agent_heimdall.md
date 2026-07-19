@@ -104,7 +104,8 @@ For selected-message copying/moving:
 - Note data lives on the message row: `note` and `note_color`.
 - Note edits debounce `updateMessage({ id, content, note, note_color })`.
 - Heimdall stores note dialog state locally and reads/writes the current message from Redux.
-- Note preview hover is deliberately managed with close-delay refs to prevent flicker.
+- Message and note previews use a short close-delay grace period so the pointer can cross the real gap from a node/pill into the preview without flicker.
+- Preview positioning wrappers are pointer-transparent; only the visible preview cards capture input and cancel the pending close timer.
 
 ### Search
 
@@ -125,6 +126,7 @@ For selected-message copying/moving:
 - Do not dispatch `fetchMessageTree` for a non-current conversation from Heimdall unless you intend to replace Chat Redux state. Prefer React Query invalidation for other conversations.
 - Preserve ID comparisons by string when crossing local/cloud or UUID/legacy boundaries.
 - Keep `data-heimdall-wheel-exempt='true'` on scrollable overlays so the graph wheel handler does not hijack modal/list scrolling.
+- Keep hover-preview positioning wrappers pointer-transparent and visible preview cards pointer-active; do not add invisible hit areas above graph nodes.
 - Keep node elements carrying `data-node-id`; context-menu and hover logic depend on `closest('[data-node-id]')`.
 - Avoid expensive layout recalculation by preserving memoization inputs and stable refs where possible.
 

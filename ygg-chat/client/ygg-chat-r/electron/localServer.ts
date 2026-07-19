@@ -5184,6 +5184,21 @@ function setupServer() {
     return files
   }
 
+  builtInTools.set('memory_manage', async () => {
+    const files = await listMemoryFileSummaries()
+    return {
+      success: true,
+      files: files
+        .filter(file => file.exists)
+        .map(({ kind, label, projectName, path: filePath }) => ({
+          kind,
+          label,
+          ...(projectName ? { projectName } : {}),
+          path: filePath,
+        })),
+    }
+  })
+
   const resolveMemoryFileId = (id: string): { path: string; kind: MemoryFileKind; projectName?: string | null } | null => {
     if (id === 'global:memory') return { path: getLongTermMemoryFilePath(), kind: 'global' }
     if (id === 'global:recent') return { path: getRecentMemoryFilePath(), kind: 'recent' }

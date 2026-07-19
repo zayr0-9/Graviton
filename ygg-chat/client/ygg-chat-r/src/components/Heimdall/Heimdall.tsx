@@ -28,12 +28,6 @@ import { useConversations } from '../../hooks/useQueries'
 import type { RootState } from '../../store/store'
 import { parseId } from '../../utils/helpers'
 import stripMarkdownToText from '../../utils/markdownStripper'
-import {
-  HEIMDALL_MESSAGE_PREVIEW_HOVER_PADDING_ENABLED_CHANGE_EVENT,
-  HEIMDALL_NOTE_PREVIEW_HOVER_PADDING_ENABLED_CHANGE_EVENT,
-  loadHeimdallMessagePreviewHoverPaddingEnabled,
-  loadHeimdallNotePreviewHoverPaddingEnabled,
-} from '../../helpers/chatUiSettingsStorage'
 // import { MarkdownLink } from '../MarkdownLink/MarkdownLink'
 import { environment, localApi } from '../../utils/api'
 import { DeleteConfirmModal } from '../DeleteConfirmModal/DeleteConfirmModal'
@@ -114,7 +108,7 @@ const HEIMDALL_NODE_SELECTED_STROKE_WIDTH = 2.75
 const HEIMDALL_NODE_VISIBLE_STROKE_WIDTH = 2.25
 const HEIMDALL_NODE_RADIUS = 22
 const HEIMDALL_NOTE_PILL_RADIUS = 14
-const HEIMDALL_COMPACT_NODE_HOVER_SCALE = 1.06
+const HEIMDALL_COMPACT_NODE_HOVER_SCALE = 1.035
 
 const isValidHexColor = (value?: string | null): value is string =>
   typeof value === 'string' && /^#[0-9A-Fa-f]{6}$/.test(value)
@@ -388,45 +382,6 @@ export const Heimdall: React.FC<HeimdallProps> = ({
       return false
     }
   })
-
-  const [notePreviewHoverPaddingEnabled, setNotePreviewHoverPaddingEnabled] = useState<boolean>(() =>
-    loadHeimdallNotePreviewHoverPaddingEnabled()
-  )
-  const [messagePreviewHoverPaddingEnabled, setMessagePreviewHoverPaddingEnabled] = useState<boolean>(() =>
-    loadHeimdallMessagePreviewHoverPaddingEnabled()
-  )
-
-  useEffect(() => {
-    const handleNotePreviewHoverPaddingChange = (event: CustomEvent<boolean>) => {
-      setNotePreviewHoverPaddingEnabled(event.detail)
-    }
-
-    window.addEventListener(
-      HEIMDALL_NOTE_PREVIEW_HOVER_PADDING_ENABLED_CHANGE_EVENT,
-      handleNotePreviewHoverPaddingChange as EventListener
-    )
-    return () =>
-      window.removeEventListener(
-        HEIMDALL_NOTE_PREVIEW_HOVER_PADDING_ENABLED_CHANGE_EVENT,
-        handleNotePreviewHoverPaddingChange as EventListener
-      )
-  }, [])
-
-  useEffect(() => {
-    const handleMessagePreviewHoverPaddingChange = (event: CustomEvent<boolean>) => {
-      setMessagePreviewHoverPaddingEnabled(event.detail)
-    }
-
-    window.addEventListener(
-      HEIMDALL_MESSAGE_PREVIEW_HOVER_PADDING_ENABLED_CHANGE_EVENT,
-      handleMessagePreviewHoverPaddingChange as EventListener
-    )
-    return () =>
-      window.removeEventListener(
-        HEIMDALL_MESSAGE_PREVIEW_HOVER_PADDING_ENABLED_CHANGE_EVENT,
-        handleMessagePreviewHoverPaddingChange as EventListener
-      )
-  }, [])
 
   const toggleHeatmapMode = useCallback(() => {
     setHeatmapMode(prev => {
@@ -764,10 +719,7 @@ export const Heimdall: React.FC<HeimdallProps> = ({
 
   const NOTE_PREVIEW_WIDTH = 320
   const NOTE_PREVIEW_MAX_HEIGHT = 280
-  const NOTE_PREVIEW_HOVER_PADDING = 18
-  const MESSAGE_PREVIEW_HOVER_PADDING = 18
-  const NOTE_PREVIEW_CLOSE_DELAY_MS = 180
-  const MESSAGE_PREVIEW_CLOSE_DELAY_MS = 180
+  const PREVIEW_HOVER_TRANSFER_GRACE_MS = 180
 
   const getNoteBadgeMetrics = (noteText?: string) => {
     const rawNote = noteText || ''
@@ -1007,7 +959,7 @@ export const Heimdall: React.FC<HeimdallProps> = ({
     notePreviewCloseTimeoutRef.current = window.setTimeout(() => {
       setHoveredNote(null)
       notePreviewCloseTimeoutRef.current = null
-    }, NOTE_PREVIEW_CLOSE_DELAY_MS)
+    }, PREVIEW_HOVER_TRANSFER_GRACE_MS)
   }, [clearNotePreviewCloseTimeout])
 
   const handleNoteBadgeClick = useCallback(
@@ -2807,7 +2759,7 @@ export const Heimdall: React.FC<HeimdallProps> = ({
     messagePreviewCloseTimeoutRef.current = window.setTimeout(() => {
       setSelectedNode(null)
       messagePreviewCloseTimeoutRef.current = null
-    }, MESSAGE_PREVIEW_CLOSE_DELAY_MS)
+    }, PREVIEW_HOVER_TRANSFER_GRACE_MS)
   }, [clearMessagePreviewCloseTimeout])
 
   const handleNodeMouseEnter = useCallback(
@@ -3473,7 +3425,7 @@ export const Heimdall: React.FC<HeimdallProps> = ({
               height={nodeHeight}
               rx={HEIMDALL_NODE_RADIUS}
               strokeWidth='0'
-              className={`cursor-pointer transition-all duration-200 hover:opacity-95 ${
+              className={`cursor-pointer transition-[background-color,color,opacity,transform] duration-150 hover:opacity-95 ${
                 effectiveNodeColors ? '' : getHeimdallNodeFallbackFillClass(node.sender, isVisible, isDarkMode)
               }`}
               style={{
@@ -3728,7 +3680,7 @@ export const Heimdall: React.FC<HeimdallProps> = ({
               cy={y + circleRadius}
               r={circleRadius}
               strokeWidth='0'
-              className={`cursor-pointer transition-all duration-150 ${
+              className={`cursor-pointer transition-[fill,stroke,opacity,transform] duration-150 ${
                 effectiveNodeColors ? '' : getHeimdallNodeFallbackFillClass(node.sender, isVisible, isDarkMode)
               }`}
               style={{
@@ -3913,14 +3865,11 @@ export const Heimdall: React.FC<HeimdallProps> = ({
       getHeatmapNodeColors,
       handleNodeMouseEnter,
       handleNodeMouseLeave,
-      handleMessagePreviewEnter,
-      handleMessagePreviewLeave,
       handleSubagentBadgeClick,
       handleNoteBadgeHover,
       handleNoteBadgeLeave,
       handleNoteBadgeClick,
       getCurrentMessage,
-      messagePreviewHoverPaddingEnabled,
     ]
   )
 
@@ -3972,12 +3921,12 @@ export const Heimdall: React.FC<HeimdallProps> = ({
         : undefined,
     [customTheme, customThemeEnabled, heimdallControlButtonStyle, isDarkMode]
   )
-  const heimdallContextMenuItemClass = `w-full flex items-center gap-3 px-3 py-2.5 rounded-[14px] text-sm font-medium cursor-pointer transition-all duration-200 hover:pl-4 group ${
+  const heimdallContextMenuItemClass = `w-full flex items-center gap-3 px-3 py-2.5 rounded-[14px] text-sm font-medium cursor-pointer transition-[background-color,color,opacity,transform] duration-150 hover:pl-4 group ${
     customThemeEnabled
       ? 'text-stone-500 hover:bg-[var(--heimdall-context-menu-item-hover-bg)] hover:text-[var(--heimdall-context-menu-item-hover-text)] dark:text-neutral-400 dark:hover:bg-[var(--heimdall-context-menu-item-hover-bg)] dark:hover:text-[var(--heimdall-context-menu-item-hover-text)]'
       : 'text-stone-500 hover:bg-stone-100 hover:text-stone-900 dark:text-neutral-400 dark:hover:bg-neutral-800 dark:hover:text-white'
   }`
-  const heimdallContextMenuDestructiveItemClass = `w-full flex items-center gap-3 px-3 py-2.5 rounded-[14px] text-sm font-medium cursor-pointer transition-all duration-200 hover:pl-4 group ${
+  const heimdallContextMenuDestructiveItemClass = `w-full flex items-center gap-3 px-3 py-2.5 rounded-[14px] text-sm font-medium cursor-pointer transition-[background-color,color,opacity,transform] duration-150 hover:pl-4 group ${
     customThemeEnabled
       ? 'text-stone-500 hover:bg-[var(--heimdall-context-menu-item-hover-bg)] hover:text-[var(--heimdall-context-menu-item-hover-text)] dark:text-neutral-400 dark:hover:bg-[var(--heimdall-context-menu-item-hover-bg)] dark:hover:text-[var(--heimdall-context-menu-item-hover-text)]'
       : 'text-stone-500 hover:bg-red-50 hover:text-red-600 dark:text-neutral-400 dark:hover:bg-red-950 dark:hover:text-red-400'
@@ -4281,7 +4230,7 @@ export const Heimdall: React.FC<HeimdallProps> = ({
                         type='button'
                         onClick={() => handleSelectSearchResult(item)}
                         onMouseEnter={() => setSearchHoverIndex(idx)}
-                        className={`flex flex-col justify-start text-left rounded-xl bg-white/55 dark:bg-white/10 p-3 min-h-[320px] shadow-sm hover:bg-white/75 dark:hover:bg-white/15 transition-all ${
+                        className={`flex flex-col justify-start text-left rounded-xl bg-white/55 dark:bg-white/10 p-3 min-h-[320px] shadow-sm hover:bg-white/75 dark:hover:bg-white/15 transition-[background-color,color,opacity,transform] duration-150 ${
                           idx === searchHoverIndex ? 'ring-2 ring-amber-300/70 dark:ring-amber-400/50' : ''
                         }`}
                       >
@@ -4585,39 +4534,21 @@ export const Heimdall: React.FC<HeimdallProps> = ({
             Array.isArray(contentBlocks) && contentBlocks.some((block: any) => block.type === 'image' && block.url)
 
           const popupWidth = hasImage ? 800 : 320
-          // Ensure popup fits in viewport horizontally, with some padding
-          const leftPos = Math.min(mousePosition.x + 10, dimensions.width - popupWidth - 20)
-
-          const messagePreviewHoverPadding = messagePreviewHoverPaddingEnabled ? MESSAGE_PREVIEW_HOVER_PADDING : 0
           const popupMaxHeight = hasImage ? 600 : 450
 
           return (
             <div
-              className='absolute z-20'
-              data-heimdall-wheel-exempt='true'
-              onMouseEnter={handleMessagePreviewEnter}
-              onMouseLeave={handleMessagePreviewLeave}
+              className='pointer-events-none absolute z-20'
               style={{
-                left: Math.max(
-                  10,
-                  Math.min(
-                    leftPos - messagePreviewHoverPadding,
-                    dimensions.width - (popupWidth + messagePreviewHoverPadding * 2) - 10
-                  )
-                ),
-                top: Math.max(
-                  10,
-                  Math.min(
-                    mousePosition.y + 10 - messagePreviewHoverPadding,
-                    dimensions.height - (popupMaxHeight + messagePreviewHoverPadding * 2) - 10
-                  )
-                ),
-                padding: `${messagePreviewHoverPadding}px`,
+                left: Math.max(10, Math.min(mousePosition.x + 10, dimensions.width - popupWidth - 10)),
+                top: Math.max(10, Math.min(mousePosition.y + 10, dimensions.height - popupMaxHeight - 10)),
               }}
             >
               <div
-                className={`p-4 rounded-lg shadow-xl no-scrollbar ${compactMode ? 'border-2' : 'border'}`}
+                className={`pointer-events-auto p-4 rounded-lg shadow-xl no-scrollbar ${compactMode ? 'border-2' : 'border'}`}
                 data-heimdall-wheel-exempt='true'
+                onMouseEnter={handleMessagePreviewEnter}
+                onMouseLeave={handleMessagePreviewLeave}
                 style={{
                   width: `${popupWidth}px`,
                   maxHeight: `${popupMaxHeight}px`,
@@ -4772,35 +4703,22 @@ export const Heimdall: React.FC<HeimdallProps> = ({
         })()}
       {hoveredNote &&
         (() => {
-          const notePreviewHoverPadding = notePreviewHoverPaddingEnabled ? NOTE_PREVIEW_HOVER_PADDING : 0
-
           return (
             <div
-              className='absolute z-30'
-              data-heimdall-wheel-exempt='true'
-              onMouseEnter={handleNotePreviewEnter}
-              onMouseLeave={handleNotePreviewLeave}
+              className='pointer-events-none absolute z-30'
               style={{
-                left: Math.max(
-                  10,
-                  Math.min(
-                    hoveredNote.x + 10 - notePreviewHoverPadding,
-                    dimensions.width - (NOTE_PREVIEW_WIDTH + notePreviewHoverPadding * 2) - 10
-                  )
-                ),
+                left: Math.max(10, Math.min(hoveredNote.x + 10, dimensions.width - NOTE_PREVIEW_WIDTH - 10)),
                 top: Math.max(
                   10,
-                  Math.min(
-                    hoveredNote.y + 10 - notePreviewHoverPadding,
-                    dimensions.height - (NOTE_PREVIEW_MAX_HEIGHT + notePreviewHoverPadding * 2) - 10
-                  )
+                  Math.min(hoveredNote.y + 10, dimensions.height - NOTE_PREVIEW_MAX_HEIGHT - 10)
                 ),
-                padding: `${notePreviewHoverPadding}px`,
               }}
             >
           <div
-            className='p-4 rounded-lg shadow-xl border no-scrollbar'
+            className='pointer-events-auto p-4 rounded-lg shadow-xl border no-scrollbar'
             data-heimdall-wheel-exempt='true'
+            onMouseEnter={handleNotePreviewEnter}
+            onMouseLeave={handleNotePreviewLeave}
             style={{
               width: `${NOTE_PREVIEW_WIDTH}px`,
               maxHeight: `${NOTE_PREVIEW_MAX_HEIGHT}px`,

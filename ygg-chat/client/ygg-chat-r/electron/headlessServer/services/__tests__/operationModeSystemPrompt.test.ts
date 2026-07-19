@@ -1,4 +1,16 @@
-import { describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import {
+  getAgentModePrompt,
+  getDefaultAgentModePrompt,
+  getDefaultSubagentModePrompt,
+  getSubagentModePrompt,
+  loadOperationModePromptSettings,
+  resetAgentModePromptOverride,
+  resetSubagentModePromptOverride,
+  saveAgentModePromptOverride,
+  saveSubagentModePromptOverride,
+} from '../../../../src/helpers/operationModePromptStorage.js'
+import { resolveSubagentSystemPrompt } from '../../../../src/features/chats/subagentRuntime.js'
 import {
   assertToolAllowedForOperationMode,
   buildOperationModeSystemPrompt,
@@ -53,5 +65,73 @@ describe('plan mode tool filtering', () => {
   it('does not block bash or powershell tool calls in plan mode', () => {
     expect(() => assertToolAllowedForOperationMode({ name: 'bash' }, 'plan')).not.toThrow()
     expect(() => assertToolAllowedForOperationMode({ name: 'powershell' }, 'plan')).not.toThrow()
+  })
+})
+
+describe('operation mode prompt overrides', () => {
+  const storage = new Map<string, string>()
+
+  beforeEach(() => {
+    storage.clear()
+    vi.stubGlobal('localStorage', {
+      getItem: (key: string) => storage.get(key) ?? null,
+      setItem: (key: string, value: string) => storage.set(key, value),
+      removeItem: (key: string) => storage.delete(key),
+      clear: () => storage.clear(),
+    })
+  })
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  it('normalizes Chat-only saved settings without overrides', () => {
+    storage.set(
+      'ygg_operation_mode_prompt_settings',
+      JSON.stringify({ selectedChatPromptId: 'default-chat-mode', chatPrompts: [] })
+    )
+
+    expect(loadOperationModePromptSettings()).toMatchObject({
+      selectedChatPromptId: 'default-chat-mode',
+      chatPrompts: [],
+      agentModePromptOverride: null,
+      subagentModePromptOverride: null,
+    })
+  })
+
+  it('uses saved Agent and Subagent overrides while preserving reset fallbacks', () => {
+    saveAgentModePromptOverride('  Custom Agent Base  ')
+    saveSubagentModePromptOverride('  Custom Subagent Base  ')
+
+    expect(getAgentModePrompt().prompt).toBe('Custom Agent Base')
+    expect(buildOperationModeSystemPrompt({ operationMode: 'execute', includeCustomToolsPrompt: false })).toContain(
+      'Custom Agent Base'
+    )
+    expect(getSubagentModePrompt().prompt).toBe('Custom Subagent Base')
+    expect(resolveSubagentSystemPrompt('Call-specific instruction')).toBe(
+      'Custom Subagent Base\n\nCall-specific instruction'
+    )
+
+    resetAgentModePromptOverride()
+    resetSubagentModePromptOverride()
+
+    expect(getAgentModePrompt().prompt).toBe(getDefaultAgentModePrompt().prompt)
+    expect(getSubagentModePrompt().prompt).toBe(getDefaultSubagentModePrompt().prompt)
+  })
+
+  it('treats blank overrides as resets without disturbing Chat prompt settings', () => {
+    storage.set(
+      'ygg_operation_mode_prompt_settings',
+      JSON.stringify({
+        selectedChatPromptId: 'custom-chat',
+        chatPrompts: [{ id: 'custom-chat', name: 'Custom Chat', prompt: 'Chat prompt' }],
+      })
+    )
+
+    const saved = saveAgentModePromptOverride('   ')
+
+    expect(saved.agentModePromptOverride).toBeNull()
+    expect(saved.selectedChatPromptId).toBe('custom-chat')
+    expect(saved.chatPrompts).toEqual([{ id: 'custom-chat', name: 'Custom Chat', prompt: 'Chat prompt' }])
   })
 })

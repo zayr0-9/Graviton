@@ -33,6 +33,7 @@ import {
   ToolPermissionDialog,
 } from '../components'
 import { useHtmlIframeRegistry } from '../components/HtmlIframeRegistry/HtmlIframeRegistry'
+import { contentSpringTransition, softTransition } from '../components/motion'
 import { ContextUsageSparkline } from '../components/ContextUsageSparkline/ContextUsageSparkline'
 import {
   ChatInputBorderAnimationType,
@@ -337,6 +338,7 @@ const BENCH_MAX_EVENTS = 1200
 const BENCH_SCROLL_ACTIVE_WINDOW_MS = 140
 const THEME_DEMO_INTERVAL_MS = 500
 const STREAMING_THINKING_INDICATOR_PLACEMENT_STORAGE_KEY = 'chat:streamingThinkingIndicatorPlacement'
+const EXPANDED_FILE_PREVIEW_EXIT_MS = 150
 
 const getStoredStreamingThinkingIndicatorPlacement = (): StreamingThinkingIndicatorPlacement => {
   try {
@@ -1871,8 +1873,7 @@ function Chat() {
     const path = expandedFilePath
     setExpandedFilePath(null)
     setClosingFilePath(path)
-    // Match transition duration (100ms)
-    window.setTimeout(() => setClosingFilePath(null), 130)
+    window.setTimeout(() => setClosingFilePath(null), EXPANDED_FILE_PREVIEW_EXIT_MS)
   }, [expandedFilePath])
 
   const escapeRegExp = (str: string) => str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
@@ -3479,8 +3480,16 @@ function Chat() {
     : undefined
   const contextUsagePopoverStyle: React.CSSProperties | undefined = contextUsagePopoverBackgroundColor
     ? {
-        backgroundColor: contextUsagePopoverBackgroundColor,
+        // Keep the surface opaque even when the selected theme token contains transparency.
+        backgroundColor: isDarkMode ? '#171717' : '#ffffff',
+        backgroundImage: `linear-gradient(${contextUsagePopoverBackgroundColor}, ${contextUsagePopoverBackgroundColor})`,
         color: getThemeModeColor(customTheme.colors.settingsCustomThemesBodyText, isDarkMode),
+      }
+    : undefined
+  const contextUsagePopoverArrowStyle: React.CSSProperties | undefined = contextUsagePopoverBackgroundColor
+    ? {
+        backgroundColor: isDarkMode ? '#171717' : '#ffffff',
+        backgroundImage: `linear-gradient(${contextUsagePopoverBackgroundColor}, ${contextUsagePopoverBackgroundColor})`,
       }
     : undefined
   const sendButtonAnimationThemeColor = customThemeEnabled
@@ -7156,11 +7165,13 @@ function Chat() {
             <div className='composer-controls-row relative z-10 mt-2 flex items-center justify-between gap-3'>
                 {/* Left side controls */}
                 <div
-                  className={`composer-controls-left group relative z-20 flex h-10 xl:h-12 min-w-0 flex-[0_1_58%] max-w-[58%] cursor-pointer items-center overflow-visible rounded-full ${leftControlsBorderClasses} bg-neutral-100/40 px-2 py-1 md:py-1 xl:py-1.5 backdrop-blur-xl transition-all duration-300 dark:bg-neutral-900/40`}
+                  className={`composer-controls-left relative z-20 flex h-10 xl:h-12 min-w-0 flex-[0_1_58%] max-w-[58%] items-center overflow-visible rounded-full ${leftControlsBorderClasses} bg-neutral-100/40 px-2 py-1 md:py-1 xl:py-1.5 backdrop-blur-xl transition-all duration-300 dark:bg-neutral-900/40`}
                   style={leftControlsTokenTintStyle}
                 >
+                  {/* Hover only the exposed usage surface; selectors and settings remain independent controls. */}
+                  <div className='peer absolute inset-0 z-0' aria-hidden='true' />
                   <button
-                    className='flex h-9 w-9 items-center justify-center rounded-full bg-white/80 text-stone-700 backdrop-blur-xl transition-all duration-200 hover:-translate-y-0.5 hover:scale-105 hover:bg-white hover:text-stone-950 active:translate-y-0 active:scale-95 dark:bg-yBlack-900/80 dark:text-stone-200 dark:hover:bg-neutral-900 dark:hover:text-white'
+                    className='relative z-10 flex h-9 w-9 items-center justify-center rounded-full bg-white/80 text-stone-700 backdrop-blur-xl transition-all duration-200 hover:-translate-y-0.5 hover:scale-105 hover:bg-white hover:text-stone-950 active:translate-y-0 active:scale-95 dark:bg-yBlack-900/80 dark:text-stone-200 dark:hover:bg-neutral-900 dark:hover:text-white'
                     style={actionPopoverTriggerStyle}
                     onClick={() => {
                       setSpinSettings(true)
@@ -7175,7 +7186,7 @@ function Chat() {
                       onAnimationEnd={() => setSpinSettings(false)}
                     />
                   </button>
-                  <div className='composer-controls-left-selectors flex items-center gap-1 flex-nowrap min-w-0 flex-1 overflow-hidden'>
+                  <div className='composer-controls-left-selectors relative z-10 flex items-center gap-1 flex-nowrap min-w-0 flex-1 overflow-hidden'>
                     {import.meta.env.VITE_ENVIRONMENT === 'electron' && extensions.length > 0 && (
                       <Select
                         value={selectedExtensionId || ''}
@@ -7224,9 +7235,9 @@ function Chat() {
                     />
                   </div>
                   {showTokenUsageBar && showTokenUsageHoverDetails && (
-                    <div className='pointer-events-none absolute bottom-full left-1/2 z-[60] mb-2 w-max max-w-[calc(100vw-2rem)] -translate-x-1/2 translate-y-1 opacity-0 invisible transition-all duration-200 group-hover:translate-y-0 group-hover:opacity-100 group-hover:visible group-focus-within:translate-y-0 group-focus-within:opacity-100 group-focus-within:visible'>
+                    <div className='pointer-events-none absolute bottom-full left-1/2 z-[60] mb-2 w-max max-w-[calc(100vw-2rem)] -translate-x-1/2 translate-y-1 opacity-0 invisible transition-all duration-200 peer-hover:translate-y-0 peer-hover:opacity-100 peer-hover:visible'>
                       <div
-                        className='rounded-2xl bg-white/70 px-3 py-2.5 text-black whitespace-nowrap backdrop-blur-2xl dark:bg-neutral-900/70 dark:text-white'
+                        className='isolate rounded-2xl bg-white px-3 py-2.5 text-black whitespace-nowrap backdrop-blur-2xl dark:bg-neutral-900 dark:text-white'
                         style={contextUsagePopoverStyle}
                       >
                         <div className='flex items-center gap-2 text-xs'>
@@ -7265,8 +7276,8 @@ function Chat() {
                         )}
                         {/* Tooltip Arrow */}
                         <div
-                          className='absolute left-1/2 top-full h-2 w-2 -translate-x-1/2 -translate-y-1 rotate-45 bg-white/80 dark:bg-neutral-900/80'
-                          style={contextUsagePopoverBackgroundColor ? { backgroundColor: contextUsagePopoverBackgroundColor } : undefined}
+                          className='absolute left-1/2 top-full h-2 w-2 -translate-x-1/2 -translate-y-1 rotate-45 bg-white dark:bg-neutral-900'
+                          style={contextUsagePopoverArrowStyle}
                         />
                       </div>
                     </div>
@@ -7739,7 +7750,7 @@ function Chat() {
                 initial={{ opacity: 0 }}
                 animate={{ opacity: 1 }}
                 exit={{ opacity: 0 }}
-                transition={{ duration: 0.2 }}
+                transition={softTransition}
                 onClick={() => {
                   setHeimdallVisible(false)
                   try {
@@ -7758,7 +7769,7 @@ function Chat() {
                 initial={{ y: '100%' }}
                 animate={{ y: 0 }}
                 exit={{ y: '100%' }}
-                transition={{ type: 'spring', damping: 30, stiffness: 300 }}
+                transition={contentSpringTransition}
               >
                 {/* Drag handle indicator */}
                 <div className='w-full flex justify-center py-3 bg-neutral-100 dark:bg-neutral-800 border-b border-neutral-200 dark:border-neutral-700'>
@@ -7823,7 +7834,7 @@ function Chat() {
           const top = (expandedAnchor?.top ?? 16) - 8
           return (
             <div
-              className={`fixed z-[99999] -translate-y-full rounded-lg shadow-2xl overflow-y-auto shadow-sm p-3 transform transition-all duration-100 ease-out dark:bg-neutral-900 bg-neutral-100 pointer-events-auto`}
+              className='fixed z-[99999] -translate-y-full overflow-y-auto rounded-lg bg-neutral-100 p-3 shadow-sm transition-[opacity,transform] duration-[150ms] [transition-timing-function:cubic-bezier(0.22,1,0.36,1)] pointer-events-auto dark:bg-neutral-900'
               style={{ left, top, maxWidth: '30vw', width: 'clamp(90vw, 90vw, 56rem)' }}
               onMouseDown={e => e.stopPropagation()}
               onMouseUp={e => e.stopPropagation()}

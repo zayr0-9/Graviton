@@ -353,7 +353,7 @@ const DOCKED_EDITOR_DEFAULT_WIDTH_PX = 720
 const DOCKED_TOTAL_WIDTH_RATIO = 0.9
 const DOCKED_LAYOUT_GAP_PX = 8
 const DOCKED_CHAT_MIN_WIDTH_PX = 580
-const RIGHT_BAR_EXPANDED_CONTENT_DEFER_MS = 320
+const RIGHT_BAR_EXPANDED_CONTENT_DEFER_MS = 260
 
 const PRESET_CONFIGS: Array<{
   key: GlobalAgentSchedulePreset
@@ -2673,7 +2673,7 @@ const RightBar: React.FC<RightBarProps> = ({
   return (
     <aside
       ref={asideRef}
-      className={`relative z-10 ${isWeb ? 'h-[100vh]' : 'h-full'} flex flex-col ${isEditorDockOpen ? 'overflow-visible' : 'overflow-hidden'} bg-transparent dark:bg-transparent flex-shrink-0 ${isResizingSidebar ? 'transition-none' : 'transition-[width,flex-basis] duration-300 ease-in-out'} ${className}`}
+      className={`relative z-10 ${isWeb ? 'h-[100vh]' : 'h-full'} flex flex-col ${isEditorDockOpen ? 'overflow-visible' : 'overflow-hidden'} bg-transparent dark:bg-transparent flex-shrink-0 ${isResizingSidebar ? 'transition-none' : 'transition-[width,flex-basis] duration-[260ms] [transition-timing-function:cubic-bezier(0.22,1,0.36,1)]'} ${className}`}
       style={{
         width: `${asideWidthPx}px`,
         maxWidth: '100%',
@@ -3094,7 +3094,7 @@ const RightBar: React.FC<RightBarProps> = ({
               {!isWeb && (
                 <button
                   onClick={() => setActiveTab('git')}
-                  className={`flex-1 px-2 py-2 text-sm font-medium rounded-xl transition-all duration-200 ${
+                  className={`flex-1 px-2 py-2 text-sm font-medium rounded-xl transition-[background-color,color,transform] duration-150 ${
                     activeTab === 'git'
                       ? 'bg-neutral-50 acrylic-ultra-light-nb-3 text-stone-800 dark:text-stone-200 scale-102 dark:border-transparent shadow-[0px_0.5px_3px_1px_rgba(0,0,0,0.05)] dark:shadow-[0px_0.5px_3px_2px_rgba(0,0,0,0.05)]'
                       : 'bg-transparent text-stone-600 dark:text-stone-300 hover:scale-101 hover:bg-neutral-50 dark:hover:bg-neutral-900/50 '
@@ -3105,7 +3105,7 @@ const RightBar: React.FC<RightBarProps> = ({
               )}
               <button
                 onClick={() => setActiveTab('note')}
-                className={`flex-1 px-2 py-2 text-sm font-medium rounded-xl transition-all duration-200 ${
+                className={`flex-1 px-2 py-2 text-sm font-medium rounded-xl transition-[background-color,color,transform] duration-150 ${
                   activeTab === 'note'
                     ? 'bg-neutral-50 acrylic-ultra-light-nb-3 text-stone-800 dark:text-stone-200 scale-102 dark:border-transparent shadow-[0px_0.5px_3px_1px_rgba(0,0,0,0.05)] dark:shadow-[0px_0.5px_3px_2px_rgba(0,0,0,0.05)]'
                     : 'bg-transparent text-stone-600 dark:text-stone-300 hover:scale-101 hover:bg-neutral-50 dark:hover:bg-neutral-900/50 '
@@ -3116,7 +3116,7 @@ const RightBar: React.FC<RightBarProps> = ({
               {!isWeb && (
                 <button
                   onClick={() => setActiveTab('terminal')}
-                  className={`flex-1 px-2 py-2 text-sm font-medium rounded-xl transition-all duration-200 ${
+                  className={`flex-1 px-2 py-2 text-sm font-medium rounded-xl transition-[background-color,color,transform] duration-150 ${
                     activeTab === 'terminal'
                       ? 'bg-neutral-50 acrylic-ultra-light-nb-3 text-stone-800 dark:text-stone-200 scale-102 dark:border-transparent shadow-[0px_0.5px_3px_-0.5px_rgba(0,0,0,0.05)] dark:shadow-[0px_0.5px_3px_2px_rgba(0,0,0,0.05)]'
                       : 'bg-transparent hover:scale-101 text-stone-600 dark:text-stone-300 hover:bg-neutral-50 dark:hover:bg-neutral-900/50 '
@@ -3129,7 +3129,7 @@ const RightBar: React.FC<RightBarProps> = ({
               {/* Global tab intentionally hidden.
             <button
               onClick={() => setActiveTab('global')}
-              className={`flex-1 px-2 py-2 text-sm font-medium rounded-xl transition-all duration-200 ${
+              className={`flex-1 px-2 py-2 text-sm font-medium rounded-xl transition-[background-color,color,transform] duration-150 ${
                 activeTab === 'global'
                   ? 'bg-neutral-100 dark:bg-neutral-900 text-stone-800 dark:text-stone-200 border-1 border-neutral-300 scale-102 dark:border-neutral-600 shadow-[0px_0.5px_3px_-0.5px_rgba(0,0,0,0.05)] dark:shadow-[0px_0.5px_3px_2px_rgba(0,0,0,0.35)]'
                   : 'bg-transparent hover:scale-101 text-stone-600 dark:text-stone-400 hover:bg-neutral-50 dark:hover:bg-neutral-900/50 border-1 border-neutral-300 dark:border-neutral-800'

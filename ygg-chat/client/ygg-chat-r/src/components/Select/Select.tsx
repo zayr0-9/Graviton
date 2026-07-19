@@ -9,6 +9,7 @@ import {
   toggleModelFavorite,
 } from '../../utils/favorites'
 import { Button } from '../Button/button'
+import { contentSpringTransition, reducedMotionTransition, shellSpringTransition } from '../motion'
 import { ModelInfoModal } from '../ModelInfoModal/ModelInfoModal'
 
 export type SelectOption = { value: string; label?: string }
@@ -47,22 +48,6 @@ interface SelectProps {
 const DROPDOWN_LIMIT = 25
 const DEFAULT_SELECT_DROPDOWN_Z_INDEX = 100
 
-const springTransition = {
-  type: 'spring' as const,
-  stiffness: 340,
-  damping: 44,
-  mass: 0.86,
-}
-
-const internalTransition = {
-  type: 'spring' as const,
-  stiffness: 300,
-  damping: 40,
-  mass: 0.8,
-}
-
-const softTransition = { duration: 0.18, ease: 'easeOut' as const }
-const collapseSoftTransition = { duration: 0.24, ease: 'easeInOut' as const }
 
 export const Select: React.FC<SelectProps> = ({
   value,
@@ -334,7 +319,7 @@ export const Select: React.FC<SelectProps> = ({
                 initial={prefersReducedMotion ? { opacity: 0 } : { opacity: 0, y: dropdownPosition.bottom ? -8 : 8, scale: 0.965 }}
                 animate={prefersReducedMotion ? { opacity: 1 } : { opacity: 1, y: 0, scale: 1 }}
                 exit={prefersReducedMotion ? { opacity: 0 } : { opacity: 0, y: dropdownPosition.bottom ? -8 : 8, scale: 0.965 }}
-                transition={prefersReducedMotion ? collapseSoftTransition : springTransition}
+                transition={prefersReducedMotion ? reducedMotionTransition : shellSpringTransition}
                 style={{
                   zIndex: dropdownZIndex,
                   maxHeight: listMaxHeight,
@@ -350,7 +335,7 @@ export const Select: React.FC<SelectProps> = ({
                   initial={prefersReducedMotion ? { opacity: 0 } : { opacity: 0, y: 10, scale: 0.985 }}
                   animate={prefersReducedMotion ? { opacity: 1 } : { opacity: 1, y: 0, scale: 1 }}
                   exit={prefersReducedMotion ? { opacity: 0 } : { opacity: 0, y: 10, scale: 0.985 }}
-                  transition={prefersReducedMotion ? softTransition : internalTransition}
+                  transition={prefersReducedMotion ? reducedMotionTransition : contentSpringTransition}
                 >
             {filterUI && (
               <div className='border-b border-neutral-200 bg-white/35 px-2 py-2 backdrop-blur-md dark:border-neutral-900 dark:bg-neutral-950/25'>
@@ -404,7 +389,7 @@ export const Select: React.FC<SelectProps> = ({
                           e.stopPropagation()
                           if (!optDisabled) handleSelect(opt.value)
                         }}
-                        className={`flex-1 hover:scale-103 transition-all line-clamp-3 justify-start text-left text-[13px] sm:text-[13px] md:text-[13px] lg:text-[14px] 2xl:text-[14px] 3xl:text-[14px] 4xl:text-[14px] ${isSelected ? 'font-medium' : ''} ${optDisabled ? 'cursor-not-allowed' : 'hover:bg-neutral-200'}`}
+                        className={`flex-1 transition-colors duration-150 line-clamp-3 justify-start text-left text-[13px] sm:text-[13px] md:text-[13px] lg:text-[14px] 2xl:text-[14px] 3xl:text-[14px] 4xl:text-[14px] ${isSelected ? 'font-medium' : ''} ${optDisabled ? 'cursor-not-allowed' : 'hover:bg-neutral-200'}`}
                         title={optDisabled ? 'Upgrade to access this model' : undefined}
                       >
                         {opt.label}

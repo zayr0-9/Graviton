@@ -29,6 +29,7 @@ import {
   Wrench,
   X,
 } from 'lucide-react'
+import { AnimatePresence, motion, useReducedMotion } from 'framer-motion'
 import React, { useCallback, useEffect, useRef, useState } from 'react'
 import { AppStoreModal } from '../../containers/appStore'
 import { fetchMcpTools, selectCurrentConversationId } from '../../features/chats'
@@ -240,6 +241,7 @@ export const SettingsPane: React.FC<SettingsPaneProps> = ({ open, onClose }) => 
   const tools = useAppSelector(state => state.chat.tools ?? [])
   const { theme: customTheme, enabled: customThemeEnabled } = useCustomChatTheme()
   const isDarkMode = useHtmlDarkMode()
+  const shouldReduceMotion = useReducedMotion()
   const settingsPaneBodyBackgroundColor = customThemeEnabled
     ? getThemeModeColor(customTheme.colors.settingsPaneBodyBg, isDarkMode)
     : undefined
@@ -1338,8 +1340,6 @@ ${block}`
     }
   }, [open])
 
-  if (!open) return null
-
   const hooksByEvent = HOOK_EVENT_ORDER.map(event => ({
     event,
     hooks: managedHooks.filter(hook => hook.event === event),
@@ -1361,19 +1361,43 @@ ${block}`
   const settingsSectionBodyStyle = savedCustomThemesColors ? { color: savedCustomThemesColors.bodyText } : undefined
 
   return (
-    <div className='fixed inset-0 z-400 flex items-center justify-center'>
-      {/* Overlay */}
-      <div
-        className='fixed inset-0 bg-neutral-300/50 dark:bg-neutral-900/20 bg-opacity-50 backdrop-blur-sm'
-        onClick={onClose}
-      />
+    <AnimatePresence>
+      {open && (
+        <motion.div
+          className='fixed inset-0 z-400 flex items-center justify-center'
+          initial={shouldReduceMotion ? { opacity: 0 } : { opacity: 0 }}
+          animate={{ opacity: 1 }}
+          exit={{ opacity: 0 }}
+          transition={{ duration: 0.18, ease: 'easeOut' }}
+        >
+          {/* Overlay */}
+          <motion.button
+            type='button'
+            className='fixed inset-0 cursor-default bg-neutral-300/50 backdrop-blur-sm dark:bg-neutral-900/20'
+            aria-label='Close settings'
+            onClick={onClose}
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            transition={{ duration: 0.18, ease: 'easeOut' }}
+          />
 
-      {/* Modal */}
-      <div className='py-2 w-full max-w-5xl'>
-        <div
-          className={`relative z-50 mx-4 overflow-y-scroll rounded-[2rem] bg-neutral-50/85 px-5 py-4 backdrop-blur-2xl transition-all duration-300 ease-in-out no-scrollbar dark:bg-yBlack-900/90 sm:px-7 lg:py-6 ${
-            tools.some(tool => tool.enabled) ? 'h-[80vh]' : 'h-[58vh]'
-          }`}
+          {/* Modal */}
+          <motion.div
+            className='w-full max-w-5xl py-2'
+            initial={shouldReduceMotion ? { opacity: 0 } : { opacity: 0, y: 18, scale: 0.985 }}
+            animate={shouldReduceMotion ? { opacity: 1 } : { opacity: 1, y: 0, scale: 1 }}
+            exit={shouldReduceMotion ? { opacity: 0 } : { opacity: 0, y: 12, scale: 0.985 }}
+            transition={
+              shouldReduceMotion
+                ? { duration: 0.18, ease: 'easeOut' }
+                : { type: 'spring', stiffness: 300, damping: 32, mass: 0.82 }
+            }
+          >
+            <div
+              className={`relative z-50 mx-4 overflow-y-scroll rounded-[2rem] bg-neutral-50/85 px-5 py-4 backdrop-blur-2xl transition-[height] duration-[260ms] [transition-timing-function:cubic-bezier(0.22,1,0.36,1)] no-scrollbar dark:bg-yBlack-900/90 sm:px-7 lg:py-6 ${
+                tools.some(tool => tool.enabled) ? 'h-[80vh]' : 'h-[58vh]'
+              }`}
           onClick={e => e.stopPropagation()}
           style={{
             scrollbarGutter: 'stable',
@@ -3383,9 +3407,10 @@ ${block}`
             </div>
           </div>
         </div>
-      </div>
-
-      <AppStoreModal open={appStoreOpen} onClose={() => setAppStoreOpen(false)} />
-    </div>
+          </motion.div>
+          <AppStoreModal open={appStoreOpen} onClose={() => setAppStoreOpen(false)} />
+        </motion.div>
+        )}
+      </AnimatePresence>
   )
 }

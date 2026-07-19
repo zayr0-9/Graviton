@@ -39,14 +39,10 @@ import {
 } from '../helpers/chatReasoningSettingsStorage'
 import {
   loadAutoCompactionEnabled,
-  loadHeimdallMessagePreviewHoverPaddingEnabled,
-  loadHeimdallNotePreviewHoverPaddingEnabled,
   loadShowAddedFilesPills,
   loadShowTokenUsageBar,
   loadShowTokenUsageHoverDetails,
   saveAutoCompactionEnabled,
-  saveHeimdallMessagePreviewHoverPaddingEnabled,
-  saveHeimdallNotePreviewHoverPaddingEnabled,
   saveShowAddedFilesPills,
   saveShowTokenUsageBar,
   saveShowTokenUsageHoverDetails,
@@ -78,11 +74,17 @@ import {
   addChatModePrompt,
   DEFAULT_CHAT_MODE_PROMPT_ID,
   deleteChatModePrompt,
+  getDefaultAgentModePrompt,
   getDefaultChatModePrompt,
+  getDefaultSubagentModePrompt,
   loadOperationModePromptSettings,
   OPERATION_MODE_PROMPT_SETTINGS_CHANGE_EVENT,
   OperationModePromptSettings,
+  resetAgentModePromptOverride,
   resetChatModePromptSelectionToDefault,
+  resetSubagentModePromptOverride,
+  saveAgentModePromptOverride,
+  saveSubagentModePromptOverride,
   selectChatModePrompt,
   updateChatModePrompt,
 } from '../helpers/operationModePromptStorage'
@@ -424,18 +426,18 @@ const Settings: React.FC = () => {
   )
   const [chatModePromptNameInput, setChatModePromptNameInput] = useState('')
   const [chatModePromptInput, setChatModePromptInput] = useState('')
+  const [agentModePromptInput, setAgentModePromptInput] = useState(() =>
+    loadOperationModePromptSettings().agentModePromptOverride || getDefaultAgentModePrompt().prompt
+  )
+  const [subagentModePromptInput, setSubagentModePromptInput] = useState(() =>
+    loadOperationModePromptSettings().subagentModePromptOverride || getDefaultSubagentModePrompt().prompt
+  )
   const [showTokenUsageBar, setShowTokenUsageBar] = useState<boolean>(() => loadShowTokenUsageBar())
   const [showTokenUsageHoverDetails, setShowTokenUsageHoverDetails] = useState<boolean>(() =>
     loadShowTokenUsageHoverDetails()
   )
   const [autoCompactionEnabled, setAutoCompactionEnabled] = useState<boolean>(() => loadAutoCompactionEnabled())
   const [showAddedFilesPills, setShowAddedFilesPills] = useState<boolean>(() => loadShowAddedFilesPills())
-  const [heimdallNotePreviewHoverPaddingEnabled, setHeimdallNotePreviewHoverPaddingEnabled] = useState<boolean>(() =>
-    loadHeimdallNotePreviewHoverPaddingEnabled()
-  )
-  const [heimdallMessagePreviewHoverPaddingEnabled, setHeimdallMessagePreviewHoverPaddingEnabled] = useState<boolean>(() =>
-    loadHeimdallMessagePreviewHoverPaddingEnabled()
-  )
   const [browserSettings, setBrowserSettings] = useState<BrowserSettings>(() => loadBrowserSettings())
   const [subagentSettings, setSubagentSettings] = useState<SubagentToolSettings>(() => loadSubagentToolSettings())
   const [subagentMaxTurnsInput, setSubagentMaxTurnsInput] = useState<string>(() =>
@@ -470,6 +472,10 @@ const Settings: React.FC = () => {
           prompt => prompt.id === operationModePromptSettings.selectedChatPromptId
         ) ?? defaultChatModePrompt
   const isDefaultChatModePromptSelected = selectedChatModePrompt.id === DEFAULT_CHAT_MODE_PROMPT_ID
+  const defaultAgentModePrompt = getDefaultAgentModePrompt()
+  const defaultSubagentModePrompt = getDefaultSubagentModePrompt()
+  const isAgentModePromptOverridden = operationModePromptSettings.agentModePromptOverride !== null
+  const isSubagentModePromptOverridden = operationModePromptSettings.subagentModePromptOverride !== null
 
   const handleLogout = async () => {
     await signOut()
@@ -741,6 +747,14 @@ const Settings: React.FC = () => {
     setChatModePromptNameInput(selectedChatModePrompt.name)
     setChatModePromptInput(selectedChatModePrompt.prompt)
   }, [selectedChatModePrompt.id, selectedChatModePrompt.name, selectedChatModePrompt.prompt])
+
+  useEffect(() => {
+    setAgentModePromptInput(operationModePromptSettings.agentModePromptOverride || defaultAgentModePrompt.prompt)
+  }, [operationModePromptSettings.agentModePromptOverride, defaultAgentModePrompt.prompt])
+
+  useEffect(() => {
+    setSubagentModePromptInput(operationModePromptSettings.subagentModePromptOverride || defaultSubagentModePrompt.prompt)
+  }, [operationModePromptSettings.subagentModePromptOverride, defaultSubagentModePrompt.prompt])
 
   useEffect(() => {
     const handleToolExecutionSettingsChange = (e: CustomEvent<ToolExecutionSettings>) => {
@@ -1834,6 +1848,33 @@ const Settings: React.FC = () => {
     showStatus({ type: 'success', text: 'Chat Mode prompt reset to default.' })
   }
 
+  const handleSaveAgentModePrompt = () => {
+    const saved = saveAgentModePromptOverride(agentModePromptInput)
+    setOperationModePromptSettings(saved)
+    showStatus({ type: 'success', text: saved.agentModePromptOverride ? 'Agent Mode prompt saved.' : 'Agent Mode prompt reset to default.' })
+  }
+
+  const handleResetAgentModePrompt = () => {
+    const saved = resetAgentModePromptOverride()
+    setOperationModePromptSettings(saved)
+    showStatus({ type: 'success', text: 'Agent Mode prompt reset to default.' })
+  }
+
+  const handleSaveSubagentModePrompt = () => {
+    const saved = saveSubagentModePromptOverride(subagentModePromptInput)
+    setOperationModePromptSettings(saved)
+    showStatus({
+      type: 'success',
+      text: saved.subagentModePromptOverride ? 'Subagent system prompt saved.' : 'Subagent system prompt reset to default.',
+    })
+  }
+
+  const handleResetSubagentModePrompt = () => {
+    const saved = resetSubagentModePromptOverride()
+    setOperationModePromptSettings(saved)
+    showStatus({ type: 'success', text: 'Subagent system prompt reset to default.' })
+  }
+
   const handleAutoCompactionToggle = () => {
     const nextValue = !autoCompactionEnabled
     saveAutoCompactionEnabled(nextValue)
@@ -1841,30 +1882,6 @@ const Settings: React.FC = () => {
     showStatus({
       type: 'success',
       text: nextValue ? 'Auto compaction enabled in Chat.' : 'Auto compaction disabled in Chat.',
-    })
-  }
-
-  const handleHeimdallNotePreviewHoverPaddingToggle = () => {
-    const nextValue = !heimdallNotePreviewHoverPaddingEnabled
-    saveHeimdallNotePreviewHoverPaddingEnabled(nextValue)
-    setHeimdallNotePreviewHoverPaddingEnabled(nextValue)
-    showStatus({
-      type: 'success',
-      text: nextValue
-        ? 'Heimdall note preview hover padding enabled.'
-        : 'Heimdall note preview hover padding disabled.',
-    })
-  }
-
-  const handleHeimdallMessagePreviewHoverPaddingToggle = () => {
-    const nextValue = !heimdallMessagePreviewHoverPaddingEnabled
-    saveHeimdallMessagePreviewHoverPaddingEnabled(nextValue)
-    setHeimdallMessagePreviewHoverPaddingEnabled(nextValue)
-    showStatus({
-      type: 'success',
-      text: nextValue
-        ? 'Heimdall message preview hover padding enabled.'
-        : 'Heimdall message preview hover padding disabled.',
     })
   }
 
@@ -2472,7 +2489,7 @@ const Settings: React.FC = () => {
         <SettingsSection
           title='Chat Interface'
           description='Control optional chat UI elements.'
-          features={['Token usage bar', 'Hover details', 'Added file pills', 'Auto compaction', 'Heimdall hover padding']}
+          features={['Token usage bar', 'Hover details', 'Added file pills', 'Auto compaction']}
         >
           <div className='flex flex-col gap-4'>
             <div className='flex items-center justify-between'>
@@ -2540,42 +2557,6 @@ const Settings: React.FC = () => {
               >
                 <span
                   className={settingsToggleKnobClass(autoCompactionEnabled)}
-                />
-              </button>
-            </div>
-
-            <div className='flex items-center justify-between pt-2 pt-2'>
-              <div>
-                <p className='text-base font-medium text-stone-900 dark:text-stone-100'>Heimdall Note Hover Padding</p>
-                <p className='text-sm text-stone-500 dark:text-stone-400'>
-                  Add an invisible hover buffer around note previews so you can move from a note pill to its preview
-                  without it closing.
-                </p>
-              </div>
-              <button
-                onClick={handleHeimdallNotePreviewHoverPaddingToggle}
-                className={settingsToggleClass(heimdallNotePreviewHoverPaddingEnabled)}
-              >
-                <span
-                  className={settingsToggleKnobClass(heimdallNotePreviewHoverPaddingEnabled)}
-                />
-              </button>
-            </div>
-
-            <div className='flex items-center justify-between pt-2 pt-2'>
-              <div>
-                <p className='text-base font-medium text-stone-900 dark:text-stone-100'>Heimdall Message Hover Padding</p>
-                <p className='text-sm text-stone-500 dark:text-stone-400'>
-                  Add an invisible hover buffer around message previews so you can move from a message node to its preview
-                  without it closing.
-                </p>
-              </div>
-              <button
-                onClick={handleHeimdallMessagePreviewHoverPaddingToggle}
-                className={settingsToggleClass(heimdallMessagePreviewHoverPaddingEnabled)}
-              >
-                <span
-                  className={settingsToggleKnobClass(heimdallMessagePreviewHoverPaddingEnabled)}
                 />
               </button>
             </div>
@@ -2680,6 +2661,35 @@ const Settings: React.FC = () => {
             </div>
           </div>
         </SettingsSection>
+
+        {import.meta.env.VITE_ENVIRONMENT === 'electron' && (
+          <SettingsSection
+            title='Agent Mode Prompt'
+            description='Used when the composer is in Agent Mode. A custom prompt changes the baseline instructions for all Agent Mode requests on this device.'
+            features={['Editable prompt', 'Local override', 'Default reset']}
+          >
+          <div className='flex flex-col gap-2'>
+            <div>
+              <p className='text-base font-medium text-stone-900 dark:text-stone-100'>Agent System Prompt</p>
+              <p className='text-sm text-stone-500 dark:text-stone-400'>
+                {isAgentModePromptOverridden ? 'Using a saved local override.' : 'Using the bundled default prompt.'}
+              </p>
+            </div>
+            <textarea
+              value={agentModePromptInput}
+              onChange={e => setAgentModePromptInput(e.target.value)}
+              rows={12}
+              className={`w-full ${settingsTextAreaClass}`}
+            />
+            <div className='flex flex-wrap gap-2'>
+              <Button onClick={handleSaveAgentModePrompt}>Save Agent Prompt</Button>
+              <Button variant='secondary' onClick={handleResetAgentModePrompt}>
+                Reset to Default
+              </Button>
+            </div>
+          </div>
+          </SettingsSection>
+        )}
 
         <SettingsSection
           title='Chat Reasoning Defaults'
@@ -3252,6 +3262,28 @@ const Settings: React.FC = () => {
                     className={settingsToggleKnobClass(subagentSettings.orchestratorEnabled)}
                   />
                 </button>
+              </div>
+
+              <div className='flex flex-col gap-2 pt-2'>
+                <div>
+                  <p className='text-base font-medium text-stone-900 dark:text-stone-100'>Subagent System Prompt</p>
+                  <p className='text-sm text-stone-500 dark:text-stone-400'>
+                    Base system prompt for every <code>subagent</code> tool invocation. A per-call <code>systemPrompt</code>{' '}
+                    is appended after this prompt. {isSubagentModePromptOverridden ? 'Using a saved local override.' : 'Using the bundled default prompt.'}
+                  </p>
+                </div>
+                <textarea
+                  value={subagentModePromptInput}
+                  onChange={e => setSubagentModePromptInput(e.target.value)}
+                  rows={12}
+                  className={`w-full ${settingsTextAreaClass}`}
+                />
+                <div className='flex flex-wrap gap-2'>
+                  <Button onClick={handleSaveSubagentModePrompt}>Save Subagent Prompt</Button>
+                  <Button variant='secondary' onClick={handleResetSubagentModePrompt}>
+                    Reset to Default
+                  </Button>
+                </div>
               </div>
 
               <p className='text-xs text-stone-500 dark:text-stone-400 pt-2 pt-2'>

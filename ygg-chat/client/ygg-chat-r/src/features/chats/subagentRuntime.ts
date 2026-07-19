@@ -4,7 +4,7 @@ import type { RootState } from '../../store/store'
 import type { Model, OperationMode, ToolDefinition } from './chatTypes'
 import { createStreamingRequest, environment, localApi } from '../../utils/api'
 import { isCommunityMode } from '../../config/runtimeMode'
-import { getDefaultSubagentModePrompt } from '../../helpers/operationModePromptStorage'
+import { getSubagentModePrompt } from '../../helpers/operationModePromptStorage'
 import { normalizeSubagentModelName } from '../../helpers/subagentModelNames'
 import {
   getSubagentEnabledTools,
@@ -128,9 +128,9 @@ const resolveSubagentDefaults = (
 
 const shouldUseCommunityLocalEphemeral = () => isCommunityMode && isElectronEnvironment
 
-const resolveSubagentSystemPrompt = (requestedSystemPrompt: unknown): string => {
+export const resolveSubagentSystemPrompt = (requestedSystemPrompt: unknown): string => {
   const customSystemPrompt = typeof requestedSystemPrompt === 'string' ? requestedSystemPrompt.trim() : ''
-  const defaultSystemPrompt = getDefaultSubagentModePrompt().prompt.trim()
+  const defaultSystemPrompt = getSubagentModePrompt().prompt.trim()
   return [defaultSystemPrompt, customSystemPrompt].filter(Boolean).join('\n\n')
 }
 

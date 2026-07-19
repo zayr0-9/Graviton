@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from 'react'
+import { useReducedMotion } from 'framer-motion'
 
 const STREAMING_THINKING_WORDS = [
   'Thinking',
@@ -30,9 +31,10 @@ export const StreamingThinkingIndicator = React.memo(function StreamingThinkingI
   style,
 }: StreamingThinkingIndicatorProps) {
   const [wordIndex, setWordIndex] = useState(0)
+  const shouldReduceMotion = useReducedMotion()
 
   useEffect(() => {
-    if (typeof window === 'undefined' || STREAMING_THINKING_WORDS.length <= 1) return
+    if (shouldReduceMotion || typeof window === 'undefined' || STREAMING_THINKING_WORDS.length <= 1) return
 
     const intervalId = window.setInterval(() => {
       setWordIndex(prev => (prev + 1) % STREAMING_THINKING_WORDS.length)
@@ -41,7 +43,7 @@ export const StreamingThinkingIndicator = React.memo(function StreamingThinkingI
     return () => {
       window.clearInterval(intervalId)
     }
-  }, [])
+  }, [shouldReduceMotion])
 
   const variantClassName =
     variant === 'tab'
@@ -66,7 +68,7 @@ export const StreamingThinkingIndicator = React.memo(function StreamingThinkingI
           <span className='streaming-pixel streaming-pixel-delay-3 h-1.5 w-1.5 rounded-[1px] bg-blue-500/60 dark:bg-orange-500/65' />
         </span>
       )}
-      <span className='tool-name-shimmer relative z-10 min-w-[5.75rem] font-medium leading-[1.2]'>
+      <span className={`relative z-10 min-w-[5.75rem] font-medium leading-[1.2] ${shouldReduceMotion ? '' : 'tool-name-shimmer'}`}>
         {STREAMING_THINKING_WORDS[wordIndex]}
       </span>
     </div>

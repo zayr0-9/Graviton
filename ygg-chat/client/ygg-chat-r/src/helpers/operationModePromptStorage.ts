@@ -20,6 +20,8 @@ export interface OperationModePrompt {
 export interface OperationModePromptSettings {
   selectedChatPromptId: string
   chatPrompts: OperationModePrompt[]
+  agentModePromptOverride: string | null
+  subagentModePromptOverride: string | null
 }
 
 const defaultChatPrompt: OperationModePrompt = {
@@ -83,6 +85,14 @@ const normalizeSettings = (settings: Partial<OperationModePromptSettings> | null
   return {
     selectedChatPromptId,
     chatPrompts,
+    agentModePromptOverride:
+      typeof settings?.agentModePromptOverride === 'string' && settings.agentModePromptOverride.trim()
+        ? settings.agentModePromptOverride.trim()
+        : null,
+    subagentModePromptOverride:
+      typeof settings?.subagentModePromptOverride === 'string' && settings.subagentModePromptOverride.trim()
+        ? settings.subagentModePromptOverride.trim()
+        : null,
   }
 }
 
@@ -111,7 +121,7 @@ export function loadOperationModePromptSettings(): OperationModePromptSettings {
   }
 }
 
-export function saveOperationModePromptSettings(settings: OperationModePromptSettings): OperationModePromptSettings {
+export function saveOperationModePromptSettings(settings: Partial<OperationModePromptSettings>): OperationModePromptSettings {
   const normalized = normalizeSettings(settings)
   try {
     if (typeof localStorage !== 'undefined') {
@@ -135,7 +145,33 @@ export function getActiveChatModePrompt(): OperationModePrompt {
 }
 
 export function getAgentModePrompt(): OperationModePrompt {
-  return getDefaultAgentModePrompt()
+  const override = loadOperationModePromptSettings().agentModePromptOverride
+  return override ? { ...defaultAgentPrompt, prompt: override } : getDefaultAgentModePrompt()
+}
+
+export function getSubagentModePrompt(): OperationModePrompt {
+  const override = loadOperationModePromptSettings().subagentModePromptOverride
+  return override ? { ...defaultSubagentPrompt, prompt: override } : getDefaultSubagentModePrompt()
+}
+
+export function saveAgentModePromptOverride(prompt: string): OperationModePromptSettings {
+  const settings = loadOperationModePromptSettings()
+  return saveOperationModePromptSettings({ ...settings, agentModePromptOverride: prompt })
+}
+
+export function resetAgentModePromptOverride(): OperationModePromptSettings {
+  const settings = loadOperationModePromptSettings()
+  return saveOperationModePromptSettings({ ...settings, agentModePromptOverride: null })
+}
+
+export function saveSubagentModePromptOverride(prompt: string): OperationModePromptSettings {
+  const settings = loadOperationModePromptSettings()
+  return saveOperationModePromptSettings({ ...settings, subagentModePromptOverride: prompt })
+}
+
+export function resetSubagentModePromptOverride(): OperationModePromptSettings {
+  const settings = loadOperationModePromptSettings()
+  return saveOperationModePromptSettings({ ...settings, subagentModePromptOverride: null })
 }
 
 export function addChatModePrompt(name: string, prompt: string): OperationModePromptSettings {

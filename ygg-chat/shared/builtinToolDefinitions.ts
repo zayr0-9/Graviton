@@ -138,6 +138,16 @@ export const BUILTIN_TOOL_DEFINITIONS: SharedToolDefinition[] = [
     },
   },
   {
+    name: 'memory_manage',
+    enabled: true,
+    description:
+      'List the runtime memory Markdown files that currently exist, including global, recent, and per-project memory, with their exact absolute paths. This tool only lists files and never reads or modifies their contents. Use read_file with a returned path to inspect a memory file, and use edit_file with that same absolute path to update it.',
+    inputSchema: {
+      type: 'object',
+      properties: {},
+    },
+  },
+  {
     name: 'theme_manager',
     enabled: true,
     description:

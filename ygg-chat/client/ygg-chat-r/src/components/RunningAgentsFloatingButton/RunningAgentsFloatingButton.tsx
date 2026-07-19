@@ -13,6 +13,7 @@ import {
 } from '../../hooks/useRunningAgentStreams'
 import { useConversationBranchDebugData, type ResearchNoteItem } from '../../hooks/useQueries'
 import { getThemeModeColor, useCustomChatTheme, useHtmlDarkMode } from '../ThemeManager/themeConfig'
+import { useMotionPreferences } from '../motion'
 
 interface RunningAgentsFloatingButtonProps {
   notes?: ResearchNoteItem[]
@@ -21,24 +22,6 @@ interface RunningAgentsFloatingButtonProps {
   appsOpen?: boolean
 }
 
-const springTransition = {
-  type: 'spring' as const,
-  stiffness: 340,
-  damping: 44,
-  mass: 0.86,
-}
-
-const collapseTransition = springTransition
-
-const internalTransition = {
-  type: 'spring' as const,
-  stiffness: 300,
-  damping: 40,
-  mass: 0.8,
-}
-
-const softTransition = { duration: 0.18, ease: 'easeOut' as const }
-const collapseSoftTransition = { duration: 0.24, ease: 'easeInOut' as const }
 const codexDevLogsEnabled =
   (typeof __YGG_CODEX_DEV_LOGS__ !== 'undefined' && __YGG_CODEX_DEV_LOGS__) ||
   (typeof window !== 'undefined' && Boolean(window.electronAPI?.dev?.codexDevLogsEnabled))
@@ -356,6 +339,7 @@ export const RunningAgentsFloatingButton: React.FC<RunningAgentsFloatingButtonPr
   const navigate = useNavigate()
   const dispatch = useAppDispatch()
   const shouldReduceMotion = useReducedMotion()
+  const motionPreferences = useMotionPreferences(shouldReduceMotion)
   const { activeStreams, streamHistory } = useRunningAgentStreams(notes)
   const notifications = useAppSelector(state => state.ui.notifications)
   const currentConversationId = useAppSelector(selectCurrentConversationId)
@@ -601,13 +585,13 @@ export const RunningAgentsFloatingButton: React.FC<RunningAgentsFloatingButtonPr
       />
       <motion.div
       layout
-      transition={shouldReduceMotion ? softTransition : expanded ? springTransition : collapseTransition}
+      transition={motionPreferences.shellTransition}
       className={`fixed z-[1500] ${className}`}
       style={{ transformOrigin: 'bottom right' }}
     >
       <motion.div
         layout
-        transition={shouldReduceMotion ? softTransition : expanded ? springTransition : collapseTransition}
+        transition={motionPreferences.shellTransition}
         className='overflow-hidden rounded-[28px] border border-neutral-200/60 bg-white/75 text-neutral-800 shadow-[0_18px_55px_rgba(15,23,42,0.18)] backdrop-blur-2xl will-change-[width,height,transform] dark:border-neutral-700/55 dark:bg-yBlack-900/75 dark:text-neutral-100'
         style={floatingShellStyle}
       >
@@ -638,7 +622,7 @@ export const RunningAgentsFloatingButton: React.FC<RunningAgentsFloatingButtonPr
                   initial={shouldReduceMotion ? { opacity: 0 } : { opacity: 0, x: 10, scale: 0.985 }}
                   animate={shouldReduceMotion ? { opacity: 1 } : { opacity: 1, x: 0, scale: 1 }}
                   exit={shouldReduceMotion ? { opacity: 0 } : { opacity: 0, x: 8, scale: 0.985 }}
-                  transition={shouldReduceMotion ? softTransition : internalTransition}
+                  transition={motionPreferences.contentTransition}
                   aria-label={inlineNotification.title}
                 >
                   <span
@@ -682,7 +666,7 @@ export const RunningAgentsFloatingButton: React.FC<RunningAgentsFloatingButtonPr
                   initial={shouldReduceMotion ? { opacity: 0 } : { opacity: 0, x: -8, scale: 0.985 }}
                   animate={shouldReduceMotion ? { opacity: 1 } : { opacity: 1, x: 0, scale: 1 }}
                   exit={shouldReduceMotion ? { opacity: 0 } : { opacity: 0, x: -8, scale: 0.985 }}
-                  transition={shouldReduceMotion ? softTransition : internalTransition}
+                  transition={motionPreferences.contentTransition}
                   aria-label={ariaLabel}
                   aria-expanded={expanded}
                 >
@@ -692,10 +676,10 @@ export const RunningAgentsFloatingButton: React.FC<RunningAgentsFloatingButtonPr
                       style={floatingStatusDotStyle}
                       animate={
                         hasActiveStreams && !shouldReduceMotion
-                          ? { scale: [1, 1.32, 1], opacity: [1, 0.55, 1] }
+                          ? { scale: [1, 1.16, 1], opacity: [1, 0.68, 1] }
                           : { scale: 1, opacity: 1 }
                       }
-                      transition={{ duration: 1.25, repeat: hasActiveStreams ? Infinity : 0, ease: 'easeInOut' }}
+                      transition={{ duration: 1.6, repeat: hasActiveStreams && !shouldReduceMotion ? Infinity : 0, ease: 'easeInOut' }}
                     />
                   </span>
 
@@ -711,7 +695,7 @@ export const RunningAgentsFloatingButton: React.FC<RunningAgentsFloatingButtonPr
                         initial={{ opacity: 0, scale: 0.75, x: -4 }}
                         animate={{ opacity: 1, scale: 1, x: 0 }}
                         exit={{ opacity: 0, scale: 0.75, x: -4 }}
-                        transition={shouldReduceMotion ? softTransition : internalTransition}
+                        transition={motionPreferences.contentTransition}
                         className='rounded-full bg-neutral-900/90 px-1.5 py-0.5 text-[10px] lg:text-[11px] font-bold leading-none text-white dark:bg-neutral-100 dark:text-neutral-900'
                         style={floatingBadgeStyle}
                       >
@@ -732,7 +716,7 @@ export const RunningAgentsFloatingButton: React.FC<RunningAgentsFloatingButtonPr
                   initial={shouldReduceMotion ? { opacity: 0 } : { opacity: 0, scale: 0.98, x: 8 }}
                   animate={shouldReduceMotion ? { opacity: 1 } : { opacity: 1, scale: 1, x: 0 }}
                   exit={shouldReduceMotion ? { opacity: 0 } : { opacity: 0, scale: 0.98, x: 8 }}
-                  transition={shouldReduceMotion ? softTransition : internalTransition}
+                  transition={motionPreferences.contentTransition}
                 >
                   {codexDevLogsEnabled ? (
                     <motion.button
@@ -744,7 +728,7 @@ export const RunningAgentsFloatingButton: React.FC<RunningAgentsFloatingButtonPr
                       initial={shouldReduceMotion ? { opacity: 0 } : { opacity: 0, scale: 0.88, x: 8 }}
                       animate={shouldReduceMotion ? { opacity: 1 } : { opacity: 1, scale: 1, x: 0 }}
                       exit={shouldReduceMotion ? { opacity: 0 } : { opacity: 0, scale: 0.88, x: 8 }}
-                      transition={shouldReduceMotion ? softTransition : internalTransition}
+                      transition={motionPreferences.contentTransition}
                       aria-label='Open branch diagnostics'
                       title='Open branch diagnostics'
                     >
@@ -752,7 +736,7 @@ export const RunningAgentsFloatingButton: React.FC<RunningAgentsFloatingButtonPr
                         className='bx bx-git-branch text-lg'
                         initial={shouldReduceMotion ? { opacity: 0 } : { opacity: 0, scale: 0.92, rotate: -8 }}
                         animate={shouldReduceMotion ? { opacity: 1 } : { opacity: 1, scale: 1, rotate: 0 }}
-                        transition={shouldReduceMotion ? softTransition : { duration: 0.14, ease: 'easeOut' }}
+                        transition={motionPreferences.feedbackTransition}
                         aria-hidden='true'
                       />
                     </motion.button>
@@ -770,7 +754,7 @@ export const RunningAgentsFloatingButton: React.FC<RunningAgentsFloatingButtonPr
                   initial={shouldReduceMotion ? { opacity: 0 } : { opacity: 0, scale: 0.88, x: 8 }}
                   animate={shouldReduceMotion ? { opacity: 1 } : { opacity: 1, scale: 1, x: 0 }}
                   exit={shouldReduceMotion ? { opacity: 0 } : { opacity: 0, scale: 0.88, x: 8 }}
-                  transition={shouldReduceMotion ? softTransition : internalTransition}
+                  transition={motionPreferences.contentTransition}
                   aria-label={appsOpen ? 'Close apps modal' : 'Open apps modal'}
                   title={appsOpen ? 'Close apps' : 'Open apps'}
                 >
@@ -779,7 +763,7 @@ export const RunningAgentsFloatingButton: React.FC<RunningAgentsFloatingButtonPr
                     className={`bx ${appsOpen ? 'bx-x' : 'bx-expand-alt'} text-lg`}
                     initial={shouldReduceMotion ? { opacity: 0 } : { opacity: 0, scale: 0.92, rotate: -8 }}
                     animate={shouldReduceMotion ? { opacity: 1 } : { opacity: 1, scale: 1, rotate: 0 }}
-                    transition={shouldReduceMotion ? softTransition : { duration: 0.14, ease: 'easeOut' }}
+                    transition={motionPreferences.feedbackTransition}
                     aria-hidden='true'
                   />
                   </motion.button>
@@ -794,8 +778,8 @@ export const RunningAgentsFloatingButton: React.FC<RunningAgentsFloatingButtonPr
                 key='details-shell'
                 initial={shouldReduceMotion ? { opacity: 0, height: 0 } : { opacity: 0, height: 0 }}
                 animate={shouldReduceMotion ? { opacity: 1, height: 'auto' } : { opacity: 1, height: 'auto' }}
-                exit={shouldReduceMotion ? { opacity: 0, height: 0 } : { opacity: 0, height: 0, transition: springTransition }}
-                transition={shouldReduceMotion ? collapseSoftTransition : springTransition}
+                exit={shouldReduceMotion ? { opacity: 0, height: 0 } : { opacity: 0, height: 0, transition: motionPreferences.shellTransition }}
+                transition={motionPreferences.shellTransition}
                 className='w-[min(22rem,calc(100vw-2rem))] overflow-hidden border-t border-neutral-200/70 dark:border-neutral-800/80'
                 style={floatingDividerStyle}
               >
@@ -803,7 +787,7 @@ export const RunningAgentsFloatingButton: React.FC<RunningAgentsFloatingButtonPr
                   initial={shouldReduceMotion ? { opacity: 0 } : { opacity: 0, y: 10, scale: 0.985 }}
                   animate={shouldReduceMotion ? { opacity: 1 } : { opacity: 1, y: 0, scale: 1 }}
                   exit={shouldReduceMotion ? { opacity: 0 } : { opacity: 0, y: 10, scale: 0.985 }}
-                  transition={shouldReduceMotion ? softTransition : { duration: 0.18, ease: 'easeOut' }}
+                  transition={motionPreferences.contentTransition}
                   className='px-2 pb-2 pt-1'
                 >
                 <div className='flex items-center justify-between px-2 py-2'>
@@ -852,7 +836,7 @@ export const RunningAgentsFloatingButton: React.FC<RunningAgentsFloatingButtonPr
                               : 'hover:bg-neutral-100/90 dark:bg-neutral-900/45 dark:hover:bg-neutral-800/70'
                           }`}
                           style={floatingRowStyle}
-                          transition={shouldReduceMotion ? softTransition : internalTransition}
+                          transition={motionPreferences.contentTransition}
                           whileHover={shouldReduceMotion ? undefined : { scale: 1.004 }}
                           whileTap={shouldReduceMotion ? undefined : { scale: 0.996 }}
                         >
@@ -882,8 +866,8 @@ export const RunningAgentsFloatingButton: React.FC<RunningAgentsFloatingButtonPr
                                   <motion.span
                                     className='h-2.5 w-2.5 rounded-full bg-emerald-500'
                                     style={floatingActiveDotStyle}
-                                    animate={shouldReduceMotion ? { scale: 1, opacity: 1 } : { scale: [1, 1.35, 1], opacity: [1, 0.55, 1] }}
-                                    transition={{ duration: 1.25, repeat: Infinity, ease: 'easeInOut' }}
+                                    animate={shouldReduceMotion ? { scale: 1, opacity: 1 } : { scale: [1, 1.16, 1], opacity: [1, 0.68, 1] }}
+                                    transition={{ duration: 1.6, repeat: shouldReduceMotion ? 0 : Infinity, ease: 'easeInOut' }}
                                   />
                                 </span>
                                 {stream.hasError ? (
@@ -948,7 +932,7 @@ export const RunningAgentsFloatingButton: React.FC<RunningAgentsFloatingButtonPr
                                 : 'hover:bg-neutral-100/90 dark:bg-neutral-900/35 dark:hover:bg-neutral-800/65'
                             }`}
                             style={floatingRowStyle}
-                            transition={shouldReduceMotion ? softTransition : internalTransition}
+                            transition={motionPreferences.contentTransition}
                             whileHover={shouldReduceMotion ? undefined : { scale: 1.004 }}
                             whileTap={shouldReduceMotion ? undefined : { scale: 0.996 }}
                           >

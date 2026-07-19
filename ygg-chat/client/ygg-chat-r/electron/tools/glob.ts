@@ -16,6 +16,7 @@ const DEFAULT_IGNORE_PATTERNS = [
   '**/.next/**',
   '**/.nuxt/**',
   '**/.cache/**',
+  '**/.ygg/memory/**',
   '**/dist/**',
   '**/build/**',
   '**/coverage/**',

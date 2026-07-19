@@ -1,6 +1,6 @@
 # Agent Context: Design Patterns
 
-Last reviewed: 2026-06-22
+Last reviewed: 2026-07-19
 
 ## Purpose
 
@@ -104,3 +104,37 @@ When a UI surface is part of the main app experience, make it theme-aware unless
 - Preserve custom theme hooks and component-specific theme overrides where they already exist.
 - For newly redesigned or newly touched chrome/modal/editor components, check whether custom theme hooks should be added before finishing the change.
 - If older source examples still contain heavy borders or shadows, treat this document as the newer design direction for new or redesigned UI.
+
+
+## Motion and Transition Polish
+
+Graviton uses expressive but disciplined motion: movement should explain a spatial or state change, never compete with work. Prefer one coherent transition for a surface over multiple simultaneous scale, shadow, shimmer, and layout effects.
+
+### Motion Hierarchy
+
+- **Shells, drawers, and anchored overlays:** use the shared Framer shell spring from `src/components/motion.ts` (`shellSpringTransition`). Apply it to the containing layout surface, not each child.
+- **Contained content swaps:** use `contentSpringTransition` or the short `softTransition`; enter with a modest opacity/translate/scale treatment only when it clarifies hierarchy.
+- **Controls and rows:** use targeted `background-color`, `color`, `opacity`, or `transform` transitions. Fast feedback is 150ms; use small hover scale/lift only for standalone icon controls, and pair it with a subtle pressed return.
+- **Live work/status:** looping motion is reserved for active streaming, progress, or current-path feedback. Keep amplitude low, run only while state is active, and use a color/icon/text fallback.
+
+### Timing and CSS Rules
+
+- Shared CSS values live in `src/index.css`: `--ygg-motion-duration-fast` (150ms), `--ygg-motion-duration-standard` (180ms), `--ygg-motion-duration-layout` (260ms), and `--ygg-motion-ease-emphasized` (`cubic-bezier(0.22, 1, 0.36, 1)`).
+- Do not introduce `transition: all` or Tailwind `transition-all` in newly touched app chrome. Name the animated properties explicitly.
+- Animate compositor-friendly `transform` and `opacity` by default. Only animate `height`, `width`, or grid rows for intentional disclosure/layout changes.
+- Do not mix CSS transform hover states with Framer `layout` transforms on the same layout element; this creates jitter. Keep Framer layout ownership on the shell and use color-only CSS feedback on its controls.
+- Match deferred content mounting to the visible expansion duration so users never see an empty pane.
+
+### Reduced Motion and Performance
+
+- Framer components must use `useReducedMotion()` and the shared opacity-first fallback through `useMotionPreferences()` or the reduced-motion transition token.
+- CSS keyframes/utilities must provide a `prefers-reduced-motion` alternative that stops decorative looping/displacement while preserving visible status.
+- Never add layout animation to virtualized Chat rows, streaming row growth, active resize drags, Monaco/terminal layout, or Heimdall pan/pinch/wheel transforms.
+- Preserve existing focus restoration, `aria-expanded`, Escape, click-outside, pointer-event gating, and keyboard navigation when animating portals and disclosures.
+
+### Patterns
+
+- **Compact-to-expanded shell:** animate fixed outer wrapper and inner shell with `layout`; use `AnimatePresence mode='popLayout'`; reveal the detail height shell separately from its inner content.
+- **Anchored menu/portal:** set transform origin toward the trigger, use a modest directional offset, and keep backdrop opacity independent from surface movement.
+- **Hover-revealed action cluster:** combine a short opacity transition with a small vertical offset; avoid scaling the containing row.
+- **Resizable panes and graph canvases:** turn off dimension transitions during direct manipulation and leave requestAnimationFrame interaction loops imperative.

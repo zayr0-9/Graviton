@@ -8,6 +8,7 @@ import { ConversationId, Project } from '../../../../shared/types'
 import { Button } from '../components'
 import SearchList, { type SearchResultItem } from '../components/SearchList/SearchList'
 import { getThemeModeColor, useCustomChatTheme, useHtmlDarkMode } from '../components/ThemeManager/themeConfig'
+import { contentSpringTransition, shellSpringTransition, softTransition } from '../components/motion'
 import { chatSliceActions } from '../features/chats'
 import {
   activeConversationIdSet,
@@ -53,7 +54,7 @@ const SIDEBAR_PREVIEW_PORTAL_GAP_PX = 12
 const SIDEBAR_PREVIEW_PORTAL_MAX_WIDTH_PX = 440
 const SIDEBAR_PREVIEW_PORTAL_MIN_WIDTH_PX = 260
 const SIDEBAR_PREVIEW_CLOSE_DELAY_MS = 120
-const PROJECT_CONVERSATIONS_EXPANSION_DEFER_MS = 240
+const PROJECT_CONVERSATIONS_EXPANSION_DEFER_MS = 180
 const CONVERSATION_SORT_POPOVER_WIDTH_PX = 360
 const CONVERSATION_SORT_POPOVER_GAP_PX = 8
 const PROJECT_CONVERSATIONS_EXPANSION_TRANSITION = {
@@ -534,7 +535,7 @@ const ProjectAccordionItem: React.FC<ProjectAccordionItemProps> = memo(
                 onToggle(project.id)
               }
             }}
-            className='w-full text-left rounded-lg transition-all duration-200 cursor-pointer py-2 flex items-center hover:scale-90 justify-center'
+            className='flex w-full cursor-pointer items-center justify-center rounded-lg py-2 text-left transition-transform duration-150 hover:scale-[1.02] active:scale-[0.98]'
             title={project.name}
           >
             <Button
@@ -547,7 +548,7 @@ const ProjectAccordionItem: React.FC<ProjectAccordionItemProps> = memo(
             </Button>
           </div>
         ) : (
-          <div className='relative overflow-visible rounded-lg transition-all duration-200'>
+          <div className='relative overflow-visible rounded-lg transition-colors duration-150'>
             <div className='group/projectHeader relative min-w-0 rounded-lg px-2 py-2 hover:bg-stone-100/30 dark:hover:bg-yBlack-900/10'>
               <button
                 type='button'
@@ -558,7 +559,7 @@ const ProjectAccordionItem: React.FC<ProjectAccordionItemProps> = memo(
                 <motion.i
                   className='bx bx-chevron-right mt-0.5 inline-flex h-5 w-5 items-center justify-center text-lg leading-none text-neutral-500'
                   animate={{ rotate: isExpanded ? 90 : 0 }}
-                  transition={{ type: 'spring', stiffness: 420, damping: 30 }}
+                  transition={contentSpringTransition}
                   aria-hidden='true'
                 />
                 <div className='min-w-0 flex-1'>
@@ -1520,7 +1521,7 @@ const SideBar: React.FC<SideBarProps> = ({
                 <button
                   type='button'
                   onClick={() => setConversationTab('recent')}
-                  className={`rounded-full px-3 py-2 text-sm font-semibold transition-all duration-200 ${
+                  className={`rounded-full px-3 py-2 text-sm font-semibold transition-[background-color,color,transform] duration-150 ${
                     conversationTab === 'recent'
                       ? 'bg-white/80 text-neutral-900 shadow-[0_0_8px_rgba(15,23,42,0.08)] dark:bg-white/15 dark:text-neutral-100 dark:shadow-none'
                       : 'text-neutral-500 hover:bg-white/45 hover:text-neutral-900 dark:text-neutral-400 dark:hover:bg-white/10 dark:hover:text-neutral-200'
@@ -1531,7 +1532,7 @@ const SideBar: React.FC<SideBarProps> = ({
                 <button
                   type='button'
                   onClick={() => setConversationTab('favorites')}
-                  className={`rounded-full px-3 py-2 text-sm font-semibold transition-all duration-200 ${
+                  className={`rounded-full px-3 py-2 text-sm font-semibold transition-[background-color,color,transform] duration-150 ${
                     conversationTab === 'favorites'
                       ? 'bg-white/80 text-neutral-900 shadow-[0_0_8px_rgba(15,23,42,0.08)] dark:bg-white/15 dark:text-neutral-100 dark:shadow-none'
                       : 'text-neutral-500 hover:bg-white/45 hover:text-neutral-900 dark:text-neutral-400 dark:hover:bg-white/10 dark:hover:text-neutral-200'
@@ -1820,7 +1821,7 @@ const SideBar: React.FC<SideBarProps> = ({
             size='circle'
             rounded='full'
             onClick={handleToggleSidebar}
-            className='mx-auto p-2 transition-transform duration-200 hover:scale-103'
+            className='mx-auto p-2 transition-transform duration-150 hover:scale-[1.02] active:scale-[0.98]'
             aria-label={sidebarToggleAriaLabel}
             aria-haspopup='dialog'
             aria-expanded={showExpandedPortal}
@@ -1849,7 +1850,7 @@ const SideBar: React.FC<SideBarProps> = ({
                   initial={{ opacity: 0 }}
                   animate={{ opacity: 1 }}
                   exit={{ opacity: 0 }}
-                  transition={{ duration: 0.16, ease: 'easeOut' }}
+                  transition={softTransition}
                 />
 
                 <motion.section
@@ -1865,7 +1866,7 @@ const SideBar: React.FC<SideBarProps> = ({
                   initial={{ opacity: 0, x: -16, scale: 0.985 }}
                   animate={{ opacity: 1, x: 0, scale: 1 }}
                   exit={{ opacity: 0, x: -10, scale: 0.985 }}
-                  transition={{ duration: 0.22, ease: 'easeOut' }}
+                  transition={shellSpringTransition}
                 >
                   <div className='acrylic-subtle-no-hover h-full min-h-0 flex flex-col overflow-hidden rounded-xl'>
                     <div className='flex items-center justify-between px-3 py-2 border-b border-neutral-200/80 dark:border-neutral-800/80'>
@@ -1909,7 +1910,7 @@ const SideBar: React.FC<SideBarProps> = ({
                       initial={{ opacity: 0, x: -12, scale: 0.985 }}
                       animate={{ opacity: 1, x: 0, scale: 1 }}
                       exit={{ opacity: 0, x: -8, scale: 0.985 }}
-                      transition={{ duration: 0.18, ease: 'easeOut' }}
+                      transition={contentSpringTransition}
                     >
                       <div className='h-full min-h-0 flex flex-col'>
                         <div className='px-3 py-2 border-b border-neutral-200/80 dark:border-neutral-800/80 space-y-2'>
