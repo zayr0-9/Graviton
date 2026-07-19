@@ -109,3 +109,49 @@ export function extractOpenAIContextUsageFromBlocks(blocks: unknown): OpenAICont
 export function openAIContextUsageBlock(usage: OpenAIContextUsage): Record<string, unknown> {
   return { type: 'openai_context_usage', usage }
 }
+
+export interface ContinuationCompactionDecision {
+  shouldCompact: boolean
+  reportedTokens: number
+  projectedTokens: number
+  effectiveTokens: number
+  contextLength: number
+  thresholdPercent: number
+}
+
+export function resolveOpenAIContinuationCompaction(params: {
+  providerName: unknown
+  reportedUsage?: OpenAIContextUsage | null
+  projectedTokens: number
+  contextLength: number
+  enabled?: boolean
+  thresholdPercent?: number
+}): ContinuationCompactionDecision {
+  const reportedTokens = finiteNonNegative(params.reportedUsage?.usedTokens)
+  const projectedTokens = finiteNonNegative(params.projectedTokens)
+  const contextLength = finiteNonNegative(params.contextLength)
+  const thresholdPercent =
+    typeof params.thresholdPercent === 'number' && Number.isFinite(params.thresholdPercent)
+      ? Math.max(0, params.thresholdPercent)
+      : 85
+  const effectiveTokens = Math.max(reportedTokens, projectedTokens)
+
+  return {
+    shouldCompact:
+      params.enabled !== false &&
+      isOpenAIProvider(params.providerName) &&
+      contextLength > 0 &&
+      shouldCompactAtPercent(effectiveTokens, contextLength, thresholdPercent),
+    reportedTokens,
+    projectedTokens,
+    effectiveTokens,
+    contextLength,
+    thresholdPercent,
+  }
+}
+
+export function openAIModelContextLength(modelName: unknown): number {
+  const normalized = typeof modelName === 'string' ? modelName.trim().toLowerCase() : ''
+  if (normalized === 'gpt-4o' || normalized.startsWith('gpt-4o-')) return 128_000
+  return 258_000
+}

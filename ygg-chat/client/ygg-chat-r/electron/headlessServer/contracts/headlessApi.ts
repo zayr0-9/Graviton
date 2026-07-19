@@ -36,6 +36,12 @@ export interface HeadlessMessageRequest {
   planModeVerbosity?: 'concise' | 'normal' | 'detailed'
   streamId?: string | null
   toolTimeoutMs?: number
+  autoCompactionEnabled?: boolean
+  contextLength?: number
+  compactionThresholdPercent?: number
+  compactionProvider?: string | null
+  compactionModelName?: string | null
+  compactionSystemPrompt?: string | null
 }
 
 export type HeadlessStreamEvent =
@@ -70,6 +76,19 @@ export type HeadlessStreamEvent =
   | { type: 'chunk'; part: 'tool_call'; toolCall: any }
   | { type: 'chunk'; part: 'tool_result'; toolResult: any }
   | { type: 'context_usage'; usage: OpenAIContextUsage }
+  | {
+      type: 'context_compaction'
+      status: 'threshold_reached' | 'started' | 'completed' | 'failed'
+      turn: number
+      reportedTokens: number
+      projectedTokens: number
+      effectiveTokens: number
+      contextLength: number
+      thresholdPercent: number
+      parentMessageId?: string | null
+      summaryMessage?: any
+      error?: string
+    }
   | { type: 'assistant_message_persisted'; message: any }
   | { type: 'complete'; message: any; providerError?: boolean }
   | {

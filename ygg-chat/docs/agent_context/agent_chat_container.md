@@ -287,3 +287,8 @@ When adding new persistent UI settings, prefer helper modules in `src/helpers/*S
 ## OpenAI Context Meter
 
 `Chat.tsx` resolves context from the selected branch after its latest auto-compaction marker. For OpenAI only, it uses the latest assistant `context_usage` snapshot whenever it is available and falls back to the local `tokenx` estimate only when usage is unavailable. For every other provider, the context bar and 85% auto-compaction gate continue using the existing estimate unchanged. Never select usage from a sibling branch or sum usage across OpenAI tool turns.
+
+
+## Active-run Compaction
+
+Renderer-managed OpenAI send, edit, repeat, and branch tool loops invoke the same `compactBranch` operation before a required continuation when usage reaches 85%. The summary marker becomes the mutable loop parent and branch lineage anchor, allowing work to continue without another user message. Manual `/compactify` and pre-send compaction remain available as controls and fallback paths.

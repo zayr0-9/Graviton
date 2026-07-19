@@ -199,16 +199,18 @@ export function registerHeadlessServerRoutes(app: Express, deps: HeadlessServerR
   registerTestHarnessRoutes(app, {
     getDefaultTools: resolveDefaultInferenceTools,
   })
+  const compactionService = new CompactionService({
+    ...deps,
+    tokenStore,
+  })
   registerChatRoutes(app, {
     orchestrator: new ChatOrchestrator({
       ...deps,
       tokenStore,
       toolExecutor: executeToolViaOrchestrator,
       defaultToolsProvider: resolveDefaultInferenceTools,
+      compactBranch: input => compactionService.compactBranch(input),
     }),
-    compactionService: new CompactionService({
-      ...deps,
-      tokenStore,
-    }),
+    compactionService,
   })
 }
