@@ -33,6 +33,7 @@ import {
   ToolPermissionDialog,
 } from '../components'
 import { useHtmlIframeRegistry } from '../components/HtmlIframeRegistry/HtmlIframeRegistry'
+import { ContextUsageSparkline } from '../components/ContextUsageSparkline/ContextUsageSparkline'
 import {
   ChatInputBorderAnimationType,
   getStoredChatInputBorderAnimation,
@@ -104,6 +105,7 @@ import type { ContentBlock, ImageDraftTarget, StreamUndoSummary, ToolCall } from
 import type { PlanClarificationAnswer } from '../features/chats/planToolTypes'
 import {
   estimateContentBlocksForContext,
+  openAIContextUsageHistory,
   resolveContextTokens,
   safeEstimateTokenCount,
 } from '../features/chats/contextTokenEstimate'
@@ -6051,11 +6053,13 @@ function Chat() {
     })
 
     const estimatedContextTokens = promptAndContextTokens + messageTokens
+    const contextMessages = displayMessages.slice(startIndex)
     const resolvedContext = resolveContextTokens({
       providerName: providers.currentProvider,
       estimatedTokens: estimatedContextTokens,
-      messages: displayMessages.slice(startIndex),
+      messages: contextMessages,
     })
+    const openAIUsageHistory = openAIContextUsageHistory(contextMessages)
 
     return {
       promptAndContextTokens,
@@ -6063,6 +6067,7 @@ function Chat() {
       estimatedContextTokens,
       totalContextTokens: resolvedContext.effectiveTokens,
       reportedUsage: resolvedContext.reportedUsage,
+      openAIUsageHistory,
       source: resolvedContext.source,
     }
   }, [
@@ -7231,17 +7236,12 @@ function Chat() {
                             {tokenLimits.totalBudget.toLocaleString()}
                           </span>
                         </div>
-                        {tokenUsage.reportedUsage && (
-                          <>
-                            <div className='mt-1 flex items-center gap-2 text-xs'>
-                              <span className='text-neutral-700 dark:text-neutral-300'>OpenAI reported:</span>
-                              <span>{tokenUsage.reportedUsage.usedTokens.toLocaleString()}</span>
-                            </div>
-                            <div className='mt-1 flex items-center gap-2 text-xs'>
-                              <span className='text-neutral-700 dark:text-neutral-300'>Cached input:</span>
-                              <span>{tokenUsage.reportedUsage.cachedInputTokens.toLocaleString()}</span>
-                            </div>
-                          </>
+                        {isOpenAIContextProvider && tokenUsage.openAIUsageHistory.length > 0 && (
+                          <ContextUsageSparkline
+                            points={tokenUsage.openAIUsageHistory}
+                            totalColor={tokenUsageProgressColor}
+                            isDarkMode={isDarkMode}
+                          />
                         )}
                         {!isOpenAIContextProvider && (
                           <>

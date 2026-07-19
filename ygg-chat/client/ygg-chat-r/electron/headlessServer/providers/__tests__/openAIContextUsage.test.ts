@@ -38,9 +38,10 @@ describe('OpenAI context usage', () => {
     expect(extractOpenAIContextUsageFromBlocks([{ type: 'openai_context_usage', usage }])?.usedTokens).toBe(90)
   })
 
-  it('keeps the local estimate as a conservative floor and retains the existing 85 percent gate', () => {
+  it('prefers provider-reported usage and falls back to the local estimate when it is unavailable', () => {
     const usage = normalizeOpenAIContextUsage({ input_tokens: 70, output_tokens: 10 })
-    expect(effectiveOpenAIContextTokens(usage, 90)).toBe(90)
+    expect(effectiveOpenAIContextTokens(usage, 90)).toBe(80)
+    expect(effectiveOpenAIContextTokens(null, 90)).toBe(90)
     expect(shouldCompactAtPercent(84_999, 100_000)).toBe(false)
     expect(shouldCompactAtPercent(85_000, 100_000)).toBe(true)
   })

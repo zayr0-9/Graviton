@@ -125,3 +125,25 @@ export function resolveContextTokens(params: {
     source: reportedUsage ? 'reported' : 'estimated',
   }
 }
+
+export function openAIContextUsageHistory(messages: Array<Message | null | undefined>): OpenAIContextUsage[] {
+  const history: OpenAIContextUsage[] = []
+  const seenSnapshots = new Set<string>()
+
+  for (const message of messages) {
+    if (!message || message.role !== 'assistant') continue
+    const direct = message.context_usage
+    const usage =
+      direct && typeof direct === 'object' && !Array.isArray(direct) && direct.provider === 'openai'
+        ? (direct as OpenAIContextUsage)
+        : extractOpenAIContextUsageFromBlocks(message.content_blocks)
+    if (!usage) continue
+
+    const snapshotKey = usage.responseId || `${usage.recordedAt}:${usage.usedTokens}:${usage.cachedInputTokens}`
+    if (seenSnapshots.has(snapshotKey)) continue
+    seenSnapshots.add(snapshotKey)
+    history.push(usage)
+  }
+
+  return history
+}

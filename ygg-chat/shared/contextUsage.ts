@@ -72,7 +72,7 @@ export function isOpenAIProvider(providerName: unknown): boolean {
 }
 
 export function effectiveOpenAIContextTokens(reported: OpenAIContextUsage | null | undefined, estimated: number): number {
-  return Math.max(reported?.usedTokens || 0, finiteNonNegative(estimated))
+  return reported?.usedTokens ?? finiteNonNegative(estimated)
 }
 
 export function shouldCompactAtPercent(usedTokens: number, contextLength: number, thresholdPercent = 85): boolean {
@@ -93,10 +93,13 @@ export function extractOpenAIContextUsageFromBlocks(blocks: unknown): OpenAICont
   for (let index = parsed.length - 1; index >= 0; index--) {
     const block = parsed[index]
     if (block?.type !== 'openai_context_usage') continue
-    const normalized = normalizeOpenAIContextUsage(block.usage ?? block, {
-      model: typeof block.model === 'string' ? block.model : undefined,
-      responseId: typeof block.responseId === 'string' ? block.responseId : undefined,
-      recordedAt: typeof block.recordedAt === 'string' ? block.recordedAt : undefined,
+    const usage = block.usage ?? block
+    const normalized = normalizeOpenAIContextUsage(usage, {
+      model: typeof block.model === 'string' ? block.model : typeof usage?.model === 'string' ? usage.model : undefined,
+      responseId:
+        typeof block.responseId === 'string' ? block.responseId : typeof usage?.responseId === 'string' ? usage.responseId : undefined,
+      recordedAt:
+        typeof block.recordedAt === 'string' ? block.recordedAt : typeof usage?.recordedAt === 'string' ? usage.recordedAt : undefined,
     })
     if (normalized) return normalized
   }
