@@ -7,7 +7,13 @@ import type { ProviderTokenStore } from '../providers/tokenStore.js'
 import { BranchOrchestrator, type ResolvedExecution } from './branchOrchestrator.js'
 import { buildHeadlessSystemPrompt } from './headlessSystemPrompt.js'
 import { ProviderRouter } from './providerRouter.js'
-import { ProviderErrorAssistantResponse, ToolLoopService, type ToolExecutor, type ToolLoopRunResult } from './toolLoopService.js'
+import {
+  ProviderErrorAssistantResponse,
+  ToolLoopService,
+  type ToolExecutor,
+  type ToolLoopCompactor,
+  type ToolLoopRunResult,
+} from './toolLoopService.js'
 import { filterToolsForOperationMode } from '../../../../../shared/operationModeToolPolicy.js'
 
 interface ChatOrchestratorDeps {
@@ -19,6 +25,7 @@ interface ChatOrchestratorDeps {
   toolLoopService?: ToolLoopService
   toolExecutor?: ToolExecutor
   defaultToolsProvider?: () => Array<{ name: string; description?: string; inputSchema?: Record<string, any> }>
+  compactBranch?: ToolLoopCompactor
 }
 
 export interface HeadlessChatOrchestrator {
@@ -48,6 +55,7 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
         messageRepo: this.messageRepo,
         providerRouter: this.providerRouter,
         executeTool: deps.toolExecutor,
+        compactBranch: deps.compactBranch,
       })
     this.defaultToolsProvider = deps.defaultToolsProvider ?? (() => [])
   }
@@ -181,6 +189,12 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
         rootPath: request.rootPath ?? conversation?.cwd ?? null,
         operationMode: resolvedOperationMode,
         toolTimeoutMs: request.toolTimeoutMs,
+        autoCompactionEnabled: request.autoCompactionEnabled,
+        contextLength: request.contextLength,
+        compactionThresholdPercent: request.compactionThresholdPercent,
+        compactionProvider: request.compactionProvider,
+        compactionModelName: request.compactionModelName,
+        compactionSystemPrompt: request.compactionSystemPrompt,
       },
         emit
       )
@@ -215,10 +229,11 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
 
     emit({ type: 'complete', message: toolLoopResult.finalAssistantMessage })
     } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error)
       this.streamingRunRepo.finish(trackedStreamId, {
         status: 'error',
-        endReason: 'error',
-        error: error instanceof Error ? error.message : String(error),
+        endReason: errorMessage.includes('context compaction') ? 'context_compaction_failed' : 'error',
+        error: errorMessage,
       })
       throw error
     }

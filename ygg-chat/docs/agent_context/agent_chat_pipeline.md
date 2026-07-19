@@ -74,3 +74,8 @@ Typical send flow:
 - Renderer IPC and the headless tool loop both consume `OpenAiChatgptProvider`; each completed provider/tool turn replaces the previous usage snapshot rather than being summed.
 - This authoritative calculation applies only to the OpenAI provider. Other providers retain Graviton's existing `tokenx` message/prompt estimation.
 - For OpenAI, the renderer uses provider-reported usage whenever it is available and falls back to its local estimate only when no usage is reported. Auto-compaction retains the existing 85% model-context threshold.
+
+
+## Mid-run OpenAI Compaction
+
+OpenAI/Codex tool loops evaluate context again at the safe continuation boundary: after the assistant turn and all requested tool results are persisted, but before the next provider request. The gate uses the greater of provider-reported usage and a projected post-tool replay estimate. At 85% of the active model context window it runs the existing branch compaction operation, re-anchors the same stream to the resulting `__auto_compaction_summary__` marker, and continues with empty user content. Tools are never re-executed across this boundary. If compaction fails, continuation stops before another provider request.

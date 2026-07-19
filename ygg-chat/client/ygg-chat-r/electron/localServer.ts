@@ -3823,7 +3823,7 @@ function setupServer() {
         name: 'GPT-5.5',
         displayName: 'GPT-5.5',
         description: 'Latest GPT-5.5 frontier model for professional work',
-        contextLength: 400000,
+        contextLength: 258000,
         maxCompletionTokens: 128000,
       },
       {
@@ -3831,7 +3831,7 @@ function setupServer() {
         name: 'GPT-5.5 Pro',
         displayName: 'GPT-5.5 Pro',
         description: 'Version of GPT-5.5 that produces smarter and more precise responses',
-        contextLength: 400000,
+        contextLength: 258000,
         maxCompletionTokens: 128000,
       },
       {
@@ -3839,7 +3839,7 @@ function setupServer() {
         name: 'GPT-5.4',
         displayName: 'GPT-5.4',
         description: 'Latest GPT-5.4 frontier model for professional work',
-        contextLength: 400000,
+        contextLength: 258000,
         maxCompletionTokens: 128000,
       },
       {
@@ -3847,7 +3847,7 @@ function setupServer() {
         name: 'GPT-5.4 Mini',
         displayName: 'GPT-5.4 Mini',
         description: 'Strong mini model for coding, computer use, and subagents',
-        contextLength: 400000,
+        contextLength: 258000,
         maxCompletionTokens: 128000,
       },
       {
@@ -3855,7 +3855,7 @@ function setupServer() {
         name: 'GPT-5.4 Pro',
         displayName: 'GPT-5.4 Pro',
         description: 'Version of GPT-5.4 that produces smarter and more precise responses',
-        contextLength: 400000,
+        contextLength: 258000,
         maxCompletionTokens: 128000,
       },
       {
@@ -3863,7 +3863,7 @@ function setupServer() {
         name: 'GPT-5.3 Codex',
         displayName: 'GPT-5.3 Codex',
         description: 'Latest GPT-5.3 Codex model for coding tasks',
-        contextLength: 400000,
+        contextLength: 258000,
         maxCompletionTokens: 16384,
       },
       {

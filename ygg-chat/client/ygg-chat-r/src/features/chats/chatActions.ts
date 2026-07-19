@@ -1,7 +1,12 @@
 import { createAsyncThunk } from '@reduxjs/toolkit'
 import type { QueryClient } from '@tanstack/react-query'
 import { v4 as uuidv4 } from 'uuid'
-import { estimateContentBlocksForContext, safeEstimateTokenCount } from './contextTokenEstimate'
+import {
+  estimateContentBlocksForContext,
+  latestOpenAIContextUsage,
+  safeEstimateTokenCount,
+} from './contextTokenEstimate'
+import { resolveOpenAIContinuationCompaction } from '../../../../../shared/contextUsage'
 import { ConversationId, MessageId } from '../../../../../shared/types'
 import { isCommunityMode } from '../../config/runtimeMode'
 import { getDefaultUserSystemPromptFromCache } from '../../hooks/useQueries'
@@ -2867,6 +2872,111 @@ export const compactBranch = createAsyncThunk<
 )
 
 // Streaming message sending with proper error handling
+async function compactOpenAIContinuationIfNeeded(params: {
+  dispatch: any
+  conversationId: ConversationId
+  streamId: string
+  history: Message[]
+  parentMessageId: MessageId | null
+  providerName: string
+  modelName: string
+  contextLength: number
+  projectedContext?: unknown[]
+}): Promise<{ history: Message[]; parentMessageId: MessageId | null }> {
+  const decision = resolveOpenAIContinuationCompaction({
+    providerName: params.providerName,
+    reportedUsage: latestOpenAIContextUsage(params.history),
+    projectedTokens:
+      params.history.reduce(
+        (total, message) =>
+          total +
+          safeEstimateTokenCount(message.content) +
+          estimateContentBlocksForContext(message.content_blocks) +
+          safeEstimateTokenCount(message.tool_calls),
+        0
+      ) + safeEstimateTokenCount(params.projectedContext),
+    contextLength: params.contextLength,
+    enabled: loadAutoCompactionEnabled(),
+  })
+
+  if (!decision.shouldCompact || params.parentMessageId == null) {
+    return { history: params.history, parentMessageId: params.parentMessageId }
+  }
+
+  const eventDetails = {
+    turn: 0,
+    reportedTokens: decision.reportedTokens,
+    projectedTokens: decision.projectedTokens,
+    effectiveTokens: decision.effectiveTokens,
+    contextLength: decision.contextLength,
+    thresholdPercent: decision.thresholdPercent,
+    parentMessageId: params.parentMessageId,
+  }
+  params.dispatch(
+    chatSliceActions.streamChunkReceived({
+      streamId: params.streamId,
+      chunk: { type: 'context_compaction', status: 'threshold_reached', ...eventDetails } as any,
+    })
+  )
+  params.dispatch(
+    chatSliceActions.streamChunkReceived({
+      streamId: params.streamId,
+      chunk: { type: 'context_compaction', status: 'started', ...eventDetails } as any,
+    })
+  )
+
+  try {
+    const providerSettings = loadProviderSettings()
+    const result = await params.dispatch(
+      compactBranch({
+        conversationId: params.conversationId,
+        parentMessageId: params.parentMessageId,
+        messages: params.history,
+        providerName: providerSettings.compactionProvider || params.providerName,
+        modelName: providerSettings.compactionModel || params.modelName,
+      })
+    ).unwrap()
+    const summary = result?.message
+    const validSummary =
+      summary?.role === 'system' &&
+      summary?.note === AUTO_COMPACTION_NOTE &&
+      String(summary?.parent_id ?? '') === String(params.parentMessageId)
+    if (!validSummary) throw new Error('Compaction returned an invalid branch summary marker')
+
+    params.dispatch(
+      chatSliceActions.streamChunkReceived({
+        streamId: params.streamId,
+        chunk: {
+          type: 'context_compaction',
+          status: 'completed',
+          ...eventDetails,
+          parentMessageId: summary.id,
+          summaryMessage: summary,
+        } as any,
+      })
+    )
+    params.dispatch(
+      chatSliceActions.streamLineageUpdated({
+        streamId: params.streamId,
+        currentBranchAnchorMessageId: summary.id,
+      })
+    )
+    return {
+      history: trimHistoryToLatestCompaction([...params.history, summary]),
+      parentMessageId: summary.id,
+    }
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    params.dispatch(
+      chatSliceActions.streamChunkReceived({
+        streamId: params.streamId,
+        chunk: { type: 'context_compaction', status: 'failed', ...eventDetails, error: message } as any,
+      })
+    )
+    throw new Error(`Automatic context compaction failed; continuation paused: ${message}`)
+  }
+}
+
 export const sendMessage = createAsyncThunk<
   { messageId: MessageId | null; userMessage: any; streamId: string },
   SendMessagePayload & { streamId?: string },
@@ -3690,6 +3800,22 @@ export const sendMessage = createAsyncThunk<
             }
 
             if (!continueTurn) break
+            const compactedContinuation = await compactOpenAIContinuationIfNeeded({
+              dispatch,
+              conversationId,
+              streamId,
+              history: currentTurnHistory,
+              parentMessageId: parent,
+              providerName: provider,
+              modelName: modelName || '',
+              contextLength:
+                modelsData?.models?.find(model => model.name === modelName)?.contextLength ||
+                modelsData?.selected?.contextLength ||
+                258_000,
+              projectedContext: [systemPrompt, pendingHookContextForNextTurn],
+            })
+            currentTurnHistory = compactedContinuation.history
+            parent = compactedContinuation.parentMessageId
             continue
           }
 
@@ -4306,6 +4432,22 @@ export const sendMessage = createAsyncThunk<
             }
 
             if (!continueTurn) break
+            const compactedContinuation = await compactOpenAIContinuationIfNeeded({
+              dispatch,
+              conversationId,
+              streamId,
+              history: currentTurnHistory,
+              parentMessageId: parent,
+              providerName: provider,
+              modelName: modelName || '',
+              contextLength:
+                modelsData?.models?.find(model => model.name === modelName)?.contextLength ||
+                modelsData?.selected?.contextLength ||
+                258_000,
+              projectedContext: [systemPrompt, pendingHookContextForNextTurn],
+            })
+            currentTurnHistory = compactedContinuation.history
+            parent = compactedContinuation.parentMessageId
             continue
           }
 
@@ -4905,7 +5047,12 @@ export const sendMessage = createAsyncThunk<
       const message = error instanceof Error ? error.message : 'Failed to send message'
       void finishStreamingRun(streamId, {
         status: error instanceof Error && error.name === 'AbortError' ? 'aborted' : 'error',
-        endReason: error instanceof Error && error.name === 'AbortError' ? 'aborted' : 'error',
+        endReason:
+          error instanceof Error && error.name === 'AbortError'
+            ? 'aborted'
+            : error instanceof Error && error.message.includes('context compaction')
+              ? 'context_compaction_failed'
+              : 'error',
         error: message,
       })
       dispatch(chatSliceActions.streamChunkReceived({ streamId, chunk: { type: 'error', error: message } }))
@@ -6066,6 +6213,19 @@ export const editMessageWithBranching = createAsyncThunk<
           }
 
           if (!continueTurn) break
+          const compactedContinuation = await compactOpenAIContinuationIfNeeded({
+            dispatch,
+            conversationId,
+            streamId,
+            history: currentTurnHistory,
+            parentMessageId: activeParentId,
+            providerName: provider,
+            modelName: modelName || '',
+            contextLength: branchContextLimit,
+            projectedContext: [baseSystemPrompt, pendingHookContextForNextTurn],
+          })
+          currentTurnHistory = compactedContinuation.history
+          activeParentId = compactedContinuation.parentMessageId
           continue
         }
 
@@ -6650,7 +6810,12 @@ export const editMessageWithBranching = createAsyncThunk<
       const message = error instanceof Error ? error.message : 'Failed to edit message'
       void finishStreamingRun(streamId, {
         status: error instanceof Error && error.name === 'AbortError' ? 'aborted' : 'error',
-        endReason: error instanceof Error && error.name === 'AbortError' ? 'aborted' : 'error',
+        endReason:
+          error instanceof Error && error.name === 'AbortError'
+            ? 'aborted'
+            : error instanceof Error && error.message.includes('context compaction')
+              ? 'context_compaction_failed'
+              : 'error',
         error: message,
       })
       dispatch(chatSliceActions.streamChunkReceived({ streamId, chunk: { type: 'error', error: message } }))
@@ -7473,6 +7638,22 @@ export const sendMessageToBranch = createAsyncThunk<
           }
 
           if (!continueTurn) break
+          const compactedContinuation = await compactOpenAIContinuationIfNeeded({
+            dispatch,
+            conversationId,
+            streamId,
+            history: currentTurnHistory,
+            parentMessageId: currentParentId,
+            providerName: provider,
+            modelName: modelName || '',
+            contextLength:
+              modelsData?.models?.find(model => model.name === modelName)?.contextLength ||
+              modelsData?.selected?.contextLength ||
+              258_000,
+            projectedContext: [baseSystemPrompt, pendingHookContextForNextTurn],
+          })
+          currentTurnHistory = compactedContinuation.history
+          currentParentId = compactedContinuation.parentMessageId
           continue
         }
 
@@ -7992,7 +8173,12 @@ export const sendMessageToBranch = createAsyncThunk<
       const message = error instanceof Error ? error.message : 'Failed to send message'
       void finishStreamingRun(streamId, {
         status: error instanceof Error && error.name === 'AbortError' ? 'aborted' : 'error',
-        endReason: error instanceof Error && error.name === 'AbortError' ? 'aborted' : 'error',
+        endReason:
+          error instanceof Error && error.name === 'AbortError'
+            ? 'aborted'
+            : error instanceof Error && error.message.includes('context compaction')
+              ? 'context_compaction_failed'
+              : 'error',
         error: message,
       })
       dispatch(chatSliceActions.streamChunkReceived({ streamId, chunk: { type: 'error', error: message } }))
@@ -9240,7 +9426,12 @@ export const sendCCMessage = createAsyncThunk<
       const message = error instanceof Error ? error.message : 'Failed to send CC message'
       void finishStreamingRun(streamId, {
         status: error instanceof Error && error.name === 'AbortError' ? 'aborted' : 'error',
-        endReason: error instanceof Error && error.name === 'AbortError' ? 'aborted' : 'error',
+        endReason:
+          error instanceof Error && error.name === 'AbortError'
+            ? 'aborted'
+            : error instanceof Error && error.message.includes('context compaction')
+              ? 'context_compaction_failed'
+              : 'error',
         error: message,
       })
       dispatch(chatSliceActions.streamChunkReceived({ streamId, chunk: { type: 'error', error: message } }))
@@ -9515,7 +9706,12 @@ export const sendCCBranch = createAsyncThunk<
       const message = error instanceof Error ? error.message : 'Failed to send CC branch message'
       void finishStreamingRun(streamId, {
         status: error instanceof Error && error.name === 'AbortError' ? 'aborted' : 'error',
-        endReason: error instanceof Error && error.name === 'AbortError' ? 'aborted' : 'error',
+        endReason:
+          error instanceof Error && error.name === 'AbortError'
+            ? 'aborted'
+            : error instanceof Error && error.message.includes('context compaction')
+              ? 'context_compaction_failed'
+              : 'error',
         error: message,
       })
       dispatch(chatSliceActions.streamChunkReceived({ streamId, chunk: { type: 'error', error: message } }))

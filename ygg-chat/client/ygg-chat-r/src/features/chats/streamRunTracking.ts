@@ -4,7 +4,7 @@ import { StreamLineage, StreamType } from './chatTypes'
 
 type StreamRunSource = 'renderer' | 'headless' | 'subagent' | 'tool' | 'unknown'
 type StreamRunStatus = 'running' | 'completed' | 'aborted' | 'error'
-type StreamRunEndReason = 'completed' | 'aborted' | 'error' | 'pruned' | 'unknown'
+type StreamRunEndReason = 'completed' | 'aborted' | 'error' | 'context_compaction_failed' | 'pruned' | 'unknown'
 
 const isLocalRuntime = (): boolean =>
   import.meta.env.VITE_ENVIRONMENT === 'electron' ||
