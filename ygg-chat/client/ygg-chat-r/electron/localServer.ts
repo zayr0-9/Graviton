@@ -10520,6 +10520,8 @@ export async function startLocalServer(
 
   try {
     initializeLocalDatabase(actualDbPath)
+    // Register memory routes and their list-only tool handler before tool registries consume builtInTools.
+    setupServer()
 
     // Initialize tool registries
     initializeBuiltInToolRegistry()
@@ -10614,8 +10616,6 @@ export async function startLocalServer(
     } catch (error) {
       console.error(`[LocalServer] Error registering MCP tools:`, error)
     }
-
-    setupServer()
 
     const retryableCodes = new Set(['EADDRINUSE', 'EACCES', 'EPERM'])
     const portCandidates = buildPortCandidates(preferredPort, fallbackPorts, allowEphemeralPort)
