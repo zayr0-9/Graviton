@@ -11,6 +11,12 @@ import { persistWithFallback, type ToolResultPersistencePolicy } from './toolRes
 import { sanitizeToolResultContentForModel } from '../providers/toolResultSanitizer.js'
 import { formatProviderErrorForAssistant, type FormattedProviderError } from '../providers/providerErrorFormatter.js'
 import { assertToolAllowedForOperationMode } from '../../../../../shared/operationModeToolPolicy.js'
+import {
+  extractOpenAIContextUsageFromBlocks,
+  openAIModelContextLength,
+  resolveOpenAIContinuationCompaction,
+  type OpenAIContextUsage,
+} from '../../../../../shared/contextUsage.js'
 
 export interface ToolExecutionContext {
   conversationId: string
@@ -23,6 +29,18 @@ export interface ToolExecutionContext {
 
 export type ToolExecutor = (toolCall: ProviderToolCall, context: ToolExecutionContext) => Promise<any>
 
+export type ToolLoopCompactor = (input: {
+  conversationId: string
+  parentMessageId: string
+  messages: any[]
+  provider: string
+  modelName: string
+  userId?: string | null
+  accessToken?: string | null
+  accountId?: string | null
+  systemPrompt?: string | null
+}) => Promise<{ message: any }>
+
 interface ToolLoopServiceDeps {
   messageRepo: MessageRepo
   providerRouter: ProviderRouter
@@ -30,6 +48,7 @@ interface ToolLoopServiceDeps {
   maxTurns?: number
   persistencePolicy?: Partial<ToolResultPersistencePolicy>
   providerTurnTimeoutMs?: number
+  compactBranch?: ToolLoopCompactor
 }
 
 export interface ToolLoopRunInput {
@@ -62,6 +81,12 @@ export interface ToolLoopRunInput {
   rootPath?: string | null
   operationMode?: 'plan' | 'execute'
   toolTimeoutMs?: number
+  autoCompactionEnabled?: boolean
+  contextLength?: number
+  compactionThresholdPercent?: number
+  compactionProvider?: string | null
+  compactionModelName?: string | null
+  compactionSystemPrompt?: string | null
 }
 
 export interface ToolLoopRunResult {
@@ -120,6 +145,32 @@ function parseJsonArray(value: any): any[] {
     }
   }
   return []
+}
+
+function approximateTokens(value: unknown): number {
+  if (value == null) return 0
+  let serialized: string
+  try {
+    serialized = typeof value === 'string' ? value : JSON.stringify(value)
+  } catch {
+    serialized = String(value)
+  }
+  return Math.ceil(serialized.length / 4)
+}
+
+function projectedReplayTokens(input: ToolLoopRunInput, history: any[]): number {
+  return (
+    approximateTokens(input.systemPrompt) +
+    approximateTokens(input.conversationContext) +
+    approximateTokens(input.projectContext) +
+    history.reduce((total, message) => total + approximateTokens(message), 0)
+  )
+}
+
+function usageFromMessage(message: any): OpenAIContextUsage | null {
+  const direct = message?.context_usage
+  if (direct && typeof direct === 'object' && direct.provider === 'openai') return direct as OpenAIContextUsage
+  return extractOpenAIContextUsageFromBlocks(message?.content_blocks)
 }
 
 function getToolResultPersistedContent(result: any): any {
@@ -209,6 +260,7 @@ export class ToolLoopService {
   private readonly maxTurns: number
   private readonly persistencePolicy?: Partial<ToolResultPersistencePolicy>
   private readonly providerTurnTimeoutMs: number
+  private readonly compactBranch?: ToolLoopCompactor
 
   constructor(deps: ToolLoopServiceDeps) {
     this.messageRepo = deps.messageRepo
@@ -217,6 +269,7 @@ export class ToolLoopService {
     this.maxTurns = Math.max(1, deps.maxTurns ?? DEFAULT_MAX_TURNS)
     this.persistencePolicy = deps.persistencePolicy
     this.providerTurnTimeoutMs = Math.max(5_000, deps.providerTurnTimeoutMs ?? DEFAULT_PROVIDER_TURN_TIMEOUT_MS)
+    this.compactBranch = deps.compactBranch
   }
 
   async run(input: ToolLoopRunInput, emit: (event: HeadlessStreamEvent) => void): Promise<ToolLoopRunResult> {
@@ -506,9 +559,76 @@ export class ToolLoopService {
         history[assistantHistoryIndex] = assistantForContinuation
       }
 
-      // Continue the loop even when all tool calls fail.
-      // We still append tool_result blocks (with is_error=true) so the model can react,
-      // apologize, choose alternatives, or recover on the next turn.
+      // Continue the loop even when all tool calls fail. Before issuing the next
+      // provider request, compact at a quiescent boundary where every requested
+      // tool has executed exactly once and its result is durable.
+      currentParentId = assistantMessage.id
+      currentUserContent = ''
+
+      const reportedUsage = output.contextUsage ?? usageFromMessage(lastAssistantMessage)
+      const compactionDecision = resolveOpenAIContinuationCompaction({
+        providerName: input.provider,
+        reportedUsage,
+        projectedTokens: projectedReplayTokens(input, history),
+        contextLength: input.contextLength ?? openAIModelContextLength(input.modelName),
+        enabled: input.autoCompactionEnabled ?? true,
+        thresholdPercent: input.compactionThresholdPercent,
+      })
+
+      if (compactionDecision.shouldCompact) {
+        const eventDetails = {
+          turn,
+          reportedTokens: compactionDecision.reportedTokens,
+          projectedTokens: compactionDecision.projectedTokens,
+          effectiveTokens: compactionDecision.effectiveTokens,
+          contextLength: compactionDecision.contextLength,
+          thresholdPercent: compactionDecision.thresholdPercent,
+          parentMessageId: assistantMessage.id,
+        }
+        emit({ type: 'context_compaction', status: 'threshold_reached', ...eventDetails })
+        emit({ type: 'context_compaction', status: 'started', ...eventDetails })
+
+        if (!this.compactBranch) {
+          const error = 'Automatic context compaction is not configured; continuation paused before context overflow.'
+          emit({ type: 'context_compaction', status: 'failed', ...eventDetails, error })
+          throw new Error(error)
+        }
+
+        try {
+          const compacted = await this.compactBranch({
+            conversationId: input.conversationId,
+            parentMessageId: assistantMessage.id,
+            messages: history,
+            provider: input.compactionProvider || input.provider,
+            modelName: input.compactionModelName || input.modelName,
+            userId: input.userId,
+            accessToken: input.accessToken,
+            accountId: input.accountId,
+            systemPrompt: input.compactionSystemPrompt,
+          })
+          const summaryMessage = compacted?.message
+          const validSummary =
+            summaryMessage?.role === 'system' &&
+            summaryMessage?.note === '__auto_compaction_summary__' &&
+            String(summaryMessage?.parent_id ?? '') === String(assistantMessage.id)
+          if (!validSummary) throw new Error('Compaction returned an invalid branch summary marker')
+
+          history = [summaryMessage]
+          currentParentId = summaryMessage.id
+          emit({
+            type: 'context_compaction',
+            status: 'completed',
+            ...eventDetails,
+            parentMessageId: summaryMessage.id,
+            summaryMessage,
+          })
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error)
+          emit({ type: 'context_compaction', status: 'failed', ...eventDetails, error: message })
+          throw new Error(`Automatic context compaction failed; continuation paused: ${message}`)
+        }
+      }
+
       emit({
         type: 'tool_loop',
         status: 'turn_completed',
@@ -516,9 +636,6 @@ export class ToolLoopService {
         maxTurns: this.maxTurns,
         continued: true,
       })
-
-      currentParentId = assistantMessage.id
-      currentUserContent = ''
     }
 
     emit({

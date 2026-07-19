@@ -3,10 +3,48 @@ import {
   effectiveOpenAIContextTokens,
   extractOpenAIContextUsageFromBlocks,
   normalizeOpenAIContextUsage,
+  resolveOpenAIContinuationCompaction,
   shouldCompactAtPercent,
 } from '../../../../../../shared/contextUsage.js'
 
 describe('OpenAI context usage', () => {
+  it('compacts OpenAI continuations at 85% of the 258k subscription window', () => {
+    const below = resolveOpenAIContinuationCompaction({
+      providerName: 'OpenAI (ChatGPT)',
+      projectedTokens: 219_299,
+      contextLength: 258_000,
+    })
+    const atThreshold = resolveOpenAIContinuationCompaction({
+      providerName: 'OpenAI (ChatGPT)',
+      projectedTokens: 219_300,
+      contextLength: 258_000,
+    })
+
+    expect(below.shouldCompact).toBe(false)
+    expect(atThreshold.shouldCompact).toBe(true)
+  })
+
+  it('uses the greater of reported usage and the projected post-tool replay', () => {
+    const decision = resolveOpenAIContinuationCompaction({
+      providerName: 'openai',
+      reportedUsage: normalizeOpenAIContextUsage({ total_tokens: 200_000 }),
+      projectedTokens: 225_000,
+      contextLength: 258_000,
+    })
+
+    expect(decision.effectiveTokens).toBe(225_000)
+    expect(decision.shouldCompact).toBe(true)
+  })
+
+  it('does not activate mid-run compaction for other providers', () => {
+    expect(
+      resolveOpenAIContinuationCompaction({
+        providerName: 'OpenRouter',
+        projectedTokens: 250_000,
+        contextLength: 258_000,
+      }).shouldCompact
+    ).toBe(false)
+  })
   it('normalizes OpenAI usage without subtracting cached input tokens', () => {
     const usage = normalizeOpenAIContextUsage(
       {

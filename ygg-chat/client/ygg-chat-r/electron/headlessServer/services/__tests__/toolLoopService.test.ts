@@ -150,6 +150,115 @@ describeIfSqlite('ToolLoopService', () => {
     db.close()
   })
 
+  it('compacts an OpenAI tool loop before its next continuation request', async () => {
+    const providerRouter = new FakeProviderRouter()
+    providerRouter.enqueue({
+      content: '',
+      toolCalls: [{ id: 'call-compact', name: 'read_file', arguments: { path: 'README.md' } }],
+      contentBlocks: [{ type: 'tool_use', id: 'call-compact', name: 'read_file', input: { path: 'README.md' } }],
+      contextUsage: {
+        provider: 'openai',
+        inputTokens: 220_000,
+        cachedInputTokens: 0,
+        outputTokens: 1_000,
+        reasoningTokens: 0,
+        totalTokens: 221_000,
+        usedTokens: 221_000,
+        recordedAt: '2026-01-01T00:00:00.000Z',
+      },
+    })
+    providerRouter.enqueue({ content: 'Continued after compaction.' })
+
+    let compactionCalls = 0
+    const service = new ToolLoopService({
+      messageRepo,
+      providerRouter: providerRouter as unknown as ProviderRouter,
+      executeTool: async () => 'README body',
+      maxTurns: 4,
+      compactBranch: async input => {
+        compactionCalls++
+        const summary = messageRepo.createMessage({
+          conversationId: input.conversationId,
+          parentId: input.parentMessageId,
+          role: 'system',
+          content: 'Compacted context',
+          modelName: input.modelName,
+          contentBlocks: [],
+          note: '__auto_compaction_summary__',
+        })
+        return { message: summary }
+      },
+    })
+
+    const events: any[] = []
+    const result = await service.run(
+      {
+        provider: 'openaichatgpt',
+        modelName: 'gpt-5.4',
+        conversationId: 'c1',
+        assistantParentId: null,
+        history: [],
+        userContent: 'read and summarize',
+        autoCompactionEnabled: true,
+        contextLength: 258_000,
+      },
+      event => events.push(event)
+    )
+
+    expect(result.finalAssistantMessage.content).toBe('Continued after compaction.')
+    expect(compactionCalls).toBe(1)
+    expect(providerRouter.calls[1].input.history).toHaveLength(1)
+    expect(providerRouter.calls[1].input.history[0].note).toBe('__auto_compaction_summary__')
+    expect(events.some(event => event.type === 'context_compaction' && event.status === 'completed')).toBe(true)
+  })
+
+  it('pauses before another provider call when mid-run compaction fails', async () => {
+    const providerRouter = new FakeProviderRouter()
+    providerRouter.enqueue({
+      content: '',
+      toolCalls: [{ id: 'call-fail', name: 'read_file', arguments: { path: 'README.md' } }],
+      contextUsage: {
+        provider: 'openai',
+        inputTokens: 220_000,
+        cachedInputTokens: 0,
+        outputTokens: 1_000,
+        reasoningTokens: 0,
+        totalTokens: 221_000,
+        usedTokens: 221_000,
+        recordedAt: '2026-01-01T00:00:00.000Z',
+      },
+    })
+
+    const service = new ToolLoopService({
+      messageRepo,
+      providerRouter: providerRouter as unknown as ProviderRouter,
+      executeTool: async () => 'README body',
+      compactBranch: async () => {
+        throw new Error('summary provider unavailable')
+      },
+    })
+    const events: any[] = []
+
+    await expect(
+      service.run(
+        {
+          provider: 'openai',
+          modelName: 'gpt-5.4',
+          conversationId: 'c1',
+          assistantParentId: null,
+          history: [],
+          userContent: 'read it',
+          autoCompactionEnabled: true,
+          contextLength: 258_000,
+        },
+        event => events.push(event)
+      )
+    ).rejects.toThrow('continuation paused')
+
+    expect(providerRouter.calls).toHaveLength(1)
+    expect(events.some(event => event.type === 'context_compaction' && event.status === 'failed')).toBe(true)
+  })
+
   it('executes tool calls and continues to a second turn', async () => {
     const providerRouter = new FakeProviderRouter()
     providerRouter.enqueue({

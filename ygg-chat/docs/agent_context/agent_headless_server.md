@@ -72,3 +72,8 @@ Manual harness: `http://localhost:<local-server-port>/headless/openai-test` when
 - `OpenAiChatgptProvider` normalizes Codex usage and `ToolLoopService` emits a `context_usage` SSE event for every completed OpenAI provider turn.
 - Usage snapshots replace one another across full-replay tool continuations; they are not cumulative.
 - Assistant messages carry the snapshot in `context_usage` and in a structured content block so local persistence and renderer reloads retain it without changing other-provider behavior.
+
+
+## Mid-run Context Compaction
+
+`ToolLoopService` supports an injected branch compactor and explicit auto-compaction policy fields. For OpenAI/Codex only, a continued tool turn checks the latest normalized usage plus projected replay after tool-result persistence. Threshold, start, completion, and failure are emitted as `context_compaction` SSE events. A successful summary replaces pre-compaction replay history and becomes the next parent; a failure pauses the run before another inference call.
