@@ -10,7 +10,7 @@ import {
   saveAgentModePromptOverride,
   saveSubagentModePromptOverride,
 } from '../../../../src/helpers/operationModePromptStorage.js'
-import { resolveSubagentSystemPrompt } from '../../../../src/features/chats/subagentRuntime.js'
+import { resolveSubagentSystemPrompt } from '../../../../src/features/chats/subagentClient.js'
 import {
   assertToolAllowedForOperationMode,
   buildOperationModeSystemPrompt,

@@ -48,9 +48,22 @@ These return JSON and do not require an existing conversation.
 
 > Note: current implementation is OpenAI ChatGPT focused. For OpenRouter streaming in Electron integrations (including custom-tool UI `REQUEST_GENERATION`), use `/api/conversations/:id/messages` with `provider: "openrouter"`.
 
-### C) Optional subagent orchestration (non-SSE JSON)
+### C) Subagent orchestration (SSE)
 
-- `POST /api/headless/subagent/run`
+- `POST /api/headless/subagent/stream`
+
+Runs one agentic subagent turn-loop server-side (shared `ToolLoopService` engine) and
+streams `HeadlessSubagentStreamEvent` frames: `started` (includes `subagentRunId` + a
+child `streamId`), interior `chunk` / `tool_execution` / `tool_loop` / `context_usage` /
+`context_compaction` events, and a terminal `complete` (with `result` + `stats`) or `error`.
+
+Request body: `{ conversationId, parentMessageId, toolCallId?, streamId?, prompt,
+systemPrompt?, provider, modelName, tools?: string[], maxTurns?, temperature?,
+operationMode?, autoApprove, rootPath?, userId?, accessToken?, accountId? }`. Tool
+definitions are resolved server-side by name (the `subagent` tool is always excluded).
+`provider: "openrouter"` is rejected — subagents run on the local providers only.
+The transcript is persisted to `subagent_runs` / `subagent_messages` (see
+`agent_subagents_orchestration.md`); closing the SSE connection aborts the run.
 
 ---
 

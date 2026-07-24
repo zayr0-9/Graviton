@@ -44,6 +44,72 @@ export interface HeadlessMessageRequest {
   compactionSystemPrompt?: string | null
 }
 
+export interface HeadlessSubagentStreamRequest {
+  conversationId: string
+  parentMessageId: string
+  toolCallId?: string | null
+  /** Parent stream id, for lineage only (becomes the subagent run's parent_stream_id). */
+  streamId?: string | null
+  prompt: string
+  systemPrompt?: string | null
+  provider: string
+  modelName: string
+  /** Requested tool NAMES; resolved to definitions server-side. `subagent` is always excluded. */
+  tools?: string[]
+  maxTurns?: number
+  temperature?: number
+  operationMode?: 'plan' | 'execute'
+  /** Parent's toolAutoApprove && inheritAutoApprove. When false, only read-only tools run. */
+  autoApprove: boolean
+  rootPath?: string | null
+  userId?: string | null
+  accessToken?: string | null
+  accountId?: string | null
+  toolTimeoutMs?: number
+  autoCompactionEnabled?: boolean
+  contextLength?: number
+  compactionThresholdPercent?: number
+}
+
+export type HeadlessSubagentStreamEvent =
+  | HeadlessStreamEvent
+  | {
+      type: 'started'
+      operation: 'subagent'
+      subagentRunId: string
+      streamId: string
+      conversationId: string
+      parentMessageId: string
+      toolCallId?: string | null
+      provider: string
+      modelName: string
+      maxTurns: number
+      resolvedToolNames: string[]
+    }
+  | {
+      type: 'complete'
+      subagentRunId: string
+      message?: any
+      result: string
+      stats: {
+        turnsUsed: number
+        maxTurns: number
+        toolCallsUsed: number
+        toolsExecuted: Array<{ name: string; success: boolean }>
+      }
+    }
+  | {
+      type: 'error'
+      subagentRunId?: string
+      error: string
+      provider?: string
+      status?: number
+      errorType?: string
+      resetAt?: number
+      retryExhausted?: boolean
+      aborted?: boolean
+    }
+
 export type HeadlessStreamEvent =
   | {
       type: 'started'
@@ -58,7 +124,7 @@ export type HeadlessStreamEvent =
   | { type: 'provider_routed'; provider: string; modelName: string }
   | {
       type: 'tool_loop'
-      status: 'turn_started' | 'turn_completed' | 'max_turns_reached'
+      status: 'turn_started' | 'turn_completed' | 'max_turns_reached' | 'empty_turn_retry' | 'finalization_turn'
       turn: number
       maxTurns: number
       continued?: boolean

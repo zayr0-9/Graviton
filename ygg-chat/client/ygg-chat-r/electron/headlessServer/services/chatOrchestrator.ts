@@ -3,6 +3,7 @@ import { ConversationRepo } from '../persistence/conversationRepo.js'
 import { MessageRepo } from '../persistence/messageRepo.js'
 import { ProjectRepo } from '../persistence/projectRepo.js'
 import { StreamingRunRepo } from '../persistence/streamingRunRepo.js'
+import { TreeMessageSink } from './messageSink.js'
 import type { ProviderTokenStore } from '../providers/tokenStore.js'
 import { BranchOrchestrator, type ResolvedExecution } from './branchOrchestrator.js'
 import { buildHeadlessSystemPrompt } from './headlessSystemPrompt.js'
@@ -52,7 +53,7 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
     this.toolLoopService =
       deps.toolLoopService ??
       new ToolLoopService({
-        messageRepo: this.messageRepo,
+        sink: new TreeMessageSink({ messageRepo: this.messageRepo }),
         providerRouter: this.providerRouter,
         executeTool: deps.toolExecutor,
         compactBranch: deps.compactBranch,

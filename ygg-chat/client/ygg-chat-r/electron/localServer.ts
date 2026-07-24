@@ -19,6 +19,7 @@ import { isManagedToolPath } from './utils/managedToolPaths.js'
 
 // Tool imports
 import { registerHeadlessServerRoutes } from './headlessServer/index.js'
+import { SubagentRunRepo } from './headlessServer/persistence/subagentRunRepo.js'
 import { embedText as embedTextWithLmStudio, embedTexts as embedTextsWithLmStudio, getLmStudioBaseUrl } from './headlessServer/providers/lmStudioEmbeddings.js'
 import {
   handleLspWebSocketUpgrade,
@@ -1044,6 +1045,16 @@ let oauthCallbackServer: any = null // OAuth callback server on port 1455
 let db: Database.Database | null = null
 let statements: any = {}
 let currentDbPath: string | null = null
+
+// Lazily constructed after `statements` is initialized. Shared source of truth
+// with the headless subagent engine for subagent_runs / subagent_messages.
+let subagentRunRepoInstance: SubagentRunRepo | null = null
+function getSubagentRunRepo(): SubagentRunRepo {
+  if (!subagentRunRepoInstance) {
+    subagentRunRepoInstance = new SubagentRunRepo({ statements })
+  }
+  return subagentRunRepoInstance
+}
 let sqliteVecAvailable = false
 let sqliteVecLoadError: string | null = null
 
@@ -2546,18 +2557,8 @@ const safeJsonParseLocal = <T,>(value: any, fallback: T): T => {
   }
 }
 
-const normalizeSubagentMessageRow = (row: any) => ({
-  ...row,
-  tool_calls: safeJsonParseLocal(row.tool_calls, null),
-  content_blocks: safeJsonParseLocal(row.content_blocks, null),
-})
-
-const normalizeSubagentRunRow = (row: any, messages: any[] = []) => ({
-  ...row,
-  turns_used: Number(row.turns_used || 0),
-  tool_calls_used: Number(row.tool_calls_used || 0),
-  messages,
-})
+// Subagent run/message normalization now lives in SubagentRunRepo (single
+// source of truth shared with the headless subagent engine).
 
 const normalizeStreamingRunRow = (row: any) => {
   if (!row) return null
@@ -4231,7 +4232,6 @@ function setupServer() {
         status,
       } = req.body || {}
 
-      const runId = typeof id === 'string' && id.trim() ? id.trim() : uuidv4()
       const resolvedConversationId = String(conversation_id || conversationId || '').trim()
       const resolvedParentMessageId = String(parent_message_id || parentMessageId || '').trim()
       const resolvedPrompt = typeof prompt === 'string' ? prompt : ''
@@ -4249,27 +4249,18 @@ function setupServer() {
         return
       }
 
-      const now = new Date().toISOString()
-      statements.upsertSubagentRun.run(
-        runId,
-        resolvedConversationId,
-        resolvedParentMessageId,
-        tool_call_id || toolCallId || null,
-        resolvedPrompt,
-        provider || null,
-        model_name || modelName || null,
-        system_prompt || systemPrompt || null,
-        status || 'running',
-        null,
-        null,
-        0,
-        0,
-        now,
-        now
-      )
-
-      const run = statements.getSubagentRunById.get(runId)
-      res.json({ run: normalizeSubagentRunRow(run, []) })
+      const run = getSubagentRunRepo().createRun({
+        id: typeof id === 'string' && id.trim() ? id.trim() : undefined,
+        conversationId: resolvedConversationId,
+        parentMessageId: resolvedParentMessageId,
+        toolCallId: tool_call_id || toolCallId || null,
+        prompt: resolvedPrompt,
+        provider: provider || null,
+        modelName: model_name || modelName || null,
+        systemPrompt: system_prompt || systemPrompt || null,
+        status: status || 'running',
+      })
+      res.json({ run })
     } catch (error) {
       console.error('[LocalServer] Error creating subagent run:', error)
       res.status(500).json({ error: 'Failed to create subagent run' })
@@ -4279,8 +4270,8 @@ function setupServer() {
   app.post('/api/subagents/runs/:runId/messages', (req, res) => {
     try {
       const { runId } = req.params
-      const run = statements.getSubagentRunById.get(runId)
-      if (!run) {
+      const repo = getSubagentRunRepo()
+      if (!repo.getRunById(runId)) {
         res.status(404).json({ error: 'Subagent run not found' })
         return
       }
@@ -4292,25 +4283,20 @@ function setupServer() {
         return
       }
 
-      const nextSequence = statements.getNextSubagentMessageSequence.get(runId) as { nextSequence: number } | undefined
-      const resolvedSequence = typeof sequence === 'number' && Number.isFinite(sequence) ? sequence : nextSequence?.nextSequence ?? 0
-      const messageId = typeof id === 'string' && id.trim() ? id.trim() : uuidv4()
-      const messageCreatedAt = created_at || createdAt || new Date().toISOString()
+      repo.appendMessage(runId, {
+        id: typeof id === 'string' && id.trim() ? id.trim() : undefined,
+        role: resolvedRole as any,
+        content: typeof content === 'string' ? content : content == null ? '' : JSON.stringify(content),
+        thinkingBlock: thinking_block || thinkingBlock || null,
+        toolCalls: typeof tool_calls === 'string' ? tool_calls : tool_calls ?? toolCalls ?? null,
+        toolCallId: tool_call_id || toolCallId || null,
+        contentBlocks: typeof content_blocks === 'string' ? content_blocks : content_blocks ?? contentBlocks ?? null,
+        sequence: typeof sequence === 'number' && Number.isFinite(sequence) ? sequence : undefined,
+        createdAt: created_at || createdAt || undefined,
+      })
 
-      statements.insertSubagentMessage.run(
-        messageId,
-        runId,
-        resolvedRole,
-        typeof content === 'string' ? content : content == null ? '' : JSON.stringify(content),
-        thinking_block || thinkingBlock || null,
-        typeof tool_calls === 'string' ? tool_calls : JSON.stringify(tool_calls ?? toolCalls ?? null),
-        tool_call_id || toolCallId || null,
-        typeof content_blocks === 'string' ? content_blocks : JSON.stringify(content_blocks ?? contentBlocks ?? null),
-        resolvedSequence,
-        messageCreatedAt
-      )
-
-      const messages = statements.getSubagentMessagesByRunId.all(runId).map(normalizeSubagentMessageRow)
+      const messages = repo.getMessages(runId)
+      const messageId = typeof id === 'string' && id.trim() ? id.trim() : messages[messages.length - 1]?.id
       res.json({ message: messages.find((m: any) => m.id === messageId), messages })
     } catch (error) {
       console.error('[LocalServer] Error appending subagent message:', error)
@@ -4322,23 +4308,18 @@ function setupServer() {
     try {
       const { runId } = req.params
       const { status, final_response, finalResponse, error, turns_used, turnsUsed, tool_calls_used, toolCallsUsed } = req.body || {}
-      const now = new Date().toISOString()
-      statements.updateSubagentRun.run(
-        status || null,
-        final_response ?? finalResponse ?? null,
-        error ?? null,
-        typeof turns_used === 'number' ? turns_used : typeof turnsUsed === 'number' ? turnsUsed : null,
-        typeof tool_calls_used === 'number' ? tool_calls_used : typeof toolCallsUsed === 'number' ? toolCallsUsed : null,
-        now,
-        runId
-      )
-      const run = statements.getSubagentRunById.get(runId)
+      const run = getSubagentRunRepo().updateRun(runId, {
+        status: status || null,
+        finalResponse: final_response ?? finalResponse ?? null,
+        error: error ?? null,
+        turnsUsed: typeof turns_used === 'number' ? turns_used : typeof turnsUsed === 'number' ? turnsUsed : null,
+        toolCallsUsed: typeof tool_calls_used === 'number' ? tool_calls_used : typeof toolCallsUsed === 'number' ? toolCallsUsed : null,
+      })
       if (!run) {
         res.status(404).json({ error: 'Subagent run not found' })
         return
       }
-      const messages = statements.getSubagentMessagesByRunId.all(runId).map(normalizeSubagentMessageRow)
-      res.json({ run: normalizeSubagentRunRow(run, messages) })
+      res.json({ run })
     } catch (err) {
       console.error('[LocalServer] Error updating subagent run:', err)
       res.status(500).json({ error: 'Failed to update subagent run' })
@@ -4347,11 +4328,7 @@ function setupServer() {
 
   app.get('/api/subagents/by-parent/:messageId', (req, res) => {
     try {
-      const runs = statements.getSubagentRunsByParentMessageId.all(req.params.messageId).map((run: any) => {
-        const messages = statements.getSubagentMessagesByRunId.all(run.id).map(normalizeSubagentMessageRow)
-        return normalizeSubagentRunRow(run, messages)
-      })
-      res.json({ runs })
+      res.json({ runs: getSubagentRunRepo().listByParentMessage(req.params.messageId) })
     } catch (error) {
       console.error('[LocalServer] Error fetching subagent runs by parent:', error)
       res.status(500).json({ error: 'Failed to fetch subagent runs' })
@@ -4360,11 +4337,7 @@ function setupServer() {
 
   app.get('/api/conversations/:conversationId/subagents', (req, res) => {
     try {
-      const runs = statements.getSubagentRunsByConversationId.all(req.params.conversationId).map((run: any) => {
-        const messages = statements.getSubagentMessagesByRunId.all(run.id).map(normalizeSubagentMessageRow)
-        return normalizeSubagentRunRow(run, messages)
-      })
-      res.json({ runs })
+      res.json({ runs: getSubagentRunRepo().listByConversation(req.params.conversationId) })
     } catch (error) {
       console.error('[LocalServer] Error fetching conversation subagents:', error)
       res.status(500).json({ error: 'Failed to fetch conversation subagents' })

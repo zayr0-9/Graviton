@@ -4,6 +4,7 @@ import { loadAgentSettings, AgentSettings } from '../helpers/agentSettingsStorag
 import { createStreamingRequest, localApi } from '../utils/api'
 import { getAllTools, getToolsForAI } from '../features/chats/toolDefinitions'
 import { executeLocalTool } from '../features/chats/chatActions'
+import { abortSubagentControllers } from '../features/chats/subagentClient'
 import {
   updateGlobalAgentMessageCache,
   clearGlobalAgentOptimisticMessage,
@@ -217,6 +218,9 @@ class GlobalAgentLoop {
       this.streamAbortController.abort()
       this.streamAbortController = null
     }
+
+    // Abort any in-flight subagent stream started under this agent's stream id.
+    abortSubagentControllers(this.state.streamId)
 
     if (this.queryClient) {
       clearGlobalAgentStreamBuffer(this.queryClient)

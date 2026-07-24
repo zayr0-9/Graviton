@@ -75,11 +75,7 @@ import {
   type PlanClarificationAnswer,
   type PlanClarificationResult,
 } from './planToolTypes'
-import {
-  abortSubagentControllers,
-  executeSimpleSubagentCall,
-  executeSubagentCall,
-} from './subagentRuntime'
+import { abortSubagentControllers, executeSubagentCall } from './subagentClient'
 import {
   fetchConversationUndoSummaries,
   markStreamUndoFinalMessage,
@@ -1853,7 +1849,6 @@ type MultiCallExecutionContext = {
   accessToken?: string | null
   callerProvider?: string | null
   queryClient?: QueryClient | null
-  subagentDepth?: number
   dispatch?: any
   getState?: () => RootState
   enableHooks?: boolean
@@ -2093,7 +2088,6 @@ export const executeLocalTool = async (
     accessToken?: string | null
     callerProvider?: string | null
     queryClient?: QueryClient | null
-    subagentDepth?: number
     // For renderer-local tools and subagent execution
     dispatch?: any
     getState?: () => RootState
@@ -2107,29 +2101,21 @@ export const executeLocalTool = async (
   const timeoutMs = resolveToolTimeoutMs(toolCall, context?.timeoutMs)
   const preparedToolCall = applyDefaultBashProcessTimeout(toolCall, timeoutMs)
 
-  // Subagent: execute via ephemeral endpoint (works in both electron and web)
+  // Subagent: thin client over the local headless subagent engine.
   if (preparedToolCall?.name === 'subagent') {
-    if (!context?.dispatch || !context?.getState || !context?.conversationId || !context?.messageId) {
-      // Fallback to simple mode if context not available
-      return await executeSimpleSubagentCall(
-        preparedToolCall,
-        context?.accessToken ?? null,
-        context?.callerProvider ?? null
-      )
+    if (!context?.conversationId || !context?.messageId) {
+      throw new Error('Subagent requires conversation context (conversationId and messageId)')
     }
-    return await executeSubagentCall(preparedToolCall, context.accessToken ?? null, {
-      dispatch: context.dispatch,
-      getState: context.getState,
+    return await executeSubagentCall(preparedToolCall, {
       conversationId: context.conversationId,
       parentMessageId: context.messageId,
-      streamId: context.streamId,
+      toolCallId: typeof preparedToolCall?.id === 'string' ? preparedToolCall.id : null,
+      streamId: context.streamId ?? null,
       rootPath,
-      callerProvider: context.callerProvider,
-      queryClient: context.queryClient ?? null,
-      subagentDepth: (context.subagentDepth ?? 0) + 1,
       operationMode,
-      executeLocalTool,
-      executeToolWithPermissionCheck,
+      callerProvider: context.callerProvider ?? null,
+      queryClient: context.queryClient ?? null,
+      getState: context.getState ?? null,
     })
   }
 

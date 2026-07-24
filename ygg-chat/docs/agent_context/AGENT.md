@@ -39,6 +39,7 @@ Start here, then open the smallest relevant subsystem context file before editin
 
 - `agent_global_persistent_agent.md` - persistent Electron/local background agent loop and task queue.
 - `agent_headless_server.md` - headless local server API, server-side chat orchestration, mobile UI.
+- `agent_subagents_orchestration.md` - the `subagent` tool: renderer thin client + one server-side engine (shared tool loop), transcript persistence, SSE route.
 
 ## Platform and Integration
 
@@ -57,7 +58,7 @@ This MVP set deliberately covers the highest-risk agent-editing surfaces first. 
 
 - `agent_context_compaction_memory.md`
 
-Potential future context topics that do not yet have dedicated files in this checkout include branching conversations, projects/conversations/messages, providers/models, auth/provider tokens, subagents orchestration, local storage sync, frontend app shell, settings/preferences, theme UI, IDE/LSP context, and workspace mutations.
+Potential future context topics that do not yet have dedicated files in this checkout include branching conversations, projects/conversations/messages, providers/models, auth/provider tokens, local storage sync, frontend app shell, settings/preferences, theme UI, IDE/LSP context, and workspace mutations.
 
 ## Maintenance Rules
 

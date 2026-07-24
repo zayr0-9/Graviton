@@ -43,6 +43,16 @@ export interface CompactBranchInput {
   systemPrompt?: string | null
 }
 
+export interface GenerateCompactionSummaryInput {
+  messages: CompactionMessageLike[]
+  provider: string
+  modelName: string
+  userId?: string | null
+  accessToken?: string | null
+  accountId?: string | null
+  systemPrompt?: string | null
+}
+
 interface CompactionServiceDeps {
   db: any
   statements: any
@@ -421,17 +431,12 @@ export class CompactionService {
     this.providerRouter = deps.providerRouter ?? new ProviderRouter({ tokenStore: deps.tokenStore })
   }
 
-  async compactBranch(input: CompactBranchInput): Promise<{ message: any }> {
-    const conversation = this.statements.getConversationById.get(input.conversationId) as any
-    if (!conversation) {
-      throw new Error(`Conversation not found: ${input.conversationId}`)
-    }
-
-    const parentMessage = this.statements.getMessageById.get(input.parentMessageId) as any
-    if (!parentMessage || String(parentMessage.conversation_id) !== String(input.conversationId)) {
-      throw new Error(`Parent message not found in conversation: ${input.parentMessageId}`)
-    }
-
+  /**
+   * Compact an arbitrary message array into a single resume-line-prefixed summary
+   * string. Does not touch any persistence, so it is reusable by callers that
+   * store the summary outside the main tree (e.g. the subagent transcript).
+   */
+  async generateCompactionSummary(input: GenerateCompactionSummaryInput): Promise<string> {
     const compactableHistory = trimHistoryToLatestCompaction(Array.isArray(input.messages) ? input.messages : [])
     const historyLines = buildCompactionHistoryLines(compactableHistory)
     const writeOpAppendix = buildCompactionWriteOpAppendix(compactableHistory)
@@ -464,7 +469,7 @@ export class CompactionService {
       systemPrompt: compactionSystemPrompt,
       history: [],
       userContent: compactionUserPrompt,
-      userId: input.userId ?? conversation.user_id ?? null,
+      userId: input.userId ?? null,
       accessToken: input.accessToken ?? null,
       accountId: input.accountId ?? null,
       tools: [],
@@ -477,11 +482,33 @@ export class CompactionService {
     }
 
     const fencedWriteOpAppendix = writeOpAppendix ? `\`\`\`\n${writeOpAppendix}\n\`\`\`` : ''
-    const persistedSummaryContent = ensureCompactionSummaryResumeLine(
+    return ensureCompactionSummaryResumeLine(
       [summaryText, fencedWriteOpAppendix]
         .filter(section => typeof section === 'string' && section.trim().length > 0)
         .join('\n\n')
     )
+  }
+
+  async compactBranch(input: CompactBranchInput): Promise<{ message: any }> {
+    const conversation = this.statements.getConversationById.get(input.conversationId) as any
+    if (!conversation) {
+      throw new Error(`Conversation not found: ${input.conversationId}`)
+    }
+
+    const parentMessage = this.statements.getMessageById.get(input.parentMessageId) as any
+    if (!parentMessage || String(parentMessage.conversation_id) !== String(input.conversationId)) {
+      throw new Error(`Parent message not found in conversation: ${input.parentMessageId}`)
+    }
+
+    const persistedSummaryContent = await this.generateCompactionSummary({
+      messages: input.messages,
+      provider: input.provider,
+      modelName: input.modelName,
+      userId: input.userId ?? conversation.user_id ?? null,
+      accessToken: input.accessToken,
+      accountId: input.accountId,
+      systemPrompt: input.systemPrompt,
+    })
 
     const message = this.messageRepo.createMessage({
       conversationId: input.conversationId,

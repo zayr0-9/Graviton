@@ -23,7 +23,8 @@ Use this when changing:
 - `client/ygg-chat-r/electron/headlessServer/routes/*`: route modules.
 - `client/ygg-chat-r/electron/headlessServer/services/chatOrchestrator.ts`: main server-side chat orchestration.
 - `client/ygg-chat-r/electron/headlessServer/services/branchOrchestrator.ts`: continuation/branch semantics.
-- `client/ygg-chat-r/electron/headlessServer/services/toolLoopService.ts`: assistant tool-call continuation.
+- `client/ygg-chat-r/electron/headlessServer/services/toolLoopService.ts`: shared assistant tool-call continuation loop; persists via an injectable `MessageSink` (`messageSink.ts`) and supports abort, per-run `maxTurns`, and opt-in robustness (empty-turn retry + finalization).
+- `client/ygg-chat-r/electron/headlessServer/services/subagentRunService.ts` + `routes/subagentRoutes.ts`: the `subagent` tool engine and its `POST /api/headless/subagent/stream` SSE route (see `agent_subagents_orchestration.md`). Reuses `ToolLoopService` with a transcript `MessageSink` (`subagentTranscriptSink.ts`) over `persistence/subagentRunRepo.ts`.
 - `client/ygg-chat-r/electron/headlessServer/providers/*`: provider adapters/token handling.
 - `client/ygg-chat-r/electron/headlessServer/persistence/*`: project/conversation/message repos, including `streamingRunRepo.ts` for durable stream lifecycle rows.
 - `client/ygg-chat-r/electron/headlessServer/stream/*`: SSE writer/event types.
@@ -66,6 +67,7 @@ Manual harness: `http://localhost:<local-server-port>/headless/openai-test` when
 - `agent_runtime_modes.md`
 - `agent_chat_pipeline.md`
 - `agent_local_tools_runtime.md`
+- `agent_subagents_orchestration.md`
 
 ## OpenAI Context Usage
 

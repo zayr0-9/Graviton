@@ -44,6 +44,7 @@ Typical send flow:
 
 - Preserve branch lineage and parent IDs when creating messages.
 - Tool calls are permission-gated unless auto-approval/operation mode allows otherwise.
+- The `subagent` tool is a thin client (`subagentClient.ts`) over the server-side engine; `executeLocalTool` streams it via SSE and persists the returned text as the tool_result like any other tool. See `agent_subagents_orchestration.md`.
 - Compaction is additive: it creates a synthetic system summary, not deletion.
 - New multi-stream work should use explicit stream IDs, not rely on global default compatibility state.
 - Hook execution can modify prompts/tool inputs or block execution; keep hook call sites ordered.

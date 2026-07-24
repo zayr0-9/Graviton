@@ -1092,18 +1092,13 @@ export const BUILTIN_TOOL_DEFINITIONS: SharedToolDefinition[] = [
     name: 'subagent',
     enabled: true,
     description:
-      'Spawn an agentic sub-agent to perform complex tasks using tool calls. The subagent can use tools like read_file, ripgrep, browse_web etc. to accomplish tasks autonomously. Messages are persisted and can be reviewed. Use orchestratorMode=true to specify exact tools, or false to use pre-configured default tools.',
+      'Spawn an agentic sub-agent to perform complex tasks using tool calls. The subagent can use tools like read_file, ripgrep, browse_web etc. to accomplish tasks autonomously. Its transcript is persisted and can be reviewed. Nested subagents are not supported. Use orchestratorMode=true to specify exact tools, or false to use pre-configured default tools.',
     inputSchema: {
       type: 'object',
       properties: {
         prompt: {
           type: 'string',
           description: 'The task prompt for the subagent. Be specific and provide all necessary context.',
-        },
-        model: {
-          type: 'string',
-          description:
-            'Model to use for the subagent (e.g., "anthropic/claude-sonnet-4", "gpt-5.6-sol", "google/gemini-2.0-flash"). If omitted, uses the Subagent model from Settings, then the selected provider model, with GPT-5.6 Sol as the final fallback.',
         },
         systemPrompt: {
           type: 'string',
@@ -1129,17 +1124,7 @@ export const BUILTIN_TOOL_DEFINITIONS: SharedToolDefinition[] = [
         inheritAutoApprove: {
           type: 'boolean',
           description:
-            'If true, inherit parent auto-approve setting for tool calls. If false, always require approval for subagent tool calls. Default: true.',
-        },
-        sessionId: {
-          type: 'string',
-          description:
-            'Optional existing subagent session id to resume. Only used when resume=true. Phase 1 resume requires the conversation messages to already be loaded in the frontend cache.',
-        },
-        resume: {
-          type: 'boolean',
-          description:
-            'If true and sessionId is provided, continue an existing persisted subagent session instead of starting a new one.',
+            'If true, inherit parent auto-approve setting for tool calls. If false, the subagent is restricted to read-only tools. Default: true.',
         },
       },
       required: ['prompt'],

@@ -1,5 +1,5 @@
 import Conf from 'conf'
-import { app, BrowserWindow, dialog, ipcMain, Menu, nativeTheme, screen, shell, Tray, webContents } from 'electron'
+import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, nativeTheme, screen, shell, Tray, webContents } from 'electron'
 import autoUpdaterPkg from 'electron-updater'
 import fs from 'fs'
 import os from 'os'
@@ -653,8 +653,17 @@ function createWindow() {
 
 function createTray() {
   if (tray) return
+
   const iconPath = getIconPath(nativeTheme.shouldUseDarkColors)
-  tray = new Tray(iconPath)
+  let trayIcon = nativeImage.createFromPath(iconPath)
+
+  if (process.platform === 'darwin') {
+    // Menu-bar icons use point dimensions, unlike application/window icons.
+    // Keep the full-color app artwork rather than converting it to a monochrome template glyph.
+    trayIcon = trayIcon.resize({ width: 18, height: 18 })
+  }
+
+  tray = new Tray(trayIcon)
   tray.setToolTip('Graviton')
   tray.on('click', () => {
     if (mainWindow) {

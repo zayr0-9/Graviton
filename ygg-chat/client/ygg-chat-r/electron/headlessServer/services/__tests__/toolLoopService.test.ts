@@ -1,8 +1,9 @@
 import type Database from 'better-sqlite3'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { MessageRepo } from '../../persistence/messageRepo.js'
+import type { MessageSink } from '../messageSink.js'
 import { ProviderRouter } from '../providerRouter.js'
-import { ToolLoopService } from '../toolLoopService.js'
+import { ProviderEmptyResponseError, ToolLoopService } from '../toolLoopService.js'
 
 let BetterSqlite3Ctor: (new (filename: string) => Database.Database) | null = null
 
@@ -615,5 +616,237 @@ describeIfSqlite('ToolLoopService plan mode runtime block list', () => {
 
     expect(executorCalled).toBe(false)
     expect(events.some((event: any) => event.type === 'tool_execution' && event.status === 'failed')).toBe(true)
+  })
+})
+
+// These exercise the loop control flow (signal, robustness) without SQLite by
+// injecting an in-memory MessageSink, so they run in every environment.
+class FakeSink implements MessageSink {
+  readonly persisted: any[] = []
+  private seq = 0
+
+  persistAssistantMessage(draft: any): any {
+    const message = {
+      id: `m${++this.seq}`,
+      role: 'assistant',
+      content: draft.content ?? '',
+      content_blocks: JSON.stringify(draft.contentBlocks ?? null),
+      tool_calls: JSON.stringify(draft.toolCalls ?? null),
+      parent_id: draft.parentId ?? null,
+      conversation_id: draft.conversationId,
+      ...(draft.contextUsage ? { context_usage: draft.contextUsage } : {}),
+    }
+    this.persisted.push(message)
+    return message
+  }
+
+  updateAssistantToolState(messageId: string, update: any): any | null {
+    const message = this.persisted.find(m => m.id === messageId)
+    if (!message) return null
+    message.content_blocks = JSON.stringify(update.contentBlocks ?? null)
+    message.tool_calls = JSON.stringify(update.toolCalls ?? null)
+    return message
+  }
+}
+
+const baseRunInput = {
+  provider: 'openaichatgpt',
+  modelName: 'gpt-5.6-sol',
+  conversationId: 'c1',
+  assistantParentId: null,
+  history: [] as any[],
+  userContent: 'do the task',
+}
+
+describe('ToolLoopService signal + robustness (in-memory sink)', () => {
+  it('forwards the abort signal to the provider request', async () => {
+    const providerRouter = new FakeProviderRouter()
+    providerRouter.enqueue({ content: 'done' })
+    const controller = new AbortController()
+    const service = new ToolLoopService({
+      sink: new FakeSink(),
+      providerRouter: providerRouter as unknown as ProviderRouter,
+    })
+
+    await service.run({ ...baseRunInput, signal: controller.signal }, () => {})
+
+    expect(providerRouter.calls[0].input.signal).toBe(controller.signal)
+  })
+
+  it('stops before the next turn when aborted during tool execution', async () => {
+    const providerRouter = new FakeProviderRouter()
+    providerRouter.enqueue({
+      content: '',
+      toolCalls: [{ id: 'call-1', name: 'read_file', arguments: { path: 'a' } }],
+    })
+    providerRouter.enqueue({ content: 'should never run' })
+    const controller = new AbortController()
+    const sink = new FakeSink()
+    const service = new ToolLoopService({
+      sink,
+      providerRouter: providerRouter as unknown as ProviderRouter,
+      executeTool: async () => {
+        controller.abort()
+        return 'tool output'
+      },
+    })
+
+    await expect(service.run({ ...baseRunInput, signal: controller.signal }, () => {})).rejects.toMatchObject({
+      name: 'AbortError',
+    })
+    expect(providerRouter.calls).toHaveLength(1)
+  })
+
+  it('propagates an abort thrown by a tool without recording a failed tool result', async () => {
+    const providerRouter = new FakeProviderRouter()
+    providerRouter.enqueue({
+      content: '',
+      toolCalls: [{ id: 'call-1', name: 'read_file', arguments: { path: 'a' } }],
+    })
+    const controller = new AbortController()
+    const service = new ToolLoopService({
+      sink: new FakeSink(),
+      providerRouter: providerRouter as unknown as ProviderRouter,
+      executeTool: async () => {
+        controller.abort()
+        const abortError = new Error('aborted')
+        abortError.name = 'AbortError'
+        throw abortError
+      },
+    })
+
+    const events: any[] = []
+    await expect(
+      service.run({ ...baseRunInput, signal: controller.signal }, event => events.push(event))
+    ).rejects.toMatchObject({ name: 'AbortError' })
+    expect(events.some(event => event.type === 'tool_execution' && event.status === 'failed')).toBe(false)
+  })
+
+  it('retries once on an empty turn and recovers', async () => {
+    const providerRouter = new FakeProviderRouter()
+    providerRouter.enqueue({ content: '' })
+    providerRouter.enqueue({ content: 'recovered answer' })
+    const sink = new FakeSink()
+    const service = new ToolLoopService({
+      sink,
+      providerRouter: providerRouter as unknown as ProviderRouter,
+    })
+
+    const events: any[] = []
+    const result = await service.run(
+      { ...baseRunInput, robustness: { retryEmptyTurn: true, emptyTurnRetryDelayMs: 1 } },
+      event => events.push(event)
+    )
+
+    expect(providerRouter.calls).toHaveLength(2)
+    expect(result.finalAssistantMessage.content).toBe('recovered answer')
+    expect(sink.persisted).toHaveLength(1)
+    expect(events.some(event => event.type === 'tool_loop' && event.status === 'empty_turn_retry')).toBe(true)
+  })
+
+  it('throws ProviderEmptyResponseError when a no-tool run stays empty after retry', async () => {
+    const providerRouter = new FakeProviderRouter()
+    providerRouter.enqueue({ content: '' })
+    providerRouter.enqueue({ content: '   ' })
+    const service = new ToolLoopService({
+      sink: new FakeSink(),
+      providerRouter: providerRouter as unknown as ProviderRouter,
+    })
+
+    await expect(
+      service.run({ ...baseRunInput, robustness: { retryEmptyTurn: true, emptyTurnRetryDelayMs: 1 } }, () => {})
+    ).rejects.toBeInstanceOf(ProviderEmptyResponseError)
+    expect(providerRouter.calls).toHaveLength(2)
+  })
+
+  it('runs a tool-free finalization turn when tools ran but no answer was produced', async () => {
+    const providerRouter = new FakeProviderRouter()
+    providerRouter.enqueue({
+      content: '',
+      toolCalls: [{ id: 'call-1', name: 'read_file', arguments: { path: 'a' } }],
+    })
+    providerRouter.enqueue({ content: '' })
+    providerRouter.enqueue({ content: 'final summary' })
+    const service = new ToolLoopService({
+      sink: new FakeSink(),
+      providerRouter: providerRouter as unknown as ProviderRouter,
+      executeTool: async () => 'tool output',
+      maxTurns: 5,
+    })
+
+    const events: any[] = []
+    const result = await service.run(
+      { ...baseRunInput, robustness: { finalizeOnSilentToolEnd: true } },
+      event => events.push(event)
+    )
+
+    expect(result.finalAssistantMessage.content).toBe('final summary')
+    expect(result.anyToolsExecuted).toBe(true)
+    expect(providerRouter.calls[2].input.tools).toBeUndefined()
+    expect(events.some(event => event.type === 'tool_loop' && event.status === 'finalization_turn')).toBe(true)
+  })
+
+  it('finalizes instead of throwing when max turns are exhausted with tool activity', async () => {
+    const providerRouter = new FakeProviderRouter()
+    providerRouter.enqueue({
+      content: '',
+      toolCalls: [{ id: 'call-1', name: 'read_file', arguments: { path: 'a' } }],
+    })
+    providerRouter.enqueue({ content: 'wrapped up' })
+    const service = new ToolLoopService({
+      sink: new FakeSink(),
+      providerRouter: providerRouter as unknown as ProviderRouter,
+      executeTool: async () => 'tool output',
+      maxTurns: 1,
+    })
+
+    const result = await service.run(
+      { ...baseRunInput, robustness: { finalizeOnSilentToolEnd: true } },
+      () => {}
+    )
+
+    expect(result.finalAssistantMessage.content).toBe('wrapped up')
+  })
+
+  it('still throws on max turns when finalization is disabled', async () => {
+    const providerRouter = new FakeProviderRouter()
+    providerRouter.enqueue({
+      content: '',
+      toolCalls: [{ id: 'call-1', name: 'read_file', arguments: { path: 'a' } }],
+    })
+    const service = new ToolLoopService({
+      sink: new FakeSink(),
+      providerRouter: providerRouter as unknown as ProviderRouter,
+      executeTool: async () => 'tool output',
+      maxTurns: 1,
+    })
+
+    await expect(service.run({ ...baseRunInput }, () => {})).rejects.toThrow('reached max turns')
+  })
+
+  it('clamps the per-run maxTurns override', async () => {
+    const providerRouter = new FakeProviderRouter()
+    providerRouter.enqueue({
+      content: '',
+      toolCalls: [{ id: 'a', name: 'read_file', arguments: {} }],
+    })
+    providerRouter.enqueue({
+      content: '',
+      toolCalls: [{ id: 'b', name: 'read_file', arguments: {} }],
+    })
+    providerRouter.enqueue({ content: 'unreached' })
+    const service = new ToolLoopService({
+      sink: new FakeSink(),
+      providerRouter: providerRouter as unknown as ProviderRouter,
+      executeTool: async () => 'tool output',
+      maxTurns: 400,
+    })
+
+    const events: any[] = []
+    await expect(
+      service.run({ ...baseRunInput, maxTurns: 2 }, event => events.push(event))
+    ).rejects.toThrow('reached max turns (2)')
+    expect(providerRouter.calls).toHaveLength(2)
+    expect(events.some(event => event.type === 'tool_loop' && event.status === 'max_turns_reached' && event.maxTurns === 2)).toBe(true)
   })
 })

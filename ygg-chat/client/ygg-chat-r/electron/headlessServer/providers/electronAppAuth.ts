@@ -217,12 +217,31 @@ export async function syncOpenRouterTokenFromElectronSession(tokenStore: Provide
   })
 }
 
-export function syncOpenAiChatGptTokenFromElectronStorage(tokenStore: ProviderTokenStore): void {
+export function syncOpenAiChatGptTokenFromElectronStorage(
+  tokenStore: ProviderTokenStore,
+  options: { preferNewest?: boolean } = {}
+): void {
   const record = readElectronOpenAiChatGptTokens()
 
   if (!record.accessToken || !record.accountId) {
     tokenStore.delete('openaichatgpt', record.userId)
     return
+  }
+
+  // Provider-side refreshes rotate the tokenStore copy but do NOT write back to
+  // the Electron Conf store, so a re-sync could regress a fresher token. When
+  // preferNewest is set (per-run re-sync), skip the upsert if the mirror row is
+  // already the same or newer.
+  if (options.preferNewest) {
+    const existing = tokenStore.get('openaichatgpt', record.userId)
+    if (existing) {
+      const sameToken = existing.accessToken === record.accessToken
+      const existingExpiry = existing.expiresAt ? new Date(existing.expiresAt).getTime() : NaN
+      const incomingExpiry = record.expiresAt ? new Date(record.expiresAt).getTime() : NaN
+      const existingIsNewer =
+        Number.isFinite(existingExpiry) && Number.isFinite(incomingExpiry) && existingExpiry > incomingExpiry
+      if (sameToken || existingIsNewer) return
+    }
   }
 
   tokenStore.upsert({

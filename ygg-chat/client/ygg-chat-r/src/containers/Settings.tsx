@@ -3196,8 +3196,8 @@ const Settings: React.FC = () => {
                 <div>
                   <p className='text-base font-medium text-stone-900 dark:text-stone-100'>Subagent Model</p>
                   <p className='text-sm text-stone-500 dark:text-stone-400'>
-                    Model used when a <code>subagent</code> tool call omits <code>model</code>. Leave unset to use the
-                    selected/default model for the resolved provider.
+                    Model used for every <code>subagent</code> tool call. Leave unset to use the selected/default model
+                    for the resolved provider.
                   </p>
                 </div>
                 <Select
@@ -3217,8 +3217,7 @@ const Settings: React.FC = () => {
                   className='max-w-xl'
                 />
                 <p className='text-xs text-stone-500 dark:text-stone-400'>
-                  Tool-call <code>model</code> arguments still override this setting. Current model list provider:{' '}
-                  <code>{subagentProviderForModels}</code>.
+                  Current model list provider: <code>{subagentProviderForModels}</code>.
                 </p>
               </div>
 

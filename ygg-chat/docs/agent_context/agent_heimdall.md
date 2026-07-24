@@ -104,7 +104,8 @@ For selected-message copying/moving:
 - Note data lives on the message row: `note` and `note_color`.
 - Note edits debounce `updateMessage({ id, content, note, note_color })`.
 - Heimdall stores note dialog state locally and reads/writes the current message from Redux.
-- Message and note previews use a short close-delay grace period so the pointer can cross the real gap from a node/pill into the preview without flicker.
+- The message hover preview is docked to the side of the panel opposite the hovered node (node in the left half → dock right; right half → dock left), computed from the node's on-screen centre via the same transform as `visiblePositions`. This guarantees it never overlaps the node (which would block clicks). Its width is capped to the node's opposite half to keep that guarantee on narrow panels.
+- Moving off a node starts a close timer (`MESSAGE_PREVIEW_CLOSE_DELAY_MS`, longer than the adjacent note preview's `PREVIEW_HOVER_TRANSFER_GRACE_MS` because the docked card is not under the cursor); entering the card cancels it so the card can be scrolled, and leaving the card restarts it. A new node-hover replaces the preview content.
 - Preview positioning wrappers are pointer-transparent; only the visible preview cards capture input and cancel the pending close timer.
 
 ### Search
@@ -116,9 +117,10 @@ For selected-message copying/moving:
 
 ### Subagent badges
 
-- Heimdall builds subagent badge data from assistant messages containing `subagent` tool calls and from dedicated subagent runs fetched from local APIs in Electron.
+- Heimdall builds subagent badge data from assistant messages containing `subagent` tool calls and from dedicated subagent runs fetched from local APIs in Electron (`GET /api/conversations/:id/subagents`, polled ~3s).
 - Dedicated run data overrides assistant tool-call derived entries for the same parent when available.
 - Badge click opens a modal showing parent task plus subagent call content blocks.
+- Data source is unchanged, but subagent transcripts (`subagent_runs` / `subagent_messages`) are now written by the server-side subagent engine, not the renderer. See `agent_subagents_orchestration.md`.
 
 ## Important Invariants
 

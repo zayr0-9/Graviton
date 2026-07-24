@@ -1,5 +1,6 @@
 import type { HeadlessStreamEvent } from '../contracts/headlessApi.js'
 import { MessageRepo } from '../persistence/messageRepo.js'
+import { TreeMessageSink, type MessageSink } from './messageSink.js'
 import type {
   ProviderGenerateInput,
   ProviderGenerateOutput,
@@ -25,6 +26,7 @@ export interface ToolExecutionContext {
   rootPath?: string | null
   operationMode?: 'plan' | 'execute'
   timeoutMs?: number
+  signal?: AbortSignal
 }
 
 export type ToolExecutor = (toolCall: ProviderToolCall, context: ToolExecutionContext) => Promise<any>
@@ -42,13 +44,29 @@ export type ToolLoopCompactor = (input: {
 }) => Promise<{ message: any }>
 
 interface ToolLoopServiceDeps {
-  messageRepo: MessageRepo
+  /**
+   * Message persistence port. Provide `sink` directly, or `messageRepo` to get
+   * the default tree persistence (wrapped in TreeMessageSink). One is required.
+   */
+  messageRepo?: MessageRepo
+  sink?: MessageSink
   providerRouter: ProviderRouter
   executeTool?: ToolExecutor
   maxTurns?: number
   persistencePolicy?: Partial<ToolResultPersistencePolicy>
   providerTurnTimeoutMs?: number
   compactBranch?: ToolLoopCompactor
+}
+
+export interface ToolLoopRobustnessOptions {
+  /** Retry a provider turn once when it comes back empty (no text/tools/image). */
+  retryEmptyTurn?: boolean
+  /** When tools ran but the loop ends with no visible answer, run one tool-free finalization turn. */
+  finalizeOnSilentToolEnd?: boolean
+  /** Override the finalization user instruction. */
+  finalizationInstruction?: string
+  /** Base delay (ms) before an empty-turn retry; jitter is added on top. */
+  emptyTurnRetryDelayMs?: number
 }
 
 export interface ToolLoopRunInput {
@@ -87,11 +105,22 @@ export interface ToolLoopRunInput {
   compactionProvider?: string | null
   compactionModelName?: string | null
   compactionSystemPrompt?: string | null
+  /** Per-run turn cap; clamped to [1, service maxTurns]. Defaults to service maxTurns. */
+  maxTurns?: number
+  /** Abort signal; checked between turns and before each tool, and forwarded to the provider. */
+  signal?: AbortSignal
+  /** Overrides the codex session / prompt-cache key (railwayTurn.conversationId). */
+  railwaySessionId?: string | null
+  /** Forwarded to openaichatgpt so commentary text can back-fill an empty final answer. */
+  allowCommentaryFallbackText?: boolean
+  /** Opt-in robustness behaviors; all default off so main-chat behavior is unchanged. */
+  robustness?: ToolLoopRobustnessOptions
 }
 
 export interface ToolLoopRunResult {
   finalAssistantMessage: any
   turnsUsed: number
+  anyToolsExecuted: boolean
   providerError?: FormattedProviderError
 }
 
@@ -109,24 +138,112 @@ export class ProviderErrorAssistantResponse extends Error {
   }
 }
 
+export class ProviderEmptyResponseError extends Error {
+  readonly provider: string
+  readonly modelName: string
+  readonly turnsUsed: number
+
+  constructor(input: { provider: string; modelName: string; turnsUsed: number }) {
+    super('Provider returned an empty response after retry')
+    this.name = 'ProviderEmptyResponseError'
+    this.provider = input.provider
+    this.modelName = input.modelName
+    this.turnsUsed = input.turnsUsed
+  }
+}
+
 const DEFAULT_MAX_TURNS = 400
 const DEFAULT_PROVIDER_TURN_TIMEOUT_MS = 180_000
+const EMPTY_TURN_RETRY_BASE_MS = 600
+const EMPTY_TURN_RETRY_JITTER_MS = 400
+const DEFAULT_FINALIZATION_INSTRUCTION =
+  'Summarize the tool results above and provide the final answer. Do not call tools. Be concise and complete.'
+const THINKING_WRAPPER_PATTERN = /<thinking>[\s\S]*?<\/thinking>\s*/gi
 
-function withTimeout<T>(task: Promise<T>, timeoutMs: number, label: string): Promise<T> {
+function isAbortError(error: unknown): boolean {
+  return typeof error === 'object' && error !== null && (error as any).name === 'AbortError'
+}
+
+function makeAbortError(): Error {
+  if (typeof DOMException !== 'undefined') {
+    return new DOMException('The operation was aborted.', 'AbortError')
+  }
+  const error = new Error('The operation was aborted.')
+  ;(error as any).name = 'AbortError'
+  return error
+}
+
+function stripThinkingWrapper(text: string): string {
+  if (!text) return ''
+  return text.replace(THINKING_WRAPPER_PATTERN, '').trim()
+}
+
+function outputHasImageBlock(output: ProviderGenerateOutput): boolean {
+  return Array.isArray(output.contentBlocks) && output.contentBlocks.some(block => block?.type === 'image')
+}
+
+/** A turn is "empty" when it yields no tool calls, no image, and no text after stripping reasoning. */
+function isEmptyTurnOutput(output: ProviderGenerateOutput): boolean {
+  if (Array.isArray(output.toolCalls) && output.toolCalls.length > 0) return false
+  if (outputHasImageBlock(output)) return false
+  return stripThinkingWrapper(output.content || '').length === 0
+}
+
+function abortAwareSleep(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise<void>((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(makeAbortError())
+      return
+    }
+    const timer = setTimeout(() => {
+      cleanup()
+      resolve()
+    }, ms)
+    const onAbort = () => {
+      cleanup()
+      reject(makeAbortError())
+    }
+    const cleanup = () => {
+      clearTimeout(timer)
+      signal?.removeEventListener('abort', onAbort)
+    }
+    signal?.addEventListener('abort', onAbort, { once: true })
+  })
+}
+
+function withTimeoutAndAbort<T>(
+  task: Promise<T>,
+  timeoutMs: number,
+  label: string,
+  signal?: AbortSignal
+): Promise<T> {
   const boundedTimeoutMs = Math.max(1_000, timeoutMs)
 
   return new Promise<T>((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(makeAbortError())
+      return
+    }
     const timer = setTimeout(() => {
+      cleanup()
       reject(new Error(`${label} timed out after ${boundedTimeoutMs}ms`))
     }, boundedTimeoutMs)
-
+    const onAbort = () => {
+      cleanup()
+      reject(makeAbortError())
+    }
+    const cleanup = () => {
+      clearTimeout(timer)
+      signal?.removeEventListener('abort', onAbort)
+    }
+    signal?.addEventListener('abort', onAbort, { once: true })
     task.then(
       value => {
-        clearTimeout(timer)
+        cleanup()
         resolve(value)
       },
       error => {
-        clearTimeout(timer)
+        cleanup()
         reject(error)
       }
     )
@@ -254,7 +371,7 @@ function appendGeneratedBlocks(output: ProviderGenerateOutput): any[] {
  * Phase 4: pending -> execute -> tool_result -> continue loop.
  */
 export class ToolLoopService {
-  private readonly messageRepo: MessageRepo
+  private readonly sink: MessageSink
   private readonly providerRouter: ProviderRouter
   private readonly executeTool?: ToolExecutor
   private readonly maxTurns: number
@@ -263,7 +380,13 @@ export class ToolLoopService {
   private readonly compactBranch?: ToolLoopCompactor
 
   constructor(deps: ToolLoopServiceDeps) {
-    this.messageRepo = deps.messageRepo
+    if (deps.sink) {
+      this.sink = deps.sink
+    } else if (deps.messageRepo) {
+      this.sink = new TreeMessageSink({ messageRepo: deps.messageRepo })
+    } else {
+      throw new Error('ToolLoopService requires either a sink or a messageRepo')
+    }
     this.providerRouter = deps.providerRouter
     this.executeTool = deps.executeTool
     this.maxTurns = Math.max(1, deps.maxTurns ?? DEFAULT_MAX_TURNS)
@@ -272,113 +395,235 @@ export class ToolLoopService {
     this.compactBranch = deps.compactBranch
   }
 
+  /**
+   * Issue one provider turn: build the request, generate (with per-turn timeout
+   * and abort), emit stream events, and surface a provider error as a persisted
+   * assistant message + ProviderErrorAssistantResponse. Abort errors propagate
+   * unwrapped so callers can distinguish cancellation from provider failure.
+   */
+  private async generateProviderTurn(params: {
+    input: ToolLoopRunInput
+    history: any[]
+    userContent: string
+    parentId: string | null
+    turn: number
+    maxTurns: number
+    disableTools: boolean
+    emit: (event: HeadlessStreamEvent) => void
+  }): Promise<ProviderGenerateOutput> {
+    const { input, emit, turn, maxTurns } = params
+    const providerRoute = normalizeProviderRoute(input.provider)
+    const providerInput: ProviderGenerateInput = {
+      modelName: input.modelName,
+      systemPrompt: input.systemPrompt ?? null,
+      history: params.history,
+      userContent: params.userContent,
+      userId: input.userId ?? null,
+      accessToken: input.accessToken ?? null,
+      accountId: input.accountId ?? null,
+      tools: params.disableTools ? undefined : input.tools,
+      think: input.think,
+      temperature: input.temperature,
+      signal: input.signal,
+      railwayTurn:
+        providerRoute === 'openrouter' || providerRoute === 'openaichatgpt'
+          ? {
+              conversationId: input.railwaySessionId || input.conversationId,
+              parentId: params.parentId,
+              operation: input.operation,
+              conversationContext: input.conversationContext ?? null,
+              projectContext: input.projectContext ?? null,
+              think: input.think,
+              temperature: input.temperature,
+              attachmentsBase64: turn === 1 && !params.disableTools ? (input.attachmentsBase64 ?? null) : null,
+              retrigger: turn === 1 && !params.disableTools ? input.retrigger : false,
+              executionMode: input.executionMode,
+              isBranch: input.isBranch,
+              storageMode: 'local',
+              isElectron: input.isElectron ?? true,
+              imageConfig: input.imageConfig,
+              reasoningConfig: input.reasoningConfig,
+              serviceTier: input.serviceTier,
+              promptCacheRetention: input.promptCacheRetention,
+              ...(input.allowCommentaryFallbackText != null
+                ? { allowCommentaryFallbackText: input.allowCommentaryFallbackText }
+                : {}),
+            }
+          : null,
+    }
+
+    let streamedTextDuringTurn = false
+    let streamedReasoningDuringTurn = false
+    let output: ProviderGenerateOutput
+    try {
+      output = await withTimeoutAndAbort(
+        this.providerRouter.generate(input.provider, providerInput, event => {
+          if (event?.type === 'chunk' && event.part === 'text' && typeof event.delta === 'string' && event.delta.length > 0) {
+            streamedTextDuringTurn = true
+          }
+          if (
+            event?.type === 'chunk' &&
+            event.part === 'reasoning' &&
+            typeof event.delta === 'string' &&
+            event.delta.length > 0
+          ) {
+            streamedReasoningDuringTurn = true
+          }
+          emit(event)
+        }),
+        this.providerTurnTimeoutMs,
+        `Provider turn ${turn}/${maxTurns}`,
+        input.signal
+      )
+    } catch (error) {
+      // Cancellation is not a provider failure; propagate it so the run aborts cleanly.
+      if (input.signal?.aborted || isAbortError(error)) {
+        throw error
+      }
+
+      const providerError = formatProviderErrorForAssistant(error, {
+        provider: input.provider,
+        modelName: input.modelName,
+      })
+
+      if (providerError) {
+        const assistantMessage = this.sink.persistAssistantMessage({
+          conversationId: input.conversationId,
+          parentId: params.parentId,
+          content: providerError.message,
+          modelName: input.modelName,
+          contentBlocks: [{ type: 'text', content: providerError.message }],
+        })
+
+        if (!streamedTextDuringTurn) {
+          emit({ type: 'chunk', part: 'text', delta: providerError.message })
+        }
+        emit({ type: 'assistant_message_persisted', message: assistantMessage })
+        throw new ProviderErrorAssistantResponse({ assistantMessage, providerError, turnsUsed: turn })
+      }
+
+      const message = error instanceof Error ? error.message : String(error)
+      emit({ type: 'error', error: `Continuation generation failed on turn ${turn}/${maxTurns}: ${message}` })
+      throw error
+    }
+
+    if (output.contextUsage) {
+      emit({ type: 'context_usage', usage: output.contextUsage })
+    }
+    if (output.reasoning && !streamedReasoningDuringTurn) {
+      emit({ type: 'chunk', part: 'reasoning', delta: output.reasoning })
+    }
+    if (output.content && !streamedTextDuringTurn) {
+      emit({ type: 'chunk', part: 'text', delta: output.content })
+    }
+
+    return output
+  }
+
+  /**
+   * One extra tool-free turn that asks the model to summarize prior tool results.
+   * Fixes the failure mode where a run ends with tool activity but no visible
+   * answer. Empty output here is a hard failure (ProviderEmptyResponseError).
+   */
+  private async runFinalizationTurn(params: {
+    input: ToolLoopRunInput
+    history: any[]
+    parentId: string | null
+    turnsSoFar: number
+    maxTurns: number
+    anyToolsExecuted: boolean
+    emit: (event: HeadlessStreamEvent) => void
+  }): Promise<ToolLoopRunResult> {
+    const { input, emit } = params
+    const finalizeTurn = params.turnsSoFar + 1
+    const instruction = input.robustness?.finalizationInstruction || DEFAULT_FINALIZATION_INSTRUCTION
+
+    emit({ type: 'tool_loop', status: 'finalization_turn', turn: finalizeTurn, maxTurns: params.maxTurns })
+
+    const history = [...params.history, { role: 'user', content: instruction }]
+    const output = await this.generateProviderTurn({
+      input,
+      history,
+      userContent: instruction,
+      parentId: params.parentId,
+      turn: finalizeTurn,
+      maxTurns: params.maxTurns,
+      disableTools: true,
+      emit,
+    })
+
+    const contentBlocks = appendGeneratedBlocks({ ...output, toolCalls: [] })
+    const assistantMessage = this.sink.persistAssistantMessage({
+      conversationId: input.conversationId,
+      parentId: params.parentId,
+      content: output.content || '',
+      modelName: input.modelName,
+      contentBlocks,
+      contextUsage: output.contextUsage,
+      thinkingBlock: output.reasoning ?? null,
+    })
+    emit({ type: 'assistant_message_persisted', message: assistantMessage })
+
+    if (!stripThinkingWrapper(output.content || '')) {
+      throw new ProviderEmptyResponseError({
+        provider: input.provider,
+        modelName: input.modelName,
+        turnsUsed: finalizeTurn,
+      })
+    }
+
+    emit({ type: 'tool_loop', status: 'turn_completed', turn: finalizeTurn, maxTurns: params.maxTurns, continued: false })
+    return {
+      finalAssistantMessage: assistantMessage,
+      turnsUsed: finalizeTurn,
+      anyToolsExecuted: params.anyToolsExecuted,
+    }
+  }
+
   async run(input: ToolLoopRunInput, emit: (event: HeadlessStreamEvent) => void): Promise<ToolLoopRunResult> {
+    const maxTurns = Math.max(1, Math.min(input.maxTurns ?? this.maxTurns, this.maxTurns))
+    const robustness = input.robustness
     let currentParentId = input.assistantParentId
     let currentUserContent = input.userContent
     let history = [...(input.history || [])]
     let lastAssistantMessage: any = null
-    for (let turn = 1; turn <= this.maxTurns; turn++) {
+    let anyToolsExecuted = false
+
+    for (let turn = 1; turn <= maxTurns; turn++) {
+      input.signal?.throwIfAborted()
       emit({
         type: 'tool_loop',
         status: 'turn_started',
         turn,
-        maxTurns: this.maxTurns,
+        maxTurns,
       })
 
-      const providerRoute = normalizeProviderRoute(input.provider)
-      const providerInput: ProviderGenerateInput = {
-        modelName: input.modelName,
-        systemPrompt: input.systemPrompt ?? null,
+      // Generate the turn, retrying once on an empty response when enabled.
+      let output = await this.generateProviderTurn({
+        input,
         history,
         userContent: currentUserContent,
-        userId: input.userId ?? null,
-        accessToken: input.accessToken ?? null,
-        accountId: input.accountId ?? null,
-        tools: input.tools,
-        think: input.think,
-        temperature: input.temperature,
-        railwayTurn:
-          providerRoute === 'openrouter' || providerRoute === 'openaichatgpt'
-            ? {
-                conversationId: input.conversationId,
-                parentId: currentParentId,
-                operation: input.operation,
-                conversationContext: input.conversationContext ?? null,
-                projectContext: input.projectContext ?? null,
-                think: input.think,
-                temperature: input.temperature,
-                attachmentsBase64: turn === 1 ? (input.attachmentsBase64 ?? null) : null,
-                retrigger: turn === 1 ? input.retrigger : false,
-                executionMode: input.executionMode,
-                isBranch: input.isBranch,
-                storageMode: 'local',
-                isElectron: input.isElectron ?? true,
-                imageConfig: input.imageConfig,
-                reasoningConfig: input.reasoningConfig,
-                serviceTier: input.serviceTier,
-                promptCacheRetention: input.promptCacheRetention,
-              }
-            : null,
-      }
+        parentId: currentParentId,
+        turn,
+        maxTurns,
+        disableTools: false,
+        emit,
+      })
 
-      let output: ProviderGenerateOutput
-      let streamedTextDuringTurn = false
-      let streamedReasoningDuringTurn = false
-      try {
-        output = await withTimeout(
-          this.providerRouter.generate(input.provider, providerInput, event => {
-            if (event?.type === 'chunk' && event.part === 'text' && typeof event.delta === 'string' && event.delta.length > 0) {
-              streamedTextDuringTurn = true
-            }
-            if (
-              event?.type === 'chunk' &&
-              event.part === 'reasoning' &&
-              typeof event.delta === 'string' &&
-              event.delta.length > 0
-            ) {
-              streamedReasoningDuringTurn = true
-            }
-            emit(event)
-          }),
-          this.providerTurnTimeoutMs,
-          `Provider turn ${turn}/${this.maxTurns}`
-        )
-      } catch (error) {
-        const providerError = formatProviderErrorForAssistant(error, {
-          provider: input.provider,
-          modelName: input.modelName,
+      if (robustness?.retryEmptyTurn && isEmptyTurnOutput(output)) {
+        emit({ type: 'tool_loop', status: 'empty_turn_retry', turn, maxTurns })
+        const baseDelay = robustness.emptyTurnRetryDelayMs ?? EMPTY_TURN_RETRY_BASE_MS
+        await abortAwareSleep(baseDelay + Math.floor(Math.random() * EMPTY_TURN_RETRY_JITTER_MS), input.signal)
+        output = await this.generateProviderTurn({
+          input,
+          history,
+          userContent: currentUserContent,
+          parentId: currentParentId,
+          turn,
+          maxTurns,
+          disableTools: false,
+          emit,
         })
-
-        if (providerError) {
-          const assistantMessage = this.messageRepo.createMessage({
-            conversationId: input.conversationId,
-            parentId: currentParentId,
-            role: 'assistant',
-            content: providerError.message,
-            modelName: input.modelName,
-            contentBlocks: [{ type: 'text', content: providerError.message }],
-          })
-
-          if (!streamedTextDuringTurn) {
-            emit({ type: 'chunk', part: 'text', delta: providerError.message })
-          }
-          emit({ type: 'assistant_message_persisted', message: assistantMessage })
-          throw new ProviderErrorAssistantResponse({ assistantMessage, providerError, turnsUsed: turn })
-        }
-
-        const message = error instanceof Error ? error.message : String(error)
-        emit({ type: 'error', error: `Continuation generation failed on turn ${turn}/${this.maxTurns}: ${message}` })
-        throw error
-      }
-
-      if (output.contextUsage) {
-        emit({ type: 'context_usage', usage: output.contextUsage })
-      }
-      if (output.reasoning && !streamedReasoningDuringTurn) {
-        emit({ type: 'chunk', part: 'reasoning', delta: output.reasoning })
-      }
-      if (output.content && !streamedTextDuringTurn) {
-        emit({ type: 'chunk', part: 'text', delta: output.content })
       }
 
       const assistantToolCalls = Array.isArray(output.toolCalls)
@@ -390,15 +635,15 @@ export class ToolLoopService {
         toolCalls: assistantToolCalls,
       })
 
-      const assistantMessage = this.messageRepo.createMessage({
+      const assistantMessage = this.sink.persistAssistantMessage({
         conversationId: input.conversationId,
         parentId: currentParentId,
-        role: 'assistant',
         content: output.content || '',
         modelName: input.modelName,
         toolCalls: assistantToolCalls,
         contentBlocks: assistantContentBlocks,
         contextUsage: output.contextUsage,
+        thinkingBlock: output.reasoning ?? null,
       })
 
       lastAssistantMessage = assistantMessage
@@ -407,17 +652,43 @@ export class ToolLoopService {
       emit({ type: 'assistant_message_persisted', message: assistantMessage })
 
       if (!assistantToolCalls.length) {
+        const strippedText = stripThinkingWrapper(output.content || '')
+
+        // Tools ran but the model gave no visible answer: recover with a summary turn.
+        if (!strippedText && robustness?.finalizeOnSilentToolEnd && anyToolsExecuted) {
+          return await this.runFinalizationTurn({
+            input,
+            history,
+            parentId: assistantMessage.id,
+            turnsSoFar: turn,
+            maxTurns,
+            anyToolsExecuted,
+            emit,
+          })
+        }
+
+        // Provider produced nothing and no tools ever ran: a real failure, not fake success.
+        if (!strippedText && robustness?.retryEmptyTurn && !anyToolsExecuted) {
+          emit({ type: 'tool_loop', status: 'turn_completed', turn, maxTurns, continued: false })
+          throw new ProviderEmptyResponseError({
+            provider: input.provider,
+            modelName: input.modelName,
+            turnsUsed: turn,
+          })
+        }
+
         emit({
           type: 'tool_loop',
           status: 'turn_completed',
           turn,
-          maxTurns: this.maxTurns,
+          maxTurns,
           continued: false,
         })
 
         return {
           finalAssistantMessage: assistantMessage,
           turnsUsed: turn,
+          anyToolsExecuted,
         }
       }
 
@@ -426,19 +697,22 @@ export class ToolLoopService {
           type: 'tool_loop',
           status: 'turn_completed',
           turn,
-          maxTurns: this.maxTurns,
+          maxTurns,
           continued: false,
         })
 
         return {
           finalAssistantMessage: assistantMessage,
           turnsUsed: turn,
+          anyToolsExecuted,
         }
       }
 
+      anyToolsExecuted = true
       const toolResultBlocks: any[] = []
 
       for (const toolCall of assistantToolCalls) {
+        input.signal?.throwIfAborted()
         emit({ type: 'chunk', part: 'tool_call', toolCall })
         emit({
           type: 'tool_execution',
@@ -463,6 +737,7 @@ export class ToolLoopService {
             rootPath: input.rootPath ?? null,
             operationMode,
             timeoutMs: input.toolTimeoutMs,
+            signal: input.signal,
           })
 
           toolResultContent = toToolResultContent(result)
@@ -477,6 +752,10 @@ export class ToolLoopService {
             durationMs: Math.max(0, Date.now() - startedAt),
           })
         } catch (error) {
+          // A cancelled tool means the whole run is aborting; propagate.
+          if (input.signal?.aborted || isAbortError(error)) {
+            throw error
+          }
           toolError = true
           toolResultContent = error instanceof Error ? error.message : String(error)
           modelToolResultContent = toolResultContent
@@ -538,7 +817,7 @@ export class ToolLoopService {
 
         const persistResult = await persistWithFallback({
           attemptPersist: async () => {
-            const updated = this.messageRepo.updateAssistantToolState(assistantMessage.id, {
+            const updated = this.sink.updateAssistantToolState(assistantMessage.id, {
               contentBlocks: updatedBlocks,
               toolCalls: updatedToolCalls,
             })
@@ -633,7 +912,7 @@ export class ToolLoopService {
         type: 'tool_loop',
         status: 'turn_completed',
         turn,
-        maxTurns: this.maxTurns,
+        maxTurns,
         continued: true,
       })
     }
@@ -641,17 +920,30 @@ export class ToolLoopService {
     emit({
       type: 'tool_loop',
       status: 'max_turns_reached',
-      turn: this.maxTurns,
-      maxTurns: this.maxTurns,
+      turn: maxTurns,
+      maxTurns,
       continued: false,
     })
+
+    // Recover a silent max-turns exhaustion with a summary turn when enabled.
+    if (robustness?.finalizeOnSilentToolEnd && anyToolsExecuted && lastAssistantMessage) {
+      return await this.runFinalizationTurn({
+        input,
+        history,
+        parentId: currentParentId,
+        turnsSoFar: maxTurns,
+        maxTurns,
+        anyToolsExecuted,
+        emit,
+      })
+    }
 
     if (!lastAssistantMessage) {
       throw new Error('Tool loop ended without an assistant message')
     }
 
     throw new Error(
-      `Tool loop reached max turns (${this.maxTurns}) without producing a final assistant response without tool calls`
+      `Tool loop reached max turns (${maxTurns}) without producing a final assistant response without tool calls`
     )
   }
 }

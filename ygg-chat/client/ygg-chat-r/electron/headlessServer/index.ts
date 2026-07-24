@@ -18,7 +18,8 @@ import { registerSubagentRoutes } from './routes/subagentRoutes.js'
 import { registerTestHarnessRoutes } from './routes/testHarnessRoutes.js'
 import { ChatOrchestrator } from './services/chatOrchestrator.js'
 import { CompactionService } from './services/compactionService.js'
-import { SubagentOrchestrator } from './services/subagentOrchestrator.js'
+import { SubagentRunService } from './services/subagentRunService.js'
+import { normalizeProviderRoute } from './services/providerRouter.js'
 import type { ToolExecutor } from './services/toolLoopService.js'
 
 interface HeadlessServerRouteDeps {
@@ -119,6 +120,38 @@ const resolveDefaultInferenceTools = (): InferenceToolDefinition[] => {
   return dedupeToolsByName(tools)
 }
 
+// The subagent tool is always excluded (no nested subagents).
+const SUBAGENT_EXCLUDED_TOOL_NAMES = new Set(['subagent'])
+
+// Default tool set when a subagent request omits `tools`. Mirrors the renderer's
+// DEFAULT_SUBAGENT_TOOLS; every name here is in HEADLESS_RUNTIME_BUILTIN_TOOL_NAMES.
+const DEFAULT_SUBAGENT_TOOL_NAMES = [
+  'read_file',
+  'read_files',
+  'glob',
+  'ripgrep',
+  'browse_web',
+  'brave_search',
+  'edit_file',
+  'multi_edit',
+  'create_file',
+  'delete_file',
+  'bash',
+]
+
+const resolveInferenceToolsByName = (
+  names: string[] | undefined
+): { tools: InferenceToolDefinition[]; resolvedNames: string[]; unknownNames: string[] } => {
+  const requested = Array.isArray(names) ? names : DEFAULT_SUBAGENT_TOOL_NAMES
+  const wanted = new Set(requested.filter(name => typeof name === 'string' && !SUBAGENT_EXCLUDED_TOOL_NAMES.has(name)))
+  const available = resolveDefaultInferenceTools()
+  const tools = available.filter(tool => wanted.has(tool.name))
+  const resolvedNames = tools.map(tool => tool.name)
+  const resolvedSet = new Set(resolvedNames)
+  const unknownNames = [...wanted].filter(name => !resolvedSet.has(name))
+  return { tools, resolvedNames, unknownNames }
+}
+
 function bootstrapHeadlessProviderTokens(tokenStore: ProviderTokenStore): void {
   syncOpenRouterTokenFromElectronSession(tokenStore)
   syncOpenAiChatGptTokenFromElectronStorage(tokenStore)
@@ -143,6 +176,13 @@ const executeToolViaOrchestrator: ToolExecutor = async (toolCall, context) => {
         })()
       : toolCall.arguments ?? {}
 
+  const signal = context.signal
+  if (signal?.aborted) {
+    const abortError = new Error('Tool execution aborted')
+    abortError.name = 'AbortError'
+    throw abortError
+  }
+
   const job = toolOrchestrator.submit(toolCall.name, parsedArguments, {
     timeoutMs,
     rootPath: context.rootPath ?? null,
@@ -154,6 +194,14 @@ const executeToolViaOrchestrator: ToolExecutor = async (toolCall, context) => {
 
   const startedAt = Date.now()
   while (Date.now() - startedAt <= timeoutMs) {
+    // Cancel the in-flight job promptly when the run is aborted.
+    if (signal?.aborted) {
+      toolOrchestrator.cancel(job.id)
+      const abortError = new Error('Tool execution aborted')
+      abortError.name = 'AbortError'
+      throw abortError
+    }
+
     const current = toolOrchestrator.getJob(job.id)
     if (!current) {
       throw new Error(`Tool job disappeared: ${job.id}`)
@@ -189,19 +237,40 @@ export function registerHeadlessServerRoutes(app: Express, deps: HeadlessServerR
   registerCustomToolRpcRoutes(app)
   registerCapabilityRoutes(app, { getDefaultTools: resolveDefaultInferenceTools })
   registerEphemeralGenerateRoutes(app, { tokenStore })
-  registerSubagentRoutes(app, {
-    orchestrator: new SubagentOrchestrator({
-      ...deps,
-      tokenStore,
-      toolExecutor: executeToolViaOrchestrator,
-    }),
-  })
-  registerTestHarnessRoutes(app, {
-    getDefaultTools: resolveDefaultInferenceTools,
-  })
+
   const compactionService = new CompactionService({
     ...deps,
     tokenStore,
+  })
+
+  registerSubagentRoutes(app, {
+    runService: new SubagentRunService({
+      statements: deps.statements,
+      tokenStore,
+      toolExecutor: executeToolViaOrchestrator,
+      resolveToolsByName: resolveInferenceToolsByName,
+      compactionService,
+      refreshProviderTokens: async (provider: string) => {
+        // Re-sync provider auth from the Electron store in case the user signed
+        // in or tokens rotated after the server started.
+        if (normalizeProviderRoute(provider) === 'openaichatgpt') {
+          syncOpenAiChatGptTokenFromElectronStorage(tokenStore, { preferNewest: true })
+        } else {
+          await syncOpenRouterTokenFromElectronSession(tokenStore)
+        }
+      },
+    }),
+    validateTarget: (conversationId: string, parentMessageId: string) => {
+      const conversation = deps.statements.getConversationById?.get(conversationId)
+      if (!conversation) return { status: 404, error: 'Conversation not found' }
+      const parentMessage = deps.statements.getMessageById?.get(parentMessageId)
+      if (!parentMessage) return { status: 404, error: 'Parent message not found' }
+      return null
+    },
+  })
+
+  registerTestHarnessRoutes(app, {
+    getDefaultTools: resolveDefaultInferenceTools,
   })
   registerChatRoutes(app, {
     orchestrator: new ChatOrchestrator({
