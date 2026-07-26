@@ -6,7 +6,12 @@ const MAX_EDIT_FILE_BEFORE_CHARS = 2200
 const MAX_EDIT_FILE_AFTER_CHARS = 4200
 const MAX_CREATE_FILE_CONTENT_CHARS = 1200
 const MAX_TOOL_ERROR_CHARS = 280
+const MAX_TOOL_CONTEXT_APPENDIX_CHARS = 40000
+const MAX_TOOL_ARGUMENTS_CHARS = 4000
+const MAX_TOOL_RESULT_CHARS = 8000
+const MAX_SUBAGENT_RESULT_CHARS = 24000
 const WRITE_OPS_HEADER = 'Recent workspace mutations (exact tool arguments/results preserved):'
+const TOOL_CONTEXT_HEADER = 'Recent tool interactions (arguments/results preserved for context):'
 
 type ParsedToolCall = {
   id: string
@@ -89,7 +94,7 @@ const parseToolCallsForCompaction = (toolCalls: unknown): ParsedToolCall[] => {
     if (!isRecord(rawCall)) return []
 
     const functionPayload = isRecord(rawCall.function) ? rawCall.function : null
-    const id = asTrimmedString(rawCall.id)
+    const id = asTrimmedString(rawCall.id) ?? asTrimmedString(rawCall.call_id)
     const name = asTrimmedString(rawCall.name) ?? asTrimmedString(functionPayload?.name)
 
     if (!id || !name) return []
@@ -202,10 +207,12 @@ const extractToolResultStatus = (toolResult: ToolResultRecord | undefined): Tool
     }
   }
 
-  return {
-    label: 'status unknown',
-    errorText: truncateCompactionSnippet(toolResult.content, MAX_TOOL_ERROR_CHARS),
-  }
+  return toolResult.content
+    ? { label: 'success' }
+    : {
+        label: 'status unknown',
+        errorText: null,
+      }
 }
 
 const formatLineRange = (args: Record<string, unknown>): string | null => {
@@ -308,6 +315,35 @@ const formatDeleteFileEntry = (toolCall: ParsedToolCall, status: ToolExecutionSt
   return lines.join('\n')
 }
 
+const collectToolCallsForCompaction = (message: Message): ParsedToolCall[] => {
+  const calls = [
+    ...parseToolCallsForCompaction((message as any).tool_calls),
+    ...parseToolCallsForCompaction(
+      parseContentBlocksForCompaction((message as any).content_blocks).filter(block => block.type === 'tool_use')
+    ),
+  ]
+  const seenIds = new Set<string>()
+  return calls.filter(call => {
+    if (seenIds.has(call.id)) return false
+    seenIds.add(call.id)
+    return true
+  })
+}
+
+const formatToolContextEntry = (toolCall: ParsedToolCall, toolResult: ToolResultRecord | undefined): string => {
+  const status = extractToolResultStatus(toolResult)
+  const lines = [`${toolCall.name} ${status.label}`]
+  const args = truncateCompactionSnippet(stringifyUnknown(toolCall.args), MAX_TOOL_ARGUMENTS_CHARS)
+  const resultLimit = toolCall.name === 'subagent' ? MAX_SUBAGENT_RESULT_CHARS : MAX_TOOL_RESULT_CHARS
+  const result = truncateCompactionSnippet(toolResult?.content, resultLimit)
+
+  lines.push('arguments:')
+  lines.push(args ?? '{}')
+  lines.push('result:')
+  lines.push(result ?? '(result unavailable)')
+  return lines.join('\n')
+}
+
 const formatWriteToolEntry = (toolCall: ParsedToolCall, toolResult: ToolResultRecord | undefined): string | null => {
   if (!INCLUDED_WRITE_TOOL_NAMES.has(toolCall.name)) return null
 
@@ -339,8 +375,8 @@ const addEntryNumber = (entry: string, index: number): string => {
   return [`${index}) ${firstLine}`, ...rest].join('\n')
 }
 
-// Keep bulky raw tool payloads out of the summarizer prompt. Selected write operations are preserved
-// separately via buildCompactionWriteOpAppendix so continuation still sees the exact workspace mutations.
+// Keep raw protocol messages out of the conversational transcript. Tool interactions are serialized
+// separately with bounded arguments/results, while write operations retain their specialized format.
 export const buildCompactionHistoryLines = (messages: Message[]): string[] =>
   messages
     .filter(message => message.role !== 'tool')
@@ -352,12 +388,42 @@ export const buildCompactionHistoryLines = (messages: Message[]): string[] =>
     })
     .filter(Boolean)
 
-// Preserve exact, bounded write-operation context outside the LLM-generated summary so continuation can
-// recover the important workspace mutations without re-summarizing code edits.
+// Preserve bounded non-write tool context in both the summarizer prompt and persisted summary. Subagent
+// results receive a larger per-result allowance because their returned scout transcript is itself context.
+export const buildCompactionToolContextAppendix = (messages: Message[]): string => {
+  const toolResultLookup = buildToolResultLookup(messages)
+  const formattedEntries = messages.flatMap(message =>
+    collectToolCallsForCompaction(message)
+      .filter(toolCall => !INCLUDED_WRITE_TOOL_NAMES.has(toolCall.name))
+      .map(toolCall => formatToolContextEntry(toolCall, toolResultLookup.get(toolCall.id)))
+  )
+
+  if (formattedEntries.length === 0) return ''
+
+  const selectedEntries: string[] = []
+  let usedChars = TOOL_CONTEXT_HEADER.length
+  for (let i = formattedEntries.length - 1; i >= 0; i--) {
+    const entry = formattedEntries[i]
+    const separatorChars = selectedEntries.length > 0 ? 2 : 0
+    if (selectedEntries.length > 0 && usedChars + separatorChars + entry.length > MAX_TOOL_CONTEXT_APPENDIX_CHARS) continue
+    selectedEntries.push(entry)
+    usedChars += separatorChars + entry.length
+    if (usedChars >= MAX_TOOL_CONTEXT_APPENDIX_CHARS) break
+  }
+  selectedEntries.reverse()
+  if (selectedEntries.length === 0) selectedEntries.push(formattedEntries[formattedEntries.length - 1])
+
+  const omittedCount = formattedEntries.length - selectedEntries.length
+  const parts = [TOOL_CONTEXT_HEADER]
+  if (omittedCount > 0) parts.push(`Older tool interaction entries omitted: ${omittedCount}`)
+  parts.push(selectedEntries.map((entry, index) => addEntryNumber(entry, index + 1)).join('\n\n'))
+  return parts.join('\n\n')
+}
+
 export const buildCompactionWriteOpAppendix = (messages: Message[]): string => {
   const toolResultLookup = buildToolResultLookup(messages)
   const formattedEntries = messages.flatMap(message =>
-    parseToolCallsForCompaction((message as any).tool_calls)
+    collectToolCallsForCompaction(message)
       .map(toolCall => formatWriteToolEntry(toolCall, toolResultLookup.get(toolCall.id)))
       .filter((entry): entry is string => Boolean(entry))
   )

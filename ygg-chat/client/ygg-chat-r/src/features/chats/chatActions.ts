@@ -46,7 +46,11 @@ import { createLmStudioStreamingRequest } from './LMStudio'
 import { createOpenAIChatGPTStreamingRequest } from './OpenAIChatGPT'
 import { createZaiStreamingRequest } from './Zai'
 import { openStreamingWithPreFirstByteRetry } from './streamResilience'
-import { buildCompactionHistoryLines, buildCompactionWriteOpAppendix } from './compactionContext'
+import {
+  buildCompactionHistoryLines,
+  buildCompactionToolContextAppendix,
+  buildCompactionWriteOpAppendix,
+} from './compactionContext'
 import { persistToolResultsWithFallback } from './toolResultPersistence'
 // OpenAI OAuth is handled internally by OpenAIChatGPT module
 import { loadAutoCompactionEnabled } from '../../helpers/chatUiSettingsStorage'
@@ -2639,17 +2643,19 @@ export const compactBranch = createAsyncThunk<
         historyLines.length > 0
           ? historyLines.join('\n\n')
           : '(No non-tool conversational text remained after filtering tool outputs.)'
+      const toolContextAppendix = buildCompactionToolContextAppendix(compactableHistory)
       const writeOpAppendix = buildCompactionWriteOpAppendix(compactableHistory)
 
       console.log('[compactBranch] prepared', {
         resolvedModelName,
         compactableHistoryCount: compactableHistory.length,
         historyLinesCount: historyLines.length,
+        toolContextAppendixChars: toolContextAppendix.length,
         writeOpAppendixChars: writeOpAppendix.length,
       })
 
-      if (historyLines.length === 0 && !writeOpAppendix) {
-        console.log('[compactBranch] skip: no history lines or write-op appendix')
+      if (historyLines.length === 0 && !toolContextAppendix && !writeOpAppendix) {
+        console.log('[compactBranch] skip: no history lines or tool appendices')
         return { message: null }
       }
 
@@ -2666,6 +2672,7 @@ export const compactBranch = createAsyncThunk<
         '',
         'Conversation history:',
         historyText,
+        ...(toolContextAppendix ? ['', toolContextAppendix] : []),
       ].join('\n')
 
       let summaryText = ''
@@ -2783,9 +2790,10 @@ export const compactBranch = createAsyncThunk<
         throw new Error('Compaction returned empty summary')
       }
 
+      const fencedToolContextAppendix = toolContextAppendix ? `\`\`\`\n${toolContextAppendix}\n\`\`\`` : ''
       const fencedWriteOpAppendix = writeOpAppendix ? `\`\`\`\n${writeOpAppendix}\n\`\`\`` : ''
       const persistedSummaryContent = ensureCompactionSummaryResumeLine(
-        [finalSummary, fencedWriteOpAppendix]
+        [finalSummary, fencedToolContextAppendix, fencedWriteOpAppendix]
           .filter(section => typeof section === 'string' && section.trim().length > 0)
           .join('\n\n')
       )

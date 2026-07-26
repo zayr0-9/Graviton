@@ -176,6 +176,76 @@ describeIfSqlite('CompactionService', () => {
     expect(JSON.parse(reloadedParent.children_ids)).toContain(result.message.id)
   })
 
+  it('includes completed read and subagent tool interactions in the summary prompt and persisted context', async () => {
+    const summary = await service.generateCompactionSummary({
+      messages: [
+        {
+          role: 'user',
+          content: 'Investigate the compaction bug',
+        },
+        {
+          role: 'assistant',
+          content: '',
+          tool_calls: JSON.stringify([
+            { id: 'call-read', name: 'read_file', arguments: { path: '/workspace/src/chat.ts' } },
+            { id: 'call-subagent', name: 'subagent', arguments: { prompt: 'Trace the tool history flow' } },
+          ]),
+          content_blocks: JSON.stringify([
+            {
+              type: 'tool_result',
+              tool_use_id: 'call-read',
+              content: 'export const compactHistory = true',
+              is_error: false,
+            },
+          ]),
+        },
+        {
+          role: 'tool',
+          tool_call_id: 'call-subagent',
+          content: 'Scout found that tool messages were filtered before summarization.',
+        },
+      ],
+      provider: 'openaichatgpt',
+      modelName: 'gpt-test',
+    })
+
+    const prompt = providerRouter.calls[0].input.userContent
+    expect(prompt).toContain('Recent tool interactions')
+    expect(prompt).toContain('read_file success')
+    expect(prompt).toContain('/workspace/src/chat.ts')
+    expect(prompt).toContain('export const compactHistory = true')
+    expect(prompt).toContain('subagent success')
+    expect(prompt).toContain('Trace the tool history flow')
+    expect(prompt).toContain('Scout found that tool messages were filtered before summarization.')
+
+    expect(summary).toContain('Recent tool interactions')
+    expect(summary).toContain('export const compactHistory = true')
+    expect(summary).toContain('Scout found that tool messages were filtered before summarization.')
+  })
+
+  it('extracts tool calls from tool_use content blocks when tool_calls metadata is absent', async () => {
+    await service.generateCompactionSummary({
+      messages: [
+        {
+          role: 'assistant',
+          content: '',
+          content_blocks: [
+            { type: 'tool_use', id: 'call-glob', name: 'glob', input: { pattern: '**/*.ts' } },
+            { type: 'tool_result', tool_use_id: 'call-glob', content: ['src/a.ts', 'src/b.ts'], is_error: false },
+          ],
+        },
+      ],
+      provider: 'openaichatgpt',
+      modelName: 'gpt-test',
+    })
+
+    const prompt = providerRouter.calls[0].input.userContent
+    expect(prompt).toContain('glob success')
+    expect(prompt).toContain('**/*.ts')
+    expect(prompt).toContain('src/a.ts')
+    expect(prompt).toContain('src/b.ts')
+  })
+
   it('rejects empty provider summaries', async () => {
     providerRouter.nextOutput = { content: '   ' }
     const user = messageRepo.createMessage({ conversationId: 'c1', parentId: null, role: 'user', content: 'hello' })
