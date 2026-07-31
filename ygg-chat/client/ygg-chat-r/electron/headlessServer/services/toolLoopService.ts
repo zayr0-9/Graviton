@@ -69,6 +69,23 @@ export interface ToolLoopRobustnessOptions {
   emptyTurnRetryDelayMs?: number
 }
 
+/**
+ * Phase 3 chat-hook adapter. Supplied only by the ChatOrchestrator (via a
+ * ChatHookSession) when hooks are enabled for the run; absent for subagents/tests,
+ * which then behave exactly as before. Implemented in chatHookService.ts.
+ */
+export interface ToolLoopHooks {
+  /** Shared accumulator the executor (Pre/Post/Failure) and the loop (Stop) both push to. */
+  hookContext: string[]
+  /**
+   * Fold the currently-accumulated hook context onto the run's base system prompt.
+   * MUST return the base unchanged (possibly null) when nothing is accumulated.
+   */
+  foldSystemPrompt(baseSystemPrompt: string | null): string | null
+  /** Stop hook: returns true to force one more turn on a would-be natural stop. */
+  runStop(params: { assistantMessage: any; streamId: string | null }): Promise<boolean>
+}
+
 export interface ToolLoopRunInput {
   provider: string
   operation?: 'send' | 'repeat' | 'branch' | 'edit-branch'
@@ -115,6 +132,12 @@ export interface ToolLoopRunInput {
   allowCommentaryFallbackText?: boolean
   /** Opt-in robustness behaviors; all default off so main-chat behavior is unchanged. */
   robustness?: ToolLoopRobustnessOptions
+  /**
+   * Opt-in chat hooks (Phase 3). When present, the loop folds accumulated hook
+   * context into each turn's system prompt and runs the Stop hook at a natural stop.
+   * Absent (subagents/tests) => no fold, no Stop hook — behavior is unchanged.
+   */
+  hooks?: ToolLoopHooks
 }
 
 export interface ToolLoopRunResult {
@@ -303,13 +326,18 @@ function getToolResultModelContent(result: any): any {
   return getToolResultPersistedContent(result)
 }
 
-function toToolResultContent(result: any): string {
+export function toToolResultContent(result: any): string {
   const persistedContent = getToolResultPersistedContent(result)
   if (typeof persistedContent === 'string') return persistedContent
   try {
-    return JSON.stringify(persistedContent)
+    // Coalesce undefined -> null so this always returns a string (JSON.stringify(undefined)
+    // is the JS value `undefined`, not "null"). Mirrors the renderer's
+    // serializeToolResultContent(getToolResultPersistedContent(result)) which does
+    // JSON.stringify(content ?? null) — keeps the persisted tool_result block AND the
+    // PostToolUse hook payload's tool_result identical across renderer/server.
+    return JSON.stringify(persistedContent ?? null)
   } catch {
-    return String(persistedContent)
+    return String(persistedContent ?? null)
   }
 }
 
@@ -410,12 +438,17 @@ export class ToolLoopService {
     maxTurns: number
     disableTools: boolean
     emit: (event: HeadlessStreamEvent) => void
+    /**
+     * Per-turn system prompt (Phase 3 hook fold). When provided (even null), it
+     * replaces input.systemPrompt for this turn. Absent => input.systemPrompt as before.
+     */
+    systemPromptOverride?: string | null
   }): Promise<ProviderGenerateOutput> {
     const { input, emit, turn, maxTurns } = params
     const providerRoute = normalizeProviderRoute(input.provider)
     const providerInput: ProviderGenerateInput = {
       modelName: input.modelName,
-      systemPrompt: input.systemPrompt ?? null,
+      systemPrompt: params.systemPromptOverride !== undefined ? params.systemPromptOverride : (input.systemPrompt ?? null),
       history: params.history,
       userContent: params.userContent,
       userId: input.userId ?? null,
@@ -588,9 +621,26 @@ export class ToolLoopService {
     let history = [...(input.history || [])]
     let lastAssistantMessage: any = null
     let anyToolsExecuted = false
+    // Phase 3: true iff the most recent iteration was a natural stop (no tool calls)
+    // that a Stop hook forced to continue. Used only at the max-turns boundary to
+    // finalize gracefully with the valid persisted answer (parity with the renderer,
+    // which exits its while loop at MAX_TURNS and completes) instead of hard-erroring.
+    let stopHookForcedContinue = false
 
     for (let turn = 1; turn <= maxTurns; turn++) {
       input.signal?.throwIfAborted()
+      stopHookForcedContinue = false
+
+      // Phase 3: fold accumulated hook context into this turn's system prompt, then
+      // clear the buffer (parity with the renderer's per-iteration fold+clear,
+      // chatActions.ts:3217-3225). `undefined` => no hooks => provider gets
+      // input.systemPrompt unchanged.
+      let turnSystemPromptOverride: string | null | undefined
+      if (input.hooks) {
+        turnSystemPromptOverride = input.hooks.foldSystemPrompt(input.systemPrompt ?? null)
+        input.hooks.hookContext.length = 0
+      }
+
       emit({
         type: 'tool_loop',
         status: 'turn_started',
@@ -608,6 +658,7 @@ export class ToolLoopService {
         maxTurns,
         disableTools: false,
         emit,
+        systemPromptOverride: turnSystemPromptOverride,
       })
 
       if (robustness?.retryEmptyTurn && isEmptyTurnOutput(output)) {
@@ -623,6 +674,7 @@ export class ToolLoopService {
           maxTurns,
           disableTools: false,
           emit,
+          systemPromptOverride: turnSystemPromptOverride,
         })
       }
 
@@ -652,6 +704,25 @@ export class ToolLoopService {
       emit({ type: 'assistant_message_persisted', message: assistantMessage })
 
       if (!assistantToolCalls.length) {
+        // Phase 3 Stop hook (parity with the renderer's shouldContinueFromStopHook,
+        // chatActions.ts:3567-3587): on a would-be natural stop, a configured Stop hook
+        // may force one more turn. Reuses the existing for-loop — no parallel loop. The
+        // just-persisted assistantMessage is already in history; continuing injects an
+        // empty user turn parented on it, exactly like the renderer. No-op without hooks.
+        if (input.hooks) {
+          const forceContinue = await input.hooks.runStop({
+            assistantMessage,
+            streamId: input.streamId ?? null,
+          })
+          if (forceContinue) {
+            emit({ type: 'tool_loop', status: 'turn_completed', turn, maxTurns, continued: true })
+            currentParentId = assistantMessage.id
+            currentUserContent = ''
+            stopHookForcedContinue = true
+            continue
+          }
+        }
+
         const strippedText = stripThinkingWrapper(output.content || '')
 
         // Tools ran but the model gave no visible answer: recover with a summary turn.
@@ -931,6 +1002,20 @@ export class ToolLoopService {
       maxTurns,
       continued: false,
     })
+
+    // Phase 3: if a Stop hook forced continuation past the turn cap, the last turn was
+    // a valid natural stop (no pending tool calls) already persisted. Finalize with it
+    // instead of throwing — parity with the renderer, which exits its `while (turnCount
+    // < MAX_TURNS)` loop and completes with the last message rather than erroring. The
+    // tool-driven max-turns case (marker false) still falls through to the throw below,
+    // where the "without a final assistant response without tool calls" wording is accurate.
+    if (stopHookForcedContinue && lastAssistantMessage) {
+      return {
+        finalAssistantMessage: lastAssistantMessage,
+        turnsUsed: maxTurns,
+        anyToolsExecuted,
+      }
+    }
 
     // Recover a silent max-turns exhaustion with a summary turn when enabled.
     if (robustness?.finalizeOnSilentToolEnd && anyToolsExecuted && lastAssistantMessage) {

@@ -54,6 +54,13 @@ export interface BuildServerLoopRequestParams {
    * server default (auto-approve). The 3 shims pass state.chat.toolAutoApprove (a boolean).
    */
   toolAutoApprove?: boolean
+  /**
+   * Phase 3: opt into the server-owned loop's chat hooks (parity with the renderer's
+   * always-on-in-electron hooks). The 3 shims pass isElectronMode. Forwarded verbatim.
+   */
+  hooksEnabled?: boolean
+  /** Passed to hook scripts as lookup.localApiBase; the shims pass getCachedLocalApiBase(). */
+  localApiBase?: string | null
 }
 
 export interface ServerLoopRequest {
@@ -112,6 +119,9 @@ export function buildServerLoopRequest(operation: ServerLoopOperation, params: B
     streamId: params.streamId,
     // Forward verbatim (no undefined -> false coercion): drives the server's pause gate.
     toolAutoApprove: params.toolAutoApprove,
+    // Phase 3 hooks: forward verbatim. The server gates on `=== true`, so undefined = off.
+    hooksEnabled: params.hooksEnabled,
+    localApiBase: params.localApiBase ?? null,
   }
   // Send the tools array whenever the caller provided one (even []), so an
   // all-disabled set is respected; omit only when tools were not provided.

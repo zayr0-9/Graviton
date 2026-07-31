@@ -16,6 +16,8 @@ import {
   type ToolLoopRunResult,
 } from './toolLoopService.js'
 import type { DecisionBroker, ClarifyDecision, PermissionDecision } from './decisionBroker.js'
+import { createChatHookSession, type ChatHookSession } from './chatHookService.js'
+import type { HookRunRequest, HookRunResult } from '../../hooks/hookTypes.js'
 import { filterToolsForOperationMode } from '../../../../../shared/operationModeToolPolicy.js'
 
 interface ChatOrchestratorDeps {
@@ -31,6 +33,10 @@ interface ChatOrchestratorDeps {
   /** Shared pause/resume registry. When present (with toolExecutor), enables the
    *  interactive permission / plan_md-clarify pause via a per-run wrapping executor. */
   decisionBroker?: DecisionBroker
+  /** In-process hook runner (runHookRequest). When present AND request.hooksEnabled
+   *  AND a decisionBroker is wired, the run fires the 5 lifecycle chat hooks
+   *  (parity with the renderer). Absent for subagents/tests => NO hooks. */
+  hookRunner?: (req: HookRunRequest) => Promise<HookRunResult>
 }
 
 /** Tools that never prompt for permission (mirrors the renderer TOOL_PERMISSION_ALWAYS_BYPASS). */
@@ -74,6 +80,109 @@ function isAbortError(error: unknown): boolean {
   return typeof error === 'object' && error !== null && (error as { name?: unknown }).name === 'AbortError'
 }
 
+/**
+ * Build a per-run tool executor that pauses for interactive decisions (permission /
+ * plan_md clarify) via the DecisionBroker and — when a hookSession is supplied —
+ * interleaves the PreToolUse/PostToolUse/PostToolUseFailure chat hooks around the
+ * permission gate. Extracted from ChatOrchestrator so the interleave is unit-testable
+ * without the persistence layer. Behavior with `hookSession` undefined is the exact
+ * Phase-2 path, byte-for-byte.
+ */
+export function createChatPausingExecutor(deps: {
+  base: ToolExecutor
+  broker: DecisionBroker
+  streamId: string
+  emit: (event: HeadlessStreamEvent) => void
+  signal?: AbortSignal
+  hookSession?: ChatHookSession
+}): ToolExecutor {
+  const { base, broker, streamId, emit, signal, hookSession } = deps
+  return async (toolCall, context) => {
+    const sig = context.signal ?? signal
+    const args = parseToolArgs(toolCall.arguments)
+
+    // plan_md clarify is INHERENTLY interactive: the base executor always throws on it
+    // (planMd.ts), so it is intercepted here and routed through the DecisionBroker's
+    // clarify channel instead of executed. `call`/`cArgs` are the effective (possibly
+    // hook-rewritten) call so a PreToolUse updatedInput reaches the clarify questions.
+    const runClarify = async (call: typeof toolCall, cArgs: any) => {
+      emit({
+        type: 'clarify_required',
+        streamId,
+        toolCallId: toolCall.id,
+        toolName: call.name,
+        questions: Array.isArray(cArgs?.questions) ? cArgs.questions : [],
+      })
+      const decision = await broker.requestDecision<ClarifyDecision>({ streamId, toolCallId: toolCall.id, signal: sig })
+      return {
+        clarified: !decision.cancelled,
+        cancelled: decision.cancelled ?? false,
+        questions: Array.isArray(cArgs?.questions) ? cArgs.questions.length : 0,
+        answers: decision.answers ?? [],
+      }
+    }
+    const isClarify = (name: string | undefined, a: any) => name === 'plan_md' && a?.action === 'clarify'
+
+    // No hooks: the exact Phase-2 path, byte-for-byte. Clarify is intercepted before
+    // the auto-approve short-circuit (auto-approve only skips permission PROMPTS, not
+    // the clarify mechanism).
+    if (!hookSession) {
+      if (isClarify(toolCall.name, args)) return runClarify(toolCall, args)
+      if (broker.isAutoApproveAll(streamId)) return base(toolCall, context)
+      if (shouldBypassPermission(toolCall.name, args)) return base(toolCall, context)
+      emit({ type: 'permission_required', streamId, toolCallId: toolCall.id, toolName: toolCall.name, toolInput: args })
+      const decision = await broker.requestDecision<PermissionDecision>({ streamId, toolCallId: toolCall.id, signal: sig })
+      if (decision === 'deny') throw new Error('Tool execution denied by user')
+      if (decision === 'allow_always') broker.setAutoApproveAll(streamId)
+      return base(toolCall, context)
+    }
+
+    // Hooks active — port of the renderer executeToolWithPermissionCheck
+    // (chatActions.ts:2406-2522): PreToolUse (BEFORE any prompt/clarify; may rewrite
+    // args or deny) -> [clarify OR permission gate + execute] -> PostToolUse /
+    // PostToolUseFailure. A SINGLE try/catch so a PreToolUse deny AND a permission deny
+    // both fire PostToolUseFailure, matching the renderer's single catch. Clarify runs
+    // INSIDE the hook wrapper (parity: the renderer intercepts clarify in the base
+    // executor, under executeToolWithPermissionCheck, so Pre/Post DO fire around it).
+    let effectiveToolCall = toolCall
+    try {
+      const pre = await hookSession.runPreToolUse(toolCall, context)
+      if (pre.updatedInput) effectiveToolCall = { ...toolCall, arguments: pre.updatedInput }
+      if (pre.permissionDecision === 'deny') {
+        throw new Error(pre.permissionDecisionReason || 'Tool blocked by hook')
+      }
+      const effArgs = parseToolArgs(effectiveToolCall.arguments)
+
+      let result: any
+      if (isClarify(effectiveToolCall.name, effArgs)) {
+        // Clarify bypasses the permission prompt (its own interactive channel), but
+        // still fires PostToolUse — same as the renderer.
+        result = await runClarify(effectiveToolCall, effArgs)
+      } else if (broker.isAutoApproveAll(streamId) || shouldBypassPermission(effectiveToolCall.name, effArgs)) {
+        result = await base(effectiveToolCall, context)
+      } else {
+        // Prompt shows the rewritten args. toolCallId stays the original id (a rewrite
+        // only touches arguments), so the /resume correlation is unchanged.
+        emit({ type: 'permission_required', streamId, toolCallId: toolCall.id, toolName: effectiveToolCall.name, toolInput: effArgs })
+        const decision = await broker.requestDecision<PermissionDecision>({ streamId, toolCallId: toolCall.id, signal: sig })
+        if (decision === 'deny') throw new Error('Tool execution denied by user')
+        if (decision === 'allow_always') broker.setAutoApproveAll(streamId)
+        result = await base(effectiveToolCall, context)
+      }
+
+      await hookSession.runPostToolUse(effectiveToolCall, result, context)
+      return result
+    } catch (error) {
+      // Abort escapes unwrapped to preserve the loop's clean cancellation unwind
+      // (toolLoopService rethrows aborts); no PostToolUseFailure on cancel — a
+      // deliberate, documented divergence from the renderer (which fires it on any error).
+      if (sig?.aborted || isAbortError(error)) throw error
+      await hookSession.runPostToolUseFailure(effectiveToolCall, error, context)
+      throw error
+    }
+  }
+}
+
 export interface HeadlessChatOrchestrator {
   runMessage(
     request: HeadlessMessageRequest,
@@ -96,6 +205,7 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
   private readonly toolExecutor?: ToolExecutor
   private readonly compactBranch?: ToolLoopCompactor
   private readonly decisionBroker?: DecisionBroker
+  private readonly hookRunner?: (req: HookRunRequest) => Promise<HookRunResult>
 
   constructor(deps: ChatOrchestratorDeps) {
     this.conversationRepo = new ConversationRepo({ db: deps.db, statements: deps.statements })
@@ -107,6 +217,7 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
     this.toolExecutor = deps.toolExecutor
     this.compactBranch = deps.compactBranch
     this.decisionBroker = deps.decisionBroker
+    this.hookRunner = deps.hookRunner
     this.toolLoopService =
       deps.toolLoopService ??
       new ToolLoopService({
@@ -127,57 +238,17 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
   private makePausingExecutor(
     streamId: string,
     emit: (event: HeadlessStreamEvent) => void,
-    signal?: AbortSignal
+    signal?: AbortSignal,
+    hookSession?: ChatHookSession
   ): ToolExecutor {
-    const base = this.toolExecutor!
-    const broker = this.decisionBroker!
-    return async (toolCall, context) => {
-      const sig = context.signal ?? signal
-      const args = parseToolArgs(toolCall.arguments)
-
-      // plan_md clarify is INHERENTLY interactive: the base executor always throws on
-      // it (planMd.ts), so it must be intercepted regardless of auto-approve state
-      // (auto-approve only skips permission PROMPTS, not the clarify mechanism). This
-      // MUST come before the auto-approve short-circuit below.
-      if (toolCall.name === 'plan_md' && args?.action === 'clarify') {
-        emit({
-          type: 'clarify_required',
-          streamId,
-          toolCallId: toolCall.id,
-          toolName: toolCall.name,
-          questions: Array.isArray(args.questions) ? args.questions : [],
-        })
-        const decision = await broker.requestDecision<ClarifyDecision>({ streamId, toolCallId: toolCall.id, signal: sig })
-        return {
-          clarified: !decision.cancelled,
-          cancelled: decision.cancelled ?? false,
-          questions: Array.isArray(args.questions) ? args.questions.length : 0,
-          answers: decision.answers ?? [],
-        }
-      }
-
-      // Auto-approve (whole-run or after allow_always): no permission pause.
-      if (broker.isAutoApproveAll(streamId)) return base(toolCall, context)
-
-      // Read-only / management tools never prompt.
-      if (shouldBypassPermission(toolCall.name, args)) return base(toolCall, context)
-
-      // Interactive permission: pause, ask, resume.
-      emit({
-        type: 'permission_required',
-        streamId,
-        toolCallId: toolCall.id,
-        toolName: toolCall.name,
-        toolInput: args,
-      })
-      const decision = await broker.requestDecision<PermissionDecision>({ streamId, toolCallId: toolCall.id, signal: sig })
-      if (decision === 'deny') {
-        // Throw -> the loop records an is_error tool_result and continues.
-        throw new Error('Tool execution denied by user')
-      }
-      if (decision === 'allow_always') broker.setAutoApproveAll(streamId)
-      return base(toolCall, context)
-    }
+    return createChatPausingExecutor({
+      base: this.toolExecutor!,
+      broker: this.decisionBroker!,
+      streamId,
+      emit,
+      signal,
+      hookSession,
+    })
   }
 
   private requireMessage(messageId: string, conversationId: string): any {
@@ -226,6 +297,42 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
       this.projectRepo.touch(conversation.project_id, now)
     }
 
+    // Hoisted above resolveExecution so the hook session can carry project context and
+    // run UserPromptSubmit before the user message is persisted. Reused below for the
+    // system prompt / projectContext (was fetched inline there previously).
+    const project = conversation.project_id ? this.projectRepo.getById(conversation.project_id) : null
+
+    // Phase 3: build a per-run chat-hook session when a hook runner is wired, the
+    // request opted in, AND the interactive (broker) path is active — hooks live on the
+    // pausing executor, so they require the broker. Absent for subagents/mobile/tests.
+    const hookSession =
+      this.hookRunner && request.hooksEnabled === true && this.decisionBroker
+        ? createChatHookSession({
+            conversationRepo: this.conversationRepo,
+            runHook: this.hookRunner,
+            conversationId: request.conversationId,
+            cwd: request.rootPath ?? conversation.cwd ?? null,
+            provider: request.provider,
+            model: request.modelName,
+            operation: request.operation,
+            streamId: trackedStreamId,
+            project: { projectId: project?.id ?? null, projectName: project?.name ?? null },
+            localApiBase: request.localApiBase ?? null,
+          })
+        : null
+
+    // UserPromptSubmit runs BEFORE the user message is persisted so a prompt rewrite
+    // flows into BOTH the persisted user row and the inference content (both derive
+    // from request.content in BranchOrchestrator). Only for operations that create a
+    // user message (send/branch/edit-branch) — repeat has no new user message, matching
+    // the renderer. A blocked hook throws -> the outer catch finishes the run 'error'.
+    if (
+      hookSession &&
+      (request.operation === 'send' || request.operation === 'branch' || request.operation === 'edit-branch')
+    ) {
+      request.content = await hookSession.runUserPromptSubmit(request.content, request.parentId ?? null)
+    }
+
     const resolved = this.resolveExecution(request)
 
     trackedStreamId = this.streamingRunRepo.upsert({
@@ -246,6 +353,10 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
     if (this.decisionBroker && trackedStreamId) {
       this.decisionBroker.initSession(trackedStreamId, { autoApproveAll: request.toolAutoApprove !== false })
     }
+
+    // Re-point the hook session at the FINAL (post-upsert) stream id so hook payloads
+    // (and any /resume-style correlation) use the same id the SSE clients see.
+    if (hookSession && trackedStreamId) hookSession.streamId = trackedStreamId
 
     emit({
       type: 'started',
@@ -278,7 +389,6 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
       resolvedOperationMode
     )
 
-    const project = conversation?.project_id ? this.projectRepo.getById(conversation.project_id) : null
     const systemPrompt = buildHeadlessSystemPrompt({
       operationMode: resolvedOperationMode,
       includeOperationModePrompt: request.includeOperationModePrompt ?? true,
@@ -299,7 +409,7 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
         ? new ToolLoopService({
             sink: new TreeMessageSink({ messageRepo: this.messageRepo }),
             providerRouter: this.providerRouter,
-            executeTool: this.makePausingExecutor(trackedStreamId, emit, signal),
+            executeTool: this.makePausingExecutor(trackedStreamId, emit, signal, hookSession ?? undefined),
             compactBranch: this.compactBranch,
           })
         : this.toolLoopService
@@ -344,6 +454,9 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
         compactionModelName: request.compactionModelName,
         compactionSystemPrompt: request.compactionSystemPrompt,
         signal,
+        // Phase 3: drives the per-turn hook-context fold + the Stop hook. Undefined
+        // when hooks are off (subagents/tests/mobile) => loop behavior unchanged.
+        hooks: hookSession?.toolLoopHooks(),
       },
         emit
       )

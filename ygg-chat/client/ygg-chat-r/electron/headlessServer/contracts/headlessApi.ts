@@ -49,6 +49,18 @@ export interface HeadlessMessageRequest {
   compactionProvider?: string | null
   compactionModelName?: string | null
   compactionSystemPrompt?: string | null
+  /**
+   * Phase 3 opt-in: run the 5 lifecycle chat hooks in the server loop (parity with
+   * the renderer's chat hooks). Absent/false == no hooks. Requires the server to have
+   * a hookRunner + decisionBroker wired. The mobile LAN UI and subagents never send it.
+   */
+  hooksEnabled?: boolean
+  /**
+   * Base URL passed to hook scripts as lookup.localApiBase so a hook can call back into
+   * the local API (parity with the renderer's getCachedLocalApiBase()). Absent == null;
+   * hooks still run, only callback-style hooks degrade.
+   */
+  localApiBase?: string | null
 }
 
 export interface HeadlessSubagentStreamRequest {

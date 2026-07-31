@@ -16,6 +16,7 @@ import { registerCustomToolRpcRoutes } from './routes/customToolRpcRoutes.js'
 import { registerEphemeralGenerateRoutes } from './routes/ephemeralGenerateRoutes.js'
 import { registerSubagentRoutes } from './routes/subagentRoutes.js'
 import { registerTestHarnessRoutes } from './routes/testHarnessRoutes.js'
+import { runHookRequest } from '../hooks/hookRunner.js'
 import { ChatOrchestrator } from './services/chatOrchestrator.js'
 import { DecisionBroker } from './services/decisionBroker.js'
 import { CompactionService } from './services/compactionService.js'
@@ -285,6 +286,8 @@ export function registerHeadlessServerRoutes(app: Express, deps: HeadlessServerR
       defaultToolsProvider: resolveDefaultInferenceTools,
       compactBranch: input => compactionService.compactBranch(input),
       decisionBroker,
+      // Phase 3: in-process chat hooks (fires only when a request sets hooksEnabled).
+      hookRunner: runHookRequest,
     }),
     compactionService,
     decisionBroker,

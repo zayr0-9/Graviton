@@ -73,4 +73,14 @@ describe('buildServerLoopRequest', () => {
     expect(buildServerLoopRequest('send', { ...base, toolAutoApprove: false }).body.toolAutoApprove).toBe(false)
     expect(buildServerLoopRequest('send', { ...base }).body.toolAutoApprove).toBeUndefined()
   })
+
+  it('forwards hooksEnabled verbatim and localApiBase (defaulting null)', () => {
+    const on = buildServerLoopRequest('send', { ...base, hooksEnabled: true, localApiBase: 'http://x/api' }).body
+    expect(on.hooksEnabled).toBe(true)
+    expect(on.localApiBase).toBe('http://x/api')
+
+    const off = buildServerLoopRequest('send', { ...base }).body
+    expect(off.hooksEnabled).toBeUndefined() // server gates on === true, so undefined == off
+    expect(off.localApiBase).toBeNull()
+  })
 })

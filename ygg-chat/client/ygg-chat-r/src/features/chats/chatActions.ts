@@ -3147,6 +3147,8 @@ export const sendMessage = createAsyncThunk<
           tools: filterToolsForOperationMode(getAllTools(), operationModeAtSend),
           streamId,
           toolAutoApprove: state.chat.toolAutoApprove,
+          hooksEnabled: isElectronMode,
+          localApiBase: getCachedLocalApiBase(),
         })
         const result = await runServerChatLoop(
           {
@@ -5622,6 +5624,8 @@ export const editMessageWithBranching = createAsyncThunk<
           tools: filterToolsForOperationMode(getAllTools(), operationModeAtSend),
           streamId,
           toolAutoApprove: state.chat.toolAutoApprove,
+          hooksEnabled: isElectronMode,
+          localApiBase: getCachedLocalApiBase(),
         })
         const result = await runServerChatLoop(
           {
@@ -7105,6 +7109,8 @@ export const sendMessageToBranch = createAsyncThunk<
           tools: filterToolsForOperationMode(getAllTools(), operationModeAtSend),
           streamId,
           toolAutoApprove: state.chat.toolAutoApprove,
+          hooksEnabled: isElectronMode,
+          localApiBase: getCachedLocalApiBase(),
         })
         const result = await runServerChatLoop(
           {
