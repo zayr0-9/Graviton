@@ -1077,21 +1077,8 @@ export const createCheckoutSession = async (
   email?: string
 ): Promise<CheckoutSessionResponse> => {
   assertCloudBackendAllowed('/stripe/create-checkout-session', 'createCheckoutSession')
-
-  const response = await fetch(`${API_BASE}/stripe/create-checkout-session`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({ userId, tier, email }),
-  })
-
-  if (!response.ok) {
-    const errorData = await response.json().catch(() => ({ error: 'Failed to create checkout session' }))
-    throw new Error(errorData.error || 'Failed to create checkout session')
-  }
-
-  return response.json()
+  // Railway-authoritative via the /api/cloud/* pass-through (server injects the Bearer).
+  return cloudApi.post<CheckoutSessionResponse>('/stripe/create-checkout-session', { userId, tier, email })
 }
 
 /**
@@ -1099,15 +1086,7 @@ export const createCheckoutSession = async (
  */
 export const getSubscriptionStatus = async (userId: number): Promise<SubscriptionStatus> => {
   assertCloudBackendAllowed('/stripe/subscription-status', 'getSubscriptionStatus')
-
-  const response = await fetch(`${API_BASE}/stripe/subscription-status?userId=${userId}`)
-
-  if (!response.ok) {
-    const errorData = await response.json().catch(() => ({ error: 'Failed to get subscription status' }))
-    throw new Error(errorData.error || 'Failed to get subscription status')
-  }
-
-  return response.json()
+  return cloudApi.get<SubscriptionStatus>(`/stripe/subscription-status?userId=${userId}`)
 }
 
 /**
@@ -1115,21 +1094,7 @@ export const getSubscriptionStatus = async (userId: number): Promise<Subscriptio
  */
 export const cancelSubscription = async (userId: number): Promise<{ success: boolean; message: string }> => {
   assertCloudBackendAllowed('/stripe/cancel-subscription', 'cancelSubscription')
-
-  const response = await fetch(`${API_BASE}/stripe/cancel-subscription`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({ userId }),
-  })
-
-  if (!response.ok) {
-    const errorData = await response.json().catch(() => ({ error: 'Failed to cancel subscription' }))
-    throw new Error(errorData.error || 'Failed to cancel subscription')
-  }
-
-  return response.json()
+  return cloudApi.post<{ success: boolean; message: string }>('/stripe/cancel-subscription', { userId })
 }
 
 /**
@@ -1140,15 +1105,7 @@ export const getCreditHistory = async (
   limit: number = 100
 ): Promise<{ history: CreditTransaction[] }> => {
   assertCloudBackendAllowed('/stripe/credit-history', 'getCreditHistory')
-
-  const response = await fetch(`${API_BASE}/stripe/credit-history?userId=${userId}&limit=${limit}`)
-
-  if (!response.ok) {
-    const errorData = await response.json().catch(() => ({ error: 'Failed to get credit history' }))
-    throw new Error(errorData.error || 'Failed to get credit history')
-  }
-
-  return response.json()
+  return cloudApi.get<{ history: CreditTransaction[] }>(`/stripe/credit-history?userId=${userId}&limit=${limit}`)
 }
 
 /**
@@ -1156,13 +1113,5 @@ export const getCreditHistory = async (
  */
 export const getPricingInfo = async (): Promise<PricingInfo> => {
   assertCloudBackendAllowed('/stripe/pricing-info', 'getPricingInfo')
-
-  const response = await fetch(`${API_BASE}/stripe/pricing-info`)
-
-  if (!response.ok) {
-    const errorData = await response.json().catch(() => ({ error: 'Failed to get pricing info' }))
-    throw new Error(errorData.error || 'Failed to get pricing info')
-  }
-
-  return response.json()
+  return cloudApi.get<PricingInfo>('/stripe/pricing-info')
 }
