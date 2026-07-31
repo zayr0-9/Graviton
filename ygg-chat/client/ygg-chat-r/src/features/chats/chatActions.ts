@@ -61,6 +61,7 @@ import { createStreamingRun, finishStreamingRun } from './streamRunTracking'
 import { runServerChatLoop } from './mainChatClient'
 import { buildServerLoopRequest } from './buildServerLoopRequest'
 import { isServerOwnedChatLoopEnabled, isCloudServerLoopEnabled } from '../../helpers/serverLoopSettings'
+import { getValidTokens } from './openaiOAuth'
 import {
   assertToolAllowedForOperationMode,
   buildOperationModeSystemPrompt,
@@ -3125,8 +3126,11 @@ export const sendMessage = createAsyncThunk<
       if (
         isServerOwnedChatLoopEnabled() &&
         isElectronMode &&
-        (isLmStudio || isZai || (isCloudServerLoopEnabled() && providerSlug === 'openrouter'))
+        (isLmStudio || isZai || isOpenAIChatGPT || (isCloudServerLoopEnabled() && providerSlug === 'openrouter'))
       ) {
+        // ChatGPT auth: resolve fresh {accessToken, accountId} from the renderer (auto-
+        // refreshing) so the server uses them directly. null for every other provider.
+        const chatgptServerAuth = isOpenAIChatGPT ? await getValidTokens() : null
         const { path, body } = buildServerLoopRequest('send', {
           conversationId: String(conversationId),
           content: input.content.trim(),
@@ -3153,6 +3157,10 @@ export const sendMessage = createAsyncThunk<
           // so the local-provider request is unchanged; serviceTier only for openrouter.
           temperature: openRouterTemperature,
           serviceTier: providerSlug === 'openrouter' ? serviceTier : undefined,
+          // ChatGPT: forward fresh renderer tokens so the server resolves auth directly
+          // (null for every other provider => omitted from the body).
+          accessToken: chatgptServerAuth?.accessToken,
+          accountId: chatgptServerAuth?.accountId,
         })
         const result = await runServerChatLoop(
           {
@@ -5607,8 +5615,11 @@ export const editMessageWithBranching = createAsyncThunk<
       if (
         isServerOwnedChatLoopEnabled() &&
         isElectronMode &&
-        (isLmStudio || isZai || (isCloudServerLoopEnabled() && providerSlug === 'openrouter'))
+        (isLmStudio || isZai || isOpenAIChatGPT || (isCloudServerLoopEnabled() && providerSlug === 'openrouter'))
       ) {
+        // ChatGPT auth: resolve fresh {accessToken, accountId} from the renderer (auto-
+        // refreshing) so the server uses them directly. null for every other provider.
+        const chatgptServerAuth = isOpenAIChatGPT ? await getValidTokens() : null
         const { path, body } = buildServerLoopRequest('edit', {
           conversationId: String(conversationId),
           content: newContent,
@@ -5634,6 +5645,10 @@ export const editMessageWithBranching = createAsyncThunk<
           // so the local-provider request is unchanged; serviceTier only for openrouter.
           temperature: openRouterTemperature,
           serviceTier: providerSlug === 'openrouter' ? serviceTier : undefined,
+          // ChatGPT: forward fresh renderer tokens so the server resolves auth directly
+          // (null for every other provider => omitted from the body).
+          accessToken: chatgptServerAuth?.accessToken,
+          accountId: chatgptServerAuth?.accountId,
         })
         const result = await runServerChatLoop(
           {
@@ -7096,8 +7111,11 @@ export const sendMessageToBranch = createAsyncThunk<
       if (
         isServerOwnedChatLoopEnabled() &&
         isElectronMode &&
-        (isLmStudio || isZai || (isCloudServerLoopEnabled() && providerSlug === 'openrouter'))
+        (isLmStudio || isZai || isOpenAIChatGPT || (isCloudServerLoopEnabled() && providerSlug === 'openrouter'))
       ) {
+        // ChatGPT auth: resolve fresh {accessToken, accountId} from the renderer (auto-
+        // refreshing) so the server uses them directly. null for every other provider.
+        const chatgptServerAuth = isOpenAIChatGPT ? await getValidTokens() : null
         const { path, body } = buildServerLoopRequest('branch', {
           conversationId: String(conversationId),
           content,
@@ -7123,6 +7141,10 @@ export const sendMessageToBranch = createAsyncThunk<
           // so the local-provider request is unchanged; serviceTier only for openrouter.
           temperature: openRouterTemperature,
           serviceTier: providerSlug === 'openrouter' ? serviceTier : undefined,
+          // ChatGPT: forward fresh renderer tokens so the server resolves auth directly
+          // (null for every other provider => omitted from the body).
+          accessToken: chatgptServerAuth?.accessToken,
+          accountId: chatgptServerAuth?.accountId,
         })
         const result = await runServerChatLoop(
           {

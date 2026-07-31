@@ -7,8 +7,8 @@
  * forwards its locals.
  *
  * Notes / invariants (see Phase 1 spec):
- * - MUST send provider ('lmstudio'|'zai') and modelName, or the server silently
- *   defaults to openaichatgpt / gpt-5.6-sol.
+ * - MUST send provider ('lmstudio'|'zai'|'openrouter'|'openaichatgpt') and modelName,
+ *   or the server silently defaults to openaichatgpt / gpt-5.6-sol.
  * - `content` is the RAW first-turn user text; the server owns the multi-turn loop.
  * - systemPrompt is intentionally OMITTED: the server assembles it from
  *   operationMode + project/conversation prompts. Sending buildOperationModeSystemPrompt
@@ -72,6 +72,14 @@ export interface BuildServerLoopRequestParams {
    * only for openrouter, so the lmstudio/zai body never gains this field.
    */
   serviceTier?: 'priority'
+  /**
+   * ChatGPT (openaichatgpt) auth, forwarded from the renderer's getValidTokens() so
+   * the server's OpenAiChatgptProvider uses them directly instead of depending on its
+   * token-store row. Forwarded only-when-set; the server also parses them from the
+   * Authorization / ChatGPT-Account-Id headers, and falls back to its store otherwise.
+   */
+  accessToken?: string | null
+  accountId?: string | null
 }
 
 export interface ServerLoopRequest {
@@ -142,6 +150,9 @@ export function buildServerLoopRequest(operation: ServerLoopOperation, params: B
   // reach the body and the lmstudio/zai request stays byte-for-byte unchanged.
   if (typeof params.temperature === 'number') body.temperature = params.temperature
   if (params.serviceTier !== undefined) body.serviceTier = params.serviceTier
+  // ChatGPT auth: forward only-when-set so non-ChatGPT bodies are unchanged.
+  if (params.accessToken) body.accessToken = params.accessToken
+  if (params.accountId) body.accountId = params.accountId
 
   return { path, body }
 }

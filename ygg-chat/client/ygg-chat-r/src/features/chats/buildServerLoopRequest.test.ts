@@ -102,6 +102,27 @@ describe('buildServerLoopRequest', () => {
     expect('serviceTier' in off).toBe(false)
   })
 
+  it('forwards ChatGPT accessToken + accountId only when set', () => {
+    const on = buildServerLoopRequest('send', {
+      ...base,
+      provider: 'openaichatgpt',
+      accessToken: 'tok-abc',
+      accountId: 'acct-1',
+    }).body
+    expect(on.accessToken).toBe('tok-abc')
+    expect(on.accountId).toBe('acct-1')
+
+    // Omitted (no undefined/null keys) when the caller has no ChatGPT tokens.
+    const off = buildServerLoopRequest('send', { ...base }).body
+    expect('accessToken' in off).toBe(false)
+    expect('accountId' in off).toBe(false)
+
+    // null (getValidTokens miss) is treated as "not set" — omitted, not sent as null.
+    const nulled = buildServerLoopRequest('send', { ...base, accessToken: null, accountId: null }).body
+    expect('accessToken' in nulled).toBe(false)
+    expect('accountId' in nulled).toBe(false)
+  })
+
   it('resolves edit/branch routes and still requires messageId', () => {
     expect(buildServerLoopRequest('edit', { ...base, messageId: 'm9' }).path).toBe(
       '/conversations/conv-1/messages/m9/edit-branch'
