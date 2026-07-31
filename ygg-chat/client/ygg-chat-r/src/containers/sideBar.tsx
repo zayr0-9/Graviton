@@ -776,7 +776,9 @@ const SideBar: React.FC<SideBarProps> = ({
   } = useSearchTopLevelUserMessages(null, { forceServerSearch: true })
 
   const projectNameById = useMemo(() => {
-    return new Map(projectData.map(project => [String(project.id), project.name]))
+    return new Map<string, string>(
+      projectData.map((project): [string, string] => [String(project.id), String(project.name ?? '')])
+    )
   }, [projectData])
 
   const sidebarSearchResults = useMemo<SearchResultItem[]>(() => {

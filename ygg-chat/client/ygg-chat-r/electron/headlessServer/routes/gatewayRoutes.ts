@@ -326,7 +326,7 @@ export function registerGatewayRoutes(app: Express, deps: RegisterGatewayRoutesD
   })
 
   app.get('/api/gw/projects/:id', async (req, res) => {
-    const mode = localRowStorageMode('projects', req.params.id)
+    const mode = resolveWriteMode('projects', req.params.id, req)
     if (mode === 'local') {
       const r = await localLeg(req, `/api/app/projects/${req.params.id}`)
       res.status(r.status).json(r.body)
@@ -512,7 +512,7 @@ export function registerGatewayRoutes(app: Express, deps: RegisterGatewayRoutesD
   // ---- Conversations: single-entity reads / writes ----
 
   app.get('/api/gw/conversations/:id', async (req, res) => {
-    const mode = localRowStorageMode('conversations', req.params.id)
+    const mode = resolveWriteMode('conversations', req.params.id, req)
     if (mode === 'local') {
       const r = await localLeg(req, `/api/app/conversations/${req.params.id}`)
       res.status(r.status).json(r.body)

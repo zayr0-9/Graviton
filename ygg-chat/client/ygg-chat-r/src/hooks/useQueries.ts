@@ -28,7 +28,7 @@ import {
   USER_SYSTEM_PROMPTS_STORAGE_CHANGE_EVENT,
   type UserSystemPromptStorageMode,
 } from '../helpers/userSystemPromptStorage'
-import { api, environment, localApi } from '../utils/api'
+import { api, cloudApi, environment, gwApi, localApi } from '../utils/api'
 import { getFavoritedModels } from '../utils/favorites'
 import { useAuth } from './useAuth'
 
@@ -55,47 +55,11 @@ export function useProjects() {
 
   const query = useQuery({
     queryKey: ['projects', userId],
-    queryFn: async () => {
-      // In Electron community mode, use local projects only
-      if (isElectronCommunityMode()) {
-        const localProjects = await localApi.get<ProjectWithLatestConversation[]>(`/app/projects?userId=${userId}`)
-        return [...localProjects].sort((a, b) => {
-          const dateA = new Date(a.latest_conversation_updated_at || a.updated_at).getTime()
-          const dateB = new Date(b.latest_conversation_updated_at || b.updated_at).getTime()
-          return dateB - dateA
-        })
-      }
-
-      // In Electron mode, fetch both cloud and local projects
-      if (environment === 'electron') {
-        const [cloudProjects, localProjects] = await Promise.all([
-          api
-            .get<ProjectWithLatestConversation[]>(`/projects/sorted/latest-conversation?userId=${userId}`, accessToken)
-            .catch(err => {
-              console.error('Failed to fetch cloud projects:', err)
-              return []
-            }),
-          localApi.get<ProjectWithLatestConversation[]>(`/app/projects?userId=${userId}`).catch(err => {
-            console.error('Failed to fetch local projects:', err)
-            return []
-          }),
-        ])
-
-        // Merge and sort by latest_conversation_updated_at or updated_at
-        const merged = [...cloudProjects, ...localProjects].sort((a, b) => {
-          const dateA = new Date(a.latest_conversation_updated_at || a.updated_at).getTime()
-          const dateB = new Date(b.latest_conversation_updated_at || b.updated_at).getTime()
-          return dateB - dateA
-        })
-
-        return merged
-      }
-
-      // Web mode: cloud only
-      return api.get<ProjectWithLatestConversation[]>(
-        `/projects/sorted/latest-conversation?userId=${userId}`,
-        accessToken
-      )
+    queryFn: async (): Promise<ProjectWithLatestConversation[]> => {
+      void accessToken
+      // Storage-aware via the gateway: merges local + cloud (deduped, sorted by
+      // latest_conversation_updated_at), or local-only in community mode.
+      return gwApi.get<ProjectWithLatestConversation[]>(`/projects?userId=${userId}`)
     },
     enabled: !!accessToken && !!userId,
     staleTime: 10 * 60 * 1000, // Projects don't change often, 10 minute cache
@@ -117,34 +81,15 @@ export function useProjects() {
  * Cache key: ['projects', projectId]
  */
 export function useProject(projectId: ProjectId | null, storageMode?: 'local' | 'cloud') {
-  const { accessToken, userId } = useAuth()
-  const queryClient = useQueryClient()
+  const { accessToken } = useAuth()
 
   return useQuery({
     queryKey: ['projects', projectId],
     queryFn: async () => {
       if (!projectId) throw new Error('Project ID is required')
-
-      // Determine storage mode: use parameter if provided, otherwise check cached projects
-      let effectiveStorageMode = storageMode
-      if (!effectiveStorageMode) {
-        // Try to get storage_mode from cached projects
-        const projects = queryClient.getQueryData<ProjectWithLatestConversation[]>(['projects', userId])
-        const project = projects?.find(p => p.id === projectId)
-        effectiveStorageMode = project?.storage_mode || 'cloud'
-      }
-
-      // console.log('[useProject] Fetching project:', projectId, 'storage_mode:', effectiveStorageMode)
-
-      // Route to appropriate API based on storage mode
-      if ((effectiveStorageMode === 'local' && environment === 'electron') || isElectronCommunityMode()) {
-        // console.log('[useProject] Using local API for project:', projectId)
-        return localApi.get<Project>(`/app/projects/${projectId}`)
-      }
-
-      // Default to cloud API
-      // console.log('[useProject] Using cloud API for project:', projectId)
-      return api.get<Project>(`/projects/${projectId}`, accessToken)
+      // The gateway routes by the entity's storage mode; pass the caller's hint when known.
+      const qs = storageMode ? `?storageMode=${storageMode}` : ''
+      return gwApi.get<Project>(`/projects/${projectId}${qs}`)
     },
     enabled: !!projectId && !!accessToken,
     staleTime: 10000,
@@ -176,37 +121,8 @@ export function useConversations(enabled: boolean = true) {
     queryKey: ['conversations'],
     queryFn: async () => {
       if (!userId) throw new Error('User not authenticated')
-
-      // In Electron community mode, use local conversations only
-      if (isElectronCommunityMode()) {
-        const localConversations = await localApi.get<Conversation[]>(`/app/conversations?userId=${userId}`)
-        return [...localConversations].sort(
-          (a, b) => new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime()
-        )
-      }
-
-      // In Electron mode, fetch both cloud and local conversations
-      if (environment === 'electron') {
-        const [cloudConversations, localConversations] = await Promise.all([
-          api.get<Conversation[]>(`/users/${userId}/conversations`, accessToken).catch(err => {
-            console.error('Failed to fetch cloud conversations:', err)
-            return []
-          }),
-          localApi.get<Conversation[]>(`/app/conversations?userId=${userId}`).catch(err => {
-            console.error('Failed to fetch local conversations:', err)
-            return []
-          }),
-        ])
-
-        // Merge and sort by updated_at
-        const merged = [...cloudConversations, ...localConversations].sort(
-          (a, b) => new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime()
-        )
-
-        return merged
-      }
-
-      return api.get<Conversation[]>(`/users/${userId}/conversations`, accessToken)
+      // Storage-aware via the gateway (merges local + cloud, deduped; local-only in community).
+      return gwApi.get<Conversation[]>(`/conversations?userId=${userId}`)
     },
     enabled: enabled && !!userId && !!accessToken,
     staleTime: 5 * 60 * 1000, // Conversations list doesn't change often, 5 minute cache
@@ -253,72 +169,10 @@ export function useConversationsInfinite(enabled: boolean = true) {
     queryKey: ['conversations', 'infinite'],
     queryFn: async ({ pageParam }) => {
       if (!userId) throw new Error('User not authenticated')
-
-      // Build query string
-      const params = new URLSearchParams({ limit: String(PAGE_SIZE) })
-      if (pageParam) {
-        params.set('cursor', pageParam)
-      }
-
-      // In Electron community mode, use local conversations only
-      if (isElectronCommunityMode()) {
-        const localConversations = await localApi.get<Conversation[]>(`/app/conversations?userId=${userId}`)
-        if (!pageParam) {
-          const sorted = [...localConversations].sort(
-            (a, b) => new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime()
-          )
-          return {
-            conversations: sorted.slice(0, PAGE_SIZE),
-            nextCursor: null,
-            hasMore: sorted.length > PAGE_SIZE,
-          }
-        }
-        return {
-          conversations: [],
-          nextCursor: null,
-          hasMore: false,
-        }
-      }
-
-      // In Electron mode, fetch both cloud and local conversations
-      if (environment === 'electron') {
-        const [cloudResult, localConversations] = await Promise.all([
-          api
-            .get<PaginatedConversationsResponse>(
-              `/users/${userId}/conversations/paginated?${params.toString()}`,
-              accessToken
-            )
-            .catch(err => {
-              console.error('Failed to fetch cloud conversations:', err)
-              return { conversations: [], nextCursor: null, hasMore: false }
-            }),
-          localApi.get<Conversation[]>(`/app/conversations?userId=${userId}`).catch(err => {
-            console.error('Failed to fetch local conversations:', err)
-            return []
-          }),
-        ])
-
-        // For first page, merge local conversations
-        // Local conversations are only included on first page since they're not paginated
-        if (!pageParam) {
-          const merged = [...localConversations, ...cloudResult.conversations].sort(
-            (a, b) => new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime()
-          )
-          return {
-            conversations: merged.slice(0, PAGE_SIZE),
-            nextCursor: cloudResult.nextCursor,
-            hasMore: cloudResult.hasMore || merged.length > PAGE_SIZE,
-          }
-        }
-
-        return cloudResult
-      }
-
-      // Web mode: cloud only
-      return api.get<PaginatedConversationsResponse>(
-        `/users/${userId}/conversations/paginated?${params.toString()}`,
-        accessToken
-      )
+      // Storage-aware pagination via the gateway (region-A merge server-side; local-only in community).
+      const params = new URLSearchParams({ userId, limit: String(PAGE_SIZE) })
+      if (pageParam) params.set('cursor', pageParam)
+      return gwApi.get<PaginatedConversationsResponse>(`/conversations/paginated?${params.toString()}`)
     },
     initialPageParam: undefined as string | undefined,
     getNextPageParam: lastPage => (lastPage.hasMore ? lastPage.nextCursor : undefined),
@@ -351,39 +205,9 @@ export function useConversationsByProject(projectId: ProjectId | null, enabled: 
     queryKey: ['conversations', 'project', projectId],
     queryFn: async () => {
       if (!projectId) throw new Error('Project ID is required')
-
-      // In Electron community mode, use local conversations only
-      if (isElectronCommunityMode()) {
-        const localConversations = await localApi.get<Conversation[]>(
-          `/app/conversations?userId=${userId}&projectId=${projectId}`
-        )
-        return [...localConversations].sort(
-          (a, b) => new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime()
-        )
-      }
-
-      // In Electron mode, fetch both cloud and local conversations
-      if (environment === 'electron') {
-        const [cloudConversations, localConversations] = await Promise.all([
-          api.get<Conversation[]>(`/conversations/project/${projectId}`, accessToken).catch(err => {
-            console.error('Failed to fetch cloud project conversations:', err)
-            return []
-          }),
-          localApi.get<Conversation[]>(`/app/conversations?userId=${userId}&projectId=${projectId}`).catch(err => {
-            console.error('Failed to fetch local project conversations:', err)
-            return []
-          }),
-        ])
-
-        // Merge and sort by updated_at
-        const merged = [...cloudConversations, ...localConversations].sort(
-          (a, b) => new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime()
-        )
-
-        return merged
-      }
-
-      return api.get<Conversation[]>(`/conversations/project/${projectId}`, accessToken)
+      // Gateway returns the merged (local+cloud, deduped) user conversation list; filter to this project.
+      const all = await gwApi.get<Conversation[]>(`/conversations?userId=${userId}`)
+      return all.filter(c => String(c.project_id) === String(projectId))
     },
     enabled: enabled && !!projectId && !!accessToken,
     staleTime: 0,
@@ -414,78 +238,15 @@ export function useConversationsByProjectInfinite(
 ) {
   const { enabled = true } = options
   const { accessToken, userId } = useAuth()
-  const queryClient = useQueryClient()
 
   return useInfiniteQuery({
     queryKey: ['conversations', 'project', projectId, 'infinite'],
-    queryFn: async ({ pageParam }) => {
+    queryFn: async ({ pageParam }): Promise<PaginatedConversationsResponse> => {
       if (!projectId) throw new Error('Project ID is required')
-
-      const params = new URLSearchParams({ limit: String(PAGE_SIZE) })
-      if (pageParam) {
-        params.set('cursor', pageParam)
-      }
-
-      const localParams = new URLSearchParams({
-        userId: userId || '',
-        projectId: String(projectId),
-        limit: String(PAGE_SIZE),
-      })
-      if (pageParam) {
-        localParams.set('cursor', pageParam)
-      }
-
-      if (isElectronCommunityMode()) {
-        return localApi.get<PaginatedConversationsResponse>(`/app/conversations?${localParams.toString()}`)
-      }
-
-      if (environment === 'electron') {
-        const cachedProjects = userId
-          ? queryClient.getQueryData<ProjectWithLatestConversation[]>(['projects', userId])
-          : undefined
-        const cachedProject = cachedProjects?.find(project => String(project.id) === String(projectId))
-
-        if (cachedProject?.storage_mode === 'local') {
-          return localApi.get<PaginatedConversationsResponse>(`/app/conversations?${localParams.toString()}`)
-        }
-
-        if (cachedProject?.storage_mode === 'cloud') {
-          return api.get<PaginatedConversationsResponse>(
-            `/conversations/project/${projectId}/paginated?${params.toString()}`,
-            accessToken
-          )
-        }
-
-        const [cloudResult, localResult] = await Promise.all([
-          api
-            .get<PaginatedConversationsResponse>(
-              `/conversations/project/${projectId}/paginated?${params.toString()}`,
-              accessToken
-            )
-            .catch(err => {
-              console.error('Failed to fetch cloud project conversations:', err)
-              return { conversations: [], nextCursor: null, hasMore: false }
-            }),
-          localApi.get<PaginatedConversationsResponse>(`/app/conversations?${localParams.toString()}`).catch(err => {
-            console.error('Failed to fetch local project conversations:', err)
-            return { conversations: [], nextCursor: null, hasMore: false }
-          }),
-        ])
-        const conversations = [...localResult.conversations, ...cloudResult.conversations].sort(
-          (a, b) => new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime()
-        )
-
-        return {
-          conversations,
-          nextCursor: localResult.hasMore ? localResult.nextCursor : cloudResult.nextCursor,
-          hasMore: localResult.hasMore || cloudResult.hasMore,
-        }
-      }
-
-      return api.get<PaginatedConversationsResponse>(
-        `/conversations/project/${projectId}/paginated?${params.toString()}`,
-        accessToken
-      )
+      // Storage-aware dual-cursor pagination handled server-side (region-B merge).
+      const params = new URLSearchParams({ userId: userId || '', projectId: String(projectId), limit: String(PAGE_SIZE) })
+      if (pageParam) params.set('cursor', pageParam)
+      return gwApi.get<PaginatedConversationsResponse>(`/conversations/by-project?${params.toString()}`)
     },
     initialPageParam: undefined as string | undefined,
     getNextPageParam: lastPage => (lastPage.hasMore ? lastPage.nextCursor : undefined),
@@ -512,59 +273,8 @@ export function useRecentConversations(limit: number = 120) {
     queryKey: ['conversations', 'recent', userId, safeLimit],
     queryFn: async () => {
       if (!userId) throw new Error('User not authenticated')
-      const query = new URLSearchParams({ limit: String(safeLimit) }).toString()
-
-      // In Electron community mode, use local conversations only
-      if (isElectronCommunityMode()) {
-        const localConversations = await localApi.get<Conversation[]>(`/app/conversations?userId=${userId}`)
-        return [...localConversations]
-          .sort((a, b) => new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime())
-          .slice(0, safeLimit)
-      }
-
-      // In Electron mode, fetch both cloud and local conversations
-      if (environment === 'electron') {
-        const [cloudConversations, localConversations] = await Promise.all([
-          api.get<any[]>(`/users/${userId}/conversations/recent?${query}`, accessToken).catch(err => {
-            console.error('Failed to fetch cloud recent conversations:', err)
-            return []
-          }),
-          localApi.get<Conversation[]>(`/app/conversations?userId=${userId}`).catch(err => {
-            console.error('Failed to fetch local conversations:', err)
-            return []
-          }),
-        ])
-
-        // Transform cloud response to client format
-        const normalizedCloud: Conversation[] = cloudConversations.map((conv: any) => ({
-          ...conv,
-          id: String(conv.id),
-          user_id: conv.owner_id || String(conv.user_id),
-          project_id: conv.project_id ? String(conv.project_id) : null,
-        }))
-
-        // Merge, sort by updated_at, and take the most recent `limit` conversations
-        const merged = [...normalizedCloud, ...localConversations]
-          .sort((a, b) => new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime())
-          .slice(0, safeLimit)
-
-        return merged
-      }
-
-      // Web mode: cloud only
-      const response = await api.get<any[]>(`/users/${userId}/conversations/recent?${query}`, accessToken)
-
-      // Transform server response to client format
-      // - Local mode: user_id is number, convert to string
-      // - Web mode: owner_id is string UUID, map to user_id
-      const normalized: Conversation[] = response.map((conv: any) => ({
-        ...conv,
-        id: String(conv.id),
-        user_id: conv.owner_id || String(conv.user_id),
-        project_id: conv.project_id ? String(conv.project_id) : null,
-      }))
-
-      return normalized
+      // Gateway normalizes cloud rows (owner_id→user_id, id→String), merges + slices to limit.
+      return gwApi.get<Conversation[]>(`/conversations/recent?userId=${userId}&limit=${safeLimit}`)
     },
     enabled: !!userId && !!accessToken,
     staleTime: 5 * 60 * 1000, // Recent conversations list, 5 minute cache
@@ -618,10 +328,10 @@ export function useConversationData(conversationId: ConversationId | null) {
 
       // Fetch all data in parallel
       const [messages, treeData, systemPromptRes, contextRes] = await Promise.all([
-        api.get<Message[]>(`/conversations/${conversationId}/messages`, accessToken),
-        api.get<any>(`/conversations/${conversationId}/messages/tree`, accessToken),
-        api.get<{ systemPrompt: string | null }>(`/conversations/${conversationId}/system-prompt`, accessToken),
-        api.get<{ context: string | null }>(`/conversations/${conversationId}/context`, accessToken),
+        gwApi.get<Message[]>(`/conversations/${conversationId}/messages`),
+        gwApi.get<any>(`/conversations/${conversationId}/messages/tree`),
+        gwApi.get<{ systemPrompt: string | null }>(`/conversations/${conversationId}/system-prompt`),
+        gwApi.get<{ context: string | null }>(`/conversations/${conversationId}/context`),
       ])
 
       return {
@@ -817,20 +527,10 @@ export function useConversationMessages(conversationId: ConversationId | null, s
         if (!effectiveStorageMode) effectiveStorageMode = 'cloud'
       }
 
-      // Route to appropriate API based on storage mode
-      if (effectiveStorageMode === 'local' && environment === 'electron') {
-        const result = await localApi.get<{
-          messages: Message[]
-          tree: any
-          meta?: { storage_mode: 'local' | 'cloud' }
-        }>(`/app/conversations/${conversationId}/messages/tree`)
-        return result
-      }
-
-      // Default to cloud API
-      const result = await api.get<{ messages: Message[]; tree: any; meta?: { storage_mode: 'local' | 'cloud' } }>(
-        `/conversations/${conversationId}/messages/tree`,
-        accessToken
+      // Storage-aware fetch via the gateway (routes local vs cloud server-side).
+      void effectiveStorageMode
+      const result = await gwApi.get<{ messages: Message[]; tree: any; meta?: { storage_mode: 'local' | 'cloud' } }>(
+        `/conversations/${conversationId}/messages/tree`
       )
       return result
     },
@@ -1069,9 +769,8 @@ export function useModels(provider: string | null) {
           endpoint = '/models' // Ollama
       }
 
-      const response = await api.get<{ models: string[] | Model[]; default: string | Model; userIsFreeTier?: boolean }>(
-        endpoint,
-        accessToken
+      const response = await cloudApi.get<{ models: string[] | Model[]; default: string | Model; userIsFreeTier?: boolean }>(
+        endpoint
       )
 
       // Handle both string[] and Model[] responses
@@ -1133,7 +832,7 @@ export function useRecentModels(limit: number = 5) {
       }
 
       const query = new URLSearchParams({ limit: String(limit) }).toString()
-      const response = await api.get<{ models: string[] }>(`/models/recent?${query}`, accessToken)
+      const response = await cloudApi.get<{ models: string[] }>(`/models/recent?${query}`)
       const models = Array.isArray(response?.models) ? response.models : []
 
       // Map plain names to BaseModel shape with sensible defaults
@@ -1199,7 +898,7 @@ export function useZdrModels() {
   return useQuery({
     queryKey: ['models', 'openrouter', 'zdr'],
     queryFn: async () => {
-      const response = await api.get<{ endpoints: ZdrModel[] }>('/models/openrouter/zdr', accessToken)
+      const response = await cloudApi.get<{ endpoints: ZdrModel[] }>('/models/openrouter/zdr')
       return response.endpoints || []
     },
     enabled: !!accessToken && !isElectronCommunityMode(),
@@ -1228,7 +927,7 @@ export function useToggleSecretMode() {
     mutationFn: async ({ enabled }: { enabled: boolean }) => {
       if (enabled) {
         // Fetch ZDR models
-        const response = await api.get<{ endpoints: ZdrModel[] }>('/models/openrouter/zdr', accessToken)
+        const response = await cloudApi.get<{ endpoints: ZdrModel[] }>('/models/openrouter/zdr')
         const zdrEndpoints = response.endpoints || []
 
         // Deduplicate endpoints by model id (same model can have multiple ZDR providers)
@@ -1346,7 +1045,7 @@ export function useResearchNotes() {
     queryKey: ['research-notes', userId],
     queryFn: async () => {
       if (!userId) throw new Error('User not authenticated')
-      return api.get<ResearchNoteItem[]>(`/users/${userId}/research-notes`, accessToken)
+      return cloudApi.get<ResearchNoteItem[]>(`/users/${userId}/research-notes`)
     },
     enabled: !!userId && !!accessToken,
     staleTime: 5 * 60 * 1000, // 5 minutes - research notes don't change often
@@ -1362,7 +1061,6 @@ export function useResearchNotes() {
  */
 export function useRefreshModels() {
   const queryClient = useQueryClient()
-  const { accessToken } = useAuth()
 
   return useMutation({
     mutationFn: async (provider: string) => {
@@ -1395,7 +1093,7 @@ export function useRefreshModels() {
           break
       }
 
-      const response = await api.get<{ models: string[] | Model[]; default: string | Model }>(endpoint, accessToken)
+      const response = await cloudApi.get<{ models: string[] | Model[]; default: string | Model }>(endpoint)
       const isStringArray = Array.isArray(response.models) && typeof response.models[0] === 'string'
 
       return {
@@ -2160,7 +1858,7 @@ export function useUserSystemPromptsQuery() {
         return localPrompts
       }
 
-      const response = await api.get<UserSystemPromptCached[]>('/system-prompts', accessToken)
+      const response = await cloudApi.get<UserSystemPromptCached[]>('/system-prompts')
       const cloudPrompts = (response || []).map(prompt => ({ ...prompt, storage_mode: 'cloud' as const }))
       return [...localPrompts, ...cloudPrompts]
     },
