@@ -5593,6 +5593,69 @@ export const editMessageWithBranching = createAsyncThunk<
       // Determine execution mode
       const isElectronMode =
         import.meta.env.VITE_ENVIRONMENT === 'electron' || (typeof __IS_ELECTRON__ !== 'undefined' && __IS_ELECTRON__)
+
+      // ── Phase 1: server-owned chat loop (thin client) — edit-branch ──
+      // Same gate as sendMessage; falls through to the unchanged client loop otherwise.
+      if (
+        isServerOwnedChatLoopEnabled() &&
+        isElectronMode &&
+        (isLmStudio || isZai) &&
+        state.chat.toolAutoApprove === true
+      ) {
+        const { path, body } = buildServerLoopRequest('edit', {
+          conversationId: String(conversationId),
+          content: newContent,
+          provider: serverProvider,
+          modelName,
+          userId: auth.userId,
+          messageId: String(originalMessageId),
+          parentId: parentMessageId ?? null,
+          operationMode: operationModeAtSend,
+          think,
+          rootPath: effectiveToolRootPath,
+          conversationContext: conversationContextSource,
+          projectContext,
+          storageMode,
+          attachmentsBase64,
+          selectedFiles: selectedFilesForChat,
+          tools: filterToolsForOperationMode(getAllTools(), operationModeAtSend),
+          streamId,
+        })
+        const result = await runServerChatLoop(
+          {
+            operation: 'edit',
+            conversationId: String(conversationId),
+            streamId,
+            path,
+            request: body,
+            signal: controller.signal,
+          },
+          { dispatch, getState }
+        )
+        if (result.messageId) {
+          void finishStreamingRun(streamId, {
+            status: result.providerError ? 'error' : 'completed',
+            endReason: result.providerError ? 'error' : 'completed',
+            assistantMessageId: result.messageId,
+            finalMessageId: result.messageId,
+          })
+          void markStreamUndoFinalMessage(streamId, String(result.messageId))
+            .then(summary => {
+              if (summary)
+                dispatch(
+                  chatSliceActions.streamUndoSummariesReceived({
+                    conversationId: String(conversationId),
+                    summaries: [summary],
+                  })
+                )
+            })
+            .catch(error => console.warn('[serverLoop] Failed to mark final message', error))
+        }
+        dispatch(chatSliceActions.sendingCompleted({ streamId }))
+        setTimeout(() => dispatch(chatSliceActions.streamPruned({ streamId })), STREAM_PRUNE_DELAY)
+        return { messageId: result.messageId, userMessage: result.userMessage, originalMessageId, streamId }
+      }
+
       const executionMode = 'client' // Prefer client execution for tools
       let currentTurnHistory = [...branchHistoryForSend]
       const pendingHookContextForNextTurn: string[] = []
@@ -7013,6 +7076,69 @@ export const sendMessageToBranch = createAsyncThunk<
       // Determine execution mode
       const isElectronMode =
         import.meta.env.VITE_ENVIRONMENT === 'electron' || (typeof __IS_ELECTRON__ !== 'undefined' && __IS_ELECTRON__)
+
+      // ── Phase 1: server-owned chat loop (thin client) — branch ──
+      // Same gate as sendMessage; falls through to the unchanged client loop otherwise.
+      if (
+        isServerOwnedChatLoopEnabled() &&
+        isElectronMode &&
+        (isLmStudio || isZai) &&
+        state.chat.toolAutoApprove === true
+      ) {
+        const { path, body } = buildServerLoopRequest('branch', {
+          conversationId: String(conversationId),
+          content,
+          provider: serverProvider,
+          modelName,
+          userId: auth.userId,
+          messageId: String(parentId),
+          parentId: parentId ?? null,
+          operationMode: operationModeAtSend,
+          think,
+          rootPath: effectiveToolRootPath,
+          conversationContext: conversationContextSource,
+          projectContext,
+          storageMode,
+          attachmentsBase64,
+          selectedFiles: selectedFilesForChat,
+          tools: filterToolsForOperationMode(getAllTools(), operationModeAtSend),
+          streamId,
+        })
+        const result = await runServerChatLoop(
+          {
+            operation: 'branch',
+            conversationId: String(conversationId),
+            streamId,
+            path,
+            request: body,
+            signal: controller.signal,
+          },
+          { dispatch, getState }
+        )
+        if (result.messageId) {
+          void finishStreamingRun(streamId, {
+            status: result.providerError ? 'error' : 'completed',
+            endReason: result.providerError ? 'error' : 'completed',
+            assistantMessageId: result.messageId,
+            finalMessageId: result.messageId,
+          })
+          void markStreamUndoFinalMessage(streamId, String(result.messageId))
+            .then(summary => {
+              if (summary)
+                dispatch(
+                  chatSliceActions.streamUndoSummariesReceived({
+                    conversationId: String(conversationId),
+                    summaries: [summary],
+                  })
+                )
+            })
+            .catch(error => console.warn('[serverLoop] Failed to mark final message', error))
+        }
+        dispatch(chatSliceActions.sendingCompleted({ streamId }))
+        setTimeout(() => dispatch(chatSliceActions.streamPruned({ streamId })), STREAM_PRUNE_DELAY)
+        return { messageId: result.messageId, userMessage: result.userMessage, streamId }
+      }
+
       const executionMode = 'client'
 
       const pendingHookContextForNextTurn: string[] = []
