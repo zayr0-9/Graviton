@@ -231,7 +231,6 @@ const makeInitialState = (): ChatState => {
     planClarificationRequest: null,
     toolAutoApprove: false,
     operationMode: 'plan',
-    ccSlashCommands: [],
     freeTier: {
       freeGenerationsRemaining: null,
       showLimitModal: false,
@@ -1017,13 +1016,6 @@ export const chatSlice = createSlice({
       state.conversation.currentPath = parsedPath
     },
 
-    // Update Claude Code session info
-    ccSessionUpdated: (
-      state,
-      action: PayloadAction<{ sessionId: string; lastMessageAt: string; messageCount: number; cwd: string }>
-    ) => {
-      state.conversation.ccSession = action.payload
-    },
     ccCwdSet: (state, action: PayloadAction<string>) => {
       state.conversation.ccCwd = action.payload
     },
@@ -1198,15 +1190,6 @@ export const chatSlice = createSlice({
 
     operationModeToggled: state => {
       state.operationMode = state.operationMode === 'plan' ? 'execute' : 'plan'
-    },
-
-    // CC Slash Commands
-    ccSlashCommandsLoaded: (state, action: PayloadAction<string[]>) => {
-      state.ccSlashCommands = action.payload
-    },
-
-    ccSlashCommandsCleared: state => {
-      state.ccSlashCommands = []
     },
 
     /* Free tier reducers */

@@ -393,9 +393,6 @@ export const selectToolByName = createSelector(
   (tools, toolName) => tools.find(tool => tool.name === toolName)
 )
 
-// CC Slash Commands selector
-export const selectCCSlashCommands = createSelector([selectChatState], chat => chat.ccSlashCommands)
-
 export const selectStreamUndoRoot = createSelector([selectChatState], chat => chat.streamUndo)
 
 export const selectStreamUndoSummariesForParentMessage = (parentMessageId: MessageId | string) =>

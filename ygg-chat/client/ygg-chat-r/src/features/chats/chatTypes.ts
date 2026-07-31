@@ -118,16 +118,6 @@ export interface StreamChunk {
   remaining?: number
   // tool permission request correlation id
   requestId?: string
-  // CC-specific chunk type (from Claude Code SDK streaming events)
-  chunkType?:
-    | 'content_delta'
-    | 'thinking_delta'
-    | 'tool_start'
-    | 'tool_end'
-    | 'tool_progress'
-    | 'result_output'
-    | 'system_output'
-    | string
 }
 
 // Sequential event for streaming to preserve order
@@ -333,8 +323,6 @@ export interface ConversationState {
   excludedMessages: MessageId[] //id of each message which are NOT to be sent for chat,
   context: string
   ccCwd: string
-  // Claude Code session tracking
-  ccSession?: CCSessionInfo | null
 }
 
 // Core chat state - ONLY chat concerns
@@ -385,7 +373,6 @@ export interface ChatState {
   planClarificationRequest: PlanClarificationRequest | null
   toolAutoApprove: boolean
   operationMode: OperationMode
-  ccSlashCommands: string[]
   freeTier: {
     freeGenerationsRemaining: number | null
     showLimitModal: boolean
@@ -435,34 +422,6 @@ export interface BranchMessagePayload {
   // Captured at send time: 'plan' = Chat Mode, 'execute' = Agent Mode.
   operationMode?: OperationMode
 }
-
-export interface CCSessionInfo {
-  sessionId: string
-  lastMessageAt: string
-  messageCount: number
-  cwd: string
-}
-
-export interface SlashCommand {
-  name: string
-  description?: string
-}
-
-export interface SendCCMessagePayload {
-  conversationId: ConversationId
-  message: string
-  cwd?: string
-  permissionMode?: 'default' | 'plan' | 'bypassPermissions' | 'acceptEdits'
-  resume?: boolean
-  parentId?: MessageId | null
-  sessionId?: string
-  forkSession?: boolean
-}
-
-export interface SendCCBranchPayload extends Omit<SendCCMessagePayload, 'parentId'> {
-  parentId: MessageId
-}
-
 
 export interface ModelSelectionPayload {
   model: Model
