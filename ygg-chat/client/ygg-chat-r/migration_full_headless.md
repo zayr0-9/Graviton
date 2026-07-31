@@ -20,7 +20,7 @@ turning the renderer into a thin client that talks only to `127.0.0.1:3002`.
 | 2 | Pause/resume protocol (interactive tool-permission + `plan_md` clarify) | ✅ done | `15758d9`, `8052fe0` |
 | 3 | 5 lifecycle chat hooks in the server loop | ✅ done | `919b207` |
 | 4 | Cloud provider through the gateway (free-tier relay + Railway id adoption) | ◐ partial — see below | `1f68568`, `176fbb3` |
-| 5 | Storage-aware CRUD gateway + retire dualSync | ◐ partial — write path + gateway done; reads/attachments deferred | `293ef8d`, `881c7e8` |
+| 5 | Storage-aware CRUD gateway + retire dualSync | ◐ partial — write path + gateway + rename fix + system-prompts done; list-reads/attachments deferred | `293ef8d`, `881c7e8`, `e2196bd`, `fb355ba` |
 | 6 | Cutover + delete ~5,200 renderer loop lines; flags default-on | ☐ not started | — |
 
 Feature flags in play today:
@@ -177,11 +177,22 @@ The five Phase-0 skeletons are now real:
 dedup + write-normalizers, `railwayClient`, `cloudMirrorService`,
 `appAuthTokenManager`, `cloudProxyRoutes` allowlist, extended `gatewayFlags`.
 
+### Follow-ups landed after the initial cutover
+- **Rename fix (`e2196bd`):** the rewrite dropped the `storageMode` param, so cloud
+  conversations (notably inside cloud projects) could be misrouted to the local leg
+  and never reach Railway. Added an authoritative `?storageMode=` hint
+  (`resolveWriteMode`) across conversation/project write routes + threaded it through
+  the write thunks, and made `mirrorConversation/mirrorProject` reuse the existing
+  row's `user_id` so cloud updates refresh the local mirror instead of skipping.
+- **System prompts (`fb355ba`):** the 8 system-prompt helpers now go through
+  `cloudApi` (/api/cloud/system-prompts) instead of Railway directly.
+
 ### Deferred (NOT yet cut over — still hit Railway directly / need more work)
-- **`useQueries` read-layer** (6 merge hooks + `useModels`/ZDR + system-prompt
-  hooks) — still merges client-side. Behavior unchanged (the gateway mirrors cloud
-  writes, so the client merge still sees consistent data), but reads are not yet
-  "only :3002". Repointing them is the next slice.
+- **`useQueries` list-read merge hooks** (6: projects + conversations flat/paginated/
+  by-project/recent/favorites) + **`useModels`/ZDR** — still merge client-side / hit
+  Railway. Behavior unchanged (the gateway mirrors cloud writes, so the client merge
+  still sees consistent data), but reads are not yet "only :3002". Repointing them
+  (to the now-deduped gateway merge endpoints) is the next slice.
 - **Attachments** (`uploadAttachment`/link/fetch/delete) — need a multipart-aware
   gateway route; still use the cloud `apiCall`.
 - **Stripe helpers** (`api.ts` + `lib/payments/stripe.ts`) and **Settings**
