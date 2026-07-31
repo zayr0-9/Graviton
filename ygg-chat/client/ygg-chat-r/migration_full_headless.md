@@ -20,7 +20,7 @@ turning the renderer into a thin client that talks only to `127.0.0.1:3002`.
 | 2 | Pause/resume protocol (interactive tool-permission + `plan_md` clarify) | ✅ done | `15758d9`, `8052fe0` |
 | 3 | 5 lifecycle chat hooks in the server loop | ✅ done | `919b207` |
 | 4 | Cloud provider through the gateway (free-tier relay + Railway id adoption) | ◐ partial — see below | `1f68568`, `176fbb3` |
-| 5 | Storage-aware CRUD gateway + retire dualSync | ◐ partial — write path + gateway + rename fix + system-prompts done; list-reads/attachments deferred | `293ef8d`, `881c7e8`, `e2196bd`, `fb355ba` |
+| 5 | Storage-aware CRUD gateway + retire dualSync | ◐ near-complete — writes + reads + models + system-prompts + Stripe cut over; only attachments/OAuth/search-fallbacks remain | `293ef8d`, `881c7e8`, `e2196bd`, `fb355ba`, `1d7aa51`, `4d2af8a` |
 | 6 | Cutover + delete ~5,200 renderer loop lines; flags default-on | ☐ not started | — |
 
 Feature flags in play today:
@@ -186,19 +186,27 @@ dedup + write-normalizers, `railwayClient`, `cloudMirrorService`,
   row's `user_id` so cloud updates refresh the local mirror instead of skipping.
 - **System prompts (`fb355ba`):** the 8 system-prompt helpers now go through
   `cloudApi` (/api/cloud/system-prompts) instead of Railway directly.
+- **Read-layer (`1d7aa51`):** the `useQueries` list hooks (projects + conversations
+  flat/paginated/by-project/recent) now call the gateway (server-side merge + dedup)
+  instead of merging client-side; `useConversationData` (messages/tree/system-prompt/
+  context) → gwApi; models/ZDR/recent-models/research-notes/cached-system-prompts →
+  cloudApi. GET /projects/:id and /conversations/:id honor the `?storageMode=` hint.
+  (One consumer, sideBar, needed an explicit tuple annotation — a union-of-arrays map
+  inference quirk the repoint perturbed; runtime unchanged.)
+- **Stripe (`4d2af8a`):** the 5 Stripe helpers → `cloudApi` (community guard kept).
 
-### Deferred (NOT yet cut over — still hit Railway directly / need more work)
-- **`useQueries` list-read merge hooks** (6: projects + conversations flat/paginated/
-  by-project/recent/favorites) + **`useModels`/ZDR** — still merge client-side / hit
-  Railway. Behavior unchanged (the gateway mirrors cloud writes, so the client merge
-  still sees consistent data), but reads are not yet "only :3002". Repointing them
-  (to the now-deduped gateway merge endpoints) is the next slice.
-- **Attachments** (`uploadAttachment`/link/fetch/delete) — need a multipart-aware
-  gateway route; still use the cloud `apiCall`.
-- **Stripe helpers** (`api.ts` + `lib/payments/stripe.ts`) and **Settings**
-  google-drive/oauth calls — still hit `API_BASE`; repoint to `cloudApi`.
+### Deferred (still hit Railway directly — each needs NEW work, not a plain repoint)
+- **Attachments** (`uploadAttachment`/link/fetch/delete/fetchById) — need a
+  multipart-aware gateway route (railwayClient FormData passthrough) + storage
+  routing; still use the cloud `apiCall`.
+- **Settings google-drive OAuth** (status/start/disconnect) — the start/disconnect
+  redirect needs the real Railway origin, so a blind :3002 repoint risks breaking the
+  consent flow.
+- **2 cloud search fallbacks** (`useSearchTopLevelUserMessages`) — need userId + the
+  `/api/gw/conversations/search` endpoint shape; low-traffic fallbacks.
 - **Legacy renderer streaming loop** (~5,200 lines) + its 24 `localMirror` message
   sites — explicitly **Phase 6**.
+- `lib/payments/stripe.ts` is dead (no importers); leave for a cleanup pass.
 
 ### Not live-verified
 No live Railway/Supabase here, so the whole cloud leg (gateway cloud reads/writes,
