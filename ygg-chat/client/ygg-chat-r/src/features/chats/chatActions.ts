@@ -10,7 +10,7 @@ import { resolveOpenAIContinuationCompaction } from '../../../../../shared/conte
 import { ConversationId, MessageId } from '../../../../../shared/types'
 import { isCommunityMode } from '../../config/runtimeMode'
 import { getDefaultUserSystemPromptFromCache } from '../../hooks/useQueries'
-import { dualSync } from '../../lib/sync/dualSyncManager'
+import { localMirror as dualSync } from '../../lib/localMirror'
 import type { RootState } from '../../store/store'
 import { ThunkExtraArgument } from '../../store/thunkExtra'
 import {
@@ -18,8 +18,10 @@ import {
   apiCall,
   buildLocalApiUrl,
   createStreamingRequest,
+  cloudApi,
   environment,
   getCachedLocalApiBase,
+  gwApi,
   localApi,
   shouldUseLocalApi,
 } from '../../utils/api'
@@ -5160,30 +5162,14 @@ export const updateMessage = createAsyncThunk<
         conversation?.storage_mode || getStorageModeFromCache(extra.queryClient, currentConversationId!)
       const isLocalMode = shouldUseLocalApi(storageMode)
 
-      let updated: Message
-
-      if (isLocalMode) {
-        // In local mode, persist to local SQLite via localApi
-        const body: any = { content, note }
-        if (note_color !== undefined && isLocalMode) {
-          body.note_color = note_color
-        }
-        if (content_blocks) {
-          body.content_blocks = content_blocks
-        }
-
-        updated = await localApi.put<Message>(`/app/messages/${id}`, body)
-      } else {
-        const body: any = { content, note }
-        if (content_blocks) {
-          body.content_blocks = content_blocks
-        }
-
-        updated = await apiCall<Message>(`/messages/${id}`, auth.accessToken, {
-          method: 'PUT',
-          body: JSON.stringify(body),
-        })
-      }
+      // Storage-aware update via the gateway (routes local vs cloud + mirrors).
+      const body: any = { content, note }
+      if (note_color !== undefined && isLocalMode) body.note_color = note_color
+      if (content_blocks) body.content_blocks = content_blocks
+      const updated = await gwApi.put<Message>(
+        `/messages/${id}?conversationId=${encodeURIComponent(String(currentConversationId ?? ''))}`,
+        body
+      )
       const appliedNoteColor = isLocalMode ? note_color : undefined
       dispatch(chatSliceActions.messageUpdated({ id, content, note, note_color: appliedNoteColor, content_blocks }))
 
@@ -5218,10 +5204,9 @@ export const fetchConversationMessages = createAsyncThunk<
   Message[],
   ConversationId,
   { state: RootState; extra: ThunkExtraArgument }
->('chat/fetchConversationMessages', async (conversationId, { dispatch, extra, rejectWithValue, getState }) => {
-  const { auth } = extra
+>('chat/fetchConversationMessages', async (conversationId, { dispatch, rejectWithValue, getState }) => {
   try {
-    const raw = await apiCall<Message[]>(`/conversations/${conversationId}/messages`, auth.accessToken)
+    const raw = await gwApi.get<Message[]>(`/conversations/${conversationId}/messages`)
     // Ensure client-only fields exist
     const messages: Message[] = (raw || []).map(m => ({
       ...m,
@@ -5260,7 +5245,6 @@ export const deleteMessage = createAsyncThunk<
   { id: MessageId; conversationId: ConversationId; storageMode?: 'local' | 'cloud' },
   { extra: ThunkExtraArgument }
 >('chat/deleteMessage', async ({ id, conversationId, storageMode }, { dispatch, extra, rejectWithValue }) => {
-  const { auth } = extra
   try {
     // Use storageMode passed from caller (most reliable) or fallback to cache lookup
     const effectiveStorageMode = storageMode ?? getStorageModeFromCache(extra.queryClient, conversationId)
@@ -5275,13 +5259,8 @@ export const deleteMessage = createAsyncThunk<
     //   messageId: id,
     // })
 
-    if (isLocalMode) {
-      // console.log('[deleteMessage] -> Routing to LOCAL API: /app/messages/' + id)
-      await localApi.delete(`/app/messages/${id}`)
-    } else {
-      // console.log('[deleteMessage] -> Routing to CLOUD API: /messages/' + id)
-      await apiCall(`/messages/${id}`, auth.accessToken, { method: 'DELETE' })
-    }
+    // Storage-aware delete via the gateway (routes local vs cloud).
+    await gwApi.delete(`/messages/${id}?conversationId=${encodeURIComponent(String(conversationId))}`)
     // Sync React Query cache immediately
     removeMessagesFromCache(extra.queryClient, conversationId, [id])
     // Sync message deletion to local SQLite (fire-and-forget)
@@ -8449,15 +8428,8 @@ export const syncConversationToLocal = createAsyncThunk<
       // Fetch conversation from REMOTE source of truth (Cloud), not local API
       let conversation: Conversation | null = null
       try {
-        const res = await fetch(`${remoteApiBase}/conversations/${conversationId}`, {
-          headers: {
-            Authorization: `Bearer ${auth.accessToken}`,
-            'Content-Type': 'application/json',
-          },
-        })
-        if (res.ok) {
-          conversation = await res.json()
-        }
+        // Fetch the source-of-truth conversation through the gateway (:3002), not Railway directly.
+        conversation = await gwApi.get<Conversation>(`/conversations/${conversationId}`)
       } catch (e) {
         console.warn('Failed to fetch remote conversation for sync', e)
       }
@@ -8476,15 +8448,7 @@ export const syncConversationToLocal = createAsyncThunk<
             // If not in cache, fetch from REMOTE API
             if (!project) {
               try {
-                const projRes = await fetch(`${remoteApiBase}/projects/${projectId}`, {
-                  headers: {
-                    Authorization: `Bearer ${auth.accessToken}`,
-                    'Content-Type': 'application/json',
-                  },
-                })
-                if (projRes.ok) {
-                  project = await projRes.json()
-                }
+                project = await gwApi.get<any>(`/projects/${projectId}`)
               } catch (e) {
                 console.warn(`Failed to fetch project ${projectId} for sync`, e)
               }
@@ -8530,8 +8494,7 @@ export const fetchMessageTree = createAsyncThunk<
   any,
   ConversationId | { conversationId: ConversationId; storageMode?: 'local' | 'cloud' },
   { state: RootState; extra: ThunkExtraArgument }
->('chat/fetchMessageTree', async (payload, { dispatch, extra, rejectWithValue, getState }) => {
-  const { auth } = extra
+>('chat/fetchMessageTree', async (payload, { dispatch, rejectWithValue, getState }) => {
 
   // Handle both old (just conversationId) and new (object with storageMode) signatures
   const conversationId = typeof payload === 'object' ? payload.conversationId : payload
@@ -8567,18 +8530,11 @@ export const fetchMessageTree = createAsyncThunk<
     // console.log(`[fetchMessageTree] Storage Mode: ${storageMode}`)
     // console.log(`[fetchMessageTree] Environment: ${environment}`)
 
-    if (shouldUseLocalApi(storageMode, environment)) {
-      // console.log('[fetchMessageTree] Routing to LOCAL API')
-      response = await localApi.get<{ messages: Message[]; tree: any }>(
-        `/app/conversations/${conversationId}/messages/tree`
-      )
-    } else {
-      // console.log('[fetchMessageTree] Routing to CLOUD API')
-      response = await apiCall<{ messages: Message[]; tree: any }>(
-        `/conversations/${conversationId}/messages/tree`,
-        auth.accessToken
-      )
-    }
+    // Storage-aware fetch via the gateway (routes local vs cloud server-side).
+    void storageMode
+    response = await gwApi.get<{ messages: Message[]; tree: any }>(
+      `/conversations/${conversationId}/messages/tree`
+    )
 
     // Handle both old and new response formats for backward compatibility
     const treeData = response.tree || response
@@ -8667,8 +8623,7 @@ export const initializeConversationData = createAsyncThunk<
   { messages: Message[]; treeData: any; systemPrompt: string | null; context: string | null },
   ConversationId,
   { state: RootState; extra: ThunkExtraArgument }
->('chat/initializeConversationData', async (conversationId, { dispatch, extra, rejectWithValue, getState }) => {
-  const { auth } = extra
+>('chat/initializeConversationData', async (conversationId, { dispatch, rejectWithValue, getState }) => {
 
   try {
     // Check if we already have this conversation's data loaded recently
@@ -8700,8 +8655,8 @@ export const initializeConversationData = createAsyncThunk<
 
     // 2. Fetch system prompt and context in parallel (these are lightweight)
     const [systemPromptRes, contextRes] = await Promise.all([
-      apiCall<{ systemPrompt: string | null }>(`/conversations/${conversationId}/system-prompt`, auth.accessToken),
-      apiCall<{ context: string | null }>(`/conversations/${conversationId}/context`, auth.accessToken),
+      gwApi.get<{ systemPrompt: string | null }>(`/conversations/${conversationId}/system-prompt`),
+      gwApi.get<{ context: string | null }>(`/conversations/${conversationId}/context`),
     ])
 
     const systemPrompt = systemPromptRes?.systemPrompt ?? null
@@ -8726,13 +8681,11 @@ export const refreshCurrentPathAfterDelete = createAsyncThunk<
   { state: RootState; extra: ThunkExtraArgument }
 >(
   'chat/refreshCurrentPathAfterDelete',
-  async ({ conversationId, messageId }, { getState, dispatch, extra, rejectWithValue }) => {
-    const { auth } = extra
+  async ({ conversationId, messageId }, { getState, dispatch, rejectWithValue }) => {
     try {
       // Fetch direct children of the deleted message from the server
-      const children = await apiCall<MessageId[]>(
-        `/conversations/${conversationId}/messages/${messageId}/children`,
-        auth.accessToken
+      const children = await gwApi.get<MessageId[]>(
+        `/conversations/${conversationId}/messages/${messageId}/children`
       )
 
       const state = getState() as RootState
@@ -8780,10 +8733,10 @@ export const initializeUserAndConversation = createAsyncThunk<
         throw new Error('User not authenticated')
       }
 
-      const conversation = await localApi.post<{ id: ConversationId }>('/app/conversations', {
-        user_id: auth.userId,
+      const conversation = await gwApi.post<{ id: ConversationId }>('/conversations', {
+        userId: auth.userId,
         title: 'New Conversation',
-        storage_mode: 'local',
+        storageMode: 'local',
       })
 
       dispatch(
@@ -8792,17 +8745,11 @@ export const initializeUserAndConversation = createAsyncThunk<
       return { userId: auth.userId, conversationId: conversation.id }
     }
 
-    // Create test user
-    const user = await apiCall<{ id: number }>('/users', auth.accessToken, {
-      method: 'POST',
-      body: JSON.stringify({ username: 'test-user' }),
-    })
+    // Create test user (Railway-authoritative, via the cloud proxy)
+    const user = await cloudApi.post<{ id: number }>('/users', { username: 'test-user' })
 
-    // Create new conversation
-    const conversation = await apiCall<{ id: ConversationId }>(`/conversations`, auth.accessToken, {
-      method: 'POST',
-      body: JSON.stringify({ userId: user.id }),
-    })
+    // Create new conversation through the storage-aware gateway
+    const conversation = await gwApi.post<{ id: ConversationId }>(`/conversations`, { userId: user.id })
 
     dispatch(chatSliceActions.initializationCompleted({ userId: String(user.id), conversationId: conversation.id }))
     return { userId: user.id, conversationId: conversation.id }
@@ -8819,32 +8766,15 @@ export const deleteSelectedNodes = createAsyncThunk<
   { ids: MessageId[]; conversationId: ConversationId; storageMode?: 'local' | 'cloud' },
   { extra: ThunkExtraArgument }
 >('chat/deleteSelectedNodes', async ({ ids, conversationId, storageMode }, { extra, rejectWithValue }) => {
-  const { auth } = extra
   try {
     // Use storageMode passed from caller (most reliable) or fallback to cache lookup
     const effectiveStorageMode = storageMode ?? getStorageModeFromCache(extra.queryClient, conversationId)
-    const isLocalMode = shouldUseLocalApi(effectiveStorageMode)
-
-    // console.log('[deleteSelectedNodes] Routing decision:', {
-    //   passedStorageMode: storageMode,
-    //   effectiveStorageMode,
-    //   isLocalMode,
-    //   environment,
-    //   conversationId,
-    //   messageCount: ids.length,
-    // })
-
-    let response: { deleted: number }
-    if (isLocalMode) {
-      // console.log('[deleteSelectedNodes] -> Routing to LOCAL API: /app/messages/deleteMany')
-      response = await localApi.post<{ deleted: number }>('/app/messages/deleteMany', { ids })
-    } else {
-      // console.log('[deleteSelectedNodes] -> Routing to CLOUD API: /messages/deleteMany')
-      response = await apiCall<{ deleted: number }>('/messages/deleteMany', auth.accessToken, {
-        method: 'POST',
-        body: JSON.stringify({ ids }),
-      })
-    }
+    // Storage-aware bulk delete via the gateway (routes local vs cloud server-side).
+    const response = await gwApi.post<{ deleted: number }>('/messages/deleteMany', {
+      ids,
+      conversationId,
+      storageMode: effectiveStorageMode,
+    })
     // Sync React Query cache immediately
     removeMessagesFromCache(extra.queryClient, conversationId, ids)
     return response
@@ -8860,28 +8790,10 @@ export const updateConversationTitle = createAsyncThunk<
   Conversation,
   { id: ConversationId; title: string; storageMode?: 'cloud' | 'local' },
   { extra: ThunkExtraArgument; state: RootState }
->('chat/updateConversationTitle', async ({ id, title, storageMode }, { extra, getState, rejectWithValue }) => {
-  const { auth } = extra
+>('chat/updateConversationTitle', async ({ id, title }, { extra, rejectWithValue }) => {
   try {
-    // Infer storage mode from state if not provided
-    let effectiveMode = storageMode
-    if (!effectiveMode) {
-      const conversation = getState().conversations.items.find(c => c.id === id)
-      effectiveMode = conversation?.storage_mode || 'cloud'
-    }
-
-    // Route to appropriate API based on storage mode
-    if (shouldUseLocalApi(effectiveMode, environment)) {
-      const updated = await localApi.patch<Conversation>(`/app/conversations/${id}`, { title })
-      syncConversationTitleAcrossCaches(extra.queryClient, updated)
-      return updated
-    }
-
-    // Default to cloud API
-    const updated = await apiCall<Conversation>(`/conversations/${id}/`, auth.accessToken, {
-      method: 'PATCH',
-      body: JSON.stringify({ title }),
-    })
+    // Storage-aware title update via the gateway.
+    const updated = await gwApi.patch<Conversation>(`/conversations/${id}`, { title })
     syncConversationTitleAcrossCaches(extra.queryClient, updated)
     return updated
   } catch (error) {
@@ -9315,26 +9227,13 @@ export const insertBulkMessages = createAsyncThunk<
     storageMode?: 'local' | 'cloud' // Optional: explicitly set storage mode (useful for newly created conversations)
   },
   { extra: ThunkExtraArgument }
->('chat/insertBulkMessages', async ({ conversationId, messages, storageMode }, { extra, rejectWithValue }) => {
-  const { auth } = extra
+>('chat/insertBulkMessages', async ({ conversationId, messages, storageMode }, { rejectWithValue }) => {
   try {
-    // Use provided storageMode if available, otherwise try cache lookup
-    const effectiveStorageMode = storageMode || getStorageModeFromCache(extra.queryClient, conversationId)
-    if (shouldUseLocalApi(effectiveStorageMode, environment)) {
-      const response = await localApi.post<{ messages: Message[] }>(
-        `/app/conversations/${conversationId}/messages/bulk`,
-        { messages }
-      )
-      return response.messages
-    }
-
-    const response = await apiCall<{ messages: Message[] }>(
+    void storageMode
+    // Storage-aware bulk insert via the gateway (routes local vs cloud; mirrors cloud writes).
+    const response = await gwApi.post<{ messages: Message[] }>(
       `/conversations/${conversationId}/messages/bulk`,
-      auth.accessToken,
-      {
-        method: 'POST',
-        body: JSON.stringify({ messages }),
-      }
+      { messages }
     )
     return response.messages
   } catch (error) {
@@ -9453,7 +9352,8 @@ export const fetchUserSystemPrompts = createAsyncThunk<
   dispatch(chatSliceActions.userSystemPromptsLoadingStarted())
 
   try {
-    const prompts = await apiCall<any[]>('/system-prompts', accessToken)
+    void accessToken
+    const prompts = await cloudApi.get<any[]>('/system-prompts')
     dispatch(chatSliceActions.userSystemPromptsLoaded(prompts))
     return
   } catch (error) {

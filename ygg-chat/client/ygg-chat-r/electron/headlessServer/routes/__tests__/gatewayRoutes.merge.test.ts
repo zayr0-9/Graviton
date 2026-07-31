@@ -1,11 +1,17 @@
 import { describe, expect, it } from 'vitest'
 import {
   sortByUpdatedDesc,
+  dedupById,
   mergeConversationLists,
   mergeProjects,
   mergeRecent,
   mergeConversationsPaginated,
   mergeByProjectPaginated,
+  toLocalConversationCreate,
+  toCloudConversationCreate,
+  toLocalProjectCreate,
+  toCloudProjectCreate,
+  toCloudProjectUpdate,
 } from '../gatewayRoutes.js'
 
 const row = (id: string, updated_at: string, extra: Record<string, any> = {}) => ({ id, updated_at, ...extra })
@@ -22,10 +28,15 @@ describe('gateway merge helpers', () => {
     expect(mergeConversationLists(local, cloud).map(r => r.id)).toEqual(['c1', 'l1', 'c2'])
   })
 
-  it('mergeConversationLists does NOT dedup ids (partition invariant is assumed)', () => {
-    // A pathological same-id-in-both case is preserved (two rows), matching the renderer.
+  it('mergeConversationLists dedups by id (a cloud entity mirrored locally must not appear twice)', () => {
     const out = mergeConversationLists([row('x', '2021-01-01')], [row('x', '2022-01-01')])
-    expect(out).toHaveLength(2)
+    expect(out).toHaveLength(1)
+    expect(out[0].updated_at).toBe('2022-01-01') // first after sort-desc wins
+  })
+
+  it('dedupById keeps first occurrence and preserves rows without ids', () => {
+    expect(dedupById([{ id: 'a' }, { id: 'a' }, { id: 'b' }]).map(r => r.id)).toEqual(['a', 'b'])
+    expect(dedupById([{}, {}]).length).toBe(2) // no id → never merged
   })
 
   it('mergeProjects orders by latest_conversation_updated_at || updated_at desc, cloud-first', () => {
@@ -93,5 +104,47 @@ describe('gateway merge helpers', () => {
       const done = { conversations: [], nextCursor: null, hasMore: false }
       expect(mergeByProjectPaginated(done, done).hasMore).toBe(false)
     })
+  })
+})
+
+describe('gateway write normalizers (canonical camelCase → each backend shape)', () => {
+  it('toLocalConversationCreate maps camel→snake and forces storage_mode local', () => {
+    const out = toLocalConversationCreate({
+      userId: 'u1',
+      title: 'T',
+      projectId: 'p1',
+      systemPrompt: 'sp',
+      conversationContext: 'ctx',
+      cwd: '/tmp',
+    })
+    expect(out).toMatchObject({
+      user_id: 'u1',
+      title: 'T',
+      project_id: 'p1',
+      system_prompt: 'sp',
+      conversation_context: 'ctx',
+      cwd: '/tmp',
+      storage_mode: 'local',
+    })
+  })
+
+  it('toCloudConversationCreate keeps Railway camelCase and drops cwd/storageMode', () => {
+    const out = toCloudConversationCreate({ userId: 'u1', title: 'T', projectId: 'p1', cwd: '/tmp', storageMode: 'cloud' })
+    expect(out).toEqual({ userId: 'u1', title: 'T', projectId: 'p1', systemPrompt: undefined, conversationContext: undefined })
+    expect('cwd' in out).toBe(false)
+    expect('storageMode' in out).toBe(false)
+  })
+
+  it('project create normalizers: local carries cwd + user_id, cloud drops cwd but keeps userId (snake system_prompt both)', () => {
+    const canonical = { userId: 'u1', name: 'P', system_prompt: 'sp', cwd: '/tmp' }
+    expect(toLocalProjectCreate(canonical)).toMatchObject({ user_id: 'u1', name: 'P', system_prompt: 'sp', cwd: '/tmp' })
+    const cloud = toCloudProjectCreate(canonical)
+    expect(cloud).toEqual({ userId: 'u1', name: 'P', context: null, system_prompt: 'sp' })
+    expect('cwd' in cloud).toBe(false)
+  })
+
+  it('toCloudProjectUpdate strips local-only fields (cwd / storage mode)', () => {
+    const out = toCloudProjectUpdate({ name: 'P', context: 'c', system_prompt: 'sp', cwd: '/tmp', storage_mode: 'cloud', storageMode: 'cloud' })
+    expect(out).toEqual({ name: 'P', context: 'c', system_prompt: 'sp' })
   })
 })

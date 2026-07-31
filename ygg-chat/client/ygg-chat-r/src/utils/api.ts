@@ -510,6 +510,29 @@ export const localApi = {
   },
 }
 
+/**
+ * Phase 5 thin-client gateways. Both hit the LOCAL server (:3002) — the renderer
+ * never talks to Railway directly anymore:
+ *  - gwApi (/api/gw/*): storage-aware CRUD/reads. The server owns the local-vs-cloud
+ *    branch + dual-fetch/merge + dual-write; the renderer just calls one path.
+ *  - cloudApi (/api/cloud/*): authenticated pass-through to Railway-authoritative
+ *    resources. The server injects the Bearer, so callers pass no token.
+ * Both reuse localApi's transport, error handling, and network-failure reporting.
+ */
+function makeLocalGateway(prefix: string) {
+  const p = (endpoint: string) => `${prefix}${normalizeEndpoint(endpoint)}`
+  return {
+    get: <T>(endpoint: string, options?: RequestInit): Promise<T> => localApi.get<T>(p(endpoint), options),
+    post: <T>(endpoint: string, data?: any, options?: RequestInit): Promise<T> => localApi.post<T>(p(endpoint), data, options),
+    patch: <T>(endpoint: string, data?: any, options?: RequestInit): Promise<T> => localApi.patch<T>(p(endpoint), data, options),
+    put: <T>(endpoint: string, data?: any, options?: RequestInit): Promise<T> => localApi.put<T>(p(endpoint), data, options),
+    delete: <T>(endpoint: string, options?: RequestInit): Promise<T> => localApi.delete<T>(p(endpoint), options),
+  }
+}
+
+export const gwApi = makeLocalGateway('/gw')
+export const cloudApi = makeLocalGateway('/cloud')
+
 if (typeof window !== 'undefined' && environment === 'electron') {
   void refreshLocalServerStatus().catch(() => {
     // Endpoint discovery is best-effort and can be retried by callers.

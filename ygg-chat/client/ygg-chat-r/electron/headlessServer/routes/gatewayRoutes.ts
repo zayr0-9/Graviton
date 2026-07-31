@@ -60,15 +60,36 @@ export function sortByUpdatedDesc<T extends { updated_at?: any }>(rows: T[]): T[
   return [...rows].sort((a, b) => ts(b.updated_at) - ts(a.updated_at))
 }
 
-/** Flat list merge (fetchConversations / useConversations): local + cloud, updated_at desc. */
-export function mergeConversationLists(local: any[], cloud: any[]): any[] {
-  return sortByUpdatedDesc([...(local || []), ...(cloud || [])])
+/**
+ * Drop duplicate ids, keeping the first occurrence. The renderer's client-side
+ * merge relied on the storage_mode partition (an entity is local XOR cloud) and
+ * did NO dedup, so a cloud entity mirrored into local SQLite could appear twice.
+ * Deduping here is strictly safer: identical id ⇒ same entity (the local copy IS
+ * the cloud mirror), so which copy wins doesn't matter.
+ */
+export function dedupById<T extends { id?: any }>(rows: T[]): T[] {
+  const seen = new Set<string>()
+  const out: T[] = []
+  for (const r of rows || []) {
+    const key = r?.id != null ? String(r.id) : null
+    if (key != null) {
+      if (seen.has(key)) continue
+      seen.add(key)
+    }
+    out.push(r)
+  }
+  return out
 }
 
-/** Projects merge (useProjects): cloud + local, ordered by latest_conversation_updated_at || updated_at desc. */
+/** Flat list merge (fetchConversations / useConversations): local + cloud, updated_at desc, deduped. */
+export function mergeConversationLists(local: any[], cloud: any[]): any[] {
+  return dedupById(sortByUpdatedDesc([...(local || []), ...(cloud || [])]))
+}
+
+/** Projects merge (useProjects): cloud + local, ordered by latest_conversation_updated_at || updated_at desc, deduped. */
 export function mergeProjects(cloud: any[], local: any[]): any[] {
   const key = (p: any) => ts(p.latest_conversation_updated_at || p.updated_at)
-  return [...(cloud || []), ...(local || [])].sort((a, b) => key(b) - key(a))
+  return dedupById([...(cloud || []), ...(local || [])].sort((a, b) => key(b) - key(a)))
 }
 
 /**
@@ -82,7 +103,7 @@ export function mergeRecent(cloud: any[], local: any[], limit: number): any[] {
     user_id: c.owner_id || String(c.user_id),
     project_id: c.project_id != null ? String(c.project_id) : null,
   }))
-  const merged = sortByUpdatedDesc([...normalizedCloud, ...(local || [])])
+  const merged = dedupById(sortByUpdatedDesc([...normalizedCloud, ...(local || [])]))
   const safeLimit = Number.isFinite(limit) && limit > 0 ? Math.floor(limit) : merged.length
   return merged.slice(0, safeLimit)
 }
@@ -100,7 +121,7 @@ export function mergeConversationsPaginated(
 ): { conversations: any[]; nextCursor: string | null; hasMore: boolean } {
   const cloudConvs = cloud?.conversations || []
   if (!pageParam) {
-    const merged = sortByUpdatedDesc([...(localAll || []), ...cloudConvs])
+    const merged = dedupById(sortByUpdatedDesc([...(localAll || []), ...cloudConvs]))
     return {
       conversations: merged.slice(0, pageSize),
       nextCursor: cloud?.nextCursor ?? null,
@@ -119,12 +140,88 @@ export function mergeByProjectPaginated(
   local: { conversations: any[]; nextCursor: string | null; hasMore: boolean },
   cloud: { conversations: any[]; nextCursor: string | null; hasMore: boolean }
 ): { conversations: any[]; nextCursor: string | null; hasMore: boolean } {
-  const conversations = sortByUpdatedDesc([...(local?.conversations || []), ...(cloud?.conversations || [])])
+  const conversations = dedupById(sortByUpdatedDesc([...(local?.conversations || []), ...(cloud?.conversations || [])]))
   return {
     conversations,
     nextCursor: local?.hasMore ? local?.nextCursor ?? null : cloud?.nextCursor ?? null,
     hasMore: !!local?.hasMore || !!cloud?.hasMore,
   }
+}
+
+// ---------------------------------------------------------------------------
+// Write-body normalizers (canonical camelCase in → each backend's shape)
+//
+// The renderer sends ONE canonical (camelCase, Railway-ish) body; the gateway
+// translates for the local leg. Cloud is Railway's native shape. This is where
+// the local(snake)/cloud(camel) divergence is owned, so the renderer never branches.
+// ---------------------------------------------------------------------------
+
+const pick = (b: any, ...keys: string[]) => {
+  for (const k of keys) if (b?.[k] !== undefined) return b[k]
+  return undefined
+}
+
+export function toLocalConversationCreate(b: any): Record<string, any> {
+  return {
+    id: b?.id,
+    user_id: pick(b, 'userId', 'user_id'),
+    title: pick(b, 'title') ?? null,
+    project_id: pick(b, 'projectId', 'project_id') ?? null,
+    system_prompt: pick(b, 'systemPrompt', 'system_prompt') ?? null,
+    conversation_context: pick(b, 'conversationContext', 'conversation_context') ?? null,
+    cwd: pick(b, 'cwd') ?? null,
+    storage_mode: 'local',
+  }
+}
+
+export function toCloudConversationCreate(b: any): Record<string, any> {
+  return {
+    userId: pick(b, 'userId', 'user_id'),
+    title: pick(b, 'title') ?? null,
+    projectId: pick(b, 'projectId', 'project_id') ?? null,
+    systemPrompt: pick(b, 'systemPrompt', 'system_prompt'),
+    conversationContext: pick(b, 'conversationContext', 'conversation_context'),
+  }
+}
+
+export function toLocalProjectCreate(b: any): Record<string, any> {
+  return {
+    id: b?.id,
+    user_id: pick(b, 'userId', 'user_id'),
+    name: pick(b, 'name') ?? 'Untitled Project',
+    context: pick(b, 'context') ?? null,
+    system_prompt: pick(b, 'systemPrompt', 'system_prompt') ?? null,
+    cwd: pick(b, 'cwd') ?? null,
+  }
+}
+
+export function toCloudProjectCreate(b: any): Record<string, any> {
+  // Projects use snake_case name/context/system_prompt on BOTH legs; only userId is camel.
+  // cwd is intentionally dropped for cloud projects (matches the legacy renderer).
+  return {
+    userId: pick(b, 'userId', 'user_id'),
+    name: pick(b, 'name'),
+    context: pick(b, 'context') ?? null,
+    system_prompt: pick(b, 'systemPrompt', 'system_prompt') ?? null,
+  }
+}
+
+/** Strip local-only fields (cwd, storage mode) for a cloud project update (PUT). */
+export function toCloudProjectUpdate(b: any): Record<string, any> {
+  const { cwd, storage_mode, storageMode, ...rest } = (b || {}) as Record<string, any>
+  void cwd
+  void storage_mode
+  void storageMode
+  return rest
+}
+
+/** Conversation sub-field → (canonical camelCase key, local snake_case column, cloud sub-path). */
+export const CONVERSATION_SUBFIELDS: Record<string, { key: string; column: string; cloudPath: string }> = {
+  'system-prompt': { key: 'systemPrompt', column: 'system_prompt', cloudPath: 'system-prompt' },
+  context: { key: 'context', column: 'conversation_context', cloudPath: 'context' },
+  'research-note': { key: 'researchNote', column: 'research_note', cloudPath: 'research-note' },
+  cwd: { key: 'cwd', column: 'cwd', cloudPath: 'cwd' },
+  project: { key: 'projectId', column: 'project_id', cloudPath: 'project' },
 }
 
 // ---------------------------------------------------------------------------
@@ -209,7 +306,8 @@ export function registerGatewayRoutes(app: Express, deps: RegisterGatewayRoutesD
       res.status(local.status).json(local.body)
       return
     }
-    const cloud = await cloudLeg('GET', `/projects`)
+    // Use the sorted endpoint so cloud rows carry latest_conversation_updated_at (matches useProjects).
+    const cloud = await cloudLeg('GET', `/projects/sorted/latest-conversation?userId=${encodeURIComponent(userId)}`)
     const cloudArr = Array.isArray(cloud.body) ? cloud.body : cloud.body?.projects || []
     res.json(mergeProjects(cloudArr, Array.isArray(local.body) ? local.body : []))
   })
@@ -226,14 +324,19 @@ export function registerGatewayRoutes(app: Express, deps: RegisterGatewayRoutesD
   })
 
   app.post('/api/gw/projects', async (req, res) => {
-    const storageMode = req.body?.storage_mode || req.body?.storageMode
+    const storageMode = pick(req.body, 'storageMode', 'storage_mode')
     if (storageMode === 'local' || !(await hasCloudSession())) {
-      const r = await localLeg(req, `/api/app/projects`, jsonInit('POST', req.body))
+      const r = await localLeg(req, `/api/app/projects`, jsonInit('POST', toLocalProjectCreate(req.body)))
       res.status(r.status).json(r.body)
       return
     }
-    const r = await cloudLeg('POST', `/projects`, req.body)
-    if (r.ok && r.body) await mirrorBestEffort('project', r.body)
+    const r = await cloudLeg('POST', `/projects`, toCloudProjectCreate(req.body))
+    if (r.ok && r.body) {
+      await mirrorBestEffort('project', {
+        ...r.body,
+        user_id: r.body.user_id || r.body.owner_id || pick(req.body, 'userId', 'user_id'),
+      })
+    }
     res.status(r.status).json(r.body)
   })
 
@@ -244,7 +347,7 @@ export function registerGatewayRoutes(app: Express, deps: RegisterGatewayRoutesD
       res.status(r.status).json(r.body)
       return
     }
-    const r = await cloudLeg('PUT', `/projects/${req.params.id}`, req.body)
+    const r = await cloudLeg('PUT', `/projects/${req.params.id}`, toCloudProjectUpdate(req.body))
     if (r.ok && r.body) await mirrorBestEffort('project', r.body)
     res.status(r.status).json(r.body)
   })
@@ -407,14 +510,20 @@ export function registerGatewayRoutes(app: Express, deps: RegisterGatewayRoutesD
   })
 
   app.post('/api/gw/conversations', async (req, res) => {
-    const storageMode = req.body?.storage_mode || req.body?.storageMode
+    const storageMode = pick(req.body, 'storageMode', 'storage_mode')
     if (storageMode === 'local' || !(await hasCloudSession())) {
-      const r = await localLeg(req, `/api/app/conversations`, jsonInit('POST', req.body))
+      const r = await localLeg(req, `/api/app/conversations`, jsonInit('POST', toLocalConversationCreate(req.body)))
       res.status(r.status).json(r.body)
       return
     }
-    const r = await cloudLeg('POST', `/conversations`, req.body)
-    if (r.ok && r.body) await mirrorBestEffort('conversation', r.body)
+    const r = await cloudLeg('POST', `/conversations`, toCloudConversationCreate(req.body))
+    if (r.ok && r.body) {
+      await mirrorBestEffort('conversation', {
+        ...r.body,
+        user_id: r.body.user_id || r.body.owner_id || pick(req.body, 'userId', 'user_id'),
+        project_id: r.body.project_id ?? pick(req.body, 'projectId', 'project_id') ?? null,
+      })
+    }
     res.status(r.status).json(r.body)
   })
 
@@ -438,6 +547,50 @@ export function registerGatewayRoutes(app: Express, deps: RegisterGatewayRoutesD
       return
     }
     const r = await cloudLeg('DELETE', `/conversations/${req.params.id}/`)
+    res.status(r.status).json(r.body)
+  })
+
+  // Conversation sub-field updates (system-prompt / context / research-note / cwd / project).
+  // Cloud uses per-field endpoints + camelCase; local uses one patch endpoint + snake_case.
+  // Cloud path is authoritative; the local mirror row is refreshed best-effort.
+  for (const [seg, spec] of Object.entries(CONVERSATION_SUBFIELDS)) {
+    app.patch(`/api/gw/conversations/:id/${seg}`, async (req, res) => {
+      const value = pick(req.body, spec.key, spec.column) ?? null
+      const mode = localRowStorageMode('conversations', req.params.id)
+      if (mode === 'local') {
+        const r = await localLeg(req, `/api/app/conversations/${req.params.id}`, jsonInit('PATCH', { [spec.column]: value }))
+        res.status(r.status).json(r.body)
+        return
+      }
+      const r = await cloudLeg('PATCH', `/conversations/${req.params.id}/${spec.cloudPath}`, { [spec.key]: value })
+      // Keep the local mirror row fresh (best-effort; matches dualSync.syncResearchNote/syncCwd).
+      if (r.ok) await localLeg(req, `/api/app/conversations/${req.params.id}`, jsonInit('PATCH', { [spec.column]: value })).catch(() => {})
+      res.status(r.status).json(r.body)
+    })
+  }
+
+  // GET the system-prompt / context sub-fields (renderer expects {systemPrompt}/{context}).
+  app.get('/api/gw/conversations/:id/system-prompt', async (req, res) => {
+    const mode = localRowStorageMode('conversations', req.params.id)
+    if (mode === 'local') {
+      const r = await localLeg(req, `/api/app/conversations/${req.params.id}`)
+      const sp = r.body && typeof r.body.system_prompt === 'string' ? r.body.system_prompt : null
+      res.status(r.ok ? 200 : r.status).json(r.ok ? { systemPrompt: sp } : r.body)
+      return
+    }
+    const r = await cloudLeg('GET', `/conversations/${req.params.id}/system-prompt`)
+    res.status(r.status).json(r.body)
+  })
+
+  app.get('/api/gw/conversations/:id/context', async (req, res) => {
+    const mode = localRowStorageMode('conversations', req.params.id)
+    if (mode === 'local') {
+      const r = await localLeg(req, `/api/app/conversations/${req.params.id}`)
+      const ctx = r.body ? (r.body.conversation_context ?? null) : null
+      res.status(r.ok ? 200 : r.status).json(r.ok ? { context: ctx } : r.body)
+      return
+    }
+    const r = await cloudLeg('GET', `/conversations/${req.params.id}/context`)
     res.status(r.status).json(r.body)
   })
 

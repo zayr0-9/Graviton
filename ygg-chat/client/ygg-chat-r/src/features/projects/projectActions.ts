@@ -1,74 +1,30 @@
 import { createAsyncThunk } from '@reduxjs/toolkit'
 import { Project, StorageMode } from '../../../../../shared/types'
 import { isCommunityMode } from '../../config/runtimeMode'
-import { apiCall, localApi, environment, shouldUseLocalApi } from '../../utils/api'
+import { gwApi, environment } from '../../utils/api'
 import { ThunkExtraArgument } from '../../store/thunkExtra'
 import { RootState } from '../../store/store'
-import { dualSync } from '../../lib/sync/dualSyncManager'
 
-const isElectronCommunityMode = () => environment === 'electron' && isCommunityMode
+// Phase 5: thin client. All project CRUD/reads go through the /api/gw/* gateway,
+// which owns the local-vs-cloud branch, the merge, and the cloud→SQLite mirror.
 
-// Fetch all projects
+// Fetch all projects (gateway merges local + cloud, cloud-first, latest-activity desc)
 export const fetchProjects = createAsyncThunk<Project[], void, { extra: ThunkExtraArgument }>(
   'projects/fetchProjects',
   async (_, { extra }) => {
     const { auth } = extra
-
-    if (isElectronCommunityMode()) {
-      return await localApi.get<Project[]>(`/app/projects?userId=${auth.userId}`)
-    }
-
-    // In Electron mode, fetch both cloud and local projects
-    if (environment === 'electron') {
-      const [cloudProjects, localProjects] = await Promise.all([
-        apiCall('/projects', auth.accessToken, { method: 'GET' }) as Promise<Project[]>,
-        localApi.get<Project[]>(`/app/projects?userId=${auth.userId}`),
-      ])
-
-      // Merge and sort by updated_at
-      const merged = [...cloudProjects, ...localProjects].sort(
-        (a, b) => new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime()
-      )
-
-      return merged
-    }
-
-    // Web mode: cloud only
-    const response = await apiCall('/projects', auth.accessToken, {
-      method: 'GET',
-    })
-    return response as Project[]
+    return await gwApi.get<Project[]>(`/projects?userId=${auth.userId}`)
   }
 )
 
-// Fetch project by ID
+// Fetch project by ID (gateway routes by the entity's storage mode)
 export const fetchProjectById = createAsyncThunk<
   Project,
   { id: number | string; storageMode?: StorageMode },
   { extra: ThunkExtraArgument; state: RootState }
->(
-  'projects/fetchProjectById',
-  async ({ id: projectId, storageMode }, { extra, getState }) => {
-    const { auth } = extra
-
-    // Infer storage mode from state if not provided
-    let effectiveMode = storageMode
-    if (!effectiveMode) {
-      const project = getState().projects.projects.find(p => p.id === projectId)
-      effectiveMode = project?.storage_mode || (isElectronCommunityMode() ? 'local' : 'cloud')
-    }
-
-    // Route to local or cloud API
-    if (shouldUseLocalApi(effectiveMode, environment)) {
-      return await localApi.get<Project>(`/app/projects/${projectId}`)
-    }
-
-    const response = await apiCall(`/projects/${projectId}`, auth.accessToken, {
-      method: 'GET',
-    })
-    return response as Project
-  }
-)
+>('projects/fetchProjectById', async ({ id: projectId }) => {
+  return await gwApi.get<Project>(`/projects/${projectId}`)
+})
 
 // Create project
 export interface CreateProjectPayload {
@@ -77,48 +33,26 @@ export interface CreateProjectPayload {
   context?: string
   system_prompt?: string
   cwd?: string | null
-  storageMode?: StorageMode // NEW PARAMETER
+  storageMode?: StorageMode
 }
 
 export const createProject = createAsyncThunk<Project, CreateProjectPayload, { extra: ThunkExtraArgument; state: RootState }>(
   'projects/createProject',
   async (payload, { extra }) => {
     const { auth } = extra
-    const { storageMode, ...restPayload } = payload
+    const { storageMode, conversation_id: _conversationId, ...restPayload } = payload
+    const isCommunity = environment === 'electron' && isCommunityMode
+    const effectiveStorageMode = isCommunity ? 'local' : storageMode || 'cloud'
 
-    const effectiveStorageMode = isElectronCommunityMode() ? 'local' : (storageMode || 'cloud')
-
-    // Route to local or cloud API
-    if (shouldUseLocalApi(effectiveStorageMode, environment)) {
-      const project = await localApi.post<Project>('/app/projects', {
-        user_id: auth.userId,
-        name: restPayload.name,
-        context: restPayload.context || null,
-        system_prompt: restPayload.system_prompt || null,
-        cwd: restPayload.cwd || null,
-        storage_mode: 'local',
-      })
-      return project
-    }
-
-    // Cloud mode: existing behavior. Project cwd is local-only, so do not send it to cloud APIs.
-    const { cwd: _cwd, ...cloudPayload } = restPayload
-    const response = await apiCall('/projects', auth.accessToken, {
-      method: 'POST',
-      body: JSON.stringify({
-        ...cloudPayload,
-        userId: auth.userId,
-      }),
+    // Canonical body; the gateway normalizes per storage leg + mirrors cloud creates.
+    return await gwApi.post<Project>('/projects', {
+      userId: auth.userId,
+      name: restPayload.name,
+      context: restPayload.context || null,
+      system_prompt: restPayload.system_prompt || null,
+      cwd: restPayload.cwd || null,
+      storageMode: effectiveStorageMode,
     })
-    const project = response as Project
-
-    // Sync to local SQLite (fire-and-forget) - only for cloud mode
-    dualSync.syncProject({
-      ...project,
-      user_id: auth.userId,
-    })
-
-    return project
   }
 )
 
@@ -134,72 +68,24 @@ export interface UpdateProjectPayload {
 
 export const updateProject = createAsyncThunk<Project, UpdateProjectPayload, { extra: ThunkExtraArgument; state: RootState }>(
   'projects/updateProject',
-  async (payload, { extra, getState }) => {
-    const { auth } = extra
-    const { id, storage_mode, ...updateData } = payload
-
-    // Infer storage mode from state if not provided
-    let effectiveMode = storage_mode
-    if (!effectiveMode) {
-      const project = getState().projects.projects.find(p => p.id === id)
-      effectiveMode = project?.storage_mode || (isElectronCommunityMode() ? 'local' : 'cloud')
-    }
-
-    // Route to local or cloud API
-    if (shouldUseLocalApi(effectiveMode, environment)) {
-      const project = await localApi.patch<Project>(`/app/projects/${id}`, {
-        name: updateData.name,
-        context: updateData.context || null,
-        system_prompt: updateData.system_prompt || null,
-        cwd: updateData.cwd ?? null,
-        storage_mode: effectiveMode,
-      })
-      return project
-    }
-
-    // Cloud mode: existing behavior. Project cwd is local-only, so do not send it to cloud APIs.
-    const { cwd: _cwd, ...cloudUpdateData } = updateData
-    const response = await apiCall(`/projects/${id}`, auth.accessToken, {
-      method: 'PUT',
-      body: JSON.stringify(cloudUpdateData),
+  async (payload) => {
+    const { id, storage_mode: _storageMode, ...updateData } = payload
+    // Canonical body; gateway forwards to local (with cwd) or cloud (cwd stripped).
+    return await gwApi.patch<Project>(`/projects/${id}`, {
+      name: updateData.name,
+      context: updateData.context ?? null,
+      system_prompt: updateData.system_prompt ?? null,
+      cwd: updateData.cwd ?? null,
     })
-    const project = response as Project
-
-    // Sync to local SQLite (fire-and-forget)
-    dualSync.syncProject(project, 'update')
-
-    return project
   }
 )
 
-// Delete project
+// Delete project (gateway routes by storage mode; cloud deletes propagate to SQLite)
 export const deleteProject = createAsyncThunk<
   number | string,
   { id: number | string; storageMode?: StorageMode },
   { extra: ThunkExtraArgument; state: RootState }
->(
-  'projects/deleteProject',
-  async ({ id: projectId, storageMode }, { extra, getState }) => {
-    const { auth } = extra
-
-    // Infer storage mode from state if not provided
-    let effectiveMode = storageMode
-    if (!effectiveMode) {
-      const project = getState().projects.projects.find(p => p.id === projectId)
-      effectiveMode = project?.storage_mode || (isElectronCommunityMode() ? 'local' : 'cloud')
-    }
-
-    if (shouldUseLocalApi(effectiveMode, environment)) {
-      await localApi.delete(`/app/projects/${projectId}`)
-    } else {
-      await apiCall(`/projects/${projectId}`, auth.accessToken, {
-        method: 'DELETE',
-      })
-
-      // Sync deletion to local SQLite (fire-and-forget)
-      dualSync.syncProject({ id: projectId }, 'delete')
-    }
-
-    return projectId
-  }
-)
+>('projects/deleteProject', async ({ id: projectId }) => {
+  await gwApi.delete(`/projects/${projectId}`)
+  return projectId
+})

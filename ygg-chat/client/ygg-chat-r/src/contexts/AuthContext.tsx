@@ -3,7 +3,7 @@ import React, { createContext, useCallback, useEffect, useMemo, useState } from 
 import { isCommunityMode, isElectronMode, LOCAL_AUTH_USER_ID, syncRuntimeAuthMode } from '../config/runtimeMode'
 import { clearUser, setUser } from '../features/users/usersSlice'
 import { getAuthProvider, type AuthProvider as IAuthProvider } from '../lib/auth'
-import { dualSync } from '../lib/sync/dualSyncManager'
+import { localMirror as dualSync } from '../lib/localMirror'
 import { store } from '../store/store'
 import { updateThunkExtraAuth } from '../store/thunkExtra'
 import { API_BASE, FORCE_LOGOUT_EVENT } from '../utils/api'

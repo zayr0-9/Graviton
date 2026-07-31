@@ -7,7 +7,7 @@ import { useAuth } from '../hooks/useAuth'
 import { useRecentConversations } from '../hooks/useQueries'
 import { syncHeadlessOpenRouterToken } from '../lib/auth/headlessProviderTokenSync'
 import { supabase } from '../lib/supabase'
-import { dualSync } from '../lib/sync/dualSyncManager'
+import { localMirror as dualSync } from '../lib/localMirror'
 import { localApi } from '../utils/api'
 
 // Railway server URL for OOB auth (where Redis runs)

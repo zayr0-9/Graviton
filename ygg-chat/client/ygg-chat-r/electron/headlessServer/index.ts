@@ -253,10 +253,13 @@ export function registerHeadlessServerRoutes(app: Express, deps: HeadlessServerR
   registerCapabilityRoutes(app, { getDefaultTools: resolveDefaultInferenceTools })
   registerEphemeralGenerateRoutes(app, { tokenStore })
 
-  // Phase 5 cloud gateway (default OFF): storage-aware /api/gw/* CRUD + merge and
-  // /api/cloud/* authenticated pass-through. Both share one single-flight app-token
-  // manager (sole Supabase refresher) + one Railway client.
-  if (gatewayFlags.crud || gatewayFlags.cloudProxy) {
+  // Phase 5 cloud gateway: storage-aware /api/gw/* CRUD + merge and /api/cloud/*
+  // authenticated pass-through. Mounted UNCONDITIONALLY — the renderer is now a thin
+  // client that routes all CRUD/reads/cloud through these paths (Phase 5 cutover), so
+  // they must always be available. They are additive routes (nothing else served
+  // /api/gw or /api/cloud), so mounting them changes no existing behavior. Both share
+  // one single-flight app-token manager (sole Supabase refresher) + one Railway client.
+  {
     const appAuth = createAppAuthTokenManager()
     const railway = createRailwayClient({ auth: appAuth })
     registerGatewayRoutes(app, {
@@ -265,9 +268,9 @@ export function registerHeadlessServerRoutes(app: Express, deps: HeadlessServerR
       auth: appAuth,
       db: deps.db,
       statements: deps.statements,
-      enabled: gatewayFlags.crud,
+      enabled: true,
     })
-    registerCloudProxyRoutes(app, { railway, enabled: gatewayFlags.cloudProxy })
+    registerCloudProxyRoutes(app, { railway, enabled: true })
   }
 
   const compactionService = new CompactionService({
