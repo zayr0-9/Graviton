@@ -998,29 +998,32 @@ export interface UpdateUserSystemPromptPayload {
   isDefault?: boolean
 }
 
-export const getUserSystemPrompts = (accessToken: string | null) =>
-  api.get<UserSystemPrompt[]>('/system-prompts', accessToken)
+// Phase 5: system prompts are Railway-authoritative — routed through the /api/cloud/*
+// pass-through (server injects the Bearer). The accessToken param is retained but
+// unused so existing call sites need no change.
+export const getUserSystemPrompts = (_accessToken?: string | null) =>
+  cloudApi.get<UserSystemPrompt[]>('/system-prompts')
 
-export const getUserSystemPromptById = (id: string, accessToken: string | null) =>
-  api.get<UserSystemPrompt>(`/system-prompts/${id}`, accessToken)
+export const getUserSystemPromptById = (id: string, _accessToken?: string | null) =>
+  cloudApi.get<UserSystemPrompt>(`/system-prompts/${id}`)
 
-export const getDefaultUserSystemPrompt = (accessToken: string | null) =>
-  api.get<UserSystemPrompt | null>('/system-prompts/default', accessToken)
+export const getDefaultUserSystemPrompt = (_accessToken?: string | null) =>
+  cloudApi.get<UserSystemPrompt | null>('/system-prompts/default')
 
-export const createUserSystemPrompt = (data: CreateUserSystemPromptPayload, accessToken: string | null) =>
-  api.post<UserSystemPrompt>('/system-prompts', accessToken, data)
+export const createUserSystemPrompt = (data: CreateUserSystemPromptPayload, _accessToken?: string | null) =>
+  cloudApi.post<UserSystemPrompt>('/system-prompts', data)
 
-export const updateUserSystemPrompt = (id: string, data: UpdateUserSystemPromptPayload, accessToken: string | null) =>
-  api.put<UserSystemPrompt>(`/system-prompts/${id}`, accessToken, data)
+export const updateUserSystemPrompt = (id: string, data: UpdateUserSystemPromptPayload, _accessToken?: string | null) =>
+  cloudApi.put<UserSystemPrompt>(`/system-prompts/${id}`, data)
 
-export const setDefaultUserSystemPrompt = (id: string, accessToken: string | null) =>
-  api.patch<UserSystemPrompt>(`/system-prompts/${id}/default`, accessToken)
+export const setDefaultUserSystemPrompt = (id: string, _accessToken?: string | null) =>
+  cloudApi.patch<UserSystemPrompt>(`/system-prompts/${id}/default`)
 
-export const deleteUserSystemPrompt = (id: string, accessToken: string | null) =>
-  api.delete<{ message: string; id: string }>(`/system-prompts/${id}`, accessToken)
+export const deleteUserSystemPrompt = (id: string, _accessToken?: string | null) =>
+  cloudApi.delete<{ message: string; id: string }>(`/system-prompts/${id}`)
 
-export const clearDefaultUserSystemPrompt = (accessToken: string | null) =>
-  api.delete<{ message: string }>('/system-prompts/default', accessToken)
+export const clearDefaultUserSystemPrompt = (_accessToken?: string | null) =>
+  cloudApi.delete<{ message: string }>('/system-prompts/default')
 
 // Stripe Payment API functions
 export interface SubscriptionStatus {
