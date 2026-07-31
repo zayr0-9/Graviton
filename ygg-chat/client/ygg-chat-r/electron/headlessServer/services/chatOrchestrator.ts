@@ -62,7 +62,9 @@ function parseToolArgs(raw: unknown): any {
 function shouldBypassPermission(toolName: string, args: any): boolean {
   if (ALWAYS_BYPASS_TOOLS.has(toolName)) return true
   if (toolName === 'custom_tool_manager') {
-    const action = typeof args?.action === 'string' ? args.action : ''
+    // Normalize identically to the renderer (chatActions shouldBypassToolPermission)
+    // so mixed-case/whitespace actions bypass on both sides.
+    const action = (typeof args?.action === 'string' ? args.action : '').trim().toLowerCase()
     return action !== 'invoke' && CUSTOM_TOOL_MANAGER_BYPASS_ACTIONS.has(action)
   }
   return false
@@ -131,13 +133,12 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
     const broker = this.decisionBroker!
     return async (toolCall, context) => {
       const sig = context.signal ?? signal
-      // Auto-approve (whole-run or after allow_always): no pause.
-      if (broker.isAutoApproveAll(streamId)) return base(toolCall, context)
-
       const args = parseToolArgs(toolCall.arguments)
 
-      // plan_md clarify is renderer-interactive and the base executor throws on it;
-      // intercept, ask the client, and RETURN a normal (non-error) clarify result.
+      // plan_md clarify is INHERENTLY interactive: the base executor always throws on
+      // it (planMd.ts), so it must be intercepted regardless of auto-approve state
+      // (auto-approve only skips permission PROMPTS, not the clarify mechanism). This
+      // MUST come before the auto-approve short-circuit below.
       if (toolCall.name === 'plan_md' && args?.action === 'clarify') {
         emit({
           type: 'clarify_required',
@@ -154,6 +155,9 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
           answers: decision.answers ?? [],
         }
       }
+
+      // Auto-approve (whole-run or after allow_always): no permission pause.
+      if (broker.isAutoApproveAll(streamId)) return base(toolCall, context)
 
       // Read-only / management tools never prompt.
       if (shouldBypassPermission(toolCall.name, args)) return base(toolCall, context)
