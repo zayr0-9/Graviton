@@ -86,16 +86,30 @@ async function runSseOrchestrator(
 ): Promise<void> {
   initializeSse(res)
   const stopHeartbeat = startSseHeartbeat(res)
+  // Abort the run when the client disconnects. This both cancels in-flight
+  // provider/tool work and (Phase 2+) unblocks a loop paused awaiting a
+  // permission/clarify decision, so a dropped client never hangs the run.
+  const abortController = new AbortController()
+  let finished = false
+
+  res.on('close', () => {
+    if (!finished) abortController.abort()
+  })
 
   try {
     const request = buildHeadlessMessageRequest(req, operation)
-    await orchestrator.runMessage(request, event => {
-      writeSseEvent(res, event)
-    })
+    await orchestrator.runMessage(
+      request,
+      event => {
+        writeSseEvent(res, event)
+      },
+      abortController.signal
+    )
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error)
     writeSseEvent(res, { type: 'error', error: message })
   } finally {
+    finished = true
     stopHeartbeat()
     res.end()
   }

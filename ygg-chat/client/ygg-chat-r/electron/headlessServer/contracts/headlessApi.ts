@@ -156,6 +156,37 @@ export type HeadlessStreamEvent =
       error?: string
     }
   | { type: 'assistant_message_persisted'; message: any }
+  // ── Phase 0 foundations: additive members for the stateful thin-client loop. ──
+  // Emitted only once the server owns the loop (Phase 2+). No current emitter, so
+  // existing clients (mobile UI, subagent thin client) are unaffected.
+  // The server pauses the loop and asks the renderer to approve a tool call.
+  | {
+      type: 'permission_required'
+      streamId?: string | null
+      toolCallId: string
+      toolName: string
+      toolInput: any
+      turn?: number
+    }
+  // The server pauses the loop and asks the renderer to answer a plan_md clarify.
+  | {
+      type: 'clarify_required'
+      streamId?: string | null
+      toolCallId: string
+      toolName: string
+      questions: any[]
+    }
+  // The server asks the renderer to execute a UI/renderer-bound tool locally.
+  | {
+      type: 'tool_request'
+      streamId?: string | null
+      toolCallId: string
+      toolName: string
+      toolInput: any
+    }
+  // Relayed from Railway (cloud/free-tier inference) by the gateway proxy (Phase 4).
+  | { type: 'free_generations_update'; remaining: number; isFreeTier?: boolean }
+  | { type: 'generation_limit_reached'; message?: string }
   | { type: 'complete'; message: any; providerError?: boolean }
   | {
       type: 'error'

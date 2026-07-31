@@ -1,0 +1,169 @@
+/**
+ * DecisionBroker — the server-side pause/resume registry for the stateful
+ * thin-client chat loop.
+ *
+ * Phase 0 foundation. Fully implemented and unit-tested here, but not yet wired
+ * into the tool loop (that happens in Phase 2, inside the per-run wrapping
+ * executor built by ChatOrchestrator). Nothing imports it yet, so it is inert.
+ *
+ * Design (see the refactor plan, "Crux — concrete integration points"):
+ * - The paused executor calls `requestDecision({ streamId, toolCallId, signal })`
+ *   and awaits the returned promise while the loop is suspended at the tool
+ *   choke point. The caller is responsible for emitting the matching SSE event
+ *   (permission_required / clarify_required / tool_request) before awaiting.
+ * - `POST /resume` (Phase 2) looks the pending entry up by (streamId, toolCallId)
+ *   and calls `resolve(...)`, unblocking the loop.
+ * - The run's AbortSignal (from res.on('close')) rejects the pending promise so a
+ *   disconnected client never hangs the loop.
+ * - Per-stream sessions carry the "allow always / auto-approve" decision so the
+ *   loop can skip future pauses within the same run.
+ */
+
+export type PermissionDecision = 'allow_once' | 'allow_always' | 'deny'
+
+export interface ClarifyDecision {
+  cancelled?: boolean
+  answers?: any[]
+}
+
+export interface ToolBridgeDecision {
+  result?: any
+  error?: string
+}
+
+export type Decision = PermissionDecision | ClarifyDecision | ToolBridgeDecision
+
+export class DecisionAbortedError extends Error {
+  constructor(message = 'Decision aborted') {
+    super(message)
+    this.name = 'AbortError'
+  }
+}
+
+interface PendingEntry {
+  resolve: (decision: Decision) => void
+  reject: (error: Error) => void
+  cleanup: () => void
+}
+
+interface StreamSession {
+  autoApproveAll: boolean
+}
+
+/** Composite key: one pending decision per (stream, toolCall). */
+function keyFor(streamId: string, toolCallId: string): string {
+  return `${streamId}::${toolCallId}`
+}
+
+export class DecisionBroker {
+  private readonly pending = new Map<string, PendingEntry>()
+  private readonly sessions = new Map<string, StreamSession>()
+
+  /**
+   * Suspend on a decision from the client. Rejects with an AbortError if the
+   * provided signal aborts (client disconnect). The caller emits the SSE event.
+   */
+  requestDecision<T extends Decision = Decision>(opts: {
+    streamId: string
+    toolCallId: string
+    signal?: AbortSignal
+  }): Promise<T> {
+    const { streamId, toolCallId, signal } = opts
+    const key = keyFor(streamId, toolCallId)
+
+    return new Promise<T>((resolve, reject) => {
+      if (signal?.aborted) {
+        reject(new DecisionAbortedError())
+        return
+      }
+
+      // If a stale entry exists for this key, reject it before replacing.
+      const existing = this.pending.get(key)
+      if (existing) {
+        existing.cleanup()
+        existing.reject(new Error(`Superseded pending decision: ${key}`))
+        this.pending.delete(key)
+      }
+
+      const onAbort = () => {
+        const entry = this.pending.get(key)
+        if (entry) {
+          this.pending.delete(key)
+          entry.cleanup()
+          entry.reject(new DecisionAbortedError())
+        }
+      }
+
+      const cleanup = () => {
+        if (signal) signal.removeEventListener('abort', onAbort)
+      }
+
+      if (signal) signal.addEventListener('abort', onAbort, { once: true })
+
+      this.pending.set(key, {
+        resolve: decision => resolve(decision as T),
+        reject,
+        cleanup,
+      })
+    })
+  }
+
+  /** Resolve a pending decision (called by POST /resume). Returns false if none matched. */
+  resolve(streamId: string, toolCallId: string, decision: Decision): boolean {
+    const key = keyFor(streamId, toolCallId)
+    const entry = this.pending.get(key)
+    if (!entry) return false
+    this.pending.delete(key)
+    entry.cleanup()
+    entry.resolve(decision)
+    return true
+  }
+
+  /** Reject a pending decision. Returns false if none matched. */
+  reject(streamId: string, toolCallId: string, error: Error): boolean {
+    const key = keyFor(streamId, toolCallId)
+    const entry = this.pending.get(key)
+    if (!entry) return false
+    this.pending.delete(key)
+    entry.cleanup()
+    entry.reject(error)
+    return true
+  }
+
+  /** Drain every pending decision for a stream (called in the run's finally). */
+  rejectAllForStream(streamId: string, error: Error = new DecisionAbortedError()): void {
+    const prefix = `${streamId}::`
+    for (const [key, entry] of this.pending) {
+      if (key.startsWith(prefix)) {
+        this.pending.delete(key)
+        entry.cleanup()
+        entry.reject(error)
+      }
+    }
+    this.sessions.delete(streamId)
+  }
+
+  hasPending(streamId: string, toolCallId: string): boolean {
+    return this.pending.has(keyFor(streamId, toolCallId))
+  }
+
+  // ── Per-stream sessions (auto-approve / allow-always) ──
+
+  initSession(streamId: string, opts?: { autoApproveAll?: boolean }): void {
+    this.sessions.set(streamId, { autoApproveAll: opts?.autoApproveAll ?? false })
+  }
+
+  isAutoApproveAll(streamId: string): boolean {
+    return this.sessions.get(streamId)?.autoApproveAll ?? false
+  }
+
+  setAutoApproveAll(streamId: string): void {
+    const session = this.sessions.get(streamId)
+    if (session) session.autoApproveAll = true
+    else this.sessions.set(streamId, { autoApproveAll: true })
+  }
+
+  clearSession(streamId: string): void {
+    this.sessions.delete(streamId)
+  }
+}

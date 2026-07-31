@@ -30,7 +30,11 @@ interface ChatOrchestratorDeps {
 }
 
 export interface HeadlessChatOrchestrator {
-  runMessage(request: HeadlessMessageRequest, emit: (event: HeadlessStreamEvent) => void): Promise<void>
+  runMessage(
+    request: HeadlessMessageRequest,
+    emit: (event: HeadlessStreamEvent) => void,
+    signal?: AbortSignal
+  ): Promise<void>
 }
 
 export class ChatOrchestrator implements HeadlessChatOrchestrator {
@@ -89,7 +93,11 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
     })
   }
 
-  async runMessage(request: HeadlessMessageRequest, emit: (event: HeadlessStreamEvent) => void): Promise<void> {
+  async runMessage(
+    request: HeadlessMessageRequest,
+    emit: (event: HeadlessStreamEvent) => void,
+    signal?: AbortSignal
+  ): Promise<void> {
     let trackedStreamId = request.streamId ?? null
     try {
     const conversation = this.conversationRepo.getById(request.conversationId)
@@ -196,6 +204,7 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
         compactionProvider: request.compactionProvider,
         compactionModelName: request.compactionModelName,
         compactionSystemPrompt: request.compactionSystemPrompt,
+        signal,
       },
         emit
       )
