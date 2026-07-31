@@ -33,6 +33,13 @@ export interface ProviderRailwayTurnInput {
   runId?: string | null
   previousResponseId?: string | null
   allowCommentaryFallbackText?: boolean
+  /**
+   * When true, Railway's free-tier meter frames are relayed up as SSE events
+   * (free_generations_update / generation_limit_reached) instead of being dropped.
+   * Set ONLY by the server-owned cloud chat path (ChatOrchestrator, gateway.chat +
+   * openrouter route). Subagents/tests/flag-off leave it unset => drop parity.
+   */
+  relayFreeTierEvents?: boolean
 }
 
 export interface ProviderGenerateInput {
@@ -401,6 +408,26 @@ export class OpenRouterProvider implements HeadlessProvider {
 
     if (!streamOpen.response.ok) {
       const text = await streamOpen.response.text().catch(() => '')
+      // Free-tier exhaustion: Railway answers the OpenRouter send with HTTP 403 and a
+      // JSON body { error: 'generation_limit_reached', message?: string }. The renderer
+      // parsed this to show the upgrade modal (chatActions.ts:4612-4617); relay it as an
+      // SSE event so the server-owned loop drives the same modal. Gated by the cloud
+      // relay flag — otherwise collapsed into the generic throw exactly as before. The
+      // event is flushed to SSE before the throw unwinds the run.
+      if (streamOpen.response.status === 403 && turn.relayFreeTierEvents) {
+        let body: any = null
+        try {
+          body = JSON.parse(text)
+        } catch {
+          body = null
+        }
+        if (body?.error === 'generation_limit_reached') {
+          emit?.({
+            type: 'generation_limit_reached',
+            message: typeof body.message === 'string' ? body.message : undefined,
+          })
+        }
+      }
       throw new Error(`Railway OpenRouter request failed (${streamOpen.response.status}): ${text}`)
     }
 
@@ -456,6 +483,18 @@ export class OpenRouterProvider implements HeadlessProvider {
         }
         if (parsed.type === 'complete' && parsed.message) {
           completeMessage = parsed.message
+          continue
+        }
+        if (parsed.type === 'free_generations_update') {
+          // Free-tier meter update streamed by Railway. Relay it (gated) so the renderer
+          // decrements free_generations_remaining, matching chatActions.ts:4823-4830.
+          if (turn.relayFreeTierEvents) {
+            emit?.({
+              type: 'free_generations_update',
+              remaining: Number(parsed.remaining),
+              isFreeTier: parsed.isFreeTier ?? true,
+            })
+          }
           continue
         }
         if (parsed.type !== 'chunk') continue

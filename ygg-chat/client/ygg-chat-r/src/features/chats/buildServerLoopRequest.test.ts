@@ -83,4 +83,33 @@ describe('buildServerLoopRequest', () => {
     expect(off.hooksEnabled).toBeUndefined() // server gates on === true, so undefined == off
     expect(off.localApiBase).toBeNull()
   })
+
+  it('forwards openrouter temperature + serviceTier only when set (no undefined keys)', () => {
+    const on = buildServerLoopRequest('send', {
+      ...base,
+      provider: 'openrouter',
+      temperature: 0.7,
+      serviceTier: 'priority',
+    }).body
+    expect(on.provider).toBe('openrouter')
+    expect(on.temperature).toBe(0.7)
+    expect(on.serviceTier).toBe('priority')
+
+    // Omitted for the local-provider path (undefined temperature / serviceTier) so the
+    // lmstudio/zai body is byte-for-byte unchanged.
+    const off = buildServerLoopRequest('send', { ...base }).body
+    expect('temperature' in off).toBe(false)
+    expect('serviceTier' in off).toBe(false)
+  })
+
+  it('resolves edit/branch routes and still requires messageId', () => {
+    expect(buildServerLoopRequest('edit', { ...base, messageId: 'm9' }).path).toBe(
+      '/conversations/conv-1/messages/m9/edit-branch'
+    )
+    expect(buildServerLoopRequest('branch', { ...base, messageId: 'm9' }).path).toBe(
+      '/conversations/conv-1/messages/m9/branch'
+    )
+    expect(() => buildServerLoopRequest('edit', { ...base })).toThrow(/edit requires messageId/)
+    expect(() => buildServerLoopRequest('branch', { ...base })).toThrow(/branch requires messageId/)
+  })
 })

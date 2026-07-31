@@ -119,6 +119,12 @@ describe('projectServerEvent', () => {
     expect((a[0].payload as any)).toMatchObject({ remaining: 41, isFreeTier: true })
   })
 
+  it('generation_limit_reached maps to freeTierLimitModalShown (Phase 4 cloud path modal)', () => {
+    const a = projectServerEvent({ type: 'generation_limit_reached', message: 'Upgrade' }, ctx)
+    expect(a).toHaveLength(1)
+    expect(a[0].type).toBe(chatSliceActions.freeTierLimitModalShown.type)
+  })
+
   it('permission_required carries the correlation ids the resolver thunk needs for /resume', () => {
     const a = projectServerEvent({ type: 'permission_required', toolCallId: 'tc1', toolName: 'bash', toolInput: { cmd: 'ls' } }, ctx)
     expect(a[0].type).toBe(chatSliceActions.toolPermissionRequested.type)

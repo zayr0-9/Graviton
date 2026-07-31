@@ -60,7 +60,7 @@ import { generateStreamId, STREAM_PRUNE_DELAY } from './streamHelpers'
 import { createStreamingRun, finishStreamingRun } from './streamRunTracking'
 import { runServerChatLoop } from './mainChatClient'
 import { buildServerLoopRequest } from './buildServerLoopRequest'
-import { isServerOwnedChatLoopEnabled } from '../../helpers/serverLoopSettings'
+import { isServerOwnedChatLoopEnabled, isCloudServerLoopEnabled } from '../../helpers/serverLoopSettings'
 import {
   assertToolAllowedForOperationMode,
   buildOperationModeSystemPrompt,
@@ -3125,7 +3125,7 @@ export const sendMessage = createAsyncThunk<
       if (
         isServerOwnedChatLoopEnabled() &&
         isElectronMode &&
-        (isLmStudio || isZai)
+        (isLmStudio || isZai || (isCloudServerLoopEnabled() && providerSlug === 'openrouter'))
       ) {
         const { path, body } = buildServerLoopRequest('send', {
           conversationId: String(conversationId),
@@ -3149,6 +3149,10 @@ export const sendMessage = createAsyncThunk<
           toolAutoApprove: state.chat.toolAutoApprove,
           hooksEnabled: isElectronMode,
           localApiBase: getCachedLocalApiBase(),
+          // Phase 4 openrouter parity: undefined for lmstudio/zai (omitted from body),
+          // so the local-provider request is unchanged; serviceTier only for openrouter.
+          temperature: openRouterTemperature,
+          serviceTier: providerSlug === 'openrouter' ? serviceTier : undefined,
         })
         const result = await runServerChatLoop(
           {
@@ -5603,7 +5607,7 @@ export const editMessageWithBranching = createAsyncThunk<
       if (
         isServerOwnedChatLoopEnabled() &&
         isElectronMode &&
-        (isLmStudio || isZai)
+        (isLmStudio || isZai || (isCloudServerLoopEnabled() && providerSlug === 'openrouter'))
       ) {
         const { path, body } = buildServerLoopRequest('edit', {
           conversationId: String(conversationId),
@@ -5626,6 +5630,10 @@ export const editMessageWithBranching = createAsyncThunk<
           toolAutoApprove: state.chat.toolAutoApprove,
           hooksEnabled: isElectronMode,
           localApiBase: getCachedLocalApiBase(),
+          // Phase 4 openrouter parity: undefined for lmstudio/zai (omitted from body),
+          // so the local-provider request is unchanged; serviceTier only for openrouter.
+          temperature: openRouterTemperature,
+          serviceTier: providerSlug === 'openrouter' ? serviceTier : undefined,
         })
         const result = await runServerChatLoop(
           {
@@ -7088,7 +7096,7 @@ export const sendMessageToBranch = createAsyncThunk<
       if (
         isServerOwnedChatLoopEnabled() &&
         isElectronMode &&
-        (isLmStudio || isZai)
+        (isLmStudio || isZai || (isCloudServerLoopEnabled() && providerSlug === 'openrouter'))
       ) {
         const { path, body } = buildServerLoopRequest('branch', {
           conversationId: String(conversationId),
@@ -7111,6 +7119,10 @@ export const sendMessageToBranch = createAsyncThunk<
           toolAutoApprove: state.chat.toolAutoApprove,
           hooksEnabled: isElectronMode,
           localApiBase: getCachedLocalApiBase(),
+          // Phase 4 openrouter parity: undefined for lmstudio/zai (omitted from body),
+          // so the local-provider request is unchanged; serviceTier only for openrouter.
+          temperature: openRouterTemperature,
+          serviceTier: providerSlug === 'openrouter' ? serviceTier : undefined,
         })
         const result = await runServerChatLoop(
           {

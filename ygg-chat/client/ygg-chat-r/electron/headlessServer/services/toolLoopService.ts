@@ -130,6 +130,13 @@ export interface ToolLoopRunInput {
   railwaySessionId?: string | null
   /** Forwarded to openaichatgpt so commentary text can back-fill an empty final answer. */
   allowCommentaryFallbackText?: boolean
+  /**
+   * Phase 4: relay Railway free-tier SSE frames (free_generations_update /
+   * generation_limit_reached) up through the OpenRouter provider. Set only by the
+   * server-owned cloud chat path. Absent (subagents/tests/native providers) => the
+   * provider drops the frames exactly as before.
+   */
+  relayFreeTierEvents?: boolean
   /** Opt-in robustness behaviors; all default off so main-chat behavior is unchanged. */
   robustness?: ToolLoopRobustnessOptions
   /**
@@ -473,6 +480,7 @@ export class ToolLoopService {
               executionMode: input.executionMode,
               isBranch: input.isBranch,
               storageMode: 'local',
+              relayFreeTierEvents: input.relayFreeTierEvents ?? false,
               isElectron: input.isElectron ?? true,
               imageConfig: input.imageConfig,
               reasoningConfig: input.reasoningConfig,
@@ -594,6 +602,8 @@ export class ToolLoopService {
       contentBlocks,
       contextUsage: output.contextUsage,
       thinkingBlock: output.reasoning ?? null,
+      // Phase 4: adopt Railway's id on the cloud path (see the main-turn persist site).
+      providerMessageId: output.raw && typeof output.raw.id === 'string' ? output.raw.id : null,
     })
     emit({ type: 'assistant_message_persisted', message: assistantMessage })
 
@@ -696,6 +706,10 @@ export class ToolLoopService {
         contentBlocks: assistantContentBlocks,
         contextUsage: output.contextUsage,
         thinkingBlock: output.reasoning ?? null,
+        // Phase 4: Railway's authoritative message id (when the provider surfaced a
+        // complete frame). Only CloudMirrorSink adopts it; TreeMessageSink ignores it,
+        // and it is null for native providers / streamed-only frames => mint parity.
+        providerMessageId: output.raw && typeof output.raw.id === 'string' ? output.raw.id : null,
       })
 
       lastAssistantMessage = assistantMessage

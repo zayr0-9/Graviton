@@ -3,11 +3,11 @@ import { ConversationRepo } from '../persistence/conversationRepo.js'
 import { MessageRepo } from '../persistence/messageRepo.js'
 import { ProjectRepo } from '../persistence/projectRepo.js'
 import { StreamingRunRepo } from '../persistence/streamingRunRepo.js'
-import { TreeMessageSink } from './messageSink.js'
+import { TreeMessageSink, CloudMirrorSink } from './messageSink.js'
 import type { ProviderTokenStore } from '../providers/tokenStore.js'
 import { BranchOrchestrator, type ResolvedExecution } from './branchOrchestrator.js'
 import { buildHeadlessSystemPrompt } from './headlessSystemPrompt.js'
-import { ProviderRouter } from './providerRouter.js'
+import { ProviderRouter, normalizeProviderRoute } from './providerRouter.js'
 import {
   ProviderErrorAssistantResponse,
   ToolLoopService,
@@ -37,6 +37,10 @@ interface ChatOrchestratorDeps {
    *  AND a decisionBroker is wired, the run fires the 5 lifecycle chat hooks
    *  (parity with the renderer). Absent for subagents/tests => NO hooks. */
   hookRunner?: (req: HookRunRequest) => Promise<HookRunResult>
+  /** Phase 4 gateway.chat flag. When true, the openrouter (cloud) route relays
+   *  free-tier SSE events and adopts Railway message ids (CloudMirrorSink). Default
+   *  false => the cloud route behaves exactly as before (drop frames, mint ids). */
+  cloudChatEnabled?: boolean
 }
 
 /** Tools that never prompt for permission (mirrors the renderer TOOL_PERMISSION_ALWAYS_BYPASS). */
@@ -206,6 +210,7 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
   private readonly compactBranch?: ToolLoopCompactor
   private readonly decisionBroker?: DecisionBroker
   private readonly hookRunner?: (req: HookRunRequest) => Promise<HookRunResult>
+  private readonly cloudChatEnabled: boolean
 
   constructor(deps: ChatOrchestratorDeps) {
     this.conversationRepo = new ConversationRepo({ db: deps.db, statements: deps.statements })
@@ -218,6 +223,7 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
     this.compactBranch = deps.compactBranch
     this.decisionBroker = deps.decisionBroker
     this.hookRunner = deps.hookRunner
+    this.cloudChatEnabled = deps.cloudChatEnabled ?? false
     this.toolLoopService =
       deps.toolLoopService ??
       new ToolLoopService({
@@ -400,6 +406,11 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
     const conversationContext = request.conversationContext ?? conversation?.conversation_context ?? null
     const projectContext = request.projectContext ?? project?.context ?? null
 
+    // Phase 4: the cloud (openrouter) route relays free-tier events and adopts Railway
+    // message ids, but ONLY when gateway.chat is on. Every other provider/flag-off run
+    // stays on TreeMessageSink with drop-frame parity.
+    const isCloudRoute = this.cloudChatEnabled && normalizeProviderRoute(request.provider) === 'openrouter'
+
     // Build a per-run loop with a run-scoped pausing executor when the broker is
     // wired; otherwise fall back to the ctor-built loop (preserves non-broker callers
     // and tests). Guarded on BOTH so a partially-wired ctor can't build a loop with an
@@ -407,7 +418,9 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
     const loop =
       this.decisionBroker && this.toolExecutor
         ? new ToolLoopService({
-            sink: new TreeMessageSink({ messageRepo: this.messageRepo }),
+            sink: isCloudRoute
+              ? new CloudMirrorSink({ messageRepo: this.messageRepo })
+              : new TreeMessageSink({ messageRepo: this.messageRepo }),
             providerRouter: this.providerRouter,
             executeTool: this.makePausingExecutor(trackedStreamId, emit, signal, hookSession ?? undefined),
             compactBranch: this.compactBranch,
@@ -457,6 +470,9 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
         // Phase 3: drives the per-turn hook-context fold + the Stop hook. Undefined
         // when hooks are off (subagents/tests/mobile) => loop behavior unchanged.
         hooks: hookSession?.toolLoopHooks(),
+        // Phase 4: relay Railway free-tier frames only on the cloud (openrouter) route
+        // under gateway.chat. False everywhere else => drop-frame parity.
+        relayFreeTierEvents: isCloudRoute,
       },
         emit
       )

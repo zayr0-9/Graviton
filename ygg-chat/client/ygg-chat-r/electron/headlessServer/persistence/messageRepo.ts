@@ -7,6 +7,13 @@ interface MessageRepoDeps {
 }
 
 export interface CreateMessageInput {
+  /**
+   * Caller-supplied id to adopt (e.g. a Railway-authoritative message id on the
+   * cloud path). Omitted on every default path, where a fresh uuid is minted.
+   * upsertMessage is INSERT ... ON CONFLICT(id) DO UPDATE, so re-adopting an
+   * existing id updates in place.
+   */
+  id?: string
   conversationId: string
   parentId: string | null
   role: 'user' | 'assistant' | 'tool' | 'system' | 'ex_agent'
@@ -34,7 +41,7 @@ export class MessageRepo {
 
   createMessage(input: CreateMessageInput): any {
     const now = new Date().toISOString()
-    const messageId = uuidv4()
+    const messageId = input.id ?? uuidv4()
 
     this.statements.upsertMessage.run(
       messageId,

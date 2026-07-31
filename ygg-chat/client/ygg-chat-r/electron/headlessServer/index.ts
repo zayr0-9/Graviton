@@ -22,6 +22,7 @@ import { DecisionBroker } from './services/decisionBroker.js'
 import { CompactionService } from './services/compactionService.js'
 import { SubagentRunService } from './services/subagentRunService.js'
 import { normalizeProviderRoute } from './services/providerRouter.js'
+import { resolveGatewayFlags } from './config/gatewayFlags.js'
 import type { ToolExecutor } from './services/toolLoopService.js'
 
 interface HeadlessServerRouteDeps {
@@ -232,6 +233,9 @@ export function registerHeadlessServerRoutes(app: Express, deps: HeadlessServerR
   const tokenStore = new ProviderTokenStore(deps.db)
   bootstrapHeadlessProviderTokens(tokenStore)
 
+  // Phase 4 gateway flags (default OFF). Resolved once at startup.
+  const gatewayFlags = resolveGatewayFlags()
+
   // One shared pause/resume registry across the chat orchestrator (which pauses the
   // loop) and the POST /api/resume route (which resolves the paused decision).
   const decisionBroker = new DecisionBroker()
@@ -288,6 +292,8 @@ export function registerHeadlessServerRoutes(app: Express, deps: HeadlessServerR
       decisionBroker,
       // Phase 3: in-process chat hooks (fires only when a request sets hooksEnabled).
       hookRunner: runHookRequest,
+      // Phase 4: cloud (openrouter) free-tier relay + Railway id adoption. Default OFF.
+      cloudChatEnabled: gatewayFlags.chat,
     }),
     compactionService,
     decisionBroker,

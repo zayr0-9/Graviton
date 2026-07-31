@@ -61,6 +61,17 @@ export interface BuildServerLoopRequestParams {
   hooksEnabled?: boolean
   /** Passed to hook scripts as lookup.localApiBase; the shims pass getCachedLocalApiBase(). */
   localApiBase?: string | null
+  /**
+   * Phase 4 (openrouter/cloud route): the resolved OpenRouter sampling temperature.
+   * Undefined for lmstudio/zai (resolveOpenRouterTemperature returns undefined), so
+   * it is omitted from those bodies — keeping the local-provider request unchanged.
+   */
+  temperature?: number
+  /**
+   * Phase 4 (openrouter/cloud route): the paid-tier service tier. The shims pass it
+   * only for openrouter, so the lmstudio/zai body never gains this field.
+   */
+  serviceTier?: 'priority'
 }
 
 export interface ServerLoopRequest {
@@ -126,6 +137,11 @@ export function buildServerLoopRequest(operation: ServerLoopOperation, params: B
   // Send the tools array whenever the caller provided one (even []), so an
   // all-disabled set is respected; omit only when tools were not provided.
   if (tools !== undefined) body.tools = tools
+
+  // Phase 4 openrouter parity: forward these only when set, so no undefined keys
+  // reach the body and the lmstudio/zai request stays byte-for-byte unchanged.
+  if (typeof params.temperature === 'number') body.temperature = params.temperature
+  if (params.serviceTier !== undefined) body.serviceTier = params.serviceTier
 
   return { path, body }
 }
