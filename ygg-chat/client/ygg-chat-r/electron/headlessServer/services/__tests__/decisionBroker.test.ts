@@ -74,4 +74,49 @@ describe('DecisionBroker', () => {
     broker.resolve('s1', 't1', 'deny')
     await expect(second).resolves.toBe('deny')
   })
+
+  it('reject() settles a pending decision with the given error', async () => {
+    const broker = new DecisionBroker()
+    const p = broker.requestDecision({ streamId: 's1', toolCallId: 't1' })
+    const err = new Error('resume-error')
+    expect(broker.reject('s1', 't1', err)).toBe(true)
+    await expect(p).rejects.toBe(err)
+    expect(broker.hasPending('s1', 't1')).toBe(false)
+  })
+
+  it('reject() returns false when there is no matching pending decision', () => {
+    const broker = new DecisionBroker()
+    expect(broker.reject('nope', 'nope', new Error('x'))).toBe(false)
+  })
+
+  it('rejectAllForStream matches the exact stream, not a bare string prefix (s1 vs s10)', async () => {
+    const broker = new DecisionBroker()
+    const s1 = broker.requestDecision({ streamId: 's1', toolCallId: 't1' })
+    const s10 = broker.requestDecision({ streamId: 's10', toolCallId: 't1' })
+
+    broker.rejectAllForStream('s1')
+
+    await expect(s1).rejects.toBeInstanceOf(DecisionAbortedError)
+    expect(broker.hasPending('s10', 't1')).toBe(true)
+
+    broker.resolve('s10', 't1', 'allow_once')
+    await expect(s10).resolves.toBe('allow_once')
+  })
+
+  it('aborting a superseded signal does not settle the superseding entry', async () => {
+    const broker = new DecisionBroker()
+    const ctrlA = new AbortController()
+    const ctrlB = new AbortController()
+    const first = broker.requestDecision({ streamId: 's1', toolCallId: 't1', signal: ctrlA.signal })
+    const second = broker.requestDecision({ streamId: 's1', toolCallId: 't1', signal: ctrlB.signal })
+
+    await expect(first).rejects.toThrow(/Superseded/)
+
+    // ctrlA's listener must have been cleaned up on supersede: aborting it is a no-op.
+    ctrlA.abort()
+    expect(broker.hasPending('s1', 't1')).toBe(true)
+
+    broker.resolve('s1', 't1', 'allow_once')
+    await expect(second).resolves.toBe('allow_once')
+  })
 })

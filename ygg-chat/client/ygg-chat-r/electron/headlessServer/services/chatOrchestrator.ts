@@ -29,6 +29,10 @@ interface ChatOrchestratorDeps {
   compactBranch?: ToolLoopCompactor
 }
 
+function isAbortError(error: unknown): boolean {
+  return typeof error === 'object' && error !== null && (error as { name?: unknown }).name === 'AbortError'
+}
+
 export interface HeadlessChatOrchestrator {
   runMessage(
     request: HeadlessMessageRequest,
@@ -239,6 +243,17 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
 
     emit({ type: 'complete', message: toolLoopResult.finalAssistantMessage })
     } catch (error) {
+      // Client disconnect / explicit cancel: record a clean 'aborted' outcome and
+      // return WITHOUT rethrowing, so runSseOrchestrator does not write a spurious
+      // provider-style { type: 'error' } frame (mirrors SubagentRunService).
+      if (signal?.aborted || isAbortError(error)) {
+        this.streamingRunRepo.finish(trackedStreamId, {
+          status: 'aborted',
+          endReason: 'aborted',
+          error: 'Run aborted',
+        })
+        return
+      }
       const errorMessage = error instanceof Error ? error.message : String(error)
       this.streamingRunRepo.finish(trackedStreamId, {
         status: 'error',
