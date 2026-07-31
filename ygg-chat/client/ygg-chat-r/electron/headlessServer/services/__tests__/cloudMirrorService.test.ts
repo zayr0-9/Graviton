@@ -82,6 +82,25 @@ describe('cloudMirrorService', () => {
     )
   })
 
+  it('mirrorConversation reuses the existing local row user_id when a cloud UPDATE omits it (rename fix)', async () => {
+    const statements = makeStatements()
+    const db = {
+      prepare(sql: string) {
+        return {
+          get: () => (/SELECT user_id FROM conversations WHERE id/.test(sql) ? { user_id: 'u-existing' } : undefined),
+          run: () => {},
+        }
+      },
+    }
+    const svc = createCloudMirrorService({ db, statements })
+    // A Railway PATCH (rename) response with no user_id/owner_id must still update the local mirror.
+    await svc.mirror('conversation', { id: 'c1', title: 'renamed' })
+    expect(statements.upsertConversation.run).toHaveBeenCalled()
+    const args = statements.upsertConversation.run.mock.calls[0]
+    expect(args[2]).toBe('u-existing') // effectiveUserId resolved from the existing row
+    expect(args[3]).toBe('renamed') // new title persisted
+  })
+
   it('mirrors a message: JSON-stringifies tool_calls/children_ids/content_blocks and touches timestamps', async () => {
     const statements = makeStatements()
     const { db, runCalls } = makeDb()

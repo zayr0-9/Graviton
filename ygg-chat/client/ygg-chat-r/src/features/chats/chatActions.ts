@@ -8790,10 +8790,14 @@ export const updateConversationTitle = createAsyncThunk<
   Conversation,
   { id: ConversationId; title: string; storageMode?: 'cloud' | 'local' },
   { extra: ThunkExtraArgument; state: RootState }
->('chat/updateConversationTitle', async ({ id, title }, { extra, rejectWithValue }) => {
+>('chat/updateConversationTitle', async ({ id, title, storageMode }, { extra, getState, rejectWithValue }) => {
   try {
-    // Storage-aware title update via the gateway.
-    const updated = await gwApi.patch<Conversation>(`/conversations/${id}`, { title })
+    // Storage-aware title update via the gateway. Pass the authoritative storageMode
+    // hint (Chat.tsx already supplies it) so a cloud conversation is never misrouted
+    // to the local leg by a stale/ambiguous local mirror row.
+    const mode = storageMode || getState().conversations.items.find(c => c.id === id)?.storage_mode
+    const qs = mode ? `?storageMode=${mode}` : ''
+    const updated = await gwApi.patch<Conversation>(`/conversations/${id}${qs}`, { title })
     syncConversationTitleAcrossCaches(extra.queryClient, updated)
     return updated
   } catch (error) {

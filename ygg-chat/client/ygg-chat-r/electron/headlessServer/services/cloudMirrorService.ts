@@ -116,8 +116,19 @@ class SqliteCloudMirrorService implements CloudMirrorService {
     this.statements.upsertUser.run(e.id, e.username || `synced-user-${String(e.id).substring(0, 8)}`, e.created_at || nowIso())
   }
 
+  /** Reuse the existing mirror row's user_id when a cloud UPDATE response omits it. */
+  private existingRowUserId(table: 'conversations' | 'projects', id: any): string | null {
+    if (!this.db || id == null) return null
+    try {
+      const row = this.db.prepare(`SELECT user_id FROM ${table} WHERE id = ?`).get(id) as { user_id?: string } | undefined
+      return row?.user_id ?? null
+    } catch {
+      return null
+    }
+  }
+
   private mirrorProject(e: Record<string, any>): void {
-    const effectiveUserId = e.user_id || e.owner_id
+    const effectiveUserId = e.user_id || e.owner_id || this.existingRowUserId('projects', e.id)
     if (!e.id || !effectiveUserId) return
     this.ensureUserExists(effectiveUserId)
     this.statements.upsertProject.run(
@@ -134,7 +145,7 @@ class SqliteCloudMirrorService implements CloudMirrorService {
   }
 
   private mirrorConversation(e: Record<string, any>): void {
-    const effectiveUserId = e.user_id || e.owner_id
+    const effectiveUserId = e.user_id || e.owner_id || this.existingRowUserId('conversations', e.id)
     if (!e.id || !effectiveUserId) return
     this.ensureUserExists(effectiveUserId)
     if (e.project_id) this.ensureProjectExists(e.project_id, effectiveUserId)

@@ -283,6 +283,19 @@ export function registerGatewayRoutes(app: Express, deps: RegisterGatewayRoutesD
     }
   }
 
+  /**
+   * Resolve which leg a single-entity write targets. The renderer's explicit
+   * ?storageMode= hint is AUTHORITATIVE (it knows the entity's mode from Redux),
+   * so a cloud write can never be misrouted to the local leg by a stale/ambiguous
+   * local mirror row. Falls back to the local row, then cloud.
+   */
+  function resolveWriteMode(table: 'conversations' | 'projects', id: string, req: Request): 'local' | 'cloud' {
+    const hint = req.query?.storageMode
+    if (hint === 'local') return 'local'
+    if (hint === 'cloud') return 'cloud'
+    return localRowStorageMode(table, id) ?? 'cloud'
+  }
+
   const jsonInit = (method: string, body: unknown): RequestInit => ({
     method,
     headers: { 'Content-Type': 'application/json' },
@@ -341,7 +354,7 @@ export function registerGatewayRoutes(app: Express, deps: RegisterGatewayRoutesD
   })
 
   app.patch('/api/gw/projects/:id', async (req, res) => {
-    const mode = localRowStorageMode('projects', req.params.id)
+    const mode = resolveWriteMode('projects', req.params.id, req)
     if (mode === 'local') {
       const r = await localLeg(req, `/api/app/projects/${req.params.id}`, jsonInit('PATCH', req.body))
       res.status(r.status).json(r.body)
@@ -353,7 +366,7 @@ export function registerGatewayRoutes(app: Express, deps: RegisterGatewayRoutesD
   })
 
   app.delete('/api/gw/projects/:id', async (req, res) => {
-    const mode = localRowStorageMode('projects', req.params.id)
+    const mode = resolveWriteMode('projects', req.params.id, req)
     if (mode === 'local') {
       const r = await localLeg(req, `/api/app/projects/${req.params.id}`, { method: 'DELETE' })
       res.status(r.status).json(r.body)
@@ -528,7 +541,7 @@ export function registerGatewayRoutes(app: Express, deps: RegisterGatewayRoutesD
   })
 
   app.patch('/api/gw/conversations/:id', async (req, res) => {
-    const mode = localRowStorageMode('conversations', req.params.id)
+    const mode = resolveWriteMode('conversations', req.params.id, req)
     if (mode === 'local') {
       const r = await localLeg(req, `/api/app/conversations/${req.params.id}`, jsonInit('PATCH', req.body))
       res.status(r.status).json(r.body)
@@ -540,7 +553,7 @@ export function registerGatewayRoutes(app: Express, deps: RegisterGatewayRoutesD
   })
 
   app.delete('/api/gw/conversations/:id', async (req, res) => {
-    const mode = localRowStorageMode('conversations', req.params.id)
+    const mode = resolveWriteMode('conversations', req.params.id, req)
     if (mode === 'local') {
       const r = await localLeg(req, `/api/app/conversations/${req.params.id}`, { method: 'DELETE' })
       res.status(r.status).json(r.body)
@@ -556,7 +569,7 @@ export function registerGatewayRoutes(app: Express, deps: RegisterGatewayRoutesD
   for (const [seg, spec] of Object.entries(CONVERSATION_SUBFIELDS)) {
     app.patch(`/api/gw/conversations/:id/${seg}`, async (req, res) => {
       const value = pick(req.body, spec.key, spec.column) ?? null
-      const mode = localRowStorageMode('conversations', req.params.id)
+      const mode = resolveWriteMode('conversations', req.params.id, req)
       if (mode === 'local') {
         const r = await localLeg(req, `/api/app/conversations/${req.params.id}`, jsonInit('PATCH', { [spec.column]: value }))
         res.status(r.status).json(r.body)
