@@ -39,6 +39,8 @@ export interface RunServerChatLoopDeps {
 export interface RunServerChatLoopResult {
   messageId: MessageId | null
   userMessage: Message | null
+  /** True when the terminal `complete` carried a provider error (message still rendered). */
+  providerError: boolean
 }
 
 /**
@@ -74,6 +76,7 @@ export async function runServerChatLoop(
   let streamError: string | null = null
   let messageId: MessageId | null = null
   let userMessage: Message | null = null
+  let providerError = false
 
   const handleEvent = (event: any): void => {
     if (!event || typeof event.type !== 'string') return
@@ -87,6 +90,7 @@ export async function runServerChatLoop(
       // 'branch' uses no optimistic bubble.
     } else if (event.type === 'complete') {
       messageId = event.message?.id ?? null
+      providerError = event.providerError === true
       sawTerminal = true
     } else if (event.type === 'error') {
       streamError = typeof event.error === 'string' && event.error ? event.error : 'Headless stream error'
@@ -129,5 +133,5 @@ export async function runServerChatLoop(
     throw new Error('Headless stream ended without a terminal event')
   }
 
-  return { messageId, userMessage }
+  return { messageId, userMessage, providerError }
 }

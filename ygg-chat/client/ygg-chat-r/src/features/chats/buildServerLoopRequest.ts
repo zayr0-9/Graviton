@@ -56,15 +56,17 @@ export interface ServerLoopRequest {
 }
 
 function shapeTools(tools?: ServerLoopToolInput[]): Array<{ name: string; description?: string; inputSchema: Record<string, any> }> | undefined {
-  if (!Array.isArray(tools) || tools.length === 0) return undefined
-  const shaped = tools
+  // undefined => caller omitted tools => let the server use its default set.
+  // A provided array (even all-disabled -> []) is authoritative: send it verbatim so
+  // the server does NOT substitute defaults and auto-run tools the user disabled.
+  if (!Array.isArray(tools)) return undefined
+  return tools
     .filter(t => t.enabled !== false)
     .map(t => ({
       name: t.name,
       description: t.description,
       inputSchema: t.inputSchema ?? { type: 'object', properties: {} },
     }))
-  return shaped.length > 0 ? shaped : undefined
 }
 
 export function buildServerLoopRequest(operation: ServerLoopOperation, params: BuildServerLoopRequestParams): ServerLoopRequest {
@@ -103,7 +105,9 @@ export function buildServerLoopRequest(operation: ServerLoopOperation, params: B
     attachmentsBase64: params.attachmentsBase64 ?? null,
     streamId: params.streamId,
   }
-  if (tools) body.tools = tools
+  // Send the tools array whenever the caller provided one (even []), so an
+  // all-disabled set is respected; omit only when tools were not provided.
+  if (tools !== undefined) body.tools = tools
 
   return { path, body }
 }

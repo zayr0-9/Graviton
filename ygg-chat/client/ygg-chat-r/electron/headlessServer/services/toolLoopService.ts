@@ -836,6 +836,13 @@ export class ToolLoopService {
         const assistantForContinuation = persistResult.result ?? inMemoryAssistant
         lastAssistantMessage = assistantForContinuation
         history[assistantHistoryIndex] = assistantForContinuation
+
+        // Re-emit the merged assistant row (now carrying tool_result blocks) so SSE
+        // clients can update the intermediate turn's message in place. The initial
+        // assistant_message_persisted at :652 fired BEFORE tools ran, so without this
+        // a thin client renders the turn without its tool results until a DB reload.
+        // Clients that ignore this event (subagent transcript, mobile UI) are unaffected.
+        emit({ type: 'assistant_message_persisted', message: assistantForContinuation })
       }
 
       // Continue the loop even when all tool calls fail. Before issuing the next

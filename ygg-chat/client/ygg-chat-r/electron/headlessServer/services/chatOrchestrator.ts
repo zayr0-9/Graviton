@@ -152,8 +152,11 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
     const history = this.conversationRepo.listPathToMessage(request.conversationId, resolved.historyLeafId)
 
     const resolvedOperationMode = request.operationMode ?? 'execute'
+    // An explicit tools array (even empty) is authoritative — only fall back to the
+    // default tool set when the caller omits `tools` entirely. This lets a client
+    // that disabled every tool send [] and get NO tools, rather than the defaults.
     const resolvedTools = filterToolsForOperationMode(
-      Array.isArray(request.tools) && request.tools.length > 0 ? request.tools : this.defaultToolsProvider(),
+      Array.isArray(request.tools) ? request.tools : this.defaultToolsProvider(),
       resolvedOperationMode
     )
 

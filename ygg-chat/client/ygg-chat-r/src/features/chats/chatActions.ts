@@ -3159,8 +3159,8 @@ export const sendMessage = createAsyncThunk<
         )
         if (result.messageId) {
           void finishStreamingRun(streamId, {
-            status: 'completed',
-            endReason: 'completed',
+            status: result.providerError ? 'error' : 'completed',
+            endReason: result.providerError ? 'error' : 'completed',
             assistantMessageId: result.messageId,
             finalMessageId: result.messageId,
           })
