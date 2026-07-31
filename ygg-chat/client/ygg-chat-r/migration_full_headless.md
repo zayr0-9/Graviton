@@ -20,7 +20,7 @@ turning the renderer into a thin client that talks only to `127.0.0.1:3002`.
 | 2 | Pause/resume protocol (interactive tool-permission + `plan_md` clarify) | ✅ done | `15758d9`, `8052fe0` |
 | 3 | 5 lifecycle chat hooks in the server loop | ✅ done | `919b207` |
 | 4 | Cloud provider through the gateway (free-tier relay + Railway id adoption) | ◐ partial — see below | `1f68568`, `176fbb3` |
-| 5 | Storage-aware CRUD/reads gateway + retire dualSync | ☐ not started | — |
+| 5 | Storage-aware CRUD gateway + retire dualSync | ◐ partial — write path + gateway done; reads/attachments deferred | `293ef8d`, `881c7e8` |
 | 6 | Cutover + delete ~5,200 renderer loop lines; flags default-on | ☐ not started | — |
 
 Feature flags in play today:
@@ -129,6 +129,71 @@ Strengthened `gatewayFlags` coverage (Conf-enable branch + catch-safety guard).
   `reasoningConfig` (defaults medium/auto) and doesn't send
   `serviceTier`/`promptCacheRetention` in the Codex body — the subagent path already
   behaves this way. Small follow-up if reasoning-effort parity matters.
+
+---
+
+## Phase 5 — Storage-aware CRUD gateway + retire dualSync (partial)
+
+**Decision on record:** the maintainer chose a **blind full cutover** (no flag
+fallback; git is the safety net) after being told the cloud/Railway path is not
+live-testable from this environment. So — unlike Phases 1–4 — the Phase 5 gateway
+is mounted **unconditionally** (`index.ts`) and the renderer talks to it directly:
+with these commits the write path is no longer flag-gated OFF.
+
+### Server foundation (`293ef8d`) — all DB-free tested
+The five Phase-0 skeletons are now real:
+- **`appAuthTokenManager`** — single-flight Supabase refresher (sole process-wide
+  refresher; concurrent callers coalesce; optional `forceRefresh` for 401).
+- **`railwayClient`** — Bearer-injected Railway pass-through: `passthrough()`
+  (verbatim status/body, never throws), `request<T>()` (throws `RailwayHttpError`),
+  SSE `stream()`, and 401→forced-refresh→retry-once.
+- **`cloudMirrorService`** — in-process SQLite dual-write reusing the shared
+  `/api/sync/*` upsert statements + `ensure*Exists` FK stubs (owner_id→user_id).
+- **`gatewayRoutes` (`/api/gw/*`)** — storage-aware conversations/projects/messages:
+  local leg delegates to `/api/app/*` over loopback (byte-identical local CRUD),
+  cloud leg via `railwayClient`; reads merge (updated_at desc, **id-dedup**,
+  dual-cursor drains local-first; cloud leg skipped when no session = community);
+  writes route by storage_mode + mirror; canonical→leg **write normalizers** own the
+  local(snake)/cloud(camel) divergence; conversation sub-field GET/PATCH routes.
+- **`cloudProxyRoutes` (`/api/cloud/*`)** — allowlisted authenticated pass-through
+  (models/users/system-prompts/stripe/app-store/oauth).
+- New flags `gateway.crud`/`gateway.cloudProxy` (resolved; routes mount uncond.).
+
+### Renderer cutover (`881c7e8`)
+- `api.ts`: `gwApi` (`/api/gw/*`) + `cloudApi` (`/api/cloud/*`) thin clients (both
+  hit :3002; server owns cloud auth, callers pass no token).
+- `conversationActions` / `projectActions`: every CRUD/read thunk → one gateway
+  call; dropped `shouldUseLocalApi` branching + all `dualSync` calls.
+- `chatActions`: message CRUD (update/delete/tree/bulk/deleteMany/messages),
+  `initialize*` / `refreshCurrentPathAfterDelete` / `syncConversationToLocal`, and
+  the `/system-prompts` + `/users` helpers → `gwApi`/`cloudApi`.
+- **`dualSyncManager` (502-line class) DELETED** → `src/lib/localMirror.ts` (thin
+  fire-and-forget `/api/sync/*` writer, same surface) keeps the legacy streaming
+  loop's local mirror alive until Phase 6 removes that loop. Dead `lib/sync/*` gone.
+
+### Validation
+`tsc -p tsconfig.app.json` clean · `test:headless` **226 passed** / 37 skipped /
+24 todo · renderer chats suite **42 passed**. New DB-free tests: gateway merge +
+dedup + write-normalizers, `railwayClient`, `cloudMirrorService`,
+`appAuthTokenManager`, `cloudProxyRoutes` allowlist, extended `gatewayFlags`.
+
+### Deferred (NOT yet cut over — still hit Railway directly / need more work)
+- **`useQueries` read-layer** (6 merge hooks + `useModels`/ZDR + system-prompt
+  hooks) — still merges client-side. Behavior unchanged (the gateway mirrors cloud
+  writes, so the client merge still sees consistent data), but reads are not yet
+  "only :3002". Repointing them is the next slice.
+- **Attachments** (`uploadAttachment`/link/fetch/delete) — need a multipart-aware
+  gateway route; still use the cloud `apiCall`.
+- **Stripe helpers** (`api.ts` + `lib/payments/stripe.ts`) and **Settings**
+  google-drive/oauth calls — still hit `API_BASE`; repoint to `cloudApi`.
+- **Legacy renderer streaming loop** (~5,200 lines) + its 24 `localMirror` message
+  sites — explicitly **Phase 6**.
+
+### Not live-verified
+No live Railway/Supabase here, so the whole cloud leg (gateway cloud reads/writes,
+mirror, `railwayClient` Bearer/401, cloud-proxy) is unit-tested but **needs a
+`build:mac` dogfood** before it can be trusted. Community/local-only paths are the
+most exercised by the DB-free tests.
 
 ---
 
