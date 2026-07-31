@@ -36,6 +36,13 @@ export interface HeadlessMessageRequest {
   planModeVerbosity?: 'concise' | 'normal' | 'detailed'
   streamId?: string | null
   toolTimeoutMs?: number
+  /**
+   * Interactive tool-permission policy for the server-owned loop.
+   * OPTIONAL and undefined-by-default: absence == auto-approve. The loop pauses
+   * for a permission decision ONLY when a caller EXPLICITLY sends `false`
+   * (the mobile LAN UI never sends it, so it always auto-approves).
+   */
+  toolAutoApprove?: boolean
   autoCompactionEnabled?: boolean
   contextLength?: number
   compactionThresholdPercent?: number

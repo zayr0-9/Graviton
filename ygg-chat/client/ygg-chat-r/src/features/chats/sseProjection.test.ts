@@ -119,6 +119,22 @@ describe('projectServerEvent', () => {
     expect((a[0].payload as any)).toMatchObject({ remaining: 41, isFreeTier: true })
   })
 
+  it('permission_required carries the correlation ids the resolver thunk needs for /resume', () => {
+    const a = projectServerEvent({ type: 'permission_required', toolCallId: 'tc1', toolName: 'bash', toolInput: { cmd: 'ls' } }, ctx)
+    expect(a[0].type).toBe(chatSliceActions.toolPermissionRequested.type)
+    const p = a[0].payload as any
+    expect(p.toolCall).toMatchObject({ id: 'tc1', name: 'bash', arguments: { cmd: 'ls' }, status: 'pending' })
+    expect(p.streamId).toBe('stream-1')
+    expect(p.toolCallId).toBe('tc1')
+  })
+
+  it('clarify_required carries streamId + toolCallId', () => {
+    const a = projectServerEvent({ type: 'clarify_required', toolCallId: 'tc2', toolName: 'plan_md', questions: [{ q: 'x' }] }, ctx)
+    expect(a[0].type).toBe(chatSliceActions.planClarificationRequested.type)
+    const p = a[0].payload as any
+    expect(p).toMatchObject({ id: 'tc2', streamId: 'stream-1', toolCallId: 'tc2', questions: [{ q: 'x' }] })
+  })
+
   it('no-op events return an empty action list', () => {
     for (const type of ['provider_routed', 'context_usage', 'context_compaction', 'tool_execution', 'tool_request', 'unknown_future_event']) {
       expect(projectServerEvent({ type }, ctx)).toEqual([])

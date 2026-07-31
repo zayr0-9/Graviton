@@ -3115,16 +3115,17 @@ export const sendMessage = createAsyncThunk<
       const isElectronMode =
         import.meta.env.VITE_ENVIRONMENT === 'electron' || (typeof __IS_ELECTRON__ !== 'undefined' && __IS_ELECTRON__)
 
-      // ── Phase 1: server-owned chat loop (thin client) ──
-      // Route only auto-approve + local-provider (LM Studio / Zai) sends through the
-      // headless engine, behind an OFF-by-default flag. Every other case falls through
-      // to the unchanged client loop below (dual-run fallback). The stream setup
-      // (sendingStarted / AbortController) above and the catch/finally below are shared.
+      // ── Phase 1/2: server-owned chat loop (thin client) ──
+      // Route local-provider (LM Studio / Zai) sends through the headless engine behind
+      // an OFF-by-default flag. toolAutoApprove is forwarded so the server auto-approves
+      // (true) or pauses per tool for an interactive permission decision (false, Phase 2).
+      // Every other case falls through to the unchanged client loop below (dual-run
+      // fallback). The stream setup (sendingStarted / AbortController) above and the
+      // catch/finally below are shared.
       if (
         isServerOwnedChatLoopEnabled() &&
         isElectronMode &&
-        (isLmStudio || isZai) &&
-        state.chat.toolAutoApprove === true
+        (isLmStudio || isZai)
       ) {
         const { path, body } = buildServerLoopRequest('send', {
           conversationId: String(conversationId),
@@ -3145,6 +3146,7 @@ export const sendMessage = createAsyncThunk<
           selectedFiles: selectedFilesForChat,
           tools: filterToolsForOperationMode(getAllTools(), operationModeAtSend),
           streamId,
+          toolAutoApprove: state.chat.toolAutoApprove,
         })
         const result = await runServerChatLoop(
           {
@@ -5599,8 +5601,7 @@ export const editMessageWithBranching = createAsyncThunk<
       if (
         isServerOwnedChatLoopEnabled() &&
         isElectronMode &&
-        (isLmStudio || isZai) &&
-        state.chat.toolAutoApprove === true
+        (isLmStudio || isZai)
       ) {
         const { path, body } = buildServerLoopRequest('edit', {
           conversationId: String(conversationId),
@@ -5620,6 +5621,7 @@ export const editMessageWithBranching = createAsyncThunk<
           selectedFiles: selectedFilesForChat,
           tools: filterToolsForOperationMode(getAllTools(), operationModeAtSend),
           streamId,
+          toolAutoApprove: state.chat.toolAutoApprove,
         })
         const result = await runServerChatLoop(
           {
@@ -7082,8 +7084,7 @@ export const sendMessageToBranch = createAsyncThunk<
       if (
         isServerOwnedChatLoopEnabled() &&
         isElectronMode &&
-        (isLmStudio || isZai) &&
-        state.chat.toolAutoApprove === true
+        (isLmStudio || isZai)
       ) {
         const { path, body } = buildServerLoopRequest('branch', {
           conversationId: String(conversationId),
@@ -7103,6 +7104,7 @@ export const sendMessageToBranch = createAsyncThunk<
           selectedFiles: selectedFilesForChat,
           tools: filterToolsForOperationMode(getAllTools(), operationModeAtSend),
           streamId,
+          toolAutoApprove: state.chat.toolAutoApprove,
         })
         const result = await runServerChatLoop(
           {
@@ -9318,10 +9320,31 @@ export const insertBulkMessages = createAsyncThunk<
 //   }
 // )
 
+/**
+ * POST a decision to the server-owned loop's /api/resume (Phase 2). Errors
+ * (404/409 = no pending / already resolved, or network) are swallowed so a
+ * stale click never crashes the UI.
+ */
+const postDecisionResume = async (
+  body: { streamId: string; toolCallId: string } & Record<string, unknown>
+): Promise<void> => {
+  try {
+    const url = await buildLocalApiUrl('/resume')
+    await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
+  } catch (error) {
+    console.warn('[serverLoop] /resume failed', error)
+  }
+}
+
 export const respondToToolPermission = createAsyncThunk<void, boolean, { state: RootState; extra: ThunkExtraArgument }>(
   'chat/respondToToolPermission',
-  async (allowed, { dispatch }) => {
-    if (pendingPermissionResolve) {
+  async (allowed, { dispatch, getState }) => {
+    const req = getState().chat.toolCallPermissionRequest
+    if (req?.streamId && req?.toolCallId) {
+      // Server-owned loop: resolve the paused decision over /resume.
+      await postDecisionResume({ streamId: req.streamId, toolCallId: req.toolCallId, decision: allowed ? 'allow_once' : 'deny' })
+    } else if (pendingPermissionResolve) {
+      // Client-owned loop fallback (flag off / non-local provider).
       pendingPermissionResolve(allowed)
       pendingPermissionResolve = null
     }
@@ -9333,8 +9356,11 @@ export const respondToPlanClarification = createAsyncThunk<
   void,
   PlanClarificationAnswer[],
   { state: RootState; extra: ThunkExtraArgument }
->('chat/respondToPlanClarification', async (answers, { dispatch }) => {
-  if (pendingPlanClarificationResolve) {
+>('chat/respondToPlanClarification', async (answers, { dispatch, getState }) => {
+  const req = getState().chat.planClarificationRequest
+  if (req?.streamId && req?.toolCallId) {
+    await postDecisionResume({ streamId: req.streamId, toolCallId: req.toolCallId, answers })
+  } else if (pendingPlanClarificationResolve) {
     pendingPlanClarificationResolve({ answers })
     pendingPlanClarificationResolve = null
   }
@@ -9343,8 +9369,11 @@ export const respondToPlanClarification = createAsyncThunk<
 
 export const cancelPlanClarification = createAsyncThunk<void, void, { state: RootState; extra: ThunkExtraArgument }>(
   'chat/cancelPlanClarification',
-  async (_, { dispatch }) => {
-    if (pendingPlanClarificationResolve) {
+  async (_, { dispatch, getState }) => {
+    const req = getState().chat.planClarificationRequest
+    if (req?.streamId && req?.toolCallId) {
+      await postDecisionResume({ streamId: req.streamId, toolCallId: req.toolCallId, cancelled: true })
+    } else if (pendingPlanClarificationResolve) {
       pendingPlanClarificationResolve({ cancelled: true })
       pendingPlanClarificationResolve = null
     }
@@ -9356,12 +9385,15 @@ export const respondToToolPermissionAndEnableAll = createAsyncThunk<
   void,
   void,
   { state: RootState; extra: ThunkExtraArgument }
->('chat/respondToToolPermissionAndEnableAll', async (_, { dispatch }) => {
-  // Enable auto-approve mode for all future tools
+>('chat/respondToToolPermissionAndEnableAll', async (_, { dispatch, getState }) => {
+  // Enable auto-approve mode for all future tools (drives the client-loop fallback;
+  // harmless for the server path, which relies on the allow_always decision below).
   dispatch(chatSliceActions.toolAutoApproveEnabled())
 
-  // Approve the current pending tool call
-  if (pendingPermissionResolve) {
+  const req = getState().chat.toolCallPermissionRequest
+  if (req?.streamId && req?.toolCallId) {
+    await postDecisionResume({ streamId: req.streamId, toolCallId: req.toolCallId, decision: 'allow_always' })
+  } else if (pendingPermissionResolve) {
     pendingPermissionResolve(true)
     pendingPermissionResolve = null
   }

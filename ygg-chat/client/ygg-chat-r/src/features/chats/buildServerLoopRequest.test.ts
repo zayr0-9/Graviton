@@ -67,4 +67,10 @@ describe('buildServerLoopRequest', () => {
     const { body } = buildServerLoopRequest('send', { ...base })
     expect('tools' in body).toBe(false)
   })
+
+  it('forwards toolAutoApprove verbatim (true / false / undefined) with no coercion', () => {
+    expect(buildServerLoopRequest('send', { ...base, toolAutoApprove: true }).body.toolAutoApprove).toBe(true)
+    expect(buildServerLoopRequest('send', { ...base, toolAutoApprove: false }).body.toolAutoApprove).toBe(false)
+    expect(buildServerLoopRequest('send', { ...base }).body.toolAutoApprove).toBeUndefined()
+  })
 })

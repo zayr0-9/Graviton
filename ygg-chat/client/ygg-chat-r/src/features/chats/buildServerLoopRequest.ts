@@ -48,6 +48,12 @@ export interface BuildServerLoopRequestParams {
   selectedFiles?: unknown[]
   tools?: ServerLoopToolInput[]
   streamId: string
+  /**
+   * Interactive tool-permission policy. Forwarded VERBATIM (never coerced): true =
+   * auto-approve; false = server pauses per tool for a permission decision; undefined =
+   * server default (auto-approve). The 3 shims pass state.chat.toolAutoApprove (a boolean).
+   */
+  toolAutoApprove?: boolean
 }
 
 export interface ServerLoopRequest {
@@ -104,6 +110,8 @@ export function buildServerLoopRequest(operation: ServerLoopOperation, params: B
     selectedFiles: params.selectedFiles ?? [],
     attachmentsBase64: params.attachmentsBase64 ?? null,
     streamId: params.streamId,
+    // Forward verbatim (no undefined -> false coercion): drives the server's pause gate.
+    toolAutoApprove: params.toolAutoApprove,
   }
   // Send the tools array whenever the caller provided one (even []), so an
   // all-disabled set is respected; omit only when tools were not provided.

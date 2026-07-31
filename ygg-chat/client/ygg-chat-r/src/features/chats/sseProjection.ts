@@ -192,10 +192,12 @@ export function projectServerEvent(event: ServerStreamEvent, ctx: ProjectionCont
     }
 
     case 'permission_required': {
-      // Defined for completeness; not exercised in Phase 1 (auto-approve gate).
+      // Carry streamId + toolCallId so the resolver thunk can POST /resume (Phase 2).
       return [
         chatSliceActions.toolPermissionRequested({
           toolCall: { id: event.toolCallId, name: event.toolName, arguments: event.toolInput, status: 'pending' } as any,
+          streamId,
+          toolCallId: event.toolCallId,
         }),
       ]
     }

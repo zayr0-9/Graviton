@@ -15,6 +15,7 @@ import {
   type ToolLoopCompactor,
   type ToolLoopRunResult,
 } from './toolLoopService.js'
+import type { DecisionBroker, ClarifyDecision, PermissionDecision } from './decisionBroker.js'
 import { filterToolsForOperationMode } from '../../../../../shared/operationModeToolPolicy.js'
 
 interface ChatOrchestratorDeps {
@@ -27,6 +28,44 @@ interface ChatOrchestratorDeps {
   toolExecutor?: ToolExecutor
   defaultToolsProvider?: () => Array<{ name: string; description?: string; inputSchema?: Record<string, any> }>
   compactBranch?: ToolLoopCompactor
+  /** Shared pause/resume registry. When present (with toolExecutor), enables the
+   *  interactive permission / plan_md-clarify pause via a per-run wrapping executor. */
+  decisionBroker?: DecisionBroker
+}
+
+/** Tools that never prompt for permission (mirrors the renderer TOOL_PERMISSION_ALWAYS_BYPASS). */
+const ALWAYS_BYPASS_TOOLS = new Set(['skill_manager', 'mcp_manager', 'multi_call'])
+/** custom_tool_manager actions that are read-only/management (bypass) vs 'invoke' (prompt). */
+const CUSTOM_TOOL_MANAGER_BYPASS_ACTIONS = new Set([
+  'list',
+  'get',
+  'enable',
+  'disable',
+  'add',
+  'remove',
+  'reload',
+  'settings',
+])
+
+function parseToolArgs(raw: unknown): any {
+  if (typeof raw === 'string') {
+    try {
+      return JSON.parse(raw)
+    } catch {
+      return {}
+    }
+  }
+  return raw ?? {}
+}
+
+/** Whether a tool call skips the interactive permission prompt (server-side port of the renderer gate). */
+function shouldBypassPermission(toolName: string, args: any): boolean {
+  if (ALWAYS_BYPASS_TOOLS.has(toolName)) return true
+  if (toolName === 'custom_tool_manager') {
+    const action = typeof args?.action === 'string' ? args.action : ''
+    return action !== 'invoke' && CUSTOM_TOOL_MANAGER_BYPASS_ACTIONS.has(action)
+  }
+  return false
 }
 
 function isAbortError(error: unknown): boolean {
@@ -50,6 +89,11 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
   private readonly branchOrchestrator: BranchOrchestrator
   private readonly toolLoopService: ToolLoopService
   private readonly defaultToolsProvider: NonNullable<ChatOrchestratorDeps['defaultToolsProvider']>
+  // Kept as fields so runMessage can build a per-run ToolLoopService with a
+  // run-scoped pausing executor (mirrors SubagentRunService.countingExecutor).
+  private readonly toolExecutor?: ToolExecutor
+  private readonly compactBranch?: ToolLoopCompactor
+  private readonly decisionBroker?: DecisionBroker
 
   constructor(deps: ChatOrchestratorDeps) {
     this.conversationRepo = new ConversationRepo({ db: deps.db, statements: deps.statements })
@@ -58,6 +102,9 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
     this.streamingRunRepo = new StreamingRunRepo({ statements: deps.statements })
     this.providerRouter = deps.providerRouter ?? new ProviderRouter({ tokenStore: deps.tokenStore })
     this.branchOrchestrator = deps.branchOrchestrator ?? new BranchOrchestrator()
+    this.toolExecutor = deps.toolExecutor
+    this.compactBranch = deps.compactBranch
+    this.decisionBroker = deps.decisionBroker
     this.toolLoopService =
       deps.toolLoopService ??
       new ToolLoopService({
@@ -67,6 +114,66 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
         compactBranch: deps.compactBranch,
       })
     this.defaultToolsProvider = deps.defaultToolsProvider ?? (() => [])
+  }
+
+  /**
+   * Build a per-run executor that pauses for an interactive permission decision
+   * (or a plan_md clarify) via the DecisionBroker before delegating to the base
+   * executor. Mirrors SubagentRunService.countingExecutor. Only used when a broker
+   * + base executor are wired AND the run's session is not auto-approve.
+   */
+  private makePausingExecutor(
+    streamId: string,
+    emit: (event: HeadlessStreamEvent) => void,
+    signal?: AbortSignal
+  ): ToolExecutor {
+    const base = this.toolExecutor!
+    const broker = this.decisionBroker!
+    return async (toolCall, context) => {
+      const sig = context.signal ?? signal
+      // Auto-approve (whole-run or after allow_always): no pause.
+      if (broker.isAutoApproveAll(streamId)) return base(toolCall, context)
+
+      const args = parseToolArgs(toolCall.arguments)
+
+      // plan_md clarify is renderer-interactive and the base executor throws on it;
+      // intercept, ask the client, and RETURN a normal (non-error) clarify result.
+      if (toolCall.name === 'plan_md' && args?.action === 'clarify') {
+        emit({
+          type: 'clarify_required',
+          streamId,
+          toolCallId: toolCall.id,
+          toolName: toolCall.name,
+          questions: Array.isArray(args.questions) ? args.questions : [],
+        })
+        const decision = await broker.requestDecision<ClarifyDecision>({ streamId, toolCallId: toolCall.id, signal: sig })
+        return {
+          clarified: !decision.cancelled,
+          cancelled: decision.cancelled ?? false,
+          questions: Array.isArray(args.questions) ? args.questions.length : 0,
+          answers: decision.answers ?? [],
+        }
+      }
+
+      // Read-only / management tools never prompt.
+      if (shouldBypassPermission(toolCall.name, args)) return base(toolCall, context)
+
+      // Interactive permission: pause, ask, resume.
+      emit({
+        type: 'permission_required',
+        streamId,
+        toolCallId: toolCall.id,
+        toolName: toolCall.name,
+        toolInput: args,
+      })
+      const decision = await broker.requestDecision<PermissionDecision>({ streamId, toolCallId: toolCall.id, signal: sig })
+      if (decision === 'deny') {
+        // Throw -> the loop records an is_error tool_result and continues.
+        throw new Error('Tool execution denied by user')
+      }
+      if (decision === 'allow_always') broker.setAutoApproveAll(streamId)
+      return base(toolCall, context)
+    }
   }
 
   private requireMessage(messageId: string, conversationId: string): any {
@@ -129,6 +236,13 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
       rootMessageId: resolved.assistantParentId,
     })
 
+    // Seed the pause/resume session on the FINAL (post-upsert) stream id. Default to
+    // auto-approve; pause only when the caller EXPLICITLY sent toolAutoApprove:false
+    // (the mobile LAN UI never sends it, so it always auto-approves).
+    if (this.decisionBroker && trackedStreamId) {
+      this.decisionBroker.initSession(trackedStreamId, { autoApproveAll: request.toolAutoApprove !== false })
+    }
+
     emit({
       type: 'started',
       operation: request.operation,
@@ -172,9 +286,23 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
     const conversationContext = request.conversationContext ?? conversation?.conversation_context ?? null
     const projectContext = request.projectContext ?? project?.context ?? null
 
+    // Build a per-run loop with a run-scoped pausing executor when the broker is
+    // wired; otherwise fall back to the ctor-built loop (preserves non-broker callers
+    // and tests). Guarded on BOTH so a partially-wired ctor can't build a loop with an
+    // undefined executor.
+    const loop =
+      this.decisionBroker && this.toolExecutor
+        ? new ToolLoopService({
+            sink: new TreeMessageSink({ messageRepo: this.messageRepo }),
+            providerRouter: this.providerRouter,
+            executeTool: this.makePausingExecutor(trackedStreamId, emit, signal),
+            compactBranch: this.compactBranch,
+          })
+        : this.toolLoopService
+
     let toolLoopResult: ToolLoopRunResult
     try {
-      toolLoopResult = await this.toolLoopService.run(
+      toolLoopResult = await loop.run(
       {
         provider: request.provider,
         operation: request.operation,
@@ -264,6 +392,10 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
         error: errorMessage,
       })
       throw error
+    } finally {
+      // Drain any pending decisions + the per-stream session so a disconnected or
+      // errored run never leaks a paused promise. rejectAllForStream also clears the session.
+      if (this.decisionBroker && trackedStreamId) this.decisionBroker.rejectAllForStream(trackedStreamId)
     }
   }
 }

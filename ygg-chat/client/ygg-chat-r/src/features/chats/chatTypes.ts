@@ -351,6 +351,11 @@ export interface InitializationState {
 
 export interface ToolCallPermissionRequest {
   toolCall: ToolCall
+  // Set when the request originates from the server-owned loop (Phase 2): the
+  // resolver thunk POSTs the decision to /api/resume keyed by these, instead of
+  // resolving the in-process client-loop promise.
+  streamId?: string
+  toolCallId?: string
 }
 
 export type OperationMode = 'plan' | 'execute'

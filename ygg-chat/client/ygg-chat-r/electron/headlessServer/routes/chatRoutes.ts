@@ -2,11 +2,14 @@ import type { Express, Request, Response } from 'express'
 import type { HeadlessChatOperation, HeadlessMessageRequest } from '../contracts/headlessApi.js'
 import type { HeadlessChatOrchestrator } from '../services/chatOrchestrator.js'
 import type { CompactionService } from '../services/compactionService.js'
+import type { Decision, DecisionBroker } from '../services/decisionBroker.js'
 import { initializeSse, startSseHeartbeat, writeSseEvent } from '../stream/sseWriter.js'
 
 interface RegisterChatRoutesDeps {
   orchestrator: HeadlessChatOrchestrator
   compactionService?: CompactionService
+  /** Shared pause/resume registry; also injected into the ChatOrchestrator. */
+  decisionBroker?: DecisionBroker
 }
 
 function buildHeadlessMessageRequest(req: Request, operation: HeadlessChatOperation): HeadlessMessageRequest {
@@ -75,6 +78,15 @@ function buildHeadlessMessageRequest(req: Request, operation: HeadlessChatOperat
         : typeof body.tool_timeout_ms === 'number'
           ? body.tool_timeout_ms
           : undefined,
+    // CRITICAL: resolve to undefined when absent (NOT false). The mobile LAN UI never
+    // sends this, and undefined must survive to the orchestrator's `!== false` test so
+    // the loop defaults to auto-approve and only pauses when a caller EXPLICITLY sends false.
+    toolAutoApprove:
+      typeof body.toolAutoApprove === 'boolean'
+        ? body.toolAutoApprove
+        : typeof body.tool_auto_approve === 'boolean'
+          ? body.tool_auto_approve
+          : undefined,
   }
 }
 
@@ -116,7 +128,39 @@ async function runSseOrchestrator(
 }
 
 export function registerChatRoutes(app: Express, deps: RegisterChatRoutesDeps): void {
-  const { orchestrator, compactionService } = deps
+  const { orchestrator, compactionService, decisionBroker } = deps
+
+  // Pause/resume: the renderer answers a permission_required / clarify_required
+  // event by resolving the paused decision on the ALREADY-OPEN SSE stream. Plain
+  // JSON (not SSE). Keyed by streamId+toolCallId (conversationId is not part of the
+  // broker key), so this is a flat route.
+  app.post('/api/resume', (req, res) => {
+    if (!decisionBroker) {
+      res.status(501).json({ error: 'Decision broker not configured' })
+      return
+    }
+    const body = req.body ?? {}
+    const streamId = body.streamId ?? body.stream_id
+    const toolCallId = body.toolCallId ?? body.tool_call_id
+    if (!streamId || !toolCallId) {
+      res.status(400).json({ error: 'streamId and toolCallId are required' })
+      return
+    }
+    let decision: Decision
+    if (typeof body.decision === 'string') {
+      decision = body.decision as Decision // permission: allow_once | allow_always | deny
+    } else if (body.answers !== undefined || body.cancelled !== undefined) {
+      decision = { answers: body.answers, cancelled: body.cancelled } // plan_md clarify
+    } else if (body.result !== undefined || body.error !== undefined) {
+      decision = { result: body.result, error: body.error } // tool bridge (future)
+    } else {
+      res.status(400).json({ error: 'decision, answers/cancelled, or result/error is required' })
+      return
+    }
+    const matched = decisionBroker.resolve(String(streamId), String(toolCallId), decision)
+    if (matched) res.status(200).json({ success: true })
+    else res.status(409).json({ success: false, error: 'No pending decision for that stream/toolCall' })
+  })
 
   app.post('/api/conversations/:id/compact', async (req, res) => {
     if (!compactionService) {

@@ -17,6 +17,7 @@ import { registerEphemeralGenerateRoutes } from './routes/ephemeralGenerateRoute
 import { registerSubagentRoutes } from './routes/subagentRoutes.js'
 import { registerTestHarnessRoutes } from './routes/testHarnessRoutes.js'
 import { ChatOrchestrator } from './services/chatOrchestrator.js'
+import { DecisionBroker } from './services/decisionBroker.js'
 import { CompactionService } from './services/compactionService.js'
 import { SubagentRunService } from './services/subagentRunService.js'
 import { normalizeProviderRoute } from './services/providerRouter.js'
@@ -230,6 +231,10 @@ export function registerHeadlessServerRoutes(app: Express, deps: HeadlessServerR
   const tokenStore = new ProviderTokenStore(deps.db)
   bootstrapHeadlessProviderTokens(tokenStore)
 
+  // One shared pause/resume registry across the chat orchestrator (which pauses the
+  // loop) and the POST /api/resume route (which resolves the paused decision).
+  const decisionBroker = new DecisionBroker()
+
   registerCrudRoutes(app, deps)
   registerProviderAuthRoutes(app, { tokenStore })
   registerMobileUiRoutes(app)
@@ -279,7 +284,9 @@ export function registerHeadlessServerRoutes(app: Express, deps: HeadlessServerR
       toolExecutor: executeToolViaOrchestrator,
       defaultToolsProvider: resolveDefaultInferenceTools,
       compactBranch: input => compactionService.compactBranch(input),
+      decisionBroker,
     }),
     compactionService,
+    decisionBroker,
   })
 }
