@@ -9,6 +9,10 @@
  *  - `tokenOwner` — make the server the sole Supabase-token refresher. NOT yet
  *                   consumed (lands with the token-owner slice); resolved here so
  *                   the whole flag surface lives in one place.
+ *  - `crud`       — mount the storage-aware /api/gw/* CRUD gateway (conversations/
+ *                   projects/messages: local+cloud merge + dual-write). Phase 5.
+ *  - `cloudProxy` — mount the /api/cloud/* authenticated pass-through to Railway
+ *                   (models/users/system-prompts/stripe/app-store/drive). Phase 5.
  *
  * `YGG_GATEWAY_MODE` truthy is a master override that turns every gateway flag on
  * (mirrors the env-truthy precedent in openaiChatgptProvider.ts:982). Otherwise
@@ -22,6 +26,8 @@ import Conf from 'conf'
 export interface GatewayFlags {
   chat: boolean
   tokenOwner: boolean
+  crud: boolean
+  cloudProxy: boolean
 }
 
 function isEnvTruthy(value: string | undefined): boolean {
@@ -31,17 +37,21 @@ function isEnvTruthy(value: string | undefined): boolean {
 export function resolveGatewayFlags(): GatewayFlags {
   // Master env override wins and short-circuits any Conf read.
   if (isEnvTruthy(process.env.YGG_GATEWAY_MODE)) {
-    return { chat: true, tokenOwner: true }
+    return { chat: true, tokenOwner: true, crud: true, cloudProxy: true }
   }
 
   let chat = false
   let tokenOwner = false
+  let crud = false
+  let cloudProxy = false
   try {
     const store = new Conf({ projectName: 'ygg-chat-r', configFileMode: 0o600 })
     chat = store.get('gateway.chat') === true
     tokenOwner = store.get('gateway.tokenOwner') === true
+    crud = store.get('gateway.crud') === true
+    cloudProxy = store.get('gateway.cloudProxy') === true
   } catch {
     // A missing/corrupt Conf store must never break server startup; stay default-off.
   }
-  return { chat, tokenOwner }
+  return { chat, tokenOwner, crud, cloudProxy }
 }

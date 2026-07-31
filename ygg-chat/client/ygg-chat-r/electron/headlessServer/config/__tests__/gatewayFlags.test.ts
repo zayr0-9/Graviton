@@ -35,33 +35,44 @@ describe('resolveGatewayFlags', () => {
   })
 
   it('defaults every flag OFF with no env override and no Conf keys set', () => {
-    expect(resolveGatewayFlags()).toEqual({ chat: false, tokenOwner: false })
+    expect(resolveGatewayFlags()).toEqual({ chat: false, tokenOwner: false, crud: false, cloudProxy: false })
   })
 
   it('YGG_GATEWAY_MODE truthy is a master override that turns every flag on', () => {
     for (const truthy of ['1', 'true', 'yes', 'on', 'TRUE']) {
       process.env.YGG_GATEWAY_MODE = truthy
-      expect(resolveGatewayFlags()).toEqual({ chat: true, tokenOwner: true })
+      expect(resolveGatewayFlags()).toEqual({ chat: true, tokenOwner: true, crud: true, cloudProxy: true })
     }
   })
 
   it('treats a non-truthy env value as off (falls through to Conf defaults)', () => {
     process.env.YGG_GATEWAY_MODE = 'off'
-    expect(resolveGatewayFlags()).toEqual({ chat: false, tokenOwner: false })
+    expect(resolveGatewayFlags()).toEqual({ chat: false, tokenOwner: false, crud: false, cloudProxy: false })
   })
 
   it('reads each flag independently from its Conf key (only === true enables)', () => {
     mockConf.get = key => (key === 'gateway.chat' ? true : undefined)
-    expect(resolveGatewayFlags()).toEqual({ chat: true, tokenOwner: false })
+    expect(resolveGatewayFlags()).toEqual({ chat: true, tokenOwner: false, crud: false, cloudProxy: false })
 
     mockConf.get = key => (key === 'gateway.tokenOwner' ? true : 'truthy-but-not-boolean')
     // A non-boolean truthy value must NOT enable (guards against loose Conf values).
-    expect(resolveGatewayFlags()).toEqual({ chat: false, tokenOwner: true })
+    expect(resolveGatewayFlags()).toEqual({ chat: false, tokenOwner: true, crud: false, cloudProxy: false })
+  })
+
+  it('reads the Phase 5 crud + cloudProxy keys independently (only === true enables)', () => {
+    mockConf.get = key => (key === 'gateway.crud' ? true : undefined)
+    expect(resolveGatewayFlags()).toEqual({ chat: false, tokenOwner: false, crud: true, cloudProxy: false })
+
+    mockConf.get = key => (key === 'gateway.cloudProxy' ? true : undefined)
+    expect(resolveGatewayFlags()).toEqual({ chat: false, tokenOwner: false, crud: false, cloudProxy: true })
+
+    mockConf.get = key => (key === 'gateway.crud' || key === 'gateway.cloudProxy' ? true : 0)
+    expect(resolveGatewayFlags()).toEqual({ chat: false, tokenOwner: false, crud: true, cloudProxy: true })
   })
 
   it('a corrupt/unreadable Conf store must never throw at startup — stays default-off', () => {
     mockConf.throws = true
     expect(() => resolveGatewayFlags()).not.toThrow()
-    expect(resolveGatewayFlags()).toEqual({ chat: false, tokenOwner: false })
+    expect(resolveGatewayFlags()).toEqual({ chat: false, tokenOwner: false, crud: false, cloudProxy: false })
   })
 })

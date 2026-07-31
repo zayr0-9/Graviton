@@ -145,13 +145,13 @@ function getSupabaseRefreshConfig(): { url: string; anonKey: string } | null {
   return url && anonKey ? { url, anonKey } : null
 }
 
-function shouldRefresh(expiresAt: string | null, skewMs = 5 * 60 * 1000): boolean {
+export function shouldRefresh(expiresAt: string | null, skewMs = 5 * 60 * 1000): boolean {
   if (!expiresAt) return false
   const expiresMs = new Date(expiresAt).getTime()
   return Number.isFinite(expiresMs) && expiresMs - Date.now() <= skewMs
 }
 
-async function refreshElectronAppAuthSession(refreshToken: string): Promise<StoredElectronAuthSession | null> {
+export async function refreshElectronAppAuthSession(refreshToken: string): Promise<StoredElectronAuthSession | null> {
   const config = getSupabaseRefreshConfig()
   if (!config) return null
 

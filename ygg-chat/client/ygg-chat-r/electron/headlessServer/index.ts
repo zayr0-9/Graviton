@@ -16,6 +16,11 @@ import { registerCustomToolRpcRoutes } from './routes/customToolRpcRoutes.js'
 import { registerEphemeralGenerateRoutes } from './routes/ephemeralGenerateRoutes.js'
 import { registerSubagentRoutes } from './routes/subagentRoutes.js'
 import { registerTestHarnessRoutes } from './routes/testHarnessRoutes.js'
+import { registerGatewayRoutes } from './routes/gatewayRoutes.js'
+import { registerCloudProxyRoutes } from './routes/cloudProxyRoutes.js'
+import { createAppAuthTokenManager } from './services/appAuthTokenManager.js'
+import { createRailwayClient } from './services/railwayClient.js'
+import { createCloudMirrorService } from './services/cloudMirrorService.js'
 import { runHookRequest } from '../hooks/hookRunner.js'
 import { ChatOrchestrator } from './services/chatOrchestrator.js'
 import { DecisionBroker } from './services/decisionBroker.js'
@@ -247,6 +252,23 @@ export function registerHeadlessServerRoutes(app: Express, deps: HeadlessServerR
   registerCustomToolRpcRoutes(app)
   registerCapabilityRoutes(app, { getDefaultTools: resolveDefaultInferenceTools })
   registerEphemeralGenerateRoutes(app, { tokenStore })
+
+  // Phase 5 cloud gateway (default OFF): storage-aware /api/gw/* CRUD + merge and
+  // /api/cloud/* authenticated pass-through. Both share one single-flight app-token
+  // manager (sole Supabase refresher) + one Railway client.
+  if (gatewayFlags.crud || gatewayFlags.cloudProxy) {
+    const appAuth = createAppAuthTokenManager()
+    const railway = createRailwayClient({ auth: appAuth })
+    registerGatewayRoutes(app, {
+      railway,
+      mirror: createCloudMirrorService({ db: deps.db, statements: deps.statements }),
+      auth: appAuth,
+      db: deps.db,
+      statements: deps.statements,
+      enabled: gatewayFlags.crud,
+    })
+    registerCloudProxyRoutes(app, { railway, enabled: gatewayFlags.cloudProxy })
+  }
 
   const compactionService = new CompactionService({
     ...deps,
