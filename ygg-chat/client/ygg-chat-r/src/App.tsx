@@ -33,7 +33,6 @@ import RightBar from './containers/rightBar'
 import SideBar from './containers/sideBar'
 import { selectCcCwd, selectCurrentConversationId } from './features/chats'
 import { selectCurrentUser } from './features/users'
-import GlobalAgentBootstrap from './GlobalAgentBootstrap'
 import { useAppSelector } from './hooks/redux'
 import { useIsMobile } from './hooks/useMediaQuery'
 import { useResearchNotes } from './hooks/useQueries'
@@ -314,8 +313,6 @@ function App() {
       <LiquidGlassSVG />
       {/* Establish IDE Context WebSocket globally so it's not tied to any specific page */}
       <IdeContextBootstrap />
-      {/* Initialize global agent loop (Electron only) */}
-      <GlobalAgentBootstrap />
       {/* Global update modal for Electron auto-updates */}
       <UpdateModal />
       <div className='app-content'>

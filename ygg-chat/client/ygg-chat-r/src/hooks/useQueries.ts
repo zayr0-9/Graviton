@@ -2266,22 +2266,6 @@ export type DirectoryListingResponse = LocalFileListingResponse
 export type DirectoryFileSearchResponse = LocalFileSearchResponse
 
 /**
- * Global Agent hooks - re-export from dedicated files
- */
-export {
-  useGlobalAgentQueuedTasks,
-  useGlobalAgentMessages,
-  useGlobalAgentOptimisticMessage,
-  useRemoveGlobalAgentQueuedTask,
-  useGlobalAgentStreamBuffer,
-} from './useGlobalAgentMessages'
-export type {
-  GlobalAgentMessagesData,
-  GlobalAgentQueuedTask,
-  GlobalAgentQueuedTasksData,
-} from './useGlobalAgentMessages'
-
-/**
  * Fetch files from a directory path
  * Cache key: ['directory-files', path]
  *
