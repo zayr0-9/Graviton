@@ -58,6 +58,9 @@ import { getDefaultBashTimeoutMs, getDefaultToolCallTimeoutMs } from '../../help
 import { updateToolEnabledState } from '../../helpers/toolSettingsStorage'
 import { generateStreamId, STREAM_PRUNE_DELAY } from './streamHelpers'
 import { createStreamingRun, finishStreamingRun } from './streamRunTracking'
+import { runServerChatLoop } from './mainChatClient'
+import { buildServerLoopRequest } from './buildServerLoopRequest'
+import { isServerOwnedChatLoopEnabled } from '../../helpers/serverLoopSettings'
 import {
   assertToolAllowedForOperationMode,
   buildOperationModeSystemPrompt,
@@ -3111,6 +3114,75 @@ export const sendMessage = createAsyncThunk<
       // Determine execution mode
       const isElectronMode =
         import.meta.env.VITE_ENVIRONMENT === 'electron' || (typeof __IS_ELECTRON__ !== 'undefined' && __IS_ELECTRON__)
+
+      // ── Phase 1: server-owned chat loop (thin client) ──
+      // Route only auto-approve + local-provider (LM Studio / Zai) sends through the
+      // headless engine, behind an OFF-by-default flag. Every other case falls through
+      // to the unchanged client loop below (dual-run fallback). The stream setup
+      // (sendingStarted / AbortController) above and the catch/finally below are shared.
+      if (
+        isServerOwnedChatLoopEnabled() &&
+        isElectronMode &&
+        (isLmStudio || isZai) &&
+        state.chat.toolAutoApprove === true
+      ) {
+        const { path, body } = buildServerLoopRequest('send', {
+          conversationId: String(conversationId),
+          content: input.content.trim(),
+          provider: serverProvider,
+          modelName,
+          userId: auth.userId,
+          parentId: parent ?? null,
+          operationMode: operationModeAtSend,
+          think,
+          reasoningConfig,
+          imageConfig,
+          rootPath: effectiveToolRootPath,
+          conversationContext: conversationContextSource,
+          projectContext,
+          storageMode,
+          attachmentsBase64,
+          selectedFiles: selectedFilesForChat,
+          tools: filterToolsForOperationMode(getAllTools(), operationModeAtSend),
+          streamId,
+        })
+        const result = await runServerChatLoop(
+          {
+            operation: 'send',
+            conversationId: String(conversationId),
+            streamId,
+            path,
+            request: body,
+            signal: controller.signal,
+          },
+          { dispatch, getState }
+        )
+        if (result.messageId) {
+          void finishStreamingRun(streamId, {
+            status: 'completed',
+            endReason: 'completed',
+            assistantMessageId: result.messageId,
+            finalMessageId: result.messageId,
+          })
+          void markStreamUndoFinalMessage(streamId, String(result.messageId))
+            .then(summary => {
+              if (summary)
+                dispatch(
+                  chatSliceActions.streamUndoSummariesReceived({
+                    conversationId: String(conversationId),
+                    summaries: [summary],
+                  })
+                )
+            })
+            .catch(error => console.warn('[serverLoop] Failed to mark final message', error))
+        }
+        // NOTE: streamCompleted is dispatched by the projection on the terminal 'complete'
+        // event, so the shim must NOT re-dispatch it here (avoid double-finalize).
+        dispatch(chatSliceActions.sendingCompleted({ streamId }))
+        setTimeout(() => dispatch(chatSliceActions.streamPruned({ streamId })), STREAM_PRUNE_DELAY)
+        return { messageId: result.messageId, userMessage: result.userMessage, streamId }
+      }
+
       // For local tool execution support (GemTools), we prefer client mode even in web environment
       // This allows the client to intercept tool calls and execute them via the discovered local server endpoint.
       const executionMode = 'client'
