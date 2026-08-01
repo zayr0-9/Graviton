@@ -151,6 +151,36 @@ describeIfSqlite('ToolLoopService', () => {
     db.close()
   })
 
+  it('does not replay persisted history before the latest compaction summary', async () => {
+    const providerRouter = new FakeProviderRouter()
+    providerRouter.enqueue({ content: 'continued from summary' })
+    const service = new ToolLoopService({
+      messageRepo,
+      providerRouter: providerRouter as unknown as ProviderRouter,
+    })
+
+    await service.run({
+      provider: 'openaichatgpt',
+      modelName: 'gpt-5.4',
+      conversationId: 'c1',
+      assistantParentId: 'summary',
+      history: [
+        { id: 'old-user', role: 'user', content: 'old context' },
+        { id: 'old-assistant', role: 'assistant', content: 'old answer' },
+        {
+          id: 'summary',
+          role: 'system',
+          note: '__auto_compaction_summary__',
+          content: 'Following is summary of the session, you have to resume the work.\n\nsummary',
+        },
+        { id: 'new-user', role: 'user', content: 'new context' },
+      ],
+      userContent: 'continue',
+    })
+
+    expect(providerRouter.calls[0].input.history.map((message: any) => message.id)).toEqual(['summary', 'new-user'])
+  })
+
   it('compacts an OpenAI tool loop before its next continuation request', async () => {
     const providerRouter = new FakeProviderRouter()
     providerRouter.enqueue({

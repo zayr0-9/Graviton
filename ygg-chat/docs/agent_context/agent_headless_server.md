@@ -24,7 +24,7 @@ Use this when changing:
 ## Key Files
 
 Wiring root:
-- `client/ygg-chat-r/electron/headlessServer/index.ts` — `registerHeadlessServerRoutes` builds the shared graph: one process-wide `DecisionBroker` (`index.ts:246`), the base `ToolExecutor` `executeToolViaOrchestrator` (`index.ts:173`, submit→poll `toolOrchestrator` every 100 ms, timeout clamped 1s–600s / default 300s, cancels on abort — shared by chat and subagent paths), and the `ChatOrchestrator` wired with `toolExecutor`, `defaultToolsProvider: resolveDefaultInferenceTools`, `compactBranch`, `decisionBroker`, `hookRunner: runHookRequest`, `cloudChatEnabled: gatewayFlags.chat` (`index.ts:310`–`325`). The Phase 5 gateway surfaces mount **unconditionally** (`enabled: true`, `index.ts:262`–`274`).
+- `client/ygg-chat-r/electron/headlessServer/index.ts` — `registerHeadlessServerRoutes` builds the shared graph: one process-wide `DecisionBroker`; the leaf `executeToolViaOrchestrator` (submit→poll `toolOrchestrator`, timeout/cancel support) used by ordinary and child tools; one shared `SubagentRunService`; and a main-chat `createSubagentDispatchExecutor` that intercepts `subagent` in-process before delegating other names to the leaf executor. `ChatOrchestrator` is wired with that composite executor, `defaultToolsProvider: resolveDefaultInferenceTools`, compaction, hooks, and gateway flags. The gateway surfaces mount unconditionally.
 
 Chat loop engine:
 - `services/chatOrchestrator.ts` — `ChatOrchestrator.runMessage` (main entry). Builds a fresh per-run `ToolLoopService`, chooses the message sink, wires the pausing executor + hook session, and finishes/aborts the run. `createChatPausingExecutor` (`chatOrchestrator.ts:95`) is the per-run tool wrapper; `ALWAYS_BYPASS_TOOLS` (`chatOrchestrator.ts:47`) = `skill_manager, mcp_manager, multi_call`.
@@ -47,7 +47,7 @@ Cloud gateway + token layer:
 - `services/runSessionRegistry.ts` — per-`streamId` `RunSession` (seq'd event buffer + attach/detach + run-owned abort) enabling detach/reattach (§Detach/Reattach). Gated by `gateway.resumableRuns` (default OFF).
 
 Subagents / other:
-- `services/subagentRunService.ts` + `routes/subagentRoutes.ts` — the `subagent` tool engine and its `POST /api/headless/subagent/stream` SSE route (see `agent_subagents_orchestration.md`). Reuses `ToolLoopService`.
+- `services/subagentRunService.ts` + `services/subagentToolExecutor.ts` + `routes/subagentRoutes.ts` — the shared subagent engine, the parent-chat in-process dispatcher, and the direct `POST /api/headless/subagent/stream` SSE route (see `agent_subagents_orchestration.md`). Reuses `ToolLoopService`.
 - `contracts/headlessApi.ts` — `HeadlessMessageRequest`, `HeadlessStreamEvent` union (§SSE below), `HeadlessSubagentStreamEvent`.
 - `providers/*`, `stream/*` (SSE writer), `ui/mobile/src/*` (mobile LAN UI), `README.md`, `HEADLESS_API_GUIDE.md`.
 

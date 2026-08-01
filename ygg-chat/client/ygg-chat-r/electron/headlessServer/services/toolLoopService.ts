@@ -11,6 +11,7 @@ import { ProviderRouter, normalizeProviderRoute } from './providerRouter.js'
 import { persistWithFallback, type ToolResultPersistencePolicy } from './toolResultPersistenceService.js'
 import { sanitizeToolResultContentForModel } from '../providers/toolResultSanitizer.js'
 import { formatProviderErrorForAssistant, type FormattedProviderError } from '../providers/providerErrorFormatter.js'
+import { trimHistoryToLatestCompaction } from './compactionService.js'
 import { assertToolAllowedForOperationMode } from '../../../../../shared/operationModeToolPolicy.js'
 import {
   extractOpenAIContextUsageFromBlocks,
@@ -25,8 +26,14 @@ export interface ToolExecutionContext {
   streamId?: string | null
   rootPath?: string | null
   operationMode?: 'plan' | 'execute'
+  provider?: string
+  modelName?: string
+  autoApprove?: boolean
+  subagentReasoningEffort?: 'low' | 'medium' | 'high' | 'xhigh'
   timeoutMs?: number
   signal?: AbortSignal
+  /** Policy-aware executor used by composite tools for each nested call. */
+  nestedExecutor?: ToolExecutor
 }
 
 export type ToolExecutor = (toolCall: ProviderToolCall, context: ToolExecutionContext) => Promise<any>
@@ -116,6 +123,10 @@ export interface ToolLoopRunInput {
   rootPath?: string | null
   operationMode?: 'plan' | 'execute'
   toolTimeoutMs?: number
+  /** Parent tool-approval policy, forwarded to server-owned subagent calls. */
+  toolAutoApprove?: boolean
+  /** Reasoning effort to apply to child subagent calls. */
+  subagentReasoningEffort?: 'low' | 'medium' | 'high' | 'xhigh'
   autoCompactionEnabled?: boolean
   contextLength?: number
   compactionThresholdPercent?: number
@@ -305,12 +316,38 @@ function approximateTokens(value: unknown): number {
   return Math.ceil(serialized.length / 4)
 }
 
+/**
+ * Estimate the model-visible token cost of one history message for the compaction
+ * projection. Deliberately NOT `approximateTokens(wholeRow)`: a persisted row duplicates
+ * its text across `content`, `plain_text_content`, AND `content_blocks`, carries row
+ * metadata (ids, children_ids, timestamps, note), and re-escapes the already-stringified
+ * `content_blocks` — inflating the estimate several-fold. That inflation, fed through
+ * resolveOpenAIContinuationCompaction's Math.max(reported, projected), let compaction fire
+ * while the real reported usage was still low (the ~50k early-fire). Count ONE canonical
+ * text representation per message, and skip `role:'tool'` entries whose result is already
+ * merged into the preceding assistant message's content_blocks (avoids double-counting).
+ */
+export function estimateHistoryMessageTokens(message: unknown): number {
+  if (message == null) return 0
+  if (typeof message !== 'object') return approximateTokens(message)
+  const msg = message as { role?: unknown; content?: unknown; content_blocks?: unknown }
+  // Tool-result entries are also merged into the assistant row's content_blocks — count once.
+  if (msg.role === 'tool') return 0
+  // content_blocks (when present) is the richest single representation (text + tool_use +
+  // tool_result); fall back to `content`. Take the larger so an empty blocks array does not
+  // under-count. Estimate content_blocks as its raw string (no whole-row re-escaping).
+  const blocks = msg.content_blocks
+  const fromBlocks = blocks == null ? 0 : approximateTokens(typeof blocks === 'string' ? blocks : JSON.stringify(blocks))
+  const fromContent = approximateTokens(msg.content)
+  return Math.max(fromBlocks, fromContent)
+}
+
 function projectedReplayTokens(input: ToolLoopRunInput, history: any[]): number {
   return (
     approximateTokens(input.systemPrompt) +
     approximateTokens(input.conversationContext) +
     approximateTokens(input.projectContext) +
-    history.reduce((total, message) => total + approximateTokens(message), 0)
+    history.reduce((total, message) => total + estimateHistoryMessageTokens(message), 0)
   )
 }
 
@@ -628,7 +665,9 @@ export class ToolLoopService {
     const robustness = input.robustness
     let currentParentId = input.assistantParentId
     let currentUserContent = input.userContent
-    let history = [...(input.history || [])]
+    // Defend the provider boundary for direct callers as well as ChatOrchestrator.
+    // Persistence retains the full branch; model replay begins at its latest summary.
+    let history = trimHistoryToLatestCompaction(input.history || [])
     let lastAssistantMessage: any = null
     let anyToolsExecuted = false
     // Phase 3: true iff the most recent iteration was a natural stop (no tool calls)
@@ -821,6 +860,10 @@ export class ToolLoopService {
             streamId: input.streamId ?? null,
             rootPath: input.rootPath ?? null,
             operationMode,
+            provider: input.provider,
+            modelName: input.modelName,
+            autoApprove: input.toolAutoApprove !== false,
+            subagentReasoningEffort: input.subagentReasoningEffort,
             timeoutMs: input.toolTimeoutMs,
             signal: input.signal,
           })

@@ -87,6 +87,37 @@ export class SubagentRunService {
     this.providerTurnTimeoutMs = Math.max(5_000, deps.providerTurnTimeoutMs ?? DEFAULT_PROVIDER_TURN_TIMEOUT_MS)
   }
 
+  /**
+   * Run a subagent from another server-owned tool loop and return its final text.
+   * The normal lifecycle events are still produced internally, so persistence and
+   * terminal-state handling stay identical to the SSE route.
+   */
+  async runForTool(request: HeadlessSubagentStreamRequest, signal: AbortSignal): Promise<string> {
+    let result: string | null = null
+    let terminalError: string | null = null
+
+    await this.run(
+      request,
+      event => {
+        if (event.type === 'complete' && 'result' in event) {
+          result = event.result
+        } else if (event.type === 'error') {
+          terminalError = event.error
+        }
+      },
+      signal
+    )
+
+    if (signal.aborted) {
+      const abortError = new Error(terminalError || 'Subagent aborted')
+      abortError.name = 'AbortError'
+      throw abortError
+    }
+    if (terminalError) throw new Error(terminalError)
+    if (result === null) throw new Error('Subagent ended without a terminal result')
+    return result
+  }
+
   async run(
     request: HeadlessSubagentStreamRequest,
     emit: (event: HeadlessSubagentStreamEvent) => void,
@@ -179,7 +210,7 @@ export class SubagentRunService {
       }
       toolCallsUsed += 1
       try {
-        const result = await this.toolExecutor(toolCall, context)
+        const result = await this.toolExecutor(toolCall, { ...context, nestedExecutor: countingExecutor })
         toolsExecuted.push({ name: toolCall.name, success: true })
         return result
       } catch (error) {
@@ -234,6 +265,7 @@ export class SubagentRunService {
           userContent: request.prompt,
           systemPrompt: request.systemPrompt ?? null,
           temperature: request.temperature,
+          reasoningConfig: request.reasoningEffort ? { effort: request.reasoningEffort } : undefined,
           userId: request.userId ?? null,
           accessToken: request.accessToken ?? null,
           accountId: request.accountId ?? null,

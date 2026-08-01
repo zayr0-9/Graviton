@@ -43,6 +43,10 @@ function buildSubagentStreamRequest(body: any): HeadlessSubagentStreamRequest {
     tools: normalizeToolNames(body?.tools),
     maxTurns: typeof body?.maxTurns === 'number' ? body.maxTurns : undefined,
     temperature: typeof body?.temperature === 'number' ? body.temperature : undefined,
+    reasoningEffort:
+      body?.reasoningEffort === 'low' || body?.reasoningEffort === 'medium' || body?.reasoningEffort === 'high' || body?.reasoningEffort === 'xhigh'
+        ? body.reasoningEffort
+        : undefined,
     operationMode: body?.operationMode === 'plan' || body?.operation_mode === 'plan' ? 'plan' : 'execute',
     autoApprove: body?.autoApprove === true || body?.auto_approve === true,
     rootPath: typeof body?.rootPath === 'string' ? body.rootPath : typeof body?.root_path === 'string' ? body.root_path : null,

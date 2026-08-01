@@ -39,6 +39,8 @@ export interface BuildServerLoopRequestParams {
   operationMode: 'plan' | 'execute'
   think?: boolean
   reasoningConfig?: unknown
+  /** Persisted user preference for reasoning effort in child subagents. */
+  subagentReasoningEffort?: 'low' | 'medium' | 'high' | 'xhigh'
   imageConfig?: unknown
   rootPath?: string | null
   conversationContext?: string | null
@@ -80,6 +82,21 @@ export interface BuildServerLoopRequestParams {
    */
   accessToken?: string | null
   accountId?: string | null
+  /**
+   * Auto-compaction / context settings for the server-owned loop. Previously dropped, so the
+   * server always applied its defaults (compaction ran even when disabled; the trigger used a
+   * per-model default window instead of the selected model's). Forwarded only-when-set:
+   * autoCompactionEnabled is sent even when false (that is how the user disables it).
+   */
+  autoCompactionEnabled?: boolean
+  /** The SELECTED model's context window; sizes the compaction trigger (server falls back per-model). */
+  contextLength?: number
+  /** Compaction trigger threshold %; omitted => server default (85). */
+  compactionThresholdPercent?: number
+  /** Provider/model/prompt for the summarization pass; null => server uses the current chat provider/model/default prompt. */
+  compactionProvider?: string | null
+  compactionModelName?: string | null
+  compactionSystemPrompt?: string | null
 }
 
 export interface ServerLoopRequest {
@@ -127,6 +144,7 @@ export function buildServerLoopRequest(operation: ServerLoopOperation, params: B
     includeOperationModePrompt: true,
     think: params.think,
     reasoningConfig: params.reasoningConfig,
+    subagentReasoningEffort: params.subagentReasoningEffort,
     imageConfig: params.imageConfig,
     rootPath: params.rootPath ?? null,
     cwd: params.rootPath ?? null,
@@ -153,6 +171,16 @@ export function buildServerLoopRequest(operation: ServerLoopOperation, params: B
   // ChatGPT auth: forward only-when-set so non-ChatGPT bodies are unchanged.
   if (params.accessToken) body.accessToken = params.accessToken
   if (params.accountId) body.accountId = params.accountId
+
+  // Auto-compaction / context settings: forward only-when-set (server keeps its default when
+  // a field is absent). autoCompactionEnabled is sent even when false — that disables it.
+  if (typeof params.autoCompactionEnabled === 'boolean') body.autoCompactionEnabled = params.autoCompactionEnabled
+  if (typeof params.contextLength === 'number') body.contextLength = params.contextLength
+  if (typeof params.compactionThresholdPercent === 'number')
+    body.compactionThresholdPercent = params.compactionThresholdPercent
+  if (params.compactionProvider != null) body.compactionProvider = params.compactionProvider
+  if (params.compactionModelName != null) body.compactionModelName = params.compactionModelName
+  if (params.compactionSystemPrompt != null) body.compactionSystemPrompt = params.compactionSystemPrompt
 
   return { path, body }
 }

@@ -125,6 +125,29 @@ describe('projectServerEvent', () => {
     expect(a[0].type).toBe(chatSliceActions.freeTierLimitModalShown.type)
   })
 
+  it('projects a completed server compaction summary into the active branch', () => {
+    const a = projectServerEvent(
+      {
+        type: 'context_compaction',
+        status: 'completed',
+        summaryMessage: { id: 'summary-1', role: 'system', note: '__auto_compaction_summary__', content: 'summary' },
+      },
+      ctx
+    )
+    expect(types(a)).toEqual([
+      chatSliceActions.messageAdded.type,
+      chatSliceActions.messageBranchCreated.type,
+      chatSliceActions.streamLineageUpdated.type,
+    ])
+    expect((a[1].payload as any).newMessage.id).toBe('summary-1')
+    expect((a[2].payload as any)).toMatchObject({ streamId: 'stream-1', branchAnchorMessageId: 'summary-1' })
+  })
+
+  it('does not project non-terminal compaction status events', () => {
+    expect(projectServerEvent({ type: 'context_compaction', status: 'started' }, ctx)).toEqual([])
+    expect(projectServerEvent({ type: 'context_compaction', status: 'failed' }, ctx)).toEqual([])
+  })
+
   it('permission_required carries the correlation ids the resolver thunk needs for /resume', () => {
     const a = projectServerEvent({ type: 'permission_required', toolCallId: 'tc1', toolName: 'bash', toolInput: { cmd: 'ls' } }, ctx)
     expect(a[0].type).toBe(chatSliceActions.toolPermissionRequested.type)
@@ -142,7 +165,7 @@ describe('projectServerEvent', () => {
   })
 
   it('no-op events return an empty action list', () => {
-    for (const type of ['provider_routed', 'context_usage', 'context_compaction', 'tool_execution', 'tool_request', 'unknown_future_event']) {
+    for (const type of ['provider_routed', 'context_usage', 'tool_execution', 'tool_request', 'unknown_future_event']) {
       expect(projectServerEvent({ type }, ctx)).toEqual([])
     }
   })

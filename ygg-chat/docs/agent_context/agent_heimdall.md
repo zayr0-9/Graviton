@@ -104,9 +104,9 @@ For selected-message copying/moving:
 - Note data lives on the message row: `note` and `note_color`.
 - Note edits debounce `updateMessage({ id, content, note, note_color })`.
 - Heimdall stores note dialog state locally and reads/writes the current message from Redux.
-- The message hover preview is docked to the side of the panel opposite the hovered node (node in the left half → dock right; right half → dock left), computed from the node's on-screen centre via the same transform as `visiblePositions`. This guarantees it never overlaps the node (which would block clicks). Its width is capped to the node's opposite half to keep that guarantee on narrow panels.
-- Moving off a node starts a close timer (`MESSAGE_PREVIEW_CLOSE_DELAY_MS`, longer than the adjacent note preview's `PREVIEW_HOVER_TRANSFER_GRACE_MS` because the docked card is not under the cursor); entering the card cancels it so the card can be scrolled, and leaving the card restarts it. A new node-hover replaces the preview content.
-- Preview positioning wrappers are pointer-transparent; only the visible preview cards capture input and cancel the pending close timer.
+- Message and note-pill hover previews share opposite-side docking: an anchor in the left half of the panel docks its preview right, and an anchor in the right half docks left. The shared layout derives the anchor's on-screen position from the same transform as `visiblePositions`, preventing the card from covering the interactive node or note pill. Preview width is capped to the opposite half on narrow panels.
+- Leaving a node or note pill starts the shared `DOCKED_PREVIEW_CLOSE_DELAY_MS` timer; entering its docked card cancels it so the card can be reached and scrolled, and leaving the card restarts it. A new hover replaces the displayed content.
+- Preview positioning wrappers are pointer-transparent; only the visible preview cards capture input, cancel the pending close timer, and remain marked `data-heimdall-wheel-exempt='true'`.
 
 ### Search
 

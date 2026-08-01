@@ -466,8 +466,19 @@ export const ensureCompactionSummaryResumeLine = (content: string | null | undef
   return `${AUTO_COMPACTION_SUMMARY_RESUME_LINE}\n\n${trimmed}`
 }
 
-const isAutoCompactionSummaryMessage = (message: CompactionMessageLike | undefined | null): boolean =>
-  Boolean(message && typeof message.note === 'string' && message.note === AUTO_COMPACTION_NOTE)
+export const isAutoCompactionSummaryMessage = (message: CompactionMessageLike | undefined | null): boolean => {
+  if (!message) return false
+  if (typeof message.note === 'string' && message.note === AUTO_COMPACTION_NOTE) return true
+
+  // Older/manual summaries may have been persisted without the marker but retain
+  // the stable resume-line prefix. Treat them as the same inference boundary.
+  const content = message.content ?? message.plain_text_content ?? message.content_plain_text ?? ''
+  return (
+    (message.role === 'system' || message.role === 'developer') &&
+    typeof content === 'string' &&
+    content.trim().startsWith(AUTO_COMPACTION_SUMMARY_RESUME_LINE)
+  )
+}
 
 export const trimHistoryToLatestCompaction = (messages: Array<CompactionMessageLike | undefined>): CompactionMessageLike[] => {
   const resolved = messages.filter(Boolean) as CompactionMessageLike[]

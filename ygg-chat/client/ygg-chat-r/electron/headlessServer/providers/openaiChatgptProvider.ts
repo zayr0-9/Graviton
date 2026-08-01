@@ -2100,7 +2100,14 @@ export class OpenAiChatgptProvider implements HeadlessProvider {
     const sessionId = input.railwayTurn?.conversationId?.trim() || traceId
     const requestId = (input.railwayTurn as any)?.runId?.trim?.() || sessionId
     const messages = toCodexMessages(input)
-    const codexProvider = new CodexResponsesProvider({ auth })
+    const reasoningEffort = input.reasoningConfig?.effort
+    const codexProvider = new CodexResponsesProvider({
+      auth,
+      reasoningEffort:
+        reasoningEffort === 'minimal' || reasoningEffort === 'low' || reasoningEffort === 'medium' || reasoningEffort === 'high' || reasoningEffort === 'xhigh'
+          ? reasoningEffort
+          : undefined,
+    })
     const parsed = await codexProvider.generate({
       model,
       providerInput: input,

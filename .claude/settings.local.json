@@ -1,6 +1,24 @@
 {
+  "permissions": {
+    "allow": [
+      "Bash(grep -rn \"conversations/\\\\${\" src/features/chats/chatActions.ts)",
+      "Bash(grep -rn \"streamChunkReceived\\\\|/messages'\\\\|conversations/\\\\${\\\\|getReader\\\\|text/event-stream\\\\|EventSource\\\\|api/conversations\" /Users/karansingh/Projects/Graviton/ygg-chat/client/ygg-chat-r/src/features/chats/chatActions.ts)",
+      "Bash(awk 'NR>=10097 && NR<=10320 && /app\\\\.\\(get|post|put|patch|delete\\)\\\\\\(/{print NR\": \"$0}' electron/localServer.ts)",
+      "Bash(awk 'NR>10099 && /app\\\\.\\(get|post|put|patch|delete\\)\\\\\\(/{print NR\": \"$0; c++} c>=2{exit}' electron/localServer.ts)",
+      "Bash(awk 'NR<9702 && /app\\\\.\\(get|post|put|patch|delete\\)\\\\\\(/{last=NR\": \"$0} END{print last}' electron/localServer.ts)",
+      "Bash(awk 'NR>3263 && /app\\\\.\\(get|post|put|patch|delete\\)\\\\\\(/{print NR\": \"$0; exit}' electron/localServer.ts)",
+      "Bash(awk 'NR>10160 && NR<10450 && \\(/app\\\\.\\(get|post|put|patch|delete\\)\\\\\\(/ || /^\\(function|async function|const setup|}\\)/ \\){print NR\": \"$0}' electron/localServer.ts)",
+      "Bash(awk 'NR>=10098 && NR<=10382{if\\(/^  \\\\}\\\\\\)/\\) print NR\": \"$0}' electron/localServer.ts)",
+      "Bash(grep -rn \"'/models\\\\|\\\\`/models\\\\|\\\\\"/models\\\\|/models/openrouter\\\\|/provider-auth/models\" src/ --include=\"*.ts\" --include=\"*.tsx\")",
+      "Bash(awk 'NR>=9640 && NR<=9720 && \\(/^export const/ || /^\\\\/\\\\/ ===/\\){print NR\": \"$0}' src/features/chats/chatActions.ts)",
+      "Bash(echo \"RC=$?\")",
+      "Bash(awk 'NR>=2900 && NR<=2945 && /app\\\\.\\(get|post|put|patch|delete\\)\\\\\\(/{print NR\": \"$0}' electron/localServer.ts)",
+      "Bash(awk 'NR>=3229 && NR<=3499 && /app\\\\.\\(get|post|put|patch|delete\\)\\\\\\(/{print NR\": \"$0}' electron/localServer.ts)",
+      "Bash(grep -E \"\\\\.\\(tsx|ts\\)$\")"
+    ]
+  },
+  "enableAllProjectMcpServers": true,
   "enabledMcpjsonServers": [
     "supabase"
-  ],
-  "enableAllProjectMcpServers": true
+  ]
 }

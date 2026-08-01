@@ -37,6 +37,14 @@ export interface RunServerChatLoopParams {
 export interface RunServerChatLoopDeps {
   dispatch: (action: unknown) => unknown
   getState: () => unknown
+  /**
+   * Called after each persisted message (user / assistant / terminal complete) has been
+   * projected to Redux, so the caller can refresh views DERIVED from the message list —
+   * chiefly the Heimdall node tree, which renders from its own `heimdall.treeData` slice
+   * rather than the live `conversation.messages`. Best-effort; must never throw. Omitted
+   * by mobile/tests. See chatActions.refreshHeimdallTreeFromState.
+   */
+  onMessagePersisted?: () => void
 }
 
 export interface RunServerChatLoopResult {
@@ -69,7 +77,8 @@ function makeHandleEvent(
   acc: StreamAccumulator,
   ctx: ProjectionContext,
   operation: ServerLoopOperation,
-  dispatch: (action: unknown) => unknown
+  dispatch: (action: unknown) => unknown,
+  onMessagePersisted?: () => void
 ): (event: ServerStreamEvent) => void {
   return (event: ServerStreamEvent): void => {
     if (!event || typeof event.type !== 'string') return
@@ -83,10 +92,16 @@ function makeHandleEvent(
       if (operation === 'send') dispatch(chatSliceActions.optimisticMessageCleared())
       else if (operation === 'edit') dispatch(chatSliceActions.optimisticBranchMessageCleared())
       // 'branch' uses no optimistic bubble.
+      onMessagePersisted?.()
+    } else if (event.type === 'assistant_message_persisted') {
+      // Intermediate + re-emitted post-tool assistant rows: already projected to Redux
+      // above; let the caller refresh derived views (Heimdall) so nodes appear per-turn.
+      onMessagePersisted?.()
     } else if (event.type === 'complete') {
       acc.messageId = event.message?.id ?? null
       acc.providerError = event.providerError === true
       acc.sawTerminal = true
+      onMessagePersisted?.()
     } else if (event.type === 'error') {
       acc.streamError = typeof event.error === 'string' && event.error ? event.error : 'Headless stream error'
       acc.sawTerminal = true
@@ -188,10 +203,10 @@ export async function runServerChatLoop(
   deps: RunServerChatLoopDeps
 ): Promise<RunServerChatLoopResult> {
   const { operation, conversationId, streamId, path, request, signal } = params
-  const { dispatch } = deps
+  const { dispatch, onMessagePersisted } = deps
   const ctx: ProjectionContext = { streamId, conversationId }
   const acc = newAccumulator()
-  const handleEvent = makeHandleEvent(acc, ctx, operation, dispatch)
+  const handleEvent = makeHandleEvent(acc, ctx, operation, dispatch, onMessagePersisted)
 
   const url = await buildLocalApiUrl(path)
   const res = await fetch(url, {
@@ -244,10 +259,10 @@ export async function runServerReattach(
   deps: RunServerChatLoopDeps
 ): Promise<RunServerReattachResult> {
   const { streamId, conversationId, operation, fromSeq = 0, signal } = params
-  const { dispatch } = deps
+  const { dispatch, onMessagePersisted } = deps
   const ctx: ProjectionContext = { streamId, conversationId }
   const acc = newAccumulator(fromSeq)
-  const handleEvent = makeHandleEvent(acc, ctx, operation, dispatch)
+  const handleEvent = makeHandleEvent(acc, ctx, operation, dispatch, onMessagePersisted)
 
   try {
     const url = await buildLocalApiUrl(`/api/streams/${encodeURIComponent(streamId)}?fromSeq=${fromSeq}`)

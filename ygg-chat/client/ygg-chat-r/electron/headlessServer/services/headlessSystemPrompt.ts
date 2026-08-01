@@ -9,9 +9,11 @@ const DEFAULT_HEADLESS_INSTRUCTIONS = 'You are ChatGPT.'
 
 const DEFAULT_CHAT_MODE_PROMPT_RELATIVE_PATH = 'src/features/chats/prompts/default_chat_mode.md'
 const DEFAULT_AGENT_MODE_PROMPT_RELATIVE_PATH = 'src/features/chats/prompts/default_agent_mode.md'
+const DEFAULT_SUBAGENT_MODE_PROMPT_RELATIVE_PATH = 'src/features/chats/prompts/default_subagent_mode.md'
 
 let defaultChatModePrompt: string | null = null
 let defaultAgentModePrompt: string | null = null
+let defaultSubagentModePrompt: string | null = null
 
 const appendPromptPart = (parts: string[], value?: string | null) => {
   const trimmed = typeof value === 'string' ? value.trim() : ''
@@ -74,6 +76,11 @@ export function getHeadlessOperationModePrompt(operationMode?: HeadlessOperation
 
   defaultAgentModePrompt ??= readPromptFile(DEFAULT_AGENT_MODE_PROMPT_RELATIVE_PATH)
   return defaultAgentModePrompt
+}
+
+export function getHeadlessSubagentModePrompt(): string {
+  defaultSubagentModePrompt ??= readPromptFile(DEFAULT_SUBAGENT_MODE_PROMPT_RELATIVE_PATH)
+  return defaultSubagentModePrompt
 }
 
 export interface BuildHeadlessSystemPromptInput {

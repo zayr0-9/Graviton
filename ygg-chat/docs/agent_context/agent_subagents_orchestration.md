@@ -44,7 +44,7 @@ Use this when changing:
   fields (`robustness`, `hooks`, `relayFreeTierEvents`, `signal`,
   `railwaySessionId`, `allowCommentaryFallbackText`). No permission/pause logic here.
 - `client/ygg-chat-r/electron/headlessServer/services/subagentRunService.ts`: the subagent
-  caller of the engine — validation, run + `streaming_runs` lifecycle, tool
+  caller of the engine — `run`/`runForTool`, validation, run + `streaming_runs` lifecycle, tool
   resolution, provider auth re-sync (`refreshProviderTokens`), the `countingExecutor`
   (static read-only/auto-approve gate + tool-call counting), the transcript
   compactor, and terminal-state mapping. Sets `robustness:{ retryEmptyTurn,
@@ -61,6 +61,10 @@ Use this when changing:
   subagent auto-approve gate — `AUTO_APPROVE_REQUIRED_TOOL_NAMES` + all MCP/custom
   tools) and `filterToolsForOperationMode` (plan-mode tool filter, shared with the
   main loop).
+- `client/ygg-chat-r/electron/headlessServer/services/subagentToolExecutor.ts`:
+  `createSubagentDispatchExecutor`, the parent-chat composite executor that intercepts
+  `subagent` and calls `SubagentRunService.runForTool` in-process; all other tools
+  delegate to the leaf `ToolOrchestrator` executor.
 - `client/ygg-chat-r/electron/headlessServer/routes/subagentRoutes.ts`:
   `POST /api/headless/subagent/stream` (SSE + heartbeat + client-disconnect abort;
   rejects `openrouter` before opening the stream).
@@ -71,10 +75,11 @@ Use this when changing:
 - `client/ygg-chat-r/electron/headlessServer/contracts/headlessApi.ts`:
   `HeadlessSubagentStreamRequest` + `HeadlessSubagentStreamEvent` (subagent
   `started`/`complete`/`error`, plus the reused main-chat `HeadlessStreamEvent`s).
-- `client/ygg-chat-r/electron/headlessServer/index.ts`: wiring — the shared base
-  `executeToolViaOrchestrator` (index.ts:173) is injected into BOTH
-  `SubagentRunService` (index.ts:285) and `ChatOrchestrator` (index.ts:314);
-  `registerSubagentRoutes` at index.ts:281.
+- `client/ygg-chat-r/electron/headlessServer/index.ts`: wiring — the leaf
+  `executeToolViaOrchestrator` is injected into `SubagentRunService`; the main
+  `ChatOrchestrator` receives `createSubagentDispatchExecutor({ leafExecutor,
+  subagentRunner })`. This separation prevents nested subagents while keeping
+  ordinary tools on the shared orchestrator.
 - `client/ygg-chat-r/electron/localServer.ts`: table DDL (`subagent_runs` /
   `subagent_messages`) + `/api/subagents/*` and `/api/conversations/:id/subagents`
   CRUD routes (delegate to `SubagentRunRepo`) that Heimdall polls.
@@ -116,22 +121,29 @@ Use this when changing:
 
 ### Dispatch status (how the `subagent` tool is invoked)
 
-The engine above is reachable DIRECTLY by any client that POSTs the SSE route
-(tests do this). But the path by which the parent *chat model's* `subagent` tool
-call reaches the route changed with the migration and is currently a seam:
+Both entry paths now share the server-side `SubagentRunService`:
 
-- The old renderer dispatcher — `executeLocalTool` in `chatActions.ts`, which
-  special-cased `name === 'subagent'` → `executeSubagentCall` (thin client → SSE
-  route) — was DELETED in the thin-client cutover (Phase 6b). The renderer no
-  longer runs a tool loop, so it no longer dispatches this tool.
-- Server-side, no `subagent` handler is registered in the tool orchestrator, and
-  the renderer↔server tool bridge that would carry a server-loop `subagent` call
-  (`tool_request` event + `ToolBridgeDecision` in `POST /api/resume`) is defined in
-  the contract but has NO emitter yet (`chatRoutes.ts:164` marks it "future").
-- Net effect today: a `subagent` tool call issued from the server-owned main loop
-  resolves to an `Unknown tool: subagent` error tool_result. Wiring it back up
-  (a server-side handler that spawns the engine, or the tool bridge) is the open
-  work; `subagentClient.executeSubagentCall` is retained for that path.
+- Direct callers POST `POST /api/headless/subagent/stream`; the route projects the
+  service lifecycle onto SSE.
+- Parent chat tool calls go through `createSubagentDispatchExecutor`
+  (`services/subagentToolExecutor.ts`). It intercepts `subagent` before the ordinary
+  `ToolOrchestrator` registry, builds a child request from the parent tool context,
+  and awaits `SubagentRunService.runForTool` in-process. The returned final text is
+  the parent loop's tool result.
+- Ordinary parent tools and child leaf tools use `executeToolViaOrchestrator`.
+  Both paths also have the in-process `multi_call` composite available; each nested
+  child call re-enters the subagent approval/operation-mode policy before leaf execution.
+  `multi_call` rejects nested `multi_call` and `subagent`, and `SubagentRunService`
+  never receives the parent subagent dispatcher, so recursive agents remain impossible.
+- Parent operation mode, stream/message/tool-call lineage, root path, provider/model,
+  abort signal, and auto-approve policy are forwarded. `orchestratorMode:true` uses
+  the requested child tool names; otherwise the server default child tool set is used.
+  OpenRouter parents fall back to the local ChatGPT subagent provider, matching the
+  retained renderer client's local-only rule.
+
+The old renderer dispatcher remains deleted. `subagentClient.executeSubagentCall`
+is retained for direct renderer/SSE use and tests, but the server-owned main loop
+does not round-trip through the renderer or the unfinished `tool_request` bridge.
 
 ## Important Invariants
 

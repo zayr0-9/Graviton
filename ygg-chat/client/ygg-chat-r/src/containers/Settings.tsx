@@ -127,6 +127,7 @@ import {
   saveSubagentToolSettings,
   SUBAGENT_TOOL_SETTINGS_CHANGE_EVENT,
   SubagentToolSettings,
+  SUBAGENT_REASONING_EFFORT_OPTIONS,
 } from '../helpers/subagentToolSettings'
 import { normalizeSubagentModelName } from '../helpers/subagentModelNames'
 import {
@@ -1606,6 +1607,16 @@ const Settings: React.FC = () => {
         defaultModel: nextModel,
       },
       nextModel ? 'Subagent model updated.' : 'Subagent model will use provider selected/default model.'
+    )
+  }
+
+  const handleSubagentReasoningEffortChange = (value: string) => {
+    const reasoningEffort = SUBAGENT_REASONING_EFFORT_OPTIONS.includes(value as (typeof SUBAGENT_REASONING_EFFORT_OPTIONS)[number])
+      ? (value as SubagentToolSettings['reasoningEffort'])
+      : subagentSettings.reasoningEffort
+    persistSubagentSettings(
+      { ...subagentSettings, reasoningEffort },
+      `Subagent reasoning effort set to ${reasoningEffort}.`
     )
   }
 
@@ -3146,7 +3157,7 @@ const Settings: React.FC = () => {
           <SettingsSection
             title='Subagent'
             description={<>Configure default subagent behavior used by the <code>subagent</code> tool.</>}
-            features={['Provider', 'Model', 'Max turns', 'Orchestrator tool calls']}
+            features={['Provider', 'Model', 'Reasoning', 'Max turns', 'Orchestrator tool calls']}
           >
             <div className='flex flex-col gap-4'>
               <div className='flex flex-col gap-2'>
@@ -3202,6 +3213,24 @@ const Settings: React.FC = () => {
                 <p className='text-xs text-stone-500 dark:text-stone-400'>
                   Current model list provider: <code>{subagentProviderForModels}</code>.
                 </p>
+              </div>
+
+              <div className='flex flex-col gap-2 pt-2'>
+                <div>
+                  <p className='text-base font-medium text-stone-900 dark:text-stone-100'>Subagent Reasoning Effort</p>
+                  <p className='text-sm text-stone-500 dark:text-stone-400'>
+                    Reasoning level used by OpenAI ChatGPT subagents. Other providers may ignore this setting.
+                  </p>
+                </div>
+                <Select
+                  value={subagentSettings.reasoningEffort}
+                  onChange={handleSubagentReasoningEffortChange}
+                  options={SUBAGENT_REASONING_EFFORT_OPTIONS.map(effort => ({
+                    value: effort,
+                    label: effort === 'xhigh' ? 'Extra high' : `${effort[0].toUpperCase()}${effort.slice(1)}`,
+                  }))}
+                  className='max-w-xs'
+                />
               </div>
 
               <div className='flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between pt-2 pt-2'>

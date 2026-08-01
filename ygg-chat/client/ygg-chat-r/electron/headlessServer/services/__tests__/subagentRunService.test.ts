@@ -197,6 +197,30 @@ describe('SubagentRunService', () => {
     expect(streamingRunRepo.finishCalls[0]).toMatchObject({ status: 'completed' })
   })
 
+  it('returns the terminal result to a server-owned parent tool call', async () => {
+    const providerRouter = new FakeProviderRouter()
+    providerRouter.enqueue({ content: 'programmatic result' })
+    const runRepo = new FakeRunRepo()
+    const streamingRunRepo = new FakeStreamingRunRepo()
+    const service = buildService({ providerRouter, runRepo, streamingRunRepo })
+
+    await expect(service.runForTool(baseRequest(), new AbortController().signal)).resolves.toBe('programmatic result')
+    expect([...runRepo.runs.values()][0].status).toBe('completed')
+  })
+
+  it('rejects a server-owned parent tool call when the child ends in error', async () => {
+    const providerRouter = new FakeProviderRouter()
+    providerRouter.enqueue({ content: '' })
+    providerRouter.enqueue({ content: '' })
+    const service = buildService({
+      providerRouter,
+      runRepo: new FakeRunRepo(),
+      streamingRunRepo: new FakeStreamingRunRepo(),
+    })
+
+    await expect(service.runForTool(baseRequest(), new AbortController().signal)).rejects.toThrow('empty response')
+  })
+
   it('merges tool results and responses_output_items into the transcript', async () => {
     const providerRouter = new FakeProviderRouter()
     providerRouter.enqueue({

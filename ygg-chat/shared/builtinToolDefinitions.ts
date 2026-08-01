@@ -308,6 +308,7 @@ export const BUILTIN_TOOL_DEFINITIONS: SharedToolDefinition[] = [
         calls: {
           type: 'array',
           minItems: 1,
+          maxItems: 20,
           description:
             'Ordered list of tool calls to execute. Results preserve this order. Each call should specify a tool name and optional args object.',
           items: {

@@ -46,6 +46,7 @@ import {
 } from './compactionContext'
 // OpenAI OAuth is handled internally by OpenAIChatGPT module
 import { loadAutoCompactionEnabled } from '../../helpers/chatUiSettingsStorage'
+import { getSubagentReasoningEffort } from '../../helpers/subagentToolSettings'
 import { loadLongTermMemoryContextEnabled } from '../../helpers/longTermMemorySettingsStorage'
 import { DEFAULT_COMPACTION_SYSTEM_PROMPT, loadProviderSettings } from '../../helpers/providerSettingsStorage'
 import { updateToolEnabledState } from '../../helpers/toolSettingsStorage'
@@ -173,6 +174,59 @@ const buildTreeFromMessages = (messages: Message[]): any | null => {
     message: 'Conversation',
     sender: 'assistant',
     children: rootChildren,
+  }
+}
+
+/**
+ * Best-effort live refresh of the Heimdall node tree during a server-owned run.
+ *
+ * Heimdall renders from its own `heimdall.treeData` slice, normally fed from the React
+ * Query messages/tree cache. The thin-client SSE loop updates Redux
+ * `conversation.messages` (via projection) but NOT that query cache, so pre-fix the graph
+ * did not update mid-send — it only refreshed after a conversation switch evicted+refetched
+ * the query. We rebuild the tree from the live Redux messages and dispatch it straight into
+ * `heimdall.treeData`. Deliberately NOT via `setQueryData` on the messages cache: that would
+ * re-fire Chat.tsx's `messagesLoaded` effect and clobber the in-flight streamed messages.
+ * Wrapped so a failure never interrupts generation. Called on each persisted message
+ * (user / assistant / terminal) by the server-loop client's onMessagePersisted hook.
+ */
+const refreshHeimdallTreeFromState = (getState: () => RootState, dispatch: (action: unknown) => unknown): void => {
+  try {
+    const messages = getState().chat.conversation.messages
+    dispatch(chatSliceActions.heimdallDataLoaded({ treeData: buildTreeFromMessages(messages) }))
+  } catch (error) {
+    console.warn('[serverLoop] Heimdall tree refresh failed (non-fatal):', error)
+  }
+}
+
+/**
+ * Build the compaction/context fields for the server-owned loop request from the renderer's
+ * settings. Pre-fix these were dropped, so the server always fell back to its defaults:
+ * auto-compaction ran even when the user disabled it, and the trigger used a per-model
+ * default window instead of the SELECTED model's context length. Sourced from the same
+ * settings the manual compactBranch path uses (loadAutoCompactionEnabled + providerSettings).
+ * contextLength comes from the selected model's cache entry. buildServerLoopRequest forwards
+ * each field only-when-set, so a caller that can't resolve one keeps the server default.
+ */
+const buildCompactionRequestParams = (
+  modelsData: { models?: Model[]; default?: Model; selected?: Model } | undefined,
+  modelName: string | undefined
+): {
+  autoCompactionEnabled: boolean
+  contextLength: number | undefined
+  compactionProvider: string | null
+  compactionModelName: string | null
+  compactionSystemPrompt: string
+} => {
+  const settings = loadProviderSettings()
+  const model =
+    modelsData?.models?.find(m => m.name === modelName) || modelsData?.selected || modelsData?.default || null
+  return {
+    autoCompactionEnabled: loadAutoCompactionEnabled(),
+    contextLength: model?.contextLength,
+    compactionProvider: settings.compactionProvider,
+    compactionModelName: settings.compactionModel,
+    compactionSystemPrompt: settings.compactionSystemPrompt,
   }
 }
 
@@ -1262,6 +1316,7 @@ export const sendMessage = createAsyncThunk<
           operationMode: operationModeAtSend,
           think,
           reasoningConfig,
+          subagentReasoningEffort: getSubagentReasoningEffort(),
           imageConfig,
           rootPath: effectiveToolRootPath,
           conversationContext: conversationContextSource,
@@ -1282,6 +1337,9 @@ export const sendMessage = createAsyncThunk<
           // (null for every other provider => omitted from the body).
           accessToken: chatgptServerAuth?.accessToken,
           accountId: chatgptServerAuth?.accountId,
+          // Auto-compaction / context settings (previously dropped => server used defaults,
+          // ignoring the user's disable toggle and the selected model's real context window).
+          ...buildCompactionRequestParams(modelsData, modelName),
         })
         const result = await runServerChatLoop(
           {
@@ -1292,7 +1350,7 @@ export const sendMessage = createAsyncThunk<
             request: body,
             signal: controller.signal,
           },
-          { dispatch, getState }
+          { dispatch, getState, onMessagePersisted: () => refreshHeimdallTreeFromState(getState, dispatch) }
         )
         if (result.messageId) {
           void finishStreamingRun(streamId, {
@@ -1812,6 +1870,7 @@ export const editMessageWithBranching = createAsyncThunk<
           parentId: parentMessageId ?? null,
           operationMode: operationModeAtSend,
           think,
+          subagentReasoningEffort: getSubagentReasoningEffort(),
           rootPath: effectiveToolRootPath,
           conversationContext: conversationContextSource,
           projectContext,
@@ -1831,6 +1890,9 @@ export const editMessageWithBranching = createAsyncThunk<
           // (null for every other provider => omitted from the body).
           accessToken: chatgptServerAuth?.accessToken,
           accountId: chatgptServerAuth?.accountId,
+          // Auto-compaction / context settings (previously dropped => server used defaults,
+          // ignoring the user's disable toggle and the selected model's real context window).
+          ...buildCompactionRequestParams(modelsData, modelName),
         })
         const result = await runServerChatLoop(
           {
@@ -1841,7 +1903,7 @@ export const editMessageWithBranching = createAsyncThunk<
             request: body,
             signal: controller.signal,
           },
-          { dispatch, getState }
+          { dispatch, getState, onMessagePersisted: () => refreshHeimdallTreeFromState(getState, dispatch) }
         )
         if (result.messageId) {
           void finishStreamingRun(streamId, {
@@ -2031,6 +2093,7 @@ export const sendMessageToBranch = createAsyncThunk<
           parentId: parentId ?? null,
           operationMode: operationModeAtSend,
           think,
+          subagentReasoningEffort: getSubagentReasoningEffort(),
           rootPath: effectiveToolRootPath,
           conversationContext: conversationContextSource,
           projectContext,
@@ -2050,6 +2113,9 @@ export const sendMessageToBranch = createAsyncThunk<
           // (null for every other provider => omitted from the body).
           accessToken: chatgptServerAuth?.accessToken,
           accountId: chatgptServerAuth?.accountId,
+          // Auto-compaction / context settings (previously dropped => server used defaults,
+          // ignoring the user's disable toggle and the selected model's real context window).
+          ...buildCompactionRequestParams(modelsData, modelName),
         })
         const result = await runServerChatLoop(
           {
@@ -2060,7 +2126,7 @@ export const sendMessageToBranch = createAsyncThunk<
             request: body,
             signal: controller.signal,
           },
-          { dispatch, getState }
+          { dispatch, getState, onMessagePersisted: () => refreshHeimdallTreeFromState(getState, dispatch) }
         )
         if (result.messageId) {
           void finishStreamingRun(streamId, {
@@ -2717,7 +2783,7 @@ export const resumeInFlightStreams = createAsyncThunk<
           fromSeq: 0,
           signal: controller.signal,
         },
-        { dispatch, getState }
+        { dispatch, getState, onMessagePersisted: () => refreshHeimdallTreeFromState(getState, dispatch) }
       )
       if (result.gone) dispatch(chatSliceActions.streamingAborted({ streamId: rec.streamId }))
       removeInflightStream(rec.streamId)

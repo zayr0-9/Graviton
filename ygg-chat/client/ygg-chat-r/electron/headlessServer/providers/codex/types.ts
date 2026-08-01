@@ -41,7 +41,7 @@ export type CodexProviderOptions = {
   userAgent?: string
   transport?: CodexResponsesTransport
   fetch?: typeof fetch
-  reasoningEffort?: 'minimal' | 'low' | 'medium' | 'high'
+  reasoningEffort?: 'minimal' | 'low' | 'medium' | 'high' | 'xhigh'
   reasoningSummary?: 'auto' | 'concise' | 'detailed' | null
 }
 

@@ -331,10 +331,10 @@ export const Heimdall: React.FC<HeimdallProps> = ({
   const [noteText, setNoteText] = useState<string>('')
   const [noteColor, setNoteColor] = useState<string | null>(null)
   const [hoveredNote, setHoveredNote] = useState<{
+    nodeId: string
     note: string
     sender: 'user' | 'assistant' | 'ex_agent'
-    x: number
-    y: number
+    fallbackPosition: { x: number; y: number }
   } | null>(null)
   const notePreviewCloseTimeoutRef = useRef<number | null>(null)
   // Store message content in ref to avoid stale closures in debounced update
@@ -719,11 +719,9 @@ export const Heimdall: React.FC<HeimdallProps> = ({
 
   const NOTE_PREVIEW_WIDTH = 320
   const NOTE_PREVIEW_MAX_HEIGHT = 280
-  const PREVIEW_HOVER_TRANSFER_GRACE_MS = 180
-  // The message preview is docked away from the cursor, so give it a longer close
-  // delay than the adjacent note preview: long enough to auto-dismiss after the
-  // pointer moves off the node, but with time to travel onto the card to scroll it.
-  const MESSAGE_PREVIEW_CLOSE_DELAY_MS = 450
+  // Hover previews dock away from their graph anchors, so allow enough time to
+  // reach the card and scroll it after leaving a node or note pill.
+  const DOCKED_PREVIEW_CLOSE_DELAY_MS = 450
 
   const getNoteBadgeMetrics = (noteText?: string) => {
     const rawNote = noteText || ''
@@ -963,7 +961,7 @@ export const Heimdall: React.FC<HeimdallProps> = ({
     notePreviewCloseTimeoutRef.current = window.setTimeout(() => {
       setHoveredNote(null)
       notePreviewCloseTimeoutRef.current = null
-    }, PREVIEW_HOVER_TRANSFER_GRACE_MS)
+    }, DOCKED_PREVIEW_CLOSE_DELAY_MS)
   }, [clearNotePreviewCloseTimeout])
 
   const handleNoteBadgeClick = useCallback(
@@ -988,10 +986,13 @@ export const Heimdall: React.FC<HeimdallProps> = ({
       const containerRect = containerRef.current?.getBoundingClientRect()
       if (!containerRect) return
       setHoveredNote({
+        nodeId: node.id,
         note,
         sender: node.sender,
-        x: event.clientX - containerRect.left,
-        y: event.clientY - containerRect.top,
+        fallbackPosition: {
+          x: event.clientX - containerRect.left,
+          y: event.clientY - containerRect.top,
+        },
       })
     },
     [clearNotePreviewCloseTimeout]
@@ -2751,6 +2752,31 @@ export const Heimdall: React.FC<HeimdallProps> = ({
   const visiblePositionValues = useMemo(() => visiblePositionEntries.map(([, pos]) => pos), [visiblePositionEntries])
   const visiblePositionIdSet = useMemo(() => new Set(visiblePositionEntries.map(([id]) => id)), [visiblePositionEntries])
 
+  const getDockedPreviewLayout = (
+    anchorNodeId: string,
+    preferredWidth: number,
+    maxHeight: number,
+    fallbackPosition: { x: number; y: number }
+  ) => {
+    // Dock on the panel half opposite the graph anchor so the preview never
+    // covers the interactive node or note pill that opened it.
+    const dockMargin = 12
+    const halfWidth = dimensions.width / 2
+    const width = Math.min(preferredWidth, Math.max(220, halfWidth - dockMargin * 2))
+    const nodePos = positions[anchorNodeId]
+    const screenTx = cullingPan.x + dimensions.width / 2
+    const screenTy = cullingPan.y + 100
+    const anchorCenterX = nodePos ? (nodePos.x + offsetX) * cullingZoom + screenTx : fallbackPosition.x
+    const anchorTopY = nodePos ? (nodePos.y + offsetY) * cullingZoom + screenTy : fallbackPosition.y
+    const dockRight = anchorCenterX < halfWidth
+
+    return {
+      left: dockRight ? dimensions.width - width - dockMargin : dockMargin,
+      top: Math.max(10, Math.min(anchorTopY, dimensions.height - maxHeight - 10)),
+      width,
+    }
+  }
+
   const clearMessagePreviewCloseTimeout = useCallback(() => {
     if (messagePreviewCloseTimeoutRef.current !== null) {
       window.clearTimeout(messagePreviewCloseTimeoutRef.current)
@@ -2763,8 +2789,8 @@ export const Heimdall: React.FC<HeimdallProps> = ({
     messagePreviewCloseTimeoutRef.current = window.setTimeout(() => {
       setSelectedNode(null)
       messagePreviewCloseTimeoutRef.current = null
-    }, MESSAGE_PREVIEW_CLOSE_DELAY_MS)
-  }, [clearMessagePreviewCloseTimeout, MESSAGE_PREVIEW_CLOSE_DELAY_MS])
+    }, DOCKED_PREVIEW_CLOSE_DELAY_MS)
+  }, [clearMessagePreviewCloseTimeout])
 
   const handleNodeMouseEnter = useCallback(
     (e: React.MouseEvent<SVGElement>) => {
@@ -4543,26 +4569,12 @@ export const Heimdall: React.FC<HeimdallProps> = ({
           const popupWidth = hasImage ? 800 : 320
           const popupMaxHeight = hasImage ? 600 : 450
 
-          // Dock the preview on the side of the panel OPPOSITE the hovered node so it
-          // can never sit over the node (which would block clicks). Cap the width to
-          // the node's opposite half to preserve that guarantee on narrow panels.
-          const DOCK_MARGIN = 12
-          const halfWidth = dimensions.width / 2
-          const dockWidth = Math.min(popupWidth, Math.max(220, halfWidth - DOCK_MARGIN * 2))
-          const nodePos = positions[selectedNode.id]
-          const screenTx = cullingPan.x + dimensions.width / 2
-          const screenTy = cullingPan.y + 100
-          const nodeCenterX = nodePos ? (nodePos.x + offsetX) * cullingZoom + screenTx : mousePosition.x
-          const nodeTopY = nodePos ? (nodePos.y + offsetY) * cullingZoom + screenTy : mousePosition.y
-          // Node in the left half -> dock right; node in the right half -> dock left.
-          const dockRight = nodeCenterX < halfWidth
-          const dockLeft = dockRight ? dimensions.width - dockWidth - DOCK_MARGIN : DOCK_MARGIN
-          const dockTop = Math.max(10, Math.min(nodeTopY, dimensions.height - popupMaxHeight - 10))
+          const dockedPreview = getDockedPreviewLayout(selectedNode.id, popupWidth, popupMaxHeight, mousePosition)
 
           return (
             <div
               className='pointer-events-none absolute z-20'
-              style={{ left: dockLeft, top: dockTop }}
+              style={{ left: dockedPreview.left, top: dockedPreview.top }}
             >
               <div
                 className={`pointer-events-auto p-4 rounded-lg shadow-xl no-scrollbar ${compactMode ? 'border-2' : 'border'}`}
@@ -4570,7 +4582,7 @@ export const Heimdall: React.FC<HeimdallProps> = ({
                 onMouseEnter={handleMessagePreviewEnter}
                 onMouseLeave={handleMessagePreviewLeave}
                 style={{
-                  width: `${dockWidth}px`,
+                  width: `${dockedPreview.width}px`,
                   maxHeight: `${popupMaxHeight}px`,
                   overflow: 'auto',
                   backgroundColor: heimdallNodeHoverModalBackgroundColor,
@@ -4723,16 +4735,17 @@ export const Heimdall: React.FC<HeimdallProps> = ({
         })()}
       {hoveredNote &&
         (() => {
+          const dockedPreview = getDockedPreviewLayout(
+            hoveredNote.nodeId,
+            NOTE_PREVIEW_WIDTH,
+            NOTE_PREVIEW_MAX_HEIGHT,
+            hoveredNote.fallbackPosition
+          )
+
           return (
             <div
               className='pointer-events-none absolute z-30'
-              style={{
-                left: Math.max(10, Math.min(hoveredNote.x + 10, dimensions.width - NOTE_PREVIEW_WIDTH - 10)),
-                top: Math.max(
-                  10,
-                  Math.min(hoveredNote.y + 10, dimensions.height - NOTE_PREVIEW_MAX_HEIGHT - 10)
-                ),
-              }}
+              style={{ left: dockedPreview.left, top: dockedPreview.top }}
             >
           <div
             className='pointer-events-auto p-4 rounded-lg shadow-xl border no-scrollbar'
@@ -4740,7 +4753,7 @@ export const Heimdall: React.FC<HeimdallProps> = ({
             onMouseEnter={handleNotePreviewEnter}
             onMouseLeave={handleNotePreviewLeave}
             style={{
-              width: `${NOTE_PREVIEW_WIDTH}px`,
+              width: `${dockedPreview.width}px`,
               maxHeight: `${NOTE_PREVIEW_MAX_HEIGHT}px`,
               overflow: 'auto',
               backgroundColor: heimdallNodeHoverModalBackgroundColor,

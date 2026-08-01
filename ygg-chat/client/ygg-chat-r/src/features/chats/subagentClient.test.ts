@@ -19,12 +19,14 @@ const settings = {
   maxTurns: 42,
   defaultProvider: null as string | null,
   defaultModel: null as string | null,
+  reasoningEffort: 'high' as const,
 }
 
 vi.mock('../../helpers/subagentToolSettings', () => ({
   loadSubagentToolSettings: vi.fn(() => settings),
   getSubagentEnabledTools: vi.fn(() => settings.enabledTools),
   getSubagentMaxTurns: vi.fn(() => settings.maxTurns),
+  getSubagentReasoningEffort: vi.fn(() => settings.reasoningEffort),
   isOrchestratorEnabled: vi.fn(() => settings.orchestratorEnabled),
 }))
 
@@ -131,6 +133,7 @@ describe('executeSubagentCall request building', () => {
       provider: 'openaichatgpt',
       modelName: 'gpt-5.6-sol',
       maxTurns: 42,
+      reasoningEffort: 'high',
       operationMode: 'execute',
       autoApprove: false,
       rootPath: '/repo',

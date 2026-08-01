@@ -4,15 +4,25 @@
 const STORAGE_KEY = 'ygg_subagent_tool_settings'
 export const SUBAGENT_TOOL_SETTINGS_CHANGE_EVENT = 'ygg-subagent-tool-settings-change'
 
+export const SUBAGENT_REASONING_EFFORT_OPTIONS = ['low', 'medium', 'high', 'xhigh'] as const
+export type SubagentReasoningEffort = (typeof SUBAGENT_REASONING_EFFORT_OPTIONS)[number]
+
 export interface SubagentToolSettings {
   enabledTools: string[] // Tool names enabled for subagent when orchestratorMode=false
   orchestratorEnabled: boolean // Whether subagent can use tools (orchestrator mode)
   defaultProvider: string | null // Provider used by subagents; null follows the current chat provider
   defaultModel: string | null // Model used by subagents; null follows the selected/default model for the resolved provider
   maxTurns: number // Maximum model/tool loop turns for one subagent invocation
+  reasoningEffort: SubagentReasoningEffort // OpenAI ChatGPT reasoning effort for subagent runs
 }
 
 export const DEFAULT_SUBAGENT_MAX_TURNS = 120
+const DEFAULT_SUBAGENT_REASONING_EFFORT: SubagentReasoningEffort = 'medium'
+
+const normalizeReasoningEffort = (value: unknown): SubagentReasoningEffort =>
+  SUBAGENT_REASONING_EFFORT_OPTIONS.includes(value as SubagentReasoningEffort)
+    ? (value as SubagentReasoningEffort)
+    : DEFAULT_SUBAGENT_REASONING_EFFORT
 
 const normalizeMaxTurns = (value: unknown): number => {
   const parsed = Number(value)
@@ -41,6 +51,7 @@ const DEFAULT_SETTINGS: SubagentToolSettings = {
   defaultProvider: null,
   defaultModel: null,
   maxTurns: DEFAULT_SUBAGENT_MAX_TURNS,
+  reasoningEffort: DEFAULT_SUBAGENT_REASONING_EFFORT,
 }
 
 /**
@@ -64,6 +75,7 @@ export function loadSubagentToolSettings(): SubagentToolSettings {
       defaultProvider,
       defaultModel,
       maxTurns: normalizeMaxTurns(parsed.maxTurns ?? DEFAULT_SETTINGS.maxTurns),
+      reasoningEffort: normalizeReasoningEffort(parsed.reasoningEffort),
     }
   } catch {
     return { ...DEFAULT_SETTINGS }
@@ -168,4 +180,14 @@ export function getDefaultMaxTurns(): number {
 
 export function setDefaultMaxTurns(maxTurns: number): void {
   setSubagentMaxTurns(maxTurns)
+}
+
+export function getSubagentReasoningEffort(): SubagentReasoningEffort {
+  return loadSubagentToolSettings().reasoningEffort
+}
+
+export function setSubagentReasoningEffort(reasoningEffort: SubagentReasoningEffort): void {
+  const settings = loadSubagentToolSettings()
+  settings.reasoningEffort = normalizeReasoningEffort(reasoningEffort)
+  saveSubagentToolSettings(settings)
 }

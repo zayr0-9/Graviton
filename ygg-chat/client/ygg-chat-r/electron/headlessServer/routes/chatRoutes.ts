@@ -76,6 +76,10 @@ function buildHeadlessMessageRequest(req: Request, operation: HeadlessChatOperat
     isElectron: typeof body.isElectron === 'boolean' ? body.isElectron : undefined,
     imageConfig: body.imageConfig ?? body.image_config,
     reasoningConfig: body.reasoningConfig ?? body.reasoning_config,
+    subagentReasoningEffort:
+      body.subagentReasoningEffort === 'low' || body.subagentReasoningEffort === 'medium' || body.subagentReasoningEffort === 'high' || body.subagentReasoningEffort === 'xhigh'
+        ? body.subagentReasoningEffort
+        : undefined,
     serviceTier: body.serviceTier ?? body.service_tier,
     promptCacheRetention: body.promptCacheRetention ?? body.prompt_cache_retention,
     tools: Array.isArray(body.tools) ? body.tools : undefined,
@@ -119,6 +123,32 @@ function buildHeadlessMessageRequest(req: Request, operation: HeadlessChatOperat
           ? body.hooks_enabled
           : undefined,
     localApiBase: body.localApiBase ?? body.local_api_base ?? null,
+    // Auto-compaction / context settings. Previously DROPPED here, so the orchestrator
+    // received undefined and the server applied its defaults (autoCompactionEnabled ?? true;
+    // contextLength ?? openAIModelContextLength(model); thresholdPercent ?? 85) — ignoring the
+    // user's disable toggle, threshold, and the selected model's real window. Parsed
+    // undefined-safe so the mobile LAN UI / subagents (which omit them) keep the defaults.
+    autoCompactionEnabled:
+      typeof body.autoCompactionEnabled === 'boolean'
+        ? body.autoCompactionEnabled
+        : typeof body.auto_compaction_enabled === 'boolean'
+          ? body.auto_compaction_enabled
+          : undefined,
+    contextLength:
+      typeof body.contextLength === 'number'
+        ? body.contextLength
+        : typeof body.context_length === 'number'
+          ? body.context_length
+          : undefined,
+    compactionThresholdPercent:
+      typeof body.compactionThresholdPercent === 'number'
+        ? body.compactionThresholdPercent
+        : typeof body.compaction_threshold_percent === 'number'
+          ? body.compaction_threshold_percent
+          : undefined,
+    compactionProvider: body.compactionProvider ?? body.compaction_provider ?? null,
+    compactionModelName: body.compactionModelName ?? body.compaction_model_name ?? null,
+    compactionSystemPrompt: body.compactionSystemPrompt ?? body.compaction_system_prompt ?? null,
   }
 }
 

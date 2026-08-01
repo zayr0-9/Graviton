@@ -25,6 +25,7 @@ import {
   InputTextArea,
   ModelSelectControl,
   PlanClarificationPanel,
+  ReasoningLevelControl,
   Select,
   SettingsPane,
   StreamingThinkingIndicator,
@@ -147,7 +148,6 @@ import { selectCurrentUser } from '../features/users'
 import {
   CHAT_REASONING_SETTINGS_CHANGE_EVENT,
   loadChatReasoningSettings,
-  REASONING_EFFORT_OPTIONS,
 } from '../helpers/chatReasoningSettingsStorage'
 import {
   CHAT_UI_ADDED_FILES_PILLS_VISIBILITY_CHANGE_EVENT,
@@ -7404,35 +7404,8 @@ function Chat() {
                               </div>
                             </>
                           )}
-                          {/* Reasoning Effort Options - shown when thinking is enabled */}
                           {selectedModel?.thinking && (
-                            <>
-                              <h1 className='text-black dark:text-neutral-200 text-[16px]'>Reasoning Options</h1>
-                              <div className='flex flex-col gap-1'>
-                                <label className='text-xs text-neutral-500 dark:text-neutral-400'>Effort Level</label>
-                                <Select
-                                  value={reasoningConfig.effort}
-                                  options={REASONING_EFFORT_OPTIONS.map(option => ({
-                                    value: option,
-                                    label:
-                                      option === 'medium'
-                                        ? 'Medium (Default)'
-                                        : option === 'xhigh'
-                                          ? 'X-High'
-                                          : option.charAt(0).toUpperCase() + option.slice(1),
-                                  }))}
-                                  onChange={value =>
-                                    setReasoningConfig(prev => ({
-                                      ...prev,
-                                      effort: value as ReasoningConfig['effort'],
-                                    }))
-                                  }
-                                  placeholder='Select effort level'
-                                  size='small'
-                                  dropdownZIndex={ACTION_POPOVER_SELECT_DROPDOWN_Z_INDEX}
-                                />
-                              </div>
-                              <div className='flex items-center justify-between gap-3'>
+                            <div className='flex items-center justify-between gap-3'>
                                 <div className='flex flex-col'>
                                   <span className='text-xs text-neutral-500 dark:text-neutral-400'>Fast mode</span>
                                   <span className='text-[11px] text-neutral-400 dark:text-neutral-500'>
@@ -7476,7 +7449,6 @@ function Chat() {
                                   />
                                 </button>
                               </div>
-                            </>
                           )}
                           {/* Orchestrator Mode Toggle */}
                           <div className='flex items-center gap-2'>
@@ -7573,45 +7545,18 @@ function Chat() {
                       )}
                     </ActionPopover>
                   )}
-                  {/* Thinking toggle - next to popover, disabled when not supported */}
-                  <button
-                    className={`p-2 rounded-full transition-all duration-200 ${
-                      selectedModel?.thinking
-                        ? 'text-neutral-500 dark:text-neutral-400 hover:text-neutral-800 dark:hover:text-neutral-200 hover:bg-white/10 dark:hover:bg-white/5'
-                        : 'text-neutral-300 dark:text-neutral-600 cursor-not-allowed'
-                    }`}
-                    onClick={() => setThink(t => !t)}
-                    disabled={!selectedModel?.thinking}
-                    title={selectedModel?.thinking ? 'Enable thinking' : 'Thinking not supported by this model'}
-                  >
-                    {think ? (
-                      <>
-                        <img
-                          src={getAssetPath('img/thinkingonlightmode.svg')}
-                          alt='Thinking active'
-                          className='w-[22px] h-[22px] dark:hidden'
-                        />
-                        <img
-                          src={getAssetPath('img/thinkingondarkmode.svg')}
-                          alt='Thinking active'
-                          className='w-[22px] h-[22px] hidden dark:block'
-                        />
-                      </>
-                    ) : (
-                      <>
-                        <img
-                          src={getAssetPath('img/thinkingofflightmode.svg')}
-                          alt='Thinking'
-                          className='w-[22px] h-[22px] dark:hidden'
-                        />
-                        <img
-                          src={getAssetPath('img/thinkingoffdarkmode.svg')}
-                          alt='Thinking'
-                          className='w-[22px] h-[22px] hidden dark:block'
-                        />
-                      </>
-                    )}
-                  </button>
+                  <ReasoningLevelControl
+                    supported={Boolean(selectedModel?.thinking)}
+                    level={think ? reasoningConfig.effort : 'off'}
+                    onLevelChange={level => {
+                      if (level === 'off') {
+                        setThink(false)
+                        return
+                      }
+                      setThink(true)
+                      setReasoningConfig(prev => ({ ...prev, effort: level }))
+                    }}
+                  />
                   {/* Attachment upload button */}
                   <input
                     ref={attachmentInputRef}

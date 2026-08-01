@@ -183,6 +183,46 @@ describeIfSqlite('ChatOrchestrator continuation semantics', () => {
     expect(events[events.length - 1].type).toBe('complete')
   })
 
+  it('replays only the latest compaction summary and subsequent branch messages', async () => {
+    const rootUser = messageRepo.createMessage({
+      conversationId: 'c1',
+      parentId: null,
+      role: 'user',
+      content: 'old context that must not be replayed',
+      modelName: 'gpt-5.1-codex-mini',
+    })
+    const oldAssistant = messageRepo.createMessage({
+      conversationId: 'c1',
+      parentId: rootUser.id,
+      role: 'assistant',
+      content: 'old assistant context that must not be replayed',
+      modelName: 'gpt-5.1-codex-mini',
+    })
+    const summary = messageRepo.createMessage({
+      conversationId: 'c1',
+      parentId: oldAssistant.id,
+      role: 'system',
+      content: 'Following is summary of the session, you have to resume the work.\n\nCompacted context.',
+      modelName: 'gpt-5.1-codex-mini',
+      note: '__auto_compaction_summary__',
+    })
+
+    await orchestrator.runMessage(
+      {
+        operation: 'send',
+        conversationId: 'c1',
+        parentId: summary.id,
+        content: 'continue from the summary',
+        provider: 'openaichatgpt',
+        modelName: 'gpt-5.1-codex-mini',
+      },
+      () => {}
+    )
+
+    expect(providerRouter.calls[0].history.map((message: any) => message.id)).toEqual([summary.id])
+    expect(providerRouter.calls[0].history[0].note).toBe('__auto_compaction_summary__')
+  })
+
   it('turns post-retry OpenAI provider errors into a persisted assistant response', async () => {
     providerRouter.enqueue(
       new Error(

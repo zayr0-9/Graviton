@@ -49,6 +49,8 @@ export interface HeadlessMessageRequest {
   compactionProvider?: string | null
   compactionModelName?: string | null
   compactionSystemPrompt?: string | null
+  /** Reasoning effort forwarded to child subagents spawned by this chat run. */
+  subagentReasoningEffort?: 'low' | 'medium' | 'high' | 'xhigh'
   /**
    * Phase 3 opt-in: run the 5 lifecycle chat hooks in the server loop (parity with
    * the renderer's chat hooks). Absent/false == no hooks. Requires the server to have
@@ -77,6 +79,8 @@ export interface HeadlessSubagentStreamRequest {
   tools?: string[]
   maxTurns?: number
   temperature?: number
+  /** OpenAI ChatGPT reasoning effort for this child run. */
+  reasoningEffort?: 'low' | 'medium' | 'high' | 'xhigh'
   operationMode?: 'plan' | 'execute'
   /** Parent's toolAutoApprove && inheritAutoApprove. When false, only read-only tools run. */
   autoApprove: boolean

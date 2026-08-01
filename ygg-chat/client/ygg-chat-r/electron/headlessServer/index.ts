@@ -27,6 +27,8 @@ import { DecisionBroker } from './services/decisionBroker.js'
 import { RunSessionRegistry } from './services/runSessionRegistry.js'
 import { CompactionService } from './services/compactionService.js'
 import { SubagentRunService } from './services/subagentRunService.js'
+import { createSubagentDispatchExecutor } from './services/subagentToolExecutor.js'
+import { createMultiCallDispatchExecutor } from './services/multiCallExecutor.js'
 import { normalizeProviderRoute } from './services/providerRouter.js'
 import { resolveGatewayFlags } from './config/gatewayFlags.js'
 import type { ToolExecutor } from './services/toolLoopService.js'
@@ -62,6 +64,8 @@ const HEADLESS_RUNTIME_BUILTIN_TOOL_NAMES = new Set([
   'custom_tool_manager',
   'mcp_manager',
   'skill_manager',
+  'subagent',
+  'multi_call',
 ])
 
 const BUILT_IN_INFERENCE_TOOLS: InferenceToolDefinition[] = BUILTIN_TOOL_DEFINITIONS.filter(tool =>
@@ -143,6 +147,7 @@ const DEFAULT_SUBAGENT_TOOL_NAMES = [
   'brave_search',
   'edit_file',
   'multi_edit',
+  'multi_call',
   'create_file',
   'delete_file',
   'bash',
@@ -286,23 +291,32 @@ export function registerHeadlessServerRoutes(app: Express, deps: HeadlessServerR
     tokenStore,
   })
 
+  const multiCallToolExecutor = createMultiCallDispatchExecutor(executeToolViaOrchestrator)
+  const subagentRunService = new SubagentRunService({
+    statements: deps.statements,
+    tokenStore,
+    // Child tools use the leaf executor. They can never re-enter the parent
+    // subagent dispatcher, preserving the no-nested-subagents invariant.
+    toolExecutor: multiCallToolExecutor,
+    resolveToolsByName: resolveInferenceToolsByName,
+    compactionService,
+    refreshProviderTokens: async (provider: string) => {
+      // Re-sync provider auth from the Electron store in case the user signed
+      // in or tokens rotated after the server started.
+      if (normalizeProviderRoute(provider) === 'openaichatgpt') {
+        syncOpenAiChatGptTokenFromElectronStorage(tokenStore, { preferNewest: true })
+      } else {
+        await syncOpenRouterTokenFromElectronSession(tokenStore)
+      }
+    },
+  })
+  const chatToolExecutor = createSubagentDispatchExecutor({
+    leafExecutor: multiCallToolExecutor,
+    subagentRunner: subagentRunService,
+  })
+
   registerSubagentRoutes(app, {
-    runService: new SubagentRunService({
-      statements: deps.statements,
-      tokenStore,
-      toolExecutor: executeToolViaOrchestrator,
-      resolveToolsByName: resolveInferenceToolsByName,
-      compactionService,
-      refreshProviderTokens: async (provider: string) => {
-        // Re-sync provider auth from the Electron store in case the user signed
-        // in or tokens rotated after the server started.
-        if (normalizeProviderRoute(provider) === 'openaichatgpt') {
-          syncOpenAiChatGptTokenFromElectronStorage(tokenStore, { preferNewest: true })
-        } else {
-          await syncOpenRouterTokenFromElectronSession(tokenStore)
-        }
-      },
-    }),
+    runService: subagentRunService,
     validateTarget: (conversationId: string, parentMessageId: string) => {
       const conversation = deps.statements.getConversationById?.get(conversationId)
       if (!conversation) return { status: 404, error: 'Conversation not found' }
@@ -319,7 +333,7 @@ export function registerHeadlessServerRoutes(app: Express, deps: HeadlessServerR
     orchestrator: new ChatOrchestrator({
       ...deps,
       tokenStore,
-      toolExecutor: executeToolViaOrchestrator,
+      toolExecutor: chatToolExecutor,
       defaultToolsProvider: resolveDefaultInferenceTools,
       compactBranch: input => compactionService.compactBranch(input),
       decisionBroker,

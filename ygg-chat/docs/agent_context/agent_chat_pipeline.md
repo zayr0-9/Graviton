@@ -270,8 +270,9 @@ Full union: `contracts/headlessApi.ts` `HeadlessStreamEvent`.
   `complete.message.id` — not from locally minted ids.
 - Tool calls are permission-gated unless the session is auto-approve
   (`toolAutoApprove !== false`) or the tool is in the bypass set.
-- The `subagent` tool is a thin client (`subagentClient.ts`) over the **same** server engine;
-  see `agent_subagents_orchestration.md`.
+- The `subagent` tool is dispatched in-process by the server-owned main loop through
+  `subagentToolExecutor.ts` into the **same** `SubagentRunService`; the retained
+  `subagentClient.ts` is the direct SSE client. See `agent_subagents_orchestration.md`.
 - Compaction is additive: a synthetic `__auto_compaction_summary__` system message, never a
   deletion.
 - Hooks can rewrite prompts/tool inputs or block execution; keep hook call sites ordered.

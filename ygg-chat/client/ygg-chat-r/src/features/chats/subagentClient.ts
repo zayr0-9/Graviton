@@ -7,6 +7,7 @@ import { normalizeSubagentModelName } from '../../helpers/subagentModelNames'
 import {
   getSubagentEnabledTools,
   getSubagentMaxTurns,
+  getSubagentReasoningEffort,
   isOrchestratorEnabled,
   loadSubagentToolSettings,
 } from '../../helpers/subagentToolSettings'
@@ -214,6 +215,7 @@ export const executeSubagentCall = async (toolCall: any, context: SubagentClient
     modelName: model,
     tools: getSubagentToolNames(orchestratorMode, requestedTools),
     maxTurns: getSubagentMaxTurns(),
+    reasoningEffort: getSubagentReasoningEffort(),
     temperature: typeof temperature === 'number' ? temperature : undefined,
     operationMode: context.operationMode,
     autoApprove,

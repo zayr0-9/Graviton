@@ -17,6 +17,7 @@ import {
 } from './toolLoopService.js'
 import type { DecisionBroker, ClarifyDecision, PermissionDecision } from './decisionBroker.js'
 import { createChatHookSession, type ChatHookSession } from './chatHookService.js'
+import { trimHistoryToLatestCompaction } from './compactionService.js'
 import type { HookRunRequest, HookRunResult } from '../../hooks/hookTypes.js'
 import { filterToolsForOperationMode } from '../../../../../shared/operationModeToolPolicy.js'
 
@@ -101,7 +102,7 @@ export function createChatPausingExecutor(deps: {
   hookSession?: ChatHookSession
 }): ToolExecutor {
   const { base, broker, streamId, emit, signal, hookSession } = deps
-  return async (toolCall, context) => {
+  const execute: ToolExecutor = async (toolCall, context) => {
     const sig = context.signal ?? signal
     const args = parseToolArgs(toolCall.arguments)
 
@@ -132,13 +133,13 @@ export function createChatPausingExecutor(deps: {
     // the clarify mechanism).
     if (!hookSession) {
       if (isClarify(toolCall.name, args)) return runClarify(toolCall, args)
-      if (broker.isAutoApproveAll(streamId)) return base(toolCall, context)
-      if (shouldBypassPermission(toolCall.name, args)) return base(toolCall, context)
+      if (broker.isAutoApproveAll(streamId)) return base(toolCall, { ...context, nestedExecutor: execute })
+      if (shouldBypassPermission(toolCall.name, args)) return base(toolCall, { ...context, nestedExecutor: execute })
       emit({ type: 'permission_required', streamId, toolCallId: toolCall.id, toolName: toolCall.name, toolInput: args })
       const decision = await broker.requestDecision<PermissionDecision>({ streamId, toolCallId: toolCall.id, signal: sig })
       if (decision === 'deny') throw new Error('Tool execution denied by user')
       if (decision === 'allow_always') broker.setAutoApproveAll(streamId)
-      return base(toolCall, context)
+      return base(toolCall, { ...context, nestedExecutor: execute })
     }
 
     // Hooks active — port of the renderer executeToolWithPermissionCheck
@@ -163,7 +164,7 @@ export function createChatPausingExecutor(deps: {
         // still fires PostToolUse — same as the renderer.
         result = await runClarify(effectiveToolCall, effArgs)
       } else if (broker.isAutoApproveAll(streamId) || shouldBypassPermission(effectiveToolCall.name, effArgs)) {
-        result = await base(effectiveToolCall, context)
+        result = await base(effectiveToolCall, { ...context, nestedExecutor: execute })
       } else {
         // Prompt shows the rewritten args. toolCallId stays the original id (a rewrite
         // only touches arguments), so the /resume correlation is unchanged.
@@ -171,7 +172,7 @@ export function createChatPausingExecutor(deps: {
         const decision = await broker.requestDecision<PermissionDecision>({ streamId, toolCallId: toolCall.id, signal: sig })
         if (decision === 'deny') throw new Error('Tool execution denied by user')
         if (decision === 'allow_always') broker.setAutoApproveAll(streamId)
-        result = await base(effectiveToolCall, context)
+        result = await base(effectiveToolCall, { ...context, nestedExecutor: execute })
       }
 
       await hookSession.runPostToolUse(effectiveToolCall, result, context)
@@ -185,6 +186,7 @@ export function createChatPausingExecutor(deps: {
       throw error
     }
   }
+  return execute
 }
 
 export interface HeadlessChatOrchestrator {
@@ -384,7 +386,12 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
       modelName: request.modelName,
     })
 
-    const history = this.conversationRepo.listPathToMessage(request.conversationId, resolved.historyLeafId)
+    // Keep the full parent chain in SQLite for branch navigation/auditability, but never
+    // replay ancestors that a compaction summary has replaced. This restores the legacy
+    // renderer-loop invariant for every server-owned operation (send/branch/edit/repeat).
+    const history = trimHistoryToLatestCompaction(
+      this.conversationRepo.listPathToMessage(request.conversationId, resolved.historyLeafId)
+    )
 
     const resolvedOperationMode = request.operationMode ?? 'execute'
     // An explicit tools array (even empty) is authoritative — only fall back to the
@@ -460,6 +467,8 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
         rootPath: request.rootPath ?? conversation?.cwd ?? null,
         operationMode: resolvedOperationMode,
         toolTimeoutMs: request.toolTimeoutMs,
+        toolAutoApprove: request.toolAutoApprove,
+        subagentReasoningEffort: request.subagentReasoningEffort,
         autoCompactionEnabled: request.autoCompactionEnabled,
         contextLength: request.contextLength,
         compactionThresholdPercent: request.compactionThresholdPercent,

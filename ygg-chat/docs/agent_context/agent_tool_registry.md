@@ -27,7 +27,7 @@ Use this when changing:
 ## Runtime Context
 
 - The model sees tool schemas built from the active registry.
-- Built-in tools have shared schemas and Electron implementations.
+- Built-in tools have shared schemas and Electron implementations. `multi_call` is a headless-server composite implementation rather than a `toolOrchestrator` leaf handler: it expands nested calls and sends each through normal policy-aware execution.
 - Custom tools should be discovered/managed through `custom_tool_manager`, not called directly by undeclared names.
 - MCP tools are discovered through MCP manager routes and merged if model-visible.
 

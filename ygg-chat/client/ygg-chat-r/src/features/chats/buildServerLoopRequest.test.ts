@@ -133,4 +133,9 @@ describe('buildServerLoopRequest', () => {
     expect(() => buildServerLoopRequest('edit', { ...base })).toThrow(/edit requires messageId/)
     expect(() => buildServerLoopRequest('branch', { ...base })).toThrow(/branch requires messageId/)
   })
+
+  it('forwards the persisted subagent reasoning effort to the server loop', () => {
+    const { body } = buildServerLoopRequest('send', { ...base, subagentReasoningEffort: 'xhigh' })
+    expect(body.subagentReasoningEffort).toBe('xhigh')
+  })
 })

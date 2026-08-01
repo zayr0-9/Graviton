@@ -223,7 +223,24 @@ export function projectServerEvent(event: ServerStreamEvent, ctx: ProjectionCont
       return [chatSliceActions.freeTierLimitModalShown()]
     }
 
-    // provider_routed, context_usage, context_compaction, tool_execution, tool_request: no-ops in Phase 1.
+    case 'context_compaction': {
+      // The server persists an automatic summary outside the ordinary assistant-message
+      // stream. Project its completed marker so the active branch and context meter
+      // immediately share the same replay boundary as the server.
+      if (event.status !== 'completed' || !event.summaryMessage) return []
+      const message = normalizeServerMessage(event.summaryMessage)
+      return [
+        chatSliceActions.messageAdded(message),
+        chatSliceActions.messageBranchCreated({ newMessage: message }),
+        chatSliceActions.streamLineageUpdated({
+          streamId,
+          branchAnchorMessageId: message.id,
+          currentBranchAnchorMessageId: message.id,
+        }),
+      ]
+    }
+
+    // provider_routed, context_usage, tool_execution, tool_request: no-ops in Phase 1.
     default:
       return []
   }
