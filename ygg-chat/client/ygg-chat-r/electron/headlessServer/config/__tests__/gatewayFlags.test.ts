@@ -34,8 +34,9 @@ describe('resolveGatewayFlags', () => {
     else process.env.YGG_GATEWAY_MODE = saved
   })
 
-  it('defaults every flag OFF with no env override and no Conf keys set', () => {
-    expect(resolveGatewayFlags()).toEqual({ chat: false, tokenOwner: false, crud: false, cloudProxy: false })
+  it('defaults chat ON and every other flag OFF with no env override and no Conf keys set', () => {
+    // Phase 6 cutover: chat defaults ON (renderer routes all chat server-side).
+    expect(resolveGatewayFlags()).toEqual({ chat: true, tokenOwner: false, crud: false, cloudProxy: false })
   })
 
   it('YGG_GATEWAY_MODE truthy is a master override that turns every flag on', () => {
@@ -45,34 +46,41 @@ describe('resolveGatewayFlags', () => {
     }
   })
 
-  it('treats a non-truthy env value as off (falls through to Conf defaults)', () => {
+  it('treats a non-truthy env value as off (falls through to Conf defaults: chat on, rest off)', () => {
     process.env.YGG_GATEWAY_MODE = 'off'
+    expect(resolveGatewayFlags()).toEqual({ chat: true, tokenOwner: false, crud: false, cloudProxy: false })
+  })
+
+  it('an explicit gateway.chat === false Conf key forces chat off (the escape hatch)', () => {
+    mockConf.get = key => (key === 'gateway.chat' ? false : undefined)
     expect(resolveGatewayFlags()).toEqual({ chat: false, tokenOwner: false, crud: false, cloudProxy: false })
   })
 
-  it('reads each flag independently from its Conf key (only === true enables)', () => {
-    mockConf.get = key => (key === 'gateway.chat' ? true : undefined)
-    expect(resolveGatewayFlags()).toEqual({ chat: true, tokenOwner: false, crud: false, cloudProxy: false })
-
+  it('chat stays on for any non-false chat value; other flags need === true', () => {
+    // chat uses `!== false`, so a loose truthy value keeps it on (it is on by default).
     mockConf.get = key => (key === 'gateway.tokenOwner' ? true : 'truthy-but-not-boolean')
-    // A non-boolean truthy value must NOT enable (guards against loose Conf values).
-    expect(resolveGatewayFlags()).toEqual({ chat: false, tokenOwner: true, crud: false, cloudProxy: false })
+    expect(resolveGatewayFlags()).toEqual({ chat: true, tokenOwner: true, crud: false, cloudProxy: false })
+
+    // A non-boolean truthy value must NOT enable the === true flags.
+    mockConf.get = key => (key === 'gateway.crud' ? 'truthy-but-not-boolean' : undefined)
+    expect(resolveGatewayFlags()).toEqual({ chat: true, tokenOwner: false, crud: false, cloudProxy: false })
   })
 
   it('reads the Phase 5 crud + cloudProxy keys independently (only === true enables)', () => {
     mockConf.get = key => (key === 'gateway.crud' ? true : undefined)
-    expect(resolveGatewayFlags()).toEqual({ chat: false, tokenOwner: false, crud: true, cloudProxy: false })
+    expect(resolveGatewayFlags()).toEqual({ chat: true, tokenOwner: false, crud: true, cloudProxy: false })
 
     mockConf.get = key => (key === 'gateway.cloudProxy' ? true : undefined)
-    expect(resolveGatewayFlags()).toEqual({ chat: false, tokenOwner: false, crud: false, cloudProxy: true })
+    expect(resolveGatewayFlags()).toEqual({ chat: true, tokenOwner: false, crud: false, cloudProxy: true })
 
     mockConf.get = key => (key === 'gateway.crud' || key === 'gateway.cloudProxy' ? true : 0)
-    expect(resolveGatewayFlags()).toEqual({ chat: false, tokenOwner: false, crud: true, cloudProxy: true })
+    // chat: 0 !== false => stays on.
+    expect(resolveGatewayFlags()).toEqual({ chat: true, tokenOwner: false, crud: true, cloudProxy: true })
   })
 
-  it('a corrupt/unreadable Conf store must never throw at startup — stays default-off', () => {
+  it('a corrupt/unreadable Conf store must never throw at startup — keeps chat on, rest off', () => {
     mockConf.throws = true
     expect(() => resolveGatewayFlags()).not.toThrow()
-    expect(resolveGatewayFlags()).toEqual({ chat: false, tokenOwner: false, crud: false, cloudProxy: false })
+    expect(resolveGatewayFlags()).toEqual({ chat: true, tokenOwner: false, crud: false, cloudProxy: false })
   })
 })

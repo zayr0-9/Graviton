@@ -1,11 +1,13 @@
 /**
- * Gateway feature flags (Phase 4+). Conf-backed, env-overridable, default OFF.
+ * Gateway feature flags (Phase 4+). Conf-backed, env-overridable.
  *
- * With every flag off the server behaves byte-for-byte as before, so these gate
- * only the opt-in server-owned cloud path:
+ * As of the Phase 6 cutover `chat` defaults ON (the renderer routes all chat
+ * through the server-owned loop); the rest default OFF. These gate the
+ * server-owned cloud path:
  *  - `chat`       — route the cloud (openrouter) chat through the server engine:
  *                   relay free-tier SSE events and adopt Railway message ids via
- *                   the CloudMirrorSink. Consumed by ChatOrchestrator.
+ *                   the CloudMirrorSink. Consumed by ChatOrchestrator. DEFAULT ON;
+ *                   an explicit `gateway.chat === false` Conf key forces it off.
  *  - `tokenOwner` — make the server the sole Supabase-token refresher. NOT yet
  *                   consumed (lands with the token-owner slice); resolved here so
  *                   the whole flag surface lives in one place.
@@ -40,18 +42,26 @@ export function resolveGatewayFlags(): GatewayFlags {
     return { chat: true, tokenOwner: true, crud: true, cloudProxy: true }
   }
 
-  let chat = false
+  // Phase 6 cutover: `chat` now defaults ON. The renderer routes all 5 chat
+  // providers through the server-owned loop unconditionally, and the openrouter
+  // (cloud) route requires gateway.chat for its CloudMirrorSink (Railway id
+  // adoption) + free-tier SSE relay. An explicit `gateway.chat === false` Conf key
+  // still forces it off as an escape hatch. `crud`/`cloudProxy` are vestigial —
+  // the Phase 5 gateway routes mount unconditionally (index.ts, `enabled: true`) —
+  // and `tokenOwner` stays default-off (the separate sole-refresher slice, coupled
+  // to the renderer flag and validated independently).
+  let chat = true
   let tokenOwner = false
   let crud = false
   let cloudProxy = false
   try {
     const store = new Conf({ projectName: 'ygg-chat-r', configFileMode: 0o600 })
-    chat = store.get('gateway.chat') === true
+    chat = store.get('gateway.chat') !== false
     tokenOwner = store.get('gateway.tokenOwner') === true
     crud = store.get('gateway.crud') === true
     cloudProxy = store.get('gateway.cloudProxy') === true
   } catch {
-    // A missing/corrupt Conf store must never break server startup; stay default-off.
+    // A missing/corrupt Conf store must never break server startup; keep chat on.
   }
   return { chat, tokenOwner, crud, cloudProxy }
 }

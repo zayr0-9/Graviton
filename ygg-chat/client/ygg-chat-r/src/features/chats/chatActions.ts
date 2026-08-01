@@ -3134,7 +3134,7 @@ export const sendMessage = createAsyncThunk<
       if (
         isServerOwnedChatLoopEnabled() &&
         isElectronMode &&
-        (isLmStudio || isZai || isOpenAIChatGPT || (isCloudServerLoopEnabled() && providerSlug === 'openrouter'))
+        (isLmStudio || isZai || isBedrock || isOpenAIChatGPT || (isCloudServerLoopEnabled() && providerSlug === 'openrouter'))
       ) {
         // ChatGPT auth: resolve fresh {accessToken, accountId} from the renderer (auto-
         // refreshing) so the server uses them directly. null for every other provider.
@@ -5600,7 +5600,7 @@ export const editMessageWithBranching = createAsyncThunk<
       if (
         isServerOwnedChatLoopEnabled() &&
         isElectronMode &&
-        (isLmStudio || isZai || isOpenAIChatGPT || (isCloudServerLoopEnabled() && providerSlug === 'openrouter'))
+        (isLmStudio || isZai || isBedrock || isOpenAIChatGPT || (isCloudServerLoopEnabled() && providerSlug === 'openrouter'))
       ) {
         // ChatGPT auth: resolve fresh {accessToken, accountId} from the renderer (auto-
         // refreshing) so the server uses them directly. null for every other provider.
@@ -7096,7 +7096,7 @@ export const sendMessageToBranch = createAsyncThunk<
       if (
         isServerOwnedChatLoopEnabled() &&
         isElectronMode &&
-        (isLmStudio || isZai || isOpenAIChatGPT || (isCloudServerLoopEnabled() && providerSlug === 'openrouter'))
+        (isLmStudio || isZai || isBedrock || isOpenAIChatGPT || (isCloudServerLoopEnabled() && providerSlug === 'openrouter'))
       ) {
         // ChatGPT auth: resolve fresh {accessToken, accountId} from the renderer (auto-
         // refreshing) so the server uses them directly. null for every other provider.
