@@ -2317,8 +2317,14 @@ const requestPlanClarification = async (
       questions,
       conversationId: context?.conversationId,
       messageId: context?.messageId,
-      streamId: context?.streamId,
-      toolCallId: typeof toolCall?.id === 'string' ? toolCall.id : undefined,
+      // NOTE: streamId/toolCallId are intentionally OMITTED here. This is the
+      // CLIENT-owned loop, which resolves the clarification via the
+      // pendingPlanClarificationResolve promise below — NOT POST /api/resume.
+      // Setting them makes respondToPlanClarification take the server-loop /resume
+      // branch (which has no matching DecisionBroker pending → 409, swallowed) and
+      // never resolves this promise, hanging the loop at the tool call. Mirrors
+      // requestToolPermissionDecision, which likewise omits them (why permission
+      // worked while clarify hung). The server loop sets them via sseProjection.
     })
   )
 
