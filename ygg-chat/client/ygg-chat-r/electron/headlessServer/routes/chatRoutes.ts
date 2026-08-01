@@ -1,8 +1,9 @@
 import type { Express, Request, Response } from 'express'
-import type { HeadlessChatOperation, HeadlessMessageRequest } from '../contracts/headlessApi.js'
+import type { HeadlessChatOperation, HeadlessMessageRequest, HeadlessStreamEvent } from '../contracts/headlessApi.js'
 import type { HeadlessChatOrchestrator } from '../services/chatOrchestrator.js'
 import type { CompactionService } from '../services/compactionService.js'
 import type { Decision, DecisionBroker } from '../services/decisionBroker.js'
+import type { RunSessionRegistry, RunSubscriber } from '../services/runSessionRegistry.js'
 import { initializeSse, startSseHeartbeat, writeSseEvent } from '../stream/sseWriter.js'
 
 interface RegisterChatRoutesDeps {
@@ -10,6 +11,28 @@ interface RegisterChatRoutesDeps {
   compactionService?: CompactionService
   /** Shared pause/resume registry; also injected into the ChatOrchestrator. */
   decisionBroker?: DecisionBroker
+  /**
+   * Detach/reattach registry (gateway.resumableRuns). When present AND `resumableRuns`
+   * is true, a run's lifetime is owned by its RunSession, not by the SSE socket.
+   */
+  runSessions?: RunSessionRegistry
+  /** Master gate: when false the route keeps the legacy disconnect==abort behavior. */
+  resumableRuns?: boolean
+}
+
+/** Adapt an Express SSE response to the registry's transport-agnostic sink. */
+function makeSubscriber(res: Response): RunSubscriber {
+  const r = res as unknown as { writableEnded?: boolean; destroyed?: boolean }
+  return {
+    send: frame => {
+      if (r.writableEnded || r.destroyed) return
+      // seq rides alongside the event so a reconnecting client can resume from a cursor.
+      writeSseEvent(res, { ...(frame.event as Record<string, unknown>), seq: frame.seq })
+    },
+    end: () => {
+      if (!r.writableEnded) res.end()
+    },
+  }
 }
 
 function buildHeadlessMessageRequest(req: Request, operation: HeadlessChatOperation): HeadlessMessageRequest {
@@ -103,41 +126,81 @@ async function runSseOrchestrator(
   orchestrator: HeadlessChatOrchestrator,
   req: Request,
   res: Response,
-  operation: HeadlessChatOperation
+  operation: HeadlessChatOperation,
+  opts: { runSessions?: RunSessionRegistry; resumableRuns?: boolean }
 ): Promise<void> {
+  const body = req.body ?? {}
+  const streamId = body.streamId ?? body.stream_id
+  const useSession = Boolean(opts.resumableRuns && opts.runSessions && streamId)
+
+  if (!useSession) {
+    // ── Legacy path: run lifetime == connection lifetime (disconnect => abort). ──
+    initializeSse(res)
+    const stopHeartbeat = startSseHeartbeat(res)
+    // Abort the run when the client disconnects. This both cancels in-flight
+    // provider/tool work and unblocks a loop paused awaiting a permission/clarify
+    // decision, so a dropped client never hangs the run.
+    const abortController = new AbortController()
+    let finished = false
+
+    res.on('close', () => {
+      if (!finished) abortController.abort()
+    })
+
+    try {
+      const request = buildHeadlessMessageRequest(req, operation)
+      await orchestrator.runMessage(
+        request,
+        event => {
+          writeSseEvent(res, event)
+        },
+        abortController.signal
+      )
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      writeSseEvent(res, { type: 'error', error: message })
+    } finally {
+      finished = true
+      stopHeartbeat()
+      res.end()
+    }
+    return
+  }
+
+  // ── Resumable path: the RunSession owns the run's lifetime. A bare client
+  // disconnect DETACHES (the loop keeps running in the main process); only an explicit
+  // POST /api/streams/:id/abort or the reaper cancels it. ──
+  const registry = opts.runSessions!
+  const conversationId = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id
+  // A fresh start supersedes any stale/lingering session for this id. streamIds are
+  // unique per send, so this is virtually always a no-op.
+  registry.delete(String(streamId))
+  const session = registry.create(String(streamId), conversationId || null)
+
   initializeSse(res)
   const stopHeartbeat = startSseHeartbeat(res)
-  // Abort the run when the client disconnects. This both cancels in-flight
-  // provider/tool work and (Phase 2+) unblocks a loop paused awaiting a
-  // permission/clarify decision, so a dropped client never hangs the run.
-  const abortController = new AbortController()
-  let finished = false
-
+  const subscriber = makeSubscriber(res)
   res.on('close', () => {
-    if (!finished) abortController.abort()
+    stopHeartbeat()
+    session.detach(subscriber) // keep the run alive; only release this socket
   })
+  session.attach(subscriber)
 
   try {
     const request = buildHeadlessMessageRequest(req, operation)
-    await orchestrator.runMessage(
-      request,
-      event => {
-        writeSseEvent(res, event)
-      },
-      abortController.signal
-    )
+    await orchestrator.runMessage(request, event => session.publish(event), session.signal)
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error)
-    writeSseEvent(res, { type: 'error', error: message })
+    session.publish({ type: 'error', error: message } as HeadlessStreamEvent)
   } finally {
-    finished = true
     stopHeartbeat()
-    res.end()
+    // No res.end()/delete here: a terminal publish already released the live subscriber,
+    // and the session lingers for a late reconnect until the reaper evicts it.
   }
 }
 
 export function registerChatRoutes(app: Express, deps: RegisterChatRoutesDeps): void {
-  const { orchestrator, compactionService, decisionBroker } = deps
+  const { orchestrator, compactionService, decisionBroker, runSessions, resumableRuns } = deps
 
   // Pause/resume: the renderer answers a permission_required / clarify_required
   // event by resolving the paused decision on the ALREADY-OPEN SSE stream. Plain
@@ -169,6 +232,58 @@ export function registerChatRoutes(app: Express, deps: RegisterChatRoutesDeps): 
     const matched = decisionBroker.resolve(String(streamId), String(toolCallId), decision)
     if (matched) res.status(200).json({ success: true })
     else res.status(409).json({ success: false, error: 'No pending decision for that stream/toolCall' })
+  })
+
+  // Detach/reattach (gateway.resumableRuns). Reconnect to an in-flight run by streamId
+  // and replay every buffered event after ?fromSeq. Any parked permission_required /
+  // clarify_required event is in that buffer, so it re-surfaces on replay for free.
+  // 410 => the run is gone (client should reload persisted messages).
+  app.get('/api/streams/:streamId', (req, res) => {
+    if (!runSessions || !resumableRuns) {
+      res.status(501).json({ error: 'Resumable runs are not enabled' })
+      return
+    }
+    const streamIdParam = Array.isArray(req.params.streamId) ? req.params.streamId[0] : req.params.streamId
+    const session = streamIdParam ? runSessions.get(String(streamIdParam)) : undefined
+    if (!session) {
+      res.status(410).json({ error: 'No live run for that streamId', gone: true })
+      return
+    }
+    const fromSeqRaw = req.query.fromSeq
+    const fromSeqStr = Array.isArray(fromSeqRaw) ? fromSeqRaw[0] : fromSeqRaw
+    const fromSeq = typeof fromSeqStr === 'string' ? Math.max(0, Number.parseInt(fromSeqStr, 10) || 0) : 0
+
+    initializeSse(res)
+    const stopHeartbeat = startSseHeartbeat(res)
+    const subscriber = makeSubscriber(res)
+    res.on('close', () => {
+      stopHeartbeat()
+      session.detach(subscriber)
+    })
+
+    const result = session.attach(subscriber, fromSeq)
+    if (result.status === 'truncated') {
+      // The client's cursor predates the retained buffer — it must reload from storage.
+      writeSseEvent(res, { type: 'error', error: 'stream_buffer_truncated' })
+      stopHeartbeat()
+      res.end()
+    } else if (result.status === 'replayed-terminal') {
+      // attach() already flushed the tail and ended the subscriber.
+      stopHeartbeat()
+    }
+    // 'attached-live': stays open; future frames + heartbeat continue.
+  })
+
+  // Explicit cancel — the ONLY thing that stops a resumable run (a bare disconnect only
+  // detaches). Aborting the run signal also unblocks any paused permission/clarify wait.
+  app.post('/api/streams/:streamId/abort', (req, res) => {
+    if (!runSessions || !resumableRuns) {
+      res.status(501).json({ error: 'Resumable runs are not enabled' })
+      return
+    }
+    const streamIdParam = Array.isArray(req.params.streamId) ? req.params.streamId[0] : req.params.streamId
+    const cancelled = streamIdParam ? runSessions.cancel(String(streamIdParam)) : false
+    res.status(cancelled ? 200 : 404).json({ success: cancelled })
   })
 
   app.post('/api/conversations/:id/compact', async (req, res) => {
@@ -216,19 +331,21 @@ export function registerChatRoutes(app: Express, deps: RegisterChatRoutesDeps): 
     }
   })
 
+  const sseOpts = { runSessions, resumableRuns }
+
   app.post('/api/conversations/:id/messages', async (req, res) => {
-    await runSseOrchestrator(orchestrator, req, res, 'send')
+    await runSseOrchestrator(orchestrator, req, res, 'send', sseOpts)
   })
 
   app.post('/api/conversations/:id/messages/repeat', async (req, res) => {
-    await runSseOrchestrator(orchestrator, req, res, 'repeat')
+    await runSseOrchestrator(orchestrator, req, res, 'repeat', sseOpts)
   })
 
   app.post('/api/conversations/:id/messages/:messageId/branch', async (req, res) => {
-    await runSseOrchestrator(orchestrator, req, res, 'branch')
+    await runSseOrchestrator(orchestrator, req, res, 'branch', sseOpts)
   })
 
   app.post('/api/conversations/:id/messages/:messageId/edit-branch', async (req, res) => {
-    await runSseOrchestrator(orchestrator, req, res, 'edit-branch')
+    await runSseOrchestrator(orchestrator, req, res, 'edit-branch', sseOpts)
   })
 }

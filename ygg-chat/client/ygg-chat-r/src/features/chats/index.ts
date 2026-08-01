@@ -22,6 +22,7 @@ export {
   AUTO_COMPACTION_NOTE,
   GENERATED_IMAGE_PATH_HINT_NOTE,
   abortGeneration,
+  resumeInFlightStreams,
   deleteMessage,
   editMessageWithBranching,
   refreshCurrentPathAfterDelete,

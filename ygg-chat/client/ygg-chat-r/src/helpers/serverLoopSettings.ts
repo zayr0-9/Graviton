@@ -55,3 +55,47 @@ export function setServerTokenOwnerEnabled(enabled: boolean): void {
     // ignore (storage unavailable)
   }
 }
+
+/**
+ * Resumable runs (detach/reattach). Default OFF. When on, the renderer:
+ *  - treats a stream drop as a DETACH, not a cancel: it resubscribes to the
+ *    server-owned run by streamId (GET /api/streams/:id?fromSeq=…) and replays;
+ *  - routes an explicit Stop through POST /api/streams/:id/abort (a bare disconnect
+ *    no longer cancels the run server-side);
+ *  - re-attaches to in-flight runs after a reload.
+ *
+ * Coupled to the SERVER flag (gateway.resumableRuns): with the server flag off, the
+ * detach/reattach routes 501 and a disconnect still aborts, so turning on only this
+ * renderer flag degrades to a harmless no-op (resubscribe fails => treated as ended).
+ */
+const RESUMABLE_RUNS_STORAGE_KEY = 'ygg.resumableRuns'
+
+function readResumableRunsEnvOverride(): boolean | null {
+  try {
+    const raw = (import.meta as any)?.env?.VITE_RESUMABLE_RUNS
+    if (raw === undefined || raw === null || raw === '') return null
+    return raw === 'true' || raw === '1' || raw === true
+  } catch {
+    return null
+  }
+}
+
+export function isResumableRunsEnabled(): boolean {
+  const envOverride = readResumableRunsEnvOverride()
+  if (envOverride !== null) return envOverride
+  try {
+    return typeof localStorage !== 'undefined' && localStorage.getItem(RESUMABLE_RUNS_STORAGE_KEY) === 'true'
+  } catch {
+    return false
+  }
+}
+
+export function setResumableRunsEnabled(enabled: boolean): void {
+  try {
+    if (typeof localStorage === 'undefined') return
+    if (enabled) localStorage.setItem(RESUMABLE_RUNS_STORAGE_KEY, 'true')
+    else localStorage.removeItem(RESUMABLE_RUNS_STORAGE_KEY)
+  } catch {
+    // ignore (storage unavailable)
+  }
+}

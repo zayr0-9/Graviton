@@ -51,7 +51,9 @@ import { DEFAULT_COMPACTION_SYSTEM_PROMPT, loadProviderSettings } from '../../he
 import { updateToolEnabledState } from '../../helpers/toolSettingsStorage'
 import { generateStreamId, STREAM_PRUNE_DELAY } from './streamHelpers'
 import { createStreamingRun, finishStreamingRun } from './streamRunTracking'
-import { runServerChatLoop } from './mainChatClient'
+import { runServerChatLoop, runServerReattach, postStreamAbort } from './mainChatClient'
+import { addInflightStream, removeInflightStream, listInflightStreams } from './inflightStreams'
+import { isResumableRunsEnabled } from '../../helpers/serverLoopSettings'
 import { buildServerLoopRequest } from './buildServerLoopRequest'
 import { getValidTokens } from './openaiOAuth'
 import { filterToolsForOperationMode } from './operationModeSystemPrompt'
@@ -784,6 +786,10 @@ const appendGeneratedImagePathHintsForHistory = (history: Message[], allMessages
 
 const generationAbortControllersByStream = new Map<string, Set<AbortController>>()
 
+// Detach/reattach: conversations whose in-flight runs we have already tried to resume
+// this session (mount-time resume fires at most once per conversation).
+const resumedConversations = new Set<string>()
+
 const registerGenerationAbortController = (streamId: string | null | undefined, controller: AbortController) => {
   if (!streamId) return () => {}
   let controllers = generationAbortControllersByStream.get(streamId)
@@ -1160,6 +1166,17 @@ export const sendMessage = createAsyncThunk<
       source: 'renderer',
       lineage: { rootMessageId: parent },
     })
+    // Detach/reattach: mark this run in-flight so a reload can re-attach to it. Cleared
+    // in the finally below on normal end; a reload kills the thunk first, leaving the
+    // marker for mount-time resume (resumeInFlightStreams).
+    if (isResumableRunsEnabled()) {
+      addInflightStream({
+        streamId,
+        conversationId: String(conversationId),
+        streamType: 'primary',
+        parentMessageId: parent ?? null,
+      })
+    }
 
     let controller: AbortController | undefined
     let unregisterGenerationAbortController = () => {}
@@ -1329,6 +1346,9 @@ export const sendMessage = createAsyncThunk<
       return rejectWithValue(message)
     } finally {
       unregisterGenerationAbortController()
+      // Terminal for THIS session (completed / errored / cancelled). Only a reload —
+      // which kills the thunk before finally — leaves the marker for mount-time resume.
+      removeInflightStream(streamId)
     }
   }
 )
@@ -1403,6 +1423,14 @@ export const fetchConversationMessages = createAsyncThunk<
     }))
 
     dispatch(chatSliceActions.messagesLoaded(messages))
+
+    // Detach/reattach: after a reload, re-attach to any server-owned runs this renderer
+    // started for THIS conversation but never saw finish. Once per conversation per
+    // session; fire-and-forget; no-op unless resumable runs are enabled.
+    if (isResumableRunsEnabled() && !resumedConversations.has(String(conversationId))) {
+      resumedConversations.add(String(conversationId))
+      void dispatch(resumeInFlightStreams({ conversationId: String(conversationId) }))
+    }
 
     // Conditional attachments fetch: only when metadata indicates or when metadata absent (back-compat)
     const state = getState() as RootState
@@ -1527,6 +1555,14 @@ export const editMessageWithBranching = createAsyncThunk<
       source: 'renderer',
       lineage: { originMessageId: originalMessageId, rootMessageId: parentMessageId },
     })
+    if (isResumableRunsEnabled()) {
+      addInflightStream({
+        streamId,
+        conversationId: String(conversationId),
+        streamType: 'branch',
+        parentMessageId: parentMessageId ?? null,
+      })
+    }
 
     let controller: AbortController | undefined
     let unregisterGenerationAbortController = () => {}
@@ -1857,6 +1893,7 @@ export const editMessageWithBranching = createAsyncThunk<
       return rejectWithValue(message)
     } finally {
       unregisterGenerationAbortController()
+      removeInflightStream(streamId)
     }
   }
 )
@@ -1920,6 +1957,14 @@ export const sendMessageToBranch = createAsyncThunk<
       source: 'renderer',
       lineage: { rootMessageId: parentId },
     })
+    if (isResumableRunsEnabled()) {
+      addInflightStream({
+        streamId,
+        conversationId: String(conversationId),
+        streamType: 'branch',
+        parentMessageId: parentId ?? null,
+      })
+    }
 
     let controller: AbortController | undefined
     let unregisterGenerationAbortController = () => {}
@@ -2067,6 +2112,7 @@ export const sendMessageToBranch = createAsyncThunk<
       return rejectWithValue(message)
     } finally {
       unregisterGenerationAbortController()
+      removeInflightStream(streamId)
     }
   }
 )
@@ -2613,17 +2659,74 @@ export const abortGeneration = createAsyncThunk<
 >('chat/abortGeneration', async ({ streamId }, { dispatch }) => {
   abortSubagentControllers(streamId)
 
+  // Under resumable runs a bare socket close only DETACHES (the run keeps going), so an
+  // explicit Stop must cancel the server-owned run via POST /api/streams/:id/abort.
+  // Fire it BEFORE tearing down the local reader. Best-effort (never throws).
+  if (isResumableRunsEnabled()) {
+    if (streamId) void postStreamAbort(streamId)
+    else for (const rec of listInflightStreams()) void postStreamAbort(rec.streamId)
+  }
+
   // Phase 6: every provider streams through the server-owned SSE loop. Aborting the
-  // local stream controller closes the SSE connection, which the server observes
-  // (res.on('close')) and uses to unwind the paused/running loop — so there is no
-  // separate renderer→Railway abort call.
+  // local stream controller closes the SSE connection. In the legacy (non-resumable)
+  // path the server observes res.on('close') and unwinds the loop; under resumable runs
+  // the explicit /abort above is what actually cancels it.
   abortGenerationControllers(streamId)
 
   if (streamId) {
     dispatch(chatSliceActions.streamingAborted({ streamId }))
     void finishStreamingRun(streamId, { status: 'aborted', endReason: 'aborted', error: 'Generation aborted' })
+    removeInflightStream(streamId)
   } else {
     dispatch(chatSliceActions.allStreamsAborted())
+    for (const rec of listInflightStreams()) removeInflightStream(rec.streamId)
+  }
+})
+
+/**
+ * Detach/reattach: after a reload, re-attach to any server-owned runs this renderer
+ * started but never saw finish (tracked in localStorage across the reload). For each,
+ * rebuild the stream slot (sendingStarted) and replay from the server by streamId. A
+ * run the server no longer has (410) clears its marker; persisted messages already
+ * loaded reflect the true state. No-op unless resumable runs are enabled.
+ */
+export const resumeInFlightStreams = createAsyncThunk<
+  void,
+  { conversationId: string },
+  { state: RootState }
+>('chat/resumeInFlightStreams', async ({ conversationId }, { dispatch, getState }) => {
+  if (!isResumableRunsEnabled()) return
+  const records = listInflightStreams(String(conversationId))
+  for (const rec of records) {
+    const controller = new AbortController()
+    const unregister = registerGenerationAbortController(rec.streamId, controller)
+    dispatch(
+      chatSliceActions.sendingStarted({
+        streamId: rec.streamId,
+        streamType: rec.streamType,
+        conversationId: rec.conversationId,
+        lineage: { rootMessageId: rec.parentMessageId ?? undefined },
+      })
+    )
+    try {
+      const result = await runServerReattach(
+        {
+          streamId: rec.streamId,
+          conversationId: rec.conversationId,
+          operation: rec.streamType === 'branch' ? 'branch' : 'send',
+          fromSeq: 0,
+          signal: controller.signal,
+        },
+        { dispatch, getState }
+      )
+      if (result.gone) dispatch(chatSliceActions.streamingAborted({ streamId: rec.streamId }))
+      removeInflightStream(rec.streamId)
+    } catch {
+      removeInflightStream(rec.streamId)
+    } finally {
+      dispatch(chatSliceActions.sendingCompleted({ streamId: rec.streamId }))
+      unregister()
+    }
   }
 })
 

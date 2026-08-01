@@ -24,6 +24,7 @@ import { createCloudMirrorService } from './services/cloudMirrorService.js'
 import { runHookRequest } from '../hooks/hookRunner.js'
 import { ChatOrchestrator } from './services/chatOrchestrator.js'
 import { DecisionBroker } from './services/decisionBroker.js'
+import { RunSessionRegistry } from './services/runSessionRegistry.js'
 import { CompactionService } from './services/compactionService.js'
 import { SubagentRunService } from './services/subagentRunService.js'
 import { normalizeProviderRoute } from './services/providerRouter.js'
@@ -245,6 +246,13 @@ export function registerHeadlessServerRoutes(app: Express, deps: HeadlessServerR
   // loop) and the POST /api/resume route (which resolves the paused decision).
   const decisionBroker = new DecisionBroker()
 
+  // Detach/reattach registry (gateway.resumableRuns, default OFF). When on, a chat run's
+  // lifetime is owned by its RunSession rather than the SSE socket, so a client reload
+  // detaches instead of aborting. Only started (reaper) when the flag is on; off => the
+  // registry stays empty and the chat route keeps the legacy disconnect==abort path.
+  const runSessions = new RunSessionRegistry()
+  if (gatewayFlags.resumableRuns) runSessions.startReaper()
+
   registerCrudRoutes(app, deps)
   registerProviderAuthRoutes(app, { tokenStore })
   registerMobileUiRoutes(app)
@@ -322,5 +330,7 @@ export function registerHeadlessServerRoutes(app: Express, deps: HeadlessServerR
     }),
     compactionService,
     decisionBroker,
+    runSessions,
+    resumableRuns: gatewayFlags.resumableRuns,
   })
 }
