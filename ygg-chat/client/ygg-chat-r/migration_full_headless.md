@@ -21,13 +21,25 @@ turning the renderer into a thin client that talks only to `127.0.0.1:3002`.
 | 3 | 5 lifecycle chat hooks in the server loop | ✅ done | `919b207` |
 | 4 | Cloud provider through the gateway (free-tier relay + Railway id adoption + token owner) | ◐ near-complete — Slices 1/3/4 + Slice 2 (sole token refresher) all landed; only the openrouter free-tier relay remains not-live-tested | `1f68568`, `176fbb3`, `8d0cb06` |
 | 5 | Storage-aware CRUD gateway + retire dualSync | ● complete (pending build:mac dogfood) — writes + reads + models + system-prompts + Stripe + attachments + OAuth + search all cut over; renderer no longer calls Railway directly except the Phase-6 streaming loop | `293ef8d`, `881c7e8`, `e2196bd`, `fb355ba`, `1d7aa51`, `4d2af8a`, `e9fd983`, `a3b6638`, `32fc17e` |
-| 6 | Cutover + delete ~5,200 renderer loop lines; flags default-on | ☐ not started | — |
+| 6 | Cutover + delete the renderer loop; flags default-on | ✅ done (pending build:mac dogfood) — `chatActions.ts` 9,415 → 3,003 lines; renderer is a pure `:3002` thin client | `7a6098d`, `dba3bda` |
 
-Feature flags in play today:
-- `isServerOwnedChatLoopEnabled()` — renderer base flag (`localStorage['ygg.serverOwnedChatLoop']` / `VITE_SERVER_OWNED_CHAT_LOOP`). Routes LM Studio, Zai, **and ChatGPT** through the server loop.
-- `isCloudServerLoopEnabled()` — renderer sub-flag (`localStorage['ygg.cloudServerLoop']` / `VITE_CLOUD_SERVER_LOOP`), nested under the base flag. Adds the **openrouter** route.
-- `gateway.chat` — server flag (Conf key, or `YGG_GATEWAY_MODE` master env override). Enables the openrouter free-tier relay + CloudMirrorSink.
-- `gateway.tokenOwner` — server flag, **now consumed** (Slice 2): gates the `app-auth:get-fresh-token` IPC handler so the server becomes the sole Supabase-token refresher. Pairs with the renderer `isServerTokenOwnerEnabled()` flag (`localStorage['ygg.serverTokenOwner']` / `VITE_SERVER_TOKEN_OWNER`) — flip BOTH together; with only the renderer flag on, the IPC reports `ownerEnabled:false` and the renderer safely keeps self-refreshing.
+Feature flags in play today (post-Phase-6):
+- ~~`isServerOwnedChatLoopEnabled()` / `isCloudServerLoopEnabled()`~~ — **REMOVED in Phase 6.**
+  The renderer no longer gates the chat loop; all 5 providers route through the server
+  loop unconditionally in Electron. `serverLoopSettings.ts` now holds only the
+  token-owner flag.
+- `gateway.chat` — server flag (Conf key, or `YGG_GATEWAY_MODE` master env override).
+  **Now defaults ON** (Phase 6a). Enables the openrouter free-tier relay + CloudMirrorSink;
+  an explicit `gateway.chat === false` Conf key still forces it off as an escape hatch.
+  For every non-openrouter provider it is a no-op.
+- `gateway.crud` / `gateway.cloudProxy` — **vestigial**: the Phase 5 gateway routes mount
+  unconditionally (`index.ts`, `enabled: true`), so these Conf keys are resolved but not
+  consumed. Left in place (harmless) for a later cleanup pass.
+- `gateway.tokenOwner` — server flag (Slice 2): gates the `app-auth:get-fresh-token` IPC
+  handler so the server becomes the sole Supabase-token refresher. Default OFF. Pairs with
+  the renderer `isServerTokenOwnerEnabled()` flag (`localStorage['ygg.serverTokenOwner']` /
+  `VITE_SERVER_TOKEN_OWNER`) — flip BOTH together; with only the renderer flag on, the IPC
+  reports `ownerEnabled:false` and the renderer safely keeps self-refreshing.
 
 ---
 
@@ -234,6 +246,100 @@ No live Railway/Supabase here, so the whole cloud leg (gateway cloud reads/write
 mirror, `railwayClient` Bearer/401, cloud-proxy) is unit-tested but **needs a
 `build:mac` dogfood** before it can be trusted. Community/local-only paths are the
 most exercised by the DB-free tests.
+
+---
+
+## Phase 6 — Cutover + delete the renderer-owned chat loop
+
+The irreversible cutover. The renderer is now a **pure `:3002` thin client**: every
+chat send/edit/branch runs through the server-owned headless loop, and the
+triplicated client-owned loop is gone. `chatActions.ts` shrank **9,415 → 3,003 lines**
+(−6,412). Landed as two commits so there is a clean reversible checkpoint in git
+history right before the deletion.
+
+### Phase 6a (`7a6098d`) — reversible prep
+- **Closed the Bedrock coverage gap.** Bedrock was the one supported provider still
+  stranded on the legacy client loop — its `isBedrock` predicate was computed but
+  absent from all 3 server-loop gates. Added `|| isBedrock`. The server
+  `ProviderRouter` already handles it (`HyperRouterBedrockProvider`), and `Settings.tsx`
+  already syncs bedrock creds to the server tokenStore (`/provider-auth/bedrock/token`,
+  the same path as Zai), so the server resolves bedrock auth from its store — no
+  request-body cred forwarding needed, just the gate.
+- **`gateway.chat` now defaults ON** (openrouter needs it for the CloudMirrorSink +
+  free-tier relay; it's a no-op for the other 4 providers). Updated its tests.
+- Non-destructive: with the (still-default-off) renderer base flag on, all 5 providers
+  now route server-side; the legacy loop remained intact as the flag-off fallback.
+
+### Phase 6b (`dba3bda`) — the deletion
+- **The 3 legacy thunk bodies** (client-owned streaming/tool loops of
+  `sendMessage`/`editMessageWithBranching`/`sendMessageToBranch`) deleted. The
+  server-loop shim is now the whole body; the gate collapsed from the flag+provider
+  boolean to `if (isElectronMode)`, and the non-Electron path throws (web is not a
+  target). The shared prologue (stream setup + AbortController) and catch/finally tail
+  are unchanged.
+- **Client permission/clarify/multi_call machinery** deleted:
+  `executeToolWithPermissionCheck`, `requestToolPermissionDecision`,
+  `requestPlanClarification`, `isPlanClarifyToolCall`, the `pending*Resolve` module
+  promises, the whole `executeMultiCall*` executor cluster, and the now-unreachable
+  `executeLocalTool` / `submitToolAsJob` / `executeToolAsJobAndWait`. These formed a
+  closed **cycle** (`executeToolWithPermissionCheck ↔ executeLocalTool ↔ multi_call
+  cluster`) whose only entry points were the deleted loops — so `noUnusedLocals`
+  couldn't flag it and it had to be removed by explicit closure analysis. (The plan
+  listed `executeLocalTool` as do-not-delete, but grep proved its only caller was the
+  cycle; the genuinely-shared tool helpers — `getAllTools`, `getToolsForAI`,
+  `abortSubagentControllers` — live in other modules and are untouched.)
+- **In-loop compaction** (`compactOpenAIContinuationIfNeeded`) deleted. `compactBranch`
+  (manual-compaction button) and every compaction/history helper it shares are kept.
+- **`abortStreaming`** — the last renderer→Railway direct chat call
+  (`POST /messages/:id/abort`) — deleted, and dropped from the `index.ts` re-exports.
+  `abortGeneration` now aborts the local stream controller, which closes the SSE so the
+  server unwinds the run via `res.on('close')` (the same lifecycle ChatGPT already used).
+- **The 4 resolver thunks** (`respondToToolPermission`, `respondToToolPermissionAndEnableAll`,
+  `respondToPlanClarification`, `cancelPlanClarification`) kept with **unchanged public
+  signatures** (Chat.tsx dialogs untouched); only their client-loop `else if
+  (pending*Resolve)` fallback branch was removed — the server `/resume` path
+  (`postDecisionResume`) stays.
+- **Renderer chat-loop flags removed:** `isServerOwnedChatLoopEnabled` /
+  `isCloudServerLoopEnabled` (+ their setters/env overrides) deleted from
+  `serverLoopSettings.ts`, which now holds only the independent token-owner slice.
+- **~40 dead client helpers swept** (compiler-driven via `noUnusedLocals`): hook
+  lineage/metadata builders, per-turn system-prompt + memory-context assembly,
+  stream-resilience wrapper, persist-with-fallback, generated-image-path-hint history
+  builders, the multi_call helpers, plus the orphaned per-thunk prologue vars
+  (provider booleans, `combinedContext`, `systemPrompt`, `memoryContexts`, …).
+
+### Kept — corrected the plan's stale notes
+- **`streamRunTracking.ts`** — authored by the server-loop shim (`finishStreamingRun`)
+  and the abort thunks; NOT dead. The plan said to delete it; kept.
+- **`localMirror.ts`** — 12 live sites survive (`compactBranch`, `updateMessage`,
+  `deleteMessage`, `syncConversationToLocal`, plus `AuthContext`/`Login`). The plan's
+  "~24 sites all inside the legacy loop" was inaccurate; kept.
+- The `createBedrock/LmStudio/OpenAIChatGPT/Zai StreamingRequest` builders — still used
+  by `compactBranch`'s own compaction-generate path; kept.
+
+### Validation
+Renderer `tsc -p tsconfig.app.json` clean · `test:headless` **232 passed** / 43 skipped
+/ 24 todo (the 1 failure — `ephemeralGenerateRoutes` preloaded-token — is the known
+environmental one that hits live OpenRouter via the Conf token, unrelated) · renderer
+`chats` + `jwtUtils` suites **47 passed** · `build:electron:main` (esbuild) clean ·
+eslint errors on `chatActions.ts` fell **232 → 46** (all pre-existing `no-explicit-any`;
+the cutover introduced none).
+
+### Not live-verified (git is the safety net)
+No live Railway/Supabase/Electron here, so the end-to-end server-loop path for the
+providers other than ChatGPT (LM Studio, Zai, **Bedrock**, openrouter incl. free-tier
+metering) is unit-validated but needs a **`build:mac` dogfood**. Bedrock is newly routed
+server-side and has never been exercised live; openrouter's free-tier relay + 403 modal
+likewise. If a provider misbehaves, revert to `7a6098d` (6a) — the legacy loop is intact
+there and re-enabled by setting `localStorage['ygg.serverOwnedChatLoop']` off.
+
+### Deferred (optional cleanup, not blocking)
+- Remove the vestigial `gateway.crud` / `gateway.cloudProxy` flag plumbing (routes
+  already mount unconditionally).
+- The pre-send branch auto-compaction block in `editMessageWithBranching` still runs
+  client-side (dispatches the kept `compactBranch` + re-parents via `activeParentId`
+  into the shim); the server also compacts in-loop, so this may be redundant — audit
+  whether it should move fully server-side.
 
 ---
 
