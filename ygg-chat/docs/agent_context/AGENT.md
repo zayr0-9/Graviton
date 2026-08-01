@@ -1,6 +1,6 @@
 # Agent Context Index
 
-Last reviewed: 2026-07-11
+Last reviewed: 2026-08-01
 
 This directory contains subsystem-specific context files for agents working in `ygg-chat`.
 
@@ -21,8 +21,9 @@ Start here, then open the smallest relevant subsystem context file before editin
 
 ## Chat
 
-- `agent_chat_pipeline.md` - normal send/edit/branch generation flow, providers, tools, and persistence.
-- `agent_chat_streaming_state.md` - Redux multi-stream state, branch-aware selectors, streaming invariants.
+- `agent_chat_pipeline.md` - renderer thin-client send/edit/branch flow that drives the **server-owned** agent loop on `:3002` (providers, tools, pause/resume, persistence).
+- `agent_chat_streaming_state.md` - Redux multi-stream state, branch-aware selectors, streaming invariants (now fed by server SSE → Redux projection).
+- `agent_branch.md` - conversation branching/edit/repeat: renderer placement hints vs. server-side lineage resolution (`BranchOrchestrator`).
 - `agent_chat_container.md` - `Chat.tsx` main screen orchestration, message rendering, composer, routing, and Heimdall integration.
 - `agent_md_renderer.md` - Markdown/text response rendering from `Chat.tsx` into `ChatMessage`, including `content_blocks`, stream events, prose/code styling, and renderer invariants.
 - `agent_heimdall.md` - Heimdall conversation tree rendering, node selection, notes, search, subagent badges, and selected-node actions.
@@ -37,15 +38,15 @@ Start here, then open the smallest relevant subsystem context file before editin
 
 ## Agent Runtime
 
-- `agent_global_persistent_agent.md` - persistent Electron/local background agent loop and task queue.
-- `agent_headless_server.md` - headless local server API, server-side chat orchestration, mobile UI.
-- `agent_subagents_orchestration.md` - the `subagent` tool: renderer thin client + one server-side engine (shared tool loop), transcript persistence, SSE route.
+- `agent_global_persistent_agent.md` - **RETIRED** tombstone: the renderer-owned global agent loop was deleted in the headless migration; the agent loop is now server-owned.
+- `agent_headless_server.md` - the local `:3002` server that now **owns the main chat agent loop** for all providers (pause/resume, in-loop hooks, compaction), plus the cloud gateway (`/api/gw/*`, `/api/cloud/*`), token layer, subagents, and mobile UI.
+- `agent_subagents_orchestration.md` - the `subagent` tool: renderer thin client + the shared server-side engine (the same `ToolLoopService` that now runs the main chat loop — subagents auto-approve, the main loop pauses), transcript persistence, SSE route.
 
 ## Platform and Integration
 
-- `agent_electron_main_local_server.md` - Electron main/preload/local Express server responsibilities.
+- `agent_electron_main_local_server.md` - Electron main/preload/local Express server responsibilities; hosts the `headlessServer` routes + cloud gateway; Claude Code + GlobalAgentLoop routes retired.
 - `agent_html_iframe_apps.md` - custom app iframe rendering, bridge permissions, HTML cache.
-- `agent_hooks_system.md` - Ygg hook lifecycle, hook runner, sync/async execution, model feedback.
+- `agent_hooks_system.md` - Ygg hook lifecycle and hook runner; for the main chat loop, hooks now run **in-process inside the server loop** (`chatHookService`), sync/async execution, model feedback.
 - `agent_floating_agent_button_design.md` - floating agent/app button animation, shell layout, inline stream-completion notifications, and reusable compact-to-expanded design pattern.
 
 ## Design
@@ -58,7 +59,7 @@ This MVP set deliberately covers the highest-risk agent-editing surfaces first. 
 
 - `agent_context_compaction_memory.md`
 
-Potential future context topics that do not yet have dedicated files in this checkout include branching conversations, projects/conversations/messages, providers/models, auth/provider tokens, local storage sync, frontend app shell, settings/preferences, theme UI, IDE/LSP context, and workspace mutations.
+Potential future context topics that do not yet have dedicated files in this checkout include projects/conversations/messages, providers/models, auth/provider tokens, local storage sync, frontend app shell, settings/preferences, theme UI, IDE/LSP context, and workspace mutations.
 
 ## Maintenance Rules
 

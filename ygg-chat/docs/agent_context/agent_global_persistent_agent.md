@@ -1,63 +1,70 @@
-# Agent Context: Global Persistent Agent
+# Agent Context: Global Persistent Agent — RETIRED
 
-Last reviewed: 2026-06-16
-<!--
-Defunct; retained only as historical context for the persistent background agent.
--->
-## Purpose
+Last reviewed: 2026-08-01
 
-Documents the persistent background/global agent designed for Electron local mode.
+> **STATUS: RETIRED / REMOVED.** The Global Persistent Agent (GAL — the singleton
+> renderer-owned "global agent loop") no longer exists. It was deleted in the
+> headless thin-client migration (branch `feat/headless-agent-loop`, Phases 0–6,
+> complete and live). This file is a tombstone: do **not** use it as a guide to
+> current behavior — none of the code it used to describe is in the tree anymore.
+>
+> **Where the agent loop lives now:** the main chat agent loop runs server-side in
+> the local headless Express server (`127.0.0.1:3002`) inside the Electron main
+> process. See [`agent_headless_server.md`](agent_headless_server.md) for the
+> server-owned loop and [`agent_subagents_orchestration.md`](agent_subagents_orchestration.md)
+> for the subagent engine that superseded it.
 
-## When to Open This File
+## Why it was removed
 
-Use this when changing:
-- global agent lifecycle start/pause/stop/tick;
-- persistent agent state/settings;
-- task queue endpoints;
-- system project/session bootstrap;
-- iframe app access to agent tasks/messages.
+The persistent/global renderer agent was a renderer-owned singleton loop that
+ticked against local SQLite-backed `/api/agent/*` endpoints. The headless
+migration moved **all** agent execution (main chat loop and subagents) out of the
+React renderer and into the server-owned engine
+(`electron/headlessServer/services/`: `chatOrchestrator.ts` → `branchOrchestrator.ts` →
+`toolLoopService.ts`, with the `DecisionBroker` pause/resume protocol). The
+renderer is now a thin client that only POSTs SSE routes on `:3002` and projects
+events onto Redux. A separate renderer-side "global agent loop" no longer has a
+place in that architecture, so it — along with the Claude Code tool it was paired
+with — was deleted rather than migrated.
 
-## Key Files
+## Deleted files and symbols (confirmed gone from the tree)
 
-- `PERSISTENT_AGENT_CONTEXT.md`: deep design document.
-- `client/ygg-chat-r/src/services/GlobalAgentLoop.ts`: singleton loop service.
-- `client/ygg-chat-r/src/GlobalAgentBootstrap.tsx`: wires Redux/QueryClient context and initializes loop.
-- `client/ygg-chat-r/src/hooks/useGlobalAgentCache.ts`: cache/state hook.
-- `client/ygg-chat-r/src/hooks/useGlobalAgentMessages.ts`: agent message hook.
-- `client/ygg-chat-r/src/helpers/agentSettingsStorage.ts`: agent settings persistence.
-- `client/ygg-chat-r/electron/localServer.ts`: `/api/agent/*` and `/api/agent-settings` source of truth.
-- `html_frame_context.md`: iframe app agent permission model.
+| Path / symbol | Status |
+|---|---|
+| `client/ygg-chat-r/src/services/GlobalAgentLoop.ts` | DELETED |
+| `client/ygg-chat-r/src/GlobalAgentBootstrap.tsx` | DELETED |
+| `client/ygg-chat-r/src/hooks/useGlobalAgentCache.ts` | DELETED |
+| `client/ygg-chat-r/src/hooks/useGlobalAgentMessages.ts` | DELETED |
+| `client/ygg-chat-r/src/helpers/agentSettingsStorage.ts` | DELETED |
+| GAL routes in `electron/localServer.ts` (`/api/agent/*`, `/api/agent-settings`) | REMOVED (no live references remain) |
+| `agent_settings` / `agent_sessions` / `agent_tasks` DB tables | REMOVED (no live CREATE/INSERT/prepared statements in `electron/**`) |
 
-## Runtime Context
+Retired in the same migration (paired subsystems):
 
-- Electron/local only.
-- Uses local SQLite-backed endpoints.
-- Operates through a dedicated local `system` project/session/conversation.
-- Should remain non-blocking for normal UI and chat flows.
+- `client/ygg-chat-r/electron/tools/claudeCode.ts` — the Claude Code tool + its
+  routes/thunks/reducers. DELETED.
+- `client/ygg-chat-r/src/features/chats/dualSyncManager.ts` and
+  `client/ygg-chat-r/src/lib/sync/` — DELETED; replaced server-side by
+  `electron/headlessServer/services/cloudMirrorService.ts` + the `CloudMirrorSink`
+  (see [`agent_headless_server.md`](agent_headless_server.md)).
 
-## Important Invariants
+## Grep traps (do not be misled)
 
-- Agent data should use `storage_mode: 'local'`.
-- Preserve lifecycle semantics: initialize, start, pause, stop, tick.
-- Avoid parallel global agent loops unless the architecture is deliberately changed.
-- Tool access must respect the app's permission/security model.
-- Agent task writes from iframe apps must be permission-gated by `appPermissions.agent`.
+- **Stale test fixtures still contain the old code as inert text.**
+  `electron/tools/__tests__/dummyfile.ts.test` (snapshot of the old
+  `localServer.ts`) and `electron/tools/__tests__/dummyFilechatAction.ts.test`
+  (snapshot of the old `chatActions.ts`) are read as plain-text inputs by
+  `editFile.test.ts`. They are never imported or compiled. They still mention
+  `claudeCode`, `executeClaudeCode`, `agent_settings/agent_sessions/agent_tasks`,
+  and `lib/sync/dualSyncManager` — those hits are fixtures, not live code.
+- **Unrelated:** `isPersistentGlobalAgentType` / `ex_agent_type` in
+  `client/ygg-chat-r/src/features/chats/chatSelectors.ts` belong to the separate
+  `ex_agent` message-type feature and have nothing to do with the deleted GAL.
 
-## Gotchas
+## Related docs (current)
 
-- If settings are seeded from bundled config into user data, runtime user-data copies may need refresh after changing defaults.
-- The persistent agent shares concepts with subagents but is not the same execution path.
-- Streams/messages should remain visible and recoverable through normal chat caches where applicable.
-
-## Testing and Validation
-
-- Build Electron target: `npm --prefix client/ygg-chat-r run build:electron`.
-- Manually verify start/pause/resume/stop, app restart recovery, task enqueue, and local-only persistence.
-- If endpoints change, add/adjust local server or headless tests where possible.
-
-## Related Docs
-
-- `agent_chat_pipeline.md`
-- `agent_chat_streaming_state.md`
-- `agent_html_iframe_apps.md`
-- `PERSISTENT_AGENT_CONTEXT.md`
+- [`agent_headless_server.md`](agent_headless_server.md) — the server-owned main chat loop that replaced this subsystem.
+- [`agent_subagents_orchestration.md`](agent_subagents_orchestration.md) — the subagent engine sharing the same server-side execution path.
+- [`agent_electron_main_local_server.md`](agent_electron_main_local_server.md) — the Electron main process / local server surface.
+- [`agent_html_iframe_apps.md`](agent_html_iframe_apps.md) — iframe app permission model (formerly cross-referenced here for `appPermissions.agent`).
+- [`agent_chat_pipeline.md`](agent_chat_pipeline.md), [`agent_chat_streaming_state.md`](agent_chat_streaming_state.md) — renderer thin-client chat pipeline and streaming state.

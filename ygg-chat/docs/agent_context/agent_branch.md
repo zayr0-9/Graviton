@@ -1,16 +1,20 @@
 # Agent Context: Conversation Branching
 
-Last reviewed: 2026-06-22
+Last reviewed: 2026-08-01
 
 ## Purpose
 
 Explains how Ygg Chat represents branches inside a conversation. A conversation is not stored as one append-only linear transcript. It is stored as a per-conversation message tree where every message can point at a parent message and can have zero or more child messages. A branch is any selected root-to-leaf path through that tree.
+
+Since the headless main-loop migration, branch/edit/repeat **lineage is resolved SERVER-SIDE** (in the local headless Express server on `127.0.0.1:3002`), not in the React renderer. The renderer chat thunks are thin clients that POST the branch/edit/send SSE routes and project the server's persisted-message events back onto the existing Redux reducers. See "Creating Messages and Branches" below.
 
 ## When to Open This File
 
 Use this when changing:
 - message parent/child fields or schema;
 - branch creation, edit-branch, repeat/regenerate, or normal send continuation semantics;
+- server-side lineage resolution in `BranchOrchestrator`, or the branch/edit/repeat SSE routes;
+- the SSE→Redux branch projection (`mainChatClient` / `sseProjection`);
 - current visible branch selection in Redux;
 - Heimdall node selection or branch highlighting;
 - URL hash message focus and search-result navigation;
@@ -21,15 +25,21 @@ Use this when changing:
 - `shared/types.ts`: shared `BaseMessage` fields, including `parent_id` and `children_ids`.
 - `client/ygg-chat-r/src/features/chats/chatTypes.ts`: frontend `Message` and `conversation.currentPath` state.
 - `client/ygg-chat-r/src/features/chats/pathUtils.ts`: `buildBranchPathForMessage()` builds a branch path from a flat message list.
-- `client/ygg-chat-r/src/features/chats/chatSlice.ts`: reducers that keep `currentPath`, parent `children_ids`, and branch navigation in sync.
-- `client/ygg-chat-r/src/features/chats/chatSelectors.ts`: filters flat messages to the selected branch for display.
-- `client/ygg-chat-r/src/features/chats/chatActions.ts`: normal send, edit-branch, streaming persistence, and branch-aware history construction.
-- `client/ygg-chat-r/src/containers/Chat.tsx`: dispatches send/branch actions, auto-selects latest/hash branches, and coordinates focus.
+- `client/ygg-chat-r/src/features/chats/chatSlice.ts`: reducers that keep `currentPath`, parent `children_ids`, and branch navigation in sync (`messageAdded`, `messageBranchCreated`, `streamLineageUpdated`, `streamCompleted`, `selectedNodePathSet`).
+- `client/ygg-chat-r/src/features/chats/chatSelectors.ts`: `selectDisplayMessages()` filters flat messages to the selected branch for display.
+- `client/ygg-chat-r/src/features/chats/chatActions.ts`: the 3 thin-client chat thunks (`sendMessage`, `editMessageWithBranching`, `sendMessageToBranch`). They POST the headless SSE routes and project the result. Branch-aware inference history and streaming persistence now run SERVER-SIDE; the old client-side branch-parent computation is gone (moved to `BranchOrchestrator`).
+- `client/ygg-chat-r/src/features/chats/buildServerLoopRequest.ts`: pure builder mapping each op to its SSE route `path` + JSON body.
+- `client/ygg-chat-r/src/features/chats/mainChatClient.ts`: `runServerChatLoop` — the SSE reader (fetch POST + `getReader()` stream) that drives one server run and dispatches each projected action.
+- `client/ygg-chat-r/src/features/chats/sseProjection.ts`: `projectServerEvent` — pure mapping of server SSE events onto the existing chatSlice reducers; `normalizeServerMessage` coerces server (SQLite) rows to the renderer `Message` shape.
+- `client/ygg-chat-r/src/containers/Chat.tsx`: dispatches the send/branch/edit thunks, sets the optimistic user bubble, auto-selects latest/hash branches, and coordinates focus. It no longer computes branch-parent placement (the server does).
 - `client/ygg-chat-r/src/components/Heimdall/Heimdall.tsx`: visual tree selection and current path highlighting.
 - `client/ygg-chat-r/electron/localServer.ts`: local SQLite schema, `children_ids` insert trigger, tree endpoint, and `buildMessageTree()`.
+- `client/ygg-chat-r/electron/headlessServer/routes/chatRoutes.ts`: the 4 SSE routes (`send`/`repeat`/`branch`/`edit-branch`) that drive `ChatOrchestrator.runMessage`, plus `POST /api/resume` and `POST /api/conversations/:id/compact`.
+- `client/ygg-chat-r/electron/headlessServer/services/chatOrchestrator.ts`: `runMessage` → `resolveExecution` (delegates to `BranchOrchestrator`) → persists the user message → emits `started` / `user_message_persisted` → runs the tool loop.
+- `client/ygg-chat-r/electron/headlessServer/services/branchOrchestrator.ts`: the SINGLE authority for `send`/`branch`/`edit-branch`/`repeat` lineage for ALL renderer sends. Computes `historyLeafId` + `assistantParentId` and persists the new user message.
+- `client/ygg-chat-r/electron/headlessServer/persistence/conversationRepo.ts`: `listPathToMessage()` (branch inference history) and `findNearestUserAncestor()` (repeat anchor).
+- `client/ygg-chat-r/electron/headlessServer/persistence/messageRepo.ts`: headless message creation and parent `children_ids` maintenance (`createMessage`).
 - `client/ygg-chat-r/electron/headlessServer/routes/appAutomationRoutes.ts`: headless app equivalents for message tree APIs.
-- `client/ygg-chat-r/electron/headlessServer/services/branchOrchestrator.ts`: headless continuation semantics for `send`, `branch`, `edit-branch`, and `repeat`.
-- `client/ygg-chat-r/electron/headlessServer/persistence/messageRepo.ts`: headless message creation and parent `children_ids` maintenance.
 
 ## Core Model
 
@@ -98,6 +108,16 @@ Important distinction:
 - The full conversation is the flat set/tree of all messages for one `conversation_id`.
 - The visible transcript is one selected branch path through that tree.
 
+### Post-migration: `currentPath`/anchors come from server-persisted ids
+
+The thin-client thunks do NOT mint message ids; the headless server assigns them and streams them back. `runServerChatLoop` (`mainChatClient.ts`) → `projectServerEvent` (`sseProjection.ts`) derives all lineage/path state from those server `*_persisted` ids:
+- `started` (`event.parentId` = server `assistantParentId`) seeds the stream's root/branch anchors via `streamLineageUpdated`.
+- `user_message_persisted` (server user-row id) fires `messageAdded` + `messageBranchCreated` + `streamLineageUpdated` (origin/trigger/current-branch anchors = `message.id`).
+- each `assistant_message_persisted` (per turn) fires `messageAdded` + `messageBranchCreated`.
+- terminal `complete` fires `messageAdded` + `messageBranchCreated` + `streamCompleted{ updatePath: true }`, which rebuilds `currentPath` to the final assistant message (`buildPathToMessage`).
+
+`messageBranchCreated` also appends the new id to the parent's in-memory `children_ids` and auto-navigates `currentPath` when the new message belongs to the current view. So anchors and `currentPath` always derive from server-assigned ids, never locally minted ones.
+
 ## How Paths Are Built
 
 `buildBranchPathForMessage(messages, messageId)` in `pathUtils.ts` is the shared path helper used by Chat and Heimdall.
@@ -108,53 +128,36 @@ It works in two phases:
 
 That second step matters for selecting an intermediate node. Clicking or focusing an ancestor should still resolve to a complete branch path, not just stop midway, so the visible transcript remains a complete conversation branch.
 
-Some reducer-local helpers use the simpler root-to-message path when a newly persisted message is the known branch tip. The invariant is the same: a path is a valid ancestor chain inside one conversation.
+Some reducer-local helpers (`messageBranchCreated`, `streamCompleted`) use the simpler root-to-message path when a newly persisted message is the known branch tip. The invariant is the same: a path is a valid ancestor chain inside one conversation.
 
 ## Creating Messages and Branches
 
-### Normal send
+Branching means creating a new child under an existing message, or a sibling under an existing message's parent, depending on the operation. Since the headless migration the renderer no longer computes where the new node attaches — the local headless server does.
 
-For a normal user send, Chat dispatches send actions with a parent derived from the current branch tip. The persisted user message uses that parent:
+### Thin-client flow (renderer)
 
-```text
-new user.parent_id = currentPath[currentPath.length - 1] ?? null
-```
+The three chat thunks in `chatActions.ts` are thin clients over the server-owned loop and require Electron (they throw otherwise). Each: sets an optimistic user bubble (Chat.tsx), builds the request with `buildServerLoopRequest(op, …)`, POSTs the SSE route with `runServerChatLoop`, and projects every SSE event onto the existing reducers via `projectServerEvent`. They keep NO loop control, tool execution, or client-side branch-parent computation. `buildServerLoopRequest.ts` defines the builder op as `send | edit | branch` only; the route (and the server operation name) is resolved from it:
 
-The assistant response is then persisted as a child of that user message:
+| Thunk | builder op (`buildServerLoopRequest.ts`) | SSE route (relative, resolved to `:3002`) |
+|---|---|---|
+| `sendMessage` | `send` | `POST /conversations/:id/messages` |
+| `sendMessageToBranch` | `branch` | `POST /conversations/:id/messages/:messageId/branch` |
+| `editMessageWithBranching` | `edit` | `POST /conversations/:id/messages/:messageId/edit-branch` |
 
-```text
-assistant.parent_id = new user.id
-```
+`repeat`/regenerate is a **server-only** operation (`POST /conversations/:id/messages/repeat`, `chatRoutes.ts`) — the renderer thin client does not currently issue it; see Server-side resolution below.
 
-This extends the selected branch.
+`systemPrompt` is deliberately omitted (the server assembles it). The renderer's `parentId`/`messageId` are the ONLY placement hints it sends; the server resolves the actual lineage from them.
 
-### Branch from a message
+### Server-side resolution (`BranchOrchestrator.resolve`)
 
-Branching means creating a new child under an existing message, or creating a sibling under an existing message's parent, depending on the operation.
+`branchOrchestrator.ts` is the single authority for where a new node attaches, called from `ChatOrchestrator.runMessage` via `resolveExecution` (`chatOrchestrator.ts`). For each op it returns `{ historyLeafId, assistantParentId, userContentForInference, userMessage }`; the assistant response is later persisted under `assistantParentId`, and the inference history is `conversationRepo.listPathToMessage(conversationId, historyLeafId)`.
 
-In `Chat.tsx` regular branch/edit submission resolves:
+- `send`: create a user message under `request.parentId ?? null`, then the assistant under that user. The renderer still chooses the attach point — it passes the current branch tip as `parentId`, reselected to the latest `__auto_compaction_summary__` message when the tip falls outside the post-compaction path (`chatActions.ts` `sendMessage`).
+- `branch`: create a user message under `request.messageId ?? request.parentId` (the message branched FROM). The renderer sends the branched-from id as `messageId`.
+- `edit-branch`: create a user SIBLING under the edited message's parent — `requireMessage(request.messageId).parent_id ?? null`. The server RE-DERIVES this from the edited message; the renderer's `parentId` is used only for optimistic lineage/stream tracking, not for placement.
+- `repeat`: create NO new user message; resolve the nearest user ancestor (`conversationRepo.findNearestUserAncestor`) and create a new assistant child under that user anchor (an assistant sibling of the one being regenerated). `userMessage` is null, so no `user_message_persisted` event is emitted.
 
-```ts
-const branchParentId =
-  originalMessage.role === 'assistant' || originalMessage.role === 'ex_agent'
-    ? originalMessage.id
-    : (originalMessage.parent_id ?? null)
-```
-
-Then `editMessageWithBranching()` creates the new user message with `parent_id` based on the original message's parent for edit-branch semantics. In practice:
-- editing/branching a user message creates a sibling user message under the original user's parent;
-- branching from an assistant/ex-agent continuation can create a new user message under that assistant/ex-agent message;
-- repeat/regenerate creates a new assistant sibling under the relevant user anchor.
-
-### Headless semantics
-
-`BranchOrchestrator` uses explicit operation names:
-- `send`: create a user message under `request.parentId ?? null`, then assistant under that user.
-- `branch`: create a user message under `request.messageId ?? request.parentId`.
-- `edit-branch`: create a user sibling under `originalMessage.parent_id ?? null`.
-- `repeat`: do not create a new user message; resolve the nearest user anchor and create a new assistant child/sibling from that user.
-
-These operations all rely on `parent_id` to decide where new nodes attach.
+All four key attachment off `parent_id`; `requireMessage` enforces that the target lives in the same conversation. After resolution, `runMessage` emits `started` (with `parentId = assistantParentId`) and, when a user message was created, `user_message_persisted` — the events the renderer projects into lineage/path state.
 
 ## Maintaining `children_ids`
 
@@ -172,7 +175,7 @@ BEGIN
 END;
 ```
 
-Headless routes/repos update the parent explicitly after insert. Frontend reducers also update the in-memory parent message in `messageBranchCreated` so the UI can navigate immediately before or while React Query refetches.
+Headless repos update the parent explicitly after insert (`messageRepo.createMessage` reads the parent's `children_ids`, appends, and writes it back). Frontend reducers also update the in-memory parent message in `messageBranchCreated` (from the projected `user_message_persisted` / `assistant_message_persisted` events) so the UI can navigate immediately before or while React Query refetches.
 
 Rules:
 - New messages start with `children_ids: []`.
@@ -208,7 +211,7 @@ The synthetic `root` is visual-only. Reducers such as `selectedNodePathSet` filt
 - URL hash focus: `#<messageId>` resolves to a full branch path once messages load.
 - First load: if no selected path exists, the latest message by timestamp is resolved to a branch path and selected.
 - Heimdall node click/search: selected node resolves to a branch path and focused message.
-- Stream completion/branch creation reducers: can move `currentPath` to the newly created branch when the operation belongs to the current view.
+- Server SSE projection: `messageBranchCreated` (from `user_message_persisted` / `assistant_message_persisted`) and `streamCompleted{ updatePath: true }` (from terminal `complete`) move `currentPath` to the newly created branch when the new message belongs to the current view. All ids come from the server, not the renderer.
 
 ## Storage Invariants
 
@@ -219,30 +222,31 @@ The synthetic `root` is visual-only. Reducers such as `selectedNodePathSet` filt
 - Treat `children_ids` as sibling order for tree rendering, but use `parent_id` for ancestor walking.
 - Multiple root messages are valid in one conversation; Heimdall handles them with a synthetic root.
 - A branch is a path, not an independent object. Do not add branch-specific state unless it derives from message IDs or is deliberately new metadata.
+- Message ids for the main loop are minted by the headless server, not the renderer. Do not reintroduce client-side id minting or client-side branch-parent computation; project server `*_persisted` ids instead.
 
 ## Common Change Recipes
 
 ### Add a new branch-style operation
 
-1. Decide the anchor message and whether the new message should be a child or sibling.
-2. Persist the new message with the correct `parent_id`.
-3. Ensure the parent `children_ids` includes the new ID.
+1. Decide the anchor message and whether the new message should be a child or sibling, and add a case to `BranchOrchestrator.resolve` (server-side placement).
+2. Add/point a route in `chatRoutes.ts` and a `path`/body case in `buildServerLoopRequest.ts` if the renderer must trigger it.
+3. Ensure the parent `children_ids` includes the new ID (repo insert + `messageBranchCreated` projection).
 4. Update/invalidate message queries for the conversation.
-5. Set `currentPath` to the new branch if the operation should navigate the user there.
+5. Confirm the projection sets `currentPath` to the new branch if the op should navigate the user there.
 6. Verify Heimdall receives a tree that includes the new child.
 
 ### Change branch selection
 
 1. Update `buildBranchPathForMessage()` if the change is shared by Chat, Heimdall, URL hash focus, and search.
-2. Update reducer helpers only if stream/new-message auto-navigation should change.
+2. Update reducer helpers (`messageBranchCreated`, `streamCompleted`) only if stream/new-message auto-navigation should change.
 3. Check `selectDisplayMessages()` still returns messages in `currentPath` order.
 4. Test hidden/tool/system message cases because Heimdall filtering is visual-only.
 
 ### Change persistence or schema
 
 1. Update local SQLite schema and migration/backfill if required.
-2. Update local/headless insert paths so parent/child maintenance remains consistent.
-3. Update normalization to keep frontend `children_ids` arrays.
+2. Update local/headless insert paths (`messageRepo`, `localServer`) so parent/child maintenance remains consistent.
+3. Update normalization (`normalizeServerMessage` and local normalizers) to keep frontend `children_ids` arrays.
 4. Re-check tree construction for multiple roots and stale child IDs.
 
 ## Testing and Validation
@@ -252,7 +256,7 @@ Useful targeted checks:
 - `npm --prefix client/ygg-chat-r run build:electron`
 - `npm --prefix client/ygg-chat-r run test:headless`
 
-Manual checks:
+Manual checks (all now driven through the headless server on `:3002`):
 - send a normal message and verify the branch extends linearly;
 - edit a user message and verify a sibling branch appears;
 - regenerate/repeat an assistant response and verify assistant siblings under the same user;
