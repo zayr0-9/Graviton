@@ -19,7 +19,7 @@ turning the renderer into a thin client that talks only to `127.0.0.1:3002`.
 | 1 | Non-interactive thin-client slice (auto-approve local providers: LM Studio/Zai) — send/edit/branch | ✅ done | `41b9e05`, `6743a7a`, `c310dc2` |
 | 2 | Pause/resume protocol (interactive tool-permission + `plan_md` clarify) | ✅ done | `15758d9`, `8052fe0` |
 | 3 | 5 lifecycle chat hooks in the server loop | ✅ done | `919b207` |
-| 4 | Cloud provider through the gateway (free-tier relay + Railway id adoption) | ◐ partial — see below | `1f68568`, `176fbb3` |
+| 4 | Cloud provider through the gateway (free-tier relay + Railway id adoption + token owner) | ◐ near-complete — Slices 1/3/4 + Slice 2 (sole token refresher) all landed; only the openrouter free-tier relay remains not-live-tested | `1f68568`, `176fbb3`, `8d0cb06` |
 | 5 | Storage-aware CRUD gateway + retire dualSync | ● complete (pending build:mac dogfood) — writes + reads + models + system-prompts + Stripe + attachments + OAuth + search all cut over; renderer no longer calls Railway directly except the Phase-6 streaming loop | `293ef8d`, `881c7e8`, `e2196bd`, `fb355ba`, `1d7aa51`, `4d2af8a`, `e9fd983`, `a3b6638`, `32fc17e` |
 | 6 | Cutover + delete ~5,200 renderer loop lines; flags default-on | ☐ not started | — |
 
@@ -27,7 +27,7 @@ Feature flags in play today:
 - `isServerOwnedChatLoopEnabled()` — renderer base flag (`localStorage['ygg.serverOwnedChatLoop']` / `VITE_SERVER_OWNED_CHAT_LOOP`). Routes LM Studio, Zai, **and ChatGPT** through the server loop.
 - `isCloudServerLoopEnabled()` — renderer sub-flag (`localStorage['ygg.cloudServerLoop']` / `VITE_CLOUD_SERVER_LOOP`), nested under the base flag. Adds the **openrouter** route.
 - `gateway.chat` — server flag (Conf key, or `YGG_GATEWAY_MODE` master env override). Enables the openrouter free-tier relay + CloudMirrorSink.
-- `gateway.tokenOwner` — server flag, **resolved but not yet consumed** (reserved for the deferred token-owner slice).
+- `gateway.tokenOwner` — server flag, **now consumed** (Slice 2): gates the `app-auth:get-fresh-token` IPC handler so the server becomes the sole Supabase-token refresher. Pairs with the renderer `isServerTokenOwnerEnabled()` flag (`localStorage['ygg.serverTokenOwner']` / `VITE_SERVER_TOKEN_OWNER`) — flip BOTH together; with only the renderer flag on, the IPC reports `ownerEnabled:false` and the renderer safely keeps self-refreshing.
 
 ---
 
@@ -106,16 +106,20 @@ New DB-free tests: `openRouterProvider.freeTier`, `gatewayFlags`,
 as flag-gated footguns, pre-existing/out-of-scope behavior, or coverage gaps).
 Strengthened `gatewayFlags` coverage (Conf-enable branch + catch-safety guard).
 
+### Slice 2 — server as sole token refresher (`8d0cb06`, landed)
+Delivered as a delegation model rather than a push: the renderer's two refresh
+paths (`refreshTokenIfNeeded`, `ElectronAuthProvider.refreshToken`) call an
+`app-auth:get-fresh-token` IPC that drives the shared single-flight
+`AppAuthTokenManager` (now a process-wide singleton — one lock for the gateway +
+the IPC), then adopt the rotated Conf `auth_session` the server persisted. Gated
+on `gateway.tokenOwner` (server) + `isServerTokenOwnerEnabled()` (renderer),
+coupled via an `ownerEnabled` handshake so a half-rollout falls back to
+self-refresh instead of starving auth. Still **unverifiable without a live
+Electron/Supabase build** — validate on `build:mac` by flipping both flags.
+
 ### Deferred / not done in Phase 4
-- **Slice 2 — server as sole token refresher** (`AppAuthTokenManager` single-flight
-  + server→renderer IPC token push + renderer refresh disable). Touches Electron-main
-  + renderer auth, is unverifiable without a live Electron/Supabase build, and is a
-  hardening step rather than a functional prerequisite (the server already resolves
-  provider tokens today). Awaiting explicit sign-off; both `gateway.tokenOwner` and a
-  matching renderer flag must roll out together or the two-refresher race worsens.
-- **RailwayClient / `/api/cloud/*` / `/api/gw/*`** stay skeletons — they belong to
-  Phase 5 (cloud chat gen flows through `OpenRouterProvider`'s own fetch, not
-  RailwayClient).
+- **RailwayClient / `/api/cloud/*` / `/api/gw/*`** — landed in Phase 5 (they were
+  skeletons here); Slice 2 now also shares Phase 5's `AppAuthTokenManager` singleton.
 
 ### Known caveats & follow-ups
 - **Flag coupling (openrouter only):** for correct cloud-through-gateway on the
