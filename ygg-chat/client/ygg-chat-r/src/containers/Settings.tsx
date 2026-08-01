@@ -150,7 +150,7 @@ import {
 import { useAppDispatch, useAppSelector } from '../hooks/redux'
 import { useAuth } from '../hooks/useAuth'
 import { useModels } from '../hooks/useQueries'
-import { API_BASE, getLocalServerLanOrigin, getLocalServerOrigin, localApi } from '../utils/api'
+import { cloudApi, getLocalServerLanOrigin, getLocalServerOrigin, localApi } from '../utils/api'
 
 const MAX_UPLOAD_SIZE_BYTES = 8 * 1024 * 1024 // 8MB
 const LOCAL_FONT_ACCEPT = '.woff2,.ttf,.otf'
@@ -504,13 +504,10 @@ const Settings: React.FC = () => {
     }
     if (!accessToken) return
     try {
-      const response = await fetch(`${API_BASE}/oauth/google-drive/status`, {
-        headers: { Authorization: `Bearer ${accessToken}` },
-      })
-      if (response.ok) {
-        const status = await response.json()
-        setGoogleDriveStatus(status)
-      }
+      // Routed through the local cloud proxy (:3002/api/cloud/*): the server owns
+      // the Supabase token, so the renderer no longer injects a Bearer here.
+      const status = await cloudApi.get<GoogleDriveStatus>('/oauth/google-drive/status')
+      setGoogleDriveStatus(status)
     } catch (error) {
       console.error('Failed to fetch Google Drive status:', error)
     }
@@ -2256,21 +2253,13 @@ const Settings: React.FC = () => {
 
     setGoogleConnecting(true)
     try {
-      const response = await fetch(`${API_BASE}/oauth/google-drive/start`, {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${accessToken}`,
-          'Content-Type': 'application/json',
-        },
-      })
-
-      const payload = await response.json().catch(() => ({}))
-      if (!response.ok) {
-        throw new Error(payload?.error || 'Unable to start Google Drive connection.')
-      }
+      // Routed through the local cloud proxy (:3002/api/cloud/*). Railway still
+      // mints the authUrl (with its own redirect_uri), so the OAuth consent flow
+      // is unchanged — only the request transport moves off direct Railway.
+      const payload = await cloudApi.post<{ authUrl?: string; error?: string }>('/oauth/google-drive/start')
 
       if (!payload?.authUrl) {
-        throw new Error('No Google authorization URL returned.')
+        throw new Error(payload?.error || 'No Google authorization URL returned.')
       }
 
       if (window.electronAPI?.auth?.openExternal) {
@@ -2303,14 +2292,8 @@ const Settings: React.FC = () => {
 
     setGoogleDisconnecting(true)
     try {
-      const response = await fetch(`${API_BASE}/oauth/google-drive/disconnect`, {
-        method: 'DELETE',
-        headers: { Authorization: `Bearer ${accessToken}` },
-      })
-
-      if (!response.ok) {
-        throw new Error('Failed to disconnect Google Drive.')
-      }
+      // Routed through the local cloud proxy (:3002/api/cloud/*); server-owned token.
+      await cloudApi.delete('/oauth/google-drive/disconnect')
 
       setGoogleDriveStatus({ connected: false, connectedAt: null, lastUsedAt: null })
       showStatus({ type: 'success', text: 'Google Drive disconnected.' })
