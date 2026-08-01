@@ -20,7 +20,7 @@ turning the renderer into a thin client that talks only to `127.0.0.1:3002`.
 | 2 | Pause/resume protocol (interactive tool-permission + `plan_md` clarify) | ✅ done | `15758d9`, `8052fe0` |
 | 3 | 5 lifecycle chat hooks in the server loop | ✅ done | `919b207` |
 | 4 | Cloud provider through the gateway (free-tier relay + Railway id adoption) | ◐ partial — see below | `1f68568`, `176fbb3` |
-| 5 | Storage-aware CRUD gateway + retire dualSync | ◐ near-complete — writes + reads + models + system-prompts + Stripe cut over; only attachments/OAuth/search-fallbacks remain | `293ef8d`, `881c7e8`, `e2196bd`, `fb355ba`, `1d7aa51`, `4d2af8a` |
+| 5 | Storage-aware CRUD gateway + retire dualSync | ● complete (pending build:mac dogfood) — writes + reads + models + system-prompts + Stripe + attachments + OAuth + search all cut over; renderer no longer calls Railway directly except the Phase-6 streaming loop | `293ef8d`, `881c7e8`, `e2196bd`, `fb355ba`, `1d7aa51`, `4d2af8a`, `e9fd983`, `a3b6638`, `32fc17e` |
 | 6 | Cutover + delete ~5,200 renderer loop lines; flags default-on | ☐ not started | — |
 
 Feature flags in play today:
@@ -195,17 +195,34 @@ dedup + write-normalizers, `railwayClient`, `cloudMirrorService`,
   inference quirk the repoint perturbed; runtime unchanged.)
 - **Stripe (`4d2af8a`):** the 5 Stripe helpers → `cloudApi` (community guard kept).
 
-### Deferred (still hit Railway directly — each needs NEW work, not a plain repoint)
-- **Attachments** (`uploadAttachment`/link/fetch/delete/fetchById) — need a
-  multipart-aware gateway route (railwayClient FormData passthrough) + storage
-  routing; still use the cloud `apiCall`.
-- **Settings google-drive OAuth** (status/start/disconnect) — the start/disconnect
-  redirect needs the real Railway origin, so a blind :3002 repoint risks breaking the
-  consent flow.
-- **2 cloud search fallbacks** (`useSearchTopLevelUserMessages`) — need userId + the
-  `/api/gw/conversations/search` endpoint shape; low-traffic fallbacks.
+### Stragglers landed after the read-layer cutover
+- **Attachments (`e9fd983`):** storage-aware `/api/gw/*` attachment routes
+  (GET/POST/DELETE `messages/:id/attachments`, GET `attachments/:id`, POST
+  `attachments`) that route by the message's parent-conversation storage_mode (+
+  `?storageMode=` override): local legs read/write SQLite via the shared
+  statements, cloud legs go through Railway + mirror. `railwayClient` now forwards
+  binary/Buffer bodies verbatim (keeping the caller Content-Type), so the upload
+  route streams the raw multipart body straight to Railway with its boundary
+  intact, then mirrors + links the result locally. `localApi.post` is now
+  FormData-aware; all 5 attachment thunks moved off the direct-Railway `apiCall`.
+  Note: `uploadAttachment`/link/delete/fetchById were dead (unreferenced) — this
+  cuts their transport over so Phase 6 finds no Railway-coupled attachment code;
+  `fetchAttachmentsByMessage` (the one live thunk) now also hydrates local
+  attachments on the flat-load path, not just the tree path.
+- **Google-drive OAuth (`a3b6638`):** status/start/disconnect → `cloudApi`
+  (`/api/cloud/oauth/*`). The "redirect origin" worry was moot: Railway mints the
+  `authUrl` (with its own redirect_uri) into the response body, so the request
+  transport is all that moved; the consent flow is unchanged.
+- **Search + models stragglers (`32fc17e`):** the non-electron server fallbacks in
+  `useSearchTopLevelUserMessages`/`useSearchConversations` → gateway search (gwApi,
+  keyed by userId); the missed normal-OpenRouter-models fetch in
+  `useToggleSecretMode` → `cloudApi`. `api` (direct-Railway client) is now unused
+  in `useQueries.ts`.
+
+### Deferred (still hit Railway directly — explicitly Phase 6, not a repoint)
 - **Legacy renderer streaming loop** (~5,200 lines) + its 24 `localMirror` message
-  sites — explicitly **Phase 6**.
+  sites — includes `abortStreaming` (`POST /messages/:id/abort`), the last live
+  renderer→Railway chat-path call — explicitly **Phase 6**.
 - `lib/payments/stripe.ts` is dead (no importers); leave for a cleanup pass.
 
 ### Not live-verified
