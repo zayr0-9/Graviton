@@ -17,7 +17,7 @@ turning the renderer into a thin client that talks only to `127.0.0.1:3002`.
 | — | Retire Claude Code + GlobalAgentLoop | ✅ done | `b772062`, `5ddf07c` |
 | 0 | Foundations + frozen SSE contract + DecisionBroker + abort wiring + cloud scaffolds | ✅ done | `6adc99e`, `9e4b86d` |
 | 1 | Non-interactive thin-client slice (auto-approve local providers: LM Studio/Zai) — send/edit/branch | ✅ done | `41b9e05`, `6743a7a`, `c310dc2` |
-| 2 | Pause/resume protocol (interactive tool-permission + `plan_md` clarify) | ✅ done | `15758d9`, `8052fe0` |
+| 2 | Pause/resume protocol (interactive tool-permission + `plan_md` clarify) | ✅ done (+ clarify hang fix `9a2bf81`) | `15758d9`, `8052fe0`, `9a2bf81` |
 | 3 | 5 lifecycle chat hooks in the server loop | ✅ done | `919b207` |
 | 4 | Cloud provider through the gateway (free-tier relay + Railway id adoption + token owner) | ◐ near-complete — Slices 1/3/4 + Slice 2 (sole token refresher) all landed; only the openrouter free-tier relay remains not-live-tested | `1f68568`, `176fbb3`, `8d0cb06` |
 | 5 | Storage-aware CRUD gateway + retire dualSync | ● complete (pending build:mac dogfood) — writes + reads + models + system-prompts + Stripe + attachments + OAuth + search all cut over; renderer no longer calls Railway directly except the Phase-6 streaming loop | `293ef8d`, `881c7e8`, `e2196bd`, `fb355ba`, `1d7aa51`, `4d2af8a`, `e9fd983`, `a3b6638`, `32fc17e` |
@@ -251,6 +251,23 @@ most exercised by the DB-free tests.
 - **Phase 2 (`15758d9`, `8052fe0`):** `DecisionBroker` + `POST /resume`; per-run
   pausing executor (PreToolUse→permission pause); `plan_md` clarify + `multi_call`
   via the bridge; rebound the 4 renderer resolvers.
+  - **Fix `9a2bf81` — `plan_md` clarify hang (client-owned loop).** Symptom: clarify
+    never completed — the panel showed, the user submitted, and the loop halted at the
+    tool call; permission + every other tool worked. Root cause: the CLIENT-loop
+    `requestPlanClarification` dispatched `planClarificationRequested` **with**
+    `streamId`/`toolCallId`, so `respondToPlanClarification` read that as the server-loop
+    signal and POSTed the answers to `/api/resume` — where the client loop has no
+    `DecisionBroker` pending → 409 (swallowed) — and never resolved the client-loop
+    `pendingPlanClarificationResolve` promise → permanent hang. Permission worked only
+    because its client-loop requester (`requestToolPermissionDecision`) omits those
+    fields. Fix: omit `streamId`/`toolCallId` from the client-loop clarify dispatch,
+    making it symmetric with permission (client loop → promise; server loop → `/resume`
+    via `sseProjection`, unchanged). The SERVER pause/resume was proven correct by a new
+    DB-free test (`chatOrchestrator.clarify.test.ts`: `createChatPausingExecutor` emits
+    `clarify_required`, registers the broker pending under the emitted id, never runs
+    base, resumes on `broker.resolve`) — the defect was purely client-loop routing.
+    Confirmed fixed by the maintainer. NOTE: `chatOrchestrator.phase2.test.ts` is
+    misnamed — it never covered clarify pause/resume, which is why this slipped through.
 - **Phase 3 (`919b207`):** the 5 lifecycle chat hooks (UserPromptSubmit, Pre/Post/
   Failure, Stop) in the server loop with exact ordering, lineage from
   `conversationRepo`, `additionalContext`/Stop-continue threading — gated on
