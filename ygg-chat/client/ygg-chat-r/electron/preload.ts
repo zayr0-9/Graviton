@@ -9,6 +9,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
   auth: {
     login: (credentials: any) => ipcRenderer.invoke('auth:login', credentials),
     logout: () => ipcRenderer.invoke('auth:logout'),
+    // Phase 4 Slice 2: ask the server (sole Supabase refresher) for a fresh app
+    // token. Returns { ownerEnabled } — false unless the server tokenOwner flag is
+    // on, in which case the renderer keeps self-refreshing (safe fallback).
+    getFreshAppToken: (opts?: { forceRefresh?: boolean }) => ipcRenderer.invoke('app-auth:get-fresh-token', opts),
     openExternal: (url: string) => ipcRenderer.invoke('auth:openExternal', url),
     openOAuthWindow: (url: string) => ipcRenderer.invoke('auth:openOAuthWindow', url),
     onOAuthCallback: (callback: (url: string) => void) => {

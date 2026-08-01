@@ -19,6 +19,8 @@ import { ensureManagedThemesInitialized } from './tools/themeManager.js'
 import { detectPathType, getWSLCommandArgs, isWindows } from './utils/wslBridge.js'
 import { OpenAiChatgptProvider } from './headlessServer/providers/openaiChatgptProvider.js'
 import { getValidTokens, clearTokens as clearOpenAIStoredTokens, fetchOpenAIUsageStatus } from './openaiChatgptOAuth.js'
+import { createAppAuthTokenManager } from './headlessServer/services/appAuthTokenManager.js'
+import { resolveGatewayFlags } from './headlessServer/config/gatewayFlags.js'
 
 // Destructure autoUpdater from CommonJS module (ESM/CJS interop)
 const { autoUpdater } = autoUpdaterPkg
@@ -1007,6 +1009,26 @@ ipcMain.handle('auth:logout', async () => {
   // console.log('[Electron IPC] auth:logout called')
   // Clear stored credentials
   return { success: true }
+})
+
+// Phase 4 Slice 2 — server as sole Supabase-token refresher.
+// The renderer delegates its token refresh here; the shared single-flight
+// AppAuthTokenManager (same instance the cloud gateway uses) rotates the Conf
+// `auth_session` at most once process-wide. Gated on the server `gateway.tokenOwner`
+// flag: when off we report ownerEnabled:false so the renderer keeps self-refreshing
+// (safe fallback / no half-rollout). Never throws — errors degrade to ownerEnabled:false.
+ipcMain.handle('app-auth:get-fresh-token', async (_event, opts?: { forceRefresh?: boolean }) => {
+  try {
+    if (!resolveGatewayFlags().tokenOwner) {
+      return { ownerEnabled: false as const, userId: null, accessToken: null }
+    }
+    const manager = createAppAuthTokenManager()
+    const token = await manager.getFreshAppToken(opts?.forceRefresh ? { forceRefresh: true } : undefined)
+    return { ownerEnabled: true as const, userId: token.userId, accessToken: token.accessToken }
+  } catch (error) {
+    console.error('[Electron IPC] app-auth:get-fresh-token failed:', error)
+    return { ownerEnabled: false as const, userId: null, accessToken: null, error: String(error) }
+  }
 })
 
 // Storage - Persistent storage using electron-store with fallback

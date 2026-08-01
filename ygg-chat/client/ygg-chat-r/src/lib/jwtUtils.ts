@@ -1,5 +1,6 @@
 import type { Session } from '@supabase/supabase-js'
 import { supabase } from './supabase'
+import { isServerTokenOwnerEnabled } from '../helpers/serverLoopSettings'
 
 interface CachedClaims {
   claims: Record<string, unknown>
@@ -10,6 +11,42 @@ let claimsCache: CachedClaims | null = null
 
 // Mutex to prevent concurrent token refresh requests
 let refreshPromise: Promise<boolean> | null = null
+
+/**
+ * Phase 4 Slice 2: delegate token refresh to the server (the sole refresher).
+ *
+ * When the renderer token-owner flag is on AND the server confirms ownership
+ * (`ownerEnabled`), this asks the in-process single-flight AppAuthTokenManager to
+ * rotate the Supabase session, then adopts the session the server persisted to the
+ * Conf `auth_session` store (updating the Electron window cache + claims cache).
+ *
+ * Returns true only when the server handled the refresh; on any other outcome
+ * (flag off, server flag off, no IPC, error) it returns false so the caller falls
+ * back to its own `supabase.auth.refreshSession` path — no behavior change and no
+ * half-rollout starvation.
+ */
+export async function requestServerTokenRefresh(force = false): Promise<boolean> {
+  if (!isServerTokenOwnerEnabled()) return false
+  const api = (typeof window !== 'undefined' && (window as any).electronAPI) || null
+  if (!api?.auth?.getFreshAppToken || !api?.storage?.get) return false
+  try {
+    const res = await api.auth.getFreshAppToken({ forceRefresh: force })
+    if (!res?.ownerEnabled) return false
+    // The server rotated + persisted the session to Conf `auth_session`; adopt it so
+    // the renderer's getSessionFromStorage() sees the fresh token without refreshing.
+    const stored = await api.storage.get('auth_session')
+    if (stored?.session?.access_token) {
+      ;(window as any)._cachedElectronSession = stored
+      clearClaimsCache()
+      return true
+    }
+    // Server owns refresh but persisted nothing usable — still don't self-refresh
+    // (that would race the owner); report handled with the token we were given.
+    return !!res.accessToken
+  } catch {
+    return false
+  }
+}
 
 /**
  * Read session from localStorage ONLY (no network calls).
@@ -276,6 +313,12 @@ export async function refreshTokenIfNeeded(force = false): Promise<boolean> {
       // Refresh if token expires in less than 5 minutes OR if forced
       if (force || expiresIn < 300) {
         // console.log(`[jwtUtils] ${force ? 'Force refreshing' : 'Refreshing'} token...`)
+
+        // Phase 4 Slice 2: when the server owns refresh, delegate instead of
+        // rotating the refresh_token here (which would race the server).
+        if (await requestServerTokenRefresh(force)) {
+          return true
+        }
 
         // Check if supabase client is available
         if (!supabase) {

@@ -101,4 +101,10 @@ describe('appAuthTokenManager (single-flight)', () => {
     await mgr.getFreshAppToken()
     expect(mock.refreshCalls).toBe(2)
   })
+
+  it('is a process-wide singleton so the gateway and the IPC handler share one in-flight lock', () => {
+    // Two instances would each hold their own inflight lock and could rotate the
+    // refresh_token concurrently — defeating "sole refresher". Must be the same object.
+    expect(createAppAuthTokenManager()).toBe(createAppAuthTokenManager())
+  })
 })

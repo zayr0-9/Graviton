@@ -1,6 +1,7 @@
 import { isCommunityMode } from '../../config/runtimeMode'
 import { clearHeadlessOpenRouterToken, syncHeadlessOpenRouterToken } from './headlessProviderTokenSync'
 import { supabase } from '../supabase'
+import { requestServerTokenRefresh } from '../jwtUtils'
 import type { AuthChangeCallback, AuthProvider, AuthState, Credentials, User } from './types'
 
 /**
@@ -304,6 +305,23 @@ export class ElectronAuthProvider implements AuthProvider {
     // For local-only mode, tokens don't expire
     if (this.authState.user?.id === ElectronAuthProvider.ELECTRON_USER_ID) {
       return this.authState
+    }
+
+    // Phase 4 Slice 2: when the server owns refresh, delegate instead of rotating
+    // the refresh_token here (which would race the server's single-flight manager).
+    // requestServerTokenRefresh adopts the rotated session into _cachedElectronSession;
+    // we mirror it into authState. Falls through to self-refresh when not the owner.
+    try {
+      if (await requestServerTokenRefresh(false)) {
+        const adopted = (typeof window !== 'undefined' && (window as any)._cachedElectronSession) || null
+        if (adopted?.session?.access_token) {
+          this.authState = { ...this.authState, ...adopted, session: adopted.session, accessToken: adopted.session.access_token }
+          this.syncCacheToWindow()
+          return this.authState
+        }
+      }
+    } catch {
+      // fall through to the self-refresh path below
     }
 
     // For cloud sync mode

@@ -69,7 +69,16 @@ class SingleFlightAppAuthTokenManager implements AppAuthTokenManager {
   }
 }
 
-/** Factory for the process-wide single-flight app-token manager. */
+/**
+ * Factory for the process-wide single-flight app-token manager. Memoized so the
+ * cloud gateway (RailwayClient) and the renderer-facing IPC handler share ONE
+ * instance — a single `inflight` lock is what makes the server the sole refresher.
+ * Two instances would each have their own lock and could rotate the refresh_token
+ * concurrently, reintroducing the very race this slice removes.
+ */
+let singletonManager: AppAuthTokenManager | null = null
+
 export function createAppAuthTokenManager(): AppAuthTokenManager {
-  return new SingleFlightAppAuthTokenManager()
+  if (!singletonManager) singletonManager = new SingleFlightAppAuthTokenManager()
+  return singletonManager
 }
