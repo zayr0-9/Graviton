@@ -28,7 +28,7 @@ import {
   USER_SYSTEM_PROMPTS_STORAGE_CHANGE_EVENT,
   type UserSystemPromptStorageMode,
 } from '../helpers/userSystemPromptStorage'
-import { api, cloudApi, environment, gwApi, localApi } from '../utils/api'
+import { cloudApi, environment, gwApi, localApi } from '../utils/api'
 import { getFavoritedModels } from '../utils/favorites'
 import { useAuth } from './useAuth'
 
@@ -921,7 +921,6 @@ export function useZdrModels() {
  */
 export function useToggleSecretMode() {
   const queryClient = useQueryClient()
-  const { accessToken } = useAuth()
 
   return useMutation({
     mutationFn: async ({ enabled }: { enabled: boolean }) => {
@@ -970,10 +969,9 @@ export function useToggleSecretMode() {
 
         return { models, enabled: true }
       } else {
-        // Fetch normal OpenRouter models
-        const response = await api.get<{ models: Model[]; default: Model; userIsFreeTier?: boolean }>(
-          '/models/openrouter',
-          accessToken
+        // Fetch normal OpenRouter models through the cloud proxy (server-owned token).
+        const response = await cloudApi.get<{ models: Model[]; default: Model; userIsFreeTier?: boolean }>(
+          '/models/openrouter'
         )
         return { models: response.models, default: response.default, enabled: false }
       }
@@ -1532,7 +1530,7 @@ export function useSearchTopLevelUserMessages(
     forceServerSearch?: boolean
   }
 ) {
-  const { accessToken, userId } = useAuth()
+  const { userId } = useAuth()
   const shouldSearchServer = options?.forceServerSearch ?? true
   const [searchResults, setSearchResults] = useState<TopLevelUserMessageSearchHit[]>([])
   const [isSearching, setIsSearching] = useState(false)
@@ -1564,18 +1562,20 @@ export function useSearchTopLevelUserMessages(
         }
       }
 
-      if (!accessToken) {
-        console.warn('[useSearchTopLevelUserMessages] No accessToken available, skipping server search')
+      // Non-electron fallback (not a shipping target). Routed through the
+      // storage-aware gateway (:3002/api/gw/*) keyed by userId so the renderer
+      // never talks to Railway directly; the server owns the cloud token and the
+      // local+cloud merge. Degraded to conversation-title matches, as before.
+      if (!userId) {
+        console.warn('[useSearchTopLevelUserMessages] No userId available, skipping server search')
         return []
       }
 
-      const params = new URLSearchParams({ q: query, limit: '20' })
-      const endpoint = projectId
-        ? `/search/project?${params.toString()}&projectId=${projectId}`
-        : `/search?${params.toString()}`
+      const params = new URLSearchParams({ q: query, limit: '20', userId })
+      if (projectId) params.set('projectId', projectId)
 
       try {
-        const conversations = await api.get<Conversation[]>(endpoint, accessToken)
+        const conversations = await gwApi.get<Conversation[]>(`/conversations/search?${params.toString()}`)
         const nowIso = new Date().toISOString()
 
         return (conversations || []).map(conversation => ({
@@ -1598,7 +1598,7 @@ export function useSearchTopLevelUserMessages(
         return []
       }
     },
-    [accessToken, projectId, userId]
+    [projectId, userId]
   )
 
   const search = useCallback(
@@ -1662,7 +1662,7 @@ export function useSearchConversations(
   }
 ) {
   const queryClient = useQueryClient()
-  const { accessToken, userId } = useAuth()
+  const { userId } = useAuth()
   const forceServerSearch = options?.forceServerSearch ?? false
   const [searchResults, setSearchResults] = useState<Conversation[]>([])
   const [isSearching, setIsSearching] = useState(false)
@@ -1740,25 +1740,25 @@ export function useSearchConversations(
         }
       }
 
-      if (!accessToken) {
-        console.warn('[useSearchConversations] No accessToken available, skipping server search')
+      // Non-electron fallback (not a shipping target): route through the gateway
+      // (:3002/api/gw/*) keyed by userId — no renderer token, no direct Railway.
+      if (!userId) {
+        console.warn('[useSearchConversations] No userId available, skipping server search')
         return []
       }
 
-      const params = new URLSearchParams({ q: query, limit: '20' })
-      const endpoint = projectId
-        ? `/search/project?${params.toString()}&projectId=${projectId}`
-        : `/search?${params.toString()}`
+      const params = new URLSearchParams({ q: query, limit: '20', userId })
+      if (projectId) params.set('projectId', projectId)
 
       try {
-        const results = await api.get<Conversation[]>(endpoint, accessToken)
+        const results = await gwApi.get<Conversation[]>(`/conversations/search?${params.toString()}`)
         return results || []
       } catch (error) {
         console.error('Server search failed:', error)
         return []
       }
     },
-    [accessToken, projectId, userId]
+    [projectId, userId]
   )
 
   // Main search function
