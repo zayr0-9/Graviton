@@ -70,6 +70,19 @@ function joinUrl(base: string, path: string): string {
   return `${base}/${String(path).replace(/^\/+/, '')}`
 }
 
+/**
+ * Raw/binary bodies (multipart uploads, blobs) are forwarded to Railway verbatim
+ * — never JSON-stringified — and keep the caller's Content-Type (which carries
+ * the multipart boundary). Everything else defaults to JSON.
+ */
+function isBinaryBody(body: unknown): body is Buffer | Uint8Array | ArrayBuffer {
+  return (
+    (typeof Buffer !== 'undefined' && Buffer.isBuffer(body)) ||
+    body instanceof Uint8Array ||
+    body instanceof ArrayBuffer
+  )
+}
+
 async function parseBody(response: Response): Promise<{ body: unknown; contentType: string | null }> {
   const contentType = response.headers.get('content-type')
   const text = await response.text().catch(() => '')
@@ -95,7 +108,14 @@ class HttpRailwayClient implements RailwayClient {
   private async buildHeaders(req: RailwayRequest, accessToken: string | null, streaming: boolean): Promise<Record<string, string>> {
     const headers: Record<string, string> = { ...(req.headers || {}) }
     if (accessToken) headers['Authorization'] = `Bearer ${accessToken}`
-    if (req.body !== undefined && req.body !== null && headers['Content-Type'] === undefined) {
+    // Only default to JSON for structured bodies; binary bodies keep the caller's
+    // Content-Type (e.g. multipart/form-data; boundary=…) untouched.
+    if (
+      req.body !== undefined &&
+      req.body !== null &&
+      !isBinaryBody(req.body) &&
+      headers['Content-Type'] === undefined
+    ) {
       headers['Content-Type'] = 'application/json'
     }
     if (streaming && headers['Accept'] === undefined) headers['Accept'] = 'text/event-stream'
@@ -107,7 +127,10 @@ class HttpRailwayClient implements RailwayClient {
     const headers = await this.buildHeaders(req, accessToken, streaming)
     const init: RequestInit = { method: req.method, headers }
     if (req.body !== undefined && req.body !== null) {
-      init.body = typeof req.body === 'string' ? req.body : JSON.stringify(req.body)
+      init.body =
+        typeof req.body === 'string' || isBinaryBody(req.body)
+          ? (req.body as BodyInit)
+          : JSON.stringify(req.body)
     }
     if (signal) init.signal = signal
     return fetch(joinUrl(this.base, req.path), init)

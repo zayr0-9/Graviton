@@ -8813,17 +8813,17 @@ export const uploadAttachment = createAsyncThunk<
   Attachment,
   { file: File; messageId?: number | null },
   { extra: ThunkExtraArgument }
->('chat/uploadAttachment', async ({ file, messageId }, { dispatch, extra, rejectWithValue }) => {
-  const { auth } = extra
+>('chat/uploadAttachment', async ({ file, messageId }, { dispatch, rejectWithValue }) => {
   try {
     const form = new FormData()
     form.append('file', file)
     if (messageId != null) form.append('messageId', String(messageId))
 
-    const attachment = await apiCall<Attachment>('/attachments', auth.accessToken, {
-      method: 'POST',
-      body: form,
-    })
+    // Routed through the storage-aware gateway (:3002/api/gw/attachments). The
+    // multipart body is forwarded to Railway verbatim; messageId rides the query
+    // string so the server can mirror/link the result without parsing the body.
+    const qs = messageId != null ? `?messageId=${encodeURIComponent(String(messageId))}` : ''
+    const attachment = await gwApi.post<Attachment>(`/attachments${qs}`, form)
 
     if (attachment.message_id != null) {
       dispatch(
@@ -8846,13 +8846,9 @@ export const linkAttachmentsToMessage = createAsyncThunk<
   Attachment[],
   { messageId: MessageId; attachmentIds: string[] },
   { extra: ThunkExtraArgument }
->('chat/linkAttachmentsToMessage', async ({ messageId, attachmentIds }, { dispatch, extra, rejectWithValue }) => {
-  const { auth } = extra
+>('chat/linkAttachmentsToMessage', async ({ messageId, attachmentIds }, { dispatch, rejectWithValue }) => {
   try {
-    const attachments = await apiCall<Attachment[]>(`/messages/${messageId}/attachments`, auth.accessToken, {
-      method: 'POST',
-      body: JSON.stringify({ attachmentIds }),
-    })
+    const attachments = await gwApi.post<Attachment[]>(`/messages/${messageId}/attachments`, { attachmentIds })
 
     dispatch(chatSliceActions.attachmentsSetForMessage({ messageId, attachments }))
     return attachments
@@ -8867,10 +8863,9 @@ export const fetchAttachmentsByMessage = createAsyncThunk<
   Attachment[],
   { messageId: MessageId },
   { extra: ThunkExtraArgument }
->('chat/fetchAttachmentsByMessage', async ({ messageId }, { dispatch, extra, rejectWithValue }) => {
-  const { auth } = extra
+>('chat/fetchAttachmentsByMessage', async ({ messageId }, { dispatch, rejectWithValue }) => {
   try {
-    const attachments = await apiCall<Attachment[]>(`/messages/${messageId}/attachments`, auth.accessToken)
+    const attachments = await gwApi.get<Attachment[]>(`/messages/${messageId}/attachments`)
     dispatch(chatSliceActions.attachmentsSetForMessage({ messageId, attachments }))
     // Fetch binaries and convert to base64 data URLs
     const dataUrls: string[] = (
@@ -8904,12 +8899,9 @@ export const deleteAttachmentsByMessage = createAsyncThunk<
   { deleted: number },
   { messageId: MessageId },
   { extra: ThunkExtraArgument }
->('chat/deleteAttachmentsByMessage', async ({ messageId }, { dispatch, extra, rejectWithValue }) => {
-  const { auth } = extra
+>('chat/deleteAttachmentsByMessage', async ({ messageId }, { dispatch, rejectWithValue }) => {
   try {
-    const result = await apiCall<{ deleted: number }>(`/messages/${messageId}/attachments`, auth.accessToken, {
-      method: 'DELETE',
-    })
+    const result = await gwApi.delete<{ deleted: number }>(`/messages/${messageId}/attachments`)
     dispatch(chatSliceActions.attachmentsClearedForMessage(messageId))
     return result
   } catch (error) {
@@ -8921,10 +8913,9 @@ export const deleteAttachmentsByMessage = createAsyncThunk<
 // Fetch a single attachment by ID
 export const fetchAttachmentById = createAsyncThunk<Attachment, { id: MessageId }, { extra: ThunkExtraArgument }>(
   'chat/fetchAttachmentById',
-  async ({ id }, { dispatch, extra, rejectWithValue }) => {
-    const { auth } = extra
+  async ({ id }, { dispatch, rejectWithValue }) => {
     try {
-      const attachment = await apiCall<Attachment>(`/attachments/${id}`, auth.accessToken)
+      const attachment = await gwApi.get<Attachment>(`/attachments/${id}`)
       if (attachment.message_id != null) {
         dispatch(
           chatSliceActions.attachmentUpsertedForMessage({

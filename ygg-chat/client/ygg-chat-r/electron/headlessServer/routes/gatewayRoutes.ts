@@ -18,6 +18,7 @@
  * Phase 5, gated behind the `gateway.crud` flag; no-op when disabled.
  */
 
+import express from 'express'
 import type { Express, Request } from 'express'
 import type { RailwayClient } from '../services/railwayClient.js'
 import type { CloudMirrorService, CloudEntityKind } from '../services/cloudMirrorService.js'
@@ -692,5 +693,142 @@ export function registerGatewayRoutes(app: Express, deps: RegisterGatewayRoutesD
     }
     const r = await cloudLeg('POST', `/messages/deleteMany`, req.body)
     res.status(r.status).json(r.body)
+  })
+
+  // ---- Attachments (storage-aware; authority follows the message's conversation) ----
+
+  /**
+   * Storage mode for an attachment op keyed by MESSAGE id: the renderer's
+   * ?storageMode= hint wins, else the parent conversation's storage_mode (the
+   * message row is mirrored into local SQLite for cloud convs too, so the join
+   * resolves in both modes), else cloud. Local reads go straight to SQLite via
+   * the shared statements; cloud reads/writes go through Railway + mirror.
+   */
+  function attachmentMessageMode(messageId: string, req: Request): 'local' | 'cloud' {
+    const hint = req.query?.storageMode
+    if (hint === 'local') return 'local'
+    if (hint === 'cloud') return 'cloud'
+    try {
+      const row = deps.db
+        ?.prepare(
+          'SELECT c.storage_mode AS storage_mode FROM messages m JOIN conversations c ON c.id = m.conversation_id WHERE m.id = ?'
+        )
+        .get(messageId) as { storage_mode?: string } | undefined
+      if (row) return row.storage_mode === 'local' ? 'local' : 'cloud'
+    } catch {
+      /* fall through to cloud */
+    }
+    return 'cloud'
+  }
+
+  /** Remove a message's attachment associations locally (links only; blobs may be sha-shared). */
+  function deleteLocalAttachmentLinks(messageId: string): number {
+    try {
+      const info = deps.db?.prepare('DELETE FROM message_attachment_links WHERE message_id = ?').run(messageId)
+      return info?.changes ?? 0
+    } catch {
+      return 0
+    }
+  }
+
+  app.get('/api/gw/messages/:id/attachments', async (req, res) => {
+    const mode = attachmentMessageMode(req.params.id, req)
+    if (mode === 'local') {
+      try {
+        res.json((deps.statements.getAttachmentsByMessageId.all(req.params.id) as any[]) || [])
+      } catch (err) {
+        res.status(500).json({ error: 'local attachments read failed', detail: String(err) })
+      }
+      return
+    }
+    const r = await cloudLeg('GET', `/messages/${encodeURIComponent(req.params.id)}/attachments`)
+    res.status(r.status).json(r.body)
+  })
+
+  app.post('/api/gw/messages/:id/attachments', async (req, res) => {
+    const mode = attachmentMessageMode(req.params.id, req)
+    const attachmentIds: string[] = Array.isArray(req.body?.attachmentIds) ? req.body.attachmentIds : []
+    if (mode === 'local') {
+      try {
+        const now = new Date().toISOString()
+        for (const attId of attachmentIds) {
+          deps.statements.linkAttachment.run(`${req.params.id}:${attId}`, req.params.id, attId, now)
+        }
+        res.json((deps.statements.getAttachmentsByMessageId.all(req.params.id) as any[]) || [])
+      } catch (err) {
+        res.status(500).json({ error: 'local attachment link failed', detail: String(err) })
+      }
+      return
+    }
+    const r = await cloudLeg('POST', `/messages/${encodeURIComponent(req.params.id)}/attachments`, { attachmentIds })
+    if (r.ok && Array.isArray(r.body)) {
+      for (const att of r.body) await mirrorBestEffort('attachment', att)
+    }
+    res.status(r.status).json(r.body)
+  })
+
+  app.delete('/api/gw/messages/:id/attachments', async (req, res) => {
+    const mode = attachmentMessageMode(req.params.id, req)
+    if (mode === 'local') {
+      res.json({ deleted: deleteLocalAttachmentLinks(req.params.id) })
+      return
+    }
+    const r = await cloudLeg('DELETE', `/messages/${encodeURIComponent(req.params.id)}/attachments`)
+    res.status(r.status).json(r.body)
+  })
+
+  app.get('/api/gw/attachments/:id', async (req, res) => {
+    const hint = req.query?.storageMode
+    let localRow: any = null
+    if (hint !== 'cloud') {
+      try {
+        localRow = deps.statements.getAttachmentById?.get(req.params.id) ?? null
+      } catch {
+        localRow = null
+      }
+    }
+    if (hint === 'local' || (hint !== 'cloud' && localRow)) {
+      res.json(localRow)
+      return
+    }
+    const r = await cloudLeg('GET', `/attachments/${encodeURIComponent(req.params.id)}`)
+    res.status(r.status).json(r.body)
+  })
+
+  // Upload: cloud-only (local attachments use the base64 prepare/save path, not
+  // multipart). Forward the raw multipart body to Railway verbatim so the boundary
+  // header stays intact, then mirror + link the returned attachment into SQLite.
+  app.post('/api/gw/attachments', express.raw({ type: () => true, limit: '25mb' }), async (req, res) => {
+    const messageId = req.query?.messageId ? String(req.query.messageId) : undefined
+    const contentType = req.get('content-type') || 'application/octet-stream'
+    const bodyBuf: Buffer = Buffer.isBuffer(req.body) ? req.body : Buffer.from((req.body as any) || [])
+    try {
+      const r = await deps.railway.passthrough({
+        method: 'POST',
+        path: `/attachments`,
+        headers: { 'Content-Type': contentType },
+        body: bodyBuf,
+      })
+      if (r.ok && r.body && typeof r.body === 'object') {
+        const att = r.body as Record<string, any>
+        const linkMessageId = att.message_id ?? messageId ?? null
+        await mirrorBestEffort('attachment', { ...att, message_id: linkMessageId })
+        if (linkMessageId && att.id) {
+          try {
+            deps.statements.linkAttachment.run(
+              `${linkMessageId}:${att.id}`,
+              linkMessageId,
+              att.id,
+              new Date().toISOString()
+            )
+          } catch {
+            /* best-effort local link */
+          }
+        }
+      }
+      res.status(r.status).json(r.body)
+    } catch (err) {
+      res.status(502).json({ error: 'attachment upload failed', detail: String(err) })
+    }
   })
 }

@@ -142,4 +142,28 @@ describe('railwayClient', () => {
     await expect(client.stream({ method: 'GET', path: '/s' }, e => events.push(e), controller.signal)).resolves.toBeUndefined()
     expect(events).toEqual([])
   })
+
+  it('forwards a binary (Buffer) body verbatim and keeps the caller Content-Type (multipart passthrough)', async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse(200, { id: 'att-1' }))
+    const client = createRailwayClient({ auth: makeAuth(), remoteApiBase: 'https://x/api' })
+    const buf = Buffer.from('----boundary\r\nfile-bytes\r\n----boundary--')
+    const ct = 'multipart/form-data; boundary=--boundary'
+    const out = await client.passthrough({ method: 'POST', path: '/attachments', headers: { 'Content-Type': ct }, body: buf })
+    expect(out.body).toEqual({ id: 'att-1' })
+    const [, init] = fetchMock.mock.calls[0]
+    // Body passed through untouched — NOT JSON.stringified into "{}"/a quoted string.
+    expect(init.body).toBe(buf)
+    // The caller's multipart Content-Type (with boundary) is preserved, not overwritten with application/json.
+    expect(init.headers['Content-Type']).toBe(ct)
+  })
+
+  it('does not default a binary body to application/json when no Content-Type is supplied', async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse(200, { ok: true }))
+    const client = createRailwayClient({ auth: makeAuth(), remoteApiBase: 'https://x/api' })
+    const bytes = new Uint8Array([1, 2, 3, 4])
+    await client.passthrough({ method: 'POST', path: '/x', body: bytes })
+    const [, init] = fetchMock.mock.calls[0]
+    expect(init.body).toBe(bytes)
+    expect(init.headers['Content-Type']).toBeUndefined()
+  })
 })

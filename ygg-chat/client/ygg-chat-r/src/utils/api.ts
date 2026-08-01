@@ -357,13 +357,16 @@ export const localApi = {
   post: async <T>(endpoint: string, data?: any, options?: RequestInit): Promise<T> => {
     const requestStart = Date.now()
     const method = 'POST'
+    // FormData (multipart uploads) is passed through untouched — never JSON-encoded —
+    // and we let fetch set the multipart Content-Type + boundary itself.
+    const isFormData = data && typeof FormData !== 'undefined' && data instanceof FormData
 
     try {
       const response = await fetch(await buildLocalApiUrl(endpoint), {
         ...options,
         method,
-        headers: { 'Content-Type': 'application/json', ...options?.headers },
-        body: data ? JSON.stringify(data) : undefined,
+        headers: { ...(isFormData ? {} : { 'Content-Type': 'application/json' }), ...options?.headers },
+        body: isFormData ? data : data ? JSON.stringify(data) : undefined,
       })
       if (!response.ok) {
         const error = await createLocalApiHttpError(response)
