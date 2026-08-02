@@ -11,7 +11,11 @@ import type {
 import { ProviderRouter, normalizeProviderRoute } from './providerRouter.js'
 import { persistWithFallback, type ToolResultPersistencePolicy } from './toolResultPersistenceService.js'
 import { sanitizeToolResultContentForModel } from '../providers/toolResultSanitizer.js'
-import { formatProviderErrorForAssistant, type FormattedProviderError } from '../providers/providerErrorFormatter.js'
+import {
+  formatProviderErrorForAssistant,
+  isTransientProviderError,
+  type FormattedProviderError,
+} from '../providers/providerErrorFormatter.js'
 import { trimHistoryToLatestCompaction } from './compactionService.js'
 import { assertToolAllowedForOperationMode, requiresAgentMode } from '../../../../../shared/operationModeToolPolicy.js'
 import {
@@ -79,6 +83,18 @@ export interface ToolLoopRobustnessOptions {
   finalizationInstruction?: string
   /** Base delay (ms) before an empty-turn retry; jitter is added on top. */
   emptyTurnRetryDelayMs?: number
+  /**
+   * Retry a provider turn on a TRANSIENT provider error (429 / 408 / 5xx /
+   * overloaded / usage-limit / timeout) before persisting the error and failing
+   * the turn. The turn counter is not advanced across retries; the error row is
+   * persisted only once retries are exhausted. Off by default (main chat opts
+   * out); subagents opt in.
+   */
+  retryProviderError?: boolean
+  /** Max provider-error retries before giving up. Default 2 (=> up to 3 total attempts). */
+  maxProviderRetries?: number
+  /** Base backoff (ms) before a provider-error retry; multiplied by attempt, plus jitter. */
+  providerRetryBackoffMs?: number
 }
 
 /**
@@ -208,6 +224,9 @@ const DEFAULT_MAX_TURNS = 400
 const DEFAULT_PROVIDER_TURN_TIMEOUT_MS = 180_000
 const EMPTY_TURN_RETRY_BASE_MS = 600
 const EMPTY_TURN_RETRY_JITTER_MS = 400
+const DEFAULT_MAX_PROVIDER_RETRIES = 2
+const DEFAULT_PROVIDER_RETRY_BACKOFF_MS = 750
+const PROVIDER_RETRY_JITTER_MS = 400
 const DEFAULT_FINALIZATION_INSTRUCTION =
   'Summarize the tool results above and provide the final answer. Do not call tools. Be concise and complete.'
 const THINKING_WRAPPER_PATTERN = /<thinking>[\s\S]*?<\/thinking>\s*/gi
@@ -543,72 +562,100 @@ export class ToolLoopService {
           : null,
     }
 
-    let streamedTextDuringTurn = false
-    let streamedReasoningDuringTurn = false
-    let output: ProviderGenerateOutput
-    try {
-      output = await withTimeoutAndAbort(
-        this.providerRouter.generate(input.provider, providerInput, event => {
-          if (event?.type === 'chunk' && event.part === 'text' && typeof event.delta === 'string' && event.delta.length > 0) {
-            streamedTextDuringTurn = true
+    const maxProviderRetries = input.robustness?.retryProviderError
+      ? Math.max(0, input.robustness.maxProviderRetries ?? DEFAULT_MAX_PROVIDER_RETRIES)
+      : 0
+
+    // Attempt loop for TRANSIENT provider errors (opt-in via robustness). On a
+    // retryable failure we back off and re-issue the SAME turn — WITHOUT persisting
+    // an error row and WITHOUT advancing the turn counter. The error is persisted
+    // and thrown only once retries are exhausted (or immediately when disabled /
+    // the error is not transient). for(;;) exits only via return or throw.
+    for (let attempt = 1; ; attempt++) {
+      let streamedTextDuringTurn = false
+      let streamedReasoningDuringTurn = false
+      let output: ProviderGenerateOutput
+      try {
+        output = await withTimeoutAndAbort(
+          this.providerRouter.generate(input.provider, providerInput, event => {
+            if (event?.type === 'chunk' && event.part === 'text' && typeof event.delta === 'string' && event.delta.length > 0) {
+              streamedTextDuringTurn = true
+            }
+            if (
+              event?.type === 'chunk' &&
+              event.part === 'reasoning' &&
+              typeof event.delta === 'string' &&
+              event.delta.length > 0
+            ) {
+              streamedReasoningDuringTurn = true
+            }
+            emit(event)
+          }),
+          this.providerTurnTimeoutMs,
+          `Provider turn ${turn}/${maxTurns}`,
+          input.signal
+        )
+      } catch (error) {
+        // Cancellation is not a provider failure; propagate it so the run aborts cleanly.
+        if (input.signal?.aborted || isAbortError(error)) {
+          throw error
+        }
+
+        // Transient failure with retries left: back off and try the same turn again.
+        // Deferred persistence — nothing is written until retries are exhausted.
+        if (attempt <= maxProviderRetries && isTransientProviderError(error)) {
+          emit({
+            type: 'tool_loop',
+            status: 'provider_retry',
+            turn,
+            maxTurns,
+            attempt,
+            maxAttempts: maxProviderRetries,
+          })
+          const base = input.robustness?.providerRetryBackoffMs ?? DEFAULT_PROVIDER_RETRY_BACKOFF_MS
+          // Rejects with AbortError if the run is cancelled mid-backoff -> propagates.
+          await abortAwareSleep(base * attempt + Math.floor(Math.random() * PROVIDER_RETRY_JITTER_MS), input.signal)
+          continue
+        }
+
+        const providerError = formatProviderErrorForAssistant(error, {
+          provider: input.provider,
+          modelName: input.modelName,
+        })
+
+        if (providerError) {
+          const assistantMessage = this.sink.persistAssistantMessage({
+            conversationId: input.conversationId,
+            parentId: params.parentId,
+            content: providerError.message,
+            modelName: input.modelName,
+            contentBlocks: [{ type: 'text', content: providerError.message }],
+          })
+
+          if (!streamedTextDuringTurn) {
+            emit({ type: 'chunk', part: 'text', delta: providerError.message })
           }
-          if (
-            event?.type === 'chunk' &&
-            event.part === 'reasoning' &&
-            typeof event.delta === 'string' &&
-            event.delta.length > 0
-          ) {
-            streamedReasoningDuringTurn = true
-          }
-          emit(event)
-        }),
-        this.providerTurnTimeoutMs,
-        `Provider turn ${turn}/${maxTurns}`,
-        input.signal
-      )
-    } catch (error) {
-      // Cancellation is not a provider failure; propagate it so the run aborts cleanly.
-      if (input.signal?.aborted || isAbortError(error)) {
+          emit({ type: 'assistant_message_persisted', message: assistantMessage })
+          throw new ProviderErrorAssistantResponse({ assistantMessage, providerError, turnsUsed: turn })
+        }
+
+        const message = error instanceof Error ? error.message : String(error)
+        emit({ type: 'error', error: `Continuation generation failed on turn ${turn}/${maxTurns}: ${message}` })
         throw error
       }
 
-      const providerError = formatProviderErrorForAssistant(error, {
-        provider: input.provider,
-        modelName: input.modelName,
-      })
-
-      if (providerError) {
-        const assistantMessage = this.sink.persistAssistantMessage({
-          conversationId: input.conversationId,
-          parentId: params.parentId,
-          content: providerError.message,
-          modelName: input.modelName,
-          contentBlocks: [{ type: 'text', content: providerError.message }],
-        })
-
-        if (!streamedTextDuringTurn) {
-          emit({ type: 'chunk', part: 'text', delta: providerError.message })
-        }
-        emit({ type: 'assistant_message_persisted', message: assistantMessage })
-        throw new ProviderErrorAssistantResponse({ assistantMessage, providerError, turnsUsed: turn })
+      if (output.contextUsage) {
+        emit({ type: 'context_usage', usage: output.contextUsage })
+      }
+      if (output.reasoning && !streamedReasoningDuringTurn) {
+        emit({ type: 'chunk', part: 'reasoning', delta: output.reasoning })
+      }
+      if (output.content && !streamedTextDuringTurn) {
+        emit({ type: 'chunk', part: 'text', delta: output.content })
       }
 
-      const message = error instanceof Error ? error.message : String(error)
-      emit({ type: 'error', error: `Continuation generation failed on turn ${turn}/${maxTurns}: ${message}` })
-      throw error
+      return output
     }
-
-    if (output.contextUsage) {
-      emit({ type: 'context_usage', usage: output.contextUsage })
-    }
-    if (output.reasoning && !streamedReasoningDuringTurn) {
-      emit({ type: 'chunk', part: 'reasoning', delta: output.reasoning })
-    }
-    if (output.content && !streamedTextDuringTurn) {
-      emit({ type: 'chunk', part: 'text', delta: output.content })
-    }
-
-    return output
   }
 
   /**

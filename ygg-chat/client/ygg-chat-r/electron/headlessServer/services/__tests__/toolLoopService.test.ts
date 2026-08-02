@@ -181,6 +181,68 @@ describeIfSqlite('ToolLoopService', () => {
     expect(providerRouter.calls[0].input.history.map((message: any) => message.id)).toEqual(['summary', 'new-user'])
   })
 
+  const retryRunInput = (robustness: any) => ({
+    provider: 'zai',
+    modelName: 'glm-4.6',
+    conversationId: 'c1',
+    assistantParentId: null,
+    history: [{ role: 'user', content: 'hi' }],
+    userContent: 'hi',
+    robustness,
+  })
+
+  it('retries a transient provider error before continuing (provider_retry)', async () => {
+    const providerRouter = new FakeProviderRouter()
+    providerRouter.enqueue(new Error('request failed (503): overloaded'))
+    providerRouter.enqueue({ content: 'recovered' })
+    const service = new ToolLoopService({ messageRepo, providerRouter: providerRouter as unknown as ProviderRouter })
+
+    const events: any[] = []
+    const result = await service.run(
+      retryRunInput({ retryProviderError: true, providerRetryBackoffMs: 1, maxProviderRetries: 2 }),
+      (event: any) => events.push(event)
+    )
+
+    expect(providerRouter.calls).toHaveLength(2) // one failure + one successful retry
+    const retry = events.find(e => e.type === 'tool_loop' && e.status === 'provider_retry')
+    expect(retry).toMatchObject({ turn: 1, attempt: 1, maxAttempts: 2 })
+    expect(result.finalAssistantMessage?.content).toContain('recovered')
+    expect(result.turnsUsed).toBe(1) // the retry did NOT advance the turn counter
+  })
+
+  it('gives up after exhausting provider retries', async () => {
+    const providerRouter = new FakeProviderRouter()
+    providerRouter.enqueue(new Error('request failed (503)'))
+    providerRouter.enqueue(new Error('request failed (503)'))
+    providerRouter.enqueue(new Error('request failed (503)'))
+    const service = new ToolLoopService({ messageRepo, providerRouter: providerRouter as unknown as ProviderRouter })
+
+    await expect(
+      service.run(retryRunInput({ retryProviderError: true, providerRetryBackoffMs: 1, maxProviderRetries: 2 }), () => {})
+    ).rejects.toThrow('request failed (503)')
+    expect(providerRouter.calls).toHaveLength(3) // initial + 2 retries
+  })
+
+  it('does not retry a non-transient provider error', async () => {
+    const providerRouter = new FakeProviderRouter()
+    providerRouter.enqueue(new Error('request failed (400): bad request'))
+    const service = new ToolLoopService({ messageRepo, providerRouter: providerRouter as unknown as ProviderRouter })
+
+    await expect(
+      service.run(retryRunInput({ retryProviderError: true, providerRetryBackoffMs: 1, maxProviderRetries: 2 }), () => {})
+    ).rejects.toThrow('request failed (400)')
+    expect(providerRouter.calls).toHaveLength(1) // no retry for a 400
+  })
+
+  it('does not retry provider errors when retryProviderError is off (main-chat default)', async () => {
+    const providerRouter = new FakeProviderRouter()
+    providerRouter.enqueue(new Error('request failed (503)'))
+    const service = new ToolLoopService({ messageRepo, providerRouter: providerRouter as unknown as ProviderRouter })
+
+    await expect(service.run(retryRunInput(undefined), () => {})).rejects.toThrow('request failed (503)')
+    expect(providerRouter.calls).toHaveLength(1) // opt-in only; no robustness => no retry
+  })
+
   it('compacts an OpenAI tool loop before its next continuation request', async () => {
     const providerRouter = new FakeProviderRouter()
     providerRouter.enqueue({

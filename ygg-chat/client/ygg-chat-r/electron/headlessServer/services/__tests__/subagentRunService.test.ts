@@ -349,6 +349,63 @@ describe('SubagentRunService', () => {
     expect(streamingRunRepo.finishCalls[0]).toMatchObject({ status: 'error' })
   })
 
+  it('retries a transient provider error and recovers (subagents opt into retryProviderError)', async () => {
+    const providerRouter = new FakeProviderRouter()
+    providerRouter.enqueue(new Error('request failed (429): too many requests'))
+    providerRouter.enqueue({ content: 'recovered after retry' })
+    const runRepo = new FakeRunRepo()
+    const streamingRunRepo = new FakeStreamingRunRepo()
+    const service = buildService({ providerRouter, runRepo, streamingRunRepo })
+
+    const events: HeadlessSubagentStreamEvent[] = []
+    await service.run(baseRequest(), event => events.push(event), new AbortController().signal)
+
+    // The transient 429 triggered one retry, surfaced as a provider_retry status.
+    const retry = events.find(e => e.type === 'tool_loop' && (e as any).status === 'provider_retry') as any
+    expect(retry).toBeTruthy()
+    expect(retry.attempt).toBe(1)
+    expect(providerRouter.calls).toHaveLength(2) // first (429) + retry (success)
+
+    const complete = events.find(e => e.type === 'complete') as any
+    expect(complete.result).toBe('recovered after retry')
+    const runId = (events.find(e => e.type === 'started') as any).subagentRunId
+    expect(runRepo.getRunById(runId)?.status).toBe('completed')
+  })
+
+  it('errors after exhausting provider retries (initial + 2)', async () => {
+    const providerRouter = new FakeProviderRouter()
+    providerRouter.enqueue(new Error('request failed (503): overloaded'))
+    providerRouter.enqueue(new Error('request failed (503): overloaded'))
+    providerRouter.enqueue(new Error('request failed (503): overloaded'))
+    const runRepo = new FakeRunRepo()
+    const streamingRunRepo = new FakeStreamingRunRepo()
+    const service = buildService({ providerRouter, runRepo, streamingRunRepo })
+
+    const events: HeadlessSubagentStreamEvent[] = []
+    await service.run(baseRequest(), event => events.push(event), new AbortController().signal)
+
+    expect(providerRouter.calls).toHaveLength(3) // initial + 2 retries, then give up
+    const runId = (events.find(e => e.type === 'started') as any).subagentRunId
+    expect(runRepo.getRunById(runId)?.status).toBe('error')
+    expect(events.filter(e => e.type === 'tool_loop' && (e as any).status === 'provider_retry')).toHaveLength(2)
+  })
+
+  it('does not retry a non-transient provider error', async () => {
+    const providerRouter = new FakeProviderRouter()
+    providerRouter.enqueue(new Error('request failed (400): bad request'))
+    const runRepo = new FakeRunRepo()
+    const streamingRunRepo = new FakeStreamingRunRepo()
+    const service = buildService({ providerRouter, runRepo, streamingRunRepo })
+
+    const events: HeadlessSubagentStreamEvent[] = []
+    await service.run(baseRequest(), event => events.push(event), new AbortController().signal)
+
+    expect(providerRouter.calls).toHaveLength(1) // a 400 is not transient => no retry
+    expect(events.some(e => e.type === 'tool_loop' && (e as any).status === 'provider_retry')).toBe(false)
+    const runId = (events.find(e => e.type === 'started') as any).subagentRunId
+    expect(runRepo.getRunById(runId)?.status).toBe('error')
+  })
+
   it('marks the run aborted when the signal fires', async () => {
     const providerRouter = new FakeProviderRouter()
     providerRouter.enqueue({

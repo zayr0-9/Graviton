@@ -438,7 +438,7 @@ export class SubagentRunService {
           compactionThresholdPercent: request.compactionThresholdPercent,
           compactionProvider: provider,
           compactionModelName: modelName,
-          robustness: { retryEmptyTurn: true, finalizeOnSilentToolEnd: true },
+          robustness: { retryEmptyTurn: true, finalizeOnSilentToolEnd: true, retryProviderError: true },
         },
         (event: HeadlessStreamEvent) => emit(event)
       )

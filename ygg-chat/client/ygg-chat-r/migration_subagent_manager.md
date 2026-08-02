@@ -21,13 +21,13 @@ context compaction — a fresh session should be able to resume from it alone.
 | 0 | Persistence & schema foundations | ✅ done | in checkpoint `8241cd7` |
 | 1 | Spawn engine (blocking + async) | ✅ done | committed `d88404a` (service + its test + this log) |
 | 2 | `subagent_manager` tool (executor-layer interceptor) | ✅ done | committed (see Phase 2 section) |
-| 3 | In-loop provider-error retry | ⬜ next | independent of 1/2 |
+| 3 | In-loop provider-error retry | ✅ done | committed (see Phase 3 section) |
 | 4 | Resume (`subagent_manager.resume`) | ⬜ pending | needs 0+1+2 |
-| 5 | UI: persisted transcript viewer | ⬜ pending | needs 0 |
+| 5 | UI: persisted transcript viewer | ⬜ next | needs 0 |
 | 6 | UI: live streaming | ⬜ pending | needs 5 |
 
-**Recommended slice for a usable v1:** 0 → 1 → 2 → 5. Then 3 (fewer failures),
-4 (recover failures), 6 (live progress).
+**Recommended slice for a usable v1:** 0 → 1 → 2 → 5. Then 3 (done), 4 (recover
+failures), 6 (live progress). Next up: 5 (make the manager visible), then 4.
 
 ---
 
@@ -142,6 +142,40 @@ always resolves a non-null `lineageId`. `tsc -b` (src+shared) clean; 0 tsc error
 the 3 touched source files. **Tests:** `subagentToolExecutor.test.ts` 16 pass (5
 dispatch + 11 new manager incl. the branch-A-vs-B isolation must-have). Full headless
 suite: 291 pass / 2 pre-existing fail / 58 skip.
+
+## Phase 3 — In-loop provider-error retry ✅
+
+Retries a TRANSIENT provider failure inside a single turn instead of failing the run.
+Opt-in via robustness; subagents opt in, main chat stays off.
+
+**`providers/providerErrorFormatter.ts`** — extracted the transient status/keyword
+set into `matchesTransientPattern(status, lower)` and exposed
+`isTransientProviderError(error)` (provider-agnostic — no OpenAI gate; subagents run
+on zai/bedrock/openrouter). `formatProviderErrorForAssistant` now reuses the same
+predicate for `retryExhausted` (behavior unchanged).
+
+**`services/toolLoopService.ts`** — `generateProviderTurn` now wraps
+`providerRouter.generate` in a `for(;;)` attempt loop. On a transient error with
+retries left: emit `tool_loop {status:'provider_retry', turn, attempt, maxAttempts}`,
+`abortAwareSleep(base*attempt + jitter)` (rejects → propagates on cancel), then retry
+the SAME turn — **no error row persisted, turn counter NOT advanced**. Only once
+retries are exhausted (or disabled / non-transient) does it fall through to the
+existing persist-and-throw path. New `ToolLoopRobustnessOptions`:
+`retryProviderError?` / `maxProviderRetries?` (default 2) / `providerRetryBackoffMs?`
+(default 750). Constants: `DEFAULT_MAX_PROVIDER_RETRIES=2`,
+`DEFAULT_PROVIDER_RETRY_BACKOFF_MS=750`, `PROVIDER_RETRY_JITTER_MS=400`.
+
+**`contracts/headlessApi.ts`** — `tool_loop` status union gains `'provider_retry'`
+plus optional `attempt?` / `maxAttempts?`.
+
+**`services/subagentRunService.ts`** — subagent robustness now includes
+`retryProviderError: true`.
+
+**Verified:** 0 new tsc errors in the 4 touched source files. `subagentRunService.test.ts`
+(runs locally): recovers-after-429, exhausts-after-initial+2, non-transient-400-no-retry
+all pass. `toolLoopService.test.ts` (self-skips locally, runs in CI) adds precise
+`providerRetryBackoffMs:1` cases: recovers (asserts turnsUsed unchanged), exhausts (3
+calls), non-transient (1 call), disabled/no-robustness (1 call).
 
 ---
 

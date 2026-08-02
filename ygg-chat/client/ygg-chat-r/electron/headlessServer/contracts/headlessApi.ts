@@ -157,10 +157,19 @@ export type HeadlessStreamEvent =
   | { type: 'provider_routed'; provider: string; modelName: string }
   | {
       type: 'tool_loop'
-      status: 'turn_started' | 'turn_completed' | 'max_turns_reached' | 'empty_turn_retry' | 'finalization_turn'
+      status:
+        | 'turn_started'
+        | 'turn_completed'
+        | 'max_turns_reached'
+        | 'empty_turn_retry'
+        | 'finalization_turn'
+        | 'provider_retry'
       turn: number
       maxTurns: number
       continued?: boolean
+      /** provider_retry only: the 1-based attempt that just failed, and the max retries allowed. */
+      attempt?: number
+      maxAttempts?: number
     }
   | {
       type: 'tool_execution'

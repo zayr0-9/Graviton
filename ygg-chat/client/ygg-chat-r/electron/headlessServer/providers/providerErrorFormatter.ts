@@ -62,6 +62,31 @@ function isOpenAiProvider(provider: string): boolean {
   return normalized === 'openai' || normalized === 'openaichatgpt' || normalized === 'chatgpt'
 }
 
+/** The transient-error status/keyword set, shared by the formatter and the retry classifier. */
+function matchesTransientPattern(status: number | undefined, lowerMessage: string): boolean {
+  return Boolean(
+    status === 429 ||
+      status === 408 ||
+      (typeof status === 'number' && status >= 500) ||
+      lowerMessage.includes('overloaded') ||
+      lowerMessage.includes('usage_limit_reached') ||
+      lowerMessage.includes('usage limit') ||
+      lowerMessage.includes('too many requests') ||
+      lowerMessage.includes('timed out')
+  )
+}
+
+/**
+ * Provider-agnostic transient-error classifier for in-loop retry. Uses the SAME
+ * status/keyword set the formatter uses for retryExhausted, but WITHOUT the
+ * OpenAI-only gate — subagents also run on zai/bedrock/openrouter, and a 429/5xx/
+ * overloaded/timeout on any of them is worth one more attempt after a backoff.
+ */
+export function isTransientProviderError(error: unknown): boolean {
+  const message = rawErrorMessage(error)
+  return matchesTransientPattern(extractStatus(message), message.toLowerCase())
+}
+
 export function formatProviderErrorForAssistant(error: unknown, context: { provider: string; modelName?: string }): FormattedProviderError | null {
   const provider = context.provider || 'provider'
   const originalMessage = rawErrorMessage(error)
@@ -72,16 +97,7 @@ export function formatProviderErrorForAssistant(error: unknown, context: { provi
   const providerMessage = typeof providerError?.message === 'string' ? providerError.message : undefined
   const resetAt = typeof providerError?.resets_at === 'number' ? providerError.resets_at : undefined
   const lower = originalMessage.toLowerCase()
-  const retryExhausted = Boolean(
-    status === 429 ||
-      status === 408 ||
-      (typeof status === 'number' && status >= 500) ||
-      lower.includes('overloaded') ||
-      lower.includes('usage_limit_reached') ||
-      lower.includes('usage limit') ||
-      lower.includes('too many requests') ||
-      lower.includes('timed out')
-  )
+  const retryExhausted = matchesTransientPattern(status, lower)
 
   if (!retryExhausted || !isOpenAiProvider(provider)) {
     return null
