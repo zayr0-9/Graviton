@@ -36,6 +36,7 @@ vi.mock('./toolDefinitions', () => ({
     { name: 'ripgrep', enabled: true },
     { name: 'bash', enabled: true },
     { name: 'edit_file', enabled: false },
+    { name: 'multi_call', enabled: true },
     { name: 'subagent', enabled: true },
   ]),
 }))
@@ -138,8 +139,8 @@ describe('executeSubagentCall request building', () => {
       autoApprove: false,
       rootPath: '/repo',
     })
-    // Settings-enabled tools intersected with available; excludes 'subagent'.
-    expect(capturedBody.tools).toEqual(['read_file', 'ripgrep'])
+    // Settings-enabled tools intersected with available; excludes 'subagent' and always includes multi_call.
+    expect(capturedBody.tools).toEqual(['read_file', 'ripgrep', 'multi_call'])
     expect(capturedBody.temperature).toBe(0.5)
   })
 
@@ -158,8 +159,8 @@ describe('executeSubagentCall request building', () => {
       baseContext()
     )
 
-    // edit_file is disabled but requested -> bypass; subagent always excluded.
-    expect(capturedBody.tools).toEqual(['bash', 'edit_file'])
+    // edit_file is disabled but requested -> bypass; subagent is excluded and multi_call is required.
+    expect(capturedBody.tools).toEqual(['bash', 'edit_file', 'multi_call'])
   })
 
   it('returns [] tools when the orchestrator is disabled', async () => {

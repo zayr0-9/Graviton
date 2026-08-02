@@ -1,6 +1,6 @@
 # Agent Context: Markdown and Text Response Rendering
 
-Last reviewed: 2026-06-23
+Last reviewed: 2026-08-02
 
 ## Purpose
 
@@ -140,6 +140,19 @@ If neither `streamEvents` nor `contentBlocks` are present:
 
 This keeps older messages displayable while the preferred modern path remains ordered `content_blocks` or `streamEvents`.
 
+## Generic Tool-Output Truncation
+
+Generic tool results are a renderer-only projection controlled by `chat:truncateToolOutput`:
+
+- The preference defaults to enabled and is persisted in `localStorage`.
+- `SettingsPane.tsx` saves the preference and dispatches `chat:truncateToolOutputChange`; `Chat.tsx` also listens for cross-window `storage` changes and passes `truncateToolOutput` to every `ChatMessage`.
+- When enabled, a generic result longer than 2,000 Unicode characters renders as a raw preview containing approximately 1,000 characters from the beginning and end plus an omitted-character marker.
+- The 2,000-character budget applies to the serialized whole result, so oversized objects and `multi_call` payloads do not construct an unbounded structured result tree.
+- Tool inputs/arguments and specialized HTML, MCP app, edit diff, plan display, and internal-link renderers are not truncated.
+- Canonical Redux state, SSE payloads, persisted messages, hooks, and model-facing tool results remain complete. Disabling the global preference restores complete generic output.
+
+Collapsed generic tool cards do not construct their result subtree until expanded. Preserve this behavior when changing tool-card rendering so truncation continues to reduce DOM work rather than only hiding full content with CSS.
+
 ## Process/Tool/Reasoning Grouping
 
 There are two related grouping layers.
@@ -212,6 +225,7 @@ The `fontSizeOffset` is applied through inline `style` on Markdown containers or
 - Keep fenced code blocks selectable and copyable.
 - Keep `rehypeHighlight` configured with `ignoreMissing: true` so unknown code fence languages do not break rendering.
 - Keep generated HTML/tool iframe rendering separate from Markdown. Tool HTML is registered/opened through the HTML iframe registry, not injected into ReactMarkdown.
+- Keep generic tool-output truncation renderer-only; never truncate canonical persisted, streamed, hook, or model-facing tool results.
 - Avoid adding untrusted raw HTML support to ReactMarkdown unless a separate sanitizer and threat model are introduced.
 - Preserve stable virtual row keys and measured containers when changing message render output.
 
@@ -250,7 +264,7 @@ The `fontSizeOffset` is applied through inline `style` on Markdown containers or
 
 Recommended checks after renderer changes:
 
-- Build: `npm --prefix client/ygg-chat-r run build:web`.
+- Build: `npm --prefix client/ygg-chat-r run build:electron`.
 - Manual message samples:
   - plain Markdown paragraphs/headings/lists/tables/task lists;
   - inline code and fenced code with known/unknown language names;

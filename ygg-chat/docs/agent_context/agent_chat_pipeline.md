@@ -36,9 +36,10 @@ Use this when changing:
   `src/utils/api.ts`); it holds **no** loop control, tool execution, or
   permission/hook/compaction orchestration.
 - **Detach/reattach (`gateway.resumableRuns` / `isResumableRunsEnabled()`, default
-  OFF).** When on, a client disconnect DETACHES rather than aborts: the run keeps
-  running server-side and the renderer resubscribes by `streamId` (incl. after a
-  reload via `resumeInFlightStreams`); Stop cancels via `POST /api/streams/:id/abort`.
+  ON in Electron).** A client disconnect or Chat route unmount DETACHES rather than
+  aborts: the run keeps running server-side and the renderer retains its module-level
+  reader or resubscribes by `streamId`; Stop cancels via `POST /api/streams/:id/abort`.
+  Explicit `false` on both settings restores the legacy disconnect-abort path.
   See `agent_headless_server.md` §Detach/Reattach and `agent_chat_streaming_state.md`.
 - `systemPrompt` is deliberately **omitted** from the request body — the server assembles
   it (`buildHeadlessSystemPrompt`) from operation mode + project/conversation prompts.
@@ -114,9 +115,10 @@ All 3 thunks share the same shape:
      `toolAutoApprove` (verbatim — undefined survives, only explicit `false` pauses),
      `hooksEnabled: isElectronMode`, `tools` (an explicit `[]` is authoritative → no tools),
      `attachmentsBase64` (turn-1 only), `streamId`. `systemPrompt` is omitted.
-2. **HTTP → loop**: `chatRoutes.ts runSseOrchestrator` opens the SSE stream, creates an
-   `AbortController` aborted on `res.on('close')`, and calls
-   `orchestrator.runMessage(request, emit, signal)`.
+2. **HTTP → loop**: `chatRoutes.ts runSseOrchestrator` opens the SSE stream and, by
+   default, attaches it to a `RunSession` whose `AbortController` outlives the socket.
+   `res.on('close')` only detaches. Explicit `gateway.resumableRuns=false` uses the
+   legacy response-owned controller and disconnect-abort behavior.
 3. **`ChatOrchestrator.runMessage`** (`chatOrchestrator.ts:288`):
    - Load conversation, `touch` conversation + project.
    - Build `hookSession` iff `hookRunner && request.hooksEnabled === true && decisionBroker`.
@@ -176,8 +178,9 @@ The server loop pauses **mid-turn**, per tool call, to ask the renderer for a de
   `cancelPlanClarification` (`:2904`) — all POST `/api/resume` via `postDecisionResume`
   (`:2869`), reading `{ streamId, toolCallId }` from Redux. Public signatures are unchanged
   (zero `Chat.tsx` changes). The old module-level `pending*Resolve` promises are **removed**.
-- **Abort**: aborting the local `fetch` controller closes the SSE socket; the server observes
-  `res.on('close')` and unwinds the paused/running loop. No separate renderer→Railway abort.
+- **Abort**: Stop first awaits `POST /api/streams/:id/abort`, then closes the local
+  reader and clears UI state. If the abort request fails, the in-flight marker is retained
+  for reconciliation; the run otherwise continues until completion or the detached reaper.
 
 ## Hooks (server-side, in-process)
 

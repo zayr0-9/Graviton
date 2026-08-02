@@ -12,7 +12,7 @@ import { persistWithFallback, type ToolResultPersistencePolicy } from './toolRes
 import { sanitizeToolResultContentForModel } from '../providers/toolResultSanitizer.js'
 import { formatProviderErrorForAssistant, type FormattedProviderError } from '../providers/providerErrorFormatter.js'
 import { trimHistoryToLatestCompaction } from './compactionService.js'
-import { assertToolAllowedForOperationMode } from '../../../../../shared/operationModeToolPolicy.js'
+import { assertToolAllowedForOperationMode, requiresAgentMode } from '../../../../../shared/operationModeToolPolicy.js'
 import {
   extractOpenAIContextUsageFromBlocks,
   openAIModelContextLength,
@@ -122,6 +122,10 @@ export interface ToolLoopRunInput {
   streamId?: string | null
   rootPath?: string | null
   operationMode?: 'plan' | 'execute'
+  /** Agent-mode prompt selected by the orchestrator if this run is upgraded mid-turn. */
+  agentSystemPrompt?: string | null
+  /** Server-owned prompt to switch the current Plan-mode run to Agent mode. */
+  requestOperationModeUpgrade?: (toolCall: ProviderToolCall) => Promise<boolean>
   toolTimeoutMs?: number
   /** Parent tool-approval policy, forwarded to server-owned subagent calls. */
   toolAutoApprove?: boolean
@@ -670,6 +674,7 @@ export class ToolLoopService {
     let history = trimHistoryToLatestCompaction(input.history || [])
     let lastAssistantMessage: any = null
     let anyToolsExecuted = false
+    let activeOperationMode = input.operationMode ?? 'execute'
     // Phase 3: true iff the most recent iteration was a natural stop (no tool calls)
     // that a Stop hook forced to continue. Used only at the max-turns boundary to
     // finalize gracefully with the valid persisted answer (parity with the renderer,
@@ -851,15 +856,22 @@ export class ToolLoopService {
         const startedAt = Date.now()
 
         try {
-          const operationMode = input.operationMode ?? 'execute'
-          assertToolAllowedForOperationMode(toolCall, operationMode)
+          if (requiresAgentMode(toolCall, activeOperationMode)) {
+            const upgraded = await input.requestOperationModeUpgrade?.(toolCall)
+            if (!upgraded) {
+              assertToolAllowedForOperationMode(toolCall, activeOperationMode)
+            }
+            activeOperationMode = 'execute'
+            input.systemPrompt = input.agentSystemPrompt ?? input.systemPrompt
+          }
+          assertToolAllowedForOperationMode(toolCall, activeOperationMode)
 
           const result = await this.executeTool(toolCall, {
             conversationId: input.conversationId,
             messageId: assistantMessage.id,
             streamId: input.streamId ?? null,
             rootPath: input.rootPath ?? null,
-            operationMode,
+            operationMode: activeOperationMode,
             provider: input.provider,
             modelName: input.modelName,
             autoApprove: input.toolAutoApprove !== false,

@@ -8,6 +8,7 @@ import { default as searchReducer } from '../features/search/searchSlice'
 import { uiActions, uiReducer } from '../features/ui'
 import { usersReducer } from '../features/users'
 import { thunkExtraArg } from './thunkExtra'
+import { recordTerminalSnapshotLease } from '../features/chats/conversationSnapshotCoordinator'
 
 // Root reducer configuration
 const rootReducer = {
@@ -27,6 +28,31 @@ type ListenerState = {
 
 const listenerMiddleware = createListenerMiddleware()
 
+// Provider/client failures can terminate via sendingCompleted without a terminal complete
+// event. Preserve any persisted live lineage until the coordinator confirms durability.
+listenerMiddleware.startListening({
+  actionCreator: chatSliceActions.sendingCompleted,
+  effect: (action, api) => {
+    const streamId = action.payload?.streamId
+    if (!streamId) return
+    const state = api.getState() as ListenerState
+    const stream = state.chat.streaming.byId[streamId]
+    if (!stream?.conversationId) return
+    const messageIds = [
+      stream.messageId,
+      stream.triggerUserMessageId,
+      stream.currentBranchAnchorMessageId,
+      stream.branchAnchorMessageId,
+      stream.lastCompletedMessageId,
+      stream.finalMessageId,
+      stream.lineage.rootMessageId,
+      stream.lineage.originMessageId,
+    ]
+    if (!messageIds.some(id => id != null)) return
+    recordTerminalSnapshotLease({ conversationId: stream.conversationId, streamId, messageIds })
+  },
+})
+
 listenerMiddleware.startListening({
   actionCreator: chatSliceActions.streamCompleted,
   effect: (action, api) => {
@@ -41,12 +67,26 @@ listenerMiddleware.startListening({
     const stream = state.chat.streaming.byId[streamId]
     if (!stream) return
 
-    // Notification requirement: when a branch stream completes.
-    if (stream.streamType !== 'branch') return
-
     const conversationId = stream.conversationId
     if (conversationId == null) return
 
+    recordTerminalSnapshotLease({
+      conversationId,
+      streamId,
+      messageIds: [
+        messageId,
+        stream.triggerUserMessageId,
+        stream.currentBranchAnchorMessageId,
+        stream.branchAnchorMessageId,
+        stream.lastCompletedMessageId,
+        stream.finalMessageId,
+        stream.lineage.rootMessageId,
+        stream.lineage.originMessageId,
+      ],
+    })
+
+    // Notification requirement remains branch-only; every terminal stream gets a lease.
+    if (stream.streamType !== 'branch') return
     const conversation = state.conversations.items.find(c => String(c.id) === String(conversationId))
 
     api.dispatch(
@@ -95,6 +135,9 @@ export const setupStore = (preloadedState?: Partial<RootState>) => {
     preloadedState,
     middleware: getDefaultMiddleware =>
       getDefaultMiddleware({
+        thunk: {
+          extraArgument: thunkExtraArg,
+        },
         serializableCheck: {
           ignoredActions: ['persist/PERSIST', 'persist/REHYDRATE'],
         },

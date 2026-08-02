@@ -19,6 +19,8 @@ export interface InflightStreamRecord {
   conversationId: string
   streamType: 'primary' | 'branch'
   parentMessageId: string | null
+  /** Highest server event sequence projected by this renderer. */
+  lastSeq?: number
 }
 
 const STORAGE_KEY = 'ygg.inflightStreams'
@@ -48,6 +50,15 @@ export function addInflightStream(record: InflightStreamRecord): void {
   if (!record.streamId) return
   const map = readAll()
   map[record.streamId] = record
+  writeAll(map)
+}
+
+export function updateInflightStreamCursor(streamId: string, lastSeq: number): void {
+  if (!streamId || !Number.isFinite(lastSeq) || lastSeq < 0) return
+  const map = readAll()
+  const record = map[streamId]
+  if (!record || (record.lastSeq ?? 0) >= lastSeq) return
+  map[streamId] = { ...record, lastSeq }
   writeAll(map)
 }
 

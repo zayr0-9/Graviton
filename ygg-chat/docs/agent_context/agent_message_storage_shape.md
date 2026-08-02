@@ -201,9 +201,7 @@ Routing rules:
 - Electron mixed mode checks passed `storageMode`, React Query caches, and local fallback.
 - Other fetch surfaces (e.g. `useConversationData`) now go through the storage-aware gateway `gwApi` (`/api/gw/conversations/:id/messages` + `/messages/tree`), which merges local ⊕ cloud server-side; the renderer no longer branches on `shouldUseLocalApi` for those.
 
-`Chat.tsx` then mirrors query output into Redux for legacy consumers:
-- `messagesLoaded(fetchedMessages)` for flat messages;
-- `heimdallDataLoaded({ treeData, subagentMap: {} })` for Heimdall.
+`Chat.tsx` no longer mirrors raw query output directly. `conversationSnapshotCoordinator.ts` is the only persisted-snapshot bridge: it generation-gates the request, reconciles explicit active/terminal protections against authoritative fetched deletions, rebuilds the canonical tree, writes the accepted exact-key cache snapshot, and dispatches `conversationSnapshotApplied` atomically.
 
 ## Building the Tree
 

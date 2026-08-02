@@ -53,9 +53,17 @@ import { updateToolEnabledState } from '../../helpers/toolSettingsStorage'
 import { generateStreamId, STREAM_PRUNE_DELAY } from './streamHelpers'
 import { createStreamingRun, finishStreamingRun } from './streamRunTracking'
 import { runServerChatLoop, runServerReattach, postStreamAbort } from './mainChatClient'
-import { addInflightStream, removeInflightStream, listInflightStreams } from './inflightStreams'
+import {
+  addInflightStream,
+  removeInflightStream,
+  listInflightStreams,
+  updateInflightStreamCursor,
+} from './inflightStreams'
 import { isResumableRunsEnabled } from '../../helpers/serverLoopSettings'
 import { buildServerLoopRequest } from './buildServerLoopRequest'
+import { buildConversationTree } from './conversationTree'
+import { conversationQueryKeys } from './conversationQueryKeys'
+import type { ConversationMessagesTreeData } from './conversationMessagesApi'
 import { getValidTokens } from './openaiOAuth'
 import { filterToolsForOperationMode } from './operationModeSystemPrompt'
 import {
@@ -133,49 +141,7 @@ const getStorageModeFromCache = (
   return 'cloud' // Default to cloud if not found
 }
 
-/**
- * Builds a ChatNode tree structure from a flat array of messages
- * Mimics server-side convertMessagesToHeimdall logic
- */
-const buildTreeFromMessages = (messages: Message[]): any | null => {
-  if (!messages || messages.length === 0) return null
-
-  // Find root messages (parent_id is null/undefined)
-  const rootMessages = messages.filter(msg => !msg.parent_id)
-  if (rootMessages.length === 0) return null
-
-  // Recursive function to build tree node
-  const buildNode = (message: Message): any => {
-    const children = messages
-      .filter(msg => msg.parent_id === message.id)
-      .sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime())
-      .map(buildNode)
-
-    return {
-      id: message.id.toString(),
-      message: message.content,
-      sender: message.role === 'user' ? 'user' : message.role === 'ex_agent' ? 'ex_agent' : 'assistant',
-      children,
-    }
-  }
-
-  // Single root - return it directly
-  if (rootMessages.length === 1) {
-    return buildNode(rootMessages[0])
-  }
-
-  // Multiple roots - create synthetic root
-  const rootChildren = rootMessages
-    .sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime())
-    .map(buildNode)
-
-  return {
-    id: 'root',
-    message: 'Conversation',
-    sender: 'assistant',
-    children: rootChildren,
-  }
-}
+const buildTreeFromMessages = buildConversationTree
 
 /**
  * Best-effort live refresh of the Heimdall node tree during a server-owned run.
@@ -315,8 +281,8 @@ const removeMessagesFromCache = (
 ) => {
   if (!queryClient) return
 
-  const cacheKey = ['conversations', conversationId, 'messages']
-  const existingData = queryClient.getQueryData<{ messages: Message[]; tree: any }>(cacheKey)
+  const cacheKey = conversationQueryKeys.messages(conversationId)
+  const existingData = queryClient.getQueryData<ConversationMessagesTreeData>(cacheKey)
 
   if (existingData) {
     const deletedSet = new Set(deletedIds.map(String))
@@ -328,6 +294,7 @@ const removeMessagesFromCache = (
     const newTree = buildTreeFromMessages(remainingMessages)
 
     queryClient.setQueryData(cacheKey, {
+      ...existingData,
       messages: remainingMessages,
       tree: newTree,
     })
@@ -349,8 +316,8 @@ const updateMessageInCache = (
 ) => {
   if (!queryClient) return
 
-  const cacheKey = ['conversations', conversationId, 'messages']
-  const existingData = queryClient.getQueryData<{ messages: Message[]; tree: any }>(cacheKey)
+  const cacheKey = conversationQueryKeys.messages(conversationId)
+  const existingData = queryClient.getQueryData<ConversationMessagesTreeData>(cacheKey)
 
   if (existingData) {
     // Update the message content in the messages array
@@ -371,6 +338,7 @@ const updateMessageInCache = (
     const newTree = buildTreeFromMessages(updatedMessages)
 
     queryClient.setQueryData(cacheKey, {
+      ...existingData,
       messages: updatedMessages,
       tree: newTree,
     })
@@ -386,14 +354,15 @@ const updateMessageCache = (queryClient: QueryClient | null, conversationId: Con
   if (!queryClient) return
 
   // Update the messages cache
-  const cacheKey = ['conversations', conversationId, 'messages']
-  const existingData = queryClient.getQueryData<{ messages: Message[]; tree: any }>(cacheKey)
+  const cacheKey = conversationQueryKeys.messages(conversationId)
+  const existingData = queryClient.getQueryData<ConversationMessagesTreeData>(cacheKey)
 
   if (existingData) {
     const updatedMessages = [...existingData.messages, newMessage]
     const updatedTree = addMessageToTree(existingData.tree, newMessage, newMessage.parent_id ?? null)
 
     queryClient.setQueryData(cacheKey, {
+      ...existingData,
       messages: updatedMessages,
       tree: updatedTree,
     })
@@ -480,8 +449,8 @@ const updateMessageArtifactsInCache = (
 ) => {
   if (!queryClient || !newArtifacts.length) return
 
-  const cacheKey = ['conversations', conversationId, 'messages']
-  const existingData = queryClient.getQueryData<{ messages: Message[]; tree: any }>(cacheKey)
+  const cacheKey = conversationQueryKeys.messages(conversationId)
+  const existingData = queryClient.getQueryData<ConversationMessagesTreeData>(cacheKey)
 
   if (existingData) {
     // Update the message artifacts in the messages array without dropping existing local previews.
@@ -490,8 +459,8 @@ const updateMessageArtifactsInCache = (
     )
 
     queryClient.setQueryData(cacheKey, {
+      ...existingData,
       messages: updatedMessages,
-      tree: existingData.tree, // Tree structure doesn't need artifact updates
     })
   }
 }
@@ -840,9 +809,13 @@ const appendGeneratedImagePathHintsForHistory = (history: Message[], allMessages
 
 const generationAbortControllersByStream = new Map<string, Set<AbortController>>()
 
-// Detach/reattach: conversations whose in-flight runs we have already tried to resume
-// this session (mount-time resume fires at most once per conversation).
-const resumedConversations = new Set<string>()
+/** True when this renderer already owns the live reader for a server run. */
+export const hasGenerationReader = (streamId: string | null | undefined): boolean =>
+  Boolean(streamId && generationAbortControllersByStream.get(streamId)?.size)
+
+// Stop retains markers whose server abort request failed. The owning thunk consumes this
+// hint in its finally path instead of erasing the only way to reconcile the live run.
+const retainInflightMarkerOnReaderClose = new Set<string>()
 
 const registerGenerationAbortController = (streamId: string | null | undefined, controller: AbortController) => {
   if (!streamId) return () => {}
@@ -1350,7 +1323,19 @@ export const sendMessage = createAsyncThunk<
             request: body,
             signal: controller.signal,
           },
-          { dispatch, getState, onMessagePersisted: () => refreshHeimdallTreeFromState(getState, dispatch) }
+          {
+            dispatch,
+            getState,
+            onMessagePersisted: () => refreshHeimdallTreeFromState(getState, dispatch),
+            onSeq: (seq, event) => {
+              if (
+                event.type !== 'permission_required' &&
+                event.type !== 'clarify_required' &&
+                event.type !== 'operation_mode_upgrade_required'
+              )
+                updateInflightStreamCursor(streamId, seq)
+            },
+          }
         )
         if (result.messageId) {
           void finishStreamingRun(streamId, {
@@ -1406,7 +1391,7 @@ export const sendMessage = createAsyncThunk<
       unregisterGenerationAbortController()
       // Terminal for THIS session (completed / errored / cancelled). Only a reload —
       // which kills the thunk before finally — leaves the marker for mount-time resume.
-      removeInflightStream(streamId)
+      if (!retainInflightMarkerOnReaderClose.delete(streamId)) removeInflightStream(streamId)
     }
   }
 )
@@ -1480,15 +1465,10 @@ export const fetchConversationMessages = createAsyncThunk<
       artifacts: Array.isArray((m as any).artifacts) ? (m as any).artifacts : [],
     }))
 
-    dispatch(chatSliceActions.messagesLoaded(messages))
-
-    // Detach/reattach: after a reload, re-attach to any server-owned runs this renderer
-    // started for THIS conversation but never saw finish. Once per conversation per
-    // session; fire-and-forget; no-op unless resumable runs are enabled.
-    if (isResumableRunsEnabled() && !resumedConversations.has(String(conversationId))) {
-      resumedConversations.add(String(conversationId))
-      void dispatch(resumeInFlightStreams({ conversationId: String(conversationId) }))
+    if (String(getState().chat.conversation.currentConversationId ?? '') !== String(conversationId)) {
+      return messages
     }
+    dispatch(chatSliceActions.messagesLoaded(messages))
 
     // Conditional attachments fetch: only when metadata indicates or when metadata absent (back-compat)
     const state = getState() as RootState
@@ -1518,7 +1498,7 @@ export const deleteMessage = createAsyncThunk<
   MessageId,
   { id: MessageId; conversationId: ConversationId; storageMode?: 'local' | 'cloud' },
   { extra: ThunkExtraArgument }
->('chat/deleteMessage', async ({ id, conversationId, storageMode }, { dispatch, extra, rejectWithValue }) => {
+>('chat/deleteMessage', async ({ id, conversationId, storageMode }, { extra, rejectWithValue }) => {
   try {
     // Use storageMode passed from caller (most reliable) or fallback to cache lookup
     const effectiveStorageMode = storageMode ?? getStorageModeFromCache(extra.queryClient, conversationId)
@@ -1539,10 +1519,9 @@ export const deleteMessage = createAsyncThunk<
     removeMessagesFromCache(extra.queryClient, conversationId, [id])
     // Sync message deletion to local SQLite (fire-and-forget)
     dualSync.syncMessage({ id }, 'delete')
-    // Refetch conversation messages to ensure sync with server (cloud only)
-    if (!isLocalMode) {
-      await dispatch(fetchConversationMessages(conversationId))
-    }
+    // Chat routes reconcile the authoritative post-delete snapshot through the
+    // generation-gated coordinator. Do not dispatch a legacy raw snapshot here.
+    void isLocalMode
     return id
   } catch (error) {
     console.error('[deleteMessage] Error:', error)
@@ -1903,7 +1882,19 @@ export const editMessageWithBranching = createAsyncThunk<
             request: body,
             signal: controller.signal,
           },
-          { dispatch, getState, onMessagePersisted: () => refreshHeimdallTreeFromState(getState, dispatch) }
+          {
+            dispatch,
+            getState,
+            onMessagePersisted: () => refreshHeimdallTreeFromState(getState, dispatch),
+            onSeq: (seq, event) => {
+              if (
+                event.type !== 'permission_required' &&
+                event.type !== 'clarify_required' &&
+                event.type !== 'operation_mode_upgrade_required'
+              )
+                updateInflightStreamCursor(streamId, seq)
+            },
+          }
         )
         if (result.messageId) {
           void finishStreamingRun(streamId, {
@@ -1955,7 +1946,7 @@ export const editMessageWithBranching = createAsyncThunk<
       return rejectWithValue(message)
     } finally {
       unregisterGenerationAbortController()
-      removeInflightStream(streamId)
+      if (!retainInflightMarkerOnReaderClose.delete(streamId)) removeInflightStream(streamId)
     }
   }
 )
@@ -2126,7 +2117,19 @@ export const sendMessageToBranch = createAsyncThunk<
             request: body,
             signal: controller.signal,
           },
-          { dispatch, getState, onMessagePersisted: () => refreshHeimdallTreeFromState(getState, dispatch) }
+          {
+            dispatch,
+            getState,
+            onMessagePersisted: () => refreshHeimdallTreeFromState(getState, dispatch),
+            onSeq: (seq, event) => {
+              if (
+                event.type !== 'permission_required' &&
+                event.type !== 'clarify_required' &&
+                event.type !== 'operation_mode_upgrade_required'
+              )
+                updateInflightStreamCursor(streamId, seq)
+            },
+          }
         )
         if (result.messageId) {
           void finishStreamingRun(streamId, {
@@ -2178,7 +2181,7 @@ export const sendMessageToBranch = createAsyncThunk<
       return rejectWithValue(message)
     } finally {
       unregisterGenerationAbortController()
-      removeInflightStream(streamId)
+      if (!retainInflightMarkerOnReaderClose.delete(streamId)) removeInflightStream(streamId)
     }
   }
 )
@@ -2332,7 +2335,14 @@ export const fetchMessageTree = createAsyncThunk<
         artifacts: Array.isArray((m as any).artifacts) ? (m as any).artifacts : [],
       }))
 
-      dispatch(chatSliceActions.messagesLoaded(normalizedMessages))
+      if (String(getState().chat.conversation.currentConversationId ?? '') !== String(conversationId)) {
+        return response
+      }
+      dispatch(chatSliceActions.conversationSnapshotApplied({
+        conversationId,
+        messages: normalizedMessages,
+        tree: buildConversationTree(normalizedMessages),
+      }))
 
       // Conditional attachments fetch: only when metadata indicates or when metadata absent
       const attachmentsByMessage = state.chat.attachments.byMessage || {}
@@ -2390,8 +2400,12 @@ export const fetchMessageTree = createAsyncThunk<
       }
     }
 
-    // console.log('treeData', treeData)
-    dispatch(chatSliceActions.heimdallDataLoaded({ treeData }))
+    // Snapshot messages and tree were installed atomically above. Empty legacy
+    // responses still clear Heimdall only when this conversation remains current.
+    if ((!messages || !Array.isArray(messages)) &&
+        String(getState().chat.conversation.currentConversationId ?? '') === String(conversationId)) {
+      dispatch(chatSliceActions.heimdallDataLoaded({ treeData }))
+    }
 
     return response
   } catch (error) {
@@ -2728,24 +2742,31 @@ export const abortGeneration = createAsyncThunk<
   // Under resumable runs a bare socket close only DETACHES (the run keeps going), so an
   // explicit Stop must cancel the server-owned run via POST /api/streams/:id/abort.
   // Fire it BEFORE tearing down the local reader. Best-effort (never throws).
-  if (isResumableRunsEnabled()) {
-    if (streamId) void postStreamAbort(streamId)
-    else for (const rec of listInflightStreams()) void postStreamAbort(rec.streamId)
-  }
+  const records = streamId ? listInflightStreams().filter(rec => rec.streamId === streamId) : listInflightStreams()
+  const streamIds = streamId ? [streamId] : records.map(rec => rec.streamId)
+  let serverAbortSucceeded = !isResumableRunsEnabled()
 
-  // Phase 6: every provider streams through the server-owned SSE loop. Aborting the
-  // local stream controller closes the SSE connection. In the legacy (non-resumable)
-  // path the server observes res.on('close') and unwinds the loop; under resumable runs
-  // the explicit /abort above is what actually cancels it.
-  abortGenerationControllers(streamId)
+  try {
+    if (isResumableRunsEnabled()) {
+      const results = await Promise.all(streamIds.map(async id => ({ id, ok: await postStreamAbort(id) })))
+      serverAbortSucceeded = results.every(result => result.ok)
+      for (const result of results) {
+        if (!result.ok && hasGenerationReader(result.id)) retainInflightMarkerOnReaderClose.add(result.id)
+      }
+    }
+  } finally {
+    // Close local readers only after every server abort request has settled. If a request
+    // failed, retain its marker so a later Chat mount can reconcile the unknown live run.
+    abortGenerationControllers(streamId)
 
-  if (streamId) {
-    dispatch(chatSliceActions.streamingAborted({ streamId }))
-    void finishStreamingRun(streamId, { status: 'aborted', endReason: 'aborted', error: 'Generation aborted' })
-    removeInflightStream(streamId)
-  } else {
-    dispatch(chatSliceActions.allStreamsAborted())
-    for (const rec of listInflightStreams()) removeInflightStream(rec.streamId)
+    if (streamId) {
+      dispatch(chatSliceActions.streamingAborted({ streamId }))
+      void finishStreamingRun(streamId, { status: 'aborted', endReason: 'aborted', error: 'Generation aborted' })
+      if (serverAbortSucceeded) removeInflightStream(streamId)
+    } else {
+      dispatch(chatSliceActions.allStreamsAborted())
+      if (serverAbortSucceeded) for (const rec of records) removeInflightStream(rec.streamId)
+    }
   }
 })
 
@@ -2764,6 +2785,10 @@ export const resumeInFlightStreams = createAsyncThunk<
   if (!isResumableRunsEnabled()) return
   const records = listInflightStreams(String(conversationId))
   for (const rec of records) {
+    // Route remounts must not replace the module-level reader that survived the Chat
+    // unmount. RunSession attach is last-writer-wins, so ownership is checked per stream.
+    if (hasGenerationReader(rec.streamId)) continue
+
     const controller = new AbortController()
     const unregister = registerGenerationAbortController(rec.streamId, controller)
     dispatch(
@@ -2780,15 +2805,27 @@ export const resumeInFlightStreams = createAsyncThunk<
           streamId: rec.streamId,
           conversationId: rec.conversationId,
           operation: rec.streamType === 'branch' ? 'branch' : 'send',
-          fromSeq: 0,
+          fromSeq: rec.lastSeq ?? 0,
           signal: controller.signal,
         },
-        { dispatch, getState, onMessagePersisted: () => refreshHeimdallTreeFromState(getState, dispatch) }
+        {
+          dispatch,
+          getState,
+          onMessagePersisted: () => refreshHeimdallTreeFromState(getState, dispatch),
+          onSeq: (seq, event) => {
+            if (
+              event.type !== 'permission_required' &&
+              event.type !== 'clarify_required' &&
+              event.type !== 'operation_mode_upgrade_required'
+            )
+              updateInflightStreamCursor(rec.streamId, seq)
+          },
+        }
       )
       if (result.gone) dispatch(chatSliceActions.streamingAborted({ streamId: rec.streamId }))
-      removeInflightStream(rec.streamId)
+      if (result.gone || result.terminal) removeInflightStream(rec.streamId)
     } catch {
-      removeInflightStream(rec.streamId)
+      // Retain the marker after transient failures so a later route mount can retry.
     } finally {
       dispatch(chatSliceActions.sendingCompleted({ streamId: rec.streamId }))
       unregister()
@@ -3057,6 +3094,23 @@ export const respondToToolPermission = createAsyncThunk<void, boolean, { state: 
     dispatch(chatSliceActions.toolPermissionResponded())
   }
 )
+
+export const respondToOperationModeUpgrade = createAsyncThunk<
+  void,
+  boolean,
+  { state: RootState; extra: ThunkExtraArgument }
+>('chat/respondToOperationModeUpgrade', async (approved, { dispatch, getState }) => {
+  const req = getState().chat.operationModeUpgradeRequest
+  if (approved) dispatch(chatSliceActions.operationModeSet('execute'))
+  if (req?.streamId && req?.toolCallId) {
+    await postDecisionResume({
+      streamId: req.streamId,
+      toolCallId: req.toolCallId,
+      decision: approved ? 'switch_to_execute' : 'deny',
+    })
+  }
+  dispatch(chatSliceActions.operationModeUpgradeResponded())
+})
 
 export const respondToPlanClarification = createAsyncThunk<
   void,

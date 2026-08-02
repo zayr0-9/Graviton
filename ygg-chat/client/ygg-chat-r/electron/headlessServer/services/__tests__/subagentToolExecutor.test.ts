@@ -61,7 +61,7 @@ describe('createSubagentDispatchExecutor', () => {
         systemPrompt: expect.stringContaining('Report facts only'),
         provider: 'openaichatgpt',
         modelName: 'gpt-5.6-sol',
-        tools: ['read_file', 'ripgrep'],
+        tools: ['read_file', 'ripgrep', 'multi_call'],
         temperature: 0.2,
         reasoningEffort: 'high',
         operationMode: 'plan',

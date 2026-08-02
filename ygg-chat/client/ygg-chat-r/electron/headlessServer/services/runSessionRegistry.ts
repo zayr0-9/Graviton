@@ -1,7 +1,7 @@
 /**
  * RunSessionRegistry — decouples a chat run's LIFETIME from its SSE connection.
  *
- * Gated behind `gateway.resumableRuns` (default OFF). When ON, the chat route routes
+ * Gated behind `gateway.resumableRuns` (default ON; explicit false opts out). When ON, the chat route routes
  * the orchestrator's `emit` through a per-streamId RunSession instead of writing
  * straight to one `res`. The session:
  *   - owns the run's AbortController (so ONLY an explicit cancel — POST

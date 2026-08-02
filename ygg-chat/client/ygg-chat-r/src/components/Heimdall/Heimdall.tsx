@@ -3083,16 +3083,6 @@ export const Heimdall: React.FC<HeimdallProps> = ({
   const heimdallNotePillBorderColor = customThemeEnabled
     ? getThemeModeColor(customTheme.colors.heimdallNotePillBorder, isDarkMode)
     : 'rgba(0,0,0,0.18)'
-  const heimdallNodeHoverModalBackgroundColor = customThemeEnabled
-    ? getThemeModeColor(customTheme.colors.heimdallNodeHoverModalBg, isDarkMode)
-    : isDarkMode
-      ? '#262626'
-      : '#fafafa'
-  const heimdallNodeHoverModalBorderColor = customThemeEnabled
-    ? getThemeModeColor(customTheme.colors.heimdallNodeHoverModalBorder, isDarkMode)
-    : isDarkMode
-      ? '#404040'
-      : '#e7e5e4'
   const heimdallNodeHoverModalTextColor = customThemeEnabled
     ? getThemeModeColor(customTheme.colors.heimdallNodeHoverModalText, isDarkMode)
     : isDarkMode
@@ -3171,6 +3161,13 @@ export const Heimdall: React.FC<HeimdallProps> = ({
   }
   const heimdallContextMenuHeaderStyle: React.CSSProperties | undefined = customThemeEnabled
     ? { color: heimdallContextMenuMutedTextColor }
+    : undefined
+  const heimdallHoverPreviewStyle: React.CSSProperties | undefined = customThemeEnabled
+    ? {
+        backgroundColor: heimdallContextMenuBackgroundColor,
+        borderColor: heimdallContextMenuBorderColor,
+        color: heimdallContextMenuTextColor,
+      }
     : undefined
   const heimdallContextMenuDividerStyle: React.CSSProperties | undefined = customThemeEnabled
     ? { backgroundColor: heimdallContextMenuDividerColor }
@@ -4386,7 +4383,7 @@ export const Heimdall: React.FC<HeimdallProps> = ({
       {/* Custom context menu after selection */}
       {showContextMenu && contextMenuPos && (
         <div
-          className='absolute z-30 w-[240px] rounded-[20px] border border-stone-200/55 bg-white/75 p-1.5 shadow-[0_30px_60px_-12px_rgba(0,0,0,0.25)] backdrop-blur-2xl animate-menuEntrance dark:border-neutral-700/55 dark:bg-neutral-900/75 dark:shadow-[0_30px_60px_-12px_rgba(0,0,0,0.6)]'
+          className='absolute z-30 w-[240px] rounded-[20px] border border-stone-200/55 bg-white/75 p-1.5 shadow-[0_18px_36px_-22px_rgba(0,0,0,0.18)] backdrop-blur-2xl animate-menuEntrance dark:border-neutral-700/55 dark:bg-neutral-900/75 dark:shadow-[0_30px_60px_-12px_rgba(0,0,0,0.6)]'
           style={heimdallContextMenuStyle}
           onMouseDown={e => e.stopPropagation()}
         >
@@ -4577,7 +4574,7 @@ export const Heimdall: React.FC<HeimdallProps> = ({
               style={{ left: dockedPreview.left, top: dockedPreview.top }}
             >
               <div
-                className={`pointer-events-auto p-4 rounded-lg shadow-xl no-scrollbar ${compactMode ? 'border-2' : 'border'}`}
+                className='pointer-events-auto rounded-[20px] border border-stone-200/55 bg-white/75 p-4 shadow-[0_18px_36px_-22px_rgba(0,0,0,0.18)] backdrop-blur-2xl no-scrollbar dark:border-neutral-700/55 dark:bg-neutral-900/75 dark:shadow-[0_30px_60px_-12px_rgba(0,0,0,0.6)]'
                 data-heimdall-wheel-exempt='true'
                 onMouseEnter={handleMessagePreviewEnter}
                 onMouseLeave={handleMessagePreviewLeave}
@@ -4585,9 +4582,7 @@ export const Heimdall: React.FC<HeimdallProps> = ({
                   width: `${dockedPreview.width}px`,
                   maxHeight: `${popupMaxHeight}px`,
                   overflow: 'auto',
-                  backgroundColor: heimdallNodeHoverModalBackgroundColor,
-                  borderColor: heimdallNodeHoverModalBorderColor,
-                  color: heimdallNodeHoverModalTextColor,
+                  ...heimdallHoverPreviewStyle,
                 }}
               >
               <div className='text-sm mb-2 font-medium' style={{ color: heimdallNodeHoverModalTitleTextColor }}>
@@ -4748,7 +4743,7 @@ export const Heimdall: React.FC<HeimdallProps> = ({
               style={{ left: dockedPreview.left, top: dockedPreview.top }}
             >
           <div
-            className='pointer-events-auto p-4 rounded-lg shadow-xl border no-scrollbar'
+            className='pointer-events-auto rounded-[20px] border border-stone-200/55 bg-white/75 p-4 shadow-[0_18px_36px_-22px_rgba(0,0,0,0.18)] backdrop-blur-2xl no-scrollbar dark:border-neutral-700/55 dark:bg-neutral-900/75 dark:shadow-[0_30px_60px_-12px_rgba(0,0,0,0.6)]'
             data-heimdall-wheel-exempt='true'
             onMouseEnter={handleNotePreviewEnter}
             onMouseLeave={handleNotePreviewLeave}
@@ -4756,9 +4751,7 @@ export const Heimdall: React.FC<HeimdallProps> = ({
               width: `${dockedPreview.width}px`,
               maxHeight: `${NOTE_PREVIEW_MAX_HEIGHT}px`,
               overflow: 'auto',
-              backgroundColor: heimdallNodeHoverModalBackgroundColor,
-              borderColor: heimdallNodeHoverModalBorderColor,
-              color: heimdallNodeHoverModalTextColor,
+              ...heimdallHoverPreviewStyle,
             }}
           >
             <div className='text-sm font-medium mb-2' style={{ color: heimdallNodeHoverModalTitleTextColor }}>

@@ -77,9 +77,11 @@ import {
   Message,
   resolveAttachmentUrl,
   respondToPlanClarification,
+  respondToOperationModeUpgrade,
   respondToToolPermission,
   respondToToolPermissionAndEnableAll,
   restoreStreamFileEdits,
+  resumeInFlightStreams,
   selectCcCwd,
   selectConversationMessages,
   selectCurrentConversationId,
@@ -168,6 +170,11 @@ import {
   ProviderSettings,
 } from '../helpers/providerSettingsStorage'
 import { isOrchestratorEnabled, toggleOrchestratorEnabled } from '../helpers/subagentToolSettings'
+import {
+  loadToolOutputTruncationEnabled,
+  TOOL_OUTPUT_TRUNCATION_CHANGE_EVENT,
+  TOOL_OUTPUT_TRUNCATION_ENABLED_KEY,
+} from '../helpers/toolOutputTruncation'
 import { useAppDispatch, useAppSelector } from '../hooks/redux'
 import { useAuth } from '../hooks/useAuth'
 import { useIdeContext } from '../hooks/useIdeContext'
@@ -175,7 +182,6 @@ import { useIsMobile } from '../hooks/useMediaQuery'
 import { useRunningJobs } from '../hooks/useToolJobs'
 import {
   ResearchNoteItem,
-  useConversationMessages,
   useConversationsByProject,
   useConversationStorageMode,
   useModels,
@@ -183,6 +189,7 @@ import {
   useSelectModel,
 } from '../hooks/useQueries'
 import { useSubscriptionStatus } from '../hooks/useSubscriptionStatus'
+import { useConversationSnapshotCoordinator } from '../hooks/useConversationSnapshotCoordinator'
 import { CHAT_INSERT_FILE_PATH_EVENT, type ChatInsertFilePathDetail } from '../helpers/chatInputBridge'
 import { dispatchOpenWorkspaceMutationDiffs } from '../helpers/workspaceMutationDiffBridge'
 import { cloneConversation, localApi } from '../utils/api'
@@ -1092,6 +1099,7 @@ function Chat() {
   // const canSendFromRedux = useAppSelector(selectCanSend)
   const sendingState = useAppSelector(selectSendingState)
   const currentConversationId = useAppSelector(selectCurrentConversationId)
+  const snapshotConversationId = useAppSelector(state => state.chat.conversation.snapshotConversationId)
   const streamUndoRoot = useAppSelector(selectStreamUndoRoot)
   const compactingConversationId = useAppSelector(state => state.chat.composition.compactingConversationId)
   // Current view stream - automatically selects the relevant stream based on currentPath
@@ -1171,6 +1179,7 @@ function Chat() {
   const conversationMessages = useAppSelector(selectConversationMessages)
   const displayMessages = useAppSelector(selectDisplayMessages)
   const toolCallPermissionRequest = useAppSelector(state => state.chat.toolCallPermissionRequest)
+  const operationModeUpgradeRequest = useAppSelector(state => state.chat.operationModeUpgradeRequest)
   const planClarificationRequest = useAppSelector(state => state.chat.planClarificationRequest)
   const toolAutoApprove = useAppSelector(state => state.chat.toolAutoApprove)
   const showFreeTierModal = useAppSelector(state => state.chat.freeTier.showLimitModal)
@@ -2115,7 +2124,7 @@ function Chat() {
       return false
     }
   })
-
+  const [truncateToolOutput, setTruncateToolOutput] = useState<boolean>(loadToolOutputTruncationEnabled)
 
   const virtualizationMetricsRef = useRef<{
     lastRowDeriveMs: number
@@ -3148,15 +3157,23 @@ function Chat() {
     return match?.storage_mode
   }, [conversationIdFromUrl, projectConversations, storageModeFromNav, storageModeFromHook, queryClient])
 
-  // React Query for message fetching (automatic deduplication and caching)
-  // Use URL-derived ID to ensure correct fetching even on page refresh
-  // Single request fetches both messages AND tree data to eliminate duplicate requests
-  // Pass storage_mode from projectConversations to correctly route to local/cloud API
-  const { data: conversationData, isFetched: isConversationDataFetched } = useConversationMessages(
-    conversationIdFromUrl,
-    conversationStorageMode
-  )
-  const treeData = conversationData?.tree
+  // Persisted snapshots only enter Redux through the generation-gated coordinator.
+  // Cached query data is never projected directly, so Settings -> Back cannot clobber
+  // the same-conversation live SSE projection before the route-entry fetch completes.
+  const {
+    data: conversationData,
+    isFetched: isConversationDataFetched,
+    acceptedConversationId,
+    refresh: refreshConversationSnapshot,
+  } = useConversationSnapshotCoordinator(conversationIdFromUrl, conversationStorageMode)
+
+  // Route entry is the recovery boundary. A surviving module-level reader is skipped
+  // per stream; only orphaned localStorage markers reattach to the main-process run.
+  useEffect(() => {
+    if (!conversationIdFromUrl) return
+    void dispatch(resumeInFlightStreams({ conversationId: String(conversationIdFromUrl) }))
+  }, [conversationIdFromUrl, dispatch])
+
   // Use useMemo to ensure stable reference for empty object fallback
   // Without this, {} !== {} on each render, causing the useEffect below to
   // dispatch on every render, triggering an infinite update loop
@@ -3306,8 +3323,8 @@ function Chat() {
     return () => clearTimeout(handle)
   }, [titleInput, currentConversationId, currentConversation?.title, dispatch, queryClient, selectedProject?.id])
 
-  // Reset visible messages immediately when switching conversations to prevent stale message bleed.
-  // Also evict inactive message caches from previously visited conversations to reduce memory pressure.
+  // Clear only on an actual A -> B switch. A Chat -> Settings -> Back remount retains
+  // the live same-conversation Redux/tree/path state while the coordinator refetches.
   useEffect(() => {
     queryClient.removeQueries({
       queryKey: ['conversations'],
@@ -3323,17 +3340,23 @@ function Chat() {
       },
     })
 
-    dispatch(chatSliceActions.messagesLoaded([]))
-  }, [conversationIdFromUrl, dispatch, queryClient])
+    if (snapshotConversationId != null && String(snapshotConversationId) !== String(conversationIdFromUrl ?? '')) {
+      dispatch(chatSliceActions.messagesLoaded([]))
+      dispatch(chatSliceActions.heimdallDataLoaded({ treeData: null, subagentMap: {} }))
+    }
+  }, [conversationIdFromUrl, dispatch, queryClient, snapshotConversationId])
 
-  // Sync React Query messages to Redux when query resolves, including empty conversations.
-  // This keeps Redux state updated for components that still depend on it.
+  // Run post-acceptance side effects. Messages/tree were already installed atomically by
+  // the coordinator; this effect only mirrors and hydrates attachments.
   useEffect(() => {
-    if (!conversationIdFromUrl || !isConversationDataFetched) return
+    if (
+      !conversationIdFromUrl ||
+      !isConversationDataFetched ||
+      !conversationData ||
+      acceptedConversationId !== String(conversationIdFromUrl)
+    ) return
 
-    const fetchedMessages = conversationData?.messages ?? []
-    dispatch(chatSliceActions.messagesLoaded(fetchedMessages))
-
+    const fetchedMessages = conversationData.messages
     if (fetchedMessages.length === 0) return
 
     // Sync to local database in Electron mode
@@ -3383,13 +3406,7 @@ function Chat() {
         })
       }
     })
-  }, [conversationData, conversationIdFromUrl, conversationStorageMode, dispatch, isConversationDataFetched])
-
-  // Sync tree data to Redux when it arrives
-  // Always dispatch even when treeData is null/undefined to keep Redux in sync with React Query
-  useEffect(() => {
-    dispatch(chatSliceActions.heimdallDataLoaded({ treeData, subagentMap: {} }))
-  }, [treeData, dispatch])
+  }, [acceptedConversationId, conversationData, conversationIdFromUrl, conversationStorageMode, dispatch, isConversationDataFetched])
 
   // Sync React Query conversations to Redux to ensure system_prompt and conversation_context are available
   // This fixes the issue where refreshing the page doesn't load context and system prompt from query cache
@@ -3596,6 +3613,13 @@ function Chat() {
       }
     }
 
+    const handleToolOutputTruncationEvent = (e: Event) => {
+      const detail = (e as CustomEvent<boolean>).detail
+      if (typeof detail === 'boolean') {
+        setTruncateToolOutput(detail)
+      }
+    }
+
     const handleStreamingIndicatorPlacementEvent = (e: Event) => {
       const detail = (e as CustomEvent<StreamingThinkingIndicatorPlacement>).detail
       if (detail === 'message' || detail === 'input-tab') {
@@ -3607,17 +3631,22 @@ function Chat() {
       if (e.key === 'chat:groupToolReasoningRuns' && e.newValue !== null) {
         setGroupToolReasoningRuns(e.newValue === 'true')
       }
+      if (e.key === TOOL_OUTPUT_TRUNCATION_ENABLED_KEY) {
+        setTruncateToolOutput(e.newValue === 'false' ? false : true)
+      }
       if (e.key === STREAMING_THINKING_INDICATOR_PLACEMENT_STORAGE_KEY && e.newValue !== null) {
         setStreamingThinkingIndicatorPlacement(e.newValue === 'input-tab' ? 'input-tab' : 'message')
       }
     }
 
     window.addEventListener('groupToolReasoningRunsChange', handleGroupRunsEvent)
+    window.addEventListener(TOOL_OUTPUT_TRUNCATION_CHANGE_EVENT, handleToolOutputTruncationEvent)
     window.addEventListener('streamingThinkingIndicatorPlacementChange', handleStreamingIndicatorPlacementEvent)
     window.addEventListener('storage', handleStorageEvent)
 
     return () => {
       window.removeEventListener('groupToolReasoningRunsChange', handleGroupRunsEvent)
+      window.removeEventListener(TOOL_OUTPUT_TRUNCATION_CHANGE_EVENT, handleToolOutputTruncationEvent)
       window.removeEventListener('streamingThinkingIndicatorPlacementChange', handleStreamingIndicatorPlacementEvent)
       window.removeEventListener('storage', handleStorageEvent)
     }
@@ -5134,12 +5163,7 @@ function Chat() {
         .then(() => {
           clearPendingCwdAnnouncement(currentConversationId, pendingCwdValue)
           dispatch(chatSliceActions.messageArtifactsBackupCleared({ messageId: parsedId }))
-          // Invalidate React Query cache after successful branch to fetch new messages.
-          // Note: messages query now includes tree data, so only one invalidation is needed.
-          queryClient.invalidateQueries({
-            queryKey: ['conversations', currentConversationId, 'messages'],
-            refetchType: 'active',
-          })
+          void refreshConversationSnapshot()
         })
         .catch(error => {
           // Clear optimistic branch message on error
@@ -5158,7 +5182,7 @@ function Chat() {
       replaceFileMentionsWithPath,
       appendIdeContextToMessage,
       conversationMessages,
-      queryClient,
+      refreshConversationSnapshot,
       withPendingCwdAnnouncement,
       clearPendingCwdAnnouncement,
       getBranchImageDraftDataUrls,
@@ -5176,17 +5200,13 @@ function Chat() {
       )
         .unwrap()
         .then(() => {
-          if (!currentConversationId) return
-          queryClient.invalidateQueries({
-            queryKey: ['conversations', currentConversationId, 'messages'],
-            refetchType: 'active',
-          })
+          if (currentConversationId) void refreshConversationSnapshot()
         })
         .catch(error => {
           console.error('Failed to update message:', error)
         })
     },
-    [currentConversationId, dispatch, queryClient]
+    [currentConversationId, dispatch, refreshConversationSnapshot]
   )
 
   const handleMessageBranch = useCallback(
@@ -5417,16 +5437,10 @@ function Chat() {
       } catch (error) {
         console.error('[Chat] Failed to delete message:', error)
       } finally {
-        await queryClient.invalidateQueries({
-          queryKey: ['conversations', currentConversationId, 'messages'],
-        })
-        await queryClient.refetchQueries({
-          queryKey: ['conversations', currentConversationId, 'messages'],
-          type: 'active',
-        })
+        await refreshConversationSnapshot()
       }
     },
-    [dispatch, currentConversationId, conversationStorageMode, queryClient]
+    [dispatch, currentConversationId, conversationStorageMode, refreshConversationSnapshot]
   )
 
   const handleRequestDelete = useCallback(
@@ -6290,11 +6304,7 @@ function Chat() {
                   className='!rounded-full !p-2 transition-all duration-200 hover:bg-black/5 dark:hover:bg-white/5'
                   aria-label='Refresh Messages'
                   onClick={() => {
-                    if (currentConversationId) {
-                      queryClient.invalidateQueries({
-                        queryKey: ['conversations', currentConversationId, 'messages'],
-                      })
-                    }
+                    if (currentConversationId) void refreshConversationSnapshot()
                   }}
                   title='Sync / Refresh'
                 >
@@ -6393,6 +6403,7 @@ function Chat() {
                                 width='w-full'
                                 fontSizeOffset={fontSizeOffset}
                                 groupToolReasoningRuns={groupToolReasoningRuns}
+                                truncateToolOutput={truncateToolOutput}
                                 customTheme={customTheme}
                                 customThemeEnabled={customThemeEnabled}
                                 isDarkMode={isDarkMode}
@@ -6424,6 +6435,7 @@ function Chat() {
                                 width='w-full'
                                 fontSizeOffset={fontSizeOffset}
                                 groupToolReasoningRuns={groupToolReasoningRuns}
+                                truncateToolOutput={truncateToolOutput}
                                 customTheme={customTheme}
                                 customThemeEnabled={customThemeEnabled}
                                 isDarkMode={isDarkMode}
@@ -6459,6 +6471,7 @@ function Chat() {
                                 width='w-full'
                                 fontSizeOffset={fontSizeOffset}
                                 groupToolReasoningRuns={groupToolReasoningRuns}
+                                truncateToolOutput={truncateToolOutput}
                                 customTheme={customTheme}
                                 customThemeEnabled={customThemeEnabled}
                                 isDarkMode={isDarkMode}
@@ -6567,6 +6580,7 @@ function Chat() {
                                           artifacts={groupedMessage.artifacts}
                                           fontSizeOffset={fontSizeOffset}
                                           groupToolReasoningRuns={false}
+                                          truncateToolOutput={truncateToolOutput}
                                           customTheme={customTheme}
                                           customThemeEnabled={customThemeEnabled}
                                           isDarkMode={isDarkMode}
@@ -6612,6 +6626,7 @@ function Chat() {
                                           artifacts={bridgedMessage.artifacts}
                                           fontSizeOffset={fontSizeOffset}
                                           groupToolReasoningRuns={false}
+                                          truncateToolOutput={truncateToolOutput}
                                           customTheme={customTheme}
                                           customThemeEnabled={customThemeEnabled}
                                           isDarkMode={isDarkMode}
@@ -6673,6 +6688,7 @@ function Chat() {
                               artifacts={msg.artifacts}
                               fontSizeOffset={fontSizeOffset}
                               groupToolReasoningRuns={groupToolReasoningRuns}
+                              truncateToolOutput={truncateToolOutput}
                               customTheme={customTheme}
                               customThemeEnabled={customThemeEnabled}
                               isDarkMode={isDarkMode}
@@ -6718,6 +6734,7 @@ function Chat() {
                     width='w-full'
                     fontSizeOffset={fontSizeOffset}
                     groupToolReasoningRuns={groupToolReasoningRuns}
+                    truncateToolOutput={truncateToolOutput}
                     customTheme={customTheme}
                     customThemeEnabled={customThemeEnabled}
                     isDarkMode={isDarkMode}
@@ -6790,7 +6807,15 @@ function Chat() {
             <div
               className={`slate-input-wrapper relative z-10 ${leftControlsBorderClasses} bg-neutral-100/40 dark:bg-neutral-900/40 backdrop-blur-xl rounded-3xl px-2 pt-3 pb-2 transition-all duration-300`}
             >
-              {toolCallPermissionRequest && (
+              {operationModeUpgradeRequest && (
+                <ToolPermissionDialog
+                  toolCall={operationModeUpgradeRequest.toolCall}
+                  variant='operation-mode-upgrade'
+                  onGrant={() => dispatch(respondToOperationModeUpgrade(true))}
+                  onDeny={() => dispatch(respondToOperationModeUpgrade(false))}
+                />
+              )}
+              {!operationModeUpgradeRequest && toolCallPermissionRequest && (
                 <ToolPermissionDialog
                   toolCall={toolCallPermissionRequest.toolCall}
                   onGrant={() => dispatch(respondToToolPermission(true))}
@@ -6808,7 +6833,7 @@ function Chat() {
               {/* Todo List / Modified Files Display */}
               {showComposerSummaryPanels && (
                 <div
-                  className={`mx-2 ${toolCallPermissionRequest ? 'mt-1' : 'mt-2'} mb-1 ${
+                  className={`mx-2 ${toolCallPermissionRequest || operationModeUpgradeRequest ? 'mt-1' : 'mt-2'} mb-1 ${
                     showComposerSummaryPanelsAsRow ? 'flex gap-2' : 'block'
                   }`}
                 >

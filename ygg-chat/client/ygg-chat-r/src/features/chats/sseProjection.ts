@@ -202,6 +202,16 @@ export function projectServerEvent(event: ServerStreamEvent, ctx: ProjectionCont
       ]
     }
 
+    case 'operation_mode_upgrade_required': {
+      return [
+        chatSliceActions.operationModeUpgradeRequested({
+          toolCall: { id: event.toolCallId, name: event.toolName, arguments: event.toolInput, status: 'pending' } as any,
+          streamId,
+          toolCallId: event.toolCallId,
+        }),
+      ]
+    }
+
     case 'clarify_required': {
       return [
         chatSliceActions.planClarificationRequested({

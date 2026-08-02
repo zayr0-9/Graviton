@@ -20,6 +20,7 @@
  */
 
 export type PermissionDecision = 'allow_once' | 'allow_always' | 'deny'
+export type OperationModeUpgradeDecision = 'switch_to_execute' | 'deny'
 
 export interface ClarifyDecision {
   cancelled?: boolean
@@ -31,7 +32,7 @@ export interface ToolBridgeDecision {
   error?: string
 }
 
-export type Decision = PermissionDecision | ClarifyDecision | ToolBridgeDecision
+export type Decision = PermissionDecision | OperationModeUpgradeDecision | ClarifyDecision | ToolBridgeDecision
 
 export class DecisionAbortedError extends Error {
   constructor(message = 'Decision aborted') {

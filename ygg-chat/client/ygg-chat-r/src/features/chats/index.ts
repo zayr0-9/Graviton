@@ -27,6 +27,7 @@ export {
   editMessageWithBranching,
   refreshCurrentPathAfterDelete,
   respondToPlanClarification,
+  respondToOperationModeUpgrade,
   cancelPlanClarification,
   respondToToolPermission,
   respondToToolPermissionAndEnableAll,

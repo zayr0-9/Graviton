@@ -19,9 +19,11 @@ import {
   StreamState,
   StreamUndoSummary,
   ToolCallPermissionRequest,
+  OperationModeUpgradeRequest,
   UserSystemPrompt,
 } from './chatTypes'
 import { createEmptyStreamState, DEFAULT_STREAM_ID } from './streamHelpers'
+import { buildPathToConversationMessage } from './conversationTree'
 import toolDefinitions, { ToolDefinition } from './toolDefinitions'
 
 // Helper to deep clone tool definitions for mutable Redux state
@@ -199,6 +201,7 @@ const makeInitialState = (): ChatState => {
     },
     conversation: {
       currentConversationId: null,
+      snapshotConversationId: null,
       focusedChatMessageId: null,
       currentPath: [],
       messages: [],
@@ -228,6 +231,7 @@ const makeInitialState = (): ChatState => {
     },
     tools: cloneTools(toolDefinitions),
     toolCallPermissionRequest: null,
+    operationModeUpgradeRequest: null,
     planClarificationRequest: null,
     toolAutoApprove: false,
     operationMode: 'plan',
@@ -845,11 +849,24 @@ export const chatSlice = createSlice({
     },
 
     conversationSet: (state, action: PayloadAction<ConversationId>) => {
-      state.conversation.currentConversationId = action.payload
+      const nextConversationId = action.payload
+      if (
+        state.conversation.snapshotConversationId != null &&
+        String(state.conversation.snapshotConversationId) !== String(nextConversationId)
+      ) {
+        state.conversation.messages = []
+        state.conversation.currentPath = []
+        state.conversation.focusedChatMessageId = null
+        state.conversation.snapshotConversationId = null
+        state.heimdall.treeData = null
+        state.heimdall.subagentMap = {}
+      }
+      state.conversation.currentConversationId = nextConversationId
     },
 
     conversationCleared: state => {
       state.conversation.currentConversationId = null
+      state.conversation.snapshotConversationId = null
       state.conversation.messages = []
       state.conversation.currentPath = []
       state.conversation.ccCwd = ''
@@ -945,6 +962,39 @@ export const chatSlice = createSlice({
           state.conversation.currentPath = cleanedPath
         }
       }
+    },
+
+    conversationSnapshotApplied: (
+      state,
+      action: PayloadAction<{
+        conversationId: ConversationId
+        messages: Message[]
+        tree: ChatState['heimdall']['treeData']
+      }>
+    ) => {
+      if (String(state.conversation.currentConversationId ?? '') !== String(action.payload.conversationId)) return
+
+      const existingArtifactsById = new Map<string, string[]>()
+      for (const message of state.conversation.messages) {
+        if (message.artifacts?.length) existingArtifactsById.set(String(message.id), message.artifacts)
+      }
+      state.conversation.snapshotConversationId = action.payload.conversationId
+      state.conversation.messages = action.payload.messages.map(message => {
+        if (message.artifacts?.length) return message
+        const attachmentMeta = message as Message & { has_attachments?: boolean; attachments_count?: number }
+        if (attachmentMeta.has_attachments === false || attachmentMeta.attachments_count === 0) return message
+        const artifacts = existingArtifactsById.get(String(message.id))
+        return artifacts?.length ? { ...message, artifacts } : message
+      })
+
+      const previousTip = state.conversation.currentPath.at(-1)
+      state.conversation.currentPath = previousTip == null
+        ? []
+        : buildPathToConversationMessage(state.conversation.messages, String(previousTip))
+      state.heimdall.treeData = action.payload.tree
+      state.heimdall.subagentMap = {}
+      state.heimdall.loading = false
+      state.heimdall.error = null
     },
 
     // Branching support
@@ -1162,6 +1212,14 @@ export const chatSlice = createSlice({
 
     toolPermissionResponded: state => {
       state.toolCallPermissionRequest = null
+    },
+
+    operationModeUpgradeRequested: (state, action: PayloadAction<OperationModeUpgradeRequest>) => {
+      state.operationModeUpgradeRequest = action.payload
+    },
+
+    operationModeUpgradeResponded: state => {
+      state.operationModeUpgradeRequest = null
     },
 
     planClarificationRequested: (state, action: PayloadAction<import('./planToolTypes').PlanClarificationRequest>) => {

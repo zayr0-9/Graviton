@@ -250,7 +250,7 @@ export function registerChatRoutes(app: Express, deps: RegisterChatRoutesDeps): 
     }
     let decision: Decision
     if (typeof body.decision === 'string') {
-      decision = body.decision as Decision // permission: allow_once | allow_always | deny
+      decision = body.decision as Decision // permission or operation-mode-upgrade decision
     } else if (body.answers !== undefined || body.cancelled !== undefined) {
       decision = { answers: body.answers, cancelled: body.cancelled } // plan_md clarify
     } else if (body.result !== undefined || body.error !== undefined) {

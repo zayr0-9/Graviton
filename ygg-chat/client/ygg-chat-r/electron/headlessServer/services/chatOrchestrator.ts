@@ -402,14 +402,36 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
       resolvedOperationMode
     )
 
-    const systemPrompt = buildHeadlessSystemPrompt({
-      operationMode: resolvedOperationMode,
-      includeOperationModePrompt: request.includeOperationModePrompt ?? true,
-      requestPrompt: request.systemPrompt ?? null,
-      projectPrompt: project?.system_prompt ?? null,
-      conversationPrompt: conversation?.system_prompt ?? null,
-      planModeVerbosity: request.planModeVerbosity ?? 'concise',
-    })
+    const buildSystemPromptForMode = (operationMode: 'plan' | 'execute') =>
+      buildHeadlessSystemPrompt({
+        operationMode,
+        includeOperationModePrompt: request.includeOperationModePrompt ?? true,
+        requestPrompt: request.systemPrompt ?? null,
+        projectPrompt: project?.system_prompt ?? null,
+        conversationPrompt: conversation?.system_prompt ?? null,
+        planModeVerbosity: request.planModeVerbosity ?? 'concise',
+      })
+    const systemPrompt = buildSystemPromptForMode(resolvedOperationMode)
+    const agentSystemPrompt = buildSystemPromptForMode('execute')
+    const requestOperationModeUpgrade =
+      this.decisionBroker && trackedStreamId
+        ? async (toolCall: { id: string; name: string; arguments: unknown }) => {
+            const toolInput = parseToolArgs(toolCall.arguments)
+            emit({
+              type: 'operation_mode_upgrade_required',
+              streamId: trackedStreamId,
+              toolCallId: toolCall.id,
+              toolName: toolCall.name,
+              toolInput,
+            })
+            const decision = await this.decisionBroker!.requestDecision({
+              streamId: trackedStreamId,
+              toolCallId: toolCall.id,
+              signal,
+            })
+            return decision === 'switch_to_execute'
+          }
+        : undefined
     const conversationContext = request.conversationContext ?? conversation?.conversation_context ?? null
     const projectContext = request.projectContext ?? project?.context ?? null
 
@@ -466,6 +488,8 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
         streamId: trackedStreamId,
         rootPath: request.rootPath ?? conversation?.cwd ?? null,
         operationMode: resolvedOperationMode,
+        agentSystemPrompt,
+        requestOperationModeUpgrade,
         toolTimeoutMs: request.toolTimeoutMs,
         toolAutoApprove: request.toolAutoApprove,
         subagentReasoningEffort: request.subagentReasoningEffort,

@@ -63,7 +63,10 @@ describe('postStreamAbort', () => {
     const fetchMock = vi.fn().mockResolvedValue({ ok: true, status: 200 })
     vi.stubGlobal('fetch', fetchMock)
     expect(await postStreamAbort('s-1')).toBe(true)
-    expect(fetchMock).toHaveBeenCalledWith('http://local/api/streams/s-1/abort', { method: 'POST' })
+    expect(fetchMock).toHaveBeenCalledWith(
+      'http://local/api/streams/s-1/abort',
+      expect.objectContaining({ method: 'POST', signal: expect.any(AbortSignal) })
+    )
   })
 
   it('never throws on network error', async () => {

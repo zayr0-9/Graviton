@@ -44,7 +44,7 @@ Cloud gateway + token layer:
 - `services/cloudMirrorService.ts` — mirrors Railway-authoritative entities into SQLite (server-side replacement for the deleted renderer `dualSyncManager`).
 - `services/appAuthTokenManager.ts` — single-flight, process-wide Supabase-token refresher.
 - `config/gatewayFlags.ts` — `resolveGatewayFlags()` → `{ chat, tokenOwner, crud, cloudProxy, resumableRuns }`.
-- `services/runSessionRegistry.ts` — per-`streamId` `RunSession` (seq'd event buffer + attach/detach + run-owned abort) enabling detach/reattach (§Detach/Reattach). Gated by `gateway.resumableRuns` (default OFF).
+- `services/runSessionRegistry.ts` — per-`streamId` `RunSession` (seq'd event buffer + attach/detach + run-owned abort) enabling detach/reattach (§Detach/Reattach). Gated by `gateway.resumableRuns` (default ON; explicit false is the rollback path).
 
 Subagents / other:
 - `services/subagentRunService.ts` + `services/subagentToolExecutor.ts` + `routes/subagentRoutes.ts` — the shared subagent engine, the parent-chat in-process dispatcher, and the direct `POST /api/headless/subagent/stream` SSE route (see `agent_subagents_orchestration.md`). Reuses `ToolLoopService`.
@@ -110,7 +110,7 @@ The loop pauses mid-turn to ask the renderer for a tool-permission or `plan_md` 
 - Wrapper handling: `deny` → throw (`is_error` tool_result); `allow_always` → `broker.setAutoApproveAll(streamId)` then execute; `allow_once` → execute.
 - Renderer side: the 4 resolver thunks (`respondToToolPermission`, `respondToToolPermissionAndEnableAll`, `respondToPlanClarification`, `cancelPlanClarification`) POST `/api/resume` via `postDecisionResume`; the old module-level `pending*Resolve` promises are **deleted**.
 
-## Detach / reattach — resumable runs (`gateway.resumableRuns`, default OFF)
+## Detach / reattach — resumable runs (`gateway.resumableRuns`, default ON)
 
 `services/runSessionRegistry.ts` decouples a run's lifetime from its SSE socket. With the flag ON, `runSseOrchestrator` (`chatRoutes.ts`) routes `emit` through a per-`streamId` `RunSession` instead of writing straight to `res`, and the **session** (not `res.on('close')`) owns the `AbortController`:
 
@@ -118,8 +118,14 @@ The loop pauses mid-turn to ask the renderer for a tool-permission or `plan_md` 
 - The session buffers every event with a monotonic `seq` (bounded ring buffer), fans out to at most one attached subscriber (last-attach-wins), and lingers after a terminal event so a late reconnect still receives the tail.
 - **`GET /api/streams/:streamId?fromSeq=N`** — resubscribe: attach, replay buffered frames with `seq > N`, then stream live. Because `permission_required` / `clarify_required` frames are in the buffer, a **parked decision re-surfaces on replay for free** (no broker change). `410 Gone` when the run was already evicted → the client reloads persisted messages. `seq` rides on each SSE frame as the replay cursor (append-style chunk projection is only idempotent with it).
 - **`POST /api/streams/:streamId/abort`** — the ONLY thing that cancels now (a disconnect only detaches). Aborting the session signal also unblocks any paused decision via the existing signal→broker path.
-- **Reaper** (`registry.startReaper`, started only when the flag is on): evicts terminal sessions after `terminalLingerMs` and cancels+evicts still-running sessions abandoned (detached) past `idleDetachedMs`. **App-quit kills every session** (in-memory) — the accepted ceiling; there is no cross-restart durability.
-- Flag OFF (default): `runSseOrchestrator` keeps the legacy path (disconnect == abort) and `/api/streams/*` return `501`. Byte-identical to pre-feature behavior.
+- **Reaper** (`registry.startReaper`, started by default): evicts terminal sessions after
+  one minute and cancels+evicts still-running sessions detached for five minutes. The
+  event buffer is capped at 20,000 frames. **App quit kills every session** (in-memory) —
+  the accepted ceiling; there is no cross-restart durability.
+- Sessions accept one subscriber and use last-attach-wins semantics; renderer per-stream
+  reader ownership prevents route remounts from replacing a surviving subscriber.
+- Explicit `gateway.resumableRuns === false`: `runSseOrchestrator` keeps the legacy path
+  (disconnect == abort) and `/api/streams/*` return `501`.
 - Renderer counterpart: `mainChatClient.ts` (in-session resubscribe + `postStreamAbort`) + `resumeInFlightStreams` (mount-time re-attach after a reload) + `inflightStreams.ts` (localStorage tracking) — see `agent_chat_streaming_state.md`.
 
 ## In-process chat hooks (`chatHookService.ts`)
@@ -158,7 +164,9 @@ Chosen per-run in `runMessage` (`chatOrchestrator.ts:421`):
 
 `resolveGatewayFlags()` → `{ chat, tokenOwner, crud, cloudProxy }` (`gatewayFlags.ts:39`):
 - Master override `YGG_GATEWAY_MODE` env truthy (`/^(1|true|yes|on)$/i`) → all four `true`, short-circuiting Conf.
-- Otherwise defaults: **`chat = true`** (Conf `gateway.chat !== false` — Phase 6 cutover, ON; explicit `gateway.chat === false` is the escape hatch), `tokenOwner = false`, `crud = false`, `cloudProxy = false`. Wrapped in try/catch so a bad/missing Conf store keeps `chat` on and never breaks startup.
+- Otherwise defaults: **`chat = true`** and **`resumableRuns = true`** (each uses
+  `!== false`; explicit false is the escape hatch), while `tokenOwner`, `crud`, and
+  `cloudProxy` remain false. A bad/missing Conf store keeps both default-on paths active.
 - **Only `chat` and `tokenOwner` are live.** `chat` feeds `cloudChatEnabled` into `ChatOrchestrator`; `tokenOwner` is consumed only by the `main.ts` IPC gate. **`crud`/`cloudProxy` are vestigial** — the Phase 5 gateway routes mount with hardcoded `enabled: true` (`index.ts:271`,`273`) regardless of these flags.
 
 ## Full SSE event union (`HeadlessStreamEvent`, `contracts/headlessApi.ts:132`)

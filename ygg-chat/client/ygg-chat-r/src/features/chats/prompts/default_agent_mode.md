@@ -37,7 +37,7 @@ Appropriate delegations include:
 - reviewing a proposed patch for correctness, regressions, edge cases, security, or test gaps
 - investigating failing tests or commands and reporting evidence-backed fixes
 
-Delegate with a precise objective, scope boundaries, relevant paths, constraints, acceptance criteria, and expected deliverable. Let subagents reason and make recommendations within their scope. Require them to report changed files, commands/tests run, verified results, assumptions, risks, and unresolved issues so their work can be audited.
+Delegate with a precise objective, scope boundaries, relevant paths, constraints, acceptance criteria, and expected deliverable. When invoking a subagent with `orchestratorMode: true`, include `multi_call` in its `tools` list, along with every underlying tool it may need to invoke through `multi_call` (for example, `read_file`, `glob`, and `ripgrep`). Instruct the subagent to use `multi_call` to batch independent, predictable exploration or validation calls for faster results, while preserving sequential calls when later work depends on earlier results. Let subagents reason and make recommendations within their scope. Require them to report changed files, commands/tests run, verified results, assumptions, risks, and unresolved issues so their work can be audited.
 
 Coordinate rather than duplicate: split independent tasks into non-overlapping workstreams, avoid concurrent edits to the same files, and reserve integration-sensitive decisions for the main agent. Use direct inspection to verify critical claims and review all delegated modifications before relying on them.
 
@@ -190,6 +190,7 @@ If validation fails:
 
 You may have access to tools such as:
 - `todo_list` for persistent task tracking.
+- `multi_call` to batch predictable independent tool calls; when delegating with `orchestratorMode: true`, explicitly include it and its required underlying tools in the subagent’s `tools` list.
 - `read_file`, `read_files`, `read_file_continuation` for file inspection.
 - `glob` and `ripgrep` for discovery/search.
 - `edit_file`, `multi_edit`, `create_file`, `delete_file` for workspace changes.

@@ -4,7 +4,7 @@ import type { ToolExecutionContext, ToolExecutor } from './toolLoopService.js'
 
 const MAX_CALLS = 20
 const MAX_CONCURRENCY = 4
-const FORBIDDEN_NESTED_TOOLS = new Set(['multi_call', 'subagent'])
+const FORBIDDEN_NESTED_TOOLS = new Set(['multi_call', 'html_renderer'])
 
 type NestedCall = { tool?: unknown; toolName?: unknown; args?: unknown }
 
@@ -36,6 +36,11 @@ function modelSafeData(data: unknown): unknown {
   return safeData
 }
 
+function isForbiddenNestedTool(tool: string, args: unknown): boolean {
+  if (FORBIDDEN_NESTED_TOOLS.has(tool)) return true
+  return tool === 'plan_md' && !!args && typeof args === 'object' && !Array.isArray(args) && (args as Record<string, unknown>).action === 'display'
+}
+
 function normalizeCalls(toolCall: ProviderToolCall): Array<{ tool: string; args: Record<string, unknown> }> {
   const args = parseArguments(toolCall)
   if (!Array.isArray(args.calls) || args.calls.length === 0) {
@@ -48,10 +53,10 @@ function normalizeCalls(toolCall: ProviderToolCall): Array<{ tool: string; args:
   return args.calls.map((call: NestedCall, index: number) => {
     const tool = typeof call?.tool === 'string' ? call.tool.trim() : typeof call?.toolName === 'string' ? call.toolName.trim() : ''
     if (!tool) throw new Error(`multi_call call ${index + 1} requires a tool name`)
-    if (FORBIDDEN_NESTED_TOOLS.has(tool)) {
+    const nestedArgs = call?.args == null ? {} : call.args
+    if (isForbiddenNestedTool(tool, nestedArgs)) {
       throw new Error(`multi_call cannot invoke nested tool: ${tool}`)
     }
-    const nestedArgs = call?.args == null ? {} : call.args
     if (typeof nestedArgs !== 'object' || Array.isArray(nestedArgs)) {
       throw new Error(`multi_call call ${index + 1} args must be an object`)
     }

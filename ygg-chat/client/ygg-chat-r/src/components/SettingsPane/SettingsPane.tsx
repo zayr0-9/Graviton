@@ -42,6 +42,10 @@ import {
   loadLongTermMemoryContextEnabled,
   saveLongTermMemoryContextEnabled,
 } from '../../helpers/longTermMemorySettingsStorage'
+import {
+  loadToolOutputTruncationEnabled,
+  saveToolOutputTruncationEnabled,
+} from '../../helpers/toolOutputTruncation'
 import { localApi } from '../../utils/api'
 import { extractTextFromPdf } from '../../utils/pdfUtils'
 import { InputTextArea } from '../InputTextArea/InputTextArea'
@@ -362,6 +366,8 @@ export const SettingsPane: React.FC<SettingsPaneProps> = ({ open, onClose }) => 
     }
   })
 
+  const [truncateToolOutput, setTruncateToolOutput] = useState<boolean>(loadToolOutputTruncationEnabled)
+
   const [editDiffAnimationsEnabled, setEditDiffAnimationsEnabled] = useState<boolean>(() => {
     try {
       return localStorage.getItem('chat:editDiffAnimationsEnabled') === 'true'
@@ -396,6 +402,11 @@ export const SettingsPane: React.FC<SettingsPaneProps> = ({ open, onClose }) => 
     } catch {
       // localStorage unavailable; keep in-memory state only
     }
+  }, [])
+
+  const handleToolOutputTruncationChange = useCallback((enabled: boolean) => {
+    setTruncateToolOutput(enabled)
+    saveToolOutputTruncationEnabled(enabled)
   }, [])
 
   const handleEditDiffAnimationsEnabledChange = useCallback((enabled: boolean) => {
@@ -1830,6 +1841,80 @@ ${block}`
               >
                 <div className='min-h-0 overflow-hidden'>
                   <div className='space-y-3 px-3 pb-3 pt-1'>
+                  {/* Tool Output Truncation Section */}
+                  <div className='space-y-2'>
+                    <div
+                      className='overflow-hidden rounded-2xl bg-neutral-50/70 dark:bg-neutral-900/10'
+                      style={
+                        savedCustomThemesColors
+                          ? {
+                              backgroundColor: savedCustomThemesColors.cardBg,
+                              borderColor: savedCustomThemesColors.cardBorder,
+                            }
+                          : undefined
+                      }
+                    >
+                      <div className='flex items-start justify-between gap-3 px-3 py-3'>
+                        <div className='flex min-w-0 items-start gap-3'>
+                          <div
+                            className='mt-0.5 flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-blue-100 text-blue-600 dark:bg-blue-500/15 dark:text-blue-300'
+                            style={
+                              savedCustomThemesColors
+                                ? {
+                                    backgroundColor: savedCustomThemesColors.accentBg,
+                                    color: savedCustomThemesColors.accentText,
+                                  }
+                                : undefined
+                            }
+                          >
+                            <FileJson {...lucideIconProps} />
+                          </div>
+                          <div className='min-w-0 pr-3'>
+                            <p
+                              className='text-sm font-medium text-stone-700 dark:text-neutral-100'
+                              style={savedCustomThemesColors ? { color: savedCustomThemesColors.titleText } : undefined}
+                            >
+                              Truncate long tool output
+                            </p>
+                            <p
+                              className='mt-0.5 text-xs text-neutral-500 dark:text-neutral-100'
+                              style={savedCustomThemesColors ? { color: savedCustomThemesColors.bodyText } : undefined}
+                            >
+                              Keep the first and last 1,000 characters of generic tool results, omitting the middle.
+                            </p>
+                          </div>
+                        </div>
+                        <button
+                          type='button'
+                          onClick={() => handleToolOutputTruncationChange(!truncateToolOutput)}
+                          className={iconButtonClass}
+                          style={
+                            savedCustomThemesColors
+                              ? {
+                                  backgroundColor: savedCustomThemesColors.buttonBg,
+                                  color: savedCustomThemesColors.buttonText,
+                                }
+                              : undefined
+                          }
+                          title={truncateToolOutput ? 'Show complete tool output' : 'Truncate long tool output'}
+                          aria-label='Truncate long tool output'
+                          aria-pressed={truncateToolOutput}
+                        >
+                          {truncateToolOutput ? (
+                            <Check
+                              {...lucideIconProps}
+                              style={
+                                savedCustomThemesColors ? { color: savedCustomThemesColors.primaryButtonBg } : undefined
+                              }
+                            />
+                          ) : (
+                            <X {...lucideIconProps} />
+                          )}
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+
                   {/* Process Step Grouping Section */}
                   <div className='space-y-2'>
                     <div

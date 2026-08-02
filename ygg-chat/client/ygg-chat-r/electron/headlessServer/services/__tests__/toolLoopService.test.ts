@@ -611,6 +611,44 @@ describeIfSqlite('ToolLoopService plan mode runtime block list', () => {
     expect(executedToolNames).toEqual(['bash', 'powershell'])
   })
 
+  it('requests an Agent-mode upgrade before executing a mutating Plan-mode tool', async () => {
+    const providerRouter = new FakeProviderRouter()
+    providerRouter.enqueue({ content: '', toolCalls: [{ id: 'call-edit', name: 'edit_file', arguments: { path: 'README.md' } }] })
+    providerRouter.enqueue({ content: 'done' })
+
+    const requested: string[] = []
+    const executedModes: string[] = []
+    const service = new ToolLoopService({
+      messageRepo,
+      providerRouter: providerRouter as unknown as ProviderRouter,
+      executeTool: async (_toolCall, context) => {
+        executedModes.push(context.operationMode || '')
+        return 'edited'
+      },
+      maxTurns: 3,
+    })
+
+    await service.run(
+      {
+        provider: 'openaichatgpt',
+        modelName: 'gpt-5.1-codex-mini',
+        conversationId: 'c1',
+        assistantParentId: null,
+        history: [],
+        userContent: 'edit',
+        operationMode: 'plan',
+        requestOperationModeUpgrade: async toolCall => {
+          requested.push(toolCall.id)
+          return true
+        },
+      },
+      () => {}
+    )
+
+    expect(requested).toEqual(['call-edit'])
+    expect(executedModes).toEqual(['execute'])
+  })
+
   it('blocks mutating tools in plan mode before invoking the executor', async () => {
     const providerRouter = new FakeProviderRouter()
     providerRouter.enqueue({

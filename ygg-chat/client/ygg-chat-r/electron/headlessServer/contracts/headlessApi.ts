@@ -199,6 +199,14 @@ export type HeadlessStreamEvent =
       toolName: string
       questions: any[]
     }
+  // The server pauses a Plan-mode run until the user decides whether to enter Agent mode.
+  | {
+      type: 'operation_mode_upgrade_required'
+      streamId?: string | null
+      toolCallId: string
+      toolName: string
+      toolInput: any
+    }
   // The server asks the renderer to execute a UI/renderer-bound tool locally.
   | {
       type: 'tool_request'

@@ -132,12 +132,15 @@ Both entry paths now share the server-side `SubagentRunService`:
   the parent loop's tool result.
 - Ordinary parent tools and child leaf tools use `executeToolViaOrchestrator`.
   Both paths also have the in-process `multi_call` composite available; each nested
-  child call re-enters the subagent approval/operation-mode policy before leaf execution.
-  `multi_call` rejects nested `multi_call` and `subagent`, and `SubagentRunService`
-  never receives the parent subagent dispatcher, so recursive agents remain impossible.
+  child call re-enters the subagent approval/operation-mode policy before execution.
+  Parent-chat `multi_call` batches may invoke `subagent` through the parent dispatcher;
+  `multi_call` still rejects recursive `multi_call`, and `SubagentRunService` never
+  receives the parent subagent dispatcher, so recursive agents remain impossible.
 - Parent operation mode, stream/message/tool-call lineage, root path, provider/model,
   abort signal, and auto-approve policy are forwarded. `orchestratorMode:true` uses
-  the requested child tool names; otherwise the server default child tool set is used.
+  the requested child tool names plus the always-required `multi_call` tool; otherwise
+  the server default child tool set is used. Direct server requests also have
+  `multi_call` added during tool resolution, so every subagent can invoke it.
   OpenRouter parents fall back to the local ChatGPT subagent provider, matching the
   retained renderer client's local-only rule.
 

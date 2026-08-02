@@ -73,19 +73,25 @@ describe('multiCallExecutor', () => {
     ])
   })
 
-  it('rejects recursion and enforces nested plan-mode policy', async () => {
-    const execute = vi.fn()
-    await expect(executeMultiCall(call({ calls: [{ tool: 'multi_call' }] }), context(), execute)).rejects.toThrow(
-      'cannot invoke nested tool: multi_call'
-    )
-    await expect(executeMultiCall(call({ calls: [{ tool: 'subagent' }] }), context(), execute)).rejects.toThrow(
-      'cannot invoke nested tool: subagent'
-    )
+  it('rejects recursive and UI-rendering nested tools, allows subagent, and enforces nested plan-mode policy', async () => {
+    const execute = vi.fn(async nested => nested.name)
+    for (const nestedCall of [
+      { tool: 'multi_call' },
+      { tool: 'html_renderer' },
+      { tool: 'plan_md', args: { action: 'display', name: 'sample-plan' } },
+    ]) {
+      await expect(executeMultiCall(call({ calls: [nestedCall] }), context(), execute)).rejects.toThrow(
+        `cannot invoke nested tool: ${nestedCall.tool}`
+      )
+    }
+
+    const subagentResult = await executeMultiCall(call({ calls: [{ tool: 'subagent' }] }), context(), execute)
+    expect(subagentResult.results[0]).toEqual({ tool: 'subagent', ok: true, data: 'subagent' })
 
     const result = await executeMultiCall(call({ calls: [{ tool: 'edit_file' }] }), context({ operationMode: 'plan' }), execute)
     expect(result.results[0]).toMatchObject({ tool: 'edit_file', ok: false })
     expect(result.results[0].error).toContain('not available in Chat Mode')
-    expect(execute).not.toHaveBeenCalled()
+    expect(execute).toHaveBeenCalledOnce()
   })
 
   it('uses the policy-aware nested executor supplied in context', async () => {

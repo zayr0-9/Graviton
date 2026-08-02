@@ -45,6 +45,8 @@ export interface RunServerChatLoopDeps {
    * by mobile/tests. See chatActions.refreshHeimdallTreeFromState.
    */
   onMessagePersisted?: () => void
+  /** Persist the highest projected sequence for reload-safe reattachment. */
+  onSeq?: (seq: number, event: ServerStreamEvent) => void
 }
 
 export interface RunServerChatLoopResult {
@@ -78,12 +80,14 @@ function makeHandleEvent(
   ctx: ProjectionContext,
   operation: ServerLoopOperation,
   dispatch: (action: unknown) => unknown,
-  onMessagePersisted?: () => void
+  onMessagePersisted?: () => void,
+  onSeq?: (seq: number, event: ServerStreamEvent) => void
 ): (event: ServerStreamEvent) => void {
   return (event: ServerStreamEvent): void => {
     if (!event || typeof event.type !== 'string') return
     // Track the replay cursor. Present only on the resumable (session) path.
-    if (typeof event.seq === 'number' && event.seq > acc.lastSeq) acc.lastSeq = event.seq
+    const nextSeq = typeof event.seq === 'number' && event.seq > acc.lastSeq ? event.seq : null
+    if (nextSeq !== null) acc.lastSeq = nextSeq
     // (a) project to Redux, in order.
     for (const action of projectServerEvent(event, ctx)) dispatch(action)
     // (b) event-specific side effects that need the operation / return ids.
@@ -106,6 +110,9 @@ function makeHandleEvent(
       acc.streamError = typeof event.error === 'string' && event.error ? event.error : 'Headless stream error'
       acc.sawTerminal = true
     }
+    // Checkpoint only after projection and side effects succeed. Pending decision frames
+    // are filtered by the caller so reload can replay them and rebuild their dialogs.
+    if (nextSeq !== null) onSeq?.(nextSeq, event)
   }
 }
 
@@ -203,10 +210,10 @@ export async function runServerChatLoop(
   deps: RunServerChatLoopDeps
 ): Promise<RunServerChatLoopResult> {
   const { operation, conversationId, streamId, path, request, signal } = params
-  const { dispatch, onMessagePersisted } = deps
+  const { dispatch, onMessagePersisted, onSeq } = deps
   const ctx: ProjectionContext = { streamId, conversationId }
   const acc = newAccumulator()
-  const handleEvent = makeHandleEvent(acc, ctx, operation, dispatch, onMessagePersisted)
+  const handleEvent = makeHandleEvent(acc, ctx, operation, dispatch, onMessagePersisted, onSeq)
 
   const url = await buildLocalApiUrl(path)
   const res = await fetch(url, {
@@ -259,10 +266,10 @@ export async function runServerReattach(
   deps: RunServerChatLoopDeps
 ): Promise<RunServerReattachResult> {
   const { streamId, conversationId, operation, fromSeq = 0, signal } = params
-  const { dispatch, onMessagePersisted } = deps
+  const { dispatch, onMessagePersisted, onSeq } = deps
   const ctx: ProjectionContext = { streamId, conversationId }
   const acc = newAccumulator(fromSeq)
-  const handleEvent = makeHandleEvent(acc, ctx, operation, dispatch, onMessagePersisted)
+  const handleEvent = makeHandleEvent(acc, ctx, operation, dispatch, onMessagePersisted, onSeq)
 
   try {
     const url = await buildLocalApiUrl(`/api/streams/${encodeURIComponent(streamId)}?fromSeq=${fromSeq}`)
@@ -271,7 +278,7 @@ export async function runServerReattach(
       return { messageId: null, userMessage: null, providerError: false, gone: true, terminal: false }
     }
     if (!res.ok || !res.body) {
-      return { messageId: acc.messageId, userMessage: acc.userMessage, providerError: acc.providerError, gone: true, terminal: false }
+      return { messageId: acc.messageId, userMessage: acc.userMessage, providerError: acc.providerError, gone: false, terminal: false }
     }
     await pump(res, handleEvent)
     // A mid-replay drop (still not terminal) → keep resubscribing.
@@ -282,7 +289,7 @@ export async function runServerReattach(
     }
   } catch (error) {
     if ((error as { name?: string }).name !== 'AbortError') {
-      return { messageId: acc.messageId, userMessage: acc.userMessage, providerError: acc.providerError, gone: true, terminal: acc.sawTerminal }
+      return { messageId: acc.messageId, userMessage: acc.userMessage, providerError: acc.providerError, gone: false, terminal: acc.sawTerminal }
     }
   }
 
@@ -298,11 +305,15 @@ export async function runServerReattach(
 /** Explicitly cancel a server-owned run. Under resumable runs this is what Stop calls
  * (a bare socket close only detaches). Best-effort; never throws. */
 export async function postStreamAbort(streamId: string): Promise<boolean> {
+  const controller = new AbortController()
+  const timeout = setTimeout(() => controller.abort(), 5_000)
   try {
     const url = await buildLocalApiUrl(`/api/streams/${encodeURIComponent(streamId)}/abort`)
-    const res = await fetch(url, { method: 'POST' })
+    const res = await fetch(url, { method: 'POST', signal: controller.signal })
     return res.ok
   } catch {
     return false
+  } finally {
+    clearTimeout(timeout)
   }
 }

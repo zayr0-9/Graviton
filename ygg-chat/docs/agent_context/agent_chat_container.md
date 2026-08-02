@@ -72,12 +72,12 @@ Use this value for message fetches and mutations tied to the current conversatio
 
 ## Message and Tree Loading Flow
 
-1. `useConversationMessages(conversationIdFromUrl, conversationStorageMode)` fetches `{ messages, tree, meta }`.
-2. On route/conversation switch, Chat clears visible Redux messages immediately with `messagesLoaded([])` to prevent stale bleed.
-3. When query data resolves, Chat dispatches `messagesLoaded(fetchedMessages)`.
-4. In Electron, Chat calls `syncConversationToLocal()` to mirror cloud-fetched messages into local SQLite when appropriate.
-5. Attachment metadata is dispatched, and binaries are fetched/converted to base64 artifacts asynchronously.
-6. Chat dispatches `heimdallDataLoaded({ treeData, subagentMap: {} })` whenever tree data changes, including null/empty tree.
+1. `useConversationSnapshotCoordinator(conversationIdFromUrl, conversationStorageMode)` starts an authoritative persisted fetch on every Chat route entry.
+2. A same-conversation remount (for example Settings → Back) retains Redux messages, Heimdall, path, and live stream state. Only an actual A → B switch clears visible state.
+3. The coordinator generation-gates requests, reconciles fetched rows with active-stream/terminal-lease-protected Redux rows, and treats other fetched omissions as authoritative deletions.
+4. It rebuilds Heimdall with `buildConversationTree()` and dispatches one `conversationSnapshotApplied` action so messages/tree/path change atomically.
+5. Only accepted snapshots are written to the exact React Query key; raw or superseded responses never enter the cache.
+6. In Electron, Chat runs post-acceptance local mirroring and attachment hydration.
 7. Project conversations from React Query are mirrored into Redux via `conversationsLoaded(projectConversations)` so current conversation metadata is available to selectors and prompts.
 
 ## Rendering Pipeline
@@ -232,7 +232,8 @@ When adding new persistent UI settings, prefer helper modules in `src/helpers/*S
 ## Important Invariants
 
 - Keep route-derived `conversationIdFromUrl` as the fetch identity; Redux can lag route changes.
-- Clear Redux messages immediately on conversation switch to avoid stale message bleed.
+- Clear Redux messages/tree only on an actual conversation switch; retain them across same-conversation route remounts.
+- Persisted snapshots may enter Redux only through the generation-gated coordinator and its atomic snapshot action.
 - Do not dispatch data for another conversation into current Redux message/tree state.
 - Use explicit `streamId` for sends and branches.
 - Keep composer input local; avoid putting every keystroke into Redux.

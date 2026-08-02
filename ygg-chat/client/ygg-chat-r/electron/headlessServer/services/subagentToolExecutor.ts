@@ -29,7 +29,7 @@ function buildSubagentRequest(toolCall: ProviderToolCall, context: ToolExecution
   const modelName = inheritedProvider === 'openrouter' ? DEFAULT_SUBAGENT_MODEL : context.modelName || DEFAULT_SUBAGENT_MODEL
   const useRequestedTools = args.orchestratorMode === true && Array.isArray(args.tools)
   const tools = useRequestedTools
-    ? args.tools.filter((name: unknown): name is string => typeof name === 'string' && name.trim() !== 'subagent')
+    ? [...new Set([...args.tools, 'multi_call'].filter((name: unknown): name is string => typeof name === 'string' && name.trim() !== 'subagent'))]
     : undefined
   const requestedSystemPrompt = typeof args.systemPrompt === 'string' ? args.systemPrompt.trim() : ''
   const systemPrompt = [getHeadlessSubagentModePrompt(), requestedSystemPrompt].filter(Boolean).join('\n\n')

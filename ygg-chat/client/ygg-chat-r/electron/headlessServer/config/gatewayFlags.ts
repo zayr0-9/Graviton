@@ -1,8 +1,8 @@
 /**
  * Gateway feature flags (Phase 4+). Conf-backed, env-overridable.
  *
- * As of the Phase 6 cutover `chat` defaults ON (the renderer routes all chat
- * through the server-owned loop); the rest default OFF. These gate the
+ * As of the route-independent run cutover, `chat` and `resumableRuns` default ON;
+ * the remaining flags default OFF. These gate the
  * server-owned cloud path:
  *  - `chat`       — route the cloud (openrouter) chat through the server engine:
  *                   relay free-tier SSE events and adopt Railway message ids via
@@ -19,8 +19,9 @@
  *                   bare client disconnect DETACHES (the run keeps going in the main
  *                   process) instead of aborting; the client resubscribes by streamId
  *                   and replays. Only an explicit POST /api/streams/:id/abort cancels.
- *                   DEFAULT OFF (off => today's disconnect==abort behavior). App-quit
- *                   still kills every run (the in-memory sessions die with the process).
+ *                   DEFAULT ON; only an explicit `gateway.resumableRuns === false`
+ *                   restores disconnect==abort behavior. App-quit still kills every run
+ *                   (the in-memory sessions die with the process).
  *
  * `YGG_GATEWAY_MODE` truthy is a master override that turns every gateway flag on
  * (mirrors the env-truthy precedent in openaiChatgptProvider.ts:982). Otherwise
@@ -61,16 +62,16 @@ export function resolveGatewayFlags(): GatewayFlags {
   let tokenOwner = false
   let crud = false
   let cloudProxy = false
-  let resumableRuns = false
+  let resumableRuns = true
   try {
     const store = new Conf({ projectName: 'ygg-chat-r', configFileMode: 0o600 })
     chat = store.get('gateway.chat') !== false
     tokenOwner = store.get('gateway.tokenOwner') === true
     crud = store.get('gateway.crud') === true
     cloudProxy = store.get('gateway.cloudProxy') === true
-    resumableRuns = store.get('gateway.resumableRuns') === true
+    resumableRuns = store.get('gateway.resumableRuns') !== false
   } catch {
-    // A missing/corrupt Conf store must never break server startup; keep chat on.
+    // A missing/corrupt Conf store must never break startup; keep chat/resumable on.
   }
   return { chat, tokenOwner, crud, cloudProxy, resumableRuns }
 }

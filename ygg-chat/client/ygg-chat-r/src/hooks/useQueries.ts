@@ -16,6 +16,11 @@ import type {
 } from '../../shared/localGit'
 import type { Message, Model } from '../features/chats/chatTypes'
 import {
+  fetchConversationMessagesTree,
+  type ConversationMessagesTreeData,
+} from '../features/chats/conversationMessagesApi'
+import { conversationQueryKeys } from '../features/chats/conversationQueryKeys'
+import {
   buildConversationBranchDebugData,
   type BranchDebugData,
 } from '../features/chats/branchDebug'
@@ -33,6 +38,8 @@ import { getFavoritedModels } from '../utils/favorites'
 import { useAuth } from './useAuth'
 
 const isElectronCommunityMode = () => environment === 'electron' && isCommunityMode
+
+export type { ConversationMessagesTreeData } from '../features/chats/conversationMessagesApi'
 
 /**
  * Fetch all projects for the current user, sorted by latest conversation
@@ -441,98 +448,20 @@ export function useLocalTopLevelUserMessages(conversationId: ConversationId | nu
  *
  * Returns: { messages: Message[], tree: ChatNode }
  */
-export interface ConversationMessagesTreeData {
-  messages: Message[]
-  tree: any
-  meta?: { storage_mode: 'local' | 'cloud' }
-}
-
 export function useConversationMessages(conversationId: ConversationId | null, storageMode?: 'local' | 'cloud') {
   const { accessToken } = useAuth()
   const queryClient = useQueryClient()
 
   const query = useQuery<ConversationMessagesTreeData>({
-    queryKey: ['conversations', conversationId, 'messages'],
-    queryFn: async () => {
+    queryKey: conversationId ? conversationQueryKeys.messages(conversationId) : ['conversations', null, 'messages'],
+    queryFn: ({ signal }) => {
       if (!conversationId) throw new Error('Conversation ID is required')
-
-      if (isElectronCommunityMode()) {
-        const result = await localApi.get<{
-          messages: Message[]
-          tree: any
-          meta?: { storage_mode: 'local' | 'cloud' }
-        }>(`/app/conversations/${conversationId}/messages/tree`)
-        return result
-      }
-
-      // Determine storage mode: use parameter if provided, otherwise check cached conversations
-      let effectiveStorageMode = storageMode
-      if (!effectiveStorageMode) {
-        // Search ALL cached conversation lists (main list, project lists, recent lists)
-        // This finds the conversation even if it's only loaded in a specific project view
-        const allConversationQueries = queryClient.getQueriesData<Conversation[]>({ queryKey: ['conversations'] })
-
-        for (const [_, data] of allConversationQueries) {
-          if (Array.isArray(data)) {
-            // Robust comparison handling both string/number IDs
-            const match = data.find(c => String(c.id) === String(conversationId))
-            if (match) {
-              if (match.storage_mode) {
-                effectiveStorageMode = match.storage_mode
-                // console.log('[useConversationMessages] Found storage_mode in cache:', effectiveStorageMode, 'from query:', queryKey)
-                break
-              }
-
-              // Fallback: Try to get storage_mode from project if conversation lacks it
-              if (match.project_id && accessToken) {
-                // Need to find project in cache - usually ['projects', userId]
-                // Note: userId is inside useAuth closure
-                const projectsQuery = queryClient.getQueriesData<ProjectWithLatestConversation[]>({
-                  queryKey: ['projects'],
-                })
-                for (const [_, projects] of projectsQuery) {
-                  if (Array.isArray(projects)) {
-                    const project = projects.find(p => p.id === match.project_id)
-                    if (project?.storage_mode) {
-                      effectiveStorageMode = project.storage_mode
-                      // console.log('[useConversationMessages] Found storage_mode via project cache:', effectiveStorageMode)
-                      break
-                    }
-                  }
-                }
-                if (effectiveStorageMode) break
-              }
-            }
-          }
-        }
-
-        // In Electron mode with unknown storage mode, try local first (handles page reload scenario)
-        if (!effectiveStorageMode && environment === 'electron') {
-          try {
-            const localResult = await localApi.get<{
-              messages: Message[]
-              tree: any
-              meta?: { storage_mode: 'local' | 'cloud' }
-            }>(`/app/conversations/${conversationId}/messages/tree`)
-            // If local API succeeds, return the raw tree.
-            if (localResult) {
-              return localResult
-            }
-          } catch (err) {
-            // Local not found, fall through to cloud
-          }
-          effectiveStorageMode = 'cloud'
-        }
-
-        if (!effectiveStorageMode) effectiveStorageMode = 'cloud'
-      }
-
-      // Storage-aware fetch via the gateway (routes local vs cloud server-side).
-      void effectiveStorageMode
-      const result = await gwApi.get<{ messages: Message[]; tree: any; meta?: { storage_mode: 'local' | 'cloud' } }>(
-        `/conversations/${conversationId}/messages/tree`
-      )
-      return result
+      return fetchConversationMessagesTree(conversationId, {
+        storageMode,
+        accessToken,
+        queryClient,
+        signal,
+      })
     },
     enabled: !!conversationId && !!accessToken,
     staleTime: 30000, // 30 seconds - messages only change on user actions (send/edit/branch)
@@ -569,12 +498,12 @@ export function useConversationBranchDebugData(conversationId: ConversationId | 
   const queryClient = useQueryClient()
 
   return useQuery<ConversationMessagesTreeData, Error, BranchDebugData>({
-    queryKey: ['conversations', conversationId, 'messages'],
+    queryKey: conversationId ? conversationQueryKeys.messages(conversationId) : ['conversations', null, 'messages'],
     enabled: false,
     queryFn: async () => {
       if (!conversationId) return { messages: [], tree: null }
       return (
-        queryClient.getQueryData<ConversationMessagesTreeData>(['conversations', conversationId, 'messages']) ?? {
+        queryClient.getQueryData<ConversationMessagesTreeData>(conversationQueryKeys.messages(conversationId)) ?? {
           messages: [],
           tree: null,
         }

@@ -136,6 +136,10 @@ const resolveDefaultInferenceTools = (): InferenceToolDefinition[] => {
 // The subagent tool is always excluded (no nested subagents).
 const SUBAGENT_EXCLUDED_TOOL_NAMES = new Set(['subagent'])
 
+// These orchestration tools are always exposed to a child, including when a
+// parent supplies an explicit tool whitelist.
+const REQUIRED_SUBAGENT_TOOL_NAMES = new Set(['multi_call'])
+
 // Default tool set when a subagent request omits `tools`. Mirrors the renderer's
 // DEFAULT_SUBAGENT_TOOLS; every name here is in HEADLESS_RUNTIME_BUILTIN_TOOL_NAMES.
 const DEFAULT_SUBAGENT_TOOL_NAMES = [
@@ -157,7 +161,10 @@ const resolveInferenceToolsByName = (
   names: string[] | undefined
 ): { tools: InferenceToolDefinition[]; resolvedNames: string[]; unknownNames: string[] } => {
   const requested = Array.isArray(names) ? names : DEFAULT_SUBAGENT_TOOL_NAMES
-  const wanted = new Set(requested.filter(name => typeof name === 'string' && !SUBAGENT_EXCLUDED_TOOL_NAMES.has(name)))
+  const wanted = new Set([
+    ...requested.filter(name => typeof name === 'string' && !SUBAGENT_EXCLUDED_TOOL_NAMES.has(name)),
+    ...REQUIRED_SUBAGENT_TOOL_NAMES,
+  ])
   const available = resolveDefaultInferenceTools()
   const tools = available.filter(tool => wanted.has(tool.name))
   const resolvedNames = tools.map(tool => tool.name)
@@ -244,17 +251,17 @@ export function registerHeadlessServerRoutes(app: Express, deps: HeadlessServerR
   const tokenStore = new ProviderTokenStore(deps.db)
   bootstrapHeadlessProviderTokens(tokenStore)
 
-  // Phase 4 gateway flags (default OFF). Resolved once at startup.
+  // Gateway flags are resolved once at startup. Chat and route-independent runs default on.
   const gatewayFlags = resolveGatewayFlags()
 
   // One shared pause/resume registry across the chat orchestrator (which pauses the
   // loop) and the POST /api/resume route (which resolves the paused decision).
   const decisionBroker = new DecisionBroker()
 
-  // Detach/reattach registry (gateway.resumableRuns, default OFF). When on, a chat run's
-  // lifetime is owned by its RunSession rather than the SSE socket, so a client reload
-  // detaches instead of aborting. Only started (reaper) when the flag is on; off => the
-  // registry stays empty and the chat route keeps the legacy disconnect==abort path.
+  // Detach/reattach registry (gateway.resumableRuns, default ON). A chat run's lifetime
+  // is owned by its RunSession rather than the SSE socket, so route changes and renderer
+  // reloads detach instead of aborting. Explicit false retains the legacy
+  // disconnect==abort path and leaves the reaper stopped.
   const runSessions = new RunSessionRegistry()
   if (gatewayFlags.resumableRuns) runSessions.startReaper()
 

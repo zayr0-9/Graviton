@@ -27,6 +27,9 @@ export const CHAT_MODE_ALLOWED_TOOL_NAMES = new Set([
   'weather',
   'powershell',
   'subagent',
+  'custom_tool_manager',
+  'mcp_manager',
+  'skill_manager',
 ])
 
 export const CHAT_MODE_BLOCKED_TOOL_NAMES = new Set([
@@ -80,10 +83,20 @@ export function assertToolAllowedWithoutAutoApprove(toolCall: any): void {
 
 export function filterToolsForOperationMode<T extends OperationModeToolPolicyDefinition>(
   tools: T[],
-  operationMode: OperationMode
+  _operationMode: OperationMode
 ): T[] {
-  if (operationMode !== 'plan') return tools
-  return tools.filter(tool => !tool.isCustom && !tool.isMcp && CHAT_MODE_ALLOWED_TOOL_NAMES.has(tool.name))
+  // Keep Agent-only schemas visible in Plan mode so the server can ask the user
+  // to switch modes when the model needs one. Execution remains gated below.
+  return tools
+}
+
+export function requiresAgentMode(toolCall: any, operationMode: OperationMode): boolean {
+  if (operationMode !== 'plan') return false
+  const toolName = typeof toolCall?.name === 'string' ? toolCall.name : ''
+  // Custom and MCP definitions do not retain their registry flags on a provider
+  // tool call. Anything outside the Plan-mode allow list therefore needs an
+  // explicit Agent-mode upgrade before it can execute.
+  return Boolean(toolName) && !CHAT_MODE_ALLOWED_TOOL_NAMES.has(toolName)
 }
 
 export function assertToolAllowedForOperationMode(toolCall: any, operationMode: OperationMode): void {

@@ -4,6 +4,7 @@ import {
   removeInflightStream,
   listInflightStreams,
   clearInflightStreams,
+  updateInflightStreamCursor,
   type InflightStreamRecord,
 } from './inflightStreams'
 
@@ -55,6 +56,13 @@ describe('inflightStreams', () => {
     const all = listInflightStreams()
     expect(all).toHaveLength(1)
     expect(all[0]).toMatchObject({ streamType: 'branch', parentMessageId: 'm9' })
+  })
+
+  it('persists only a newer replay cursor', () => {
+    addInflightStream(rec('s1', 'c1'))
+    updateInflightStreamCursor('s1', 8)
+    updateInflightStreamCursor('s1', 3)
+    expect(listInflightStreams('c1')[0]).toMatchObject({ lastSeq: 8 })
   })
 
   it('survives a "reload" (persists to storage, re-read fresh)', () => {

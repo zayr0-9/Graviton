@@ -10,6 +10,8 @@
  * flag is still consumed by the renderer's auth-refresh delegation.
  */
 
+import { isElectronMode } from '../config/runtimeMode'
+
 /**
  * Phase 4 Slice 2: make the server the SOLE Supabase-token refresher.
  *
@@ -57,7 +59,7 @@ export function setServerTokenOwnerEnabled(enabled: boolean): void {
 }
 
 /**
- * Resumable runs (detach/reattach). Default OFF. When on, the renderer:
+ * Resumable runs (detach/reattach). Default ON in Electron. When on, the renderer:
  *  - treats a stream drop as a DETACH, not a cancel: it resubscribes to the
  *    server-owned run by streamId (GET /api/streams/:id?fromSeq=…) and replays;
  *  - routes an explicit Stop through POST /api/streams/:id/abort (a bare disconnect
@@ -84,17 +86,21 @@ export function isResumableRunsEnabled(): boolean {
   const envOverride = readResumableRunsEnvOverride()
   if (envOverride !== null) return envOverride
   try {
-    return typeof localStorage !== 'undefined' && localStorage.getItem(RESUMABLE_RUNS_STORAGE_KEY) === 'true'
+    if (typeof localStorage !== 'undefined') {
+      const stored = localStorage.getItem(RESUMABLE_RUNS_STORAGE_KEY)
+      if (stored === 'true') return true
+      if (stored === 'false') return false
+    }
   } catch {
-    return false
+    // Fall through to the runtime default when storage is unavailable.
   }
+  return isElectronMode
 }
 
 export function setResumableRunsEnabled(enabled: boolean): void {
   try {
     if (typeof localStorage === 'undefined') return
-    if (enabled) localStorage.setItem(RESUMABLE_RUNS_STORAGE_KEY, 'true')
-    else localStorage.removeItem(RESUMABLE_RUNS_STORAGE_KEY)
+    localStorage.setItem(RESUMABLE_RUNS_STORAGE_KEY, String(enabled))
   } catch {
     // ignore (storage unavailable)
   }

@@ -78,8 +78,9 @@ remains the live rendering state and can be pruned; `streaming_runs.status`,
 `ended_at`, `end_reason`, and `duration_ms` are the durable record of when a stream
 ended.
 
-**Detach / reattach (resumable runs — `isResumableRunsEnabled()`, default OFF).** When
-on, a dropped SSE connection no longer ends the run: the server keeps it alive (see
+**Detach / reattach (resumable runs — `isResumableRunsEnabled()`, default ON in
+Electron).** A dropped SSE connection or Chat route unmount no longer ends the run: the
+server keeps it alive (see
 `agent_headless_server.md` §Detach/Reattach) and the renderer re-attaches by `streamId`.
 - `client/ygg-chat-r/src/features/chats/mainChatClient.ts`: on a non-terminal, non-cancel
   drop, `runServerChatLoop` resubscribes via `GET /api/streams/:id?fromSeq=<last applied
@@ -88,11 +89,12 @@ on, a dropped SSE connection no longer ends the run: the server keeps it alive (
 - `client/ygg-chat-r/src/features/chats/inflightStreams.ts`: a `localStorage`-backed record
   of runs started-but-not-finished (survives a reload). Added on send/branch/edit start;
   removed in the thunk `finally` — a reload kills the thunk first, leaving the marker.
-- `resumeInFlightStreams` thunk (`chatActions.ts`): fired once per conversation from
-  `fetchConversationMessages`. Rebuilds each in-flight stream slot (`sendingStarted`) then
-  replays from the server (`fromSeq:0`); a `410` clears the marker.
-- **Stop** now dispatches `postStreamAbort` — a bare disconnect only DETACHES, so Stop must
-  cancel explicitly. App-quit kills all in-flight runs (in-memory server sessions).
+- `resumeInFlightStreams` thunk (`chatActions.ts`): dispatched from the actual `Chat`
+  route load. It skips streams with an existing module-level reader, rebuilds only orphaned
+  stream slots, and resumes from each marker's persisted `lastSeq`; `410`/terminal replay
+  clears the marker. Per-stream ownership allows later runs in the same conversation.
+- **Stop** awaits `postStreamAbort` before closing local readers. Failed abort requests
+  retain markers for reconciliation. App quit still kills all in-memory server sessions.
 
 ## Important Invariants
 
@@ -111,6 +113,7 @@ on, a dropped SSE connection no longer ends the run: the server keeps it alive (
 - Tool-result events and persisted tool messages are related but not identical; update both paths deliberately.
 - Stream Redux state is pruned; durable file-edit undo state lives under Electron app user-data `.ygg/backups/<stream>/`, keyed by `streamId` and parent user message ID.
 - Durable stream lifecycle rows are best-effort; a failed `streaming_runs` write (renderer or server) must not interrupt generation.
+- Terminal projection records a renderer reconciliation lease before normal stream pruning. The lease protects only explicit final/live/lineage rows and remains until an accepted persisted snapshot contains them; route entry/manual refresh retries failed reconciliation.
 
 ## Testing and Validation
 

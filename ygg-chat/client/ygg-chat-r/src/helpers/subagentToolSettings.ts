@@ -40,6 +40,7 @@ export const DEFAULT_SUBAGENT_TOOLS = [
   'brave_search',
   'edit_file',
   'multi_edit',
+  'multi_call',
   'create_file',
   'delete_file',
   'bash',

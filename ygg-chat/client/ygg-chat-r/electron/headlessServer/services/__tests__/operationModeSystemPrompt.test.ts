@@ -62,9 +62,15 @@ describe('plan mode tool filtering', () => {
     expect(filtered).not.toContain('edit_file')
   })
 
-  it('does not block bash or powershell tool calls in plan mode', () => {
-    expect(() => assertToolAllowedForOperationMode({ name: 'bash' }, 'plan')).not.toThrow()
-    expect(() => assertToolAllowedForOperationMode({ name: 'powershell' }, 'plan')).not.toThrow()
+  it('allows tool-manager calls in plan mode', () => {
+    for (const name of ['bash', 'powershell', 'custom_tool_manager', 'mcp_manager', 'skill_manager']) {
+      expect(() => assertToolAllowedForOperationMode({ name }, 'plan')).not.toThrow()
+    }
+  })
+
+  it('keeps Agent-only tools model-visible so they can request an Agent-mode upgrade', () => {
+    const tools = [{ name: 'edit_file', enabled: true }, { name: 'custom_tool_manager', enabled: true }] as ToolDefinition[]
+    expect(filterToolsForOperationMode(tools, 'plan').map(tool => tool.name)).toEqual(['edit_file', 'custom_tool_manager'])
   })
 })
 

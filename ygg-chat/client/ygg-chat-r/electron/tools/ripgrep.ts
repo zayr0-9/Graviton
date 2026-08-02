@@ -1,6 +1,7 @@
 import { spawn } from 'child_process'
 import * as path from 'path'
 import { detectPathType, getWSLCommandArgs, shouldUseWSL, toWslPath } from '../utils/wslBridge.js'
+import { getNativeShellPath } from './nativeShell.js'
 
 const DEFAULT_MAX_OUTPUT_CHARS = (() => {
   const envValue = Number(process.env.RIPGREP_MAX_OUTPUT_CHARS ?? process.env.RIPGREP_OUTPUT_LIMIT)
@@ -131,6 +132,7 @@ export async function ripgrepSearch(
 
   const useWSL = shouldUseWSL() && !canUseNativeWindowsRg
   const resolvedPath = resolveSearchPath(normalizedSearchPath, useWSL)
+  const nativeShellPath = useWSL ? null : await getNativeShellPath()
 
   // Build rg command arguments
   const args: string[] = []
@@ -202,6 +204,7 @@ export async function ripgrepSearch(
   return new Promise(resolve => {
     const command = `${cmd} ${cmdArgs.join(' ')}`
     const child = spawn(cmd, cmdArgs, {
+      env: nativeShellPath ? { ...process.env, PATH: nativeShellPath } : process.env,
       stdio: ['ignore', 'pipe', 'pipe'],
     })
 

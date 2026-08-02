@@ -23,7 +23,7 @@ Use this when changing:
 - `client/ygg-chat-r/electron/localServer.ts`: embedded local server (prefers :3002). Initializes `toolOrchestrator`, registers built-in/custom/MCP tool handlers with it, and hosts the legacy `POST /api/tools/execute` + job routes (submit/list/get/cancel, WebSocket subscribe). Mounts the headless server (`registerHeadlessServerRoutes`) which owns the chat loop.
 - `client/ygg-chat-r/electron/tools/orchestrator/*`: background job queue/lifecycle (`toolOrchestrator` singleton). The SAME in-process orchestrator serves both the legacy job routes and the server chat/subagent loops.
 - `client/ygg-chat-r/electron/headlessServer/index.ts` (`executeToolViaOrchestrator`): the leaf `ToolExecutor` for the server-owned chat + subagent loops. Parses args, honors `context.signal`, `toolOrchestrator.submit(...)`, then polls `toolOrchestrator.getJob(...)` every 100ms until terminal or `timeoutMs` (clamped 1s–600s, default 300s). No HTTP round-trip, no renderer involvement.
-- `client/ygg-chat-r/electron/headlessServer/services/multiCallExecutor.ts`: in-process `multi_call` composite dispatcher. Runs up to 20 validated leaf calls sequentially or with concurrency capped at 4, preserves result order, forwards abort/workspace context, and routes each nested call back through the caller's policy-aware executor. Nested `multi_call` and `subagent` are rejected.
+- `client/ygg-chat-r/electron/headlessServer/services/multiCallExecutor.ts`: in-process `multi_call` composite dispatcher. Runs up to 20 validated leaf calls sequentially or with concurrency capped at 4, preserves result order, forwards abort/workspace context, and routes each nested call back through the caller's policy-aware executor. Recursive `multi_call`, `html_renderer`, and `plan_md` with `action:'display'` are rejected; `subagent` is permitted for parent-chat batches.
 - `client/ygg-chat-r/electron/headlessServer/services/toolLoopService.ts` (`ToolLoopService.run`): server-side agent loop; calls `this.executeTool(toolCall, ctx)` per tool call.
 - `client/ygg-chat-r/electron/headlessServer/services/chatOrchestrator.ts` (`createChatPausingExecutor`): per-run executor wrapper that pauses each tool call for permission/clarify before delegating to the base executor.
 - `client/ygg-chat-r/src/services/ToolJobManager.ts`: renderer client for the tool-jobs UI/background jobs (still live — `ToolJobsModal`, `useToolJobs`). No longer part of the main chat loop's tool-execution path.
@@ -63,6 +63,7 @@ Permission/clarify decisions are NOT renderer-owned pre-checks anymore. The loop
 
 ## Gotchas
 
+- On macOS/Linux, GUI-launched Electron inherits a minimal `PATH`. The Bash tool runs commands through the user's configured `$SHELL` as an interactive login shell (`-lic`) and falls back to `/bin/bash`; native ripgrep execution imports that shell's `PATH` before spawning `rg`, so terminal-managed Homebrew/nvm/asdf paths remain available.
 - On Windows/Electron, Bash may route through WSL/path conversion; PowerShell may be required for native paths.
 - `edit_file` uses layered matching and line hints; preserve validation semantics.
 - `edit_file` and `multi_edit` in execute mode create managed per-stream undo backups through `streamUndoManager`; keep local-server and utility-runtime registration behavior aligned.

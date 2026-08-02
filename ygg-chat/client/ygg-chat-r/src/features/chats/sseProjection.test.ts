@@ -157,6 +157,19 @@ describe('projectServerEvent', () => {
     expect(p.toolCallId).toBe('tc1')
   })
 
+  it('operation_mode_upgrade_required carries the tool and correlation ids', () => {
+    const a = projectServerEvent(
+      { type: 'operation_mode_upgrade_required', toolCallId: 'tc-upgrade', toolName: 'edit_file', toolInput: { path: 'a.ts' } },
+      ctx
+    )
+    expect(a[0].type).toBe(chatSliceActions.operationModeUpgradeRequested.type)
+    expect(a[0].payload as any).toMatchObject({
+      streamId: 'stream-1',
+      toolCallId: 'tc-upgrade',
+      toolCall: { id: 'tc-upgrade', name: 'edit_file', arguments: { path: 'a.ts' } },
+    })
+  })
+
   it('clarify_required carries streamId + toolCallId', () => {
     const a = projectServerEvent({ type: 'clarify_required', toolCallId: 'tc2', toolName: 'plan_md', questions: [{ q: 'x' }] }, ctx)
     expect(a[0].type).toBe(chatSliceActions.planClarificationRequested.type)

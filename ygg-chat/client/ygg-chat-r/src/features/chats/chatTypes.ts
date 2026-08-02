@@ -316,6 +316,8 @@ export interface CompositionState {
 
 export interface ConversationState {
   currentConversationId: ConversationId | null
+  /** Conversation whose messages/tree/path are currently installed. */
+  snapshotConversationId: ConversationId | null
   focusedChatMessageId: MessageId | null
   currentPath: MessageId[] // Array of message IDs forming current branch
   messages: Message[] // Linear messages in current path order
@@ -360,6 +362,12 @@ export interface ToolCallPermissionRequest {
 
 export type OperationMode = 'plan' | 'execute'
 
+export interface OperationModeUpgradeRequest {
+  toolCall: ToolCall
+  streamId?: string
+  toolCallId?: string
+}
+
 export interface ChatState {
   providerState: ProviderState
   composition: CompositionState
@@ -375,6 +383,7 @@ export interface ChatState {
   attachments: AttachmentsState
   tools: tools[]
   toolCallPermissionRequest: ToolCallPermissionRequest | null
+  operationModeUpgradeRequest: OperationModeUpgradeRequest | null
   planClarificationRequest: PlanClarificationRequest | null
   toolAutoApprove: boolean
   operationMode: OperationMode

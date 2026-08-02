@@ -1,10 +1,11 @@
 import { spawn } from 'child_process'
 import path from 'path'
-import { detectPathType, getWSLCommandArgs, isWindows, toWslPath } from '../utils/wslBridge.js'
+import { detectPathType, getWSLCommandArgs, isWindows } from '../utils/wslBridge.js'
+import { buildNativeShellCommand } from './nativeShell.js'
 
 const DEFAULT_MAX_OUTPUT_CHARS = 20000
 
-type ShellMode = 'bash' | 'wsl' | 'powershell'
+type ShellMode = 'native' | 'wsl' | 'powershell'
 
 // Commands that return exit code 1 for "no matches" (not an error)
 const EXIT_1_NO_MATCH_COMMANDS = ['grep', 'egrep', 'fgrep', 'diff', 'cmp', 'awk']
@@ -50,7 +51,7 @@ type CwdResolution = {
 
 /**
  * Determine which shell to use based on platform and path type:
- * - Linux/Mac: always 'bash'
+ * - Linux/Mac: the user's configured shell, with /bin/bash fallback
  * - Windows + Linux path (/home/...): 'wsl'
  * - Windows + Windows path (C:\...): 'powershell'
  */
@@ -69,9 +70,9 @@ function resolveCwd(inputCwd?: string): CwdResolution {
   const cwdCandidate = getEffectiveCwd(inputCwd)
 
   if (!isWindows()) {
-    // Linux/Mac: always use bash natively
+    // Linux/Mac: use the user's configured shell (normally zsh on macOS).
     const posix = path.isAbsolute(cwdCandidate) ? cwdCandidate : path.resolve(cwdCandidate)
-    return { display: posix, forSpawn: posix, shellMode: 'bash' }
+    return { display: posix, forSpawn: posix, shellMode: 'native' }
   }
 
   // On Windows: determine shell based on path type
@@ -92,12 +93,13 @@ function resolveCwd(inputCwd?: string): CwdResolution {
 async function buildCommand(
   command: string,
   spawnCwd?: string,
-  shellMode: ShellMode = 'bash'
+  shellMode: ShellMode = 'native'
 ): Promise<{ cmd: string; args: string[]; displayCwd?: string }> {
   switch (shellMode) {
-    case 'bash':
-      // Native bash on Linux/Mac
-      return { cmd: 'bash', args: ['-lc', command], displayCwd: spawnCwd }
+    case 'native': {
+      const nativeShell = buildNativeShellCommand(command)
+      return { ...nativeShell, displayCwd: spawnCwd }
+    }
 
     case 'wsl':
       // WSL bash on Windows for Linux paths
@@ -149,8 +151,8 @@ export async function runBashCommand(command: string, options: BashOptions = {})
     },
   }
 
-  // Set cwd for native shells (bash and powershell), WSL handles cwd via --cd flag
-  if (shellMode === 'bash' || shellMode === 'powershell') {
+  // Set cwd for native shells; WSL handles cwd via --cd flag.
+  if (shellMode === 'native' || shellMode === 'powershell') {
     spawnOptions.cwd = spawnCwd
   }
 

@@ -102,10 +102,12 @@ const getSubagentToolNames = (orchestratorMode: boolean, requestedTools: unknown
 
   const allTools = getAllTools()
   const excluded = new Set(['subagent'])
+  const required = new Set(['multi_call'])
   const useRequested = orchestratorMode && Array.isArray(requestedTools) && requestedTools.length > 0
-  const allowed = new Set(
-    (useRequested ? (requestedTools as string[]) : getSubagentEnabledTools()).filter(name => !excluded.has(name))
-  )
+  const allowed = new Set([
+    ...(useRequested ? (requestedTools as string[]) : getSubagentEnabledTools()).filter(name => !excluded.has(name)),
+    ...required,
+  ])
   const bypassEnabledCheck = useRequested
 
   return allTools

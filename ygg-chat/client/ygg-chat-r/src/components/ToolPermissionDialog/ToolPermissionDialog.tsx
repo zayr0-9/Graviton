@@ -6,7 +6,8 @@ interface ToolPermissionDialogProps {
   toolCall: ToolCall
   onGrant: () => void
   onDeny: () => void
-  onAllowAll: () => void
+  onAllowAll?: () => void
+  variant?: 'permission' | 'operation-mode-upgrade'
 }
 
 export const ToolPermissionDialog: React.FC<ToolPermissionDialogProps> = ({
@@ -14,6 +15,7 @@ export const ToolPermissionDialog: React.FC<ToolPermissionDialogProps> = ({
   onGrant,
   onDeny,
   onAllowAll,
+  variant = 'permission',
 }) => {
   const formattedArgs = JSON.stringify(toolCall.arguments, null, 2)
   const bashDescription =
@@ -109,7 +111,7 @@ export const ToolPermissionDialog: React.FC<ToolPermissionDialogProps> = ({
       <div className='flex items-center px-1'>
         <div className='min-w-0 flex flex-1 mb-1 items-center gap-2'>
           <h3 className='text-sm' style={{ color: titleTextColor }}>
-            Permission requested
+            {variant === 'operation-mode-upgrade' ? 'Switch to Agent Mode?' : 'Permission requested'}
           </h3>
           <span
             className='truncate rounded-md text-[10px] px-2 py-0.5 leading-none mt-0.5 tracking-[0.08em]'
@@ -138,6 +140,12 @@ export const ToolPermissionDialog: React.FC<ToolPermissionDialogProps> = ({
           tool
         </div>
       </div>
+
+      {variant === 'operation-mode-upgrade' && (
+        <p className='px-1 text-[11px]' style={{ color: badgeTextColor }}>
+          This tool requires Agent Mode because it can modify files, system state, or app state.
+        </p>
+      )}
 
       {/* Terminal-style command preview */}
       <div
@@ -168,7 +176,7 @@ export const ToolPermissionDialog: React.FC<ToolPermissionDialogProps> = ({
             color: denyButtonTextColor,
           }}
         >
-          Deny
+          {variant === 'operation-mode-upgrade' ? 'Stay in Plan Mode' : 'Deny'}
         </button>
         <button
           type='button'
@@ -180,20 +188,22 @@ export const ToolPermissionDialog: React.FC<ToolPermissionDialogProps> = ({
             color: allowButtonTextColor,
           }}
         >
-          Allow Once
+          {variant === 'operation-mode-upgrade' ? 'Switch to Agent Mode' : 'Allow Once'}
         </button>
-        <button
-          type='button'
-          onClick={onAllowAll}
-          className='rounded-full border px-3 py-1.5 text-[11px] font-semibold leading-none backdrop-blur-xl transition-all duration-200 hover:-translate-y-0.5 hover:scale-[1.02] hover:bg-current/5 active:translate-y-0 active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400/70 focus-visible:ring-offset-2 focus-visible:ring-offset-neutral-50 dark:focus-visible:ring-orange-400/70 dark:focus-visible:ring-offset-yBlack-900'
-          style={{
-            backgroundColor: 'transparent',
-            borderColor: allowAllButtonBorderColor,
-            color: allowAllButtonTextColor,
-          }}
-        >
-          Always Allow
-        </button>
+        {variant === 'permission' && onAllowAll && (
+          <button
+            type='button'
+            onClick={onAllowAll}
+            className='rounded-full border px-3 py-1.5 text-[11px] font-semibold leading-none backdrop-blur-xl transition-all duration-200 hover:-translate-y-0.5 hover:scale-[1.02] hover:bg-current/5 active:translate-y-0 active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400/70 focus-visible:ring-offset-2 focus-visible:ring-offset-neutral-50 dark:focus-visible:ring-orange-400/70 dark:focus-visible:ring-offset-yBlack-900'
+            style={{
+              backgroundColor: 'transparent',
+              borderColor: allowAllButtonBorderColor,
+              color: allowAllButtonTextColor,
+            }}
+          >
+            Always Allow
+          </button>
+        )}
       </div>
     </div>
   )
