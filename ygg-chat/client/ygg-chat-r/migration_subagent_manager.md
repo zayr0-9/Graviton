@@ -19,9 +19,9 @@ context compaction — a fresh session should be able to resume from it alone.
 | Phase | Goal | Status | Notes |
 |---|---|---|---|
 | 0 | Persistence & schema foundations | ✅ done | in checkpoint `8241cd7` |
-| 1 | Spawn engine (blocking + async) | ✅ done | **uncommitted** at last update (service + its test) |
-| 2 | `subagent_manager` tool (executor-layer interceptor) | ⬜ next | unblocked |
-| 3 | In-loop provider-error retry | ⬜ pending | independent of 1/2 |
+| 1 | Spawn engine (blocking + async) | ✅ done | committed `d88404a` (service + its test + this log) |
+| 2 | `subagent_manager` tool (executor-layer interceptor) | ✅ done | committed (see Phase 2 section) |
+| 3 | In-loop provider-error retry | ⬜ next | independent of 1/2 |
 | 4 | Resume (`subagent_manager.resume`) | ⬜ pending | needs 0+1+2 |
 | 5 | UI: persisted transcript viewer | ⬜ pending | needs 0 |
 | 6 | UI: live streaming | ⬜ pending | needs 5 |
@@ -104,6 +104,45 @@ handle uniqueness, by-tool-call, by-lineage(+status) with branch isolation, reop
 `waitFor`; new cases: spawnDetached returns handle + completes in background;
 `cancel(handle)` aborts in-flight run. **Result: 10 pass / 1 pre-existing fail.**
 
+## Phase 2 — `subagent_manager` tool ✅
+
+**`shared/builtinToolDefinitions.ts`** — new `subagent_manager` model-visible tool
+(after `subagent`): `action` enum `spawn|list|status|cancel|resume` + spawn args
+(`prompt`, `blocking`, `systemPrompt`, `orchestratorMode`, `tools`,
+`inheritAutoApprove`, `temperature`), `status` (list filter), `handle`.
+
+**`electron/headlessServer/services/subagentToolExecutor.ts`**
+- New `SubagentManagerRunner` interface (spawnDetached / spawnBlocking / cancel /
+  isActive / getRunByHandle / listByLineage) — implemented by `SubagentRunService`.
+- New `createSubagentManagerExecutor({leafExecutor, runner})`: intercepts
+  `subagent_manager`, routes actions, everything else → leaf. Reads the full
+  `ToolExecutionContext` (esp. `lineageId`), which a registry handler would drop.
+- **Ownership** (`ownsRun`): `!!ctx.lineageId && run.lineage_id===ctx.lineageId &&
+  run.conversation_id===ctx.conversationId`. A null owner-lineage owns nothing
+  (no null==null match). `notOwnedResult` is identical for unknown vs other-branch
+  handles (can't probe another branch's handles). Returns concise transcript-free
+  `toRunView` (+ `resumable`/`live` flags). `resume` is a stable "not available
+  yet" stub until Phase 4. `buildSubagentRequest` tool filter now also drops
+  `subagent_manager` (no nesting).
+
+**`electron/headlessServer/services/subagentRunService.ts`** — added
+`spawnBlocking(request, signal)` (same prepareRun/driveRun engine as detached, just
+awaited; returns `{handle,runId,streamId,status,result,error}`; never throws on a
+subagent error), plus `getRunByHandle` / `listByLineage` pass-throughs.
+
+**`electron/headlessServer/index.ts`** — `subagent_manager` added to
+`HEADLESS_RUNTIME_BUILTIN_TOOL_NAMES` (advertised) and `SUBAGENT_EXCLUDED_TOOL_NAMES`
+(no nesting). `chatToolExecutor` now = manager interceptor → dispatch (`subagent`)
+→ multiCall/leaf. **`src/features/chats/toolDefinitions.ts`** — added to
+`OPENAI_LOCALLY_SUPPORTED_BUILTIN_TOOL_NAMES` (mirrors `subagent`).
+
+**Verified:** flow trace confirmed `lineageId`/`conversationId`/`signal` survive the
+`createChatPausingExecutor` (spreads `{...context}`) → interceptor; chatOrchestrator
+always resolves a non-null `lineageId`. `tsc -b` (src+shared) clean; 0 tsc errors in
+the 3 touched source files. **Tests:** `subagentToolExecutor.test.ts` 16 pass (5
+dispatch + 11 new manager incl. the branch-A-vs-B isolation must-have). Full headless
+suite: 291 pass / 2 pre-existing fail / 58 skip.
+
 ---
 
 ## Verification environment (IMPORTANT)
@@ -121,10 +160,14 @@ handle uniqueness, by-tool-call, by-lineage(+status) with branch isolation, reop
   `npm run test:tools`. Electron code is bundled via esbuild (NO tsc typecheck in the
   standard build); `tsc -b` only covers `src` + `shared`.
 
-**Known pre-existing failure (NOT from this work):** `subagentRunService.test.ts >
-"filters mcp tools out of the tool set in plan mode"` fails at HEAD (`8241cd7`) too —
-`filterToolsForOperationMode` no longer drops `mcp__*` in plan mode but the test still
-expects it to. Decide separately whether to fix the test or the behavior.
+**Known pre-existing failures (NOT from this work)** — both fail at HEAD with all
+subagent-manager changes stashed, both stem from `filterToolsForOperationMode` behavior
+having changed (in the checkpointed lineage/fork WIP) without the tests being updated:
+1. `subagentRunService.test.ts > "filters mcp tools out of the tool set in plan mode"`
+   — expects `mcp__*` dropped in plan mode; it no longer is.
+2. `operationModeSystemPrompt.test.ts > "exposes bash and powershell in plan mode"`
+   — expects `edit_file` filtered out in plan mode; it no longer is.
+Decide separately whether to fix the tests or the behavior.
 
 ---
 

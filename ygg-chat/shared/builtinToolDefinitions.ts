@@ -1131,6 +1131,67 @@ export const BUILTIN_TOOL_DEFINITIONS: SharedToolDefinition[] = [
       required: ['prompt'],
     },
   },
+  {
+    name: 'subagent_manager',
+    enabled: true,
+    description:
+      'Manage asynchronous sub-agents scoped to THIS branch. Fire off background sub-agents and get a short 6-digit handle back, then poll their status, cancel them, or resume a failed one — all without blocking your own work. Only sub-agents spawned by this branch are ever visible or controllable; a parallel branch cannot see or touch them. Nested sub-agents are not supported. Actions: "spawn" (start one sub-agent; set blocking=true to wait for its result inline, or omit/false to run it in the background and get a handle immediately), "list" (all sub-agents this branch owns, optionally filtered by status), "status" (details for one handle), "cancel" (abort a running sub-agent by handle), "resume" (restart a failed/aborted sub-agent by handle).',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        action: {
+          type: 'string',
+          enum: ['spawn', 'list', 'status', 'cancel', 'resume'],
+          description: 'The manager action to perform.',
+        },
+        prompt: {
+          type: 'string',
+          description: 'spawn only: the task prompt for the sub-agent. Be specific and provide all necessary context. Required for spawn.',
+        },
+        blocking: {
+          type: 'boolean',
+          description:
+            'spawn only: if true, wait for the sub-agent to finish and return its result inline. If false or omitted, spawn in the background and return a handle immediately so you can keep working and poll later. Default: false.',
+        },
+        systemPrompt: {
+          type: 'string',
+          description: 'spawn only: optional system prompt to set the sub-agent behavior/persona.',
+        },
+        orchestratorMode: {
+          type: 'boolean',
+          description:
+            'spawn only: if true, use exactly the tools listed in `tools`; if false/omitted, use the pre-configured default sub-agent tool set. Default: false.',
+        },
+        tools: {
+          type: 'array',
+          items: { type: 'string' },
+          description:
+            'spawn only: tool names to enable for the sub-agent (only used when orchestratorMode=true). `subagent` and `subagent_manager` are always excluded to prevent nesting.',
+        },
+        inheritAutoApprove: {
+          type: 'boolean',
+          description:
+            'spawn only: if true, inherit the parent auto-approve setting. If false, the sub-agent is restricted to read-only tools. Default: true.',
+        },
+        temperature: {
+          type: 'number',
+          minimum: 0,
+          maximum: 2,
+          description: 'spawn only: sampling temperature (0-2). Lower = more focused, higher = more creative.',
+        },
+        status: {
+          type: 'string',
+          enum: ['running', 'completed', 'error', 'aborted'],
+          description: 'list only: optional status filter.',
+        },
+        handle: {
+          type: 'string',
+          description: 'The 6-digit handle returned by spawn. Required for status, cancel, and resume.',
+        },
+      },
+      required: ['action'],
+    },
+  },
 ]
 
 export default BUILTIN_TOOL_DEFINITIONS

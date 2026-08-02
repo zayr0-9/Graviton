@@ -3,7 +3,12 @@ import type {
   HeadlessSubagentStreamEvent,
   HeadlessSubagentStreamRequest,
 } from '../contracts/headlessApi.js'
-import { SubagentRunRepo, type SubagentMessageRow } from '../persistence/subagentRunRepo.js'
+import {
+  SubagentRunRepo,
+  type SubagentMessageRow,
+  type SubagentRunRow,
+  type SubagentRunStatus,
+} from '../persistence/subagentRunRepo.js'
 import { StreamingRunRepo } from '../persistence/streamingRunRepo.js'
 import type { ProviderToolCall, ProviderToolDefinition } from '../providers/openRouterProvider.js'
 import type { ProviderTokenStore } from '../providers/tokenStore.js'
@@ -189,6 +194,59 @@ export class SubagentRunService {
   /** True if the handle maps to a run currently executing in THIS process. */
   isActive(handle: string): boolean {
     return this.activeRuns.has(handle)
+  }
+
+  /**
+   * Blocking spawn for the subagent manager. Uses the SAME prepareRun/driveRun
+   * engine and persistence as spawnDetached — the only difference is that it
+   * awaits the loop and returns the terminal outcome inline (handle + result +
+   * status). Unlike runForTool it does NOT throw on a subagent-level error: the
+   * manager surfaces error/aborted structurally so the model can choose to
+   * resume or spawn anew. driveRun still persists every terminal state.
+   */
+  async spawnBlocking(
+    request: HeadlessSubagentStreamRequest,
+    signal: AbortSignal
+  ): Promise<{
+    handle: string | null
+    runId: string
+    streamId: string
+    status: SubagentRunStatus
+    result: string
+    error: string | null
+  }> {
+    let result = ''
+    let terminalError: string | null = null
+    let aborted = false
+    const emit = (event: HeadlessSubagentStreamEvent): void => {
+      if (event.type === 'complete' && 'result' in event) {
+        result = event.result
+      } else if (event.type === 'error') {
+        terminalError = event.error
+        if ((event as { aborted?: boolean }).aborted) aborted = true
+      }
+    }
+    const prepared = await this.prepareRun(request, emit)
+    await this.driveRun(prepared, request, emit, signal)
+    const status: SubagentRunStatus = aborted || signal.aborted ? 'aborted' : terminalError ? 'error' : 'completed'
+    return {
+      handle: prepared.handle,
+      runId: prepared.runId,
+      streamId: prepared.subStreamId,
+      status,
+      result,
+      error: terminalError,
+    }
+  }
+
+  /** Resolve a run by its 6-digit handle (manager status/cancel/resume ownership checks). */
+  getRunByHandle(handle: string): SubagentRunRow | null {
+    return this.runRepo.getRunByHandle(handle)
+  }
+
+  /** Runs owned by a content lineage (+ optional status) — backs the manager's branch-scoped list. */
+  listByLineage(lineageId: string, status?: SubagentRunStatus): SubagentRunRow[] {
+    return this.runRepo.listByLineage(lineageId, status)
   }
 
   private async prepareRun(

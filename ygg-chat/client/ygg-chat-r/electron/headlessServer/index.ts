@@ -28,7 +28,7 @@ import { DecisionBroker } from './services/decisionBroker.js'
 import { RunSessionRegistry } from './services/runSessionRegistry.js'
 import { CompactionService } from './services/compactionService.js'
 import { SubagentRunService } from './services/subagentRunService.js'
-import { createSubagentDispatchExecutor } from './services/subagentToolExecutor.js'
+import { createSubagentDispatchExecutor, createSubagentManagerExecutor } from './services/subagentToolExecutor.js'
 import { createMultiCallDispatchExecutor } from './services/multiCallExecutor.js'
 import { normalizeProviderRoute } from './services/providerRouter.js'
 import { resolveGatewayFlags } from './config/gatewayFlags.js'
@@ -66,6 +66,7 @@ const HEADLESS_RUNTIME_BUILTIN_TOOL_NAMES = new Set([
   'mcp_manager',
   'skill_manager',
   'subagent',
+  'subagent_manager',
   'multi_call',
 ])
 
@@ -134,8 +135,8 @@ const resolveDefaultInferenceTools = (): InferenceToolDefinition[] => {
   return dedupeToolsByName(tools)
 }
 
-// The subagent tool is always excluded (no nested subagents).
-const SUBAGENT_EXCLUDED_TOOL_NAMES = new Set(['subagent'])
+// The subagent + subagent_manager tools are always excluded (no nested subagents).
+const SUBAGENT_EXCLUDED_TOOL_NAMES = new Set(['subagent', 'subagent_manager'])
 
 // These orchestration tools are always exposed to a child, including when a
 // parent supplies an explicit tool whitelist.
@@ -319,9 +320,17 @@ export function registerHeadlessServerRoutes(app: Express, deps: HeadlessServerR
       }
     },
   })
-  const chatToolExecutor = createSubagentDispatchExecutor({
+  // Compose two interceptors ahead of the orchestrator registry:
+  //   subagent_manager (global async manager, branch-scoped) -> subagent (legacy
+  //   blocking dispatch) -> multiCall/leaf. Both interceptors see the full
+  //   ToolExecutionContext (incl. lineageId) that the registry path would drop.
+  const subagentDispatchExecutor = createSubagentDispatchExecutor({
     leafExecutor: multiCallToolExecutor,
     subagentRunner: subagentRunService,
+  })
+  const chatToolExecutor = createSubagentManagerExecutor({
+    leafExecutor: subagentDispatchExecutor,
+    runner: subagentRunService,
   })
 
   registerSubagentRoutes(app, {
