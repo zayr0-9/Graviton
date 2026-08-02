@@ -1,5 +1,6 @@
 import type { HeadlessStreamEvent } from '../contracts/headlessApi.js'
 import { MessageRepo } from '../persistence/messageRepo.js'
+import { ToolInvocationRepo } from '../persistence/toolInvocationRepo.js'
 import { TreeMessageSink, type MessageSink } from './messageSink.js'
 import type {
   ProviderGenerateInput,
@@ -34,6 +35,9 @@ export interface ToolExecutionContext {
   signal?: AbortSignal
   /** Policy-aware executor used by composite tools for each nested call. */
   nestedExecutor?: ToolExecutor
+  /** Durable execution identity of the currently executing parent tool. */
+  parentToolInvocationId?: string | null
+  lineageId?: string | null
 }
 
 export type ToolExecutor = (toolCall: ProviderToolCall, context: ToolExecutionContext) => Promise<any>
@@ -59,6 +63,7 @@ interface ToolLoopServiceDeps {
   sink?: MessageSink
   providerRouter: ProviderRouter
   executeTool?: ToolExecutor
+  toolInvocationRepo?: ToolInvocationRepo
   maxTurns?: number
   persistencePolicy?: Partial<ToolResultPersistencePolicy>
   providerTurnTimeoutMs?: number
@@ -98,6 +103,8 @@ export interface ToolLoopRunInput {
   operation?: 'send' | 'repeat' | 'branch' | 'edit-branch'
   modelName: string
   conversationId: string
+  /** Stable content lineage. Optional so subagent and legacy callers remain unaffected. */
+  lineageId?: string | null
   assistantParentId: string | null
   history: any[]
   userContent: string
@@ -450,6 +457,7 @@ export class ToolLoopService {
   private readonly sink: MessageSink
   private readonly providerRouter: ProviderRouter
   private readonly executeTool?: ToolExecutor
+  private readonly toolInvocationRepo?: ToolInvocationRepo
   private readonly maxTurns: number
   private readonly persistencePolicy?: Partial<ToolResultPersistencePolicy>
   private readonly providerTurnTimeoutMs: number
@@ -465,6 +473,7 @@ export class ToolLoopService {
     }
     this.providerRouter = deps.providerRouter
     this.executeTool = deps.executeTool
+    this.toolInvocationRepo = deps.toolInvocationRepo
     this.maxTurns = Math.max(1, deps.maxTurns ?? DEFAULT_MAX_TURNS)
     this.persistencePolicy = deps.persistencePolicy
     this.providerTurnTimeoutMs = Math.max(5_000, deps.providerTurnTimeoutMs ?? DEFAULT_PROVIDER_TURN_TIMEOUT_MS)
@@ -843,10 +852,26 @@ export class ToolLoopService {
       for (const toolCall of assistantToolCalls) {
         input.signal?.throwIfAborted()
         emit({ type: 'chunk', part: 'tool_call', toolCall })
+
+        // Invocation lifecycle persistence is strict at create time: executing without
+        // an ownership record would violate durability. It is enabled only when a
+        // stable content lineage is available, preserving subagent/legacy behavior.
+        const invocation = input.lineageId && this.toolInvocationRepo
+          ? this.toolInvocationRepo.create({
+              conversationId: input.conversationId,
+              lineageId: input.lineageId,
+              runId: input.streamId ?? null,
+              toolCallId: toolCall.id,
+              assistantMessageId: assistantMessage.id,
+              toolName: toolCall.name,
+            })
+          : null
         emit({
           type: 'tool_execution',
           status: 'started',
           toolCallId: toolCall.id,
+          toolInvocationId: invocation?.id,
+          lineageId: input.lineageId ?? null,
           toolName: toolCall.name,
         })
 
@@ -866,6 +891,39 @@ export class ToolLoopService {
           }
           assertToolAllowedForOperationMode(toolCall, activeOperationMode)
 
+          const executeNested: ToolExecutor = async (nestedCall, nestedContext) => {
+            const nestedInvocation = input.lineageId && this.toolInvocationRepo
+              ? this.toolInvocationRepo.create({
+                  conversationId: input.conversationId,
+                  lineageId: input.lineageId,
+                  runId: input.streamId ?? null,
+                  parentToolInvocationId: nestedContext.parentToolInvocationId ?? invocation?.id ?? null,
+                  toolCallId: nestedCall.id,
+                  assistantMessageId: assistantMessage.id,
+                  toolName: nestedCall.name,
+                })
+              : null
+            const nestedStartedAt = Date.now()
+            emit({ type: 'tool_execution', status: 'started', toolCallId: nestedCall.id, toolInvocationId: nestedInvocation?.id, lineageId: input.lineageId ?? null, toolName: nestedCall.name })
+            try {
+              const nestedResult = await this.executeTool!(nestedCall, {
+                ...nestedContext,
+                parentToolInvocationId: nestedInvocation?.id ?? nestedContext.parentToolInvocationId ?? null,
+                lineageId: input.lineageId ?? null,
+                nestedExecutor: executeNested,
+              })
+              nestedInvocation && this.toolInvocationRepo?.finish(nestedInvocation.id, { status: 'completed' })
+              emit({ type: 'tool_execution', status: 'completed', toolCallId: nestedCall.id, toolInvocationId: nestedInvocation?.id, lineageId: input.lineageId ?? null, toolName: nestedCall.name, durationMs: Math.max(0, Date.now() - nestedStartedAt) })
+              return nestedResult
+            } catch (error) {
+              const aborted = nestedContext.signal?.aborted || isAbortError(error)
+              const errorText = aborted ? 'Tool execution aborted' : error instanceof Error ? error.message : String(error)
+              nestedInvocation && this.toolInvocationRepo?.finish(nestedInvocation.id, { status: aborted ? 'aborted' : 'failed', error: errorText })
+              emit({ type: 'tool_execution', status: aborted ? 'aborted' : 'failed', toolCallId: nestedCall.id, toolInvocationId: nestedInvocation?.id, lineageId: input.lineageId ?? null, toolName: nestedCall.name, durationMs: Math.max(0, Date.now() - nestedStartedAt), error: errorText })
+              throw error
+            }
+          }
+
           const result = await this.executeTool(toolCall, {
             conversationId: input.conversationId,
             messageId: assistantMessage.id,
@@ -878,32 +936,58 @@ export class ToolLoopService {
             subagentReasoningEffort: input.subagentReasoningEffort,
             timeoutMs: input.toolTimeoutMs,
             signal: input.signal,
+            parentToolInvocationId: invocation?.id ?? null,
+            lineageId: input.lineageId ?? null,
+            nestedExecutor: executeNested,
           })
 
           toolResultContent = toToolResultContent(result)
           modelToolResultContent = getToolResultModelContent(result)
           toolError = false
 
+          invocation && this.toolInvocationRepo?.finish(invocation.id, { status: 'completed' })
           emit({
             type: 'tool_execution',
             status: 'completed',
             toolCallId: toolCall.id,
+            toolInvocationId: invocation?.id,
+            lineageId: input.lineageId ?? null,
             toolName: toolCall.name,
             durationMs: Math.max(0, Date.now() - startedAt),
           })
         } catch (error) {
-          // A cancelled tool means the whole run is aborting; propagate.
+          // A cancelled tool means the whole run is aborting; close ownership first.
           if (input.signal?.aborted || isAbortError(error)) {
+            invocation && this.toolInvocationRepo?.finish(invocation.id, {
+              status: 'aborted',
+              error: 'Tool execution aborted',
+            })
+            emit({
+              type: 'tool_execution',
+              status: 'aborted',
+              toolCallId: toolCall.id,
+              toolInvocationId: invocation?.id,
+              lineageId: input.lineageId ?? null,
+              toolName: toolCall.name,
+              durationMs: Math.max(0, Date.now() - startedAt),
+              error: 'Tool execution aborted',
+            })
             throw error
           }
           toolError = true
           toolResultContent = error instanceof Error ? error.message : String(error)
           modelToolResultContent = toolResultContent
 
+          invocation && this.toolInvocationRepo?.finish(invocation.id, {
+            status: 'failed',
+            error: toolResultContent,
+          })
           emit({
             type: 'tool_execution',
             status: 'failed',
             toolCallId: toolCall.id,
+            toolInvocationId: invocation?.id,
+            lineageId: input.lineageId ?? null,
             toolName: toolCall.name,
             durationMs: Math.max(0, Date.now() - startedAt),
             error: toolResultContent,

@@ -114,6 +114,25 @@ describe('registerChatRoutes', () => {
     expect(seenOperations).toEqual(['repeat', 'branch', 'edit-branch'])
   })
 
+  it('forwards optional content-lineage and fork-operation identities without conflating stream identity', async () => {
+    await fetch(`${baseUrl}/api/conversations/c1/messages`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        content: 'test',
+        lineage_id: 'lineage-1',
+        operationId: 'operation-1',
+        stream_id: 'stream-1',
+      }),
+    })
+
+    expect(seenRequests[0]).toMatchObject({
+      lineageId: 'lineage-1',
+      operationId: 'operation-1',
+      streamId: 'stream-1',
+    })
+  })
+
   it('forwards operation mode prompt settings', async () => {
     await fetch(`${baseUrl}/api/conversations/c1/messages`, {
       method: 'POST',

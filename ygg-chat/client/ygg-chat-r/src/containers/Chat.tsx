@@ -192,7 +192,7 @@ import { useSubscriptionStatus } from '../hooks/useSubscriptionStatus'
 import { useConversationSnapshotCoordinator } from '../hooks/useConversationSnapshotCoordinator'
 import { CHAT_INSERT_FILE_PATH_EVENT, type ChatInsertFilePathDetail } from '../helpers/chatInputBridge'
 import { dispatchOpenWorkspaceMutationDiffs } from '../helpers/workspaceMutationDiffBridge'
-import { cloneConversation, localApi } from '../utils/api'
+import { cloneConversation, gwApi, localApi } from '../utils/api'
 import { getAssetPath } from '../utils/assetPath'
 import { parseId } from '../utils/helpers'
 import { extractTextFromPdf } from '../utils/pdfUtils'
@@ -1072,7 +1072,11 @@ function Chat() {
 
 
   // Get conversation ID and project ID from URL params FIRST (before any hooks that depend on it)
-  const { id: conversationIdParam, projectId: projectIdParam } = useParams<{ id?: string; projectId?: string }>()
+  const { id: conversationIdParam, projectId: projectIdParam, lineageId: lineageIdParam } = useParams<{
+    id?: string
+    projectId?: string
+    lineageId?: string
+  }>()
   const conversationIdFromUrl = conversationIdParam ? parseId(conversationIdParam) : null
   const projectIdFromUrl = projectIdParam === 'null' ? null : projectIdParam || null
 
@@ -2011,8 +2015,10 @@ function Chat() {
 
   const attachmentInputRef = useRef<HTMLInputElement>(null)
 
-  // Track if we already applied the URL hash-based path to avoid overriding user branch switches
+  // Track if we already applied URL-driven selection to avoid overriding later user branch switches.
   const hashAppliedRef = useRef<MessageId | null>(null)
+  const lineageRouteAttemptedRef = useRef<string | null>(null)
+  const manualLineageSelectionEpochRef = useRef(0)
 
 
   // Lock page scroll while chat is mounted
@@ -4428,6 +4434,78 @@ function Chat() {
     updateVisibleMessageRef.current?.()
   }, [renderableMessagesSignature, virtualRows])
 
+  // Apply a canonical lineage deep link only after the matching conversation snapshot is installed.
+  // The endpoint is authoritative for the branch path. Route and manual-selection guards prevent a
+  // late response from switching either the conversation or a branch the user chose while it loaded.
+  useEffect(() => {
+    if (!lineageIdParam || conversationIdFromUrl == null) return
+    if (!isConversationDataFetched || acceptedConversationId !== String(conversationIdFromUrl)) return
+    if (snapshotConversationId == null || String(snapshotConversationId) !== String(conversationIdFromUrl)) return
+
+    const routeKey = `${String(conversationIdFromUrl)}:${lineageIdParam}`
+    if (lineageRouteAttemptedRef.current === routeKey) return
+    lineageRouteAttemptedRef.current = routeKey
+
+    const manualSelectionEpoch = manualLineageSelectionEpochRef.current
+    let cancelled = false
+
+    void gwApi
+      .get<{
+        pathMessageIds?: Array<MessageId | string | number>
+        path?: Array<{ id?: MessageId | string | number } | MessageId | string | number>
+        head_message_id?: MessageId | string | number | null
+      }>(
+        `/conversations/${encodeURIComponent(String(conversationIdFromUrl))}/lineages/${encodeURIComponent(lineageIdParam)}`
+      )
+      .then(detail => {
+        if (cancelled || manualLineageSelectionEpochRef.current !== manualSelectionEpoch) return
+        if (acceptedConversationId !== String(conversationIdFromUrl)) return
+
+        const rawPath =
+          detail.pathMessageIds ??
+          detail.path?.map(item => (typeof item === 'object' && item !== null ? item.id : item)) ??
+          []
+        const path = rawPath
+          .map(id => parseId(String(id)))
+          .filter((id): id is MessageId =>
+            typeof id === 'string' || (typeof id === 'number' && !Number.isNaN(id))
+          )
+        if (path.length === 0) return
+
+        const requestedFocusValue = new URLSearchParams(location.search).get('focus')
+        const requestedFocus = requestedFocusValue == null ? null : parseId(requestedFocusValue)
+        const focusInPath =
+          requestedFocus != null && path.some(messageId => String(messageId) === String(requestedFocus))
+        const parsedHead = detail.head_message_id == null ? path[path.length - 1] : parseId(String(detail.head_message_id))
+        const focus = focusInPath ? requestedFocus : parsedHead
+
+        dispatch(
+          chatSliceActions.lineageSelected({
+            conversationId: conversationIdFromUrl,
+            lineageId: lineageIdParam,
+            path,
+            focus,
+          })
+        )
+      })
+      .catch(error => {
+        // A missing/stale lineage link should still open the conversation's normal branch.
+        console.warn('[Chat] Failed to apply lineage deep link:', error)
+      })
+
+    return () => {
+      cancelled = true
+    }
+  }, [
+    acceptedConversationId,
+    conversationIdFromUrl,
+    dispatch,
+    isConversationDataFetched,
+    lineageIdParam,
+    location.search,
+    snapshotConversationId,
+  ])
+
   // If URL contains a #messageId fragment, capture it once
   // const location = useLocation() // Moved to top
   const hashMessageId = React.useMemo(() => {
@@ -5335,6 +5413,7 @@ function Chat() {
   const handleNodeSelect = useCallback(
     (nodeId: string, path: string[]) => {
       if (!nodeId || !path || path.length === 0) return // ignore clicks on empty space
+      manualLineageSelectionEpochRef.current += 1
 
       const parsedNodeId = parseId(nodeId)
       const isValidNodeId =

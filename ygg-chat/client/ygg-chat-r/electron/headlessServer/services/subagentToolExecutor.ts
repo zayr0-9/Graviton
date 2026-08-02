@@ -39,6 +39,9 @@ function buildSubagentRequest(toolCall: ProviderToolCall, context: ToolExecution
     parentMessageId: context.messageId,
     toolCallId: toolCall.id,
     streamId: context.streamId ?? null,
+    // ToolExecutionContext gains lineage at the parent loop boundary. Keep the
+    // structural intersection compatible while that additive type lands.
+    lineageId: (context as ToolExecutionContext & { lineageId?: string | null }).lineageId ?? null,
     prompt,
     systemPrompt: systemPrompt || null,
     provider,

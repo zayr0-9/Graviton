@@ -35,6 +35,10 @@ export interface HeadlessMessageRequest {
   includeOperationModePrompt?: boolean
   planModeVerbosity?: 'concise' | 'normal' | 'detailed'
   streamId?: string | null
+  /** Stable content-branch identity. Optional for legacy callers; resolved server-side. */
+  lineageId?: string | null
+  /** Idempotency/audit identity for a fork operation; distinct from streamId. */
+  operationId?: string | null
   toolTimeoutMs?: number
   /**
    * Interactive tool-permission policy for the server-owned loop.
@@ -69,8 +73,10 @@ export interface HeadlessSubagentStreamRequest {
   conversationId: string
   parentMessageId: string
   toolCallId?: string | null
-  /** Parent stream id, for lineage only (becomes the subagent run's parent_stream_id). */
+  /** Parent stream id (becomes the subagent run's parent_stream_id); distinct from content lineage. */
   streamId?: string | null
+  /** Inherited content-branch ownership. Standalone subagent requests may omit it. */
+  lineageId?: string | null
   prompt: string
   systemPrompt?: string | null
   provider: string
@@ -101,6 +107,7 @@ export type HeadlessSubagentStreamEvent =
       operation: 'subagent'
       subagentRunId: string
       streamId: string
+      lineageId?: string | null
       conversationId: string
       parentMessageId: string
       toolCallId?: string | null
@@ -112,6 +119,7 @@ export type HeadlessSubagentStreamEvent =
   | {
       type: 'complete'
       subagentRunId: string
+      lineageId?: string | null
       message?: any
       result: string
       stats: {
@@ -124,6 +132,7 @@ export type HeadlessSubagentStreamEvent =
   | {
       type: 'error'
       subagentRunId?: string
+      lineageId?: string | null
       error: string
       provider?: string
       status?: number
@@ -142,8 +151,9 @@ export type HeadlessStreamEvent =
       provider: string
       modelName: string
       streamId?: string | null
+      lineageId?: string | null
     }
-  | { type: 'user_message_persisted'; message: any }
+  | { type: 'user_message_persisted'; message: any; lineageId?: string | null }
   | { type: 'provider_routed'; provider: string; modelName: string }
   | {
       type: 'tool_loop'
@@ -154,8 +164,11 @@ export type HeadlessStreamEvent =
     }
   | {
       type: 'tool_execution'
-      status: 'started' | 'completed' | 'failed'
+      status: 'started' | 'completed' | 'failed' | 'aborted'
       toolCallId: string
+      /** Server-owned execution identity; distinct from the provider toolCallId. */
+      toolInvocationId?: string
+      lineageId?: string | null
       toolName: string
       durationMs?: number
       error?: string
@@ -178,7 +191,7 @@ export type HeadlessStreamEvent =
       summaryMessage?: any
       error?: string
     }
-  | { type: 'assistant_message_persisted'; message: any }
+  | { type: 'assistant_message_persisted'; message: any; lineageId?: string | null }
   // ── Phase 0 foundations: additive members for the stateful thin-client loop. ──
   // Emitted only once the server owns the loop (Phase 2+). No current emitter, so
   // existing clients (mobile UI, subagent thin client) are unaffected.
@@ -218,10 +231,11 @@ export type HeadlessStreamEvent =
   // Relayed from Railway (cloud/free-tier inference) by the gateway proxy (Phase 4).
   | { type: 'free_generations_update'; remaining: number; isFreeTier?: boolean }
   | { type: 'generation_limit_reached'; message?: string }
-  | { type: 'complete'; message: any; providerError?: boolean }
+  | { type: 'complete'; message: any; providerError?: boolean; lineageId?: string | null }
   | {
       type: 'error'
       error: string
+      lineageId?: string | null
       provider?: string
       modelName?: string
       retryExhausted?: boolean

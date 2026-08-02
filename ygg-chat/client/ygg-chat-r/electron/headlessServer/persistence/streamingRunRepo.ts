@@ -4,6 +4,7 @@ type StreamRunStatus = 'running' | 'completed' | 'aborted' | 'error'
 
 type UpsertStreamingRunInput = {
   streamId?: string | null
+  lineageId?: string | null
   conversationId?: string | null
   parentMessageId?: string | null
   userMessageId?: string | null
@@ -92,7 +93,19 @@ export class StreamingRunRepo {
       now
     )
 
+    if (input.lineageId) {
+      if (!this.statements.attachStreamingRunToLineage) {
+        throw new Error('Streaming-run lineage attachment statement is not configured')
+      }
+      this.statements.attachStreamingRunToLineage.run(input.lineageId, streamId)
+    }
+
     return streamId
+  }
+
+  getLineageId(streamId: string | null | undefined): string | null {
+    if (!streamId) return null
+    return (this.statements.getStreamingRunById.get(streamId) as any)?.lineage_id ?? null
   }
 
   finish(streamId: string | null | undefined, input: FinishStreamingRunInput): void {

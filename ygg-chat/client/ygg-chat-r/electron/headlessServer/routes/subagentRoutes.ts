@@ -26,6 +26,7 @@ function buildSubagentStreamRequest(body: any): HeadlessSubagentStreamRequest {
     ).trim(),
     toolCallId: body?.toolCallId ?? body?.tool_call_id ?? null,
     streamId: body?.streamId ?? body?.stream_id ?? null,
+    lineageId: body?.lineageId ?? body?.lineage_id ?? null,
     prompt: typeof body?.prompt === 'string' ? body.prompt : '',
     systemPrompt:
       typeof body?.systemPrompt === 'string'

@@ -1262,10 +1262,51 @@ function initializeLocalDatabase(dbPath: string) {
   `)
 
   db.exec(`
+    CREATE TABLE IF NOT EXISTS lineages (
+      id TEXT PRIMARY KEY,
+      conversation_id TEXT NOT NULL,
+      parent_lineage_id TEXT,
+      forked_from_message_id TEXT,
+      root_message_id TEXT,
+      head_message_id TEXT,
+      status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','active','archived')),
+      created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE CASCADE,
+      FOREIGN KEY (parent_lineage_id) REFERENCES lineages(id) ON DELETE SET NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS fork_operations (
+      id TEXT PRIMARY KEY,
+      conversation_id TEXT NOT NULL,
+      source_lineage_id TEXT,
+      target_lineage_id TEXT NOT NULL,
+      source_message_id TEXT,
+      materialized_message_id TEXT,
+      operation TEXT NOT NULL DEFAULT 'fork',
+      status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','materialized','error')),
+      metadata_json TEXT,
+      created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE CASCADE,
+      FOREIGN KEY (source_lineage_id) REFERENCES lineages(id) ON DELETE SET NULL,
+      FOREIGN KEY (target_lineage_id) REFERENCES lineages(id) ON DELETE CASCADE
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_lineages_conversation_updated ON lineages(conversation_id, updated_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_lineages_parent ON lineages(parent_lineage_id, created_at);
+    CREATE INDEX IF NOT EXISTS idx_lineages_head_message ON lineages(head_message_id) WHERE head_message_id IS NOT NULL;
+    CREATE INDEX IF NOT EXISTS idx_fork_operations_conversation_created ON fork_operations(conversation_id, created_at);
+    CREATE INDEX IF NOT EXISTS idx_fork_operations_target_status ON fork_operations(target_lineage_id, status, created_at);
+    CREATE INDEX IF NOT EXISTS idx_fork_operations_source_message ON fork_operations(source_message_id) WHERE source_message_id IS NOT NULL;
+  `)
+
+  db.exec(`
     CREATE TABLE IF NOT EXISTS messages (
       id TEXT PRIMARY KEY,
       conversation_id TEXT NOT NULL,
       parent_id TEXT,
+      lineage_id TEXT,
       children_ids TEXT DEFAULT '[]',
       role TEXT NOT NULL CHECK (role IN ('user', 'assistant', 'system', 'ex_agent', 'tool')),
       content TEXT NOT NULL,
@@ -1300,6 +1341,7 @@ function initializeLocalDatabase(dbPath: string) {
     CREATE TABLE IF NOT EXISTS streaming_runs (
       stream_id TEXT PRIMARY KEY,
       conversation_id TEXT,
+      lineage_id TEXT,
       parent_message_id TEXT,
       user_message_id TEXT,
       assistant_message_id TEXT,
@@ -1332,9 +1374,38 @@ function initializeLocalDatabase(dbPath: string) {
   `)
 
   db.exec(`
+    CREATE TABLE IF NOT EXISTS tool_invocations (
+      id TEXT PRIMARY KEY,
+      conversation_id TEXT NOT NULL,
+      lineage_id TEXT NOT NULL,
+      run_id TEXT,
+      parent_tool_invocation_id TEXT,
+      tool_call_id TEXT NOT NULL,
+      assistant_message_id TEXT NOT NULL,
+      tool_name TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'running' CHECK (status IN ('running','completed','failed','aborted')),
+      started_at DATETIME NOT NULL,
+      ended_at DATETIME,
+      duration_ms INTEGER,
+      error TEXT,
+      created_at DATETIME NOT NULL,
+      updated_at DATETIME NOT NULL,
+      FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE CASCADE,
+      FOREIGN KEY (lineage_id) REFERENCES lineages(id) ON DELETE CASCADE,
+      FOREIGN KEY (parent_tool_invocation_id) REFERENCES tool_invocations(id) ON DELETE SET NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_tool_invocations_lineage_started ON tool_invocations(lineage_id, started_at);
+    CREATE INDEX IF NOT EXISTS idx_tool_invocations_run_started ON tool_invocations(run_id, started_at) WHERE run_id IS NOT NULL;
+    CREATE INDEX IF NOT EXISTS idx_tool_invocations_parent ON tool_invocations(parent_tool_invocation_id, started_at) WHERE parent_tool_invocation_id IS NOT NULL;
+    CREATE INDEX IF NOT EXISTS idx_tool_invocations_status ON tool_invocations(status, started_at);
+  `)
+
+  db.exec(`
     CREATE TABLE IF NOT EXISTS subagent_runs (
       id TEXT PRIMARY KEY,
       conversation_id TEXT NOT NULL,
+      lineage_id TEXT,
       parent_message_id TEXT NOT NULL,
       tool_call_id TEXT,
       prompt TEXT NOT NULL,
@@ -1346,6 +1417,9 @@ function initializeLocalDatabase(dbPath: string) {
       error TEXT,
       turns_used INTEGER DEFAULT 0,
       tool_calls_used INTEGER DEFAULT 0,
+      handle TEXT,
+      attempt INTEGER NOT NULL DEFAULT 0,
+      last_turn_at DATETIME,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE CASCADE,
@@ -1368,8 +1442,50 @@ function initializeLocalDatabase(dbPath: string) {
 
     CREATE INDEX IF NOT EXISTS idx_subagent_runs_parent ON subagent_runs(parent_message_id, created_at);
     CREATE INDEX IF NOT EXISTS idx_subagent_runs_conversation ON subagent_runs(conversation_id, created_at);
+    CREATE INDEX IF NOT EXISTS idx_subagent_runs_tool_call ON subagent_runs(tool_call_id, created_at) WHERE tool_call_id IS NOT NULL;
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_subagent_runs_handle ON subagent_runs(handle) WHERE handle IS NOT NULL;
     CREATE INDEX IF NOT EXISTS idx_subagent_messages_run_seq ON subagent_messages(run_id, sequence);
   `)
+
+  // Idempotent migration for databases created by the previous inline schema.
+  try {
+    for (const tableName of ['messages', 'streaming_runs', 'subagent_runs']) {
+      const columns = db.prepare(`PRAGMA table_info(${tableName})`).all() as { name: string }[]
+      if (!columns.some(column => column.name === 'lineage_id')) {
+        db.exec(`ALTER TABLE ${tableName} ADD COLUMN lineage_id TEXT`)
+      }
+    }
+    db.exec(`
+      CREATE INDEX IF NOT EXISTS idx_messages_lineage_created ON messages(lineage_id, created_at) WHERE lineage_id IS NOT NULL;
+      CREATE INDEX IF NOT EXISTS idx_streaming_runs_lineage_started ON streaming_runs(lineage_id, started_at) WHERE lineage_id IS NOT NULL;
+      CREATE INDEX IF NOT EXISTS idx_streaming_runs_lineage_status ON streaming_runs(lineage_id, status);
+      CREATE INDEX IF NOT EXISTS idx_subagent_runs_lineage_created ON subagent_runs(lineage_id, created_at) WHERE lineage_id IS NOT NULL;
+      CREATE INDEX IF NOT EXISTS idx_subagent_runs_lineage_status ON subagent_runs(lineage_id, status);
+    `)
+  } catch (error) {
+    console.warn('[LocalServer] Failed to migrate content lineage columns:', error)
+  }
+
+  // Idempotent migration: subagent_manager columns (handle, attempt, last_turn_at)
+  // for databases created before the subagent-manager work.
+  try {
+    const subagentRunColumns = db.prepare('PRAGMA table_info(subagent_runs)').all() as { name: string }[]
+    if (!subagentRunColumns.some(column => column.name === 'handle')) {
+      db.exec('ALTER TABLE subagent_runs ADD COLUMN handle TEXT')
+    }
+    if (!subagentRunColumns.some(column => column.name === 'attempt')) {
+      db.exec('ALTER TABLE subagent_runs ADD COLUMN attempt INTEGER NOT NULL DEFAULT 0')
+    }
+    if (!subagentRunColumns.some(column => column.name === 'last_turn_at')) {
+      db.exec('ALTER TABLE subagent_runs ADD COLUMN last_turn_at DATETIME')
+    }
+    db.exec(`
+      CREATE INDEX IF NOT EXISTS idx_subagent_runs_tool_call ON subagent_runs(tool_call_id, created_at) WHERE tool_call_id IS NOT NULL;
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_subagent_runs_handle ON subagent_runs(handle) WHERE handle IS NOT NULL;
+    `)
+  } catch (error) {
+    console.warn('[LocalServer] Failed to migrate subagent_manager columns:', error)
+  }
 
   db.exec(`
     CREATE TABLE IF NOT EXISTS message_attachments (
@@ -1898,6 +2014,72 @@ function initializeLocalDatabase(dbPath: string) {
 
   // Update statements
   statements = {
+    // Content lineages (separate from execution/stream runs)
+    insertLineage: db.prepare(`
+      INSERT INTO lineages (
+        id, conversation_id, parent_lineage_id, forked_from_message_id,
+        root_message_id, head_message_id, status, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `),
+    getLineageById: db.prepare('SELECT * FROM lineages WHERE id = ?'),
+    listLineagesByConversation: db.prepare(
+      'SELECT * FROM lineages WHERE conversation_id = ? ORDER BY created_at ASC, id ASC'
+    ),
+    resolveLineageByMessage: db.prepare(`
+      SELECT l.* FROM messages m INNER JOIN lineages l ON l.id = m.lineage_id WHERE m.id = ?
+    `),
+    resolveAncestorLineageByMessage: db.prepare(`
+      WITH RECURSIVE ancestors(id, parent_id, lineage_id, depth) AS (
+        SELECT id, parent_id, lineage_id, 0 FROM messages WHERE id = ?
+        UNION ALL
+        SELECT m.id, m.parent_id, m.lineage_id, ancestors.depth + 1
+        FROM messages m INNER JOIN ancestors ON m.id = ancestors.parent_id
+        WHERE ancestors.depth < 10000
+      )
+      SELECT l.* FROM ancestors INNER JOIN lineages l ON l.id = ancestors.lineage_id
+      WHERE ancestors.lineage_id IS NOT NULL ORDER BY ancestors.depth ASC LIMIT 1
+    `),
+    attachMessageToLineage: db.prepare(`
+      UPDATE messages SET lineage_id = ?
+      WHERE id = ?
+        AND conversation_id = (SELECT conversation_id FROM lineages WHERE id = ?)
+        AND (lineage_id IS NULL OR lineage_id = ?)
+    `),
+    advanceLineage: db.prepare(`
+      UPDATE lineages SET root_message_id = COALESCE(root_message_id, ?), head_message_id = ?,
+        status = ?, updated_at = ? WHERE id = ?
+    `),
+    insertForkOperation: db.prepare(`
+      INSERT INTO fork_operations (
+        id, conversation_id, source_lineage_id, target_lineage_id, source_message_id,
+        materialized_message_id, operation, status, metadata_json, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `),
+    getForkOperationById: db.prepare('SELECT * FROM fork_operations WHERE id = ?'),
+    materializeForkOperation: db.prepare(`
+      UPDATE fork_operations SET materialized_message_id = ?, status = 'materialized', updated_at = ?
+      WHERE id = ? AND status = 'pending'
+    `),
+    attachStreamingRunToLineage: db.prepare('UPDATE streaming_runs SET lineage_id = ? WHERE stream_id = ?'),
+    attachSubagentRunToLineage: db.prepare('UPDATE subagent_runs SET lineage_id = ? WHERE id = ?'),
+
+    // Metadata-only execution ownership under stable content lineage.
+    insertToolInvocation: db.prepare(`
+      INSERT INTO tool_invocations (
+        id, conversation_id, lineage_id, run_id, parent_tool_invocation_id,
+        tool_call_id, assistant_message_id, tool_name, status, started_at,
+        created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'running', ?, ?, ?)
+    `),
+    finishToolInvocation: db.prepare(`
+      UPDATE tool_invocations SET status = ?, ended_at = ?, duration_ms = ?, error = ?, updated_at = ?
+      WHERE id = ? AND status = 'running'
+    `),
+    getToolInvocationById: db.prepare('SELECT * FROM tool_invocations WHERE id = ?'),
+    listToolInvocationsByLineage: db.prepare(
+      'SELECT * FROM tool_invocations WHERE lineage_id = ? ORDER BY started_at ASC, id ASC'
+    ),
+
     // Users
     upsertUser: db.prepare(`
         INSERT INTO users (id, username, created_at)
@@ -2112,6 +2294,22 @@ function initializeLocalDatabase(dbPath: string) {
       'SELECT * FROM subagent_runs WHERE parent_message_id = ? ORDER BY created_at ASC'
     ),
     getSubagentRunById: db.prepare('SELECT * FROM subagent_runs WHERE id = ?'),
+    getSubagentRunByHandle: db.prepare('SELECT * FROM subagent_runs WHERE handle = ?'),
+    getSubagentRunsByToolCallId: db.prepare(
+      'SELECT * FROM subagent_runs WHERE tool_call_id = ? ORDER BY created_at ASC'
+    ),
+    getSubagentRunsByLineageId: db.prepare(
+      'SELECT * FROM subagent_runs WHERE lineage_id = ? ORDER BY created_at ASC'
+    ),
+    getSubagentRunsByLineageAndStatus: db.prepare(
+      'SELECT * FROM subagent_runs WHERE lineage_id = ? AND status = ? ORDER BY created_at ASC'
+    ),
+    attachSubagentRunHandle: db.prepare('UPDATE subagent_runs SET handle = ? WHERE id = ?'),
+    reopenSubagentRun: db.prepare(`
+        UPDATE subagent_runs
+        SET status = 'running', error = NULL, attempt = attempt + 1, updated_at = ?
+        WHERE id = ? AND status IN ('error', 'aborted')
+      `),
     getSubagentMessagesByRunId: db.prepare(
       'SELECT * FROM subagent_messages WHERE run_id = ? ORDER BY sequence ASC, created_at ASC'
     ),

@@ -1180,6 +1180,7 @@ export const sendMessage = createAsyncThunk<
         streamType: 'primary',
         conversationId,
         lineage: {
+          lineageId: preSendState.chat.conversation.currentLineageId ?? undefined,
           rootMessageId: parent,
         },
       })
@@ -1299,6 +1300,7 @@ export const sendMessage = createAsyncThunk<
           selectedFiles: selectedFilesForChat,
           tools: filterToolsForOperationMode(getAllTools(), operationModeAtSend),
           streamId,
+          currentLineageId: state.chat.conversation.currentLineageId,
           toolAutoApprove: state.chat.toolAutoApprove,
           hooksEnabled: isElectronMode,
           localApiBase: getCachedLocalApiBase(),
@@ -1578,6 +1580,7 @@ export const editMessageWithBranching = createAsyncThunk<
         streamType: 'branch',
         conversationId,
         lineage: {
+          lineageId: preSendState.chat.conversation.currentLineageId ?? undefined,
           originMessageId: originalMessageId,
           rootMessageId: parentMessageId, // Parent where new branch attaches
         },
@@ -1858,6 +1861,7 @@ export const editMessageWithBranching = createAsyncThunk<
           selectedFiles: selectedFilesForChat,
           tools: filterToolsForOperationMode(getAllTools(), operationModeAtSend),
           streamId,
+          currentLineageId: state.chat.conversation.currentLineageId,
           toolAutoApprove: state.chat.toolAutoApprove,
           hooksEnabled: isElectronMode,
           localApiBase: getCachedLocalApiBase(),
@@ -1997,6 +2001,7 @@ export const sendMessageToBranch = createAsyncThunk<
         streamType: 'branch',
         conversationId,
         lineage: {
+          lineageId: preSendState.chat.conversation.currentLineageId ?? undefined,
           rootMessageId: parentId,
         },
       })
@@ -2093,6 +2098,7 @@ export const sendMessageToBranch = createAsyncThunk<
           selectedFiles: selectedFilesForChat,
           tools: filterToolsForOperationMode(getAllTools(), operationModeAtSend),
           streamId,
+          currentLineageId: state.chat.conversation.currentLineageId,
           toolAutoApprove: state.chat.toolAutoApprove,
           hooksEnabled: isElectronMode,
           localApiBase: getCachedLocalApiBase(),

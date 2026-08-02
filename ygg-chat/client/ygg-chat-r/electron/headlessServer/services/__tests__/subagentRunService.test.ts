@@ -15,6 +15,7 @@ class FakeRunRepo {
     const row = {
       id,
       conversation_id: input.conversationId,
+      lineage_id: input.lineageId ?? null,
       parent_message_id: input.parentMessageId,
       tool_call_id: input.toolCallId ?? null,
       prompt: input.prompt,
@@ -129,6 +130,7 @@ function baseRequest(overrides: Partial<HeadlessSubagentStreamRequest> = {}): He
     parentMessageId: 'p1',
     toolCallId: 'call-1',
     streamId: 'parent-stream-1',
+    lineageId: 'content-lineage-1',
     prompt: 'do the task',
     provider: 'openaichatgpt',
     modelName: 'gpt-5.6-sol',
@@ -172,14 +174,18 @@ describe('SubagentRunService', () => {
     const started = events.find(e => e.type === 'started') as any
     expect(started.subagentRunId).toBeTruthy()
     expect(started.streamId).toBe('sub-stream-1')
+    expect(started.lineageId).toBe('content-lineage-1')
+    expect(started.streamId).not.toBe(started.lineageId)
     expect(started.resolvedToolNames).toEqual(['read_file', 'bash'])
 
     const complete = events.find(e => e.type === 'complete') as any
     expect(complete.result).toBe('the final answer')
+    expect(complete.lineageId).toBe('content-lineage-1')
     expect(complete.stats.turnsUsed).toBe(1)
 
     const runId = started.subagentRunId
     expect(runRepo.getRunById(runId)?.status).toBe('completed')
+    expect(runRepo.getRunById(runId)?.lineage_id).toBe('content-lineage-1')
     expect(runRepo.getRunById(runId)?.final_response).toBe('the final answer')
 
     // First transcript row is the user prompt with the subagent_role marker.
@@ -191,6 +197,7 @@ describe('SubagentRunService', () => {
     expect(streamingRunRepo.upsertCalls[0]).toMatchObject({
       streamType: 'subagent',
       source: 'subagent',
+      lineageId: 'content-lineage-1',
       parentStreamId: 'parent-stream-1',
       metadata: { subagent_run_id: runId },
     })

@@ -4115,7 +4115,8 @@ export const Heimdall: React.FC<HeimdallProps> = ({
         <button
           type='button'
           onClick={() => setSearchOpen(true)}
-          className='flex items-center gap-2 px-3 py-2 rounded-xl text-stone-800 dark:text-stone-200 shadow-[0_0px_8px_-4px_rgba(0,0,0,0.2)] dark:shadow-[0_-12px_28px_-6px_rgba(0,0,0,0.65)] hover:bg-neutral-100 dark:hover:bg-neutral-800 active:scale-95 transition'
+          className='flex items-center gap-2 rounded-[20px] border border-stone-200/55 bg-white/75 px-3 py-2 text-stone-800 shadow-[0_18px_36px_-22px_rgba(0,0,0,0.18)] backdrop-blur-2xl transition hover:bg-stone-100/80 active:scale-95 dark:border-neutral-700/55 dark:bg-neutral-900/75 dark:text-stone-200 dark:shadow-[0_30px_60px_-12px_rgba(0,0,0,0.6)] dark:hover:bg-neutral-800/80'
+          style={heimdallHoverPreviewStyle}
         >
           <i className='bx bx-search text-lg' />
           <span className='text-sm font-medium'>Search Messages</span>
@@ -4190,7 +4191,8 @@ export const Heimdall: React.FC<HeimdallProps> = ({
           onClick={handleSearchClose}
         >
           <div
-            className='bg-white/65 dark:bg-neutral-950/65 backdrop-blur-3xl rounded-2xl shadow-xl flex flex-col max-h-[85vh] w-[95%] sm:w-[90%] max-w-6xl'
+            className='flex max-h-[85vh] w-[95%] max-w-6xl flex-col rounded-[20px] border border-stone-200/55 bg-white/75 shadow-[0_18px_36px_-22px_rgba(0,0,0,0.18)] backdrop-blur-2xl sm:w-[90%] dark:border-neutral-700/55 dark:bg-neutral-900/75 dark:shadow-[0_30px_60px_-12px_rgba(0,0,0,0.6)]'
+            style={heimdallHoverPreviewStyle}
             onClick={e => e.stopPropagation()}
             data-heimdall-wheel-exempt='true'
           >

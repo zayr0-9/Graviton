@@ -18,6 +18,7 @@ describe('normalizeServerMessage', () => {
       tool_calls: '[{"id":"t1","name":"read_file"}]',
       content_blocks: 'null',
       created_at: '2026-01-01',
+      lineage_id: 'lineage-1',
     }
     const m = normalizeServerMessage(row) as any
     expect(Array.isArray(m.children_ids)).toBe(true)
@@ -29,6 +30,7 @@ describe('normalizeServerMessage', () => {
     expect(m.partial).toBe(false)
     expect(m.content_plain_text).toBe('hi')
     expect(m.model_name).toBe('unknown')
+    expect(m.lineage_id).toBe('lineage-1')
   })
 
   it('passes through already-parsed values', () => {
@@ -50,13 +52,23 @@ describe('projectServerEvent', () => {
     })
   })
 
-  it('started with no parentId is a no-op', () => {
+  it('started projects lineage identity even without a legacy parent anchor', () => {
+    const a = projectServerEvent({ type: 'started', parentId: null, lineageId: 'lineage-1' }, ctx)
+    expect(types(a)).toEqual([chatSliceActions.streamLineageUpdated.type])
+    expect(a[0].payload as any).toMatchObject({ streamId: 'stream-1', lineageId: 'lineage-1' })
+  })
+
+  it('started with neither parentId nor lineageId is a no-op', () => {
     expect(projectServerEvent({ type: 'started', parentId: null }, ctx)).toEqual([])
   })
 
   it('user_message_persisted => messageAdded, messageBranchCreated, streamLineageUpdated (in order)', () => {
     const a = projectServerEvent(
-      { type: 'user_message_persisted', message: { id: 'u1', role: 'user', content: 'hey', conversation_id: 'conv-1' } },
+      {
+        type: 'user_message_persisted',
+        lineageId: 'lineage-1',
+        message: { id: 'u1', role: 'user', content: 'hey', conversation_id: 'conv-1', lineage_id: 'lineage-1' },
+      },
       ctx
     )
     expect(types(a)).toEqual([
@@ -66,7 +78,8 @@ describe('projectServerEvent', () => {
     ])
     expect((a[0].payload as any).id).toBe('u1')
     expect((a[1].payload as any).newMessage.id).toBe('u1')
-    expect((a[2].payload as any).triggerUserMessageId).toBe('u1')
+    expect((a[2].payload as any)).toMatchObject({ triggerUserMessageId: 'u1', lineageId: 'lineage-1' })
+    expect((a[0].payload as any).lineage_id).toBe('lineage-1')
   })
 
   it('maps chunk parts to streamChunkReceived', () => {
@@ -91,14 +104,28 @@ describe('projectServerEvent', () => {
     expect((a[2].payload as any).chunk.type).toBe('complete')
   })
 
+  it('assistant persisted projects lineage identity when supplied', () => {
+    const a = projectServerEvent(
+      { type: 'assistant_message_persisted', lineageId: 'lineage-1', message: { id: 'a1', role: 'assistant' } },
+      ctx
+    )
+    expect(types(a)).toContain(chatSliceActions.streamLineageUpdated.type)
+    expect((a[2].payload as any)).toMatchObject({ streamId: 'stream-1', lineageId: 'lineage-1' })
+  })
+
   it('terminal complete => messageAdded, messageBranchCreated, streamCompleted', () => {
-    const a = projectServerEvent({ type: 'complete', message: { id: 'a2', role: 'assistant' } }, ctx)
+    const a = projectServerEvent(
+      { type: 'complete', lineageId: 'lineage-1', message: { id: 'a2', role: 'assistant', lineage_id: 'lineage-1' } },
+      ctx
+    )
     expect(types(a)).toEqual([
       chatSliceActions.messageAdded.type,
       chatSliceActions.messageBranchCreated.type,
+      chatSliceActions.streamLineageUpdated.type,
       chatSliceActions.streamCompleted.type,
     ])
-    expect((a[2].payload as any)).toMatchObject({ streamId: 'stream-1', messageId: 'a2', updatePath: true })
+    expect((a[2].payload as any)).toMatchObject({ streamId: 'stream-1', lineageId: 'lineage-1' })
+    expect((a[3].payload as any)).toMatchObject({ streamId: 'stream-1', messageId: 'a2', updatePath: true })
   })
 
   it('error persists a partial assistant row but emits NO error chunk (thunk owns it)', () => {

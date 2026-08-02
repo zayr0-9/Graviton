@@ -50,6 +50,10 @@ export interface BuildServerLoopRequestParams {
   selectedFiles?: unknown[]
   tools?: ServerLoopToolInput[]
   streamId: string
+  /** Exact lineage currently selected in the renderer; omitted for a new/unselected conversation. */
+  currentLineageId?: string | null
+  /** Stable idempotency/correlation identity for this operation. Generated when omitted. */
+  operationId?: string
   /**
    * Interactive tool-permission policy. Forwarded VERBATIM (never coerced): true =
    * auto-approve; false = server pauses per tool for a permission decision; undefined =
@@ -118,6 +122,15 @@ function shapeTools(tools?: ServerLoopToolInput[]): Array<{ name: string; descri
     }))
 }
 
+function generateOperationId(): string {
+  if (typeof globalThis.crypto !== 'undefined' && typeof globalThis.crypto.randomUUID === 'function') {
+    return globalThis.crypto.randomUUID()
+  }
+  // Older Electron/test runtimes may not expose randomUUID. Keep the fallback local,
+  // dependency-free, and collision-resistant enough for a renderer operation identity.
+  return `op-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}-${Math.random().toString(36).slice(2)}`
+}
+
 export function buildServerLoopRequest(operation: ServerLoopOperation, params: BuildServerLoopRequestParams): ServerLoopRequest {
   const { conversationId } = params
 
@@ -154,12 +167,17 @@ export function buildServerLoopRequest(operation: ServerLoopOperation, params: B
     selectedFiles: params.selectedFiles ?? [],
     attachmentsBase64: params.attachmentsBase64 ?? null,
     streamId: params.streamId,
+    operationId: params.operationId ?? generateOperationId(),
     // Forward verbatim (no undefined -> false coercion): drives the server's pause gate.
     toolAutoApprove: params.toolAutoApprove,
     // Phase 3 hooks: forward verbatim. The server gates on `=== true`, so undefined = off.
     hooksEnabled: params.hooksEnabled,
     localApiBase: params.localApiBase ?? null,
   }
+  // A lineage is meaningful only when the renderer is continuing an exact selected
+  // branch. Omit null/undefined so legacy/new-conversation requests remain compatible.
+  if (params.currentLineageId != null) body.lineageId = params.currentLineageId
+
   // Send the tools array whenever the caller provided one (even []), so an
   // all-disabled set is respected; omit only when tools were not provided.
   if (tools !== undefined) body.tools = tools

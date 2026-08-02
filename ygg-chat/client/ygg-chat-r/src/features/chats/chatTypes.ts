@@ -150,12 +150,18 @@ export type StreamLifecycleStatus =
   | 'completed'
   | 'error'
 
+// Renderer-owned identity for an exact conversation branch/lineage. The optional
+// brand keeps string interoperability for existing callers while documenting when
+// an arbitrary string is being used as a lineage identity.
+export type LineageId = string & { readonly __lineageIdBrand?: never }
+
 // Lineage metadata for tracking stream hierarchy (subagents, tool-spawned streams)
 export interface StreamLineage {
+  lineageId?: LineageId          // Exact renderer branch/lineage identity
   parentStreamId?: string        // If spawned from another stream
   rootMessageId?: MessageId      // The message whose branch this stream belongs to
   originMessageId?: MessageId    // The message that triggered this subagent/tool-run
-  branchId?: string              // Optional disambiguator for branches sharing a root
+  branchId?: string              // Legacy optional branch disambiguator
 }
 
 export interface StreamState {
@@ -316,6 +322,7 @@ export interface CompositionState {
 
 export interface ConversationState {
   currentConversationId: ConversationId | null
+  currentLineageId: LineageId | null
   /** Conversation whose messages/tree/path are currently installed. */
   snapshotConversationId: ConversationId | null
   focusedChatMessageId: MessageId | null
@@ -396,6 +403,13 @@ export interface ChatState {
 }
 
 // Action payloads
+export interface LineageSelectionPayload {
+  conversationId: ConversationId
+  lineageId: LineageId
+  path: MessageId[]
+  focus: MessageId | null
+}
+
 export interface SendMessagePayload {
   conversationId: ConversationId
   input: MessageInput

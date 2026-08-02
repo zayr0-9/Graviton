@@ -25,6 +25,7 @@ import {
   PaymentPage,
   PaymentPlans,
   PrivacyPolicy,
+  RecentLineages,
   RefundPolicy,
   Settings,
   TermsOfService,
@@ -74,9 +75,16 @@ const RIGHTBAR_HIDDEN_ROUTES = new Set([
   '/logging',
 ])
 
-const CHAT_ROUTE_PATTERN = /^\/chat\/[^/]+\/[^/]+$/
+const CHAT_ROUTE_PATTERN = /^\/chat\/[^/]+\/[^/]+(?:\/lineage\/[^/]+)?$/
+const RECENT_LINEAGES_ROUTE_PATTERN = /^\/projects\/[^/]+\/lineages\/recent$/
 
-const SIDEBAR_VISIBLE_ROUTE_PATTERNS = [/^\/homepage$/, /^\/conversationPage$/, CHAT_ROUTE_PATTERN, /^\/logging$/]
+const SIDEBAR_VISIBLE_ROUTE_PATTERNS = [
+  /^\/homepage$/,
+  /^\/conversationPage$/,
+  CHAT_ROUTE_PATTERN,
+  RECENT_LINEAGES_ROUTE_PATTERN,
+  /^\/logging$/,
+]
 
 const getRouteAnimationKey = (pathname: string) => {
   if (CHAT_ROUTE_PATTERN.test(pathname)) {
@@ -168,7 +176,8 @@ const RightBarShell = () => {
   }, [])
 
   if (isMobile) return null
-  if (RIGHTBAR_HIDDEN_ROUTES.has(location.pathname)) return null
+  if (RIGHTBAR_HIDDEN_ROUTES.has(location.pathname) || RECENT_LINEAGES_ROUTE_PATTERN.test(location.pathname))
+    return null
 
   return (
     <RightBar
@@ -227,6 +236,26 @@ function AnimatedRoutes() {
             <ProtectedRoute>
               <Chat />
             </ProtectedRoute>
+          }
+        />
+        <Route
+          path='/chat/:projectId/:id/lineage/:lineageId'
+          element={
+            <ProtectedRoute>
+              <Chat />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path='/projects/:projectId/lineages/recent'
+          element={
+            isElectron ? (
+              <ProtectedRoute>
+                <RecentLineages />
+              </ProtectedRoute>
+            ) : (
+              <Navigate to='/homepage' replace />
+            )
           }
         />
         <Route

@@ -2919,7 +2919,7 @@ const ChatMessage: React.FC<ChatMessageProps> = React.memo(
       <div
         id={`message-${id}`}
         ref={messageRef}
-        className={`group px-0 sm:px-2 md:px-2 ${styles.container} ${contextHighlightClass} ${width} ${role === 'user' ? 'mt-4 pt-px pb-[18px] mb-[2px]' : ''} transition-colors duration-200 rounded-md hover:bg-opacity-80 ${isCompactionSummary ? 'border border-emerald-300/50 dark:border-emerald-600/50 bg-emerald-50/40 dark:bg-emerald-900/10' : ''} ${className ?? ''}`}
+        className={`group px-0 sm:px-2 md:px-2 ${styles.container} ${contextHighlightClass} ${width} ${role === 'user' ? 'mt-4 pt-px pb-[18px] mb-[4px]' : ''} transition-colors duration-200 rounded-md hover:bg-opacity-80 ${isCompactionSummary ? 'border border-emerald-300/50 dark:border-emerald-600/50 bg-emerald-50/40 dark:bg-emerald-900/10' : ''} ${className ?? ''}`}
         style={styles.containerStyle}
         onContextMenu={handleContextMenu}
         onMouseEnter={() => setIsHovering(true)}

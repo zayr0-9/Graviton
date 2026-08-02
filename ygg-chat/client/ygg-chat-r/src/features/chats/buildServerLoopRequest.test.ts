@@ -27,6 +27,26 @@ describe('buildServerLoopRequest', () => {
     })
   })
 
+  it('forwards current lineage only when continuing and creates a fresh operation identity', () => {
+    const first = buildServerLoopRequest('send', { ...base, currentLineageId: 'lineage-1' }).body
+    const second = buildServerLoopRequest('send', { ...base, currentLineageId: null }).body
+
+    expect(first.lineageId).toBe('lineage-1')
+    expect(typeof first.operationId).toBe('string')
+    expect(String(first.operationId).length).toBeGreaterThan(0)
+    expect(second.operationId).not.toBe(first.operationId)
+    expect('lineageId' in second).toBe(false)
+  })
+
+  it('preserves a caller-supplied operation identity across request construction', () => {
+    const { body } = buildServerLoopRequest('branch', {
+      ...base,
+      messageId: 'm9',
+      operationId: 'operation-fixed',
+    })
+    expect(body.operationId).toBe('operation-fixed')
+  })
+
   it('never sends a systemPrompt (server assembles it; avoid double-prompt)', () => {
     const { body } = buildServerLoopRequest('send', { ...base })
     expect('systemPrompt' in body).toBe(false)

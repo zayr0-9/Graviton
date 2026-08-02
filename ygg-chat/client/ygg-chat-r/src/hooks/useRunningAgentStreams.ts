@@ -9,6 +9,7 @@ export type AgentStreamActivityKind = StreamEvent['type'] | 'idle'
 export type AgentStreamListItem = {
   streamId: string
   streamType: string
+  lineageId: string | null
   conversationId: string | null
   projectId: string | null
   conversationTitle: string | null
@@ -208,6 +209,7 @@ export function useRunningAgentStreams(notes: ResearchNoteItem[] = []) {
       return {
         streamId,
         streamType: stream.streamType,
+        lineageId: stream.lineage.lineageId ? String(stream.lineage.lineageId) : null,
         conversationId: streamConversationId,
         projectId: convo?.project_id ? String(convo.project_id) : note?.project_id ? String(note.project_id) : null,
         conversationTitle: convo?.title || note?.title || (streamConversationId ? `Conversation ${streamConversationId}` : null),

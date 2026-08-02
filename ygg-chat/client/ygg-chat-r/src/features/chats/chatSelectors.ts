@@ -164,8 +164,9 @@ export const selectCurrentViewStream = createSelector(
     selectStreamingRoot,
     (state: RootState) => state.chat.conversation.currentPath,
     (state: RootState) => state.chat.conversation.currentConversationId,
+    (state: RootState) => state.chat.conversation.currentLineageId,
   ],
-  (streaming, currentPath, currentConversationId) => {
+  (streaming, currentPath, currentConversationId, currentLineageId) => {
     const activeStreams = Object.entries(streaming.byId).filter(([, stream]) => {
       if (!stream.active) return false
       if (currentConversationId == null) return true
@@ -174,6 +175,22 @@ export const selectCurrentViewStream = createSelector(
 
     if (activeStreams.length === 0) {
       return null
+    }
+
+    // Exact renderer lineage identity takes precedence over mutable message anchors.
+    // Streams without lineageId continue through the legacy branch-anchor ranking below.
+    if (currentLineageId != null) {
+      const exactLineageStreams = activeStreams.filter(
+        ([, stream]) => stream.lineage.lineageId != null && String(stream.lineage.lineageId) === String(currentLineageId)
+      )
+      if (exactLineageStreams.length > 0) {
+        const [id, stream] = exactLineageStreams.sort((a, b) => {
+          if (a[0] === streaming.primaryStreamId) return -1
+          if (b[0] === streaming.primaryStreamId) return 1
+          return b[1].createdAt.localeCompare(a[1].createdAt)
+        })[0]
+        return { id, ...stream }
+      }
     }
 
     // If no path is selected yet, fall back to conversation-scoped primary/first active stream.
@@ -302,6 +319,10 @@ export const selectConversationMessages = createSelector(
   conversation => conversation.messages
 )
 export const selectCurrentPath = createSelector([selectConversationState], conversation => conversation.currentPath)
+export const selectCurrentLineageId = createSelector(
+  [selectConversationState],
+  conversation => conversation.currentLineageId
+)
 export const selectCcCwd = createSelector([selectConversationState], conversation => conversation.ccCwd)
 export const selectBookmarkedMessages = createSelector(
   [selectConversationState],

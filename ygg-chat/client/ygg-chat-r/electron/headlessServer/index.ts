@@ -17,6 +17,7 @@ import { registerEphemeralGenerateRoutes } from './routes/ephemeralGenerateRoute
 import { registerSubagentRoutes } from './routes/subagentRoutes.js'
 import { registerTestHarnessRoutes } from './routes/testHarnessRoutes.js'
 import { registerGatewayRoutes } from './routes/gatewayRoutes.js'
+import { registerLineageRoutes } from './routes/lineageRoutes.js'
 import { registerCloudProxyRoutes } from './routes/cloudProxyRoutes.js'
 import { createAppAuthTokenManager } from './services/appAuthTokenManager.js'
 import { createRailwayClient } from './services/railwayClient.js'
@@ -272,6 +273,7 @@ export function registerHeadlessServerRoutes(app: Express, deps: HeadlessServerR
   registerCustomToolRpcRoutes(app)
   registerCapabilityRoutes(app, { getDefaultTools: resolveDefaultInferenceTools })
   registerEphemeralGenerateRoutes(app, { tokenStore })
+  registerLineageRoutes(app, deps)
 
   // Phase 5 cloud gateway: storage-aware /api/gw/* CRUD + merge and /api/cloud/*
   // authenticated pass-through. Mounted UNCONDITIONALLY — the renderer is now a thin

@@ -21,6 +21,7 @@ function createSchema(db: Database.Database): void {
     CREATE TABLE subagent_runs (
       id TEXT PRIMARY KEY,
       conversation_id TEXT NOT NULL,
+      lineage_id TEXT,
       parent_message_id TEXT NOT NULL,
       tool_call_id TEXT,
       prompt TEXT NOT NULL,
@@ -32,6 +33,9 @@ function createSchema(db: Database.Database): void {
       error TEXT,
       turns_used INTEGER DEFAULT 0,
       tool_calls_used INTEGER DEFAULT 0,
+      handle TEXT,
+      attempt INTEGER NOT NULL DEFAULT 0,
+      last_turn_at DATETIME,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
     );
@@ -49,6 +53,8 @@ function createSchema(db: Database.Database): void {
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       FOREIGN KEY (run_id) REFERENCES subagent_runs(id) ON DELETE CASCADE
     );
+
+    CREATE UNIQUE INDEX idx_subagent_runs_handle ON subagent_runs(handle) WHERE handle IS NOT NULL;
   `)
 }
 
@@ -65,6 +71,7 @@ function createStatements(db: Database.Database): any {
         tool_calls_used = excluded.tool_calls_used,
         updated_at = excluded.updated_at
     `),
+    attachSubagentRunToLineage: db.prepare('UPDATE subagent_runs SET lineage_id = ? WHERE id = ?'),
     updateSubagentRun: db.prepare(`
       UPDATE subagent_runs
       SET status = COALESCE(?, status),
@@ -88,6 +95,16 @@ function createStatements(db: Database.Database): any {
     getSubagentRunsByConversationId: db.prepare('SELECT * FROM subagent_runs WHERE conversation_id = ? ORDER BY created_at ASC'),
     getSubagentRunsByParentMessageId: db.prepare('SELECT * FROM subagent_runs WHERE parent_message_id = ? ORDER BY created_at ASC'),
     getSubagentRunById: db.prepare('SELECT * FROM subagent_runs WHERE id = ?'),
+    getSubagentRunByHandle: db.prepare('SELECT * FROM subagent_runs WHERE handle = ?'),
+    getSubagentRunsByToolCallId: db.prepare('SELECT * FROM subagent_runs WHERE tool_call_id = ? ORDER BY created_at ASC'),
+    getSubagentRunsByLineageId: db.prepare('SELECT * FROM subagent_runs WHERE lineage_id = ? ORDER BY created_at ASC'),
+    getSubagentRunsByLineageAndStatus: db.prepare('SELECT * FROM subagent_runs WHERE lineage_id = ? AND status = ? ORDER BY created_at ASC'),
+    attachSubagentRunHandle: db.prepare('UPDATE subagent_runs SET handle = ? WHERE id = ?'),
+    reopenSubagentRun: db.prepare(`
+      UPDATE subagent_runs
+      SET status = 'running', error = NULL, attempt = attempt + 1, updated_at = ?
+      WHERE id = ? AND status IN ('error', 'aborted')
+    `),
     getSubagentMessagesByRunId: db.prepare('SELECT * FROM subagent_messages WHERE run_id = ? ORDER BY sequence ASC, created_at ASC'),
     getNextSubagentMessageSequence: db.prepare('SELECT COALESCE(MAX(sequence), -1) + 1 AS nextSequence FROM subagent_messages WHERE run_id = ?'),
   }
@@ -126,6 +143,19 @@ describeIfSqlite('SubagentRunRepo', () => {
     expect(run.tool_calls_used).toBe(0)
     expect(run.messages).toEqual([])
     expect(repo.getRunById(run.id)?.prompt).toBe('do the task')
+  })
+
+  it('attaches an inherited content lineage without changing the run id', () => {
+    const run = repo.createRun({
+      id: 'distinct-subagent-run',
+      conversationId: 'c1',
+      lineageId: 'content-lineage-1',
+      parentMessageId: 'p1',
+      prompt: 'do the task',
+    })
+
+    expect(run.id).toBe('distinct-subagent-run')
+    expect(run.lineage_id).toBe('content-lineage-1')
   })
 
   it('appends messages with monotonic sequence and parses JSON columns', () => {
@@ -193,5 +223,77 @@ describeIfSqlite('SubagentRunRepo', () => {
   it('returns null updating an unknown message', () => {
     const run = makeRun()
     expect(repo.updateMessageToolState(run.id, 'missing', { contentBlocks: [], toolCalls: [] })).toBeNull()
+  })
+
+  it('mints a unique 6-digit handle resolvable via getRunByHandle', () => {
+    const a = makeRun()
+    const b = makeRun()
+    expect(a.handle).toMatch(/^\d{6}$/)
+    expect(b.handle).toMatch(/^\d{6}$/)
+    expect(a.handle).not.toBe(b.handle)
+    expect(a.attempt).toBe(0)
+    expect(repo.getRunByHandle(a.handle!)?.id).toBe(a.id)
+    expect(repo.getRunByHandle('000000')).toBeNull()
+  })
+
+  it('honors an explicit handle when supplied', () => {
+    const run = repo.createRun({
+      conversationId: 'c1',
+      parentMessageId: 'p1',
+      prompt: 'task',
+      handle: '424242',
+    })
+    expect(run.handle).toBe('424242')
+    expect(repo.getRunByHandle('424242')?.id).toBe(run.id)
+  })
+
+  it('lists runs by tool call with transcripts', () => {
+    const run = makeRun() // tool_call_id 'call-1'
+    repo.appendMessage(run.id, { role: 'user', content: 'hi' })
+    repo.createRun({ conversationId: 'c1', parentMessageId: 'p1', toolCallId: 'call-2', prompt: 'other' })
+
+    const byToolCall = repo.listByToolCall('call-1')
+    expect(byToolCall).toHaveLength(1)
+    expect(byToolCall[0].id).toBe(run.id)
+    expect(byToolCall[0].messages).toHaveLength(1)
+  })
+
+  it('lists runs by lineage and by lineage+status (lightweight, no transcript)', () => {
+    const running = repo.createRun({ conversationId: 'c1', lineageId: 'lin-A', parentMessageId: 'p1', prompt: 'a' })
+    const failed = repo.createRun({ conversationId: 'c1', lineageId: 'lin-A', parentMessageId: 'p1', prompt: 'b' })
+    repo.updateRun(failed.id, { status: 'error', error: 'boom' })
+    // A parallel branch in the same conversation must NOT leak into lin-A's view.
+    repo.createRun({ conversationId: 'c1', lineageId: 'lin-B', parentMessageId: 'p1', prompt: 'other-branch' })
+    repo.appendMessage(running.id, { role: 'user', content: 'hi' })
+
+    const all = repo.listByLineage('lin-A')
+    expect(all.map(r => r.id).sort()).toEqual([running.id, failed.id].sort())
+    expect(all.every(r => r.messages?.length === 0)).toBe(true) // lightweight
+
+    const onlyRunning = repo.listByLineage('lin-A', 'running')
+    expect(onlyRunning.map(r => r.id)).toEqual([running.id])
+    expect(repo.listByLineage('lin-B')).toHaveLength(1)
+  })
+
+  it('reopenRun transitions error/aborted -> running, bumps attempt, and guards terminal/running', () => {
+    const run = makeRun()
+
+    // running -> cannot reopen (idempotency / not-yet-failed guard)
+    expect(repo.reopenRun(run.id)).toBe(false)
+
+    repo.updateRun(run.id, { status: 'error', error: 'boom' })
+    expect(repo.reopenRun(run.id)).toBe(true)
+    let row = repo.getRunById(run.id)
+    expect(row?.status).toBe('running')
+    expect(row?.error).toBeNull() // cleared on reopen
+    expect(row?.attempt).toBe(1)
+
+    // now running again -> reopen is a no-op
+    expect(repo.reopenRun(run.id)).toBe(false)
+
+    // completed -> never resumable
+    repo.updateRun(run.id, { status: 'completed', finalResponse: 'done' })
+    expect(repo.reopenRun(run.id)).toBe(false)
+    expect(repo.getRunById(run.id)?.attempt).toBe(1) // unchanged
   })
 })

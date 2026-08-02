@@ -265,6 +265,53 @@ export function useConversationsByProjectInfinite(
   })
 }
 
+export interface RecentLineageMessagePreview {
+  id: string
+  role: string
+  content: string
+}
+
+/**
+ * Compact lineage projection returned by the project recent-lineages endpoint.
+ * This is deliberately separate from Message: aggregate data must remain in
+ * React Query and must never be projected into the chat Redux store.
+ */
+export interface RecentLineage {
+  conversationId: string
+  conversationTitle: string | null
+  storageMode: 'local' | 'cloud' | null
+  lineageId: string
+  headMessageId: string | null
+  parentLineageId: string | null
+  activityAt: string
+  status: string
+  activeRunCount: number
+  pathPreview: RecentLineageMessagePreview[]
+}
+
+/**
+ * Fetch compact, project-scoped lineage summaries for the Electron navigator.
+ * Cache key: ['projects', projectId, 'recent-lineages', limit]
+ */
+export function useRecentLineages(projectId: ProjectId | string | null, limit: number = 20) {
+  const safeLimit = Math.max(1, Math.floor(Number.isFinite(limit) ? limit : 20))
+
+  return useQuery({
+    queryKey: ['projects', projectId, 'recent-lineages', safeLimit],
+    queryFn: async (): Promise<RecentLineage[]> => {
+      if (!projectId) throw new Error('Project ID is required')
+      return gwApi.get<RecentLineage[]>(
+        `/projects/${encodeURIComponent(String(projectId))}/recent-lineages?limit=${safeLimit}`
+      )
+    },
+    enabled: !!projectId && environment === 'electron',
+    staleTime: 30 * 1000,
+    refetchOnMount: 'always',
+    refetchOnReconnect: false,
+    refetchOnWindowFocus: false,
+  })
+}
+
 /**
  * Fetch recent conversations with a limit
  * Cache key: ['conversations', 'recent', userId, limit]
@@ -612,7 +659,9 @@ export function useModels(provider: string | null) {
         }))
         const defaultModel = models[0] || stringToModel('glm-5.1')
         const storedSelection = getStoredSelectedModel()
-        const selectedModel = storedSelection ? models.find(m => m.name === storedSelection.name) || defaultModel : defaultModel
+        const selectedModel = storedSelection
+          ? models.find(m => m.name === storedSelection.name) || defaultModel
+          : defaultModel
 
         return {
           models,
@@ -661,9 +710,7 @@ export function useModels(provider: string | null) {
         const defaultModel = models[0] || stringToModel('gpt-5.6-sol')
 
         const storedSelection = getStoredSelectedModel()
-        const selectedModel = storedSelection
-          ? models.find(m => m.name === storedSelection.name) || defaultModel
-          : defaultModel
+        const selectedModel = storedSelection ? models.find(m => m.name === storedSelection.name) || defaultModel : defaultModel
 
         return {
           models,

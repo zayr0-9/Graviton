@@ -94,14 +94,20 @@ export function projectServerEvent(event: ServerStreamEvent, ctx: ProjectionCont
   switch (event.type) {
     case 'started': {
       const parentId = event.parentId ?? null
-      if (!parentId) return []
+      const lineageId = event.lineageId ?? null
+      if (!parentId && !lineageId) return []
       return [
         chatSliceActions.streamLineageUpdated({
           streamId,
-          rootMessageId: parentId,
-          branchAnchorMessageId: parentId,
-          currentBranchAnchorMessageId: parentId,
-        }),
+          ...(lineageId ? { lineageId } : {}),
+          ...(parentId
+            ? {
+                rootMessageId: parentId,
+                branchAnchorMessageId: parentId,
+                currentBranchAnchorMessageId: parentId,
+              }
+            : {}),
+        } as any),
       ]
     }
 
@@ -112,11 +118,12 @@ export function projectServerEvent(event: ServerStreamEvent, ctx: ProjectionCont
         chatSliceActions.messageBranchCreated({ newMessage: message }),
         chatSliceActions.streamLineageUpdated({
           streamId,
+          lineageId: event.lineageId ?? (message as any).lineage_id ?? undefined,
           originMessageId: message.id,
           branchAnchorMessageId: message.id,
           triggerUserMessageId: message.id,
           currentBranchAnchorMessageId: message.id,
-        }),
+        } as any),
       ]
     }
 
@@ -165,9 +172,13 @@ export function projectServerEvent(event: ServerStreamEvent, ctx: ProjectionCont
       // Per-turn: persist the assistant row and close the turn with a complete-CHUNK
       // (NOT streamCompleted — that keeps active=true for multi-turn loops).
       const message = normalizeServerMessage(event.message)
+      const lineageId = event.lineageId ?? (message as any).lineage_id ?? null
       return [
         chatSliceActions.messageAdded(message),
         chatSliceActions.messageBranchCreated({ newMessage: message }),
+        ...(lineageId
+          ? [chatSliceActions.streamLineageUpdated({ streamId, lineageId } as any)]
+          : []),
         chatSliceActions.streamChunkReceived({ streamId, chunk: { type: 'complete', message } }),
       ]
     }
@@ -175,9 +186,13 @@ export function projectServerEvent(event: ServerStreamEvent, ctx: ProjectionCont
     case 'complete': {
       // Terminal (once per run): persist final message and finalize the stream.
       const message = normalizeServerMessage(event.message)
+      const lineageId = event.lineageId ?? (message as any).lineage_id ?? null
       return [
         chatSliceActions.messageAdded(message),
         chatSliceActions.messageBranchCreated({ newMessage: message }),
+        ...(lineageId
+          ? [chatSliceActions.streamLineageUpdated({ streamId, lineageId } as any)]
+          : []),
         chatSliceActions.streamCompleted({ streamId, messageId: message.id, updatePath: true }),
       ]
     }

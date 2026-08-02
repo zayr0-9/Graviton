@@ -150,6 +150,7 @@ export class SubagentRunService {
 
     const run = this.runRepo.createRun({
       conversationId: request.conversationId,
+      lineageId: request.lineageId ?? null,
       parentMessageId: request.parentMessageId,
       toolCallId: request.toolCallId ?? null,
       prompt: request.prompt,
@@ -160,8 +161,9 @@ export class SubagentRunService {
     })
     const runId = run.id
 
-    // Child streaming_runs row (never the parent's stream id) for lineage.
+    // Child streaming_runs row uses a fresh run id while retaining content ownership.
     const subStreamId = this.streamingRunRepo.upsert({
+      lineageId: request.lineageId ?? null,
       conversationId: request.conversationId,
       parentMessageId: request.parentMessageId,
       streamType: 'subagent',
@@ -179,6 +181,7 @@ export class SubagentRunService {
       operation: 'subagent',
       subagentRunId: runId,
       streamId: subStreamId,
+      lineageId: request.lineageId ?? null,
       conversationId: request.conversationId,
       parentMessageId: request.parentMessageId,
       toolCallId: request.toolCallId ?? null,
@@ -306,6 +309,7 @@ export class SubagentRunService {
       emit({
         type: 'complete',
         subagentRunId: runId,
+        lineageId: request.lineageId ?? null,
         message: result.finalAssistantMessage,
         result: finalText,
         stats: { turnsUsed, maxTurns, toolCallsUsed, toolsExecuted },
@@ -325,7 +329,13 @@ export class SubagentRunService {
           metadata: { subagent_run_id: runId },
         })
         // The client has usually disconnected; emit best-effort.
-        emit({ type: 'error', subagentRunId: runId, error: 'Subagent aborted', aborted: true })
+        emit({
+          type: 'error',
+          subagentRunId: runId,
+          lineageId: request.lineageId ?? null,
+          error: 'Subagent aborted',
+          aborted: true,
+        })
         return
       }
 
@@ -353,6 +363,7 @@ export class SubagentRunService {
         emit({
           type: 'error',
           subagentRunId: runId,
+          lineageId: request.lineageId ?? null,
           error: providerError.message,
           provider,
           status: providerError.status,
@@ -377,7 +388,13 @@ export class SubagentRunService {
         error: message,
         metadata: { subagent_run_id: runId },
       })
-      emit({ type: 'error', subagentRunId: runId, error: message, provider })
+      emit({
+        type: 'error',
+        subagentRunId: runId,
+        lineageId: request.lineageId ?? null,
+        error: message,
+        provider,
+      })
     }
   }
 }

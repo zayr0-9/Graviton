@@ -90,14 +90,21 @@ describe('registerSubagentRoutes', () => {
     expect(events[2]).toMatchObject({ type: 'complete', result: 'final text' })
   })
 
-  it('normalizes the request body (tool names, autoApprove, streamId)', async () => {
+  it('normalizes the request body (tool names, autoApprove, streamId, lineageId)', async () => {
     await fetch(`${baseUrl}/api/headless/subagent/stream`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ ...validBody(), streamId: 'parent-s', tools: ['read_file', { name: 'ripgrep' }], autoApprove: false }),
+      body: JSON.stringify({
+        ...validBody(),
+        streamId: 'parent-s',
+        lineage_id: 'content-lineage-1',
+        tools: ['read_file', { name: 'ripgrep' }],
+        autoApprove: false,
+      }),
     })
     expect(seenRequests[0]).toMatchObject({
       streamId: 'parent-s',
+      lineageId: 'content-lineage-1',
       tools: ['read_file', 'ripgrep'],
       autoApprove: false,
     })

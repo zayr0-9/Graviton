@@ -3,6 +3,8 @@ import { ConversationRepo } from '../persistence/conversationRepo.js'
 import { MessageRepo } from '../persistence/messageRepo.js'
 import { ProjectRepo } from '../persistence/projectRepo.js'
 import { StreamingRunRepo } from '../persistence/streamingRunRepo.js'
+import { LineageRepo, type LineageRow } from '../persistence/lineageRepo.js'
+import { ToolInvocationRepo } from '../persistence/toolInvocationRepo.js'
 import { TreeMessageSink, CloudMirrorSink } from './messageSink.js'
 import type { ProviderTokenStore } from '../providers/tokenStore.js'
 import { BranchOrchestrator, type ResolvedExecution } from './branchOrchestrator.js'
@@ -133,13 +135,13 @@ export function createChatPausingExecutor(deps: {
     // the clarify mechanism).
     if (!hookSession) {
       if (isClarify(toolCall.name, args)) return runClarify(toolCall, args)
-      if (broker.isAutoApproveAll(streamId)) return base(toolCall, { ...context, nestedExecutor: execute })
-      if (shouldBypassPermission(toolCall.name, args)) return base(toolCall, { ...context, nestedExecutor: execute })
+      if (broker.isAutoApproveAll(streamId)) return base(toolCall, { ...context, nestedExecutor: context.nestedExecutor ?? execute })
+      if (shouldBypassPermission(toolCall.name, args)) return base(toolCall, { ...context, nestedExecutor: context.nestedExecutor ?? execute })
       emit({ type: 'permission_required', streamId, toolCallId: toolCall.id, toolName: toolCall.name, toolInput: args })
       const decision = await broker.requestDecision<PermissionDecision>({ streamId, toolCallId: toolCall.id, signal: sig })
       if (decision === 'deny') throw new Error('Tool execution denied by user')
       if (decision === 'allow_always') broker.setAutoApproveAll(streamId)
-      return base(toolCall, { ...context, nestedExecutor: execute })
+      return base(toolCall, { ...context, nestedExecutor: context.nestedExecutor ?? execute })
     }
 
     // Hooks active — port of the renderer executeToolWithPermissionCheck
@@ -164,7 +166,7 @@ export function createChatPausingExecutor(deps: {
         // still fires PostToolUse — same as the renderer.
         result = await runClarify(effectiveToolCall, effArgs)
       } else if (broker.isAutoApproveAll(streamId) || shouldBypassPermission(effectiveToolCall.name, effArgs)) {
-        result = await base(effectiveToolCall, { ...context, nestedExecutor: execute })
+        result = await base(effectiveToolCall, { ...context, nestedExecutor: context.nestedExecutor ?? execute })
       } else {
         // Prompt shows the rewritten args. toolCallId stays the original id (a rewrite
         // only touches arguments), so the /resume correlation is unchanged.
@@ -172,7 +174,7 @@ export function createChatPausingExecutor(deps: {
         const decision = await broker.requestDecision<PermissionDecision>({ streamId, toolCallId: toolCall.id, signal: sig })
         if (decision === 'deny') throw new Error('Tool execution denied by user')
         if (decision === 'allow_always') broker.setAutoApproveAll(streamId)
-        result = await base(effectiveToolCall, { ...context, nestedExecutor: execute })
+        result = await base(effectiveToolCall, { ...context, nestedExecutor: context.nestedExecutor ?? execute })
       }
 
       await hookSession.runPostToolUse(effectiveToolCall, result, context)
@@ -198,10 +200,12 @@ export interface HeadlessChatOrchestrator {
 }
 
 export class ChatOrchestrator implements HeadlessChatOrchestrator {
+  private readonly statements: any
   private readonly conversationRepo: ConversationRepo
   private readonly messageRepo: MessageRepo
   private readonly projectRepo: ProjectRepo
   private readonly streamingRunRepo: StreamingRunRepo
+  private readonly lineageRepo: LineageRepo
   private readonly providerRouter: ProviderRouter
   private readonly branchOrchestrator: BranchOrchestrator
   private readonly toolLoopService: ToolLoopService
@@ -215,10 +219,12 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
   private readonly cloudChatEnabled: boolean
 
   constructor(deps: ChatOrchestratorDeps) {
+    this.statements = deps.statements
     this.conversationRepo = new ConversationRepo({ db: deps.db, statements: deps.statements })
     this.messageRepo = new MessageRepo({ db: deps.db, statements: deps.statements })
     this.projectRepo = new ProjectRepo({ db: deps.db })
     this.streamingRunRepo = new StreamingRunRepo({ statements: deps.statements })
+    this.lineageRepo = new LineageRepo({ db: deps.db, statements: deps.statements })
     this.providerRouter = deps.providerRouter ?? new ProviderRouter({ tokenStore: deps.tokenStore })
     this.branchOrchestrator = deps.branchOrchestrator ?? new BranchOrchestrator()
     this.toolExecutor = deps.toolExecutor
@@ -341,10 +347,94 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
       request.content = await hookSession.runUserPromptSubmit(request.content, request.parentId ?? null)
     }
 
+    const { resolved, activeLineage, pendingOperationId } = this.messageRepo.transaction(() => {
+    const sourceMessageId =
+      request.operation === 'send'
+        ? request.parentId ?? null
+        : request.messageId ?? request.parentId ?? null
+    let sourceLineage: LineageRow | null
+    if (request.lineageId) {
+      sourceLineage = this.lineageRepo.get(request.lineageId)
+      if (!sourceLineage) throw new Error(`Lineage not found: ${request.lineageId}`)
+    } else {
+      sourceLineage = this.lineageRepo.resolve({ messageId: sourceMessageId })
+    }
+    if (!sourceLineage && sourceMessageId) {
+      // Adopt legacy source content before deciding whether the requested write is
+      // an exact-head continuation or a fork.
+      sourceLineage = this.lineageRepo.reconcile({
+        conversationId: request.conversationId,
+        messageId: sourceMessageId,
+      })
+    }
+    if (sourceLineage && sourceLineage.conversation_id !== request.conversationId) {
+      throw new Error('Lineage belongs to a different conversation')
+    }
+    if (sourceLineage && sourceMessageId) {
+      const sourcePath = this.lineageRepo.getDetail(request.conversationId, sourceLineage.id)?.pathMessageIds ?? []
+      if (!sourcePath.includes(String(sourceMessageId))) {
+        throw new Error('Source message does not belong to the requested lineage')
+      }
+    }
+    if (request.operationId && request.operation !== 'send') {
+      const existingOperation = this.lineageRepo.getForkOperation(request.operationId)
+      if (existingOperation) {
+        throw new Error(`Lineage operation already exists: ${request.operationId}`)
+      }
+    }
+
     const resolved = this.resolveExecution(request)
+    const mustFork = request.operation !== 'send' || Boolean(sourceLineage && sourceLineage.head_message_id !== sourceMessageId)
+    let activeLineage: LineageRow
+    let pendingOperationId: string | null = null
+
+    if (!sourceLineage && !sourceMessageId && resolved.userMessage) {
+      activeLineage = this.lineageRepo.createRoot({
+        id: request.lineageId ?? undefined,
+        conversationId: request.conversationId,
+        rootMessageId: resolved.userMessage.id,
+      })
+    } else if (mustFork) {
+      const pending = this.lineageRepo.createPendingFork({
+        operationId: request.operationId ?? undefined,
+        conversationId: request.conversationId,
+        sourceLineageId: sourceLineage?.id ?? null,
+        sourceMessageId,
+        operation: request.operation,
+      })
+      activeLineage = pending.lineage
+      pendingOperationId = pending.operation.id
+      // Branch/edit create user content immediately; repeat remains pending until
+      // the first assistant turn is persisted by the lineage-aware sink.
+      if (resolved.userMessage) {
+        activeLineage = this.lineageRepo.materialize(pending.operation.id, resolved.userMessage.id).lineage
+        pendingOperationId = null
+      }
+    } else if (sourceLineage) {
+      activeLineage = resolved.userMessage
+        ? this.lineageRepo.appendMessage(sourceLineage.id, resolved.userMessage.id)
+        : sourceLineage
+    } else {
+      // A repeat against legacy/rootless content can only arrive with a source id,
+      // so this fallback is for defensive compatibility with unusual callers.
+      activeLineage = this.lineageRepo.createRoot({ conversationId: request.conversationId })
+      pendingOperationId = request.operation === 'repeat'
+        ? this.lineageRepo.createPendingFork({
+            operationId: request.operationId ?? undefined,
+            conversationId: request.conversationId,
+            sourceLineageId: activeLineage.id,
+            sourceMessageId,
+            operation: request.operation,
+          }).operation.id
+        : null
+    }
+    return { resolved, activeLineage, pendingOperationId }
+    })
+    const lineageId = activeLineage.id
 
     trackedStreamId = this.streamingRunRepo.upsert({
       streamId: trackedStreamId,
+      lineageId,
       conversationId: request.conversationId,
       parentMessageId: resolved.assistantParentId,
       streamType: request.operation === 'branch' || request.operation === 'edit-branch' ? 'branch' : 'primary',
@@ -374,10 +464,11 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
       provider: request.provider,
       modelName: request.modelName,
       streamId: trackedStreamId,
+      lineageId,
     })
 
     if (resolved.userMessage) {
-      emit({ type: 'user_message_persisted', message: resolved.userMessage })
+      emit({ type: 'user_message_persisted', message: resolved.userMessage, lineageId })
     }
 
     emit({
@@ -444,17 +535,33 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
     // wired; otherwise fall back to the ctor-built loop (preserves non-broker callers
     // and tests). Guarded on BOTH so a partially-wired ctor can't build a loop with an
     // undefined executor.
-    const loop =
-      this.decisionBroker && this.toolExecutor
-        ? new ToolLoopService({
-            sink: isCloudRoute
-              ? new CloudMirrorSink({ messageRepo: this.messageRepo })
-              : new TreeMessageSink({ messageRepo: this.messageRepo }),
-            providerRouter: this.providerRouter,
-            executeTool: this.makePausingExecutor(trackedStreamId, emit, signal, hookSession ?? undefined),
-            compactBranch: this.compactBranch,
-          })
-        : this.toolLoopService
+    const sinkDeps = {
+      messageRepo: this.messageRepo,
+      lineageRepo: this.lineageRepo,
+      lineageId,
+      pendingOperationId,
+    }
+    const loop = new ToolLoopService({
+      sink: isCloudRoute ? new CloudMirrorSink(sinkDeps) : new TreeMessageSink(sinkDeps),
+      providerRouter: this.providerRouter,
+      executeTool:
+        this.decisionBroker && this.toolExecutor
+          ? this.makePausingExecutor(trackedStreamId, emit, signal, hookSession ?? undefined)
+          : this.toolExecutor,
+      toolInvocationRepo: new ToolInvocationRepo({ statements: this.statements }),
+      compactBranch: this.compactBranch,
+    })
+    const emitWithLineage = (event: HeadlessStreamEvent) => {
+      if (
+        event.type === 'assistant_message_persisted' ||
+        event.type === 'complete' ||
+        event.type === 'error'
+      ) {
+        emit({ ...event, lineageId } as HeadlessStreamEvent)
+      } else {
+        emit(event)
+      }
+    }
 
     let toolLoopResult: ToolLoopRunResult
     try {
@@ -464,6 +571,7 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
         operation: request.operation,
         modelName: request.modelName,
         conversationId: request.conversationId,
+        lineageId,
         assistantParentId: resolved.assistantParentId,
         history,
         userContent: resolved.userContentForInference,
@@ -507,13 +615,13 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
         // under gateway.chat. False everywhere else => drop-frame parity.
         relayFreeTierEvents: isCloudRoute,
       },
-        emit
+        emitWithLineage
       )
     } catch (error) {
       if (error instanceof ProviderErrorAssistantResponse) {
         this.streamingRunRepo.finish(trackedStreamId, {
           status: 'error',
-          endReason: 'provider_error',
+          endReason: 'error',
           assistantMessageId: error.assistantMessage?.id ?? null,
           finalMessageId: error.assistantMessage?.id ?? null,
           error: error.providerError.originalMessage,
@@ -525,7 +633,7 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
             resetAt: error.providerError.resetAt,
           },
         })
-        emit({ type: 'complete', message: error.assistantMessage, providerError: true })
+        emit({ type: 'complete', message: error.assistantMessage, providerError: true, lineageId })
         return
       }
       throw error
@@ -538,7 +646,7 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
       finalMessageId: toolLoopResult.finalAssistantMessage?.id ?? null,
     })
 
-    emit({ type: 'complete', message: toolLoopResult.finalAssistantMessage })
+    emit({ type: 'complete', message: toolLoopResult.finalAssistantMessage, lineageId })
     } catch (error) {
       // Client disconnect / explicit cancel: record a clean 'aborted' outcome and
       // return WITHOUT rethrowing, so runSseOrchestrator does not write a spurious
@@ -554,9 +662,12 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
       const errorMessage = error instanceof Error ? error.message : String(error)
       this.streamingRunRepo.finish(trackedStreamId, {
         status: 'error',
-        endReason: errorMessage.includes('context compaction') ? 'context_compaction_failed' : 'error',
+        endReason: 'error',
         error: errorMessage,
       })
+      if (typeof error === 'object' && error !== null) {
+        ;(error as any).lineageId = this.streamingRunRepo.getLineageId(trackedStreamId)
+      }
       throw error
     } finally {
       // Drain any pending decisions + the per-stream session so a disconnected or

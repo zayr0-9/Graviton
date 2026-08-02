@@ -86,7 +86,7 @@ u1 user
     u3 user "edited follow-up"
 ```
 
-The branch identity is not a separate database row or branch table. The branch is identified by the chain of message IDs selected through parent/child relationships.
+A logical conversation alternative now has a first-class, stable **lineage** row. The lineage ID is durable while its `head_message_id` moves as content is appended. `messages.parent_id` remains the canonical structural ancestry used to resolve the lineage's root-to-head path; `messages.lineage_id` records creation ownership and does not imply that shared ancestors are reassigned. A **fork** is the server-authoritative operation that creates a child lineage from a source lineage and fork-point message.
 
 ## Branch Identity: `currentPath`
 
@@ -221,7 +221,7 @@ The synthetic `root` is visual-only. Reducers such as `selectedNodePathSet` filt
 - Compare IDs defensively with `String(id)` when crossing local/cloud/legacy boundaries.
 - Treat `children_ids` as sibling order for tree rendering, but use `parent_id` for ancestor walking.
 - Multiple root messages are valid in one conversation; Heimdall handles them with a synthetic root.
-- A branch is a path, not an independent object. Do not add branch-specific state unless it derives from message IDs or is deliberately new metadata.
+- A lineage is a stable persisted identity; its visible path is a projection resolved from its current head through `parent_id`. Do not use a leaf message ID, stream ID, or tool-call ID as lineage identity.
 - Message ids for the main loop are minted by the headless server, not the renderer. Do not reintroduce client-side id minting or client-side branch-parent computation; project server `*_persisted` ids instead.
 
 ## Common Change Recipes

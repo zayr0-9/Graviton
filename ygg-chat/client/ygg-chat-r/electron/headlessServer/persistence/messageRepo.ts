@@ -39,6 +39,10 @@ export class MessageRepo {
     this.statements = deps.statements
   }
 
+  transaction<T>(operation: () => T): T {
+    return this.db.transaction(operation)()
+  }
+
   createMessage(input: CreateMessageInput): any {
     const now = new Date().toISOString()
     const messageId = input.id ?? uuidv4()

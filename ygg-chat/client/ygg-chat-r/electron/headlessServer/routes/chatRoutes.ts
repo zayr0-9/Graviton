@@ -99,6 +99,8 @@ function buildHeadlessMessageRequest(req: Request, operation: HeadlessChatOperat
         ? (body.planModeVerbosity ?? body.plan_mode_verbosity)
         : 'concise',
     streamId: body.streamId ?? body.stream_id ?? null,
+    lineageId: body.lineageId ?? body.lineage_id ?? null,
+    operationId: body.operationId ?? body.operation_id ?? null,
     toolTimeoutMs:
       typeof body.toolTimeoutMs === 'number'
         ? body.toolTimeoutMs
@@ -188,7 +190,7 @@ async function runSseOrchestrator(
       )
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
-      writeSseEvent(res, { type: 'error', error: message })
+      writeSseEvent(res, { type: 'error', error: message, lineageId: (error as any)?.lineageId ?? null })
     } finally {
       finished = true
       stopHeartbeat()
@@ -221,7 +223,7 @@ async function runSseOrchestrator(
     await orchestrator.runMessage(request, event => session.publish(event), session.signal)
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error)
-    session.publish({ type: 'error', error: message } as HeadlessStreamEvent)
+    session.publish({ type: 'error', error: message, lineageId: (error as any)?.lineageId ?? null } as HeadlessStreamEvent)
   } finally {
     stopHeartbeat()
     // No res.end()/delete here: a terminal publish already released the live subscriber,
