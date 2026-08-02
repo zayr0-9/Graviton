@@ -11,7 +11,8 @@ class FakeRunRepo {
   private seq = 0
 
   createRun(input: any): any {
-    const id = input.id || `run-${++this.seq}`
+    const seq = ++this.seq
+    const id = input.id || `run-${seq}`
     const row = {
       id,
       conversation_id: input.conversationId,
@@ -27,6 +28,9 @@ class FakeRunRepo {
       error: null,
       turns_used: 0,
       tool_calls_used: 0,
+      handle: input.handle ?? String(100000 + seq),
+      attempt: 0,
+      last_turn_at: null,
     }
     this.runs.set(id, row)
     this.messages.set(id, [])
@@ -158,6 +162,14 @@ function buildService(opts: {
         opts.generateCompactionSummary ?? (async () => 'Following is summary of the session, you have to resume the work.\n\nsummary'),
     },
   })
+}
+
+async function waitFor(condition: () => boolean, timeoutMs = 1000): Promise<void> {
+  const start = Date.now()
+  while (!condition()) {
+    if (Date.now() - start > timeoutMs) throw new Error('waitFor timed out')
+    await new Promise(resolve => setTimeout(resolve, 5))
+  }
 }
 
 describe('SubagentRunService', () => {
@@ -364,6 +376,64 @@ describe('SubagentRunService', () => {
     expect(runRepo.getRunById(runId)?.status).toBe('aborted')
     expect(streamingRunRepo.finishCalls[0]).toMatchObject({ status: 'aborted' })
     expect(providerRouter.calls).toHaveLength(1)
+  })
+
+  it('spawnDetached returns a handle immediately and completes in the background', async () => {
+    const providerRouter = new FakeProviderRouter()
+    providerRouter.enqueue({ content: 'async answer' })
+    const runRepo = new FakeRunRepo()
+    const streamingRunRepo = new FakeStreamingRunRepo()
+    const service = buildService({ providerRouter, runRepo, streamingRunRepo })
+
+    const { handle, runId, streamId } = await service.spawnDetached(baseRequest())
+
+    // Handle is returned and the run row exists synchronously (before the loop finishes).
+    expect(handle).toMatch(/^\d{6}$/)
+    expect(streamId).toBe('sub-stream-1')
+    expect(runRepo.getRunById(runId)?.prompt).toBe('do the task')
+
+    await waitFor(() => runRepo.getRunById(runId)?.status === 'completed')
+    expect(runRepo.getRunById(runId)?.final_response).toBe('async answer')
+    // Deregistered from the in-process active-run map once terminal.
+    expect(service.isActive(handle!)).toBe(false)
+  })
+
+  it('cancel(handle) aborts a detached run that is still executing', async () => {
+    const providerRouter = new FakeProviderRouter()
+    providerRouter.enqueue({ content: '', toolCalls: [{ id: 'c1', name: 'read_file', arguments: {} }] })
+    providerRouter.enqueue({ content: 'unreached' })
+    const runRepo = new FakeRunRepo()
+    const streamingRunRepo = new FakeStreamingRunRepo()
+
+    let releaseTool!: () => void
+    const toolGate = new Promise<void>(resolve => {
+      releaseTool = resolve
+    })
+    let signalToolStarted!: () => void
+    const toolStarted = new Promise<void>(resolve => {
+      signalToolStarted = resolve
+    })
+    const service = buildService({
+      providerRouter,
+      runRepo,
+      streamingRunRepo,
+      toolExecutor: async () => {
+        signalToolStarted()
+        await toolGate
+        return 'ok'
+      },
+    })
+
+    const { handle, runId } = await service.spawnDetached(baseRequest())
+    await toolStarted // run is now mid-flight inside the tool
+    expect(service.isActive(handle!)).toBe(true)
+    expect(service.cancel(handle!)).toBe(true)
+    releaseTool()
+
+    await waitFor(() => runRepo.getRunById(runId)?.status === 'aborted')
+    expect(streamingRunRepo.finishCalls.at(-1)).toMatchObject({ status: 'aborted' })
+    expect(providerRouter.calls).toHaveLength(1) // second turn never ran
+    expect(service.cancel(handle!)).toBe(false) // no longer active
   })
 
   it('compacts the transcript when usage crosses the threshold', async () => {

@@ -3,7 +3,7 @@ import type {
   HeadlessSubagentStreamEvent,
   HeadlessSubagentStreamRequest,
 } from '../contracts/headlessApi.js'
-import { SubagentRunRepo } from '../persistence/subagentRunRepo.js'
+import { SubagentRunRepo, type SubagentMessageRow } from '../persistence/subagentRunRepo.js'
 import { StreamingRunRepo } from '../persistence/streamingRunRepo.js'
 import type { ProviderToolCall, ProviderToolDefinition } from '../providers/openRouterProvider.js'
 import type { ProviderTokenStore } from '../providers/tokenStore.js'
@@ -66,6 +66,28 @@ function clampMaxTurns(value: number | undefined): number {
   return Math.max(1, Math.min(requested, MAX_MAX_TURNS))
 }
 
+/** Persisted run context produced before the loop drives; carries the ids the manager needs. */
+interface PreparedSubagentRun {
+  runId: string
+  handle: string | null
+  subStreamId: string
+  userMessage: SubagentMessageRow
+  provider: string
+  modelName: string
+  operationMode: 'plan' | 'execute'
+  maxTurns: number
+  tools: ProviderToolDefinition[]
+  resolvedToolNames: string[]
+}
+
+/** A detached (async) run tracked in-process so the manager can cancel it by handle. */
+interface ActiveSubagentRun {
+  runId: string
+  controller: AbortController
+}
+
+const NOOP_EMIT = (_event: HeadlessSubagentStreamEvent): void => {}
+
 export class SubagentRunService {
   private readonly runRepo: SubagentRunRepo
   private readonly streamingRunRepo: StreamingRunRepo
@@ -75,6 +97,8 @@ export class SubagentRunService {
   private readonly compactionService: CompactionSummaryGenerator
   private readonly refreshProviderTokens?: (provider: string) => Promise<void> | void
   private readonly providerTurnTimeoutMs: number
+  /** handle -> live detached run, so cancel(handle) can abort a run that outlives its spawn call. */
+  private readonly activeRuns = new Map<string, ActiveSubagentRun>()
 
   constructor(deps: SubagentRunServiceDeps) {
     this.runRepo = deps.runRepo ?? new SubagentRunRepo({ statements: deps.statements })
@@ -123,6 +147,54 @@ export class SubagentRunService {
     emit: (event: HeadlessSubagentStreamEvent) => void,
     signal: AbortSignal
   ): Promise<void> {
+    const prepared = await this.prepareRun(request, emit)
+    await this.driveRun(prepared, request, emit, signal)
+  }
+
+  /**
+   * Fire-and-forget spawn for the subagent manager. Persists the run far enough to
+   * return its handle immediately, then drives the loop in the BACKGROUND under an
+   * owned AbortController (registered by handle so cancel(handle) works). The run
+   * outlives the spawning tool call. driveRun persists all terminal state; the
+   * .catch is a backstop for an unexpected throw outside driveRun's own try.
+   */
+  async spawnDetached(
+    request: HeadlessSubagentStreamRequest
+  ): Promise<{ handle: string | null; runId: string; streamId: string }> {
+    const controller = new AbortController()
+    const prepared = await this.prepareRun(request, NOOP_EMIT)
+    if (prepared.handle) {
+      this.activeRuns.set(prepared.handle, { runId: prepared.runId, controller })
+    }
+    void this.driveRun(prepared, request, NOOP_EMIT, controller.signal)
+      .catch(error => this.persistUnexpectedFailure(prepared, error))
+      .finally(() => {
+        if (prepared.handle) this.activeRuns.delete(prepared.handle)
+      })
+    return { handle: prepared.handle, runId: prepared.runId, streamId: prepared.subStreamId }
+  }
+
+  /**
+   * Cancel a detached run by handle. Returns true if a live run was found and
+   * signalled to abort (driveRun then marks it 'aborted'); false if no live run
+   * maps to the handle (already terminal, unknown, or blocking).
+   */
+  cancel(handle: string): boolean {
+    const active = this.activeRuns.get(handle)
+    if (!active) return false
+    active.controller.abort()
+    return true
+  }
+
+  /** True if the handle maps to a run currently executing in THIS process. */
+  isActive(handle: string): boolean {
+    return this.activeRuns.has(handle)
+  }
+
+  private async prepareRun(
+    request: HeadlessSubagentStreamRequest,
+    emit: (event: HeadlessSubagentStreamEvent) => void
+  ): Promise<PreparedSubagentRun> {
     const provider =
       typeof request.provider === 'string' && request.provider.trim() ? request.provider.trim() : 'openaichatgpt'
     const modelName =
@@ -197,6 +269,28 @@ export class SubagentRunService {
       content: request.prompt,
       contentBlocks: [{ type: 'text', content: request.prompt, subagent_role: 'user_prompt' }],
     })
+
+    return {
+      runId,
+      handle: run.handle,
+      subStreamId,
+      userMessage,
+      provider,
+      modelName,
+      operationMode,
+      maxTurns,
+      tools,
+      resolvedToolNames,
+    }
+  }
+
+  private async driveRun(
+    prepared: PreparedSubagentRun,
+    request: HeadlessSubagentStreamRequest,
+    emit: (event: HeadlessSubagentStreamEvent) => void,
+    signal: AbortSignal
+  ): Promise<void> {
+    const { runId, subStreamId, userMessage, provider, modelName, operationMode, maxTurns, tools } = prepared
 
     let turnsUsed = 0
     let toolCallsUsed = 0
@@ -395,6 +489,25 @@ export class SubagentRunService {
         error: message,
         provider,
       })
+    }
+  }
+
+  /**
+   * Backstop for a detached run that throws OUTSIDE driveRun's own try/catch
+   * (driveRun already persists completed/error/aborted for the normal paths).
+   */
+  private persistUnexpectedFailure(prepared: PreparedSubagentRun, error: unknown): void {
+    const message = error instanceof Error ? error.message : String(error)
+    try {
+      this.runRepo.updateRun(prepared.runId, { status: 'error', error: message })
+      this.streamingRunRepo.finish(prepared.subStreamId, {
+        status: 'error',
+        endReason: 'error',
+        error: message,
+        metadata: { subagent_run_id: prepared.runId },
+      })
+    } catch (persistError) {
+      console.warn('[subagent] failed to persist unexpected detached failure:', persistError)
     }
   }
 }
