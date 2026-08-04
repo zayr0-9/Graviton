@@ -22,12 +22,13 @@ context compaction — a fresh session should be able to resume from it alone.
 | 1 | Spawn engine (blocking + async) | ✅ done | committed `d88404a` (service + its test + this log) |
 | 2 | `subagent_manager` tool (executor-layer interceptor) | ✅ done | committed (see Phase 2 section) |
 | 3 | In-loop provider-error retry | ✅ done | committed (see Phase 3 section) |
-| 4 | Resume (`subagent_manager.resume`) | ⬜ next | needs 0+1+2 |
+| 4 | Resume (`subagent_manager.resume`) | ✅ done | committed (see Phase 4 section) |
 | 5 | UI: persisted transcript viewer | ✅ done | committed (see Phase 5 section) |
-| 6 | UI: live streaming | ⬜ pending | needs 5 |
+| 6 | UI: live streaming | ⬜ next | needs 5 |
 
-**Recommended slice for a usable v1:** 0 → 1 → 2 → 5 (all done). Next up: 4
-(recover failures via resume), then 6 (live progress).
+**Recommended slice for a usable v1:** 0 → 1 → 2 → 5 (all done). Only Phase 6
+(live streaming) remains — everything else (spawn, manager, retry, resume,
+persisted viewer) is landed.
 
 ---
 
@@ -176,6 +177,64 @@ plus optional `attempt?` / `maxAttempts?`.
 all pass. `toolLoopService.test.ts` (self-skips locally, runs in CI) adds precise
 `providerRetryBackoffMs:1` cases: recovers (asserts turnsUsed unchanged), exhausts (3
 calls), non-transient (1 call), disabled/no-robustness (1 call).
+
+## Phase 4 — Resume (`subagent_manager.resume`) ✅
+
+Turns the Phase 2 `resume` stub into a real background resume of a terminated
+(error|aborted) run, reusing the SAME runId + handle but a NEW streamId.
+
+**Status gate = the atomic `reopenRun` CAS** (error|aborted → running, bumps
+`attempt`). If it does not transition (run already running/completed), resume
+drives nothing and reports "not resumable" — this is the double-run guard.
+
+**History rebuild.** Instead of the synthetic `[{role:'user', prompt}]`, the loop
+replays the persisted transcript (`getMessages(runId)`). The persisted row shape
+already carries `role`/`content`/`content_blocks`/`tool_calls`, and the codex
+(OpenAI) request builder derives `function_call_output` items from the assistant's
+`tool_result` content-blocks (not from separate `role:'tool'` rows, which the sink
+never persists), so an assistant-only rebuild pairs correctly. Compaction trim is
+free: `generateCompactionSummary` stores summaries with the resume-line prefix, so
+the loop's own `trimHistoryToLatestCompaction` recognizes them on rebuild without
+the (unpersisted) `__auto_compaction_summary__` note.
+
+**Dangling tool_use repair** (`repairDanglingToolUse`). A crash can persist an
+assistant with `tool_calls` whose results were never merged. OpenAI Responses
+rejects a `function_call` with no matching `function_call_output`, so for each
+`tool_calls[].id` lacking a `tool_result` block we synthesize
+`{type:'tool_result', tool_use_id, content:'[interrupted…]', is_error:true}` and
+mark the call errored — via `updateMessageToolState`, **never re-executing** the
+tool. (Results merge atomically per turn, so only the tail assistant is ever
+dangling, but the sweep covers every assistant defensively.)
+
+**Budget recount.** `turns_used` is stale (often 0) after a crash, so `priorTurns`
+= count of persisted assistant rows; the resumed loop runs with `maxTurns -
+priorTurns` and persists `priorTurns + result.turnsUsed`. `turnsUsed` is seeded to
+`priorTurns` so an interrupted resume still records the prior work.
+
+**Startup reconciler** (`reconcileOrphanedRuns`, called once in `index.ts` after
+the service is built). Any run still `running` at process start is a crash orphan
+(a fresh process owns no live loop) → flipped to a resumable `error`
+(`ORPHANED_RUN_ERROR`). Idempotent. Backed by a new `getRunningSubagentRuns`
+statement (`localServer.ts`) + `SubagentRunRepo.listRunning()`.
+
+**Wiring.** `SubagentRunService.resumeDetached(runId, request)` (owned
+AbortController, registered in `activeRuns` by handle so `cancel` works, drives in
+background, `.catch`→`persistUnexpectedFailure`, `.finally`→deregister); `driveRun`
+gained an optional `ResumeState` (history / userContent='' / assistantParentId=tail
+/ priorTurns). `SubagentManagerRunner` gains `resumeDetached`; `managerResume` is
+now async — ownership check → resumable gate (honest messages for
+running/completed) → `buildResumeRequest(run, ctx)` (identity from the run row,
+auth/rootPath/autoApprove from the live context, default tool set) → resumeDetached
+→ null means the CAS was lost to a race.
+
+**Verified:** `tsc -b` clean; 0 new electron tsc errors in the touched source
+files. `subagentToolExecutor.test.ts` 19 pass (+4 resume: resumes-terminated /
+not-completed / not-running / not-another-branch). `subagentRunService.test.ts`
+(runs locally) +4: resumes-from-rebuilt-transcript (asserts the prior assistant is
+replayed + budget carried + `attempt` bumped + resumed streaming row), dangling
+repair (synthetic is_error result, tool NOT re-executed), reopen-CAS-fails-when-not-
+resumable, and reconciler (2 orphans → error, completed untouched, idempotent).
+Full headless suite: 303 pass / 2 pre-existing fail / 62 skip.
 
 ## Phase 5 — UI: persisted transcript viewer ✅
 

@@ -31,6 +31,10 @@ export interface SubagentManagerRunner {
     result: string
     error: string | null
   }>
+  resumeDetached(
+    runId: string,
+    request: HeadlessSubagentStreamRequest
+  ): Promise<{ handle: string | null; runId: string; streamId: string } | null>
   cancel(handle: string): boolean
   isActive(handle: string): boolean
   getRunByHandle(handle: string): SubagentRunRow | null
@@ -86,6 +90,38 @@ function buildSubagentRequest(toolCall: ProviderToolCall, context: ToolExecution
     reasoningEffort: context.subagentReasoningEffort,
     operationMode: context.operationMode ?? 'execute',
     autoApprove: args.inheritAutoApprove !== false && context.autoApprove !== false,
+    rootPath: context.rootPath ?? null,
+    userId: null,
+    toolTimeoutMs: context.timeoutMs,
+  }
+}
+
+/**
+ * Build the request that continues an EXISTING run. Identity (conversation,
+ * parent, tool call, lineage, provider, model, system prompt, prompt) comes from
+ * the persisted run row so the resume targets the same content ownership; the
+ * live execution context supplies rootPath / autoApprove / reasoning / timeout and
+ * (via the service's token refresh) auth. Tools are left undefined so the resumed
+ * run gets the standard subagent tool set — the original per-run tool list is not
+ * persisted.
+ */
+function buildResumeRequest(run: SubagentRunRow, context: ToolExecutionContext): HeadlessSubagentStreamRequest {
+  const inheritedProvider = run.provider || context.provider || 'openaichatgpt'
+  const provider = inheritedProvider === 'openrouter' ? 'openaichatgpt' : inheritedProvider
+  return {
+    conversationId: run.conversation_id,
+    parentMessageId: run.parent_message_id,
+    toolCallId: run.tool_call_id,
+    streamId: context.streamId ?? null,
+    lineageId: run.lineage_id,
+    prompt: run.prompt ?? '',
+    systemPrompt: run.system_prompt ?? null,
+    provider,
+    modelName: run.model_name || context.modelName || DEFAULT_SUBAGENT_MODEL,
+    tools: undefined,
+    reasoningEffort: context.subagentReasoningEffort,
+    operationMode: context.operationMode ?? 'execute',
+    autoApprove: context.autoApprove !== false,
     rootPath: context.rootPath ?? null,
     userId: null,
     toolTimeoutMs: context.timeoutMs,
@@ -268,23 +304,53 @@ function managerCancel(
   }
 }
 
-function managerResume(
+async function managerResume(
   runner: SubagentManagerRunner,
   context: ToolExecutionContext,
   args: Record<string, any>
-): Record<string, any> {
+): Promise<Record<string, any>> {
   const handle = normalizeHandle(args.handle)
   if (!handle) throw new Error('subagent_manager resume: a handle is required.')
   const run = runner.getRunByHandle(handle)
   if (!run || !ownsRun(run, context)) return { ...notOwnedResult('resume', handle), resumed: false }
-  // Phase 4 lands the actual resume (history rebuild + dangling-tool_use repair +
-  // reopen-same-runId). Surface a stable, honest response until then.
+
+  // Only a terminated run can resume. running -> already going; completed -> done.
+  if (!isResumable(run.status)) {
+    return {
+      action: 'resume',
+      handle,
+      resumed: false,
+      status: run.status,
+      message:
+        run.status === 'running'
+          ? `Sub-agent ${handle} is already running; poll status instead of resuming.`
+          : `Sub-agent ${handle} already completed; there is nothing to resume.`,
+    }
+  }
+
+  const request = buildResumeRequest(run, context)
+  const outcome = await runner.resumeDetached(run.id, request)
+  if (!outcome) {
+    // Lost the reopen CAS race (another caller resumed it, or it is no longer terminal).
+    const latest = runner.getRunByHandle(handle)
+    return {
+      action: 'resume',
+      handle,
+      resumed: false,
+      status: latest?.status ?? run.status,
+      message: `Sub-agent ${handle} could not be resumed (its status changed); poll status.`,
+    }
+  }
   return {
     action: 'resume',
     handle,
-    resumed: false,
-    status: run.status,
-    message: 'Resuming a sub-agent is not available yet. Spawn a new sub-agent with the remaining work instead.',
+    runId: outcome.runId,
+    streamId: outcome.streamId,
+    resumed: true,
+    status: 'running',
+    message:
+      `Sub-agent ${handle} resumed in the background from its saved transcript. ` +
+      `Poll subagent_manager {action:"status", handle:"${handle}"} for progress.`,
   }
 }
 

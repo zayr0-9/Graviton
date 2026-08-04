@@ -2310,6 +2310,7 @@ function initializeLocalDatabase(dbPath: string) {
         SET status = 'running', error = NULL, attempt = attempt + 1, updated_at = ?
         WHERE id = ? AND status IN ('error', 'aborted')
       `),
+    getRunningSubagentRuns: db.prepare("SELECT * FROM subagent_runs WHERE status = 'running' ORDER BY created_at ASC"),
     getSubagentMessagesByRunId: db.prepare(
       'SELECT * FROM subagent_messages WHERE run_id = ? ORDER BY sequence ASC, created_at ASC'
     ),

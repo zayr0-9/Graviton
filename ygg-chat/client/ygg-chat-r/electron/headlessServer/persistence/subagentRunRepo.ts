@@ -252,6 +252,16 @@ export class SubagentRunRepo {
       .map((run: any) => normalizeSubagentRunRow(run, this.getMessages(run.id)))
   }
 
+  /**
+   * All runs currently marked 'running' (lightweight; no transcript). At process
+   * startup these can only be crash orphans — a fresh process has no live loop —
+   * so the startup reconciler flips them to a resumable terminal state.
+   */
+  listRunning(): SubagentRunRow[] {
+    if (!this.statements.getRunningSubagentRuns) return []
+    return this.statements.getRunningSubagentRuns.all().map((run: any) => normalizeSubagentRunRow(run, []))
+  }
+
   /** Resolve a run by its short 6-digit handle (lightweight; no transcript). */
   getRunByHandle(handle: string): SubagentRunRow | null {
     const row = this.statements.getSubagentRunByHandle.get(handle)

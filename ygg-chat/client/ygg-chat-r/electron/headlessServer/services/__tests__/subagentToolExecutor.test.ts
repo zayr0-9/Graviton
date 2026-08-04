@@ -132,6 +132,7 @@ class FakeManagerRunner implements SubagentManagerRunner {
   private live = new Set<string>()
   private seq = 0
   cancelCalls: string[] = []
+  resumeCalls: Array<{ runId: string; request: HeadlessSubagentStreamRequest }> = []
 
   private makeRun(request: HeadlessSubagentStreamRequest, status: SubagentRunStatus, finalResponse: string | null): SubagentRunRow {
     const seq = ++this.seq
@@ -177,6 +178,16 @@ class FakeManagerRunner implements SubagentManagerRunner {
       result: run.final_response ?? '',
       error: null as string | null,
     }
+  }
+
+  async resumeDetached(runId: string, request: HeadlessSubagentStreamRequest) {
+    this.resumeCalls.push({ runId, request })
+    const run = [...this.runs.values()].find(r => r.id === runId)
+    // Mirror the real reopenRun CAS: only error|aborted runs reopen.
+    if (!run || (run.status !== 'error' && run.status !== 'aborted')) return null
+    run.status = 'running'
+    this.live.add(run.handle!)
+    return { handle: run.handle, runId: run.id, streamId: `stream-${run.id}-resumed` }
   }
 
   cancel(handle: string): boolean {
@@ -322,15 +333,66 @@ describe('createSubagentManagerExecutor', () => {
     expect(runner.isActive(spawn.handle)).toBe(false)
   })
 
-  it('reports resume as not yet available for an owned run', async () => {
+  it('resumes an owned terminated run in the background', async () => {
     const runner = new FakeManagerRunner()
     const execute = createSubagentManagerExecutor({ leafExecutor: vi.fn(), runner })
     const spawn: any = await execute(spawnCall({ action: 'spawn', prompt: 'p' }), context())
     runner.setStatus(spawn.handle, 'error')
 
     const resume: any = await execute(spawnCall({ action: 'resume', handle: spawn.handle }), context())
+    expect(resume.action).toBe('resume')
+    expect(resume.resumed).toBe(true)
+    expect(resume.status).toBe('running')
+    expect(resume.streamId).toBe(`stream-${resume.runId}-resumed`)
+    // The run was reopened via the runner, and is live again.
+    expect(runner.resumeCalls).toHaveLength(1)
+    expect(runner.resumeCalls[0].runId).toBe(resume.runId)
+    expect(runner.isActive(spawn.handle)).toBe(true)
+  })
+
+  it('does not resume a completed run (nothing to resume)', async () => {
+    const runner = new FakeManagerRunner()
+    const execute = createSubagentManagerExecutor({ leafExecutor: vi.fn(), runner })
+    const spawn: any = await execute(spawnCall({ action: 'spawn', prompt: 'p' }), context())
+    runner.setStatus(spawn.handle, 'completed')
+
+    const resume: any = await execute(spawnCall({ action: 'resume', handle: spawn.handle }), context())
     expect(resume.resumed).toBe(false)
-    expect(resume.message).toContain('not available yet')
+    expect(resume.status).toBe('completed')
+    expect(resume.message).toContain('nothing to resume')
+    // Gated before touching the engine.
+    expect(runner.resumeCalls).toHaveLength(0)
+  })
+
+  it('does not resume a still-running run', async () => {
+    const runner = new FakeManagerRunner()
+    const execute = createSubagentManagerExecutor({ leafExecutor: vi.fn(), runner })
+    const spawn: any = await execute(spawnCall({ action: 'spawn', prompt: 'p' }), context())
+
+    const resume: any = await execute(spawnCall({ action: 'resume', handle: spawn.handle }), context())
+    expect(resume.resumed).toBe(false)
+    expect(resume.status).toBe('running')
+    expect(resume.message).toContain('already running')
+    expect(runner.resumeCalls).toHaveLength(0)
+  })
+
+  it('does not resume another branch\'s run (identical not-owned shape)', async () => {
+    const runner = new FakeManagerRunner()
+    const execute = createSubagentManagerExecutor({ leafExecutor: vi.fn(), runner })
+    // Branch B owns an errored run.
+    const spawnB: any = await execute(spawnCall({ action: 'spawn', prompt: 'p' }), context({ lineageId: 'lin-B' }))
+    runner.setStatus(spawnB.handle, 'error')
+
+    // Branch A tries to resume B's handle.
+    const resume: any = await execute(
+      spawnCall({ action: 'resume', handle: spawnB.handle }),
+      context({ lineageId: 'lin-A' })
+    )
+    expect(resume.resumed).toBe(false)
+    expect(resume.found).toBe(false)
+    expect(runner.resumeCalls).toHaveLength(0)
+    // B's run was never reopened.
+    expect(runner.getRunByHandle(spawnB.handle)?.status).toBe('error')
   })
 
   it('does not leak runs when the branch has no lineage', async () => {

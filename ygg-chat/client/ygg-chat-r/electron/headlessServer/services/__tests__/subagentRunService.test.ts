@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import type { HeadlessSubagentStreamRequest, HeadlessSubagentStreamEvent } from '../../contracts/headlessApi.js'
 import type { ProviderRouter } from '../providerRouter.js'
 import type { SubagentRunRepo } from '../../persistence/subagentRunRepo.js'
@@ -82,6 +82,21 @@ class FakeRunRepo {
 
   getMessages(runId: string): any[] {
     return (this.messages.get(runId) || []).map(m => ({ ...m }))
+  }
+
+  /** Compare-and-set reopen: only error|aborted -> running (bumps attempt). */
+  reopenRun(runId: string): boolean {
+    const row = this.runs.get(runId)
+    if (!row) return false
+    if (row.status !== 'error' && row.status !== 'aborted') return false
+    row.status = 'running'
+    row.error = null
+    row.attempt = (row.attempt ?? 0) + 1
+    return true
+  }
+
+  listRunning(): any[] {
+    return [...this.runs.values()].filter(r => r.status === 'running').map(r => ({ ...r, messages: [] }))
   }
 }
 
@@ -536,5 +551,126 @@ describe('SubagentRunService', () => {
     const runId = (events.find(e => e.type === 'started') as any).subagentRunId
     const systemRow = runRepo.getMessages(runId).find(m => m.role === 'system')
     expect(systemRow?.content).toContain('Following is summary of the session')
+  })
+
+  // Seed a terminated run + its transcript directly on the fake repo (as a crash
+  // would have left it) so resume has something to rebuild from.
+  function seedTerminatedRun(
+    runRepo: FakeRunRepo,
+    opts: { status?: 'error' | 'aborted'; danglingToolCall?: boolean } = {}
+  ): string {
+    const run = runRepo.createRun(baseRequest())
+    const runId = run.id
+    runRepo.appendMessage(runId, {
+      role: 'user',
+      content: 'do the task',
+      contentBlocks: [{ type: 'text', content: 'do the task', subagent_role: 'user_prompt' }],
+    })
+    runRepo.appendMessage(runId, {
+      role: 'assistant',
+      content: 'starting work',
+      toolCalls: opts.danglingToolCall ? [{ id: 'call-x', name: 'read_file', arguments: { path: 'a' } }] : null,
+      contentBlocks: opts.danglingToolCall
+        ? [
+            { type: 'text', content: 'starting work' },
+            { type: 'tool_use', id: 'call-x', name: 'read_file', input: { path: 'a' } },
+          ]
+        : [{ type: 'text', content: 'starting work' }],
+    })
+    runRepo.updateRun(runId, { status: opts.status ?? 'error', error: 'boom' })
+    return runId
+  }
+
+  it('resumes a terminated run from its persisted transcript (rebuilt history, budget carried)', async () => {
+    const providerRouter = new FakeProviderRouter()
+    providerRouter.enqueue({ content: 'resumed final answer' })
+    const runRepo = new FakeRunRepo()
+    const streamingRunRepo = new FakeStreamingRunRepo()
+    const service = buildService({ providerRouter, runRepo, streamingRunRepo })
+    const runId = seedTerminatedRun(runRepo)
+
+    const outcome = await service.resumeDetached(runId, baseRequest())
+    expect(outcome).not.toBeNull()
+    expect(outcome!.runId).toBe(runId)
+    await waitFor(() => runRepo.getRunById(runId)?.status === 'completed')
+
+    // The provider was replayed with the REBUILT transcript (prompt + the prior
+    // assistant turn), not a fresh single user turn. (The loop mutates this array
+    // by reference as it appends new turns, so assert the rebuilt prefix, not the
+    // post-run length.)
+    const firstTurnHistory = providerRouter.calls[0].input.history
+    expect(firstTurnHistory[0].role).toBe('user')
+    expect(firstTurnHistory[0].content).toContain('do the task')
+    expect(firstTurnHistory[1].role).toBe('assistant')
+    expect(firstTurnHistory[1].content).toBe('starting work')
+
+    // Budget carried: 1 prior assistant turn + 1 resumed turn = 2.
+    const run = runRepo.getRunById(runId)
+    expect(run?.status).toBe('completed')
+    expect(run?.final_response).toBe('resumed final answer')
+    expect(run?.turns_used).toBe(2)
+    expect(run?.attempt).toBe(1) // reopenRun bumped it
+
+    // A fresh streaming row was opened for the resumed attempt.
+    const lastUpsert = streamingRunRepo.upsertCalls[streamingRunRepo.upsertCalls.length - 1]
+    expect(lastUpsert.metadata).toMatchObject({ subagent_run_id: runId, resumed: true })
+  })
+
+  it('repairs a dangling tool_use before replay (synthesizes an is_error result, never re-executes)', async () => {
+    const providerRouter = new FakeProviderRouter()
+    providerRouter.enqueue({ content: 'done after repair' })
+    const runRepo = new FakeRunRepo()
+    const toolExecutor = vi.fn(async () => 'should not run')
+    const service = buildService({ providerRouter, runRepo, streamingRunRepo: new FakeStreamingRunRepo(), toolExecutor })
+    const runId = seedTerminatedRun(runRepo, { danglingToolCall: true })
+
+    await service.resumeDetached(runId, baseRequest())
+    await waitFor(() => runRepo.getRunById(runId)?.status === 'completed')
+
+    // The interrupted tool was NOT re-executed.
+    expect(toolExecutor).not.toHaveBeenCalled()
+
+    // The tail assistant now carries a synthetic is_error tool_result for call-x.
+    const assistant = runRepo.getMessages(runId).find(m => m.role === 'assistant' && Array.isArray(m.tool_calls))
+    const resultBlock = (assistant?.content_blocks as any[]).find(
+      b => b.type === 'tool_result' && b.tool_use_id === 'call-x'
+    )
+    expect(resultBlock).toBeTruthy()
+    expect(resultBlock.is_error).toBe(true)
+    // And the provider's replayed history includes that repaired assistant.
+    const replayed = providerRouter.calls[0].input.history.find((m: any) => Array.isArray(m.tool_calls))
+    expect(replayed.content_blocks.some((b: any) => b.type === 'tool_result' && b.tool_use_id === 'call-x')).toBe(true)
+  })
+
+  it('does not resume a run that is not in a resumable state (reopen CAS fails)', async () => {
+    const providerRouter = new FakeProviderRouter()
+    const runRepo = new FakeRunRepo()
+    const service = buildService({ providerRouter, runRepo, streamingRunRepo: new FakeStreamingRunRepo() })
+    const run = runRepo.createRun(baseRequest()) // status 'running'
+
+    const outcome = await service.resumeDetached(run.id, baseRequest())
+    expect(outcome).toBeNull()
+    expect(providerRouter.calls).toHaveLength(0) // nothing driven
+  })
+
+  it('reconciles orphaned running runs into a resumable error state at startup', async () => {
+    const runRepo = new FakeRunRepo()
+    const service = buildService({
+      providerRouter: new FakeProviderRouter(),
+      runRepo,
+      streamingRunRepo: new FakeStreamingRunRepo(),
+    })
+    const orphanA = runRepo.createRun(baseRequest()) // running
+    const orphanB = runRepo.createRun(baseRequest()) // running
+    const done = runRepo.createRun(baseRequest())
+    runRepo.updateRun(done.id, { status: 'completed' })
+
+    const count = service.reconcileOrphanedRuns()
+    expect(count).toBe(2)
+    expect(runRepo.getRunById(orphanA.id)?.status).toBe('error')
+    expect(runRepo.getRunById(orphanB.id)?.status).toBe('error')
+    expect(runRepo.getRunById(done.id)?.status).toBe('completed')
+    // Idempotent: a second sweep finds nothing still running.
+    expect(service.reconcileOrphanedRuns()).toBe(0)
   })
 })

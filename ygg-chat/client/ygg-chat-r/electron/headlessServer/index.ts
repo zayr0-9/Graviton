@@ -320,6 +320,16 @@ export function registerHeadlessServerRoutes(app: Express, deps: HeadlessServerR
       }
     },
   })
+  // Startup reconciler: any subagent run left 'running' by a previous process
+  // crash is an orphan (this fresh process owns no live loop), so flip it to a
+  // resumable terminal state now, before anything can read stale 'running' rows.
+  try {
+    const reconciled = subagentRunService.reconcileOrphanedRuns()
+    if (reconciled > 0) console.log(`[subagent] reconciled ${reconciled} orphaned running run(s) -> resumable`)
+  } catch (error) {
+    console.warn('[subagent] orphaned-run reconciliation failed (continuing):', error)
+  }
+
   // Compose two interceptors ahead of the orchestrator registry:
   //   subagent_manager (global async manager, branch-scoped) -> subagent (legacy
   //   blocking dispatch) -> multiCall/leaf. Both interceptors see the full

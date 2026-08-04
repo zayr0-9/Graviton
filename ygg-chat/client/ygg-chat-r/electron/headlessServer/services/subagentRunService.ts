@@ -55,6 +55,11 @@ const DEFAULT_MODEL = 'gpt-5.6-sol'
 const DEFAULT_MAX_TURNS = 120
 const MAX_MAX_TURNS = 400
 const DEFAULT_PROVIDER_TURN_TIMEOUT_MS = 180_000
+/** Synthetic tool_result for a tool_use interrupted by a crash/suspension (never re-executed). */
+const INTERRUPTED_TOOL_RESULT =
+  '[interrupted: the sub-agent was suspended before this tool finished. Treat it as failed and continue.]'
+/** Marks a run whose loop was lost to a process restart while still 'running'. */
+const ORPHANED_RUN_ERROR = 'Interrupted by a server restart before completing. Resume to continue.'
 const THINKING_WRAPPER_PATTERN = /<thinking>[\s\S]*?<\/thinking>\s*/gi
 
 function stripThinkingWrapper(text: string): string {
@@ -89,6 +94,19 @@ interface PreparedSubagentRun {
 interface ActiveSubagentRun {
   runId: string
   controller: AbortController
+}
+
+/**
+ * Overrides driveRun uses to continue an existing run instead of starting fresh:
+ * the rebuilt transcript as the loop history, no new user turn, the tail message as
+ * the assistant parent, and the count of turns already spent (so the remaining
+ * budget and the persisted turns_used stay correct across the resume).
+ */
+interface ResumeState {
+  history: any[]
+  userContent: string
+  assistantParentId: string | null
+  priorTurns: number
 }
 
 const NOOP_EMIT = (_event: HeadlessSubagentStreamEvent): void => {}
@@ -239,6 +257,46 @@ export class SubagentRunService {
     }
   }
 
+  /**
+   * Resume a previously-terminated run (error|aborted) IN THE BACKGROUND under an
+   * owned AbortController, reusing the SAME runId + handle but a NEW streamId. The
+   * status gate is the atomic reopenRun CAS: if it does not transition (the run is
+   * already running or completed), this returns null and drives nothing — the
+   * caller reports "not resumable". Otherwise the persisted transcript is repaired
+   * (dangling tool_use) and replayed as history, and driveRun continues from there.
+   */
+  async resumeDetached(
+    runId: string,
+    request: HeadlessSubagentStreamRequest
+  ): Promise<{ handle: string | null; runId: string; streamId: string } | null> {
+    const controller = new AbortController()
+    const prepared = await this.prepareResume(runId, request, NOOP_EMIT)
+    if (!prepared) return null
+    if (prepared.prepared.handle) {
+      this.activeRuns.set(prepared.prepared.handle, { runId, controller })
+    }
+    void this.driveRun(prepared.prepared, request, NOOP_EMIT, controller.signal, prepared.resumeState)
+      .catch(error => this.persistUnexpectedFailure(prepared.prepared, error))
+      .finally(() => {
+        if (prepared.prepared.handle) this.activeRuns.delete(prepared.prepared.handle)
+      })
+    return { handle: prepared.prepared.handle, runId, streamId: prepared.prepared.subStreamId }
+  }
+
+  /**
+   * Startup reconciler: any run still marked 'running' at process start is a crash
+   * orphan (a fresh process owns no live loop), so flip it to a resumable 'error'.
+   * driveRun has no finally that could have done this on crash. Returns the count
+   * reconciled. Idempotent — a second call finds nothing left running.
+   */
+  reconcileOrphanedRuns(): number {
+    const orphans = this.runRepo.listRunning()
+    for (const run of orphans) {
+      this.runRepo.updateRun(run.id, { status: 'error', error: ORPHANED_RUN_ERROR })
+    }
+    return orphans.length
+  }
+
   /** Resolve a run by its 6-digit handle (manager status/cancel/resume ownership checks). */
   getRunByHandle(handle: string): SubagentRunRow | null {
     return this.runRepo.getRunByHandle(handle)
@@ -347,15 +405,157 @@ export class SubagentRunService {
     }
   }
 
+  /**
+   * Repair any assistant turn whose tool_calls lack a matching tool_result — the
+   * shape a crash leaves when the loop persisted an assistant with tool calls but
+   * never merged their results. OpenAI Responses rejects a function_call with no
+   * function_call_output (see codexRequestItems pairing), so for each dangling
+   * call we synthesize an is_error tool_result block (NEVER re-execute the tool)
+   * and mark the call errored, via updateMessageToolState (content/thinking/
+   * sequence preserved). Returns the number of tool results synthesized.
+   */
+  private repairDanglingToolUse(runId: string): number {
+    const messages = this.runRepo.getMessages(runId)
+    let repaired = 0
+    for (const message of messages) {
+      if (message.role !== 'assistant') continue
+      const toolCalls = Array.isArray(message.tool_calls) ? message.tool_calls : []
+      if (toolCalls.length === 0) continue
+      const blocks = Array.isArray(message.content_blocks) ? [...message.content_blocks] : []
+      const resultIds = new Set(
+        blocks
+          .filter((block: any) => block?.type === 'tool_result' && typeof block.tool_use_id === 'string')
+          .map((block: any) => block.tool_use_id as string)
+      )
+      const dangling = toolCalls.filter((call: any) => call?.id && !resultIds.has(call.id))
+      if (dangling.length === 0) continue
+
+      for (const call of dangling) {
+        blocks.push({ type: 'tool_result', tool_use_id: call.id, content: INTERRUPTED_TOOL_RESULT, is_error: true })
+      }
+      const danglingIds = new Set(dangling.map((call: any) => call.id))
+      const updatedToolCalls = toolCalls.map((call: any) =>
+        danglingIds.has(call?.id) ? { ...call, status: 'error', result: INTERRUPTED_TOOL_RESULT } : call
+      )
+      this.runRepo.updateMessageToolState(runId, message.id, { contentBlocks: blocks, toolCalls: updatedToolCalls })
+      repaired += dangling.length
+    }
+    return repaired
+  }
+
+  /**
+   * Prepare a resume: atomically reopen the run (CAS gate), repair dangling
+   * tool_use, rebuild the loop history from the persisted transcript, re-resolve
+   * tools, and open a NEW streaming row (new streamId, same runId + handle). Null
+   * when the run was not in a resumable state (reopen CAS did not transition).
+   */
+  private async prepareResume(
+    runId: string,
+    request: HeadlessSubagentStreamRequest,
+    emit: (event: HeadlessSubagentStreamEvent) => void
+  ): Promise<{ prepared: PreparedSubagentRun; resumeState: ResumeState } | null> {
+    // Atomic status gate: only error|aborted -> running transitions (bumps attempt).
+    if (!this.runRepo.reopenRun(runId)) return null
+
+    this.repairDanglingToolUse(runId)
+    const run = this.runRepo.getRunById(runId)
+    const messages = this.runRepo.getMessages(runId)
+    const priorTurns = messages.filter(message => message.role === 'assistant').length
+
+    const provider =
+      typeof request.provider === 'string' && request.provider.trim() ? request.provider.trim() : 'openaichatgpt'
+    const modelName =
+      typeof request.modelName === 'string' && request.modelName.trim() ? request.modelName.trim() : DEFAULT_MODEL
+    const operationMode = request.operationMode === 'plan' ? 'plan' : 'execute'
+    const maxTurns = clampMaxTurns(request.maxTurns)
+
+    try {
+      await this.refreshProviderTokens?.(provider)
+    } catch (error) {
+      console.warn('[subagent] provider token refresh failed (continuing):', error)
+    }
+
+    const resolved = this.resolveToolsByName(request.tools)
+    let tools = resolved.tools
+    if (operationMode === 'plan') {
+      tools = filterToolsForOperationMode(
+        tools.map(tool => ({ ...tool, isMcp: tool.name.startsWith('mcp__') })),
+        'plan'
+      )
+    }
+    const resolvedToolNames = tools.map(tool => tool.name)
+
+    // Fresh streaming row for this attempt: new streamId, same content ownership.
+    const subStreamId = this.streamingRunRepo.upsert({
+      lineageId: request.lineageId ?? null,
+      conversationId: request.conversationId,
+      parentMessageId: request.parentMessageId,
+      streamType: 'subagent',
+      source: 'subagent',
+      operation: 'subagent',
+      provider,
+      modelName,
+      toolCallId: request.toolCallId ?? null,
+      parentStreamId: request.streamId ?? null,
+      metadata: { subagent_run_id: runId, resumed: true },
+    })
+
+    emit({
+      type: 'started',
+      operation: 'subagent',
+      subagentRunId: runId,
+      streamId: subStreamId,
+      lineageId: request.lineageId ?? null,
+      conversationId: request.conversationId,
+      parentMessageId: request.parentMessageId,
+      toolCallId: request.toolCallId ?? null,
+      provider,
+      modelName,
+      maxTurns,
+      resolvedToolNames,
+    })
+
+    const tailMessage = messages.length > 0 ? messages[messages.length - 1] : null
+    const prepared: PreparedSubagentRun = {
+      runId,
+      handle: run?.handle ?? null,
+      subStreamId,
+      // Only assistantParentId is read from this in driveRun, and resume overrides it.
+      userMessage: (tailMessage ?? messages[0]) as SubagentMessageRow,
+      provider,
+      modelName,
+      operationMode,
+      maxTurns,
+      tools,
+      resolvedToolNames,
+    }
+    const resumeState: ResumeState = {
+      history: messages,
+      userContent: '',
+      assistantParentId: tailMessage?.id ?? null,
+      priorTurns,
+    }
+    return { prepared, resumeState }
+  }
+
   private async driveRun(
     prepared: PreparedSubagentRun,
     request: HeadlessSubagentStreamRequest,
     emit: (event: HeadlessSubagentStreamEvent) => void,
-    signal: AbortSignal
+    signal: AbortSignal,
+    resume?: ResumeState
   ): Promise<void> {
     const { runId, subStreamId, userMessage, provider, modelName, operationMode, maxTurns, tools } = prepared
 
-    let turnsUsed = 0
+    // On resume we continue the persisted transcript instead of starting a fresh
+    // single user turn, and the remaining turn budget excludes turns already spent.
+    const priorTurns = resume?.priorTurns ?? 0
+    const history = resume ? resume.history : [{ role: 'user', content: request.prompt }]
+    const loopUserContent = resume ? resume.userContent : request.prompt
+    const assistantParentId = resume ? resume.assistantParentId : userMessage.id
+    const effectiveMaxTurns = Math.max(1, maxTurns - priorTurns)
+
+    let turnsUsed = priorTurns
     let toolCallsUsed = 0
     const toolsExecuted: Array<{ name: string; success: boolean }> = []
 
@@ -420,9 +620,9 @@ export class SubagentRunService {
           provider,
           modelName,
           conversationId: request.conversationId,
-          assistantParentId: userMessage.id,
-          history: [{ role: 'user', content: request.prompt }],
-          userContent: request.prompt,
+          assistantParentId,
+          history,
+          userContent: loopUserContent,
           systemPrompt: request.systemPrompt ?? null,
           temperature: request.temperature,
           reasoningConfig: request.reasoningEffort ? { effort: request.reasoningEffort } : undefined,
@@ -434,7 +634,7 @@ export class SubagentRunService {
           rootPath: request.rootPath ?? null,
           operationMode,
           toolTimeoutMs: request.toolTimeoutMs,
-          maxTurns,
+          maxTurns: effectiveMaxTurns,
           signal,
           railwaySessionId: `subagent:${runId}`,
           allowCommentaryFallbackText: true,
@@ -448,7 +648,7 @@ export class SubagentRunService {
         (event: HeadlessStreamEvent) => emit(event)
       )
 
-      turnsUsed = result.turnsUsed
+      turnsUsed = priorTurns + result.turnsUsed
       const finalText = stripThinkingWrapper(result.finalAssistantMessage?.content ?? '')
 
       this.runRepo.updateRun(runId, {
