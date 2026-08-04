@@ -74,7 +74,10 @@ export function registerSubagentRoutes(app: Express, deps: RegisterSubagentRoute
       return
     }
     const runs = deps.runService.listByToolCall(toolCallId)
-    res.json({ runs })
+    // The current child streamId lets the viewer subscribe to GET /api/streams/:id
+    // for live progress while a run is 'running' (null once nothing is streaming).
+    const streamId = deps.runService.latestStreamIdForToolCall(toolCallId)
+    res.json({ runs, streamId })
   })
 
   app.post('/api/headless/subagent/stream', async (req, res) => {

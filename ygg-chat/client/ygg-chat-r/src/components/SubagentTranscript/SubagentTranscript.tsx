@@ -1,12 +1,14 @@
 import 'boxicons'
 import 'boxicons/css/boxicons.min.css'
-import React from 'react'
+import React, { useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
+import { useQueryClient } from '@tanstack/react-query'
 import ReactMarkdown from 'react-markdown'
 import rehypeHighlight from 'rehype-highlight'
 import remarkGfm from 'remark-gfm'
 import type { SubagentRunRow } from '../../../../../shared/types'
 import { useSubagentByToolCall } from '../../hooks/useQueries'
+import { buildLocalApiUrl, environment } from '../../utils/api'
 import { Button } from '../Button/button'
 import {
   TOOL_NAME_ERROR_CLASS,
@@ -295,6 +297,121 @@ export const SubagentTranscript: React.FC<{ runs: SubagentRunRow[] }> = ({ runs 
   </div>
 )
 
+// ── Live streaming (Phase 6) ──────────────────────────────────────────────────
+
+interface SubagentLiveState {
+  /** Streamed text for the in-progress (not-yet-persisted) turn. */
+  text: string
+  /** Streamed reasoning for the in-progress turn. */
+  reasoning: string
+  /** Terminal reached (complete/error) or the stream was already gone (410). */
+  done: boolean
+}
+
+const EMPTY_LIVE: SubagentLiveState = { text: '', reasoning: '', done: false }
+
+/**
+ * Subscribe to a running subagent's child stream (GET /api/streams/:streamId) and
+ * expose the in-progress turn's streamed text/reasoning. On each turn boundary
+ * (assistant_message_persisted) and on the terminal complete/error it invalidates
+ * the persisted transcript query so the modal folds finished turns into the clean
+ * transcript. Enabled only while a run is actually running (and on electron); a
+ * 410 (session already reaped) just resolves `done` and the persisted view stands.
+ * Re-runs when `streamId` changes — which is exactly how a resume re-targets.
+ */
+export function useSubagentLiveStream(
+  toolCallId: string | null,
+  streamId: string | null | undefined,
+  active: boolean
+): SubagentLiveState {
+  const queryClient = useQueryClient()
+  const [state, setState] = useState<SubagentLiveState>(EMPTY_LIVE)
+  const textRef = useRef('')
+  const reasoningRef = useRef('')
+
+  useEffect(() => {
+    if (!active || !streamId || environment !== 'electron') {
+      setState(EMPTY_LIVE)
+      return
+    }
+    let cancelled = false
+    const controller = new AbortController()
+    textRef.current = ''
+    reasoningRef.current = ''
+    setState(EMPTY_LIVE)
+
+    const invalidatePersisted = () => {
+      void queryClient.invalidateQueries({ queryKey: ['subagents', 'by-tool-call', toolCallId] })
+    }
+
+    const applyEvent = (event: any) => {
+      if (cancelled || !event || typeof event.type !== 'string') return
+      if (event.type === 'chunk' && typeof event.delta === 'string') {
+        if (event.part === 'text') {
+          textRef.current += event.delta
+          setState({ text: textRef.current, reasoning: reasoningRef.current, done: false })
+        } else if (event.part === 'reasoning') {
+          reasoningRef.current += event.delta
+          setState({ text: textRef.current, reasoning: reasoningRef.current, done: false })
+        }
+      } else if (event.type === 'assistant_message_persisted') {
+        // A turn just landed in the transcript — fold it in and reset the live tail.
+        textRef.current = ''
+        reasoningRef.current = ''
+        setState({ text: '', reasoning: '', done: false })
+        invalidatePersisted()
+      } else if (event.type === 'complete' || event.type === 'error') {
+        setState(s => ({ ...s, done: true }))
+        invalidatePersisted()
+      }
+    }
+
+    const run = async () => {
+      try {
+        const url = await buildLocalApiUrl(`/streams/${encodeURIComponent(streamId)}?fromSeq=0`)
+        const res = await fetch(url, { signal: controller.signal })
+        if (!res.ok || !res.body) {
+          // 410 => the run already ended and its session was reaped; persisted stands.
+          if (!cancelled) setState(s => ({ ...s, done: true }))
+          return
+        }
+        const reader = res.body.getReader()
+        const decoder = new TextDecoder()
+        let buffer = ''
+        // eslint-disable-next-line no-constant-condition
+        while (true) {
+          const { done, value } = await reader.read()
+          if (done || cancelled) break
+          buffer += decoder.decode(value, { stream: true })
+          const lines = buffer.split('\n')
+          buffer = lines.pop() ?? ''
+          for (const line of lines) {
+            if (!line.startsWith('data:')) continue
+            const data = line.slice('data:'.length).trim()
+            if (!data || data === '[DONE]') continue
+            try {
+              applyEvent(JSON.parse(data))
+            } catch {
+              /* ignore malformed frame */
+            }
+          }
+        }
+      } catch {
+        // Network error / aborted — leave the persisted transcript as the source of truth.
+        if (!cancelled) setState(s => ({ ...s, done: true }))
+      }
+    }
+    void run()
+
+    return () => {
+      cancelled = true
+      controller.abort()
+    }
+  }, [toolCallId, streamId, active, queryClient])
+
+  return state
+}
+
 // ── Modal ───────────────────────────────────────────────────────────────────
 
 interface SubagentTranscriptModalProps {
@@ -310,9 +427,15 @@ interface SubagentTranscriptModalProps {
  */
 export const SubagentTranscriptModal: React.FC<SubagentTranscriptModalProps> = ({ toolCallId, onClose }) => {
   const { data, isLoading, isError, error } = useSubagentByToolCall(toolCallId)
+  const runs = data?.runs ?? []
+  const streamId = data?.streamId ?? null
+  const anyRunning = runs.some(run => run.status === 'running')
+  // Subscribe to the child stream only while a run is actually running (the hook
+  // no-ops otherwise). Re-targets automatically when streamId changes on resume.
+  const live = useSubagentLiveStream(toolCallId, streamId, anyRunning && !!toolCallId)
   if (!toolCallId) return null
 
-  const runs = data?.runs ?? []
+  const showLiveTail = anyRunning && !live.done && Boolean(live.text || live.reasoning)
 
   return createPortal(
     <div
@@ -327,8 +450,14 @@ export const SubagentTranscriptModal: React.FC<SubagentTranscriptModalProps> = (
         onClick={e => e.stopPropagation()}
       >
         <div className='flex justify-between items-center px-5 py-4 border-b border-stone-200 dark:border-neutral-800 shrink-0'>
-          <h3 className='text-base font-semibold text-stone-800 dark:text-stone-100'>
+          <h3 className='flex items-center gap-2 text-base font-semibold text-stone-800 dark:text-stone-100'>
             Subagent Transcript{runs.length > 1 ? ` (${runs.length})` : ''}
+            {anyRunning && (
+              <span className='inline-flex items-center gap-1 text-[10px] font-semibold uppercase tracking-wider text-blue-600 dark:text-blue-400'>
+                <span className='h-1.5 w-1.5 rounded-full bg-current animate-pulse' aria-hidden='true' />
+                Live
+              </span>
+            )}
           </h3>
           <Button
             variant='outline2'
@@ -356,6 +485,29 @@ export const SubagentTranscriptModal: React.FC<SubagentTranscriptModalProps> = (
             </div>
           )}
           {!isLoading && !isError && runs.length > 0 && <SubagentTranscript runs={runs} />}
+
+          {/* Live tail: the in-progress turn's streamed output, folded into the
+              persisted transcript as each turn lands. */}
+          {showLiveTail && (
+            <div className='px-5 py-4 border-t border-stone-100 dark:border-neutral-800'>
+              <div className='flex items-center gap-2 mb-2 text-[10px] font-semibold uppercase tracking-wider text-blue-600 dark:text-blue-400'>
+                <span className='h-1.5 w-1.5 rounded-full bg-current animate-pulse' aria-hidden='true' />
+                Streaming
+              </div>
+              {live.reasoning && (
+                <div className='mb-2 prose prose-sm dark:prose-invert max-w-none text-stone-500 dark:text-stone-400 prose-p:my-1'>
+                  <ReactMarkdown remarkPlugins={[remarkGfm]}>{live.reasoning}</ReactMarkdown>
+                </div>
+              )}
+              {live.text && (
+                <div className='prose prose-sm dark:prose-invert max-w-none text-stone-700 dark:text-stone-300 prose-p:my-1 prose-pre:my-2 prose-pre:bg-stone-100 dark:prose-pre:bg-neutral-800 prose-code:text-orange-600 dark:prose-code:text-orange-400 prose-pre:text-xs prose-pre:overflow-x-auto'>
+                  <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[[rehypeHighlight, { ignoreMissing: true }]]}>
+                    {live.text}
+                  </ReactMarkdown>
+                </div>
+              )}
+            </div>
+          )}
         </div>
       </div>
     </div>,

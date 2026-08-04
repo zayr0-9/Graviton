@@ -2062,6 +2062,12 @@ function initializeLocalDatabase(dbPath: string) {
     `),
     attachStreamingRunToLineage: db.prepare('UPDATE streaming_runs SET lineage_id = ? WHERE stream_id = ?'),
     attachSubagentRunToLineage: db.prepare('UPDATE subagent_runs SET lineage_id = ? WHERE id = ?'),
+    // Latest subagent stream for a tool call — the streamId the transcript viewer
+    // subscribes to for live progress (a resume mints a newer row, so DESC LIMIT 1
+    // always resolves the current attempt).
+    getLatestSubagentStreamIdByToolCall: db.prepare(
+      "SELECT stream_id FROM streaming_runs WHERE tool_call_id = ? AND stream_type = 'subagent' ORDER BY started_at DESC LIMIT 1"
+    ),
 
     // Metadata-only execution ownership under stable content lineage.
     insertToolInvocation: db.prepare(`

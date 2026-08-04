@@ -158,6 +158,30 @@ function baseRequest(overrides: Partial<HeadlessSubagentStreamRequest> = {}): He
   }
 }
 
+/**
+ * Minimal RunSessionRegistry stand-in that records what each run publishes, so we
+ * can assert live-stream events reach the session backing GET /api/streams/:id.
+ */
+class FakeRunSessionRegistry {
+  sessions = new Map<string, { conversationId: string | null; published: any[]; terminal: boolean }>()
+
+  create(streamId: string, conversationId: string | null) {
+    if (!this.sessions.has(streamId)) this.sessions.set(streamId, { conversationId, published: [], terminal: false })
+    return this.get(streamId)
+  }
+
+  get(streamId: string) {
+    const record = this.sessions.get(streamId)
+    if (!record) return undefined
+    return {
+      publish: (event: any) => {
+        record.published.push(event)
+        if (event.type === 'complete' || event.type === 'error') record.terminal = true
+      },
+    }
+  }
+}
+
 function buildService(opts: {
   providerRouter: FakeProviderRouter
   runRepo: FakeRunRepo
@@ -165,6 +189,7 @@ function buildService(opts: {
   toolExecutor?: (toolCall: any, ctx: any) => Promise<any>
   resolveToolsByName?: (names: string[] | undefined) => ResolvedSubagentTools
   generateCompactionSummary?: (input: any) => Promise<string>
+  runSessions?: FakeRunSessionRegistry
 }): SubagentRunService {
   return new SubagentRunService({
     runRepo: opts.runRepo as unknown as SubagentRunRepo,
@@ -176,6 +201,7 @@ function buildService(opts: {
       generateCompactionSummary:
         opts.generateCompactionSummary ?? (async () => 'Following is summary of the session, you have to resume the work.\n\nsummary'),
     },
+    runSessions: opts.runSessions as unknown as import('../runSessionRegistry.js').RunSessionRegistry | undefined,
   })
 }
 
@@ -651,6 +677,25 @@ describe('SubagentRunService', () => {
     const outcome = await service.resumeDetached(run.id, baseRequest())
     expect(outcome).toBeNull()
     expect(providerRouter.calls).toHaveLength(0) // nothing driven
+  })
+
+  it('publishes stream events into the run session for live viewing', async () => {
+    const providerRouter = new FakeProviderRouter()
+    providerRouter.enqueue({ content: 'live answer' })
+    const runRepo = new FakeRunRepo()
+    const streamingRunRepo = new FakeStreamingRunRepo()
+    const runSessions = new FakeRunSessionRegistry()
+    const service = buildService({ providerRouter, runRepo, streamingRunRepo, runSessions })
+
+    await service.run(baseRequest(), () => {}, new AbortController().signal)
+
+    // A session was created for the child streamId and received started -> complete.
+    const session = runSessions.sessions.get('sub-stream-1')
+    expect(session).toBeTruthy()
+    const types = session!.published.map(e => e.type)
+    expect(types[0]).toBe('started')
+    expect(types).toContain('complete')
+    expect(session!.terminal).toBe(true)
   })
 
   it('reconciles orphaned running runs into a resumable error state at startup', async () => {

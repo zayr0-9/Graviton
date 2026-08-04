@@ -24,11 +24,11 @@ context compaction — a fresh session should be able to resume from it alone.
 | 3 | In-loop provider-error retry | ✅ done | committed (see Phase 3 section) |
 | 4 | Resume (`subagent_manager.resume`) | ✅ done | committed (see Phase 4 section) |
 | 5 | UI: persisted transcript viewer | ✅ done | committed (see Phase 5 section) |
-| 6 | UI: live streaming | ⬜ next | needs 5 |
+| 6 | UI: live streaming | ✅ done | committed (see Phase 6 section) |
 
-**Recommended slice for a usable v1:** 0 → 1 → 2 → 5 (all done). Only Phase 6
-(live streaming) remains — everything else (spawn, manager, retry, resume,
-persisted viewer) is landed.
+**All phases landed.** Spawn (blocking + async), the branch-scoped `subagent_manager`
+tool (spawn/list/status/cancel/resume), in-loop provider retry, resume + startup
+reconciler, the persisted transcript viewer, and live streaming are all in.
 
 ---
 
@@ -285,6 +285,58 @@ electron files. Headless suite: my 2 route tests pass; the only failure is the
 pre-existing plan-mode mcp-filter test (confirmed unchanged with my service edit
 stashed). No circular imports (ChatMessage → SubagentTranscript → chatMessageShared,
 a leaf util). Feature is electron-only (the hook is gated on `environment`).
+
+## Phase 6 — UI: live streaming ✅
+
+Makes a running (or resumed) subagent stream its progress into the transcript
+viewer live, then fold into the persisted transcript on completion.
+
+**The blocker it solves.** Manager-spawned runs drive in the BACKGROUND with a
+NOOP emit and never registered with `RunSessionRegistry`, so there was no live
+stream and `GET /api/streams/:childStreamId` 410'd. Fix: the service now publishes
+every run's events into a RunSession keyed by its child streamId, so the EXISTING
+shared `GET /api/streams/:streamId` route (chatRoutes) replays it — no new stream
+route, no change to the subagent SSE/POST route.
+
+**Server.**
+- `SubagentRunService` takes an optional `runSessions: RunSessionRegistry`.
+  `prepareRun`/`prepareResume` `create()` a session for the child streamId and
+  publish `started`; `driveRun` wraps its emit in `publishAndEmit` so every loop
+  event + the terminal complete/error is published (which marks the session
+  terminal). `index.ts` passes the SHARED chat registry, gated on `resumableRuns`
+  (same gate as the streams route; off => no live stream, persisted still works).
+  Verified the reaper is safe: a never-attached running session has
+  `detachedAt === null`, so it is only reaped 60s AFTER terminal — exactly the
+  flip-to-persisted window; a viewer disconnect `detach()`es without aborting the
+  background run.
+- `GET /api/subagents/by-tool-call/:toolCallId` now also returns the current child
+  `streamId` (new `getLatestSubagentStreamIdByToolCall` stmt +
+  `StreamingRunRepo.latestSubagentStreamIdByToolCall` +
+  `SubagentRunService.latestStreamIdForToolCall`). `ORDER BY started_at DESC LIMIT
+  1` so a resume's newer stream wins — this is the "re-target on resume".
+
+**Renderer (deliberately self-contained — NOT the global Redux streaming slice).**
+`useSubagentByToolCall` returns `{ runs, streamId }`. New `useSubagentLiveStream`
+hook `fetch`-subscribes `GET /streams/:streamId?fromSeq=0`, parses the SSE frames
+(`{...event, seq}`), accumulates the in-progress turn's text/reasoning, and on each
+`assistant_message_persisted` (turn boundary) + the terminal `complete`/`error`
+invalidates the `['subagents','by-tool-call',toolCallId]` query so finished turns
+fold into the persisted transcript. `SubagentTranscriptModal` subscribes only while
+a run is `running`, shows a "Live" pulse + a streaming tail, and re-targets
+automatically when `streamId` changes (resume). A 410 (session reaped) just resolves
+`done`. **Why not the Redux path the plan sketched:** projecting subagent
+`started`/`complete` through the main `projectServerEvent` risks hijacking
+`conversation.currentLineageId` (chatSlice `streamLineageUpdated`) and hits the
+`started` `parentId` guard / optional-`complete.message` mismatches the recon
+flagged — a modal-local subscription is isolated, can't disturb the main chat view,
+and delivers the same result. The dormant `selectChildStreams` /
+`selectActiveSubagentStreams` and the `heimdall.subagentMap` tombstone were left
+untouched.
+
+**Verified:** `tsc -b` clean; 0 new electron tsc errors. Route test asserts the
+`streamId` in the response; new service test asserts a background run publishes
+`started → complete` into its session (fake registry). Full headless suite: 304
+pass / 2 pre-existing fail / 62 skip.
 
 ---
 

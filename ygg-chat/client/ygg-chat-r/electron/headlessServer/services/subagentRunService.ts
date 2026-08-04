@@ -12,6 +12,7 @@ import {
 import { StreamingRunRepo } from '../persistence/streamingRunRepo.js'
 import type { ProviderToolCall, ProviderToolDefinition } from '../providers/openRouterProvider.js'
 import type { ProviderTokenStore } from '../providers/tokenStore.js'
+import type { RunSession, RunSessionRegistry } from './runSessionRegistry.js'
 import { ProviderRouter } from './providerRouter.js'
 import type { GenerateCompactionSummaryInput } from './compactionService.js'
 import { SubagentTranscriptSink } from './subagentTranscriptSink.js'
@@ -49,6 +50,13 @@ interface SubagentRunServiceDeps {
   compactionService: CompactionSummaryGenerator
   refreshProviderTokens?: (provider: string) => Promise<void> | void
   providerTurnTimeoutMs?: number
+  /**
+   * When provided, each run publishes its stream events into a RunSession keyed by
+   * its child streamId, so the shared GET /api/streams/:streamId route can replay
+   * a live/terminal run to the transcript viewer. Omitted (e.g. resumable runs off)
+   * => background runs simply don't stream live; the persisted transcript still works.
+   */
+  runSessions?: RunSessionRegistry
 }
 
 const DEFAULT_MODEL = 'gpt-5.6-sol'
@@ -120,6 +128,7 @@ export class SubagentRunService {
   private readonly compactionService: CompactionSummaryGenerator
   private readonly refreshProviderTokens?: (provider: string) => Promise<void> | void
   private readonly providerTurnTimeoutMs: number
+  private readonly runSessions?: RunSessionRegistry
   /** handle -> live detached run, so cancel(handle) can abort a run that outlives its spawn call. */
   private readonly activeRuns = new Map<string, ActiveSubagentRun>()
 
@@ -132,6 +141,7 @@ export class SubagentRunService {
     this.compactionService = deps.compactionService
     this.refreshProviderTokens = deps.refreshProviderTokens
     this.providerTurnTimeoutMs = Math.max(5_000, deps.providerTurnTimeoutMs ?? DEFAULT_PROVIDER_TURN_TIMEOUT_MS)
+    this.runSessions = deps.runSessions
   }
 
   /**
@@ -297,6 +307,21 @@ export class SubagentRunService {
     return orphans.length
   }
 
+  /**
+   * Publish one stream event into the run's RunSession (when sessions are enabled)
+   * so GET /api/streams/:streamId can replay it to the transcript viewer. Best
+   * effort — a publish failure never disrupts the run.
+   */
+  private publishToSession(streamId: string, event: HeadlessSubagentStreamEvent): void {
+    const session: RunSession | undefined = this.runSessions?.get(streamId)
+    if (!session) return
+    try {
+      session.publish(event as unknown as HeadlessStreamEvent)
+    } catch (error) {
+      console.warn('[subagent] session publish failed (continuing):', error)
+    }
+  }
+
   /** Resolve a run by its 6-digit handle (manager status/cancel/resume ownership checks). */
   getRunByHandle(handle: string): SubagentRunRow | null {
     return this.runRepo.getRunByHandle(handle)
@@ -310,6 +335,15 @@ export class SubagentRunService {
   /** All runs spawned by a given provider tool call, WITH transcripts — backs the UI viewer route. */
   listByToolCall(toolCallId: string): SubagentRunRow[] {
     return this.runRepo.listByToolCall(toolCallId)
+  }
+
+  /**
+   * The current (latest) child streamId for a tool call, so the transcript viewer
+   * can subscribe to GET /api/streams/:streamId for live progress. Resolves the
+   * resumed attempt's stream after a resume. Null when there's no subagent stream.
+   */
+  latestStreamIdForToolCall(toolCallId: string): string | null {
+    return this.streamingRunRepo.latestSubagentStreamIdByToolCall(toolCallId)
   }
 
   private async prepareRun(
@@ -369,7 +403,11 @@ export class SubagentRunService {
       metadata: { subagent_run_id: runId },
     })
 
-    emit({
+    // Session keyed by the child streamId so GET /api/streams/:streamId can replay
+    // this run live to the transcript viewer (created before the first publish).
+    this.runSessions?.create(subStreamId, request.conversationId)
+
+    const startedEvent: HeadlessSubagentStreamEvent = {
       type: 'started',
       operation: 'subagent',
       subagentRunId: runId,
@@ -382,7 +420,9 @@ export class SubagentRunService {
       modelName,
       maxTurns,
       resolvedToolNames,
-    })
+    }
+    this.publishToSession(subStreamId, startedEvent)
+    emit(startedEvent)
 
     // Persist the user prompt as the first transcript row (renderer parity).
     const userMessage = this.runRepo.appendMessage(runId, {
@@ -500,7 +540,11 @@ export class SubagentRunService {
       metadata: { subagent_run_id: runId, resumed: true },
     })
 
-    emit({
+    // Fresh session for the resumed attempt's NEW streamId. The renderer re-targets
+    // by re-reading the run's latest streamId (see the by-tool-call route).
+    this.runSessions?.create(subStreamId, request.conversationId)
+
+    const startedEvent: HeadlessSubagentStreamEvent = {
       type: 'started',
       operation: 'subagent',
       subagentRunId: runId,
@@ -513,7 +557,9 @@ export class SubagentRunService {
       modelName,
       maxTurns,
       resolvedToolNames,
-    })
+    }
+    this.publishToSession(subStreamId, startedEvent)
+    emit(startedEvent)
 
     const tailMessage = messages.length > 0 ? messages[messages.length - 1] : null
     const prepared: PreparedSubagentRun = {
@@ -554,6 +600,14 @@ export class SubagentRunService {
     const loopUserContent = resume ? resume.userContent : request.prompt
     const assistantParentId = resume ? resume.assistantParentId : userMessage.id
     const effectiveMaxTurns = Math.max(1, maxTurns - priorTurns)
+
+    // Mirror every stream event into the run's RunSession (when enabled) so the
+    // transcript viewer can watch live via GET /api/streams/:subStreamId, then emit
+    // to the direct caller (SSE route res / blocking capture / NOOP for detached).
+    const publishAndEmit = (event: HeadlessSubagentStreamEvent): void => {
+      this.publishToSession(subStreamId, event)
+      emit(event)
+    }
 
     let turnsUsed = priorTurns
     let toolCallsUsed = 0
@@ -645,7 +699,7 @@ export class SubagentRunService {
           compactionModelName: modelName,
           robustness: { retryEmptyTurn: true, finalizeOnSilentToolEnd: true, retryProviderError: true },
         },
-        (event: HeadlessStreamEvent) => emit(event)
+        (event: HeadlessStreamEvent) => publishAndEmit(event)
       )
 
       turnsUsed = priorTurns + result.turnsUsed
@@ -663,7 +717,7 @@ export class SubagentRunService {
         metadata: { subagent_run_id: runId },
       })
 
-      emit({
+      publishAndEmit({
         type: 'complete',
         subagentRunId: runId,
         lineageId: request.lineageId ?? null,
@@ -686,7 +740,7 @@ export class SubagentRunService {
           metadata: { subagent_run_id: runId },
         })
         // The client has usually disconnected; emit best-effort.
-        emit({
+        publishAndEmit({
           type: 'error',
           subagentRunId: runId,
           lineageId: request.lineageId ?? null,
@@ -717,7 +771,7 @@ export class SubagentRunService {
             retryExhausted: providerError.retryExhausted,
           },
         })
-        emit({
+        publishAndEmit({
           type: 'error',
           subagentRunId: runId,
           lineageId: request.lineageId ?? null,
@@ -745,7 +799,7 @@ export class SubagentRunService {
         error: message,
         metadata: { subagent_run_id: runId },
       })
-      emit({
+      publishAndEmit({
         type: 'error',
         subagentRunId: runId,
         lineageId: request.lineageId ?? null,

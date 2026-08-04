@@ -319,6 +319,11 @@ export function registerHeadlessServerRoutes(app: Express, deps: HeadlessServerR
         await syncOpenRouterTokenFromElectronSession(tokenStore)
       }
     },
+    // Share the chat RunSessionRegistry so background subagent runs publish their
+    // stream events to a session the existing GET /api/streams/:streamId route can
+    // replay — this is what lets the transcript viewer watch a run live. Gated on
+    // resumableRuns (same gate as that route); off => runs just don't stream live.
+    runSessions: gatewayFlags.resumableRuns ? runSessions : undefined,
   })
   // Startup reconciler: any subagent run left 'running' by a previous process
   // crash is an orphan (this fresh process owns no live loop), so flip it to a

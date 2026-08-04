@@ -55,6 +55,8 @@ describe('registerSubagentRoutes', () => {
           return runImpl(request, emit, signal)
         },
         listByToolCall: (toolCallId: string) => listByToolCallImpl(toolCallId),
+        latestStreamIdForToolCall: (toolCallId: string) =>
+          listByToolCallImpl(toolCallId).length > 0 ? `stream-${toolCallId}` : null,
       } as unknown as SubagentRunService,
       validateTarget: (conversationId, parentMessageId) => {
         if (conversationId === 'missing-convo') return { status: 404, error: 'Conversation not found' }
@@ -183,6 +185,8 @@ describe('registerSubagentRoutes', () => {
     expect(body.runs).toHaveLength(1)
     expect(body.runs[0]).toMatchObject({ id: 'run-1', status: 'completed' })
     expect(body.runs[0].messages).toHaveLength(2)
+    // The current child streamId is surfaced for the live viewer subscription.
+    expect(body.streamId).toBe('stream-tc-1')
   })
 
   it('GET by-tool-call returns an empty array when no runs match', async () => {

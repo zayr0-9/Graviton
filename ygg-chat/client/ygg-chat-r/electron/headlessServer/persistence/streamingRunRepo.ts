@@ -108,6 +108,16 @@ export class StreamingRunRepo {
     return (this.statements.getStreamingRunById.get(streamId) as any)?.lineage_id ?? null
   }
 
+  /**
+   * The streamId of the most recent subagent stream for a tool call — what the
+   * transcript viewer subscribes to for live progress. A resume mints a newer row,
+   * so this always resolves the current attempt. Null when none / statement absent.
+   */
+  latestSubagentStreamIdByToolCall(toolCallId: string | null | undefined): string | null {
+    if (!toolCallId || !this.statements.getLatestSubagentStreamIdByToolCall) return null
+    return (this.statements.getLatestSubagentStreamIdByToolCall.get(toolCallId) as any)?.stream_id ?? null
+  }
+
   finish(streamId: string | null | undefined, input: FinishStreamingRunInput): void {
     if (!streamId) return
     const existing = this.statements.getStreamingRunById.get(streamId)

@@ -489,14 +489,18 @@ export function useLocalTopLevelUserMessages(conversationId: ConversationId | nu
  * Fetch the persisted subagent run(s) spawned by a given provider tool call, with
  * their full transcripts, for the tool-card transcript viewer (Phase 5). One tool
  * call maps to one run in practice, but the server returns an array so a multi-run
- * tool call still renders. Cache key: ['subagents', 'by-tool-call', toolCallId].
+ * tool call still renders. `streamId` is the current child stream a live viewer can
+ * subscribe to (Phase 6); it re-targets to the resumed attempt after a resume.
+ * Cache key: ['subagents', 'by-tool-call', toolCallId].
  */
 export function useSubagentByToolCall(toolCallId: string | null, enabled: boolean = true) {
   return useQuery({
     queryKey: ['subagents', 'by-tool-call', toolCallId],
     queryFn: async () => {
       if (!toolCallId) throw new Error('toolCallId is required')
-      return localApi.get<{ runs: SubagentRunRow[] }>(`/subagents/by-tool-call/${toolCallId}`)
+      return localApi.get<{ runs: SubagentRunRow[]; streamId?: string | null }>(
+        `/subagents/by-tool-call/${toolCallId}`
+      )
     },
     enabled: enabled && !!toolCallId && environment === 'electron',
     staleTime: 30 * 1000,
