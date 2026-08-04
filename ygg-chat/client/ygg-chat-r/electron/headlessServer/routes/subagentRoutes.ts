@@ -63,6 +63,20 @@ function buildSubagentStreamRequest(body: any): HeadlessSubagentStreamRequest {
 }
 
 export function registerSubagentRoutes(app: Express, deps: RegisterSubagentRoutesDeps): void {
+  // Persisted transcript viewer (Phase 5): resolve the run(s) a given provider tool
+  // call spawned, WITH their transcripts, so the renderer can show the full subagent
+  // conversation after the fact. One tool call maps to one run in practice, but the
+  // repo returns an array (kept as-is here) so a multi-run tool call still renders.
+  app.get('/api/subagents/by-tool-call/:toolCallId', (req, res) => {
+    const toolCallId = String(req.params.toolCallId ?? '').trim()
+    if (!toolCallId) {
+      res.status(400).json({ error: 'toolCallId is required' })
+      return
+    }
+    const runs = deps.runService.listByToolCall(toolCallId)
+    res.json({ runs })
+  })
+
   app.post('/api/headless/subagent/stream', async (req, res) => {
     const request = buildSubagentStreamRequest(req.body ?? {})
 

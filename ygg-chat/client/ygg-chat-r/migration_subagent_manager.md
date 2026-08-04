@@ -22,12 +22,12 @@ context compaction — a fresh session should be able to resume from it alone.
 | 1 | Spawn engine (blocking + async) | ✅ done | committed `d88404a` (service + its test + this log) |
 | 2 | `subagent_manager` tool (executor-layer interceptor) | ✅ done | committed (see Phase 2 section) |
 | 3 | In-loop provider-error retry | ✅ done | committed (see Phase 3 section) |
-| 4 | Resume (`subagent_manager.resume`) | ⬜ pending | needs 0+1+2 |
-| 5 | UI: persisted transcript viewer | ⬜ next | needs 0 |
+| 4 | Resume (`subagent_manager.resume`) | ⬜ next | needs 0+1+2 |
+| 5 | UI: persisted transcript viewer | ✅ done | committed (see Phase 5 section) |
 | 6 | UI: live streaming | ⬜ pending | needs 5 |
 
-**Recommended slice for a usable v1:** 0 → 1 → 2 → 5. Then 3 (done), 4 (recover
-failures), 6 (live progress). Next up: 5 (make the manager visible), then 4.
+**Recommended slice for a usable v1:** 0 → 1 → 2 → 5 (all done). Next up: 4
+(recover failures via resume), then 6 (live progress).
 
 ---
 
@@ -176,6 +176,56 @@ plus optional `attempt?` / `maxAttempts?`.
 all pass. `toolLoopService.test.ts` (self-skips locally, runs in CI) adds precise
 `providerRetryBackoffMs:1` cases: recovers (asserts turnsUsed unchanged), exhausts (3
 calls), non-transient (1 call), disabled/no-robustness (1 call).
+
+## Phase 5 — UI: persisted transcript viewer ✅
+
+Adds a "View transcript" button to `subagent`/`subagent_manager` tool cards that
+opens the persisted subagent conversation in a modal. Pure wire-up on top of the
+Phase 0 repo; no new engine work.
+
+**Server.** `services/subagentRunService.ts` — new `listByToolCall(toolCallId)`
+pass-through (returns runs WITH transcripts). `routes/subagentRoutes.ts` — new
+`GET /api/subagents/by-tool-call/:toolCallId` → `{ runs }`. Auto-wired: the route
+is registered inside the already-mounted `registerSubagentRoutes`, which now sees
+the new service method (no `index.ts` change). Route test +2 cases (returns runs
+with transcript; empty array when none match) → 9/9 pass.
+
+**Shared type.** `shared/types.ts` now owns the canonical `SubagentRunRow` /
+`SubagentMessageRow` / `SubagentRunStatus` / `SubagentMessageRole`;
+`persistence/subagentRunRepo.ts` imports + re-exports them (all existing server
+importers keep importing from the repo module — zero call-site churn) so server
+and renderer share ONE definition and can't drift.
+
+**Renderer.**
+- `hooks/useQueries.ts` — `useSubagentByToolCall(toolCallId)` (electron-only,
+  `staleTime 30s`), key `['subagents','by-tool-call',toolCallId]`.
+- NEW `components/SubagentTranscript/SubagentTranscript.tsx` — extracted the
+  Heimdall block renderer (text / tool_use / tool_result / thinking) + the
+  per-run flatten (`buildDedicatedSubagentMap` logic) into a standalone
+  `SubagentRunView` / `SubagentTranscript` / `SubagentTranscriptModal` (portals to
+  `<body>` like `ImageModal`). Also exports `SubagentToolName` (a tiny component
+  that fetches the run and returns the tool-name `<span>` with a status-derived
+  class) + `subagentStatusToolNameClass`.
+- `components/ChatMessage/ChatMessage.tsx` — new `onOpenSubagentTranscript?` prop;
+  `isSubagent` flag (matches `subagent`/`subagent_manager`); a
+  `renderSubagentTranscriptButton(group.id)` mirroring `renderHtmlViewerButton`
+  slotted into the tool header row. **`group.id` IS the provider tool_call id**,
+  which the by-tool-call read resolves directly. **Status chip fix:** for subagent
+  cards the tool-name uses `<SubagentToolName>` (status from `run.status`) instead
+  of the result-derived class — an async spawn's result is only a handle, so the
+  generic card would otherwise show "success" while the run is still running.
+  (`SubagentToolName` is a component, not an inline call, because
+  `renderToolCallGroupCard` runs inside a `.map` and must not call a hook.)
+- `containers/Chat.tsx` — `subagentTranscriptToolCallId` state +
+  `openSubagentTranscript` handler, passed to all 7 `<ChatMessage>` sites, and one
+  `<SubagentTranscriptModal>` mounted beside the other Chat modals (Chat-scoped,
+  no App-level context needed).
+
+**Verified:** `tsc -b` (src+shared) clean (exit 0); 0 new errors in the touched
+electron files. Headless suite: my 2 route tests pass; the only failure is the
+pre-existing plan-mode mcp-filter test (confirmed unchanged with my service edit
+stashed). No circular imports (ChatMessage → SubagentTranscript → chatMessageShared,
+a leaf util). Feature is electron-only (the hook is gated on `environment`).
 
 ---
 

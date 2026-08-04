@@ -1,43 +1,15 @@
 import { v4 as uuidv4 } from 'uuid'
+import type {
+  SubagentMessageRole,
+  SubagentMessageRow,
+  SubagentRunRow,
+  SubagentRunStatus,
+} from '../../../../../shared/types.js'
 
-export type SubagentRunStatus = 'running' | 'completed' | 'error' | 'aborted'
-export type SubagentMessageRole = 'user' | 'assistant' | 'tool' | 'system'
-
-export interface SubagentMessageRow {
-  id: string
-  run_id: string
-  role: string
-  content: string
-  thinking_block: string | null
-  tool_calls: any
-  tool_call_id: string | null
-  content_blocks: any
-  sequence: number
-  created_at: string
-}
-
-export interface SubagentRunRow {
-  id: string
-  conversation_id: string
-  lineage_id: string | null
-  parent_message_id: string
-  tool_call_id: string | null
-  prompt: string
-  provider: string | null
-  model_name: string | null
-  system_prompt: string | null
-  status: string
-  final_response: string | null
-  error: string | null
-  turns_used: number
-  tool_calls_used: number
-  handle: string | null
-  attempt: number
-  last_turn_at: string | null
-  created_at: string
-  updated_at: string
-  messages?: SubagentMessageRow[]
-}
+// The row shapes are defined once in shared/types.ts (so the renderer's transcript
+// viewer shares the exact same contract) and re-exported here for the server code
+// that has always imported them from this repo module.
+export type { SubagentMessageRole, SubagentMessageRow, SubagentRunRow, SubagentRunStatus }
 
 export interface CreateSubagentRunInput {
   id?: string

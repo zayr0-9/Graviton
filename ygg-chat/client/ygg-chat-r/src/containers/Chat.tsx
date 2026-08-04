@@ -36,6 +36,7 @@ import {
 import { useHtmlIframeRegistry } from '../components/HtmlIframeRegistry/HtmlIframeRegistry'
 import { contentSpringTransition, softTransition } from '../components/motion'
 import { ContextUsageSparkline } from '../components/ContextUsageSparkline/ContextUsageSparkline'
+import { SubagentTranscriptModal } from '../components/SubagentTranscript/SubagentTranscript'
 import {
   ChatInputBorderAnimationType,
   getStoredChatInputBorderAnimation,
@@ -997,6 +998,8 @@ function Chat() {
   const [hasLocalInput, setHasLocalInput] = useState(false)
   const [addedIdeContexts, setAddedIdeContexts] = useState<AddedIdeContext[]>([])
   const [pendingViewStreamId, setPendingViewStreamId] = useState<string | null>(null)
+  // Tool call whose persisted subagent transcript is open in the viewer modal (Phase 5).
+  const [subagentTranscriptToolCallId, setSubagentTranscriptToolCallId] = useState<string | null>(null)
 
   const getLocalInput = useCallback(() => inputControllerRef.current?.getValue() ?? '', [])
   const updateLocalInput = useCallback((next: ChatInputUpdater) => {
@@ -5965,6 +5968,10 @@ function Chat() {
   const canOpenHtmlTools = Boolean(htmlRegistry)
   const openToolHtmlModal = canOpenHtmlTools ? handleOpenToolHtmlModal : undefined
 
+  const openSubagentTranscript = useCallback((toolCallId: string) => {
+    setSubagentTranscriptToolCallId(toolCallId)
+  }, [])
+
   // Refresh models using React Query mutation
   // const handleRefreshModels = useCallback(() => {
   //   if (providers.currentProvider) {
@@ -6489,6 +6496,7 @@ function Chat() {
                                 className='opacity-70'
                                 userTurnElapsedLabel={userTurnElapsedLabelByMessageId.get(String(message.id))}
                                 onOpenToolHtmlModal={openToolHtmlModal}
+                                onOpenSubagentTranscript={openSubagentTranscript}
                               />
                             </VirtualizedRowContainer>
                           )
@@ -6521,6 +6529,7 @@ function Chat() {
                                 className='opacity-70'
                                 userTurnElapsedLabel={userTurnElapsedLabelByMessageId.get(String(message.id))}
                                 onOpenToolHtmlModal={openToolHtmlModal}
+                                onOpenSubagentTranscript={openSubagentTranscript}
                               />
                             </VirtualizedRowContainer>
                           )
@@ -6557,6 +6566,7 @@ function Chat() {
                                 modelName={selectedModel?.name || undefined}
                                 className=''
                                 onOpenToolHtmlModal={openToolHtmlModal}
+                                onOpenSubagentTranscript={openSubagentTranscript}
                               />
                             </VirtualizedRowContainer>
                           )
@@ -6664,6 +6674,7 @@ function Chat() {
                                           customThemeEnabled={customThemeEnabled}
                                           isDarkMode={isDarkMode}
                                           onOpenToolHtmlModal={openToolHtmlModal}
+                                          onOpenSubagentTranscript={openSubagentTranscript}
                                         />
                                       )
                                     })}
@@ -6710,6 +6721,7 @@ function Chat() {
                                           customThemeEnabled={customThemeEnabled}
                                           isDarkMode={isDarkMode}
                                           onOpenToolHtmlModal={openToolHtmlModal}
+                                          onOpenSubagentTranscript={openSubagentTranscript}
                                         />
                                       )
                                     })()}
@@ -6784,6 +6796,7 @@ function Chat() {
                               onAddToNote={handleAddToNote}
                               onExplainFromSelection={handleExplainFromSelection}
                               onOpenToolHtmlModal={openToolHtmlModal}
+                              onOpenSubagentTranscript={openSubagentTranscript}
                               onEditingStateChange={handleMessageEditingStateChange}
                             />
                           </VirtualizedRowContainer>
@@ -6820,6 +6833,7 @@ function Chat() {
                     modelName={selectedModel?.name || undefined}
                     className=''
                     onOpenToolHtmlModal={openToolHtmlModal}
+                    onOpenSubagentTranscript={openSubagentTranscript}
                   />
                 </div>
                 <div
@@ -7922,6 +7936,10 @@ function Chat() {
         onClose={() => dispatch(chatSliceActions.freeTierLimitModalHidden())}
       />
       <ToolJobsModal isOpen={jobsModalOpen} onClose={() => setJobsModalOpen(false)} />
+      <SubagentTranscriptModal
+        toolCallId={subagentTranscriptToolCallId}
+        onClose={() => setSubagentTranscriptToolCallId(null)}
+      />
 
       {/* OpenRouter login required modal */}
       {openRouterLoginRequiredModalOpen && (

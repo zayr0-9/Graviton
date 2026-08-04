@@ -30,6 +30,7 @@ import { EditToolDiffView } from '../EditFileDiffView/EditToolDiffView'
 import { PlanMdToolView } from '../PlanMdToolView'
 import { useHtmlIframeRegistry } from '../HtmlIframeRegistry/HtmlIframeRegistry'
 import { ImageModal } from '../ImageModal/ImageModal'
+import { SubagentToolName } from '../SubagentTranscript/SubagentTranscript'
 import { MarkdownLink } from '../MarkdownLink/MarkdownLink'
 import { McpAppIframe } from '../McpAppIframe/McpAppIframe'
 import { TextArea } from '../TextArea/TextArea'
@@ -103,6 +104,7 @@ interface ChatMessageProps {
   onAddToNote?: (text: string) => void
   onExplainFromSelection?: (id: string, newContent: string) => void
   onOpenToolHtmlModal?: (key?: string) => void
+  onOpenSubagentTranscript?: (toolCallId: string) => void
   isEditing?: boolean
   width: ChatMessageWidth
   // When true (default), message cards have colored backgrounds and left borders.
@@ -650,6 +652,7 @@ const ChatMessage: React.FC<ChatMessageProps> = React.memo(
     onAddToNote: _onAddToNote,
     onExplainFromSelection,
     onOpenToolHtmlModal,
+    onOpenSubagentTranscript,
     isEditing = false,
     width = 'w-3/5',
     colored = true,
@@ -1569,6 +1572,21 @@ const ChatMessage: React.FC<ChatMessageProps> = React.memo(
       </Button>
     )
 
+    // Opens the persisted subagent transcript for a tool call (Phase 5). toolCallId
+    // is the tool-call group's id, which the by-tool-call read resolves to its run.
+    const renderSubagentTranscriptButton = (toolCallId: string) => (
+      <Button
+        variant='outline2'
+        size='small'
+        onClick={() => onOpenSubagentTranscript?.(toolCallId)}
+        disabled={!onOpenSubagentTranscript}
+        title='View subagent transcript'
+      >
+        <i className='bx bx-conversation text-base' aria-hidden='true'></i>
+        <span className='ml-1'>View transcript</span>
+      </Button>
+    )
+
     const registerAndOpenMcpViewer = (
       entryKey: string,
       payload: {
@@ -1711,6 +1729,8 @@ const ChatMessage: React.FC<ChatMessageProps> = React.memo(
         .toLowerCase()
         .replace(/[-\s]/g, '_')
       const isInternalLinkTool = normalizedToolCardName === 'internallink' || normalizedToolCardName === 'internal_link'
+      const isSubagent =
+        normalizedToolCardName === 'subagent' || normalizedToolCardName === 'subagent_manager'
 
       if (isInternalLinkTool) {
         const resultPayload = group.results.length > 0 ? group.results[group.results.length - 1].content : null
@@ -2070,7 +2090,11 @@ const ChatMessage: React.FC<ChatMessageProps> = React.memo(
           {/* Tool header row */}
           <div className='flex min-w-0 max-w-full flex-wrap items-center gap-2 overflow-hidden'>
             <button onClick={() => handleExpandToggle(toggleKey, group)} className={TOOL_HEADER_BUTTON_CLASS}>
-              <span className={toolNameClass}>{group.name || 'tool'}</span>
+              {isSubagent ? (
+                <SubagentToolName toolCallId={group.id} name={group.name || 'tool'} fallbackClass={toolNameClass} />
+              ) : (
+                <span className={toolNameClass}>{group.name || 'tool'}</span>
+              )}
               {!isExpanded && pathContent && (
                 <span
                   className='text-[0.8125em] text-neutral-500 dark:text-neutral-500 max-w-[200px] overflow-hidden whitespace-nowrap'
@@ -2104,6 +2128,7 @@ const ChatMessage: React.FC<ChatMessageProps> = React.memo(
               </button>
             )}
             {primaryHtmlResultKey && renderHtmlViewerButton(primaryHtmlResultKey)}
+            {isSubagent && renderSubagentTranscriptButton(group.id)}
           </div>
 
           {/* Expandable content */}

@@ -249,6 +249,11 @@ export class SubagentRunService {
     return this.runRepo.listByLineage(lineageId, status)
   }
 
+  /** All runs spawned by a given provider tool call, WITH transcripts — backs the UI viewer route. */
+  listByToolCall(toolCallId: string): SubagentRunRow[] {
+    return this.runRepo.listByToolCall(toolCallId)
+  }
+
   private async prepareRun(
     request: HeadlessSubagentStreamRequest,
     emit: (event: HeadlessSubagentStreamEvent) => void

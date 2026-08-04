@@ -211,3 +211,48 @@ export interface MessageFileContent {
   relative_path?: string | null
   created_at: string
 }
+
+// ── Subagent runs ─────────────────────────────────────────────────────────────
+// One canonical shape for a persisted subagent run + its transcript, shared by the
+// headless server repo (electron/headlessServer/persistence/subagentRunRepo.ts,
+// which re-exports these) and the renderer's transcript viewer so the two cannot
+// drift. `messages` is populated by the by-tool-call viewer read; list/status reads
+// omit it.
+export type SubagentRunStatus = 'running' | 'completed' | 'error' | 'aborted'
+export type SubagentMessageRole = 'user' | 'assistant' | 'tool' | 'system'
+
+export interface SubagentMessageRow {
+  id: string
+  run_id: string
+  role: string
+  content: string
+  thinking_block: string | null
+  tool_calls: any
+  tool_call_id: string | null
+  content_blocks: any
+  sequence: number
+  created_at: string
+}
+
+export interface SubagentRunRow {
+  id: string
+  conversation_id: string
+  lineage_id: string | null
+  parent_message_id: string
+  tool_call_id: string | null
+  prompt: string
+  provider: string | null
+  model_name: string | null
+  system_prompt: string | null
+  status: string
+  final_response: string | null
+  error: string | null
+  turns_used: number
+  tool_calls_used: number
+  handle: string | null
+  attempt: number
+  last_turn_at: string | null
+  created_at: string
+  updated_at: string
+  messages?: SubagentMessageRow[]
+}
