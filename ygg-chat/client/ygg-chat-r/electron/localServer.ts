@@ -1161,6 +1161,69 @@ function tryEnableSqliteVec(database: Database.Database): { available: boolean; 
   }
 }
 
+/**
+ * A single, run-ONCE schema migration. `up` must be IDEMPOTENT (guard ALTERs with a
+ * PRAGMA table_info check, use CREATE ... IF NOT EXISTS) so a crash between applying
+ * the DDL and stamping user_version is harmless — the next launch re-runs it as a
+ * no-op and then stamps. Never edit or reorder a shipped migration; only APPEND a
+ * new one with the next integer version.
+ */
+interface SchemaMigration {
+  version: number
+  name: string
+  up: (database: Database.Database) => void
+}
+
+const SCHEMA_MIGRATIONS: SchemaMigration[] = [
+  {
+    version: 1,
+    name: 'subagent_manager_columns',
+    up: database => {
+      // subagent_runs gained handle / attempt / last_turn_at (+ the handle & tool_call
+      // indexes) for the subagent-manager work. Databases created before it lack the
+      // columns; add them, then the indexes. Guarded so it is also a safe no-op on a
+      // fresh DB whose CREATE TABLE already declared the columns.
+      const columns = database.prepare('PRAGMA table_info(subagent_runs)').all() as { name: string }[]
+      const hasColumn = (name: string) => columns.some(column => column.name === name)
+      if (!hasColumn('handle')) database.exec('ALTER TABLE subagent_runs ADD COLUMN handle TEXT')
+      if (!hasColumn('attempt')) database.exec('ALTER TABLE subagent_runs ADD COLUMN attempt INTEGER NOT NULL DEFAULT 0')
+      if (!hasColumn('last_turn_at')) database.exec('ALTER TABLE subagent_runs ADD COLUMN last_turn_at DATETIME')
+      database.exec(`
+        CREATE INDEX IF NOT EXISTS idx_subagent_runs_tool_call ON subagent_runs(tool_call_id, created_at) WHERE tool_call_id IS NOT NULL;
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_subagent_runs_handle ON subagent_runs(handle) WHERE handle IS NOT NULL;
+      `)
+    },
+  },
+]
+
+/**
+ * Apply pending schema migrations exactly once each, tracked by SQLite's per-database
+ * PRAGMA user_version. Migrations are applied in ascending version order; user_version
+ * is stamped only AFTER a migration's `up` succeeds (each `up` is idempotent, so a
+ * partial/crashed apply is retried harmlessly next launch). A fresh database — whose
+ * CREATE TABLE blocks already match the latest schema — still passes through these as
+ * no-ops and gets stamped to the latest version, so fresh and migrated installs
+ * converge. Throws if a migration fails (surfacing a real schema problem loudly).
+ */
+function runSchemaMigrations(database: Database.Database): void {
+  const currentVersion = Number(database.pragma('user_version', { simple: true })) || 0
+  const targetVersion = SCHEMA_MIGRATIONS.reduce((max, migration) => Math.max(max, migration.version), 0)
+  if (currentVersion >= targetVersion) return
+
+  for (const migration of SCHEMA_MIGRATIONS) {
+    if (migration.version <= currentVersion) continue
+    try {
+      migration.up(database)
+      // Stamp only after the (idempotent) DDL succeeds — never before.
+      database.pragma(`user_version = ${migration.version}`)
+      console.log(`[LocalServer] Applied schema migration v${migration.version} (${migration.name})`)
+    } catch (error) {
+      console.error(`[LocalServer] Schema migration v${migration.version} (${migration.name}) failed:`, error)
+      throw error
+    }
+  }
+}
+
 // Initialize database at specified path
 function initializeLocalDatabase(dbPath: string) {
   currentDbPath = dbPath
@@ -1442,10 +1505,13 @@ function initializeLocalDatabase(dbPath: string) {
 
     CREATE INDEX IF NOT EXISTS idx_subagent_runs_parent ON subagent_runs(parent_message_id, created_at);
     CREATE INDEX IF NOT EXISTS idx_subagent_runs_conversation ON subagent_runs(conversation_id, created_at);
-    CREATE INDEX IF NOT EXISTS idx_subagent_runs_tool_call ON subagent_runs(tool_call_id, created_at) WHERE tool_call_id IS NOT NULL;
-    CREATE UNIQUE INDEX IF NOT EXISTS idx_subagent_runs_handle ON subagent_runs(handle) WHERE handle IS NOT NULL;
     CREATE INDEX IF NOT EXISTS idx_subagent_messages_run_seq ON subagent_messages(run_id, sequence);
   `)
+  // NOTE: the tool_call and handle indexes are created in the idempotent migration
+  // block below (after the handle column is guaranteed to exist). They MUST NOT be
+  // created here: on a pre-existing subagent_runs table the CREATE TABLE above is a
+  // no-op, so this unconditional block would reference the not-yet-added `handle`
+  // column and crash initializeLocalDatabase with "no such column: handle".
 
   // Idempotent migration for databases created by the previous inline schema.
   try {
@@ -1466,26 +1532,11 @@ function initializeLocalDatabase(dbPath: string) {
     console.warn('[LocalServer] Failed to migrate content lineage columns:', error)
   }
 
-  // Idempotent migration: subagent_manager columns (handle, attempt, last_turn_at)
-  // for databases created before the subagent-manager work.
-  try {
-    const subagentRunColumns = db.prepare('PRAGMA table_info(subagent_runs)').all() as { name: string }[]
-    if (!subagentRunColumns.some(column => column.name === 'handle')) {
-      db.exec('ALTER TABLE subagent_runs ADD COLUMN handle TEXT')
-    }
-    if (!subagentRunColumns.some(column => column.name === 'attempt')) {
-      db.exec('ALTER TABLE subagent_runs ADD COLUMN attempt INTEGER NOT NULL DEFAULT 0')
-    }
-    if (!subagentRunColumns.some(column => column.name === 'last_turn_at')) {
-      db.exec('ALTER TABLE subagent_runs ADD COLUMN last_turn_at DATETIME')
-    }
-    db.exec(`
-      CREATE INDEX IF NOT EXISTS idx_subagent_runs_tool_call ON subagent_runs(tool_call_id, created_at) WHERE tool_call_id IS NOT NULL;
-      CREATE UNIQUE INDEX IF NOT EXISTS idx_subagent_runs_handle ON subagent_runs(handle) WHERE handle IS NOT NULL;
-    `)
-  } catch (error) {
-    console.warn('[LocalServer] Failed to migrate subagent_manager columns:', error)
-  }
+  // Versioned, run-ONCE schema migrations (tracked by PRAGMA user_version). Runs
+  // AFTER the CREATE TABLE ... blocks above so every table exists, and BEFORE the
+  // prepared statements below (which reference the migrated columns). See
+  // runSchemaMigrations / SCHEMA_MIGRATIONS for the ordered list.
+  runSchemaMigrations(db)
 
   db.exec(`
     CREATE TABLE IF NOT EXISTS message_attachments (

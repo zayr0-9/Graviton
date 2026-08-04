@@ -61,6 +61,30 @@ reconciler, the persisted transcript viewer, and live streaming are all in.
 
 ---
 
+## Schema migration mechanism (post-fix)
+
+The Phase 0 schema additions (`handle`/`attempt`/`last_turn_at` on `subagent_runs`
++ the `handle`/`tool_call` indexes) originally lived in an inline, every-launch
+idempotent block — but the partial-unique **`idx_subagent_runs_handle` index was in
+the UNCONDITIONAL `CREATE TABLE` exec block**, so on a pre-existing DB (table
+already there, no `handle` column) it crashed `initializeLocalDatabase` with
+`SqliteError: no such column: handle` and the local server failed to start.
+
+Fixed by introducing a **run-once versioned migration runner** in `localServer.ts`
+(`runSchemaMigrations` + `SCHEMA_MIGRATIONS`, tracked by `PRAGMA user_version`):
+- The unconditional `CREATE TABLE` block now creates only always-safe indexes
+  (parent/conversation/message-seq); the `handle` + `tool_call` indexes moved into
+  migration **v1** (`subagent_manager_columns`), which runs AFTER the `ALTER`s that
+  guarantee the columns.
+- Each migration runs at most once (skipped when `user_version >= version`), stamped
+  only after its idempotent `up` succeeds → crash-safe (retried harmlessly). Fresh
+  DBs pass through as no-ops and converge to the same `user_version`.
+- Verified against `node:sqlite` (15 checks): pre-Phase-0 DB migrates without the
+  crash, columns+indexes added, legacy rows preserved, `WHERE handle=?` prepares,
+  second launch is a clean no-op, fresh DB converges, `up` runs exactly once.
+- **Future schema changes: append a new numbered migration; never edit/reorder a
+  shipped one.**
+
 ## Phase 0 — Persistence & schema foundations ✅ (in `8241cd7`)
 
 **`electron/localServer.ts`**
