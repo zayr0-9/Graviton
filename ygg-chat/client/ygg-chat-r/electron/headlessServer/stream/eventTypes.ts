@@ -1,3 +1,3 @@
-import type { HeadlessStreamEvent } from '../contracts/headlessApi.js'
+import type { HeadlessStreamEvent } from '../../../../../shared/headlessApi.js'
 
 export type ChatSseEvent = HeadlessStreamEvent

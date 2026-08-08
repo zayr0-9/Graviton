@@ -2100,7 +2100,12 @@ export class OpenAiChatgptProvider implements HeadlessProvider {
     const sessionId = input.railwayTurn?.conversationId?.trim() || traceId
     const requestId = (input.railwayTurn as any)?.runId?.trim?.() || sessionId
     const messages = toCodexMessages(input)
-    const reasoningEffort = input.reasoningConfig?.effort
+    // BEHAVIOUR CHANGE: this read was `input.reasoningConfig?.effort`, but
+    // ProviderGenerateInput has no such field — callers set reasoningConfig on
+    // railwayTurn (toolLoopService.ts sets it there from ChatOrchestrator /
+    // SubagentRunService). The old read was therefore always undefined and the
+    // Codex provider never received a reasoning effort.
+    const reasoningEffort = input.railwayTurn?.reasoningConfig?.effort
     const codexProvider = new CodexResponsesProvider({
       auth,
       reasoningEffort:

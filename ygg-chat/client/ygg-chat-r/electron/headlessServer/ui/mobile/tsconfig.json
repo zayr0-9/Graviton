@@ -1,0 +1,28 @@
+{
+  // The mobile LAN UI is a browser React app bundled by electron/esbuild.main.mjs
+  // (entry src/main.tsx -> assets/mobile-app.js). It is NOT part of the Node-only
+  // electron project (which excludes this directory) and NOT part of the renderer
+  // project (tsconfig.app.json includes only `src` + ygg-chat/shared).
+  //
+  // Without this file nothing type-checks the mobile app at all, and esbuild strips
+  // types without checking them. That is how its local copy of the SSE union drifted
+  // from the server unnoticed. Run it with `npm run typecheck:mobile`.
+  "compilerOptions": {
+    "target": "ES2020",
+    "lib": ["ES2020", "DOM", "DOM.Iterable"],
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "jsx": "react-jsx",
+    "resolveJsonModule": true,
+    "allowSyntheticDefaultImports": true,
+    "esModuleInterop": true,
+    "isolatedModules": true,
+    "noEmit": true,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true,
+    // Matches tsconfig.app.json. The point of this project is to catch wire-contract
+    // drift, not to run a strictness migration on 6,700 lines of UI code.
+    "strict": false
+  },
+  "include": ["src", "tailwind.config.ts"]
+}

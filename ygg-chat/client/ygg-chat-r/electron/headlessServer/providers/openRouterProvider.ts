@@ -1,4 +1,4 @@
-import type { HeadlessStreamEvent } from '../contracts/headlessApi.js'
+import type { HeadlessStreamEvent } from '../../../../../shared/headlessApi.js'
 import type { OpenAIContextUsage } from '../../../../../shared/contextUsage.js'
 import { normalizeAuthorizationToken, syncOpenRouterTokenFromElectronSession } from './electronAppAuth.js'
 import type { AppAuthTokenManager } from '../services/appAuthTokenManager.js'

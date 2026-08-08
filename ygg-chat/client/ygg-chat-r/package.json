@@ -1,7 +1,7 @@
 {
   "name": "graviton",
   "private": true,
-  "version": "0.3.2",
+  "version": "0.3.3",
   "description": "YggChat desktop client",
   "homepage": "https://yggchat.com",
   "author": {
@@ -18,7 +18,9 @@
     "build": "cross-env BUILD_TARGET=web tsc -b && cross-env BUILD_TARGET=web vite build",
     "build:web": "cross-env BUILD_TARGET=web tsc -b && cross-env BUILD_TARGET=web vite build",
     "build:electron": "cross-env BUILD_TARGET=electron tsc -b && cross-env BUILD_TARGET=electron vite build",
-    "build:electron:main": "node electron/esbuild.main.mjs",
+    "typecheck:electron": "tsc -p electron/tsconfig.json --noEmit",
+    "typecheck:mobile": "tsc -p electron/headlessServer/ui/mobile/tsconfig.json --noEmit",
+    "build:electron:main": "npm run typecheck:electron && npm run typecheck:mobile && node electron/esbuild.main.mjs",
     "rebuild:client": "npx @electron/rebuild -f -w better-sqlite3 -w keytar -w node-pty -v 38.8.4",
     "build:win": "npm run build:electron && npm run build:electron:main && electron-builder --win",
     "build:linux": "npm run build:electron && npm run build:electron:main && electron-builder --linux",

@@ -8,20 +8,20 @@
  * optimistic-message clear, terminal messageId capture, error rethrow) are owned
  * by runServerChatLoop, which knows the operation.
  *
- * The renderer and the electron headless server are separate TS projects, so the
- * server's HeadlessStreamEvent union is mirrored loosely here rather than imported
- * across the boundary. Keep this in sync with
- * electron/headlessServer/contracts/headlessApi.ts.
+ * The event union is IMPORTED from the shared wire contract, not mirrored here.
+ * Adding a server event type therefore surfaces as an unhandled `switch` case
+ * rather than as a silent runtime no-op.
  */
 
 import { chatSliceActions } from './chatSlice'
 import type { Message } from './chatTypes'
+import type { HeadlessStreamFrame } from '../../../../../shared/headlessApi'
 
-/** Loose mirror of the server's HeadlessStreamEvent union. */
-export interface ServerStreamEvent {
-  type: string
-  [key: string]: any
-}
+/**
+ * One server SSE frame as the renderer receives it: a HeadlessStreamEvent plus the
+ * optional `seq` cursor spliced on by the resumable path.
+ */
+export type ServerStreamEvent = HeadlessStreamFrame
 
 export interface ProjectionContext {
   streamId: string

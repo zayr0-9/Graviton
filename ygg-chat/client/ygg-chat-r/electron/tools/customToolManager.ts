@@ -97,7 +97,7 @@ function describeSchemaField(name: string, schema: any): string {
   if (!schema || typeof schema !== 'object') return `${name}: any`
 
   const fieldType = Array.isArray(schema.type) ? schema.type.join('|') : schema.type
-  const enumValues = Array.isArray(schema.enum) ? schema.enum.map(v => JSON.stringify(v)).join(', ') : null
+  const enumValues = Array.isArray(schema.enum) ? schema.enum.map((v: any) => JSON.stringify(v)).join(', ') : null
 
   if (enumValues) {
     const enumType = fieldType ? `${fieldType}, ` : ''

@@ -218,7 +218,10 @@ export function registerCustomToolsRoutes(app: Express): void {
   })
 
   app.get('/api/headless/custom-tools/ui/:name/*', async (req, res) => {
-    await handleServeCustomToolUi(req, res, req.params[0])
+    // @types/express is ^5 while express is ^4.21.2. Express 4 exposes an unnamed
+    // wildcard capture as req.params[0]; the v5 types model it as { "": string[] }.
+    const wildcardParams = req.params as unknown as Record<string, string | undefined>
+    await handleServeCustomToolUi(req, res, wildcardParams[0])
   })
 
   app.patch('/api/headless/custom-tools/:name', async (req, res) => {

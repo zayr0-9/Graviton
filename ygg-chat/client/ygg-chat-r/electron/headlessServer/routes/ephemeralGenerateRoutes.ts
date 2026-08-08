@@ -206,15 +206,23 @@ function getRemoteApiBase(): string {
   return (process.env.YGG_API_URL || process.env.VITE_API_URL || 'https://webdrasil-production.up.railway.app/api').replace(/\/+$/, '')
 }
 
-function resolveRemoteAppAccessToken(
+async function resolveRemoteAppAccessToken(
   tokenStore: ProviderTokenStore,
   userId?: string | null,
   accessToken?: string | null
-): string {
+): Promise<string> {
   const directToken = normalizeAuthorizationToken(accessToken)
   if (directToken) return directToken
 
-  syncOpenRouterTokenFromElectronSession(tokenStore)
+  // MUST be awaited: this refreshes an expiring Electron session and upserts the
+  // result into the token store, and the very next line reads that store. Left
+  // unawaited it could not affect the read it precedes, so the refresh was dead
+  // weight — and its rejection landed as an unhandled promise long after the
+  // response, which under vitest surfaced inside whichever test was running next.
+  //
+  // Still best-effort: a sync failure must not fail the request, because the stored
+  // and env-var fallbacks below can both still satisfy it.
+  await syncOpenRouterTokenFromElectronSession(tokenStore).catch(() => {})
   const stored = userId ? tokenStore.get('openrouter', userId) : tokenStore.getLatest('openrouter')
   const storedToken = normalizeAuthorizationToken(stored?.accessToken)
   if (storedToken) return storedToken
@@ -259,7 +267,7 @@ async function runRemoteOpenRouterEphemeralGenerate(tokenStore: ProviderTokenSto
     return { error: 'content is required', status: 400 as const }
   }
 
-  const accessToken = resolveRemoteAppAccessToken(tokenStore, parsed.userId, parsed.accessToken)
+  const accessToken = await resolveRemoteAppAccessToken(tokenStore, parsed.userId, parsed.accessToken)
   const res = await fetch(`${getRemoteApiBase()}/generate/ephemeral`, {
     method: 'POST',
     headers: {

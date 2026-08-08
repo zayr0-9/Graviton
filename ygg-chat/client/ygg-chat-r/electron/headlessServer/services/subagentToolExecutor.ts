@@ -1,4 +1,4 @@
-import type { HeadlessSubagentStreamRequest } from '../contracts/headlessApi.js'
+import type { HeadlessSubagentStreamRequest } from '../../../../../shared/headlessApi.js'
 import type { ProviderToolCall } from '../providers/openRouterProvider.js'
 import type { SubagentRunRow, SubagentRunStatus } from '../persistence/subagentRunRepo.js'
 import type { ToolExecutionContext, ToolExecutor } from './toolLoopService.js'

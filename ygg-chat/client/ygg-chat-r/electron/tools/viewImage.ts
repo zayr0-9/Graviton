@@ -123,7 +123,7 @@ export async function viewImage(inputPath: string, options: ViewImageOptions = {
     throw new Error(`unsupported or unknown image format for '${inputPath}'`)
   }
 
-  const detail = options.detail === 'original' ? 'original' : 'high'
+  const detail: 'high' | 'original' = options.detail === 'original' ? 'original' : 'high'
   const imageUrl = `data:${mimeType};base64,${bytes.toString('base64')}`
   const summary = `[Image: ${mimeType}, ${(bytes.length / 1024).toFixed(1)} KB, detail=${detail}]`
   const persistedContent = {

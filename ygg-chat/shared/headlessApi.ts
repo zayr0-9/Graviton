@@ -1,4 +1,16 @@
-import type { OpenAIContextUsage } from '../../../../../shared/contextUsage.js'
+/**
+ * The renderer <-> headless server wire contract.
+ *
+ * Lives in `ygg-chat/shared/` so BOTH sides compile against ONE declaration: the
+ * server (electron/tsconfig.json) and the renderer (tsconfig.app.json, which
+ * includes `../../shared/**` and aliases it as `@shared/*`). Do not restate these
+ * shapes in a client — import them.
+ *
+ * Import style differs per project and both are correct: the server resolves
+ * NodeNext-style and writes the `.js` extension, the renderer resolves
+ * bundler-style and writes none.
+ */
+import type { OpenAIContextUsage } from './contextUsage.js'
 
 export type HeadlessChatOperation = 'send' | 'repeat' | 'branch' | 'edit-branch'
 
@@ -254,3 +266,22 @@ export type HeadlessStreamEvent =
       resetAt?: number
       assistantMessage?: any
     }
+
+/**
+ * Wire envelope for one SSE frame.
+ *
+ * On the resumable (run-session) path `chatRoutes` splices a monotonic `seq` onto
+ * every frame it relays or replays; direct non-resumable writes omit it. `seq` is
+ * the reattach cursor — the renderer stores the highest applied value and passes it
+ * back as `?fromSeq=` on `GET /api/streams/:streamId`.
+ *
+ * Written as a distributive conditional so `Framed<A | B>` stays a union of framed
+ * members. A plain `(A | B) & { seq?: number }` would not narrow on `type` reliably.
+ */
+export type Framed<E> = E extends unknown ? E & { seq?: number } : never
+
+/** One frame on a main chat stream, as a client receives it. */
+export type HeadlessStreamFrame = Framed<HeadlessStreamEvent>
+
+/** One frame on a subagent stream, as a client receives it. */
+export type HeadlessSubagentStreamFrame = Framed<HeadlessSubagentStreamEvent>

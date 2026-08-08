@@ -91,8 +91,12 @@ function validateAndResolvePath(
 
   // Detect if we should use POSIX logic (WSL paths on Windows)
   // If on Windows, but paths start with '/', treat as WSL/Linux path
-  const usePosix =
+  // Boolean(): the && / || chain yields `string | boolean | undefined` when inputPath or
+  // rootPath is an empty string. Only ever used as a boolean (below, and by
+  // isManagedToolPath), so coercing here changes nothing at runtime.
+  const usePosix = Boolean(
     process.platform === 'win32' && ((inputPath && inputPath.startsWith('/')) || (rootPath && rootPath.startsWith('/')))
+  )
 
   const pathModule = usePosix ? path.posix : path
 
@@ -383,6 +387,11 @@ type BuiltInToolHandler = (
     conversationId?: string | null
     messageId?: string | null
     streamId?: string | null
+    // Both are supplied by callers (see the /api/tools/execute handler below, which
+    // destructures them off req.body) and read by the edit/create/delete handlers for
+    // pre-edit backups. They were missing here, so those reads did not type-check.
+    parentMessageId?: string | null
+    toolCallId?: string | null
   }
 ) => Promise<ToolResult>
 

@@ -660,7 +660,7 @@ class CustomToolRegistry extends EventEmitter {
 
     try {
       this.stateWatcher = fs.watch(stateDir, (_event, filename) => {
-        const name = typeof filename === 'string' ? filename : filename?.toString()
+        const name = typeof filename === 'string' ? filename : ''
         if (!name) return
         if (path.basename(name) !== CUSTOM_TOOLS_STATE_FILE) return
         this.scheduleWatcherReload('state')
@@ -728,7 +728,7 @@ class CustomToolRegistry extends EventEmitter {
     const dir = getCustomToolsDirectory()
     try {
       this.rootWatcher = fs.watch(dir, { recursive: true }, (_event, filename) => {
-        const name = typeof filename === 'string' ? filename : filename?.toString()
+        const name = typeof filename === 'string' ? filename : ''
         if (name && shouldIgnoreCustomToolsWatchPath(name)) return
         this.scheduleWatcherReload('root_recursive')
       })
@@ -736,7 +736,7 @@ class CustomToolRegistry extends EventEmitter {
       console.log('[CustomToolLoader] Auto-refresh watcher enabled (recursive)')
     } catch {
       this.rootWatcher = fs.watch(dir, (_event, filename) => {
-        const name = typeof filename === 'string' ? filename : filename?.toString()
+        const name = typeof filename === 'string' ? filename : ''
         if (name && shouldIgnoreCustomToolsWatchPath(name)) return
         this.scheduleWatcherReload('root')
       })

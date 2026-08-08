@@ -1,9 +1,22 @@
 import './__testSupport__/localStorageShim' // must run before chatSlice import (reads localStorage at init)
 import { describe, it, expect } from 'vitest'
-import { projectServerEvent, normalizeServerMessage, type ProjectionContext } from './sseProjection'
+import { projectServerEvent, normalizeServerMessage, type ProjectionContext, type ServerStreamEvent } from './sseProjection'
 import { chatSliceActions } from './chatSlice'
 
 const ctx: ProjectionContext = { streamId: 'stream-1', conversationId: 'conv-1' }
+
+/**
+ * Build a deliberately PARTIAL event fixture.
+ *
+ * projectServerEvent reads only a few fields per event type, so most tests below
+ * pass complete, type-checked literals. Use this helper ONLY where the fixture is
+ * intentionally incomplete (it omits wire fields the projection never reads) or
+ * intentionally invalid (the forward-compatibility case, which asserts that an
+ * unrecognised `type` falls through to `default:`). Keeping the cast here rather
+ * than widening ServerStreamEvent means every other fixture stays checked against
+ * the real wire union.
+ */
+const partial = (event: Record<string, unknown>): ServerStreamEvent => event as unknown as ServerStreamEvent
 const types = (actions: { type: string }[]) => actions.map(a => a.type)
 
 describe('normalizeServerMessage', () => {
@@ -42,7 +55,7 @@ describe('normalizeServerMessage', () => {
 
 describe('projectServerEvent', () => {
   it('started seeds branch anchors from the server parentId', () => {
-    const a = projectServerEvent({ type: 'started', parentId: 'p1' }, ctx)
+    const a = projectServerEvent(partial({ type: 'started', parentId: 'p1' }), ctx)
     expect(types(a)).toEqual([chatSliceActions.streamLineageUpdated.type])
     expect((a[0].payload as any)).toMatchObject({
       streamId: 'stream-1',
@@ -53,13 +66,13 @@ describe('projectServerEvent', () => {
   })
 
   it('started projects lineage identity even without a legacy parent anchor', () => {
-    const a = projectServerEvent({ type: 'started', parentId: null, lineageId: 'lineage-1' }, ctx)
+    const a = projectServerEvent(partial({ type: 'started', parentId: null, lineageId: 'lineage-1' }), ctx)
     expect(types(a)).toEqual([chatSliceActions.streamLineageUpdated.type])
     expect(a[0].payload as any).toMatchObject({ streamId: 'stream-1', lineageId: 'lineage-1' })
   })
 
   it('started with neither parentId nor lineageId is a no-op', () => {
-    expect(projectServerEvent({ type: 'started', parentId: null }, ctx)).toEqual([])
+    expect(projectServerEvent(partial({ type: 'started', parentId: null }), ctx)).toEqual([])
   })
 
   it('user_message_persisted => messageAdded, messageBranchCreated, streamLineageUpdated (in order)', () => {
@@ -154,11 +167,11 @@ describe('projectServerEvent', () => {
 
   it('projects a completed server compaction summary into the active branch', () => {
     const a = projectServerEvent(
-      {
+      partial({
         type: 'context_compaction',
         status: 'completed',
         summaryMessage: { id: 'summary-1', role: 'system', note: '__auto_compaction_summary__', content: 'summary' },
-      },
+      }),
       ctx
     )
     expect(types(a)).toEqual([
@@ -171,8 +184,8 @@ describe('projectServerEvent', () => {
   })
 
   it('does not project non-terminal compaction status events', () => {
-    expect(projectServerEvent({ type: 'context_compaction', status: 'started' }, ctx)).toEqual([])
-    expect(projectServerEvent({ type: 'context_compaction', status: 'failed' }, ctx)).toEqual([])
+    expect(projectServerEvent(partial({ type: 'context_compaction', status: 'started' }), ctx)).toEqual([])
+    expect(projectServerEvent(partial({ type: 'context_compaction', status: 'failed' }), ctx)).toEqual([])
   })
 
   it('permission_required carries the correlation ids the resolver thunk needs for /resume', () => {
@@ -206,7 +219,7 @@ describe('projectServerEvent', () => {
 
   it('no-op events return an empty action list', () => {
     for (const type of ['provider_routed', 'context_usage', 'tool_execution', 'tool_request', 'unknown_future_event']) {
-      expect(projectServerEvent({ type }, ctx)).toEqual([])
+      expect(projectServerEvent(partial({ type }), ctx)).toEqual([])
     }
   })
 })

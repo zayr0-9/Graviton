@@ -8,6 +8,26 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { ProviderTokenStore } from '../../providers/tokenStore.js'
 import { registerEphemeralGenerateRoutes } from '../ephemeralGenerateRoutes.js'
 
+// Neutralize the Electron-session sync. It does `new Conf({ projectName: 'ygg-chat-r' })`,
+// which reads the DEVELOPER'S REAL signed-in config and, when that session is near
+// expiry, POSTs to Supabase to refresh it — then upserts the result into the very
+// token store these tests preload.
+//
+// The `XDG_CONFIG_HOME` temp dir set in beforeEach was meant to isolate that, but
+// `conf` resolves its path through `env-paths`, which on macOS returns
+// `~/Library/Preferences/<name>` and ignores XDG_CONFIG_HOME entirely. So the
+// isolation worked on Linux/CI and silently leaked on darwin. Mocking the one export
+// isolates it on every platform. Everything else in the module stays real —
+// normalizeAuthorizationToken is used by the route under test.
+const authMocks = vi.hoisted(() => ({
+  syncOpenRouterTokenFromElectronSession: vi.fn(async (_store: unknown) => {}),
+}))
+
+vi.mock('../../providers/electronAppAuth.js', async importOriginal => ({
+  ...(await importOriginal<typeof import('../../providers/electronAppAuth.js')>()),
+  syncOpenRouterTokenFromElectronSession: authMocks.syncOpenRouterTokenFromElectronSession,
+}))
+
 describe('registerEphemeralGenerateRoutes', () => {
   let appServer: Server
   let baseUrl = ''
@@ -170,6 +190,48 @@ describe('registerEphemeralGenerateRoutes', () => {
     expect(payload.error).toContain('Graviton app auth token missing')
   })
 
+  it('awaits the electron-session sync before reading the token store', async () => {
+    // resolveRemoteAppAccessToken runs syncOpenRouterTokenFromElectronSession to
+    // refresh an expiring session INTO the token store, then reads that store on the
+    // next line. The call used to be un-awaited, so the read always won the race and
+    // the refreshed token could never be used. Asserting on the Authorization header
+    // is what pins the ordering: a token that only exists after the sync resolves can
+    // only appear here if the sync was awaited.
+    let seenAuthorization: string | null = null
+    authMocks.syncOpenRouterTokenFromElectronSession.mockImplementationOnce(async (store: any) => {
+      await new Promise(resolve => setTimeout(resolve, 5))
+      store.upsert({ provider: 'openrouter', userId: 'u-synced', accessToken: 'synced-token' })
+    })
+
+    const nativeFetch = globalThis.fetch.bind(globalThis)
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input: any, init: any) => {
+      const url = String(typeof input === 'string' ? input : (input?.url ?? input))
+      if (url.includes('/generate/ephemeral')) {
+        seenAuthorization = String(init?.headers?.Authorization ?? '')
+        return new Response('data: {"text":"hi"}\n\ndata: [DONE]\n\n', {
+          status: 200,
+          headers: { 'content-type': 'text/event-stream' },
+        }) as any
+      }
+      return new Response('{}', { status: 401, headers: { 'content-type': 'application/json' } }) as any
+    })
+
+    const res = await nativeFetch(`${baseUrl}/api/headless/ephemeral/chat`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        provider: 'openrouter',
+        content: 'hello',
+        modelName: 'anthropic/claude-3.5-sonnet',
+        history: [],
+      }),
+    })
+
+    expect(res.status).toBe(200)
+    expect(authMocks.syncOpenRouterTokenFromElectronSession).toHaveBeenCalledTimes(1)
+    expect(seenAuthorization).toBe('Bearer synced-token')
+  })
+
   it('ephemeral openrouter requests can use preloaded token store auth without passing userId', async () => {
     tokenStore.upsert({
       provider: 'openrouter',
@@ -178,12 +240,22 @@ describe('registerEphemeralGenerateRoutes', () => {
     })
 
     const nativeFetch = globalThis.fetch.bind(globalThis)
-    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
-      new Response('data: {"text":"hi"}\n\ndata: [DONE]\n\n', {
-        status: 200,
-        headers: { 'content-type': 'text/event-stream' },
-      }) as any
-    )
+    // Return a FRESH Response per call, dispatched by URL, rather than
+    // `mockResolvedValue` — that hands back ONE Response instance whose body can only
+    // be read once, so any second outbound call on this path fails with
+    // "Invalid state: ReadableStream is locked" and the route 500s.
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input: any) => {
+      const url = String(typeof input === 'string' ? input : (input?.url ?? input))
+      if (url.includes('/generate/ephemeral')) {
+        return new Response('data: {"text":"hi"}\n\ndata: [DONE]\n\n', {
+          status: 200,
+          headers: { 'content-type': 'text/event-stream' },
+        }) as any
+      }
+      // Anything else (the session refresh) fails closed, which is what this test
+      // wants: the route must fall back to the token preloaded into the store above.
+      return new Response('{}', { status: 401, headers: { 'content-type': 'application/json' } }) as any
+    })
 
     const res = await nativeFetch(`${baseUrl}/api/headless/ephemeral/chat`, {
       method: 'POST',

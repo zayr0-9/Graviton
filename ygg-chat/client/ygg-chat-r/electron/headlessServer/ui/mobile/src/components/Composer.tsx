@@ -12,7 +12,9 @@ interface ComposerProps {
   branchLabel?: string
   onCancelBranch?: () => void
   slashCommands?: string[]
-  onSlashCommandSelect?: (command: string) => { handled: boolean; clearInput?: boolean } | void
+  // `| undefined`, not `| void`: selectSlashCommand reads `.handled` off the result,
+  // and a `void` return type forbids that property access even behind `?.`.
+  onSlashCommandSelect?: (command: string) => { handled: boolean; clearInput?: boolean } | undefined
 }
 
 const DEFAULT_ROWS = 1

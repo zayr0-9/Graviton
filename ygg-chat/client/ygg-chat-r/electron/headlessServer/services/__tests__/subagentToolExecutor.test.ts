@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import type { HeadlessSubagentStreamRequest } from '../../contracts/headlessApi.js'
+import type { HeadlessSubagentStreamRequest } from '../../../../../../shared/headlessApi.js'
 import type { SubagentRunRow, SubagentRunStatus } from '../../persistence/subagentRunRepo.js'
 import {
   createSubagentDispatchExecutor,

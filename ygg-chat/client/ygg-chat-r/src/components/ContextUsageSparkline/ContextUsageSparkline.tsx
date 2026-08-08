@@ -113,7 +113,13 @@ export const ContextUsageSparkline: React.FC<ContextUsageSparklineProps> = ({ po
           strokeDasharray='2 4'
           strokeWidth='1'
         />
+        {/* initial={false} on all three: without it framer-motion reads a starting value
+            for every animated key off the DOM on mount. These are SVG attributes, so the
+            read returns undefined and motion writes the string "undefined" into d/cx/cy
+            for one frame, which the browser rejects. initial={false} snaps to the target
+            on mount and still interpolates on later updates, which is the intent here. */}
         <motion.path
+          initial={false}
           d={chart.cachedPath}
           animate={{ d: chart.cachedPath }}
           transition={transition}
@@ -125,6 +131,7 @@ export const ContextUsageSparkline: React.FC<ContextUsageSparklineProps> = ({ po
           strokeWidth='1.5'
         />
         <motion.path
+          initial={false}
           d={chart.totalPath}
           animate={{ d: chart.totalPath }}
           transition={transition}
@@ -134,7 +141,12 @@ export const ContextUsageSparkline: React.FC<ContextUsageSparklineProps> = ({ po
           strokeLinejoin='round'
           strokeWidth='2'
         />
+        {/* cx/cy are also set as real attributes so the first paint has a position even
+            before motion takes the values over. */}
         <motion.circle
+          initial={false}
+          cx={WIDTH - PADDING_X}
+          cy={chart.totalEndY}
           animate={{
             cx: WIDTH - PADDING_X,
             cy: chart.totalEndY,

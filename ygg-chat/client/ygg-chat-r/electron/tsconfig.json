@@ -13,10 +13,34 @@
     "forceConsistentCasingInFileNames": true,
     "resolveJsonModule": true,
     "allowSyntheticDefaultImports": true,
-    "noUnusedLocals": true,
-    "noUnusedParameters": true,
+    // Dead-code hygiene, not correctness. Turned off so `typecheck:electron` gates
+    // on real type errors only. Leaving them on would require deleting ~20 retained
+    // declarations (including readCodexSseOutputLegacy_DISABLED, kept on purpose),
+    // which is a separate decision from turning the compiler on. eslint's
+    // no-unused-vars still covers this. See electron/TYPECHECK-DEAD-CODE.md for the list.
+    "noUnusedLocals": false,
+    "noUnusedParameters": false,
     "noImplicitReturns": true
   },
   "include": ["./**/*.ts"],
-  "exclude": ["node_modules", "dist", "dist-electron"]
+  // This project checks the Node-side production code only (electron main + the
+  // headless server). Two areas are deliberately out of scope:
+  //
+  // 1. headlessServer/ui/mobile — a separate React app (main.tsx + tailwind)
+  //    bundled by esbuild.main.mjs. It needs jsx + DOM libs, which do not belong
+  //    in a Node-only project. No server module imports its source.
+  // 2. __tests__ — six server test files import renderer modules from ../src
+  //    (e.g. operationModeSystemPrompt.test.ts -> src/features/chats/subagentClient),
+  //    which transitively pulls in the Redux store and needs DOM + vite/client
+  //    types. Adding DOM here would let server code reference `document` unchecked.
+  //
+  // Both need their own tsconfig to be checked. Tracked as follow-on work.
+  "exclude": [
+    "node_modules",
+    "dist",
+    "dist-electron",
+    "headlessServer/ui/mobile",
+    "**/__tests__/**",
+    "**/*.test.ts"
+  ]
 }

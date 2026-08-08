@@ -1,4 +1,5 @@
 import type { LocalFileEntry, LocalFileListingResponse, LocalFileSearchResponse } from '../../../../../shared/localFileBrowser'
+import type { HeadlessStreamFrame } from '../../../../../../../shared/headlessApi'
 
 export type MessageRole = 'user' | 'assistant' | 'system' | 'tool'
 
@@ -89,32 +90,20 @@ export type ParsedRenderItem =
   | { type: 'reasoning'; key: string; text: string }
   | { type: 'tool'; key: string; group: ToolGroup }
 
-export type HeadlessSseEvent =
-  | { type: 'chunk'; part: 'text' | 'reasoning'; delta: string }
-  | { type: 'chunk'; part: 'tool_call'; toolCall: ToolCallLike }
-  | { type: 'chunk'; part: 'tool_result'; toolResult: ToolResultLike }
-  | { type: 'tool_execution'; status: 'started' | 'completed' | 'failed'; toolCallId: string; toolName: string }
-  | {
-      type: 'tool_loop'
-      status: 'turn_started' | 'turn_completed' | 'max_turns_reached'
-      turn: number
-      maxTurns: number
-      continued?: boolean
-    }
-  | { type: 'complete'; message?: MobileMessage; providerError?: boolean }
-  | { type: 'reauth_required'; message?: string }
-  | {
-      type: 'error',
-      error: string
-      provider?: string
-      modelName?: string
-      retryExhausted?: boolean
-      status?: number
-      errorType?: string
-      resetAt?: number
-      assistantMessage?: MobileMessage
-    }
-  | Record<string, unknown>
+/**
+ * One SSE frame from the headless server.
+ *
+ * IMPORTED from the shared wire contract, not restated here. The previous local
+ * copy declared 6 of the server's 18 event types and had drifted on two enums
+ * (`tool_execution.status` was missing 'aborted'; `tool_loop.status` was missing
+ * 'empty_turn_retry', 'finalization_turn' and 'provider_retry'). It also ended in
+ * `| Record<string, unknown>`, which made the union absorb any object and disabled
+ * narrowing for every member — so neither drift was visible to tsc.
+ *
+ * Handling a subset of the union is still fine: App.applyStreamEvent tests
+ * `event.type` and ignores what it does not render.
+ */
+export type HeadlessSseEvent = HeadlessStreamFrame
 
 export interface MobileCustomTool {
   name: string

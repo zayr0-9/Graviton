@@ -770,7 +770,7 @@ var require_scheduler = __commonJS({
 var require_react_dom_production = __commonJS({
   "node_modules/.pnpm/react-dom@19.2.7_react@19.2.7/node_modules/react-dom/cjs/react-dom.production.js"(exports) {
     "use strict";
-    var React25 = require_react();
+    var React22 = require_react();
     function formatProdErrorMessage(code4) {
       var url = "https://react.dev/errors/" + code4;
       if (1 < arguments.length) {
@@ -810,7 +810,7 @@ var require_react_dom_production = __commonJS({
         implementation
       };
     }
-    var ReactSharedInternals = React25.__CLIENT_INTERNALS_DO_NOT_USE_OR_WARN_USERS_THEY_CANNOT_UPGRADE;
+    var ReactSharedInternals = React22.__CLIENT_INTERNALS_DO_NOT_USE_OR_WARN_USERS_THEY_CANNOT_UPGRADE;
     function getCrossOriginStringAs(as, input) {
       if ("font" === as) return "";
       if ("string" === typeof input)
@@ -946,7 +946,7 @@ var require_react_dom_client_production = __commonJS({
   "node_modules/.pnpm/react-dom@19.2.7_react@19.2.7/node_modules/react-dom/cjs/react-dom-client.production.js"(exports) {
     "use strict";
     var Scheduler = require_scheduler();
-    var React25 = require_react();
+    var React22 = require_react();
     var ReactDOM = require_react_dom();
     function formatProdErrorMessage(code4) {
       var url = "https://react.dev/errors/" + code4;
@@ -1137,7 +1137,7 @@ var require_react_dom_client_production = __commonJS({
       return null;
     }
     var isArrayImpl = Array.isArray;
-    var ReactSharedInternals = React25.__CLIENT_INTERNALS_DO_NOT_USE_OR_WARN_USERS_THEY_CANNOT_UPGRADE;
+    var ReactSharedInternals = React22.__CLIENT_INTERNALS_DO_NOT_USE_OR_WARN_USERS_THEY_CANNOT_UPGRADE;
     var ReactDOMSharedInternals = ReactDOM.__DOM_INTERNALS_DO_NOT_USE_OR_WARN_USERS_THEY_CANNOT_UPGRADE;
     var sharedNotPendingObject = {
       pending: false,
@@ -12583,7 +12583,7 @@ var require_react_dom_client_production = __commonJS({
         0 === i && attemptExplicitHydrationTarget(target);
       }
     };
-    var isomorphicReactPackageVersion$jscomp$inline_1840 = React25.version;
+    var isomorphicReactPackageVersion$jscomp$inline_1840 = React22.version;
     if ("19.2.7" !== isomorphicReactPackageVersion$jscomp$inline_1840)
       throw Error(
         formatProdErrorMessage(
@@ -12702,6 +12702,48 @@ var require_client = __commonJS({
     if (true) {
       checkDCE();
       module.exports = require_react_dom_client_production();
+    } else {
+      module.exports = null;
+    }
+  }
+});
+
+// node_modules/.pnpm/react@19.2.7/node_modules/react/cjs/react-jsx-runtime.production.js
+var require_react_jsx_runtime_production = __commonJS({
+  "node_modules/.pnpm/react@19.2.7/node_modules/react/cjs/react-jsx-runtime.production.js"(exports) {
+    "use strict";
+    var REACT_ELEMENT_TYPE = /* @__PURE__ */ Symbol.for("react.transitional.element");
+    var REACT_FRAGMENT_TYPE = /* @__PURE__ */ Symbol.for("react.fragment");
+    function jsxProd(type, config3, maybeKey) {
+      var key = null;
+      void 0 !== maybeKey && (key = "" + maybeKey);
+      void 0 !== config3.key && (key = "" + config3.key);
+      if ("key" in config3) {
+        maybeKey = {};
+        for (var propName in config3)
+          "key" !== propName && (maybeKey[propName] = config3[propName]);
+      } else maybeKey = config3;
+      config3 = maybeKey.ref;
+      return {
+        $$typeof: REACT_ELEMENT_TYPE,
+        type,
+        key,
+        ref: void 0 !== config3 ? config3 : null,
+        props: maybeKey
+      };
+    }
+    exports.Fragment = REACT_FRAGMENT_TYPE;
+    exports.jsx = jsxProd;
+    exports.jsxs = jsxProd;
+  }
+});
+
+// node_modules/.pnpm/react@19.2.7/node_modules/react/jsx-runtime.js
+var require_jsx_runtime = __commonJS({
+  "node_modules/.pnpm/react@19.2.7/node_modules/react/jsx-runtime.js"(exports, module) {
+    "use strict";
+    if (true) {
+      module.exports = require_react_jsx_runtime_production();
     } else {
       module.exports = null;
     }
@@ -12943,48 +12985,6 @@ var require_cjs3 = __commonJS({
     }
     StyleToJS.default = StyleToJS;
     module.exports = StyleToJS;
-  }
-});
-
-// node_modules/.pnpm/react@19.2.7/node_modules/react/cjs/react-jsx-runtime.production.js
-var require_react_jsx_runtime_production = __commonJS({
-  "node_modules/.pnpm/react@19.2.7/node_modules/react/cjs/react-jsx-runtime.production.js"(exports) {
-    "use strict";
-    var REACT_ELEMENT_TYPE = /* @__PURE__ */ Symbol.for("react.transitional.element");
-    var REACT_FRAGMENT_TYPE = /* @__PURE__ */ Symbol.for("react.fragment");
-    function jsxProd(type, config3, maybeKey) {
-      var key = null;
-      void 0 !== maybeKey && (key = "" + maybeKey);
-      void 0 !== config3.key && (key = "" + config3.key);
-      if ("key" in config3) {
-        maybeKey = {};
-        for (var propName in config3)
-          "key" !== propName && (maybeKey[propName] = config3[propName]);
-      } else maybeKey = config3;
-      config3 = maybeKey.ref;
-      return {
-        $$typeof: REACT_ELEMENT_TYPE,
-        type,
-        key,
-        ref: void 0 !== config3 ? config3 : null,
-        props: maybeKey
-      };
-    }
-    exports.Fragment = REACT_FRAGMENT_TYPE;
-    exports.jsx = jsxProd;
-    exports.jsxs = jsxProd;
-  }
-});
-
-// node_modules/.pnpm/react@19.2.7/node_modules/react/jsx-runtime.js
-var require_jsx_runtime = __commonJS({
-  "node_modules/.pnpm/react@19.2.7/node_modules/react/jsx-runtime.js"(exports, module) {
-    "use strict";
-    if (true) {
-      module.exports = require_react_jsx_runtime_production();
-    } else {
-      module.exports = null;
-    }
   }
 });
 
@@ -48971,11 +48971,11 @@ var require_rehype_highlight = __commonJS({
 });
 
 // electron/headlessServer/ui/mobile/src/main.tsx
-var import_react37 = __toESM(require_react(), 1);
+var import_react34 = __toESM(require_react(), 1);
 var import_client = __toESM(require_client(), 1);
 
 // electron/headlessServer/ui/mobile/src/App.tsx
-var import_react36 = __toESM(require_react(), 1);
+var import_react33 = __toESM(require_react(), 1);
 
 // electron/headlessServer/ui/mobile/src/api.ts
 var jsonFetch = async (url, init2) => {
@@ -49470,10 +49470,7 @@ var mobileApi = {
 };
 
 // electron/headlessServer/ui/mobile/src/components/Composer.tsx
-var import_react7 = __toESM(require_react(), 1);
-
-// electron/headlessServer/ui/mobile/src/components/ui/badge.tsx
-var import_react = __toESM(require_react(), 1);
+var import_react5 = __toESM(require_react(), 1);
 
 // node_modules/.pnpm/clsx@2.1.1/node_modules/clsx/dist/clsx.mjs
 function r(e) {
@@ -49494,14 +49491,16 @@ function clsx() {
 var cn = (...inputs) => clsx(inputs);
 
 // electron/headlessServer/ui/mobile/src/components/ui/badge.tsx
+var import_jsx_runtime = __toESM(require_jsx_runtime(), 1);
 var Badge = ({ className, variant = "default", ...props }) => {
-  return /* @__PURE__ */ import_react.default.createElement("span", { className: cn("ui-badge", `ui-badge--${variant}`, className), ...props });
+  return /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { className: cn("ui-badge", `ui-badge--${variant}`, className), ...props });
 };
 
 // electron/headlessServer/ui/mobile/src/components/ui/button.tsx
-var import_react2 = __toESM(require_react(), 1);
-var Button = import_react2.default.forwardRef(function Button2({ className, variant = "default", size = "md", type = "button", ...props }, ref) {
-  return /* @__PURE__ */ import_react2.default.createElement(
+var import_react = __toESM(require_react(), 1);
+var import_jsx_runtime2 = __toESM(require_jsx_runtime(), 1);
+var Button = import_react.default.forwardRef(function Button2({ className, variant = "default", size = "md", type = "button", ...props }, ref) {
+  return /* @__PURE__ */ (0, import_jsx_runtime2.jsx)(
     "button",
     {
       ref,
@@ -49513,27 +49512,31 @@ var Button = import_react2.default.forwardRef(function Button2({ className, vari
 });
 
 // electron/headlessServer/ui/mobile/src/components/ui/card.tsx
-var import_react3 = __toESM(require_react(), 1);
+var import_jsx_runtime3 = __toESM(require_jsx_runtime(), 1);
 
 // electron/headlessServer/ui/mobile/src/components/ui/input.tsx
-var import_react4 = __toESM(require_react(), 1);
-var Input = import_react4.default.forwardRef(function Input2({ className, ...props }, ref) {
-  return /* @__PURE__ */ import_react4.default.createElement("input", { ref, className: cn("ui-input", className), ...props });
+var import_react2 = __toESM(require_react(), 1);
+var import_jsx_runtime4 = __toESM(require_jsx_runtime(), 1);
+var Input = import_react2.default.forwardRef(function Input2({ className, ...props }, ref) {
+  return /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("input", { ref, className: cn("ui-input", className), ...props });
 });
 
 // electron/headlessServer/ui/mobile/src/components/ui/select.tsx
-var import_react5 = __toESM(require_react(), 1);
-var Select = import_react5.default.forwardRef(function Select2({ className, ...props }, ref) {
-  return /* @__PURE__ */ import_react5.default.createElement("select", { ref, className: cn("ui-select", className), ...props });
+var import_react3 = __toESM(require_react(), 1);
+var import_jsx_runtime5 = __toESM(require_jsx_runtime(), 1);
+var Select = import_react3.default.forwardRef(function Select2({ className, ...props }, ref) {
+  return /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("select", { ref, className: cn("ui-select", className), ...props });
 });
 
 // electron/headlessServer/ui/mobile/src/components/ui/textarea.tsx
-var import_react6 = __toESM(require_react(), 1);
-var Textarea = import_react6.default.forwardRef(function Textarea2({ className, ...props }, ref) {
-  return /* @__PURE__ */ import_react6.default.createElement("textarea", { ref, className: cn("ui-textarea", className), ...props });
+var import_react4 = __toESM(require_react(), 1);
+var import_jsx_runtime6 = __toESM(require_jsx_runtime(), 1);
+var Textarea = import_react4.default.forwardRef(function Textarea2({ className, ...props }, ref) {
+  return /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("textarea", { ref, className: cn("ui-textarea", className), ...props });
 });
 
 // electron/headlessServer/ui/mobile/src/components/Composer.tsx
+var import_jsx_runtime7 = __toESM(require_jsx_runtime(), 1);
 var DEFAULT_ROWS = 1;
 var MAX_ROWS = 6;
 var Composer = ({
@@ -49549,9 +49552,9 @@ var Composer = ({
   slashCommands = [],
   onSlashCommandSelect
 }) => {
-  const textareaRef = (0, import_react7.useRef)(null);
-  const [selectedSlashIndex, setSelectedSlashIndex] = (0, import_react7.useState)(0);
-  const autoResize = (0, import_react7.useCallback)(() => {
+  const textareaRef = (0, import_react5.useRef)(null);
+  const [selectedSlashIndex, setSelectedSlashIndex] = (0, import_react5.useState)(0);
+  const autoResize = (0, import_react5.useCallback)(() => {
     const textarea = textareaRef.current;
     if (!textarea) return;
     const computedStyle = window.getComputedStyle(textarea);
@@ -49565,24 +49568,24 @@ var Composer = ({
     textarea.style.height = `${nextHeight}px`;
     textarea.style.overflowY = textarea.scrollHeight > maxHeight ? "auto" : "hidden";
   }, []);
-  (0, import_react7.useEffect)(() => {
+  (0, import_react5.useEffect)(() => {
     autoResize();
   }, [value, autoResize]);
-  const activeSlashQuery = (0, import_react7.useMemo)(() => {
+  const activeSlashQuery = (0, import_react5.useMemo)(() => {
     const trimmedStart = value.trimStart();
     if (!trimmedStart.startsWith("/") || trimmedStart.includes("\n")) return null;
     const commandText = trimmedStart.slice(1);
     if (commandText.includes(" ")) return null;
     return commandText.toLowerCase();
   }, [value]);
-  const filteredSlashCommands = (0, import_react7.useMemo)(() => {
+  const filteredSlashCommands = (0, import_react5.useMemo)(() => {
     if (activeSlashQuery == null || disabled || slashCommands.length === 0) return [];
     return slashCommands.filter((command) => command.toLowerCase().startsWith(activeSlashQuery));
   }, [activeSlashQuery, disabled, slashCommands]);
-  (0, import_react7.useEffect)(() => {
+  (0, import_react5.useEffect)(() => {
     setSelectedSlashIndex(0);
   }, [activeSlashQuery]);
-  const selectSlashCommand = (0, import_react7.useCallback)(
+  const selectSlashCommand = (0, import_react5.useCallback)(
     (command) => {
       const result = onSlashCommandSelect?.(command);
       if (result?.handled && result.clearInput) {
@@ -49591,76 +49594,96 @@ var Composer = ({
     },
     [onChange, onSlashCommandSelect]
   );
-  return /* @__PURE__ */ import_react7.default.createElement("div", { className: "mobile-composer" }, isBranching ? /* @__PURE__ */ import_react7.default.createElement("div", { className: "mobile-branch-banner" }, /* @__PURE__ */ import_react7.default.createElement("span", null, branchLabel || "Branching from selected message"), onCancelBranch ? /* @__PURE__ */ import_react7.default.createElement(Button, { onClick: onCancelBranch, disabled: disabled || sending, variant: "ghost", size: "sm" }, "Cancel branch") : null) : null, filteredSlashCommands.length > 0 ? /* @__PURE__ */ import_react7.default.createElement("div", { className: "mobile-slash-menu", role: "listbox", "aria-label": "Slash commands" }, /* @__PURE__ */ import_react7.default.createElement("div", { className: "mobile-slash-menu-heading" }, "Commands"), filteredSlashCommands.map((command, index3) => {
-    const selected = index3 === selectedSlashIndex;
-    return /* @__PURE__ */ import_react7.default.createElement(
-      "button",
+  return /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)("div", { className: "mobile-composer", children: [
+    isBranching ? /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)("div", { className: "mobile-branch-banner", children: [
+      /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("span", { children: branchLabel || "Branching from selected message" }),
+      onCancelBranch ? /* @__PURE__ */ (0, import_jsx_runtime7.jsx)(Button, { onClick: onCancelBranch, disabled: disabled || sending, variant: "ghost", size: "sm", children: "Cancel branch" }) : null
+    ] }) : null,
+    filteredSlashCommands.length > 0 ? /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)("div", { className: "mobile-slash-menu", role: "listbox", "aria-label": "Slash commands", children: [
+      /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("div", { className: "mobile-slash-menu-heading", children: "Commands" }),
+      filteredSlashCommands.map((command, index3) => {
+        const selected = index3 === selectedSlashIndex;
+        return /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)(
+          "button",
+          {
+            type: "button",
+            className: selected ? "selected" : void 0,
+            onMouseEnter: () => setSelectedSlashIndex(index3),
+            onClick: () => selectSlashCommand(command),
+            children: [
+              /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("span", { className: "mobile-slash-menu-icon", children: "/" }),
+              /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)("span", { className: "mobile-slash-menu-copy", children: [
+                /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)("span", { className: "mobile-slash-menu-label", children: [
+                  "/",
+                  command
+                ] }),
+                /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("span", { className: "mobile-slash-menu-description", children: "Summarize this branch context" })
+              ] })
+            ]
+          },
+          command
+        );
+      })
+    ] }) : null,
+    /* @__PURE__ */ (0, import_jsx_runtime7.jsx)(
+      Textarea,
       {
-        key: command,
-        type: "button",
-        className: selected ? "selected" : void 0,
-        onMouseEnter: () => setSelectedSlashIndex(index3),
-        onClick: () => selectSlashCommand(command)
-      },
-      /* @__PURE__ */ import_react7.default.createElement("span", { className: "mobile-slash-menu-icon" }, "/"),
-      /* @__PURE__ */ import_react7.default.createElement("span", { className: "mobile-slash-menu-copy" }, /* @__PURE__ */ import_react7.default.createElement("span", { className: "mobile-slash-menu-label" }, "/", command), /* @__PURE__ */ import_react7.default.createElement("span", { className: "mobile-slash-menu-description" }, "Summarize this branch context"))
-    );
-  })) : null, /* @__PURE__ */ import_react7.default.createElement(
-    Textarea,
-    {
-      ref: textareaRef,
-      rows: DEFAULT_ROWS,
-      value,
-      onChange: (event) => onChange(event.target.value),
-      placeholder: isBranching ? "Rewrite branched prompt..." : "Type a message...",
-      disabled,
-      onInput: autoResize,
-      onKeyDown: (event) => {
-        if (filteredSlashCommands.length > 0) {
-          if (event.key === "ArrowDown") {
-            event.preventDefault();
-            setSelectedSlashIndex((index3) => index3 < filteredSlashCommands.length - 1 ? index3 + 1 : 0);
-            return;
+        ref: textareaRef,
+        rows: DEFAULT_ROWS,
+        value,
+        onChange: (event) => onChange(event.target.value),
+        placeholder: isBranching ? "Rewrite branched prompt..." : "Type a message...",
+        disabled,
+        onInput: autoResize,
+        onKeyDown: (event) => {
+          if (filteredSlashCommands.length > 0) {
+            if (event.key === "ArrowDown") {
+              event.preventDefault();
+              setSelectedSlashIndex((index3) => index3 < filteredSlashCommands.length - 1 ? index3 + 1 : 0);
+              return;
+            }
+            if (event.key === "ArrowUp") {
+              event.preventDefault();
+              setSelectedSlashIndex((index3) => index3 > 0 ? index3 - 1 : filteredSlashCommands.length - 1);
+              return;
+            }
+            if (event.key === "Tab") {
+              event.preventDefault();
+              selectSlashCommand(filteredSlashCommands[selectedSlashIndex] || filteredSlashCommands[0]);
+              return;
+            }
+            if (event.key === "Escape") {
+              event.preventDefault();
+              onChange("");
+              return;
+            }
           }
-          if (event.key === "ArrowUp") {
+          if (event.key === "Enter" && !event.shiftKey) {
             event.preventDefault();
-            setSelectedSlashIndex((index3) => index3 > 0 ? index3 - 1 : filteredSlashCommands.length - 1);
-            return;
+            onSubmit();
           }
-          if (event.key === "Tab") {
-            event.preventDefault();
-            selectSlashCommand(filteredSlashCommands[selectedSlashIndex] || filteredSlashCommands[0]);
-            return;
-          }
-          if (event.key === "Escape") {
-            event.preventDefault();
-            onChange("");
-            return;
-          }
-        }
-        if (event.key === "Enter" && !event.shiftKey) {
-          event.preventDefault();
-          onSubmit();
         }
       }
-    }
-  ), /* @__PURE__ */ import_react7.default.createElement(Button, { onClick: onSubmit, disabled: disabled || sending || !value.trim() }, sending ? "Busy" : isBranching ? "Send Branch" : "Send"), disabled && onDisabledInteract ? /* @__PURE__ */ import_react7.default.createElement(
-    "button",
-    {
-      type: "button",
-      className: "mobile-composer-disabled-overlay",
-      onClick: onDisabledInteract,
-      "aria-label": "Composer is disabled. Show reason"
-    }
-  ) : null);
+    ),
+    /* @__PURE__ */ (0, import_jsx_runtime7.jsx)(Button, { onClick: onSubmit, disabled: disabled || sending || !value.trim(), children: sending ? "Busy" : isBranching ? "Send Branch" : "Send" }),
+    disabled && onDisabledInteract ? /* @__PURE__ */ (0, import_jsx_runtime7.jsx)(
+      "button",
+      {
+        type: "button",
+        className: "mobile-composer-disabled-overlay",
+        onClick: onDisabledInteract,
+        "aria-label": "Composer is disabled. Show reason"
+      }
+    ) : null
+  ] });
 };
 
 // electron/headlessServer/ui/mobile/src/components/FilePathPickerModal.tsx
-var import_react21 = __toESM(require_react(), 1);
+var import_react19 = __toESM(require_react(), 1);
 var import_react_dom2 = __toESM(require_react_dom(), 1);
 
 // electron/headlessServer/ui/mobile/src/components/MonacoFileEditorModal.tsx
-var import_react19 = __toESM(require_react(), 1);
+var import_react17 = __toESM(require_react(), 1);
 var import_react_dom = __toESM(require_react_dom(), 1);
 
 // node_modules/.pnpm/@monaco-editor+loader@1.7.0/node_modules/@monaco-editor/loader/lib/es/_virtual/_rollupPluginBabelHelpers.js
@@ -50143,6 +50166,8 @@ var loader = {
 };
 
 // node_modules/.pnpm/@monaco-editor+react@4.7.0_monaco-editor@0.55.1_react-dom@19.2.7_react@19.2.7__react@19.2.7/node_modules/@monaco-editor/react/dist/index.mjs
+var import_react6 = __toESM(require_react(), 1);
+var import_react7 = __toESM(require_react(), 1);
 var import_react8 = __toESM(require_react(), 1);
 var import_react9 = __toESM(require_react(), 1);
 var import_react10 = __toESM(require_react(), 1);
@@ -50152,29 +50177,27 @@ var import_react13 = __toESM(require_react(), 1);
 var import_react14 = __toESM(require_react(), 1);
 var import_react15 = __toESM(require_react(), 1);
 var import_react16 = __toESM(require_react(), 1);
-var import_react17 = __toESM(require_react(), 1);
-var import_react18 = __toESM(require_react(), 1);
 var le = { wrapper: { display: "flex", position: "relative", textAlign: "initial" }, fullWidth: { width: "100%" }, hide: { display: "none" } };
 var v = le;
 var ae = { container: { display: "flex", height: "100%", width: "100%", justifyContent: "center", alignItems: "center" } };
 var Y = ae;
 function Me({ children: e }) {
-  return import_react12.default.createElement("div", { style: Y.container }, e);
+  return import_react10.default.createElement("div", { style: Y.container }, e);
 }
 var Z = Me;
 var $ = Z;
 function Ee({ width: e, height: r2, isEditorReady: n, loading: t, _ref: a, className: m, wrapperProps: E }) {
-  return import_react11.default.createElement("section", { style: { ...v.wrapper, width: e, height: r2 }, ...E }, !n && import_react11.default.createElement($, null, t), import_react11.default.createElement("div", { ref: a, style: { ...v.fullWidth, ...!n && v.hide }, className: m }));
+  return import_react9.default.createElement("section", { style: { ...v.wrapper, width: e, height: r2 }, ...E }, !n && import_react9.default.createElement($, null, t), import_react9.default.createElement("div", { ref: a, style: { ...v.fullWidth, ...!n && v.hide }, className: m }));
 }
 var ee = Ee;
-var H = (0, import_react10.memo)(ee);
+var H = (0, import_react8.memo)(ee);
 function Ce(e) {
-  (0, import_react13.useEffect)(e, []);
+  (0, import_react11.useEffect)(e, []);
 }
 var k = Ce;
 function he(e, r2, n = true) {
-  let t = (0, import_react14.useRef)(true);
-  (0, import_react14.useEffect)(t.current || !n ? () => {
+  let t = (0, import_react12.useRef)(true);
+  (0, import_react12.useEffect)(t.current || !n ? () => {
     t.current = false;
   } : e, r2);
 }
@@ -50194,7 +50217,7 @@ function te(e, r2) {
   return e.Uri.parse(r2);
 }
 function Oe({ original: e, modified: r2, language: n, originalLanguage: t, modifiedLanguage: a, originalModelPath: m, modifiedModelPath: E, keepCurrentOriginalModel: g = false, keepCurrentModifiedModel: N = false, theme: x = "light", loading: P = "Loading...", options: y = {}, height: V = "100%", width: z = "100%", className: F, wrapperProps: j = {}, beforeMount: A = D, onMount: q = D }) {
-  let [M, O] = (0, import_react9.useState)(false), [T, s] = (0, import_react9.useState)(true), u = (0, import_react9.useRef)(null), c = (0, import_react9.useRef)(null), w = (0, import_react9.useRef)(null), d = (0, import_react9.useRef)(q), o = (0, import_react9.useRef)(A), b = (0, import_react9.useRef)(false);
+  let [M, O] = (0, import_react7.useState)(false), [T, s] = (0, import_react7.useState)(true), u = (0, import_react7.useRef)(null), c = (0, import_react7.useRef)(null), w = (0, import_react7.useRef)(null), d = (0, import_react7.useRef)(q), o = (0, import_react7.useRef)(A), b = (0, import_react7.useRef)(false);
   k(() => {
     let i = loader.init();
     return i.then((f) => (c.current = f) && s(false)).catch((f) => f?.type !== "cancelation" && console.error("Monaco initialization: error:", f)), () => u.current ? I() : i.cancel();
@@ -50221,37 +50244,37 @@ function Oe({ original: e, modified: r2, language: n, originalLanguage: t, modif
   }, [x], M), l(() => {
     u.current?.updateOptions(y);
   }, [y], M);
-  let L = (0, import_react9.useCallback)(() => {
+  let L = (0, import_react7.useCallback)(() => {
     if (!c.current) return;
     o.current(c.current);
     let i = h(c.current, e || "", t || n || "text", m || ""), f = h(c.current, r2 || "", a || n || "text", E || "");
     u.current?.setModel({ original: i, modified: f });
-  }, [n, r2, a, e, t, m, E]), U = (0, import_react9.useCallback)(() => {
+  }, [n, r2, a, e, t, m, E]), U = (0, import_react7.useCallback)(() => {
     !b.current && w.current && (u.current = c.current.editor.createDiffEditor(w.current, { automaticLayout: true, ...y }), L(), c.current?.editor.setTheme(x), O(true), b.current = true);
   }, [y, x, L]);
-  (0, import_react9.useEffect)(() => {
+  (0, import_react7.useEffect)(() => {
     M && d.current(u.current, c.current);
-  }, [M]), (0, import_react9.useEffect)(() => {
+  }, [M]), (0, import_react7.useEffect)(() => {
     !T && !M && U();
   }, [T, M, U]);
   function I() {
     let i = u.current?.getModel();
     g || i?.original?.dispose(), N || i?.modified?.dispose(), u.current?.dispose();
   }
-  return import_react9.default.createElement(H, { width: z, height: V, isEditorReady: M, loading: P, _ref: w, className: F, wrapperProps: j });
+  return import_react7.default.createElement(H, { width: z, height: V, isEditorReady: M, loading: P, _ref: w, className: F, wrapperProps: j });
 }
 var ie = Oe;
-var we = (0, import_react8.memo)(ie);
+var we = (0, import_react6.memo)(ie);
 function He(e) {
-  let r2 = (0, import_react18.useRef)();
-  return (0, import_react18.useEffect)(() => {
+  let r2 = (0, import_react16.useRef)();
+  return (0, import_react16.useEffect)(() => {
     r2.current = e;
   }, [e]), r2.current;
 }
 var se = He;
 var _ = /* @__PURE__ */ new Map();
 function Ve({ defaultValue: e, defaultLanguage: r2, defaultPath: n, value: t, language: a, path: m, theme: E = "light", line: g, loading: N = "Loading...", options: x = {}, overrideServices: P = {}, saveViewState: y = true, keepCurrentModel: V = false, width: z = "100%", height: F = "100%", className: j, wrapperProps: A = {}, beforeMount: q = D, onMount: M = D, onChange: O, onValidate: T = D }) {
-  let [s, u] = (0, import_react17.useState)(false), [c, w] = (0, import_react17.useState)(true), d = (0, import_react17.useRef)(null), o = (0, import_react17.useRef)(null), b = (0, import_react17.useRef)(null), L = (0, import_react17.useRef)(M), U = (0, import_react17.useRef)(q), I = (0, import_react17.useRef)(), i = (0, import_react17.useRef)(t), f = se(m), Q = (0, import_react17.useRef)(false), B = (0, import_react17.useRef)(false);
+  let [s, u] = (0, import_react15.useState)(false), [c, w] = (0, import_react15.useState)(true), d = (0, import_react15.useRef)(null), o = (0, import_react15.useRef)(null), b = (0, import_react15.useRef)(null), L = (0, import_react15.useRef)(M), U = (0, import_react15.useRef)(q), I = (0, import_react15.useRef)(), i = (0, import_react15.useRef)(t), f = se(m), Q = (0, import_react15.useRef)(false), B = (0, import_react15.useRef)(false);
   k(() => {
     let p = loader.init();
     return p.then((R) => (d.current = R) && w(false)).catch((R) => R?.type !== "cancelation" && console.error("Monaco initialization: error:", R)), () => o.current ? pe() : p.cancel();
@@ -50270,22 +50293,22 @@ function Ve({ defaultValue: e, defaultLanguage: r2, defaultPath: n, value: t, la
   }, [g], s), l(() => {
     d.current?.editor.setTheme(E);
   }, [E], s);
-  let X = (0, import_react17.useCallback)(() => {
+  let X = (0, import_react15.useCallback)(() => {
     if (!(!b.current || !d.current) && !Q.current) {
       U.current(d.current);
       let p = m || n, R = h(d.current, t || e || "", r2 || a || "", p || "");
       o.current = d.current?.editor.create(b.current, { model: R, automaticLayout: true, ...x }, P), y && o.current.restoreViewState(_.get(p)), d.current.editor.setTheme(E), g !== void 0 && o.current.revealLine(g), u(true), Q.current = true;
     }
   }, [e, r2, n, t, a, m, x, P, y, E, g]);
-  (0, import_react17.useEffect)(() => {
+  (0, import_react15.useEffect)(() => {
     s && L.current(o.current, d.current);
-  }, [s]), (0, import_react17.useEffect)(() => {
+  }, [s]), (0, import_react15.useEffect)(() => {
     !c && !s && X();
-  }, [c, s, X]), i.current = t, (0, import_react17.useEffect)(() => {
+  }, [c, s, X]), i.current = t, (0, import_react15.useEffect)(() => {
     s && O && (I.current?.dispose(), I.current = o.current?.onDidChangeModelContent((p) => {
       B.current || O(o.current.getValue(), p);
     }));
-  }, [s, O]), (0, import_react17.useEffect)(() => {
+  }, [s, O]), (0, import_react15.useEffect)(() => {
     if (s) {
       let p = d.current.editor.onDidChangeMarkers((R) => {
         let G = o.current.getModel()?.uri;
@@ -50304,13 +50327,14 @@ function Ve({ defaultValue: e, defaultLanguage: r2, defaultPath: n, value: t, la
   function pe() {
     I.current?.dispose(), V ? y && _.set(m, o.current.saveViewState()) : o.current.getModel()?.dispose(), o.current.dispose();
   }
-  return import_react17.default.createElement(H, { width: z, height: F, isEditorReady: s, loading: N, _ref: b, className: j, wrapperProps: A });
+  return import_react15.default.createElement(H, { width: z, height: F, isEditorReady: s, loading: N, _ref: b, className: j, wrapperProps: A });
 }
 var fe = Ve;
-var de = (0, import_react16.memo)(fe);
+var de = (0, import_react14.memo)(fe);
 var Ft = de;
 
 // electron/headlessServer/ui/mobile/src/components/MonacoFileEditorModal.tsx
+var import_jsx_runtime8 = __toESM(require_jsx_runtime(), 1);
 var extensionLanguageMap = {
   js: "javascript",
   mjs: "javascript",
@@ -50361,12 +50385,12 @@ var MonacoFileEditorModal = ({
   onSave,
   onClose
 }) => {
-  const [hasOpened, setHasOpened] = (0, import_react19.useState)(false);
-  const editorRef = (0, import_react19.useRef)(null);
-  (0, import_react19.useEffect)(() => {
+  const [hasOpened, setHasOpened] = (0, import_react17.useState)(false);
+  const editorRef = (0, import_react17.useRef)(null);
+  (0, import_react17.useEffect)(() => {
     if (open) setHasOpened(true);
   }, [open]);
-  (0, import_react19.useEffect)(() => {
+  (0, import_react17.useEffect)(() => {
     if (!open) return;
     const runLayout = () => {
       editorRef.current?.layout();
@@ -50382,7 +50406,7 @@ var MonacoFileEditorModal = ({
       window.removeEventListener("resize", onResize);
     };
   }, [open]);
-  (0, import_react19.useEffect)(() => {
+  (0, import_react17.useEffect)(() => {
     if (!open) return;
     const previousBodyOverflow = document.body.style.overflow;
     document.body.style.overflow = "hidden";
@@ -50395,38 +50419,55 @@ var MonacoFileEditorModal = ({
       window.removeEventListener("keydown", onEscape);
     };
   }, [open, onClose]);
-  const language = (0, import_react19.useMemo)(() => detectLanguage(filePath), [filePath]);
+  const language = (0, import_react17.useMemo)(() => detectLanguage(filePath), [filePath]);
   if (!hasOpened || typeof document === "undefined") return null;
   return (0, import_react_dom.createPortal)(
-    /* @__PURE__ */ import_react19.default.createElement("div", { className: `mobile-monaco-modal-root${open ? "" : " is-hidden"}`, "aria-hidden": !open }, /* @__PURE__ */ import_react19.default.createElement("div", { className: "mobile-monaco-modal", role: "dialog", "aria-modal": "true", "aria-label": "File editor" }, /* @__PURE__ */ import_react19.default.createElement("header", { className: "mobile-monaco-modal-header" }, /* @__PURE__ */ import_react19.default.createElement("div", { className: "mobile-monaco-modal-meta" }, /* @__PURE__ */ import_react19.default.createElement("strong", null, filePath || "File editor"), /* @__PURE__ */ import_react19.default.createElement("small", null, language)), /* @__PURE__ */ import_react19.default.createElement("div", { className: "mobile-monaco-modal-actions" }, /* @__PURE__ */ import_react19.default.createElement(Button, { variant: "secondary", size: "sm", onClick: onSave, disabled: !filePath || loading || isSaving || !isDirty }, isSaving ? "Saving\u2026" : "Save"), /* @__PURE__ */ import_react19.default.createElement(Button, { variant: "outline", size: "sm", onClick: onClose, "aria-label": "Close editor" }, "\u2715"))), error ? /* @__PURE__ */ import_react19.default.createElement("div", { className: "mobile-monaco-modal-error" }, error) : null, /* @__PURE__ */ import_react19.default.createElement("div", { className: "mobile-monaco-editor-host" }, /* @__PURE__ */ import_react19.default.createElement(
-      Ft,
-      {
-        theme: "vs-dark",
-        language,
-        value,
-        width: "100%",
-        height: "100%",
-        onMount: (editor) => {
-          editorRef.current = editor;
-          window.requestAnimationFrame(() => editor.layout());
-        },
-        onChange: (next) => onChange(next ?? ""),
-        options: {
-          automaticLayout: true,
-          minimap: { enabled: false },
-          fontSize: 13,
-          wordWrap: "on",
-          smoothScrolling: true,
-          scrollBeyondLastLine: false,
-          tabSize: 2
-        }
-      }
-    ), loading ? /* @__PURE__ */ import_react19.default.createElement("div", { className: "mobile-monaco-loading" }, "Loading\u2026") : null))),
+    /* @__PURE__ */ (0, import_jsx_runtime8.jsx)("div", { className: `mobile-monaco-modal-root${open ? "" : " is-hidden"}`, "aria-hidden": !open, children: /* @__PURE__ */ (0, import_jsx_runtime8.jsxs)("div", { className: "mobile-monaco-modal", role: "dialog", "aria-modal": "true", "aria-label": "File editor", children: [
+      /* @__PURE__ */ (0, import_jsx_runtime8.jsxs)("header", { className: "mobile-monaco-modal-header", children: [
+        /* @__PURE__ */ (0, import_jsx_runtime8.jsxs)("div", { className: "mobile-monaco-modal-meta", children: [
+          /* @__PURE__ */ (0, import_jsx_runtime8.jsx)("strong", { children: filePath || "File editor" }),
+          /* @__PURE__ */ (0, import_jsx_runtime8.jsx)("small", { children: language })
+        ] }),
+        /* @__PURE__ */ (0, import_jsx_runtime8.jsxs)("div", { className: "mobile-monaco-modal-actions", children: [
+          /* @__PURE__ */ (0, import_jsx_runtime8.jsx)(Button, { variant: "secondary", size: "sm", onClick: onSave, disabled: !filePath || loading || isSaving || !isDirty, children: isSaving ? "Saving\u2026" : "Save" }),
+          /* @__PURE__ */ (0, import_jsx_runtime8.jsx)(Button, { variant: "outline", size: "sm", onClick: onClose, "aria-label": "Close editor", children: "\u2715" })
+        ] })
+      ] }),
+      error ? /* @__PURE__ */ (0, import_jsx_runtime8.jsx)("div", { className: "mobile-monaco-modal-error", children: error }) : null,
+      /* @__PURE__ */ (0, import_jsx_runtime8.jsxs)("div", { className: "mobile-monaco-editor-host", children: [
+        /* @__PURE__ */ (0, import_jsx_runtime8.jsx)(
+          Ft,
+          {
+            theme: "vs-dark",
+            language,
+            value,
+            width: "100%",
+            height: "100%",
+            onMount: (editor) => {
+              editorRef.current = editor;
+              window.requestAnimationFrame(() => editor.layout());
+            },
+            onChange: (next) => onChange(next ?? ""),
+            options: {
+              automaticLayout: true,
+              minimap: { enabled: false },
+              fontSize: 13,
+              wordWrap: "on",
+              smoothScrolling: true,
+              scrollBeyondLastLine: false,
+              tabSize: 2
+            }
+          }
+        ),
+        loading ? /* @__PURE__ */ (0, import_jsx_runtime8.jsx)("div", { className: "mobile-monaco-loading", children: "Loading\u2026" }) : null
+      ] })
+    ] }) }),
     document.body
   );
 };
 
 // electron/headlessServer/ui/mobile/src/components/FilePathPickerModal.tsx
+var import_jsx_runtime9 = __toESM(require_jsx_runtime(), 1);
 var FILE_PICKER_STATE_STORAGE_KEY = "mobile:file-picker-state:v1";
 var createEditorFileState = () => ({
   content: "",
@@ -50478,25 +50519,25 @@ var writePersistedState = (stateKey, state) => {
   writeStorageBucket(bucket);
 };
 var FilePathPickerModal = ({ open, rootPath, onClose, onInsertPath }) => {
-  const normalizedRootPath = (0, import_react21.useMemo)(() => normalizePath(rootPath), [rootPath]);
-  const stateKey = (0, import_react21.useMemo)(() => getStateKey(normalizedRootPath), [normalizedRootPath]);
-  const [currentPath, setCurrentPath] = (0, import_react21.useState)(null);
-  const [pathHistory, setPathHistory] = (0, import_react21.useState)([]);
-  const [files, setFiles] = (0, import_react21.useState)([]);
-  const [loading, setLoading] = (0, import_react21.useState)(false);
-  const [error, setError] = (0, import_react21.useState)(null);
-  const [searchQuery, setSearchQuery] = (0, import_react21.useState)("");
-  const [followGitignore, setFollowGitignore] = (0, import_react21.useState)(true);
-  const [searchResults, setSearchResults] = (0, import_react21.useState)([]);
-  const [searching, setSearching] = (0, import_react21.useState)(false);
-  const [searchError, setSearchError] = (0, import_react21.useState)(null);
-  const [isRespectingGitignore, setIsRespectingGitignore] = (0, import_react21.useState)(true);
-  const [listScrollTop, setListScrollTop] = (0, import_react21.useState)(0);
-  const listRef = (0, import_react21.useRef)(null);
-  const [editorOpen, setEditorOpen] = (0, import_react21.useState)(false);
-  const [editorPath, setEditorPath] = (0, import_react21.useState)(null);
-  const [editorFiles, setEditorFiles] = (0, import_react21.useState)({});
-  (0, import_react21.useEffect)(() => {
+  const normalizedRootPath = (0, import_react19.useMemo)(() => normalizePath(rootPath), [rootPath]);
+  const stateKey = (0, import_react19.useMemo)(() => getStateKey(normalizedRootPath), [normalizedRootPath]);
+  const [currentPath, setCurrentPath] = (0, import_react19.useState)(null);
+  const [pathHistory, setPathHistory] = (0, import_react19.useState)([]);
+  const [files, setFiles] = (0, import_react19.useState)([]);
+  const [loading, setLoading] = (0, import_react19.useState)(false);
+  const [error, setError] = (0, import_react19.useState)(null);
+  const [searchQuery, setSearchQuery] = (0, import_react19.useState)("");
+  const [followGitignore, setFollowGitignore] = (0, import_react19.useState)(true);
+  const [searchResults, setSearchResults] = (0, import_react19.useState)([]);
+  const [searching, setSearching] = (0, import_react19.useState)(false);
+  const [searchError, setSearchError] = (0, import_react19.useState)(null);
+  const [isRespectingGitignore, setIsRespectingGitignore] = (0, import_react19.useState)(true);
+  const [listScrollTop, setListScrollTop] = (0, import_react19.useState)(0);
+  const listRef = (0, import_react19.useRef)(null);
+  const [editorOpen, setEditorOpen] = (0, import_react19.useState)(false);
+  const [editorPath, setEditorPath] = (0, import_react19.useState)(null);
+  const [editorFiles, setEditorFiles] = (0, import_react19.useState)({});
+  (0, import_react19.useEffect)(() => {
     if (!open) return;
     const restored = readPersistedState(stateKey);
     if (restored) {
@@ -50516,7 +50557,7 @@ var FilePathPickerModal = ({ open, rootPath, onClose, onInsertPath }) => {
     setSearchError(null);
     setIsRespectingGitignore(restored ? restored.followGitignore : true);
   }, [open, normalizedRootPath, stateKey]);
-  (0, import_react21.useEffect)(() => {
+  (0, import_react19.useEffect)(() => {
     if (!open) return;
     writePersistedState(stateKey, {
       currentPath,
@@ -50526,7 +50567,7 @@ var FilePathPickerModal = ({ open, rootPath, onClose, onInsertPath }) => {
       scrollTop: listScrollTop
     });
   }, [open, stateKey, currentPath, pathHistory, searchQuery, followGitignore, listScrollTop]);
-  (0, import_react21.useEffect)(() => {
+  (0, import_react19.useEffect)(() => {
     if (!open || !currentPath) return;
     let cancelled = false;
     const run = async () => {
@@ -50552,7 +50593,7 @@ var FilePathPickerModal = ({ open, rootPath, onClose, onInsertPath }) => {
   const searchBasePath = normalizedRootPath || currentPath;
   const activeSearchQuery = searchQuery.trim();
   const isSearchMode = activeSearchQuery.length > 0;
-  (0, import_react21.useEffect)(() => {
+  (0, import_react19.useEffect)(() => {
     if (!open) return;
     if (!activeSearchQuery) {
       setSearchResults([]);
@@ -50593,7 +50634,7 @@ var FilePathPickerModal = ({ open, rootPath, onClose, onInsertPath }) => {
       window.clearTimeout(timeoutId);
     };
   }, [open, activeSearchQuery, searchBasePath, followGitignore]);
-  (0, import_react21.useEffect)(() => {
+  (0, import_react19.useEffect)(() => {
     if (!open) return;
     const previousBodyOverflow = document.body.style.overflow;
     document.body.style.overflow = "hidden";
@@ -50606,13 +50647,13 @@ var FilePathPickerModal = ({ open, rootPath, onClose, onInsertPath }) => {
       window.removeEventListener("keydown", handleEscape);
     };
   }, [open, onClose]);
-  (0, import_react21.useEffect)(() => {
+  (0, import_react19.useEffect)(() => {
     if (!open) return;
     const node2 = listRef.current;
     if (!node2) return;
     node2.scrollTop = listScrollTop;
   }, [open, listScrollTop, loading, searching, files, searchResults, isSearchMode]);
-  const canGoHome = (0, import_react21.useMemo)(() => Boolean(normalizedRootPath && currentPath && normalizedRootPath !== currentPath), [normalizedRootPath, currentPath]);
+  const canGoHome = (0, import_react19.useMemo)(() => Boolean(normalizedRootPath && currentPath && normalizedRootPath !== currentPath), [normalizedRootPath, currentPath]);
   const canGoBack = pathHistory.length > 0;
   const displayedFiles = isSearchMode ? searchResults : files;
   const openEditorForFile = async (filePath) => {
@@ -50703,173 +50744,212 @@ var FilePathPickerModal = ({ open, rootPath, onClose, onInsertPath }) => {
   };
   if (!open || typeof document === "undefined") return null;
   return (0, import_react_dom2.createPortal)(
-    /* @__PURE__ */ import_react21.default.createElement("div", { className: "mobile-file-picker-portal-root" }, /* @__PURE__ */ import_react21.default.createElement(
-      "button",
-      {
-        type: "button",
-        "aria-label": "Close file picker",
-        className: "mobile-file-picker-portal-backdrop",
-        onClick: onClose
-      }
-    ), /* @__PURE__ */ import_react21.default.createElement("section", { className: "mobile-file-picker-portal", role: "dialog", "aria-modal": "true", "aria-label": "Insert file path" }, /* @__PURE__ */ import_react21.default.createElement("header", { className: "mobile-file-picker-header" }, /* @__PURE__ */ import_react21.default.createElement("div", null, /* @__PURE__ */ import_react21.default.createElement("h2", null, "Insert path"), /* @__PURE__ */ import_react21.default.createElement("p", null, currentPath || "No working directory set")), /* @__PURE__ */ import_react21.default.createElement("div", { className: "mobile-file-picker-header-buttons" }, /* @__PURE__ */ import_react21.default.createElement(
-      Button,
-      {
-        variant: "ghost",
-        size: "sm",
-        className: "mobile-file-picker-gitignore-btn",
-        onClick: () => setFollowGitignore((value) => !value),
-        title: "Toggle .gitignore-aware search"
-      },
-      followGitignore ? ".gitignore \u2713" : ".gitignore"
-    ), /* @__PURE__ */ import_react21.default.createElement(Button, { variant: "outline", size: "sm", onClick: onClose }, "Done"))), /* @__PURE__ */ import_react21.default.createElement("div", { className: "mobile-file-picker-actions" }, /* @__PURE__ */ import_react21.default.createElement(
-      Button,
-      {
-        variant: "outline",
-        size: "sm",
-        onClick: () => {
-          if (!normalizedRootPath) return;
-          setCurrentPath(normalizedRootPath);
-          setListScrollTop(0);
-        },
-        disabled: !canGoHome
-      },
-      "Root"
-    ), /* @__PURE__ */ import_react21.default.createElement(
-      Button,
-      {
-        variant: "outline",
-        size: "sm",
-        onClick: () => {
-          const previous3 = pathHistory[pathHistory.length - 1];
-          if (!previous3) return;
-          setPathHistory((history) => history.slice(0, -1));
-          setCurrentPath(previous3);
-          setListScrollTop(0);
-        },
-        disabled: !canGoBack
-      },
-      "Back"
-    ), /* @__PURE__ */ import_react21.default.createElement(
-      Button,
-      {
-        variant: "secondary",
-        size: "sm",
-        onClick: () => {
-          if (currentPath) onInsertPath(currentPath);
-        },
-        disabled: !currentPath
-      },
-      "+ Current dir"
-    )), /* @__PURE__ */ import_react21.default.createElement("div", { className: "mobile-file-picker-search" }, /* @__PURE__ */ import_react21.default.createElement(
-      "input",
-      {
-        type: "search",
-        className: "ui-input mobile-file-picker-search-input",
-        value: searchQuery,
-        onChange: (event) => setSearchQuery(event.target.value),
-        placeholder: "Search in cwd (recursive)\u2026",
-        disabled: !searchBasePath
-      }
-    ), /* @__PURE__ */ import_react21.default.createElement(
-      Button,
-      {
-        variant: "ghost",
-        size: "sm",
-        onClick: () => {
-          setSearchQuery("");
-          setSearchResults([]);
-          setSearchError(null);
-        },
-        disabled: searchQuery.length === 0
-      },
-      "Clear"
-    )), /* @__PURE__ */ import_react21.default.createElement("div", { className: "mobile-file-picker-search-hint" }, searchBasePath ? `Searching in: ${searchBasePath} ${followGitignore ? isRespectingGitignore ? "(respects .gitignore)" : "(git repo not detected; fallback search)" : "(ignoring .gitignore)"}` : "Set conversation/project cwd first"), /* @__PURE__ */ import_react21.default.createElement(
-      "div",
-      {
-        ref: listRef,
-        className: "mobile-file-picker-list",
-        onScroll: (event) => setListScrollTop(event.currentTarget.scrollTop)
-      },
-      !isSearchMode && loading ? /* @__PURE__ */ import_react21.default.createElement("div", { className: "mobile-file-picker-muted" }, "Loading files\u2026") : null,
-      !isSearchMode && error ? /* @__PURE__ */ import_react21.default.createElement("div", { className: "mobile-file-picker-error" }, error) : null,
-      !isSearchMode && !loading && !error && files.length === 0 ? /* @__PURE__ */ import_react21.default.createElement("div", { className: "mobile-file-picker-muted" }, "Empty directory") : null,
-      isSearchMode && searching ? /* @__PURE__ */ import_react21.default.createElement("div", { className: "mobile-file-picker-muted" }, "Searching subdirectories\u2026") : null,
-      isSearchMode && searchError ? /* @__PURE__ */ import_react21.default.createElement("div", { className: "mobile-file-picker-error" }, searchError) : null,
-      isSearchMode && !searching && !searchError && searchResults.length === 0 ? /* @__PURE__ */ import_react21.default.createElement("div", { className: "mobile-file-picker-muted" }, "No matches") : null,
-      displayedFiles.map((file) => /* @__PURE__ */ import_react21.default.createElement("div", { className: "mobile-file-picker-row", key: `${isSearchMode ? "search" : "list"}-${file.path}` }, /* @__PURE__ */ import_react21.default.createElement(
+    /* @__PURE__ */ (0, import_jsx_runtime9.jsxs)("div", { className: "mobile-file-picker-portal-root", children: [
+      /* @__PURE__ */ (0, import_jsx_runtime9.jsx)(
         "button",
         {
           type: "button",
-          className: "mobile-file-picker-item",
-          onClick: () => {
-            if (!file.isDirectory) return;
-            setPathHistory((history) => {
-              if (!currentPath || currentPath === file.path) return history;
-              return [...history, currentPath];
-            });
-            setCurrentPath(file.path);
-            setListScrollTop(0);
-            if (isSearchMode) {
-              setSearchQuery("");
-              setSearchResults([]);
-              setSearchError(null);
+          "aria-label": "Close file picker",
+          className: "mobile-file-picker-portal-backdrop",
+          onClick: onClose
+        }
+      ),
+      /* @__PURE__ */ (0, import_jsx_runtime9.jsxs)("section", { className: "mobile-file-picker-portal", role: "dialog", "aria-modal": "true", "aria-label": "Insert file path", children: [
+        /* @__PURE__ */ (0, import_jsx_runtime9.jsxs)("header", { className: "mobile-file-picker-header", children: [
+          /* @__PURE__ */ (0, import_jsx_runtime9.jsxs)("div", { children: [
+            /* @__PURE__ */ (0, import_jsx_runtime9.jsx)("h2", { children: "Insert path" }),
+            /* @__PURE__ */ (0, import_jsx_runtime9.jsx)("p", { children: currentPath || "No working directory set" })
+          ] }),
+          /* @__PURE__ */ (0, import_jsx_runtime9.jsxs)("div", { className: "mobile-file-picker-header-buttons", children: [
+            /* @__PURE__ */ (0, import_jsx_runtime9.jsx)(
+              Button,
+              {
+                variant: "ghost",
+                size: "sm",
+                className: "mobile-file-picker-gitignore-btn",
+                onClick: () => setFollowGitignore((value) => !value),
+                title: "Toggle .gitignore-aware search",
+                children: followGitignore ? ".gitignore \u2713" : ".gitignore"
+              }
+            ),
+            /* @__PURE__ */ (0, import_jsx_runtime9.jsx)(Button, { variant: "outline", size: "sm", onClick: onClose, children: "Done" })
+          ] })
+        ] }),
+        /* @__PURE__ */ (0, import_jsx_runtime9.jsxs)("div", { className: "mobile-file-picker-actions", children: [
+          /* @__PURE__ */ (0, import_jsx_runtime9.jsx)(
+            Button,
+            {
+              variant: "outline",
+              size: "sm",
+              onClick: () => {
+                if (!normalizedRootPath) return;
+                setCurrentPath(normalizedRootPath);
+                setListScrollTop(0);
+              },
+              disabled: !canGoHome,
+              children: "Root"
             }
-          },
-          disabled: !file.isDirectory,
-          title: file.path
-        },
-        /* @__PURE__ */ import_react21.default.createElement("span", { className: "mobile-file-picker-item-icon" }, file.isDirectory ? "\u{1F4C1}" : "\u{1F4C4}"),
-        /* @__PURE__ */ import_react21.default.createElement("span", { className: "mobile-file-picker-item-labels" }, /* @__PURE__ */ import_react21.default.createElement("span", { className: "mobile-file-picker-item-name" }, file.name), isSearchMode && file.relativePath && file.relativePath !== file.name ? /* @__PURE__ */ import_react21.default.createElement("span", { className: "mobile-file-picker-item-subpath" }, file.relativePath) : null)
-      ), /* @__PURE__ */ import_react21.default.createElement("div", { className: "mobile-file-picker-row-actions" }, !file.isDirectory ? /* @__PURE__ */ import_react21.default.createElement(
-        Button,
+          ),
+          /* @__PURE__ */ (0, import_jsx_runtime9.jsx)(
+            Button,
+            {
+              variant: "outline",
+              size: "sm",
+              onClick: () => {
+                const previous3 = pathHistory[pathHistory.length - 1];
+                if (!previous3) return;
+                setPathHistory((history) => history.slice(0, -1));
+                setCurrentPath(previous3);
+                setListScrollTop(0);
+              },
+              disabled: !canGoBack,
+              children: "Back"
+            }
+          ),
+          /* @__PURE__ */ (0, import_jsx_runtime9.jsx)(
+            Button,
+            {
+              variant: "secondary",
+              size: "sm",
+              onClick: () => {
+                if (currentPath) onInsertPath(currentPath);
+              },
+              disabled: !currentPath,
+              children: "+ Current dir"
+            }
+          )
+        ] }),
+        /* @__PURE__ */ (0, import_jsx_runtime9.jsxs)("div", { className: "mobile-file-picker-search", children: [
+          /* @__PURE__ */ (0, import_jsx_runtime9.jsx)(
+            "input",
+            {
+              type: "search",
+              className: "ui-input mobile-file-picker-search-input",
+              value: searchQuery,
+              onChange: (event) => setSearchQuery(event.target.value),
+              placeholder: "Search in cwd (recursive)\u2026",
+              disabled: !searchBasePath
+            }
+          ),
+          /* @__PURE__ */ (0, import_jsx_runtime9.jsx)(
+            Button,
+            {
+              variant: "ghost",
+              size: "sm",
+              onClick: () => {
+                setSearchQuery("");
+                setSearchResults([]);
+                setSearchError(null);
+              },
+              disabled: searchQuery.length === 0,
+              children: "Clear"
+            }
+          )
+        ] }),
+        /* @__PURE__ */ (0, import_jsx_runtime9.jsx)("div", { className: "mobile-file-picker-search-hint", children: searchBasePath ? `Searching in: ${searchBasePath} ${followGitignore ? isRespectingGitignore ? "(respects .gitignore)" : "(git repo not detected; fallback search)" : "(ignoring .gitignore)"}` : "Set conversation/project cwd first" }),
+        /* @__PURE__ */ (0, import_jsx_runtime9.jsxs)(
+          "div",
+          {
+            ref: listRef,
+            className: "mobile-file-picker-list",
+            onScroll: (event) => setListScrollTop(event.currentTarget.scrollTop),
+            children: [
+              !isSearchMode && loading ? /* @__PURE__ */ (0, import_jsx_runtime9.jsx)("div", { className: "mobile-file-picker-muted", children: "Loading files\u2026" }) : null,
+              !isSearchMode && error ? /* @__PURE__ */ (0, import_jsx_runtime9.jsx)("div", { className: "mobile-file-picker-error", children: error }) : null,
+              !isSearchMode && !loading && !error && files.length === 0 ? /* @__PURE__ */ (0, import_jsx_runtime9.jsx)("div", { className: "mobile-file-picker-muted", children: "Empty directory" }) : null,
+              isSearchMode && searching ? /* @__PURE__ */ (0, import_jsx_runtime9.jsx)("div", { className: "mobile-file-picker-muted", children: "Searching subdirectories\u2026" }) : null,
+              isSearchMode && searchError ? /* @__PURE__ */ (0, import_jsx_runtime9.jsx)("div", { className: "mobile-file-picker-error", children: searchError }) : null,
+              isSearchMode && !searching && !searchError && searchResults.length === 0 ? /* @__PURE__ */ (0, import_jsx_runtime9.jsx)("div", { className: "mobile-file-picker-muted", children: "No matches" }) : null,
+              displayedFiles.map((file) => /* @__PURE__ */ (0, import_jsx_runtime9.jsxs)("div", { className: "mobile-file-picker-row", children: [
+                /* @__PURE__ */ (0, import_jsx_runtime9.jsxs)(
+                  "button",
+                  {
+                    type: "button",
+                    className: "mobile-file-picker-item",
+                    onClick: () => {
+                      if (!file.isDirectory) return;
+                      setPathHistory((history) => {
+                        if (!currentPath || currentPath === file.path) return history;
+                        return [...history, currentPath];
+                      });
+                      setCurrentPath(file.path);
+                      setListScrollTop(0);
+                      if (isSearchMode) {
+                        setSearchQuery("");
+                        setSearchResults([]);
+                        setSearchError(null);
+                      }
+                    },
+                    disabled: !file.isDirectory,
+                    title: file.path,
+                    children: [
+                      /* @__PURE__ */ (0, import_jsx_runtime9.jsx)("span", { className: "mobile-file-picker-item-icon", children: file.isDirectory ? "\u{1F4C1}" : "\u{1F4C4}" }),
+                      /* @__PURE__ */ (0, import_jsx_runtime9.jsxs)("span", { className: "mobile-file-picker-item-labels", children: [
+                        /* @__PURE__ */ (0, import_jsx_runtime9.jsx)("span", { className: "mobile-file-picker-item-name", children: file.name }),
+                        isSearchMode && file.relativePath && file.relativePath !== file.name ? /* @__PURE__ */ (0, import_jsx_runtime9.jsx)("span", { className: "mobile-file-picker-item-subpath", children: file.relativePath }) : null
+                      ] })
+                    ]
+                  }
+                ),
+                /* @__PURE__ */ (0, import_jsx_runtime9.jsxs)("div", { className: "mobile-file-picker-row-actions", children: [
+                  !file.isDirectory ? /* @__PURE__ */ (0, import_jsx_runtime9.jsx)(
+                    Button,
+                    {
+                      variant: "ghost",
+                      size: "sm",
+                      className: "mobile-file-picker-edit-btn",
+                      onClick: () => {
+                        void openEditorForFile(file.path);
+                      },
+                      title: "Edit file",
+                      "aria-label": `Edit ${file.name}`,
+                      children: "\u270E"
+                    }
+                  ) : null,
+                  /* @__PURE__ */ (0, import_jsx_runtime9.jsx)(
+                    Button,
+                    {
+                      variant: "ghost",
+                      size: "sm",
+                      className: "mobile-file-picker-insert-btn",
+                      onClick: () => onInsertPath(file.path),
+                      title: "Insert path",
+                      children: "+"
+                    }
+                  )
+                ] })
+              ] }, `${isSearchMode ? "search" : "list"}-${file.path}`))
+            ]
+          }
+        )
+      ] }),
+      /* @__PURE__ */ (0, import_jsx_runtime9.jsx)(
+        MonacoFileEditorModal,
         {
-          variant: "ghost",
-          size: "sm",
-          className: "mobile-file-picker-edit-btn",
-          onClick: () => {
-            void openEditorForFile(file.path);
+          open: editorOpen,
+          filePath: editorPath,
+          value: activeEditorState.content,
+          loading: activeEditorState.loading,
+          error: activeEditorState.error,
+          isDirty: activeEditorState.dirty,
+          isSaving: activeEditorState.saving,
+          onChange: handleEditorChange,
+          onSave: () => {
+            void handleEditorSave();
           },
-          title: "Edit file",
-          "aria-label": `Edit ${file.name}`
-        },
-        "\u270E"
-      ) : null, /* @__PURE__ */ import_react21.default.createElement(
-        Button,
-        {
-          variant: "ghost",
-          size: "sm",
-          className: "mobile-file-picker-insert-btn",
-          onClick: () => onInsertPath(file.path),
-          title: "Insert path"
-        },
-        "+"
-      ))))
-    )), /* @__PURE__ */ import_react21.default.createElement(
-      MonacoFileEditorModal,
-      {
-        open: editorOpen,
-        filePath: editorPath,
-        value: activeEditorState.content,
-        loading: activeEditorState.loading,
-        error: activeEditorState.error,
-        isDirty: activeEditorState.dirty,
-        isSaving: activeEditorState.saving,
-        onChange: handleEditorChange,
-        onSave: () => {
-          void handleEditorSave();
-        },
-        onClose: () => setEditorOpen(false)
-      }
-    )),
+          onClose: () => setEditorOpen(false)
+        }
+      )
+    ] }),
     document.body
   );
 };
 
 // electron/headlessServer/ui/mobile/src/components/MessageList.tsx
-var import_react30 = __toESM(require_react(), 1);
+var import_react28 = __toESM(require_react(), 1);
 
 // electron/headlessServer/ui/mobile/src/components/MessageBubble.tsx
-var import_react29 = __toESM(require_react(), 1);
+var import_react27 = __toESM(require_react(), 1);
 
 // node_modules/.pnpm/devlop@1.1.0/node_modules/devlop/lib/default.js
 function ok() {
@@ -52506,11 +52586,11 @@ function addChildren(props, children) {
     }
   }
 }
-function productionCreate(_2, jsx2, jsxs2) {
+function productionCreate(_2, jsx26, jsxs19) {
   return create3;
   function create3(_3, type, props, key) {
     const isStaticChildren = Array.isArray(props.children);
-    const fn = isStaticChildren ? jsxs2 : jsx2;
+    const fn = isStaticChildren ? jsxs19 : jsx26;
     return key ? fn(type, props, key) : fn(type, props);
   }
 }
@@ -52755,8 +52835,8 @@ var urlAttributes = {
 };
 
 // node_modules/.pnpm/react-markdown@10.1.0_@types+react@19.2.17_react@19.2.7/node_modules/react-markdown/lib/index.js
-var import_jsx_runtime = __toESM(require_jsx_runtime(), 1);
-var import_react22 = __toESM(require_react(), 1);
+var import_jsx_runtime10 = __toESM(require_jsx_runtime(), 1);
+var import_react20 = __toESM(require_react(), 1);
 
 // node_modules/.pnpm/mdast-util-to-string@4.0.0/node_modules/mdast-util-to-string/lib/index.js
 var emptyOptions2 = {};
@@ -60430,11 +60510,11 @@ function post(tree, options) {
   }
   visit(tree, transform);
   return toJsxRuntime(tree, {
-    Fragment: import_jsx_runtime.Fragment,
+    Fragment: import_jsx_runtime10.Fragment,
     components,
     ignoreInvalidStyle: true,
-    jsx: import_jsx_runtime.jsx,
-    jsxs: import_jsx_runtime.jsxs,
+    jsx: import_jsx_runtime10.jsx,
+    jsxs: import_jsx_runtime10.jsxs,
     passKeys: true,
     passNode: true
   });
@@ -63745,23 +63825,32 @@ var toReadableToolResult = (result) => {
 };
 
 // electron/headlessServer/ui/mobile/src/components/ReasoningCard.tsx
-var import_react23 = __toESM(require_react(), 1);
+var import_react21 = __toESM(require_react(), 1);
+var import_jsx_runtime11 = __toESM(require_jsx_runtime(), 1);
 var truncateWords = (input, maxWords = 20) => {
   const words = input.trim().split(/\s+/);
   if (words.length <= maxWords) return input;
   return `${words.slice(0, maxWords).join(" ")}\u2026`;
 };
 var ReasoningCard = ({ text: text7 }) => {
-  const [expanded, setExpanded] = (0, import_react23.useState)(false);
-  const summary = (0, import_react23.useMemo)(() => truncateWords(text7), [text7]);
-  return /* @__PURE__ */ import_react23.default.createElement("div", { className: "mobile-reasoning-card" }, /* @__PURE__ */ import_react23.default.createElement("div", { className: "mobile-reasoning-dot" }), /* @__PURE__ */ import_react23.default.createElement("button", { className: "mobile-reasoning-header", onClick: () => setExpanded((value) => !value) }, /* @__PURE__ */ import_react23.default.createElement("span", { className: "mobile-reasoning-label" }, "Reasoning"), !expanded ? /* @__PURE__ */ import_react23.default.createElement("span", { className: "mobile-reasoning-summary" }, summary) : null, /* @__PURE__ */ import_react23.default.createElement("span", { className: `tool-chevron ${expanded ? "open" : ""}` }, "\u203A")), /* @__PURE__ */ import_react23.default.createElement("div", { className: `tool-expand-container ${expanded ? "open" : ""}` }, /* @__PURE__ */ import_react23.default.createElement("div", { className: "tool-expand-content" }, /* @__PURE__ */ import_react23.default.createElement("pre", { className: "mobile-reasoning-content" }, text7))));
+  const [expanded, setExpanded] = (0, import_react21.useState)(false);
+  const summary = (0, import_react21.useMemo)(() => truncateWords(text7), [text7]);
+  return /* @__PURE__ */ (0, import_jsx_runtime11.jsxs)("div", { className: "mobile-reasoning-card", children: [
+    /* @__PURE__ */ (0, import_jsx_runtime11.jsx)("div", { className: "mobile-reasoning-dot" }),
+    /* @__PURE__ */ (0, import_jsx_runtime11.jsxs)("button", { className: "mobile-reasoning-header", onClick: () => setExpanded((value) => !value), children: [
+      /* @__PURE__ */ (0, import_jsx_runtime11.jsx)("span", { className: "mobile-reasoning-label", children: "Reasoning" }),
+      !expanded ? /* @__PURE__ */ (0, import_jsx_runtime11.jsx)("span", { className: "mobile-reasoning-summary", children: summary }) : null,
+      /* @__PURE__ */ (0, import_jsx_runtime11.jsx)("span", { className: `tool-chevron ${expanded ? "open" : ""}`, children: "\u203A" })
+    ] }),
+    /* @__PURE__ */ (0, import_jsx_runtime11.jsx)("div", { className: `tool-expand-container ${expanded ? "open" : ""}`, children: /* @__PURE__ */ (0, import_jsx_runtime11.jsx)("div", { className: "tool-expand-content", children: /* @__PURE__ */ (0, import_jsx_runtime11.jsx)("pre", { className: "mobile-reasoning-content", children: text7 }) }) })
+  ] });
 };
 
 // electron/headlessServer/ui/mobile/src/components/ToolCallCard.tsx
-var import_react28 = __toESM(require_react(), 1);
+var import_react26 = __toESM(require_react(), 1);
 
 // electron/headlessServer/ui/mobile/src/components/EditToolDiffView.tsx
-var import_react25 = __toESM(require_react(), 1);
+var import_react23 = __toESM(require_react(), 1);
 
 // node_modules/.pnpm/diff@8.0.4/node_modules/diff/libesm/diff/base.js
 var Diff = class {
@@ -64014,8 +64103,9 @@ function tokenize(value, options) {
 }
 
 // electron/headlessServer/ui/mobile/src/components/EditFileDiffView.tsx
-var import_react24 = __toESM(require_react(), 1);
+var import_react22 = __toESM(require_react(), 1);
 var import_rehype_highlight = __toESM(require_rehype_highlight(), 1);
+var import_jsx_runtime12 = __toESM(require_jsx_runtime(), 1);
 function getLanguageFromPath(filePath) {
   if (!filePath) return "plaintext";
   const ext = filePath.split(".").pop()?.toLowerCase() || "";
@@ -64079,10 +64169,15 @@ function getFilename(path2) {
   return normalized.split("/").pop() || normalized;
 }
 var InlineDiffLine = ({ type, content: content3, oldLineNumber, newLineNumber }) => {
-  return /* @__PURE__ */ import_react24.default.createElement("div", { className: `m-edit-inline-row ${type}` }, /* @__PURE__ */ import_react24.default.createElement("span", { className: "m-edit-ln" }, oldLineNumber ?? ""), /* @__PURE__ */ import_react24.default.createElement("span", { className: "m-edit-ln" }, newLineNumber ?? ""), /* @__PURE__ */ import_react24.default.createElement("span", { className: "m-edit-sign" }, type === "added" ? "+" : type === "removed" ? "\u2212" : " "), /* @__PURE__ */ import_react24.default.createElement("span", { className: "m-edit-code" }, content3 || " "));
+  return /* @__PURE__ */ (0, import_jsx_runtime12.jsxs)("div", { className: `m-edit-inline-row ${type}`, children: [
+    /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("span", { className: "m-edit-ln", children: oldLineNumber ?? "" }),
+    /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("span", { className: "m-edit-ln", children: newLineNumber ?? "" }),
+    /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("span", { className: "m-edit-sign", children: type === "added" ? "+" : type === "removed" ? "\u2212" : " " }),
+    /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("span", { className: "m-edit-code", children: content3 || " " })
+  ] });
 };
 var InlineDiffView = ({ original, replacement, lineInfo }) => {
-  const diffLines2 = (0, import_react24.useMemo)(() => {
+  const diffLines2 = (0, import_react22.useMemo)(() => {
     const changes = diffLines(original || "", replacement || "");
     const lines = [];
     let oldLineNumber = lineInfo?.oldStartLine ?? 1;
@@ -64106,41 +64201,95 @@ var InlineDiffView = ({ original, replacement, lineInfo }) => {
     });
     return lines;
   }, [original, replacement, lineInfo]);
-  return /* @__PURE__ */ import_react24.default.createElement("div", { className: "m-edit-inline-wrap" }, /* @__PURE__ */ import_react24.default.createElement("div", { className: "m-edit-inline-head" }, /* @__PURE__ */ import_react24.default.createElement("span", { className: "m-edit-ln" }, "old"), /* @__PURE__ */ import_react24.default.createElement("span", { className: "m-edit-ln" }, "new"), /* @__PURE__ */ import_react24.default.createElement("span", { className: "m-edit-sign" }, "\xB1"), /* @__PURE__ */ import_react24.default.createElement("span", { className: "m-edit-code" }, "code")), diffLines2.map((line, idx) => /* @__PURE__ */ import_react24.default.createElement(
-    InlineDiffLine,
-    {
-      key: idx,
-      type: line.type,
-      content: line.content,
-      oldLineNumber: line.oldLineNumber,
-      newLineNumber: line.newLineNumber
-    }
-  )));
+  return /* @__PURE__ */ (0, import_jsx_runtime12.jsxs)("div", { className: "m-edit-inline-wrap", children: [
+    /* @__PURE__ */ (0, import_jsx_runtime12.jsxs)("div", { className: "m-edit-inline-head", children: [
+      /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("span", { className: "m-edit-ln", children: "old" }),
+      /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("span", { className: "m-edit-ln", children: "new" }),
+      /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("span", { className: "m-edit-sign", children: "\xB1" }),
+      /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("span", { className: "m-edit-code", children: "code" })
+    ] }),
+    diffLines2.map((line, idx) => /* @__PURE__ */ (0, import_jsx_runtime12.jsx)(
+      InlineDiffLine,
+      {
+        type: line.type,
+        content: line.content,
+        oldLineNumber: line.oldLineNumber,
+        newLineNumber: line.newLineNumber
+      },
+      idx
+    ))
+  ] });
 };
 var EditFileDiffView = ({ args, result, className = "" }) => {
-  const [viewMode, setViewMode] = (0, import_react24.useState)("inline");
-  const parsedResult = (0, import_react24.useMemo)(() => parseResult(result), [result]);
-  const language = (0, import_react24.useMemo)(() => getLanguageFromPath(args.path || ""), [args.path]);
-  const filename = (0, import_react24.useMemo)(() => getFilename(args.path || ""), [args.path]);
+  const [viewMode, setViewMode] = (0, import_react22.useState)("inline");
+  const parsedResult = (0, import_react22.useMemo)(() => parseResult(result), [result]);
+  const language = (0, import_react22.useMemo)(() => getLanguageFromPath(args.path || ""), [args.path]);
+  const filename = (0, import_react22.useMemo)(() => getFilename(args.path || ""), [args.path]);
   const isSuccess = parsedResult.success === true;
   const hasChanges = (parsedResult.replacements ?? 0) > 0;
   const isAppendOperation = (args.operation ?? "").toLowerCase() === "append";
   const lineInfo = parsedResult.lineInfo;
-  const originalMarkdown = (0, import_react24.useMemo)(() => {
+  const originalMarkdown = (0, import_react22.useMemo)(() => {
     return `\`\`\`${language}
 ${args.searchPattern || ""}
 \`\`\``;
   }, [args.searchPattern, language]);
-  const replacementMarkdown = (0, import_react24.useMemo)(() => {
+  const replacementMarkdown = (0, import_react22.useMemo)(() => {
     const text7 = isAppendOperation ? args.content || "" : args.replacement || "";
     return `\`\`\`${language}
 ${text7}
 \`\`\``;
   }, [args.replacement, args.content, language, isAppendOperation]);
-  return /* @__PURE__ */ import_react24.default.createElement("div", { className: `m-edit-root ${className}` }, /* @__PURE__ */ import_react24.default.createElement("div", { className: "m-edit-head" }, /* @__PURE__ */ import_react24.default.createElement("div", { className: "m-edit-head-left" }, /* @__PURE__ */ import_react24.default.createElement("span", { className: "m-edit-op" }, args.operation || "replace"), /* @__PURE__ */ import_react24.default.createElement("span", { className: "m-edit-file", title: args.path || "" }, filename)), /* @__PURE__ */ import_react24.default.createElement("div", { className: "m-edit-head-right" }, hasChanges ? /* @__PURE__ */ import_react24.default.createElement("span", { className: "m-edit-pill success" }, parsedResult.replacements) : null, lineInfo ? /* @__PURE__ */ import_react24.default.createElement("span", { className: "m-edit-pill info", title: "Real file line anchors (old/new)" }, "L", lineInfo.oldStartLine, " \u2192 L", lineInfo.newStartLine) : null, lineInfo?.scope === "first_of_many" ? /* @__PURE__ */ import_react24.default.createElement("span", { className: "m-edit-pill warn" }, "first hunk") : null, !isAppendOperation ? /* @__PURE__ */ import_react24.default.createElement("div", { className: "m-edit-toggle" }, /* @__PURE__ */ import_react24.default.createElement("button", { className: viewMode === "inline" ? "active" : "", onClick: () => setViewMode("inline") }, "inline"), /* @__PURE__ */ import_react24.default.createElement("button", { className: viewMode === "unified" ? "active" : "", onClick: () => setViewMode("unified") }, "unified"), /* @__PURE__ */ import_react24.default.createElement("button", { className: viewMode === "split" ? "active" : "", onClick: () => setViewMode("split") }, "split")) : null)), /* @__PURE__ */ import_react24.default.createElement("div", { className: "m-edit-body" }, isAppendOperation ? /* @__PURE__ */ import_react24.default.createElement(InlineDiffView, { original: "", replacement: args.content || "", lineInfo }) : viewMode === "inline" ? /* @__PURE__ */ import_react24.default.createElement(InlineDiffView, { original: args.searchPattern || "", replacement: args.replacement || "", lineInfo }) : viewMode === "unified" ? /* @__PURE__ */ import_react24.default.createElement("div", { className: "m-edit-unified" }, /* @__PURE__ */ import_react24.default.createElement("div", { className: "m-edit-pane removed" }, /* @__PURE__ */ import_react24.default.createElement("div", { className: "m-edit-pane-head" }, "\u2212"), /* @__PURE__ */ import_react24.default.createElement("div", { className: "m-edit-pane-body markdown-body" }, /* @__PURE__ */ import_react24.default.createElement(Markdown, { rehypePlugins: [[import_rehype_highlight.default, { ignoreMissing: true }]] }, originalMarkdown))), /* @__PURE__ */ import_react24.default.createElement("div", { className: "m-edit-pane added" }, /* @__PURE__ */ import_react24.default.createElement("div", { className: "m-edit-pane-head" }, "+"), /* @__PURE__ */ import_react24.default.createElement("div", { className: "m-edit-pane-body markdown-body" }, /* @__PURE__ */ import_react24.default.createElement(Markdown, { rehypePlugins: [[import_rehype_highlight.default, { ignoreMissing: true }]] }, replacementMarkdown)))) : /* @__PURE__ */ import_react24.default.createElement("div", { className: "m-edit-split" }, /* @__PURE__ */ import_react24.default.createElement("div", { className: "m-edit-pane removed" }, /* @__PURE__ */ import_react24.default.createElement("div", { className: "m-edit-pane-head" }, "Original"), /* @__PURE__ */ import_react24.default.createElement("div", { className: "m-edit-pane-body markdown-body" }, /* @__PURE__ */ import_react24.default.createElement(Markdown, { rehypePlugins: [[import_rehype_highlight.default, { ignoreMissing: true }]] }, originalMarkdown))), /* @__PURE__ */ import_react24.default.createElement("div", { className: "m-edit-pane added" }, /* @__PURE__ */ import_react24.default.createElement("div", { className: "m-edit-pane-head" }, "Replacement"), /* @__PURE__ */ import_react24.default.createElement("div", { className: "m-edit-pane-body markdown-body" }, /* @__PURE__ */ import_react24.default.createElement(Markdown, { rehypePlugins: [[import_rehype_highlight.default, { ignoreMissing: true }]] }, replacementMarkdown))))), parsedResult.message ? /* @__PURE__ */ import_react24.default.createElement("div", { className: `m-edit-msg ${isSuccess ? "success" : "error"}` }, /* @__PURE__ */ import_react24.default.createElement("span", null, parsedResult.message), parsedResult.matchStrategy && parsedResult.matchStrategy !== "exact" ? /* @__PURE__ */ import_react24.default.createElement("span", { className: "m-edit-pill warn" }, parsedResult.matchStrategy) : null) : null);
+  return /* @__PURE__ */ (0, import_jsx_runtime12.jsxs)("div", { className: `m-edit-root ${className}`, children: [
+    /* @__PURE__ */ (0, import_jsx_runtime12.jsxs)("div", { className: "m-edit-head", children: [
+      /* @__PURE__ */ (0, import_jsx_runtime12.jsxs)("div", { className: "m-edit-head-left", children: [
+        /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("span", { className: "m-edit-op", children: args.operation || "replace" }),
+        /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("span", { className: "m-edit-file", title: args.path || "", children: filename })
+      ] }),
+      /* @__PURE__ */ (0, import_jsx_runtime12.jsxs)("div", { className: "m-edit-head-right", children: [
+        hasChanges ? /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("span", { className: "m-edit-pill success", children: parsedResult.replacements }) : null,
+        lineInfo ? /* @__PURE__ */ (0, import_jsx_runtime12.jsxs)("span", { className: "m-edit-pill info", title: "Real file line anchors (old/new)", children: [
+          "L",
+          lineInfo.oldStartLine,
+          " \u2192 L",
+          lineInfo.newStartLine
+        ] }) : null,
+        lineInfo?.scope === "first_of_many" ? /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("span", { className: "m-edit-pill warn", children: "first hunk" }) : null,
+        !isAppendOperation ? /* @__PURE__ */ (0, import_jsx_runtime12.jsxs)("div", { className: "m-edit-toggle", children: [
+          /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("button", { className: viewMode === "inline" ? "active" : "", onClick: () => setViewMode("inline"), children: "inline" }),
+          /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("button", { className: viewMode === "unified" ? "active" : "", onClick: () => setViewMode("unified"), children: "unified" }),
+          /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("button", { className: viewMode === "split" ? "active" : "", onClick: () => setViewMode("split"), children: "split" })
+        ] }) : null
+      ] })
+    ] }),
+    /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("div", { className: "m-edit-body", children: isAppendOperation ? /* @__PURE__ */ (0, import_jsx_runtime12.jsx)(InlineDiffView, { original: "", replacement: args.content || "", lineInfo }) : viewMode === "inline" ? /* @__PURE__ */ (0, import_jsx_runtime12.jsx)(InlineDiffView, { original: args.searchPattern || "", replacement: args.replacement || "", lineInfo }) : viewMode === "unified" ? /* @__PURE__ */ (0, import_jsx_runtime12.jsxs)("div", { className: "m-edit-unified", children: [
+      /* @__PURE__ */ (0, import_jsx_runtime12.jsxs)("div", { className: "m-edit-pane removed", children: [
+        /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("div", { className: "m-edit-pane-head", children: "\u2212" }),
+        /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("div", { className: "m-edit-pane-body markdown-body", children: /* @__PURE__ */ (0, import_jsx_runtime12.jsx)(Markdown, { rehypePlugins: [[import_rehype_highlight.default, { ignoreMissing: true }]], children: originalMarkdown }) })
+      ] }),
+      /* @__PURE__ */ (0, import_jsx_runtime12.jsxs)("div", { className: "m-edit-pane added", children: [
+        /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("div", { className: "m-edit-pane-head", children: "+" }),
+        /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("div", { className: "m-edit-pane-body markdown-body", children: /* @__PURE__ */ (0, import_jsx_runtime12.jsx)(Markdown, { rehypePlugins: [[import_rehype_highlight.default, { ignoreMissing: true }]], children: replacementMarkdown }) })
+      ] })
+    ] }) : /* @__PURE__ */ (0, import_jsx_runtime12.jsxs)("div", { className: "m-edit-split", children: [
+      /* @__PURE__ */ (0, import_jsx_runtime12.jsxs)("div", { className: "m-edit-pane removed", children: [
+        /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("div", { className: "m-edit-pane-head", children: "Original" }),
+        /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("div", { className: "m-edit-pane-body markdown-body", children: /* @__PURE__ */ (0, import_jsx_runtime12.jsx)(Markdown, { rehypePlugins: [[import_rehype_highlight.default, { ignoreMissing: true }]], children: originalMarkdown }) })
+      ] }),
+      /* @__PURE__ */ (0, import_jsx_runtime12.jsxs)("div", { className: "m-edit-pane added", children: [
+        /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("div", { className: "m-edit-pane-head", children: "Replacement" }),
+        /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("div", { className: "m-edit-pane-body markdown-body", children: /* @__PURE__ */ (0, import_jsx_runtime12.jsx)(Markdown, { rehypePlugins: [[import_rehype_highlight.default, { ignoreMissing: true }]], children: replacementMarkdown }) })
+      ] })
+    ] }) }),
+    parsedResult.message ? /* @__PURE__ */ (0, import_jsx_runtime12.jsxs)("div", { className: `m-edit-msg ${isSuccess ? "success" : "error"}`, children: [
+      /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("span", { children: parsedResult.message }),
+      parsedResult.matchStrategy && parsedResult.matchStrategy !== "exact" ? /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("span", { className: "m-edit-pill warn", children: parsedResult.matchStrategy }) : null
+    ] }) : null
+  ] });
 };
 
 // electron/headlessServer/ui/mobile/src/components/EditToolDiffView.tsx
+var import_jsx_runtime13 = __toESM(require_jsx_runtime(), 1);
 var isRecord = (value) => typeof value === "object" && value !== null && !Array.isArray(value);
 var normalizeToolName = (name2) => String(name2 || "").toLowerCase().replace(/[-\s]/g, "_");
 var parseResultRecord = (rawResult) => {
@@ -64216,18 +64365,58 @@ var buildViewModel = (toolName, rawArgs, rawResult) => {
   };
 };
 var EditToolDiffView = ({ toolName, args, result, className = "" }) => {
-  const viewModel = (0, import_react25.useMemo)(() => buildViewModel(toolName, args, result), [toolName, args, result]);
+  const viewModel = (0, import_react23.useMemo)(() => buildViewModel(toolName, args, result), [toolName, args, result]);
   if (!viewModel || viewModel.items.length === 0) return null;
   if (viewModel.mode === "single") {
     const item = viewModel.items[0];
-    return /* @__PURE__ */ import_react25.default.createElement(EditFileDiffView, { args: item.args, result: item.result, className });
+    return /* @__PURE__ */ (0, import_jsx_runtime13.jsx)(EditFileDiffView, { args: item.args, result: item.result, className });
   }
   const showSummaryMessage = Boolean(viewModel.message) && (viewModel.success === false || viewModel.stoppedEarly);
-  return /* @__PURE__ */ import_react25.default.createElement("div", { className }, /* @__PURE__ */ import_react25.default.createElement("div", { className: "mobile-tool-block" }, /* @__PURE__ */ import_react25.default.createElement("div", { className: "mobile-tool-kv" }, /* @__PURE__ */ import_react25.default.createElement("span", { className: "mobile-tool-k" }, "summary:"), " ", /* @__PURE__ */ import_react25.default.createElement("span", { className: "mobile-tool-v" }, viewModel.items.length, " edits")), typeof viewModel.applied === "number" ? /* @__PURE__ */ import_react25.default.createElement("div", { className: "mobile-tool-kv" }, /* @__PURE__ */ import_react25.default.createElement("span", { className: "mobile-tool-k" }, "applied:"), " ", /* @__PURE__ */ import_react25.default.createElement("span", { className: "mobile-tool-v" }, viewModel.applied)) : null, typeof viewModel.failed === "number" ? /* @__PURE__ */ import_react25.default.createElement("div", { className: "mobile-tool-kv" }, /* @__PURE__ */ import_react25.default.createElement("span", { className: "mobile-tool-k" }, "failed:"), " ", /* @__PURE__ */ import_react25.default.createElement("span", { className: "mobile-tool-v" }, viewModel.failed)) : null, viewModel.stoppedEarly ? /* @__PURE__ */ import_react25.default.createElement("div", { className: "mobile-tool-kv" }, /* @__PURE__ */ import_react25.default.createElement("span", { className: "mobile-tool-k" }, "status:"), " ", /* @__PURE__ */ import_react25.default.createElement("span", { className: "mobile-tool-v" }, "stopped early")) : null), viewModel.items.map((item) => /* @__PURE__ */ import_react25.default.createElement("div", { key: item.key, className: "mobile-tool-block" }, /* @__PURE__ */ import_react25.default.createElement("div", { className: "mobile-tool-kv" }, /* @__PURE__ */ import_react25.default.createElement("span", { className: "mobile-tool-k" }, "edit ", item.index + 1, ":"), " ", /* @__PURE__ */ import_react25.default.createElement("span", { className: "mobile-tool-v" }, item.args.path || item.args.operation || "edit")), /* @__PURE__ */ import_react25.default.createElement(EditFileDiffView, { args: item.args, result: item.result, className: "mobile-editfile-view" }))), showSummaryMessage ? /* @__PURE__ */ import_react25.default.createElement("div", { className: `mobile-tool-result ${viewModel.success === false ? "error" : "success"}` }, /* @__PURE__ */ import_react25.default.createElement("pre", null, viewModel.message)) : null);
+  return /* @__PURE__ */ (0, import_jsx_runtime13.jsxs)("div", { className, children: [
+    /* @__PURE__ */ (0, import_jsx_runtime13.jsxs)("div", { className: "mobile-tool-block", children: [
+      /* @__PURE__ */ (0, import_jsx_runtime13.jsxs)("div", { className: "mobile-tool-kv", children: [
+        /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("span", { className: "mobile-tool-k", children: "summary:" }),
+        " ",
+        /* @__PURE__ */ (0, import_jsx_runtime13.jsxs)("span", { className: "mobile-tool-v", children: [
+          viewModel.items.length,
+          " edits"
+        ] })
+      ] }),
+      typeof viewModel.applied === "number" ? /* @__PURE__ */ (0, import_jsx_runtime13.jsxs)("div", { className: "mobile-tool-kv", children: [
+        /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("span", { className: "mobile-tool-k", children: "applied:" }),
+        " ",
+        /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("span", { className: "mobile-tool-v", children: viewModel.applied })
+      ] }) : null,
+      typeof viewModel.failed === "number" ? /* @__PURE__ */ (0, import_jsx_runtime13.jsxs)("div", { className: "mobile-tool-kv", children: [
+        /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("span", { className: "mobile-tool-k", children: "failed:" }),
+        " ",
+        /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("span", { className: "mobile-tool-v", children: viewModel.failed })
+      ] }) : null,
+      viewModel.stoppedEarly ? /* @__PURE__ */ (0, import_jsx_runtime13.jsxs)("div", { className: "mobile-tool-kv", children: [
+        /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("span", { className: "mobile-tool-k", children: "status:" }),
+        " ",
+        /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("span", { className: "mobile-tool-v", children: "stopped early" })
+      ] }) : null
+    ] }),
+    viewModel.items.map((item) => /* @__PURE__ */ (0, import_jsx_runtime13.jsxs)("div", { className: "mobile-tool-block", children: [
+      /* @__PURE__ */ (0, import_jsx_runtime13.jsxs)("div", { className: "mobile-tool-kv", children: [
+        /* @__PURE__ */ (0, import_jsx_runtime13.jsxs)("span", { className: "mobile-tool-k", children: [
+          "edit ",
+          item.index + 1,
+          ":"
+        ] }),
+        " ",
+        /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("span", { className: "mobile-tool-v", children: item.args.path || item.args.operation || "edit" })
+      ] }),
+      /* @__PURE__ */ (0, import_jsx_runtime13.jsx)(EditFileDiffView, { args: item.args, result: item.result, className: "mobile-editfile-view" })
+    ] }, item.key)),
+    showSummaryMessage ? /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("div", { className: `mobile-tool-result ${viewModel.success === false ? "error" : "success"}`, children: /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("pre", { children: viewModel.message }) }) : null
+  ] });
 };
 
 // electron/headlessServer/ui/mobile/src/components/PlanMdToolView.tsx
-var import_react26 = __toESM(require_react(), 1);
+var import_react24 = __toESM(require_react(), 1);
+var import_jsx_runtime14 = __toESM(require_jsx_runtime(), 1);
 var isRecord2 = (value) => typeof value === "object" && value !== null && !Array.isArray(value);
 var parseRecord = (raw) => {
   if (typeof raw === "string") {
@@ -64242,17 +64431,27 @@ var parseRecord = (raw) => {
 };
 var toString3 = (value) => typeof value === "string" ? value : "";
 var PlanMdToolView = ({ args, result, className = "" }) => {
-  const parsedResult = (0, import_react26.useMemo)(() => parseRecord(result), [result]);
+  const parsedResult = (0, import_react24.useMemo)(() => parseRecord(result), [result]);
   const name2 = toString3(parsedResult.name) || toString3(args?.name) || "Plan";
   const path2 = toString3(parsedResult.path);
   const content3 = toString3(parsedResult.content) || toString3(parsedResult.modelContent) || toString3(parsedResult.message);
   const exists = parsedResult.exists !== false;
   if (!content3) return null;
-  return /* @__PURE__ */ import_react26.default.createElement("div", { className: `mobile-planmd-root ${className}` }, /* @__PURE__ */ import_react26.default.createElement("div", { className: "mobile-planmd-head" }, /* @__PURE__ */ import_react26.default.createElement("div", { className: "mobile-planmd-title-wrap" }, /* @__PURE__ */ import_react26.default.createElement("span", { className: "mobile-planmd-label" }, "plan"), /* @__PURE__ */ import_react26.default.createElement("span", { className: "mobile-planmd-title", title: name2 }, name2)), /* @__PURE__ */ import_react26.default.createElement("span", { className: `mobile-planmd-status ${exists ? "success" : "error"}` }, exists ? "displayed" : "missing")), path2 ? /* @__PURE__ */ import_react26.default.createElement("div", { className: "mobile-planmd-path" }, path2) : null, /* @__PURE__ */ import_react26.default.createElement("div", { className: "mobile-planmd-body markdown-body" }, /* @__PURE__ */ import_react26.default.createElement(Markdown, null, content3)));
+  return /* @__PURE__ */ (0, import_jsx_runtime14.jsxs)("div", { className: `mobile-planmd-root ${className}`, children: [
+    /* @__PURE__ */ (0, import_jsx_runtime14.jsxs)("div", { className: "mobile-planmd-head", children: [
+      /* @__PURE__ */ (0, import_jsx_runtime14.jsxs)("div", { className: "mobile-planmd-title-wrap", children: [
+        /* @__PURE__ */ (0, import_jsx_runtime14.jsx)("span", { className: "mobile-planmd-label", children: "plan" }),
+        /* @__PURE__ */ (0, import_jsx_runtime14.jsx)("span", { className: "mobile-planmd-title", title: name2, children: name2 })
+      ] }),
+      /* @__PURE__ */ (0, import_jsx_runtime14.jsx)("span", { className: `mobile-planmd-status ${exists ? "success" : "error"}`, children: exists ? "displayed" : "missing" })
+    ] }),
+    path2 ? /* @__PURE__ */ (0, import_jsx_runtime14.jsx)("div", { className: "mobile-planmd-path", children: path2 }) : null,
+    /* @__PURE__ */ (0, import_jsx_runtime14.jsx)("div", { className: "mobile-planmd-body markdown-body", children: /* @__PURE__ */ (0, import_jsx_runtime14.jsx)(Markdown, { children: content3 }) })
+  ] });
 };
 
 // electron/headlessServer/ui/mobile/src/components/CustomToolIframe.tsx
-var import_react27 = __toESM(require_react(), 1);
+var import_react25 = __toESM(require_react(), 1);
 
 // electron/headlessServer/ui/mobile/src/customToolIframeBridge.ts
 var isRecord3 = (value) => typeof value === "object" && value !== null && !Array.isArray(value);
@@ -64442,6 +64641,7 @@ var attachCustomToolIframeBridge = (iframe, context) => {
 };
 
 // electron/headlessServer/ui/mobile/src/components/CustomToolIframe.tsx
+var import_jsx_runtime15 = __toESM(require_jsx_runtime(), 1);
 var CustomToolIframe = ({
   html: html5,
   toolName = null,
@@ -64450,9 +64650,9 @@ var CustomToolIframe = ({
   src = null,
   warning = null
 }) => {
-  const iframeRef = (0, import_react27.useRef)(null);
-  const [acknowledged, setAcknowledged] = (0, import_react27.useState)(false);
-  (0, import_react27.useEffect)(() => {
+  const iframeRef = (0, import_react25.useRef)(null);
+  const [acknowledged, setAcknowledged] = (0, import_react25.useState)(false);
+  (0, import_react25.useEffect)(() => {
     const iframe = iframeRef.current;
     if (!iframe) return;
     const cleanup = attachCustomToolIframeBridge(iframe, {
@@ -64463,12 +64663,16 @@ var CustomToolIframe = ({
     return () => cleanup();
   }, [rootPath, toolName, userId]);
   const shouldGate = Boolean(src && warning && !acknowledged);
-  const resolvedSrc = (0, import_react27.useMemo)(() => {
+  const resolvedSrc = (0, import_react25.useMemo)(() => {
     if (src) return src;
     if (!html5) return void 0;
     return void 0;
   }, [src, html5]);
-  return /* @__PURE__ */ import_react27.default.createElement("div", { className: "mobile-custom-tool-iframe-wrap" }, shouldGate ? /* @__PURE__ */ import_react27.default.createElement("div", { className: "mobile-custom-tool-warning" }, /* @__PURE__ */ import_react27.default.createElement("div", { className: "mobile-custom-tool-warning-title" }, "Desktop-oriented custom app"), /* @__PURE__ */ import_react27.default.createElement("div", { className: "mobile-custom-tool-warning-body" }, warning), /* @__PURE__ */ import_react27.default.createElement("button", { type: "button", className: "mobile-tool-app-toggle", onClick: () => setAcknowledged(true) }, "Proceed anyway")) : /* @__PURE__ */ import_react27.default.createElement(
+  return /* @__PURE__ */ (0, import_jsx_runtime15.jsx)("div", { className: "mobile-custom-tool-iframe-wrap", children: shouldGate ? /* @__PURE__ */ (0, import_jsx_runtime15.jsxs)("div", { className: "mobile-custom-tool-warning", children: [
+    /* @__PURE__ */ (0, import_jsx_runtime15.jsx)("div", { className: "mobile-custom-tool-warning-title", children: "Desktop-oriented custom app" }),
+    /* @__PURE__ */ (0, import_jsx_runtime15.jsx)("div", { className: "mobile-custom-tool-warning-body", children: warning }),
+    /* @__PURE__ */ (0, import_jsx_runtime15.jsx)("button", { type: "button", className: "mobile-tool-app-toggle", onClick: () => setAcknowledged(true), children: "Proceed anyway" })
+  ] }) : /* @__PURE__ */ (0, import_jsx_runtime15.jsx)(
     "iframe",
     {
       ref: iframeRef,
@@ -64481,10 +64685,11 @@ var CustomToolIframe = ({
       referrerPolicy: "strict-origin-when-cross-origin",
       sandbox: "allow-scripts allow-same-origin allow-forms allow-popups allow-presentation allow-downloads"
     }
-  ));
+  ) });
 };
 
 // electron/headlessServer/ui/mobile/src/components/ToolCallCard.tsx
+var import_jsx_runtime16 = __toESM(require_jsx_runtime(), 1);
 var LOCAL_UI_BASE = "/api/headless/custom-tools/ui/";
 var buildRemoteCustomToolUiUrl = (toolName) => {
   const trimmed = String(toolName || "").trim();
@@ -64537,36 +64742,54 @@ var humanizeToolName = (name2) => {
 var renderToolResult = (result, index3, groupId, options) => {
   const htmlPayload = extractHtmlFromToolResult(result.content);
   if (htmlPayload?.html) {
-    return /* @__PURE__ */ import_react28.default.createElement("div", { key: `${groupId}-result-${index3}`, className: `mobile-tool-result ${result.is_error ? "error" : "success"}` }, /* @__PURE__ */ import_react28.default.createElement("div", { className: "mobile-tool-app-header" }, /* @__PURE__ */ import_react28.default.createElement("span", { className: "mobile-tool-app-label" }, "HTML App Result"), /* @__PURE__ */ import_react28.default.createElement("div", { className: "mobile-tool-app-actions" }, /* @__PURE__ */ import_react28.default.createElement("button", { type: "button", className: "mobile-tool-app-toggle", onClick: options.onToggleIframe }, options.isIframeOpen ? "Hide app" : "Open app"), /* @__PURE__ */ import_react28.default.createElement(
-      "button",
-      {
-        type: "button",
-        className: "mobile-tool-app-toggle",
-        disabled: !options.isIframeOpen,
-        onClick: options.onToggleFullscreen
-      },
-      options.isFullscreen ? "Exit fullscreen" : "Fullscreen"
-    ))), options.isIframeOpen ? /* @__PURE__ */ import_react28.default.createElement("div", { className: `mobile-custom-tool-iframe-shell ${options.isFullscreen ? "fullscreen" : ""}` }, options.isFullscreen ? /* @__PURE__ */ import_react28.default.createElement("div", { className: "mobile-custom-tool-fullscreen-bar" }, /* @__PURE__ */ import_react28.default.createElement("span", { className: "mobile-custom-tool-fullscreen-title" }, humanizeToolName(htmlPayload.toolName ?? options.fallbackToolName ?? null)), /* @__PURE__ */ import_react28.default.createElement(
-      "button",
-      {
-        type: "button",
-        className: "mobile-custom-tool-fullscreen-close",
-        onClick: options.onToggleFullscreen
-      },
-      "Close"
-    )) : null, /* @__PURE__ */ import_react28.default.createElement(
-      CustomToolIframe,
-      {
-        html: htmlPayload.html,
-        src: buildRemoteCustomToolUiUrl(htmlPayload.toolName ?? options.fallbackToolName ?? null),
-        warning: "This custom app may rely on desktop-only capabilities. Some actions may fail in remote/browser mode, but you can still try opening it.",
-        toolName: htmlPayload.toolName ?? options.fallbackToolName ?? null,
-        userId: options.currentUserId ?? null,
-        rootPath: options.rootPath ?? null
-      }
-    )) : null);
+    return /* @__PURE__ */ (0, import_jsx_runtime16.jsxs)("div", { className: `mobile-tool-result ${result.is_error ? "error" : "success"}`, children: [
+      /* @__PURE__ */ (0, import_jsx_runtime16.jsxs)("div", { className: "mobile-tool-app-header", children: [
+        /* @__PURE__ */ (0, import_jsx_runtime16.jsx)("span", { className: "mobile-tool-app-label", children: "HTML App Result" }),
+        /* @__PURE__ */ (0, import_jsx_runtime16.jsxs)("div", { className: "mobile-tool-app-actions", children: [
+          /* @__PURE__ */ (0, import_jsx_runtime16.jsx)("button", { type: "button", className: "mobile-tool-app-toggle", onClick: options.onToggleIframe, children: options.isIframeOpen ? "Hide app" : "Open app" }),
+          /* @__PURE__ */ (0, import_jsx_runtime16.jsx)(
+            "button",
+            {
+              type: "button",
+              className: "mobile-tool-app-toggle",
+              disabled: !options.isIframeOpen,
+              onClick: options.onToggleFullscreen,
+              children: options.isFullscreen ? "Exit fullscreen" : "Fullscreen"
+            }
+          )
+        ] })
+      ] }),
+      options.isIframeOpen ? /* @__PURE__ */ (0, import_jsx_runtime16.jsxs)("div", { className: `mobile-custom-tool-iframe-shell ${options.isFullscreen ? "fullscreen" : ""}`, children: [
+        options.isFullscreen ? /* @__PURE__ */ (0, import_jsx_runtime16.jsxs)("div", { className: "mobile-custom-tool-fullscreen-bar", children: [
+          /* @__PURE__ */ (0, import_jsx_runtime16.jsx)("span", { className: "mobile-custom-tool-fullscreen-title", children: humanizeToolName(htmlPayload.toolName ?? options.fallbackToolName ?? null) }),
+          /* @__PURE__ */ (0, import_jsx_runtime16.jsx)(
+            "button",
+            {
+              type: "button",
+              className: "mobile-custom-tool-fullscreen-close",
+              onClick: options.onToggleFullscreen,
+              children: "Close"
+            }
+          )
+        ] }) : null,
+        /* @__PURE__ */ (0, import_jsx_runtime16.jsx)(
+          CustomToolIframe,
+          {
+            html: htmlPayload.html,
+            src: buildRemoteCustomToolUiUrl(htmlPayload.toolName ?? options.fallbackToolName ?? null),
+            warning: "This custom app may rely on desktop-only capabilities. Some actions may fail in remote/browser mode, but you can still try opening it.",
+            toolName: htmlPayload.toolName ?? options.fallbackToolName ?? null,
+            userId: options.currentUserId ?? null,
+            rootPath: options.rootPath ?? null
+          }
+        )
+      ] }) : null
+    ] }, `${groupId}-result-${index3}`);
   }
-  return /* @__PURE__ */ import_react28.default.createElement("div", { key: `${groupId}-result-${index3}`, className: `mobile-tool-result ${result.is_error ? "error" : "success"}` }, /* @__PURE__ */ import_react28.default.createElement("pre", null, toReadableToolResult(result)), /* @__PURE__ */ import_react28.default.createElement("span", { className: "mobile-tool-status" }, result.is_error ? "failed" : "completed"));
+  return /* @__PURE__ */ (0, import_jsx_runtime16.jsxs)("div", { className: `mobile-tool-result ${result.is_error ? "error" : "success"}`, children: [
+    /* @__PURE__ */ (0, import_jsx_runtime16.jsx)("pre", { children: toReadableToolResult(result) }),
+    /* @__PURE__ */ (0, import_jsx_runtime16.jsx)("span", { className: "mobile-tool-status", children: result.is_error ? "failed" : "completed" })
+  ] }, `${groupId}-result-${index3}`);
 };
 var ToolCallCard = ({
   group,
@@ -64574,34 +64797,34 @@ var ToolCallCard = ({
   currentUserId = null,
   rootPath = null
 }) => {
-  const normalizedToolName = (0, import_react28.useMemo)(() => normalizeToolName2(group.name), [group.name]);
-  const isEditTool = (0, import_react28.useMemo)(() => isEditLikeTool(group.name), [group.name]);
-  const isPlanMdDisplay = (0, import_react28.useMemo)(() => isPlanMdDisplayTool(group.name, group.args), [group.name, group.args]);
+  const normalizedToolName = (0, import_react26.useMemo)(() => normalizeToolName2(group.name), [group.name]);
+  const isEditTool = (0, import_react26.useMemo)(() => isEditLikeTool(group.name), [group.name]);
+  const isPlanMdDisplay = (0, import_react26.useMemo)(() => isPlanMdDisplayTool(group.name, group.args), [group.name, group.args]);
   const isHtmlRendererTool = normalizedToolName === "html_renderer";
-  const editResult = (0, import_react28.useMemo)(() => parseResultObject(group.results[0]?.content), [group.results]);
+  const editResult = (0, import_react26.useMemo)(() => parseResultObject(group.results[0]?.content), [group.results]);
   const hasEditToolView = isEditTool && Boolean(group.args);
   const hasPlanMdDisplayView = isPlanMdDisplay && Boolean(group.args);
-  const hasHtmlResult = (0, import_react28.useMemo)(() => group.results.some((result) => Boolean(extractHtmlFromToolResult(result.content)?.html)), [group.results]);
-  const rendererHtmlFromArgs = (0, import_react28.useMemo)(() => {
+  const hasHtmlResult = (0, import_react26.useMemo)(() => group.results.some((result) => Boolean(extractHtmlFromToolResult(result.content)?.html)), [group.results]);
+  const rendererHtmlFromArgs = (0, import_react26.useMemo)(() => {
     if (!isHtmlRendererTool || !group.args) return "";
     const htmlValue = group.args.html;
     return typeof htmlValue === "string" ? htmlValue.trim() : "";
   }, [group.args, isHtmlRendererTool]);
-  const displayArgs = (0, import_react28.useMemo)(() => {
+  const displayArgs = (0, import_react26.useMemo)(() => {
     if (!group.args) return void 0;
     if (!isHtmlRendererTool) return group.args;
     const { html: _html, ...rest } = group.args;
     return Object.keys(rest).length > 0 ? rest : void 0;
   }, [group.args, isHtmlRendererTool]);
-  const [expanded, setExpanded] = (0, import_react28.useState)(
+  const [expanded, setExpanded] = (0, import_react26.useState)(
     defaultExpanded || hasEditToolView || hasPlanMdDisplayView || hasHtmlResult || Boolean(rendererHtmlFromArgs)
   );
-  const [openIframeByResultIndex, setOpenIframeByResultIndex] = (0, import_react28.useState)({});
-  const [fullscreenIframeByResultIndex, setFullscreenIframeByResultIndex] = (0, import_react28.useState)({});
-  (0, import_react28.useEffect)(() => {
+  const [openIframeByResultIndex, setOpenIframeByResultIndex] = (0, import_react26.useState)({});
+  const [fullscreenIframeByResultIndex, setFullscreenIframeByResultIndex] = (0, import_react26.useState)({});
+  (0, import_react26.useEffect)(() => {
     if (hasEditToolView || hasPlanMdDisplayView || hasHtmlResult || Boolean(rendererHtmlFromArgs)) setExpanded(true);
   }, [hasEditToolView, hasPlanMdDisplayView, hasHtmlResult, rendererHtmlFromArgs]);
-  (0, import_react28.useEffect)(() => {
+  (0, import_react26.useEffect)(() => {
     if (!hasHtmlResult) {
       setOpenIframeByResultIndex({});
       return;
@@ -64626,7 +64849,7 @@ var ToolCallCard = ({
       return changed ? next : previous3;
     });
   }, [group.results, hasHtmlResult]);
-  (0, import_react28.useEffect)(() => {
+  (0, import_react26.useEffect)(() => {
     if (!hasHtmlResult) {
       setFullscreenIframeByResultIndex({});
       return;
@@ -64647,7 +64870,7 @@ var ToolCallCard = ({
       return changed ? next : previous3;
     });
   }, [group.results, hasHtmlResult, openIframeByResultIndex]);
-  (0, import_react28.useEffect)(() => {
+  (0, import_react26.useEffect)(() => {
     const hasFullscreen = Object.values(fullscreenIframeByResultIndex).some(Boolean);
     if (!hasFullscreen) return;
     const originalOverflow = document.body.style.overflow;
@@ -64656,57 +64879,79 @@ var ToolCallCard = ({
       document.body.style.overflow = originalOverflow;
     };
   }, [fullscreenIframeByResultIndex]);
-  const pathHint = (0, import_react28.useMemo)(() => findPathHint(displayArgs), [displayArgs]);
+  const pathHint = (0, import_react26.useMemo)(() => findPathHint(displayArgs), [displayArgs]);
   const hasError = group.results.some((result) => Boolean(result.is_error)) || editResult?.success === false;
-  return /* @__PURE__ */ import_react28.default.createElement("div", { className: "mobile-tool-card" }, /* @__PURE__ */ import_react28.default.createElement("div", { className: `mobile-tool-dot ${hasError ? "error" : "success"}` }), /* @__PURE__ */ import_react28.default.createElement("button", { className: "mobile-tool-header", onClick: () => setExpanded((value) => !value) }, /* @__PURE__ */ import_react28.default.createElement(Badge, { className: "mobile-tool-chip", variant: "outline" }, group.name || "tool"), !expanded && pathHint ? /* @__PURE__ */ import_react28.default.createElement("span", { className: "mobile-tool-path" }, pathHint) : null, /* @__PURE__ */ import_react28.default.createElement("span", { className: `tool-chevron ${expanded ? "open" : ""}` }, "\u203A")), /* @__PURE__ */ import_react28.default.createElement("div", { className: `tool-expand-container ${expanded ? "open" : ""}` }, /* @__PURE__ */ import_react28.default.createElement("div", { className: "tool-expand-content" }, hasEditToolView ? /* @__PURE__ */ import_react28.default.createElement(
-    EditToolDiffView,
-    {
-      toolName: group.name,
-      args: group.args,
-      result: group.results[0]?.content ?? {},
-      className: "mobile-editfile-view"
-    }
-  ) : hasPlanMdDisplayView ? /* @__PURE__ */ import_react28.default.createElement(PlanMdToolView, { args: group.args, result: group.results[0]?.content ?? {} }) : /* @__PURE__ */ import_react28.default.createElement(import_react28.default.Fragment, null, displayArgs && Object.keys(displayArgs).length > 0 ? /* @__PURE__ */ import_react28.default.createElement("div", { className: "mobile-tool-block" }, Object.entries(displayArgs).map(([key, value]) => /* @__PURE__ */ import_react28.default.createElement("div", { key, className: "mobile-tool-kv" }, /* @__PURE__ */ import_react28.default.createElement("span", { className: "mobile-tool-k" }, key, ":"), " ", /* @__PURE__ */ import_react28.default.createElement("span", { className: "mobile-tool-v" }, typeof value === "object" ? JSON.stringify(value) : String(value))))) : null, isHtmlRendererTool && rendererHtmlFromArgs ? /* @__PURE__ */ import_react28.default.createElement("div", { className: "mobile-tool-result success" }, /* @__PURE__ */ import_react28.default.createElement("div", { className: "mobile-tool-app-header" }, /* @__PURE__ */ import_react28.default.createElement("span", { className: "mobile-tool-app-label" }, "Rendered HTML")), /* @__PURE__ */ import_react28.default.createElement(
-    CustomToolIframe,
-    {
-      html: rendererHtmlFromArgs,
-      toolName: group.name,
-      userId: currentUserId ?? null,
-      rootPath: rootPath ?? null
-    }
-  )) : group.results.map(
-    (result, index3) => renderToolResult(result, index3, group.id, {
-      currentUserId,
-      rootPath,
-      fallbackToolName: group.name,
-      isIframeOpen: openIframeByResultIndex[index3] !== false,
-      isFullscreen: fullscreenIframeByResultIndex[index3] === true,
-      onToggleIframe: () => {
-        setOpenIframeByResultIndex((previous3) => {
-          const nextOpen = previous3[index3] === false;
-          if (!nextOpen) {
-            setFullscreenIframeByResultIndex((fullscreenPrev) => {
-              if (!fullscreenPrev[index3]) return fullscreenPrev;
-              const nextFullscreen = { ...fullscreenPrev };
-              delete nextFullscreen[index3];
-              return nextFullscreen;
-            });
+  return /* @__PURE__ */ (0, import_jsx_runtime16.jsxs)("div", { className: "mobile-tool-card", children: [
+    /* @__PURE__ */ (0, import_jsx_runtime16.jsx)("div", { className: `mobile-tool-dot ${hasError ? "error" : "success"}` }),
+    /* @__PURE__ */ (0, import_jsx_runtime16.jsxs)("button", { className: "mobile-tool-header", onClick: () => setExpanded((value) => !value), children: [
+      /* @__PURE__ */ (0, import_jsx_runtime16.jsx)(Badge, { className: "mobile-tool-chip", variant: "outline", children: group.name || "tool" }),
+      !expanded && pathHint ? /* @__PURE__ */ (0, import_jsx_runtime16.jsx)("span", { className: "mobile-tool-path", children: pathHint }) : null,
+      /* @__PURE__ */ (0, import_jsx_runtime16.jsx)("span", { className: `tool-chevron ${expanded ? "open" : ""}`, children: "\u203A" })
+    ] }),
+    /* @__PURE__ */ (0, import_jsx_runtime16.jsx)("div", { className: `tool-expand-container ${expanded ? "open" : ""}`, children: /* @__PURE__ */ (0, import_jsx_runtime16.jsx)("div", { className: "tool-expand-content", children: hasEditToolView ? /* @__PURE__ */ (0, import_jsx_runtime16.jsx)(
+      EditToolDiffView,
+      {
+        toolName: group.name,
+        args: group.args,
+        result: group.results[0]?.content ?? {},
+        className: "mobile-editfile-view"
+      }
+    ) : hasPlanMdDisplayView ? /* @__PURE__ */ (0, import_jsx_runtime16.jsx)(PlanMdToolView, { args: group.args, result: group.results[0]?.content ?? {} }) : /* @__PURE__ */ (0, import_jsx_runtime16.jsxs)(import_jsx_runtime16.Fragment, { children: [
+      displayArgs && Object.keys(displayArgs).length > 0 ? /* @__PURE__ */ (0, import_jsx_runtime16.jsx)("div", { className: "mobile-tool-block", children: Object.entries(displayArgs).map(([key, value]) => /* @__PURE__ */ (0, import_jsx_runtime16.jsxs)("div", { className: "mobile-tool-kv", children: [
+        /* @__PURE__ */ (0, import_jsx_runtime16.jsxs)("span", { className: "mobile-tool-k", children: [
+          key,
+          ":"
+        ] }),
+        " ",
+        /* @__PURE__ */ (0, import_jsx_runtime16.jsx)("span", { className: "mobile-tool-v", children: typeof value === "object" ? JSON.stringify(value) : String(value) })
+      ] }, key)) }) : null,
+      isHtmlRendererTool && rendererHtmlFromArgs ? /* @__PURE__ */ (0, import_jsx_runtime16.jsxs)("div", { className: "mobile-tool-result success", children: [
+        /* @__PURE__ */ (0, import_jsx_runtime16.jsx)("div", { className: "mobile-tool-app-header", children: /* @__PURE__ */ (0, import_jsx_runtime16.jsx)("span", { className: "mobile-tool-app-label", children: "Rendered HTML" }) }),
+        /* @__PURE__ */ (0, import_jsx_runtime16.jsx)(
+          CustomToolIframe,
+          {
+            html: rendererHtmlFromArgs,
+            toolName: group.name,
+            userId: currentUserId ?? null,
+            rootPath: rootPath ?? null
           }
-          return {
+        )
+      ] }) : group.results.map(
+        (result, index3) => renderToolResult(result, index3, group.id, {
+          currentUserId,
+          rootPath,
+          fallbackToolName: group.name,
+          isIframeOpen: openIframeByResultIndex[index3] !== false,
+          isFullscreen: fullscreenIframeByResultIndex[index3] === true,
+          onToggleIframe: () => {
+            setOpenIframeByResultIndex((previous3) => {
+              const nextOpen = previous3[index3] === false;
+              if (!nextOpen) {
+                setFullscreenIframeByResultIndex((fullscreenPrev) => {
+                  if (!fullscreenPrev[index3]) return fullscreenPrev;
+                  const nextFullscreen = { ...fullscreenPrev };
+                  delete nextFullscreen[index3];
+                  return nextFullscreen;
+                });
+              }
+              return {
+                ...previous3,
+                [index3]: nextOpen
+              };
+            });
+          },
+          onToggleFullscreen: () => setFullscreenIframeByResultIndex((previous3) => ({
             ...previous3,
-            [index3]: nextOpen
-          };
-        });
-      },
-      onToggleFullscreen: () => setFullscreenIframeByResultIndex((previous3) => ({
-        ...previous3,
-        [index3]: previous3[index3] !== true
-      }))
-    })
-  )))));
+            [index3]: previous3[index3] !== true
+          }))
+        })
+      )
+    ] }) }) })
+  ] });
 };
 
 // electron/headlessServer/ui/mobile/src/components/MessageBubble.tsx
+var import_jsx_runtime17 = __toESM(require_jsx_runtime(), 1);
 var roleLabel = (role) => {
   if (role === "assistant") return "Assistant";
   if (role === "user") return "You";
@@ -64725,38 +64970,52 @@ var MessageBubble = ({
   onBranchUserMessage,
   onDeleteUserMessage
 }) => {
-  const renderItems = (0, import_react29.useMemo)(() => buildRenderItemsForMessage(message), [message]);
+  const renderItems = (0, import_react27.useMemo)(() => buildRenderItemsForMessage(message), [message]);
   const textStyle = message.role === "assistant" && typeof agentTextFontSizePx === "number" ? { "--mobile-agent-text-font-size": `${agentTextFontSizePx}px` } : void 0;
-  return /* @__PURE__ */ import_react29.default.createElement("article", { className: `mobile-message ${message.role}${isBranchTarget ? " branch-target" : ""}` }, /* @__PURE__ */ import_react29.default.createElement("header", { className: "mobile-message-header" }, /* @__PURE__ */ import_react29.default.createElement("span", { className: "mobile-message-role" }, roleLabel(message.role)), isStreaming ? /* @__PURE__ */ import_react29.default.createElement(Badge, { className: "mobile-streaming-badge" }, "streaming") : null), /* @__PURE__ */ import_react29.default.createElement("div", { className: "mobile-message-body" }, renderItems.length === 0 ? /* @__PURE__ */ import_react29.default.createElement("div", { className: "mobile-empty-text" }, "(no content)") : null, renderItems.map((item) => {
-    if (item.type === "text") {
-      return /* @__PURE__ */ import_react29.default.createElement("div", { key: item.key, className: "mobile-message-text markdown-body", style: textStyle }, /* @__PURE__ */ import_react29.default.createElement(Markdown, { remarkPlugins: [remarkGfm] }, item.text));
-    }
-    if (item.type === "reasoning") {
-      return /* @__PURE__ */ import_react29.default.createElement(ReasoningCard, { key: item.key, text: item.text });
-    }
-    return /* @__PURE__ */ import_react29.default.createElement(
-      ToolCallCard,
-      {
-        key: item.key,
-        group: item.group,
-        defaultExpanded: false,
-        currentUserId,
-        rootPath
-      }
-    );
-  })), showUserActions && message.role === "user" && !isStreaming ? /* @__PURE__ */ import_react29.default.createElement("footer", { className: "mobile-message-actions" }, /* @__PURE__ */ import_react29.default.createElement(Button, { onClick: () => onBranchUserMessage?.(message), disabled: userActionsDisabled, variant: "outline", size: "sm" }, "Branch"), /* @__PURE__ */ import_react29.default.createElement(
-    Button,
-    {
-      onClick: () => onDeleteUserMessage?.(message),
-      disabled: userActionsDisabled,
-      variant: "destructive",
-      size: "sm"
-    },
-    "Delete"
-  )) : null);
+  return /* @__PURE__ */ (0, import_jsx_runtime17.jsxs)("article", { className: `mobile-message ${message.role}${isBranchTarget ? " branch-target" : ""}`, children: [
+    /* @__PURE__ */ (0, import_jsx_runtime17.jsxs)("header", { className: "mobile-message-header", children: [
+      /* @__PURE__ */ (0, import_jsx_runtime17.jsx)("span", { className: "mobile-message-role", children: roleLabel(message.role) }),
+      isStreaming ? /* @__PURE__ */ (0, import_jsx_runtime17.jsx)(Badge, { className: "mobile-streaming-badge", children: "streaming" }) : null
+    ] }),
+    /* @__PURE__ */ (0, import_jsx_runtime17.jsxs)("div", { className: "mobile-message-body", children: [
+      renderItems.length === 0 ? /* @__PURE__ */ (0, import_jsx_runtime17.jsx)("div", { className: "mobile-empty-text", children: "(no content)" }) : null,
+      renderItems.map((item) => {
+        if (item.type === "text") {
+          return /* @__PURE__ */ (0, import_jsx_runtime17.jsx)("div", { className: "mobile-message-text markdown-body", style: textStyle, children: /* @__PURE__ */ (0, import_jsx_runtime17.jsx)(Markdown, { remarkPlugins: [remarkGfm], children: item.text }) }, item.key);
+        }
+        if (item.type === "reasoning") {
+          return /* @__PURE__ */ (0, import_jsx_runtime17.jsx)(ReasoningCard, { text: item.text }, item.key);
+        }
+        return /* @__PURE__ */ (0, import_jsx_runtime17.jsx)(
+          ToolCallCard,
+          {
+            group: item.group,
+            defaultExpanded: false,
+            currentUserId,
+            rootPath
+          },
+          item.key
+        );
+      })
+    ] }),
+    showUserActions && message.role === "user" && !isStreaming ? /* @__PURE__ */ (0, import_jsx_runtime17.jsxs)("footer", { className: "mobile-message-actions", children: [
+      /* @__PURE__ */ (0, import_jsx_runtime17.jsx)(Button, { onClick: () => onBranchUserMessage?.(message), disabled: userActionsDisabled, variant: "outline", size: "sm", children: "Branch" }),
+      /* @__PURE__ */ (0, import_jsx_runtime17.jsx)(
+        Button,
+        {
+          onClick: () => onDeleteUserMessage?.(message),
+          disabled: userActionsDisabled,
+          variant: "destructive",
+          size: "sm",
+          children: "Delete"
+        }
+      )
+    ] }) : null
+  ] });
 };
 
 // electron/headlessServer/ui/mobile/src/components/MessageList.tsx
+var import_jsx_runtime18 = __toESM(require_jsx_runtime(), 1);
 var MessageList = ({
   messages,
   streamingMessage,
@@ -64770,15 +65029,15 @@ var MessageList = ({
   onBranchUserMessage,
   onDeleteUserMessage
 }) => {
-  const containerRef = (0, import_react30.useRef)(null);
-  const messageRefs = (0, import_react30.useRef)(/* @__PURE__ */ new Map());
-  (0, import_react30.useEffect)(() => {
+  const containerRef = (0, import_react28.useRef)(null);
+  const messageRefs = (0, import_react28.useRef)(/* @__PURE__ */ new Map());
+  (0, import_react28.useEffect)(() => {
     if (!containerRef.current) return;
     if (scrollToMessageId) return;
     if (streamingMessage) return;
     containerRef.current.scrollTop = containerRef.current.scrollHeight;
   }, [messages, streamingMessage, scrollToMessageId]);
-  (0, import_react30.useEffect)(() => {
+  (0, import_react28.useEffect)(() => {
     if (!scrollToMessageId) return;
     let rafId = null;
     const scrollToTarget = () => {
@@ -64794,50 +65053,54 @@ var MessageList = ({
       }
     };
   }, [scrollToMessageId, onScrollToMessageHandled, messages]);
-  return /* @__PURE__ */ import_react30.default.createElement("div", { ref: containerRef, className: "mobile-message-list" }, messages.map((message) => {
-    const messageId = String(message.id);
-    return /* @__PURE__ */ import_react30.default.createElement(
-      "div",
-      {
-        key: message.id,
-        "data-message-id": messageId,
-        ref: (node2) => {
-          if (node2) {
-            messageRefs.current.set(messageId, node2);
-          } else {
-            messageRefs.current.delete(messageId);
-          }
-        }
-      },
-      /* @__PURE__ */ import_react30.default.createElement(
-        MessageBubble,
+  return /* @__PURE__ */ (0, import_jsx_runtime18.jsxs)("div", { ref: containerRef, className: "mobile-message-list", children: [
+    messages.map((message) => {
+      const messageId = String(message.id);
+      return /* @__PURE__ */ (0, import_jsx_runtime18.jsx)(
+        "div",
         {
-          message,
-          showUserActions: true,
-          userActionsDisabled,
-          isBranchTarget: branchTargetMessageId !== null && String(branchTargetMessageId) === String(message.id),
-          currentUserId,
-          rootPath,
-          agentTextFontSizePx,
-          onBranchUserMessage,
-          onDeleteUserMessage
-        }
-      )
-    );
-  }), streamingMessage ? /* @__PURE__ */ import_react30.default.createElement(
-    MessageBubble,
-    {
-      message: streamingMessage,
-      isStreaming: true,
-      currentUserId,
-      rootPath,
-      agentTextFontSizePx
-    }
-  ) : null);
+          "data-message-id": messageId,
+          ref: (node2) => {
+            if (node2) {
+              messageRefs.current.set(messageId, node2);
+            } else {
+              messageRefs.current.delete(messageId);
+            }
+          },
+          children: /* @__PURE__ */ (0, import_jsx_runtime18.jsx)(
+            MessageBubble,
+            {
+              message,
+              showUserActions: true,
+              userActionsDisabled,
+              isBranchTarget: branchTargetMessageId !== null && String(branchTargetMessageId) === String(message.id),
+              currentUserId,
+              rootPath,
+              agentTextFontSizePx,
+              onBranchUserMessage,
+              onDeleteUserMessage
+            }
+          )
+        },
+        message.id
+      );
+    }),
+    streamingMessage ? /* @__PURE__ */ (0, import_jsx_runtime18.jsx)(
+      MessageBubble,
+      {
+        message: streamingMessage,
+        isStreaming: true,
+        currentUserId,
+        rootPath,
+        agentTextFontSizePx
+      }
+    ) : null
+  ] });
 };
 
 // electron/headlessServer/ui/mobile/src/components/MessageTreeDrawer.tsx
-var import_react31 = __toESM(require_react(), 1);
+var import_react29 = __toESM(require_react(), 1);
+var import_jsx_runtime19 = __toESM(require_jsx_runtime(), 1);
 var NODE_WIDTH = 180;
 var NODE_HEIGHT = 58;
 var H_SPACING = 220;
@@ -64939,47 +65202,47 @@ var MessageTreeDrawer = ({
   onSelectMessage,
   onClose
 }) => {
-  const layout = (0, import_react31.useMemo)(() => buildTreeLayout(tree), [tree]);
-  const activePathSet = (0, import_react31.useMemo)(() => new Set(activePathIds.map((id) => String(id))), [activePathIds]);
-  const nodeById = (0, import_react31.useMemo)(() => new Map(layout.nodes.map((node2) => [node2.id, node2])), [layout.nodes]);
-  const canvasRef = (0, import_react31.useRef)(null);
-  const [viewport, setViewport] = (0, import_react31.useState)({ width: 0, height: 0 });
-  const [zoom, setZoom] = (0, import_react31.useState)(1);
-  const [pan, setPan] = (0, import_react31.useState)({ x: 0, y: 0 });
-  const [isDragging, setIsDragging] = (0, import_react31.useState)(false);
-  const zoomRef = (0, import_react31.useRef)(zoom);
-  const panRef = (0, import_react31.useRef)(pan);
-  const hasAutoFittedRef = (0, import_react31.useRef)(false);
-  const lastTreeSignatureRef = (0, import_react31.useRef)("");
-  const pointerMapRef = (0, import_react31.useRef)(/* @__PURE__ */ new Map());
-  const pinchStateRef = (0, import_react31.useRef)(null);
-  const dragStateRef = (0, import_react31.useRef)(null);
-  const movedDuringInteractionRef = (0, import_react31.useRef)(false);
-  const suppressNextClickRef = (0, import_react31.useRef)(false);
-  (0, import_react31.useEffect)(() => {
+  const layout = (0, import_react29.useMemo)(() => buildTreeLayout(tree), [tree]);
+  const activePathSet = (0, import_react29.useMemo)(() => new Set(activePathIds.map((id) => String(id))), [activePathIds]);
+  const nodeById = (0, import_react29.useMemo)(() => new Map(layout.nodes.map((node2) => [node2.id, node2])), [layout.nodes]);
+  const canvasRef = (0, import_react29.useRef)(null);
+  const [viewport, setViewport] = (0, import_react29.useState)({ width: 0, height: 0 });
+  const [zoom, setZoom] = (0, import_react29.useState)(1);
+  const [pan, setPan] = (0, import_react29.useState)({ x: 0, y: 0 });
+  const [isDragging, setIsDragging] = (0, import_react29.useState)(false);
+  const zoomRef = (0, import_react29.useRef)(zoom);
+  const panRef = (0, import_react29.useRef)(pan);
+  const hasAutoFittedRef = (0, import_react29.useRef)(false);
+  const lastTreeSignatureRef = (0, import_react29.useRef)("");
+  const pointerMapRef = (0, import_react29.useRef)(/* @__PURE__ */ new Map());
+  const pinchStateRef = (0, import_react29.useRef)(null);
+  const dragStateRef = (0, import_react29.useRef)(null);
+  const movedDuringInteractionRef = (0, import_react29.useRef)(false);
+  const suppressNextClickRef = (0, import_react29.useRef)(false);
+  (0, import_react29.useEffect)(() => {
     zoomRef.current = zoom;
   }, [zoom]);
-  (0, import_react31.useEffect)(() => {
+  (0, import_react29.useEffect)(() => {
     panRef.current = pan;
   }, [pan]);
-  const treeSignature = (0, import_react31.useMemo)(() => layout.nodes.map((node2) => node2.id).join("|"), [layout.nodes]);
-  (0, import_react31.useEffect)(() => {
+  const treeSignature = (0, import_react29.useMemo)(() => layout.nodes.map((node2) => node2.id).join("|"), [layout.nodes]);
+  (0, import_react29.useEffect)(() => {
     if (treeSignature === lastTreeSignatureRef.current) return;
     lastTreeSignatureRef.current = treeSignature;
     hasAutoFittedRef.current = false;
   }, [treeSignature]);
-  const updateViewport = (0, import_react31.useCallback)(() => {
+  const updateViewport = (0, import_react29.useCallback)(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
     setViewport({ width: canvas.clientWidth, height: canvas.clientHeight });
   }, []);
-  (0, import_react31.useEffect)(() => {
+  (0, import_react29.useEffect)(() => {
     if (!open) return;
     updateViewport();
     window.addEventListener("resize", updateViewport);
     return () => window.removeEventListener("resize", updateViewport);
   }, [open, updateViewport]);
-  const zoomAtClientPoint = (0, import_react31.useCallback)((clientX, clientY, desiredZoom) => {
+  const zoomAtClientPoint = (0, import_react29.useCallback)((clientX, clientY, desiredZoom) => {
     const canvas = canvasRef.current;
     if (!canvas) return;
     const rect = canvas.getBoundingClientRect();
@@ -64999,7 +65262,7 @@ var MessageTreeDrawer = ({
     setZoom(clampedZoom);
     setPan(nextPan);
   }, []);
-  const fitToView = (0, import_react31.useCallback)(() => {
+  const fitToView = (0, import_react29.useCallback)(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
     const width = canvas.clientWidth || 1;
@@ -65016,7 +65279,7 @@ var MessageTreeDrawer = ({
     setZoom(nextZoom);
     setPan(nextPan);
   }, [layout.height, layout.width]);
-  (0, import_react31.useEffect)(() => {
+  (0, import_react29.useEffect)(() => {
     if (!open) return;
     const id = window.requestAnimationFrame(() => {
       updateViewport();
@@ -65028,7 +65291,7 @@ var MessageTreeDrawer = ({
       window.cancelAnimationFrame(id);
     };
   }, [open, fitToView, updateViewport]);
-  const startPinchIfNeeded = (0, import_react31.useCallback)(() => {
+  const startPinchIfNeeded = (0, import_react29.useCallback)(() => {
     const touchPointers = Array.from(pointerMapRef.current.values()).filter((pointer) => pointer.pointerType === "touch");
     if (touchPointers.length < 2) return;
     const [first, second] = touchPointers;
@@ -65109,7 +65372,7 @@ var MessageTreeDrawer = ({
     panRef.current = nextPan;
     setPan(nextPan);
   };
-  const clearPointer = (0, import_react31.useCallback)((pointerId) => {
+  const clearPointer = (0, import_react29.useCallback)((pointerId) => {
     pointerMapRef.current.delete(pointerId);
     const touchPointers = Array.from(pointerMapRef.current.values()).filter((pointer) => pointer.pointerType === "touch");
     if (touchPointers.length < 2) {
@@ -65158,79 +65421,115 @@ var MessageTreeDrawer = ({
     onSelectMessage(messageId);
     onClose();
   };
-  return /* @__PURE__ */ import_react31.default.createElement(import_react31.default.Fragment, null, /* @__PURE__ */ import_react31.default.createElement(
-    "div",
-    {
-      className: `mobile-tree-drawer-backdrop${open ? " open" : ""}`,
-      onClick: onClose,
-      "aria-hidden": !open
-    }
-  ), /* @__PURE__ */ import_react31.default.createElement("section", { className: `mobile-tree-drawer${open ? " open" : ""}`, "aria-hidden": !open }, /* @__PURE__ */ import_react31.default.createElement("header", { className: "mobile-tree-drawer-header" }, /* @__PURE__ */ import_react31.default.createElement("div", { className: "mobile-tree-drawer-grabber" }), /* @__PURE__ */ import_react31.default.createElement("div", { className: "mobile-tree-drawer-title-row" }, /* @__PURE__ */ import_react31.default.createElement("strong", null, "Chat Tree"), /* @__PURE__ */ import_react31.default.createElement(Button, { onClick: onClose, variant: "outline", size: "sm" }, "Close"))), /* @__PURE__ */ import_react31.default.createElement("div", { className: "mobile-tree-drawer-body" }, !layout.nodes.length ? /* @__PURE__ */ import_react31.default.createElement("div", { className: "mobile-tree-empty" }, "No tree nodes yet.") : null, layout.nodes.length ? /* @__PURE__ */ import_react31.default.createElement(import_react31.default.Fragment, null, /* @__PURE__ */ import_react31.default.createElement("div", { className: "mobile-tree-canvas-toolbar" }, /* @__PURE__ */ import_react31.default.createElement(Button, { onClick: () => handleZoomStep(1.2), variant: "outline", size: "sm" }, "+"), /* @__PURE__ */ import_react31.default.createElement(Button, { onClick: () => handleZoomStep(1 / 1.2), variant: "outline", size: "sm" }, "\u2212"), /* @__PURE__ */ import_react31.default.createElement(Button, { onClick: fitToView, variant: "outline", size: "sm" }, "Fit"), /* @__PURE__ */ import_react31.default.createElement(Button, { onClick: onToggleHideEmptyAssistantMessages, variant: "outline", size: "sm" }, hideEmptyAssistantMessages ? "Show Empty AI" : "Hide Empty AI"), /* @__PURE__ */ import_react31.default.createElement("span", null, "Zoom ", Math.round(zoom * 100), "%")), /* @__PURE__ */ import_react31.default.createElement(
-    "div",
-    {
-      ref: canvasRef,
-      className: `mobile-tree-drawer-canvas interactive${isDragging ? " dragging" : ""}`,
-      onPointerDown: handlePointerDown,
-      onPointerMove: handlePointerMove,
-      onPointerUp: handlePointerUp,
-      onPointerCancel: handlePointerCancel,
-      onWheel: handleWheel
-    },
-    /* @__PURE__ */ import_react31.default.createElement("svg", { width: Math.max(1, viewport.width), height: Math.max(1, viewport.height) }, /* @__PURE__ */ import_react31.default.createElement("g", { transform: `translate(${pan.x} ${pan.y}) scale(${zoom})` }, /* @__PURE__ */ import_react31.default.createElement("g", { strokeLinecap: "round", strokeLinejoin: "round", fill: "none" }, layout.edges.map((edge) => {
-      const from = nodeById.get(edge.fromId);
-      const to = nodeById.get(edge.toId);
-      if (!from || !to) return null;
-      const isOnPath = activePathSet.has(edge.fromId) && activePathSet.has(edge.toId);
-      const fromX = from.x;
-      const fromY = from.y + NODE_HEIGHT;
-      const toX = to.x;
-      const toY = to.y;
-      const midY = fromY + (toY - fromY) * 0.45;
-      const path2 = `M ${fromX} ${fromY} L ${fromX} ${midY} L ${toX} ${midY} L ${toX} ${toY}`;
-      return /* @__PURE__ */ import_react31.default.createElement(
-        "path",
-        {
-          key: `${edge.fromId}-${edge.toId}`,
-          d: path2,
-          className: isOnPath ? "mobile-tree-edge active" : "mobile-tree-edge"
-        }
-      );
-    })), layout.nodes.map((node2) => {
-      const isActiveTip = activeTipId === node2.id;
-      const isOnActivePath = activePathSet.has(node2.id);
-      const [line1, line2] = getPreviewLines(node2.message);
-      return /* @__PURE__ */ import_react31.default.createElement(
-        "g",
-        {
-          key: node2.id,
-          transform: `translate(${node2.x - NODE_WIDTH / 2}, ${node2.y})`,
-          className: "mobile-tree-node-visual",
-          onClick: () => handleNodeClick(node2.id)
-        },
-        /* @__PURE__ */ import_react31.default.createElement(
-          "rect",
-          {
-            width: NODE_WIDTH,
-            height: NODE_HEIGHT,
-            rx: "10",
-            className: `mobile-tree-node-rect${isActiveTip ? " active-tip" : isOnActivePath ? " active-path" : ""}`
-          }
-        ),
-        /* @__PURE__ */ import_react31.default.createElement("text", { x: "10", y: "16", className: "mobile-tree-node-role-text" }, roleLabel2(node2.sender)),
-        /* @__PURE__ */ import_react31.default.createElement("text", { x: "10", y: "34", className: "mobile-tree-node-message-text" }, line1),
-        /* @__PURE__ */ import_react31.default.createElement("text", { x: "10", y: "49", className: "mobile-tree-node-message-text" }, line2),
-        node2.childCount > 1 ? /* @__PURE__ */ import_react31.default.createElement("text", { x: NODE_WIDTH - 10, y: "16", textAnchor: "end", className: "mobile-tree-node-branch-count-text" }, "\xD7", node2.childCount) : null
-      );
-    })))
-  )) : null)));
+  return /* @__PURE__ */ (0, import_jsx_runtime19.jsxs)(import_jsx_runtime19.Fragment, { children: [
+    /* @__PURE__ */ (0, import_jsx_runtime19.jsx)(
+      "div",
+      {
+        className: `mobile-tree-drawer-backdrop${open ? " open" : ""}`,
+        onClick: onClose,
+        "aria-hidden": !open
+      }
+    ),
+    /* @__PURE__ */ (0, import_jsx_runtime19.jsxs)("section", { className: `mobile-tree-drawer${open ? " open" : ""}`, "aria-hidden": !open, children: [
+      /* @__PURE__ */ (0, import_jsx_runtime19.jsxs)("header", { className: "mobile-tree-drawer-header", children: [
+        /* @__PURE__ */ (0, import_jsx_runtime19.jsx)("div", { className: "mobile-tree-drawer-grabber" }),
+        /* @__PURE__ */ (0, import_jsx_runtime19.jsxs)("div", { className: "mobile-tree-drawer-title-row", children: [
+          /* @__PURE__ */ (0, import_jsx_runtime19.jsx)("strong", { children: "Chat Tree" }),
+          /* @__PURE__ */ (0, import_jsx_runtime19.jsx)(Button, { onClick: onClose, variant: "outline", size: "sm", children: "Close" })
+        ] })
+      ] }),
+      /* @__PURE__ */ (0, import_jsx_runtime19.jsxs)("div", { className: "mobile-tree-drawer-body", children: [
+        !layout.nodes.length ? /* @__PURE__ */ (0, import_jsx_runtime19.jsx)("div", { className: "mobile-tree-empty", children: "No tree nodes yet." }) : null,
+        layout.nodes.length ? /* @__PURE__ */ (0, import_jsx_runtime19.jsxs)(import_jsx_runtime19.Fragment, { children: [
+          /* @__PURE__ */ (0, import_jsx_runtime19.jsxs)("div", { className: "mobile-tree-canvas-toolbar", children: [
+            /* @__PURE__ */ (0, import_jsx_runtime19.jsx)(Button, { onClick: () => handleZoomStep(1.2), variant: "outline", size: "sm", children: "+" }),
+            /* @__PURE__ */ (0, import_jsx_runtime19.jsx)(Button, { onClick: () => handleZoomStep(1 / 1.2), variant: "outline", size: "sm", children: "\u2212" }),
+            /* @__PURE__ */ (0, import_jsx_runtime19.jsx)(Button, { onClick: fitToView, variant: "outline", size: "sm", children: "Fit" }),
+            /* @__PURE__ */ (0, import_jsx_runtime19.jsx)(Button, { onClick: onToggleHideEmptyAssistantMessages, variant: "outline", size: "sm", children: hideEmptyAssistantMessages ? "Show Empty AI" : "Hide Empty AI" }),
+            /* @__PURE__ */ (0, import_jsx_runtime19.jsxs)("span", { children: [
+              "Zoom ",
+              Math.round(zoom * 100),
+              "%"
+            ] })
+          ] }),
+          /* @__PURE__ */ (0, import_jsx_runtime19.jsx)(
+            "div",
+            {
+              ref: canvasRef,
+              className: `mobile-tree-drawer-canvas interactive${isDragging ? " dragging" : ""}`,
+              onPointerDown: handlePointerDown,
+              onPointerMove: handlePointerMove,
+              onPointerUp: handlePointerUp,
+              onPointerCancel: handlePointerCancel,
+              onWheel: handleWheel,
+              children: /* @__PURE__ */ (0, import_jsx_runtime19.jsx)("svg", { width: Math.max(1, viewport.width), height: Math.max(1, viewport.height), children: /* @__PURE__ */ (0, import_jsx_runtime19.jsxs)("g", { transform: `translate(${pan.x} ${pan.y}) scale(${zoom})`, children: [
+                /* @__PURE__ */ (0, import_jsx_runtime19.jsx)("g", { strokeLinecap: "round", strokeLinejoin: "round", fill: "none", children: layout.edges.map((edge) => {
+                  const from = nodeById.get(edge.fromId);
+                  const to = nodeById.get(edge.toId);
+                  if (!from || !to) return null;
+                  const isOnPath = activePathSet.has(edge.fromId) && activePathSet.has(edge.toId);
+                  const fromX = from.x;
+                  const fromY = from.y + NODE_HEIGHT;
+                  const toX = to.x;
+                  const toY = to.y;
+                  const midY = fromY + (toY - fromY) * 0.45;
+                  const path2 = `M ${fromX} ${fromY} L ${fromX} ${midY} L ${toX} ${midY} L ${toX} ${toY}`;
+                  return /* @__PURE__ */ (0, import_jsx_runtime19.jsx)(
+                    "path",
+                    {
+                      d: path2,
+                      className: isOnPath ? "mobile-tree-edge active" : "mobile-tree-edge"
+                    },
+                    `${edge.fromId}-${edge.toId}`
+                  );
+                }) }),
+                layout.nodes.map((node2) => {
+                  const isActiveTip = activeTipId === node2.id;
+                  const isOnActivePath = activePathSet.has(node2.id);
+                  const [line1, line2] = getPreviewLines(node2.message);
+                  return /* @__PURE__ */ (0, import_jsx_runtime19.jsxs)(
+                    "g",
+                    {
+                      transform: `translate(${node2.x - NODE_WIDTH / 2}, ${node2.y})`,
+                      className: "mobile-tree-node-visual",
+                      onClick: () => handleNodeClick(node2.id),
+                      children: [
+                        /* @__PURE__ */ (0, import_jsx_runtime19.jsx)(
+                          "rect",
+                          {
+                            width: NODE_WIDTH,
+                            height: NODE_HEIGHT,
+                            rx: "10",
+                            className: `mobile-tree-node-rect${isActiveTip ? " active-tip" : isOnActivePath ? " active-path" : ""}`
+                          }
+                        ),
+                        /* @__PURE__ */ (0, import_jsx_runtime19.jsx)("text", { x: "10", y: "16", className: "mobile-tree-node-role-text", children: roleLabel2(node2.sender) }),
+                        /* @__PURE__ */ (0, import_jsx_runtime19.jsx)("text", { x: "10", y: "34", className: "mobile-tree-node-message-text", children: line1 }),
+                        /* @__PURE__ */ (0, import_jsx_runtime19.jsx)("text", { x: "10", y: "49", className: "mobile-tree-node-message-text", children: line2 }),
+                        node2.childCount > 1 ? /* @__PURE__ */ (0, import_jsx_runtime19.jsxs)("text", { x: NODE_WIDTH - 10, y: "16", textAnchor: "end", className: "mobile-tree-node-branch-count-text", children: [
+                          "\xD7",
+                          node2.childCount
+                        ] }) : null
+                      ]
+                    },
+                    node2.id
+                  );
+                })
+              ] }) })
+            }
+          )
+        ] }) : null
+      ] })
+    ] })
+  ] });
 };
 
 // electron/headlessServer/ui/mobile/src/components/MobileHeader.tsx
-var import_react34 = __toESM(require_react(), 1);
+var import_react31 = __toESM(require_react(), 1);
 var import_react_dom3 = __toESM(require_react_dom(), 1);
 
 // electron/headlessServer/ui/mobile/src/components/ProfilePicker.tsx
-var import_react32 = __toESM(require_react(), 1);
+var import_jsx_runtime20 = __toESM(require_jsx_runtime(), 1);
 var ProfilePicker = ({
   users,
   selectedUserId,
@@ -65240,20 +65539,31 @@ var ProfilePicker = ({
   labelText = "Profile",
   className
 }) => {
-  return /* @__PURE__ */ import_react32.default.createElement("div", { className: cn("mobile-profile-picker", compact && "mobile-profile-picker--compact", className) }, /* @__PURE__ */ import_react32.default.createElement("label", { className: "mobile-profile-picker-label" }, /* @__PURE__ */ import_react32.default.createElement("span", null, labelText), /* @__PURE__ */ import_react32.default.createElement(
-    Select,
-    {
-      value: selectedUserId || "",
-      onChange: (event) => onSelect(event.target.value),
-      disabled: disabled || users.length === 0
-    },
-    users.length === 0 ? /* @__PURE__ */ import_react32.default.createElement("option", { value: "" }, "No local users found") : null,
-    users.map((user) => /* @__PURE__ */ import_react32.default.createElement("option", { key: user.id, value: user.id }, user.username || user.id, " \xB7 ", user.conversation_count ?? 0, " conv"))
-  )));
+  return /* @__PURE__ */ (0, import_jsx_runtime20.jsx)("div", { className: cn("mobile-profile-picker", compact && "mobile-profile-picker--compact", className), children: /* @__PURE__ */ (0, import_jsx_runtime20.jsxs)("label", { className: "mobile-profile-picker-label", children: [
+    /* @__PURE__ */ (0, import_jsx_runtime20.jsx)("span", { children: labelText }),
+    /* @__PURE__ */ (0, import_jsx_runtime20.jsxs)(
+      Select,
+      {
+        value: selectedUserId || "",
+        onChange: (event) => onSelect(event.target.value),
+        disabled: disabled || users.length === 0,
+        children: [
+          users.length === 0 ? /* @__PURE__ */ (0, import_jsx_runtime20.jsx)("option", { value: "", children: "No local users found" }) : null,
+          users.map((user) => /* @__PURE__ */ (0, import_jsx_runtime20.jsxs)("option", { value: user.id, children: [
+            user.username || user.id,
+            " \xB7 ",
+            user.conversation_count ?? 0,
+            " conv"
+          ] }, user.id))
+        ]
+      }
+    )
+  ] }) });
 };
 
 // electron/headlessServer/ui/mobile/src/components/ToolTogglePanel.tsx
-var import_react33 = __toESM(require_react(), 1);
+var import_react30 = __toESM(require_react(), 1);
+var import_jsx_runtime21 = __toESM(require_jsx_runtime(), 1);
 var ToolTogglePanel = ({
   tools,
   busyToolNames,
@@ -65263,37 +65573,57 @@ var ToolTogglePanel = ({
   onToggleTool
 }) => {
   const busy = new Set(busyToolNames);
-  const [isOpen, setIsOpen] = (0, import_react33.useState)(false);
-  return /* @__PURE__ */ import_react33.default.createElement("section", { className: "mobile-tool-panel" }, /* @__PURE__ */ import_react33.default.createElement(
+  const [isOpen, setIsOpen] = (0, import_react30.useState)(false);
+  return /* @__PURE__ */ (0, import_jsx_runtime21.jsx)("section", { className: "mobile-tool-panel", children: /* @__PURE__ */ (0, import_jsx_runtime21.jsxs)(
     "details",
     {
       className: "mobile-tool-panel-details",
       open: isOpen,
-      onToggle: (event) => setIsOpen(event.currentTarget.open)
-    },
-    /* @__PURE__ */ import_react33.default.createElement("summary", { className: "mobile-tool-panel-header" }, /* @__PURE__ */ import_react33.default.createElement("h2", null, "Custom tools"), /* @__PURE__ */ import_react33.default.createElement("span", { className: "mobile-tool-panel-chevron", "aria-hidden": "true" }, isOpen ? "\u25BE" : "\u25B8")),
-    /* @__PURE__ */ import_react33.default.createElement("div", { className: "mobile-tool-panel-body" }, /* @__PURE__ */ import_react33.default.createElement("div", { className: "mobile-tool-panel-actions" }, /* @__PURE__ */ import_react33.default.createElement(Button, { onClick: onRefresh, disabled: disabled || loading, variant: "outline", size: "sm" }, loading ? "Refreshing\u2026" : "Refresh")), tools.length === 0 ? /* @__PURE__ */ import_react33.default.createElement("p", { className: "mobile-tree-muted" }, "No custom tools found.") : /* @__PURE__ */ import_react33.default.createElement("div", { className: "mobile-tool-toggle-list" }, tools.map((tool) => {
-      const toggling = busy.has(tool.name);
-      return /* @__PURE__ */ import_react33.default.createElement("div", { key: tool.name, className: "mobile-tool-toggle-row" }, /* @__PURE__ */ import_react33.default.createElement("div", null, /* @__PURE__ */ import_react33.default.createElement("strong", null, tool.name), /* @__PURE__ */ import_react33.default.createElement("div", { className: "mobile-tool-toggle-meta" }, /* @__PURE__ */ import_react33.default.createElement(Badge, { variant: tool.enabled ? "success" : "outline" }, tool.enabled ? "Enabled" : "Disabled"), /* @__PURE__ */ import_react33.default.createElement(Badge, { variant: tool.loaded ? "default" : "outline" }, tool.loaded ? "Loaded" : "Not loaded")), tool.description ? /* @__PURE__ */ import_react33.default.createElement("p", null, tool.description) : null), /* @__PURE__ */ import_react33.default.createElement(
-        Button,
-        {
-          onClick: () => onToggleTool(tool.name, !tool.enabled),
-          disabled: disabled || toggling || loading,
-          variant: tool.enabled ? "secondary" : "default",
-          size: "sm"
-        },
-        toggling ? "Saving\u2026" : tool.enabled ? "Disable" : "Enable"
-      ));
-    })))
-  ));
+      onToggle: (event) => setIsOpen(event.currentTarget.open),
+      children: [
+        /* @__PURE__ */ (0, import_jsx_runtime21.jsxs)("summary", { className: "mobile-tool-panel-header", children: [
+          /* @__PURE__ */ (0, import_jsx_runtime21.jsx)("h2", { children: "Custom tools" }),
+          /* @__PURE__ */ (0, import_jsx_runtime21.jsx)("span", { className: "mobile-tool-panel-chevron", "aria-hidden": "true", children: isOpen ? "\u25BE" : "\u25B8" })
+        ] }),
+        /* @__PURE__ */ (0, import_jsx_runtime21.jsxs)("div", { className: "mobile-tool-panel-body", children: [
+          /* @__PURE__ */ (0, import_jsx_runtime21.jsx)("div", { className: "mobile-tool-panel-actions", children: /* @__PURE__ */ (0, import_jsx_runtime21.jsx)(Button, { onClick: onRefresh, disabled: disabled || loading, variant: "outline", size: "sm", children: loading ? "Refreshing\u2026" : "Refresh" }) }),
+          tools.length === 0 ? /* @__PURE__ */ (0, import_jsx_runtime21.jsx)("p", { className: "mobile-tree-muted", children: "No custom tools found." }) : /* @__PURE__ */ (0, import_jsx_runtime21.jsx)("div", { className: "mobile-tool-toggle-list", children: tools.map((tool) => {
+            const toggling = busy.has(tool.name);
+            return /* @__PURE__ */ (0, import_jsx_runtime21.jsxs)("div", { className: "mobile-tool-toggle-row", children: [
+              /* @__PURE__ */ (0, import_jsx_runtime21.jsxs)("div", { children: [
+                /* @__PURE__ */ (0, import_jsx_runtime21.jsx)("strong", { children: tool.name }),
+                /* @__PURE__ */ (0, import_jsx_runtime21.jsxs)("div", { className: "mobile-tool-toggle-meta", children: [
+                  /* @__PURE__ */ (0, import_jsx_runtime21.jsx)(Badge, { variant: tool.enabled ? "success" : "outline", children: tool.enabled ? "Enabled" : "Disabled" }),
+                  /* @__PURE__ */ (0, import_jsx_runtime21.jsx)(Badge, { variant: tool.loaded ? "default" : "outline", children: tool.loaded ? "Loaded" : "Not loaded" })
+                ] }),
+                tool.description ? /* @__PURE__ */ (0, import_jsx_runtime21.jsx)("p", { children: tool.description }) : null
+              ] }),
+              /* @__PURE__ */ (0, import_jsx_runtime21.jsx)(
+                Button,
+                {
+                  onClick: () => onToggleTool(tool.name, !tool.enabled),
+                  disabled: disabled || toggling || loading,
+                  variant: tool.enabled ? "secondary" : "default",
+                  size: "sm",
+                  children: toggling ? "Saving\u2026" : tool.enabled ? "Disable" : "Enable"
+                }
+              )
+            ] }, tool.name);
+          }) })
+        ] })
+      ]
+    }
+  ) });
 };
 
 // electron/headlessServer/ui/mobile/src/components/MobileHeader.tsx
+var import_jsx_runtime22 = __toESM(require_jsx_runtime(), 1);
 var PROVIDER_LABELS = {
   openaichatgpt: "OpenAI ChatGPT",
   openrouter: "OpenRouter",
   lmstudio: "LM Studio",
-  zai: "Z.AI / GLM"
+  zai: "Z.AI / GLM",
+  bedrock: "AWS Bedrock"
 };
 var REASONING_EFFORT_LABELS = {
   low: "Low",
@@ -65357,17 +65687,17 @@ var MobileHeader = ({
   onOpenPathPicker,
   canOpenPathPicker
 }) => {
-  const [settingsOpen, setSettingsOpen] = (0, import_react34.useState)(false);
-  const [modelSearch, setModelSearch] = (0, import_react34.useState)("");
-  const [conversationSettingsExpanded, setConversationSettingsExpanded] = (0, import_react34.useState)(false);
-  const filteredModelOptions = (0, import_react34.useMemo)(() => {
+  const [settingsOpen, setSettingsOpen] = (0, import_react31.useState)(false);
+  const [modelSearch, setModelSearch] = (0, import_react31.useState)("");
+  const [conversationSettingsExpanded, setConversationSettingsExpanded] = (0, import_react31.useState)(false);
+  const filteredModelOptions = (0, import_react31.useMemo)(() => {
     const query = modelSearch.trim().toLowerCase();
     if (!query) return modelOptions;
     const matches = modelOptions.filter((model) => model.toLowerCase().includes(query));
     if (matches.includes(modelName) || !modelName) return matches;
     return [modelName, ...matches];
   }, [modelOptions, modelName, modelSearch]);
-  const authStatus = (0, import_react34.useMemo)(() => {
+  const authStatus = (0, import_react31.useMemo)(() => {
     if (providerName === "openaichatgpt") {
       return {
         label: `OpenAI ${openAiAuthenticated ? "connected" : "not connected"}`,
@@ -65391,7 +65721,7 @@ var MobileHeader = ({
       className: "connected"
     };
   }, [providerName, openAiAuthenticated, openRouterAuthenticated, zaiAuthenticated]);
-  (0, import_react34.useEffect)(() => {
+  (0, import_react31.useEffect)(() => {
     if (!settingsOpen) {
       setModelSearch("");
       return;
@@ -65407,226 +65737,364 @@ var MobileHeader = ({
       window.removeEventListener("keydown", handleEscape);
     };
   }, [settingsOpen]);
-  (0, import_react34.useEffect)(() => {
+  (0, import_react31.useEffect)(() => {
     setModelSearch("");
   }, [providerName]);
   const settingsPortal = settingsOpen && typeof document !== "undefined" ? (0, import_react_dom3.createPortal)(
-    /* @__PURE__ */ import_react34.default.createElement("div", { className: "mobile-settings-portal-root" }, /* @__PURE__ */ import_react34.default.createElement(
-      "button",
-      {
-        type: "button",
-        "aria-label": "Close settings panel",
-        className: "mobile-settings-portal-backdrop",
-        onClick: () => setSettingsOpen(false)
-      }
-    ), /* @__PURE__ */ import_react34.default.createElement("section", { className: "mobile-settings-portal", role: "dialog", "aria-modal": "true", "aria-label": "Chat settings" }, /* @__PURE__ */ import_react34.default.createElement("header", { className: "mobile-settings-portal-header" }, /* @__PURE__ */ import_react34.default.createElement("div", null, /* @__PURE__ */ import_react34.default.createElement("h2", null, "Chat settings"), /* @__PURE__ */ import_react34.default.createElement("p", null, "Pick model + profile, then continue chatting.")), /* @__PURE__ */ import_react34.default.createElement(Button, { variant: "outline", size: "sm", onClick: () => setSettingsOpen(false) }, "Done")), /* @__PURE__ */ import_react34.default.createElement("div", { className: "mobile-settings-portal-body" }, /* @__PURE__ */ import_react34.default.createElement("div", { className: "mobile-settings-select-grid" }, /* @__PURE__ */ import_react34.default.createElement("label", { className: "mobile-settings-field" }, /* @__PURE__ */ import_react34.default.createElement("span", null, "Provider"), /* @__PURE__ */ import_react34.default.createElement(
-      Select,
-      {
-        value: providerName,
-        onChange: (event) => onProviderChange(event.target.value),
-        disabled: selectorsDisabled
-      },
-      providerOptions.map((provider) => /* @__PURE__ */ import_react34.default.createElement("option", { key: provider, value: provider }, PROVIDER_LABELS[provider]))
-    )), /* @__PURE__ */ import_react34.default.createElement("label", { className: "mobile-settings-field" }, /* @__PURE__ */ import_react34.default.createElement("span", null, "Model"), /* @__PURE__ */ import_react34.default.createElement(
-      Input,
-      {
-        type: "text",
-        value: modelSearch,
-        onChange: (event) => setModelSearch(event.target.value),
-        placeholder: "Search models\u2026",
-        disabled: selectorsDisabled || modelOptions.length <= 1
-      }
-    ), /* @__PURE__ */ import_react34.default.createElement("span", { className: "mobile-settings-field-hint" }, filteredModelOptions.length, " of ", modelOptions.length, " models"), /* @__PURE__ */ import_react34.default.createElement(
-      Select,
-      {
-        value: modelName,
-        onChange: (event) => onModelChange(event.target.value),
-        disabled: selectorsDisabled
-      },
-      filteredModelOptions.map((model) => /* @__PURE__ */ import_react34.default.createElement("option", { key: model, value: model }, model))
-    )), /* @__PURE__ */ import_react34.default.createElement(
-      ProfilePicker,
-      {
-        users,
-        selectedUserId,
-        onSelect: onUserSelect,
-        disabled: selectorsDisabled,
-        compact: true
-      }
-    )), /* @__PURE__ */ import_react34.default.createElement("section", { className: "mobile-settings-mode-prompts", "aria-label": "Default operation mode prompts" }, /* @__PURE__ */ import_react34.default.createElement("div", null, /* @__PURE__ */ import_react34.default.createElement("strong", null, "Default mode prompts"), /* @__PURE__ */ import_react34.default.createElement("p", null, "Include built-in Chat/Agent instructions before project and conversation prompts.")), /* @__PURE__ */ import_react34.default.createElement("label", { className: "mobile-settings-toggle-row" }, /* @__PURE__ */ import_react34.default.createElement(
-      "input",
-      {
-        type: "checkbox",
-        checked: includeOperationModePrompts,
-        onChange: (event) => onIncludeOperationModePromptsChange(event.target.checked),
-        disabled: selectorsDisabled
-      }
-    ), /* @__PURE__ */ import_react34.default.createElement("span", null, includeOperationModePrompts ? "Enabled" : "Disabled"))), /* @__PURE__ */ import_react34.default.createElement("section", { className: "mobile-settings-thinking-options", "aria-label": "Thinking options" }, /* @__PURE__ */ import_react34.default.createElement("div", { className: "mobile-settings-thinking-options-header" }, /* @__PURE__ */ import_react34.default.createElement("div", null, /* @__PURE__ */ import_react34.default.createElement("strong", null, "Thinking options"), /* @__PURE__ */ import_react34.default.createElement("p", null, "Send reasoning preferences to providers/models that support thinking.")), /* @__PURE__ */ import_react34.default.createElement("label", { className: "mobile-settings-toggle-row" }, /* @__PURE__ */ import_react34.default.createElement(
-      "input",
-      {
-        type: "checkbox",
-        checked: thinkingEnabled,
-        onChange: (event) => onThinkingEnabledChange(event.target.checked),
-        disabled: selectorsDisabled
-      }
-    ), /* @__PURE__ */ import_react34.default.createElement("span", null, thinkingEnabled ? "Enabled" : "Disabled"))), /* @__PURE__ */ import_react34.default.createElement("label", { className: "mobile-settings-field mobile-settings-thinking-effort-field" }, /* @__PURE__ */ import_react34.default.createElement("span", null, "Reasoning effort"), /* @__PURE__ */ import_react34.default.createElement(
-      Select,
-      {
-        value: reasoningEffort,
-        onChange: (event) => onReasoningEffortChange(event.target.value),
-        disabled: selectorsDisabled || !thinkingEnabled
-      },
-      REASONING_EFFORT_OPTIONS.map((option) => /* @__PURE__ */ import_react34.default.createElement("option", { key: option, value: option }, option === reasoningEffort ? `${REASONING_EFFORT_LABELS[option]} (Selected)` : REASONING_EFFORT_LABELS[option]))
-    ))), /* @__PURE__ */ import_react34.default.createElement("section", { className: "mobile-settings-font-zoom", "aria-label": "Assistant text zoom" }, /* @__PURE__ */ import_react34.default.createElement("div", { className: "mobile-settings-font-zoom-header" }, /* @__PURE__ */ import_react34.default.createElement("span", null, "Agent text zoom"), /* @__PURE__ */ import_react34.default.createElement("strong", null, agentTextFontSizePx, "px")), /* @__PURE__ */ import_react34.default.createElement("div", { className: "mobile-settings-font-zoom-row" }, /* @__PURE__ */ import_react34.default.createElement("span", { "aria-hidden": "true" }, "A"), /* @__PURE__ */ import_react34.default.createElement(
-      Input,
-      {
-        type: "range",
-        min: minAgentTextFontSizePx,
-        max: maxAgentTextFontSizePx,
-        step: 1,
-        value: agentTextFontSizePx,
-        onChange: (event) => onAgentTextFontSizeChange(Number(event.target.value)),
-        "aria-label": "Agent message text font size",
-        className: "mobile-settings-font-zoom-slider"
-      }
-    ), /* @__PURE__ */ import_react34.default.createElement("span", { "aria-hidden": "true" }, "A")), /* @__PURE__ */ import_react34.default.createElement("p", null, "Controls the font size for assistant text responses.")), /* @__PURE__ */ import_react34.default.createElement("div", { className: "mobile-settings-auth-row" }, /* @__PURE__ */ import_react34.default.createElement(Badge, { className: `mobile-auth-pill ${authStatus.className}`, variant: "outline" }, authStatus.label), providerName === "openaichatgpt" ? !openAiAuthenticated ? /* @__PURE__ */ import_react34.default.createElement(import_react34.default.Fragment, null, /* @__PURE__ */ import_react34.default.createElement(Button, { onClick: onOpenAiLoginStart, disabled: openAiBusy, variant: "secondary", size: "sm" }, "Sign in OpenAI"), /* @__PURE__ */ import_react34.default.createElement(
-      Button,
-      {
-        onClick: onOpenAiLoginComplete,
-        disabled: openAiBusy || !hasPendingOpenAiFlow,
-        variant: "outline",
-        size: "sm"
-      },
-      "Complete sign-in"
-    )) : /* @__PURE__ */ import_react34.default.createElement(Button, { onClick: onOpenAiLogout, disabled: openAiBusy, variant: "outline", size: "sm" }, "Sign out OpenAI") : providerName === "openrouter" ? /* @__PURE__ */ import_react34.default.createElement("span", { className: "mobile-conversation-cwd-hint" }, "OpenRouter uses your stored app token.") : providerName === "zai" ? zaiAuthenticated ? /* @__PURE__ */ import_react34.default.createElement(import_react34.default.Fragment, null, /* @__PURE__ */ import_react34.default.createElement(Button, { onClick: onZaiTokenSet, variant: "secondary", size: "sm" }, "Replace Z.AI key"), /* @__PURE__ */ import_react34.default.createElement(Button, { onClick: onZaiTokenClear, variant: "outline", size: "sm" }, "Clear Z.AI key")) : /* @__PURE__ */ import_react34.default.createElement(Button, { onClick: onZaiTokenSet, variant: "secondary", size: "sm" }, "Enter Z.AI API key") : /* @__PURE__ */ import_react34.default.createElement("span", { className: "mobile-conversation-cwd-hint" }, "LM Studio uses your local runtime. No remote auth needed.")), /* @__PURE__ */ import_react34.default.createElement("section", { className: "mobile-settings-collapsible" }, /* @__PURE__ */ import_react34.default.createElement(
-      "button",
-      {
-        type: "button",
-        className: "mobile-settings-collapsible-toggle",
-        onClick: () => setConversationSettingsExpanded((previous3) => !previous3),
-        "aria-expanded": conversationSettingsExpanded
-      },
-      /* @__PURE__ */ import_react34.default.createElement("span", null, /* @__PURE__ */ import_react34.default.createElement("strong", null, "Prompt, context, and cwd"), /* @__PURE__ */ import_react34.default.createElement("small", null, "Project prompt/context plus conversation cwd")),
-      /* @__PURE__ */ import_react34.default.createElement("span", { "aria-hidden": "true" }, conversationSettingsExpanded ? "\u25BE" : "\u25B8")
-    ), conversationSettingsExpanded ? /* @__PURE__ */ import_react34.default.createElement("div", { className: "mobile-settings-collapsible-body" }, /* @__PURE__ */ import_react34.default.createElement("label", { className: "mobile-settings-field", htmlFor: "conversation-system-prompt-input" }, /* @__PURE__ */ import_react34.default.createElement("span", null, "System prompt"), /* @__PURE__ */ import_react34.default.createElement(
-      Textarea,
-      {
-        id: "conversation-system-prompt-input",
-        value: conversationSystemPromptInput,
-        onChange: (event) => onConversationSystemPromptInputChange(event.target.value),
-        placeholder: "Optional system prompt for this conversation",
-        rows: 4,
-        disabled: !activeConversationId || selectorsDisabled || savingConversationSettings
-      }
-    )), /* @__PURE__ */ import_react34.default.createElement("label", { className: "mobile-settings-field", htmlFor: "conversation-context-input" }, /* @__PURE__ */ import_react34.default.createElement("span", null, "Context"), /* @__PURE__ */ import_react34.default.createElement(
-      Textarea,
-      {
-        id: "conversation-context-input",
-        value: conversationContextInput,
-        onChange: (event) => onConversationContextInputChange(event.target.value),
-        placeholder: "Optional conversation context or notes",
-        rows: 5,
-        disabled: !activeConversationId || selectorsDisabled || savingConversationSettings
-      }
-    )), /* @__PURE__ */ import_react34.default.createElement("div", { className: "mobile-conversation-cwd mobile-conversation-cwd--in-settings" }, /* @__PURE__ */ import_react34.default.createElement("label", { htmlFor: "conversation-cwd-input" }, "Conversation working directory (cwd)"), /* @__PURE__ */ import_react34.default.createElement("div", { className: "mobile-conversation-cwd-row" }, /* @__PURE__ */ import_react34.default.createElement(
-      Input,
-      {
-        id: "conversation-cwd-input",
-        type: "text",
-        value: conversationCwdInput,
-        onChange: (event) => onConversationCwdInputChange(event.target.value),
-        placeholder: "e.g. D:\\\\projects\\\\my-repo",
-        disabled: !activeConversationId || selectorsDisabled || savingConversationSettings
-      }
-    ), /* @__PURE__ */ import_react34.default.createElement(
-      Button,
-      {
-        onClick: onSaveConversationSettings,
-        disabled: !activeConversationId || selectorsDisabled || savingConversationSettings,
-        variant: "outline",
-        size: "sm"
-      },
-      savingConversationSettings ? "Saving\u2026" : "Save"
-    )), /* @__PURE__ */ import_react34.default.createElement("span", { className: "mobile-conversation-cwd-hint" }, "Used as tool execution root for this conversation. Leave empty to fall back to project cwd."))) : null), /* @__PURE__ */ import_react34.default.createElement("div", { className: "mobile-settings-tools-wrap" }, /* @__PURE__ */ import_react34.default.createElement(
-      ToolTogglePanel,
-      {
-        tools: customTools,
-        busyToolNames: customToolBusyNames,
-        loading: customToolsLoading,
-        disabled: selectorsDisabled,
-        onRefresh: onRefreshCustomTools,
-        onToggleTool: onToggleCustomTool
-      }
-    ))))),
+    /* @__PURE__ */ (0, import_jsx_runtime22.jsxs)("div", { className: "mobile-settings-portal-root", children: [
+      /* @__PURE__ */ (0, import_jsx_runtime22.jsx)(
+        "button",
+        {
+          type: "button",
+          "aria-label": "Close settings panel",
+          className: "mobile-settings-portal-backdrop",
+          onClick: () => setSettingsOpen(false)
+        }
+      ),
+      /* @__PURE__ */ (0, import_jsx_runtime22.jsxs)("section", { className: "mobile-settings-portal", role: "dialog", "aria-modal": "true", "aria-label": "Chat settings", children: [
+        /* @__PURE__ */ (0, import_jsx_runtime22.jsxs)("header", { className: "mobile-settings-portal-header", children: [
+          /* @__PURE__ */ (0, import_jsx_runtime22.jsxs)("div", { children: [
+            /* @__PURE__ */ (0, import_jsx_runtime22.jsx)("h2", { children: "Chat settings" }),
+            /* @__PURE__ */ (0, import_jsx_runtime22.jsx)("p", { children: "Pick model + profile, then continue chatting." })
+          ] }),
+          /* @__PURE__ */ (0, import_jsx_runtime22.jsx)(Button, { variant: "outline", size: "sm", onClick: () => setSettingsOpen(false), children: "Done" })
+        ] }),
+        /* @__PURE__ */ (0, import_jsx_runtime22.jsxs)("div", { className: "mobile-settings-portal-body", children: [
+          /* @__PURE__ */ (0, import_jsx_runtime22.jsxs)("div", { className: "mobile-settings-select-grid", children: [
+            /* @__PURE__ */ (0, import_jsx_runtime22.jsxs)("label", { className: "mobile-settings-field", children: [
+              /* @__PURE__ */ (0, import_jsx_runtime22.jsx)("span", { children: "Provider" }),
+              /* @__PURE__ */ (0, import_jsx_runtime22.jsx)(
+                Select,
+                {
+                  value: providerName,
+                  onChange: (event) => onProviderChange(event.target.value),
+                  disabled: selectorsDisabled,
+                  children: providerOptions.map((provider) => /* @__PURE__ */ (0, import_jsx_runtime22.jsx)("option", { value: provider, children: PROVIDER_LABELS[provider] }, provider))
+                }
+              )
+            ] }),
+            /* @__PURE__ */ (0, import_jsx_runtime22.jsxs)("label", { className: "mobile-settings-field", children: [
+              /* @__PURE__ */ (0, import_jsx_runtime22.jsx)("span", { children: "Model" }),
+              /* @__PURE__ */ (0, import_jsx_runtime22.jsx)(
+                Input,
+                {
+                  type: "text",
+                  value: modelSearch,
+                  onChange: (event) => setModelSearch(event.target.value),
+                  placeholder: "Search models\u2026",
+                  disabled: selectorsDisabled || modelOptions.length <= 1
+                }
+              ),
+              /* @__PURE__ */ (0, import_jsx_runtime22.jsxs)("span", { className: "mobile-settings-field-hint", children: [
+                filteredModelOptions.length,
+                " of ",
+                modelOptions.length,
+                " models"
+              ] }),
+              /* @__PURE__ */ (0, import_jsx_runtime22.jsx)(
+                Select,
+                {
+                  value: modelName,
+                  onChange: (event) => onModelChange(event.target.value),
+                  disabled: selectorsDisabled,
+                  children: filteredModelOptions.map((model) => /* @__PURE__ */ (0, import_jsx_runtime22.jsx)("option", { value: model, children: model }, model))
+                }
+              )
+            ] }),
+            /* @__PURE__ */ (0, import_jsx_runtime22.jsx)(
+              ProfilePicker,
+              {
+                users,
+                selectedUserId,
+                onSelect: onUserSelect,
+                disabled: selectorsDisabled,
+                compact: true
+              }
+            )
+          ] }),
+          /* @__PURE__ */ (0, import_jsx_runtime22.jsxs)("section", { className: "mobile-settings-mode-prompts", "aria-label": "Default operation mode prompts", children: [
+            /* @__PURE__ */ (0, import_jsx_runtime22.jsxs)("div", { children: [
+              /* @__PURE__ */ (0, import_jsx_runtime22.jsx)("strong", { children: "Default mode prompts" }),
+              /* @__PURE__ */ (0, import_jsx_runtime22.jsx)("p", { children: "Include built-in Chat/Agent instructions before project and conversation prompts." })
+            ] }),
+            /* @__PURE__ */ (0, import_jsx_runtime22.jsxs)("label", { className: "mobile-settings-toggle-row", children: [
+              /* @__PURE__ */ (0, import_jsx_runtime22.jsx)(
+                "input",
+                {
+                  type: "checkbox",
+                  checked: includeOperationModePrompts,
+                  onChange: (event) => onIncludeOperationModePromptsChange(event.target.checked),
+                  disabled: selectorsDisabled
+                }
+              ),
+              /* @__PURE__ */ (0, import_jsx_runtime22.jsx)("span", { children: includeOperationModePrompts ? "Enabled" : "Disabled" })
+            ] })
+          ] }),
+          /* @__PURE__ */ (0, import_jsx_runtime22.jsxs)("section", { className: "mobile-settings-thinking-options", "aria-label": "Thinking options", children: [
+            /* @__PURE__ */ (0, import_jsx_runtime22.jsxs)("div", { className: "mobile-settings-thinking-options-header", children: [
+              /* @__PURE__ */ (0, import_jsx_runtime22.jsxs)("div", { children: [
+                /* @__PURE__ */ (0, import_jsx_runtime22.jsx)("strong", { children: "Thinking options" }),
+                /* @__PURE__ */ (0, import_jsx_runtime22.jsx)("p", { children: "Send reasoning preferences to providers/models that support thinking." })
+              ] }),
+              /* @__PURE__ */ (0, import_jsx_runtime22.jsxs)("label", { className: "mobile-settings-toggle-row", children: [
+                /* @__PURE__ */ (0, import_jsx_runtime22.jsx)(
+                  "input",
+                  {
+                    type: "checkbox",
+                    checked: thinkingEnabled,
+                    onChange: (event) => onThinkingEnabledChange(event.target.checked),
+                    disabled: selectorsDisabled
+                  }
+                ),
+                /* @__PURE__ */ (0, import_jsx_runtime22.jsx)("span", { children: thinkingEnabled ? "Enabled" : "Disabled" })
+              ] })
+            ] }),
+            /* @__PURE__ */ (0, import_jsx_runtime22.jsxs)("label", { className: "mobile-settings-field mobile-settings-thinking-effort-field", children: [
+              /* @__PURE__ */ (0, import_jsx_runtime22.jsx)("span", { children: "Reasoning effort" }),
+              /* @__PURE__ */ (0, import_jsx_runtime22.jsx)(
+                Select,
+                {
+                  value: reasoningEffort,
+                  onChange: (event) => onReasoningEffortChange(event.target.value),
+                  disabled: selectorsDisabled || !thinkingEnabled,
+                  children: REASONING_EFFORT_OPTIONS.map((option) => /* @__PURE__ */ (0, import_jsx_runtime22.jsx)("option", { value: option, children: option === reasoningEffort ? `${REASONING_EFFORT_LABELS[option]} (Selected)` : REASONING_EFFORT_LABELS[option] }, option))
+                }
+              )
+            ] })
+          ] }),
+          /* @__PURE__ */ (0, import_jsx_runtime22.jsxs)("section", { className: "mobile-settings-font-zoom", "aria-label": "Assistant text zoom", children: [
+            /* @__PURE__ */ (0, import_jsx_runtime22.jsxs)("div", { className: "mobile-settings-font-zoom-header", children: [
+              /* @__PURE__ */ (0, import_jsx_runtime22.jsx)("span", { children: "Agent text zoom" }),
+              /* @__PURE__ */ (0, import_jsx_runtime22.jsxs)("strong", { children: [
+                agentTextFontSizePx,
+                "px"
+              ] })
+            ] }),
+            /* @__PURE__ */ (0, import_jsx_runtime22.jsxs)("div", { className: "mobile-settings-font-zoom-row", children: [
+              /* @__PURE__ */ (0, import_jsx_runtime22.jsx)("span", { "aria-hidden": "true", children: "A" }),
+              /* @__PURE__ */ (0, import_jsx_runtime22.jsx)(
+                Input,
+                {
+                  type: "range",
+                  min: minAgentTextFontSizePx,
+                  max: maxAgentTextFontSizePx,
+                  step: 1,
+                  value: agentTextFontSizePx,
+                  onChange: (event) => onAgentTextFontSizeChange(Number(event.target.value)),
+                  "aria-label": "Agent message text font size",
+                  className: "mobile-settings-font-zoom-slider"
+                }
+              ),
+              /* @__PURE__ */ (0, import_jsx_runtime22.jsx)("span", { "aria-hidden": "true", children: "A" })
+            ] }),
+            /* @__PURE__ */ (0, import_jsx_runtime22.jsx)("p", { children: "Controls the font size for assistant text responses." })
+          ] }),
+          /* @__PURE__ */ (0, import_jsx_runtime22.jsxs)("div", { className: "mobile-settings-auth-row", children: [
+            /* @__PURE__ */ (0, import_jsx_runtime22.jsx)(Badge, { className: `mobile-auth-pill ${authStatus.className}`, variant: "outline", children: authStatus.label }),
+            providerName === "openaichatgpt" ? !openAiAuthenticated ? /* @__PURE__ */ (0, import_jsx_runtime22.jsxs)(import_jsx_runtime22.Fragment, { children: [
+              /* @__PURE__ */ (0, import_jsx_runtime22.jsx)(Button, { onClick: onOpenAiLoginStart, disabled: openAiBusy, variant: "secondary", size: "sm", children: "Sign in OpenAI" }),
+              /* @__PURE__ */ (0, import_jsx_runtime22.jsx)(
+                Button,
+                {
+                  onClick: onOpenAiLoginComplete,
+                  disabled: openAiBusy || !hasPendingOpenAiFlow,
+                  variant: "outline",
+                  size: "sm",
+                  children: "Complete sign-in"
+                }
+              )
+            ] }) : /* @__PURE__ */ (0, import_jsx_runtime22.jsx)(Button, { onClick: onOpenAiLogout, disabled: openAiBusy, variant: "outline", size: "sm", children: "Sign out OpenAI" }) : providerName === "openrouter" ? /* @__PURE__ */ (0, import_jsx_runtime22.jsx)("span", { className: "mobile-conversation-cwd-hint", children: "OpenRouter uses your stored app token." }) : providerName === "zai" ? zaiAuthenticated ? /* @__PURE__ */ (0, import_jsx_runtime22.jsxs)(import_jsx_runtime22.Fragment, { children: [
+              /* @__PURE__ */ (0, import_jsx_runtime22.jsx)(Button, { onClick: onZaiTokenSet, variant: "secondary", size: "sm", children: "Replace Z.AI key" }),
+              /* @__PURE__ */ (0, import_jsx_runtime22.jsx)(Button, { onClick: onZaiTokenClear, variant: "outline", size: "sm", children: "Clear Z.AI key" })
+            ] }) : /* @__PURE__ */ (0, import_jsx_runtime22.jsx)(Button, { onClick: onZaiTokenSet, variant: "secondary", size: "sm", children: "Enter Z.AI API key" }) : /* @__PURE__ */ (0, import_jsx_runtime22.jsx)("span", { className: "mobile-conversation-cwd-hint", children: "LM Studio uses your local runtime. No remote auth needed." })
+          ] }),
+          /* @__PURE__ */ (0, import_jsx_runtime22.jsxs)("section", { className: "mobile-settings-collapsible", children: [
+            /* @__PURE__ */ (0, import_jsx_runtime22.jsxs)(
+              "button",
+              {
+                type: "button",
+                className: "mobile-settings-collapsible-toggle",
+                onClick: () => setConversationSettingsExpanded((previous3) => !previous3),
+                "aria-expanded": conversationSettingsExpanded,
+                children: [
+                  /* @__PURE__ */ (0, import_jsx_runtime22.jsxs)("span", { children: [
+                    /* @__PURE__ */ (0, import_jsx_runtime22.jsx)("strong", { children: "Prompt, context, and cwd" }),
+                    /* @__PURE__ */ (0, import_jsx_runtime22.jsx)("small", { children: "Project prompt/context plus conversation cwd" })
+                  ] }),
+                  /* @__PURE__ */ (0, import_jsx_runtime22.jsx)("span", { "aria-hidden": "true", children: conversationSettingsExpanded ? "\u25BE" : "\u25B8" })
+                ]
+              }
+            ),
+            conversationSettingsExpanded ? /* @__PURE__ */ (0, import_jsx_runtime22.jsxs)("div", { className: "mobile-settings-collapsible-body", children: [
+              /* @__PURE__ */ (0, import_jsx_runtime22.jsxs)("label", { className: "mobile-settings-field", htmlFor: "conversation-system-prompt-input", children: [
+                /* @__PURE__ */ (0, import_jsx_runtime22.jsx)("span", { children: "System prompt" }),
+                /* @__PURE__ */ (0, import_jsx_runtime22.jsx)(
+                  Textarea,
+                  {
+                    id: "conversation-system-prompt-input",
+                    value: conversationSystemPromptInput,
+                    onChange: (event) => onConversationSystemPromptInputChange(event.target.value),
+                    placeholder: "Optional system prompt for this conversation",
+                    rows: 4,
+                    disabled: !activeConversationId || selectorsDisabled || savingConversationSettings
+                  }
+                )
+              ] }),
+              /* @__PURE__ */ (0, import_jsx_runtime22.jsxs)("label", { className: "mobile-settings-field", htmlFor: "conversation-context-input", children: [
+                /* @__PURE__ */ (0, import_jsx_runtime22.jsx)("span", { children: "Context" }),
+                /* @__PURE__ */ (0, import_jsx_runtime22.jsx)(
+                  Textarea,
+                  {
+                    id: "conversation-context-input",
+                    value: conversationContextInput,
+                    onChange: (event) => onConversationContextInputChange(event.target.value),
+                    placeholder: "Optional conversation context or notes",
+                    rows: 5,
+                    disabled: !activeConversationId || selectorsDisabled || savingConversationSettings
+                  }
+                )
+              ] }),
+              /* @__PURE__ */ (0, import_jsx_runtime22.jsxs)("div", { className: "mobile-conversation-cwd mobile-conversation-cwd--in-settings", children: [
+                /* @__PURE__ */ (0, import_jsx_runtime22.jsx)("label", { htmlFor: "conversation-cwd-input", children: "Conversation working directory (cwd)" }),
+                /* @__PURE__ */ (0, import_jsx_runtime22.jsxs)("div", { className: "mobile-conversation-cwd-row", children: [
+                  /* @__PURE__ */ (0, import_jsx_runtime22.jsx)(
+                    Input,
+                    {
+                      id: "conversation-cwd-input",
+                      type: "text",
+                      value: conversationCwdInput,
+                      onChange: (event) => onConversationCwdInputChange(event.target.value),
+                      placeholder: "e.g. D:\\\\projects\\\\my-repo",
+                      disabled: !activeConversationId || selectorsDisabled || savingConversationSettings
+                    }
+                  ),
+                  /* @__PURE__ */ (0, import_jsx_runtime22.jsx)(
+                    Button,
+                    {
+                      onClick: onSaveConversationSettings,
+                      disabled: !activeConversationId || selectorsDisabled || savingConversationSettings,
+                      variant: "outline",
+                      size: "sm",
+                      children: savingConversationSettings ? "Saving\u2026" : "Save"
+                    }
+                  )
+                ] }),
+                /* @__PURE__ */ (0, import_jsx_runtime22.jsx)("span", { className: "mobile-conversation-cwd-hint", children: "Used as tool execution root for this conversation. Leave empty to fall back to project cwd." })
+              ] })
+            ] }) : null
+          ] }),
+          /* @__PURE__ */ (0, import_jsx_runtime22.jsx)("div", { className: "mobile-settings-tools-wrap", children: /* @__PURE__ */ (0, import_jsx_runtime22.jsx)(
+            ToolTogglePanel,
+            {
+              tools: customTools,
+              busyToolNames: customToolBusyNames,
+              loading: customToolsLoading,
+              disabled: selectorsDisabled,
+              onRefresh: onRefreshCustomTools,
+              onToggleTool: onToggleCustomTool
+            }
+          ) })
+        ] })
+      ] })
+    ] }),
     document.body
   ) : null;
-  return /* @__PURE__ */ import_react34.default.createElement(import_react34.default.Fragment, null, /* @__PURE__ */ import_react34.default.createElement("header", { className: "mobile-header" }, /* @__PURE__ */ import_react34.default.createElement("div", { className: "mobile-header-top" }, /* @__PURE__ */ import_react34.default.createElement("div", { className: "mobile-header-brand" }, /* @__PURE__ */ import_react34.default.createElement("h1", null, "Graviton"), /* @__PURE__ */ import_react34.default.createElement("p", { className: "mobile-status" }, /* @__PURE__ */ import_react34.default.createElement("span", { className: "mobile-status-dot", "aria-hidden": "true" }), statusText)), /* @__PURE__ */ import_react34.default.createElement("div", { className: "mobile-header-actions" }, /* @__PURE__ */ import_react34.default.createElement(
-    Button,
-    {
-      variant: "ghost",
-      size: "sm",
-      className: "mobile-header-icon-button",
-      onClick: onOpenBranchTree,
-      disabled: !canOpenBranchTree,
-      "aria-label": "Open branch tree",
-      title: "Open branch tree"
-    },
-    "\u2387"
-  ), /* @__PURE__ */ import_react34.default.createElement(
-    Button,
-    {
-      variant: "ghost",
-      size: "sm",
-      className: `mobile-header-mode-button ${operationMode === "plan" ? "is-chat" : "is-agent"}`,
-      onClick: onOperationModeToggle,
-      disabled: selectorsDisabled,
-      "aria-label": operationMode === "plan" ? "Switch to Agent Mode" : "Switch to Chat Mode",
-      title: operationMode === "plan" ? "Chat Mode: planning/read-only" : "Agent Mode: tool execution"
-    },
-    operationMode === "plan" ? "Chat" : "Agent"
-  ), /* @__PURE__ */ import_react34.default.createElement(
-    Button,
-    {
-      variant: "ghost",
-      size: "sm",
-      className: "mobile-header-icon-button",
-      onClick: onOpenProjectConversationPicker,
-      disabled: !canOpenProjectConversationPicker,
-      "aria-label": "Switch project or conversation",
-      title: "Switch project or conversation"
-    },
-    "\u2630"
-  ), /* @__PURE__ */ import_react34.default.createElement(
-    Button,
-    {
-      variant: "ghost",
-      size: "sm",
-      className: "mobile-header-icon-button",
-      onClick: () => setSettingsOpen(true),
-      "aria-haspopup": "dialog",
-      "aria-expanded": settingsOpen,
-      "aria-label": "Open chat settings",
-      title: "Open chat settings"
-    },
-    "\u2699"
-  ))), /* @__PURE__ */ import_react34.default.createElement("div", { className: "mobile-header-summary mobile-header-summary--compact" }, /* @__PURE__ */ import_react34.default.createElement("div", { className: "mobile-header-summary-item" }, /* @__PURE__ */ import_react34.default.createElement("span", null, PROVIDER_LABELS[providerName], " \xB7 ", operationMode === "plan" ? "Chat Mode" : "Agent Mode"), /* @__PURE__ */ import_react34.default.createElement("strong", null, modelName), /* @__PURE__ */ import_react34.default.createElement(
-    Button,
-    {
-      variant: "ghost",
-      size: "sm",
-      className: "mobile-header-path-button",
-      onClick: onOpenPathPicker,
-      disabled: !canOpenPathPicker,
-      title: canOpenPathPicker ? "Browse files/folders and insert path" : "Set conversation/project cwd first",
-      "aria-label": "Open file path picker"
-    },
-    "\uFF0B"
-  )))), settingsPortal);
+  return /* @__PURE__ */ (0, import_jsx_runtime22.jsxs)(import_jsx_runtime22.Fragment, { children: [
+    /* @__PURE__ */ (0, import_jsx_runtime22.jsxs)("header", { className: "mobile-header", children: [
+      /* @__PURE__ */ (0, import_jsx_runtime22.jsxs)("div", { className: "mobile-header-top", children: [
+        /* @__PURE__ */ (0, import_jsx_runtime22.jsxs)("div", { className: "mobile-header-brand", children: [
+          /* @__PURE__ */ (0, import_jsx_runtime22.jsx)("h1", { children: "Graviton" }),
+          /* @__PURE__ */ (0, import_jsx_runtime22.jsxs)("p", { className: "mobile-status", children: [
+            /* @__PURE__ */ (0, import_jsx_runtime22.jsx)("span", { className: "mobile-status-dot", "aria-hidden": "true" }),
+            statusText
+          ] })
+        ] }),
+        /* @__PURE__ */ (0, import_jsx_runtime22.jsxs)("div", { className: "mobile-header-actions", children: [
+          /* @__PURE__ */ (0, import_jsx_runtime22.jsx)(
+            Button,
+            {
+              variant: "ghost",
+              size: "sm",
+              className: "mobile-header-icon-button",
+              onClick: onOpenBranchTree,
+              disabled: !canOpenBranchTree,
+              "aria-label": "Open branch tree",
+              title: "Open branch tree",
+              children: "\u2387"
+            }
+          ),
+          /* @__PURE__ */ (0, import_jsx_runtime22.jsx)(
+            Button,
+            {
+              variant: "ghost",
+              size: "sm",
+              className: `mobile-header-mode-button ${operationMode === "plan" ? "is-chat" : "is-agent"}`,
+              onClick: onOperationModeToggle,
+              disabled: selectorsDisabled,
+              "aria-label": operationMode === "plan" ? "Switch to Agent Mode" : "Switch to Chat Mode",
+              title: operationMode === "plan" ? "Chat Mode: planning/read-only" : "Agent Mode: tool execution",
+              children: operationMode === "plan" ? "Chat" : "Agent"
+            }
+          ),
+          /* @__PURE__ */ (0, import_jsx_runtime22.jsx)(
+            Button,
+            {
+              variant: "ghost",
+              size: "sm",
+              className: "mobile-header-icon-button",
+              onClick: onOpenProjectConversationPicker,
+              disabled: !canOpenProjectConversationPicker,
+              "aria-label": "Switch project or conversation",
+              title: "Switch project or conversation",
+              children: "\u2630"
+            }
+          ),
+          /* @__PURE__ */ (0, import_jsx_runtime22.jsx)(
+            Button,
+            {
+              variant: "ghost",
+              size: "sm",
+              className: "mobile-header-icon-button",
+              onClick: () => setSettingsOpen(true),
+              "aria-haspopup": "dialog",
+              "aria-expanded": settingsOpen,
+              "aria-label": "Open chat settings",
+              title: "Open chat settings",
+              children: "\u2699"
+            }
+          )
+        ] })
+      ] }),
+      /* @__PURE__ */ (0, import_jsx_runtime22.jsx)("div", { className: "mobile-header-summary mobile-header-summary--compact", children: /* @__PURE__ */ (0, import_jsx_runtime22.jsxs)("div", { className: "mobile-header-summary-item", children: [
+        /* @__PURE__ */ (0, import_jsx_runtime22.jsxs)("span", { children: [
+          PROVIDER_LABELS[providerName],
+          " \xB7 ",
+          operationMode === "plan" ? "Chat Mode" : "Agent Mode"
+        ] }),
+        /* @__PURE__ */ (0, import_jsx_runtime22.jsx)("strong", { children: modelName }),
+        /* @__PURE__ */ (0, import_jsx_runtime22.jsx)(
+          Button,
+          {
+            variant: "ghost",
+            size: "sm",
+            className: "mobile-header-path-button",
+            onClick: onOpenPathPicker,
+            disabled: !canOpenPathPicker,
+            title: canOpenPathPicker ? "Browse files/folders and insert path" : "Set conversation/project cwd first",
+            "aria-label": "Open file path picker",
+            children: "\uFF0B"
+          }
+        )
+      ] }) })
+    ] }),
+    settingsPortal
+  ] });
 };
 
 // electron/headlessServer/ui/mobile/src/components/ProjectConversationTree.tsx
-var import_react35 = __toESM(require_react(), 1);
+var import_react32 = __toESM(require_react(), 1);
 var import_react_dom4 = __toESM(require_react_dom(), 1);
+var import_jsx_runtime23 = __toESM(require_jsx_runtime(), 1);
 var keyForProject = (projectId) => projectId || "__none__";
 var ProjectGroup = ({
   title,
@@ -65640,17 +66108,28 @@ var ProjectGroup = ({
   onCreateConversation,
   disabled
 }) => {
-  return /* @__PURE__ */ import_react35.default.createElement("section", { className: "mobile-project-group" }, /* @__PURE__ */ import_react35.default.createElement("button", { className: "mobile-project-header", onClick: () => onToggleProject(projectId) }, /* @__PURE__ */ import_react35.default.createElement("span", null, title), /* @__PURE__ */ import_react35.default.createElement("span", { className: "mobile-project-meta" }, expanded ? "\u2212" : "+")), expanded ? /* @__PURE__ */ import_react35.default.createElement("div", { className: "mobile-project-body" }, /* @__PURE__ */ import_react35.default.createElement("div", { className: "mobile-project-actions" }, /* @__PURE__ */ import_react35.default.createElement(Button, { onClick: () => onCreateConversation(projectId), disabled, size: "sm", variant: "outline" }, "New conversation")), loading ? /* @__PURE__ */ import_react35.default.createElement("div", { className: "mobile-tree-muted" }, "Loading conversations\u2026") : null, !loading && conversations.length === 0 ? /* @__PURE__ */ import_react35.default.createElement("div", { className: "mobile-tree-muted" }, "No conversations") : null, !loading ? conversations.map((conversation) => /* @__PURE__ */ import_react35.default.createElement(
-    Button,
-    {
-      key: conversation.id,
-      className: `mobile-conversation-row ${activeConversationId === conversation.id ? "active" : ""}`,
-      onClick: () => onSelectConversation(conversation.id),
-      variant: "ghost",
-      size: "sm"
-    },
-    conversation.title || "Untitled Conversation"
-  )) : null) : null);
+  return /* @__PURE__ */ (0, import_jsx_runtime23.jsxs)("section", { className: "mobile-project-group", children: [
+    /* @__PURE__ */ (0, import_jsx_runtime23.jsxs)("button", { className: "mobile-project-header", onClick: () => onToggleProject(projectId), children: [
+      /* @__PURE__ */ (0, import_jsx_runtime23.jsx)("span", { children: title }),
+      /* @__PURE__ */ (0, import_jsx_runtime23.jsx)("span", { className: "mobile-project-meta", children: expanded ? "\u2212" : "+" })
+    ] }),
+    expanded ? /* @__PURE__ */ (0, import_jsx_runtime23.jsxs)("div", { className: "mobile-project-body", children: [
+      /* @__PURE__ */ (0, import_jsx_runtime23.jsx)("div", { className: "mobile-project-actions", children: /* @__PURE__ */ (0, import_jsx_runtime23.jsx)(Button, { onClick: () => onCreateConversation(projectId), disabled, size: "sm", variant: "outline", children: "New conversation" }) }),
+      loading ? /* @__PURE__ */ (0, import_jsx_runtime23.jsx)("div", { className: "mobile-tree-muted", children: "Loading conversations\u2026" }) : null,
+      !loading && conversations.length === 0 ? /* @__PURE__ */ (0, import_jsx_runtime23.jsx)("div", { className: "mobile-tree-muted", children: "No conversations" }) : null,
+      !loading ? conversations.map((conversation) => /* @__PURE__ */ (0, import_jsx_runtime23.jsx)(
+        Button,
+        {
+          className: `mobile-conversation-row ${activeConversationId === conversation.id ? "active" : ""}`,
+          onClick: () => onSelectConversation(conversation.id),
+          variant: "ghost",
+          size: "sm",
+          children: conversation.title || "Untitled Conversation"
+        },
+        conversation.id
+      )) : null
+    ] }) : null
+  ] });
 };
 var ProjectConversationTree = ({
   open,
@@ -65666,7 +66145,7 @@ var ProjectConversationTree = ({
   onClose,
   disabled = false
 }) => {
-  (0, import_react35.useEffect)(() => {
+  (0, import_react32.useEffect)(() => {
     if (!open) return;
     const previousBodyOverflow = document.body.style.overflow;
     document.body.style.overflow = "hidden";
@@ -65680,37 +66159,53 @@ var ProjectConversationTree = ({
     };
   }, [open, onClose]);
   if (!open) return null;
-  const modal = /* @__PURE__ */ import_react35.default.createElement(import_react35.default.Fragment, null, /* @__PURE__ */ import_react35.default.createElement(
-    "button",
-    {
-      type: "button",
-      "aria-label": "Close projects panel",
-      className: "mobile-project-modal-backdrop open",
-      onClick: onClose
-    }
-  ), /* @__PURE__ */ import_react35.default.createElement("section", { className: "mobile-project-modal open", role: "dialog", "aria-modal": "true", "aria-label": "Projects" }, /* @__PURE__ */ import_react35.default.createElement("header", { className: "mobile-project-modal-header" }, /* @__PURE__ */ import_react35.default.createElement("strong", null, "Projects & Conversations"), /* @__PURE__ */ import_react35.default.createElement(Button, { onClick: onClose, variant: "outline", size: "sm" }, "Close")), /* @__PURE__ */ import_react35.default.createElement("div", { className: "mobile-project-modal-body" }, /* @__PURE__ */ import_react35.default.createElement("div", { className: "mobile-project-tree" }, /* @__PURE__ */ import_react35.default.createElement("div", { className: "mobile-project-tree-header" }, /* @__PURE__ */ import_react35.default.createElement("span", { className: "mobile-tree-muted" }, "Manage projects and pick a conversation"), /* @__PURE__ */ import_react35.default.createElement(Button, { onClick: onCreateProject, disabled, size: "sm" }, "New project")), projects.map((project) => {
-    const projectKey2 = keyForProject(project.id);
-    return /* @__PURE__ */ import_react35.default.createElement(
-      ProjectGroup,
+  const modal = /* @__PURE__ */ (0, import_jsx_runtime23.jsxs)(import_jsx_runtime23.Fragment, { children: [
+    /* @__PURE__ */ (0, import_jsx_runtime23.jsx)(
+      "button",
       {
-        key: project.id,
-        title: project.name || "Untitled Project",
-        projectId: project.id,
-        conversations: conversationsByProjectKey[projectKey2] || [],
-        expanded: expandedProjectKeys.includes(projectKey2),
-        loading: loadingProjectKeys.includes(projectKey2),
-        activeConversationId,
-        onToggleProject,
-        onSelectConversation,
-        onCreateConversation,
-        disabled
+        type: "button",
+        "aria-label": "Close projects panel",
+        className: "mobile-project-modal-backdrop open",
+        onClick: onClose
       }
-    );
-  })))));
+    ),
+    /* @__PURE__ */ (0, import_jsx_runtime23.jsxs)("section", { className: "mobile-project-modal open", role: "dialog", "aria-modal": "true", "aria-label": "Projects", children: [
+      /* @__PURE__ */ (0, import_jsx_runtime23.jsxs)("header", { className: "mobile-project-modal-header", children: [
+        /* @__PURE__ */ (0, import_jsx_runtime23.jsx)("strong", { children: "Projects & Conversations" }),
+        /* @__PURE__ */ (0, import_jsx_runtime23.jsx)(Button, { onClick: onClose, variant: "outline", size: "sm", children: "Close" })
+      ] }),
+      /* @__PURE__ */ (0, import_jsx_runtime23.jsx)("div", { className: "mobile-project-modal-body", children: /* @__PURE__ */ (0, import_jsx_runtime23.jsxs)("div", { className: "mobile-project-tree", children: [
+        /* @__PURE__ */ (0, import_jsx_runtime23.jsxs)("div", { className: "mobile-project-tree-header", children: [
+          /* @__PURE__ */ (0, import_jsx_runtime23.jsx)("span", { className: "mobile-tree-muted", children: "Manage projects and pick a conversation" }),
+          /* @__PURE__ */ (0, import_jsx_runtime23.jsx)(Button, { onClick: onCreateProject, disabled, size: "sm", children: "New project" })
+        ] }),
+        projects.map((project) => {
+          const projectKey2 = keyForProject(project.id);
+          return /* @__PURE__ */ (0, import_jsx_runtime23.jsx)(
+            ProjectGroup,
+            {
+              title: project.name || "Untitled Project",
+              projectId: project.id,
+              conversations: conversationsByProjectKey[projectKey2] || [],
+              expanded: expandedProjectKeys.includes(projectKey2),
+              loading: loadingProjectKeys.includes(projectKey2),
+              activeConversationId,
+              onToggleProject,
+              onSelectConversation,
+              onCreateConversation,
+              disabled
+            },
+            project.id
+          );
+        })
+      ] }) })
+    ] })
+  ] });
   return (0, import_react_dom4.createPortal)(modal, document.body);
 };
 
 // electron/headlessServer/ui/mobile/src/App.tsx
+var import_jsx_runtime24 = __toESM(require_jsx_runtime(), 1);
 var createStreamingState = () => ({
   text: "",
   reasoning: "",
@@ -65939,72 +66434,72 @@ var filterEmptyAssistantNodes = (tree) => {
   };
 };
 var App = () => {
-  const [selectedProvider, setSelectedProvider] = (0, import_react36.useState)(
+  const [selectedProvider, setSelectedProvider] = (0, import_react33.useState)(
     () => normalizeProviderName(readStorageValue(MOBILE_LAST_PROVIDER_STORAGE_KEY))
   );
-  const [providerModels, setProviderModels] = (0, import_react36.useState)([]);
-  const [modelName, setModelName] = (0, import_react36.useState)("gpt-5.6-sol");
-  const [statusText, setStatusText] = (0, import_react36.useState)("Loading\u2026");
-  const [agentTextFontSizePx, setAgentTextFontSizePx] = (0, import_react36.useState)(readAgentTextFontSize);
-  const [operationMode, setOperationMode] = (0, import_react36.useState)(
+  const [providerModels, setProviderModels] = (0, import_react33.useState)([]);
+  const [modelName, setModelName] = (0, import_react33.useState)("gpt-5.6-sol");
+  const [statusText, setStatusText] = (0, import_react33.useState)("Loading\u2026");
+  const [agentTextFontSizePx, setAgentTextFontSizePx] = (0, import_react33.useState)(readAgentTextFontSize);
+  const [operationMode, setOperationMode] = (0, import_react33.useState)(
     () => normalizeOperationMode(readStorageValue(MOBILE_OPERATION_MODE_STORAGE_KEY))
   );
-  const [includeOperationModePrompts, setIncludeOperationModePrompts] = (0, import_react36.useState)(
+  const [includeOperationModePrompts, setIncludeOperationModePrompts] = (0, import_react33.useState)(
     () => readBooleanStorageValue(MOBILE_INCLUDE_OPERATION_MODE_PROMPTS_STORAGE_KEY, true)
   );
-  const [thinkingEnabled, setThinkingEnabled] = (0, import_react36.useState)(
+  const [thinkingEnabled, setThinkingEnabled] = (0, import_react33.useState)(
     () => readBooleanStorageValue(MOBILE_THINKING_ENABLED_STORAGE_KEY, DEFAULT_THINKING_ENABLED)
   );
-  const [reasoningEffort, setReasoningEffort] = (0, import_react36.useState)(
+  const [reasoningEffort, setReasoningEffort] = (0, import_react33.useState)(
     () => normalizeReasoningEffort(readStorageValue(MOBILE_REASONING_EFFORT_STORAGE_KEY))
   );
-  const [users, setUsers] = (0, import_react36.useState)([]);
-  const [selectedUserId, setSelectedUserId] = (0, import_react36.useState)(() => readStorageValue(MOBILE_LAST_USER_STORAGE_KEY));
-  const [projects, setProjects] = (0, import_react36.useState)([]);
-  const [expandedProjectKeys, setExpandedProjectKeys] = (0, import_react36.useState)([]);
-  const [loadingProjectKeys, setLoadingProjectKeys] = (0, import_react36.useState)([]);
-  const [conversationsByProjectKey, setConversationsByProjectKey] = (0, import_react36.useState)({});
-  const [activeConversationId, setActiveConversationId] = (0, import_react36.useState)(null);
-  const [allMessages, setAllMessages] = (0, import_react36.useState)([]);
-  const [messages, setMessages] = (0, import_react36.useState)([]);
-  const [messageTree, setMessageTree] = (0, import_react36.useState)(null);
-  const [currentPathMessageIds, setCurrentPathMessageIds] = (0, import_react36.useState)([]);
-  const [scrollToMessageId, setScrollToMessageId] = (0, import_react36.useState)(null);
-  const [isTreeDrawerOpen, setIsTreeDrawerOpen] = (0, import_react36.useState)(false);
-  const [isProjectsModalOpen, setIsProjectsModalOpen] = (0, import_react36.useState)(false);
-  const [isPathPickerOpen, setIsPathPickerOpen] = (0, import_react36.useState)(false);
-  const [hideEmptyAssistantMessages, setHideEmptyAssistantMessages] = (0, import_react36.useState)(true);
-  const [draft, setDraft] = (0, import_react36.useState)("");
-  const [conversationSystemPromptInput, setConversationSystemPromptInput] = (0, import_react36.useState)("");
-  const [conversationContextInput, setConversationContextInput] = (0, import_react36.useState)("");
-  const [conversationCwdInput, setConversationCwdInput] = (0, import_react36.useState)("");
-  const [savingConversationSettings, setSavingConversationSettings] = (0, import_react36.useState)(false);
-  const [branchSourceMessage, setBranchSourceMessage] = (0, import_react36.useState)(null);
-  const [sending, setSending] = (0, import_react36.useState)(false);
-  const [compacting, setCompacting] = (0, import_react36.useState)(false);
-  const [streamingState, setStreamingState] = (0, import_react36.useState)(null);
-  const [composerBlockModal, setComposerBlockModal] = (0, import_react36.useState)(null);
-  const [openAiConnected, setOpenAiConnected] = (0, import_react36.useState)(false);
-  const [openRouterConnected, setOpenRouterConnected] = (0, import_react36.useState)(false);
-  const [zaiConnected, setZaiConnected] = (0, import_react36.useState)(false);
-  const [openAiBusy, setOpenAiBusy] = (0, import_react36.useState)(false);
-  const [pendingOpenAiState, setPendingOpenAiState] = (0, import_react36.useState)(null);
-  const [customTools, setCustomTools] = (0, import_react36.useState)([]);
-  const [customToolsLoading, setCustomToolsLoading] = (0, import_react36.useState)(false);
-  const [customToolBusyNames, setCustomToolBusyNames] = (0, import_react36.useState)([]);
-  const [inferenceTools, setInferenceTools] = (0, import_react36.useState)([]);
-  const lastStreamCompleteMessageIdRef = (0, import_react36.useRef)(null);
-  const currentPathIdsRef = (0, import_react36.useRef)([]);
-  const streamingMessage = (0, import_react36.useMemo)(() => makeStreamingMessage(streamingState), [streamingState]);
-  const displayedMessages = (0, import_react36.useMemo)(() => {
+  const [users, setUsers] = (0, import_react33.useState)([]);
+  const [selectedUserId, setSelectedUserId] = (0, import_react33.useState)(() => readStorageValue(MOBILE_LAST_USER_STORAGE_KEY));
+  const [projects, setProjects] = (0, import_react33.useState)([]);
+  const [expandedProjectKeys, setExpandedProjectKeys] = (0, import_react33.useState)([]);
+  const [loadingProjectKeys, setLoadingProjectKeys] = (0, import_react33.useState)([]);
+  const [conversationsByProjectKey, setConversationsByProjectKey] = (0, import_react33.useState)({});
+  const [activeConversationId, setActiveConversationId] = (0, import_react33.useState)(null);
+  const [allMessages, setAllMessages] = (0, import_react33.useState)([]);
+  const [messages, setMessages] = (0, import_react33.useState)([]);
+  const [messageTree, setMessageTree] = (0, import_react33.useState)(null);
+  const [currentPathMessageIds, setCurrentPathMessageIds] = (0, import_react33.useState)([]);
+  const [scrollToMessageId, setScrollToMessageId] = (0, import_react33.useState)(null);
+  const [isTreeDrawerOpen, setIsTreeDrawerOpen] = (0, import_react33.useState)(false);
+  const [isProjectsModalOpen, setIsProjectsModalOpen] = (0, import_react33.useState)(false);
+  const [isPathPickerOpen, setIsPathPickerOpen] = (0, import_react33.useState)(false);
+  const [hideEmptyAssistantMessages, setHideEmptyAssistantMessages] = (0, import_react33.useState)(true);
+  const [draft, setDraft] = (0, import_react33.useState)("");
+  const [conversationSystemPromptInput, setConversationSystemPromptInput] = (0, import_react33.useState)("");
+  const [conversationContextInput, setConversationContextInput] = (0, import_react33.useState)("");
+  const [conversationCwdInput, setConversationCwdInput] = (0, import_react33.useState)("");
+  const [savingConversationSettings, setSavingConversationSettings] = (0, import_react33.useState)(false);
+  const [branchSourceMessage, setBranchSourceMessage] = (0, import_react33.useState)(null);
+  const [sending, setSending] = (0, import_react33.useState)(false);
+  const [compacting, setCompacting] = (0, import_react33.useState)(false);
+  const [streamingState, setStreamingState] = (0, import_react33.useState)(null);
+  const [composerBlockModal, setComposerBlockModal] = (0, import_react33.useState)(null);
+  const [openAiConnected, setOpenAiConnected] = (0, import_react33.useState)(false);
+  const [openRouterConnected, setOpenRouterConnected] = (0, import_react33.useState)(false);
+  const [zaiConnected, setZaiConnected] = (0, import_react33.useState)(false);
+  const [openAiBusy, setOpenAiBusy] = (0, import_react33.useState)(false);
+  const [pendingOpenAiState, setPendingOpenAiState] = (0, import_react33.useState)(null);
+  const [customTools, setCustomTools] = (0, import_react33.useState)([]);
+  const [customToolsLoading, setCustomToolsLoading] = (0, import_react33.useState)(false);
+  const [customToolBusyNames, setCustomToolBusyNames] = (0, import_react33.useState)([]);
+  const [inferenceTools, setInferenceTools] = (0, import_react33.useState)([]);
+  const lastStreamCompleteMessageIdRef = (0, import_react33.useRef)(null);
+  const currentPathIdsRef = (0, import_react33.useRef)([]);
+  const streamingMessage = (0, import_react33.useMemo)(() => makeStreamingMessage(streamingState), [streamingState]);
+  const displayedMessages = (0, import_react33.useMemo)(() => {
     if (!hideEmptyAssistantMessages) return messages;
     return messages.filter((message) => !(message.role === "assistant" && buildRenderItemsForMessage(message).length === 0));
   }, [messages, hideEmptyAssistantMessages]);
-  const treeForDrawer = (0, import_react36.useMemo)(() => {
+  const treeForDrawer = (0, import_react33.useMemo)(() => {
     if (!hideEmptyAssistantMessages) return messageTree;
     return filterEmptyAssistantNodes(messageTree);
   }, [messageTree, hideEmptyAssistantMessages]);
-  const activeConversation = (0, import_react36.useMemo)(() => {
+  const activeConversation = (0, import_react33.useMemo)(() => {
     if (!activeConversationId) return null;
     for (const bucket of Object.values(conversationsByProjectKey)) {
       const found = bucket.find((conversation) => conversation.id === activeConversationId);
@@ -66012,18 +66507,18 @@ var App = () => {
     }
     return null;
   }, [activeConversationId, conversationsByProjectKey]);
-  const projectById = (0, import_react36.useMemo)(() => {
+  const projectById = (0, import_react33.useMemo)(() => {
     const next = /* @__PURE__ */ new Map();
     projects.forEach((project) => {
       next.set(project.id, project);
     });
     return next;
   }, [projects]);
-  const activeProject = (0, import_react36.useMemo)(() => {
+  const activeProject = (0, import_react33.useMemo)(() => {
     const projectId = activeConversation?.project_id || null;
     return projectId ? projectById.get(projectId) || null : null;
   }, [activeConversation?.project_id, projectById]);
-  const activeProjectCwd = (0, import_react36.useMemo)(() => {
+  const activeProjectCwd = (0, import_react33.useMemo)(() => {
     const conversationCwd = normalizeCwd(activeConversation?.cwd);
     if (conversationCwd) return conversationCwd;
     const projectId = activeConversation?.project_id || null;
@@ -66031,13 +66526,13 @@ var App = () => {
     if (projectCwd) return projectCwd;
     return null;
   }, [activeConversation, projectById]);
-  const availableModelOptions = (0, import_react36.useMemo)(() => {
+  const availableModelOptions = (0, import_react33.useMemo)(() => {
     const models = providerModels.find((provider) => provider.name === selectedProvider)?.models || [];
     return models.length > 0 ? models : [modelName];
   }, [providerModels, selectedProvider, modelName]);
   const selectedProviderRequiresAuth = selectedProvider === "openaichatgpt" || selectedProvider === "openrouter" || selectedProvider === "zai";
   const selectedProviderAuthenticated = selectedProvider === "openaichatgpt" ? openAiConnected : selectedProvider === "openrouter" ? openRouterConnected : selectedProvider === "zai" ? zaiConnected : true;
-  const composerDisabledReason = (0, import_react36.useMemo)(() => {
+  const composerDisabledReason = (0, import_react33.useMemo)(() => {
     if (!selectedUserId) {
       return {
         title: "No user profile selected",
@@ -66065,16 +66560,16 @@ var App = () => {
     selectedProviderAuthenticated,
     selectedProvider
   ]);
-  const handleComposerDisabledInteract = (0, import_react36.useCallback)(() => {
+  const handleComposerDisabledInteract = (0, import_react33.useCallback)(() => {
     if (!composerDisabledReason) return;
     setComposerBlockModal(composerDisabledReason);
   }, [composerDisabledReason]);
-  (0, import_react36.useEffect)(() => {
+  (0, import_react33.useEffect)(() => {
     if (!composerDisabledReason && composerBlockModal) {
       setComposerBlockModal(null);
     }
   }, [composerDisabledReason, composerBlockModal]);
-  (0, import_react36.useEffect)(() => {
+  (0, import_react33.useEffect)(() => {
     setConversationSystemPromptInput(activeProject?.system_prompt || activeConversation?.system_prompt || "");
     setConversationContextInput(activeProject?.context || activeConversation?.conversation_context || "");
     const currentConversationCwd = normalizeCwd(activeConversation?.cwd);
@@ -66134,7 +66629,7 @@ var App = () => {
       (previous3) => willExpand ? [...previous3, key] : previous3.filter((value) => value !== key)
     );
   };
-  const selectPathFromMessageId = (0, import_react36.useCallback)((sourceMessages, targetMessageId) => {
+  const selectPathFromMessageId = (0, import_react33.useCallback)((sourceMessages, targetMessageId) => {
     if (!sourceMessages.length) {
       setCurrentPathMessageIds([]);
       setMessages([]);
@@ -66149,14 +66644,14 @@ var App = () => {
     setCurrentPathMessageIds(pathIds);
     setMessages(mapPathToMessages(sourceMessages, pathIds));
   }, []);
-  const selectLatestBranch = (0, import_react36.useCallback)(
+  const selectLatestBranch = (0, import_react33.useCallback)(
     (sourceMessages) => {
       const latestLeafId = resolveLatestLeafMessageId(sourceMessages);
       selectPathFromMessageId(sourceMessages, latestLeafId);
     },
     [selectPathFromMessageId]
   );
-  const loadConversationTree = (0, import_react36.useCallback)(
+  const loadConversationTree = (0, import_react33.useCallback)(
     async (conversationId, options) => {
       const payload = await mobileApi.getConversationMessageTree(conversationId);
       const listed = Array.isArray(payload.messages) ? payload.messages : [];
@@ -66481,41 +66976,41 @@ ${nextPath}`;
     });
     setStatusText(`Inserted path: ${nextPath}`);
   };
-  (0, import_react36.useEffect)(() => {
+  (0, import_react33.useEffect)(() => {
     currentPathIdsRef.current = currentPathMessageIds;
   }, [currentPathMessageIds]);
-  (0, import_react36.useEffect)(() => {
+  (0, import_react33.useEffect)(() => {
     writeStorageValue(MOBILE_LAST_USER_STORAGE_KEY, selectedUserId);
   }, [selectedUserId]);
-  (0, import_react36.useEffect)(() => {
+  (0, import_react33.useEffect)(() => {
     writeStorageValue(MOBILE_LAST_PROVIDER_STORAGE_KEY, selectedProvider);
   }, [selectedProvider]);
-  (0, import_react36.useEffect)(() => {
+  (0, import_react33.useEffect)(() => {
     writeStorageValue(MOBILE_AGENT_TEXT_FONT_SIZE_STORAGE_KEY, String(agentTextFontSizePx));
   }, [agentTextFontSizePx]);
-  (0, import_react36.useEffect)(() => {
+  (0, import_react33.useEffect)(() => {
     writeStorageValue(MOBILE_OPERATION_MODE_STORAGE_KEY, operationMode);
   }, [operationMode]);
-  (0, import_react36.useEffect)(() => {
+  (0, import_react33.useEffect)(() => {
     writeStorageValue(MOBILE_INCLUDE_OPERATION_MODE_PROMPTS_STORAGE_KEY, String(includeOperationModePrompts));
   }, [includeOperationModePrompts]);
-  (0, import_react36.useEffect)(() => {
+  (0, import_react33.useEffect)(() => {
     writeStorageValue(MOBILE_THINKING_ENABLED_STORAGE_KEY, String(thinkingEnabled));
   }, [thinkingEnabled]);
-  (0, import_react36.useEffect)(() => {
+  (0, import_react33.useEffect)(() => {
     writeStorageValue(MOBILE_REASONING_EFFORT_STORAGE_KEY, reasoningEffort);
   }, [reasoningEffort]);
-  (0, import_react36.useEffect)(() => {
+  (0, import_react33.useEffect)(() => {
     const models = providerModels.find((provider) => provider.name === selectedProvider)?.models || [];
     if (models.length === 0) return;
     if (models.includes(modelName)) return;
     setModelName(models[0]);
   }, [providerModels, selectedProvider, modelName]);
-  (0, import_react36.useEffect)(() => {
+  (0, import_react33.useEffect)(() => {
     if (!selectedUserId) return;
     writeStorageValue(mobileLastConversationStorageKey(selectedUserId), activeConversationId);
   }, [selectedUserId, activeConversationId]);
-  (0, import_react36.useEffect)(() => {
+  (0, import_react33.useEffect)(() => {
     let cancelled = false;
     const run = async () => {
       try {
@@ -66549,7 +67044,7 @@ ${nextPath}`;
       cancelled = true;
     };
   }, []);
-  (0, import_react36.useEffect)(() => {
+  (0, import_react33.useEffect)(() => {
     if (!selectedUserId) {
       setProjects([]);
       setInferenceTools([]);
@@ -66645,7 +67140,7 @@ ${nextPath}`;
       cancelled = true;
     };
   }, [selectedUserId]);
-  (0, import_react36.useEffect)(() => {
+  (0, import_react33.useEffect)(() => {
     if (activeConversationId) return;
     setAllMessages([]);
     setMessages([]);
@@ -66654,7 +67149,7 @@ ${nextPath}`;
     setScrollToMessageId(null);
     setBranchSourceMessage(null);
   }, [activeConversationId]);
-  (0, import_react36.useEffect)(() => {
+  (0, import_react33.useEffect)(() => {
     if (!activeConversationId) return;
     setIsTreeDrawerOpen(false);
     setIsPathPickerOpen(false);
@@ -66888,144 +67383,160 @@ ${nextPath}`;
     }
   };
   const activeBranchTipId = currentPathMessageIds[currentPathMessageIds.length - 1] || null;
-  return /* @__PURE__ */ import_react36.default.createElement("main", { className: "mobile-app-shell" }, /* @__PURE__ */ import_react36.default.createElement(
-    MobileHeader,
-    {
-      providerName: selectedProvider,
-      providerOptions: providerModels.length > 0 ? providerModels.map((provider) => provider.name) : ["openaichatgpt", "openrouter", "lmstudio", "zai"],
-      modelName,
-      modelOptions: availableModelOptions,
-      statusText,
-      agentTextFontSizePx,
-      minAgentTextFontSizePx: MIN_AGENT_TEXT_FONT_SIZE_PX,
-      maxAgentTextFontSizePx: MAX_AGENT_TEXT_FONT_SIZE_PX,
-      onAgentTextFontSizeChange: (value) => setAgentTextFontSizePx(clampAgentTextFontSize(value)),
-      operationMode,
-      includeOperationModePrompts,
-      thinkingEnabled,
-      reasoningEffort,
-      onOperationModeToggle: () => setOperationMode((previous3) => previous3 === "plan" ? "execute" : "plan"),
-      onIncludeOperationModePromptsChange: setIncludeOperationModePrompts,
-      onThinkingEnabledChange: setThinkingEnabled,
-      onReasoningEffortChange: setReasoningEffort,
-      users,
-      selectedUserId,
-      onProviderChange: setSelectedProvider,
-      onModelChange: setModelName,
-      onUserSelect: setSelectedUserId,
-      selectorsDisabled: sending || compacting,
-      openAiAuthenticated: openAiConnected,
-      openRouterAuthenticated: openRouterConnected,
-      zaiAuthenticated: zaiConnected,
-      openAiBusy,
-      hasPendingOpenAiFlow: Boolean(pendingOpenAiState),
-      onOpenAiLoginStart: handleOpenAiLoginStart,
-      onOpenAiLoginComplete: handleOpenAiLoginComplete,
-      onOpenAiLogout: handleOpenAiLogout,
-      onZaiTokenSet: handleZaiTokenSet,
-      onZaiTokenClear: handleZaiTokenClear,
-      customTools,
-      customToolBusyNames,
-      customToolsLoading,
-      onRefreshCustomTools: loadCustomTools,
-      onToggleCustomTool: handleToggleCustomTool,
-      activeConversationId,
-      conversationSystemPromptInput,
-      conversationContextInput,
-      conversationCwdInput,
-      onConversationSystemPromptInputChange: setConversationSystemPromptInput,
-      onConversationContextInputChange: setConversationContextInput,
-      onConversationCwdInputChange: setConversationCwdInput,
-      onSaveConversationSettings: handleSaveConversationSettings,
-      savingConversationSettings,
-      onOpenProjectConversationPicker: () => setIsProjectsModalOpen(true),
-      canOpenProjectConversationPicker: !sending && !compacting && Boolean(selectedUserId),
-      onOpenBranchTree: () => setIsTreeDrawerOpen(true),
-      canOpenBranchTree: Boolean(activeConversationId) && !sending && !compacting && allMessages.length > 0,
-      onOpenPathPicker: () => setIsPathPickerOpen(true),
-      canOpenPathPicker: Boolean(activeProjectCwd) && !sending && !compacting && Boolean(activeConversationId)
-    }
-  ), /* @__PURE__ */ import_react36.default.createElement(
-    ProjectConversationTree,
-    {
-      open: isProjectsModalOpen,
-      projects,
-      conversationsByProjectKey,
-      expandedProjectKeys,
-      activeConversationId,
-      loadingProjectKeys,
-      onToggleProject: toggleProject,
-      onSelectConversation: (conversationId) => {
-        setActiveConversationId(conversationId);
-        setIsProjectsModalOpen(false);
-      },
-      onCreateProject: handleCreateProject,
-      onCreateConversation: handleCreateConversation,
-      onClose: () => setIsProjectsModalOpen(false),
-      disabled: sending || compacting || !selectedUserId
-    }
-  ), /* @__PURE__ */ import_react36.default.createElement(
-    MessageList,
-    {
-      messages: displayedMessages,
-      streamingMessage,
-      branchTargetMessageId: branchSourceMessage?.id || null,
-      scrollToMessageId,
-      onScrollToMessageHandled: () => setScrollToMessageId(null),
-      userActionsDisabled: sending || compacting || !activeConversationId || !selectedUserId,
-      currentUserId: selectedUserId,
-      rootPath: activeProjectCwd,
-      agentTextFontSizePx,
-      onBranchUserMessage: handleBranchUserMessage,
-      onDeleteUserMessage: handleDeleteUserMessage
-    }
-  ), /* @__PURE__ */ import_react36.default.createElement(
-    Composer,
-    {
-      value: draft,
-      onChange: setDraft,
-      onSubmit: handleSend,
-      sending: sending || compacting,
-      isBranching: Boolean(branchSourceMessage),
-      branchLabel: branchSourceMessage ? `Branching from message ${branchSourceMessage.id.slice(0, 8)}\u2026 (new parent = previous message)` : void 0,
-      onCancelBranch: branchSourceMessage ? handleCancelBranch : void 0,
-      disabled: Boolean(composerDisabledReason),
-      onDisabledInteract: handleComposerDisabledInteract,
-      slashCommands: MOBILE_SLASH_COMMANDS,
-      onSlashCommandSelect: handleSlashCommandSelect
-    }
-  ), /* @__PURE__ */ import_react36.default.createElement(
-    FilePathPickerModal,
-    {
-      open: isPathPickerOpen,
-      rootPath: activeProjectCwd,
-      onClose: () => setIsPathPickerOpen(false),
-      onInsertPath: handleInsertPathIntoDraft
-    }
-  ), /* @__PURE__ */ import_react36.default.createElement(
-    MessageTreeDrawer,
-    {
-      open: isTreeDrawerOpen,
-      tree: treeForDrawer,
-      activePathIds: currentPathMessageIds,
-      activeTipId: activeBranchTipId,
-      hideEmptyAssistantMessages,
-      onToggleHideEmptyAssistantMessages: () => setHideEmptyAssistantMessages((previous3) => !previous3),
-      onSelectMessage: handleSelectTreeNode,
-      onClose: () => setIsTreeDrawerOpen(false)
-    }
-  ), composerBlockModal ? /* @__PURE__ */ import_react36.default.createElement(import_react36.default.Fragment, null, /* @__PURE__ */ import_react36.default.createElement(
-    "button",
-    {
-      type: "button",
-      "aria-label": "Close composer blocked dialog",
-      className: "mobile-blocked-modal-backdrop",
-      onClick: () => setComposerBlockModal(null)
-    }
-  ), /* @__PURE__ */ import_react36.default.createElement("section", { className: "mobile-blocked-modal", role: "dialog", "aria-modal": "true", "aria-label": "Composer blocked" }, /* @__PURE__ */ import_react36.default.createElement("h3", null, composerBlockModal.title), /* @__PURE__ */ import_react36.default.createElement("p", null, composerBlockModal.message), /* @__PURE__ */ import_react36.default.createElement("div", { className: "mobile-blocked-modal-actions" }, /* @__PURE__ */ import_react36.default.createElement(Button, { onClick: () => setComposerBlockModal(null), size: "sm" }, "Got it")))) : null);
+  return /* @__PURE__ */ (0, import_jsx_runtime24.jsxs)("main", { className: "mobile-app-shell", children: [
+    /* @__PURE__ */ (0, import_jsx_runtime24.jsx)(
+      MobileHeader,
+      {
+        providerName: selectedProvider,
+        providerOptions: providerModels.length > 0 ? providerModels.map((provider) => provider.name) : ["openaichatgpt", "openrouter", "lmstudio", "zai"],
+        modelName,
+        modelOptions: availableModelOptions,
+        statusText,
+        agentTextFontSizePx,
+        minAgentTextFontSizePx: MIN_AGENT_TEXT_FONT_SIZE_PX,
+        maxAgentTextFontSizePx: MAX_AGENT_TEXT_FONT_SIZE_PX,
+        onAgentTextFontSizeChange: (value) => setAgentTextFontSizePx(clampAgentTextFontSize(value)),
+        operationMode,
+        includeOperationModePrompts,
+        thinkingEnabled,
+        reasoningEffort,
+        onOperationModeToggle: () => setOperationMode((previous3) => previous3 === "plan" ? "execute" : "plan"),
+        onIncludeOperationModePromptsChange: setIncludeOperationModePrompts,
+        onThinkingEnabledChange: setThinkingEnabled,
+        onReasoningEffortChange: setReasoningEffort,
+        users,
+        selectedUserId,
+        onProviderChange: setSelectedProvider,
+        onModelChange: setModelName,
+        onUserSelect: setSelectedUserId,
+        selectorsDisabled: sending || compacting,
+        openAiAuthenticated: openAiConnected,
+        openRouterAuthenticated: openRouterConnected,
+        zaiAuthenticated: zaiConnected,
+        openAiBusy,
+        hasPendingOpenAiFlow: Boolean(pendingOpenAiState),
+        onOpenAiLoginStart: handleOpenAiLoginStart,
+        onOpenAiLoginComplete: handleOpenAiLoginComplete,
+        onOpenAiLogout: handleOpenAiLogout,
+        onZaiTokenSet: handleZaiTokenSet,
+        onZaiTokenClear: handleZaiTokenClear,
+        customTools,
+        customToolBusyNames,
+        customToolsLoading,
+        onRefreshCustomTools: loadCustomTools,
+        onToggleCustomTool: handleToggleCustomTool,
+        activeConversationId,
+        conversationSystemPromptInput,
+        conversationContextInput,
+        conversationCwdInput,
+        onConversationSystemPromptInputChange: setConversationSystemPromptInput,
+        onConversationContextInputChange: setConversationContextInput,
+        onConversationCwdInputChange: setConversationCwdInput,
+        onSaveConversationSettings: handleSaveConversationSettings,
+        savingConversationSettings,
+        onOpenProjectConversationPicker: () => setIsProjectsModalOpen(true),
+        canOpenProjectConversationPicker: !sending && !compacting && Boolean(selectedUserId),
+        onOpenBranchTree: () => setIsTreeDrawerOpen(true),
+        canOpenBranchTree: Boolean(activeConversationId) && !sending && !compacting && allMessages.length > 0,
+        onOpenPathPicker: () => setIsPathPickerOpen(true),
+        canOpenPathPicker: Boolean(activeProjectCwd) && !sending && !compacting && Boolean(activeConversationId)
+      }
+    ),
+    /* @__PURE__ */ (0, import_jsx_runtime24.jsx)(
+      ProjectConversationTree,
+      {
+        open: isProjectsModalOpen,
+        projects,
+        conversationsByProjectKey,
+        expandedProjectKeys,
+        activeConversationId,
+        loadingProjectKeys,
+        onToggleProject: toggleProject,
+        onSelectConversation: (conversationId) => {
+          setActiveConversationId(conversationId);
+          setIsProjectsModalOpen(false);
+        },
+        onCreateProject: handleCreateProject,
+        onCreateConversation: handleCreateConversation,
+        onClose: () => setIsProjectsModalOpen(false),
+        disabled: sending || compacting || !selectedUserId
+      }
+    ),
+    /* @__PURE__ */ (0, import_jsx_runtime24.jsx)(
+      MessageList,
+      {
+        messages: displayedMessages,
+        streamingMessage,
+        branchTargetMessageId: branchSourceMessage?.id || null,
+        scrollToMessageId,
+        onScrollToMessageHandled: () => setScrollToMessageId(null),
+        userActionsDisabled: sending || compacting || !activeConversationId || !selectedUserId,
+        currentUserId: selectedUserId,
+        rootPath: activeProjectCwd,
+        agentTextFontSizePx,
+        onBranchUserMessage: handleBranchUserMessage,
+        onDeleteUserMessage: handleDeleteUserMessage
+      }
+    ),
+    /* @__PURE__ */ (0, import_jsx_runtime24.jsx)(
+      Composer,
+      {
+        value: draft,
+        onChange: setDraft,
+        onSubmit: handleSend,
+        sending: sending || compacting,
+        isBranching: Boolean(branchSourceMessage),
+        branchLabel: branchSourceMessage ? `Branching from message ${branchSourceMessage.id.slice(0, 8)}\u2026 (new parent = previous message)` : void 0,
+        onCancelBranch: branchSourceMessage ? handleCancelBranch : void 0,
+        disabled: Boolean(composerDisabledReason),
+        onDisabledInteract: handleComposerDisabledInteract,
+        slashCommands: MOBILE_SLASH_COMMANDS,
+        onSlashCommandSelect: handleSlashCommandSelect
+      }
+    ),
+    /* @__PURE__ */ (0, import_jsx_runtime24.jsx)(
+      FilePathPickerModal,
+      {
+        open: isPathPickerOpen,
+        rootPath: activeProjectCwd,
+        onClose: () => setIsPathPickerOpen(false),
+        onInsertPath: handleInsertPathIntoDraft
+      }
+    ),
+    /* @__PURE__ */ (0, import_jsx_runtime24.jsx)(
+      MessageTreeDrawer,
+      {
+        open: isTreeDrawerOpen,
+        tree: treeForDrawer,
+        activePathIds: currentPathMessageIds,
+        activeTipId: activeBranchTipId,
+        hideEmptyAssistantMessages,
+        onToggleHideEmptyAssistantMessages: () => setHideEmptyAssistantMessages((previous3) => !previous3),
+        onSelectMessage: handleSelectTreeNode,
+        onClose: () => setIsTreeDrawerOpen(false)
+      }
+    ),
+    composerBlockModal ? /* @__PURE__ */ (0, import_jsx_runtime24.jsxs)(import_jsx_runtime24.Fragment, { children: [
+      /* @__PURE__ */ (0, import_jsx_runtime24.jsx)(
+        "button",
+        {
+          type: "button",
+          "aria-label": "Close composer blocked dialog",
+          className: "mobile-blocked-modal-backdrop",
+          onClick: () => setComposerBlockModal(null)
+        }
+      ),
+      /* @__PURE__ */ (0, import_jsx_runtime24.jsxs)("section", { className: "mobile-blocked-modal", role: "dialog", "aria-modal": "true", "aria-label": "Composer blocked", children: [
+        /* @__PURE__ */ (0, import_jsx_runtime24.jsx)("h3", { children: composerBlockModal.title }),
+        /* @__PURE__ */ (0, import_jsx_runtime24.jsx)("p", { children: composerBlockModal.message }),
+        /* @__PURE__ */ (0, import_jsx_runtime24.jsx)("div", { className: "mobile-blocked-modal-actions", children: /* @__PURE__ */ (0, import_jsx_runtime24.jsx)(Button, { onClick: () => setComposerBlockModal(null), size: "sm", children: "Got it" }) })
+      ] })
+    ] }) : null
+  ] });
 };
 
 // electron/headlessServer/ui/mobile/src/main.tsx
+var import_jsx_runtime25 = __toESM(require_jsx_runtime(), 1);
 var applyThemePreference = () => {
   const root4 = document.documentElement;
   root4.removeAttribute("data-theme");
@@ -67036,7 +67547,7 @@ if (!rootElement) {
   throw new Error("Missing #root element for mobile app");
 }
 (0, import_client.createRoot)(rootElement).render(
-  /* @__PURE__ */ import_react37.default.createElement(import_react37.default.StrictMode, null, /* @__PURE__ */ import_react37.default.createElement(App, null))
+  /* @__PURE__ */ (0, import_jsx_runtime25.jsx)(import_react34.default.StrictMode, { children: /* @__PURE__ */ (0, import_jsx_runtime25.jsx)(App, {}) })
 );
 /*! Bundled license information:
 

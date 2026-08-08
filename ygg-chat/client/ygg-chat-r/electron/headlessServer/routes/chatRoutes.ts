@@ -1,5 +1,5 @@
 import type { Express, Request, Response } from 'express'
-import type { HeadlessChatOperation, HeadlessMessageRequest, HeadlessStreamEvent } from '../contracts/headlessApi.js'
+import type { HeadlessChatOperation, HeadlessMessageRequest, HeadlessStreamEvent } from '../../../../../shared/headlessApi.js'
 import type { HeadlessChatOrchestrator } from '../services/chatOrchestrator.js'
 import type { CompactionService } from '../services/compactionService.js'
 import type { Decision, DecisionBroker } from '../services/decisionBroker.js'

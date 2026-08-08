@@ -1,5 +1,5 @@
 import type { Express } from 'express'
-import type { HeadlessSubagentStreamRequest } from '../contracts/headlessApi.js'
+import type { HeadlessSubagentStreamRequest } from '../../../../../shared/headlessApi.js'
 import type { SubagentRunService } from '../services/subagentRunService.js'
 import { normalizeProviderRoute } from '../services/providerRouter.js'
 import { initializeSse, startSseHeartbeat, writeSseEvent } from '../stream/sseWriter.js'

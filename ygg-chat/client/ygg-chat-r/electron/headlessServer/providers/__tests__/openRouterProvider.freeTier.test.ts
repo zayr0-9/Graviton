@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { OpenRouterProvider, type ProviderGenerateInput } from '../openRouterProvider.js'
-import type { HeadlessStreamEvent } from '../../contracts/headlessApi.js'
+import type { HeadlessStreamEvent } from '../../../../../../shared/headlessApi.js'
 
 /**
  * Phase 4 — OpenRouterProvider free-tier relay. DB-free: stubs global.fetch so the

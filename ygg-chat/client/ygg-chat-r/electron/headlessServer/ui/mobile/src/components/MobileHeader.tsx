@@ -72,6 +72,7 @@ const PROVIDER_LABELS: Record<MobileProviderName, string> = {
   openrouter: 'OpenRouter',
   lmstudio: 'LM Studio',
   zai: 'Z.AI / GLM',
+  bedrock: 'AWS Bedrock',
 }
 
 const REASONING_EFFORT_LABELS: Record<MobileReasoningEffort, string> = {

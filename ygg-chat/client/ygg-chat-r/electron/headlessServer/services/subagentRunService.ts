@@ -2,7 +2,7 @@ import type {
   HeadlessStreamEvent,
   HeadlessSubagentStreamEvent,
   HeadlessSubagentStreamRequest,
-} from '../contracts/headlessApi.js'
+} from '../../../../../shared/headlessApi.js'
 import {
   SubagentRunRepo,
   type SubagentMessageRow,

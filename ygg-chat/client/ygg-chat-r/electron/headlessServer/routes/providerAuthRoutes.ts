@@ -1,5 +1,5 @@
 import type { Express } from 'express'
-import { JWT_CLAIM_PATH } from '../../../src/features/chats/openaiOAuth.js'
+import { JWT_CLAIM_PATH } from '../../openaiChatgptOAuth.js'
 import type { ProviderTokenStore } from '../providers/tokenStore.js'
 
 interface RegisterProviderAuthRoutesDeps {

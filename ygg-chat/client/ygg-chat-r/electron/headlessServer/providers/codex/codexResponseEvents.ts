@@ -170,7 +170,8 @@ function captureCompletedResponseMetadata(response: any, state: State): void {
   if (!response || typeof response !== 'object') return
   if (typeof response.id === 'string') state.responseId = response.id
   if (response.usage !== undefined) state.usage = response.usage
-  if (Array.isArray(response.output)) state.outputItems = response.output.map(item => enrichMessageItemWithStreamedText(item, state))
+  if (Array.isArray(response.output))
+    state.outputItems = response.output.map((item: any) => enrichMessageItemWithStreamedText(item, state))
 }
 
 function collectResponseOutput(response: any, state: State): void {
@@ -326,7 +327,12 @@ function isHostedToolOutputItem(item: any): boolean {
 }
 
 function reasoningTextFromItem(item: any): string {
-  return canonicalReasoningText([item.summary, item.content, item.text, item.delta].flatMap(textPartsFromUnknown))
+  // Must not pass `textPartsFromUnknown` directly: flatMap invokes its callback as
+  // (value, index, array), so the element index would bind to the `allowedTypes`
+  // parameter and `allowedTypes.has(type)` would throw on a number.
+  return canonicalReasoningText(
+    [item.summary, item.content, item.text, item.delta].flatMap(value => textPartsFromUnknown(value))
+  )
 }
 
 function stripDuplicateReasoningFromOutputItems(items: any[], canonicalReasoning: string): any[] {

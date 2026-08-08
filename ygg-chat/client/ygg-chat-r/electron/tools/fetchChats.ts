@@ -230,7 +230,7 @@ const sortByCreatedAtAsc = (a: { created_at: string | null }, b: { created_at: s
   return aTime - bTime
 }
 
-const sortByUpdatedAtDesc = (a: { updated_at: string | null }, b: { updated_at: string | null }): number => {
+const sortByUpdatedAtDesc = (a: Record<string, any>, b: Record<string, any>): number => {
   const aTime = parseTimestamp(a.updated_at)
   const bTime = parseTimestamp(b.updated_at)
   if (!Number.isFinite(aTime) && !Number.isFinite(bTime)) return 0
@@ -558,7 +558,7 @@ export async function execute(
 
       const messageSearchResults = options
         .listMessagesByConversationId(scopedConversationId)
-        .map(msg => {
+        .map((msg): MessageSearchItem => {
           const messageText = safeText(msg?.plain_text_content) || safeText(msg?.content)
           const note = normalizeNote(msg?.note)
           const score = calculateMessageSearchScore(query, messageText, note)
@@ -606,7 +606,7 @@ export async function execute(
     }
 
     const messageSearchResults = options.searchTopLevelMessages
-      ? options.searchTopLevelMessages({ userId, projectId, query, limit }).map(result => ({
+      ? options.searchTopLevelMessages({ userId, projectId, query, limit }).map((result): MessageSearchItem => ({
           conversation_id: safeText(result?.conversation_id),
           project_id: normalizeNullableText(result?.project_id),
           storage_mode: safeText(result?.storage_mode) === 'cloud' ? 'cloud' : 'local',
@@ -654,7 +654,7 @@ export async function execute(
     }
 
     const noteSearchResults = options.searchNotes
-      ? options.searchNotes({ userId, projectId, query, limit }).map(result => ({
+      ? options.searchNotes({ userId, projectId, query, limit }).map((result): NoteSearchItem => ({
           conversation_id: safeText(result?.conversation_id),
           project_id: normalizeNullableText(result?.project_id),
           storage_mode: safeText(result?.storage_mode) === 'cloud' ? 'cloud' : 'local',

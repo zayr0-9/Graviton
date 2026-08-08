@@ -1,4 +1,4 @@
-import type { HeadlessMessageRequest, HeadlessStreamEvent } from '../contracts/headlessApi.js'
+import type { HeadlessMessageRequest, HeadlessStreamEvent } from '../../../../../shared/headlessApi.js'
 import { ConversationRepo } from '../persistence/conversationRepo.js'
 import { MessageRepo } from '../persistence/messageRepo.js'
 import { ProjectRepo } from '../persistence/projectRepo.js'
@@ -542,19 +542,23 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
       })
     const systemPrompt = buildSystemPromptForMode(resolvedOperationMode)
     const agentSystemPrompt = buildSystemPromptForMode('execute')
+    // `trackedStreamId` is a `let` (reassigned at the streamingRunRepo.upsert above), so
+    // TypeScript cannot carry the truthiness narrowing into the async closure below.
+    // Capture the (now stable) value in a const so the narrowing survives.
+    const decisionStreamId = trackedStreamId
     const requestOperationModeUpgrade =
-      this.decisionBroker && trackedStreamId
+      this.decisionBroker && decisionStreamId
         ? async (toolCall: { id: string; name: string; arguments: unknown }) => {
             const toolInput = parseToolArgs(toolCall.arguments)
             emit({
               type: 'operation_mode_upgrade_required',
-              streamId: trackedStreamId,
+              streamId: decisionStreamId,
               toolCallId: toolCall.id,
               toolName: toolCall.name,
               toolInput,
             })
             const decision = await this.decisionBroker!.requestDecision({
-              streamId: trackedStreamId,
+              streamId: decisionStreamId,
               toolCallId: toolCall.id,
               signal,
             })

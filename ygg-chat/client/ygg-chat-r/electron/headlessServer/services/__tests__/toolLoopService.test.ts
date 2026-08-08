@@ -747,6 +747,7 @@ describeIfSqlite('ToolLoopService plan mode runtime block list', () => {
     expect(executorCalled).toBe(false)
     expect(events.some((event: any) => event.type === 'tool_execution' && event.status === 'failed')).toBe(true)
   })
+
 })
 
 // These exercise the loop control flow (signal, robustness) without SQLite by
@@ -789,6 +790,51 @@ const baseRunInput = {
 }
 
 describe('ToolLoopService signal + robustness (in-memory sink)', () => {
+  it('does not silently self-upgrade out of plan mode when no upgrade handler is wired', async () => {
+    // Regression: requiresAgentMode() is true for ANYTHING outside the plan allow
+    // list, but assertToolAllowedForOperationMode() throws only for the blocked list
+    // and `mcp__*`. html_renderer is in neither, so with no requestOperationModeUpgrade
+    // handler (the subagent case, and the main loop without a decisionBroker) the guard
+    // used to fall through: the tool ran AND activeOperationMode became 'execute' for
+    // the REST of the run. Turn 2's edit_file proves the mode did not stick.
+    //
+    // Lives in the in-memory-sink suite on purpose: the plan-mode gate has nothing to
+    // do with SQLite, and describeIfSqlite is skipped wherever better-sqlite3 is
+    // unavailable — which is exactly where a regression would go unnoticed.
+    const providerRouter = new FakeProviderRouter()
+    providerRouter.enqueue({
+      content: '',
+      toolCalls: [{ id: 'call-html', name: 'html_renderer', arguments: { html: '<p>hi</p>' } }],
+    })
+    providerRouter.enqueue({
+      content: '',
+      toolCalls: [{ id: 'call-edit', name: 'edit_file', arguments: { path: 'README.md' } }],
+    })
+    providerRouter.enqueue({ content: 'recovered' })
+
+    const executed: string[] = []
+    const service = new ToolLoopService({
+      sink: new FakeSink(),
+      providerRouter: providerRouter as unknown as ProviderRouter,
+      executeTool: async toolCall => {
+        executed.push(toolCall.name)
+        return 'should-not-run'
+      },
+      maxTurns: 4,
+    })
+
+    const events: any[] = []
+    await service.run(
+      // requestOperationModeUpgrade deliberately omitted.
+      { ...baseRunInput, userContent: 'render then edit', operationMode: 'plan' },
+      event => events.push(event)
+    )
+
+    expect(executed).toEqual([])
+    const failures = events.filter((event: any) => event.type === 'tool_execution' && event.status === 'failed')
+    expect(failures.map((event: any) => event.toolName)).toEqual(['html_renderer', 'edit_file'])
+  })
+
   it('forwards the abort signal to the provider request', async () => {
     const providerRouter = new FakeProviderRouter()
     providerRouter.enqueue({ content: 'done' })

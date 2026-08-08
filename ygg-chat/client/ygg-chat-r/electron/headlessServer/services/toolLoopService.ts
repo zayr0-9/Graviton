@@ -1,4 +1,4 @@
-import type { HeadlessStreamEvent } from '../contracts/headlessApi.js'
+import type { HeadlessStreamEvent } from '../../../../../shared/headlessApi.js'
 import { MessageRepo } from '../persistence/messageRepo.js'
 import { ToolInvocationRepo } from '../persistence/toolInvocationRepo.js'
 import { TreeMessageSink, type MessageSink } from './messageSink.js'
@@ -931,7 +931,23 @@ export class ToolLoopService {
           if (requiresAgentMode(toolCall, activeOperationMode)) {
             const upgraded = await input.requestOperationModeUpgrade?.(toolCall)
             if (!upgraded) {
+              // The user declined, OR no upgrade handler is wired at all (subagents
+              // never wire one, and chatOrchestrator only does when a decisionBroker
+              // and streamId exist). Either way: the tool must NOT run, and the run
+              // must STAY in plan mode.
+              //
+              // assertToolAllowedForOperationMode alone is NOT sufficient here — it
+              // throws only for CHAT_MODE_BLOCKED_TOOL_NAMES and `mcp__*`, whereas
+              // requiresAgentMode is true for anything outside the plan allow list.
+              // A tool in neither set (html_renderer, theme_manager, any custom tool)
+              // used to fall straight through: it executed AND promoted
+              // activeOperationMode to 'execute' for the remainder of the run, with no
+              // user consent and no event emitted. Assert first so blocked/mcp tools
+              // keep their specific message, then fail closed for everything else.
               assertToolAllowedForOperationMode(toolCall, activeOperationMode)
+              throw new Error(
+                `Tool "${toolCall.name}" is not available in Chat Mode. Switch to Agent Mode to run tools that can modify files, system state, or app state.`
+              )
             }
             activeOperationMode = 'execute'
             input.systemPrompt = input.agentSystemPrompt ?? input.systemPrompt

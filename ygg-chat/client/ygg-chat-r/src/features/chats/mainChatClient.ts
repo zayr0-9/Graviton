@@ -192,7 +192,7 @@ async function resubscribeUntilTerminal(
 
     let res: Response
     try {
-      const url = await buildLocalApiUrl(`/api/streams/${encodeURIComponent(streamId)}?fromSeq=${acc.lastSeq}`)
+      const url = await buildLocalApiUrl(`/streams/${encodeURIComponent(streamId)}?fromSeq=${acc.lastSeq}`)
       res = await fetch(url, { signal })
     } catch (error) {
       if ((error as { name?: string }).name === 'AbortError') return
@@ -330,7 +330,7 @@ export async function runServerReattach(
   const handleEvent = makeHandleEvent(acc, ctx, operation, dispatch, onMessagePersisted, onSeq)
 
   try {
-    const url = await buildLocalApiUrl(`/api/streams/${encodeURIComponent(streamId)}?fromSeq=${fromSeq}`)
+    const url = await buildLocalApiUrl(`/streams/${encodeURIComponent(streamId)}?fromSeq=${fromSeq}`)
     const res = await fetch(url, { signal })
     if (res.status === 410) {
       return { messageId: null, userMessage: null, providerError: false, gone: true, terminal: false }
@@ -366,7 +366,7 @@ export async function postStreamAbort(streamId: string): Promise<boolean> {
   const controller = new AbortController()
   const timeout = setTimeout(() => controller.abort(), 5_000)
   try {
-    const url = await buildLocalApiUrl(`/api/streams/${encodeURIComponent(streamId)}/abort`)
+    const url = await buildLocalApiUrl(`/streams/${encodeURIComponent(streamId)}/abort`)
     const res = await fetch(url, { method: 'POST', signal: controller.signal })
     return res.ok
   } catch {

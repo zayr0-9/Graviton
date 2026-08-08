@@ -1,4 +1,4 @@
-import type { HeadlessMessageRequest } from '../contracts/headlessApi.js'
+import type { HeadlessMessageRequest } from '../../../../../shared/headlessApi.js'
 
 export interface ResolvedExecution {
   historyLeafId: string | null

@@ -17,7 +17,7 @@
  * No Express coupling: the route adapts its `res` to the small RunSubscriber sink.
  */
 
-import type { HeadlessStreamEvent } from '../contracts/headlessApi.js'
+import type { HeadlessStreamEvent } from '../../../../../shared/headlessApi.js'
 
 export type RunStatus = 'running' | 'completed' | 'errored' | 'cancelled'
 

@@ -268,7 +268,11 @@ async function readLineSelectionFromFile(
 
     stream.on('data', chunk => {
       if (wholeFileHasher && !stoppedEarly) {
-        wholeFileHasher.update(chunk, 'utf8')
+        // The stream is opened with encoding 'utf8' so chunks are strings at runtime,
+        // but the Node types still model `string | Buffer`. Hash.update accepts both,
+        // and defaults to utf8 for strings, so dropping the explicit encoding is
+        // behaviour-identical and type-safe for either.
+        wholeFileHasher.update(chunk)
       }
 
       const working = carry + chunk

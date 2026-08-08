@@ -6,7 +6,7 @@ This guide explains how to call the Electron headless server so external clients
 > - `electron/headlessServer/routes/*`
 > - `electron/headlessServer/services/*`
 > - `electron/headlessServer/providers/*`
-> - `electron/headlessServer/contracts/headlessApi.ts`
+> - `ygg-chat/shared/headlessApi.ts`
 
 ---
 

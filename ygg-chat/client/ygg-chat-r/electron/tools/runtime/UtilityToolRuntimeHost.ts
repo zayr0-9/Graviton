@@ -203,7 +203,10 @@ export class UtilityToolRuntimeHost {
       this.process = null
     })
 
-    this.process.on('error', (error: Error) => {
+    // Electron types UtilityProcess events as 'spawn' | 'exit' | 'message' only, so
+    // 'error' is not in the overload set. Registering it is harmless and preserves
+    // existing behaviour if Electron ever emits it.
+    ;(this.process as unknown as NodeJS.EventEmitter).on('error', (error: Error) => {
       this.logLifecycle('process_error', { message: error.message, pendingCount: this.pending.size }, 'error')
       this.rejectAllPending(`Utility tool runtime error: ${error.message}`, 'process_error')
       this.rejectReady(

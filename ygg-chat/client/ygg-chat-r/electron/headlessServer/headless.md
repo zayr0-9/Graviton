@@ -84,7 +84,7 @@ persistence/messageRepo.ts, conversationRepo.ts, projectRepo.ts
 
 stream/sseWriter.ts, stream/eventTypes.ts
 
-contracts/headlessApi.ts (request/response + SSE event schema)
+../../../../shared/headlessApi.ts (request/response + SSE event schema; shared with the renderer)
 
 Non-trivial fixes in current localServer.ts to do immediately
 

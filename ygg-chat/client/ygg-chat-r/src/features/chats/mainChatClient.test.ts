@@ -18,7 +18,9 @@ vi.hoisted(() => {
 
 // buildLocalApiUrl -> deterministic origin so we can assert exact URLs.
 vi.mock('../../utils/api', () => ({
-  buildLocalApiUrl: async (p: string) => `http://local${p}`,
+  // Mirrors the real builder: getLocalApiBase() returns `<origin>/api`, so the
+  // mock MUST add /api too or it hides double-prefix bugs at the call sites.
+  buildLocalApiUrl: async (p: string) => `http://local/api${p}`,
   FORCE_LOGOUT_EVENT: 'force-logout',
 }))
 // Force resumable behavior on (decoupled from localStorage/env).

@@ -36,7 +36,8 @@ export interface AssistantMessageDraft {
 
 const runMessageTransaction = <T>(messageRepo: MessageRepo, operation: () => T): T => {
   const transaction = (messageRepo as MessageRepo & { transaction?: <R>(callback: () => R) => R }).transaction
-  return typeof transaction === 'function' ? transaction.call(messageRepo, operation) : operation()
+  // Function.prototype.call does not preserve the generic, so annotate the call site.
+  return typeof transaction === 'function' ? transaction.call<unknown, [() => T], T>(messageRepo, operation) : operation()
 }
 
 export interface MessageSink {

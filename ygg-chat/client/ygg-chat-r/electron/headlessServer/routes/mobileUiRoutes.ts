@@ -46,7 +46,11 @@ export function registerMobileUiRoutes(app: Express): void {
   })
 
   app.get('/mobile/assets/*', (req, res) => {
-    const requestedPath = String(req.params[0] || '').trim()
+    // @types/express is ^5 while express is ^4.21.2. Express 4 exposes an unnamed
+    // wildcard capture as req.params[0]; the v5 types model it as { "": string[] }.
+    // Read through a v4-shaped view until the types match the runtime version.
+    const wildcardParams = req.params as unknown as Record<string, string | undefined>
+    const requestedPath = String(wildcardParams[0] || '').trim()
     if (!requestedPath) {
       res.status(404).json({ success: false, error: 'Asset not found' })
       return

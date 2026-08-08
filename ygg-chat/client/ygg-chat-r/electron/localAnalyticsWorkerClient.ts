@@ -70,7 +70,7 @@ class LocalAnalyticsWorkerClient {
     if (this.worker) return this.worker
 
     const workerUrl = new URL('./localAnalyticsWorker.mjs', import.meta.url)
-    const worker = new Worker(fileURLToPath(workerUrl), { type: 'module' })
+    const worker = new Worker(fileURLToPath(workerUrl))
     worker.on('message', (message: WorkerResponse) => this.handleMessage(message))
     worker.on('error', error => this.restartWorker(error instanceof Error ? error : new Error(String(error))))
     worker.on('exit', code => {

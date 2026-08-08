@@ -169,7 +169,7 @@ function reconcileManifestContext(manifest: StreamUndoManifest, context: StreamU
   return changed
 }
 
-async function getOrCreateManifest(context: Required<Pick<StreamUndoRecordContext, 'streamId'>> & StreamUndoRecordContext): Promise<StreamUndoManifest> {
+async function getOrCreateManifest(context: StreamUndoRecordContext & { streamId: string }): Promise<StreamUndoManifest> {
   const existing = await readManifest(context.streamId)
   if (existing) return existing
   const now = new Date().toISOString()

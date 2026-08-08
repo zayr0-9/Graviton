@@ -191,7 +191,15 @@ const executeHttpRequest = async (params: Record<string, any>): Promise<any> => 
       success: true,
       status: response.status,
       ok: response.ok,
-      headers: Object.fromEntries(response.headers.entries()),
+      // forEach rather than entries(): this project compiles with lib ES2022 and no
+      // DOM, where the ambient Headers type does not declare an entries() iterator.
+      headers: (() => {
+        const headers: Record<string, string> = {}
+        response.headers.forEach((value, key) => {
+          headers[key] = value
+        })
+        return headers
+      })(),
       data,
     }
   } finally {

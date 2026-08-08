@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import type { HeadlessSubagentStreamRequest, HeadlessSubagentStreamEvent } from '../../contracts/headlessApi.js'
+import type { HeadlessSubagentStreamRequest, HeadlessSubagentStreamEvent } from '../../../../../../shared/headlessApi.js'
 import type { ProviderRouter } from '../providerRouter.js'
 import type { SubagentRunRepo } from '../../persistence/subagentRunRepo.js'
 import type { StreamingRunRepo } from '../../persistence/streamingRunRepo.js'
@@ -348,7 +348,7 @@ describe('SubagentRunService', () => {
     ])
   })
 
-  it('filters mcp tools out of the tool set in plan mode', async () => {
+  it('keeps mcp tools model-visible in plan mode (execution is gated in the tool loop)', async () => {
     const providerRouter = new FakeProviderRouter()
     providerRouter.enqueue({ content: 'planned' })
     const runRepo = new FakeRunRepo()
@@ -367,9 +367,14 @@ describe('SubagentRunService', () => {
     const events: HeadlessSubagentStreamEvent[] = []
     await service.run(baseRequest({ operationMode: 'plan' }), event => events.push(event), new AbortController().signal)
 
+    // filterToolsForOperationMode is deliberately identity-valued: Agent-only schemas
+    // stay visible so the model can ASK for an Agent-mode upgrade. For a subagent no
+    // upgrade prompt exists (requestOperationModeUpgrade is unset), so ToolLoopService
+    // falls through to assertToolAllowedForOperationMode, which throws on `mcp__*`.
+    // See the plan-mode execution-gate test in operationModeSystemPrompt.test.ts.
     const started = events.find(e => e.type === 'started') as any
-    expect(started.resolvedToolNames).toEqual(['read_file'])
-    expect(providerRouter.calls[0].input.tools.map((t: any) => t.name)).toEqual(['read_file'])
+    expect(started.resolvedToolNames).toEqual(['read_file', 'mcp__server__do'])
+    expect(providerRouter.calls[0].input.tools.map((t: any) => t.name)).toEqual(['read_file', 'mcp__server__do'])
   })
 
   it('marks the run errored when the provider stays empty', async () => {
