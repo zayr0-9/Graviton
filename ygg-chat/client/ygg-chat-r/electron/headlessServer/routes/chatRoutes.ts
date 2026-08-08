@@ -190,6 +190,18 @@ async function runSseOrchestrator(
       )
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
+      if (operation === 'branch' || operation === 'edit-branch') {
+        console.error('[LineageForkDebug][Main] request-failed', {
+          error: message,
+          operation,
+          conversationId: req.params.id ?? null,
+          streamId: body.streamId ?? body.stream_id ?? null,
+          operationId: body.operationId ?? body.operation_id ?? null,
+          requestedLineageId: body.lineageId ?? body.lineage_id ?? null,
+          sourceMessageId: req.params.messageId ?? body.messageId ?? body.message_id ?? null,
+          parentId: body.parentId ?? body.parent_id ?? null,
+        })
+      }
       writeSseEvent(res, { type: 'error', error: message, lineageId: (error as any)?.lineageId ?? null })
     } finally {
       finished = true
@@ -223,6 +235,18 @@ async function runSseOrchestrator(
     await orchestrator.runMessage(request, event => session.publish(event), session.signal)
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error)
+    if (operation === 'branch' || operation === 'edit-branch') {
+      console.error('[LineageForkDebug][Main] request-failed', {
+        error: message,
+        operation,
+        conversationId: req.params.id ?? null,
+        streamId: body.streamId ?? body.stream_id ?? null,
+        operationId: body.operationId ?? body.operation_id ?? null,
+        requestedLineageId: body.lineageId ?? body.lineage_id ?? null,
+        sourceMessageId: req.params.messageId ?? body.messageId ?? body.message_id ?? null,
+        parentId: body.parentId ?? body.parent_id ?? null,
+      })
+    }
     session.publish({ type: 'error', error: message, lineageId: (error as any)?.lineageId ?? null } as HeadlessStreamEvent)
   } finally {
     stopHeartbeat()

@@ -23,6 +23,7 @@ Use this when changing:
 - `client/ygg-chat-r/src/containers/Chat.tsx`: main container and UI orchestration.
 - `client/ygg-chat-r/src/components/ChatMessage/ChatMessage.tsx`: individual message rendering/actions.
 - `client/ygg-chat-r/src/components/Heimdall/Heimdall.tsx`: conversation tree panel rendered by Chat.
+- `client/ygg-chat-r/src/components/ParallelChatPane/ParallelChatPane.tsx`: session-only secondary branch transcript.
 - `client/ygg-chat-r/src/features/chats/chatActions.ts`: send/branch/edit/delete/stream thunks.
 - `client/ygg-chat-r/src/features/chats/chatSlice.ts`: chat Redux state and reducers.
 - `client/ygg-chat-r/src/features/chats/chatSelectors.ts`: selected/display messages, stream selectors, Heimdall selectors.
@@ -207,6 +208,15 @@ Chat passes Heimdall:
 - `storageMode={conversationStorageMode}`.
 
 Mobile layout may render Heimdall differently/conditionally, but most desktop tree work should be validated on non-mobile first.
+
+## Parallel Branch Pane (Desktop MVP)
+
+`Chat.tsx` remains the sole route/snapshot owner. It can render one optional `ParallelChatPane` next to the primary transcript and the shared Heimdall tree. The secondary pane is session-only: it resets on a conversation route change or reload.
+
+- Heimdall's single-message **Open in Parallel** action calls `onOpenParallel(conversationId, messageId, path)` without mutating the primary Redux `currentPath`.
+- The pane renders from the shared conversation snapshot with `selectDisplayMessagesFor(messages, path)` and resolves only its branch stream with `selectCurrentViewStreamFor(streaming, { conversationId, lineageId, path })`.
+- Its composer and pending stream are local to the pane; its send passes explicit `branchPath` and `lineageId` to `sendMessage`, so thunk history cannot be changed by a later primary-path selection.
+- The MVP intentionally leaves mobile single-pane and retains the existing primary transcript's full composer/action surface. Avoid mounting a second full `Chat` container because it would duplicate route, snapshot, global listener, and singleton-composition behavior.
 
 ## Local CWD and IDE Context
 

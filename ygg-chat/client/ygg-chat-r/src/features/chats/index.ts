@@ -75,6 +75,8 @@ export {
   selectActiveStreamIds,
   selectAllActiveStreams,
   selectCurrentViewStream,
+  selectCurrentViewStreamFor,
+  selectDisplayMessagesFor,
   selectIsAnyStreaming,
   selectPrimaryStreamId,
   selectPrimaryStreamState,

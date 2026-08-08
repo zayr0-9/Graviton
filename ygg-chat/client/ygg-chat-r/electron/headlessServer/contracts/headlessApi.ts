@@ -240,6 +240,7 @@ export type HeadlessStreamEvent =
   // Relayed from Railway (cloud/free-tier inference) by the gateway proxy (Phase 4).
   | { type: 'free_generations_update'; remaining: number; isFreeTier?: boolean }
   | { type: 'generation_limit_reached'; message?: string }
+  | { type: 'reauth_required'; message?: string }
   | { type: 'complete'; message: any; providerError?: boolean; lineageId?: string | null }
   | {
       type: 'error'

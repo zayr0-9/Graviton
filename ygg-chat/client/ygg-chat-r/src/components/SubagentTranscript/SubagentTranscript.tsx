@@ -10,7 +10,11 @@ import type { SubagentRunRow } from '../../../../../shared/types'
 import { useSubagentByToolCall } from '../../hooks/useQueries'
 import { buildLocalApiUrl, environment } from '../../utils/api'
 import { Button } from '../Button/button'
+import { getThemeModeColor, useCustomChatTheme, useHtmlDarkMode } from '../ThemeManager/themeConfig'
 import {
+  REASONING_CHEVRON_BASE_CLASS,
+  REASONING_TEXT_MARKDOWN_CLASS,
+  TOOL_CHEVRON_BASE_CLASS,
   TOOL_NAME_ERROR_CLASS,
   TOOL_NAME_RUNNING_CLASS,
   TOOL_NAME_SUCCESS_CLASS,
@@ -137,6 +141,50 @@ const StatusBadge: React.FC<{ status: string | null | undefined }> = ({ status }
 
 // ── Block + run renderers ─────────────────────────────────────────────────────
 
+/**
+ * Collapsed-by-default disclosure for a transcript block: a clickable header
+ * row (label + chevron) and a smooth expand/collapse body using the same
+ * `tool-expand-container`/`tool-expand-content` transition classes as the main
+ * chat's tool/process cards. Defaults to the tool-chevron styling; reasoning
+ * blocks pass the reasoning chevron class.
+ */
+const CollapsibleBlock: React.FC<{
+  label: string
+  labelClass?: string
+  lineLabelClass?: string
+  chevronBaseClass?: string
+  content: React.ReactNode
+}> = ({ label, labelClass, lineLabelClass, chevronBaseClass = TOOL_CHEVRON_BASE_CLASS, content }) => {
+  const [isExpanded, setIsExpanded] = useState(false)
+  return (
+    <div className='min-w-0 max-w-full space-y-1'>
+      <button
+        type='button'
+        onClick={() => setIsExpanded(v => !v)}
+        aria-expanded={isExpanded}
+        className='flex min-w-0 max-w-full flex-wrap items-center gap-1.5 group/tool hover:opacity-80 transition-opacity cursor-pointer outline-none'
+      >
+        {lineLabelClass ? (
+          <span className={lineLabelClass}>{label}</span>
+        ) : (
+          <span className={labelClass ?? ''}>{label}</span>
+        )}
+        <svg
+          className={`${chevronBaseClass} ${isExpanded ? 'open' : ''}`}
+          fill='none'
+          viewBox='0 0 24 24'
+          stroke='currentColor'
+        >
+          <path strokeLinecap='round' strokeLinejoin='round' strokeWidth={2} d='M9 5l7 7-7 7' />
+        </svg>
+      </button>
+      <div className={`tool-expand-container ${isExpanded ? 'open' : ''}`}>
+        <div className='tool-expand-content'>{content}</div>
+      </div>
+    </div>
+  )
+}
+
 const TranscriptBlock: React.FC<{ block: any }> = ({ block }) => {
   if (block.type === 'text') {
     const textContent = block.content ?? block.text
@@ -151,27 +199,20 @@ const TranscriptBlock: React.FC<{ block: any }> = ({ block }) => {
   }
 
   if (block.type === 'tool_use') {
+    const input = block.input
+    const inputText = input == null ? null : typeof input === 'string' ? input : JSON.stringify(input, null, 2)
     return (
-      <details className='group border-l-2 border-blue-400 dark:border-blue-600 pl-3 py-2'>
-        <summary className='flex cursor-pointer list-none items-center gap-2 mb-1 select-none [&::-webkit-details-marker]:hidden'>
-          <svg
-            className='h-3 w-3 text-blue-600 dark:text-blue-400 transition-transform group-open:rotate-90'
-            fill='none'
-            viewBox='0 0 24 24'
-            stroke='currentColor'
-          >
-            <path strokeLinecap='round' strokeLinejoin='round' strokeWidth={2} d='M9 5l7 7-7 7' />
-          </svg>
-          <span className='text-[10px] font-semibold text-blue-600 dark:text-blue-400 uppercase tracking-wider'>
-            Tool: {block.name}
-          </span>
-        </summary>
-        {block.input && (
-          <pre className='mt-2 text-[11px] text-stone-600 dark:text-stone-400 bg-stone-100 dark:bg-neutral-800 p-2 rounded overflow-x-auto max-h-40 thin-scrollbar'>
-            {typeof block.input === 'string' ? block.input : JSON.stringify(block.input, null, 2)}
-          </pre>
-        )}
-      </details>
+      <CollapsibleBlock
+        label={block.name || 'tool'}
+        labelClass={TOOL_NAME_SUCCESS_CLASS}
+        content={
+          inputText != null ? (
+            <pre className='whitespace-pre-wrap break-words text-[0.8125em] leading-relaxed text-neutral-500 dark:text-neutral-400'>
+              {inputText}
+            </pre>
+          ) : null
+        }
+      />
     )
   }
 
@@ -179,51 +220,30 @@ const TranscriptBlock: React.FC<{ block: any }> = ({ block }) => {
     const isError = block.is_error
     const content = typeof block.content === 'string' ? block.content : JSON.stringify(block.content, null, 2)
     return (
-      <details
-        className={`group border-l-2 ${isError ? 'border-red-400 dark:border-red-600' : 'border-emerald-400 dark:border-emerald-600'} pl-3 py-2`}
-      >
-        <summary className='flex cursor-pointer list-none items-center gap-2 mb-1 select-none [&::-webkit-details-marker]:hidden'>
-          <svg
-            className={`h-3 w-3 transition-transform group-open:rotate-90 ${isError ? 'text-red-600 dark:text-red-400' : 'text-emerald-600 dark:text-emerald-400'}`}
-            fill='none'
-            viewBox='0 0 24 24'
-            stroke='currentColor'
-          >
-            <path strokeLinecap='round' strokeLinejoin='round' strokeWidth={2} d='M9 5l7 7-7 7' />
-          </svg>
-          <span
-            className={`text-[10px] font-semibold uppercase tracking-wider ${isError ? 'text-red-600 dark:text-red-400' : 'text-emerald-600 dark:text-emerald-400'}`}
-          >
-            {isError ? 'Error' : 'Result'}
-          </span>
-        </summary>
-        <pre className='mt-2 text-[11px] text-stone-600 dark:text-stone-400 bg-stone-100 dark:bg-neutral-800 p-2 rounded overflow-x-auto max-h-60 whitespace-pre-wrap break-words thin-scrollbar'>
-          {content}
-        </pre>
-      </details>
+      <CollapsibleBlock
+        label={isError ? 'Error' : 'Result'}
+        labelClass={isError ? TOOL_NAME_ERROR_CLASS : TOOL_NAME_SUCCESS_CLASS}
+        content={
+          <pre className='whitespace-pre-wrap break-words text-[0.8125em] leading-relaxed text-neutral-500 dark:text-neutral-400'>
+            {content}
+          </pre>
+        }
+      />
     )
   }
 
   if (block.type === 'thinking' && block.content) {
     return (
-      <details className='group border-l-2 border-purple-400 dark:border-purple-600 pl-3 py-2 bg-purple-50/50 dark:bg-purple-900/10 rounded-r'>
-        <summary className='flex cursor-pointer list-none items-center gap-2 mb-1 select-none [&::-webkit-details-marker]:hidden'>
-          <svg
-            className='h-3 w-3 text-purple-600 dark:text-purple-400 transition-transform group-open:rotate-90'
-            fill='none'
-            viewBox='0 0 24 24'
-            stroke='currentColor'
-          >
-            <path strokeLinecap='round' strokeLinejoin='round' strokeWidth={2} d='M9 5l7 7-7 7' />
-          </svg>
-          <span className='text-[10px] font-semibold text-purple-600 dark:text-purple-400 uppercase tracking-wider'>
-            Thinking
-          </span>
-        </summary>
-        <div className='mt-2 prose prose-sm dark:prose-invert max-w-none text-stone-600 dark:text-stone-400 prose-p:my-1'>
-          <ReactMarkdown remarkPlugins={[remarkGfm]}>{block.content}</ReactMarkdown>
-        </div>
-      </details>
+      <CollapsibleBlock
+        label='Thinking'
+        chevronBaseClass={REASONING_CHEVRON_BASE_CLASS}
+        lineLabelClass='text-[0.8125em] leading-none text-neutral-800 dark:text-neutral-500'
+        content={
+          <div className={REASONING_TEXT_MARKDOWN_CLASS}>
+            <ReactMarkdown remarkPlugins={[remarkGfm]}>{block.content}</ReactMarkdown>
+          </div>
+        }
+      />
     )
   }
 
@@ -433,9 +453,28 @@ export const SubagentTranscriptModal: React.FC<SubagentTranscriptModalProps> = (
   // Subscribe to the child stream only while a run is actually running (the hook
   // no-ops otherwise). Re-targets automatically when streamId changes on resume.
   const live = useSubagentLiveStream(toolCallId, streamId, anyRunning && !!toolCallId)
+  const { theme: customTheme, enabled: customThemeEnabled } = useCustomChatTheme()
+  const isDarkMode = useHtmlDarkMode()
   if (!toolCallId) return null
 
   const showLiveTail = anyRunning && !live.done && Boolean(live.text || live.reasoning)
+  const pickThemeColor = (color: { light: string; dark: string }, fallback: string) =>
+    customThemeEnabled ? getThemeModeColor(color, isDarkMode) : fallback
+  const themeColors = {
+    backdrop: pickThemeColor(customTheme.colors.toolJobsModalBackdrop, 'rgba(0, 0, 0, 0.4)'),
+    surface: pickThemeColor(customTheme.colors.toolJobsModalBg, isDarkMode ? '#18181b' : '#fafafa'),
+    border: pickThemeColor(customTheme.colors.toolJobsModalBorder, isDarkMode ? '#404040' : '#e7e5e4'),
+    panel: pickThemeColor(customTheme.colors.toolJobsPanelBg, isDarkMode ? 'rgba(23, 23, 23, 0.6)' : 'rgba(250, 250, 250, 0.8)'),
+    primaryText: pickThemeColor(customTheme.colors.toolJobsPrimaryText, isDarkMode ? '#f5f5f5' : '#292524'),
+    mutedText: pickThemeColor(customTheme.colors.toolJobsMutedText, isDarkMode ? '#a3a3a3' : '#78716c'),
+    errorBg: pickThemeColor(customTheme.colors.toolJobsErrorBg, isDarkMode ? 'rgba(127, 29, 29, 0.2)' : 'rgba(255, 241, 242, 0.85)'),
+    errorText: pickThemeColor(customTheme.colors.toolJobsErrorText, isDarkMode ? '#fda4af' : '#dc2626'),
+    liveBadgeBg: pickThemeColor(customTheme.colors.toolJobsLiveBadgeBg, isDarkMode ? 'rgba(6, 78, 59, 0.3)' : 'rgba(209, 250, 229, 1)'),
+    liveBadgeText: pickThemeColor(customTheme.colors.toolJobsLiveBadgeText, isDarkMode ? '#a7f3d0' : '#047857'),
+    buttonBg: pickThemeColor(customTheme.colors.settingsCustomThemesButtonBg, isDarkMode ? 'rgba(38, 38, 38, 0.8)' : '#ffffff'),
+    buttonBorder: pickThemeColor(customTheme.colors.settingsCustomThemesButtonBorder, isDarkMode ? '#525252' : '#d4d4d4'),
+    buttonText: pickThemeColor(customTheme.colors.settingsCustomThemesButtonText, isDarkMode ? '#e5e5e5' : '#404040'),
+  }
 
   return createPortal(
     <div
@@ -443,17 +482,38 @@ export const SubagentTranscriptModal: React.FC<SubagentTranscriptModalProps> = (
       aria-modal='true'
       aria-label='Subagent transcript'
       className='fixed inset-0 z-[1200] flex items-center justify-center bg-black/40 p-6 backdrop-blur-[2px]'
+      style={customThemeEnabled ? { backgroundColor: themeColors.backdrop } : undefined}
       onClick={onClose}
     >
       <div
-        className='bg-neutral-50 dark:bg-zinc-900 border border-stone-200 dark:border-neutral-700 rounded-2xl shadow-2xl flex flex-col max-h-[85vh] w-[90%] max-w-2xl'
+        className='bg-neutral-50 dark:bg-zinc-900/70 backdrop-blur-xl border border-stone-200 dark:border-neutral-700 rounded-2xl flex flex-col max-h-[85vh] w-[90%] max-w-2xl'
+        style={
+          customThemeEnabled
+            ? {
+                backgroundColor: isDarkMode
+                  ? `color-mix(in srgb, ${themeColors.surface} 70%, transparent)`
+                  : themeColors.surface,
+                borderColor: themeColors.border,
+                backdropFilter: isDarkMode ? 'blur(24px)' : undefined,
+              }
+            : undefined
+        }
         onClick={e => e.stopPropagation()}
       >
-        <div className='flex justify-between items-center px-5 py-4 border-b border-stone-200 dark:border-neutral-800 shrink-0'>
-          <h3 className='flex items-center gap-2 text-base font-semibold text-stone-800 dark:text-stone-100'>
+        <div
+          className='flex justify-between items-center px-5 py-4 border-b border-stone-200 dark:border-neutral-800 shrink-0'
+          style={customThemeEnabled ? { borderColor: themeColors.border } : undefined}
+        >
+          <h3
+            className='flex items-center gap-2 text-base font-semibold text-stone-800 dark:text-stone-100'
+            style={customThemeEnabled ? { color: themeColors.primaryText } : undefined}
+          >
             Subagent Transcript{runs.length > 1 ? ` (${runs.length})` : ''}
             {anyRunning && (
-              <span className='inline-flex items-center gap-1 text-[10px] font-semibold uppercase tracking-wider text-blue-600 dark:text-blue-400'>
+              <span
+                className='inline-flex items-center gap-1 text-[10px] font-semibold uppercase tracking-wider text-blue-600 dark:text-blue-400'
+                style={customThemeEnabled ? { backgroundColor: themeColors.liveBadgeBg, color: themeColors.liveBadgeText } : undefined}
+              >
                 <span className='h-1.5 w-1.5 rounded-full bg-current animate-pulse' aria-hidden='true' />
                 Live
               </span>
@@ -465,22 +525,35 @@ export const SubagentTranscriptModal: React.FC<SubagentTranscriptModalProps> = (
             onClick={onClose}
             aria-label='Close subagent transcript'
             title='Close'
+            style={customThemeEnabled ? { backgroundColor: themeColors.buttonBg, borderColor: themeColors.buttonBorder, color: themeColors.buttonText } : undefined}
           >
             <i className='bx bx-x text-lg' aria-hidden='true'></i>
           </Button>
         </div>
 
-        <div className='overflow-y-auto flex-1 thin-scrollbar'>
+        <div className='overflow-y-auto flex-1 thin-scrollbar'
+          style={customThemeEnabled ? { color: themeColors.primaryText } : undefined}>
           {isLoading && (
-            <div className='px-5 py-4 text-xs text-stone-500 dark:text-stone-400'>Loading transcript…</div>
+            <div
+              className='px-5 py-4 text-xs text-stone-500 dark:text-stone-400'
+              style={customThemeEnabled ? { color: themeColors.mutedText } : undefined}
+            >
+              Loading transcript…
+            </div>
           )}
           {!isLoading && isError && (
-            <div className='px-5 py-4 text-xs text-red-600 dark:text-red-400'>
+            <div
+              className='px-5 py-4 text-xs text-red-600 dark:text-red-400'
+              style={customThemeEnabled ? { backgroundColor: themeColors.errorBg, color: themeColors.errorText } : undefined}
+            >
               Failed to load transcript{error instanceof Error ? `: ${error.message}` : ''}
             </div>
           )}
           {!isLoading && !isError && runs.length === 0 && (
-            <div className='px-5 py-4 text-xs text-stone-500 dark:text-stone-400'>
+            <div
+              className='px-5 py-4 text-xs text-stone-500 dark:text-stone-400'
+              style={customThemeEnabled ? { color: themeColors.mutedText } : undefined}
+            >
               No subagent transcript found for this tool call.
             </div>
           )}
@@ -489,8 +562,14 @@ export const SubagentTranscriptModal: React.FC<SubagentTranscriptModalProps> = (
           {/* Live tail: the in-progress turn's streamed output, folded into the
               persisted transcript as each turn lands. */}
           {showLiveTail && (
-            <div className='px-5 py-4 border-t border-stone-100 dark:border-neutral-800'>
-              <div className='flex items-center gap-2 mb-2 text-[10px] font-semibold uppercase tracking-wider text-blue-600 dark:text-blue-400'>
+            <div
+              className='px-5 py-4 border-t border-stone-100 dark:border-neutral-800'
+              style={customThemeEnabled ? { backgroundColor: themeColors.panel, borderColor: themeColors.border } : undefined}
+            >
+              <div
+                className='flex items-center gap-2 mb-2 text-[10px] font-semibold uppercase tracking-wider text-blue-600 dark:text-blue-400'
+                style={customThemeEnabled ? { backgroundColor: themeColors.liveBadgeBg, color: themeColors.liveBadgeText } : undefined}
+              >
                 <span className='h-1.5 w-1.5 rounded-full bg-current animate-pulse' aria-hidden='true' />
                 Streaming
               </div>

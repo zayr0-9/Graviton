@@ -22,6 +22,8 @@ import {
   DeleteConfirmModal,
   FreeGenerationsModal,
   Heimdall,
+  ParallelChatPane,
+  type ParallelChatPaneTarget,
   InputTextArea,
   ModelSelectControl,
   PlanClarificationPanel,
@@ -198,6 +200,7 @@ import { getAssetPath } from '../utils/assetPath'
 import { parseId } from '../utils/helpers'
 import { extractTextFromPdf } from '../utils/pdfUtils'
 import { addFileMentionLookupKeys } from '../../shared/fileMatchRanking'
+import { extractLatestTodoList } from '../features/chats/todoListTracking'
 
 type ParsedMessageData = {
   toolCalls?: ToolCall[]
@@ -3449,6 +3452,9 @@ function Chat() {
     }
   })
   const [isResizing, setIsResizing] = useState(false)
+  // Session-only secondary transcript. It intentionally resets with this route container.
+  const [parallelPane, setParallelPane] = useState<ParallelChatPaneTarget | null>(null)
+  const [activeChatPane, setActiveChatPane] = useState<'primary' | 'parallel'>('primary')
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [think, setThink] = useState<boolean>(chatReasoningSettings.defaultThinkingEnabled)
   const [heimdallVisible, setHeimdallVisible] = useState<boolean>(() => {
@@ -5485,6 +5491,23 @@ function Chat() {
     ]
   )
 
+  const handleOpenParallel = useCallback(
+    (conversationId: ConversationId, messageId: MessageId, path: string[]) => {
+      if (currentConversationId == null || String(conversationId) !== String(currentConversationId)) return
+      const parsedPath = path.map(parseId).filter(id => typeof id === 'string' || typeof id === 'number') as MessageId[]
+      if (parsedPath.length === 0) return
+      setParallelPane({ conversationId, messageId, path: parsedPath })
+      setActiveChatPane('parallel')
+    },
+    [currentConversationId]
+  )
+
+  // Close/reset the session-only second pane when navigating to another conversation.
+  useEffect(() => {
+    setParallelPane(null)
+    setActiveChatPane('primary')
+  }, [conversationIdFromUrl])
+
   // const handleOnResend = (id: string) => {
   //   if (currentConversationId) {
   //     dispatch(
@@ -5979,93 +6002,8 @@ function Chat() {
   //   }
   // }, [providers.currentProvider, refreshModelsMutation])
 
-  // Helper: Parse todo items from markdown content
-  const TODO_ITEM_REGEX = /^\s*[-*]\s*\[(x|X| )\]\s*(.*)$/
-  const parseTodoItems = (markdownContent: string): { text: string; done: boolean }[] => {
-    const items: { text: string; done: boolean }[] = []
-    const lines = markdownContent.split('\n')
-    for (const line of lines) {
-      const match = TODO_ITEM_REGEX.exec(line)
-      if (match) {
-        items.push({
-          done: match[1].toLowerCase() === 'x',
-          text: match[2].trim(),
-        })
-      }
-    }
-    return items
-  }
-
-  // Extract the most recent todo_list tool result from displayMessages
-  // This finds the latest tool_use block for 'todo_list' and its corresponding result
-  const latestTodoList = useMemo(() => {
-    // Iterate from most recent to oldest
-    for (let i = displayMessages.length - 1; i >= 0; i--) {
-      const msg = displayMessages[i]
-      if ((msg.role === 'assistant' || msg.role === 'ex_agent') && msg.content_blocks) {
-        let blocks: ContentBlock[] = []
-        try {
-          if (typeof msg.content_blocks === 'object') {
-            blocks = Array.isArray(msg.content_blocks) ? msg.content_blocks : [msg.content_blocks]
-          } else if (typeof msg.content_blocks === 'string') {
-            const parsed = JSON.parse(msg.content_blocks)
-            blocks = Array.isArray(parsed) ? parsed : [parsed]
-          }
-        } catch {
-          continue
-        }
-
-        // Look for tool_use blocks for todo_list and find corresponding tool_result
-        for (const block of blocks) {
-          if (block.type === 'tool_use' && (block as any).name === 'todo_list') {
-            const toolUseBlock = block as any
-            // Find the corresponding tool_result
-            const resultBlock = blocks.find(
-              b => b.type === 'tool_result' && (b as any).tool_use_id === toolUseBlock.id
-            ) as any
-            if (resultBlock && !resultBlock.is_error) {
-              const action = toolUseBlock.input?.action
-              if (action === 'create' || action === 'read' || action === 'edit') {
-                // Parse the result content to extract the markdown content
-                let resultData: any = resultBlock.content
-
-                // If content is a string, try to parse it as JSON
-                if (typeof resultData === 'string') {
-                  try {
-                    resultData = JSON.parse(resultData)
-                  } catch {
-                    // If parsing fails, use the string as-is (might be raw markdown)
-                  }
-                }
-
-                // Extract the markdown content from the result object
-                let markdownContent = ''
-                if (typeof resultData === 'object' && resultData !== null && 'content' in resultData) {
-                  markdownContent = resultData.content || ''
-                } else if (typeof resultData === 'string') {
-                  markdownContent = resultData
-                }
-
-                // Parse the markdown into todo items
-                const items = parseTodoItems(markdownContent)
-
-                // Only return if there are actual todo items
-                if (items.length > 0) {
-                  return {
-                    name: resultData?.name || toolUseBlock.input?.name || 'Todo List',
-                    action,
-                    items,
-                    messageId: msg.id,
-                  }
-                }
-              }
-            }
-          }
-        }
-      }
-    }
-    return null
-  }, [displayMessages])
+  // Extract the most recent direct or multi_call-nested todo_list result from the current branch.
+  const latestTodoList = useMemo(() => extractLatestTodoList(displayMessages), [displayMessages])
 
   const branchFileMutationData = useMemo(() => extractBranchFileMutations(displayMessages), [displayMessages])
   const hasLatestTodoList = Boolean(latestTodoList?.items?.length)
@@ -6271,9 +6209,9 @@ function Chat() {
       className='flex h-full overflow-hidden bg-transparent dark:bg-transparent'
     >
       <div
-        className={`relative flex flex-col ${heimdallVisible && !isMobile ? 'flex-none' : 'flex-1'} rounded-xl mb-2 min-w-0 bg-transparent sm:min-w-[240px] md:min-w-[280px]  overflow-hidden`}
+        className={`relative flex flex-col ${heimdallVisible && !isMobile ? 'flex-none' : 'flex-1'} rounded-xl mb-2 min-w-0 bg-transparent sm:min-w-[240px] md:min-w-[280px] overflow-hidden`}
         style={{
-          width: isMobile ? '100%' : heimdallVisible ? `${leftWidthPct}%` : 'auto',
+          width: isMobile ? '100%' : heimdallVisible ? `${parallelPane ? Math.max(25, leftWidthPct - 20) : leftWidthPct}%` : 'auto',
           backgroundColor: chatSurfaceBackgroundColor,
         }}
       >
@@ -7761,6 +7699,18 @@ function Chat() {
         </div>
 
       {/* SEPARATOR - Hidden on mobile */}
+      {parallelPane && !isMobile && (
+        <ParallelChatPane
+          target={parallelPane}
+          active={activeChatPane === 'parallel'}
+          onActivate={() => setActiveChatPane('parallel')}
+          onClose={() => {
+            setParallelPane(null)
+            setActiveChatPane('primary')
+          }}
+        />
+      )}
+
       {heimdallVisible && !isMobile && (
         <div
           className='w-2 z-10 dark:bg-transparent bg-transparent hover:dark:bg-neutral-800 hover:bg-neutral-200 cursor-col-resize select-none'
@@ -7796,6 +7746,7 @@ function Chat() {
             compactMode={compactMode}
             conversationId={currentConversationId}
             onNodeSelect={handleNodeSelect}
+            onOpenParallel={handleOpenParallel}
             visibleMessageId={visibleMessageId}
             storageMode={conversationStorageMode}
           />
@@ -7849,6 +7800,7 @@ function Chat() {
                     compactMode={compactMode}
                     conversationId={currentConversationId}
                     onNodeSelect={handleNodeSelect}
+                    onOpenParallel={handleOpenParallel}
                     visibleMessageId={visibleMessageId}
                     storageMode={conversationStorageMode}
                   />

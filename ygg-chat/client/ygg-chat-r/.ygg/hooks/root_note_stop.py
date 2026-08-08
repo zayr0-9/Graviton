@@ -5,6 +5,17 @@ from urllib import request, error
 MODEL = 'gpt-5.4-mini'
 PROVIDER = 'openai'
 
+# Semantic note-pill color scheme. Each color maps to one category; the
+# note model assigns it strictly from the nature of the summary. This is a
+# Cartesian 5-color palette, intentionally small — enough to fill categories.
+NOTE_COLOR_PRESETS = [
+    '#22c55e',  # green  - question / clarification / help
+    '#ef4444',  # red    - bug / error / fix
+    '#8b5cf6',  # purple - new feature / enhancement
+    '#3b82f6',  # blue   - refactor / improvement / performance
+    '#f59e0b',  # amber  - general / documentation / misc
+]
+
 SYSTEM_PROMPT = '''You maintain a concise running branch note for a conversation path.
 
 Update the note only if the latest turn materially changes it.
@@ -17,14 +28,36 @@ Required output format for the note text:
 - bullet 2
 - bullet 3
 
+Set note_color ONLY when creating a note for the first time (when the
+"Existing branch note" input is <empty>). Never change a color while updating
+or appending to an existing note: return note_color as an empty string in that
+case, because its originally assigned color must remain unchanged.
+
+For a first-time note only, classify the note's dominant purpose using this
+exact scheme; each category maps to one color:
+
+- Questions / clarifications / help requested  -> #22c55e (green)
+- Bug reports / errors / fixes                -> #ef4444 (red)
+- New features / enhancements / additions     -> #8b5cf6 (purple)
+- Refactors / improvements / performance      -> #3b82f6 (blue)
+- General / docs / other                      -> #f59e0b (amber)
+
+Rules:
+- For a first-time note, pick exactly ONE color that best fits its dominant purpose.
+- When a new note mixes categories, choose the color of the most significant purpose.
+- Do not invent colors. Only the five hex values above are allowed.
+- For an existing note, note_color MUST be an empty string.
+
 Return JSON only:
 {
   "updated": true | false,
   "note": "full note text when updated, otherwise empty string",
+  "note_color": "a scheme hex only for a first-time note; otherwise empty string",
   "reason": "short reason"
 }
 
 Set updated=false if the current note is already adequate.
+For a first-time note, note_color must be exactly one of the five allowed hex values.
 Do not include markdown fences.
 '''
 
@@ -87,6 +120,17 @@ def _truncate_inline(text, limit=180):
 def _fallback_note(latest_user_text, latest_assistant_text):
     seed = _truncate_inline(latest_user_text) or _truncate_inline(latest_assistant_text) or 'Branch updated.'
     return '## branch note - latest turn\n- ' + seed
+
+
+def _sanitize_note_color(value):
+    """Return a canonical preset hex color, or None when the model did not
+    provide (or provided an invalid) choice. Case-insensitive so models that
+    emit uppercase hex still persist the canonical lowercase preset value."""
+    normalized = _safe_text(value).strip().lower()
+    for preset in NOTE_COLOR_PRESETS:
+        if normalized == preset.lower():
+            return preset
+    return None
 
 
 def _emit_debug(message):
@@ -297,6 +341,9 @@ def main():
 
         updated = bool(model_json.get('updated'))
         next_note = _safe_text(model_json.get('note')).strip()
+        # A color is assigned only when the note is first created. Existing-note
+        # updates preserve their already-persisted note_color regardless of model output.
+        next_note_color = _sanitize_note_color(model_json.get('note_color')) if not existing_note else None
 
         # Prefer model output whenever present.
         # If model asks for no update but there is no note yet, create a small fallback note
@@ -310,15 +357,19 @@ def main():
             )
             return
 
+        put_payload = {'note': next_note}
+        if next_note_color is not None:
+            put_payload['note_color'] = next_note_color
+
         _json_request(
             f'{local_api_base}/app/messages/{note_anchor_message_id}',
             method='PUT',
-            payload={'note': next_note},
+            payload=put_payload,
             timeout=20,
         )
 
         _emit_debug(
-            f'updated: anchor={note_anchor_message_id} used_fallback={not bool(_safe_text(model_json.get("note")).strip()) and not bool(existing_note)} len={len(next_note)}'
+            f'updated: anchor={note_anchor_message_id} used_fallback={not bool(_safe_text(model_json.get("note")).strip()) and not bool(existing_note)} len={len(next_note)} color={next_note_color or ("preserved" if existing_note else "default")}'
         )
     except error.HTTPError as http_error:
         raise RuntimeError(

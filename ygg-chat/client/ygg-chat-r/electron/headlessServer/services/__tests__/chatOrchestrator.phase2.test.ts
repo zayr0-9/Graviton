@@ -1,7 +1,7 @@
 import type Database from 'better-sqlite3'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { MessageRepo } from '../../persistence/messageRepo.js'
-import { ChatOrchestrator } from '../chatOrchestrator.js'
+import { ChatOrchestrator, shouldRejectSourceLineageMismatch } from '../chatOrchestrator.js'
 
 let BetterSqlite3Ctor: (new (filename: string) => Database.Database) | null = null
 
@@ -127,6 +127,18 @@ class FakeProviderRouter {
     return { content: `assistant:${input.userContent}` }
   }
 }
+
+describe('source lineage membership validation', () => {
+  it('allows an inferred creation owner whose moving head is on a sibling path', () => {
+    expect(shouldRejectSourceLineageMismatch(null, false)).toBe(false)
+    expect(shouldRejectSourceLineageMismatch(undefined, false)).toBe(false)
+  })
+
+  it('still rejects a mismatched lineage explicitly asserted by the client', () => {
+    expect(shouldRejectSourceLineageMismatch('lineage-c', false)).toBe(true)
+    expect(shouldRejectSourceLineageMismatch('lineage-c', true)).toBe(false)
+  })
+})
 
 describeIfSqlite('ChatOrchestrator continuation semantics', () => {
   let db: Database.Database

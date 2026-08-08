@@ -87,6 +87,7 @@ Important details:
 Current actions include:
 - **Copy Text**: copies selected node text in selected-node order.
 - **Add/View Note**: shown for a single selected node, opens note editor.
+- **Open in Parallel**: shown for one selected message when Chat provides `onOpenParallel`; resolves the existing complete branch path and opens/replaces the session-only desktop secondary transcript without changing the primary path.
 - **New Chat From Here**: copies selected messages into a newly created conversation via `insertBulkMessages`.
 - **Copy to Existing Chat**: copies selected messages into another conversation via `insertBulkMessages`.
 - **Move to Existing Chat**: copies selected messages into another conversation, then deletes the source selection after successful insert.

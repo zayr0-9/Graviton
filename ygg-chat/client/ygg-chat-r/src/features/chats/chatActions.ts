@@ -862,6 +862,12 @@ interface CompactBranchPayload {
   modelName?: string | null
 }
 
+// Manual/auto compaction has no server-side turn budget or heartbeat to fall back on, so a
+// provider that stalls mid-stream (rate limited, WS wedged, etc.) previously hung the compose
+// bar's loading animation forever with zero console output. Race the whole generation step
+// against a hard timeout so the thunk always settles.
+const COMPACTION_TIMEOUT_MS = 120_000
+
 export const compactBranch = createAsyncThunk<
   { message: Message | null },
   CompactBranchPayload,
@@ -953,100 +959,124 @@ export const compactBranch = createAsyncThunk<
         usingEphemeral: !isLmStudio && !isOpenAIChatGPT && !isZai,
       })
 
-      if (isLmStudio) {
-        await createLmStudioStreamingRequest(
-          {
-            conversationId,
-            parentId: parentMessageId,
-            modelName: resolvedModelName,
-            systemPrompt: compactionSystemPrompt,
-            messages: [
-              { role: 'system', content: compactionSystemPrompt },
-              { role: 'user', content: compactionUserPrompt },
-            ],
-            tools: [],
-          },
-          {
-            onChunk: chunk => {
-              if (chunk?.part === 'text' && typeof chunk?.delta === 'string') {
-                summaryText += chunk.delta
-              }
-              if (chunk?.type === 'complete' && chunk?.message?.content) {
-                summaryText = chunk.message.content
-              }
+      const compactionAbortController = new AbortController()
+      let compactionTimeoutId: ReturnType<typeof setTimeout> | null = null
+      const compactionTimeoutPromise = new Promise<never>((_, reject) => {
+        compactionTimeoutId = setTimeout(() => {
+          compactionAbortController.abort()
+          reject(
+            new Error(
+              `Compaction timed out after ${COMPACTION_TIMEOUT_MS / 1000}s — the provider did not respond (it may be rate-limited or unreachable).`
+            )
+          )
+        }, COMPACTION_TIMEOUT_MS)
+      })
+
+      const runCompactionGeneration = async () => {
+        if (isLmStudio) {
+          await createLmStudioStreamingRequest(
+            {
+              conversationId,
+              parentId: parentMessageId,
+              modelName: resolvedModelName,
+              systemPrompt: compactionSystemPrompt,
+              messages: [
+                { role: 'system', content: compactionSystemPrompt },
+                { role: 'user', content: compactionUserPrompt },
+              ],
+              tools: [],
             },
-          }
-        )
-      } else if (isOpenAIChatGPT || isZai || isBedrock) {
-        await (isBedrock ? createBedrockStreamingRequest : isZai ? createZaiStreamingRequest : createOpenAIChatGPTStreamingRequest)(
-          {
-            conversationId,
-            parentId: parentMessageId,
-            modelName: resolvedModelName,
-            systemPrompt: compactionSystemPrompt,
-            messages: [
-              { role: 'system', content: compactionSystemPrompt },
-              { role: 'user', content: compactionUserPrompt },
-            ],
-            ...(isZai || isBedrock ? { userId: auth.userId } : {}),
-            tools: [],
-          },
-          {
-            onChunk: chunk => {
-              if (chunk?.part === 'text' && typeof chunk?.delta === 'string') {
-                summaryText += chunk.delta
-              }
-              if (chunk?.type === 'complete' && chunk?.message?.content) {
-                summaryText = chunk.message.content
-              }
+            {
+              signal: compactionAbortController.signal,
+              onChunk: chunk => {
+                if (chunk?.part === 'text' && typeof chunk?.delta === 'string') {
+                  summaryText += chunk.delta
+                }
+                if (chunk?.type === 'complete' && chunk?.message?.content) {
+                  summaryText = chunk.message.content
+                }
+              },
+            }
+          )
+        } else if (isOpenAIChatGPT || isZai || isBedrock) {
+          await (isBedrock ? createBedrockStreamingRequest : isZai ? createZaiStreamingRequest : createOpenAIChatGPTStreamingRequest)(
+            {
+              conversationId,
+              parentId: parentMessageId,
+              modelName: resolvedModelName,
+              systemPrompt: compactionSystemPrompt,
+              messages: [
+                { role: 'system', content: compactionSystemPrompt },
+                { role: 'user', content: compactionUserPrompt },
+              ],
+              ...(isZai || isBedrock ? { userId: auth.userId } : {}),
+              tools: [],
             },
+            {
+              signal: compactionAbortController.signal,
+              onChunk: chunk => {
+                if (chunk?.part === 'text' && typeof chunk?.delta === 'string') {
+                  summaryText += chunk.delta
+                }
+                if (chunk?.type === 'complete' && chunk?.message?.content) {
+                  summaryText = chunk.message.content
+                }
+              },
+            }
+          )
+        } else {
+          const response = await createStreamingRequest('/generate/ephemeral', auth.accessToken, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              model: resolvedModelName,
+              systemPrompt: compactionSystemPrompt,
+              prompt: compactionUserPrompt,
+              temperature: 0.2,
+              maxTokens: 1200,
+            }),
+            signal: compactionAbortController.signal,
+          })
+
+          if (!response.ok) {
+            const text = await response.text()
+            throw new Error(`Compaction request failed: HTTP ${response.status}: ${text}`)
           }
-        )
-      } else {
-        const response = await createStreamingRequest('/generate/ephemeral', auth.accessToken, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            model: resolvedModelName,
-            systemPrompt: compactionSystemPrompt,
-            prompt: compactionUserPrompt,
-            temperature: 0.2,
-            maxTokens: 1200,
-          }),
-        })
 
-        if (!response.ok) {
-          const text = await response.text()
-          throw new Error(`Compaction request failed: HTTP ${response.status}: ${text}`)
-        }
+          const reader = response.body?.getReader()
+          if (!reader) throw new Error('Compaction response stream missing')
 
-        const reader = response.body?.getReader()
-        if (!reader) throw new Error('Compaction response stream missing')
+          const decoder = new TextDecoder()
+          let sseBuffer = ''
 
-        const decoder = new TextDecoder()
-        let sseBuffer = ''
+          while (true) {
+            const { done, value } = await reader.read()
+            if (done) break
+            sseBuffer += decoder.decode(value, { stream: true })
+            const lines = sseBuffer.split('\n')
+            sseBuffer = lines.pop() || ''
 
-        while (true) {
-          const { done, value } = await reader.read()
-          if (done) break
-          sseBuffer += decoder.decode(value, { stream: true })
-          const lines = sseBuffer.split('\n')
-          sseBuffer = lines.pop() || ''
-
-          for (const line of lines) {
-            if (!line.startsWith('data: ')) continue
-            const data = line.slice(6)
-            if (data === '[DONE]') continue
-            try {
-              const parsed = JSON.parse(data)
-              if (typeof parsed.text === 'string') {
-                summaryText += parsed.text
+            for (const line of lines) {
+              if (!line.startsWith('data: ')) continue
+              const data = line.slice(6)
+              if (data === '[DONE]') continue
+              try {
+                const parsed = JSON.parse(data)
+                if (typeof parsed.text === 'string') {
+                  summaryText += parsed.text
+                }
+              } catch {
+                if (data.trim()) summaryText += data
               }
-            } catch {
-              if (data.trim()) summaryText += data
             }
           }
         }
+      }
+
+      try {
+        await Promise.race([runCompactionGeneration(), compactionTimeoutPromise])
+      } finally {
+        if (compactionTimeoutId) clearTimeout(compactionTimeoutId)
       }
 
       const finalSummary = summaryText.trim()
@@ -1054,7 +1084,11 @@ export const compactBranch = createAsyncThunk<
         summaryChars: finalSummary.length,
       })
       if (!finalSummary) {
-        throw new Error('Compaction returned empty summary')
+        throw new Error(
+          compactionAbortController.signal.aborted
+            ? `Compaction timed out after ${COMPACTION_TIMEOUT_MS / 1000}s — the provider did not respond (it may be rate-limited or unreachable).`
+            : 'Compaction returned empty summary'
+        )
       }
 
       const fencedToolContextAppendix = toolContextAppendix ? `\`\`\`\n${toolContextAppendix}\n\`\`\`` : ''
@@ -1152,6 +1186,8 @@ export const sendMessage = createAsyncThunk<
       cwd,
       operationMode: requestedOperationMode,
       streamId: providedStreamId,
+      lineageId: providedLineageId,
+      branchPath: providedBranchPath,
     },
     { dispatch, getState, extra, rejectWithValue, signal }
   ) => {
@@ -1180,7 +1216,9 @@ export const sendMessage = createAsyncThunk<
         streamType: 'primary',
         conversationId,
         lineage: {
-          lineageId: preSendState.chat.conversation.currentLineageId ?? undefined,
+          lineageId: providedLineageId === undefined
+            ? preSendState.chat.conversation.currentLineageId ?? undefined
+            : providedLineageId ?? undefined,
           rootMessageId: parent,
         },
       })
@@ -1216,7 +1254,7 @@ export const sendMessage = createAsyncThunk<
 
       const state = getState() as RootState
       const { messages: currentMessages } = state.chat.conversation
-      const currentPathIds = state.chat.conversation.currentPath.filter(id => id !== 'root')
+      const currentPathIds = (providedBranchPath ?? state.chat.conversation.currentPath).filter(id => id !== 'root')
       const currentPathMessages = appendGeneratedImagePathHintsForHistory(
         trimHistoryToLatestCompaction(currentPathIds.map(id => currentMessages.find(m => m.id === id))),
         currentMessages
@@ -1300,7 +1338,7 @@ export const sendMessage = createAsyncThunk<
           selectedFiles: selectedFilesForChat,
           tools: filterToolsForOperationMode(getAllTools(), operationModeAtSend),
           streamId,
-          currentLineageId: state.chat.conversation.currentLineageId,
+          currentLineageId: providedLineageId === undefined ? state.chat.conversation.currentLineageId : providedLineageId,
           toolAutoApprove: state.chat.toolAutoApprove,
           hooksEnabled: isElectronMode,
           localApiBase: getCachedLocalApiBase(),
@@ -1549,6 +1587,8 @@ export const editMessageWithBranching = createAsyncThunk<
       cwd,
       operationMode: requestedOperationMode,
       streamId: providedStreamId,
+      lineageId: providedLineageId,
+      branchPath: providedBranchPath,
     },
     { dispatch, getState, extra, rejectWithValue, signal }
   ) => {
@@ -1580,7 +1620,9 @@ export const editMessageWithBranching = createAsyncThunk<
         streamType: 'branch',
         conversationId,
         lineage: {
-          lineageId: preSendState.chat.conversation.currentLineageId ?? undefined,
+          lineageId: providedLineageId === undefined
+            ? preSendState.chat.conversation.currentLineageId ?? undefined
+            : providedLineageId ?? undefined,
           originMessageId: originalMessageId,
           rootMessageId: parentMessageId, // Parent where new branch attaches
         },
@@ -1612,7 +1654,7 @@ export const editMessageWithBranching = createAsyncThunk<
       signal.addEventListener('abort', () => controller?.abort())
       unregisterGenerationAbortController = registerGenerationAbortController(streamId, controller)
 
-      const currentPathIds = state.chat.conversation.currentPath.filter(id => id !== 'root')
+      const currentPathIds = (providedBranchPath ?? state.chat.conversation.currentPath).filter(id => id !== 'root')
       // Truncate path to only include messages strictly before the originalMessageId
       const idxOriginal = currentPathIds.indexOf(originalMessageId)
       const truncatedPathIds = idxOriginal >= 0 ? currentPathIds.slice(0, idxOriginal) : currentPathIds
@@ -1861,7 +1903,7 @@ export const editMessageWithBranching = createAsyncThunk<
           selectedFiles: selectedFilesForChat,
           tools: filterToolsForOperationMode(getAllTools(), operationModeAtSend),
           streamId,
-          currentLineageId: state.chat.conversation.currentLineageId,
+          currentLineageId: providedLineageId === undefined ? state.chat.conversation.currentLineageId : providedLineageId,
           toolAutoApprove: state.chat.toolAutoApprove,
           hooksEnabled: isElectronMode,
           localApiBase: getCachedLocalApiBase(),
@@ -1973,6 +2015,7 @@ export const sendMessageToBranch = createAsyncThunk<
       cwd,
       operationMode: requestedOperationMode,
       streamId: providedStreamId,
+      lineageId: providedLineageId,
     },
     { dispatch, getState, extra, rejectWithValue, signal }
   ) => {
@@ -2001,7 +2044,9 @@ export const sendMessageToBranch = createAsyncThunk<
         streamType: 'branch',
         conversationId,
         lineage: {
-          lineageId: preSendState.chat.conversation.currentLineageId ?? undefined,
+          lineageId: providedLineageId === undefined
+            ? preSendState.chat.conversation.currentLineageId ?? undefined
+            : providedLineageId ?? undefined,
           rootMessageId: parentId,
         },
       })
@@ -2098,7 +2143,7 @@ export const sendMessageToBranch = createAsyncThunk<
           selectedFiles: selectedFilesForChat,
           tools: filterToolsForOperationMode(getAllTools(), operationModeAtSend),
           streamId,
-          currentLineageId: state.chat.conversation.currentLineageId,
+          currentLineageId: providedLineageId === undefined ? state.chat.conversation.currentLineageId : providedLineageId,
           toolAutoApprove: state.chat.toolAutoApprove,
           hooksEnabled: isElectronMode,
           localApiBase: getCachedLocalApiBase(),

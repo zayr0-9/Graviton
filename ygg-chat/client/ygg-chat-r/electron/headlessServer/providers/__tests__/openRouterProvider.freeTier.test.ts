@@ -126,3 +126,47 @@ describe('OpenRouterProvider free-tier relay', () => {
     expect(events.filter(e => e.type === 'generation_limit_reached')).toHaveLength(0)
   })
 })
+
+
+describe('OpenRouterProvider shared app auth', () => {
+  it('uses the shared app-token manager and retries once with a forced refresh after Railway returns 401', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(makeErrorResponse(401, JSON.stringify({ error: 'expired' })))
+      .mockResolvedValueOnce(makeStreamResponse([`data: [DONE]\n\n`]))
+    vi.stubGlobal('fetch', fetchMock)
+    const appAuth = {
+      getFreshAppToken: vi
+        .fn()
+        .mockResolvedValueOnce({ userId: 'u1', accessToken: 'stale-token' })
+        .mockResolvedValueOnce({ userId: 'u1', accessToken: 'fresh-token' }),
+    }
+
+    await new OpenRouterProvider({ appAuth }).generate({
+      ...baseInput(undefined),
+      accessToken: undefined,
+    })
+
+    expect(appAuth.getFreshAppToken).toHaveBeenNthCalledWith(1, undefined)
+    expect(appAuth.getFreshAppToken).toHaveBeenNthCalledWith(2, { forceRefresh: true })
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+    expect(fetchMock.mock.calls[0][1].headers.Authorization).toBe('Bearer stale-token')
+    expect(fetchMock.mock.calls[1][1].headers.Authorization).toBe('Bearer fresh-token')
+  })
+
+  it('raises a structured app-auth error when Railway still rejects the refreshed token', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => makeErrorResponse(401, JSON.stringify({ error: 'expired' }))))
+    const appAuth = {
+      getFreshAppToken: vi.fn(async () => ({ userId: 'u1', accessToken: 'expired-token' })),
+    }
+
+    await expect(
+      new OpenRouterProvider({ appAuth }).generate({
+        ...baseInput(undefined),
+        accessToken: undefined,
+      })
+    ).rejects.toMatchObject({ name: 'RailwayAppAuthError', status: 401, errorType: 'reauth_required' })
+    expect(appAuth.getFreshAppToken).toHaveBeenNthCalledWith(1, undefined)
+    expect(appAuth.getFreshAppToken).toHaveBeenNthCalledWith(2, { forceRefresh: true })
+  })
+})

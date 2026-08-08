@@ -8,7 +8,12 @@ vi.hoisted(() => {
 })
 
 import type { RootState } from '../../store/store'
-import { selectCurrentLineageId, selectCurrentViewStream } from './chatSelectors'
+import {
+  selectCurrentLineageId,
+  selectCurrentViewStream,
+  selectCurrentViewStreamFor,
+  selectDisplayMessagesFor,
+} from './chatSelectors'
 import chatReducer, { chatSliceActions } from './chatSlice'
 import { createEmptyStreamState } from './streamHelpers'
 import type { LineageId } from './chatTypes'
@@ -105,5 +110,106 @@ describe('renderer lineage state', () => {
     }
 
     expect(selectCurrentViewStream({ chat } as RootState)?.id).toBe('legacy')
+  })
+})
+
+describe('renderer lineage stream ownership', () => {
+  it('does not let a background branch replace the selected lineage', () => {
+    let state = chatReducer(undefined, chatSliceActions.lineageSelected({
+      conversationId: 'conversation-a',
+      lineageId: lineage('lineage-b'),
+      path: ['root', 'branch-b'],
+      focus: 'branch-b',
+    }))
+
+    state = chatReducer(state, chatSliceActions.sendingStarted({
+      streamId: 'stream-c',
+      streamType: 'branch',
+      conversationId: 'conversation-a',
+      lineage: { lineageId: lineage('lineage-a'), rootMessageId: 'root' },
+    }))
+    state = chatReducer(state, chatSliceActions.streamLineageUpdated({
+      streamId: 'stream-c',
+      lineageId: lineage('lineage-c'),
+    }))
+
+    expect(state.streaming.byId['stream-c'].lineage.lineageId).toBe('lineage-c')
+    expect(state.conversation.currentLineageId).toBe('lineage-b')
+  })
+
+  it('promotes a forked lineage when its stream still owns the selected lineage', () => {
+    let state = chatReducer(undefined, chatSliceActions.lineageSelected({
+      conversationId: 'conversation-a',
+      lineageId: lineage('lineage-b'),
+      path: ['root', 'branch-b'],
+      focus: 'branch-b',
+    }))
+
+    state = chatReducer(state, chatSliceActions.sendingStarted({
+      streamId: 'stream-b-fork',
+      streamType: 'branch',
+      conversationId: 'conversation-a',
+      lineage: { lineageId: lineage('lineage-b'), rootMessageId: 'branch-b' },
+    }))
+    state = chatReducer(state, chatSliceActions.streamLineageUpdated({
+      streamId: 'stream-b-fork',
+      lineageId: lineage('lineage-b-child'),
+    }))
+
+    expect(state.conversation.currentLineageId).toBe('lineage-b-child')
+  })
+})
+
+
+describe('pane-parameterized selectors', () => {
+  it('selects sibling display paths and exact lineage streams independently', () => {
+    const root = chatReducer(undefined, { type: 'test' })
+    const messages = [
+      { id: 'root', parent_id: null },
+      { id: 'branch-a', parent_id: 'root' },
+      { id: 'branch-b', parent_id: 'root' },
+    ].map(({ id, parent_id }) => ({
+      conversation_id: 'conversation-a',
+      role: 'user' as const,
+      content: id,
+      content_plain_text: id,
+      children_ids: [],
+      created_at: '2024-01-01T00:00:00.000Z',
+      model_name: 'test',
+      partial: false,
+      pastedContext: [],
+      artifacts: [],
+      id,
+      parent_id,
+    }))
+    const streamA = {
+      ...createEmptyStreamState('branch', { lineageId: lineage('lineage-a') }),
+      active: true,
+      conversationId: 'conversation-a',
+    }
+    const streamB = {
+      ...createEmptyStreamState('branch', { lineageId: lineage('lineage-b') }),
+      active: true,
+      conversationId: 'conversation-a',
+    }
+    const streaming = {
+      ...root.streaming,
+      activeIds: ['stream-a', 'stream-b'],
+      byId: { 'stream-a': streamA, 'stream-b': streamB },
+      primaryStreamId: 'stream-a',
+    }
+
+    expect(selectDisplayMessagesFor(messages, ['root', 'branch-a']).map(message => message.id)).toEqual(['root', 'branch-a'])
+    expect(selectDisplayMessagesFor(messages, ['root', 'branch-b']).map(message => message.id)).toEqual(['root', 'branch-b'])
+    expect(selectCurrentViewStreamFor(streaming, {
+      conversationId: 'conversation-a',
+      lineageId: 'lineage-a',
+      path: ['root', 'branch-a'],
+    })?.id).toBe('stream-a')
+    expect(selectCurrentViewStreamFor(streaming, {
+      conversationId: 'conversation-a',
+      lineageId: 'lineage-b',
+      path: ['root', 'branch-b'],
+    })?.id).toBe('stream-b')
   })
 })

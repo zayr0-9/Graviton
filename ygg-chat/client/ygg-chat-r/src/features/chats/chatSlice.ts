@@ -775,11 +775,31 @@ export const chatSlice = createSlice({
       const stream = state.streaming.byId[streamId]
       if (stream) {
         if (lineageId !== undefined) {
+          const previousStreamLineageId = stream.lineage.lineageId
+          const currentPathIds = new Set(state.conversation.currentPath.map(id => String(id)))
+          const streamBelongsToCurrentPath =
+            currentPathIds.size === 0 ||
+            [
+              stream.lineage.rootMessageId,
+              stream.lineage.originMessageId,
+              stream.branchAnchorMessageId,
+              stream.currentBranchAnchorMessageId,
+            ].some(id => id != null && currentPathIds.has(String(id)))
+          const streamOwnsSelection = state.conversation.currentLineageId != null
+            ? previousStreamLineageId != null &&
+              String(previousStreamLineageId) === String(state.conversation.currentLineageId)
+            : streamBelongsToCurrentPath
+
           stream.lineage.lineageId = lineageId ?? undefined
           if (
             lineageId &&
-            stream.conversationId === state.conversation.currentConversationId
+            stream.conversationId === state.conversation.currentConversationId &&
+            streamOwnsSelection
           ) {
+            // A stream may continue in the background after the user selects another
+            // branch. Keep its exact identity stream-local unless it still represents
+            // the selected lineage/path; otherwise a late event can pair lineage C with
+            // a source message on B and make a valid fork fail server membership checks.
             state.conversation.currentLineageId = lineageId
           }
         }

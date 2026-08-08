@@ -240,6 +240,7 @@ interface HeimdallProps {
   loading?: boolean
   error?: string | null
   onNodeSelect?: (nodeId: string, path: string[]) => void
+  onOpenParallel?: (conversationId: ConversationId, messageId: MessageId, path: string[]) => void
   conversationId?: ConversationId | null
   visibleMessageId?: MessageId | null
   storageMode?: 'local' | 'cloud'
@@ -252,6 +253,7 @@ export const Heimdall: React.FC<HeimdallProps> = ({
   loading = false,
   error = null,
   onNodeSelect,
+  onOpenParallel,
   conversationId,
   visibleMessageId = null,
   storageMode,
@@ -1508,6 +1510,15 @@ export const Heimdall: React.FC<HeimdallProps> = ({
       }
     }
 
+    // A completed plain click (no drag, not the right button releasing a
+    // right-click/rectangle selection) ends right-click selection mode, so the
+    // previously right-clicked node's highlight clears once the action menu is
+    // dismissed. Pan drags never reach here with hasMovedRef.current still false,
+    // so panning after a right-click select leaves the selection untouched.
+    if (e.button !== 2 && !hasMovedRef.current && selectedNodes.length > 0) {
+      dispatch(chatSliceActions.nodesSelected([]))
+    }
+
     // Reset refs
     pointerDownPosRef.current = null
     hasMovedRef.current = false
@@ -1736,6 +1747,14 @@ export const Heimdall: React.FC<HeimdallProps> = ({
     // This ensures all messages on the branch are included, even if filtered from tree view
     const path = buildBranchPathForMessage(flatMessages as any, nodeIdParsed)
     return path.map(id => String(id))
+  }
+
+  const handleOpenParallel = (): void => {
+    if (!onOpenParallel || !conversationId || selectedNodes.length !== 1) return
+
+    const messageId = selectedNodes[0]
+    onOpenParallel(conversationId, messageId, getPathWithDescendants(String(messageId)))
+    setShowContextMenu(false)
   }
 
   // Reset view when data changes
@@ -2569,7 +2588,13 @@ export const Heimdall: React.FC<HeimdallProps> = ({
       setShowContextMenu(false)
     }
     const onKey = (ev: KeyboardEvent) => {
-      if (ev.key === 'Escape') setShowContextMenu(false)
+      if (ev.key === 'Escape') {
+        setShowContextMenu(false)
+        // Escape has no pointerup to route through, so clear the right-click
+        // selection highlight here directly (mousedown-outside-Heimdall intentionally
+        // leaves it, since that click may be unrelated to the tree entirely).
+        dispatch(chatSliceActions.nodesSelected([]))
+      }
     }
     window.addEventListener('mousedown', onDown)
     window.addEventListener('keydown', onKey)
@@ -2577,7 +2602,7 @@ export const Heimdall: React.FC<HeimdallProps> = ({
       window.removeEventListener('mousedown', onDown)
       window.removeEventListener('keydown', onKey)
     }
-  }, [showContextMenu])
+  }, [showContextMenu, dispatch])
 
   useEffect(() => {
     if (!showConversationSelector) return
@@ -4446,6 +4471,25 @@ export const Heimdall: React.FC<HeimdallProps> = ({
               <span className='ml-auto font-mono text-[10px] tracking-[0.05em] text-stone-400 dark:text-neutral-500'>
                 N
               </span>
+            </button>
+          )}
+
+          {selectedNodes.length === 1 && onOpenParallel && (
+            <button
+              className={heimdallContextMenuItemClass}
+              style={getHeimdallContextMenuItemStyle()}
+              onClick={handleOpenParallel}
+            >
+              <svg
+                className='w-4 h-4 opacity-50 group-hover:opacity-100 transition-opacity'
+                fill='none'
+                viewBox='0 0 24 24'
+                stroke='currentColor'
+                strokeWidth={2}
+              >
+                <path d='M12 3v18m-9-9h18M5.5 5.5l4.25 4.25M18.5 5.5l-4.25 4.25M5.5 18.5l4.25-4.25M18.5 18.5l-4.25-4.25' />
+              </svg>
+              <span>Open in Parallel</span>
             </button>
           )}
 

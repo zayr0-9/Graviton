@@ -31,3 +31,5 @@ export { UpdateModal } from './UpdateModal/UpdateModal'
 export { MonacoFileEditorPane } from './MonacoFileEditorPane/MonacoFileEditorPane'
 export { MonacoGitDiffPane } from './MonacoGitDiffPane/MonacoGitDiffPane'
 export { XtermTerminalPane } from './XtermTerminalPane/XtermTerminalPane'
+
+export { ParallelChatPane, type ParallelChatPaneTarget } from './ParallelChatPane/ParallelChatPane'

@@ -412,6 +412,9 @@ export interface LineageSelectionPayload {
 
 export interface SendMessagePayload {
   conversationId: ConversationId
+  /** Immutable branch context captured by a transcript pane before dispatch. */
+  lineageId?: LineageId | null
+  branchPath?: MessageId[]
   input: MessageInput
   parent: MessageId
   repeatNum: number
@@ -427,6 +430,9 @@ export interface SendMessagePayload {
 
 export interface EditMessagePayload {
   conversationId: ConversationId
+  /** Immutable branch context captured by a transcript pane before dispatch. */
+  lineageId?: LineageId | null
+  branchPath?: MessageId[]
   originalMessageId: MessageId
   newContent: string
   modelOverride?: string
@@ -440,6 +446,9 @@ export interface EditMessagePayload {
 
 export interface BranchMessagePayload {
   conversationId: ConversationId
+  /** Immutable branch context captured by a transcript pane before dispatch. */
+  lineageId?: LineageId | null
+  branchPath?: MessageId[]
   parentId: MessageId
   content: string
   modelOverride?: string

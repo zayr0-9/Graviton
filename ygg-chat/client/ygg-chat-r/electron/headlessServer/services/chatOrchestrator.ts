@@ -10,6 +10,7 @@ import type { ProviderTokenStore } from '../providers/tokenStore.js'
 import { BranchOrchestrator, type ResolvedExecution } from './branchOrchestrator.js'
 import { buildHeadlessSystemPrompt } from './headlessSystemPrompt.js'
 import { ProviderRouter, normalizeProviderRoute } from './providerRouter.js'
+import { RailwayAppAuthError } from '../providers/openRouterProvider.js'
 import {
   ProviderErrorAssistantResponse,
   ToolLoopService,
@@ -85,6 +86,13 @@ function shouldBypassPermission(toolName: string, args: any): boolean {
 
 function isAbortError(error: unknown): boolean {
   return typeof error === 'object' && error !== null && (error as { name?: unknown }).name === 'AbortError'
+}
+
+export function shouldRejectSourceLineageMismatch(
+  requestedLineageId: string | null | undefined,
+  sourceInLineagePath: boolean
+): boolean {
+  return Boolean(requestedLineageId) && !sourceInLineagePath
 }
 
 /**
@@ -371,9 +379,39 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
       throw new Error('Lineage belongs to a different conversation')
     }
     if (sourceLineage && sourceMessageId) {
-      const sourcePath = this.lineageRepo.getDetail(request.conversationId, sourceLineage.id)?.pathMessageIds ?? []
-      if (!sourcePath.includes(String(sourceMessageId))) {
-        throw new Error('Source message does not belong to the requested lineage')
+      const sourceDetail = this.lineageRepo.getDetail(request.conversationId, sourceLineage.id)
+      const sourcePath = sourceDetail?.pathMessageIds ?? []
+      const sourceMessage = this.statements.getMessageById.get(sourceMessageId) as any
+      const diagnostics = {
+        operation: request.operation,
+        conversationId: request.conversationId,
+        streamId: request.streamId ?? null,
+        operationId: request.operationId ?? null,
+        requestedLineageId: request.lineageId ?? null,
+        resolvedSourceLineageId: sourceLineage.id,
+        sourceMessageId: String(sourceMessageId),
+        sourceMessageParentId: sourceMessage?.parent_id ?? null,
+        sourceMessageStoredLineageId: sourceMessage?.lineage_id ?? null,
+        lineageParentId: sourceLineage.parent_lineage_id,
+        lineageForkedFromMessageId: sourceLineage.forked_from_message_id,
+        lineageRootMessageId: sourceLineage.root_message_id,
+        lineageHeadMessageId: sourceLineage.head_message_id,
+        lineagePathMessageIds: sourcePath.map(String),
+        sourceInLineagePath: sourcePath.includes(String(sourceMessageId)),
+      }
+      if (request.operation !== 'send') {
+        console.info('[LineageForkDebug][Main] validate', diagnostics)
+      }
+      if (!diagnostics.sourceInLineagePath) {
+        if (shouldRejectSourceLineageMismatch(request.lineageId, diagnostics.sourceInLineagePath)) {
+          // An explicit lineage is an exact client assertion, so a path mismatch is
+          // genuinely invalid. Without one, resolve() only returns the message row's
+          // creation owner. That lineage's moving head may now follow a sibling arm,
+          // so creation ownership is not proof of current path membership.
+          console.error('[LineageForkDebug][Main] membership-mismatch', diagnostics)
+          throw new Error('Source message does not belong to the requested lineage')
+        }
+        console.warn('[LineageForkDebug][Main] inferred-owner-path-mismatch-allowed', diagnostics)
       }
     }
     if (request.operationId && request.operation !== 'send') {
@@ -660,6 +698,7 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
         return
       }
       const errorMessage = error instanceof Error ? error.message : String(error)
+      const requiresReauthentication = error instanceof RailwayAppAuthError
       this.streamingRunRepo.finish(trackedStreamId, {
         status: 'error',
         endReason: 'error',
@@ -667,6 +706,9 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
       })
       if (typeof error === 'object' && error !== null) {
         ;(error as any).lineageId = this.streamingRunRepo.getLineageId(trackedStreamId)
+      }
+      if (requiresReauthentication) {
+        emit({ type: 'reauth_required', message: errorMessage })
       }
       throw error
     } finally {

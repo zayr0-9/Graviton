@@ -96,6 +96,10 @@ server keeps it alive (see
 - **Stop** awaits `postStreamAbort` before closing local readers. Failed abort requests
   retain markers for reconciliation. App quit still kills all in-memory server sessions.
 
+## Parallel Pane Projection
+
+The desktop parallel-branch MVP reuses the shared `streaming.byId` store but must not use the singleton `selectCurrentViewStream` for its secondary view. `selectCurrentViewStreamFor(streaming, { conversationId, lineageId, path })` and `selectDisplayMessagesFor(messages, path)` accept explicit pane identity. Send/edit/branch thunk payloads may likewise carry immutable `lineageId` and `branchPath`; prefer them over a later `getState().conversation.currentPath` read.
+
 ## Important Invariants
 
 - UI should render the stream relevant to the current branch/view, not any globally active stream.

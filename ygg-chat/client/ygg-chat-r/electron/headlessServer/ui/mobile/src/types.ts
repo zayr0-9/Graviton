@@ -102,8 +102,9 @@ export type HeadlessSseEvent =
       continued?: boolean
     }
   | { type: 'complete'; message?: MobileMessage; providerError?: boolean }
+  | { type: 'reauth_required'; message?: string }
   | {
-      type: 'error'
+      type: 'error',
       error: string
       provider?: string
       modelName?: string

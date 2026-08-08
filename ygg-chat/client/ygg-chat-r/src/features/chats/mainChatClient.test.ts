@@ -17,7 +17,10 @@ vi.hoisted(() => {
 })
 
 // buildLocalApiUrl -> deterministic origin so we can assert exact URLs.
-vi.mock('../../utils/api', () => ({ buildLocalApiUrl: async (p: string) => `http://local${p}` }))
+vi.mock('../../utils/api', () => ({
+  buildLocalApiUrl: async (p: string) => `http://local${p}`,
+  FORCE_LOGOUT_EVENT: 'force-logout',
+}))
 // Force resumable behavior on (decoupled from localStorage/env).
 vi.mock('../../helpers/serverLoopSettings', () => ({ isResumableRunsEnabled: () => true }))
 
@@ -160,5 +163,34 @@ describe('runServerChatLoop resubscribe', () => {
     ).rejects.toMatchObject({ name: 'AbortError' })
 
     expect(fetchMock).toHaveBeenCalledTimes(1) // no reattach attempt
+  })
+})
+
+
+describe('runServerChatLoop reauthentication', () => {
+  it('forces a visible Electron sign-in transition when the server requires reauthentication', async () => {
+    const dispatchEvent = vi.fn()
+    ;(globalThis as any).window = { dispatchEvent, location: { hash: '' } }
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(sseResponse([{ type: 'reauth_required', message: 'Sign in again.' }, { type: 'error', error: 'raw 401' }]))
+    )
+
+    await expect(
+      runServerChatLoop(
+        {
+          streamId: 's-auth',
+          conversationId: 'c1',
+          operation: 'send',
+          path: '/api/conversations/c1/messages',
+          request: {},
+          signal: new AbortController().signal,
+        },
+        collectDispatch()
+      )
+    ).rejects.toThrow('Sign in again.')
+
+    expect(dispatchEvent).toHaveBeenCalledWith(expect.objectContaining({ type: 'force-logout' }))
+    expect((globalThis as any).window.location.hash).toBe('/login')
   })
 })

@@ -30,7 +30,7 @@ import { CompactionService } from './services/compactionService.js'
 import { SubagentRunService } from './services/subagentRunService.js'
 import { createSubagentDispatchExecutor, createSubagentManagerExecutor } from './services/subagentToolExecutor.js'
 import { createMultiCallDispatchExecutor } from './services/multiCallExecutor.js'
-import { normalizeProviderRoute } from './services/providerRouter.js'
+import { ProviderRouter, normalizeProviderRoute } from './services/providerRouter.js'
 import { resolveGatewayFlags } from './config/gatewayFlags.js'
 import type { ToolExecutor } from './services/toolLoopService.js'
 
@@ -255,6 +255,11 @@ export function registerHeadlessServerRoutes(app: Express, deps: HeadlessServerR
 
   // Gateway flags are resolved once at startup. Chat and route-independent runs default on.
   const gatewayFlags = resolveGatewayFlags()
+  // One process-wide app-session owner for every Railway-backed path, including
+  // OpenRouter streaming (which previously bypassed this shared refresh policy).
+  const appAuth = createAppAuthTokenManager()
+  const railway = createRailwayClient({ auth: appAuth })
+  const providerRouter = new ProviderRouter({ tokenStore, appAuth })
 
   // One shared pause/resume registry across the chat orchestrator (which pauses the
   // loop) and the POST /api/resume route (which resolves the paused decision).
@@ -283,8 +288,6 @@ export function registerHeadlessServerRoutes(app: Express, deps: HeadlessServerR
   // /api/gw or /api/cloud), so mounting them changes no existing behavior. Both share
   // one single-flight app-token manager (sole Supabase refresher) + one Railway client.
   {
-    const appAuth = createAppAuthTokenManager()
-    const railway = createRailwayClient({ auth: appAuth })
     registerGatewayRoutes(app, {
       railway,
       mirror: createCloudMirrorService({ db: deps.db, statements: deps.statements }),
@@ -299,12 +302,14 @@ export function registerHeadlessServerRoutes(app: Express, deps: HeadlessServerR
   const compactionService = new CompactionService({
     ...deps,
     tokenStore,
+    providerRouter,
   })
 
   const multiCallToolExecutor = createMultiCallDispatchExecutor(executeToolViaOrchestrator)
   const subagentRunService = new SubagentRunService({
     statements: deps.statements,
     tokenStore,
+    providerRouter,
     // Child tools use the leaf executor. They can never re-enter the parent
     // subagent dispatcher, preserving the no-nested-subagents invariant.
     toolExecutor: multiCallToolExecutor,
@@ -366,6 +371,7 @@ export function registerHeadlessServerRoutes(app: Express, deps: HeadlessServerR
     orchestrator: new ChatOrchestrator({
       ...deps,
       tokenStore,
+      providerRouter,
       toolExecutor: chatToolExecutor,
       defaultToolsProvider: resolveDefaultInferenceTools,
       compactBranch: input => compactionService.compactBranch(input),

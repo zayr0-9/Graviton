@@ -10,6 +10,7 @@ import {
   type ProviderStreamEventHandler,
 } from '../providers/openRouterProvider.js'
 import type { ProviderTokenStore } from '../providers/tokenStore.js'
+import type { AppAuthTokenManager } from './appAuthTokenManager.js'
 
 export type ProviderRoute = 'openrouter' | 'openaichatgpt' | 'lmstudio' | 'zai' | 'bedrock'
 
@@ -37,6 +38,7 @@ export function normalizeProviderRoute(providerName: string): ProviderRoute {
 
 interface ProviderRouterDeps {
   tokenStore?: ProviderTokenStore
+  appAuth?: AppAuthTokenManager
 }
 
 export class ProviderRouter {
@@ -44,7 +46,7 @@ export class ProviderRouter {
 
   constructor(deps: ProviderRouterDeps = {}) {
     this.providers = {
-      openrouter: new OpenRouterProvider({ tokenStore: deps.tokenStore }),
+      openrouter: new OpenRouterProvider({ tokenStore: deps.tokenStore, appAuth: deps.appAuth }),
       openaichatgpt: new OpenAiChatgptProvider({ tokenStore: deps.tokenStore }),
       lmstudio: new LmStudioProvider(),
       zai: new HyperRouterZaiProvider({ tokenStore: deps.tokenStore }),

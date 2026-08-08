@@ -14,7 +14,7 @@
  * the replay cursor (append-style chunk projection is only idempotent with the cursor).
  */
 
-import { buildLocalApiUrl } from '../../utils/api'
+import { buildLocalApiUrl, FORCE_LOGOUT_EVENT } from '../../utils/api'
 import { isResumableRunsEnabled } from '../../helpers/serverLoopSettings'
 import { chatSliceActions } from './chatSlice'
 import { projectServerEvent, normalizeServerMessage, type ProjectionContext, type ServerStreamEvent } from './sseProjection'
@@ -66,12 +66,13 @@ interface StreamAccumulator {
   messageId: MessageId | null
   userMessage: Message | null
   providerError: boolean
+  requiresReauthentication: boolean
   /** Highest server `seq` applied — the reattach cursor. */
   lastSeq: number
 }
 
 function newAccumulator(startSeq = 0): StreamAccumulator {
-  return { sawTerminal: false, streamError: null, messageId: null, userMessage: null, providerError: false, lastSeq: startSeq }
+  return { sawTerminal: false, streamError: null, messageId: null, userMessage: null, providerError: false, requiresReauthentication: false, lastSeq: startSeq }
 }
 
 /** Build the per-event handler: project to Redux (in order) + capture return ids. */
@@ -106,8 +107,16 @@ function makeHandleEvent(
       acc.providerError = event.providerError === true
       acc.sawTerminal = true
       onMessagePersisted?.()
+    } else if (event.type === 'reauth_required') {
+      acc.streamError = typeof event.message === 'string' && event.message ? event.message : 'Your session has expired. Please sign in again.'
+      acc.requiresReauthentication = true
+      acc.sawTerminal = true
+      if (typeof window !== 'undefined') {
+        window.dispatchEvent(new CustomEvent(FORCE_LOGOUT_EVENT))
+        window.location.hash = '/login'
+      }
     } else if (event.type === 'error') {
-      acc.streamError = typeof event.error === 'string' && event.error ? event.error : 'Headless stream error'
+      if (!acc.requiresReauthentication) acc.streamError = typeof event.error === 'string' && event.error ? event.error : 'Headless stream error'
       acc.sawTerminal = true
     }
     // Checkpoint only after projection and side effects succeed. Pending decision frames
@@ -210,10 +219,33 @@ export async function runServerChatLoop(
   deps: RunServerChatLoopDeps
 ): Promise<RunServerChatLoopResult> {
   const { operation, conversationId, streamId, path, request, signal } = params
-  const { dispatch, onMessagePersisted, onSeq } = deps
+  const { dispatch, getState, onMessagePersisted, onSeq } = deps
   const ctx: ProjectionContext = { streamId, conversationId }
   const acc = newAccumulator()
   const handleEvent = makeHandleEvent(acc, ctx, operation, dispatch, onMessagePersisted, onSeq)
+
+  if (operation === 'branch' || operation === 'edit') {
+    const state = getState() as any
+    const conversation = state?.chat?.conversation
+    const stream = state?.chat?.streaming?.byId?.[streamId]
+    console.info('[LineageForkDebug][Renderer] request', {
+      operation,
+      conversationId,
+      streamId,
+      operationId: request.operationId ?? null,
+      requestedLineageId: request.lineageId ?? null,
+      sourceMessageId: operation === 'branch'
+        ? path.match(/\/messages\/([^/]+)\/branch$/)?.[1] ?? null
+        : path.match(/\/messages\/([^/]+)\/edit-branch$/)?.[1] ?? null,
+      parentId: request.parentId ?? null,
+      selectedLineageId: conversation?.currentLineageId ?? null,
+      selectedPath: Array.isArray(conversation?.currentPath) ? conversation.currentPath.map(String) : [],
+      focusedMessageId: conversation?.focusedChatMessageId ?? null,
+      streamLineageId: stream?.lineage?.lineageId ?? null,
+      streamRootMessageId: stream?.lineage?.rootMessageId ?? null,
+      streamOriginMessageId: stream?.lineage?.originMessageId ?? null,
+    })
+  }
 
   const url = await buildLocalApiUrl(path)
   const res = await fetch(url, {
@@ -235,7 +267,33 @@ export async function runServerChatLoop(
     await resubscribeUntilTerminal(streamId, acc, handleEvent, signal)
   }
 
-  if (acc.streamError) throw new Error(acc.streamError)
+  if (acc.streamError) {
+    if (operation === 'branch' || operation === 'edit') {
+      const state = getState() as any
+      const conversation = state?.chat?.conversation
+      const stream = state?.chat?.streaming?.byId?.[streamId]
+      console.error('[LineageForkDebug][Renderer] failed', {
+        error: acc.streamError,
+        operation,
+        conversationId,
+        streamId,
+        operationId: request.operationId ?? null,
+        requestedLineageId: request.lineageId ?? null,
+        sourceMessageId: operation === 'branch'
+          ? path.match(/\/messages\/([^/]+)\/branch$/)?.[1] ?? null
+          : path.match(/\/messages\/([^/]+)\/edit-branch$/)?.[1] ?? null,
+        parentId: request.parentId ?? null,
+        selectedLineageId: conversation?.currentLineageId ?? null,
+        selectedPath: Array.isArray(conversation?.currentPath) ? conversation.currentPath.map(String) : [],
+        focusedMessageId: conversation?.focusedChatMessageId ?? null,
+        streamLineageId: stream?.lineage?.lineageId ?? null,
+        streamRootMessageId: stream?.lineage?.rootMessageId ?? null,
+        streamOriginMessageId: stream?.lineage?.originMessageId ?? null,
+        lastSeq: acc.lastSeq,
+      })
+    }
+    throw new Error(acc.streamError)
+  }
   if (!acc.sawTerminal) {
     if (signal.aborted) {
       const abortError = new Error('Message cancelled')
