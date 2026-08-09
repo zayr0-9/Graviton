@@ -1,4 +1,5 @@
 import { createSlice, PayloadAction } from '@reduxjs/toolkit'
+import { normalizeChatErrorEnvelope } from '../../../../../shared/chatErrors'
 import providersList from '../../../../../shared/providers.json'
 import { ConversationId, MessageId } from '../../../../../shared/types'
 import { isCommunityMode } from '../../config/runtimeMode'
@@ -6,6 +7,7 @@ import { parseId } from '../../utils/helpers'
 
 import {
   Attachment,
+  ChatErrorRecord,
   ChatState,
   ImageDraft,
   ImageDraftTarget,
@@ -17,6 +19,7 @@ import {
   SendingStartedPayload,
   StreamChunkPayload,
   StreamCompletedPayload,
+  StreamEvent,
   StreamingAbortedPayload,
   StreamState,
   StreamUndoSummary,
@@ -148,6 +151,25 @@ const isMessageForCurrentConversation = (
   return false
 }
 
+/**
+ * Identity of a chat error notice for dedupe purposes: (conversationId, streamId,
+ * envelope.code). The bucket is already conversation-scoped, so only the stream slot
+ * and the code need to appear in the key.
+ *
+ * This is what stops a resubscribe storm from stacking ten identical bubbles: every
+ * reattach re-delivers the same terminal error for the same streamId.
+ *
+ * `streamId` is null for failures that happened before a stream slot ever existed
+ * (the send never got off the ground). Those are keyed by their anchor message
+ * instead, so two different sends that both fail with `local_server_unreachable`
+ * remain two distinct bubbles rather than collapsing into one attached to the wrong
+ * parent.
+ */
+const chatErrorDedupeKey = (record: ChatErrorRecord): string => {
+  const slot = record.streamId != null ? `s:${String(record.streamId)}` : `p:${String(record.parentMessageId ?? '')}`
+  return `${slot}|${record.envelope.code}`
+}
+
 // Helper to get or create stream state with fallback
 const getOrCreateStream = (state: ChatState, streamId: string): StreamState => {
   if (!state.streaming.byId[streamId]) {
@@ -242,6 +264,13 @@ const makeInitialState = (): ChatState => {
       freeGenerationsRemaining: null,
       showLimitModal: false,
       isFreeTierUser: false,
+    },
+    // Tier-2 failures that have no persisted assistant message to live on. Deliberately
+    // NOT inside `streaming.byId`: that slot is pruned 30s after a run ends, and
+    // `selectCurrentViewStreamFor` filters on `active` first, so an errored stream slot
+    // is unreachable the moment it carries an error.
+    errorNotices: {
+      byConversationId: {},
     },
     userSystemPrompts: {
       prompts: [],
@@ -394,12 +423,24 @@ export const chatSlice = createSlice({
       const stream = state.streaming.byId[streamId]
 
       if (stream) {
+        // Read before the status is overwritten below.
+        const endedInError = stream.status === 'error'
+
         stream.active = false
         stream.status = 'completed'
         stream.finished = true
         stream.liveMessageId = null
         stream.finalMessageId = stream.messageId
         stream.streamingMessageId = null
+        // A user Stop dispatches streamingAborted and THEN this, so without clearing, the
+        // slot ended up {status:'completed', finished:true, error:'Generation aborted'} and
+        // useRunningAgentStreams' `hasError: Boolean(stream.error)` painted a clean Stop as
+        // a red error dot. Genuine failures are exempt: the error chunk sets status='error'
+        // and is dispatched AFTER sendingCompleted (see the ordering note in sseProjection),
+        // so this only ever clears a non-error terminal state.
+        if (!endedInError) {
+          stream.error = null
+        }
 
         // Remove from active list
         state.streaming.activeIds = state.streaming.activeIds.filter(id => id !== streamId)
@@ -407,8 +448,15 @@ export const chatSlice = createSlice({
         // Legacy sync for primary streams
         if (stream.streamType === 'primary') {
           state.composition.sending = false
-          state.composition.imageDrafts = []
-          state.composition.imageDraftTarget = null
+          // A failed send is dispatched through here too (handleServerLoopFailure calls
+          // sendingCompleted on EVERY failure), and the recovery path puts the typed text
+          // back in the composer. Clearing the drafts unconditionally meant the words came
+          // back but the attachments the user picked did not — silently, with no way to
+          // recover them. A run that ended in error keeps its drafts for the retry.
+          if (!endedInError) {
+            state.composition.imageDrafts = []
+            state.composition.imageDraftTarget = null
+          }
         }
 
         // Clear primary if this was the primary stream
@@ -425,7 +473,10 @@ export const chatSlice = createSlice({
 
     streamingAborted: (state, action: PayloadAction<StreamingAbortedPayload | undefined>) => {
       const streamId = action.payload?.streamId ?? DEFAULT_STREAM_ID
-      const error = action.payload?.error ?? 'Generation aborted'
+      // A user Stop is not an error. Only an explicitly supplied reason (an abort the
+      // user did NOT ask for) sets `stream.error`; the bare Stop path leaves it null so
+      // the run-status dot stays neutral.
+      const error = action.payload?.error ?? null
       const stream = state.streaming.byId[streamId]
 
       if (stream) {
@@ -460,7 +511,8 @@ export const chatSlice = createSlice({
         if (stream) {
           stream.active = false
           stream.status = 'aborting'
-          stream.error = 'Generation aborted'
+          // "Stop all" is a user action, not a failure. See streamingAborted.
+          stream.error = null
           stream.liveMessageId = null
           stream.streamingMessageId = null
         }
@@ -654,19 +706,66 @@ export const chatSlice = createSlice({
         stream.status = hasToolCalls ? 'waiting_for_tool' : 'active'
         // Do NOT set active=false here. Wait for explicit streamCompleted action.
         // This is crucial for multi-turn loops where 'complete' chunks arrive per turn.
+      } else if (chunk.type === 'notice') {
+        // Non-terminal status ("Reconnecting…", "Retrying 2 of 3"). Never persisted and
+        // never touches `error`/`status`/`active` — it exists purely so a multi-second
+        // silence has a visible cause, in order among the streamed content.
+        const noticeCode = chunk.code ?? chunk.noticeCode
+        if (noticeCode) {
+          const noticeEvent: StreamEvent = {
+            type: 'notice',
+            noticeCode,
+            content: chunk.message ?? chunk.content ?? '',
+            complete: true,
+          }
+          if (typeof chunk.attempt === 'number') noticeEvent.attempt = chunk.attempt
+          if (typeof chunk.maxAttempts === 'number') noticeEvent.maxAttempts = chunk.maxAttempts
+
+          // Replace a trailing notice of the same code instead of stacking
+          // "Reconnecting… Reconnecting… Reconnecting…" down the transcript.
+          const lastEvent = stream.events[stream.events.length - 1]
+          if (lastEvent && lastEvent.type === 'notice' && lastEvent.noticeCode === noticeCode) {
+            stream.events[stream.events.length - 1] = noticeEvent
+          } else {
+            stream.events.push(noticeEvent)
+          }
+        }
       } else if (chunk.type === 'error') {
-        stream.error = chunk.error || 'Unknown stream error'
-        stream.status = 'error'
-        stream.active = false
-        stream.liveMessageId = null
-        stream.streamingMessageId = null
+        // Only `envelope.userMessage` is ever rendered. Any raw `Error.message` on the
+        // chunk goes to `detail`, behind a disclosure — it leaks loop vocabulary,
+        // lineage ids and stack text. normalizeChatErrorEnvelope always returns a
+        // complete envelope, so an older server that sends `{type:'error'}` with no
+        // envelope still produces a renderable bubble.
+        const rawDetail = typeof chunk.error === 'string' && chunk.error.trim() ? chunk.error : undefined
+        const envelope = normalizeChatErrorEnvelope(chunk.errorEnvelope ?? chunk.envelope, rawDetail)
 
-        // Remove from active list
-        state.streaming.activeIds = state.streaming.activeIds.filter(id => id !== streamId)
+        // Contract: `terminal` absent === true.
+        const terminal = chunk.terminal !== false
 
-        // Clear primary if this was the primary stream
-        if (state.streaming.primaryStreamId === streamId) {
-          state.streaming.primaryStreamId = null
+        // Log the failure in order among the streamed content so a live error is visible
+        // where it happened rather than only after the run tears down. Guard against a
+        // resubscribe re-delivering the identical terminal error.
+        const lastEvent = stream.events[stream.events.length - 1]
+        const isRepeatOfLastError =
+          lastEvent && lastEvent.type === 'error' && lastEvent.errorEnvelope?.code === envelope.code
+        if (!isRepeatOfLastError) {
+          stream.events.push({ type: 'error', errorEnvelope: envelope, complete: true })
+        }
+
+        if (terminal) {
+          stream.error = envelope.userMessage
+          stream.status = 'error'
+          stream.active = false
+          stream.liveMessageId = null
+          stream.streamingMessageId = null
+
+          // Remove from active list
+          state.streaming.activeIds = state.streaming.activeIds.filter(id => id !== streamId)
+
+          // Clear primary if this was the primary stream
+          if (state.streaming.primaryStreamId === streamId) {
+            state.streaming.primaryStreamId = null
+          }
         }
       }
     },
@@ -731,7 +830,10 @@ export const chatSlice = createSlice({
       }
     },
 
-    // Garbage collection: remove a finished stream from byId
+    // Garbage collection: remove a finished stream from byId.
+    // INVARIANT: this must never touch `state.errorNotices`. That is the entire reason
+    // error notices live outside `streaming.byId` — the slot is pruned 30s after a run
+    // ends, and an error the user has not seen or dismissed must outlive it.
     streamPruned: (state, action: PayloadAction<{ streamId: string }>) => {
       const { streamId } = action.payload
 
@@ -1333,6 +1435,69 @@ export const chatSlice = createSlice({
     },
     freeTierLimitModalHidden: state => {
       state.freeTier.showLimitModal = false
+    },
+
+    /* Chat error notice reducers (tier 2: failures with no persisted message to live on) */
+
+    chatErrorRecorded: (state, action: PayloadAction<ChatErrorRecord>) => {
+      const record = action.payload
+      const key = String(record.conversationId)
+      const bucket = state.errorNotices.byConversationId[key] ?? []
+
+      // Dedupe on (conversationId, streamId, envelope.code). Dismissed records still
+      // count: a reattach storm must not resurrect a bubble the user already closed.
+      const dedupeKey = chatErrorDedupeKey(record)
+      if (bucket.some(existing => chatErrorDedupeKey(existing) === dedupeKey)) return
+
+      bucket.push(record)
+      state.errorNotices.byConversationId[key] = bucket
+    },
+
+    chatErrorDismissed: (state, action: PayloadAction<{ conversationId: ConversationId; id: string }>) => {
+      const { conversationId, id } = action.payload
+      const bucket = state.errorNotices.byConversationId[String(conversationId)]
+      if (!bucket) return
+      // Mark rather than remove, so the dedupe above keeps the bubble closed.
+      const record = bucket.find(entry => entry.id === id)
+      if (record) record.dismissed = true
+    },
+
+    // A later successful send to the same parent means the recorded failure is stale.
+    // Removed outright (not dismissed): the run it described no longer represents state.
+    /**
+     * A successful send supersedes the failures that came before it.
+     *
+     * `parentMessageId` is nullable on BOTH sides on purpose. A failure that happened
+     * before anything was persisted — the server being down, an unauthenticated provider,
+     * the first message of a conversation — has no parent to anchor to. The previous
+     * version explicitly RETAINED those (`entry.parentMessageId == null || …`), so an
+     * unanchored bubble could never be cleared by anything: the user signed in, the next
+     * message streamed perfectly, and the stale "Try again" was still sitting there.
+     * Unanchored records are exactly the ones a later success disproves, so they go.
+     */
+    chatErrorsClearedForParent: (
+      state,
+      action: PayloadAction<{ conversationId: ConversationId; parentMessageId: MessageId | null }>
+    ) => {
+      const { conversationId, parentMessageId } = action.payload
+      const key = String(conversationId)
+      const bucket = state.errorNotices.byConversationId[key]
+      if (!bucket || bucket.length === 0) return
+
+      const parentKey = parentMessageId == null ? null : String(parentMessageId)
+      const remaining = bucket.filter(entry => {
+        if (entry.parentMessageId == null) return false
+        if (parentKey == null) return true
+        return String(entry.parentMessageId) !== parentKey
+      })
+      if (remaining.length === bucket.length) return
+
+      if (remaining.length === 0) delete state.errorNotices.byConversationId[key]
+      else state.errorNotices.byConversationId[key] = remaining
+    },
+
+    chatErrorsClearedForConversation: (state, action: PayloadAction<ConversationId>) => {
+      delete state.errorNotices.byConversationId[String(action.payload)]
     },
 
     /* User System Prompts reducers */

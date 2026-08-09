@@ -2,38 +2,54 @@
 // Install skills from GitHub, ClawdHub, or local folders
 
 import AdmZip from 'adm-zip'
+import { execFile as execFileCallback } from 'node:child_process'
 import fs from 'fs/promises'
 import path from 'path'
+import { promisify } from 'node:util'
 import yaml from 'yaml'
+import { getNativeShellPath } from '../tools/nativeShell.js'
 import { skillRegistry } from './skillLoader.js'
+import { parseSkillManifest, serializeSkillManifest } from './skillManifest.js'
+
+const execFile = promisify(execFileCallback)
 
 interface GitHubContent {
   name: string
-  path: string
   type: 'file' | 'dir'
   download_url: string | null
-  url: string // API URL for directories
-  html_url?: string
 }
 
 export interface SkillInstallCandidate {
   name: string
   path: string
   url: string
-  contents?: GitHubContent[]
 }
 
 interface GitHubSourceParts {
   owner: string
   repo: string
-  path: string
+  repoPath: string
   ref?: string
+  cloneUrl: string
+}
+
+interface LocalSkillCandidate extends SkillInstallCandidate {
+  sourcePath: string
+}
+
+interface SkillValidation {
+  valid: boolean
+  name?: string
+  displayName?: string
+  error?: string
 }
 
 export interface InstallResult {
   success: boolean
   skillName?: string
   skillNames?: string[]
+  displayName?: string
+  displayNames?: string[]
   error?: string
   code?: 'MULTIPLE_SKILLS_FOUND' | 'NO_SKILLS_FOUND' | 'INVALID_SOURCE' | 'INSTALL_FAILED'
   candidates?: SkillInstallCandidate[]
@@ -48,6 +64,8 @@ interface CatalogSkill {
 const GITHUB_API_BASE = 'https://api.github.com'
 const USER_AGENT = 'ygg-chat-electron'
 const GITHUB_API_MIN_INTERVAL_MS = process.env.VITEST ? 0 : 750
+const GIT_CLONE_TIMEOUT_MS = 120_000
+const GIT_CLONE_MAX_BUFFER = 1024 * 1024
 
 let lastGitHubApiRequestAt = 0
 
@@ -107,227 +125,258 @@ async function downloadFile(url: string): Promise<string> {
 }
 
 /**
- * Recursively download directory contents from GitHub
+ * Parse a GitHub repository, HTTPS clone URL, shorthand, or tree URL.
  */
-async function downloadDirectory(
-  contents: GitHubContent[],
-  targetDir: string,
-  preloadedDirectories: Map<string, GitHubContent[]> = new Map()
-): Promise<void> {
-  await fs.mkdir(targetDir, { recursive: true })
+export function parseGitHubSource(source: string): GitHubSourceParts {
+  const trimmed = source.trim().replace(/\/$/, '')
+  let owner: string
+  let repoWithSuffix: string
+  let repoPath = ''
+  let ref: string | undefined
 
-  for (const item of contents) {
-    const targetPath = path.join(targetDir, item.name)
-
-    if (item.type === 'file' && item.download_url) {
-      const content = await downloadFile(item.download_url)
-      await fs.writeFile(targetPath, content, 'utf-8')
-    } else if (item.type === 'dir') {
-      // Fetch subdirectory contents, reusing already discovered directories when available.
-      const subContents = preloadedDirectories.get(item.path) || (await fetchGitHubAPI(item.url))
-      await downloadDirectory(subContents, targetPath, preloadedDirectories)
+  if (/^https?:\/\/github\.com\//i.test(trimmed)) {
+    const url = new URL(trimmed)
+    if (url.protocol !== 'https:') {
+      throw new Error('Invalid GitHub URL. Use an HTTPS GitHub repository URL')
     }
+    const parts = url.pathname.split('/').filter(Boolean).map(decodeURIComponent)
+    owner = parts[0]
+    repoWithSuffix = parts[1]
+    if ((parts[2] === 'tree' || parts[2] === 'blob') && parts.length >= 4) {
+      ref = parts[3]
+      repoPath = parts.slice(4).join('/')
+    } else if (parts.length > 2) {
+      throw new Error('Invalid GitHub URL. Use a repository URL or /tree/<ref>/<path> skill folder URL')
+    }
+  } else {
+    const parts = trimmed.split('/').filter(Boolean)
+    if (parts.length < 2) {
+      throw new Error('Invalid source format. Use "owner/repo" or "owner/repo/path"')
+    }
+    ;[owner, repoWithSuffix] = parts
+    repoPath = parts.slice(2).join('/')
+  }
+
+  const repo = repoWithSuffix.replace(/\.git$/i, '')
+  if (!/^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$/.test(owner) || !/^[A-Za-z0-9._-]+$/.test(repo)) {
+    throw new Error('Invalid GitHub source. Expected https://github.com/owner/repo.git')
+  }
+
+  return {
+    owner,
+    repo,
+    repoPath,
+    ref,
+    cloneUrl: `https://github.com/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}.git`,
   }
 }
 
-/**
- * Parse GitHub source string
- * Formats:
- *   - "owner/repo" -> entire repo
- *   - "owner/repo/path/to/skill" -> specific path
- *   - "https://github.com/owner/repo" -> entire repo
- *   - "https://github.com/owner/repo/tree/main/path" -> specific path
- */
-function buildGitHubContentsUrl(owner: string, repo: string, repoPath: string, ref?: string): string {
+function buildGitHubTreeUrl(parts: GitHubSourceParts, repoPath: string): string {
   const encodedPath = repoPath
     .split('/')
     .filter(Boolean)
     .map(encodeURIComponent)
     .join('/')
-  return withGitHubRef(`${GITHUB_API_BASE}/repos/${owner}/${repo}/contents/${encodedPath}`, ref)
+  return `https://github.com/${encodeURIComponent(parts.owner)}/${encodeURIComponent(parts.repo)}/tree/${encodeURIComponent(parts.ref || 'main')}/${encodedPath}`
 }
 
-function withGitHubRef(url: string, ref?: string): string {
-  if (!ref) return url
-  const separator = url.includes('?') ? '&' : '?'
-  return `${url}${separator}ref=${encodeURIComponent(ref)}`
+async function runGitClone(parts: GitHubSourceParts, targetDir: string): Promise<void> {
+  const args = ['clone', '--depth', '1', '--single-branch']
+  if (parts.ref) {
+    args.push('--branch', parts.ref)
+  }
+  args.push('--', parts.cloneUrl, targetDir)
+
+  const nativePath = await getNativeShellPath()
+  try {
+    await execFile('git', args, {
+      timeout: GIT_CLONE_TIMEOUT_MS,
+      maxBuffer: GIT_CLONE_MAX_BUFFER,
+      windowsHide: true,
+      env: {
+        ...process.env,
+        ...(nativePath ? { PATH: nativePath } : {}),
+        GIT_TERMINAL_PROMPT: '0',
+        GCM_INTERACTIVE: 'Never',
+      },
+    })
+  } catch (error) {
+    const gitError = error as NodeJS.ErrnoException & { stderr?: string }
+    if (gitError.code === 'ENOENT') {
+      throw new Error('Git is required to install skills from GitHub. Install Git and try again.')
+    }
+    const detail = String(gitError.stderr || gitError.message || '').trim().split(/\r?\n/).pop()
+    throw new Error(`Failed to clone GitHub repository${detail ? `: ${detail}` : ''}`)
+  }
 }
 
-function buildGitHubTreeUrl(owner: string, repo: string, ref: string | undefined, repoPath: string): string {
-  const encodedPath = repoPath
-    .split('/')
-    .filter(Boolean)
-    .map(encodeURIComponent)
-    .join('/')
-  return `https://github.com/${owner}/${repo}/tree/${encodeURIComponent(ref || 'main')}/${encodedPath}`
-}
-
-function containsSkillMd(contents: GitHubContent[]): boolean {
-  return contents.some((item: GitHubContent) => item.name === 'SKILL.md' && item.type === 'file')
+async function hasSkillManifest(dirPath: string): Promise<boolean> {
+  try {
+    return (await fs.stat(path.join(dirPath, 'SKILL.md'))).isFile()
+  } catch {
+    return false
+  }
 }
 
 async function findDirectSkillCandidates(
-  owner: string,
-  repo: string,
-  contents: GitHubContent[],
-  ref?: string
-): Promise<SkillInstallCandidate[]> {
-  const directories = contents.filter((item: GitHubContent) => item.type === 'dir')
-  const candidates: SkillInstallCandidate[] = []
-
-  for (const directory of directories) {
-    try {
-      const directoryContents = await fetchGitHubAPI(withGitHubRef(directory.url, ref))
-      if (Array.isArray(directoryContents) && containsSkillMd(directoryContents)) {
-        candidates.push({
-          name: directory.name,
-          path: directory.path,
-          url: directory.html_url || buildGitHubTreeUrl(owner, repo, ref, directory.path),
-          contents: directoryContents,
-        })
-      }
-    } catch {
-      // Ignore unreadable child directories; they are simply not installable skills.
-    }
+  parts: GitHubSourceParts,
+  baseDir: string,
+  relativeBase: string
+): Promise<LocalSkillCandidate[]> {
+  const entries = await fs.readdir(baseDir, { withFileTypes: true })
+  const candidates: LocalSkillCandidate[] = []
+  for (const entry of entries) {
+    if (!entry.isDirectory() || entry.name.startsWith('.')) continue
+    const sourcePath = path.join(baseDir, entry.name)
+    if (!(await hasSkillManifest(sourcePath))) continue
+    const candidatePath = path.posix.join(relativeBase, entry.name)
+    candidates.push({
+      name: entry.name,
+      path: candidatePath,
+      url: buildGitHubTreeUrl(parts, candidatePath),
+      sourcePath,
+    })
   }
-
   return candidates
 }
 
-function multipleSkillsFound(candidates: SkillInstallCandidate[]): InstallResult {
-  const names = candidates.map(candidate => candidate.name).join(', ')
-  const urls = candidates.map(candidate => candidate.url).join(', ')
+async function discoverGitHubSkills(
+  parts: GitHubSourceParts,
+  cloneDir: string
+): Promise<{ singleSkillPath?: string; candidates: LocalSkillCandidate[] }> {
+  const requestedPath = path.resolve(cloneDir, parts.repoPath || '.')
+  const relative = path.relative(cloneDir, requestedPath)
+  if (relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
+    throw new Error('GitHub skill path escapes the repository')
+  }
+
+  let requestedStat
+  try {
+    requestedStat = await fs.stat(requestedPath)
+  } catch {
+    throw new Error('Repository path not found')
+  }
+  if (!requestedStat.isDirectory()) {
+    throw new Error('GitHub skill path must be a directory containing SKILL.md')
+  }
+
+  if (await hasSkillManifest(requestedPath)) {
+    return { singleSkillPath: requestedPath, candidates: [] }
+  }
+
+  let candidates = await findDirectSkillCandidates(parts, requestedPath, parts.repoPath)
+  if (!parts.repoPath && candidates.length === 0) {
+    const skillsPath = path.join(requestedPath, 'skills')
+    try {
+      if ((await fs.stat(skillsPath)).isDirectory()) {
+        candidates = await findDirectSkillCandidates(parts, skillsPath, 'skills')
+      }
+    } catch {
+      // No conventional top-level skills directory.
+    }
+  }
+
+  return { candidates }
+}
+
+function multipleSkillsFound(candidates: LocalSkillCandidate[]): InstallResult {
+  const publicCandidates = candidates.map(({ sourcePath: _sourcePath, ...candidate }) => candidate)
   return {
     success: false,
     code: 'MULTIPLE_SKILLS_FOUND',
-    candidates: candidates.map(({ contents: _contents, ...candidate }) => candidate),
-    error: `Multiple skills found: ${names}. Paste one of these specific skill URLs to install it: ${urls}`,
+    candidates: publicCandidates,
+    error: `Multiple skills found: ${publicCandidates.map(candidate => candidate.name).join(', ')}. Choose a specific skill or install all skills.`,
   }
 }
 
-async function discoverGitHubSkills(parts: GitHubSourceParts): Promise<{
-  contents: GitHubContent[]
-  isSingleSkill: boolean
-  candidates: SkillInstallCandidate[]
-}> {
-  const { owner, repo, path: repoPath, ref } = parts
-  const contents = await fetchGitHubAPI(buildGitHubContentsUrl(owner, repo, repoPath, ref))
-
-  if (!Array.isArray(contents)) {
-    return { contents: [], isSingleSkill: false, candidates: [] }
+async function withClonedGitHubRepository<T>(parts: GitHubSourceParts, callback: (cloneDir: string) => Promise<T>): Promise<T> {
+  const skillsDir = skillRegistry.getSkillsDirectory()
+  await fs.mkdir(skillsDir, { recursive: true })
+  const cloneDir = path.join(skillsDir, `.cloning-${parts.repo}-${Date.now()}-${Math.random().toString(36).slice(2)}`)
+  try {
+    await runGitClone(parts, cloneDir)
+    return await callback(cloneDir)
+  } finally {
+    await fs.rm(cloneDir, { recursive: true, force: true })
   }
-
-  if (containsSkillMd(contents)) {
-    return { contents, isSingleSkill: true, candidates: [] }
-  }
-
-  let candidates = await findDirectSkillCandidates(owner, repo, contents, ref)
-  const skillsDir = contents.find((item: GitHubContent) => item.type === 'dir' && item.name === 'skills')
-  if (repoPath === '' && candidates.length === 0 && skillsDir) {
-    const skillsContents = await fetchGitHubAPI(withGitHubRef(skillsDir.url, ref))
-    if (Array.isArray(skillsContents)) {
-      candidates = await findDirectSkillCandidates(owner, repo, skillsContents, ref)
-    }
-  }
-
-  return { contents, isSingleSkill: false, candidates }
 }
 
-function parseGitHubSource(source: string): GitHubSourceParts {
-  // Handle full URLs
-  if (source.startsWith('https://github.com/')) {
-    const url = new URL(source)
-    const parts = url.pathname.split('/').filter(Boolean).map(decodeURIComponent)
-
-    const owner = parts[0]
-    const repo = parts[1]
-
-    if (!owner || !repo) {
-      throw new Error('Invalid GitHub URL. Expected https://github.com/owner/repo')
-    }
-
-    // Check for /tree/branch/path or /blob/branch/path format
-    if ((parts[2] === 'tree' || parts[2] === 'blob') && parts.length > 3) {
-      const ref = parts[3]
-      const pathParts = parts.slice(4)
-      return { owner, repo, path: pathParts.join('/'), ref }
-    }
-
-    return { owner, repo, path: '' }
-  }
-
-  // Handle shorthand format: owner/repo or owner/repo/path
-  const parts = source.split('/').filter(Boolean)
-  if (parts.length < 2) {
-    throw new Error('Invalid source format. Use "owner/repo" or "owner/repo/path"')
-  }
-
-  const [owner, repo, ...pathParts] = parts
-  return { owner, repo, path: pathParts.join('/') }
-}
-
-/**
- * Validate that a directory contains a valid SKILL.md
- */
-async function validateSkillDirectory(dirPath: string): Promise<{ valid: boolean; name?: string; error?: string }> {
+/** Validate and normalize a staged skill manifest. */
+async function validateSkillDirectory(dirPath: string, rewriteManifest = false): Promise<SkillValidation> {
   const skillMdPath = path.join(dirPath, 'SKILL.md')
 
   try {
     const content = await fs.readFile(skillMdPath, 'utf-8')
-
-    // Check for frontmatter
-    const match = content.match(/^---\n([\s\S]*?)\n---/)
-    if (!match) {
-      return { valid: false, error: 'SKILL.md missing YAML frontmatter' }
+    const manifest = parseSkillManifest(content)
+    if (rewriteManifest && manifest.name !== manifest.runtimeName) {
+      await fs.writeFile(skillMdPath, serializeSkillManifest(manifest), 'utf-8')
     }
-
-    // Parse frontmatter to get name
-    const frontmatter = yaml.parse(match[1])
-
-    if (!frontmatter.name) {
-      return { valid: false, error: 'SKILL.md missing required "name" field' }
+    return {
+      valid: true,
+      name: manifest.runtimeName,
+      displayName: manifest.name !== manifest.runtimeName ? manifest.name : undefined,
     }
-
-    if (!frontmatter.description) {
-      return { valid: false, error: 'SKILL.md missing required "description" field' }
-    }
-
-    return { valid: true, name: frontmatter.name }
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
       return { valid: false, error: 'No SKILL.md found in directory' }
     }
-    return { valid: false, error: `Failed to read SKILL.md: ${error}` }
+    return { valid: false, error: error instanceof Error ? error.message : String(error) }
   }
 }
 
-/**
- * Install a skill from GitHub
- */
+async function writeSkillMetadata(
+  skillPath: string,
+  installedFrom: string,
+  displayName?: string,
+  extra: Record<string, unknown> = {}
+): Promise<void> {
+  await fs.writeFile(
+    path.join(skillPath, '.skill-meta.json'),
+    JSON.stringify(
+      {
+        installedAt: new Date().toISOString(),
+        installedFrom,
+        ...(displayName ? { displayName } : {}),
+        enabled: true,
+        ...extra,
+      },
+      null,
+      2
+    ),
+    'utf-8'
+  )
+}
+
+async function reloadAndVerify(skillNames: string[]): Promise<void> {
+  await skillRegistry.reload()
+  const missing = skillNames.filter(name => !skillRegistry.hasSkill(name))
+  if (missing.length > 0) {
+    throw new Error(`Installed skill was not loaded by the registry: ${missing.join(', ')}`)
+  }
+}
+
+/** Install one skill from a GitHub repository clone. */
 export async function installFromGitHub(source: string): Promise<InstallResult> {
   try {
     const parts = parseGitHubSource(source)
-    const { repo, path: repoPath, ref } = parts
-    const discovery = await discoverGitHubSkills(parts)
-
-    if (discovery.isSingleSkill) {
-      return await installSingleSkill(discovery.contents, source, repoPath.split('/').pop() || repo)
-    }
-
-    if (discovery.candidates.length === 1) {
-      return installFromGitHub(buildGitHubTreeUrl(parts.owner, repo, ref, discovery.candidates[0].path))
-    }
-
-    if (discovery.candidates.length > 1) {
-      return multipleSkillsFound(discovery.candidates)
-    }
-
-    return {
-      success: false,
-      code: 'NO_SKILLS_FOUND',
-      error:
-        'No skills found at this location. GitHub skills must be folders containing SKILL.md, for example https://github.com/owner/repo/tree/main/skills/skill-name',
-    }
+    return await withClonedGitHubRepository(parts, async cloneDir => {
+      const discovery = await discoverGitHubSkills(parts, cloneDir)
+      if (discovery.singleSkillPath) {
+        return installSingleSkillFromDirectory(discovery.singleSkillPath, `github:${source}`)
+      }
+      if (discovery.candidates.length === 1) {
+        return installSingleSkillFromDirectory(discovery.candidates[0].sourcePath, `github:${source}`)
+      }
+      if (discovery.candidates.length > 1) {
+        return multipleSkillsFound(discovery.candidates)
+      }
+      return {
+        success: false,
+        code: 'NO_SKILLS_FOUND',
+        error:
+          'No skills found at this location. GitHub skills must be folders containing SKILL.md, for example https://github.com/owner/repo/tree/main/skills/skill-name',
+      }
+    })
   } catch (error) {
     return {
       success: false,
@@ -340,21 +389,20 @@ export async function installFromGitHub(source: string): Promise<InstallResult> 
 export async function installAllFromGitHub(source: string): Promise<InstallResult> {
   try {
     const parts = parseGitHubSource(source)
-    const discovery = await discoverGitHubSkills(parts)
-
-    if (discovery.isSingleSkill) {
-      return installSingleSkill(discovery.contents, source, parts.path.split('/').pop() || parts.repo)
-    }
-
-    if (discovery.candidates.length === 0) {
-      return {
-        success: false,
-        code: 'NO_SKILLS_FOUND',
-        error: 'No skills found to install from this GitHub location',
+    return await withClonedGitHubRepository(parts, async cloneDir => {
+      const discovery = await discoverGitHubSkills(parts, cloneDir)
+      if (discovery.singleSkillPath) {
+        return installSingleSkillFromDirectory(discovery.singleSkillPath, `github:${source}`)
       }
-    }
-
-    return installSkillGroupFromGitHub(parts, source, discovery.candidates)
+      if (discovery.candidates.length === 0) {
+        return {
+          success: false,
+          code: 'NO_SKILLS_FOUND',
+          error: 'No skills found to install from this GitHub location',
+        }
+      }
+      return installSkillGroupFromDirectories(parts.repo, source, discovery.candidates)
+    })
   } catch (error) {
     return {
       success: false,
@@ -364,176 +412,119 @@ export async function installAllFromGitHub(source: string): Promise<InstallResul
   }
 }
 
-/**
- * Install a single skill from GitHub contents
- */
-async function installSkillGroupFromGitHub(
-  parts: GitHubSourceParts,
+async function installSingleSkillFromDirectory(sourcePath: string, installedFrom: string): Promise<InstallResult> {
+  const skillsDir = skillRegistry.getSkillsDirectory()
+  const stagingDir = path.join(skillsDir, `.installing-${Date.now()}-${Math.random().toString(36).slice(2)}`)
+  let targetDir: string | null = null
+  let moved = false
+
+  try {
+    await copyDirectory(sourcePath, stagingDir, new Set(['.git']))
+    const validation = await validateSkillDirectory(stagingDir, true)
+    if (!validation.valid || !validation.name) {
+      return { success: false, code: 'INSTALL_FAILED', error: validation.error || 'Invalid skill manifest' }
+    }
+
+    targetDir = path.join(skillsDir, validation.name)
+    if (await directoryExists(targetDir) || skillRegistry.hasSkill(validation.name)) {
+      return { success: false, code: 'INSTALL_FAILED', error: `Skill "${validation.name}" is already installed` }
+    }
+
+    await writeSkillMetadata(stagingDir, installedFrom, validation.displayName)
+    await fs.rename(stagingDir, targetDir)
+    moved = true
+    await reloadAndVerify([validation.name])
+
+    return {
+      success: true,
+      skillName: validation.name,
+      displayName: validation.displayName,
+    }
+  } catch (error) {
+    if (moved && targetDir) {
+      await fs.rm(targetDir, { recursive: true, force: true })
+      try {
+        await skillRegistry.reload()
+      } catch {}
+    }
+    return {
+      success: false,
+      code: 'INSTALL_FAILED',
+      error: error instanceof Error ? error.message : String(error),
+    }
+  } finally {
+    await fs.rm(stagingDir, { recursive: true, force: true })
+  }
+}
+
+async function installSkillGroupFromDirectories(
+  groupName: string,
   source: string,
-  candidates: SkillInstallCandidate[]
+  candidates: LocalSkillCandidate[]
 ): Promise<InstallResult> {
   const skillsDir = skillRegistry.getSkillsDirectory()
-  const groupName = parts.repo
   const targetDir = path.join(skillsDir, groupName)
-  const tempDir = path.join(skillsDir, `.installing-${groupName}-${Date.now()}`)
+  const stagingDir = path.join(skillsDir, `.installing-${groupName}-${Date.now()}-${Math.random().toString(36).slice(2)}`)
   const installedSkillNames: string[] = []
+  const displayNames: string[] = []
+  let moved = false
 
   try {
     if (await directoryExists(targetDir)) {
-      return { success: false, error: `Skill group "${groupName}" is already installed` }
+      return { success: false, code: 'INSTALL_FAILED', error: `Skill group "${groupName}" is already installed` }
     }
+    await fs.mkdir(stagingDir, { recursive: true })
 
-    await fs.mkdir(tempDir, { recursive: true })
-
+    const runtimeNames = new Set<string>()
     for (const candidate of candidates) {
-      const contents =
-        candidate.contents || (await fetchGitHubAPI(buildGitHubContentsUrl(parts.owner, parts.repo, candidate.path, parts.ref)))
-      if (!Array.isArray(contents) || !containsSkillMd(contents)) {
-        throw new Error(`GitHub skill candidate "${candidate.name}" no longer contains SKILL.md`)
+      const candidateStagingDir = path.join(stagingDir, `.candidate-${installedSkillNames.length}`)
+      await copyDirectory(candidate.sourcePath, candidateStagingDir, new Set(['.git']))
+      const validation = await validateSkillDirectory(candidateStagingDir, true)
+      if (!validation.valid || !validation.name) {
+        throw new Error(`${candidate.name}: ${validation.error || 'Invalid skill manifest'}`)
       }
-
-      const skillTempDir = path.join(tempDir, candidate.name)
-      await downloadDirectory(contents, skillTempDir, new Map([[candidate.path, contents]]))
-
-      const validation = await validateSkillDirectory(skillTempDir)
-      if (!validation.valid) {
-        throw new Error(`${candidate.name}: ${validation.error}`)
+      if (runtimeNames.has(validation.name) || skillRegistry.hasSkill(validation.name)) {
+        throw new Error(`Duplicate normalized skill name "${validation.name}"`)
       }
+      runtimeNames.add(validation.name)
 
-      installedSkillNames.push(validation.name || candidate.name)
+      const finalStagedPath = path.join(stagingDir, validation.name)
+      await fs.rename(candidateStagingDir, finalStagedPath)
+      await writeSkillMetadata(finalStagedPath, `github-group:${source}`, validation.displayName, { group: groupName })
+      installedSkillNames.push(validation.name)
+      displayNames.push(validation.displayName || validation.name)
     }
 
-    await fs.rename(tempDir, targetDir)
+    await fs.rename(stagingDir, targetDir)
+    moved = true
+    await reloadAndVerify(installedSkillNames)
 
-    const installedAt = new Date().toISOString()
-    for (const skillName of installedSkillNames) {
-      const metaPath = path.join(targetDir, skillName, '.skill-meta.json')
-      const meta = {
-        installedAt,
-        installedFrom: `github-group:${source}`,
-        enabled: true,
-        group: groupName,
-      }
-      await fs.writeFile(metaPath, JSON.stringify(meta, null, 2), 'utf-8')
+    return {
+      success: true,
+      skillName: groupName,
+      skillNames: installedSkillNames,
+      displayNames,
     }
-
-    await skillRegistry.reload()
-
-    return { success: true, skillName: groupName, skillNames: installedSkillNames }
   } catch (error) {
-    try {
-      await fs.rm(tempDir, { recursive: true, force: true })
-    } catch {}
-
+    if (moved) {
+      await fs.rm(targetDir, { recursive: true, force: true })
+      try {
+        await skillRegistry.reload()
+      } catch {}
+    }
     return {
       success: false,
       code: 'INSTALL_FAILED',
       error: error instanceof Error ? error.message : String(error),
     }
+  } finally {
+    await fs.rm(stagingDir, { recursive: true, force: true })
   }
 }
 
-async function installSingleSkill(
-  contents: GitHubContent[],
-  source: string,
-  fallbackName: string
-): Promise<InstallResult> {
-  const skillsDir = skillRegistry.getSkillsDirectory()
-
-  // Create temp directory
-  const tempDir = path.join(skillsDir, `.installing-${Date.now()}`)
-
-  try {
-    // Download all files
-    await downloadDirectory(contents, tempDir)
-
-    // Validate
-    const validation = await validateSkillDirectory(tempDir)
-    if (!validation.valid) {
-      await fs.rm(tempDir, { recursive: true, force: true })
-      return { success: false, error: validation.error }
-    }
-
-    const skillName = validation.name || fallbackName
-    const targetDir = path.join(skillsDir, skillName)
-
-    // Check if already installed
-    if (await directoryExists(targetDir)) {
-      await fs.rm(tempDir, { recursive: true, force: true })
-      return { success: false, error: `Skill "${skillName}" is already installed` }
-    }
-
-    // Move to final location
-    await fs.rename(tempDir, targetDir)
-
-    // Write metadata
-    const metaPath = path.join(targetDir, '.skill-meta.json')
-    const meta = {
-      installedAt: new Date().toISOString(),
-      installedFrom: `github:${source}`,
-      enabled: true,
-    }
-    await fs.writeFile(metaPath, JSON.stringify(meta, null, 2), 'utf-8')
-
-    // Reload registry
-    await skillRegistry.reload()
-
-    return { success: true, skillName }
-  } catch (error) {
-    // Cleanup on failure
-    try {
-      await fs.rm(tempDir, { recursive: true, force: true })
-    } catch {}
-
-    return {
-      success: false,
-      error: error instanceof Error ? error.message : String(error),
-    }
-  }
-}
-
-/**
- * Install a skill from a local folder
- */
+/** Install a skill from a local folder using the same staging and verification path. */
 export async function installFromLocal(sourcePath: string): Promise<InstallResult> {
-  try {
-    // Validate source
-    const validation = await validateSkillDirectory(sourcePath)
-    if (!validation.valid) {
-      return { success: false, error: validation.error }
-    }
-
-    const skillName = validation.name!
-    const skillsDir = skillRegistry.getSkillsDirectory()
-    const targetDir = path.join(skillsDir, skillName)
-
-    // Check if already installed
-    if (await directoryExists(targetDir)) {
-      return { success: false, error: `Skill "${skillName}" is already installed` }
-    }
-
-    // Copy directory
-    await copyDirectory(sourcePath, targetDir)
-
-    // Write metadata
-    const metaPath = path.join(targetDir, '.skill-meta.json')
-    const meta = {
-      installedAt: new Date().toISOString(),
-      installedFrom: 'local',
-      enabled: true,
-    }
-    await fs.writeFile(metaPath, JSON.stringify(meta, null, 2), 'utf-8')
-
-    // Reload registry
-    await skillRegistry.reload()
-
-    return { success: true, skillName }
-  } catch (error) {
-    return {
-      success: false,
-      error: error instanceof Error ? error.message : String(error),
-    }
-  }
+  return installSingleSkillFromDirectory(sourcePath, 'local')
 }
 
 /**
@@ -624,77 +615,26 @@ async function downloadZipFile(url: string): Promise<Buffer> {
  */
 export async function installFromZipUrl(zipUrl: string, sourceLabel: string): Promise<InstallResult> {
   const skillsDir = skillRegistry.getSkillsDirectory()
-  const tempDir = path.join(skillsDir, `.installing-zip-${Date.now()}`)
+  const extractionDir = path.join(skillsDir, `.extracting-zip-${Date.now()}-${Math.random().toString(36).slice(2)}`)
 
   try {
-    // Download zip
-    // console.log(`[SkillInstaller] Downloading zip from: ${zipUrl}`)
     const zipBuffer = await downloadZipFile(zipUrl)
-
-    // Extract zip
-    // console.log(`[SkillInstaller] Extracting zip...`)
     const zip = new AdmZip(zipBuffer)
-    zip.extractAllTo(tempDir, true)
+    zip.extractAllTo(extractionDir, true)
 
-    // Check if zip extracted to a single subdirectory (common pattern)
-    const entries = await fs.readdir(tempDir, { withFileTypes: true })
-    let skillSourceDir = tempDir
-
-    // If there's exactly one directory and no files, use that as the source
-    const dirs = entries.filter(e => e.isDirectory())
-    const files = entries.filter(e => e.isFile())
-    if (dirs.length === 1 && files.length === 0) {
-      skillSourceDir = path.join(tempDir, dirs[0].name)
-    }
-
-    // Validate
-    const validation = await validateSkillDirectory(skillSourceDir)
-    if (!validation.valid) {
-      await fs.rm(tempDir, { recursive: true, force: true })
-      return { success: false, error: validation.error }
-    }
-
-    const skillName = validation.name!
-    const targetDir = path.join(skillsDir, skillName)
-
-    // Check if already installed
-    if (await directoryExists(targetDir)) {
-      await fs.rm(tempDir, { recursive: true, force: true })
-      return { success: false, error: `Skill "${skillName}" is already installed` }
-    }
-
-    // Move to final location
-    await fs.rename(skillSourceDir, targetDir)
-
-    // Clean up temp dir if we used a subdirectory
-    if (skillSourceDir !== tempDir) {
-      await fs.rm(tempDir, { recursive: true, force: true })
-    }
-
-    // Write metadata
-    const metaPath = path.join(targetDir, '.skill-meta.json')
-    const meta = {
-      installedAt: new Date().toISOString(),
-      installedFrom: sourceLabel,
-      enabled: true,
-    }
-    await fs.writeFile(metaPath, JSON.stringify(meta, null, 2), 'utf-8')
-
-    // Reload registry
-    await skillRegistry.reload()
-
-    console.log(`[SkillInstaller] Successfully installed skill: ${skillName}`)
-    return { success: true, skillName }
+    const entries = await fs.readdir(extractionDir, { withFileTypes: true })
+    const dirs = entries.filter(entry => entry.isDirectory() && !entry.name.startsWith('.'))
+    const files = entries.filter(entry => entry.isFile())
+    const skillSourceDir = dirs.length === 1 && files.length === 0 ? path.join(extractionDir, dirs[0].name) : extractionDir
+    return await installSingleSkillFromDirectory(skillSourceDir, sourceLabel)
   } catch (error) {
-    // Cleanup on failure
-    try {
-      await fs.rm(tempDir, { recursive: true, force: true })
-    } catch {}
-
     return {
       success: false,
+      code: 'INSTALL_FAILED',
       error: error instanceof Error ? error.message : String(error),
     }
+  } finally {
+    await fs.rm(extractionDir, { recursive: true, force: true })
   }
 }
 
@@ -723,8 +663,8 @@ export async function installFromUrl(url: string): Promise<InstallResult> {
     return installFromClawdHub(url)
   }
 
-  // GitHub URL
-  if (url.includes('github.com')) {
+  // GitHub repository or HTTPS clone URL
+  if (/^https?:\/\/github\.com\//i.test(url)) {
     return installFromGitHub(url)
   }
 
@@ -752,17 +692,22 @@ async function directoryExists(dirPath: string): Promise<boolean> {
   }
 }
 
-async function copyDirectory(src: string, dest: string): Promise<void> {
+async function copyDirectory(src: string, dest: string, excludedNames: Set<string> = new Set()): Promise<void> {
   await fs.mkdir(dest, { recursive: true })
   const entries = await fs.readdir(src, { withFileTypes: true })
 
   for (const entry of entries) {
+    if (excludedNames.has(entry.name)) continue
+    if (entry.isSymbolicLink()) {
+      throw new Error(`Skill contains unsupported symbolic link: ${entry.name}`)
+    }
+
     const srcPath = path.join(src, entry.name)
     const destPath = path.join(dest, entry.name)
 
     if (entry.isDirectory()) {
-      await copyDirectory(srcPath, destPath)
-    } else {
+      await copyDirectory(srcPath, destPath, excludedNames)
+    } else if (entry.isFile()) {
       await fs.copyFile(srcPath, destPath)
     }
   }

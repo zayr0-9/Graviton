@@ -4,19 +4,17 @@
 import { app } from 'electron'
 import fs from 'fs/promises'
 import path from 'path'
-import yaml from 'yaml'
+import { normalizeSkillName, parseSkillManifest } from './skillManifest.js'
 
 const SKILLS_DIR_NAME = 'skills'
 const SKILL_FILE = 'SKILL.md'
 const META_FILE = '.skill-meta.json'
 const SKILLS_GUIDE_FILE = 'SKILLS_GUIDE.md'
 
-// Regex to extract YAML frontmatter
-const FRONTMATTER_REGEX = /^---\n([\s\S]*?)\n---\n([\s\S]*)$/
-
 export interface SkillDefinition {
   // From SKILL.md frontmatter (required)
-  name: string // Must match folder name, lowercase + hyphens only
+  name: string // Runtime activation key, lowercase + hyphens only
+  displayName?: string // Original manifest name when normalization changed it
   description: string // Max 1024 chars, used for AI to decide relevance
 
   // From SKILL.md frontmatter (optional)
@@ -38,6 +36,7 @@ export interface SkillDefinition {
 
 export interface SkillSummary {
   name: string
+  displayName?: string
   description: string
   enabled: boolean
 }
@@ -52,6 +51,7 @@ export interface SkillMetadata {
   installedAt: string // ISO timestamp
   installedFrom: string // "github:anthropics/skills/skills/code-review" or "local"
   version?: string // From metadata.version if present
+  displayName?: string // Original manifest name when normalized for runtime use
   enabled: boolean
 }
 
@@ -221,47 +221,20 @@ Step-by-step instructions for the AI to follow...
     const metaFilePath = path.join(skillPath, META_FILE)
 
     try {
-      // Read SKILL.md
       const skillContent = await fs.readFile(skillFilePath, 'utf-8')
+      const manifest = parseSkillManifest(skillContent)
+      const runtimeName = manifest.runtimeName
+      const frontmatter = manifest.frontmatter
 
-      // Parse frontmatter
-      const match = skillContent.match(FRONTMATTER_REGEX)
-      if (!match) {
-        console.warn(`[SkillLoader] Invalid SKILL.md format in ${skillDirName}: missing frontmatter`)
-        return
-      }
-
-      const [, frontmatterRaw, bodyContent] = match
-      let frontmatter: any
-
+      const directoryName = path.basename(skillPath)
+      let normalizedDirectoryName: string | null = null
       try {
-        frontmatter = yaml.parse(frontmatterRaw)
-      } catch (parseError) {
-        console.warn(`[SkillLoader] Invalid YAML frontmatter in ${skillDirName}:`, parseError)
-        return
+        normalizedDirectoryName = normalizeSkillName(directoryName)
+      } catch {
+        // Legacy folders can contain names that are not valid skill identifiers.
       }
-
-      // Validate required fields
-      if (!frontmatter.name || typeof frontmatter.name !== 'string') {
-        console.warn(`[SkillLoader] Missing or invalid 'name' in ${skillDirName}`)
-        return
-      }
-
-      if (!frontmatter.description || typeof frontmatter.description !== 'string') {
-        console.warn(`[SkillLoader] Missing or invalid 'description' in ${skillDirName}`)
-        return
-      }
-
-      // Validate name format (lowercase, hyphens, no consecutive hyphens)
-      if (!/^[a-z][a-z0-9-]*[a-z0-9]$|^[a-z]$/.test(frontmatter.name)) {
-        console.warn(`[SkillLoader] Invalid name format in ${skillDirName}: must be lowercase with hyphens`)
-        return
-      }
-
-      // Name should match directory
-      if (frontmatter.name !== skillDirName) {
-        console.warn(`[SkillLoader] Skill name "${frontmatter.name}" doesn't match directory "${skillDirName}"`)
-        // Continue anyway but log warning
+      if (runtimeName !== normalizedDirectoryName) {
+        console.warn(`[SkillLoader] Skill name "${runtimeName}" doesn't match directory "${skillDirName}"`)
       }
 
       // Check for optional directories
@@ -279,15 +252,21 @@ Step-by-step instructions for the AI to follow...
       }
 
       // Build definition
+      const displayName = meta.displayName || (manifest.name !== runtimeName ? manifest.name : undefined)
+      const allowedToolsValue = frontmatter['allowed-tools']
       const definition: SkillDefinition = {
-        name: frontmatter.name,
-        description: frontmatter.description,
-        license: frontmatter.license,
-        compatibility: frontmatter.compatibility,
-        metadata: frontmatter.metadata,
-        allowedTools: frontmatter['allowed-tools']?.split(' ').filter(Boolean),
+        name: runtimeName,
+        displayName,
+        description: manifest.description,
+        license: typeof frontmatter.license === 'string' ? frontmatter.license : undefined,
+        compatibility: typeof frontmatter.compatibility === 'string' ? frontmatter.compatibility : undefined,
+        metadata:
+          frontmatter.metadata && typeof frontmatter.metadata === 'object' && !Array.isArray(frontmatter.metadata)
+            ? (frontmatter.metadata as Record<string, string>)
+            : undefined,
+        allowedTools: typeof allowedToolsValue === 'string' ? allowedToolsValue.split(' ').filter(Boolean) : undefined,
         sourcePath: skillPath,
-        bodyContent: bodyContent.trim(),
+        bodyContent: manifest.bodyContent,
         hasScripts,
         hasReferences,
         hasAssets,
@@ -296,8 +275,16 @@ Step-by-step instructions for the AI to follow...
         installedFrom: meta.installedFrom,
       }
 
-      this.skills.set(frontmatter.name, definition)
-      // console.log(`[SkillLoader] Loaded skill: ${frontmatter.name}`)
+      const existing = this.skills.get(runtimeName)
+      if (existing) {
+        console.warn(
+          `[SkillLoader] Duplicate skill name "${runtimeName}" in ${skillDirName}; already loaded from ${existing.sourcePath}`
+        )
+        return
+      }
+
+      this.skills.set(runtimeName, definition)
+      // console.log(`[SkillLoader] Loaded skill: ${runtimeName}`)
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
         console.warn(`[SkillLoader] No SKILL.md found in ${skillDirName}`)
@@ -331,6 +318,7 @@ Step-by-step instructions for the AI to follow...
   getSummaries(): SkillSummary[] {
     return Array.from(this.skills.values()).map(s => ({
       name: s.name,
+      displayName: s.displayName,
       description: s.description,
       enabled: s.enabled,
     }))
@@ -371,6 +359,7 @@ Step-by-step instructions for the AI to follow...
     const meta: SkillMetadata = {
       installedAt: skill.installedAt,
       installedFrom: skill.installedFrom || 'local',
+      displayName: skill.displayName,
       enabled,
     }
 

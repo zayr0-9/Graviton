@@ -33,6 +33,7 @@ Start here, then open the smallest relevant subsystem context file before editin
 
 - `agent_tool_registry.md` - built-in, custom, and MCP tool definitions visible to model/runtime.
 - `agent_local_tools_runtime.md` - Electron tool implementations, execution routes, utility host, and tests.
+- `agent_skills.md` - skill installation, GitHub clone flow, manifest normalization, registry loading, and model activation.
 - `agent_custom_tools.md` - custom tool loading, definition format, RPC/UI tools, managed paths.
 - `agent_mcp.md` - MCP transports, configuration, remote OAuth, credential persistence, routes, and validation.
 

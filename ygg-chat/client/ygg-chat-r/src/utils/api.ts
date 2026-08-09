@@ -1,7 +1,8 @@
 // utils/api.ts
 import { ConversationId, StorageMode } from '../../../../shared/types'
 import { isCommunityMode } from '../config/runtimeMode'
-import { clearClaimsCache, getSessionFromStorage, getTokenExpirationTime, refreshTokenIfNeeded } from '../lib/jwtUtils'
+import { attachLocalChatErrorCode } from '../features/chats/localChatErrors'
+import { getSessionFromStorage, getTokenExpirationTime, refreshTokenIfNeeded } from '../lib/jwtUtils'
 import { logClientError } from '../services/clientTelemetry'
 
 // Base configuration
@@ -121,11 +122,21 @@ export interface LocalServerStatus {
   localServerUrl: string | null
   localServerLanUrl: string | null
   localServerError?: string | null
+  /**
+   * Something is listening on our port but it is NOT this instance's local server
+   * (another copy of the app, or an unrelated process). Writing to it is a
+   * cross-instance data hazard, so callers must treat this as harder-than-down.
+   */
+  localServerForeign?: boolean
 }
 
 let cachedLocalServerStatus: LocalServerStatus | null = null
 let cachedLocalServerStatusAt = 0
 let pendingLocalServerStatusRequest: Promise<LocalServerStatus> | null = null
+// Set when the `sync:status` IPC itself failed/timed out. Deliberately separate from
+// `cachedLocalServerStatus`: we keep the last KNOWN-GOOD origin (better than falling
+// back to the hardcoded :3002, which may be another instance) but stop calling it verified.
+let lastLocalServerStatusProbeFailed = false
 
 function normalizeEndpoint(endpoint: string): string {
   if (!endpoint) return '/'
@@ -190,6 +201,7 @@ function getDefaultLocalServerStatus(): LocalServerStatus {
     localServerUrl: null,
     localServerLanUrl: null,
     localServerError: null,
+    localServerForeign: false,
   }
 }
 
@@ -205,6 +217,7 @@ function normalizeLocalServerStatus(raw: Partial<LocalServerStatus> | null | und
     localServerUrl: normalizedUrl,
     localServerLanUrl: normalizedLanUrl,
     localServerError: raw?.localServerError ?? null,
+    localServerForeign: Boolean(raw?.localServerForeign),
   }
 }
 
@@ -227,9 +240,11 @@ async function fetchLocalServerStatus(forceRefresh = false): Promise<LocalServer
       const normalized = normalizeLocalServerStatus(status)
       cachedLocalServerStatus = normalized
       cachedLocalServerStatusAt = Date.now()
+      lastLocalServerStatusProbeFailed = false
       return normalized
     })
     .catch(error => {
+      lastLocalServerStatusProbeFailed = true
       const fallback = getDefaultLocalServerStatus()
       fallback.localServerError = error instanceof Error ? error.message : String(error)
       return fallback
@@ -257,6 +272,29 @@ export async function getLocalServerLanOrigin(): Promise<string | null> {
 
 export function getCachedLocalServerOrigin(): string {
   return normalizeOrigin(cachedLocalServerStatus?.localServerUrl) || DEFAULT_LOCAL_SERVER_ORIGIN
+}
+
+/**
+ * Whether the origin we are about to talk to was actually reported by OUR main
+ * process, as opposed to the hardcoded `http://127.0.0.1:3002` guess.
+ *
+ * This matters: when the `sync:status` IPC times out we silently fall back to
+ * :3002, which may be a DIFFERENT app instance's server — a cross-instance data
+ * hazard. `sync:status` now live-probes `/api/health` and only reports
+ * `localServerRunning: true` when its OWN server answers, so this predicate is
+ * the renderer's signal that the endpoint is trustworthy.
+ *
+ * The fallback itself is unchanged (removing it would break every caller); this
+ * is the hook a caller uses to refuse or warn instead of writing blind.
+ */
+export function isLocalServerOriginVerified(): boolean {
+  if (lastLocalServerStatusProbeFailed) return false
+  return Boolean(cachedLocalServerStatus?.localServerRunning && normalizeOrigin(cachedLocalServerStatus?.localServerUrl))
+}
+
+/** The origin plus whether it is verified, for callers that must branch on both. */
+export function getLocalServerOriginInfo(): { origin: string; verified: boolean } {
+  return { origin: getCachedLocalServerOrigin(), verified: isLocalServerOriginVerified() }
 }
 
 export function getCachedLocalServerLanOrigin(): string | null {
@@ -296,14 +334,85 @@ export function shouldUseLocalApi(storageMode?: StorageMode, env?: string): bool
   return storageMode === 'local' && runtimeEnv === 'electron'
 }
 
+// ---------------------------------------------------------------------------
+// Local-API failure classification (shared judgement, no behaviour of its own)
+//
+// `handleLocalApiError` below produces the friendliest local-server message in
+// the app, but it is reachable ONLY through the `localApi` wrapper. Paths that
+// use raw `fetch` (the chat/streaming path) used to re-derive this — badly — and
+// ended up surfacing the browser's useless "Failed to fetch".
+//
+// These exports are the judgement, extracted so every path agrees. They are pure
+// predicates: they throw nothing, log nothing, and no existing caller changes
+// behaviour because `handleLocalApiError` now delegates to them verbatim.
+// ---------------------------------------------------------------------------
+
+/**
+ * True when the request never reached a server at all.
+ *
+ * `fetch` rejects with a `TypeError` for DNS/refused-connection/CORS-preflight
+ * style failures — for a loopback URL that means the local server is not
+ * listening. Anything that produced an HTTP response (any status) is NOT this.
+ */
+export function isLocalServerUnreachableError(error: unknown): boolean {
+  return error instanceof TypeError && error.message.includes('fetch')
+}
+
+/** The user-safe prose for an unreachable local server. The one wording, in one place. */
+export function getLocalServerUnreachableMessage(base: string = getCachedLocalApiBase()): string {
+  return (
+    `Local server not available at ${base}. ` +
+    `Please ensure the Electron app is running with the local server enabled.`
+  )
+}
+
+/**
+ * `unreachable` - no server answered; retrying once it is up will work.
+ * `http`        - a server answered with a non-2xx; `status` is meaningful.
+ * `unknown`     - anything else (aborts, JSON parse failures, programming errors).
+ */
+export type LocalApiFailureKind = 'unreachable' | 'http' | 'unknown'
+
+export interface LocalApiFailure {
+  kind: LocalApiFailureKind
+  /**
+   * For `unreachable` this is user-safe prose. For `http`/`unknown` it is RAW
+   * technical text — callers that render to a user must treat it as `detail`
+   * and supply their own user-facing wording.
+   */
+  message: string
+  status?: number
+  statusText?: string
+  payload?: unknown
+}
+
+/**
+ * Classify anything caught around a local-server request, whether it came from
+ * `localApi` (a `LocalApiError`) or from a raw `fetch` (a `TypeError`).
+ */
+export function classifyLocalApiFailure(error: unknown): LocalApiFailure {
+  if (isLocalServerUnreachableError(error)) {
+    return { kind: 'unreachable', message: getLocalServerUnreachableMessage() }
+  }
+
+  if (error instanceof LocalApiError) {
+    return {
+      kind: 'http',
+      message: error.message,
+      status: error.status,
+      statusText: error.statusText,
+      payload: error.payload,
+    }
+  }
+
+  return { kind: 'unknown', message: getErrorMessage(error) }
+}
+
 // Local API client (mirrors cloud api object) with error handling
 const handleLocalApiError = (error: any, endpoint: string): never => {
   // Check if it's a network error (server unavailable)
-  if (error instanceof TypeError && error.message.includes('fetch')) {
-    throw new Error(
-      `Local server not available at ${getCachedLocalApiBase()}. ` +
-        `Please ensure the Electron app is running with the local server enabled.`
-    )
+  if (isLocalServerUnreachableError(error)) {
+    throw new Error(getLocalServerUnreachableMessage())
   }
 
   if (error instanceof LocalApiError) {
@@ -578,61 +687,37 @@ async function ensureValidToken(): Promise<string | null> {
   return session.access_token
 }
 
-// Flag to prevent multiple concurrent redirects
-let isRedirectingToLogin = false
-
-// Custom event name for force logout - AuthContext should listen for this
+// Custom event name for force logout - AuthContext should listen for this.
+// Still exported and still listened for (AuthContext clears its React state on it), but
+// NOTHING in this file dispatches it any more — see `sessionExpiredError` below.
 export const FORCE_LOGOUT_EVENT = 'force-logout'
 
-// Helper function to handle login redirection based on environment
-const redirectToLogin = () => {
-  // Check if already on login page
-  const currentPath = environment === 'electron' ? window.location.hash.replace('#', '') : window.location.pathname
-
-  if (currentPath === '/login' || currentPath.startsWith('/login')) {
-    // console.log('[api] Already on login page, skipping redirect')
-    return
-  }
-
-  // Prevent multiple concurrent redirects
-  if (isRedirectingToLogin) {
-    // console.log('[api] Redirect already in progress, skipping')
-    return
-  }
-
-  isRedirectingToLogin = true
-
-  // Clear cached auth state to stop queries from firing with stale tokens
-  clearClaimsCache()
-
-  if (typeof window !== 'undefined') {
-    // Clear the cached Electron session
-    ;(window as any)._cachedElectronSession = null
-
-    // Clear Supabase localStorage to prevent stale tokens
-    try {
-      localStorage.removeItem('supabase-auth-token')
-    } catch (e) {
-      // Ignore localStorage errors
-    }
-
-    // Dispatch force logout event so AuthContext can clear its React state
-    // This prevents the redirect loop where Login.tsx sees stale user state
-    window.dispatchEvent(new CustomEvent(FORCE_LOGOUT_EVENT))
-  }
-
-  if (environment === 'electron') {
-    // In Electron with HashRouter, we need to update the hash
-    window.location.hash = '/login'
-  } else {
-    // In Web with BrowserRouter, we can use href (or assign to origin + /login)
-    window.location.href = '/login'
-  }
-
-  // Reset the flag after a short delay to allow for page transition
-  setTimeout(() => {
-    isRedirectingToLogin = false
-  }, 2000)
+/**
+ * D2 — an expired session renders a chat bubble with a Sign in button. Nothing may yank
+ * the user to /login mid-generation.
+ *
+ * Both 401 handlers below used to call a `redirectToLogin()` helper that (a) dispatched
+ * `FORCE_LOGOUT_EVENT`, which clears `AuthContext` state and makes `ProtectedRoute`
+ * immediately `<Navigate to='/login'>`, and (b) assigned `location.href` / `location.hash`
+ * directly. Ordinary CRUD issued from the chat screen runs through `apiCall` while a reply
+ * is streaming (cloneConversation, patchConversationProject, model fetches…), and the
+ * auto-compaction path runs through `createStreamingRequest`, so a 401 on any of them threw
+ * the user out of the app mid-reply — precisely what the SSE path was already fixed not to
+ * do (`mainChatClient`, `reauth_required`).
+ *
+ * The classified throw replaces it. `chatErrorCode` and `status` are both read by
+ * `classifyLocalChatError`, so whatever catches this lands on `session_expired` and renders
+ * the bubble; the user chooses when to leave. `Error.message` here is raw technical text and
+ * ends up in `envelope.detail` only — `envelope.userMessage` is the only string a user reads.
+ *
+ * Genuine sign-out is untouched: it goes through `AuthContext.signOut` → `provider.logout()`,
+ * which never involved this helper. No caller in this file needs the hard redirect; if one
+ * ever does, it must be that caller's own explicit decision, not a side effect of a 401.
+ */
+const sessionExpiredError = (source: string): Error => {
+  const error = new Error(`Unauthorized (${source})`)
+  ;(error as Error & { status?: number }).status = 401
+  return attachLocalChatErrorCode(error, 'session_expired')
 }
 
 // Core API utility function - now accepts accessToken as parameter
@@ -678,44 +763,39 @@ export const apiCall = async <T>(endpoint: string, accessToken: string | null, o
 
   let response = await executeRequest(tokenToUse)
 
-  // Handle 401 Unauthorized: Try to refresh token and retry once
+  // Handle 401 Unauthorized: Try to refresh token and retry once.
+  // The reason is accumulated rather than thrown inline: the old shape wrapped its own
+  // throws in the same try/catch, so the catch re-swallowed them and every branch collapsed
+  // to one indistinguishable message. Nothing here navigates (D2) — see sessionExpiredError.
   if (response.status === 401 && (environment === 'web' || environment === 'electron')) {
     console.warn('[api] Received 401 Unauthorized, attempting token refresh and retry...')
 
+    let refreshFailure: string | null = null
     try {
       // Force refresh the token
       const refreshed = await refreshTokenIfNeeded(true)
 
-      if (refreshed) {
+      if (!refreshed) {
+        refreshFailure = 'token refresh failed'
+      } else {
         // Get the new token
-        const newSession = getSessionFromStorage()
-        const newToken = newSession?.access_token
+        const newToken = getSessionFromStorage()?.access_token
 
-        if (newToken) {
-          // console.log('[api] Token refreshed, retrying request...')
+        if (!newToken) {
+          refreshFailure = 'token refresh succeeded but no token was stored'
+        } else {
           // Retry the request with the new token
           response = await executeRequest(newToken)
-
-          if (response.status === 401) {
-            // Still unauthorized after refresh - redirect to login
-            console.error('[api] Still unauthorized after token refresh, redirecting to login...')
-            redirectToLogin()
-            throw new Error('Session expired. Please log in again.')
-          }
-        } else {
-          console.error('[api] Token refresh succeeded but no token found')
-          redirectToLogin()
-          throw new Error('Session expired. Please log in again.')
+          if (response.status === 401) refreshFailure = 'still unauthorized after token refresh'
         }
-      } else {
-        console.error('[api] Token refresh failed, redirecting to login...')
-        redirectToLogin()
-        throw new Error('Session expired. Please log in again.')
       }
     } catch (error) {
-      console.error('[api] Error during token refresh:', error)
-      redirectToLogin()
-      throw new Error('Session expired. Please log in again.')
+      refreshFailure = `token refresh threw: ${getErrorMessage(error)}`
+    }
+
+    if (refreshFailure) {
+      console.error('[api] 401 Unauthorized —', refreshFailure)
+      throw sessionExpiredError(`apiCall ${method} ${endpoint}: ${refreshFailure}`)
     }
   }
 
@@ -868,44 +948,39 @@ export const createStreamingRequest = async (
 
   let response = await executeStreamRequest(tokenToUse)
 
-  // Handle 401 Unauthorized: Try to refresh token and retry once
+  // Handle 401 Unauthorized: Try to refresh token and retry once.
+  // This is the path auto-compaction takes (`chatActions` → '/generate/ephemeral'), which
+  // runs INSIDE the send flow at ≥85% context — a forced redirect here fired at exactly the
+  // moment D2 was written to prevent. It classifies now; the caller renders the bubble.
   if (response.status === 401 && (environment === 'web' || environment === 'electron')) {
     console.warn('[api] Streaming request received 401, attempting token refresh and retry...')
 
+    let refreshFailure: string | null = null
     try {
       // Force refresh the token
       const refreshed = await refreshTokenIfNeeded(true)
 
-      if (refreshed) {
+      if (!refreshed) {
+        refreshFailure = 'token refresh failed'
+      } else {
         // Get the new token
-        const newSession = getSessionFromStorage()
-        const newToken = newSession?.access_token
+        const newToken = getSessionFromStorage()?.access_token
 
-        if (newToken) {
-          // console.log('[api] Token refreshed, retrying streaming request...')
+        if (!newToken) {
+          refreshFailure = 'token refresh succeeded but no token was stored'
+        } else {
           // Retry the request with the new token
           response = await executeStreamRequest(newToken)
-
-          if (response.status === 401) {
-            // Still unauthorized after refresh - redirect to login
-            console.error('[api] Streaming request still unauthorized after token refresh')
-            redirectToLogin()
-            throw new Error('Session expired. Please log in again.')
-          }
-        } else {
-          console.error('[api] Token refresh succeeded but no token found')
-          redirectToLogin()
-          throw new Error('Session expired. Please log in again.')
+          if (response.status === 401) refreshFailure = 'still unauthorized after token refresh'
         }
-      } else {
-        console.error('[api] Token refresh failed, redirecting to login...')
-        redirectToLogin()
-        throw new Error('Session expired. Please log in again.')
       }
     } catch (error) {
-      console.error('[api] Error during streaming request token refresh:', error)
-      redirectToLogin()
-      throw new Error('Session expired. Please log in again.')
+      refreshFailure = `token refresh threw: ${getErrorMessage(error)}`
+    }
+
+    if (refreshFailure) {
+      console.error('[api] Streaming request 401 Unauthorized —', refreshFailure)
+      throw sessionExpiredError(`createStreamingRequest ${method} ${endpoint}: ${refreshFailure}`)
     }
   }
 

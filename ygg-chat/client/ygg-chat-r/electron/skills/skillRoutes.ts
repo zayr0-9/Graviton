@@ -143,7 +143,7 @@ export function registerSkillRoutes(app: Express): void {
       const result = await installFromGitHub(source)
 
       if (result.success) {
-        res.json({ success: true, skillName: result.skillName })
+        res.json({ success: true, skillName: result.skillName, displayName: result.displayName })
       } else {
         res.status(400).json(installFailureResponse(result))
       }
@@ -166,7 +166,13 @@ export function registerSkillRoutes(app: Express): void {
       const result = await installAllFromGitHub(source)
 
       if (result.success) {
-        res.json({ success: true, skillName: result.skillName, skillNames: result.skillNames })
+        res.json({
+          success: true,
+          skillName: result.skillName,
+          skillNames: result.skillNames,
+          displayName: result.displayName,
+          displayNames: result.displayNames,
+        })
       } else {
         res.status(400).json(installFailureResponse(result))
       }
@@ -189,7 +195,7 @@ export function registerSkillRoutes(app: Express): void {
       const result = await installFromLocal(sourcePath)
 
       if (result.success) {
-        res.json({ success: true, skillName: result.skillName })
+        res.json({ success: true, skillName: result.skillName, displayName: result.displayName })
       } else {
         res.status(400).json(installFailureResponse(result))
       }
@@ -212,7 +218,13 @@ export function registerSkillRoutes(app: Express): void {
       const result = await installFromUrl(url)
 
       if (result.success) {
-        res.json({ success: true, skillName: result.skillName, skillNames: result.skillNames })
+        res.json({
+          success: true,
+          skillName: result.skillName,
+          skillNames: result.skillNames,
+          displayName: result.displayName,
+          displayNames: result.displayNames,
+        })
       } else {
         res.status(400).json(installFailureResponse(result))
       }

@@ -17,6 +17,7 @@ import {
   filterToolsForOperationMode,
 } from '../../../../src/features/chats/operationModeSystemPrompt.js'
 import type { ToolDefinition } from '../../../../src/features/chats/toolDefinitions.js'
+import { requiresAgentMode } from '../../../../../../shared/operationModeToolPolicy.js'
 
 describe('buildOperationModeSystemPrompt', () => {
   it('adds concise Plan response style by default', () => {
@@ -65,9 +66,17 @@ describe('plan mode tool filtering', () => {
   })
 
   it('allows tool-manager calls in plan mode', () => {
-    for (const name of ['bash', 'powershell', 'custom_tool_manager', 'mcp_manager', 'skill_manager']) {
+    for (const name of [
+      'bash',
+      'powershell',
+      'subagent_manager',
+      'custom_tool_manager',
+      'mcp_manager',
+      'skill_manager',
+    ]) {
       expect(() => assertToolAllowedForOperationMode({ name }, 'plan')).not.toThrow()
     }
+    expect(requiresAgentMode({ name: 'subagent_manager' }, 'plan')).toBe(false)
   })
 
   it('blocks file-mutating and mcp tools at execution time in plan mode', () => {

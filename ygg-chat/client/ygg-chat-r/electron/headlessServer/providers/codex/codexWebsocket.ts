@@ -1,6 +1,12 @@
 import WebSocket from 'ws'
+import { attachPartialOutput } from '../openRouterProvider.js'
 import type { CodexParseResult, CodexResponseParseOptions } from './types.js'
-import { codexResponseParseResult, createCodexResponseParseState, processCodexResponseEventText } from './codexResponseEvents.js'
+import {
+  codexPartialOutputFromState,
+  codexResponseParseResult,
+  createCodexResponseParseState,
+  processCodexResponseEventText,
+} from './codexResponseEvents.js'
 
 const RESPONSES_WEBSOCKETS_V2_BETA_HEADER_VALUE = 'responses_websockets=2026-02-06'
 const RESPONSES_LITE_HEADER = 'x-openai-internal-codex-responses-lite'
@@ -62,6 +68,12 @@ export async function parseCodexWebSocketResponse(options: {
       processCodexResponseEventText(message.text, state)
       if (eventType === 'response.completed' || eventType === 'response.done') return codexResponseParseResult(state)
     }
+  } catch (error) {
+    // R1(a): every mid-stream failure this transport can raise lands here — idle
+    // timeout, user abort, socket error, close-before-completion, and the terminal
+    // `response.failed` / `response.incomplete` / `error` frames thrown by the
+    // parser — so the text already streamed to the user survives the throw.
+    throw attachPartialOutput(error, codexPartialOutputFromState(state))
   } finally {
     closeSocket(socket)
   }

@@ -5,6 +5,7 @@ import { TreeMessageSink, type MessageSink } from './messageSink.js'
 import type {
   ProviderGenerateInput,
   ProviderGenerateOutput,
+  ProviderPartialOutput,
   ProviderToolCall,
   ProviderToolDefinition,
 } from '../providers/openRouterProvider.js'
@@ -12,10 +13,14 @@ import { ProviderRouter, normalizeProviderRoute } from './providerRouter.js'
 import { persistWithFallback, type ToolResultPersistencePolicy } from './toolResultPersistenceService.js'
 import { sanitizeToolResultContentForModel } from '../providers/toolResultSanitizer.js'
 import {
+  attachChatErrorCode,
+  classifyChatError,
   formatProviderErrorForAssistant,
+  getAttachedChatErrorCode,
   isTransientProviderError,
   type FormattedProviderError,
 } from '../providers/providerErrorFormatter.js'
+import { buildChatErrorEnvelope, type ChatErrorCode } from '../../../../../shared/chatErrors.js'
 import { trimHistoryToLatestCompaction } from './compactionService.js'
 import { assertToolAllowedForOperationMode, requiresAgentMode } from '../../../../../shared/operationModeToolPolicy.js'
 import {
@@ -217,6 +222,10 @@ export class ProviderEmptyResponseError extends Error {
     this.provider = input.provider
     this.modelName = input.modelName
     this.turnsUsed = input.turnsUsed
+    // Classified at construction so every throw site (the main loop and the
+    // finalization turn) carries the code; nothing downstream has to match on
+    // `name` or re-parse the message.
+    attachChatErrorCode(this, 'provider_empty_response', { provider: input.provider })
   }
 }
 
@@ -282,6 +291,18 @@ function abortAwareSleep(ms: number, signal?: AbortSignal): Promise<void> {
   })
 }
 
+/**
+ * `label` is part of a string that CAN reach a user: on the OpenAI path
+ * `formatProviderErrorForAssistant` folds this message into the persisted assistant
+ * text ("Reason: …"), because "timed out" is one of its transient patterns. So the
+ * label must stay in plain user vocabulary — it must NOT carry loop internals like
+ * "Provider turn 7/400". Turn context already travels structurally on the
+ * `tool_loop` frames (turn / maxTurns), where the renderer can use it without
+ * splicing it into prose.
+ *
+ * The word "timed out" is load-bearing twice over: `isTransientProviderError`
+ * matches on it to allow an in-loop retry, and the formatter treats it as transient.
+ */
 function withTimeoutAndAbort<T>(
   task: Promise<T>,
   timeoutMs: number,
@@ -297,7 +318,9 @@ function withTimeoutAndAbort<T>(
     }
     const timer = setTimeout(() => {
       cleanup()
-      reject(new Error(`${label} timed out after ${boundedTimeoutMs}ms`))
+      reject(
+        attachChatErrorCode(new Error(`${label} timed out after ${boundedTimeoutMs}ms`), 'provider_timeout')
+      )
     }, boundedTimeoutMs)
     const onAbort = () => {
       cleanup()
@@ -425,6 +448,88 @@ function toModelToolResultContent(content: string, toolName?: string | null): st
   }
 }
 
+const TOOL_DENIED_PATTERN = /\bdenied\b|\bdeclin(?:e|ed|es)\b|\brejected by the user\b|\buser cancell?ed\b|\bnot approved\b/
+const TOOL_POLICY_PATTERN = /\bagent mode\b|\bplan mode\b|\bchat mode\b|\bnot available in\b|\bnot allowed in\b|operation mode/
+const TOOL_TIMEOUT_PATTERN = /\btimed out\b|\btimeout\b|\betimedout\b/
+const MCP_TRANSPORT_PATTERN =
+  /\b(?:unavailable|unreachable|not connected|disconnected|no such server|failed to (?:connect|start|spawn)|connection (?:closed|refused|reset)|transport|econnrefused|econnreset|enoent|server exited)\b/
+
+/**
+ * Which failure was this, in the shared vocabulary?
+ *
+ * A code attached upstream always wins — `chatHookService` already tags a PreToolUse
+ * `deny` as `tool_denied`, and the orchestrator tags a user Deny the same way. The
+ * heuristics below only cover errors that reach us as bare prose. The distinction is
+ * not cosmetic: a Deny and a Plan-mode block are the tool behaving exactly as
+ * configured, and must never be presented (or styled) as a crash.
+ */
+function classifyToolExecutionErrorCode(error: unknown, toolName?: string | null): ChatErrorCode {
+  const attached = getAttachedChatErrorCode(error)
+  if (attached) return attached
+
+  const message = (error instanceof Error ? error.message : String(error)).toLowerCase()
+  if (TOOL_DENIED_PATTERN.test(message)) return 'tool_denied'
+  if (TOOL_POLICY_PATTERN.test(message)) return 'tool_blocked_by_policy'
+  if (TOOL_TIMEOUT_PATTERN.test(message)) return 'tool_timeout'
+
+  const isMcpTool = typeof toolName === 'string' && toolName.startsWith('mcp__')
+  if ((isMcpTool || message.includes('mcp')) && MCP_TRANSPORT_PATTERN.test(message)) return 'mcp_unavailable'
+
+  return 'tool_failed'
+}
+
+/** What the MODEL should do next. Deliberately imperative — this is not user prose. */
+function toolFailureModelGuidance(code: ChatErrorCode): string {
+  switch (code) {
+    case 'tool_denied':
+      return 'The user declined this tool call. Do NOT call it again. Continue without it, or ask the user how to proceed.'
+    case 'tool_blocked_by_policy':
+      return 'This tool is not permitted in the current mode. Do NOT call it again. Continue with the tools that are available.'
+    case 'tool_timeout':
+      return 'This tool exceeded its time budget. Only call it again with a narrower or cheaper input.'
+    case 'mcp_unavailable':
+      return 'The MCP server backing this tool is unreachable. Do NOT call its tools again in this reply.'
+    default:
+      return 'This tool call FAILED. Do NOT repeat the identical call — change the arguments or take a different approach.'
+  }
+}
+
+/**
+ * State the failure inside the tool result's TEXT, because no provider on this
+ * server puts the `is_error` flag on the wire:
+ *
+ *  - openRouter rebuilds a `role:'tool'` history entry from a fixed field list
+ *    (`normalizeHistoryMessage`), which has no `is_error`;
+ *  - lmStudio emits an OpenAI chat-completions `role:'tool'` message, whose schema
+ *    has no failure field;
+ *  - openaiChatgpt emits a Responses `function_call_output`, likewise;
+ *  - hyperRouter reads tool results ONLY out of the assistant row's `content_blocks`
+ *    and ignores `role:'tool'` entries entirely.
+ *
+ * The flag is still set on both carriers (see the call sites) for any consumer that
+ * does honour it, but the text is the only channel that survives everywhere. Without
+ * it a failure reaches the model as an ordinary string it reads as data, which is why
+ * it happily re-issues the identical failing call.
+ */
+function markToolFailureForModel(content: string, code: ChatErrorCode): string {
+  return `[tool_error code=${code}] ${toolFailureModelGuidance(code)}\n\n${content}`
+}
+
+/**
+ * `assertToolAllowedForOperationMode` lives in shared/ and throws plain Errors.
+ * Tag them at the boundary so the catch below does not have to pattern-match prose.
+ */
+function assertToolAllowedForOperationModeClassified(
+  toolCall: ProviderToolCall,
+  operationMode: 'plan' | 'execute'
+): void {
+  try {
+    assertToolAllowedForOperationMode(toolCall, operationMode)
+  } catch (error) {
+    throw error && typeof error === 'object' ? attachChatErrorCode(error, 'tool_blocked_by_policy') : error
+  }
+}
+
 function normalizeToolCall(raw: any): ProviderToolCall | null {
   if (!raw || typeof raw !== 'object') return null
   const id = typeof raw.id === 'string' && raw.id.trim() ? raw.id : null
@@ -469,6 +574,56 @@ function appendGeneratedBlocks(output: ProviderGenerateOutput): any[] {
   return blocks
 }
 
+/** Normalized, non-empty partial. Every field is present so callers never re-guard. */
+interface NormalizedPartialOutput {
+  content: string
+  contentBlocks: any[]
+  reasoning: string
+  toolCalls: ProviderToolCall[]
+}
+
+const MAX_PARTIAL_CAUSE_DEPTH = 5
+
+/**
+ * R1(a) -> R1(b): read the text/blocks/reasoning/tool calls a streaming provider had
+ * already accumulated when it threw (`error.partialOutput`, set by
+ * `attachPartialOutput`).
+ *
+ * The `cause` chain is walked because a provider throw is not always the object the
+ * loop catches: a wrapper (Codex's request layer, a retry shim) can re-throw with the
+ * original as `cause`, and the accumulated words must not be lost to that indirection.
+ *
+ * Returns null when nothing renderable was accumulated — an empty assistant row is
+ * noise, and the classified failure is reported either way.
+ */
+function readPartialProviderOutput(error: unknown): NormalizedPartialOutput | null {
+  let node: any = error
+  for (let depth = 0; node && depth < MAX_PARTIAL_CAUSE_DEPTH; depth++) {
+    if (typeof node === 'object' || typeof node === 'function') {
+      const raw = (node as { partialOutput?: unknown }).partialOutput
+      if (raw && typeof raw === 'object' && !Array.isArray(raw)) {
+        const partial = raw as ProviderPartialOutput
+        const normalized: NormalizedPartialOutput = {
+          content: typeof partial.content === 'string' ? partial.content : '',
+          contentBlocks: Array.isArray(partial.contentBlocks) ? partial.contentBlocks : [],
+          reasoning: typeof partial.reasoning === 'string' ? partial.reasoning : '',
+          toolCalls: Array.isArray(partial.toolCalls) ? partial.toolCalls : [],
+        }
+        const renderable =
+          normalized.content.trim().length > 0 ||
+          normalized.reasoning.trim().length > 0 ||
+          normalized.contentBlocks.length > 0 ||
+          normalized.toolCalls.length > 0
+        if (renderable) return normalized
+      }
+    }
+    const next = node && typeof node === 'object' ? node.cause : undefined
+    if (!next || next === node) break
+    node = next
+  }
+  return null
+}
+
 /**
  * Phase 4: pending -> execute -> tool_result -> continue loop.
  */
@@ -500,6 +655,60 @@ export class ToolLoopService {
   }
 
   /**
+   * R1(b) — PARTIAL TEXT IS NEVER LOST.
+   *
+   * Persist whatever the provider had streamed before it threw as an ORDINARY
+   * assistant row: normal `content` / `content_blocks`, NO ErrorBlock, no marker,
+   * nothing that says "this failed". The explanation is a SEPARATE row the
+   * orchestrator writes as a CHILD of this one, so the user keeps the words and gets
+   * the reason, and both survive a reload.
+   *
+   * Returns the persisted row (the id the ErrorBlock row parents onto), or null when
+   * the throw carried nothing renderable.
+   */
+  private persistPartialProviderOutput(params: {
+    input: ToolLoopRunInput
+    parentId: string | null
+    error: unknown
+    emit: (event: HeadlessStreamEvent) => void
+  }): any | null {
+    const partial = readPartialProviderOutput(params.error)
+    if (!partial) return null
+
+    const toolCalls = partial.toolCalls
+      .map(normalizeToolCall)
+      .filter((call): call is ProviderToolCall => Boolean(call))
+    const contentBlocks = appendGeneratedBlocks({
+      content: partial.content,
+      contentBlocks: partial.contentBlocks,
+      reasoning: partial.reasoning || undefined,
+      toolCalls,
+    })
+
+    try {
+      const message = this.sink.persistAssistantMessage({
+        conversationId: params.input.conversationId,
+        parentId: params.parentId,
+        content: partial.content,
+        modelName: params.input.modelName,
+        toolCalls: toolCalls.length ? toolCalls : null,
+        contentBlocks,
+        thinkingBlock: partial.reasoning || null,
+      })
+      // The live renderer adopts this row instead of throwing its stream buffer away,
+      // and the orchestrator's "last persisted assistant id" tracker (which reads this
+      // frame) now points at it — that id is the parent for the ErrorBlock row.
+      params.emit({ type: 'assistant_message_persisted', message })
+      return message
+    } catch (persistError) {
+      // Losing the partial is bad; losing the CLASSIFIED FAILURE because saving the
+      // partial threw would be worse. Log and fall through to the rethrow.
+      console.error('[ToolLoopService] failed to persist partial provider output', persistError)
+      return null
+    }
+  }
+
+  /**
    * Issue one provider turn: build the request, generate (with per-turn timeout
    * and abort), emit stream events, and surface a provider error as a persisted
    * assistant message + ProviderErrorAssistantResponse. Abort errors propagate
@@ -519,6 +728,12 @@ export class ToolLoopService {
      * replaces input.systemPrompt for this turn. Absent => input.systemPrompt as before.
      */
     systemPromptOverride?: string | null
+    /**
+     * R1(b): the loop's "last persisted assistant id" tracker. Called with the partial
+     * row persisted on a mid-stream provider failure so `run`'s own `lastAssistantMessage`
+     * agrees with the `assistant_message_persisted` frame the orchestrator tracks.
+     */
+    recordAssistant?: (message: any) => void
   }): Promise<ProviderGenerateOutput> {
     const { input, emit, turn, maxTurns } = params
     const providerRoute = normalizeProviderRoute(input.provider)
@@ -592,7 +807,10 @@ export class ToolLoopService {
             emit(event)
           }),
           this.providerTurnTimeoutMs,
-          `Provider turn ${turn}/${maxTurns}`,
+          // NOT `Provider turn ${turn}/${maxTurns}` any more: on the OpenAI path that
+          // label was folded verbatim into the persisted assistant text, which is how
+          // "Provider turn 7/400" reached the screen.
+          'The model provider',
           input.signal
         )
       } catch (error) {
@@ -602,8 +820,15 @@ export class ToolLoopService {
         }
 
         // Transient failure with retries left: back off and try the same turn again.
-        // Deferred persistence — nothing is written until retries are exhausted.
+        // Deferred persistence — nothing is written until retries are exhausted, and
+        // this attempt's partial output is deliberately dropped: the re-issued turn
+        // regenerates it, so persisting it here would duplicate the answer.
         if (attempt <= maxProviderRetries && isTransientProviderError(error)) {
+          // Two frames, one per audience. `tool_loop` is the machine-readable record;
+          // `notice` is the user-visible one. The LOOP owns the prose for all three
+          // silences it can cause (retrying / max_turns_reached / compacting) and
+          // `sseProjection` projects only the `notice` — so the two cannot drift into
+          // either showing the backoff twice or, as happened here, not at all.
           emit({
             type: 'tool_loop',
             status: 'provider_retry',
@@ -612,35 +837,79 @@ export class ToolLoopService {
             attempt,
             maxAttempts: maxProviderRetries,
           })
+          emit({
+            type: 'notice',
+            code: 'retrying',
+            message: 'That did not go through. Trying again…',
+            attempt,
+            maxAttempts: maxProviderRetries,
+            lineageId: input.lineageId ?? null,
+          })
           const base = input.robustness?.providerRetryBackoffMs ?? DEFAULT_PROVIDER_RETRY_BACKOFF_MS
           // Rejects with AbortError if the run is cancelled mid-backoff -> propagates.
           await abortAwareSleep(base * attempt + Math.floor(Math.random() * PROVIDER_RETRY_JITTER_MS), input.signal)
           continue
         }
 
+        // R1(b): retries are exhausted (or disabled) — this failure is real, so keep
+        // whatever the provider already streamed. Persisted BEFORE the rethrow so the
+        // row exists by the time the orchestrator writes its ErrorBlock child.
+        const partialAssistantMessage = this.persistPartialProviderOutput({
+          input,
+          parentId: params.parentId,
+          error,
+          emit,
+        })
+        if (partialAssistantMessage) params.recordAssistant?.(partialAssistantMessage)
+
         const providerError = formatProviderErrorForAssistant(error, {
           provider: input.provider,
           modelName: input.modelName,
         })
 
-        if (providerError) {
-          const assistantMessage = this.sink.persistAssistantMessage({
-            conversationId: input.conversationId,
-            parentId: params.parentId,
-            content: providerError.message,
-            modelName: input.modelName,
-            contentBlocks: [{ type: 'text', content: providerError.message }],
-          })
+        // A code attached at the throw site (a turn timeout) is more specific than
+        // anything the formatter's prose can be re-parsed into — carry it through.
+        const attachedCode = getAttachedChatErrorCode(error)
 
-          if (!streamedTextDuringTurn) {
-            emit({ type: 'chunk', part: 'text', delta: providerError.message })
-          }
-          emit({ type: 'assistant_message_persisted', message: assistantMessage })
-          throw new ProviderErrorAssistantResponse({ assistantMessage, providerError, turnsUsed: turn })
+        if (providerError) {
+          // The legacy human prose ("Reason: …", "HTTP status: 429", "Error type:
+          // usage_limit_reached") is NO LONGER persisted as an assistant message and no
+          // longer streamed as a text chunk. It read as if the MODEL had said it, and it
+          // said the same thing as the ErrorBlock row the orchestrator writes for this
+          // same failure — exactly ONE assistant row may carry the explanation, and that
+          // row is the orchestrator's. The prose survives as `envelope.detail`, which is
+          // technical text that is never rendered on its own; `envelope.userMessage`
+          // remains the only string a user reads.
+          //
+          // `assistantMessage` is now the D1 partial (or null when nothing was streamed).
+          // The orchestrator parents its ErrorBlock row on `assistantMessage?.id ??
+          // lastPersistedAssistantId ?? assistantParentId`, so both cases land correctly.
+          const wrapped = new ProviderErrorAssistantResponse({
+            assistantMessage: partialAssistantMessage,
+            providerError: providerError.envelope
+              ? { ...providerError, envelope: { ...providerError.envelope, detail: providerError.message } }
+              : providerError,
+            turnsUsed: turn,
+          })
+          throw attachedCode ? attachChatErrorCode(wrapped, attachedCode, { provider: input.provider }) : wrapped
         }
 
-        const message = error instanceof Error ? error.message : String(error)
-        emit({ type: 'error', error: `Continuation generation failed on turn ${turn}/${maxTurns}: ${message}` })
+        // No `error` frame here any more. The orchestrator/route owns the single
+        // terminal frame for this exception; emitting one here as well produced TWO
+        // terminal frames for one failure (and the second one leaked "Continuation
+        // generation failed on turn 7/400" into user-facing prose). A notice would be
+        // pure noise: this rethrow is immediately followed by the owner's frame,
+        // saying the same thing with a proper envelope. Instead, classify the error
+        // once, here, so that owner never has to re-parse the message text. Turn
+        // context is already on the `tool_loop` frames.
+        if (error && typeof error === 'object' && !attachedCode) {
+          const envelope = classifyChatError(error, {
+            provider: input.provider,
+            modelName: input.modelName,
+            phase: 'provider',
+          })
+          attachChatErrorCode(error, envelope.code, envelope)
+        }
         throw error
       }
 
@@ -671,6 +940,8 @@ export class ToolLoopService {
     maxTurns: number
     anyToolsExecuted: boolean
     emit: (event: HeadlessStreamEvent) => void
+    /** Forwarded to generateProviderTurn so an R1(b) partial updates the loop's tracker. */
+    recordAssistant?: (message: any) => void
   }): Promise<ToolLoopRunResult> {
     const { input, emit } = params
     const finalizeTurn = params.turnsSoFar + 1
@@ -688,6 +959,7 @@ export class ToolLoopService {
       maxTurns: params.maxTurns,
       disableTools: true,
       emit,
+      recordAssistant: params.recordAssistant,
     })
 
     const contentBlocks = appendGeneratedBlocks({ ...output, toolCalls: [] })
@@ -729,6 +1001,13 @@ export class ToolLoopService {
     // Persistence retains the full branch; model replay begins at its latest summary.
     let history = trimHistoryToLatestCompaction(input.history || [])
     let lastAssistantMessage: any = null
+    // The loop's "last persisted assistant id" tracker. R1(b): a partial persisted on a
+    // mid-stream provider failure must land here too, so this and the
+    // `assistant_message_persisted` frame the orchestrator tracks never disagree about
+    // which row an ErrorBlock should hang off.
+    const recordAssistant = (message: any) => {
+      if (message) lastAssistantMessage = message
+    }
     let anyToolsExecuted = false
     let activeOperationMode = input.operationMode ?? 'execute'
     // Phase 3: true iff the most recent iteration was a natural stop (no tool calls)
@@ -769,6 +1048,7 @@ export class ToolLoopService {
         disableTools: false,
         emit,
         systemPromptOverride: turnSystemPromptOverride,
+        recordAssistant,
       })
 
       if (robustness?.retryEmptyTurn && isEmptyTurnOutput(output)) {
@@ -895,6 +1175,11 @@ export class ToolLoopService {
 
       anyToolsExecuted = true
       const toolResultBlocks: any[] = []
+      // The same blocks, but with failures stated in the text. Kept separate so the
+      // PERSISTED result (and therefore the tool card, the MCP-app bridge and the
+      // hook payload) still shows exactly what the tool said, while the copy replayed
+      // to the model says that it failed. See markToolFailureForModel.
+      const modelToolResultBlocks: any[] = []
 
       for (const toolCall of assistantToolCalls) {
         input.signal?.throwIfAborted()
@@ -925,6 +1210,7 @@ export class ToolLoopService {
         let toolResultContent = ''
         let modelToolResultContent: any = ''
         let toolError = false
+        let toolErrorCode: ChatErrorCode | null = null
         const startedAt = Date.now()
 
         try {
@@ -944,15 +1230,18 @@ export class ToolLoopService {
               // activeOperationMode to 'execute' for the remainder of the run, with no
               // user consent and no event emitted. Assert first so blocked/mcp tools
               // keep their specific message, then fail closed for everything else.
-              assertToolAllowedForOperationMode(toolCall, activeOperationMode)
-              throw new Error(
-                `Tool "${toolCall.name}" is not available in Chat Mode. Switch to Agent Mode to run tools that can modify files, system state, or app state.`
+              assertToolAllowedForOperationModeClassified(toolCall, activeOperationMode)
+              throw attachChatErrorCode(
+                new Error(
+                  `Tool "${toolCall.name}" is not available in Chat Mode. Switch to Agent Mode to run tools that can modify files, system state, or app state.`
+                ),
+                'tool_blocked_by_policy'
               )
             }
             activeOperationMode = 'execute'
             input.systemPrompt = input.agentSystemPrompt ?? input.systemPrompt
           }
-          assertToolAllowedForOperationMode(toolCall, activeOperationMode)
+          assertToolAllowedForOperationModeClassified(toolCall, activeOperationMode)
 
           const executeNested: ToolExecutor = async (nestedCall, nestedContext) => {
             const nestedInvocation = input.lineageId && this.toolInvocationRepo
@@ -1038,8 +1327,13 @@ export class ToolLoopService {
             throw error
           }
           toolError = true
+          // Classify BEFORE the result is built: a Deny and a Plan-mode block are the
+          // system working as configured, not a crash, and the code is what lets every
+          // downstream reader say so without pattern-matching this message.
+          toolErrorCode = classifyToolExecutionErrorCode(error, toolCall.name)
+          if (error && typeof error === 'object') attachChatErrorCode(error, toolErrorCode)
           toolResultContent = error instanceof Error ? error.message : String(error)
-          modelToolResultContent = toolResultContent
+          modelToolResultContent = markToolFailureForModel(toolResultContent, toolErrorCode)
 
           invocation && this.toolInvocationRepo?.finish(invocation.id, {
             status: 'failed',
@@ -1062,9 +1356,16 @@ export class ToolLoopService {
           tool_use_id: toolCall.id,
           content: toolResultContent,
           is_error: toolError,
+          // Additive: WHY it failed, in the shared vocabulary. `is_error` alone cannot
+          // distinguish "you declined this" from "this tool crashed", so a Deny used to
+          // be styled identically to a crash.
+          ...(toolErrorCode ? { error_code: toolErrorCode } : {}),
         }
 
         toolResultBlocks.push(toolResultBlock)
+        modelToolResultBlocks.push(
+          toolError ? { ...toolResultBlock, content: markToolFailureForModel(toolResultContent, toolErrorCode!) } : toolResultBlock
+        )
 
         emit({
           type: 'chunk',
@@ -1073,6 +1374,7 @@ export class ToolLoopService {
             tool_use_id: toolCall.id,
             content: toolResultContent,
             is_error: toolError,
+            ...(toolErrorCode ? { error_code: toolErrorCode } : {}),
           },
         })
 
@@ -1080,12 +1382,18 @@ export class ToolLoopService {
           role: 'tool',
           tool_call_id: toolCall.id,
           content: toModelToolResultContent(modelToolResultContent, toolCall.name),
-        })
+          // Set for any consumer that honours it. Every provider in this repo drops it
+          // when it serialises a `role:'tool'` entry, which is exactly why the failure
+          // is also stated in `content` — see markToolFailureForModel.
+          is_error: toolError,
+          ...(toolErrorCode ? { error_code: toolErrorCode } : {}),
+        } as any)
       }
 
       if (toolResultBlocks.length > 0) {
         const existingBlocks = parseJsonArray(assistantMessage.content_blocks)
         const updatedBlocks = [...existingBlocks, ...toolResultBlocks]
+        const anyToolErrors = toolResultBlocks.some(block => block.is_error)
 
         const updatedToolCalls = assistantToolCalls.map(call => {
           const resultBlock = toolResultBlocks.find(block => block.tool_use_id === call.id)
@@ -1122,7 +1430,14 @@ export class ToolLoopService {
 
         const assistantForContinuation = persistResult.result ?? inMemoryAssistant
         lastAssistantMessage = assistantForContinuation
-        history[assistantHistoryIndex] = assistantForContinuation
+        // openaiChatgpt and lmStudio build their tool outputs from the assistant row's
+        // content_blocks (codex even de-dupes the matching `role:'tool'` entry away),
+        // and hyperRouter reads ONLY the blocks. So when a tool failed, the copy of the
+        // row that is REPLAYED to the model carries the marked blocks; the persisted
+        // row, the returned message and the SSE frame keep the tool's own text.
+        history[assistantHistoryIndex] = anyToolErrors
+          ? { ...assistantForContinuation, content_blocks: JSON.stringify([...existingBlocks, ...modelToolResultBlocks]) }
+          : assistantForContinuation
 
         // Re-emit the merged assistant row (now carrying tool_result blocks) so SSE
         // clients can update the intermediate turn's message in place. The initial
@@ -1160,11 +1475,19 @@ export class ToolLoopService {
         }
         emit({ type: 'context_compaction', status: 'threshold_reached', ...eventDetails })
         emit({ type: 'context_compaction', status: 'started', ...eventDetails })
+        // In-loop compaction is a whole extra model call. Without this the run just
+        // goes quiet mid-answer, which reads as a hang.
+        emit({
+          type: 'notice',
+          code: 'compacting',
+          message: 'This conversation is getting long — summarising it so I can keep going.',
+          lineageId: input.lineageId ?? null,
+        })
 
         if (!this.compactBranch) {
           const error = 'Automatic context compaction is not configured; continuation paused before context overflow.'
           emit({ type: 'context_compaction', status: 'failed', ...eventDetails, error })
-          throw new Error(error)
+          throw attachChatErrorCode(new Error(error), 'compaction_failed')
         }
 
         try {
@@ -1198,7 +1521,11 @@ export class ToolLoopService {
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error)
           emit({ type: 'context_compaction', status: 'failed', ...eventDetails, error: message })
-          throw new Error(`Automatic context compaction failed; continuation paused: ${message}`)
+          throw attachChatErrorCode(
+            new Error(`Automatic context compaction failed; continuation paused: ${message}`),
+            'compaction_failed',
+            { detail: message }
+          )
         }
       }
 
@@ -1217,6 +1544,17 @@ export class ToolLoopService {
       turn: maxTurns,
       maxTurns,
       continued: false,
+    })
+    // Non-terminal on purpose: the branches below may still finalize successfully.
+    // The prose comes from the shared table so the notice and the error bubble that
+    // may follow it cannot drift apart.
+    emit({
+      type: 'notice',
+      code: 'max_turns_reached',
+      message: buildChatErrorEnvelope('max_turns_reached').userMessage,
+      attempt: maxTurns,
+      maxAttempts: maxTurns,
+      lineageId: input.lineageId ?? null,
     })
 
     // Phase 3: if a Stop hook forced continuation past the turn cap, the last turn was
@@ -1247,11 +1585,15 @@ export class ToolLoopService {
     }
 
     if (!lastAssistantMessage) {
-      throw new Error('Tool loop ended without an assistant message')
+      throw attachChatErrorCode(new Error('Tool loop ended without an assistant message'), 'internal_error')
     }
 
-    throw new Error(
-      `Tool loop reached max turns (${maxTurns}) without producing a final assistant response without tool calls`
+    // The message stays as-is (callers and tests match on it); the code is what the
+    // orchestrator reads. "max turns (400)" is loop vocabulary and must not reach the
+    // bubble — the envelope's own prose does.
+    throw attachChatErrorCode(
+      new Error(`Tool loop reached max turns (${maxTurns}) without producing a final assistant response without tool calls`),
+      'max_turns_reached'
     )
   }
 }

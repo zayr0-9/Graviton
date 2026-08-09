@@ -20,6 +20,7 @@ interface SkillManagerResult {
   // For 'activate' action
   skill?: {
     name: string
+    displayName?: string
     description: string
     instructions: string      // The bodyContent from SKILL.md
     hasScripts: boolean
@@ -74,6 +75,7 @@ export async function execute(args: SkillManagerArgs): Promise<SkillManagerResul
       success: true,
       skill: {
         name: skill.name,
+        displayName: skill.displayName,
         description: skill.description,
         instructions: skill.bodyContent,
         hasScripts: skill.hasScripts,

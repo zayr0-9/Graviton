@@ -3,6 +3,8 @@ import { toCodexRequestParts, buildCodexRequestDiagnostics } from './codexReques
 import { parseCodexSseResponse } from './codexSse.js'
 import { openStreamingWithPreFirstByteRetry } from '../streamResilience.js'
 import { parseCodexWebSocketResponse } from './codexWebsocket.js'
+import { attachPartialOutput } from '../openRouterProvider.js'
+import type { ProviderPartialOutput } from '../openRouterProvider.js'
 import type { CodexGenerateInput, CodexGenerateResult, CodexProviderOptions, CodexResponsesTransport } from './types.js'
 import { CODEX_BASE_URL, CODEX_ORIGINATOR } from './types.js'
 
@@ -145,8 +147,19 @@ export class CodexResponsesProvider {
           error: error instanceof Error ? error.message : String(error),
         })
       }
-      input.signal?.throwIfAborted()
-      return await this.generateHttp(input, headers, body)
+      // R1(a): the websocket attempt may already have streamed text to the user
+      // before it failed. If the fallback never gets going — an abort here, or an
+      // HTTP failure that produced nothing of its own — that text is the only
+      // output this turn has, so carry it onto whatever error we end up throwing.
+      // `attachPartialOutput` never overwrites, so a fallback that DID stream keeps
+      // its own, fresher partial.
+      const websocketPartial = (error as any)?.partialOutput as ProviderPartialOutput | undefined
+      try {
+        input.signal?.throwIfAborted()
+        return await this.generateHttp(input, headers, body)
+      } catch (fallbackError) {
+        throw attachPartialOutput(fallbackError, websocketPartial)
+      }
     }
   }
 

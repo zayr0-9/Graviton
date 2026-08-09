@@ -2,6 +2,7 @@ import Conf from 'conf'
 import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, nativeTheme, screen, shell, Tray, webContents } from 'electron'
 import autoUpdaterPkg from 'electron-updater'
 import fs from 'fs'
+import http from 'http'
 import os from 'os'
 import path from 'path'
 import { fileURLToPath } from 'url'
@@ -55,6 +56,149 @@ const LOCAL_SERVER_LAN_ADVERTISE_HOST = process.env.YGG_LOCAL_SERVER_LAN_ADVERTI
 const LOCAL_SERVER_ALLOW_EPHEMERAL_PORT = true
 const BROWSER_SETTINGS_STORAGE_KEY = 'ygg_browser_settings'
 const DEFAULT_GUEST_DEVTOOLS_ENABLED = true
+
+// ---------------------------------------------------------------------------
+// Local server liveness
+//
+// `localServerStarted` is a BOOT-TIME boolean: once the server starts it stays
+// true even if the HTTP server later dies, so `sync:status` used to report a
+// dead server as running forever. The renderer then either hangs on requests or,
+// worse, times out `sync:status` and falls back to the hardcoded :3002 — which
+// may be a DIFFERENT app instance's server.
+//
+// So `sync:status` now live-probes `/api/health` (which existed and was called
+// from nowhere). The probe is cached for a couple of seconds so a burst of
+// `sync:status` calls costs one socket, not N.
+// ---------------------------------------------------------------------------
+const LOCAL_SERVER_HEALTH_TIMEOUT_MS = 1200
+const LOCAL_SERVER_HEALTH_CACHE_TTL_MS = 2000
+
+interface LocalServerHealth {
+  /** Our own local server answered `/api/health` correctly. */
+  ok: boolean
+  /** Something answered, but it is not this instance's local server. */
+  foreign: boolean
+  error: string | null
+}
+
+let cachedLocalServerHealth: LocalServerHealth | null = null
+let cachedLocalServerHealthAt = 0
+let cachedLocalServerHealthPort: number | null = null
+let pendingLocalServerHealthProbe: Promise<LocalServerHealth> | null = null
+
+function requestLocalServerHealth(port: number): Promise<LocalServerHealth> {
+  return new Promise<LocalServerHealth>(resolve => {
+    let settled = false
+    const finish = (result: LocalServerHealth) => {
+      if (settled) return
+      settled = true
+      resolve(result)
+    }
+
+    const request = http.request(
+      {
+        host: '127.0.0.1',
+        port,
+        path: '/api/health',
+        method: 'GET',
+        timeout: LOCAL_SERVER_HEALTH_TIMEOUT_MS,
+        headers: { accept: 'application/json' },
+      },
+      response => {
+        const chunks: Buffer[] = []
+        let size = 0
+        response.on('data', (chunk: Buffer) => {
+          // The payload is tiny; cap it so a wrong server on this port cannot stream at us.
+          if (size >= 8192) return
+          chunks.push(chunk)
+          size += chunk.length
+        })
+        response.on('error', (error: Error) => finish({ ok: false, foreign: false, error: error.message }))
+        response.on('end', () => {
+          if (response.statusCode !== 200) {
+            finish({ ok: false, foreign: false, error: `/api/health returned HTTP ${response.statusCode}` })
+            return
+          }
+
+          let payload: Record<string, unknown> | null = null
+          try {
+            const parsed: unknown = JSON.parse(Buffer.concat(chunks).toString('utf8'))
+            payload = parsed && typeof parsed === 'object' ? (parsed as Record<string, unknown>) : null
+          } catch {
+            payload = null
+          }
+
+          if (payload?.status !== 'ok' || payload?.mode !== 'local-sync') {
+            finish({
+              ok: false,
+              foreign: true,
+              error: `port ${port} is answering, but not as this app's local sync server`,
+            })
+            return
+          }
+
+          // Forward-compatible cross-instance check. `/api/health` does not report the
+          // owning pid today; when it does (see the cross-file request), a mismatch means
+          // ANOTHER app instance owns this port and writing to it would corrupt its data.
+          const reportedPid = typeof payload.pid === 'number' ? payload.pid : null
+          if (reportedPid !== null && reportedPid !== process.pid) {
+            finish({
+              ok: false,
+              foreign: true,
+              error: `port ${port} is served by another app instance (pid ${reportedPid})`,
+            })
+            return
+          }
+
+          finish({ ok: true, foreign: false, error: null })
+        })
+      }
+    )
+
+    request.on('timeout', () => {
+      request.destroy()
+      finish({ ok: false, foreign: false, error: `/api/health did not answer within ${LOCAL_SERVER_HEALTH_TIMEOUT_MS}ms` })
+    })
+    request.on('error', (error: Error) => finish({ ok: false, foreign: false, error: error.message }))
+    request.end()
+  })
+}
+
+async function probeLocalServerHealth(): Promise<LocalServerHealth> {
+  if (!localServerStarted || localServerPort == null) {
+    return { ok: false, foreign: false, error: localServerError ?? 'Local server has not been started.' }
+  }
+
+  const port = localServerPort
+  const now = Date.now()
+
+  // Any restart lands on a (possibly) different port — that invalidates the cache
+  // without needing to reach into the start/stop paths.
+  if (cachedLocalServerHealthPort !== port) {
+    cachedLocalServerHealth = null
+    cachedLocalServerHealthAt = 0
+    cachedLocalServerHealthPort = port
+  }
+
+  if (cachedLocalServerHealth && now - cachedLocalServerHealthAt < LOCAL_SERVER_HEALTH_CACHE_TTL_MS) {
+    return cachedLocalServerHealth
+  }
+
+  if (pendingLocalServerHealthProbe) return pendingLocalServerHealthProbe
+
+  pendingLocalServerHealthProbe = requestLocalServerHealth(port)
+    .then(result => {
+      cachedLocalServerHealth = result
+      cachedLocalServerHealthAt = Date.now()
+      cachedLocalServerHealthPort = port
+      return result
+    })
+    .finally(() => {
+      pendingLocalServerHealthProbe = null
+    })
+
+  return pendingLocalServerHealthProbe
+}
 
 
 function isPrivateIpv4(address: string): boolean {
@@ -2040,13 +2184,25 @@ ipcMain.handle('auth:openOAuthWindow', async (_event, url: string) => {
 })
 
 // Local sync server status
+//
+// `localServerRunning` is a LIVE answer: it is true only when this process's own
+// server just answered `/api/health` on the port it is actually bound to. A server
+// that died after boot now reports false instead of true-forever.
+//
+// The port/url are still the last real binding even when the probe fails. That is
+// deliberate: nulling them would make the renderer fall back to the hardcoded
+// :3002, which is the cross-instance hazard we are trying to close. The renderer
+// gates on `localServerRunning` (see `isLocalServerOriginVerified` in utils/api.ts).
 ipcMain.handle('sync:status', async () => {
+  const health = await probeLocalServerHealth()
+
   return {
-    localServerRunning: localServerStarted,
+    localServerRunning: health.ok,
     localServerPort,
     localServerUrl,
     localServerLanUrl,
-    localServerError,
+    localServerError: health.ok ? null : (health.error ?? localServerError),
+    localServerForeign: health.foreign,
   }
 })
 

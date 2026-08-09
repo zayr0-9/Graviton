@@ -10,7 +10,17 @@
  * NodeNext-style and writes the `.js` extension, the renderer resolves
  * bundler-style and writes none.
  */
+import type { ChatErrorEnvelope, ChatNoticeCode } from './chatErrors.js'
 import type { OpenAIContextUsage } from './contextUsage.js'
+
+export type {
+  ChatErrorAction,
+  ChatErrorActionKind,
+  ChatErrorCode,
+  ChatErrorEnvelope,
+  ChatErrorRecoverability,
+  ChatNoticeCode,
+} from './chatErrors.js'
 
 export type HeadlessChatOperation = 'send' | 'repeat' | 'branch' | 'edit-branch'
 
@@ -152,6 +162,7 @@ export type HeadlessSubagentStreamEvent =
       resetAt?: number
       retryExhausted?: boolean
       aborted?: boolean
+      envelope?: ChatErrorEnvelope
     }
 
 export type HeadlessStreamEvent =
@@ -252,10 +263,30 @@ export type HeadlessStreamEvent =
   // Relayed from Railway (cloud/free-tier inference) by the gateway proxy (Phase 4).
   | { type: 'free_generations_update'; remaining: number; isFreeTier?: boolean }
   | { type: 'generation_limit_reached'; message?: string }
-  | { type: 'reauth_required'; message?: string }
-  | { type: 'complete'; message: any; providerError?: boolean; lineageId?: string | null }
+  | { type: 'reauth_required'; message?: string; envelope?: ChatErrorEnvelope }
+  // Non-terminal, user-facing status. A run keeps going after one of these; they
+  // exist so a multi-second silence (a provider retry, a resubscribe, an in-loop
+  // compaction) has a visible cause instead of looking like a stall. Never
+  // persisted as message content.
+  | {
+      type: 'notice'
+      code: ChatNoticeCode
+      message: string
+      attempt?: number
+      maxAttempts?: number
+      lineageId?: string | null
+    }
+  | {
+      type: 'complete'
+      message: any
+      providerError?: boolean
+      lineageId?: string | null
+      /** Set with `providerError`, so a badged completion carries the same prose as a hard failure. */
+      envelope?: ChatErrorEnvelope
+    }
   | {
       type: 'error'
+      /** Raw/technical text. For logs and `envelope.detail` — never rendered on its own. */
       error: string
       lineageId?: string | null
       provider?: string
@@ -265,6 +296,31 @@ export type HeadlessStreamEvent =
       errorType?: string
       resetAt?: number
       assistantMessage?: any
+      /**
+       * The classified, user-facing form. Optional ONLY for back-compat with the
+       * mobile LAN UI and any pre-envelope server; every emitter in this repo sets
+       * it, and readers fall back through `normalizeChatErrorEnvelope`.
+       */
+      envelope?: ChatErrorEnvelope
+      /**
+       * Does this end the run? Absent means `true` (every pre-existing emitter was
+       * terminal). An explicit `false` lets the loop report a failure it recovered from.
+       */
+      terminal?: boolean
+      /**
+       * THE TIER-1 / TIER-2 DISCRIMINATOR. Set to the id of the assistant message the
+       * server persisted carrying this failure's `ErrorBlock`.
+       *
+       * Present  => the failure is already durable message content; the renderer MUST
+       *             NOT also create a `ChatErrorRecord`, or the user sees two bubbles
+       *             for one error.
+       * Absent   => the server had nothing to attach the failure to (it happened before
+       *             the user message was persisted), so the renderer owns the surface.
+       *
+       * This is the only reliable signal: the renderer cannot otherwise tell whether an
+       * `assistant_message_persisted` frame it saw was an error row or ordinary output.
+       */
+      persistedErrorMessageId?: string | null
     }
 
 /**

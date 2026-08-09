@@ -1,3 +1,4 @@
+import type { ProviderPartialOutput } from '../openRouterProvider.js'
 import type { CodexParseResult, CodexResponseParseOptions } from './types.js'
 
 type State = {
@@ -54,6 +55,24 @@ export function codexResponseParseResult(state: State): CodexParseResult {
       outputItemCount: outputItems.length,
       addedItemCount: state.responseItemsAdded.length,
     },
+  }
+}
+
+/**
+ * R1(a): whatever this stream had accumulated at the moment it failed, in the
+ * shape every provider uses (`err.partialOutput`).
+ *
+ * Deliberately reuses `codexResponseParseResult`, so a partial is assembled by the
+ * exact same text/reasoning/tool-call selection as a successful run — a failure
+ * must not produce differently-shaped text from a success. Content blocks are not
+ * built here: `openaiChatgptProvider` owns that mapping and fills them in.
+ */
+export function codexPartialOutputFromState(state: State): ProviderPartialOutput {
+  const result = codexResponseParseResult(state)
+  return {
+    ...(result.content ? { content: result.content } : {}),
+    ...(result.reasoningContent ? { reasoning: result.reasoningContent } : {}),
+    ...(result.toolCalls?.length ? { toolCalls: result.toolCalls } : {}),
   }
 }
 

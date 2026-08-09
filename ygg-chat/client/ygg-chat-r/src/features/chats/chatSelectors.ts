@@ -1,6 +1,7 @@
 import { createSelector } from '@reduxjs/toolkit'
-import { MessageId } from '../../../../../shared/types'
+import { ConversationId, MessageId } from '../../../../../shared/types'
 import { RootState } from '../../store/store'
+import type { ChatErrorRecord } from './chatTypes'
 
 // Base selector
 const selectChatState = (state: RootState) => state.chat
@@ -65,10 +66,6 @@ export const makeSelectThinkingBuffer = (streamId: string) =>
 export const makeSelectStreamEvents = (streamId: string) =>
   createSelector([selectStreamingRoot], streaming => streaming.byId[streamId]?.events ?? [])
 
-// Factory for creating per-stream error selector
-export const makeSelectStreamError = (streamId: string) =>
-  createSelector([selectStreamingRoot], streaming => streaming.byId[streamId]?.error ?? null)
-
 // Factory for creating per-stream active status selector
 export const makeSelectIsStreaming = (streamId: string) =>
   createSelector([selectStreamingRoot], streaming => streaming.byId[streamId]?.active ?? false)
@@ -94,9 +91,6 @@ export const selectStreamBuffer = createSelector([selectPrimaryStreamState], str
 // Legacy: thinking buffer from primary stream
 export const selectThinkingBuffer = createSelector([selectPrimaryStreamState], stream => stream?.thinkingBuffer ?? '')
 
-// Legacy: error from primary stream
-export const selectStreamError = createSelector([selectPrimaryStreamState], stream => stream?.error ?? null)
-
 // Legacy: events from primary stream
 export const selectStreamEvents = createSelector([selectPrimaryStreamState], stream => stream?.events ?? [])
 
@@ -108,7 +102,10 @@ export const selectSendingState = createSelector([selectChatState, selectActiveS
   sending: chat.composition.sending,
   compacting: chat.composition.compacting,
   streaming: activeIds.length > 0,
-  error: null, // Error now per-stream, use selectStreamError for specific stream
+  // Errors are no longer surfaced here. A live stream failure is an `error` event on the
+  // stream's own event log; a failure with no message to live on is a ChatErrorRecord —
+  // see selectChatErrorsForConversation.
+  error: null,
 }))
 
 // ============================================================================
@@ -448,3 +445,54 @@ export const selectStreamUndoRestoringByStreamId = (streamId: string) =>
 
 export const selectStreamUndoErrorByStreamId = (streamId: string) =>
   createSelector([selectStreamUndoRoot], undo => undo.errorByStreamId[streamId] ?? null)
+
+// ============================================================================
+// Chat error notices
+// ============================================================================
+//
+// These read `chat.errorNotices`, NOT `chat.streaming.byId`. A stream slot is pruned
+// 30s after its run ends and `selectCurrentViewStreamFor` filters on `active` first, so
+// anything read off a stream is gone (or unreachable) exactly when an error needs to be
+// visible. Error notices outlive both.
+
+// Stable identity so a conversation with no errors never produces a new array and
+// forces a re-render.
+const EMPTY_CHAT_ERRORS: readonly ChatErrorRecord[] = []
+
+export const selectChatErrorNotices = createSelector([selectChatState], chat => chat.errorNotices)
+
+/** Undismissed errors for a conversation, oldest first (insertion order). */
+export const selectChatErrorsForConversation = createSelector(
+  [selectChatErrorNotices, (_state: RootState, conversationId: ConversationId | null | undefined) => conversationId],
+  (notices, conversationId): readonly ChatErrorRecord[] => {
+    if (conversationId == null) return EMPTY_CHAT_ERRORS
+    const bucket = notices.byConversationId[String(conversationId)]
+    if (!bucket || bucket.length === 0) return EMPTY_CHAT_ERRORS
+    const undismissed = bucket.filter(record => !record.dismissed)
+    return undismissed.length === 0 ? EMPTY_CHAT_ERRORS : undismissed
+  }
+)
+
+/**
+ * Undismissed errors anchored to one parent message, for the message-list row that
+ * renders under it. Records with a null parent predate any lineage and are therefore
+ * never anchored to a row — they belong to the conversation-level surface.
+ */
+export const selectChatErrorsForParentMessage = createSelector(
+  [
+    selectChatErrorsForConversation,
+    (
+      _state: RootState,
+      _conversationId: ConversationId | null | undefined,
+      parentMessageId: MessageId | null | undefined
+    ) => parentMessageId,
+  ],
+  (errors, parentMessageId): readonly ChatErrorRecord[] => {
+    if (parentMessageId == null) return EMPTY_CHAT_ERRORS
+    const parentKey = String(parentMessageId)
+    const anchored = errors.filter(
+      record => record.parentMessageId != null && String(record.parentMessageId) === parentKey
+    )
+    return anchored.length === 0 ? EMPTY_CHAT_ERRORS : anchored
+  }
+)

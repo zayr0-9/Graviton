@@ -1,5 +1,6 @@
 import { MessageRepo } from '../persistence/messageRepo.js'
 import { ProviderRouter } from './providerRouter.js'
+import { excludeContextExcludedMessages } from '../../../../../shared/contextExclusion.js'
 
 export const AUTO_COMPACTION_NOTE = '__auto_compaction_summary__'
 export const AUTO_COMPACTION_SUMMARY_RESUME_LINE = 'Following is summary of the session, you have to resume the work.'
@@ -512,7 +513,17 @@ export class CompactionService {
    * store the summary outside the main tree (e.g. the subagent transcript).
    */
   async generateCompactionSummary(input: GenerateCompactionSummaryInput): Promise<string> {
-    const compactableHistory = trimHistoryToLatestCompaction(Array.isArray(input.messages) ? input.messages : [])
+    // R5: strip `excludeFromContext` rows BEFORE anything reads them. This is the single
+    // choke point for every compaction caller — the in-loop compaction AND the manual
+    // `chatRoutes` route, which feeds caller-supplied rows verbatim. Without it an error
+    // row (whose `content` mirrors `envelope.userMessage`) gets summarised INTO the
+    // conversation memory and then replayed to the model as established history forever.
+    // Applied above `trimHistoryToLatestCompaction` so the tool/write appendices are
+    // covered too, not just the history lines.
+    const contextEligibleMessages = excludeContextExcludedMessages(
+      Array.isArray(input.messages) ? input.messages : []
+    )
+    const compactableHistory = trimHistoryToLatestCompaction(contextEligibleMessages)
     const historyLines = buildCompactionHistoryLines(compactableHistory)
     const toolContextAppendix = buildCompactionToolContextAppendix(compactableHistory)
     const writeOpAppendix = buildCompactionWriteOpAppendix(compactableHistory)

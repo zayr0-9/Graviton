@@ -26,7 +26,7 @@ vi.mock('../../utils/api', () => ({
 // Force resumable behavior on (decoupled from localStorage/env).
 vi.mock('../../helpers/serverLoopSettings', () => ({ isResumableRunsEnabled: () => true }))
 
-import { runServerChatLoop, runServerReattach, postStreamAbort } from './mainChatClient'
+import { runServerChatLoop, runServerReattach, postStreamAbort, getChatStreamErrorEnvelope } from './mainChatClient'
 
 /** Build a fake SSE Response from a list of events (one `data:` frame each). */
 function sseResponse(events: unknown[], opts: { status?: number } = {}): Response {
@@ -67,16 +67,24 @@ describe('postStreamAbort', () => {
   it('POSTs to the abort route and returns ok', async () => {
     const fetchMock = vi.fn().mockResolvedValue({ ok: true, status: 200 })
     vi.stubGlobal('fetch', fetchMock)
-    expect(await postStreamAbort('s-1')).toBe(true)
+    expect(await postStreamAbort('s-1')).toMatchObject({ ok: true })
     expect(fetchMock).toHaveBeenCalledWith(
       'http://local/api/streams/s-1/abort',
       expect.objectContaining({ method: 'POST', signal: expect.any(AbortSignal) })
     )
   })
 
-  it('never throws on network error', async () => {
+  // A failed Stop used to return a bare `false` that no caller could explain. It now
+  // carries an envelope, because "the server may still be generating" is something the
+  // user has to be told — silently reporting a clean stop is a lie.
+  it('never throws on network error, and reports why the stop is unconfirmed', async () => {
     vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('down')))
-    expect(await postStreamAbort('s-1')).toBe(false)
+    const result = await postStreamAbort('s-1')
+    expect(result.ok).toBe(false)
+    expect(result.envelope?.code).toBe('stop_not_confirmed')
+    // Raw text belongs in `detail`, never in the string the user reads.
+    expect(result.envelope?.detail).toContain('down')
+    expect(result.envelope?.userMessage).not.toContain('down')
   })
 })
 
@@ -170,7 +178,11 @@ describe('runServerChatLoop resubscribe', () => {
 
 
 describe('runServerChatLoop reauthentication', () => {
-  it('forces a visible Electron sign-in transition when the server requires reauthentication', async () => {
+  // Deliberate behaviour change: an expired session used to yank the user out of the app
+  // mid-generation (force-logout event -> ProtectedRoute -> /login). It now classifies as
+  // `session_expired` and lets the chat render a bubble with a Sign in button, so the user
+  // keeps their place and their partial reply, and chooses when to leave.
+  it('classifies reauthentication as session_expired WITHOUT forcing navigation', async () => {
     const dispatchEvent = vi.fn()
     ;(globalThis as any).window = { dispatchEvent, location: { hash: '' } }
     vi.stubGlobal(
@@ -178,21 +190,25 @@ describe('runServerChatLoop reauthentication', () => {
       vi.fn().mockResolvedValue(sseResponse([{ type: 'reauth_required', message: 'Sign in again.' }, { type: 'error', error: 'raw 401' }]))
     )
 
-    await expect(
-      runServerChatLoop(
-        {
-          streamId: 's-auth',
-          conversationId: 'c1',
-          operation: 'send',
-          path: '/api/conversations/c1/messages',
-          request: {},
-          signal: new AbortController().signal,
-        },
-        collectDispatch()
-      )
-    ).rejects.toThrow('Sign in again.')
+    const error = await runServerChatLoop(
+      {
+        streamId: 's-auth',
+        conversationId: 'c1',
+        operation: 'send',
+        path: '/api/conversations/c1/messages',
+        request: {},
+        signal: new AbortController().signal,
+      },
+      collectDispatch()
+    ).catch(e => e)
 
-    expect(dispatchEvent).toHaveBeenCalledWith(expect.objectContaining({ type: 'force-logout' }))
-    expect((globalThis as any).window.location.hash).toBe('/login')
+    const envelope = getChatStreamErrorEnvelope(error)
+    expect(envelope?.code).toBe('session_expired')
+    expect(envelope?.action?.kind).toBe('sign_in')
+    expect(envelope?.recoverability).toBe('user_action')
+
+    // The whole point of the change: no side effect yanks the user anywhere.
+    expect(dispatchEvent).not.toHaveBeenCalled()
+    expect((globalThis as any).window.location.hash).toBe('')
   })
 })

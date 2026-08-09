@@ -139,6 +139,8 @@ type SkillInstallResult = {
   success?: boolean
   skillName?: string
   skillNames?: string[]
+  displayName?: string
+  displayNames?: string[]
   error?: string
   code?: string
   candidates?: SkillInstallCandidate[]
@@ -148,7 +150,8 @@ const formatSkillInstallSuccess = (data: SkillInstallResult) => {
   if (data.skillNames?.length) {
     return `Successfully installed ${data.skillNames.length} skills under "${data.skillName}"`
   }
-  return `Successfully installed "${data.skillName}"`
+  const installedName = data.displayName || data.skillName
+  return `Successfully installed "${installedName}"${data.displayName && data.skillName ? ` as ${data.skillName}` : ''}`
 }
 
 const HOOK_EVENT_ORDER: ManagedHookListItem['event'][] = [
@@ -278,7 +281,7 @@ export const SettingsPane: React.FC<SettingsPaneProps> = ({ open, onClose }) => 
   const [skillInstallMessage, setSkillInstallMessage] = useState('')
   const [skillInstallCandidates, setSkillInstallCandidates] = useState<SkillInstallCandidate[]>([])
   const [installedSkills, setInstalledSkills] = useState<
-    Array<{ name: string; description: string; enabled: boolean }>
+    Array<{ name: string; displayName?: string; description: string; enabled: boolean }>
   >([])
   const [skillsLoading, setSkillsLoading] = useState(false)
 
@@ -612,7 +615,7 @@ export const SettingsPane: React.FC<SettingsPaneProps> = ({ open, onClose }) => 
     try {
       const data = await localApi.get<{
         success?: boolean
-        skills?: Array<{ name: string; description: string; enabled: boolean }>
+        skills?: Array<{ name: string; displayName?: string; description: string; enabled: boolean }>
       }>('/skills')
       if (data.success && data.skills) {
         setInstalledSkills(data.skills)
@@ -2817,7 +2820,7 @@ ${block}`
                       type='text'
                       value={skillUrl}
                       onChange={e => setSkillUrl(e.target.value)}
-                      placeholder='https://clawdhub.com/owner/skill-name'
+                      placeholder='https://github.com/owner/repo.git'
                       className={`min-w-0 flex-1 ${inputSurfaceClass}`}
                       disabled={skillInstallStatus === 'loading'}
                       onKeyDown={e => {
@@ -2904,8 +2907,8 @@ ${block}`
 
                   {/* Help text */}
                   <p className='text-xs text-neutral-500 dark:text-neutral-500'>
-                    Supported URLs: ClawdHub pages, GitHub skill folders, or GitHub repos. Multi-skill repos can be
-                    installed individually or grouped under the repo name.
+                    Supported URLs: ClawdHub pages, GitHub HTTPS clone links, skill folders, or repos. Multi-skill
+                    repos can be installed individually or grouped under the repo name.
                   </p>
 
                   {/* Installed Skills List */}
@@ -2933,7 +2936,7 @@ ${block}`
                             <div className='flex-1 min-w-0'>
                               <div className='flex items-center gap-2'>
                                 <span className='font-medium text-sm text-neutral-900 dark:text-neutral-100'>
-                                  {skill.name}
+                                  {skill.displayName || skill.name}
                                 </span>
                                 <span
                                   className={`text-xs px-1.5 py-0.5 rounded ${
@@ -2945,6 +2948,11 @@ ${block}`
                                   {skill.enabled ? 'Enabled' : 'Disabled'}
                                 </span>
                               </div>
+                              {skill.displayName && skill.displayName !== skill.name && (
+                                <p className='text-[11px] text-neutral-400 dark:text-neutral-500 truncate mt-0.5'>
+                                  Agent name: {skill.name}
+                                </p>
+                              )}
                               <p className='text-xs text-neutral-500 dark:text-neutral-400 truncate mt-0.5'>
                                 {skill.description}
                               </p>

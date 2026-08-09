@@ -17,12 +17,15 @@
  * buildSystemPromptWithHookContext is NOT ported here — it is a separate feature,
  * orthogonal to hooks. Only hook context is folded server-side.
  */
+import type { HeadlessStreamEvent } from '../../../../../shared/headlessApi.js'
 import type {
+  HookEventName,
   HookProjectContext,
   HookRunRequest,
   HookRunResult,
   HookTurnContext,
 } from '../../hooks/hookTypes.js'
+import { attachChatErrorCode } from '../providers/providerErrorFormatter.js'
 import type { ToolExecutionContext, ToolLoopHooks } from './toolLoopService.js'
 import { toToolResultContent } from './toolLoopService.js'
 
@@ -173,6 +176,85 @@ export function buildHookMetadata(params: {
   }
 }
 
+// ── Hook failure visibility ─────────────────────────────────────────────────
+
+/**
+ * A hook failure is NON-terminal: a broken hook must never kill a chat. But it must
+ * also never be silent — before this, `HookRunResult.errors` was written by the runner
+ * and read by nobody, so "your hooks are broken" and "you have no hooks" were the same
+ * observable state. Every failure now surfaces as a `notice` frame the UI can render
+ * inline while the run keeps going.
+ *
+ * The lifecycle point is the only hook identity the runner currently reports (its
+ * `errors` are bare strings with no command/source attached), so it is what the message
+ * names. See the cross-file note on hookRunner.ts for the structured-failure upgrade.
+ */
+const HOOK_LIFECYCLE_PHRASE: Record<HookEventName, string> = {
+  UserPromptSubmit: 'before your message was sent',
+  PreToolUse: 'before a tool ran',
+  PostToolUse: 'after a tool ran',
+  PostToolUseFailure: 'after a tool failed',
+  Stop: 'when the reply finished',
+}
+
+/**
+ * Cap on a single accumulated `[Hook context]` block. A hook that prints non-JSON and
+ * exits 0 has its ENTIRE stdout interpreted as `additionalContext` by the runner, so an
+ * accidental `set -x`, a stack trace, or a `cat` of a large file would otherwise be
+ * folded verbatim into the system prompt of every subsequent turn.
+ */
+const MAX_HOOK_CONTEXT_CHARS = 8_000
+
+const TRUNCATION_MARKER = '\n…[hook output truncated]'
+
+function describeHookFailure(event: HookEventName, failureCount: number): string {
+  const when = HOOK_LIFECYCLE_PHRASE[event] ?? `at the ${event} lifecycle point`
+  const subject =
+    failureCount > 1 ? `${failureCount} of your ${event} hooks failed` : `Your ${event} hook failed`
+  return `${subject} to run ${when}. The chat continued without it — check your hook configuration.`
+}
+
+function describeHookOutputTruncation(event: HookEventName): string {
+  const when = HOOK_LIFECYCLE_PHRASE[event] ?? `at the ${event} lifecycle point`
+  return `Your ${event} hook printed more output than can be used as context ${when}, so it was truncated. A hook should print JSON, or nothing.`
+}
+
+/**
+ * UserPromptSubmit block. The hook's own `reason` is authored by the user's own
+ * configuration and is written to be read, so it is the one raw string allowed to
+ * become `userMessage`; everything else falls back to prose. `Error.message` keeps its
+ * previous value so existing callers/logs are unchanged.
+ *
+ * NOTE: this only classifies the failure. Per decision D1 the typed prompt must still
+ * be persisted — that reordering lives in chatOrchestrator.ts (see the report).
+ */
+export function createUserPromptBlockedError(reason?: string | null): Error {
+  const trimmed = typeof reason === 'string' ? reason.trim() : ''
+  const error = new Error(trimmed || 'Blocked by hook')
+  return attachChatErrorCode(error, 'tool_blocked_by_policy', {
+    userMessage: trimmed || 'A hook blocked this message before it was sent.',
+    recoverability: 'user_action',
+    action: { kind: 'open_settings', label: 'Check hooks' },
+  })
+}
+
+/**
+ * PreToolUse `permissionDecision: 'deny'`. Deliberately `tool_denied` rather than
+ * `hook_failed`: the hook did exactly what it was configured to do, which is a very
+ * different thing to tell a user than "your hook crashed".
+ */
+export function createPreToolUseDenyError(
+  result: Pick<HookRunResult, 'permissionDecisionReason' | 'reason'>
+): Error {
+  const trimmed = (result.permissionDecisionReason || result.reason || '').trim()
+  const error = new Error(trimmed || 'Tool blocked by hook')
+  return attachChatErrorCode(error, 'tool_denied', {
+    userMessage: trimmed || 'A hook blocked this tool call.',
+    recoverability: 'user_action',
+    action: { kind: 'open_settings', label: 'Check hooks' },
+  })
+}
+
 // ── Session (the wiring surface handed to the orchestrator + loop) ───────────
 
 export type HookRunFn = (req: HookRunRequest) => Promise<HookRunResult>
@@ -188,6 +270,14 @@ export interface ChatHookSessionConfig {
   streamId: string | null
   project?: HookProjectContext | null
   localApiBase?: string | null
+  /**
+   * Stream sink. When wired, every hook failure surfaces as a non-terminal
+   * `{type:'notice', code:'hook_failed'}` frame. Optional so subagents, the mobile LAN
+   * path and existing tests keep working unchanged — they simply get no notices.
+   */
+  emit?: (event: HeadlessStreamEvent) => void
+  /** Stamped onto emitted notices so the renderer can attribute them to a lineage. */
+  lineageId?: string | null
 }
 
 export interface ChatHookSession {
@@ -213,16 +303,67 @@ export function createChatHookSession(config: ChatHookSessionConfig): ChatHookSe
   const localApiBase = config.localApiBase ?? null
   let streamId = config.streamId
 
+  const emitNotice = (message: string): void => {
+    if (!config.emit) return
+    try {
+      config.emit({
+        type: 'notice',
+        code: 'hook_failed',
+        message,
+        lineageId: config.lineageId ?? null,
+      })
+    } catch {
+      // A dead stream sink must not turn a hook failure into a chat failure.
+    }
+  }
+
+  /**
+   * Raw failure text is diagnostic, never user-facing: a `notice` has no `detail`
+   * field, so it goes to the server log while the user gets prose.
+   */
+  const reportHookFailures = (event: HookEventName, errors: string[]): void => {
+    if (errors.length === 0) return
+    console.warn(`[chatHookService] ${event} hook failure`, { event, conversationId: config.conversationId, errors })
+    emitNotice(describeHookFailure(event, errors.length))
+  }
+
   // Parity with the renderer chatHookClient swallow (:120-132): a hook-runner
-  // failure never aborts the chat — surface it as a no-match result. (runHookRequest
-  // itself already swallows individual hook failures into `errors`; this guards a
-  // rejection from hook discovery.)
+  // failure never aborts the chat — surface it as a no-match result. The failure is no
+  // longer silent though: both a discovery-level rejection and the per-hook failures
+  // the runner collects into `errors` now emit a non-terminal notice.
   const safeRun = async (req: HookRunRequest): Promise<HookRunResult> => {
     try {
-      return await config.runHook(req)
+      const result = await config.runHook(req)
+      reportHookFailures(req.event, Array.isArray(result.errors) ? result.errors : [])
+      return result
     } catch (error) {
-      return { matched: false, hookCount: 0, errors: [error instanceof Error ? error.message : String(error)] }
+      const message = error instanceof Error ? error.message : String(error)
+      reportHookFailures(req.event, [message])
+      return { matched: false, hookCount: 0, errors: [message] }
     }
+  }
+
+  /**
+   * Guarded fold of a hook's `additionalContext` into the shared accumulator. Enforces
+   * MAX_HOOK_CONTEXT_CHARS so a hook that dumps its stdout cannot silently take over
+   * the system prompt for the rest of the run.
+   */
+  const foldAdditionalContext = (event: HookEventName, value: string | null | undefined): void => {
+    if (typeof value !== 'string') return
+    const trimmed = value.trim()
+    if (!trimmed) return
+    if (trimmed.length <= MAX_HOOK_CONTEXT_CHARS) {
+      appendHookAdditionalContext(hookContext, trimmed)
+      return
+    }
+    hookContext.push(`${trimmed.slice(0, MAX_HOOK_CONTEXT_CHARS).trimEnd()}${TRUNCATION_MARKER}`)
+    console.warn(`[chatHookService] ${event} hook context truncated`, {
+      event,
+      conversationId: config.conversationId,
+      length: trimmed.length,
+      limit: MAX_HOOK_CONTEXT_CHARS,
+    })
+    emitNotice(describeHookOutputTruncation(event))
   }
 
   const metadataFor = (opts: {
@@ -260,9 +401,9 @@ export function createChatHookSession(config: ChatHookSessionConfig): ChatHookSe
       lookup: meta.lookup,
       project: meta.project,
     })
-    appendHookAdditionalContext(hookContext, result.additionalContext)
+    foldAdditionalContext('UserPromptSubmit', result.additionalContext)
     if (result.blocked) {
-      throw new Error(result.reason || 'Blocked by hook')
+      throw createUserPromptBlockedError(result.reason)
     }
     return typeof result.updatedPrompt === 'string' ? result.updatedPrompt : prompt
   }
@@ -283,7 +424,7 @@ export function createChatHookSession(config: ChatHookSessionConfig): ChatHookSe
       lineage: meta.lineage,
       lookup: meta.lookup,
     })
-    appendHookAdditionalContext(hookContext, result.additionalContext)
+    foldAdditionalContext('PreToolUse', result.additionalContext)
     return result
   }
 
@@ -306,7 +447,7 @@ export function createChatHookSession(config: ChatHookSessionConfig): ChatHookSe
       lineage: meta.lineage,
       lookup: meta.lookup,
     })
-    appendHookAdditionalContext(hookContext, result.additionalContext)
+    foldAdditionalContext('PostToolUse', result.additionalContext)
   }
 
   const runPostToolUseFailure = async (effectiveToolCall: any, error: unknown, ctx: ToolExecutionContext): Promise<void> => {
@@ -326,7 +467,7 @@ export function createChatHookSession(config: ChatHookSessionConfig): ChatHookSe
       lineage: meta.lineage,
       lookup: meta.lookup,
     })
-    appendHookAdditionalContext(hookContext, result.additionalContext)
+    foldAdditionalContext('PostToolUseFailure', result.additionalContext)
   }
 
   // Port of chatActions.ts shouldContinueFromStopHook (:1396-1455). Returns true to
@@ -359,9 +500,9 @@ export function createChatHookSession(config: ChatHookSessionConfig): ChatHookSe
       turn: meta.turn,
       project: meta.project,
     })
-    appendHookAdditionalContext(hookContext, result.additionalContext)
+    foldAdditionalContext('Stop', result.additionalContext)
     if (result.blocked) {
-      appendHookAdditionalContext(hookContext, result.reason || 'Hook requested continued execution.')
+      foldAdditionalContext('Stop', result.reason || 'Hook requested continued execution.')
       return true
     }
     return false

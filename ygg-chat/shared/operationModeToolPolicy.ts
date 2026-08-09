@@ -27,6 +27,7 @@ export const CHAT_MODE_ALLOWED_TOOL_NAMES = new Set([
   'weather',
   'powershell',
   'subagent',
+  'subagent_manager',
   'custom_tool_manager',
   'mcp_manager',
   'skill_manager',

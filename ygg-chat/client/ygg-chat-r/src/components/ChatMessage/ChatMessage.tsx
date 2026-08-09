@@ -1,4 +1,6 @@
 ﻿import type { ContentBlock, StreamEvent, ToolCall } from '@/features/chats/chatTypes'
+import type { ChatErrorActionKind, ChatErrorEnvelope } from '../../../../../shared/chatErrors'
+import type { MessageId } from '../../../../../shared/types'
 import type { ToolDefinition } from '@/features/chats/toolDefinitions'
 import type { RootState } from '@/store/store'
 import 'boxicons' // Types
@@ -26,6 +28,7 @@ import { truncateToolOutput as truncateToolOutputPreview } from '../../helpers/t
 import { useIsMobile } from '../../hooks/useMediaQuery'
 import { environment, localApi } from '../../utils/api'
 import { Button } from '../Button/button'
+import { ChatErrorBubble } from '../ChatErrorBubble/ChatErrorBubble'
 import { EditToolDiffView } from '../EditFileDiffView/EditToolDiffView'
 import { PlanMdToolView } from '../PlanMdToolView'
 import { useHtmlIframeRegistry } from '../HtmlIframeRegistry/HtmlIframeRegistry'
@@ -134,6 +137,15 @@ interface ChatMessageProps {
     error?: string | null
   }
   onUndoStreamEdits?: () => void
+  /**
+   * What the button on a PERSISTED error bubble (tier 1) does.
+   *
+   * Redux is not persisted, so after a reload a server-written `ErrorBlock` row is the ONLY
+   * surface a failure has. Without this the bubble draws no button at all
+   * (`ChatErrorBubble` requires `onAction` to render one) and every reloaded error is a dead
+   * end. `Chat` supplies it, because only the container knows what `retry` / `sign_in` mean.
+   */
+  onChatErrorAction?: (kind: ChatErrorActionKind, messageId: MessageId, envelope: ChatErrorEnvelope) => void
 }
 
 interface MessageActionsProps {
@@ -634,6 +646,24 @@ const CodeRenderer: React.FC<any> = ({ inline, className, children, ...props }) 
 // Stable components map so ReactMarkdown does not treat its renderers as changed each render.
 const MARKDOWN_COMPONENTS = { pre: PreRenderer, code: CodeRenderer, a: MarkdownLink }
 
+/**
+ * R5 — `excludeFromContext` means EVERYWHERE, not just the server's history builder.
+ *
+ * An `ErrorBlock` is prose the APP wrote to explain a failure. It is not something the model
+ * said. Every path that treats `content_blocks` as model output — "is this message empty",
+ * copy-to-clipboard, the editable text round-trip, any token estimate — must read the
+ * filtered view below and never `contentBlocks` directly, or the user copies "I couldn't
+ * reach the provider" as if the assistant had said it.
+ *
+ * Keyed off the explicit `excludeFromContext` flag as well as the block type so a future
+ * excluded block member is honoured without editing this predicate.
+ */
+const isExcludedFromModelOutput = (block: ContentBlock | undefined | null): boolean => {
+  if (!block) return true
+  if (block.type === 'error') return true
+  return (block as { excludeFromContext?: boolean }).excludeFromContext === true
+}
+
 const ChatMessage: React.FC<ChatMessageProps> = React.memo(
   ({
     id,
@@ -671,6 +701,7 @@ const ChatMessage: React.FC<ChatMessageProps> = React.memo(
     userTurnElapsedLabel,
     undoState,
     onUndoStreamEdits,
+    onChatErrorAction,
   }) => {
     const dispatch = useAppDispatch()
     const navigate = useNavigate()
@@ -775,22 +806,54 @@ const ChatMessage: React.FC<ChatMessageProps> = React.memo(
           ? `Undo ${undoState.fileCount} file${undoState.fileCount === 1 ? '' : 's'}`
           : undefined
 
+    // R5: the model-output view of this message's blocks. Everything that counts, filters,
+    // copies or round-trips `content_blocks` as "what the assistant produced" reads this;
+    // only the RENDERER walks `contentBlocks` itself, because the bubble must still be drawn.
+    // A fresh array also keeps `contentBlocksToEditableText`'s in-place `.sort()` off the prop.
+    const modelOutputBlocks = useMemo(
+      () => (Array.isArray(contentBlocks) ? contentBlocks.filter(b => !isExcludedFromModelOutput(b)) : undefined),
+      [contentBlocks]
+    )
+    const hasExcludedBlocks = useMemo(
+      () => Array.isArray(contentBlocks) && contentBlocks.some(isExcludedFromModelOutput),
+      [contentBlocks]
+    )
+
     const hasContent = useMemo(() => {
       const hasSimpleContent = visibleContent && visibleContent.trim().length > 0
+      // An ErrorBlock never makes a message non-empty: a row whose only block is a failure
+      // explanation has no model output to copy, edit or branch from.
       const hasBlockContent =
-        contentBlocks &&
-        contentBlocks.some(b => (b.type === 'text' && b.content && b.content.trim().length > 0) || b.type === 'image')
+        modelOutputBlocks &&
+        modelOutputBlocks.some(
+          b => (b.type === 'text' && b.content && b.content.trim().length > 0) || b.type === 'image'
+        )
 
       return hasSimpleContent || hasBlockContent
-    }, [visibleContent, contentBlocks])
+    }, [visibleContent, modelOutputBlocks])
+
+    /**
+     * R5: the string the clipboard gets. Identical to `visibleContent` for every ordinary
+     * message — the block-derived path engages ONLY when an excluded block is present, so an
+     * error bubble's text can never be copied as "what the assistant said".
+     */
+    const copyText = useMemo(() => {
+      if (!hasExcludedBlocks) return visibleContent
+      const fromBlocks = modelOutputBlocks && modelOutputBlocks.length > 0
+        ? contentBlocksToEditableText(modelOutputBlocks)
+        : ''
+      const normalized = role === 'user' ? stripAttachedImagePathMetadata(fromBlocks) : fromBlocks
+      return normalized.trim().length > 0 ? normalized : ''
+    }, [hasExcludedBlocks, modelOutputBlocks, role, visibleContent])
 
     const canBranchMessage = role === 'user' || (role === 'assistant' && messageData?.parent_id == null)
 
     const handleEdit = () => {
       dispatch(chatSliceActions.editingBranchSet(false))
       setEditingState(true)
-      // Use contentBlocks if available, otherwise use simple content
-      setEditContent(contentBlocks && contentBlocks.length > 0 ? stripAttachedImagePathMetadata(contentBlocksToEditableText(contentBlocks)) : visibleContent)
+      // Use contentBlocks if available, otherwise use simple content.
+      // R5: excluded blocks are not model output, so they never enter the editable text.
+      setEditContent(modelOutputBlocks && modelOutputBlocks.length > 0 ? stripAttachedImagePathMetadata(contentBlocksToEditableText(modelOutputBlocks)) : visibleContent)
       setEditMode('edit')
       onEditingStateChange?.(id, true, 'edit')
     }
@@ -798,8 +861,9 @@ const ChatMessage: React.FC<ChatMessageProps> = React.memo(
     const handleBranch = () => {
       dispatch(chatSliceActions.editingBranchSet(true))
       setEditingState(true)
-      // Use contentBlocks if available, otherwise use simple content
-      setEditContent(contentBlocks && contentBlocks.length > 0 ? stripAttachedImagePathMetadata(contentBlocksToEditableText(contentBlocks)) : visibleContent)
+      // Use contentBlocks if available, otherwise use simple content.
+      // R5: excluded blocks are not model output, so they never enter the editable text.
+      setEditContent(modelOutputBlocks && modelOutputBlocks.length > 0 ? stripAttachedImagePathMetadata(contentBlocksToEditableText(modelOutputBlocks)) : visibleContent)
       setEditMode('branch')
       onEditingStateChange?.(id, true, 'branch')
     }
@@ -816,7 +880,7 @@ const ChatMessage: React.FC<ChatMessageProps> = React.memo(
       if (onEdit && trimmedContent !== visibleContent) {
         // Convert edited text back to contentBlocks if original had contentBlocks
         const newContentBlocks =
-          contentBlocks && contentBlocks.length > 0 ? editableTextToContentBlocks(trimmedContent) : undefined
+          modelOutputBlocks && modelOutputBlocks.length > 0 ? editableTextToContentBlocks(trimmedContent) : undefined
         onEdit(id, appendAttachedImagePathMetadata(trimmedContent, extractAttachedImagePaths(content)), newContentBlocks)
       }
       dispatch(chatSliceActions.editingBranchSet(false))
@@ -828,7 +892,7 @@ const ChatMessage: React.FC<ChatMessageProps> = React.memo(
       if (onBranch) {
         // Convert edited text back to contentBlocks if original had contentBlocks
         const newContentBlocks =
-          contentBlocks && contentBlocks.length > 0 ? editableTextToContentBlocks(editContent.trim()) : undefined
+          modelOutputBlocks && modelOutputBlocks.length > 0 ? editableTextToContentBlocks(editContent.trim()) : undefined
         onBranch(
           id,
           appendAttachedImagePathMetadata(editContent.trim(), extractAttachedImagePaths(content)),
@@ -906,11 +970,19 @@ const ChatMessage: React.FC<ChatMessageProps> = React.memo(
         }
       }
 
-      if (onCopy) {
-        onCopy(visibleContent)
+      // R5: nothing the model produced -> nothing to copy. Do not fall back to the raw
+      // `content` string, which on an ErrorBlock row would be the failure explanation.
+      if (hasExcludedBlocks && !copyText) {
+        return
       }
 
-      // Get rendered HTML from the message element for rich paste support
+      if (onCopy) {
+        onCopy(copyText)
+      }
+
+      // Get rendered HTML from the message element for rich paste support.
+      // `.prose` is only ever a rendered-markdown node, so the error bubble (which is a
+      // sibling, never inside one) cannot leak into the rich-text flavour either.
       let html: string | undefined
       const messageEl = document.getElementById(`message-${id}`)
       if (messageEl) {
@@ -921,7 +993,7 @@ const ChatMessage: React.FC<ChatMessageProps> = React.memo(
         }
       }
 
-      const ok = await copyRichText(visibleContent, html)
+      const ok = await copyRichText(copyText, html)
       if (ok) {
         setCopied(true)
         setTimeout(() => setCopied(false), 1500)
@@ -2584,6 +2656,57 @@ const ChatMessage: React.FC<ChatMessageProps> = React.memo(
           continue
         }
 
+        // A non-terminal status frame ("Reconnecting…", "Trying again…", "Summarising
+        // earlier turns…"). Without this branch the run just goes quiet for several
+        // seconds and the silence reads as a hang — which is the whole reason the
+        // server emits these. `kind: 'other'` keeps it out of the collapsed process
+        // group, since the point is to be seen while it is happening.
+        if (event.type === 'notice') {
+          const noticeText = event.content
+          if (noticeText) {
+            const noticeKey = `stream-notice-${idx}`
+            const counter =
+              typeof event.attempt === 'number' && typeof event.maxAttempts === 'number'
+                ? ` (${event.attempt} of ${event.maxAttempts})`
+                : ''
+            items.push({
+              key: noticeKey,
+              kind: 'other',
+              node: (
+                <div
+                  key={noticeKey}
+                  className='my-1 text-[0.8125em] italic text-neutral-500 dark:text-neutral-400'
+                  style={messageContentStyle}
+                >
+                  {noticeText}
+                  {counter}
+                </div>
+              ),
+            })
+          }
+          idx += 1
+          continue
+        }
+
+        // An in-order failure on a live stream. The durable surface is the persisted
+        // ErrorBlock (tier 1) or the `chat_error` row (tier 2); this is the same
+        // envelope shown in place while the stream is still on screen, so the failure
+        // appears where the text stopped rather than only at the bottom of the list.
+        if (event.type === 'error' && event.errorEnvelope) {
+          const errKey = `stream-error-${idx}`
+          items.push({
+            key: errKey,
+            kind: 'other',
+            node: (
+              <div key={errKey} className='my-2'>
+                <ChatErrorBubble envelope={event.errorEnvelope} style={messageContentStyle} />
+              </div>
+            ),
+          })
+          idx += 1
+          continue
+        }
+
         if (event.type === 'text') {
           let accumulatedText = event.delta || ''
           let nextIdx = idx + 1
@@ -2795,7 +2918,10 @@ const ChatMessage: React.FC<ChatMessageProps> = React.memo(
           block.type === 'thinking' ||
           block.type === 'tool_use' ||
           block.type === 'image' ||
-          block.type === 'reasoning_details'
+          block.type === 'reasoning_details' ||
+          // A persisted terminal failure is a first-class renderable. Without this, a message
+          // whose ONLY block is an ErrorBlock looks empty and the bubble never draws.
+          block.type === 'error'
       )
       let idx = 0
 
@@ -2818,6 +2944,28 @@ const ChatMessage: React.FC<ChatMessageProps> = React.memo(
               node: toolNode,
             })
           }
+          idx += 1
+          continue
+        }
+
+        if (block.type === 'error') {
+          const errorKey = `error-${block.index}-${idx}`
+          items.push({
+            key: errorKey,
+            // `kind: 'other'` is load-bearing: it terminates any surrounding process run so the
+            // failure can never be folded behind the collapsed "Agent Steps" disclosure.
+            kind: 'other',
+            node: (
+              <div key={errorKey} className='my-2'>
+                {/* No `onDismiss`: a persisted ErrorBlock is part of the transcript. */}
+                <ChatErrorBubble
+                  envelope={block.envelope}
+                  style={messageContentStyle}
+                  onAction={onChatErrorAction ? kind => onChatErrorAction(kind, id, block.envelope) : undefined}
+                />
+              </div>
+            ),
+          })
           idx += 1
           continue
         }

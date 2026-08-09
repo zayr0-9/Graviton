@@ -66,7 +66,6 @@ export {
   selectProviderState,
   selectSendingState,
   selectStreamBuffer,
-  selectStreamError,
   selectStreamEvents,
   selectStreamState,
   selectThinkingBuffer,

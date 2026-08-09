@@ -164,7 +164,9 @@ does not round-trip through the renderer or the unfinished `tool_request` bridge
 - **Transcripts, not the chat tree.** Subagent turns go to `subagent_runs` /
   `subagent_messages` via `SubagentTranscriptSink`; they never enter the
   conversation message tree.
-- **No nested subagents.** The engine always excludes `subagent` from a subagent's tool set.
+- **No nested subagents.** The engine always excludes `subagent` and
+  `subagent_manager` from a subagent's tool set. The parent chat may use both in
+  Plan Mode; child runs still cannot spawn nested agents.
 - **Local providers only.** `openrouter` subagents fall back to the default local
   provider client-side and are rejected server-side (`subagentRoutes.ts`).
 - **Abort = close the SSE connection.** The route aborts an `AbortController` on

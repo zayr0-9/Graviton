@@ -2,6 +2,7 @@
 // Express routes for MCP server management
 
 import { Express } from 'express'
+import { attachChatErrorCode } from '../headlessServer/providers/providerErrorFormatter.js'
 import { toolOrchestrator } from '../tools/orchestrator/index.js'
 import { mcpManager, McpServerConfig, type McpOAuthConfig } from './mcpManager.js'
 import { toMcpExecutionResult } from './mcpToolResult.js'
@@ -18,14 +19,16 @@ async function refreshMcpToolsWithOrchestrator(): Promise<number> {
     // For now, just register (re-registration should be idempotent)
     toolOrchestrator.registerTool(qualifiedName, async (args, _options) => {
       try {
+        // A tool-level failure reported BY a reachable MCP server (isError: true) is a
+        // legitimate, model-visible result and still resolves.
         const mcpResult = await mcpManager.callTool(qualifiedName, args)
         return toMcpExecutionResult(mcpResult)
       } catch (error) {
+        // MUST rethrow — see the identical registration in localServer.ts. Resolving with
+        // { success: false } made the orchestrator mark the job COMPLETE, so MCP transport
+        // failures reached the model and the UI as successful results with is_error: false.
         console.error(`[McpRoutes] MCP tool execution error (${qualifiedName}):`, error)
-        return {
-          success: false,
-          error: error instanceof Error ? error.message : String(error),
-        }
+        throw attachChatErrorCode(error instanceof Error ? error : new Error(String(error)), 'mcp_unavailable')
       }
     })
     registeredCount++

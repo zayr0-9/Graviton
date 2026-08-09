@@ -1,5 +1,11 @@
+import { attachPartialOutput } from '../openRouterProvider.js'
 import type { CodexParseResult, CodexResponseParseOptions } from './types.js'
-import { codexResponseParseResult, createCodexResponseParseState, processCodexResponseEventText } from './codexResponseEvents.js'
+import {
+  codexPartialOutputFromState,
+  codexResponseParseResult,
+  createCodexResponseParseState,
+  processCodexResponseEventText,
+} from './codexResponseEvents.js'
 
 export async function parseCodexSseResponse(response: Response, options: CodexResponseParseOptions = {}): Promise<CodexParseResult> {
   if (!response.ok) {
@@ -13,24 +19,38 @@ export async function parseCodexSseResponse(response: Response, options: CodexRe
   if (!reader) throw new Error('ChatGPT backend request returned no readable stream body')
   let buffer = ''
   let pendingRead = options.firstRead ?? null
-  for (;;) {
-    const readResult = pendingRead ?? (await reader.read())
-    pendingRead = null
-    const { value, done } = readResult
-    if (done) break
-    buffer += decoder.decode(value, { stream: true }).replace(/\r\n/g, '\n')
-    const frames = buffer.split(/\n\n+/)
-    buffer = frames.pop() || ''
-    for (const frame of frames) if (frame.trim()) processFrameText(frame, state)
+  // R1(a): one boundary for every mid-stream failure this transport can raise —
+  // a rejected read (socket reset, timeout, abort) and a thrown terminal frame
+  // (`response.failed` / `response.incomplete` / `error`) alike — so the text
+  // already streamed to the user rides out on the error instead of being lost.
+  try {
+    for (;;) {
+      const readResult = pendingRead ?? (await reader.read())
+      pendingRead = null
+      const { value, done } = readResult
+      if (done) break
+      buffer += decoder.decode(value, { stream: true }).replace(/\r\n/g, '\n')
+      const frames = buffer.split(/\n\n+/)
+      buffer = frames.pop() || ''
+      for (const frame of frames) if (frame.trim()) processFrameText(frame, state)
+    }
+    buffer += decoder.decode()
+    if (buffer.trim()) processFrameText(buffer, state)
+  } catch (error) {
+    throw attachPartialOutput(error, codexPartialOutputFromState(state))
   }
-  buffer += decoder.decode()
-  if (buffer.trim()) processFrameText(buffer, state)
   return codexResponseParseResult(state)
 }
 
 export function parseCodexSseText(text: string, options: CodexResponseParseOptions = {}): CodexParseResult {
   const state = createCodexResponseParseState(options)
-  for (const frame of splitFrames(text)) processFrameText(frame, state)
+  try {
+    for (const frame of splitFrames(text)) processFrameText(frame, state)
+  } catch (error) {
+    // Non-streamed body, but frames are still replayed through `emit`, so a
+    // terminal error frame can land after the user has already seen text.
+    throw attachPartialOutput(error, codexPartialOutputFromState(state))
+  }
   return codexResponseParseResult(state)
 }
 

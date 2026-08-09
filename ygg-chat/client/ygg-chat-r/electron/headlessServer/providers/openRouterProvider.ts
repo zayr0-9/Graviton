@@ -1,6 +1,7 @@
 import type { HeadlessStreamEvent } from '../../../../../shared/headlessApi.js'
 import type { OpenAIContextUsage } from '../../../../../shared/contextUsage.js'
 import { normalizeAuthorizationToken, syncOpenRouterTokenFromElectronSession } from './electronAppAuth.js'
+import { attachChatErrorCode } from './providerErrorFormatter.js'
 import type { AppAuthTokenManager } from '../services/appAuthTokenManager.js'
 import { buildToolNameMap, sanitizeToolResultContentForModel } from './toolResultSanitizer.js'
 import { openStreamingWithPreFirstByteRetry } from './streamResilience.js'
@@ -75,6 +76,58 @@ export interface ProviderGenerateOutput {
   raw?: any
 }
 
+/**
+ * Whatever a streaming provider had already accumulated at the instant it threw.
+ *
+ * R1(a): a provider that fails after streaming 400 words must not lose the 400
+ * words. Every streaming provider attaches this to the error it throws, as
+ * `err.partialOutput`, and `toolLoopService` persists it as an ORDINARY assistant
+ * row (no ErrorBlock) before the failure is reported.
+ *
+ * Field names are identical across every provider so consumers never special-case.
+ * EMPTY FIELDS ARE OMITTED — a consumer can test presence without also testing
+ * for `''` / `[]` — and if nothing at all was accumulated no `partialOutput` is
+ * attached at all.
+ */
+export interface ProviderPartialOutput {
+  content?: string
+  contentBlocks?: any[]
+  reasoning?: string
+  toolCalls?: ProviderToolCall[]
+}
+
+/**
+ * Attach `partial` to `error` as `error.partialOutput` and return the same error
+ * so call sites read `throw attachPartialOutput(err, …)`.
+ *
+ * Merge semantics, innermost frame wins per field: the frame closest to the
+ * stream owns the text it accumulated, while an outer frame (e.g. the Codex
+ * provider, which is the only layer that knows how to build content blocks) can
+ * still fill in fields the inner frame could not supply. Never overwrites.
+ */
+export function attachPartialOutput<E>(error: E, partial: ProviderPartialOutput | null | undefined): E {
+  if (!error || (typeof error !== 'object' && typeof error !== 'function')) return error
+  if (!partial) return error
+
+  const target = error as any
+  const existing = target.partialOutput && typeof target.partialOutput === 'object' ? (target.partialOutput as ProviderPartialOutput) : null
+  const merged: ProviderPartialOutput = { ...(existing || {}) }
+
+  if (!merged.content && partial.content) merged.content = partial.content
+  if (!merged.reasoning && partial.reasoning) merged.reasoning = partial.reasoning
+  if (!merged.toolCalls?.length && partial.toolCalls?.length) merged.toolCalls = partial.toolCalls
+  if (!merged.contentBlocks?.length && partial.contentBlocks?.length) merged.contentBlocks = partial.contentBlocks
+
+  if (Object.keys(merged).length === 0) return error
+
+  try {
+    target.partialOutput = merged
+  } catch {
+    // A frozen/exotic error object is not worth failing the failure path over.
+  }
+  return error
+}
+
 export type ProviderStreamEventHandler = (event: HeadlessStreamEvent) => void
 
 export interface HeadlessProvider {
@@ -89,13 +142,92 @@ interface OpenRouterProviderDeps {
   remoteApiBase?: string
 }
 
+/** Longest provider-authored string we are willing to promote to `envelope.userMessage`. */
+const MAX_PROVIDER_USER_MESSAGE_LENGTH = 240
+
+/**
+ * Railway's own prose is only allowed to become `userMessage` when it reads like a
+ * sentence for a human. Anything long, empty, or JSON-shaped stays in `detail` and
+ * the shared default prose wins instead (IRON RULE 1: no raw payload on screen).
+ */
+function asUserFacingProviderMessage(value: unknown): string | undefined {
+  if (typeof value !== 'string') return undefined
+  const trimmed = value.trim()
+  if (!trimmed || trimmed.length > MAX_PROVIDER_USER_MESSAGE_LENGTH) return undefined
+  if (trimmed.startsWith('{') || trimmed.startsWith('[')) return undefined
+  return trimmed
+}
+
+/**
+ * The app session (AppAuthTokenManager / stored mirror / env token) was rejected.
+ * `status` and `errorType` are real PROPERTIES so a classifier can read them
+ * structurally instead of regexing them back out of `message`.
+ */
 export class RailwayAppAuthError extends Error {
   readonly status = 401
   readonly errorType = 'reauth_required'
+  readonly provider = 'openrouter'
+  /** Raw response text. Diagnostic only — never rendered on its own. */
+  readonly detail?: string
 
-  constructor() {
+  constructor(detail?: string) {
     super('Your Yggdrasil session has expired. Please sign in again to continue using cloud models.')
     this.name = 'RailwayAppAuthError'
+    if (detail) this.detail = detail
+  }
+}
+
+/**
+ * A caller-supplied (BYOK / subagent-owned) token was rejected with 401. Distinct
+ * from `RailwayAppAuthError` because the app session may be perfectly healthy —
+ * only this provider credential is dead, so the affordance is "Reconnect", not a
+ * full app sign-in.
+ */
+export class RailwayProviderTokenError extends Error {
+  readonly status = 401
+  readonly errorType = 'provider_signin_required'
+  readonly provider = 'openrouter'
+  readonly detail?: string
+
+  constructor(detail?: string) {
+    super('The access token supplied for this OpenRouter request was rejected by Railway (401).')
+    this.name = 'RailwayProviderTokenError'
+    if (detail) this.detail = detail
+  }
+}
+
+/**
+ * Any non-ok Railway response. The message keeps its historical shape (callers and
+ * tests match on it) but it is a DETAIL string, never user-facing prose; `status`
+ * and `errorType` ride along as properties for the classifier.
+ */
+export class RailwayOpenRouterRequestError extends Error {
+  readonly provider = 'openrouter'
+  readonly status: number
+  readonly errorType?: string
+  /** Raw response body text. Diagnostic only. */
+  readonly detail: string
+
+  constructor(status: number, responseText: string, options: { errorType?: string } = {}) {
+    super(`Railway OpenRouter request failed (${status}): ${responseText}`)
+    this.name = 'RailwayOpenRouterRequestError'
+    this.status = status
+    this.detail = responseText
+    if (options.errorType) this.errorType = options.errorType
+  }
+}
+
+/** A failure raised while consuming an already-open Railway SSE stream. */
+export class RailwayOpenRouterStreamError extends Error {
+  readonly provider = 'openrouter'
+  readonly errorType: string
+  readonly detail?: string
+
+  constructor(message: string, options: { errorType: string; detail?: string }) {
+    super(message)
+    this.name = 'RailwayOpenRouterStreamError'
+    this.errorType = options.errorType
+    if (options.detail) this.detail = options.detail
   }
 }
 
@@ -446,30 +578,73 @@ export class OpenRouterProvider implements HeadlessProvider {
 
     if (!streamOpen.response.ok) {
       const text = await streamOpen.response.text().catch(() => '')
+      const status = streamOpen.response.status
+      const errorBody = parseJson<any>(text, null)
+      const providerErrorType = typeof errorBody?.error === 'string' ? errorBody.error : undefined
+
       // Free-tier exhaustion: Railway answers the OpenRouter send with HTTP 403 and a
-      // JSON body { error: 'generation_limit_reached', message?: string }. The renderer
-      // parsed this to show the upgrade modal (chatActions.ts:4612-4617); relay it as an
-      // SSE event so the server-owned loop drives the same modal. Gated by the cloud
-      // relay flag — otherwise collapsed into the generic throw exactly as before. The
-      // event is flushed to SSE before the throw unwinds the run.
-      if (streamOpen.response.status === 403 && turn.relayFreeTierEvents) {
-        let body: any = null
-        try {
-          body = JSON.parse(text)
-        } catch {
-          body = null
-        }
-        if (body?.error === 'generation_limit_reached') {
+      // JSON body { error: 'generation_limit_reached', message?: string }.
+      const freeTierExhausted =
+        status === 403 && (providerErrorType === 'generation_limit_reached' || text.includes('generation_limit_reached'))
+
+      if (freeTierExhausted) {
+        // The SSE *event* stays gated on the cloud relay flag, because only the
+        // server-owned cloud path has a renderer listening for it (per D3 that
+        // renderer now draws a bubble, not a blocking modal — the event survives
+        // either way). The CLASSIFICATION below is deliberately NOT gated: every
+        // subagent run and every non-cloud route used to lose the free-tier signal
+        // entirely and surface a raw "request failed (403)" string instead.
+        if (turn.relayFreeTierEvents) {
           emit?.({
             type: 'generation_limit_reached',
-            message: typeof body.message === 'string' ? body.message : undefined,
+            message: typeof errorBody?.message === 'string' ? errorBody.message : undefined,
           })
         }
+        throw attachChatErrorCode(
+          new RailwayOpenRouterRequestError(status, text, { errorType: 'generation_limit_reached' }),
+          'free_tier_exhausted',
+          {
+            provider: this.name,
+            status,
+            // Railway's own copy ("You have used all 50 free generations…") beats the
+            // generic default when it reads like a sentence; otherwise it stays in detail.
+            // Spread rather than assign: an explicit `undefined` would blank the
+            // classifier's own value instead of falling back to it.
+            ...(asUserFacingProviderMessage(errorBody?.message)
+              ? { userMessage: asUserFacingProviderMessage(errorBody?.message) as string }
+              : {}),
+            ...(text ? { detail: text } : {}),
+          }
+        )
       }
-      if (streamOpen.response.status === 401 && this.appAuth && !input.accessToken) {
-        throw new RailwayAppAuthError()
+
+      if (status === 401) {
+        // Two different 401s land here and they are NOT the same failure, so they get
+        // two different codes and two different affordances:
+        //
+        //  * No explicit accessToken => the request was signed with the APP session
+        //    (AppAuthTokenManager, the stored provider mirror, or the env token). The
+        //    single forced-refresh retry above has already been spent, so the Yggdrasil
+        //    session itself is dead => `session_expired`, whose action is "Sign in"
+        //    (D2: rendered as a chat bubble, never a forced redirect).
+        //  * An explicit accessToken WAS passed => a caller-owned BYOK/subagent token
+        //    that this provider must never refresh. The app session may be entirely
+        //    healthy; what failed is the credential for THIS provider => the narrower
+        //    `provider_signin_required`, whose action is "Reconnect".
+        //
+        // The previous gate required `this.appAuth && !input.accessToken`, so BOTH the
+        // explicit-token 401 and the compat-path (tokenStore/env) 401 fell through to
+        // the generic throw and reached the user as raw HTTP text with no code at all.
+        const authOverrides = { provider: this.name, status, ...(text ? { detail: text } : {}) }
+        if (!normalizeAuthorizationToken(input.accessToken)) {
+          throw attachChatErrorCode(new RailwayAppAuthError(text), 'session_expired', authOverrides)
+        }
+        throw attachChatErrorCode(new RailwayProviderTokenError(text), 'provider_signin_required', authOverrides)
       }
-      throw new Error(`Railway OpenRouter request failed (${streamOpen.response.status}): ${text}`)
+
+      // Everything else keeps its historical message, but now carries `status` and
+      // `errorType` as properties so the classifier reads them structurally.
+      throw new RailwayOpenRouterRequestError(status, text, { errorType: providerErrorType })
     }
 
     if (!streamOpen.reader) {
@@ -484,9 +659,35 @@ export class OpenRouterProvider implements HeadlessProvider {
     const streamedContentBlocks: any[] = []
     const streamedToolCalls: ProviderToolCall[] = []
     let completeMessage: any = null
+    // Malformed `data:` payloads are counted, never rendered. See the parse catch below.
+    let droppedFrameCount = 0
+    let firstDroppedFrameSample = ''
+    const droppedFrameDetail = () =>
+      droppedFrameCount > 0
+        ? `${droppedFrameCount} unparseable SSE frame(s) dropped from the ${this.name} stream. First: ${firstDroppedFrameSample}`
+        : undefined
+
+    /**
+     * R1(a): everything streamed so far, in the shape every provider uses. Read at
+     * each mid-stream throw so the words already on screen survive the failure.
+     * `attachPartialOutput` drops whichever of these are still empty.
+     */
+    const partialSoFar = (): ProviderPartialOutput => ({
+      content: streamedText,
+      reasoning: streamedReasoning,
+      toolCalls: streamedToolCalls,
+      contentBlocks: streamedContentBlocks,
+    })
 
     while (true) {
-      const readResult = pendingRead ?? (await streamOpen.reader.read())
+      // A transport failure (socket reset, request timeout, abort) surfaces as a
+      // rejected read, not as a frame, so it needs the partial too.
+      let readResult: ReadableStreamReadResult<Uint8Array>
+      try {
+        readResult = pendingRead ?? (await streamOpen.reader.read())
+      } catch (error) {
+        throw attachPartialOutput(error, partialSoFar())
+      }
       pendingRead = null
 
       const { done, value } = readResult
@@ -507,20 +708,27 @@ export class OpenRouterProvider implements HeadlessProvider {
         try {
           parsed = JSON.parse(payload)
         } catch {
-          if (payload) {
-            streamedText += payload
-            streamedContentBlocks.push({ type: 'text', content: payload })
-            emit?.({ type: 'chunk', part: 'text', delta: payload })
-          }
+          // A `data:` payload that is not JSON is a MALFORMED PROVIDER FRAME, not model
+          // output. Treating it as content used to splice raw JSON fragments inline into
+          // the reply and then persist them. Drop it, count it, and let the end-of-stream
+          // check below decide whether the run is still usable.
+          droppedFrameCount += 1
+          if (!firstDroppedFrameSample) firstDroppedFrameSample = payload.slice(0, 200)
           continue
         }
 
         if (!parsed) continue
         if (parsed.type === 'error') {
-          throw new Error(typeof parsed.error === 'string' ? parsed.error : 'Railway stream error')
+          throw attachPartialOutput(
+            new RailwayOpenRouterStreamError(typeof parsed.error === 'string' ? parsed.error : 'Railway stream error', {
+              errorType: 'stream_error',
+              detail: droppedFrameDetail(),
+            }),
+            partialSoFar()
+          )
         }
         if (parsed.type === 'aborted') {
-          throw createAbortError()
+          throw attachPartialOutput(createAbortError(), partialSoFar())
         }
         if (parsed.type === 'complete' && parsed.message) {
           completeMessage = parsed.message
@@ -589,6 +797,40 @@ export class OpenRouterProvider implements HeadlessProvider {
           continue
         }
       }
+    }
+
+    if (droppedFrameCount > 0) {
+      const producedOutput =
+        Boolean(completeMessage) ||
+        streamedText.length > 0 ||
+        streamedReasoning.length > 0 ||
+        streamedToolCalls.length > 0 ||
+        streamedContentBlocks.length > 0
+
+      if (!producedOutput) {
+        // Nothing survived the stream, so the run has genuinely failed. Classify it
+        // rather than returning an empty reply that looks like the model said nothing.
+        // No `partialOutput` here on purpose: `producedOutput` being false is exactly
+        // the statement that there is nothing accumulated to hand back (R1(a) says
+        // attach nothing rather than an empty partial).
+        throw attachChatErrorCode(
+          new RailwayOpenRouterStreamError('Railway OpenRouter stream contained only unparseable frames', {
+            errorType: 'malformed_stream_frame',
+            detail: droppedFrameDetail(),
+          }),
+          'stream_interrupted',
+          { provider: this.name, ...(droppedFrameDetail() ? { detail: droppedFrameDetail() as string } : {}) }
+        )
+      }
+
+      // The run produced usable output but part of the stream was unreadable. Say so
+      // with a non-terminal notice: it is never persisted, so the user learns the reply
+      // may be incomplete without a raw payload fragment ever entering the message.
+      emit?.({
+        type: 'notice',
+        code: 'stream_interrupted',
+        message: 'Part of this reply arrived in a form I could not read, so it was left out.',
+      })
     }
 
     if (completeMessage) {

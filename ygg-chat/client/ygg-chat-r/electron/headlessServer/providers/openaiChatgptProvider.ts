@@ -9,10 +9,12 @@ import type { ProviderTokenStore } from './tokenStore.js'
 import { CodexResponsesProvider, toCodexMessages } from './codex/index.js'
 import { normalizeOpenAIContextUsage, openAIContextUsageBlock } from '../../../../../shared/contextUsage.js'
 import { buildToolNameMap, sanitizeToolResultContentForModel } from './toolResultSanitizer.js'
+import { attachPartialOutput } from './openRouterProvider.js'
 import type {
   HeadlessProvider,
   ProviderGenerateInput,
   ProviderGenerateOutput,
+  ProviderPartialOutput,
   ProviderStreamEventHandler,
   ProviderToolCall,
   ProviderToolDefinition,
@@ -1274,6 +1276,17 @@ function createCodexEventParser(params: { emit?: ProviderStreamEventHandler; mod
     const fallbackImages = Array.from(imageGenerationItemsById.values())
     return normalizeResponseOutputItemsForReplay([...fallbackMessages, ...fallbackFunctionCalls, ...fallbackImages])
   }
+  /**
+   * R1(a): everything parsed so far, for the mid-stream throws below. Also handed
+   * back to the callers so a transport-level failure — one that never reaches
+   * `handle` at all, such as a rejected read or a socket error — can attach the
+   * same partial from the same source of truth.
+   */
+  const partialSoFar = (): ProviderPartialOutput => ({
+    content: streamedText,
+    reasoning: streamedReasoning,
+    toolCalls: extractToolCallsFromReplayItems(buildFallbackResponseOutputItems()),
+  })
   const handle = (parsed: any) => {
     if (!parsed) return
     const eventType = typeof parsed.type === 'string' ? parsed.type : 'unknown'
@@ -1376,17 +1389,23 @@ function createCodexEventParser(params: { emit?: ProviderStreamEventHandler; mod
     }
     if (parsed.type === 'response.failed' || parsed.type === 'response.incomplete') {
       const responseError = parsed?.response?.error
-      throw new Error(
-        typeof responseError?.message === 'string' && responseError.message.trim()
-          ? responseError.message
-          : parsed.type === 'response.incomplete'
-            ? 'OpenAI response was incomplete.'
-            : 'OpenAI response failed.'
+      throw attachPartialOutput(
+        new Error(
+          typeof responseError?.message === 'string' && responseError.message.trim()
+            ? responseError.message
+            : parsed.type === 'response.incomplete'
+              ? 'OpenAI response was incomplete.'
+              : 'OpenAI response failed.'
+        ),
+        partialSoFar()
       )
     }
     if (parsed.type === 'error') {
       const err = parsed.error
-      throw new Error(typeof err?.message === 'string' ? err.message : 'OpenAI websocket returned an error event.')
+      throw attachPartialOutput(
+        new Error(typeof err?.message === 'string' ? err.message : 'OpenAI websocket returned an error event.'),
+        partialSoFar()
+      )
     }
     if (parsed.type === 'response.completed' || parsed.type === 'response.done') {
       if (typeof parsed?.response?.id === 'string') completedResponseId = parsed.response.id
@@ -1431,7 +1450,7 @@ function createCodexEventParser(params: { emit?: ProviderStreamEventHandler; mod
     })
     return output
   }
-  return { handle, finish }
+  return { handle, finish, partialSoFar }
 }
 
 async function readCodexSseOutput(params: {
@@ -1452,7 +1471,15 @@ async function readCodexSseOutput(params: {
   let doneMarkerSeen = false
   logOpenAiChatgpt('info', 'SSE parser start', { traceId: params.traceId, hasFirstRead: Boolean(params.firstRead) })
   while (true) {
-    const readResult = pendingRead ?? (await params.reader.read())
+    // R1(a): a transport failure (socket reset, timeout, abort) surfaces as a
+    // rejected read rather than as a frame, so it never passes through `handle`
+    // and has to attach the partial itself.
+    let readResult: ReadableStreamReadResult<Uint8Array>
+    try {
+      readResult = pendingRead ?? (await params.reader.read())
+    } catch (error) {
+      throw attachPartialOutput(error, parser.partialSoFar())
+    }
     pendingRead = null
     const { done, value } = readResult
     if (done) break
@@ -1483,7 +1510,10 @@ async function readCodexSseOutput(params: {
           })
           continue
         }
-        throw error
+        // The parser's own terminal-frame throws already carry the partial; this
+        // merge is a no-op for those and a backstop for anything else `handle`
+        // can raise.
+        throw attachPartialOutput(error, parser.partialSoFar())
       }
     }
   }
@@ -1552,7 +1582,10 @@ async function readCodexWebSocketOutput(params: {
         error: error instanceof Error ? error.message : String(error),
         stack: error instanceof Error ? error.stack : undefined,
       })
-      reject(error instanceof Error ? error : new Error(String(error)))
+      // R1(a): the single funnel for every failure of this transport — idle
+      // timeout, send error, socket error, close-before-completion and a thrown
+      // terminal frame — so all of them keep what was already streamed.
+      reject(attachPartialOutput(error instanceof Error ? error : new Error(String(error)), parser.partialSoFar()))
     }
     const timer = setTimeout(() => fail(new Error('OpenAI websocket idle timeout')), params.timeoutMs ?? 120000)
     const bumpTimer = () => {
@@ -1981,7 +2014,12 @@ async function readCodexSseOutputLegacy_DISABLED(params: {
             : parsed.type === 'response.incomplete'
               ? 'OpenAI response was incomplete.'
               : 'OpenAI response failed.'
-        throw new Error(message)
+        // R1(a): hand back what streamed before the terminal frame.
+        throw attachPartialOutput(new Error(message), {
+          content: streamedText,
+          reasoning: streamedReasoning,
+          toolCalls: extractToolCallsFromReplayItems(buildFallbackResponseOutputItems()),
+        })
       }
 
       if (parsed.type === 'response.completed' || parsed.type === 'response.done') {
@@ -2005,6 +2043,28 @@ async function readCodexSseOutputLegacy_DISABLED(params: {
     toolCalls,
     responseOutputItems,
   }
+}
+
+/**
+ * R1(a): the Codex transports attach the text/reasoning/tool calls they accumulated,
+ * but only this provider knows how those become content blocks. Build them from the
+ * partial in the SAME order the success path uses (thinking, text, tool_use) so a
+ * persisted partial row renders exactly like a completed one.
+ *
+ * `contextUsage` and `responses_output_items` are intentionally left out: neither
+ * exists for a run that never completed.
+ */
+function contentBlocksFromPartialOutput(error: unknown): any[] {
+  const partial = (error as any)?.partialOutput as ProviderPartialOutput | undefined
+  if (!partial || typeof partial !== 'object') return []
+
+  const blocks: any[] = []
+  if (partial.reasoning) blocks.push({ type: 'thinking', content: partial.reasoning })
+  if (partial.content) blocks.push({ type: 'text', content: partial.content })
+  for (const toolCall of partial.toolCalls || []) {
+    blocks.push({ type: 'tool_use', id: toolCall.id, name: toolCall.name, input: toolCall.arguments })
+  }
+  return blocks
 }
 
 export class OpenAiChatgptProvider implements HeadlessProvider {
@@ -2113,17 +2173,24 @@ export class OpenAiChatgptProvider implements HeadlessProvider {
           ? reasoningEffort
           : undefined,
     })
-    const parsed = await codexProvider.generate({
-      model,
-      providerInput: input,
-      messages,
-      tools: input.tools || [],
-      sessionId,
-      runId: requestId,
-      signal: input.signal,
-      emit,
-      allowCommentaryFallbackText: input.railwayTurn?.allowCommentaryFallbackText === true,
-    })
+    const parsed = await codexProvider
+      .generate({
+        model,
+        providerInput: input,
+        messages,
+        tools: input.tools || [],
+        sessionId,
+        runId: requestId,
+        signal: input.signal,
+        emit,
+        allowCommentaryFallbackText: input.railwayTurn?.allowCommentaryFallbackText === true,
+      })
+      .catch((error: unknown) => {
+        // The transport already attached content/reasoning/toolCalls; only the block
+        // mapping is missing. `attachPartialOutput` merges without overwriting, and
+        // no-ops entirely when the run failed before producing anything.
+        throw attachPartialOutput(error, { contentBlocks: contentBlocksFromPartialOutput(error) })
+      })
 
     logOpenAiChatgpt('info', 'transport parsed output', {
       traceId,

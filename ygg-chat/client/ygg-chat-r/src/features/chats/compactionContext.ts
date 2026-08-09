@@ -1,3 +1,4 @@
+import { isContextExcludedMessage } from '../../../../../shared/contextExclusion'
 import type { Message } from './chatTypes'
 
 const INCLUDED_WRITE_TOOL_NAMES = new Set(['edit_file', 'multi_edit', 'create_file', 'delete_file'])
@@ -377,9 +378,12 @@ const addEntryNumber = (entry: string, index: number): string => {
 
 // Keep raw protocol messages out of the conversational transcript. Tool interactions are serialized
 // separately with bounded arguments/results, while write operations retain their specialized format.
+// R5: an `excludeFromContext` (ErrorBlock) row is dropped outright — its `content` mirrors
+// `envelope.userMessage`, so summarising it would bake "I couldn't reach the model provider"
+// into the conversation memory and replay it to the model as established history, permanently.
 export const buildCompactionHistoryLines = (messages: Message[]): string[] =>
   messages
-    .filter(message => message.role !== 'tool')
+    .filter(message => message.role !== 'tool' && !isContextExcludedMessage(message))
     .map(message => {
       const role = message.role === 'assistant' || message.role === 'ex_agent' ? 'assistant' : message.role
       const content =

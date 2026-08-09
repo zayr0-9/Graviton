@@ -257,15 +257,31 @@ describeIfSqlite('ChatOrchestrator continuation semantics', () => {
 
     const messages = statements.getMessagesByConversationId.all('c1') as any[]
     const user = messages.find((msg: any) => msg.role === 'user')
-    const assistant = messages.find((msg: any) => msg.role === 'assistant')
+    const assistants = messages.filter((msg: any) => msg.role === 'assistant')
+    // The row carrying the classified failure — identified by its ErrorBlock, not by
+    // position, so this holds whether or not the loop also persisted a partial/prose row.
+    const errorRow = assistants.find((msg: any) => String(msg.content_blocks ?? '').includes('"type":"error"'))
 
     expect(user).toBeTruthy()
-    expect(assistant).toBeTruthy()
-    expect(assistant.parent_id).toBe(user.id)
-    expect(assistant.content).toContain('The usage limit has been reached')
-    expect(events.some(evt => evt.type === 'assistant_message_persisted' && evt.message.id === assistant.id)).toBe(true)
+    expect(errorRow).toBeTruthy()
+    // R1(c): the error row hangs off the D1 partial when the loop wrote one, and off the
+    // user turn when it did not. Either way it is a descendant of this turn.
+    const partialIds = assistants.filter((msg: any) => msg.id !== errorRow.id).map((msg: any) => msg.id)
+    expect([user.id, ...partialIds]).toContain(errorRow.parent_id)
+    expect(events.some(evt => evt.type === 'assistant_message_persisted' && evt.message.id === errorRow.id)).toBe(true)
     expect(events.some(evt => evt.type === 'error')).toBe(false)
-    expect(events[events.length - 1]).toMatchObject({ type: 'complete', providerError: true, message: { id: assistant.id } })
+    // CHANGED DELIBERATELY (was `message: { id: <prose row> }`). `complete.message` is
+    // what sseProjection rebuilds `currentPath` from (streamCompleted updatePath:true),
+    // so naming the error row's PARENT truncated the error row off the rendered path —
+    // it existed in SQLite and was never drawn. The terminal frame names the error row.
+    expect(events[events.length - 1]).toMatchObject({
+      type: 'complete',
+      providerError: true,
+      message: { id: errorRow.id },
+    })
+    // R2 (one bubble per failure): the row IS the surface, so the badged completion no
+    // longer carries an `envelope` for the renderer to record a second time.
+    expect((events[events.length - 1] as any).envelope).toBeUndefined()
   })
 
   it('repeat regenerates assistant without creating new user', async () => {

@@ -1,5 +1,8 @@
+import type { ChatErrorEnvelope, ChatNoticeCode } from '../../../../../shared/chatErrors'
 import { BaseMessage, BaseModel, ConversationId, ImageConfig, MessageId, OpenAIServiceTier, ReasoningConfig } from '../../../../../shared/types'
 import type { PlanClarificationRequest } from './planToolTypes'
+
+export type { ChatErrorAction, ChatErrorCode, ChatErrorEnvelope, ChatNoticeCode } from '../../../../../shared/chatErrors'
 
 // Message types (shared with conversations)
 export interface Message extends BaseMessage {
@@ -8,8 +11,10 @@ export interface Message extends BaseMessage {
   artifacts: string[]
   //should write a function which extracts text content
   //when user drags and drops it on the input component
-  // Content blocks for ex_agent messages (Claude Code responses stored chronologically)
-  content_blocks?: (ThinkingBlock | ToolUseBlock | TextBlock | ToolResultBlock | ImageBlock | ReasoningDetailsBlock)[]
+  // Content blocks for ex_agent messages (Claude Code responses stored chronologically).
+  // Spelled as `ContentBlock[]` rather than longhand so a new member (e.g. ErrorBlock, which
+  // makes a classified failure survive a reload) is persistable without editing this line.
+  content_blocks?: ContentBlock[]
 }
 
 export interface miniMessage {
@@ -64,6 +69,22 @@ export interface ReasoningDetailsBlock {
   }>
 }
 
+/**
+ * A classified failure, persisted as message content so it survives a reload and
+ * appears in the tree / Heimdall / export like any other block.
+ *
+ * `excludeFromContext` is load-bearing: without it the next turn replays "I
+ * couldn't reach the provider" to the model as its own prior words. Every
+ * history-building path must honour it.
+ */
+export interface ErrorBlock {
+  type: 'error'
+  index: number
+  envelope: ChatErrorEnvelope
+  /** Always true for error blocks. Explicit so serialisation cannot lose it by omission. */
+  excludeFromContext: true
+}
+
 export type ContentBlock =
   | ThinkingBlock
   | ToolUseBlock
@@ -71,6 +92,7 @@ export type ContentBlock =
   | ToolResultBlock
   | ImageBlock
   | ReasoningDetailsBlock
+  | ErrorBlock
 
 // Tool call types
 export interface ToolCall {
@@ -122,10 +144,17 @@ export interface StreamChunk {
 
 // Sequential event for streaming to preserve order
 export interface StreamEvent {
-  type: 'text' | 'reasoning' | 'tool_call' | 'tool_result' | 'image'
+  type: 'text' | 'reasoning' | 'tool_call' | 'tool_result' | 'image' | 'error' | 'notice'
   content?: string
   delta?: string
   toolCall?: ToolCall
+  /** Set on `error` events. The live, in-order counterpart of a persisted ErrorBlock. */
+  errorEnvelope?: ChatErrorEnvelope
+  /** Set on `notice` events (non-terminal status such as "Reconnecting…"). */
+  noticeCode?: ChatNoticeCode
+  /** Retry/attempt counters carried by `notice` events. */
+  attempt?: number
+  maxAttempts?: number
   // Tool result from streaming (matches server ToolResultBlock)
   toolResult?: {
     tool_use_id: string
@@ -399,7 +428,36 @@ export interface ChatState {
     showLimitModal: boolean
     isFreeTierUser: boolean
   }
+  errorNotices: ChatErrorNoticesState
   userSystemPrompts: UserSystemPromptsState
+}
+
+/**
+ * A failure that has no persisted assistant message to live on.
+ *
+ * Tier 1 of the error surface is a server-persisted ErrorBlock. This is tier 2:
+ * it covers what tier 1 structurally cannot — failures BEFORE the user message is
+ * persisted (the server has no row to attach to) and every renderer-local failure
+ * that never produced an SSE frame at all.
+ *
+ * It must NOT live in `streaming.byId`: that slot is pruned 30s after a run, and
+ * `selectCurrentViewStreamFor` filters on `active` first, so an errored slot is
+ * unreachable the moment it carries an error.
+ */
+export interface ChatErrorRecord {
+  id: string
+  conversationId: ConversationId
+  envelope: ChatErrorEnvelope
+  /** Anchors the bubble in the tree. Null when the failure predates any lineage. */
+  parentMessageId: MessageId | null
+  streamId: string | null
+  lineageId: LineageId | null
+  createdAt: number
+  dismissed: boolean
+}
+
+export interface ChatErrorNoticesState {
+  byConversationId: Record<string, ChatErrorRecord[]>
 }
 
 // Action payloads

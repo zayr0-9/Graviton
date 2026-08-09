@@ -34,6 +34,8 @@
     "test:tools:coverage": "vitest run --config vitest.tools.config.ts --coverage",
     "test:headless": "vitest run --config vitest.headless.config.ts",
     "test:headless:watch": "vitest --config vitest.headless.config.ts",
+    "test:renderer": "vitest run --config vitest.renderer.config.ts",
+    "test:renderer:watch": "vitest --config vitest.renderer.config.ts",
     "preview": "vite preview",
     "predev": "node scripts/check-env.js",
     "electron": "electron .",
