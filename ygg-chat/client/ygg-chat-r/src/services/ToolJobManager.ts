@@ -110,9 +110,9 @@ class ToolJobManager {
   // WebSocket connection
   private ws: WebSocket | null = null
   private wsConnected = false
+  private wsSubscribed = false
   private wsReconnectTimer: number | null = null
   private wsReconnectAttempts = 0
-  private readonly maxReconnectAttempts = 10
   private readonly reconnectDelayMs = 2000
 
   // Event listeners
@@ -122,6 +122,9 @@ class ToolJobManager {
   // Initialization state
   private initialized = false
   private initializing = false
+  private desiredConnected = true
+  private connectionGeneration = 0
+  private refreshGeneration = 0
 
   private constructor() {
     // Private constructor for singleton
@@ -143,6 +146,7 @@ class ToolJobManager {
   async initialize(): Promise<void> {
     if (this.initialized || this.initializing) return
 
+    this.desiredConnected = true
     this.initializing = true
 
     try {
@@ -150,13 +154,14 @@ class ToolJobManager {
         // Best-effort cache refresh; requests still fallback if discovery fails.
       })
 
-      // Load initial jobs from server
-      await this.refreshJobs()
-
-      // Connect WebSocket for real-time updates
+      // Start the live channel even when the initial HTTP snapshot fails. Previously a
+      // transient /jobs failure skipped WebSocket setup for the renderer lifetime.
       await this.connectWebSocket()
-
       this.initialized = true
+
+      // Best-effort bootstrap snapshot. A second authoritative reconciliation runs
+      // after the server acknowledges subscribe_jobs, closing the snapshot/event gap.
+      await this.refreshJobs().catch(() => undefined)
     } catch (error) {
       console.error('[ToolJobManager] Initialization failed:', error)
     } finally {
@@ -168,43 +173,61 @@ class ToolJobManager {
    * Connect to WebSocket for real-time job events
    */
   private async connectWebSocket(): Promise<void> {
+    if (!this.desiredConnected) return
     if (this.ws && (this.ws.readyState === WebSocket.OPEN || this.ws.readyState === WebSocket.CONNECTING)) {
       return
     }
 
+    const generation = ++this.connectionGeneration
     try {
       await refreshLocalServerStatus().catch(() => {
         // Best-effort cache refresh; requests still fallback if discovery fails.
       })
+      if (!this.desiredConnected || generation !== this.connectionGeneration) return
       const wsUrl = buildCachedLocalWebSocketUrl('/ide-context?type=frontend&id=job-manager')
-      this.ws = new WebSocket(wsUrl)
+      const ws = new WebSocket(wsUrl)
+      this.ws = ws
 
-      this.ws.onopen = () => {
+      ws.onopen = () => {
+        if (!this.desiredConnected || generation !== this.connectionGeneration || this.ws !== ws) {
+          ws.close()
+          return
+        }
         this.wsConnected = true
+        this.wsSubscribed = false
         this.wsReconnectAttempts = 0
 
-        // Subscribe to job events
+        // Subscribe first. The jobs_subscribed acknowledgement triggers a fresh HTTP
+        // reconciliation, so jobs created during startup/reconnect cannot disappear.
         this.ws?.send(JSON.stringify({ type: 'subscribe_jobs' }))
       }
 
-      this.ws.onmessage = event => {
+      ws.onmessage = event => {
+        if (generation !== this.connectionGeneration || this.ws !== ws) return
         try {
           const message = JSON.parse(event.data)
 
           if (message.type === 'job_event') {
             this.handleJobEvent(message.data as JobEvent)
+          } else if (message.type === 'jobs_subscribed') {
+            this.wsSubscribed = true
+            // Reconcile events missed before subscription or while disconnected.
+            void this.refreshJobs().catch(() => undefined)
           }
         } catch (error) {
           console.error('[ToolJobManager] Failed to parse WebSocket message:', error)
         }
       }
 
-      this.ws.onclose = () => {
+      ws.onclose = () => {
+        if (generation !== this.connectionGeneration || this.ws !== ws) return
         this.wsConnected = false
-        this.scheduleReconnect()
+        this.wsSubscribed = false
+        this.ws = null
+        if (this.desiredConnected) this.scheduleReconnect()
       }
 
-      this.ws.onerror = error => {
+      ws.onerror = error => {
         console.error('[ToolJobManager] WebSocket error:', error)
       }
     } catch (error) {
@@ -217,12 +240,10 @@ class ToolJobManager {
    * Schedule WebSocket reconnection
    */
   private scheduleReconnect(): void {
-    if (this.wsReconnectTimer) return
-    if (this.wsReconnectAttempts >= this.maxReconnectAttempts) {
-      console.error('[ToolJobManager] Max reconnect attempts reached')
-      return
-    }
+    if (!this.desiredConnected || this.wsReconnectTimer) return
 
+    // Retry for the renderer lifetime with capped backoff. Giving up permanently made
+    // the modal silently stale after a sufficiently long local-server restart.
     this.wsReconnectAttempts++
     const delay = this.reconnectDelayMs * Math.min(this.wsReconnectAttempts, 5)
 
@@ -236,8 +257,9 @@ class ToolJobManager {
    * Handle incoming job event
    */
   private handleJobEvent(event: JobEvent): void {
-    // Update local cache
-    this.jobs.set(event.job.id, event.job)
+    // Update local cache without allowing a delayed HTTP snapshot to downgrade an
+    // already-terminal WebSocket state back to pending/running.
+    this.upsertJob(event.job)
 
     // Notify event listeners
     for (const listener of this.eventListeners) {
@@ -250,6 +272,13 @@ class ToolJobManager {
 
     // Notify change listeners
     this.notifyChangeListeners()
+  }
+
+  private upsertJob(job: JobSummary): void {
+    const existing = this.jobs.get(job.id)
+    const terminal = (status: JobStatus) => status === 'completed' || status === 'failed' || status === 'cancelled'
+    if (existing && terminal(existing.status) && !terminal(job.status)) return
+    this.jobs.set(job.id, job)
   }
 
   /**
@@ -271,6 +300,7 @@ class ToolJobManager {
    * Refresh jobs from server
    */
   async refreshJobs(filter?: JobFilter): Promise<JobSummary[]> {
+    const refreshGeneration = !filter ? ++this.refreshGeneration : null
     try {
       const params = new URLSearchParams()
       if (filter?.status) {
@@ -289,12 +319,33 @@ class ToolJobManager {
       const data = await response.json()
 
       if (data.success && data.jobs) {
-        // Update cache
-        for (const job of data.jobs) {
-          this.jobs.set(job.id, job)
+        let snapshot: JobSummary[] = data.jobs
+        if (!filter) {
+          // History is paginated, but active work must never be hidden behind the first
+          // 100 terminal rows. Fetch it separately and build one authoritative snapshot.
+          const activeUrl = await buildLocalApiUrl('/jobs?status=pending,running&limit=10000')
+          const activeResponse = await fetch(activeUrl)
+          const activeData = await activeResponse.json()
+          if (activeData.success && Array.isArray(activeData.jobs)) {
+            const byId = new Map<string, JobSummary>()
+            for (const job of [...data.jobs, ...activeData.jobs]) byId.set(job.id, job)
+            snapshot = Array.from(byId.values())
+          }
+
+          // Ignore a stale authoritative response before it can mutate the cache.
+          if (refreshGeneration !== this.refreshGeneration) return snapshot
+          const previous = this.jobs
+          this.jobs = new Map()
+          for (const job of snapshot) {
+            const existing = previous.get(job.id)
+            if (existing) this.jobs.set(job.id, existing)
+            this.upsertJob(job)
+          }
+        } else {
+          for (const job of snapshot) this.upsertJob(job)
         }
         this.notifyChangeListeners()
-        return data.jobs
+        return snapshot
       }
 
       throw new Error(data.error || 'Failed to fetch jobs')
@@ -446,13 +497,15 @@ class ToolJobManager {
    * Check if connected to server
    */
   isConnected(): boolean {
-    return this.wsConnected
+    return this.wsConnected && this.wsSubscribed
   }
 
   /**
    * Disconnect and cleanup
    */
   disconnect(): void {
+    this.desiredConnected = false
+    this.connectionGeneration += 1
     if (this.wsReconnectTimer) {
       clearTimeout(this.wsReconnectTimer)
       this.wsReconnectTimer = null
@@ -464,6 +517,7 @@ class ToolJobManager {
     }
 
     this.wsConnected = false
+    this.wsSubscribed = false
     this.initialized = false
   }
 }

@@ -192,9 +192,11 @@ describe('projectServerEvent', () => {
       chatSliceActions.messageBranchCreated.type,
       chatSliceActions.streamLineageUpdated.type,
       chatSliceActions.streamCompleted.type,
+      chatSliceActions.decisionRequestsClearedForStream.type,
     ])
     expect((a[2].payload as any)).toMatchObject({ streamId: 'stream-1', lineageId: 'lineage-1' })
     expect((a[3].payload as any)).toMatchObject({ streamId: 'stream-1', messageId: 'a2', updatePath: true })
+    expect(a[4].payload).toBe('stream-1')
   })
 
   it('terminal complete records the envelope when the server badged a provider error', () => {
@@ -211,6 +213,7 @@ describe('projectServerEvent', () => {
       chatSliceActions.messageAdded.type,
       chatSliceActions.messageBranchCreated.type,
       chatSliceActions.streamCompleted.type,
+      chatSliceActions.decisionRequestsClearedForStream.type,
       chatSliceActions.chatErrorRecorded.type,
     ])
     expect(recordOf(a)).toMatchObject({
@@ -244,7 +247,10 @@ describe('projectServerEvent', () => {
       },
       ctx
     )
-    expect(types(a)).toEqual([chatSliceActions.chatErrorRecorded.type])
+    expect(types(a)).toEqual([
+      chatSliceActions.decisionRequestsClearedForStream.type,
+      chatSliceActions.chatErrorRecorded.type,
+    ])
     expect(recordOf(a)).toMatchObject({
       conversationId: 'conv-1',
       streamId: 'stream-1',
@@ -276,7 +282,7 @@ describe('projectServerEvent', () => {
 
   // R3 — pressing Stop is a normal outcome. The orchestrator emits a terminal `error` frame
   // on abort so reconnecting clients stop hanging, but it must never draw a red bubble.
-  it('a cancelled error frame projects nothing at all', () => {
+  it('a cancelled error frame clears only that stream decision state without drawing an error', () => {
     const a = projectServerEvent(
       {
         type: 'error',
@@ -285,7 +291,8 @@ describe('projectServerEvent', () => {
       },
       ctx
     )
-    expect(a).toEqual([])
+    expect(types(a)).toEqual([chatSliceActions.decisionRequestsClearedForStream.type])
+    expect(a[0].payload).toBe('stream-1')
   })
 
   it('error emits NO error chunk when terminal (the thunk catch owns that ordering)', () => {
@@ -296,7 +303,10 @@ describe('projectServerEvent', () => {
 
   it('error from a pre-envelope server still records a renderable envelope', () => {
     const a = projectServerEvent({ type: 'error', error: 'ECONNRESET' }, ctx)
-    expect(types(a)).toEqual([chatSliceActions.chatErrorRecorded.type])
+    expect(types(a)).toEqual([
+      chatSliceActions.decisionRequestsClearedForStream.type,
+      chatSliceActions.chatErrorRecorded.type,
+    ])
     const record = recordOf(a)
     expect(record.envelope.code).toBe('internal_error')
     expect(record.envelope.userMessage).toBeTruthy()

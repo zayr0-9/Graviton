@@ -209,7 +209,21 @@ export class RunSessionRegistry {
     return true
   }
 
-  /** Drop a session from the registry (does not cancel; caller decides). */
+  /**
+   * Replace a stream owner safely. A duplicate POST must not detach and orphan the old
+   * run: abort it first so every decision/tool wait unwinds, then install the new owner.
+   */
+  replace(streamId: string, conversationId: string | null): RunSession {
+    const existing = this.sessions.get(streamId)
+    if (existing) {
+      existing.cancel()
+      existing.detach()
+      this.sessions.delete(streamId)
+    }
+    return this.create(streamId, conversationId)
+  }
+
+  /** Drop a session from the registry (does not cancel; terminal eviction only). */
   delete(streamId: string): void {
     const session = this.sessions.get(streamId)
     if (!session) return

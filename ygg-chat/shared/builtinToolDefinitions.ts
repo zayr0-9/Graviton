@@ -1135,13 +1135,13 @@ export const BUILTIN_TOOL_DEFINITIONS: SharedToolDefinition[] = [
     name: 'subagent_manager',
     enabled: true,
     description:
-      'Manage asynchronous sub-agents scoped to THIS branch. Fire off background sub-agents and get a short 6-digit handle back, then poll their status, cancel them, or resume a failed one — all without blocking your own work. Only sub-agents spawned by this branch are ever visible or controllable; a parallel branch cannot see or touch them. Nested sub-agents are not supported. Actions: "spawn" (start one sub-agent; set blocking=true to wait for its result inline, or omit/false to run it in the background and get a handle immediately), "list" (all sub-agents this branch owns, optionally filtered by status), "status" (details for one handle), "cancel" (abort a running sub-agent by handle), "resume" (restart a failed/aborted sub-agent by handle).',
+      'Manage asynchronous sub-agents scoped to THIS branch. Fire off background sub-agents and get a short 6-digit handle back, then wait for completion, inspect status, cancel, or resume a failed run. Only sub-agents spawned by this branch are visible or controllable; parallel branches cannot access them. Nested sub-agents are not supported. Actions: "spawn" (start one sub-agent; blocking=true returns its result inline, otherwise returns a handle immediately), "list" (all branch-owned sub-agents, optionally filtered by status), "status" (a non-blocking snapshot), "wait" (block until one handle reaches completed/error/aborted and return its final result), "cancel" (abort a running handle), "resume" (restart a failed/aborted handle). After asynchronous delegation, continue independent work if any; when no other useful task remains, call "wait" once instead of repeatedly polling "status".',
     inputSchema: {
       type: 'object',
       properties: {
         action: {
           type: 'string',
-          enum: ['spawn', 'list', 'status', 'cancel', 'resume'],
+          enum: ['spawn', 'list', 'status', 'wait', 'cancel', 'resume'],
           description: 'The manager action to perform.',
         },
         prompt: {
@@ -1151,7 +1151,7 @@ export const BUILTIN_TOOL_DEFINITIONS: SharedToolDefinition[] = [
         blocking: {
           type: 'boolean',
           description:
-            'spawn only: if true, wait for the sub-agent to finish and return its result inline. If false or omitted, spawn in the background and return a handle immediately so you can keep working and poll later. Default: false.',
+            'spawn only: if true, wait for the sub-agent to finish and return its result inline. If false or omitted, spawn in the background and return a handle immediately so you can keep working, then use wait when its final result is needed. Default: false.',
         },
         systemPrompt: {
           type: 'string',
@@ -1186,7 +1186,7 @@ export const BUILTIN_TOOL_DEFINITIONS: SharedToolDefinition[] = [
         },
         handle: {
           type: 'string',
-          description: 'The 6-digit handle returned by spawn. Required for status, cancel, and resume.',
+          description: 'The 6-digit handle returned by spawn. Required for status, wait, cancel, and resume.',
         },
       },
       required: ['action'],

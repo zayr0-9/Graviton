@@ -2,7 +2,7 @@ import { useQueryClient } from '@tanstack/react-query'
 import { formatDistanceToNow, formatDistance } from 'date-fns'
 import React, { useEffect, useMemo, useState } from 'react'
 import type { Conversation } from '../../features/conversations/conversationTypes'
-import { useJobStats, useToolJobs } from '../../hooks/useToolJobs'
+import { useJobManagerConnection, useJobStats, useToolJobs } from '../../hooks/useToolJobs'
 import type { PaginatedConversationsResponse } from '../../hooks/useQueries'
 import { Job, toolJobManager } from '../../services/ToolJobManager'
 import { Button } from '../Button/button'
@@ -388,12 +388,21 @@ const ProgressBar: React.FC<{ value: number; status: string; themeColors: ToolJo
 export const ToolJobsModal: React.FC<ToolJobsModalProps> = ({ isOpen, onClose }) => {
   const queryClient = useQueryClient()
   const themeColors = useToolJobsThemeColors()
-  const { jobs, loading, error } = useToolJobs()
-  const { stats, loading: statsLoading } = useJobStats()
+  const { jobs, loading, error, refresh: refreshJobs } = useToolJobs()
+  const { stats, loading: statsLoading, refresh: refreshStats } = useJobStats()
+  const jobsLive = useJobManagerConnection()
   const [cancelling, setCancelling] = useState<Set<string>>(new Set())
   const [selectedJobDetails, setSelectedJobDetails] = useState<Job | null>(null)
   const [conversationTitle, setConversationTitle] = useState<string | undefined>(undefined)
   const [detailsLoading, setDetailsLoading] = useState(false)
+
+  // Opening the modal is an explicit request for current state. Reconcile even if a
+  // WebSocket gap happened while it was closed.
+  useEffect(() => {
+    if (!isOpen) return
+    void refreshJobs()
+    void refreshStats()
+  }, [isOpen, refreshJobs, refreshStats])
 
   // Look up conversation title from React Query cache
   const findConversationTitle = (conversationId: string | null): string | undefined => {
@@ -483,14 +492,17 @@ export const ToolJobsModal: React.FC<ToolJobsModalProps> = ({ isOpen, onClose })
           <div className='flex items-center gap-2'>
             <div
               className='flex items-center gap-1 text-xs px-2 py-1 rounded-full'
-              style={{ backgroundColor: themeColors.liveBadgeBg, color: themeColors.liveBadgeText }}
+              style={{
+                backgroundColor: jobsLive ? themeColors.liveBadgeBg : themeColors.errorBg,
+                color: jobsLive ? themeColors.liveBadgeText : themeColors.errorText,
+              }}
             >
               <span
-                className='w-2 h-2 rounded-full animate-pulse'
-                style={{ backgroundColor: themeColors.liveDot }}
+                className={`w-2 h-2 rounded-full ${jobsLive ? 'animate-pulse' : ''}`}
+                style={{ backgroundColor: jobsLive ? themeColors.liveDot : themeColors.errorText }}
                 aria-hidden='true'
               ></span>
-              Live
+              {jobsLive ? 'Live' : 'Reconnecting'}
             </div>
             <Button variant='outline2' size='medium' onClick={onClose}>
               <i className='bx bx-x text-lg' aria-hidden='true'></i>

@@ -149,6 +149,53 @@ describe('registerChatRoutes — resumable runs (detach/reattach)', () => {
     expect(bEvents.map(e => e.seq)).toEqual([2, 3, 4]) // chunk a (replayed), chunk b, complete
   })
 
+  it('a duplicate POST with the same streamId reattaches without starting a second run', async () => {
+    let runs = 0
+    let release: () => void = () => {}
+    const gate = new Promise<void>(resolve => {
+      release = resolve
+    })
+    const app = express()
+    app.use(express.json())
+    registerChatRoutes(app, {
+      orchestrator: {
+        async runMessage(request: any, emit: any) {
+          runs += 1
+          emit({ type: 'started', operation: request.operation, conversationId: request.conversationId })
+          await gate
+          emit({ type: 'complete', message: { id: 'assistant-duplicate' } })
+        },
+      } as any,
+      runSessions: new RunSessionRegistry(),
+      resumableRuns: true,
+    })
+    const server = app.listen(0)
+    const address = server.address() as AddressInfo
+    harness = { baseUrl: `http://127.0.0.1:${address.port}`, server, release }
+
+    const first = await fetch(`${harness.baseUrl}/api/conversations/c1/messages`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ content: 'hi', streamId: 'duplicate-stream' }),
+    })
+    const firstEvents = collect(first)
+    await delay(20)
+
+    const duplicate = await fetch(`${harness.baseUrl}/api/conversations/c1/messages`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ content: 'hi', streamId: 'duplicate-stream' }),
+    })
+    const duplicateEvents = collect(duplicate)
+    await delay(20)
+    expect(runs).toBe(1)
+
+    harness.release()
+    const replay = await duplicateEvents
+    expect(replay.map(event => event.type)).toEqual(['started', 'complete'])
+    await firstEvents
+  })
+
   it('POST /api/streams/:id/abort is the only thing that cancels a live run', async () => {
     harness = startServer({ resumableRuns: true, mode: 'abortable' })
     const { baseUrl } = harness

@@ -124,6 +124,7 @@ The loop pauses mid-turn to ask the renderer for a tool-permission or `plan_md` 
   the accepted ceiling; there is no cross-restart durability.
 - Sessions accept one subscriber and use last-attach-wins semantics; renderer per-stream
   reader ownership prevents route remounts from replacing a surviving subscriber.
+- A repeated POST that reuses an existing `streamId` is treated as an idempotent re-attach to the existing session; it must never start a second orchestrator run. The registry also exposes abort-before-replace for explicit replacement callers. Never restore delete-without-abort: it orphaned branch runs outside abort, reattach, and reaper reachability.
 - Explicit `gateway.resumableRuns === false`: `runSseOrchestrator` keeps the legacy path
   (disconnect == abort) and `/api/streams/*` return `501`.
 - Renderer counterpart: `mainChatClient.ts` (in-session resubscribe + `postStreamAbort`) + `resumeInFlightStreams` (mount-time re-attach after a reload) + `inflightStreams.ts` (localStorage tracking) — see `agent_chat_streaming_state.md`.

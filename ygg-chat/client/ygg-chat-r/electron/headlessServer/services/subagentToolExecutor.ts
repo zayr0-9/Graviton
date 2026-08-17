@@ -37,6 +37,7 @@ export interface SubagentManagerRunner {
   ): Promise<{ handle: string | null; runId: string; streamId: string } | null>
   cancel(handle: string): boolean
   isActive(handle: string): boolean
+  waitForTerminal(handle: string, signal?: AbortSignal): Promise<SubagentRunRow | null>
   getRunByHandle(handle: string): SubagentRunRow | null
   listByLineage(lineageId: string, status?: SubagentRunStatus): SubagentRunRow[]
 }
@@ -244,8 +245,8 @@ async function managerSpawn(
     status: 'running',
     message:
       `Sub-agent started in the background with handle ${handle}. ` +
-      `Keep working; poll subagent_manager {action:"status", handle:"${handle}"} for progress, ` +
-      `or {action:"list"} to see all sub-agents owned by this branch.`,
+      `Keep working on independent tasks, then call subagent_manager {action:"wait", handle:"${handle}"} ` +
+      `when you need its final result. Use status only for a non-blocking progress snapshot.`,
   }
 }
 
@@ -281,6 +282,21 @@ function managerStatus(
   const run = runner.getRunByHandle(handle)
   if (!run || !ownsRun(run, context)) return notOwnedResult('status', handle)
   return { action: 'status', found: true, subagent: toRunView(run, runner.isActive(handle)) }
+}
+
+async function managerWait(
+  runner: SubagentManagerRunner,
+  context: ToolExecutionContext,
+  args: Record<string, any>
+): Promise<Record<string, any>> {
+  const handle = normalizeHandle(args.handle)
+  if (!handle) throw new Error('subagent_manager wait: a handle is required.')
+  const run = runner.getRunByHandle(handle)
+  if (!run || !ownsRun(run, context)) return notOwnedResult('wait', handle)
+
+  const terminal = await runner.waitForTerminal(handle, context.signal)
+  if (!terminal || !ownsRun(terminal, context)) return notOwnedResult('wait', handle)
+  return { action: 'wait', found: true, subagent: toRunView(terminal, runner.isActive(handle)) }
 }
 
 function managerCancel(
@@ -323,7 +339,7 @@ async function managerResume(
       status: run.status,
       message:
         run.status === 'running'
-          ? `Sub-agent ${handle} is already running; poll status instead of resuming.`
+          ? `Sub-agent ${handle} is already running; wait for it instead of resuming.`
           : `Sub-agent ${handle} already completed; there is nothing to resume.`,
     }
   }
@@ -338,7 +354,7 @@ async function managerResume(
       handle,
       resumed: false,
       status: latest?.status ?? run.status,
-      message: `Sub-agent ${handle} could not be resumed (its status changed); poll status.`,
+      message: `Sub-agent ${handle} could not be resumed because its status changed; use wait if it is running, or status for a snapshot.`,
     }
   }
   return {
@@ -350,7 +366,7 @@ async function managerResume(
     status: 'running',
     message:
       `Sub-agent ${handle} resumed in the background from its saved transcript. ` +
-      `Poll subagent_manager {action:"status", handle:"${handle}"} for progress.`,
+      `Call subagent_manager {action:"wait", handle:"${handle}"} when you need its final result.`,
   }
 }
 
@@ -358,7 +374,7 @@ async function managerResume(
  * Intercept the global `subagent_manager` tool before ordinary calls reach the
  * registry. Every action reads the full ToolExecutionContext (crucially
  * `lineageId`, which an orchestrator-registered handler would drop) so list /
- * status / cancel / resume can enforce branch ownership. Non-manager tools —
+ * status / wait / cancel / resume can enforce branch ownership. Non-manager tools —
  * including the legacy `subagent` tool — fall through to the leaf executor
  * (compose this over createSubagentDispatchExecutor). This never runs for a
  * child, so no-nested-subagents holds.
@@ -379,13 +395,15 @@ export function createSubagentManagerExecutor(deps: {
         return managerList(deps.runner, context, args)
       case 'status':
         return managerStatus(deps.runner, context, args)
+      case 'wait':
+        return managerWait(deps.runner, context, args)
       case 'cancel':
         return managerCancel(deps.runner, context, args)
       case 'resume':
         return managerResume(deps.runner, context, args)
       default:
         throw new Error(
-          `subagent_manager: unknown action "${action || '(missing)'}". Use spawn | list | status | cancel | resume.`
+          `subagent_manager: unknown action "${action || '(missing)'}". Use spawn | list | status | wait | cancel | resume.`
         )
     }
   }

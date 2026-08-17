@@ -281,14 +281,33 @@ async function runSseOrchestrator(
   // POST /api/streams/:id/abort or the reaper cancels it. ──
   const registry = opts.runSessions!
   const conversationId = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id
-  // A fresh start supersedes any stale/lingering session for this id. streamIds are
-  // unique per send, so this is virtually always a no-op.
-  registry.delete(String(streamId))
-  const session = registry.create(String(streamId), conversationId || null)
+  const normalizedStreamId = String(streamId)
 
   initializeSse(res)
   const stopHeartbeat = startSseHeartbeat(res)
-  const subscriber = makeSubscriber(res)
+  const baseSubscriber = makeSubscriber(res)
+  const subscriber: RunSubscriber = {
+    send: frame => baseSubscriber.send(frame),
+    end: () => {
+      stopHeartbeat()
+      baseSubscriber.end()
+    },
+  }
+
+  // A repeated POST for the same stream is an idempotent re-attach, not a second run.
+  // Starting a replacement while the old run unwinds lets its broker cleanup reject the
+  // replacement branch's decisions; deleting it instead makes the old run unreachable.
+  const existingSession = registry.get(normalizedStreamId)
+  if (existingSession) {
+    res.on('close', () => {
+      stopHeartbeat()
+      existingSession.detach(subscriber)
+    })
+    existingSession.attach(subscriber)
+    return
+  }
+
+  const session = registry.create(normalizedStreamId, conversationId || null)
   res.on('close', () => {
     stopHeartbeat()
     session.detach(subscriber) // keep the run alive; only release this socket
@@ -397,6 +416,11 @@ export function registerChatRoutes(app: Express, deps: RegisterChatRoutesDeps): 
     }
     let decision: Decision
     if (typeof body.decision === 'string') {
+      const allowedDecisions = new Set(['allow_once', 'allow_always', 'deny', 'switch_to_execute'])
+      if (!allowedDecisions.has(body.decision)) {
+        sendJsonError(res, 400, 'Invalid decision value', 'decision_not_delivered')
+        return
+      }
       decision = body.decision as Decision // permission or operation-mode-upgrade decision
     } else if (body.answers !== undefined || body.cancelled !== undefined) {
       decision = { answers: body.answers, cancelled: body.cancelled } // plan_md clarify

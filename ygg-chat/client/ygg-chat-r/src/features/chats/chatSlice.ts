@@ -258,6 +258,9 @@ const makeInitialState = (): ChatState => {
     toolCallPermissionRequest: null,
     operationModeUpgradeRequest: null,
     planClarificationRequest: null,
+    toolPermissionRequestsByStream: {},
+    operationModeUpgradeRequestsByStream: {},
+    planClarificationRequestsByStream: {},
     toolAutoApprove: false,
     operationMode: 'plan',
     freeTier: {
@@ -1383,26 +1386,54 @@ export const chatSlice = createSlice({
 
     toolPermissionRequested: (state, action: PayloadAction<ToolCallPermissionRequest>) => {
       state.toolCallPermissionRequest = action.payload
+      if (action.payload.streamId) state.toolPermissionRequestsByStream[action.payload.streamId] = action.payload
     },
 
     toolPermissionResponded: state => {
       state.toolCallPermissionRequest = null
     },
 
+    toolPermissionRespondedForStream: (state, action: PayloadAction<string>) => {
+      delete state.toolPermissionRequestsByStream[action.payload]
+      if (state.toolCallPermissionRequest?.streamId === action.payload) state.toolCallPermissionRequest = null
+    },
+
     operationModeUpgradeRequested: (state, action: PayloadAction<OperationModeUpgradeRequest>) => {
       state.operationModeUpgradeRequest = action.payload
+      if (action.payload.streamId) state.operationModeUpgradeRequestsByStream[action.payload.streamId] = action.payload
     },
 
     operationModeUpgradeResponded: state => {
       state.operationModeUpgradeRequest = null
     },
 
+    operationModeUpgradeRespondedForStream: (state, action: PayloadAction<string>) => {
+      delete state.operationModeUpgradeRequestsByStream[action.payload]
+      if (state.operationModeUpgradeRequest?.streamId === action.payload) state.operationModeUpgradeRequest = null
+    },
+
     planClarificationRequested: (state, action: PayloadAction<import('./planToolTypes').PlanClarificationRequest>) => {
       state.planClarificationRequest = action.payload
+      if (action.payload.streamId) state.planClarificationRequestsByStream[action.payload.streamId] = action.payload
     },
 
     planClarificationResponded: state => {
       state.planClarificationRequest = null
+    },
+
+    planClarificationRespondedForStream: (state, action: PayloadAction<string>) => {
+      delete state.planClarificationRequestsByStream[action.payload]
+      if (state.planClarificationRequest?.streamId === action.payload) state.planClarificationRequest = null
+    },
+
+    decisionRequestsClearedForStream: (state, action: PayloadAction<string>) => {
+      const streamId = action.payload
+      delete state.toolPermissionRequestsByStream[streamId]
+      delete state.operationModeUpgradeRequestsByStream[streamId]
+      delete state.planClarificationRequestsByStream[streamId]
+      if (state.toolCallPermissionRequest?.streamId === streamId) state.toolCallPermissionRequest = null
+      if (state.operationModeUpgradeRequest?.streamId === streamId) state.operationModeUpgradeRequest = null
+      if (state.planClarificationRequest?.streamId === streamId) state.planClarificationRequest = null
     },
 
     toolAutoApproveEnabled: state => {

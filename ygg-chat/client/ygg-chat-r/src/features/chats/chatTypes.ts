@@ -418,9 +418,18 @@ export interface ChatState {
   selectedNodes: MessageId[]
   attachments: AttachmentsState
   tools: tools[]
+  /** Legacy latest-request mirrors; keep for compatibility with older consumers. */
   toolCallPermissionRequest: ToolCallPermissionRequest | null
   operationModeUpgradeRequest: OperationModeUpgradeRequest | null
   planClarificationRequest: PlanClarificationRequest | null
+  /**
+   * Authoritative branch/run-scoped decision state. Concurrent branch streams can pause
+   * independently; a prompt from one stream must never overwrite another stream's only
+   * resume correlation.
+   */
+  toolPermissionRequestsByStream: Record<string, ToolCallPermissionRequest>
+  operationModeUpgradeRequestsByStream: Record<string, OperationModeUpgradeRequest>
+  planClarificationRequestsByStream: Record<string, PlanClarificationRequest>
   toolAutoApprove: boolean
   operationMode: OperationMode
   freeTier: {

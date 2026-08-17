@@ -79,6 +79,37 @@ function isAbortError(error: unknown): boolean {
   return typeof error === 'object' && error !== null && (error as any).name === 'AbortError'
 }
 
+function createAbortError(message = 'Subagent wait aborted'): Error {
+  const error = new Error(message)
+  error.name = 'AbortError'
+  return error
+}
+
+function awaitWithAbort<T>(promise: Promise<T>, signal?: AbortSignal): Promise<T> {
+  if (!signal) return promise
+  if (signal.aborted) return Promise.reject(createAbortError())
+
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = (): void => {
+      cleanup()
+      reject(createAbortError())
+    }
+    const cleanup = (): void => signal.removeEventListener('abort', onAbort)
+
+    signal.addEventListener('abort', onAbort, { once: true })
+    promise.then(
+      value => {
+        cleanup()
+        resolve(value)
+      },
+      error => {
+        cleanup()
+        reject(error)
+      }
+    )
+  })
+}
+
 function clampMaxTurns(value: number | undefined): number {
   const requested = typeof value === 'number' && Number.isFinite(value) ? Math.floor(value) : DEFAULT_MAX_TURNS
   return Math.max(1, Math.min(requested, MAX_MAX_TURNS))
@@ -98,10 +129,11 @@ interface PreparedSubagentRun {
   resolvedToolNames: string[]
 }
 
-/** A detached (async) run tracked in-process so the manager can cancel it by handle. */
+/** A detached (async) attempt tracked in-process for cancel and event-driven wait. */
 interface ActiveSubagentRun {
   runId: string
   controller: AbortController
+  completion: Promise<void>
 }
 
 /**
@@ -129,7 +161,7 @@ export class SubagentRunService {
   private readonly refreshProviderTokens?: (provider: string) => Promise<void> | void
   private readonly providerTurnTimeoutMs: number
   private readonly runSessions?: RunSessionRegistry
-  /** handle -> live detached run, so cancel(handle) can abort a run that outlives its spawn call. */
+  /** handle -> live detached attempt, shared by cancel(handle) and waitForTerminal(handle). */
   private readonly activeRuns = new Map<string, ActiveSubagentRun>()
 
   constructor(deps: SubagentRunServiceDeps) {
@@ -194,16 +226,8 @@ export class SubagentRunService {
   async spawnDetached(
     request: HeadlessSubagentStreamRequest
   ): Promise<{ handle: string | null; runId: string; streamId: string }> {
-    const controller = new AbortController()
     const prepared = await this.prepareRun(request, NOOP_EMIT)
-    if (prepared.handle) {
-      this.activeRuns.set(prepared.handle, { runId: prepared.runId, controller })
-    }
-    void this.driveRun(prepared, request, NOOP_EMIT, controller.signal)
-      .catch(error => this.persistUnexpectedFailure(prepared, error))
-      .finally(() => {
-        if (prepared.handle) this.activeRuns.delete(prepared.handle)
-      })
+    this.startDetachedAttempt(prepared, request)
     return { handle: prepared.handle, runId: prepared.runId, streamId: prepared.subStreamId }
   }
 
@@ -222,6 +246,30 @@ export class SubagentRunService {
   /** True if the handle maps to a run currently executing in THIS process. */
   isActive(handle: string): boolean {
     return this.activeRuns.has(handle)
+  }
+
+  /**
+   * Wait for one detached handle to reach a persisted terminal state without
+   * polling. Aborting the supplied signal releases only this waiter; it never
+   * aborts the detached child (cancel(handle) owns that behavior).
+   */
+  async waitForTerminal(handle: string, signal?: AbortSignal): Promise<SubagentRunRow | null> {
+    for (;;) {
+      const run = this.runRepo.getRunByHandle(handle)
+      if (!run || run.status !== 'running') return run
+
+      const active = this.activeRuns.get(handle)
+      if (!active || active.runId !== run.id) {
+        // Close the completion/cleanup race before declaring a broken lifecycle.
+        const latest = this.runRepo.getRunByHandle(handle)
+        if (!latest || latest.status !== 'running') return latest
+        throw new Error(`Sub-agent ${handle} is marked running but has no active runtime in this process.`)
+      }
+
+      await awaitWithAbort(active.completion, signal)
+      // Re-read persistence after the attempt settles. If another caller resumed
+      // the same handle concurrently, loop and wait for that newer attempt too.
+    }
   }
 
   /**
@@ -279,18 +327,59 @@ export class SubagentRunService {
     runId: string,
     request: HeadlessSubagentStreamRequest
   ): Promise<{ handle: string | null; runId: string; streamId: string } | null> {
+    // Reopen first, then immediately reserve the handle's lifecycle entry before
+    // any asynchronous preparation. A concurrent waiter can now attach during
+    // token refresh/tool resolution instead of observing a running row with no
+    // local runtime owner.
+    if (!this.runRepo.reopenRun(runId)) return null
+    const reopened = this.runRepo.getRunById(runId)
+    const handle = reopened?.handle ?? null
     const controller = new AbortController()
-    const prepared = await this.prepareResume(runId, request, NOOP_EMIT)
-    if (!prepared) return null
-    if (prepared.prepared.handle) {
-      this.activeRuns.set(prepared.prepared.handle, { runId, controller })
+    let settleCompletion!: () => void
+    const completion = new Promise<void>(resolve => {
+      settleCompletion = resolve
+    })
+    const entry: ActiveSubagentRun = { runId, controller, completion }
+    if (handle) this.activeRuns.set(handle, entry)
+
+    let prepared: { prepared: PreparedSubagentRun; resumeState: ResumeState }
+    try {
+      prepared = await this.prepareResume(runId, request, NOOP_EMIT)
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      this.runRepo.updateRun(runId, { status: 'error', error: message })
+      settleCompletion()
+      if (handle && this.activeRuns.get(handle) === entry) this.activeRuns.delete(handle)
+      throw error
     }
+
     void this.driveRun(prepared.prepared, request, NOOP_EMIT, controller.signal, prepared.resumeState)
       .catch(error => this.persistUnexpectedFailure(prepared.prepared, error))
       .finally(() => {
-        if (prepared.prepared.handle) this.activeRuns.delete(prepared.prepared.handle)
+        settleCompletion()
+        if (handle && this.activeRuns.get(handle) === entry) this.activeRuns.delete(handle)
       })
     return { handle: prepared.prepared.handle, runId, streamId: prepared.prepared.subStreamId }
+  }
+
+  /** Register and drive one detached attempt. Cleanup is identity-safe so an old
+   * attempt cannot delete a newer resumed attempt stored under the same handle. */
+  private startDetachedAttempt(
+    prepared: PreparedSubagentRun,
+    request: HeadlessSubagentStreamRequest,
+    resumeState?: ResumeState
+  ): void {
+    const controller = new AbortController()
+    let entry!: ActiveSubagentRun
+    const completion = this.driveRun(prepared, request, NOOP_EMIT, controller.signal, resumeState)
+      .catch(error => this.persistUnexpectedFailure(prepared, error))
+      .finally(() => {
+        if (prepared.handle && this.activeRuns.get(prepared.handle) === entry) {
+          this.activeRuns.delete(prepared.handle)
+        }
+      })
+    entry = { runId: prepared.runId, controller, completion }
+    if (prepared.handle) this.activeRuns.set(prepared.handle, entry)
   }
 
   /**
@@ -493,10 +582,9 @@ export class SubagentRunService {
     runId: string,
     request: HeadlessSubagentStreamRequest,
     emit: (event: HeadlessSubagentStreamEvent) => void
-  ): Promise<{ prepared: PreparedSubagentRun; resumeState: ResumeState } | null> {
-    // Atomic status gate: only error|aborted -> running transitions (bumps attempt).
-    if (!this.runRepo.reopenRun(runId)) return null
-
+  ): Promise<{ prepared: PreparedSubagentRun; resumeState: ResumeState }> {
+    // resumeDetached already performed the atomic reopen and reserved the active
+    // lifecycle entry before entering this asynchronous preparation phase.
     this.repairDanglingToolUse(runId)
     const run = this.runRepo.getRunById(runId)
     const messages = this.runRepo.getMessages(runId)

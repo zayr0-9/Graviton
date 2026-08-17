@@ -3571,10 +3571,15 @@ const settleDecisionResume = (
   return { closeDialog: false }
 }
 
-export const respondToToolPermission = createAsyncThunk<void, boolean, { state: RootState; extra: ThunkExtraArgument }>(
+export const respondToToolPermission = createAsyncThunk<
+  void,
+  { allowed: boolean; streamId?: string },
+  { state: RootState; extra: ThunkExtraArgument }
+>(
   'chat/respondToToolPermission',
-  async (allowed, { dispatch, getState }) => {
-    const req = getState().chat.toolCallPermissionRequest
+  async ({ allowed, streamId }, { dispatch, getState }) => {
+    const chat = getState().chat
+    const req = (streamId ? chat.toolPermissionRequestsByStream[streamId] : null) ?? chat.toolCallPermissionRequest
     if (req?.streamId && req?.toolCallId) {
       // Server-owned loop: resolve the paused decision over /resume.
       const outcome = await postDecisionResume({
@@ -3585,16 +3590,18 @@ export const respondToToolPermission = createAsyncThunk<void, boolean, { state: 
       // Records the failure first; keeps the dialog open when another click could work.
       if (!settleDecisionResume(dispatch, getState(), req.streamId, outcome).closeDialog) return
     }
-    dispatch(chatSliceActions.toolPermissionResponded())
+    if (req?.streamId) dispatch(chatSliceActions.toolPermissionRespondedForStream(req.streamId))
+    else dispatch(chatSliceActions.toolPermissionResponded())
   }
 )
 
 export const respondToOperationModeUpgrade = createAsyncThunk<
   void,
-  boolean,
+  { approved: boolean; streamId?: string },
   { state: RootState; extra: ThunkExtraArgument }
->('chat/respondToOperationModeUpgrade', async (approved, { dispatch, getState }) => {
-  const req = getState().chat.operationModeUpgradeRequest
+>('chat/respondToOperationModeUpgrade', async ({ approved, streamId }, { dispatch, getState }) => {
+  const chat = getState().chat
+  const req = (streamId ? chat.operationModeUpgradeRequestsByStream[streamId] : null) ?? chat.operationModeUpgradeRequest
   if (approved) dispatch(chatSliceActions.operationModeSet('execute'))
   if (req?.streamId && req?.toolCallId) {
     const outcome = await postDecisionResume({
@@ -3604,46 +3611,56 @@ export const respondToOperationModeUpgrade = createAsyncThunk<
     })
     if (!settleDecisionResume(dispatch, getState(), req.streamId, outcome).closeDialog) return
   }
-  dispatch(chatSliceActions.operationModeUpgradeResponded())
+  if (req?.streamId) dispatch(chatSliceActions.operationModeUpgradeRespondedForStream(req.streamId))
+  else dispatch(chatSliceActions.operationModeUpgradeResponded())
 })
 
 export const respondToPlanClarification = createAsyncThunk<
   void,
-  PlanClarificationAnswer[],
+  { answers: PlanClarificationAnswer[]; streamId?: string },
   { state: RootState; extra: ThunkExtraArgument }
->('chat/respondToPlanClarification', async (answers, { dispatch, getState }) => {
-  const req = getState().chat.planClarificationRequest
+>('chat/respondToPlanClarification', async ({ answers, streamId }, { dispatch, getState }) => {
+  const chat = getState().chat
+  const req = (streamId ? chat.planClarificationRequestsByStream[streamId] : null) ?? chat.planClarificationRequest
   if (req?.streamId && req?.toolCallId) {
     const outcome = await postDecisionResume({ streamId: req.streamId, toolCallId: req.toolCallId, answers })
     // Keeping this dialog open on a transient failure also preserves the typed answers,
     // which are otherwise destroyed by planClarificationResponded.
     if (!settleDecisionResume(dispatch, getState(), req.streamId, outcome).closeDialog) return
   }
-  dispatch(chatSliceActions.planClarificationResponded())
+  if (req?.streamId) dispatch(chatSliceActions.planClarificationRespondedForStream(req.streamId))
+  else dispatch(chatSliceActions.planClarificationResponded())
 })
 
-export const cancelPlanClarification = createAsyncThunk<void, void, { state: RootState; extra: ThunkExtraArgument }>(
+export const cancelPlanClarification = createAsyncThunk<
+  void,
+  string | undefined,
+  { state: RootState; extra: ThunkExtraArgument }
+>(
   'chat/cancelPlanClarification',
-  async (_, { dispatch, getState }) => {
-    const req = getState().chat.planClarificationRequest
+  async (streamId, { dispatch, getState }) => {
+    const chat = getState().chat
+    const req = (streamId ? chat.planClarificationRequestsByStream[streamId] : null) ?? chat.planClarificationRequest
     if (req?.streamId && req?.toolCallId) {
       const outcome = await postDecisionResume({ streamId: req.streamId, toolCallId: req.toolCallId, cancelled: true })
       if (!settleDecisionResume(dispatch, getState(), req.streamId, outcome).closeDialog) return
     }
-    dispatch(chatSliceActions.planClarificationResponded())
+    if (req?.streamId) dispatch(chatSliceActions.planClarificationRespondedForStream(req.streamId))
+    else dispatch(chatSliceActions.planClarificationResponded())
   }
 )
 
 export const respondToToolPermissionAndEnableAll = createAsyncThunk<
   void,
-  void,
+  string | undefined,
   { state: RootState; extra: ThunkExtraArgument }
->('chat/respondToToolPermissionAndEnableAll', async (_, { dispatch, getState }) => {
+>('chat/respondToToolPermissionAndEnableAll', async (streamId, { dispatch, getState }) => {
   // Enable auto-approve mode for all future tools; the server path relies on the
   // allow_always decision forwarded below.
   dispatch(chatSliceActions.toolAutoApproveEnabled())
 
-  const req = getState().chat.toolCallPermissionRequest
+  const chat = getState().chat
+  const req = (streamId ? chat.toolPermissionRequestsByStream[streamId] : null) ?? chat.toolCallPermissionRequest
   if (req?.streamId && req?.toolCallId) {
     const outcome = await postDecisionResume({
       streamId: req.streamId,
@@ -3653,8 +3670,9 @@ export const respondToToolPermissionAndEnableAll = createAsyncThunk<
     if (!settleDecisionResume(dispatch, getState(), req.streamId, outcome).closeDialog) return
   }
 
-  // Clear the permission dialog
-  dispatch(chatSliceActions.toolPermissionResponded())
+  // Clear only the branch/run prompt that was answered.
+  if (req?.streamId) dispatch(chatSliceActions.toolPermissionRespondedForStream(req.streamId))
+  else dispatch(chatSliceActions.toolPermissionResponded())
 })
 
 /**

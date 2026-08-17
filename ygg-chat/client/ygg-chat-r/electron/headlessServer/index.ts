@@ -213,6 +213,7 @@ const executeToolViaOrchestrator: ToolExecutor = async (toolCall, context) => {
     conversationId: context.conversationId ?? null,
     messageId: context.messageId ?? null,
     streamId: context.streamId ?? null,
+    toolCallId: toolCall.id ?? null,
   })
 
   const startedAt = Date.now()

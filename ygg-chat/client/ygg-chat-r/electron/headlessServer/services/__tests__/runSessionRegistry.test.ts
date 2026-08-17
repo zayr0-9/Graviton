@@ -148,8 +148,24 @@ describe('RunSessionRegistry', () => {
     expect(reg.get('s1')).toBe(s1)
     expect(reg.size()).toBe(1)
     reg.delete('s1')
+    expect(s1.signal.aborted).toBe(false)
     expect(reg.get('s1')).toBeUndefined()
     expect(reg.size()).toBe(0)
+  })
+
+  it('replace aborts and detaches the old owner before installing a fresh session', () => {
+    const reg = new RunSessionRegistry()
+    const old = reg.create('s1', 'c1')
+    const subscriber = recorder()
+    old.attach(subscriber.sub)
+
+    const replacement = reg.replace('s1', 'c1')
+
+    expect(replacement).not.toBe(old)
+    expect(reg.get('s1')).toBe(replacement)
+    expect(old.signal.aborted).toBe(true)
+    expect(old.hasSubscriber()).toBe(false)
+    expect(replacement.signal.aborted).toBe(false)
   })
 
   it('cancel by id aborts the session; unknown id returns false', () => {

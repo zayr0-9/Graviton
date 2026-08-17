@@ -26,6 +26,8 @@ describe('buildOperationModeSystemPrompt', () => {
     expect(prompt).toContain('Agent Prompt: Plan mode')
     expect(prompt).toContain('## Plan Response Style')
     expect(prompt).toContain('Use short, concise plans')
+    expect(prompt).toContain('action: "wait"')
+    expect(prompt).toContain('instead of repeatedly polling `status`')
   })
 
   it('adds selected Plan response verbosity', () => {
@@ -42,6 +44,8 @@ describe('buildOperationModeSystemPrompt', () => {
     const prompt = buildOperationModeSystemPrompt({ operationMode: 'execute', includeCustomToolsPrompt: false })
 
     expect(prompt).toContain('Agent Prompt: Coding mode')
+    expect(prompt).toContain('action: "wait"')
+    expect(prompt).toContain('do not repeatedly poll `status`')
     expect(prompt).not.toContain('## Plan Response Style')
   })
 })

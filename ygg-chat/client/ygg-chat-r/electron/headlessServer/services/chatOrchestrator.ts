@@ -277,7 +277,7 @@ export function createChatPausingExecutor(deps: {
         toolName: call.name,
         questions: Array.isArray(cArgs?.questions) ? cArgs.questions : [],
       })
-      const decision = await broker.requestDecision<ClarifyDecision>({ streamId, toolCallId: toolCall.id, signal: sig })
+      const decision = await broker.requestDecision<ClarifyDecision>({ streamId, toolCallId: toolCall.id, kind: 'clarify', signal: sig })
       return {
         clarified: !decision.cancelled,
         cancelled: decision.cancelled ?? false,
@@ -295,7 +295,7 @@ export function createChatPausingExecutor(deps: {
       if (broker.isAutoApproveAll(streamId)) return base(toolCall, { ...context, nestedExecutor: context.nestedExecutor ?? execute })
       if (shouldBypassPermission(toolCall.name, args)) return base(toolCall, { ...context, nestedExecutor: context.nestedExecutor ?? execute })
       emit({ type: 'permission_required', streamId, toolCallId: toolCall.id, toolName: toolCall.name, toolInput: args })
-      const decision = await broker.requestDecision<PermissionDecision>({ streamId, toolCallId: toolCall.id, signal: sig })
+      const decision = await broker.requestDecision<PermissionDecision>({ streamId, toolCallId: toolCall.id, kind: 'permission', signal: sig })
       if (decision === 'deny') throw new Error('Tool execution denied by user')
       if (decision === 'allow_always') broker.setAutoApproveAll(streamId)
       return base(toolCall, { ...context, nestedExecutor: context.nestedExecutor ?? execute })
@@ -328,7 +328,7 @@ export function createChatPausingExecutor(deps: {
         // Prompt shows the rewritten args. toolCallId stays the original id (a rewrite
         // only touches arguments), so the /resume correlation is unchanged.
         emit({ type: 'permission_required', streamId, toolCallId: toolCall.id, toolName: effectiveToolCall.name, toolInput: effArgs })
-        const decision = await broker.requestDecision<PermissionDecision>({ streamId, toolCallId: toolCall.id, signal: sig })
+        const decision = await broker.requestDecision<PermissionDecision>({ streamId, toolCallId: toolCall.id, kind: 'permission', signal: sig })
         if (decision === 'deny') throw new Error('Tool execution denied by user')
         if (decision === 'allow_always') broker.setAutoApproveAll(streamId)
         result = await base(effectiveToolCall, { ...context, nestedExecutor: context.nestedExecutor ?? execute })
@@ -862,6 +862,7 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
             const decision = await this.decisionBroker!.requestDecision({
               streamId: decisionStreamId,
               toolCallId: toolCall.id,
+              kind: 'operation_mode_upgrade',
               signal,
             })
             return decision === 'switch_to_execute'

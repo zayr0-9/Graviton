@@ -1307,9 +1307,21 @@ function Chat() {
 
   const conversationMessages = useAppSelector(selectConversationMessages)
   const displayMessages = useAppSelector(selectDisplayMessages)
-  const toolCallPermissionRequest = useAppSelector(state => state.chat.toolCallPermissionRequest)
-  const operationModeUpgradeRequest = useAppSelector(state => state.chat.operationModeUpgradeRequest)
-  const planClarificationRequest = useAppSelector(state => state.chat.planClarificationRequest)
+  const toolCallPermissionRequest = useAppSelector(state =>
+    streamState.id
+      ? (state.chat.toolPermissionRequestsByStream[streamState.id] ?? null)
+      : state.chat.toolCallPermissionRequest
+  )
+  const operationModeUpgradeRequest = useAppSelector(state =>
+    streamState.id
+      ? (state.chat.operationModeUpgradeRequestsByStream[streamState.id] ?? null)
+      : state.chat.operationModeUpgradeRequest
+  )
+  const planClarificationRequest = useAppSelector(state =>
+    streamState.id
+      ? (state.chat.planClarificationRequestsByStream[streamState.id] ?? null)
+      : state.chat.planClarificationRequest
+  )
   const toolAutoApprove = useAppSelector(state => state.chat.toolAutoApprove)
   // D3: free-tier exhaustion is a chat bubble, not a blocking modal. `sseProjection` records the
   // `free_tier_exhausted` bubble directly on `generation_limit_reached` and never raises
@@ -7241,23 +7253,33 @@ function Chat() {
                 <ToolPermissionDialog
                   toolCall={operationModeUpgradeRequest.toolCall}
                   variant='operation-mode-upgrade'
-                  onGrant={() => dispatch(respondToOperationModeUpgrade(true))}
-                  onDeny={() => dispatch(respondToOperationModeUpgrade(false))}
+                  onGrant={() =>
+                    dispatch(respondToOperationModeUpgrade({ approved: true, streamId: operationModeUpgradeRequest.streamId }))
+                  }
+                  onDeny={() =>
+                    dispatch(respondToOperationModeUpgrade({ approved: false, streamId: operationModeUpgradeRequest.streamId }))
+                  }
                 />
               )}
               {!operationModeUpgradeRequest && toolCallPermissionRequest && (
                 <ToolPermissionDialog
                   toolCall={toolCallPermissionRequest.toolCall}
-                  onGrant={() => dispatch(respondToToolPermission(true))}
-                  onDeny={() => dispatch(respondToToolPermission(false))}
-                  onAllowAll={() => dispatch(respondToToolPermissionAndEnableAll())}
+                  onGrant={() =>
+                    dispatch(respondToToolPermission({ allowed: true, streamId: toolCallPermissionRequest.streamId }))
+                  }
+                  onDeny={() =>
+                    dispatch(respondToToolPermission({ allowed: false, streamId: toolCallPermissionRequest.streamId }))
+                  }
+                  onAllowAll={() => dispatch(respondToToolPermissionAndEnableAll(toolCallPermissionRequest.streamId))}
                 />
               )}
               {planClarificationRequest && (
                 <PlanClarificationPanel
                   request={planClarificationRequest}
-                  onSubmit={(answers: PlanClarificationAnswer[]) => dispatch(respondToPlanClarification(answers))}
-                  onCancel={() => dispatch(cancelPlanClarification())}
+                  onSubmit={(answers: PlanClarificationAnswer[]) =>
+                    dispatch(respondToPlanClarification({ answers, streamId: planClarificationRequest.streamId }))
+                  }
+                  onCancel={() => dispatch(cancelPlanClarification(planClarificationRequest.streamId))}
                 />
               )}
               {/* Todo List / Modified Files Display */}

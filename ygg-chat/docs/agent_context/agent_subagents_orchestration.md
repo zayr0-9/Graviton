@@ -136,6 +136,11 @@ Both entry paths now share the server-side `SubagentRunService`:
   Parent-chat `multi_call` batches may invoke `subagent` through the parent dispatcher;
   `multi_call` still rejects recursive `multi_call`, and `SubagentRunService` never
   receives the parent subagent dispatcher, so recursive agents remain impossible.
+- `subagent_manager.wait(handle)` verifies the same branch/conversation ownership
+  as `status`, then awaits the detached attempt's in-process completion promise
+  without polling. It re-reads SQLite before returning the canonical terminal
+  status/result. Aborting the parent releases only the waiter; it does not cancel
+  the child (that remains the explicit `cancel` action).
 - Parent operation mode, stream/message/tool-call lineage, root path, provider/model,
   abort signal, and auto-approve policy are forwarded. `orchestratorMode:true` uses
   the requested child tool names plus the always-required `multi_call` tool; otherwise
@@ -177,6 +182,10 @@ does not round-trip through the renderer or the unfinished `tool_request` bridge
   answer, and otherwise raises `ProviderEmptyResponseError`.
 - **Settings travel per request.** The caller composes the system prompt and selects
   tools; the server stores nothing between runs.
+- **Wait is lifecycle-backed, not timer-backed.** Manager `wait` shares the active
+  attempt's completion promise, supports multiple waiters, and has no default
+  timeout. Persisted terminal state remains authoritative; startup reconciliation
+  turns process-lost running rows into resumable errors.
 
 ## Testing and Validation
 

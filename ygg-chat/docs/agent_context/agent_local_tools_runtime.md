@@ -26,7 +26,7 @@ Use this when changing:
 - `client/ygg-chat-r/electron/headlessServer/services/multiCallExecutor.ts`: in-process `multi_call` composite dispatcher. Runs up to 20 validated leaf calls sequentially or with concurrency capped at 4, preserves result order, forwards abort/workspace context, and routes each nested call back through the caller's policy-aware executor. Recursive `multi_call`, `html_renderer`, and `plan_md` with `action:'display'` are rejected; `subagent` is permitted for parent-chat batches.
 - `client/ygg-chat-r/electron/headlessServer/services/toolLoopService.ts` (`ToolLoopService.run`): server-side agent loop; calls `this.executeTool(toolCall, ctx)` per tool call.
 - `client/ygg-chat-r/electron/headlessServer/services/chatOrchestrator.ts` (`createChatPausingExecutor`): per-run executor wrapper that pauses each tool call for permission/clarify before delegating to the base executor.
-- `client/ygg-chat-r/src/services/ToolJobManager.ts`: renderer client for the tool-jobs UI/background jobs (still live — `ToolJobsModal`, `useToolJobs`). No longer part of the main chat loop's tool-execution path.
+- `client/ygg-chat-r/src/services/ToolJobManager.ts`: renderer client for the tool-jobs UI/background jobs (still live — `ToolJobsModal`, `useToolJobs`). It subscribes first, reconciles `/jobs` after every subscription/reconnect, fetches active jobs independently of history pagination, and exposes acknowledged live status. It is not part of the main chat loop's execution path.
 - `client/ygg-chat-r/electron/tools/__tests__/*`: tool tests.
 - `client/ygg-chat-r/electron/tools/TEST_PLAN.md`: tool test plan.
 
@@ -60,6 +60,9 @@ Permission/clarify decisions are NOT renderer-owned pre-checks anymore. The loop
 - Large/model-only tool payloads use split channels: `displayContent`/`persistedContent` stay compact, while ephemeral `modelContent` is used only for the immediate provider continuation. Never persist `modelContent` in chat history, tool-job rows, hooks, or logs.
 - `view_image` returns compact path/MIME/size metadata for display and persistence, with exactly one typed `input_image` data URL in ephemeral `modelContent`.
 - Background jobs need status transitions: pending -> running -> completed/failed/cancelled.
+- Interactive decision state is keyed by `streamId` in Redux; concurrent branch runs must never overwrite another branch's permission/clarify/operation-mode correlation.
+- A duplicate resumable-run POST for an existing `streamId` must reattach to that `RunSession` instead of starting a replacement; explicit replacement callers must abort the old session before replacing it. Deleting without aborting creates an unreachable run that no UI, reaper, or Stop request can reach.
+- The Tool Jobs live badge means the WebSocket subscription was acknowledged, not merely that a socket object exists.
 
 ## Gotchas
 

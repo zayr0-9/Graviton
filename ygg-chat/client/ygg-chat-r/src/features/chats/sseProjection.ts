@@ -357,6 +357,7 @@ export function projectServerEvent(event: ServerStreamEvent, ctx: ProjectionCont
           ? [chatSliceActions.streamLineageUpdated({ streamId, lineageId } as any)]
           : []),
         chatSliceActions.streamCompleted({ streamId, messageId: (message as any)?.id, updatePath: true }),
+        chatSliceActions.decisionRequestsClearedForStream(streamId),
         // A completion the server badged with `providerError` finished, but not
         // cleanly. Record the envelope so a degraded run is distinguishable from a
         // good one instead of looking identical to it.
@@ -388,9 +389,13 @@ export function projectServerEvent(event: ServerStreamEvent, ctx: ProjectionCont
       // hanging — but a cancel must leave nothing red behind: no in-transcript error
       // chunk, and above all no durable record (which would outlive the run and offer
       // a "Try again" for something the user deliberately stopped).
-      if (envelope.code === 'cancelled') return []
+      if (envelope.code === 'cancelled') {
+        return terminal ? [chatSliceActions.decisionRequestsClearedForStream(streamId)] : []
+      }
 
-      const actions: ProjectedAction[] = []
+      const actions: ProjectedAction[] = terminal
+        ? [chatSliceActions.decisionRequestsClearedForStream(streamId)]
+        : []
 
       // A non-terminal failure never reaches the thunk catch (the stream does not
       // reject), so nothing else would ever show it. Emit it here, in order, with

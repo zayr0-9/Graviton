@@ -9,6 +9,14 @@ describe('subagent tool definition', () => {
     expect(subagent?.inputSchema.properties).not.toHaveProperty('model')
   })
 
+  it('exposes manager wait as a handle-scoped action', () => {
+    const manager = BUILTIN_TOOL_DEFINITIONS.find(tool => tool.name === 'subagent_manager')
+
+    expect(manager?.inputSchema.properties.action.enum).toContain('wait')
+    expect(manager?.inputSchema.properties.handle.description).toContain('wait')
+    expect(manager?.description).toContain('instead of repeatedly polling')
+  })
+
   it('no longer exposes the removed resume/session arguments', () => {
     const subagent = BUILTIN_TOOL_DEFINITIONS.find(tool => tool.name === 'subagent')
 

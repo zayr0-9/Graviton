@@ -33,6 +33,16 @@ export interface ToolBridgeDecision {
 }
 
 export type Decision = PermissionDecision | OperationModeUpgradeDecision | ClarifyDecision | ToolBridgeDecision
+export type DecisionKind = 'permission' | 'operation_mode_upgrade' | 'clarify' | 'tool_bridge' | 'any'
+
+function decisionMatchesKind(kind: DecisionKind, decision: Decision): boolean {
+  if (kind === 'any') return true
+  if (kind === 'permission') return decision === 'allow_once' || decision === 'allow_always' || decision === 'deny'
+  if (kind === 'operation_mode_upgrade') return decision === 'switch_to_execute' || decision === 'deny'
+  if (!decision || typeof decision !== 'object' || Array.isArray(decision)) return false
+  if (kind === 'clarify') return 'answers' in decision || 'cancelled' in decision
+  return 'result' in decision || 'error' in decision
+}
 
 export class DecisionAbortedError extends Error {
   constructor(message = 'Decision aborted') {
@@ -42,6 +52,7 @@ export class DecisionAbortedError extends Error {
 }
 
 interface PendingEntry {
+  kind: DecisionKind
   resolve: (decision: Decision) => void
   reject: (error: Error) => void
   cleanup: () => void
@@ -67,9 +78,10 @@ export class DecisionBroker {
   requestDecision<T extends Decision = Decision>(opts: {
     streamId: string
     toolCallId: string
+    kind?: DecisionKind
     signal?: AbortSignal
   }): Promise<T> {
-    const { streamId, toolCallId, signal } = opts
+    const { streamId, toolCallId, kind = 'any', signal } = opts
     const key = keyFor(streamId, toolCallId)
 
     return new Promise<T>((resolve, reject) => {
@@ -102,6 +114,7 @@ export class DecisionBroker {
       if (signal) signal.addEventListener('abort', onAbort, { once: true })
 
       this.pending.set(key, {
+        kind,
         resolve: decision => resolve(decision as T),
         reject,
         cleanup,
@@ -109,11 +122,11 @@ export class DecisionBroker {
     })
   }
 
-  /** Resolve a pending decision (called by POST /resume). Returns false if none matched. */
+  /** Resolve a pending decision (called by POST /resume). Returns false on no match or wrong decision kind. */
   resolve(streamId: string, toolCallId: string, decision: Decision): boolean {
     const key = keyFor(streamId, toolCallId)
     const entry = this.pending.get(key)
-    if (!entry) return false
+    if (!entry || !decisionMatchesKind(entry.kind, decision)) return false
     this.pending.delete(key)
     entry.cleanup()
     entry.resolve(decision)

@@ -84,6 +84,17 @@ class FakeRunRepo {
     return (this.messages.get(runId) || []).map(m => ({ ...m }))
   }
 
+  getRunByHandle(handle: string): any | null {
+    const row = [...this.runs.values()].find(run => run.handle === handle)
+    return row ? { ...row } : null
+  }
+
+  listByLineage(lineageId: string, status?: string): any[] {
+    return [...this.runs.values()]
+      .filter(run => run.lineage_id === lineageId && (!status || run.status === status))
+      .map(run => ({ ...run }))
+  }
+
   /** Compare-and-set reopen: only error|aborted -> running (bumps attempt). */
   reopenRun(runId: string): boolean {
     const row = this.runs.get(runId)
@@ -126,7 +137,7 @@ class FakeProviderRouter {
   async generate(provider: string, input: any): Promise<any> {
     this.calls.push({ provider, input })
     if (this.queued.length > 0) {
-      const next = this.queued.shift()
+      const next = await this.queued.shift()
       if (next instanceof Error) throw next
       return next
     }
@@ -189,6 +200,7 @@ function buildService(opts: {
   toolExecutor?: (toolCall: any, ctx: any) => Promise<any>
   resolveToolsByName?: (names: string[] | undefined) => ResolvedSubagentTools
   generateCompactionSummary?: (input: any) => Promise<string>
+  refreshProviderTokens?: (provider: string) => Promise<void> | void
   runSessions?: FakeRunSessionRegistry
 }): SubagentRunService {
   return new SubagentRunService({
@@ -197,6 +209,7 @@ function buildService(opts: {
     providerRouter: opts.providerRouter as unknown as ProviderRouter,
     toolExecutor: opts.toolExecutor ?? (async () => 'tool output'),
     resolveToolsByName: opts.resolveToolsByName ?? makeResolver(),
+    refreshProviderTokens: opts.refreshProviderTokens,
     compactionService: {
       generateCompactionSummary:
         opts.generateCompactionSummary ?? (async () => 'Following is summary of the session, you have to resume the work.\n\nsummary'),
@@ -501,6 +514,80 @@ describe('SubagentRunService', () => {
     expect(service.isActive(handle!)).toBe(false)
   })
 
+  it('waitForTerminal blocks without polling and supports multiple waiters', async () => {
+    const providerRouter = new FakeProviderRouter()
+    let releaseProvider!: (output: any) => void
+    providerRouter.enqueue(
+      new Promise(resolve => {
+        releaseProvider = resolve
+      })
+    )
+    const runRepo = new FakeRunRepo()
+    const service = buildService({
+      providerRouter,
+      runRepo,
+      streamingRunRepo: new FakeStreamingRunRepo(),
+    })
+
+    const { handle } = await service.spawnDetached(baseRequest())
+    const first = service.waitForTerminal(handle!)
+    const second = service.waitForTerminal(handle!)
+    let settled = false
+    void first.then(() => {
+      settled = true
+    })
+    await Promise.resolve()
+    expect(settled).toBe(false)
+
+    releaseProvider({ content: 'waited answer' })
+    const [firstRun, secondRun] = await Promise.all([first, second])
+    expect(firstRun).toMatchObject({ status: 'completed', final_response: 'waited answer' })
+    expect(secondRun).toMatchObject({ status: 'completed', final_response: 'waited answer' })
+    expect(service.isActive(handle!)).toBe(false)
+  })
+
+  it('aborting waitForTerminal does not cancel the detached child', async () => {
+    const providerRouter = new FakeProviderRouter()
+    let releaseProvider!: (output: any) => void
+    providerRouter.enqueue(
+      new Promise(resolve => {
+        releaseProvider = resolve
+      })
+    )
+    const runRepo = new FakeRunRepo()
+    const service = buildService({
+      providerRouter,
+      runRepo,
+      streamingRunRepo: new FakeStreamingRunRepo(),
+    })
+
+    const { handle } = await service.spawnDetached(baseRequest())
+    const waiterController = new AbortController()
+    const waiting = service.waitForTerminal(handle!, waiterController.signal)
+    waiterController.abort()
+    await expect(waiting).rejects.toMatchObject({ name: 'AbortError' })
+    expect(service.isActive(handle!)).toBe(true)
+
+    releaseProvider({ content: 'still completed' })
+    const terminal = await service.waitForTerminal(handle!)
+    expect(terminal).toMatchObject({ status: 'completed', final_response: 'still completed' })
+  })
+
+  it('waitForTerminal returns terminal rows immediately and fails fast for a running orphan', async () => {
+    const runRepo = new FakeRunRepo()
+    const service = buildService({
+      providerRouter: new FakeProviderRouter(),
+      runRepo,
+      streamingRunRepo: new FakeStreamingRunRepo(),
+    })
+    const completed = runRepo.createRun(baseRequest())
+    runRepo.updateRun(completed.id, { status: 'completed', finalResponse: 'done' })
+    await expect(service.waitForTerminal(completed.handle)).resolves.toMatchObject({ status: 'completed' })
+
+    const orphan = runRepo.createRun(baseRequest())
+    await expect(service.waitForTerminal(orphan.handle)).rejects.toThrow('no active runtime')
+  })
+
   it('cancel(handle) aborts a detached run that is still executing', async () => {
     const providerRouter = new FakeProviderRouter()
     providerRouter.enqueue({ content: '', toolCalls: [{ id: 'c1', name: 'read_file', arguments: {} }] })
@@ -645,6 +732,69 @@ describe('SubagentRunService', () => {
     // A fresh streaming row was opened for the resumed attempt.
     const lastUpsert = streamingRunRepo.upsertCalls[streamingRunRepo.upsertCalls.length - 1]
     expect(lastUpsert.metadata).toMatchObject({ subagent_run_id: runId, resumed: true })
+  })
+
+  it('lets waitForTerminal attach while a resumed attempt is still preparing', async () => {
+    const providerRouter = new FakeProviderRouter()
+    providerRouter.enqueue({ content: 'resumed after preparation' })
+    const runRepo = new FakeRunRepo()
+    let signalRefreshStarted!: () => void
+    const refreshStarted = new Promise<void>(resolve => {
+      signalRefreshStarted = resolve
+    })
+    let releaseRefresh!: () => void
+    const refreshGate = new Promise<void>(resolve => {
+      releaseRefresh = resolve
+    })
+    const service = buildService({
+      providerRouter,
+      runRepo,
+      streamingRunRepo: new FakeStreamingRunRepo(),
+      refreshProviderTokens: async () => {
+        signalRefreshStarted()
+        await refreshGate
+      },
+    })
+    const runId = seedTerminatedRun(runRepo)
+    const handle = runRepo.getRunById(runId)!.handle
+
+    const resuming = service.resumeDetached(runId, baseRequest())
+    await refreshStarted
+    expect(runRepo.getRunById(runId)?.status).toBe('running')
+    expect(service.isActive(handle)).toBe(true)
+
+    let settled = false
+    const waiting = service.waitForTerminal(handle).then(run => {
+      settled = true
+      return run
+    })
+    await Promise.resolve()
+    expect(settled).toBe(false)
+
+    releaseRefresh()
+    await resuming
+    await expect(waiting).resolves.toMatchObject({ status: 'completed', final_response: 'resumed after preparation' })
+  })
+
+  it('settles resume waiters and restores error state when preparation fails', async () => {
+    const runRepo = new FakeRunRepo()
+    const service = buildService({
+      providerRouter: new FakeProviderRouter(),
+      runRepo,
+      streamingRunRepo: new FakeStreamingRunRepo(),
+      resolveToolsByName: () => {
+        throw new Error('tool resolution failed')
+      },
+    })
+    const runId = seedTerminatedRun(runRepo)
+    const handle = runRepo.getRunById(runId)!.handle
+
+    await expect(service.resumeDetached(runId, baseRequest())).rejects.toThrow('tool resolution failed')
+    expect(service.isActive(handle)).toBe(false)
+    await expect(service.waitForTerminal(handle)).resolves.toMatchObject({
+      status: 'error',
+      error: 'tool resolution failed',
+    })
   })
 
   it('repairs a dangling tool_use before replay (synthesizes an is_error result, never re-executes)', async () => {

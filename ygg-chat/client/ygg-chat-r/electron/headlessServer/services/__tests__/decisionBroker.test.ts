@@ -13,6 +13,20 @@ describe('DecisionBroker', () => {
     expect(broker.hasPending('s1', 't1')).toBe(false)
   })
 
+  it('does not consume a pending decision when the resume payload has the wrong kind', async () => {
+    const broker = new DecisionBroker()
+    const permission = broker.requestDecision({
+      streamId: 's1',
+      toolCallId: 't1',
+      kind: 'permission',
+    })
+
+    expect(broker.resolve('s1', 't1', { answers: [] })).toBe(false)
+    expect(broker.hasPending('s1', 't1')).toBe(true)
+    expect(broker.resolve('s1', 't1', 'allow_once')).toBe(true)
+    await expect(permission).resolves.toBe('allow_once')
+  })
+
   it('resolve() returns false when there is no matching pending decision', () => {
     const broker = new DecisionBroker()
     expect(broker.resolve('nope', 'nope', 'deny')).toBe(false)

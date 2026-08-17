@@ -133,6 +133,8 @@ class FakeManagerRunner implements SubagentManagerRunner {
   private seq = 0
   cancelCalls: string[] = []
   resumeCalls: Array<{ runId: string; request: HeadlessSubagentStreamRequest }> = []
+  waitCalls: Array<{ handle: string; signal?: AbortSignal }> = []
+  private waiters = new Map<string, Array<(run: SubagentRunRow) => void>>()
 
   private makeRun(request: HeadlessSubagentStreamRequest, status: SubagentRunStatus, finalResponse: string | null): SubagentRunRow {
     const seq = ++this.seq
@@ -203,6 +205,33 @@ class FakeManagerRunner implements SubagentManagerRunner {
     return this.live.has(handle)
   }
 
+  async waitForTerminal(handle: string, signal?: AbortSignal): Promise<SubagentRunRow | null> {
+    this.waitCalls.push({ handle, signal })
+    const run = this.runs.get(handle)
+    if (!run || run.status !== 'running') return run ?? null
+    if (signal?.aborted) {
+      const error = new Error('Subagent wait aborted')
+      error.name = 'AbortError'
+      throw error
+    }
+    return new Promise<SubagentRunRow>((resolve, reject) => {
+      const onAbort = (): void => {
+        signal?.removeEventListener('abort', onAbort)
+        const error = new Error('Subagent wait aborted')
+        error.name = 'AbortError'
+        reject(error)
+      }
+      signal?.addEventListener('abort', onAbort, { once: true })
+      const settle = (terminal: SubagentRunRow): void => {
+        signal?.removeEventListener('abort', onAbort)
+        resolve(terminal)
+      }
+      const waiters = this.waiters.get(handle) ?? []
+      waiters.push(settle)
+      this.waiters.set(handle, waiters)
+    })
+  }
+
   getRunByHandle(handle: string): SubagentRunRow | null {
     return this.runs.get(handle) ?? null
   }
@@ -216,7 +245,12 @@ class FakeManagerRunner implements SubagentManagerRunner {
     const run = this.runs.get(handle)
     if (run) {
       run.status = status
+      if (status === 'completed') run.final_response = 'finished result'
+      if (status === 'error' || status === 'aborted') run.error = 'boom'
       this.live.delete(handle)
+      const waiters = this.waiters.get(handle) ?? []
+      this.waiters.delete(handle)
+      for (const settle of waiters) settle(run)
     }
   }
 }
@@ -307,6 +341,56 @@ describe('createSubagentManagerExecutor', () => {
     expect(status.subagent.handle).toBe(spawn.handle)
     expect(status.subagent.live).toBe(true)
     expect(status.subagent.resumable).toBe(false)
+  })
+
+  it('waits for an owned run and returns its terminal persisted view', async () => {
+    const runner = new FakeManagerRunner()
+    const execute = createSubagentManagerExecutor({ leafExecutor: vi.fn(), runner })
+    const controller = new AbortController()
+    const spawn: any = await execute(spawnCall({ action: 'spawn', prompt: 'p' }), context())
+
+    let settled = false
+    const waiting = execute(
+      spawnCall({ action: 'wait', handle: spawn.handle }),
+      context({ signal: controller.signal })
+    ).then(result => {
+      settled = true
+      return result as any
+    })
+    await Promise.resolve()
+    expect(settled).toBe(false)
+    expect(runner.waitCalls).toEqual([{ handle: spawn.handle, signal: controller.signal }])
+
+    runner.setStatus(spawn.handle, 'completed')
+    const result = await waiting
+    expect(result).toMatchObject({
+      action: 'wait',
+      found: true,
+      subagent: { handle: spawn.handle, status: 'completed', live: false, result: 'finished result' },
+    })
+  })
+
+  it('wait returns terminal runs immediately and preserves branch isolation', async () => {
+    const runner = new FakeManagerRunner()
+    const execute = createSubagentManagerExecutor({ leafExecutor: vi.fn(), runner })
+    const branchB = context({ lineageId: 'lin-B' })
+    const spawn: any = await execute(spawnCall({ action: 'spawn', prompt: 'p' }), branchB)
+    runner.setStatus(spawn.handle, 'error')
+
+    const owned: any = await execute(spawnCall({ action: 'wait', handle: spawn.handle }), branchB)
+    expect(owned.subagent).toMatchObject({ status: 'error', resumable: true, error: 'boom' })
+
+    const crossBranch: any = await execute(
+      spawnCall({ action: 'wait', handle: spawn.handle }),
+      context({ lineageId: 'lin-A' })
+    )
+    expect(crossBranch).toMatchObject({ action: 'wait', found: false })
+    expect(runner.waitCalls).toHaveLength(1)
+  })
+
+  it('requires a handle to wait', async () => {
+    const execute = createSubagentManagerExecutor({ leafExecutor: vi.fn(), runner: new FakeManagerRunner() })
+    await expect(execute(spawnCall({ action: 'wait' }), context())).rejects.toThrow('wait: a handle is required')
   })
 
   it('list filters by status and flags resumable terminal runs', async () => {
