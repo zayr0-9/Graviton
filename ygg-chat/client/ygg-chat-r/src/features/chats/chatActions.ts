@@ -56,7 +56,11 @@ import {
 import { loadAutoCompactionEnabled } from '../../helpers/chatUiSettingsStorage'
 import { getSubagentReasoningEffort } from '../../helpers/subagentToolSettings'
 import { loadLongTermMemoryContextEnabled } from '../../helpers/longTermMemorySettingsStorage'
-import { DEFAULT_COMPACTION_SYSTEM_PROMPT, loadProviderSettings } from '../../helpers/providerSettingsStorage'
+import {
+  DEFAULT_COMPACTION_SYSTEM_PROMPT,
+  loadProviderSettings,
+  resolveProviderContextLength,
+} from '../../helpers/providerSettingsStorage'
 import { updateToolEnabledState } from '../../helpers/toolSettingsStorage'
 import { generateStreamId, STREAM_PRUNE_DELAY } from './streamHelpers'
 import { createStreamingRun, finishStreamingRun } from './streamRunTracking'
@@ -185,12 +189,13 @@ const refreshHeimdallTreeFromState = (getState: () => RootState, dispatch: (acti
  * auto-compaction ran even when the user disabled it, and the trigger used a per-model
  * default window instead of the SELECTED model's context length. Sourced from the same
  * settings the manual compactBranch path uses (loadAutoCompactionEnabled + providerSettings).
- * contextLength comes from the selected model's cache entry. buildServerLoopRequest forwards
- * each field only-when-set, so a caller that can't resolve one keeps the server default.
+ * contextLength uses the global provider override for ChatGPT and selected-model metadata
+ * for every other provider. buildServerLoopRequest forwards each field only-when-set.
  */
 const buildCompactionRequestParams = (
   modelsData: { models?: Model[]; default?: Model; selected?: Model } | undefined,
-  modelName: string | undefined
+  modelName: string | undefined,
+  providerName: string
 ): {
   autoCompactionEnabled: boolean
   contextLength: number | undefined
@@ -203,7 +208,7 @@ const buildCompactionRequestParams = (
     modelsData?.models?.find(m => m.name === modelName) || modelsData?.selected || modelsData?.default || null
   return {
     autoCompactionEnabled: loadAutoCompactionEnabled(),
-    contextLength: model?.contextLength,
+    contextLength: resolveProviderContextLength(providerName, model?.contextLength, settings),
     compactionProvider: settings.compactionProvider,
     compactionModelName: settings.compactionModel,
     compactionSystemPrompt: settings.compactionSystemPrompt,
@@ -1615,7 +1620,7 @@ export const sendMessage = createAsyncThunk<
           accountId: chatgptServerAuth?.accountId,
           // Auto-compaction / context settings (previously dropped => server used defaults,
           // ignoring the user's disable toggle and the selected model's real context window).
-          ...buildCompactionRequestParams(modelsData, modelName),
+          ...buildCompactionRequestParams(modelsData, modelName, providerSlug),
         })
         const result = await runServerChatLoop(
           {
@@ -2038,7 +2043,7 @@ export const editMessageWithBranching = createAsyncThunk<
         modelsData?.selected ||
         modelsData?.default ||
         null
-      const branchContextLimit = resolvedModel?.contextLength || 128_000
+      const branchContextLimit = resolveProviderContextLength(providerSlug, resolvedModel?.contextLength) || 128_000
 
       let promptAndContextTokens = 0
       promptAndContextTokens += safeEstimateTokenCount(selectedProject?.system_prompt)
@@ -2204,7 +2209,7 @@ export const editMessageWithBranching = createAsyncThunk<
           accountId: chatgptServerAuth?.accountId,
           // Auto-compaction / context settings (previously dropped => server used defaults,
           // ignoring the user's disable toggle and the selected model's real context window).
-          ...buildCompactionRequestParams(modelsData, modelName),
+          ...buildCompactionRequestParams(modelsData, modelName, providerSlug),
         })
         const result = await runServerChatLoop(
           {
@@ -2453,7 +2458,7 @@ export const sendMessageToBranch = createAsyncThunk<
           accountId: chatgptServerAuth?.accountId,
           // Auto-compaction / context settings (previously dropped => server used defaults,
           // ignoring the user's disable toggle and the selected model's real context window).
-          ...buildCompactionRequestParams(modelsData, modelName),
+          ...buildCompactionRequestParams(modelsData, modelName, providerSlug),
         })
         const result = await runServerChatLoop(
           {

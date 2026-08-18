@@ -3558,7 +3558,12 @@ function setupServer() {
 
   // GET /api/openai/models - Get available ChatGPT models
   app.get('/api/openai/models', (_req, res) => {
-    // Return hardcoded list of ChatGPT models available with Plus/Pro subscription
+    // Return hardcoded model capabilities with the user's global ChatGPT context override.
+    const configuredContextLength = Number(process.env.YGG_OPENAI_CHATGPT_MAX_CONTEXT_TOKENS)
+    const globalContextLength =
+      Number.isFinite(configuredContextLength) && configuredContextLength > 0
+        ? Math.max(1_000, Math.min(2_000_000, Math.floor(configuredContextLength)))
+        : 258_000
     const models = [
       {
         id: 'gpt-5.5',
@@ -3621,8 +3626,9 @@ function setupServer() {
     res.json({
       models: models.map(m => ({
         ...m,
+        contextLength: globalContextLength,
         version: 'chatgpt',
-        inputTokenLimit: m.contextLength,
+        inputTokenLimit: globalContextLength,
         outputTokenLimit: m.maxCompletionTokens,
         promptCost: 0,
         completionCost: 0,

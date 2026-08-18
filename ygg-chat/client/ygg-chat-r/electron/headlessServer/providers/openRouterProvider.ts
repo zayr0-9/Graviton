@@ -55,6 +55,8 @@ export interface ProviderGenerateInput {
   tools?: ProviderToolDefinition[]
   think?: boolean
   temperature?: number
+  /** Effective context-window limit for this generation. Used by ChatGPT diagnostics and loop compaction. */
+  contextLength?: number
   railwayTurn?: ProviderRailwayTurnInput | null
   signal?: AbortSignal
 }

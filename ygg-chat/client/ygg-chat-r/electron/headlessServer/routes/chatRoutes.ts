@@ -188,9 +188,9 @@ function buildHeadlessMessageRequest(req: Request, operation: HeadlessChatOperat
     localApiBase: body.localApiBase ?? body.local_api_base ?? null,
     // Auto-compaction / context settings. Previously DROPPED here, so the orchestrator
     // received undefined and the server applied its defaults (autoCompactionEnabled ?? true;
-    // contextLength ?? openAIModelContextLength(model); thresholdPercent ?? 85) — ignoring the
-    // user's disable toggle, threshold, and the selected model's real window. Parsed
-    // undefined-safe so the mobile LAN UI / subagents (which omit them) keep the defaults.
+    // contextLength is resolved again by ProviderRouter: ChatGPT always uses the global
+    // provider override mirrored into the Electron process; other providers retain the
+    // selected model value. Parsed undefined-safe for mobile/direct callers.
     autoCompactionEnabled:
       typeof body.autoCompactionEnabled === 'boolean'
         ? body.autoCompactionEnabled

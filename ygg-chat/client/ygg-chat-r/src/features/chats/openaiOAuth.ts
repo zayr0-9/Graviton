@@ -2,6 +2,8 @@
 // Uses OpenAI's official OAuth flow (same as Codex CLI)
 // For personal use with ChatGPT Plus/Pro subscriptions
 
+import { loadProviderSettings } from '../../helpers/providerSettingsStorage'
+
 // OAuth Configuration (from OpenAI Codex CLI)
 export const OPENAI_CLIENT_ID = 'app_EMoamEEZ73f0CkXaXp7hrann'
 export const OPENAI_AUTHORIZE_URL = 'https://auth.openai.com/oauth/authorize'
@@ -751,15 +753,16 @@ export const CHATGPT_MODELS = [
 
 // Get models list formatted for the app
 export function getOpenAIChatGPTModels() {
+  const globalContextLength = loadProviderSettings().openAiChatGptMaxContextTokens
   return CHATGPT_MODELS.map(m => ({
     id: m.id,
     name: m.name,
     displayName: m.displayName,
     version: 'chatgpt',
     description: m.description,
-    contextLength: m.contextLength,
+    contextLength: globalContextLength,
     maxCompletionTokens: m.maxCompletionTokens,
-    inputTokenLimit: m.contextLength,
+    inputTokenLimit: globalContextLength,
     outputTokenLimit: m.maxCompletionTokens,
     promptCost: 0,
     completionCost: 0,

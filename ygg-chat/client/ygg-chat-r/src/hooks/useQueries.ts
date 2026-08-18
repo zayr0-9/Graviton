@@ -33,6 +33,7 @@ import {
   USER_SYSTEM_PROMPTS_STORAGE_CHANGE_EVENT,
   type UserSystemPromptStorageMode,
 } from '../helpers/userSystemPromptStorage'
+import { PROVIDER_SETTINGS_CHANGE_EVENT } from '../helpers/providerSettingsStorage'
 import { cloudApi, environment, gwApi, localApi } from '../utils/api'
 import { getFavoritedModels } from '../utils/favorites'
 import { useAuth } from './useAuth'
@@ -641,6 +642,19 @@ const getStoredSelectedModel = (): Model | null => {
  */
 export function useModels(provider: string | null) {
   const { accessToken } = useAuth()
+  const queryClient = useQueryClient()
+
+  useEffect(() => {
+    if (!provider) return
+    const normalized = provider.trim().toLowerCase().replace(/\s+/g, '')
+    if (normalized !== 'openai(chatgpt)' && normalized !== 'openaichatgpt' && normalized !== 'openai') return
+
+    const handleProviderSettingsChange = () => {
+      void queryClient.invalidateQueries({ queryKey: ['models', provider] })
+    }
+    window.addEventListener(PROVIDER_SETTINGS_CHANGE_EVENT, handleProviderSettingsChange)
+    return () => window.removeEventListener(PROVIDER_SETTINGS_CHANGE_EVENT, handleProviderSettingsChange)
+  }, [provider, queryClient])
 
   return useQuery({
     queryKey: ['models', provider],

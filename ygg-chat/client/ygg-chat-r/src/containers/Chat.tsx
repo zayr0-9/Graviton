@@ -190,6 +190,7 @@ import {
   loadProviderSettings,
   PROVIDER_SETTINGS_CHANGE_EVENT,
   ProviderSettings,
+  resolveProviderContextLength,
 } from '../helpers/providerSettingsStorage'
 import { isOrchestratorEnabled, toggleOrchestratorEnabled } from '../helpers/subagentToolSettings'
 import {
@@ -5273,7 +5274,8 @@ function Chat() {
               })
               const totalContextTokens = resolvedContext.effectiveTokens
               const usdValue = (currentUser?.cached_current_credits ?? 0) / 100
-              const totalContextLimit = selectedModel?.contextLength || 128_000
+              const totalContextLimit =
+                resolveProviderContextLength(providers.currentProvider, selectedModel?.contextLength, providerSettings) || 128_000
               const promptCostPer1K = selectedModel?.promptCost ?? 0
               const completionCostPer1K = selectedModel?.completionCost ?? 0
 
@@ -6509,7 +6511,8 @@ function Chat() {
     const usdValue = current_credits / 100 // Convert credits to USD
 
     // Model context limit.
-    const totalContextLimit = selectedModel?.contextLength || 128_000
+    const totalContextLimit =
+      resolveProviderContextLength(providers.currentProvider, selectedModel?.contextLength, providerSettings) || 128_000
 
     // Cost is per 1K tokens: cost = (tokens / 1000) * costPer1K
     // So: tokens = (usd * 1000) / costPer1K
@@ -6531,7 +6534,14 @@ function Chat() {
     const totalBudget = Math.max(0, Math.min(totalContextLimit, creditInputLimit, creditOutputLimit))
 
     return { totalBudget, totalContextLimit }
-  }, [selectedModel?.promptCost, selectedModel?.completionCost, selectedModel?.contextLength, current_credits])
+  }, [
+    selectedModel?.promptCost,
+    selectedModel?.completionCost,
+    selectedModel?.contextLength,
+    providers.currentProvider,
+    providerSettings.openAiChatGptMaxContextTokens,
+    current_credits,
+  ])
 
   // Calculate progress percentages.
   const totalContextProgress =

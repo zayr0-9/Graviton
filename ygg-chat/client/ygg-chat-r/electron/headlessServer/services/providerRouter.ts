@@ -1,7 +1,10 @@
 import { HyperRouterBedrockProvider } from '../providers/hyperRouterBedrockProvider.js'
 import { HyperRouterZaiProvider } from '../providers/hyperRouterZaiProvider.js'
 import { LmStudioProvider } from '../providers/lmStudioProvider.js'
-import { OpenAiChatgptProvider } from '../providers/openaiChatgptProvider.js'
+import {
+  OpenAiChatgptProvider,
+  resolveOpenAIChatGPTContextLength,
+} from '../providers/openaiChatgptProvider.js'
 import {
   OpenRouterProvider,
   type HeadlessProvider,
@@ -52,6 +55,13 @@ export class ProviderRouter {
       zai: new HyperRouterZaiProvider({ tokenStore: deps.tokenStore }),
       bedrock: new HyperRouterBedrockProvider({ tokenStore: deps.tokenStore }),
     }
+  }
+
+  resolveContextLength(providerName: string, requestedContextLength: number | undefined): number | undefined {
+    if (normalizeProviderRoute(providerName) === 'openaichatgpt') {
+      return resolveOpenAIChatGPTContextLength(requestedContextLength)
+    }
+    return requestedContextLength
   }
 
   async generate(

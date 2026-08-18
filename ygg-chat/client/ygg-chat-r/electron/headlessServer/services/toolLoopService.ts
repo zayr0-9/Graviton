@@ -737,8 +737,17 @@ export class ToolLoopService {
   }): Promise<ProviderGenerateOutput> {
     const { input, emit, turn, maxTurns } = params
     const providerRoute = normalizeProviderRoute(input.provider)
+    const routerWithContextResolver = this.providerRouter as ProviderRouter & {
+      resolveContextLength?: (providerName: string, requestedContextLength: number | undefined) => number | undefined
+    }
+    const resolvedContextLength =
+      typeof routerWithContextResolver.resolveContextLength === 'function'
+        ? routerWithContextResolver.resolveContextLength(input.provider, input.contextLength)
+        : input.contextLength
+
     const providerInput: ProviderGenerateInput = {
       modelName: input.modelName,
+      contextLength: resolvedContextLength,
       systemPrompt: params.systemPromptOverride !== undefined ? params.systemPromptOverride : (input.systemPrompt ?? null),
       history: params.history,
       userContent: params.userContent,
@@ -1454,11 +1463,17 @@ export class ToolLoopService {
       currentUserContent = ''
 
       const reportedUsage = output.contextUsage ?? usageFromMessage(lastAssistantMessage)
+      const routerWithContextResolver = this.providerRouter as ProviderRouter & {
+        resolveContextLength?: (providerName: string, requestedContextLength: number | undefined) => number | undefined
+      }
       const compactionDecision = resolveOpenAIContinuationCompaction({
         providerName: input.provider,
         reportedUsage,
         projectedTokens: projectedReplayTokens(input, history),
-        contextLength: input.contextLength ?? openAIModelContextLength(input.modelName),
+        contextLength:
+          (typeof routerWithContextResolver.resolveContextLength === 'function'
+            ? routerWithContextResolver.resolveContextLength(input.provider, input.contextLength)
+            : input.contextLength) ?? openAIModelContextLength(input.modelName),
         enabled: input.autoCompactionEnabled ?? true,
         thresholdPercent: input.compactionThresholdPercent,
       })

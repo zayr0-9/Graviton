@@ -18,6 +18,17 @@ describe('provider routing', () => {
     expect(normalizeProviderRoute('unknown-provider')).toBe('openaichatgpt')
   })
 
+  it('applies the global context override only to ChatGPT routes', () => {
+    process.env.YGG_OPENAI_CHATGPT_MAX_CONTEXT_TOKENS = '123000'
+    const router = new ProviderRouter()
+
+    expect(router.resolveContextLength('OpenAI (ChatGPT)', 96_000)).toBe(96_000)
+    expect(router.resolveContextLength('openaichatgpt', undefined)).toBe(123_000)
+    expect(router.resolveContextLength('openrouter', 200_000)).toBe(200_000)
+    expect(router.resolveContextLength('lmstudio', 32_000)).toBe(32_000)
+    delete process.env.YGG_OPENAI_CHATGPT_MAX_CONTEXT_TOKENS
+  })
+
   it('routes openrouter and lmstudio through provider implementations', async () => {
     const router = new ProviderRouter()
 

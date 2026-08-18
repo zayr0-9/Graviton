@@ -97,10 +97,14 @@ import {
 } from '../helpers/planModeResponseSettingsStorage'
 import {
   DEFAULT_LMSTUDIO_BASE_URL,
+  DEFAULT_OPENAI_CHATGPT_MAX_CONTEXT_TOKENS,
   loadProviderSettings,
+  MAX_OPENAI_CHATGPT_MAX_CONTEXT_TOKENS,
   MAX_OPENROUTER_TEMPERATURE,
+  MIN_OPENAI_CHATGPT_MAX_CONTEXT_TOKENS,
   MIN_OPENROUTER_TEMPERATURE,
   normalizeLmStudioBaseUrl,
+  normalizeOpenAiChatGptMaxContextTokens,
   PROVIDER_SETTINGS_CHANGE_EVENT,
   ProviderSettings,
   saveProviderSettings,
@@ -384,6 +388,10 @@ const Settings: React.FC = () => {
     return typeof configured === 'number' ? String(configured) : ''
   })
   const [openRouterTemperatureTouched, setOpenRouterTemperatureTouched] = useState(false)
+  const [openAiChatGptMaxContextInput, setOpenAiChatGptMaxContextInput] = useState<string>(() =>
+    String(loadProviderSettings().openAiChatGptMaxContextTokens)
+  )
+  const [openAiChatGptMaxContextTouched, setOpenAiChatGptMaxContextTouched] = useState(false)
   const [lmStudioBaseUrlInput, setLmStudioBaseUrlInput] = useState<string>(() => loadProviderSettings().lmStudioBaseUrl ?? '')
   const [lmStudioBaseUrlTouched, setLmStudioBaseUrlTouched] = useState(false)
   const [memoryBackfillRunning, setMemoryBackfillRunning] = useState(false)
@@ -730,6 +738,11 @@ const Settings: React.FC = () => {
     const configured = providerSettings.openRouterTemperature
     setOpenRouterTemperatureInput(typeof configured === 'number' ? String(configured) : '')
   }, [providerSettings.openRouterTemperature, openRouterTemperatureTouched])
+
+  useEffect(() => {
+    if (openAiChatGptMaxContextTouched) return
+    setOpenAiChatGptMaxContextInput(String(providerSettings.openAiChatGptMaxContextTokens))
+  }, [providerSettings.openAiChatGptMaxContextTokens, openAiChatGptMaxContextTouched])
 
   useEffect(() => {
     if (lmStudioBaseUrlTouched) return
@@ -1386,6 +1399,41 @@ const Settings: React.FC = () => {
     }
 
     showStatus({ type: 'success', text: 'OpenRouter temperature updated.' })
+  }
+
+  const handleOpenAiChatGptMaxContextInputChange = (value: string) => {
+    setOpenAiChatGptMaxContextInput(value)
+    setOpenAiChatGptMaxContextTouched(true)
+  }
+
+  const commitOpenAiChatGptMaxContextChange = (value: string) => {
+    const parsed = Number(value)
+    if (!Number.isFinite(parsed) || parsed <= 0) {
+      setOpenAiChatGptMaxContextTouched(false)
+      setOpenAiChatGptMaxContextInput(String(providerSettings.openAiChatGptMaxContextTokens))
+      showStatus({ type: 'error', text: 'ChatGPT max context must be a positive number of tokens.' })
+      return
+    }
+
+    const normalized = normalizeOpenAiChatGptMaxContextTokens(parsed)
+    const updated = {
+      ...providerSettings,
+      openAiChatGptMaxContextTokens: normalized,
+    }
+    saveProviderSettings(updated)
+    setProviderSettings(updated)
+    setOpenAiChatGptMaxContextTouched(false)
+    setOpenAiChatGptMaxContextInput(String(normalized))
+
+    if (normalized !== Math.floor(parsed)) {
+      showStatus({
+        type: 'info',
+        text: `ChatGPT max context adjusted to ${normalized.toLocaleString()} tokens (allowed range ${MIN_OPENAI_CHATGPT_MAX_CONTEXT_TOKENS.toLocaleString()}-${MAX_OPENAI_CHATGPT_MAX_CONTEXT_TOKENS.toLocaleString()}).`,
+      })
+      return
+    }
+
+    showStatus({ type: 'success', text: `ChatGPT max context updated to ${normalized.toLocaleString()} tokens.` })
   }
 
   const handleLmStudioBaseUrlInputChange = (value: string) => {
@@ -2737,7 +2785,7 @@ const Settings: React.FC = () => {
           <SettingsSection
             title='Provider Settings'
             description='Configure how providers appear in the chat interface.'
-            features={['Provider selector', 'Default provider', 'Auto-compaction provider', 'LM Studio URL', 'Provider credentials', 'ChatGPT OAuth']}
+            features={['Provider selector', 'Default provider', 'ChatGPT max context', 'Auto-compaction provider', 'LM Studio URL', 'Provider credentials', 'ChatGPT OAuth']}
           >
             <div className='flex flex-col gap-4'>
               {/* Visibility Toggle */}
@@ -2822,6 +2870,45 @@ const Settings: React.FC = () => {
                   </Button>
                 </div>
               </div>
+              <div className='flex flex-col gap-2 pt-2'>
+                <div>
+                  <p className='text-base font-medium text-stone-900 dark:text-stone-100'>ChatGPT Max Context Tokens</p>
+                  <p className='text-sm text-stone-500 dark:text-stone-400'>
+                    Global context-window limit for all OpenAI (ChatGPT) models. This also controls their token meter and 85% auto-compaction boundary.
+                  </p>
+                </div>
+                <div className='flex flex-wrap items-center gap-2'>
+                  <input
+                    type='number'
+                    min={MIN_OPENAI_CHATGPT_MAX_CONTEXT_TOKENS}
+                    max={MAX_OPENAI_CHATGPT_MAX_CONTEXT_TOKENS}
+                    step={1000}
+                    value={openAiChatGptMaxContextInput}
+                    onChange={e => handleOpenAiChatGptMaxContextInputChange(e.target.value)}
+                    onBlur={e => commitOpenAiChatGptMaxContextChange(e.target.value)}
+                    onKeyDown={e => {
+                      if (e.key === 'Enter') {
+                        e.currentTarget.blur()
+                      }
+                    }}
+                    className={`w-48 ${settingsInputClass}`}
+                  />
+                  {providerSettings.openAiChatGptMaxContextTokens !== DEFAULT_OPENAI_CHATGPT_MAX_CONTEXT_TOKENS && (
+                    <Button
+                      variant='outline2'
+                      size='small'
+                      onClick={() => commitOpenAiChatGptMaxContextChange(String(DEFAULT_OPENAI_CHATGPT_MAX_CONTEXT_TOKENS))}
+                      className='h-[36px]'
+                    >
+                      Reset
+                    </Button>
+                  )}
+                </div>
+                <p className='text-xs text-stone-500 dark:text-stone-400'>
+                  Default: {DEFAULT_OPENAI_CHATGPT_MAX_CONTEXT_TOKENS.toLocaleString()} tokens. ChatGPT models only; other providers keep their model-specific limits.
+                </p>
+              </div>
+
               <div className='flex flex-col gap-2 pt-2 pt-2'>
                 <div>
                   <p className='text-base font-medium text-stone-900 dark:text-stone-100'>Auto-Compaction Provider</p>

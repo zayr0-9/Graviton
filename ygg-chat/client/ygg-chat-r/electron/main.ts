@@ -575,6 +575,21 @@ function syncLmStudioBaseUrlFromStore(): void {
   delete process.env.LMSTUDIO_BASE_URL
 }
 
+function syncOpenAiChatGptMaxContextFromStore(): void {
+  try {
+    const providerSettings = getFromStore('ygg_provider_settings')
+    const rawValue = providerSettings?.openAiChatGptMaxContextTokens
+    if (typeof rawValue === 'number' && Number.isFinite(rawValue) && rawValue > 0) {
+      process.env.YGG_OPENAI_CHATGPT_MAX_CONTEXT_TOKENS = String(Math.floor(rawValue))
+      return
+    }
+  } catch (error) {
+    console.error('[Electron] Failed to sync ChatGPT max context from storage:', error)
+  }
+
+  delete process.env.YGG_OPENAI_CHATGPT_MAX_CONTEXT_TOKENS
+}
+
 function getOpenAiPromptCacheRetentionFromStore(): 'in_memory' | '24h' {
   try {
     const providerSettings = getFromStore('ygg_provider_settings')
@@ -1013,6 +1028,7 @@ app.whenReady().then(async () => {
   try {
     await initializeStore()
     syncLmStudioBaseUrlFromStore()
+    syncOpenAiChatGptMaxContextFromStore()
     process.env.YGG_APP_USER_DATA = app.getPath('userData')
     const managedHooksDirectory = await ensureManagedHooksInitialized()
     console.log(`[Electron] Managed hooks directory ready at: ${managedHooksDirectory}`)
@@ -1208,6 +1224,7 @@ ipcMain.handle('storage:set', async (_event, key: string, value: any) => {
       const success = deleteFromStore(key)
       if (key === 'ygg_provider_settings') {
         syncLmStudioBaseUrlFromStore()
+        syncOpenAiChatGptMaxContextFromStore()
       }
       // console.log('[Electron IPC] Deleted key from storage')
       return { success }
@@ -1215,6 +1232,7 @@ ipcMain.handle('storage:set', async (_event, key: string, value: any) => {
       const success = setInStore(key, value)
       if (key === 'ygg_provider_settings') {
         syncLmStudioBaseUrlFromStore()
+        syncOpenAiChatGptMaxContextFromStore()
       }
       // console.log('[Electron IPC] Stored successfully')
       return { success }
@@ -1237,6 +1255,7 @@ ipcMain.handle('storage:clear', async () => {
   try {
     const success = clearStore()
     syncLmStudioBaseUrlFromStore()
+    syncOpenAiChatGptMaxContextFromStore()
     return { success }
   } catch (error) {
     console.error('[Electron IPC] Failed to clear storage:', error)

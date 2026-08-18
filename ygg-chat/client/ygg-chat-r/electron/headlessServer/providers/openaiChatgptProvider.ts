@@ -29,6 +29,23 @@ interface ResolvedAuth {
   accountId: string
 }
 
+export const DEFAULT_OPENAI_CHATGPT_CONTEXT_LENGTH = 258_000
+export const MIN_OPENAI_CHATGPT_CONTEXT_LENGTH = 1_000
+export const MAX_OPENAI_CHATGPT_CONTEXT_LENGTH = 2_000_000
+
+export function resolveOpenAIChatGPTContextLength(configuredValue?: unknown): number {
+  const storedGlobalValue = Number(process.env.YGG_OPENAI_CHATGPT_MAX_CONTEXT_TOKENS)
+  const candidate =
+    typeof configuredValue === 'number' && Number.isFinite(configuredValue) && configuredValue > 0
+      ? configuredValue
+      : Number.isFinite(storedGlobalValue) && storedGlobalValue > 0
+        ? storedGlobalValue
+        : DEFAULT_OPENAI_CHATGPT_CONTEXT_LENGTH
+
+  if (!Number.isFinite(candidate) || candidate <= 0) return DEFAULT_OPENAI_CHATGPT_CONTEXT_LENGTH
+  return Math.max(MIN_OPENAI_CHATGPT_CONTEXT_LENGTH, Math.min(MAX_OPENAI_CHATGPT_CONTEXT_LENGTH, Math.floor(candidate)))
+}
+
 interface RefreshedTokenPayload {
   accessToken: string
   refreshToken: string
@@ -2153,10 +2170,12 @@ export class OpenAiChatgptProvider implements HeadlessProvider {
       historyItems: Array.isArray(input.history) ? input.history.length : 0,
       toolDefinitions: Array.isArray(input.tools) ? input.tools.length : 0,
       hasUserContent: typeof input.userContent === 'string' && input.userContent.length > 0,
+      contextLength: resolveOpenAIChatGPTContextLength(input.contextLength),
     })
 
     const auth = await this.resolveAuth(input)
     const model = normalizeOpenAIChatGPTModel(input.modelName)
+    const contextLength = resolveOpenAIChatGPTContextLength(input.contextLength)
     const sessionId = input.railwayTurn?.conversationId?.trim() || traceId
     const requestId = (input.railwayTurn as any)?.runId?.trim?.() || sessionId
     const messages = toCodexMessages(input)
@@ -2256,6 +2275,7 @@ export class OpenAiChatgptProvider implements HeadlessProvider {
         usage: parsed.usage,
         request_shape: parsed.diagnostics,
         generatedImagesDirectoryHint: getGeneratedImagesDirectoryHint(),
+        context_length_limit: contextLength,
       },
     }
 

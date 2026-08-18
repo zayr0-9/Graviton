@@ -7,6 +7,9 @@ const STORAGE_KEY = 'ygg_provider_settings'
 export const PROVIDER_SETTINGS_CHANGE_EVENT = 'ygg-provider-settings-change'
 export const MIN_OPENROUTER_TEMPERATURE = 0
 export const MAX_OPENROUTER_TEMPERATURE = 2
+export const DEFAULT_OPENAI_CHATGPT_MAX_CONTEXT_TOKENS = 258_000
+export const MIN_OPENAI_CHATGPT_MAX_CONTEXT_TOKENS = 1_000
+export const MAX_OPENAI_CHATGPT_MAX_CONTEXT_TOKENS = 2_000_000
 export const DEFAULT_COMPACTION_SYSTEM_PROMPT =
   'You compact chat history. Return detailed markdown that preserves goals, hard requirements, key facts, decisions, pending tasks, and unresolved questions. Do not include tool protocol chatter, but include general context around changes made instead. Include full absolute paths of files touched/edited, and brief summary of what changed.'
 export const DEFAULT_LMSTUDIO_BASE_URL = import.meta.env.VITE_LMSTUDIO_BASE || 'http://172.31.32.1:1234'
@@ -28,6 +31,8 @@ export interface ProviderSettings {
   compactionSystemPrompt: string
   /** Optional LM Studio server base URL override. Null = use app default. */
   lmStudioBaseUrl: string | null
+  /** Global context-window limit used by every OpenAI (ChatGPT) model and its auto-compaction threshold. */
+  openAiChatGptMaxContextTokens: number
   /** OpenAI Responses API prompt cache retention policy. */
   openAiPromptCacheRetention: OpenAIPromptCacheRetention
 }
@@ -40,6 +45,7 @@ const DEFAULT_SETTINGS: ProviderSettings = {
   compactionModel: null,
   compactionSystemPrompt: DEFAULT_COMPACTION_SYSTEM_PROMPT,
   lmStudioBaseUrl: null,
+  openAiChatGptMaxContextTokens: DEFAULT_OPENAI_CHATGPT_MAX_CONTEXT_TOKENS,
   openAiPromptCacheRetention: 'in_memory',
 }
 
@@ -57,6 +63,37 @@ function normalizeCompactionSystemPrompt(value: unknown): string {
   if (typeof value !== 'string') return DEFAULT_COMPACTION_SYSTEM_PROMPT
   const trimmed = value.trim()
   return trimmed.length > 0 ? trimmed : DEFAULT_COMPACTION_SYSTEM_PROMPT
+}
+
+export function normalizeOpenAiChatGptMaxContextTokens(value: unknown): number {
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    return DEFAULT_OPENAI_CHATGPT_MAX_CONTEXT_TOKENS
+  }
+
+  return Math.max(
+    MIN_OPENAI_CHATGPT_MAX_CONTEXT_TOKENS,
+    Math.min(MAX_OPENAI_CHATGPT_MAX_CONTEXT_TOKENS, Math.floor(value))
+  )
+}
+
+export function isOpenAIChatGPTProviderName(providerName: unknown): boolean {
+  if (typeof providerName !== 'string') return false
+  const normalized = providerName.trim().toLowerCase().replace(/\s+/g, '')
+  return normalized === 'openai' || normalized === 'openaichatgpt' || normalized === 'openai(chatgpt)'
+}
+
+export function resolveProviderContextLength(
+  providerName: unknown,
+  modelContextLength: number | null | undefined,
+  settings: ProviderSettings = loadProviderSettings()
+): number | undefined {
+  if (isOpenAIChatGPTProviderName(providerName)) {
+    return normalizeOpenAiChatGptMaxContextTokens(settings.openAiChatGptMaxContextTokens)
+  }
+
+  return typeof modelContextLength === 'number' && Number.isFinite(modelContextLength) && modelContextLength > 0
+    ? modelContextLength
+    : undefined
 }
 
 function normalizeOpenAiPromptCacheRetention(value: unknown): OpenAIPromptCacheRetention {
@@ -121,6 +158,7 @@ export function loadProviderSettings(): ProviderSettings {
       compactionModel: parsed.compactionModel ?? DEFAULT_SETTINGS.compactionModel,
       compactionSystemPrompt: normalizeCompactionSystemPrompt(parsed.compactionSystemPrompt),
       lmStudioBaseUrl: normalizeLmStudioBaseUrl(parsed.lmStudioBaseUrl),
+      openAiChatGptMaxContextTokens: normalizeOpenAiChatGptMaxContextTokens(parsed.openAiChatGptMaxContextTokens),
       openAiPromptCacheRetention: normalizeOpenAiPromptCacheRetention(parsed.openAiPromptCacheRetention),
     }
   } catch {
@@ -140,6 +178,7 @@ export function saveProviderSettings(settings: ProviderSettings): void {
     openRouterTemperature: normalizeOpenRouterTemperature(settings.openRouterTemperature),
     compactionSystemPrompt: normalizeCompactionSystemPrompt(settings.compactionSystemPrompt),
     lmStudioBaseUrl: normalizeLmStudioBaseUrl(settings.lmStudioBaseUrl),
+    openAiChatGptMaxContextTokens: normalizeOpenAiChatGptMaxContextTokens(settings.openAiChatGptMaxContextTokens),
     openAiPromptCacheRetention: normalizeOpenAiPromptCacheRetention(settings.openAiPromptCacheRetention),
   }
 

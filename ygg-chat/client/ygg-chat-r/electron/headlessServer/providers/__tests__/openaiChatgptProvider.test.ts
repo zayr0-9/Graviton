@@ -1,5 +1,10 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { OpenAiChatgptProvider, normalizeOpenAIChatGPTModel } from '../openaiChatgptProvider.js'
+import {
+  DEFAULT_OPENAI_CHATGPT_CONTEXT_LENGTH,
+  OpenAiChatgptProvider,
+  normalizeOpenAIChatGPTModel,
+  resolveOpenAIChatGPTContextLength,
+} from '../openaiChatgptProvider.js'
 
 function createSseStream(events: any[]) {
   const encoder = new TextEncoder()
@@ -15,6 +20,21 @@ function createSseStream(events: any[]) {
 }
 
 describe('OpenAiChatgptProvider', () => {
+  it('resolves the global ChatGPT context override with defaults and bounds', () => {
+    delete process.env.YGG_OPENAI_CHATGPT_MAX_CONTEXT_TOKENS
+    expect(resolveOpenAIChatGPTContextLength()).toBe(DEFAULT_OPENAI_CHATGPT_CONTEXT_LENGTH)
+    expect(resolveOpenAIChatGPTContextLength(64_000)).toBe(64_000)
+
+    process.env.YGG_OPENAI_CHATGPT_MAX_CONTEXT_TOKENS = '96000'
+    expect(resolveOpenAIChatGPTContextLength()).toBe(96_000)
+    expect(resolveOpenAIChatGPTContextLength(64_000)).toBe(64_000)
+
+    process.env.YGG_OPENAI_CHATGPT_MAX_CONTEXT_TOKENS = '100'
+    expect(resolveOpenAIChatGPTContextLength()).toBe(1_000)
+    process.env.YGG_OPENAI_CHATGPT_MAX_CONTEXT_TOKENS = '9999999'
+    expect(resolveOpenAIChatGPTContextLength()).toBe(2_000_000)
+  })
+
   it('normalizes ChatGPT display labels to backend model IDs', () => {
     expect(normalizeOpenAIChatGPTModel('GPT-5.6 Sol')).toBe('gpt-5.6-sol')
     expect(normalizeOpenAIChatGPTModel('GPT-5.6 Terra')).toBe('gpt-5.6-terra')
@@ -185,6 +205,7 @@ describe('OpenAiChatgptProvider', () => {
     delete process.env.OPENAI_ACCESS_TOKEN
     delete process.env.OPENAI_CHATGPT_ACCOUNT_ID
     delete process.env.YGG_OPENAI_CHATGPT_DEBUG_LOGS
+    delete process.env.YGG_OPENAI_CHATGPT_MAX_CONTEXT_TOKENS
     delete process.env.YGG_CODEX_DEV_LOGS
   })
 
