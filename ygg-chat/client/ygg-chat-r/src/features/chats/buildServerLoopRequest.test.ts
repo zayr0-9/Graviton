@@ -47,8 +47,21 @@ describe('buildServerLoopRequest', () => {
     expect(body.operationId).toBe('operation-fixed')
   })
 
-  it('never sends a systemPrompt (server assembles it; avoid double-prompt)', () => {
-    const { body } = buildServerLoopRequest('send', { ...base })
+  it('forwards renderer-selected prompt baselines without sending a supplemental systemPrompt', () => {
+    const { body } = buildServerLoopRequest('send', {
+      ...base,
+      operationModePrompt: 'Custom Agent baseline',
+      agentModePrompt: 'Custom Agent baseline',
+      subagentModePrompt: 'Custom Subagent baseline',
+      planModeVerbosity: 'detailed',
+    })
+
+    expect(body).toMatchObject({
+      operationModePrompt: 'Custom Agent baseline',
+      agentModePrompt: 'Custom Agent baseline',
+      subagentModePrompt: 'Custom Subagent baseline',
+      planModeVerbosity: 'detailed',
+    })
     expect('systemPrompt' in body).toBe(false)
   })
 

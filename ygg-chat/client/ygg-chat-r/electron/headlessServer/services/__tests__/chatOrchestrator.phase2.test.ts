@@ -586,6 +586,29 @@ describeIfSqlite('ChatOrchestrator prompt resolution', () => {
     expect(providerInput.railwayTurn.projectContext).toBe('Project context')
   })
 
+  it('uses renderer-selected Agent and subagent baselines without appending bundled defaults', async () => {
+    const now = new Date().toISOString()
+    statements.upsertConversation.run('c-custom-prompt', null, 'u1', 'Conversation', 'gpt-5.5', null, null, null, null, 'local', now, now)
+
+    await orchestrator.runMessage(
+      {
+        operation: 'send',
+        conversationId: 'c-custom-prompt',
+        parentId: null,
+        content: 'hello',
+        provider: 'openaichatgpt',
+        modelName: 'gpt-5.5',
+        operationModePrompt: 'Custom Agent baseline',
+        agentModePrompt: 'Custom Agent baseline',
+        subagentModePrompt: 'Custom Subagent baseline',
+      },
+      () => {}
+    )
+
+    expect(providerRouter.calls[0].systemPrompt).toBe('Custom Agent baseline')
+    expect(providerRouter.calls[0].systemPrompt).not.toContain('Agent Prompt: Coding mode')
+  })
+
   it('uses chat mode prompts for plan mode requests', async () => {
     const now = new Date().toISOString()
     statements.upsertConversation.run('c-plan', null, 'u1', 'Conversation', 'gpt-5.5', null, null, null, null, 'local', now, now)

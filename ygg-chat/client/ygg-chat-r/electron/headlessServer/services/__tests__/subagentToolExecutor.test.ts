@@ -53,11 +53,14 @@ describe('createSubagentDispatchExecutor', () => {
           inheritAutoApprove: true,
         },
       },
-      context({ operationMode: 'plan' })
+      context({ operationMode: 'plan', subagentSystemPrompt: 'Custom Subagent baseline' })
     )
 
     expect(result).toBe('scout report')
     expect(leafExecutor).not.toHaveBeenCalled()
+    const childSystemPrompt = runForTool.mock.calls[0][0].systemPrompt
+    expect(childSystemPrompt).toBe('Custom Subagent baseline\n\nReport facts only')
+    expect(childSystemPrompt).not.toContain('Agent Prompt: Subagent mode')
     expect(runForTool).toHaveBeenCalledWith(
       expect.objectContaining({
         conversationId: 'conversation-1',

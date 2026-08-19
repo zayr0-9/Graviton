@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import { createMultiCallDispatchExecutor, executeMultiCall } from '../multiCallExecutor.js'
+import { createSubagentDispatchExecutor } from '../subagentToolExecutor.js'
 
 const context = (overrides: Record<string, any> = {}) => ({
   conversationId: 'conversation-1',
@@ -104,6 +105,27 @@ describe('multiCallExecutor', () => {
     expect(leaf).not.toHaveBeenCalled()
     expect(nestedExecutor).toHaveBeenCalledOnce()
     expect(result.results[0]).toEqual({ tool: 'read_file', ok: true, data: 'read_file' })
+  })
+
+  it('preserves the custom subagent baseline through a nested multi_call dispatch', async () => {
+    const runForTool = vi.fn(async () => 'subagent result')
+    const subagentDispatch = createSubagentDispatchExecutor({
+      leafExecutor: vi.fn(),
+      subagentRunner: { runForTool },
+    })
+    const dispatch = createMultiCallDispatchExecutor(subagentDispatch)
+    const toolContext = context({
+      subagentSystemPrompt: 'Custom Subagent baseline',
+      nestedExecutor: subagentDispatch,
+    })
+
+    const result = await dispatch(
+      call({ calls: [{ tool: 'subagent', args: { prompt: 'Scout', systemPrompt: 'Report facts only' } }] }),
+      toolContext
+    )
+
+    expect(result.results[0]).toEqual({ tool: 'subagent', ok: true, data: 'subagent result' })
+    expect(runForTool.mock.calls[0][0].systemPrompt).toBe('Custom Subagent baseline\n\nReport facts only')
   })
 
   it('does not expose ephemeral nested modelContent in the aggregate result', async () => {

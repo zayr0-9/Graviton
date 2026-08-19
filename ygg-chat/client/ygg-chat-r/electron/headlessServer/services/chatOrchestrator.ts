@@ -837,6 +837,10 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
       buildHeadlessSystemPrompt({
         operationMode,
         includeOperationModePrompt: request.includeOperationModePrompt ?? true,
+        operationModePrompt:
+          operationMode === 'execute'
+            ? (request.agentModePrompt ?? request.operationModePrompt ?? null)
+            : (request.operationModePrompt ?? null),
         requestPrompt: request.systemPrompt ?? null,
         projectPrompt: project?.system_prompt ?? null,
         conversationPrompt: conversation?.system_prompt ?? null,
@@ -960,6 +964,7 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
          */
         robustness: { retryProviderError: true },
         subagentReasoningEffort: request.subagentReasoningEffort,
+        subagentSystemPrompt: request.subagentModePrompt ?? null,
         autoCompactionEnabled: request.autoCompactionEnabled,
         contextLength: request.contextLength,
         compactionThresholdPercent: request.compactionThresholdPercent,

@@ -54,6 +54,8 @@ import {
 } from './compactionContext'
 // OpenAI OAuth is handled internally by OpenAIChatGPT module
 import { loadAutoCompactionEnabled } from '../../helpers/chatUiSettingsStorage'
+import { getAgentModePrompt, getActiveChatModePrompt, getSubagentModePrompt } from '../../helpers/operationModePromptStorage'
+import { loadPlanModeResponseSettings } from '../../helpers/planModeResponseSettingsStorage'
 import { getSubagentReasoningEffort } from '../../helpers/subagentToolSettings'
 import { loadLongTermMemoryContextEnabled } from '../../helpers/longTermMemorySettingsStorage'
 import {
@@ -184,13 +186,20 @@ const refreshHeimdallTreeFromState = (getState: () => RootState, dispatch: (acti
 }
 
 /**
- * Build the compaction/context fields for the server-owned loop request from the renderer's
- * settings. Pre-fix these were dropped, so the server always fell back to its defaults:
- * auto-compaction ran even when the user disabled it, and the trigger used a per-model
- * default window instead of the SELECTED model's context length. Sourced from the same
- * settings the manual compactBranch path uses (loadAutoCompactionEnabled + providerSettings).
- * contextLength uses the global provider override for ChatGPT and selected-model metadata
- * for every other provider. buildServerLoopRequest forwards each field only-when-set.
+ * Renderer-local operation-mode settings are not visible to the Electron main process.
+ * Send the selected Plan, Agent, and subagent baselines separately so the server can
+ * assemble the final prompt without duplicating bundled defaults.
+ */
+const buildOperationModePromptRequestParams = (operationMode: 'plan' | 'execute') => ({
+  operationModePrompt:
+    operationMode === 'plan' ? getActiveChatModePrompt().prompt : getAgentModePrompt().prompt,
+  agentModePrompt: getAgentModePrompt().prompt,
+  subagentModePrompt: getSubagentModePrompt().prompt,
+  planModeVerbosity: loadPlanModeResponseSettings().verbosity,
+})
+
+/**
+ * Build compaction/context fields from the renderer settings for the server-owned loop.
  */
 const buildCompactionRequestParams = (
   modelsData: { models?: Model[]; default?: Model; selected?: Model } | undefined,
@@ -1594,6 +1603,7 @@ export const sendMessage = createAsyncThunk<
           userId: auth.userId,
           parentId: parent ?? null,
           operationMode: operationModeAtSend,
+          ...buildOperationModePromptRequestParams(operationModeAtSend),
           think,
           reasoningConfig,
           subagentReasoningEffort: getSubagentReasoningEffort(),
@@ -2185,6 +2195,7 @@ export const editMessageWithBranching = createAsyncThunk<
           messageId: String(originalMessageId),
           parentId: parentMessageId ?? null,
           operationMode: operationModeAtSend,
+          ...buildOperationModePromptRequestParams(operationModeAtSend),
           think,
           subagentReasoningEffort: getSubagentReasoningEffort(),
           rootPath: effectiveToolRootPath,
@@ -2434,6 +2445,7 @@ export const sendMessageToBranch = createAsyncThunk<
           messageId: String(parentId),
           parentId: parentId ?? null,
           operationMode: operationModeAtSend,
+          ...buildOperationModePromptRequestParams(operationModeAtSend),
           think,
           subagentReasoningEffort: getSubagentReasoningEffort(),
           rootPath: effectiveToolRootPath,

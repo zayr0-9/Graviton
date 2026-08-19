@@ -10,9 +10,9 @@
  * - MUST send provider ('lmstudio'|'zai'|'openrouter'|'openaichatgpt') and modelName,
  *   or the server silently defaults to openaichatgpt / gpt-5.6-sol.
  * - `content` is the RAW first-turn user text; the server owns the multi-turn loop.
- * - systemPrompt is intentionally OMITTED: the server assembles it from
- *   operationMode + project/conversation prompts. Sending buildOperationModeSystemPrompt
- *   output while also sending operationMode would double-wrap the mode instructions.
+ * - supplemental systemPrompt is intentionally OMITTED: the server assembles the final
+ *   prompt from renderer-selected operation-mode baselines + project/conversation prompts.
+ *   The baseline fields replace the server defaults rather than double-wrapping them.
  * - attachmentsBase64 is turn-1 only (sent once on the initial request).
  */
 
@@ -37,6 +37,13 @@ export interface BuildServerLoopRequestParams {
   /** branch: the message branched FROM; edit: the message being edited. Required for those ops. */
   messageId?: string | null
   operationMode: 'plan' | 'execute'
+  /** Selected baseline for this request's current operation mode. */
+  operationModePrompt?: string | null
+  /** Agent baseline retained for a possible Plan-to-Agent upgrade. */
+  agentModePrompt?: string | null
+  /** Baseline inherited by server-owned subagent tool calls. */
+  subagentModePrompt?: string | null
+  planModeVerbosity?: 'concise' | 'normal' | 'detailed'
   think?: boolean
   reasoningConfig?: unknown
   /** Persisted user preference for reasoning effort in child subagents. */
@@ -155,6 +162,7 @@ export function buildServerLoopRequest(operation: ServerLoopOperation, params: B
     parentId: params.parentId ?? null,
     operationMode: params.operationMode,
     includeOperationModePrompt: true,
+    planModeVerbosity: params.planModeVerbosity,
     think: params.think,
     reasoningConfig: params.reasoningConfig,
     subagentReasoningEffort: params.subagentReasoningEffort,
@@ -177,6 +185,13 @@ export function buildServerLoopRequest(operation: ServerLoopOperation, params: B
   // A lineage is meaningful only when the renderer is continuing an exact selected
   // branch. Omit null/undefined so legacy/new-conversation requests remain compatible.
   if (params.currentLineageId != null) body.lineageId = params.currentLineageId
+
+  // Renderer-local prompt settings are unavailable to the Electron main process. Forward
+  // each selected baseline separately so the server can preserve final prompt ordering
+  // without appending a second operation-mode prompt.
+  if (params.operationModePrompt != null) body.operationModePrompt = params.operationModePrompt
+  if (params.agentModePrompt != null) body.agentModePrompt = params.agentModePrompt
+  if (params.subagentModePrompt != null) body.subagentModePrompt = params.subagentModePrompt
 
   // Send the tools array whenever the caller provided one (even []), so an
   // all-disabled set is respected; omit only when tools were not provided.

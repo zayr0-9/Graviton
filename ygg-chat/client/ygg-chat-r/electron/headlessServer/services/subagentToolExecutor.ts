@@ -72,7 +72,11 @@ function buildSubagentRequest(toolCall: ProviderToolCall, context: ToolExecution
       ]
     : undefined
   const requestedSystemPrompt = typeof args.systemPrompt === 'string' ? args.systemPrompt.trim() : ''
-  const systemPrompt = [getHeadlessSubagentModePrompt(), requestedSystemPrompt].filter(Boolean).join('\n\n')
+  const inheritedSystemPrompt =
+    typeof context.subagentSystemPrompt === 'string' && context.subagentSystemPrompt.trim()
+      ? context.subagentSystemPrompt.trim()
+      : getHeadlessSubagentModePrompt()
+  const systemPrompt = [inheritedSystemPrompt, requestedSystemPrompt].filter(Boolean).join('\n\n')
 
   return {
     conversationId: context.conversationId,

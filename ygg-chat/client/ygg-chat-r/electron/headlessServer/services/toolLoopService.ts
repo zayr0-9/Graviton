@@ -40,6 +40,8 @@ export interface ToolExecutionContext {
   modelName?: string
   autoApprove?: boolean
   subagentReasoningEffort?: 'low' | 'medium' | 'high' | 'xhigh'
+  /** Renderer-selected baseline inherited by server-owned child subagents. */
+  subagentSystemPrompt?: string | null
   timeoutMs?: number
   signal?: AbortSignal
   /** Policy-aware executor used by composite tools for each nested call. */
@@ -159,6 +161,8 @@ export interface ToolLoopRunInput {
   toolAutoApprove?: boolean
   /** Reasoning effort to apply to child subagent calls. */
   subagentReasoningEffort?: 'low' | 'medium' | 'high' | 'xhigh'
+  /** Renderer-selected baseline inherited by server-owned child subagents. */
+  subagentSystemPrompt?: string | null
   autoCompactionEnabled?: boolean
   contextLength?: number
   compactionThresholdPercent?: number
@@ -1295,6 +1299,7 @@ export class ToolLoopService {
             modelName: input.modelName,
             autoApprove: input.toolAutoApprove !== false,
             subagentReasoningEffort: input.subagentReasoningEffort,
+            subagentSystemPrompt: input.subagentSystemPrompt ?? null,
             timeoutMs: input.toolTimeoutMs,
             signal: input.signal,
             parentToolInvocationId: invocation?.id ?? null,

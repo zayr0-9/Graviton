@@ -180,8 +180,10 @@ does not round-trip through the renderer or the unfinished `tool_request` bridge
 - **Empty output is a typed failure**, never a fake-success "No response generated":
   the loop retries an empty turn once, finalizes when tools ran but produced no
   answer, and otherwise raises `ProviderEmptyResponseError`.
-- **Settings travel per request.** The caller composes the system prompt and selects
-  tools; the server stores nothing between runs.
+- **Settings travel per request.** The renderer forwards its selected subagent baseline
+  on each parent chat request; server-owned `subagent` / `subagent_manager` calls inherit
+  it and append any per-call `systemPrompt`. Direct subagent requests still provide their
+  composed prompt explicitly. The server stores no prompt setting between runs.
 - **Wait is lifecycle-backed, not timer-backed.** Manager `wait` shares the active
   attempt's completion promise, supports multiple waiters, and has no default
   timeout. Persisted terminal state remains authoritative; startup reconciliation

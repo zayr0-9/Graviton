@@ -21,6 +21,30 @@ describe('buildHeadlessSystemPrompt', () => {
     expect(prompt).toContain('Agent Prompt: Coding mode')
   })
 
+  it('replaces the bundled operation-mode baseline with a supplied override', () => {
+    const prompt = buildHeadlessSystemPrompt({
+      operationMode: 'execute',
+      operationModePrompt: 'Custom Agent baseline',
+      projectPrompt: 'Project prompt',
+    })
+
+    expect(prompt).toBe('Custom Agent baseline\n\nProject prompt')
+    expect(prompt).not.toContain('Agent Prompt: Coding mode')
+  })
+
+  it('keeps Plan response style when the Plan baseline is overridden', () => {
+    const prompt = buildHeadlessSystemPrompt({
+      operationMode: 'plan',
+      operationModePrompt: 'Custom Plan baseline',
+      planModeVerbosity: 'detailed',
+    })
+
+    expect(prompt).toContain('Custom Plan baseline')
+    expect(prompt).toContain('## Plan Response Style')
+    expect(prompt).toContain('Use detailed plans')
+    expect(prompt).not.toContain('Agent Prompt: Plan mode')
+  })
+
   it('adds Plan response style for plan mode', () => {
     const prompt = buildHeadlessSystemPrompt({ operationMode: 'plan', planModeVerbosity: 'normal' })
 

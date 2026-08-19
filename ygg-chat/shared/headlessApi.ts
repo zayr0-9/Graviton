@@ -36,6 +36,12 @@ export interface HeadlessMessageRequest {
   accessToken?: string | null
   accountId?: string | null
   systemPrompt?: string | null
+  /** Renderer-selected baseline for the request's current operation mode. */
+  operationModePrompt?: string | null
+  /** Renderer-selected Agent baseline used when a Plan run upgrades to Agent mode. */
+  agentModePrompt?: string | null
+  /** Renderer-selected baseline inherited by server-owned subagent tool calls. */
+  subagentModePrompt?: string | null
   conversationContext?: string | null
   projectContext?: string | null
   think?: boolean

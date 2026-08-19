@@ -86,6 +86,8 @@ export function getHeadlessSubagentModePrompt(): string {
 export interface BuildHeadlessSystemPromptInput {
   operationMode?: HeadlessOperationMode | null
   includeOperationModePrompt?: boolean | null
+  /** Selected baseline for this operation mode; blank/absent falls back to the bundled prompt. */
+  operationModePrompt?: string | null
   requestPrompt?: string | null
   projectPrompt?: string | null
   conversationPrompt?: string | null
@@ -95,6 +97,7 @@ export interface BuildHeadlessSystemPromptInput {
 export function buildHeadlessSystemPrompt({
   operationMode,
   includeOperationModePrompt = true,
+  operationModePrompt,
   requestPrompt,
   projectPrompt,
   conversationPrompt,
@@ -104,7 +107,12 @@ export function buildHeadlessSystemPrompt({
   const resolvedOperationMode = operationMode ?? 'execute'
 
   if (includeOperationModePrompt !== false) {
-    appendPromptPart(parts, getHeadlessOperationModePrompt(resolvedOperationMode))
+    appendPromptPart(
+      parts,
+      typeof operationModePrompt === 'string' && operationModePrompt.trim()
+        ? operationModePrompt
+        : getHeadlessOperationModePrompt(resolvedOperationMode)
+    )
     if (resolvedOperationMode === 'plan') {
       appendPromptPart(parts, buildHeadlessPlanModeResponseStylePrompt(planModeVerbosity))
     }

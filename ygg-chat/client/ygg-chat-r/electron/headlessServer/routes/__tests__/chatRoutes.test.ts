@@ -141,12 +141,20 @@ describe('registerChatRoutes', () => {
         content: 'test',
         operationMode: 'plan',
         includeOperationModePrompt: false,
+        operationModePrompt: 'Custom Plan baseline',
+        agentModePrompt: 'Custom Agent baseline',
+        subagentModePrompt: 'Custom Subagent baseline',
+        planModeVerbosity: 'detailed',
       }),
     })
 
     expect(seenRequests[0]).toMatchObject({
       operationMode: 'plan',
       includeOperationModePrompt: false,
+      operationModePrompt: 'Custom Plan baseline',
+      agentModePrompt: 'Custom Agent baseline',
+      subagentModePrompt: 'Custom Subagent baseline',
+      planModeVerbosity: 'detailed',
     })
   })
 
