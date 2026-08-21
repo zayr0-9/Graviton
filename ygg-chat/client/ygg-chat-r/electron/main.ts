@@ -1032,12 +1032,29 @@ app.whenReady().then(async () => {
     syncLmStudioBaseUrlFromStore()
     syncOpenAiChatGptMaxContextFromStore()
     process.env.YGG_APP_USER_DATA = app.getPath('userData')
+    // themeManager resolves its directories from the injected host context,
+    // which createYggServer configures only later in this function. These env
+    // overrides (first in its resolution chain, inherited by the tool sandbox
+    // child) pin the pre-migration desktop paths for the early init below.
+    // Without them a Finder launch (cwd "/") hit the cwd fallback, failed
+    // mkdir '/.ygg', and the catch below quit the app.
+    process.env.YGG_THEME_DIRECTORY ||= path.join(app.getPath('userData'), '.ygg', 'custom-themes')
+    process.env.YGG_THEME_TEMPLATE_DIRECTORY ||= path.join(
+      app.isPackaged ? process.resourcesPath : app.getAppPath(),
+      '.ygg',
+      'custom-themes'
+    )
     const managedHooksDirectory = await ensureManagedHooksInitialized()
     console.log(`[Electron] Managed hooks directory ready at: ${managedHooksDirectory}`)
     const managedCustomToolsDirectory = await ensureManagedCustomToolsInitialized()
     console.log(`[Electron] Managed custom tools directory ready at: ${managedCustomToolsDirectory}`)
-    const managedThemesDirectory = await ensureManagedThemesInitialized()
-    console.log(`[Electron] Managed themes directory ready at: ${managedThemesDirectory}`)
+    try {
+      const managedThemesDirectory = await ensureManagedThemesInitialized()
+      console.log(`[Electron] Managed themes directory ready at: ${managedThemesDirectory}`)
+    } catch (themeInitError) {
+      // Theme seeding must never take the whole app down.
+      console.warn('[Electron] Managed themes initialization failed (continuing):', themeInitError)
+    }
 
     if (isDebugMode) {
       const debugReasons: string[] = []
