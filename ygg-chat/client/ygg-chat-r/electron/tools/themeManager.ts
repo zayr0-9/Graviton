@@ -1,6 +1,6 @@
-import { app } from 'electron'
 import fs from 'fs/promises'
 import path from 'path'
+import { tryGetServerConfig } from '../server/serverHost.js'
 
 const YGG_DIR_NAME = '.ygg'
 const CUSTOM_THEMES_DIR_NAME = 'custom-themes'
@@ -1393,11 +1393,13 @@ function getManagedThemesDirectory(): string {
     return path.resolve(envOverride)
   }
 
-  try {
-    return path.join(app.getPath('userData'), YGG_DIR_NAME, CUSTOM_THEMES_DIR_NAME)
-  } catch {
-    return path.resolve(process.cwd(), YGG_DIR_NAME, CUSTOM_THEMES_DIR_NAME)
+  // Injected host data directory (Electron userData or standalone YGG_DATA_DIR).
+  const hostDataDir = tryGetServerConfig()?.dataDir
+  if (hostDataDir) {
+    return path.join(hostDataDir, YGG_DIR_NAME, CUSTOM_THEMES_DIR_NAME)
   }
+
+  return path.resolve(process.cwd(), YGG_DIR_NAME, CUSTOM_THEMES_DIR_NAME)
 }
 
 function getBundledThemesDirectory(): string {
@@ -1406,14 +1408,14 @@ function getBundledThemesDirectory(): string {
     return path.resolve(envOverride)
   }
 
-  try {
-    if (app.isPackaged) {
-      return path.join(process.resourcesPath, YGG_DIR_NAME, CUSTOM_THEMES_DIR_NAME)
-    }
-    return path.join(app.getAppPath(), YGG_DIR_NAME, CUSTOM_THEMES_DIR_NAME)
-  } catch {
-    return path.resolve(process.cwd(), YGG_DIR_NAME, CUSTOM_THEMES_DIR_NAME)
+  // Injected read-only resources root. The Electron adapter supplies
+  // process.resourcesPath (packaged) or app.getAppPath() (development).
+  const hostResourcesDir = tryGetServerConfig()?.resourcesDir
+  if (hostResourcesDir) {
+    return path.join(hostResourcesDir, YGG_DIR_NAME, CUSTOM_THEMES_DIR_NAME)
   }
+
+  return path.resolve(process.cwd(), YGG_DIR_NAME, CUSTOM_THEMES_DIR_NAME)
 }
 
 export async function ensureManagedThemesInitialized(): Promise<string> {

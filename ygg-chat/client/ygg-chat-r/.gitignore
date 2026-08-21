@@ -80,3 +80,5 @@ prisma/dev.db-journal
 # Temporary folders
 tmp/
 temp/
+dist-server/
+

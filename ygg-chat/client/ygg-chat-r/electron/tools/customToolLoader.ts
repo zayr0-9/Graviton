@@ -8,6 +8,7 @@ import fsPromises from 'fs/promises'
 import { createRequire as createNodeRequire } from 'module'
 import path from 'path'
 import { pathToFileURL } from 'url'
+import { tryGetServerConfig } from '../server/serverHost.js'
 
 const CUSTOM_TOOLS_DIR_NAME = 'custom-tools'
 const CUSTOM_TOOLS_RESOURCES_DIR_NAME = 'resources'
@@ -59,6 +60,15 @@ function resolveBaseDir(): string {
   const envOverride = process.env.YGG_CUSTOM_TOOLS_DIRECTORY?.trim()
   if (envOverride) {
     cachedBaseDir = path.resolve(envOverride)
+    return cachedBaseDir
+  }
+
+  // Injected host data directory (Electron userData or standalone YGG_DATA_DIR).
+  // The sandbox child never has this configured; it inherits
+  // YGG_CUSTOM_TOOLS_DIRECTORY from the server process instead (above).
+  const hostDataDir = tryGetServerConfig()?.dataDir
+  if (hostDataDir) {
+    cachedBaseDir = hostDataDir
     return cachedBaseDir
   }
 

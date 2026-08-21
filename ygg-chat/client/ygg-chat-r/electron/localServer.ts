@@ -6,7 +6,6 @@ import AdmZip from 'adm-zip'
 import Database from 'better-sqlite3'
 import cors from 'cors'
 import crypto from 'crypto'
-import { app as electronApp } from 'electron'
 import express from 'express'
 import fs from 'fs'
 import { createRequire as createNodeRequire } from 'module'
@@ -17,7 +16,24 @@ import { WebSocket, WebSocketServer } from 'ws'
 import { BUILTIN_TOOL_DEFINITIONS } from '../../../shared/builtinToolDefinitions.js'
 import { isManagedToolPath } from './utils/managedToolPaths.js'
 
+// Runtime-neutral server graph (Phase 1 server/client separation)
+import { registerBuiltInTools, type BuiltInToolHandler } from './server/builtinToolRegistry.js'
+import { buildCorsOriginOption } from './server/corsPolicy.js'
+import type { ToolSandboxHost } from './server/hostCapabilities.js'
+import {
+  getHostCapabilities,
+  getServerDataDir,
+  getServerTempDir,
+  setHostGatedToolNames,
+  tryGetHostCapabilities,
+  tryGetServerConfig,
+} from './server/serverHost.js'
+import { resolveToolWorkspaceCwd, validateAndResolvePath } from './server/toolPathPolicy.js'
+import { shouldUseUtilityRuntimeForTool } from './server/toolSandboxPolicy.js'
+
 // Tool imports
+// Individual built-in tool handler imports moved to
+// electron/server/builtinToolRegistry.ts with the registrations.
 import { registerHeadlessServerRoutes } from './headlessServer/index.js'
 import { SubagentRunRepo } from './headlessServer/persistence/subagentRunRepo.js'
 import { embedText as embedTextWithLmStudio, embedTexts as embedTextsWithLmStudio, getLmStudioBaseUrl } from './headlessServer/providers/lmStudioEmbeddings.js'
@@ -38,105 +54,19 @@ import { toMcpExecutionResult } from './mcp/mcpToolResult.js'
 import { registerMcpRoutes } from './mcp/mcpRoutes.js'
 import { registerProxyRoutes } from './proxyGateway.js'
 import { skillRegistry } from './skills/skillLoader.js'
-import { execute as executeSkillManager } from './skills/skillManager.js'
 import { registerSkillRoutes } from './skills/skillRoutes.js'
-import { runBashCommand } from './tools/bash.js'
-import { runPowerShellCommand } from './tools/powershell.js'
-import { braveSearch } from './tools/braveSearch.js'
-import { browseWeb } from './tools/browseWeb.js'
-import { createTextFile } from './tools/createFile.js'
 import { customToolRegistry, type CustomToolsChangedEvent, ToolResult } from './tools/customToolLoader.js'
-import { execute as executeCustomToolManager } from './tools/customToolManager.js'
-import { deleteFile, safeDeleteFile } from './tools/deleteFile.js'
-import { extractDirectoryStructure } from './tools/directory.js'
-import { editFile, multiEdit } from './tools/editFile.js'
-import { execute as executeFetchChats, executeFetchNotes } from './tools/fetchChats.js'
-import { execute as executeInternalLink } from './tools/internalLink.js'
-import { globSearch } from './tools/glob.js'
-import htmlRenderer from './tools/htmlRenderer.js'
-import { execute as executeMcpManagerTool } from './tools/mcpManagerTool.js'
 import { JobFilter, JobOptions, toolOrchestrator } from './tools/orchestrator/index.js'
-import { readFileContinuation, readTextFile } from './tools/readFile.js'
-import { formatReadFilesContent, readMultipleTextFiles } from './tools/readFiles.js'
-import { ripgrepSearch } from './tools/ripgrep.js'
-import { viewImage } from './tools/viewImage.js'
-import { UtilityToolRuntimeHost } from './tools/runtime/UtilityToolRuntimeHost.js'
-import { execute as executeThemeManager } from './tools/themeManager.js'
-import { createTodoList, editTodoList, listTodoLists, readTodoList } from './tools/todoMd.js'
-import { executePlanMd } from './tools/planMd.js'
 import {
   getStreamUndoSummary,
   listStreamUndoSummariesByConversation,
   markStreamUndoAssistantMessage,
-  recordPreEditBackup,
-  recordToolEditSuccess,
   restoreStreamUndo,
 } from './tools/streamUndoManager.js'
 
-/**
- * Validates and resolves a path to ensure it's within the allowed rootPath scope.
- * Prevents directory traversal attacks.
- */
-function validateAndResolvePath(
-  inputPath: string | undefined,
-  rootPath: string | undefined,
-  fallbackToRoot = true
-): string {
-  const normalizedInput = typeof inputPath === 'string' ? inputPath.trim() : ''
-
-  // If no input path provided
-  if (!normalizedInput) {
-    if (fallbackToRoot && rootPath) return rootPath
-    return '.'
-  }
-
-  // Detect if we should use POSIX logic (WSL paths on Windows)
-  // If on Windows, but paths start with '/', treat as WSL/Linux path
-  // Boolean(): the && / || chain yields `string | boolean | undefined` when inputPath or
-  // rootPath is an empty string. Only ever used as a boolean (below, and by
-  // isManagedToolPath), so coercing here changes nothing at runtime.
-  const usePosix = Boolean(
-    process.platform === 'win32' && ((inputPath && inputPath.startsWith('/')) || (rootPath && rootPath.startsWith('/')))
-  )
-
-  const pathModule = usePosix ? path.posix : path
-
-  // If no rootPath constraint, just resolve the path
-  if (!rootPath) {
-    return pathModule.resolve(normalizedInput)
-  }
-
-  const normalizedRoot = pathModule.resolve(rootPath)
-
-  // Resolve to absolute path
-  const resolvedPath = pathModule.isAbsolute(normalizedInput)
-    ? pathModule.resolve(normalizedInput)
-    : pathModule.resolve(normalizedRoot, normalizedInput)
-
-  // Security: Ensure resolved path is within rootPath scope
-  const relativeToRoot = pathModule.relative(normalizedRoot, resolvedPath)
-  const outsideWorkspace =
-    relativeToRoot === '..' || relativeToRoot.startsWith(`..${pathModule.sep}`) || pathModule.isAbsolute(relativeToRoot)
-
-  if (outsideWorkspace) {
-    const rootIsManagedPath = isManagedToolPath(normalizedRoot, usePosix)
-    const targetIsManagedPath = isManagedToolPath(resolvedPath, usePosix)
-    if (!rootIsManagedPath && targetIsManagedPath) {
-      return resolvedPath
-    }
-    throw new Error(`Path must be within workspace: ${rootPath}`)
-  }
-
-  return resolvedPath
-}
-
-function resolveToolWorkspaceCwd(requestedCwd: unknown, rootPath: string | undefined): string | undefined {
-  const normalizedRequested = typeof requestedCwd === 'string' ? requestedCwd.trim() : ''
-  if (!normalizedRequested) {
-    return rootPath || undefined
-  }
-  return validateAndResolvePath(normalizedRequested, rootPath)
-}
+// validateAndResolvePath and resolveToolWorkspaceCwd moved to
+// electron/server/toolPathPolicy.ts (imported above) so the server-owned tool
+// registry can share them.
 
 function sanitizeZipEntryName(entryName: string): string {
   return entryName.replace(/\\/g, '/').replace(/^\/+/, '')
@@ -307,7 +237,7 @@ async function stageZipBufferForToolInstall(zipBuffer: Buffer): Promise<{
     throw new Error('Zip must contain exactly one top-level tool directory.')
   }
 
-  const tempDir = await fs.promises.mkdtemp(path.join(electronApp.getPath('temp'), 'ygg-app-store-'))
+  const tempDir = await fs.promises.mkdtemp(path.join(getServerTempDir(), 'ygg-app-store-'))
   const stagedToolsRoot = path.join(tempDir, 'custom-tools')
   await fs.promises.mkdir(stagedToolsRoot, { recursive: true })
 
@@ -379,22 +309,7 @@ async function deployToolUpdateWithPreservedResources(options: {
   }
 }
 
-// Built-in tool handler type
-type BuiltInToolHandler = (
-  args: any,
-  options: {
-    rootPath?: string
-    operationMode?: 'plan' | 'execute'
-    conversationId?: string | null
-    messageId?: string | null
-    streamId?: string | null
-    // Both are supplied by callers (see the /api/tools/execute handler below, which
-    // destructures them off req.body) and read by the edit/create/delete handlers for
-    // pre-edit backups. They were missing here, so those reads did not type-check.
-    parentMessageId?: string | null
-    toolCallId?: string | null
-  }
-) => Promise<ToolResult>
+// BuiltInToolHandler type moved to electron/server/builtinToolRegistry.ts.
 
 // Registry for built-in tools (initialized in setupServer)
 const builtInTools: Map<string, BuiltInToolHandler> = new Map()
@@ -406,39 +321,29 @@ let searchTopLevelUserMessagesForToolRegistry:
   | ((params: { userId: string; query: string; projectId?: string; limit: number }) => Array<Record<string, any>>)
   | null = null
 
-const utilityToolRuntimeHost = new UtilityToolRuntimeHost()
+// The out-of-process tool sandbox is a host capability now: Electron supplies
+// a UtilityToolRuntimeHost (utilityProcess.fork), standalone supplies a
+// NodeToolRuntimeHost (child_process.fork). Assigned during startLocalServer.
+let toolSandbox: ToolSandboxHost | null = null
 let utilityRuntimeAvailable = false
 
 function getToolRuntimeMode(): 'local' | 'utility' {
+  const configured = tryGetServerConfig()?.toolRuntime.mode
+  if (configured) return configured
+  // Legacy env fallback for code paths that run before host configuration.
   return process.env.YGG_TOOLS_RUNTIME?.trim().toLowerCase() === 'utility' ? 'utility' : 'local'
 }
 
 function isUtilityRuntimeFallbackDisabled(): boolean {
+  const config = tryGetServerConfig()
+  if (config) return !config.toolRuntime.allowInProcessFallback
   const rawValue = process.env.DISABLE_TOOL_RUNTIME_FALLBACK?.trim().toLowerCase()
   if (!rawValue) return false
   return rawValue === '1' || rawValue === 'true' || rawValue === 'yes' || rawValue === 'on'
 }
 
-const UTILITY_RUNTIME_TOOL_WHITELIST = new Set<string>([
-  'read_file',
-  'read_file_continuation',
-  'read_files',
-  'create_file',
-  'edit_file',
-  'multi_edit',
-  'delete_file',
-  'directory',
-  'view_image',
-  'glob',
-  'ripgrep',
-  'bash',
-  'powershell',
-  'html_renderer',
-])
-
-function shouldUseUtilityRuntimeForTool(toolName: string): boolean {
-  return UTILITY_RUNTIME_TOOL_WHITELIST.has(toolName)
-}
+// UTILITY_RUNTIME_TOOL_WHITELIST and shouldUseUtilityRuntimeForTool moved to
+// electron/server/toolSandboxPolicy.ts (imported above).
 
 function shouldUseUtilityRuntimeForCustomTool(toolName: string): boolean {
   if (getToolRuntimeMode() !== 'utility') return false
@@ -447,534 +352,20 @@ function shouldUseUtilityRuntimeForCustomTool(toolName: string): boolean {
   return true
 }
 
-// Initialize built-in tools registry
+// Initialize built-in tools registry. The handlers live in the server-owned
+// registry module (electron/server/builtinToolRegistry.ts). The 26th built-in,
+// memory_manage, is registered inside setupServer() next to the memory routes.
 function initializeBuiltInToolRegistry() {
-  builtInTools.set('html_renderer', async args => {
-    const { html, allowUnsafe } = args
-    if (!html) throw new Error('html is required')
-    const rendered = await htmlRenderer.run({ html, allowUnsafe })
-    return rendered
+  const capabilities = getHostCapabilities()
+  registerBuiltInTools(builtInTools, {
+    getStatements: () => statements,
+    getSearchNotes: () => searchNotesForToolRegistry,
+    getSearchTopLevelUserMessages: () => searchTopLevelUserMessagesForToolRegistry,
+    browserEngine: capabilities.browserEngine,
   })
-
-  builtInTools.set('read_file', async (args, { rootPath }) => {
-    const { path: filePath, maxBytes, startLine, endLine, ranges, includeHash, cwd } = args
-    if (!filePath) throw new Error('path is required')
-    const effectiveCwd = resolveToolWorkspaceCwd(cwd, rootPath)
-    const fileRes = await readTextFile(filePath, {
-      maxBytes,
-      startLine,
-      endLine,
-      ranges,
-      includeHash,
-      cwd: effectiveCwd,
-    })
-    return { success: true, ...fileRes }
-  })
-
-  builtInTools.set('read_file_continuation', async (args, { rootPath }) => {
-    const { path: filePath, afterLine, numLines, maxBytes, includeHash, cwd } = args
-    if (!filePath) throw new Error('path is required')
-    if (afterLine === undefined) throw new Error('afterLine is required')
-    if (!numLines) throw new Error('numLines is required')
-    const effectiveCwd = resolveToolWorkspaceCwd(cwd, rootPath)
-    const fileRes = await readFileContinuation(filePath, afterLine, numLines, {
-      maxBytes,
-      includeHash,
-      cwd: effectiveCwd,
-    })
-    return { success: true, ...fileRes }
-  })
-
-  builtInTools.set('read_files', async (args, { rootPath }) => {
-    const { paths, baseDir, maxBytes, startLine, endLine, ranges, cwd } = args
-    if (!paths) throw new Error('paths are required')
-    const effectiveCwd = resolveToolWorkspaceCwd(cwd, rootPath)
-    const filesRes = await readMultipleTextFiles(paths, { baseDir, maxBytes, startLine, endLine, ranges, cwd: effectiveCwd })
-    const content = formatReadFilesContent(filesRes)
-    return { success: true, content, text: content, files: filesRes }
-  })
-
-  builtInTools.set('create_file', async (args, { rootPath, operationMode }) => {
-    const { path: filePath, content, createParentDirs, overwrite, executable, cwd } = args
-    if (!filePath) throw new Error('path is required')
-    const effectiveCwd = resolveToolWorkspaceCwd(cwd, rootPath)
-    return await createTextFile(filePath, content, {
-      createParentDirs,
-      overwrite,
-      executable,
-      operationMode,
-      cwd: effectiveCwd,
-    })
-  })
-
-  builtInTools.set('edit_file', async (args, options) => {
-    const { rootPath, operationMode } = options
-    const {
-      path: filePath,
-      operation,
-      searchPattern,
-      replacement,
-      content,
-      createBackup,
-      encoding,
-      enableFuzzyMatching,
-      fuzzyThreshold,
-      preserveIndentation,
-      validateContent,
-      expectedHash,
-      expectedMetadata,
-      approxStartLine,
-      approxEndLine,
-    } = args
-    if (!filePath) throw new Error('path is required')
-
-    const effectiveCwd = rootPath
-    const absolutePath = validateAndResolvePath(filePath, effectiveCwd, false)
-    if (operationMode === 'execute' && options.streamId) {
-      await recordPreEditBackup({
-        streamId: options.streamId,
-        conversationId: options.conversationId ?? null,
-        messageId: options.messageId ?? null,
-        parentMessageId: options.parentMessageId ?? null,
-        rootPath: rootPath ?? null,
-        cwd: effectiveCwd ?? null,
-        toolCallId: options.toolCallId ?? null,
-        originalPath: filePath,
-        absolutePath,
-      })
-    }
-
-    const result = await editFile(filePath, operation, {
-      searchPattern,
-      replacement,
-      content,
-      createBackup,
-      encoding,
-      enableFuzzyMatching,
-      fuzzyThreshold,
-      preserveIndentation,
-      // Keep tool-call behavior deterministic and safe for code edits:
-      // parse escape sequences in search patterns, but treat replacement text literally.
-      interpretSearchEscapes: true,
-      interpretReplacementEscapes: false,
-      validateContent,
-      expectedHash,
-      expectedMetadata,
-      approxStartLine,
-      approxEndLine,
-      operationMode,
-      cwd: rootPath,
-    })
-
-    if (operationMode === 'execute' && options.streamId && result?.success && (result.replacements ?? 0) > 0) {
-      await recordToolEditSuccess({
-        streamId: options.streamId,
-        conversationId: options.conversationId ?? null,
-        messageId: options.messageId ?? null,
-        parentMessageId: options.parentMessageId ?? null,
-        rootPath: rootPath ?? null,
-        cwd: effectiveCwd ?? null,
-        toolCallId: options.toolCallId ?? null,
-        originalPath: filePath,
-        absolutePath,
-        toolName: 'edit_file',
-        operation,
-      })
-      return { ...result, undo: { tracked: true, streamId: options.streamId } }
-    }
-
-    return result
-  })
-
-  builtInTools.set('multi_edit', async (args, options) => {
-    const { rootPath, operationMode } = options
-    const {
-      edits,
-      stopOnError,
-      createBackup,
-      encoding,
-      enableFuzzyMatching,
-      fuzzyThreshold,
-      preserveIndentation,
-      validateContent,
-    } = args
-    if (!Array.isArray(edits) || edits.length === 0) throw new Error('edits are required')
-
-    const effectiveCwd = rootPath
-    const editPaths = edits
-      .map((edit: any, index: number) => ({ edit, index, filePath: typeof edit?.path === 'string' ? edit.path : null }))
-      .filter((item: { filePath: string | null }): item is { edit: any; index: number; filePath: string } => Boolean(item.filePath))
-
-    if (operationMode === 'execute' && options.streamId) {
-      const seen = new Set<string>()
-      for (const item of editPaths) {
-        const absolutePath = validateAndResolvePath(item.filePath, effectiveCwd, false)
-        if (seen.has(absolutePath)) continue
-        seen.add(absolutePath)
-        await recordPreEditBackup({
-          streamId: options.streamId,
-          conversationId: options.conversationId ?? null,
-          messageId: options.messageId ?? null,
-          parentMessageId: options.parentMessageId ?? null,
-          rootPath: rootPath ?? null,
-          cwd: effectiveCwd ?? null,
-          toolCallId: options.toolCallId ?? null,
-          originalPath: item.filePath,
-          absolutePath,
-        })
-      }
-    }
-
-    const result = await multiEdit(edits, {
-      stopOnError,
-      createBackup,
-      encoding,
-      enableFuzzyMatching,
-      fuzzyThreshold,
-      preserveIndentation,
-      interpretSearchEscapes: true,
-      interpretReplacementEscapes: false,
-      validateContent,
-      operationMode,
-      cwd: rootPath,
-    })
-
-    if (operationMode === 'execute' && options.streamId && result?.results) {
-      let tracked = 0
-      for (const item of result.results) {
-        if (!item?.success || (item.replacements ?? 0) <= 0) continue
-        const sourceEdit = edits[item.index]
-        const originalPath = item.path || sourceEdit?.path
-        if (typeof originalPath !== 'string') continue
-        const absolutePath = validateAndResolvePath(originalPath, effectiveCwd, false)
-        await recordToolEditSuccess({
-          streamId: options.streamId,
-          conversationId: options.conversationId ?? null,
-          messageId: options.messageId ?? null,
-          parentMessageId: options.parentMessageId ?? null,
-          rootPath: rootPath ?? null,
-          cwd: effectiveCwd ?? null,
-          toolCallId: options.toolCallId ?? null,
-          originalPath,
-          absolutePath,
-          toolName: 'multi_edit',
-          operation: item.operation ?? sourceEdit?.operation ?? null,
-          index: item.index,
-        })
-        tracked += 1
-      }
-      if (tracked > 0) return { ...result, undo: { tracked: true, streamId: options.streamId, edits: tracked } }
-    }
-
-    return result
-  })
-
-  builtInTools.set('delete_file', async (args, { rootPath, operationMode }) => {
-    const { path: filePath, allowedExtensions } = args
-    if (!filePath) throw new Error('path is required')
-    if (allowedExtensions) {
-      await safeDeleteFile(filePath, allowedExtensions, operationMode, rootPath)
-    } else {
-      await deleteFile(filePath, operationMode, rootPath)
-    }
-    return { success: true, path: filePath }
-  })
-
-  builtInTools.set('directory', async (args, { rootPath }) => {
-    const { path: dirPath, maxDepth, includeHidden, includeSizes } = args
-    const finalDirPath = validateAndResolvePath(dirPath, rootPath)
-    const structure = await extractDirectoryStructure(finalDirPath, {
-      maxDepth,
-      includeHidden,
-      includeSizes,
-    })
-    return { success: true, structure, path: dirPath }
-  })
-
-  builtInTools.set('view_image', async (args, { rootPath }) => {
-    const { path: imagePath, cwd, detail, maxBytes } = args
-    if (!imagePath) throw new Error('path is required')
-    const effectiveCwd = resolveToolWorkspaceCwd(cwd, rootPath)
-    return await viewImage(imagePath, { cwd: effectiveCwd, detail, maxBytes })
-  })
-
-  builtInTools.set('glob', async (args, { rootPath }) => {
-    const { pattern, cwd, ignore, dot, absolute } = args
-    if (!pattern) throw new Error('pattern is required')
-    const actualCwd = validateAndResolvePath(cwd, rootPath)
-    return await globSearch(pattern, { cwd: actualCwd, ignore, dot, absolute })
-  })
-
-  builtInTools.set('ripgrep', async (args, { rootPath }) => {
-    const {
-      regex,
-      pattern,
-      path: dirPath,
-      searchPath: altSearchPath,
-      glob: globPattern,
-      case_insensitive,
-      lineNumbers,
-      count,
-      filesWithMatches,
-      maxCount,
-      hidden,
-      noIgnore,
-      contextLines,
-    } = args
-    const query = regex || pattern
-    if (!query) throw new Error('pattern or regex is required')
-    const finalSearchPath = validateAndResolvePath(dirPath || altSearchPath, rootPath)
-    return await ripgrepSearch(query, finalSearchPath, {
-      caseSensitive: !case_insensitive,
-      glob: globPattern,
-      lineNumbers,
-      count,
-      filesWithMatches,
-      maxCount,
-      hidden,
-      noIgnore,
-      contextLines,
-    })
-  })
-
-  builtInTools.set('browse_web', async args => {
-    const { url, ...options } = args
-    if (!url) throw new Error('url is required')
-    return await browseWeb(url, options)
-  })
-
-  builtInTools.set('brave_search', async args => {
-    const { query, ...options } = args
-    if (!query) throw new Error('query is required')
-    return await braveSearch(query, options)
-  })
-
-  builtInTools.set('bash', async (args, { rootPath }) => {
-    const { command, description, cwd, env, timeoutMs, maxOutputChars } = args
-    if (!command) throw new Error('command is required')
-    if (typeof description !== 'string' || !description.trim()) {
-      throw new Error('description is required')
-    }
-    const finalCwd = validateAndResolvePath(cwd, rootPath)
-    return await runBashCommand(command, {
-      description: description.trim(),
-      cwd: finalCwd,
-      env,
-      timeoutMs,
-      maxOutputChars,
-    })
-  })
-
-  builtInTools.set('powershell', async (args, { rootPath }) => {
-    const { command, description, cwd, env, timeoutMs, maxOutputChars } = args
-    if (!command) throw new Error('command is required')
-    if (typeof description !== 'string' || !description.trim()) {
-      throw new Error('description is required')
-    }
-    const finalCwd = validateAndResolvePath(cwd, rootPath)
-    return await runPowerShellCommand(command, {
-      description: description.trim(),
-      cwd: finalCwd,
-      env,
-      timeoutMs,
-      maxOutputChars,
-    })
-  })
-
-  builtInTools.set('todo_list', async args => {
-    const { action, name, content, search, replacement, edits } = args
-    switch (action) {
-      case 'list': {
-        const lists = await listTodoLists()
-        return { success: true, lists }
-      }
-      case 'read': {
-        if (!name) throw new Error('name is required for todo_list read')
-        const data = await readTodoList(name)
-        return { success: true, ...data }
-      }
-      case 'create': {
-        if (content === undefined) throw new Error('content is required for todo_list create')
-        const created = await createTodoList(content)
-        return { success: true, ...created }
-      }
-      case 'edit': {
-        if (!name) throw new Error('name is required for todo_list edit')
-        if (Array.isArray(edits)) {
-          if (edits.length === 0) throw new Error('edits must contain at least one item for todo_list edit')
-          for (const [index, edit] of edits.entries()) {
-            if (!edit || typeof edit !== 'object') {
-              throw new Error(`edits[${index}] must be an object`)
-            }
-            if (!edit.search) throw new Error(`edits[${index}].search is required for todo_list edit`)
-            if (edit.replacement === undefined) {
-              throw new Error(`edits[${index}].replacement is required for todo_list edit`)
-            }
-          }
-          const edited = await editTodoList(name, edits)
-          return edited
-        }
-        if (!search) throw new Error('search is required for todo_list edit')
-        if (replacement === undefined) throw new Error('replacement is required for todo_list edit')
-        const edited = await editTodoList(name, search, replacement)
-        return edited
-      }
-      default:
-        throw new Error(`Unsupported todo_list action: ${action}`)
-    }
-  })
-
-  builtInTools.set('theme_manager', async args => {
-    return await executeThemeManager(args)
-  })
-
-  builtInTools.set('plan_md', async (args, { rootPath }) => {
-    return await executePlanMd(args, rootPath)
-  })
-
-  builtInTools.set('fetch_notes', async (args, options) => {
-    return await executeFetchNotes(args, {
-      currentConversationId: options?.conversationId ?? null,
-      listConversations: () => {
-        const getter = statements?.getAllConversations
-        if (!getter || typeof getter.all !== 'function') return []
-        return getter.all()
-      },
-      getConversationById: conversationId => {
-        const getter = statements?.getConversationById
-        if (!getter || typeof getter.get !== 'function') return undefined
-        return getter.get(conversationId)
-      },
-      searchConversations: ({ userId, projectId, query, limit }) => {
-        const trimmedQuery = typeof query === 'string' ? query.trim() : ''
-        if (!trimmedQuery) return []
-        const normalizedQuery = trimmedQuery.replace(/[\s_-]+/g, '')
-        const likeQuery = `%${trimmedQuery}%`
-        const normalizedLikeQuery = `%${normalizedQuery || trimmedQuery}%`
-        if (projectId) {
-          const getter = statements?.searchConversationsByTitleInProject
-          if (!getter || typeof getter.all !== 'function') return []
-          return getter.all(userId, projectId, likeQuery, normalizedLikeQuery, limit)
-        }
-        const getter = statements?.searchConversationsByTitle
-        if (!getter || typeof getter.all !== 'function') return []
-        return getter.all(userId, likeQuery, normalizedLikeQuery, limit)
-      },
-      searchTopLevelMessages: ({ userId, projectId, query, limit }) => {
-        if (!searchTopLevelUserMessagesForToolRegistry) return []
-        return searchTopLevelUserMessagesForToolRegistry({ userId, projectId, query, limit })
-      },
-      searchNotes: ({ userId, projectId, query, limit }) => {
-        if (!searchNotesForToolRegistry) return []
-        return searchNotesForToolRegistry({ userId, query, projectId, limit })
-      },
-      listMessagesByConversationId: conversationId => {
-        const getter = statements?.getMessagesByConversationId
-        if (!getter || typeof getter.all !== 'function') return []
-        return getter.all(conversationId)
-      },
-      listTopLevelUserMessagesByConversationId: conversationId => {
-        const getter = statements?.getTopLevelUserMessagesByConversationId
-        if (!getter || typeof getter.all !== 'function') return []
-        return getter.all(conversationId)
-      },
-      getMessageById: messageId => {
-        const getter = statements?.getMessageById
-        if (!getter || typeof getter.get !== 'function') return undefined
-        return getter.get(messageId)
-      },
-    })
-  })
-
-  builtInTools.set('fetch_chats', async (args, options) => {
-    return await executeFetchChats(args, {
-      currentConversationId: options?.conversationId ?? null,
-      listConversations: () => {
-        const getter = statements?.getAllConversations
-        if (!getter || typeof getter.all !== 'function') return []
-        return getter.all()
-      },
-      getConversationById: conversationId => {
-        const getter = statements?.getConversationById
-        if (!getter || typeof getter.get !== 'function') return undefined
-        return getter.get(conversationId)
-      },
-      searchConversations: ({ userId, projectId, query, limit }) => {
-        const trimmedQuery = typeof query === 'string' ? query.trim() : ''
-        if (!trimmedQuery) return []
-        const normalizedQuery = trimmedQuery.replace(/[\s_-]+/g, '')
-        const likeQuery = `%${trimmedQuery}%`
-        const normalizedLikeQuery = `%${normalizedQuery || trimmedQuery}%`
-        if (projectId) {
-          const getter = statements?.searchConversationsByTitleInProject
-          if (!getter || typeof getter.all !== 'function') return []
-          return getter.all(userId, projectId, likeQuery, normalizedLikeQuery, limit)
-        }
-        const getter = statements?.searchConversationsByTitle
-        if (!getter || typeof getter.all !== 'function') return []
-        return getter.all(userId, likeQuery, normalizedLikeQuery, limit)
-      },
-      searchTopLevelMessages: ({ userId, projectId, query, limit }) => {
-        if (!searchTopLevelUserMessagesForToolRegistry) return []
-        return searchTopLevelUserMessagesForToolRegistry({ userId, projectId, query, limit })
-      },
-      searchNotes: ({ userId, projectId, query, limit }) => {
-        if (!searchNotesForToolRegistry) return []
-        return searchNotesForToolRegistry({ userId, query, projectId, limit })
-      },
-      listMessagesByConversationId: conversationId => {
-        const getter = statements?.getMessagesByConversationId
-        if (!getter || typeof getter.all !== 'function') return []
-        return getter.all(conversationId)
-      },
-      listTopLevelUserMessagesByConversationId: conversationId => {
-        const getter = statements?.getTopLevelUserMessagesByConversationId
-        if (!getter || typeof getter.all !== 'function') return []
-        return getter.all(conversationId)
-      },
-      getMessageById: messageId => {
-        const getter = statements?.getMessageById
-        if (!getter || typeof getter.get !== 'function') return undefined
-        return getter.get(messageId)
-      },
-    })
-  })
-
-  builtInTools.set('internalLink', async (args, options) => {
-    return await executeInternalLink(args, {
-      currentConversationId: options?.conversationId ?? null,
-      getConversationById: conversationId => {
-        const getter = statements?.getConversationById
-        if (!getter || typeof getter.get !== 'function') return undefined
-        return getter.get(conversationId)
-      },
-      getMessageById: messageId => {
-        const getter = statements?.getMessageById
-        if (!getter || typeof getter.get !== 'function') return undefined
-        return getter.get(messageId)
-      },
-    })
-  })
-
-  builtInTools.set('custom_tool_manager', async (args, options) => {
-    return await executeCustomToolManager(args, {
-      rootPath: options?.rootPath,
-      operationMode: options?.operationMode,
-      conversationId: options?.conversationId ?? null,
-      messageId: options?.messageId ?? null,
-      streamId: options?.streamId ?? null,
-      cwd: options?.rootPath,
-    })
-  })
-
-  builtInTools.set('mcp_manager', async args => {
-    return await executeMcpManagerTool(args)
-  })
-
-  builtInTools.set('skill_manager', async args => {
-    return await executeSkillManager(args)
-  })
-
+  const gated = new Set<string>()
+  if (!capabilities.browserEngine) gated.add('browse_web')
+  setHostGatedToolNames(gated)
   console.log(`[LocalServer] Initialized ${builtInTools.size} built-in tools`)
 }
 
@@ -982,9 +373,10 @@ function registerCustomToolsWithOrchestrator(): number {
   const definitions = customToolRegistry.getDefinitions()
   for (const customToolDef of definitions) {
     toolOrchestrator.registerTool(customToolDef.name, async (args, options) => {
-      if (shouldUseUtilityRuntimeForCustomTool(customToolDef.name)) {
+      const sandbox = toolSandbox
+      if (sandbox && shouldUseUtilityRuntimeForCustomTool(customToolDef.name)) {
         try {
-          return await utilityToolRuntimeHost.executeTool(customToolDef.name, args, {
+          return await sandbox.executeTool(customToolDef.name, args, {
             rootPath: options?.rootPath,
             operationMode: options?.operationMode,
             conversationId: options?.conversationId,
@@ -1025,11 +417,12 @@ function bindCustomToolsLifecycleListener(): void {
     registerCustomToolsWithOrchestrator()
     console.log(`[LocalServer] Custom tools changed (${event.reason}); total=${event.totalCount}`)
 
-    if (!utilityRuntimeAvailable) {
+    const sandbox = toolSandbox
+    if (!utilityRuntimeAvailable || !sandbox) {
       return
     }
 
-    void utilityToolRuntimeHost
+    void sandbox
       .reloadCustomTools(`local:${event.reason}`)
       .then(result => {
         console.log(
@@ -1047,10 +440,13 @@ function bindCustomToolsLifecycleListener(): void {
   })
 }
 
-const app = express()
+// Recreated on every startLocalServer call so a stop/start cycle cannot
+// double-register routes on a stale Express app.
+let app = express()
 let server: any = null
 let wss: WebSocketServer | null = null
 let oauthCallbackServer: any = null // OAuth callback server on port 1455
+let oauthCleanupInterval: NodeJS.Timeout | null = null
 let db: Database.Database | null = null
 let statements: any = {}
 let currentDbPath: string | null = null
@@ -2994,9 +2390,10 @@ function initializeWebSocketServer(serverInstance: any) {
 
 // Setup Express app
 function setupServer() {
+  const corsPolicy = tryGetServerConfig()?.cors ?? { mode: 'permissive' as const, allowedOrigins: [] }
   app.use(
     cors({
-      origin: true, // Allow all origins in local dev
+      origin: buildCorsOriginOption(corsPolicy),
       credentials: true,
       allowedHeaders: [
         'Content-Type',
@@ -3021,7 +2418,7 @@ function setupServer() {
 
   if (db) {
     registerToolsRoutes(app, db, statements)
-    registerHeadlessServerRoutes(app, { db, statements })
+    registerHeadlessServerRoutes(app, { db, statements, orchestrator: toolOrchestrator })
   }
   registerProxyRoutes(app)
   registerLocalOperationsRoutes(app)
@@ -3056,8 +2453,12 @@ function setupServer() {
     }
   >()
 
-  // Clean up old pending flows and completed tokens (older than 10 minutes)
-  setInterval(() => {
+  // Clean up old pending flows and completed tokens (older than 10 minutes).
+  // The handle is module-level so stopLocalServer can clear it.
+  if (oauthCleanupInterval) {
+    clearInterval(oauthCleanupInterval)
+  }
+  oauthCleanupInterval = setInterval(() => {
     const now = Date.now()
     for (const [state, flow] of oauthPendingFlows.entries()) {
       if (now - flow.createdAt > 10 * 60 * 1000) {
@@ -3214,13 +2615,16 @@ function setupServer() {
       }
     })
 
-    oauthCallbackServer = oauthApp.listen(1455, '127.0.0.1', () => {
-      console.log('[OAuthServer] OAuth callback server running on http://127.0.0.1:1455')
+    const oauthPolicy = tryGetServerConfig()?.oauth
+    const callbackHost = oauthPolicy?.callbackHost ?? '127.0.0.1'
+    const callbackPort = oauthPolicy?.callbackPort ?? 1455
+    oauthCallbackServer = oauthApp.listen(callbackPort, callbackHost, () => {
+      console.log(`[OAuthServer] OAuth callback server running on http://${callbackHost}:${callbackPort}`)
     })
 
     oauthCallbackServer.on('error', (err: NodeJS.ErrnoException) => {
       if (err.code === 'EADDRINUSE') {
-        console.warn('[OAuthServer] Port 1455 already in use, OAuth callbacks may not work')
+        console.warn(`[OAuthServer] Port ${callbackPort} already in use, OAuth callbacks may not work`)
       } else {
         console.error('[OAuthServer] Server error:', err)
       }
@@ -4790,7 +4194,7 @@ function setupServer() {
     }
   })
 
-  const getLongTermMemoryDirectory = () => path.join(electronApp.getPath('userData'), '.ygg', 'memory')
+  const getLongTermMemoryDirectory = () => path.join(getServerDataDir(), '.ygg', 'memory')
   const getLongTermMemoryFilePath = () => path.join(getLongTermMemoryDirectory(), 'memory.md')
   const getRecentMemoryFilePath = () => path.join(getLongTermMemoryDirectory(), 'recent_memory.md')
   const sanitizeMemoryProjectDirectoryName = (projectName: string, projectId?: string | null) => {
@@ -5237,10 +4641,11 @@ function setupServer() {
 
       // Check built-in tools first
       const builtInHandler = builtInTools.get(normalizedToolName)
+      const directExecSandbox = toolSandbox
       if (builtInHandler) {
-        if (shouldUseUtilityRuntimeForTool(normalizedToolName)) {
+        if (directExecSandbox && shouldUseUtilityRuntimeForTool(normalizedToolName)) {
           try {
-            result = await utilityToolRuntimeHost.executeTool(normalizedToolName, parsedArgs, toolOptions)
+            result = await directExecSandbox.executeTool(normalizedToolName, parsedArgs, toolOptions)
           } catch (utilityError) {
             if (isUtilityRuntimeFallbackDisabled()) {
               throw utilityError
@@ -5274,9 +4679,9 @@ function setupServer() {
       }
       // Then check custom tools
       else if (customToolRegistry.hasCustomTool(normalizedToolName)) {
-        if (shouldUseUtilityRuntimeForCustomTool(normalizedToolName)) {
+        if (directExecSandbox && shouldUseUtilityRuntimeForCustomTool(normalizedToolName)) {
           try {
-            result = await utilityToolRuntimeHost.executeTool(normalizedToolName, parsedArgs, toolOptions)
+            result = await directExecSandbox.executeTool(normalizedToolName, parsedArgs, toolOptions)
           } catch (utilityError) {
             if (isUtilityRuntimeFallbackDisabled()) {
               throw utilityError
@@ -5862,17 +5267,20 @@ function setupServer() {
     }
   })
 
-  // POST /api/app/restart - Relaunch the Electron app
+  // POST /api/app/restart - Relaunch the host application. Only hosts that
+  // supply the restart capability support this; standalone returns 501.
   app.post('/api/app/restart', (_req, res) => {
     try {
+      const restart = tryGetHostCapabilities()?.restart
+      if (!restart) {
+        res.status(501).json({ success: false, error: 'Restart is not supported by this host' })
+        return
+      }
       res.json({ success: true, message: 'Restarting app' })
       setTimeout(() => {
-        try {
-          electronApp.relaunch()
-          electronApp.exit(0)
-        } catch (error) {
+        restart().catch(error => {
           console.error('[LocalServer] Failed to restart app:', error)
-        }
+        })
       }, 300)
     } catch (error) {
       console.error('[LocalServer] Restart request failed:', error)
@@ -9450,8 +8858,14 @@ function setupServer() {
   // [Phase 0] Duplicate legacy /api/app/* block removed.
   // Canonical app automation routes are defined earlier in setupServer().
 
-  // Start the OAuth callback server on port 1455
-  startOAuthCallbackServer()
+  // Start the OAuth callback server (port 1455 by default). Hosts that do not
+  // enable OAuth (standalone default) skip the listener entirely.
+  const oauthEnabled = tryGetServerConfig()?.oauth.enabled ?? true
+  if (oauthEnabled) {
+    startOAuthCallbackServer()
+  } else {
+    console.log('[OAuthServer] OAuth callback server disabled by host configuration')
+  }
 }
 
 export interface LocalServerStartOptions {
@@ -9565,6 +8979,14 @@ export async function startLocalServer(
   }
 
   try {
+    // Fail fast when the composition root did not run: every start must go
+    // through createYggServer (or a host adapter that configured the host).
+    getHostCapabilities()
+
+    // Fresh Express app per start so a stop/start cycle cannot accumulate
+    // duplicate middleware/routes on the previous instance.
+    app = express()
+
     initializeLocalDatabase(actualDbPath)
     // Register memory routes and their list-only tool handler before tool registries consume builtInTools.
     setupServer()
@@ -9574,32 +8996,45 @@ export async function startLocalServer(
     await customToolRegistry.initialize()
 
     utilityRuntimeAvailable = false
+    toolSandbox = getHostCapabilities().toolSandbox
     if (getToolRuntimeMode() === 'utility') {
-      try {
-        const customToolsDir = customToolRegistry.getCustomToolsDirectoryPath()
-        process.env.YGG_CUSTOM_TOOLS_DIRECTORY = path.dirname(customToolsDir)
-      } catch (error) {
-        console.warn('[LocalServer] Failed to derive custom tools directory override for utility runtime:', error)
-      }
-
-      try {
-        await utilityToolRuntimeHost.initialize()
-        utilityRuntimeAvailable = true
-        console.log('[LocalServer] Utility tool runtime enabled')
+      if (!toolSandbox) {
+        const message =
+          '[LocalServer] Tool runtime mode is "utility" but the host supplied no tool sandbox capability'
+        if (isUtilityRuntimeFallbackDisabled()) {
+          throw new Error(message)
+        }
+        console.error(`${message}; falling back to local tools`)
+      } else {
+        try {
+          const customToolsDir = customToolRegistry.getCustomToolsDirectoryPath()
+          process.env.YGG_CUSTOM_TOOLS_DIRECTORY = path.dirname(customToolsDir)
+        } catch (error) {
+          console.warn('[LocalServer] Failed to derive custom tools directory override for utility runtime:', error)
+        }
 
         try {
-          const syncResult = await utilityToolRuntimeHost.reloadCustomTools('startup_sync')
-          console.log(
-            `[LocalServer] Utility runtime custom tools startup sync complete; total=${syncResult.totalCount ?? 'unknown'} durationMs=${
-              syncResult.durationMs ?? 'n/a'
-            }`
-          )
-        } catch (syncError) {
-          console.warn('[LocalServer] Utility runtime custom tools startup sync failed:', syncError)
+          await toolSandbox.initialize()
+          utilityRuntimeAvailable = true
+          console.log('[LocalServer] Utility tool runtime enabled')
+
+          try {
+            const syncResult = await toolSandbox.reloadCustomTools('startup_sync')
+            console.log(
+              `[LocalServer] Utility runtime custom tools startup sync complete; total=${syncResult.totalCount ?? 'unknown'} durationMs=${
+                syncResult.durationMs ?? 'n/a'
+              }`
+            )
+          } catch (syncError) {
+            console.warn('[LocalServer] Utility runtime custom tools startup sync failed:', syncError)
+          }
+        } catch (error) {
+          utilityRuntimeAvailable = false
+          if (isUtilityRuntimeFallbackDisabled()) {
+            throw error instanceof Error ? error : new Error(String(error))
+          }
+          console.error('[LocalServer] Failed to initialize utility tool runtime; falling back to local tools:', error)
         }
-      } catch (error) {
-        utilityRuntimeAvailable = false
-        console.error('[LocalServer] Failed to initialize utility tool runtime; falling back to local tools:', error)
       }
     }
     await skillRegistry.initialize()
@@ -9608,12 +9043,13 @@ export async function startLocalServer(
     // Initialize tool orchestrator with database and register tools
     toolOrchestrator.initialize(db!)
 
-    if (utilityRuntimeAvailable) {
+    if (utilityRuntimeAvailable && toolSandbox) {
+      const sandbox = toolSandbox
       for (const [toolName, handler] of builtInTools.entries()) {
         toolOrchestrator.registerTool(toolName, async (args, options) => {
           if (shouldUseUtilityRuntimeForTool(toolName)) {
             try {
-              return await utilityToolRuntimeHost.executeTool(toolName, args, options)
+              return await sandbox.executeTool(toolName, args, options)
             } catch (utilityError) {
               if (isUtilityRuntimeFallbackDisabled()) {
                 throw utilityError
@@ -9725,17 +9161,27 @@ export async function startLocalServer(
 }
 
 // Stop the server
-export function stopLocalServer(): Promise<void> {
-  return new Promise(resolve => {
-    // Shutdown tool orchestrator first
-    localAnalyticsWorkerClient.shutdown()
-    toolOrchestrator.shutdown()
-    customToolRegistry.shutdown()
-    utilityRuntimeAvailable = false
-    utilityToolRuntimeHost.shutdown().catch(error => {
+export async function stopLocalServer(): Promise<void> {
+  // Shutdown tool orchestrator first
+  localAnalyticsWorkerClient.shutdown()
+  toolOrchestrator.shutdown()
+  customToolRegistry.shutdown()
+  utilityRuntimeAvailable = false
+  const sandbox = toolSandbox
+  toolSandbox = null
+  if (sandbox) {
+    await sandbox.shutdown().catch(error => {
       console.error('[LocalServer] Failed to shutdown utility tool runtime:', error)
     })
+  }
 
+  // Stop the OAuth pending-flow cleanup timer
+  if (oauthCleanupInterval) {
+    clearInterval(oauthCleanupInterval)
+    oauthCleanupInterval = null
+  }
+
+  return new Promise(resolve => {
     // Close OAuth callback server if running
     if (oauthCallbackServer) {
       oauthCallbackServer.close(() => {

@@ -1,4 +1,4 @@
-import Conf from 'conf'
+import { getSettingsStore } from '../config/settingsStore.js'
 import type { ProviderTokenStore } from './tokenStore.js'
 
 export type StoredElectronAuthSession = {
@@ -76,10 +76,7 @@ function normalizeExpiresAt(value: number | string | null | undefined): string |
 
 export function readElectronAppAuthSession(): { userId: string | null; accessToken: string | null; refreshToken: string | null; expiresAt: string | null } {
   try {
-    const store = new Conf({
-      projectName: 'ygg-chat-r',
-      configFileMode: 0o600,
-    })
+    const store = getSettingsStore()
 
     const authSession = (store.get('auth_session') ?? null) as StoredElectronAuthSession | null
     const userId = String(authSession?.userId || authSession?.user?.id || authSession?.session?.user?.id || '').trim() || null
@@ -108,10 +105,7 @@ export function readElectronOpenAiChatGptTokens(): {
   accountId: string | null
 } {
   try {
-    const store = new Conf({
-      projectName: 'ygg-chat-r',
-      configFileMode: 0o600,
-    })
+    const store = getSettingsStore()
 
     const rawTokens = (store.get(OPENAI_TOKENS_STORAGE_KEY) ?? null) as StoredElectronOpenAiTokens | null
     const accessToken = normalizeAuthorizationToken(rawTokens?.accessToken)
@@ -170,7 +164,7 @@ export async function refreshElectronAppAuthSession(refreshToken: string): Promi
   const payload = (await response.json().catch(() => null)) as any
   if (!payload?.access_token) return null
 
-  const store = new Conf({ projectName: 'ygg-chat-r', configFileMode: 0o600 })
+  const store = getSettingsStore()
   const current = (store.get('auth_session') ?? null) as StoredElectronAuthSession | null
   const nextSession = {
     ...(current?.session || {}),
@@ -192,7 +186,7 @@ export async function refreshElectronAppAuthSession(refreshToken: string): Promi
     session: nextSession,
   }
 
-  ;(store as any).set?.('auth_session', next)
+  store.set('auth_session', next)
   return next
 }
 

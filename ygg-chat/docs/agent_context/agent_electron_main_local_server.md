@@ -1,10 +1,12 @@
 # Agent Context: Electron Main and Local Server
 
-Last reviewed: 2026-08-01
+Last reviewed: 2026-08-21
 
 ## Purpose
 
 Documents Electron main/preload responsibilities and the embedded local Express server used by the desktop app. Since the headless main-agent-loop migration, that same Express app (on `127.0.0.1:3002`) also co-mounts the server-owned chat engine and the cloud gateway — the renderer is now a thin client that talks ONLY to `:3002`.
+
+Since the Phase 1 server/client separation, the server graph is runtime-neutral. Both hosts start it through one factory: `createYggServer(config, capabilities)`. Electron is one host. A standalone Node process is the other host (`npm run build:server` then `npm run start:server`).
 
 ## When to Open This File
 
@@ -19,7 +21,9 @@ Use this when changing:
 
 ## Key Files
 
-- `client/ygg-chat-r/electron/main.ts`: Electron entry and window/server lifecycle; `startLocalServer`/`stopLocalServer`; IPC `app-auth:get-fresh-token` (gated on `resolveGatewayFlags().tokenOwner`, `main.ts:1020`).
+- `client/ygg-chat-r/electron/main.ts`: Electron entry and window/server lifecycle. It starts the server through `createYggServer(buildElectronServerConfig(...), buildElectronHostCapabilities())` and stops it through the returned handle's single-flight `close()`. IPC `app-auth:get-fresh-token` (gated on `resolveGatewayFlags().tokenOwner`).
+- `client/ygg-chat-r/electron/electronHostAdapter.ts`: the Electron host adapter. It supplies paths (`userData`, `temp`, resources), the Conf-backed config/secret stores, `restart`, `openExternal`, the `utilityProcess` tool sandbox, and the BrowserWindow-backed `browse_web` engine. Only Electron-side files import `electron`.
+- `client/ygg-chat-r/electron/server/`: the runtime-neutral server composition modules — `serverConfig.ts` (validated `YggServerConfig`), `hostCapabilities.ts` (capability contracts), `serverHost.ts` (injected host context + host-gated tool names), `createYggServer.ts` (factory + lifecycle handle), `builtinToolRegistry.ts` (all 25 movable built-in tool registrations; `browse_web` registers only when the host supplies a browser engine), `toolSandboxPolicy.ts` (the 14-tool out-of-process whitelist), `corsPolicy.ts`, `nodeStores.ts`, and `standaloneEntry.ts` (the standalone CLI). Nothing in this directory or the graph it composes may import `electron`; `npm run build:server` fails the build on any such import.
 - `client/ygg-chat-r/electron/preload.ts`: renderer preload bridge.
 - `client/ygg-chat-r/electron/localServer.ts`: the single embedded Express app (prefers port 3002, falls back to other local ports). Owns local `/api/app/*` SQLite CRUD (conversations/projects/messages/attachments), health, OAuth callback server (port 1455), and route registration for tools/skills/MCP/LSP/proxy/local-ops. At `localServer.ts:2758` it calls `registerHeadlessServerRoutes(app, { db, statements })`, mounting the headless chat engine + cloud gateway onto the SAME app/port. (Claude Code + GlobalAgentLoop routes and `agent_*` prepared statements have been REMOVED — see "Removed / retired".)
 - `client/ygg-chat-r/electron/localOperations.ts`: local storage/operation helpers.
@@ -42,7 +46,14 @@ Use this when changing:
 - Electron main process owns native capabilities.
 - Renderer should access native/local features through preload/local API, not direct Node APIs.
 - Local server listens on `127.0.0.1:3002` in Electron local mode (fallback ports if taken). `:3002` now hosts three surfaces on one app: local `/api/app/*` CRUD, the cloud gateway (`/api/gw/*`, `/api/cloud/*`), and the server-owned chat SSE routes.
-- The MAIN chat agent loop is NO LONGER renderer-owned. It runs server-side in the Electron main process (`ChatOrchestrator` → `ToolLoopService`); the renderer's chat thunks POST the SSE routes and project the events onto existing Redux state. Tool execution, permission/hook/compaction orchestration all live server-side. The chat thunks require Electron (they throw otherwise).
+- The MAIN chat agent loop is NO LONGER renderer-owned. It runs server-side (`ChatOrchestrator` → `ToolLoopService`); the renderer's chat thunks POST the SSE routes and project the events onto existing Redux state. Tool execution, permission/hook/compaction orchestration all live server-side. The chat thunks require a local-server runtime — Electron or the standalone browser target (`isLocalServerRuntime()` in `src/utils/api.ts`); they throw in plain web mode.
+
+### Standalone server (Phase 1)
+
+- Build: `npm run build:server` → `dist-server/ygg-server.mjs` plus the Node-ABI sandbox bundle and copied assets (prompts, mobile UI, theme templates). One-time per Node version: `npm run install:server-native` installs a Node-ABI `better-sqlite3` under `dist-server/` (kept separate from the Electron-ABI build in `node_modules`).
+- Run: `YGG_DATA_DIR=<dir> npm run start:server`. Environment contract documented at the top of `electron/server/standaloneEntry.ts` (`YGG_HOST`, `YGG_PORT`, `YGG_DB_PATH`, `YGG_TEMP_DIR`, `YGG_RESOURCES_DIR`, `YGG_PROMPTS_DIR`, `YGG_OAUTH_CALLBACK_ENABLED`, `YGG_CORS_ALLOWED_ORIGINS`, `YGG_ALLOW_NON_LOOPBACK_BIND`, `YGG_TOOLS_RUNTIME`, `YGG_TOOL_RUNTIME_FALLBACK`).
+- Security defaults differ from desktop on purpose: loopback bind only (non-loopback refused without the explicit override), loopback/allowlist CORS instead of permissive, OAuth callback listener OFF, tool runtime `utility` with the in-process fallback DISABLED (a sandbox failure fails the tool call), and `browse_web` absent from the advertised tool list (no browser engine capability — follow-on F1 in the Phase 1 plan).
+- Browser dev target: `npm run dev:standalone` (Vite proxies `/api`, `/lsp`, `/ide-context` to the standalone server; `VITE_ENVIRONMENT=standalone` makes the renderer use same-origin/configured Ygg routes).
 
 ### Local server ⊕ headless server (ownership boundary)
 
@@ -78,6 +89,8 @@ Use this when changing:
 
 - Build Electron: `npm --prefix client/ygg-chat-r run build:electron`.
 - Build main/preload bundle: `npm --prefix client/ygg-chat-r run build:electron:main`.
+- Build standalone server: `npm --prefix client/ygg-chat-r run build:server` (also the electron-import leak check).
+- Server graph unit tests: `npm --prefix client/ygg-chat-r run test:server`.
 - Tool/local route changes: `npm --prefix client/ygg-chat-r run test:tools`.
 - Headless chat engine + gateway (chatRoutes/gatewayRoutes/cloudProxyRoutes/gatewayFlags/services): `npm --prefix client/ygg-chat-r run test:headless`.
 

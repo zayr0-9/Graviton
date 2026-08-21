@@ -9,6 +9,13 @@ import { logClientError } from '../services/clientTelemetry'
 export const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:3001/api'
 export const environment = import.meta.env.VITE_ENVIRONMENT || 'local'
 const DEFAULT_LOCAL_SERVER_ORIGIN = 'http://127.0.0.1:3002'
+// Explicit development override for the Ygg server origin (browser targets).
+const CONFIGURED_LOCAL_SERVER_ORIGIN = ((): string | null => {
+  const raw = import.meta.env.VITE_YGG_SERVER_ORIGIN
+  if (!raw || typeof raw !== 'string') return null
+  const trimmed = raw.trim().replace(/\/+$/, '')
+  return /^https?:\/\//i.test(trimmed) ? trimmed : null
+})()
 const LOCAL_SERVER_STATUS_CACHE_TTL_MS = 15000
 const LOCAL_SERVER_STATUS_TIMEOUT_MS = 3000
 
@@ -176,6 +183,30 @@ function isElectronRuntimeWithSyncIpc(): boolean {
   return typeof window.electronAPI?.sync?.status === 'function'
 }
 
+/**
+ * True when this renderer targets the local Ygg server: the Electron desktop
+ * app (origin discovered over sync:status IPC) or the standalone browser
+ * target (same-origin/configured). Server-owned chat flows gate on this, not
+ * on Electron specifically.
+ */
+export function isLocalServerRuntime(): boolean {
+  return environment === 'electron' || environment === 'standalone'
+}
+
+/**
+ * Origin used when no Electron IPC discovery is available, in precedence
+ * order: explicit configured origin (development) -> same-origin for the
+ * standalone browser target -> loopback default (local development).
+ */
+function resolveBrowserFallbackOrigin(): string {
+  if (CONFIGURED_LOCAL_SERVER_ORIGIN) return CONFIGURED_LOCAL_SERVER_ORIGIN
+  if (environment === 'standalone' && typeof window !== 'undefined') {
+    const sameOrigin = normalizeOrigin(window.location.origin)
+    if (sameOrigin) return sameOrigin
+  }
+  return DEFAULT_LOCAL_SERVER_ORIGIN
+}
+
 function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
   return new Promise((resolve, reject) => {
     const timeoutId = window.setTimeout(() => {
@@ -262,7 +293,7 @@ export async function refreshLocalServerStatus(): Promise<LocalServerStatus> {
 
 export async function getLocalServerOrigin(): Promise<string> {
   const status = await fetchLocalServerStatus()
-  return normalizeOrigin(status.localServerUrl) || DEFAULT_LOCAL_SERVER_ORIGIN
+  return normalizeOrigin(status.localServerUrl) || resolveBrowserFallbackOrigin()
 }
 
 export async function getLocalServerLanOrigin(): Promise<string | null> {
@@ -271,7 +302,7 @@ export async function getLocalServerLanOrigin(): Promise<string | null> {
 }
 
 export function getCachedLocalServerOrigin(): string {
-  return normalizeOrigin(cachedLocalServerStatus?.localServerUrl) || DEFAULT_LOCAL_SERVER_ORIGIN
+  return normalizeOrigin(cachedLocalServerStatus?.localServerUrl) || resolveBrowserFallbackOrigin()
 }
 
 /**
@@ -327,11 +358,13 @@ export function buildCachedLocalWebSocketUrl(pathname: string): string {
   return `${getCachedLocalServerOrigin().replace(/^http/i, 'ws')}${normalizeEndpoint(pathname)}`
 }
 
-// Helper to determine if we should use local API
+// Helper to determine if we should use local API. Both the Electron desktop
+// app and the standalone browser target talk to the local Ygg server.
 export function shouldUseLocalApi(storageMode?: StorageMode, env?: string): boolean {
   const runtimeEnv = env || environment
-  if (isCommunityMode && runtimeEnv === 'electron') return true
-  return storageMode === 'local' && runtimeEnv === 'electron'
+  const localServerCapable = runtimeEnv === 'electron' || runtimeEnv === 'standalone'
+  if (isCommunityMode && localServerCapable) return true
+  return storageMode === 'local' && localServerCapable
 }
 
 // ---------------------------------------------------------------------------

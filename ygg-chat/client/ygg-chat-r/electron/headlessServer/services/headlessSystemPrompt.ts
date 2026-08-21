@@ -1,6 +1,7 @@
 import { existsSync, readFileSync } from 'node:fs'
-import { join } from 'node:path'
+import { basename, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { tryGetServerConfig } from '../../server/serverHost.js'
 
 export type HeadlessOperationMode = 'plan' | 'execute'
 export type HeadlessPlanModeVerbosity = 'concise' | 'normal' | 'detailed'
@@ -39,33 +40,84 @@ export function buildHeadlessPlanModeResponseStylePrompt(verbosity?: HeadlessPla
 }
 
 const candidatePromptPaths = (relativePath: string): string[] => {
-  const paths = [
+  const paths: string[] = []
+
+  // Host-configured prompt assets directory (standalone bundles copy the
+  // prompt files there; Electron may set it for packaged resources).
+  const promptsDir = tryGetServerConfig()?.promptsDir
+  if (promptsDir) {
+    paths.push(join(promptsDir, basename(relativePath)))
+  }
+
+  paths.push(
     // Source/test runtime: electron/headlessServer/services/*.ts -> repo root.
     fileURLToPath(new URL(`../../../${relativePath}`, import.meta.url)),
     // Bundled Electron main runtime: electron/main.mjs -> repo/app root.
     fileURLToPath(new URL(`../${relativePath}`, import.meta.url)),
     // Local development fallback when the server is started from the package root.
-    join(process.cwd(), relativePath),
-  ]
+    join(process.cwd(), relativePath)
+  )
 
   return [...new Set(paths)]
 }
 
-const readPromptFile = (relativePath: string): string => {
+const resolvePromptFilePath = (relativePath: string): { path: string | null; candidates: string[] } => {
   const candidates = candidatePromptPaths(relativePath)
 
   for (const candidate of candidates) {
     try {
       if (existsSync(candidate)) {
-        return readFileSync(candidate, 'utf8').trim()
+        return { path: candidate, candidates }
       }
     } catch {
-      // Try the next candidate before warning below.
+      // Try the next candidate.
+    }
+  }
+
+  return { path: null, candidates }
+}
+
+const readPromptFile = (relativePath: string): string => {
+  const { path: resolved, candidates } = resolvePromptFilePath(relativePath)
+
+  if (resolved) {
+    try {
+      return readFileSync(resolved, 'utf8').trim()
+    } catch {
+      // Fall through to the warning below.
     }
   }
 
   console.warn(`[HeadlessSystemPrompt] Failed to load operation mode prompt from: ${candidates.join(', ')}`)
   return ''
+}
+
+/**
+ * Startup assertion: every operation-mode prompt must resolve on this host.
+ * The read path degrades to an empty prompt (and caches it), so a missing
+ * asset after extraction would otherwise fail silently per request. Called by
+ * createYggServer before the server starts.
+ */
+export function assertHeadlessPromptsAvailable(): void {
+  const missing: string[] = []
+
+  for (const relativePath of [
+    DEFAULT_CHAT_MODE_PROMPT_RELATIVE_PATH,
+    DEFAULT_AGENT_MODE_PROMPT_RELATIVE_PATH,
+    DEFAULT_SUBAGENT_MODE_PROMPT_RELATIVE_PATH,
+  ]) {
+    const { path: resolved, candidates } = resolvePromptFilePath(relativePath)
+    if (!resolved) {
+      missing.push(`${basename(relativePath)} (checked: ${candidates.join(', ')})`)
+    }
+  }
+
+  if (missing.length > 0) {
+    throw new Error(
+      `[HeadlessSystemPrompt] Operation-mode prompt assets are missing on this host: ${missing.join('; ')}. ` +
+        'Set promptsDir in the server config or fix the bundle to include the prompt markdown files.'
+    )
+  }
 }
 
 export function getHeadlessOperationModePrompt(operationMode?: HeadlessOperationMode | null): string {

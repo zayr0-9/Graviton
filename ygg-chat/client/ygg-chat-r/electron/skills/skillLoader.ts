@@ -1,9 +1,9 @@
 // electron/skills/skillLoader.ts
 // Discovery, parsing, and validation of Agent Skills
 
-import { app } from 'electron'
 import fs from 'fs/promises'
 import path from 'path'
+import { tryGetServerConfig } from '../server/serverHost.js'
 import { normalizeSkillName, parseSkillManifest } from './skillManifest.js'
 
 const SKILLS_DIR_NAME = 'skills'
@@ -70,14 +70,15 @@ function resolveBaseDir(): string {
     return cachedBaseDir
   }
 
-  // Use Electron's userData path, with fallback for non-Electron environments
-  try {
-    cachedBaseDir = app.getPath('userData')
-  } catch {
-    cachedBaseDir = path.resolve(process.cwd(), '.ygg-chat-r')
+  // Injected host data directory (Electron userData or standalone YGG_DATA_DIR).
+  const hostDataDir = tryGetServerConfig()?.dataDir
+  if (hostDataDir) {
+    cachedBaseDir = hostDataDir
+    return cachedBaseDir
   }
 
-  return cachedBaseDir
+  // Not cached: the host context may be configured after an early call.
+  return path.resolve(process.cwd(), '.ygg-chat-r')
 }
 
 class SkillRegistry {

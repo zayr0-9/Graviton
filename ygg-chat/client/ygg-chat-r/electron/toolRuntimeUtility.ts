@@ -416,8 +416,36 @@ function initializeBuiltInToolRegistry(): void {
   })
 }
 
+// Parent transport. Under Electron utilityProcess the parent speaks over
+// process.parentPort; under a plain Node child_process fork it speaks over the
+// standard IPC channel (process.send / process.on('message')). The message
+// protocol is identical on both transports.
+interface ParentTransport {
+  post(message: UtilityRuntimeResponse): void
+  onMessage(listener: (raw: unknown) => void): void
+}
+
+function resolveParentTransport(): ParentTransport {
+  const parentPort = (process as any).parentPort
+  if (parentPort && typeof parentPort.on === 'function') {
+    return {
+      post: message => parentPort.postMessage(message),
+      onMessage: listener => parentPort.on('message', listener),
+    }
+  }
+  if (typeof process.send === 'function') {
+    return {
+      post: message => process.send!(message),
+      onMessage: listener => process.on('message', listener),
+    }
+  }
+  throw new Error('Utility runtime parent transport is unavailable (no parentPort and no IPC channel)')
+}
+
+let parentTransport: ParentTransport | null = null
+
 function postMessage(message: UtilityRuntimeResponse): void {
-  ;(process as any).parentPort?.postMessage(message)
+  parentTransport?.post(message)
 }
 
 function normalizeIncomingMessage(raw: unknown): UtilityRuntimeRequest | null {
@@ -566,12 +594,9 @@ async function handleRequest(message: UtilityRuntimeRequest): Promise<void> {
 async function bootstrap(): Promise<void> {
   initializeBuiltInToolRegistry()
 
-  const parentPort = (process as any).parentPort
-  if (!parentPort || typeof parentPort.on !== 'function') {
-    throw new Error('Utility runtime parent port is unavailable')
-  }
+  parentTransport = resolveParentTransport()
 
-  parentPort.on('message', (rawMessage: unknown) => {
+  parentTransport.onMessage((rawMessage: unknown) => {
     const message = normalizeIncomingMessage(rawMessage)
     if (!message) {
       return

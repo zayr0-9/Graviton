@@ -2,7 +2,8 @@ import type Database from 'better-sqlite3'
 import type { Express } from 'express'
 import { mcpManager } from '../mcp/mcpManager.js'
 import { customToolRegistry } from '../tools/customToolLoader.js'
-import { toolOrchestrator } from '../tools/orchestrator/index.js'
+import { toolOrchestrator as defaultToolOrchestrator } from '../tools/orchestrator/index.js'
+import { isBuiltInToolAvailable } from '../server/serverHost.js'
 import { BUILTIN_TOOL_DEFINITIONS } from '../../../../shared/builtinToolDefinitions.js'
 import { syncOpenAiChatGptTokenFromElectronStorage, syncOpenRouterTokenFromElectronSession } from './providers/electronAppAuth.js'
 import { ProviderTokenStore } from './providers/tokenStore.js'
@@ -34,9 +35,17 @@ import { ProviderRouter, normalizeProviderRoute } from './services/providerRoute
 import { resolveGatewayFlags } from './config/gatewayFlags.js'
 import type { ToolExecutor } from './services/toolLoopService.js'
 
+type OrchestratorLike = typeof defaultToolOrchestrator
+
 interface HeadlessServerRouteDeps {
   db: Database.Database
   statements: any
+  /**
+   * Tool orchestrator owning submit/poll/cancel. The composition root
+   * (localServer.ts) injects the instance it registered tools on; the default
+   * keeps legacy behavior for tests that register routes directly.
+   */
+  orchestrator?: OrchestratorLike
 }
 
 type InferenceToolDefinition = { name: string; description?: string; inputSchema?: Record<string, any> }
@@ -70,13 +79,16 @@ const HEADLESS_RUNTIME_BUILTIN_TOOL_NAMES = new Set([
   'multi_call',
 ])
 
-const BUILT_IN_INFERENCE_TOOLS: InferenceToolDefinition[] = BUILTIN_TOOL_DEFINITIONS.filter(tool =>
-  HEADLESS_RUNTIME_BUILTIN_TOOL_NAMES.has(tool.name)
-).map(tool => ({
-  name: tool.name,
-  description: tool.description,
-  inputSchema: tool.inputSchema,
-}))
+// Computed per call: host-gated tools (e.g. browse_web without a browser
+// engine) are resolved during server startup, after this module loads.
+const getBuiltInInferenceTools = (): InferenceToolDefinition[] =>
+  BUILTIN_TOOL_DEFINITIONS.filter(
+    tool => HEADLESS_RUNTIME_BUILTIN_TOOL_NAMES.has(tool.name) && isBuiltInToolAvailable(tool.name)
+  ).map(tool => ({
+    name: tool.name,
+    description: tool.description,
+    inputSchema: tool.inputSchema,
+  }))
 
 const toMcpInferenceTool = (tool: any): InferenceToolDefinition | null => {
   const visibility = tool?._meta?.ui?.visibility
@@ -109,7 +121,7 @@ const dedupeToolsByName = (tools: InferenceToolDefinition[]): InferenceToolDefin
 }
 
 const resolveDefaultInferenceTools = (): InferenceToolDefinition[] => {
-  const tools: InferenceToolDefinition[] = [...BUILT_IN_INFERENCE_TOOLS]
+  const tools: InferenceToolDefinition[] = getBuiltInInferenceTools()
 
   try {
     const customTools = customToolRegistry
@@ -162,7 +174,9 @@ const DEFAULT_SUBAGENT_TOOL_NAMES = [
 const resolveInferenceToolsByName = (
   names: string[] | undefined
 ): { tools: InferenceToolDefinition[]; resolvedNames: string[]; unknownNames: string[] } => {
-  const requested = Array.isArray(names) ? names : DEFAULT_SUBAGENT_TOOL_NAMES
+  // Host-gated names drop out of the default set so they are not reported
+  // as unknown on hosts that cannot run them.
+  const requested = Array.isArray(names) ? names : DEFAULT_SUBAGENT_TOOL_NAMES.filter(isBuiltInToolAvailable)
   const wanted = new Set([
     ...requested.filter(name => typeof name === 'string' && !SUBAGENT_EXCLUDED_TOOL_NAMES.has(name)),
     ...REQUIRED_SUBAGENT_TOOL_NAMES,
@@ -185,7 +199,7 @@ const sleep = (ms: number): Promise<void> =>
     setTimeout(resolve, ms)
   })
 
-const executeToolViaOrchestrator: ToolExecutor = async (toolCall, context) => {
+const createOrchestratorToolExecutor = (toolOrchestrator: OrchestratorLike): ToolExecutor => async (toolCall, context) => {
   const timeoutMs = Math.max(1_000, Math.min(context.timeoutMs ?? 300_000, 600_000))
 
   const parsedArguments =
@@ -253,6 +267,8 @@ const executeToolViaOrchestrator: ToolExecutor = async (toolCall, context) => {
 export function registerHeadlessServerRoutes(app: Express, deps: HeadlessServerRouteDeps): void {
   const tokenStore = new ProviderTokenStore(deps.db)
   bootstrapHeadlessProviderTokens(tokenStore)
+
+  const executeToolViaOrchestrator = createOrchestratorToolExecutor(deps.orchestrator ?? defaultToolOrchestrator)
 
   // Gateway flags are resolved once at startup. Chat and route-independent runs default on.
   const gatewayFlags = resolveGatewayFlags()

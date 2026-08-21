@@ -30,7 +30,7 @@
  * the default-off path.
  */
 
-import Conf from 'conf'
+import { getSettingsStore } from './settingsStore.js'
 
 export interface GatewayFlags {
   chat: boolean
@@ -64,7 +64,7 @@ export function resolveGatewayFlags(): GatewayFlags {
   let cloudProxy = false
   let resumableRuns = true
   try {
-    const store = new Conf({ projectName: 'ygg-chat-r', configFileMode: 0o600 })
+    const store = getSettingsStore()
     chat = store.get('gateway.chat') !== false
     tokenOwner = store.get('gateway.tokenOwner') === true
     crud = store.get('gateway.crud') === true

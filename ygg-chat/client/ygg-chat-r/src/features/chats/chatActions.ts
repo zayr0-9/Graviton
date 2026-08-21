@@ -25,6 +25,7 @@ import {
   environment,
   getCachedLocalApiBase,
   gwApi,
+  isLocalServerRuntime,
   localApi,
   shouldUseLocalApi,
 } from '../../utils/api'
@@ -711,11 +712,11 @@ type MemoryContexts = {
 
 const maybeLoadMemoryContexts = async (project?: ChatHookProjectContext | null): Promise<MemoryContexts> => {
   const emptyMemoryContexts: MemoryContexts = { longTermMemory: null, recentMemory: null, projectMemory: null, projectName: null }
-  const isElectronMode =
-    import.meta.env.VITE_ENVIRONMENT === 'electron' ||
-    (typeof __IS_ELECTRON__ !== 'undefined' && __IS_ELECTRON__)
+  // Memory files are server-owned: any local-server runtime (Electron or the
+  // standalone browser target) can load them.
+  const isLocalEngineMode = isLocalServerRuntime() || (typeof __IS_ELECTRON__ !== 'undefined' && __IS_ELECTRON__)
 
-  if (!isElectronMode || !loadLongTermMemoryContextEnabled()) return emptyMemoryContexts
+  if (!isLocalEngineMode || !loadLongTermMemoryContextEnabled()) return emptyMemoryContexts
 
   try {
     const params = new URLSearchParams({ maxChars: '10000', recentMaxChars: '10000', projectMaxChars: '12000' })
@@ -1402,7 +1403,7 @@ export const compactBranch = createAsyncThunk<
         storage_mode: storageMode,
       })
 
-      if (import.meta.env.VITE_ENVIRONMENT === 'electron') {
+      if (isLocalServerRuntime()) {
         localApi
           .post('/sync/message', {
             ...summaryMessage,
@@ -1597,7 +1598,7 @@ export const sendMessage = createAsyncThunk<
 
       // Determine execution mode
       const isElectronMode =
-        import.meta.env.VITE_ENVIRONMENT === 'electron' || (typeof __IS_ELECTRON__ !== 'undefined' && __IS_ELECTRON__)
+        isLocalServerRuntime() || (typeof __IS_ELECTRON__ !== 'undefined' && __IS_ELECTRON__)
 
       // ── Server-owned chat loop (thin client) ──
       // Every provider's send now runs through the headless engine (Phase 6 cutover;
@@ -2192,7 +2193,7 @@ export const editMessageWithBranching = createAsyncThunk<
 
       // Determine execution mode
       const isElectronMode =
-        import.meta.env.VITE_ENVIRONMENT === 'electron' || (typeof __IS_ELECTRON__ !== 'undefined' && __IS_ELECTRON__)
+        isLocalServerRuntime() || (typeof __IS_ELECTRON__ !== 'undefined' && __IS_ELECTRON__)
 
       // ── Server-owned chat loop (thin client) — edit-branch ──
       // Every provider runs through the headless engine (Phase 6). Web mode is not a
@@ -2442,7 +2443,7 @@ export const sendMessageToBranch = createAsyncThunk<
 
       // Determine execution mode
       const isElectronMode =
-        import.meta.env.VITE_ENVIRONMENT === 'electron' || (typeof __IS_ELECTRON__ !== 'undefined' && __IS_ELECTRON__)
+        isLocalServerRuntime() || (typeof __IS_ELECTRON__ !== 'undefined' && __IS_ELECTRON__)
 
       // ── Server-owned chat loop (thin client) — branch ──
       // Every provider runs through the headless engine (Phase 6). Web mode is not a
@@ -2575,8 +2576,8 @@ export const syncConversationToLocal = createAsyncThunk<
   { conversationId: ConversationId; messages: Message[]; storageMode?: 'local' | 'cloud' },
   { state: RootState; extra: ThunkExtraArgument }
 >('chat/syncConversationToLocal', async ({ conversationId, messages, storageMode }, { extra, getState }) => {
-  // Only run in Electron mode
-  if (import.meta.env.VITE_ENVIRONMENT !== 'electron') return
+  // Only run when this renderer targets the local Ygg server
+  if (!isLocalServerRuntime()) return
   const remoteApiBase = getRemoteApiBase()
   if (!remoteApiBase) return
 
@@ -2908,7 +2909,7 @@ export const initializeUserAndConversation = createAsyncThunk<
   const { auth } = extra
   dispatch(chatSliceActions.initializationStarted())
   try {
-    if (isCommunityMode && import.meta.env.VITE_ENVIRONMENT === 'electron') {
+    if (isCommunityMode && isLocalServerRuntime()) {
       if (!auth.userId) {
         throw new Error('User not authenticated')
       }
@@ -3310,7 +3311,7 @@ export const fetchCustomTools = createAsyncThunk<void, void, { state: RootState 
   async (_, { dispatch }) => {
     // Check if we're in Electron mode
     const isElectronMode =
-      import.meta.env.VITE_ENVIRONMENT === 'electron' ||
+      isLocalServerRuntime() ||
       (typeof __IS_ELECTRON__ !== 'undefined' && __IS_ELECTRON__) ||
       (typeof window !== 'undefined' && (window as any).electronAPI)
 
@@ -3385,7 +3386,7 @@ export const fetchMcpTools = createAsyncThunk<void, void, { state: RootState }>(
   async (_, { dispatch }) => {
     // Check if we're in Electron mode
     const isElectronMode =
-      import.meta.env.VITE_ENVIRONMENT === 'electron' ||
+      isLocalServerRuntime() ||
       (typeof __IS_ELECTRON__ !== 'undefined' && __IS_ELECTRON__) ||
       (typeof window !== 'undefined' && (window as any).electronAPI)
 

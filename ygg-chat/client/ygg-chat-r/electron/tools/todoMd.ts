@@ -1,7 +1,7 @@
-import { app } from 'electron'
 import fs from 'fs/promises'
 import path from 'path'
 import { Config, uniqueNamesGenerator } from 'unique-names-generator'
+import { tryGetServerConfig } from '../server/serverHost.js'
 
 const TODO_DIR_NAME = 'todos'
 const TODO_FILE_EXTENSION = '.md'
@@ -33,13 +33,15 @@ function resolveBaseDir(): string {
     return cachedBaseDir
   }
 
-  try {
-    cachedBaseDir = app.getPath('userData')
-  } catch (error) {
-    cachedBaseDir = path.resolve(process.cwd(), '.ygg-chat-r', 'todos-storage')
+  // Injected host data directory (Electron userData or standalone YGG_DATA_DIR).
+  const hostDataDir = tryGetServerConfig()?.dataDir
+  if (hostDataDir) {
+    cachedBaseDir = hostDataDir
+    return cachedBaseDir
   }
 
-  return cachedBaseDir
+  // Not cached: the host context may be configured after an early call.
+  return path.resolve(process.cwd(), '.ygg-chat-r', 'todos-storage')
 }
 
 function getTodoDirectory(): string {

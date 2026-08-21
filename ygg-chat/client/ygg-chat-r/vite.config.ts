@@ -1,13 +1,44 @@
 import tailwindcss from '@tailwindcss/vite'
 import react from '@vitejs/plugin-react-swc'
 import path from 'path'
-import { defineConfig } from 'vite'
+import { defineConfig, type ProxyOptions } from 'vite'
 
 // https://vite.dev/config/
 export default defineConfig(() => {
   const buildTarget = process.env.BUILD_TARGET || 'local'
   const isElectron = buildTarget === 'electron'
   const isWeb = buildTarget === 'web'
+  const isStandalone = buildTarget === 'standalone'
+  // Standalone browser target: the dev proxy forwards /api and the WebSocket
+  // paths to the standalone Ygg server (start it with `npm run start:server`).
+  const standaloneServerTarget = process.env.YGG_SERVER_PROXY_TARGET || 'http://127.0.0.1:3002'
+  const devProxy: Record<string, ProxyOptions> = isStandalone
+    ? {
+        '/api': {
+          target: standaloneServerTarget,
+          changeOrigin: true,
+          secure: false,
+        },
+        '/lsp': {
+          target: standaloneServerTarget,
+          changeOrigin: true,
+          secure: false,
+          ws: true,
+        },
+        '/ide-context': {
+          target: standaloneServerTarget,
+          changeOrigin: true,
+          secure: false,
+          ws: true,
+        },
+      }
+    : {
+        '/api': {
+          target: 'http://localhost:3001',
+          changeOrigin: true,
+          secure: false,
+        },
+      }
 
   return {
     // Use relative paths for Electron (file:// protocol requires ./ instead of /)
@@ -59,13 +90,7 @@ export default defineConfig(() => {
     // Server config
     server: {
       port: 5173,
-      proxy: {
-        '/api': {
-          target: 'http://localhost:3001',
-          changeOrigin: true,
-          secure: false,
-        },
-      },
+      proxy: devProxy,
     },
   }
 })

@@ -14,7 +14,8 @@ import {
   setBraveApiKey,
 } from './keytarSecrets.js'
 import { ensureManagedHooksInitialized } from './hooks/hookStorage.js'
-import { startLocalServer, stopLocalServer } from './localServer.js'
+import { buildElectronHostCapabilities, buildElectronServerConfig } from './electronHostAdapter.js'
+import { createYggServer, type YggServerHandle } from './server/createYggServer.js'
 import { ensureManagedCustomToolsInitialized } from './tools/customToolLoader.js'
 import { ensureManagedThemesInitialized } from './tools/themeManager.js'
 import { detectPathType, getWSLCommandArgs, isWindows } from './utils/wslBridge.js'
@@ -35,6 +36,7 @@ let isQuitting = false
 let compactMode = false
 let savedBounds: Electron.Rectangle | null = null
 let localServerStarted = false
+let localServerHandle: YggServerHandle | null = null
 let localServerPort: number | null = null
 let localServerUrl: string | null = null
 let localServerLanUrl: string | null = null
@@ -1050,21 +1052,24 @@ app.whenReady().then(async () => {
       `[Electron] Local server bind host: ${LOCAL_SERVER_HOST}, advertise host: ${LOCAL_SERVER_ADVERTISE_HOST}, remote access: ${LOCAL_SERVER_ALLOW_REMOTE}`
     )
     try {
-      const localDbPath = path.join(app.getPath('userData'), 'local-sync.db')
-      const localServerInfo = await startLocalServer({
-        preferredPort: LOCAL_SERVER_PREFERRED_PORT,
-        fallbackPorts: LOCAL_SERVER_FALLBACK_PORTS,
-        host: LOCAL_SERVER_HOST,
-        allowEphemeralPort: LOCAL_SERVER_ALLOW_EPHEMERAL_PORT,
-        dbPath: localDbPath,
-      })
+      // Shared factory (Phase 1 server/client separation): Electron supplies
+      // paths/capabilities; the runtime-neutral graph owns everything else.
+      localServerHandle = await createYggServer(
+        buildElectronServerConfig({
+          bindHost: LOCAL_SERVER_HOST,
+          preferredPort: LOCAL_SERVER_PREFERRED_PORT,
+          fallbackPorts: LOCAL_SERVER_FALLBACK_PORTS,
+          allowEphemeralPort: LOCAL_SERVER_ALLOW_EPHEMERAL_PORT,
+        }),
+        buildElectronHostCapabilities()
+      )
       localServerStarted = true
-      localServerPort = localServerInfo.port
-      localServerUrl = `http://${LOCAL_SERVER_ADVERTISE_HOST}:${localServerInfo.port}`
+      localServerPort = localServerHandle.port
+      localServerUrl = `http://${LOCAL_SERVER_ADVERTISE_HOST}:${localServerHandle.port}`
       const detectedLanHost = LOCAL_SERVER_ALLOW_REMOTE ? detectPreferredLanIpv4() : null
-      localServerLanUrl = detectedLanHost ? `http://${detectedLanHost}:${localServerInfo.port}` : null
+      localServerLanUrl = detectedLanHost ? `http://${detectedLanHost}:${localServerHandle.port}` : null
       localServerError = null
-      process.env.YGG_LOCAL_SERVER_PORT = String(localServerInfo.port)
+      process.env.YGG_LOCAL_SERVER_PORT = String(localServerHandle.port)
       process.env.YGG_LOCAL_SERVER_URL = localServerUrl
       if (localServerLanUrl) {
         process.env.YGG_LOCAL_SERVER_LAN_URL = localServerLanUrl
@@ -1072,12 +1077,13 @@ app.whenReady().then(async () => {
         delete process.env.YGG_LOCAL_SERVER_LAN_URL
       }
       console.log(
-        `[Electron] Local sync server started on ${localServerInfo.url} (renderer endpoint: ${localServerUrl}, lan endpoint: ${localServerLanUrl || 'n/a'})`
+        `[Electron] Local sync server started on ${localServerHandle.origin} (renderer endpoint: ${localServerUrl}, lan endpoint: ${localServerLanUrl || 'n/a'})`
       )
     } catch (localServerStartError) {
       console.warn('[Electron] Failed to start local sync server:', localServerStartError)
       console.warn('[Electron] Continuing without local sync - data will not be synced locally')
       localServerStarted = false
+      localServerHandle = null
       localServerPort = null
       localServerUrl = null
       localServerLanUrl = null
@@ -1106,10 +1112,11 @@ app.on('window-all-closed', () => {
   if (!isQuitting && !isDebugMode) {
     return
   }
-  // Stop local sync server
+  // Stop local sync server (close() is single-flight and idempotent)
   if (localServerStarted) {
     console.log('[Electron] Stopping local sync server...')
-    stopLocalServer().catch(err => console.error('[Electron] Error stopping local server:', err))
+    localServerHandle?.close().catch(err => console.error('[Electron] Error stopping local server:', err))
+    localServerHandle = null
     localServerStarted = false
     localServerPort = null
     localServerUrl = null
@@ -1136,9 +1143,10 @@ app.on('before-quit', () => {
   for (const sessionId of Array.from(activeTerminalSessions.keys())) {
     destroyTerminalSession(sessionId)
   }
-  // Ensure local sync server is stopped
+  // Ensure local sync server is stopped (close() is single-flight and idempotent)
   if (localServerStarted) {
-    stopLocalServer().catch(err => console.error('[Electron] Error stopping local server on quit:', err))
+    localServerHandle?.close().catch(err => console.error('[Electron] Error stopping local server on quit:', err))
+    localServerHandle = null
     localServerStarted = false
     localServerPort = null
     localServerUrl = null

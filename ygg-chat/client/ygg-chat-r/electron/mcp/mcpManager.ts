@@ -2,7 +2,6 @@
 // MCP (Model Context Protocol) server manager
 // Manages connections to MCP servers that provide tools, resources, and prompts
 
-import { app, shell } from 'electron'
 import { spawn, ChildProcess } from 'child_process'
 import fs from 'fs/promises'
 import path from 'path'
@@ -15,6 +14,7 @@ import {
   parseWwwAuthenticateBearerChallenge,
 } from './oauthDiscovery.js'
 import { mcpOAuthSecretStore, type McpOAuthSecrets } from './mcpOAuthSecrets.js'
+import { tryGetHostCapabilities, tryGetServerConfig } from '../server/serverHost.js'
 
 // ============================================================================
 // Types and Interfaces
@@ -839,7 +839,13 @@ class McpClient extends EventEmitter {
         authUrl.searchParams.set('scope', oauthMeta.scope)
       }
 
-      await shell.openExternal(authUrl.toString())
+      const openExternal = tryGetHostCapabilities()?.openExternal
+      if (!openExternal) {
+        throw new Error(
+          `MCP OAuth requires a browser. This host cannot open URLs; open it manually: ${authUrl.toString()}`
+        )
+      }
+      await openExternal(authUrl.toString())
 
       const authCode = await callbackServer.waitForCode(5 * 60_000)
 
@@ -1478,11 +1484,12 @@ class McpManager extends EventEmitter {
   }
 
   getConfigDirectory(): string {
-    try {
-      return app.getPath('userData')
-    } catch {
-      return path.resolve(process.cwd(), '.ygg-chat-r')
+    // Injected host data directory (Electron userData or standalone YGG_DATA_DIR).
+    const hostDataDir = tryGetServerConfig()?.dataDir
+    if (hostDataDir) {
+      return hostDataDir
     }
+    return path.resolve(process.cwd(), '.ygg-chat-r')
   }
 
   getConfigPath(): string {
