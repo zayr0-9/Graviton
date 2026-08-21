@@ -209,14 +209,27 @@ Chat passes Heimdall:
 
 Mobile layout may render Heimdall differently/conditionally, but most desktop tree work should be validated on non-mobile first.
 
-## Parallel Branch Pane (Desktop MVP)
+## Parallel Branch Pane (Shared View, Separate Controller)
 
-`Chat.tsx` remains the sole route/snapshot owner. It can render one optional `ParallelChatPane` next to the primary transcript and the shared Heimdall tree. The secondary pane is session-only: it resets on a conversation route change or reload.
+`Chat.tsx` remains the sole route/snapshot owner. It can render one optional `ParallelChatPane` next to the primary transcript and the shared Heimdall tree. The secondary pane is session-only: it resets on a conversation route change or reload. Never mount a second full `Chat` container; that would duplicate route ownership, snapshot reconciliation, global listeners, and singleton application state.
 
-- Heimdall's single-message **Open in Parallel** action calls `onOpenParallel(conversationId, messageId, path)` without mutating the primary Redux `currentPath`.
-- The pane renders from the shared conversation snapshot with `selectDisplayMessagesFor(messages, path)` and resolves only its branch stream with `selectCurrentViewStreamFor(streaming, { conversationId, lineageId, path })`.
-- Its composer and pending stream are local to the pane; its send passes explicit `branchPath` and `lineageId` to `sendMessage`, so thunk history cannot be changed by a later primary-path selection.
-- The MVP intentionally leaves mobile single-pane and retains the existing primary transcript's full composer/action surface. Avoid mounting a second full `Chat` container because it would duplicate route, snapshot, global listener, and singleton-composition behavior.
+The two chat surfaces now share pane primitives under `src/components/ChatPane/`:
+- `ChatInputController` keeps high-frequency draft input local to each mounted pane.
+- `ChatComposerFrame` provides the same rounded glass input/control geometry and send/loading affordance.
+- `ChatPaneToolbar` and `ChatPaneSurface` provide the same themed floating toolbar, rounded shell, transcript clearance, and bottom composer placement.
+- `paneState.ts` contains pure pane error routing and local-path advancement helpers.
+
+The parallel controller deliberately shares canonical conversation messages, provider/model defaults, and `streaming.byId`, but owns its branch path/lineage, draft, optimistic user row, pending stream ID, reasoning choice, scroll-follow state, decision surface, and failure recovery. It renders `ChatMessage` with the same font, grouping, truncation, custom-theme, tool viewer, subagent viewer, and message-action props as the primary transcript.
+
+Functional invariants:
+- Heimdall **Open in Parallel** captures an explicit branch path without mutating primary Redux `currentPath`.
+- The pane reads branch messages with `selectDisplayMessagesFor(messages, path)` and its active run with `selectCurrentViewStreamFor(streaming, { conversationId, lineageId, path })`.
+- Parallel sends pass immutable `branchPath`/`lineageId`, `streamType:'branch'`, and `updatePath:false`; completion advances only the controller-local path from server-persisted IDs.
+- Permission, operation-mode upgrade, and plan clarification prompts are selected by the pane's effective stream ID and rendered inside that pane's composer.
+- Durable errors are routed by stream ID, exact lineage, or parent-on-path. Failed text is restored only to the originating pane.
+- Stop is stream-scoped. Closing the pane removes its view but does not silently abort a resumable server run.
+- The original and parallel panes are separated by a 12px draggable divider. `chat:parallelSplitPct` persists their 20–80% allocation; mouse/touch drag resizes, Left/Right arrows adjust by 2%, and double-click restores 50/50. This divider is independent from the existing chat/Heimdall divider.
+- The feature remains desktop-only; mobile remains a single visible transcript.
 
 ## Local CWD and IDE Context
 

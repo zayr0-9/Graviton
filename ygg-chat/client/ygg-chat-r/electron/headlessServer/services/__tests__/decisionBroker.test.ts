@@ -27,6 +27,49 @@ describe('DecisionBroker', () => {
     await expect(permission).resolves.toBe('allow_once')
   })
 
+  it('allow_always atomically releases every pending permission for that stream only', async () => {
+    const broker = new DecisionBroker()
+    broker.initSession('s1', { autoApproveAll: false })
+    broker.initSession('s2', { autoApproveAll: false })
+    const first = broker.requestDecision({ streamId: 's1', toolCallId: 't1', kind: 'permission' })
+    const second = broker.requestDecision({ streamId: 's1', toolCallId: 't2', kind: 'permission' })
+    const clarify = broker.requestDecision({ streamId: 's1', toolCallId: 'clarify', kind: 'clarify' })
+    const operationMode = broker.requestDecision({
+      streamId: 's1',
+      toolCallId: 'upgrade',
+      kind: 'operation_mode_upgrade',
+    })
+    const otherStream = broker.requestDecision({ streamId: 's2', toolCallId: 't1', kind: 'permission' })
+
+    expect(broker.resolve('s1', 't2', 'allow_always')).toBe(true)
+
+    await expect(first).resolves.toBe('allow_always')
+    await expect(second).resolves.toBe('allow_always')
+    expect(broker.isAutoApproveAll('s1')).toBe(true)
+    expect(broker.hasPending('s1', 'clarify')).toBe(true)
+    expect(broker.hasPending('s1', 'upgrade')).toBe(true)
+    expect(broker.hasPending('s2', 't1')).toBe(true)
+
+    broker.resolve('s1', 'clarify', { answers: [] })
+    broker.resolve('s1', 'upgrade', 'switch_to_execute')
+    broker.resolve('s2', 't1', 'allow_once')
+    await expect(clarify).resolves.toEqual({ answers: [] })
+    await expect(operationMode).resolves.toBe('switch_to_execute')
+    await expect(otherStream).resolves.toBe('allow_once')
+  })
+
+  it('does not register a late permission waiter after allow-all won the race', async () => {
+    const broker = new DecisionBroker()
+    broker.initSession('s1', { autoApproveAll: false })
+    const first = broker.requestDecision({ streamId: 's1', toolCallId: 't1', kind: 'permission' })
+    broker.resolve('s1', 't1', 'allow_always')
+    await expect(first).resolves.toBe('allow_always')
+
+    const late = broker.requestDecision({ streamId: 's1', toolCallId: 't2', kind: 'permission' })
+    await expect(late).resolves.toBe('allow_always')
+    expect(broker.hasPending('s1', 't2')).toBe(false)
+  })
+
   it('resolve() returns false when there is no matching pending decision', () => {
     const broker = new DecisionBroker()
     expect(broker.resolve('nope', 'nope', 'deny')).toBe(false)

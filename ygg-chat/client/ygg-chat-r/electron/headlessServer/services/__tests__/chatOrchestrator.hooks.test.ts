@@ -115,6 +115,33 @@ describe('createChatPausingExecutor (hook interleave)', () => {
     expect(prompt.toolCallId).toBe('t1')
   })
 
+  it('allow_always releases concurrent permission waiters and upgrades their execution context', async () => {
+    const broker = new DecisionBroker()
+    broker.initSession('s1', { autoApproveAll: false })
+    const executed: Array<{ id: string; autoApprove: boolean | undefined }> = []
+    const base: ToolExecutor = async (toolCall, context) => {
+      executed.push({ id: toolCall.id, autoApprove: context.autoApprove })
+      return toolCall.id
+    }
+    const emitted: any[] = []
+    const exec = createChatPausingExecutor({ base, broker, streamId: 's1', emit: event => emitted.push(event) })
+
+    const first = exec({ id: 'batch:1', name: 'read_file', arguments: { path: 'a' } } as any, { ...ctx, autoApprove: false })
+    const second = exec({ id: 'batch:2', name: 'glob', arguments: { pattern: '*' } } as any, { ...ctx, autoApprove: false })
+
+    expect(broker.hasPending('s1', 'batch:1')).toBe(true)
+    expect(broker.hasPending('s1', 'batch:2')).toBe(true)
+    expect(broker.resolve('s1', 'batch:2', 'allow_always')).toBe(true)
+
+    await expect(Promise.all([first, second])).resolves.toEqual(['batch:1', 'batch:2'])
+    expect(executed).toEqual([
+      { id: 'batch:1', autoApprove: true },
+      { id: 'batch:2', autoApprove: true },
+    ])
+    expect(emitted.filter(event => event.type === 'permission_required')).toHaveLength(2)
+    expect(broker.isAutoApproveAll('s1')).toBe(true)
+  })
+
   it('plan_md clarify (hooks active) fires PreToolUse + PostToolUse around the clarify decision, honoring updatedInput', async () => {
     const broker = autoApproveBroker()
     const emitted: any[] = []

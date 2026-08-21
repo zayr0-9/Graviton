@@ -39,7 +39,7 @@
 
 import { chatSliceActions } from './chatSlice'
 import { buildChatErrorRecord } from './localChatErrors'
-import type { ContentBlock, LineageId, Message } from './chatTypes'
+import type { ContentBlock, LineageId, Message, StreamType } from './chatTypes'
 import {
   buildChatErrorEnvelope,
   normalizeChatErrorEnvelope,
@@ -69,6 +69,35 @@ export interface ProjectionContext {
 
 /** A dispatch-ready RTK action ({ type, payload }). */
 export type ProjectedAction = { type: string; payload?: unknown }
+
+/** Renderer policy owned by the caller that started a stream. */
+export interface StreamProjectionPolicy {
+  streamId: string
+  streamType: StreamType
+  updatePath: boolean
+}
+
+/**
+ * Apply caller-owned stream policy at the projection dispatch boundary. The SSE wire
+ * does not carry renderer pane ownership, so sendMessage wraps the projection dispatch
+ * with this helper while legacy callers retain the projection's primary/updatePath=true
+ * defaults.
+ */
+export function applyStreamProjectionPolicy(
+  action: ProjectedAction,
+  policy: StreamProjectionPolicy
+): ProjectedAction {
+  if (action.type !== chatSliceActions.streamCompleted.type) return action
+  const payload = action.payload as { streamId?: string; messageId?: MessageId } | undefined
+  if (!payload || payload.streamId !== policy.streamId) return action
+  return {
+    ...action,
+    payload: {
+      ...payload,
+      updatePath: policy.updatePath,
+    },
+  }
+}
 
 function parseMaybeJson<T>(value: any, fallback: T): T {
   if (value === null || value === undefined) return fallback

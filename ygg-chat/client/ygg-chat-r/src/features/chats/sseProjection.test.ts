@@ -1,7 +1,13 @@
 import './__testSupport__/localStorageShim' // must run before chatSlice import (reads localStorage at init)
 import { describe, it, expect } from 'vitest'
-import { projectServerEvent, normalizeServerMessage, type ProjectionContext, type ServerStreamEvent } from './sseProjection'
-import { chatSliceActions } from './chatSlice'
+import {
+  applyStreamProjectionPolicy,
+  projectServerEvent,
+  normalizeServerMessage,
+  type ProjectionContext,
+  type ServerStreamEvent,
+} from './sseProjection'
+import chatReducer, { chatSliceActions } from './chatSlice'
 
 const ctx: ProjectionContext = { streamId: 'stream-1', conversationId: 'conv-1' }
 
@@ -197,6 +203,44 @@ describe('projectServerEvent', () => {
     expect((a[2].payload as any)).toMatchObject({ streamId: 'stream-1', lineageId: 'lineage-1' })
     expect((a[3].payload as any)).toMatchObject({ streamId: 'stream-1', messageId: 'a2', updatePath: true })
     expect(a[4].payload).toBe('stream-1')
+  })
+
+  it('defaults terminal ownership to updatePath=true for primary sends', () => {
+    const started = chatSliceActions.sendingStarted({ streamId: 'stream-1' })
+    let state = chatReducer(undefined, started)
+    expect(state.streaming.byId['stream-1'].streamType).toBe('primary')
+    expect(state.streaming.primaryStreamId).toBe('stream-1')
+
+    const complete = projectServerEvent({ type: 'complete', message: { id: 'a2', role: 'assistant' } }, ctx)
+      .find(action => action.type === chatSliceActions.streamCompleted.type)!
+    expect(complete.payload).toMatchObject({ streamId: 'stream-1', updatePath: true })
+  })
+
+  it('explicit branch/updatePath=false neither claims primary bookkeeping nor mutates currentPath', () => {
+    let state = chatReducer(undefined, chatSliceActions.conversationPathSet(['existing']))
+    state = chatReducer(
+      state,
+      chatSliceActions.sendingStarted({ streamId: 'stream-1', streamType: 'branch', conversationId: 'conv-1' })
+    )
+    expect(state.streaming.byId['stream-1'].streamType).toBe('branch')
+    expect(state.streaming.primaryStreamId).toBeNull()
+    expect(state.composition.sending).toBe(false)
+
+    const projected = projectServerEvent({ type: 'complete', message: { id: 'a2', role: 'assistant' } }, ctx)
+    for (const action of projected) {
+      state = chatReducer(
+        state,
+        applyStreamProjectionPolicy(action, {
+          streamId: 'stream-1',
+          streamType: 'branch',
+          updatePath: false,
+        }) as any
+      )
+    }
+
+    expect(state.conversation.currentPath).toEqual(['existing'])
+    expect(state.streaming.primaryStreamId).toBeNull()
+    expect(state.streaming.byId['stream-1'].streamType).toBe('branch')
   })
 
   it('terminal complete records the envelope when the server badged a provider error', () => {

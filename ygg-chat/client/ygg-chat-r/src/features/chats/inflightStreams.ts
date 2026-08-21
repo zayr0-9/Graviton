@@ -19,6 +19,8 @@ export interface InflightStreamRecord {
   conversationId: string
   streamType: 'primary' | 'branch'
   parentMessageId: string | null
+  /** Whether terminal replay may advance the singleton primary conversation path. */
+  updatePath?: boolean
   /** Highest server event sequence projected by this renderer. */
   lastSeq?: number
 }

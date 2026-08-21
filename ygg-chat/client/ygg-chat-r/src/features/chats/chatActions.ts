@@ -94,6 +94,7 @@ import {
 } from './toolDefinitions'
 import { type ChatHookProjectContext } from './chatHookClient'
 import { type PlanClarificationAnswer } from './planToolTypes'
+import { applyStreamProjectionPolicy } from './sseProjection'
 import { abortSubagentControllers } from './subagentClient'
 import {
   fetchConversationUndoSummaries,
@@ -1457,15 +1458,26 @@ export const sendMessage = createAsyncThunk<
       streamId: providedStreamId,
       lineageId: providedLineageId,
       branchPath: providedBranchPath,
+      streamType: requestedStreamType,
+      updatePath: requestedUpdatePath,
+      includeGlobalComposerContext: requestedGlobalComposerContext,
     },
     { dispatch, getState, extra, rejectWithValue, signal }
   ) => {
     const { auth } = extra
 
-    // Generate or use provided stream ID
-    const streamId = providedStreamId ?? generateStreamId('primary')
+    // Primary ownership remains the default for existing callers. Parallel panes opt
+    // into branch ownership and keep their terminal completion off the global path.
+    const streamType = requestedStreamType ?? 'primary'
+    const updatePath = requestedUpdatePath ?? true
+    const includeGlobalComposerContext = requestedGlobalComposerContext ?? true
+    const streamId = providedStreamId ?? generateStreamId(streamType)
+    const projectionDispatch = (action: unknown) =>
+      dispatch(applyStreamProjectionPolicy(action as any, { streamId, streamType, updatePath }) as any)
     const preSendState = getState() as RootState
-    const preSendDrafts = getDraftsForTarget(preSendState, { kind: 'composer' })
+    const preSendDrafts = includeGlobalComposerContext
+      ? getDraftsForTarget(preSendState, { kind: 'composer' })
+      : []
     const preSendAttachmentsBase64 = preSendDrafts.length
       ? preSendDrafts.map(d => ({
         dataUrl: d.dataUrl,
@@ -1477,7 +1489,9 @@ export const sendMessage = createAsyncThunk<
         sha256: d.sha256,
       }))
       : null
-    const preSendSelectedFilesForChat = preSendState.ideContext.selectedFilesForChat || []
+    const preSendSelectedFilesForChat = includeGlobalComposerContext
+      ? preSendState.ideContext.selectedFilesForChat || []
+      : []
 
     const sendLineageId =
       (providedLineageId === undefined ? preSendState.chat.conversation.currentLineageId : providedLineageId) ?? null
@@ -1496,7 +1510,7 @@ export const sendMessage = createAsyncThunk<
       dispatch(
         chatSliceActions.sendingStarted({
           streamId,
-          streamType: 'primary',
+          streamType,
           conversationId,
           lineage: {
             lineageId: sendLineageId ?? undefined,
@@ -1508,7 +1522,7 @@ export const sendMessage = createAsyncThunk<
         streamId,
         conversationId,
         parentMessageId: parent ?? null,
-        streamType: 'primary',
+        streamType,
         operation: 'send',
         source: 'renderer',
         lineage: { rootMessageId: parent },
@@ -1520,8 +1534,9 @@ export const sendMessage = createAsyncThunk<
         addInflightStream({
           streamId,
           conversationId: String(conversationId),
-          streamType: 'primary',
+          streamType,
           parentMessageId: parent ?? null,
+          updatePath,
         })
       }
 
@@ -1642,7 +1657,7 @@ export const sendMessage = createAsyncThunk<
             signal: controller.signal,
           },
           {
-            dispatch,
+            dispatch: projectionDispatch,
             getState,
             onMessagePersisted: () => refreshHeimdallTreeFromState(getState, dispatch),
             onSeq: (seq, event) => {
@@ -3202,7 +3217,14 @@ export const resumeInFlightStreams = createAsyncThunk<
           signal: controller.signal,
         },
         {
-          dispatch,
+          dispatch: action =>
+            dispatch(
+              applyStreamProjectionPolicy(action as any, {
+                streamId: rec.streamId,
+                streamType: rec.streamType,
+                updatePath: rec.updatePath ?? rec.streamType !== 'branch',
+              }) as any
+            ),
           getState,
           onMessagePersisted: () => refreshHeimdallTreeFromState(getState, dispatch),
           onSeq: (seq, event) => {
@@ -3502,9 +3524,9 @@ interface DecisionResumeOutcome {
  * parked forever waiting for an answer that never arrived, while the UI told the user
  * their answer had been accepted. That was the worst gap in the chat error surface.
  *
- * 409 is the one non-ok status that is genuinely NOT a failure: the broker had no
- * pending decision because the run already resolved, aborted, or was reaped. There is
- * no parked run left to deadlock, so a stale click reports nothing.
+ * A 409 remains a failure because the broker uses the same result for an absent waiter
+ * and a decision-kind mismatch. The renderer cannot prove the run is unparked, so it
+ * must preserve the prompt and surface the server's reload action.
  */
 const postDecisionResume = async (
   body: { streamId: string; toolCallId: string } & Record<string, unknown>
@@ -3518,8 +3540,11 @@ const postDecisionResume = async (
       body: JSON.stringify(body),
     })
     status = res.status
-    if (res.ok || res.status === 409) return { ok: true, status }
+    if (res.ok) return { ok: true, status }
 
+    // A 409 is not proof that no run is parked: DecisionBroker also returns it for a
+    // wrong decision kind. Preserve the prompt and surface the server's recovery action
+    // instead of silently claiming the answer was delivered.
     // The route replies with a fully classified `envelope` (chatRoutes.sendJsonError).
     // Prefer it — it knows things this side cannot, e.g. that a 501 broker-not-configured
     // is fatal rather than retryable.
@@ -3553,7 +3578,9 @@ const postDecisionResume = async (
  *   - transport failure, no status at all (offline, local server down) → KEEP OPEN.
  *     The user fixes the network and clicks again; the run is still parked.
  *   - 5xx → KEEP OPEN. Server-side transience; the pending decision is still there.
- *   - any 4xx → CLOSE. The server gave a definitive verdict on this exact body, and
+ *   - 409 → KEEP OPEN. It can mean an existing waiter rejected the decision kind, so
+ *     closing could strand a live run. The recovery bubble offers a reload action.
+ *   - other 4xx → CLOSE. The server gave a definitive verdict on this exact body, and
  *     clicking again sends identical bytes to the identical verdict.
  *   - `recoverability: 'fatal'` (the 501 "decision broker not configured") → CLOSE.
  *     Retrying can never work on this server, and trapping the user in an
@@ -3584,6 +3611,7 @@ const settleDecisionResume = (
   }
 
   if (outcome.envelope?.recoverability === 'fatal') return { closeDialog: true }
+  if (outcome.status === 409) return { closeDialog: false }
   if (typeof outcome.status === 'number' && outcome.status < 500) return { closeDialog: true }
   return { closeDialog: false }
 }
@@ -3596,7 +3624,7 @@ export const respondToToolPermission = createAsyncThunk<
   'chat/respondToToolPermission',
   async ({ allowed, streamId }, { dispatch, getState }) => {
     const chat = getState().chat
-    const req = (streamId ? chat.toolPermissionRequestsByStream[streamId] : null) ?? chat.toolCallPermissionRequest
+    const req = streamId ? (chat.toolPermissionRequestsByStream[streamId] ?? null) : chat.toolCallPermissionRequest
     if (req?.streamId && req?.toolCallId) {
       // Server-owned loop: resolve the paused decision over /resume.
       const outcome = await postDecisionResume({
@@ -3618,8 +3646,7 @@ export const respondToOperationModeUpgrade = createAsyncThunk<
   { state: RootState; extra: ThunkExtraArgument }
 >('chat/respondToOperationModeUpgrade', async ({ approved, streamId }, { dispatch, getState }) => {
   const chat = getState().chat
-  const req = (streamId ? chat.operationModeUpgradeRequestsByStream[streamId] : null) ?? chat.operationModeUpgradeRequest
-  if (approved) dispatch(chatSliceActions.operationModeSet('execute'))
+  const req = streamId ? (chat.operationModeUpgradeRequestsByStream[streamId] ?? null) : chat.operationModeUpgradeRequest
   if (req?.streamId && req?.toolCallId) {
     const outcome = await postDecisionResume({
       streamId: req.streamId,
@@ -3628,6 +3655,7 @@ export const respondToOperationModeUpgrade = createAsyncThunk<
     })
     if (!settleDecisionResume(dispatch, getState(), req.streamId, outcome).closeDialog) return
   }
+  if (approved) dispatch(chatSliceActions.operationModeSet('execute'))
   if (req?.streamId) dispatch(chatSliceActions.operationModeUpgradeRespondedForStream(req.streamId))
   else dispatch(chatSliceActions.operationModeUpgradeResponded())
 })
@@ -3638,7 +3666,7 @@ export const respondToPlanClarification = createAsyncThunk<
   { state: RootState; extra: ThunkExtraArgument }
 >('chat/respondToPlanClarification', async ({ answers, streamId }, { dispatch, getState }) => {
   const chat = getState().chat
-  const req = (streamId ? chat.planClarificationRequestsByStream[streamId] : null) ?? chat.planClarificationRequest
+  const req = streamId ? (chat.planClarificationRequestsByStream[streamId] ?? null) : chat.planClarificationRequest
   if (req?.streamId && req?.toolCallId) {
     const outcome = await postDecisionResume({ streamId: req.streamId, toolCallId: req.toolCallId, answers })
     // Keeping this dialog open on a transient failure also preserves the typed answers,
@@ -3657,7 +3685,7 @@ export const cancelPlanClarification = createAsyncThunk<
   'chat/cancelPlanClarification',
   async (streamId, { dispatch, getState }) => {
     const chat = getState().chat
-    const req = (streamId ? chat.planClarificationRequestsByStream[streamId] : null) ?? chat.planClarificationRequest
+    const req = streamId ? (chat.planClarificationRequestsByStream[streamId] ?? null) : chat.planClarificationRequest
     if (req?.streamId && req?.toolCallId) {
       const outcome = await postDecisionResume({ streamId: req.streamId, toolCallId: req.toolCallId, cancelled: true })
       if (!settleDecisionResume(dispatch, getState(), req.streamId, outcome).closeDialog) return
@@ -3672,20 +3700,21 @@ export const respondToToolPermissionAndEnableAll = createAsyncThunk<
   string | undefined,
   { state: RootState; extra: ThunkExtraArgument }
 >('chat/respondToToolPermissionAndEnableAll', async (streamId, { dispatch, getState }) => {
-  // Enable auto-approve mode for all future tools; the server path relies on the
-  // allow_always decision forwarded below.
-  dispatch(chatSliceActions.toolAutoApproveEnabled())
-
   const chat = getState().chat
-  const req = (streamId ? chat.toolPermissionRequestsByStream[streamId] : null) ?? chat.toolCallPermissionRequest
-  if (req?.streamId && req?.toolCallId) {
-    const outcome = await postDecisionResume({
-      streamId: req.streamId,
-      toolCallId: req.toolCallId,
-      decision: 'allow_always',
-    })
-    if (!settleDecisionResume(dispatch, getState(), req.streamId, outcome).closeDialog) return
-  }
+  const req = streamId ? (chat.toolPermissionRequestsByStream[streamId] ?? null) : chat.toolCallPermissionRequest
+  if (!req?.streamId || !req?.toolCallId) return
+
+  const outcome = await postDecisionResume({
+    streamId: req.streamId,
+    toolCallId: req.toolCallId,
+    decision: 'allow_always',
+  })
+  if (!settleDecisionResume(dispatch, getState(), req.streamId, outcome).closeDialog) return
+
+  // Change the renderer default only after the server atomically promoted the current
+  // stream and released its pending permission waiters. A failed resume must not make
+  // unrelated future branches appear auto-approved while this run remains parked.
+  dispatch(chatSliceActions.toolAutoApproveEnabled())
 
   // Clear only the branch/run prompt that was answered.
   if (req?.streamId) dispatch(chatSliceActions.toolPermissionRespondedForStream(req.streamId))

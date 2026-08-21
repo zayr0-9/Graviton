@@ -493,6 +493,12 @@ export interface SendMessagePayload {
   cwd?: string | null
   // Captured at send time: 'plan' = Chat Mode, 'execute' = Agent Mode.
   operationMode?: OperationMode
+  /** Stream ownership defaults to `primary`; pane continuations explicitly use `branch`. */
+  streamType?: Extract<StreamType, 'primary' | 'branch'>
+  /** Whether terminal completion may advance the global conversation path. Defaults to true. */
+  updatePath?: boolean
+  /** Pane-local sends can explicitly opt out of singleton composer attachments/files. */
+  includeGlobalComposerContext?: boolean
 }
 
 export interface EditMessagePayload {

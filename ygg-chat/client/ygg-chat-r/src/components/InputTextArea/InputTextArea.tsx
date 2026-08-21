@@ -57,6 +57,7 @@ interface TextAreaProps {
   fallbackFileSearchRoot?: string | null
   filterSelectedMentionFiles?: boolean
   enableImageAttachments?: boolean
+  enableFileMentions?: boolean
   imageDraftTarget?: ImageDraftTarget
   fontSizeOffset?: number
 }
@@ -166,6 +167,7 @@ export const InputTextArea: React.FC<TextAreaProps> = ({
   fallbackFileSearchRoot = null,
   filterSelectedMentionFiles = true,
   enableImageAttachments = false,
+  enableFileMentions = true,
   imageDraftTarget = { kind: 'composer' },
   fontSizeOffset = 0,
   ...rest
@@ -194,6 +196,7 @@ export const InputTextArea: React.FC<TextAreaProps> = ({
     (typeof chatCwd === 'string' && chatCwd.trim()) ||
     null
   const shouldUseLocalFileFallback =
+    enableFileMentions &&
     import.meta.env.VITE_ENVIRONMENT !== 'web' &&
     !!effectiveFallbackFileSearchRoot &&
     (!extensionConnected || mentionableFiles.length === 0)
@@ -330,8 +333,8 @@ export const InputTextArea: React.FC<TextAreaProps> = ({
     }
     setActiveSlashCommand(null)
 
-    // Check for file mentions
-    const mention = findActiveMention(newValue, cursorPos)
+    // Check for file mentions only when this pane owns a file-selection context.
+    const mention = enableFileMentions ? findActiveMention(newValue, cursorPos) : null
     if (mention) {
       setActiveMention(mention)
     } else {

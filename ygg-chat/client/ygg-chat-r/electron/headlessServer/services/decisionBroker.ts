@@ -90,6 +90,14 @@ export class DecisionBroker {
         return
       }
 
+      // Allow-all is a stream policy, not merely one tool-call answer. A parallel
+      // nested call may have observed the old policy immediately before another call
+      // enabled it; do not let that stale check create a new parked permission waiter.
+      if (kind === 'permission' && this.isAutoApproveAll(streamId)) {
+        resolve('allow_always' as T)
+        return
+      }
+
       // If a stale entry exists for this key, reject it before replacing.
       const existing = this.pending.get(key)
       if (existing) {
@@ -127,6 +135,23 @@ export class DecisionBroker {
     const key = keyFor(streamId, toolCallId)
     const entry = this.pending.get(key)
     if (!entry || !decisionMatchesKind(entry.kind, decision)) return false
+
+    if (entry.kind === 'permission' && decision === 'allow_always') {
+      // Several parallel multi_call workers can already be parked by the time the user
+      // answers the one prompt the renderer can display. Atomically promote the stream
+      // and release every existing permission waiter. Clarification and operation-mode
+      // decisions remain interactive and are deliberately untouched.
+      this.setAutoApproveAll(streamId)
+      const prefix = `${streamId}::`
+      for (const [pendingKey, pendingEntry] of this.pending) {
+        if (!pendingKey.startsWith(prefix) || pendingEntry.kind !== 'permission') continue
+        this.pending.delete(pendingKey)
+        pendingEntry.cleanup()
+        pendingEntry.resolve('allow_always')
+      }
+      return true
+    }
+
     this.pending.delete(key)
     entry.cleanup()
     entry.resolve(decision)

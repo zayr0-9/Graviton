@@ -50,12 +50,18 @@ describe('inflightStreams', () => {
     expect(listInflightStreams().map(r => r.streamId)).toEqual(['s2'])
   })
 
-  it('add overwrites the record for the same streamId (idempotent key)', () => {
+  it('overwrites by streamId and preserves pane-owned terminal path policy', () => {
     addInflightStream(rec('s1', 'c1'))
-    addInflightStream({ streamId: 's1', conversationId: 'c1', streamType: 'branch', parentMessageId: 'm9' })
+    addInflightStream({
+      streamId: 's1',
+      conversationId: 'c1',
+      streamType: 'branch',
+      parentMessageId: 'm9',
+      updatePath: false,
+    })
     const all = listInflightStreams()
     expect(all).toHaveLength(1)
-    expect(all[0]).toMatchObject({ streamType: 'branch', parentMessageId: 'm9' })
+    expect(all[0]).toMatchObject({ streamType: 'branch', parentMessageId: 'm9', updatePath: false })
   })
 
   it('persists only a newer replay cursor', () => {

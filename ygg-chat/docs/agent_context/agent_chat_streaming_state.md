@@ -98,7 +98,14 @@ server keeps it alive (see
 
 ## Parallel Pane Projection
 
-The desktop parallel-branch MVP reuses the shared `streaming.byId` store but must not use the singleton `selectCurrentViewStream` for its secondary view. `selectCurrentViewStreamFor(streaming, { conversationId, lineageId, path })` and `selectDisplayMessagesFor(messages, path)` accept explicit pane identity. Send/edit/branch thunk payloads may likewise carry immutable `lineageId` and `branchPath`; prefer them over a later `getState().conversation.currentPath` read.
+The desktop parallel pane reuses canonical `conversation.messages` and `streaming.byId`, but all view/transient state remains pane-owned. It must not use singleton `selectCurrentViewStream` or mutate the primary `conversation.currentPath`.
+
+- `selectCurrentViewStreamFor(streaming, { conversationId, lineageId, path })` and `selectDisplayMessagesFor(messages, path)` accept explicit pane identity.
+- `SendMessagePayload` supports explicit `streamType` and `updatePath`. Existing sends default to `streamType:'primary'` and `updatePath:true`; parallel continuations pass `streamType:'branch'` and `updatePath:false`.
+- `sendMessage` applies the terminal path policy at the SSE projection dispatch boundary with `applyStreamProjectionPolicy`. The wire event remains unchanged and the base `projectServerEvent` remains backward-compatible.
+- Resumable inflight records persist `updatePath`; reattach reapplies the same policy so a reloaded parallel run cannot advance the primary path.
+- The parallel controller advances its own path from server-persisted user/final IDs through `ChatPane/paneState.ts`.
+- Per-stream permission, operation-mode-upgrade, and clarification maps are the decision authority for each pane. Durable errors remain canonical and are projected into a pane by stream, lineage, or branch parent.
 
 ## Important Invariants
 

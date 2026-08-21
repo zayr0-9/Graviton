@@ -175,7 +175,7 @@ The server loop pauses **mid-turn**, per tool call, to ask the renderer for a de
 - **`POST /api/resume`** (`chatRoutes.ts:146`, plain JSON): requires `streamId` + `toolCallId`;
   `decision` string → permission (`allow_once|allow_always|deny`); `answers`/`cancelled` →
   clarify; matched → 200, else **409** (stale click). `deny` → throw
-  `'Tool execution denied by user'`; `allow_always` → `broker.setAutoApproveAll(streamId)`.
+  `'Tool execution denied by user'`; `allow_always` atomically enables the stream and resolves all permission waiters already parked for that stream, including parallel `multi_call` workers.
 - **Renderer resolvers** (`chatActions.ts`): `respondToToolPermission` (`:2880`),
   `respondToToolPermissionAndEnableAll` (`:2915`), `respondToPlanClarification` (`:2892`),
   `cancelPlanClarification` (`:2904`) — all POST `/api/resume` via `postDecisionResume`

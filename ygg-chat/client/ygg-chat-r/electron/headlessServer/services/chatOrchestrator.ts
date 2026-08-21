@@ -264,6 +264,7 @@ export function createChatPausingExecutor(deps: {
   const execute: ToolExecutor = async (toolCall, context) => {
     const sig = context.signal ?? signal
     const args = parseToolArgs(toolCall.arguments)
+    const approvedContext = () => ({ ...context, autoApprove: true, nestedExecutor: context.nestedExecutor ?? execute })
 
     // plan_md clarify is INHERENTLY interactive: the base executor always throws on it
     // (planMd.ts), so it is intercepted here and routed through the DecisionBroker's
@@ -292,13 +293,13 @@ export function createChatPausingExecutor(deps: {
     // the clarify mechanism).
     if (!hookSession) {
       if (isClarify(toolCall.name, args)) return runClarify(toolCall, args)
-      if (broker.isAutoApproveAll(streamId)) return base(toolCall, { ...context, nestedExecutor: context.nestedExecutor ?? execute })
+      if (broker.isAutoApproveAll(streamId)) return base(toolCall, approvedContext())
       if (shouldBypassPermission(toolCall.name, args)) return base(toolCall, { ...context, nestedExecutor: context.nestedExecutor ?? execute })
       emit({ type: 'permission_required', streamId, toolCallId: toolCall.id, toolName: toolCall.name, toolInput: args })
       const decision = await broker.requestDecision<PermissionDecision>({ streamId, toolCallId: toolCall.id, kind: 'permission', signal: sig })
       if (decision === 'deny') throw new Error('Tool execution denied by user')
       if (decision === 'allow_always') broker.setAutoApproveAll(streamId)
-      return base(toolCall, { ...context, nestedExecutor: context.nestedExecutor ?? execute })
+      return base(toolCall, decision === 'allow_always' ? approvedContext() : { ...context, nestedExecutor: context.nestedExecutor ?? execute })
     }
 
     // Hooks active — port of the renderer executeToolWithPermissionCheck
@@ -322,7 +323,9 @@ export function createChatPausingExecutor(deps: {
         // Clarify bypasses the permission prompt (its own interactive channel), but
         // still fires PostToolUse — same as the renderer.
         result = await runClarify(effectiveToolCall, effArgs)
-      } else if (broker.isAutoApproveAll(streamId) || shouldBypassPermission(effectiveToolCall.name, effArgs)) {
+      } else if (broker.isAutoApproveAll(streamId)) {
+        result = await base(effectiveToolCall, approvedContext())
+      } else if (shouldBypassPermission(effectiveToolCall.name, effArgs)) {
         result = await base(effectiveToolCall, { ...context, nestedExecutor: context.nestedExecutor ?? execute })
       } else {
         // Prompt shows the rewritten args. toolCallId stays the original id (a rewrite
@@ -331,7 +334,10 @@ export function createChatPausingExecutor(deps: {
         const decision = await broker.requestDecision<PermissionDecision>({ streamId, toolCallId: toolCall.id, kind: 'permission', signal: sig })
         if (decision === 'deny') throw new Error('Tool execution denied by user')
         if (decision === 'allow_always') broker.setAutoApproveAll(streamId)
-        result = await base(effectiveToolCall, { ...context, nestedExecutor: context.nestedExecutor ?? execute })
+        result = await base(
+          effectiveToolCall,
+          decision === 'allow_always' ? approvedContext() : { ...context, nestedExecutor: context.nestedExecutor ?? execute }
+        )
       }
 
       await hookSession.runPostToolUse(effectiveToolCall, result, context)

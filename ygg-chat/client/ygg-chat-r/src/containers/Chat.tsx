@@ -29,7 +29,6 @@ import {
   Heimdall,
   ParallelChatPane,
   type ParallelChatPaneTarget,
-  InputTextArea,
   ModelSelectControl,
   PlanClarificationPanel,
   ReasoningLevelControl,
@@ -41,6 +40,12 @@ import {
   ToolPermissionDialog,
 } from '../components'
 import { ChatErrorBubble } from '../components/ChatErrorBubble/ChatErrorBubble'
+import {
+  ChatInputController,
+  type ChatInputControllerHandle,
+  type ChatInputUpdater,
+  type ComposerSlashCommandResult,
+} from '../components/ChatPane/ChatInputController'
 import { useHtmlIframeRegistry } from '../components/HtmlIframeRegistry/HtmlIframeRegistry'
 import { contentSpringTransition, softTransition } from '../components/motion'
 import { ContextUsageSparkline } from '../components/ContextUsageSparkline/ContextUsageSparkline'
@@ -313,37 +318,6 @@ type BenchStats = {
   avg: number
   p50: number
   p95: number
-}
-
-type ChatInputUpdater = string | ((prev: string) => string)
-
-type ChatInputControllerHandle = {
-  getValue: () => string
-  setValue: (next: ChatInputUpdater) => void
-  clear: () => void
-  focus: () => void
-}
-
-type ComposerSlashCommandResult = {
-  handled: boolean
-  clearInput?: boolean
-}
-
-type ChatInputControllerProps = {
-  conversationId: ConversationId | null
-  initialValue: string
-  slashCommands?: string[]
-  onSlashCommandSelect?: (command: string) => ComposerSlashCommandResult | void
-  onHasTextChange: (hasText: boolean) => void
-  onSubmit: () => void
-  onBlurPersist: (content: string) => void
-  onAddCurrentIdeContext?: () => boolean
-  onClearIdeContexts?: () => void
-  selectedIdeContextItems?: Array<{ id: string; label: string }>
-  fallbackFileSearchRoot?: string | null
-  filterSelectedMentionFiles?: boolean
-  imageDraftTarget?: ImageDraftTarget
-  fontSizeOffset?: number
 }
 
 type AddedIdeContext = {
@@ -892,142 +866,6 @@ const parseMessageDataForRender = (msg: Message): ParsedMessageData => {
   return { toolCalls, contentBlocks }
 }
 
-const ChatInputController = React.memo(
-  React.forwardRef<ChatInputControllerHandle, ChatInputControllerProps>(
-    (
-      {
-        conversationId,
-        initialValue,
-        slashCommands,
-        onSlashCommandSelect,
-        onHasTextChange,
-        onSubmit,
-        onBlurPersist,
-        onAddCurrentIdeContext,
-        onClearIdeContexts,
-        selectedIdeContextItems,
-        fallbackFileSearchRoot,
-        filterSelectedMentionFiles = true,
-        imageDraftTarget = { kind: 'composer' },
-        fontSizeOffset = 0,
-      },
-      ref
-    ) => {
-      const [value, setValueState] = useState(initialValue)
-      const valueRef = useRef(initialValue)
-      const wrapperRef = useRef<HTMLDivElement | null>(null)
-      const lastHasTextRef = useRef(initialValue.trim().length > 0)
-
-      const publishHasText = useCallback(
-        (nextValue: string) => {
-          const hasText = nextValue.trim().length > 0
-          if (hasText !== lastHasTextRef.current) {
-            lastHasTextRef.current = hasText
-            onHasTextChange(hasText)
-          }
-        },
-        [onHasTextChange]
-      )
-
-      const setValue = useCallback(
-        (next: ChatInputUpdater) => {
-          const prevValue = valueRef.current
-          const nextValue = typeof next === 'function' ? next(prevValue) : next
-          valueRef.current = nextValue
-          setValueState(nextValue)
-          publishHasText(nextValue)
-        },
-        [publishHasText]
-      )
-
-      const clear = useCallback(() => {
-        setValue('')
-      }, [setValue])
-
-      const focus = useCallback(() => {
-        const textarea = wrapperRef.current?.querySelector('textarea')
-        if (!textarea) return
-        try {
-          textarea.focus({ preventScroll: true })
-        } catch {
-          textarea.focus()
-        }
-      }, [])
-
-      useEffect(() => {
-        valueRef.current = initialValue
-        setValueState(initialValue)
-        const hasText = initialValue.trim().length > 0
-        lastHasTextRef.current = hasText
-        onHasTextChange(hasText)
-      }, [conversationId, initialValue, onHasTextChange])
-
-      React.useImperativeHandle(
-        ref,
-        () => ({
-          getValue: () => valueRef.current,
-          setValue,
-          clear,
-          focus,
-        }),
-        [clear, focus, setValue]
-      )
-
-      const handleChange = useCallback(
-        (nextValue: string) => {
-          valueRef.current = nextValue
-          setValueState(nextValue)
-          publishHasText(nextValue)
-        },
-        [publishHasText]
-      )
-
-      const handleKeyDown = useCallback(
-        (event: React.KeyboardEvent<HTMLTextAreaElement>) => {
-          if (event.key === 'Enter' && !event.shiftKey) {
-            event.preventDefault()
-            onSubmit()
-          }
-        },
-        [onSubmit]
-      )
-
-      const handleBlur = useCallback(() => {
-        onBlurPersist(valueRef.current)
-      }, [onBlurPersist])
-
-      return (
-        <div ref={wrapperRef}>
-          <InputTextArea
-            value={value}
-            onChange={handleChange}
-            onKeyDown={handleKeyDown}
-            onBlur={handleBlur}
-            placeholder='Type your message...'
-            state='default'
-            width='w-full'
-            minRows={1}
-            autoFocus={true}
-            showCharCount={false}
-            slashCommands={slashCommands}
-            onSlashCommandSelect={onSlashCommandSelect}
-            onAddCurrentIdeContext={onAddCurrentIdeContext}
-            onClearIdeContexts={onClearIdeContexts}
-            selectedIdeContextItems={selectedIdeContextItems}
-            fallbackFileSearchRoot={fallbackFileSearchRoot}
-            filterSelectedMentionFiles={filterSelectedMentionFiles}
-            enableImageAttachments={true}
-            imageDraftTarget={imageDraftTarget}
-            fontSizeOffset={fontSizeOffset}
-            className='!border-0 !focus:border-0 !outline-none !shadow-none focus:!ring-0'
-          />
-        </div>
-      )
-    }
-  )
-)
-
-ChatInputController.displayName = 'ChatInputController'
 
 function Chat() {
   const dispatch = useAppDispatch()
@@ -3626,6 +3464,16 @@ function Chat() {
     }
   })
   const [isResizing, setIsResizing] = useState(false)
+  const [parallelSplitPct, setParallelSplitPct] = useState<number>(() => {
+    try {
+      const stored = typeof window !== 'undefined' ? window.localStorage.getItem('chat:parallelSplitPct') : null
+      const parsed = stored ? Number.parseFloat(stored) : Number.NaN
+      return Number.isFinite(parsed) ? Math.min(80, Math.max(20, parsed)) : 50
+    } catch {
+      return 50
+    }
+  })
+  const [isParallelResizing, setIsParallelResizing] = useState(false)
   // Session-only secondary transcript. It intentionally resets with this route container.
   const [parallelPane, setParallelPane] = useState<ParallelChatPaneTarget | null>(null)
   const [activeChatPane, setActiveChatPane] = useState<'primary' | 'parallel'>('primary')
@@ -4063,7 +3911,52 @@ function Chat() {
       document.body.style.userSelect = prevUserSelect
       document.body.style.cursor = prevCursor
     }
-  }, [isResizing])
+  }, [isResizing, parallelPane])
+
+  useEffect(() => {
+    if (!isParallelResizing || !parallelPane || isMobile) return
+
+    const clamp = (value: number) => Math.max(20, Math.min(80, value))
+    const handleMove = (clientX: number) => {
+      const container = containerRef.current
+      if (!container) return
+      const rect = container.getBoundingClientRect()
+      const chatWorkspaceWidth = heimdallVisible ? rect.width * (leftWidthPct / 100) : rect.width
+      if (chatWorkspaceWidth <= 0) return
+      const nextSplit = clamp(((clientX - rect.left) / chatWorkspaceWidth) * 100)
+      setParallelSplitPct(nextSplit)
+      try {
+        window.localStorage.setItem('chat:parallelSplitPct', nextSplit.toFixed(2))
+      } catch {}
+    }
+
+    const stopResizing = () => setIsParallelResizing(false)
+    const onMouseMove = (event: MouseEvent) => handleMove(event.clientX)
+    const onTouchMove = (event: TouchEvent) => {
+      if (event.touches[0]) handleMove(event.touches[0].clientX)
+    }
+
+    window.addEventListener('mousemove', onMouseMove)
+    window.addEventListener('mouseup', stopResizing)
+    window.addEventListener('touchmove', onTouchMove, { passive: false })
+    window.addEventListener('touchend', stopResizing)
+    window.addEventListener('blur', stopResizing)
+
+    const previousUserSelect = document.body.style.userSelect
+    const previousCursor = document.body.style.cursor
+    document.body.style.userSelect = 'none'
+    document.body.style.cursor = 'col-resize'
+
+    return () => {
+      window.removeEventListener('mousemove', onMouseMove)
+      window.removeEventListener('mouseup', stopResizing)
+      window.removeEventListener('touchmove', onTouchMove)
+      window.removeEventListener('touchend', stopResizing)
+      window.removeEventListener('blur', stopResizing)
+      document.body.style.userSelect = previousUserSelect
+      document.body.style.cursor = previousCursor
+    }
+  }, [heimdallVisible, isMobile, isParallelResizing, leftWidthPct, parallelPane])
 
   // Sync system prompt and context from current conversation
   // Read directly from React Query projectConversations to avoid Redux sync race conditions
@@ -6597,9 +6490,20 @@ function Chat() {
       className='flex h-full overflow-hidden bg-transparent dark:bg-transparent'
     >
       <div
-        className={`relative flex flex-col ${heimdallVisible && !isMobile ? 'flex-none' : 'flex-1'} rounded-xl mb-2 min-w-0 bg-transparent sm:min-w-[240px] md:min-w-[280px] overflow-hidden`}
+        data-chat-pane-surface='true'
+        data-chat-pane-kind='primary'
+        data-chat-pane-active={activeChatPane === 'primary' ? 'true' : 'false'}
+        onMouseDown={() => setActiveChatPane('primary')}
+        onFocusCapture={() => setActiveChatPane('primary')}
+        className={`relative flex flex-col ${(heimdallVisible || parallelPane) && !isMobile ? 'flex-none' : 'flex-1'} rounded-xl mb-2 min-w-0 bg-transparent sm:min-w-[240px] md:min-w-[280px] overflow-hidden`}
         style={{
-          width: isMobile ? '100%' : heimdallVisible ? `${parallelPane ? Math.max(25, leftWidthPct - 20) : leftWidthPct}%` : 'auto',
+          width: isMobile
+            ? '100%'
+            : parallelPane
+              ? `calc(${((heimdallVisible ? leftWidthPct : 100) * parallelSplitPct) / 100}% - 6px)`
+              : heimdallVisible
+                ? `${leftWidthPct}%`
+                : 'auto',
           backgroundColor: chatSurfaceBackgroundColor,
         }}
       >
@@ -7216,6 +7120,7 @@ function Chat() {
         {/* Input area: controls row + textarea (absolutely positioned overlay) */}
         <div
           ref={inputAreaRef}
+          data-chat-pane-composer='true'
           className={`absolute ${isBranchEditing ? 'z-100' : 'z-10'} bottom-0 left-0 right-0 mx-auto mb-2 px-2 sm:px-0 md:px-4 lg:px-4 2xl:px-4  ${!heimdallVisible ? 'max-w-full sm:max-w-xl md:max-w-2xl lg:max-w-3xl xl:max-w-3xl 2xl:max-w-4xl 3xl:max-w-6xl' : 'max-w-full sm:max-w-xl md:max-w-2xl lg:max-w-3xl xl:max-w-4xl 2xl:max-w-4xl'}`}
           style={{ paddingBottom: 'max(0.5rem, env(safe-area-inset-bottom))' }}
         >
@@ -7301,11 +7206,11 @@ function Chat() {
                 >
                   {hasLatestTodoList && latestTodoList && (
                     <div
-                      className={`${composerSummaryPanelClassName} rounded-[16px] bg-neutral-100/80 px-2 py-0.5 dark:bg-neutral-800/50`}
+                      className={`${composerSummaryPanelClassName} rounded-[16px] bg-neutral-100/80 px-2 py-1 dark:bg-neutral-800/50`}
                     >
-                      <div className='flex items-center justify-between gap-2'>
-                        <span className='flex min-w-0 items-center gap-1.5 text-xs font-medium text-neutral-600 dark:text-neutral-400'>
-                          <i className='bx bx-list-check shrink-0 text-2xl'></i>
+                      <div className='flex items-center justify-between gap-3'>
+                        <span className='min-w-0 flex items-center gap-1.5 text-xs font-medium text-neutral-600 dark:text-neutral-400'>
+                          <i className='bx bx-list-check shrink-0 text-base'></i>
                           <span className='truncate text-[12px]'>Todo list</span>
                           {effectiveTodoListCollapsed && (
                             <span className='ml-1 shrink-0 text-[10px] text-neutral-400 dark:text-neutral-500'>
@@ -7322,22 +7227,28 @@ function Chat() {
                                 : ''}
                           </span>
                           <button
+                            type='button'
                             onClick={() => toggleTodoListCollapsed()}
-                            className='mt-1 rounded-lg px-2 py-0.5 transition-colors hover:bg-neutral-200 dark:hover:bg-neutral-700'
+                            className='rounded-md px-1 py-0.5 text-neutral-500 transition-colors hover:text-neutral-700 dark:text-neutral-400 dark:hover:text-neutral-200'
                             title={effectiveTodoListCollapsed ? 'Expand todo list' : 'Collapse todo list'}
                           >
                             <i
-                              className={`bx ${effectiveTodoListCollapsed ? 'bx-chevron-down' : 'bx-chevron-up'} text-sm text-neutral-500`}
+                              className={`bx ${effectiveTodoListCollapsed ? 'bx-chevron-down' : 'bx-chevron-up'} translate-y-px text-sm transition-transform duration-300 ease-in-out`}
                             ></i>
                           </button>
                         </div>
                       </div>
-                      {!effectiveTodoListCollapsed && (
-                        <ul className='mt-1.5 max-h-40 space-y-1 overflow-y-auto pb-2 thin-scrollbar'>
+                      <div
+                        className={`overflow-hidden transition-[max-height,opacity,margin] duration-300 ease-in-out ${
+                          effectiveTodoListCollapsed ? 'mt-0 max-h-0 opacity-0' : 'mt-1.5 max-h-44 opacity-100'
+                        }`}
+                        aria-hidden={effectiveTodoListCollapsed}
+                      >
+                        <ul className='max-h-40 space-y-1 overflow-y-auto pr-1 thin-scrollbar'>
                           {latestTodoList.items.map((item, idx) => (
                             <li
                               key={`todo-item-${idx}`}
-                              className={`flex min-w-0 items-center gap-2 text-xs ${
+                              className={`flex min-w-0 items-center gap-2 px-1 py-1 text-xs ${
                                 item.done
                                   ? 'text-neutral-500 dark:text-neutral-400'
                                   : 'text-neutral-800 dark:text-neutral-200'
@@ -7356,7 +7267,7 @@ function Chat() {
                             </li>
                           ))}
                         </ul>
-                      )}
+                      </div>
                     </div>
                   )}
                   {hasBranchFileMutations && (
@@ -8129,11 +8040,67 @@ function Chat() {
           </div>
         </div>
 
-      {/* SEPARATOR - Hidden on mobile */}
+      {parallelPane && !isMobile && (
+        <div
+          className='group relative z-20 mb-2 flex w-3 shrink-0 cursor-col-resize select-none items-stretch justify-center'
+          role='separator'
+          aria-label='Resize original and parallel chat panes'
+          aria-orientation='vertical'
+          aria-valuemin={20}
+          aria-valuemax={80}
+          aria-valuenow={Math.round(parallelSplitPct)}
+          tabIndex={0}
+          onDoubleClick={() => {
+            setParallelSplitPct(50)
+            try {
+              window.localStorage.setItem('chat:parallelSplitPct', '50')
+            } catch {}
+          }}
+          onKeyDown={event => {
+            if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return
+            event.preventDefault()
+            const direction = event.key === 'ArrowLeft' ? -1 : 1
+            setParallelSplitPct(previous => {
+              const next = Math.max(20, Math.min(80, previous + direction * 2))
+              try {
+                window.localStorage.setItem('chat:parallelSplitPct', next.toFixed(2))
+              } catch {}
+              return next
+            })
+          }}
+          onMouseDown={() => setIsParallelResizing(true)}
+          onTouchStart={event => {
+            event.preventDefault()
+            setIsParallelResizing(true)
+          }}
+          title='Drag to resize chat panes · Double-click to reset'
+        >
+          <div
+            className={`my-3 w-px rounded-full transition-[width,background-color] duration-150 ${
+              isParallelResizing
+                ? 'w-0.5 bg-blue-500 dark:bg-orange-400'
+                : 'bg-neutral-300 group-hover:w-0.5 group-hover:bg-blue-400 dark:bg-neutral-700 dark:group-hover:bg-orange-400'
+            }`}
+          />
+        </div>
+      )}
+
       {parallelPane && !isMobile && (
         <ParallelChatPane
           target={parallelPane}
           active={activeChatPane === 'parallel'}
+          width={`calc(${((heimdallVisible ? leftWidthPct : 100) * (100 - parallelSplitPct)) / 100}% - 6px)`}
+          title={currentConversation?.title ? `${currentConversation.title} · Parallel` : 'Parallel branch'}
+          fontSizeOffset={fontSizeOffset}
+          groupToolReasoningRuns={groupToolReasoningRuns}
+          truncateToolOutput={truncateToolOutput}
+          onOpenToolHtmlModal={openToolHtmlModal}
+          onOpenSubagentTranscript={openSubagentTranscript}
+          onOpenSettings={() => setSettingsOpen(true)}
+          onChatErrorAction={handleChatErrorAction}
+          onEditMessage={handleMessageEdit}
+          onDeleteMessage={handleRequestDelete}
+          onAddToNote={handleAddToNote}
           onActivate={() => setActiveChatPane('parallel')}
           onClose={() => {
             setParallelPane(null)
@@ -8157,12 +8124,18 @@ function Chat() {
         />
       )}
 
-      {isResizing && !isMobile && (
+      {(isResizing || isParallelResizing) && !isMobile && (
         <div
           className='fixed inset-0 z-[2000] cursor-col-resize select-none bg-transparent'
           aria-hidden='true'
-          onMouseUp={() => setIsResizing(false)}
-          onTouchEnd={() => setIsResizing(false)}
+          onMouseUp={() => {
+            setIsResizing(false)
+            setIsParallelResizing(false)
+          }}
+          onTouchEnd={() => {
+            setIsResizing(false)
+            setIsParallelResizing(false)
+          }}
         />
       )}
 
