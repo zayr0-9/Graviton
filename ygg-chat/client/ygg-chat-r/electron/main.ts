@@ -6,23 +6,23 @@ import http from 'http'
 import os from 'os'
 import path from 'path'
 import { fileURLToPath } from 'url'
-import './envLoader.js'
+import '../server/envLoader.js'
 import {
   deleteBraveApiKey,
   getBraveApiKey,
   hasBraveApiKey,
   setBraveApiKey,
-} from './keytarSecrets.js'
-import { ensureManagedHooksInitialized } from './hooks/hookStorage.js'
+} from '../server/keytarSecrets.js'
+import { ensureManagedHooksInitialized } from '../server/hooks/hookStorage.js'
 import { buildElectronHostCapabilities, buildElectronServerConfig } from './electronHostAdapter.js'
-import { createYggServer, type YggServerHandle } from './server/createYggServer.js'
-import { ensureManagedCustomToolsInitialized } from './tools/customToolLoader.js'
-import { ensureManagedThemesInitialized } from './tools/themeManager.js'
-import { detectPathType, getWSLCommandArgs, isWindows } from './utils/wslBridge.js'
-import { OpenAiChatgptProvider } from './headlessServer/providers/openaiChatgptProvider.js'
-import { getValidTokens, clearTokens as clearOpenAIStoredTokens, fetchOpenAIUsageStatus } from './openaiChatgptOAuth.js'
-import { createAppAuthTokenManager } from './headlessServer/services/appAuthTokenManager.js'
-import { resolveGatewayFlags } from './headlessServer/config/gatewayFlags.js'
+import { createYggServer, type YggServerHandle } from '../server/createYggServer.js'
+import { ensureManagedCustomToolsInitialized } from '../server/tools/customToolLoader.js'
+import { ensureManagedThemesInitialized } from '../server/tools/themeManager.js'
+import { detectPathType, getWSLCommandArgs, isWindows } from '../server/utils/wslBridge.js'
+import { OpenAiChatgptProvider } from '../server/headlessServer/providers/openaiChatgptProvider.js'
+import { getValidTokens, clearTokens as clearOpenAIStoredTokens, fetchOpenAIUsageStatus } from '../server/openaiChatgptOAuth.js'
+import { createAppAuthTokenManager } from '../server/headlessServer/services/appAuthTokenManager.js'
+import { resolveGatewayFlags } from '../server/headlessServer/config/gatewayFlags.js'
 
 // Destructure autoUpdater from CommonJS module (ESM/CJS interop)
 const { autoUpdater } = autoUpdaterPkg

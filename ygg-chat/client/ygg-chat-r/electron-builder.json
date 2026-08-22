@@ -13,8 +13,8 @@
     "electron/preload.mjs",
     "electron/toolRuntimeUtility.mjs",
     "src/features/chats/prompts/*.md",
-    "electron/headlessServer/ui/mobile/**/*",
-    "electron/headlessServer/routes/**/*.html"
+    "server/headlessServer/ui/mobile/**/*",
+    "server/headlessServer/routes/**/*.html"
   ],
   "asarUnpack": [
     "**/node_modules/better-sqlite3/**/*",

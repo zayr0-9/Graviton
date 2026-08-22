@@ -1,0 +1,406 @@
+import type Database from 'better-sqlite3'
+import type { Express } from 'express'
+import { mcpManager } from '../mcp/mcpManager.js'
+import { customToolRegistry } from '../tools/customToolLoader.js'
+import { toolOrchestrator as defaultToolOrchestrator } from '../tools/orchestrator/index.js'
+import { isBuiltInToolAvailable } from '../serverHost.js'
+import { BUILTIN_TOOL_DEFINITIONS } from '../../../../shared/builtinToolDefinitions.js'
+import { syncOpenAiChatGptTokenFromElectronStorage, syncOpenRouterTokenFromElectronSession } from './providers/electronAppAuth.js'
+import { ProviderTokenStore } from './providers/tokenStore.js'
+import { registerCapabilityRoutes } from './routes/capabilityRoutes.js'
+import { registerChatRoutes } from './routes/chatRoutes.js'
+import { registerCrudRoutes } from './routes/crudRoutes.js'
+import { registerProviderAuthRoutes } from './routes/providerAuthRoutes.js'
+import { registerMobileUiRoutes } from './routes/mobileUiRoutes.js'
+import { registerCustomToolsRoutes } from './routes/customToolsRoutes.js'
+import { registerCustomToolRpcRoutes } from './routes/customToolRpcRoutes.js'
+import { registerEphemeralGenerateRoutes } from './routes/ephemeralGenerateRoutes.js'
+import { registerSubagentRoutes } from './routes/subagentRoutes.js'
+import { registerTestHarnessRoutes } from './routes/testHarnessRoutes.js'
+import { registerGatewayRoutes } from './routes/gatewayRoutes.js'
+import { registerLineageRoutes } from './routes/lineageRoutes.js'
+import { registerCloudProxyRoutes } from './routes/cloudProxyRoutes.js'
+import { createAppAuthTokenManager } from './services/appAuthTokenManager.js'
+import { createRailwayClient } from './services/railwayClient.js'
+import { createCloudMirrorService } from './services/cloudMirrorService.js'
+import { runHookRequest } from '../hooks/hookRunner.js'
+import { ChatOrchestrator } from './services/chatOrchestrator.js'
+import { DecisionBroker } from './services/decisionBroker.js'
+import { RunSessionRegistry } from './services/runSessionRegistry.js'
+import { CompactionService } from './services/compactionService.js'
+import { SubagentRunService } from './services/subagentRunService.js'
+import { createSubagentDispatchExecutor, createSubagentManagerExecutor } from './services/subagentToolExecutor.js'
+import { createMultiCallDispatchExecutor } from './services/multiCallExecutor.js'
+import { ProviderRouter, normalizeProviderRoute } from './services/providerRouter.js'
+import { resolveGatewayFlags } from './config/gatewayFlags.js'
+import type { ToolExecutor } from './services/toolLoopService.js'
+
+type OrchestratorLike = typeof defaultToolOrchestrator
+
+interface HeadlessServerRouteDeps {
+  db: Database.Database
+  statements: any
+  /**
+   * Tool orchestrator owning submit/poll/cancel. The composition root
+   * (localServer.ts) injects the instance it registered tools on; the default
+   * keeps legacy behavior for tests that register routes directly.
+   */
+  orchestrator?: OrchestratorLike
+}
+
+type InferenceToolDefinition = { name: string; description?: string; inputSchema?: Record<string, any> }
+
+const HEADLESS_RUNTIME_BUILTIN_TOOL_NAMES = new Set([
+  'todo_list',
+  'plan_md',
+  'fetch_notes',
+  'fetch_chats',
+  'read_file',
+  'read_file_continuation',
+  'read_files',
+  'create_file',
+  'edit_file',
+  'multi_edit',
+  'delete_file',
+  'directory',
+  'glob',
+  'ripgrep',
+  'brave_search',
+  'browse_web',
+  'bash',
+  'powershell',
+  'html_renderer',
+  'theme_manager',
+  'custom_tool_manager',
+  'mcp_manager',
+  'skill_manager',
+  'subagent',
+  'subagent_manager',
+  'multi_call',
+])
+
+// Computed per call: host-gated tools (e.g. browse_web without a browser
+// engine) are resolved during server startup, after this module loads.
+const getBuiltInInferenceTools = (): InferenceToolDefinition[] =>
+  BUILTIN_TOOL_DEFINITIONS.filter(
+    tool => HEADLESS_RUNTIME_BUILTIN_TOOL_NAMES.has(tool.name) && isBuiltInToolAvailable(tool.name)
+  ).map(tool => ({
+    name: tool.name,
+    description: tool.description,
+    inputSchema: tool.inputSchema,
+  }))
+
+const toMcpInferenceTool = (tool: any): InferenceToolDefinition | null => {
+  const visibility = tool?._meta?.ui?.visibility
+  if (Array.isArray(visibility) && !visibility.includes('model')) {
+    return null
+  }
+
+  const name = typeof tool?.qualifiedName === 'string' ? tool.qualifiedName : typeof tool?.name === 'string' ? tool.name : null
+  if (!name) return null
+
+  return {
+    name,
+    description: typeof tool?.description === 'string' ? tool.description : undefined,
+    inputSchema:
+      tool?.inputSchema && typeof tool.inputSchema === 'object'
+        ? tool.inputSchema
+        : { type: 'object', properties: {} },
+  }
+}
+
+const dedupeToolsByName = (tools: InferenceToolDefinition[]): InferenceToolDefinition[] => {
+  const byName = new Map<string, InferenceToolDefinition>()
+  for (const tool of tools) {
+    if (!tool?.name) continue
+    if (!byName.has(tool.name)) {
+      byName.set(tool.name, tool)
+    }
+  }
+  return Array.from(byName.values())
+}
+
+const resolveDefaultInferenceTools = (): InferenceToolDefinition[] => {
+  const tools: InferenceToolDefinition[] = getBuiltInInferenceTools()
+
+  try {
+    const customTools = customToolRegistry
+      .getDefinitions()
+      .filter(def => def.enabled)
+      .map(def => ({
+        name: def.name,
+        description: def.description,
+        inputSchema: def.inputSchema,
+      }))
+    tools.push(...customTools)
+  } catch {
+    // Ignore custom tool discovery failures in request-path fallback.
+  }
+
+  try {
+    const mcpTools = mcpManager.getAllTools().map(toMcpInferenceTool).filter((tool): tool is InferenceToolDefinition => !!tool)
+    tools.push(...mcpTools)
+  } catch {
+    // Ignore MCP discovery failures in request-path fallback.
+  }
+
+  return dedupeToolsByName(tools)
+}
+
+// The subagent + subagent_manager tools are always excluded (no nested subagents).
+const SUBAGENT_EXCLUDED_TOOL_NAMES = new Set(['subagent', 'subagent_manager'])
+
+// These orchestration tools are always exposed to a child, including when a
+// parent supplies an explicit tool whitelist.
+const REQUIRED_SUBAGENT_TOOL_NAMES = new Set(['multi_call'])
+
+// Default tool set when a subagent request omits `tools`. Mirrors the renderer's
+// DEFAULT_SUBAGENT_TOOLS; every name here is in HEADLESS_RUNTIME_BUILTIN_TOOL_NAMES.
+const DEFAULT_SUBAGENT_TOOL_NAMES = [
+  'read_file',
+  'read_files',
+  'glob',
+  'ripgrep',
+  'browse_web',
+  'brave_search',
+  'edit_file',
+  'multi_edit',
+  'multi_call',
+  'create_file',
+  'delete_file',
+  'bash',
+]
+
+const resolveInferenceToolsByName = (
+  names: string[] | undefined
+): { tools: InferenceToolDefinition[]; resolvedNames: string[]; unknownNames: string[] } => {
+  // Host-gated names drop out of the default set so they are not reported
+  // as unknown on hosts that cannot run them.
+  const requested = Array.isArray(names) ? names : DEFAULT_SUBAGENT_TOOL_NAMES.filter(isBuiltInToolAvailable)
+  const wanted = new Set([
+    ...requested.filter(name => typeof name === 'string' && !SUBAGENT_EXCLUDED_TOOL_NAMES.has(name)),
+    ...REQUIRED_SUBAGENT_TOOL_NAMES,
+  ])
+  const available = resolveDefaultInferenceTools()
+  const tools = available.filter(tool => wanted.has(tool.name))
+  const resolvedNames = tools.map(tool => tool.name)
+  const resolvedSet = new Set(resolvedNames)
+  const unknownNames = [...wanted].filter(name => !resolvedSet.has(name))
+  return { tools, resolvedNames, unknownNames }
+}
+
+function bootstrapHeadlessProviderTokens(tokenStore: ProviderTokenStore): void {
+  syncOpenRouterTokenFromElectronSession(tokenStore)
+  syncOpenAiChatGptTokenFromElectronStorage(tokenStore)
+}
+
+const sleep = (ms: number): Promise<void> =>
+  new Promise(resolve => {
+    setTimeout(resolve, ms)
+  })
+
+const createOrchestratorToolExecutor = (toolOrchestrator: OrchestratorLike): ToolExecutor => async (toolCall, context) => {
+  const timeoutMs = Math.max(1_000, Math.min(context.timeoutMs ?? 300_000, 600_000))
+
+  const parsedArguments =
+    typeof toolCall.arguments === 'string'
+      ? (() => {
+          try {
+            return JSON.parse(toolCall.arguments)
+          } catch {
+            return {}
+          }
+        })()
+      : toolCall.arguments ?? {}
+
+  const signal = context.signal
+  if (signal?.aborted) {
+    const abortError = new Error('Tool execution aborted')
+    abortError.name = 'AbortError'
+    throw abortError
+  }
+
+  const job = toolOrchestrator.submit(toolCall.name, parsedArguments, {
+    timeoutMs,
+    rootPath: context.rootPath ?? null,
+    operationMode: context.operationMode ?? 'execute',
+    conversationId: context.conversationId ?? null,
+    messageId: context.messageId ?? null,
+    streamId: context.streamId ?? null,
+    toolCallId: toolCall.id ?? null,
+  })
+
+  const startedAt = Date.now()
+  while (Date.now() - startedAt <= timeoutMs) {
+    // Cancel the in-flight job promptly when the run is aborted.
+    if (signal?.aborted) {
+      toolOrchestrator.cancel(job.id)
+      const abortError = new Error('Tool execution aborted')
+      abortError.name = 'AbortError'
+      throw abortError
+    }
+
+    const current = toolOrchestrator.getJob(job.id)
+    if (!current) {
+      throw new Error(`Tool job disappeared: ${job.id}`)
+    }
+
+    if (current.status === 'completed') {
+      return current.result
+    }
+
+    if (current.status === 'failed') {
+      throw new Error(current.error || `Tool execution failed: ${toolCall.name}`)
+    }
+
+    if (current.status === 'cancelled') {
+      throw new Error(`Tool execution cancelled: ${toolCall.name}`)
+    }
+
+    await sleep(100)
+  }
+
+  toolOrchestrator.cancel(job.id)
+  throw new Error(`Tool execution timed out after ${timeoutMs}ms: ${toolCall.name}`)
+}
+
+export function registerHeadlessServerRoutes(app: Express, deps: HeadlessServerRouteDeps): void {
+  const tokenStore = new ProviderTokenStore(deps.db)
+  bootstrapHeadlessProviderTokens(tokenStore)
+
+  const executeToolViaOrchestrator = createOrchestratorToolExecutor(deps.orchestrator ?? defaultToolOrchestrator)
+
+  // Gateway flags are resolved once at startup. Chat and route-independent runs default on.
+  const gatewayFlags = resolveGatewayFlags()
+  // One process-wide app-session owner for every Railway-backed path, including
+  // OpenRouter streaming (which previously bypassed this shared refresh policy).
+  const appAuth = createAppAuthTokenManager()
+  const railway = createRailwayClient({ auth: appAuth })
+  const providerRouter = new ProviderRouter({ tokenStore, appAuth })
+
+  // One shared pause/resume registry across the chat orchestrator (which pauses the
+  // loop) and the POST /api/resume route (which resolves the paused decision).
+  const decisionBroker = new DecisionBroker()
+
+  // Detach/reattach registry (gateway.resumableRuns, default ON). A chat run's lifetime
+  // is owned by its RunSession rather than the SSE socket, so route changes and renderer
+  // reloads detach instead of aborting. Explicit false retains the legacy
+  // disconnect==abort path and leaves the reaper stopped.
+  const runSessions = new RunSessionRegistry()
+  if (gatewayFlags.resumableRuns) runSessions.startReaper()
+
+  registerCrudRoutes(app, deps)
+  registerProviderAuthRoutes(app, { tokenStore })
+  registerMobileUiRoutes(app)
+  registerCustomToolsRoutes(app)
+  registerCustomToolRpcRoutes(app)
+  registerCapabilityRoutes(app, { getDefaultTools: resolveDefaultInferenceTools })
+  registerEphemeralGenerateRoutes(app, { tokenStore })
+  registerLineageRoutes(app, deps)
+
+  // Phase 5 cloud gateway: storage-aware /api/gw/* CRUD + merge and /api/cloud/*
+  // authenticated pass-through. Mounted UNCONDITIONALLY — the renderer is now a thin
+  // client that routes all CRUD/reads/cloud through these paths (Phase 5 cutover), so
+  // they must always be available. They are additive routes (nothing else served
+  // /api/gw or /api/cloud), so mounting them changes no existing behavior. Both share
+  // one single-flight app-token manager (sole Supabase refresher) + one Railway client.
+  {
+    registerGatewayRoutes(app, {
+      railway,
+      mirror: createCloudMirrorService({ db: deps.db, statements: deps.statements }),
+      auth: appAuth,
+      db: deps.db,
+      statements: deps.statements,
+      enabled: true,
+    })
+    registerCloudProxyRoutes(app, { railway, enabled: true })
+  }
+
+  const compactionService = new CompactionService({
+    ...deps,
+    tokenStore,
+    providerRouter,
+  })
+
+  const multiCallToolExecutor = createMultiCallDispatchExecutor(executeToolViaOrchestrator)
+  const subagentRunService = new SubagentRunService({
+    statements: deps.statements,
+    tokenStore,
+    providerRouter,
+    // Child tools use the leaf executor. They can never re-enter the parent
+    // subagent dispatcher, preserving the no-nested-subagents invariant.
+    toolExecutor: multiCallToolExecutor,
+    resolveToolsByName: resolveInferenceToolsByName,
+    compactionService,
+    refreshProviderTokens: async (provider: string) => {
+      // Re-sync provider auth from the Electron store in case the user signed
+      // in or tokens rotated after the server started.
+      if (normalizeProviderRoute(provider) === 'openaichatgpt') {
+        syncOpenAiChatGptTokenFromElectronStorage(tokenStore, { preferNewest: true })
+      } else {
+        await syncOpenRouterTokenFromElectronSession(tokenStore)
+      }
+    },
+    // Share the chat RunSessionRegistry so background subagent runs publish their
+    // stream events to a session the existing GET /api/streams/:streamId route can
+    // replay — this is what lets the transcript viewer watch a run live. Gated on
+    // resumableRuns (same gate as that route); off => runs just don't stream live.
+    runSessions: gatewayFlags.resumableRuns ? runSessions : undefined,
+  })
+  // Startup reconciler: any subagent run left 'running' by a previous process
+  // crash is an orphan (this fresh process owns no live loop), so flip it to a
+  // resumable terminal state now, before anything can read stale 'running' rows.
+  try {
+    const reconciled = subagentRunService.reconcileOrphanedRuns()
+    if (reconciled > 0) console.log(`[subagent] reconciled ${reconciled} orphaned running run(s) -> resumable`)
+  } catch (error) {
+    console.warn('[subagent] orphaned-run reconciliation failed (continuing):', error)
+  }
+
+  // Compose two interceptors ahead of the orchestrator registry:
+  //   subagent_manager (global async manager, branch-scoped) -> subagent (legacy
+  //   blocking dispatch) -> multiCall/leaf. Both interceptors see the full
+  //   ToolExecutionContext (incl. lineageId) that the registry path would drop.
+  const subagentDispatchExecutor = createSubagentDispatchExecutor({
+    leafExecutor: multiCallToolExecutor,
+    subagentRunner: subagentRunService,
+  })
+  const chatToolExecutor = createSubagentManagerExecutor({
+    leafExecutor: subagentDispatchExecutor,
+    runner: subagentRunService,
+  })
+
+  registerSubagentRoutes(app, {
+    runService: subagentRunService,
+    validateTarget: (conversationId: string, parentMessageId: string) => {
+      const conversation = deps.statements.getConversationById?.get(conversationId)
+      if (!conversation) return { status: 404, error: 'Conversation not found' }
+      const parentMessage = deps.statements.getMessageById?.get(parentMessageId)
+      if (!parentMessage) return { status: 404, error: 'Parent message not found' }
+      return null
+    },
+  })
+
+  registerTestHarnessRoutes(app, {
+    getDefaultTools: resolveDefaultInferenceTools,
+  })
+  registerChatRoutes(app, {
+    orchestrator: new ChatOrchestrator({
+      ...deps,
+      tokenStore,
+      providerRouter,
+      toolExecutor: chatToolExecutor,
+      defaultToolsProvider: resolveDefaultInferenceTools,
+      compactBranch: input => compactionService.compactBranch(input),
+      decisionBroker,
+      // Phase 3: in-process chat hooks (fires only when a request sets hooksEnabled).
+      hookRunner: runHookRequest,
+      // Phase 4: cloud (openrouter) free-tier relay + Railway id adoption. Default OFF.
+      cloudChatEnabled: gatewayFlags.chat,
+    }),
+    compactionService,
+    decisionBroker,
+    runSessions,
+    resumableRuns: gatewayFlags.resumableRuns,
+  })
+}

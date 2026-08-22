@@ -1,0 +1,48 @@
+{
+  "extends": "../tsconfig.json",
+  "compilerOptions": {
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "target": "ES2022",
+    "lib": ["ES2022"],
+    "noEmit": true,
+    "sourceMap": true,
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true,
+    "resolveJsonModule": true,
+    "allowSyntheticDefaultImports": true,
+    // Dead-code hygiene, not correctness. Turned off so `typecheck:server` gates
+    // on real type errors only. Leaving them on would require deleting ~20 retained
+    // declarations (including readCodexSseOutputLegacy_DISABLED, kept on purpose),
+    // which is a separate decision from turning the compiler on. eslint's
+    // no-unused-vars still covers this. See server/TYPECHECK-DEAD-CODE.md for the list.
+    "noUnusedLocals": false,
+    "noUnusedParameters": false,
+    "noImplicitReturns": true
+  },
+  "include": ["./**/*.ts"],
+  // This project checks the runtime-neutral server graph only. Two areas are
+  // deliberately out of scope:
+  //
+  // 1. headlessServer/ui/mobile — a separate React app (main.tsx + tailwind)
+  //    bundled by electron/esbuild.main.mjs. It needs jsx + DOM libs, which do
+  //    not belong in a Node-only project. It has its own tsconfig
+  //    (typecheck:mobile). No server module imports its source.
+  // 2. __tests__ — six server test files import renderer modules from ../src
+  //    (e.g. operationModeSystemPrompt.test.ts -> src/features/chats/subagentClient),
+  //    which transitively pulls in the Redux store and needs DOM + vite/client
+  //    types. Adding DOM here would let server code reference `document` unchecked.
+  //
+  // The Electron host shell (electron/*.ts) is checked by typecheck:electron.
+  "exclude": [
+    "node_modules",
+    "dist",
+    "dist-electron",
+    "dist-server",
+    "headlessServer/ui/mobile",
+    "**/__tests__/**",
+    "**/*.test.ts"
+  ]
+}

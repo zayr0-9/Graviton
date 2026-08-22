@@ -82,3 +82,16 @@ tmp/
 temp/
 dist-server/
 
+
+# Compiled server files (outputs land in electron/ and dist-server/; these
+# guard against stray in-tree compilation)
+server/*.cjs
+server/*.js
+server/*.mjs
+!server/esbuild.server.mjs
+server/*.js.map
+server/*.mjs.map
+server/tools/*.js
+server/tools/*.js.map
+server/utils/*.js
+server/utils/*.js.map

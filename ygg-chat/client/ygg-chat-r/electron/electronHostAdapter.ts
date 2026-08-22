@@ -6,10 +6,10 @@
 import Conf from 'conf'
 import { app, shell } from 'electron'
 import path from 'path'
-import type { KeyValueStore, SecretStore, YggHostCapabilities } from './server/hostCapabilities.js'
-import { resolveYggServerConfig, type YggServerConfig } from './server/serverConfig.js'
-import { browseWeb } from './tools/browseWeb.js'
-import { UtilityToolRuntimeHost } from './tools/runtime/UtilityToolRuntimeHost.js'
+import type { KeyValueStore, SecretStore, YggHostCapabilities } from '../server/hostCapabilities.js'
+import { resolveYggServerConfig, type YggServerConfig } from '../server/serverConfig.js'
+import { browseWeb } from './browseWeb.js'
+import { UtilityToolRuntimeHost } from './UtilityToolRuntimeHost.js'
 
 export interface ElectronServerOptions {
   bindHost: string

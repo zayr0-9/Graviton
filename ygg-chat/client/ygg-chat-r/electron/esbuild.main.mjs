@@ -44,7 +44,7 @@ console.log('✅ preload.ts compiled to preload.mjs')
 
 // Bundle utility process runtime entry
 await esbuild.build({
-  entryPoints: [path.join(__dirname, 'toolRuntimeUtility.ts')],
+  entryPoints: [path.join(__dirname, '..', 'server', 'toolRuntimeUtility.ts')],
   bundle: true,
   platform: 'node',
   target: 'node20',
@@ -65,7 +65,7 @@ console.log('✅ toolRuntimeUtility.ts bundled to toolRuntimeUtility.mjs')
 
 // Bundle local analytics worker so expensive SQLite dashboard queries run off the main thread
 await esbuild.build({
-  entryPoints: [path.join(__dirname, 'localAnalyticsWorker.ts')],
+  entryPoints: [path.join(__dirname, '..', 'server', 'localAnalyticsWorker.ts')],
   bundle: true,
   platform: 'node',
   target: 'node20',
@@ -85,11 +85,11 @@ console.log('✅ localAnalyticsWorker.ts bundled to localAnalyticsWorker.mjs')
 
 // Bundle mobile headless UI (React) for LAN access
 await esbuild.build({
-  entryPoints: [path.join(__dirname, 'headlessServer', 'ui', 'mobile', 'src', 'main.tsx')],
+  entryPoints: [path.join(__dirname, '..', 'server', 'headlessServer', 'ui', 'mobile', 'src', 'main.tsx')],
   bundle: true,
   platform: 'browser',
   target: 'es2020',
-  outfile: path.join(__dirname, 'headlessServer', 'ui', 'mobile', 'assets', 'mobile-app.js'),
+  outfile: path.join(__dirname, '..', 'server', 'headlessServer', 'ui', 'mobile', 'assets', 'mobile-app.js'),
   format: 'esm',
   sourcemap: true,
   define: {
@@ -99,4 +99,4 @@ await esbuild.build({
   logLevel: 'info',
 })
 
-console.log('✅ mobile React UI bundled to headlessServer/ui/mobile/assets/mobile-app.js')
+console.log('✅ mobile React UI bundled to server/headlessServer/ui/mobile/assets/mobile-app.js')
