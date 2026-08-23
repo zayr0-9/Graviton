@@ -151,6 +151,12 @@ All 3 thunks share the same shape:
    `projectServerEvent`, which returns ordered actions dispatched onto the unchanged
    reducers. Terminal `complete` emits `streamCompleted`; the thunk then adds
    `sendingCompleted` + delayed `streamPruned`.
+   - Pasted image drafts are prepared before send and carry durable `attachmentId`s.
+     When the server creates the user row, `ChatOrchestrator` links those IDs in the
+     same message/lineage transaction and includes attachment metadata on
+     `user_message_persisted`. The initiating renderer also transfers its captured
+     data URLs from the optimistic temp row to the server-assigned row immediately;
+     later snapshots rehydrate through `/api/local/attachments/:id/file`.
 
 `repeat` (`POST …/messages/repeat`) is a server operation as well (no new user message),
 but has no dedicated renderer thunk in this flow.
@@ -274,6 +280,9 @@ Full union: `contracts/headlessApi.ts` `HeadlessStreamEvent`.
 - Branch lineage and parent ids are **server-assigned** (SQLite ids). The renderer rebuilds
   its current path from `started.parentId`, `user_message_persisted.message.id`, and
   `complete.message.id` — not from locally minted ids.
+- Prepared user attachments must be linked by `ChatOrchestrator` when that server-assigned
+  user ID is minted. Local attachment binaries are renderer-accessible only through the
+  resolved Ygg server origin; never expose or navigate to their absolute server file paths.
 - Tool calls are permission-gated unless the session is auto-approve
   (`toolAutoApprove !== false`) or the tool is in the bypass set.
 - The `subagent` tool is dispatched in-process by the server-owned main loop through

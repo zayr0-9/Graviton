@@ -2,11 +2,8 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { AnimatePresence, motion, useReducedMotion } from 'framer-motion'
 import { Eye, Maximize2, Minus, Pencil, Plus, Save, X } from 'lucide-react'
 import { createPortal } from 'react-dom'
-import ReactMarkdown from 'react-markdown'
-import remarkGfm from 'remark-gfm'
-import rehypeHighlight from 'rehype-highlight'
 import { localApi } from '../../utils/api'
-import { SHARED_TEXT_MARKDOWN_CLASS } from '../ChatMessage/chatMessageShared'
+import { MarkdownContent } from '../MarkdownContent/MarkdownContent'
 import { motionState, useMotionPreferences } from '../motion'
 import {
   getMarkdownThemeVars,
@@ -40,20 +37,7 @@ const parseRecord = (raw: unknown): UnknownRecord => {
 
 const toString = (value: unknown): string => (typeof value === 'string' ? value : '')
 
-const PlanMarkdown: React.FC<{
-  content: string
-  className?: string
-  style?: React.CSSProperties
-}> = ({ content, className = '', style }) => (
-  <div
-    className={`${SHARED_TEXT_MARKDOWN_CLASS} !pb-0 !text-[0.8125em] sm:!text-[0.8125em] xl:!text-[0.8125em] 2xl:!text-[0.8125em] 3xl:!text-[0.8125em] ${className}`}
-    style={style}
-  >
-    <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[[rehypeHighlight, { ignoreMissing: true }]]}>
-      {content}
-    </ReactMarkdown>
-  </div>
-)
+const PlanMarkdown = MarkdownContent
 
 const iconButtonClass =
   'flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-white/45 text-neutral-600 backdrop-blur-xl transition-[background-color,color,transform,opacity] duration-150 hover:bg-white/80 hover:text-neutral-950 active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400/70 disabled:cursor-not-allowed disabled:opacity-35 disabled:hover:bg-white/45 dark:bg-black/20 dark:text-neutral-300 dark:hover:bg-white/10 dark:hover:text-white dark:focus-visible:ring-orange-400/70 dark:disabled:hover:bg-black/20'

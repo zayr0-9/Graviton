@@ -151,6 +151,42 @@ describe('runServerChatLoop resubscribe', () => {
     expect(fetchMock).toHaveBeenNthCalledWith(2, 'http://local/api/streams/s-1?fromSeq=2', expect.anything())
   })
 
+  it('carries optimistic image artifacts onto the server-assigned user message', async () => {
+    const post = sseResponse([
+      {
+        type: 'user_message_persisted',
+        message: {
+          id: 'u1',
+          conversation_id: 'c1',
+          role: 'user',
+          content: 'image',
+          children_ids: [],
+          created_at: new Date().toISOString(),
+        },
+        seq: 1,
+      },
+      { type: 'complete', message: { id: 'a1' }, seq: 2 },
+    ])
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(post))
+    const deps = collectDispatch()
+
+    const result = await runServerChatLoop(
+      {
+        operation: 'send',
+        conversationId: 'c1',
+        streamId: 's-images',
+        path: '/api/conversations/c1/messages',
+        request: {},
+        signal: new AbortController().signal,
+      },
+      { ...deps, userMessageArtifacts: ['data:image/png;base64,YQ=='] }
+    )
+
+    expect(result.userMessage?.artifacts).toEqual(['data:image/png;base64,YQ=='])
+    const added = deps.actions.find(action => action.type === 'chat/messageAdded')
+    expect(added?.payload?.artifacts).toEqual(['data:image/png;base64,YQ=='])
+  })
+
   it('does NOT resubscribe when the run was cancelled locally (signal aborted)', async () => {
     const ac = new AbortController()
     ac.abort()

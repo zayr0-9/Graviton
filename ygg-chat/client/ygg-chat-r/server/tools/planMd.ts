@@ -41,6 +41,8 @@ export interface PlanToolArgs {
   search?: string
   replacement?: string
   cwd?: string
+  /** Absolute path, or a path relative to cwd, for display actions. */
+  path?: string
 }
 
 export interface PlanInfo {
@@ -231,27 +233,41 @@ export async function editPlan(name: string, search: string, replacement: string
   }
 }
 
-export async function displayPlan(name: string, cwd?: string): Promise<DisplayPlanResult> {
-  const normalized = normalizeName(name)
-  const dir = getPlanStorageDirectory(cwd)
-  const filePath = path.join(dir, `${normalized}${PLAN_FILE_EXTENSION}`)
+function displayNameForPath(filePath: string): string {
+  return path.basename(filePath, path.extname(filePath)) || filePath
+}
+
+async function displayMarkdownFile(filePath: string, name: string): Promise<DisplayPlanResult> {
   try {
     const content = await fs.readFile(filePath, 'utf8')
     return {
       displayed: true,
       exists: true,
-      name: normalized,
+      name,
       path: filePath,
       content,
-      message: `Displayed plan "${normalized}" in the chat view.`,
-      modelContent: `Plan "${normalized}" was displayed to the user in the chat view. Do not repeat the plan unless the user asks.`,
+      message: `Displayed plan "${name}" in the chat view.`,
+      modelContent: `Plan "${name}" was displayed to the user in the chat view. Do not repeat the plan unless the user asks.`,
     }
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
-      return { displayed: false, exists: false, name: normalized, message: `Plan "${normalized}" does not exist` }
+      return { displayed: false, exists: false, name, path: filePath, message: `Plan "${name}" does not exist` }
     }
     throw error
   }
+}
+
+export async function displayPlan(name: string, cwd?: string): Promise<DisplayPlanResult> {
+  const normalized = normalizeName(name)
+  return await displayMarkdownFile(planFilePath(getPlanStorageDirectory(cwd), normalized), normalized)
+}
+
+export async function displayMarkdownPath(filePath: string, cwd?: string): Promise<DisplayPlanResult> {
+  const requestedPath = filePath.trim()
+  if (!requestedPath) throw new Error('path is required for display action when name is not provided')
+
+  const resolvedPath = path.resolve(resolveBaseDirectory(cwd), requestedPath)
+  return await displayMarkdownFile(resolvedPath, displayNameForPath(resolvedPath))
 }
 
 export async function executePlanMd(args: PlanToolArgs, defaultCwd?: string): Promise<any> {
@@ -270,7 +286,8 @@ export async function executePlanMd(args: PlanToolArgs, defaultCwd?: string): Pr
       if (args.replacement === undefined) throw new Error('replacement is required for edit action')
       return await editPlan(args.name, args.search, args.replacement, cwd)
     case 'display':
-      if (!args.name) throw new Error('name is required for display action')
+      if (args.path) return await displayMarkdownPath(args.path, cwd)
+      if (!args.name) throw new Error('name or path is required for display action')
       return await displayPlan(args.name, cwd)
     case 'clarify':
       throw new Error('plan_md clarify must be handled by the renderer so the user can answer interactively')

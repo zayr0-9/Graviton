@@ -6202,16 +6202,9 @@ function Chat() {
                 }))
                 dispatch(chatSliceActions.imageDraftsAppended({ drafts: preparedDrafts, target }))
 
-                // During branch editing, attach previews only to the explicitly edited message.
-                // Do not fall back to focusedChatMessageId; focus is navigation state, not an attachment target.
-                if (branchTargetMessageId != null) {
-                  dispatch(
-                    chatSliceActions.messageArtifactsAppended({
-                      messageId: branchTargetMessageId,
-                      artifacts: preparedDrafts.map(d => d.dataUrl),
-                    })
-                  )
-                }
+                // Branch drafts stay in composition state until the server creates the
+                // sibling user message. Mutating the immutable source row here makes a
+                // newly pasted image appear on both the source and edited branch.
               } catch (err) {
                 console.error('Failed to persist selected images locally', err)
               }

@@ -1,7 +1,11 @@
 import type Database from 'better-sqlite3'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { MessageRepo } from '../../persistence/messageRepo.js'
-import { ChatOrchestrator, shouldRejectSourceLineageMismatch } from '../chatOrchestrator.js'
+import {
+  ChatOrchestrator,
+  linkPreparedAttachmentsToMessage,
+  shouldRejectSourceLineageMismatch,
+} from '../chatOrchestrator.js'
 
 let BetterSqlite3Ctor: (new (filename: string) => Database.Database) | null = null
 
@@ -64,6 +68,22 @@ function createSchema(db: Database.Database): void {
       content_blocks TEXT,
       created_at TEXT
     );
+
+    CREATE TABLE message_attachments (
+      id TEXT PRIMARY KEY,
+      file_path TEXT,
+      mime_type TEXT,
+      sha256 TEXT,
+      created_at TEXT
+    );
+
+    CREATE TABLE message_attachment_links (
+      id TEXT PRIMARY KEY,
+      message_id TEXT NOT NULL,
+      attachment_id TEXT NOT NULL,
+      created_at TEXT,
+      UNIQUE(message_id, attachment_id)
+    );
   `)
 }
 
@@ -103,6 +123,16 @@ function createStatements(db: Database.Database): any {
     `),
     getMessageById: db.prepare('SELECT * FROM messages WHERE id = ?'),
     getMessagesByConversationId: db.prepare('SELECT * FROM messages WHERE conversation_id = ? ORDER BY created_at ASC'),
+    getAttachmentById: db.prepare('SELECT * FROM message_attachments WHERE id = ?'),
+    linkAttachment: db.prepare(`
+      INSERT OR IGNORE INTO message_attachment_links (id, message_id, attachment_id, created_at)
+      VALUES (?, ?, ?, ?)
+    `),
+    getAttachmentsByMessageId: db.prepare(`
+      SELECT ma.* FROM message_attachment_links mal
+      JOIN message_attachments ma ON ma.id = mal.attachment_id
+      WHERE mal.message_id = ? ORDER BY ma.created_at ASC
+    `),
     upsertStreamingRun: { run: () => {} },
     getStreamingRunById: { get: () => null },
     updateStreamingRun: { run: () => {} },
@@ -127,6 +157,33 @@ class FakeProviderRouter {
     return { content: `assistant:${input.userContent}` }
   }
 }
+
+describe('prepared attachment linking', () => {
+  it('deduplicates IDs, links them to the server-assigned message, and returns metadata', () => {
+    const rows = new Map([
+      ['att-1', { id: 'att-1', file_path: '/tmp/one.png' }],
+      ['att-2', { id: 'att-2', file_path: '/tmp/two.png' }],
+    ])
+    const links: any[][] = []
+    const statements = {
+      getAttachmentById: { get: (id: string) => rows.get(id) },
+      linkAttachment: { run: (...args: any[]) => links.push(args) },
+    }
+
+    const linked = linkPreparedAttachmentsToMessage(statements, 'message-1', [
+      { attachmentId: 'att-1' },
+      { attachment_id: 'att-1' },
+      { attachmentId: 'att-2' },
+    ])
+
+    expect(linked).toEqual([rows.get('att-1'), rows.get('att-2')])
+    expect(links).toHaveLength(2)
+    expect(links.map(([, messageId, attachmentId]) => [messageId, attachmentId])).toEqual([
+      ['message-1', 'att-1'],
+      ['message-1', 'att-2'],
+    ])
+  })
+})
 
 describe('source lineage membership validation', () => {
   it('allows an inferred creation owner whose moving head is on a sibling path', () => {
@@ -193,6 +250,43 @@ describeIfSqlite('ChatOrchestrator continuation semantics', () => {
     expect(assistant.parent_id).toBe(user.id)
     expect(events.some(evt => evt.type === 'user_message_persisted')).toBe(true)
     expect(events[events.length - 1].type).toBe('complete')
+  })
+
+  it('links prepared image attachments before emitting the persisted user message', async () => {
+    const now = new Date().toISOString()
+    db.prepare(
+      'INSERT INTO message_attachments (id, file_path, mime_type, sha256, created_at) VALUES (?, ?, ?, ?, ?)'
+    ).run('att-1', '/tmp/image.png', 'image/png', 'sha-1', now)
+
+    const events: any[] = []
+    await orchestrator.runMessage(
+      {
+        operation: 'send',
+        conversationId: 'c1',
+        parentId: null,
+        content: 'describe this image',
+        provider: 'openaichatgpt',
+        modelName: 'gpt-5.1-codex-mini',
+        attachmentsBase64: [
+          {
+            dataUrl: 'data:image/png;base64,YQ==',
+            attachmentId: 'att-1',
+            filePath: '/tmp/image.png',
+          },
+        ],
+      },
+      event => events.push(event)
+    )
+
+    const persisted = events.find(event => event.type === 'user_message_persisted')
+    expect(persisted?.message).toMatchObject({
+      attachments_count: 1,
+      has_attachments: true,
+      attachments: [expect.objectContaining({ id: 'att-1' })],
+    })
+    expect(statements.getAttachmentsByMessageId.all(persisted.message.id)).toEqual([
+      expect.objectContaining({ id: 'att-1' }),
+    ])
   })
 
   it('replays only the latest compaction summary and subsequent branch messages', async () => {

@@ -41,3 +41,42 @@ describe('plan_md create', () => {
     expect(await harness.readFile('.ygg/plans/execute-plan.md')).toBe(content)
   })
 })
+
+
+describe('plan_md display', () => {
+  it('displays a Markdown file specified by an absolute path outside .ygg/plans', async () => {
+    const harness = await createToolFsHarness('ygg-plan-md-display-path-test-')
+    const filePath = await harness.writeFile('docs/external-plan.md', '# External plan\n\nDisplayed from its file path.')
+
+    const result = await executePlanMd(
+      {
+        action: 'display',
+        path: filePath,
+      },
+      harness.workspaceDir
+    )
+
+    expect(result).toMatchObject({
+      displayed: true,
+      exists: true,
+      name: 'external-plan',
+      path: filePath,
+      content: '# External plan\n\nDisplayed from its file path.',
+    })
+  })
+
+  it('resolves relative display paths from cwd', async () => {
+    const harness = await createToolFsHarness('ygg-plan-md-display-relative-test-')
+    const filePath = await harness.writeFile('docs/relative-plan.md', '# Relative plan')
+
+    const result = await executePlanMd(
+      {
+        action: 'display',
+        path: 'docs/relative-plan.md',
+      },
+      harness.workspaceDir
+    )
+
+    expect(result).toMatchObject({ displayed: true, path: filePath, content: '# Relative plan' })
+  })
+})

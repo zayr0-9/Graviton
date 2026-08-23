@@ -57,6 +57,9 @@ export interface RunServerChatLoopDeps {
    * by mobile/tests. See chatActions.refreshHeimdallTreeFromState.
    */
   onMessagePersisted?: () => void
+  /** Data URLs captured before send. They bridge the optimistic temp row to the
+   * server-assigned user-message ID; durable metadata linking is server-owned. */
+  userMessageArtifacts?: string[]
   /** Persist the highest projected sequence for reload-safe reattachment. */
   onSeq?: (seq: number, event: ServerStreamEvent) => void
 }
@@ -250,6 +253,11 @@ function makeHandleEvent(
     // (b) event-specific side effects that need the operation / return ids.
     if (event.type === 'user_message_persisted') {
       acc.userMessage = normalizeServerMessage(event.message)
+      if (ctx.userMessageArtifacts?.length) {
+        acc.userMessage.artifacts = Array.from(
+          new Set([...(acc.userMessage.artifacts || []), ...ctx.userMessageArtifacts])
+        )
+      }
       if (operation === 'send') dispatch(chatSliceActions.optimisticMessageCleared())
       else if (operation === 'edit') dispatch(chatSliceActions.optimisticBranchMessageCleared())
       // 'branch' uses no optimistic bubble.
@@ -479,8 +487,8 @@ export async function runServerChatLoop(
   deps: RunServerChatLoopDeps
 ): Promise<RunServerChatLoopResult> {
   const { operation, conversationId, streamId, path, request, signal } = params
-  const { dispatch, getState, onMessagePersisted, onSeq } = deps
-  const ctx: ProjectionContext = { streamId, conversationId }
+  const { dispatch, getState, onMessagePersisted, onSeq, userMessageArtifacts } = deps
+  const ctx: ProjectionContext = { streamId, conversationId, userMessageArtifacts }
   const acc = newAccumulator()
   const handleEvent = makeHandleEvent(acc, ctx, operation, dispatch, onMessagePersisted, onSeq)
 

@@ -58,6 +58,10 @@ export type ServerStreamEvent = HeadlessStreamFrame
 export interface ProjectionContext {
   streamId: string
   conversationId: ConversationId
+  /** Renderer-owned data URLs for the new user turn. The server persists and links
+   * attachment metadata, while this keeps the optimistic preview visible across the
+   * temp-id -> server-id handoff without waiting for a binary refetch. */
+  userMessageArtifacts?: string[]
   /**
    * Anchors a durable error record in the tree when the failing frame carries no
    * message of its own (a pre-message failure: reauth, free-tier exhaustion).
@@ -275,6 +279,9 @@ export function projectServerEvent(event: ServerStreamEvent, ctx: ProjectionCont
 
     case 'user_message_persisted': {
       const message = normalizeServerMessage(event.message)
+      if (ctx.userMessageArtifacts?.length) {
+        message.artifacts = Array.from(new Set([...(message.artifacts || []), ...ctx.userMessageArtifacts]))
+      }
       return [
         chatSliceActions.messageAdded(message),
         chatSliceActions.messageBranchCreated({ newMessage: message }),

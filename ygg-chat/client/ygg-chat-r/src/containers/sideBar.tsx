@@ -6,6 +6,7 @@ import { createPortal } from 'react-dom'
 import { useLocation, useNavigate } from 'react-router-dom'
 import { ConversationId, Project } from '../../../../shared/types'
 import { Button } from '../components'
+import { MarkdownContent } from '../components/MarkdownContent/MarkdownContent'
 import SearchList, { type SearchResultItem } from '../components/SearchList/SearchList'
 import { getThemeModeColor, useCustomChatTheme, useHtmlDarkMode } from '../components/ThemeManager/themeConfig'
 import { contentSpringTransition, shellSpringTransition, softTransition } from '../components/motion'
@@ -1976,14 +1977,10 @@ const SideBar: React.FC<SideBarProps> = ({
                                 className='w-full text-left rounded-lg border border-neutral-200/80 bg-neutral-50 px-3 py-2 transition-colors hover:bg-neutral-100 dark:border-neutral-700/70 dark:bg-neutral-900/80 dark:hover:bg-neutral-800'
                                 title='Open this conversation branch'
                               >
-                                {message.note && (
-                                  <p className='mb-1 text-[11px] font-medium whitespace-pre-wrap break-words text-blue-600 dark:text-orange-400'>
-                                    {message.note}
-                                  </p>
-                                )}
-                                <p className='text-xs text-neutral-800 dark:text-neutral-100 whitespace-pre-wrap break-words'>
-                                  {message.plain_text_content || message.content}
-                                </p>
+                                <MarkdownContent
+                                  content={message.note || message.plain_text_content || message.content}
+                                  className='text-[11px] font-medium text-blue-600 dark:text-orange-400 prose-p:my-0 prose-pre:my-2 prose-ul:my-1 prose-ol:my-1'
+                                />
                               </button>
                             ))}
                         </div>

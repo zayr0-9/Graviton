@@ -50,6 +50,40 @@ interface ChatOrchestratorDeps {
   cloudChatEnabled?: boolean
 }
 
+export function linkPreparedAttachmentsToMessage(
+  statements: any,
+  messageId: string,
+  attachments: any[] | null | undefined
+): any[] {
+  const attachmentIds = Array.from(
+    new Set(
+      (Array.isArray(attachments) ? attachments : [])
+        .map(attachment =>
+          typeof attachment?.attachmentId === 'string'
+            ? attachment.attachmentId.trim()
+            : typeof attachment?.attachment_id === 'string'
+              ? attachment.attachment_id.trim()
+              : ''
+        )
+        .filter(Boolean)
+    )
+  )
+  if (attachmentIds.length === 0) return []
+  if (!statements.getAttachmentById?.get || !statements.linkAttachment?.run) {
+    throw new Error('Attachment persistence statements are not configured')
+  }
+
+  const linkedAttachments: any[] = []
+  const now = new Date().toISOString()
+  for (const attachmentId of attachmentIds) {
+    const attachment = statements.getAttachmentById.get(attachmentId)
+    if (!attachment) throw new Error(`Prepared attachment not found: ${attachmentId}`)
+    statements.linkAttachment.run(uuidv4(), messageId, attachmentId, now)
+    linkedAttachments.push(attachment)
+  }
+  return linkedAttachments
+}
+
 /** Tools that never prompt for permission (mirrors the renderer TOOL_PERMISSION_ALWAYS_BYPASS). */
 const ALWAYS_BYPASS_TOOLS = new Set(['skill_manager', 'mcp_manager', 'multi_call'])
 /** custom_tool_manager actions that are read-only/management (bypass) vs 'invoke' (prompt). */
@@ -512,7 +546,7 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
   }
 
   private createUserMessage(request: HeadlessMessageRequest, parentId: string | null, content: string): any {
-    return this.messageRepo.createMessage({
+    const userMessage = this.messageRepo.createMessage({
       conversationId: request.conversationId,
       parentId,
       role: 'user',
@@ -520,6 +554,19 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
       modelName: request.modelName,
       contentBlocks: null,
     })
+
+    const linkedAttachments = linkPreparedAttachmentsToMessage(
+      this.statements,
+      userMessage.id,
+      request.attachmentsBase64
+    )
+    if (linkedAttachments.length > 0) {
+      userMessage.attachments = linkedAttachments
+      userMessage.attachments_count = linkedAttachments.length
+      userMessage.has_attachments = true
+    }
+
+    return userMessage
   }
 
   private resolveExecution(request: HeadlessMessageRequest): ResolvedExecution {

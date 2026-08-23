@@ -22,8 +22,8 @@ import {
   buildLocalApiUrl,
   createStreamingRequest,
   cloudApi,
-  environment,
   getCachedLocalApiBase,
+  getCachedLocalServerOrigin,
   gwApi,
   isLocalServerRuntime,
   localApi,
@@ -33,6 +33,7 @@ import { convContextSet, systemPromptSet } from '../conversations/conversationSl
 import type { Conversation } from '../conversations/conversationTypes'
 import { selectSelectedProject } from '../projects/projectSelectors'
 import { chatSliceActions } from './chatSlice'
+import { resolveAttachmentUrlFromOrigins } from './attachmentUrl'
 import {
   Attachment,
   BranchMessagePayload,
@@ -399,23 +400,6 @@ const updateMessageCache = (queryClient: QueryClient | null, conversationId: Con
   }
 }
 
-/**
- * Updates a message's artifacts in React Query cache
- * Keeps React Query cache in sync with Redux state when artifacts are appended
- * Essential for ensuring images/attachments appear immediately in sent messages
- */
-const mergeArtifactUrls = (existing: string[] | undefined, incoming: string[]): string[] => {
-  const merged = Array.isArray(existing) ? [...existing] : []
-  const seen = new Set(merged)
-  for (const artifact of incoming) {
-    if (!seen.has(artifact)) {
-      merged.push(artifact)
-      seen.add(artifact)
-    }
-  }
-  return merged
-}
-
 const getDraftsForTarget = (
   state: RootState,
   target: { kind: 'composer' } | { kind: 'branch'; messageId: MessageId }
@@ -476,33 +460,6 @@ const prepareLocalAttachmentsForModel = async (
     )
     ;(failure as Error & { envelope: ChatErrorEnvelope }).envelope = envelope
     throw failure
-  }
-}
-
-
-
-
-const updateMessageArtifactsInCache = (
-  queryClient: QueryClient | null,
-  conversationId: ConversationId,
-  messageId: MessageId,
-  newArtifacts: string[]
-) => {
-  if (!queryClient || !newArtifacts.length) return
-
-  const cacheKey = conversationQueryKeys.messages(conversationId)
-  const existingData = queryClient.getQueryData<ConversationMessagesTreeData>(cacheKey)
-
-  if (existingData) {
-    // Update the message artifacts in the messages array without dropping existing local previews.
-    const updatedMessages = existingData.messages.map(msg =>
-      msg.id === messageId ? { ...msg, artifacts: mergeArtifactUrls(msg.artifacts, newArtifacts) } : msg
-    )
-
-    queryClient.setQueryData(cacheKey, {
-      ...existingData,
-      messages: updatedMessages,
-    })
   }
 }
 
@@ -621,60 +578,15 @@ export const resolveAttachmentUrl = (
   urlOrPath?: string | null,
   filePath?: string | null,
   attachmentId?: string | null
-): string | null => {
-  const origin = API_BASE.replace(/\/?api\/?$/, '')
-
-  // Helper to detect absolute paths (Unix: /path or Windows: C:/path, D:/path, etc.)
-  const isAbsoluteLocalPath = (p: string): boolean => {
-    // Unix absolute path (but not server paths like /uploads or /data)
-    if (p.startsWith('/') && !p.startsWith('/uploads') && !p.startsWith('/data/')) {
-      return true
-    }
-    // Windows absolute path (C:/, D:/, etc.)
-    if (/^[A-Za-z]:\//.test(p)) {
-      return true
-    }
-    return false
-  }
-
-  // For local mode with attachment ID, use the local file serving endpoint
-  // This handles absolute paths like /home/user/.config/yggdrasil/user_images/...
-  // or Windows paths like C:/Users/rajka/AppData/Roaming/yggdrasil/user_images/...
-  if (attachmentId && environment === 'electron' && filePath) {
-    const fp = filePath.replace(/\\/g, '/')
-    // Check if it's an absolute path (not a relative server path)
-    if (isAbsoluteLocalPath(fp)) {
-      return `${getCachedLocalApiBase()}/local/attachments/${attachmentId}/file`
-    }
-  }
-
-  if (urlOrPath) {
-    if (/^https?:\/\//i.test(urlOrPath)) return urlOrPath
-    if (urlOrPath.startsWith('/')) return `${origin}${urlOrPath}`
-  }
-  if (filePath) {
-    const fp = filePath.replace(/\\/g, '/')
-    if (fp.startsWith('data/uploads/')) {
-      const filename = fp.split('/').pop() || ''
-      if (filename) return `${origin}/uploads/${filename}`
-    }
-    // For electron with absolute local paths but no attachment ID, we can't serve them
-    if (environment === 'electron' && isAbsoluteLocalPath(fp)) {
-      // Can't serve without ID, return null to indicate unavailable
-      console.warn('[resolveAttachmentUrl] Local file path without attachment ID:', fp)
-      return null
-    }
-    // Fallbacks for relative server paths only
-    // Don't append absolute local paths to origin - they're not server paths
-    if (isAbsoluteLocalPath(fp)) {
-      console.warn('[resolveAttachmentUrl] Absolute local path in non-electron environment:', fp)
-      return null
-    }
-    if (fp.startsWith('/')) return `${origin}${fp}`
-    return `${origin}/${fp}`
-  }
-  return null
-}
+): string | null =>
+  resolveAttachmentUrlFromOrigins({
+    urlOrPath,
+    filePath,
+    attachmentId,
+    localOrigin: getCachedLocalServerOrigin(),
+    localApiBase: getCachedLocalApiBase(),
+    remoteOrigin: API_BASE.replace(/\/?api\/?$/, ''),
+  })
 
 // Helper: Parse content_blocks from string or array format
 
@@ -1661,6 +1573,7 @@ export const sendMessage = createAsyncThunk<
             dispatch: projectionDispatch,
             getState,
             onMessagePersisted: () => refreshHeimdallTreeFromState(getState, dispatch),
+            userMessageArtifacts: (attachmentsBase64 || []).map(attachment => attachment.dataUrl),
             onSeq: (seq, event) => {
               if (
                 event.type !== 'permission_required' &&
@@ -2043,20 +1956,6 @@ export const editMessageWithBranching = createAsyncThunk<
         : null
       const attachmentsBase64 = await prepareLocalAttachmentsForModel(attachmentDrafts, 'edit message image attachments')
 
-      // Before sending, reflect current image drafts in the UI by appending them
-      // to the artifacts of the message being branched from.
-      if (drafts.length > 0) {
-        const draftDataUrls = drafts.map(d => d.dataUrl)
-        dispatch(
-          chatSliceActions.messageArtifactsAppended({
-            messageId: originalMessageId,
-            artifacts: draftDataUrls,
-          })
-        )
-        // Sync artifacts to React Query cache to keep UI consistent
-        updateMessageArtifactsInCache(extra.queryClient, conversationId, originalMessageId, draftDataUrls)
-      }
-
       if (!modelName) {
         // LOCAL-02: this used to reject with the bare string 'No model selected', which
         // reached no bubble at all. Tagged so the catch records a real classified error
@@ -2251,6 +2150,7 @@ export const editMessageWithBranching = createAsyncThunk<
             dispatch,
             getState,
             onMessagePersisted: () => refreshHeimdallTreeFromState(getState, dispatch),
+            userMessageArtifacts: (attachmentsBase64 || []).map(attachment => attachment.dataUrl),
             onSeq: (seq, event) => {
               if (
                 event.type !== 'permission_required' &&
@@ -2501,6 +2401,7 @@ export const sendMessageToBranch = createAsyncThunk<
             dispatch,
             getState,
             onMessagePersisted: () => refreshHeimdallTreeFromState(getState, dispatch),
+            userMessageArtifacts: (attachmentsBase64 || []).map(attachment => attachment.dataUrl),
             onSeq: (seq, event) => {
               if (
                 event.type !== 'permission_required' &&

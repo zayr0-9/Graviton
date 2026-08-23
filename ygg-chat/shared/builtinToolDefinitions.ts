@@ -74,7 +74,7 @@ export const BUILTIN_TOOL_DEFINITIONS: SharedToolDefinition[] = [
     name: 'plan_md',
     enabled: true,
     description:
-      'Create, list, read, edit, display, or clarify Markdown plans stored in the project .ygg/plans directory. Use clarify to ask the user structured planning questions with selectable options plus a manual answer option; the user answers are returned as the tool result so the model can continue.',
+      'Create, list, read, edit, display, or clarify Markdown plans. Display can also render a Markdown file at any absolute path or a path relative to cwd. Use clarify to ask the user structured planning questions with selectable options plus a manual answer option; the user answers are returned as the tool result so the model can continue.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -102,7 +102,11 @@ export const BUILTIN_TOOL_DEFINITIONS: SharedToolDefinition[] = [
         },
         cwd: {
           type: 'string',
-          description: 'Workspace directory whose .ygg/plans directory stores plan files.',
+          description: 'Workspace directory whose .ygg/plans directory stores plan files, and the base directory for relative display paths.',
+        },
+        path: {
+          type: 'string',
+          description: 'For display action: an absolute Markdown-file path or a path relative to cwd. Takes precedence over name and can point outside .ygg/plans.',
         },
         questions: {
           type: 'array',
