@@ -26,6 +26,22 @@ import { createChatHookSession, type ChatHookSession } from './chatHookService.j
 import { trimHistoryToLatestCompaction } from './compactionService.js'
 import type { HookRunRequest, HookRunResult } from '../../hooks/hookTypes.js'
 import { filterToolsForOperationMode } from '../../../../../shared/operationModeToolPolicy.js'
+import {
+  normalizeContextDirectorySettings,
+  resolveContextDirectorySettingsFromEnv,
+  type ContextDirectorySettings,
+} from '../../../../../shared/contextDirectories.js'
+import {
+  CONTEXT_INJECTION_KIND,
+  LABEL_HOOK_CONTEXT,
+  collectLoadedContextPaths,
+  toContextInjectionBlock,
+} from '../../../../../shared/contextInjection.js'
+import { createConversationContextLoader, type ConversationContextLoader, type LaunchInjection } from '../../context/contextLoader.js'
+import { registerConversationContext } from '../../context/contextSessionRegistry.js'
+import { loadSkillFromDirectory, type DiscoveredSkill } from '../../context/skillsDiscovery.js'
+import { skillRegistry } from '../../skills/skillLoader.js'
+import { tryGetServerConfig } from '../../serverHost.js'
 
 interface ChatOrchestratorDeps {
   db: any
@@ -545,14 +561,19 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
     return message
   }
 
-  private createUserMessage(request: HeadlessMessageRequest, parentId: string | null, content: string): any {
+  private createUserMessage(
+    request: HeadlessMessageRequest,
+    parentId: string | null,
+    content: string,
+    contentBlocks: any[] | null = null
+  ): any {
     const userMessage = this.messageRepo.createMessage({
       conversationId: request.conversationId,
       parentId,
       role: 'user',
       content,
       modelName: request.modelName,
-      contentBlocks: null,
+      contentBlocks,
     })
 
     const linkedAttachments = linkPreparedAttachmentsToMessage(
@@ -569,13 +590,67 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
     return userMessage
   }
 
-  private resolveExecution(request: HeadlessMessageRequest): ResolvedExecution {
+  /**
+   * Docs §11.3 decision 6: the launch-time instruction set is a real user row tagged
+   * `meta.kind = 'context_injection'`, inserted directly BEFORE the user's own message
+   * (system prompt → instructions → user prompt, as Claude Code orders them). Built once
+   * per branch: the caller only passes `launchInjection` when the active branch path
+   * has no such row since the latest compaction.
+   */
+  private resolveExecution(
+    request: HeadlessMessageRequest,
+    extras: {
+      launchInjection?: LaunchInjection | null
+      userMessageBlocks?: any[] | null
+      onContextMessage?: (message: any) => void
+    } = {}
+  ): ResolvedExecution {
     return this.branchOrchestrator.resolve(request, {
       requireMessage: (messageId, conversationId) => this.requireMessage(messageId, conversationId),
-      createUserMessage: (parentId, content) => this.createUserMessage(request, parentId, content),
+      createUserMessage: (parentId, content) => {
+        let effectiveParentId = parentId
+        if (extras.launchInjection) {
+          const contextMessage = this.persistContextInjectionMessage(request, parentId, extras.launchInjection)
+          extras.onContextMessage?.(contextMessage)
+          effectiveParentId = contextMessage.id
+        }
+        return this.createUserMessage(request, effectiveParentId, content, extras.userMessageBlocks ?? null)
+      },
       findNearestUserAncestor: (messageId, conversationId) =>
         this.conversationRepo.findNearestUserAncestor(conversationId, messageId),
     })
+  }
+
+  private persistContextInjectionMessage(
+    request: HeadlessMessageRequest,
+    parentId: string | null,
+    injection: { text: string; files: string[]; reason: string }
+  ): any {
+    return this.messageRepo.createMessage({
+      conversationId: request.conversationId,
+      parentId,
+      role: 'user',
+      content: injection.text,
+      modelName: request.modelName,
+      contentBlocks: null,
+      meta: { kind: CONTEXT_INJECTION_KIND, files: injection.files, reason: injection.reason },
+    })
+  }
+
+  /** Host-installed skills (`<dataDir>/skills`) as the personal scope (decision 10). */
+  private async loadHostSkills(): Promise<DiscoveredSkill[]> {
+    try {
+      await skillRegistry.initialize()
+      const out: DiscoveredSkill[] = []
+      for (const skill of skillRegistry.getEnabledSkills()) {
+        const discovered = await loadSkillFromDirectory(skill.sourcePath, 'personal')
+        if (discovered) out.push(discovered)
+      }
+      return out
+    } catch (error) {
+      console.warn('[ChatOrchestrator] host skills unavailable', error instanceof Error ? error.message : error)
+      return []
+    }
   }
 
   async runMessage(
@@ -673,6 +748,81 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
       phase = 'lifecycle'
     }
 
+    // ── Auto-loaded context (docs/claude_code_context_loading_rules.md §11) ──
+    // Independent of hooks/broker (decision 14): runs whenever the conversation has a
+    // root. Reads the user's context-directory setting from the request, else env.
+    const contextRootPath = request.rootPath ?? conversation.cwd ?? null
+    const contextDirectories: ContextDirectorySettings = normalizeContextDirectorySettings(
+      request.contextDirectories,
+      resolveContextDirectorySettingsFromEnv()
+    )
+    let contextLoader: ConversationContextLoader | null = null
+    if (contextRootPath) {
+      contextLoader = createConversationContextLoader({
+        conversationId: request.conversationId,
+        rootPath: contextRootPath,
+        settings: contextDirectories,
+        dataDir: tryGetServerConfig()?.dataDir ?? null,
+        autoMemoryEnabled: request.autoMemoryEnabled,
+        hostSkills: await this.loadHostSkills(),
+        // Decision 5 (partial): under the auto-approve tool policy external imports load;
+        // under the interactive policy they are skipped and logged. A broker card for
+        // them needs the decision session, which is seeded after the lineage transaction.
+        approveExternalImports: async paths => {
+          if (request.toolAutoApprove !== false) return true
+          console.warn('[ChatOrchestrator] external instruction imports skipped (interactive tool policy)', paths)
+          return false
+        },
+        onInstructionsLoaded: hookSession
+          ? (entries, reason) => {
+              const loadReason = reason === 'memory' || reason === 'hook' || reason === 'skill' ? 'session_start' : reason
+              void hookSession.runInstructionsLoaded(loadReason, entries.map(entry => entry.path).filter(Boolean))
+            }
+          : undefined,
+      })
+      registerConversationContext(request.conversationId, contextLoader)
+    }
+
+    // Launch-time instruction set for this branch (decision 6). Async, so it runs
+    // before the synchronous lineage transaction that persists the user message.
+    // `repeat` creates no user row and therefore gets no new context row.
+    let launchInjection: LaunchInjection | null = null
+    const userMessageBlocks: any[] = []
+    let contextMessage: any = null
+    if (contextLoader && request.operation !== 'repeat') {
+      const anchorId =
+        request.operation === 'send'
+          ? request.parentId ?? null
+          : request.operation === 'branch'
+            ? request.messageId ?? request.parentId ?? null
+            : request.messageId
+              ? (this.conversationRepo.getMessageById(request.messageId)?.parent_id ?? null)
+              : null
+      const anchorPath = anchorId
+        ? trimHistoryToLatestCompaction(this.conversationRepo.listPathToMessage(request.conversationId, String(anchorId)))
+        : []
+      try {
+        launchInjection = await contextLoader.buildLaunchInjection(collectLoadedContextPaths(anchorPath))
+      } catch (error) {
+        console.warn('[ChatOrchestrator] instruction file load failed', error instanceof Error ? error.message : error)
+      }
+      if (launchInjection && hookSession) await hookSession.runSessionStart('startup')
+      try {
+        // `/skill args` typed by the user: the rendered body rides on the user message.
+        const slash = await contextLoader.expandSlashInvocation(request.content)
+        if (slash) userMessageBlocks.push(toContextInjectionBlock(slash))
+      } catch (error) {
+        console.warn('[ChatOrchestrator] skill expansion failed', error instanceof Error ? error.message : error)
+      }
+    }
+    if (hookSession) {
+      // §11.5 rule 3: UserPromptSubmit / SessionStart output rides on the user message,
+      // never on the system prompt.
+      for (const text of hookSession.drainHookContext()) {
+        userMessageBlocks.push(toContextInjectionBlock({ path: '', label: LABEL_HOOK_CONTEXT, text, reason: 'hook' }))
+      }
+    }
+
     const { resolved, activeLineage, pendingOperationId } = this.messageRepo.transaction(() => {
     const sourceMessageId =
       request.operation === 'send'
@@ -739,7 +889,13 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
       }
     }
 
-    const resolved = this.resolveExecution(request)
+    const resolved = this.resolveExecution(request, {
+      launchInjection,
+      userMessageBlocks: userMessageBlocks.length > 0 ? userMessageBlocks : null,
+      onContextMessage: message => {
+        contextMessage = message
+      },
+    })
     const mustFork = request.operation !== 'send' || Boolean(sourceLineage && sourceLineage.head_message_id !== sourceMessageId)
     let activeLineage: LineageRow
     let pendingOperationId: string | null = null
@@ -853,6 +1009,11 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
     // (and any /resume-style correlation) use the same id the SSE clients see.
     if (hookSession && trackedStreamId) hookSession.streamId = trackedStreamId
 
+    // The context row precedes the user's row in the tree, so it is announced first;
+    // the renderer's branch anchor ends on the user's own message.
+    if (contextMessage) {
+      emit({ type: 'user_message_persisted', message: contextMessage, lineageId })
+    }
     if (resolved.userMessage) {
       emit({ type: 'user_message_persisted', message: resolved.userMessage, lineageId })
     }
@@ -886,6 +1047,15 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
       resolvedOperationMode
     )
 
+    // Skill / agent indexes and the memory pointer are part of the system prompt (§10
+    // steps 3-4). They are a function of the root and the settings, so they are stable
+    // for the conversation and cache across calls (§11.5 rule 6).
+    const contextPromptParts = contextLoader
+      ? await contextLoader.buildSystemPromptParts().catch(error => {
+          console.warn('[ChatOrchestrator] context indexes unavailable', error instanceof Error ? error.message : error)
+          return { skillsIndex: null, agentsIndex: null, autoMemoryPrompt: null }
+        })
+      : { skillsIndex: null, agentsIndex: null, autoMemoryPrompt: null }
     const buildSystemPromptForMode = (operationMode: 'plan' | 'execute') =>
       buildHeadlessSystemPrompt({
         operationMode,
@@ -898,6 +1068,9 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
         projectPrompt: project?.system_prompt ?? null,
         conversationPrompt: conversation?.system_prompt ?? null,
         planModeVerbosity: request.planModeVerbosity ?? 'concise',
+        skillsIndex: contextPromptParts.skillsIndex,
+        agentsIndex: contextPromptParts.agentsIndex,
+        autoMemoryPrompt: contextPromptParts.autoMemoryPrompt,
       })
     const systemPrompt = buildSystemPromptForMode(resolvedOperationMode)
     const agentSystemPrompt = buildSystemPromptForMode('execute')
@@ -1028,6 +1201,14 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
         // Phase 3: drives the per-turn hook-context fold + the Stop hook. Undefined
         // when hooks are off (subagents/tests/mobile) => loop behavior unchanged.
         hooks: hookSession?.toolLoopHooks(),
+        // Docs §11.5: hook output goes to the transcript tail; the system prompt is immutable.
+        hookContextPlacement: 'transcript',
+        // Docs §11: lazy instruction loads + post-compaction re-injection.
+        contextLoader: contextLoader ?? undefined,
+        contextDirectories,
+        persistContextInjection: contextLoader
+          ? ({ parentId, text, files, reason }) => this.persistContextInjectionMessage(request, parentId, { text, files, reason })
+          : undefined,
         // Phase 4: relay Railway free-tier frames only on the cloud (openrouter) route
         // under gateway.chat. False everywhere else => drop-frame parity.
         relayFreeTierEvents: isCloudRoute,

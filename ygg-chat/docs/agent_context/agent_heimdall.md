@@ -1,3 +1,9 @@
+---
+paths:
+  - "client/ygg-chat-r/src/components/Heimdall/**"
+  - "client/ygg-chat-r/src/features/chats/pathUtils.ts"
+---
+
 # Agent Context: Heimdall Conversation Tree
 
 Last reviewed: 2026-06-16

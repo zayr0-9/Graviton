@@ -1,3 +1,13 @@
+---
+paths:
+  - "client/ygg-chat-r/electron/main.ts"
+  - "client/ygg-chat-r/electron/preload.ts"
+  - "client/ygg-chat-r/electron/electronHostAdapter.ts"
+  - "client/ygg-chat-r/server/createYggServer.ts"
+  - "client/ygg-chat-r/server/localServer.ts"
+  - "client/ygg-chat-r/server/routes/**"
+---
+
 # Agent Context: Electron Main and Local Server
 
 Last reviewed: 2026-08-21

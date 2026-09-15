@@ -28,6 +28,8 @@ export interface CreateMessageInput {
   noteColor?: string | null
   exAgentSessionId?: string | null
   exAgentType?: string | null
+  /** Generic JSON metadata; see the `meta` column note in localServer.ts. */
+  meta?: Record<string, unknown> | null
 }
 
 export class MessageRepo {
@@ -64,7 +66,8 @@ export class MessageRepo {
       input.exAgentSessionId ?? null,
       input.exAgentType ?? null,
       JSON.stringify(input.contentBlocks ?? null),
-      now
+      now,
+      input.meta ? JSON.stringify(input.meta) : null
     )
 
     if (input.parentId) {

@@ -1,3 +1,8 @@
+---
+paths:
+  - "client/ygg-chat-r/server/tools/glob.ts"
+---
+
 # `glob.ts` tool documentation
 
 ## Purpose

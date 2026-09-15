@@ -95,6 +95,13 @@ export interface HeadlessMessageRequest {
    * hooks still run, only callback-style hooks degrade.
    */
   localApiBase?: string | null
+  /**
+   * In-repo config directory names to read/write (docs/claude_code_context_loading_rules.md
+   * §11.4). Absent => server env defaults (`YGG_CONTEXT_DIRECTORIES`), then `.ygg` + `.claude`.
+   */
+  contextDirectories?: { readDirs: string[]; writeDir: string } | null
+  /** Renderer auto-memory toggle. Absent => enabled unless the server env disables it. */
+  autoMemoryEnabled?: boolean
 }
 
 export interface HeadlessSubagentStreamRequest {
@@ -128,6 +135,12 @@ export interface HeadlessSubagentStreamRequest {
   autoCompactionEnabled?: boolean
   contextLength?: number
   compactionThresholdPercent?: number
+  /** Inherited from the parent chat request (§11.4). */
+  contextDirectories?: { readDirs: string[]; writeDir: string } | null
+  /** `<configDir>/agents/<name>.md` definition applied to this run, when any. */
+  agentType?: string | null
+  /** Graviton tool names removed from the resolved tool set (agent `disallowedTools`). */
+  disallowedTools?: string[]
 }
 
 export type HeadlessSubagentStreamEvent =
@@ -185,6 +198,12 @@ export type HeadlessStreamEvent =
       lineageId?: string | null
     }
   | { type: 'user_message_persisted'; message: any; lineageId?: string | null }
+  /**
+   * A persisted `meta.kind === 'context_injection'` user row written mid-run (the
+   * post-compaction re-injection). Renderers add it to the tree without moving the
+   * stream's branch anchor.
+   */
+  | { type: 'context_injection_persisted'; message: any; lineageId?: string | null }
   | { type: 'provider_routed'; provider: string; modelName: string }
   | {
       type: 'tool_loop'

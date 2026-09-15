@@ -60,6 +60,7 @@ import { getAgentModePrompt, getActiveChatModePrompt, getSubagentModePrompt } fr
 import { loadPlanModeResponseSettings } from '../../helpers/planModeResponseSettingsStorage'
 import { getSubagentReasoningEffort } from '../../helpers/subagentToolSettings'
 import { loadLongTermMemoryContextEnabled } from '../../helpers/longTermMemorySettingsStorage'
+import { loadContextDirectorySettings } from '../../helpers/contextDirectorySettingsStorage'
 import {
   DEFAULT_COMPACTION_SYSTEM_PROMPT,
   loadProviderSettings,
@@ -1546,6 +1547,8 @@ export const sendMessage = createAsyncThunk<
           toolAutoApprove: state.chat.toolAutoApprove,
           hooksEnabled: isElectronMode,
           localApiBase: getCachedLocalApiBase(),
+          contextDirectories: loadContextDirectorySettings(),
+          autoMemoryEnabled: loadLongTermMemoryContextEnabled(),
           // Phase 4 openrouter parity: undefined for lmstudio/zai (omitted from body),
           // so the local-provider request is unchanged; serviceTier only for openrouter.
           temperature: openRouterTemperature,
@@ -2122,6 +2125,8 @@ export const editMessageWithBranching = createAsyncThunk<
           toolAutoApprove: state.chat.toolAutoApprove,
           hooksEnabled: isElectronMode,
           localApiBase: getCachedLocalApiBase(),
+          contextDirectories: loadContextDirectorySettings(),
+          autoMemoryEnabled: loadLongTermMemoryContextEnabled(),
           // Phase 4 openrouter parity: undefined for lmstudio/zai (omitted from body),
           // so the local-provider request is unchanged; serviceTier only for openrouter.
           temperature: openRouterTemperature,
@@ -2372,6 +2377,8 @@ export const sendMessageToBranch = createAsyncThunk<
           toolAutoApprove: state.chat.toolAutoApprove,
           hooksEnabled: isElectronMode,
           localApiBase: getCachedLocalApiBase(),
+          contextDirectories: loadContextDirectorySettings(),
+          autoMemoryEnabled: loadLongTermMemoryContextEnabled(),
           // Phase 4 openrouter parity: undefined for lmstudio/zai (omitted from body),
           // so the local-provider request is unchanged; serviceTier only for openrouter.
           temperature: openRouterTemperature,

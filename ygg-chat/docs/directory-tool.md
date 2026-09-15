@@ -1,3 +1,8 @@
+---
+paths:
+  - "client/ygg-chat-r/server/tools/directory.ts"
+---
+
 # Directory Tool (`directory.ts`)
 
 This helper lives in `client/ygg-chat-r/electron/tools/directory.ts` and exports `extractDirectoryStructure`, a utility that safely walks a directory tree and returns a text-based tree listing. It is used by the Electron surface to answer requests for the contents of a folder while enforcing workspace boundaries and ignoring irrelevant files.

@@ -137,6 +137,8 @@ import {
   safeEstimateTokenCount,
 } from '../features/chats/contextTokenEstimate'
 import { isOpenAIProvider } from '../../../../shared/contextUsage'
+import { isContextInjectionMessage, parseMessageMeta } from '../../../../shared/contextInjection'
+import { ContextInjectionCard, type ContextInjectionCardEntry } from '../components/ChatMessage/ContextInjectionCard'
 import {
   extractBranchFileMutations,
   type WorkspaceMutationOperation,
@@ -772,6 +774,29 @@ const getResponsesOutputAssistantTexts = (block: ContentBlock): string[] => {
 const chatErrorIdentityKey = (envelope: ChatErrorEnvelope): string =>
   `${envelope.code}\u0000${envelope.userMessage ?? ''}\u0000${envelope.detail ?? ''}`
 
+/**
+ * Split a persisted instruction-set row (`renderInstructionSet` output) back into one
+ * entry per `Contents of <path> (<label>):` section so the card can list and expand
+ * each file. Falls back to one entry per `meta.files` path when the markers are absent.
+ */
+const splitInstructionSetIntoEntries = (content: string, files: string[], reason: string): ContextInjectionCardEntry[] => {
+  const marker = /^Contents of (.+?) \((.+?)\):\s*$/gm
+  const entries: ContextInjectionCardEntry[] = []
+  const matches = Array.from(content.matchAll(marker))
+  for (let i = 0; i < matches.length; i++) {
+    const match = matches[i]
+    const start = (match.index ?? 0) + match[0].length
+    const end = i + 1 < matches.length ? (matches[i + 1].index ?? content.length) : content.length
+    const text = content
+      .slice(start, end)
+      .replace(/<\/system-reminder>\s*$/, '')
+      .trim()
+    entries.push({ path: match[1], label: match[2], text, reason })
+  }
+  if (entries.length > 0) return entries
+  return files.map(file => ({ path: file, label: 'instruction file', text: content, reason }))
+}
+
 const isProcessContentBlock = (block: ContentBlock): boolean => {
   if (
     block.type === 'thinking' ||
@@ -834,6 +859,17 @@ const parseMessageDataForRender = (msg: Message): ParsedMessageData => {
     } catch (error) {
       console.warn(`Failed to parse content_blocks for message ${msg.id}`, error)
       contentBlocks = undefined
+    }
+  } else if (msg.role === 'user' && msg.content_blocks) {
+    // User rows carry only `context_injection` blocks (`/skill` expansion, UserPromptSubmit
+    // hook output). Keep those and nothing else, so the legacy user text path is unchanged.
+    try {
+      const parsed = typeof msg.content_blocks === 'string' ? JSON.parse(msg.content_blocks) : msg.content_blocks
+      const list: ContentBlock[] = Array.isArray(parsed) ? parsed : parsed ? [parsed] : []
+      const injections = list.filter(block => block?.type === 'context_injection')
+      if (injections.length > 0) contentBlocks = injections
+    } catch (error) {
+      console.warn(`Failed to parse user content_blocks for message ${msg.id}`, error)
     }
   }
 
@@ -2188,6 +2224,10 @@ function Chat() {
           }
           if (block.type === 'image') {
             return Boolean(block.url)
+          }
+          // A loaded-context card is a visible row; never fold its message into "Agent Steps".
+          if (block.type === 'context_injection') {
+            return true
           }
 
           const responseTexts = getResponsesOutputAssistantTexts(block)
@@ -6990,6 +7030,35 @@ function Chat() {
                             ? contentBlocks.filter(block => !isProcessContentBlock(block))
                             : contentBlocks
                         const assistantContainerClassName = assistantContainerClassByMessageId.get(String(msg.id))
+
+                        if (isContextInjectionMessage(msg)) {
+                          // Auto-loaded instruction files (AGENTS.md / CLAUDE.md, rules, MEMORY.md):
+                          // a persisted user row the model reads in full. People get one collapsed line.
+                          const injectionMeta = parseMessageMeta((msg as any).meta)
+                          const injectedFiles = Array.isArray(injectionMeta?.files)
+                            ? (injectionMeta!.files as unknown[]).filter((file): file is string => typeof file === 'string')
+                            : []
+                          const injectionReason = typeof injectionMeta?.reason === 'string' ? injectionMeta.reason : 'session_start'
+                          return (
+                            <VirtualizedRowContainer
+                              key={renderRow.key}
+                              id={`message-${msg.id}`}
+                              index={virtualRow.index}
+                              start={virtualRow.start}
+                              measureElement={virtualizer.measureElement}
+                              className='z-0'
+                            >
+                              <ContextInjectionCard
+                                variant='launch'
+                                entries={splitInstructionSetIntoEntries(msg.content, injectedFiles, injectionReason)}
+                                fontSizeOffset={fontSizeOffset}
+                                customTheme={customTheme}
+                                customThemeEnabled={customThemeEnabled}
+                                isDarkMode={isDarkMode}
+                              />
+                            </VirtualizedRowContainer>
+                          )
+                        }
 
                         return (
                           <VirtualizedRowContainer

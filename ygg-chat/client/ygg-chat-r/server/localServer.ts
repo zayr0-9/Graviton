@@ -355,6 +355,18 @@ const SCHEMA_MIGRATIONS: SchemaMigration[] = [
       `)
     },
   },
+  {
+    version: 2,
+    name: 'messages_meta_column',
+    up: database => {
+      // Generic per-message metadata (JSON object). First key: `kind = 'context_injection'`
+      // for auto-loaded instruction files (docs/claude_code_context_loading_rules.md §11.3
+      // decision 6). Future identifiers go in here as new keys, not as new columns.
+      // Guarded: a fresh DB's CREATE TABLE already declares the column.
+      const columns = database.prepare('PRAGMA table_info(messages)').all() as { name: string }[]
+      if (!columns.some(column => column.name === 'meta')) database.exec('ALTER TABLE messages ADD COLUMN meta TEXT')
+    },
+  },
 ]
 
 /**
@@ -544,6 +556,7 @@ function initializeLocalDatabase(dbPath: string) {
       ex_agent_session_id TEXT,
       ex_agent_type TEXT,
       content_blocks TEXT,
+      meta TEXT,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE CASCADE,
       FOREIGN KEY (parent_id) REFERENCES messages(id) ON DELETE CASCADE
@@ -1394,8 +1407,8 @@ function initializeLocalDatabase(dbPath: string) {
 
     // Messages
     upsertMessage: db.prepare(`
-        INSERT INTO messages (id, conversation_id, parent_id, children_ids, role, content, plain_text_content, thinking_block, tool_calls, tool_call_id, model_name, note, note_color, ex_agent_session_id, ex_agent_type, content_blocks, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO messages (id, conversation_id, parent_id, children_ids, role, content, plain_text_content, thinking_block, tool_calls, tool_call_id, model_name, note, note_color, ex_agent_session_id, ex_agent_type, content_blocks, created_at, meta)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(id) DO UPDATE SET
           content = excluded.content,
           plain_text_content = excluded.plain_text_content,
@@ -1404,7 +1417,8 @@ function initializeLocalDatabase(dbPath: string) {
           tool_call_id = excluded.tool_call_id,
           note = excluded.note,
           note_color = excluded.note_color,
-          content_blocks = excluded.content_blocks
+          content_blocks = excluded.content_blocks,
+          meta = COALESCE(excluded.meta, messages.meta)
       `),
     deleteMessage: db.prepare('DELETE FROM messages WHERE id = ?'),
     getMessageById: db.prepare('SELECT * FROM messages WHERE id = ?'),

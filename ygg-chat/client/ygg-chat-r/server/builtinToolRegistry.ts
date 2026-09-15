@@ -619,7 +619,7 @@ export function registerBuiltInTools(builtInTools: Map<string, BuiltInToolHandle
     return await executeMcpManagerTool(args)
   })
 
-  builtInTools.set('skill_manager', async args => {
-    return await executeSkillManager(args)
+  builtInTools.set('skill_manager', async (args, { rootPath, conversationId }) => {
+    return await executeSkillManager(args, { rootPath: rootPath ?? null, conversationId: conversationId ?? null })
   })
 }

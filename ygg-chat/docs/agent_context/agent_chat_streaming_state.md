@@ -1,3 +1,13 @@
+---
+paths:
+  - "client/ygg-chat-r/src/features/chats/chatSlice.ts"
+  - "client/ygg-chat-r/src/features/chats/chatSelectors.ts"
+  - "client/ygg-chat-r/src/features/chats/stream*.ts"
+  - "client/ygg-chat-r/src/features/chats/inflightStreams.ts"
+  - "client/ygg-chat-r/src/features/chats/mainChatClient.ts"
+  - "client/ygg-chat-r/src/features/chats/sseProjection.ts"
+---
+
 # Agent Context: Chat Streaming State
 
 Last reviewed: 2026-08-01

@@ -1,3 +1,11 @@
+---
+paths:
+  - "client/ygg-chat-r/server/auth/**"
+  - "client/ygg-chat-r/server/routes/managedOAuthRoutes.ts"
+  - "client/ygg-chat-r/src/lib/auth/**"
+  - "shared/auth.ts"
+---
+
 # Managed authentication (Electron)
 
 ## Ownership

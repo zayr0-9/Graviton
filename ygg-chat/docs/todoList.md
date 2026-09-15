@@ -1,3 +1,8 @@
+---
+paths:
+  - "client/ygg-chat-r/server/tools/todoMd.ts"
+---
+
 # TODO List Tool: `electron/tools/todoMd.ts`
 
 This tool provides file-backed TODO storage as Markdown files. Names are **auto-generated** using a dictionary of fun words (e.g., "goku-sage-ember"). Four actions: create, list, read, edit.

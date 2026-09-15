@@ -1,3 +1,14 @@
+---
+paths:
+  - "client/ygg-chat-r/server/headlessServer/services/compactionService.ts"
+  - "client/ygg-chat-r/server/headlessServer/services/toolLoopService.ts"
+  - "client/ygg-chat-r/src/features/chats/compactionContext.ts"
+  - "client/ygg-chat-r/src/features/chats/contextTokenEstimate.ts"
+  - "client/ygg-chat-r/.ygg/hooks/*memory*.py"
+  - "client/ygg-chat-r/.ygg/hooks/root_note_stop.py"
+  - "shared/contextUsage.ts"
+---
+
 # Agent Context: Compaction and Memory
 
 Last reviewed: 2026-08-01

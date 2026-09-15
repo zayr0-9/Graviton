@@ -1,3 +1,8 @@
+---
+paths:
+  - "docs/claude_code_context_loading_rules.md"
+---
+
 # Claude Code Context Auto-Loading Rules
 
 Last reviewed: 2026-09-15
@@ -725,6 +730,9 @@ Stale docs found on the way: `docs/agent_context/agent_skills.md` points at
 
 ### 11.2 Gaps, one per Claude Code rule
 
+The "Graviton status" column below describes the state **before** the 2026-09-15
+implementation. Section 11.6 records what shipped and what is still open.
+
 | Claude Code rule | Graviton status | Attach point |
 | --- | --- | --- |
 | §2 + §2.7 ancestor-chain instruction files at launch, filename set `AGENTS.md`, `CLAUDE.md`, `.claude/CLAUDE.md`, `AGENTS.local.md`, `CLAUDE.local.md` | Missing | New loader called in `chatOrchestrator.ts` between `:637` (root known) and `:889` (prompt built). Add a `projectInstructions` part to `buildHeadlessSystemPrompt`. Must land in **both** `systemPrompt` and `agentSystemPrompt` (plan→execute swap at `toolLoopService.ts:1358`). Per-directory order and real-path dedupe per §2.7 rules 2 and 4. |
@@ -934,6 +942,42 @@ costs tokens once per firing, not once per iteration, and the per-entry cap
    conversation, or accept one cache miss and document it.
 7. Compaction is the one point where the prefix legitimately changes. Rebuild the tail content there
    as section 2.6 and section 5.4 describe.
+
+### 11.6 Implementation status (2026-09-15)
+
+Operational detail lives in `docs/agent_context/agent_context_loading.md`. Paths below are
+relative to `client/ygg-chat-r/`.
+
+| Rule | Status | Where |
+| --- | --- | --- |
+| §1 frontmatter envelope, booleans, lists, HTML comment stripping, 4 MiB cap | Implemented | `server/context/frontmatter.ts`, `server/context/instructionFiles.ts` |
+| §2 / §2.7 launch chain (`AGENTS.md`, `CLAUDE.md` or `.claude/CLAUDE.md`, `.local.md`), root-first order, real-path dedupe, `@AGENTS.md`-only skip | Implemented | `server/context/instructionFiles.ts` `discoverLaunchInstructionFiles` |
+| §2.3 imports, 4 hops, code-span exclusion, user-scope without dialog | Implemented | `expandImports`, `extractImportTokens` |
+| §2.3 external import approval | Partial (decision 5) | Loads under the auto-approve tool policy; skipped and logged under the interactive policy. `chatOrchestrator.ts` `approveExternalImports` |
+| §2.4 delivery as a user-side message with labels | Implemented | Persisted user row, `meta.kind = 'context_injection'`; `shared/contextInjection.ts` `renderInstructionSet` |
+| §2.2 step 3 nested lazy load; §3.4 path-scoped rules; §5.7 skill `paths`; nested skills | Implemented | `server/context/contextLoader.ts` `collectLazyInjections`, `toolLoopService.ts` tool-result blocks |
+| §2.5 `claudeMdExcludes` | Implemented | Read from `<dataDir>/.ygg/settings.json`, `~/<readDir>/settings.json`, `<root>/<readDir>/settings.json` (+ `.local.json`) |
+| §2.6 compaction re-injection; §5.4 skill re-attach 5,000 / 25,000 tokens | Implemented | `buildPostCompactionInjection`, `toolLoopService.ts` after `compactBranch` |
+| §3 rules: recursive, symlinks, circular detection, external rules gate, glob budget | Implemented | `server/context/rulesLoader.ts`, `server/context/globMatcher.ts` |
+| §4 `MEMORY.md` 200 lines / 25 KB, repo-root slug, `autoMemoryEnabled`, `autoMemoryDirectory`, env toggles | Implemented | `server/context/autoMemory.ts`; memory prompt in the system prompt |
+| §4 `modified` frontmatter stamp on write | Not applicable | Graviton has no server memory write route; the model writes files with the edit tools |
+| §5.1 scopes personal > project > nested, legacy commands, collisions listed | Implemented | `server/context/skillsDiscovery.ts`, host installs as personal scope (decision 10) |
+| §5.2 frontmatter (all keys parsed; `allowed-tools`, `hooks`, `shell` not acted on; `model`, `effort` ignored) | Implemented | `parseSkillFrontmatter` |
+| §5.3 description index, 1,536-char cap, `disable-model-invocation` | Implemented | `renderSkillIndex` → `buildHeadlessSystemPrompt` `skillsIndex` |
+| §5.4 body as a conversation message; `/name args` from the user | Implemented | `skill_manager activate` body → `context_injection` block; slash expansion on the user row |
+| §5.5 substitutions and escapes | Implemented | `renderSkillBody` |
+| §5.6 `` !`cmd` `` | TODO (decision 8) | Text left in place |
+| §5.8 `context: fork` | Not implemented | Parsed; the model uses the `subagent` tool directly |
+| §6 agent definitions, validation, closest-wins, index, `agent_type` on `subagent`, `tools`, `disallowedTools`, `skills`, `maxTurns`, `memory`, `omitClaudeMd` | Implemented | `server/context/agentsLoader.ts`, `subagentToolExecutor.ts`, `subagentRunService.ts` |
+| §6.4 subagent receives instruction files | Implemented | In the subagent system prompt |
+| §7 output styles, §8 plugins, managed policy | Not implemented | — |
+| §9 `SessionStart`, `PreCompact`, `InstructionsLoaded` events and matchers | Implemented | `server/hooks/hookTypes.ts`, `hookRunner.ts`, `chatHookService.ts` |
+| §9.4 `additionalContext` to the transcript tail | Implemented | `toolLoopService.ts` `hookContextPlacement: 'transcript'` (legacy fold behind `'system_prompt'`) |
+| §11.4 context directory setting | Implemented | `shared/contextDirectories.ts`, `src/helpers/contextDirectorySettingsStorage.ts`, Settings "Context files", request field `contextDirectories` |
+| Decision 6 `meta` column | Implemented | Schema migration v2 `messages_meta_column` (`server/MIGRATIONS.md`) |
+| Decision 7 `context_injection` block, branch-derived loaded set | Implemented | `shared/contextInjection.ts` |
+| Heimdall filter, compact rows | Implemented | `Heimdall.tsx` toggle, `Chat.tsx`, `ChatMessage.tsx` |
+| Renderer `/` menu for user-invocable skills | Not implemented | Server-side expansion only |
 
 ---
 

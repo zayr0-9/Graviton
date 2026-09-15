@@ -1,3 +1,8 @@
+---
+paths:
+  - "docs/stateContext.md"
+---
+
 # Graviton Application State Overview
 
 This document describes how state is managed across the main Graviton application surfaces, with a focus on the core user-facing areas of the product:

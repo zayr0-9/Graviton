@@ -1,3 +1,10 @@
+---
+paths:
+  - "client/ygg-chat-r/server/tools/customTool*.ts"
+  - "client/ygg-chat-r/server/utils/managedToolPaths.ts"
+  - "client/ygg-chat-r/custom-tools/**"
+---
+
 # Agent Context: Custom Tools
 
 Last reviewed: 2026-06-16

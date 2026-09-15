@@ -14,6 +14,15 @@ import {
 import { ProviderRouter, normalizeProviderRoute } from './providerRouter.js'
 import { persistWithFallback, type ToolResultPersistencePolicy } from './toolResultPersistenceService.js'
 import { sanitizeToolResultContentForModel } from '../providers/toolResultSanitizer.js'
+import type { ContextDirectorySettings } from '../../../../../shared/contextDirectories.js'
+import {
+  LABEL_HOOK_CONTEXT,
+  collectLoadedContextPaths,
+  foldContextInjectionsForModel,
+  renderInjectionEntries,
+  toContextInjectionBlock,
+  type ContextInjectionEntry,
+} from '../../../../../shared/contextInjection.js'
 import {
   attachChatErrorCode,
   classifyChatError,
@@ -52,6 +61,8 @@ export interface ToolExecutionContext {
   /** Durable execution identity of the currently executing parent tool. */
   parentToolInvocationId?: string | null
   lineageId?: string | null
+  /** In-repo config directory setting of the parent chat (docs §11.4); subagents inherit it. */
+  contextDirectories?: ContextDirectorySettings | null
 }
 
 export type ToolExecutor = (toolCall: ProviderToolCall, context: ToolExecutionContext) => Promise<any>
@@ -123,7 +134,35 @@ export interface ToolLoopHooks {
   foldSystemPrompt(baseSystemPrompt: string | null): string | null
   /** Stop hook: returns true to force one more turn on a would-be natural stop. */
   runStop(params: { assistantMessage: any; streamId: string | null }): Promise<boolean>
+  /** PreCompact hook (`trigger: auto`), fired before an in-loop compaction. Optional. */
+  runPreCompact?(): Promise<void>
+  /** SessionStart hook with `source: compact`, fired after an in-loop compaction. Optional. */
+  runSessionStart?(source: 'startup' | 'compact'): Promise<void>
 }
+
+/**
+ * Per-run auto-loaded context source (docs §11.3 decisions 7 and §2.6). Supplied by
+ * the ChatOrchestrator when the conversation has a root path; absent for
+ * subagents/tests => no lazy loads and no post-compaction re-injection.
+ */
+export interface ToolLoopContextLoader {
+  /** Nested AGENTS.md / CLAUDE.md, path-scoped rules and skills triggered by a tool call. */
+  collectLazyInjections(toolCall: ProviderToolCall, alreadyLoaded: ReadonlySet<string>): Promise<ContextInjectionEntry[]>
+  /** Launch set re-read from disk plus invoked skill bodies, delivered after a compaction summary. */
+  buildPostCompactionInjection(
+    historyBeforeCompaction: ReadonlyArray<unknown>
+  ): Promise<{ text: string; files: string[]; reason: string } | null>
+}
+
+/** Persists a `meta.kind === 'context_injection'` user row and returns the stored message. */
+export type ContextInjectionPersister = (input: { parentId: string; text: string; files: string[]; reason: string }) => any
+
+/**
+ * Where hook `additionalContext` lands (docs §11.5 rule 3). `transcript` (default)
+ * appends it to the tool result / next user turn so the system prompt stays byte-stable
+ * and the provider prefix cache holds. `system_prompt` is the legacy per-iteration fold.
+ */
+export type HookContextPlacement = 'transcript' | 'system_prompt'
 
 export interface ToolLoopRunInput {
   provider: string
@@ -198,6 +237,14 @@ export interface ToolLoopRunInput {
    * Absent (subagents/tests) => no fold, no Stop hook — behavior is unchanged.
    */
   hooks?: ToolLoopHooks
+  /** Default `transcript`. See HookContextPlacement. */
+  hookContextPlacement?: HookContextPlacement
+  /** Auto-loaded context source for lazy loads and compaction re-injection. */
+  contextLoader?: ToolLoopContextLoader
+  /** Writes the post-compaction context row. Required for re-injection to persist. */
+  persistContextInjection?: ContextInjectionPersister
+  /** Forwarded to every tool call's ToolExecutionContext. */
+  contextDirectories?: ContextDirectorySettings | null
 }
 
 export interface ToolLoopRunResult {
@@ -266,6 +313,49 @@ function makeAbortError(): Error {
 function stripThinkingWrapper(text: string): string {
   if (!text) return ''
   return text.replace(THINKING_WRAPPER_PATTERN, '').trim()
+}
+
+/** Move accumulated hook context out of the shared buffer as injection entries. */
+function drainHookContextEntries(hooks: ToolLoopHooks | undefined): ContextInjectionEntry[] {
+  if (!hooks || hooks.hookContext.length === 0) return []
+  const drained = hooks.hookContext.splice(0)
+  return drained
+    .map(text => (typeof text === 'string' ? text.trim() : ''))
+    .filter(Boolean)
+    .map(text => ({ path: '', label: LABEL_HOOK_CONTEXT, text, reason: 'hook' as const }))
+}
+
+function parseToolCallArguments(raw: unknown): Record<string, unknown> {
+  if (typeof raw === 'string') {
+    try {
+      const parsed = JSON.parse(raw)
+      return parsed && typeof parsed === 'object' ? parsed : {}
+    } catch {
+      return {}
+    }
+  }
+  return raw && typeof raw === 'object' ? (raw as Record<string, unknown>) : {}
+}
+
+/** `skill_manager activate` success → the skill body as a `skill` injection entry. */
+function extractSkillActivationEntry(toolCall: ProviderToolCall, result: any): ContextInjectionEntry | null {
+  if (toolCall.name !== 'skill_manager') return null
+  const args = parseToolCallArguments(toolCall.arguments)
+  if (args.action !== 'activate') return null
+  const skill = result && typeof result === 'object' ? (result as any).skill : null
+  if (!skill || typeof skill.instructions !== 'string' || !skill.instructions.trim()) return null
+  const name = typeof skill.name === 'string' ? skill.name : 'skill'
+  return {
+    path: typeof skill.sourcePath === 'string' ? skill.sourcePath : '',
+    label: `skill ${name} instructions`,
+    text: skill.instructions,
+    reason: 'skill',
+  }
+}
+
+function stripSkillInstructionsForModel(result: any): any {
+  const { instructions: _instructions, ...skill } = (result as any).skill
+  return { ...(result as object), skill: { ...skill, instructions: '(delivered below as skill instructions)' } }
 }
 
 function outputHasImageBlock(output: ProviderGenerateOutput): boolean {
@@ -795,7 +885,8 @@ export class ToolLoopService {
       modelName: input.modelName,
       contextLength: resolvedContextLength,
       systemPrompt: params.systemPromptOverride !== undefined ? params.systemPromptOverride : (input.systemPrompt ?? null),
-      history: params.history,
+      // Persisted `context_injection` blocks/rows become model-visible text here and only here.
+      history: foldContextInjectionsForModel(params.history),
       userContent: params.userContent,
       userId: input.userId ?? null,
       authSessionId: input.authSessionId,
@@ -1150,8 +1241,11 @@ export class ToolLoopService {
       // clear the buffer (parity with the renderer's per-iteration fold+clear,
       // chatActions.ts:3217-3225). `undefined` => no hooks => provider gets
       // input.systemPrompt unchanged.
+      // Docs §11.5: with the default `transcript` placement the system prompt is never
+      // touched — accumulated hook context is drained onto the tool result that follows
+      // (or the next user turn), so the provider prefix cache survives every iteration.
       let turnSystemPromptOverride: string | null | undefined
-      if (input.hooks) {
+      if (input.hooks && (input.hookContextPlacement ?? 'transcript') === 'system_prompt') {
         turnSystemPromptOverride = input.hooks.foldSystemPrompt(input.systemPrompt ?? null)
         input.hooks.hookContext.length = 0
       }
@@ -1237,7 +1331,9 @@ export class ToolLoopService {
           if (forceContinue) {
             emit({ type: 'tool_loop', status: 'turn_completed', turn, maxTurns, continued: true })
             currentParentId = assistantMessage.id
-            currentUserContent = ''
+            // §11.5 rule 3: Stop-hook output rides on the next user turn.
+            const drained = (input.hookContextPlacement ?? 'transcript') === 'transcript' ? drainHookContextEntries(input.hooks) : []
+            currentUserContent = drained.length > 0 ? renderInjectionEntries(drained) : ''
             stopHookForcedContinue = true
             continue
           }
@@ -1337,6 +1433,8 @@ export class ToolLoopService {
         let modelToolResultContent: any = ''
         let toolError = false
         let toolErrorCode: ChatErrorCode | null = null
+        /** A `skill_manager activate` body, delivered as a context injection instead of a JSON blob. */
+        let skillInjection: ContextInjectionEntry | null = null
         const startedAt = Date.now()
 
         try {
@@ -1419,11 +1517,19 @@ export class ToolLoopService {
             parentToolInvocationId: invocation?.id ?? null,
             lineageId: input.lineageId ?? null,
             nestedExecutor: executeNested,
+            contextDirectories: input.contextDirectories ?? null,
           })
 
           toolResultContent = toToolResultContent(result)
           modelToolResultContent = getToolResultModelContent(result)
           toolError = false
+
+          // Docs §5.4: a skill body enters the conversation as a message, not as a tool
+          // result blob. The persisted result keeps the full payload for the UI; the copy
+          // replayed to the model carries a short acknowledgement and the body rides on the
+          // `context_injection` block below (reason `skill`, so compaction can re-attach it).
+          skillInjection = extractSkillActivationEntry(toolCall, result)
+          if (skillInjection) modelToolResultContent = stripSkillInstructionsForModel(result)
 
           invocation && this.toolInvocationRepo?.finish(invocation.id, { status: 'completed' })
           emit({
@@ -1479,6 +1585,29 @@ export class ToolLoopService {
           })
         }
 
+        // ── Transcript-tail context (docs §11.5 rules 3 and 4) ──
+        // Hook additionalContext accumulated around this call, the skill body (when this
+        // was `skill_manager activate`), and the lazy loads the touched paths trigger
+        // (nested AGENTS.md / CLAUDE.md, path-scoped rules and skills). Each becomes a
+        // persisted `context_injection` block beside the tool result; the fold in
+        // generateProviderTurn appends their text to the tool result for the model.
+        const injectionEntries: ContextInjectionEntry[] = []
+        if ((input.hookContextPlacement ?? 'transcript') === 'transcript') {
+          injectionEntries.push(...drainHookContextEntries(input.hooks))
+        }
+        if (skillInjection) injectionEntries.push(skillInjection)
+        if (input.contextLoader && !toolError) {
+          try {
+            const alreadyLoaded = collectLoadedContextPaths(history)
+            for (const block of toolResultBlocks) {
+              if (block?.type === 'context_injection' && typeof block.path === 'string' && block.path) alreadyLoaded.add(block.path)
+            }
+            injectionEntries.push(...(await input.contextLoader.collectLazyInjections(toolCall, alreadyLoaded)))
+          } catch (error) {
+            console.warn('[ToolLoop] lazy context load failed', { tool: toolCall.name, error: error instanceof Error ? error.message : String(error) })
+          }
+        }
+
         const toolResultBlock = {
           type: 'tool_result',
           tool_use_id: toolCall.id,
@@ -1494,6 +1623,11 @@ export class ToolLoopService {
         modelToolResultBlocks.push(
           toolError ? { ...toolResultBlock, content: markToolFailureForModel(toolResultContent, toolErrorCode!) } : toolResultBlock
         )
+        for (const entry of injectionEntries) {
+          const block = toContextInjectionBlock(entry, toolCall.id)
+          toolResultBlocks.push(block)
+          modelToolResultBlocks.push(block)
+        }
 
         emit({
           type: 'chunk',
@@ -1625,6 +1759,8 @@ export class ToolLoopService {
         }
 
         try {
+          if (input.hooks?.runPreCompact) await input.hooks.runPreCompact()
+          const historyBeforeCompaction = history
           const compacted = await this.compactBranch({
             conversationId: input.conversationId,
             parentMessageId: assistantMessage.id,
@@ -1653,6 +1789,32 @@ export class ToolLoopService {
             parentMessageId: summaryMessage.id,
             summaryMessage,
           })
+
+          // Docs §2.6 / §5.4 / §11.5 rule 7: the prefix legitimately changed, so rebuild
+          // the tail once — launch set re-read from disk plus invoked skill bodies — as a
+          // persisted context row under the summary. SessionStart(compact) hook output
+          // accumulates and rides on the next tool result.
+          if (input.contextLoader && input.persistContextInjection) {
+            try {
+              const reinjection = await input.contextLoader.buildPostCompactionInjection(historyBeforeCompaction)
+              if (reinjection) {
+                const row = input.persistContextInjection({
+                  parentId: summaryMessage.id,
+                  text: reinjection.text,
+                  files: reinjection.files,
+                  reason: reinjection.reason,
+                })
+                if (row) {
+                  history.push(row)
+                  currentParentId = row.id
+                  emit({ type: 'context_injection_persisted', message: row, lineageId: input.lineageId ?? null })
+                }
+              }
+            } catch (error) {
+              console.warn('[ToolLoop] post-compaction context re-injection failed', error)
+            }
+          }
+          if (input.hooks?.runSessionStart) await input.hooks.runSessionStart('compact')
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error)
           emit({ type: 'context_compaction', status: 'failed', ...eventDetails, error: message })

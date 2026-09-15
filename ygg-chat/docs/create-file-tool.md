@@ -1,3 +1,8 @@
+---
+paths:
+  - "client/ygg-chat-r/server/tools/createFile.ts"
+---
+
 # `client/ygg-chat-r/electron/tools/createFile.ts`
 
 This utility implements `createTextFile`, a TypeScript helper used by the Yggdrasil Electron tooling layer for safely creating text files (e.g., for scaffolding, automation helpers, or CLI commands).

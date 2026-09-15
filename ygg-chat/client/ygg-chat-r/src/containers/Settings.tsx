@@ -130,6 +130,15 @@ import {
 } from '../helpers/subagentToolSettings'
 import { normalizeSubagentModelName } from '../helpers/subagentModelNames'
 import {
+  CONTEXT_DIRECTORY_PRESETS,
+  detectContextDirectoryPreset,
+  loadContextDirectorySettings,
+  saveContextDirectorySettings,
+  validateContextDirectoryName,
+  type ContextDirectoryPreset,
+  type ContextDirectorySettings,
+} from '../helpers/contextDirectorySettingsStorage'
+import {
   addCustomVideo,
   BackgroundColorSettings,
   BackgroundMode,
@@ -448,6 +457,50 @@ const Settings: React.FC = () => {
     String(loadSubagentToolSettings().maxTurns)
   )
   const [subagentMaxTurnsTouched, setSubagentMaxTurnsTouched] = useState(false)
+  // Context files (docs/claude_code_context_loading_rules.md §11.4): which in-repo
+  // directories hold rules/skills/agents. Persisted per user; sent on every chat request.
+  const [contextDirectories, setContextDirectories] = useState<ContextDirectorySettings>(() => loadContextDirectorySettings())
+  const [contextDirectoryPreset, setContextDirectoryPreset] = useState<ContextDirectoryPreset>(() =>
+    detectContextDirectoryPreset(loadContextDirectorySettings())
+  )
+  const [customContextDirectoryInput, setCustomContextDirectoryInput] = useState('')
+  const customContextDirectoryError = customContextDirectoryInput.trim()
+    ? validateContextDirectoryName(customContextDirectoryInput) ??
+      (contextDirectories.readDirs.includes(customContextDirectoryInput.trim()) ? 'Directory is already in the list.' : null)
+    : null
+  const applyContextDirectories = (next: ContextDirectorySettings, preset: ContextDirectoryPreset) => {
+    const saved = saveContextDirectorySettings(next)
+    setContextDirectories(saved)
+    setContextDirectoryPreset(preset)
+  }
+  const handleContextDirectoryPreset = (preset: ContextDirectoryPreset) => {
+    if (preset === 'custom') {
+      applyContextDirectories(contextDirectories, 'custom')
+      return
+    }
+    const presetSettings = CONTEXT_DIRECTORY_PRESETS[preset]
+    applyContextDirectories({ readDirs: [...presetSettings.readDirs], writeDir: presetSettings.writeDir }, preset)
+  }
+  const handleAddCustomContextDirectory = () => {
+    const name = customContextDirectoryInput.trim()
+    if (!name || customContextDirectoryError) return
+    applyContextDirectories({ readDirs: [...contextDirectories.readDirs, name], writeDir: contextDirectories.writeDir }, 'custom')
+    setCustomContextDirectoryInput('')
+  }
+  const handleRemoveContextDirectory = (name: string) => {
+    const readDirs = contextDirectories.readDirs.filter(dir => dir !== name)
+    if (readDirs.length === 0) return
+    const writeDir = readDirs.includes(contextDirectories.writeDir) ? contextDirectories.writeDir : readDirs[0]
+    applyContextDirectories({ readDirs, writeDir }, 'custom')
+  }
+  const handleMoveContextDirectory = (name: string, direction: -1 | 1) => {
+    const index = contextDirectories.readDirs.indexOf(name)
+    const target = index + direction
+    if (index < 0 || target < 0 || target >= contextDirectories.readDirs.length) return
+    const readDirs = [...contextDirectories.readDirs]
+    ;[readDirs[index], readDirs[target]] = [readDirs[target], readDirs[index]]
+    applyContextDirectories({ readDirs, writeDir: contextDirectories.writeDir }, 'custom')
+  }
   const compactionProviderForModels = providerSettings.compactionProvider || providers.currentProvider || 'OpenRouter'
   const { data: compactionModelsData } = useModels(compactionProviderForModels)
   const normalizedRemoteBaseUrlInput = normalizeRemoteBaseUrl(remoteBaseUrlInput)
@@ -3374,6 +3427,145 @@ const Settings: React.FC = () => {
               <p className='text-xs text-stone-500 dark:text-stone-400 pt-2 pt-2'>
                 Note: subagent turn/tool quota args and verbose return summary have been removed for a simpler output.
               </p>
+            </div>
+          </SettingsSection>
+        )}
+
+        {import.meta.env.VITE_ENVIRONMENT === 'electron' && (
+          <SettingsSection
+            title='Context files'
+            description={
+              <>
+                Choose which in-repo directories hold <code>rules/</code>, <code>skills/</code>, <code>agents/</code> and
+                agent memory. <code>AGENTS.md</code> and <code>CLAUDE.md</code> at each directory level always load.
+              </>
+            }
+            features={['Read order', 'Write directory', 'Claude Code compatible']}
+          >
+            <div className='flex flex-col gap-4'>
+              <div className='flex flex-col gap-2'>
+                <p className='text-base font-medium text-stone-900 dark:text-stone-100'>Config directories</p>
+                <div className='flex flex-wrap gap-2'>
+                  {(
+                    [
+                      ['ygg', '.ygg only'],
+                      ['claude', '.claude only'],
+                      ['both', 'Both (default)'],
+                      ['custom', 'Custom'],
+                    ] as Array<[ContextDirectoryPreset, string]>
+                  ).map(([preset, label]) => (
+                    <label
+                      key={preset}
+                      className={`flex items-center gap-2 rounded-full border px-3 py-1.5 text-sm cursor-pointer ${
+                        contextDirectoryPreset === preset
+                          ? 'border-emerald-400 bg-emerald-50 text-emerald-800 dark:border-emerald-600 dark:bg-emerald-900/30 dark:text-emerald-200'
+                          : 'border-stone-200 text-stone-600 dark:border-stone-700 dark:text-stone-300'
+                      }`}
+                    >
+                      <input
+                        type='radio'
+                        name='context-directory-preset'
+                        className='accent-emerald-500'
+                        checked={contextDirectoryPreset === preset}
+                        onChange={() => handleContextDirectoryPreset(preset)}
+                      />
+                      {label}
+                    </label>
+                  ))}
+                </div>
+                <p className='text-sm text-stone-500 dark:text-stone-400'>
+                  Read order: <code>{contextDirectories.readDirs.join(' → ')}</code>. Files with the same name in two
+                  directories: the first one wins.
+                </p>
+              </div>
+
+              {contextDirectoryPreset === 'custom' && (
+                <div className='flex flex-col gap-2'>
+                  <ul className='flex flex-col gap-1'>
+                    {contextDirectories.readDirs.map((dir, index) => (
+                      <li key={dir} className='flex items-center gap-2 text-sm'>
+                        <code className='rounded bg-black/5 px-2 py-0.5 dark:bg-white/10'>{dir}</code>
+                        <Button
+                          variant='outline2'
+                          size='small'
+                          onClick={() => handleMoveContextDirectory(dir, -1)}
+                          disabled={index === 0}
+                        >
+                          Up
+                        </Button>
+                        <Button
+                          variant='outline2'
+                          size='small'
+                          onClick={() => handleMoveContextDirectory(dir, 1)}
+                          disabled={index === contextDirectories.readDirs.length - 1}
+                        >
+                          Down
+                        </Button>
+                        <Button
+                          variant='outline2'
+                          size='small'
+                          onClick={() => handleRemoveContextDirectory(dir)}
+                          disabled={contextDirectories.readDirs.length === 1}
+                        >
+                          Remove
+                        </Button>
+                      </li>
+                    ))}
+                  </ul>
+                  <div className='flex flex-wrap items-center gap-2'>
+                    <input
+                      type='text'
+                      value={customContextDirectoryInput}
+                      placeholder='.mytool'
+                      onChange={e => setCustomContextDirectoryInput(e.target.value)}
+                      onKeyDown={e => {
+                        if (e.key === 'Enter') handleAddCustomContextDirectory()
+                      }}
+                      className={`max-w-xs ${settingsInputClass}`}
+                    />
+                    <Button
+                      variant='primary'
+                      size='small'
+                      onClick={handleAddCustomContextDirectory}
+                      disabled={!customContextDirectoryInput.trim() || Boolean(customContextDirectoryError)}
+                    >
+                      Add directory
+                    </Button>
+                  </div>
+                  {customContextDirectoryError && (
+                    <p className='text-xs text-amber-600 dark:text-amber-400'>{customContextDirectoryError}</p>
+                  )}
+                </div>
+              )}
+
+              <div className='flex flex-col gap-2'>
+                <div>
+                  <p className='text-base font-medium text-stone-900 dark:text-stone-100'>Write directory</p>
+                  <p className='text-sm text-stone-500 dark:text-stone-400'>
+                    Agent memory and generated files go here. Must be one of the read directories.
+                  </p>
+                </div>
+                <Select
+                  value={contextDirectories.writeDir}
+                  onChange={(value: string) =>
+                    applyContextDirectories(
+                      { readDirs: contextDirectories.readDirs, writeDir: value },
+                      detectContextDirectoryPreset({ readDirs: contextDirectories.readDirs, writeDir: value })
+                    )
+                  }
+                  options={contextDirectories.readDirs.map(dir => ({ value: dir, label: dir }))}
+                  className='max-w-xs'
+                />
+              </div>
+
+              <div className='rounded-[1.75rem] bg-white/45 px-4 py-3 text-xs text-stone-600 dark:bg-zinc-900 dark:text-stone-300'>
+                <p>
+                  Loaded on every chat with a project folder: <code>AGENTS.md</code>, <code>CLAUDE.md</code>,{' '}
+                  <code>.claude/CLAUDE.md</code> and their <code>.local.md</code> variants from the filesystem root down
+                  to the folder; <code>&lt;dir&gt;/rules/*.md</code>; the skill and agent index. Nested files load when a
+                  file in that subfolder is read or edited.
+                </p>
+              </div>
             </div>
           </SettingsSection>
         )}

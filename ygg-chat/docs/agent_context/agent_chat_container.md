@@ -1,3 +1,9 @@
+---
+paths:
+  - "client/ygg-chat-r/src/containers/Chat.tsx"
+  - "client/ygg-chat-r/src/components/ParallelChatPane/**"
+---
+
 # Agent Context: Chat Container
 
 Last reviewed: 2026-08-01

@@ -1,6 +1,7 @@
 ﻿import type { ContentBlock, StreamEvent, ToolCall } from '@/features/chats/chatTypes'
 import type { ChatErrorActionKind, ChatErrorEnvelope } from '../../../../../shared/chatErrors'
 import type { MessageId } from '../../../../../shared/types'
+import { ContextInjectionCard, type ContextInjectionCardEntry } from './ContextInjectionCard'
 import type { ToolDefinition } from '@/features/chats/toolDefinitions'
 import type { RootState } from '@/store/store'
 import 'boxicons' // Types
@@ -763,6 +764,14 @@ const ChatMessage: React.FC<ChatMessageProps> = React.memo(
     // Explain input states
     const streamToolGroupsByIndex = useMemo(() => buildToolCallGroupsFromStream(streamEvents), [streamEvents])
     const contentToolGroupsByIndex = useMemo(() => buildToolCallGroupsFromBlocks(contentBlocks), [contentBlocks])
+    // A user row only ever carries `context_injection` blocks (Chat.tsx keeps the rest out).
+    // They render as a card under the role header while `content` keeps the legacy text path.
+    const userContextInjectionEntries = useMemo<ContextInjectionCardEntry[]>(() => {
+      if (role !== 'user' || !Array.isArray(contentBlocks)) return []
+      return contentBlocks
+        .filter((block): block is Extract<ContentBlock, { type: 'context_injection' }> => block?.type === 'context_injection')
+        .map(block => ({ path: block.path, label: block.label, text: block.text, reason: block.reason }))
+    }, [contentBlocks, role])
     const htmlRegistry = useHtmlIframeRegistry()
     const [showExplainInput, setShowExplainInput] = useState(false)
     const [explainInputValue, setExplainInputValue] = useState('')
@@ -2962,6 +2971,38 @@ const ChatMessage: React.FC<ChatMessageProps> = React.memo(
           continue
         }
 
+        if (block.type === 'context_injection') {
+          // Auto-loaded context (docs/claude_code_context_loading_rules.md decision 7).
+          // Consecutive injection blocks (one tool call can trigger several files) become
+          // ONE visible card. `kind: 'other'` is load-bearing: the card must never fold
+          // into the collapsed "Agent Steps" run, or the trigger is invisible.
+          const entries: ContextInjectionCardEntry[] = []
+          let cursor = idx
+          while (cursor < contentBlocks.length) {
+            const candidate = contentBlocks[cursor]
+            if (!candidate || candidate.type !== 'context_injection') break
+            entries.push({ path: candidate.path, label: candidate.label, text: candidate.text, reason: candidate.reason })
+            cursor += 1
+          }
+          const injectionKey = `context-injection-${idx}`
+          items.push({
+            key: injectionKey,
+            kind: 'other',
+            node: (
+              <ContextInjectionCard
+                key={injectionKey}
+                entries={entries}
+                fontSizeOffset={fontSizeOffset}
+                customTheme={customTheme}
+                customThemeEnabled={customThemeEnabled}
+                isDarkMode={isDarkMode}
+              />
+            ),
+          })
+          idx = cursor
+          continue
+        }
+
         if (block.type === 'error') {
           const errorKey = `error-${block.index}-${idx}`
           items.push({
@@ -3131,6 +3172,17 @@ const ChatMessage: React.FC<ChatMessageProps> = React.memo(
               {styles.roleText}
             </span>
           </div>
+        )}
+
+        {/* Context that rode on this user message: `/skill` expansion, UserPromptSubmit hook output. */}
+        {role === 'user' && userContextInjectionEntries.length > 0 && (
+          <ContextInjectionCard
+            entries={userContextInjectionEntries}
+            fontSizeOffset={fontSizeOffset}
+            customTheme={customTheme}
+            customThemeEnabled={customThemeEnabled}
+            isDarkMode={isDarkMode}
+          />
         )}
 
         {/* Prioritize rendering: streamEvents > contentBlocks > legacy fields */}

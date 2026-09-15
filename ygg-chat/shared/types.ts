@@ -69,6 +69,11 @@ export interface BaseMessage {
   // External agent fields (for Claude Code, etc.)
   ex_agent_session_id?: string | null
   ex_agent_type?: string | null
+  /**
+   * Generic metadata record (JSON string on a SQLite row, object once normalised).
+   * `kind: 'context_injection'` marks an auto-loaded instruction-file message.
+   */
+  meta?: string | Record<string, unknown> | null
 }
 
 export interface ImageConfig {

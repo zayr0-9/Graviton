@@ -182,6 +182,20 @@ function buildHeadlessMessageRequest(req: Request, operation: HeadlessChatOperat
           ? body.hooks_enabled
           : undefined,
     localApiBase: body.localApiBase ?? body.local_api_base ?? null,
+    // Context directory setting (docs §11.4). Passed through raw; the orchestrator
+    // normalises it and falls back to the server env defaults when absent/invalid.
+    contextDirectories:
+      body.contextDirectories && typeof body.contextDirectories === 'object'
+        ? body.contextDirectories
+        : body.context_directories && typeof body.context_directories === 'object'
+          ? body.context_directories
+          : null,
+    autoMemoryEnabled:
+      typeof body.autoMemoryEnabled === 'boolean'
+        ? body.autoMemoryEnabled
+        : typeof body.auto_memory_enabled === 'boolean'
+          ? body.auto_memory_enabled
+          : undefined,
     // Auto-compaction / context settings. Previously DROPPED here, so the orchestrator
     // received undefined and the server applied its defaults (autoCompactionEnabled ?? true;
     // contextLength is resolved again by ProviderRouter: ChatGPT always uses the global

@@ -85,6 +85,21 @@ export interface ErrorBlock {
   excludeFromContext: true
 }
 
+/**
+ * Auto-loaded context that rides on a tool result or a user message (nested
+ * AGENTS.md / CLAUDE.md, path-scoped rules, skills, hook output). Rendered compactly;
+ * folded into the tool result text for the model. See shared/contextInjection.ts.
+ */
+export interface ContextInjectionBlock {
+  type: 'context_injection'
+  index?: number
+  tool_use_id?: string
+  path: string
+  label: string
+  text: string
+  reason: string
+}
+
 export type ContentBlock =
   | ThinkingBlock
   | ToolUseBlock
@@ -93,6 +108,7 @@ export type ContentBlock =
   | ImageBlock
   | ReasoningDetailsBlock
   | ErrorBlock
+  | ContextInjectionBlock
 
 // Tool call types
 export interface ToolCall {

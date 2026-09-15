@@ -1,3 +1,8 @@
+---
+paths:
+  - "client/ygg-chat-r/server/tools/deleteFile.ts"
+---
+
 # Electron deleteFile Tool
 
 This document explains how the `deleteFile.ts` helper inside `client/ygg-chat-r/electron/tools` works and how it can safely delete files from the Electron build environment.

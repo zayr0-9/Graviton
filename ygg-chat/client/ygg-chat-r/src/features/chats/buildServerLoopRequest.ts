@@ -16,6 +16,8 @@
  * - attachmentsBase64 is turn-1 only (sent once on the initial request).
  */
 
+import type { ContextDirectorySettings } from '../../../../../shared/contextDirectories'
+
 export type ServerLoopOperation = 'send' | 'edit' | 'branch'
 
 export interface ServerLoopToolInput {
@@ -57,6 +59,10 @@ export interface BuildServerLoopRequestParams {
   selectedFiles?: unknown[]
   tools?: ServerLoopToolInput[]
   streamId: string
+  /** In-repo config directories to read/write (docs §11.4). Omitted => server defaults. */
+  contextDirectories?: ContextDirectorySettings | null
+  /** Renderer auto-memory toggle; forwarded verbatim so `false` disables MEMORY.md loading. */
+  autoMemoryEnabled?: boolean
   /** Exact lineage currently selected in the renderer; omitted for a new/unselected conversation. */
   currentLineageId?: string | null
   /** Stable idempotency/correlation identity for this operation. Generated when omitted. */
@@ -182,6 +188,9 @@ export function buildServerLoopRequest(operation: ServerLoopOperation, params: B
     hooksEnabled: params.hooksEnabled,
     localApiBase: params.localApiBase ?? null,
   }
+  // Context directory setting + auto-memory toggle (docs §11.4): forward only when set.
+  if (params.contextDirectories) body.contextDirectories = params.contextDirectories
+  if (typeof params.autoMemoryEnabled === 'boolean') body.autoMemoryEnabled = params.autoMemoryEnabled
   // A lineage is meaningful only when the renderer is continuing an exact selected
   // branch. Omit null/undefined so legacy/new-conversation requests remain compatible.
   if (params.currentLineageId != null) body.lineageId = params.currentLineageId

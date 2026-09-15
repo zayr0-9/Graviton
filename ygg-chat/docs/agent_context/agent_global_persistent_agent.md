@@ -1,3 +1,8 @@
+---
+paths:
+  - "docs/agent_context/agent_global_persistent_agent.md"
+---
+
 # Agent Context: Global Persistent Agent — RETIRED
 
 Last reviewed: 2026-08-01

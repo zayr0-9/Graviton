@@ -698,6 +698,56 @@ export const ThemeManager: React.FC = () => {
               onChange={(mode, value) => handleChatSurfaceChange('chatProgressBarFill', mode, value)}
             />
             <PairEditor
+              label='Loaded context card background'
+              value={theme.colors.contextCardBg}
+              onChange={(mode, value) => handleChatSurfaceChange('contextCardBg', mode, value)}
+            />
+            <PairEditor
+              label='Loaded context card hover background'
+              value={theme.colors.contextCardHoverBg}
+              onChange={(mode, value) => handleChatSurfaceChange('contextCardHoverBg', mode, value)}
+            />
+            <PairEditor
+              label='Loaded context card title text'
+              value={theme.colors.contextCardTitleText}
+              onChange={(mode, value) => handleChatSurfaceChange('contextCardTitleText', mode, value)}
+            />
+            <PairEditor
+              label='Loaded context card count text'
+              value={theme.colors.contextCardMetaText}
+              onChange={(mode, value) => handleChatSurfaceChange('contextCardMetaText', mode, value)}
+            />
+            <PairEditor
+              label='Loaded context card file path text'
+              value={theme.colors.contextCardPathText}
+              onChange={(mode, value) => handleChatSurfaceChange('contextCardPathText', mode, value)}
+            />
+            <PairEditor
+              label='Loaded context card muted text'
+              value={theme.colors.contextCardMutedText}
+              onChange={(mode, value) => handleChatSurfaceChange('contextCardMutedText', mode, value)}
+            />
+            <PairEditor
+              label='Loaded context card reason badge background'
+              value={theme.colors.contextCardBadgeBg}
+              onChange={(mode, value) => handleChatSurfaceChange('contextCardBadgeBg', mode, value)}
+            />
+            <PairEditor
+              label='Loaded context card reason badge text'
+              value={theme.colors.contextCardBadgeText}
+              onChange={(mode, value) => handleChatSurfaceChange('contextCardBadgeText', mode, value)}
+            />
+            <PairEditor
+              label='Loaded context card file text background'
+              value={theme.colors.contextCardCodeBg}
+              onChange={(mode, value) => handleChatSurfaceChange('contextCardCodeBg', mode, value)}
+            />
+            <PairEditor
+              label='Loaded context card file text'
+              value={theme.colors.contextCardCodeText}
+              onChange={(mode, value) => handleChatSurfaceChange('contextCardCodeText', mode, value)}
+            />
+            <PairEditor
               label='Action popover border'
               value={theme.colors.actionPopoverBorder}
               onChange={(mode, value) => handleChatSurfaceChange('actionPopoverBorder', mode, value)}

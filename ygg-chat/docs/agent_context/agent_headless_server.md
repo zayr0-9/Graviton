@@ -1,3 +1,9 @@
+---
+paths:
+  - "client/ygg-chat-r/server/headlessServer/**"
+  - "shared/headlessApi.ts"
+---
+
 # Agent Context: Headless Server
 
 Last reviewed: 2026-08-01

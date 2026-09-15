@@ -1,4 +1,17 @@
-export type HookEventName = 'UserPromptSubmit' | 'PreToolUse' | 'PostToolUse' | 'PostToolUseFailure' | 'Stop'
+export type HookEventName =
+  | 'UserPromptSubmit'
+  | 'PreToolUse'
+  | 'PostToolUse'
+  | 'PostToolUseFailure'
+  | 'Stop'
+  /** Fired when a branch gets its launch-time instruction set (`source: startup`) or after compaction (`source: compact`). */
+  | 'SessionStart'
+  /** Fired before an automatic compaction (`trigger: auto`). */
+  | 'PreCompact'
+  /** Fired when instruction files, rules or skills are injected (`load_reason`). */
+  | 'InstructionsLoaded'
+
+export type InstructionsLoadReason = 'session_start' | 'nested_traversal' | 'path_glob_match' | 'include' | 'compact'
 export type HookExecutionMode = 'sync' | 'async'
 
 export interface HookToolCall {
@@ -48,6 +61,13 @@ export interface HookRunRequest {
   lookup?: HookLookup | null
   turn?: HookTurnContext | null
   project?: HookProjectContext | null
+  /** SessionStart matcher value: `startup` | `compact`. */
+  source?: string | null
+  /** PreCompact matcher value: `auto` | `manual`. */
+  trigger?: string | null
+  /** InstructionsLoaded: matcher value plus the files that loaded. */
+  loadReason?: InstructionsLoadReason | null
+  filePaths?: string[] | null
 }
 
 export interface HookRunResult {

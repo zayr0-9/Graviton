@@ -38,6 +38,7 @@
  */
 
 import { chatSliceActions } from './chatSlice'
+import { parseMessageMeta } from '../../../../../shared/contextInjection'
 import { buildChatErrorRecord } from './localChatErrors'
 import type { ContentBlock, LineageId, Message, StreamType } from './chatTypes'
 import {
@@ -154,6 +155,7 @@ export function normalizeServerMessage(row: any): Message {
   if (!row || typeof row !== 'object') return null as unknown as Message
   return {
     ...row,
+    meta: parseMessageMeta(row.meta),
     children_ids: parseMaybeJson<any[]>(row.children_ids, []),
     tool_calls: typeof row.tool_calls === 'string' ? parseMaybeJson<any>(row.tool_calls, null) : (row.tool_calls ?? null),
     content_blocks: coerceContentBlocks(row.content_blocks),
@@ -275,6 +277,13 @@ export function projectServerEvent(event: ServerStreamEvent, ctx: ProjectionCont
             : {}),
         } as any),
       ]
+    }
+
+    case 'context_injection_persisted': {
+      // A mid-run context row (post-compaction re-injection). Add it to the tree only;
+      // it is not a branch anchor and must not move the stream's trigger message.
+      const message = normalizeServerMessage(event.message)
+      return message ? [chatSliceActions.messageAdded(message)] : []
     }
 
     case 'user_message_persisted': {

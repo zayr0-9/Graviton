@@ -1,3 +1,12 @@
+---
+paths:
+  - "client/ygg-chat-r/src/components/ChatMessage/**"
+  - "client/ygg-chat-r/src/components/MarkdownLink/**"
+  - "client/ygg-chat-r/src/components/MermaidDiagram/**"
+  - "client/ygg-chat-r/src/containers/Chat.tsx"
+  - "client/ygg-chat-r/src/index.css"
+---
+
 # Agent Context: Markdown and Text Response Rendering
 
 Last reviewed: 2026-08-02

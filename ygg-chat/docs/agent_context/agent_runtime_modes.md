@@ -1,3 +1,8 @@
+---
+paths:
+  - "docs/agent_context/agent_runtime_modes.md"
+---
+
 # Agent Context: Runtime Modes
 
 Last reviewed: 2026-08-01

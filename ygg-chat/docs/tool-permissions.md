@@ -1,3 +1,8 @@
+---
+paths:
+  - "docs/tool-permissions.md"
+---
+
 # Tool Permission Flow Overview
 
 This project uses an interactive tool execution flow that ensures users stay in control when the assistant needs to call a local tool. Below is a high-level description of how the feature works:

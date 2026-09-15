@@ -3,6 +3,12 @@ import type { ProviderToolCall } from '../providers/openRouterProvider.js'
 import type { SubagentRunRow, SubagentRunStatus } from '../persistence/subagentRunRepo.js'
 import type { ToolExecutionContext, ToolExecutor } from './toolLoopService.js'
 import { getHeadlessSubagentModePrompt } from './headlessSystemPrompt.js'
+import { resolveToolAliases } from '../../../../../shared/toolNameAliases.js'
+import { renderContextSection } from '../../../../../shared/contextInjection.js'
+import { getConversationContext } from '../../context/contextSessionRegistry.js'
+import { resolveAgentMemoryDirectory, type AgentDefinition } from '../../context/agentsLoader.js'
+import { MEMORY_INDEX_FILE, readMemoryIndex } from '../../context/autoMemory.js'
+import { tryGetServerConfig } from '../../serverHost.js'
 
 const DEFAULT_SUBAGENT_MODEL = 'gpt-5.6-sol'
 
@@ -52,7 +58,69 @@ function parseArguments(toolCall: ProviderToolCall): Record<string, any> {
   }
 }
 
-function buildSubagentRequest(toolCall: ProviderToolCall, context: ToolExecutionContext): HeadlessSubagentStreamRequest {
+/**
+ * Docs §6.4: everything a `<configDir>/agents/<name>.md` definition contributes to
+ * a child run. The body is the subagent system prompt; instruction files (§2) are
+ * appended unless `omitClaudeMd`; `skills:` bodies and the agent's own MEMORY.md
+ * follow. Built per spawn, so the child's system prompt is stable for one repo and
+ * still caches across runs.
+ */
+async function buildAgentDefinitionParts(
+  agent: AgentDefinition | null,
+  context: ToolExecutionContext
+): Promise<{ systemPromptParts: string[]; tools: string[] | undefined; disallowedTools: string[]; maxTurns?: number }> {
+  const loader = getConversationContext(context.conversationId)
+  const systemPromptParts: string[] = []
+  if (agent) systemPromptParts.push(agent.body)
+
+  if (loader && !(agent?.omitClaudeMd ?? false)) {
+    try {
+      const launch = await loader.buildLaunchInjection(new Set(), 'session_start')
+      if (launch) systemPromptParts.push(launch.text)
+    } catch (error) {
+      console.warn('[subagent] instruction files skipped', error instanceof Error ? error.message : error)
+    }
+  }
+
+  if (!agent) return { systemPromptParts, tools: undefined, disallowedTools: [] }
+
+  if (loader && agent.skills.length > 0) {
+    for (const name of agent.skills) {
+      const skill = await loader.findSkill(name)
+      if (!skill || skill.frontmatter.disableModelInvocation) {
+        console.debug(`[subagent] agent "${agent.name}" skill "${name}" not preloaded (missing or not model-invocable)`)
+        continue
+      }
+      systemPromptParts.push(renderContextSection(loader.renderSkillEntry(skill, null, `skill ${skill.name}, preloaded for agent ${agent.name}`)))
+    }
+  }
+
+  const dataDir = tryGetServerConfig()?.dataDir ?? null
+  const rootPath = context.rootPath ?? loader?.rootPath ?? null
+  if (agent.memory && dataDir && rootPath) {
+    const memoryDir = resolveAgentMemoryDirectory(agent, {
+      dataDir,
+      rootPath,
+      writeDir: context.contextDirectories?.writeDir ?? loader?.settings.writeDir ?? '.ygg',
+    })
+    if (memoryDir) {
+      const index = await readMemoryIndex(memoryDir)
+      systemPromptParts.push(
+        [
+          `# Agent memory`,
+          `Your persistent memory directory is \`${memoryDir}\`. Keep \`${MEMORY_INDEX_FILE}\` there as a short index (first 200 lines are loaded) and one file per fact beside it.`,
+          index ? renderContextSection({ ...index, label: `agent ${agent.name} memory index` }) : `\`${MEMORY_INDEX_FILE}\` does not exist yet.`,
+        ].join('\n\n')
+      )
+    }
+  }
+
+  const tools = agent.tools ? resolveToolAliases(agent.tools).names.filter(name => name !== 'subagent' && name !== 'subagent_manager') : undefined
+  const disallowedTools = resolveToolAliases(agent.disallowedTools).names
+  return { systemPromptParts, tools, disallowedTools, maxTurns: agent.maxTurns }
+}
+
+async function buildSubagentRequest(toolCall: ProviderToolCall, context: ToolExecutionContext): Promise<HeadlessSubagentStreamRequest> {
   const args = parseArguments(toolCall)
   const prompt = typeof args.prompt === 'string' ? args.prompt.trim() : ''
   if (!prompt) throw new Error('Subagent requires a prompt')
@@ -60,8 +128,20 @@ function buildSubagentRequest(toolCall: ProviderToolCall, context: ToolExecution
   const inheritedProvider = context.provider || 'openaichatgpt'
   const provider = inheritedProvider === 'openrouter' ? 'openaichatgpt' : inheritedProvider
   const modelName = inheritedProvider === 'openrouter' ? DEFAULT_SUBAGENT_MODEL : context.modelName || DEFAULT_SUBAGENT_MODEL
+
+  // Docs §6: an `agent_type` selects a `<configDir>/agents/<name>.md` definition.
+  const agentTypeRaw =
+    typeof args.agent_type === 'string' ? args.agent_type.trim() : typeof args.agentType === 'string' ? args.agentType.trim() : ''
+  const loader = getConversationContext(context.conversationId)
+  let agent: AgentDefinition | null = null
+  if (agentTypeRaw) {
+    agent = loader ? await loader.findAgent(agentTypeRaw) : null
+    if (!agent) throw new Error(`Unknown agent type "${agentTypeRaw}". Use a name from the available agent types list, or omit agent_type.`)
+  }
+  const definition = await buildAgentDefinitionParts(agent, context)
+
   const useRequestedTools = args.orchestratorMode === true && Array.isArray(args.tools)
-  const tools = useRequestedTools
+  const requestedTools = useRequestedTools
     ? [
         ...new Set(
           [...args.tools, 'multi_call'].filter(
@@ -71,14 +151,20 @@ function buildSubagentRequest(toolCall: ProviderToolCall, context: ToolExecution
         ),
       ]
     : undefined
+  // The definition's allow-list wins over the model's ad-hoc list (it is the author's contract).
+  const tools = definition.tools ?? requestedTools
   const requestedSystemPrompt = typeof args.systemPrompt === 'string' ? args.systemPrompt.trim() : ''
   const inheritedSystemPrompt =
     typeof context.subagentSystemPrompt === 'string' && context.subagentSystemPrompt.trim()
       ? context.subagentSystemPrompt.trim()
       : getHeadlessSubagentModePrompt()
-  const systemPrompt = [inheritedSystemPrompt, requestedSystemPrompt].filter(Boolean).join('\n\n')
+  const systemPrompt = [inheritedSystemPrompt, ...definition.systemPromptParts, requestedSystemPrompt].filter(Boolean).join('\n\n')
 
   return {
+    agentType: agent?.name ?? null,
+    disallowedTools: definition.disallowedTools.length > 0 ? definition.disallowedTools : undefined,
+    maxTurns: definition.maxTurns,
+    contextDirectories: context.contextDirectories ?? loader?.settings ?? null,
     conversationId: context.conversationId,
     parentMessageId: context.messageId,
     toolCallId: toolCall.id,
@@ -147,7 +233,7 @@ export function createSubagentDispatchExecutor(deps: {
     if (toolCall.name !== 'subagent') return deps.leafExecutor(toolCall, context)
 
     const signal = context.signal ?? new AbortController().signal
-    const request = buildSubagentRequest(toolCall, context)
+    const request = await buildSubagentRequest(toolCall, context)
     return deps.subagentRunner.runForTool(request, signal)
   }
 }
@@ -223,7 +309,7 @@ async function managerSpawn(
   context: ToolExecutionContext,
   args: Record<string, any>
 ): Promise<Record<string, any>> {
-  const request = buildSubagentRequest(toolCall, context)
+  const request = await buildSubagentRequest(toolCall, context)
   if (args.blocking === true) {
     const signal = context.signal ?? new AbortController().signal
     const outcome = await runner.spawnBlocking(request, signal)

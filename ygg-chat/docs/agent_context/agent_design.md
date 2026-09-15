@@ -1,3 +1,12 @@
+---
+paths:
+  - "client/ygg-chat-r/src/components/Button/**"
+  - "client/ygg-chat-r/src/components/ThemeManager/**"
+  - "client/ygg-chat-r/src/components/Heimdall/**"
+  - "client/ygg-chat-r/src/index.css"
+  - "client/ygg-chat-r/server/tools/themeManager.ts"
+---
+
 # Agent Context: Design Patterns
 
 Last reviewed: 2026-07-19

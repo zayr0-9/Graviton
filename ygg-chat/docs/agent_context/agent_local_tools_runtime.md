@@ -1,3 +1,13 @@
+---
+paths:
+  - "client/ygg-chat-r/server/tools/**"
+  - "client/ygg-chat-r/server/toolRuntimeUtility.ts"
+  - "client/ygg-chat-r/electron/UtilityToolRuntimeHost.ts"
+  - "client/ygg-chat-r/server/routes/toolExecutionRoutes.ts"
+  - "client/ygg-chat-r/server/routes/jobRoutes.ts"
+  - "client/ygg-chat-r/src/services/ToolJobManager.ts"
+---
+
 # Agent Context: Local Tools Runtime
 
 Last reviewed: 2026-08-01

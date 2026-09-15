@@ -1,3 +1,9 @@
+---
+paths:
+  - "client/ygg-chat-r/server/mcp/**"
+  - "client/ygg-chat-r/src/components/SettingsPane/SettingsPane.tsx"
+---
+
 # Agent Context: MCP
 
 Last reviewed: 2026-07-17

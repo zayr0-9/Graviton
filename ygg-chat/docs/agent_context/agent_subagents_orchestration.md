@@ -1,3 +1,13 @@
+---
+paths:
+  - "client/ygg-chat-r/server/headlessServer/services/subagent*.ts"
+  - "client/ygg-chat-r/server/headlessServer/services/toolLoopService.ts"
+  - "client/ygg-chat-r/server/headlessServer/persistence/subagentRunRepo.ts"
+  - "client/ygg-chat-r/server/headlessServer/routes/subagentRoutes.ts"
+  - "client/ygg-chat-r/src/components/SubagentTranscript/**"
+  - "shared/operationModeToolPolicy.ts"
+---
+
 # Agent Context: Subagents Orchestration
 
 Last reviewed: 2026-08-01

@@ -1,3 +1,15 @@
+---
+paths:
+  - "shared/types.ts"
+  - "client/ygg-chat-r/server/localServer.ts"
+  - "client/ygg-chat-r/server/headlessServer/persistence/messageRepo.ts"
+  - "client/ygg-chat-r/server/headlessServer/persistence/conversationRepo.ts"
+  - "client/ygg-chat-r/server/headlessServer/services/messageSink.ts"
+  - "client/ygg-chat-r/server/headlessServer/services/cloudMirrorService.ts"
+  - "client/ygg-chat-r/src/features/chats/chatTypes.ts"
+  - "client/ygg-chat-r/src/features/chats/sseProjection.ts"
+---
+
 # Agent Context: Message Storage Shape
 
 Last reviewed: 2026-08-01

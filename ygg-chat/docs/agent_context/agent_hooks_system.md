@@ -1,3 +1,11 @@
+---
+paths:
+  - "client/ygg-chat-r/server/hooks/**"
+  - "client/ygg-chat-r/server/headlessServer/services/chatHookService.ts"
+  - "client/ygg-chat-r/server/routes/hookRoutes.ts"
+  - "client/ygg-chat-r/.ygg/hooks/**"
+---
+
 # Agent Context: Hooks System
 
 Last reviewed: 2026-08-01
@@ -29,10 +37,10 @@ Use this when changing:
 - `.ygg/settings.json` and `.ygg/settings.local.json`: hook config locations discovered by `hookRunner` (in addition to the managed hooks dir).
 
 ### Server-loop integration (this is where the chat loop fires hooks)
-- `client/ygg-chat-r/electron/headlessServer/services/chatHookService.ts`: `createChatHookSession` — the per-run session that wraps `runHookRequest`, rebuilds lineage/metadata from `ConversationRepo`, accumulates `additionalContext`, and exposes the 5 lifecycle calls + the `ToolLoopHooks` adapter. Pure builders (`buildHookLineage`, `buildHookMetadata`, `buildSystemPromptWithHookContext`, `appendHookAdditionalContext`) are verbatim ports of the old renderer functions.
-- `client/ygg-chat-r/electron/headlessServer/services/chatOrchestrator.ts`: builds the hook session (`ChatOrchestrator.runMessage`, `chatOrchestrator.ts:314`), fires `UserPromptSubmit` (`:339`), and interleaves Pre/Post/Failure hooks inside the pausing tool executor (`createChatPausingExecutor`, `:95`).
-- `client/ygg-chat-r/electron/headlessServer/services/toolLoopService.ts`: consumes `input.hooks` (`ToolLoopHooks`, `toolLoopService.ts:77`) — folds hook context into each turn's system prompt then clears it (`:649-651`), and calls `runStop` on a natural stop (`:726-727`).
-- `client/ygg-chat-r/electron/headlessServer/index.ts:319`: wires `hookRunner: runHookRequest` (in-process) into the `ChatOrchestrator`.
+- `client/ygg-chat-r/server/headlessServer/services/chatHookService.ts`: `createChatHookSession` — the per-run session that wraps `runHookRequest`, rebuilds lineage/metadata from `ConversationRepo`, accumulates `additionalContext`, and exposes the 5 lifecycle calls + the `ToolLoopHooks` adapter. Pure builders (`buildHookLineage`, `buildHookMetadata`, `buildSystemPromptWithHookContext`, `appendHookAdditionalContext`) are verbatim ports of the old renderer functions.
+- `client/ygg-chat-r/server/headlessServer/services/chatOrchestrator.ts`: builds the hook session (`ChatOrchestrator.runMessage`, `chatOrchestrator.ts:314`), fires `UserPromptSubmit` (`:339`), and interleaves Pre/Post/Failure hooks inside the pausing tool executor (`createChatPausingExecutor`, `:95`).
+- `client/ygg-chat-r/server/headlessServer/services/toolLoopService.ts`: consumes `input.hooks` (`ToolLoopHooks`, `toolLoopService.ts:77`) — folds hook context into each turn's system prompt then clears it (`:649-651`), and calls `runStop` on a natural stop (`:726-727`).
+- `client/ygg-chat-r/server/headlessServer/index.ts:319`: wires `hookRunner: runHookRequest` (in-process) into the `ChatOrchestrator`.
 
 ### Renderer (thin-client) surface
 - `client/ygg-chat-r/src/features/chats/chatActions.ts`: the 3 chat thunks set `hooksEnabled: isElectronMode` on the server-loop request (`chatActions.ts:1258`, `:1788`, `:1998`). They no longer contain any hook call site.
@@ -89,7 +97,7 @@ Wiring: the executor Pre/Post/Failure hooks are interleaved inside `createChatPa
 ## Testing and Validation
 
 - Build Electron after contract changes: `npm --prefix client/ygg-chat-r run build:electron`.
-- Server-loop hook unit tests: `client/ygg-chat-r/electron/headlessServer/services/__tests__/chatHookService.test.ts`.
+- Server-loop hook unit tests: `client/ygg-chat-r/server/headlessServer/services/__tests__/chatHookService.test.ts`.
 - Manually verify a simple command hook for each touched event.
 - For chat integration changes, test send, tool use, failed tool use, PreToolUse deny/rewrite before the permission prompt, and Stop continuation.
 

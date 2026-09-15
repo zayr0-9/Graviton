@@ -112,6 +112,8 @@ function parseExecutionMode(value: unknown): HookExecutionMode | undefined {
 }
 
 function getDefaultExecutionMode(event: HookEventName): HookExecutionMode {
+  // Context-producing lifecycle events must be awaited or their stdout is lost.
+  if (event === 'SessionStart' || event === 'PreCompact') return 'sync'
   // Hooks that can affect current prompt/tool decisions must remain synchronous by default.
   if (event === 'UserPromptSubmit' || event === 'PreToolUse') return 'sync'
   return 'async'
@@ -172,6 +174,16 @@ function matchesSinglePattern(pattern: string, candidate: string): boolean {
 
 function matchesHookMatcher(event: HookEventName, matcher: string | string[] | undefined, req: HookRunRequest): boolean {
   if (!matcher) return true
+  // Events without a tool use their own matcher vocabulary (docs §9.2):
+  // SessionStart: startup|compact; PreCompact: auto|manual; InstructionsLoaded: load reasons.
+  const eventValue =
+    event === 'SessionStart' ? req.source : event === 'PreCompact' ? req.trigger : event === 'InstructionsLoaded' ? req.loadReason : null
+  if (eventValue !== null) {
+    const candidates = Array.isArray(matcher) ? matcher : splitMatchers(matcher)
+    if (candidates.length === 0) return true
+    const value = typeof eventValue === 'string' ? eventValue : ''
+    return candidates.some(pattern => matchesSinglePattern(pattern, value))
+  }
   if (event !== 'PreToolUse' && event !== 'PostToolUse' && event !== 'PostToolUseFailure') {
     return true
   }
@@ -407,6 +419,10 @@ function buildHookPayload(req: HookRunRequest): Record<string, unknown> {
 
   if (req.toolResult !== undefined) payload.tool_result = req.toolResult
   if (req.error != null) payload.error = req.error
+  if (req.source != null) payload.source = req.source
+  if (req.trigger != null) payload.trigger = req.trigger
+  if (req.loadReason != null) payload.load_reason = req.loadReason
+  if (Array.isArray(req.filePaths)) payload.file_paths = req.filePaths
 
   return payload
 }

@@ -1,3 +1,8 @@
+---
+paths:
+  - "client/ygg-chat-r/server/tools/ripgrep.ts"
+---
+
 # `ripgrep.ts` (Electron Tool) Documentation
 
 ## Purpose

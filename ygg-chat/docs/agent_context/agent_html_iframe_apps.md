@@ -1,3 +1,13 @@
+---
+paths:
+  - "client/ygg-chat-r/src/components/HtmlIframeRegistry/**"
+  - "client/ygg-chat-r/src/utils/iframeBridge.ts"
+  - "client/ygg-chat-r/src/components/ChatMessage/HtmlIframe.tsx"
+  - "client/ygg-chat-r/src/components/HtmlToolsModal/**"
+  - "client/ygg-chat-r/src/components/HtmlToolsModalFullScreen/**"
+  - "client/ygg-chat-r/server/localToolsRoutes.ts"
+---
+
 # Agent Context: HTML Iframe Apps
 
 Last reviewed: 2026-06-16

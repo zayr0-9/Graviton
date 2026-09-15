@@ -1089,6 +1089,11 @@ export const BUILTIN_TOOL_DEFINITIONS: SharedToolDefinition[] = [
           description:
             'Path to resource file within the skill (e.g., "references/FORMS.md"). Required for load_resource action.',
         },
+        arguments: {
+          type: 'string',
+          description:
+            'Optional argument string for "activate". Substituted into the skill body as $ARGUMENTS, $0, $1, … and any named arguments the skill declares.',
+        },
       },
       required: ['action'],
     },
@@ -1108,6 +1113,11 @@ export const BUILTIN_TOOL_DEFINITIONS: SharedToolDefinition[] = [
         systemPrompt: {
           type: 'string',
           description: 'Optional system prompt to set the subagent behavior/persona.',
+        },
+        agent_type: {
+          type: 'string',
+          description:
+            'Optional agent definition name from the "Available agent types" list. Its body becomes the subagent system prompt and its tools list restricts the tool set.',
         },
         temperature: {
           type: 'number',

@@ -1,3 +1,12 @@
+---
+paths:
+  - "client/ygg-chat-r/src/components/RunningAgentsFloatingButton/**"
+  - "client/ygg-chat-r/src/hooks/useRunningAgentStreams.ts"
+  - "client/ygg-chat-r/src/components/GlobalNotifications/**"
+  - "client/ygg-chat-r/src/features/ui/uiSlice.ts"
+  - "client/ygg-chat-r/src/App.tsx"
+---
+
 # Agent Context: Floating Agent Button Design
 
 Last reviewed: 2026-06-17

@@ -1,3 +1,12 @@
+---
+paths:
+  - "client/ygg-chat-r/server/headlessServer/services/branchOrchestrator.ts"
+  - "client/ygg-chat-r/server/headlessServer/persistence/conversationRepo.ts"
+  - "client/ygg-chat-r/src/features/chats/pathUtils.ts"
+  - "client/ygg-chat-r/src/features/chats/chatActions.ts"
+  - "client/ygg-chat-r/src/features/chats/chatSlice.ts"
+---
+
 # Agent Context: Conversation Branching
 
 Last reviewed: 2026-08-01

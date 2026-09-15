@@ -1,3 +1,8 @@
+---
+paths:
+  - "docs/graviton_context.md"
+---
+
 # Graviton Architecture Context
 
 ## Overview

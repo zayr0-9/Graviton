@@ -144,6 +144,14 @@ export interface BuildHeadlessSystemPromptInput {
   projectPrompt?: string | null
   conversationPrompt?: string | null
   planModeVerbosity?: HeadlessPlanModeVerbosity | null
+  /**
+   * Auto-loaded context indexes (docs/claude_code_context_loading_rules.md §10 steps 3-4).
+   * Built once per conversation and never changed between iterations (§11.5 rule 1).
+   */
+  skillsIndex?: string | null
+  agentsIndex?: string | null
+  /** Where the model's persistent memory lives (§4.2), when auto memory is on. */
+  autoMemoryPrompt?: string | null
 }
 
 export function buildHeadlessSystemPrompt({
@@ -154,6 +162,9 @@ export function buildHeadlessSystemPrompt({
   projectPrompt,
   conversationPrompt,
   planModeVerbosity,
+  skillsIndex,
+  agentsIndex,
+  autoMemoryPrompt,
 }: BuildHeadlessSystemPromptInput): string {
   const parts: string[] = []
   const resolvedOperationMode = operationMode ?? 'execute'
@@ -172,6 +183,9 @@ export function buildHeadlessSystemPrompt({
   appendPromptPart(parts, requestPrompt)
   appendPromptPart(parts, projectPrompt)
   appendPromptPart(parts, conversationPrompt)
+  appendPromptPart(parts, skillsIndex)
+  appendPromptPart(parts, agentsIndex)
+  appendPromptPart(parts, autoMemoryPrompt)
 
   return parts.join('\n\n') || DEFAULT_HEADLESS_INSTRUCTIONS
 }

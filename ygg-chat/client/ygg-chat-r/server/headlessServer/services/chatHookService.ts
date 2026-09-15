@@ -24,6 +24,7 @@ import type {
   HookRunRequest,
   HookRunResult,
   HookTurnContext,
+  InstructionsLoadReason,
 } from '../../hooks/hookTypes.js'
 import { attachChatErrorCode } from '../providers/providerErrorFormatter.js'
 import type { ToolExecutionContext, ToolLoopHooks } from './toolLoopService.js'
@@ -195,6 +196,9 @@ const HOOK_LIFECYCLE_PHRASE: Record<HookEventName, string> = {
   PostToolUse: 'after a tool ran',
   PostToolUseFailure: 'after a tool failed',
   Stop: 'when the reply finished',
+  SessionStart: 'when the session context was built',
+  PreCompact: 'before the conversation was compacted',
+  InstructionsLoaded: 'when instruction files were loaded',
 }
 
 /**
@@ -293,6 +297,14 @@ export interface ChatHookSession {
   runPostToolUse(effectiveToolCall: any, result: any, ctx: ToolExecutionContext): Promise<void>
   /** PostToolUseFailure — error path; folds additionalContext (caller re-throws). */
   runPostToolUseFailure(effectiveToolCall: any, error: unknown, ctx: ToolExecutionContext): Promise<void>
+  /** SessionStart (`source: startup | compact`); folds additionalContext. */
+  runSessionStart(source: 'startup' | 'compact'): Promise<void>
+  /** PreCompact (`trigger: auto | manual`); folds additionalContext. */
+  runPreCompact(trigger?: 'auto' | 'manual'): Promise<void>
+  /** InstructionsLoaded — informational; additionalContext is folded like the others. */
+  runInstructionsLoaded(reason: InstructionsLoadReason, filePaths: string[]): Promise<void>
+  /** Take every accumulated context entry out of the buffer (docs §11.5 rule 3). */
+  drainHookContext(): string[]
   /** Adapter handed to ToolLoopService via input.hooks (Stop + per-turn fold). */
   toolLoopHooks(): ToolLoopHooks
 }
@@ -508,6 +520,36 @@ export function createChatHookSession(config: ChatHookSessionConfig): ChatHookSe
     return false
   }
 
+  const runSimpleEvent = async (
+    event: 'SessionStart' | 'PreCompact' | 'InstructionsLoaded',
+    extra: Pick<HookRunRequest, 'source' | 'trigger' | 'loadReason' | 'filePaths'>
+  ): Promise<void> => {
+    const meta = metadataFor({ includeProject: true })
+    const result = await safeRun({
+      event,
+      conversationId: meta.conversationId,
+      streamId,
+      cwd: config.cwd,
+      provider: config.provider,
+      model: config.model,
+      operation: config.operation,
+      messageId: meta.messageId,
+      parentId: meta.parentId,
+      lineage: meta.lineage,
+      lookup: meta.lookup,
+      project: meta.project,
+      ...extra,
+    })
+    foldAdditionalContext(event, result.additionalContext)
+  }
+
+  const runSessionStart = (source: 'startup' | 'compact') => runSimpleEvent('SessionStart', { source })
+  const runPreCompact = (trigger: 'auto' | 'manual' = 'auto') => runSimpleEvent('PreCompact', { trigger })
+  const runInstructionsLoaded = (reason: InstructionsLoadReason, filePaths: string[]) =>
+    runSimpleEvent('InstructionsLoaded', { loadReason: reason, filePaths })
+
+  const drainHookContext = (): string[] => hookContext.splice(0)
+
   const foldSystemPrompt = (baseSystemPrompt: string | null): string | null => {
     // No accumulated context => leave the base prompt (possibly null) untouched, so a
     // hooks-enabled run with no hook output is identical to the non-hooks path.
@@ -527,8 +569,12 @@ export function createChatHookSession(config: ChatHookSessionConfig): ChatHookSe
     runPreToolUse,
     runPostToolUse,
     runPostToolUseFailure,
+    runSessionStart,
+    runPreCompact,
+    runInstructionsLoaded,
+    drainHookContext,
     toolLoopHooks(): ToolLoopHooks {
-      return { hookContext, foldSystemPrompt, runStop }
+      return { hookContext, foldSystemPrompt, runStop, runPreCompact: () => runPreCompact('auto'), runSessionStart }
     },
   }
 }

@@ -1,3 +1,13 @@
+---
+paths:
+  - "package.json"
+  - "client/ygg-chat-r/package.json"
+  - "client/ygg-chat-r/src/main.tsx"
+  - "client/ygg-chat-r/src/App.tsx"
+  - "client/ygg-chat-r/electron/main.ts"
+  - "client/ygg-chat-r/server/createYggServer.ts"
+---
+
 # Agent Context: Project Overview
 
 Last reviewed: 2026-08-01

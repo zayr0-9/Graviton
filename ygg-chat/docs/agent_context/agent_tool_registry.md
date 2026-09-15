@@ -1,3 +1,12 @@
+---
+paths:
+  - "shared/builtinToolDefinitions.ts"
+  - "client/ygg-chat-r/server/builtinToolRegistry.ts"
+  - "client/ygg-chat-r/src/features/chats/toolDefinitions.ts"
+  - "client/ygg-chat-r/server/tools/customTool*.ts"
+  - "client/ygg-chat-r/server/mcp/**"
+---
+
 # Agent Context: Tool Registry
 
 Last reviewed: 2026-06-16

@@ -1,3 +1,8 @@
+---
+paths:
+  - "client/ygg-chat-r/server/tools/editFile.ts"
+---
+
 # `editFile.ts` Tool Documentation
 
 Located at `client/ygg-chat-r/electron/tools/editFile.ts`, this helper is a lightweight, search-and-replace-based file editing toolkit used by the Electron automation layer. It can replace, replace the first occurrence, or append content with extra safety checks and a layered matching strategy to keep edits precise even when the source text changes slightly.

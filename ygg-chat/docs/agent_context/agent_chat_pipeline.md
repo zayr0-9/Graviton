@@ -1,3 +1,14 @@
+---
+paths:
+  - "client/ygg-chat-r/src/features/chats/chatActions.ts"
+  - "client/ygg-chat-r/src/features/chats/buildServerLoopRequest.ts"
+  - "client/ygg-chat-r/src/features/chats/mainChatClient.ts"
+  - "client/ygg-chat-r/src/features/chats/sseProjection.ts"
+  - "client/ygg-chat-r/server/headlessServer/routes/chatRoutes.ts"
+  - "client/ygg-chat-r/server/headlessServer/services/chatOrchestrator.ts"
+  - "client/ygg-chat-r/server/headlessServer/services/toolLoopService.ts"
+---
+
 # Agent Context: Chat Pipeline
 
 Last reviewed: 2026-08-01

@@ -1,3 +1,9 @@
+---
+paths:
+  - "client/ygg-chat-r/server/skills/**"
+  - "client/ygg-chat-r/src/components/SettingsPane/SettingsPane.tsx"
+---
+
 # Agent Context: Skills
 
 Last reviewed: 2026-08-09
@@ -8,11 +14,11 @@ Documents installation, discovery, normalization, and model activation for Agent
 
 ## Key Files
 
-- `client/ygg-chat-r/electron/skills/skillManifest.ts`: shared `SKILL.md` parsing, runtime-name normalization, and serialization.
-- `client/ygg-chat-r/electron/skills/skillInstaller.ts`: GitHub clone, ClawdHub/zip, and local-folder installation.
-- `client/ygg-chat-r/electron/skills/skillLoader.ts`: user-data registry, legacy compatibility, enable/disable state, resources, and uninstall.
-- `client/ygg-chat-r/electron/skills/skillRoutes.ts`: Settings API under `/api/skills/*`.
-- `client/ygg-chat-r/electron/skills/skillManager.ts`: model-facing `skill_manager` list/activate/load-resource tool.
+- `client/ygg-chat-r/server/skills/skillManifest.ts`: shared `SKILL.md` parsing, runtime-name normalization, and serialization.
+- `client/ygg-chat-r/server/skills/skillInstaller.ts`: GitHub clone, ClawdHub/zip, and local-folder installation.
+- `client/ygg-chat-r/server/skills/skillLoader.ts`: user-data registry, legacy compatibility, enable/disable state, resources, and uninstall.
+- `client/ygg-chat-r/server/skills/skillRoutes.ts`: Settings API under `/api/skills/*`.
+- `client/ygg-chat-r/server/skills/skillManager.ts`: model-facing `skill_manager` list/activate/load-resource tool.
 - `client/ygg-chat-r/src/components/SettingsPane/SettingsPane.tsx`: install and installed-skill UI.
 - `client/ygg-chat-r/electron/tools/__tests__/skillInstaller.test.ts` and `skillLoader.test.ts`: installation and compatibility regressions.
 

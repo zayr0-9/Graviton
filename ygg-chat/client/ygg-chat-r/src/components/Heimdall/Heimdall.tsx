@@ -1,6 +1,7 @@
 import { useQueryClient } from '@tanstack/react-query'
+import { isContextInjectionMessage } from '../../../../../shared/contextInjection'
 import 'boxicons/css/boxicons.min.css'
-import { Flame, ListFilter, Maximize2, Minimize2, RotateCcw, ZoomIn, ZoomOut } from 'lucide-react'
+import { Flame, ListFilter, Maximize2, Minimize2, RotateCcw, ZoomIn, ZoomOut, FileText } from 'lucide-react'
 import type { JSX } from 'react'
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import ReactMarkdown from 'react-markdown'
@@ -367,6 +368,29 @@ export const Heimdall: React.FC<HeimdallProps> = ({
       return true
     }
   })
+
+  // Rendering-only filter for auto-loaded instruction rows (`meta.kind === 'context_injection'`,
+  // docs/claude_code_context_loading_rules.md §11.3 decision 6). Hidden by default.
+  const [filterContextInjections, setFilterContextInjections] = useState<boolean>(() => {
+    try {
+      const saved = localStorage.getItem('heimdall-filter-context-injections')
+      return saved !== null ? JSON.parse(saved) : true
+    } catch {
+      return true
+    }
+  })
+
+  const toggleFilterContextInjections = useCallback(() => {
+    setFilterContextInjections(prev => {
+      const next = !prev
+      try {
+        localStorage.setItem('heimdall-filter-context-injections', JSON.stringify(next))
+      } catch {
+        // ignore
+      }
+      return next
+    })
+  }, [])
 
   const toggleFilterEmptyMessages = useCallback(() => {
     setFilterEmptyMessages(prev => {
@@ -1692,12 +1716,17 @@ export const Heimdall: React.FC<HeimdallProps> = ({
     // Look up full message to check for structured content (blocks, tools, etc.)
     const fullMsg = messageById.get(String(node.id))
 
+    // A context-injection row is treated as empty so it is promoted away while its
+    // descendants stay on the branch. Selection still expands to hidden nodes.
+    const isHiddenContextInjection = filterContextInjections && fullMsg ? isContextInjectionMessage(fullMsg) : false
+
     const hasContent =
-      (node.message && node.message.trim().length > 0) ||
+      !isHiddenContextInjection &&
+      ((node.message && node.message.trim().length > 0) ||
       (fullMsg &&
         ((fullMsg.content && fullMsg.content.trim().length > 0) ||
           (Array.isArray(fullMsg.content_blocks) &&
-            fullMsg.content_blocks.some((b: any) => b.type === 'text' && b.text && b.text.trim().length > 0))))
+            fullMsg.content_blocks.some((b: any) => b.type === 'text' && b.text && b.text.trim().length > 0)))))
 
     // 1. Process children first using flatMap to flatten the results
     let filteredChildren: ChatNode[] = []
@@ -1708,7 +1737,8 @@ export const Heimdall: React.FC<HeimdallProps> = ({
 
     // 2. If node is empty, skip it and return its children (promotion)
     // Exception: Keep nodes that have siblings (parallel branches)
-    if (!hasContent && !hasSiblings) {
+    const shouldHide = isHiddenContextInjection || (filterEmptyMessages && !hasContent)
+    if (shouldHide && !hasSiblings) {
       return filteredChildren
     }
 
@@ -1721,7 +1751,7 @@ export const Heimdall: React.FC<HeimdallProps> = ({
     const rawData = chatData ?? lastDataRef.current ?? null
     if (!rawData) return null
 
-    if (filterEmptyMessages) {
+    if (filterEmptyMessages || filterContextInjections) {
       const result = filterEmptyNodes(rawData, false) // Root node has no siblings
 
       if (result.length === 0) return null
@@ -1735,7 +1765,7 @@ export const Heimdall: React.FC<HeimdallProps> = ({
     }
 
     return rawData
-  }, [chatData, messageById, filterEmptyMessages])
+  }, [chatData, messageById, filterEmptyMessages, filterContextInjections])
 
   // Get the complete branch path for a selected node
   // Uses unfiltered flatMessages to ensure filtered nodes are included in the path
@@ -4107,6 +4137,17 @@ export const Heimdall: React.FC<HeimdallProps> = ({
           aria-pressed={filterEmptyMessages}
         >
           <ListFilter size={18} strokeWidth={2.25} />
+        </button>
+        <button
+          type='button'
+          onClick={toggleFilterContextInjections}
+          className={`${heimdallControlButtonClass} ${filterContextInjections ? heimdallControlButtonActiveClass : ''}`}
+          style={getHeimdallControlButtonStyle(filterContextInjections)}
+          title={filterContextInjections ? 'Show Loaded Context Messages' : 'Hide Loaded Context Messages'}
+          aria-label={filterContextInjections ? 'Show loaded context messages' : 'Hide loaded context messages'}
+          aria-pressed={filterContextInjections}
+        >
+          <FileText size={18} strokeWidth={2.25} />
         </button>
         <button
           type='button'

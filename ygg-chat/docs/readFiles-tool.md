@@ -1,3 +1,9 @@
+---
+paths:
+  - "client/ygg-chat-r/server/tools/readFiles.ts"
+  - "client/ygg-chat-r/server/tools/readFile.ts"
+---
+
 # readFiles Tool
 
 `client/ygg-chat-r/electron/tools/readFiles.ts` provides the implementation behind the `read_files` IPC action exposed by the local Electron server. It reuses the single-file reader (`readFile.ts`) to return structured metadata for multiple files in one call.
