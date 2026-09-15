@@ -832,9 +832,9 @@ export const BUILTIN_TOOL_DEFINITIONS: SharedToolDefinition[] = [
         },
         timeoutMs: {
           type: 'integer',
-          minimum: 100,
-          maximum: 120000,
-          description: 'Optional timeout in milliseconds (default 0 meaning no timeout)',
+          minimum: 0,
+          maximum: 180000,
+          description: 'Execution timeout in milliseconds (default 180000, maximum 180000). Returns captured output on timeout after up to 300ms of process cleanup. Zero uses the default; unlimited execution is not supported.',
         },
         maxOutputChars: {
           type: 'integer',
@@ -869,9 +869,9 @@ export const BUILTIN_TOOL_DEFINITIONS: SharedToolDefinition[] = [
         },
         timeoutMs: {
           type: 'integer',
-          minimum: 100,
-          maximum: 120000,
-          description: 'Optional timeout in milliseconds (default 0 meaning no timeout)',
+          minimum: 0,
+          maximum: 180000,
+          description: 'Execution timeout in milliseconds (default 180000, maximum 180000). Returns captured output on timeout after up to 300ms of process cleanup. Zero uses the default; unlimited execution is not supported.',
         },
         maxOutputChars: {
           type: 'integer',

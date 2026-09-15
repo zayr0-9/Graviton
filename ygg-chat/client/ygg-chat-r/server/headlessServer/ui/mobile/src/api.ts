@@ -56,43 +56,8 @@ const parseSseChunk = (chunk: string, onEvent: (event: HeadlessSseEvent) => void
 }
 
 const readRuntimeAppSession = async (): Promise<{ accessToken: string | null; userId: string | null }> => {
-  try {
-    if (typeof window !== 'undefined' && (window as any).electronAPI?.storage?.get) {
-      const stored = await (window as any).electronAPI.storage.get('auth_session')
-      const accessToken = stored?.accessToken || stored?.session?.access_token || null
-      const userId = stored?.userId || stored?.user?.id || stored?.session?.user?.id || null
-      if (accessToken) {
-        return {
-          accessToken: String(accessToken),
-          userId: userId ? String(userId) : null,
-        }
-      }
-    }
-  } catch {
-    // fall through to localStorage fallback
-  }
-
-  try {
-    if (typeof window !== 'undefined') {
-      const raw = window.localStorage.getItem('supabase-auth-token')
-      if (raw) {
-        const parsed = JSON.parse(raw)
-        const session = parsed?.currentSession || parsed?.session || parsed
-        const accessToken = session?.access_token || null
-        const userId = session?.user?.id || null
-        if (accessToken) {
-          return {
-            accessToken: String(accessToken),
-            userId: userId ? String(userId) : null,
-          }
-        }
-      }
-    }
-  } catch {
-    // ignore localStorage parse failures
-  }
-
-  return { accessToken: null, userId: null }
+  const result = await jsonFetch<{ snapshot?: { userId?: string | null } }>('/api/provider-auth/openrouter/token', { method: 'GET' })
+  return { accessToken: null, userId: result.snapshot?.userId ?? null }
 }
 
 export const mobileApi = {
@@ -468,16 +433,12 @@ export const mobileApi = {
       return { pending: true }
     }
 
-    if (!payload?.success || !payload?.accessToken || !payload?.refreshToken || !payload?.accountId) {
+    if (!payload?.success) {
       throw new Error(payload?.error || 'OpenAI OAuth completion failed')
     }
 
     return {
       pending: false,
-      accessToken: payload.accessToken,
-      refreshToken: payload.refreshToken,
-      expiresAt: payload.expiresAt,
-      accountId: payload.accountId,
     }
   },
 

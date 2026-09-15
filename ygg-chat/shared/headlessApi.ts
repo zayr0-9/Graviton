@@ -98,6 +98,8 @@ export interface HeadlessMessageRequest {
 }
 
 export interface HeadlessSubagentStreamRequest {
+  /** Internal server-inherited session reference; not an OAuth credential. */
+  authSessionId?: string
   conversationId: string
   parentMessageId: string
   toolCallId?: string | null

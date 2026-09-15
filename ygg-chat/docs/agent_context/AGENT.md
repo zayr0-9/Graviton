@@ -18,6 +18,7 @@ Start here, then open the smallest relevant subsystem context file before editin
 
 - `agent_project_overview.md` - repository layout, workspace scripts, runtime map, and how to use the context set.
 - `agent_runtime_modes.md` - legacy runtime map; for this repository, apply the local-Electron-only scope above.
+- `../claude_code_context_loading_rules.md` - reference spec of Claude Code's CLAUDE.md + AGENTS.md (open standard) / rules / skills / agents / hooks auto-loading, with a Graviton parity map (section 11).
 
 ## Chat
 
@@ -44,6 +45,8 @@ Start here, then open the smallest relevant subsystem context file before editin
 - `agent_subagents_orchestration.md` - the `subagent` tool: renderer thin client + the shared server-side engine (the same `ToolLoopService` that now runs the main chat loop — subagents auto-approve, the main loop pauses), transcript persistence, SSE route.
 
 ## Platform and Integration
+
+- `agent_auth.md` - canonical Supabase/Codex credential ownership, refresh, migration, login and public auth status.
 
 - `agent_electron_main_local_server.md` - Electron main/preload/local Express server responsibilities; hosts the `headlessServer` routes + cloud gateway; Claude Code + GlobalAgentLoop routes retired.
 - `agent_html_iframe_apps.md` - custom app iframe rendering, bridge permissions, HTML cache.

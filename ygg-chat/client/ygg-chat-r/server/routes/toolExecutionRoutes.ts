@@ -14,6 +14,7 @@ import { customToolRegistry, ToolResult } from '../tools/customToolLoader.js'
 import { mcpManager } from '../mcp/mcpManager.js'
 import { toMcpExecutionResult } from '../mcp/mcpToolResult.js'
 import { shouldUseUtilityRuntimeForTool } from '../toolSandboxPolicy.js'
+import { canFallbackToLocalExecution } from '../tools/runtime/toolRuntimeSandbox.js'
 
 export interface ToolExecutionRoutesDeps {
   builtInTools: Map<string, BuiltInToolHandler>
@@ -27,6 +28,11 @@ export function registerToolExecutionRoutes(app: Express, deps: ToolExecutionRou
 
   // Tool Execution Endpoint (uses built-in and custom tool registries)
   app.post('/api/tools/execute', async (req, res) => {
+    const controller = new AbortController()
+    const onClose = () => {
+      if (!res.writableEnded) controller.abort()
+    }
+    res.on('close', onClose)
     try {
       const { toolName, args, rootPath, operationMode, conversationId, messageId, parentMessageId, streamId, toolCallId } = req.body
       const normalizedToolName = typeof toolName === 'string' ? toolName.trim() : toolName
@@ -34,6 +40,7 @@ export function registerToolExecutionRoutes(app: Express, deps: ToolExecutionRou
 
       const parsedArgs = typeof args === 'string' ? JSON.parse(args) : args
       const toolOptions = {
+        signal: controller.signal,
         rootPath,
         operationMode: operationMode as 'plan' | 'execute' | undefined,
         conversationId: conversationId ?? null,
@@ -53,7 +60,11 @@ export function registerToolExecutionRoutes(app: Express, deps: ToolExecutionRou
           try {
             result = await directExecSandbox.executeTool(normalizedToolName, parsedArgs, toolOptions)
           } catch (utilityError) {
-            if (isUtilityRuntimeFallbackDisabled()) {
+            if (
+              isUtilityRuntimeFallbackDisabled() ||
+              controller.signal.aborted ||
+              !canFallbackToLocalExecution(utilityError)
+            ) {
               throw utilityError
             }
             console.warn(
@@ -89,7 +100,7 @@ export function registerToolExecutionRoutes(app: Express, deps: ToolExecutionRou
           try {
             result = await directExecSandbox.executeTool(normalizedToolName, parsedArgs, toolOptions)
           } catch (utilityError) {
-            if (isUtilityRuntimeFallbackDisabled()) {
+            if (isUtilityRuntimeFallbackDisabled() || controller.signal.aborted || !canFallbackToLocalExecution(utilityError)) {
               throw utilityError
             }
             console.warn(
@@ -127,6 +138,8 @@ export function registerToolExecutionRoutes(app: Express, deps: ToolExecutionRou
       console.error('[LocalServer] Tool execution error:', error)
       const msg = error instanceof Error ? error.message : String(error)
       res.json({ result: { success: false, error: msg } })
+    } finally {
+      res.off('close', onClose)
     }
   })
 

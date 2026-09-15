@@ -362,3 +362,9 @@ Heartbeat frames are sent as SSE comments (`: heartbeat`) and should be ignored.
 ---
 
 If you want, I can also generate a second file with ready-to-run **TypeScript SDK wrapper** for these endpoints (including SSE stream parser and strong types).
+
+## Managed OAuth migration
+
+Supabase app sessions and Codex connections are now server-owned. Raw OAuth registration at `/api/provider-auth/openai/token` and `/api/provider-auth/openrouter/token` (POST) returns 410. GET returns public status; DELETE disconnects the managed slot. Environment/per-request OAuth tokens no longer override managed inference credentials. API-key providers are unchanged.
+
+Use `/api/openai/auth/start`, browser/manual callback, then `/api/openai/auth/complete`. Completion returns `{success, snapshot, email}`, not access/refresh tokens; do not copy it into provider-token storage. The desktop owns app login through typed auth IPC. Reconnect-required runs end with an actionable error; sign-in never automatically replays tools.

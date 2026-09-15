@@ -14,6 +14,8 @@ export interface JobOptions {
   priority?: JobPriority
   /** Timeout in milliseconds (default: 300000 = 5 minutes) */
   timeoutMs?: number
+  /** Optional caller deadline, including time spent queued (epoch milliseconds). */
+  deadlineMs?: number
   /** Number of retry attempts on failure (default: 0) */
   retries?: number
   /** Delay between retries in ms (default: 1000) */
@@ -53,6 +55,8 @@ export interface Job {
   operationMode: 'plan' | 'execute'
   /** Timeout in milliseconds */
   timeoutMs: number
+  /** Caller deadline for this live invocation; not persisted across restarts. */
+  deadlineMs?: number
   /** Retry configuration */
   retries: number
   retriesRemaining: number

@@ -12,6 +12,7 @@
 import type Database from 'better-sqlite3'
 import { v4 as uuidv4 } from 'uuid'
 import type { WebSocket } from 'ws'
+import { SHELL_RUNTIME_MARGIN_MS } from '../shellExecutionPolicy.js'
 import {
   Job,
   JobEvent,
@@ -36,6 +37,8 @@ const PRIORITY_WEIGHTS: Record<JobPriority, number> = {
 type ToolHandler = (
   args: Record<string, any>,
   options: {
+    signal?: AbortSignal
+    deadlineMs?: number
     rootPath?: string
     operationMode?: 'plan' | 'execute'
     conversationId?: string | null
@@ -52,6 +55,10 @@ export class ToolOrchestrator {
   private jobs: Map<string, Job> = new Map()
   private pendingQueue: string[] = [] // Job IDs ordered by priority
   private activeJobs: Set<string> = new Set()
+  private jobControllers = new Map<string, AbortController>()
+  private timeoutTimers = new Map<string, NodeJS.Timeout>()
+  private retryTimers = new Map<string, NodeJS.Timeout>()
+  private shuttingDown = false
   private config: Required<OrchestratorConfig>
   private db: Database.Database | null = null
   private statements: {
@@ -90,6 +97,7 @@ export class ToolOrchestrator {
    * Initialize the orchestrator with database connection
    */
   initialize(db: Database.Database): void {
+    this.shuttingDown = false
     this.db = db
 
     if (this.config.persistJobs) {
@@ -311,6 +319,7 @@ export class ToolOrchestrator {
    * Submit a new job
    */
   submit(toolName: string, args: Record<string, any>, options: JobOptions = {}): Job {
+    if (this.shuttingDown) throw new Error('Tool orchestrator is shut down')
     const id = uuidv4()
     const now = new Date().toISOString()
     const normalizedToolName = normalizeToolName(toolName)
@@ -327,6 +336,7 @@ export class ToolOrchestrator {
       rootPath: options.rootPath ?? null,
       operationMode: options.operationMode ?? 'execute',
       timeoutMs: options.timeoutMs ?? this.config.defaultTimeoutMs,
+      deadlineMs: options.deadlineMs,
       retries: options.retries ?? 0,
       retriesRemaining: options.retries ?? 0,
       retryDelayMs: options.retryDelayMs ?? 1000,
@@ -386,7 +396,7 @@ export class ToolOrchestrator {
    * Process the job queue
    */
   private processQueue(): void {
-    while (this.activeJobs.size < this.config.concurrencyLimit && this.pendingQueue.length > 0) {
+    while (!this.shuttingDown && this.activeJobs.size < this.config.concurrencyLimit && this.pendingQueue.length > 0) {
       const jobId = this.pendingQueue.shift()
       if (!jobId) break
 
@@ -407,6 +417,14 @@ export class ToolOrchestrator {
       return
     }
 
+    const controller = new AbortController()
+    this.jobControllers.set(job.id, controller)
+    const isShell = job.toolName === 'bash' || job.toolName === 'powershell'
+    const jobEndMs = Math.min(
+      Date.now() + job.timeoutMs,
+      Number.isFinite(job.deadlineMs) ? job.deadlineMs! : Infinity
+    )
+
     // Mark as running
     job.status = 'running'
     job.startedAt = new Date().toISOString()
@@ -421,17 +439,28 @@ export class ToolOrchestrator {
 
     // console.log(`[ToolOrchestrator] Job started: ${job.id} (${job.toolName})`)
 
-    // Execute with timeout
-    let timeoutId: NodeJS.Timeout | null = null
-    const timeoutPromise = new Promise<never>((_, reject) => {
-      timeoutId = setTimeout(() => {
-        reject(new Error(`Job timed out after ${job.timeoutMs}ms`))
-      }, job.timeoutMs)
+    // Race the signal as well as the handler: even an uncooperative handler
+    // cannot keep the orchestration lifecycle (or its timeout) alive on cancel.
+    let onAbort: () => void = () => {}
+    const abortPromise = new Promise<never>((_, reject) => {
+      onAbort = () => reject(controller.signal.reason ?? new Error('Job cancelled'))
+      controller.signal.addEventListener('abort', onAbort, { once: true })
+      if (controller.signal.aborted) onAbort()
     })
+    if (jobEndMs <= Date.now()) {
+      controller.abort(new Error('Job deadline elapsed before execution'))
+    }
+    if (!controller.signal.aborted) {
+      this.timeoutTimers.set(job.id, setTimeout(() => {
+        controller.abort(new Error(`Job timed out after ${job.timeoutMs}ms`))
+      }, Math.max(0, jobEndMs - Date.now())))
+    }
 
     try {
       const result = await Promise.race([
-        handler(job.args, {
+        controller.signal.aborted ? abortPromise : handler(job.args, {
+          signal: controller.signal,
+          deadlineMs: jobEndMs - (isShell ? SHELL_RUNTIME_MARGIN_MS : 0),
           rootPath: job.rootPath ?? undefined,
           operationMode: job.operationMode,
           conversationId: job.conversationId,
@@ -440,17 +469,17 @@ export class ToolOrchestrator {
           streamId: job.streamId,
           toolCallId: job.toolCallId,
         }),
-        timeoutPromise,
+        abortPromise,
       ])
 
-      if (timeoutId) clearTimeout(timeoutId)
       this.completeJob(job, result)
     } catch (error) {
-      if (timeoutId) clearTimeout(timeoutId)
+      if (this.getJob(job.id)?.status === 'cancelled') return
       const errorMsg = error instanceof Error ? error.message : String(error)
 
       // Check for retries
-      if (job.retriesRemaining > 0) {
+      // Shell execution may already have had side effects; never replay it.
+      if (!isShell && !this.shuttingDown && job.retriesRemaining > 0) {
         job.retriesRemaining--
         job.status = 'pending'
         job.startedAt = null
@@ -460,23 +489,30 @@ export class ToolOrchestrator {
         // console.log(`[ToolOrchestrator] Job ${job.id} failed, retrying (${job.retriesRemaining} left): ${errorMsg}`)
 
         // Re-queue with delay
-        setTimeout(() => {
+        this.retryTimers.set(job.id, setTimeout(() => {
+          this.retryTimers.delete(job.id)
+          if (this.shuttingDown || job.status !== 'pending') return
           this.enqueuePending(job.id, job.priority)
           this.processQueue()
-        }, job.retryDelayMs)
+        }, job.retryDelayMs))
       } else {
         this.failJob(job, errorMsg)
       }
+    } finally {
+      controller.signal.removeEventListener('abort', onAbort)
+      clearTimeout(this.timeoutTimers.get(job.id))
+      this.timeoutTimers.delete(job.id)
+      this.jobControllers.delete(job.id)
+      this.activeJobs.delete(job.id)
+      this.processQueue()
     }
-
-    // Continue processing queue
-    this.processQueue()
   }
 
   /**
    * Mark job as completed
    */
   private completeJob(job: Job, result: any): void {
+    if (job.status === 'cancelled') return
     job.status = 'completed'
     job.completedAt = new Date().toISOString()
     job.result = result
@@ -497,6 +533,7 @@ export class ToolOrchestrator {
    * Mark job as failed
    */
   private failJob(job: Job, error: string): void {
+    if (job.status === 'cancelled') return
     job.status = 'failed'
     job.completedAt = new Date().toISOString()
     job.error = error
@@ -524,6 +561,11 @@ export class ToolOrchestrator {
     }
 
     job.status = 'cancelled'
+    clearTimeout(this.timeoutTimers.get(job.id))
+    this.timeoutTimers.delete(job.id)
+    clearTimeout(this.retryTimers.get(job.id))
+    this.retryTimers.delete(job.id)
+    this.jobControllers.get(job.id)?.abort(new Error('Job cancelled'))
     job.completedAt = new Date().toISOString()
     this.activeJobs.delete(job.id)
     this.pendingQueue = this.pendingQueue.filter(id => id !== jobId)
@@ -535,7 +577,7 @@ export class ToolOrchestrator {
       timestamp: job.completedAt,
     })
 
-    // console.log(`[ToolOrchestrator] Job cancelled: ${job.id}`)
+    this.processQueue()
     return true
   }
 
@@ -722,14 +764,15 @@ export class ToolOrchestrator {
    * Shutdown the orchestrator
    */
   shutdown(): void {
+    this.shuttingDown = true
     if (this.cleanupTimer) {
       clearInterval(this.cleanupTimer)
       this.cleanupTimer = null
     }
 
-    // Cancel all running jobs
-    for (const jobId of this.activeJobs) {
-      this.cancel(jobId)
+    // Stop dispatch before cancellation releases slots; include delayed retries.
+    for (const job of this.jobs.values()) {
+      if (job.status === 'running' || job.status === 'pending') this.cancel(job.id)
     }
 
     this.subscribers.clear()

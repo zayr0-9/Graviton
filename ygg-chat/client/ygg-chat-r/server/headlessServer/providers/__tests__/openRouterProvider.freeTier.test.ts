@@ -1,4 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
+vi.mock('../../../auth/runtime.js', () => ({ getAuthManager: () => ({
+  resolve: async () => ({ accessToken: 'managed-token', sessionId: 'test-session', revision: 0, userId: 'test-user' }),
+}) }))
 import { OpenRouterProvider, type ProviderGenerateInput } from '../openRouterProvider.js'
 import type { HeadlessStreamEvent } from '../../../../../../shared/headlessApi.js'
 

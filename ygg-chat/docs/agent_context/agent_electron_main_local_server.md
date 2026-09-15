@@ -73,6 +73,8 @@ Use this when changing:
 
 ## Important Invariants
 
+**Auth update:** authentication is unconditionally main/server-owned (`agent_auth.md`). The token-owner IPC/flags and old renderer session refreshers are removed. Login/status IPC is token-free and main-frame checked; Codex routes now live in `server/routes/managedOAuthRoutes.ts`. Historical auth references elsewhere in this document are superseded.
+
 - Keep renderer/main boundaries explicit and secure.
 - Do not expose broad native capabilities over preload without validation.
 - Local server route changes can affect renderer, tools, mobile UI, and iframe apps.

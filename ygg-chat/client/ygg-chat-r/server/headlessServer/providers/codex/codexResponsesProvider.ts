@@ -18,14 +18,29 @@ function previewForCodexLog(value: unknown, maxLength = 1200): string {
   return raw.length > maxLength ? `${raw.slice(0, maxLength)}...<truncated:${raw.length}>` : raw
 }
 
-const RESPONSES_LITE_VERSION = '0.144.0'
+const RESPONSES_LITE_VERSION = '0.153.0'
 const RESPONSES_LITE_HEADER = 'x-openai-internal-codex-responses-lite'
 const RESPONSES_LITE_WIRE_SESSION_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
 const MAX_RESPONSES_LITE_SESSIONS = 500
 const liteWireSessionIds = new Map<string, string>()
 
 function usesResponsesLite(model: string): boolean {
-  return /^gpt-5\.6-(sol|terra|luna)$/i.test(model)
+  return /^(?:gpt-6-astra|gpt-5\.6-(?:sol|terra|luna))$/i.test(model)
+}
+
+function toResponsesLiteTools(tools: any[]): any[] {
+  const functions = tools.filter(tool => tool?.type === 'function')
+  const standalone = tools.filter(tool => tool?.type !== 'function')
+  if (functions.length === 0) return standalone
+  return [
+    {
+      type: 'namespace',
+      name: 'functions',
+      description: '',
+      tools: functions,
+    },
+    ...standalone,
+  ]
 }
 
 function createUuidV7(): string {
@@ -59,7 +74,7 @@ export class CodexResponsesProvider {
     const instructions = parts.instructions?.trim() || 'You are ChatGPT.'
     const liteInput = responsesLite
       ? [
-          { type: 'additional_tools', role: 'developer', tools: parts.tools },
+          { type: 'additional_tools', role: 'developer', tools: toResponsesLiteTools(parts.tools) },
           { type: 'message', role: 'developer', content: [{ type: 'input_text', text: instructions }] },
           ...parts.input,
         ]
@@ -154,6 +169,7 @@ export class CodexResponsesProvider {
       // `attachPartialOutput` never overwrites, so a fallback that DID stream keeps
       // its own, fresher partial.
       const websocketPartial = (error as any)?.partialOutput as ProviderPartialOutput | undefined
+      if (websocketPartial || (error as any)?.status === 401) throw error
       try {
         input.signal?.throwIfAborted()
         return await this.generateHttp(input, headers, body)
@@ -195,7 +211,7 @@ export class CodexResponsesProvider {
         inputItems: Array.isArray(body.input) ? body.input.length : 0,
         bodyPreview: previewForCodexLog(errorBody),
       })
-      throw new Error(`ChatGPT backend request failed (${streamOpen.response.status}): ${errorBody || streamOpen.response.statusText}`)
+      throw Object.assign(new Error(`ChatGPT backend request failed (${streamOpen.response.status}): ${errorBody || streamOpen.response.statusText}`), { status: streamOpen.response.status })
     }
     return await parseCodexSseResponse(streamOpen.response, {
       emit: input.emit,

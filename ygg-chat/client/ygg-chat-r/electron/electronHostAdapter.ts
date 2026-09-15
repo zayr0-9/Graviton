@@ -91,7 +91,7 @@ function buildSecretStore(): SecretStore {
   }
 }
 
-export function buildElectronHostCapabilities(): YggHostCapabilities {
+export function buildElectronHostCapabilities(configStore?: KeyValueStore): YggHostCapabilities {
   return {
     restart: async () => {
       app.relaunch()
@@ -100,7 +100,7 @@ export function buildElectronHostCapabilities(): YggHostCapabilities {
     openExternal: async url => {
       await shell.openExternal(url)
     },
-    configStore: buildConfigStore(),
+    configStore: configStore ?? buildConfigStore(),
     secretStore: buildSecretStore(),
     toolSandbox: new UtilityToolRuntimeHost(),
     browserEngine: {

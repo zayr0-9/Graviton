@@ -8,12 +8,13 @@ Documents local Electron MCP server configuration, transport behavior, remote OA
 
 ## Key Files
 
-- `client/ygg-chat-r/electron/mcp/mcpManager.ts`: stdio/Streamable HTTP clients, capability discovery, OAuth flow, persistence, and lifecycle.
-- `client/ygg-chat-r/electron/mcp/oauthDiscovery.ts`: Bearer challenge parsing and RFC 9728/RFC 8414 metadata URL candidates.
-- `client/ygg-chat-r/electron/mcp/mcpOAuthSecrets.ts`: per-server secure OAuth credential storage.
-- `client/ygg-chat-r/electron/mcp/mcpRoutes.ts`: local management/status routes and response redaction.
+- `client/ygg-chat-r/server/mcp/mcpManager.ts`: stdio/Streamable HTTP clients, capability discovery, OAuth flow, persistence, and lifecycle.
+- `client/ygg-chat-r/server/mcp/oauthDiscovery.ts`: Bearer challenge parsing and RFC 9728/RFC 8414 metadata URL candidates.
+- `client/ygg-chat-r/server/mcp/mcpOAuthSecrets.ts`: per-server secure OAuth credential storage.
+- `client/ygg-chat-r/server/mcp/mcpRoutes.ts`: local management/status routes and response redaction.
 - `client/ygg-chat-r/src/components/SettingsPane/SettingsPane.tsx`: MCP settings UI.
-- `client/ygg-chat-r/electron/tools/__tests__/oauthDiscovery.test.ts`: focused discovery tests.
+- `client/ygg-chat-r/server/tools/__tests__/oauthDiscovery.test.ts`: focused discovery tests.
+- `client/ygg-chat-r/server/__tests__/mcpOAuthRedirectUri.test.ts`: fixed callback validation and OAuth flow coverage.
 
 ## Configuration Source
 
@@ -39,9 +40,11 @@ Minimal remote server:
 
 For providers that reject anonymous dynamic client registration, configure `oauth.clientId`, `oauth.tokenEndpointAuthMethod: "none"`, and any required scopes. Confidential client secrets are accepted only when the provider requires `client_secret_post`.
 
+For pre-registered clients that accept only fixed callback URLs, configure `oauth.redirectUri`, for example `http://127.0.0.1:6274/oauth/callback`. Fixed callbacks must use `http`, a `localhost` or `127.0.0.1` host, and an explicit port; the MCP client binds its temporary callback listener to that exact host, port, and path. When omitted, the client continues to use an ephemeral loopback port and `/mcp/oauth/callback`.
+
 ## Remote OAuth Flow
 
-1. Streamable HTTP sends an unauthenticated request when no OAuth credential exists.
+1. Startup loads configuration and securely stored credentials without connecting. The first explicit/model MCP use starts the target server, and Streamable HTTP sends an unauthenticated request when no OAuth credential exists.
 2. A `401` Bearer challenge supplies optional `resource_metadata` and `scope` hints.
 3. The client discovers protected-resource and authorization-server metadata.
 4. It uses a configured client or dynamically registers one, creates PKCE/state, starts a loopback callback, and opens the system browser from Electron main.
@@ -62,6 +65,8 @@ Dynamic callback ports are ephemeral. Dynamic client registrations record their 
 ## Important Invariants
 
 - Local Electron is the only supported runtime surface in this repository.
+- MCP servers never connect or launch OAuth during Graviton startup; connection and authentication begin only on explicit/model MCP use.
+- `settings.lazyStart` and per-server `autoStart` remain config-compatible legacy fields, but startup is always lazy.
 - All Streamable HTTP JSON-RPC requests and notifications use the centralized OAuth-aware headers and refresh path.
 - A rejected access token is invalidated before refresh/retry; auth retries occur at most once.
 - OAuth secrets and authorization codes must not appear in route responses or logs.
@@ -70,7 +75,8 @@ Dynamic callback ports are ephemeral. Dynamic client registrations record their 
 
 ## Validation
 
-- Focused discovery tests: `npm --prefix client/ygg-chat-r run test:tools -- --run electron/tools/__tests__/oauthDiscovery.test.ts`
+- Focused discovery tests: `npm --prefix client/ygg-chat-r run test:tools -- --run server/tools/__tests__/oauthDiscovery.test.ts`
+- Fixed callback tests: `npm --prefix client/ygg-chat-r run test:server -- --run server/__tests__/mcpOAuthRedirectUri.test.ts`
 - Tool tests: `npm --prefix client/ygg-chat-r run test:tools`
 - Electron renderer/type build: `npm --prefix client/ygg-chat-r run build:electron`
 - Electron main bundle: `npm --prefix client/ygg-chat-r run build:electron:main`

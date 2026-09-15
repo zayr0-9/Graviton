@@ -45,7 +45,7 @@ const AUTO_DISMISS_MS = 8000
 const isGloballyActionable = (notice: UiErrorNotice): boolean => {
   const kind = notice.envelope.action?.kind
   if (!kind) return false
-  return kind === 'sign_in' || kind === 'open_settings' || kind === 'upgrade' || kind === 'reload_conversation'
+  return kind === 'reconnect_provider' || kind === 'sign_in' || kind === 'open_settings' || kind === 'upgrade' || kind === 'reload_conversation'
 }
 
 export const GlobalNotifications: React.FC = () => {
@@ -91,6 +91,7 @@ export const GlobalNotifications: React.FC = () => {
       case 'sign_in':
         navigate('/login')
         break
+      case 'reconnect_provider':
       case 'open_settings':
         navigate('/settings')
         break

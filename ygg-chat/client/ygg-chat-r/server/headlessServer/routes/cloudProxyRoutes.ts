@@ -24,6 +24,8 @@ export interface RegisterCloudProxyRoutesDeps {
 export const CLOUD_PROXY_ALLOWED_PREFIXES = [
   '/models',
   '/users',
+  '/user/account',
+  '/generate/ephemeral',
   '/system-prompts',
   '/stripe',
   '/app-store',
@@ -53,6 +55,17 @@ export function registerCloudProxyRoutes(app: Express, deps: RegisterCloudProxyR
     const hasBody = method !== 'GET' && method !== 'HEAD' && method !== 'DELETE'
 
     try {
+      if (pathOnly === '/generate/ephemeral') {
+        const controller = new AbortController()
+        res.on('close', () => controller.abort())
+        res.setHeader('Content-Type', 'text/event-stream')
+        res.setHeader('Cache-Control', 'no-cache')
+        await deps.railway.stream({ method, path: rest, body: hasBody ? req.body : undefined }, event => {
+          if (!res.writableEnded) res.write(`data: ${JSON.stringify(event)}\n\n`)
+        }, controller.signal)
+        res.end()
+        return
+      }
       const result = await deps.railway.passthrough({
         method,
         path: rest,
@@ -67,7 +80,12 @@ export function registerCloudProxyRoutes(app: Express, deps: RegisterCloudProxyR
         res.status(result.status).json(result.body)
       }
     } catch (err) {
-      res.status(502).json({ error: 'cloud proxy failed', detail: String(err) })
+      if (res.headersSent) {
+        if (!res.writableEnded) { res.write(`data: ${JSON.stringify({ type: 'error', error: (err as any)?.status === 401 ? 'Sign in again to continue.' : 'Cloud connection failed.' })}\n\n`); res.end() }
+        return
+      }
+      const status = (err as any)?.status === 401 ? 401 : 503
+      res.status(status).json({ error: status === 401 ? 'Sign in again to continue.' : 'Cloud connection temporarily unavailable.' })
     }
   })
 }

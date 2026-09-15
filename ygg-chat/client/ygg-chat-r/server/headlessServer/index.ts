@@ -5,7 +5,7 @@ import { customToolRegistry } from '../tools/customToolLoader.js'
 import { toolOrchestrator as defaultToolOrchestrator } from '../tools/orchestrator/index.js'
 import { isBuiltInToolAvailable } from '../serverHost.js'
 import { BUILTIN_TOOL_DEFINITIONS } from '../../../../shared/builtinToolDefinitions.js'
-import { syncOpenAiChatGptTokenFromElectronStorage, syncOpenRouterTokenFromElectronSession } from './providers/electronAppAuth.js'
+import { initializeAuth } from '../auth/runtime.js'
 import { ProviderTokenStore } from './providers/tokenStore.js'
 import { registerCapabilityRoutes } from './routes/capabilityRoutes.js'
 import { registerChatRoutes } from './routes/chatRoutes.js'
@@ -189,10 +189,6 @@ const resolveInferenceToolsByName = (
   return { tools, resolvedNames, unknownNames }
 }
 
-function bootstrapHeadlessProviderTokens(tokenStore: ProviderTokenStore): void {
-  syncOpenRouterTokenFromElectronSession(tokenStore)
-  syncOpenAiChatGptTokenFromElectronStorage(tokenStore)
-}
 
 const sleep = (ms: number): Promise<void> =>
   new Promise(resolve => {
@@ -200,7 +196,10 @@ const sleep = (ms: number): Promise<void> =>
   })
 
 const createOrchestratorToolExecutor = (toolOrchestrator: OrchestratorLike): ToolExecutor => async (toolCall, context) => {
-  const timeoutMs = Math.max(1_000, Math.min(context.timeoutMs ?? 300_000, 600_000))
+  const requestedTimeout = context.timeoutMs
+  const timeoutMs = typeof requestedTimeout === 'number' && Number.isFinite(requestedTimeout) && requestedTimeout > 0
+    ? Math.max(1_000, Math.min(requestedTimeout, 600_000))
+    : 300_000
 
   const parsedArguments =
     typeof toolCall.arguments === 'string'
@@ -222,6 +221,7 @@ const createOrchestratorToolExecutor = (toolOrchestrator: OrchestratorLike): Too
 
   const job = toolOrchestrator.submit(toolCall.name, parsedArguments, {
     timeoutMs,
+    deadlineMs: Date.now() + timeoutMs,
     rootPath: context.rootPath ?? null,
     operationMode: context.operationMode ?? 'execute',
     conversationId: context.conversationId ?? null,
@@ -231,7 +231,7 @@ const createOrchestratorToolExecutor = (toolOrchestrator: OrchestratorLike): Too
   })
 
   const startedAt = Date.now()
-  while (Date.now() - startedAt <= timeoutMs) {
+  while (true) {
     // Cancel the in-flight job promptly when the run is aborted.
     if (signal?.aborted) {
       toolOrchestrator.cancel(job.id)
@@ -257,6 +257,9 @@ const createOrchestratorToolExecutor = (toolOrchestrator: OrchestratorLike): Too
       throw new Error(`Tool execution cancelled: ${toolCall.name}`)
     }
 
+    // Read a terminal result before enforcing the polling deadline. Otherwise
+    // output completed between the final poll and this deadline is discarded.
+    if (Date.now() - startedAt >= timeoutMs) break
     await sleep(100)
   }
 
@@ -265,8 +268,18 @@ const createOrchestratorToolExecutor = (toolOrchestrator: OrchestratorLike): Too
 }
 
 export function registerHeadlessServerRoutes(app: Express, deps: HeadlessServerRouteDeps): void {
+  // OAuth credential overrides are not a supported local API authentication mode.
+  app.use(['/api/conversations', '/api/headless/subagent', '/api/headless/ephemeral', '/api/headless/provider/openai'], (req, res, next) => {
+    const provider = normalizeProviderRoute(String(req.body?.provider || 'openaichatgpt'))
+    if ((provider === 'openaichatgpt' || provider === 'openrouter') &&
+        (req.body?.accessToken || req.body?.access_token || req.body?.refreshToken || req.body?.refresh_token || req.headers['chatgpt-account-id'])) {
+      res.status(400).json({ error: 'OAuth credentials are server-owned. Connect the account in Settings instead of supplying tokens.' })
+      return
+    }
+    next()
+  })
   const tokenStore = new ProviderTokenStore(deps.db)
-  bootstrapHeadlessProviderTokens(tokenStore)
+  initializeAuth(deps.db)
 
   const executeToolViaOrchestrator = createOrchestratorToolExecutor(deps.orchestrator ?? defaultToolOrchestrator)
 
@@ -332,15 +345,7 @@ export function registerHeadlessServerRoutes(app: Express, deps: HeadlessServerR
     toolExecutor: multiCallToolExecutor,
     resolveToolsByName: resolveInferenceToolsByName,
     compactionService,
-    refreshProviderTokens: async (provider: string) => {
-      // Re-sync provider auth from the Electron store in case the user signed
-      // in or tokens rotated after the server started.
-      if (normalizeProviderRoute(provider) === 'openaichatgpt') {
-        syncOpenAiChatGptTokenFromElectronStorage(tokenStore, { preferNewest: true })
-      } else {
-        await syncOpenRouterTokenFromElectronSession(tokenStore)
-      }
-    },
+
     // Share the chat RunSessionRegistry so background subagent runs publish their
     // stream events to a session the existing GET /api/streams/:streamId route can
     // replay — this is what lets the transcript viewer watch a run live. Gated on

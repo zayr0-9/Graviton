@@ -1,4 +1,8 @@
 export interface ToolExecutionOptions {
+  /** In-process only; never serialized over IPC. */
+  signal?: AbortSignal
+  /** Absolute epoch time at which shell execution must stop. */
+  deadlineMs?: number
   rootPath?: string
   operationMode?: 'plan' | 'execute'
   conversationId?: string | null
@@ -13,7 +17,12 @@ export interface UtilityExecuteToolRequest {
   requestId: string
   toolName: string
   args: any
-  options?: ToolExecutionOptions
+  options?: Omit<ToolExecutionOptions, 'signal'>
+}
+
+export interface UtilityCancelToolRequest {
+  type: 'cancel_tool'
+  requestId: string
 }
 
 export interface UtilityShutdownRequest {
@@ -29,6 +38,7 @@ export interface UtilityReloadCustomToolsRequest {
 
 export type UtilityRuntimeRequest =
   | UtilityExecuteToolRequest
+  | UtilityCancelToolRequest
   | UtilityShutdownRequest
   | UtilityReloadCustomToolsRequest
 

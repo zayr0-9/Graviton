@@ -1,7 +1,43 @@
-import { exec } from 'child_process'
-import { promisify } from 'util'
+import { execFile } from 'child_process'
+import { normalizeShellTimeoutMs } from '../tools/shellExecutionPolicy.js'
 
-const execAsync = promisify(exec)
+export interface WSLExecutionOptions { signal?: AbortSignal; deadlineMs?: number; timeoutMs?: number }
+
+function discover(args: string[], options: WSLExecutionOptions): Promise<{ stdout: Buffer }> {
+  return new Promise((resolve, reject) => {
+    let settled = false
+    let timer: NodeJS.Timeout | undefined
+    let child: ReturnType<typeof execFile> | undefined
+    const finish = (error?: Error, stdout?: Buffer) => {
+      if (settled) return
+      settled = true
+      if (timer) clearTimeout(timer)
+      options.signal?.removeEventListener('abort', abort)
+      if (error) {
+        try { child?.kill('SIGKILL') } catch { /* best effort */ }
+        child?.stdout?.destroy()
+        child?.stderr?.destroy()
+        child?.unref()
+        reject(error)
+      } else resolve({ stdout: stdout! })
+    }
+    const abort = () => finish(new Error('WSL discovery cancelled'))
+    const remaining = Math.min(normalizeShellTimeoutMs(options.timeoutMs),
+      Number.isFinite(options.deadlineMs) ? options.deadlineMs! - Date.now() : Infinity)
+    if (options.signal?.aborted) { abort(); return }
+    if (remaining <= 0) { finish(new Error('WSL discovery deadline reached')); return }
+    options.signal?.addEventListener('abort', abort, { once: true })
+    timer = setTimeout(() => finish(new Error('WSL discovery timed out')), remaining)
+    try {
+      child = execFile('wsl.exe', args, { encoding: 'buffer', timeout: remaining,
+        signal: options.signal, killSignal: 'SIGKILL', windowsHide: true, maxBuffer: 64 * 1024 },
+      (error, stdout) => finish(error ?? undefined, stdout))
+      child.on('error', () => {})
+      child.stdout?.on('error', () => {})
+      child.stderr?.on('error', () => {})
+    } catch (error) { finish(error instanceof Error ? error : new Error(String(error))) }
+  })
+}
 
 // Cached default distro
 let defaultDistro: string | null = null
@@ -52,13 +88,17 @@ export function shouldUseWSL(): boolean {
 /**
  * Get the default WSL distribution with robust fallback and caching
  */
-export async function getDefaultDistro(): Promise<string> {
+export async function getDefaultDistro(options: WSLExecutionOptions = {}): Promise<string> {
+  // Share one discovery budget across verbose and quiet attempts.
+  options = { ...options, deadlineMs: Math.min(Date.now() + normalizeShellTimeoutMs(options.timeoutMs),
+    Number.isFinite(options.deadlineMs) ? options.deadlineMs! : Infinity) }
+  if (options.signal?.aborted || (options.deadlineMs !== undefined && options.deadlineMs <= Date.now())) throw new Error('WSL discovery stopped')
   if (defaultDistro) return defaultDistro
 
   try {
     // Try verbose list to find the default (marked with *)
     // wsl.exe outputs UTF-16LE, so we must read as buffer and decode explicitly
-    const { stdout: buffer } = await execAsync('wsl.exe --list --verbose', { encoding: 'buffer' })
+    const { stdout: buffer } = await discover(['--list', '--verbose'], options)
     const stdout = buffer.toString('utf16le').replace(/^\uFEFF/, '') // Remove BOM if present
     const lines = stdout.split('\n')
 
@@ -74,7 +114,7 @@ export async function getDefaultDistro(): Promise<string> {
     }
 
     // Fallback to simple list if verbose parsing fails
-    const { stdout: simpleBuffer } = await execAsync('wsl.exe --list --quiet', { encoding: 'buffer' })
+    const { stdout: simpleBuffer } = await discover(['--list', '--quiet'], options)
     const simpleOut = simpleBuffer.toString('utf16le').replace(/^\uFEFF/, '')
     const firstDistro = simpleOut.split(/\s+/)[0]
     if (firstDistro) {
@@ -84,6 +124,7 @@ export async function getDefaultDistro(): Promise<string> {
 
     throw new Error('No WSL distributions found')
   } catch (error) {
+    if (options.signal?.aborted || (options.deadlineMs !== undefined && options.deadlineMs <= Date.now())) throw error
     console.error('[LocalServer] Failed to detect WSL distro:', error)
     // Final fallback
     return 'Ubuntu'
@@ -148,7 +189,7 @@ export function toWslPath(rawPath: string): string {
   return normalized
 }
 
-export async function resolveToWindowsPath(filePath: string): Promise<string> {
+export async function resolveToWindowsPath(filePath: string, options: WSLExecutionOptions = {}): Promise<string> {
   // If not windows, just return the path
   if (!isWindows()) {
     return filePath
@@ -169,7 +210,7 @@ export async function resolveToWindowsPath(filePath: string): Promise<string> {
   }
 
   try {
-    const distro = await getDefaultDistro()
+    const distro = await getDefaultDistro(options)
 
     // Ensure we don't double-prefix if it's already a UNC path
     if (trimmedPath.startsWith('\\\\wsl$')) return trimmedPath
@@ -191,9 +232,10 @@ export async function resolveToWindowsPath(filePath: string): Promise<string> {
 export async function getWSLCommandArgs(
   command: string,
   args: string[] = [],
-  cwd?: string
+  cwd?: string,
+  options: WSLExecutionOptions = {}
 ): Promise<[string, string[]]> {
-  const distro = await getDefaultDistro()
+  const distro = await getDefaultDistro(options)
   const finalArgs = ['-d', distro]
 
   if (cwd) {

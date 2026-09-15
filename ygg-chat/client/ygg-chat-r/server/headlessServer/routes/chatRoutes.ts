@@ -102,13 +102,6 @@ function buildHeadlessMessageRequest(req: Request, operation: HeadlessChatOperat
   const headerUserId = req.headers['x-user-id']
   const userIdFromHeader = Array.isArray(headerUserId) ? headerUserId[0] : headerUserId
 
-  const authorizationHeader = Array.isArray(req.headers.authorization)
-    ? req.headers.authorization[0]
-    : req.headers.authorization
-
-  const headerAccountId = req.headers['chatgpt-account-id']
-  const accountIdFromHeader = Array.isArray(headerAccountId) ? headerAccountId[0] : headerAccountId
-
   const conversationIdParam = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id
   const messageIdParam = Array.isArray(req.params.messageId) ? req.params.messageId[0] : req.params.messageId
 
@@ -121,8 +114,8 @@ function buildHeadlessMessageRequest(req: Request, operation: HeadlessChatOperat
     provider: body.provider ?? 'openaichatgpt',
     modelName: body.modelName ?? body.model_name ?? 'gpt-5.6-sol',
     userId: body.userId ?? body.user_id ?? userIdFromHeader ?? null,
-    accessToken: body.accessToken ?? body.access_token ?? (authorizationHeader?.replace(/^Bearer\s+/i, '') ?? null),
-    accountId: body.accountId ?? body.account_id ?? accountIdFromHeader ?? null,
+    accessToken: null,
+    accountId: null,
     systemPrompt: body.systemPrompt ?? body.system_prompt ?? null,
     operationModePrompt: body.operationModePrompt ?? body.operation_mode_prompt ?? null,
     agentModePrompt: body.agentModePrompt ?? body.agent_mode_prompt ?? null,

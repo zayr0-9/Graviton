@@ -7,12 +7,26 @@ contextBridge.exposeInMainWorld('electronAPI', {
     codexDevLogsEnabled: /^(1|true|yes|on)$/i.test(process.env.YGG_CODEX_DEV_LOGS || ''),
   },
   auth: {
+    onLoginError: (callback: (message: string) => void) => {
+      const listener = (_event: unknown, message: string) => callback(message)
+      ipcRenderer.on('auth:login-error', listener)
+      return () => { ipcRenderer.removeListener('auth:login-error', listener) }
+    },
+    status: () => ipcRenderer.invoke('auth:status'),
+    start: (provider: string, oob = false) => ipcRenderer.invoke('auth:start', provider, oob),
+    code: (code: string) => ipcRenderer.invoke('auth:code', code),
+    cancel: () => ipcRenderer.invoke('auth:cancel'),
+    migrate: (values: unknown) => ipcRenderer.invoke('auth:migrate', values),
+    check: () => ipcRenderer.invoke('auth:check'),
+    onChanged: (callback: (state: any) => void) => {
+      const listener = (_event: unknown, state: any) => callback(state)
+      ipcRenderer.on('auth:changed', listener)
+      void ipcRenderer.invoke('auth:subscribe').then(callback)
+      return () => { ipcRenderer.removeListener('auth:changed', listener) }
+    },
     login: (credentials: any) => ipcRenderer.invoke('auth:login', credentials),
     logout: () => ipcRenderer.invoke('auth:logout'),
-    // Phase 4 Slice 2: ask the server (sole Supabase refresher) for a fresh app
-    // token. Returns { ownerEnabled } — false unless the server tokenOwner flag is
-    // on, in which case the renderer keeps self-refreshing (safe fallback).
-    getFreshAppToken: (opts?: { forceRefresh?: boolean }) => ipcRenderer.invoke('app-auth:get-fresh-token', opts),
+
     openExternal: (url: string) => ipcRenderer.invoke('auth:openExternal', url),
     openOAuthWindow: (url: string) => ipcRenderer.invoke('auth:openOAuthWindow', url),
     onOAuthCallback: (callback: (url: string) => void) => {

@@ -11,11 +11,11 @@ if (!supabaseUrl || !supabaseAnonKey) {
 } else {
   supabase = createClient(supabaseUrl, supabaseAnonKey, {
     auth: {
-      persistSession: true,
+      persistSession: false,
       // CRITICAL: autoRefreshToken MUST be false to prevent /auth/v1/user calls
       // We handle token refresh manually to maintain full control
       autoRefreshToken: false,
-      detectSessionInUrl: true,
+      detectSessionInUrl: false,
       // Asymmetric JWT verification settings
       // Uses JWKS from /.well-known/jwks.json for local token verification
       // IMPORTANT: With asymmetric JWTs, getClaims() performs LOCAL verification

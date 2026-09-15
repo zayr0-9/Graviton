@@ -301,6 +301,7 @@ export const SettingsPane: React.FC<SettingsPaneProps> = ({ open, onClose }) => 
       oauth?: {
         tokenEndpointAuthMethod?: 'client_secret_post' | 'none'
         clientId?: string
+        redirectUri?: string
         scopes?: string[]
         hasClientId?: boolean
         hasClientSecret?: boolean
@@ -314,7 +315,6 @@ export const SettingsPane: React.FC<SettingsPaneProps> = ({ open, onClose }) => 
       toolCount: number
     }>
   >([])
-  const [mcpLazyStart, setMcpLazyStart] = useState(true)
   const [mcpLoading, setMcpLoading] = useState(false)
   const [mcpRefreshing, setMcpRefreshing] = useState(false)
   const [mcpAddMode, setMcpAddMode] = useState(false)
@@ -330,6 +330,7 @@ export const SettingsPane: React.FC<SettingsPaneProps> = ({ open, onClose }) => 
   const [newServerHeadersText, setNewServerHeadersText] = useState('')
   const [newServerOauthClientId, setNewServerOauthClientId] = useState('')
   const [newServerOauthClientSecret, setNewServerOauthClientSecret] = useState('')
+  const [newServerOauthRedirectUri, setNewServerOauthRedirectUri] = useState('')
   const [newServerOauthScopes, setNewServerOauthScopes] = useState('')
   const [newServerOauthTokenAuthMethod, setNewServerOauthTokenAuthMethod] = useState<'client_secret_post' | 'none'>(
     'client_secret_post'
@@ -347,6 +348,7 @@ export const SettingsPane: React.FC<SettingsPaneProps> = ({ open, onClose }) => 
   const [editServerOauthClientId, setEditServerOauthClientId] = useState('')
   const [editServerOauthClientSecret, setEditServerOauthClientSecret] = useState('')
   const [editServerOauthAccessToken, setEditServerOauthAccessToken] = useState('')
+  const [editServerOauthRedirectUri, setEditServerOauthRedirectUri] = useState('')
   const [editServerOauthScopes, setEditServerOauthScopes] = useState('')
   const [editServerOauthTokenAuthMethod, setEditServerOauthTokenAuthMethod] = useState<'client_secret_post' | 'none'>('client_secret_post')
 
@@ -762,24 +764,12 @@ export const SettingsPane: React.FC<SettingsPaneProps> = ({ open, onClose }) => 
     }
   }, [])
 
-  const fetchMcpSettings = useCallback(async () => {
-    try {
-      const data = await localApi.get<{ success?: boolean; settings?: { lazyStart?: boolean } }>('/mcp/settings')
-      if (data.success && data.settings) {
-        setMcpLazyStart(Boolean(data.settings.lazyStart))
-      }
-    } catch (error) {
-      console.error('Failed to fetch MCP settings:', error)
-    }
-  }, [])
-
   // Fetch MCP servers when section is expanded
   useEffect(() => {
     if (mcpExpanded) {
       fetchMcpServers()
-      fetchMcpSettings()
     }
-  }, [mcpExpanded, fetchMcpServers, fetchMcpSettings])
+  }, [mcpExpanded, fetchMcpServers])
 
   // Handle MCP server start/stop
   const handleToggleMcpServer = useCallback(
@@ -867,6 +857,7 @@ export const SettingsPane: React.FC<SettingsPaneProps> = ({ open, onClose }) => 
     }
     const oauthClientId = newServerOauthClientId.trim()
     const oauthClientSecret = newServerOauthClientSecret.trim()
+    const oauthRedirectUri = newServerOauthRedirectUri.trim()
     const oauthScopes = newServerOauthScopes
       .split(/[,\s]+/)
       .map(scope => scope.trim())
@@ -927,10 +918,11 @@ export const SettingsPane: React.FC<SettingsPaneProps> = ({ open, onClose }) => 
     }
 
     const parsedOAuth =
-      newServerTransport === 'http' && (oauthClientId || oauthClientSecret || oauthScopes.length > 0)
+      newServerTransport === 'http' && (oauthClientId || oauthClientSecret || oauthRedirectUri || oauthScopes.length > 0)
         ? {
             clientId: oauthClientId || undefined,
             clientSecret: oauthClientSecret || undefined,
+            redirectUri: oauthRedirectUri || undefined,
             scopes: oauthScopes.length > 0 ? oauthScopes : undefined,
             tokenEndpointAuthMethod: newServerOauthTokenAuthMethod,
           }
@@ -971,6 +963,7 @@ export const SettingsPane: React.FC<SettingsPaneProps> = ({ open, onClose }) => 
         setNewServerHeadersText('')
         setNewServerOauthClientId('')
         setNewServerOauthClientSecret('')
+        setNewServerOauthRedirectUri('')
         setNewServerOauthScopes('')
         setNewServerOauthTokenAuthMethod('client_secret_post')
         setNewServerTransport('stdio')
@@ -999,6 +992,7 @@ export const SettingsPane: React.FC<SettingsPaneProps> = ({ open, onClose }) => 
     newServerHeadersText,
     newServerOauthClientId,
     newServerOauthClientSecret,
+    newServerOauthRedirectUri,
     newServerOauthScopes,
     newServerOauthTokenAuthMethod,
     fetchMcpServers,
@@ -1019,6 +1013,7 @@ export const SettingsPane: React.FC<SettingsPaneProps> = ({ open, onClose }) => 
     setEditServerOauthClientId(server.oauth?.clientId || '')
     setEditServerOauthClientSecret('')
     setEditServerOauthAccessToken('')
+    setEditServerOauthRedirectUri(server.oauth?.redirectUri || '')
     setEditServerOauthScopes((server.oauth?.scopes || []).join(' '))
     setEditServerOauthTokenAuthMethod(server.oauth?.tokenEndpointAuthMethod || 'client_secret_post')
     setMcpActionStatus(null)
@@ -1052,6 +1047,7 @@ export const SettingsPane: React.FC<SettingsPaneProps> = ({ open, onClose }) => 
           clientId: editServerOauthClientId.trim() || undefined,
           clientSecret: editServerOauthClientSecret.trim() || undefined,
           accessToken: editServerOauthAccessToken.trim() || undefined,
+          redirectUri: editServerOauthRedirectUri.trim() || undefined,
           scopes: oauthScopes.length > 0 ? oauthScopes : undefined,
           tokenEndpointAuthMethod: editServerOauthTokenAuthMethod,
         }
@@ -1115,6 +1111,7 @@ export const SettingsPane: React.FC<SettingsPaneProps> = ({ open, onClose }) => 
     editServerOauthClientId,
     editServerOauthClientSecret,
     editServerOauthAccessToken,
+    editServerOauthRedirectUri,
     editServerOauthScopes,
     editServerOauthTokenAuthMethod,
     fetchMcpServers,
@@ -1139,30 +1136,6 @@ export const SettingsPane: React.FC<SettingsPaneProps> = ({ open, onClose }) => 
       setTimeout(() => setMcpActionStatus(null), 3000)
     }
   }, [dispatch, fetchMcpServers])
-
-  const handleToggleMcpLazyStart = useCallback(async () => {
-    const nextValue = !mcpLazyStart
-    setMcpLazyStart(nextValue)
-    try {
-      const data = await localApi.put<{ success?: boolean; error?: string }>('/mcp/settings', { lazyStart: nextValue })
-      if (data.success) {
-        setMcpActionStatus({
-          type: 'success',
-          message: nextValue
-            ? 'Lazy start enabled (servers won’t auto-start)'
-            : 'Auto-start enabled (restart app to start servers)',
-        })
-      } else {
-        setMcpActionStatus({ type: 'error', message: data.error || 'Failed to update MCP settings' })
-        setMcpLazyStart(!nextValue)
-      }
-    } catch (error) {
-      setMcpActionStatus({ type: 'error', message: 'Failed to update MCP settings' })
-      setMcpLazyStart(!nextValue)
-    } finally {
-      setTimeout(() => setMcpActionStatus(null), 3000)
-    }
-  }, [mcpLazyStart])
 
   const handleAttachmentInputChange = useCallback(
     (target: 'system' | 'context') => async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -3042,20 +3015,13 @@ ${block}`
                   <div className='flex items-center justify-between rounded-2xl bg-neutral-50/70 px-3 py-2 dark:bg-neutral-800/50'>
                     <div>
                       <p className='text-sm font-medium text-neutral-700 dark:text-neutral-200'>
-                        Lazy start MCP servers
+                        On-demand MCP authentication
                       </p>
                       <p className='text-xs text-neutral-500 dark:text-neutral-400'>
-                        When enabled, servers won’t auto-start on launch.
+                        MCP servers connect and authenticate only when explicitly started or used by the AI.
                       </p>
                     </div>
-                    <button
-                      type='button'
-                      onClick={handleToggleMcpLazyStart}
-                      className={iconButtonClass}
-                      title={mcpLazyStart ? 'Disable lazy start' : 'Enable lazy start'}
-                    >
-                      <Check {...lucideIconProps} className={mcpLazyStart ? 'text-green-500' : 'text-neutral-400'} />
-                    </button>
+                    <Check {...lucideIconProps} className='text-green-500' />
                   </div>
 
                   {/* Status Message */}
@@ -3255,6 +3221,23 @@ ${block}`
 
                           <div className='space-y-2'>
                             <label className='text-xs font-medium text-neutral-600 dark:text-neutral-400'>
+                              OAuth Redirect URI (optional)
+                            </label>
+                            <input
+                              type='text'
+                              value={newServerOauthRedirectUri}
+                              onChange={e => setNewServerOauthRedirectUri(e.target.value)}
+                              placeholder='http://127.0.0.1:6274/oauth/callback'
+                              className={inputSurfaceClass}
+                            />
+                            <p className='text-[11px] text-neutral-500 dark:text-neutral-400'>
+                              Use a pre-registered localhost or 127.0.0.1 HTTP callback with an explicit port. Leave
+                              blank to use a temporary callback port.
+                            </p>
+                          </div>
+
+                          <div className='space-y-2'>
+                            <label className='text-xs font-medium text-neutral-600 dark:text-neutral-400'>
                               OAuth Scopes (optional)
                             </label>
                             <input
@@ -3313,6 +3296,7 @@ ${block}`
                             setNewServerHeadersText('')
                             setNewServerOauthClientId('')
                             setNewServerOauthClientSecret('')
+                            setNewServerOauthRedirectUri('')
                             setNewServerOauthScopes('')
                             setNewServerOauthTokenAuthMethod('client_secret_post')
                           }}
@@ -3473,6 +3457,11 @@ ${block}`
                                       <label className='text-xs font-medium text-neutral-600 dark:text-neutral-400'>New OAuth Bearer Access Token (optional)</label>
                                       <input type='password' value={editServerOauthAccessToken} onChange={e => setEditServerOauthAccessToken(e.target.value)} placeholder={server.oauth?.hasAccessToken ? 'Blank preserves current token' : 'Paste access token'} className={inputSurfaceClass} />
                                       <p className='text-[11px] text-neutral-500 dark:text-neutral-400'>Stored securely. Replacing it clears the old expiry so it can be used immediately.</p>
+                                    </div>
+                                    <div className='space-y-1'>
+                                      <label className='text-xs font-medium text-neutral-600 dark:text-neutral-400'>OAuth Redirect URI (optional)</label>
+                                      <input value={editServerOauthRedirectUri} onChange={e => setEditServerOauthRedirectUri(e.target.value)} placeholder='http://127.0.0.1:6274/oauth/callback' className={inputSurfaceClass} />
+                                      <p className='text-[11px] text-neutral-500 dark:text-neutral-400'>Must be a pre-registered localhost or 127.0.0.1 HTTP callback with an explicit port.</p>
                                     </div>
                                     <input value={editServerOauthScopes} onChange={e => setEditServerOauthScopes(e.target.value)} placeholder='OAuth scopes (space or comma separated)' className={inputSurfaceClass} />
                                     <select value={editServerOauthTokenAuthMethod} onChange={e => setEditServerOauthTokenAuthMethod(e.target.value as 'client_secret_post' | 'none')} className={inputSurfaceClass}>

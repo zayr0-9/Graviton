@@ -1,233 +1,39 @@
-import { spawn } from 'child_process'
 import path from 'path'
+import { randomUUID } from 'crypto'
 import { detectPathType, getWSLCommandArgs, isWindows } from '../utils/wslBridge.js'
 import { buildNativeShellCommand } from './nativeShell.js'
+import { runBoundedShell, type ShellRunOptions, type ShellRunResult } from './shellRunner.js'
 
-const DEFAULT_MAX_OUTPUT_CHARS = 20000
+export interface BashOptions extends ShellRunOptions { description?: string }
+export interface BashResult extends ShellRunResult {}
 
-type ShellMode = 'native' | 'wsl' | 'powershell'
-
-// Commands that return exit code 1 for "no matches" (not an error)
 const EXIT_1_NO_MATCH_COMMANDS = ['grep', 'egrep', 'fgrep', 'diff', 'cmp', 'awk']
-
 function getDefaultSuccessCodes(command: string): number[] {
-  const trimmed = command.trim()
-  const firstWord = trimmed.split(/\s+/)[0]
-  // Handle paths like /usr/bin/grep
-  const basename = firstWord.split('/').pop() || firstWord
-
-  if (EXIT_1_NO_MATCH_COMMANDS.includes(basename)) {
-    return [0, 1]
-  }
-  return [0]
+  const first = command.trim().split(/\s+/)[0].split('/').pop() || ''
+  return EXIT_1_NO_MATCH_COMMANDS.includes(first) ? [0, 1] : [0]
 }
 
-export interface BashOptions {
-  /** Brief human-readable explanation of why this bash command is being run */
-  description?: string
-  cwd?: string
-  env?: NodeJS.ProcessEnv
-  input?: string
-  timeoutMs?: number
-  maxOutputChars?: number
-  /** Treat these exit codes as success instead of failure */
-  successCodes?: number[]
-}
-
-
-export interface BashResult {
-  success: boolean
-  cwd: string
-  stdout: string
-  stderr: string
-  error?: string
-}
-
-type CwdResolution = {
-  display: string // what we return to the caller (windows stays windows)
-  forSpawn?: string // what we pass to WSL/bash/powershell (converted when needed)
-  shellMode: ShellMode
-}
-
-/**
- * Determine which shell to use based on platform and path type:
- * - Linux/Mac: the user's configured shell, with /bin/bash fallback
- * - Windows + Linux path (/home/...): 'wsl'
- * - Windows + Windows path (C:\...): 'powershell'
- */
-function getEffectiveCwd(inputCwd?: string): string {
-  const trimmed = inputCwd?.trim()
-
-  // Treat empty/default placeholder cwd values as "use the tool process cwd".
-  if (!trimmed || trimmed === '.' || trimmed === '/') {
-    return process.cwd()
-  }
-
-  return trimmed
-}
-
-function resolveCwd(inputCwd?: string): CwdResolution {
-  const cwdCandidate = getEffectiveCwd(inputCwd)
-
-  if (!isWindows()) {
-    // Linux/Mac: use the user's configured shell (normally zsh on macOS).
-    const posix = path.isAbsolute(cwdCandidate) ? cwdCandidate : path.resolve(cwdCandidate)
-    return { display: posix, forSpawn: posix, shellMode: 'native' }
-  }
-
-  // On Windows: determine shell based on path type
-  const pathType = detectPathType(cwdCandidate)
-
-  if (pathType === 'linux') {
-    // Linux path on Windows → use WSL
-    return { display: cwdCandidate, forSpawn: cwdCandidate, shellMode: 'wsl' }
-  }
-
-  // Windows path or relative path → use PowerShell natively
-  const normalizedWin = path.win32.isAbsolute(cwdCandidate)
-    ? path.win32.normalize(cwdCandidate)
-    : path.win32.resolve(cwdCandidate)
-  return { display: normalizedWin, forSpawn: normalizedWin, shellMode: 'powershell' }
-}
-
-async function buildCommand(
-  command: string,
-  spawnCwd?: string,
-  shellMode: ShellMode = 'native'
-): Promise<{ cmd: string; args: string[]; displayCwd?: string }> {
-  switch (shellMode) {
-    case 'native': {
-      const nativeShell = buildNativeShellCommand(command)
-      return { ...nativeShell, displayCwd: spawnCwd }
-    }
-
-    case 'wsl':
-      // WSL bash on Windows for Linux paths
-      const [wslCmd, wslArgs] = await getWSLCommandArgs('bash', ['-lc', command], spawnCwd)
-      return { cmd: wslCmd, args: wslArgs, displayCwd: spawnCwd }
-
-    case 'powershell':
-      // Native PowerShell on Windows for Windows paths
-      // Use -NoProfile for faster startup, -NonInteractive for non-interactive mode
-      // -Command executes the command string
-      return {
-        cmd: 'powershell.exe',
-        args: ['-NoProfile', '-NonInteractive', '-Command', command],
-        displayCwd: spawnCwd,
+export function runBashCommand(command: string, options: BashOptions = {}): Promise<BashResult> {
+  return runBoundedShell(async context => {
+    const input = options.cwd?.trim()
+    const candidate = !input || input === '.' || input === '/' ? process.cwd() : input
+    if (!isWindows()) {
+      const cwd = path.resolve(candidate)
+      const native = buildNativeShellCommand(command)
+      // Preserve login/interactive PATH initialization, but keep descendants in our group.
+      if (['bash', 'zsh', 'sh', 'ksh'].includes(path.basename(native.cmd))) {
+        native.args = ['-lic', `set +m; ${command}`]
       }
-  }
-}
-
-function filterStderr(stderr: string): string {
-  return stderr
-    .split('\n')
-    .filter(line => !line.includes('screen size is bogus'))
-    .join('\n')
-}
-
-function clampMaxOutput(max?: number): number {
-  if (max === undefined || max === null) {
-    return DEFAULT_MAX_OUTPUT_CHARS
-  }
-  if (Number.isNaN(max) || max <= 0) {
-    return DEFAULT_MAX_OUTPUT_CHARS
-  }
-  return Math.min(200000, Math.floor(max))
-}
-
-export async function runBashCommand(command: string, options: BashOptions = {}): Promise<BashResult> {
-  // const startTime = Date.now()
-  const maxOutputChars = clampMaxOutput(options.maxOutputChars)
-  const { display: displayCwd, forSpawn: spawnCwd, shellMode } = resolveCwd(options.cwd)
-
-  const { cmd, args, displayCwd: resultCwd } = await buildCommand(command, spawnCwd, shellMode)
-
-  const spawnOptions: { cwd?: string; env: NodeJS.ProcessEnv } = {
-    env: {
-      ...process.env,
-      COLUMNS: '120',
-      LINES: '24',
-      ...(options.env || {}),
-    },
-  }
-
-  // Set cwd for native shells; WSL handles cwd via --cd flag.
-  if (shellMode === 'native' || shellMode === 'powershell') {
-    spawnOptions.cwd = spawnCwd
-  }
-
-  let stdout = ''
-  let stderr = ''
-  let remaining = maxOutputChars
-  let timeoutHandle: NodeJS.Timeout | null = null
-  let timedOut = false
-
-  const append = (target: 'stdout' | 'stderr', chunk: Buffer) => {
-    if (remaining <= 0) {
-      return
+      return { ...native, cwd, displayCwd: cwd }
     }
-
-    const text = chunk.toString('utf8')
-    const toTake = Math.min(remaining, text.length)
-    if (target === 'stdout') {
-      stdout += text.slice(0, toTake)
-    } else {
-      stderr += text.slice(0, toTake)
+    if (detectPathType(candidate) === 'linux') {
+      const marker = `__YGG_GROUP_${randomUUID().replace(/-/g, '')}__`
+      // setsid owns only this invocation; no distro-wide termination is used.
+      const [cmd, args] = await getWSLCommandArgs('setsid', ['bash', '-c',
+        `printf '${marker}%s\\n' "$$" >&2; exec bash -lc "$1"`, 'ygg-shell', `set +m; ${command}`], candidate, context)
+      return { cmd, args, displayCwd: candidate, wsl: { distro: args[1], marker } }
     }
-
-    remaining -= toTake
-  }
-
-  return new Promise<BashResult>(resolve => {
-    const child = spawn(cmd, args, {
-      cwd: spawnOptions.cwd,
-      env: spawnOptions.env,
-      stdio: ['pipe', 'pipe', 'pipe'],
-    })
-
-    if (options.input) {
-      child.stdin.end(options.input)
-    } else {
-      child.stdin.end()
-    }
-
-    if (options.timeoutMs && options.timeoutMs > 0) {
-      timeoutHandle = setTimeout(() => {
-        timedOut = true
-        child.kill('SIGTERM')
-        setTimeout(() => child.kill('SIGKILL'), 300)
-      }, options.timeoutMs)
-    }
-
-    child.stdout.on('data', chunk => append('stdout', chunk))
-    child.stderr.on('data', chunk => append('stderr', chunk))
-
-    const finalize = (result: BashResult) => {
-      if (timeoutHandle) {
-        clearTimeout(timeoutHandle)
-        timeoutHandle = null
-      }
-      resolve(result)
-    }
-
-    child.on('error', error => {
-      finalize({
-        success: false,
-        cwd: resultCwd ?? displayCwd,
-        stdout,
-        stderr: filterStderr(stderr),
-        error: error instanceof Error ? error.message : String(error),
-      })
-    })
-
-    child.on('close', (code) => {
-      const successCodes = new Set(options.successCodes ?? getDefaultSuccessCodes(command))
-      finalize({
-        success: !timedOut && code !== null && successCodes.has(code),
-        cwd: resultCwd ?? displayCwd,
-        stdout,
-        stderr: filterStderr(stderr),
-      })
-    })
-  })
+    const cwd = path.win32.resolve(candidate)
+    return { cmd: 'powershell.exe', args: ['-NoProfile', '-NonInteractive', '-Command', command], cwd, displayCwd: cwd }
+  }, { ...options, successCodes: options.successCodes ?? getDefaultSuccessCodes(command) })
 }

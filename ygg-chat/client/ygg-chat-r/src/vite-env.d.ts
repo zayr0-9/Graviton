@@ -23,14 +23,16 @@ interface ImportMeta {
 // Electron API types (available when running in Electron)
 interface ElectronAPI {
   auth: {
+    onLoginError: (callback: (message: string) => void) => () => void
+    status: () => Promise<any>
+    start: (provider: string, oob?: boolean) => Promise<{ url: string }>
+    code: (code: string) => Promise<any>
+    cancel: () => Promise<void>
+    migrate: (values: unknown) => Promise<any>
+    check: () => Promise<any>
+    onChanged: (callback: (state: any) => void) => () => void
     login: (credentials: any) => Promise<any>
     logout: () => Promise<void>
-    getFreshAppToken: (opts?: { forceRefresh?: boolean }) => Promise<{
-      ownerEnabled: boolean
-      userId?: string | null
-      accessToken?: string | null
-      error?: string
-    }>
     openExternal: (url: string) => Promise<{ success: boolean; error?: string }>
     openOAuthWindow: (url: string) => Promise<{ success: boolean; error?: string }>
     onOAuthCallback: (callback: (url: string) => void) => () => void

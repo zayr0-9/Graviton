@@ -2,6 +2,8 @@
 // Embedded local SQLite server for dual-sync in Electron mode
 // This server prefers port 3002 and falls back to available local ports.
 
+import { stopAuth } from './auth/runtime.js'
+import { cancelAppLogin } from './auth/appLogin.js'
 import AdmZip from 'adm-zip'
 import Database from 'better-sqlite3'
 import cors from 'cors'
@@ -28,6 +30,7 @@ import {
 } from './serverHost.js'
 import { resolveToolWorkspaceCwd, validateAndResolvePath } from './toolPathPolicy.js'
 import { shouldUseUtilityRuntimeForTool } from './toolSandboxPolicy.js'
+import { canFallbackToLocalExecution } from './tools/runtime/toolRuntimeSandbox.js'
 
 // Tool imports
 // Individual built-in tool handler imports moved to
@@ -47,7 +50,7 @@ import { mcpManager } from './mcp/mcpManager.js'
 import { toMcpExecutionResult } from './mcp/mcpToolResult.js'
 import { registerMcpRoutes } from './mcp/mcpRoutes.js'
 import { registerProxyRoutes } from './proxyGateway.js'
-import { registerOpenAiOAuthRoutes, startOpenAiOAuthCallbackServer, stopOpenAiOAuth } from './routes/openaiOAuthRoutes.js'
+import { registerOpenAiOAuthRoutes, startOpenAiOAuthCallbackServer, stopOpenAiOAuth } from './routes/managedOAuthRoutes.js'
 import { registerRunStateRoutes } from './routes/runStateRoutes.js'
 import { registerSyncStorageRoutes } from './routes/syncStorageRoutes.js'
 import { registerMemoryRoutes } from './routes/memoryRoutes.js'
@@ -138,6 +141,8 @@ function registerCustomToolsWithOrchestrator(): number {
       if (sandbox && shouldUseUtilityRuntimeForCustomTool(customToolDef.name)) {
         try {
           return await sandbox.executeTool(customToolDef.name, args, {
+            signal: options.signal,
+            deadlineMs: options.deadlineMs,
             rootPath: options?.rootPath,
             operationMode: options?.operationMode,
             conversationId: options?.conversationId,
@@ -145,7 +150,7 @@ function registerCustomToolsWithOrchestrator(): number {
             streamId: options?.streamId,
           })
         } catch (utilityError) {
-          if (isUtilityRuntimeFallbackDisabled()) {
+          if (isUtilityRuntimeFallbackDisabled() || options.signal?.aborted || !canFallbackToLocalExecution(utilityError)) {
             throw utilityError
           }
           console.warn(
@@ -2156,7 +2161,11 @@ export async function startLocalServer(
             try {
               return await sandbox.executeTool(toolName, args, options)
             } catch (utilityError) {
-              if (isUtilityRuntimeFallbackDisabled()) {
+              if (
+                isUtilityRuntimeFallbackDisabled() ||
+                options.signal?.aborted ||
+                !canFallbackToLocalExecution(utilityError)
+              ) {
                 throw utilityError
               }
               console.warn(
@@ -2281,6 +2290,8 @@ export async function stopLocalServer(): Promise<void> {
   }
 
   // Stop the OAuth cleanup timer and close the callback server
+  stopAuth()
+  cancelAppLogin()
   stopOpenAiOAuth()
 
   return new Promise(resolve => {

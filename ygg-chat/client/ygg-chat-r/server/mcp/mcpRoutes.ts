@@ -4,7 +4,12 @@
 import { Express } from 'express'
 import { attachChatErrorCode } from '../headlessServer/providers/providerErrorFormatter.js'
 import { toolOrchestrator } from '../tools/orchestrator/index.js'
-import { mcpManager, McpServerConfig, type McpOAuthConfig } from './mcpManager.js'
+import {
+  mcpManager,
+  McpServerConfig,
+  parseMcpOAuthRedirectUri,
+  type McpOAuthConfig,
+} from './mcpManager.js'
 import { toMcpExecutionResult } from './mcpToolResult.js'
 
 // Helper function to refresh MCP tools with the orchestrator
@@ -91,6 +96,9 @@ function parseOAuthConfig(raw: unknown): McpOAuthConfig | undefined {
     tokenEndpointAuthMethod = tokenEndpointAuthMethodRaw
   }
 
+  const redirectUri = asString('redirectUri')
+  if (redirectUri) parseMcpOAuthRedirectUri(redirectUri)
+
   return {
     resourceMetadataUrl: asString('resourceMetadataUrl'),
     resource: asString('resource'),
@@ -103,6 +111,7 @@ function parseOAuthConfig(raw: unknown): McpOAuthConfig | undefined {
     clientSecret: asString('clientSecret'),
     tokenEndpointAuthMethod,
     clientMode,
+    redirectUri,
     registeredRedirectUri: asString('registeredRedirectUri'),
     accessToken: asString('accessToken'),
     refreshToken: asString('refreshToken'),
@@ -122,6 +131,7 @@ function sanitizeOAuthForResponse(oauth: McpOAuthConfig | undefined): Record<str
     clientId: oauth.clientId,
     tokenEndpointAuthMethod: oauth.tokenEndpointAuthMethod,
     clientMode: oauth.clientMode,
+    redirectUri: oauth.redirectUri,
     registeredRedirectUri: oauth.registeredRedirectUri,
     hasClientId: Boolean(oauth.clientId),
     hasClientSecret: Boolean(oauth.clientSecret),

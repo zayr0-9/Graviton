@@ -1,7 +1,8 @@
 import type { HeadlessStreamEvent } from '../../../../../shared/headlessApi.js'
 import type { ReadableStreamReadResult } from './webStreamTypes.js'
 import type { OpenAIContextUsage } from '../../../../../shared/contextUsage.js'
-import { normalizeAuthorizationToken, syncOpenRouterTokenFromElectronSession } from './electronAppAuth.js'
+const normalizeAuthorizationToken = (token?: string | null) => String(token || '').replace(/^Bearer\s+/i, '').trim()
+import { getAuthManager } from '../../auth/runtime.js'
 import { attachChatErrorCode } from './providerErrorFormatter.js'
 import type { AppAuthTokenManager } from '../services/appAuthTokenManager.js'
 import { buildToolNameMap, sanitizeToolResultContentForModel } from './toolResultSanitizer.js'
@@ -51,6 +52,7 @@ export interface ProviderGenerateInput {
   history: any[]
   userContent: string
   userId?: string | null
+  authSessionId?: string
   accessToken?: string | null
   accountId?: string | null
   tools?: ProviderToolDefinition[]
@@ -473,37 +475,14 @@ export class OpenRouterProvider implements HeadlessProvider {
     this.remoteApiBase = deps.remoteApiBase
   }
 
-  private async resolveAuth(input: ProviderGenerateInput, forceRefresh = false): Promise<string> {
-    const directToken = normalizeAuthorizationToken(input.accessToken)
-    if (directToken) return directToken
-
-    // OpenRouter is Railway-backed app auth, not an independent provider OAuth flow.
-    // Use the process-wide single-flight owner so proactive refresh and 401 recovery
-    // cannot race the CRUD/cloud-proxy paths.
+  private async resolveAuth(input: ProviderGenerateInput, forceRefresh = false, rejectedRevision?: number): Promise<import('../services/appAuthTokenManager.js').AppToken> {
     if (this.appAuth) {
-      const { accessToken } = await this.appAuth.getFreshAppToken(forceRefresh ? { forceRefresh: true } : undefined)
-      const appToken = normalizeAuthorizationToken(accessToken)
-      if (appToken) return appToken
-      // Once the shared app-token owner is wired, do not fall back to a stale
-      // provider-token mirror or env secret. Railway app auth is authoritative.
-      throw new RailwayAppAuthError()
+      const result = await this.appAuth.getFreshAppToken(input.authSessionId ? { sessionId: input.authSessionId, forceRefresh, rejectedRevision } : forceRefresh ? { forceRefresh: true, ...(rejectedRevision !== undefined ? { rejectedRevision } : {}) } : undefined)
+      if (!result.accessToken) throw new RailwayAppAuthError()
+      return result
     }
+    return await getAuthManager().resolve('app', { sessionId: input.authSessionId, force: forceRefresh && rejectedRevision === undefined, rejectedRevision })
 
-    // Compatibility path for isolated providers/tests that predate the shared
-    // headless-server auth graph.
-    if (this.tokenStore) {
-      await syncOpenRouterTokenFromElectronSession(this.tokenStore)
-      const stored = input.userId ? this.tokenStore.get('openrouter', input.userId) : this.tokenStore.getLatest('openrouter')
-      const storedToken = normalizeAuthorizationToken(stored?.accessToken)
-      if (storedToken) return storedToken
-    }
-
-    const envToken = normalizeAuthorizationToken(
-      process.env.YGG_APP_ACCESS_TOKEN || process.env.YGG_ACCESS_TOKEN || process.env.SUPABASE_ACCESS_TOKEN || ''
-    )
-    if (envToken) return envToken
-
-    throw new Error('Graviton app auth token missing for Railway-backed OpenRouter provider.')
   }
 
   async generate(input: ProviderGenerateInput, emit?: ProviderStreamEventHandler): Promise<ProviderGenerateOutput> {
@@ -512,7 +491,9 @@ export class OpenRouterProvider implements HeadlessProvider {
       throw new Error('Railway chat context missing for OpenRouter provider (conversationId required).')
     }
 
-    let accessToken = await this.resolveAuth(input)
+    let auth = await this.resolveAuth(input)
+    let accessToken = auth.accessToken!
+    input = { ...input, authSessionId: input.authSessionId ?? auth.sessionId }
     const history = normalizeHistory(input.history || [])
     const tools = toServerToolFormat(input.tools)
     const remoteApiBase = getRemoteApiBase(this.remoteApiBase)
@@ -558,6 +539,7 @@ export class OpenRouterProvider implements HeadlessProvider {
     const openStream = (token: string) =>
       openStreamingWithPreFirstByteRetry({
         endpoint: endpointPath,
+        parentSignal: input.signal,
         openAttempt: signal =>
           fetch(endpoint, {
             method: 'POST',
@@ -574,8 +556,10 @@ export class OpenRouterProvider implements HeadlessProvider {
     let streamOpen = await openStream(accessToken)
     // Match RailwayClient's 401 policy: force one single-flight refresh and retry
     // once. Explicit request tokens remain caller-owned and are never refreshed here.
-    if (streamOpen.response.status === 401 && this.appAuth && !input.accessToken && !input.signal?.aborted) {
-      accessToken = await this.resolveAuth(input, true)
+    if (streamOpen.response.status === 401 && !input.signal?.aborted) {
+      await streamOpen.response.body?.cancel?.()
+      auth = await this.resolveAuth(input, true, auth.revision)
+      accessToken = auth.accessToken!
       streamOpen = await openStream(accessToken)
     }
 
@@ -635,14 +619,12 @@ export class OpenRouterProvider implements HeadlessProvider {
         //    healthy; what failed is the credential for THIS provider => the narrower
         //    `provider_signin_required`, whose action is "Reconnect".
         //
-        // The previous gate required `this.appAuth && !input.accessToken`, so BOTH the
+        // The previous gate required `this.appAuth && true`, so BOTH the
         // explicit-token 401 and the compat-path (tokenStore/env) 401 fell through to
         // the generic throw and reached the user as raw HTTP text with no code at all.
         const authOverrides = { provider: this.name, status, ...(text ? { detail: text } : {}) }
-        if (!normalizeAuthorizationToken(input.accessToken)) {
-          throw attachChatErrorCode(new RailwayAppAuthError(text), 'session_expired', authOverrides)
-        }
-        throw attachChatErrorCode(new RailwayProviderTokenError(text), 'provider_signin_required', authOverrides)
+        if (auth.sessionId && getAuthManager().snapshot('app').sessionId === auth.sessionId) getAuthManager().requireReconnect('app')
+        throw attachChatErrorCode(new RailwayAppAuthError(text), 'session_expired', authOverrides)
       }
 
       // Everything else keeps its historical message, but now carries `status` and
@@ -653,6 +635,14 @@ export class OpenRouterProvider implements HeadlessProvider {
     if (!streamOpen.reader) {
       throw new Error('Railway OpenRouter request returned no readable stream body')
     }
+
+    input.signal?.throwIfAborted()
+    const onAbort = () => {
+      void streamOpen.reader?.cancel().catch(() => {})
+    }
+    input.signal?.addEventListener('abort', onAbort, { once: true })
+    const readerClosed = (streamOpen.reader as ReadableStreamDefaultReader<Uint8Array> & { closed?: Promise<void> }).closed
+    void readerClosed?.finally(() => input.signal?.removeEventListener('abort', onAbort)).catch(() => {})
 
     const decoder = new TextDecoder()
     let buffer = ''

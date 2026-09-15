@@ -4,7 +4,6 @@
  * to ensure consistent IPC handler support across all contexts.
  */
 
-import { getSessionFromStorage, refreshTokenIfNeeded } from '../lib/jwtUtils'
 import { buildLocalApiUrl, createStreamingRequest, environment, localApi } from './api'
 
 type StreamState = {
@@ -410,12 +409,9 @@ export function createMessageHandler(
           }
 
           const streamLocalHeadless = async (): Promise<GenerationStreamResult> => {
-            await refreshTokenIfNeeded().catch(() => false)
-            const session = getSessionFromStorage()
-            const sessionUserId = session?.user?.id || null
-            const accessToken = session?.access_token || null
+
             const effectiveUserId =
-              (typeof userId === 'string' && userId.trim()) || context.getUserId() || sessionUserId || 'custom-tool-ui'
+              (typeof userId === 'string' && userId.trim()) || context.getUserId() || 'custom-tool-ui'
             const effectiveRootPath =
               (typeof rootPath === 'string' && rootPath.trim()) || (typeof cwd === 'string' && cwd.trim()) || null
 
@@ -447,16 +443,12 @@ export function createMessageHandler(
             if (typeof accountId === 'string' && accountId.trim()) {
               requestBody.accountId = accountId.trim()
             }
-            if (accessToken) {
-              requestBody.accessToken = accessToken
-            }
 
             const streamResponse = await fetch(endpoint, {
               method: 'POST',
               headers: {
                 'Content-Type': 'application/json',
                 Accept: 'text/event-stream',
-                ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}),
               },
               body: JSON.stringify(requestBody),
             })

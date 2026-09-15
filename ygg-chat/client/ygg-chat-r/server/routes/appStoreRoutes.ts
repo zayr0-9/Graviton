@@ -6,6 +6,7 @@
 // staging/validation helper cluster used only by these routes.
 // Restart requires the host restart capability; standalone returns 501.
 
+import { getAuthManager } from '../auth/runtime.js'
 import AdmZip from 'adm-zip'
 import express, { type Express } from 'express'
 import fs from 'fs'
@@ -283,7 +284,7 @@ export function registerAppStoreRoutes(app: Express): void {
           return
         }
 
-        const authHeader = req.headers.authorization
+        const authHeader = `Bearer ${(await getAuthManager().resolve('app')).accessToken}`
         if (!authHeader) {
           res.status(401).json({ success: false, error: 'Authorization header is required.' })
           return

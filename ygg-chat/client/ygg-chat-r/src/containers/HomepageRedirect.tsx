@@ -79,7 +79,7 @@ const HomepageRedirect: React.FC = () => {
   useEffect(() => {
     if (redirectInFlightRef.current) return
     if (authLoading) return
-    if (!userId || !accessToken) return
+    if (!userId) return
     if (projectsLoading || projectsRefetching || conversationsLoading || conversationsRefetching) return
 
     redirectInFlightRef.current = true

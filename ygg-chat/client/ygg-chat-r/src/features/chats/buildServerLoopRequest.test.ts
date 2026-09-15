@@ -135,15 +135,15 @@ describe('buildServerLoopRequest', () => {
     expect('serviceTier' in off).toBe(false)
   })
 
-  it('forwards ChatGPT accessToken + accountId only when set', () => {
+  it('never forwards legacy OAuth credentials', () => {
     const on = buildServerLoopRequest('send', {
       ...base,
       provider: 'openaichatgpt',
       accessToken: 'tok-abc',
       accountId: 'acct-1',
     }).body
-    expect(on.accessToken).toBe('tok-abc')
-    expect(on.accountId).toBe('acct-1')
+    expect(on.accessToken).toBeUndefined()
+    expect(on.accountId).toBeUndefined()
 
     // Omitted (no undefined/null keys) when the caller has no ChatGPT tokens.
     const off = buildServerLoopRequest('send', { ...base }).body

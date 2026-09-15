@@ -267,7 +267,8 @@ export function registerGatewayRoutes(app: Express, deps: RegisterGatewayRoutesD
       const token = await deps.auth.getFreshAppToken()
       return !!token.accessToken
     } catch {
-      return false
+      // A configured but unavailable session must not silently turn into an empty cloud dataset.
+      return true
     }
   }
 

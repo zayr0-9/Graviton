@@ -86,7 +86,6 @@ import { buildServerLoopRequest } from './buildServerLoopRequest'
 import { buildConversationTree } from './conversationTree'
 import { conversationQueryKeys } from './conversationQueryKeys'
 import type { ConversationMessagesTreeData } from './conversationMessagesApi'
-import { getValidTokens } from './openaiOAuth'
 import { filterToolsForOperationMode } from './operationModeSystemPrompt'
 import {
   getAllTools,
@@ -1489,7 +1488,6 @@ export const sendMessage = createAsyncThunk<
       const serverProvider =
         providerSlug === 'google' ? 'gemini' : /^(zai|glm|z\.ai)(\/glm)?$/.test(providerSlug) ? 'zai' : /^(bedrock|awsbedrock|aws-bedrock|amazonbedrock|amazon-bedrock)$/.test(providerSlug) ? 'bedrock' : providerSlug
       const openRouterTemperature = resolveOpenRouterTemperature(providerSlug)
-      const isOpenAIChatGPT = providerSlug === 'openaichatgpt' || providerSlug === 'openai(chatgpt)'
       // Gather any image drafts (base64) captured before send start so UI can clear immediately.
       const attachmentsBase64 = await prepareLocalAttachmentsForModel(preSendAttachmentsBase64, 'image attachments')
 
@@ -1522,7 +1520,7 @@ export const sendMessage = createAsyncThunk<
       if (isElectronMode) {
         // ChatGPT auth: resolve fresh {accessToken, accountId} from the renderer (auto-
         // refreshing) so the server uses them directly. null for every other provider.
-        const chatgptServerAuth = isOpenAIChatGPT ? await getValidTokens() : null
+        const chatgptServerAuth = null as { accessToken?: string; accountId?: string } | null
         const { path, body } = buildServerLoopRequest('send', {
           conversationId: String(conversationId),
           content: input.content.trim(),
@@ -1901,7 +1899,6 @@ export const editMessageWithBranching = createAsyncThunk<
       const serverProvider =
         providerSlug === 'google' ? 'gemini' : /^(zai|glm|z\.ai)(\/glm)?$/.test(providerSlug) ? 'zai' : /^(bedrock|awsbedrock|aws-bedrock|amazonbedrock|amazon-bedrock)$/.test(providerSlug) ? 'bedrock' : providerSlug
       const openRouterTemperature = resolveOpenRouterTemperature(providerSlug)
-      const isOpenAIChatGPT = providerSlug === 'openaichatgpt' || providerSlug === 'openai(chatgpt)'
 
       // Combine mode, user default, project, and conversation system prompts.
       const selectedProject = selectSelectedProject(state)
@@ -2100,7 +2097,7 @@ export const editMessageWithBranching = createAsyncThunk<
       if (isElectronMode) {
         // ChatGPT auth: resolve fresh {accessToken, accountId} from the renderer (auto-
         // refreshing) so the server uses them directly. null for every other provider.
-        const chatgptServerAuth = isOpenAIChatGPT ? await getValidTokens() : null
+        const chatgptServerAuth = null as { accessToken?: string; accountId?: string } | null
         const { path, body } = buildServerLoopRequest('edit', {
           conversationId: String(conversationId),
           content: newContent,
@@ -2323,7 +2320,6 @@ export const sendMessageToBranch = createAsyncThunk<
       const serverProvider =
         providerSlug === 'google' ? 'gemini' : /^(zai|glm|z\.ai)(\/glm)?$/.test(providerSlug) ? 'zai' : /^(bedrock|awsbedrock|aws-bedrock|amazonbedrock|amazon-bedrock)$/.test(providerSlug) ? 'bedrock' : providerSlug
       const openRouterTemperature = resolveOpenRouterTemperature(providerSlug)
-      const isOpenAIChatGPT = providerSlug === 'openaichatgpt' || providerSlug === 'openai(chatgpt)'
       const attachmentsBase64 = await prepareLocalAttachmentsForModel(preSendAttachmentsBase64, 'image attachments')
 
       // Retrieve project and conversation context to send with branch message
@@ -2351,7 +2347,7 @@ export const sendMessageToBranch = createAsyncThunk<
       if (isElectronMode) {
         // ChatGPT auth: resolve fresh {accessToken, accountId} from the renderer (auto-
         // refreshing) so the server uses them directly. null for every other provider.
-        const chatgptServerAuth = isOpenAIChatGPT ? await getValidTokens() : null
+        const chatgptServerAuth = null as { accessToken?: string; accountId?: string } | null
         const { path, body } = buildServerLoopRequest('branch', {
           conversationId: String(conversationId),
           content,

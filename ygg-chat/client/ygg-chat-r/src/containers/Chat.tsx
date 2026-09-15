@@ -73,10 +73,6 @@ import {
 } from '../components/ThemeManager/themeConfig'
 import { isCommunityMode } from '../config/runtimeMode'
 import {
-  clearOpenAIChatGPTTokensFromHeadless,
-  persistOpenAIChatGPTTokensToHeadless,
-} from '../features/chats/openaiHeadlessAuth'
-import {
   abortGeneration,
   AUTO_COMPACTION_NOTE,
   cancelPlanClarification,
@@ -149,9 +145,8 @@ import {
   clearTokens as clearOpenAITokens,
   fetchOpenAIUsageStatus,
   isOpenAIAuthenticated,
-  saveTokens,
   type OpenAIUsageSnapshot,
-} from '../features/chats/openaiOAuth'
+} from '../features/chats/chatgptAccount'
 import { buildBranchPathForMessage } from '../features/chats/pathUtils'
 import { generateStreamId } from '../features/chats/streamHelpers'
 import {
@@ -5896,23 +5891,14 @@ function Chat() {
         return 'pending'
       }
 
-      if (!data.success || !data.accessToken || !data.refreshToken || !data.expiresAt || !data.accountId) {
+      if (!data.success) {
         if (!options.suppressErrors) {
           setOpenaiAuthError(data.error || 'Authentication failed. Please try again.')
         }
         return 'error'
       }
 
-      // Save tokens to localStorage using the openaiOAuth module
-      const tokens = {
-        accessToken: data.accessToken,
-        refreshToken: data.refreshToken,
-        expiresAt: data.expiresAt,
-        accountId: data.accountId,
-        email: typeof data.email === 'string' && data.email.trim() ? data.email.trim() : null,
-      }
-      saveTokens(tokens)
-      await persistOpenAIChatGPTTokensToHeadless(tokens, [userId])
+      // The server committed the connection; no OAuth credentials cross this boundary.
 
       // Successfully authenticated, select the provider
       dispatch(chatSliceActions.providerSelected('OpenAI (ChatGPT)'))
@@ -5980,7 +5966,7 @@ function Chat() {
   const handleOpenaiLogout = async () => {
     clearOpenAITokens()
     try {
-      await clearOpenAIChatGPTTokensFromHeadless([userId])
+      await clearOpenAITokens()
     } catch (error) {
       console.error('Failed to clear headless OpenAI ChatGPT tokens:', error)
     }

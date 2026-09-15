@@ -1,11 +1,9 @@
 import path from 'path'
+import { getAuthManager } from '../../auth/runtime.js'
+import { AuthFailure, type AuthSessionManager } from '../../auth/authSessionManager.js'
 import type { ReadableStreamReadResult } from './webStreamTypes.js'
 import WebSocket from 'ws'
-import {
-  JWT_CLAIM_PATH,
-  OPENAI_CLIENT_ID,
-  OPENAI_TOKEN_URL,
-} from '../../openaiChatgptOAuth.js'
+const JWT_CLAIM_PATH = 'https://api.openai.com/auth'
 import type { ProviderTokenStore } from './tokenStore.js'
 import { CodexResponsesProvider, toCodexMessages } from './codex/index.js'
 import { normalizeOpenAIContextUsage, openAIContextUsageBlock } from '../../../../../shared/contextUsage.js'
@@ -23,6 +21,7 @@ import type {
 
 interface OpenAiChatgptProviderDeps {
   tokenStore?: ProviderTokenStore
+  auth?: AuthSessionManager
 }
 
 interface ResolvedAuth {
@@ -57,6 +56,7 @@ interface RefreshedTokenPayload {
 export function normalizeOpenAIChatGPTModel(model: string): string {
   const m = (model || '').toLowerCase().replace(/\s+/g, '-')
 
+  if (m.includes('gpt-6-astra')) return 'gpt-6-astra'
   if (m.includes('gpt-5.6-sol')) return 'gpt-5.6-sol'
   if (m.includes('gpt-5.6-terra')) return 'gpt-5.6-terra'
   if (m.includes('gpt-5.6-luna')) return 'gpt-5.6-luna'
@@ -141,44 +141,6 @@ function shouldRefresh(expiresAtIso?: string | null): boolean {
   return Date.now() >= expiresAt - 5 * 60 * 1000
 }
 
-async function refreshOpenAiAccessToken(refreshToken: string): Promise<RefreshedTokenPayload> {
-  const response = await fetch(OPENAI_TOKEN_URL, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-    body: new URLSearchParams({
-      grant_type: 'refresh_token',
-      refresh_token: refreshToken,
-      client_id: OPENAI_CLIENT_ID,
-    }),
-  })
-
-  if (!response.ok) {
-    const text = await response.text().catch(() => '')
-    throw new Error(`OpenAI token refresh failed (${response.status}): ${text}`)
-  }
-
-  const json = (await response.json()) as {
-    access_token?: string
-    refresh_token?: string
-    expires_in?: number
-  }
-
-  if (!json.access_token || !json.refresh_token || typeof json.expires_in !== 'number') {
-    throw new Error('OpenAI token refresh response missing required fields')
-  }
-
-  const accountId = extractAccountId(json.access_token)
-  if (!accountId) {
-    throw new Error('OpenAI token refresh succeeded but account_id could not be derived from JWT')
-  }
-
-  return {
-    accessToken: json.access_token,
-    refreshToken: json.refresh_token,
-    expiresAtIso: new Date(Date.now() + json.expires_in * 1000).toISOString(),
-    accountId,
-  }
-}
 
 function parseContentBlocks(blocks: any): any[] {
   if (!blocks) return []
@@ -2087,77 +2049,38 @@ function contentBlocksFromPartialOutput(error: unknown): any[] {
 
 export class OpenAiChatgptProvider implements HeadlessProvider {
   readonly name = 'openaichatgpt'
-  private readonly tokenStore?: ProviderTokenStore
+  private readonly auth: AuthSessionManager
 
   constructor(deps: OpenAiChatgptProviderDeps = {}) {
-    this.tokenStore = deps.tokenStore
+    this.auth = deps.auth ?? getAuthManager()
   }
 
   private async resolveAuth(input: ProviderGenerateInput): Promise<ResolvedAuth> {
-    if (input.accessToken) {
-      const accountId = input.accountId || extractAccountId(input.accessToken)
-      if (!accountId) {
-        throw new Error(
-          'ChatGPT account ID missing. Provide accountId or use a token that includes chatgpt_account_id claim.'
-        )
-      }
-      return {
-        accessToken: input.accessToken,
-        accountId,
-      }
-    }
-
-    if (this.tokenStore) {
-      const record = input.userId
-        ? this.tokenStore.get('openaichatgpt', input.userId)
-        : this.tokenStore.getLatest('openaichatgpt')
-      if (record) {
-        if (shouldRefresh(record.expiresAt ?? null) && record.refreshToken) {
-          const refreshed = await refreshOpenAiAccessToken(record.refreshToken)
-          this.tokenStore.upsert({
-            provider: 'openaichatgpt',
-            userId: record.userId,
-            accessToken: refreshed.accessToken,
-            refreshToken: refreshed.refreshToken,
-            expiresAt: refreshed.expiresAtIso,
-            accountId: refreshed.accountId,
-          })
-
-          return {
-            accessToken: refreshed.accessToken,
-            accountId: refreshed.accountId,
-          }
-        }
-
-        const accountId = record.accountId || extractAccountId(record.accessToken)
-        if (!accountId) {
-          throw new Error('Stored OpenAI token is missing account context (chatgpt_account_id).')
-        }
-
-        return {
-          accessToken: record.accessToken,
-          accountId,
-        }
-      }
-    }
-
-    const envToken = process.env.OPENAI_CHATGPT_ACCESS_TOKEN || process.env.OPENAI_ACCESS_TOKEN || null
-    const envAccountId = process.env.OPENAI_CHATGPT_ACCOUNT_ID || null
-
-    if (envToken) {
-      const derived = envAccountId || extractAccountId(envToken)
-      if (!derived) {
-        throw new Error('OPENAI_CHATGPT_ACCOUNT_ID is required when access token lacks chatgpt_account_id claim.')
-      }
-      return { accessToken: envToken, accountId: derived }
-    }
-
-    throw new Error(
-      'OpenAI ChatGPT auth missing. Provide token+account_id or store OAuth tokens via provider-auth route.'
-    )
+    const credential = await this.auth.resolve('codex', { sessionId: input.authSessionId })
+    return { accessToken: credential.accessToken, accountId: credential.userId }
   }
 
   async generate(input: ProviderGenerateInput, emit?: ProviderStreamEventHandler): Promise<ProviderGenerateOutput> {
+    const sessionId = input.authSessionId ?? this.auth.snapshot('codex').sessionId ?? undefined
+    let credential = await this.auth.resolve('codex', { sessionId })
+    let emitted = false
+    const relay: ProviderStreamEventHandler = event => { emitted = true; emit?.(event) }
+    try { return await this.generateAttempt({ ...input, authSessionId: sessionId }, relay) }
+    catch (error) {
+      if (emitted || (error as any)?.partialOutput || (error as any)?.status !== 401 || input.signal?.aborted) throw error
+      credential = await this.auth.resolve('codex', { sessionId, rejectedRevision: credential.revision })
+      try { return await this.generateAttempt({ ...input, authSessionId: credential.sessionId }, relay) }
+      catch (retryError) {
+        if ((retryError as any)?.status === 401) {
+          if (this.auth.snapshot('codex').sessionId === credential.sessionId) this.auth.requireReconnect('codex')
+          throw new AuthFailure('codex', 'reauth_required', 'Reconnect your ChatGPT account to continue.')
+        }
+        throw retryError
+      }
+    }
+  }
+
+  private async generateAttempt(input: ProviderGenerateInput, emit?: ProviderStreamEventHandler): Promise<ProviderGenerateOutput> {
     const traceId = createOpenAiChatgptTraceId(input)
     const startedAt = Date.now()
     logOpenAiChatgpt('info', 'generate start', {

@@ -1,4 +1,9 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
+vi.mock('../../../auth/runtime.js', () => ({ getAuthManager: () => ({
+  snapshot: () => ({ sessionId: 'test-session' }),
+  resolve: async () => ({ sessionId: 'test-session', revision: 0, accessToken: 'managed-test-token', userId: 'acct-test' }),
+  requireReconnect: vi.fn(),
+}) }))
 import {
   DEFAULT_OPENAI_CHATGPT_CONTEXT_LENGTH,
   OpenAiChatgptProvider,
@@ -36,6 +41,7 @@ describe('OpenAiChatgptProvider', () => {
   })
 
   it('normalizes ChatGPT display labels to backend model IDs', () => {
+    expect(normalizeOpenAIChatGPTModel('GPT-6-Astra')).toBe('gpt-6-astra')
     expect(normalizeOpenAIChatGPTModel('GPT-5.6 Sol')).toBe('gpt-5.6-sol')
     expect(normalizeOpenAIChatGPTModel('GPT-5.6 Terra')).toBe('gpt-5.6-terra')
     expect(normalizeOpenAIChatGPTModel('GPT-5.6 Luna')).toBe('gpt-5.6-luna')
@@ -45,7 +51,7 @@ describe('OpenAiChatgptProvider', () => {
     expect(normalizeOpenAIChatGPTModel('GPT-5.3 Codex')).toBe('gpt-5.3-codex')
   })
 
-  it.each(['gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna'])(
+  it.each(['gpt-6-astra', 'gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna'])(
     'enables Responses Lite transport for %s',
     async modelName => {
       process.env.OPENAI_CHATGPT_ACCESS_TOKEN =
@@ -64,8 +70,20 @@ describe('OpenAiChatgptProvider', () => {
         expect(headers.get('session-id')).toBe(body.prompt_cache_key)
         expect(headers.get('thread-id')).toBe(body.prompt_cache_key)
         expect(headers.get('x-session-affinity')).toBe(body.prompt_cache_key)
-        expect(headers.get('version')).toBe('0.144.0')
-        expect(body.input[0]).toEqual(expect.objectContaining({ type: 'additional_tools', role: 'developer' }))
+        expect(headers.get('version')).toBe('0.153.0')
+        expect(body.input[0]).toEqual({
+          type: 'additional_tools',
+          role: 'developer',
+          tools: [
+            expect.objectContaining({
+              type: 'namespace',
+              name: 'functions',
+              tools: expect.arrayContaining([expect.objectContaining({ type: 'function', name: expect.any(String) })]),
+            }),
+            { type: 'web_search' },
+            { type: 'image_generation' },
+          ],
+        })
         expect(body.input[1]).toEqual({
           type: 'message',
           role: 'developer',
@@ -104,6 +122,7 @@ describe('OpenAiChatgptProvider', () => {
         modelName,
         history: [],
         userContent: 'hello',
+        tools: [{ name: 'read_file', description: 'Read a file', inputSchema: { type: 'object' } }],
         railwayTurn: { conversationId } as any,
       })
       expect(result.content).toBe('ok')
@@ -222,7 +241,7 @@ describe('OpenAiChatgptProvider', () => {
       expect(body.parallel_tool_calls).toBe(true)
       expect(body.prompt_cache_key).toEqual(expect.stringMatching(/^ygg-chat:/))
       expect(body.client_metadata).toEqual({ 'x-codex-installation-id': body.prompt_cache_key })
-      expect(headers.get('ChatGPT-Account-ID')).toBe('acct-1')
+      expect(headers.get('ChatGPT-Account-ID')).toBe('acct-test')
       expect(headers.get('originator')).toBe('codex_cli_rs')
       expect(headers.get('x-client-request-id')).toBe(body.prompt_cache_key)
       expect(headers.get('session-id')).toBe(body.prompt_cache_key)
@@ -475,7 +494,7 @@ describe('OpenAiChatgptProvider', () => {
       expect(headers.get('session-id')).toBe('conversation-cache-key')
       expect(headers.get('thread-id')).toBe('conversation-cache-key')
       expect(headers.get('x-client-request-id')).toBe('run-cache-key')
-      expect(headers.get('ChatGPT-Account-ID')).toBe('acct-3')
+      expect(headers.get('ChatGPT-Account-ID')).toBe('acct-test')
       return {
         ok: true,
         status: 200,

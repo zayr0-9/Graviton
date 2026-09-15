@@ -61,7 +61,7 @@ export const useUserSystemPrompts = (options: UseUserSystemPromptsOptions = {}):
 
   const queryClient = useQueryClient()
   const { accessToken, userId } = useAuth()
-  const canSaveToCloud = Boolean(accessToken && userId && isCloudSessionEnabled())
+  const canSaveToCloud = Boolean(userId && isCloudSessionEnabled())
 
   // Use React Query for system prompts (cached globally)
   const { prompts, isLoading, refetch } = useUserSystemPromptsQuery()
@@ -159,7 +159,7 @@ export const useUserSystemPrompts = (options: UseUserSystemPromptsOptions = {}):
         return
       }
 
-      if (!accessToken) {
+      if (!userId) {
         const errorMsg = 'Authentication required'
         setSaveError(errorMsg)
         onError?.(errorMsg)
@@ -212,7 +212,7 @@ export const useUserSystemPrompts = (options: UseUserSystemPromptsOptions = {}):
         return
       }
 
-      if (!accessToken) {
+      if (!userId) {
         const errorMsg = 'Authentication required'
         setSaveError(errorMsg)
         onError?.(errorMsg)

@@ -1,5 +1,5 @@
 import type Database from 'better-sqlite3'
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { MessageRepo } from '../../persistence/messageRepo.js'
 import type { MessageSink } from '../messageSink.js'
 import { ProviderRouter } from '../providerRouter.js'
@@ -673,6 +673,42 @@ describeIfSqlite('ToolLoopService plan mode runtime block list', () => {
     expect(executedToolNames).toEqual(['bash', 'powershell'])
   })
 
+  it('writes streamed text to the SQLite messages row when an active turn is cancelled', async () => {
+    const controller = new AbortController()
+    const providerRouter = {
+      generate: vi.fn((_provider: string, _input: any, emit: (event: any) => void) => {
+        emit({ type: 'chunk', part: 'text', delta: 'durable partial text' })
+        return new Promise(() => {})
+      }),
+    }
+    const service = new ToolLoopService({
+      messageRepo,
+      providerRouter: providerRouter as unknown as ProviderRouter,
+    })
+
+    const run = service.run(
+      {
+        provider: 'openaichatgpt',
+        modelName: 'gpt-5.6-sol',
+        conversationId: 'c1',
+        assistantParentId: null,
+        history: [],
+        userContent: 'stream then cancel',
+        signal: controller.signal,
+      },
+      () => {}
+    )
+    controller.abort()
+
+    await expect(run).rejects.toMatchObject({ name: 'AbortError' })
+    const messages = statements.getMessagesByConversationId.all('c1') as any[]
+    expect(messages).toHaveLength(1)
+    expect(messages[0]).toMatchObject({ role: 'assistant', content: 'durable partial text' })
+    expect(messages[0].plain_text_content).toBe('durable partial text')
+    const blocks = JSON.parse(messages[0].content_blocks || '[]')
+    expect(blocks).toEqual([{ type: 'text', content: 'durable partial text' }])
+  })
+
   it('requests an Agent-mode upgrade before executing a mutating Plan-mode tool', async () => {
     const providerRouter = new FakeProviderRouter()
     providerRouter.enqueue({ content: '', toolCalls: [{ id: 'call-edit', name: 'edit_file', arguments: { path: 'README.md' } }] })
@@ -840,7 +876,7 @@ describe('ToolLoopService signal + robustness (in-memory sink)', () => {
     expect(failures.map((event: any) => event.toolName)).toEqual(['html_renderer', 'edit_file'])
   })
 
-  it('forwards the abort signal to the provider request', async () => {
+  it('forwards a live child abort signal to the provider request', async () => {
     const providerRouter = new FakeProviderRouter()
     providerRouter.enqueue({ content: 'done' })
     const controller = new AbortController()
@@ -851,7 +887,117 @@ describe('ToolLoopService signal + robustness (in-memory sink)', () => {
 
     await service.run({ ...baseRunInput, signal: controller.signal }, () => {})
 
-    expect(providerRouter.calls[0].input.signal).toBe(controller.signal)
+    expect(providerRouter.calls[0].input.signal).toBeInstanceOf(AbortSignal)
+    expect(providerRouter.calls[0].input.signal).not.toBe(controller.signal)
+    expect(providerRouter.calls[0].input.signal.aborted).toBe(false)
+  })
+
+  it('keeps an active provider turn alive beyond the timeout and rearms from each chunk', async () => {
+    vi.useFakeTimers()
+    try {
+      const sink = new FakeSink()
+      const providerRouter = {
+        generate: vi.fn((_provider: string, _input: any, emit: (event: any) => void) =>
+          new Promise(resolve => {
+            setTimeout(() => emit({ type: 'chunk', part: 'text', delta: 'one ' }), 4_000)
+            setTimeout(() => emit({ type: 'chunk', part: 'text', delta: 'two ' }), 8_000)
+            setTimeout(() => resolve({ content: 'one two done' }), 12_000)
+          })
+        ),
+      }
+      const service = new ToolLoopService({
+        sink,
+        providerRouter: providerRouter as unknown as ProviderRouter,
+        providerTurnTimeoutMs: 5_000,
+      })
+
+      const run = service.run(baseRunInput, () => {})
+      await vi.advanceTimersByTimeAsync(12_000)
+      const result = await run
+
+      expect(result.finalAssistantMessage.content).toBe('one two done')
+      expect(providerRouter.generate).toHaveBeenCalledTimes(1)
+      expect(sink.persisted).toHaveLength(1)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('aborts an idle provider attempt and persists text already streamed before timeout', async () => {
+    vi.useFakeTimers()
+    try {
+      const sink = new FakeSink()
+      let attemptSignal: AbortSignal | null = null
+      let emitLate: ((event: any) => void) | null = null
+      const events: any[] = []
+      const providerRouter = {
+        generate: vi.fn((_provider: string, input: any, emit: (event: any) => void) => {
+          attemptSignal = input.signal
+          emitLate = emit
+          emit({ type: 'chunk', part: 'text', delta: 'kept text' })
+          return new Promise(() => {})
+        }),
+      }
+      const service = new ToolLoopService({
+        sink,
+        providerRouter: providerRouter as unknown as ProviderRouter,
+        providerTurnTimeoutMs: 5_000,
+      })
+
+      const run = service.run(
+        { ...baseRunInput, robustness: { retryProviderError: true, maxProviderRetries: 2 } },
+        event => events.push(event)
+      )
+      const rejection = expect(run).rejects.toMatchObject({ name: 'ProviderErrorAssistantResponse' })
+      await vi.advanceTimersByTimeAsync(5_000)
+      await rejection
+
+      expect(attemptSignal?.aborted).toBe(true)
+      expect(sink.persisted).toHaveLength(1)
+      expect(sink.persisted[0].content).toBe('kept text')
+      expect(events.some(event => event.type === 'assistant_message_persisted' && event.message.content === 'kept text')).toBe(true)
+
+      emitLate?.({ type: 'chunk', part: 'text', delta: ' late text' })
+      expect(events.some(event => event.type === 'chunk' && event.delta === ' late text')).toBe(false)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('classifies a provider-originated AbortError as a provider failure, not user cancellation', async () => {
+    const sink = new FakeSink()
+    const providerAbort = new Error('provider aborted the response')
+    providerAbort.name = 'AbortError'
+    const providerRouter = new FakeProviderRouter()
+    providerRouter.enqueue(providerAbort)
+    const service = new ToolLoopService({
+      sink,
+      providerRouter: providerRouter as unknown as ProviderRouter,
+    })
+
+    await expect(service.run(baseRunInput, () => {})).rejects.not.toMatchObject({ name: 'AbortError' })
+  })
+
+  it('persists streamed text on parent cancellation without converting it to a provider error', async () => {
+    const sink = new FakeSink()
+    const controller = new AbortController()
+    const providerRouter = {
+      generate: vi.fn((_provider: string, _input: any, emit: (event: any) => void) => {
+        emit({ type: 'chunk', part: 'text', delta: 'cancelled but kept' })
+        return new Promise(() => {})
+      }),
+    }
+    const service = new ToolLoopService({
+      sink,
+      providerRouter: providerRouter as unknown as ProviderRouter,
+    })
+
+    const run = service.run({ ...baseRunInput, signal: controller.signal }, () => {})
+    controller.abort()
+
+    await expect(run).rejects.toMatchObject({ name: 'AbortError' })
+    expect(sink.persisted).toHaveLength(1)
+    expect(sink.persisted[0].content).toBe('cancelled but kept')
   })
 
   it('stops before the next turn when aborted during tool execution', async () => {

@@ -2,7 +2,6 @@
 import { ConversationId, StorageMode } from '../../../../shared/types'
 import { isCommunityMode } from '../config/runtimeMode'
 import { attachLocalChatErrorCode } from '../features/chats/localChatErrors'
-import { getSessionFromStorage, getTokenExpirationTime, refreshTokenIfNeeded } from '../lib/jwtUtils'
 import { logClientError } from '../services/clientTelemetry'
 
 // Base configuration
@@ -690,35 +689,6 @@ if (typeof window !== 'undefined' && environment === 'electron') {
  *
  * @returns The current valid access token or null
  */
-async function ensureValidToken(): Promise<string | null> {
-  // Skip for non-web/electron environments (local mode doesn't need token refresh)
-  if (environment !== 'web' && environment !== 'electron') {
-    return null
-  }
-
-  const session = getSessionFromStorage()
-  if (!session?.access_token) {
-    // console.log('[api] No session found')
-    return null
-  }
-
-  const expiresIn = getTokenExpirationTime()
-  if (expiresIn === null) {
-    console.warn('[api] Could not determine token expiration')
-    return session.access_token
-  }
-
-  // Refresh if token expires in < 5 minutes (300 seconds)
-  if (expiresIn < 300) {
-    // console.log(`[api] Token expires in ${expiresIn}s, refreshing...`)
-    await refreshTokenIfNeeded()
-    // Get the refreshed token
-    const refreshedSession = getSessionFromStorage()
-    return refreshedSession?.access_token || null
-  }
-
-  return session.access_token
-}
 
 // Custom event name for force logout - AuthContext should listen for this.
 // Still exported and still listened for (AuthContext clears its React state on it), but
@@ -757,9 +727,9 @@ const sessionExpiredError = (source: string): Error => {
 export const apiCall = async <T>(endpoint: string, accessToken: string | null, options?: RequestInit): Promise<T> => {
   assertCloudBackendAllowed(endpoint, 'apiCall')
 
-  // Ensure token is valid before making the request
-  const validToken = await ensureValidToken()
-  const tokenToUse = validToken || accessToken
+  // OAuth is injected by the local gateway, never by the renderer.
+  void accessToken
+  const tokenToUse = null
   const requestStart = Date.now()
 
   const isFormData = options?.body && typeof FormData !== 'undefined' && options.body instanceof FormData
@@ -769,7 +739,7 @@ export const apiCall = async <T>(endpoint: string, accessToken: string | null, o
   const method = String(restOptions.method || 'GET').toUpperCase()
 
   const makeRequest = async (token: string | null) => {
-    return fetch(`${API_BASE}${endpoint}`, {
+    return fetch(await buildLocalApiUrl(`${/^(\/conversations|\/projects|\/messages|\/attachments)(\/|\?|$)/.test(endpoint) ? '/gw' : '/cloud'}${endpoint}`), {
       ...restOptions, // Spread everything EXCEPT headers
       headers: {
         ...(isFormData ? {} : { 'Content-Type': 'application/json' }),
@@ -800,36 +770,8 @@ export const apiCall = async <T>(endpoint: string, accessToken: string | null, o
   // The reason is accumulated rather than thrown inline: the old shape wrapped its own
   // throws in the same try/catch, so the catch re-swallowed them and every branch collapsed
   // to one indistinguishable message. Nothing here navigates (D2) — see sessionExpiredError.
-  if (response.status === 401 && (environment === 'web' || environment === 'electron')) {
-    console.warn('[api] Received 401 Unauthorized, attempting token refresh and retry...')
-
-    let refreshFailure: string | null = null
-    try {
-      // Force refresh the token
-      const refreshed = await refreshTokenIfNeeded(true)
-
-      if (!refreshed) {
-        refreshFailure = 'token refresh failed'
-      } else {
-        // Get the new token
-        const newToken = getSessionFromStorage()?.access_token
-
-        if (!newToken) {
-          refreshFailure = 'token refresh succeeded but no token was stored'
-        } else {
-          // Retry the request with the new token
-          response = await executeRequest(newToken)
-          if (response.status === 401) refreshFailure = 'still unauthorized after token refresh'
-        }
-      }
-    } catch (error) {
-      refreshFailure = `token refresh threw: ${getErrorMessage(error)}`
-    }
-
-    if (refreshFailure) {
-      console.error('[api] 401 Unauthorized —', refreshFailure)
-      throw sessionExpiredError(`apiCall ${method} ${endpoint}: ${refreshFailure}`)
-    }
+  if (response.status === 401) {
+    throw sessionExpiredError(endpoint)
   }
 
   if (!response.ok) {
@@ -940,9 +882,9 @@ export const createStreamingRequest = async (
 ): Promise<Response> => {
   assertCloudBackendAllowed(endpoint, 'createStreamingRequest')
 
-  // Ensure token is valid before making the request
-  const validToken = await ensureValidToken()
-  const tokenToUse = validToken || accessToken
+  // OAuth is injected by the local gateway, never by the renderer.
+  void accessToken
+  const tokenToUse = null
   const requestStart = Date.now()
 
   const isFormData = options?.body && typeof FormData !== 'undefined' && options.body instanceof FormData
@@ -958,7 +900,7 @@ export const createStreamingRequest = async (
       ...(token && (environment === 'web' || environment === 'electron') ? { Authorization: `Bearer ${token}` } : {}),
     }
 
-    return fetch(`${API_BASE}${endpoint}`, {
+    return fetch(await buildLocalApiUrl(`${/^(\/conversations|\/projects|\/messages|\/attachments)(\/|\?|$)/.test(endpoint) ? '/gw' : '/cloud'}${endpoint}`), {
       ...restOptions, // Spread everything EXCEPT headers
       headers, // Set headers separately
     })
@@ -985,36 +927,8 @@ export const createStreamingRequest = async (
   // This is the path auto-compaction takes (`chatActions` → '/generate/ephemeral'), which
   // runs INSIDE the send flow at ≥85% context — a forced redirect here fired at exactly the
   // moment D2 was written to prevent. It classifies now; the caller renders the bubble.
-  if (response.status === 401 && (environment === 'web' || environment === 'electron')) {
-    console.warn('[api] Streaming request received 401, attempting token refresh and retry...')
-
-    let refreshFailure: string | null = null
-    try {
-      // Force refresh the token
-      const refreshed = await refreshTokenIfNeeded(true)
-
-      if (!refreshed) {
-        refreshFailure = 'token refresh failed'
-      } else {
-        // Get the new token
-        const newToken = getSessionFromStorage()?.access_token
-
-        if (!newToken) {
-          refreshFailure = 'token refresh succeeded but no token was stored'
-        } else {
-          // Retry the request with the new token
-          response = await executeStreamRequest(newToken)
-          if (response.status === 401) refreshFailure = 'still unauthorized after token refresh'
-        }
-      }
-    } catch (error) {
-      refreshFailure = `token refresh threw: ${getErrorMessage(error)}`
-    }
-
-    if (refreshFailure) {
-      console.error('[api] Streaming request 401 Unauthorized —', refreshFailure)
-      throw sessionExpiredError(`createStreamingRequest ${method} ${endpoint}: ${refreshFailure}`)
-    }
+  if (response.status === 401) {
+    throw sessionExpiredError(endpoint)
   }
 
   if (!response.ok) {

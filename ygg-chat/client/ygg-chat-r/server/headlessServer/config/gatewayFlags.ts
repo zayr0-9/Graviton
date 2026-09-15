@@ -34,7 +34,6 @@ import { getSettingsStore } from './settingsStore.js'
 
 export interface GatewayFlags {
   chat: boolean
-  tokenOwner: boolean
   crud: boolean
   cloudProxy: boolean
   resumableRuns: boolean
@@ -47,7 +46,7 @@ function isEnvTruthy(value: string | undefined): boolean {
 export function resolveGatewayFlags(): GatewayFlags {
   // Master env override wins and short-circuits any Conf read.
   if (isEnvTruthy(process.env.YGG_GATEWAY_MODE)) {
-    return { chat: true, tokenOwner: true, crud: true, cloudProxy: true, resumableRuns: true }
+    return { chat: true, crud: true, cloudProxy: true, resumableRuns: true }
   }
 
   // Phase 6 cutover: `chat` now defaults ON. The renderer routes all 5 chat
@@ -59,19 +58,17 @@ export function resolveGatewayFlags(): GatewayFlags {
   // and `tokenOwner` stays default-off (the separate sole-refresher slice, coupled
   // to the renderer flag and validated independently).
   let chat = true
-  let tokenOwner = false
   let crud = false
   let cloudProxy = false
   let resumableRuns = true
   try {
     const store = getSettingsStore()
     chat = store.get('gateway.chat') !== false
-    tokenOwner = store.get('gateway.tokenOwner') === true
     crud = store.get('gateway.crud') === true
     cloudProxy = store.get('gateway.cloudProxy') === true
     resumableRuns = store.get('gateway.resumableRuns') !== false
   } catch {
     // A missing/corrupt Conf store must never break startup; keep chat/resumable on.
   }
-  return { chat, tokenOwner, crud, cloudProxy, resumableRuns }
+  return { chat, crud, cloudProxy, resumableRuns }
 }

@@ -35,6 +35,7 @@ import { useHtmlIframeRegistry } from '../HtmlIframeRegistry/HtmlIframeRegistry'
 import { ImageModal } from '../ImageModal/ImageModal'
 import { SubagentToolName } from '../SubagentTranscript/SubagentTranscript'
 import { MarkdownLink } from '../MarkdownLink/MarkdownLink'
+import { MermaidDiagram, getMermaidSource, isMermaidCodeBlock, prepareMermaidMarkdown } from '../MermaidDiagram'
 import { McpAppIframe } from '../McpAppIframe/McpAppIframe'
 import { TextArea } from '../TextArea/TextArea'
 import {
@@ -579,6 +580,11 @@ const PreRenderer: React.FC<any> = ({ children, className, ...props }) => {
   const [copied, setCopied] = useState(false)
   const preRef = useRef<HTMLPreElement | null>(null)
 
+  const codeChild = React.Children.toArray(children).find(isMermaidCodeBlock)
+  if (codeChild) {
+    return <MermaidDiagram chart={getMermaidSource(codeChild)} />
+  }
+
   const handleCopyCode = async () => {
     try {
       const plain = preRef.current?.innerText ?? ''
@@ -762,7 +768,11 @@ const ChatMessage: React.FC<ChatMessageProps> = React.memo(
     const [explainInputValue, setExplainInputValue] = useState('')
     const explainInputPosition = useRef<{ x: number; y: number } | null>(null)
     const explainInputRef = useRef<HTMLDivElement | null>(null)
-    const [explainInputFixedPosition, setExplainInputFixedPosition] = useState<{ x: number; y: number } | null>(null)
+    const [explainInputFixedPosition, setExplainInputFixedPosition] = useState<{
+      x: number
+      y: number
+      width: number
+    } | null>(null)
     const [mcpLoadState, setMcpLoadState] = useState<Record<string, boolean>>({})
     const [mcpReloadTokens, setMcpReloadTokens] = useState<Record<string, number>>({})
     const isStreamingRender = id === 'streaming' || (Array.isArray(streamEvents) && streamEvents.length > 0)
@@ -1093,32 +1103,36 @@ const ChatMessage: React.FC<ChatMessageProps> = React.memo(
 
     // Get adjusted position for explain input to avoid viewport overflow
     const getAdjustedExplainInputPosition = useCallback(() => {
-      if (!explainInputPosition.current || !explainInputRef.current) return explainInputPosition.current
+      if (!explainInputPosition.current || !explainInputRef.current) return null
 
       const inputRect = explainInputRef.current.getBoundingClientRect()
       const viewportWidth = window.innerWidth
       const viewportHeight = window.innerHeight
       const offset = 12
+      const horizontalMargin = 6
+      const chatPaneRect = messageRef.current
+        ?.closest<HTMLElement>('[data-chat-pane-surface="true"]')
+        ?.getBoundingClientRect()
+      const availableLeft = Math.max(horizontalMargin, (chatPaneRect?.left ?? 0) + horizontalMargin)
+      const availableRight = Math.min(
+        viewportWidth - horizontalMargin,
+        (chatPaneRect?.right ?? viewportWidth) - horizontalMargin
+      )
+      const width = Math.max(0, availableRight - availableLeft)
 
       // On mobile, center the input in the viewport
       if (isMobile) {
         return {
-          x: (viewportWidth - inputRect.width) / 2,
+          x: availableLeft,
           y: (viewportHeight - inputRect.height) / 2,
+          width,
         }
       }
 
-      // On desktop, position near the cursor but adjust to avoid viewport overflow
+      // On desktop, position near the cursor but keep the wider input inside the chat pane.
       let { x, y } = explainInputPosition.current
-      x = x - inputRect.width / 2
-
-      // Adjust horizontal position
-      if (x + inputRect.width > viewportWidth) {
-        x = viewportWidth - inputRect.width - 10
-      }
-      if (x < 10) {
-        x = 10
-      }
+      x = x - width / 2
+      x = Math.min(Math.max(x, availableLeft), availableRight - width)
 
       // Prefer showing above the click position; fall back below if needed
       const aboveY = y - inputRect.height - offset
@@ -1131,7 +1145,7 @@ const ChatMessage: React.FC<ChatMessageProps> = React.memo(
         y = Math.max(10, viewportHeight - inputRect.height - 10)
       }
 
-      return { x: Math.max(10, x), y: Math.max(10, y) }
+      return { x, y: Math.max(10, y), width }
     }, [isMobile])
 
     useEffect(() => {
@@ -1448,7 +1462,7 @@ const ChatMessage: React.FC<ChatMessageProps> = React.memo(
           rehypePlugins={[[rehypeHighlight, { ignoreMissing: true }], rehypeKatex]}
           components={MARKDOWN_COMPONENTS}
         >
-          {markdown}
+          {prepareMermaidMarkdown(markdown)}
         </ReactMarkdown>
       </div>
     )
@@ -2712,8 +2726,8 @@ const ChatMessage: React.FC<ChatMessageProps> = React.memo(
           let nextIdx = idx + 1
           while (nextIdx < streamEvents.length) {
             const nextEvent = streamEvents[nextIdx]
-            if (nextEvent?.type === 'text' && nextEvent.delta) {
-              accumulatedText += nextEvent.delta
+            if (nextEvent?.type === 'text') {
+              accumulatedText += nextEvent.delta || ''
               nextIdx += 1
             } else {
               break
@@ -3516,10 +3530,11 @@ const ChatMessage: React.FC<ChatMessageProps> = React.memo(
           createPortal(
             <div
               ref={explainInputRef}
-              className='fixed px-2 py-2 z-[100] w-[320px] sm:w-[400px] rounded-[14px] acrylic shadow-[0_4px_12px_rgba(0,0,0,0.15)] dark:shadow-[0_4px_20px_rgba(0,0,0,0.5)]  [will-change:contents] [transform:translateZ(0)]'
+              className='fixed px-2 py-2 z-[100] w-[320px] sm:w-[400px] rounded-[14px] acrylic shadow-[0_4px_12px_rgba(0,0,0,0.15)] dark:shadow-[0_4px_20px_rgba(0,0,0,0.5)] [will-change:contents] [transform:translateZ(0)]'
               style={{
                 left: `${explainInputFixedPosition?.x ?? explainInputPosition.current?.x ?? 0}px`,
                 top: `${explainInputFixedPosition?.y ?? explainInputPosition.current?.y ?? 0}px`,
+                width: explainInputFixedPosition ? `${explainInputFixedPosition.width}px` : undefined,
               }}
             >
               {/* Display selected text */}

@@ -12,6 +12,7 @@
 // This file must not import `electron`.
 
 import path from 'path'
+import { normalizeShellTimeoutMs, SHELL_RUNTIME_MARGIN_MS } from '../shellExecutionPolicy.js'
 import { fileURLToPath } from 'url'
 import { v4 as uuidv4 } from 'uuid'
 import type { ToolExecutionOptions, UtilityRuntimeRequest, UtilityRuntimeResponse } from './protocol.js'
@@ -26,6 +27,7 @@ type UtilityTimeoutCause =
   | 'process_error'
 
 interface UtilityRequestError extends Error {
+  dispatched?: boolean
   requestId?: string
   requestType?: PendingRequestKind | 'ready'
   toolName?: string
@@ -141,6 +143,14 @@ function createUtilityRequestError(
   error.timeoutCause = details.timeoutCause
   error.errorCode = details.errorCode
   return error
+}
+
+/** Unknown transport failures must never retry a possibly executed command. */
+export function canFallbackToLocalExecution(error: unknown): boolean {
+  if (!error || typeof error !== 'object') return false
+  const e = error as UtilityRequestError & { code?: string }
+  return e.dispatched === false && e.name !== 'AbortError' && e.name !== 'TimeoutError'
+    && !/abort|cancel|deadline|execution_timeout/i.test(`${e.errorCode || ''} ${e.code || ''} ${e.timeoutCause || ''}`)
 }
 
 export class ToolRuntimeSandboxHost {
@@ -420,83 +430,109 @@ export class ToolRuntimeSandboxHost {
       timeoutMs: number
       timeoutCause: UtilityTimeoutCause
       toolName?: string
+      signal?: AbortSignal
+      deadlineMs?: number
+      deadlineMarginMs?: number
     }
   ): Promise<T> {
-    await this.initialize()
-
-    if (!this.process) {
-      throw createUtilityRequestError('Utility tool runtime is not available', {
-        requestId: payload.requestId,
-        requestType: meta.kind,
-        toolName: meta.toolName,
-      })
-    }
-
+    // The budget includes initialization, not just time spent awaiting IPC.
     const startedAtMs = Date.now()
     const requestId = payload.requestId
-
-    this.logLifecycle('request_dispatch', {
-      requestId,
-      requestType: meta.kind,
-      toolName: meta.toolName,
-      timeoutMs: meta.timeoutMs,
-    })
-
+    const deadline = Number.isFinite(meta.deadlineMs) ? meta.deadlineMs! : Infinity
+    const expiresAt = Math.min(startedAtMs + meta.timeoutMs, deadline + (meta.deadlineMarginMs ?? 0))
     return await new Promise<T>((resolve, reject) => {
-      const timeoutId = setTimeout(() => {
-        if (!this.pending.has(requestId)) return
+      let settled = false
+      let dispatched = false
+      let transport: SandboxProcessHandle | null = null
+      let timeoutId: NodeJS.Timeout | undefined
+      const cleanup = () => {
+        if (timeoutId) clearTimeout(timeoutId)
+        meta.signal?.removeEventListener('abort', onAbort)
         this.pending.delete(requestId)
-        const durationMs = Date.now() - startedAtMs
-        const timeoutError = createUtilityRequestError('Utility runtime request timed out', {
-          requestId,
-          requestType: meta.kind,
-          toolName: meta.toolName,
-          durationMs,
-          timeoutCause: meta.timeoutCause,
+      }
+      const fail = (reason: unknown) => {
+        if (settled) return
+        settled = true
+        cleanup()
+        const error = createUtilityRequestError(reason instanceof Error ? reason.message : String(reason), {
+          requestId, requestType: meta.kind, toolName: meta.toolName,
+          durationMs: Date.now() - startedAtMs,
+          timeoutCause: (reason as UtilityRequestError)?.timeoutCause,
+          errorCode: (reason as UtilityRequestError)?.errorCode,
         })
-        this.logLifecycle(
-          'request_timeout',
-          {
-            requestId,
-            requestType: meta.kind,
-            toolName: meta.toolName,
-            durationMs,
-            timeoutCause: meta.timeoutCause,
+        error.dispatched = dispatched
+        if (reason instanceof Error) error.name = reason.name
+        reject(error)
+      }
+      const cancel = (aborted: boolean) => {
+        if (settled) return
+        // Remove ownership before sending cancellation, even with synchronous transports.
+        const error = createUtilityRequestError(aborted ? 'Utility runtime request aborted' : 'Utility runtime request deadline exceeded', {
+          errorCode: aborted ? 'aborted' : 'deadline_exceeded',
+          timeoutCause: aborted ? undefined : meta.timeoutCause,
+        })
+        error.name = aborted ? 'AbortError' : 'TimeoutError'
+        fail(error)
+        if (dispatched && meta.kind === 'execute_tool') {
+          try { transport?.postMessage({ type: 'cancel_tool', requestId }) } catch { /* best effort */ }
+        }
+      }
+      const onAbort = () => cancel(true)
+      if (meta.signal?.aborted) { onAbort(); return }
+      if (deadline <= Date.now() || expiresAt <= Date.now()) { cancel(false); return }
+      meta.signal?.addEventListener('abort', onAbort, { once: true })
+      timeoutId = setTimeout(() => cancel(false), Math.max(0, expiresAt - Date.now()))
+      void this.initialize().then(() => {
+        if (settled) return
+        if (meta.signal?.aborted) { onAbort(); return }
+        // Never launch a shell whose stop deadline elapsed during initialization.
+        if (deadline <= Date.now() || expiresAt <= Date.now()) { cancel(false); return }
+        transport = this.process
+        if (!transport) { fail(new Error('Utility tool runtime is not available')); return }
+        this.pending.set(requestId, {
+          requestId, kind: meta.kind, toolName: meta.toolName, startedAtMs,
+          timeoutMs: meta.timeoutMs, timeoutId,
+          resolve: value => {
+            if (settled) return
+            settled = true
+            cleanup()
+            resolve(value)
           },
-          'warn'
-        )
-        reject(timeoutError)
-      }, meta.timeoutMs)
-
-      this.pending.set(requestId, {
-        requestId,
-        kind: meta.kind,
-        toolName: meta.toolName,
-        startedAtMs,
-        timeoutMs: meta.timeoutMs,
-        resolve,
-        reject,
-        timeoutId,
-      })
-
-      this.process!.postMessage(payload)
+          reject: fail,
+        })
+        // A throwing send may already have handed the request to the child.
+        dispatched = true
+        try { transport.postMessage(payload) } catch (error) { fail(error) }
+      }, fail)
     })
   }
 
   async executeTool(toolName: string, args: any, options: ToolExecutionOptions = {}): Promise<any> {
     const requestId = uuidv4()
+    const { signal, ...wireOptions } = options
+    const shell = toolName === 'bash' || toolName === 'powershell'
+    if (shell) {
+      // Carry the original execution budget across process startup/preparation.
+      wireOptions.deadlineMs = Math.min(
+        Date.now() + normalizeShellTimeoutMs(args?.timeoutMs),
+        Number.isFinite(options.deadlineMs) ? options.deadlineMs! : Infinity,
+      )
+    }
     const payload: UtilityRuntimeRequest = {
       type: 'execute_tool',
       requestId,
       toolName,
       args,
-      options,
+      options: wireOptions,
     }
 
     return await this.sendRequest<any>(payload, {
       kind: 'execute_tool',
       toolName,
-      timeoutMs: DEFAULT_EXECUTION_TIMEOUT_MS,
+      signal,
+      deadlineMs: wireOptions.deadlineMs,
+      deadlineMarginMs: shell ? SHELL_RUNTIME_MARGIN_MS : 0,
+      timeoutMs: shell ? normalizeShellTimeoutMs(args?.timeoutMs) + SHELL_RUNTIME_MARGIN_MS : DEFAULT_EXECUTION_TIMEOUT_MS,
       timeoutCause: 'execution_timeout',
     })
   }

@@ -1,5 +1,5 @@
 import type { Express } from 'express'
-import { normalizeAuthorizationToken, syncOpenRouterTokenFromElectronSession } from '../providers/electronAppAuth.js'
+import { getAuthManager } from '../../auth/runtime.js'
 import { LmStudioProvider } from '../providers/lmStudioProvider.js'
 import { HyperRouterBedrockProvider } from '../providers/hyperRouterBedrockProvider.js'
 import { HyperRouterZaiProvider } from '../providers/hyperRouterZaiProvider.js'
@@ -211,28 +211,7 @@ async function resolveRemoteAppAccessToken(
   userId?: string | null,
   accessToken?: string | null
 ): Promise<string> {
-  const directToken = normalizeAuthorizationToken(accessToken)
-  if (directToken) return directToken
-
-  // MUST be awaited: this refreshes an expiring Electron session and upserts the
-  // result into the token store, and the very next line reads that store. Left
-  // unawaited it could not affect the read it precedes, so the refresh was dead
-  // weight — and its rejection landed as an unhandled promise long after the
-  // response, which under vitest surfaced inside whichever test was running next.
-  //
-  // Still best-effort: a sync failure must not fail the request, because the stored
-  // and env-var fallbacks below can both still satisfy it.
-  await syncOpenRouterTokenFromElectronSession(tokenStore).catch(() => {})
-  const stored = userId ? tokenStore.get('openrouter', userId) : tokenStore.getLatest('openrouter')
-  const storedToken = normalizeAuthorizationToken(stored?.accessToken)
-  if (storedToken) return storedToken
-
-  const envToken = normalizeAuthorizationToken(
-    process.env.YGG_APP_ACCESS_TOKEN || process.env.YGG_ACCESS_TOKEN || process.env.SUPABASE_ACCESS_TOKEN || ''
-  )
-  if (envToken) return envToken
-
-  throw new Error('Graviton app auth token missing for OpenRouter-backed ephemeral generation.')
+  return (await getAuthManager().resolve('app')).accessToken
 }
 
 function normalizeHistoryMessage(message: any): { role: string; content: string } | null {

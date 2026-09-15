@@ -1,4 +1,5 @@
 import path from 'path'
+import { SHELL_CLEANUP_GRACE_MS } from './tools/shellExecutionPolicy.js'
 import { runBashCommand } from './tools/bash.js'
 import { runPowerShellCommand } from './tools/powershell.js'
 import { createTextFile } from './tools/createFile.js'
@@ -383,7 +384,7 @@ function initializeBuiltInToolRegistry(): void {
     })
   })
 
-  builtInTools.set('bash', async (args, { rootPath }) => {
+  builtInTools.set('bash', async (args, { rootPath, signal, deadlineMs }) => {
     const { command, description, cwd, env, timeoutMs, maxOutputChars } = args
     if (!command) throw new Error('command is required')
     if (typeof description !== 'string' || !description.trim()) {
@@ -395,11 +396,13 @@ function initializeBuiltInToolRegistry(): void {
       cwd: finalCwd,
       env,
       timeoutMs,
+      signal,
+      deadlineMs,
       maxOutputChars,
     })
   })
 
-  builtInTools.set('powershell', async (args, { rootPath }) => {
+  builtInTools.set('powershell', async (args, { rootPath, signal, deadlineMs }) => {
     const { command, description, cwd, env, timeoutMs, maxOutputChars } = args
     if (!command) throw new Error('command is required')
     if (typeof description !== 'string' || !description.trim()) {
@@ -411,6 +414,8 @@ function initializeBuiltInToolRegistry(): void {
       cwd: finalCwd,
       env,
       timeoutMs,
+      signal,
+      deadlineMs,
       maxOutputChars,
     })
   })
@@ -486,11 +491,29 @@ async function reloadCustomTools(requestId: string, reason: string | undefined):
   }
 }
 
+const activeRequests = new Map<string, { controller: AbortController; done: Promise<void> }>()
+let shuttingDown = false
+
 async function handleRequest(message: UtilityRuntimeRequest): Promise<void> {
+  if (message.type === 'cancel_tool') {
+    activeRequests.get(message.requestId)?.controller.abort()
+    return
+  }
   if (message.type === 'shutdown') {
+    shuttingDown = true
+    const active = [...activeRequests.values()]
+    for (const request of active) request.controller.abort()
+    let timer: NodeJS.Timeout | undefined
+    await Promise.race([
+      Promise.allSettled(active.map(request => request.done)),
+      new Promise<void>(resolve => { timer = setTimeout(resolve, SHELL_CLEANUP_GRACE_MS + 100) }),
+    ])
+    if (timer) clearTimeout(timer)
     postMessage({ type: 'shutdown_ack', requestId: message.requestId })
     process.exit(0)
+    return
   }
+  if (shuttingDown) return
 
   if (message.type === 'reload_custom_tools') {
     await reloadCustomTools(message.requestId, message.reason)
@@ -503,6 +526,10 @@ async function handleRequest(message: UtilityRuntimeRequest): Promise<void> {
 
   const startedAtMs = Date.now()
   const handler = builtInTools.get(message.toolName)
+  const controller = new AbortController()
+  let finish!: () => void
+  const done = new Promise<void>(resolve => { finish = resolve })
+  activeRequests.set(message.requestId, { controller, done })
 
   logLifecycle('request_start', {
     requestId: message.requestId,
@@ -511,7 +538,7 @@ async function handleRequest(message: UtilityRuntimeRequest): Promise<void> {
 
   try {
     if (handler) {
-      const result = await handler(message.args, message.options || {})
+      const result = await handler(message.args, { ...message.options, signal: controller.signal })
       const durationMs = Date.now() - startedAtMs
       postMessage({
         type: 'tool_result',
@@ -531,6 +558,7 @@ async function handleRequest(message: UtilityRuntimeRequest): Promise<void> {
 
     await ensureCustomToolsInitialized()
 
+    controller.signal.throwIfAborted()
     if (customToolRegistry.hasCustomTool(message.toolName)) {
       const result = await customToolRegistry.executeTool(message.toolName, message.args, {
         rootPath: message.options?.rootPath,
@@ -588,6 +616,9 @@ async function handleRequest(message: UtilityRuntimeRequest): Promise<void> {
       durationMs,
       error: msg,
     })
+  } finally {
+    activeRequests.delete(message.requestId)
+    finish()
   }
 }
 

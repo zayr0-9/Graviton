@@ -64,6 +64,14 @@ describe.sequential('theme_manager tool', () => {
             light: '#f8f5ef',
             dark: '#18181b',
           },
+          heimdallNodes: {
+            assistant: {
+              visibleFill: {
+                light: '#e0e7ff',
+                dark: 'rgba(129, 140, 248, 0.2)',
+              },
+            },
+          },
         },
       },
     })
@@ -83,6 +91,8 @@ describe.sequential('theme_manager tool', () => {
     expect(readResult.success).toBe(true)
     expect(readResult.exists).toBe(true)
     expect(readResult.theme?.colors.chatPanelBg.light).toBe('#f8f5ef')
+    expect(readResult.theme?.colors.heimdallNodes.assistant.visibleFill.dark).toBe('rgba(129, 140, 248, 0.2)')
+    expect(readResult.theme?.colors.heimdallNodes.ex_agent.visibleFill.dark).toBe('rgba(249, 115, 22, 0.2)')
     expect(readResult.theme?.colors.heimdallNodes.ex_agent.visibleStroke.dark).toBe('#ea580c')
     // Ensure newly added theme surfaces are persisted/sanitized by the tool schema.
     expect(readResult.theme?.colors.ideContextPreviewBg.dark).toBe('rgba(10, 10, 10, 0.95)')

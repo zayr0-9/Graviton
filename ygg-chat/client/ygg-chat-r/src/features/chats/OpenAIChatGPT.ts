@@ -5,7 +5,7 @@
 import { v4 as uuidv4 } from 'uuid'
 import { ConversationId, MessageId, ToolDefinition as SharedToolDefinition } from '../../../../../shared/types'
 import { ContentBlock, Message, ToolCall } from './chatTypes'
-import { CHATGPT_BASE_URL, CHATGPT_CODEX_ENDPOINT, getValidTokens } from './openaiOAuth'
+import { CHATGPT_BASE_URL, CHATGPT_CODEX_ENDPOINT, getValidTokens } from './chatgptAccount'
 import { loadProviderSettings } from '../../helpers/providerSettingsStorage'
 import { openStreamingWithPreFirstByteRetry } from './streamResilience'
 import { getToolsForAI } from './toolDefinitions'
@@ -48,6 +48,7 @@ function mapTools(tools: SharedToolDefinition[]) {
 function normalizeModel(model: string): string {
   const m = model.toLowerCase().replace(/\s+/g, '-')
 
+  if (m.includes('gpt-6-astra')) return 'gpt-6-astra'
   if (m.includes('gpt-5.6-sol')) return 'gpt-5.6-sol'
   if (m.includes('gpt-5.6-terra')) return 'gpt-5.6-terra'
   if (m.includes('gpt-5.6-luna')) return 'gpt-5.6-luna'

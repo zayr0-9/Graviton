@@ -193,24 +193,7 @@ export const TEST_HARNESS_CLIENT_JS = `;(function () {
       }
 
       if (completeRes.ok && payload && payload.success) {
-        state.accessToken = payload.accessToken || null
-        state.refreshToken = payload.refreshToken || null
-        state.accountId = payload.accountId || null
-        state.expiresAt = payload.expiresAt || null
-
-        var expiresAtIso = state.expiresAt ? new Date(Number(state.expiresAt)).toISOString() : null
-        await jsonFetch('/api/provider-auth/openai/token', {
-          method: 'POST',
-          body: JSON.stringify({
-            userId: ui.userId ? ui.userId.value.trim() : '',
-            accessToken: state.accessToken,
-            refreshToken: state.refreshToken,
-            accountId: state.accountId,
-            expiresAt: expiresAtIso,
-          }),
-        })
-
-        setStatus('Connected. accountId=' + (state.accountId || 'n/a'))
+        setStatus('Connected through server-managed OAuth.')
         addMessage('sys', 'OAuth connected successfully.')
         return
       }

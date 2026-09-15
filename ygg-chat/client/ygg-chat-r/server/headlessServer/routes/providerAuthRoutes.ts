@@ -1,5 +1,6 @@
+import { getAuthManager, disconnectAuth } from '../../auth/runtime.js'
 import type { Express } from 'express'
-import { JWT_CLAIM_PATH } from '../../openaiChatgptOAuth.js'
+const JWT_CLAIM_PATH = 'https://api.openai.com/auth'
 import type { ProviderTokenStore } from '../providers/tokenStore.js'
 
 interface RegisterProviderAuthRoutesDeps {
@@ -125,6 +126,7 @@ export function registerProviderAuthRoutes(app: Express, deps: RegisterProviderA
 
   const registerTokenRoutes = (providerSlug: 'openai' | 'openrouter' | 'zai' | 'bedrock', providerKey: string, opts?: { deriveAccountId?: boolean }) => {
     app.post(`/api/provider-auth/${providerSlug}/token`, (req, res) => {
+      if (providerSlug === 'openai' || providerSlug === 'openrouter') { res.status(410).json({ error: 'OAuth tokens are server-owned. Use the login flow.' }); return }
       const payload = normalizePayload(req.body)
 
       if (!payload.userId || !payload.accessToken) {
@@ -157,6 +159,7 @@ export function registerProviderAuthRoutes(app: Express, deps: RegisterProviderA
     })
 
     app.get(`/api/provider-auth/${providerSlug}/token`, (req, res) => {
+      if (providerSlug === 'openai' || providerSlug === 'openrouter') { const snapshot = getAuthManager().snapshot(providerSlug === 'openai' ? 'codex' : 'app'); res.json({ success: true, hasToken: snapshot.status === 'ready' || snapshot.status === 'refreshing', snapshot }); return }
       const userId = String(req.query.userId ?? req.query.user_id ?? '')
       if (!userId) {
         res.status(400).json({ success: false, error: 'userId query param is required' })
@@ -168,6 +171,7 @@ export function registerProviderAuthRoutes(app: Express, deps: RegisterProviderA
     })
 
     app.delete(`/api/provider-auth/${providerSlug}/token`, (req, res) => {
+      if (providerSlug === 'openai' || providerSlug === 'openrouter') { disconnectAuth(providerSlug === 'openai' ? 'codex' : 'app'); res.json({ success: true }); return }
       const userId = String(req.query.userId ?? req.query.user_id ?? '')
       if (!userId) {
         res.status(400).json({ success: false, error: 'userId query param is required' })
@@ -189,8 +193,7 @@ export function registerProviderAuthRoutes(app: Express, deps: RegisterProviderA
     let openRouterModels = [...DEFAULT_OPENROUTER_MODELS]
 
     if (userId) {
-      const tokenRecord = tokenStore.get('openrouter', userId)
-      const storedAccessToken = normalizeAuthorizationToken(tokenRecord?.accessToken)
+      const storedAccessToken = await getAuthManager().resolve('app').then(record => record.accessToken).catch(() => null)
 
       if (storedAccessToken) {
         try {
@@ -211,6 +214,7 @@ export function registerProviderAuthRoutes(app: Express, deps: RegisterProviderA
           name: 'openaichatgpt',
           models: [
             'gpt-5.6-sol',
+            'gpt-6-astra',
             'gpt-5.6-terra',
             'gpt-5.6-luna',
             'gpt-5.5',

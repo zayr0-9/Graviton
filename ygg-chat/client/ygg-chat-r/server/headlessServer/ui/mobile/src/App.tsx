@@ -743,17 +743,6 @@ export const App: React.FC = () => {
         return
       }
 
-      if (!result.accessToken || !result.refreshToken || !result.accountId) {
-        throw new Error('OAuth completed without required token fields')
-      }
-
-      await mobileApi.storeOpenAiToken({
-        userId: selectedUserId,
-        accessToken: result.accessToken,
-        refreshToken: result.refreshToken,
-        expiresAt: result.expiresAt,
-        accountId: result.accountId,
-      })
 
       setPendingOpenAiState(null)
       setOpenAiConnected(true)

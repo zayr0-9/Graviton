@@ -20,6 +20,7 @@ Open this when changing:
 - `client/ygg-chat-r/src/features/chats/chatTypes.ts`: `ContentBlock`, `StreamEvent`, `ToolCall`, and stream state types.
 - `client/ygg-chat-r/src/index.css`: global Tailwind/prose/Highlight.js/KaTeX styling and animation utilities used by rendered messages.
 - `client/ygg-chat-r/src/components/MarkdownLink/MarkdownLink.tsx`: custom anchor renderer used by chat Markdown.
+- `client/ygg-chat-r/src/components/MermaidDiagram/MermaidDiagram.tsx`: secure, lazy Mermaid renderer shared by chat and plan Markdown surfaces.
 
 ## End-to-End Rendering Flow
 
@@ -94,7 +95,8 @@ Plugins:
 - `rehype-katex` for math rendering.
 
 Custom component renderers:
-- `pre: PreRenderer` wraps fenced code blocks in a bordered `not-prose` container and adds a copy button;
+- fenced `mermaid` blocks are detected by the `pre` renderer and rendered through the shared `MermaidDiagram`; completion-aware preprocessing temporarily marks an unmatched Mermaid fence as `mermaid-pending`, so live streams show ordinary source and do not invoke Mermaid until the matching closing fence arrives. Mermaid is lazy-loaded, uses strict security, follows light/dark mode, and falls back to source text on syntax errors. Each completed diagram can open a diagram-only fullscreen viewer with drag panning, cursor-centered wheel/trackpad zoom, zoom controls, fit-to-view, and 100% reset;
+- `pre: PreRenderer` wraps other fenced code blocks in a bordered `not-prose` container and adds a copy button;
 - `code: CodeRenderer` applies custom inline-code colors and leaves block code to Highlight.js/pre styling;
 - `a: MarkdownLink` renders links through the app's link component.
 

@@ -93,6 +93,7 @@ function connect(options: { baseURL: string; headers: Headers; signal?: AbortSig
       settled = true
       clearTimeout(timeout)
       options.signal?.removeEventListener('abort', onAbort)
+      socket.off('unexpected-response', onResponse)
       socket.off('open', onOpen)
       socket.off('error', onError)
       socket.off('close', onClose)
@@ -101,6 +102,11 @@ function connect(options: { baseURL: string; headers: Headers; signal?: AbortSig
         reject(error)
       } else resolve(socket)
     }
+    const onResponse = (_request: unknown, response: import('node:http').IncomingMessage) => {
+      response.resume()
+      finish(Object.assign(new Error('ChatGPT WebSocket handshake rejected'), { status: response.statusCode }))
+    }
+    socket.on('unexpected-response', onResponse)
     const onOpen = () => finish()
     const onError = (error: Error) => finish(error)
     const onClose = (_code: number, reason: Buffer) => finish(new Error(`websocket closed before connection was established${reason?.length ? `: ${reason.toString()}` : ''}`))

@@ -17,29 +17,29 @@ Use this when changing:
 
 ## Key Files
 
-- `client/ygg-chat-r/electron/tools/*`: built-in tool implementations.
-- `client/ygg-chat-r/electron/tools/runtime/*`: utility tool runtime protocol/host.
-- `client/ygg-chat-r/electron/toolRuntimeUtility.ts`: utility runtime entry.
-- `client/ygg-chat-r/electron/localServer.ts`: embedded local server (prefers :3002). Initializes `toolOrchestrator`, registers built-in/custom/MCP tool handlers with it, and hosts the legacy `POST /api/tools/execute` + job routes (submit/list/get/cancel, WebSocket subscribe). Mounts the headless server (`registerHeadlessServerRoutes`) which owns the chat loop.
-- `client/ygg-chat-r/electron/tools/orchestrator/*`: background job queue/lifecycle (`toolOrchestrator` singleton). The SAME in-process orchestrator serves both the legacy job routes and the server chat/subagent loops.
-- `client/ygg-chat-r/electron/headlessServer/index.ts` (`executeToolViaOrchestrator`): the leaf `ToolExecutor` for the server-owned chat + subagent loops. Parses args, honors `context.signal`, `toolOrchestrator.submit(...)`, then polls `toolOrchestrator.getJob(...)` every 100ms until terminal or `timeoutMs` (clamped 1s–600s, default 300s). No HTTP round-trip, no renderer involvement.
-- `client/ygg-chat-r/electron/headlessServer/services/multiCallExecutor.ts`: in-process `multi_call` composite dispatcher. Runs up to 20 validated leaf calls sequentially or with concurrency capped at 4, preserves result order, forwards abort/workspace context, and routes each nested call back through the caller's policy-aware executor. Recursive `multi_call`, `html_renderer`, and `plan_md` with `action:'display'` are rejected; `subagent` is permitted for parent-chat batches.
-- `client/ygg-chat-r/electron/headlessServer/services/toolLoopService.ts` (`ToolLoopService.run`): server-side agent loop; calls `this.executeTool(toolCall, ctx)` per tool call.
-- `client/ygg-chat-r/electron/headlessServer/services/chatOrchestrator.ts` (`createChatPausingExecutor`): per-run executor wrapper that pauses each tool call for permission/clarify before delegating to the base executor.
+- `client/ygg-chat-r/server/tools/*`: built-in tool implementations.
+- `client/ygg-chat-r/server/tools/runtime/*`: utility tool runtime protocol/host.
+- `client/ygg-chat-r/server/toolRuntimeUtility.ts`: utility runtime entry.
+- `client/ygg-chat-r/server/localServer.ts`: embedded local server (prefers :3002). Initializes `toolOrchestrator`, registers built-in/custom/MCP tool handlers with it, and hosts the legacy `POST /api/tools/execute` + job routes (submit/list/get/cancel, WebSocket subscribe). Mounts the headless server (`registerHeadlessServerRoutes`) which owns the chat loop.
+- `client/ygg-chat-r/server/tools/orchestrator/*`: background job queue/lifecycle (`toolOrchestrator` singleton). The SAME in-process orchestrator serves both the legacy job routes and the server chat/subagent loops.
+- `client/ygg-chat-r/server/headlessServer/index.ts` (`executeToolViaOrchestrator`): the leaf `ToolExecutor` for the server-owned chat + subagent loops. Parses args, honors `context.signal`, `toolOrchestrator.submit(...)`, then polls `toolOrchestrator.getJob(...)` every 100ms until terminal or `timeoutMs` (clamped 1s–600s, default 300s). No HTTP round-trip, no renderer involvement.
+- `client/ygg-chat-r/server/headlessServer/services/multiCallExecutor.ts`: in-process `multi_call` composite dispatcher. Runs up to 20 validated leaf calls sequentially or with concurrency capped at 4, preserves result order, forwards abort/workspace context, and routes each nested call back through the caller's policy-aware executor. Recursive `multi_call`, `html_renderer`, and `plan_md` with `action:'display'` are rejected; `subagent` is permitted for parent-chat batches.
+- `client/ygg-chat-r/server/headlessServer/services/toolLoopService.ts` (`ToolLoopService.run`): server-side agent loop; calls `this.executeTool(toolCall, ctx)` per tool call.
+- `client/ygg-chat-r/server/headlessServer/services/chatOrchestrator.ts` (`createChatPausingExecutor`): per-run executor wrapper that pauses each tool call for permission/clarify before delegating to the base executor.
 - `client/ygg-chat-r/src/services/ToolJobManager.ts`: renderer client for the tool-jobs UI/background jobs (still live — `ToolJobsModal`, `useToolJobs`). It subscribes first, reconciles `/jobs` after every subscription/reconnect, fetches active jobs independently of history pagination, and exposes acknowledged live status. It is not part of the main chat loop's execution path.
-- `client/ygg-chat-r/electron/tools/__tests__/*`: tool tests.
-- `client/ygg-chat-r/electron/tools/TEST_PLAN.md`: tool test plan.
+- `client/ygg-chat-r/server/tools/__tests__/*`: tool tests.
+- `client/ygg-chat-r/server/tools/TEST_PLAN.md`: tool test plan.
 
 ## Server-Owned Chat Loop Execution
 
 The main chat agent loop no longer runs in the React renderer; it runs inside the local headless Express server (127.0.0.1:3002) in the Electron main process. Tool execution follows the loop, not the renderer:
 
-1. `ChatOrchestrator.runMessage` (`electron/headlessServer/services/chatOrchestrator.ts`) builds a per-run `ToolLoopService`.
+1. `ChatOrchestrator.runMessage` (`server/headlessServer/services/chatOrchestrator.ts`) builds a per-run `ToolLoopService`.
 2. `ToolLoopService.run` (`toolLoopService.ts`) drives turns and calls `this.executeTool(toolCall, ctx)` for each tool call.
 3. `executeTool` is the pausing wrapper `createChatPausingExecutor` (`chatOrchestrator.ts:95`). Per tool call it optionally pauses on `DecisionBroker.requestDecision` (unless the stream is auto-approve or the tool is in `ALWAYS_BYPASS_TOOLS` = `skill_manager`/`mcp_manager`/`multi_call`, or a non-`invoke` `custom_tool_manager` action). PreToolUse hooks may deny/rewrite args before any prompt.
 4. On approval it delegates to the base executor `executeToolViaOrchestrator` (`index.ts:173`), which runs the tool through the shared in-process `toolOrchestrator` (same registered handlers as the legacy job routes).
 
-Permission/clarify decisions are NOT renderer-owned pre-checks anymore. The loop pauses server-side and asks via SSE `permission_required` / `clarify_required`; the renderer answers with `POST /api/resume` (`electron/headlessServer/routes/chatRoutes.ts`). Broker key = `` `${streamId}::${toolCallId}` `` (`electron/headlessServer/services/decisionBroker.ts`). Abort/disconnect (`res.on('close')`) rejects pending decisions and cancels the in-flight orchestrator job. Subagents use the same base executor via `SubagentRunService`.
+Permission/clarify decisions are NOT renderer-owned pre-checks anymore. The loop pauses server-side and asks via SSE `permission_required` / `clarify_required`; the renderer answers with `POST /api/resume` (`server/headlessServer/routes/chatRoutes.ts`). Broker key = `` `${streamId}::${toolCallId}` `` (`server/headlessServer/services/decisionBroker.ts`). Abort/disconnect (`res.on('close')`) rejects pending decisions and cancels the in-flight orchestrator job. Subagents use the same base executor via `SubagentRunService`.
 
 ## Data Flow
 
@@ -54,7 +54,11 @@ Permission/clarify decisions are NOT renderer-owned pre-checks anymore. The loop
 
 - File tools must respect workspace/root path and safety constraints.
 - Mutating operations should be explicit and auditable.
-- Shell tools must avoid hanging interactive commands and should capture bounded output.
+- Foreground `bash` and `powershell` commands have a 180-second (3-minute) default and maximum. Zero/invalid timeouts use the default. Shell execution includes preparation, captures bounded stdout/stderr, and returns a structured timeout/cancellation result after at most 300ms cleanup without relying on the child `close` event.
+- `server/tools/shellExecutionPolicy.ts` defines the shared timeout policy. The shell runner owns process cleanup; the orchestrator passes an AbortSignal and a shell deadline before its own timeout so partial output can return first. AbortSignal stays in-process; utility IPC carries per-request cancellation instead.
+- Do not retry shell commands after uncertain utility execution. A transport timeout or process failure after dispatch can leave an executed command. Built-in/custom utility fallback now requires a known pre-dispatch failure and no cancellation; this also prevents duplicate file edits on transport failures.
+- Caller deadlines include queue time. Expired jobs do not invoke handlers. Cancelled jobs retain their terminal status even if a handler resolves later. Utility startup and shell preparation consume the original execution budget.
+- Process cleanup is best effort: POSIX groups receive TERM then KILL; Windows uses bounded taskkill with direct-child fallback; WSL uses an invocation-owned setsid group. Unresponsive WSL or descendants that deliberately detach can survive, but the tool still returns at its deadline plus cleanup grace. JavaScript timers require a responsive event loop.
 - Tool result shapes should remain stable for ChatMessage/tool rendering.
 - The chat loop and the legacy job routes execute through the SAME in-process `toolOrchestrator` and its registered handlers — keep tool registration in `localServer.ts` and any new execution entry point consistent, so behaviour is identical regardless of caller.
 - Large/model-only tool payloads use split channels: `displayContent`/`persistedContent` stay compact, while ephemeral `modelContent` is used only for the immediate provider continuation. Never persist `modelContent` in chat history, tool-job rows, hooks, or logs.
@@ -70,8 +74,8 @@ Permission/clarify decisions are NOT renderer-owned pre-checks anymore. The loop
 - On Windows/Electron, Bash may route through WSL/path conversion; PowerShell may be required for native paths.
 - `edit_file` uses layered matching and line hints; preserve validation semantics.
 - `edit_file` and `multi_edit` in execute mode create managed per-stream undo backups through `streamUndoManager`; keep local-server and utility-runtime registration behavior aligned.
-- Tests may depend on temporary filesystem harnesses in `electron/tools/__tests__/helpers`.
-- Two large test fixtures under `electron/tools/__tests__/` use a `.ts.test` extension (`dummyfile.ts.test`, `dummyFilechatAction.ts.test`) and are verbatim snapshots of pre-migration source read as plain text by `editFile.test.ts`. They are never imported/compiled but still contain retired symbols (e.g. `claudeCode`, `dualSyncManager`); grepping the tree will hit them — they are fixtures, not live code.
+- Tests may depend on temporary filesystem harnesses in `server/tools/__tests__/helpers`.
+- Two large test fixtures under `server/tools/__tests__/` use a `.ts.test` extension (`dummyfile.ts.test`, `dummyFilechatAction.ts.test`) and are verbatim snapshots of pre-migration source read as plain text by `editFile.test.ts`. They are never imported/compiled but still contain retired symbols (e.g. `claudeCode`, `dualSyncManager`); grepping the tree will hit them — they are fixtures, not live code.
 
 ## Testing and Validation
 

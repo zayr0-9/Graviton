@@ -1,6 +1,5 @@
 import { isCommunityMode } from '../config/runtimeMode'
 import { supabase } from '../lib/supabase'
-import { getSessionFromStorage } from '../lib/jwtUtils'
 import { buildLocalApiUrl, environment, localApi, publicApiCall } from '../utils/api'
 
 const APP_STORE_BUCKET = 'updates'
@@ -332,17 +331,11 @@ export async function uploadCommunityApp(file: File): Promise<AppStoreApp> {
     throw new Error('Community app uploads are only available in the desktop app.')
   }
 
-  const session = getSessionFromStorage()
-  const token = session?.access_token
-  if (!token) {
-    throw new Error('You must be signed in to upload apps.')
-  }
 
   const buffer = await file.arrayBuffer()
   const response = await fetch(await buildLocalApiUrl('/app-store/community/upload'), {
     method: 'POST',
     headers: {
-      Authorization: `Bearer ${token}`,
       'Content-Type': 'application/zip',
       'x-app-store-filename': file.name,
     },

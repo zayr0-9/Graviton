@@ -41,7 +41,7 @@ describe('provider routing', () => {
           conversationId: 'c1',
         },
       })
-    ).rejects.toThrow('Graviton app auth token missing')
+    ).rejects.toThrow('Sign in again to continue.')
 
     vi.spyOn(globalThis, 'fetch').mockResolvedValue({
       ok: false,
@@ -91,6 +91,6 @@ describe('provider routing', () => {
         history: [],
         userContent: 'hello',
       })
-    ).rejects.toThrow('OpenAI ChatGPT auth missing')
+    ).rejects.toThrow('Sign in again to continue.')
   })
 })

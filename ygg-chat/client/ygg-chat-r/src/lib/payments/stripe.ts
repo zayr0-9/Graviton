@@ -5,7 +5,7 @@ import type {
   CreditHistoryEntry,
 } from './types'
 import { isCommunityMode } from '../../config/runtimeMode'
-import { API_BASE } from '../../utils/api'
+import { buildLocalApiUrl } from '../../utils/api'
 import { TIER_INFOS } from '../../constants/pricingData'
 
 const assertPaymentsEnabled = () => {
@@ -30,7 +30,7 @@ export class StripePaymentProvider implements PaymentProvider {
     email?: string,
   ): Promise<{ sessionId: string; url: string }> {
     assertPaymentsEnabled()
-    const response = await fetch(`${API_BASE}/stripe/create-checkout-session`, {
+    const response = await fetch(await buildLocalApiUrl('/cloud/stripe/create-checkout-session'), {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -50,7 +50,7 @@ export class StripePaymentProvider implements PaymentProvider {
 
   async getSubscriptionStatus(userId: string): Promise<SubscriptionStatus> {
     assertPaymentsEnabled()
-    const response = await fetch(`${API_BASE}/stripe/subscription-status?userId=${userId}`)
+    const response = await fetch(await buildLocalApiUrl(`/cloud/stripe/subscription-status?userId=${userId}`))
 
     if (!response.ok) {
       const errorData = await response.json().catch(() => ({
@@ -64,7 +64,7 @@ export class StripePaymentProvider implements PaymentProvider {
 
   async cancelSubscription(userId: string): Promise<void> {
     assertPaymentsEnabled()
-    const response = await fetch(`${API_BASE}/stripe/cancel-subscription`, {
+    const response = await fetch(await buildLocalApiUrl('/cloud/stripe/cancel-subscription'), {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -83,7 +83,7 @@ export class StripePaymentProvider implements PaymentProvider {
   async getCreditHistory(userId: string, limit: number = 100): Promise<CreditHistoryEntry[]> {
     assertPaymentsEnabled()
     const response = await fetch(
-      `${API_BASE}/stripe/credit-history?userId=${userId}&limit=${limit}`,
+      await buildLocalApiUrl(`/cloud/stripe/credit-history?userId=${userId}&limit=${limit}`),
     )
 
     if (!response.ok) {

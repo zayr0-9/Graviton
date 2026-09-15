@@ -201,9 +201,7 @@ export function buildServerLoopRequest(operation: ServerLoopOperation, params: B
   // reach the body and the lmstudio/zai request stays byte-for-byte unchanged.
   if (typeof params.temperature === 'number') body.temperature = params.temperature
   if (params.serviceTier !== undefined) body.serviceTier = params.serviceTier
-  // ChatGPT auth: forward only-when-set so non-ChatGPT bodies are unchanged.
-  if (params.accessToken) body.accessToken = params.accessToken
-  if (params.accountId) body.accountId = params.accountId
+  // OAuth credentials are resolved exclusively by the server.
 
   // Auto-compaction / context settings: forward only-when-set (server keeps its default when
   // a field is absent). autoCompactionEnabled is sent even when false — that disables it.

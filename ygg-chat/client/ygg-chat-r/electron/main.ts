@@ -1,5 +1,7 @@
+import { getAuthManager, publicAuthState, disconnectAuth, importLegacyRenderer, enableLocalLogin } from '../server/auth/runtime.js'
+import { startAppLogin, completeAppCode, completeAppCallback, cancelAppLogin } from '../server/auth/appLogin.js'
 import Conf from 'conf'
-import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, nativeTheme, screen, shell, Tray, webContents } from 'electron'
+import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, nativeTheme, powerMonitor, screen, shell, Tray, webContents } from 'electron'
 import autoUpdaterPkg from 'electron-updater'
 import fs from 'fs'
 import http from 'http'
@@ -20,9 +22,7 @@ import { ensureManagedCustomToolsInitialized } from '../server/tools/customToolL
 import { ensureManagedThemesInitialized } from '../server/tools/themeManager.js'
 import { detectPathType, getWSLCommandArgs, isWindows } from '../server/utils/wslBridge.js'
 import { OpenAiChatgptProvider } from '../server/headlessServer/providers/openaiChatgptProvider.js'
-import { getValidTokens, clearTokens as clearOpenAIStoredTokens, fetchOpenAIUsageStatus } from '../server/openaiChatgptOAuth.js'
-import { createAppAuthTokenManager } from '../server/headlessServer/services/appAuthTokenManager.js'
-import { resolveGatewayFlags } from '../server/headlessServer/config/gatewayFlags.js'
+import { fetchOpenAIUsageStatus } from '../server/auth/codexUsage.js'
 
 // Destructure autoUpdater from CommonJS module (ESM/CJS interop)
 const { autoUpdater } = autoUpdaterPkg
@@ -1013,11 +1013,18 @@ if (!isDebugMode) {
   console.log('[Electron] Debug mode enabled: single-instance lock disabled')
 }
 
+async function syncAuthenticatedProfile(user: any): Promise<void> {
+  if (!localServerPort) throw new Error('Local service is not ready')
+  const response = await fetch(`http://127.0.0.1:${localServerPort}/api/local/users/merge`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ fromUserId: 'a7c485cb-99e7-4cf2-82a9-6e23b55cdfc3', toUserId: user.id, toUsername: user.user_metadata?.name || user.email?.split('@')[0] || 'user', toCreatedAt: user.created_at }),
+  })
+  if (!response.ok) throw new Error('Signed in, but local profile synchronization failed. Retry signing in.')
+}
 // Handle OAuth callback from external browser
 function handleOAuthCallback(url: string) {
-  // Send the callback URL to the renderer process
+  void completeAppCallback(url).then(async result => { await syncAuthenticatedProfile(result.user); mainWindow?.webContents.send('auth:changed', publicAuthState()) }).catch(() => mainWindow?.webContents.send('auth:login-error', 'Sign-in could not be completed. Please try again.'))
   if (mainWindow && mainWindow.webContents) {
-    mainWindow.webContents.send('oauth:callback', url)
 
     // Focus the window
     if (mainWindow.isMinimized()) mainWindow.restore()
@@ -1078,8 +1085,13 @@ app.whenReady().then(async () => {
           fallbackPorts: LOCAL_SERVER_FALLBACK_PORTS,
           allowEphemeralPort: LOCAL_SERVER_ALLOW_EPHEMERAL_PORT,
         }),
-        buildElectronHostCapabilities()
+        buildElectronHostCapabilities({
+          get: key => getFromStore(key),
+          set: (key, value) => { if (key.startsWith('managed_auth') && !store) throw new Error('Durable authentication storage is unavailable'); if (!setInStore(key, value)) throw new Error('Settings persistence failed') },
+          delete: key => { if (!deleteFromStore(key)) throw new Error('Settings deletion failed') },
+        })
       )
+      powerMonitor.on('resume', () => { void getAuthManager().check().catch(() => undefined) })
       localServerStarted = true
       localServerPort = localServerHandle.port
       localServerUrl = `http://${LOCAL_SERVER_ADVERTISE_HOST}:${localServerHandle.port}`
@@ -1183,17 +1195,18 @@ app.on('before-quit', () => {
 // IPC Handlers for Electron-specific features
 
 // Authentication (optional - for cloud sync)
-ipcMain.handle('auth:login', async (_event, _credentials) => {
+authHandle('auth:login', async (_event, _credentials) => {
   // In Electron, we can store credentials securely using electron-store or keytar
   // For now, return a simple success
   // console.log('[Electron IPC] auth:login called')
-  return { success: true, userId: 'electron-user-id' }
+  if (_credentials?.email || _credentials?.password) throw new Error('Use Google or GitHub sign-in')
+  return enableLocalLogin()
 })
 
-ipcMain.handle('auth:logout', async () => {
+authHandle('auth:logout', async () => {
   // console.log('[Electron IPC] auth:logout called')
-  // Clear stored credentials
-  return { success: true }
+  cancelAppLogin()
+  return disconnectAuth('app')
 })
 
 // Phase 4 Slice 2 — server as sole Supabase-token refresher.
@@ -1202,22 +1215,33 @@ ipcMain.handle('auth:logout', async () => {
 // `auth_session` at most once process-wide. Gated on the server `gateway.tokenOwner`
 // flag: when off we report ownerEnabled:false so the renderer keeps self-refreshing
 // (safe fallback / no half-rollout). Never throws — errors degrade to ownerEnabled:false.
-ipcMain.handle('app-auth:get-fresh-token', async (_event, opts?: { forceRefresh?: boolean }) => {
-  try {
-    if (!resolveGatewayFlags().tokenOwner) {
-      return { ownerEnabled: false as const, userId: null, accessToken: null }
-    }
-    const manager = createAppAuthTokenManager()
-    const token = await manager.getFreshAppToken(opts?.forceRefresh ? { forceRefresh: true } : undefined)
-    return { ownerEnabled: true as const, userId: token.userId, accessToken: token.accessToken }
-  } catch (error) {
-    console.error('[Electron IPC] app-auth:get-fresh-token failed:', error)
-    return { ownerEnabled: false as const, userId: null, accessToken: null, error: String(error) }
+function authHandle(channel: string, handler: (...args: any[]) => any): void {
+  ipcMain.handle(channel, (event, ...args) => {
+    if (!mainWindow || event.sender !== mainWindow.webContents || event.senderFrame !== event.sender.mainFrame) throw new Error('Untrusted auth caller')
+    return handler(event, ...args)
+  })
+}
+authHandle('auth:status', () => publicAuthState())
+authHandle('auth:start', (_event, provider: string, oob: boolean) => ({ url: startAppLogin(provider, oob) }))
+authHandle('auth:code', async (_event, code: string) => { const result = await completeAppCode(code); await syncAuthenticatedProfile(result.user); return publicAuthState() })
+authHandle('auth:cancel', () => { cancelAppLogin(); return true })
+authHandle('auth:migrate', (_event, values) => { importLegacyRenderer(values); return publicAuthState() })
+authHandle('auth:check', async () => { await getAuthManager().check(); return publicAuthState() })
+let authEventsAttached = false
+authHandle('auth:subscribe', () => {
+  if (!authEventsAttached) {
+    authEventsAttached = true
+    getAuthManager().subscribe(() => {
+      for (const window of BrowserWindow.getAllWindows()) if (!window.isDestroyed()) window.webContents.send('auth:changed', publicAuthState())
+    })
   }
+  return publicAuthState()
 })
 
 // Storage - Persistent storage using electron-store with fallback
+const isAuthStorageKey = (key: string) => !key || ['managed_auth_v1', 'managed_auth_migration_v1', 'auth_session', 'openai_chatgpt_tokens'].some(root => key === root || key.startsWith(`${root}.`) || root.startsWith(`${key}.`))
 ipcMain.handle('storage:get', async (_event, key: string) => {
+  if (isAuthStorageKey(key)) throw new Error('Use the authentication API')
   // console.log('[Electron IPC] storage:get called for key:', key)
 
   if (!storeInitialized) {
@@ -1236,6 +1260,7 @@ ipcMain.handle('storage:get', async (_event, key: string) => {
 })
 
 ipcMain.handle('storage:set', async (_event, key: string, value: any) => {
+  if (isAuthStorageKey(key)) throw new Error('Use the authentication API')
   // console.log('[Electron IPC] storage:set called for key:', key)
 
   if (!storeInitialized) {
@@ -1270,6 +1295,9 @@ ipcMain.handle('storage:set', async (_event, key: string, value: any) => {
 
 // Clear all storage (for logout/account switching)
 ipcMain.handle('storage:clear', async () => {
+  cancelAppLogin()
+  disconnectAuth('app')
+  disconnectAuth('codex')
   // console.log('[Electron IPC] storage:clear called - clearing all stored data')
 
   if (!storeInitialized) {
@@ -1364,7 +1392,7 @@ ipcMain.handle('autoUpdater:installNow', async () => {
 })
 
 // Open OAuth URL in external browser
-ipcMain.handle('auth:openExternal', async (_event, url: string) => {
+authHandle('auth:openExternal', async (_event, url: string) => {
   // console.log('[Electron IPC] Opening external URL for OAuth:', url)
   try {
     await shell.openExternal(url)
@@ -2156,7 +2184,7 @@ ipcMain.handle('window:getState', async () => {
 })
 
 // Open OAuth URL in a new BrowserWindow (for WSL/Linux compatibility)
-ipcMain.handle('auth:openOAuthWindow', async (_event, url: string) => {
+authHandle('auth:openOAuthWindow', async (_event, url: string) => {
   // console.log('[Electron IPC] Opening OAuth window:', url)
 
   return new Promise(resolve => {
@@ -2437,17 +2465,17 @@ function sendOpenAIStreamEvent(sender: Electron.WebContents, streamId: string, c
 }
 
 ipcMain.handle('openai:chatgpt:isAuthenticated', async () => {
-  const tokens = await getValidTokens(openAIStorageAdapter())
-  return Boolean(tokens?.accessToken)
+  const status = getAuthManager().snapshot('codex').status
+  return status === 'ready' || status === 'refreshing'
 })
 
 ipcMain.handle('openai:chatgpt:clearTokens', async () => {
-  clearOpenAIStoredTokens(openAIStorageAdapter())
+  disconnectAuth('codex')
   return { success: true }
 })
 
 ipcMain.handle('openai:chatgpt:usage', async () => {
-  return fetchOpenAIUsageStatus(openAIStorageAdapter())
+  return fetchOpenAIUsageStatus()
 })
 
 ipcMain.handle('openai:chatgpt:stream-start', async (event, payload: any) => {
@@ -2465,7 +2493,8 @@ ipcMain.handle('openai:chatgpt:stream-start', async (event, payload: any) => {
           delete: () => {},
         } as any,
       })
-      const tokens = await getValidTokens(openAIStorageAdapter())
+      const credential = await getAuthManager().resolve('codex')
+      const tokens = { accessToken: credential.accessToken, accountId: credential.userId }
       if (!tokens) {
         throw new Error('OpenAI authentication required. Please sign in with your ChatGPT Plus/Pro account.')
       }

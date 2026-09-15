@@ -1,7 +1,8 @@
 import express from 'express'
 import type { AddressInfo } from 'node:net'
 import type { Server } from 'node:http'
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+vi.mock('../../../auth/runtime.js', () => ({ getAuthManager: () => ({ resolve: async () => ({ accessToken: 'live-token' }) }) }))
 import { ProviderTokenStore } from '../../providers/tokenStore.js'
 import { registerProviderAuthRoutes } from '../providerAuthRoutes.js'
 
@@ -46,65 +47,16 @@ describe('registerProviderAuthRoutes', () => {
     })
   })
 
-  it('stores and clears openai token records', async () => {
-    const putToken = await postJson(baseUrl, '/api/provider-auth/openai/token', {
-      userId: 'u1',
-      accessToken: 'token.without.jwt.claim',
-      accountId: 'acct-1',
-      refreshToken: 'ref-abc',
-    })
-    expect(putToken.status).toBe(200)
-
-    const getToken = await fetch(`${baseUrl}/api/provider-auth/openai/token?userId=u1`)
-    expect(getToken.status).toBe(200)
-    const tokenPayload = (await getToken.json()) as any
-    expect(tokenPayload.success).toBe(true)
-    expect(tokenPayload.hasToken).toBe(true)
-    expect(tokenPayload.token).toBeUndefined()
-
-    expect(tokenStore.get('openaichatgpt', 'u1')?.accountId).toBe('acct-1')
-    expect(tokenStore.get('openaichatgpt', 'u1')?.accessToken).toBe('token.without.jwt.claim')
-
-    const putBootstrapToken = await postJson(baseUrl, '/api/provider-auth/openai/token', {
-      userId: 'electron-openai-chatgpt',
-      accessToken: 'bootstrap.token.without.jwt.claim',
-      accountId: 'acct-bootstrap',
-      refreshToken: 'ref-bootstrap',
-    })
-    expect(putBootstrapToken.status).toBe(200)
-    expect(tokenStore.get('openaichatgpt', 'electron-openai-chatgpt')?.accountId).toBe('acct-bootstrap')
-
-    const delToken = await deleteRequest(baseUrl, '/api/provider-auth/openai/token?userId=u1')
-    expect(delToken.status).toBe(200)
-    expect(tokenStore.get('openaichatgpt', 'u1')).toBeNull()
-    expect(tokenStore.get('openaichatgpt', 'electron-openai-chatgpt')).not.toBeNull()
-
-    const delBootstrapToken = await deleteRequest(
-      baseUrl,
-      '/api/provider-auth/openai/token?userId=electron-openai-chatgpt'
-    )
-    expect(delBootstrapToken.status).toBe(200)
-    expect(tokenStore.get('openaichatgpt', 'electron-openai-chatgpt')).toBeNull()
+  it('rejects raw OpenAI OAuth credential registration without creating a mirror', async () => {
+    const response = await postJson(baseUrl, '/api/provider-auth/openai/token', { userId: 'u1', accessToken: 'secret', refreshToken: 'secret' })
+    expect(response.status).toBe(410)
+    expect(tokenStore.getLatest('openaichatgpt')).toBeNull()
   })
 
-  it('stores and clears openrouter token records', async () => {
-    const putToken = await postJson(baseUrl, '/api/provider-auth/openrouter/token', {
-      userId: 'u2',
-      accessToken: 'or-key',
-    })
-    expect(putToken.status).toBe(200)
-
-    const getToken = await fetch(`${baseUrl}/api/provider-auth/openrouter/token?userId=u2`)
-    expect(getToken.status).toBe(200)
-    const tokenPayload = (await getToken.json()) as any
-    expect(tokenPayload.success).toBe(true)
-    expect(tokenPayload.hasToken).toBe(true)
-    expect(tokenPayload.token).toBeUndefined()
-    expect(tokenStore.get('openrouter', 'u2')?.accessToken).toBe('or-key')
-
-    const delToken = await deleteRequest(baseUrl, '/api/provider-auth/openrouter/token?userId=u2')
-    expect(delToken.status).toBe(200)
-    expect(tokenStore.get('openrouter', 'u2')).toBeNull()
+  it('rejects raw app OAuth credential registration without creating a mirror', async () => {
+    const response = await postJson(baseUrl, '/api/provider-auth/openrouter/token', { userId: 'u2', accessToken: 'secret' })
+    expect(response.status).toBe(410)
+    expect(tokenStore.getLatest('openrouter')).toBeNull()
   })
 
   it('stores and clears bedrock credential records', async () => {
@@ -188,7 +140,7 @@ describe('registerProviderAuthRoutes', () => {
     expect(providerNames).toContain('zai')
     expect(providerNames).toContain('bedrock')
     const openAiProvider = payload.providers.find((provider: any) => provider.name === 'openaichatgpt')
-    expect(openAiProvider?.models).toEqual(expect.arrayContaining(['gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna']))
+    expect(openAiProvider?.models).toEqual(expect.arrayContaining(['gpt-6-astra', 'gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna']))
     const bedrockProvider = payload.providers.find((provider: any) => provider.name === 'bedrock')
     expect(bedrockProvider?.models).toContain('anthropic.claude-3-5-sonnet-20241022-v2:0')
   })

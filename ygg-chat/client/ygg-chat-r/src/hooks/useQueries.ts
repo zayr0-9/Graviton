@@ -25,7 +25,7 @@ import {
   type BranchDebugData,
 } from '../features/chats/branchDebug'
 import { fetchLmStudioModels } from '../features/chats/LMStudio'
-import { getOpenAIChatGPTModels } from '../features/chats/openaiOAuth'
+import { getOpenAIChatGPTModels } from '../features/chats/chatgptAccount'
 import type { Conversation } from '../features/conversations/conversationTypes'
 import { isCloudSessionEnabled, isCommunityMode } from '../config/runtimeMode'
 import {
@@ -56,6 +56,8 @@ export type { ConversationMessagesTreeData } from '../features/chats/conversatio
  */
 export function useProjects() {
   const { accessToken, userId } = useAuth()
+  void accessToken
+  void userId
   const location = useLocation()
 
   // Always refetch on Homepage route (`/homepage`), never on Chat.tsx
@@ -69,7 +71,7 @@ export function useProjects() {
       // latest_conversation_updated_at), or local-only in community mode.
       return gwApi.get<ProjectWithLatestConversation[]>(`/projects?userId=${userId}`)
     },
-    enabled: !!accessToken && !!userId,
+    enabled: !!userId && !!userId,
     staleTime: 10 * 60 * 1000, // Projects don't change often, 10 minute cache
     refetchOnMount: isHomePage ? 'always' : false, // Force fresh data on Homepage
     refetchOnReconnect: false,
@@ -89,7 +91,9 @@ export function useProjects() {
  * Cache key: ['projects', projectId]
  */
 export function useProject(projectId: ProjectId | null, storageMode?: 'local' | 'cloud') {
-  const { accessToken } = useAuth()
+  const { accessToken, userId } = useAuth()
+  void accessToken
+  void userId
 
   return useQuery({
     queryKey: ['projects', projectId],
@@ -99,7 +103,7 @@ export function useProject(projectId: ProjectId | null, storageMode?: 'local' | 
       const qs = storageMode ? `?storageMode=${storageMode}` : ''
       return gwApi.get<Project>(`/projects/${projectId}${qs}`)
     },
-    enabled: !!projectId && !!accessToken,
+    enabled: !!projectId && !!userId,
     staleTime: 10000,
   })
 }
@@ -116,7 +120,7 @@ export function useProject(projectId: ProjectId | null, storageMode?: 'local' | 
  * @returns Query result with data, isLoading, isRefetching, and refetch function for manual refresh
  */
 export function useConversations(enabled: boolean = true) {
-  const { accessToken, userId: authUserId } = useAuth()
+  const { userId: authUserId } = useAuth()
   // const location = useLocation()
 
   // Use userId from AuthContext (works for both local mode with UUID and web mode)
@@ -132,7 +136,7 @@ export function useConversations(enabled: boolean = true) {
       // Storage-aware via the gateway (merges local + cloud, deduped; local-only in community).
       return gwApi.get<Conversation[]>(`/conversations?userId=${userId}`)
     },
-    enabled: enabled && !!userId && !!accessToken,
+    enabled: enabled && !!userId && !!userId,
     staleTime: 5 * 60 * 1000, // Conversations list doesn't change often, 5 minute cache
     // refetchOnMount: isConversationPage ? 'always' : false, // Force fresh data on ConversationPage
     refetchOnMount: true,
@@ -170,7 +174,7 @@ const PAGE_SIZE = 50
  * @returns InfiniteQuery result with pages, fetchNextPage, hasNextPage, isFetchingNextPage
  */
 export function useConversationsInfinite(enabled: boolean = true) {
-  const { accessToken, userId: authUserId } = useAuth()
+  const { userId: authUserId } = useAuth()
   const userId = authUserId
 
   return useInfiniteQuery({
@@ -184,7 +188,7 @@ export function useConversationsInfinite(enabled: boolean = true) {
     },
     initialPageParam: undefined as string | undefined,
     getNextPageParam: lastPage => (lastPage.hasMore ? lastPage.nextCursor : undefined),
-    enabled: enabled && !!userId && !!accessToken,
+    enabled: enabled && !!userId && !!userId,
     staleTime: 5 * 60 * 1000,
     refetchOnMount: true,
     refetchOnReconnect: false,
@@ -204,6 +208,8 @@ export function useConversationsInfinite(enabled: boolean = true) {
  */
 export function useConversationsByProject(projectId: ProjectId | null, enabled: boolean = true) {
   const { accessToken, userId } = useAuth()
+  void accessToken
+  void userId
   // const location = useLocation()
 
   // Always refetch on ConversationPage
@@ -217,7 +223,7 @@ export function useConversationsByProject(projectId: ProjectId | null, enabled: 
       const all = await gwApi.get<Conversation[]>(`/conversations?userId=${userId}`)
       return all.filter(c => String(c.project_id) === String(projectId))
     },
-    enabled: enabled && !!projectId && !!accessToken,
+    enabled: enabled && !!projectId && !!userId,
     staleTime: 0,
     // Always refetch on mount so sidebar project expansion fetches fresh server data.
     refetchOnMount: 'always',
@@ -246,6 +252,8 @@ export function useConversationsByProjectInfinite(
 ) {
   const { enabled = true } = options
   const { accessToken, userId } = useAuth()
+  void accessToken
+  void userId
 
   return useInfiniteQuery({
     queryKey: ['conversations', 'project', projectId, 'infinite'],
@@ -258,7 +266,7 @@ export function useConversationsByProjectInfinite(
     },
     initialPageParam: undefined as string | undefined,
     getNextPageParam: lastPage => (lastPage.hasMore ? lastPage.nextCursor : undefined),
-    enabled: enabled && !!projectId && !!accessToken,
+    enabled: enabled && !!projectId && !!userId,
     staleTime: 5 * 60 * 1000,
     refetchOnMount: true,
     refetchOnReconnect: false,
@@ -318,7 +326,7 @@ export function useRecentLineages(projectId: ProjectId | string | null, limit: n
  * Cache key: ['conversations', 'recent', userId, limit]
  */
 export function useRecentConversations(limit: number = 120) {
-  const { accessToken, userId: authUserId } = useAuth()
+  const { userId: authUserId } = useAuth()
 
   // Use userId from AuthContext (works for both local mode with UUID and web mode)
   const userId = authUserId
@@ -331,7 +339,7 @@ export function useRecentConversations(limit: number = 120) {
       // Gateway normalizes cloud rows (owner_id→user_id, id→String), merges + slices to limit.
       return gwApi.get<Conversation[]>(`/conversations/recent?userId=${userId}&limit=${safeLimit}`)
     },
-    enabled: !!userId && !!accessToken,
+    enabled: !!userId && !!userId,
     staleTime: 5 * 60 * 1000, // Recent conversations list, 5 minute cache
     refetchOnMount: false, // Don't refetch if data exists
     refetchOnReconnect: false,
@@ -374,7 +382,9 @@ export function useFavoritedConversations(limit: number | null = 8) {
  * Cache key: ['conversations', conversationId, 'data']
  */
 export function useConversationData(conversationId: ConversationId | null) {
-  const { accessToken } = useAuth()
+  const { accessToken, userId } = useAuth()
+  void accessToken
+  void userId
 
   return useQuery({
     queryKey: ['conversations', conversationId, 'data'],
@@ -396,7 +406,7 @@ export function useConversationData(conversationId: ConversationId | null) {
         context: contextRes?.context ?? null,
       }
     },
-    enabled: !!conversationId && !!accessToken,
+    enabled: !!conversationId && !!userId,
     staleTime: 2000, // Conversation data changes frequently during chat
   })
 }
@@ -520,7 +530,9 @@ export function useSubagentByToolCall(toolCallId: string | null, enabled: boolea
  * Returns: { messages: Message[], tree: ChatNode }
  */
 export function useConversationMessages(conversationId: ConversationId | null, storageMode?: 'local' | 'cloud') {
-  const { accessToken } = useAuth()
+  const { accessToken, userId } = useAuth()
+  void accessToken
+  void userId
   const queryClient = useQueryClient()
 
   const query = useQuery<ConversationMessagesTreeData>({
@@ -534,7 +546,7 @@ export function useConversationMessages(conversationId: ConversationId | null, s
         signal,
       })
     },
-    enabled: !!conversationId && !!accessToken,
+    enabled: !!conversationId && !!userId,
     staleTime: 30000, // 30 seconds - messages only change on user actions (send/edit/branch)
     // Aggressive deduplication: only refetch if data is truly stale
     refetchOnMount: false, // Don't refetch on component mount if data exists
@@ -641,7 +653,9 @@ const getStoredSelectedModel = (): Model | null => {
  * The selected field contains the currently selected model (persisted from localStorage or defaults to server default)
  */
 export function useModels(provider: string | null) {
-  const { accessToken } = useAuth()
+  const { accessToken, userId } = useAuth()
+  void accessToken
+  void userId
   const queryClient = useQueryClient()
 
   useEffect(() => {
@@ -820,7 +834,7 @@ export function useModels(provider: string | null) {
         userIsFreeTier: response.userIsFreeTier ?? false, // User's tier status for disabling non-free models
       }
     },
-    enabled: !!provider && !!accessToken,
+    enabled: !!provider && !!userId,
     staleTime: 5 * 60 * 1000, // 5 minutes - models don't change frequently
     refetchOnMount: false, // Don't refetch on component mount if cache exists
     refetchOnReconnect: false,
@@ -835,7 +849,9 @@ export function useModels(provider: string | null) {
  * Returns: BaseModel[] (model names with metadata)
  */
 export function useRecentModels(limit: number = 5) {
-  const { accessToken } = useAuth()
+  const { accessToken, userId } = useAuth()
+  void accessToken
+  void userId
 
   return useQuery({
     queryKey: ['models', 'recent'],
@@ -876,7 +892,7 @@ export function useRecentModels(limit: number = 5) {
 
       return normalized
     },
-    enabled: !!accessToken && !isElectronCommunityMode(),
+    enabled: !!userId && !isElectronCommunityMode(),
     staleTime: 2 * 60 * 1000, // 2 minutes - recent models are more dynamic
     refetchOnMount: false,
     refetchOnReconnect: false,
@@ -906,7 +922,9 @@ export interface ZdrModel {
  * Returns: { endpoints: ZdrModel[] }
  */
 export function useZdrModels() {
-  const { accessToken } = useAuth()
+  const { accessToken, userId } = useAuth()
+  void accessToken
+  void userId
 
   return useQuery({
     queryKey: ['models', 'openrouter', 'zdr'],
@@ -914,7 +932,7 @@ export function useZdrModels() {
       const response = await cloudApi.get<{ endpoints: ZdrModel[] }>('/models/openrouter/zdr')
       return response.endpoints || []
     },
-    enabled: !!accessToken && !isElectronCommunityMode(),
+    enabled: !!userId && !isElectronCommunityMode(),
     staleTime: 5 * 60 * 1000, // 5 minutes - ZDR endpoints don't change frequently
     refetchOnMount: false,
     refetchOnReconnect: false,
@@ -1051,6 +1069,8 @@ export interface ResearchNoteItem {
  */
 export function useResearchNotes() {
   const { accessToken, userId } = useAuth()
+  void accessToken
+  void userId
 
   return useQuery({
     queryKey: ['research-notes', userId],
@@ -1058,7 +1078,7 @@ export function useResearchNotes() {
       if (!userId) throw new Error('User not authenticated')
       return cloudApi.get<ResearchNoteItem[]>(`/users/${userId}/research-notes`)
     },
-    enabled: !!userId && !!accessToken,
+    enabled: !!userId && !!userId,
     staleTime: 5 * 60 * 1000, // 5 minutes - research notes don't change often
     refetchOnMount: false, // Don't refetch if data exists
     refetchOnReconnect: false,
@@ -1132,7 +1152,9 @@ export function useRefreshModels() {
  */
 export function useMoveConversationToProject() {
   const queryClient = useQueryClient()
-  const { accessToken } = useAuth()
+  const { accessToken, userId } = useAuth()
+  void accessToken
+  void userId
 
   return useMutation({
     mutationFn: async ({
@@ -1860,6 +1882,8 @@ export interface UserSystemPromptCached {
  */
 export function useUserSystemPromptsQuery() {
   const { accessToken, userId } = useAuth()
+  void accessToken
+  void userId
   const queryClient = useQueryClient()
 
   const query = useQuery({
@@ -1867,7 +1891,7 @@ export function useUserSystemPromptsQuery() {
     queryFn: async () => {
       const localPrompts = loadLocalUserSystemPrompts()
 
-      if (!userId || !accessToken || isElectronCommunityMode() || !isCloudSessionEnabled()) {
+      if (!userId || isElectronCommunityMode() || !isCloudSessionEnabled()) {
         return localPrompts
       }
 

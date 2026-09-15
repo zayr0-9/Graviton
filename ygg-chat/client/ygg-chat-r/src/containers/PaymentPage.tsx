@@ -3,7 +3,6 @@ import { useNavigate, useSearchParams } from 'react-router-dom'
 import { Button } from '../components'
 import { isCommunityMode } from '../config/runtimeMode'
 import { useAuth } from '../hooks/useAuth'
-import { getSessionFromStorage } from '../lib/jwtUtils'
 import { getPaymentProvider, type SubscriptionStatus, type TierInfo } from '../lib/payments'
 import { apiCall } from '../utils/api'
 
@@ -215,8 +214,7 @@ const PaymentPage: React.FC = () => {
     setError(null)
 
     try {
-      const session = getSessionFromStorage()
-      const accessToken = session?.access_token || null
+      const accessToken = null
 
       const response = await apiCall<{ success: boolean; message: string }>('/user/account', accessToken, {
         method: 'DELETE',

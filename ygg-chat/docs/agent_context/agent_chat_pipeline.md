@@ -64,7 +64,7 @@ Use this when changing:
   projection reuses the existing vocabulary).
 - `chatSelectors.ts`, `chatTypes.ts` — branch/view selectors and types.
 
-### Server chat engine (`client/ygg-chat-r/electron/headlessServer/`)
+### Server chat engine (`client/ygg-chat-r/server/headlessServer/`)
 - `index.ts` — `registerHeadlessServerRoutes` (`:237`) wires the shared graph: one
   process-wide `DecisionBroker` (`:246`), the base `ToolExecutor`
   `executeToolViaOrchestrator` (`:173`), and `ChatOrchestrator` (built at `:311` with
@@ -144,9 +144,16 @@ All 3 thunks share the same shape:
      `ProviderErrorAssistantResponse` → `finish('error', 'provider_error')` +
      `complete { providerError: true }`; abort → `finish('aborted')`, no error frame.
      **finally:** `decisionBroker.rejectAllForStream(trackedStreamId)`.
-4. **`ToolLoopService.run`** (`toolLoopService.ts:626`): the multi-turn loop. Per tool call
+4. **`ToolLoopService.run`** (`toolLoopService.ts`): the multi-turn loop. Per tool call
    it invokes the pausing executor; per turn it folds hook context into the system prompt,
    evaluates in-loop compaction at the quiescent boundary, and honors the abort signal.
+   Provider-turn timeout is **activity-based**: the 180-second default is rearmed by each
+   provider stream event, so a response may run longer while bytes keep arriving. A real
+   idle timeout aborts only that provider attempt, fences late events, and persists any
+   text/reasoning/tool state already emitted as an ordinary assistant row before the
+   classified error row. Explicit Stop/cancel also preserves non-empty streamed output
+   without adding an error row. Once visible output exists, that attempt is not retried,
+   avoiding a duplicate regenerated answer in the append-only live stream.
 5. **Renderer projection**: `runServerChatLoop` hands every SSE event to
    `projectServerEvent`, which returns ordered actions dispatched onto the unchanged
    reducers. Terminal `complete` emits `streamCompleted`; the thunk then adds

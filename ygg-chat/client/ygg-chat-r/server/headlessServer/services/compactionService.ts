@@ -44,6 +44,7 @@ export interface CompactBranchInput {
   provider: string
   modelName: string
   userId?: string | null
+  authSessionId?: string
   accessToken?: string | null
   accountId?: string | null
   systemPrompt?: string | null
@@ -54,6 +55,7 @@ export interface GenerateCompactionSummaryInput {
   provider: string
   modelName: string
   userId?: string | null
+  authSessionId?: string
   accessToken?: string | null
   accountId?: string | null
   systemPrompt?: string | null
@@ -558,6 +560,7 @@ export class CompactionService {
       history: [],
       userContent: compactionUserPrompt,
       userId: input.userId ?? null,
+      authSessionId: input.authSessionId,
       accessToken: input.accessToken ?? null,
       accountId: input.accountId ?? null,
       tools: [],
@@ -594,6 +597,7 @@ export class CompactionService {
       provider: input.provider,
       modelName: input.modelName,
       userId: input.userId ?? conversation.user_id ?? null,
+      authSessionId: input.authSessionId,
       accessToken: input.accessToken,
       accountId: input.accountId,
       systemPrompt: input.systemPrompt,

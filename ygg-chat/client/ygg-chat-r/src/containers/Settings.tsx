@@ -23,12 +23,7 @@ import {
   clearTokens as clearOpenAITokens,
   getOpenAIAccountEmail,
   isOpenAIAuthenticated,
-  saveTokens,
-} from '../features/chats/openaiOAuth'
-import {
-  clearOpenAIChatGPTTokensFromHeadless,
-  persistOpenAIChatGPTTokensToHeadless,
-} from '../features/chats/openaiHeadlessAuth'
+} from '../features/chats/chatgptAccount'
 import { getAllTools } from '../features/chats/toolDefinitions'
 import {
   CHAT_REASONING_SETTINGS_CHANGE_EVENT,
@@ -511,7 +506,7 @@ const Settings: React.FC = () => {
       setGoogleDriveStatus(null)
       return
     }
-    if (!accessToken) return
+    if (!userId) return
     try {
       // Routed through the local cloud proxy (:3002/api/cloud/*): the server owns
       // the Supabase token, so the renderer no longer injects a Bearer here.
@@ -979,7 +974,7 @@ const Settings: React.FC = () => {
         return 'pending'
       }
 
-      if (!data.success || !data.accessToken || !data.refreshToken || !data.expiresAt || !data.accountId) {
+      if (!data.success) {
         if (!options.suppressErrors) {
           setOpenaiAuthError(data.error || 'Authentication failed. Please try again.')
         }
@@ -987,15 +982,7 @@ const Settings: React.FC = () => {
       }
 
       const signedInEmail = typeof data.email === 'string' && data.email.trim() ? data.email.trim() : null
-      const tokens = {
-        accessToken: data.accessToken,
-        refreshToken: data.refreshToken,
-        expiresAt: data.expiresAt,
-        accountId: data.accountId,
-        email: signedInEmail,
-      }
-      saveTokens(tokens)
-      await persistOpenAIChatGPTTokensToHeadless(tokens, [userId])
+
       setOpenaiAccountEmail(signedInEmail)
 
       dispatch(chatSliceActions.providerSelected('OpenAI (ChatGPT)'))
@@ -1091,7 +1078,7 @@ const Settings: React.FC = () => {
     clearOpenAITokens()
 
     const failedHeadlessTokenDeletes: unknown[] = []
-    const results = await Promise.allSettled([clearOpenAIChatGPTTokensFromHeadless([userId])])
+    const results = await Promise.allSettled([clearOpenAITokens()])
     failedHeadlessTokenDeletes.push(...results.filter(result => result.status === 'rejected'))
 
     setOpenaiAccountEmail(null)
@@ -2305,7 +2292,7 @@ const Settings: React.FC = () => {
       return
     }
 
-    if (!accessToken) {
+    if (!userId) {
       showStatus({ type: 'error', text: 'Sign in required to connect Google Drive.' })
       return
     }
@@ -2347,7 +2334,7 @@ const Settings: React.FC = () => {
       showStatus({ type: 'info', text: 'Google Drive is disabled in community mode.' })
       return
     }
-    if (!accessToken) return
+    if (!userId) return
 
     setGoogleDisconnecting(true)
     try {

@@ -17,7 +17,7 @@
 
 // Resolves to this program's fetch body type (undici under Node, DOM under Electron)
 type BodyInit = NonNullable<RequestInit['body']>
-import type { AppAuthTokenManager } from './appAuthTokenManager.js'
+import type { AppToken, AppAuthTokenManager } from './appAuthTokenManager.js'
 
 export interface RailwayClientDeps {
   auth: AppAuthTokenManager
@@ -124,8 +124,8 @@ class HttpRailwayClient implements RailwayClient {
     return headers
   }
 
-  private async doFetch(req: RailwayRequest, forceRefresh: boolean, streaming: boolean, signal?: AbortSignal): Promise<Response> {
-    const { accessToken } = await this.auth.getFreshAppToken(forceRefresh ? { forceRefresh: true } : undefined)
+  private async doFetch(req: RailwayRequest, token: AppToken, streaming: boolean, signal?: AbortSignal): Promise<Response> {
+    const { accessToken } = token
     const headers = await this.buildHeaders(req, accessToken, streaming)
     const init: RequestInit = { method: req.method, headers }
     if (req.body !== undefined && req.body !== null) {
@@ -140,9 +140,12 @@ class HttpRailwayClient implements RailwayClient {
 
   /** Fetch with one forced-refresh retry on 401. */
   private async fetchWithRetry(req: RailwayRequest, streaming: boolean, signal?: AbortSignal): Promise<Response> {
-    let response = await this.doFetch(req, false, streaming, signal)
+    let token = await this.auth.getFreshAppToken(undefined)
+    let response = await this.doFetch(req, token, streaming, signal)
     if (response.status === 401 && !signal?.aborted) {
-      response = await this.doFetch(req, true, streaming, signal)
+      await response.body?.cancel?.()
+      token = await this.auth.getFreshAppToken(token.revision === undefined ? { forceRefresh: true } : { rejectedRevision: token.revision, sessionId: token.sessionId })
+      response = await this.doFetch(req, token, streaming, signal)
     }
     return response
   }

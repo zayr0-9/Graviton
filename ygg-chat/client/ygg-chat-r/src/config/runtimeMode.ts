@@ -18,40 +18,15 @@ export const isCloudSession = (snapshot: Partial<RuntimeAuthSnapshot> | null | u
   const accessToken = snapshot?.accessToken || null
   const userId = snapshot?.userId || null
 
+  if (userId && userId !== LOCAL_AUTH_USER_ID) return true
   if (!accessToken || !userId) return false
   if (LOCAL_AUTH_TOKENS.has(accessToken)) return false
 
   return isLikelyJwt(accessToken)
 }
 
-const readRuntimeSnapshotFromStorage = (): RuntimeAuthSnapshot => {
-  try {
-    if (typeof window !== 'undefined' && (window as any)._cachedElectronSession) {
-      const session = (window as any)._cachedElectronSession
-      return {
-        accessToken: session?.accessToken || session?.session?.access_token || null,
-        userId: session?.userId || session?.user?.id || session?.session?.user?.id || null,
-      }
-    }
-  } catch {
-    // ignore
-  }
-
-  try {
-    const raw = localStorage.getItem('supabase-auth-token')
-    if (!raw) {
-      return { accessToken: null, userId: null }
-    }
-    const parsed = JSON.parse(raw)
-    const session = parsed?.currentSession || parsed?.session || parsed
-    return {
-      accessToken: session?.access_token || null,
-      userId: session?.user?.id || null,
-    }
-  } catch {
-    return { accessToken: null, userId: null }
-  }
-}
+let runtimeIdentity: RuntimeAuthSnapshot = { accessToken: null, userId: null }
+const readRuntimeSnapshotFromStorage = (): RuntimeAuthSnapshot => runtimeIdentity
 
 let cloudSessionEnabled = isCloudSession(readRuntimeSnapshotFromStorage())
 
@@ -74,6 +49,7 @@ export const syncRuntimeAuthMode = (snapshot?: Partial<RuntimeAuthSnapshot> | nu
       }
     : readRuntimeSnapshotFromStorage()
 
+  runtimeIdentity = { userId: resolved.userId, accessToken: null }
   applyRuntimeAuthMode(isCloudSession(resolved))
 }
 

@@ -1,13 +1,15 @@
+import { getAuthManager } from '../../auth/runtime.js'
 import type { HeadlessStreamEvent } from '../../../../../shared/headlessApi.js'
 import { MessageRepo } from '../persistence/messageRepo.js'
 import { ToolInvocationRepo } from '../persistence/toolInvocationRepo.js'
 import { TreeMessageSink, type MessageSink } from './messageSink.js'
-import type {
-  ProviderGenerateInput,
-  ProviderGenerateOutput,
-  ProviderPartialOutput,
-  ProviderToolCall,
-  ProviderToolDefinition,
+import {
+  attachPartialOutput,
+  type ProviderGenerateInput,
+  type ProviderGenerateOutput,
+  type ProviderPartialOutput,
+  type ProviderToolCall,
+  type ProviderToolDefinition,
 } from '../providers/openRouterProvider.js'
 import { ProviderRouter, normalizeProviderRoute } from './providerRouter.js'
 import { persistWithFallback, type ToolResultPersistencePolicy } from './toolResultPersistenceService.js'
@@ -42,6 +44,7 @@ export interface ToolExecutionContext {
   subagentReasoningEffort?: 'low' | 'medium' | 'high' | 'xhigh'
   /** Renderer-selected baseline inherited by server-owned child subagents. */
   subagentSystemPrompt?: string | null
+  authSessions?: { app: string; codex: string }
   timeoutMs?: number
   signal?: AbortSignal
   /** Policy-aware executor used by composite tools for each nested call. */
@@ -60,6 +63,7 @@ export type ToolLoopCompactor = (input: {
   provider: string
   modelName: string
   userId?: string | null
+  authSessionId?: string
   accessToken?: string | null
   accountId?: string | null
   systemPrompt?: string | null
@@ -137,6 +141,7 @@ export interface ToolLoopRunInput {
   think?: boolean
   temperature?: number
   userId?: string | null
+  authSessionId?: string
   accessToken?: string | null
   accountId?: string | null
   attachmentsBase64?: any[] | null
@@ -163,6 +168,7 @@ export interface ToolLoopRunInput {
   subagentReasoningEffort?: 'low' | 'medium' | 'high' | 'xhigh'
   /** Renderer-selected baseline inherited by server-owned child subagents. */
   subagentSystemPrompt?: string | null
+  authSessions?: { app: string; codex: string }
   autoCompactionEnabled?: boolean
   contextLength?: number
   compactionThresholdPercent?: number
@@ -234,7 +240,7 @@ export class ProviderEmptyResponseError extends Error {
 }
 
 const DEFAULT_MAX_TURNS = 400
-const DEFAULT_PROVIDER_TURN_TIMEOUT_MS = 180_000
+const DEFAULT_PROVIDER_TURN_IDLE_TIMEOUT_MS = 540_000
 const EMPTY_TURN_RETRY_BASE_MS = 600
 const EMPTY_TURN_RETRY_JITTER_MS = 400
 const DEFAULT_MAX_PROVIDER_RETRIES = 2
@@ -296,54 +302,82 @@ function abortAwareSleep(ms: number, signal?: AbortSignal): Promise<void> {
 }
 
 /**
- * `label` is part of a string that CAN reach a user: on the OpenAI path
- * `formatProviderErrorForAssistant` folds this message into the persisted assistant
- * text ("Reason: …"), because "timed out" is one of its transient patterns. So the
- * label must stay in plain user vocabulary — it must NOT carry loop internals like
- * "Provider turn 7/400". Turn context already travels structurally on the
- * `tool_loop` frames (turn / maxTurns), where the renderer can use it without
- * splicing it into prose.
- *
- * The word "timed out" is load-bearing twice over: `isTransientProviderError`
- * matches on it to allow an in-loop retry, and the formatter treats it as transient.
+ * Run one provider attempt with an ACTIVITY timeout, not a wall-clock deadline.
+ * Each provider event calls `touch`, so a long response may stream for as long as it
+ * needs. A genuinely idle attempt is fenced before its child signal is aborted; this
+ * prevents a non-cooperative provider from emitting late chunks into a retry/error
+ * path. Parent cancellation remains an AbortError and is never reclassified as a
+ * provider timeout.
  */
-function withTimeoutAndAbort<T>(
-  task: Promise<T>,
+function withIdleTimeoutAndAbort<T>(
+  task: (context: { signal: AbortSignal; touch: () => void; isActive: () => boolean }) => Promise<T>,
   timeoutMs: number,
   label: string,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  partialOutput?: () => ProviderPartialOutput
 ): Promise<T> {
   const boundedTimeoutMs = Math.max(1_000, timeoutMs)
+  const attemptController = new AbortController()
 
   return new Promise<T>((resolve, reject) => {
+    let settled = false
+    let timer: ReturnType<typeof setTimeout> | null = null
+
+    const cleanup = () => {
+      if (timer) clearTimeout(timer)
+      timer = null
+      signal?.removeEventListener('abort', onParentAbort)
+    }
+    const settle = (operation: () => void) => {
+      if (settled) return
+      settled = true
+      cleanup()
+      operation()
+    }
+    const onParentAbort = () => {
+      settle(() => {
+        attemptController.abort()
+        reject(attachPartialOutput(makeAbortError(), partialOutput?.()))
+      })
+    }
+    const armIdleTimer = () => {
+      if (settled) return
+      if (timer) clearTimeout(timer)
+      timer = setTimeout(() => {
+        const timeoutError = attachPartialOutput(
+          attachChatErrorCode(new Error(`${label} timed out after ${boundedTimeoutMs}ms of inactivity`), 'provider_timeout'),
+          partialOutput?.()
+        )
+        settle(() => {
+          attemptController.abort()
+          reject(timeoutError)
+        })
+      }, boundedTimeoutMs)
+    }
+
     if (signal?.aborted) {
-      reject(makeAbortError())
+      onParentAbort()
       return
     }
-    const timer = setTimeout(() => {
-      cleanup()
-      reject(
-        attachChatErrorCode(new Error(`${label} timed out after ${boundedTimeoutMs}ms`), 'provider_timeout')
-      )
-    }, boundedTimeoutMs)
-    const onAbort = () => {
-      cleanup()
-      reject(makeAbortError())
+
+    signal?.addEventListener('abort', onParentAbort, { once: true })
+    armIdleTimer()
+
+    let taskPromise: Promise<T>
+    try {
+      taskPromise = task({
+        signal: attemptController.signal,
+        touch: armIdleTimer,
+        isActive: () => !settled,
+      })
+    } catch (error) {
+      settle(() => reject(attachPartialOutput(error, partialOutput?.())))
+      return
     }
-    const cleanup = () => {
-      clearTimeout(timer)
-      signal?.removeEventListener('abort', onAbort)
-    }
-    signal?.addEventListener('abort', onAbort, { once: true })
-    task.then(
-      value => {
-        cleanup()
-        resolve(value)
-      },
-      error => {
-        cleanup()
-        reject(error)
-      }
+
+    taskPromise.then(
+      value => settle(() => resolve(value)),
+      error => settle(() => reject(attachPartialOutput(error, partialOutput?.())))
     )
   })
 }
@@ -588,6 +622,10 @@ interface NormalizedPartialOutput {
 
 const MAX_PARTIAL_CAUSE_DEPTH = 5
 
+function hasRenderablePartialOutput(error: unknown): boolean {
+  return readPartialProviderOutput(error) !== null
+}
+
 /**
  * R1(a) -> R1(b): read the text/blocks/reasoning/tool calls a streaming provider had
  * already accumulated when it threw (`error.partialOutput`, set by
@@ -638,7 +676,8 @@ export class ToolLoopService {
   private readonly toolInvocationRepo?: ToolInvocationRepo
   private readonly maxTurns: number
   private readonly persistencePolicy?: Partial<ToolResultPersistencePolicy>
-  private readonly providerTurnTimeoutMs: number
+  /** Compatibility input, now interpreted as time with no provider events. */
+  private readonly providerTurnIdleTimeoutMs: number
   private readonly compactBranch?: ToolLoopCompactor
 
   constructor(deps: ToolLoopServiceDeps) {
@@ -654,7 +693,10 @@ export class ToolLoopService {
     this.toolInvocationRepo = deps.toolInvocationRepo
     this.maxTurns = Math.max(1, deps.maxTurns ?? DEFAULT_MAX_TURNS)
     this.persistencePolicy = deps.persistencePolicy
-    this.providerTurnTimeoutMs = Math.max(5_000, deps.providerTurnTimeoutMs ?? DEFAULT_PROVIDER_TURN_TIMEOUT_MS)
+    this.providerTurnIdleTimeoutMs = Math.max(
+      5_000,
+      deps.providerTurnTimeoutMs ?? DEFAULT_PROVIDER_TURN_IDLE_TIMEOUT_MS
+    )
     this.compactBranch = deps.compactBranch
   }
 
@@ -756,6 +798,7 @@ export class ToolLoopService {
       history: params.history,
       userContent: params.userContent,
       userId: input.userId ?? null,
+      authSessionId: input.authSessionId,
       accessToken: input.accessToken ?? null,
       accountId: input.accountId ?? null,
       tools: params.disableTools ? undefined : input.tools,
@@ -802,41 +845,107 @@ export class ToolLoopService {
     for (let attempt = 1; ; attempt++) {
       let streamedTextDuringTurn = false
       let streamedReasoningDuringTurn = false
+      const streamedPartial: ProviderPartialOutput = {
+        content: '',
+        reasoning: '',
+        contentBlocks: [],
+        toolCalls: [],
+      }
       let output: ProviderGenerateOutput
       try {
-        output = await withTimeoutAndAbort(
-          this.providerRouter.generate(input.provider, providerInput, event => {
-            if (event?.type === 'chunk' && event.part === 'text' && typeof event.delta === 'string' && event.delta.length > 0) {
-              streamedTextDuringTurn = true
-            }
-            if (
-              event?.type === 'chunk' &&
-              event.part === 'reasoning' &&
-              typeof event.delta === 'string' &&
-              event.delta.length > 0
-            ) {
-              streamedReasoningDuringTurn = true
-            }
-            emit(event)
-          }),
-          this.providerTurnTimeoutMs,
-          // NOT `Provider turn ${turn}/${maxTurns}` any more: on the OpenAI path that
-          // label was folded verbatim into the persisted assistant text, which is how
-          // "Provider turn 7/400" reached the screen.
+        output = await withIdleTimeoutAndAbort(
+          ({ signal: attemptSignal, touch, isActive }) =>
+            this.providerRouter.generate(input.provider, { ...providerInput, signal: attemptSignal }, event => {
+              if (!isActive()) return
+              touch()
+
+              if (event?.type === 'chunk' && event.part === 'text' && typeof event.delta === 'string' && event.delta.length > 0) {
+                streamedTextDuringTurn = true
+                streamedPartial.content = `${streamedPartial.content || ''}${event.delta}`
+                streamedPartial.contentBlocks!.push({ type: 'text', content: event.delta })
+              }
+              if (
+                event?.type === 'chunk' &&
+                event.part === 'reasoning' &&
+                typeof event.delta === 'string' &&
+                event.delta.length > 0
+              ) {
+                streamedReasoningDuringTurn = true
+                streamedPartial.reasoning = `${streamedPartial.reasoning || ''}${event.delta}`
+                streamedPartial.contentBlocks!.push({ type: 'thinking', content: event.delta })
+              }
+              if (event?.type === 'chunk' && event.part === 'tool_call') {
+                const toolCall = normalizeToolCall(event.toolCall)
+                if (toolCall && !streamedPartial.toolCalls!.some(call => call.id === toolCall.id)) {
+                  streamedPartial.toolCalls!.push(toolCall)
+                  streamedPartial.contentBlocks!.push({
+                    type: 'tool_use',
+                    id: toolCall.id,
+                    name: toolCall.name,
+                    input: toolCall.arguments,
+                  })
+                }
+              }
+              if (event?.type === 'chunk' && event.part === 'tool_result' && event.toolResult) {
+                streamedPartial.contentBlocks!.push({
+                  type: 'tool_result',
+                  tool_use_id: event.toolResult.tool_use_id,
+                  content: event.toolResult.content,
+                  is_error: Boolean(event.toolResult.is_error),
+                })
+              }
+              if (event?.type === 'chunk' && event.part === 'image' && event.url) {
+                streamedPartial.contentBlocks!.push({
+                  type: 'image',
+                  url: event.url,
+                  mimeType: event.mimeType || 'image/png',
+                })
+              }
+              emit(event)
+            }),
+          this.providerTurnIdleTimeoutMs,
           'The model provider',
-          input.signal
+          input.signal,
+          () => streamedPartial
         )
-      } catch (error) {
-        // Cancellation is not a provider failure; propagate it so the run aborts cleanly.
-        if (input.signal?.aborted || isAbortError(error)) {
+      } catch (caughtError) {
+        let error = caughtError
+        // Some providers use AbortError for a remote/provider-side "aborted" frame.
+        // Only the run's parent signal is authoritative for user cancellation; convert
+        // an independent provider abort into a classified provider failure so the
+        // orchestrator does not silently mark the whole run as user-aborted.
+        if (!input.signal?.aborted && isAbortError(error)) {
+          const providerAbort = attachChatErrorCode(
+            new Error(error instanceof Error ? error.message : 'The model provider aborted the response'),
+            'stream_interrupted',
+            { provider: input.provider }
+          )
+          const partial = readPartialProviderOutput(error)
+          error = partial ? attachPartialOutput(providerAbort, partial) : providerAbort
+        }
+
+        // Preserve content already shown even when the user cancels. Cancellation is
+        // still propagated as AbortError and the orchestrator does not add ErrorBlock.
+        if (input.signal?.aborted) {
+          const partialAssistantMessage = this.persistPartialProviderOutput({
+            input,
+            parentId: params.parentId,
+            error,
+            emit,
+          })
+          if (partialAssistantMessage) params.recordAssistant?.(partialAssistantMessage)
           throw error
         }
 
-        // Transient failure with retries left: back off and try the same turn again.
-        // Deferred persistence — nothing is written until retries are exhausted, and
-        // this attempt's partial output is deliberately dropped: the re-issued turn
-        // regenerates it, so persisting it here would duplicate the answer.
-        if (attempt <= maxProviderRetries && isTransientProviderError(error)) {
+        // Transient failure with retries left and NO visible output: back off and try
+        // the same turn again. Once an attempt has streamed renderable content, retrying
+        // would append a second answer to the live buffer and force us to discard words
+        // the user already saw. Treat that attempt as terminal and persist it below.
+        if (
+          attempt <= maxProviderRetries &&
+          isTransientProviderError(error) &&
+          !hasRenderablePartialOutput(error)
+        ) {
           // Two frames, one per audience. `tool_loop` is the machine-readable record;
           // `notice` is the user-visible one. The LOOP owns the prose for all three
           // silences it can cause (retrying / max_turns_reached / compacting) and
@@ -1006,6 +1115,10 @@ export class ToolLoopService {
   }
 
   async run(input: ToolLoopRunInput, emit: (event: HeadlessStreamEvent) => void): Promise<ToolLoopRunResult> {
+    const route = normalizeProviderRoute(input.provider)
+    const slot = route === 'openrouter' ? 'app' : route === 'openaichatgpt' ? 'codex' : null
+    const authSessions = input.authSessions ?? { app: getAuthManager().snapshot('app').sessionId ?? 'signed-out', codex: getAuthManager().snapshot('codex').sessionId ?? 'signed-out' }
+    input = { ...input, authSessions, ...(slot ? { authSessionId: input.authSessionId ?? authSessions[slot] } : {}) }
     const maxTurns = Math.max(1, Math.min(input.maxTurns ?? this.maxTurns, this.maxTurns))
     const robustness = input.robustness
     let currentParentId = input.assistantParentId
@@ -1300,6 +1413,7 @@ export class ToolLoopService {
             autoApprove: input.toolAutoApprove !== false,
             subagentReasoningEffort: input.subagentReasoningEffort,
             subagentSystemPrompt: input.subagentSystemPrompt ?? null,
+            authSessions: input.authSessions,
             timeoutMs: input.toolTimeoutMs,
             signal: input.signal,
             parentToolInvocationId: invocation?.id ?? null,
@@ -1518,6 +1632,7 @@ export class ToolLoopService {
             provider: input.compactionProvider || input.provider,
             modelName: input.compactionModelName || input.modelName,
             userId: input.userId,
+            authSessionId: authSessions[normalizeProviderRoute(input.compactionProvider || input.provider) === 'openrouter' ? 'app' : 'codex'],
             accessToken: input.accessToken,
             accountId: input.accountId,
             systemPrompt: input.compactionSystemPrompt,

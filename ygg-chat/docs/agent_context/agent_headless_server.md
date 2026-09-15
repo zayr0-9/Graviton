@@ -24,7 +24,7 @@ Use this when changing:
 ## Key Files
 
 Wiring root:
-- `client/ygg-chat-r/electron/headlessServer/index.ts` — `registerHeadlessServerRoutes` builds the shared graph: one process-wide `DecisionBroker`; the leaf `executeToolViaOrchestrator` (submit→poll `toolOrchestrator`, timeout/cancel support) used by ordinary and child tools; one shared `SubagentRunService`; and a main-chat `createSubagentDispatchExecutor` that intercepts `subagent` in-process before delegating other names to the leaf executor. `ChatOrchestrator` is wired with that composite executor, `defaultToolsProvider: resolveDefaultInferenceTools`, compaction, hooks, and gateway flags. The gateway surfaces mount unconditionally.
+- `client/ygg-chat-r/server/headlessServer/index.ts` — `registerHeadlessServerRoutes` builds the shared graph: one process-wide `DecisionBroker`; the leaf `executeToolViaOrchestrator` (submit→poll `toolOrchestrator`, timeout/cancel support) used by ordinary and child tools; one shared `SubagentRunService`; and a main-chat `createSubagentDispatchExecutor` that intercepts `subagent` in-process before delegating other names to the leaf executor. `ChatOrchestrator` is wired with that composite executor, `defaultToolsProvider: resolveDefaultInferenceTools`, compaction, hooks, and gateway flags. The gateway surfaces mount unconditionally.
 
 Chat loop engine:
 - `services/chatOrchestrator.ts` — `ChatOrchestrator.runMessage` (main entry). Builds a fresh per-run `ToolLoopService`, chooses the message sink, wires the pausing executor + hook session, and finishes/aborts the run. `createChatPausingExecutor` (`chatOrchestrator.ts:95`) is the per-run tool wrapper; `ALWAYS_BYPASS_TOOLS` (`chatOrchestrator.ts:47`) = `skill_manager, mcp_manager, multi_call`.
@@ -94,7 +94,12 @@ Data flow, in order:
 8. Build history, resolved tools (`filterToolsForOperationMode`), and system prompt (server-assembled; the renderer deliberately omits `systemPrompt`).
 9. `isCloudRoute = cloudChatEnabled && normalizeProviderRoute(provider) === 'openrouter'` (`chatOrchestrator.ts:412`).
 10. Per-run loop build (`chatOrchestrator.ts:418`–`475`): fresh `ToolLoopService` with `sink = CloudMirrorSink` (cloud route) else `TreeMessageSink`, `executeTool = createChatPausingExecutor(...)`, `relayFreeTierEvents: isCloudRoute`, and `input.hooks = hookSession.toolLoopHooks()`.
-11. `loop.run(input, emit)`.
+11. `loop.run(input, emit)`. Each provider attempt receives a child abort signal and
+    an activity-based idle timer (180-second default) that is rearmed by provider stream
+    events. Continuous streaming is therefore not cut off by total elapsed time. A true
+    idle timeout fences/aborts the attempt and persists the loop-owned streamed snapshot
+    before error handling; parent cancellation preserves a non-empty snapshot without an
+    ErrorBlock. Attempts that already exposed renderable output are not retried.
 12. Terminal handling: success → `streamingRunRepo.finish('completed')` + `complete`; `ProviderErrorAssistantResponse` → `finish('error', endReason:'provider_error')` + `complete { providerError:true }`; abort → `finish('aborted')` and return (no `error` frame); other error → `finish('error')` + rethrow. **finally:** `decisionBroker.rejectAllForStream(trackedStreamId)` drains pending decisions + session.
 
 Signal threading: one `AbortController` per SSE request → `runMessage(…, signal)` → pausing executor uses `context.signal ?? signal` for `broker.requestDecision` (disconnect rejects the paused promise) and `loop.run` gets `input.signal` (checked each turn / before each tool, forwarded to the provider). Abort is classified by `isAbortError` (`name === 'AbortError'`).
@@ -156,6 +161,8 @@ Chosen per-run in `runMessage` (`chatOrchestrator.ts:421`):
 `providerMessageId` is sourced from `output.raw?.id` at the persist sites in `toolLoopService.ts`.
 
 ## Cloud client & token layer
+
+**Auth refactor update:** `server/auth/runtime.ts` now owns Supabase and Codex credentials. `appAuthTokenManager` is only a Railway adapter; `electronAppAuth.ts`, SQLite OAuth mirrors, and `gateway.tokenOwner` are removed. See `agent_auth.md`; historical Phase 5 token-owner rollout notes below are superseded.
 
 - **`railwayClient.ts`** — base URL `YGG_API_URL → VITE_API_URL → webdrasil default` (`:65`). Every request injects `Authorization: Bearer <token>` from `AppAuthTokenManager.getFreshAppToken()`; binary bodies forwarded verbatim (multipart boundary intact). On `401` (not aborted) it does exactly one `forceRefresh` retry. Three methods: `passthrough` (verbatim status/body, never throws on HTTP status — lets `/api/cloud/*` mirror cloud errors), `request<T>` (throws on non-2xx), `stream` (SSE relay to `onEvent`, abortable via `signal`).
 - **`appAuthTokenManager.ts`** — `SingleFlightAppAuthTokenManager`, a **process-wide memoized singleton** (`createAppAuthTokenManager`, `:81`). The single `inflight` lock is what makes the server the sole refresher — two instances would reintroduce the refresh_token race. `getFreshAppToken()` reads the Conf `auth_session`, refreshes iff `refreshToken` present AND (`forceRefresh` OR near-expiry 5-min skew), sharing one in-flight `refreshElectronAppAuthSession`; a failed refresh resolves (never rejects) so callers fall back to the stale read. Wraps `providers/electronAppAuth.ts`.
@@ -239,6 +246,10 @@ Manual harness: `http://localhost:<local-server-port>/headless/openai-test` when
 ## OpenAI Context Usage
 
 - `OpenAiChatgptProvider` normalizes Codex usage and `ToolLoopService` emits a `context_usage` SSE event for every completed OpenAI provider turn.
+- Provider liveness is separate from client SSE liveness: server heartbeat comments keep
+  the renderer connection alive, while only provider events rearm the provider-turn idle
+  timeout. Timeout aborts the child provider attempt, not the run-wide signal, so a silent
+  attempt with no visible output may still use the configured transient retry policy.
 - Usage snapshots replace one another across full-replay tool continuations; they are not cumulative.
 - Assistant messages carry the snapshot in `context_usage` and in a structured content block so local persistence and renderer reloads retain it without changing other-provider behavior.
 

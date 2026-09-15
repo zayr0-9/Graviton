@@ -1,12 +1,14 @@
+import { getPublicAuth } from '../lib/auth/publicState'
+import { cloudApi } from '../utils/api'
 import { Session, User } from '@supabase/supabase-js'
 import React, { createContext, useCallback, useEffect, useMemo, useState } from 'react'
-import { isCommunityMode, isElectronMode, LOCAL_AUTH_USER_ID, syncRuntimeAuthMode } from '../config/runtimeMode'
+import { isCommunityMode, isElectronMode, syncRuntimeAuthMode } from '../config/runtimeMode'
 import { clearUser, setUser } from '../features/users/usersSlice'
 import { getAuthProvider, type AuthProvider as IAuthProvider } from '../lib/auth'
 import { localMirror as dualSync } from '../lib/localMirror'
 import { store } from '../store/store'
 import { updateThunkExtraAuth } from '../store/thunkExtra'
-import { API_BASE, FORCE_LOGOUT_EVENT } from '../utils/api'
+import { FORCE_LOGOUT_EVENT } from '../utils/api'
 
 export interface AuthContextType {
   user: User | null
@@ -68,8 +70,8 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
   }, [])
 
   // Fetch user profile from API and sync to Redux
-  const syncUserProfile = useCallback(async (userId: string | null, accessToken: string | null) => {
-    if (!userId || !accessToken) {
+  const syncUserProfile = useCallback(async (userId: string | null, _accessToken: string | null) => {
+    if (!userId) {
       // console.log('[AuthContext] Clearing user profile from Redux')
       store.dispatch(clearUser())
       return
@@ -101,19 +103,8 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
       }
 
       // console.log('[AuthContext] Fetching user profile for:', userId)
-      const response = await fetch(`${API_BASE}/users/${userId}`, {
-        headers: {
-          Authorization: `Bearer ${accessToken}`,
-          'Content-Type': 'application/json',
-        },
-      })
-
-      if (!response.ok) {
-        console.error('[AuthContext] Failed to fetch user profile:', response.statusText)
-        return
-      }
-
-      const profile = await response.json()
+      const profile = await cloudApi.get<any>(`/users/${userId}`)
+      if (getPublicAuth()?.user?.id !== userId) return
       // console.log('[AuthContext] User profile fetched:', profile.username)
 
       // Dispatch to Redux
@@ -156,7 +147,6 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
   useEffect(() => {
     let mounted = true
     let unsubscribe: (() => void) | null = null
-    let refreshInterval: number | null = null
 
     const initializeAuth = async () => {
       try {
@@ -202,50 +192,7 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
           await syncUserProfile(user?.id ?? null, session.accessToken)
         })
 
-        // Set up periodic token refresh if provider requires network auth
-        if (authProvider.requiresNetworkAuth()) {
-          // console.log('[AuthContext] Setting up periodic token refresh')
-          refreshInterval = window.setInterval(async () => {
-            try {
-              await authProvider.refreshToken()
-            } catch (error) {
-              console.error('[AuthContext] Token refresh failed:', error)
-            }
-          }, 30000) // Check every 30 seconds
-
-          // Add visibility change listener - refresh when tab becomes visible
-          const handleVisibilityChange = async () => {
-            if (document.visibilityState === 'visible') {
-              // console.log('[AuthContext] Tab became visible, checking token...')
-              try {
-                await authProvider.refreshToken()
-              } catch (error) {
-                console.error('[AuthContext] Token refresh on visibility change failed:', error)
-              }
-            }
-          }
-
-          // Add window focus listener - refresh when window gains focus
-          const handleWindowFocus = async () => {
-            // console.log('[AuthContext] Window gained focus, checking token...')
-            try {
-              await authProvider.refreshToken()
-            } catch (error) {
-              console.error('[AuthContext] Token refresh on window focus failed:', error)
-            }
-          }
-
-          document.addEventListener('visibilitychange', handleVisibilityChange)
-          window.addEventListener('focus', handleWindowFocus)
-
-          // Store cleanup functions
-          const originalUnsubscribe = unsubscribe
-          unsubscribe = () => {
-            document.removeEventListener('visibilitychange', handleVisibilityChange)
-            window.removeEventListener('focus', handleWindowFocus)
-            if (originalUnsubscribe) originalUnsubscribe()
-          }
-        }
+        // Refresh scheduling belongs to the main-process auth owner.
       } catch (error) {
         console.error('[AuthContext] Failed to initialize auth:', error)
         if (mounted) {
@@ -265,9 +212,6 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
         unsubscribe()
       }
 
-      if (refreshInterval !== null) {
-        clearInterval(refreshInterval)
-      }
     }
   }, [updateAuthState, syncUserProfile])
 
@@ -275,43 +219,6 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
   const signIn = useCallback(
     async (credentials: { email: string; password: string }) => {
       // console.log('[AuthContext] Signing in...')
-
-      const wantsLocalLogin = !credentials.email?.trim() && !credentials.password?.trim()
-
-      if (wantsLocalLogin) {
-        const localToken = isElectronMode ? 'electron-local-token' : 'local-mode-token'
-        const localAuthState = {
-          user: {
-            id: LOCAL_AUTH_USER_ID,
-            username: isElectronMode ? 'electron-user' : 'local-user',
-            email: isElectronMode ? 'electron@localhost' : 'local@localhost',
-          },
-          session: {
-            access_token: localToken,
-          },
-          loading: false,
-          accessToken: localToken,
-          userId: LOCAL_AUTH_USER_ID,
-        }
-
-        if (isElectronMode && window.electronAPI?.storage) {
-          try {
-            await window.electronAPI.storage.set('auth_session', localAuthState)
-          } catch (storageError) {
-            console.warn('[AuthContext] Failed to persist local auth session:', storageError)
-          }
-        }
-
-        updateAuthState({
-          user: localAuthState.user as any,
-          session: localAuthState.session as any,
-          accessToken: localAuthState.accessToken,
-          userId: localAuthState.userId,
-        })
-
-        await syncUserProfile(localAuthState.userId, localAuthState.accessToken)
-        return
-      }
 
       if (!provider) {
         console.warn('[AuthContext] Provider not initialized yet')

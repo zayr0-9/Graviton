@@ -20,13 +20,18 @@ import { registerEphemeralGenerateRoutes } from '../ephemeralGenerateRoutes.js'
 // isolates it on every platform. Everything else in the module stays real —
 // normalizeAuthorizationToken is used by the route under test.
 const authMocks = vi.hoisted(() => ({
+  token: null as string | null,
   syncOpenRouterTokenFromElectronSession: vi.fn(async (_store: unknown) => {}),
 }))
 
-vi.mock('../../providers/electronAppAuth.js', async importOriginal => ({
-  ...(await importOriginal<typeof import('../../providers/electronAppAuth.js')>()),
-  syncOpenRouterTokenFromElectronSession: authMocks.syncOpenRouterTokenFromElectronSession,
-}))
+vi.mock('../../../auth/runtime.js', () => ({ getAuthManager: () => ({
+  snapshot: () => ({ sessionId: 'test-session' }),
+  resolve: async () => {
+    await authMocks.syncOpenRouterTokenFromElectronSession(null)
+    if (!authMocks.token) throw new Error('Sign in again to continue.')
+    return { sessionId: 'test-session', revision: 0, accessToken: authMocks.token, userId: 'acct-route' }
+  },
+}) }))
 
 describe('registerEphemeralGenerateRoutes', () => {
   let appServer: Server
@@ -36,6 +41,9 @@ describe('registerEphemeralGenerateRoutes', () => {
   let tempConfigDir = ''
 
   beforeEach(async () => {
+    authMocks.token = null
+    authMocks.syncOpenRouterTokenFromElectronSession.mockReset()
+    authMocks.syncOpenRouterTokenFromElectronSession.mockResolvedValue(undefined)
     previousXdgConfigHome = process.env.XDG_CONFIG_HOME
     tempConfigDir = await mkdtemp(join(tmpdir(), 'ygg-ephemeral-routes-'))
     process.env.XDG_CONFIG_HOME = tempConfigDir
@@ -86,7 +94,7 @@ describe('registerEphemeralGenerateRoutes', () => {
     expect(res.status).toBe(500)
     const payload = (await res.json()) as any
     expect(payload.success).toBe(false)
-    expect(payload.error).toContain('OpenAI ChatGPT auth missing')
+    expect(payload.error).toContain('Sign in again to continue.')
   })
 
   it('ephemeral chat alias defaults to openai and fails fast without auth', async () => {
@@ -99,10 +107,11 @@ describe('registerEphemeralGenerateRoutes', () => {
     expect(res.status).toBe(500)
     const payload = (await res.json()) as any
     expect(payload.success).toBe(false)
-    expect(payload.error).toContain('OpenAI ChatGPT auth missing')
+    expect(payload.error).toContain('Sign in again to continue.')
   })
 
   it('ephemeral chat normalizes ChatGPT display labels and enables commentary fallback', async () => {
+    authMocks.token = 'managed-token'
     process.env.OPENAI_CHATGPT_ACCESS_TOKEN = 'header.eyJodHRwczovL2FwaS5vcGVuYWkuY29tL2F1dGgiOnsiY2hhdGdwdF9hY2NvdW50X2lkIjoiYWNjdC1yb3V0ZSJ9fQ.sig'
     const nativeFetch = globalThis.fetch.bind(globalThis)
     const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation(async (_input, init) => {
@@ -170,7 +179,7 @@ describe('registerEphemeralGenerateRoutes', () => {
     expect(res.status).toBe(500)
     const payload = (await res.json()) as any
     expect(payload.success).toBe(false)
-    expect(payload.error).toContain('Graviton app auth token missing')
+    expect(payload.error).toContain('Sign in again to continue.')
   })
 
   it('ephemeral chat infers openrouter from non-openai prefixed model names', async () => {
@@ -187,7 +196,7 @@ describe('registerEphemeralGenerateRoutes', () => {
     expect(res.status).toBe(500)
     const payload = (await res.json()) as any
     expect(payload.success).toBe(false)
-    expect(payload.error).toContain('Graviton app auth token missing')
+    expect(payload.error).toContain('Sign in again to continue.')
   })
 
   it('awaits the electron-session sync before reading the token store', async () => {
@@ -198,9 +207,9 @@ describe('registerEphemeralGenerateRoutes', () => {
     // is what pins the ordering: a token that only exists after the sync resolves can
     // only appear here if the sync was awaited.
     let seenAuthorization: string | null = null
-    authMocks.syncOpenRouterTokenFromElectronSession.mockImplementationOnce(async (store: any) => {
+    authMocks.syncOpenRouterTokenFromElectronSession.mockImplementationOnce(async () => {
       await new Promise(resolve => setTimeout(resolve, 5))
-      store.upsert({ provider: 'openrouter', userId: 'u-synced', accessToken: 'synced-token' })
+      authMocks.token = 'synced-token'
     })
 
     const nativeFetch = globalThis.fetch.bind(globalThis)
@@ -232,7 +241,8 @@ describe('registerEphemeralGenerateRoutes', () => {
     expect(seenAuthorization).toBe('Bearer synced-token')
   })
 
-  it('ephemeral openrouter requests can use preloaded token store auth without passing userId', async () => {
+  it('ephemeral openrouter requests use the managed account without caller token fields', async () => {
+    authMocks.token = 'app-token'
     tokenStore.upsert({
       provider: 'openrouter',
       userId: 'u-openrouter',

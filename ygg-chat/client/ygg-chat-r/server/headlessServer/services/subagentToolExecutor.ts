@@ -89,6 +89,7 @@ function buildSubagentRequest(toolCall: ProviderToolCall, context: ToolExecution
     prompt,
     systemPrompt: systemPrompt || null,
     provider,
+    authSessionId: context.authSessions?.[provider === 'openrouter' ? 'app' : 'codex'],
     modelName,
     tools,
     temperature: typeof args.temperature === 'number' ? args.temperature : undefined,
