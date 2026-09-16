@@ -1,6 +1,7 @@
 import { useQueryClient } from '@tanstack/react-query'
 import { formatDistanceToNow, formatDistance } from 'date-fns'
 import React, { useEffect, useMemo, useState } from 'react'
+import { createPortal } from 'react-dom'
 import type { Conversation } from '../../features/conversations/conversationTypes'
 import { useJobManagerConnection, useJobStats, useToolJobs } from '../../hooks/useToolJobs'
 import type { PaginatedConversationsResponse } from '../../hooks/useQueries'
@@ -136,6 +137,21 @@ const resolveStatusTheme = (status: string, themeColors: ToolJobsThemeColors) =>
   }
 }
 
+/**
+ * Layer for the tool jobs modals.
+ *
+ * These render through a portal onto `document.body` rather than in place. A modal rendered
+ * inside the chat tree competes with the composer, whose controls row, settings popover and
+ * context popover all sit in the composer's own stacking context; the modal then lost to them
+ * whatever z-index it carried. A portal takes it out of that contest entirely, and the values
+ * below only have to clear the chat surface: the composer sits at z-10, Heimdall at z-100 and
+ * its close button at z-110. The pane resize overlay at z-2000 stays above, which is correct,
+ * because it only exists while a pane is being dragged.
+ */
+const MODAL_Z_CLASS = 'z-[1200]'
+/** The details modal opens from the list, so it sits one step above it. */
+const MODAL_DETAILS_Z_CLASS = 'z-[1210]'
+
 const JobDetailsModal: React.FC<JobDetailsModalProps> = ({ job, conversationTitle, isOpen, onClose }) => {
   const [elapsedTime, setElapsedTime] = useState<string>('—')
   const themeColors = useToolJobsThemeColors()
@@ -157,9 +173,9 @@ const JobDetailsModal: React.FC<JobDetailsModalProps> = ({ job, conversationTitl
 
   const statusColor = resolveStatusTheme(job.status, themeColors)
 
-  return (
+  return createPortal(
     <div
-      className='fixed inset-0 z-[60] flex items-center justify-center backdrop-blur-sm animate-in fade-in duration-200'
+      className={`fixed inset-0 ${MODAL_DETAILS_Z_CLASS} flex items-center justify-center backdrop-blur-sm animate-in fade-in duration-200`}
       style={{ backgroundColor: themeColors.modalBackdrop }}
     >
       <div
@@ -359,7 +375,8 @@ const JobDetailsModal: React.FC<JobDetailsModalProps> = ({ job, conversationTitl
           </div>
         </div>
       </div>
-    </div>
+    </div>,
+    document.body
   )
 }
 
@@ -471,9 +488,9 @@ export const ToolJobsModal: React.FC<ToolJobsModalProps> = ({ isOpen, onClose })
 
   if (!isOpen) return null
 
-  return (
+  return createPortal(
     <div
-      className='fixed inset-0 z-50 flex items-center justify-center backdrop-blur-sm animate-in fade-in duration-200'
+      className={`fixed inset-0 ${MODAL_Z_CLASS} flex items-center justify-center backdrop-blur-sm animate-in fade-in duration-200`}
       style={{ backgroundColor: themeColors.modalBackdrop }}
     >
       <div
@@ -684,6 +701,7 @@ export const ToolJobsModal: React.FC<ToolJobsModalProps> = ({ isOpen, onClose })
         isOpen={selectedJobDetails !== null}
         onClose={handleCloseDetails}
       />
-    </div>
+    </div>,
+    document.body
   )
 }

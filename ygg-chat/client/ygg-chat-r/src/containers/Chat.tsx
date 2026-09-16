@@ -7682,11 +7682,18 @@ function Chat() {
             <div className='composer-controls-row relative z-10 mt-2 flex items-center justify-between gap-3'>
                 {/* Left side controls */}
                 <div
-                  className={`composer-controls-left relative z-20 flex h-10 xl:h-12 min-w-0 flex-[0_1_58%] max-w-[58%] items-center overflow-visible rounded-full ${leftControlsBorderClasses} bg-neutral-100/40 px-2 py-1 md:py-1 xl:py-1.5 backdrop-blur-xl transition-all duration-300 dark:bg-neutral-900/40`}
+                  className={`composer-controls-left relative z-20 flex h-10 xl:h-12 min-w-0 flex-[0_1_58%] max-w-[58%] items-center gap-1 overflow-visible rounded-full ${leftControlsBorderClasses} bg-neutral-100/40 px-2.5 py-1 md:py-1 xl:py-1.5 backdrop-blur-xl transition-all duration-300 dark:bg-neutral-900/40`}
                   style={leftControlsTokenTintStyle}
                 >
-                  {/* Hover only the exposed usage surface; selectors and settings remain independent controls. */}
-                  <div className='peer absolute inset-0 z-0' aria-hidden='true' />
+                  {/*
+                    Hover target for the context usage popover. It stays BEHIND the selectors and
+                    settings on purpose, so those remain independent controls. Sitting behind them
+                    left only the thin strips between controls as a usable target, so the surface
+                    now reaches past the pill on the sides and below, where nothing else sits. It
+                    deliberately does not grow upward: that space belongs to the textarea, and this
+                    element takes pointer events, so covering it would block typing.
+                  */}
+                  <div className='peer absolute -inset-x-2 top-0 -bottom-3 z-0' aria-hidden='true' />
                   <button
                     className='relative z-10 flex h-9 w-9 items-center justify-center rounded-full bg-white/80 text-stone-700 backdrop-blur-xl transition-all duration-200 hover:-translate-y-0.5 hover:scale-105 hover:bg-white hover:text-stone-950 active:translate-y-0 active:scale-95 dark:bg-yBlack-900/80 dark:text-stone-200 dark:hover:bg-neutral-900 dark:hover:text-white'
                     style={actionPopoverTriggerStyle}
