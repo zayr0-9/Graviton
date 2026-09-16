@@ -7685,15 +7685,6 @@ function Chat() {
                   className={`composer-controls-left relative z-20 flex h-10 xl:h-12 min-w-0 flex-[0_1_58%] max-w-[58%] items-center gap-1 overflow-visible rounded-full ${leftControlsBorderClasses} bg-neutral-100/40 px-2.5 py-1 md:py-1 xl:py-1.5 backdrop-blur-xl transition-all duration-300 dark:bg-neutral-900/40`}
                   style={leftControlsTokenTintStyle}
                 >
-                  {/*
-                    Hover target for the context usage popover. It stays BEHIND the selectors and
-                    settings on purpose, so those remain independent controls. Sitting behind them
-                    left only the thin strips between controls as a usable target, so the surface
-                    now reaches past the pill on the sides and below, where nothing else sits. It
-                    deliberately does not grow upward: that space belongs to the textarea, and this
-                    element takes pointer events, so covering it would block typing.
-                  */}
-                  <div className='peer absolute -inset-x-2 top-0 -bottom-3 z-0' aria-hidden='true' />
                   <button
                     className='relative z-10 flex h-9 w-9 items-center justify-center rounded-full bg-white/80 text-stone-700 backdrop-blur-xl transition-all duration-200 hover:-translate-y-0.5 hover:scale-105 hover:bg-white hover:text-stone-950 active:translate-y-0 active:scale-95 dark:bg-yBlack-900/80 dark:text-stone-200 dark:hover:bg-neutral-900 dark:hover:text-white'
                     style={actionPopoverTriggerStyle}
@@ -7710,7 +7701,7 @@ function Chat() {
                       onAnimationEnd={() => setSpinSettings(false)}
                     />
                   </button>
-                  <div className='composer-controls-left-selectors relative z-10 flex items-center gap-1 flex-nowrap min-w-0 flex-1 overflow-hidden'>
+                  <div className='composer-controls-left-selectors relative z-10 flex min-w-0 shrink items-center gap-1 flex-nowrap overflow-hidden'>
                     {import.meta.env.VITE_ENVIRONMENT === 'electron' && extensions.length > 0 && (
                       <Select
                         value={selectedExtensionId || ''}
@@ -7758,6 +7749,17 @@ function Chat() {
                       footerContent={modelSelectFooter}
                     />
                   </div>
+                  {/*
+                    Hover target for the context usage popover, and the reason this row carries a
+                    fourth slot. It sits AFTER the selectors rather than behind them: this element
+                    takes pointer events, and the earlier version sat underneath the controls,
+                    which left only the thin strips between them as a usable target. Keeping it a
+                    sibling of the popover below is what lets `peer-hover` reach it.
+
+                    It claims whatever width the pill has spare, and holds a 44px floor when the
+                    window is narrow, so the target never collapses to nothing.
+                  */}
+                  <div className='peer min-w-[44px] flex-1 basis-0 self-stretch' aria-hidden='true' />
                   {showTokenUsageBar && showTokenUsageHoverDetails && (
                     <div className='pointer-events-none absolute bottom-full left-1/2 z-[60] mb-2 w-max max-w-[calc(100vw-2rem)] -translate-x-1/2 translate-y-1 opacity-0 invisible transition-all duration-200 peer-hover:translate-y-0 peer-hover:opacity-100 peer-hover:visible'>
                       <div
