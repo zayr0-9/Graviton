@@ -141,6 +141,12 @@ import { isContextInjectionMessage, parseMessageMeta } from '../../../../shared/
 import { ContextInjectionCard, type ContextInjectionCardEntry } from '../components/ChatMessage/ContextInjectionCard'
 import { DisclosureRow } from '../components/ChatMessage/messagePrimitives'
 import {
+  CHAT_ERROR_ROW_HEIGHT,
+  estimateMessageRowHeight,
+  PROCESS_GROUP_ROW_HEIGHT,
+  SMALL_CHROME_ROW_HEIGHT,
+} from '../components/ChatMessage/estimateMessageHeight'
+import {
   extractBranchFileMutations,
   type WorkspaceMutationOperation,
 } from '../features/chats/workspaceMutationTracking'
@@ -2831,21 +2837,98 @@ function Chat() {
   // per streamed token.
   const getVirtualItemKey = useCallback((index: number) => virtualRows[index]?.key ?? index, [virtualRows])
 
-  // Per-kind size estimate instead of a flat 100px. Assistant replies are routinely many times
-  // taller than user turns, so a flat estimate made conversation-load scroll jump repeatedly as
-  // rows measured up from 100 to their real height, and widened the estimate->real handoff jump
-  // when a streamed reply is persisted.
+  // Font size offset for messages (synced from SettingsPane via custom event + localStorage)
+  const [fontSizeOffset, setFontSizeOffset] = useState<number>(() => {
+    try {
+      const stored = localStorage.getItem('chat:fontSizeOffset')
+      return stored ? parseInt(stored, 10) : 0
+    } catch {
+      return 0
+    }
+  })
+
+  // Width of the scroll container, used to estimate how many lines a text block wraps to.
+  // Only meaningful changes are published so the estimate callback does not churn per frame
+  // during a window resize.
+  const [messagesContainerWidth, setMessagesContainerWidth] = useState(0)
+  useEffect(() => {
+    const el = messagesContainerRef.current
+    if (!el || typeof ResizeObserver === 'undefined') return
+
+    const apply = () => {
+      const next = el.clientWidth
+      setMessagesContainerWidth(prev => (Math.abs(prev - next) >= 8 ? next : prev))
+    }
+
+    apply()
+    const observer = new ResizeObserver(apply)
+    observer.observe(el)
+    return () => observer.disconnect()
+  }, [currentConversationId])
+
+  // Content-aware row estimate.
+  //
+  // An unmeasured row is placed at this height; when it measures, the virtualizer corrects
+  // scrollTop by the delta, and the React adapter repaints after that write, so the delta is
+  // visible as a jump. virtual-core 3.17 suppresses this for re-measurement during backward
+  // scroll, but a FIRST measurement is still corrected in both directions — which is exactly
+  // the bottom-to-top pass through a freshly loaded conversation. So the estimate has to be
+  // close. A flat guess per role was routinely 200px+ off on short tool-heavy replies.
+  //
+  // The model lives in ChatMessage/estimateMessageHeight.ts, next to the layout it mirrors.
   const estimateVirtualRowSize = useCallback(
     (index: number) => {
       const row = virtualRows[index]
       if (!row) return 200
-      if (row.kind === 'message_row') {
-        if (row.row.kind === 'process_group') return 160
-        return row.row.message.role === 'user' ? 120 : 400
+
+      // Before the first measurement a typical desktop pane width is a better guess than 0.
+      const containerWidth = messagesContainerWidth || 720
+
+      const estimateForMessage = (message: Message) => {
+        const blocks = (parsedMessageDataById.get(message.id) ?? EMPTY_PARSED_MESSAGE_DATA).contentBlocks
+        // Mirrors `hasContent && canBranchMessage` in ChatMessage, which gates the actions row.
+        const hasText = typeof message.content === 'string' && message.content.trim().length > 0
+        const hasBlockContent =
+          Array.isArray(blocks) &&
+          blocks.some(
+            block =>
+              (block.type === 'text' && typeof block.content === 'string' && block.content.trim().length > 0) ||
+              block.type === 'image'
+          )
+        const canBranch =
+          message.role === 'user' || (message.role === 'assistant' && message.parent_id == null)
+
+        return estimateMessageRowHeight({
+          role: message.role,
+          content: typeof message.content === 'string' ? message.content : '',
+          contentBlocks: blocks,
+          containerWidth,
+          fontSizeOffset,
+          groupToolReasoningRuns,
+          artifactCount: Array.isArray(message.artifacts) ? message.artifacts.length : 0,
+          showsActionsRow: (hasText || hasBlockContent) && canBranch,
+        })
       }
-      return 120
+
+      switch (row.kind) {
+        case 'message_row':
+          return row.row.kind === 'process_group' ? PROCESS_GROUP_ROW_HEIGHT : estimateForMessage(row.row.message)
+        case 'optimistic_message':
+        case 'optimistic_branch_message':
+          return estimateForMessage(row.message)
+        case 'chat_error':
+          return CHAT_ERROR_ROW_HEIGHT
+        case 'generation_loader':
+          return SMALL_CHROME_ROW_HEIGHT
+        // The live row grows every token and is measured continuously, so its estimate only
+        // has to be sane for the frame it mounts on.
+        case 'streaming_message':
+          return 200
+        default:
+          return 200
+      }
     },
-    [virtualRows]
+    [virtualRows, parsedMessageDataById, messagesContainerWidth, fontSizeOffset, groupToolReasoningRuns]
   )
 
   // Virtualizer for efficient message list rendering
@@ -3526,15 +3609,6 @@ function Chat() {
       // Fallback: check if mobile
       const isMobileDevice = typeof window !== 'undefined' && window.innerWidth < 768
       return isMobileDevice ? false : true
-    }
-  })
-  // Font size offset for messages (synced from SettingsPane via custom event + localStorage)
-  const [fontSizeOffset, setFontSizeOffset] = useState<number>(() => {
-    try {
-      const stored = localStorage.getItem('chat:fontSizeOffset')
-      return stored ? parseInt(stored, 10) : 0
-    } catch {
-      return 0
     }
   })
 
