@@ -964,7 +964,6 @@ html {
 .chat-markdown :not(pre) > code {
   background: var(--chat-md-inline-code-bg) !important;
   color: var(--chat-md-inline-code-text) !important;
-  border: 1px solid var(--chat-md-inline-code-border);
 }
 
 .chat-markdown-code-block {
@@ -975,7 +974,6 @@ html {
 
 .chat-markdown-code-header {
   background: var(--chat-md-code-block-header-bg);
-  border-bottom: 1px solid var(--chat-md-code-block-border);
   color: var(--chat-md-code-block-header-text);
 }
 

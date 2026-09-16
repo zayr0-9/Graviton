@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { ChevronDown, Settings } from 'lucide-react'
 import { ConversationId, MessageId, ReasoningConfig } from '../../../../../shared/types'
 import type { ChatErrorActionKind } from '../../../../../shared/chatErrors'
-import type { ChatErrorRecord, LineageId, ToolCall } from '../../features/chats/chatTypes'
+import type { ChatErrorRecord, LineageId } from '../../features/chats/chatTypes'
 import {
   abortGeneration,
   cancelPlanClarification,
@@ -72,16 +72,6 @@ interface ParallelChatPaneProps {
   onEditMessage?: (id: string, content: string) => void
   onDeleteMessage?: (id: string) => void
   onAddToNote?: (text: string) => void
-}
-
-const parseToolCalls = (value: unknown): ToolCall[] | undefined => {
-  if (!value) return undefined
-  try {
-    const parsed = typeof value === 'string' ? JSON.parse(value) : value
-    return Array.isArray(parsed) ? parsed : [parsed]
-  } catch {
-    return undefined
-  }
 }
 
 /**
@@ -403,8 +393,6 @@ export function ParallelChatPane({
             id={`parallel-${message.id}`}
             role={message.role}
             content={message.content}
-            thinking={message.thinking_block}
-            toolCalls={parseToolCalls(message.tool_calls)}
             contentBlocks={message.content_blocks}
             timestamp={message.created_at}
             modelName={message.model_name}
@@ -447,8 +435,6 @@ export function ParallelChatPane({
             id={`parallel-streaming-${effectiveStream.id}`}
             role='assistant'
             content={effectiveStream.buffer}
-            thinking={effectiveStream.thinkingBuffer}
-            toolCalls={effectiveStream.toolCalls}
             streamEvents={effectiveStream.events}
             width='w-full'
             fontSizeOffset={fontSizeOffset}

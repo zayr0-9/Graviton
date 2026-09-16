@@ -1,11 +1,7 @@
-﻿import type { ContentBlock, StreamEvent, ToolCall } from '@/features/chats/chatTypes'
+import type { ContentBlock, StreamEvent } from '@/features/chats/chatTypes'
 import type { ChatErrorActionKind, ChatErrorEnvelope } from '../../../../../shared/chatErrors'
 import type { MessageId } from '../../../../../shared/types'
-import { ContextInjectionCard, type ContextInjectionCardEntry } from './ContextInjectionCard'
-import type { ToolDefinition } from '@/features/chats/toolDefinitions'
 import type { RootState } from '@/store/store'
-import 'boxicons' // Types
-import 'boxicons/css/boxicons.min.css'
 import 'katex/dist/katex.min.css'
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { createSelector } from '@reduxjs/toolkit'
@@ -17,6 +13,7 @@ import rehypeHighlight from 'rehype-highlight'
 import rehypeKatex from 'rehype-katex'
 import remarkGfm from 'remark-gfm'
 import remarkMath from 'remark-math'
+import { Check, X } from 'lucide-react'
 import { AUTO_COMPACTION_NOTE, fetchMcpTools } from '../../features/chats/chatActions'
 import { chatSliceActions } from '../../features/chats/chatSlice'
 import {
@@ -25,19 +22,13 @@ import {
   stripAttachedImagePathMetadata,
 } from '../../features/chats/attachedImagePaths'
 import { useAppDispatch } from '../../hooks/redux'
-import { truncateToolOutput as truncateToolOutputPreview } from '../../helpers/toolOutputTruncation'
 import { useIsMobile } from '../../hooks/useMediaQuery'
 import { environment, localApi } from '../../utils/api'
-import { Button } from '../Button/button'
 import { ChatErrorBubble } from '../ChatErrorBubble/ChatErrorBubble'
-import { EditToolDiffView } from '../EditFileDiffView/EditToolDiffView'
-import { PlanMdToolView } from '../PlanMdToolView'
 import { useHtmlIframeRegistry } from '../HtmlIframeRegistry/HtmlIframeRegistry'
 import { ImageModal } from '../ImageModal/ImageModal'
-import { SubagentToolName } from '../SubagentTranscript/SubagentTranscript'
 import { MarkdownLink } from '../MarkdownLink/MarkdownLink'
 import { MermaidDiagram, getMermaidSource, isMermaidCodeBlock, prepareMermaidMarkdown } from '../MermaidDiagram'
-import { McpAppIframe } from '../McpAppIframe/McpAppIframe'
 import { TextArea } from '../TextArea/TextArea'
 import {
   type CustomChatTheme,
@@ -48,9 +39,11 @@ import {
   getThemeModeColor,
   resolveRoleThemeKey,
 } from '../ThemeManager/themeConfig'
-import { HtmlIframe } from './HtmlIframe'
+import { ContextInjectionCard, type ContextInjectionCardEntry } from './ContextInjectionCard'
+import { MessageActions } from './MessageActions'
+import { Badge, DisclosurePanel, DisclosureRow } from './messagePrimitives'
+import { ToolCallGroupCard, type McpViewerPayload } from './ToolCallGroupCard'
 import {
-  AGENT_RUN_CHEVRON_BASE_CLASS,
   buildToolCallGroupsFromBlocks,
   buildToolCallGroupsFromStream,
   COLLAPSED_CONTENT_WORD_LIMIT,
@@ -59,29 +52,22 @@ import {
   extractAssistantTextsFromResponsesOutputItems,
   extractHtmlFromToolResult,
   extractReasoningTextsFromResponsesOutputItems,
-  formatToolResultSummary,
+  FAST_COLOR_TRANSITION_CLASS,
+  FOCUS_RING_CLASS,
   getChatFontSizeOffsetStyle,
-  LEGACY_TEXT_MARKDOWN_CLASS,
+  MESSAGE_BLOCK_INSET_CLASS,
+  MESSAGE_BLOCK_STACK_CLASS,
   MESSAGE_IMAGE_CLASS,
   MESSAGE_IMAGE_WRAPPER_CLASS,
   normalizeReasoningTextForComparison,
-  parseMcpQualifiedName,
-  PROCESS_CARD_REASONING_WRAPPER_CLASS,
-  PROCESS_CARD_WRAPPER_CLASS,
   PROCESS_RUN_GROUP_MIN_ITEMS,
-
-  REASONING_CHEVRON_BASE_CLASS,
   REASONING_TEXT_MARKDOWN_CLASS,
   SHARED_TEXT_MARKDOWN_CLASS,
-  TOOL_CHEVRON_BASE_CLASS,
-  TOOL_HEADER_BUTTON_CLASS,
-  TOOL_NAME_ERROR_CLASS,
-  TOOL_NAME_RUNNING_CLASS,
-  TOOL_NAME_SUCCESS_CLASS,
   type ToolCallRenderGroup,
 } from './chatMessageShared'
+
 type MessageRole = 'user' | 'assistant' | 'system' | 'ex_agent' | 'tool'
-// Updated to use valid Tailwind classes
+
 type ChatMessageWidth =
   | 'max-w-sm'
   | 'max-w-md'
@@ -95,9 +81,11 @@ type ChatMessageWidth =
 interface ChatMessageProps {
   id: string
   role: MessageRole
+  /**
+   * Plain text of the message. User rows render it as their prose. Assistant rows use it
+   * only as a fallback when neither `contentBlocks` nor `streamEvents` is present.
+   */
   content: string
-  thinking?: string
-  toolCalls?: ToolCall[]
   contentBlocks?: ContentBlock[]
   streamEvents?: StreamEvent[]
   timestamp?: string | Date
@@ -112,18 +100,17 @@ interface ChatMessageProps {
   onOpenSubagentTranscript?: (toolCallId: string) => void
   isEditing?: boolean
   width: ChatMessageWidth
-  // When true (default), message cards have colored backgrounds and left borders.
-  // When false, they render with transparent background and border.
+  /** When true (default) user rows draw a tinted surface. When false every row is flat. */
   colored?: boolean
   modelName?: string
   className?: string
   artifacts?: string[]
   showInlineActions?: boolean
-  // Font size offset in pixels: positive increases, negative decreases all fonts uniformly
+  /** Font size offset in pixels applied to every block through `calc(1em + Npx)`. */
   fontSizeOffset?: number
-  // Optional UX setting to group long consecutive reasoning/tool chains
+  /** Group long consecutive reasoning/tool runs into one "Agent steps" disclosure. */
   groupToolReasoningRuns?: boolean
-  // Display-only projection; canonical tool results remain complete.
+  /** Display-only projection; canonical tool results remain complete. */
   truncateToolOutput?: boolean
   customTheme?: CustomChatTheme
   customThemeEnabled?: boolean
@@ -150,349 +137,11 @@ interface ChatMessageProps {
   onChatErrorAction?: (kind: ChatErrorActionKind, messageId: MessageId, envelope: ChatErrorEnvelope) => void
 }
 
-interface MessageActionsProps {
-  onEdit?: () => void
-  onBranch?: () => void
-  onDelete?: () => void
-  onCopy?: () => void
-  onCopySelection?: () => void
-  onExplainSelection?: (position?: { x: number; y: number }) => void
-  onAddToNoteSelection?: () => void
-  onResend?: () => void
-  onSave?: () => void
-  onCancel?: () => void
-  onSaveBranch?: () => void
-  onMore?: () => void
-  onUndoEdits?: () => void
-  undoLabel?: string
-  undoDisabled?: boolean
-  isEditing: boolean
-  editMode?: 'edit' | 'branch'
-  copied?: boolean
-  modelName?: string
-  isVisible?: boolean
-  variant?: 'default' | 'selection'
-  layout?: 'pill' | 'menu'
-}
-
 type MoreMenuPlacement = {
   top: number
   left: number
   width: number
   openUp: boolean
-}
-
-const MessageActions: React.FC<MessageActionsProps> = ({
-  onEdit,
-  onBranch,
-  onDelete,
-  onCopy,
-  onCopySelection,
-  onExplainSelection,
-  onAddToNoteSelection,
-  // onResend - hidden from UI
-  onSave,
-  onCancel,
-  onSaveBranch,
-  onMore,
-  onUndoEdits,
-  undoLabel,
-  undoDisabled,
-  isEditing,
-  editMode = 'edit',
-  copied = false,
-  modelName,
-  isVisible = false,
-  variant = 'default',
-  layout = 'pill',
-}) => {
-  const isSelectionVariant = variant === 'selection'
-  const isMenuLayout = layout === 'menu'
-  const showLabels = isMenuLayout
-  const containerClassName = isMenuLayout
-    ? 'flex flex-col items-stretch bg-neutral-100/90 dark:bg-neutral-900/90 backdrop-blur-xl border border-neutral-200/70 dark:border-white/[0.08] rounded-2xl p-1 gap-1 shadow-[0_12px_14px_-10px_rgba(0,0,0,0.2)] dark:shadow-[0_12px_12px_-1px_rgba(0,0,0,0.55)]'
-    : 'inline-flex items-center bg-neutral-100/80 dark:bg-neutral-900/80 backdrop-blur-xl border border-neutral-200/50 dark:border-white/[0.08] rounded-full p-0 gap-0.5 shadow-[0_10px_14px_-10px_rgba(0,0,0,0.15)] dark:shadow-[0_3px_4px_-1px_rgba(0,0,0,0.5)]'
-  const baseButtonClassName = isMenuLayout
-    ? 'flex items-center gap-2 px-3 py-2 rounded-xl bg-transparent border-none cursor-pointer transition-all duration-200'
-    : 'p-2 rounded-full bg-transparent border-none cursor-pointer transition-all duration-200'
-
-  const shouldShow = isVisible || isEditing
-
-  return (
-    <div
-      className={`${containerClassName} transition-all duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)] ${
-        shouldShow
-          ? 'opacity-100 translate-y-0 scale-100 pointer-events-auto'
-          : 'opacity-0 translate-y-2 scale-[0.98] pointer-events-none'
-      }`}
-    >
-      {/* Model ID Badge */}
-      {modelName && !isEditing && !isSelectionVariant && (
-        <div
-          className={`font-mono text-[0.625em] text-neutral-500 dark:text-neutral-400 tracking-wider uppercase ${
-            isMenuLayout ? 'px-3 py-2' : 'px-3'
-          } ${
-            isMenuLayout
-              ? 'border-b border-neutral-200 dark:border-white/[0.08]'
-              : 'border-r border-neutral-200 dark:border-white/[0.08]'
-          }`}
-        >
-          {(() => {
-            const displayName = modelName.includes('/') ? modelName.split('/').pop() || modelName : modelName
-            return displayName.length > 20 ? displayName.slice(0, 20) + '...' : displayName
-          })()}
-        </div>
-      )}
-
-      {isEditing ? (
-        <>
-          <button
-            onClick={editMode === 'branch' ? onSaveBranch : onSave}
-            className='p-2 rounded-full bg-transparent border-none cursor-pointer text-neutral-500 dark:text-neutral-400 hover:bg-white/50 dark:hover:bg-white/5 hover:text-green-500 transition-all duration-200'
-            title={editMode === 'branch' ? 'Create branch' : 'Save changes'}
-          >
-            <svg className='w-[15px] h-[15px]' strokeWidth='1.8' fill='none' stroke='currentColor' viewBox='0 0 24 24'>
-              <path strokeLinecap='round' strokeLinejoin='round' d='M5 13l4 4L19 7' />
-            </svg>
-          </button>
-          <button
-            onClick={onCancel}
-            className='p-2 rounded-full bg-transparent border-none cursor-pointer text-neutral-500 dark:text-neutral-400 hover:bg-red-500/10 hover:text-red-400 transition-all duration-200'
-            title='Cancel editing'
-          >
-            <svg className='w-[15px] h-[15px]' strokeWidth='1.8' fill='none' stroke='currentColor' viewBox='0 0 24 24'>
-              <path strokeLinecap='round' strokeLinejoin='round' d='M6 18L18 6M6 6l12 12' />
-            </svg>
-          </button>
-        </>
-      ) : (
-        <>
-          {isSelectionVariant ? (
-            <>
-              {onCopySelection && (
-                <button
-                  onClick={onCopySelection}
-                  className={`${baseButtonClassName} ${
-                    copied
-                      ? 'text-green-500'
-                      : 'text-neutral-500 dark:text-neutral-400 hover:bg-white/50 dark:hover:bg-white/5 hover:text-neutral-800 dark:hover:text-neutral-200'
-                  }`}
-                  title={copied ? 'Copied' : 'Copy selection'}
-                >
-                  {copied ? (
-                    <svg
-                      className='w-[15px] h-[15px]'
-                      strokeWidth='1.8'
-                      fill='none'
-                      stroke='currentColor'
-                      viewBox='0 0 24 24'
-                    >
-                      <path strokeLinecap='round' strokeLinejoin='round' d='M5 13l4 4L19 7' />
-                    </svg>
-                  ) : (
-                    <svg
-                      className='w-[15px] h-[15px]'
-                      strokeWidth='1.8'
-                      fill='none'
-                      stroke='currentColor'
-                      viewBox='0 0 24 24'
-                    >
-                      <path d='M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z' />
-                    </svg>
-                  )}
-                  {showLabels && <span className='text-sm'>Copy selection</span>}
-                </button>
-              )}
-
-              {onExplainSelection && (
-                <button
-                  onClick={event => onExplainSelection({ x: event.clientX, y: event.clientY })}
-                  className={`${baseButtonClassName} text-neutral-500 dark:text-neutral-400 hover:bg-white/50 dark:hover:bg-white/5 hover:text-blue-500`}
-                  title='Explain selection'
-                >
-                  <svg
-                    className='w-[15px] h-[15px]'
-                    strokeWidth='1.8'
-                    fill='none'
-                    stroke='currentColor'
-                    viewBox='0 0 24 24'
-                  >
-                    <path strokeLinecap='round' strokeLinejoin='round' d='M12 21a9 9 0 100-18 9 9 0 000 18z' />
-                    <path strokeLinecap='round' strokeLinejoin='round' d='M9.5 9a2.5 2.5 0 115 0c0 2-2.5 2-2.5 4' />
-                    <path strokeLinecap='round' strokeLinejoin='round' d='M12 17h.01' />
-                  </svg>
-                  {showLabels && <span className='text-sm'>Explain selection</span>}
-                </button>
-              )}
-
-              {onAddToNoteSelection && (
-                <button
-                  onClick={onAddToNoteSelection}
-                  className={`${baseButtonClassName} text-neutral-500 dark:text-neutral-400 hover:bg-white/50 dark:hover:bg-white/5 hover:text-amber-500`}
-                  title='Add selection to note'
-                >
-                  <svg
-                    className='w-[15px] h-[15px]'
-                    strokeWidth='1.8'
-                    fill='none'
-                    stroke='currentColor'
-                    viewBox='0 0 24 24'
-                  >
-                    <path
-                      strokeLinecap='round'
-                      strokeLinejoin='round'
-                      d='M7 3h7l5 5v13a1 1 0 01-1 1H7a2 2 0 01-2-2V5a2 2 0 012-2z'
-                    />
-                    <path strokeLinecap='round' strokeLinejoin='round' d='M14 3v6h6' />
-                    <path strokeLinecap='round' strokeLinejoin='round' d='M8 13h8M8 17h5' />
-                  </svg>
-                  {showLabels && <span className='text-sm'>Add to note</span>}
-                </button>
-              )}
-            </>
-          ) : (
-            <>
-              {/* Copy Button */}
-              <button
-                onClick={onCopy}
-                className={`${baseButtonClassName} ${
-                  copied
-                    ? 'text-green-500'
-                    : 'text-neutral-500 dark:text-neutral-400 hover:bg-white/50 dark:hover:bg-white/5 hover:text-neutral-800 dark:hover:text-neutral-200'
-                }`}
-                title={copied ? 'Copied' : 'Copy Content'}
-              >
-                {copied ? (
-                  <svg
-                    className='w-[15px] h-[15px]'
-                    strokeWidth='1.8'
-                    fill='none'
-                    stroke='currentColor'
-                    viewBox='0 0 24 24'
-                  >
-                    <path strokeLinecap='round' strokeLinejoin='round' d='M5 13l4 4L19 7' />
-                  </svg>
-                ) : (
-                  <svg
-                    className='w-[15px] h-[15px]'
-                    strokeWidth='1.8'
-                    fill='none'
-                    stroke='currentColor'
-                    viewBox='0 0 24 24'
-                  >
-                    <path d='M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z' />
-                  </svg>
-                )}
-                {showLabels && <span className='text-sm'>Copy</span>}
-              </button>
-
-              {/* Edit Button */}
-              {onEdit && (
-                <button
-                  onClick={onEdit}
-                  className={`${baseButtonClassName} text-neutral-500 dark:text-neutral-400 hover:bg-white/50 dark:hover:bg-white/5 hover:text-neutral-800 dark:hover:text-neutral-200`}
-                  title='Edit Prompt'
-                >
-                  <svg
-                    className='w-[15px] h-[15px]'
-                    strokeWidth='1.8'
-                    fill='none'
-                    stroke='currentColor'
-                    viewBox='0 0 24 24'
-                  >
-                    <path d='M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z' />
-                  </svg>
-                  {showLabels && <span className='text-sm'>Edit</span>}
-                </button>
-              )}
-
-              {/* Branch Button */}
-              {onBranch && (
-                <button
-                  onClick={onBranch}
-                  className={`${baseButtonClassName} text-neutral-500 dark:text-neutral-400 hover:bg-white/50 dark:hover:bg-white/5 hover:text-green-500`}
-                  title='Branch message'
-                >
-                  <svg
-                    className='w-[15px] h-[15px]'
-                    strokeWidth='1.8'
-                    fill='none'
-                    stroke='currentColor'
-                    viewBox='0 0 24 24'
-                  >
-                    <path
-                      strokeLinecap='round'
-                      strokeLinejoin='round'
-                      d='M6 4v8a4 4 0 004 4h4M6 8a2 2 0 100-4 2 2 0 000 4zm8 8a2 2 0 100-4 2 2 0 000 4z'
-                    />
-                  </svg>
-                  {showLabels && <span className='text-sm'>Branch</span>}
-                </button>
-              )}
-
-              {/* Regenerate Button - currently hidden per user request */}
-              {/* {onResend && (
-                <button
-                  onClick={onResend}
-                  className='p-2 rounded-full bg-transparent border-none cursor-pointer text-neutral-500 dark:text-neutral-400 hover:bg-white/50 dark:hover:bg-white/5 hover:text-blue-500 transition-all duration-200'
-                  title='Regenerate Response'
-                >
-                  <svg className='w-[15px] h-[15px]' strokeWidth='1.8' fill='none' stroke='currentColor' viewBox='0 0 24 24'>
-                    <path d='M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15' />
-                  </svg>
-                </button>
-              )} */}
-
-              {/* Delete Button */}
-              {onDelete && (
-                <button
-                  onClick={onDelete}
-                  className={`${baseButtonClassName} text-neutral-500 dark:text-neutral-400 hover:bg-red-500/10 hover:text-red-400`}
-                  title='Delete'
-                >
-                  <svg
-                    className='w-[15px] h-[15px]'
-                    strokeWidth='1.8'
-                    fill='none'
-                    stroke='currentColor'
-                    viewBox='0 0 24 24'
-                  >
-                    <path d='M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16' />
-                  </svg>
-                  {showLabels && <span className='text-sm'>Delete</span>}
-                </button>
-              )}
-
-              {/* Undo file edits Button */}
-              {onUndoEdits && (
-                <button
-                  onClick={onUndoEdits}
-                  disabled={undoDisabled}
-                  className={`${baseButtonClassName} text-neutral-500 dark:text-neutral-400 hover:bg-amber-500/10 hover:text-amber-500 disabled:opacity-50 disabled:cursor-not-allowed`}
-                  title={undoLabel || 'Undo file edits'}
-                >
-                  <i className='bx bx-undo text-[15px]'></i>
-                  {showLabels && <span className='text-sm'>{undoLabel || 'Undo edits'}</span>}
-                </button>
-              )}
-
-              {/* More Options Button */}
-              {onMore && (
-                <button
-                  onClick={onMore}
-                  className={`${baseButtonClassName} text-neutral-500 dark:text-neutral-400 hover:bg-white/50 dark:hover:bg-white/5 hover:text-neutral-800 dark:hover:text-neutral-200`}
-                  title='More options'
-                >
-                  <i className='bx bx-dots-vertical-rounded text-[15px]'></i>
-                  {showLabels && <span className='text-sm'>More</span>}
-                </button>
-              )}
-            </>
-          )}
-        </>
-      )}
-    </div>
-  )
 }
 
 type ProcessEntryType = 'tool' | 'reasoning'
@@ -529,7 +178,6 @@ const selectConversationByIdMap = createSelector(
 // scope. This lets the markdown block/code renderers below also live at module scope with a stable
 // identity — otherwise ReactMarkdown remounts every <pre>/<code> subtree on each render.
 const copyRichText = async (plainText: string, html?: string): Promise<boolean> => {
-  // Try copying both HTML and plain text for rich paste support (Word, etc.)
   try {
     if (navigator.clipboard && typeof navigator.clipboard.write === 'function' && html) {
       const htmlBlob = new Blob([html], { type: 'text/html' })
@@ -541,21 +189,19 @@ const copyRichText = async (plainText: string, html?: string): Promise<boolean> 
       await navigator.clipboard.write([clipboardItem])
       return true
     }
-  } catch (_) {
+  } catch {
     // Fall through to plain text copy
   }
 
-  // Fallback to plain text copy
   try {
     if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
       await navigator.clipboard.writeText(plainText)
       return true
     }
-  } catch (_) {
+  } catch {
     // fall through to execCommand fallback
   }
 
-  // Fallback for non-secure contexts or older browsers
   try {
     const textarea = document.createElement('textarea')
     textarea.value = plainText
@@ -565,7 +211,7 @@ const copyRichText = async (plainText: string, html?: string): Promise<boolean> 
     document.body.appendChild(textarea)
     textarea.focus()
     textarea.select()
-    // @ts-ignore - Deprecated API used intentionally as a safe fallback when Clipboard API is unavailable
+    // Deprecated API used intentionally as a safe fallback when the Clipboard API is unavailable.
     const ok = document.execCommand('copy')
     document.body.removeChild(textarea)
     return ok
@@ -575,8 +221,7 @@ const copyRichText = async (plainText: string, html?: string): Promise<boolean> 
   }
 }
 
-// Custom renderer for block code (<pre>) with a stable copy action and no overlay on top of
-// selectable text. Module-scoped so its component identity is stable across renders.
+// Fenced code block with a stable copy action. Module-scoped so its identity is stable.
 const PreRenderer: React.FC<any> = ({ children, className, ...props }) => {
   const [copied, setCopied] = useState(false)
   const preRef = useRef<HTMLPreElement | null>(null)
@@ -590,12 +235,8 @@ const PreRenderer: React.FC<any> = ({ children, className, ...props }) => {
     try {
       const plain = preRef.current?.innerText ?? ''
       if (!plain) return
-
       const ok = await copyRichText(plain)
-      if (!ok) {
-        throw new Error('Clipboard write failed')
-      }
-
+      if (!ok) throw new Error('Clipboard write failed')
       setCopied(true)
       window.setTimeout(() => setCopied(false), 1500)
     } catch (err) {
@@ -604,9 +245,9 @@ const PreRenderer: React.FC<any> = ({ children, className, ...props }) => {
   }
 
   return (
-    <div className='chat-markdown-code-block my-3 not-prose overflow-hidden rounded-xl border'>
-      <div className='chat-markdown-code-header flex items-center justify-end px-2'>
-        <Button
+    <div className='chat-markdown-code-block not-prose my-3 overflow-hidden rounded-2xl'>
+      <div className='chat-markdown-code-header flex h-8 items-center justify-end px-2'>
+        <button
           type='button'
           onMouseDown={event => {
             event.preventDefault()
@@ -616,12 +257,11 @@ const PreRenderer: React.FC<any> = ({ children, className, ...props }) => {
             event.stopPropagation()
             void handleCopyCode()
           }}
-          className='chat-markdown-code-copy-button shrink-0 py-1 px-2 mt-1'
-          size='smaller'
-          variant='outline2'
+          className={`chat-markdown-code-copy-button inline-flex h-6 items-center gap-1 rounded-full px-2.5 text-[0.72em] font-medium ${FAST_COLOR_TRANSITION_CLASS} ${FOCUS_RING_CLASS}`}
+          aria-label={copied ? 'Copied' : 'Copy code'}
         >
           {copied ? 'Copied' : 'Copy'}
-        </Button>
+        </button>
       </div>
       <pre
         ref={preRef}
@@ -637,12 +277,11 @@ const PreRenderer: React.FC<any> = ({ children, className, ...props }) => {
 const CodeRenderer: React.FC<any> = ({ inline, className, children, ...props }) => {
   if (inline) {
     return (
-      <code className='chat-markdown-inline-code inline rounded px-1 py-0.5 whitespace-pre-wrap' {...props}>
+      <code className='chat-markdown-inline-code inline rounded-md px-1 py-0.5 whitespace-pre-wrap' {...props}>
         {children}
       </code>
     )
   }
-
   return (
     <code className={className} {...props}>
       {children}
@@ -661,9 +300,6 @@ const MARKDOWN_COMPONENTS = { pre: PreRenderer, code: CodeRenderer, a: MarkdownL
  * copy-to-clipboard, the editable text round-trip, any token estimate — must read the
  * filtered view below and never `contentBlocks` directly, or the user copies "I couldn't
  * reach the provider" as if the assistant had said it.
- *
- * Keyed off the explicit `excludeFromContext` flag as well as the block type so a future
- * excluded block member is honoured without editing this predicate.
  */
 const isExcludedFromModelOutput = (block: ContentBlock | undefined | null): boolean => {
   if (!block) return true
@@ -671,22 +307,70 @@ const isExcludedFromModelOutput = (block: ContentBlock | undefined | null): bool
   return (block as { excludeFromContext?: boolean }).excludeFromContext === true
 }
 
+const truncateWords = (text: string | any, maxWords: number = COLLAPSED_CONTENT_WORD_LIMIT): string => {
+  const content = typeof text === 'object' ? JSON.stringify(text) : String(text)
+  const words = content.split(/\s+/)
+  if (words.length <= maxWords) return content
+  return words.slice(0, maxWords).join(' ') + '...'
+}
+
+const getCollapsedReasoningSummary = (text: string | any): string => {
+  const content = typeof text === 'object' ? JSON.stringify(text) : String(text)
+  const firstBoldSection = content.match(/\*\*([\s\S]*?)\*\*/)?.[1]?.trim()
+  if (firstBoldSection) return firstBoldSection.replace(/\s+/g, ' ')
+  return truncateWords(content)
+}
+
+const isProcessRunSeparatorText = (text: string): boolean => {
+  const trimmed = text.trim()
+  if (!trimmed) return true
+  // Keep obviously structured markdown content out of process-run grouping.
+  if (trimmed.startsWith('#') || trimmed.startsWith('```')) return false
+  // Short connective text (even if multiline) should not break an Agent Steps run.
+  const words = trimmed.split(/\s+/).filter(Boolean)
+  return words.length <= 12
+}
+
+const parseResponsesToolArgs = (rawArgs: unknown): unknown => {
+  if (typeof rawArgs !== 'string') return rawArgs
+  try {
+    return rawArgs ? JSON.parse(rawArgs) : rawArgs
+  } catch {
+    return rawArgs
+  }
+}
+
+const ROLE_LABEL: Record<string, string> = {
+  user: 'User',
+  assistant: 'Assistant',
+  system: 'System',
+  ex_agent: 'Claude Code',
+}
+
+const ROLE_LABEL_CLASS: Record<string, string> = {
+  user: 'text-indigo-700 dark:text-yPurple-50',
+  assistant: 'text-lime-800 dark:text-yBrown-50',
+  system: 'text-purple-500 dark:text-purple-300',
+  ex_agent: 'text-orange-700 dark:text-orange-400',
+}
+
+const EXPLAIN_BUTTON_CLASS = `flex h-8 w-8 items-center justify-center rounded-full bg-black/[0.05] text-neutral-600 disabled:cursor-not-allowed disabled:opacity-50 dark:bg-white/[0.06] dark:text-neutral-300 ${FAST_COLOR_TRANSITION_CLASS} ${FOCUS_RING_CLASS}`
+
+const FLOATING_SURFACE_CLASS =
+  'rounded-2xl bg-white/95 backdrop-blur-xl ring-1 ring-black/[0.06] dark:bg-yBlack-900/95 dark:ring-white/[0.08]'
+
 const ChatMessage: React.FC<ChatMessageProps> = React.memo(
   ({
     id,
     role,
     content,
-    thinking,
-    toolCalls,
     contentBlocks,
     streamEvents,
-    // timestamp,
     onEdit,
     onBranch,
     onDelete,
     onCopy,
-    onResend: _onResend,
-    onAddToNote: _onAddToNote,
+    onAddToNote,
     onExplainFromSelection,
     onOpenToolHtmlModal,
     onOpenSubagentTranscript,
@@ -722,6 +406,7 @@ const ChatMessage: React.FC<ChatMessageProps> = React.memo(
     const customTheme = customThemeProp ?? getStoredCustomChatTheme()
     const customThemeEnabled =
       typeof customThemeEnabledProp === 'boolean' ? customThemeEnabledProp : getCustomChatThemeEnabled()
+
     const [editingState, setEditingState] = useState(isEditing)
     const visibleContent = useMemo(
       () => (role === 'user' ? stripAttachedImagePathMetadata(content) : content),
@@ -730,9 +415,6 @@ const ChatMessage: React.FC<ChatMessageProps> = React.memo(
     const [editContent, setEditContent] = useState(visibleContent)
     const [editMode, setEditMode] = useState<'edit' | 'branch'>('edit')
     const [copied, setCopied] = useState(false)
-    // Toggle visibility of the reasoning/thinking block
-    const [showThinking, setShowThinking] = useState(false)
-    // Track expanded/collapsed state for tool calls, reasoning blocks, and grouped runs
     const [expandedBlocks, setExpandedBlocks] = useState<{
       toolCalls: Set<string>
       reasoning: Set<number>
@@ -742,11 +424,9 @@ const ChatMessage: React.FC<ChatMessageProps> = React.memo(
       reasoning: new Set(),
       groupRuns: new Set(),
     })
-    // More menu states
     const [showMoreMenu, setShowMoreMenu] = useState(false)
     const [moreMenuPlacement, setMoreMenuPlacement] = useState<MoreMenuPlacement | null>(null)
     const moreMenuRef = useRef<HTMLDivElement | null>(null)
-    // Hover state for message actions visibility (fixes web mode hover detection)
     const [isHovering, setIsHovering] = useState(false)
     const moreButtonRef = useRef<HTMLDivElement | null>(null)
     const messageRef = useRef<HTMLDivElement | null>(null)
@@ -755,23 +435,14 @@ const ChatMessage: React.FC<ChatMessageProps> = React.memo(
       if (!isMobile) return
       setIsHovering(true)
     }, [isMobile])
-    // Context menu states (floating MessageActions)
+
     const [contextMenuOpen, setContextMenuOpen] = useState(false)
     const [contextMenuPosition, setContextMenuPosition] = useState<{ x: number; y: number } | null>(null)
     const [selectedText, setSelectedText] = useState<string>('')
     const floatingActionsRef = useRef<HTMLDivElement | null>(null)
     const [selectedArtifactUrl, setSelectedArtifactUrl] = useState<string | null>(null)
-    // Explain input states
     const streamToolGroupsByIndex = useMemo(() => buildToolCallGroupsFromStream(streamEvents), [streamEvents])
     const contentToolGroupsByIndex = useMemo(() => buildToolCallGroupsFromBlocks(contentBlocks), [contentBlocks])
-    // A user row only ever carries `context_injection` blocks (Chat.tsx keeps the rest out).
-    // They render as a card under the role header while `content` keeps the legacy text path.
-    const userContextInjectionEntries = useMemo<ContextInjectionCardEntry[]>(() => {
-      if (role !== 'user' || !Array.isArray(contentBlocks)) return []
-      return contentBlocks
-        .filter((block): block is Extract<ContentBlock, { type: 'context_injection' }> => block?.type === 'context_injection')
-        .map(block => ({ path: block.path, label: block.label, text: block.text, reason: block.reason }))
-    }, [contentBlocks, role])
     const htmlRegistry = useHtmlIframeRegistry()
     const [showExplainInput, setShowExplainInput] = useState(false)
     const [explainInputValue, setExplainInputValue] = useState('')
@@ -784,13 +455,12 @@ const ChatMessage: React.FC<ChatMessageProps> = React.memo(
     } | null>(null)
     const [mcpLoadState, setMcpLoadState] = useState<Record<string, boolean>>({})
     const [mcpReloadTokens, setMcpReloadTokens] = useState<Record<string, number>>({})
-    const isStreamingRender = id === 'streaming' || (Array.isArray(streamEvents) && streamEvents.length > 0)
-    const expandContainerStyle = isStreamingRender ? ({ transition: 'none' } as React.CSSProperties) : undefined
+    const hasStreamEvents = Array.isArray(streamEvents) && streamEvents.length > 0
+    const isStreamingRender = id === 'streaming' || hasStreamEvents
     const handleExpandTransitionEnd = useCallback(() => {
       onLayoutChange?.()
     }, [onLayoutChange])
-    // Get message data from Redux store via a shared memoized id->message map (O(1) lookup),
-    // instead of an O(N) .find() that re-ran for every mounted message on every stream token.
+
     const messageData = useSelector((state: RootState) => selectMessageByIdMap(state).get(String(id)))
     const isCompactionSummary = messageData?.note === AUTO_COMPACTION_NOTE
     const toolDefinitions = useSelector((state: RootState) => state.chat.tools)
@@ -837,6 +507,10 @@ const ChatMessage: React.FC<ChatMessageProps> = React.memo(
       () => Array.isArray(contentBlocks) && contentBlocks.some(isExcludedFromModelOutput),
       [contentBlocks]
     )
+    // A user row only ever carries `context_injection` blocks (Chat.tsx keeps the rest out), so
+    // its editable text is always the plain `content`. Assistant rows round-trip their blocks.
+    const editableSourceBlocks = role === 'user' ? undefined : modelOutputBlocks
+    const hasEditableBlocks = Boolean(editableSourceBlocks && editableSourceBlocks.length > 0)
 
     const hasContent = useMemo(() => {
       const hasSimpleContent = visibleContent && visibleContent.trim().length > 0
@@ -847,7 +521,6 @@ const ChatMessage: React.FC<ChatMessageProps> = React.memo(
         modelOutputBlocks.some(
           b => (b.type === 'text' && b.content && b.content.trim().length > 0) || b.type === 'image'
         )
-
       return hasSimpleContent || hasBlockContent
     }, [visibleContent, modelOutputBlocks])
 
@@ -858,21 +531,23 @@ const ChatMessage: React.FC<ChatMessageProps> = React.memo(
      */
     const copyText = useMemo(() => {
       if (!hasExcludedBlocks) return visibleContent
-      const fromBlocks = modelOutputBlocks && modelOutputBlocks.length > 0
-        ? contentBlocksToEditableText(modelOutputBlocks)
-        : ''
+      const fromBlocks =
+        modelOutputBlocks && modelOutputBlocks.length > 0 ? contentBlocksToEditableText(modelOutputBlocks) : ''
       const normalized = role === 'user' ? stripAttachedImagePathMetadata(fromBlocks) : fromBlocks
       return normalized.trim().length > 0 ? normalized : ''
     }, [hasExcludedBlocks, modelOutputBlocks, role, visibleContent])
 
     const canBranchMessage = role === 'user' || (role === 'assistant' && messageData?.parent_id == null)
 
+    const getEditableText = () =>
+      hasEditableBlocks
+        ? stripAttachedImagePathMetadata(contentBlocksToEditableText(editableSourceBlocks as ContentBlock[]))
+        : visibleContent
+
     const handleEdit = () => {
       dispatch(chatSliceActions.editingBranchSet(false))
       setEditingState(true)
-      // Use contentBlocks if available, otherwise use simple content.
-      // R5: excluded blocks are not model output, so they never enter the editable text.
-      setEditContent(modelOutputBlocks && modelOutputBlocks.length > 0 ? stripAttachedImagePathMetadata(contentBlocksToEditableText(modelOutputBlocks)) : visibleContent)
+      setEditContent(getEditableText())
       setEditMode('edit')
       onEditingStateChange?.(id, true, 'edit')
     }
@@ -880,26 +555,19 @@ const ChatMessage: React.FC<ChatMessageProps> = React.memo(
     const handleBranch = () => {
       dispatch(chatSliceActions.editingBranchSet(true))
       setEditingState(true)
-      // Use contentBlocks if available, otherwise use simple content.
-      // R5: excluded blocks are not model output, so they never enter the editable text.
-      setEditContent(modelOutputBlocks && modelOutputBlocks.length > 0 ? stripAttachedImagePathMetadata(contentBlocksToEditableText(modelOutputBlocks)) : visibleContent)
+      setEditContent(getEditableText())
       setEditMode('branch')
       onEditingStateChange?.(id, true, 'branch')
     }
 
     const handleSave = () => {
       const trimmedContent = editContent.trim()
-
-      // Prevent saving empty messages
       if (!trimmedContent) {
         console.warn('Cannot save empty message')
         return
       }
-
       if (onEdit && trimmedContent !== visibleContent) {
-        // Convert edited text back to contentBlocks if original had contentBlocks
-        const newContentBlocks =
-          modelOutputBlocks && modelOutputBlocks.length > 0 ? editableTextToContentBlocks(trimmedContent) : undefined
+        const newContentBlocks = hasEditableBlocks ? editableTextToContentBlocks(trimmedContent) : undefined
         onEdit(id, appendAttachedImagePathMetadata(trimmedContent, extractAttachedImagePaths(content)), newContentBlocks)
       }
       dispatch(chatSliceActions.editingBranchSet(false))
@@ -909,14 +577,9 @@ const ChatMessage: React.FC<ChatMessageProps> = React.memo(
 
     const handleSaveBranch = () => {
       if (onBranch) {
-        // Convert edited text back to contentBlocks if original had contentBlocks
-        const newContentBlocks =
-          modelOutputBlocks && modelOutputBlocks.length > 0 ? editableTextToContentBlocks(editContent.trim()) : undefined
-        onBranch(
-          id,
-          appendAttachedImagePathMetadata(editContent.trim(), extractAttachedImagePaths(content)),
-          newContentBlocks
-        )
+        const trimmedContent = editContent.trim()
+        const newContentBlocks = hasEditableBlocks ? editableTextToContentBlocks(trimmedContent) : undefined
+        onBranch(id, appendAttachedImagePathMetadata(trimmedContent, extractAttachedImagePaths(content)), newContentBlocks)
       }
       dispatch(chatSliceActions.editingBranchSet(false))
       // Clear only drafts owned by this branch edit after branching is initiated.
@@ -939,7 +602,6 @@ const ChatMessage: React.FC<ChatMessageProps> = React.memo(
     }
 
     const handleCopy = async () => {
-      // Check for image block first
       const imageBlock = contentBlocks?.find(b => b.type === 'image')
 
       if (imageBlock && imageBlock.type === 'image' && imageBlock.url) {
@@ -948,39 +610,29 @@ const ChatMessage: React.FC<ChatMessageProps> = React.memo(
           const response = await fetch(imageBlock.url)
           const blob = await response.blob()
           const blobUrl = window.URL.createObjectURL(blob)
-
           const link = document.createElement('a')
           link.href = blobUrl
 
-          // Determine filename
           let extension = 'png'
           if (imageBlock.mimeType) {
             const mimeParts = imageBlock.mimeType.split('/')
-            if (mimeParts.length > 1) {
-              extension = mimeParts[1]
-            }
+            if (mimeParts.length > 1) extension = mimeParts[1]
           } else if (blob.type) {
             const parts = blob.type.split('/')
-            if (parts.length > 1) {
-              extension = parts[1]
-            }
+            if (parts.length > 1) extension = parts[1]
           }
 
-          const filename = `generated-image-${Date.now()}.${extension}`
-          link.download = filename
-
+          link.download = `generated-image-${Date.now()}.${extension}`
           document.body.appendChild(link)
           link.click()
           document.body.removeChild(link)
           window.URL.revokeObjectURL(blobUrl)
 
-          // Show copied feedback
           setCopied(true)
           setTimeout(() => setCopied(false), 1500)
           return
         } catch (err) {
           console.error('Failed to download image:', err)
-          // Fallback to direct link if fetch fails
           try {
             window.open(imageBlock.url, '_blank')
           } catch (e) {
@@ -991,25 +643,17 @@ const ChatMessage: React.FC<ChatMessageProps> = React.memo(
 
       // R5: nothing the model produced -> nothing to copy. Do not fall back to the raw
       // `content` string, which on an ErrorBlock row would be the failure explanation.
-      if (hasExcludedBlocks && !copyText) {
-        return
-      }
+      if (hasExcludedBlocks && !copyText) return
 
-      if (onCopy) {
-        onCopy(copyText)
-      }
+      if (onCopy) onCopy(copyText)
 
-      // Get rendered HTML from the message element for rich paste support.
-      // `.prose` is only ever a rendered-markdown node, so the error bubble (which is a
-      // sibling, never inside one) cannot leak into the rich-text flavour either.
+      // Rendered HTML for rich paste support. `.prose` is only ever a rendered-markdown node, so
+      // the error bubble (a sibling, never inside one) cannot leak into the rich-text flavour.
       let html: string | undefined
       const messageEl = document.getElementById(`message-${id}`)
       if (messageEl) {
-        // Find the prose content div which contains the rendered markdown
         const proseEl = messageEl.querySelector('.prose')
-        if (proseEl) {
-          html = proseEl.innerHTML
-        }
+        if (proseEl) html = proseEl.innerHTML
       }
 
       const ok = await copyRichText(copyText, html)
@@ -1022,27 +666,18 @@ const ChatMessage: React.FC<ChatMessageProps> = React.memo(
     }
 
     const handleDelete = () => {
-      if (onDelete) {
-        onDelete(id)
-      }
+      if (onDelete) onDelete(id)
     }
 
     const handleDeleteArtifact = (index: number) => {
       dispatch(chatSliceActions.messageArtifactDeleted({ messageId: id, index }))
     }
 
-    const handleArtifactClick = (url: string) => {
-      setSelectedArtifactUrl(url)
-    }
-
-    const handleCloseArtifactModal = () => {
-      setSelectedArtifactUrl(null)
-    }
+    const handleArtifactClick = (url: string) => setSelectedArtifactUrl(url)
+    const handleCloseArtifactModal = () => setSelectedArtifactUrl(null)
 
     const handleContextMenu = (e: React.MouseEvent) => {
-      e.preventDefault() // Always prevent default
-
-      // Get selected text
+      e.preventDefault()
       const selection = window.getSelection()
       const rawText = selection?.toString() || ''
       const container = messageRef.current
@@ -1054,9 +689,7 @@ const ChatMessage: React.FC<ChatMessageProps> = React.memo(
         Boolean((anchorNode && container?.contains(anchorNode)) || (focusNode && container?.contains(focusNode)))
       const text = selectionInsideMessage ? rawText.trim() : ''
 
-      // Store selected text for potential use
       setSelectedText(text)
-      // Show floating MessageActions at click position
       setContextMenuPosition({ x: e.clientX, y: e.clientY })
       setContextMenuOpen(true)
       explainInputPosition.current = { x: e.clientX, y: e.clientY }
@@ -1064,10 +697,8 @@ const ChatMessage: React.FC<ChatMessageProps> = React.memo(
 
     const handleSendExplainInput = () => {
       if (onExplainFromSelection && selectedText && explainInputValue.trim()) {
-        // Combine user's custom question with the selected text
         const branchContent = `${explainInputValue.trim()}\n\nSelected text:\n\`\`\`\n${selectedText}\n\`\`\``
         onExplainFromSelection(id, branchContent)
-        // Reset state
         setShowExplainInput(false)
         setExplainInputFixedPosition(null)
         setExplainInputValue('')
@@ -1106,8 +737,8 @@ const ChatMessage: React.FC<ChatMessageProps> = React.memo(
     }
 
     const handleAddSelectionToNote = () => {
-      if (!selectedText || !_onAddToNote) return
-      _onAddToNote(selectedText)
+      if (!selectedText || !onAddToNote) return
+      onAddToNote(selectedText)
     }
 
     // Get adjusted position for explain input to avoid viewport overflow
@@ -1129,21 +760,14 @@ const ChatMessage: React.FC<ChatMessageProps> = React.memo(
       )
       const width = Math.max(0, availableRight - availableLeft)
 
-      // On mobile, center the input in the viewport
       if (isMobile) {
-        return {
-          x: availableLeft,
-          y: (viewportHeight - inputRect.height) / 2,
-          width,
-        }
+        return { x: availableLeft, y: (viewportHeight - inputRect.height) / 2, width }
       }
 
-      // On desktop, position near the cursor but keep the wider input inside the chat pane.
       let { x, y } = explainInputPosition.current
       x = x - width / 2
       x = Math.min(Math.max(x, availableLeft), availableRight - width)
 
-      // Prefer showing above the click position; fall back below if needed
       const aboveY = y - inputRect.height - offset
       const belowY = y + offset
       if (aboveY >= 10) {
@@ -1162,17 +786,12 @@ const ChatMessage: React.FC<ChatMessageProps> = React.memo(
         setExplainInputFixedPosition(null)
         return
       }
-
       const updatePosition = () => {
         const adjusted = getAdjustedExplainInputPosition()
-        if (adjusted) {
-          setExplainInputFixedPosition(adjusted)
-        }
+        if (adjusted) setExplainInputFixedPosition(adjusted)
       }
-
       const frame = window.requestAnimationFrame(updatePosition)
       window.addEventListener('resize', updatePosition)
-
       return () => {
         window.cancelAnimationFrame(frame)
         window.removeEventListener('resize', updatePosition)
@@ -1182,18 +801,13 @@ const ChatMessage: React.FC<ChatMessageProps> = React.memo(
     // Click outside handler for explain input
     useEffect(() => {
       if (!showExplainInput) return
-
       const handleClickOutside = (event: MouseEvent) => {
         if (explainInputRef.current && !explainInputRef.current.contains(event.target as Node)) {
           handleCancelExplainInput()
         }
       }
-
       document.addEventListener('mousedown', handleClickOutside)
-
-      return () => {
-        document.removeEventListener('mousedown', handleClickOutside)
-      }
+      return () => document.removeEventListener('mousedown', handleClickOutside)
     }, [showExplainInput])
 
     // Focus explain textarea without scrolling the virtual list
@@ -1208,47 +822,34 @@ const ChatMessage: React.FC<ChatMessageProps> = React.memo(
           textarea.focus()
         }
       }, 0)
-
-      return () => {
-        window.clearTimeout(focusTimer)
-      }
+      return () => window.clearTimeout(focusTimer)
     }, [showExplainInput])
 
     const getEstimatedMoreMenuSize = useCallback(() => {
-      if (typeof window === 'undefined') {
-        return { width: 320, height: 440 }
-      }
-
+      if (typeof window === 'undefined') return { width: 320, height: 440 }
       const breakpointWidth = window.innerWidth >= 768 ? 320 : window.innerWidth >= 640 ? 288 : 256
       const maxAllowedWidth = Math.max(180, window.innerWidth - 16)
-      const width = Math.min(breakpointWidth, maxAllowedWidth)
-
-      return { width, height: 440 }
+      return { width: Math.min(breakpointWidth, maxAllowedWidth), height: 440 }
     }, [])
 
     const computeMoreMenuPlacement = useCallback((): MoreMenuPlacement | null => {
       if (typeof window === 'undefined') return null
-
       const trigger = moreButtonRef.current
       if (!trigger) return null
 
       const rect = trigger.getBoundingClientRect()
       const { width, height } = getEstimatedMoreMenuSize()
       const margin = 8
-
       const minLeft = margin
       const maxLeft = Math.max(margin, window.innerWidth - width - margin)
       const left = Math.min(Math.max(rect.right - width, minLeft), maxLeft)
-
       const spaceBelow = window.innerHeight - rect.bottom - margin
       const spaceAbove = rect.top - margin
       const openUp = spaceBelow < height && spaceAbove > spaceBelow
-
       const preferredTop = openUp ? rect.top - height - 6 : rect.bottom + 6
       const minTop = margin
       const maxTop = Math.max(margin, window.innerHeight - height - margin)
       const top = Math.min(Math.max(preferredTop, minTop), maxTop)
-
       return { top, left, width, openUp }
     }, [getEstimatedMoreMenuSize])
 
@@ -1258,10 +859,8 @@ const ChatMessage: React.FC<ChatMessageProps> = React.memo(
         setMoreMenuPlacement(null)
         return
       }
-
       const placement = computeMoreMenuPlacement()
       if (!placement) return
-
       setMoreMenuPlacement(placement)
       setShowMoreMenu(true)
     }
@@ -1272,20 +871,13 @@ const ChatMessage: React.FC<ChatMessageProps> = React.memo(
         const target = event.target as Node
         const clickedMenu = Boolean(moreMenuRef.current && moreMenuRef.current.contains(target))
         const clickedTrigger = Boolean(moreButtonRef.current && moreButtonRef.current.contains(target))
-
         if (!clickedMenu && !clickedTrigger) {
           setShowMoreMenu(false)
           setMoreMenuPlacement(null)
         }
       }
-
-      if (showMoreMenu) {
-        document.addEventListener('mousedown', handleClickOutside)
-      }
-
-      return () => {
-        document.removeEventListener('mousedown', handleClickOutside)
-      }
+      if (showMoreMenu) document.addEventListener('mousedown', handleClickOutside)
+      return () => document.removeEventListener('mousedown', handleClickOutside)
     }, [showMoreMenu])
 
     // Close More menu when context menu opens to avoid conflicts
@@ -1296,26 +888,20 @@ const ChatMessage: React.FC<ChatMessageProps> = React.memo(
       }
     }, [contextMenuOpen])
 
-    // Click outside handler for floating MessageActions
+    // Click outside / Escape handler for floating MessageActions
     const closeFloatingActions = useCallback(() => setContextMenuOpen(false), [])
     useEffect(() => {
       if (!contextMenuOpen) return
-
       const handleClickOutside = (event: MouseEvent) => {
         if (floatingActionsRef.current && !floatingActionsRef.current.contains(event.target as Node)) {
           closeFloatingActions()
         }
       }
-
       const handleEscape = (event: KeyboardEvent) => {
-        if (event.key === 'Escape') {
-          closeFloatingActions()
-        }
+        if (event.key === 'Escape') closeFloatingActions()
       }
-
       document.addEventListener('mousedown', handleClickOutside)
       document.addEventListener('keydown', handleEscape)
-
       return () => {
         document.removeEventListener('mousedown', handleClickOutside)
         document.removeEventListener('keydown', handleEscape)
@@ -1325,16 +911,13 @@ const ChatMessage: React.FC<ChatMessageProps> = React.memo(
     // Mobile: hide inline actions when tapping outside the message
     useEffect(() => {
       if (!isMobile) return
-
       const handleTapOutside = (event: MouseEvent | TouchEvent) => {
         if (messageRef.current && !messageRef.current.contains(event.target as Node)) {
           setIsHovering(false)
         }
       }
-
       document.addEventListener('mousedown', handleTapOutside)
       document.addEventListener('touchstart', handleTapOutside)
-
       return () => {
         document.removeEventListener('mousedown', handleTapOutside)
         document.removeEventListener('touchstart', handleTapOutside)
@@ -1344,120 +927,74 @@ const ChatMessage: React.FC<ChatMessageProps> = React.memo(
     // Keep portal menu anchored to the trigger while open
     useEffect(() => {
       if (!showMoreMenu) return
-
       const recomputePosition = () => {
         const placement = computeMoreMenuPlacement()
         if (placement) setMoreMenuPlacement(placement)
       }
-
       window.addEventListener('resize', recomputePosition)
       window.addEventListener('scroll', recomputePosition, true)
-
       return () => {
         window.removeEventListener('resize', recomputePosition)
         window.removeEventListener('scroll', recomputePosition, true)
       }
     }, [showMoreMenu, computeMoreMenuPlacement])
 
-    const getRoleStyles = () => {
-      const transparentContainer = 'border-l-4 border-l-transparent bg-transparent dark:bg-transparent'
-      const useColored = !!colored
-
-      if (useColored && customThemeEnabled) {
-        const roleThemeKey = resolveRoleThemeKey(role)
-        const roleTheme = customTheme.colors.messageRoles[roleThemeKey]
-        const roleText =
-          roleThemeKey === 'user'
-            ? 'User'
-            : roleThemeKey === 'assistant'
-              ? 'Assistant'
-              : roleThemeKey === 'system'
-                ? 'System'
-                : roleThemeKey === 'ex_agent'
-                  ? 'Claude Code'
-                  : 'Unknown'
-
-        const borderColor = 'transparent'
-        const containerStyle: React.CSSProperties = {
-          backgroundColor: getThemeModeColor(roleTheme.containerBg, isDarkMode),
-          ...(roleThemeKey === 'ex_agent' ? { borderColor } : { borderLeftColor: borderColor }),
-        }
-
-        return {
-          container: roleThemeKey === 'ex_agent' ? 'border-2' : 'border-l-4',
-          role: '',
-          roleStyle: {
-            color: getThemeModeColor(roleTheme.roleText, isDarkMode),
-          } as React.CSSProperties,
-          containerStyle,
-          roleText,
-        }
+    // Tell the virtual list about disclosure changes across the whole expand transition.
+    useEffect(() => {
+      if (!onLayoutChange) return
+      onLayoutChange()
+      if (typeof window === 'undefined') return
+      const rafId = window.requestAnimationFrame(() => onLayoutChange())
+      const timeoutA = window.setTimeout(() => onLayoutChange(), 140)
+      const timeoutB = window.setTimeout(() => onLayoutChange(), 320)
+      return () => {
+        window.cancelAnimationFrame(rafId)
+        window.clearTimeout(timeoutA)
+        window.clearTimeout(timeoutB)
       }
+    }, [expandedBlocks, onLayoutChange])
 
-      switch (role) {
-        case 'user':
-          return {
-            container: useColored
-              ? 'bg-gray-800 border-l-0 border-l-transparent bg-neutral-50 dark:bg-neutral-900'
-              : transparentContainer,
-            role: 'text-indigo-800 dark:text-yPurple-50',
-            roleStyle: undefined,
-            containerStyle: undefined,
-            roleText: 'User',
-          }
-        case 'assistant':
-          return {
-            container: useColored
-              ? 'border-l-0 border-l-transparent bg-transparent dark:bg-transparent'
-              : transparentContainer,
-            role: 'text-lime-800 dark:text-yBrown-50',
-            roleStyle: undefined,
-            containerStyle: undefined,
-            roleText: 'Assistant',
-          }
-        case 'system':
-          return {
-            container: useColored
-              ? 'border-l-0 border-l-transparent bg-transparent dark:bg-transparent'
-              : transparentContainer,
-            role: 'text-purple-400',
-            roleStyle: undefined,
-            containerStyle: undefined,
-            roleText: 'System',
-          }
-        case 'ex_agent':
-          return {
-            container: useColored
-              ? 'border-2 border-transparent bg-transparent dark:bg-transparent'
-              : transparentContainer,
-            role: 'text-orange-700 dark:text-orange-400',
-            roleStyle: undefined,
-            containerStyle: undefined,
-            roleText: 'Claude Code',
-          }
-        default:
-          return {
-            container: useColored
-              ? 'border-l-4 border-l-transparent bg-transparent dark:bg-transparent'
-              : transparentContainer,
-            role: 'text-gray-400',
-            roleStyle: undefined,
-            containerStyle: undefined,
-            roleText: 'Unknown',
-          }
-      }
+    const toggleBlock = (type: 'toolCalls' | 'reasoning' | 'groupRuns', blockId: string | number) => {
+      setExpandedBlocks(prev => {
+        const next = { ...prev }
+        const set = new Set<any>(prev[type] as Set<any>)
+        if (set.has(blockId)) set.delete(blockId)
+        else set.add(blockId)
+        next[type] = set as any
+        return next
+      })
     }
 
-    const styles = getRoleStyles()
+    // ── Role surface ──────────────────────────────────────────────────────────────────
 
-    const markdownThemeVars = getMarkdownThemeVars(customThemeEnabled ? customTheme : createDefaultCustomChatTheme(), isDarkMode)
+    const roleThemeKey = resolveRoleThemeKey(role)
+    const roleTheme = customThemeEnabled ? customTheme.colors.messageRoles[roleThemeKey] : null
+    const roleLabel = ROLE_LABEL[roleThemeKey] ?? 'Unknown'
+    const roleLabelClass = roleTheme ? '' : (ROLE_LABEL_CLASS[roleThemeKey] ?? 'text-neutral-500')
+    const roleLabelStyle: React.CSSProperties | undefined = roleTheme
+      ? { color: getThemeModeColor(roleTheme.roleText, isDarkMode) }
+      : undefined
+    const isUserRow = role === 'user'
+    const drawSurface = colored && isUserRow
+    const surfaceClass = drawSurface && !roleTheme ? 'bg-neutral-100/80 dark:bg-white/[0.05]' : ''
+    const surfaceStyle: React.CSSProperties | undefined =
+      drawSurface && roleTheme ? { backgroundColor: getThemeModeColor(roleTheme.containerBg, isDarkMode) } : undefined
+
+    const markdownThemeVars = getMarkdownThemeVars(
+      customThemeEnabled ? customTheme : createDefaultCustomChatTheme(),
+      isDarkMode
+    )
+
+    // Style object for content areas that scale with fontSizeOffset. Disclosure labels use
+    // em-based sizes so they inherit it too.
+    const messageContentStyle = getChatFontSizeOffsetStyle(fontSizeOffset)
 
     const renderMarkdownNode = ({
       key,
       markdown,
-      className,
+      className: markdownClassName,
       style,
-      id,
+      id: nodeId,
     }: {
       key: string
       markdown: string
@@ -1465,7 +1002,7 @@ const ChatMessage: React.FC<ChatMessageProps> = React.memo(
       style?: React.CSSProperties
       id?: string
     }) => (
-      <div key={key} id={id} className={className} style={{ ...markdownThemeVars, ...style }}>
+      <div key={key} id={nodeId} className={markdownClassName} style={{ ...markdownThemeVars, ...style }}>
         <ReactMarkdown
           remarkPlugins={[remarkGfm, remarkMath]}
           rehypePlugins={[[rehypeHighlight, { ignoreMissing: true }], rehypeKatex]}
@@ -1476,137 +1013,39 @@ const ChatMessage: React.FC<ChatMessageProps> = React.memo(
       </div>
     )
 
-    const renderImageNode = ({ key, url, onClick }: { key: string; url: string; onClick?: () => void }) => {
-      const imageClassName = onClick ? `${MESSAGE_IMAGE_CLASS} cursor-pointer` : MESSAGE_IMAGE_CLASS
+    const renderImageNode = ({ key, url, onClick }: { key: string; url: string; onClick?: () => void }) => (
+      <div key={key} className={MESSAGE_IMAGE_WRAPPER_CLASS}>
+        <img
+          src={url}
+          alt='Generated image'
+          className={onClick ? `${MESSAGE_IMAGE_CLASS} cursor-pointer` : MESSAGE_IMAGE_CLASS}
+          onClick={onClick}
+          loading='lazy'
+        />
+      </div>
+    )
 
-      return (
-        <div key={key} className={MESSAGE_IMAGE_WRAPPER_CLASS}>
-          <img src={url} alt='Generated image' className={imageClassName} onClick={onClick} loading='lazy' />
-        </div>
-      )
-    }
+    // ── HTML viewer registry (on demand, never eager) ─────────────────────────────────
 
-    // Toggle function for collapsible blocks
-    const toggleBlock = (type: 'toolCalls' | 'reasoning' | 'groupRuns', id: string | number) => {
-      setExpandedBlocks(prev => {
-        const newState = { ...prev }
-        const currentSet = prev[type]
-        const set = new Set([...Array.from(currentSet as any)])
-        if (set.has(id as any)) {
-          set.delete(id as any)
-        } else {
-          set.add(id as any)
-        }
-        newState[type] = set as any
-        return newState
-      })
-    }
-
-    useEffect(() => {
-      if (!onLayoutChange) return
-
-      onLayoutChange()
-      if (typeof window === 'undefined') return
-
-      const rafId = window.requestAnimationFrame(() => onLayoutChange())
-      const timeoutA = window.setTimeout(() => onLayoutChange(), 140)
-      const timeoutB = window.setTimeout(() => onLayoutChange(), 320)
-
-      return () => {
-        window.cancelAnimationFrame(rafId)
-        window.clearTimeout(timeoutA)
-        window.clearTimeout(timeoutB)
-      }
-    }, [expandedBlocks, onLayoutChange, showThinking])
-
-    // Extract path-like parameters from tool arguments
-    const extractPathParam = (args: any): string | null => {
-      if (!args || typeof args !== 'object') return null
-
-      if (Array.isArray(args.edits)) {
-        const editPaths = args.edits
-          .map((edit: any) => (edit && typeof edit === 'object' && typeof edit.path === 'string' ? edit.path : null))
-          .filter((value: string | null): value is string => Boolean(value))
-
-        if (editPaths.length > 0) {
-          return editPaths.length === 1 ? editPaths[0] : `${editPaths[0]} +${editPaths.length - 1} more`
-        }
-
-        if (args.edits.length > 0) {
-          return `${args.edits.length} edits`
-        }
-      }
-
-      const pathKeys = ['file_path', 'path', 'directory', 'dir', 'output_path', 'input_path', 'filepath']
-      for (const key of pathKeys) {
-        if (args[key] && typeof args[key] === 'string') {
-          return args[key]
-        }
-      }
-      return null
-    }
-
-    // Truncate content to first N words
-    const truncateWords = (text: string | any, maxWords: number = COLLAPSED_CONTENT_WORD_LIMIT): string => {
-      const content = typeof text === 'object' ? JSON.stringify(text) : String(text)
-      const words = content.split(/\s+/)
-      if (words.length <= maxWords) return content
-      return words.slice(0, maxWords).join(' ') + '...'
-    }
-
-    const getCollapsedReasoningSummary = (text: string | any): string => {
-      const content = typeof text === 'object' ? JSON.stringify(text) : String(text)
-      const firstBoldSection = content.match(/\*\*([\s\S]*?)\*\*/)?.[1]?.trim()
-
-      if (firstBoldSection) {
-        return firstBoldSection.replace(/\s+/g, ' ')
-      }
-
-      return truncateWords(content)
-    }
-
-    const isProcessRunSeparatorText = (text: string): boolean => {
-      const trimmed = text.trim()
-      if (!trimmed) return true
-
-      // Keep obviously structured markdown content out of process-run grouping.
-      if (trimmed.startsWith('#') || trimmed.startsWith('```')) return false
-
-      // Short connective text (even if multiline) should not break an Agent Steps run.
-      const words = trimmed.split(/\s+/).filter(Boolean)
-      return words.length <= 12
-    }
-
-    // Build a lookup map of HTML entries for on-demand registration.
-    // Entries are NOT auto-registered - only when user clicks "Open Viewer" or expands.
-    // This prevents polluting the registry with every tool found on the page.
     const htmlRegistryEntriesMap = useMemo(() => {
       const entriesMap = new Map<string, { key: string; html: string; label: string; toolName?: string | null }>()
-
-      // Skip if we're in streaming mode - only available after message is persisted
-      if (Array.isArray(streamEvents) && streamEvents.length > 0) {
-        return entriesMap
-      }
+      // Only available after the message is persisted.
+      if (hasStreamEvents) return entriesMap
 
       const normalizeHtml = (html: string) => html.trim()
       const addEntry = (key: string, html: string, label: string, toolName?: string | null) => {
         if (typeof html !== 'string') return
         const normalized = normalizeHtml(html)
-        if (normalized.length > 0) {
-          entriesMap.set(key, { key, html: normalized, label, toolName: toolName ?? null })
-        }
+        if (normalized.length > 0) entriesMap.set(key, { key, html: normalized, label, toolName: toolName ?? null })
       }
 
       const groupsSource = Array.isArray(contentBlocks) && contentBlocks.length > 0 ? contentToolGroupsByIndex : null
-
       if (groupsSource) {
         const seen = new Set<string>()
         groupsSource.forEach(group => {
           if (seen.has(group.id)) return
           seen.add(group.id)
-
           const htmlSeen = new Set<string>()
-          // Format label: replace underscores with spaces and title case
           const rawName = group.name || 'Tool Result'
           const toolLabel = rawName.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase())
           const toolName = group.name ?? null
@@ -1618,29 +1057,22 @@ const ChatMessage: React.FC<ChatMessageProps> = React.memo(
               addEntry(`${id}-html-renderer-${group.id}`, normalized, toolLabel, toolName)
             }
           }
-
           group.results.forEach((result, resultIdx) => {
             const maybeHtml = extractHtmlFromToolResult(result.content)
             if (maybeHtml?.html) {
               const normalized = normalizeHtml(maybeHtml.html)
-              if (normalized.length === 0 || htmlSeen.has(normalized)) {
-                return
-              }
+              if (normalized.length === 0 || htmlSeen.has(normalized)) return
               htmlSeen.add(normalized)
               addEntry(`${id}-${group.id}-result-${resultIdx}`, normalized, toolLabel, maybeHtml.toolName ?? toolName)
             }
           })
         })
       }
-
       return entriesMap
-    }, [contentBlocks, contentToolGroupsByIndex, id, streamEvents])
+    }, [contentBlocks, contentToolGroupsByIndex, id, hasStreamEvents])
 
-    // Register an HTML entry on-demand (when user clicks "Open Viewer")
-    const registerAndOpenHtmlViewer = (entryKey: string) => {
-      if (!htmlRegistry || !onOpenToolHtmlModal) return
-
-      // Find the entry in our map and register it before opening
+    const registerHtmlEntry = (entryKey: string) => {
+      if (!htmlRegistry) return
       const entry = htmlRegistryEntriesMap.get(entryKey)
       if (entry) {
         htmlRegistry.registerEntry(entry.key, entry.html, entry.label, {
@@ -1649,913 +1081,107 @@ const ChatMessage: React.FC<ChatMessageProps> = React.memo(
           toolName: entry.toolName ?? null,
         })
       }
+    }
 
-      // Open the modal
+    const registerAndOpenHtmlViewer = (entryKey: string) => {
+      if (!htmlRegistry || !onOpenToolHtmlModal) return
+      registerHtmlEntry(entryKey)
       onOpenToolHtmlModal(entryKey)
     }
 
-    const renderHtmlViewerButton = (entryKey: string) => (
-      <Button
-        variant='outline2'
-        size='small'
-        onClick={() => registerAndOpenHtmlViewer(entryKey)}
-        disabled={!onOpenToolHtmlModal}
-        title='Open tool output viewer'
-      >
-        <i className='bx bx-window-open text-base' aria-hidden='true'></i>
-        <span className='ml-1'>Open Viewer</span>
-      </Button>
-    )
-
-    // Opens the persisted subagent transcript for a tool call (Phase 5). toolCallId
-    // is the tool-call group's id, which the by-tool-call read resolves to its run.
-    const renderSubagentTranscriptButton = (toolCallId: string) => (
-      <Button
-        variant='outline2'
-        size='small'
-        onClick={() => onOpenSubagentTranscript?.(toolCallId)}
-        disabled={!onOpenSubagentTranscript}
-        title='View subagent transcript'
-      >
-        <i className='bx bx-conversation text-base' aria-hidden='true'></i>
-        <span className='ml-1'>View transcript</span>
-      </Button>
-    )
-
-    const registerAndOpenMcpViewer = (
-      entryKey: string,
-      payload: {
-        serverName: string
-        resourceUri: string
-        qualifiedToolName: string
-        toolArgs?: Record<string, any> | null
-        toolResult?: { content: any; is_error?: boolean } | null
-        toolDefinition?: ToolDefinition
-        reloadToken?: number
-      },
-      label?: string | null
-    ) => {
+    const registerAndOpenMcpViewer = (entryKey: string, payload: McpViewerPayload, label?: string | null) => {
       if (!htmlRegistry || !onOpenToolHtmlModal) return
       htmlRegistry.registerMcpEntry(entryKey, payload, label, { conversationId, projectId })
       onOpenToolHtmlModal(entryKey)
     }
 
-    const renderMcpViewerButton = (
-      entryKey: string,
-      payload: {
-        serverName: string
-        resourceUri: string
-        qualifiedToolName: string
-        toolArgs?: Record<string, any> | null
-        toolResult?: { content: any; is_error?: boolean } | null
-        toolDefinition?: ToolDefinition
-        reloadToken?: number
-      },
-      label?: string | null
-    ) => (
-      <Button
-        variant='outline2'
-        size='small'
-        onClick={() => registerAndOpenMcpViewer(entryKey, payload, label)}
-        disabled={!onOpenToolHtmlModal}
-        title='Open MCP app viewer'
-      >
-        <i className='bx bx-fullscreen text-base' aria-hidden='true'></i>
-        <span className='ml-1'>Fullscreen</span>
-      </Button>
-    )
-
-    // Handle expand click - also registers HTML entries when expanding (not collapsing)
+    // Expanding a tool card registers its HTML entries so the viewer can open them later.
     const handleExpandToggle = (toggleKey: string, group: ToolCallRenderGroup) => {
       const isCurrentlyExpanded = expandedBlocks.toolCalls.has(toggleKey)
-
-      // If we're expanding (not currently expanded), register any HTML entries
       if (!isCurrentlyExpanded && htmlRegistry) {
-        // Check for html_renderer tool
-        const isHtmlRenderer = (group.name ?? '').toLowerCase() === 'html_renderer'
-        if (isHtmlRenderer && typeof group.args?.html === 'string') {
-          const entryKey = `${id}-html-renderer-${group.id}`
-          const entry = htmlRegistryEntriesMap.get(entryKey)
-          if (entry) {
-            htmlRegistry.registerEntry(entry.key, entry.html, entry.label, {
-              conversationId,
-              projectId,
-              toolName: entry.toolName ?? null,
-            })
-          }
+        if ((group.name ?? '').toLowerCase() === 'html_renderer' && typeof group.args?.html === 'string') {
+          registerHtmlEntry(`${id}-html-renderer-${group.id}`)
         }
-
-        // Register HTML results
         group.results.forEach((result, resultIdx) => {
-          const maybeHtml = extractHtmlFromToolResult(result.content)
-          if (maybeHtml?.html) {
-            const entryKey = `${id}-${group.id}-result-${resultIdx}`
-            const entry = htmlRegistryEntriesMap.get(entryKey)
-            if (entry) {
-              htmlRegistry.registerEntry(entry.key, entry.html, entry.label, {
-                conversationId,
-                projectId,
-                toolName: entry.toolName ?? null,
-              })
-            }
+          if (extractHtmlFromToolResult(result.content)?.html) {
+            registerHtmlEntry(`${id}-${group.id}-result-${resultIdx}`)
           }
         })
       }
-
-      // Toggle the expansion state
       toggleBlock('toolCalls', toggleKey)
     }
 
     const renderToolCallGroupCard = (group: ToolCallRenderGroup, key: string) => {
-      const openInternalRoute = (route: string | null | undefined) => {
-        if (!route) return
-        navigate(route)
-      }
-
-      // Don't render orphaned groups (results waiting for their tool_call)
-      if (group.anchorIndex === -1) {
-        return null
-      }
-
+      if (group.anchorIndex === -1) return null
       const toggleKey = `tool-group-${key}`
-
-      const isExpanded = expandedBlocks.toolCalls.has(toggleKey)
-      const isMcpGroup = (group.name ?? '').startsWith('mcp__')
-      const parsedMcp = isMcpGroup ? parseMcpQualifiedName(group.name ?? '') : null
-      const mcpServerName = parsedMcp?.serverName
-
-      // Special handling for html_renderer tool - always show rendered HTML
-      const isHtmlRenderer = (group.name ?? '').toLowerCase() === 'html_renderer'
-      const extractedHtml = (() => {
-        if (!isHtmlRenderer) return null
-        // Use the INPUT html directly (group.args.html) - it has the full CSS
-        // The tool result gets processed and loses styling
-        if (group.args && typeof group.args.html === 'string') {
-          return group.args.html
-        }
-        return null
-      })()
-      const hasHtmlOutput =
-        (isHtmlRenderer && typeof extractedHtml === 'string') ||
-        group.results.some(result => Boolean(extractHtmlFromToolResult(result.content)?.html))
-
-      // Render html_renderer tool with always-visible HTML
-      if (isHtmlRenderer && typeof extractedHtml === 'string') {
-        const htmlPreviewKey = `${id}-html-renderer-${group.id}`
-        return (
-          <div key={toggleKey} className={PROCESS_CARD_WRAPPER_CLASS} style={messageContentStyle}>
-            {/* Tool header */}
-            <div className='flex items-center gap-2 mb-2'>
-              <span className={group.results.length > 0 ? TOOL_NAME_SUCCESS_CLASS : TOOL_NAME_RUNNING_CLASS}>
-                {group.name || 'html_renderer'}
-              </span>
-              {renderHtmlViewerButton(htmlPreviewKey)}
-            </div>
-
-            {/* Always show HTML output */}
-            <div className='mt-2'>
-              <HtmlIframe html={extractedHtml} toolName={group.name ?? null} />
-            </div>
-          </div>
-        )
-      }
-
-      const normalizedToolCardName = String(group.name ?? '')
-        .toLowerCase()
-        .replace(/[-\s]/g, '_')
-      const isInternalLinkTool = normalizedToolCardName === 'internallink' || normalizedToolCardName === 'internal_link'
-      const isSubagent =
-        normalizedToolCardName === 'subagent' || normalizedToolCardName === 'subagent_manager'
-
-      if (isInternalLinkTool) {
-        const resultPayload = group.results.length > 0 ? group.results[group.results.length - 1].content : null
-        const parsedPayload = (() => {
-          if (typeof resultPayload === 'string') {
-            try {
-              return JSON.parse(resultPayload)
-            } catch {
-              return null
-            }
-          }
-          return resultPayload && typeof resultPayload === 'object' ? resultPayload : null
-        })()
-
-        const target = parsedPayload?.target && typeof parsedPayload.target === 'object' ? parsedPayload.target : null
-        const route: string | null = typeof target?.route === 'string' ? target.route : null
-        const routeType: string = typeof target?.routeType === 'string' ? target.routeType : 'conversation'
-        const conversationIdLabel =
-          typeof target?.conversationId === 'string' && target.conversationId.trim().length > 0
-            ? target.conversationId
-            : null
-        const projectIdLabel =
-          typeof target?.projectId === 'string' && target.projectId.trim().length > 0 ? target.projectId : null
-        const messageIdLabel =
-          typeof target?.messageId === 'string' && target.messageId.trim().length > 0 ? target.messageId : null
-        const providedLabel = typeof parsedPayload?.label === 'string' ? parsedPayload.label.trim() : ''
-        const conversationTitle =
-          typeof target?.conversationTitle === 'string' && target.conversationTitle.trim().length > 0
-            ? target.conversationTitle
-            : null
-        const buttonLabel =
-          providedLabel ||
-          conversationTitle ||
-          (routeType === 'project'
-            ? projectIdLabel
-              ? `Open project ${projectIdLabel}`
-              : 'Open project'
-            : conversationIdLabel
-              ? `Open chat ${conversationIdLabel}`
-              : 'Open chat')
-        const warnings = Array.isArray(parsedPayload?.warnings)
-          ? parsedPayload.warnings.filter(
-              (value: unknown): value is string => typeof value === 'string' && value.trim().length > 0
-            )
-          : []
-        const errorText = typeof parsedPayload?.error === 'string' ? parsedPayload.error : null
-        const linkFailed = parsedPayload?.success === false || !route
-
-        return (
-          <div key={toggleKey} className={PROCESS_CARD_WRAPPER_CLASS} style={messageContentStyle}>
-            <div className='flex items-center gap-2 mb-2 flex-wrap'>
-              <span className={linkFailed ? TOOL_NAME_ERROR_CLASS : TOOL_NAME_SUCCESS_CLASS}>
-                {group.name || 'internalLink'}
-              </span>
-              <Button
-                variant='outline2'
-                size='small'
-                onClick={() => openInternalRoute(route)}
-                disabled={!route}
-                title={route ? `Navigate to ${route}` : 'No route resolved'}
-              >
-                <i className='bx bx-link-external text-base' aria-hidden='true'></i>
-                <span className='ml-1'>{buttonLabel}</span>
-              </Button>
-            </div>
-            <div className='border-l-2 border-neutral-300/50 dark:border-neutral-700/50 pl-4 py-1 font-mono text-[0.8125em] text-neutral-500 dark:text-neutral-500 leading-relaxed'>
-              {projectIdLabel && (
-                <div>
-                  <span className='text-neutral-400 dark:text-neutral-600'>projectId:</span>{' '}
-                  <span className='text-neutral-600 dark:text-neutral-300'>{projectIdLabel}</span>
-                </div>
-              )}
-              {conversationIdLabel && (
-                <div>
-                  <span className='text-neutral-400 dark:text-neutral-600'>conversationId:</span>{' '}
-                  <span className='text-neutral-600 dark:text-neutral-300'>{conversationIdLabel}</span>
-                </div>
-              )}
-              {messageIdLabel && (
-                <div>
-                  <span className='text-neutral-400 dark:text-neutral-600'>messageId:</span>{' '}
-                  <span className='text-neutral-600 dark:text-neutral-300'>{messageIdLabel}</span>
-                </div>
-              )}
-              {route && (
-                <div className='break-all'>
-                  <span className='text-neutral-400 dark:text-neutral-600'>route:</span>{' '}
-                  <span className='text-neutral-600 dark:text-neutral-300'>{route}</span>
-                </div>
-              )}
-              {!route && errorText && (
-                <div className='text-red-600 dark:text-red-400'>
-                  <span className='text-neutral-400 dark:text-neutral-600'>error:</span> {errorText}
-                </div>
-              )}
-              {warnings.length > 0 && (
-                <div className='mt-1 text-[1em] text-amber-600 dark:text-amber-400'>{warnings.join(' • ')}</div>
-              )}
-            </div>
-          </div>
-        )
-      }
-
-      const mcpTool = toolDefinitions.find(t => t.isMcp && t.name === group.name)
-      const mcpResourceUri = mcpTool?.mcpUi?.resourceUri
-      if (mcpTool && mcpResourceUri) {
-        const parsed = parseMcpQualifiedName(group.name ?? '')
-        const serverName = mcpTool.mcpServerName || parsed?.serverName
-        if (serverName) {
-          const latestResult = group.results.length > 0 ? group.results[group.results.length - 1] : null
-          const normalizedResult = latestResult
-            ? { content: latestResult.content, is_error: latestResult.is_error }
-            : null
-          const reloadKey = `${id}-${group.id}-mcp`
-          const mcpEntryKey = `${id}-${group.id}-mcp-app`
-          const rawLabel = mcpTool.mcpToolName || parsed?.toolName || group.name || 'MCP App'
-          const mcpLabel = rawLabel.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase())
-          const mcpViewerPayload = {
-            serverName,
-            resourceUri: mcpResourceUri,
-            qualifiedToolName: mcpTool.name,
-            toolArgs: group.args || undefined,
-            toolResult: normalizedResult,
-            toolDefinition: mcpTool,
-            reloadToken: mcpReloadTokens[reloadKey] || 0,
-          }
-          return (
-            <div key={toggleKey} className={PROCESS_CARD_WRAPPER_CLASS} style={messageContentStyle}>
-              <div className='flex items-center gap-2 mb-2 flex-wrap'>
-                <span
-                  className={
-                    latestResult?.is_error
-                      ? TOOL_NAME_ERROR_CLASS
-                      : latestResult
-                        ? TOOL_NAME_SUCCESS_CLASS
-                        : TOOL_NAME_RUNNING_CLASS
-                  }
-                >
-                  {group.name || 'mcp_app'}
-                </span>
-                <span className='text-[0.8125em] uppercase tracking-[0.15em] text-emerald-600 dark:text-emerald-400'>
-                  MCP App
-                </span>
-                <div className='ml-auto flex items-center gap-2'>
-                  {renderMcpViewerButton(mcpEntryKey, mcpViewerPayload, mcpLabel)}
-                  <button
-                    type='button'
-                    onClick={() => handleLoadMcpApp(serverName, reloadKey)}
-                    disabled={mcpLoadState[reloadKey]}
-                    className='flex items-center gap-1 rounded border border-neutral-200 dark:border-neutral-700 px-2 py-1 text-[0.8125em] uppercase tracking-[0.12em] text-neutral-600 dark:text-neutral-300 hover:bg-neutral-100 dark:hover:bg-neutral-800 disabled:opacity-60'
-                  >
-                    <i
-                      className={`bx ${mcpLoadState[reloadKey] ? 'bx-loader-circle animate-spin' : 'bx-play-circle'}`}
-                    />
-                    Load app
-                  </button>
-                </div>
-              </div>
-              <div className='mt-2'>
-                <McpAppIframe
-                  serverName={serverName}
-                  qualifiedToolName={mcpTool.name}
-                  resourceUri={mcpResourceUri}
-                  toolArgs={group.args || undefined}
-                  toolResult={normalizedResult}
-                  toolDefinition={mcpTool}
-                  reloadToken={mcpReloadTokens[reloadKey] || 0}
-                  className='w-full min-h-[600px] rounded-lg bg-white'
-                />
-              </div>
-            </div>
-          )
-        }
-      }
-
-      const pathParam = extractPathParam(group.args)
-      const resultSummary = group.results.length > 0 ? formatToolResultSummary(group.results[0].content) : null
-      const pathContent = pathParam || null
-      const htmlResultKeys = group.results
-        .map((result, resultIdx) =>
-          extractHtmlFromToolResult(result.content)?.html ? `${id}-${group.id}-result-${resultIdx}` : null
-        )
-        .filter((key): key is string => Boolean(key))
-      const primaryHtmlResultKey = htmlResultKeys[0]
-
-      // Check for failure: either structured failure response OR is_error flag on any result
-      const hasResults = group.results.length > 0
-      const hasError = group.results.some(r => r.is_error) || resultSummary === 'failure'
-      const toolNameClass = hasError
-        ? TOOL_NAME_ERROR_CLASS
-        : hasResults
-          ? TOOL_NAME_SUCCESS_CLASS
-          : TOOL_NAME_RUNNING_CLASS
-      const isEditLikeTool =
-        normalizedToolCardName === 'edit_file' ||
-        normalizedToolCardName === 'editfile' ||
-        normalizedToolCardName === 'multi_edit'
-      const isPlanMdDisplayTool =
-        normalizedToolCardName === 'plan_md' && String(group.args?.action || '').toLowerCase() === 'display'
-      if (isPlanMdDisplayTool && group.args) {
-        const planResult = group.results.length > 0 ? group.results[0].content : {}
-        return (
-          <div key={toggleKey} className={PROCESS_CARD_WRAPPER_CLASS} style={messageContentStyle}>
-            <PlanMdToolView args={group.args} result={planResult} />
-          </div>
-        )
-      }
-
-      if (isEditLikeTool && group.args) {
-        const editResult = group.results.length > 0 ? group.results[0].content : {}
-        const isEditToolSuccess = formatToolResultSummary(editResult) === 'success'
-        return (
-          <div key={toggleKey} className={PROCESS_CARD_WRAPPER_CLASS} style={messageContentStyle}>
-            {/* Tool header + edit summary */}
-            <div className='flex min-w-0 items-start gap-2'>
-              <span
-                className={
-                  !group.results.length
-                    ? TOOL_NAME_RUNNING_CLASS
-                    : isEditToolSuccess
-                      ? TOOL_NAME_SUCCESS_CLASS
-                      : TOOL_NAME_ERROR_CLASS
-                }
-              >
-                {group.name || 'edit_file'}
-              </span>
-              <EditToolDiffView
-                toolName={group.name}
-                args={group.args}
-                result={editResult}
-                className='min-w-0 flex-1'
-              />
-            </div>
-          </div>
-        )
-      }
-
-      const renderToolJsonValue = (value: unknown): string => {
-        if (typeof value === 'string') return value
-        if (value === null || typeof value === 'undefined') return String(value)
-        if (typeof value === 'object') {
-          try {
-            return JSON.stringify(value)
-          } catch {
-            return String(value)
-          }
-        }
-        return String(value)
-      }
-
-      const getGenericToolOutputPreview = (value: unknown) => {
-        const text = renderToolJsonValue(value)
-        return truncateToolOutput ? truncateToolOutputPreview(text) : { text, truncated: false, omittedCharacters: 0 }
-      }
-
-      const parseToolJsonObject = (value: unknown): Record<string, any> | null => {
-        if (!value) return null
-        if (typeof value === 'object' && !Array.isArray(value)) return value as Record<string, any>
-        if (typeof value !== 'string') return null
-        try {
-          const parsed = JSON.parse(value)
-          return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? (parsed as Record<string, any>) : null
-        } catch {
-          return null
-        }
-      }
-
-      const renderToolBadge = (
-        label: React.ReactNode,
-        variant: 'neutral' | 'success' | 'error' | 'info' | 'warning' = 'neutral'
-      ) => {
-        const variantClass =
-          variant === 'success'
-            ? 'border-emerald-200/80 dark:border-emerald-900/70 bg-emerald-50/70 dark:bg-emerald-950/20 text-emerald-600 dark:text-emerald-300'
-            : variant === 'error'
-              ? 'border-red-200/80 dark:border-red-900/70 bg-red-50/70 dark:bg-red-950/20 text-red-600 dark:text-red-300'
-              : variant === 'info'
-                ? 'border-blue-200/80 dark:border-blue-900/70 bg-blue-50/70 dark:bg-blue-950/20 text-blue-600 dark:text-blue-300'
-                : variant === 'warning'
-                  ? 'border-amber-200/80 dark:border-amber-900/70 bg-amber-50/70 dark:bg-amber-950/20 text-amber-700 dark:text-amber-300'
-                  : 'border-neutral-200/80 dark:border-neutral-700/80 text-neutral-500 dark:text-neutral-400'
-
-        return (
-          <span
-            className={`min-w-0 max-w-full break-words rounded-full border px-1.5 py-0.5 text-[0.85em] [overflow-wrap:anywhere] ${variantClass}`}
-          >
-            {label}
-          </span>
-        )
-      }
-
-      const getToolPayloadStatus = (
-        payload: Record<string, any> | null,
-        fallbackIsError?: boolean
-      ): { label: string; variant: 'success' | 'error' | 'neutral' } | null => {
-        if (fallbackIsError) return { label: 'failed', variant: 'error' }
-        if (!payload) return fallbackIsError === false ? { label: 'ok', variant: 'success' } : null
-        if (typeof payload.ok === 'boolean') return { label: payload.ok ? 'ok' : 'failed', variant: payload.ok ? 'success' : 'error' }
-        if (typeof payload.success === 'boolean') {
-          return { label: payload.success ? 'success' : 'failure', variant: payload.success ? 'success' : 'error' }
-        }
-        if (typeof payload.isError === 'boolean') {
-          return { label: payload.isError ? 'failed' : 'ok', variant: payload.isError ? 'error' : 'success' }
-        }
-        return fallbackIsError === false ? { label: 'ok', variant: 'success' } : null
-      }
-
-      const renderToolFieldRows = (record: Record<string, any> | null, fallback?: { key: string; value: unknown }) => {
-        const entries = record ? Object.entries(record) : fallback ? [[fallback.key, fallback.value] as [string, unknown]] : []
-
-        if (entries.length === 0) {
-          return <div className='italic text-neutral-400 dark:text-neutral-600'>No fields</div>
-        }
-
-        return entries.map(([fieldKey, fieldValue]) => (
-          <div key={fieldKey} className='min-w-0 max-w-full break-words whitespace-pre-wrap [overflow-wrap:anywhere]'>
-            <span className='text-neutral-400 dark:text-neutral-600'>{fieldKey}:</span>{' '}
-            <span className='text-neutral-600 dark:text-neutral-400'>{renderToolJsonValue(fieldValue)}</span>
-          </div>
-        ))
-      }
-
-      const renderStructuredToolCard = ({
-        cardKey,
-        index,
-        title,
-        status,
-        children,
-      }: {
-        cardKey: string
-        index?: number
-        title: React.ReactNode
-        status?: { label: string; variant: 'success' | 'error' | 'neutral' } | null
-        children: React.ReactNode
-      }) => (
-        <div
-          key={cardKey}
-          className='min-w-0 max-w-full overflow-hidden rounded-lg border border-neutral-200/80 dark:border-neutral-700/80 bg-white/45 dark:bg-white/[0.03] shadow-sm [overflow-wrap:anywhere]'
-        >
-          <div className='flex min-w-0 flex-wrap items-center gap-1.5 border-b border-neutral-200/70 dark:border-neutral-700/70 bg-neutral-50/80 dark:bg-neutral-900/35 px-2 py-1'>
-            {typeof index === 'number' && (
-              <span className='inline-flex h-4 min-w-4 shrink-0 items-center justify-center rounded-full bg-neutral-200/80 dark:bg-neutral-800 text-[0.7em] font-semibold text-neutral-600 dark:text-neutral-300'>
-                {index + 1}
-              </span>
-            )}
-            <span className='min-w-0 flex-1 basis-0 break-words font-semibold text-neutral-700 dark:text-neutral-200 [overflow-wrap:anywhere]'>
-              {title}
-            </span>
-            {status && <span className='min-w-0 shrink break-words'>{renderToolBadge(status.label, status.variant)}</span>}
-          </div>
-          <div className='min-w-0 max-w-full px-2 py-1 space-y-1 [overflow-wrap:anywhere]'>{children}</div>
-        </div>
-      )
-
       return (
-        <div key={toggleKey} className={PROCESS_CARD_WRAPPER_CLASS} style={messageContentStyle}>
-          {/* Tool header row */}
-          <div className='flex min-w-0 max-w-full flex-wrap items-center gap-2 overflow-hidden'>
-            <button onClick={() => handleExpandToggle(toggleKey, group)} className={TOOL_HEADER_BUTTON_CLASS}>
-              {isSubagent ? (
-                <SubagentToolName toolCallId={group.id} name={group.name || 'tool'} fallbackClass={toolNameClass} />
-              ) : (
-                <span className={toolNameClass}>{group.name || 'tool'}</span>
-              )}
-              {!isExpanded && pathContent && (
-                <span
-                  className='text-[0.8125em] text-neutral-500 dark:text-neutral-500 max-w-[200px] overflow-hidden whitespace-nowrap'
-                  style={{ direction: 'rtl', textOverflow: 'ellipsis' }}
-                >
-                  {pathContent}
-                </span>
-              )}
-              <svg
-                className={`${TOOL_CHEVRON_BASE_CLASS} ${isExpanded ? 'open' : ''}`}
-                fill='none'
-                viewBox='0 0 24 24'
-                stroke='currentColor'
-              >
-                <path strokeLinecap='round' strokeLinejoin='round' strokeWidth={2} d='M9 5l7 7-7 7' />
-              </svg>
-            </button>
-            {isMcpGroup && mcpServerName && (
-              <button
-                type='button'
-                onClick={() => handleLoadMcpApp(mcpServerName, `${id}-${group.id}-mcp`)}
-                disabled={mcpLoadState[`${id}-${group.id}-mcp`]}
-                className='ml-auto flex items-center gap-1 rounded border border-neutral-200 dark:border-neutral-700 px-2 py-1 text-[0.8125em] uppercase tracking-[0.12em] text-neutral-600 dark:text-neutral-300 hover:bg-neutral-100 dark:hover:bg-neutral-800 disabled:opacity-60'
-              >
-                <i
-                  className={`bx ${
-                    mcpLoadState[`${id}-${group.id}-mcp`] ? 'bx-loader-circle animate-spin' : 'bx-play-circle'
-                  }`}
-                />
-                Load app
-              </button>
-            )}
-            {primaryHtmlResultKey && renderHtmlViewerButton(primaryHtmlResultKey)}
-            {isSubagent && renderSubagentTranscriptButton(group.id)}
-          </div>
-
-          {/* Expandable content */}
-          <div
-            className={`tool-expand-container ${isExpanded ? 'open' : ''}`}
-            style={expandContainerStyle}
-            onTransitionEnd={handleExpandTransitionEnd}
-          >
-            <div className='tool-expand-content'>
-              {/* Tool inputs */}
-              {!hasHtmlOutput && group.args && Object.keys(group.args).length > 0 && (
-                <div className='min-w-0 max-w-full overflow-hidden border-l-2 border-neutral-300/50 dark:border-neutral-700/50 pl-3 py-1 mb-2 font-mono text-[0.8125em] text-neutral-500 dark:text-neutral-500 leading-relaxed [overflow-wrap:anywhere]'>
-                  {normalizedToolCardName === 'multi_call' && Array.isArray(group.args.calls) ? (
-                    <div className='min-w-0 max-w-full break-normal overflow-hidden [overflow-wrap:anywhere]'>
-                      <div className='mb-1 flex min-w-0 max-w-full flex-wrap items-center gap-1.5 overflow-hidden [overflow-wrap:anywhere]'>
-                        <span className='text-neutral-400 dark:text-neutral-600'>calls:</span>
-                        {renderToolBadge(
-                          `${group.args.calls.length} call${group.args.calls.length === 1 ? '' : 's'}`,
-                          'neutral'
-                        )}
-                        {typeof group.args.parallel !== 'undefined' &&
-                          renderToolBadge(`parallel: ${String(group.args.parallel)}`, 'info')}
-                        {typeof group.args.stopOnError !== 'undefined' &&
-                          renderToolBadge(`stopOnError: ${String(group.args.stopOnError)}`, 'warning')}
-                      </div>
-                      <div className='min-w-0 max-w-full space-y-1.5'>
-                        {group.args.calls.map((call: any, callIdx: number) => {
-                          const callRecord = call && typeof call === 'object' ? (call as Record<string, any>) : null
-                          const toolName =
-                            typeof callRecord?.tool === 'string'
-                              ? callRecord.tool
-                              : typeof callRecord?.toolName === 'string'
-                                ? callRecord.toolName
-                                : `call ${callIdx + 1}`
-                          const callArgs =
-                            callRecord?.args && typeof callRecord.args === 'object' && !Array.isArray(callRecord.args)
-                              ? (callRecord.args as Record<string, any>)
-                              : null
-                          const extraFields = callRecord
-                            ? Object.fromEntries(
-                                Object.entries(callRecord).filter(
-                                  ([callKey]) => callKey !== 'tool' && callKey !== 'toolName' && callKey !== 'args'
-                                )
-                              )
-                            : null
-
-                          return renderStructuredToolCard({
-                            cardKey: `input-${callIdx}`,
-                            index: callIdx,
-                            title: toolName,
-                            children: (
-                              <>
-                                {renderToolFieldRows(callArgs, callArgs ? undefined : { key: 'args', value: callRecord?.args ?? null })}
-                                {extraFields && Object.keys(extraFields).length > 0 && renderToolFieldRows(extraFields)}
-                              </>
-                            ),
-                          })
-                        })}
-                      </div>
-                    </div>
-                  ) : (
-                    <div className='min-w-0 max-w-full break-normal overflow-hidden [overflow-wrap:anywhere]'>
-                      <div className='mb-1 flex min-w-0 max-w-full flex-wrap items-center gap-1.5 overflow-hidden [overflow-wrap:anywhere]'>
-                        <span className='text-neutral-400 dark:text-neutral-600'>input:</span>
-                        {renderToolBadge(`${Object.keys(group.args).length} field${Object.keys(group.args).length === 1 ? '' : 's'}`)}
-                      </div>
-                      {renderStructuredToolCard({
-                        cardKey: 'input-args',
-                        title: 'Arguments',
-                        children: renderToolFieldRows(group.args),
-                      })}
-                    </div>
-                  )}
-                </div>
-              )}
-
-              {/* Tool results */}
-              {isExpanded && group.results.length > 0 && (
-                <div className='min-w-0 max-w-full space-y-2'>
-                  {group.results.map((result, resultIdx) => {
-                    const resultKey = `${id}-${group.id}-result-${resultIdx}`
-                    const maybeHtml = extractHtmlFromToolResult(result.content)
-
-                    if (maybeHtml?.html) {
-                      return (
-                        <HtmlIframe
-                          key={resultKey}
-                          html={maybeHtml.html}
-                          toolName={maybeHtml.toolName ?? group.name ?? null}
-                        />
-                      )
-                    }
-
-                    const outputPreview = getGenericToolOutputPreview(result.content)
-                    if (outputPreview.truncated) {
-                      return (
-                        <div
-                          key={resultKey}
-                          className={`min-w-0 max-w-full overflow-hidden border-l-2 pl-3 py-1 font-mono text-[0.8125em] leading-relaxed [overflow-wrap:anywhere] ${
-                            result.is_error
-                              ? 'border-red-400/50 dark:border-red-600/50 text-red-600 dark:text-red-400'
-                              : 'border-neutral-300/50 dark:border-neutral-700/50 text-neutral-500 dark:text-neutral-500'
-                          }`}
-                        >
-                          <div className='mb-1 flex min-w-0 max-w-full flex-wrap items-center gap-1.5 overflow-hidden [overflow-wrap:anywhere]'>
-                            <span className='text-neutral-400 dark:text-neutral-600'>output:</span>
-                            {renderToolBadge(`result ${resultIdx + 1}`)}
-                            {renderToolBadge('truncated preview', 'warning')}
-                          </div>
-                          <div className='min-w-0 max-w-full break-words whitespace-pre-wrap text-neutral-600 dark:text-neutral-400 [overflow-wrap:anywhere]'>
-                            {outputPreview.text}
-                          </div>
-                          {!result.is_error && (
-                            <span className='text-neutral-400 dark:text-neutral-600 italic mt-1 block text-[1em] tracking-tight'>
-                              completed
-                            </span>
-                          )}
-                        </div>
-                      )
-                    }
-
-                    const multiCallOutput = normalizedToolCardName === 'multi_call' ? parseToolJsonObject(result.content) : null
-                    const multiCallResults = Array.isArray(multiCallOutput?.results) ? multiCallOutput.results : null
-
-                    if (multiCallResults) {
-                      return (
-                        <div
-                          key={resultKey}
-                          className={`min-w-0 max-w-full overflow-hidden border-l-2 pl-3 py-1 font-mono text-[0.8125em] leading-relaxed [overflow-wrap:anywhere] ${
-                            result.is_error
-                              ? 'border-red-400/50 dark:border-red-600/50 text-red-600 dark:text-red-400'
-                              : 'border-neutral-300/50 dark:border-neutral-700/50 text-neutral-500 dark:text-neutral-500'
-                          }`}
-                        >
-                          <div className='mb-1 flex min-w-0 max-w-full flex-wrap items-center gap-1.5 overflow-hidden [overflow-wrap:anywhere]'>
-                            <span className='text-neutral-400 dark:text-neutral-600'>output:</span>
-                            {renderToolBadge(
-                              `${multiCallResults.length} result${multiCallResults.length === 1 ? '' : 's'}`,
-                              'neutral'
-                            )}
-                            {typeof multiCallOutput?.parallel !== 'undefined' &&
-                              renderToolBadge(`parallel: ${String(multiCallOutput.parallel)}`, 'info')}
-                            {typeof multiCallOutput?.stopOnError !== 'undefined' &&
-                              renderToolBadge(`stopOnError: ${String(multiCallOutput.stopOnError)}`, 'warning')}
-                          </div>
-                          <div className='min-w-0 max-w-full space-y-1.5'>
-                            {multiCallResults.map((callResult, callResultIdx) => {
-                              const resultRecord =
-                                callResult && typeof callResult === 'object' ? (callResult as Record<string, any>) : null
-                              const nestedToolName =
-                                typeof resultRecord?.tool === 'string'
-                                  ? resultRecord.tool
-                                  : typeof resultRecord?.toolName === 'string'
-                                    ? resultRecord.toolName
-                                    : `result ${callResultIdx + 1}`
-                              const nestedData = resultRecord?.data
-                              const extraFields = resultRecord
-                                ? Object.fromEntries(
-                                    Object.entries(resultRecord).filter(
-                                      ([callKey]) =>
-                                        callKey !== 'tool' && callKey !== 'toolName' && callKey !== 'ok' && callKey !== 'data'
-                                    )
-                                  )
-                                : null
-
-                              return renderStructuredToolCard({
-                                cardKey: `${resultKey}-multi-${callResultIdx}`,
-                                index: callResultIdx,
-                                title: nestedToolName,
-                                status: getToolPayloadStatus(resultRecord),
-                                children: (
-                                  <>
-                                    {typeof nestedData !== 'undefined' &&
-                                      renderToolFieldRows(
-                                        nestedData && typeof nestedData === 'object' && !Array.isArray(nestedData)
-                                          ? (nestedData as Record<string, any>)
-                                          : null,
-                                        { key: 'data', value: nestedData }
-                                      )}
-                                    {extraFields && Object.keys(extraFields).length > 0 && renderToolFieldRows(extraFields)}
-                                  </>
-                                ),
-                              })
-                            })}
-                          </div>
-                          {!result.is_error && (
-                            <span className='text-neutral-400 dark:text-neutral-600 italic mt-1 block text-[1em] tracking-tight'>
-                              completed
-                            </span>
-                          )}
-                        </div>
-                      )
-                    }
-
-                    const outputRecord = parseToolJsonObject(result.content)
-                    const outputStatus = getToolPayloadStatus(outputRecord, result.is_error)
-
-                    return (
-                      <div
-                        key={resultKey}
-                        className={`min-w-0 max-w-full overflow-hidden border-l-2 pl-3 py-1 font-mono text-[0.8125em] leading-relaxed [overflow-wrap:anywhere] ${
-                          result.is_error
-                            ? 'border-red-400/50 dark:border-red-600/50 text-red-600 dark:text-red-400'
-                            : 'border-neutral-300/50 dark:border-neutral-700/50 text-neutral-500 dark:text-neutral-500'
-                        }`}
-                      >
-                        <div className='mb-1 flex min-w-0 max-w-full flex-wrap items-center gap-1.5 overflow-hidden [overflow-wrap:anywhere]'>
-                          <span className='text-neutral-400 dark:text-neutral-600'>output:</span>
-                          {renderToolBadge(`result ${resultIdx + 1}`)}
-                        </div>
-                        <div className='min-w-0 max-w-full space-y-1.5'>
-                          {renderStructuredToolCard({
-                            cardKey: `${resultKey}-card`,
-                            index: group.results.length > 1 ? resultIdx : undefined,
-                            title: group.results.length > 1 ? `Result ${resultIdx + 1}` : 'Result',
-                            status: outputStatus,
-                            children: renderToolFieldRows(
-                              outputRecord,
-                              outputRecord ? undefined : { key: 'content', value: result.content }
-                            ),
-                          })}
-                        </div>
-                        {!result.is_error && (
-                          <span className='text-neutral-400 dark:text-neutral-600 italic mt-1 block text-[1em] tracking-tight'>
-                            completed
-                          </span>
-                        )}
-                      </div>
-                    )
-                  })}
-                </div>
-              )}
-            </div>
-          </div>
-        </div>
+        <ToolCallGroupCard
+          key={toggleKey}
+          group={group}
+          toggleKey={toggleKey}
+          messageId={id}
+          expanded={expandedBlocks.toolCalls.has(toggleKey)}
+          onToggle={() => handleExpandToggle(toggleKey, group)}
+          disableExpandTransition={isStreamingRender}
+          onExpandTransitionEnd={handleExpandTransitionEnd}
+          contentStyle={messageContentStyle}
+          truncateToolOutput={truncateToolOutput}
+          toolDefinitions={toolDefinitions}
+          mcpLoadState={mcpLoadState}
+          mcpReloadTokens={mcpReloadTokens}
+          onLoadMcpApp={handleLoadMcpApp}
+          canOpenViewer={Boolean(onOpenToolHtmlModal)}
+          onOpenHtmlViewer={registerAndOpenHtmlViewer}
+          onOpenMcpViewer={registerAndOpenMcpViewer}
+          onOpenSubagentTranscript={onOpenSubagentTranscript}
+          onNavigate={route => navigate(route)}
+        />
       )
     }
 
-    // Style object for message content areas that should scale with fontSizeOffset.
-    // Tool/reasoning labels use em-based text sizes so they inherit this offset too.
-    const messageContentStyle = getChatFontSizeOffsetStyle(fontSizeOffset)
-    const hasSelection = selectedText.length > 0
-
-    const contextHighlightClass = contextMenuOpen ? 'bg-neutral-200/60 dark:bg-orange-900/10' : ''
-
-    const isHiddenStreamSeparator = (event: StreamEvent, index: number): boolean => {
-      const groupedTool = streamToolGroupsByIndex.get(index)
-
-      // Tool events that are not rendered (deduped by anchor) should not split text/reasoning groups.
-      if (groupedTool && groupedTool.anchorIndex !== index) return true
-
-      // Empty deltas create invisible events; they should not split groups either.
-      if ((event.type === 'text' || event.type === 'reasoning') && !event.delta) return true
-
-      return false
-    }
-
-    const getPreviousVisibleStreamType = (index: number): StreamEvent['type'] | null => {
-      if (!Array.isArray(streamEvents) || streamEvents.length === 0) return null
-
-      for (let i = index - 1; i >= 0; i--) {
-        const prevEvent = streamEvents[i]
-        if (!prevEvent) continue
-        if (isHiddenStreamSeparator(prevEvent, i)) continue
-        return prevEvent.type
-      }
-
-      return null
-    }
+    // ── Render items ──────────────────────────────────────────────────────────────────
 
     const buildReasoningRenderItem = (reasoningText: string, reasoningId: number, key: string): MessageRenderItem => {
       const isExpanded = expandedBlocks.reasoning.has(reasoningId)
-      const reasoningSummary = getCollapsedReasoningSummary(reasoningText)
-
+      const panelId = `${id}-${key}-panel`
       return {
         key,
         kind: 'process',
         processType: 'reasoning',
         node: (
-          <div key={key} className={PROCESS_CARD_WRAPPER_CLASS} style={messageContentStyle}>
-            <button
-              onClick={() => toggleBlock('reasoning', reasoningId)}
-              className='flex items-center gap-2 group/reason hover:opacity-80 transition-opacity cursor-pointer outline-none'
-            >
-              <span className='text-[0.8125em] leading-none text-neutral-800 dark:text-neutral-500'>Reasoning</span>
-              {!isExpanded && reasoningSummary && (
-                <span className='text-[0.8125em] text-neutral-500 dark:text-neutral-500 line-clamp-1 max-w-[300px]'>
-                  {reasoningSummary}
-                </span>
-              )}
-              <svg
-                className={`${REASONING_CHEVRON_BASE_CLASS} ${isExpanded ? 'open' : ''}`}
-                fill='none'
-                viewBox='0 0 24 24'
-                stroke='currentColor'
-              >
-                <path strokeLinecap='round' strokeLinejoin='round' strokeWidth={2} d='M9 5l7 7-7 7' />
-              </svg>
-            </button>
-
-            <div
-              className={`tool-expand-container ${isExpanded ? 'open' : ''}`}
-              style={expandContainerStyle}
+          <div key={key} className='min-w-0 max-w-full' style={messageContentStyle}>
+            <DisclosureRow
+              label='Reasoning'
+              summary={getCollapsedReasoningSummary(reasoningText)}
+              expanded={isExpanded}
+              onToggle={() => toggleBlock('reasoning', reasoningId)}
+              controlsId={panelId}
+            />
+            <DisclosurePanel
+              id={panelId}
+              expanded={isExpanded}
+              disableTransition={isStreamingRender}
               onTransitionEnd={handleExpandTransitionEnd}
             >
-              <div className='tool-expand-content'>
-                {renderMarkdownNode({
-                  key: `${key}-reasoning-content`,
-                  markdown: reasoningText,
-                  className: REASONING_TEXT_MARKDOWN_CLASS,
-                })}
-              </div>
-            </div>
+              {renderMarkdownNode({
+                key: `${key}-reasoning-content`,
+                markdown: reasoningText,
+                className: REASONING_TEXT_MARKDOWN_CLASS,
+              })}
+            </DisclosurePanel>
           </div>
         ),
       }
     }
 
-    const renderItemsWithOptionalProcessGrouping = (
-      items: MessageRenderItem[],
-      sourceKey: string
-    ): React.ReactNode[] => {
-      if (!groupToolReasoningRuns) {
-        return items.map(item => item.node)
-      }
+    const renderItemsWithOptionalProcessGrouping = (items: MessageRenderItem[], sourceKey: string): React.ReactNode[] => {
+      if (!groupToolReasoningRuns) return items.map(item => item.node)
 
       const rendered: React.ReactNode[] = []
       let index = 0
 
       while (index < items.length) {
         const current = items[index]
-
         if (current.kind !== 'process') {
           rendered.push(current.node)
           index += 1
@@ -2566,23 +1192,18 @@ const ChatMessage: React.FC<ChatMessageProps> = React.memo(
         while (runEnd < items.length) {
           const candidate = items[runEnd]
           if (!candidate) break
-
           if (candidate.kind === 'process') {
             runEnd += 1
             continue
           }
-
           if (candidate.ignoreForProcessRunGrouping) {
             let lookahead = runEnd + 1
-            while (lookahead < items.length && items[lookahead]?.ignoreForProcessRunGrouping) {
-              lookahead += 1
-            }
+            while (lookahead < items.length && items[lookahead]?.ignoreForProcessRunGrouping) lookahead += 1
             if (lookahead < items.length && items[lookahead]?.kind === 'process') {
               runEnd += 1
               continue
             }
           }
-
           break
         }
 
@@ -2597,37 +1218,26 @@ const ChatMessage: React.FC<ChatMessageProps> = React.memo(
           const summaryParts: string[] = []
           if (toolCount > 0) summaryParts.push(`${toolCount} tool${toolCount === 1 ? '' : 's'}`)
           if (reasoningCount > 0) summaryParts.push(`${reasoningCount} reasoning`)
+          const panelId = `${id}-${groupKey}-panel`
 
           rendered.push(
-            <div key={groupKey} className={PROCESS_CARD_WRAPPER_CLASS} style={messageContentStyle}>
-              <button
-                onClick={() => toggleBlock('groupRuns', groupKey)}
-                className='flex items-center gap-2 group/run hover:opacity-80 transition-opacity cursor-pointer outline-none'
-              >
-                <span className='text-[0.8125em] uppercase tracking-wider text-neutral-500 dark:text-neutral-500 font-bold'>
-                  Agent Steps ({processItems.length})
-                </span>
-                {!isExpanded && summaryParts.length > 0 && (
-                  <span className='text-[0.8125em] text-neutral-500 dark:text-neutral-500 line-clamp-1 max-w-[300px]'>
-                    {summaryParts.join(' â€¢ ')}
-                  </span>
-                )}
-                <svg
-                  className={`${AGENT_RUN_CHEVRON_BASE_CLASS} ${isExpanded ? 'open' : ''}`}
-                  fill='none'
-                  viewBox='0 0 24 24'
-                  stroke='currentColor'
-                >
-                  <path strokeLinecap='round' strokeLinejoin='round' strokeWidth={2} d='M9 5l7 7-7 7' />
-                </svg>
-              </button>
-              <div
-                className={`tool-expand-container ${isExpanded ? 'open' : ''}`}
-                style={expandContainerStyle}
+            <div key={groupKey} className='min-w-0 max-w-full' style={messageContentStyle}>
+              <DisclosureRow
+                label='Agent steps'
+                meta={String(processItems.length)}
+                summary={summaryParts.join(' · ')}
+                expanded={isExpanded}
+                onToggle={() => toggleBlock('groupRuns', groupKey)}
+                controlsId={panelId}
+              />
+              <DisclosurePanel
+                id={panelId}
+                expanded={isExpanded}
+                disableTransition={isStreamingRender}
                 onTransitionEnd={handleExpandTransitionEnd}
               >
-                <div className='tool-expand-content'>{runItems.map(item => item.node)}</div>
-              </div>
+                <div className={MESSAGE_BLOCK_STACK_CLASS}>{runItems.map(item => item.node)}</div>
+              </DisclosurePanel>
             </div>
           )
         } else {
@@ -2640,16 +1250,68 @@ const ChatMessage: React.FC<ChatMessageProps> = React.memo(
       return rendered
     }
 
-    const wrapStreamProcessNode = (key: string, node: React.ReactNode): React.ReactNode => (
-      <React.Fragment key={`stream-process-${key}`}>{node}</React.Fragment>
-    )
+    const renderTextItem = (key: string, markdown: string): MessageRenderItem => ({
+      key,
+      kind: 'other',
+      ignoreForProcessRunGrouping: isProcessRunSeparatorText(markdown),
+      node: renderMarkdownNode({ key, markdown, className: SHARED_TEXT_MARKDOWN_CLASS, style: messageContentStyle }),
+    })
+
+    const renderErrorItem = (key: string, envelope: ChatErrorEnvelope, withAction: boolean): MessageRenderItem => ({
+      key,
+      // `kind: 'other'` is load-bearing: it terminates any surrounding process run so the
+      // failure can never be folded behind the collapsed "Agent steps" disclosure.
+      kind: 'other',
+      node: (
+        <div key={key} className={MESSAGE_BLOCK_INSET_CLASS}>
+          {/* No `onDismiss`: a persisted ErrorBlock is part of the transcript. */}
+          <ChatErrorBubble
+            envelope={envelope}
+            style={messageContentStyle}
+            onAction={withAction && onChatErrorAction ? kind => onChatErrorAction(kind, id, envelope) : undefined}
+          />
+        </div>
+      ),
+    })
+
+    const renderContextInjectionItem = (key: string, entries: ContextInjectionCardEntry[]): MessageRenderItem => ({
+      key,
+      // `kind: 'other'` is load-bearing: the card must never fold into the collapsed run.
+      kind: 'other',
+      node: (
+        <ContextInjectionCard
+          key={key}
+          entries={entries}
+          fontSizeOffset={fontSizeOffset}
+          customTheme={customTheme}
+          customThemeEnabled={customThemeEnabled}
+          isDarkMode={isDarkMode}
+        />
+      ),
+    })
+
+    const isHiddenStreamSeparator = (event: StreamEvent, index: number): boolean => {
+      if (event.type !== 'text') return false
+      const text = event.delta || ''
+      if (!text.trim()) return true
+      const prev = streamEvents?.[index - 1]
+      const next = streamEvents?.[index + 1]
+      return prev?.type === 'reasoning' && next?.type === 'reasoning' && isProcessRunSeparatorText(text)
+    }
+
+    const getPreviousVisibleStreamType = (index: number): StreamEvent['type'] | null => {
+      if (!Array.isArray(streamEvents)) return null
+      let cursor = index - 1
+      while (cursor >= 0) {
+        const event = streamEvents[cursor]
+        if (event && !isHiddenStreamSeparator(event, cursor)) return event.type
+        cursor -= 1
+      }
+      return null
+    }
 
     const buildStreamRenderItems = (): MessageRenderItem[] => {
       if (!Array.isArray(streamEvents) || streamEvents.length === 0) return []
-
-      // Keep reasoning visible during live streaming so it stays interleaved
-      // with text/tool events as it arrives.
-      const hideStreamingReasoning = false
 
       const items: MessageRenderItem[] = []
       let idx = 0
@@ -2664,14 +1326,13 @@ const ChatMessage: React.FC<ChatMessageProps> = React.memo(
         const groupedTool = streamToolGroupsByIndex.get(idx)
         if (groupedTool) {
           if (groupedTool.anchorIndex === idx) {
-            const toolKey = `stream-${groupedTool.id}-${idx}`
-            const toolNode = renderToolCallGroupCard(groupedTool, toolKey)
+            const toolNode = renderToolCallGroupCard(groupedTool, `stream-${groupedTool.id}-${idx}`)
             if (toolNode) {
               items.push({
                 key: `stream-tool-${groupedTool.id}-${idx}`,
                 kind: 'process',
                 processType: 'tool',
-                node: wrapStreamProcessNode(`stream-tool-${groupedTool.id}-${idx}`, toolNode),
+                node: toolNode,
               })
             }
           }
@@ -2680,10 +1341,8 @@ const ChatMessage: React.FC<ChatMessageProps> = React.memo(
         }
 
         // A non-terminal status frame ("Reconnecting…", "Trying again…", "Summarising
-        // earlier turns…"). Without this branch the run just goes quiet for several
-        // seconds and the silence reads as a hang — which is the whole reason the
-        // server emits these. `kind: 'other'` keeps it out of the collapsed process
-        // group, since the point is to be seen while it is happening.
+        // earlier turns…"). `kind: 'other'` keeps it out of the collapsed process group,
+        // since the point is to be seen while it is happening.
         if (event.type === 'notice') {
           const noticeText = event.content
           if (noticeText) {
@@ -2698,7 +1357,7 @@ const ChatMessage: React.FC<ChatMessageProps> = React.memo(
               node: (
                 <div
                   key={noticeKey}
-                  className='my-1 text-[0.8125em] italic text-neutral-500 dark:text-neutral-400'
+                  className={`flex h-8 items-center ${MESSAGE_BLOCK_INSET_CLASS} text-[0.8125em] italic text-neutral-500 dark:text-neutral-400`}
                   style={messageContentStyle}
                 >
                   {noticeText}
@@ -2711,21 +1370,9 @@ const ChatMessage: React.FC<ChatMessageProps> = React.memo(
           continue
         }
 
-        // An in-order failure on a live stream. The durable surface is the persisted
-        // ErrorBlock (tier 1) or the `chat_error` row (tier 2); this is the same
-        // envelope shown in place while the stream is still on screen, so the failure
-        // appears where the text stopped rather than only at the bottom of the list.
+        // An in-order failure on a live stream, shown where the text stopped.
         if (event.type === 'error' && event.errorEnvelope) {
-          const errKey = `stream-error-${idx}`
-          items.push({
-            key: errKey,
-            kind: 'other',
-            node: (
-              <div key={errKey} className='my-2'>
-                <ChatErrorBubble envelope={event.errorEnvelope} style={messageContentStyle} />
-              </div>
-            ),
-          })
+          items.push(renderErrorItem(`stream-error-${idx}`, event.errorEnvelope, false))
           idx += 1
           continue
         }
@@ -2742,38 +1389,18 @@ const ChatMessage: React.FC<ChatMessageProps> = React.memo(
               break
             }
           }
-
-          const trimmedText = accumulatedText.trim()
-          if (trimmedText.length > 0) {
-            const textKey = `text-${idx}`
-            items.push({
-              key: textKey,
-              kind: 'other',
-              ignoreForProcessRunGrouping: isProcessRunSeparatorText(accumulatedText),
-              node: renderMarkdownNode({
-                key: textKey,
-                markdown: accumulatedText,
-                className: SHARED_TEXT_MARKDOWN_CLASS,
-                style: messageContentStyle,
-              }),
-            })
+          if (accumulatedText.trim().length > 0) {
+            items.push(renderTextItem(`text-${idx}`, accumulatedText))
           }
-
           idx = nextIdx
           continue
         }
 
         if (event.type === 'reasoning' && event.delta) {
-          if (hideStreamingReasoning) {
-            idx += 1
-            continue
-          }
-
           if (getPreviousVisibleStreamType(idx) === 'reasoning') {
             idx += 1
             continue
           }
-
           let accumulatedReasoning = event.delta || ''
           let nextIdx = idx + 1
           while (nextIdx < streamEvents.length) {
@@ -2787,14 +1414,7 @@ const ChatMessage: React.FC<ChatMessageProps> = React.memo(
               break
             }
           }
-
-          {
-            const reasoningItem = buildReasoningRenderItem(accumulatedReasoning, idx, `reasoning-${idx}`)
-            items.push({
-              ...reasoningItem,
-              node: wrapStreamProcessNode(reasoningItem.key, reasoningItem.node),
-            })
-          }
+          items.push(buildReasoningRenderItem(accumulatedReasoning, idx, `reasoning-${idx}`))
           idx = nextIdx
           continue
         }
@@ -2811,13 +1431,12 @@ const ChatMessage: React.FC<ChatMessageProps> = React.memo(
             anchorIndex: idx,
           }
           const fallbackNode = renderToolCallGroupCard(fallbackGroup, `stream-fallback-${toolCall.id}-${idx}`)
-
           if (fallbackNode) {
             items.push({
               key: `stream-fallback-tool-${toolCall.id}-${idx}`,
               kind: 'process',
               processType: 'tool',
-              node: wrapStreamProcessNode(`stream-fallback-tool-${toolCall.id}-${idx}`, fallbackNode),
+              node: fallbackNode,
             })
           }
           idx += 1
@@ -2829,11 +1448,7 @@ const ChatMessage: React.FC<ChatMessageProps> = React.memo(
           items.push({
             key: imageKey,
             kind: 'other',
-            node: renderImageNode({
-              key: imageKey,
-              url: event.url,
-              onClick: () => handleArtifactClick(event.url),
-            }),
+            node: renderImageNode({ key: imageKey, url: event.url, onClick: () => handleArtifactClick(event.url) }),
           })
         }
 
@@ -2841,15 +1456,6 @@ const ChatMessage: React.FC<ChatMessageProps> = React.memo(
       }
 
       return items
-    }
-
-    const parseResponsesToolArgs = (rawArgs: unknown): unknown => {
-      if (typeof rawArgs !== 'string') return rawArgs
-      try {
-        return rawArgs ? JSON.parse(rawArgs) : rawArgs
-      } catch {
-        return rawArgs
-      }
     }
 
     const buildResponsesOutputItemsRenderItems = (responseItems: any[], baseIndex: number): MessageRenderItem[] => {
@@ -2863,34 +1469,22 @@ const ChatMessage: React.FC<ChatMessageProps> = React.memo(
         }
 
         if (item.type === 'message' && item.role === 'assistant') {
-          const messageTexts = extractAssistantTextsFromResponsesOutputItems([item])
-          for (const text of messageTexts) {
-            const textKey = `responses-text-${baseIndex}-${localIndex}`
-            items.push({
-              key: textKey,
-              kind: 'other',
-              ignoreForProcessRunGrouping: isProcessRunSeparatorText(text),
-              node: renderMarkdownNode({
-                key: textKey,
-                markdown: text,
-                className: SHARED_TEXT_MARKDOWN_CLASS,
-                style: messageContentStyle,
-              }),
-            })
+          for (const text of extractAssistantTextsFromResponsesOutputItems([item])) {
+            items.push(renderTextItem(`responses-text-${baseIndex}-${localIndex}`, text))
             localIndex += 1
           }
           continue
         }
 
         if (item.type === 'reasoning') {
-          const reasoningTexts = extractReasoningTextsFromResponsesOutputItems([item])
-          for (const reasoningText of reasoningTexts) {
-            const reasoningItem = buildReasoningRenderItem(
-              reasoningText,
-              900000000 + baseIndex * 100 + localIndex,
-              `responses-reasoning-${baseIndex}-${localIndex}`
+          for (const reasoningText of extractReasoningTextsFromResponsesOutputItems([item])) {
+            items.push(
+              buildReasoningRenderItem(
+                reasoningText,
+                900000000 + baseIndex * 100 + localIndex,
+                `responses-reasoning-${baseIndex}-${localIndex}`
+              )
             )
-            items.push(reasoningItem)
             localIndex += 1
           }
           continue
@@ -2904,13 +1498,12 @@ const ChatMessage: React.FC<ChatMessageProps> = React.memo(
               {
                 id: callId,
                 name,
-                args: parseResponsesToolArgs(item.arguments),
+                args: parseResponsesToolArgs(item.arguments) as Record<string, any> | null,
                 results: [],
                 anchorIndex: baseIndex + localIndex,
               },
               `responses-tool-${callId}-${baseIndex}-${localIndex}`
             )
-
             if (toolNode) {
               items.push({
                 key: `responses-tool-${callId}-${baseIndex}-${localIndex}`,
@@ -2930,26 +1523,23 @@ const ChatMessage: React.FC<ChatMessageProps> = React.memo(
       return items
     }
 
-    const buildContentBlockRenderItems = (): MessageRenderItem[] => {
-      if (!Array.isArray(contentBlocks) || contentBlocks.length === 0) return []
-
+    const buildContentBlockRenderItems = (blocks: ContentBlock[]): MessageRenderItem[] => {
       const items: MessageRenderItem[] = []
       const renderedReasoningSignatures = new Set<string>()
-      const hasExplicitRenderableBlocks = contentBlocks.some(
+      const hasExplicitRenderableBlocks = blocks.some(
         block =>
           block.type === 'text' ||
           block.type === 'thinking' ||
           block.type === 'tool_use' ||
           block.type === 'image' ||
           block.type === 'reasoning_details' ||
-          // A persisted terminal failure is a first-class renderable. Without this, a message
-          // whose ONLY block is an ErrorBlock looks empty and the bubble never draws.
+          // A persisted terminal failure is a first-class renderable.
           block.type === 'error'
       )
       let idx = 0
 
-      while (idx < contentBlocks.length) {
-        const block = contentBlocks[idx]
+      while (idx < blocks.length) {
+        const block = blocks[idx]
         if (!block) {
           idx += 1
           continue
@@ -2957,8 +1547,7 @@ const ChatMessage: React.FC<ChatMessageProps> = React.memo(
 
         const groupedTool = contentToolGroupsByIndex.get(idx)
         if (groupedTool) {
-          const toolKey = `block-${groupedTool.id}-${idx}`
-          const toolNode = renderToolCallGroupCard(groupedTool, toolKey)
+          const toolNode = renderToolCallGroupCard(groupedTool, `block-${groupedTool.id}-${idx}`)
           if (toolNode) {
             items.push({
               key: `block-tool-${groupedTool.id}-${idx}`,
@@ -2972,55 +1561,22 @@ const ChatMessage: React.FC<ChatMessageProps> = React.memo(
         }
 
         if (block.type === 'context_injection') {
-          // Auto-loaded context (docs/claude_code_context_loading_rules.md decision 7).
-          // Consecutive injection blocks (one tool call can trigger several files) become
-          // ONE visible card. `kind: 'other'` is load-bearing: the card must never fold
-          // into the collapsed "Agent Steps" run, or the trigger is invisible.
+          // Consecutive injection blocks (one tool call can trigger several files) become ONE card.
           const entries: ContextInjectionCardEntry[] = []
           let cursor = idx
-          while (cursor < contentBlocks.length) {
-            const candidate = contentBlocks[cursor]
+          while (cursor < blocks.length) {
+            const candidate = blocks[cursor]
             if (!candidate || candidate.type !== 'context_injection') break
             entries.push({ path: candidate.path, label: candidate.label, text: candidate.text, reason: candidate.reason })
             cursor += 1
           }
-          const injectionKey = `context-injection-${idx}`
-          items.push({
-            key: injectionKey,
-            kind: 'other',
-            node: (
-              <ContextInjectionCard
-                key={injectionKey}
-                entries={entries}
-                fontSizeOffset={fontSizeOffset}
-                customTheme={customTheme}
-                customThemeEnabled={customThemeEnabled}
-                isDarkMode={isDarkMode}
-              />
-            ),
-          })
+          items.push(renderContextInjectionItem(`context-injection-${idx}`, entries))
           idx = cursor
           continue
         }
 
         if (block.type === 'error') {
-          const errorKey = `error-${block.index}-${idx}`
-          items.push({
-            key: errorKey,
-            // `kind: 'other'` is load-bearing: it terminates any surrounding process run so the
-            // failure can never be folded behind the collapsed "Agent Steps" disclosure.
-            kind: 'other',
-            node: (
-              <div key={errorKey} className='my-2'>
-                {/* No `onDismiss`: a persisted ErrorBlock is part of the transcript. */}
-                <ChatErrorBubble
-                  envelope={block.envelope}
-                  style={messageContentStyle}
-                  onAction={onChatErrorAction ? kind => onChatErrorAction(kind, id, block.envelope) : undefined}
-                />
-              </div>
-            ),
-          })
+          items.push(renderErrorItem(`error-${block.index}-${idx}`, block.envelope, true))
           idx += 1
           continue
         }
@@ -3028,41 +1584,25 @@ const ChatMessage: React.FC<ChatMessageProps> = React.memo(
         if (block.type === 'text') {
           const blockText = typeof block.content === 'string' ? block.content : ''
           const rawText = role === 'user' ? stripAttachedImagePathMetadata(blockText) : blockText
-          if (!rawText.trim()) {
-            idx += 1
-            continue
+          if (rawText.trim()) {
+            items.push(renderTextItem(`text-${block.index}-${idx}`, rawText))
           }
-
-          const textKey = `text-${block.index}-${idx}`
-          items.push({
-            key: textKey,
-            kind: 'other',
-            ignoreForProcessRunGrouping: isProcessRunSeparatorText(rawText),
-            node: renderMarkdownNode({
-              key: textKey,
-              markdown: rawText,
-              className: SHARED_TEXT_MARKDOWN_CLASS,
-              style: messageContentStyle,
-            }),
-          })
           idx += 1
           continue
         }
 
         if (block.type === 'thinking') {
           let prevIdx = idx - 1
-          while (prevIdx >= 0 && contentBlocks[prevIdx]?.type === 'reasoning_details') {
-            prevIdx -= 1
-          }
-          if (prevIdx >= 0 && contentBlocks[prevIdx]?.type === 'thinking') {
+          while (prevIdx >= 0 && blocks[prevIdx]?.type === 'reasoning_details') prevIdx -= 1
+          if (prevIdx >= 0 && blocks[prevIdx]?.type === 'thinking') {
             idx += 1
             continue
           }
 
           let accumulatedThinking = block.content || ''
           let nextIdx = idx + 1
-          while (nextIdx < contentBlocks.length) {
-            const nextBlock = contentBlocks[nextIdx]
+          while (nextIdx < blocks.length) {
+            const nextBlock = blocks[nextIdx]
             if (!nextBlock) {
               nextIdx += 1
               continue
@@ -3078,9 +1618,7 @@ const ChatMessage: React.FC<ChatMessageProps> = React.memo(
           }
 
           const normalizedThinking = normalizeReasoningTextForComparison(accumulatedThinking)
-          if (normalizedThinking) {
-            renderedReasoningSignatures.add(normalizedThinking)
-          }
+          if (normalizedThinking) renderedReasoningSignatures.add(normalizedThinking)
 
           items.push(
             buildReasoningRenderItem(
@@ -3095,19 +1633,10 @@ const ChatMessage: React.FC<ChatMessageProps> = React.memo(
 
         if ((block as any).type === 'responses_output_items' && Array.isArray((block as any).items)) {
           const responseBlock = block as any
-          const baseIndex = typeof responseBlock.index === 'number' ? responseBlock.index : idx
-
-          if (hasExplicitRenderableBlocks) {
-            idx += 1
-            continue
+          if (!hasExplicitRenderableBlocks) {
+            const baseIndex = typeof responseBlock.index === 'number' ? responseBlock.index : idx
+            items.push(...buildResponsesOutputItemsRenderItems(responseBlock.items, baseIndex))
           }
-
-          items.push(...buildResponsesOutputItemsRenderItems(responseBlock.items, baseIndex))
-          idx += 1
-          continue
-        }
-
-        if (block.type === 'reasoning_details') {
           idx += 1
           continue
         }
@@ -3117,222 +1646,140 @@ const ChatMessage: React.FC<ChatMessageProps> = React.memo(
           items.push({
             key: imageKey,
             kind: 'other',
-            node: renderImageNode({
-              key: imageKey,
-              url: block.url,
-              onClick: () => handleArtifactClick(block.url),
-            }),
+            node: renderImageNode({ key: imageKey, url: block.url, onClick: () => handleArtifactClick(block.url) }),
           })
           idx += 1
           continue
         }
 
+        // reasoning_details and unknown block types draw nothing.
         idx += 1
       }
 
       return items
     }
 
-    const streamRenderedNodes =
-      !editingState && Array.isArray(streamEvents) && streamEvents.length > 0
-        ? renderItemsWithOptionalProcessGrouping(buildStreamRenderItems(), `stream-${id}`)
-        : null
+    /**
+     * The blocks this row draws. Priority: live `streamEvents`, then persisted `contentBlocks`.
+     * A row with neither (an optimistic user message, or an old assistant row that only has a
+     * `content` string) is drawn as one text block, so every message goes through one path.
+     * User rows always add their `content` as the text block after any context injection cards.
+     */
+    const renderableBlocks = useMemo<ContentBlock[]>(() => {
+      const blocks = Array.isArray(contentBlocks) ? contentBlocks : []
+      if (isUserRow) {
+        const injections = blocks.filter(block => block?.type === 'context_injection')
+        const text = visibleContent.trim()
+        return text
+          ? [...injections, { type: 'text', index: injections.length, content: visibleContent } as ContentBlock]
+          : injections
+      }
+      if (blocks.length > 0) return blocks
+      const text = visibleContent.trim()
+      return text ? [{ type: 'text', index: 0, content: visibleContent } as ContentBlock] : []
+    }, [contentBlocks, isUserRow, visibleContent])
 
-    const contentBlockRenderedNodes =
-      !editingState && Array.isArray(contentBlocks) && contentBlocks.length > 0
-        ? renderItemsWithOptionalProcessGrouping(buildContentBlockRenderItems(), `blocks-${id}`)
-        : null
+    // `contentToolGroupsByIndex` is keyed by index into `contentBlocks`. A user row never has tool
+    // blocks and the fallback text block sits alone, so the map stays valid for `renderableBlocks`.
+    const renderedNodes = editingState
+      ? null
+      : hasStreamEvents
+        ? renderItemsWithOptionalProcessGrouping(buildStreamRenderItems(), `stream-${id}`)
+        : renderableBlocks.length > 0
+          ? renderItemsWithOptionalProcessGrouping(buildContentBlockRenderItems(renderableBlocks), `blocks-${id}`)
+          : null
+
+    const hasSelection = selectedText.length > 0
+    const showActionsRow = hasContent && canBranchMessage && showInlineActions
+    const contextHighlightClass = contextMenuOpen ? 'bg-black/[0.03] dark:bg-white/[0.03]' : ''
 
     return (
       <div
         id={`message-${id}`}
         ref={messageRef}
-        className={`group px-0 sm:px-2 md:px-2 ${styles.container} ${contextHighlightClass} ${width} ${role === 'user' ? 'mt-4 pt-px pb-[18px] mb-[4px]' : ''} transition-colors duration-200 rounded-md hover:bg-opacity-80 ${isCompactionSummary ? 'border border-emerald-300/50 dark:border-emerald-600/50 bg-emerald-50/40 dark:bg-emerald-900/10' : ''} ${className ?? ''}`}
-        style={styles.containerStyle}
+        className={`group ${width} px-0 sm:px-2 ${isUserRow ? 'pt-3 pb-1' : 'py-1'} ${className ?? ''}`}
         onContextMenu={handleContextMenu}
         onMouseEnter={() => setIsHovering(true)}
         onMouseLeave={() => setIsHovering(false)}
         onClick={handleMobileMessageActivate}
         onTouchStart={handleMobileMessageActivate}
       >
-        {isCompactionSummary && (
-          <div className='inline-flex mt-4 items-center gap-2 py-[3px] px-2.5 bg-emerald-100/70 dark:bg-emerald-900/40 border border-emerald-300/70 dark:border-emerald-700 rounded-md'>
-            <div className='w-1.5 h-1.5 rounded-full bg-emerald-500' />
-            <span className='font-mono text-[0.6875em] uppercase tracking-[0.08em] text-emerald-700 dark:text-emerald-300'>
-              Compaction Summary
-            </span>
-          </div>
-        )}
-
-        {/* Header with role */}
-        {role === 'user' && (
-          <div className='inline-flex mt-[2px] items-center gap-2 px-2.5 py-[3px] bg-white/[0.03] border border-white/[0.08] rounded-md mb-3 backdrop-blur cursor-default transition-all duration-200'>
-            <div className='w-1 h-1 rounded-full bg-neutral-500 shadow-[0_0_8px_rgba(115,115,115,0.4)]'></div>
-            <span className={`text-sm tracking-[0.1em] ${styles.role || 'text-neutral-500'}`} style={styles.roleStyle}>
-              {styles.roleText}
-            </span>
-          </div>
-        )}
-
-        {/* Context that rode on this user message: `/skill` expansion, UserPromptSubmit hook output. */}
-        {role === 'user' && userContextInjectionEntries.length > 0 && (
-          <ContextInjectionCard
-            entries={userContextInjectionEntries}
-            fontSizeOffset={fontSizeOffset}
-            customTheme={customTheme}
-            customThemeEnabled={customThemeEnabled}
-            isDarkMode={isDarkMode}
-          />
-        )}
-
-        {/* Prioritize rendering: streamEvents > contentBlocks > legacy fields */}
-        {/* Sequential streaming events - render in order as received */}
-        {!editingState && Array.isArray(streamEvents) && streamEvents.length > 0 ? (
-          <div className='space-y-0 mb-0'>
-            {streamRenderedNodes}
-          </div>
-        ) : !editingState && Array.isArray(contentBlocks) && contentBlocks.length > 0 ? (
-          <div className='space-y-0 mb-0'>
-            {contentBlockRenderedNodes}
-          </div>
-        ) : (
-          <div>
-            {/* Fallback: render tool calls and reasoning separately if no streamEvents or contentBlocks */}
-            {Array.isArray(toolCalls) && toolCalls.length > 0 && (
-              <div className='space-y-0 mb-3'>
-                {toolCalls.map((toolCall, idx) =>
-                  renderToolCallGroupCard(
-                    {
-                      id: toolCall.id,
-                      name: toolCall.name,
-                      args: toolCall.arguments,
-                      results: toolCall.result
-                        ? [{ content: toolCall.result, is_error: toolCall.status === 'executing' && false }]
-                        : [],
-                      anchorIndex: idx,
-                    },
-                    `legacy-${toolCall.id}-${idx}`
-                  )
-                )}
-              </div>
-            )}
-
-            {/* Reasoning / thinking block */}
-            {typeof thinking === 'string' && thinking.trim().length > 0 && (
-              <div className={PROCESS_CARD_REASONING_WRAPPER_CLASS}>
-                {/* Reasoning header */}
-                <button
-                  onClick={() => setShowThinking(s => !s)}
-                  className='flex items-center gap-2 group/reason hover:opacity-80 transition-opacity cursor-pointer outline-none'
-                  aria-expanded={showThinking}
-                  aria-controls={`reasoning-content-${id}`}
+        <div
+          className={`min-w-0 rounded-2xl ${drawSurface ? 'px-1.5 pt-2 pb-1' : ''} ${surfaceClass} ${contextHighlightClass} ${FAST_COLOR_TRANSITION_CLASS}`}
+          style={surfaceStyle}
+        >
+          {/* Role caption. Assistant rows stay unlabelled; the surface is the label for user rows. */}
+          {(isUserRow || isCompactionSummary) && (
+            <div className={`flex h-7 items-center gap-2 ${MESSAGE_BLOCK_INSET_CLASS}`}>
+              {isUserRow && (
+                <span
+                  className={`text-[0.7em] font-semibold uppercase tracking-[0.14em] ${roleLabelClass}`}
+                  style={roleLabelStyle}
                 >
-                  <span className='text-[0.8125em] uppercase tracking-wider text-neutral-500 dark:text-neutral-500 font-bold'>
-                    Reasoning
-                  </span>
-                  {!showThinking && (
-                    <span className='text-[0.8125em] text-neutral-500 dark:text-neutral-500 line-clamp-1 max-w-[300px]'>
-                      {getCollapsedReasoningSummary(thinking)}
-                    </span>
-                  )}
-                  <svg
-                    className={`${REASONING_CHEVRON_BASE_CLASS} ${showThinking ? 'open' : ''}`}
-                    fill='none'
-                    viewBox='0 0 24 24'
-                    stroke='currentColor'
-                  >
-                    <path strokeLinecap='round' strokeLinejoin='round' strokeWidth={2} d='M9 5l7 7-7 7' />
-                  </svg>
-                </button>
+                  {roleLabel}
+                </span>
+              )}
+              {isCompactionSummary && (
+                <Badge tone='success'>
+                  <span className='mr-1.5 inline-block h-1.5 w-1.5 rounded-full bg-current' aria-hidden='true' />
+                  Compaction summary
+                </Badge>
+              )}
+            </div>
+          )}
 
-                {/* Expandable content */}
-                <div
-                  className={`tool-expand-container ${showThinking ? 'open' : ''}`}
-                  style={expandContainerStyle}
-                  onTransitionEnd={handleExpandTransitionEnd}
-                >
-                  <div className='tool-expand-content'>
-                    {renderMarkdownNode({
-                      key: `legacy-reasoning-${id}`,
-                      id: `reasoning-content-${id}`,
-                      markdown: thinking,
-                      className: REASONING_TEXT_MARKDOWN_CLASS,
-                    })}
-                  </div>
-                </div>
-              </div>
-            )}
-          </div>
-        )}
-
-        {/* Message content - show edit mode or normal display */}
-        {editingState ? (
-          <div className='px-2 w-full relative'>
-            <TextArea
-              value={editContent}
-              onChange={setEditContent}
-              placeholder='Edit your message...'
-              minRows={2}
-              maxRows={40}
-              maxHeightViewportRatio={editMode === 'branch' ? 0.45 : undefined}
-              maxLength={20000}
-              autoFocus
-              label='Create New Branch'
-              width='w-full'
-              enableImageAttachments={editMode === 'branch'}
-              imageDraftTarget={{ kind: 'branch', messageId: id }}
-              fontSizeOffset={fontSizeOffset}
-              onContextMenu={(e: React.MouseEvent<HTMLTextAreaElement>) => {
-                // Always show default browser menu in TextArea, never the custom menu
-                e.stopPropagation()
-              }}
-              onKeyDown={e => {
-                if (e.key === 'Enter' && !e.shiftKey) {
-                  e.preventDefault()
-                  if (editMode === 'branch') {
-                    handleSaveBranch()
-                  } else {
-                    handleSave()
+          {/* Body: edit surface or the block stack. */}
+          {editingState ? (
+            <div className={`${MESSAGE_BLOCK_INSET_CLASS} w-full`}>
+              <TextArea
+                value={editContent}
+                onChange={setEditContent}
+                placeholder='Edit your message...'
+                minRows={2}
+                maxRows={40}
+                maxHeightViewportRatio={editMode === 'branch' ? 0.45 : undefined}
+                maxLength={20000}
+                autoFocus
+                label={editMode === 'branch' ? 'Create new branch' : 'Edit message'}
+                width='w-full'
+                enableImageAttachments={editMode === 'branch'}
+                imageDraftTarget={{ kind: 'branch', messageId: id }}
+                fontSizeOffset={fontSizeOffset}
+                onContextMenu={(e: React.MouseEvent<HTMLTextAreaElement>) => {
+                  // Always show the default browser menu in the TextArea, never the custom menu
+                  e.stopPropagation()
+                }}
+                onKeyDown={e => {
+                  if (e.key === 'Enter' && !e.shiftKey) {
+                    e.preventDefault()
+                    if (editMode === 'branch') handleSaveBranch()
+                    else handleSave()
+                  } else if (e.key === 'Escape') {
+                    e.preventDefault()
+                    handleCancel()
                   }
-                } else if (e.key === 'Escape') {
-                  e.preventDefault()
-                  handleCancel()
-                }
-              }}
-            />
-          </div>
-        ) : (
-          <div>
-            {/* Display mode - only show if no contentBlocks or streamEvents present (to avoid duplication) */}
-            {(!contentBlocks || contentBlocks.length === 0) &&
-              (!streamEvents || streamEvents.length === 0) &&
-              renderMarkdownNode({
-                key: `legacy-content-${id}`,
-                markdown: visibleContent,
-                className: LEGACY_TEXT_MARKDOWN_CLASS,
-                style: messageContentStyle,
-              })}
-          </div>
-        )}
-        {/* {hasContent && modelName && role !== 'user' && (
-          <div className='mt-1 text-[0.75em] sm:text-[0.875em] 3xl:text-[1em] text-stone-400 flex justify-end'>{modelName}</div>
-        )} */}
-        {/* Artifacts (images) */}
-        {Array.isArray(artifacts) && artifacts.length > 0 && role !== 'assistant' && (
-          <div className='mt-3 mb-3 space-y-2 flex flex-col items-end'>
-            <h3 className='text-[0.75em] font-semibold uppercase tracking-wide text-neutral-600 dark:text-neutral-400'>
-              Attachments
-            </h3>
-            <div className='flex flex-wrap gap-2 sm:gap-3 justify-end self-end'>
+                }}
+              />
+              <div className='flex h-7 items-center justify-end text-[0.72em] text-neutral-500 dark:text-neutral-400'>
+                Enter to save · Shift+Enter for a new line · Escape to cancel
+              </div>
+            </div>
+          ) : (
+            renderedNodes && <div className={MESSAGE_BLOCK_STACK_CLASS}>{renderedNodes}</div>
+          )}
+
+          {/* Attachments on non-assistant rows. */}
+          {Array.isArray(artifacts) && artifacts.length > 0 && role !== 'assistant' && (
+            <div className={`${MESSAGE_BLOCK_INSET_CLASS} flex flex-wrap justify-end gap-2 py-2`}>
               {artifacts.map((dataUrl, idx) => (
                 <div
                   key={`${id}-artifact-${idx}`}
-                  className='relative rounded-lg overflow-hidden border border-neutral-200 dark:border-neutral-700 bg-white dark:bg-neutral-900 w-fit'
+                  className='relative h-20 w-20 overflow-hidden rounded-xl bg-black/[0.04] dark:bg-white/[0.05]'
                 >
                   <img
                     src={dataUrl}
                     alt={`attachment-${idx}`}
-                    className='h-20 w-20 sm:h-20 md:h-20 lg:h-20 object-contain bg-neutral-100 dark:bg-neutral-800 cursor-pointer'
+                    className='h-full w-full cursor-pointer object-contain'
                     loading='lazy'
                     onClick={() => handleArtifactClick(dataUrl)}
                   />
@@ -3340,77 +1787,70 @@ const ChatMessage: React.FC<ChatMessageProps> = React.memo(
                     <button
                       type='button'
                       title='Remove image'
+                      aria-label='Remove image'
                       onClick={() => handleDeleteArtifact(idx)}
-                      className='absolute top-2 right-2 z-10 p-1.5 rounded-md bg-neutral-800/70 text-white hover:bg-neutral-700'
+                      className={`absolute right-1 top-1 flex h-6 w-6 items-center justify-center rounded-full bg-black/60 text-white hover:bg-black/80 ${FAST_COLOR_TRANSITION_CLASS} ${FOCUS_RING_CLASS}`}
                     >
-                      <svg className='w-4 h-4' fill='none' stroke='currentColor' viewBox='0 0 24 24'>
-                        <path strokeLinecap='round' strokeLinejoin='round' strokeWidth={2} d='M6 18L18 6M6 6l12 12' />
-                      </svg>
+                      <X size={12} strokeWidth={2.5} aria-hidden='true' />
                     </button>
                   )}
                 </div>
               ))}
             </div>
-          </div>
-        )}
-        {/* Actions row (at bottom) */}
-        {hasContent && canBranchMessage && showInlineActions && (
-          <div className='flex items-center justify-between gap-3'>
-            {role === 'user' && userTurnElapsedLabel && !editingState ? (
-              <div
-                className={`min-w-0 flex-1 text-[0.625em] font-medium uppercase tracking-[0.12em] text-neutral-500 transition-all duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)] dark:text-neutral-400 ${
-                  isHovering ? 'translate-y-0 opacity-100' : 'translate-y-2 opacity-0 pointer-events-none'
-                }`}
-                aria-label={userTurnElapsedLabel}
-              >
-                {userTurnElapsedLabel}
-              </div>
-            ) : (
-              <div className='flex-1' />
-            )}
-            <div ref={moreButtonRef} className='relative shrink-0'>
-              <MessageActions
-                onEdit={role === 'user' ? handleEdit : undefined}
-                onBranch={handleBranch}
-                onDelete={role === 'user' ? handleDelete : undefined}
-                onCopy={handleCopy}
-                onSave={handleSave}
-                onSaveBranch={handleSaveBranch}
-                onCancel={handleCancel}
-                onMore={handleMoreClick}
-                onUndoEdits={role === 'user' && undoState?.available ? onUndoStreamEdits : undefined}
-                undoLabel={undoLabel}
-                undoDisabled={undoState?.restoring || undoState?.restored}
-                isEditing={editingState}
-                editMode={editMode}
-                copied={copied}
-                modelName={modelName}
-                isVisible={isHovering}
-                variant='default'
-              />
-              {/* More menu dropdown */}
-              {showMoreMenu &&
-                moreMenuPlacement &&
-                createPortal(
-                  <div
-                    ref={moreMenuRef}
-                    className='fixed z-[200] w-64 sm:w-72 md:w-80 rounded-2xl bg-white dark:bg-yBlack-900 border border-neutral-200 dark:border-neutral-700 shadow-[0_0px_4px_3px_rgba(0,0,0,0.03)] dark:shadow-[0_1px_8px_2px_rgba(0,0,0,0.45)] [will-change:contents] [transform:translateZ(0)]'
-                    style={{
-                      top: `${moreMenuPlacement.top}px`,
-                      left: `${moreMenuPlacement.left}px`,
-                      width: `${moreMenuPlacement.width}px`,
-                    }}
-                  >
-                    <div className='p-2 sm:p-3'>
-                      <div className='flex items-center justify-between mb-1'>
-                        <h3 className='text-[0.75em] sm:text-[0.875em] 3xl:text-[1em] font-semibold text-gray-700 dark:text-gray-300'>
-                          Message Info
-                        </h3>
-                      </div>
-                      <div className='max-h-64 sm:max-h-80 md:max-h-96 overflow-y-auto text-[0.75em] sm:text-[0.875em] space-y-1.5 pt-2'>
-                        {messageData ? (
-                          <>
-                            {Object.entries(messageData)
+          )}
+
+          {/* Actions row. Always occupies its height so hover does not shift layout. */}
+          {showActionsRow && (
+            <div className={`flex h-10 items-center justify-between gap-3 ${MESSAGE_BLOCK_INSET_CLASS}`}>
+              {isUserRow && userTurnElapsedLabel && !editingState ? (
+                <div
+                  className={`min-w-0 flex-1 truncate text-[0.625em] font-medium uppercase tracking-[0.12em] text-neutral-500 dark:text-neutral-400 transition-[opacity,transform] duration-200 ease-out motion-reduce:transition-none ${
+                    isHovering ? 'translate-y-0 opacity-100' : 'translate-y-1 opacity-0 pointer-events-none'
+                  }`}
+                  aria-label={userTurnElapsedLabel}
+                >
+                  {userTurnElapsedLabel}
+                </div>
+              ) : (
+                <div className='flex-1' />
+              )}
+              <div ref={moreButtonRef} className='relative shrink-0'>
+                <MessageActions
+                  onEdit={isUserRow ? handleEdit : undefined}
+                  onBranch={handleBranch}
+                  onDelete={isUserRow ? handleDelete : undefined}
+                  onCopy={handleCopy}
+                  onSave={handleSave}
+                  onSaveBranch={handleSaveBranch}
+                  onCancel={handleCancel}
+                  onMore={handleMoreClick}
+                  onUndoEdits={isUserRow && undoState?.available ? onUndoStreamEdits : undefined}
+                  undoLabel={undoLabel}
+                  undoDisabled={undoState?.restoring || undoState?.restored}
+                  isEditing={editingState}
+                  editMode={editMode}
+                  copied={copied}
+                  modelName={modelName}
+                  isVisible={isHovering}
+                  variant='default'
+                />
+                {showMoreMenu &&
+                  moreMenuPlacement &&
+                  createPortal(
+                    <div
+                      ref={moreMenuRef}
+                      className={`fixed z-[200] ${FLOATING_SURFACE_CLASS} [will-change:contents] [transform:translateZ(0)]`}
+                      style={{
+                        top: `${moreMenuPlacement.top}px`,
+                        left: `${moreMenuPlacement.left}px`,
+                        width: `${moreMenuPlacement.width}px`,
+                      }}
+                    >
+                      <div className='p-3'>
+                        <h3 className='text-[0.8125em] font-semibold text-neutral-700 dark:text-neutral-200'>Message info</h3>
+                        <div className='thin-scrollbar mt-2 max-h-64 space-y-1.5 overflow-y-auto text-[0.78em] sm:max-h-80 md:max-h-96'>
+                          {messageData ? (
+                            Object.entries(messageData)
                               .filter(
                                 ([key]) =>
                                   key !== 'content' &&
@@ -3420,39 +1860,26 @@ const ChatMessage: React.FC<ChatMessageProps> = React.memo(
                               )
                               .map(([key, value]) => (
                                 <div key={key} className='flex gap-2'>
-                                  <span className='font-medium text-gray-600 dark:text-gray-400 shrink-0'>{key}:</span>
-                                  <span className='text-gray-800 dark:text-gray-200 break-all'>
+                                  <span className='shrink-0 font-medium text-neutral-500 dark:text-neutral-400'>{key}:</span>
+                                  <span className='break-all text-neutral-800 dark:text-neutral-200'>
                                     {typeof value === 'object' ? JSON.stringify(value, null, 2) : String(value)}
                                   </span>
                                 </div>
-                              ))}
-                          </>
-                        ) : (
-                          <p className='text-gray-500 dark:text-gray-400'>No message data found</p>
-                        )}
+                              ))
+                          ) : (
+                            <p className='text-neutral-500 dark:text-neutral-400'>No message data found</p>
+                          )}
+                        </div>
                       </div>
-                    </div>
-                  </div>,
-                  document.body
-                )}
+                    </div>,
+                    document.body
+                  )}
+              </div>
             </div>
-          </div>
-        )}
+          )}
+        </div>
 
-        {/* Edit instructions */}
-        {editingState && (
-          <div className='text-[13px] text-gray-500 dark:text-gray-200 leading-none pl-1 pb-1 text-right'>
-            Press Enter to save, Shift+Enter for new line, Escape to cancel
-          </div>
-        )}
-
-        {/* {timestamp && formatTimestamp(timestamp) && (
-          <div className='text-[0.5625em] sm:text-[0.75em] 3xl:text-[0.875em] text-stone-400 pt-0.5 flex justify-end'>
-            {formatTimestamp(timestamp)}
-          </div>
-        )} */}
-
-        {/* Floating MessageActions on Right-Click */}
+        {/* Floating MessageActions on right-click */}
         {contextMenuOpen &&
           contextMenuPosition &&
           createPortal(
@@ -3493,16 +1920,15 @@ const ChatMessage: React.FC<ChatMessageProps> = React.memo(
                 onCopy={
                   !hasSelection
                     ? () => {
-                        handleCopy()
-                        // Don't close on copy to show feedback
+                        // Stay open so the copied state is visible.
+                        void handleCopy()
                       }
                     : undefined
                 }
                 onCopySelection={
                   hasSelection
                     ? () => {
-                        handleCopySelection()
-                        // Don't close on copy to show feedback
+                        void handleCopySelection()
                       }
                     : undefined
                 }
@@ -3515,7 +1941,7 @@ const ChatMessage: React.FC<ChatMessageProps> = React.memo(
                     : undefined
                 }
                 onAddToNoteSelection={
-                  hasSelection && _onAddToNote
+                  hasSelection && onAddToNote
                     ? () => {
                         closeFloatingActions()
                         handleAddSelectionToNote()
@@ -3576,22 +2002,21 @@ const ChatMessage: React.FC<ChatMessageProps> = React.memo(
             document.body
           )}
 
-        {/* Floating Explain Input - use portal to escape transform container */}
+        {/* Floating explain input. Portal escapes the transform container. */}
         {showExplainInput &&
           explainInputPosition.current &&
           createPortal(
             <div
               ref={explainInputRef}
-              className='fixed px-2 py-2 z-[100] w-[320px] sm:w-[400px] rounded-[14px] acrylic shadow-[0_4px_12px_rgba(0,0,0,0.15)] dark:shadow-[0_4px_20px_rgba(0,0,0,0.5)] [will-change:contents] [transform:translateZ(0)]'
+              className={`fixed z-[100] w-[320px] p-2 sm:w-[400px] ${FLOATING_SURFACE_CLASS} [will-change:contents] [transform:translateZ(0)]`}
               style={{
                 left: `${explainInputFixedPosition?.x ?? explainInputPosition.current?.x ?? 0}px`,
                 top: `${explainInputFixedPosition?.y ?? explainInputPosition.current?.y ?? 0}px`,
                 width: explainInputFixedPosition ? `${explainInputFixedPosition.width}px` : undefined,
               }}
             >
-              {/* Display selected text */}
-              <div className='mb-2 p-2 rounded-[12px] bg-neutral-50 dark:bg-yBlack-800 border border-neutral-200 dark:border-neutral-700 max-h-[100px] overflow-y-auto'>
-                <div className='text-[0.75em] text-gray-600 dark:text-gray-400 italic line-clamp-4'>"{selectedText}"</div>
+              <div className='thin-scrollbar mb-2 max-h-[100px] overflow-y-auto rounded-xl bg-black/[0.04] p-2 dark:bg-white/[0.05]'>
+                <div className='line-clamp-4 text-[0.75em] italic text-neutral-600 dark:text-neutral-400'>“{selectedText}”</div>
               </div>
               <TextArea
                 value={explainInputValue}
@@ -3611,24 +2036,31 @@ const ChatMessage: React.FC<ChatMessageProps> = React.memo(
                   }
                 }}
               />
-              <div className='mt-2 flex justify-end gap-2'>
+              <div className='mt-2 flex justify-end gap-1.5'>
                 <button
+                  type='button'
                   onClick={handleCancelExplainInput}
-                  className='w-7 h-7 flex items-center justify-center rounded-full text-sm bg-neutral-200 hover:bg-rose-400 dark:bg-neutral-600/80 disabled:bg-neutral-300 disabled:cursor-not-allowed dark:disabled:bg-neutral-700 dark:hover:bg-rose-600/80 dark:text-white text-black hover:text-neutral-50 transition-colors'
+                  title='Cancel'
+                  aria-label='Cancel'
+                  className={`${EXPLAIN_BUTTON_CLASS} hover:bg-red-500/12 hover:text-red-600 dark:hover:text-red-300`}
                 >
-                  <i className='bx bx-x text-base' aria-hidden='true'></i>
+                  <X size={15} strokeWidth={2.25} aria-hidden='true' />
                 </button>
                 <button
+                  type='button'
                   onClick={handleSendExplainInput}
                   disabled={!explainInputValue.trim()}
-                  className='w-7 h-7 flex items-center justify-center rounded-full bg-neutral-200 dark:bg-neutral-600 hover:bg-blue-500 dark:hover:bg-green-700 disabled:bg-neutral-300 disabled:cursor-not-allowed dark:disabled:bg-neutral-800 dark:text-white text-black hover:text-neutral-50 transition-colors'
+                  title='Send'
+                  aria-label='Send'
+                  className={`${EXPLAIN_BUTTON_CLASS} hover:bg-emerald-500/12 hover:text-emerald-600 dark:hover:text-emerald-300`}
                 >
-                  <i className='bx bx-check  text-[18px] leading-none' aria-hidden='true'></i>
+                  <Check size={15} strokeWidth={2.25} aria-hidden='true' />
                 </button>
               </div>
             </div>,
             document.body
           )}
+
         <ImageModal
           isOpen={Boolean(selectedArtifactUrl)}
           imageUrl={selectedArtifactUrl ?? ''}
@@ -3639,7 +2071,6 @@ const ChatMessage: React.FC<ChatMessageProps> = React.memo(
   }
 )
 
-// Display name for debugging
 ChatMessage.displayName = 'ChatMessage'
 
 export { ChatMessage }

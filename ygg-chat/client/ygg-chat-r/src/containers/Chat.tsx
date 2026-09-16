@@ -139,6 +139,7 @@ import {
 import { isOpenAIProvider } from '../../../../shared/contextUsage'
 import { isContextInjectionMessage, parseMessageMeta } from '../../../../shared/contextInjection'
 import { ContextInjectionCard, type ContextInjectionCardEntry } from '../components/ChatMessage/ContextInjectionCard'
+import { DisclosureRow } from '../components/ChatMessage/messagePrimitives'
 import {
   extractBranchFileMutations,
   type WorkspaceMutationOperation,
@@ -6808,8 +6809,6 @@ function Chat() {
                                 id='streaming'
                                 role='assistant'
                                 content={streamState.buffer}
-                                thinking={streamState.thinkingBuffer}
-                                toolCalls={streamState.toolCalls}
                                 streamEvents={streamState.events}
                                 width='w-full'
                                 fontSizeOffset={fontSizeOffset}
@@ -6896,41 +6895,25 @@ function Chat() {
                               measureElement={virtualizer.measureElement}
                               className='z-0'
                             >
-                              <div className='relative pl-6 py-3 ml-2 border-l border-neutral-300 dark:border-neutral-700'>
-                                <div className='absolute -left-[5px] top-4 w-2.5 h-2.5 rounded-full bg-violet-500 shadow-[0_0_8px_rgba(139,92,246,0.35)]' />
-                                <button
-                                  onClick={() => toggleProcessMessageRun(runId)}
-                                  className='flex items-center gap-2 group/run hover:opacity-80 transition-opacity cursor-pointer outline-none'
-                                  style={
-                                    fontSizeOffset !== 0 ? { fontSize: `calc(1em + ${fontSizeOffset}px)` } : undefined
-                                  }
+                              <div
+                                className='min-w-0 px-0 py-1 sm:px-2'
+                                style={fontSizeOffset !== 0 ? { fontSize: `calc(1em + ${fontSizeOffset}px)` } : undefined}
+                              >
+                                <DisclosureRow
+                                  label='Agent steps'
+                                  meta={String(row.messages.length)}
+                                  summary={summaryParts.join(' · ')}
+                                  expanded={isExpanded}
+                                  onToggle={() => toggleProcessMessageRun(runId)}
+                                  controlsId={`message-group-${runId}-panel`}
+                                />
+                                <div
+                                  id={`message-group-${runId}-panel`}
+                                  className={`tool-expand-container ${isExpanded ? 'open' : ''}`}
                                 >
-                                  <span className='text-[0.625em] uppercase tracking-wider text-neutral-500 dark:text-neutral-500 font-bold'>
-                                    Agent Steps ({row.messages.length})
-                                  </span>
-                                  {!isExpanded && summaryParts.length > 0 && (
-                                    <span className='text-[0.75em] text-neutral-500 dark:text-neutral-500 line-clamp-1 max-w-[320px]'>
-                                      {summaryParts.join(' • ')}
-                                    </span>
-                                  )}
-                                  <svg
-                                    className={`tool-chevron w-3.5 h-3.5 text-neutral-400 dark:text-neutral-600 group-hover/run:text-neutral-500 dark:group-hover/run:text-neutral-400 ${isExpanded ? 'open' : ''}`}
-                                    fill='none'
-                                    viewBox='0 0 24 24'
-                                    stroke='currentColor'
-                                  >
-                                    <path
-                                      strokeLinecap='round'
-                                      strokeLinejoin='round'
-                                      strokeWidth={2}
-                                      d='M9 5l7 7-7 7'
-                                    />
-                                  </svg>
-                                </button>
-                                <div className={`tool-expand-container ${isExpanded ? 'open' : ''}`}>
-                                  <div className='tool-expand-content pt-2'>
+                                  <div className='tool-expand-content pl-2.5'>
                                     {row.messages.map(groupedMessage => {
-                                      const { toolCalls, contentBlocks } =
+                                      const { contentBlocks } =
                                         parsedMessageDataById.get(groupedMessage.id) ?? EMPTY_PARSED_MESSAGE_DATA
                                       return (
                                         <ChatMessage
@@ -6938,8 +6921,6 @@ function Chat() {
                                           id={groupedMessage.id.toString()}
                                           role={groupedMessage.role}
                                           content={groupedMessage.content}
-                                          thinking={groupedMessage.thinking_block}
-                                          toolCalls={toolCalls}
                                           contentBlocks={contentBlocks}
                                           timestamp={groupedMessage.created_at}
                                           width='w-full'
@@ -6986,8 +6967,6 @@ function Chat() {
                                           id={`${bridgedMessage.id}-process`}
                                           role={bridgedMessage.role}
                                           content=''
-                                          thinking={bridgedMessage.thinking_block}
-                                          toolCalls={bridgedParsed.toolCalls}
                                           contentBlocks={bridgedProcessBlocks}
                                           timestamp={bridgedMessage.created_at}
                                           width='w-full'
@@ -7013,7 +6992,7 @@ function Chat() {
                         }
 
                         const msg = row.message
-                        const { toolCalls, contentBlocks } =
+                        const { contentBlocks } =
                           parsedMessageDataById.get(msg.id) ?? EMPTY_PARSED_MESSAGE_DATA
                         const previousRenderRow = virtualRow.index > 0 ? virtualRows[virtualRow.index - 1] : null
                         const previousRow = previousRenderRow?.kind === 'message_row' ? previousRenderRow.row : null
@@ -7023,8 +7002,6 @@ function Chat() {
                           previousRow.bridgedMessageId != null &&
                           String(previousRow.bridgedMessageId) === String(msg.id)
 
-                        const displayThinking = isProcessBridgeSourceMessage ? undefined : msg.thinking_block
-                        const displayToolCalls = isProcessBridgeSourceMessage ? [] : toolCalls
                         const displayContentBlocks =
                           isProcessBridgeSourceMessage && Array.isArray(contentBlocks)
                             ? contentBlocks.filter(block => !isProcessContentBlock(block))
@@ -7079,8 +7056,6 @@ function Chat() {
                               id={msg.id.toString()}
                               role={msg.role}
                               content={msg.content}
-                              thinking={displayThinking}
-                              toolCalls={displayToolCalls}
                               contentBlocks={displayContentBlocks}
                               timestamp={msg.created_at}
                               width='w-full'
@@ -7130,8 +7105,6 @@ function Chat() {
                     id='streaming'
                     role='assistant'
                     content={streamState.buffer}
-                    thinking={streamState.thinkingBuffer}
-                    toolCalls={streamState.toolCalls}
                     streamEvents={streamState.events}
                     width='w-full'
                     fontSizeOffset={fontSizeOffset}

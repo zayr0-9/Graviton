@@ -9,7 +9,7 @@ paths:
 
 # Agent Context: Markdown and Text Response Rendering
 
-Last reviewed: 2026-08-02
+Last reviewed: 2026-09-16
 
 ## Purpose
 
@@ -26,6 +26,9 @@ Open this when changing:
 - `client/ygg-chat-r/src/containers/Chat.tsx`: parses message payloads, decides virtual rows, passes render props into `ChatMessage`.
 - `client/ygg-chat-r/src/components/ChatMessage/ChatMessage.tsx`: renders one message, including Markdown, content blocks, stream events, reasoning, tool cards, images, edit/branch UI, and selection actions.
 - `client/ygg-chat-r/src/components/ChatMessage/chatMessageShared.ts`: shared Markdown/prose classes, content-block edit conversion, tool-group builders, response-item extraction helpers.
+- `client/ygg-chat-r/src/components/ChatMessage/messagePrimitives.tsx`: `DisclosureRow`, `DisclosurePanel`, `SurfaceCard`, `Badge`, `FieldRows`, `SectionLabel`. Every reasoning row, tool card, and grouped run uses these.
+- `client/ygg-chat-r/src/components/ChatMessage/ToolCallGroupCard.tsx`: one tool call with its results, including the html_renderer, internalLink, MCP app, plan_md, and edit-diff variants.
+- `client/ygg-chat-r/src/components/ChatMessage/MessageActions.tsx`: hover pill and right-click menu for copy, edit, branch, delete, undo, and selection actions.
 - `client/ygg-chat-r/src/features/chats/chatTypes.ts`: `ContentBlock`, `StreamEvent`, `ToolCall`, and stream state types.
 - `client/ygg-chat-r/src/index.css`: global Tailwind/prose/Highlight.js/KaTeX styling and animation utilities used by rendered messages.
 - `client/ygg-chat-r/src/components/MarkdownLink/MarkdownLink.tsx`: custom anchor renderer used by chat Markdown.
@@ -76,9 +79,7 @@ The parsed result is cached by a signature containing message ID, role, update/c
 
 For each normal message row, `Chat.tsx` passes these props to `ChatMessage`:
 
-- `content={msg.content}` for legacy Markdown fallback;
-- `thinking={displayThinking}` for legacy reasoning fallback;
-- `toolCalls={displayToolCalls}` for legacy tool fallback;
+- `content={msg.content}` for user prose and the no-blocks fallback;
 - `contentBlocks={displayContentBlocks}` for ordered structured rendering;
 - `streamEvents={streamState.events}` only for live streaming messages;
 - message metadata, artifacts, font offset, theme, actions, undo state, and grouping settings.
@@ -89,7 +90,7 @@ For each normal message row, `Chat.tsx` passes these props to `ChatMessage`:
 
 1. `streamEvents` when present and not editing;
 2. `contentBlocks` when present and not editing;
-3. legacy fields: `toolCalls`, `thinking`, then `content`.
+3. `content` wrapped as one `text` block when neither is present (optimistic user rows, old assistant rows).
 
 This priority is important: if `contentBlocks` or `streamEvents` exist, legacy `content` is not rendered again, preventing duplicated text.
 
@@ -105,13 +106,12 @@ Plugins:
 
 Custom component renderers:
 - fenced `mermaid` blocks are detected by the `pre` renderer and rendered through the shared `MermaidDiagram`; completion-aware preprocessing temporarily marks an unmatched Mermaid fence as `mermaid-pending`, so live streams show ordinary source and do not invoke Mermaid until the matching closing fence arrives. Mermaid is lazy-loaded, uses strict security, follows light/dark mode, and falls back to source text on syntax errors. Each completed diagram can open a diagram-only fullscreen viewer with drag panning, cursor-centered wheel/trackpad zoom, zoom controls, fit-to-view, and 100% reset;
-- `pre: PreRenderer` wraps other fenced code blocks in a bordered `not-prose` container and adds a copy button;
+- `pre: PreRenderer` wraps other fenced code blocks in a flat `not-prose` surface with a copy pill;
 - `code: CodeRenderer` applies custom inline-code colors and leaves block code to Highlight.js/pre styling;
 - `a: MarkdownLink` renders links through the app's link component.
 
 `renderMarkdownNode` receives a class name from `chatMessageShared.ts`:
 - `SHARED_TEXT_MARKDOWN_CLASS`: current structured/streamed text block rendering;
-- `LEGACY_TEXT_MARKDOWN_CLASS`: legacy full-message `content` fallback;
 - `REASONING_TEXT_MARKDOWN_CLASS`: expanded reasoning/thinking content.
 
 These classes all use Tailwind Typography `.prose`, `dark:prose-invert`, responsive text sizing, and tighter paragraph/list/heading/pre spacing.
@@ -141,15 +141,24 @@ For persisted structured messages, `ChatMessage` uses `buildContentBlockRenderIt
 
 A content block with short connective text can be marked `ignoreForProcessRunGrouping` so it does not break a larger process/tool/reasoning run.
 
-## Legacy Field Rendering
+## Block Stack Layout
 
-If neither `streamEvents` nor `contentBlocks` are present:
+`ChatMessage` draws every message as one `flex-col` stack (`MESSAGE_BLOCK_STACK_CLASS`, 6px gap).
+Each render item is exactly one child of that stack and carries no vertical margin of its own.
+Text, images, and the label of every disclosure row share one horizontal inset
+(`MESSAGE_BLOCK_INSET_CLASS`), so prose and process labels sit on the same left edge.
 
-- `toolCalls` render first as tool cards;
-- `thinking` renders as a collapsible reasoning block;
-- `content` renders as Markdown using `LEGACY_TEXT_MARKDOWN_CLASS`.
+- Reasoning, generic tool cards, and grouped "Agent steps" all use `DisclosureRow` (32px) plus `DisclosurePanel`.
+- Tool variants that are always visible (html_renderer, MCP app, plan_md, edit diff, internalLink) use a static 32px row with the same inset.
+- Structured tool detail uses `SurfaceCard` and `Badge`. Surfaces are tone only. No borders, no shadows.
+- User rows draw one tinted `rounded-2xl` surface with a small role caption. Assistant rows are flat.
 
-This keeps older messages displayable while the preferred modern path remains ordered `content_blocks` or `streamEvents`.
+## Fallback for Rows Without Blocks
+
+The legacy `thinking` and `toolCalls` props no longer exist. A row with neither `streamEvents` nor
+`contentBlocks` renders its `content` string as one `text` block, so old assistant rows and
+optimistic user rows still display through the same path. User rows always append their `content`
+as the text block after any `context_injection` cards.
 
 ## Generic Tool-Output Truncation
 

@@ -144,7 +144,7 @@ export const ContextInjectionCard: React.FC<ContextInjectionCardProps> = ({
 
   return (
     <div
-      className={`my-2 rounded-2xl backdrop-blur-xl ${surfaceClass} ${isLaunch ? 'mx-2' : ''} ${className ?? ''}`}
+      className={`rounded-2xl backdrop-blur-xl ${surfaceClass} ${isLaunch ? 'mx-2 my-2' : ''} ${className ?? ''}`}
       style={{
         ...(fontSizeOffset !== 0 ? { fontSize: `calc(1em + ${fontSizeOffset}px)` } : {}),
         ...(themed ? { backgroundColor: palette.bg } : {}),
