@@ -55,6 +55,7 @@ import {
   FAST_COLOR_TRANSITION_CLASS,
   FOCUS_RING_CLASS,
   getChatFontSizeOffsetStyle,
+  isProcessOnlyBlockSet,
   MESSAGE_BLOCK_INSET_CLASS,
   MESSAGE_BLOCK_STACK_CLASS,
   MESSAGE_IMAGE_CLASS,
@@ -1679,6 +1680,14 @@ const ChatMessage: React.FC<ChatMessageProps> = React.memo(
       return text ? [{ type: 'text', index: 0, content: visibleContent } as ContentBlock] : []
     }, [contentBlocks, isUserRow, visibleContent])
 
+    /**
+     * A row of pure agent work sits in the same tight run as the blocks inside it. Message rows
+     * are absolutely positioned by the virtualizer, so a negative margin cannot pull them
+     * together; the row's own padding is the only lever. Live rows keep the normal padding so the
+     * layout does not shift as the stream turns from tool calls into an answer.
+     */
+    const isProcessOnlyRow = !isUserRow && !hasStreamEvents && isProcessOnlyBlockSet(renderableBlocks)
+
     // `contentToolGroupsByIndex` is keyed by index into `contentBlocks`. A user row never has tool
     // blocks and the fallback text block sits alone, so the map stays valid for `renderableBlocks`.
     const renderedNodes = editingState
@@ -1697,7 +1706,7 @@ const ChatMessage: React.FC<ChatMessageProps> = React.memo(
       <div
         id={`message-${id}`}
         ref={messageRef}
-        className={`group ${width} px-0 sm:px-2 ${isUserRow ? 'pt-3 pb-1' : 'py-1'} ${className ?? ''}`}
+        className={`group ${width} px-0 sm:px-2 ${isUserRow ? 'pt-3 pb-1' : isProcessOnlyRow ? 'py-px' : 'py-1'} ${className ?? ''}`}
         onContextMenu={handleContextMenu}
         onMouseEnter={() => setIsHovering(true)}
         onMouseLeave={() => setIsHovering(false)}

@@ -1,5 +1,5 @@
 import type { ContentBlock } from '@/features/chats/chatTypes'
-import { PROCESS_RUN_GROUP_MIN_ITEMS } from './chatMessageShared'
+import { isProcessOnlyBlockSet, PROCESS_RUN_GROUP_MIN_ITEMS } from './chatMessageShared'
 
 /**
  * Height estimate for one virtual row, derived from the blocks the row will draw.
@@ -27,9 +27,10 @@ const STACK_GAP = 6
 /**
  * Effective gap between two consecutive process blocks, meaning tool cards and reasoning rows.
  * The stack still lays out a 6px gap, and `[data-chat-block] + [data-chat-block]` in index.css
- * pulls 5px of it back, so a run of agent work reads as one block. Keep both in step.
+ * pulls 4px of it back, so a run of agent work reads as one block. Matches the 2px that two
+ * process-only message rows leave between them. Keep all three in step.
  */
-const PROCESS_RUN_GAP = 1
+const PROCESS_RUN_GAP = 2
 /** Text block `py-1` */
 const TEXT_BLOCK_PADDING = 8
 /** `DISCLOSURE_ROW_CLASS` h-8. Collapsed reasoning, tool card, and agent-steps rows. */
@@ -43,9 +44,10 @@ const CONTEXT_CARD = 44
 /** Stream notice row, `h-8`. */
 const NOTICE_ROW = 32
 
-/** Outer wrapper: user `pt-3 pb-1`, others `py-1`. */
+/** Outer wrapper: user `pt-3 pb-1`, process-only rows `py-px`, everything else `py-1`. */
 const OUTER_PADDING_USER = 16
 const OUTER_PADDING_OTHER = 8
+const OUTER_PADDING_PROCESS_ONLY = 2
 /** Tinted surface on user rows: `px-1.5 pt-2 pb-1`. */
 const SURFACE_PADDING_USER = 12
 const SURFACE_INSET_X_USER = 12
@@ -203,6 +205,8 @@ export const estimateMessageRowHeight = (input: EstimateMessageRowInput): number
 
   const isUserRow = role === 'user'
   const blocks = Array.isArray(contentBlocks) ? contentBlocks : []
+  // Mirrors `isProcessOnlyRow` in ChatMessage, which drops such a row to `py-px`.
+  const isProcessOnly = !isUserRow && isProcessOnlyBlockSet(contentBlocks)
 
   const contentWidth = Math.max(
     160,
@@ -285,7 +289,7 @@ export const estimateMessageRowHeight = (input: EstimateMessageRowInput): number
     }
   }
 
-  if (items.length === 0) return baseChrome(isUserRow, artifactCount, showsActionsRow)
+  if (items.length === 0) return baseChrome(isUserRow, artifactCount, showsActionsRow, isProcessOnly)
 
   // Long runs of process items collapse into a single "Agent steps" row. Build the list of
   // children the stack actually renders, then gap only between them.
@@ -322,12 +326,21 @@ export const estimateMessageRowHeight = (input: EstimateMessageRowInput): number
     blocksHeight += bothAreProcessBlocks ? PROCESS_RUN_GAP : STACK_GAP
   }
 
-  return blocksHeight + baseChrome(isUserRow, artifactCount, showsActionsRow)
+  return blocksHeight + baseChrome(isUserRow, artifactCount, showsActionsRow, isProcessOnly)
 }
 
 /** Padding, caption, attachments, and actions row that sit outside the block stack. */
-const baseChrome = (isUserRow: boolean, artifactCount: number, showsActionsRow: boolean): number => {
-  let height = isUserRow ? OUTER_PADDING_USER + SURFACE_PADDING_USER + ROLE_CAPTION : OUTER_PADDING_OTHER
+const baseChrome = (
+  isUserRow: boolean,
+  artifactCount: number,
+  showsActionsRow: boolean,
+  isProcessOnly: boolean
+): number => {
+  let height = isUserRow
+    ? OUTER_PADDING_USER + SURFACE_PADDING_USER + ROLE_CAPTION
+    : isProcessOnly
+      ? OUTER_PADDING_PROCESS_ONLY
+      : OUTER_PADDING_OTHER
   if (artifactCount > 0) height += ATTACHMENTS_ROW
   if (showsActionsRow) height += ACTIONS_ROW
   return height

@@ -67,6 +67,41 @@ export const REASONING_TEXT_MARKDOWN_CLASS = `chat-markdown text-[0.8125em] text
 export const MESSAGE_IMAGE_WRAPPER_CLASS = `${MESSAGE_BLOCK_INSET_CLASS} py-1`
 export const MESSAGE_IMAGE_CLASS = 'max-w-full max-h-96 object-contain rounded-2xl'
 
+/**
+ * True when a row draws only agent process blocks: reasoning rows and tool cards, with no
+ * prose, image, error bubble or context card.
+ *
+ * Such a row is one step of a run rather than something to read, so it carries less vertical
+ * padding and joins the tight run with its neighbours. Without this, a run of one-tool-per-message
+ * steps shows a wide gap at every message boundary and a tight gap inside each message, which
+ * reads as uneven spacing around every reasoning row.
+ */
+export const isProcessOnlyBlockSet = (blocks: ContentBlock[] | undefined): boolean => {
+  if (!Array.isArray(blocks) || blocks.length === 0) return false
+
+  let hasProcessBlock = false
+  for (const block of blocks) {
+    if (!block) continue
+    switch (block.type) {
+      case 'thinking':
+      case 'tool_use':
+        hasProcessBlock = true
+        break
+      // Folded into its tool card, or drawn as nothing at all.
+      case 'tool_result':
+      case 'reasoning_details':
+        break
+      case 'text':
+        // An empty text block draws nothing, so it does not make the row readable content.
+        if (typeof block.content === 'string' && block.content.trim().length > 0) return false
+        break
+      default:
+        return false
+    }
+  }
+  return hasProcessBlock
+}
+
 export interface ToolCallRenderGroup {
   id: string
   name?: string

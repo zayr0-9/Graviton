@@ -614,12 +614,17 @@ html {
 
 /* Consecutive process blocks (tool cards and reasoning rows) read as one run of work, so they
    sit tighter than the gap the message block stack keeps between unlike blocks. The stack owns
-   the 6px gap; this pulls it back to 1px for process-to-process pairs only. Text, images, error
+   the 6px gap; this pulls it back to 2px for process-to-process pairs only. Text, images, error
    bubbles and context cards carry no marker, so they keep the full rhythm on both sides.
+
+   2px is not arbitrary: a process-only MESSAGE row carries `py-px`, so two such rows also sit
+   2px apart. A run of one-tool-per-message steps therefore spaces evenly whether two blocks share
+   a message or straddle a message boundary.
+
    Keep in sync with PROCESS_RUN_GAP in components/ChatMessage/estimateMessageHeight.ts, which
    the virtual row height estimate reads. */
 [data-chat-block] + [data-chat-block] {
-  margin-top: -5px;
+  margin-top: -4px;
 }
 
 /* Slate input wrapper glassmorphism effect */
