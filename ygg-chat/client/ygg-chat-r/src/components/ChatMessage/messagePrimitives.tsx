@@ -124,7 +124,15 @@ export const DisclosurePanel: React.FC<DisclosurePanelProps> = ({
     style={disableTransition ? { transition: 'none' } : undefined}
     onTransitionEnd={onTransitionEnd}
   >
-    <div className={`tool-expand-content ${flush ? '' : DISCLOSURE_BODY_CLASS}`}>{children}</div>
+    {/*
+      `.tool-expand-content` is the grid child that collapses to a 0fr track. It must carry no
+      vertical padding: with border-box sizing the used height can never fall below padding, so
+      padding here keeps a collapsed panel that many pixels tall on every closed disclosure.
+      The body padding therefore goes one level deeper.
+    */}
+    <div className='tool-expand-content'>
+      <div className={flush ? '' : DISCLOSURE_BODY_CLASS}>{children}</div>
+    </div>
   </div>
 )
 

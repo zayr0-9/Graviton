@@ -1149,7 +1149,7 @@ const ChatMessage: React.FC<ChatMessageProps> = React.memo(
         kind: 'process',
         processType: 'reasoning',
         node: (
-          <div key={key} className='min-w-0 max-w-full' style={messageContentStyle}>
+          <div key={key} className='min-w-0 max-w-full' style={messageContentStyle} data-chat-block='reasoning'>
             <DisclosureRow
               label='Reasoning'
               summary={getCollapsedReasoningSummary(reasoningText)}

@@ -25,11 +25,11 @@ import { PROCESS_RUN_GROUP_MIN_ITEMS } from './chatMessageShared'
 /** `MESSAGE_BLOCK_STACK_CLASS` gap-1.5 */
 const STACK_GAP = 6
 /**
- * Effective gap between two consecutive tool cards. The stack still lays out a 6px gap, and
- * `[data-chat-block='tool'] + [data-chat-block='tool']` in index.css pulls 3px of it back, so
- * a run of tool calls reads as one block of work. Keep both in step.
+ * Effective gap between two consecutive process blocks, meaning tool cards and reasoning rows.
+ * The stack still lays out a 6px gap, and `[data-chat-block] + [data-chat-block]` in index.css
+ * pulls 5px of it back, so a run of agent work reads as one block. Keep both in step.
  */
-const TOOL_RUN_GAP = 3
+const PROCESS_RUN_GAP = 1
 /** Text block `py-1` */
 const TEXT_BLOCK_PADDING = 8
 /** `DISCLOSURE_ROW_CLASS` h-8. Collapsed reasoning, tool card, and agent-steps rows. */
@@ -318,8 +318,8 @@ export const estimateMessageRowHeight = (input: EstimateMessageRowInput): number
   for (let index = 0; index < children.length; index += 1) {
     blocksHeight += children[index][0]
     if (index === 0) continue
-    const bothAreToolCards = children[index][1] === 'tool' && children[index - 1][1] === 'tool'
-    blocksHeight += bothAreToolCards ? TOOL_RUN_GAP : STACK_GAP
+    const bothAreProcessBlocks = isProcessKind(children[index][1]) && isProcessKind(children[index - 1][1])
+    blocksHeight += bothAreProcessBlocks ? PROCESS_RUN_GAP : STACK_GAP
   }
 
   return blocksHeight + baseChrome(isUserRow, artifactCount, showsActionsRow)

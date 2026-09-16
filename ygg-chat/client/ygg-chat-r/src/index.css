@@ -585,6 +585,12 @@ html {
 }
 
 .tool-expand-content {
+  /* This is the grid child that collapses to a 0fr track. With border-box sizing the used
+     height can never fall below its own padding, so vertical padding here would become a
+     permanent floor on the height of every CLOSED disclosure. Put body padding on an inner
+     element instead. This declaration is unlayered, so it also overrides a Tailwind padding
+     utility applied here by mistake. */
+  padding-block: 0;
   min-height: 0;
   min-width: 0;
   max-width: 100%;
@@ -606,12 +612,14 @@ html {
   transform: rotate(90deg);
 }
 
-/* Consecutive tool call cards read as one run of work, so they sit tighter than the gap the
-   message block stack keeps between unlike blocks. The stack owns the 6px gap; this pulls back
-   only tool-to-tool pairs. Keep in sync with TOOL_RUN_GAP in
-   components/ChatMessage/estimateMessageHeight.ts, which the virtual row estimate reads. */
-[data-chat-block='tool'] + [data-chat-block='tool'] {
-  margin-top: -3px;
+/* Consecutive process blocks (tool cards and reasoning rows) read as one run of work, so they
+   sit tighter than the gap the message block stack keeps between unlike blocks. The stack owns
+   the 6px gap; this pulls it back to 1px for process-to-process pairs only. Text, images, error
+   bubbles and context cards carry no marker, so they keep the full rhythm on both sides.
+   Keep in sync with PROCESS_RUN_GAP in components/ChatMessage/estimateMessageHeight.ts, which
+   the virtual row height estimate reads. */
+[data-chat-block] + [data-chat-block] {
+  margin-top: -5px;
 }
 
 /* Slate input wrapper glassmorphism effect */
