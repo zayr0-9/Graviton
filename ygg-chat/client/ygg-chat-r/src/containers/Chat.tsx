@@ -141,10 +141,11 @@ import { isContextInjectionMessage, parseMessageMeta } from '../../../../shared/
 import { ContextInjectionCard, type ContextInjectionCardEntry } from '../components/ChatMessage/ContextInjectionCard'
 import { DisclosureRow } from '../components/ChatMessage/messagePrimitives'
 import {
-  CHAT_ERROR_ROW_HEIGHT,
+  chatErrorRowHeight,
+  DEFAULT_ROOT_FONT_SIZE,
   estimateMessageRowHeight,
-  PROCESS_GROUP_ROW_HEIGHT,
-  SMALL_CHROME_ROW_HEIGHT,
+  processGroupRowHeight,
+  smallChromeRowHeight,
 } from '../components/ChatMessage/estimateMessageHeight'
 import {
   extractBranchFileMutations,
@@ -2866,6 +2867,26 @@ function Chat() {
     return () => observer.disconnect()
   }, [currentConversationId])
 
+  // Every Tailwind spacing utility is rem based, and index.css scales the root font size by
+  // display density: 14px on a 2x retina panel, 16px normally. A row is therefore 12.5% shorter
+  // on a retina laptop than the nominal class names suggest, so the estimate has to read the
+  // real value rather than assume 16px.
+  const [rootFontSize, setRootFontSize] = useState(DEFAULT_ROOT_FONT_SIZE)
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+
+    const readRootFontSize = () => {
+      const parsed = Number.parseFloat(window.getComputedStyle(document.documentElement).fontSize)
+      if (!Number.isFinite(parsed) || parsed <= 0) return
+      setRootFontSize(prev => (Math.abs(prev - parsed) >= 0.5 ? parsed : prev))
+    }
+
+    readRootFontSize()
+    // The density media queries key off resolution and viewport width, so both can change.
+    window.addEventListener('resize', readRootFontSize)
+    return () => window.removeEventListener('resize', readRootFontSize)
+  }, [])
+
   // Content-aware row estimate.
   //
   // An unmeasured row is placed at this height; when it measures, the virtualizer corrects
@@ -2903,6 +2924,7 @@ function Chat() {
           content: typeof message.content === 'string' ? message.content : '',
           contentBlocks: blocks,
           containerWidth,
+          rootFontSize,
           fontSizeOffset,
           groupToolReasoningRuns,
           artifactCount: Array.isArray(message.artifacts) ? message.artifacts.length : 0,
@@ -2912,14 +2934,16 @@ function Chat() {
 
       switch (row.kind) {
         case 'message_row':
-          return row.row.kind === 'process_group' ? PROCESS_GROUP_ROW_HEIGHT : estimateForMessage(row.row.message)
+          return row.row.kind === 'process_group'
+            ? processGroupRowHeight(rootFontSize)
+            : estimateForMessage(row.row.message)
         case 'optimistic_message':
         case 'optimistic_branch_message':
           return estimateForMessage(row.message)
         case 'chat_error':
-          return CHAT_ERROR_ROW_HEIGHT
+          return chatErrorRowHeight(rootFontSize)
         case 'generation_loader':
-          return SMALL_CHROME_ROW_HEIGHT
+          return smallChromeRowHeight(rootFontSize)
         // The live row grows every token and is measured continuously, so its estimate only
         // has to be sane for the frame it mounts on.
         case 'streaming_message':
@@ -2928,7 +2952,7 @@ function Chat() {
           return 200
       }
     },
-    [virtualRows, parsedMessageDataById, messagesContainerWidth, fontSizeOffset, groupToolReasoningRuns]
+    [virtualRows, parsedMessageDataById, messagesContainerWidth, rootFontSize, fontSizeOffset, groupToolReasoningRuns]
   )
 
   // Virtualizer for efficient message list rendering

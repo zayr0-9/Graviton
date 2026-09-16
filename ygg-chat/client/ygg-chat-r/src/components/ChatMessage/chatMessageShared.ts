@@ -68,13 +68,29 @@ export const MESSAGE_IMAGE_WRAPPER_CLASS = `${MESSAGE_BLOCK_INSET_CLASS} py-1`
 export const MESSAGE_IMAGE_CLASS = 'max-w-full max-h-96 object-contain rounded-2xl'
 
 /**
- * True when a row draws only agent process blocks: reasoning rows and tool cards, with no
- * prose, image, error bubble or context card.
+ * Block types that draw something to READ, as opposed to a step of agent work.
  *
- * Such a row is one step of a run rather than something to read, so it carries less vertical
- * padding and joins the tight run with its neighbours. Without this, a run of one-tool-per-message
- * steps shows a wide gap at every message boundary and a tight gap inside each message, which
- * reads as uneven spacing around every reasoning row.
+ * Everything absent from this set draws nothing or folds into a tool card: `tool_result`,
+ * `reasoning_details`, and provider bookkeeping such as `openai_context_usage`. Unknown types
+ * belong here too, because `buildContentBlockRenderItems` falls through and draws nothing for
+ * them. Listing what IS readable, rather than what is not, keeps this predicate correct when a
+ * provider adds a new metadata block.
+ */
+const READABLE_BLOCK_TYPES: ReadonlySet<string> = new Set([
+  'image',
+  'error',
+  'context_injection',
+  'responses_output_items',
+])
+
+/**
+ * True when a row draws only agent process blocks: reasoning rows and tool cards, with nothing
+ * to read.
+ *
+ * Such a row is one step of a run, so it carries less vertical padding and joins the tight run
+ * with its neighbours. Without this, a run of one-tool-per-message steps shows a wide gap at
+ * every message boundary and a tight gap inside each message, which reads as uneven spacing
+ * around every reasoning row.
  */
 export const isProcessOnlyBlockSet = (blocks: ContentBlock[] | undefined): boolean => {
   if (!Array.isArray(blocks) || blocks.length === 0) return false
@@ -82,22 +98,18 @@ export const isProcessOnlyBlockSet = (blocks: ContentBlock[] | undefined): boole
   let hasProcessBlock = false
   for (const block of blocks) {
     if (!block) continue
-    switch (block.type) {
-      case 'thinking':
-      case 'tool_use':
-        hasProcessBlock = true
-        break
-      // Folded into its tool card, or drawn as nothing at all.
-      case 'tool_result':
-      case 'reasoning_details':
-        break
-      case 'text':
-        // An empty text block draws nothing, so it does not make the row readable content.
-        if (typeof block.content === 'string' && block.content.trim().length > 0) return false
-        break
-      default:
-        return false
+
+    if (block.type === 'thinking' || block.type === 'tool_use') {
+      hasProcessBlock = true
+      continue
     }
+    if (block.type === 'text') {
+      // An empty text block draws nothing, so it does not make the row readable.
+      if (typeof block.content === 'string' && block.content.trim().length > 0) return false
+      continue
+    }
+    if (READABLE_BLOCK_TYPES.has(block.type)) return false
+    // Anything else draws nothing, so it cannot disqualify the row.
   }
   return hasProcessBlock
 }

@@ -621,10 +621,14 @@ html {
    2px apart. A run of one-tool-per-message steps therefore spaces evenly whether two blocks share
    a message or straddle a message boundary.
 
+   The stack gap is rem based and index.css scales the root size by display density, so a fixed
+   negative margin would leave a different gap on a retina panel than on a 1x one. Subtracting
+   the gap itself pins the result at 2px everywhere.
+
    Keep in sync with PROCESS_RUN_GAP in components/ChatMessage/estimateMessageHeight.ts, which
    the virtual row height estimate reads. */
 [data-chat-block] + [data-chat-block] {
-  margin-top: -4px;
+  margin-top: calc(2px - 0.375rem);
 }
 
 /* Slate input wrapper glassmorphism effect */
