@@ -606,6 +606,14 @@ html {
   transform: rotate(90deg);
 }
 
+/* Consecutive tool call cards read as one run of work, so they sit tighter than the gap the
+   message block stack keeps between unlike blocks. The stack owns the 6px gap; this pulls back
+   only tool-to-tool pairs. Keep in sync with TOOL_RUN_GAP in
+   components/ChatMessage/estimateMessageHeight.ts, which the virtual row estimate reads. */
+[data-chat-block='tool'] + [data-chat-block='tool'] {
+  margin-top: -3px;
+}
+
 /* Slate input wrapper glassmorphism effect */
 .slate-input-wrapper {
   backdrop-filter: blur(20px);

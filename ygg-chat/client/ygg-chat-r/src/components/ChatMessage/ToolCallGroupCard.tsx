@@ -67,6 +67,12 @@ export interface ToolCallGroupCardProps {
   onNavigate: (route: string) => void
 }
 
+/** Tool names vary by provider in case and separator, so compare on a normalized form. */
+const normalizeToolName = (name: unknown): string =>
+  String(name ?? '')
+    .toLowerCase()
+    .replace(/[-\s]/g, '_')
+
 const STATIC_ROW_CLASS = `flex h-8 min-w-0 w-full items-center gap-2 ${MESSAGE_BLOCK_INSET_CLASS}`
 
 const extractPathParam = (args: any): string | null => {
@@ -160,7 +166,7 @@ export const ToolCallGroupCard: React.FC<ToolCallGroupCardProps> = ({
   if (group.anchorIndex === -1) return null
 
   const rawName = group.name ?? ''
-  const normalizedName = String(rawName).toLowerCase().replace(/[-\s]/g, '_')
+  const normalizedName = normalizeToolName(rawName)
   const isMcpGroup = rawName.startsWith('mcp__')
   const parsedMcp = isMcpGroup ? parseMcpQualifiedName(rawName) : null
   const mcpServerName = parsedMcp?.serverName
@@ -209,7 +215,7 @@ export const ToolCallGroupCard: React.FC<ToolCallGroupCardProps> = ({
   if (isHtmlRenderer && group.args && typeof group.args.html === 'string') {
     const htmlPreviewKey = `${messageId}-html-renderer-${group.id}`
     return (
-      <div className='min-w-0 max-w-full' style={wrapperStyle}>
+      <div className='min-w-0 max-w-full' style={wrapperStyle} data-chat-block='tool'>
         <div className={STATIC_ROW_CLASS}>
           <ToolName name={rawName || 'html_renderer'} tone={hasResults ? 'success' : 'running'} />
           <span className='min-w-0 flex-1' />
@@ -260,7 +266,7 @@ export const ToolCallGroupCard: React.FC<ToolCallGroupCardProps> = ({
     if (route) fields.route = route
 
     return (
-      <div className='min-w-0 max-w-full' style={wrapperStyle}>
+      <div className='min-w-0 max-w-full' style={wrapperStyle} data-chat-block='tool'>
         <div className={STATIC_ROW_CLASS}>
           <ToolName name={rawName || 'internalLink'} tone={linkFailed ? 'error' : 'success'} />
           <span className='min-w-0 flex-1' />
@@ -312,7 +318,7 @@ export const ToolCallGroupCard: React.FC<ToolCallGroupCardProps> = ({
         reloadToken: mcpReloadTokens[reloadKey] || 0,
       }
       return (
-        <div className='min-w-0 max-w-full' style={wrapperStyle}>
+        <div className='min-w-0 max-w-full' style={wrapperStyle} data-chat-block='tool'>
           <div className={STATIC_ROW_CLASS}>
             <ToolName name={rawName || 'mcp_app'} tone={latestResult?.is_error ? 'error' : latestResult ? 'success' : 'running'} />
             <Badge tone='success'>MCP App</Badge>
@@ -353,7 +359,7 @@ export const ToolCallGroupCard: React.FC<ToolCallGroupCardProps> = ({
   if (normalizedName === 'plan_md' && String(group.args?.action || '').toLowerCase() === 'display' && group.args) {
     const planResult = hasResults ? group.results[0].content : {}
     return (
-      <div className='min-w-0 max-w-full' style={wrapperStyle}>
+      <div className='min-w-0 max-w-full' style={wrapperStyle} data-chat-block='tool'>
         <div className={STATIC_ROW_CLASS}>
           <ToolName name={rawName || 'plan_md'} tone={tone} />
         </div>
@@ -375,7 +381,7 @@ export const ToolCallGroupCard: React.FC<ToolCallGroupCardProps> = ({
         ? 'success'
         : 'error'
     return (
-      <div className='min-w-0 max-w-full' style={wrapperStyle}>
+      <div className='min-w-0 max-w-full' style={wrapperStyle} data-chat-block='tool'>
         <div className={STATIC_ROW_CLASS}>
           <ToolName name={rawName || 'edit_file'} tone={editTone} />
         </div>
@@ -408,26 +414,55 @@ export const ToolCallGroupCard: React.FC<ToolCallGroupCardProps> = ({
     rawName || 'tool'
   )
 
+  const transcriptPill = (toolCallId: string, label = 'Transcript') => (
+    <button
+      type='button'
+      onClick={() => onOpenSubagentTranscript?.(toolCallId)}
+      disabled={!onOpenSubagentTranscript}
+      className={ACTION_PILL_CLASS}
+      title='View subagent transcript'
+      aria-label='View subagent transcript'
+    >
+      <MessagesSquare size={13} strokeWidth={2.25} aria-hidden='true' />
+      {label}
+    </button>
+  )
+
+  /**
+   * Subagents spawned through `multi_call` never carry the group's own tool name, so the
+   * ordinary `isSubagent` branch cannot see them. The server gives each nested call the
+   * synthetic id `${parentId}:${1-based index}` (multiCallExecutor.ts) and the subagent run
+   * is persisted under exactly that id, so the transcript is reachable by rebuilding it here.
+   */
+  const nestedSubagentCalls: Array<{ index: number; toolCallId: string }> =
+    normalizedName === 'multi_call' && Array.isArray(group.args?.calls)
+      ? (group.args.calls as any[])
+          .map((call, index) => {
+            const record = call && typeof call === 'object' ? (call as Record<string, any>) : null
+            const nestedName = normalizeToolName(
+              typeof record?.tool === 'string' ? record.tool : typeof record?.toolName === 'string' ? record.toolName : ''
+            )
+            const isNestedSubagent = nestedName === 'subagent' || nestedName === 'subagent_manager'
+            return isNestedSubagent ? { index, toolCallId: `${group.id}:${index + 1}` } : null
+          })
+          .filter((entry): entry is { index: number; toolCallId: string } => entry !== null)
+      : []
+
+  // A fan-out of several subagents would crowd the header, so only the single case gets a
+  // header pill. Every nested run is always reachable from its card in the expanded input.
+  const soleNestedSubagent = nestedSubagentCalls.length === 1 ? nestedSubagentCalls[0] : null
+
   const trailing = (
     <>
       {isMcpGroup && mcpServerName && loadAppPill(mcpServerName, `${messageId}-${group.id}-mcp`)}
       {primaryHtmlResultKey && viewerPill(primaryHtmlResultKey)}
-      {isSubagent && (
-        <button
-          type='button'
-          onClick={() => onOpenSubagentTranscript?.(group.id)}
-          disabled={!onOpenSubagentTranscript}
-          className={ACTION_PILL_CLASS}
-          title='View subagent transcript'
-          aria-label='View subagent transcript'
-        >
-          <MessagesSquare size={13} strokeWidth={2.25} aria-hidden='true' />
-          Transcript
-        </button>
-      )}
+      {isSubagent && transcriptPill(group.id)}
+      {soleNestedSubagent && transcriptPill(soleNestedSubagent.toolCallId)}
     </>
   )
-  const hasTrailing = Boolean((isMcpGroup && mcpServerName) || primaryHtmlResultKey || isSubagent)
+  const hasTrailing = Boolean(
+    (isMcpGroup && mcpServerName) || primaryHtmlResultKey || isSubagent || soleNestedSubagent
+  )
 
   const renderInputs = () => {
     if (hasHtmlOutput || !group.args || Object.keys(group.args).length === 0) return null
@@ -461,8 +496,17 @@ export const ToolCallGroupCard: React.FC<ToolCallGroupCardProps> = ({
                     Object.entries(callRecord).filter(([callKey]) => callKey !== 'tool' && callKey !== 'toolName' && callKey !== 'args')
                   )
                 : null
+              // A nested subagent reaches its own transcript from its own card, so a fan-out
+              // of several subagents stays navigable without crowding the group header.
+              const nestedSubagent = nestedSubagentCalls.find(entry => entry.index === callIdx)
+
               return (
-                <SurfaceCard key={`input-${callIdx}`} index={callIdx} title={toolName}>
+                <SurfaceCard
+                  key={`input-${callIdx}`}
+                  index={callIdx}
+                  title={toolName}
+                  actions={nestedSubagent ? transcriptPill(nestedSubagent.toolCallId) : undefined}
+                >
                   <FieldRows record={callArgs} fallback={callArgs ? undefined : { key: 'args', value: callRecord?.args ?? null }} />
                   {extraFields && Object.keys(extraFields).length > 0 && <FieldRows record={extraFields} />}
                 </SurfaceCard>
@@ -586,7 +630,7 @@ export const ToolCallGroupCard: React.FC<ToolCallGroupCardProps> = ({
   }
 
   return (
-    <div className='min-w-0 max-w-full' style={wrapperStyle}>
+    <div className='min-w-0 max-w-full' style={wrapperStyle} data-chat-block='tool'>
       <DisclosureRow
         label={label}
         tone={tone}

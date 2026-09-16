@@ -24,6 +24,12 @@ import { PROCESS_RUN_GROUP_MIN_ITEMS } from './chatMessageShared'
 
 /** `MESSAGE_BLOCK_STACK_CLASS` gap-1.5 */
 const STACK_GAP = 6
+/**
+ * Effective gap between two consecutive tool cards. The stack still lays out a 6px gap, and
+ * `[data-chat-block='tool'] + [data-chat-block='tool']` in index.css pulls 3px of it back, so
+ * a run of tool calls reads as one block of work. Keep both in step.
+ */
+const TOOL_RUN_GAP = 3
 /** Text block `py-1` */
 const TEXT_BLOCK_PADDING = 8
 /** `DISCLOSURE_ROW_CLASS` h-8. Collapsed reasoning, tool card, and agent-steps rows. */
@@ -173,7 +179,7 @@ export interface EstimateMessageRowInput {
   showsActionsRow: boolean
 }
 
-type ItemKind = 'process' | 'other'
+type ItemKind = 'tool' | 'reasoning' | 'other'
 
 /**
  * Estimated pixel height of one message row.
@@ -205,6 +211,7 @@ export const estimateMessageRowHeight = (input: EstimateMessageRowInput): number
 
   // Each entry is [height, kind]. Kind drives the process-run grouping below.
   const items: Array<[number, ItemKind]> = []
+  const isProcessKind = (kind: ItemKind) => kind === 'tool' || kind === 'reasoning'
 
   const pushText = (markdown: string) => {
     const body = estimateMarkdownHeight(markdown, contentWidth, fontSizeOffset)
@@ -248,11 +255,11 @@ export const estimateMessageRowHeight = (input: EstimateMessageRowInput): number
           const mergesWithPrevious =
             previous?.type === 'thinking' ||
             (previous?.type === 'reasoning_details' && blocks[index - 2]?.type === 'thinking')
-          if (!mergesWithPrevious) items.push([DISCLOSURE_ROW, 'process'])
+          if (!mergesWithPrevious) items.push([DISCLOSURE_ROW, 'reasoning'])
           break
         }
         case 'tool_use': {
-          items.push([estimateSpecialToolCard(block) ?? DISCLOSURE_ROW, 'process'])
+          items.push([estimateSpecialToolCard(block) ?? DISCLOSURE_ROW, 'tool'])
           break
         }
         case 'image': {
@@ -282,31 +289,38 @@ export const estimateMessageRowHeight = (input: EstimateMessageRowInput): number
 
   // Long runs of process items collapse into a single "Agent steps" row. Build the list of
   // children the stack actually renders, then gap only between them.
-  const children: number[] = []
-  let run: number[] = []
+  const children: Array<[number, ItemKind]> = []
+  let run: Array<[number, ItemKind]> = []
 
   const flushRun = () => {
     if (run.length === 0) return
     if (groupToolReasoningRuns && run.length >= PROCESS_RUN_GROUP_MIN_ITEMS) {
-      children.push(DISCLOSURE_ROW)
+      // The collapsed "Agent steps" row is a disclosure row, not a tool card, so it does not
+      // take the tighter tool-to-tool gap.
+      children.push([DISCLOSURE_ROW, 'other'])
     } else {
       children.push(...run)
     }
     run = []
   }
 
-  for (const [height, kind] of items) {
-    if (kind === 'process') {
-      run.push(height)
+  for (const item of items) {
+    if (isProcessKind(item[1])) {
+      run.push(item)
       continue
     }
     flushRun()
-    children.push(height)
+    children.push(item)
   }
   flushRun()
 
-  const blocksHeight =
-    children.reduce((total, height) => total + height, 0) + Math.max(0, children.length - 1) * STACK_GAP
+  let blocksHeight = 0
+  for (let index = 0; index < children.length; index += 1) {
+    blocksHeight += children[index][0]
+    if (index === 0) continue
+    const bothAreToolCards = children[index][1] === 'tool' && children[index - 1][1] === 'tool'
+    blocksHeight += bothAreToolCards ? TOOL_RUN_GAP : STACK_GAP
+  }
 
   return blocksHeight + baseChrome(isUserRow, artifactCount, showsActionsRow)
 }
