@@ -11,7 +11,12 @@ import {
   Undo2,
   X,
 } from 'lucide-react'
-import { FAST_COLOR_TRANSITION_CLASS, FOCUS_RING_CLASS } from './chatMessageShared'
+import {
+  FAST_COLOR_TRANSITION_CLASS,
+  FOCUS_RING_CLASS,
+  TEXT_LABEL_CLASS,
+  TEXT_NANO_CLASS,
+} from './chatMessageShared'
 
 export interface MessageActionsProps {
   onEdit?: () => void
@@ -94,7 +99,7 @@ export const MessageActions: React.FC<MessageActionsProps> = ({
     : 'inline-flex items-center gap-0.5 rounded-full bg-white/70 p-1 backdrop-blur-xl dark:bg-white/[0.06]'
 
   const buttonBase = isMenuLayout
-    ? `flex h-9 w-full items-center gap-2.5 rounded-xl px-3 text-left text-[0.8125em] text-neutral-600 dark:text-neutral-300 ${FAST_COLOR_TRANSITION_CLASS} ${FOCUS_RING_CLASS}`
+    ? `flex h-9 w-full items-center gap-2.5 rounded-xl px-3 text-left ${TEXT_LABEL_CLASS} text-neutral-600 dark:text-neutral-300 ${FAST_COLOR_TRANSITION_CLASS} ${FOCUS_RING_CLASS}`
     : `flex h-8 w-8 items-center justify-center rounded-full text-neutral-500 dark:text-neutral-400 active:scale-95 transition-[background-color,color,transform] duration-150 ease-out ${FOCUS_RING_CLASS}`
 
   const renderAction = ({
@@ -146,7 +151,7 @@ export const MessageActions: React.FC<MessageActionsProps> = ({
     >
       {modelName && !isEditing && !isSelectionVariant && (
         <div
-          className={`shrink-0 truncate font-mono text-[0.625em] uppercase tracking-wider text-neutral-500 dark:text-neutral-400 ${
+          className={`shrink-0 truncate font-mono ${TEXT_NANO_CLASS} uppercase tracking-wider text-neutral-500 dark:text-neutral-400 ${
             isMenuLayout ? 'px-3 py-1.5' : 'px-2.5'
           }`}
           title={modelName}

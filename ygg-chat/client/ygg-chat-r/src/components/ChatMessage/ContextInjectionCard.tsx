@@ -1,6 +1,11 @@
 import React, { useMemo, useState } from 'react'
 import { BookOpenText, ChevronRight } from 'lucide-react'
 import {
+  TEXT_DETAIL_CLASS,
+  TEXT_LABEL_CLASS,
+  TEXT_MICRO_CLASS,
+} from './chatMessageShared'
+import {
   getCustomChatThemeEnabled,
   getStoredCustomChatTheme,
   getThemeModeColor,
@@ -162,10 +167,10 @@ export const ContextInjectionCard: React.FC<ContextInjectionCardProps> = ({
         aria-label={`${title}: ${countLabel}`}
       >
         <BookOpenText size={18} strokeWidth={2.25} className={`shrink-0 ${titleClass}`} style={color(palette.title)} />
-        <span className={`font-mono text-[0.68em] font-bold uppercase tracking-[0.12em] ${titleClass}`} style={color(palette.title)}>
+        <span className={`font-mono ${TEXT_MICRO_CLASS} font-bold uppercase tracking-[0.12em] ${titleClass}`} style={color(palette.title)}>
           {title}
         </span>
-        <span className={`text-[0.78em] ${metaClass}`} style={color(palette.meta)}>
+        <span className={`${TEXT_DETAIL_CLASS} ${metaClass}`} style={color(palette.meta)}>
           {countLabel}
         </span>
         {!expanded && (
@@ -186,7 +191,7 @@ export const ContextInjectionCard: React.FC<ContextInjectionCardProps> = ({
           {entries.map((entry, index) => {
             const isOpen = openEntry === index
             return (
-              <li key={`${entry.path || entry.label}-${index}`} className='text-[0.82em]'>
+              <li key={`${entry.path || entry.label}-${index}`} className={TEXT_LABEL_CLASS}>
                 <button
                   type='button'
                   onClick={() => setOpenEntry(isOpen ? null : index)}
@@ -206,7 +211,7 @@ export const ContextInjectionCard: React.FC<ContextInjectionCardProps> = ({
                     {entry.path || entry.label}
                   </span>
                   <span
-                    className={`shrink-0 rounded-full px-2 py-[2px] text-[0.7em] uppercase tracking-wider ${badgeClass}`}
+                    className={`shrink-0 rounded-full px-2 py-[2px] ${TEXT_MICRO_CLASS} uppercase tracking-wider ${badgeClass}`}
                     style={themed ? { backgroundColor: palette.badgeBg, color: palette.badgeText } : undefined}
                   >
                     {describeContextInjectionReason(entry.reason)}

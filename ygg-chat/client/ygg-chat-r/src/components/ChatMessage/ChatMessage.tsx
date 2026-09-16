@@ -64,6 +64,10 @@ import {
   PROCESS_RUN_GROUP_MIN_ITEMS,
   REASONING_TEXT_MARKDOWN_CLASS,
   SHARED_TEXT_MARKDOWN_CLASS,
+  TEXT_DETAIL_CLASS,
+  TEXT_LABEL_CLASS,
+  TEXT_MICRO_CLASS,
+  TEXT_NANO_CLASS,
   type ToolCallRenderGroup,
 } from './chatMessageShared'
 
@@ -258,7 +262,7 @@ const PreRenderer: React.FC<any> = ({ children, className, ...props }) => {
             event.stopPropagation()
             void handleCopyCode()
           }}
-          className={`chat-markdown-code-copy-button inline-flex h-6 items-center gap-1 rounded-full px-2.5 text-[0.72em] font-medium ${FAST_COLOR_TRANSITION_CLASS} ${FOCUS_RING_CLASS}`}
+          className={`chat-markdown-code-copy-button inline-flex h-6 items-center gap-1 rounded-full px-2.5 ${TEXT_MICRO_CLASS} font-medium ${FAST_COLOR_TRANSITION_CLASS} ${FOCUS_RING_CLASS}`}
           aria-label={copied ? 'Copied' : 'Copy code'}
         >
           {copied ? 'Copied' : 'Copy'}
@@ -1358,7 +1362,7 @@ const ChatMessage: React.FC<ChatMessageProps> = React.memo(
               node: (
                 <div
                   key={noticeKey}
-                  className={`flex h-8 items-center ${MESSAGE_BLOCK_INSET_CLASS} text-[0.8125em] italic text-neutral-500 dark:text-neutral-400`}
+                  className={`flex h-8 items-center ${MESSAGE_BLOCK_INSET_CLASS} ${TEXT_LABEL_CLASS} italic text-neutral-500 dark:text-neutral-400`}
                   style={messageContentStyle}
                 >
                   {noticeText}
@@ -1722,7 +1726,7 @@ const ChatMessage: React.FC<ChatMessageProps> = React.memo(
             <div className={`flex h-7 items-center gap-2 ${MESSAGE_BLOCK_INSET_CLASS}`}>
               {isUserRow && (
                 <span
-                  className={`text-[0.7em] font-semibold uppercase tracking-[0.14em] ${roleLabelClass}`}
+                  className={`${TEXT_MICRO_CLASS} font-semibold uppercase tracking-[0.14em] ${roleLabelClass}`}
                   style={roleLabelStyle}
                 >
                   {roleLabel}
@@ -1769,7 +1773,7 @@ const ChatMessage: React.FC<ChatMessageProps> = React.memo(
                   }
                 }}
               />
-              <div className='flex h-7 items-center justify-end text-[0.72em] text-neutral-500 dark:text-neutral-400'>
+              <div className={`flex h-7 items-center justify-end ${TEXT_MICRO_CLASS} text-neutral-500 dark:text-neutral-400`}>
                 Enter to save · Shift+Enter for a new line · Escape to cancel
               </div>
             </div>
@@ -1813,7 +1817,7 @@ const ChatMessage: React.FC<ChatMessageProps> = React.memo(
             <div className={`flex h-10 items-center justify-between gap-3 ${MESSAGE_BLOCK_INSET_CLASS}`}>
               {isUserRow && userTurnElapsedLabel && !editingState ? (
                 <div
-                  className={`min-w-0 flex-1 truncate text-[0.625em] font-medium uppercase tracking-[0.12em] text-neutral-500 dark:text-neutral-400 transition-[opacity,transform] duration-200 ease-out motion-reduce:transition-none ${
+                  className={`min-w-0 flex-1 truncate ${TEXT_NANO_CLASS} font-medium uppercase tracking-[0.12em] text-neutral-500 dark:text-neutral-400 transition-[opacity,transform] duration-200 ease-out motion-reduce:transition-none ${
                     isHovering ? 'translate-y-0 opacity-100' : 'translate-y-1 opacity-0 pointer-events-none'
                   }`}
                   aria-label={userTurnElapsedLabel}
@@ -1856,8 +1860,8 @@ const ChatMessage: React.FC<ChatMessageProps> = React.memo(
                       }}
                     >
                       <div className='p-3'>
-                        <h3 className='text-[0.8125em] font-semibold text-neutral-700 dark:text-neutral-200'>Message info</h3>
-                        <div className='thin-scrollbar mt-2 max-h-64 space-y-1.5 overflow-y-auto text-[0.78em] sm:max-h-80 md:max-h-96'>
+                        <h3 className={`${TEXT_LABEL_CLASS} font-semibold text-neutral-700 dark:text-neutral-200`}>Message info</h3>
+                        <div className='thin-scrollbar mt-2 max-h-64 space-y-1.5 overflow-y-auto ${TEXT_DETAIL_CLASS} sm:max-h-80 md:max-h-96'>
                           {messageData ? (
                             Object.entries(messageData)
                               .filter(
@@ -2025,7 +2029,7 @@ const ChatMessage: React.FC<ChatMessageProps> = React.memo(
               }}
             >
               <div className='thin-scrollbar mb-2 max-h-[100px] overflow-y-auto rounded-xl bg-black/[0.04] p-2 dark:bg-white/[0.05]'>
-                <div className='line-clamp-4 text-[0.75em] italic text-neutral-600 dark:text-neutral-400'>“{selectedText}”</div>
+                <div className={`line-clamp-4 ${TEXT_DETAIL_CLASS} italic text-neutral-600 dark:text-neutral-400`}>“{selectedText}”</div>
               </div>
               <TextArea
                 value={explainInputValue}

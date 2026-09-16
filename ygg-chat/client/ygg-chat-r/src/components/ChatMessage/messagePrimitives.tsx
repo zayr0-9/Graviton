@@ -4,6 +4,7 @@ import {
   DISCLOSURE_BODY_CLASS,
   DISCLOSURE_CHEVRON_CLASS,
   DISCLOSURE_LABEL_CLASS,
+  DISCLOSURE_LABEL_LAYOUT_CLASS,
   DISCLOSURE_ROW_CLASS,
   DISCLOSURE_SUMMARY_CLASS,
   MONO_DETAIL_CLASS,
@@ -11,6 +12,8 @@ import {
   stringifyToolValue,
   SURFACE_CARD_PADDING_CLASS,
   SURFACE_INNER_CLASS,
+  TEXT_DETAIL_CLASS,
+  TEXT_MICRO_CLASS,
 } from './chatMessageShared'
 
 /**
@@ -65,11 +68,13 @@ export const DisclosureRow: React.FC<DisclosureRowProps> = ({
   hideSummaryWhenExpanded = true,
 }) => {
   const showSummary = summary != null && summary !== '' && (!expanded || !hideSummaryWhenExpanded)
+  // A node label brings its own typography, so it gets the layout slot WITHOUT a text size.
+  // Applying one here as well would multiply two em-relative sizes and render it small.
   const labelNode =
     typeof label === 'string' ? (
       <span className={`${DISCLOSURE_LABEL_CLASS} ${TONE_LABEL_CLASS[tone]}`}>{label}</span>
     ) : (
-      <span className={`${DISCLOSURE_LABEL_CLASS} inline-flex min-w-0 items-center`}>{label}</span>
+      <span className={`${DISCLOSURE_LABEL_LAYOUT_CLASS} inline-flex items-center`}>{label}</span>
     )
 
   return (
@@ -84,7 +89,7 @@ export const DisclosureRow: React.FC<DisclosureRowProps> = ({
         {leading && <span className='flex shrink-0 items-center text-neutral-400 dark:text-neutral-500'>{leading}</span>}
         {labelNode}
         {meta != null && meta !== '' && (
-          <span className='shrink-0 truncate text-[0.78em] leading-none text-neutral-500 dark:text-neutral-500'>{meta}</span>
+          <span className={`shrink-0 truncate ${TEXT_DETAIL_CLASS} leading-none text-neutral-500 dark:text-neutral-500`}>{meta}</span>
         )}
         {showSummary ? <span className={DISCLOSURE_SUMMARY_CLASS}>{summary}</span> : <span className='min-w-0 flex-1' />}
         <ChevronRight
@@ -152,7 +157,7 @@ export const Badge: React.FC<{ tone?: BadgeTone; children: React.ReactNode; clas
   className,
 }) => (
   <span
-    className={`inline-flex min-w-0 max-w-full items-center rounded-full px-2 py-[2px] text-[0.72em] font-medium leading-none tracking-wide [overflow-wrap:anywhere] ${BADGE_TONE_CLASS[tone]} ${className ?? ''}`}
+    className={`inline-flex min-w-0 max-w-full items-center rounded-full px-2 py-[2px] ${TEXT_MICRO_CLASS} font-medium leading-none tracking-wide [overflow-wrap:anywhere] ${BADGE_TONE_CLASS[tone]} ${className ?? ''}`}
   >
     {children}
   </span>
@@ -178,12 +183,12 @@ export const SurfaceCard: React.FC<SurfaceCardProps> = ({ title, index, badge, a
       {hasHeader && (
         <div className={`flex min-w-0 flex-wrap items-center gap-2 ${SURFACE_CARD_PADDING_CLASS}`}>
           {typeof index === 'number' && (
-            <span className='inline-flex h-4 min-w-4 shrink-0 items-center justify-center rounded-full bg-black/[0.06] px-1 text-[0.68em] font-semibold text-neutral-600 dark:bg-white/[0.08] dark:text-neutral-300'>
+            <span className={`inline-flex h-4 min-w-4 shrink-0 items-center justify-center rounded-full bg-black/[0.06] px-1 ${TEXT_MICRO_CLASS} font-semibold text-neutral-600 dark:bg-white/[0.08] dark:text-neutral-300`}>
               {index + 1}
             </span>
           )}
           {title != null && (
-            <span className='min-w-0 flex-1 basis-0 truncate text-[0.8em] font-medium text-neutral-700 dark:text-neutral-200'>
+            <span className={`min-w-0 flex-1 basis-0 truncate ${TEXT_DETAIL_CLASS} font-medium text-neutral-700 dark:text-neutral-200`}>
               {title}
             </span>
           )}
@@ -227,7 +232,7 @@ export const FieldRows: React.FC<{
 /** Section label inside an expanded tool body: `input`, `output`, plus badges. */
 export const SectionLabel: React.FC<{ label: string; children?: React.ReactNode }> = ({ label, children }) => (
   <div className='flex min-w-0 max-w-full flex-wrap items-center gap-1.5 pb-1'>
-    <span className='font-mono text-[0.72em] uppercase tracking-[0.12em] text-neutral-400 dark:text-neutral-600'>{label}</span>
+    <span className={`font-mono ${TEXT_MICRO_CLASS} uppercase tracking-[0.12em] text-neutral-400 dark:text-neutral-600`}>{label}</span>
     {children}
   </div>
 )

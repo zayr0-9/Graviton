@@ -17,6 +17,25 @@ export const PROCESS_RUN_GROUP_MIN_ITEMS = 4
 export const MESSAGE_BLOCK_STACK_CLASS = 'flex min-w-0 w-full flex-col gap-1.5'
 export const MESSAGE_BLOCK_INSET_CLASS = 'px-2.5'
 
+/**
+ * Type scale for message chrome. Four steps only, because near-duplicate sizes read as noise
+ * rather than hierarchy. Values are em-relative so the chat font size preference scales them
+ * together.
+ *
+ * NEVER apply two of these to nested elements. They are em-relative, so a label sized here
+ * inside a slot also sized here renders at the product of the two. `DISCLOSURE_LABEL_LAYOUT_CLASS`
+ * exists for exactly that reason: it carries the layout of the label slot and no typography, so a
+ * caller-supplied node can bring its own.
+ */
+/** Row labels, collapsed summaries, reasoning prose, menu items. */
+export const TEXT_LABEL_CLASS = 'text-[0.8125em]'
+/** Card titles, field rows, action pills, meta text. */
+export const TEXT_DETAIL_CLASS = 'text-[0.75em]'
+/** Badges, section labels, index chips, uppercase captions. */
+export const TEXT_MICRO_CLASS = 'text-[0.6875em]'
+/** Model name and elapsed label, which sit beside a control rather than in the flow. */
+export const TEXT_NANO_CLASS = 'text-[0.625em]'
+
 /** Fast color-only feedback. Never `transition-all` in message chrome. */
 export const FAST_COLOR_TRANSITION_CLASS = 'transition-[background-color,color,opacity] duration-150 ease-out'
 export const FOCUS_RING_CLASS =
@@ -24,8 +43,10 @@ export const FOCUS_RING_CLASS =
 
 /** Collapsible header row shared by reasoning, tool cards, and grouped agent steps. */
 export const DISCLOSURE_ROW_CLASS = `flex h-8 min-w-0 w-full items-center gap-2 rounded-xl ${MESSAGE_BLOCK_INSET_CLASS} text-left hover:bg-black/[0.04] dark:hover:bg-white/[0.05] ${FAST_COLOR_TRANSITION_CLASS} ${FOCUS_RING_CLASS}`
-export const DISCLOSURE_LABEL_CLASS = 'shrink-0 max-w-[60%] truncate text-[0.8125em] font-medium leading-none'
-export const DISCLOSURE_SUMMARY_CLASS = 'min-w-0 flex-1 truncate text-[0.8125em] leading-none text-neutral-500 dark:text-neutral-500'
+/** Layout of the label slot, with no typography, for a caller-supplied node. */
+export const DISCLOSURE_LABEL_LAYOUT_CLASS = 'min-w-0 shrink-0 max-w-[60%] truncate'
+export const DISCLOSURE_LABEL_CLASS = `${DISCLOSURE_LABEL_LAYOUT_CLASS} ${TEXT_LABEL_CLASS} font-medium leading-none`
+export const DISCLOSURE_SUMMARY_CLASS = `min-w-0 flex-1 truncate ${TEXT_LABEL_CLASS} leading-none text-neutral-500 dark:text-neutral-500`
 export const DISCLOSURE_CHEVRON_CLASS =
   'shrink-0 text-neutral-400 dark:text-neutral-600 transition-transform duration-150 ease-out motion-reduce:transition-none'
 /** Legacy chevron classes still used by SubagentTranscript. Same motion token as `DISCLOSURE_CHEVRON_CLASS`. */
@@ -41,14 +62,14 @@ export const SURFACE_CARD_PADDING_CLASS = 'px-3 py-2'
 
 /** Monospace detail text used by tool inputs and outputs. */
 export const MONO_DETAIL_CLASS =
-  'min-w-0 max-w-full break-words font-mono text-[0.78em] leading-relaxed text-neutral-600 dark:text-neutral-400 [overflow-wrap:anywhere]'
+  `min-w-0 max-w-full break-words font-mono ${TEXT_DETAIL_CLASS} leading-relaxed text-neutral-600 dark:text-neutral-400 [overflow-wrap:anywhere]`
 export const MONO_KEY_CLASS = 'text-neutral-400 dark:text-neutral-600'
 
 /** Small pill action used inside tool cards (viewer, transcript, load app). */
-export const ACTION_PILL_CLASS = `inline-flex h-7 shrink-0 items-center gap-1.5 rounded-full bg-black/[0.05] px-2.5 text-[0.75em] font-medium text-neutral-600 hover:bg-black/[0.09] hover:text-neutral-900 disabled:cursor-not-allowed disabled:opacity-50 dark:bg-white/[0.06] dark:text-neutral-300 dark:hover:bg-white/[0.11] dark:hover:text-white ${FAST_COLOR_TRANSITION_CLASS} ${FOCUS_RING_CLASS}`
+export const ACTION_PILL_CLASS = `inline-flex h-7 shrink-0 items-center gap-1.5 rounded-full bg-black/[0.05] px-2.5 ${TEXT_DETAIL_CLASS} font-medium text-neutral-600 hover:bg-black/[0.09] hover:text-neutral-900 disabled:cursor-not-allowed disabled:opacity-50 dark:bg-white/[0.06] dark:text-neutral-300 dark:hover:bg-white/[0.11] dark:hover:text-white ${FAST_COLOR_TRANSITION_CLASS} ${FOCUS_RING_CLASS}`
 
 /** Tool name states. Kept as exports because SubagentTranscript reuses them. */
-export const TOOL_NAME_BASE_CLASS = 'min-w-0 max-w-full truncate text-[0.8125em] font-medium leading-none text-neutral-700 dark:text-neutral-300'
+export const TOOL_NAME_BASE_CLASS = `min-w-0 max-w-full truncate ${TEXT_LABEL_CLASS} font-medium leading-none text-neutral-700 dark:text-neutral-300`
 export const TOOL_NAME_RUNNING_CLASS = `${TOOL_NAME_BASE_CLASS} tool-name-shimmer`
 export const TOOL_NAME_SUCCESS_CLASS = TOOL_NAME_BASE_CLASS
 export const TOOL_NAME_ERROR_CLASS = `${TOOL_NAME_BASE_CLASS} text-red-600 dark:text-red-400`
@@ -63,7 +84,7 @@ export const getChatFontSizeOffsetStyle = (fontSizeOffset?: number): CSSProperti
 
 /** Prose text block. Same inset as every disclosure row so text and labels share one left edge. */
 export const SHARED_TEXT_MARKDOWN_CLASS = `chat-markdown prose max-w-none dark:prose-invert w-full min-w-0 ${MESSAGE_BLOCK_INSET_CLASS} py-1 ${CHAT_NORMAL_TEXT_SIZE_CLASS} ${CHAT_MARKDOWN_PROSE_TIGHT_CLASS}`
-export const REASONING_TEXT_MARKDOWN_CLASS = `chat-markdown text-[0.8125em] text-neutral-600 dark:text-neutral-400 prose max-w-none dark:prose-invert min-w-0 ${CHAT_MARKDOWN_PROSE_TIGHT_CLASS}`
+export const REASONING_TEXT_MARKDOWN_CLASS = `chat-markdown ${TEXT_LABEL_CLASS} text-neutral-600 dark:text-neutral-400 prose max-w-none dark:prose-invert min-w-0 ${CHAT_MARKDOWN_PROSE_TIGHT_CLASS}`
 export const MESSAGE_IMAGE_WRAPPER_CLASS = `${MESSAGE_BLOCK_INSET_CLASS} py-1`
 export const MESSAGE_IMAGE_CLASS = 'max-w-full max-h-96 object-contain rounded-2xl'
 
