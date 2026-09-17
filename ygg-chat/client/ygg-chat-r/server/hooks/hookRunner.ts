@@ -1,12 +1,17 @@
 import fs from 'fs'
 import os from 'os'
 import path from 'path'
+import { v4 as uuidv4 } from 'uuid'
 import { runBashCommand } from '../tools/bash.js'
 import { isWindows, resolveToWindowsPath } from '../utils/wslBridge.js'
-import { ensureManagedHooksInitialized } from './hookStorage.js'
+import { ensureManagedHooksInitialized, getManagedHooksDirectory } from './hookStorage.js'
+import { appendHookTransition, redactHookDiagnostic, resolveHookLogTarget, toSafeHookRunRecord } from './hookDiagnostics.js'
 import type {
   HookEventName,
   HookExecutionMode,
+  HookRunRecord,
+  HookRunStatus,
+  HookScope,
   HookRunRequest,
   HookRunResult,
   NormalizedHookEntry,
@@ -16,6 +21,11 @@ import type {
 const YGG_SETTINGS_FILES = ['settings.json', 'settings.local.json'] as const
 const DEFAULT_HOOK_TIMEOUT_MS = 30_000
 const DEFAULT_HOOK_MAX_OUTPUT_CHARS = 60_000
+let defaultHookRunTracker: import('./hookTypes.js').HookRunTracker | null = null
+
+export function configureHookRunTracker(tracker: import('./hookTypes.js').HookRunTracker | null): void {
+  defaultHookRunTracker = tracker
+}
 
 function isHookDebugLoggingEnabled(): boolean {
   return /^(1|true|yes|on)$/i.test(process.env.YGG_HOOK_DEBUG_LOGS || '')
@@ -38,6 +48,57 @@ function warnHookRunner(message: string, details?: Record<string, unknown>): voi
 }
 
 type HookCommandExecutionResult = Awaited<ReturnType<typeof runBashCommand>>
+
+type HookCommandReport = {
+  decision: Partial<HookRunResult>
+  configuredCommand: string
+  executedCommand: string
+  cwd: string | null
+  success: boolean
+  timedOut: boolean
+  fallbackAttempted: boolean
+  error: string | null
+  stdout: string
+  stderr: string
+  outcomeCode: string | null
+  outcomeSummary: string | null
+}
+
+function deriveHookLabel(command: string): string {
+  const scriptMatch = command.match(/(?:^|\s)([^\s"']+\.(?:py|js|mjs|cjs|sh))(?:\s|$)/i)
+  const candidate = scriptMatch?.[1] || command.trim().split(/\s+/).at(-1) || 'hook'
+  return path.basename(candidate).replace(/\.[^.]+$/, '').replace(/[_-]+/g, ' ')
+}
+
+function deriveHookScope(sourceFile: string, requestCwd?: string | null): HookScope {
+  const resolvedSource = path.resolve(sourceFile)
+  const managedRoot = path.resolve(getManagedHooksDirectory())
+  if (resolvedSource === managedRoot || resolvedSource.startsWith(`${managedRoot}${path.sep}`)) return 'personal'
+  const cwd = typeof requestCwd === 'string' && requestCwd.trim() ? path.resolve(requestCwd) : null
+  if (cwd && (resolvedSource === cwd || resolvedSource.startsWith(`${cwd}${path.sep}`))) {
+    return path.basename(sourceFile) === 'settings.local.json' ? 'local_override' : 'project'
+  }
+  return path.basename(sourceFile) === 'settings.local.json' ? 'local_override' : 'project'
+}
+
+function parseHookOutcome(stdout: string): { code: string | null; summary: string | null } {
+  const trimmed = stdout.trim()
+  if (!trimmed) return { code: null, summary: null }
+  try {
+    const parsed = JSON.parse(trimmed)
+    if (!isRecord(parsed)) return { code: null, summary: null }
+    return {
+      code: toTrimmedString(parsed.outcomeCode) ?? toTrimmedString(parsed.outcome_code),
+      summary: toTrimmedString(parsed.outcomeSummary) ?? toTrimmedString(parsed.outcome_summary) ?? toTrimmedString(parsed.reason),
+    }
+  } catch {
+    return { code: null, summary: null }
+  }
+}
+
+function isSkippedOutcome(code: string | null): boolean {
+  return Boolean(code && /^(unchanged|no_|missing_|messages_unavailable|disabled|empty_|not_)/.test(code))
+}
 
 function getPythonFallbackCommand(command: string): string | null {
   const trimmed = command.trimStart()
@@ -242,6 +303,8 @@ function normalizeEventEntries(rawValue: unknown, source: string): NormalizedHoo
     const handlers = normalizeHandler(rawEntry, entryMatcher, rawEntry.enabled !== false).map(handler => ({
       ...handler,
       workingDirectory,
+      sourceFile: source,
+      label: deriveHookLabel(handler.command),
     }))
     if (handlers.length === 0) continue
     entries.push({
@@ -545,37 +608,109 @@ function mergeHookDecision(
   return next
 }
 
-// Async hooks are fire-and-forget. Their output is logged but cannot affect the
-// current request. Use sync for hooks that block, mutate prompts, update tool
-// inputs, or provide immediate context.
-function launchAsyncCommandHook(handler: NormalizedHookHandler, req: HookRunRequest): void {
-  logHookRunner('launching async command hook', {
-    event: req.event,
-    command: handler.command,
-    cwd: handler.workingDirectory || req.cwd || null,
-    timeoutMs: handler.timeoutMs ?? DEFAULT_HOOK_TIMEOUT_MS,
-  })
-
-  void executeCommandHook(handler, req)
-    .then(decision => {
-      logHookRunner('async command hook completed', {
-        event: req.event,
-        command: handler.command,
-        decisionKeys: Object.keys(decision),
-        ignoredDecision: Object.keys(decision).length > 0,
-      })
-    })
-    .catch(error => {
-      warnHookRunner('async command hook failed', {
-        event: req.event,
-        command: handler.command,
-        cwd: handler.workingDirectory || req.cwd || null,
-        error: error instanceof Error ? error.message : String(error),
-      })
-    })
+function persistHookRun(req: HookRunRequest, record: HookRunRecord): HookRunRecord {
+  if (!req.runTracker) return record
+  try {
+    return req.runTracker.create(record)
+  } catch (error) {
+    console.warn('[HookRunner] Failed to persist scheduled hook run:', redactHookDiagnostic(error instanceof Error ? error.message : error, 500))
+    return record
+  }
 }
 
-async function executeCommandHook(handler: NormalizedHookHandler, req: HookRunRequest): Promise<Partial<HookRunResult>> {
+function updateHookRun(req: HookRunRequest, record: HookRunRecord, update: Partial<HookRunRecord>): HookRunRecord {
+  const next = { ...record, ...update, updatedAt: update.updatedAt || new Date().toISOString() }
+  if (!req.runTracker) return next
+  try {
+    return req.runTracker.update(record.id, update) ?? next
+  } catch (error) {
+    console.warn('[HookRunner] Failed to update hook run:', redactHookDiagnostic(error instanceof Error ? error.message : error, 500))
+    return next
+  }
+}
+
+function toLogTransition(record: HookRunRecord) {
+  return {
+    runId: record.id,
+    status: record.status,
+    timestamp: record.updatedAt,
+    event: record.event,
+    conversationId: record.conversationId,
+    streamId: record.streamId,
+    messageId: record.messageId,
+    label: record.label,
+    scope: record.scope,
+    executionMode: record.executionMode,
+    configuredCommand: record.configuredCommand,
+    executedCommand: record.executedCommand,
+    sourceFile: record.sourceFile,
+    cwd: record.cwd,
+    durationMs: record.durationMs,
+    outcomeCode: record.outcomeCode,
+    outcomeSummary: record.outcomeSummary,
+    errorSummary: record.errorSummary,
+    stdoutPreview: record.stdoutPreview,
+    stderrPreview: record.stderrPreview,
+    logPath: record.logPath || '',
+    logFallback: record.logFallback,
+  }
+}
+
+async function executeTrackedHook(
+  handler: NormalizedHookHandler,
+  req: HookRunRequest,
+  initialRecord: HookRunRecord
+): Promise<{ report: HookCommandReport; record: HookRunRecord }> {
+  const startedAt = new Date().toISOString()
+  let record = updateHookRun(req, initialRecord, { status: 'running', startedAt, updatedAt: startedAt })
+  await appendHookTransition(toLogTransition(record))
+  const report = await executeCommandHook(handler, req)
+  const completedAt = new Date().toISOString()
+  const durationMs = Math.max(0, new Date(completedAt).getTime() - new Date(startedAt).getTime())
+  const status: HookRunStatus = report.timedOut
+    ? 'timed_out'
+    : !report.success
+      ? 'failed'
+      : isSkippedOutcome(report.outcomeCode)
+        ? 'skipped'
+        : 'succeeded'
+  record = updateHookRun(req, record, {
+    status,
+    completedAt,
+    durationMs,
+    executedCommand: redactHookDiagnostic(report.executedCommand, 2_000),
+    outcomeCode: report.outcomeCode ?? (status === 'succeeded' ? 'completed' : status),
+    outcomeSummary: report.outcomeSummary ?? (status === 'succeeded' ? 'completed' : report.error),
+    errorSummary: status === 'failed' || status === 'timed_out' ? redactHookDiagnostic(report.error, 2_000) : null,
+    stdoutPreview: redactHookDiagnostic(report.stdout),
+    stderrPreview: redactHookDiagnostic(report.stderr),
+    updatedAt: completedAt,
+  })
+  await appendHookTransition(toLogTransition(record))
+  try { req.onActivity?.([toSafeHookRunRecord(record)]) } catch { /* terminal activity is best effort */ }
+  return { report, record }
+}
+
+// Async hooks remain fire-and-forget for chat responsiveness, but their durable run
+// record and NDJSON transition continue to terminal state after the chat SSE ends.
+function launchAsyncCommandHook(handler: NormalizedHookHandler, req: HookRunRequest, record: HookRunRecord): void {
+  void executeTrackedHook(handler, req, record).catch(async error => {
+    const completedAt = new Date().toISOString()
+    const failed = updateHookRun(req, record, {
+      status: 'failed',
+      completedAt,
+      errorSummary: redactHookDiagnostic(error instanceof Error ? error.message : error, 2_000),
+      outcomeCode: 'runner_error',
+      outcomeSummary: 'Hook runner failed before command completion',
+      updatedAt: completedAt,
+    })
+    await appendHookTransition(toLogTransition(failed))
+    try { req.onActivity?.([toSafeHookRunRecord(failed)]) } catch { /* terminal activity is best effort */ }
+    console.warn('[HookRunner] Async hook failed:', failed.errorSummary)
+  })
+}
+
+async function executeCommandHook(handler: NormalizedHookHandler, req: HookRunRequest): Promise<HookCommandReport> {
   const payload = buildHookPayload(req)
   const cwd = handler.workingDirectory || req.cwd || undefined
   const timeoutMs = handler.timeoutMs ?? DEFAULT_HOOK_TIMEOUT_MS
@@ -613,41 +748,36 @@ async function executeCommandHook(handler: NormalizedHookHandler, req: HookRunRe
     stderrPreview: previewForHookLog(executionResult.stderr),
   })
 
-  const combinedOutput = [executionResult.stdout, executionResult.stderr].filter(Boolean).join('\n').trim()
-  if (!combinedOutput) {
-    if (!executionResult.success) {
-      throw new Error(executionResult.error || 'Hook command failed without output')
+  const stdout = executionResult.stdout || ''
+  const stderr = executionResult.stderr || ''
+  const combinedOutput = [stdout, stderr].filter(Boolean).join('\n').trim()
+  let decision: Partial<HookRunResult> = {}
+  if (combinedOutput) {
+    try {
+      decision = normalizeDecision(req.event, JSON.parse(stdout.trim() || combinedOutput))
+    } catch {
+      decision = interpretTextResult(req.event, combinedOutput)
     }
-    return {}
   }
-
-  try {
-    const decision = normalizeDecision(req.event, JSON.parse(combinedOutput))
-    logHookRunner('parsed command hook JSON output', {
-      event: req.event,
-      command: executedCommand,
-      configuredCommand: handler.command,
-      decisionKeys: Object.keys(decision),
-      additionalContextPreview: previewForHookLog(decision.additionalContext),
-    })
-    return decision
-  } catch {
-    const interpreted = interpretTextResult(req.event, combinedOutput)
-    logHookRunner('interpreted command hook text output', {
-      event: req.event,
-      command: executedCommand,
-      configuredCommand: handler.command,
-      interpretedKeys: Object.keys(interpreted),
-      outputPreview: previewForHookLog(combinedOutput),
-    })
-    if (!executionResult.success && !interpreted.blocked && !interpreted.permissionDecision) {
-      throw new Error(combinedOutput)
-    }
-    return interpreted
+  const outcome = parseHookOutcome(stdout)
+  return {
+    decision,
+    configuredCommand: handler.command,
+    executedCommand,
+    cwd: cwd ?? null,
+    success: executionResult.success,
+    timedOut: executionResult.timedOut === true,
+    fallbackAttempted,
+    error: executionResult.error || (!executionResult.success ? combinedOutput || 'Hook command failed without output' : null),
+    stdout,
+    stderr,
+    outcomeCode: outcome.code,
+    outcomeSummary: outcome.summary,
   }
 }
 
 export async function runHookRequest(req: HookRunRequest): Promise<HookRunResult> {
+  if (defaultHookRunTracker) req = { ...req, runTracker: defaultHookRunTracker }
   logHookRunner('run request start', {
     event: req.event,
     cwd: req.cwd ?? null,
@@ -667,8 +797,47 @@ export async function runHookRequest(req: HookRunRequest): Promise<HookRunResult
     handler,
     executionMode: resolveExecutionMode(req.event, handler),
   }))
-  const syncHandlers = handlersWithExecutionMode.filter(item => item.executionMode === 'sync').map(item => item.handler)
-  const asyncHandlers = handlersWithExecutionMode.filter(item => item.executionMode === 'async').map(item => item.handler)
+  const syncHandlers = handlersWithExecutionMode.filter(item => item.executionMode === 'sync')
+  const asyncHandlers = handlersWithExecutionMode.filter(item => item.executionMode === 'async')
+
+  const logTarget = await resolveHookLogTarget(req.cwd).catch(() => ({
+    logPath: path.join(getManagedHooksDirectory(), 'logs', 'hooks.ndjson'),
+    fallback: true,
+  }))
+  const scheduledAt = new Date().toISOString()
+  const scheduledRuns = handlersWithExecutionMode.map(({ handler, executionMode }): HookRunRecord =>
+    persistHookRun(req, {
+      id: uuidv4(),
+      conversationId: req.conversationId ?? null,
+      streamId: req.streamId ?? null,
+      event: req.event,
+      messageId: req.messageId ?? null,
+      label: handler.label || deriveHookLabel(handler.command),
+      configuredCommand: redactHookDiagnostic(handler.command, 2_000) || '',
+      executedCommand: null,
+      sourceFile: handler.sourceFile || '',
+      scope: deriveHookScope(handler.sourceFile || '', req.cwd),
+      executionMode,
+      status: 'scheduled',
+      outcomeCode: null,
+      outcomeSummary: null,
+      cwd: handler.workingDirectory || req.cwd || null,
+      startedAt: null,
+      completedAt: null,
+      durationMs: null,
+      errorSummary: null,
+      stdoutPreview: null,
+      stderrPreview: null,
+      logPath: logTarget.logPath,
+      logFallback: logTarget.fallback,
+      createdAt: scheduledAt,
+      updatedAt: scheduledAt,
+    })
+  )
+  await Promise.all(scheduledRuns.map(run => appendHookTransition(toLogTransition(run))))
+  if (scheduledRuns.length > 0) {
+    try { req.onActivity?.(scheduledRuns.map(toSafeHookRunRecord)) } catch { /* activity must not break hooks */ }
+  }
 
   logHookRunner('matched handlers', {
     event: req.event,
@@ -692,25 +861,33 @@ export async function runHookRequest(req: HookRunRequest): Promise<HookRunResult
     asyncHookCount: asyncHandlers.length,
     launchedAsyncHookCount: 0,
     errors: [],
+    hookRuns: scheduledRuns.map(toSafeHookRunRecord),
   }
   const additionalContexts: string[] = []
 
-  for (const handler of asyncHandlers) {
-    launchAsyncCommandHook(handler, req)
+  for (const item of asyncHandlers) {
+    const runIndex = handlersWithExecutionMode.indexOf(item)
+    launchAsyncCommandHook(item.handler, req, scheduledRuns[runIndex])
     result.launchedAsyncHookCount = (result.launchedAsyncHookCount ?? 0) + 1
   }
 
-  for (const handler of syncHandlers) {
+  for (const item of syncHandlers) {
+    const runIndex = handlersWithExecutionMode.indexOf(item)
     try {
-      const decision = await executeCommandHook(handler, req)
+      const { report, record } = await executeTrackedHook(item.handler, req, scheduledRuns[runIndex])
       result.hookCount += 1
-      result = mergeHookDecision(result, req.event, decision, additionalContexts)
+      result.hookRuns![runIndex] = toSafeHookRunRecord(record)
+      if (!report.success) {
+        pushUnique(result.errors || (result.errors = []), report.error || 'Hook command failed')
+      } else {
+        result = mergeHookDecision(result, req.event, report.decision, additionalContexts)
+      }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
       warnHookRunner('command hook failed', {
         event: req.event,
-        command: handler.command,
-        cwd: handler.workingDirectory || req.cwd || null,
+        command: item.handler.command,
+        cwd: item.handler.workingDirectory || req.cwd || null,
         error: message,
       })
       pushUnique(result.errors || (result.errors = []), message)

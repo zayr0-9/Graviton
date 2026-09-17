@@ -132,7 +132,7 @@ curl -N -X POST http://127.0.0.1:3002/api/conversations/<conversationId>/message
   -d '{
     "content": "Summarize README and list TODOs",
     "provider": "openaichatgpt",
-    "modelName": "gpt-5.4-mini",
+    "modelName": "gpt-5.5",
     "userId": "user-123",
     "rootPath": "D:/workspace/my-project"
   }'
@@ -150,7 +150,7 @@ Core fields:
 
 - `content: string`
 - `provider: string` (default `openaichatgpt`)
-- `modelName: string` (default `gpt-5.4`)
+- `modelName: string` (default `gpt-5.5`)
 - `userId?: string`
 - `parentId?: string | null`
 - `messageId?: string | null` (for branch/edit/repeat forms)
@@ -248,7 +248,7 @@ Request:
 
 ```json
 {
-  "modelName": "gpt-5.4-mini",
+  "modelName": "gpt-5.5",
   "content": "Explain this code",
   "userId": "user-123",
   "history": [],
@@ -272,7 +272,7 @@ Response shape:
   "success": true,
   "provider": "openaichatgpt",
   "upstream": "responses",
-  "modelName": "gpt-5.4-mini",
+  "modelName": "gpt-5.5",
   "message": { "role": "assistant", "content": "..." },
   "reasoning": "...",
   "toolCalls": [],

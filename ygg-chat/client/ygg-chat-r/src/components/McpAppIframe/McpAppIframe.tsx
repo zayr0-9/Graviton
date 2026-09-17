@@ -12,6 +12,7 @@ import {
 import type { ToolDefinition } from '../../features/chats/toolDefinitions'
 import { getMcpTools } from '../../features/chats/toolDefinitions'
 import { normalizeMcpAppToolResult, type McpAppToolResultEnvelope } from '../../utils/mcpAppToolResult'
+import { getMcpAppHeight, MCP_APP_MAX_HEIGHT, rememberMcpAppHeight } from './mcpAppSizing'
 
 type McpAppIframeProps = {
   serverName: string
@@ -22,6 +23,12 @@ type McpAppIframeProps = {
   toolDefinition?: ToolDefinition
   className?: string
   reloadToken?: number
+  /**
+   * Key under which the settled height is remembered (see `mcpAppSizing.ts`). Inline chat cards
+   * pass their entry key so a remount renders at the right height on the first frame. Without
+   * it the iframe still sizes itself, but forgets on unmount.
+   */
+  heightKey?: string | null
 }
 
 type JsonRpcRequest = {
@@ -73,7 +80,7 @@ const buildHostContext = (toolDefinition?: ToolDefinition, fallbackToolName?: st
     displayMode: 'inline',
     containerDimensions: {
       width: typeof window !== 'undefined' ? window.innerWidth : undefined,
-      maxHeight: 600,
+      maxHeight: MCP_APP_MAX_HEIGHT,
     },
   }
 }
@@ -102,9 +109,19 @@ export const McpAppIframe: React.FC<McpAppIframeProps> = ({
   toolDefinition,
   className,
   reloadToken,
+  heightKey = null,
 }) => {
   const iframeRef = useRef<HTMLIFrameElement | null>(null)
   const [html, setHtml] = useState<string | null>(null)
+  // One height for the loading box and the iframe, so the row never changes size between the
+  // two. The app may move it inside [MIN, MAX] through `ui/notifications/size-changed`.
+  const [height, setHeight] = useState(() => getMcpAppHeight(heightKey))
+  const heightKeyRef = useRef(heightKey)
+  useEffect(() => {
+    if (heightKeyRef.current === heightKey) return
+    heightKeyRef.current = heightKey
+    setHeight(getMcpAppHeight(heightKey))
+  }, [heightKey])
   const [uiMeta, setUiMeta] = useState<McpUiMeta | undefined>(undefined)
   const [loadError, setLoadError] = useState<string | null>(null)
   const appReadyRef = useRef(false)
@@ -398,15 +415,11 @@ export const McpAppIframe: React.FC<McpAppIframeProps> = ({
           ensureReadyAndSend()
           break
         case 'ui/notifications/size-changed': {
-          const iframe = iframeRef.current
-          if (!iframe) break
-          const { width, height } = notification.params || {}
-          if (typeof width === 'number') {
-            iframe.style.width = `${width}px`
-          }
-          if (typeof height === 'number') {
-            iframe.style.height = `${height}px`
-          }
+          // Width is the card's to decide: the iframe fills it. Only height is negotiable, and
+          // it is clamped to the range the host advertised in `containerDimensions`.
+          const requested = notification.params?.height
+          if (typeof requested !== 'number' || !Number.isFinite(requested)) break
+          setHeight(rememberMcpAppHeight(heightKeyRef.current, requested))
           break
         }
         case 'notifications/message':
@@ -444,7 +457,10 @@ export const McpAppIframe: React.FC<McpAppIframeProps> = ({
 
   if (!html) {
     return (
-      <div className='rounded-lg border border-neutral-200 bg-white p-3 text-xs text-neutral-500 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-400'>
+      <div
+        className='rounded-lg border border-neutral-200 bg-white p-3 text-xs text-neutral-500 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-400'
+        style={{ height }}
+      >
         Loading MCP App…
       </div>
     )
@@ -454,8 +470,8 @@ export const McpAppIframe: React.FC<McpAppIframeProps> = ({
     <iframe
       ref={iframeRef}
       srcDoc={html}
-      className={className ?? 'w-full min-h-[600px] rounded-lg bg-white'}
-      style={{ border: 'none' }}
+      className={className ?? 'w-full rounded-lg bg-white'}
+      style={{ border: 'none', height }}
       title='MCP App'
       allow={allowAttr}
       allowFullScreen

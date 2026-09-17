@@ -72,6 +72,7 @@ Dynamic callback ports are ephemeral. Dynamic client registrations record their 
 
 - Local Electron is the only supported runtime surface in this repository.
 - MCP servers never connect or launch OAuth during Graviton startup; connection and authentication begin only on explicit/model MCP use.
+- Successful capability discovery emits `toolsChanged`; the local server immediately registers the new handlers, the active tool loop refreshes its provider schemas before the next turn, and the renderer receives `tools_updated` over the chat stream.
 - `settings.lazyStart` and per-server `autoStart` remain config-compatible legacy fields, but startup is always lazy.
 - All Streamable HTTP JSON-RPC requests and notifications use the centralized OAuth-aware headers and refresh path.
 - A rejected access token is invalidated before refresh/retry; auth retries occur at most once.

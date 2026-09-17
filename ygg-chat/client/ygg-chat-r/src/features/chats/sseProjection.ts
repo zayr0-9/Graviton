@@ -335,6 +335,11 @@ export function projectServerEvent(event: ServerStreamEvent, ctx: ProjectionCont
       return [errorChunkAction(streamId, envelope, false)]
     }
 
+    case 'hook_activity': {
+      if (!event.messageId) return []
+      return [chatSliceActions.hookActivityUpdated({ messageId: event.messageId as MessageId, runs: event.runs as any })]
+    }
+
     case 'notice': {
       return [
         noticeAction(streamId, event.code, event.message, { attempt: event.attempt, maxAttempts: event.maxAttempts }),

@@ -151,6 +151,48 @@ describe('runServerChatLoop resubscribe', () => {
     expect(fetchMock).toHaveBeenNthCalledWith(2, 'http://local/api/streams/s-1?fromSeq=2', expect.anything())
   })
 
+  it('merges tools_updated definitions into the renderer tool registry', async () => {
+    const post = sseResponse([
+      {
+        type: 'tools_updated',
+        tools: [{
+          name: 'mcp__auto-refresh-test__echo',
+          description: 'Echo input',
+          inputSchema: { type: 'object', properties: { text: { type: 'string' } } },
+          serverName: 'auto-refresh-test',
+          toolName: 'echo',
+          ui: { visibility: ['model', 'app'] },
+        }],
+        seq: 1,
+      },
+      { type: 'complete', message: { id: 'a-tools' }, seq: 2 },
+    ])
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(post))
+    const deps = collectDispatch()
+
+    await runServerChatLoop(
+      {
+        operation: 'send',
+        conversationId: 'c1',
+        streamId: 's-tools',
+        path: '/api/conversations/c1/messages',
+        request: {},
+        signal: new AbortController().signal,
+      },
+      deps
+    )
+
+    const setTools = deps.actions.find(action => action.type === 'chat/setTools')
+    expect(setTools?.payload).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        name: 'mcp__auto-refresh-test__echo',
+        isMcp: true,
+        mcpServerName: 'auto-refresh-test',
+        mcpToolName: 'echo',
+      }),
+    ]))
+  })
+
   it('carries optimistic image artifacts onto the server-assigned user message', async () => {
     const post = sseResponse([
       {

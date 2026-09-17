@@ -1,6 +1,8 @@
 import type Database from 'better-sqlite3'
 import type { Express } from 'express'
 import { v4 as uuidv4 } from 'uuid'
+import { toSafeHookRunRecord } from '../../hooks/hookDiagnostics.js'
+import { HookRunRepo } from '../persistence/hookRunRepo.js'
 
 interface AppAutomationRouteDeps {
   db: Database.Database
@@ -870,10 +872,19 @@ export function registerAppAutomationRoutes(app: Express, deps: AppAutomationRou
       const { id } = req.params
       const messages = statements.getMessagesByConversationId.all(id)
 
+      const hookRuns = new HookRunRepo({ db }).list({ conversationId: id, limit: 500 }).map(toSafeHookRunRecord)
+      const hookRunsByMessage = new Map<string, typeof hookRuns>()
+      for (const run of hookRuns) {
+        if (!run.messageId) continue
+        const list = hookRunsByMessage.get(String(run.messageId)) || []
+        list.push(run)
+        hookRunsByMessage.set(String(run.messageId), list)
+      }
       const normalizedMessages = messages.map((msg: any) => {
         const attachments = statements.getAttachmentsByMessageId.all(msg.id) as any[]
         return {
           ...msg,
+          hook_runs: hookRunsByMessage.get(String(msg.id)) || [],
           children_ids: msg.children_ids ? JSON.parse(msg.children_ids) : [],
           tool_calls: msg.tool_calls ? JSON.parse(msg.tool_calls) : null,
           content_blocks: msg.content_blocks ? JSON.parse(msg.content_blocks) : null,

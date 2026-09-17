@@ -1,4 +1,4 @@
-import type { ContentBlock, StreamEvent } from '@/features/chats/chatTypes'
+import type { ContentBlock, HookRunRecord, StreamEvent } from '@/features/chats/chatTypes'
 import type { ChatErrorActionKind, ChatErrorEnvelope } from '../../../../../shared/chatErrors'
 import type { MessageId } from '../../../../../shared/types'
 import type { RootState } from '@/store/store'
@@ -40,6 +40,7 @@ import {
   resolveRoleThemeKey,
 } from '../ThemeManager/themeConfig'
 import { ContextInjectionCard, type ContextInjectionCardEntry } from './ContextInjectionCard'
+import { HookActivityCard } from './HookActivityCard'
 import { MessageActions } from './MessageActions'
 import { Badge, DisclosurePanel, DisclosureRow } from './messagePrimitives'
 import { ToolCallGroupCard, type McpViewerPayload } from './ToolCallGroupCard'
@@ -93,6 +94,7 @@ interface ChatMessageProps {
   content: string
   contentBlocks?: ContentBlock[]
   streamEvents?: StreamEvent[]
+  hookRuns?: HookRunRecord[]
   timestamp?: string | Date
   onEdit?: (id: string, newContent: string, newContentBlocks?: ContentBlock[]) => void
   onBranch?: (id: string, newContent: string, newContentBlocks?: ContentBlock[]) => void
@@ -122,6 +124,8 @@ interface ChatMessageProps {
   isDarkMode?: boolean
   onEditingStateChange?: (id: string, isEditing: boolean, mode: 'edit' | 'branch' | null) => void
   onLayoutChange?: () => void
+  onHookRunsUpdated?: (messageId: string, runs: HookRunRecord[]) => void
+  onHookRunsSettled?: () => void
   userTurnElapsedLabel?: string
   undoState?: {
     available: boolean
@@ -371,6 +375,7 @@ const ChatMessage: React.FC<ChatMessageProps> = React.memo(
     content,
     contentBlocks,
     streamEvents,
+    hookRuns,
     onEdit,
     onBranch,
     onDelete,
@@ -394,6 +399,8 @@ const ChatMessage: React.FC<ChatMessageProps> = React.memo(
     isDarkMode: isDarkModeProp,
     onEditingStateChange,
     onLayoutChange,
+    onHookRunsUpdated,
+    onHookRunsSettled,
     userTurnElapsedLabel,
     undoState,
     onUndoStreamEdits,
@@ -1255,6 +1262,15 @@ const ChatMessage: React.FC<ChatMessageProps> = React.memo(
       return rendered
     }
 
+    const renderHookActivityItem = (): MessageRenderItem | null => {
+      if (!hookRuns?.length || role !== 'assistant') return null
+      return {
+        key: 'hook-activity',
+        kind: 'other',
+        node: <HookActivityCard key='hook-activity' initialRuns={hookRuns} messageId={id} event={hookRuns[0]?.event} fontSizeOffset={fontSizeOffset} onLayoutChange={onLayoutChange} onRunsUpdated={runs => onHookRunsUpdated?.(id, runs)} onRunsSettled={onHookRunsSettled} />,
+      }
+    }
+
     const renderTextItem = (key: string, markdown: string): MessageRenderItem => ({
       key,
       kind: 'other',
@@ -1694,13 +1710,17 @@ const ChatMessage: React.FC<ChatMessageProps> = React.memo(
 
     // `contentToolGroupsByIndex` is keyed by index into `contentBlocks`. A user row never has tool
     // blocks and the fallback text block sits alone, so the map stays valid for `renderableBlocks`.
-    const renderedNodes = editingState
+    const baseRenderedNodes = editingState
       ? null
       : hasStreamEvents
         ? renderItemsWithOptionalProcessGrouping(buildStreamRenderItems(), `stream-${id}`)
         : renderableBlocks.length > 0
           ? renderItemsWithOptionalProcessGrouping(buildContentBlockRenderItems(renderableBlocks), `blocks-${id}`)
           : null
+    const hookActivityItem = renderHookActivityItem()
+    const renderedNodes = hookActivityItem
+      ? [...(Array.isArray(baseRenderedNodes) ? baseRenderedNodes : baseRenderedNodes ? [baseRenderedNodes] : []), hookActivityItem.node]
+      : baseRenderedNodes
 
     const hasSelection = selectedText.length > 0
     const showActionsRow = hasContent && canBranchMessage && showInlineActions

@@ -23,6 +23,7 @@
 import { buildLocalApiUrl } from '../../utils/api'
 import { isResumableRunsEnabled } from '../../helpers/serverLoopSettings'
 import { chatSliceActions } from './chatSlice'
+import { getAllTools, setMcpTools, type ToolDefinition } from './toolDefinitions'
 import { projectServerEvent, normalizeServerMessage, type ProjectionContext, type ServerStreamEvent } from './sseProjection'
 import { attachLocalChatErrorCode, classifyLocalChatError } from './localChatErrors'
 import type { Message } from './chatTypes'
@@ -251,7 +252,30 @@ function makeHandleEvent(
     // (a) project to Redux, in order.
     for (const action of projectServerEvent(event, ctx)) dispatch(action)
     // (b) event-specific side effects that need the operation / return ids.
-    if (event.type === 'user_message_persisted') {
+    if (event.type === 'tools_updated') {
+      const discovered = event.tools.map((tool): ToolDefinition => {
+        const visibility = Array.isArray(tool.ui?.visibility) ? tool.ui.visibility : ['model', 'app']
+        return {
+          name: tool.name,
+          description: tool.description || `MCP tool from ${tool.serverName || 'server'}`,
+          enabled: visibility.includes('model'),
+          inputSchema: {
+            type: 'object',
+            properties: tool.inputSchema?.properties || {},
+            required: Array.isArray(tool.inputSchema?.required) ? tool.inputSchema.required : undefined,
+          },
+          isMcp: tool.name.startsWith('mcp__'),
+          mcpServerName: tool.serverName,
+          mcpToolName: tool.toolName,
+          mcpUi: tool.ui,
+        }
+      })
+      const existingMcp = getAllTools().filter(tool => tool.isMcp)
+      const byName = new Map(existingMcp.map(tool => [tool.name, tool]))
+      for (const tool of discovered) byName.set(tool.name, tool)
+      setMcpTools(Array.from(byName.values()))
+      dispatch(chatSliceActions.setTools(getAllTools()))
+    } else if (event.type === 'user_message_persisted') {
       acc.userMessage = normalizeServerMessage(event.message)
       if (ctx.userMessageArtifacts?.length) {
         acc.userMessage.artifacts = Array.from(

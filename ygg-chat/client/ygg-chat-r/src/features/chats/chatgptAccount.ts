@@ -25,9 +25,6 @@ const models = [
   ['gpt-5.6-luna', 'GPT-5.6 Luna', 'Fast and cost-efficient GPT-5.6 model'],
   ['gpt-5.5', 'GPT-5.5', 'Latest GPT-5.5 frontier model for professional work'],
   ['gpt-5.5-pro', 'GPT-5.5 Pro', 'Version of GPT-5.5 that produces smarter and more precise responses'],
-  ['gpt-5.4', 'GPT-5.4', 'Latest GPT-5.4 frontier model for professional work'],
-  ['gpt-5.4-mini', 'GPT-5.4 Mini', 'Strong mini model for coding, computer use, and subagents'],
-  ['gpt-5.4-pro', 'GPT-5.4 Pro', 'Version of GPT-5.4 that produces smarter and more precise responses'],
   ['gpt-5.3-codex', 'GPT-5.3 Codex', 'Latest GPT-5.3 Codex model for coding tasks'],
   ['gpt-4o', 'GPT-4o', 'GPT-4o multimodal model'],
 ]

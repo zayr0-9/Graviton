@@ -5,6 +5,35 @@ import type { PlanClarificationRequest } from './planToolTypes'
 export type { ChatErrorAction, ChatErrorCode, ChatErrorEnvelope, ChatNoticeCode } from '../../../../../shared/chatErrors'
 
 // Message types (shared with conversations)
+export type HookRunStatus = 'scheduled' | 'running' | 'succeeded' | 'skipped' | 'failed' | 'timed_out'
+export interface HookRunRecord {
+  id: string
+  conversationId: string | null
+  streamId: string | null
+  event: string
+  messageId: string | null
+  label: string
+  configuredCommand: string
+  executedCommand: string | null
+  sourceFile: string
+  scope: 'personal' | 'project' | 'local_override'
+  executionMode: 'sync' | 'async'
+  status: HookRunStatus
+  outcomeCode: string | null
+  outcomeSummary: string | null
+  cwd: string | null
+  startedAt: string | null
+  completedAt: string | null
+  durationMs: number | null
+  errorSummary: string | null
+  stdoutPreview: string | null
+  stderrPreview: string | null
+  logPath: string | null
+  logFallback: boolean
+  createdAt: string
+  updatedAt: string
+}
+
 export interface Message extends BaseMessage {
   //media: Blob or path to file
   pastedContext: string[]
@@ -15,6 +44,7 @@ export interface Message extends BaseMessage {
   // Spelled as `ContentBlock[]` rather than longhand so a new member (e.g. ErrorBlock, which
   // makes a classified failure survive a reload) is persistable without editing this line.
   content_blocks?: ContentBlock[]
+  hook_runs?: HookRunRecord[]
 }
 
 export interface miniMessage {

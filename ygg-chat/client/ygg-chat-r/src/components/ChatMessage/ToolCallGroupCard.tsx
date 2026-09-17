@@ -346,7 +346,8 @@ export const ToolCallGroupCard: React.FC<ToolCallGroupCardProps> = ({
                 toolResult={normalizedResult}
                 toolDefinition={mcpTool}
                 reloadToken={mcpReloadTokens[reloadKey] || 0}
-                className='w-full min-h-[600px] rounded-xl bg-white'
+                heightKey={mcpEntryKey}
+                className='w-full rounded-xl bg-white'
               />
             </div>
           </div>
@@ -394,6 +395,9 @@ export const ToolCallGroupCard: React.FC<ToolCallGroupCardProps> = ({
 
   // Generic tool: collapsible row, inputs and outputs inside.
   const isSubagent = normalizedName === 'subagent' || normalizedName === 'subagent_manager'
+  const isSubagentSpawn =
+    normalizedName === 'subagent' ||
+    (normalizedName === 'subagent_manager' && String(group.args?.action ?? '').toLowerCase() === 'spawn')
   const pathContent = extractPathParam(group.args)
   const htmlResultKeys = group.results
     .map((result, resultIdx) =>
@@ -442,8 +446,10 @@ export const ToolCallGroupCard: React.FC<ToolCallGroupCardProps> = ({
             const nestedName = normalizeToolName(
               typeof record?.tool === 'string' ? record.tool : typeof record?.toolName === 'string' ? record.toolName : ''
             )
-            const isNestedSubagent = nestedName === 'subagent' || nestedName === 'subagent_manager'
-            return isNestedSubagent ? { index, toolCallId: `${group.id}:${index + 1}` } : null
+            const nestedAction = String((record?.args as Record<string, any> | undefined)?.action ?? '').toLowerCase()
+            const isNestedSubagentSpawn =
+              nestedName === 'subagent' || (nestedName === 'subagent_manager' && nestedAction === 'spawn')
+            return isNestedSubagentSpawn ? { index, toolCallId: `${group.id}:${index + 1}` } : null
           })
           .filter((entry): entry is { index: number; toolCallId: string } => entry !== null)
       : []
@@ -456,12 +462,12 @@ export const ToolCallGroupCard: React.FC<ToolCallGroupCardProps> = ({
     <>
       {isMcpGroup && mcpServerName && loadAppPill(mcpServerName, `${messageId}-${group.id}-mcp`)}
       {primaryHtmlResultKey && viewerPill(primaryHtmlResultKey)}
-      {isSubagent && transcriptPill(group.id)}
+      {isSubagentSpawn && transcriptPill(group.id)}
       {soleNestedSubagent && transcriptPill(soleNestedSubagent.toolCallId)}
     </>
   )
   const hasTrailing = Boolean(
-    (isMcpGroup && mcpServerName) || primaryHtmlResultKey || isSubagent || soleNestedSubagent
+    (isMcpGroup && mcpServerName) || primaryHtmlResultKey || isSubagentSpawn || soleNestedSubagent
   )
 
   const renderInputs = () => {

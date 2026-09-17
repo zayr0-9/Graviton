@@ -150,6 +150,7 @@ Text, images, and the label of every disclosure row share one horizontal inset
 
 - Reasoning, generic tool cards, and grouped "Agent steps" all use `DisclosureRow` (32px) plus `DisclosurePanel`.
 - Tool variants that are always visible (html_renderer, MCP app, plan_md, edit diff, internalLink) use a static 32px row with the same inset.
+- The MCP app iframe has one explicit height, shared by its loading box, clamped to `[240, 600]` px (`McpAppIframe/mcpAppSizing.ts`). The app moves it through `ui/notifications/size-changed`; the settled value is remembered per `${messageId}-${toolCallId}-mcp-app` in localStorage, so a remount and the row estimator both use it. `containerDimensions.maxHeight` advertises the same ceiling.
 - Structured tool detail uses `SurfaceCard` and `Badge`. Surfaces are tone only. No borders, no shadows.
 - User rows draw one tinted `rounded-2xl` surface with a small role caption. Assistant rows are flat.
 

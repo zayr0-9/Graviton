@@ -1053,7 +1053,16 @@ export const chatSlice = createSlice({
 
       const existing = state.conversation.messages.findIndex(x => x.id === m.id)
       if (existing >= 0) {
-        state.conversation.messages[existing] = m
+        const previous = state.conversation.messages[existing]
+        const byRunId = new Map((previous.hook_runs || []).map(run => [run.id, run]))
+        for (const run of m.hook_runs || []) {
+          const prior = byRunId.get(run.id)
+          if (!prior || new Date(run.updatedAt).getTime() >= new Date(prior.updatedAt).getTime()) byRunId.set(run.id, run)
+        }
+        state.conversation.messages[existing] = {
+          ...m,
+          ...(byRunId.size > 0 ? { hook_runs: Array.from(byRunId.values()) } : {}),
+        }
       } else {
         state.conversation.messages.push(m)
       }
@@ -1061,6 +1070,23 @@ export const chatSlice = createSlice({
 
     messagesCleared: state => {
       state.conversation.messages = []
+    },
+
+    hookActivityUpdated: (state, action: PayloadAction<{ messageId: MessageId; runs: import('./chatTypes').HookRunRecord[] }>) => {
+      const message = state.conversation.messages.find(item => String(item.id) === String(action.payload.messageId))
+      if (!message) return
+      const byId = new Map((message.hook_runs || []).map(run => [run.id, run]))
+      for (const run of action.payload.runs) {
+        const previous = byId.get(run.id)
+        if (!previous || new Date(run.updatedAt).getTime() >= new Date(previous.updatedAt).getTime()) byId.set(run.id, run)
+      }
+      message.hook_runs = Array.from(byId.values())
+    },
+
+    hookActivityReconciled: (state, action: PayloadAction<{ messageId: MessageId; runs: import('./chatTypes').HookRunRecord[] }>) => {
+      const message = state.conversation.messages.find(item => String(item.id) === String(action.payload.messageId))
+      if (!message) return
+      message.hook_runs = action.payload.runs
     },
 
     messageUpdated: (

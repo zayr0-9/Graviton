@@ -48,7 +48,17 @@ interface HeadlessServerRouteDeps {
   orchestrator?: OrchestratorLike
 }
 
-type InferenceToolDefinition = { name: string; description?: string; inputSchema?: Record<string, any> }
+type InferenceToolDefinition = {
+  name: string
+  description?: string
+  inputSchema?: Record<string, any>
+  serverName?: string
+  toolName?: string
+  ui?: {
+    resourceUri?: string
+    visibility?: Array<'model' | 'app'>
+  }
+}
 
 const HEADLESS_RUNTIME_BUILTIN_TOOL_NAMES = new Set([
   'todo_list',
@@ -99,6 +109,9 @@ const toMcpInferenceTool = (tool: any): InferenceToolDefinition | null => {
   const name = typeof tool?.qualifiedName === 'string' ? tool.qualifiedName : typeof tool?.name === 'string' ? tool.name : null
   if (!name) return null
 
+  const ui = tool?._meta?.ui ||
+    (tool?._meta?.['ui/resourceUri'] ? { resourceUri: tool._meta['ui/resourceUri'] } : undefined)
+
   return {
     name,
     description: typeof tool?.description === 'string' ? tool.description : undefined,
@@ -106,6 +119,9 @@ const toMcpInferenceTool = (tool: any): InferenceToolDefinition | null => {
       tool?.inputSchema && typeof tool.inputSchema === 'object'
         ? tool.inputSchema
         : { type: 'object', properties: {} },
+    serverName: typeof tool?.serverName === 'string' ? tool.serverName : undefined,
+    toolName: typeof tool?.name === 'string' ? tool.name : undefined,
+    ui,
   }
 }
 

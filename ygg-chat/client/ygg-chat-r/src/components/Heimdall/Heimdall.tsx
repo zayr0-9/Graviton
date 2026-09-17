@@ -1,7 +1,7 @@
 import { useQueryClient } from '@tanstack/react-query'
 import { isContextInjectionMessage } from '../../../../../shared/contextInjection'
 import 'boxicons/css/boxicons.min.css'
-import { Flame, ListFilter, Maximize2, Minimize2, RotateCcw, ZoomIn, ZoomOut, FileText } from 'lucide-react'
+import { Flame, ListFilter, Maximize2, Minimize2, RotateCcw, ZoomIn, ZoomOut } from 'lucide-react'
 import type { JSX } from 'react'
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import ReactMarkdown from 'react-markdown'
@@ -32,6 +32,7 @@ import stripMarkdownToText from '../../utils/markdownStripper'
 // import { MarkdownLink } from '../MarkdownLink/MarkdownLink'
 import { environment, localApi } from '../../utils/api'
 import { DeleteConfirmModal } from '../DeleteConfirmModal/DeleteConfirmModal'
+import { shouldPromoteHeimdallNode } from './heimdallNodeVisibility'
 import { TextArea } from '../TextArea/TextArea'
 import { TextField } from '../TextField/TextField'
 import {
@@ -369,28 +370,9 @@ export const Heimdall: React.FC<HeimdallProps> = ({
     }
   })
 
-  // Rendering-only filter for auto-loaded instruction rows (`meta.kind === 'context_injection'`,
-  // docs/claude_code_context_loading_rules.md §11.3 decision 6). Hidden by default.
-  const [filterContextInjections, setFilterContextInjections] = useState<boolean>(() => {
-    try {
-      const saved = localStorage.getItem('heimdall-filter-context-injections')
-      return saved !== null ? JSON.parse(saved) : true
-    } catch {
-      return true
-    }
-  })
-
-  const toggleFilterContextInjections = useCallback(() => {
-    setFilterContextInjections(prev => {
-      const next = !prev
-      try {
-        localStorage.setItem('heimdall-filter-context-injections', JSON.stringify(next))
-      } catch {
-        // ignore
-      }
-      return next
-    })
-  }, [])
+  // Dedicated context-injection rows are model-history scaffolding rather than
+  // conversation turns. Heimdall always promotes their descendants and never renders
+  // them as nodes; Chat still renders their context cards from the flat message list.
 
   const toggleFilterEmptyMessages = useCallback(() => {
     setFilterEmptyMessages(prev => {
@@ -1718,7 +1700,7 @@ export const Heimdall: React.FC<HeimdallProps> = ({
 
     // A context-injection row is treated as empty so it is promoted away while its
     // descendants stay on the branch. Selection still expands to hidden nodes.
-    const isHiddenContextInjection = filterContextInjections && fullMsg ? isContextInjectionMessage(fullMsg) : false
+    const isHiddenContextInjection = fullMsg ? isContextInjectionMessage(fullMsg) : false
 
     const hasContent =
       !isHiddenContextInjection &&
@@ -1737,8 +1719,12 @@ export const Heimdall: React.FC<HeimdallProps> = ({
 
     // 2. If node is empty, skip it and return its children (promotion)
     // Exception: Keep nodes that have siblings (parallel branches)
-    const shouldHide = isHiddenContextInjection || (filterEmptyMessages && !hasContent)
-    if (shouldHide && !hasSiblings) {
+    if (shouldPromoteHeimdallNode({
+      isContextInjection: isHiddenContextInjection,
+      isEmpty: !hasContent,
+      hasSiblings,
+      filterEmptyMessages,
+    })) {
       return filteredChildren
     }
 
@@ -1751,7 +1737,7 @@ export const Heimdall: React.FC<HeimdallProps> = ({
     const rawData = chatData ?? lastDataRef.current ?? null
     if (!rawData) return null
 
-    if (filterEmptyMessages || filterContextInjections) {
+    if (filterEmptyMessages || messageById.size > 0) {
       const result = filterEmptyNodes(rawData, false) // Root node has no siblings
 
       if (result.length === 0) return null
@@ -1765,7 +1751,7 @@ export const Heimdall: React.FC<HeimdallProps> = ({
     }
 
     return rawData
-  }, [chatData, messageById, filterEmptyMessages, filterContextInjections])
+  }, [chatData, messageById, filterEmptyMessages])
 
   // Get the complete branch path for a selected node
   // Uses unfiltered flatMessages to ensure filtered nodes are included in the path
@@ -4137,17 +4123,6 @@ export const Heimdall: React.FC<HeimdallProps> = ({
           aria-pressed={filterEmptyMessages}
         >
           <ListFilter size={18} strokeWidth={2.25} />
-        </button>
-        <button
-          type='button'
-          onClick={toggleFilterContextInjections}
-          className={`${heimdallControlButtonClass} ${filterContextInjections ? heimdallControlButtonActiveClass : ''}`}
-          style={getHeimdallControlButtonStyle(filterContextInjections)}
-          title={filterContextInjections ? 'Show Loaded Context Messages' : 'Hide Loaded Context Messages'}
-          aria-label={filterContextInjections ? 'Show loaded context messages' : 'Hide loaded context messages'}
-          aria-pressed={filterContextInjections}
-        >
-          <FileText size={18} strokeWidth={2.25} />
         </button>
         <button
           type='button'

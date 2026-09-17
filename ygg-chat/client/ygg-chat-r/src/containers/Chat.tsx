@@ -118,6 +118,7 @@ import {
 import type {
   ChatErrorRecord,
   ContentBlock,
+  HookRunRecord,
   ImageDraftTarget,
   StreamUndoSummary,
   ToolCall,
@@ -226,6 +227,7 @@ import { useConversationSnapshotCoordinator } from '../hooks/useConversationSnap
 import { CHAT_INSERT_FILE_PATH_EVENT, type ChatInsertFilePathDetail } from '../helpers/chatInputBridge'
 import { dispatchOpenWorkspaceMutationDiffs } from '../helpers/workspaceMutationDiffBridge'
 import { cloneConversation, gwApi, localApi } from '../utils/api'
+import { getHookRunsRenderSignature } from '../components/ChatMessage/hookActivityState'
 import { getAssetPath } from '../utils/assetPath'
 import { parseId } from '../utils/helpers'
 import { extractTextFromPdf } from '../utils/pdfUtils'
@@ -1017,6 +1019,16 @@ function Chat() {
   // Redux selectors
   const currentUser = useAppSelector(selectCurrentUser)
   const providers = useAppSelector(selectProviderState)
+  const toolDefinitions = useAppSelector(state => state.chat.tools)
+  // MCP tools with a UI resource draw the always-open app card (ToolCallGroupCard). The row
+  // estimator needs the same distinction, or every plain MCP call is guessed 600px too tall.
+  const isMcpAppTool = useMemo(() => {
+    const names = new Set<string>()
+    for (const tool of toolDefinitions) {
+      if (tool.isMcp && tool.mcpUi?.resourceUri) names.add(tool.name)
+    }
+    return (toolName: string) => names.has(toolName)
+  }, [toolDefinitions])
   const currentProviderSlug = (providers.currentProvider || '').toLowerCase().replace(/\s+/g, '')
   const isOpenAIChatGPTProvider = currentProviderSlug === 'openaichatgpt' || currentProviderSlug === 'openai(chatgpt)'
   const isOpenAIContextProvider = isOpenAIProvider(providers.currentProvider)
@@ -2167,7 +2179,8 @@ function Chat() {
           const toolCallsHash = hashUnknownForRenderCache(msg.tool_calls)
           const thinkingHash = hashStringForRenderCache(msg.thinking_block ?? '')
           const noteHash = hashStringForRenderCache(`${msg.note ?? ''}:${msg.note_color ?? ''}`)
-          return `${msg.id}:${msg.role}:${updatedAt}:a${artifactCount}:c${contentHash}:b${contentBlocksHash}:t${toolCallsHash}:r${thinkingHash}:n${noteHash}`
+          const hookRunsHash = hashStringForRenderCache(getHookRunsRenderSignature(msg.hook_runs))
+          return `${msg.id}:${msg.role}:${updatedAt}:a${artifactCount}:c${contentHash}:b${contentBlocksHash}:t${toolCallsHash}:r${thinkingHash}:n${noteHash}:h${hookRunsHash}`
         })
         .join('|'),
     [renderableMessages]
@@ -2929,6 +2942,9 @@ function Chat() {
           groupToolReasoningRuns,
           artifactCount: Array.isArray(message.artifacts) ? message.artifacts.length : 0,
           showsActionsRow: (hasText || hasBlockContent) && canBranch,
+          messageId: message.id,
+          isMcpAppTool,
+          hookRunCount: message.hook_runs?.length ?? 0,
         })
       }
 
@@ -2952,7 +2968,15 @@ function Chat() {
           return 200
       }
     },
-    [virtualRows, parsedMessageDataById, messagesContainerWidth, rootFontSize, fontSizeOffset, groupToolReasoningRuns]
+    [
+      virtualRows,
+      parsedMessageDataById,
+      messagesContainerWidth,
+      rootFontSize,
+      fontSizeOffset,
+      groupToolReasoningRuns,
+      isMcpAppTool,
+    ]
   )
 
   // Virtualizer for efficient message list rendering
@@ -3333,6 +3357,20 @@ function Chat() {
     acceptedConversationId,
     refresh: refreshConversationSnapshot,
   } = useConversationSnapshotCoordinator(conversationIdFromUrl, conversationStorageMode)
+
+  const handleHookRunsUpdated = useCallback(
+    (messageId: string, runs: HookRunRecord[]) => {
+      dispatch(chatSliceActions.hookActivityReconciled({ messageId, runs }))
+    },
+    [dispatch]
+  )
+
+  // Stop hooks can update branch-anchor notes or content blocks after the chat stream
+  // has already closed. Once active runs settle, reload the persisted conversation so
+  // both Chat and Heimdall receive those hook-owned message mutations.
+  const handleHookRunsSettled = useCallback(() => {
+    void refreshConversationSnapshot()
+  }, [refreshConversationSnapshot])
 
   // Route entry is the recovery boundary. A surviving module-level reader is skipped
   // per stream; only orphaned localStorage markers reattach to the main-process run.
@@ -6780,10 +6818,13 @@ function Chat() {
               </div>
             </div>
           )}
-          {/* Messages Display */}
+          {/* Messages Display. `isolate` keeps row z-indexes (focus-within:z-[70], the editing row's
+              zIndex 80) local to this list. Without it they compete in the root stacking context
+              and paint over the right bar (`relative z-10` in rightBar.tsx). Message popovers are
+              portaled to body, so nothing in here needs to escape. */}
           <div
             ref={messagesContainerRef}
-            className={`flex flex-col ${currentConversationId && isTitleBarVisible ? 'pt-25' : 'pt-6'} transition-[padding-top] duration-300 dark:border-neutral-700 border-stone-200 rounded-lg overflow-y-auto overflow-x-hidden thin-scrollbar overscroll-y-contain touch-pan-y`}
+            className={`isolate flex flex-col ${currentConversationId && isTitleBarVisible ? 'pt-25' : 'pt-6'} transition-[padding-top] duration-300 dark:border-neutral-700 border-stone-200 rounded-lg overflow-y-auto overflow-x-hidden thin-scrollbar overscroll-y-contain touch-pan-y`}
             style={{
               ['overflowAnchor' as any]: 'none',
               willChange: 'scroll-position',
@@ -7020,6 +7061,7 @@ function Chat() {
                                           role={groupedMessage.role}
                                           content={groupedMessage.content}
                                           contentBlocks={contentBlocks}
+                                          hookRuns={groupedMessage.hook_runs}
                                           timestamp={groupedMessage.created_at}
                                           width='w-full'
                                           modelName={groupedMessage.model_name}
@@ -7033,6 +7075,8 @@ function Chat() {
                                           onOpenToolHtmlModal={openToolHtmlModal}
                                           onOpenSubagentTranscript={openSubagentTranscript}
                                           onChatErrorAction={handlePersistedChatErrorAction}
+                                          onHookRunsUpdated={handleHookRunsUpdated}
+                                          onHookRunsSettled={handleHookRunsSettled}
                                         />
                                       )
                                     })}
@@ -7079,6 +7123,8 @@ function Chat() {
                                           onOpenToolHtmlModal={openToolHtmlModal}
                                           onOpenSubagentTranscript={openSubagentTranscript}
                                           onChatErrorAction={handlePersistedChatErrorAction}
+                                          onHookRunsUpdated={handleHookRunsUpdated}
+                                          onHookRunsSettled={handleHookRunsSettled}
                                         />
                                       )
                                     })()}
@@ -7155,6 +7201,7 @@ function Chat() {
                               role={msg.role}
                               content={msg.content}
                               contentBlocks={displayContentBlocks}
+                              hookRuns={msg.hook_runs}
                               timestamp={msg.created_at}
                               width='w-full'
                               modelName={msg.model_name}
@@ -7168,6 +7215,8 @@ function Chat() {
                               className={assistantContainerClassName}
                               userTurnElapsedLabel={userTurnElapsedLabelByMessageId.get(String(msg.id))}
                               undoState={msg.role === 'user' ? undoStateByMessageId.get(String(msg.id)) : undefined}
+                              onHookRunsUpdated={handleHookRunsUpdated}
+                              onHookRunsSettled={handleHookRunsSettled}
                               onUndoStreamEdits={
                                 msg.role === 'user' ? undoHandlerByMessageId.get(String(msg.id)) : undefined
                               }

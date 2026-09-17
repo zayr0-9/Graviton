@@ -170,6 +170,7 @@ SECRET_PATTERNS = (
 )
 RECENT_ENTRY_RE = re.compile(r'^- \[(\d{4}-\d{2}-\d{2}-\d{2}-\d{2})\]\s+(.*)$')
 DEBUG_MESSAGES = []
+OUTCOME_UPDATED = False
 
 
 def _json_request(url, method='GET', payload=None, timeout=20):
@@ -183,19 +184,8 @@ def _json_request(url, method='GET', payload=None, timeout=20):
             body = resp.read().decode('utf-8')
             return json.loads(body) if body else {}
     except error.HTTPError as http_error:
-        error_body = ''
-        try:
-            error_body = http_error.read().decode('utf-8', errors='replace')
-        except Exception:
-            error_body = ''
-        details = {
-            'url': url,
-            'method': method,
-            'status': getattr(http_error, 'code', '?'),
-            'reason': getattr(http_error, 'reason', '?'),
-            'body': error_body[:2000],
-        }
-        raise RuntimeError(f'_json_request HTTPError: {json.dumps(details, ensure_ascii=False)}') from http_error
+        status = getattr(http_error, 'code', '?')
+        raise RuntimeError(f'callback request failed with HTTP status {status}') from http_error
 
 
 def _safe_text(value):
@@ -247,11 +237,24 @@ def _emit_debug(message, **details):
     DEBUG_MESSAGES.append(f'[long_term_memory_stop] {message}{suffix}')
 
 
+def _emit_outcome(outcome_code, outcome_summary, additional_context=''):
+    result = {
+        'outcomeCode': outcome_code,
+        'outcomeSummary': outcome_summary,
+    }
+    if additional_context:
+        result['additionalContext'] = additional_context
+    print(json.dumps(result))
+
+
 def _flush_result():
-    if DEBUG_MESSAGES:
-        print(json.dumps({'additionalContext': '\n\n'.join(DEBUG_MESSAGES)}))
-    else:
-        print('{}')
+    outcome_code = 'updated' if OUTCOME_UPDATED else 'unchanged'
+    outcome_summary = 'Memory files were updated.' if OUTCOME_UPDATED else 'No memory changes were needed.'
+    _emit_outcome(
+        outcome_code,
+        outcome_summary,
+        '\n\n'.join(DEBUG_MESSAGES) if DEBUG_MESSAGES else '',
+    )
 
 
 def _memory_directory():
@@ -530,11 +533,13 @@ def _append_project_entries(project_memory_text, entries, current_date, project_
 
 
 def _atomic_write(path, content):
+    global OUTCOME_UPDATED
     os.makedirs(os.path.dirname(path), exist_ok=True)
     tmp_path = f'{path}.tmp'
     with open(tmp_path, 'w', encoding='utf-8') as handle:
         handle.write(content)
     os.replace(tmp_path, path)
+    OUTCOME_UPDATED = True
 
 
 def _generate_memory_json(local_api_base, system_prompt, model_input):
@@ -570,12 +575,7 @@ def _run_long_term_memory_update(local_api_base, memory_path, memory_text, lates
 
     generation, model_json = _generate_memory_json(local_api_base, SYSTEM_PROMPT, model_input)
     if not isinstance(model_json, dict):
-        _emit_debug(
-            'long_term_fired_then_skipped: model did not return valid JSON',
-            model_text=_truncate_inline(_safe_text(generation.get('text')), 260),
-            **debug_details,
-        )
-        return memory_text
+        raise RuntimeError('long-term memory generation returned invalid JSON')
 
     if not bool(model_json.get('updated')):
         _emit_debug(
@@ -586,8 +586,7 @@ def _run_long_term_memory_update(local_api_base, memory_path, memory_text, lates
 
     entries = model_json.get('entries')
     if not isinstance(entries, list):
-        _emit_debug('long_term_fired_then_skipped: entries was not a list', **debug_details)
-        return memory_text
+        raise RuntimeError('long-term memory generation returned invalid entries')
 
     next_memory, appended = _append_entries(memory_text, entries, current_date)
     if not appended or next_memory == memory_text:
@@ -638,8 +637,7 @@ def _run_project_memory_update(local_api_base, project_memory_path, project_id, 
 
     generation, model_json = _generate_memory_json(local_api_base, PROJECT_MEMORY_SYSTEM_PROMPT, model_input)
     if not isinstance(model_json, dict):
-        _emit_debug('project_memory_fired_then_skipped: model did not return valid JSON', model_text=_truncate_inline(_safe_text(generation.get('text')), 260), **project_debug_details)
-        return project_memory_text
+        raise RuntimeError('project memory generation returned invalid JSON')
 
     if not bool(model_json.get('updated')):
         _emit_debug(f'project_memory_fired_then_skipped: { _truncate_inline(_safe_text(model_json.get("reason"))) or "no update" }', **project_debug_details)
@@ -647,8 +645,7 @@ def _run_project_memory_update(local_api_base, project_memory_path, project_id, 
 
     entries = model_json.get('entries')
     if not isinstance(entries, list):
-        _emit_debug('project_memory_fired_then_skipped: entries was not a list', **project_debug_details)
-        return project_memory_text
+        raise RuntimeError('project memory generation returned invalid entries')
 
     next_project_memory, appended, pruned = _append_project_entries(project_memory_text, entries, current_date, project_name, project_id)
     if not appended or next_project_memory == project_memory_text:
@@ -688,12 +685,7 @@ def _run_recent_memory_update(local_api_base, recent_memory_path, memory_text, r
 
     generation, model_json = _generate_memory_json(local_api_base, RECENT_MEMORY_SYSTEM_PROMPT, model_input)
     if not isinstance(model_json, dict):
-        _emit_debug(
-            'recent_memory_fired_then_skipped: model did not return valid JSON',
-            model_text=_truncate_inline(_safe_text(generation.get('text')), 260),
-            **recent_debug_details,
-        )
-        return recent_memory_text
+        raise RuntimeError('recent memory generation returned invalid JSON')
 
     if not bool(model_json.get('updated')):
         pruned, pruned_by_age, pruned_by_size = _prune_recent_memory(recent_memory_text or '# Recent memory\n', now)
@@ -709,8 +701,7 @@ def _run_recent_memory_update(local_api_base, recent_memory_path, memory_text, r
 
     entries = model_json.get('entries')
     if not isinstance(entries, list):
-        _emit_debug('recent_memory_fired_then_skipped: entries was not a list', **recent_debug_details)
-        return recent_memory_text
+        raise RuntimeError('recent memory generation returned invalid entries')
 
     next_recent_memory, appended, pruned_by_age, pruned_by_size = _append_recent_entries(
         recent_memory_text,
@@ -760,7 +751,7 @@ def _resolve_project_context(local_api_base, conversation_id, payload):
             if isinstance(conversation, dict):
                 project_id = project_id or _safe_text(conversation.get('project_id'))
         except Exception as exc:
-            _emit_debug('project_context_fallback_conversation_failed', error=_truncate_inline(str(exc), 200), conversation_id=conversation_id)
+            raise RuntimeError('project conversation context callback failed') from exc
 
     if local_api_base and project_id and not project_name:
         try:
@@ -768,7 +759,7 @@ def _resolve_project_context(local_api_base, conversation_id, payload):
             if isinstance(project, dict):
                 project_name = _safe_text(project.get('name'))
         except Exception as exc:
-            _emit_debug('project_context_fallback_project_failed', error=_truncate_inline(str(exc), 200), project_id=project_id)
+            raise RuntimeError('project metadata callback failed') from exc
 
     return project_id, project_name
 
@@ -777,19 +768,22 @@ def main():
     try:
         payload = json.load(sys.stdin)
     except Exception:
-        print('{}')
+        _emit_outcome('missing_callback_context', 'Hook input was not valid JSON.')
         return
 
     try:
+        if not isinstance(payload, dict):
+            _emit_outcome('missing_callback_context', 'Hook input did not contain a callback object.')
+            return
         event_name = payload.get('hook_event_name')
         if event_name not in ('Stop', 'UserPromptSubmit'):
-            print('{}')
+            _emit_outcome('ignored_event', 'Hook event was not supported.')
             return
 
-        lookup = payload.get('lookup') or {}
+        lookup = payload.get('lookup') if isinstance(payload.get('lookup'), dict) else {}
         local_api_base = _safe_text(lookup.get('local_api_base')).rstrip('/')
         conversation_id = _safe_text(payload.get('conversation_id'))
-        turn = payload.get('turn') or {}
+        turn = payload.get('turn') if isinstance(payload.get('turn'), dict) else {}
         last_user_message_id = _safe_text(turn.get('last_user_message_id'))
         last_assistant_message_id = _safe_text(turn.get('last_assistant_message_id'))
         last_assistant_text = _safe_text(payload.get('last_assistant_message'))
@@ -813,7 +807,7 @@ def main():
                 project_name=project_name or '<missing>',
                 project_memory_path=project_memory_path or '<missing>',
             )
-            _flush_result()
+            _emit_outcome('missing_callback_context', 'Required callback context was unavailable.')
             return
 
         messages = []
@@ -831,7 +825,7 @@ def main():
                     memory_path=memory_path,
                     recent_memory_path=recent_memory_path,
                 )
-                _flush_result()
+                _emit_outcome('messages_unavailable', 'Conversation messages were unavailable.')
                 return
 
             message_by_id = {str(m.get('id')): m for m in messages if isinstance(m, dict) and m.get('id') is not None}
@@ -848,7 +842,7 @@ def main():
                 memory_path=memory_path,
                 recent_memory_path=recent_memory_path,
             )
-            _flush_result()
+            _emit_outcome('messages_unavailable', 'The latest turn text was unavailable.')
             return
 
         memory_text = _read_memory(memory_path)
@@ -913,9 +907,9 @@ def main():
             {**debug_details, 'memory_chars': len(next_memory_text), 'recent_memory_chars': len(next_recent_memory_text)},
         )
         _flush_result()
-    except Exception as exc:
-        # Hook failures should not block chat completion. Raising lets the hook runner log the error.
-        raise RuntimeError(f'long_term_memory_stop failed: {exc}') from exc
+    except Exception:
+        print('long_term_memory_stop: callback, generation, parsing, or update failed', file=sys.stderr)
+        raise SystemExit(1)
 
 
 if __name__ == '__main__':

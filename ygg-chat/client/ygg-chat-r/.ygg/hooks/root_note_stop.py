@@ -73,20 +73,8 @@ def _json_request(url, method='GET', payload=None, timeout=20):
             body = resp.read().decode('utf-8')
             return json.loads(body) if body else {}
     except error.HTTPError as http_error:
-        error_body = ''
-        try:
-            error_body = http_error.read().decode('utf-8', errors='replace')
-        except Exception:
-            error_body = ''
-
-        details = {
-            'url': url,
-            'method': method,
-            'status': getattr(http_error, 'code', '?'),
-            'reason': getattr(http_error, 'reason', '?'),
-            'body': error_body[:4000],
-        }
-        raise RuntimeError(f'_json_request HTTPError: {json.dumps(details, ensure_ascii=False)}') from http_error
+        status = getattr(http_error, 'code', '?')
+        raise RuntimeError(f'callback request failed with HTTP status {status}') from http_error
 
 
 def _safe_text(value):
@@ -133,30 +121,39 @@ def _sanitize_note_color(value):
     return None
 
 
-def _emit_debug(message):
-    print(json.dumps({'additionalContext': f'[root_note_stop] {message}'}))
+def _emit_outcome(outcome_code, outcome_summary, additional_context=''):
+    result = {
+        'outcomeCode': outcome_code,
+        'outcomeSummary': outcome_summary,
+    }
+    if additional_context:
+        result['additionalContext'] = f'[root_note_stop] {additional_context}'
+    print(json.dumps(result))
 
 
 def main():
     try:
         payload = json.load(sys.stdin)
     except Exception:
-        print('{}')
+        _emit_outcome('missing_callback_context', 'Hook input was not valid JSON.')
         return
 
     try:
+        if not isinstance(payload, dict):
+            _emit_outcome('missing_callback_context', 'Hook input did not contain a callback object.')
+            return
         if payload.get('hook_event_name') != 'Stop':
-            print('{}')
+            _emit_outcome('ignored_event', 'Hook event was not Stop.')
             return
 
-        lookup = payload.get('lookup') or {}
+        lookup = payload.get('lookup') if isinstance(payload.get('lookup'), dict) else {}
         local_api_base = _safe_text(lookup.get('local_api_base')).rstrip('/')
         conversation_id = _safe_text(payload.get('conversation_id'))
-        lineage = payload.get('lineage') or {}
-        turn = payload.get('turn') or {}
+        lineage = payload.get('lineage') if isinstance(payload.get('lineage'), dict) else {}
+        turn = payload.get('turn') if isinstance(payload.get('turn'), dict) else {}
 
         if not local_api_base or not conversation_id:
-            _emit_debug('skipped: missing local_api_base or conversation_id')
+            _emit_outcome('missing_callback_context', 'Required callback context was unavailable.')
             return
 
         lineage_root_message_id = _safe_text(lineage.get('root_message_id'))
@@ -168,7 +165,7 @@ def main():
 
         messages = _json_request(f'{local_api_base}/app/conversations/{conversation_id}/messages')
         if not isinstance(messages, list) or not messages:
-            _emit_debug('skipped: conversation messages unavailable')
+            _emit_outcome('messages_unavailable', 'Conversation messages were unavailable.')
             return
 
         message_by_id = {str(m.get('id')): m for m in messages if isinstance(m, dict) and m.get('id') is not None}
@@ -189,9 +186,8 @@ def main():
             if isinstance(fetched, dict) and fetched.get('id') is not None:
                 message_by_id[str(fetched.get('id'))] = fetched
                 return fetched
-            _emit_debug(
-                f'hydrate_miss: id={message_id} err={_truncate_inline(str(hydrate_error) if hydrate_error else "not_found", 220)}'
-            )
+            if hydrate_error is not None:
+                raise RuntimeError('message hydration callback failed') from hydrate_error
             return None
 
         def _root_from(message_id):
@@ -222,9 +218,7 @@ def main():
             conversation_root_message = root_candidates[0] if root_candidates else None
 
         if not conversation_root_message:
-            _emit_debug(
-                f'skipped: root message not found lineage_root={lineage_root_message_id or "<none>"} current={current_message_id or "<none>"}'
-            )
+            _emit_outcome('no_branch_anchor', 'No branch root message could be resolved.')
             return
 
         conversation_root_message_id = str(conversation_root_message.get('id'))
@@ -289,9 +283,7 @@ def main():
         note_anchor_message_source = 'nearest_branch_scan' if note_anchor_message is not None else 'none'
 
         if note_anchor_message is None:
-            _emit_debug(
-                f'skipped: no user note anchor found path_anchor={path_anchor_id or "<none>"} convo_root={conversation_root_message_id or "<none>"}'
-            )
+            _emit_outcome('no_branch_anchor', 'The current path has no branch note anchor.')
             return
 
         note_anchor_message_id = str(note_anchor_message.get('id'))
@@ -305,9 +297,7 @@ def main():
         latest_assistant_text = _safe_text((last_assistant_message or {}).get('content')) or last_assistant_text
 
         if not latest_user_text and not latest_assistant_text:
-            _emit_debug(
-                f'skipped: empty latest text anchor={note_anchor_message_id} last_user={last_user_message_id or "<none>"} last_assistant={last_assistant_message_id or "<none>"}'
-            )
+            _emit_outcome('messages_unavailable', 'The latest turn text was unavailable.')
             return
 
         model_input = (
@@ -352,8 +342,10 @@ def main():
             next_note = _fallback_note(latest_user_text, latest_assistant_text)
 
         if not next_note or next_note == existing_note:
-            _emit_debug(
-                f'skipped: anchor={note_anchor_message_id} source={note_anchor_message_source} updated={updated} has_note={bool(next_note)} unchanged={next_note == existing_note}'
+            _emit_outcome(
+                'unchanged',
+                'The existing branch note already reflects the latest turn.',
+                f'anchor={note_anchor_message_id} source={note_anchor_message_source}',
             )
             return
 
@@ -368,15 +360,14 @@ def main():
             timeout=20,
         )
 
-        _emit_debug(
-            f'updated: anchor={note_anchor_message_id} used_fallback={not bool(_safe_text(model_json.get("note")).strip()) and not bool(existing_note)} len={len(next_note)} color={next_note_color or ("preserved" if existing_note else "default")}'
+        _emit_outcome(
+            'updated',
+            'The branch note was updated.',
+            f'anchor={note_anchor_message_id} len={len(next_note)}',
         )
-    except error.HTTPError as http_error:
-        raise RuntimeError(
-            f'root_note_stop HTTPError: status={getattr(http_error, "code", "?")} reason={getattr(http_error, "reason", "?")}'
-        ) from http_error
-    except Exception as exc:
-        raise RuntimeError(f'root_note_stop failed: {exc}') from exc
+    except Exception:
+        print('root_note_stop: callback, generation, parsing, or update failed', file=sys.stderr)
+        raise SystemExit(1)
 
 
 if __name__ == '__main__':

@@ -1,4 +1,5 @@
 import type { ContentBlock } from '@/features/chats/chatTypes'
+import { buildMcpAppEntryKey, getMcpAppHeight } from '../McpAppIframe/mcpAppSizing'
 import { isProcessOnlyBlockSet, PROCESS_RUN_GROUP_MIN_ITEMS } from './chatMessageShared'
 
 /**
@@ -28,8 +29,8 @@ import { isProcessOnlyBlockSet, PROCESS_RUN_GROUP_MIN_ITEMS } from './chatMessag
 // Constants below are held in rem and resolved against the measured root size, so the estimate
 // does not carry a systematic 12.5% error on the display most of this app runs on.
 //
-// Values written in px are genuinely px in the markup: Tailwind's `px` suffix, arbitrary values
-// such as `min-h-[600px]`, and rough guesses for content whose real height is unknown.
+// Values written in px are genuinely px in the markup: Tailwind's `px` suffix, inline `height`
+// styles such as the MCP app iframe, and rough guesses for content whose real height is unknown.
 
 /** `MESSAGE_BLOCK_STACK_CLASS` gap-1.5. */
 const REM_STACK_GAP = 0.375
@@ -95,8 +96,9 @@ const CODE_LINE_RATIO = 0.85 * 1.5
 const TOOL_BODY_EDIT_DIFF = 96
 const TOOL_BODY_PLAN_MD = 200
 const TOOL_BODY_HTML = 400
-const TOOL_BODY_MCP_APP = 640
 const TOOL_BODY_INTERNAL_LINK = 72
+/** `DISCLOSURE_BODY_CLASS` (pt-1 pb-2) plus the `p-1` surface card around the MCP iframe. */
+const REM_MCP_APP_BODY_CHROME = 1.25
 
 /** The root font size when it cannot be measured, matching the index.css default. */
 export const DEFAULT_ROOT_FONT_SIZE = 16
@@ -115,7 +117,9 @@ const normalizeToolName = (name: unknown): string =>
  */
 const estimateSpecialToolCard = (
   block: Extract<ContentBlock, { type: 'tool_use' }>,
-  rootFontSize: number
+  rootFontSize: number,
+  messageId: string | undefined,
+  isMcpAppTool: ((toolName: string) => boolean) | undefined
 ): number | null => {
   const name = normalizeToolName(block.name)
   const input = (block.input ?? {}) as Record<string, unknown>
@@ -125,7 +129,13 @@ const estimateSpecialToolCard = (
   if (name === 'internallink' || name === 'internal_link') return header + TOOL_BODY_INTERNAL_LINK
   if (name === 'plan_md' && String(input.action ?? '').toLowerCase() === 'display') return header + TOOL_BODY_PLAN_MD
   if (name === 'edit_file' || name === 'editfile' || name === 'multi_edit') return header + TOOL_BODY_EDIT_DIFF
-  if (name.startsWith('mcp__')) return header + TOOL_BODY_MCP_APP
+  if (name.startsWith('mcp__')) {
+    // Only MCP tools with a UI resource draw the always-open app card. The rest are ordinary
+    // collapsible rows. Without the predicate, assume the app: that was the old behaviour.
+    if (isMcpAppTool && !isMcpAppTool(String(block.name ?? ''))) return null
+    const key = messageId && block.id ? buildMcpAppEntryKey(messageId, block.id) : null
+    return header + REM_MCP_APP_BODY_CHROME * rootFontSize + getMcpAppHeight(key)
+  }
   return null
 }
 
@@ -211,6 +221,12 @@ export interface EstimateMessageRowInput {
   artifactCount: number
   /** Whether the row draws its actions row. Mirrors `hasContent && canBranchMessage`. */
   showsActionsRow: boolean
+  /** Lets MCP app cards look up their remembered height. Omit for rows without a persisted id. */
+  messageId?: string
+  /** True when the MCP tool has a UI resource and so draws the always-open app card. */
+  isMcpAppTool?: (toolName: string) => boolean
+  /** Collapsed Hook Activity card rendered after assistant content. */
+  hookRunCount?: number
 }
 
 type ItemKind = 'tool' | 'reasoning' | 'other'
@@ -234,6 +250,9 @@ export const estimateMessageRowHeight = (input: EstimateMessageRowInput): number
     groupToolReasoningRuns,
     artifactCount,
     showsActionsRow,
+    messageId,
+    isMcpAppTool,
+    hookRunCount = 0,
   } = input
 
   const isUserRow = role === 'user'
@@ -305,7 +324,7 @@ export const estimateMessageRowHeight = (input: EstimateMessageRowInput): number
           break
         }
         case 'tool_use': {
-          items.push([estimateSpecialToolCard(block, rootFontSize) ?? disclosureRow, 'tool'])
+          items.push([estimateSpecialToolCard(block, rootFontSize, messageId, isMcpAppTool) ?? disclosureRow, 'tool'])
           break
         }
         case 'image': {
@@ -330,6 +349,7 @@ export const estimateMessageRowHeight = (input: EstimateMessageRowInput): number
     }
   }
 
+  if (!isUserRow && hookRunCount > 0) items.push([REM_CONTEXT_CARD * rootFontSize, 'other'])
   if (items.length === 0) return baseChrome(isUserRow, artifactCount, showsActionsRow, isProcessOnly, rootFontSize)
 
   // Long runs of process items collapse into a single "Agent steps" row. Build the list of

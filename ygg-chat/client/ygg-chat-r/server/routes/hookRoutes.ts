@@ -6,8 +6,10 @@
 import type { Express } from 'express'
 import { listManagedHooks, setManagedHookEnabled } from '../hooks/hookManager.js'
 import { runHookRequest } from '../hooks/hookRunner.js'
+import { toSafeHookRunRecord } from '../hooks/hookDiagnostics.js'
+import type { HookRunRepo } from '../headlessServer/persistence/hookRunRepo.js'
 
-export function registerHookRoutes(app: Express): void {
+export function registerHookRoutes(app: Express, deps: { hookRunRepo?: HookRunRepo } = {}): void {
   app.get('/api/hooks', async (_req, res) => {
     try {
       const hooks = await listManagedHooks()
@@ -40,6 +42,25 @@ export function registerHookRoutes(app: Express): void {
         error: error instanceof Error ? error.message : String(error),
       })
     }
+  })
+
+  app.get('/api/hooks/runs', (req, res) => {
+    if (!deps.hookRunRepo) return res.json({ runs: [] })
+    const messageId = typeof req.query.messageId === 'string' ? req.query.messageId : undefined
+    const streamId = typeof req.query.streamId === 'string' ? req.query.streamId : undefined
+    const conversationId = typeof req.query.conversationId === 'string' ? req.query.conversationId : undefined
+    const limit = typeof req.query.limit === 'string' ? Number(req.query.limit) : undefined
+    if (!messageId && !streamId && !conversationId) {
+      return res.status(400).json({ error: 'messageId, streamId, or conversationId is required' })
+    }
+    const runs = deps.hookRunRepo.list({ messageId, streamId, conversationId, limit }).map(toSafeHookRunRecord)
+    return res.json({ runs })
+  })
+
+  app.get('/api/hooks/runs/:id', (req, res) => {
+    const run = deps.hookRunRepo?.getById(req.params.id)
+    if (!run) return res.status(404).json({ error: 'Hook run not found' })
+    return res.json({ run: toSafeHookRunRecord(run) })
   })
 
   app.post('/api/hooks/run', async (req, res) => {

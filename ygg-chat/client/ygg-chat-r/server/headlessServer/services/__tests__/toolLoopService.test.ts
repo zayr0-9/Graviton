@@ -831,6 +831,52 @@ const baseRunInput = {
 }
 
 describe('ToolLoopService signal + robustness (in-memory sink)', () => {
+  it('refreshes discovered tools before the next provider turn', async () => {
+    const providerRouter = new FakeProviderRouter()
+    providerRouter.enqueue({
+      content: '',
+      toolCalls: [{ id: 'discover', name: 'mcp_manager', arguments: { action: 'list_tools', name: 'demo' } }],
+    })
+    providerRouter.enqueue({ content: 'used discovered schema' })
+
+    const initialTools = [{ name: 'mcp_manager', inputSchema: { type: 'object', properties: {} } }]
+    const discoveredTool = {
+      name: 'mcp__demo__echo',
+      description: 'Echo input',
+      inputSchema: { type: 'object', properties: { text: { type: 'string' } } },
+    }
+    let discovered = false
+    const events: any[] = []
+    const service = new ToolLoopService({
+      sink: new FakeSink(),
+      providerRouter: providerRouter as unknown as ProviderRouter,
+      executeTool: async () => {
+        discovered = true
+        return { success: true }
+      },
+      maxTurns: 3,
+    })
+
+    await service.run(
+      {
+        ...baseRunInput,
+        tools: initialTools,
+        refreshTools: current => discovered ? [...current, discoveredTool] : current,
+      },
+      event => events.push(event)
+    )
+
+    expect(providerRouter.calls[0].input.tools.map((tool: any) => tool.name)).toEqual(['mcp_manager'])
+    expect(providerRouter.calls[1].input.tools.map((tool: any) => tool.name)).toEqual([
+      'mcp_manager',
+      'mcp__demo__echo',
+    ])
+    expect(events).toContainEqual(expect.objectContaining({
+      type: 'tools_updated',
+      tools: [expect.objectContaining({ name: 'mcp__demo__echo' })],
+    }))
+  })
+
   it('does not silently self-upgrade out of plan mode when no upgrade handler is wired', async () => {
     // Regression: requiresAgentMode() is true for ANYTHING outside the plan allow
     // list, but assertToolAllowedForOperationMode() throws only for the blocked list

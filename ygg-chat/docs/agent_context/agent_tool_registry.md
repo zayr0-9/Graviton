@@ -38,7 +38,7 @@ Use this when changing:
 - The model sees tool schemas built from the active registry.
 - Built-in tools have shared schemas and Electron implementations. `multi_call` is a headless-server composite implementation rather than a `toolOrchestrator` leaf handler: it expands nested calls and sends each through normal policy-aware execution.
 - Custom tools should be discovered/managed through `custom_tool_manager`, not called directly by undeclared names.
-- MCP tools are discovered through MCP manager routes and merged if model-visible.
+- MCP tools are discovered on demand. A successful MCP `tools/list` automatically registers execution handlers, refreshes the active server-owned loop before its next provider turn, and updates the renderer registry through the `tools_updated` SSE event; Settings refresh is not required.
 
 ## Important Invariants
 

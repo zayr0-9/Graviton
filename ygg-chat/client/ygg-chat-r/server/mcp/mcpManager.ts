@@ -128,6 +128,11 @@ export interface McpServerStatus {
   pid?: number
 }
 
+export interface McpToolsChangedEvent {
+  serverName: string
+  tools: McpToolDefinition[]
+}
+
 // JSON-RPC message types
 interface JsonRpcRequest {
   jsonrpc: '2.0'
@@ -294,7 +299,8 @@ class McpClient extends EventEmitter {
   constructor(
     public readonly name: string,
     public readonly config: McpServerConfig,
-    private readonly onOAuthChanged?: (oauth: McpOAuthConfig) => Promise<void>
+    private readonly onOAuthChanged?: (oauth: McpOAuthConfig) => Promise<void>,
+    private readonly onToolsChanged?: (tools: McpToolDefinition[]) => void
   ) {
     super()
     this.transport = resolveTransport(config)
@@ -465,6 +471,7 @@ class McpClient extends EventEmitter {
         serverName: this.name,
         qualifiedName: `mcp__${this.name}__${tool.name}`,
       }))
+      this.onToolsChanged?.(this.tools)
       console.log(`[MCP:${this.name}] Loaded ${this.tools.length} tools`)
     } catch (err) {
       console.log(`[MCP:${this.name}] No tools available:`, err)
@@ -1733,15 +1740,25 @@ export class McpManager extends EventEmitter {
 
     // Create and connect client
     let client: McpClient
-    client = new McpClient(config.name, normalizedConfig, async oauth => {
-      normalizedConfig.oauth = { ...oauth }
-      const configs = await this.loadConfig()
-      const index = configs.findIndex(item => item.name === config.name)
-      if (index !== -1) {
-        configs[index] = { ...configs[index], ...client.config, oauth: { ...oauth }, name: config.name }
-        await this.saveConfig(configs, this.settings)
+    client = new McpClient(
+      config.name,
+      normalizedConfig,
+      async oauth => {
+        normalizedConfig.oauth = { ...oauth }
+        const configs = await this.loadConfig()
+        const index = configs.findIndex(item => item.name === config.name)
+        if (index !== -1) {
+          configs[index] = { ...configs[index], ...client.config, oauth: { ...oauth }, name: config.name }
+          await this.saveConfig(configs, this.settings)
+        }
+      },
+      tools => {
+        this.emit('toolsChanged', {
+          serverName: config.name,
+          tools: tools.map(tool => ({ ...tool })),
+        } satisfies McpToolsChangedEvent)
       }
-    })
+    )
 
     client.on('statusChange', (status) => {
       this.emit('serverStatusChange', { name: config.name, status })

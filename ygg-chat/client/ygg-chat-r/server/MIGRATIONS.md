@@ -30,6 +30,7 @@ An installed app therefore upgrades itself once per migration and never re-runs 
 | --- | --- | --- | --- | --- |
 | 1 | `subagent_manager_columns` | `subagent_runs` gains `handle`, `attempt`, `last_turn_at` and two indexes. | Subagent manager (detached runs, resume). | before 2026-09-15 |
 | 2 | `messages_meta_column` | `messages` gains `meta TEXT` (JSON object). First key: `kind = 'context_injection'` with `files` and `reason`. | Auto-loaded instruction files are persisted as tagged user rows (docs/claude_code_context_loading_rules.md §11.3 decision 6). Future per-message identifiers go in `meta`, not in new columns. | 2026-09-15 |
+| 3 | `hook_runs` | Adds operational hook-run lifecycle records and indexes by message, conversation, stream, and active status. | Async hook completion, skips, failures, and diagnostics must survive SSE completion and app navigation. | 2026-09-16 |
 
 ## Verifying a migration
 

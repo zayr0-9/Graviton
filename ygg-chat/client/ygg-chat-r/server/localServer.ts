@@ -46,7 +46,7 @@ import {
 import { registerLocalOperationsRoutes } from './localOperations.js'
 import { localAnalyticsWorkerClient } from './localAnalyticsWorkerClient.js'
 import { createToolsStatements, initializeToolsSchema, pruneOldTools, registerToolsRoutes } from './localToolsRoutes.js'
-import { mcpManager } from './mcp/mcpManager.js'
+import { mcpManager, type McpToolDefinition, type McpToolsChangedEvent } from './mcp/mcpManager.js'
 import { toMcpExecutionResult } from './mcp/mcpToolResult.js'
 import { registerMcpRoutes } from './mcp/mcpRoutes.js'
 import { registerProxyRoutes } from './proxyGateway.js'
@@ -55,6 +55,8 @@ import { registerRunStateRoutes } from './routes/runStateRoutes.js'
 import { registerSyncStorageRoutes } from './routes/syncStorageRoutes.js'
 import { registerMemoryRoutes } from './routes/memoryRoutes.js'
 import { registerHookRoutes } from './routes/hookRoutes.js'
+import { HookRunRepo } from './headlessServer/persistence/hookRunRepo.js'
+import { configureHookRunTracker } from './hooks/hookRunner.js'
 import { registerUndoRoutes } from './routes/undoRoutes.js'
 import { registerToolExecutionRoutes } from './routes/toolExecutionRoutes.js'
 import { registerAppStoreRoutes } from './routes/appStoreRoutes.js'
@@ -131,6 +133,39 @@ function initializeBuiltInToolRegistry() {
   if (!capabilities.browserEngine) gated.add('browse_web')
   setHostGatedToolNames(gated)
   console.log(`[LocalServer] Initialized ${builtInTools.size} built-in tools`)
+}
+
+function registerMcpToolsWithOrchestrator(mcpTools: McpToolDefinition[] = mcpManager.getAllTools()): number {
+  for (const mcpTool of mcpTools) {
+    const qualifiedName = mcpTool.qualifiedName || mcpTool.name
+    toolOrchestrator.registerTool(qualifiedName, async (args, _options) => {
+      try {
+        const mcpResult = await mcpManager.callTool(qualifiedName, args)
+        // A tool-level failure reported BY a reachable MCP server (isError: true) is a
+        // legitimate, model-visible result. Only transport failures reject the job.
+        return toMcpExecutionResult(mcpResult)
+      } catch (error) {
+        console.error(`[LocalServer] MCP tool execution error (${qualifiedName}):`, error)
+        throw attachChatErrorCode(
+          error instanceof Error ? error : new Error(String(error)),
+          'mcp_unavailable'
+        )
+      }
+    })
+  }
+  console.log(`[LocalServer] Registered ${mcpTools.length} MCP tools with orchestrator`)
+  return mcpTools.length
+}
+
+let mcpToolsListenerBound = false
+function bindMcpToolsLifecycleListener(): void {
+  if (mcpToolsListenerBound) return
+  mcpToolsListenerBound = true
+
+  mcpManager.on('toolsChanged', (event: McpToolsChangedEvent) => {
+    registerMcpToolsWithOrchestrator(event.tools)
+    console.log(`[LocalServer] MCP tools changed (${event.serverName}); total=${event.tools.length}`)
+  })
 }
 
 function registerCustomToolsWithOrchestrator(): number {
@@ -335,6 +370,44 @@ interface SchemaMigration {
   up: (database: Database.Database) => void
 }
 
+function createHookRunsSchema(database: Database.Database): void {
+  database.exec(`
+    CREATE TABLE IF NOT EXISTS hook_runs (
+      id TEXT PRIMARY KEY,
+      conversation_id TEXT,
+      stream_id TEXT,
+      event TEXT NOT NULL,
+      message_id TEXT,
+      label TEXT NOT NULL,
+      configured_command TEXT NOT NULL,
+      executed_command TEXT,
+      source_file TEXT NOT NULL,
+      scope TEXT NOT NULL CHECK (scope IN ('personal','project','local_override')),
+      execution_mode TEXT NOT NULL CHECK (execution_mode IN ('sync','async')),
+      status TEXT NOT NULL CHECK (status IN ('scheduled','running','succeeded','skipped','failed','timed_out')),
+      outcome_code TEXT,
+      outcome_summary TEXT,
+      cwd TEXT,
+      started_at TEXT,
+      completed_at TEXT,
+      duration_ms INTEGER,
+      error_summary TEXT,
+      stdout_preview TEXT,
+      stderr_preview TEXT,
+      log_path TEXT,
+      log_fallback INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE CASCADE,
+      FOREIGN KEY (message_id) REFERENCES messages(id) ON DELETE SET NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_hook_runs_message_created ON hook_runs(message_id, created_at);
+    CREATE INDEX IF NOT EXISTS idx_hook_runs_conversation_created ON hook_runs(conversation_id, created_at);
+    CREATE INDEX IF NOT EXISTS idx_hook_runs_stream_created ON hook_runs(stream_id, created_at);
+    CREATE INDEX IF NOT EXISTS idx_hook_runs_active ON hook_runs(status, updated_at) WHERE status IN ('scheduled','running');
+  `)
+}
+
 const SCHEMA_MIGRATIONS: SchemaMigration[] = [
   {
     version: 1,
@@ -365,6 +438,13 @@ const SCHEMA_MIGRATIONS: SchemaMigration[] = [
       // Guarded: a fresh DB's CREATE TABLE already declares the column.
       const columns = database.prepare('PRAGMA table_info(messages)').all() as { name: string }[]
       if (!columns.some(column => column.name === 'meta')) database.exec('ALTER TABLE messages ADD COLUMN meta TEXT')
+    },
+  },
+  {
+    version: 3,
+    name: 'hook_runs',
+    up: database => {
+      createHookRunsSchema(database)
     },
   },
 ]
@@ -573,6 +653,8 @@ function initializeLocalDatabase(dbPath: string) {
   } catch (error) {
     console.warn('[LocalServer] Failed to migrate messages table:', error)
   }
+
+  createHookRunsSchema(db)
 
   db.exec(`
     CREATE TABLE IF NOT EXISTS streaming_runs (
@@ -1895,7 +1977,16 @@ function setupServer() {
   // Memory routes + the memory_manage tool live in routes/memoryRoutes.ts.
   registerMemoryRoutes(app, { statements, builtInTools })
 
-  registerHookRoutes(app)
+  const hookRunRepo = new HookRunRepo({ db: db! })
+  configureHookRunTracker(hookRunRepo)
+  try {
+    const recovered = hookRunRepo.recoverStaleRuns()
+    if (recovered > 0) console.warn(`[HookRunner] Recovered ${recovered} interrupted hook run(s)`)
+    hookRunRepo.pruneOlderThan(new Date(Date.now() - 90 * 24 * 60 * 60 * 1000).toISOString())
+  } catch (error) {
+    console.warn('[HookRunner] Hook-run startup maintenance failed:', error)
+  }
+  registerHookRoutes(app, { hookRunRepo })
 
   registerUndoRoutes(app)
 
@@ -2198,39 +2289,15 @@ export async function startLocalServer(
     }
 
     bindCustomToolsLifecycleListener()
+    bindMcpToolsLifecycleListener()
 
     // Register custom tools with the orchestrator
     registerCustomToolsWithOrchestrator()
 
-    // Register MCP tools with the orchestrator
+    // Register any MCP tools already connected before this local-server start. Later
+    // discovery is handled automatically by the manager's toolsChanged event.
     try {
-      const mcpTools = mcpManager.getAllTools()
-      console.log(`[LocalServer] Found ${mcpTools.length} MCP tools to register`)
-      for (const mcpTool of mcpTools) {
-        const qualifiedName = mcpTool.qualifiedName || mcpTool.name
-        console.log(`[LocalServer] Registering MCP tool: ${qualifiedName}`)
-        toolOrchestrator.registerTool(qualifiedName, async (args, _options) => {
-          try {
-            const mcpResult = await mcpManager.callTool(qualifiedName, args)
-            // A tool-level failure reported BY a reachable MCP server (isError: true) is a
-            // legitimate, model-visible result and still resolves — only a transport-level
-            // failure (below) is an execution error.
-            return toMcpExecutionResult(mcpResult)
-          } catch (error) {
-            // MUST rethrow. Resolving with { success: false } made the orchestrator mark the
-            // job COMPLETE, so every MCP transport failure (server disconnected, stdio process
-            // dead, HTTP endpoint down, OAuth expired, MCP's own request timeout) surfaced as a
-            // successful tool result with is_error: false. Throwing turns it into a genuine
-            // failed job -> is_error tool result, and gives a retry policy something to hook.
-            console.error(`[LocalServer] MCP tool execution error (${qualifiedName}):`, error)
-            throw attachChatErrorCode(
-              error instanceof Error ? error : new Error(String(error)),
-              'mcp_unavailable'
-            )
-          }
-        })
-      }
-      console.log(`[LocalServer] Registered ${mcpTools.length} MCP tools with orchestrator`)
+      registerMcpToolsWithOrchestrator()
     } catch (error) {
       console.error(`[LocalServer] Error registering MCP tools:`, error)
     }

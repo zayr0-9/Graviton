@@ -45,9 +45,9 @@ describe('OpenAiChatgptProvider', () => {
     expect(normalizeOpenAIChatGPTModel('GPT-5.6 Sol')).toBe('gpt-5.6-sol')
     expect(normalizeOpenAIChatGPTModel('GPT-5.6 Terra')).toBe('gpt-5.6-terra')
     expect(normalizeOpenAIChatGPTModel('GPT-5.6 Luna')).toBe('gpt-5.6-luna')
-    expect(normalizeOpenAIChatGPTModel('GPT-5.4 Mini')).toBe('gpt-5.4-mini')
-    expect(normalizeOpenAIChatGPTModel('openaichatgpt/GPT-5.4 Mini')).toBe('gpt-5.4-mini')
-    expect(normalizeOpenAIChatGPTModel('GPT-5.4 Pro')).toBe('gpt-5.4-pro')
+    expect(normalizeOpenAIChatGPTModel('GPT-5.4 Mini')).toBe('gpt-5.5')
+    expect(normalizeOpenAIChatGPTModel('openaichatgpt/GPT-5.4 Mini')).toBe('gpt-5.5')
+    expect(normalizeOpenAIChatGPTModel('GPT-5.4 Pro')).toBe('gpt-5.5')
     expect(normalizeOpenAIChatGPTModel('GPT-5.3 Codex')).toBe('gpt-5.3-codex')
   })
 

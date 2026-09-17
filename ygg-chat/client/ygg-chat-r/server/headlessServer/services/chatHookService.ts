@@ -314,6 +314,12 @@ export function createChatHookSession(config: ChatHookSessionConfig): ChatHookSe
   const project = config.project ?? null
   const localApiBase = config.localApiBase ?? null
   let streamId = config.streamId
+  const emitHookActivity = (event: HookEventName, messageId: string | null) => (runs: import('../../hooks/hookTypes.js').HookRunRecord[]): void => {
+    if (!config.emit || runs.length === 0) return
+    try {
+      config.emit({ type: 'hook_activity', event, messageId, runs, lineageId: config.lineageId ?? null })
+    } catch { /* operational metadata must not break chat */ }
+  }
 
   const emitNotice = (message: string): void => {
     if (!config.emit) return
@@ -345,7 +351,7 @@ export function createChatHookSession(config: ChatHookSessionConfig): ChatHookSe
   // the runner collects into `errors` now emit a non-terminal notice.
   const safeRun = async (req: HookRunRequest): Promise<HookRunResult> => {
     try {
-      const result = await config.runHook(req)
+      const result = await config.runHook({ ...req, onActivity: req.onActivity ?? emitHookActivity(req.event, req.messageId ?? null) })
       reportHookFailures(req.event, Array.isArray(result.errors) ? result.errors : [])
       return result
     } catch (error) {
@@ -511,6 +517,7 @@ export function createChatHookSession(config: ChatHookSessionConfig): ChatHookSe
       lookup: meta.lookup,
       turn: meta.turn,
       project: meta.project,
+      onActivity: emitHookActivity('Stop', lastAssistantMessageId),
     })
     foldAdditionalContext('Stop', result.additionalContext)
     if (result.blocked) {

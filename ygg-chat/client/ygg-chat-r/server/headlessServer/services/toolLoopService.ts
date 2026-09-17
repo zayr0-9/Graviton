@@ -193,6 +193,11 @@ export interface ToolLoopRunInput {
   serviceTier?: 'priority'
   promptCacheRetention?: 'in_memory' | '24h'
   tools?: ProviderToolDefinition[]
+  /**
+   * Optional live tool source. Re-evaluated before each provider turn so tools
+   * discovered by a manager tool become callable in the same ongoing run.
+   */
+  refreshTools?: (currentTools: ProviderToolDefinition[]) => ProviderToolDefinition[]
   streamId?: string | null
   rootPath?: string | null
   operationMode?: 'plan' | 'execute'
@@ -1256,6 +1261,37 @@ export class ToolLoopService {
         turn,
         maxTurns,
       })
+
+      // A discovery/manager tool can add definitions while this run is active. Refresh
+      // immediately before every provider turn so the next continuation sees them.
+      if (input.refreshTools) {
+        const previousToolNames = new Set((input.tools ?? []).map(tool => tool.name))
+        const refreshedTools = input.refreshTools(input.tools ?? [])
+        input.tools = refreshedTools
+        const addedMcpTools = refreshedTools.filter(
+          tool => tool.name.startsWith('mcp__') && !previousToolNames.has(tool.name)
+        )
+        if (addedMcpTools.length > 0) {
+          const updatedTools = addedMcpTools.map(tool => {
+            const mcpTool = tool as ProviderToolDefinition & {
+              serverName?: string
+              toolName?: string
+              ui?: { resourceUri?: string; visibility?: Array<'model' | 'app'> }
+            }
+            return {
+              name: tool.name,
+              description: tool.description,
+              inputSchema: tool.inputSchema ?? { type: 'object', properties: {} },
+              ...(tool.name.startsWith('mcp__') ? {
+                serverName: mcpTool.serverName ?? tool.name.match(/^mcp__([^_]+)__(.+)$/)?.[1],
+                toolName: mcpTool.toolName ?? tool.name.match(/^mcp__([^_]+)__(.+)$/)?.[2],
+                ...(mcpTool.ui ? { ui: mcpTool.ui } : {}),
+              } : {}),
+            }
+          })
+          emit({ type: 'tools_updated', tools: updatedTools })
+        }
+      }
 
       // Generate the turn, retrying once on an empty response when enabled.
       let output = await this.generateProviderTurn({

@@ -206,6 +206,53 @@ export type HeadlessStreamEvent =
   | { type: 'context_injection_persisted'; message: any; lineageId?: string | null }
   | { type: 'provider_routed'; provider: string; modelName: string }
   | {
+      type: 'hook_activity'
+      event: string
+      messageId: string | null
+      runs: Array<{
+        id: string
+        conversationId: string | null
+        streamId: string | null
+        event: string
+        messageId: string | null
+        label: string
+        configuredCommand: string
+        executedCommand: string | null
+        sourceFile: string
+        scope: 'personal' | 'project' | 'local_override'
+        executionMode: 'sync' | 'async'
+        status: 'scheduled' | 'running' | 'succeeded' | 'skipped' | 'failed' | 'timed_out'
+        outcomeCode: string | null
+        outcomeSummary: string | null
+        cwd: string | null
+        startedAt: string | null
+        completedAt: string | null
+        durationMs: number | null
+        errorSummary: string | null
+        stdoutPreview: string | null
+        stderrPreview: string | null
+        logPath: string | null
+        logFallback: boolean
+        createdAt: string
+        updatedAt: string
+      }>
+      lineageId?: string | null
+    }
+  | {
+      type: 'tools_updated'
+      tools: Array<{
+        name: string
+        description?: string
+        inputSchema: Record<string, any>
+        serverName?: string
+        toolName?: string
+        ui?: {
+          resourceUri?: string
+          visibility?: Array<'model' | 'app'>
+        }
+      }>
+    }
+  | {
       type: 'tool_loop'
       status:
         | 'turn_started'

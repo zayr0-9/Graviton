@@ -91,7 +91,7 @@ export function registerOpenAiOAuthRoutes(app: Express): void {
   app.get('/api/openai/models', (_req, res) => {
     const configured = Number(process.env.YGG_OPENAI_CHATGPT_MAX_CONTEXT_TOKENS)
     const contextLength = Number.isFinite(configured) && configured > 0 ? Math.max(1000, Math.min(2_000_000, Math.floor(configured))) : 258_000
-    const models = ['gpt-5.5', 'gpt-6-astra', 'gpt-5.5-pro', 'gpt-5.4', 'gpt-5.4-mini', 'gpt-5.4-pro', 'gpt-5.3-codex', 'gpt-4o'].map(id => ({
+    const models = ['gpt-5.5', 'gpt-6-astra', 'gpt-5.5-pro', 'gpt-5.3-codex', 'gpt-4o'].map(id => ({
       id, name: id, displayName: id, description: id, contextLength, maxCompletionTokens: id === 'gpt-4o' || id === 'gpt-5.3-codex' ? 16384 : 128000,
       version: 'chatgpt', inputTokenLimit: contextLength, outputTokenLimit: id === 'gpt-4o' || id === 'gpt-5.3-codex' ? 16384 : 128000,
       promptCost: 0, completionCost: 0, requestCost: 0, thinking: true, supportsImages: true, supportsWebSearch: false,

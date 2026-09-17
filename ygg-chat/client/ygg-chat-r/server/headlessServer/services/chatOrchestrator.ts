@@ -1042,10 +1042,34 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
     // An explicit tools array (even empty) is authoritative — only fall back to the
     // default tool set when the caller omits `tools` entirely. This lets a client
     // that disabled every tool send [] and get NO tools, rather than the defaults.
+    const requestedTools = Array.isArray(request.tools) ? request.tools : null
+    const initialDefaultTools = this.defaultToolsProvider()
+    const initialAvailableMcpNames = new Set(
+      initialDefaultTools.filter(tool => tool.name.startsWith('mcp__')).map(tool => tool.name)
+    )
     const resolvedTools = filterToolsForOperationMode(
-      Array.isArray(request.tools) ? request.tools : this.defaultToolsProvider(),
+      requestedTools ?? initialDefaultTools,
       resolvedOperationMode
     )
+    // Preserve an explicit client whitelist, including MCP tools the user disabled.
+    // Only MCP definitions that become available after this run starts are added.
+    const canDiscoverMcpTools = requestedTools === null || requestedTools.some(tool => tool.name === 'mcp_manager')
+    const refreshTools = !canDiscoverMcpTools
+      ? (currentTools: Array<{ name: string; description?: string; inputSchema?: Record<string, any> }>) => currentTools
+      : requestedTools
+        ? (currentTools: Array<{ name: string; description?: string; inputSchema?: Record<string, any> }>) => {
+            const byName = new Map(currentTools.map(tool => [tool.name, tool]))
+            for (const tool of this.defaultToolsProvider()) {
+              if (
+                tool.name.startsWith('mcp__') &&
+                (byName.has(tool.name) || !initialAvailableMcpNames.has(tool.name))
+              ) {
+                byName.set(tool.name, tool)
+              }
+            }
+            return filterToolsForOperationMode(Array.from(byName.values()), resolvedOperationMode)
+          }
+        : () => filterToolsForOperationMode(this.defaultToolsProvider(), resolvedOperationMode)
 
     // Skill / agent indexes and the memory pointer are part of the system prompt (§10
     // steps 3-4). They are a function of the root and the settings, so they are stable
@@ -1164,6 +1188,7 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
         serviceTier: request.serviceTier,
         promptCacheRetention: request.promptCacheRetention,
         tools: resolvedTools,
+        refreshTools,
         streamId: trackedStreamId,
         rootPath: request.rootPath ?? conversation?.cwd ?? null,
         operationMode: resolvedOperationMode,

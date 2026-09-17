@@ -66,6 +66,8 @@ describe('McpManager lazy connection', () => {
     const manager = new McpManager()
     managers.push(manager)
     vi.spyOn(manager, 'getConfigDirectory').mockReturnValue(dataDir)
+    const toolsChanged = vi.fn()
+    manager.on('toolsChanged', toolsChanged)
 
     await manager.initialize()
 
@@ -78,5 +80,9 @@ describe('McpManager lazy connection', () => {
     expect(result.content[0]?.text).toBe('ok')
     expect(fetchMock.mock.calls.length).toBeGreaterThan(0)
     expect(manager.getServerStatus('remote')?.status).toBe('connected')
+    expect(toolsChanged).toHaveBeenCalledWith(expect.objectContaining({
+      serverName: 'remote',
+      tools: [expect.objectContaining({ name: 'echo', qualifiedName: 'mcp__remote__echo' })],
+    }))
   })
 })

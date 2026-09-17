@@ -62,9 +62,7 @@ export function normalizeOpenAIChatGPTModel(model: string): string {
   if (m.includes('gpt-5.6-luna')) return 'gpt-5.6-luna'
   if (m.includes('gpt-5.5-pro')) return 'gpt-5.5-pro'
   if (m.includes('gpt-5.5')) return 'gpt-5.5'
-  if (m.includes('gpt-5.4-mini')) return 'gpt-5.4-mini'
-  if (m.includes('gpt-5.4-pro')) return 'gpt-5.4-pro'
-  if (m.includes('gpt-5.4')) return 'gpt-5.4'
+  if (m.includes('gpt-5.4')) return 'gpt-5.5'
   if (m.includes('gpt-5.3-codex')) return 'gpt-5.3-codex'
 
   // Retired ChatGPT Codex models: route stale saved/default selections to an available Codex model.
@@ -73,7 +71,7 @@ export function normalizeOpenAIChatGPTModel(model: string): string {
   }
 
   if (m.includes('gpt-5')) return 'gpt-5.5'
-  if (m.includes('gpt-4o')) return 'gpt-5.4-mini'
+  if (m.includes('gpt-4o')) return 'gpt-5.5'
 
   return model
 }

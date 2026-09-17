@@ -13,6 +13,45 @@ export type HookEventName =
 
 export type InstructionsLoadReason = 'session_start' | 'nested_traversal' | 'path_glob_match' | 'include' | 'compact'
 export type HookExecutionMode = 'sync' | 'async'
+export type HookRunStatus = 'scheduled' | 'running' | 'succeeded' | 'skipped' | 'failed' | 'timed_out'
+export type HookScope = 'personal' | 'project' | 'local_override'
+
+export interface HookRunRecord {
+  id: string
+  conversationId: string | null
+  streamId: string | null
+  event: HookEventName
+  messageId: string | null
+  label: string
+  configuredCommand: string
+  executedCommand: string | null
+  sourceFile: string
+  scope: HookScope
+  executionMode: HookExecutionMode
+  status: HookRunStatus
+  outcomeCode: string | null
+  outcomeSummary: string | null
+  cwd: string | null
+  startedAt: string | null
+  completedAt: string | null
+  durationMs: number | null
+  errorSummary: string | null
+  stdoutPreview: string | null
+  stderrPreview: string | null
+  logPath: string | null
+  logFallback: boolean
+  createdAt: string
+  updatedAt: string
+}
+
+export type HookRunUpdate = Partial<Omit<HookRunRecord, 'id' | 'createdAt'>>
+
+export interface HookRunTracker {
+  create(record: HookRunRecord): HookRunRecord
+  update(id: string, update: HookRunUpdate): HookRunRecord | null | undefined
+}
+
+export type HookActivityListener = (runs: HookRunRecord[]) => void
 
 export interface HookToolCall {
   id?: string | null
@@ -68,6 +107,10 @@ export interface HookRunRequest {
   /** InstructionsLoaded: matcher value plus the files that loaded. */
   loadReason?: InstructionsLoadReason | null
   filePaths?: string[] | null
+  /** Operational tracker for individual command runs. Never exposed to hook stdin. */
+  runTracker?: HookRunTracker | null
+  /** Called once after matching handlers are persisted as scheduled. */
+  onActivity?: HookActivityListener | null
 }
 
 export interface HookRunResult {
@@ -83,6 +126,7 @@ export interface HookRunResult {
   errors?: string[]
   asyncHookCount?: number
   launchedAsyncHookCount?: number
+  hookRuns?: HookRunRecord[]
 }
 
 export interface NormalizedHookHandler {
@@ -93,6 +137,8 @@ export interface NormalizedHookHandler {
   workingDirectory?: string
   enabled?: boolean
   executionMode?: HookExecutionMode
+  sourceFile?: string
+  label?: string
 }
 
 export interface NormalizedHookEntry {

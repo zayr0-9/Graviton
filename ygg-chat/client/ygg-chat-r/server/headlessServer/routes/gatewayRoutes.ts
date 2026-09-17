@@ -23,6 +23,8 @@ import type { Express, Request } from 'express'
 import type { RailwayClient } from '../services/railwayClient.js'
 import type { CloudMirrorService, CloudEntityKind } from '../services/cloudMirrorService.js'
 import type { AppAuthTokenManager } from '../services/appAuthTokenManager.js'
+import { toSafeHookRunRecord } from '../../hooks/hookDiagnostics.js'
+import { HookRunRepo } from '../persistence/hookRunRepo.js'
 
 export const GW_PAGE_SIZE = 50
 
@@ -619,7 +621,24 @@ export function registerGatewayRoutes(app: Express, deps: RegisterGatewayRoutesD
       return
     }
     const r = await cloudLeg('GET', `/conversations/${req.params.id}/messages/tree`)
-    res.status(r.status).json(r.body)
+    if (!r.ok || !r.body || !Array.isArray(r.body.messages)) {
+      res.status(r.status).json(r.body)
+      return
+    }
+    // Hook runs are local operational metadata even for cloud-backed conversations.
+    // Enrich the authoritative cloud tree by message id without sending diagnostics to Railway.
+    const localRuns = new HookRunRepo({ db: deps.db }).list({ conversationId: req.params.id, limit: 500 }).map(toSafeHookRunRecord)
+    const byMessage = new Map<string, typeof localRuns>()
+    for (const run of localRuns) {
+      if (!run.messageId) continue
+      const list = byMessage.get(String(run.messageId)) || []
+      list.push(run)
+      byMessage.set(String(run.messageId), list)
+    }
+    res.status(r.status).json({
+      ...r.body,
+      messages: r.body.messages.map((message: any) => ({ ...message, hook_runs: byMessage.get(String(message.id)) || [] })),
+    })
   })
 
   app.get('/api/gw/conversations/:id/messages', async (req, res) => {

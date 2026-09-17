@@ -32,6 +32,7 @@ import {
 } from '../../utils/mcpApps'
 import { normalizeMcpAppToolResult } from '../../utils/mcpAppToolResult'
 import { McpAppIframe } from '../McpAppIframe/McpAppIframe'
+import { MCP_APP_MAX_HEIGHT } from '../McpAppIframe/mcpAppSizing'
 
 type HtmlIframeEntryBase = {
   key: string
@@ -283,7 +284,7 @@ const buildHostContext = (toolDefinition?: ToolDefinition, fallbackToolName?: st
     displayMode: 'inline',
     containerDimensions: {
       width: typeof window !== 'undefined' ? window.innerWidth : undefined,
-      maxHeight: 600,
+      maxHeight: MCP_APP_MAX_HEIGHT,
     },
   }
 }
