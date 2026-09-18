@@ -1,16 +1,47 @@
-import React from 'react'
+import React, { useEffect, useState } from 'react'
 import { createPortal } from 'react-dom'
 import type { BaseModel } from '../../../../../shared/types'
+import {
+  loadModelShortcutSlots,
+  MODEL_SHORTCUT_SLOTS_CHANGE_EVENT,
+  saveModelShortcutSlot,
+  type ModelShortcutSlots,
+} from '../../helpers/chatKeyboardShortcuts'
 import { Button } from '../Button/button'
 
 interface ModelInfoModalProps {
   model: BaseModel | null
+  provider?: string | null
   isOpen: boolean
   onClose: () => void
 }
 
-export const ModelInfoModal: React.FC<ModelInfoModalProps> = ({ model, isOpen, onClose }) => {
+export const ModelInfoModal: React.FC<ModelInfoModalProps> = ({ model, provider, isOpen, onClose }) => {
+  const [shortcutSlots, setShortcutSlots] = useState<ModelShortcutSlots>(loadModelShortcutSlots)
+
+  useEffect(() => {
+    if (!isOpen) return
+
+    const syncSlots = () => setShortcutSlots(loadModelShortcutSlots())
+    syncSlots()
+    window.addEventListener(MODEL_SHORTCUT_SLOTS_CHANGE_EVENT, syncSlots)
+    window.addEventListener('storage', syncSlots)
+    return () => {
+      window.removeEventListener(MODEL_SHORTCUT_SLOTS_CHANGE_EVENT, syncSlots)
+      window.removeEventListener('storage', syncSlots)
+    }
+  }, [isOpen])
+
   if (!isOpen || !model) return null
+
+  const assignShortcutSlot = (slot: number) => {
+    if (!provider) return
+    setShortcutSlots(saveModelShortcutSlot(slot, { provider, model }))
+  }
+
+  const clearShortcutSlot = (slot: number) => {
+    setShortcutSlots(saveModelShortcutSlot(slot, null))
+  }
 
   const formatValue = (value: any): string => {
     if (value === null || value === undefined) return 'N/A'
@@ -138,6 +169,57 @@ export const ModelInfoModal: React.FC<ModelInfoModalProps> = ({ model, isOpen, o
               </div>
             </div>
           ))}
+
+          <div>
+            <h3 className='mb-1 text-sm font-semibold uppercase tracking-wide text-neutral-700 dark:text-neutral-300'>
+              Keyboard shortcut
+            </h3>
+            <p className='mb-3 text-sm text-neutral-500 dark:text-neutral-400'>
+              Assign this model to a slot. Press Ctrl + 1–9 in Chat to switch the provider and model.
+            </p>
+            {provider ? (
+              <div className='grid grid-cols-3 gap-2 sm:grid-cols-5'>
+                {Array.from({ length: 9 }, (_, index) => index + 1).map(slot => {
+                  const assignment = shortcutSlots[slot]
+                  const isAssignedToThisModel =
+                    assignment?.provider === provider && assignment.model.name === model.name
+
+                  return (
+                    <div key={slot} className='flex min-w-0 flex-col gap-1'>
+                      <button
+                        type='button'
+                        onClick={() => assignShortcutSlot(slot)}
+                        className={`rounded-lg border px-2 py-2 text-left transition-colors ${
+                          isAssignedToThisModel
+                            ? 'border-blue-500 bg-blue-50 text-blue-800 dark:border-orange-500 dark:bg-orange-500/10 dark:text-orange-200'
+                            : 'border-neutral-200 text-neutral-700 hover:bg-neutral-50 dark:border-neutral-700 dark:text-neutral-200 dark:hover:bg-neutral-800'
+                        }`}
+                        title={assignment ? `${assignment.provider} · ${assignment.model.name}` : `Assign Ctrl + ${slot}`}
+                      >
+                        <span className='block text-xs font-semibold'>Ctrl + {slot}</span>
+                        <span className='block truncate text-[10px] opacity-70'>
+                          {isAssignedToThisModel ? 'Assigned' : assignment?.model.displayName || assignment?.model.name || 'Empty'}
+                        </span>
+                      </button>
+                      {assignment && (
+                        <button
+                          type='button'
+                          onClick={() => clearShortcutSlot(slot)}
+                          className='text-[10px] text-neutral-500 hover:text-rose-600 dark:text-neutral-400 dark:hover:text-rose-300'
+                        >
+                          Clear
+                        </button>
+                      )}
+                    </div>
+                  )
+                })}
+              </div>
+            ) : (
+              <p className='text-sm text-neutral-500 dark:text-neutral-400'>
+                Open model information from the Chat model selector to assign a provider-aware shortcut.
+              </p>
+            )}
+          </div>
         </div>
 
         {/* Footer */}

@@ -1,7 +1,23 @@
 import { useQueryClient } from '@tanstack/react-query'
 import { AnimatePresence, motion } from 'framer-motion'
 import React, { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { BarChart3, Monitor, Moon, PanelLeftClose, PanelLeftOpen, Settings, Sun, User } from 'lucide-react'
+import {
+  ArrowDown,
+  ArrowUp,
+  BarChart3,
+  CalendarPlus,
+  Check,
+  ChevronDown,
+  Clock3,
+  Monitor,
+  Moon,
+  PanelLeftClose,
+  PanelLeftOpen,
+  Settings,
+  Sun,
+  User,
+  X,
+} from 'lucide-react'
 import { createPortal } from 'react-dom'
 import { useLocation, useNavigate } from 'react-router-dom'
 import { ConversationId, Project } from '../../../../shared/types'
@@ -98,6 +114,25 @@ const DEFAULT_CONVERSATION_SORT_OPTIONS: SidebarConversationSortOptions = {
   field: 'updated_at',
   order: 'desc',
 }
+const CONVERSATION_SORT_STORAGE_KEY = 'sidebar:conversationSortOptions'
+
+const readStoredConversationSortOptions = (): SidebarConversationSortOptions => {
+  if (typeof window === 'undefined') return DEFAULT_CONVERSATION_SORT_OPTIONS
+
+  try {
+    const storedValue = window.localStorage.getItem(CONVERSATION_SORT_STORAGE_KEY)
+    if (!storedValue) return DEFAULT_CONVERSATION_SORT_OPTIONS
+
+    const parsedValue = JSON.parse(storedValue) as Partial<SidebarConversationSortOptions>
+    const field =
+      parsedValue.field === 'created_at' ? 'created_at' : parsedValue.field === 'updated_at' ? 'updated_at' : null
+    const order = parsedValue.order === 'asc' ? 'asc' : parsedValue.order === 'desc' ? 'desc' : null
+
+    return field && order ? { field, order } : DEFAULT_CONVERSATION_SORT_OPTIONS
+  } catch {
+    return DEFAULT_CONVERSATION_SORT_OPTIONS
+  }
+}
 
 const getConversationDateGroupKey = (date: Date) => {
   return `${date.getFullYear()}-${date.getMonth() + 1}-${date.getDate()}`
@@ -177,47 +212,99 @@ const SidebarSortDropdown = <T extends string>({
   ariaLabel,
 }: SidebarSortDropdownProps<T>) => {
   const [open, setOpen] = useState(false)
+  const rootRef = useRef<HTMLDivElement | null>(null)
   const selectedOption = options.find(option => option.value === value) ?? options[0]
+  const { theme: customTheme, enabled: customThemeEnabled } = useCustomChatTheme()
+  const isDarkMode = useHtmlDarkMode()
+  const controlStyle: React.CSSProperties | undefined = customThemeEnabled
+    ? {
+        backgroundColor: getThemeModeColor(customTheme.colors.settingsCustomThemesInnerCardBg, isDarkMode),
+        color: getThemeModeColor(customTheme.colors.toolJobsPrimaryText, isDarkMode),
+      }
+    : undefined
+  const menuStyle: React.CSSProperties | undefined = customThemeEnabled
+    ? {
+        backgroundColor: getThemeModeColor(customTheme.colors.settingsCustomThemesCardBg, isDarkMode),
+        color: getThemeModeColor(customTheme.colors.toolJobsPrimaryText, isDarkMode),
+      }
+    : undefined
+
+  useEffect(() => {
+    if (!open) return
+
+    const handlePointerDown = (event: PointerEvent) => {
+      if (!rootRef.current?.contains(event.target as Node)) setOpen(false)
+    }
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setOpen(false)
+    }
+
+    document.addEventListener('pointerdown', handlePointerDown)
+    document.addEventListener('keydown', handleKeyDown)
+    return () => {
+      document.removeEventListener('pointerdown', handlePointerDown)
+      document.removeEventListener('keydown', handleKeyDown)
+    }
+  }, [open])
+
+  const selectOption = (nextValue: T) => {
+    setOpen(false)
+    onChange(nextValue)
+  }
 
   return (
-    <div className='relative'>
+    <div ref={rootRef} className='relative'>
       <button
         type='button'
-        className='flex w-full items-center justify-between gap-3 rounded-xl border border-neutral-200 bg-white px-3 py-2.5 text-left text-sm text-neutral-800 outline-none transition-colors hover:bg-neutral-50 focus:border-blue-400 focus:ring-2 focus:ring-blue-400/20 dark:border-neutral-700 dark:bg-neutral-950 dark:text-neutral-100 dark:hover:bg-neutral-900 dark:focus:border-orange-400 dark:focus:ring-orange-400/20'
+        className='flex w-full items-center justify-between gap-3 rounded-2xl bg-white/65 px-4 py-3 text-left text-sm font-medium text-neutral-800 outline-none backdrop-blur-xl transition-[background-color,color] duration-150 hover:bg-white/90 focus-visible:ring-2 focus-visible:ring-blue-400/60 dark:bg-black/20 dark:text-neutral-100 dark:hover:bg-black/30 dark:focus-visible:ring-orange-400/60'
+        style={controlStyle}
         onClick={() => setOpen(previous => !previous)}
         aria-haspopup='listbox'
         aria-expanded={open}
         aria-label={ariaLabel}
       >
         <span>{selectedOption?.label}</span>
-        <i className={`bx bx-chevron-down text-lg leading-none transition-transform ${open ? 'rotate-180' : ''}`} aria-hidden='true'></i>
+        <ChevronDown
+          size={18}
+          strokeWidth={2.25}
+          className={`shrink-0 transition-transform duration-150 ${open ? 'rotate-180' : ''}`}
+          aria-hidden='true'
+        />
       </button>
 
       {open && (
         <div
           role='listbox'
-          className='absolute left-0 right-0 top-full z-[1410] mt-1 overflow-hidden rounded-xl border border-neutral-200 bg-white py-1 shadow-xl dark:border-neutral-700 dark:bg-neutral-950'
+          className='absolute left-0 right-0 top-full z-[1410] mt-2 overflow-hidden rounded-2xl bg-white/95 p-1.5 backdrop-blur-xl dark:bg-neutral-950/95'
+          style={menuStyle}
         >
           {options.map(option => {
             const isSelected = option.value === value
+            const optionStyle: React.CSSProperties | undefined = customThemeEnabled
+              ? isSelected
+                ? {
+                    backgroundColor: getThemeModeColor(customTheme.colors.composerToggleActiveBg, isDarkMode),
+                    color: getThemeModeColor(customTheme.colors.composerToggleActiveText, isDarkMode),
+                  }
+                : { color: getThemeModeColor(customTheme.colors.toolJobsPrimaryText, isDarkMode) }
+              : undefined
+
             return (
               <button
                 key={option.value}
                 type='button'
                 role='option'
                 aria-selected={isSelected}
-                className={`flex w-full items-center justify-between px-3 py-2 text-left text-sm transition-colors ${
+                className={`flex w-full items-center justify-between rounded-xl px-3 py-2.5 text-left text-sm transition-[background-color,color] duration-150 ${
                   isSelected
-                    ? 'bg-blue-600 text-white dark:bg-orange-500 dark:text-neutral-950'
-                    : 'text-neutral-800 hover:bg-neutral-100 dark:text-neutral-100 dark:hover:bg-neutral-800'
+                    ? 'bg-blue-100 text-blue-800 dark:bg-orange-500/20 dark:text-orange-100'
+                    : 'text-neutral-800 hover:bg-black/5 dark:text-neutral-100 dark:hover:bg-white/10'
                 }`}
-                onClick={() => {
-                  onChange(option.value)
-                  setOpen(false)
-                }}
+                style={optionStyle}
+                onClick={() => selectOption(option.value)}
               >
                 <span>{option.label}</span>
-                {isSelected && <i className='bx bx-check text-lg leading-none' aria-hidden='true'></i>}
+                {isSelected && <Check size={17} strokeWidth={2.5} aria-hidden='true' />}
               </button>
             )
           })}
@@ -683,6 +770,8 @@ const SideBar: React.FC<SideBarProps> = ({
   const queryClient = useQueryClient()
   const navigate = useNavigate()
   const location = useLocation()
+  const { theme: customTheme, enabled: customThemeEnabled } = useCustomChatTheme()
+  const isDarkMode = useHtmlDarkMode()
   const isWeb = import.meta.env.VITE_ENVIRONMENT === 'web'
   const isElectronMode =
     import.meta.env.VITE_ENVIRONMENT === 'electron' ||
@@ -696,10 +785,10 @@ const SideBar: React.FC<SideBarProps> = ({
   const [conversationToMove, setConversationToMove] = useState<Conversation | null>(null)
   const [destinationProject, setDestinationProject] = useState<{ id: string; name: string } | null>(null)
   const [conversationSortOptions, setConversationSortOptions] = useState<SidebarConversationSortOptions>(
-    DEFAULT_CONVERSATION_SORT_OPTIONS
+    readStoredConversationSortOptions
   )
   const [draftConversationSortOptions, setDraftConversationSortOptions] = useState<SidebarConversationSortOptions>(
-    DEFAULT_CONVERSATION_SORT_OPTIONS
+    readStoredConversationSortOptions
   )
   const [showConversationSortModal, setShowConversationSortModal] = useState(false)
   const [conversationSortModalPosition, setConversationSortModalPosition] = useState({ top: 96, left: 16 })
@@ -915,7 +1004,7 @@ const SideBar: React.FC<SideBarProps> = ({
   }, [isExpandPortalOpen])
 
   useEffect(() => {
-    if (!isExpandPortalOpen) return
+    if (!isExpandPortalOpen || showConversationSortModal) return
 
     const handleEscape = (event: KeyboardEvent) => {
       if (event.key === 'Escape') {
@@ -927,7 +1016,7 @@ const SideBar: React.FC<SideBarProps> = ({
     return () => {
       window.removeEventListener('keydown', handleEscape)
     }
-  }, [closeExpandPortal, isExpandPortalOpen])
+  }, [closeExpandPortal, isExpandPortalOpen, showConversationSortModal])
 
   const previousPathnameRef = useRef(location.pathname)
 
@@ -1114,7 +1203,7 @@ const SideBar: React.FC<SideBarProps> = ({
   const handleDeleteSidebarConversation = useCallback(
     async (conversation: Conversation) => {
       const label = conversation.title || `Conversation ${conversation.id}`
-      const shouldDelete = window.confirm(`Delete conversation \"${label}\"? This action cannot be undone.`)
+      const shouldDelete = window.confirm(`Delete conversation "${label}"? This action cannot be undone.`)
       if (!shouldDelete) return
 
       const wasActiveConversation = String(activeConversationId) === String(conversation.id)
@@ -1422,17 +1511,31 @@ const SideBar: React.FC<SideBarProps> = ({
   }, [draftConversationSortOptions])
 
   useEffect(() => {
+    try {
+      window.localStorage.setItem(CONVERSATION_SORT_STORAGE_KEY, JSON.stringify(conversationSortOptions))
+    } catch (error) {
+      console.warn('Failed to persist sidebar conversation sort options:', error)
+    }
+  }, [conversationSortOptions])
+
+  useEffect(() => {
     if (!showConversationSortModal) return
+
+    const handleEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') handleCloseConversationSortModal()
+    }
 
     updateConversationSortModalPosition()
     window.addEventListener('resize', updateConversationSortModalPosition)
     window.addEventListener('scroll', updateConversationSortModalPosition, true)
+    window.addEventListener('keydown', handleEscape)
 
     return () => {
       window.removeEventListener('resize', updateConversationSortModalPosition)
       window.removeEventListener('scroll', updateConversationSortModalPosition, true)
+      window.removeEventListener('keydown', handleEscape)
     }
-  }, [showConversationSortModal, updateConversationSortModalPosition])
+  }, [handleCloseConversationSortModal, showConversationSortModal, updateConversationSortModalPosition])
 
   const handleSidebarProjectCreated = useCallback(
     async (project: Project) => {
@@ -1789,6 +1892,38 @@ const SideBar: React.FC<SideBarProps> = ({
   ) : (
     <PanelLeftOpen className='h-5 w-5' strokeWidth={2.25} aria-hidden='true' />
   )
+  const conversationSortThemeStyles = customThemeEnabled
+    ? {
+        backdrop: {
+          backgroundColor: getThemeModeColor(customTheme.colors.authModalBackdrop, isDarkMode),
+        } satisfies React.CSSProperties,
+        modal: {
+          backgroundColor: getThemeModeColor(customTheme.colors.settingsPaneBodyBg, isDarkMode),
+          color: getThemeModeColor(customTheme.colors.toolJobsPrimaryText, isDarkMode),
+        } satisfies React.CSSProperties,
+        section: {
+          backgroundColor: getThemeModeColor(customTheme.colors.settingsCustomThemesCardBg, isDarkMode),
+        } satisfies React.CSSProperties,
+        primaryText: {
+          color: getThemeModeColor(customTheme.colors.toolJobsPrimaryText, isDarkMode),
+        } satisfies React.CSSProperties,
+        mutedText: {
+          color: getThemeModeColor(customTheme.colors.toolJobsMutedText, isDarkMode),
+        } satisfies React.CSSProperties,
+        button: {
+          backgroundColor: getThemeModeColor(customTheme.colors.settingsCustomThemesButtonBg, isDarkMode),
+          color: getThemeModeColor(customTheme.colors.settingsCustomThemesButtonText, isDarkMode),
+        } satisfies React.CSSProperties,
+        activeBadge: {
+          backgroundColor: getThemeModeColor(customTheme.colors.composerToggleActiveBg, isDarkMode),
+          color: getThemeModeColor(customTheme.colors.composerToggleActiveText, isDarkMode),
+        } satisfies React.CSSProperties,
+        primaryButton: {
+          backgroundColor: getThemeModeColor(customTheme.colors.settingsCustomThemesPrimaryButtonBg, isDarkMode),
+          color: getThemeModeColor(customTheme.colors.settingsCustomThemesPrimaryButtonText, isDarkMode),
+        } satisfies React.CSSProperties,
+      }
+    : null
 
   const {
     data: topLevelUserPreviewMessages = [],
@@ -1997,42 +2132,70 @@ const SideBar: React.FC<SideBarProps> = ({
       {/* Project Conversation Sort Modal */}
       {showConversationSortModal && (
         <div
-          className='fixed inset-0 z-[1300] bg-transparent'
+          className='fixed inset-0 z-[1300] bg-neutral-950/10 backdrop-blur-[2px] dark:bg-black/30'
+          style={conversationSortThemeStyles?.backdrop}
           onClick={handleCloseConversationSortModal}
         >
-          <div
-            className='fixed bg-neutral-50/95 text-neutral-900 backdrop-blur-xl dark:bg-neutral-900/95 rounded-3xl border border-gray-200 dark:border-zinc-700 w-[calc(100vw-16px)] max-w-sm p-6 shadow-[0_8px_32px_rgba(0,0,0,0.1)] dark:shadow-[0_8px_32px_rgba(0,0,0,0.3)]'
+          <section
+            role='dialog'
+            aria-modal='true'
+            aria-labelledby='conversation-sort-title'
+            className='fixed w-[calc(100vw-16px)] max-w-sm overflow-visible rounded-[1.75rem] bg-neutral-50/95 p-5 text-neutral-900 backdrop-blur-xl dark:bg-neutral-900/95 dark:text-neutral-100'
             style={{
+              ...conversationSortThemeStyles?.modal,
               top: `${conversationSortModalPosition.top}px`,
               left: `${conversationSortModalPosition.left}px`,
               width: `${CONVERSATION_SORT_POPOVER_WIDTH_PX}px`,
             }}
             onClick={event => event.stopPropagation()}
           >
-            <div className='mb-5 flex items-start justify-between gap-3'>
-              <div>
-                <h3 className='text-xl font-semibold dark:text-neutral-100'>Sort conversations</h3>
-                <p className='mt-1 text-sm text-neutral-600 dark:text-neutral-400'>
+            <header className='flex items-start gap-4'>
+              <div
+                className='flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-blue-100 text-blue-700 dark:bg-orange-500/15 dark:text-orange-200'
+                style={conversationSortThemeStyles?.activeBadge}
+              >
+                <Clock3 size={20} strokeWidth={2.25} aria-hidden='true' />
+              </div>
+              <div className='min-w-0 flex-1'>
+                <h3
+                  id='conversation-sort-title'
+                  className='text-lg font-semibold tracking-tight text-neutral-950 dark:text-neutral-50'
+                  style={conversationSortThemeStyles?.primaryText}
+                >
+                  Sort conversations
+                </h3>
+                <p
+                  className='mt-1 text-sm leading-5 text-neutral-600 dark:text-neutral-400'
+                  style={conversationSortThemeStyles?.mutedText}
+                >
                   Choose how conversations are ordered inside expanded projects.
                 </p>
               </div>
-              <Button
-                variant='outline2'
-                size='smaller'
-                rounded='full'
-                className='mt-0 flex h-8 w-8 shrink-0 items-center justify-center p-0'
+              <button
+                type='button'
+                className='flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-white/60 text-neutral-600 transition-[background-color,color,transform] duration-150 hover:bg-white hover:text-neutral-950 active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400/60 dark:bg-white/10 dark:text-neutral-300 dark:hover:bg-white/15 dark:hover:text-white dark:focus-visible:ring-orange-400/60'
+                style={conversationSortThemeStyles?.button}
                 onClick={handleCloseConversationSortModal}
                 aria-label='Close conversation sort options'
               >
-                <i className='bx bx-x text-lg' aria-hidden='true'></i>
-              </Button>
-            </div>
+                <X size={18} strokeWidth={2.25} aria-hidden='true' />
+              </button>
+            </header>
 
-            <div className='space-y-4'>
-              <label className='block'>
-                <span className='mb-2 block text-xs font-semibold uppercase tracking-wide text-neutral-500 dark:text-neutral-400'>
-                  Sort by
-                </span>
+            <div
+              className='mt-5 space-y-4 rounded-3xl bg-white/45 p-4 backdrop-blur-xl dark:bg-black/15'
+              style={conversationSortThemeStyles?.section}
+            >
+              <div>
+                <div className='mb-2 flex items-center gap-2'>
+                  <CalendarPlus size={15} strokeWidth={2.25} aria-hidden='true' />
+                  <span
+                    className='text-xs font-semibold uppercase tracking-[0.12em] text-neutral-500 dark:text-neutral-400'
+                    style={conversationSortThemeStyles?.mutedText}
+                  >
+                    Sort by
+                  </span>
+                </div>
                 <SidebarSortDropdown<SidebarConversationSortField>
                   value={draftConversationSortOptions.field}
                   onChange={field =>
@@ -2042,17 +2205,27 @@ const SideBar: React.FC<SideBarProps> = ({
                     }))
                   }
                   options={[
-                    { value: 'updated_at', label: 'Updated at' },
-                    { value: 'created_at', label: 'Created at' },
+                    { value: 'updated_at', label: 'Update time' },
+                    { value: 'created_at', label: 'Creation time' },
                   ]}
                   ariaLabel='Choose project conversation sort field'
                 />
-              </label>
+              </div>
 
-              <label className='block'>
-                <span className='mb-2 block text-xs font-semibold uppercase tracking-wide text-neutral-500 dark:text-neutral-400'>
-                  Order
-                </span>
+              <div>
+                <div className='mb-2 flex items-center gap-2'>
+                  {draftConversationSortOptions.order === 'desc' ? (
+                    <ArrowDown size={15} strokeWidth={2.25} aria-hidden='true' />
+                  ) : (
+                    <ArrowUp size={15} strokeWidth={2.25} aria-hidden='true' />
+                  )}
+                  <span
+                    className='text-xs font-semibold uppercase tracking-[0.12em] text-neutral-500 dark:text-neutral-400'
+                    style={conversationSortThemeStyles?.mutedText}
+                  >
+                    Direction
+                  </span>
+                </div>
                 <SidebarSortDropdown<SidebarConversationSortOrder>
                   value={draftConversationSortOptions.order}
                   onChange={order =>
@@ -2067,30 +2240,36 @@ const SideBar: React.FC<SideBarProps> = ({
                   ]}
                   ariaLabel='Choose project conversation sort order'
                 />
-              </label>
+              </div>
             </div>
 
-            <div className='mt-6 flex justify-end gap-3'>
-              <Button
-                variant='outline2'
-                size='circle'
-                rounded='full'
-                className='group'
-                onClick={handleCloseConversationSortModal}
+            <footer className='mt-5 flex items-center justify-between gap-3'>
+              <p
+                className='text-xs text-neutral-500 dark:text-neutral-400'
+                style={conversationSortThemeStyles?.mutedText}
               >
-                <p className='transition-transform duration-100 group-active:scale-95'>Cancel</p>
-              </Button>
-              <Button
-                variant='outline2'
-                size='circle'
-                rounded='full'
-                className='group bg-blue-500 hover:bg-blue-600 dark:bg-blue-600 hover:text-black dark:hover:bg-blue-700 text-white border-blue-600 dark:border-blue-700 px-5 py-2.5'
-                onClick={handleApplyConversationSortOptions}
-              >
-                <p className='transition-transform duration-100 group-active:scale-95'>Apply</p>
-              </Button>
-            </div>
-          </div>
+                Saved for your next session
+              </p>
+              <div className='flex items-center gap-2'>
+                <button
+                  type='button'
+                  className='rounded-full bg-white/60 px-4 py-2.5 text-sm font-medium text-neutral-700 transition-[background-color,color,transform] duration-150 hover:bg-white active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400/60 dark:bg-white/10 dark:text-neutral-200 dark:hover:bg-white/15 dark:focus-visible:ring-orange-400/60'
+                  style={conversationSortThemeStyles?.button}
+                  onClick={handleCloseConversationSortModal}
+                >
+                  Cancel
+                </button>
+                <button
+                  type='button'
+                  className='rounded-full bg-blue-600 px-5 py-2.5 text-sm font-semibold text-white transition-[filter,transform] duration-150 hover:brightness-110 active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400/70 focus-visible:ring-offset-2 focus-visible:ring-offset-neutral-50 dark:bg-orange-500 dark:text-neutral-950 dark:focus-visible:ring-orange-400/70 dark:focus-visible:ring-offset-neutral-900'
+                  style={conversationSortThemeStyles?.primaryButton}
+                  onClick={handleApplyConversationSortOptions}
+                >
+                  Apply
+                </button>
+              </div>
+            </footer>
+          </section>
         </div>
       )}
 

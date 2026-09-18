@@ -64,7 +64,8 @@ function createSchema(db: Database.Database): void {
       ex_agent_session_id TEXT,
       ex_agent_type TEXT,
       content_blocks TEXT,
-      created_at TEXT
+      created_at TEXT,
+      meta TEXT
     );
   `)
 }
@@ -88,8 +89,8 @@ function createStatements(db: Database.Database): any {
     getConversationById: db.prepare('SELECT * FROM conversations WHERE id = ?'),
 
     upsertMessage: db.prepare(`
-      INSERT INTO messages (id, conversation_id, parent_id, children_ids, role, content, plain_text_content, thinking_block, tool_calls, tool_call_id, model_name, note, note_color, ex_agent_session_id, ex_agent_type, content_blocks, created_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO messages (id, conversation_id, parent_id, children_ids, role, content, plain_text_content, thinking_block, tool_calls, tool_call_id, model_name, note, note_color, ex_agent_session_id, ex_agent_type, content_blocks, created_at, meta)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(id) DO UPDATE SET
         content = excluded.content,
         plain_text_content = excluded.plain_text_content,
@@ -390,7 +391,9 @@ describeIfSqlite('ToolLoopService', () => {
     expect(firstCalls[0]?.status).toBe('complete')
 
     const firstBlocks = JSON.parse(firstAssistant.content_blocks || '[]') as any[]
-    expect(firstBlocks.some((block: any) => block.type === 'tool_result' && block.tool_use_id === 'call-1')).toBe(true)
+    const firstResults = firstBlocks.filter((block: any) => block.type === 'tool_result' && block.tool_use_id === 'call-1')
+    expect(firstResults).toHaveLength(1)
+    expect(firstResults[0]?.content).toBe('README body')
 
     expect(events.some((evt: any) => evt.type === 'tool_execution' && evt.status === 'started')).toBe(true)
     expect(events.some((evt: any) => evt.type === 'tool_execution' && evt.status === 'completed')).toBe(true)
@@ -1046,6 +1049,36 @@ describe('ToolLoopService signal + robustness (in-memory sink)', () => {
     expect(sink.persisted[0].content).toBe('cancelled but kept')
   })
 
+  it('replaces the persisted fallback with one real result before continuation', async () => {
+    const providerRouter = new FakeProviderRouter()
+    providerRouter.enqueue({
+      content: '',
+      toolCalls: [{ id: 'call-1', name: 'read_file', arguments: { path: 'a' } }],
+    })
+    providerRouter.enqueue({ content: 'done' })
+    const sink = new FakeSink()
+    const service = new ToolLoopService({
+      sink,
+      providerRouter: providerRouter as unknown as ProviderRouter,
+      executeTool: async () => 'real output',
+    })
+
+    await service.run(baseRunInput, () => {})
+
+    const persistedBlocks = JSON.parse(sink.persisted[0].content_blocks || '[]') as any[]
+    const persistedResults = persistedBlocks.filter(
+      block => block.type === 'tool_result' && block.tool_use_id === 'call-1'
+    )
+    expect(persistedResults).toEqual([
+      { type: 'tool_result', tool_use_id: 'call-1', content: 'real output', is_error: false },
+    ])
+
+    const continuationBlocks = providerRouter.calls[1].input.history.flatMap((entry: any) =>
+      JSON.parse(entry.content_blocks || '[]')
+    )
+    expect(continuationBlocks.some((block: any) => block.content === 'Tool execution did not complete.')).toBe(false)
+  })
+
   it('stops before the next turn when aborted during tool execution', async () => {
     const providerRouter = new FakeProviderRouter()
     providerRouter.enqueue({
@@ -1077,8 +1110,9 @@ describe('ToolLoopService signal + robustness (in-memory sink)', () => {
       toolCalls: [{ id: 'call-1', name: 'read_file', arguments: { path: 'a' } }],
     })
     const controller = new AbortController()
+    const sink = new FakeSink()
     const service = new ToolLoopService({
-      sink: new FakeSink(),
+      sink,
       providerRouter: providerRouter as unknown as ProviderRouter,
       executeTool: async () => {
         controller.abort()
@@ -1093,6 +1127,18 @@ describe('ToolLoopService signal + robustness (in-memory sink)', () => {
       service.run({ ...baseRunInput, signal: controller.signal }, event => events.push(event))
     ).rejects.toMatchObject({ name: 'AbortError' })
     expect(events.some(event => event.type === 'tool_execution' && event.status === 'failed')).toBe(false)
+
+    const persistedBlocks = JSON.parse(sink.persisted[0].content_blocks || '[]') as any[]
+    expect(persistedBlocks).toContainEqual({
+      type: 'tool_result',
+      tool_use_id: 'call-1',
+      content: 'Tool execution did not complete.',
+      is_error: true,
+    })
+
+    const initialPersistEvent = events.find(event => event.type === 'assistant_message_persisted')
+    const streamedBlocks = JSON.parse(initialPersistEvent?.message?.content_blocks || '[]') as any[]
+    expect(streamedBlocks.some(block => block.type === 'tool_result' && block.tool_use_id === 'call-1')).toBe(false)
   })
 
   it('retries once on an empty turn and recovers', async () => {

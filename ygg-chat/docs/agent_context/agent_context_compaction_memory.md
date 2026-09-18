@@ -32,8 +32,8 @@ Use this when changing:
 ## Where compaction runs (post-migration)
 
 - IN-LOOP (auto) compaction is SERVER-OWNED. It fires inside the tool loop, not the renderer. `client/ygg-chat-r/electron/headlessServer/services/toolLoopService.ts` `ToolLoopService.run` evaluates compaction at a quiescent turn boundary (every requested tool has executed once and its result is durable) — the block at `toolLoopService.ts:939-1001`. When it decides to compact it calls `this.compactBranch(...)`, which `ChatOrchestrator` wires to `CompactionService.compactBranch` (`client/ygg-chat-r/electron/headlessServer/index.ts` builds `CompactionService` and passes `compactBranch: input => compactionService.compactBranch(input)`).
-- MANUAL compaction (the UI "compact" button) is STILL RENDERER-SIDE. The `compactBranch` thunk in `client/ygg-chat-r/src/features/chats/chatActions.ts` (`chat/compactBranch`) streams a summary directly per-provider (client-side ephemeral request) and dispatches `compactingStarted`. This is the one surviving renderer generation path. A server route `POST /api/conversations/:id/compact` (`client/ygg-chat-r/electron/headlessServer/routes/chatRoutes.ts`) also exists and calls `compactionService.compactBranch`, but the manual button uses the renderer thunk, not this route.
-- The renderer also keeps a PRE-BRANCH auto-compaction precheck inside `editMessageWithBranching` (`chatActions.ts`): if branch context ≥85%, it dispatches the same client-side `compactBranch` thunk before sending the branch. This reuses the manual path; it is not the in-loop server compaction.
+- MANUAL compaction (the UI "compact" button) dispatches the renderer `compactBranch` thunk, but the thunk is now a thin client for `POST /api/conversations/:id/compact`. `CompactionService.compactBranch` generates and persists the summary before the renderer receives or exposes its server-assigned ID.
+- The renderer also keeps a PRE-BRANCH auto-compaction precheck inside `editMessageWithBranching` (`chatActions.ts`): if branch context ≥85%, it dispatches the same thin-client `compactBranch` thunk before sending the branch.
 - The renderer no longer imports `resolveOpenAIContinuationCompaction` or otherwise orchestrates in-loop compaction (grep-confirmed: zero hits in `src`).
 
 ## Server-side context/token estimation
@@ -61,8 +61,8 @@ The in-loop compaction decision is computed server-side:
 - `shared/contextUsage.ts`: server-side compaction/token decision helpers (`resolveOpenAIContinuationCompaction`, `openAIModelContextLength`, `extractOpenAIContextUsageFromBlocks`, `shouldCompactAtPercent`, `isOpenAIProvider`).
 - `client/ygg-chat-r/src/helpers/providerSettingsStorage.ts`: stores and normalizes the global ChatGPT max-context override; `Settings.tsx`, Chat token meters/prechecks, request construction, and Electron's mirrored server fallback all consume it.
 - `client/ygg-chat-r/src/features/chats/contextTokenEstimate.ts`: token/content-block estimation helpers (`estimateContentBlocksForContext`, `openAIContextUsageHistory`, `safeEstimateTokenCount`); validated by the server-side test above and used by the renderer for its pre-branch token precheck.
-- `client/ygg-chat-r/src/features/chats/chatActions.ts`: thin-client chat pipeline. Its only compaction call site is the manual `compactBranch` thunk (plus the pre-branch precheck that dispatches it); the in-loop loop no longer lives here.
-- `client/ygg-chat-r/src/features/chats/compactionContext.ts`: renderer compaction transcript and bounded tool-context serialization used by the manual `compactBranch` thunk; mirrors the server's `compactionService` serialization.
+- `client/ygg-chat-r/src/features/chats/chatActions.ts`: thin-client chat pipeline. Its `compactBranch` thunk calls the server compact route and only projects the returned persisted row after success.
+- `client/ygg-chat-r/src/features/chats/compactionContext.ts`: retained renderer compaction serialization helpers; server-owned compaction uses the equivalent implementation in `compactionService.ts`.
 - `docs/agent_context/agent_hooks_system.md`: hook lifecycle and execution-mode context.
 
 ## Important Invariants
@@ -82,7 +82,7 @@ The in-loop compaction decision is computed server-side:
 ## Gotchas
 
 - Memory-context INJECTION (long-term/recent/project memory folded into the inference prompt) is intentionally NOT ported to the server loop (see the `chatHookService.ts` header). The renderer still loads memory contexts (`maybeLoadMemoryContexts` in `chatActions.ts`) but currently only to estimate tokens for its pre-branch compaction precheck — it is not folded into the server-assembled system prompt. Only hook `additionalContext` is folded server-side.
-- Two compaction entry points share the same serialization but diverge in ownership: server in-loop (`toolLoopService.ts` → `CompactionService.compactBranch`) vs renderer manual button (client-side `compactBranch` thunk). A serialization change must be mirrored in both `compactionService.ts` and `compactionContext.ts` to keep summaries identical.
+- In-loop, manual, pre-send, and pre-branch compaction all persist through `CompactionService.compactBranch`; the renderer thunk must never mint or expose a summary ID before that route succeeds.
 - Packaged Electron copies bundled `.ygg` hook resources into the user-data `.ygg` directory. Non-atomic overwrites can make JSON settings briefly unreadable to concurrent hook requests.
 - Long-term-memory extraction should treat “no relevant context” as no update, not as content to store.
 - Root-note and long-term-memory hooks run from the managed hooks working directory, so relative paths should be written with that runtime cwd in mind.

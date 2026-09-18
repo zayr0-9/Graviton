@@ -66,7 +66,8 @@ function createSchema(db: Database.Database): void {
       ex_agent_session_id TEXT,
       ex_agent_type TEXT,
       content_blocks TEXT,
-      created_at TEXT
+      created_at TEXT,
+      meta TEXT
     );
 
     CREATE TABLE message_attachments (
@@ -106,8 +107,8 @@ function createStatements(db: Database.Database): any {
     getConversationById: db.prepare('SELECT * FROM conversations WHERE id = ?'),
 
     upsertMessage: db.prepare(`
-      INSERT INTO messages (id, conversation_id, parent_id, children_ids, role, content, plain_text_content, thinking_block, tool_calls, tool_call_id, model_name, note, note_color, ex_agent_session_id, ex_agent_type, content_blocks, created_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO messages (id, conversation_id, parent_id, children_ids, role, content, plain_text_content, thinking_block, tool_calls, tool_call_id, model_name, note, note_color, ex_agent_session_id, ex_agent_type, content_blocks, created_at, meta)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(id) DO UPDATE SET
         content = excluded.content,
         plain_text_content = excluded.plain_text_content,

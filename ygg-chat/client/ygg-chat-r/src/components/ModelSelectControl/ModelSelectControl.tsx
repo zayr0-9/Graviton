@@ -60,6 +60,7 @@ export const ModelSelectControl: React.FC<ModelSelectControlProps> = ({
     <>
       <Select
         value={selectedModelName || ''}
+        modelProvider={provider}
         onChange={onChange}
         options={sortedFilteredModels.map(m => m.name)}
         placeholder={placeholder}
@@ -93,6 +94,7 @@ export const ModelSelectControl: React.FC<ModelSelectControlProps> = ({
         isOpen={expandedViewOpen}
         onClose={() => setExpandedViewOpen(false)}
         models={sortedFilteredModels}
+        provider={provider}
         selectedModelName={selectedModelName}
         onSelect={onChange}
         disabledOptions={disabledModelOptions}

@@ -237,11 +237,10 @@ Both paths run through `CompactionService`:
   `compactBranch`, re-anchors the stream to the `__auto_compaction_summary__` system marker,
   resets `history = [summaryMessage]` and emits `completed`. Failure → `failed` + throw
   (`endReason: context_compaction_failed`).
-- **Manual button**: `POST /api/conversations/:id/compact` (`chatRoutes.ts:174`) →
-  `compactionService.compactBranch` (`:559`) → persists a `role:'system'`,
-  `note:'__auto_compaction_summary__'` message. The renderer's standalone `compactBranch`
-  thunk (`chatActions.ts:832`) still drives this button client-side (the ONE surviving
-  renderer-side generation path); in-loop auto-compaction moved server-side.
+- **Manual button / renderer prechecks**: the renderer `compactBranch` thunk POSTs
+  `/api/conversations/:id/compact` and projects only the returned persisted row.
+  `compactionService.compactBranch` persists a `role:'system'`,
+  `note:'__auto_compaction_summary__'` message before returning its server-assigned ID.
 
 ## Provider routing, message sinks, cloud gateway
 

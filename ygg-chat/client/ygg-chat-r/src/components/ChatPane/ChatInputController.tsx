@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react'
 import type { ConversationId } from '../../../../../shared/types'
 import type { ImageDraftTarget } from '../../features/chats/chatTypes'
+import { wrapPastedTextInMarkdownFence } from '../../helpers/chatKeyboardShortcuts'
 import { InputTextArea } from '../InputTextArea/InputTextArea'
 
 export type ChatInputUpdater = string | ((prev: string) => string)
@@ -69,6 +70,7 @@ export const ChatInputController = React.memo(
       const valueRef = useRef(initialValue)
       const wrapperRef = useRef<HTMLDivElement | null>(null)
       const lastHasTextRef = useRef(initialValue.trim().length > 0)
+      const shiftPressedRef = useRef(false)
 
       const publishHasText = useCallback(
         (nextValue: string) => {
@@ -117,6 +119,27 @@ export const ChatInputController = React.memo(
         [clear, focus, setValue]
       )
 
+      useEffect(() => {
+        const handleKeyDown = (event: KeyboardEvent) => {
+          if (event.key === 'Shift') shiftPressedRef.current = true
+        }
+        const handleKeyUp = (event: KeyboardEvent) => {
+          if (event.key === 'Shift') shiftPressedRef.current = false
+        }
+        const handleBlur = () => {
+          shiftPressedRef.current = false
+        }
+
+        window.addEventListener('keydown', handleKeyDown)
+        window.addEventListener('keyup', handleKeyUp)
+        window.addEventListener('blur', handleBlur)
+        return () => {
+          window.removeEventListener('keydown', handleKeyDown)
+          window.removeEventListener('keyup', handleKeyUp)
+          window.removeEventListener('blur', handleBlur)
+        }
+      }, [])
+
       const handleChange = useCallback(
         (nextValue: string) => {
           valueRef.current = nextValue
@@ -124,6 +147,31 @@ export const ChatInputController = React.memo(
           publishHasText(nextValue)
         },
         [publishHasText]
+      )
+
+      const handlePaste = useCallback(
+        (event: React.ClipboardEvent<HTMLTextAreaElement>) => {
+          if (!shiftPressedRef.current) return
+
+          const pastedText = event.clipboardData.getData('text/plain')
+          if (!pastedText) return
+
+          event.preventDefault()
+          const textarea = event.currentTarget
+          const selectionStart = textarea.selectionStart ?? valueRef.current.length
+          const selectionEnd = textarea.selectionEnd ?? selectionStart
+          const fencedText = wrapPastedTextInMarkdownFence(pastedText)
+          const nextValue =
+            valueRef.current.slice(0, selectionStart) + fencedText + valueRef.current.slice(selectionEnd)
+          const nextCursorPosition = selectionStart + fencedText.length
+
+          setValue(nextValue)
+          window.requestAnimationFrame(() => {
+            textarea.focus()
+            textarea.setSelectionRange(nextCursorPosition, nextCursorPosition)
+          })
+        },
+        [setValue]
       )
 
       return (
@@ -137,6 +185,7 @@ export const ChatInputController = React.memo(
                 onSubmit()
               }
             }}
+            onPaste={handlePaste}
             onBlur={() => onBlurPersist(valueRef.current)}
             placeholder='Type your message...'
             state='default'

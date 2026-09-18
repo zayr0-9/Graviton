@@ -18,6 +18,18 @@ const message = (id: string, parentId: string | null, createdAt = id): Message =
 })
 
 describe('buildConversationTree', () => {
+  it('honors persisted children_ids order before deterministic fallback order', () => {
+    const root = message('root', null, '2024-01-01')
+    root.children_ids = ['b', 'a']
+    const tree = buildConversationTree([
+      root,
+      message('a', 'root', '2024-01-02'),
+      message('b', 'root', '2024-01-03'),
+      message('c', 'root', '2024-01-04'),
+    ])
+    expect(tree?.children.map(child => child.id)).toEqual(['b', 'a', 'c'])
+  })
+
   it('orders siblings deterministically and normalizes IDs', () => {
     const tree = buildConversationTree([
       message('root', null, '2024-01-01'),

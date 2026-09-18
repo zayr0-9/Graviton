@@ -212,7 +212,7 @@ function createSchema(db: Database.Database): void {
   db.exec(`
     CREATE TABLE projects (id TEXT PRIMARY KEY, name TEXT, user_id TEXT, context TEXT, system_prompt TEXT, storage_mode TEXT, created_at TEXT, updated_at TEXT);
     CREATE TABLE conversations (id TEXT PRIMARY KEY, project_id TEXT, user_id TEXT, title TEXT, model_name TEXT, system_prompt TEXT, conversation_context TEXT, research_note TEXT, cwd TEXT, storage_mode TEXT, created_at TEXT, updated_at TEXT);
-    CREATE TABLE messages (id TEXT PRIMARY KEY, conversation_id TEXT NOT NULL, parent_id TEXT, children_ids TEXT, role TEXT, content TEXT, plain_text_content TEXT, thinking_block TEXT, tool_calls TEXT, tool_call_id TEXT, model_name TEXT, note TEXT, note_color TEXT, ex_agent_session_id TEXT, ex_agent_type TEXT, content_blocks TEXT, created_at TEXT);
+    CREATE TABLE messages (id TEXT PRIMARY KEY, conversation_id TEXT NOT NULL, parent_id TEXT, children_ids TEXT, role TEXT, content TEXT, plain_text_content TEXT, thinking_block TEXT, tool_calls TEXT, tool_call_id TEXT, model_name TEXT, note TEXT, note_color TEXT, ex_agent_session_id TEXT, ex_agent_type TEXT, content_blocks TEXT, created_at TEXT, meta TEXT);
   `)
 }
 
@@ -220,7 +220,7 @@ function createStatements(db: Database.Database): any {
   return {
     upsertConversation: db.prepare(`INSERT INTO conversations (id, project_id, user_id, title, model_name, system_prompt, conversation_context, research_note, cwd, storage_mode, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`),
     getConversationById: db.prepare('SELECT * FROM conversations WHERE id = ?'),
-    upsertMessage: db.prepare(`INSERT INTO messages (id, conversation_id, parent_id, children_ids, role, content, plain_text_content, thinking_block, tool_calls, tool_call_id, model_name, note, note_color, ex_agent_session_id, ex_agent_type, content_blocks, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET content = excluded.content, plain_text_content = excluded.plain_text_content, thinking_block = excluded.thinking_block, tool_calls = excluded.tool_calls, content_blocks = excluded.content_blocks`),
+    upsertMessage: db.prepare(`INSERT INTO messages (id, conversation_id, parent_id, children_ids, role, content, plain_text_content, thinking_block, tool_calls, tool_call_id, model_name, note, note_color, ex_agent_session_id, ex_agent_type, content_blocks, created_at, meta) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET content = excluded.content, plain_text_content = excluded.plain_text_content, thinking_block = excluded.thinking_block, tool_calls = excluded.tool_calls, content_blocks = excluded.content_blocks, meta = COALESCE(excluded.meta, messages.meta)`),
     getMessageById: db.prepare('SELECT * FROM messages WHERE id = ?'),
     getMessagesByConversationId: db.prepare('SELECT * FROM messages WHERE conversation_id = ? ORDER BY created_at ASC'),
     upsertStreamingRun: { run: () => {} },

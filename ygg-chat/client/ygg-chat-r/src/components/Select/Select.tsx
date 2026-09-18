@@ -26,6 +26,7 @@ interface SelectProps {
   blur?: 'low' | 'high'
   filterUI?: React.ReactNode
   modelData?: Record<string, BaseModel>
+  modelProvider?: string | null
   onFavoritesChange?: () => void
   modelSelect?: boolean
   footerContent?: React.ReactNode
@@ -61,6 +62,7 @@ export const Select: React.FC<SelectProps> = ({
   blur = 'low',
   filterUI,
   modelData,
+  modelProvider,
   onFavoritesChange,
   modelSelect = false,
   footerContent,
@@ -464,7 +466,12 @@ export const Select: React.FC<SelectProps> = ({
           document.body
         )}
 
-      <ModelInfoModal model={selectedModelForInfo} isOpen={showModelInfo} onClose={() => setShowModelInfo(false)} />
+      <ModelInfoModal
+        model={selectedModelForInfo}
+        provider={modelProvider}
+        isOpen={showModelInfo}
+        onClose={() => setShowModelInfo(false)}
+      />
     </div>
   )
 }

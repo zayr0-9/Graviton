@@ -34,6 +34,7 @@ interface TextAreaProps {
   value?: string
   onChange?: (value: string) => void
   onKeyDown?: (e: React.KeyboardEvent<HTMLTextAreaElement>) => void
+  onPaste?: (e: React.ClipboardEvent<HTMLTextAreaElement>) => void
   onBlur?: () => void
   state?: textAreaState
   errorMessage?: string
@@ -144,6 +145,7 @@ export const InputTextArea: React.FC<TextAreaProps> = ({
   value = '',
   onChange,
   onKeyDown,
+  onPaste,
   onBlur,
   state = 'default',
   errorMessage,
@@ -508,7 +510,8 @@ export const InputTextArea: React.FC<TextAreaProps> = ({
   }
 
   const handlePaste = (e: React.ClipboardEvent<HTMLTextAreaElement>) => {
-    if (state === 'disabled' || !enableImageAttachments) return
+    onPaste?.(e)
+    if (e.defaultPrevented || state === 'disabled' || !enableImageAttachments) return
 
     const items = Array.from(e.clipboardData?.items || [])
     const imageItems = items.filter(item => item.type.startsWith('image/'))

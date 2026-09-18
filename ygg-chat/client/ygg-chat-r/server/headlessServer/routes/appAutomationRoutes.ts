@@ -917,9 +917,13 @@ export function registerAppAutomationRoutes(app: Express, deps: AppAutomationRou
           thinking_block?: string
           model_name?: string
           tool_calls?: string | any[]
+          tool_call_id?: string | null
           note?: string
           note_color?: string | null
+          ex_agent_session_id?: string | null
+          ex_agent_type?: string | null
           content_blocks?: any
+          meta?: string | Record<string, unknown> | null
         }>
       }
 
@@ -936,7 +940,8 @@ export function registerAppAutomationRoutes(app: Express, deps: AppAutomationRou
 
       const createdMessages: any[] = []
       let lastMessageId: string | null = null
-      const now = new Date().toISOString()
+      const transferStartedAt = Date.now()
+      const now = new Date(transferStartedAt).toISOString()
       const sourceIdToNewId = new Map<string, string>()
       const hasStructuredParents = messages.some(msg => msg.source_id != null || msg.parent_source_id !== undefined)
 
@@ -949,14 +954,20 @@ export function registerAppAutomationRoutes(app: Express, deps: AppAutomationRou
       const orderedEntries: typeof entries = []
 
       if (hasStructuredParents) {
-        const entryBySourceKey = new Map(entries.map(entry => [entry.msg.source_id != null ? String(entry.msg.source_id) : `__legacy_${entry.index}`, entry]))
+        const entryBySourceKey = new Map(
+          entries.map(entry => [
+            entry.msg.source_id != null ? String(entry.msg.source_id) : `__legacy_${entry.index}`,
+            entry,
+          ])
+        )
         const visitedEntries = new Set<string>()
 
         const visitEntry = (entry: (typeof entries)[number]) => {
           const sourceKey = entry.msg.source_id != null ? String(entry.msg.source_id) : `__legacy_${entry.index}`
           if (visitedEntries.has(sourceKey)) return
 
-          const parentEntry = entry.msg.parent_source_id != null ? entryBySourceKey.get(String(entry.msg.parent_source_id)) : null
+          const parentEntry =
+            entry.msg.parent_source_id != null ? entryBySourceKey.get(String(entry.msg.parent_source_id)) : null
           if (parentEntry) visitEntry(parentEntry)
 
           visitedEntries.add(sourceKey)
@@ -968,62 +979,71 @@ export function registerAppAutomationRoutes(app: Express, deps: AppAutomationRou
         orderedEntries.push(...entries)
       }
 
-      for (const { msg, index } of orderedEntries) {
-        const sourceKey = msg.source_id != null ? String(msg.source_id) : `__legacy_${index}`
-        const messageId = sourceIdToNewId.get(sourceKey) || uuidv4()
-        const parentId = hasStructuredParents
-          ? msg.parent_source_id != null
-            ? sourceIdToNewId.get(String(msg.parent_source_id)) || null
-            : null
-          : lastMessageId
+      const insertMessages = db.transaction(() => {
+        for (const { msg, index } of orderedEntries) {
+          const sourceKey = msg.source_id != null ? String(msg.source_id) : `__legacy_${index}`
+          const messageId = sourceIdToNewId.get(sourceKey) || uuidv4()
+          const parentId = hasStructuredParents
+            ? msg.parent_source_id != null
+              ? sourceIdToNewId.get(String(msg.parent_source_id)) || null
+              : null
+            : lastMessageId
 
-        statements.upsertMessage.run(
-          messageId,
-          conversationId,
-          parentId,
-          '[]',
-          msg.role,
-          msg.content,
-          msg.content,
-          msg.thinking_block || null,
-          msg.tool_calls
-            ? typeof msg.tool_calls === 'string'
-              ? msg.tool_calls
-              : JSON.stringify(msg.tool_calls)
-            : null,
-          null,
-          msg.model_name || 'unknown',
-          msg.note || null,
-          msg.note_color || null,
-          null,
-          null,
-          msg.content_blocks
-            ? typeof msg.content_blocks === 'string'
-              ? msg.content_blocks
-              : JSON.stringify(msg.content_blocks)
-            : null,
-          now
-        )
+          statements.upsertMessage.run(
+            messageId,
+            conversationId,
+            parentId,
+            '[]',
+            msg.role,
+            msg.content,
+            msg.content,
+            msg.thinking_block || null,
+            msg.tool_calls
+              ? typeof msg.tool_calls === 'string'
+                ? msg.tool_calls
+                : JSON.stringify(msg.tool_calls)
+              : null,
+            msg.tool_call_id || null,
+            msg.model_name || 'unknown',
+            msg.note || null,
+            msg.note_color || null,
+            msg.ex_agent_session_id || null,
+            msg.ex_agent_type || null,
+            msg.content_blocks
+              ? typeof msg.content_blocks === 'string'
+                ? msg.content_blocks
+                : JSON.stringify(msg.content_blocks)
+              : null,
+            new Date(transferStartedAt + createdMessages.length).toISOString(),
+            typeof msg.meta === 'string' ? msg.meta : msg.meta ? JSON.stringify(msg.meta) : null
+          )
 
-        createdMessages.push({
-          id: messageId,
-          conversation_id: conversationId,
-          parent_id: parentId,
-          children_ids: [],
-          role: msg.role,
-          content: msg.content,
-          plain_text_content: msg.content,
-          thinking_block: msg.thinking_block || null,
-          tool_calls: msg.tool_calls || null,
-          model_name: msg.model_name || 'unknown',
-          note: msg.note || null,
-          note_color: msg.note_color || null,
-          content_blocks: msg.content_blocks || null,
-          created_at: now,
-        })
+          createdMessages.push({
+            id: messageId,
+            conversation_id: conversationId,
+            parent_id: parentId,
+            children_ids: [],
+            role: msg.role,
+            content: msg.content,
+            plain_text_content: msg.content,
+            thinking_block: msg.thinking_block || null,
+            tool_calls: msg.tool_calls || null,
+            tool_call_id: msg.tool_call_id || null,
+            model_name: msg.model_name || 'unknown',
+            note: msg.note || null,
+            note_color: msg.note_color || null,
+            ex_agent_session_id: msg.ex_agent_session_id || null,
+            ex_agent_type: msg.ex_agent_type || null,
+            content_blocks: msg.content_blocks || null,
+            meta: msg.meta ?? null,
+            created_at: new Date(transferStartedAt + createdMessages.length).toISOString(),
+          })
 
-        lastMessageId = messageId
-      }
+          lastMessageId = messageId
+        }
+      })
+
+      insertMessages()
 
       if (!conversation.title && messages.length > 0) {
         const firstContent = messages[0].content
@@ -1065,7 +1085,7 @@ export function registerAppAutomationRoutes(app: Express, deps: AppAutomationRou
 
   app.post('/api/app/messages', (req, res) => {
     try {
-      const { conversation_id, parent_id, role, content, model_name, tool_calls, tool_call_id, content_blocks } = req.body
+      const { conversation_id, parent_id, role, content, model_name, tool_calls, tool_call_id, content_blocks, meta } = req.body
 
       if (!conversation_id) {
         res.status(400).json({ error: 'conversation_id is required' })
@@ -1096,7 +1116,8 @@ export function registerAppAutomationRoutes(app: Express, deps: AppAutomationRou
         null,
         null,
         JSON.stringify(content_blocks || null),
-        now
+        now,
+        typeof meta === 'string' ? meta : meta ? JSON.stringify(meta) : null
       )
 
       if (parent_id) {
@@ -1207,7 +1228,8 @@ export function registerAppAutomationRoutes(app: Express, deps: AppAutomationRou
         null,
         null,
         JSON.stringify(null),
-        now
+        now,
+        null
       )
 
       const childrenIds = JSON.parse(parentMessage.children_ids || '[]')

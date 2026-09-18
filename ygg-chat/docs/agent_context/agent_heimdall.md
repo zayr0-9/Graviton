@@ -103,8 +103,10 @@ For selected-message copying/moving:
 - Heimdall builds one structured clone payload for all three transfer actions.
 - The payload includes each selected message's source ID and selected parent source ID, so target inserts can remap the copied tree to fresh message IDs.
 - If a selected message's original parent is not selected, that message becomes a top-level root in the target conversation.
-- It copies role, content, thinking, model name, tool calls, notes, note color, and content blocks.
+- It copies role, content, thinking, model/tool linkage, notes, agent fields, content blocks, and message metadata.
+- Selected roots and siblings are emitted in source tree order (`children_ids` first, deterministic snapshot order as fallback), independent of click/selection order.
 - `insertBulkMessages` preserves selected branch structure for structured payloads while retaining legacy linear-chain fallback for old flat payloads.
+- Move refuses a partial subtree selection because deleting a selected ancestor would cascade-delete descendants that were not copied; copy remains available for such selections.
 
 ### Notes
 

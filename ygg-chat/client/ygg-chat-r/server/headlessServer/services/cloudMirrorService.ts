@@ -205,7 +205,8 @@ class SqliteCloudMirrorService implements CloudMirrorService {
       e.ex_agent_session_id || null,
       e.ex_agent_type || null,
       normalizedContentBlocks,
-      messageCreatedAt
+      messageCreatedAt,
+      typeof e.meta === 'string' ? e.meta : e.meta ? JSON.stringify(e.meta) : null
     )
 
     // Touch conversation/project timestamps to reflect recent activity.

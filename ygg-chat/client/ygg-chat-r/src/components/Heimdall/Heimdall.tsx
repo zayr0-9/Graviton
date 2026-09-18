@@ -18,6 +18,7 @@ import {
 } from '../../features/chats/chatActions'
 import { chatSliceActions } from '../../features/chats/chatSlice'
 import { buildBranchPathForMessage } from '../../features/chats/pathUtils'
+import { buildMessageTransferPayload, hasUnselectedDescendants } from '../../features/chats/messageTransfer'
 import { createConversation, updateCwd } from '../../features/conversations/conversationActions'
 import { makeSelectConversationById } from '../../features/conversations/conversationSelectors'
 import type { Conversation } from '../../features/conversations/conversationTypes'
@@ -221,19 +222,6 @@ const getHeatmapColor = (progress: number) => {
 // }
 
 type ConversationTransferMode = 'copy' | 'move'
-
-type MessageToCopy = {
-  source_id?: string
-  parent_source_id?: string | null
-  role: Message['role']
-  content: string
-  thinking_block?: string
-  model_name?: string
-  tool_calls?: string | any
-  note?: string
-  note_color?: string | null
-  content_blocks?: any
-}
 
 interface HeimdallProps {
   chatData?: ChatNode | null
@@ -2370,78 +2358,7 @@ export const Heimdall: React.FC<HeimdallProps> = ({
     }
   }
 
-  const buildMessagesToCopyFromSelection = (): MessageToCopy[] => {
-    const ids = selectedNodes || []
-    if (ids.length === 0) return []
-
-    const selectedSet = new Set(ids.map(id => String(id)))
-    const childrenByParent = new Map<string, Message[]>()
-
-    allMessages.forEach(msg => {
-      if (msg.parent_id != null) {
-        const parentId = String(msg.parent_id)
-        const siblings = childrenByParent.get(parentId) || []
-        siblings.push(msg)
-        childrenByParent.set(parentId, siblings)
-      }
-    })
-
-    const orderedMessages: Message[] = []
-    const visited = new Set<string>()
-
-    const visitSelectedSubtree = (msg: Message): void => {
-      const id = String(msg.id)
-      if (visited.has(id) || !selectedSet.has(id)) return
-
-      visited.add(id)
-      orderedMessages.push(msg)
-
-      const children = childrenByParent.get(id) || []
-      children.forEach(child => {
-        if (selectedSet.has(String(child.id))) {
-          visitSelectedSubtree(child)
-        }
-      })
-    }
-
-    // Start at selected roots so copied branches keep their original parent/child
-    // shape. A selected message becomes a top-level root only when its original
-    // parent is outside the selection.
-    allMessages.forEach(msg => {
-      const id = String(msg.id)
-      if (!selectedSet.has(id)) return
-      const parentId = msg.parent_id == null ? null : String(msg.parent_id)
-      if (parentId == null || !selectedSet.has(parentId)) {
-        visitSelectedSubtree(msg)
-      }
-    })
-
-    // Defensive fallback for malformed/cyclic data or stale selections.
-    allMessages.forEach(msg => {
-      const id = String(msg.id)
-      if (selectedSet.has(id) && !visited.has(id)) {
-        visitSelectedSubtree(msg)
-      }
-    })
-
-    return orderedMessages.map(msg => {
-      const sourceId = String(msg.id)
-      const parentSourceId = msg.parent_id != null && selectedSet.has(String(msg.parent_id)) ? String(msg.parent_id) : null
-
-      return {
-        source_id: sourceId,
-        parent_source_id: parentSourceId,
-        role: msg.role,
-        content: msg.content,
-        thinking_block: msg.thinking_block || '',
-        model_name: msg.model_name || 'unknown',
-        tool_calls: msg.tool_calls || undefined,
-        note: msg.note || undefined,
-        note_color: msg.note_color || null,
-        content_blocks: msg.content_blocks || undefined,
-      }
-    })
-  }
+  const buildMessagesToCopyFromSelection = () => buildMessageTransferPayload(allMessages, selectedNodes || [])
 
   const handleOpenConversationSelector = (mode: ConversationTransferMode): void => {
     if (!selectedNodes || selectedNodes.length === 0) {
@@ -2477,6 +2394,11 @@ export const Heimdall: React.FC<HeimdallProps> = ({
 
       if (conversationTransferMode === 'move' && !conversationId) {
         setConversationSelectorError('Cannot move messages because the source chat is unknown.')
+        return
+      }
+
+      if (conversationTransferMode === 'move' && hasUnselectedDescendants(allMessages, idsToTransfer)) {
+        setConversationSelectorError('Select every descendant of the chosen messages before moving them, or use Copy instead.')
         return
       }
 

@@ -37,6 +37,7 @@ function createSchema(db: Database.Database): void {
       user_id TEXT,
       context TEXT,
       system_prompt TEXT,
+      cwd TEXT,
       storage_mode TEXT,
       created_at TEXT,
       updated_at TEXT,
@@ -66,8 +67,8 @@ function createSchema(db: Database.Database): void {
       conversation_id TEXT NOT NULL,
       parent_id TEXT,
       children_ids TEXT DEFAULT '[]',
-      role TEXT,
-      content TEXT,
+      role TEXT NOT NULL CHECK (role IN ('user', 'assistant', 'system', 'ex_agent', 'tool')),
+      content TEXT NOT NULL,
       plain_text_content TEXT,
       thinking_block TEXT,
       tool_calls TEXT,
@@ -79,9 +80,21 @@ function createSchema(db: Database.Database): void {
       ex_agent_type TEXT,
       content_blocks TEXT,
       created_at TEXT,
+      meta TEXT,
       FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE CASCADE,
       FOREIGN KEY (parent_id) REFERENCES messages(id) ON DELETE CASCADE
     );
+
+    CREATE TRIGGER messages_children_insert AFTER INSERT ON messages
+    WHEN NEW.parent_id IS NOT NULL
+    BEGIN
+      UPDATE messages
+      SET children_ids = CASE
+        WHEN children_ids = '[]' OR children_ids = '' THEN '["' || NEW.id || '"]'
+        ELSE SUBSTR(children_ids, 1, LENGTH(children_ids)-1) || ',"' || NEW.id || '"]'
+      END
+      WHERE id = NEW.parent_id;
+    END;
   `)
 }
 
@@ -94,12 +107,13 @@ function createStatements(db: Database.Database): any {
     `),
 
     upsertProject: db.prepare(`
-      INSERT INTO projects (id, name, user_id, context, system_prompt, storage_mode, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO projects (id, name, user_id, context, system_prompt, cwd, storage_mode, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(id) DO UPDATE SET
         name = excluded.name,
         context = excluded.context,
         system_prompt = excluded.system_prompt,
+        cwd = excluded.cwd,
         storage_mode = excluded.storage_mode,
         updated_at = excluded.updated_at
     `),
@@ -122,8 +136,8 @@ function createStatements(db: Database.Database): any {
     getConversationById: db.prepare('SELECT * FROM conversations WHERE id = ?'),
 
     upsertMessage: db.prepare(`
-      INSERT INTO messages (id, conversation_id, parent_id, children_ids, role, content, plain_text_content, thinking_block, tool_calls, tool_call_id, model_name, note, note_color, ex_agent_session_id, ex_agent_type, content_blocks, created_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO messages (id, conversation_id, parent_id, children_ids, role, content, plain_text_content, thinking_block, tool_calls, tool_call_id, model_name, note, note_color, ex_agent_session_id, ex_agent_type, content_blocks, created_at, meta)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(id) DO UPDATE SET
         content = excluded.content,
         plain_text_content = excluded.plain_text_content,
@@ -250,6 +264,78 @@ describeIfSqlite('registerAppAutomationRoutes', () => {
 
     const missingUserRes = await fetch(`${baseUrl}/api/app/conversations/latest`)
     expect(missingUserRes.status).toBe(400)
+  })
+
+  it('bulk-copies multiple branches without flattening their topology or sibling order', async () => {
+    const conversationRes = await postJson(baseUrl, '/api/app/conversations', {
+      title: 'Bulk Target',
+      user_id: 'bulk-user',
+    })
+    expect(conversationRes.status).toBe(201)
+    const conversationId = ((await conversationRes.json()) as any).id as string
+
+    const bulkRes = await postJson(baseUrl, `/api/app/conversations/${conversationId}/messages/bulk`, {
+      messages: [
+        {
+          source_id: 'root',
+          parent_source_id: null,
+          role: 'user',
+          content: 'root',
+          meta: { transfer: true },
+        },
+        { source_id: 'branch-b', parent_source_id: 'root', role: 'assistant', content: 'branch-b' },
+        { source_id: 'branch-b-leaf', parent_source_id: 'branch-b', role: 'user', content: 'branch-b-leaf' },
+        { source_id: 'branch-a', parent_source_id: 'root', role: 'assistant', content: 'branch-a' },
+        { source_id: 'branch-a-leaf', parent_source_id: 'branch-a', role: 'tool', content: 'branch-a-leaf', tool_call_id: 'tool-1' },
+      ],
+    })
+
+    expect(bulkRes.status).toBe(200)
+    const created = ((await bulkRes.json()) as any).messages as any[]
+    expect(created.map(message => message.content)).toEqual([
+      'root',
+      'branch-b',
+      'branch-b-leaf',
+      'branch-a',
+      'branch-a-leaf',
+    ])
+
+    const byContent = new Map(created.map(message => [message.content, message]))
+    expect(byContent.get('branch-b')?.parent_id).toBe(byContent.get('root')?.id)
+    expect(byContent.get('branch-b-leaf')?.parent_id).toBe(byContent.get('branch-b')?.id)
+    expect(byContent.get('branch-a')?.parent_id).toBe(byContent.get('root')?.id)
+    expect(byContent.get('branch-a-leaf')?.parent_id).toBe(byContent.get('branch-a')?.id)
+
+    const rootRecord = db!.prepare('SELECT * FROM messages WHERE id = ?').get(byContent.get('root')?.id) as any
+    expect(JSON.parse(rootRecord.children_ids)).toEqual([
+      byContent.get('branch-b')?.id,
+      byContent.get('branch-a')?.id,
+    ])
+    expect(JSON.parse(rootRecord.meta)).toEqual({ transfer: true })
+
+    const leafRecord = db!.prepare('SELECT * FROM messages WHERE id = ?').get(byContent.get('branch-a-leaf')?.id) as any
+    expect(leafRecord.tool_call_id).toBe('tool-1')
+    expect(created.map(message => message.created_at)).toEqual([...created.map(message => message.created_at)].sort())
+  })
+
+  it('rolls back the complete bulk copy when one message cannot be persisted', async () => {
+    const conversationRes = await postJson(baseUrl, '/api/app/conversations', {
+      title: 'Rollback Target',
+      user_id: 'rollback-user',
+    })
+    expect(conversationRes.status).toBe(201)
+    const conversationId = ((await conversationRes.json()) as any).id as string
+
+    const bulkRes = await postJson(baseUrl, `/api/app/conversations/${conversationId}/messages/bulk`, {
+      messages: [
+        { source_id: 'root', parent_source_id: null, role: 'user', content: 'root' },
+        { source_id: 'bad', parent_source_id: 'root', role: null, content: 'bad' },
+      ],
+    })
+
+    expect(bulkRes.status).toBe(500)
+    const count = db!.prepare('SELECT COUNT(*) AS count FROM messages WHERE conversation_id = ?').get(conversationId) as any
+    expect(count.count).toBe(0)
   })
 
   it('tracks parent children_ids when creating and branching messages', async () => {

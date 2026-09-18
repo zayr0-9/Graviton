@@ -44,7 +44,20 @@ export function buildConversationTree(messages: Message[]): ChatNode | null {
     childrenByParent.set(parent, children)
   }
 
-  for (const children of childrenByParent.values()) children.sort(compareMessages)
+  for (const [parent, children] of childrenByParent) {
+    const orderedChildIds = Array.isArray(byId.get(parent)?.children_ids)
+      ? byId.get(parent)!.children_ids.map(String)
+      : []
+    const sourceRank = new Map(orderedChildIds.map((id, index) => [id, index]))
+    children.sort((left, right) => {
+      const leftRank = sourceRank.get(messageId(left))
+      const rightRank = sourceRank.get(messageId(right))
+      if (leftRank != null && rightRank != null) return leftRank - rightRank
+      if (leftRank != null) return -1
+      if (rightRank != null) return 1
+      return compareMessages(left, right)
+    })
+  }
 
   const visited = new Set<string>()
   const buildNode = (message: Message, ancestors: Set<string>): ChatNode => {

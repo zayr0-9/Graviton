@@ -156,7 +156,7 @@ Memory-context injection is intentionally NOT ported.
 
 Two paths, both via `CompactionService.compactBranch`, which persists a `role:'system'`, `note:'__auto_compaction_summary__'` message:
 - **In-loop (auto):** runs inside `ToolLoopService.run` at the quiescent boundary after a tool-executing turn (OpenAI/Codex continuation policy). Emits `context_compaction` `threshold_reached`→`started`→`completed`; a successful summary replaces pre-compaction replay history and becomes the next parent. Failure emits `failed` + throws (`endReason: context_compaction_failed`). The renderer no longer orchestrates in-loop compaction.
-- **Manual button:** `POST /api/conversations/:id/compact` (`chatRoutes.ts:174`). The renderer's standalone `compactBranch` thunk (manual-compaction button) was **KEPT** and is still fully client-side (the one surviving renderer-side generation path).
+- **Manual button / renderer prechecks:** the renderer `compactBranch` thunk POSTs `POST /api/conversations/:id/compact`. `CompactionService.compactBranch` generates and persists the system summary before returning its server-assigned ID.
 
 ## Message sink selection & Railway-id adoption (`messageSink.ts`)
 

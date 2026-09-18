@@ -581,6 +581,7 @@ function toModelToolResultContent(content: string, toolName?: string | null): st
   }
 }
 
+const INCOMPLETE_TOOL_RESULT = 'Tool execution did not complete.'
 const TOOL_DENIED_PATTERN = /\bdenied\b|\bdeclin(?:e|ed|es)\b|\brejected by the user\b|\buser cancell?ed\b|\bnot approved\b/
 const TOOL_POLICY_PATTERN = /\bagent mode\b|\bplan mode\b|\bchat mode\b|\bnot available in\b|\bnot allowed in\b|operation mode/
 const TOOL_TIMEOUT_PATTERN = /\btimed out\b|\btimeout\b|\betimedout\b/
@@ -1332,6 +1333,21 @@ export class ToolLoopService {
         ...output,
         toolCalls: assistantToolCalls,
       })
+      // Persist a fallback result with every tool call so an abort or process loss can
+      // never leave a structurally dangling tool_use. This persisted snapshot is not
+      // added to the live model history: successful execution replaces it below using
+      // assistantContentBlocks plus the real results.
+      const persistedAssistantContentBlocks = assistantToolCalls.length > 0
+        ? [
+            ...assistantContentBlocks,
+            ...assistantToolCalls.map(call => ({
+              type: 'tool_result',
+              tool_use_id: call.id,
+              content: INCOMPLETE_TOOL_RESULT,
+              is_error: true,
+            })),
+          ]
+        : assistantContentBlocks
 
       const assistantMessage = this.sink.persistAssistantMessage({
         conversationId: input.conversationId,
@@ -1339,7 +1355,7 @@ export class ToolLoopService {
         content: output.content || '',
         modelName: input.modelName,
         toolCalls: assistantToolCalls,
-        contentBlocks: assistantContentBlocks,
+        contentBlocks: persistedAssistantContentBlocks,
         contextUsage: output.contextUsage,
         thinkingBlock: output.reasoning ?? null,
         // Phase 4: Railway's authoritative message id (when the provider surfaced a
@@ -1349,9 +1365,14 @@ export class ToolLoopService {
       })
 
       lastAssistantMessage = assistantMessage
-      history.push(assistantMessage)
+      // Keep pending fallback results durable but out of active inference context. The
+      // next provider turn is reached only after this row is replaced with real results.
+      const assistantForHistory = assistantToolCalls.length > 0
+        ? { ...assistantMessage, content_blocks: JSON.stringify(assistantContentBlocks) }
+        : assistantMessage
+      history.push(assistantForHistory)
       const assistantHistoryIndex = history.length - 1
-      emit({ type: 'assistant_message_persisted', message: assistantMessage })
+      emit({ type: 'assistant_message_persisted', message: assistantForHistory })
 
       if (!assistantToolCalls.length) {
         // Phase 3 Stop hook (parity with the renderer's shouldContinueFromStopHook,
@@ -1689,7 +1710,9 @@ export class ToolLoopService {
       }
 
       if (toolResultBlocks.length > 0) {
-        const existingBlocks = parseJsonArray(assistantMessage.content_blocks)
+        // Build from the provider's original blocks, not the persisted snapshot: that
+        // snapshot contains fallback results which this successful update replaces.
+        const existingBlocks = assistantContentBlocks
         const updatedBlocks = [...existingBlocks, ...toolResultBlocks]
         const anyToolErrors = toolResultBlocks.some(block => block.is_error)
 

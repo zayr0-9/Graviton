@@ -16,6 +16,7 @@ interface ExpandedModelViewProps {
   isOpen: boolean
   onClose: () => void
   models: BaseModel[]
+  provider?: string | null
   selectedModelName?: string
   onSelect: (modelName: string) => void
   disabledOptions?: string[]
@@ -32,6 +33,7 @@ export const ExpandedModelView: React.FC<ExpandedModelViewProps> = ({
   isOpen,
   onClose,
   models,
+  provider,
   selectedModelName,
   onSelect,
   disabledOptions = [],
@@ -371,7 +373,12 @@ export const ExpandedModelView: React.FC<ExpandedModelViewProps> = ({
         </div>,
         document.body
       )}
-      <ModelInfoModal model={selectedModelForInfo} isOpen={showModelInfo} onClose={() => setShowModelInfo(false)} />
+      <ModelInfoModal
+        model={selectedModelForInfo}
+        provider={provider}
+        isOpen={showModelInfo}
+        onClose={() => setShowModelInfo(false)}
+      />
     </>
   )
 }

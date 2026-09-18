@@ -204,6 +204,7 @@ import {
   resolveProviderContextLength,
 } from '../helpers/providerSettingsStorage'
 import { isOrchestratorEnabled, toggleOrchestratorEnabled } from '../helpers/subagentToolSettings'
+import { loadModelShortcutSlots } from '../helpers/chatKeyboardShortcuts'
 import {
   loadToolOutputTruncationEnabled,
   TOOL_OUTPUT_TRUNCATION_CHANGE_EVENT,
@@ -5045,6 +5046,55 @@ function Chat() {
     },
     [dispatch, openOpenaiAuthUrl]
   )
+
+  useEffect(() => {
+    const handleChatKeyboardShortcut = (event: KeyboardEvent) => {
+      const hasPrimaryModifier = event.ctrlKey || event.metaKey
+      if (!hasPrimaryModifier || event.altKey) return
+
+      // Ctrl/Cmd + , opens quick chat settings; adding Shift opens the full Settings route.
+      if (event.code === 'Comma') {
+        event.preventDefault()
+        if (event.shiftKey) {
+          navigate('/settings')
+        } else {
+          setSettingsOpen(true)
+        }
+        return
+      }
+
+      if (event.shiftKey || !/^Digit[1-9]$/.test(event.code)) return
+
+      const slot = Number(event.code.slice(-1))
+      const assignment = loadModelShortcutSlots()[slot]
+      if (!assignment) return
+
+      const providerExists = providers.providers.some(provider => provider.name === assignment.provider)
+      if (!providerExists) {
+        console.warn(`Model shortcut ${slot} uses an unavailable provider:`, assignment.provider)
+        return
+      }
+
+      if (assignment.provider === 'OpenRouter' && isCommunityMode) {
+        event.preventDefault()
+        setOpenRouterLoginRequiredModalOpen(true)
+        return
+      }
+
+      if (assignment.provider === 'OpenAI (ChatGPT)' && !isOpenAIAuthenticated()) {
+        event.preventDefault()
+        void handleProviderSelect(assignment.provider)
+        return
+      }
+
+      event.preventDefault()
+      dispatch(chatSliceActions.providerSelected(assignment.provider))
+      selectModelMutation.mutate({ provider: assignment.provider, model: assignment.model })
+    }
+
+    window.addEventListener('keydown', handleChatKeyboardShortcut)
+    return () => window.removeEventListener('keydown', handleChatKeyboardShortcut)
+  }, [dispatch, handleProviderSelect, navigate, providers.providers, selectModelMutation])
 
   const handleComposerSlashCommandSelect = useCallback(
     (command: string): ComposerSlashCommandResult | void => {

@@ -1,6 +1,5 @@
 import { createAsyncThunk } from '@reduxjs/toolkit'
 import type { QueryClient } from '@tanstack/react-query'
-import { v4 as uuidv4 } from 'uuid'
 import {
   estimateContentBlocksForContext,
   safeEstimateTokenCount,
@@ -20,7 +19,6 @@ import { ThunkExtraArgument } from '../../store/thunkExtra'
 import {
   API_BASE,
   buildLocalApiUrl,
-  createStreamingRequest,
   cloudApi,
   getCachedLocalApiBase,
   getCachedLocalServerOrigin,
@@ -45,15 +43,6 @@ import {
   SendMessagePayload,
   ToolDefinition,
 } from './chatTypes'
-import { createBedrockStreamingRequest } from './Bedrock'
-import { createLmStudioStreamingRequest } from './LMStudio'
-import { createOpenAIChatGPTStreamingRequest } from './OpenAIChatGPT'
-import { createZaiStreamingRequest } from './Zai'
-import {
-  buildCompactionHistoryLines,
-  buildCompactionToolContextAppendix,
-  buildCompactionWriteOpAppendix,
-} from './compactionContext'
 // OpenAI OAuth is handled internally by OpenAIChatGPT module
 import { loadAutoCompactionEnabled } from '../../helpers/chatUiSettingsStorage'
 import { getAgentModePrompt, getActiveChatModePrompt, getSubagentModePrompt } from '../../helpers/operationModePromptStorage'
@@ -61,11 +50,7 @@ import { loadPlanModeResponseSettings } from '../../helpers/planModeResponseSett
 import { getSubagentReasoningEffort } from '../../helpers/subagentToolSettings'
 import { loadLongTermMemoryContextEnabled } from '../../helpers/longTermMemorySettingsStorage'
 import { loadContextDirectorySettings } from '../../helpers/contextDirectorySettingsStorage'
-import {
-  DEFAULT_COMPACTION_SYSTEM_PROMPT,
-  loadProviderSettings,
-  resolveProviderContextLength,
-} from '../../helpers/providerSettingsStorage'
+import { loadProviderSettings, resolveProviderContextLength } from '../../helpers/providerSettingsStorage'
 import { updateToolEnabledState } from '../../helpers/toolSettingsStorage'
 import { generateStreamId, STREAM_PRUNE_DELAY } from './streamHelpers'
 import { createStreamingRun, finishStreamingRun } from './streamRunTracking'
@@ -96,7 +81,7 @@ import {
 } from './toolDefinitions'
 import { type ChatHookProjectContext } from './chatHookClient'
 import { type PlanClarificationAnswer } from './planToolTypes'
-import { applyStreamProjectionPolicy } from './sseProjection'
+import { applyStreamProjectionPolicy, normalizeServerMessage } from './sseProjection'
 import { abortSubagentControllers } from './subagentClient'
 import {
   fetchConversationUndoSummaries,
@@ -667,7 +652,6 @@ const buildProjectContextForMemory = (project: { id?: string | null; name?: stri
 
 
 export const AUTO_COMPACTION_NOTE = '__auto_compaction_summary__'
-export const AUTO_COMPACTION_SUMMARY_RESUME_LINE = 'Following is summary of the session, you have to resume the work.'
 export const GENERATED_IMAGE_PATH_HINT_NOTE = '__generated_image_path_hint__'
 
 const isAutoCompactionSummaryMessage = (msg: Message | undefined | null): boolean => {
@@ -679,20 +663,6 @@ const isGeneratedImagePathHintMessage = (msg: Message | undefined | null): boole
   if (!msg) return false
   return typeof msg.note === 'string' && msg.note === GENERATED_IMAGE_PATH_HINT_NOTE
 }
-
-
-const ensureCompactionSummaryResumeLine = (content: string | null | undefined): string => {
-  const trimmed = typeof content === 'string' ? content.trim() : ''
-  if (!trimmed) return AUTO_COMPACTION_SUMMARY_RESUME_LINE
-  if (trimmed.startsWith(AUTO_COMPACTION_SUMMARY_RESUME_LINE)) return trimmed
-  return `${AUTO_COMPACTION_SUMMARY_RESUME_LINE}\n\n${trimmed}`
-}
-
-
-
-
-
-
 
 
 const trimHistoryToLatestCompaction = (messages: Array<Message | undefined>): Message[] => {
@@ -855,6 +825,7 @@ interface ServerLoopFailureParams {
   streamId: string
   parentMessageId?: MessageId | null
   lineageId?: LineageId | null
+  phase?: 'preflight' | 'stream'
 }
 
 interface ServerLoopFailureResult {
@@ -918,6 +889,7 @@ const handleServerLoopFailure = ({
   streamId,
   parentMessageId,
   lineageId,
+  phase = 'stream',
 }: ServerLoopFailureParams): ServerLoopFailureResult => {
   // The spinner must stop whichever way this ended — Stop included.
   dispatch(chatSliceActions.sendingCompleted({ streamId }))
@@ -928,7 +900,7 @@ const handleServerLoopFailure = ({
     return { aborted: true, envelope: null, message: 'Message cancelled', recorded: false }
   }
 
-  const envelope = envelopeCarriedOnError(error) ?? classifyLocalChatError(error, { phase: 'stream', streamId })
+  const envelope = envelopeCarriedOnError(error) ?? classifyLocalChatError(error, { phase, streamId })
   const detail = rawErrorText(error)
 
   void finishStreamingRun(streamId, {
@@ -1045,10 +1017,9 @@ interface CompactBranchPayload {
   modelName?: string | null
 }
 
-// Manual/auto compaction has no server-side turn budget or heartbeat to fall back on, so a
-// provider that stalls mid-stream (rate limited, WS wedged, etc.) previously hung the compose
-// bar's loading animation forever with zero console output. Race the whole generation step
-// against a hard timeout so the thunk always settles.
+// Compaction IDs must come from durable server persistence. The old renderer path minted
+// a UUID, exposed it to Redux, then fire-and-forgot `/sync/message`; a failed/racing write
+// left the next send parented to a row SQLite had never seen.
 const COMPACTION_TIMEOUT_MS = 120_000
 
 export const compactBranch = createAsyncThunk<
@@ -1064,280 +1035,50 @@ export const compactBranch = createAsyncThunk<
     dispatch(chatSliceActions.compactingStarted({ conversationId }))
 
     try {
-      const { auth } = extra
+      if (!parentMessageId) throw new Error('Compaction requires a persisted parent message')
+
       const state = getState() as RootState
-
       const provider = providerName || state.chat.providerState.currentProvider || 'OpenRouter'
-      const providerSlug = provider.toLowerCase().replace(/\s+/g, '')
-      const isLmStudio = providerSlug === 'lmstudio'
-      const isOpenAIChatGPT = providerSlug === 'openaichatgpt' || providerSlug === 'openai(chatgpt)'
-      const isBedrock = /^(bedrock|awsbedrock|aws-bedrock|amazonbedrock|amazon-bedrock)$/.test(providerSlug)
-      const isZai =
-        providerSlug === 'z.ai/glm' || providerSlug === 'zai/glm' || providerSlug === 'zai' || providerSlug === 'glm'
-
-      console.log('[compactBranch] start', {
-        conversationId,
-        parentMessageId,
-        inputMessages: messages.length,
-        providerName: provider,
-        modelName: modelName ?? null,
-        providerSlug,
-      })
-
       const modelsData = extra.queryClient?.getQueryData<{ models: Model[]; default: Model; selected: Model }>([
         'models',
         provider,
       ])
       const resolvedModelName = modelName || modelsData?.selected?.name || modelsData?.default?.name
-      if (!resolvedModelName) {
-        throw new Error('No model selected for compaction')
-      }
+      if (!resolvedModelName) throw new Error('No model selected for compaction')
 
       const compactableHistory = trimHistoryToLatestCompaction(messages)
-      const historyLines = buildCompactionHistoryLines(compactableHistory)
-      const historyText =
-        historyLines.length > 0
-          ? historyLines.join('\n\n')
-          : '(No non-tool conversational text remained after filtering tool outputs.)'
-      const toolContextAppendix = buildCompactionToolContextAppendix(compactableHistory)
-      const writeOpAppendix = buildCompactionWriteOpAppendix(compactableHistory)
-
-      console.log('[compactBranch] prepared', {
-        resolvedModelName,
-        compactableHistoryCount: compactableHistory.length,
-        historyLinesCount: historyLines.length,
-        toolContextAppendixChars: toolContextAppendix.length,
-        writeOpAppendixChars: writeOpAppendix.length,
-      })
-
-      if (historyLines.length === 0 && !toolContextAppendix && !writeOpAppendix) {
-        console.log('[compactBranch] skip: no history lines or tool appendices')
-        return { message: null }
-      }
+      if (compactableHistory.length < 2) return { message: null }
 
       const providerSettings = loadProviderSettings()
-      const compactionSystemPrompt = providerSettings.compactionSystemPrompt?.trim() || DEFAULT_COMPACTION_SYSTEM_PROMPT
-      const compactionUserPrompt = [
-        'Compact this branch context for continued conversation.',
-        'Output sections:',
-        '1) Objective',
-        '2) Confirmed facts',
-        '3) Decisions made',
-        '4) Open tasks / next steps',
-        '5) Risks / ambiguities',
-        '',
-        'Conversation history:',
-        historyText,
-        ...(toolContextAppendix ? ['', toolContextAppendix] : []),
-      ].join('\n')
-
-      let summaryText = ''
-
-      console.log('[compactBranch] execution route', {
-        provider,
-        providerSlug,
-        isLmStudio,
-        isOpenAIChatGPT,
-        isZai,
-        usingEphemeral: !isLmStudio && !isOpenAIChatGPT && !isZai,
-      })
-
-      const compactionAbortController = new AbortController()
-      let compactionTimeoutId: ReturnType<typeof setTimeout> | null = null
-      const compactionTimeoutPromise = new Promise<never>((_, reject) => {
-        compactionTimeoutId = setTimeout(() => {
-          compactionAbortController.abort()
-          reject(
-            new Error(
-              `Compaction timed out after ${COMPACTION_TIMEOUT_MS / 1000}s — the provider did not respond (it may be rate-limited or unreachable).`
-            )
-          )
-        }, COMPACTION_TIMEOUT_MS)
-      })
-
-      const runCompactionGeneration = async () => {
-        if (isLmStudio) {
-          await createLmStudioStreamingRequest(
-            {
-              conversationId,
-              parentId: parentMessageId,
-              modelName: resolvedModelName,
-              systemPrompt: compactionSystemPrompt,
-              messages: [
-                { role: 'system', content: compactionSystemPrompt },
-                { role: 'user', content: compactionUserPrompt },
-              ],
-              tools: [],
-            },
-            {
-              signal: compactionAbortController.signal,
-              onChunk: chunk => {
-                if (chunk?.part === 'text' && typeof chunk?.delta === 'string') {
-                  summaryText += chunk.delta
-                }
-                if (chunk?.type === 'complete' && chunk?.message?.content) {
-                  summaryText = chunk.message.content
-                }
-              },
-            }
-          )
-        } else if (isOpenAIChatGPT || isZai || isBedrock) {
-          await (isBedrock ? createBedrockStreamingRequest : isZai ? createZaiStreamingRequest : createOpenAIChatGPTStreamingRequest)(
-            {
-              conversationId,
-              parentId: parentMessageId,
-              modelName: resolvedModelName,
-              systemPrompt: compactionSystemPrompt,
-              messages: [
-                { role: 'system', content: compactionSystemPrompt },
-                { role: 'user', content: compactionUserPrompt },
-              ],
-              ...(isZai || isBedrock ? { userId: auth.userId } : {}),
-              tools: [],
-            },
-            {
-              signal: compactionAbortController.signal,
-              onChunk: chunk => {
-                if (chunk?.part === 'text' && typeof chunk?.delta === 'string') {
-                  summaryText += chunk.delta
-                }
-                if (chunk?.type === 'complete' && chunk?.message?.content) {
-                  summaryText = chunk.message.content
-                }
-              },
-            }
-          )
-        } else {
-          const response = await createStreamingRequest('/generate/ephemeral', auth.accessToken, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              model: resolvedModelName,
-              systemPrompt: compactionSystemPrompt,
-              prompt: compactionUserPrompt,
-              temperature: 0.2,
-              maxTokens: 1200,
-            }),
-            signal: compactionAbortController.signal,
-          })
-
-          if (!response.ok) {
-            const text = await response.text()
-            throw new Error(`Compaction request failed: HTTP ${response.status}: ${text}`)
-          }
-
-          const reader = response.body?.getReader()
-          if (!reader) throw new Error('Compaction response stream missing')
-
-          const decoder = new TextDecoder()
-          let sseBuffer = ''
-
-          while (true) {
-            const { done, value } = await reader.read()
-            if (done) break
-            sseBuffer += decoder.decode(value, { stream: true })
-            const lines = sseBuffer.split('\n')
-            sseBuffer = lines.pop() || ''
-
-            for (const line of lines) {
-              if (!line.startsWith('data: ')) continue
-              const data = line.slice(6)
-              if (data === '[DONE]') continue
-              try {
-                const parsed = JSON.parse(data)
-                if (typeof parsed.text === 'string') {
-                  summaryText += parsed.text
-                }
-              } catch {
-                if (data.trim()) summaryText += data
-              }
-            }
-          }
-        }
-      }
-
-      try {
-        await Promise.race([runCompactionGeneration(), compactionTimeoutPromise])
-      } finally {
-        if (compactionTimeoutId) clearTimeout(compactionTimeoutId)
-      }
-
-      const finalSummary = summaryText.trim()
-      console.log('[compactBranch] summary received', {
-        summaryChars: finalSummary.length,
-      })
-      if (!finalSummary) {
-        throw new Error(
-          compactionAbortController.signal.aborted
-            ? `Compaction timed out after ${COMPACTION_TIMEOUT_MS / 1000}s — the provider did not respond (it may be rate-limited or unreachable).`
-            : 'Compaction returned empty summary'
-        )
-      }
-
-      const fencedToolContextAppendix = toolContextAppendix ? `\`\`\`\n${toolContextAppendix}\n\`\`\`` : ''
-      const fencedWriteOpAppendix = writeOpAppendix ? `\`\`\`\n${writeOpAppendix}\n\`\`\`` : ''
-      const persistedSummaryContent = ensureCompactionSummaryResumeLine(
-        [finalSummary, fencedToolContextAppendix, fencedWriteOpAppendix]
-          .filter(section => typeof section === 'string' && section.trim().length > 0)
-          .join('\n\n')
+      const response = await localApi.post<{ success?: boolean; message?: unknown; error?: string }>(
+        `/conversations/${encodeURIComponent(String(conversationId))}/compact`,
+        {
+          parentMessageId: String(parentMessageId),
+          messages: compactableHistory,
+          provider,
+          modelName: resolvedModelName,
+          userId: extra.auth.userId,
+          systemPrompt: providerSettings.compactionSystemPrompt?.trim() || null,
+        },
+        { signal: AbortSignal.timeout(COMPACTION_TIMEOUT_MS) }
       )
 
-      const summaryMessage: Message = {
-        id: uuidv4(),
-        conversation_id: conversationId,
-        parent_id: parentMessageId,
-        children_ids: [],
-        role: 'system',
-        content: persistedSummaryContent,
-        content_plain_text: persistedSummaryContent,
-        thinking_block: '',
-        tool_calls: [],
-        content_blocks: [],
-        created_at: new Date().toISOString(),
-        model_name: resolvedModelName,
-        partial: false,
-        artifacts: [],
-        pastedContext: [],
-        note: AUTO_COMPACTION_NOTE,
+      if (!response?.success || !response.message) {
+        throw new Error(response?.error || 'Compaction failed before persistence')
       }
 
+      const summaryMessage = normalizeServerMessage(response.message)
+      const hasValidPersistedMarker =
+        summaryMessage?.id != null &&
+        summaryMessage.role === 'system' &&
+        summaryMessage.note === AUTO_COMPACTION_NOTE &&
+        String(summaryMessage.parent_id ?? '') === String(parentMessageId)
+      if (!hasValidPersistedMarker) throw new Error('Compaction server returned an invalid persisted summary')
+
+      // Only expose the server-assigned ID after the compact route has persisted it.
       dispatch(chatSliceActions.messageAdded(summaryMessage))
       dispatch(chatSliceActions.messageBranchCreated({ newMessage: summaryMessage }))
       updateMessageCache(extra.queryClient, conversationId, summaryMessage)
-
-      const selectedProject = selectSelectedProject(state)
-      const storageMode = getStorageModeFromCache(extra.queryClient, conversationId)
-
-      dualSync.syncMessage({
-        ...summaryMessage,
-        user_id: auth.userId,
-        project_id: selectedProject?.id || null,
-        storage_mode: storageMode,
-      })
-
-      if (isLocalServerRuntime()) {
-        localApi
-          .post('/sync/message', {
-            ...summaryMessage,
-            conversation_id: conversationId,
-            children_ids: summaryMessage.children_ids,
-            content_blocks: summaryMessage.content_blocks,
-            tool_calls: summaryMessage.tool_calls,
-            user_id: auth.userId,
-            owner_id: auth.userId,
-            project_id: selectedProject?.id || null,
-            storage_mode: storageMode,
-          })
-          .catch(err => console.error('[compactBranch] Failed to sync compaction message locally:', err))
-      }
-
-      console.log('[compactBranch] saved summary message', {
-        messageId: summaryMessage.id,
-        role: summaryMessage.role,
-        note: summaryMessage.note,
-        parentId: summaryMessage.parent_id,
-        modelName: summaryMessage.model_name,
-      })
 
       return { message: summaryMessage }
     } catch (error) {
@@ -1827,16 +1568,38 @@ export const editMessageWithBranching = createAsyncThunk<
       conversationId,
       'messages',
     ])
-    const cachedMessages = messagesCache?.messages || []
-    const currentMessages = cachedMessages.length > 0 ? cachedMessages : state.chat.conversation.messages
-    const originalMessage = currentMessages.find(m => m.id === originalMessageId)
+    const cachedMessages = (messagesCache?.messages || []).filter(
+      m => String(m.conversation_id) === String(conversationId)
+    )
+    // SSE-persisted rows enter Redux immediately, but the query snapshot can lag until
+    // all runs finish. Never let a nonempty stale cache hide a newly sent message.
+    // For the active conversation Redux is authoritative, including snapshot deletions.
+    const isCurrentConversation = String(state.chat.conversation.currentConversationId) === String(conversationId)
+    const currentMessages = isCurrentConversation
+      ? state.chat.conversation.messages.filter(m => String(m.conversation_id) === String(conversationId))
+      : cachedMessages
+    const originalMessage = currentMessages.find(m => String(m.id) === String(originalMessageId))
     const parentMessageId = originalMessage?.parent_id
 
     const editLineageId =
       (providedLineageId === undefined ? preSendState.chat.conversation.currentLineageId : providedLineageId) ?? null
 
+    // A missing source is a setup failure, not an interrupted reply. Reject before
+    // creating a stream/run or clearing the user's branch drafts in sendingStarted.
+    if (!originalMessage) {
+      const envelope = recordLocalChatError(dispatch, new Error(`Message not found for branch/edit: ${originalMessageId}`), {
+        conversationId,
+        parentMessageId: originalMessageId,
+        streamId,
+        lineageId: editLineageId,
+        phase: 'preflight',
+      })
+      return rejectWithValue({ message: envelope.userMessage, envelope, surfaced: true, aborted: false } satisfies ServerLoopRejection)
+    }
+
     let controller: AbortController | undefined
     let unregisterGenerationAbortController = () => {}
+    let serverLoopStarted = false
 
     try {
       // STUCK-SPINNER FIX: see sendMessage. This setup used to run outside the try, so a
@@ -1877,10 +1640,10 @@ export const editMessageWithBranching = createAsyncThunk<
 
       const currentPathIds = (providedBranchPath ?? state.chat.conversation.currentPath).filter(id => id !== 'root')
       // Truncate path to only include messages strictly before the originalMessageId
-      const idxOriginal = currentPathIds.indexOf(originalMessageId)
+      const idxOriginal = currentPathIds.findIndex(id => String(id) === String(originalMessageId))
       const truncatedPathIds = idxOriginal >= 0 ? currentPathIds.slice(0, idxOriginal) : currentPathIds
       const currentPathMessages = appendGeneratedImagePathHintsForHistory(
-        trimHistoryToLatestCompaction(truncatedPathIds.map(id => currentMessages.find(m => m.id === id))),
+        trimHistoryToLatestCompaction(truncatedPathIds.map(id => currentMessages.find(m => String(m.id) === String(id)))),
         currentMessages
       )
 
@@ -1917,13 +1680,12 @@ export const editMessageWithBranching = createAsyncThunk<
 
       // Build attachments: prioritize React Query cached artifacts, then Redux, plus new drafts
       // React Query cache has artifacts set via messageArtifactsSet after images are fetched
-      const artifactsFromCache: string[] = Array.isArray(originalMessage?.artifacts)
-        ? (originalMessage.artifacts as string[])
+      const cachedOriginalMessage = cachedMessages.find(m => String(m.id) === String(originalMessageId))
+      const artifactsFromCache: string[] = Array.isArray(cachedOriginalMessage?.artifacts)
+        ? cachedOriginalMessage.artifacts
         : []
-      // Also check Redux state for artifacts (fallback)
-      const reduxMessage = state.chat.conversation.messages.find(m => m.id === originalMessageId)
-      const artifactsFromRedux: string[] = Array.isArray(reduxMessage?.artifacts)
-        ? (reduxMessage.artifacts as string[])
+      const artifactsFromRedux: string[] = Array.isArray(originalMessage.artifacts)
+        ? originalMessage.artifacts
         : []
       // Use whichever has artifacts (prefer cache, fallback to Redux)
       const artifactsExisting = artifactsFromCache.length > 0 ? artifactsFromCache : artifactsFromRedux
@@ -2139,6 +1901,7 @@ export const editMessageWithBranching = createAsyncThunk<
           // ignoring the user's disable toggle and the selected model's real context window).
           ...buildCompactionRequestParams(modelsData, modelName, providerSlug),
         })
+        serverLoopStarted = true
         const result = await runServerChatLoop(
           {
             operation: 'edit',
@@ -2206,6 +1969,7 @@ export const editMessageWithBranching = createAsyncThunk<
         streamId,
         parentMessageId: parentMessageId ?? null,
         lineageId: editLineageId,
+        phase: serverLoopStarted ? 'stream' : 'preflight',
       })
       // Errored slots used to leak: streamPruned was scheduled only on the success return.
       setTimeout(() => dispatch(chatSliceActions.streamPruned({ streamId })), STREAM_PRUNE_DELAY)
@@ -3375,20 +3139,23 @@ export const insertBulkMessages = createAsyncThunk<
       thinking_block?: string
       model_name?: string
       tool_calls?: string | any
+      tool_call_id?: string | null
       note?: string
       note_color?: string | null
+      ex_agent_session_id?: string | null
+      ex_agent_type?: string | null
       content_blocks?: any
+      meta?: string | Record<string, unknown> | null
     }>
     storageMode?: 'local' | 'cloud' // Optional: explicitly set storage mode (useful for newly created conversations)
   },
   { extra: ThunkExtraArgument }
 >('chat/insertBulkMessages', async ({ conversationId, messages, storageMode }, { rejectWithValue }) => {
   try {
-    void storageMode
     // Storage-aware bulk insert via the gateway (routes local vs cloud; mirrors cloud writes).
     const response = await gwApi.post<{ messages: Message[] }>(
       `/conversations/${conversationId}/messages/bulk`,
-      { messages }
+      { messages, storageMode }
     )
     return response.messages
   } catch (error) {

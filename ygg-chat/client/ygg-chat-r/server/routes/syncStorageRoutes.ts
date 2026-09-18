@@ -445,6 +445,7 @@ export function registerSyncStorageRoutes(app: Express, deps: SyncStorageRoutesD
         ex_agent_type,
         content_blocks,
         created_at,
+        meta,
         // Additional context for dependency creation
         user_id,
         owner_id,
@@ -545,7 +546,8 @@ export function registerSyncStorageRoutes(app: Express, deps: SyncStorageRoutesD
         ex_agent_session_id || null,
         ex_agent_type || null,
         normalizedContentBlocks,
-        messageCreatedAt
+        messageCreatedAt,
+        typeof meta === 'string' ? meta : meta ? JSON.stringify(meta) : null
       )
 
       // Update conversation/project timestamps to reflect recent activity
@@ -1094,7 +1096,8 @@ export function registerSyncStorageRoutes(app: Express, deps: SyncStorageRoutesD
                   typeof op.data.content_blocks === 'string'
                     ? op.data.content_blocks
                     : JSON.stringify(op.data.content_blocks || null),
-                  op.data.created_at || new Date().toISOString()
+                  op.data.created_at || new Date().toISOString(),
+                  typeof op.data.meta === 'string' ? op.data.meta : op.data.meta ? JSON.stringify(op.data.meta) : null
                 )
                 results.push({ success: true, type: 'message', id: op.data.id })
               } else if (op.action === 'delete') {
