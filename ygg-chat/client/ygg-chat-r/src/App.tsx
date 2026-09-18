@@ -36,7 +36,7 @@ import { selectCcCwd, selectCurrentConversationId } from './features/chats'
 import { selectCurrentUser } from './features/users'
 import { useAppSelector } from './hooks/redux'
 import { useIsMobile } from './hooks/useMediaQuery'
-import { useResearchNotes } from './hooks/useQueries'
+import { useConversations, useResearchNotes } from './hooks/useQueries'
 import { dispatchChatInsertFilePath } from './helpers/chatInputBridge'
 import IdeContextBootstrap from './IdeContextBootstrap'
 
@@ -100,6 +100,7 @@ const HtmlToolsShell = ({ enabled }: { enabled: boolean }) => {
   const currentUser = useAppSelector(selectCurrentUser)
   const isMobile = useIsMobile()
   const { data: notes = [] } = useResearchNotes()
+  const { data: allConversations = [] } = useConversations()
   const isHiddenRoute = TOOL_VIEWER_HIDDEN_ROUTES.has(location.pathname)
   const canShow = Boolean(enabled && registry && currentUser && !isHiddenRoute)
   const bootstrappedUserIdRef = useRef<string | null>(null)
@@ -141,6 +142,7 @@ const HtmlToolsShell = ({ enabled }: { enabled: boolean }) => {
       {!isHomepageFullscreen && (
         <RunningAgentsFloatingButton
           notes={notes}
+          allConversations={allConversations}
           onOpenApps={toggleAppsModal}
           appsOpen={registry.isModalOpen}
           className={isMobile ? 'bottom-32 right-5' : 'bottom-6 right-14'}

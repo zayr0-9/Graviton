@@ -2,6 +2,7 @@ import { AnimatePresence, motion, useReducedMotion } from 'framer-motion'
 import React, { useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { selectCurrentConversationId, selectCurrentPath } from '../../features/chats'
+import type { Conversation } from '../../features/conversations/conversationTypes'
 import type { BranchDebugData, BranchDebugRow } from '../../features/chats/branchDebug'
 import { uiActions, type UiNotification } from '../../features/ui'
 import { useAppDispatch, useAppSelector } from '../../hooks/redux'
@@ -17,6 +18,7 @@ import { useMotionPreferences } from '../motion'
 
 interface RunningAgentsFloatingButtonProps {
   notes?: ResearchNoteItem[]
+  allConversations?: Conversation[]
   className?: string
   onOpenApps: () => void
   appsOpen?: boolean
@@ -332,6 +334,7 @@ const ParentMessageTicker = ({ text, reduceMotion }: { text: string | null | und
 
 export const RunningAgentsFloatingButton: React.FC<RunningAgentsFloatingButtonProps> = ({
   notes = [],
+  allConversations = [],
   className = '',
   onOpenApps,
   appsOpen = false,
@@ -340,7 +343,7 @@ export const RunningAgentsFloatingButton: React.FC<RunningAgentsFloatingButtonPr
   const dispatch = useAppDispatch()
   const shouldReduceMotion = useReducedMotion()
   const motionPreferences = useMotionPreferences(shouldReduceMotion)
-  const { activeStreams, streamHistory } = useRunningAgentStreams(notes)
+  const { activeStreams, streamHistory } = useRunningAgentStreams(notes, allConversations)
   const notifications = useAppSelector(state => state.ui.notifications)
   const currentConversationId = useAppSelector(selectCurrentConversationId)
   const currentPath = useAppSelector(selectCurrentPath)

@@ -71,6 +71,7 @@ export const ChatInputController = React.memo(
       const wrapperRef = useRef<HTMLDivElement | null>(null)
       const lastHasTextRef = useRef(initialValue.trim().length > 0)
       const shiftPressedRef = useRef(false)
+      const markdownPastePendingRef = useRef(false)
 
       const publishHasText = useCallback(
         (nextValue: string) => {
@@ -125,9 +126,11 @@ export const ChatInputController = React.memo(
         }
         const handleKeyUp = (event: KeyboardEvent) => {
           if (event.key === 'Shift') shiftPressedRef.current = false
+          if (event.code === 'KeyV') markdownPastePendingRef.current = false
         }
         const handleBlur = () => {
           shiftPressedRef.current = false
+          markdownPastePendingRef.current = false
         }
 
         window.addEventListener('keydown', handleKeyDown)
@@ -151,7 +154,9 @@ export const ChatInputController = React.memo(
 
       const handlePaste = useCallback(
         (event: React.ClipboardEvent<HTMLTextAreaElement>) => {
-          if (!shiftPressedRef.current) return
+          const shouldPasteAsMarkdown = shiftPressedRef.current || markdownPastePendingRef.current
+          markdownPastePendingRef.current = false
+          if (!shouldPasteAsMarkdown) return
 
           const pastedText = event.clipboardData.getData('text/plain')
           if (!pastedText) return
@@ -180,6 +185,11 @@ export const ChatInputController = React.memo(
             value={value}
             onChange={handleChange}
             onKeyDown={event => {
+              if ((event.metaKey || event.ctrlKey) && event.shiftKey && event.code === 'KeyV') {
+                // macOS can release Shift before dispatching the native paste event for Cmd+Shift+V.
+                // Remember the keyboard chord and consume it when the paste event arrives.
+                markdownPastePendingRef.current = true
+              }
               if (event.key === 'Enter' && !event.shiftKey) {
                 event.preventDefault()
                 onSubmit()

@@ -40,6 +40,25 @@ export const summarizeAgentStreamId = (value: string | null | undefined): string
   return value.length > 18 ? `${value.slice(0, 8)}…${value.slice(-6)}` : value
 }
 
+export const buildAgentConversationLookup = (
+  allConversations: readonly Conversation[],
+  scopedConversations: readonly Conversation[]
+): Map<string, Conversation> => {
+  const map = new Map<string, Conversation>()
+
+  for (const conversation of allConversations) {
+    map.set(String(conversation.id), conversation)
+  }
+
+  // Current route data can contain a title edit that has not reached the global
+  // query cache yet, so it deliberately wins over the all-conversations list.
+  for (const conversation of scopedConversations) {
+    map.set(String(conversation.id), conversation)
+  }
+
+  return map
+}
+
 export const getAgentActivityBadgeClasses = (kind: AgentStreamActivityKind): string => {
   const baseClasses = 'rounded-full px-2 py-0.5 font-medium'
   if (kind === 'tool_call' || kind === 'tool_result') {
@@ -155,8 +174,8 @@ const resolveParentMessage = (messagesById: Map<string, Message>, stream: Stream
   return null
 }
 
-export function useRunningAgentStreams(notes: ResearchNoteItem[] = []) {
-  const conversations = useAppSelector(state => state.conversations.items)
+export function useRunningAgentStreams(notes: ResearchNoteItem[] = [], allConversations: Conversation[] = []) {
+  const scopedConversations = useAppSelector(state => state.conversations.items)
   const streamingRoot = useAppSelector(state => state.chat.streaming)
   const messages = useAppSelector(state => state.chat.conversation.messages)
   const [streamHistory, setStreamHistory] = useState<AgentStreamListItem[]>([])
@@ -170,13 +189,10 @@ export function useRunningAgentStreams(notes: ResearchNoteItem[] = []) {
     return map
   }, [notes])
 
-  const conversationsById = useMemo(() => {
-    const map = new Map<string, Conversation>()
-    for (const item of conversations) {
-      map.set(String(item.id), item)
-    }
-    return map
-  }, [conversations])
+  const conversationsById = useMemo(
+    () => buildAgentConversationLookup(allConversations, scopedConversations),
+    [allConversations, scopedConversations]
+  )
 
   const messagesById = useMemo(() => {
     const map = new Map<string, Message>()
