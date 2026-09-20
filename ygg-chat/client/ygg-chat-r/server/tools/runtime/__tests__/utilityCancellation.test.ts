@@ -1,17 +1,17 @@
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 
-const mocks = vi.hoisted(() => ({ bash: vi.fn(), powershell: vi.fn(), post: vi.fn(), receive: undefined as undefined | ((message: unknown) => void) }))
+const mocks = vi.hoisted(() => ({ bash: vi.fn(), powershell: vi.fn(), glob: vi.fn(), ripgrep: vi.fn(), post: vi.fn(), receive: undefined as undefined | ((message: unknown) => void) }))
 vi.mock('../../bash.js', () => ({ runBashCommand: mocks.bash }))
 vi.mock('../../powershell.js', () => ({ runPowerShellCommand: mocks.powershell }))
 vi.mock('../../createFile.js', () => ({ createTextFile: vi.fn() }))
 vi.mock('../../deleteFile.js', () => ({ deleteFile: vi.fn(), safeDeleteFile: vi.fn() }))
 vi.mock('../../directory.js', () => ({ extractDirectoryStructure: vi.fn() }))
 vi.mock('../../editFile.js', () => ({ editFile: vi.fn(), multiEdit: vi.fn() }))
-vi.mock('../../glob.js', () => ({ globSearch: vi.fn() }))
+vi.mock('../../glob.js', () => ({ globSearch: mocks.glob }))
 vi.mock('../../htmlRenderer.js', () => ({ default: {} }))
 vi.mock('../../readFile.js', () => ({ readFileContinuation: vi.fn(), readTextFile: vi.fn() }))
 vi.mock('../../readFiles.js', () => ({ formatReadFilesContent: vi.fn(), readMultipleTextFiles: vi.fn() }))
-vi.mock('../../ripgrep.js', () => ({ ripgrepSearch: vi.fn() }))
+vi.mock('../../ripgrep.js', () => ({ ripgrepSearch: mocks.ripgrep }))
 vi.mock('../../viewImage.js', () => ({ viewImage: vi.fn() }))
 vi.mock('../../streamUndoManager.js', () => ({ recordPreEditBackup: vi.fn(), recordToolEditSuccess: vi.fn() }))
 vi.mock('../../customToolLoader.js', () => ({ customToolRegistry: { initialize: vi.fn().mockResolvedValue(undefined) } }))
@@ -57,4 +57,21 @@ it('aborts active requests before shutdown ack and bounds cleanup for uncooperat
   expect(exit).toHaveBeenCalledWith(0)
   send('b', 'bash')
   expect(mocks.bash).toHaveBeenCalledTimes(1)
+})
+
+it('forwards search options and cancels only the selected search request', async () => {
+  const options: any[] = []
+  const run = (opts: any) => { options.push(opts); return new Promise(resolve => opts.signal.addEventListener('abort', () => resolve({ success: false, cancelled: true }))) }
+  mocks.glob.mockImplementation((_pattern, opts) => run(opts))
+  mocks.ripgrep.mockImplementation((_pattern, _path, opts) => run(opts))
+  mocks.receive!({ type: 'execute_tool', requestId: 'glob', toolName: 'glob', args: { pattern: '*', nodir: true, timeoutMs: 1234 }, options: { deadlineMs: 123 } })
+  mocks.receive!({ type: 'execute_tool', requestId: 'rg', toolName: 'ripgrep', args: { pattern: 'x', caseSensitive: false, timeoutMs: 2345 }, options: { deadlineMs: 456 } })
+  expect(options[0]).toMatchObject({ deadlineMs: 123, timeoutMs: 1234, nodir: true, signal: expect.any(AbortSignal) })
+  expect(options[1]).toMatchObject({ deadlineMs: 456, timeoutMs: 2345, caseSensitive: false, signal: expect.any(AbortSignal) })
+  mocks.receive!({ type: 'cancel_tool', requestId: 'glob' })
+  expect(options[0].signal.aborted).toBe(true)
+  expect(options[1].signal.aborted).toBe(false)
+  mocks.receive!({ type: 'cancel_tool', requestId: 'rg' })
+  await vi.advanceTimersByTimeAsync(0)
+  expect(mocks.post).toHaveBeenCalledWith(expect.objectContaining({ requestId: 'rg', result: { success: false, cancelled: true } }))
 })

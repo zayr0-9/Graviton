@@ -345,14 +345,18 @@ function initializeBuiltInToolRegistry(): void {
     return await viewImage(imagePath, { cwd: effectiveCwd, detail, maxBytes })
   })
 
-  builtInTools.set('glob', async (args, { rootPath }) => {
-    const { pattern, cwd, ignore, dot, absolute } = args
+  builtInTools.set('glob', async (args, { rootPath, signal, deadlineMs }) => {
+    const { pattern, cwd, ignore, dot, absolute, mark, nosort, nocase, nodir,
+      follow, realpath, stat, withFileTypes, timeoutMs, maxMatches } = args
     if (!pattern) throw new Error('pattern is required')
     const actualCwd = validateAndResolvePath(cwd, rootPath)
-    return await globSearch(pattern, { cwd: actualCwd, ignore, dot, absolute })
+    return await globSearch(pattern, {
+      cwd: actualCwd, ignore, dot, absolute, mark, nosort, nocase, nodir,
+      follow, realpath, stat, withFileTypes, timeoutMs, maxMatches, signal, deadlineMs,
+    })
   })
 
-  builtInTools.set('ripgrep', async (args, { rootPath }) => {
+  builtInTools.set('ripgrep', async (args, { rootPath, signal, deadlineMs }) => {
     const {
       regex,
       pattern,
@@ -372,7 +376,11 @@ function initializeBuiltInToolRegistry(): void {
     if (!query) throw new Error('pattern or regex is required')
     const finalSearchPath = validateAndResolvePath(dirPath || altSearchPath, rootPath)
     return await ripgrepSearch(query, finalSearchPath, {
-      caseSensitive: !case_insensitive,
+      signal,
+      deadlineMs,
+      timeoutMs: args.timeoutMs,
+      maxOutputChars: args.maxOutputChars,
+      caseSensitive: args.caseSensitive ?? !case_insensitive,
       glob: globPattern,
       lineNumbers,
       count,

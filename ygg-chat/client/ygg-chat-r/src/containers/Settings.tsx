@@ -112,10 +112,13 @@ import {
   saveRemoteServerSettings,
 } from '../helpers/remoteServerSettingsStorage'
 import {
+  DEFAULT_STREAM_IDLE_TIMEOUT_MS,
   loadToolExecutionSettings,
   MAX_BASH_TIMEOUT_MS,
+  MAX_STREAM_IDLE_TIMEOUT_MS,
   MAX_TOOL_CALL_TIMEOUT_MS,
   MIN_BASH_TIMEOUT_MS,
+  MIN_STREAM_IDLE_TIMEOUT_MS,
   MIN_TOOL_CALL_TIMEOUT_MS,
   saveToolExecutionSettings,
   TOOL_EXECUTION_SETTINGS_CHANGE_EVENT,
@@ -424,6 +427,10 @@ const Settings: React.FC = () => {
     String(loadToolExecutionSettings().toolCallTimeoutMs)
   )
   const [toolCallTimeoutTouched, setToolCallTimeoutTouched] = useState(false)
+  const [streamIdleTimeoutInput, setStreamIdleTimeoutInput] = useState<string>(() =>
+    String(loadToolExecutionSettings().streamIdleTimeoutMs)
+  )
+  const [streamIdleTimeoutTouched, setStreamIdleTimeoutTouched] = useState(false)
   const [bashTimeoutInput, setBashTimeoutInput] = useState<string>(() =>
     String(loadToolExecutionSettings().bashTimeoutMs)
   )
@@ -2130,6 +2137,11 @@ const Settings: React.FC = () => {
   }, [toolExecutionSettings.toolCallTimeoutMs, toolCallTimeoutTouched])
 
   useEffect(() => {
+    if (streamIdleTimeoutTouched) return
+    setStreamIdleTimeoutInput(String(toolExecutionSettings.streamIdleTimeoutMs))
+  }, [toolExecutionSettings.streamIdleTimeoutMs, streamIdleTimeoutTouched])
+
+  useEffect(() => {
     if (bashTimeoutTouched) return
     setBashTimeoutInput(String(toolExecutionSettings.bashTimeoutMs))
   }, [toolExecutionSettings.bashTimeoutMs, bashTimeoutTouched])
@@ -2156,6 +2168,11 @@ const Settings: React.FC = () => {
   const handleToolCallTimeoutInputChange = (value: string) => {
     setToolCallTimeoutInput(value)
     setToolCallTimeoutTouched(true)
+  }
+
+  const handleStreamIdleTimeoutInputChange = (value: string) => {
+    setStreamIdleTimeoutInput(value)
+    setStreamIdleTimeoutTouched(true)
   }
 
   const handleBashTimeoutInputChange = (value: string) => {
@@ -2196,6 +2213,39 @@ const Settings: React.FC = () => {
     }
 
     showStatus({ type: 'success', text: 'Default tool call timeout updated.' })
+  }
+
+  const commitStreamIdleTimeoutChange = (value: string) => {
+    const parsed = Number(value)
+    if (!Number.isFinite(parsed) || parsed <= 0) {
+      setStreamIdleTimeoutTouched(false)
+      setStreamIdleTimeoutInput(String(toolExecutionSettings.streamIdleTimeoutMs))
+      showStatus({ type: 'error', text: 'Chat stream idle timeout must be a positive number of milliseconds.' })
+      return
+    }
+
+    const clamped = Math.max(
+      MIN_STREAM_IDLE_TIMEOUT_MS,
+      Math.min(MAX_STREAM_IDLE_TIMEOUT_MS, Math.floor(parsed))
+    )
+    const nextSettings: ToolExecutionSettings = {
+      ...toolExecutionSettings,
+      streamIdleTimeoutMs: clamped,
+    }
+    saveToolExecutionSettings(nextSettings)
+    setToolExecutionSettings(nextSettings)
+    setStreamIdleTimeoutTouched(false)
+    setStreamIdleTimeoutInput(String(clamped))
+
+    if (clamped !== Math.floor(parsed)) {
+      showStatus({
+        type: 'info',
+        text: `Chat stream idle timeout adjusted to ${clamped}ms (allowed range ${MIN_STREAM_IDLE_TIMEOUT_MS}-${MAX_STREAM_IDLE_TIMEOUT_MS}ms).`,
+      })
+      return
+    }
+
+    showStatus({ type: 'success', text: 'Chat stream idle timeout updated.' })
   }
 
   const commitBashTimeoutChange = (value: string) => {
@@ -3575,10 +3625,42 @@ const Settings: React.FC = () => {
           <SettingsSection
             title='Tools Configuration'
             description='Enable or disable AI tools. Changes apply to all new conversations.'
-            features={['Tool toggles', 'Tool call timeout', 'Bash timeout', 'Reload tools']}
+            features={['Tool toggles', 'Stream idle timeout', 'Tool call timeout', 'Bash timeout', 'Reload tools']}
           >
             <div>
               <div className='mb-3 space-y-3'>
+                <div className='rounded-[1.75rem] bg-white/45 p-3 dark:bg-stone-800/30'>
+                  <div className='flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between'>
+                    <div>
+                      <p className='text-base font-medium text-stone-900 dark:text-stone-100'>
+                        Chat Stream Idle Timeout (ms)
+                      </p>
+                      <p className='text-xs text-stone-500 dark:text-stone-400'>
+                        Stops listening only after the chat stream and its 15-second heartbeat stay silent for this long. New streams use the updated value.
+                      </p>
+                    </div>
+                    <input
+                      type='number'
+                      min={MIN_STREAM_IDLE_TIMEOUT_MS}
+                      max={MAX_STREAM_IDLE_TIMEOUT_MS}
+                      step={15000}
+                      value={streamIdleTimeoutInput}
+                      onChange={e => handleStreamIdleTimeoutInputChange(e.target.value)}
+                      onBlur={e => commitStreamIdleTimeoutChange(e.target.value)}
+                      onKeyDown={e => {
+                        if (e.key === 'Enter') {
+                          e.currentTarget.blur()
+                        }
+                      }}
+                      className={`w-44 ${settingsInputClass}`}
+                    />
+                  </div>
+                  <p className='mt-2 text-xs text-stone-500 dark:text-stone-400'>
+                    Default: {DEFAULT_STREAM_IDLE_TIMEOUT_MS}ms. Range: {MIN_STREAM_IDLE_TIMEOUT_MS}ms to{' '}
+                    {MAX_STREAM_IDLE_TIMEOUT_MS}ms.
+                  </p>
+                </div>
+
                 <div className='rounded-[1.75rem] bg-white/45 p-3 dark:bg-stone-800/30'>
                   <div className='flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between'>
                     <div>

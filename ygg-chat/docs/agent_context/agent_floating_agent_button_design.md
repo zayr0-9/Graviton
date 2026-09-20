@@ -131,6 +131,9 @@ flowchart TD
   C[global all-conversations React Query data] --> B
   D[state.conversations.items current-route overlay] --> B
   N[research notes fallback] --> B
+  M[current conversation messages] --> B
+  P[per-stream parent preview cache] --> B
+  B --> P
   B --> E[activeStreams sorted by createdAt]
   B --> F[streamHistory sorted by createdAt]
   G[state.ui.notifications] --> H[RunningAgentsFloatingButton inline notification]

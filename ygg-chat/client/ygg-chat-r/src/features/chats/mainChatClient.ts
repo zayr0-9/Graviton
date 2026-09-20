@@ -22,6 +22,7 @@
 
 import { buildLocalApiUrl } from '../../utils/api'
 import { isResumableRunsEnabled } from '../../helpers/serverLoopSettings'
+import { getStreamIdleTimeoutMs } from '../../helpers/toolExecutionSettings'
 import { chatSliceActions } from './chatSlice'
 import { getAllTools, setMcpTools, type ToolDefinition } from './toolDefinitions'
 import { projectServerEvent, normalizeServerMessage, type ProjectionContext, type ServerStreamEvent } from './sseProjection'
@@ -76,16 +77,12 @@ const RESUBSCRIBE_MAX_ATTEMPTS = 5
 const RESUBSCRIBE_BASE_DELAY_MS = 300
 
 /**
- * The server writes an SSE heartbeat comment frame every 15s for exactly this purpose,
- * so silence longer than a few beats is a real stall and not just a slow model.
- *
- * 45s = three missed beats. Two would be too eager (one dropped beat plus a GC pause,
- * a suspended-tab throttle or a busy event loop can easily swallow ~20s of timers),
- * and a minute-plus is indistinguishable from the bug this exists to kill: the eternal
- * spinner. Note the watchdog is armed on BYTES, not on parsed events — the heartbeat
- * itself resets it, which is what makes "nothing at all arrived" a trustworthy signal.
+ * The server writes an SSE heartbeat comment frame every 15s for exactly this purpose.
+ * The watchdog is armed on BYTES rather than parsed events, so heartbeat comments reset
+ * it while the model or a tool is otherwise silent. The persisted timeout defaults to
+ * 120s to tolerate slow disks, WSL startup, antivirus scans, and busy older machines.
  */
-const STREAM_IDLE_TIMEOUT_MS = 45_000
+const getStreamIdleTimeout = (): number => getStreamIdleTimeoutMs()
 
 /** Sentinel resolved by the idle timer, distinguishable from any read result. */
 const IDLE_TIMEOUT: unique symbol = Symbol('sse-idle-timeout')
@@ -345,6 +342,7 @@ function makeHandleEvent(
 async function pump(res: Response, acc: StreamAccumulator, handleEvent: (event: ServerStreamEvent) => void): Promise<void> {
   const reader = res.body!.getReader()
   const decoder = new TextDecoder()
+  const streamIdleTimeoutMs = getStreamIdleTimeout()
   let buffer = ''
 
   const processLine = (line: string): void => {
@@ -373,7 +371,7 @@ async function pump(res: Response, acc: StreamAccumulator, handleEvent: (event: 
   while (true) {
     let idleTimer: ReturnType<typeof setTimeout> | undefined
     const idle = new Promise<typeof IDLE_TIMEOUT>(resolve => {
-      idleTimer = setTimeout(() => resolve(IDLE_TIMEOUT), STREAM_IDLE_TIMEOUT_MS)
+      idleTimer = setTimeout(() => resolve(IDLE_TIMEOUT), streamIdleTimeoutMs)
     })
     let step: ReadableStreamReadResult<Uint8Array> | typeof IDLE_TIMEOUT
     try {
@@ -385,7 +383,7 @@ async function pump(res: Response, acc: StreamAccumulator, handleEvent: (event: 
     if (step === IDLE_TIMEOUT) {
       // The abandoned read() is released by cancelling the reader; we never read again.
       void Promise.resolve(reader.cancel()).catch(() => {})
-      const raw = `No SSE activity for ${STREAM_IDLE_TIMEOUT_MS}ms (heartbeat interval is 15000ms)`
+      const raw = `No SSE activity for ${streamIdleTimeoutMs}ms (heartbeat interval is 15000ms)`
       throw createChatStreamError(classifyLocalChatError(new Error(raw), { phase: 'stream', code: 'stream_stalled' }), raw)
     }
 

@@ -25,6 +25,8 @@ vi.mock('../../utils/api', () => ({
 }))
 // Force resumable behavior on (decoupled from localStorage/env).
 vi.mock('../../helpers/serverLoopSettings', () => ({ isResumableRunsEnabled: () => true }))
+// Keep watchdog tests fast and prove mainChatClient reads the persisted setting.
+vi.mock('../../helpers/toolExecutionSettings', () => ({ getStreamIdleTimeoutMs: () => 1_000 }))
 
 import { runServerChatLoop, runServerReattach, postStreamAbort, getChatStreamErrorEnvelope } from './mainChatClient'
 
@@ -59,6 +61,7 @@ const collectDispatch = () => {
 }
 
 afterEach(() => {
+  vi.useRealTimers()
   vi.unstubAllGlobals()
   vi.restoreAllMocks()
 })
@@ -120,6 +123,42 @@ describe('runServerReattach', () => {
 })
 
 describe('runServerChatLoop resubscribe', () => {
+  it('uses the configured stream idle timeout when no SSE bytes arrive', async () => {
+    vi.useFakeTimers()
+    const cancel = vi.fn().mockResolvedValue(undefined)
+    const hangingResponse = {
+      ok: true,
+      status: 200,
+      body: {
+        getReader: () => ({
+          read: () => new Promise(() => {}),
+          cancel,
+        }),
+      },
+    } as unknown as Response
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(hangingResponse))
+
+    const run = runServerChatLoop(
+      {
+        operation: 'send',
+        conversationId: 'c1',
+        streamId: 's-idle',
+        path: '/conversations/c1/messages',
+        request: {},
+        signal: new AbortController().signal,
+      },
+      collectDispatch()
+    )
+    const settled = run.catch(caught => caught)
+
+    await vi.advanceTimersByTimeAsync(1_000)
+    const error = await settled
+
+    expect(getChatStreamErrorEnvelope(error)).toMatchObject({ code: 'stream_stalled' })
+    expect(error.message).toContain('1000ms')
+    expect(cancel).toHaveBeenCalledOnce()
+  })
+
   it('resubscribes from the last seq after a non-terminal drop and finishes the run', async () => {
     // Initial POST ends WITHOUT a terminal event (a drop). The reattach GET carries the tail.
     const post = sseResponse([

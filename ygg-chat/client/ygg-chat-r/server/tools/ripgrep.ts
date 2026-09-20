@@ -1,4 +1,5 @@
-import { spawn } from 'child_process'
+import { randomUUID } from 'crypto'
+import { runBoundedShell, type ShellRunOptions, type ShellRunResult } from './shellRunner.js'
 import * as path from 'path'
 import { detectPathType, getWSLCommandArgs, shouldUseWSL, toWslPath } from '../utils/wslBridge.js'
 import { getNativeShellPath } from './nativeShell.js'
@@ -27,6 +28,9 @@ export interface RipgrepOptions {
   noIgnore?: boolean // --no-ignore (ignore .gitignore)
   contextLines?: number // -C (context lines before and after)
   maxOutputChars?: number // Optional limit on total output characters returned
+  timeoutMs?: number
+  signal?: AbortSignal
+  deadlineMs?: number
 }
 
 export interface RipgrepResult {
@@ -38,49 +42,29 @@ export interface RipgrepResult {
     matchCount?: number
   }>
   error?: string
+  timedOut?: boolean
+  cancelled?: boolean
   command?: string
 }
 
-let windowsNativeRgPathPromise: Promise<string | null> | null = null
+const DEFAULT_TIMEOUT_MS = 30_000
+// Raw JSON includes metadata/context that the model-result character limit does
+// not count. Bound collection before parsing, independently of that result limit.
+const MAX_RAW_OUTPUT_CHARS = 200_000
+let windowsNativeRgPath: string | undefined
 
-async function detectWindowsNativeRgPath(): Promise<string | null> {
-  if (process.platform !== 'win32') {
-    return null
-  }
-
-  if (!windowsNativeRgPathPromise) {
-    windowsNativeRgPathPromise = new Promise(resolve => {
-      const child = spawn('where.exe', ['rg.exe'], {
-        stdio: ['ignore', 'pipe', 'ignore'],
-      })
-
-      let stdout = ''
-
-      child.stdout.on('data', data => {
-        stdout += data.toString('utf8')
-      })
-
-      child.on('error', () => {
-        resolve(null)
-      })
-
-      child.on('close', code => {
-        if (code !== 0) {
-          resolve(null)
-          return
-        }
-
-        const firstPath = stdout
-          .split(/\r?\n/)
-          .map(line => line.trim())
-          .find(Boolean)
-
-        resolve(firstPath || null)
-      })
-    })
-  }
-
-  return windowsNativeRgPathPromise
+async function detectWindowsNativeRgPath(options: ShellRunOptions): Promise<string | null> {
+  if (process.platform !== 'win32') return null
+  if (windowsNativeRgPath) return windowsNativeRgPath
+  const result = await runBoundedShell(async () => ({ cmd: 'where.exe', args: ['rg.exe'] }), {
+    ...options, maxOutputChars: 16_384,
+  })
+  if (result.cancelled || result.timedOut) throw new Error(result.error || 'ripgrep discovery stopped')
+  const found = result.success ? result.stdout.split(/\r?\n/).map(line => line.trim()).find(Boolean) : undefined
+  // Do not cache an in-flight invocation: one caller's cancellation must not
+  // poison other searches or leave a hung discovery promise cached forever.
+  if (found) windowsNativeRgPath = found
+  return found || null
 }
 
 /**
@@ -122,26 +106,18 @@ export async function ripgrepSearch(
       : DEFAULT_MAX_OUTPUT_CHARS
 
   const normalizedSearchPath = (searchPath?.trim() || '.').trim()
-  const pathType = detectPathType(normalizedSearchPath)
-  const windowsNativeRgPath = await detectWindowsNativeRgPath()
-
-  const canUseNativeWindowsRg =
-    process.platform === 'win32' &&
-    Boolean(windowsNativeRgPath) &&
-    (pathType === 'relative' || pathType === 'windows')
-
-  const useWSL = shouldUseWSL() && !canUseNativeWindowsRg
-  const resolvedPath = resolveSearchPath(normalizedSearchPath, useWSL)
-  const nativeShellPath = useWSL ? null : await getNativeShellPath()
+  const timeoutMs = typeof options.timeoutMs === 'number' && Number.isFinite(options.timeoutMs) && options.timeoutMs > 0
+    ? Math.max(1, Math.min(180_000, Math.floor(options.timeoutMs))) : DEFAULT_TIMEOUT_MS
+  const runOptions: ShellRunOptions = {
+    timeoutMs, signal: options.signal, deadlineMs: options.deadlineMs,
+    maxOutputChars: MAX_RAW_OUTPUT_CHARS, successCodes: [0, 1], env: {},
+  }
 
   // Build rg command arguments
   const args: string[] = []
 
-  // Pattern (must be first non-option argument)
-  args.push(pattern)
-
-  // Path to search (already resolved/converted)
-  args.push(resolvedPath)
+  // Keep patterns beginning with '-' literal rather than interpreting rg flags.
+  args.push('-e', pattern)
 
   // Options
   if (!caseSensitive) {
@@ -187,124 +163,67 @@ export async function ripgrepSearch(
     args.push('--json')
   }
 
-  let cmd = 'rg'
-  let cmdArgs = args
+  let command = `rg ${args.join(' ')} ${normalizedSearchPath}`
+  const result: ShellRunResult = await runBoundedShell(async context => {
+    const pathType = detectPathType(normalizedSearchPath)
+    const nativeRg = await detectWindowsNativeRgPath({ ...context, timeoutMs })
+    context.signal.throwIfAborted()
+    const useNativeWindows = process.platform === 'win32' && nativeRg &&
+      (pathType === 'relative' || pathType === 'windows')
+    const useWSL = shouldUseWSL() && !useNativeWindows
+    const resolvedPath = resolveSearchPath(normalizedSearchPath, Boolean(useWSL))
+    const commandArgs = [...args, '--', resolvedPath]
+    if (useWSL) {
+      const marker = `__YGG_RG_${randomUUID().replace(/-/g, '')}__`
+      // Pass every rg argument positionally, never interpolate the user's pattern
+      // into shell code. Own a Linux process group for bounded WSL cleanup.
+      const [cmd, wslArgs] = await getWSLCommandArgs('setsid', ['sh', '-c',
+        `printf '${marker}%s\\n' "$$" >&2; exec rg "$@"`, 'ygg-rg', ...commandArgs], undefined, context)
+      command = `${cmd} ${wslArgs.join(' ')}`
+      return { cmd, args: wslArgs, wsl: { distro: wslArgs[1], marker } }
+    }
+    const nativeShellPath = await getNativeShellPath()
+    context.signal.throwIfAborted()
+    if (nativeShellPath) runOptions.env!.PATH = nativeShellPath
+    const cmd = useNativeWindows ? nativeRg! : 'rg'
+    command = `${cmd} ${commandArgs.join(' ')}`
+    return { cmd, args: commandArgs }
+  }, runOptions, true)
 
-  if (useWSL) {
-    // Use getWSLCommandArgs to run rg through WSL
-    const wsl = await getWSLCommandArgs('rg', args)
-    cmd = wsl[0]
-    cmdArgs = wsl[1]
-  } else if (canUseNativeWindowsRg && windowsNativeRgPath) {
-    // Prefer native Windows rg when available (faster than WSL /mnt bridge)
-    cmd = windowsNativeRgPath
-    cmdArgs = args
+  if (!result.success) {
+    return {
+      success: false, matches: [], command,
+      error: result.error || result.stderr.trim() || 'ripgrep exited unsuccessfully',
+      ...(result.timedOut ? { timedOut: true } : {}),
+      ...(result.cancelled ? { cancelled: true } : {}),
+    }
   }
-
-  return new Promise(resolve => {
-    const command = `${cmd} ${cmdArgs.join(' ')}`
-    const child = spawn(cmd, cmdArgs, {
-      env: nativeShellPath ? { ...process.env, PATH: nativeShellPath } : process.env,
-      stdio: ['ignore', 'pipe', 'pipe'],
-    })
-
-    let stdout = ''
-    let stderr = ''
-
-    child.stdout.on('data', data => {
-      stdout += data.toString('utf8')
-    })
-
-    child.stderr.on('data', data => {
-      stderr += data.toString('utf8')
-    })
-
-    child.on('error', error => {
-      resolve({
-        success: false,
-        matches: [],
-        error: `Failed to execute ripgrep: ${error.message}. Make sure ripgrep (rg) is installed and in your PATH.`,
-        command,
-      })
-    })
-
-    child.on('close', code => {
-      // rg returns 0 when matches found, 1 when no matches, 2 for error
-      if (code === 2 && stderr) {
-        resolve({
-          success: false,
-          matches: [],
-          error: `ripgrep error: ${stderr.trim()}`,
-          command,
-        })
-        return
+  // Never parse a truncated JSON record or mistake partial capture for a complete
+  // search. The shared runner bounds stdout+stderr while the child is producing it.
+  if (result.stderr.includes(`[Output truncated at ${MAX_RAW_OUTPUT_CHARS} characters]`)) {
+    return { success: false, matches: [], command,
+      error: `Search output exceeded the ${MAX_RAW_OUTPUT_CHARS}-character capture limit. Narrow the pattern or search path.` }
+  }
+  try {
+    const matches = parseRipgrepOutput(result.stdout, { count, filesWithMatches })
+    if (matches.length > MAX_RESULT_LINES) {
+      return { success: false, matches: [], command,
+        error: `Search returned too many matches (${matches.length} > ${MAX_RESULT_LINES}). Narrow the pattern or search path.` }
+    }
+    const totalChars = matches.reduce((total, match) => total + (match.line?.length ?? match.file.length), 0)
+    if (totalChars > maxOutputChars) {
+      return { success: false, matches: [], command,
+        error: `Search output too large (${totalChars} characters, limit is ${maxOutputChars}). Narrow the pattern or search path.` }
+    }
+    for (const match of matches) {
+      if (match.line && match.line.length > MAX_LINE_LENGTH) {
+        match.line = match.line.substring(0, MAX_LINE_LENGTH) + '... [truncated]'
       }
-
-      try {
-        const matches = parseRipgrepOutput(stdout, {
-          count,
-          filesWithMatches,
-        })
-
-        // Multi-layered limit checks
-
-        // Check 1: Number of match objects
-        if (matches.length > MAX_RESULT_LINES) {
-          resolve({
-            success: false,
-            matches: [],
-            error: `Search returned too many matches (${matches.length} matches, limit is ${MAX_RESULT_LINES}). Please narrow your search by: (1) using a more specific pattern, (2) adding a glob filter (e.g., '*.ts'), (3) reducing the search path, or (4) using maxCount to limit matches per file.`,
-            command,
-          })
-          return
-        }
-
-        // Check 2: Total character count across all match content
-        let totalChars = 0
-        for (const match of matches) {
-          if (match.line) {
-            totalChars += match.line.length
-          }
-        }
-
-        if (totalChars > maxOutputChars) {
-          resolve({
-            success: false,
-            matches: [],
-            error: `Search output too large (${totalChars} characters, limit is ${maxOutputChars}). Please narrow your search by: (1) using a more specific pattern, (2) adding a glob filter (e.g., '*.ts'), (3) reducing the search path, or (4) using maxCount to limit matches per file.`,
-            command,
-          })
-          return
-        }
-
-        // Check 3: Truncate individual lines that are too long
-        for (const match of matches) {
-          if (match.line && match.line.length > MAX_LINE_LENGTH) {
-            match.line = match.line.substring(0, MAX_LINE_LENGTH) + '... [truncated]'
-          }
-        }
-
-        resolve({
-          success: true,
-          matches,
-          command,
-        })
-      } catch (parseError: any) {
-        resolve({
-          success: false,
-          matches: [],
-          error: `Failed to parse ripgrep output: ${parseError.message}`,
-          command,
-        })
-      }
-    })
-
-    // Timeout after 30 seconds
-    setTimeout(() => {
-      child.kill('SIGTERM')
-      setTimeout(() => child.kill('SIGKILL'), 1000)
-    }, 30000)
-  })
+    }
+    return { success: true, matches, command }
+  } catch (error: any) {
+    return { success: false, matches: [], command, error: `Failed to parse ripgrep output: ${error.message}` }
+  }
 }
 
 function parseRipgrepOutput(
@@ -331,12 +250,9 @@ function parseRipgrepOutput(
   if (flags.count) {
     const lines = output.trim().split('\n')
     for (const line of lines) {
-      const parts = line.trim().split(':')
-      if (parts.length >= 2) {
-        matches.push({
-          file: parts[0],
-          matchCount: parseInt(parts[1]) || 0,
-        })
+      const match = line.trim().match(/^(.*):(\d+)$/)
+      if (match) {
+        matches.push({ file: match[1], matchCount: Number(match[2]) })
       }
     }
     return matches
@@ -360,7 +276,7 @@ function parseRipgrepOutput(
       if (!line.trim()) continue
       try {
         const data = JSON.parse(line)
-        if (data.type === 'match' && data.data) {
+        if ((data.type === 'match' || data.type === 'context') && data.data) {
           const { path: filePath, lines: matchLines, line_number } = data.data
           const file = typeof filePath === 'string' ? filePath : filePath?.text || ''
 

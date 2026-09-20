@@ -96,6 +96,9 @@ server keeps it alive (see
   drop, `runServerChatLoop` resubscribes via `GET /api/streams/:id?fromSeq=<last applied
   seq>` (the `seq` cursor keeps append-style chunk projection idempotent); `postStreamAbort`
   cancels via `POST /api/streams/:id/abort`; `runServerReattach` is the reattach reader.
+  Its byte-activity watchdog reads `streamIdleTimeoutMs` from
+  `helpers/toolExecutionSettings.ts` for each reader. The default is 120 seconds and the
+  Electron Settings page allows 45–600 seconds; 15-second heartbeat comments reset it.
 - `client/ygg-chat-r/src/features/chats/inflightStreams.ts`: a `localStorage`-backed record
   of runs started-but-not-finished (survives a reload). Added on send/branch/edit start;
   removed in the thunk `finally` — a reload kills the thunk first, leaving the marker.

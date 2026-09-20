@@ -1,7 +1,6 @@
 import { glob } from 'glob'
-import os from 'os'
 import * as path from 'path'
-import { detectPathType, isWindows, resolveToWindowsPath, toWslPath } from '../utils/wslBridge.js'
+import { detectPathType, isWindows, resolveToWindowsPath } from '../utils/wslBridge.js'
 
 const DEFAULT_MAX_MATCHES = 3000
 const DEFAULT_TIMEOUT_MS = 5000
@@ -25,28 +24,12 @@ const DEFAULT_IGNORE_PATTERNS = [
   '**/*.min.js',
 ]
 
-const HOMEDIR = os.homedir()
-
-async function ensureWithinWorkspace(cwd: string): Promise<{ resolved: string; type: 'windows' | 'wsl' }> {
-  const pathType = detectPathType(cwd)
-
-  // On Windows with a Linux path, resolve to UNC path for Node.js fs access
-  if (isWindows() && pathType === 'linux') {
-    const winPath = await resolveToWindowsPath(cwd)
-    return { resolved: winPath, type: 'wsl' }
+async function resolveGlobCwd(cwd: string, signal: AbortSignal, deadlineMs: number): Promise<string> {
+  // glob runs in Node, not WSL: retain the native UNC path for filesystem access.
+  if (isWindows() && detectPathType(cwd) === 'linux') {
+    return resolveToWindowsPath(cwd, { signal, deadlineMs })
   }
-
-  const resolved = path.resolve(cwd)
-
-  // Basic safety check: don't allow root or home dir as cwd to prevent scanning whole system
-  if (resolved === '/' || resolved === path.parse(resolved).root || resolved === HOMEDIR) {
-    // If explicit request, maybe allow? But safer to restrict.
-    // However, in local mode, user might want to scan arbitrary dirs.
-    // Let's just warn or allow if it's intentional.
-    // For now, we'll allow it if it's not the fs root.
-  }
-
-  return { resolved, type: isWindows() ? 'windows' : 'wsl' }
+  return path.resolve(cwd)
 }
 
 function mergeIgnorePatterns(defaults: string[], custom?: string | string[]): string[] {
@@ -77,12 +60,16 @@ export interface GlobOptions {
   withFileTypes?: boolean
   maxMatches?: number
   timeoutMs?: number
+  signal?: AbortSignal
+  deadlineMs?: number
 }
 
 export interface GlobResult {
   success: boolean
   matches: string[]
   error?: string
+  timedOut?: boolean
+  cancelled?: boolean
   pattern?: string
   cwd?: string
 }
@@ -113,75 +100,75 @@ export async function globSearch(pattern: string, options: GlobOptions = {}): Pr
     timeoutMs = DEFAULT_TIMEOUT_MS,
   } = options
 
+  const budgetMs = Number.isFinite(timeoutMs) && timeoutMs > 0
+    ? Math.max(1, Math.min(600_000, Math.floor(timeoutMs))) : DEFAULT_TIMEOUT_MS
+  const deadlineMs = Math.min(Date.now() + budgetMs,
+    Number.isFinite(options.deadlineMs) ? options.deadlineMs! : Infinity)
+  const matchLimit = Number.isFinite(maxMatches) && maxMatches > 0
+    ? Math.max(1, Math.floor(maxMatches)) : DEFAULT_MAX_MATCHES
+  const controller = new AbortController()
+  let timer: ReturnType<typeof setTimeout> | undefined
+  let timedOut = false
+  let cancelled = false
+  const onCancel = () => {
+    cancelled = true
+    controller.abort(new Error('Glob search cancelled'))
+  }
+  const onTimeout = () => {
+    timedOut = true
+    controller.abort(new Error('Glob search timed out. Narrow the pattern or specify a smaller cwd.'))
+  }
+  let onAbort: () => void = () => {}
+
   try {
-    const { resolved: resolvedCwd, type: resolvedType } = await ensureWithinWorkspace(cwd)
-    const sanitizedPattern = enforcePatternDepth(pattern)
-    const ignorePatterns = mergeIgnorePatterns(DEFAULT_IGNORE_PATTERNS, ignore)
+    if (options.signal?.aborted) onCancel()
+    else if (deadlineMs <= Date.now()) onTimeout()
+    controller.signal.throwIfAborted()
+    options.signal?.addEventListener('abort', onCancel, { once: true })
+    const stopped = new Promise<never>((_, reject) => {
+      onAbort = () => reject(controller.signal.reason)
+      controller.signal.addEventListener('abort', onAbort, { once: true })
+    })
+    timer = setTimeout(onTimeout, Math.max(0, deadlineMs - Date.now()))
 
-    const globOptions: any = {
-      cwd: resolvedType === 'windows' ? resolvedCwd : toWslPath(resolvedCwd),
-      ignore: ignorePatterns,
-      dot,
-      absolute,
-      mark,
-      nosort,
-      nocase,
-      nodir,
-      follow,
-      realpath,
-      stat,
-      withFileTypes,
-      windowsPathsNoEscape: true,
-    }
-
-    let results: any[]
-    try {
-      // glob v10+ returns a promise directly
-      results = (await Promise.race([
-        glob(sanitizedPattern, globOptions),
-        new Promise<never>((_, reject) =>
-          setTimeout(
-            () => reject(new Error('Glob search timed out. Narrow the pattern or specify a smaller cwd.')),
-            timeoutMs
-          )
-        ),
-      ])) as any[]
-    } catch (error: any) {
-      throw new Error(error?.message || 'Glob search failed')
-    }
-
-    if (!Array.isArray(results)) {
-      throw new Error('Glob search did not return an array of results')
-    }
-
-    if (results.length > maxMatches) {
-      return {
-        success: false,
-        matches: [],
-        error: `Too many matches (${results.length} > ${maxMatches}). Narrow the pattern or reduce cwd scope.`,
-        pattern: sanitizedPattern,
-        cwd: resolvedType === 'windows' ? resolvedCwd : toWslPath(resolvedCwd),
+    // Include path/WSL preparation in the budget, and fence late preparation so
+    // cancellation cannot start a traversal after the caller has stopped waiting.
+    const search = async (): Promise<GlobResult> => {
+      const resolvedCwd = await resolveGlobCwd(cwd, controller.signal, deadlineMs)
+      if (!controller.signal.aborted && Date.now() >= deadlineMs) onTimeout()
+      controller.signal.throwIfAborted()
+      const sanitizedPattern = enforcePatternDepth(pattern)
+      const matches: string[] = []
+      const globOptions = {
+        cwd: resolvedCwd, ignore: mergeIgnorePatterns(DEFAULT_IGNORE_PATTERNS, ignore),
+        dot, absolute: withFileTypes ? undefined : absolute, mark, nosort, nocase, nodir, follow, realpath, stat,
+        withFileTypes, windowsPathsNoEscape: true, signal: controller.signal,
       }
+      // Consume incrementally instead of retaining every match before applying
+      // the limit. Abort also stops the package's underlying filesystem walk.
+      for await (const match of glob.iterate(sanitizedPattern, globOptions)) {
+        controller.signal.throwIfAborted()
+        if (matches.length >= matchLimit) {
+          const error = new Error(`Too many matches (>${matchLimit}). Narrow the pattern or reduce cwd scope.`)
+          controller.abort(error)
+          throw error
+        }
+        matches.push(typeof match === 'string' ? match : match.fullpath())
+      }
+      controller.signal.throwIfAborted()
+      return { success: true, matches, pattern: sanitizedPattern, cwd: resolvedCwd }
     }
-
-    const matches = withFileTypes
-      ? (results as any[]).map((dirent: any) => dirent?.fullpath?.() || dirent?.path || String(dirent))
-      : (results as string[])
-
-    return {
-      success: true,
-      matches,
-      pattern: sanitizedPattern,
-      cwd: resolvedType === 'windows' ? resolvedCwd : toWslPath(resolvedCwd),
-    }
+    return await Promise.race([search(), stopped])
   } catch (error: any) {
     return {
-      success: false,
-      matches: [],
-      error: error?.message || 'Glob search failed',
-      pattern,
-      cwd,
+      success: false, matches: [], error: error?.message || 'Glob search failed', pattern, cwd,
+      ...(timedOut ? { timedOut: true } : {}),
+      ...(cancelled ? { cancelled: true } : {}),
     }
+  } finally {
+    if (timer) clearTimeout(timer)
+    options.signal?.removeEventListener('abort', onCancel)
+    controller.signal.removeEventListener('abort', onAbort)
   }
 }
 

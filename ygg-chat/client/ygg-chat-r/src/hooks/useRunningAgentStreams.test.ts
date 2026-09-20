@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { Conversation } from '../features/conversations/conversationTypes'
-import { buildAgentConversationLookup } from './useRunningAgentStreams'
+import { buildAgentConversationLookup, retainAgentParentPreview } from './useRunningAgentStreams'
 
 const conversation = (id: string, title: string, projectId: string): Conversation => ({
   id,
@@ -34,5 +34,21 @@ describe('buildAgentConversationLookup', () => {
     const lookup = buildAgentConversationLookup([staleConversation], [currentConversation])
 
     expect(lookup.get('conversation-a')?.title).toBe('Updated title')
+  })
+})
+
+
+describe('retainAgentParentPreview', () => {
+  it('keeps the originating message preview when navigation removes that conversation messages from Redux', () => {
+    const cached = { messageId: 'message-a', text: 'Original request from conversation A' }
+
+    expect(retainAgentParentPreview({ messageId: null, text: null }, cached)).toEqual(cached)
+  })
+
+  it('uses a currently resolved preview instead of stale cached content', () => {
+    const current = { messageId: 'message-a', text: 'Updated request' }
+    const cached = { messageId: 'message-a', text: 'Old request' }
+
+    expect(retainAgentParentPreview(current, cached)).toEqual(current)
   })
 })
