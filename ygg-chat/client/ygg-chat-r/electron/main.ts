@@ -705,6 +705,23 @@ function createWindow() {
   mainWindow.on('leave-full-screen', sendWindowState)
   mainWindow.webContents.once('did-finish-load', sendWindowState)
 
+  // Never let target=_blank/window.open create an untrusted Electron window.
+  // Route ordinary web links to the user's OS default browser instead.
+  mainWindow.webContents.setWindowOpenHandler(({ url }) => {
+    try {
+      const parsedUrl = new URL(url)
+      if (parsedUrl.protocol === 'http:' || parsedUrl.protocol === 'https:') {
+        void shell.openExternal(parsedUrl.toString()).catch(error => {
+          console.error('[Electron] Failed to open external link:', error)
+        })
+      }
+    } catch (error) {
+      console.error('[Electron] Refused invalid external link:', url, error)
+    }
+
+    return { action: 'deny' }
+  })
+
   // applyTitleBarTheme(mainWindow)
 
   // Show window when ready to avoid flicker

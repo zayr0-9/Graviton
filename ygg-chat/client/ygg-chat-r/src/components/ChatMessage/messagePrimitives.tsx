@@ -25,13 +25,14 @@ import {
  * CSS tokens in index.css.
  */
 
-export type DisclosureTone = 'neutral' | 'running' | 'success' | 'error'
+export type DisclosureTone = 'neutral' | 'running' | 'success' | 'error' | 'warning'
 
 const TONE_LABEL_CLASS: Record<DisclosureTone, string> = {
   neutral: 'text-neutral-700 dark:text-neutral-300',
   running: 'text-neutral-700 dark:text-neutral-300 tool-name-shimmer',
   success: 'text-neutral-700 dark:text-neutral-300',
   error: 'text-red-600 dark:text-red-400',
+  warning: 'text-amber-700 dark:text-amber-400',
 }
 
 interface DisclosureRowProps {

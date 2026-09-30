@@ -751,8 +751,7 @@ describeIfSqlite('ToolLoopService plan mode runtime block list', () => {
     expect(requested).toEqual(['call-edit'])
     expect(executedModes).toEqual(['execute'])
     expect(providerRouter.calls[0].input.systemPrompt).toContain('Custom Plan baseline')
-    expect(providerRouter.calls[1].input.systemPrompt).toBe('Custom Agent baseline')
-    expect(providerRouter.calls[1].input.systemPrompt).not.toContain('## Plan Response Style')
+    expect(providerRouter.calls[1].input.systemPrompt).toBe(providerRouter.calls[0].input.systemPrompt)
   })
 
   it('blocks mutating tools in plan mode before invoking the executor', async () => {

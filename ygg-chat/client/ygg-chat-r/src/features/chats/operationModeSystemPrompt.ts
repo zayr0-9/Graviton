@@ -1,6 +1,6 @@
 import type { OperationMode } from './chatTypes'
 import sysPromptConfig from './sys_prompt.json'
-import { getActiveChatModePrompt, getAgentModePrompt } from '../../helpers/operationModePromptStorage'
+import { getCombinedOperationModePrompt } from '../../helpers/operationModePromptStorage'
 import {
   loadPlanModeResponseSettings,
   normalizePlanModeVerbosity,
@@ -28,8 +28,8 @@ export interface BuildOperationModeSystemPromptInput {
   planModeVerbosity?: PlanModeVerbosity | null
 }
 
-export function getOperationModeSystemPrompt(operationMode: OperationMode): string {
-  return operationMode === 'plan' ? getActiveChatModePrompt().prompt : getAgentModePrompt().prompt
+export function getOperationModeSystemPrompt(_operationMode: OperationMode): string {
+  return getCombinedOperationModePrompt()
 }
 
 export function buildPlanModeResponseStylePrompt(verbosity?: PlanModeVerbosity | null): string {
@@ -37,12 +37,12 @@ export function buildPlanModeResponseStylePrompt(verbosity?: PlanModeVerbosity |
 
   switch (resolvedVerbosity) {
     case 'detailed':
-      return '## Plan Response Style\n\nUse detailed plans when helpful, but stay focused and avoid unrelated explanation.'
+      return '## Plan Response Style (only while Chat mode is active)\n\nUse detailed plans when helpful, but stay focused and avoid unrelated explanation.'
     case 'normal':
-      return '## Plan Response Style\n\nUse a balanced plan with enough detail to implement the change. Avoid unnecessary verbosity.'
+      return '## Plan Response Style (only while Chat mode is active)\n\nUse a balanced plan with enough detail to implement the change. Avoid unnecessary verbosity.'
     case 'concise':
     default:
-      return '## Plan Response Style\n\nUse short, concise plans. Prefer brief bullets and avoid unnecessary detail.'
+      return '## Plan Response Style (only while Chat mode is active)\n\nUse short, concise plans. Prefer brief bullets and avoid unnecessary detail.'
   }
 }
 
@@ -58,9 +58,7 @@ export function buildOperationModeSystemPrompt({
   const parts: string[] = []
 
   appendPromptPart(parts, getOperationModeSystemPrompt(operationMode))
-  if (operationMode === 'plan') {
-    appendPromptPart(parts, buildPlanModeResponseStylePrompt(planModeVerbosity))
-  }
+  appendPromptPart(parts, buildPlanModeResponseStylePrompt(planModeVerbosity))
   appendPromptPart(parts, basePrompt)
   appendPromptPart(parts, defaultUserPrompt)
   appendPromptPart(parts, projectPrompt)

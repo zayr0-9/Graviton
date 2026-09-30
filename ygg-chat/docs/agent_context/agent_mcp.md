@@ -48,6 +48,42 @@ For providers that reject anonymous dynamic client registration, configure `oaut
 
 For pre-registered clients that accept only fixed callback URLs, configure `oauth.redirectUri`, for example `http://127.0.0.1:6274/oauth/callback`. Fixed callbacks must use `http`, a `localhost` or `127.0.0.1` host, and an explicit port; the MCP client binds its temporary callback listener to that exact host, port, and path. When omitted, the client continues to use an ephemeral loopback port and `/mcp/oauth/callback`.
 
+## Celestial TEST Cognito compatibility
+
+The HTTP MCP add/edit form has an explicit Celestial TEST checkbox (off by default). Enabling it fills the registered public client, `none` authentication, fixed callback, and GP scope. It persists `oauth.allowMissingPkceS256ForCelestialTest: true`; this option is never sourced from discovery or tool output.
+
+The exception accepts only an **absent** `code_challenge_methods_supported` property from the exact Celestial TEST issuer and pinned authorize/token endpoints. Explicit empty, malformed, null, or plain-only declarations still fail. Issuer discovery for this opt-in refuses redirects. Every authorization still uses fresh S256 PKCE/state. Changes to the configured issuer or opt-in clear stored token/endpoint state and cancel pending authorization before saving.
+
+Example entry inside `servers` in the active `mcp-servers.json` (or use Settings → MCP):
+
+```json
+"celestial-test": {
+  "enabled": true,
+  "transport": "http",
+  "url": "http://127.0.0.1:8081/api/mcp-gp/rpc",
+  "oauth": {
+    "allowMissingPkceS256ForCelestialTest": true,
+    "authorizationServer": "https://cognito-idp.us-east-2.amazonaws.com/us-east-2_nSxSsgJuj",
+    "clientId": "5391d6flv8jtvpgg0b6j9f50dv",
+    "tokenEndpointAuthMethod": "none",
+    "redirectUri": "http://localhost:6274/oauth/callback",
+    "scopes": ["https://workbench.celestial.test.vega-alts.com/api/mcp-gp/rpc/invoke"]
+  }
+}
+```
+
+The local GP service must be running and callback port 6274 free. No client secret is needed. Browser login and product permissions remain the user's responsibility; discovery compatibility alone does not prove a live login works.
+
+## Local Celestial resource-binding exception
+
+A **separate, default-off** per-connection option, `oauth.omitResourceForLocalCelestialTest`, is exposed as “Local Celestial testing: omit OAuth resource binding”. It omits the `resource` parameter from authorization, code exchange, and refresh, removing explicit token audience binding for local development. It never enables itself after an error and does not grant the missing-PKCE-metadata exception.
+
+Only `http://127.0.0.1:8081/api/mcp-gp/rpc`, the TEST issuer/authorize/token endpoints pinned in `oauthDiscovery.ts`, public client `5391d6flv8jtvpgg0b6j9f50dv` with `none` authentication, and the exact scope set `openid profile email https://workbench.celestial.test.vega-alts.com/api/mcp-gp/rpc/invoke` are accepted. Scope order is immaterial. The opt-in uses the configured full scope set; a challenge may request a subset but cannot add scopes. Discovered issuer/endpoints are checked even when S256 is advertised. Cached configurations are checked before token reuse/refresh.
+
+The checkbox fills the public-client fields and scopes, but does not change the MCP URL or the PKCE checkbox. Connection URL and persisted OAuth resource remain localhost, not the deployed resource. Toggling the option cancels pending authorization/refresh and clears only that connection's cached tokens and discovered endpoints. Secure-store credentials survive normal reloads. S256, callbacks/state, credential storage, and server-side validation remain unchanged.
+
+Validation: `npm run test:tools -- --run server/tools/__tests__/localCelestialResource.test.ts` and `npm run test:server -- --run server/__tests__/mcpCelestialOAuth.test.ts` from the client package. Live Cognito login still requires manual verification.
+
 ## Remote OAuth Flow
 
 1. Startup loads configuration and securely stored credentials without connecting. The first explicit/model MCP use starts the target server, and Streamable HTTP sends an unauthenticated request when no OAuth credential exists.

@@ -31,7 +31,7 @@ Open this when changing:
 - `client/ygg-chat-r/src/components/ChatMessage/MessageActions.tsx`: hover pill and right-click menu for copy, edit, branch, delete, undo, and selection actions.
 - `client/ygg-chat-r/src/features/chats/chatTypes.ts`: `ContentBlock`, `StreamEvent`, `ToolCall`, and stream state types.
 - `client/ygg-chat-r/src/index.css`: global Tailwind/prose/Highlight.js/KaTeX styling and animation utilities used by rendered messages.
-- `client/ygg-chat-r/src/components/MarkdownLink/MarkdownLink.tsx`: custom anchor renderer used by chat Markdown.
+- `client/ygg-chat-r/src/components/MarkdownLink/MarkdownLink.tsx`: custom anchor renderer used by chat Markdown. In Electron, external HTTP(S) links use the preload `openExternal` capability and never fall back to `window.open`, so they open in the OS default browser rather than another Electron window.
 - `client/ygg-chat-r/src/components/MermaidDiagram/MermaidDiagram.tsx`: secure, lazy Mermaid renderer shared by chat and plan Markdown surfaces.
 
 ## End-to-End Rendering Flow
@@ -192,7 +192,7 @@ If a following assistant message contains both process content and substantial f
 
 ### Within-message grouping in `ChatMessage.tsx`
 
-`ChatMessage` can group long runs of process items within a single message or stream. Process items include reasoning and tool cards. Text that looks like a short process annotation is allowed not to break the group.
+`ChatMessage` can group long runs of process items within a single message or stream. Process items include reasoning and tool cards. Text that looks like a short process annotation is allowed not to break the group. Interactive/visual surfaces remain outside grouped runs: all `mcp__*` calls, `html_renderer`, and `plan_md` visualisation/clarification actions (`display`, `visualize`/`visualise`, and `clarify`). These tools also prevent their containing message from entering a cross-message process group. Group summaries show only the tool count and omit the duplicate run/reasoning counts.
 
 The relevant CSS utilities are `tool-expand-container`, `tool-expand-content`, and `tool-chevron` in `index.css`.
 

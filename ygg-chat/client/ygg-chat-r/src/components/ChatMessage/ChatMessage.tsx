@@ -42,7 +42,8 @@ import {
 import { ContextInjectionCard, type ContextInjectionCardEntry } from './ContextInjectionCard'
 import { HookActivityCard } from './HookActivityCard'
 import { MessageActions } from './MessageActions'
-import { Badge, DisclosurePanel, DisclosureRow } from './messagePrimitives'
+import { DisclosurePanel, DisclosureRow } from './messagePrimitives'
+import { SummarisedMessage } from './SummarisedMessage'
 import { ToolCallGroupCard, type McpViewerPayload } from './ToolCallGroupCard'
 import {
   buildToolCallGroupsFromBlocks,
@@ -56,6 +57,7 @@ import {
   FAST_COLOR_TRANSITION_CLASS,
   FOCUS_RING_CLASS,
   getChatFontSizeOffsetStyle,
+  isExcludedFromProcessRunGrouping,
   isProcessOnlyBlockSet,
   MESSAGE_BLOCK_INSET_CLASS,
   MESSAGE_BLOCK_STACK_CLASS,
@@ -368,7 +370,7 @@ const EXPLAIN_BUTTON_CLASS = `flex h-8 w-8 items-center justify-center rounded-f
 const FLOATING_SURFACE_CLASS =
   'rounded-2xl bg-white/95 backdrop-blur-xl ring-1 ring-black/[0.06] dark:bg-yBlack-900/95 dark:ring-white/[0.08]'
 
-const ChatMessage: React.FC<ChatMessageProps> = React.memo(
+const ChatMessageBody: React.FC<ChatMessageProps> = React.memo(
   ({
     id,
     role,
@@ -474,7 +476,6 @@ const ChatMessage: React.FC<ChatMessageProps> = React.memo(
     }, [onLayoutChange])
 
     const messageData = useSelector((state: RootState) => selectMessageByIdMap(state).get(String(id)))
-    const isCompactionSummary = messageData?.note === AUTO_COMPACTION_NOTE
     const toolDefinitions = useSelector((state: RootState) => state.chat.tools)
     const conversationId = messageData?.conversation_id ?? null
     const projectId = useSelector((state: RootState) =>
@@ -1226,18 +1227,14 @@ const ChatMessage: React.FC<ChatMessageProps> = React.memo(
           const groupKey = `process-run-${sourceKey}-${runItems[0].key}-${runItems[runItems.length - 1].key}`
           const isExpanded = expandedBlocks.groupRuns.has(groupKey)
           const toolCount = processItems.filter(item => item.processType === 'tool').length
-          const reasoningCount = processItems.filter(item => item.processType === 'reasoning').length
-          const summaryParts: string[] = []
-          if (toolCount > 0) summaryParts.push(`${toolCount} tool${toolCount === 1 ? '' : 's'}`)
-          if (reasoningCount > 0) summaryParts.push(`${reasoningCount} reasoning`)
+          const summary = toolCount > 0 ? `${toolCount} tool${toolCount === 1 ? '' : 's'}` : undefined
           const panelId = `${id}-${groupKey}-panel`
 
           rendered.push(
             <div key={groupKey} className='min-w-0 max-w-full' style={messageContentStyle}>
               <DisclosureRow
                 label='Agent steps'
-                meta={String(processItems.length)}
-                summary={summaryParts.join(' · ')}
+                summary={summary}
                 expanded={isExpanded}
                 onToggle={() => toggleBlock('groupRuns', groupKey)}
                 controlsId={panelId}
@@ -1351,7 +1348,7 @@ const ChatMessage: React.FC<ChatMessageProps> = React.memo(
             if (toolNode) {
               items.push({
                 key: `stream-tool-${groupedTool.id}-${idx}`,
-                kind: 'process',
+                kind: isExcludedFromProcessRunGrouping(groupedTool.name, groupedTool.args) ? 'other' : 'process',
                 processType: 'tool',
                 node: toolNode,
               })
@@ -1455,7 +1452,7 @@ const ChatMessage: React.FC<ChatMessageProps> = React.memo(
           if (fallbackNode) {
             items.push({
               key: `stream-fallback-tool-${toolCall.id}-${idx}`,
-              kind: 'process',
+              kind: isExcludedFromProcessRunGrouping(fallbackGroup.name, fallbackGroup.args) ? 'other' : 'process',
               processType: 'tool',
               node: fallbackNode,
             })
@@ -1515,11 +1512,12 @@ const ChatMessage: React.FC<ChatMessageProps> = React.memo(
           const callId = typeof item.call_id === 'string' ? item.call_id : typeof item.id === 'string' ? item.id : ''
           const name = typeof item.name === 'string' ? item.name : ''
           if (callId && name) {
+            const args = parseResponsesToolArgs(item.arguments) as Record<string, any> | null
             const toolNode = renderToolCallGroupCard(
               {
                 id: callId,
                 name,
-                args: parseResponsesToolArgs(item.arguments) as Record<string, any> | null,
+                args,
                 results: [],
                 anchorIndex: baseIndex + localIndex,
               },
@@ -1528,7 +1526,7 @@ const ChatMessage: React.FC<ChatMessageProps> = React.memo(
             if (toolNode) {
               items.push({
                 key: `responses-tool-${callId}-${baseIndex}-${localIndex}`,
-                kind: 'process',
+                kind: isExcludedFromProcessRunGrouping(name, args) ? 'other' : 'process',
                 processType: 'tool',
                 node: toolNode,
               })
@@ -1572,7 +1570,7 @@ const ChatMessage: React.FC<ChatMessageProps> = React.memo(
           if (toolNode) {
             items.push({
               key: `block-tool-${groupedTool.id}-${idx}`,
-              kind: 'process',
+              kind: isExcludedFromProcessRunGrouping(groupedTool.name, groupedTool.args) ? 'other' : 'process',
               processType: 'tool',
               node: toolNode,
             })
@@ -1742,22 +1740,14 @@ const ChatMessage: React.FC<ChatMessageProps> = React.memo(
           style={surfaceStyle}
         >
           {/* Role caption. Assistant rows stay unlabelled; the surface is the label for user rows. */}
-          {(isUserRow || isCompactionSummary) && (
+          {isUserRow && (
             <div className={`flex h-7 items-center gap-2 ${MESSAGE_BLOCK_INSET_CLASS}`}>
-              {isUserRow && (
-                <span
-                  className={`${TEXT_MICRO_CLASS} font-semibold uppercase tracking-[0.14em] ${roleLabelClass}`}
-                  style={roleLabelStyle}
-                >
-                  {roleLabel}
-                </span>
-              )}
-              {isCompactionSummary && (
-                <Badge tone='success'>
-                  <span className='mr-1.5 inline-block h-1.5 w-1.5 rounded-full bg-current' aria-hidden='true' />
-                  Compaction summary
-                </Badge>
-              )}
+              <span
+                className={`${TEXT_MICRO_CLASS} font-semibold uppercase tracking-[0.14em] ${roleLabelClass}`}
+                style={roleLabelStyle}
+              >
+                {roleLabel}
+              </span>
             </div>
           )}
 
@@ -2103,6 +2093,28 @@ const ChatMessage: React.FC<ChatMessageProps> = React.memo(
     )
   }
 )
+
+ChatMessageBody.displayName = 'ChatMessageBody'
+
+// Keep summary payloads out of the rich renderer, including callers outside the main Chat.
+// The stored message remains untouched; only its presentation changes.
+const ChatMessage: React.FC<ChatMessageProps> = React.memo(props => {
+  const isCompactionSummary = useSelector(
+    (state: RootState) => selectMessageByIdMap(state).get(String(props.id))?.note === AUTO_COMPACTION_NOTE
+  )
+  if (isCompactionSummary) {
+    return (
+      <SummarisedMessage
+        id={`message-${props.id}`}
+        className={`${props.width} ${props.className ?? ''}`}
+        customTheme={props.customTheme}
+        customThemeEnabled={props.customThemeEnabled}
+        isDarkMode={props.isDarkMode}
+      />
+    )
+  }
+  return <ChatMessageBody {...props} />
+})
 
 ChatMessage.displayName = 'ChatMessage'
 

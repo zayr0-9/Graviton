@@ -10,15 +10,15 @@ describe('buildHeadlessSystemPrompt', () => {
       conversationPrompt: 'Conversation prompt from sqlite',
     })
 
-    expect(prompt).toContain('Agent Prompt: Plan mode')
+    expect(prompt).toContain('Agent Prompt: Chat and Agent modes')
     expect(prompt).toContain('Request prompt\n\nProject prompt from sqlite\n\nConversation prompt from sqlite')
-    expect(prompt.indexOf('Agent Prompt: Plan mode')).toBeLessThan(prompt.indexOf('Request prompt'))
+    expect(prompt.indexOf('Agent Prompt: Chat and Agent modes')).toBeLessThan(prompt.indexOf('Request prompt'))
   })
 
   it('uses agent mode instructions for execute mode', () => {
     const prompt = buildHeadlessSystemPrompt({ operationMode: 'execute' })
 
-    expect(prompt).toContain('Agent Prompt: Coding mode')
+    expect(prompt).toContain('Agent Prompt: Chat and Agent modes')
   })
 
   it('replaces the bundled operation-mode baseline with a supplied override', () => {
@@ -28,8 +28,9 @@ describe('buildHeadlessSystemPrompt', () => {
       projectPrompt: 'Project prompt',
     })
 
-    expect(prompt).toBe('Custom Agent baseline\n\nProject prompt')
-    expect(prompt).not.toContain('Agent Prompt: Coding mode')
+    expect(prompt).toContain('Custom Agent baseline')
+    expect(prompt).toContain('Project prompt')
+    expect(prompt).not.toContain('Agent Prompt: Chat and Agent modes')
   })
 
   it('keeps Plan response style when the Plan baseline is overridden', () => {
@@ -42,7 +43,7 @@ describe('buildHeadlessSystemPrompt', () => {
     expect(prompt).toContain('Custom Plan baseline')
     expect(prompt).toContain('## Plan Response Style')
     expect(prompt).toContain('Use detailed plans')
-    expect(prompt).not.toContain('Agent Prompt: Plan mode')
+    expect(prompt).not.toContain('Agent Prompt: Chat and Agent modes')
   })
 
   it('adds Plan response style for plan mode', () => {
@@ -52,10 +53,11 @@ describe('buildHeadlessSystemPrompt', () => {
     expect(prompt).toContain('Use a balanced plan')
   })
 
-  it('does not add Plan response style for execute mode', () => {
+  it('keeps the same conditional Plan response style in both modes', () => {
     const prompt = buildHeadlessSystemPrompt({ operationMode: 'execute' })
 
-    expect(prompt).not.toContain('## Plan Response Style')
+    expect(prompt).toContain('## Plan Response Style (only while Chat mode is active)')
+    expect(prompt).toBe(buildHeadlessSystemPrompt({ operationMode: 'plan' }))
   })
 
   it('can disable default operation mode prompts', () => {

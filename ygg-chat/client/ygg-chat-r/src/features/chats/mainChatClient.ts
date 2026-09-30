@@ -283,7 +283,7 @@ function makeHandleEvent(
       else if (operation === 'edit') dispatch(chatSliceActions.optimisticBranchMessageCleared())
       // 'branch' uses no optimistic bubble.
       onMessagePersisted?.()
-    } else if (event.type === 'assistant_message_persisted') {
+    } else if (event.type === 'assistant_message_persisted' || event.type === 'operation_mode_changed' || event.type === 'queued_user_message_persisted') {
       // Intermediate + re-emitted post-tool assistant rows: already projected to Redux
       // above; let the caller refresh derived views (Heimdall) so nodes appear per-turn.
       onMessagePersisted?.()

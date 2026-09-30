@@ -44,7 +44,7 @@ Use this when changing:
 
 ### Renderer (thin-client) surface
 - `client/ygg-chat-r/src/features/chats/chatActions.ts`: the 3 chat thunks set `hooksEnabled: isElectronMode` on the server-loop request (`chatActions.ts:1258`, `:1788`, `:1998`). They no longer contain any hook call site.
-- `client/ygg-chat-r/src/features/chats/chatHookClient.ts`: **legacy for the chat loop** — its `runChatHook` (`POST /hooks/run`) is no longer on the main loop; only its `ChatHookProjectContext` type is still imported by `chatActions.ts`. The old `/api/hooks/run` route (`electron/localServer.ts`) survives but is off the main chat path; `/api/hooks` + `/api/hooks/toggle` remain for the settings UI.
+- `client/ygg-chat-r/src/features/chats/chatHookClient.ts`: **legacy for the chat loop** — its `runChatHook` (`POST /hooks/run`) is no longer on the main loop; `chatActions.ts` no longer imports its legacy memory project-context type. The old `/api/hooks/run` route (`electron/localServer.ts`) survives but is off the main chat path; `/api/hooks` + `/api/hooks/toggle` remain for the settings UI.
 
 ## Lifecycle Events
 
@@ -64,7 +64,7 @@ The hook session is built only when **all three** hold (`chatOrchestrator.ts:314
 
 Wiring: the executor Pre/Post/Failure hooks are interleaved inside `createChatPausingExecutor` when a `hookSession` is passed; the loop side receives `hookSession.toolLoopHooks()` → `{ hookContext, foldSystemPrompt, runStop }` as `input.hooks` (`chatOrchestrator.ts:472`).
 
-**Not ported (intentional):** memory-context injection (long-term/recent/project memory) that the old renderer folded via the same helper is a separate feature and is deliberately NOT reproduced server-side; only hook context is folded.
+**Memory is separate:** `ConversationContextLoader` injects the cwd-based `MEMORY.md` index independently of hooks. The legacy long-term/recent/project memory system and its bundled Stop writer are retired; note-summary hooks and search remain supported.
 
 ## Execution Mode Notes
 

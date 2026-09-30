@@ -82,6 +82,14 @@ Graviton loads repository context the way Claude Code does. The reference rules 
    next user turn. `foldSystemPrompt` remains only behind
    `hookContextPlacement: 'system_prompt'` (default off).
 
+## Markdown memory
+
+- Auto-memory has one source: `<dataDir>/.ygg/memory/projects/<cwd-or-git-root-slug>/MEMORY.md`, unless `autoMemoryDirectory` or the memory environment overrides select another directory. Sidebar project names/IDs do not select memory.
+- Only the first 200 lines / 25 KB of the index are injected. Individual fact files beside it are read on demand with normal file tools; those tools also write/update facts and the index.
+- A missing index contributes no memory entry. The system memory prompt still supplies the exact directory where the agent can create it. Memory from a parent workspace is not inherited automatically.
+- The legacy aggregate-memory APIs, `memory_manage` tool, file browser, and long-term-memory Stop writer are removed. Old memory files are preserved but not auto-loaded. Review/migrate useful facts to the selected directory and link them from its index. Explicit `autoMemoryDirectory` settings can share memory across repositories.
+- Note-summary search, embeddings, and the root-note Stop hook are separate from auto-memory and remain supported.
+
 ## Invariants
 
 - The system prompt is built once per run and never changes between iterations

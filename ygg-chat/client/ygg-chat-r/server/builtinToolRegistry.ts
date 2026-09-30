@@ -7,8 +7,6 @@
 //   - `browse_web` is the one Electron-only tool. It is registered only when
 //     the host supplies a BrowserEngine capability, so a standalone host never
 //     advertises a tool it cannot run.
-//   - The 26th built-in, `memory_manage`, is a list-only handler registered
-//     next to the memory routes in localServer.ts because it closes over them.
 //
 // Database-backed handlers receive `statements` through accessor functions:
 // the SQLite prepared statements are (re)created per server start, after this
@@ -76,8 +74,7 @@ export interface BuiltInToolRegistryDeps {
 
 /**
  * Populate `builtInTools` with every built-in handler the host can run.
- * Must not clear the map: setupServer() registers `memory_manage` before this
- * runs, and Map.set overwrites make re-registration idempotent anyway.
+ * Map.set overwrites make re-registration idempotent.
  */
 export function registerBuiltInTools(builtInTools: Map<string, BuiltInToolHandler>, deps: BuiltInToolRegistryDeps): void {
   builtInTools.set('html_renderer', async args => {

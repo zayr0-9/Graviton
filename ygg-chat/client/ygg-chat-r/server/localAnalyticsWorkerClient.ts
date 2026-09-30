@@ -24,6 +24,13 @@ type WorkerResponse = {
 
 const DEFAULT_TIMEOUT_MS = 120_000
 
+export function resolveLocalAnalyticsWorkerPath(moduleUrl: string): string {
+  const workerPath = fileURLToPath(new URL('./localAnalyticsWorker.mjs', moduleUrl))
+  // Node worker threads need a real filesystem entry, not an ASAR virtual path.
+  // Keep this in sync with electron-builder.json's files and asarUnpack entries.
+  return workerPath.replace(/([\\/])app\.asar([\\/])/, '$1app.asar.unpacked$2')
+}
+
 class LocalAnalyticsWorkerClient {
   private worker: Worker | null = null
   private nextId = 1
@@ -69,8 +76,7 @@ class LocalAnalyticsWorkerClient {
   private ensureWorker() {
     if (this.worker) return this.worker
 
-    const workerUrl = new URL('./localAnalyticsWorker.mjs', import.meta.url)
-    const worker = new Worker(fileURLToPath(workerUrl))
+    const worker = new Worker(resolveLocalAnalyticsWorkerPath(import.meta.url))
     worker.on('message', (message: WorkerResponse) => this.handleMessage(message))
     worker.on('error', error => this.restartWorker(error instanceof Error ? error : new Error(String(error))))
     worker.on('exit', code => {

@@ -34,6 +34,7 @@ interface TextAreaProps {
   value?: string
   onChange?: (value: string) => void
   onKeyDown?: (e: React.KeyboardEvent<HTMLTextAreaElement>) => void
+  onToggleOperationMode?: () => void
   onPaste?: (e: React.ClipboardEvent<HTMLTextAreaElement>) => void
   onBlur?: () => void
   state?: textAreaState
@@ -145,6 +146,7 @@ export const InputTextArea: React.FC<TextAreaProps> = ({
   value = '',
   onChange,
   onKeyDown,
+  onToggleOperationMode,
   onPaste,
   onBlur,
   state = 'default',
@@ -371,9 +373,9 @@ export const InputTextArea: React.FC<TextAreaProps> = ({
   }
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-    if (e.key === 'Tab' && e.shiftKey) {
+    if (e.key === 'Tab' && e.shiftKey && onToggleOperationMode) {
       e.preventDefault()
-      dispatch(chatSliceActions.operationModeToggled())
+      onToggleOperationMode()
       return
     }
 

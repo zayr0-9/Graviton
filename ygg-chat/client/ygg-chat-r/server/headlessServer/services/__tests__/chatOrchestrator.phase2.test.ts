@@ -671,10 +671,10 @@ describeIfSqlite('ChatOrchestrator prompt resolution', () => {
     )
 
     const providerInput = providerRouter.calls[0]
-    expect(providerInput.systemPrompt).toContain('Agent Prompt: Coding mode')
+    expect(providerInput.systemPrompt).toContain('Agent Prompt: Chat and Agent modes')
     expect(providerInput.systemPrompt).toContain('Project prompt from sqlite')
     expect(providerInput.systemPrompt).toContain('Conversation prompt from sqlite')
-    expect(providerInput.systemPrompt.indexOf('Agent Prompt: Coding mode')).toBeLessThan(
+    expect(providerInput.systemPrompt.indexOf('Agent Prompt: Chat and Agent modes')).toBeLessThan(
       providerInput.systemPrompt.indexOf('Project prompt from sqlite')
     )
     expect(providerInput.railwayTurn.conversationContext).toBe('Conversation context from sqlite')
@@ -700,8 +700,8 @@ describeIfSqlite('ChatOrchestrator prompt resolution', () => {
       () => {}
     )
 
-    expect(providerRouter.calls[0].systemPrompt).toBe('Custom Agent baseline')
-    expect(providerRouter.calls[0].systemPrompt).not.toContain('Agent Prompt: Coding mode')
+    expect(providerRouter.calls[0].systemPrompt).toContain('Custom Agent baseline')
+    expect(providerRouter.calls[0].systemPrompt).not.toContain('Agent Prompt: Chat and Agent modes')
   })
 
   it('uses chat mode prompts for plan mode requests', async () => {
@@ -721,7 +721,7 @@ describeIfSqlite('ChatOrchestrator prompt resolution', () => {
       () => {}
     )
 
-    expect(providerRouter.calls[0].systemPrompt).toContain('Agent Prompt: Plan mode')
+    expect(providerRouter.calls[0].systemPrompt).toContain('Agent Prompt: Chat and Agent modes')
   })
 
   it('falls back to a non-empty instruction when prompts are disabled and no sqlite prompts exist', async () => {

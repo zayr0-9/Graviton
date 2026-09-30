@@ -4,7 +4,8 @@ paths:
   - "client/ygg-chat-r/server/headlessServer/services/toolLoopService.ts"
   - "client/ygg-chat-r/src/features/chats/compactionContext.ts"
   - "client/ygg-chat-r/src/features/chats/contextTokenEstimate.ts"
-  - "client/ygg-chat-r/.ygg/hooks/*memory*.py"
+  - "client/ygg-chat-r/server/context/autoMemory.ts"
+  - "client/ygg-chat-r/server/context/contextLoader.ts"
   - "client/ygg-chat-r/.ygg/hooks/root_note_stop.py"
   - "shared/contextUsage.ts"
 ---
@@ -15,7 +16,7 @@ Last reviewed: 2026-08-01
 
 ## Purpose
 
-Documents context compaction, root-note memory, long-term memory hooks, and related persistence surfaces used to keep agent context useful across long conversations.
+Documents context compaction, note-summary search, cwd-based Markdown auto-memory, and related persistence surfaces used to keep agent context useful across long conversations.
 
 Scope note: after the headless thin-client migration, the MAIN chat agent loop (and its in-loop auto-compaction) runs SERVER-SIDE in the local headless Express server (`127.0.0.1:3002`, inside the Electron main process). This doc is Electron-only; web mode is not a target.
 
@@ -23,8 +24,7 @@ Scope note: after the headless thin-client migration, the MAIN chat agent loop (
 
 Use this when changing:
 - conversation/context compaction prompts, summaries, or the in-loop compaction trigger;
-- root-note or long-term-memory hook behavior;
-- stop-hook memory extraction;
+- root-note hook behavior or cwd-based Markdown auto-memory;
 - note-memory search, storage, or injection into agent context;
 - server-side context/token estimation used to decide when to compact;
 - agent context files that refer to compaction or memory workflows.
@@ -48,11 +48,11 @@ The in-loop compaction decision is computed server-side:
 ## Key Files
 
 - `client/ygg-chat-r/.ygg/hooks/root_note_stop.py`: async Stop hook that updates root-note style conversation memory.
-- `client/ygg-chat-r/.ygg/hooks/long_term_memory_stop.py`: async Stop hook that evaluates whether long-term memory should be updated.
+- `client/ygg-chat-r/server/context/autoMemory.ts` and `contextLoader.ts`: resolve memory from chat cwd/nearest Git root, inject `MEMORY.md` (first 200 lines / 25 KB), and reload after compaction. Fact files are read/edited through ordinary file tools. No project-name/ID-based memory store or background fact writer.
 - `client/ygg-chat-r/.ygg/settings.local.json`: bundled hook settings copied into managed user-data hooks.
 - `client/ygg-chat-r/electron/hooks/hookRunner.ts`: hook loading, execution, and model feedback handling; now invoked IN-PROCESS by the server loop (wired as `hookRunner: runHookRequest` in `electron/headlessServer/index.ts`).
 - `client/ygg-chat-r/electron/hooks/hookStorage.ts`: bundled-to-managed hook initialization and settings storage.
-- `client/ygg-chat-r/electron/headlessServer/services/chatHookService.ts`: runs Ygg hooks in-process at the loop's lifecycle points (incl. the Stop point, `runStop`, that fires the memory Stop hooks). Header documents that memory-context injection is intentionally NOT ported to the server loop.
+- `client/ygg-chat-r/server/headlessServer/services/chatHookService.ts`: runs Ygg hooks in-process at the loop's lifecycle points, including the root-note Stop hook. Markdown auto-memory injection is independent of hooks.
 - `client/ygg-chat-r/electron/headlessServer/services/toolLoopService.ts`: server chat/tool loop; owns the in-loop auto-compaction trigger (`ToolLoopService.run`, block `:939-1001`) and the server-side token projection (`projectedReplayTokens`, `usageFromMessage`).
 - `client/ygg-chat-r/electron/headlessServer/services/compactionService.ts`: `CompactionService` — headless summary generation (`generateCompactionSummary`, `:503`), bounded tool-context / write-op serialization, and summary persistence (`compactBranch`, `:559`). `AUTO_COMPACTION_NOTE = '__auto_compaction_summary__'` marker + resume-line prefix (`ensureCompactionSummaryResumeLine`).
 - `client/ygg-chat-r/electron/headlessServer/services/chatOrchestrator.ts`: wires `compactBranch` to `CompactionService.compactBranch` and threads the compaction knobs into `ToolLoopRunInput`.
@@ -81,11 +81,10 @@ The in-loop compaction decision is computed server-side:
 
 ## Gotchas
 
-- Memory-context INJECTION (long-term/recent/project memory folded into the inference prompt) is intentionally NOT ported to the server loop (see the `chatHookService.ts` header). The renderer still loads memory contexts (`maybeLoadMemoryContexts` in `chatActions.ts`) but currently only to estimate tokens for its pre-branch compaction precheck — it is not folded into the server-assembled system prompt. Only hook `additionalContext` is folded server-side.
+- The legacy global/recent/project aggregate-memory APIs, browser, tool, renderer token accounting, and long-term-memory Stop hook are removed. Existing Markdown data is preserved, not automatically mapped by project name. Migrate reviewed facts to the resolved cwd-based memory directory and link them in `MEMORY.md`; use `autoMemoryDirectory` to explicitly share across repositories.
 - In-loop, manual, pre-send, and pre-branch compaction all persist through `CompactionService.compactBranch`; the renderer thunk must never mint or expose a summary ID before that route succeeds.
 - Packaged Electron copies bundled `.ygg` hook resources into the user-data `.ygg` directory. Non-atomic overwrites can make JSON settings briefly unreadable to concurrent hook requests.
-- Long-term-memory extraction should treat “no relevant context” as no update, not as content to store.
-- Root-note and long-term-memory hooks run from the managed hooks working directory, so relative paths should be written with that runtime cwd in mind.
+- Root-note hooks run from the managed hooks working directory, so relative paths should be written with that runtime cwd in mind. Note summaries and their embedding index are independent of Markdown auto-memory.
 
 ## Testing and Validation
 

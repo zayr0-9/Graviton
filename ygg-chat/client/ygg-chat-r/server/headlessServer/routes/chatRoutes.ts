@@ -410,6 +410,68 @@ export function registerChatRoutes(app: Express, deps: RegisterChatRoutesDeps): 
   // event by resolving the paused decision on the ALREADY-OPEN SSE stream. Plain
   // JSON (not SSE). Keyed by streamId+toolCallId (conversationId is not part of the
   // broker key), so this is a flat route.
+  app.get('/api/conversations/:id/streams/:streamId/queue', (req, res) => {
+    try {
+      if (!orchestrator.getMessageQueue) throw new Error('Message queue unavailable')
+      res.json(orchestrator.getMessageQueue(String(req.params.id), String(req.params.streamId)))
+    } catch (error) { res.status(409).json({ error: error instanceof Error ? error.message : String(error) }) }
+  })
+  app.delete('/api/conversations/:id/streams/:streamId/queue/:requestId', (req, res) => {
+    try {
+      if (!orchestrator.cancelQueuedMessage) throw new Error('Message queue unavailable')
+      res.json(orchestrator.cancelQueuedMessage(String(req.params.id), String(req.params.streamId), String(req.params.requestId)))
+    } catch (error) { res.status(409).json({ error: error instanceof Error ? error.message : String(error) }) }
+  })
+  app.post('/api/conversations/:id/streams/:streamId/queue', (req, res) => {
+    const { requestId, content, attachmentsBase64 } = req.body ?? {}
+    if (typeof requestId !== 'string' || !requestId || requestId.length > 128 || typeof content !== 'string' || !content.trim() ||
+      content.length > 200_000 || (attachmentsBase64 != null && (!Array.isArray(attachmentsBase64) || attachmentsBase64.length > 20 ||
+        attachmentsBase64.some((attachment: any) => !attachment || typeof attachment.dataUrl !== 'string' ||
+          !attachment.dataUrl.startsWith('data:image/') || typeof attachment.attachmentId !== 'string')))) {
+      res.status(400).json({ error: 'Valid requestId, content and attachment list required' })
+      return
+    }
+    try {
+      if (!orchestrator.submitQueuedMessage || !runSessions || !resumableRuns) throw new Error('Queued messages require resumable runs')
+      const result = orchestrator.submitQueuedMessage(String(req.params.id), String(req.params.streamId), {
+        requestId, content, attachmentsBase64,
+      })
+      if (result.restart) {
+        const request = result.restart
+        const session = runSessions.create(request.streamId!, request.conversationId)
+        // runMessage registers intake synchronously, before its first await. The next
+        // HTTP send therefore joins this successor rather than forking another one.
+        void orchestrator.runMessage(request, event => session.publish(event), session.signal).catch(error => {
+          if (!orchestratorAlreadyPublished(error)) session.publish(buildRouteErrorEvent(error, req.body ?? {}))
+        })
+        res.json({ restarted: true, streamId: request.streamId, parentId: request.parentId })
+      } else if (result.restartStreamId) {
+        res.json({ restarted: true, streamId: result.restartStreamId })
+      } else {
+        res.json({ snapshot: result.snapshot, streamId: result.snapshot?.streamId })
+      }
+    } catch (error) { res.status(409).json({ error: error instanceof Error ? error.message : String(error) }) }
+  })
+
+  app.post('/api/conversations/:id/operation-mode', (req, res) => {
+    const { mode, requestId, streamId, parentId, lineageId } = req.body ?? {}
+    if ((mode !== 'plan' && mode !== 'execute') || typeof requestId !== 'string' || !requestId ||
+      [streamId, parentId, lineageId].some(value => value != null && typeof value !== 'string')) {
+      res.status(400).json({ error: 'Valid mode, requestId and string ids are required' })
+      return
+    }
+    if (!orchestrator.changeOperationMode) {
+      res.status(501).json({ error: 'Live mode switching is unavailable' })
+      return
+    }
+    try {
+      const conversationId = String(req.params.id)
+      res.json(orchestrator.changeOperationMode({ conversationId, mode, requestId, streamId, parentId, lineageId }))
+    } catch (error) {
+      res.status(409).json({ error: error instanceof Error ? error.message : String(error) })
+    }
+  })
+
   app.post('/api/resume', (req, res) => {
     if (!decisionBroker) {
       // The user answered a permission/clarify prompt and there is nowhere to deliver

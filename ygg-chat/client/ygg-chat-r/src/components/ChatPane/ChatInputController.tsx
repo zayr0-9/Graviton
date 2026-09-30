@@ -3,6 +3,7 @@ import type { ConversationId } from '../../../../../shared/types'
 import type { ImageDraftTarget } from '../../features/chats/chatTypes'
 import { wrapPastedTextInMarkdownFence } from '../../helpers/chatKeyboardShortcuts'
 import { InputTextArea } from '../InputTextArea/InputTextArea'
+import { getSentMessageHistory } from './sentMessageHistory'
 
 export type ChatInputUpdater = string | ((prev: string) => string)
 
@@ -25,6 +26,7 @@ export type ChatInputControllerProps = {
   onSlashCommandSelect?: (command: string) => ComposerSlashCommandResult | void
   onHasTextChange: (hasText: boolean) => void
   onSubmit: () => void
+  onToggleOperationMode?: () => void
   onBlurPersist: (content: string) => void
   onAddCurrentIdeContext?: () => boolean
   onClearIdeContexts?: () => void
@@ -52,6 +54,7 @@ export const ChatInputController = React.memo(
         onSlashCommandSelect,
         onHasTextChange,
         onSubmit,
+        onToggleOperationMode,
         onBlurPersist,
         onAddCurrentIdeContext,
         onClearIdeContexts,
@@ -72,6 +75,8 @@ export const ChatInputController = React.memo(
       const lastHasTextRef = useRef(initialValue.trim().length > 0)
       const shiftPressedRef = useRef(false)
       const markdownPastePendingRef = useRef(false)
+      const historyIndexRef = useRef<number | null>(null)
+      const historyDraftRef = useRef('')
 
       const publishHasText = useCallback(
         (nextValue: string) => {
@@ -111,6 +116,8 @@ export const ChatInputController = React.memo(
         setValueState(initialValue)
         const hasText = initialValue.trim().length > 0
         lastHasTextRef.current = hasText
+        historyIndexRef.current = null
+        historyDraftRef.current = ''
         onHasTextChange(hasText)
       }, [conversationId, initialValue, onHasTextChange])
 
@@ -145,11 +152,46 @@ export const ChatInputController = React.memo(
 
       const handleChange = useCallback(
         (nextValue: string) => {
+          historyIndexRef.current = null
+          historyDraftRef.current = ''
           valueRef.current = nextValue
           setValueState(nextValue)
           publishHasText(nextValue)
         },
         [publishHasText]
+      )
+
+      const navigateSentMessageHistory = useCallback(
+        (direction: 'older' | 'newer') => {
+          const history = getSentMessageHistory()
+          if (history.length === 0) return false
+
+          if (direction === 'older') {
+            if (historyIndexRef.current == null) {
+              historyDraftRef.current = valueRef.current
+              historyIndexRef.current = history.length - 1
+            } else if (historyIndexRef.current > 0) {
+              historyIndexRef.current -= 1
+            } else {
+              return false
+            }
+          } else {
+            if (historyIndexRef.current == null) return false
+            if (historyIndexRef.current < history.length - 1) {
+              historyIndexRef.current += 1
+            } else {
+              historyIndexRef.current = null
+              setValue(historyDraftRef.current)
+              return true
+            }
+          }
+
+          const historyIndex = historyIndexRef.current
+          if (historyIndex == null) return false
+          setValue(history[historyIndex])
+          return true
+        },
+        [setValue]
       )
 
       const handlePaste = useCallback(
@@ -184,14 +226,29 @@ export const ChatInputController = React.memo(
           <InputTextArea
             value={value}
             onChange={handleChange}
+            onToggleOperationMode={onToggleOperationMode}
             onKeyDown={event => {
               if ((event.metaKey || event.ctrlKey) && event.shiftKey && event.code === 'KeyV') {
                 // macOS can release Shift before dispatching the native paste event for Cmd+Shift+V.
                 // Remember the keyboard chord and consume it when the paste event arrives.
                 markdownPastePendingRef.current = true
               }
+              if (event.key === 'ArrowUp' && event.currentTarget.selectionStart === 0 && event.currentTarget.selectionEnd === 0) {
+                if (navigateSentMessageHistory('older')) event.preventDefault()
+                return
+              }
+              if (
+                event.key === 'ArrowDown' &&
+                event.currentTarget.selectionStart === valueRef.current.length &&
+                event.currentTarget.selectionEnd === valueRef.current.length
+              ) {
+                if (navigateSentMessageHistory('newer')) event.preventDefault()
+                return
+              }
               if (event.key === 'Enter' && !event.shiftKey) {
                 event.preventDefault()
+                historyIndexRef.current = null
+                historyDraftRef.current = ''
                 onSubmit()
               }
             }}

@@ -8,12 +8,10 @@ export type HeadlessPlanModeVerbosity = 'concise' | 'normal' | 'detailed'
 
 const DEFAULT_HEADLESS_INSTRUCTIONS = 'You are ChatGPT.'
 
-const DEFAULT_CHAT_MODE_PROMPT_RELATIVE_PATH = 'src/features/chats/prompts/default_chat_mode.md'
-const DEFAULT_AGENT_MODE_PROMPT_RELATIVE_PATH = 'src/features/chats/prompts/default_agent_mode.md'
+const DEFAULT_OPERATION_MODES_PROMPT_RELATIVE_PATH = 'src/features/chats/prompts/default_operation_modes.md'
 const DEFAULT_SUBAGENT_MODE_PROMPT_RELATIVE_PATH = 'src/features/chats/prompts/default_subagent_mode.md'
 
-let defaultChatModePrompt: string | null = null
-let defaultAgentModePrompt: string | null = null
+let defaultOperationModesPrompt: string | null = null
 let defaultSubagentModePrompt: string | null = null
 
 const appendPromptPart = (parts: string[], value?: string | null) => {
@@ -30,12 +28,12 @@ export function buildHeadlessPlanModeResponseStylePrompt(verbosity?: HeadlessPla
 
   switch (resolvedVerbosity) {
     case 'detailed':
-      return '## Plan Response Style\n\nUse detailed plans when helpful, but stay focused and avoid unrelated explanation.'
+      return '## Plan Response Style (only while Chat mode is active)\n\nUse detailed plans when helpful, but stay focused and avoid unrelated explanation.'
     case 'normal':
-      return '## Plan Response Style\n\nUse a balanced plan with enough detail to implement the change. Avoid unnecessary verbosity.'
+      return '## Plan Response Style (only while Chat mode is active)\n\nUse a balanced plan with enough detail to implement the change. Avoid unnecessary verbosity.'
     case 'concise':
     default:
-      return '## Plan Response Style\n\nUse short, concise plans. Prefer brief bullets and avoid unnecessary detail.'
+      return '## Plan Response Style (only while Chat mode is active)\n\nUse short, concise plans. Prefer brief bullets and avoid unnecessary detail.'
   }
 }
 
@@ -102,8 +100,7 @@ export function assertHeadlessPromptsAvailable(): void {
   const missing: string[] = []
 
   for (const relativePath of [
-    DEFAULT_CHAT_MODE_PROMPT_RELATIVE_PATH,
-    DEFAULT_AGENT_MODE_PROMPT_RELATIVE_PATH,
+    DEFAULT_OPERATION_MODES_PROMPT_RELATIVE_PATH,
     DEFAULT_SUBAGENT_MODE_PROMPT_RELATIVE_PATH,
   ]) {
     const { path: resolved, candidates } = resolvePromptFilePath(relativePath)
@@ -120,14 +117,9 @@ export function assertHeadlessPromptsAvailable(): void {
   }
 }
 
-export function getHeadlessOperationModePrompt(operationMode?: HeadlessOperationMode | null): string {
-  if (operationMode === 'plan') {
-    defaultChatModePrompt ??= readPromptFile(DEFAULT_CHAT_MODE_PROMPT_RELATIVE_PATH)
-    return defaultChatModePrompt
-  }
-
-  defaultAgentModePrompt ??= readPromptFile(DEFAULT_AGENT_MODE_PROMPT_RELATIVE_PATH)
-  return defaultAgentModePrompt
+export function getHeadlessOperationModePrompt(_operationMode?: HeadlessOperationMode | null): string {
+  defaultOperationModesPrompt ??= readPromptFile(DEFAULT_OPERATION_MODES_PROMPT_RELATIVE_PATH)
+  return defaultOperationModesPrompt
 }
 
 export function getHeadlessSubagentModePrompt(): string {
@@ -176,9 +168,7 @@ export function buildHeadlessSystemPrompt({
         ? operationModePrompt
         : getHeadlessOperationModePrompt(resolvedOperationMode)
     )
-    if (resolvedOperationMode === 'plan') {
-      appendPromptPart(parts, buildHeadlessPlanModeResponseStylePrompt(planModeVerbosity))
-    }
+    appendPromptPart(parts, buildHeadlessPlanModeResponseStylePrompt(planModeVerbosity))
   }
   appendPromptPart(parts, requestPrompt)
   appendPromptPart(parts, projectPrompt)

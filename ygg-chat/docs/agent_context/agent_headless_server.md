@@ -150,7 +150,7 @@ The loop pauses mid-turn to ask the renderer for a tool-permission or `plan_md` 
 4. **PostToolUseFailure** — catch path, but **NOT on abort** (aborts rethrow unwrapped); fires on PreToolUse deny AND permission deny.
 5. **Stop** — the loop calls `input.hooks.runStop` on a natural stop; `blocked === true` forces one more turn (empty user turn parented on the just-persisted assistant), appending the reason to `hookContext`.
 
-Memory-context injection is intentionally NOT ported.
+Markdown auto-memory is loaded independently by `ConversationContextLoader` from the cwd-based `MEMORY.md` index. Legacy aggregate-memory injection and its background writer are retired.
 
 ## Compaction
 

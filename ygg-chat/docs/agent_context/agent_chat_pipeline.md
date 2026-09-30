@@ -53,7 +53,7 @@ Use this when changing:
   Explicit `false` on both settings restores the legacy disconnect-abort path.
   See `agent_headless_server.md` §Detach/Reattach and `agent_chat_streaming_state.md`.
 - Supplemental `systemPrompt` is deliberately **omitted** from the request body. The
-  renderer forwards its selected Plan/Agent/subagent baselines plus Plan verbosity, and
+  renderer forwards one combined Chat/Agent baseline, the subagent baseline, and Plan verbosity;
   the server assembles the final prompt (`buildHeadlessSystemPrompt`) with project and
   conversation prompts. Missing baseline fields fall back to the bundled defaults.
 
@@ -156,7 +156,7 @@ All 3 thunks share the same shape:
      `complete { providerError: true }`; abort → `finish('aborted')`, no error frame.
      **finally:** `decisionBroker.rejectAllForStream(trackedStreamId)`.
 4. **`ToolLoopService.run`** (`toolLoopService.ts`): the multi-turn loop. Per tool call
-   it invokes the pausing executor; per turn it folds hook context into the system prompt,
+   it invokes the pausing executor; main-chat hook context is folded into transcript user/tool content,
    evaluates in-loop compaction at the quiescent boundary, and honors the abort signal.
    Provider-turn timeout is **activity-based**: the 180-second default is rearmed by each
    provider stream event, so a response may run longer while bytes keep arriving. A real
@@ -213,7 +213,8 @@ The server loop pauses **mid-turn**, per tool call, to ask the renderer for a de
 
 `chatHookService.ts createChatHookSession` (`:210`) runs Ygg hooks **in the same Electron
 main process** (no HTTP) at 5 lifecycle points. Lineage/metadata are rebuilt from
-`ConversationRepo` per call; `additionalContext` accumulates into the per-turn system prompt.
+`ConversationRepo` per call; main chat uses `hookContextPlacement: 'transcript'`, so
+`additionalContext` is delivered as user/tool-result text, not a changing system prompt.
 
 1. **UserPromptSubmit** — in `runMessage` before user-message persistence; rewrites the
    prompt; `blocked` throws (finishes run `error`).
@@ -372,3 +373,62 @@ resume resolver thunks, and the manual-compaction `compactBranch` thunk.
 - Authoritative provider usage applies only to the OpenAI provider; other providers retain
   Graviton's `tokenx` estimation. Auto-compaction retains the 85% model-context threshold,
   now evaluated inside `ToolLoopService` (see Compaction above).
+
+## Live operation-mode changes
+
+- One `default_operation_modes.md` contains shared guidance and conditional Chat (`plan`)
+  and Agent (`execute`) sections. Switching modes does not replace the system prompt.
+  Existing custom Chat/Agent baselines remain conditional sections of the combined prompt.
+- Idle toggles only update a branch-tip-scoped composer selection in Redux. Repeated
+  toggles overwrite that selection; they make no HTTP requests or transcript writes.
+  The next send carries the final mode. After persisting the actual user message,
+  the loop appends a mode notification only if that branch needs one (including initial
+  mode/post-compaction restoration). Returning to the already-announced mode adds nothing.
+- `POST /api/conversations/:id/operation-mode` requires the active `streamId`, `mode`,
+  and `requestId`. It never persists idle toggles or starts a new inference run.
+- New tool dispatch uses the accepted server mode; already-running tools are not aborted.
+  The existing Chat tool policy is unchanged, including its shell-tool allowance.
+- Mode notifications are persisted user messages (`meta.kind = 'operation_mode_change'`)
+  with `<system-reminder>` content. Insert only after the provider response and its tool
+  results settle, after any compaction/reinjection and before the next provider request.
+  Natural completion also records accepted changes without forcing a reply.
+- `operation_mode_changed` SSE adds the row and updates branch-aware UI state without
+  replacing the triggering user message. Chat renders a compact theme-aware status row.
+  Initial mode and post-compaction state must be present in model history too.
+- Chat button, Shift+Tab, and the error switch-mode action share `changeOperationMode`.
+  Tool-triggered upgrades continue to require approval and use the same server mode state.
+
+## Queued user submissions during a run
+
+- Primary and parallel composers can enqueue nonempty text while their selected branch
+  streams. Queueing never aborts the provider or executing tools, changes tool policy,
+  or starts a competing run. The Stop action remains separate.
+- `POST /api/conversations/:id/streams/:streamId/queue` accepts `requestId`, `content`,
+  and prepared `attachmentsBase64`. GET returns a revisioned snapshot; DELETE
+  `.../queue/:requestId` removes an unclaimed submission. The server validates conversation
+  ownership. Request IDs deduplicate retries; changing an existing payload is rejected.
+- `MessageInputQueue` is a bounded, server-owned in-memory mailbox (100 entries / 24 MiB
+  per run, bounded retained terminal mailboxes). It survives renderer detach/reload, not
+  server restart. `message_queue_updated` SSE and GET snapshots distinguish queued,
+  delivering, delivered, cancelled and failed input. Older HTTP revisions cannot overwrite SSE.
+- `ToolLoopService.flushBoundaryInputs` drains FIFO after tool results and compaction,
+  and on natural completion. Each entry runs UserPromptSubmit with operation `send`,
+  context/slash expansion, and transactional ordinary user-row/attachment/lineage persistence.
+  All accepted entries remain separate first-class user rows; one next inference addresses
+  the batch. Blocked entries stay visible as failed rather than silently disappearing.
+- Mode revisions captured at acceptance order queued messages relative to mode notices.
+  Queued text never changes dispatch permissions; only explicit mode changes do.
+- `queued_user_message_persisted` projects without replacing the original stream trigger
+  or stealing the primary path for a parallel run. The next assistant is parented to the
+  last delivered user row. Finalization also checks for queued input before ending.
+- Intake and natural closure are synchronous. A send arriving after normal completion
+  starts a server-owned successor only if the same lineage head is still current; the
+  renderer reattaches to that successor. Stopped/failed/stale branches reject with recoverable
+  composer text. Pending entries at errors/turn limits are marked Not sent, with Restore text.
+- Queued image payloads are linked using the normal prepared-attachment path and attached
+  to their own in-memory history row (Codex attachments/OpenRouter artifacts), not to the
+  latest mode notification. Queued images currently accept ChatGPT/OpenRouter only; other
+  provider routes reject clearly rather than silently discarding images. Parallel input
+  does not consume the primary composer's attachment drafts.
+- Validation: `messageInputQueue.test.ts`, `messageQueueRoutes.test.ts`, renderer
+  `messageQueue.test.ts` and `enqueueUserMessage.test.ts`, plus existing tool-loop/hooks tests.

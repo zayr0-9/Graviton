@@ -478,6 +478,15 @@ export interface ChatState {
   planClarificationRequestsByStream: Record<string, PlanClarificationRequest>
   toolAutoApprove: boolean
   operationMode: OperationMode
+  messageQueues: Record<string, import('../../../../../shared/queuedMessages').MessageQueueSnapshot>
+  /** Unsent selections, keyed by conversation and selected branch tip. */
+  operationModeDrafts: Record<string, OperationMode>
+  operationModeChanges: Record<string, {
+    mode: OperationMode
+    status: 'requesting' | 'pending'
+    requestId: string
+    streamId?: string | null
+  }>
   freeTier: {
     freeGenerationsRemaining: number | null
     showLimitModal: boolean

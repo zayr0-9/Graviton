@@ -40,6 +40,7 @@ import {
   ToolPermissionDialog,
 } from '../components'
 import { ChatErrorBubble } from '../components/ChatErrorBubble/ChatErrorBubble'
+import { isExcludedFromProcessRunGrouping } from '../components/ChatMessage/chatMessageShared'
 import {
   ChatInputController,
   type ChatInputControllerHandle,
@@ -124,7 +125,10 @@ import type {
   ToolCall,
 } from '../features/chats/chatTypes'
 import { selectChatErrorsForConversation } from '../features/chats/chatSelectors'
-import { readServerLoopRejection } from '../features/chats/chatActions'
+import { changeOperationMode, enqueueUserMessage, loadMessageQueue, cancelQueuedMessage, readServerLoopRejection } from '../features/chats/chatActions'
+import { QueuedMessages } from '../components/ChatMessage/QueuedMessages'
+import { OperationModeNotice } from '../components/ChatMessage/OperationModeNotice'
+import { SummarisedMessage } from '../components/ChatMessage/SummarisedMessage'
 import {
   buildChatErrorRecord,
   classifyLocalChatError,
@@ -160,6 +164,7 @@ import {
 } from '../features/chats/chatgptAccount'
 import { buildBranchPathForMessage } from '../features/chats/pathUtils'
 import { generateStreamId } from '../features/chats/streamHelpers'
+import { recordSentMessage } from '../components/ChatPane/sentMessageHistory'
 import {
   convContextSet,
   Conversation,
@@ -808,6 +813,49 @@ const splitInstructionSetIntoEntries = (content: string, files: string[], reason
   return files.map(file => ({ path: file, label: 'instruction file', text: content, reason }))
 }
 
+const parseToolArgumentsForGrouping = (value: unknown): Record<string, any> | null => {
+  if (value == null || typeof value === 'object') return value as Record<string, any> | null
+  if (typeof value !== 'string') return null
+
+  try {
+    const parsed = JSON.parse(value)
+    return parsed && typeof parsed === 'object' ? (parsed as Record<string, any>) : null
+  } catch {
+    return null
+  }
+}
+
+const getExcludedGroupingToolIds = (parsed: ParsedMessageData): Set<string> => {
+  const excludedIds = new Set<string>()
+
+  for (const toolCall of parsed.toolCalls ?? []) {
+    if (isExcludedFromProcessRunGrouping(toolCall.name, parseToolArgumentsForGrouping(toolCall.arguments))) {
+      excludedIds.add(String(toolCall.id))
+    }
+  }
+
+  for (const block of parsed.contentBlocks ?? []) {
+    if (block.type === 'tool_use' && isExcludedFromProcessRunGrouping(block.name, block.input)) {
+      excludedIds.add(String(block.id))
+      continue
+    }
+
+    const record = block as unknown as Record<string, any>
+    if (record.type !== 'responses_output_items' || !Array.isArray(record.items)) continue
+    for (const item of record.items) {
+      if (!item || item.type !== 'function_call') continue
+      if (isExcludedFromProcessRunGrouping(item.name, parseToolArgumentsForGrouping(item.arguments))) {
+        excludedIds.add(String(item.call_id || item.id || ''))
+      }
+    }
+  }
+
+  excludedIds.delete('')
+  return excludedIds
+}
+
+const hasExcludedGroupingTool = (parsed: ParsedMessageData): boolean => getExcludedGroupingToolIds(parsed).size > 0
+
 const isProcessContentBlock = (block: ContentBlock): boolean => {
   if (
     block.type === 'thinking' ||
@@ -1221,6 +1269,36 @@ function Chat() {
   // React Query for message fetching - MOVED BELOW after projectConversations is available
   // to enable passing storage_mode from cached conversations
   const selectedPath = useAppSelector(selectCurrentPath)
+  const modeChange = useAppSelector(state => {
+    const change = state.chat.operationModeChanges?.[String(currentConversationId)]
+    return streamState.active && change?.streamId === streamState.id ? change : undefined
+  })
+  const modeLineageId = useAppSelector(state => state.chat.conversation.currentLineageId)
+  const [queueSubmitting, setQueueSubmitting] = useState(false)
+  const queueRetryRef = useRef<{ streamId: string; content: string; requestId: string } | null>(null)
+  const queueSubmittingRef = useRef(false)
+  const [lastQueueStreamId, setLastQueueStreamId] = useState<string | null>(null)
+  const queueStreamId = streamState.active ? streamState.id : lastQueueStreamId
+  const queueBranchAnchor = useAppSelector(state => queueStreamId ? state.chat.streaming.byId[queueStreamId]?.currentBranchAnchorMessageId : null)
+  const queuedMessages = useAppSelector(state => queueStreamId ? state.chat.messageQueues?.[queueStreamId] : undefined)
+  useEffect(() => { setLastQueueStreamId(null) }, [currentConversationId])
+  useEffect(() => {
+    if (!streamState.active || !streamState.id || !currentConversationId) return
+    setLastQueueStreamId(streamState.id)
+    void dispatch(loadMessageQueue({ conversationId: currentConversationId, streamId: streamState.id }))
+  }, [dispatch, currentConversationId, streamState.id, streamState.active])
+  const handleOperationModeChange = useCallback((mode: 'plan' | 'execute') => {
+    if (modeChange) return
+    void dispatch(changeOperationMode({
+      mode, conversationId: currentConversationId,
+      streamId: streamState.active ? streamState.id : null,
+      parentId: selectedPath[selectedPath.length - 1] ?? null,
+      lineageId: modeLineageId,
+    }))
+  }, [dispatch, currentConversationId, selectedPath, streamState.active, streamState.id, modeChange, modeLineageId])
+  const handleToggleOperationMode = useCallback(() => {
+    handleOperationModeChange(operationMode === 'plan' ? 'execute' : 'plan')
+  }, [handleOperationModeChange, operationMode])
   const runningToolJobs = useRunningJobs()
   const multiReplyCount = useAppSelector(selectMultiReplyCount)
   const focusedChatMessageId = useAppSelector(selectFocusedChatMessageId)
@@ -2309,7 +2387,7 @@ function Chat() {
         return false
       }
 
-      if (hasSubstantialTextOrImage(msg, parsed)) {
+      if (hasSubstantialTextOrImage(msg, parsed) || hasExcludedGroupingTool(parsed)) {
         return false
       }
 
@@ -2385,7 +2463,12 @@ function Chat() {
           const trailingHasSubstantialContent = hasSubstantialTextOrImage(trailingCandidate, trailingParsed)
           const trailingUsesOrderedResponsesItems = hasResponsesOutputItems(trailingParsed)
 
-          if (trailingHasProcessSignal && trailingHasSubstantialContent && !trailingUsesOrderedResponsesItems) {
+          if (
+            trailingHasProcessSignal &&
+            trailingHasSubstantialContent &&
+            !trailingUsesOrderedResponsesItems &&
+            !hasExcludedGroupingTool(trailingParsed)
+          ) {
             bridgedMessageId = trailingCandidate.id
             toolCount += countToolSignals(trailingParsed)
             reasoningCount += countReasoningSignals(trailingCandidate, trailingParsed)
@@ -2920,6 +3003,9 @@ function Chat() {
       const containerWidth = messagesContainerWidth || 720
 
       const estimateForMessage = (message: Message) => {
+        // Summaries draw only an h-8 notice with py-1, regardless of payload size.
+        if (message.note === AUTO_COMPACTION_NOTE) return smallChromeRowHeight(rootFontSize)
+        if (parseMessageMeta(message.meta)?.kind === 'operation_mode_change') return 32
         const blocks = (parsedMessageDataById.get(message.id) ?? EMPTY_PARSED_MESSAGE_DATA).contentBlocks
         // Mirrors `hasContent && canBranchMessage` in ChatMessage, which gates the actions row.
         const hasText = typeof message.content === 'string' && message.content.trim().length > 0
@@ -5120,15 +5206,16 @@ function Chat() {
 
   // Local version of canSend that checks input controller state.
   const canSendLocal = useMemo(() => {
-    const isNotSending = !streamState.active && !isCurrentConversationCompacting
+    const isNotSending = !isCurrentConversationCompacting && !modeChange && !queueSubmitting
     const hasModel = !!selectedModel
 
     // Allow retrigger: empty input when last displayed message is from user
     const isRetrigger =
-      !hasLocalInput && displayMessages.length > 0 && displayMessages[displayMessages.length - 1]?.role === 'user'
+      !hasLocalInput && displayMessages.length > 0 && displayMessages[displayMessages.length - 1]?.role === 'user' &&
+      parseMessageMeta(displayMessages[displayMessages.length - 1]?.meta)?.kind !== 'operation_mode_change'
 
-    return (hasLocalInput || isRetrigger) && isNotSending && hasModel
-  }, [hasLocalInput, isCurrentConversationCompacting, streamState.active, selectedModel, displayMessages])
+    return (hasLocalInput || (!streamState.active && isRetrigger)) && isNotSending && hasModel
+  }, [hasLocalInput, isCurrentConversationCompacting, streamState.active, selectedModel, displayMessages, modeChange, queueSubmitting])
 
   /**
    * Re-run generation from the last user message on the current branch.
@@ -5144,7 +5231,7 @@ function Chat() {
       const lastUserMessage = displayMessages[displayMessages.length - 1]
 
       // Safety check: ensure lastUserMessage exists before accessing properties
-      if (!lastUserMessage || lastUserMessage.role !== 'user') {
+      if (!lastUserMessage || lastUserMessage.role !== 'user' || parseMessageMeta(lastUserMessage.meta)?.kind === 'operation_mode_change') {
         console.error('Cannot retrigger: No last user message found in displayMessages')
         return false
       }
@@ -5239,10 +5326,33 @@ function Chat() {
         return
       }
 
+      if (canSendLocal && currentConversationId && streamState.active && streamState.id) {
+        if (queueSubmittingRef.current) return
+        queueSubmittingRef.current = true
+        setQueueSubmitting(true)
+        const { content, pendingCwdValue } = withPendingCwdAnnouncement(currentConversationId,
+          appendIdeContextToMessage(replaceFileMentionsWithPath(localInputValue)))
+        const retry = queueRetryRef.current
+        const queuedSubmission = retry?.streamId === streamState.id && retry.content === content
+          ? retry : { streamId: streamState.id, content, requestId: crypto.randomUUID() }
+        queueRetryRef.current = queuedSubmission
+        recordSentMessage(localInputValue)
+        clearLocalInput()
+        void dispatch(enqueueUserMessage({ conversationId: currentConversationId, ...queuedSubmission })).unwrap().then(() => {
+          queueRetryRef.current = null
+          clearPendingCwdAnnouncement(currentConversationId, pendingCwdValue)
+          setAddedIdeContexts([])
+        }).catch(error => {
+          recordLocalChatError(error, { phase: 'open', conversationId: currentConversationId, streamId: streamState.id })
+        }).finally(() => { queueSubmittingRef.current = false; setQueueSubmitting(false) })
+        return
+      }
+
       if (canSendLocal && currentConversationId) {
         // Check if this is a retrigger scenario (empty input + last message is user)
         const isRetrigger =
-          !hasLocalInput && displayMessages.length > 0 && displayMessages[displayMessages.length - 1]?.role === 'user'
+          !hasLocalInput && displayMessages.length > 0 && displayMessages[displayMessages.length - 1]?.role === 'user' &&
+      parseMessageMeta(displayMessages[displayMessages.length - 1]?.meta)?.kind !== 'operation_mode_change'
 
         if (isRetrigger) {
           retriggerLastUserMessage(value)
@@ -5304,7 +5414,8 @@ function Chat() {
 
               // Use processed content for immediate send
               const inputToSend = { content: contentToSend }
-              // Clear local input immediately after sending
+              // Keep an in-memory history of raw user input, then clear the composer.
+              recordSentMessage(localInputValue)
               clearLocalInput()
 
               // Dispatch a single sendMessage with repeatNum set to value.
@@ -5343,18 +5454,14 @@ function Chat() {
                   // Note: Success case is handled in chatActions when user_message chunk arrives
                   dispatch(chatSliceActions.optimisticMessageCleared())
                   console.error('Failed to send message:', error)
-                  // Clearing the optimistic row is right (nothing was persisted) but on its own
-                  // it deletes the user's writing. Record a classified bubble so the
-                  // disappearance has a stated cause, then give the RAW typed text back to the
-                  // composer — not `contentToSend`, which has file mentions and IDE context
-                  // expanded into it. A deliberate cancel is exempt: the user meant that.
-                  const envelope = recordLocalChatError(error, {
+                  // Clearing the optimistic row is right when nothing was persisted. Keep the
+                  // composer clear; the raw input remains available through sent-message history.
+                  recordLocalChatError(error, {
                     phase: 'open',
                     conversationId: currentConversationId,
                     parentMessageId: parentForSend,
                     streamId,
                   })
-                  if (envelope?.code !== 'cancelled') restoreFailedSendText(localInputValue)
                 })
             }
 
@@ -5480,6 +5587,8 @@ function Chat() {
     },
     [
       canSendLocal,
+      streamState.active,
+      streamState.id,
       currentConversationId,
       selectedPath,
       think,
@@ -5516,7 +5625,6 @@ function Chat() {
       composerImageDraftDataUrls,
       retriggerLastUserMessage,
       recordLocalChatError,
-      restoreFailedSendText,
     ]
   )
 
@@ -5567,7 +5675,7 @@ function Chat() {
         }
         case 'switch_mode': {
           // The only mode switch an error can ask for: the run needed write access.
-          dispatch(chatSliceActions.operationModeSet('execute'))
+          handleOperationModeChange('execute')
           dismissChatError(record)
           return
         }
@@ -5614,6 +5722,7 @@ function Chat() {
     [
       dismissChatError,
       dispatch,
+      handleOperationModeChange,
       handleManualCompactifyCommand,
       multiReplyCount,
       navigate,
@@ -5696,6 +5805,7 @@ function Chat() {
 
       const streamId = generateStreamId('branch')
       setPendingViewStreamId(streamId)
+      recordSentMessage(newContent)
 
       dispatch(
         editMessageWithBranching({
@@ -5720,16 +5830,13 @@ function Chat() {
           // Clear optimistic branch message on error
           dispatch(chatSliceActions.optimisticBranchMessageCleared())
           console.error('Failed to branch message:', error)
-          // The optimistic row was the only copy of the user's edit — dropping it silently
-          // destroyed their writing. State why the row vanished, then hand the RAW edited text
-          // back to the composer, which is the only place left that can hold it.
-          const envelope = recordLocalChatError(error, {
+          // The branch attempt failed; surface the error without mutating the main composer.
+          recordLocalChatError(error, {
             phase: 'open',
             conversationId: currentConversationId,
             parentMessageId: originalMessage.parent_id ?? null,
             streamId,
           })
-          if (envelope?.code !== 'cancelled') restoreFailedSendText(newContent)
         })
     },
     [
@@ -5748,7 +5855,6 @@ function Chat() {
       clearPendingCwdAnnouncement,
       getBranchImageDraftDataUrls,
       recordLocalChatError,
-      restoreFailedSendText,
     ]
   )
 
@@ -5824,6 +5930,7 @@ function Chat() {
 
       const streamId = generateStreamId('primary')
       setPendingViewStreamId(streamId)
+      recordSentMessage(newContent)
 
       dispatch(
         sendMessage({
@@ -5851,16 +5958,13 @@ function Chat() {
         .catch(error => {
           dispatch(chatSliceActions.optimisticMessageCleared())
           console.error('Failed to send explain-selection message:', error)
-          // Same regression as the main send path: the optimistic row is the only copy of what
-          // the user asked, so clearing it alone erases the question. Explain the failure and
-          // give the raw selection text back.
-          const envelope = recordLocalChatError(error, {
+          // Surface the failure without copying this branch prompt into the main composer.
+          recordLocalChatError(error, {
             phase: 'open',
             conversationId: currentConversationId,
             parentMessageId: parsedId,
             streamId,
           })
-          if (envelope?.code !== 'cancelled') restoreFailedSendText(newContent)
         })
     },
     [
@@ -5880,7 +5984,6 @@ function Chat() {
       withPendingCwdAnnouncement,
       clearPendingCwdAnnouncement,
       recordLocalChatError,
-      restoreFailedSendText,
     ]
   )
 
@@ -7067,13 +7170,9 @@ function Chat() {
                         if (row.kind === 'process_group') {
                           const runId = String(row.id)
                           const isExpanded = expandedProcessMessageRuns.has(runId)
-                          const summaryParts: string[] = []
-                          if (row.toolCount > 0) {
-                            summaryParts.push(`${row.toolCount} tool${row.toolCount === 1 ? '' : 's'}`)
-                          }
-                          if (row.reasoningCount > 0) {
-                            summaryParts.push(`${row.reasoningCount} reasoning`)
-                          }
+                          const summary = row.toolCount > 0
+                            ? `${row.toolCount} tool${row.toolCount === 1 ? '' : 's'}`
+                            : undefined
 
                           return (
                             <VirtualizedRowContainer
@@ -7090,8 +7189,7 @@ function Chat() {
                               >
                                 <DisclosureRow
                                   label='Agent steps'
-                                  meta={String(row.messages.length)}
-                                  summary={summaryParts.join(' · ')}
+                                  summary={summary}
                                   expanded={isExpanded}
                                   onToggle={() => toggleProcessMessageRun(runId)}
                                   controlsId={`message-group-${runId}-panel`}
@@ -7186,6 +7284,24 @@ function Chat() {
                         }
 
                         const msg = row.message
+                        if (msg.note === AUTO_COMPACTION_NOTE) {
+                          return (
+                            <VirtualizedRowContainer
+                              key={renderRow.key}
+                              id={`message-${msg.id}`}
+                              index={virtualRow.index}
+                              start={virtualRow.start}
+                              measureElement={virtualizer.measureElement}
+                              className='z-0'
+                            >
+                              <SummarisedMessage
+                                customTheme={customTheme}
+                                customThemeEnabled={customThemeEnabled}
+                                isDarkMode={isDarkMode}
+                              />
+                            </VirtualizedRowContainer>
+                          )
+                        }
                         const { contentBlocks } =
                           parsedMessageDataById.get(msg.id) ?? EMPTY_PARSED_MESSAGE_DATA
                         const previousRenderRow = virtualRow.index > 0 ? virtualRows[virtualRow.index - 1] : null
@@ -7202,6 +7318,15 @@ function Chat() {
                             : contentBlocks
                         const assistantContainerClassName = assistantContainerClassByMessageId.get(String(msg.id))
 
+                        const modeMeta = parseMessageMeta(msg.meta)
+                        if (modeMeta?.kind === 'operation_mode_change' && (modeMeta.mode === 'plan' || modeMeta.mode === 'execute')) {
+                          return (
+                            <VirtualizedRowContainer key={renderRow.key} id={`message-${msg.id}`}
+                              index={virtualRow.index} start={virtualRow.start} measureElement={virtualizer.measureElement} className='z-0'>
+                              <OperationModeNotice mode={modeMeta.mode} initial={!modeMeta.previousMode} />
+                            </VirtualizedRowContainer>
+                          )
+                        }
                         if (isContextInjectionMessage(msg)) {
                           // Auto-loaded instruction files (AGENTS.md / CLAUDE.md, rules, MEMORY.md):
                           // a persisted user row the model reads in full. People get one collapsed line.
@@ -7676,6 +7801,14 @@ function Chat() {
                 </div>
               )}
 
+              {queuedMessages && queuedMessages.conversationId === currentConversationId &&
+                (streamState.active || (modeLineageId != null && queuedMessages.lineageId === modeLineageId) ||
+                  (queueBranchAnchor != null && selectedPath.includes(queueBranchAnchor))) && (
+                <QueuedMessages items={queuedMessages.items}
+                  onRestore={restoreFailedSendText}
+                  onCancel={requestId => dispatch(cancelQueuedMessage({ conversationId: currentConversationId!,
+                    streamId: queuedMessages.streamId, requestId })).unwrap()} />
+              )}
               {/* Textarea with shortcut hint */}
               <div className=''>
                 <ChatInputController
@@ -7684,6 +7817,7 @@ function Chat() {
                   initialValue={messageInput.content}
                   onHasTextChange={setHasLocalInput}
                   onSubmit={handleComposerSubmit}
+                  onToggleOperationMode={handleToggleOperationMode}
                   onBlurPersist={handleComposerBlurPersist}
                   slashCommands={composerSlashCommands}
                   onSlashCommandSelect={handleComposerSlashCommandSelect}
@@ -8143,7 +8277,8 @@ function Chat() {
                           <Button
                             variant='outline2'
                             size='medium'
-                            onClick={() => dispatch(chatSliceActions.operationModeToggled())}
+                            onClick={handleToggleOperationMode}
+                            disabled={Boolean(modeChange)}
                             className={
                               operationMode === 'plan'
                                 ? 'text-fuchsia-700 dark:text-fuchsia-300 bg-blue-50 dark:bg-blue-900/30 hover:bg-blue-100 dark:hover:bg-white/5'
@@ -8164,7 +8299,7 @@ function Chat() {
                             <i
                               className={`bx ${operationMode === 'plan' ? 'bx-clipboard' : 'bx-code-block'} mr-1 pb-0.5`}
                             ></i>
-                            {operationMode === 'plan' ? 'Chat' : 'Agent'}
+                            {modeChange ? `Switching to ${modeChange.mode === 'plan' ? 'Chat' : 'Agent'}…` : operationMode === 'plan' ? 'Chat' : 'Agent'}
                           </Button>
                         </>
                       )}
@@ -8201,6 +8336,14 @@ function Chat() {
                       <path d='m21.44 11.05-9.19 9.19a6 6 0 0 1-8.49-8.49l8.57-8.57A4 4 0 1 1 18 8.84l-8.59 8.51a2 2 0 0 1-2.83-2.83l8.49-8.48' />
                     </svg>
                   </button>
+                  {streamState.active && hasLocalInput && (
+                    <button type='button' onClick={() => handleSend(1)} disabled={!canSendLocal}
+                      title='Queue message' aria-label='Queue message'
+                      className='rounded-full px-3 py-2 text-xs bg-black/5 dark:bg-white/10 disabled:opacity-40 focus-visible:outline focus-visible:outline-2'
+                      style={customThemeEnabled ? composerToggleActiveStyle : undefined}>
+                      {queueSubmitting ? 'Queueing…' : 'Queue'}
+                    </button>
+                  )}
                   {!currentConversationId ? (
                     <span className='text-xs text-neutral-400 dark:text-neutral-500 px-2'>Creating...</span>
                   ) : showGenerationLoadingAnimation ? (

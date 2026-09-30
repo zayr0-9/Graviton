@@ -92,6 +92,9 @@ export function applyStreamProjectionPolicy(
   action: ProjectedAction,
   policy: StreamProjectionPolicy
 ): ProjectedAction {
+  if (action.type === chatSliceActions.queuedMessageInserted.type) {
+    return { ...action, payload: { ...(action.payload as object), updatePath: policy.updatePath } }
+  }
   if (action.type !== chatSliceActions.streamCompleted.type) return action
   const payload = action.payload as { streamId?: string; messageId?: MessageId } | undefined
   if (!payload || payload.streamId !== policy.streamId) return action
@@ -276,6 +279,23 @@ export function projectServerEvent(event: ServerStreamEvent, ctx: ProjectionCont
               }
             : {}),
         } as any),
+      ]
+    }
+
+    case 'message_queue_updated':
+      return [chatSliceActions.messageQueueUpdated(event.snapshot)]
+    case 'queued_user_message_persisted': {
+      const message = normalizeServerMessage(event.message)
+      return [chatSliceActions.messageAdded(message), chatSliceActions.queuedMessageInserted({ message, streamId })]
+    }
+    case 'operation_mode_decisions_cleared': {
+      return [chatSliceActions.operationModeDecisionsCleared({ streamId, toolCallIds: event.toolCallIds })]
+    }
+    case 'operation_mode_changed': {
+      const message = normalizeServerMessage(event.message)
+      return [
+        chatSliceActions.messageAdded(message),
+        chatSliceActions.operationModeNotificationReceived({ message, mode: event.mode, streamId }),
       ]
     }
 

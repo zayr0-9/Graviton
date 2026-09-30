@@ -128,11 +128,15 @@ const getToolPayloadStatus = (
   return fallbackIsError === false ? { label: 'ok', tone: 'success' } : null
 }
 
-const toneForGroup = (hasResults: boolean, hasError: boolean): DisclosureTone =>
-  hasError ? 'error' : hasResults ? 'success' : 'running'
+// The server persists this placeholder before a tool has a final result. Presentation only:
+// retain its is_error flag and content for persistence and model context.
+const isIncompleteToolResult = (result: { content: unknown }): boolean =>
+  result.content === 'Tool execution did not complete.'
 
 const toolNameClassForTone = (tone: DisclosureTone): string =>
-  tone === 'error' ? TOOL_NAME_ERROR_CLASS : tone === 'running' ? TOOL_NAME_RUNNING_CLASS : TOOL_NAME_SUCCESS_CLASS
+  tone === 'warning'
+    ? 'text-amber-700 dark:text-amber-400'
+    : tone === 'error' ? TOOL_NAME_ERROR_CLASS : tone === 'running' ? TOOL_NAME_RUNNING_CLASS : TOOL_NAME_SUCCESS_CLASS
 
 const ToolName: React.FC<{ name: string; tone: DisclosureTone }> = ({ name, tone }) => (
   <span className={`${DISCLOSURE_LABEL_CLASS} ${toolNameClassForTone(tone)}`}>{name}</span>
@@ -172,8 +176,9 @@ export const ToolCallGroupCard: React.FC<ToolCallGroupCardProps> = ({
   const mcpServerName = parsedMcp?.serverName
   const hasResults = group.results.length > 0
   const resultSummary = hasResults ? formatToolResultSummary(group.results[0].content) : null
-  const hasError = group.results.some(r => r.is_error) || resultSummary === 'failure'
-  const tone = toneForGroup(hasResults, hasError)
+  const hasIncompleteResult = group.results.some(isIncompleteToolResult)
+  const hasError = group.results.some(r => r.is_error && !isIncompleteToolResult(r)) || resultSummary === 'failure'
+  const tone: DisclosureTone = hasError ? 'error' : hasIncompleteResult ? 'warning' : hasResults ? 'success' : 'running'
   const panelId = `${toggleKey}-panel`
 
   const viewerPill = (entryKey: string) => (
@@ -217,7 +222,7 @@ export const ToolCallGroupCard: React.FC<ToolCallGroupCardProps> = ({
     return (
       <div className='min-w-0 max-w-full' style={wrapperStyle} data-chat-block='tool'>
         <div className={STATIC_ROW_CLASS}>
-          <ToolName name={rawName || 'html_renderer'} tone={hasResults ? 'success' : 'running'} />
+          <ToolName name={rawName || 'html_renderer'} tone={hasIncompleteResult ? tone : hasResults ? 'success' : 'running'} />
           <span className='min-w-0 flex-1' />
           {viewerPill(htmlPreviewKey)}
         </div>
@@ -268,7 +273,7 @@ export const ToolCallGroupCard: React.FC<ToolCallGroupCardProps> = ({
     return (
       <div className='min-w-0 max-w-full' style={wrapperStyle} data-chat-block='tool'>
         <div className={STATIC_ROW_CLASS}>
-          <ToolName name={rawName || 'internalLink'} tone={linkFailed ? 'error' : 'success'} />
+          <ToolName name={rawName || 'internalLink'} tone={hasIncompleteResult ? tone : linkFailed ? 'error' : 'success'} />
           <span className='min-w-0 flex-1' />
           <button
             type='button'
@@ -320,7 +325,7 @@ export const ToolCallGroupCard: React.FC<ToolCallGroupCardProps> = ({
       return (
         <div className='min-w-0 max-w-full' style={wrapperStyle} data-chat-block='tool'>
           <div className={STATIC_ROW_CLASS}>
-            <ToolName name={rawName || 'mcp_app'} tone={latestResult?.is_error ? 'error' : latestResult ? 'success' : 'running'} />
+            <ToolName name={rawName || 'mcp_app'} tone={hasIncompleteResult ? tone : latestResult?.is_error ? 'error' : latestResult ? 'success' : 'running'} />
             <Badge tone='success'>MCP App</Badge>
             <span className='min-w-0 flex-1' />
             <button
@@ -376,7 +381,7 @@ export const ToolCallGroupCard: React.FC<ToolCallGroupCardProps> = ({
     normalizedName === 'edit_file' || normalizedName === 'editfile' || normalizedName === 'multi_edit'
   if (isEditLikeTool && group.args) {
     const editResult = hasResults ? group.results[0].content : {}
-    const editTone: DisclosureTone = !hasResults
+    const editTone: DisclosureTone = hasIncompleteResult ? tone : !hasResults
       ? 'running'
       : formatToolResultSummary(editResult) === 'success'
         ? 'success'
@@ -547,7 +552,10 @@ export const ToolCallGroupCard: React.FC<ToolCallGroupCardProps> = ({
       )
     }
 
-    const errorTextClass = result.is_error ? 'text-red-600 dark:text-red-400' : ''
+    const isIncomplete = isIncompleteToolResult(result)
+    const errorTextClass = isIncomplete
+      ? 'text-amber-700 dark:text-amber-400'
+      : result.is_error ? 'text-red-600 dark:text-red-400' : ''
     const outputPreview = getGenericToolOutputPreview(result.content)
     if (outputPreview.truncated) {
       return (
@@ -622,7 +630,9 @@ export const ToolCallGroupCard: React.FC<ToolCallGroupCardProps> = ({
     }
 
     const outputRecord = parseToolJsonObject(result.content)
-    const outputStatus = getToolPayloadStatus(outputRecord, result.is_error)
+    const outputStatus = isIncomplete
+      ? { label: 'in progress', tone: 'warning' as const }
+      : getToolPayloadStatus(outputRecord, result.is_error)
     return (
       <div key={resultKey} className='min-w-0 max-w-full'>
         <SectionLabel label='output'>{group.results.length > 1 && <Badge>{`result ${resultIdx + 1}`}</Badge>}</SectionLabel>

@@ -31,6 +31,7 @@ import { convContextSet, systemPromptSet } from '../conversations/conversationSl
 import type { Conversation } from '../conversations/conversationTypes'
 import { selectSelectedProject } from '../projects/projectSelectors'
 import { chatSliceActions } from './chatSlice'
+import { selectOperationMode } from './chatSelectors'
 import { resolveAttachmentUrlFromOrigins } from './attachmentUrl'
 import {
   Attachment,
@@ -45,7 +46,7 @@ import {
 } from './chatTypes'
 // OpenAI OAuth is handled internally by OpenAIChatGPT module
 import { loadAutoCompactionEnabled } from '../../helpers/chatUiSettingsStorage'
-import { getAgentModePrompt, getActiveChatModePrompt, getSubagentModePrompt } from '../../helpers/operationModePromptStorage'
+import { getCombinedOperationModePrompt, getSubagentModePrompt } from '../../helpers/operationModePromptStorage'
 import { loadPlanModeResponseSettings } from '../../helpers/planModeResponseSettingsStorage'
 import { getSubagentReasoningEffort } from '../../helpers/subagentToolSettings'
 import { loadLongTermMemoryContextEnabled } from '../../helpers/longTermMemorySettingsStorage'
@@ -79,7 +80,6 @@ import {
   setMcpTools,
   updateToolEnabled as updateToolEnabledInDefinitions,
 } from './toolDefinitions'
-import { type ChatHookProjectContext } from './chatHookClient'
 import { type PlanClarificationAnswer } from './planToolTypes'
 import { applyStreamProjectionPolicy, normalizeServerMessage } from './sseProjection'
 import { abortSubagentControllers } from './subagentClient'
@@ -175,13 +175,11 @@ const refreshHeimdallTreeFromState = (getState: () => RootState, dispatch: (acti
 
 /**
  * Renderer-local operation-mode settings are not visible to the Electron main process.
- * Send the selected Plan, Agent, and subagent baselines separately so the server can
- * assemble the final prompt without duplicating bundled defaults.
+ * Send the stable combined Chat/Agent baseline plus the subagent baseline so the
+ * server can assemble the final prompt without duplicating bundled defaults.
  */
-const buildOperationModePromptRequestParams = (operationMode: 'plan' | 'execute') => ({
-  operationModePrompt:
-    operationMode === 'plan' ? getActiveChatModePrompt().prompt : getAgentModePrompt().prompt,
-  agentModePrompt: getAgentModePrompt().prompt,
+const buildOperationModePromptRequestParams = (_operationMode: 'plan' | 'execute') => ({
+  operationModePrompt: getCombinedOperationModePrompt(),
   subagentModePrompt: getSubagentModePrompt().prompt,
   planModeVerbosity: loadPlanModeResponseSettings().verbosity,
 })
@@ -600,55 +598,6 @@ const resolveOpenRouterTemperature = (providerSlug: string): number | undefined 
 }
 
 
-type MemoryContexts = {
-  longTermMemory: string | null
-  recentMemory: string | null
-  projectMemory: string | null
-  projectName: string | null
-}
-
-const maybeLoadMemoryContexts = async (project?: ChatHookProjectContext | null): Promise<MemoryContexts> => {
-  const emptyMemoryContexts: MemoryContexts = { longTermMemory: null, recentMemory: null, projectMemory: null, projectName: null }
-  // Memory files are server-owned: any local-server runtime (Electron or the
-  // standalone browser target) can load them.
-  const isLocalEngineMode = isLocalServerRuntime() || (typeof __IS_ELECTRON__ !== 'undefined' && __IS_ELECTRON__)
-
-  if (!isLocalEngineMode || !loadLongTermMemoryContextEnabled()) return emptyMemoryContexts
-
-  try {
-    const params = new URLSearchParams({ maxChars: '10000', recentMaxChars: '10000', projectMaxChars: '12000' })
-    if (project?.projectId) params.set('projectId', project.projectId)
-    if (project?.projectName) params.set('projectName', project.projectName)
-    const result = await localApi.get<{
-      success?: boolean
-      memory?: string
-      recentMemory?: string
-      projectMemory?: string
-      projectName?: string | null
-    }>(`/memory/context?${params.toString()}`)
-    const longTermMemory = typeof result?.memory === 'string' ? result.memory.trim() : ''
-    const recentMemory = typeof result?.recentMemory === 'string' ? result.recentMemory.trim() : ''
-    const projectMemory = typeof result?.projectMemory === 'string' ? result.projectMemory.trim() : ''
-    return {
-      longTermMemory: longTermMemory || null,
-      recentMemory: recentMemory || null,
-      projectMemory: projectMemory || null,
-      projectName: typeof result?.projectName === 'string' && result.projectName.trim() ? result.projectName.trim() : project?.projectName ?? null,
-    }
-  } catch (error) {
-    console.warn('[longTermMemory] Failed to load memory context:', error)
-    return emptyMemoryContexts
-  }
-}
-
-
-const buildProjectContextForMemory = (project: { id?: string | null; name?: string | null } | null | undefined): ChatHookProjectContext | null => {
-  if (!project?.id && !project?.name) return null
-  return {
-    projectId: project?.id != null ? String(project.id) : null,
-    projectName: typeof project?.name === 'string' ? project.name : null,
-  }
-}
 
 
 export const AUTO_COMPACTION_NOTE = '__auto_compaction_summary__'
@@ -1235,7 +1184,7 @@ export const sendMessage = createAsyncThunk<
 
       // Combine mode, user default, project, and conversation system prompts.
       const selectedProject = selectSelectedProject(state)
-      const operationModeAtSend = requestedOperationMode ?? state.chat.operationMode
+      const operationModeAtSend = requestedOperationMode ?? selectOperationMode(state)
       const projectContext = selectedProject?.context || null
       const conversationContextSource = state.conversations.convContext || null
       // Get selected files for chat captured before send start so UI can clear immediately
@@ -1668,11 +1617,9 @@ export const editMessageWithBranching = createAsyncThunk<
 
       // Combine mode, user default, project, and conversation system prompts.
       const selectedProject = selectSelectedProject(state)
-      const operationModeAtSend = requestedOperationMode ?? state.chat.operationMode
+      const operationModeAtSend = requestedOperationMode ?? selectOperationMode(state)
       const projectContext = selectedProject?.context || null
       const conversationContextSource = state.conversations.convContext || null
-      const projectMemoryContext = buildProjectContextForMemory(selectedProject)
-      const memoryContexts = await maybeLoadMemoryContexts(projectMemoryContext)
 
       // Gather image drafts (new images being added) captured before send start.
       const drafts = preSendDrafts
@@ -1737,9 +1684,6 @@ export const editMessageWithBranching = createAsyncThunk<
       promptAndContextTokens += safeEstimateTokenCount(selectedProject?.context)
       promptAndContextTokens += safeEstimateTokenCount(state.conversations.systemPrompt)
       promptAndContextTokens += safeEstimateTokenCount(state.conversations.convContext)
-      promptAndContextTokens += safeEstimateTokenCount(memoryContexts.longTermMemory)
-      promptAndContextTokens += safeEstimateTokenCount(memoryContexts.recentMemory)
-      promptAndContextTokens += safeEstimateTokenCount(memoryContexts.projectMemory)
 
       let messageTokens = 0
       currentPathMessages.forEach(message => {
@@ -2102,7 +2046,7 @@ export const sendMessageToBranch = createAsyncThunk<
       // Use React Query cache as fallback for storage mode detection (handles local conversations not yet in Redux)
       const storageMode = conversationMeta?.storage_mode || getStorageModeFromCache(extra.queryClient, conversationId)
       // Keep cwd for tool execution context only (do not inject cwd into system prompt)
-      const operationModeAtSend = requestedOperationMode ?? state.chat.operationMode
+      const operationModeAtSend = requestedOperationMode ?? selectOperationMode(state)
       const payloadCwd = typeof cwd === 'string' ? cwd.trim() : (cwd ?? null)
       const effectiveToolRootPath = payloadCwd || conversationMeta?.cwd || state.ideContext.workspace?.rootPath || null
 
@@ -2922,6 +2866,7 @@ export const resumeInFlightStreams = createAsyncThunk<
           envelope: reattachFailure,
         })
       }
+      void dispatch(loadMessageQueue({ conversationId: rec.conversationId, streamId: rec.streamId }))
       if (result.gone) dispatch(chatSliceActions.streamingAborted({ streamId: rec.streamId }))
       if (result.gone || result.terminal) removeInflightStream(rec.streamId)
     } catch (error) {
@@ -3287,6 +3232,122 @@ const settleDecisionResume = (
   if (typeof outcome.status === 'number' && outcome.status < 500) return { closeDialog: true }
   return { closeDialog: false }
 }
+
+export const loadMessageQueue = createAsyncThunk<void, { conversationId: string; streamId: string }, { state: RootState }>(
+  'chat/loadMessageQueue', async ({ conversationId, streamId }, { dispatch }) => {
+    const url = await buildLocalApiUrl(`/conversations/${encodeURIComponent(conversationId)}/streams/${encodeURIComponent(streamId)}/queue`)
+    const response = await fetch(url)
+    if (response.ok) dispatch(chatSliceActions.messageQueueUpdated(await response.json()))
+  }
+)
+
+export const cancelQueuedMessage = createAsyncThunk<void, { conversationId: string; streamId: string; requestId: string }, { state: RootState }>(
+  'chat/cancelQueuedMessage', async ({ conversationId, streamId, requestId }, { dispatch }) => {
+    const url = await buildLocalApiUrl(`/conversations/${encodeURIComponent(conversationId)}/streams/${encodeURIComponent(streamId)}/queue/${encodeURIComponent(requestId)}`)
+    const response = await fetch(url, { method: 'DELETE' })
+    const body = await response.json()
+    if (!response.ok) throw new Error(body.error || 'Could not cancel queued message')
+    dispatch(chatSliceActions.messageQueueUpdated(body))
+  }
+)
+
+export const enqueueUserMessage = createAsyncThunk<void, {
+  conversationId: string; streamId: string; content: string; requestId: string
+  includeGlobalComposerContext?: boolean; updatePath?: boolean
+}, { state: RootState; extra: ThunkExtraArgument }>('chat/enqueueUserMessage', async (params, { dispatch, getState }) => {
+  const drafts = params.includeGlobalComposerContext === false ? [] : getDraftsForTarget(getState(), { kind: 'composer' })
+  const attachments = drafts.map(draft => ({ ...draft }))
+  const attachmentsBase64 = await prepareLocalAttachmentsForModel(attachments.length ? attachments : null, 'queued message attachments')
+  const url = await buildLocalApiUrl(`/conversations/${encodeURIComponent(params.conversationId)}/streams/${encodeURIComponent(params.streamId)}/queue`)
+  const body = JSON.stringify({ requestId: params.requestId, content: params.content, attachmentsBase64 })
+  // A lost HTTP acknowledgement is safe to retry with the SAME immutable id/payload.
+  let response: Response
+  try {
+    response = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body })
+  } catch {
+    response = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body })
+  }
+  const result = await response.json()
+  if (!response.ok) throw new Error(result.error || 'Could not queue message')
+  if (result.snapshot) dispatch(chatSliceActions.messageQueueUpdated(result.snapshot))
+  // Do not erase images added while attachment preparation/the POST was pending.
+  for (const draft of drafts) {
+    const current = getDraftsForTarget(getState(), { kind: 'composer' })
+    const index = current.findIndex(item => item === draft || (item.dataUrl === draft.dataUrl && item.name === draft.name))
+    if (index >= 0) dispatch(chatSliceActions.imageDraftRemoved({ index, target: { kind: 'composer' } }))
+  }
+  if ((result.restarted || result.streamId !== params.streamId) && result.streamId) {
+    addInflightStream({ streamId: result.streamId, conversationId: params.conversationId,
+      streamType: params.updatePath === false ? 'branch' : 'primary',
+      parentMessageId: result.parentId ?? null, updatePath: params.updatePath !== false })
+    void dispatch(resumeInFlightStreams({ conversationId: params.conversationId }))
+  }
+})
+
+export const changeOperationMode = createAsyncThunk<
+  { status: 'pending' | 'applied'; mode: 'plan' | 'execute' },
+  {
+    mode: 'plan' | 'execute'
+    conversationId?: ConversationId | null
+    streamId?: string | null
+    parentId?: MessageId | null
+    lineageId?: LineageId | null
+  },
+  { state: RootState; extra: ThunkExtraArgument }
+>('chat/changeOperationMode', async (params, { dispatch, getState, requestId, extra }) => {
+  const { mode, streamId, parentId, lineageId } = params
+  const conversationId = params.conversationId ?? getState().chat.conversation.currentConversationId
+  if (!conversationId) {
+    // A new, unsaved conversation will receive its initial mode on first send.
+    dispatch(chatSliceActions.operationModeSet(mode))
+    return { status: 'applied', mode }
+  }
+  if (!streamId) {
+    const selectedParent = parentId === undefined ? getState().chat.conversation.currentPath.at(-1) ?? null : parentId
+    dispatch(chatSliceActions.operationModeDraftSet({ conversationId, parentId: selectedParent, mode }))
+    return { status: 'applied', mode }
+  }
+  const existing = getState().chat.operationModeChanges?.[String(conversationId)]
+  if (existing) return { status: 'pending', mode: existing.mode }
+  dispatch(chatSliceActions.operationModeChangeRequested({ conversationId, mode, requestId, streamId }))
+  try {
+    const url = await buildLocalApiUrl(`/conversations/${encodeURIComponent(conversationId)}/operation-mode`)
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ mode, streamId, parentId: parentId ?? null, lineageId, requestId }),
+    })
+    const result = await response.json()
+    if (!response.ok) throw new Error(result.error || `Mode change rejected (HTTP ${response.status})`)
+    if (result.status === 'applied') {
+      if (result.message) {
+        const message = normalizeServerMessage(result.message)
+        dispatch(chatSliceActions.messageAdded(message))
+        dispatch(chatSliceActions.operationModeNotificationReceived({ message, mode, streamId }))
+        refreshHeimdallTreeFromState(getState, dispatch)
+      }
+      dispatch(chatSliceActions.operationModeChangeFailed({ conversationId, requestId }))
+      if (String(getState().chat.conversation.currentConversationId) === String(conversationId)) {
+        dispatch(chatSliceActions.operationModeSet(mode))
+      }
+      // The server owns persistence; refresh cached snapshots, not a second write.
+      void extra.queryClient?.invalidateQueries({ queryKey: conversationQueryKeys.messages(conversationId) })
+      return { status: 'applied', mode }
+    }
+    dispatch(chatSliceActions.operationModeChangeAccepted({ conversationId, mode, requestId }))
+    return { status: 'pending', mode }
+  } catch (error) {
+    dispatch(chatSliceActions.operationModeChangeFailed({ conversationId, requestId }))
+    recordLocalChatError(dispatch, error, {
+      conversationId,
+      phase: 'resume',
+      streamId: streamId ?? undefined,
+      parentMessageId: parentId ?? null,
+      lineageId: lineageId ?? null,
+    })
+    throw error
+  }
+})
 
 export const respondToToolPermission = createAsyncThunk<
   void,

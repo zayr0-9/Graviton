@@ -143,6 +143,19 @@ export interface ToolCallRenderGroup {
   anchorIndex: number
 }
 
+/** Interactive/visual tool surfaces must remain visible instead of being folded into Agent steps. */
+export const isExcludedFromProcessRunGrouping = (name?: string, args?: Record<string, any> | null): boolean => {
+  const normalizedName = String(name || '').trim().toLowerCase()
+  if (normalizedName.startsWith('mcp__') || normalizedName === 'html_renderer') return true
+
+  if (normalizedName === 'plan_md') {
+    const action = String(args?.action || '').trim().toLowerCase()
+    return action === 'display' || action === 'visualize' || action === 'visualise' || action === 'clarify'
+  }
+
+  return false
+}
+
 // Helper function to convert contentBlocks to editable text
 export const contentBlocksToEditableText = (blocks: ContentBlock[] | undefined): string => {
   if (!blocks || blocks.length === 0) return ''

@@ -59,7 +59,7 @@ export interface YggServerConfig {
   resourcesDir: string
   /**
    * Directory holding the operation-mode prompt markdown files
-   * (default_chat_mode.md, default_agent_mode.md, default_subagent_mode.md).
+   * (default_operation_modes.md, default_subagent_mode.md).
    * Optional: when unset, the legacy source-tree candidates are used.
    */
   promptsDir?: string

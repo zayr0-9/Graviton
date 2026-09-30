@@ -39,9 +39,9 @@ export interface BuildServerLoopRequestParams {
   /** branch: the message branched FROM; edit: the message being edited. Required for those ops. */
   messageId?: string | null
   operationMode: 'plan' | 'execute'
-  /** Selected baseline for this request's current operation mode. */
+  /** Stable combined Chat/Agent baseline (mode is announced in transcript messages). */
   operationModePrompt?: string | null
-  /** Agent baseline retained for a possible Plan-to-Agent upgrade. */
+  /** Legacy request field; new clients send only the combined operationModePrompt. */
   agentModePrompt?: string | null
   /** Baseline inherited by server-owned subagent tool calls. */
   subagentModePrompt?: string | null

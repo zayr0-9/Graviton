@@ -20,12 +20,6 @@
             "command": "python3 .ygg/hooks/root_note_stop.py",
             "timeoutMs": 60000,
             "executionMode": "async"
-          },
-          {
-            "type": "command",
-            "command": "python3 .ygg/hooks/long_term_memory_stop.py",
-            "timeoutMs": 60000,
-            "executionMode": "async"
           }
         ]
       }

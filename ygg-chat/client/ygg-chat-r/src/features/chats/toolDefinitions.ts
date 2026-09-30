@@ -271,7 +271,6 @@ export const getToolsForAI = (): ToolDefinition[] => {
 const OPENAI_LOCALLY_SUPPORTED_BUILTIN_TOOL_NAMES = new Set<string>([
   'todo_list',
   'plan_md',
-  'memory_manage',
   'theme_manager',
   'fetch_notes',
   'fetch_chats',

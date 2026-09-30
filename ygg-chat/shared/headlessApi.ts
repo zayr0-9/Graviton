@@ -187,6 +187,8 @@ export type HeadlessSubagentStreamEvent =
     }
 
 export type HeadlessStreamEvent =
+  | { type: 'message_queue_updated'; snapshot: import('./queuedMessages.js').MessageQueueSnapshot }
+  | { type: 'queued_user_message_persisted'; message: any; requestId: string; streamId: string; lineageId: string | null }
   | {
       type: 'started'
       operation: HeadlessChatOperation
@@ -198,6 +200,8 @@ export type HeadlessStreamEvent =
       lineageId?: string | null
     }
   | { type: 'user_message_persisted'; message: any; lineageId?: string | null }
+  | { type: 'operation_mode_changed'; message: any; mode: 'plan' | 'execute'; streamId?: string | null; revision?: number }
+  | { type: 'operation_mode_decisions_cleared'; streamId: string; toolCallIds: string[] }
   /**
    * A persisted `meta.kind === 'context_injection'` user row written mid-run (the
    * post-compaction re-injection). Renderers add it to the tree without moving the

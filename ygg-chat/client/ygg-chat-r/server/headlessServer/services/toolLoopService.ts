@@ -34,6 +34,7 @@ import {
 import { buildChatErrorEnvelope, type ChatErrorCode } from '../../../../../shared/chatErrors.js'
 import { trimHistoryToLatestCompaction } from './compactionService.js'
 import { assertToolAllowedForOperationMode, requiresAgentMode } from '../../../../../shared/operationModeToolPolicy.js'
+import type { OperationModeControl } from './operationModeControl.js'
 import {
   extractOpenAIContextUsageFromBlocks,
   openAIModelContextLength,
@@ -201,7 +202,11 @@ export interface ToolLoopRunInput {
   streamId?: string | null
   rootPath?: string | null
   operationMode?: 'plan' | 'execute'
-  /** Agent-mode prompt selected by the orchestrator if this run is upgraded mid-turn. */
+  modeControl?: OperationModeControl
+  flushOperationMode?: (parentId: string | null, history: any[]) => any[]
+  flushQueuedMessages?: (parentId: string | null, history: any[]) => Promise<{ rows: any[]; delivered: number }>
+  closeInputQueue?: () => boolean
+  /** @deprecated Mode switches no longer replace the system prompt. */
   agentSystemPrompt?: string | null
   /** Server-owned prompt to switch the current Plan-mode run to Agent mode. */
   requestOperationModeUpgrade?: (toolCall: ProviderToolCall) => Promise<boolean>
@@ -1233,6 +1238,14 @@ export class ToolLoopService {
     }
     let anyToolsExecuted = false
     let activeOperationMode = input.operationMode ?? 'execute'
+    const flushBoundaryInputs = async () => {
+      const result = input.flushQueuedMessages
+        ? await input.flushQueuedMessages(currentParentId, history)
+        : { rows: input.flushOperationMode?.(currentParentId, history) ?? [], delivered: 0 }
+      for (const row of result.rows) { history.push(row); currentParentId = row.id }
+      if (result.delivered) currentUserContent = '' // already present as first-class history rows
+      return result.delivered
+    }
     // Phase 3: true iff the most recent iteration was a natural stop (no tool calls)
     // that a Stop hook forced to continue. Used only at the max-turns boundary to
     // finalize gracefully with the valid persisted answer (parity with the renderer,
@@ -1242,6 +1255,11 @@ export class ToolLoopService {
     for (let turn = 1; turn <= maxTurns; turn++) {
       input.signal?.throwIfAborted()
       stopHookForcedContinue = false
+      if (input.flushQueuedMessages && turn > 1) await flushBoundaryInputs()
+      else {
+        const rows = input.flushOperationMode?.(currentParentId, history) ?? []
+        for (const row of rows) { history.push(row); currentParentId = row.id }
+      }
 
       // Phase 3: fold accumulated hook context into this turn's system prompt, then
       // clear the buffer (parity with the renderer's per-iteration fold+clear,
@@ -1294,6 +1312,7 @@ export class ToolLoopService {
         }
       }
 
+      const providerModeRevision = input.modeControl?.revision ?? 0
       // Generate the turn, retrying once on an empty response when enabled.
       let output = await this.generateProviderTurn({
         input,
@@ -1396,19 +1415,29 @@ export class ToolLoopService {
           }
         }
 
+        currentParentId = assistantMessage.id
+        const delivered = turn < maxTurns ? await flushBoundaryInputs() : 0
+        if (turn >= maxTurns) {
+          const rows = input.flushOperationMode?.(currentParentId, history) ?? []
+          for (const row of rows) { history.push(row); currentParentId = row.id }
+        }
+        if (delivered) {
+          emit({ type: 'tool_loop', status: 'turn_completed', turn, maxTurns, continued: true })
+          continue
+        }
         const strippedText = stripThinkingWrapper(output.content || '')
 
         // Tools ran but the model gave no visible answer: recover with a summary turn.
         if (!strippedText && robustness?.finalizeOnSilentToolEnd && anyToolsExecuted) {
-          return await this.runFinalizationTurn({
-            input,
-            history,
-            parentId: assistantMessage.id,
-            turnsSoFar: turn,
-            maxTurns,
-            anyToolsExecuted,
-            emit,
+          const finalized = await this.runFinalizationTurn({
+            input, history, parentId: currentParentId, turnsSoFar: turn,
+            maxTurns, anyToolsExecuted, emit,
           })
+          history.push(finalized.finalAssistantMessage)
+          lastAssistantMessage = finalized.finalAssistantMessage
+          currentParentId = finalized.finalAssistantMessage.id
+          if (turn < maxTurns && (await flushBoundaryInputs() || input.closeInputQueue?.() === false)) continue
+          return finalized
         }
 
         // Provider produced nothing and no tools ever ran: a real failure, not fake success.
@@ -1421,6 +1450,7 @@ export class ToolLoopService {
           })
         }
 
+        if (turn < maxTurns && input.closeInputQueue?.() === false) continue
         emit({
           type: 'tool_loop',
           status: 'turn_completed',
@@ -1495,6 +1525,10 @@ export class ToolLoopService {
         const startedAt = Date.now()
 
         try {
+          activeOperationMode = input.modeControl?.mode ?? activeOperationMode
+          // A manual downgrade blocks this already-issued batch without immediately
+          // asking the user to undo their switch. Future model turns can request an upgrade.
+          if (input.modeControl && input.modeControl.revision !== providerModeRevision) input.modeControl.assertCanDispatch(toolCall)
           if (requiresAgentMode(toolCall, activeOperationMode)) {
             const upgraded = await input.requestOperationModeUpgrade?.(toolCall)
             if (!upgraded) {
@@ -1520,11 +1554,13 @@ export class ToolLoopService {
               )
             }
             activeOperationMode = 'execute'
-            input.systemPrompt = input.agentSystemPrompt ?? input.systemPrompt
+            if (input.modeControl) activeOperationMode = input.modeControl.mode
           }
+          input.modeControl?.assertCanDispatch(toolCall)
           assertToolAllowedForOperationModeClassified(toolCall, activeOperationMode)
 
           const executeNested: ToolExecutor = async (nestedCall, nestedContext) => {
+            input.modeControl?.assertCanDispatch(nestedCall)
             const nestedInvocation = input.lineageId && this.toolInvocationRepo
               ? this.toolInvocationRepo.create({
                   conversationId: input.conversationId,
@@ -1885,6 +1921,7 @@ export class ToolLoopService {
         }
       }
 
+      if (turn < maxTurns) await flushBoundaryInputs()
       emit({
         type: 'tool_loop',
         status: 'turn_completed',

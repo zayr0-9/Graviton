@@ -273,15 +273,15 @@ store under `.ygg`. The target is: keep the `.ygg` location, adopt the Claude Co
 
 ### 4.1 Graviton location (current code)
 
-| Item | Path | Source |
+| Item | Path / behavior | Source |
 | --- | --- | --- |
-| Data dir | Electron `app.getPath('userData')`, exported as `YGG_APP_USER_DATA`; `YGG_DATA_DIR` outside Electron | `electron/main.ts:1034`, `server/serverConfig.ts:143` |
-| Memory dir | `<dataDir>/.ygg/memory/` | `server/routes/memoryRoutes.ts:22` |
-| Global memory | `<dataDir>/.ygg/memory/memory.md` | `memoryRoutes.ts:23` |
-| Recent memory | `<dataDir>/.ygg/memory/recent_memory.md` | `memoryRoutes.ts:24` |
-| Project memory | `<dataDir>/.ygg/memory/projects/<sanitized project name>/project_memory.md` | `memoryRoutes.ts:39` |
-| Read caps | `GET /api/memory/context`: `maxChars` default 10,000, `recentMaxChars` default = `maxChars`, `projectMaxChars` default 12,000, all clamped to 100,000. Truncation keeps the **tail** of the file. | `memoryRoutes.ts:180-199` |
-| Injection | Renderer only, `src/features/chats/chatActions.ts:625`. Not ported to the headless loop (`chatHookService.ts:15-18`). | |
+| Data dir | Electron user data; `YGG_DATA_DIR` outside Electron | `server/serverConfig.ts` |
+| Memory directory | `<dataDir>/.ygg/memory/projects/<cwd-or-git-root-slug>/` | `server/context/autoMemory.ts` |
+| Index | `MEMORY.md`, first 200 lines or 25 KB | `readMemoryIndex` |
+| Fact files | Markdown files beside the index, read and edited with ordinary file tools | `buildAutoMemoryPrompt` |
+| Injection | Server-owned launch context and post-compaction reload | `server/context/contextLoader.ts` |
+
+The project-name-based memory routes, `memory_manage` tool, and bundled long-term-memory Stop writer are retired. Existing legacy Markdown data is preserved, but is not loaded automatically. There is no project-ID/name fallback. To migrate, review useful facts into individual Markdown files in the resolved cwd-based directory and add pointers to `MEMORY.md`. Do not rename a large aggregate file to the index: content beyond the index limit is dropped. If several workspaces intentionally share memory, configure `autoMemoryDirectory` for each. Note-summary search/indexing and its root-note hook are separate and remain supported.
 
 Other `.ygg` users for reference: hooks config `<dataDir>/.ygg/settings.json` (`server/hooks/hookStorage.ts:6,157`),
 custom themes `<dataDir>/.ygg/custom-themes` (`electron/main.ts:1041`). Skills live at
@@ -292,12 +292,12 @@ custom themes `<dataDir>/.ygg/custom-themes` (`electron/main.ts:1041`). Skills l
 | Rule | Claude Code | Graviton target |
 | --- | --- | --- |
 | Directory | `~/.claude/projects/<project-slug>/memory/` | `<dataDir>/.ygg/memory/projects/<project-slug>/` |
-| Slug | Derived from the git repo root, so all worktrees and subdirectories of one repo share one directory. Outside git, the project root path. | Same. Derive from the conversation `rootPath` (`chatOrchestrator.ts:626-637`), not from the project **name**. The current name-based slug at `memoryRoutes.ts:25-36` splits memory across renamed projects and merges unrelated projects with one name. |
+| Slug | Derived from the git repo root, so all worktrees and subdirectories of one repo share one directory. Outside git, the project root path. | Derive from the nearest `.git` directory/file above the conversation `rootPath`, falling back to the absolute root path, not the project name or ID. Subdirectories share their nearest repo root; separate worktree roots require an explicit override to share memory. |
 | Slug override | `CLAUDE_CODE_PROJECT_DIR_NAME` (needs `CLAUDE_CONFIG_DIR`) | `YGG_MEMORY_PROJECT_DIR_NAME` (new) |
 | Directory override | `autoMemoryDirectory` setting, absolute or `~/` path, any settings scope | Same key, same value rules, in Graviton settings |
-| Index file | `MEMORY.md`. Loaded at every session start: **first 200 lines or first 25 KB, whichever comes first**. Content beyond is dropped. After a write, warn near the limit and return an error over it. | Same file name and limits. Replace the tail-truncating `maxChars` read with a head read of 200 lines / 25 KB. |
-| Topic files | One file per memory beside the index. **Not** loaded at start. Read on demand. | Same. `memory.md` and `recent_memory.md` become topic files or are folded into `MEMORY.md`. Decide during implementation. |
-| Frontmatter | `type: user \| feedback \| project \| reference` written by the model. `modified: <ISO 8601>` added on every write to a file that already has frontmatter (v2.1.214+). Never adds frontmatter to a file without one. | Same. Add the `modified` stamp in the memory write route. |
+| Index file | `MEMORY.md`. Loaded at every session start: **first 200 lines or first 25 KB, whichever comes first**. Content beyond is dropped. After a write, warn near the limit and return an error over it. | Same file name and read limits. Ordinary file tools write memories; no dedicated memory write route or write-size enforcement. |
+| Topic files | One file per memory beside the index. **Not** loaded at start. Read on demand. | Fact files are read on demand. Legacy aggregate data is preserved on disk, but requires explicit review/migration into fact files and index pointers. |
+| Frontmatter | `type: user \| feedback \| project \| reference` written by the model. `modified: <ISO 8601>` added on every write to a file that already has frontmatter (v2.1.214+). Never adds frontmatter to a file without one. | The model writes frontmatter through ordinary file tools. No dedicated memory write route or automatic `modified` stamp. |
 | Toggles | `autoMemoryEnabled: false` (any scope) or `CLAUDE_CODE_DISABLE_AUTO_MEMORY=1` | `autoMemoryEnabled` setting (exists in the renderer as `loadLongTermMemoryContextEnabled()`) and `YGG_DISABLE_AUTO_MEMORY=1` |
 | Rendering | `Contents of <abs path> (user's auto-memory, persists across conversations):` inside the memory system-reminder, after CLAUDE.md files and rules (**observed**) | Same label, same slot, in the headless loop |
 | Compaction | `MEMORY.md` reloads after compaction | Same |

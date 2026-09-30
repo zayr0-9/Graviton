@@ -23,11 +23,11 @@ describe('buildOperationModeSystemPrompt', () => {
   it('adds concise Plan response style by default', () => {
     const prompt = buildOperationModeSystemPrompt({ operationMode: 'plan', includeCustomToolsPrompt: false })
 
-    expect(prompt).toContain('Agent Prompt: Plan mode')
+    expect(prompt).toContain('Agent Prompt: Chat and Agent modes')
     expect(prompt).toContain('## Plan Response Style')
     expect(prompt).toContain('Use short, concise plans')
-    expect(prompt).toContain('action: "wait"')
-    expect(prompt).toContain('instead of repeatedly polling `status`')
+    expect(prompt).toContain('call `wait` once rather than polling')
+    expect(prompt).toContain('Chat mode (plan)')
   })
 
   it('adds selected Plan response verbosity', () => {
@@ -40,13 +40,13 @@ describe('buildOperationModeSystemPrompt', () => {
     expect(prompt).toContain('Use detailed plans when helpful')
   })
 
-  it('does not add Plan response style in Agent Mode', () => {
+  it('keeps a stable prompt including conditional response style in Agent Mode', () => {
     const prompt = buildOperationModeSystemPrompt({ operationMode: 'execute', includeCustomToolsPrompt: false })
 
-    expect(prompt).toContain('Agent Prompt: Coding mode')
-    expect(prompt).toContain('action: "wait"')
-    expect(prompt).toContain('do not repeatedly poll `status`')
-    expect(prompt).not.toContain('## Plan Response Style')
+    expect(prompt).toContain('Agent Prompt: Chat and Agent modes')
+    expect(prompt).toContain('call `wait` once rather than polling')
+    expect(prompt).toContain('## Plan Response Style (only while Chat mode is active)')
+    expect(prompt).toBe(buildOperationModeSystemPrompt({ operationMode: 'plan', includeCustomToolsPrompt: false }))
   })
 })
 
@@ -151,6 +151,20 @@ describe('operation mode prompt overrides', () => {
 
     expect(getAgentModePrompt().prompt).toBe(getDefaultAgentModePrompt().prompt)
     expect(getSubagentModePrompt().prompt).toBe(getDefaultSubagentModePrompt().prompt)
+  })
+
+  it('preserves custom Chat and Agent sections in the same stable prompt', () => {
+    storage.set('ygg_operation_mode_prompt_settings', JSON.stringify({
+      selectedChatPromptId: 'custom', chatPrompts: [{ id: 'custom', name: 'Custom', prompt: 'Custom Chat instructions' }],
+      agentModePromptOverride: 'Custom Agent instructions',
+    }))
+    const chat = buildOperationModeSystemPrompt({ operationMode: 'plan', includeCustomToolsPrompt: false })
+    const agent = buildOperationModeSystemPrompt({ operationMode: 'execute', includeCustomToolsPrompt: false })
+    expect(chat).toBe(agent)
+    expect(chat).toContain('Custom Chat instructions')
+    expect(chat).toContain('Custom Agent instructions')
+    expect(chat).toContain('applies only while Chat mode is active')
+    expect(chat).toContain('applies only while Agent mode is active')
   })
 
   it('treats blank overrides as resets without disturbing Chat prompt settings', () => {

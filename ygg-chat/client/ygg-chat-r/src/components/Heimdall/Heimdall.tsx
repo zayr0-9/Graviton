@@ -1,5 +1,5 @@
 import { useQueryClient } from '@tanstack/react-query'
-import { isContextInjectionMessage } from '../../../../../shared/contextInjection'
+import { isContextInjectionMessage, parseMessageMeta } from '../../../../../shared/contextInjection'
 import 'boxicons/css/boxicons.min.css'
 import { Flame, ListFilter, Maximize2, Minimize2, RotateCcw, ZoomIn, ZoomOut } from 'lucide-react'
 import type { JSX } from 'react'
@@ -1689,6 +1689,7 @@ export const Heimdall: React.FC<HeimdallProps> = ({
     // A context-injection row is treated as empty so it is promoted away while its
     // descendants stay on the branch. Selection still expands to hidden nodes.
     const isHiddenContextInjection = fullMsg ? isContextInjectionMessage(fullMsg) : false
+    const isOperationModeChange = parseMessageMeta(fullMsg?.meta)?.kind === 'operation_mode_change'
 
     const hasContent =
       !isHiddenContextInjection &&
@@ -1709,6 +1710,7 @@ export const Heimdall: React.FC<HeimdallProps> = ({
     // Exception: Keep nodes that have siblings (parallel branches)
     if (shouldPromoteHeimdallNode({
       isContextInjection: isHiddenContextInjection,
+      isOperationModeChange,
       isEmpty: !hasContent,
       hasSiblings,
       filterEmptyMessages,
@@ -4041,7 +4043,7 @@ export const Heimdall: React.FC<HeimdallProps> = ({
           className={`${heimdallControlButtonClass} ${filterEmptyMessages ? heimdallControlButtonActiveClass : ''}`}
           style={getHeimdallControlButtonStyle(filterEmptyMessages)}
           title={filterEmptyMessages ? 'Show Empty Messages' : 'Hide Empty Messages'}
-          aria-label={filterEmptyMessages ? 'Show empty messages' : 'Hide empty messages'}
+          aria-label={filterEmptyMessages ? 'Show filtered messages' : 'Hide empty and mode-change messages'}
           aria-pressed={filterEmptyMessages}
         >
           <ListFilter size={18} strokeWidth={2.25} />

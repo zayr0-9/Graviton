@@ -21,6 +21,11 @@ describe('registerChatRoutes', () => {
 
     registerChatRoutes(app, {
       orchestrator: {
+        changeOperationMode(input) {
+          if (input.streamId === 'stale') throw new Error('Run is no longer active')
+          seenRequests.push(input)
+          return { status: input.streamId ? 'pending' : 'applied', mode: input.mode, revision: 1 }
+        },
         async runMessage(request, emit) {
           seenOperations.push(request.operation)
           seenRequests.push(request)
@@ -64,6 +69,19 @@ describe('registerChatRoutes', () => {
         else resolve()
       })
     })
+  })
+
+  it('routes live mode commands without starting inference and rejects invalid/stale commands', async () => {
+    const post = (body: any) => fetch(`${baseUrl}/api/conversations/c1/operation-mode`, {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body),
+    })
+    const response = await post({ mode: 'plan', streamId: 's1', requestId: 'r1' })
+    expect(response.status).toBe(200)
+    expect(await response.json()).toMatchObject({ status: 'pending', mode: 'plan' })
+    expect(seenRequests[0]).toMatchObject({ conversationId: 'c1', streamId: 's1', requestId: 'r1' })
+    expect(seenOperations).toEqual([])
+    expect((await post({ mode: 'other', requestId: 'r2' })).status).toBe(400)
+    expect((await post({ mode: 'execute', streamId: 'stale', requestId: 'r3' })).status).toBe(409)
   })
 
   it('streams SSE events from orchestrator', async () => {

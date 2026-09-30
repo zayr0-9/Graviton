@@ -4,6 +4,7 @@ import providersList from '../../../../../shared/providers.json'
 import { ConversationId, MessageId } from '../../../../../shared/types'
 import { isCommunityMode } from '../../config/runtimeMode'
 import { parseId } from '../../utils/helpers'
+import { parseMessageMeta } from '../../../../../shared/contextInjection'
 
 import {
   Attachment,
@@ -263,6 +264,9 @@ const makeInitialState = (): ChatState => {
     planClarificationRequestsByStream: {},
     toolAutoApprove: false,
     operationMode: 'plan',
+    operationModeChanges: {},
+    operationModeDrafts: {},
+    messageQueues: {},
     freeTier: {
       freeGenerationsRemaining: null,
       showLimitModal: false,
@@ -456,10 +460,8 @@ export const chatSlice = createSlice({
           // back in the composer. Clearing the drafts unconditionally meant the words came
           // back but the attachments the user picked did not — silently, with no way to
           // recover them. A run that ended in error keeps its drafts for the retry.
-          if (!endedInError) {
-            state.composition.imageDrafts = []
-            state.composition.imageDraftTarget = null
-          }
+          // Drafts now may belong to a follow-up typed during this run. They are
+          // consumed at submission, never by completion of an earlier message.
         }
 
         // Clear primary if this was the primary stream
@@ -777,7 +779,17 @@ export const chatSlice = createSlice({
       // Handle both old format (just messageId) and new format (with streamId and updatePath)
       const hasStreamId = 'streamId' in action.payload
       const streamId = hasStreamId ? (action.payload as StreamCompletedPayload).streamId : DEFAULT_STREAM_ID
-      const messageId = action.payload.messageId
+      let messageId = action.payload.messageId
+      // A mode notification may be the durable tail after a natural final answer.
+      // Keep that selected tail rather than rewinding to the returned assistant id.
+      const selectedPath = state.conversation.currentPath
+      const finalIndex = selectedPath.indexOf(messageId)
+      if (finalIndex >= 0 && selectedPath.slice(finalIndex + 1).every(id => {
+        const row = state.conversation.messages.find(message => message.id === id)
+        return parseMessageMeta(row?.meta)?.kind === 'operation_mode_change'
+      })) {
+        messageId = selectedPath[selectedPath.length - 1] ?? messageId
+      }
       const updatePath = hasStreamId ? ((action.payload as StreamCompletedPayload).updatePath ?? true) : true
 
       const stream = state.streaming.byId[streamId]
@@ -1236,8 +1248,15 @@ export const chatSlice = createSlice({
           ? state.conversation.currentPath[state.conversation.currentPath.length - 1]
           : null
 
-      const shouldSwitch =
+      const existingIndex = state.conversation.currentPath.indexOf(newMessage.id)
+      const preservesModeTail = existingIndex >= 0 && existingIndex < state.conversation.currentPath.length - 1 &&
+        state.conversation.currentPath.slice(existingIndex + 1).every(id => {
+          const row = state.conversation.messages.find(message => message.id === id)
+          return parseMessageMeta(row?.meta)?.kind === 'operation_mode_change'
+        })
+      const shouldSwitch = !preservesModeTail && (
         newMessage.role === 'user' || state.conversation.currentPath.length === 0 || currentTip === newMessage.parent_id
+      )
 
       if (shouldSwitch) {
         state.conversation.currentLineageId = null
@@ -1454,6 +1473,9 @@ export const chatSlice = createSlice({
 
     decisionRequestsClearedForStream: (state, action: PayloadAction<string>) => {
       const streamId = action.payload
+      for (const [key, change] of Object.entries(state.operationModeChanges ?? {})) {
+        if (change.streamId === streamId) delete state.operationModeChanges[key]
+      }
       delete state.toolPermissionRequestsByStream[streamId]
       delete state.operationModeUpgradeRequestsByStream[streamId]
       delete state.planClarificationRequestsByStream[streamId]
@@ -1472,6 +1494,107 @@ export const chatSlice = createSlice({
 
     toolAutoApproveToggled: state => {
       state.toolAutoApprove = !state.toolAutoApprove
+    },
+
+    operationModeDecisionsCleared: (state, action: PayloadAction<{ streamId: string; toolCallIds: string[] }>) => {
+      const { streamId, toolCallIds } = action.payload
+      const permission = state.toolPermissionRequestsByStream[streamId]
+      if (permission?.toolCallId && toolCallIds.includes(permission.toolCallId)) {
+        delete state.toolPermissionRequestsByStream[streamId]
+        if (state.toolCallPermissionRequest?.streamId === streamId) state.toolCallPermissionRequest = null
+      }
+      const upgrade = state.operationModeUpgradeRequestsByStream[streamId]
+      if (upgrade?.toolCallId && toolCallIds.includes(upgrade.toolCallId)) {
+        delete state.operationModeUpgradeRequestsByStream[streamId]
+        if (state.operationModeUpgradeRequest?.streamId === streamId) state.operationModeUpgradeRequest = null
+      }
+    },
+
+    messageQueueUpdated: (state, action: PayloadAction<import('../../../../../shared/queuedMessages').MessageQueueSnapshot>) => {
+      state.messageQueues ??= {}
+      const old = state.messageQueues[action.payload.streamId]
+      if (!old || action.payload.revision >= old.revision) state.messageQueues[action.payload.streamId] = action.payload
+    },
+
+    queuedMessageInserted: (state, action: PayloadAction<{ message: Message; streamId: string; updatePath?: boolean }>) => {
+      const { message, streamId } = action.payload
+      if (!isMessageForCurrentConversation(state, message)) return
+      const parent = state.conversation.messages.find(row => row.id === message.parent_id)
+      if (parent && !parent.children_ids.includes(message.id)) parent.children_ids.push(message.id)
+      const tip = state.conversation.currentPath.at(-1)
+      const nextPath = buildPathToMessage(state.conversation.messages, message.id)
+      if (action.payload.updatePath !== false && (!tip || nextPath.includes(tip))) {
+        state.conversation.currentPath = nextPath
+      }
+      const stream = state.streaming.byId[streamId]
+      if (stream) stream.currentBranchAnchorMessageId = message.id
+    },
+
+    operationModeDraftSet: (state, action: PayloadAction<{
+      conversationId: ConversationId; parentId: MessageId | null; mode: OperationMode
+    }>) => {
+      const { conversationId, parentId, mode } = action.payload
+      state.operationModeDrafts ??= {}
+      state.operationModeDrafts[JSON.stringify([String(conversationId), parentId == null ? null : String(parentId)])] = mode
+    },
+
+    operationModeChangeRequested: (state, action: PayloadAction<{
+      conversationId: ConversationId; mode: OperationMode; requestId: string; streamId?: string | null
+    }>) => {
+      const { conversationId, ...change } = action.payload
+      state.operationModeChanges ??= {}
+      state.operationModeChanges[String(conversationId)] = { ...change, status: 'requesting' }
+    },
+
+    operationModeChangeAccepted: (state, action: PayloadAction<{
+      conversationId: ConversationId; mode: OperationMode; requestId: string
+    }>) => {
+      const pending = state.operationModeChanges?.[String(action.payload.conversationId)]
+      // An SSE notification can arrive before the HTTP acknowledgement.
+      if (!pending || pending.requestId !== action.payload.requestId) return
+      pending.status = 'pending'
+      if (String(state.conversation.currentConversationId) === String(action.payload.conversationId)) {
+        state.operationMode = action.payload.mode
+      }
+    },
+
+    operationModeChangeFailed: (state, action: PayloadAction<{ conversationId: ConversationId; requestId: string }>) => {
+      const key = String(action.payload.conversationId)
+      if (state.operationModeChanges?.[key]?.requestId === action.payload.requestId) {
+        delete state.operationModeChanges[key]
+      }
+    },
+
+    operationModeNotificationReceived: (state, action: PayloadAction<{
+      message: Message; mode: OperationMode; streamId?: string | null
+    }>) => {
+      const { message, mode, streamId } = action.payload
+      const key = String(message.conversation_id)
+      const pending = state.operationModeChanges?.[key]
+      const matchesPending = pending?.mode === mode && (!pending.streamId || pending.streamId === streamId)
+      if (matchesPending) delete state.operationModeChanges[key]
+      if (!isMessageForCurrentConversation(state, message)) return
+
+      const parent = state.conversation.messages.find(m => m.id === message.parent_id)
+      if (parent) {
+        const children = Array.isArray(parent.children_ids) ? parent.children_ids : []
+        if (!children.includes(message.id)) parent.children_ids = [...children, message.id]
+      }
+      const path = state.conversation.currentPath
+      const tip = path[path.length - 1] ?? null
+      // A notification on a background branch must not steal the selected path.
+      if (tip === message.parent_id || path.length === 0) {
+        state.conversation.currentPath = buildPathToMessage(state.conversation.messages, message.id)
+        state.operationMode = mode
+      } else if (matchesPending) {
+        state.operationMode = mode
+      }
+      if (streamId) {
+        const stream = state.streaming.byId[streamId]
+        if (stream) stream.currentBranchAnchorMessageId = message.id
+        delete state.operationModeUpgradeRequestsByStream[streamId]
+        if (state.operationModeUpgradeRequest?.streamId === streamId) state.operationModeUpgradeRequest = null
+      }
     },
 
     operationModeSet: (state, action: PayloadAction<OperationMode>) => {
