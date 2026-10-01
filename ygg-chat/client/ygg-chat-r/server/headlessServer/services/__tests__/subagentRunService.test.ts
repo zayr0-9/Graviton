@@ -227,6 +227,22 @@ async function waitFor(condition: () => boolean, timeoutMs = 1000): Promise<void
 }
 
 describe('SubagentRunService', () => {
+  it.each([
+    ['openaichatgpt', 'priority', 'priority'],
+    ['openaichatgpt', undefined, undefined],
+    ['lmstudio', 'priority', undefined],
+  ] as const)('forwards service tier on every child turn (%s, %s)', async (provider, serviceTier, expected) => {
+    const providerRouter = new FakeProviderRouter()
+    providerRouter.enqueue({ content: '', toolCalls: [{ id: 'read-tier', name: 'read_file', arguments: { path: 'README.md' } }] })
+    providerRouter.enqueue({ content: 'done' })
+    const toolExecutor = vi.fn(async (_call: any, _context: any) => 'read result')
+    const service = buildService({ providerRouter, runRepo: new FakeRunRepo(), streamingRunRepo: new FakeStreamingRunRepo(), toolExecutor })
+    await service.run(baseRequest({ provider, serviceTier }), () => {}, new AbortController().signal)
+    expect(providerRouter.calls).toHaveLength(2)
+    for (const call of providerRouter.calls) expect(call.input.railwayTurn?.serviceTier).toBe(expected)
+    expect(toolExecutor.mock.calls[0][1].serviceTier).toBe(expected)
+  })
+
   it('completes a simple run and records transcript + streaming rows', async () => {
     const providerRouter = new FakeProviderRouter()
     providerRouter.enqueue({ content: 'the final answer' })

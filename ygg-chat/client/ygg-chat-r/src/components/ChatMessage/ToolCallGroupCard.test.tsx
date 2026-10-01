@@ -1,16 +1,25 @@
 import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it, vi } from 'vitest'
 import { ToolCallGroupCard, type ToolCallGroupCardProps } from './ToolCallGroupCard'
+import { TOOL_NAME_BASE_CLASS } from './chatMessageShared'
 
 vi.mock('../EditFileDiffView/EditToolDiffView', () => ({ EditToolDiffView: () => null }))
 vi.mock('../PlanMdToolView', () => ({ PlanMdToolView: () => null }))
 vi.mock('../McpAppIframe/McpAppIframe', () => ({ McpAppIframe: () => null }))
-vi.mock('../SubagentTranscript/SubagentTranscript', () => ({ SubagentToolName: () => null }))
+vi.mock('../SubagentTranscript/SubagentTranscript', () => ({
+  SubagentToolName: ({ name, fallbackClass }: { name: string; fallbackClass: string }) => (
+    <span className={fallbackClass}>{name}</span>
+  ),
+}))
 vi.mock('./HtmlIframe', () => ({ HtmlIframe: () => null }))
 
-const renderCard = (results: ToolCallGroupCardProps['group']['results'], name = 'read_file') => {
+const renderCard = (
+  results: ToolCallGroupCardProps['group']['results'],
+  name = 'read_file',
+  args: ToolCallGroupCardProps['group']['args'] = { path: 'file.txt' },
+) => {
   const props: ToolCallGroupCardProps = {
-    group: { id: 'call-1', name, args: { path: 'file.txt' }, results, anchorIndex: 0 },
+    group: { id: 'call-1', name, args, results, anchorIndex: 0 },
     toggleKey: 'call-1', messageId: 'message-1', expanded: true, onToggle: vi.fn(),
     truncateToolOutput: true, toolDefinitions: [], mcpLoadState: {}, mcpReloadTokens: {},
     onLoadMcpApp: vi.fn(), canOpenViewer: false, onOpenHtmlViewer: vi.fn(),
@@ -29,6 +38,18 @@ describe('incomplete tool result presentation', () => {
     expect(html).not.toContain('text-red-600')
     expect(html).not.toContain('failed')
     expect(result.is_error).toBe(true)
+  })
+
+  it('preserves tool-name sizing for a subagent_manager wait placeholder', () => {
+    const html = renderCard(
+      [{ content: 'Tool execution did not complete.', is_error: true }],
+      'subagent_manager',
+      { action: 'wait', handle: '660314' },
+    )
+    expect(html).toContain(`class="${TOOL_NAME_BASE_CLASS} text-amber-700 dark:text-amber-400">subagent_manager</span>`)
+    expect(html).toContain('in progress')
+    expect(html).toContain('Tool execution did not complete.')
+    expect(html).not.toContain('text-red-600')
   })
 
   it('keeps actual failures red', () => {

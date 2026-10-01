@@ -1,5 +1,12 @@
 import React from 'react'
 import { useNavigate } from 'react-router-dom'
+import { defaultUrlTransform, type UrlTransform } from 'react-markdown'
+
+// Keep ReactMarkdown's sanitization, allowing local files only as clickable links.
+export const markdownUrlTransform: UrlTransform = (url, key, node) => {
+  if (node.tagName === 'a' && key === 'href' && /^file:/i.test(url)) return url
+  return defaultUrlTransform(url)
+}
 
 interface MarkdownLinkProps {
   href?: string
@@ -11,7 +18,28 @@ export const MarkdownLink: React.FC<MarkdownLinkProps> = ({ href, children, ...p
   const navigate = useNavigate()
 
   const handleClick = async (e: React.MouseEvent<HTMLAnchorElement>) => {
-    if (!href) return
+    if (!href) {
+      e.preventDefault()
+      return
+    }
+
+    if (/^file:/i.test(href)) {
+      e.preventDefault()
+      if (!window.electronAPI?.shell?.openPath) {
+        console.error('Opening local file links requires the desktop app')
+        return
+      }
+
+      try {
+        const result = await window.electronAPI.shell.openPath(href)
+        if (!result.success) {
+          console.error('Failed to open local file:', result.error)
+        }
+      } catch (error) {
+        console.error('Error opening local file:', error)
+      }
+      return
+    }
 
     // Special protocol links (mailto:, tel:) - let them through normally
     if (href.startsWith('mailto:') || href.startsWith('tel:')) {
@@ -50,9 +78,9 @@ export const MarkdownLink: React.FC<MarkdownLinkProps> = ({ href, children, ...p
   return (
     <a
       href={href}
-      onClick={handleClick}
       className='text-blue-600 dark:text-blue-400 hover:underline'
       {...props}
+      onClick={handleClick}
     >
       {children}
     </a>

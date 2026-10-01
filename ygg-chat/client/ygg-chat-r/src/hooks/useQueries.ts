@@ -477,7 +477,8 @@ export interface TopLevelUserMessagePreview {
 }
 
 /**
- * Fetch top-level user messages for a conversation from local SQLite API.
+ * Fetch human top-level prompts for a conversation from local SQLite API.
+ * Generated launch-context roots are transparent; returned IDs belong to the actual prompts.
  * Used for sidebar hover preview in expanded sidebar modal.
  * Cache key: ['conversations', conversationId, 'top-level-user-messages']
  */

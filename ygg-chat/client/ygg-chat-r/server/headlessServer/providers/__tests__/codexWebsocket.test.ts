@@ -2,6 +2,13 @@ import { describe, expect, it } from 'vitest'
 import { buildCodexWebSocketHeaders, buildCodexWebSocketRequestBody } from '../codex/codexWebsocket.js'
 
 describe('buildCodexWebSocketRequestBody', () => {
+  it.each([false, true])('preserves service tier in the WebSocket body (Responses Lite: %s)', responsesLite => {
+    const headers = new Headers(responsesLite ? { 'x-openai-internal-codex-responses-lite': 'true' } : {})
+    const body = buildCodexWebSocketRequestBody({ model: 'gpt-5.5', service_tier: 'priority' }, headers)
+    expect(body.service_tier).toBe('priority')
+    expect(buildCodexWebSocketRequestBody({ model: 'gpt-5.5' }, headers)).not.toHaveProperty('service_tier')
+  })
+
   it('adds Responses Lite client metadata while preserving existing metadata', () => {
     const body = buildCodexWebSocketRequestBody(
       { model: 'gpt-5.6-luna', client_metadata: { existing: 'value' } },

@@ -19,6 +19,7 @@ import {
   parseMcpQualifiedName,
   stringifyToolValue,
   SURFACE_CARD_CLASS,
+  TOOL_NAME_BASE_CLASS,
   TOOL_NAME_ERROR_CLASS,
   TOOL_NAME_RUNNING_CLASS,
   TOOL_NAME_SUCCESS_CLASS,
@@ -135,7 +136,7 @@ const isIncompleteToolResult = (result: { content: unknown }): boolean =>
 
 const toolNameClassForTone = (tone: DisclosureTone): string =>
   tone === 'warning'
-    ? 'text-amber-700 dark:text-amber-400'
+    ? `${TOOL_NAME_BASE_CLASS} text-amber-700 dark:text-amber-400`
     : tone === 'error' ? TOOL_NAME_ERROR_CLASS : tone === 'running' ? TOOL_NAME_RUNNING_CLASS : TOOL_NAME_SUCCESS_CLASS
 
 const ToolName: React.FC<{ name: string; tone: DisclosureTone }> = ({ name, tone }) => (

@@ -12,6 +12,12 @@ const base = {
 }
 
 describe('buildServerLoopRequest', () => {
+  it.each(['send', 'branch', 'edit'] as const)('forwards Codex service tier for %s and omits it when off', op => {
+    const params = { ...base, provider: 'openaichatgpt', modelName: 'gpt-6.1-sol', messageId: 'm1' }
+    expect(buildServerLoopRequest(op, { ...params, serviceTier: 'priority' }).body.serviceTier).toBe('priority')
+    expect(buildServerLoopRequest(op, params).body).not.toHaveProperty('serviceTier')
+  })
+
   it('builds the send route + core body fields', () => {
     const { path, body } = buildServerLoopRequest('send', { ...base, parentId: 'p1' })
     expect(path).toBe('/conversations/conv-1/messages')

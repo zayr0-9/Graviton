@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { shouldPromoteHeimdallNode } from './heimdallNodeVisibility'
+import type { ChatNode } from '../../features/chats/chatTypes'
+import { buildHeimdallVisibleRoot, shouldPromoteHeimdallNode } from './heimdallNodeVisibility'
 
 describe('shouldPromoteHeimdallNode', () => {
   it('always promotes persisted context-injection rows, including roots with siblings', () => {
@@ -57,5 +58,33 @@ describe('mode-change node visibility', () => {
       hasSiblings: false,
       filterEmptyMessages: false,
     })).toBe(false)
+  })
+})
+
+describe('buildHeimdallVisibleRoot', () => {
+  const promptA: ChatNode = { id: 'prompt-a', message: 'Original prompt', sender: 'user', children: [] }
+  const promptB: ChatNode = { id: 'prompt-b', message: 'Edited prompt', sender: 'user', children: [] }
+
+  it('returns null when filtering leaves no visible nodes', () => {
+    expect(buildHeimdallVisibleRoot([])).toBeNull()
+  })
+
+  it('keeps a single promoted prompt as the root', () => {
+    expect(buildHeimdallVisibleRoot([promptA])).toBe(promptA)
+  })
+
+  it('wraps multiple promoted prompts in a synthetic Conversation root', () => {
+    const nodes = [promptA, promptB]
+    const root = buildHeimdallVisibleRoot(nodes)
+    expect(root).toEqual({ id: 'root', message: 'Conversation', sender: 'assistant', children: nodes })
+    expect(root?.children[0]).toBe(promptA)
+    expect(root?.children[1]).toBe(promptB)
+    expect(promptA.id).toBe('prompt-a')
+    expect(promptB.id).toBe('prompt-b')
+  })
+
+  it('preserves an existing synthetic root without nesting another wrapper', () => {
+    const root: ChatNode = { id: 'root', message: 'Conversation', sender: 'assistant', children: [promptA, promptB] }
+    expect(buildHeimdallVisibleRoot([root])).toBe(root)
   })
 })

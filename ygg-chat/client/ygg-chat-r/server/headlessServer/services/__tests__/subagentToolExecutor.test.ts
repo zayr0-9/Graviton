@@ -23,6 +23,18 @@ const context = (overrides: Record<string, any> = {}) => ({
 })
 
 describe('createSubagentDispatchExecutor', () => {
+  it.each([
+    ['openaichatgpt', 'priority', 'priority'],
+    ['openaichatgpt', undefined, undefined],
+    ['openrouter', 'priority', 'priority'],
+    ['lmstudio', 'priority', undefined],
+  ])('inherits service tier only for Codex children (%s, %s)', async (provider, serviceTier, expected) => {
+    const runForTool = vi.fn(async (_request: HeadlessSubagentStreamRequest) => 'done')
+    const execute = createSubagentDispatchExecutor({ leafExecutor: vi.fn(), subagentRunner: { runForTool } })
+    await execute({ id: 'sub-tier', name: 'subagent', arguments: { prompt: 'Scout' } }, context({ provider, serviceTier }))
+    expect(runForTool.mock.calls[0][0].serviceTier).toBe(expected)
+  })
+
   it('delegates ordinary tools to the leaf executor', async () => {
     const leafExecutor = vi.fn(async () => 'leaf result')
     const runForTool = vi.fn()
@@ -261,6 +273,14 @@ class FakeManagerRunner implements SubagentManagerRunner {
 const spawnCall = (args: Record<string, any>) => ({ id: `mgr-${Math.random()}`, name: 'subagent_manager', arguments: args })
 
 describe('createSubagentManagerExecutor', () => {
+  it.each([false, true])('inherits priority when spawning a manager run (blocking: %s)', async blocking => {
+    const runner = new FakeManagerRunner()
+    const spawn = vi.spyOn(runner, blocking ? 'spawnBlocking' : 'spawnDetached')
+    const execute = createSubagentManagerExecutor({ leafExecutor: vi.fn(), runner })
+    await execute(spawnCall({ action: 'spawn', prompt: 'Scout', blocking }), context({ serviceTier: 'priority' }))
+    expect(spawn.mock.calls[0][0].serviceTier).toBe('priority')
+  })
+
   it('delegates non-manager tools to the leaf executor', async () => {
     const leafExecutor = vi.fn(async () => 'leaf result')
     const runner = new FakeManagerRunner()
@@ -426,7 +446,8 @@ describe('createSubagentManagerExecutor', () => {
     const spawn: any = await execute(spawnCall({ action: 'spawn', prompt: 'p' }), context())
     runner.setStatus(spawn.handle, 'error')
 
-    const resume: any = await execute(spawnCall({ action: 'resume', handle: spawn.handle }), context())
+    const resume: any = await execute(spawnCall({ action: 'resume', handle: spawn.handle }), context({ serviceTier: 'priority' }))
+    expect(runner.resumeCalls[0].request.serviceTier).toBe('priority')
     expect(resume.action).toBe('resume')
     expect(resume.resumed).toBe(true)
     expect(resume.status).toBe('running')

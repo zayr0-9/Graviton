@@ -51,6 +51,8 @@ export interface ToolExecutionContext {
   provider?: string
   modelName?: string
   autoApprove?: boolean
+  /** Parent request's service tier, inherited by Codex subagents. */
+  serviceTier?: 'priority'
   subagentReasoningEffort?: 'low' | 'medium' | 'high' | 'xhigh'
   /** Renderer-selected baseline inherited by server-owned child subagents. */
   subagentSystemPrompt?: string | null
@@ -1602,6 +1604,7 @@ export class ToolLoopService {
             provider: input.provider,
             modelName: input.modelName,
             autoApprove: input.toolAutoApprove !== false,
+            serviceTier: input.serviceTier,
             subagentReasoningEffort: input.subagentReasoningEffort,
             subagentSystemPrompt: input.subagentSystemPrompt ?? null,
             authSessions: input.authSessions,

@@ -160,6 +160,8 @@ export interface SubagentClientContext {
   rootPath: string | null
   operationMode: OperationMode
   callerProvider?: string | null
+  /** Optional parent service tier for direct Codex subagent calls. */
+  serviceTier?: 'priority'
   queryClient?: QueryClient | null
   /** Optional: only used to read live auto-approve and stream-active state. */
   getState?: (() => RootState) | null
@@ -218,6 +220,7 @@ export const executeSubagentCall = async (toolCall: any, context: SubagentClient
     tools: getSubagentToolNames(orchestratorMode, requestedTools),
     maxTurns: getSubagentMaxTurns(),
     reasoningEffort: getSubagentReasoningEffort(),
+    serviceTier: provider === 'openaichatgpt' ? context.serviceTier : undefined,
     temperature: typeof temperature === 'number' ? temperature : undefined,
     operationMode: context.operationMode,
     autoApprove,

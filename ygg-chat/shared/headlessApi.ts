@@ -122,6 +122,8 @@ export interface HeadlessSubagentStreamRequest {
   tools?: string[]
   maxTurns?: number
   temperature?: number
+  /** Optional priority service tier for a Codex child run. */
+  serviceTier?: 'priority'
   /** OpenAI ChatGPT reasoning effort for this child run. */
   reasoningEffort?: 'low' | 'medium' | 'high' | 'xhigh'
   operationMode?: 'plan' | 'execute'

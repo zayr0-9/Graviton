@@ -1,3 +1,12 @@
+import type { ChatNode } from '../../features/chats/chatTypes'
+
+/** Assemble the visible forest without bringing a filtered message root back. */
+export function buildHeimdallVisibleRoot(nodes: ChatNode[]): ChatNode | null {
+  if (nodes.length === 0) return null
+  if (nodes.length === 1) return nodes[0]
+  return { id: 'root', message: 'Conversation', sender: 'assistant', children: nodes }
+}
+
 export interface HeimdallNodeVisibilityInput {
   isContextInjection: boolean
   isOperationModeChange: boolean

@@ -23,7 +23,7 @@ vi.mock('../TextArea/TextArea', () => ({}))
 vi.mock('./ToolCallGroupCard', () => ({}))
 vi.mock('./HookActivityCard', () => ({}))
 vi.mock('./ContextInjectionCard', () => ({}))
-vi.mock('../MarkdownLink/MarkdownLink', () => ({ MarkdownLink: () => null }))
+vi.mock('../MarkdownLink/MarkdownLink', () => ({ MarkdownLink: () => null, markdownUrlTransform: (url: string) => url }))
 
 import { ChatMessage } from './ChatMessage'
 

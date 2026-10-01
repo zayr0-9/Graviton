@@ -3,7 +3,7 @@ import type { ContentBlock, StreamEvent } from '@/features/chats/chatTypes'
 
 // Configuration for collapsed content display
 export const COLLAPSED_CONTENT_WORD_LIMIT = 15
-export const PROCESS_RUN_GROUP_MIN_ITEMS = 4
+export const PROCESS_RUN_GROUP_MIN_ITEMS = 3
 
 /**
  * Chat message design tokens (docs/agent_context/agent_design.md).

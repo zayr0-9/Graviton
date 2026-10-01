@@ -4,6 +4,7 @@ import type { Server } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { registerAppAutomationRoutes } from '../appAutomationRoutes.js'
+import { TOP_LEVEL_USER_MESSAGES_SQL } from '../../../topLevelUserMessages.js'
 
 let BetterSqlite3Ctor: (new (filename: string) => Database.Database) | null = null
 
@@ -153,6 +154,7 @@ function createStatements(db: Database.Database): any {
     `),
     getMessageById: db.prepare('SELECT * FROM messages WHERE id = ?'),
     getMessagesByConversationId: db.prepare('SELECT * FROM messages WHERE conversation_id = ? ORDER BY created_at ASC'),
+    getTopLevelUserMessagesByConversationId: db.prepare(TOP_LEVEL_USER_MESSAGES_SQL),
   }
 }
 
@@ -236,6 +238,33 @@ describeIfSqlite('registerAppAutomationRoutes', () => {
     expect(persistedConversation.model_name).toBe('unknown')
     expect(persistedConversation.cwd).toBe('/tmp/repo')
     expect(persistedConversation.storage_mode).toBe('local')
+  })
+
+  it('previews real prompt branches beneath generated launch-context roots', async () => {
+    const conversationRes = await postJson(baseUrl, '/api/app/conversations', {
+      title: 'Preview Test', user_id: 'preview-user',
+    })
+    expect(conversationRes.status).toBe(201)
+    const conversationId = ((await conversationRes.json()) as any).id as string
+    const insert = db!.prepare(`INSERT INTO messages
+      (id, conversation_id, parent_id, role, content, created_at, meta) VALUES (?, ?, ?, ?, ?, ?, ?)`)
+    insert.run('reminder', conversationId, null, 'user', 'generated instructions', '2026-09-30T10:00:00Z',
+      JSON.stringify({ kind: 'context_injection', reason: 'session_start' }))
+    insert.run('prompt-a', conversationId, 'reminder', 'user', 'Original request', '2026-09-30T10:01:00Z', null)
+    insert.run('prompt-b', conversationId, 'reminder', 'user', 'Edited request', '2026-09-30T10:02:00Z', null)
+    insert.run('answer', conversationId, 'prompt-a', 'assistant', 'Answer', '2026-09-30T10:03:00Z', null)
+    insert.run('follow-up', conversationId, 'answer', 'user', 'Later turn', '2026-09-30T10:04:00Z', null)
+
+    const response = await fetch(`${baseUrl}/api/app/conversations/${conversationId}/messages/top-level-users`)
+    expect(response.status).toBe(200)
+    expect(await response.json()).toEqual([
+      { id: 'prompt-a', conversation_id: conversationId, content: 'Original request',
+        plain_text_content: null, note: null, note_color: null, created_at: '2026-09-30T10:01:00Z' },
+      { id: 'prompt-b', conversation_id: conversationId, content: 'Edited request',
+        plain_text_content: null, note: null, note_color: null, created_at: '2026-09-30T10:02:00Z' },
+    ])
+    expect((db!.prepare('SELECT parent_id FROM messages WHERE id = ?').get('prompt-a') as any).parent_id)
+      .toBe('reminder')
   })
 
   it('returns latest conversation via single endpoint', async () => {

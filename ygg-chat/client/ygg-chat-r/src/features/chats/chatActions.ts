@@ -71,6 +71,8 @@ import {
 import { isResumableRunsEnabled } from '../../helpers/serverLoopSettings'
 import { buildServerLoopRequest } from './buildServerLoopRequest'
 import { buildConversationTree } from './conversationTree'
+import { AUTO_COMPACTION_NOTE, getTreeMessageText } from './summaryPresentation'
+export { AUTO_COMPACTION_NOTE } from './summaryPresentation'
 import { conversationQueryKeys } from './conversationQueryKeys'
 import type { ConversationMessagesTreeData } from './conversationMessagesApi'
 import { filterToolsForOperationMode } from './operationModeSystemPrompt'
@@ -219,7 +221,7 @@ const addMessageToTree = (tree: any | null, newMessage: Message, parentId: Messa
   if (!tree) {
     return {
       id: newMessage.id.toString(),
-      message: newMessage.content,
+      message: getTreeMessageText(newMessage),
       sender: newMessage.role === 'user' ? 'user' : newMessage.role === 'ex_agent' ? 'ex_agent' : 'assistant',
       children: [],
     }
@@ -232,7 +234,7 @@ const addMessageToTree = (tree: any | null, newMessage: Message, parentId: Messa
       // Synthetic root exists - add as child
       const newChild = {
         id: newMessage.id.toString(),
-        message: newMessage.content,
+        message: getTreeMessageText(newMessage),
         sender: newMessage.role === 'user' ? 'user' : newMessage.role === 'ex_agent' ? 'ex_agent' : 'assistant',
         children: [],
       }
@@ -244,7 +246,7 @@ const addMessageToTree = (tree: any | null, newMessage: Message, parentId: Messa
       // Single root exists - create synthetic root with both
       const newChild = {
         id: newMessage.id.toString(),
-        message: newMessage.content,
+        message: getTreeMessageText(newMessage),
         sender: newMessage.role === 'user' ? 'user' : newMessage.role === 'ex_agent' ? 'ex_agent' : 'assistant',
         children: [],
       }
@@ -263,7 +265,7 @@ const addMessageToTree = (tree: any | null, newMessage: Message, parentId: Messa
     if (node.id === parentId.toString()) {
       const newChild = {
         id: newMessage.id.toString(),
-        message: newMessage.content,
+        message: getTreeMessageText(newMessage),
         sender: newMessage.role === 'user' ? 'user' : newMessage.role === 'ex_agent' ? 'ex_agent' : 'assistant',
         children: [],
       }
@@ -600,7 +602,6 @@ const resolveOpenRouterTemperature = (providerSlug: string): number | undefined 
 
 
 
-export const AUTO_COMPACTION_NOTE = '__auto_compaction_summary__'
 export const GENERATED_IMAGE_PATH_HINT_NOTE = '__generated_image_path_hint__'
 
 const isAutoCompactionSummaryMessage = (msg: Message | undefined | null): boolean => {
@@ -1239,10 +1240,12 @@ export const sendMessage = createAsyncThunk<
           localApiBase: getCachedLocalApiBase(),
           contextDirectories: loadContextDirectorySettings(),
           autoMemoryEnabled: loadLongTermMemoryContextEnabled(),
-          // Phase 4 openrouter parity: undefined for lmstudio/zai (omitted from body),
-          // so the local-provider request is unchanged; serviceTier only for openrouter.
+          // Forward priority for Codex and OpenRouter only; other providers omit it.
           temperature: openRouterTemperature,
-          serviceTier: providerSlug === 'openrouter' ? serviceTier : undefined,
+          serviceTier:
+            providerSlug === 'openrouter' || providerSlug === 'openaichatgpt' || providerSlug === 'openai(chatgpt)'
+              ? serviceTier
+              : undefined,
           // ChatGPT: forward fresh renderer tokens so the server resolves auth directly
           // (null for every other provider => omitted from the body).
           accessToken: chatgptServerAuth?.accessToken,
@@ -1833,10 +1836,12 @@ export const editMessageWithBranching = createAsyncThunk<
           localApiBase: getCachedLocalApiBase(),
           contextDirectories: loadContextDirectorySettings(),
           autoMemoryEnabled: loadLongTermMemoryContextEnabled(),
-          // Phase 4 openrouter parity: undefined for lmstudio/zai (omitted from body),
-          // so the local-provider request is unchanged; serviceTier only for openrouter.
+          // Forward priority for Codex and OpenRouter only; other providers omit it.
           temperature: openRouterTemperature,
-          serviceTier: providerSlug === 'openrouter' ? serviceTier : undefined,
+          serviceTier:
+            providerSlug === 'openrouter' || providerSlug === 'openaichatgpt' || providerSlug === 'openai(chatgpt)'
+              ? serviceTier
+              : undefined,
           // ChatGPT: forward fresh renderer tokens so the server resolves auth directly
           // (null for every other provider => omitted from the body).
           accessToken: chatgptServerAuth?.accessToken,
@@ -2087,10 +2092,12 @@ export const sendMessageToBranch = createAsyncThunk<
           localApiBase: getCachedLocalApiBase(),
           contextDirectories: loadContextDirectorySettings(),
           autoMemoryEnabled: loadLongTermMemoryContextEnabled(),
-          // Phase 4 openrouter parity: undefined for lmstudio/zai (omitted from body),
-          // so the local-provider request is unchanged; serviceTier only for openrouter.
+          // Forward priority for Codex and OpenRouter only; other providers omit it.
           temperature: openRouterTemperature,
-          serviceTier: providerSlug === 'openrouter' ? serviceTier : undefined,
+          serviceTier:
+            providerSlug === 'openrouter' || providerSlug === 'openaichatgpt' || providerSlug === 'openai(chatgpt)'
+              ? serviceTier
+              : undefined,
           // ChatGPT: forward fresh renderer tokens so the server resolves auth directly
           // (null for every other provider => omitted from the body).
           accessToken: chatgptServerAuth?.accessToken,

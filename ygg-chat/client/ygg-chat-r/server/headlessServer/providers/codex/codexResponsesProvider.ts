@@ -96,6 +96,7 @@ export class CodexResponsesProvider {
         ...(this.options.reasoningSummary === null ? {} : { summary: this.options.reasoningSummary || 'auto' }),
         ...(responsesLite ? { context: 'all_turns' } : {}),
       },
+      ...(input.providerInput.railwayTurn?.serviceTier === 'priority' ? { service_tier: 'priority' } : {}),
       store: false,
       stream: true,
       include: ['reasoning.encrypted_content', 'web_search_call.action.sources'],

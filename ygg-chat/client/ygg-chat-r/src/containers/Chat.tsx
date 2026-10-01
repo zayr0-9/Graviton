@@ -7183,17 +7183,18 @@ function Chat() {
                               measureElement={virtualizer.measureElement}
                               className='z-0'
                             >
-                              <div
-                                className='min-w-0 px-0 py-1 sm:px-2'
-                                style={fontSizeOffset !== 0 ? { fontSize: `calc(1em + ${fontSizeOffset}px)` } : undefined}
-                              >
-                                <DisclosureRow
-                                  label='Agent steps'
-                                  summary={summary}
-                                  expanded={isExpanded}
-                                  onToggle={() => toggleProcessMessageRun(runId)}
-                                  controlsId={`message-group-${runId}-panel`}
-                                />
+                              <div className='min-w-0 px-0 py-1 sm:px-2'>
+                                {/* Nested messages apply their own offset; only scale the header here. */}
+                                <div style={fontSizeOffset !== 0 ? { fontSize: `calc(1em + ${fontSizeOffset}px)` } : undefined}>
+                                  <DisclosureRow
+                                    label='Agent steps'
+                                    labelSize='group'
+                                    summary={summary}
+                                    expanded={isExpanded}
+                                    onToggle={() => toggleProcessMessageRun(runId)}
+                                    controlsId={`message-group-${runId}-panel`}
+                                  />
+                                </div>
                                 <div
                                   id={`message-group-${runId}-panel`}
                                   className={`tool-expand-container ${isExpanded ? 'open' : ''}`}

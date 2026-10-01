@@ -27,7 +27,7 @@ import { environment, localApi } from '../../utils/api'
 import { ChatErrorBubble } from '../ChatErrorBubble/ChatErrorBubble'
 import { useHtmlIframeRegistry } from '../HtmlIframeRegistry/HtmlIframeRegistry'
 import { ImageModal } from '../ImageModal/ImageModal'
-import { MarkdownLink } from '../MarkdownLink/MarkdownLink'
+import { MarkdownLink, markdownUrlTransform } from '../MarkdownLink/MarkdownLink'
 import { MermaidDiagram, getMermaidSource, isMermaidCodeBlock, prepareMermaidMarkdown } from '../MermaidDiagram'
 import { TextArea } from '../TextArea/TextArea'
 import {
@@ -1020,6 +1020,7 @@ const ChatMessageBody: React.FC<ChatMessageProps> = React.memo(
           remarkPlugins={[remarkGfm, remarkMath]}
           rehypePlugins={[[rehypeHighlight, { ignoreMissing: true }], rehypeKatex]}
           components={MARKDOWN_COMPONENTS}
+          urlTransform={markdownUrlTransform}
         >
           {prepareMermaidMarkdown(markdown)}
         </ReactMarkdown>
@@ -1231,14 +1232,18 @@ const ChatMessageBody: React.FC<ChatMessageProps> = React.memo(
           const panelId = `${id}-${groupKey}-panel`
 
           rendered.push(
-            <div key={groupKey} className='min-w-0 max-w-full' style={messageContentStyle}>
-              <DisclosureRow
-                label='Agent steps'
-                summary={summary}
-                expanded={isExpanded}
-                onToggle={() => toggleBlock('groupRuns', groupKey)}
-                controlsId={panelId}
-              />
+            <div key={groupKey} className='min-w-0 max-w-full'>
+              {/* Keep the offset on the header only; each nested step applies its own. */}
+              <div style={messageContentStyle}>
+                <DisclosureRow
+                  label='Agent steps'
+                  labelSize='group'
+                  summary={summary}
+                  expanded={isExpanded}
+                  onToggle={() => toggleBlock('groupRuns', groupKey)}
+                  controlsId={panelId}
+                />
+              </div>
               <DisclosurePanel
                 id={panelId}
                 expanded={isExpanded}

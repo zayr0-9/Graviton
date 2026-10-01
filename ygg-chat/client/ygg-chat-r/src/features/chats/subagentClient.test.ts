@@ -108,6 +108,22 @@ describe('resolveSubagentSystemPrompt', () => {
 })
 
 describe('executeSubagentCall request building', () => {
+  it.each([
+    ['OpenAI (ChatGPT)', 'priority', 'priority'],
+    ['OpenAI (ChatGPT)', undefined, undefined],
+    ['OpenRouter', 'priority', 'priority'],
+    ['LM Studio', 'priority', undefined],
+  ] as const)('forwards service tier only to resolved Codex children (%s, %s)', async (callerProvider, serviceTier, expected) => {
+    let capturedBody: any
+    vi.stubGlobal('fetch', vi.fn(async (_url: string, init: any) => {
+      capturedBody = JSON.parse(init.body)
+      return sseResponse([ev({ type: 'complete', result: 'ok' })])
+    }))
+    await executeSubagentCall({ id: 'tier', arguments: { prompt: 'Scout' } }, { ...baseContext(), callerProvider, serviceTier })
+    if (expected) expect(capturedBody.serviceTier).toBe(expected)
+    else expect(capturedBody).not.toHaveProperty('serviceTier')
+  })
+
   it('builds the request body from tool args + settings', async () => {
     let capturedBody: any = null
     vi.stubGlobal(

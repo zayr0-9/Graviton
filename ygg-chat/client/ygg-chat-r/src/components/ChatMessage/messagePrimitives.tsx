@@ -38,6 +38,8 @@ const TONE_LABEL_CLASS: Record<DisclosureTone, string> = {
 interface DisclosureRowProps {
   /** Primary label. A string gets the tone class; a node is rendered as is. */
   label: React.ReactNode
+  /** Group headings are 1pt larger than ordinary row labels. Applies to string labels. */
+  labelSize?: 'default' | 'group'
   /** Optional muted text shown while collapsed. */
   summary?: React.ReactNode
   /** Always-visible muted text placed after the label, before the summary. */
@@ -57,6 +59,7 @@ interface DisclosureRowProps {
 
 export const DisclosureRow: React.FC<DisclosureRowProps> = ({
   label,
+  labelSize = 'default',
   summary,
   meta,
   expanded,
@@ -71,9 +74,12 @@ export const DisclosureRow: React.FC<DisclosureRowProps> = ({
   const showSummary = summary != null && summary !== '' && (!expanded || !hideSummaryWhenExpanded)
   // A node label brings its own typography, so it gets the layout slot WITHOUT a text size.
   // Applying one here as well would multiply two em-relative sizes and render it small.
+  const labelClass = labelSize === 'group'
+    ? `${DISCLOSURE_LABEL_LAYOUT_CLASS} text-[calc(0.8125em+1pt)] font-medium leading-tight`
+    : DISCLOSURE_LABEL_CLASS
   const labelNode =
     typeof label === 'string' ? (
-      <span className={`${DISCLOSURE_LABEL_CLASS} ${TONE_LABEL_CLASS[tone]}`}>{label}</span>
+      <span className={`${labelClass} ${TONE_LABEL_CLASS[tone]}`}>{label}</span>
     ) : (
       <span className={`${DISCLOSURE_LABEL_LAYOUT_CLASS} inline-flex items-center`}>{label}</span>
     )

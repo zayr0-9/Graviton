@@ -8,6 +8,7 @@ import http from 'http'
 import os from 'os'
 import path from 'path'
 import { fileURLToPath } from 'url'
+import { normalizeShellPath } from './shellPath.js'
 import '../server/envLoader.js'
 import {
   deleteBraveApiKey,
@@ -1420,11 +1421,11 @@ authHandle('auth:openExternal', async (_event, url: string) => {
   }
 })
 
-// Open a file or folder path in the system file explorer
+// Open files in their default application and folders in the system file manager.
 ipcMain.handle('shell:openPath', async (_event, path: string) => {
   // console.log('[Electron IPC] Opening path:', path)
   try {
-    const result = await shell.openPath(path)
+    const result = await shell.openPath(normalizeShellPath(path))
     if (result) {
       // openPath returns empty string on success, error message on failure
       return { success: false, error: result }

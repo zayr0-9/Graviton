@@ -58,3 +58,26 @@ describe('buildConversationTree', () => {
     ])
   })
 })
+
+
+describe('summary tree presentation', () => {
+  it('keeps the summary payload out of the tree without changing canonical content or paths', () => {
+    const summary = { ...message('summary', 'parent'), role: 'system' as const,
+      note: '__auto_compaction_summary__', content: '# Large summary\n'.repeat(10000) }
+    const originalContent = summary.content
+    const rows = [message('parent', null), summary, message('child', 'summary')]
+    const tree = buildConversationTree(rows)
+    expect(tree?.children[0].message).toBe('Conversation summarised. Earlier context is preserved for the model.')
+    expect(tree?.children[0].children[0].id).toBe('child')
+    expect(JSON.stringify(tree)).not.toContain('Large summary')
+    expect(summary.content).toBe(originalContent)
+    expect(buildPathToConversationMessage(rows, 'child')).toEqual(['parent', 'summary', 'child'])
+  })
+
+  it('does not hide ordinary messages that mention summaries', () => {
+    const row = message('ordinary', null)
+    row.content = 'Here is a summary of the work.'
+    row.note = 'summary'
+    expect(buildConversationTree([row])?.message).toBe(row.content)
+  })
+})

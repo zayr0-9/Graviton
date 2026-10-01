@@ -87,8 +87,8 @@ export interface BuildServerLoopRequestParams {
    */
   temperature?: number
   /**
-   * Phase 4 (openrouter/cloud route): the paid-tier service tier. The shims pass it
-   * only for openrouter, so the lmstudio/zai body never gains this field.
+   * Optional priority service tier for Codex and the OpenRouter/cloud route.
+   * Other provider shims omit it, so their request bodies remain unchanged.
    */
   serviceTier?: 'priority'
   /**

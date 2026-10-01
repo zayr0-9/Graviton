@@ -44,6 +44,7 @@ function buildSubagentStreamRequest(body: any): HeadlessSubagentStreamRequest {
     tools: normalizeToolNames(body?.tools),
     maxTurns: typeof body?.maxTurns === 'number' ? body.maxTurns : undefined,
     temperature: typeof body?.temperature === 'number' ? body.temperature : undefined,
+    serviceTier: (body?.serviceTier ?? body?.service_tier) === 'priority' ? 'priority' : undefined,
     reasoningEffort:
       body?.reasoningEffort === 'low' || body?.reasoningEffort === 'medium' || body?.reasoningEffort === 'high' || body?.reasoningEffort === 'xhigh'
         ? body.reasoningEffort

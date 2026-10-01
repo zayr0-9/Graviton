@@ -1931,6 +1931,7 @@ const SideBar: React.FC<SideBarProps> = ({
     error: topLevelUserPreviewError,
   } = useLocalTopLevelUserMessages(hoveredPreviewConversationId, shouldShowConversationPreviewPortal)
 
+  // The API projects through generated launch-context roots and returns real prompt IDs.
   const normalizedHoverPreviewSearch = hoverPreviewSearchQuery.trim().toLowerCase()
   const filteredTopLevelUserPreviewMessages = useMemo(() => {
     if (!normalizedHoverPreviewSearch) return topLevelUserPreviewMessages

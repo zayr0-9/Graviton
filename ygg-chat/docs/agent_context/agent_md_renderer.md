@@ -108,7 +108,7 @@ Custom component renderers:
 - fenced `mermaid` blocks are detected by the `pre` renderer and rendered through the shared `MermaidDiagram`; completion-aware preprocessing temporarily marks an unmatched Mermaid fence as `mermaid-pending`, so live streams show ordinary source and do not invoke Mermaid until the matching closing fence arrives. Mermaid is lazy-loaded, uses strict security, follows light/dark mode, and falls back to source text on syntax errors. Each completed diagram can open a diagram-only fullscreen viewer with drag panning, cursor-centered wheel/trackpad zoom, zoom controls, fit-to-view, and 100% reset;
 - `pre: PreRenderer` wraps other fenced code blocks in a flat `not-prose` surface with a copy pill;
 - `code: CodeRenderer` applies custom inline-code colors and leaves block code to Highlight.js/pre styling;
-- `a: MarkdownLink` renders links through the app's link component.
+- `a: MarkdownLink` renders links through the app's link component. The shared `markdownUrlTransform` preserves `file:` URLs only for anchor `href` attributes and otherwise retains ReactMarkdown's default URL sanitization. File clicks prevent document navigation and use the existing Electron `shell.openPath` bridge to open the OS default application; empty/stripped URLs cannot navigate either.
 
 `renderMarkdownNode` receives a class name from `chatMessageShared.ts`:
 - `SHARED_TEXT_MARKDOWN_CLASS`: current structured/streamed text block rendering;

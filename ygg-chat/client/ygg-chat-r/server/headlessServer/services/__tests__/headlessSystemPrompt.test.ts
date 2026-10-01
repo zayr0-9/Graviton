@@ -21,6 +21,18 @@ describe('buildHeadlessSystemPrompt', () => {
     expect(prompt).toContain('Agent Prompt: Chat and Agent modes')
   })
 
+  it.each(['plan', 'execute'] as const)('includes shared file-link guidance in %s mode', operationMode => {
+    const prompt = buildHeadlessSystemPrompt({ operationMode })
+    const guidanceIndex = prompt.indexOf('## File links for human inspection')
+
+    expect(guidanceIndex).toBeGreaterThan(-1)
+    expect(guidanceIndex).toBeLessThan(prompt.indexOf('## Chat mode (plan) — conditional'))
+    expect(prompt).toContain('[report.md](file:///Users/name/project/report.md)')
+    expect(prompt).toContain('[report.md](file:///C:/Users/name/project/report.md)')
+    expect(prompt).toContain('Never invent a path')
+    expect(prompt).toContain('Keep line numbers or symbol names outside the URL')
+  })
+
   it('replaces the bundled operation-mode baseline with a supplied override', () => {
     const prompt = buildHeadlessSystemPrompt({
       operationMode: 'execute',

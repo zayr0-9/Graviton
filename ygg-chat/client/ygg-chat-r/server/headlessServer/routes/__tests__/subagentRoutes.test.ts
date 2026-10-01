@@ -95,6 +95,21 @@ describe('registerSubagentRoutes', () => {
     expect(events[2]).toMatchObject({ type: 'complete', result: 'final text' })
   })
 
+  it.each([
+    [{ serviceTier: 'priority' }, 'priority'],
+    [{ service_tier: 'priority' }, 'priority'],
+    [{ serviceTier: 'invalid' }, undefined],
+    [{}, undefined],
+  ])('normalizes service tier from %j', async (patch, expected) => {
+    const res = await fetch(`${baseUrl}/api/headless/subagent/stream`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ ...validBody(), ...patch }),
+    })
+    await res.text()
+    expect(seenRequests[0].serviceTier).toBe(expected)
+  })
+
   it('normalizes the request body (tool names, autoApprove, streamId, lineageId)', async () => {
     await fetch(`${baseUrl}/api/headless/subagent/stream`, {
       method: 'POST',

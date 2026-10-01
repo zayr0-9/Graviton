@@ -30,10 +30,11 @@ import { useConversations } from '../../hooks/useQueries'
 import type { RootState } from '../../store/store'
 import { parseId } from '../../utils/helpers'
 import stripMarkdownToText from '../../utils/markdownStripper'
+import { isCompactionSummary, SUMMARY_PLACEHOLDER } from '../../features/chats/summaryPresentation'
 // import { MarkdownLink } from '../MarkdownLink/MarkdownLink'
 import { environment, localApi } from '../../utils/api'
 import { DeleteConfirmModal } from '../DeleteConfirmModal/DeleteConfirmModal'
-import { shouldPromoteHeimdallNode } from './heimdallNodeVisibility'
+import { buildHeimdallVisibleRoot, shouldPromoteHeimdallNode } from './heimdallNodeVisibility'
 import { TextArea } from '../TextArea/TextArea'
 import { TextField } from '../TextField/TextField'
 import {
@@ -455,6 +456,7 @@ export const Heimdall: React.FC<HeimdallProps> = ({
       const map: Record<string, SubagentNode[]> = {}
 
       messages.forEach(msg => {
+        if (isCompactionSummary(msg)) return
         const blocks = normalizeContentBlocks(msg.content_blocks)
         if (msg.role === 'assistant' && blocks.length > 0 && msg.parent_id) {
           const subagentCalls = blocks.filter((block: any) => block.type === 'tool_use' && block.name === 'subagent')
@@ -779,14 +781,18 @@ export const Heimdall: React.FC<HeimdallProps> = ({
   const [plainMessages, setPlainMessages] = useState<any[]>([])
   useEffect(() => {
     let cancelled = false
+    // Search owns a display projection, not canonical rows used by copy/move/notes.
+    const searchMessages = flatMessages.map(message => isCompactionSummary(message)
+      ? { id: message.id, role: message.role, content: SUMMARY_PLACEHOLDER, content_plain_text: SUMMARY_PLACEHOLDER }
+      : message)
     ;(async () => {
       try {
-        const res = (await stripMarkdownToText(flatMessages as any)) as any
+        const res = (await stripMarkdownToText(searchMessages as any)) as any
         if (!cancelled) {
-          setPlainMessages(Array.isArray(res) ? (res as any[]) : (flatMessages as any[]))
+          setPlainMessages(Array.isArray(res) ? (res as any[]) : searchMessages)
         }
       } catch {
-        if (!cancelled) setPlainMessages(flatMessages as any[])
+        if (!cancelled) setPlainMessages(searchMessages)
       }
     })()
     return () => {
@@ -1719,7 +1725,7 @@ export const Heimdall: React.FC<HeimdallProps> = ({
     }
 
     // 3. Otherwise, keep the node with updated children
-    return [{ ...node, children: filteredChildren }]
+    return [{ ...node, message: isCompactionSummary(fullMsg) ? SUMMARY_PLACEHOLDER : node.message, children: filteredChildren }]
   }
 
   // Use provided data or fallback to last known (prevents flash on refresh). Do NOT show a fake empty node.
@@ -1730,14 +1736,8 @@ export const Heimdall: React.FC<HeimdallProps> = ({
     if (filterEmptyMessages || messageById.size > 0) {
       const result = filterEmptyNodes(rawData, false) // Root node has no siblings
 
-      if (result.length === 0) return null
-
-      // If we have exactly one root, use it
-      if (result.length === 1) return result[0]
-
-      // If the root was filtered out but left multiple children,
-      // we must keep the root to maintain a single tree structure.
-      return { ...rawData, children: result }
+      // Multiple promoted branches need a synthetic root, not the hidden message.
+      return buildHeimdallVisibleRoot(result)
     }
 
     return rawData
@@ -2317,7 +2317,8 @@ export const Heimdall: React.FC<HeimdallProps> = ({
       const messagesById = new Map<string, string>()
       const visit = (node: ChatNode | null): void => {
         if (!node) return
-        messagesById.set(node.id, node.message)
+        // Display placeholders must not replace real content in clipboard actions.
+        messagesById.set(node.id, messageById.get(String(node.id))?.content ?? node.message)
         node.children?.forEach(visit)
       }
       visit(currentChatData)
@@ -3486,6 +3487,8 @@ export const Heimdall: React.FC<HeimdallProps> = ({
                   }
                   const msg = getCurrentMessage(nodeIdParsed)
 
+                  if (isCompactionSummary(msg)) return <p className='line-clamp-3'>{SUMMARY_PLACEHOLDER}</p>
+
                   // Check for image blocks in content_blocks
                   if (msg?.content_blocks && Array.isArray(msg.content_blocks)) {
                     const imageBlocks = msg.content_blocks.filter(
@@ -4545,7 +4548,8 @@ export const Heimdall: React.FC<HeimdallProps> = ({
               ? getCurrentMessage(nodeIdParsed)
               : null
 
-          const contentBlocks = msg?.content_blocks || []
+          const isSummary = isCompactionSummary(msg)
+          const contentBlocks = isSummary ? [] : msg?.content_blocks || []
           const hasImage =
             Array.isArray(contentBlocks) && contentBlocks.some((block: any) => block.type === 'image' && block.url)
 
@@ -4575,6 +4579,8 @@ export const Heimdall: React.FC<HeimdallProps> = ({
                 {selectedNode.sender === 'user' ? 'User' : selectedNode.sender === 'ex_agent' ? 'Agent' : 'Assistant'}
               </div>
               {(() => {
+                // No Markdown parsing, syntax highlighting, or block traversal for summaries.
+                if (isSummary) return <p className='text-sm break-words'>{SUMMARY_PLACEHOLDER}</p>
                 const hasContentBlocks = Array.isArray(contentBlocks) && contentBlocks.length > 0
 
                 // If we have content_blocks, render them

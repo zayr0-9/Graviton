@@ -781,6 +781,7 @@ export class SubagentRunService {
           systemPrompt: request.systemPrompt ?? null,
           temperature: request.temperature,
           reasoningConfig: request.reasoningEffort ? { effort: request.reasoningEffort } : undefined,
+          serviceTier: provider === 'openaichatgpt' ? request.serviceTier : undefined,
           userId: request.userId ?? null,
           authSessionId: request.authSessionId,
           accessToken: request.accessToken ?? null,

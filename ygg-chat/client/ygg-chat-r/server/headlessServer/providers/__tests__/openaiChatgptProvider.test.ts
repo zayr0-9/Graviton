@@ -25,6 +25,37 @@ function createSseStream(events: any[]) {
 }
 
 describe('OpenAiChatgptProvider', () => {
+  it.each([
+    ['gpt-5.5', 'priority'],
+    ['gpt-5.5', undefined],
+    ['gpt-6.1-sol', 'priority'],
+    ['gpt-6.1-sol', undefined],
+  ] as const)('sends only the requested service tier for %s (%s)', async (modelName, serviceTier) => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue({
+      ok: true,
+      status: 200,
+      headers: new Headers({ 'content-type': 'text/event-stream' }),
+      body: createSseStream([
+        { type: 'response.completed', response: { id: 'resp-tier', output: [
+          { type: 'message', role: 'assistant', phase: 'final_answer', content: [{ type: 'output_text', text: 'ok' }] },
+        ] } },
+      ]),
+      text: async () => '',
+    } as any)
+
+    await new OpenAiChatgptProvider().generate({
+      modelName,
+      history: [],
+      userContent: 'hello',
+      railwayTurn: { conversationId: `tier-${modelName}`, serviceTier } as any,
+    })
+
+    expect(fetchMock).toHaveBeenCalledOnce()
+    const body = JSON.parse(String(fetchMock.mock.calls[0][1]?.body))
+    if (serviceTier) expect(body.service_tier).toBe('priority')
+    else expect(body).not.toHaveProperty('service_tier')
+  })
+
   it('resolves the global ChatGPT context override with defaults and bounds', () => {
     delete process.env.YGG_OPENAI_CHATGPT_MAX_CONTEXT_TOKENS
     expect(resolveOpenAIChatGPTContextLength()).toBe(DEFAULT_OPENAI_CHATGPT_CONTEXT_LENGTH)
