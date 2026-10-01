@@ -7,7 +7,9 @@ import type { BranchDebugData, BranchDebugRow } from '../../features/chats/branc
 import { uiActions, type UiNotification } from '../../features/ui'
 import { useAppDispatch, useAppSelector } from '../../hooks/redux'
 import {
+  buildAgentForkGroups,
   getAgentActivityBadgeClasses,
+  type AgentForkGroup,
   summarizeAgentStreamId,
   useRunningAgentStreams,
   type AgentStreamListItem,
@@ -33,6 +35,45 @@ const getStreamHref = (stream: AgentStreamListItem): string | null => {
   const projectSegment = stream.projectId ? String(stream.projectId) : 'unknown'
   const hash = stream.anchorMessageId ? `#${stream.anchorMessageId}` : ''
   return `/chat/${projectSegment}/${stream.conversationId}${hash}`
+}
+
+const ForkRunDetails = ({
+  fork,
+  onNavigate,
+  style,
+}: {
+  fork: AgentForkGroup
+  onNavigate: (stream: AgentStreamListItem) => void
+  style?: React.CSSProperties
+}) => {
+  const runs = [...fork.activeStreams, ...fork.completedStreams]
+  if (runs.length < 2) return null
+
+  return (
+    <details className='mx-3 mb-2 mt-1 text-[11px] lg:text-xs text-neutral-500 dark:text-neutral-400' style={style}>
+      <summary className='cursor-pointer rounded px-1 py-1 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400'>
+        {runs.length} recent runs
+      </summary>
+      <div className='mt-1 space-y-1 border-l border-neutral-200 pl-2 dark:border-neutral-700'>
+        {runs.map(stream => (
+          <button
+            key={stream.streamId}
+            type='button'
+            onClick={() => onNavigate(stream)}
+            disabled={!getStreamHref(stream)}
+            className='block w-full rounded-lg px-2 py-1.5 text-left hover:bg-neutral-100/80 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400 disabled:opacity-60 dark:hover:bg-neutral-800/60'
+          >
+            <span className='flex items-center gap-2'>
+              <span>{formatAgentTime(stream.completedAt || stream.createdAt)}</span>
+              <span>{stream.hasError ? 'error' : stream.completedAt ? 'completed' : stream.activityLabel}</span>
+              <span className='truncate font-mono' title={stream.streamId}>{summarizeAgentStreamId(stream.streamId)}</span>
+            </span>
+            {stream.parentMessageText ? <span className='mt-0.5 block truncate'>{stream.parentMessageText}</span> : null}
+          </button>
+        ))}
+      </div>
+    </details>
+  )
 }
 
 const formatAgentTime = (value: string | null | undefined): string => {
@@ -344,6 +385,10 @@ export const RunningAgentsFloatingButton: React.FC<RunningAgentsFloatingButtonPr
   const shouldReduceMotion = useReducedMotion()
   const motionPreferences = useMotionPreferences(shouldReduceMotion)
   const { activeStreams, streamHistory } = useRunningAgentStreams(notes, allConversations)
+  const { activeForks, historyForks } = useMemo(
+    () => buildAgentForkGroups(activeStreams, streamHistory),
+    [activeStreams, streamHistory]
+  )
   const notifications = useAppSelector(state => state.ui.notifications)
   const currentConversationId = useAppSelector(selectCurrentConversationId)
   const currentPath = useAppSelector(selectCurrentPath)
@@ -356,7 +401,7 @@ export const RunningAgentsFloatingButton: React.FC<RunningAgentsFloatingButtonPr
   const hasActiveStreams = activeStreams.length > 0
   const hasErroredStream = activeStreams.some(stream => stream.hasError)
   const compactLabel = 'agents'
-  const activeCountLabel = activeStreams.length > 1 ? `+${activeStreams.length - 1}` : null
+  const activeCountLabel = activeForks.length > 1 ? `+${activeForks.length - 1}` : null
   const { theme: customTheme, enabled: customThemeEnabled } = useCustomChatTheme()
   const isDarkMode = useHtmlDarkMode()
 
@@ -512,8 +557,8 @@ export const RunningAgentsFloatingButton: React.FC<RunningAgentsFloatingButtonPr
   const ariaLabel = useMemo(() => {
     if (inlineNotification) return inlineNotification.title
     if (activeStreams.length === 0) return 'Running agents: none active'
-    return `Running agents: ${activeStreams.length} active`
-  }, [activeStreams.length, inlineNotification])
+    return `Running agents: ${activeForks.length} active forks, ${activeStreams.length} running executions`
+  }, [activeForks.length, activeStreams.length, inlineNotification])
 
   useEffect(() => {
     const activeIds = new Set(notifications.map(notification => notification.id))
@@ -810,7 +855,7 @@ export const RunningAgentsFloatingButton: React.FC<RunningAgentsFloatingButtonPr
                         style={floatingStatusDotStyle}
                         aria-hidden='true'
                       />
-                      {activeStreams.length}
+                      {activeForks.length} {activeForks.length === 1 ? 'fork' : 'forks'}
                     </span>
                   </div>
                 </div>
@@ -824,11 +869,12 @@ export const RunningAgentsFloatingButton: React.FC<RunningAgentsFloatingButtonPr
                   </div>
                 ) : (
                   <div className='max-h-72 space-y-1.5 overflow-y-auto pr-1 thin-scrollbar'>
-                    {activeStreams.map(stream => {
+                    {activeForks.map(fork => {
+                      const stream = fork.representative
                       const href = getStreamHref(stream)
                       return (
+                        <div key={fork.key}>
                         <motion.button
-                          key={stream.streamId}
                           type='button'
                           layout
                           onClick={() => navigateToStream(stream)}
@@ -850,7 +896,7 @@ export const RunningAgentsFloatingButton: React.FC<RunningAgentsFloatingButtonPr
                                   className='shrink-0 text-[11px] lg:text-xs font-bold text-emerald-600 dark:text-emerald-300'
                                   style={floatingAgentNameStyle}
                                 >
-                                  {stream.displayName}
+                                  <span title={fork.lineageId ?? undefined}>{fork.displayName}</span>
                                 </span>
                                 <span className='shrink-0 text-[10px] lg:text-[11px] font-medium text-neutral-500 dark:text-neutral-400'
                                   style={floatingMutedTextStyle}>
@@ -873,7 +919,10 @@ export const RunningAgentsFloatingButton: React.FC<RunningAgentsFloatingButtonPr
                                     transition={{ duration: 1.6, repeat: shouldReduceMotion ? 0 : Infinity, ease: 'easeInOut' }}
                                   />
                                 </span>
-                                {stream.hasError ? (
+                                <span style={floatingMutedTextStyle}>
+                                  {fork.activeStreams.length} running · {fork.completedStreams.length} recent
+                                </span>
+                                {fork.hasError ? (
                                   <span
                                     className='rounded-full bg-rose-100 px-2 py-0.5 text-[10px] lg:text-[11px] font-medium text-rose-700 dark:bg-rose-500/15 dark:text-rose-200'
                                     style={floatingErrorBadgeStyle}
@@ -891,6 +940,8 @@ export const RunningAgentsFloatingButton: React.FC<RunningAgentsFloatingButtonPr
                             </div>
                           </div>
                         </motion.button>
+                        <ForkRunDetails fork={fork} onNavigate={navigateToStream} style={floatingMutedTextStyle} />
+                        </div>
                       )
                     })}
                   </div>
@@ -904,27 +955,28 @@ export const RunningAgentsFloatingButton: React.FC<RunningAgentsFloatingButtonPr
                     >
                       History
                     </div>
-                    {streamHistory.length > 0 ? (
+                    {historyForks.length > 0 ? (
                       <div className='text-[10px] lg:text-[11px] text-neutral-500 dark:text-neutral-400' style={floatingMutedTextStyle}>
-                        last {streamHistory.length}
+                        {historyForks.length} {historyForks.length === 1 ? 'fork' : 'forks'}
                       </div>
                     ) : null}
                   </div>
 
-                  {streamHistory.length === 0 ? (
+                  {historyForks.length === 0 ? (
                     <div
                       className='rounded-2xl bg-neutral-50/70 px-3 py-2.5 text-xs lg:text-sm text-neutral-500 dark:bg-neutral-900/40 dark:text-neutral-400'
                       style={floatingCardStyle}
                     >
-                      Completed streams will appear here.
+                      Idle forks will appear here. Recent runs of active forks stay above.
                     </div>
                   ) : (
                     <div className='max-h-56 space-y-1.5 overflow-y-auto pr-1 thin-scrollbar'>
-                      {streamHistory.map(stream => {
+                      {historyForks.map(fork => {
+                        const stream = fork.representative
                         const href = getStreamHref(stream)
                         return (
+                          <div key={fork.key}>
                           <motion.button
-                            key={`history-${stream.streamId}`}
                             type='button'
                             layout
                             onClick={() => navigateToStream(stream)}
@@ -946,7 +998,7 @@ export const RunningAgentsFloatingButton: React.FC<RunningAgentsFloatingButtonPr
                                     className='shrink-0 text-[11px] lg:text-xs font-bold text-neutral-500 dark:text-neutral-400'
                                     style={floatingAgentHistoryNameStyle}
                                   >
-                                    {stream.displayName}
+                                    <span title={fork.lineageId ?? undefined}>{fork.displayName}</span>
                                   </span>
                                   <span className='shrink-0 text-[10px] lg:text-[11px] font-medium text-neutral-500 dark:text-neutral-400'
                                   style={floatingMutedTextStyle}>
@@ -960,6 +1012,9 @@ export const RunningAgentsFloatingButton: React.FC<RunningAgentsFloatingButtonPr
                                   </span>
                                 </div>
                                 <ParentMessageTicker text={stream.parentMessageText} reduceMotion={shouldReduceMotion} />
+                                <div className='mt-1 text-[11px] lg:text-xs' style={floatingMutedTextStyle}>
+                                  {fork.completedStreams.length} recent {fork.completedStreams.length === 1 ? 'run' : 'runs'}
+                                </div>
                                 <div className='mt-1 flex flex-wrap items-center gap-1.5 text-[11px] lg:text-xs'>
                                   <span
                                     className={`h-2.5 w-2.5 rounded-full ${customThemeEnabled ? '' : stream.hasError ? 'bg-rose-500' : 'bg-emerald-500'}`}
@@ -985,6 +1040,8 @@ export const RunningAgentsFloatingButton: React.FC<RunningAgentsFloatingButtonPr
                               </div>
                             </div>
                           </motion.button>
+                          <ForkRunDetails fork={fork} onNavigate={navigateToStream} style={floatingMutedTextStyle} />
+                          </div>
                         )
                       })}
                     </div>

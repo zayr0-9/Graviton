@@ -233,6 +233,7 @@ export type LineageId = string & { readonly __lineageIdBrand?: never }
 // Lineage metadata for tracking stream hierarchy (subagents, tool-spawned streams)
 export interface StreamLineage {
   lineageId?: LineageId          // Exact renderer branch/lineage identity
+  lineageIdConfirmed?: boolean  // Server resolved this run's lineage (not its initial source lineage)
   parentStreamId?: string        // If spawned from another stream
   rootMessageId?: MessageId      // The message whose branch this stream belongs to
   originMessageId?: MessageId    // The message that triggered this subagent/tool-run

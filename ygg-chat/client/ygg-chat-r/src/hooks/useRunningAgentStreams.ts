@@ -15,6 +15,7 @@ export type AgentStreamListItem = {
   streamId: string
   streamType: string
   lineageId: string | null
+  lineageIdConfirmed: boolean
   conversationId: string | null
   projectId: string | null
   conversationTitle: string | null
@@ -38,6 +39,87 @@ export type AgentStreamListItem = {
   activityLabel: string
   completedAt: string | null
   displayName: string
+}
+
+export type AgentForkGroup = {
+  key: string
+  displayName: string
+  lineageId: string | null
+  activeStreams: AgentStreamListItem[]
+  completedStreams: AgentStreamListItem[]
+  representative: AgentStreamListItem
+  hasError: boolean
+}
+
+export const getAgentForkKey = (stream: AgentStreamListItem): string =>
+  stream.conversationId && stream.lineageId && stream.lineageIdConfirmed
+    ? JSON.stringify(['fork', stream.conversationId, stream.lineageId])
+    : JSON.stringify(['run', stream.streamId])
+
+/** Reconcile late terminal metadata without losing snapshots of pruned runs. */
+export const refreshAgentStreamHistory = (
+  history: AgentStreamListItem[],
+  streamsById: Record<string, StreamState>,
+  buildItem: (streamId: string, stream: StreamState, completedAt: string | null, index: number) => AgentStreamListItem
+): AgentStreamListItem[] => {
+  let changed = false
+  const next = history.map((item, index) => {
+    const stream = streamsById[item.streamId]
+    if (!stream || stream.active) return item
+    const refreshed = buildItem(item.streamId, stream, item.completedAt, index)
+    if ((Object.keys(item) as Array<keyof AgentStreamListItem>).every(key => item[key] === refreshed[key])) return item
+    changed = true
+    return refreshed
+  })
+  return changed ? next : history
+}
+
+/** Presentation only: execution, cancellation and replay remain stream-scoped. */
+export const buildAgentForkGroups = (
+  activeStreams: readonly AgentStreamListItem[],
+  streamHistory: readonly AgentStreamListItem[]
+): { activeForks: AgentForkGroup[]; historyForks: AgentForkGroup[] } => {
+  const groups = new Map<string, AgentForkGroup>()
+  const activeIds = new Set(activeStreams.map(stream => stream.streamId))
+  const add = (stream: AgentStreamListItem, active: boolean) => {
+    const key = getAgentForkKey(stream)
+    let group = groups.get(key)
+    if (!group) {
+      const lineageId = stream.lineageIdConfirmed && stream.conversationId ? stream.lineageId : null
+      group = {
+        key,
+        displayName: lineageId ? `fork ${summarizeAgentStreamId(lineageId)}` : 'run · fork unresolved',
+        lineageId,
+        activeStreams: [],
+        completedStreams: [],
+        representative: stream,
+        hasError: false,
+      }
+      groups.set(key, group)
+    }
+    ;(active ? group.activeStreams : group.completedStreams).push(stream)
+  }
+  activeStreams.forEach(stream => add(stream, true))
+  streamHistory.forEach(stream => {
+    if (!activeIds.has(stream.streamId)) add(stream, false)
+  })
+
+  const newestFirst = (a: AgentStreamListItem, b: AgentStreamListItem) =>
+    b.createdAt.localeCompare(a.createdAt) || a.streamId.localeCompare(b.streamId)
+  for (const group of groups.values()) {
+    group.activeStreams.sort(newestFirst)
+    group.completedStreams.sort(newestFirst)
+    // Navigation/preview/status must describe live work, not an older completed run.
+    group.representative = group.activeStreams[0] ?? group.completedStreams[0]
+    group.hasError = group.activeStreams.length > 0
+      ? group.activeStreams.some(stream => stream.hasError)
+      : group.representative.hasError
+  }
+  const ordered = [...groups.values()].sort((a, b) => newestFirst(a.representative, b.representative))
+  return {
+    activeForks: ordered.filter(group => group.activeStreams.length > 0),
+    historyForks: ordered.filter(group => group.activeStreams.length === 0),
+  }
 }
 
 export const summarizeAgentStreamId = (value: string | null | undefined): string => {
@@ -243,6 +325,7 @@ export function useRunningAgentStreams(notes: ResearchNoteItem[] = [], allConver
         streamId,
         streamType: stream.streamType,
         lineageId: stream.lineage.lineageId ? String(stream.lineage.lineageId) : null,
+        lineageIdConfirmed: stream.lineage.lineageIdConfirmed === true,
         conversationId: streamConversationId,
         projectId: convo?.project_id ? String(convo.project_id) : note?.project_id ? String(note.project_id) : null,
         conversationTitle: convo?.title || note?.title || (streamConversationId ? `Conversation ${streamConversationId}` : null),
@@ -314,16 +397,17 @@ export function useRunningAgentStreams(notes: ResearchNoteItem[] = [], allConver
       completedItems.push(buildAgentStreamListItem(streamId, stream, new Date().toISOString(), completedItems.length))
     })
 
-    if (completedItems.length > 0) {
-      setStreamHistory(previous => {
-        const incomingById = new Map(completedItems.map(item => [item.streamId, item]))
-        const merged = [...previous.filter(item => !incomingById.has(item.streamId)), ...completedItems]
-        return merged
-          .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
-          .slice(0, 40)
-          .map((item, index) => ({ ...item, displayName: `agent-${index + 1}` }))
-      })
-    }
+    setStreamHistory(previous => {
+      const incomingById = new Map(completedItems.map(item => [item.streamId, item]))
+      const merged = [...previous.filter(item => !incomingById.has(item.streamId)), ...completedItems]
+      const retained = completedItems.length > 0
+        ? merged
+            .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+            .slice(0, 40)
+            .map((item, index) => ({ ...item, displayName: `agent-${index + 1}` }))
+        : previous
+      return refreshAgentStreamHistory(retained, streamingRoot.byId, buildAgentStreamListItem)
+    })
 
     previousActiveStreamIdsRef.current = currentActiveIds
   }, [buildAgentStreamListItem, streamingRoot.activeIds, streamingRoot.byId])

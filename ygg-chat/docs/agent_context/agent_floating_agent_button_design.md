@@ -49,8 +49,11 @@ Expanded state:
 - The outer shell widens/height-expands using Framer Motion layout animation.
 - The apps expand button stays visually pinned to the far right of the widened shell.
 - The running-agent panel appears below the top row.
-- Active stream list and history list are independently scrollable.
-- Active streams and history are sorted by stream start/created time.
+- Active forks and idle-fork history are independently scrollable, sorted by their latest run's start/created time.
+- Group runs by `(conversationId, server-confirmed lineageId)`; retain separate stream IDs for execution and replay. Initial source lineages and missing identities stay as individual unresolved runs until the server resolves them.
+- Show one row per fork with a stable shortened lineage label, the latest active request/navigation target, and running/recent counts. Idle rows use the latest completed run.
+- Recent completed runs stay under their active fork rather than duplicating it in History. A native disclosure exposes individual runs when more than one is retained.
+- Compact/header counts describe active fork groups, while the accessible label also reports running executions. History remains component-local and bounded to 40 completed runs.
 
 Notification state:
 
@@ -157,7 +160,7 @@ flowchart TD
 - `GlobalNotifications` currently owns notification auto-dismiss lifecycle but returns `null`; keep that if the floating button remains the notification presentation.
 - If multiple notification types are added, decide whether they should all appear in the floating button or only `branch_stream_completed`.
 - If the apps button becomes a `motion.button` with `layout`, test carefully for jitter. The current stable pattern is normal button shell plus tiny animated icon.
-- Stream display labels in the compact top-level control should remain `agents`; individual rows can use `agent-1`, `agent-2`, etc.
+- The compact top-level label remains `agents`. Group rows use a shortened durable lineage ID rather than positional `agent-1` / `agent-2` labels, which would change when sorting changes.
 
 ## Validation
 
@@ -169,4 +172,6 @@ flowchart TD
   4. Apps expand button stays pinned far right in both collapsed and expanded/notification states.
   5. Stream-completion notification widens the shell, then returns to `agents` state.
   6. Clicking notification navigates to the completed stream.
-  7. Active and history lists scroll and remain sorted by start/created time.
+  7. Active and history lists scroll and remain sorted by the latest run's start/created time.
+  8. Consecutive sends on one fork reuse one group; sibling forks remain separate, including while their server identity resolves.
+  9. Expand recent runs and navigate to individual run targets; a fork with multiple active executions counts as one fork.

@@ -908,6 +908,7 @@ export const chatSlice = createSlice({
             : streamBelongsToCurrentPath
 
           stream.lineage.lineageId = lineageId ?? undefined
+          stream.lineage.lineageIdConfirmed = Boolean(lineageId)
           if (
             lineageId &&
             stream.conversationId === state.conversation.currentConversationId &&
