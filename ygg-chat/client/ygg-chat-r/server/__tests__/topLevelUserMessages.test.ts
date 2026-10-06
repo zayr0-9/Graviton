@@ -65,7 +65,7 @@ describe('shared human top-level message selector', () => {
     expect(selectMessages()[0]).toEqual({
       id: 'earlier', conversation_id: 'conversation-1', content: 'earlier',
       plain_text_content: 'plain earlier', note: 'note earlier', note_color: '#123456',
-      created_at: '2026-09-30T11:00:00Z',
+      created_at: '2026-09-30T11:00:00Z', role: 'user', parent_id: null, children_ids: '[]',
     })
   })
 

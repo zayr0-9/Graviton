@@ -9,6 +9,7 @@
  *
  * This service is independent of React lifecycle and maintains its own state.
  */
+import type { WatchCompletionEvent } from '../../../../shared/watchEvents'
 import { buildCachedLocalWebSocketUrl, buildLocalApiUrl, refreshLocalServerStatus } from '../utils/api'
 
 // Types mirrored from server (electron/tools/orchestrator/types.ts)
@@ -117,6 +118,13 @@ class ToolJobManager {
 
   // Event listeners
   private eventListeners: Set<JobEventListener> = new Set()
+  private watchListeners = new Set<(event: WatchCompletionEvent) => void>()
+  private seenWatchCompletions = new Set<string>()
+
+  onWatchCompletion(listener: (event: WatchCompletionEvent) => void): () => void {
+    this.watchListeners.add(listener)
+    return () => this.watchListeners.delete(listener)
+  }
   private changeListeners: Set<JobsChangeListener> = new Set()
 
   // Initialization state
@@ -207,7 +215,14 @@ class ToolJobManager {
         try {
           const message = JSON.parse(event.data)
 
-          if (message.type === 'job_event') {
+          if (message.type === 'watch_completion') {
+            const completion = message.data as WatchCompletionEvent
+            if (!this.seenWatchCompletions.has(completion.handle)) {
+              this.seenWatchCompletions.add(completion.handle)
+              if (this.seenWatchCompletions.size > 256) this.seenWatchCompletions.delete(this.seenWatchCompletions.values().next().value!)
+              for (const listener of this.watchListeners) listener(completion)
+            }
+          } else if (message.type === 'job_event') {
             this.handleJobEvent(message.data as JobEvent)
           } else if (message.type === 'jobs_subscribed') {
             this.wsSubscribed = true

@@ -299,6 +299,8 @@ export interface StreamingRootState {
 
 // Action payloads for streaming actions
 export interface SendingStartedPayload {
+  /** Reattachment must not consume unrelated composer drafts. */
+  preserveDrafts?: boolean
   streamId: string
   streamType?: StreamType
   conversationId?: ConversationId | null

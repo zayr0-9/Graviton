@@ -2804,11 +2804,11 @@ export const abortGeneration = createAsyncThunk<
  */
 export const resumeInFlightStreams = createAsyncThunk<
   void,
-  { conversationId: string },
+  { conversationId: string; streamId?: string },
   { state: RootState }
->('chat/resumeInFlightStreams', async ({ conversationId }, { dispatch, getState }) => {
+>('chat/resumeInFlightStreams', async ({ conversationId, streamId }, { dispatch, getState }) => {
   if (!isResumableRunsEnabled()) return
-  const records = listInflightStreams(String(conversationId))
+  const records = listInflightStreams(String(conversationId)).filter(record => !streamId || record.streamId === streamId)
   for (const rec of records) {
     // Route remounts must not replace the module-level reader that survived the Chat
     // unmount. RunSession attach is last-writer-wins, so ownership is checked per stream.
@@ -2823,6 +2823,7 @@ export const resumeInFlightStreams = createAsyncThunk<
       dispatch(
         chatSliceActions.sendingStarted({
           streamId: rec.streamId,
+          preserveDrafts: true,
           streamType: rec.streamType,
           conversationId: rec.conversationId,
           lineage: { rootMessageId: rec.parentMessageId ?? undefined },

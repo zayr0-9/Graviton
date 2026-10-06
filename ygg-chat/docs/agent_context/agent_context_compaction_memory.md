@@ -4,6 +4,8 @@ paths:
   - "client/ygg-chat-r/server/headlessServer/services/toolLoopService.ts"
   - "client/ygg-chat-r/src/features/chats/compactionContext.ts"
   - "client/ygg-chat-r/src/features/chats/contextTokenEstimate.ts"
+  - "client/ygg-chat-r/shared/contextTokenEstimate.ts"
+  - "client/ygg-chat-r/server/headlessServer/services/contextStatusTool.ts"
   - "client/ygg-chat-r/server/context/autoMemory.ts"
   - "client/ygg-chat-r/server/context/contextLoader.ts"
   - "client/ygg-chat-r/.ygg/hooks/root_note_stop.py"
@@ -35,6 +37,12 @@ Use this when changing:
 - MANUAL compaction (the UI "compact" button) dispatches the renderer `compactBranch` thunk, but the thunk is now a thin client for `POST /api/conversations/:id/compact`. `CompactionService.compactBranch` generates and persists the summary before the renderer receives or exposes its server-assigned ID.
 - The renderer also keeps a PRE-BRANCH auto-compaction precheck inside `editMessageWithBranching` (`chatActions.ts`): if branch context ≥85%, it dispatches the same thin-client `compactBranch` thunk before sending the branch.
 - The renderer no longer imports `resolveOpenAIContinuationCompaction` or otherwise orchestrates in-loop compaction (grep-confirmed: zero hits in `src`).
+
+## Shared meter and branch context tool
+
+- `client/ygg-chat-r/shared/contextTokenEstimate.ts` owns the existing `tokenx` meter calculation, image-payload redaction, latest OpenAI usage selection, and `calculateBranchContextUsage`. The renderer's `src/features/chats/contextTokenEstimate.ts` re-exports these helpers for existing imports; `Chat.tsx` uses the shared branch calculation without changing the bar's behavior.
+- `context_status` uses the same calculation with the calling run's active history, ignoring duplicate standalone tool rows and respecting compaction. Main chat passes the same project/conversation prompts as the UI meter; direct/subagent callers fall back to their runtime prompts. The tool returns only `remainingTokens`, whole-number `remainingPercent` (rounded), and a brief approximation note. It uses provider-resolved context length (or the meter's 128,000 fallback for other providers), never credits. Reported OpenAI usage remains a latest-request snapshot, not a live tokenizer count.
+- The server's continuation-compaction projection below is unchanged; the context tool is a gauge, not a replacement compaction policy.
 
 ## Server-side context/token estimation
 

@@ -1,3 +1,6 @@
+import { createHash } from 'node:crypto'
+import { isContextInjectionMessage } from '../../../../shared/contextInjection.js'
+
 export interface FetchNotesArgs {
   action?: 'top_level' | 'siblings' | 'all'
   conversationId?: string
@@ -23,11 +26,32 @@ export interface FetchChatsArgs {
   previewChars?: number
   offset?: number
   skip?: number
+  responseMode?: 'metadata' | 'notes' | 'preview' | 'full'
+  maxOutputChars?: number
+  cursor?: string
+  updatedAfter?: string
+  updatedBefore?: string
+  includeToolMessages?: boolean
+  includeSyntheticMessages?: boolean
+  messageLimit?: number
+  messageSkip?: number
+}
+
+export interface ConversationPageInput {
+  userId?: string
+  projectId?: string
+  updatedAfter?: string
+  updatedBefore?: string
+  query?: string
+  limit: number
+  skip: number
 }
 
 interface FetchChatsExecuteOptions {
   currentConversationId?: string | null
   listConversations: () => Array<Record<string, any>>
+  listConversationsPage?: (input: ConversationPageInput) => Array<Record<string, any>>
+  countTopLevelUserMessages?: (conversationId: string) => number
   getConversationById: (conversationId: string) => Record<string, any> | undefined
   searchConversations?: (input: { userId: string; projectId?: string; query: string; limit: number }) => Array<Record<string, any>>
   searchTopLevelMessages?: (input: { userId: string; projectId?: string; query: string; limit: number }) => Array<Record<string, any>>
@@ -56,7 +80,10 @@ interface ChatSummaryItem {
   title: string | null
   created_at: string | null
   updated_at: string | null
-  top_level_messages: BaseMessageItem[]
+  rootMessageCount?: number
+  top_level_messages?: BaseMessageItem[]
+  messageSkip?: number
+  hasMoreMessages?: boolean
 }
 
 interface BranchReadItem extends BaseMessageItem {
@@ -129,6 +156,13 @@ export interface FetchChatsResult {
   hasMore?: boolean
   stoppedReason?: 'end_of_branch' | 'branch_point'
   nextBranchChildIds?: string[]
+  responseMode?: FetchChatsArgs['responseMode']
+  nextCursor?: string
+  omittedCount?: number
+  omittedChars?: number
+  truncated?: boolean
+  contentOffset?: number
+  nextMessageSkip?: number
 }
 
 const DEFAULT_LIMIT = 50
@@ -137,6 +171,9 @@ const DEFAULT_PREVIEW_CHARS = 180
 const MAX_PREVIEW_CHARS = 1200
 const DEFAULT_BRANCH_OFFSET = 10
 const MAX_BRANCH_OFFSET = 200
+const DEFAULT_OUTPUT_CHARS = 20000
+const MIN_OUTPUT_CHARS = 2000
+const MAX_OUTPUT_CHARS = 200000
 
 const safeText = (value: unknown): string => (typeof value === 'string' ? value : '')
 
@@ -420,7 +457,7 @@ const buildLinearBranchFromMessage = (
   return { chain, stoppedReason, nextBranchChildIds }
 }
 
-export async function execute(
+async function executePage(
   args: FetchChatsArgs,
   options: FetchChatsExecuteOptions
 ): Promise<FetchChatsResult> {
@@ -429,118 +466,52 @@ export async function execute(
   const previewChars = clampInt(args?.previewChars, DEFAULT_PREVIEW_CHARS, 20, MAX_PREVIEW_CHARS)
   const limit = clampInt(args?.limit, DEFAULT_LIMIT, 1, MAX_LIMIT)
 
-  if (action === 'list_chats') {
-    const chats = options
-      .listConversations()
-      .sort(sortByUpdatedAtDesc)
-      .slice(0, limit)
-      .map(conversation => {
-        const conversationId = safeText(conversation?.id)
-        const topLevelMessages = options.listTopLevelUserMessagesByConversationId
-          ? options.listTopLevelUserMessagesByConversationId(conversationId)
-          : options
-              .listMessagesByConversationId(conversationId)
-              .filter(msg => msg?.parent_id == null && safeText(msg?.role).toLowerCase() === 'user')
-
-        return summarizeChat(conversation, topLevelMessages, includeContentPreview, previewChars)
-      })
-
-    return {
-      success: true,
-      action,
-      currentConversationId: normalizeNullableText(options.currentConversationId),
-      totalCount: chats.length,
-      chats,
+  const skip = clampInt(args.skip, 0, 0, Number.MAX_SAFE_INTEGER)
+  if (action === 'list_chats' || action === 'get_chats' || action === 'search_chats') {
+    const query = action === 'search_chats' ? safeText(args.query).trim() : undefined
+    if (action === 'search_chats' && !query) return { success: false, error: 'query is required for search_chats' }
+    const contextId = args.conversationId || options.currentConversationId
+    const userId = safeText(args.userId).trim() || (contextId ? safeText(options.getConversationById(contextId)?.user_id) : '')
+    const projectId = safeText(args.projectId).trim() || undefined
+    if (action === 'search_chats' && !userId) return { success: false, error: 'userId or current conversation is required for search_chats' }
+    let conversations: Array<Record<string, any>>
+    if (action === 'get_chats') {
+      const ids = uniqueIds([args.conversationId, ...(args.conversationIds || [])])
+      if (!ids.length) return { success: false, error: 'conversationId or conversationIds is required for get_chats' }
+      conversations = ids.map(id => options.getConversationById(id)).filter((row): row is Record<string, any> => Boolean(row))
+        .slice(skip, skip + limit + 1)
+    } else if (options.listConversationsPage) {
+      conversations = options.listConversationsPage({ userId: userId || undefined, projectId,
+        updatedAfter: args.updatedAfter, updatedBefore: args.updatedBefore, query, skip, limit: limit + 1 })
+    } else {
+      conversations = options.listConversations().filter(row =>
+        (!userId || row.user_id === userId) && (!projectId || row.project_id === projectId) &&
+        (!args.updatedAfter || parseTimestamp(row.updated_at) >= Date.parse(args.updatedAfter)) &&
+        (!args.updatedBefore || parseTimestamp(row.updated_at) < Date.parse(args.updatedBefore)) &&
+        (!query || safeText(row.title).toLowerCase().includes(query.toLowerCase()) ||
+          safeText(row.title).toLowerCase().replace(/[\s_-]+/g, '').includes(query.toLowerCase().replace(/[\s_-]+/g, '')))
+      ).sort((a, b) => sortByUpdatedAtDesc(a, b) || safeText(a.id).localeCompare(safeText(b.id)))
+        .slice(skip, skip + limit + 1)
     }
-  }
-
-  if (action === 'get_chats') {
-    const requestedConversationIds = Array.from(
-      new Set([
-        safeText(args?.conversationId).trim(),
-        ...uniqueIds(args?.conversationIds),
-      ].filter(Boolean))
-    )
-
-    if (requestedConversationIds.length === 0) {
-      return { success: false, error: 'conversationId or conversationIds is required when action="get_chats"' }
-    }
-
-    const chats = requestedConversationIds
-      .map(conversationId => options.getConversationById(conversationId))
-      .filter(Boolean)
-      .map(conversation => {
-        const conversationId = safeText(conversation?.id)
-        const topLevelMessages = options.listTopLevelUserMessagesByConversationId
-          ? options.listTopLevelUserMessagesByConversationId(conversationId)
-          : options
-              .listMessagesByConversationId(conversationId)
-              .filter(msg => msg?.parent_id == null && safeText(msg?.role).toLowerCase() === 'user')
-
-        return summarizeChat(conversation!, topLevelMessages, includeContentPreview, previewChars)
-      })
-
-    return {
-      success: true,
-      action,
-      requestedConversationIds,
-      totalCount: chats.length,
-      chats,
-    }
-  }
-
-  if (action === 'search_chats') {
-    const query = safeText(args?.query).trim()
-    if (!query) {
-      return { success: false, error: 'query is required when action="search_chats"' }
-    }
-
-    const explicitUserId = safeText(args?.userId).trim()
-    const projectId = safeText(args?.projectId).trim() || undefined
-    const inferredConversationId = safeText(args?.conversationId || options.currentConversationId).trim()
-    const inferredUserId = inferredConversationId ? safeText(options.getConversationById(inferredConversationId)?.user_id).trim() : ''
-    const userId = explicitUserId || inferredUserId
-
-    if (!userId) {
-      return {
-        success: false,
-        error: 'userId is required for search_chats unless it can be inferred from conversationId/current conversation',
+    const mode = args.responseMode || 'metadata'
+    const messageSkip = clampInt(args.messageSkip, 0, 0, Number.MAX_SAFE_INTEGER)
+    const messageLimit = clampInt(args.messageLimit, 10, 1, MAX_LIMIT)
+    const chats = conversations.slice(0, limit).map(conversation => {
+      const id = safeText(conversation.id)
+      const metadata = { id, title: normalizeNullableText(conversation.title),
+        created_at: normalizeNullableText(conversation.created_at), updated_at: normalizeNullableText(conversation.updated_at) }
+      if (mode === 'metadata' && options.countTopLevelUserMessages) {
+        return { ...metadata, rootMessageCount: options.countTopLevelUserMessages(id) }
       }
-    }
-
-    const matchedConversations = options.searchConversations
-      ? options.searchConversations({ userId, projectId, query, limit })
-      : options
-          .listConversations()
-          .filter(conversation => {
-            if (safeText(conversation?.user_id).trim() !== userId) return false
-            if (projectId && safeText(conversation?.project_id).trim() !== projectId) return false
-            const title = safeText(conversation?.title).toLowerCase()
-            const normalizedTitle = title.replace(/[\s_-]+/g, '')
-            const lowerQuery = query.toLowerCase()
-            const normalizedQuery = lowerQuery.replace(/[\s_-]+/g, '')
-            return title.includes(lowerQuery) || (normalizedQuery && normalizedTitle.includes(normalizedQuery))
-          })
-          .sort(sortByUpdatedAtDesc)
-          .slice(0, limit)
-
-    const chats = matchedConversations.map(conversation => {
-      const conversationId = safeText(conversation?.id)
-      const topLevelMessages = options.listTopLevelUserMessagesByConversationId
-        ? options.listTopLevelUserMessagesByConversationId(conversationId)
-        : options
-            .listMessagesByConversationId(conversationId)
-            .filter(msg => msg?.parent_id == null && safeText(msg?.role).toLowerCase() === 'user')
-
-      return summarizeChat(conversation, topLevelMessages, includeContentPreview, previewChars)
+      const messages = options.listTopLevelUserMessagesByConversationId
+        ? options.listTopLevelUserMessagesByConversationId(id)
+        : options.listMessagesByConversationId(id).filter(msg => msg.parent_id == null && msg.role === 'user')
+      if (mode === 'metadata') return { ...metadata, rootMessageCount: messages.length }
+      const summary = summarizeChat(conversation, messages.slice(messageSkip, messageSkip + messageLimit), includeContentPreview, previewChars)
+      return { ...summary, rootMessageCount: messages.length, messageSkip,
+        hasMoreMessages: messageSkip + messageLimit < messages.length }
     })
-
-    return {
-      success: true,
-      action,
-      totalCount: chats.length,
-      chats,
-    }
+    return { success: true, action, chats, skip, returnedCount: chats.length, hasMore: conversations.length > limit }
   }
 
   if (action === 'search_messages') {
@@ -696,30 +667,14 @@ export async function execute(
   }
 
   if (action === 'get_notes') {
-    const notesResult = await executeFetchNotes(
-      {
-        action: 'all',
-        conversationId: args?.conversationId,
-        branchPointAncestorId: args?.branchPointAncestorId,
-        limit,
-        includeEmpty: args?.includeEmpty,
-        includeContentPreview,
-        previewChars,
-      },
-      options
-    )
-
-    return {
-      success: notesResult.success,
-      error: notesResult.error,
-      action,
-      conversationId: notesResult.conversationId,
-      branchPointAncestorId: notesResult.branchPointAncestorId,
-      siblingCount: notesResult.siblingCount,
-      totalCount: notesResult.totalCount,
-      noteCount: notesResult.noteCount,
-      notes: notesResult.notes,
-    }
+    const conversationId = safeText(args.conversationId || options.currentConversationId)
+    if (!conversationId) return { success: false, error: 'conversationId is required for get_notes' }
+    const notes = options.listMessagesByConversationId(conversationId)
+      .filter(msg => args.includeEmpty || Boolean(normalizeNote(msg.note)))
+      .sort((a, b) => sortByCreatedAtAsc({ created_at: a.created_at }, { created_at: b.created_at }))
+    return { success: true, action, conversationId, totalCount: notes.length,
+      notes: notes.slice(skip, skip + limit).map(msg => normalizeMessage(msg, false, previewChars)),
+      hasMore: skip + limit < notes.length }
   }
 
   const messageId = safeText(args?.messageId).trim()
@@ -740,26 +695,149 @@ export async function execute(
   const allMessages = options.listMessagesByConversationId(conversationId)
   const messageMap = new Map(allMessages.map(msg => [safeText(msg?.id), msg]))
   const { chain, stoppedReason, nextBranchChildIds } = buildLinearBranchFromMessage(startMessage, messageMap)
-
+  const eligible = chain.filter(msg =>
+    (args.includeToolMessages || ['user', 'assistant'].includes(safeText(msg.role))) &&
+    (args.includeSyntheticMessages || (!isContextInjectionMessage(msg) && msg.note !== '__auto_compaction_summary__')))
   const offset = clampInt(args?.offset, DEFAULT_BRANCH_OFFSET, 1, MAX_BRANCH_OFFSET)
-  const skip = clampInt(args?.skip, 0, 0, Number.MAX_SAFE_INTEGER)
-  const sliced = chain.slice(skip, skip + offset)
+  const sliced = eligible.slice(skip, skip + offset)
+  return { success: true, action, conversationId, messageId, skip, offset,
+    totalCount: eligible.length, returnedCount: sliced.length, hasMore: skip + offset < eligible.length,
+    stoppedReason, nextBranchChildIds,
+    branchMessages: sliced.map((msg, index) => ({ ...normalizeMessage(msg, includeContentPreview, previewChars), sequence_index: skip + index })) }
+}
 
-  return {
-    success: true,
-    action,
-    conversationId,
-    messageId,
-    skip,
-    offset,
-    totalCount: chain.length,
-    returnedCount: sliced.length,
-    hasMore: skip + offset < chain.length,
-    stoppedReason,
-    nextBranchChildIds,
-    branchMessages: sliced.map((msg, index) => ({
-      ...normalizeMessage(msg, includeContentPreview, previewChars),
-      sequence_index: skip + index,
-    })),
+type ResponseMode = NonNullable<FetchChatsArgs['responseMode']>
+
+function projectMessage(message: any, mode: ResponseMode): any {
+  const { content, plain_text_content, content_preview, note, note_color, previewChars, ...metadata } = message
+  if (mode === 'metadata') return metadata
+  if (mode === 'notes') return { id: message.id, conversation_id: message.conversation_id, created_at: message.created_at, note }
+  if (mode === 'preview') return { ...metadata, content_preview: normalizePreview(plain_text_content || content || content_preview, clampInt(previewChars, DEFAULT_PREVIEW_CHARS, 20, MAX_PREVIEW_CHARS)) }
+  return { ...metadata, content: plain_text_content || content || '', note, note_color }
+}
+
+// Text fields can be continued within a single oversized record. IDs/tree fields
+// remain intact, so callers can identify each partial record without replay dumps.
+const BODY_FIELDS = new Set(['content', 'content_preview', 'note', 'title', 'conversation_title'])
+function sliceRecordText(value: any, start: number, length: number): { value: any; total: number; splitSurrogate: boolean } {
+  let position = 0
+  let splitSurrogate = false
+  const visit = (item: any): any => {
+    if (Array.isArray(item)) return item.map(visit)
+    if (!item || typeof item !== 'object') return item
+    return Object.fromEntries(Object.entries(item).map(([key, child]) => {
+      if (typeof child === 'string' && BODY_FIELDS.has(key)) {
+        const from = Math.max(0, start - position)
+        const to = Math.max(0, Math.min(child.length, start + length - position))
+        if (to > from && to < child.length && /[\uD800-\uDBFF]/.test(child[to - 1]) && /[\uDC00-\uDFFF]/.test(child[to])) splitSurrogate = true
+        position += child.length
+        return [key, child.slice(from, Math.max(from, to))]
+      }
+      return [key, visit(child)]
+    }))
   }
+  const result = visit(value)
+  return { value: result, total: position, splitSurrogate }
+}
+
+export async function execute(args: FetchChatsArgs, options: FetchChatsExecuteOptions): Promise<FetchChatsResult> {
+  const actions = ['list_chats', 'get_chats', 'search_chats', 'search_messages', 'search_notes', 'get_notes', 'read_branch']
+  if (args.action !== undefined && !actions.includes(args.action)) return { success: false, error: 'Unknown fetch_chats action' }
+  const action = resolveChatsAction(args.action)
+  const mode = args.responseMode || (action === 'get_notes' || action === 'search_notes' ? 'notes' :
+    action === 'read_branch' || action === 'search_messages' ? (args.includeContentPreview === false ? 'metadata' : 'preview') : 'metadata')
+  if (!['metadata', 'notes', 'preview', 'full'].includes(mode)) return { success: false, error: 'Invalid responseMode' }
+  for (const date of [args.updatedAfter, args.updatedBefore]) {
+    if (date !== undefined && !Number.isFinite(Date.parse(date))) return { success: false, error: 'Date filters must be valid ISO timestamps' }
+  }
+  const budget = clampInt(args.maxOutputChars, DEFAULT_OUTPUT_CHARS, MIN_OUTPUT_CHARS, MAX_OUTPUT_CHARS)
+  const effectiveConversationId = args.conversationId || options.currentConversationId || null
+  const cursorScope = {
+    action, mode, conversationId: effectiveConversationId, conversationIds: uniqueIds(args.conversationIds),
+    userId: args.userId || (effectiveConversationId ? options.getConversationById(effectiveConversationId)?.user_id : null) || null,
+    projectId: args.projectId || null, query: args.query || null, messageId: args.messageId || null,
+    updatedAfter: args.updatedAfter || null, updatedBefore: args.updatedBefore || null,
+    limit: clampInt(args.limit, DEFAULT_LIMIT, 1, MAX_LIMIT), offset: clampInt(args.offset, DEFAULT_BRANCH_OFFSET, 1, MAX_BRANCH_OFFSET),
+    messageLimit: clampInt(args.messageLimit, 10, 1, MAX_LIMIT), messageSkip: clampInt(args.messageSkip, 0, 0, Number.MAX_SAFE_INTEGER),
+    previewChars: clampInt(args.previewChars, DEFAULT_PREVIEW_CHARS, 20, MAX_PREVIEW_CHARS), includeEmpty: Boolean(args.includeEmpty),
+    includeToolMessages: Boolean(args.includeToolMessages), includeSyntheticMessages: Boolean(args.includeSyntheticMessages),
+  }
+  const fingerprint = createHash('sha256').update(JSON.stringify(cursorScope)).digest('hex').slice(0, 16)
+  let skip = clampInt(args.skip, 0, 0, Number.MAX_SAFE_INTEGER)
+  let contentOffset = 0
+  if (args.cursor) {
+    try {
+      const parsed = JSON.parse(Buffer.from(args.cursor, 'base64url').toString('utf8'))
+      if (parsed.fingerprint !== fingerprint || parsed.action !== action || parsed.mode !== mode || !Number.isSafeInteger(parsed.skip) || parsed.skip < 0 ||
+        !Number.isSafeInteger(parsed.contentOffset) || parsed.contentOffset < 0) throw new Error('Invalid cursor')
+      skip = parsed.skip
+      contentOffset = parsed.contentOffset
+    } catch { return { success: false, error: 'Invalid continuation cursor' } }
+  }
+  // Search providers cap candidates at 200. Other actions page directly.
+  const search = action === 'search_messages' || action === 'search_notes'
+  const result = await executePage({ ...args, responseMode: mode, skip, limit: search ? MAX_LIMIT : args.limit }, options)
+  if (!result.success) return JSON.stringify(result).length <= budget ? result : { success: false, error: 'Retrieval failed' }
+  const key = result.chats ? 'chats' : result.branchMessages ? 'branchMessages' : result.notes ? 'notes' :
+    result.messageSearchResults ? 'messageSearchResults' : 'noteSearchResults'
+  let records: any[] = (result[key] as any[]) || []
+  if (search) {
+    const limit = clampInt(args.limit, DEFAULT_LIMIT, 1, MAX_LIMIT)
+    result.hasMore = skip + limit < records.length
+    records = records.slice(skip, skip + limit)
+  }
+  records = records.map(record => {
+    if (key === 'chats') return { ...record, ...(record.top_level_messages ? {
+      top_level_messages: record.top_level_messages.map((msg: any) => projectMessage({ ...msg, previewChars: args.previewChars }, mode)),
+    } : {}) }
+    if (key === 'branchMessages' || key === 'notes') return projectMessage({ ...record, previewChars: args.previewChars }, mode)
+    const { content, note, ...metadata } = record
+    if (mode === 'metadata') return metadata
+    if (mode === 'notes') return { ...metadata, note }
+    if (mode === 'preview') return { ...metadata, content_preview: normalizePreview(content || note, clampInt(args.previewChars, DEFAULT_PREVIEW_CHARS, 20, MAX_PREVIEW_CHARS)) }
+    return record
+  })
+  const output: FetchChatsResult = { ...result, [key]: [], responseMode: mode, skip,
+    returnedCount: 0, omittedCount: records.length, omittedChars: 0, truncated: false, contentOffset }
+  const cursor = (nextSkip: number, nextOffset = 0) => Buffer.from(JSON.stringify({ action, mode, fingerprint, skip: nextSkip, contentOffset: nextOffset })).toString('base64url')
+  const accepted: any[] = []
+  // Reserve continuation and accounting overhead before accepting any records.
+  for (const record of records) {
+    const candidate = contentOffset ? sliceRecordText(record, contentOffset, Number.MAX_SAFE_INTEGER).value : record
+    const trial = { ...output, [key]: [...accepted, candidate], nextCursor: cursor(skip + accepted.length + 1), hasMore: true }
+    if (JSON.stringify(trial).length > budget - 256) break
+    accepted.push(candidate)
+    contentOffset = 0
+  }
+  let nextOffset = 0
+  let advanced = accepted.length
+  if (!accepted.length && records.length) {
+    const record = records[0]
+    const total = sliceRecordText(record, 0, 0).total
+    let low = 0
+    let high = Math.max(0, total - contentOffset)
+    while (low < high) {
+      const mid = Math.ceil((low + high) / 2)
+      const trial = { ...output, [key]: [sliceRecordText(record, contentOffset, mid).value], nextCursor: cursor(skip, contentOffset + mid), hasMore: true }
+      if (JSON.stringify(trial).length <= budget - 256) low = mid
+      else high = mid - 1
+    }
+    if (sliceRecordText(record, contentOffset, low).splitSurrogate) low--
+    if (!low) return { success: false, error: 'Record metadata exceeds output budget; increase maxOutputChars or reduce messageLimit' }
+    accepted.push(sliceRecordText(record, contentOffset, low).value)
+    nextOffset = contentOffset + low
+    if (nextOffset >= total) { nextOffset = 0; advanced = 1 }
+    output.omittedChars = Math.max(0, total - contentOffset - low)
+  }
+  output[key] = accepted as any
+  output.returnedCount = accepted.length
+  output.omittedCount = records.length - advanced
+  output.truncated = advanced < records.length || nextOffset > 0
+  output.hasMore = Boolean(result.hasMore || output.truncated)
+  if (output.hasMore) output.nextCursor = cursor(skip + advanced, nextOffset)
+  if (result.chats?.some(chat => chat.hasMoreMessages)) {
+    output.nextMessageSkip = clampInt(args.messageSkip, 0, 0, Number.MAX_SAFE_INTEGER) + clampInt(args.messageLimit, 10, 1, MAX_LIMIT)
+  }
+  if (JSON.stringify(output).length > budget) return { success: false, error: 'Response metadata exceeds output budget; increase maxOutputChars' }
+  return output
 }

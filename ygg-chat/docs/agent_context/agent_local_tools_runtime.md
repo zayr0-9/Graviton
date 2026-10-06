@@ -62,7 +62,7 @@ Permission/clarify decisions are NOT renderer-owned pre-checks anymore. The loop
 
 ## Important Invariants
 
-- File tools must respect workspace/root path and safety constraints.
+- File tools must respect workspace/root path and safety constraints, except `html_renderer` file reads: it accepts exactly one of inline `html` or a raw `path`, reads UTF-8 HTML without workspace/provenance restrictions, and uses `cwd` (defaulting to the workspace root or process cwd) only as a relative-path base. Absolute paths, `~/`, outside-workspace paths, and symlink targets are allowed; OS read permissions still apply. Both built-in registries return the same `{ success, html }` payload for the existing HTML viewer.
 - Mutating operations should be explicit and auditable.
 - Search tools (`glob`, `ripgrep`) receive the orchestrator's `signal` and `deadlineMs` in both built-in registries. Their independent defaults remain 5 seconds and 30 seconds; preparation consumes the budget and an earlier caller deadline wins. Timeout/cancellation returns structured failure rather than successful empty/partial matches. These budgets are independent of the renderer SSE watchdog and Settings.
 - Glob uses abortable incremental iteration and stops at its match cap, rather than collecting the full tree first. Its Windows Node filesystem cwd must remain a native/UNC path, not be converted back into a WSL Linux path.
@@ -102,3 +102,20 @@ For targeted Vitest runs, use the relevant config in `client/ygg-chat-r/vitest.t
 - `agent_tool_registry.md`
 - `agent_tool_permissions.md` (future recommended — not yet present)
 - `docs/tool-permissions.md`
+
+## Asynchronous watches
+
+`watcher` is a branch-scoped headless executor, like `subagent_manager`, not a
+long-lived leaf job or utility-process plugin. `services/watchService.ts` owns
+bounded memory-only condition checks; `ToolOrchestrator.publishWatchCompletion`
+pushes fixed metadata over the existing subscribed-job WebSocket channel and
+replays bounded completion history on reconnect. `ToolJobManager` projects these
+into the agents pill via `uiActions.notificationAdded`. Watch completion also
+submits a provenance-tagged user message through ChatOrchestrator's safe-boundary
+queue; normally completed branches use the shared successor launcher. Watches
+pin origin/latest lineage mailboxes until completion. Accepted stream identity
+pushes let the renderer reattach without changing selected branch or drafts.
+Stopped/failed/unavailable branches report delivery failure, not a silent fork.
+`stopLocalServer` cancels watches before transport teardown.
+See [watcher schema and limitations](../watcher-tool.md) and
+`server/headlessServer/services/__tests__/watchService.test.ts`.

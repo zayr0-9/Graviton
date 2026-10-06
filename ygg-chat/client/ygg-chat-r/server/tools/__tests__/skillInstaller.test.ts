@@ -73,6 +73,7 @@ describe('skillInstaller GitHub clone installation', () => {
   })
 
   afterEach(async () => {
+    vi.unstubAllGlobals()
     await Promise.all([
       rm(skillsDir, { recursive: true, force: true }),
       rm(fixtureRepo, { recursive: true, force: true }),
@@ -171,6 +172,35 @@ describe('skillInstaller GitHub clone installation', () => {
     })
     await expect(access(path.join(skillsDir, 'repo', 'first-skill', 'SKILL.md'))).resolves.toBeUndefined()
     await expect(access(path.join(skillsDir, 'repo', 'second-skill', '.skill-meta.json'))).resolves.toBeUndefined()
+  })
+
+  it('installs a Settings GitHub URL using one clone and no HTTP file requests', async () => {
+    await addSkill('.', 'test-skill')
+    const fetchMock = vi.fn().mockRejectedValue(new Error('HTTP downloads must not be used'))
+    vi.stubGlobal('fetch', fetchMock)
+
+    const { installFromUrl } = await import('../../skills/skillInstaller.js')
+    const result = await installFromUrl('https://github.com/owner/repo.git')
+
+    expect(result).toMatchObject({ success: true, skillName: 'test-skill' })
+    expect(cloneCalls).toHaveLength(1)
+    expect(fetchMock).not.toHaveBeenCalled()
+    expect(await readdir(skillsDir)).toEqual(['test-skill'])
+  })
+
+  it('installs all skills using one clone and no per-skill HTTP requests', async () => {
+    await addSkill('skills/one', 'first-skill')
+    await addSkill('skills/two', 'second-skill')
+    const fetchMock = vi.fn().mockRejectedValue(new Error('HTTP downloads must not be used'))
+    vi.stubGlobal('fetch', fetchMock)
+
+    const { installAllFromGitHub } = await import('../../skills/skillInstaller.js')
+    const result = await installAllFromGitHub('https://github.com/owner/repo.git')
+
+    expect(result).toMatchObject({ success: true, skillNames: ['first-skill', 'second-skill'] })
+    expect(cloneCalls).toHaveLength(1)
+    expect(fetchMock).not.toHaveBeenCalled()
+    expect(await readdir(skillsDir)).toEqual(['repo'])
   })
 
   it('rejects normalized-name collisions in a grouped repository', async () => {

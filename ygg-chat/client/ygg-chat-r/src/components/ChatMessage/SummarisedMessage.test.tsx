@@ -28,6 +28,16 @@ vi.mock('../MarkdownLink/MarkdownLink', () => ({ MarkdownLink: () => null, markd
 import { ChatMessage } from './ChatMessage'
 
 describe('SummarisedMessage', () => {
+  it('also bypasses rich user bubbles for provenance-tagged watcher completions', () => {
+    state.chat.conversation.messages.push({ id: 'watch', role: 'user', meta: { kind: 'watcher_completion' } } as any)
+    const content = 'Watcher completion: process_exit watch 075f30b0-fd46-4839-9cd4-3793b8cc8444 triggered. Continue the original task.'
+    const html = renderToStaticMarkup(<ChatMessage id='watch' role='user' content={content} width='w-full' customThemeEnabled={false} />)
+    expect(html).toContain('Watcher triggered')
+    expect(html).toContain('data-chat-watcher="true"')
+    expect(html).not.toContain('rounded-2xl')
+    expect(html).not.toContain('>Watcher completion:')
+    expect(content).toContain('Continue the original task.')
+  })
   it('renders a compact notice with a stable message anchor', () => {
     const html = renderToStaticMarkup(
       <SummarisedMessage id='message-summary' customThemeEnabled={false} />

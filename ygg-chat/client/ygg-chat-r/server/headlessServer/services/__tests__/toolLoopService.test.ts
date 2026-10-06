@@ -4,6 +4,9 @@ import { MessageRepo } from '../../persistence/messageRepo.js'
 import type { MessageSink } from '../messageSink.js'
 import { ProviderRouter } from '../providerRouter.js'
 import { ProviderEmptyResponseError, ToolLoopService } from '../toolLoopService.js'
+import { createContextStatusExecutor } from '../contextStatusTool.js'
+import { createMultiCallDispatchExecutor } from '../multiCallExecutor.js'
+import { calculateBranchContextUsage } from '../../../../shared/contextTokenEstimate.js'
 
 let BetterSqlite3Ctor: (new (filename: string) => Database.Database) | null = null
 
@@ -1266,5 +1269,102 @@ describe('ToolLoopService signal + robustness (in-memory sink)', () => {
     ).rejects.toThrow('reached max turns (2)')
     expect(providerRouter.calls).toHaveLength(2)
     expect(events.some(event => event.type === 'tool_loop' && event.status === 'max_turns_reached' && event.maxTurns === 2)).toBe(true)
+  })
+})
+
+describe('ToolLoopService context_status (in-memory sink)', () => {
+  it('isolates concurrent branches, passes reported usage and each run context limit', async () => {
+    const reports: any[] = []
+    const leaf = vi.fn(async () => { throw new Error('Unexpected job dispatch') })
+    const dispatch = createMultiCallDispatchExecutor(createContextStatusExecutor(leaf))
+    const execute = async (call: any, context: any) => {
+      const result = await dispatch(call, context)
+      reports.push({ lineageId: context.lineageId, result })
+      return result
+    }
+    const run = async (lineageId: string, usedTokens: number, limit: number) => {
+      const providerRouter = new FakeProviderRouter()
+      providerRouter.enqueue({ content: '', contextUsage: {
+        provider: 'openai', usedTokens, inputTokens: usedTokens, outputTokens: 0,
+        cachedInputTokens: 0, reasoningTokens: 0, totalTokens: usedTokens, recordedAt: '2026-10-06T00:00:00.000Z',
+      }, toolCalls: [{ id: `batch-${lineageId}`, name: 'multi_call', arguments: { calls: [{ tool: 'context_status' }] } }] })
+      providerRouter.enqueue({ content: 'done' })
+      const service = new ToolLoopService({ sink: new FakeSink(), providerRouter: providerRouter as any, executeTool: execute })
+      await service.run({ ...baseRunInput, lineageId, streamId: `run-${lineageId}`, contextLength: limit, operationMode: 'plan' }, () => {})
+    }
+    await Promise.all([run('a', 200, 1000), run('b', 500, 2000)])
+    for (const [lineageId, usedTokens, totalContextLimit] of [['a', 200, 1000], ['b', 500, 2000]] as const) {
+      const report = reports.find(item => item.lineageId === lineageId && item.result.results).result.results[0].data
+      expect(report).toMatchObject({ remainingTokens: totalContextLimit - usedTokens,
+        remainingPercent: Math.round((totalContextLimit - usedTokens) / totalContextLimit * 100) })
+    }
+    expect(leaf).not.toHaveBeenCalled()
+  })
+
+  it('estimates only active branch history after compaction, using meter prompts and no duplicate tool rows', async () => {
+    const providerRouter = new FakeProviderRouter()
+    providerRouter.enqueue({ content: '', toolCalls: [{ id: 'status', name: 'context_status', arguments: {} }] })
+    providerRouter.enqueue({ content: 'done' })
+    const sink = new FakeSink()
+    const reports: any[] = []
+    const executor = createContextStatusExecutor(vi.fn())
+    const service = new ToolLoopService({ sink, providerRouter: providerRouter as any, executeTool: async (call, context) => {
+      const result = await executor(call, context)
+      reports.push(result)
+      return result
+    } })
+    const summary = { id: 'summary', role: 'system', note: '__auto_compaction_summary__', content: 'summary' }
+    const prompts = ['project prompt', 'conversation context']
+    let expectedTokens = 0
+    await service.run({ ...baseRunInput, provider: 'lmstudio', lineageId: 'branch', history: [
+      { role: 'user', content: 'old '.repeat(10000) }, summary,
+      { role: 'tool', content: 'duplicate tool result '.repeat(1000) },
+    ], contextMeterPrompts: prompts }, event => {
+      if (event.type === 'assistant_message_persisted' && reports.length === 0) {
+        expectedTokens = calculateBranchContextUsage({ providerName: 'lmstudio', messages: [summary, event.message], prompts }).totalContextTokens
+      }
+    })
+    expect(reports[0]).toMatchObject({ remainingTokens: Math.max(0, 128000 - expectedTokens),
+      remainingPercent: Math.round(Math.max(0, 128000 - expectedTokens) / 128000 * 100) })
+  })
+
+  it('uses the provider context resolver and clamps exhausted headroom to zero', async () => {
+    const providerRouter = new FakeProviderRouter()
+    ;(providerRouter as any).resolveContextLength = () => 1000
+    providerRouter.enqueue({ content: '', contextUsage: {
+      provider: 'openai', usedTokens: 1200, inputTokens: 1200, outputTokens: 0,
+      cachedInputTokens: 0, reasoningTokens: 0, totalTokens: 1200, recordedAt: '2026-10-06T00:00:00.000Z',
+    }, toolCalls: [{ id: 'status', name: 'context_status', arguments: {} }] })
+    providerRouter.enqueue({ content: 'done' })
+    let report: any
+    const executor = createContextStatusExecutor(vi.fn())
+    const service = new ToolLoopService({ sink: new FakeSink(), providerRouter: providerRouter as any, executeTool: async (call, context) => {
+      report = await executor(call, context)
+      return report
+    } })
+    await service.run({ ...baseRunInput, contextLength: 99999, autoCompactionEnabled: false }, () => {})
+    expect(report).toMatchObject({ remainingTokens: 0, remainingPercent: 0 })
+  })
+})
+
+describe('context_status estimated same-turn results', () => {
+  it('includes results from earlier top-level calls before their assistant blocks are merged', async () => {
+    const providerRouter = new FakeProviderRouter()
+    providerRouter.enqueue({ content: '', toolCalls: [
+      { id: 'read', name: 'read_file', arguments: {} },
+      { id: 'status', name: 'context_status', arguments: {} },
+    ] })
+    providerRouter.enqueue({ content: 'done' })
+    let report: any
+    const execute = createContextStatusExecutor(async () => 'large result '.repeat(4000))
+    const service = new ToolLoopService({ sink: new FakeSink(), providerRouter: providerRouter as any,
+      executeTool: async (call, context) => {
+        const result = await execute(call, context)
+        if (call.name === 'context_status') report = result
+        return result
+      },
+    })
+    await service.run({ ...baseRunInput, provider: 'lmstudio' }, () => {})
+    expect(report.remainingTokens).toBeLessThan(128000 - 4000)
   })
 })

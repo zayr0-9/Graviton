@@ -52,9 +52,10 @@ export type { ConversationMessagesTreeData } from '../features/chats/conversatio
  * - Homepage: Always refetch to show latest projects
  * - Chat.tsx: Never refetch (uses persisted cache for instant UI)
  *
+ * @param enabled - Optional flag to control whether the query runs (default: true)
  * @returns Query result with data, isLoading, isRefetching, and refetch function for manual refresh
  */
-export function useProjects() {
+export function useProjects(enabled: boolean = true) {
   const { accessToken, userId } = useAuth()
   void accessToken
   void userId
@@ -71,7 +72,7 @@ export function useProjects() {
       // latest_conversation_updated_at), or local-only in community mode.
       return gwApi.get<ProjectWithLatestConversation[]>(`/projects?userId=${userId}`)
     },
-    enabled: !!userId && !!userId,
+    enabled: enabled && !!userId,
     staleTime: 10 * 60 * 1000, // Projects don't change often, 10 minute cache
     refetchOnMount: isHomePage ? 'always' : false, // Force fresh data on Homepage
     refetchOnReconnect: false,

@@ -1,4 +1,7 @@
 import type Database from 'better-sqlite3'
+import { estimateTokenCount } from 'tokenx'
+import { extractOpenAIContextUsageFromBlocks } from '../../../shared/contextUsage.js'
+import { summarizeDurations, summarizeOutcomes } from './loggingAnalyticsMetrics.js'
 
 type QueryLike = Record<string, unknown>
 
@@ -60,7 +63,11 @@ const toNumber = (value: unknown) => {
 }
 const parseTimestamp = (value: unknown) => {
   if (typeof value !== 'string' || value.trim().length === 0) return null
-  const ms = Date.parse(value)
+  // SQLite CURRENT_TIMESTAMP is UTC but has no zone; Date.parse otherwise
+  // interprets it in the host's local timezone.
+  const normalized = /^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}(\.\d+)?$/.test(value.trim())
+    ? `${value.trim().replace(' ', 'T')}Z` : value
+  const ms = Date.parse(normalized)
   return Number.isNaN(ms) ? null : ms
 }
 const dayKey = (value: unknown) => {
@@ -130,15 +137,11 @@ const getRangeDays = (query: QueryLike) => {
   return Number.isFinite(parsed) ? clamp(Math.trunc(parsed), 1, 365) : 30
 }
 
-const placeholders = (values: unknown[]) => values.map(() => '?').join(',')
+const readAll = <T>(db: Database.Database, sql: string, params: unknown[] = []): T[] =>
+  db.prepare(sql).all(...params) as T[]
 
-const safeAll = <T>(db: Database.Database, sql: string, params: unknown[] = []): T[] => {
-  try {
-    return db.prepare(sql).all(...params) as T[]
-  } catch {
-    return []
-  }
-}
+const hasTable = (db: Database.Database, table: string): boolean =>
+  Boolean(db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(table))
 
 const textLengthForTokenEstimate = (message: MessageRow) => {
   let messageText = message.plain_text_content || message.content || ''
@@ -161,117 +164,113 @@ const textLengthForTokenEstimate = (message: MessageRow) => {
           })
           .join('\n')
 
-        if (blocksText) messageText = `${messageText}\n${blocksText}`.trim()
+        if (!messageText && blocksText) messageText = blocksText
       }
     } catch {
       // ignore malformed content_blocks
     }
   }
 
-  return messageText.length
+  return estimateTokenCount(messageText)
 }
 
-export function buildLocalAnalyticsDashboard(db: Database.Database, query: QueryLike) {
+export function buildLocalAnalyticsDashboard(db: Database.Database, query: QueryLike, now = Date.now()) {
+  // A coherent snapshot without moving heavy work onto the local server event loop.
+  return db.transaction(() => buildDashboardSnapshot(db, query, now))()
+}
+
+function buildDashboardSnapshot(db: Database.Database, query: QueryLike, now: number) {
   const rangeDays = getRangeDays(query)
   const projectId = getQueryString(query, 'projectId')
   const conversationId = getQueryString(query, 'conversationId')
   const modelFilter = getQueryString(query, 'model')
   const toolNameFilter = getQueryString(query, 'toolName')
   const toolStatusFilter = getQueryString(query, 'toolStatus')
-  const sinceMs = Date.now() - rangeDays * 24 * 60 * 60 * 1000
-  const sinceUnixSeconds = Math.floor(sinceMs / 1000)
+  const runStatusFilter = getQueryString(query, 'runStatus')
+  const sinceMs = now - rangeDays * 24 * 60 * 60 * 1000
+  const inRange = (value: unknown) => {
+    const timestamp = parseTimestamp(value)
+    return timestamp !== null && timestamp >= sinceMs && timestamp <= now
+  }
+  const dateScope = (column: string) => `julianday(${column}) BETWEEN julianday(?) AND julianday(?)`
+  const dateParams = [new Date(sinceMs).toISOString(), new Date(now).toISOString()]
+  const membership = (column: string) => [
+    conversationId ? `${column} = ?` : '',
+    projectId ? `${column} IN (SELECT id FROM conversations WHERE project_id = ?)` : '',
+  ].filter(Boolean).join(' AND ') || '1 = 1'
+  const memberParams = [conversationId, projectId].filter((value): value is string => Boolean(value))
 
-  const projects = safeAll<ProjectRow>(
-    db,
-    `SELECT id, name, created_at, storage_mode FROM projects WHERE strftime('%s', created_at) >= ? ${projectId ? 'AND id = ?' : ''} ORDER BY created_at ASC`,
-    projectId ? [sinceUnixSeconds, projectId] : [sinceUnixSeconds]
-  )
+  const projects = readAll<ProjectRow>(db, 'SELECT id, name, created_at, storage_mode FROM projects ORDER BY name')
+  const conversationOptions = readAll<ConversationRow>(db,
+    `SELECT id, project_id, title, created_at, storage_mode FROM conversations ${projectId ? 'WHERE project_id = ?' : ''} ORDER BY created_at`,
+    projectId ? [projectId] : [])
+  const scopedConversations = conversationOptions.filter(row => !conversationId || row.id === conversationId)
+  const messages = readAll<MessageRow>(db,
+    `SELECT id, conversation_id, parent_id, role, model_name, tool_calls, content, plain_text_content, content_blocks, created_at
+     FROM messages WHERE ${dateScope('created_at')} AND ${membership('conversation_id')} ORDER BY created_at`,
+    [...dateParams, ...memberParams])
 
-  const conversationWhere = ["strftime('%s', created_at) >= ?"]
-  const conversationParams: unknown[] = [sinceUnixSeconds]
-  if (projectId) {
-    conversationWhere.push('project_id = ?')
-    conversationParams.push(projectId)
-  }
-  if (conversationId) {
-    conversationWhere.push('id = ?')
-    conversationParams.push(conversationId)
-  }
-  const scopedConversations = safeAll<ConversationRow>(
-    db,
-    `SELECT id, project_id, title, created_at, storage_mode FROM conversations WHERE ${conversationWhere.join(' AND ')} ORDER BY created_at ASC`,
-    conversationParams
-  )
-  const scopedConversationIds = scopedConversations.map(conversation => conversation.id)
-  const scopedConversationIdSet = new Set(scopedConversationIds)
-
-  let messages: MessageRow[] = []
-  if (scopedConversationIds.length > 0) {
-    const messageWhere = [`strftime('%s', created_at) >= ?`, `conversation_id IN (${placeholders(scopedConversationIds)})`]
-    const messageParams: unknown[] = [sinceUnixSeconds, ...scopedConversationIds]
-    if (modelFilter) {
-      messageWhere.push('model_name = ?')
-      messageParams.push(modelFilter)
-    }
-    messages = safeAll<MessageRow>(
-      db,
-      `SELECT id, conversation_id, parent_id, role, model_name, tool_calls, content, plain_text_content, content_blocks, created_at
-       FROM messages
-       WHERE ${messageWhere.join(' AND ')}
-       ORDER BY created_at ASC`,
-      messageParams
-    )
-  }
-
-  const providerWhere = ["strftime('%s', pc.created_at) >= ?"]
-  const providerParams: unknown[] = [sinceUnixSeconds]
-  if (scopedConversationIds.length > 0) {
-    providerWhere.push(`m.conversation_id IN (${placeholders(scopedConversationIds)})`)
-    providerParams.push(...scopedConversationIds)
-  } else if (projectId || conversationId) {
-    providerWhere.push('1 = 0')
-  }
-  if (modelFilter) {
-    providerWhere.push("COALESCE(m.model_name, 'unknown') = ?")
-    providerParams.push(modelFilter)
-  }
-  const providerCosts = safeAll<ProviderCostRow>(
-    db,
+  const costsAvailable = hasTable(db, 'provider_cost')
+  const allProviderCosts = costsAvailable ? readAll<ProviderCostRow>(db,
     `SELECT pc.id, pc.message_id, pc.prompt_tokens, pc.completion_tokens, pc.reasoning_tokens, pc.approx_cost, pc.api_credit_cost,
             pc.created_at, m.conversation_id, m.model_name
-     FROM provider_cost pc
-     LEFT JOIN messages m ON m.id = pc.message_id
-     WHERE ${providerWhere.join(' AND ')}
-     ORDER BY pc.created_at ASC`,
-    providerParams
-  )
+     FROM provider_cost pc LEFT JOIN messages m ON m.id = pc.message_id
+     WHERE ${dateScope('pc.created_at')} AND ${membership('m.conversation_id')} ORDER BY pc.created_at`,
+    [...dateParams, ...memberParams]) : []
+  const providerCosts = allProviderCosts.filter(row => !modelFilter || (row.model_name || 'unknown') === modelFilter)
+  const jobsAvailable = hasTable(db, 'tool_jobs')
+  // Jobs have no model/run ownership. Model selection cannot be applied honestly.
+  const allToolJobs = jobsAvailable ? readAll<ToolJobRow>(db,
+    `SELECT id, tool_name, status, conversation_id, created_at, started_at, completed_at
+     FROM tool_jobs WHERE ${dateScope('created_at')} AND ${membership('conversation_id')} ORDER BY created_at`,
+    [...dateParams, ...memberParams]) : []
+  const toolJobs = allToolJobs.filter(row => (!toolNameFilter || row.tool_name === toolNameFilter) &&
+    (!toolStatusFilter || row.status === toolStatusFilter))
 
-  const jobWhere = ["strftime('%s', created_at) >= ?"]
-  const jobParams: unknown[] = [sinceUnixSeconds]
-  if (scopedConversationIds.length > 0) {
-    jobWhere.push(`conversation_id IN (${placeholders(scopedConversationIds)})`)
-    jobParams.push(...scopedConversationIds)
-  } else if (projectId || conversationId) {
-    jobWhere.push('1 = 0')
-  }
-  if (toolNameFilter) {
-    jobWhere.push('tool_name = ?')
-    jobParams.push(toolNameFilter)
-  }
-  if (toolStatusFilter) {
-    jobWhere.push('status = ?')
-    jobParams.push(toolStatusFilter)
-  }
-  const toolJobs = safeAll<ToolJobRow>(
-    db,
-    `SELECT id, tool_name, status, conversation_id, created_at, started_at, completed_at, error
-     FROM tool_jobs
-     WHERE ${jobWhere.join(' AND ')}
-     ORDER BY created_at ASC`,
-    jobParams
-  )
+  type RunRow = { status: string; stream_type: string; model_name: string | null; duration_ms: number | null; started_at: string }
+  const runsAvailable = hasTable(db, 'streaming_runs')
+  const allRuns = runsAvailable ? readAll<RunRow>(db,
+    `SELECT status, stream_type, model_name, duration_ms, started_at FROM streaming_runs
+     WHERE ${dateScope('started_at')} AND ${membership('conversation_id')}`,
+    [...dateParams, ...memberParams]) : []
+  const runs = allRuns.filter(row => (!modelFilter || (row.model_name || 'unknown') === modelFilter) &&
+    (!runStatusFilter || row.status === runStatusFilter))
 
-  const filteredMessages = messages
+  type InvocationRow = { tool_name: string; status: string; parent_tool_invocation_id: string | null;
+    duration_ms: number | null; started_at: string; model_name: string | null }
+  const invocationsAvailable = hasTable(db, 'tool_invocations')
+  const allInvocations = invocationsAvailable ? readAll<InvocationRow>(db,
+    `SELECT ti.tool_name, ti.status, ti.parent_tool_invocation_id, ti.duration_ms, ti.started_at,
+      ${runsAvailable ? 'COALESCE(sr.model_name, m.model_name)' : 'm.model_name'} AS model_name
+     FROM tool_invocations ti LEFT JOIN messages m ON m.id = ti.assistant_message_id
+     ${runsAvailable ? 'LEFT JOIN streaming_runs sr ON sr.stream_id = ti.run_id' : ''}
+     WHERE ${dateScope('ti.started_at')} AND ${membership('ti.conversation_id')}`,
+    [...dateParams, ...memberParams]) : []
+  const invocations = allInvocations.filter(row => (!modelFilter || (row.model_name || 'unknown') === modelFilter) &&
+    (!toolNameFilter || row.tool_name === toolNameFilter) && (!toolStatusFilter || row.status === toolStatusFilter))
+  const roots = invocations.filter(row => !row.parent_tool_invocation_id)
+  const nested = invocations.filter(row => Boolean(row.parent_tool_invocation_id))
+  const invocationGroups = new Map<string, InvocationRow[]>()
+  for (const row of invocations) {
+    const group = invocationGroups.get(row.tool_name) || []
+    group.push(row)
+    invocationGroups.set(row.tool_name, group)
+  }
+  const executionsByTool = Array.from(invocationGroups.entries()).map(([toolName, rows]) => {
+    return { toolName, ...summarizeOutcomes(rows), rootTotal: rows.filter(row => !row.parent_tool_invocation_id).length,
+      nestedTotal: rows.filter(row => Boolean(row.parent_tool_invocation_id)).length }
+  }).sort((a, b) => b.total - a.total || a.toolName.localeCompare(b.toolName))
+  const executionDaily = new Map<string, { date: string; root: number; nested: number; failed: number }>()
+  for (const row of invocations) {
+    const date = dayKey(row.started_at)
+    const bucket = executionDaily.get(date) || { date, root: 0, nested: 0, failed: 0 }
+    if (row.parent_tool_invocation_id) bucket.nested++
+    else bucket.root++
+    if (row.status === 'failed') bucket.failed++
+    executionDaily.set(date, bucket)
+  }
+
+  const filteredMessages = messages.filter(row => !modelFilter || (row.model_name || 'unknown') === modelFilter)
   const requestedToolCalls = filteredMessages.flatMap(message =>
     parseToolCalls(message.tool_calls)
       .map(call => extractToolName(call))
@@ -341,20 +340,27 @@ export function buildLocalAnalyticsDashboard(db: Database.Database, query: Query
   }
   const branchPoints = Array.from(childrenCountByParent.values()).filter(count => count > 1).length
   const depthMemo = new Map<string, number>()
-  const visiting = new Set<string>()
   const computeDepth = (id: string): number => {
-    if (depthMemo.has(id)) return depthMemo.get(id) || 0
-    if (visiting.has(id)) return 0
-    visiting.add(id)
-    const current = messageById.get(id)
-    let depth = 0
-    if (current?.parent_id && messageById.has(current.parent_id)) depth = computeDepth(current.parent_id) + 1
-    visiting.delete(id)
-    depthMemo.set(id, depth)
-    return depth
+    const path: string[] = []
+    const visiting = new Set<string>()
+    let current: string | null = id
+    while (current && messageById.has(current) && !depthMemo.has(current)) {
+      if (visiting.has(current)) {
+        // Corrupt cyclic ancestry is not a meaningful depth; keep the report usable.
+        for (const entry of path) depthMemo.set(entry, 0)
+        return 0
+      }
+      visiting.add(current)
+      path.push(current)
+      current = messageById.get(current)?.parent_id || null
+    }
+    let depth = current && depthMemo.has(current) ? depthMemo.get(current)! + 1 : 0
+    for (let index = path.length - 1; index >= 0; index--) depthMemo.set(path[index], depth++)
+    return depthMemo.get(id) || 0
   }
   const messageDepths = filteredMessages.map(message => computeDepth(message.id))
-  const maxDepth = messageDepths.length > 0 ? Math.max(...messageDepths) : 0
+  const maxDepth = messageDepths.reduce((max, depth) => Math.max(max, depth), 0)
+  const activeConversationIds = new Set(filteredMessages.map(row => row.conversation_id))
   const avgDepth = messageDepths.length > 0 ? messageDepths.reduce((sum, depth) => sum + depth, 0) / messageDepths.length : 0
 
   const totalApproxCost = providerCosts.reduce((sum, row) => sum + toNumber(row.approx_cost), 0)
@@ -362,7 +368,29 @@ export function buildLocalAnalyticsDashboard(db: Database.Database, query: Query
   const totalPromptTokens = providerCosts.reduce((sum, row) => sum + toNumber(row.prompt_tokens), 0)
   const totalCompletionTokens = providerCosts.reduce((sum, row) => sum + toNumber(row.completion_tokens), 0)
   const totalReasoningTokens = providerCosts.reduce((sum, row) => sum + toNumber(row.reasoning_tokens), 0)
-  const estimatedTotalTokens = filteredMessages.reduce((sum, message) => sum + textLengthForTokenEstimate(message), 0) * 4
+  const estimatedTotalTokens = filteredMessages.reduce((sum, message) => sum + textLengthForTokenEstimate(message), 0)
+  const seenResponses = new Set<string>()
+  let reportedSamples = 0
+  let duplicateSamples = 0
+  let unidentifiedSamples = 0
+  let inputTokens = 0
+  let outputTokens = 0
+  let cachedInputTokens = 0
+  let reportedReasoningTokens = 0
+  let reportedTotalTokens = 0
+  for (const message of filteredMessages.filter(row => row.role === 'assistant')) {
+    const usage = extractOpenAIContextUsageFromBlocks(message.content_blocks)
+    if (!usage) continue
+    if (usage.responseId && seenResponses.has(usage.responseId)) { duplicateSamples++; continue }
+    if (usage.responseId) seenResponses.add(usage.responseId)
+    else unidentifiedSamples++
+    reportedSamples++
+    inputTokens += usage.inputTokens
+    outputTokens += usage.outputTokens
+    cachedInputTokens += Math.min(usage.cachedInputTokens, usage.inputTokens)
+    reportedReasoningTokens += usage.reasoningTokens
+    reportedTotalTokens += usage.totalTokens
+  }
 
   const assistantMessageCount = filteredMessages.filter(message => message.role === 'assistant').length
   const assistantWithCost = filteredMessages.filter(message => message.role === 'assistant' && messageCostIdSet.has(message.id)).length
@@ -382,14 +410,18 @@ export function buildLocalAnalyticsDashboard(db: Database.Database, query: Query
     .sort((a, b) => a.date.localeCompare(b.date))
     .map(row => ({ ...row, approxCost: round(row.approxCost), apiCredits: round(row.apiCredits) }))
 
-  const modelStatsMap = new Map<string, { runs: number; totalApproxCost: number; totalApiCredits: number; tokens: number }>()
+  const modelStatsMap = new Map<string, { runs: number; totalApproxCost: number; totalApiCredits: number; tokens: number; prompt: number; completion: number; reasoning: number }>()
   for (const row of providerCosts) {
     const model = row.model_name || 'unknown'
-    const existing = modelStatsMap.get(model) || { runs: 0, totalApproxCost: 0, totalApiCredits: 0, tokens: 0 }
+    const existing = modelStatsMap.get(model) || { runs: 0, totalApproxCost: 0, totalApiCredits: 0, tokens: 0, prompt: 0, completion: 0, reasoning: 0 }
     existing.runs += 1
     existing.totalApproxCost += toNumber(row.approx_cost)
     existing.totalApiCredits += toNumber(row.api_credit_cost)
-    existing.tokens += toNumber(row.prompt_tokens) + toNumber(row.completion_tokens) + toNumber(row.reasoning_tokens)
+    existing.prompt += toNumber(row.prompt_tokens)
+    existing.completion += toNumber(row.completion_tokens)
+    existing.reasoning += toNumber(row.reasoning_tokens)
+    // Reasoning is a separate reported breakdown, not assumed additive to output.
+    existing.tokens += toNumber(row.prompt_tokens) + toNumber(row.completion_tokens)
     modelStatsMap.set(model, existing)
   }
   const topModels = Array.from(modelStatsMap.entries())
@@ -400,6 +432,7 @@ export function buildLocalAnalyticsDashboard(db: Database.Database, query: Query
       totalActualCredits: round(stat.totalApiCredits),
       avgActualCredits: round(stat.totalApiCredits / Math.max(1, stat.runs)),
       totalTokens: Math.round(stat.tokens),
+      prompt: stat.prompt, completion: stat.completion, reasoning: stat.reasoning,
     }))
     .sort((a, b) => b.totalActualCredits - a.totalActualCredits)
 
@@ -411,7 +444,9 @@ export function buildLocalAnalyticsDashboard(db: Database.Database, query: Query
     const key = dayKey(message.created_at)
     const toolNames = parseToolCalls(message.tool_calls).map(call => extractToolName(call)).filter((name): name is string => Boolean(name))
     if (!acc[key]) acc[key] = {}
-    for (const toolName of toolNames) acc[key][toolName] = (acc[key][toolName] || 0) + 1
+    for (const toolName of toolNames) {
+      if (!toolNameFilter || toolName === toolNameFilter) acc[key][toolName] = (acc[key][toolName] || 0) + 1
+    }
     return acc
   }, {})
 
@@ -488,22 +523,36 @@ export function buildLocalAnalyticsDashboard(db: Database.Database, query: Query
     })
     .sort((a, b) => (b.total !== a.total ? b.total - a.total : b.requested !== a.requested ? b.requested - a.requested : a.toolName.localeCompare(b.toolName)))
 
-  const availableModels = Array.from(new Set([...providerCosts.map(cost => cost.model_name || 'unknown'), ...messages.map(message => message.model_name || 'unknown')])).sort()
-  const availableToolNames = Array.from(new Set(messages.flatMap(message => parseToolCalls(message.tool_calls).map(call => extractToolName(call)).filter((name): name is string => Boolean(name))))).sort()
+  const availableModels = Array.from(new Set([...allProviderCosts.map(cost => cost.model_name || 'unknown'), ...messages.map(message => message.model_name || 'unknown'), ...allRuns.map(row => row.model_name || 'unknown'), ...allInvocations.map(row => row.model_name || 'unknown')])).sort()
+  const availableToolNames = Array.from(new Set([...messages.flatMap(message => parseToolCalls(message.tool_calls).map(call => extractToolName(call)).filter((name): name is string => Boolean(name))), ...allToolJobs.map(row => row.tool_name), ...allInvocations.map(row => row.tool_name)])).sort()
   const burnRatePerDay = totalApiCredits / Math.max(1, rangeDays)
 
   return {
     rangeDays,
-    source: 'local',
+    source: 'local' as const,
+    generatedAt: new Date(now).toISOString(),
+    availability: { costs: costsAvailable, jobs: jobsAvailable, runs: runsAvailable, executions: invocationsAvailable },
+    costRecords: providerCosts.length,
+    localRuns: { available: runsAvailable, ...summarizeOutcomes(runs),
+      main: summarizeOutcomes(runs.filter(row => ['primary', 'branch'].includes(row.stream_type))),
+      subagents: summarizeOutcomes(runs.filter(row => row.stream_type === 'subagent')) },
+    executions: { available: invocationsAvailable, root: summarizeOutcomes(roots), nested: summarizeOutcomes(nested),
+      byTool: executionsByTool, daily: Array.from(executionDaily.values()).sort((a, b) => a.date.localeCompare(b.date)) },
+    reportedUsage: { samples: reportedSamples, duplicateSamples, unidentifiedSamples, inputTokens, outputTokens,
+      cachedInputTokens, reasoningTokens: reportedReasoningTokens, totalTokens: reportedTotalTokens,
+      cachedInputPct: inputTokens > 0 ? cachedInputTokens / inputTokens * 100 : null,
+      assistantMessages: assistantMessageCount,
+      messagesWithUsage: filteredMessages.filter(row => row.role === 'assistant' && extractOpenAIContextUsageFromBlocks(row.content_blocks)).length },
     filters: {
-      applied: { projectId, conversationId, model: modelFilter, providerRunStatus: null, toolName: toolNameFilter, toolStatus: toolStatusFilter },
+      applied: { projectId, conversationId, model: modelFilter, providerRunStatus: null, runStatus: runStatusFilter, toolName: toolNameFilter, toolStatus: toolStatusFilter },
       available: {
         models: availableModels,
         providerRunStatuses: [],
         toolNames: availableToolNames,
-        toolJobStatuses: Array.from(new Set(toolJobs.map(job => job.status))).sort(),
+        toolJobStatuses: Array.from(new Set([...allToolJobs.map(job => job.status), ...allInvocations.map(row => row.status)])).sort(),
+        runStatuses: Array.from(new Set(allRuns.map(row => row.status))).sort(),
         projects: projects.map(project => ({ id: project.id, name: project.name, storage_mode: project.storage_mode })),
-        conversations: scopedConversations.map(conversation => ({ id: conversation.id, title: conversation.title, project_id: conversation.project_id, storage_mode: conversation.storage_mode })),
+        conversations: conversationOptions.map(conversation => ({ id: conversation.id, title: conversation.title, project_id: conversation.project_id, storage_mode: conversation.storage_mode })),
       },
     },
     summary: {
@@ -514,8 +563,12 @@ export function buildLocalAnalyticsDashboard(db: Database.Database, query: Query
       averageCreditsPerGeneration: round(totalApiCredits / Math.max(1, providerCosts.length)),
       averageCreditsPerAssistantMessage: round(totalApiCredits / Math.max(1, assistantMessageCount)),
       messagesTotal: filteredMessages.length,
-      conversationsCreated: scopedConversations.length,
-      projectsCreated: projects.length,
+      conversationsCreated: scopedConversations.filter(row => inRange(row.created_at)).length,
+      projectsCreated: projects.filter(row => (!projectId || row.id === projectId) &&
+        (!conversationId || scopedConversations.some(conversation => conversation.project_id === row.id)) && inRange(row.created_at)).length,
+      activeConversations: activeConversationIds.size,
+      activeProjects: new Set(scopedConversations.filter(row => activeConversationIds.has(row.id))
+        .map(row => row.project_id).filter(Boolean)).size,
       activeDays: Object.keys(messagesPerDay).length,
       estimatedTotalTokens,
     },
@@ -533,7 +586,7 @@ export function buildLocalAnalyticsDashboard(db: Database.Database, query: Query
     },
     models: {
       topByCredits: topModels,
-      tokenMixByModel: topModels.map(model => ({ model: model.model, prompt: model.totalTokens, completion: 0, reasoning: 0, samples: model.runs })),
+      tokenMixByModel: topModels.map(model => ({ model: model.model, prompt: model.prompt, completion: model.completion, reasoning: model.reasoning, samples: model.runs })),
     },
     providerRuns: {
       statusCounts: {},
@@ -552,12 +605,13 @@ export function buildLocalAnalyticsDashboard(db: Database.Database, query: Query
         unbatchedEquivalentCalls,
         savedCalls,
         savedCallsPct: unbatchedEquivalentCalls > 0 ? round((savedCalls / unbatchedEquivalentCalls) * 100, 2) : 0,
-        cachePrefixSavingsFactorPct: round(savedCalls * 10, 2),
+        // Legacy compatibility field; cache savings are not inferred from batching.
+        cachePrefixSavingsFactorPct: 0,
         byBatchTool: Array.from(batchingByTool.values()).sort((a, b) => a.toolName.localeCompare(b.toolName)),
         daily: Array.from(batchingDailyMap.values()).sort((a, b) => a.date.localeCompare(b.date)),
       },
       jobs: {
-        available: true,
+        available: jobsAvailable,
         statusCounts: toolStatusCounts,
         total: toolJobs.length,
         topFailing,

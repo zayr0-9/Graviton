@@ -33,6 +33,8 @@ import {
 } from '../providers/providerErrorFormatter.js'
 import { buildChatErrorEnvelope, type ChatErrorCode } from '../../../../../shared/chatErrors.js'
 import { trimHistoryToLatestCompaction } from './compactionService.js'
+import { calculateBranchContextUsage } from '../../../shared/contextTokenEstimate.js'
+import type { BranchContextStatus } from './contextStatusTool.js'
 import { assertToolAllowedForOperationMode, requiresAgentMode } from '../../../../../shared/operationModeToolPolicy.js'
 import type { OperationModeControl } from './operationModeControl.js'
 import {
@@ -64,6 +66,8 @@ export interface ToolExecutionContext {
   /** Durable execution identity of the currently executing parent tool. */
   parentToolInvocationId?: string | null
   lineageId?: string | null
+  /** Run-local meter callback; never uses renderer navigation or another branch. */
+  getContextStatus?: () => BranchContextStatus
   /** In-repo config directory setting of the parent chat (docs §11.4); subagents inherit it. */
   contextDirectories?: ContextDirectorySettings | null
 }
@@ -222,6 +226,8 @@ export interface ToolLoopRunInput {
   authSessions?: { app: string; codex: string }
   autoCompactionEnabled?: boolean
   contextLength?: number
+  /** Project/conversation meter prompts. Direct/subagent calls use their runtime prompts. */
+  contextMeterPrompts?: unknown[]
   compactionThresholdPercent?: number
   compactionProvider?: string | null
   compactionModelName?: string | null
@@ -1393,6 +1399,49 @@ export class ToolLoopService {
         : assistantMessage
       history.push(assistantForHistory)
       const assistantHistoryIndex = history.length - 1
+      // Capture this run's meter inputs, not a global/selected UI branch. The callback
+      // also survives multi_call context spreading without serializing the transcript.
+      const getContextStatus = (): BranchContextStatus => {
+        // Earlier calls in this same turn have live tool rows but are not merged
+        // into the assistant blocks until the whole batch settles. Include them once.
+        const pendingResults = history.slice(assistantHistoryIndex + 1).filter(message => message?.role === 'tool')
+        const meter = calculateBranchContextUsage({
+          providerName: input.provider,
+          messages: [
+            ...history.filter(message => message?.role !== 'tool'),
+            ...pendingResults.map(message => ({ content_blocks: [{
+              type: 'tool_result', tool_use_id: message.tool_call_id, content: message.content,
+            }] })),
+          ],
+          prompts: input.contextMeterPrompts ?? [
+            turnSystemPromptOverride ?? input.systemPrompt, input.conversationContext, input.projectContext,
+          ],
+        })
+        const router = this.providerRouter as ProviderRouter & {
+          resolveContextLength?: (provider: string, requested: number | undefined) => number | undefined
+        }
+        const resolvedLimit = router.resolveContextLength?.(input.provider, input.contextLength) ?? input.contextLength
+        const totalContextLimit = typeof resolvedLimit === 'number' && Number.isFinite(resolvedLimit) && resolvedLimit > 0
+          ? resolvedLimit
+          : route === 'openaichatgpt' ? openAIModelContextLength(input.modelName) : 128_000
+        const usedTokens = meter.totalContextTokens
+        const remainingTokens = Math.max(0, totalContextLimit - usedTokens)
+        return {
+          conversationId: input.conversationId,
+          lineageId: input.lineageId ?? null,
+          streamId: input.streamId ?? null,
+          messageId: assistantMessage.id,
+          provider: input.provider,
+          modelName: input.modelName,
+          usedTokens,
+          totalContextLimit,
+          remainingTokens,
+          usedPercent: Math.min(100, usedTokens / totalContextLimit * 100),
+          remainingPercent: remainingTokens / totalContextLimit * 100,
+          source: meter.source,
+          recordedAt: meter.reportedUsage?.recordedAt ?? new Date().toISOString(),
+        }
+      }
       emit({ type: 'assistant_message_persisted', message: assistantForHistory })
 
       if (!assistantToolCalls.length) {
@@ -1613,6 +1662,7 @@ export class ToolLoopService {
             parentToolInvocationId: invocation?.id ?? null,
             lineageId: input.lineageId ?? null,
             nestedExecutor: executeNested,
+            getContextStatus,
             contextDirectories: input.contextDirectories ?? null,
           })
 

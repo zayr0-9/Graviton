@@ -667,14 +667,16 @@ export const SettingsPane: React.FC<SettingsPaneProps> = ({ open, onClose }) => 
     const url = skillUrl.trim()
     if (!url) return
 
+    const isGitHubSource = /^https?:\/\/github\.com\//i.test(url)
     setSkillInstallStatus('loading')
-    setSkillInstallMessage('Downloading and installing skill...')
+    setSkillInstallMessage(isGitHubSource ? 'Cloning repository and installing skill...' : 'Downloading and installing skill...')
     setSkillInstallCandidates([])
 
     try {
-      const data = await localApi.post<SkillInstallResult>('/skills/install/url', {
-        url,
-      })
+      const data = await localApi.post<SkillInstallResult>(
+        isGitHubSource ? '/skills/install/github' : '/skills/install/url',
+        isGitHubSource ? { source: url } : { url }
+      )
 
       if (data.success) {
         setSkillInstallStatus('success')
@@ -708,7 +710,7 @@ export const SettingsPane: React.FC<SettingsPaneProps> = ({ open, onClose }) => 
     if (!url || skillInstallCandidates.length === 0) return
 
     setSkillInstallStatus('loading')
-    setSkillInstallMessage('Downloading and installing all skills...')
+    setSkillInstallMessage('Cloning repository and installing all skills...')
 
     try {
       const data = await localApi.post<SkillInstallResult>('/skills/install/github/all', { source: url })
@@ -2919,7 +2921,8 @@ ${block}`
                   {/* Help text */}
                   <p className='text-xs text-neutral-500 dark:text-neutral-500'>
                     Supported URLs: ClawdHub pages, GitHub HTTPS clone links, skill folders, or repos. Multi-skill
-                    repos can be installed individually or grouped under the repo name.
+                    repos can be installed individually or grouped under the repo name. GitHub installs use a shallow
+                    clone instead of per-file downloads and require Git on this machine.
                   </p>
 
                   {/* Installed Skills List */}

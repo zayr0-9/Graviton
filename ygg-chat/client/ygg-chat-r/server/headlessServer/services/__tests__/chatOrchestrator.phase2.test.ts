@@ -253,6 +253,40 @@ describeIfSqlite('ChatOrchestrator continuation semantics', () => {
     expect(events[events.length - 1].type).toBe('complete')
   })
 
+  it('persists automated watcher input on the live safe tail and in a completed-run successor', async () => {
+    const events: any[] = []
+    let release: (() => void) | undefined
+    let lineageId = ''
+    await orchestrator.runMessage({ operation: 'send', conversationId: 'c1', streamId: 'watch-origin',
+      content: 'benchmark task', provider: 'openaichatgpt', modelName: 'test' }, event => {
+      events.push(event)
+      if (event.type === 'started') lineageId = event.lineageId!
+      if (event.type === 'assistant_message_persisted' && !release) {
+        release = orchestrator.retainWatch({ conversationId: 'c1', lineageId, streamId: 'watch-origin', messageId: event.message.id })
+        orchestrator.submitWatchMessage('c1', lineageId, 'watch-origin', {
+          requestId: 'watcher:live', content: 'Watcher completion: live',
+          watcherCompletion: { handle: 'live', originMessageId: event.message.id },
+        })
+      }
+    })
+    const queued = events.find(event => event.type === 'queued_user_message_persisted')
+    expect(queued.message.role).toBe('user')
+    expect(JSON.parse(statements.getMessageById.get(queued.message.id).meta)).toMatchObject({ kind: 'watcher_completion', handle: 'live' })
+    expect(providerRouter.calls).toHaveLength(2)
+    const result = orchestrator.submitWatchMessage('c1', lineageId, 'watch-origin', {
+      requestId: 'watcher:idle', content: 'Watcher completion: idle',
+      watcherCompletion: { handle: 'idle', originMessageId: queued.message.id },
+    })
+    expect(result.restart?.lineageId).toBe(lineageId)
+    const successorEvents: any[] = []
+    await orchestrator.runMessage(result.restart!, event => successorEvents.push(event))
+    const nextUser = successorEvents.find(event => event.type === 'user_message_persisted').message
+    expect(nextUser.parent_id).toBe(result.restart!.parentId)
+    expect(JSON.parse(statements.getMessageById.get(nextUser.id).meta)).toMatchObject({ kind: 'watcher_completion', handle: 'idle' })
+    expect(successorEvents.find(event => event.type === 'started').lineageId).toBe(lineageId)
+    release?.()
+  })
+
   it('links prepared image attachments before emitting the persisted user message', async () => {
     const now = new Date().toISOString()
     db.prepare(

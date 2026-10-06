@@ -403,6 +403,18 @@ function sendStreamGone(res: Response, registry: RunSessionRegistry, streamId: s
   res.status(410).json({ error: 'No live run for that streamId', gone: true, reason, envelope })
 }
 
+/** Shared launch for composer completion races and autonomous watcher follow-ups.
+ * runMessage registers intake synchronously before its first await.
+ */
+export function launchQueuedSuccessor(orchestrator: HeadlessChatOrchestrator, runSessions: RunSessionRegistry, request: HeadlessMessageRequest): void {
+  if (runSessions.get(request.streamId!)) return
+  const session = runSessions.create(request.streamId!, request.conversationId)
+  session.detach() // Unattended launches must obey the existing detached-run reaper.
+  void orchestrator.runMessage(request, event => session.publish(event), session.signal).catch(error => {
+    if (!orchestratorAlreadyPublished(error)) session.publish(buildRouteErrorEvent(error, request))
+  })
+}
+
 export function registerChatRoutes(app: Express, deps: RegisterChatRoutesDeps): void {
   const { orchestrator, compactionService, decisionBroker, runSessions, resumableRuns } = deps
 
@@ -438,12 +450,7 @@ export function registerChatRoutes(app: Express, deps: RegisterChatRoutesDeps): 
       })
       if (result.restart) {
         const request = result.restart
-        const session = runSessions.create(request.streamId!, request.conversationId)
-        // runMessage registers intake synchronously, before its first await. The next
-        // HTTP send therefore joins this successor rather than forking another one.
-        void orchestrator.runMessage(request, event => session.publish(event), session.signal).catch(error => {
-          if (!orchestratorAlreadyPublished(error)) session.publish(buildRouteErrorEvent(error, req.body ?? {}))
-        })
+        launchQueuedSuccessor(orchestrator, runSessions, request)
         res.json({ restarted: true, streamId: request.streamId, parentId: request.parentId })
       } else if (result.restartStreamId) {
         res.json({ restarted: true, streamId: result.restartStreamId })

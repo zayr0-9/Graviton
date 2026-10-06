@@ -17,6 +17,7 @@ import { WebSocket, WebSocketServer } from 'ws'
 import { isManagedToolPath } from './utils/managedToolPaths.js'
 
 // Runtime-neutral server graph (Phase 1 server/client separation)
+import { watchService } from './headlessServer/services/watchService.js'
 import { registerBuiltInTools, type BuiltInToolHandler } from './builtinToolRegistry.js'
 import { buildCorsOriginOption } from './corsPolicy.js'
 import type { ToolSandboxHost } from './hostCapabilities.js'
@@ -1448,6 +1449,17 @@ function initializeLocalDatabase(dbPath: string) {
     deleteConversation: db.prepare('DELETE FROM conversations WHERE id = ?'),
     getConversationById: db.prepare('SELECT * FROM conversations WHERE id = ?'),
     getAllConversations: db.prepare('SELECT * FROM conversations ORDER BY updated_at DESC'),
+    getToolConversationsPage: db.prepare(`
+      SELECT id, title, created_at, updated_at FROM conversations
+      WHERE (@userId IS NULL OR user_id = @userId)
+        AND (@projectId IS NULL OR project_id = @projectId)
+        AND (@updatedAfter IS NULL OR julianday(updated_at) >= julianday(@updatedAfter))
+        AND (@updatedBefore IS NULL OR julianday(updated_at) < julianday(@updatedBefore))
+        AND (@query IS NULL OR title LIKE @query COLLATE NOCASE
+          OR replace(replace(replace(lower(title), ' ', ''), '-', ''), '_', '') LIKE @normalizedQuery)
+      ORDER BY updated_at DESC, id ASC LIMIT @limit OFFSET @skip
+    `),
+    countToolTopLevelUserMessages: db.prepare(`SELECT COUNT(*) AS count FROM (${TOP_LEVEL_USER_MESSAGES_SQL})`),
     getLocalConversations: db.prepare(
       "SELECT * FROM conversations WHERE user_id = ? AND storage_mode = 'local' ORDER BY updated_at DESC"
     ),
@@ -2361,6 +2373,7 @@ export async function startLocalServer(
 export async function stopLocalServer(): Promise<void> {
   // Shutdown tool orchestrator first
   localAnalyticsWorkerClient.shutdown()
+  watchService.shutdown()
   toolOrchestrator.shutdown()
   customToolRegistry.shutdown()
   utilityRuntimeAvailable = false

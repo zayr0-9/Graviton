@@ -27,7 +27,7 @@ import { globSearch } from './tools/glob.js'
 import htmlRenderer from './tools/htmlRenderer.js'
 import { execute as executeMcpManagerTool } from './tools/mcpManagerTool.js'
 import { readFileContinuation, readTextFile } from './tools/readFile.js'
-import { formatReadFilesContent, readMultipleTextFiles } from './tools/readFiles.js'
+import { formatReadFilesResult, readMultipleTextFiles } from './tools/readFiles.js'
 import { ripgrepSearch } from './tools/ripgrep.js'
 import { viewImage } from './tools/viewImage.js'
 import { execute as executeThemeManager } from './tools/themeManager.js'
@@ -77,11 +77,9 @@ export interface BuiltInToolRegistryDeps {
  * Map.set overwrites make re-registration idempotent.
  */
 export function registerBuiltInTools(builtInTools: Map<string, BuiltInToolHandler>, deps: BuiltInToolRegistryDeps): void {
-  builtInTools.set('html_renderer', async args => {
-    const { html, allowUnsafe } = args
-    if (!html) throw new Error('html is required')
-    const rendered = await htmlRenderer.run({ html, allowUnsafe })
-    return rendered
+  builtInTools.set('html_renderer', async (args, { rootPath }) => {
+    const { html, path: filePath, cwd, allowUnsafe } = args
+    return await htmlRenderer.run({ html, path: filePath, cwd: cwd ?? rootPath, allowUnsafe })
   })
 
   builtInTools.set('read_file', async (args, { rootPath }) => {
@@ -118,8 +116,7 @@ export function registerBuiltInTools(builtInTools: Map<string, BuiltInToolHandle
     if (!paths) throw new Error('paths are required')
     const effectiveCwd = resolveToolWorkspaceCwd(cwd, rootPath)
     const filesRes = await readMultipleTextFiles(paths, { baseDir, maxBytes, startLine, endLine, ranges, cwd: effectiveCwd })
-    const content = formatReadFilesContent(filesRes)
-    return { success: true, content, text: content, files: filesRes }
+    return formatReadFilesResult(filesRes, paths.length)
   })
 
   builtInTools.set('create_file', async (args, { rootPath, operationMode }) => {
@@ -539,6 +536,19 @@ export function registerBuiltInTools(builtInTools: Map<string, BuiltInToolHandle
     const statements = deps.getStatements()
     return await executeFetchChats(args, {
       currentConversationId: options?.conversationId ?? null,
+      listConversationsPage: ({ userId, projectId, updatedAfter, updatedBefore, query, limit, skip }) => {
+        const getter = statements?.getToolConversationsPage
+        if (!getter) throw new Error('Chat pagination query unavailable')
+        return getter.all({ userId: userId || null, projectId: projectId || null,
+          updatedAfter: updatedAfter || null, updatedBefore: updatedBefore || null,
+          query: query ? `%${query}%` : null,
+          normalizedQuery: query ? `%${query.toLowerCase().replace(/[\s_-]+/g, '')}%` : null, limit, skip })
+      },
+      countTopLevelUserMessages: conversationId => {
+        const getter = statements?.countToolTopLevelUserMessages
+        if (!getter) throw new Error('Chat root count query unavailable')
+        return getter.get(conversationId)?.count || 0
+      },
       listConversations: () => {
         const getter = statements?.getAllConversations
         if (!getter || typeof getter.all !== 'function') return []

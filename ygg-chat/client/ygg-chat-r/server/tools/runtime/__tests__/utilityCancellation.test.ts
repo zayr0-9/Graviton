@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 
-const mocks = vi.hoisted(() => ({ bash: vi.fn(), powershell: vi.fn(), glob: vi.fn(), ripgrep: vi.fn(), post: vi.fn(), receive: undefined as undefined | ((message: unknown) => void) }))
+const mocks = vi.hoisted(() => ({ bash: vi.fn(), powershell: vi.fn(), html: vi.fn(), glob: vi.fn(), ripgrep: vi.fn(), post: vi.fn(), receive: undefined as undefined | ((message: unknown) => void) }))
 vi.mock('../../bash.js', () => ({ runBashCommand: mocks.bash }))
 vi.mock('../../powershell.js', () => ({ runPowerShellCommand: mocks.powershell }))
 vi.mock('../../createFile.js', () => ({ createTextFile: vi.fn() }))
@@ -8,7 +8,7 @@ vi.mock('../../deleteFile.js', () => ({ deleteFile: vi.fn(), safeDeleteFile: vi.
 vi.mock('../../directory.js', () => ({ extractDirectoryStructure: vi.fn() }))
 vi.mock('../../editFile.js', () => ({ editFile: vi.fn(), multiEdit: vi.fn() }))
 vi.mock('../../glob.js', () => ({ globSearch: mocks.glob }))
-vi.mock('../../htmlRenderer.js', () => ({ default: {} }))
+vi.mock('../../htmlRenderer.js', () => ({ default: { run: mocks.html } }))
 vi.mock('../../readFile.js', () => ({ readFileContinuation: vi.fn(), readTextFile: vi.fn() }))
 vi.mock('../../readFiles.js', () => ({ formatReadFilesContent: vi.fn(), readMultipleTextFiles: vi.fn() }))
 vi.mock('../../ripgrep.js', () => ({ ripgrepSearch: mocks.ripgrep }))
@@ -74,4 +74,18 @@ it('forwards search options and cancels only the selected search request', async
   mocks.receive!({ type: 'cancel_tool', requestId: 'rg' })
   await vi.advanceTimersByTimeAsync(0)
   expect(mocks.post).toHaveBeenCalledWith(expect.objectContaining({ requestId: 'rg', result: { success: false, cancelled: true } }))
+})
+
+it('forwards raw HTML paths with rootPath as a base, without workspace validation', async () => {
+  mocks.html.mockResolvedValue({ success: true, html: '<h1>disk</h1>' })
+  mocks.receive!({ type: 'execute_tool', requestId: 'html', toolName: 'html_renderer',
+    args: { path: '/outside/page.html' }, options: { rootPath: '/workspace' } })
+  await vi.advanceTimersByTimeAsync(0)
+  expect(mocks.html).toHaveBeenCalledWith({ path: '/outside/page.html', cwd: '/workspace', html: undefined, allowUnsafe: undefined })
+  expect(mocks.post).toHaveBeenCalledWith(expect.objectContaining({ requestId: 'html', result: { success: true, html: '<h1>disk</h1>' } }))
+
+  mocks.receive!({ type: 'execute_tool', requestId: 'html-cwd', toolName: 'html_renderer',
+    args: { path: 'page.html', cwd: '/another/base' }, options: { rootPath: '/workspace' } })
+  await vi.advanceTimersByTimeAsync(0)
+  expect(mocks.html).toHaveBeenLastCalledWith({ path: 'page.html', cwd: '/another/base', html: undefined, allowUnsafe: undefined })
 })

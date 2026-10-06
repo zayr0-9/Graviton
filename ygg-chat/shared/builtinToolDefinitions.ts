@@ -14,6 +14,34 @@ export interface SharedToolDefinition {
 
 export const BUILTIN_TOOL_DEFINITIONS: SharedToolDefinition[] = [
   {
+    name: 'context_status',
+    enabled: true,
+    description: 'Report approximate context used and left in the branch/run calling this tool. No arguments. Uses the context meter calculation and the model/configured context limit, never a credit-based budget. ChatGPT uses the latest completed request usage when available; otherwise estimates. This is a point-in-time gauge, not guaranteed available output tokens.',
+    inputSchema: { type: 'object', properties: {} },
+  },
+  {
+    name: 'watcher',
+    enabled: true,
+    description: 'Register branch-scoped asynchronous watches. start returns immediately. Completion submits an automated user message to the same branch at a safe boundary, continuing a live run or starting a successor after normal completion; also pushes a visible notification. Stopped/failed/unavailable branches report delivery failure. No shell conditions. Watches are memory-only; status/list do not wait.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        action: { type: 'string', enum: ['start', 'status', 'cancel', 'list'] },
+        handle: { type: 'string', description: 'Required for status/cancel; returned by start.' },
+        kind: { type: 'string', enum: ['process_exit', 'file_created', 'file_changed', 'log_match', 'http_status'] },
+        pid: { type: 'integer', minimum: 1, description: 'Native host PID for process_exit. Already absent means triggered; exit code unavailable.' },
+        path: { type: 'string', description: 'Workspace-relative or permitted absolute regular file path.' },
+        pattern: { type: 'string', maxLength: 2048, description: 'String or regex source for log_match. Reads from beginning, 64 KiB/check.' },
+        regex: { type: 'boolean', description: 'Default false. Regex checks are isolated and limited to 500ms.' },
+        url: { type: 'string', description: 'HTTP(S) endpoint; no embedded credentials. GET without redirects.' },
+        expectedStatus: { type: 'integer', minimum: 100, maximum: 599, description: 'Default 200.' },
+        timeoutMs: { type: 'integer', minimum: 100, maximum: 86400000, description: 'Default 300000; independent of foreground tool timeout.' },
+        checkIntervalMs: { type: 'integer', minimum: 100, maximum: 60000, description: 'Default 1000; delay between completed checks.' },
+      },
+      required: ['action'],
+    },
+  },
+  {
     name: 'todo_list',
     enabled: true,
     description:
@@ -174,7 +202,7 @@ export const BUILTIN_TOOL_DEFINITIONS: SharedToolDefinition[] = [
     name: 'fetch_chats',
     enabled: true,
     description:
-      'Browse local chats and branches. Can list chats, fetch compact chat summaries by id, search chats, search top-level messages, search note summaries, fetch notes for a conversation, or read a linear message segment from a specific branch starting at a message id.',
+      'Browse local chats with bounded output. Discovery is metadata-only by default; request notes, preview or full text explicitly. Responses report omitted records/text and continuation cursors. No tool or synthetic replay messages in branch reads unless explicitly requested.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -182,11 +210,11 @@ export const BUILTIN_TOOL_DEFINITIONS: SharedToolDefinition[] = [
           type: 'string',
           enum: ['list_chats', 'get_chats', 'search_chats', 'search_messages', 'search_notes', 'get_notes', 'read_branch'],
           description:
-            'Action to perform: "list_chats" returns recent chats with compact metadata and top-level branch messages. "get_chats" returns one or more chats by conversation id. "search_chats" searches chats by title using the same local search path used by the sidebar. "search_messages" searches top-level user messages using the same local path used by the sidebar message search. "search_notes" searches note summaries using the note-memory search endpoint and returns matching conversation/message ids plus relevant note snippets. "get_notes" returns all notes for a specific conversation with message ids. "read_branch" returns a linear segment of messages from a specific message id until a branch point or the end of the branch.',
+            'list_chats: paginated recent chat metadata. get_chats: selected chats. search_chats: title search. search_messages: text snippets (current conversation when available, otherwise user/project search, capped at 200 candidates). search_notes: note search (capped at 200 candidates). get_notes: paginated notes in one conversation. read_branch: linear eligible messages until a fork or end. Default action: list_chats.',
         },
         conversationId: {
           type: 'string',
-          description: 'Conversation id for "get_chats" or "get_notes". Optional for "list_chats".',
+          description: 'Conversation id for get_chats/get_notes, explicit scope for search_messages, or user inference for list/search actions.',
         },
         conversationIds: {
           type: 'array',
@@ -195,11 +223,11 @@ export const BUILTIN_TOOL_DEFINITIONS: SharedToolDefinition[] = [
         },
         userId: {
           type: 'string',
-          description: 'User id for "search_chats", "search_messages", or "search_notes". Optional when it can be inferred from the current conversation or provided conversationId.',
+          description: 'User filter for list/search actions. Inferred from current/provided conversation when available.',
         },
         projectId: {
           type: 'string',
-          description: 'Optional project id filter for "search_chats", "search_messages", or "search_notes".',
+          description: 'Project filter for list_chats/search_chats and cross-conversation message/note search.',
         },
         query: {
           type: 'string',
@@ -225,7 +253,7 @@ export const BUILTIN_TOOL_DEFINITIONS: SharedToolDefinition[] = [
         },
         includeContentPreview: {
           type: 'boolean',
-          description: 'If true, include truncated content_preview fields where applicable. Default is true for chat and branch reads.',
+          description: 'Legacy option: false selects metadata for branch/message reads unless responseMode is explicit. Never enables full message bodies.',
         },
         previewChars: {
           type: 'integer',
@@ -242,8 +270,26 @@ export const BUILTIN_TOOL_DEFINITIONS: SharedToolDefinition[] = [
         skip: {
           type: 'integer',
           minimum: 0,
-          description: 'For "read_branch", number of messages to skip from the start of the computed linear branch segment.',
+          description: 'Number of eligible records to skip for pagination (default 0). cursor takes precedence. Branch pagination counts messages after role/synthetic filtering.',
         },
+        responseMode: {
+          type: 'string', enum: ['metadata', 'notes', 'preview', 'full'],
+          description: 'Default: metadata for list/get/title search, notes for note actions, preview for branch/message search. Preview omits full content; full returns one text representation, still budgeted. Non-metadata chat summaries include paginated root messages.',
+        },
+        maxOutputChars: {
+          type: 'integer', minimum: 2000, maximum: 200000,
+          description: 'Hard limit on serialized response characters including metadata (default 20000). Oversized records continue in text chunks; structural metadata that cannot fit returns an error.',
+        },
+        cursor: {
+          type: 'string',
+          description: 'Continuation cursor from nextCursor. Repeat the same action, filters, responseMode and IDs. contentOffset identifies partial text within a record. Search pagination is limited to 200 candidates.',
+        },
+        updatedAfter: { type: 'string', description: 'Inclusive updated-time lower bound (ISO timestamp) for list_chats/search_chats.' },
+        updatedBefore: { type: 'string', description: 'Exclusive updated-time upper bound (ISO timestamp) for list_chats/search_chats.' },
+        messageLimit: { type: 'integer', minimum: 1, maximum: 200, description: 'Root messages per non-metadata chat summary (default 10).' },
+        messageSkip: { type: 'integer', minimum: 0, description: 'Root message offset within each chat. Use nextMessageSkip with the same chat IDs to retrieve more roots.' },
+        includeToolMessages: { type: 'boolean', description: 'Include non-user/assistant roles in read_branch (default false). Returns stored text, not structured tool blocks.' },
+        includeSyntheticMessages: { type: 'boolean', description: 'Include tagged context-injection and compaction rows in read_branch (default false).' },
       },
     },
   },
@@ -402,7 +448,7 @@ export const BUILTIN_TOOL_DEFINITIONS: SharedToolDefinition[] = [
     name: 'read_files',
     enabled: true,
     description:
-      "Read multiple text/code/config files and return both a single concatenated content string separated by each file's relative path header and a structured files array.",
+      "Read multiple text/code/config files into one content string with relative-path headers. maxBytes bounds the combined UTF-8 text including headers, not each file. Returns truncation/count metadata and nextFileIndex; no duplicate text or file bodies. If truncated, use a focused read_file/range request for the indicated file.",
     inputSchema: {
       type: 'object',
       properties: {
@@ -426,7 +472,7 @@ export const BUILTIN_TOOL_DEFINITIONS: SharedToolDefinition[] = [
           type: 'integer',
           minimum: 1,
           maximum: 5242880,
-          description: 'Optional per-file safety limit on bytes to read (1 to 5MB); defaults to 204800 (200KB)',
+          description: 'Total UTF-8 byte budget for combined output text including file headers and separators (1 to 5MB; default 204800). Applies to line/range reads too. Small response metadata is additional.',
         },
         startLine: {
           type: 'integer',
@@ -877,18 +923,26 @@ export const BUILTIN_TOOL_DEFINITIONS: SharedToolDefinition[] = [
     name: 'html_renderer',
     enabled: true,
     description:
-      'Render and sanitize an HTML snippet. Returns sanitized HTML suitable for embedding as a content block. Always treat output as untrusted; client will re-sanitize before rendering.',
+      'Render HTML from an inline string or a local file path. Provide exactly one of html or path. File reads are read-only and are not restricted by workspace location or path provenance. Returns HTML suitable for embedding as a content block; always treat output as untrusted.',
     inputSchema: {
       type: 'object',
       properties: {
-        html: { type: 'string', description: 'Raw HTML to sanitize and return' },
+        html: { type: 'string', description: 'Inline HTML to render. Provide either html or path, not both.' },
+        path: {
+          type: 'string',
+          description: 'Raw local HTML file path (absolute, relative, or ~/). May be outside the workspace; no path-source restrictions. Read as UTF-8.',
+        },
+        cwd: {
+          type: 'string',
+          description: 'Base directory for relative paths. Defaults to the workspace root, or the process working directory if no workspace is set. Not an access boundary.',
+        },
         allowUnsafe: {
           type: 'boolean',
           description:
             'If true, skip sanitization (not recommended). Defaults to false. Output is still re-sanitized client-side.',
         },
       },
-      required: ['html'],
+      required: [],
     },
   },
   {

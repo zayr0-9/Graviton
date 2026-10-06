@@ -4,7 +4,7 @@ import { ReadFileOptions, readTextFile } from './readFile.js'
 
 export interface ReadMultipleOptions extends ReadFileOptions {
   baseDir?: string // used to compute the header-relative path separator
-  // Inherits startLine, endLine, ranges, maxBytes from ReadFileOptions
+  // maxBytes is shared by all formatted file text, headers and separators.
 }
 
 export interface ReadMultipleFileResult {
@@ -47,10 +47,30 @@ function buildRelativeFilename(baseDir: string, absoluteFilePath: string): strin
   return pathModule.relative(baseForRel, fileForRel).replace(/\\/g, '/')
 }
 
+export function normalizeReadFilesMaxBytes(value?: number): number {
+  return typeof value === 'number' && Number.isFinite(value)
+    ? Math.max(1, Math.min(5242880, Math.floor(value))) : 204800
+}
+
+function truncateUtf8(text: string, maxBytes: number): string {
+  const bytes = Buffer.from(text, 'utf8')
+  if (bytes.length <= maxBytes) return text
+  let end = maxBytes
+  while (end > 0 && (bytes[end] & 0xc0) === 0x80) end--
+  return bytes.subarray(0, end).toString('utf8')
+}
+
+export function formatReadFilesResult(files: ReadMultipleFileResult[], requestedCount: number) {
+  return { success: true, content: formatReadFilesContent(files),
+    truncated: files.some(file => file.truncated) || files.length < requestedCount,
+    returnedCount: files.length, omittedCount: requestedCount - files.length,
+    nextFileIndex: files.length && files[files.length - 1].truncated ? files.length - 1 : files.length }
+}
+
 export function formatReadFilesContent(files: ReadMultipleFileResult[]): string {
   return files
     .map(file => {
-      const body = file.success ? file.content : `[Error reading file: ${file.error || 'Unknown error'}]`
+      const body = file.content
       return `--- ${file.filename} ---\n${body}`
     })
     .join('\n\n')
@@ -74,73 +94,41 @@ export async function readMultipleTextFiles(
     : // Default to cwd or current working directory
       cwdBase
 
-  const results: ReadMultipleFileResult[] = new Array(inputPaths.length)
+  const maxBytes = normalizeReadFilesMaxBytes(options.maxBytes)
+  const results: ReadMultipleFileResult[] = []
+  let remaining = maxBytes
 
-  const readOne = async (p: string, index: number): Promise<void> => {
+  // Ordered reads make the shared budget deterministic and stop I/O when it is
+  // exhausted, rather than reading every file and discarding the extra output.
+  for (const p of inputPaths) {
+    let absResolved = p
+    if (isWSLPath(p)) absResolved = await resolveToWindowsPath(p)
+    else absResolved = path.isAbsolute(p) ? p : path.resolve(cwdBase, p)
+    const filename = buildRelativeFilename(baseDir, absResolved)
+    const headerBytes = Buffer.byteLength(`${results.length ? '\n\n' : ''}--- ${filename} ---\n`, 'utf8')
+    if (remaining <= headerBytes) break
+    remaining -= headerBytes
+    let result: ReadMultipleFileResult
     try {
       const res = await readTextFile(p, {
-        maxBytes: options.maxBytes,
-        startLine: options.startLine,
-        endLine: options.endLine,
-        ranges: options.ranges,
-        cwd: options.cwd,
-        includeHash: false,
+        // Probe up to one extra UTF-8 character so the reader cannot decode a
+        // budget-boundary prefix as a replacement character before we trim it.
+        ...options, maxBytes: remaining + 4, includeHash: false,
       })
-
-      let absResolved = p
-      if (isWSLPath(p)) {
-        absResolved = await resolveToWindowsPath(p)
-      } else {
-        absResolved = path.isAbsolute(p) ? p : path.resolve(cwdBase, p)
-      }
-
-      const rel = buildRelativeFilename(baseDir, absResolved)
-
-      let totalLines = res.totalLines
-      if (totalLines === undefined) {
-        // Calculate returned-content line count when full total is unavailable (e.g. bounded line reads)
-        totalLines = res.content.split(/\r?\n/).length
-      }
-
-      results[index] = {
-        filename: rel,
-        content: res.content,
-        totalLines,
-        success: true,
-        truncated: res.truncated,
-        sizeBytes: res.sizeBytes,
-        startLine: res.startLine,
-        endLine: res.endLine,
-        ranges: res.ranges,
-      }
+      // read_file line/range reads do not apply maxBytes; enforce it here too.
+      const content = truncateUtf8(res.content, remaining)
+      result = { filename, content, totalLines: res.totalLines ?? res.content.split(/\r?\n/).length,
+        success: true, truncated: res.truncated || content !== res.content,
+        sizeBytes: res.sizeBytes, startLine: res.startLine, endLine: res.endLine, ranges: res.ranges }
     } catch (error: any) {
-      const errorMsg = error instanceof Error ? error.message : String(error)
-
-      results[index] = {
-        filename: p,
-        content: `[Error reading file: ${errorMsg}]`,
-        totalLines: 0,
-        success: false,
-        error: errorMsg,
-      }
+      const message = error instanceof Error ? error.message : String(error)
+      const content = truncateUtf8(`[Error reading file: ${message}]`, remaining)
+      result = { filename, content, totalLines: 0, success: false, error: message,
+        truncated: content !== `[Error reading file: ${message}]` }
     }
+    results.push(result)
+    remaining -= Buffer.byteLength(result.content, 'utf8')
+    if (result.truncated) break
   }
-
-  const concurrency = Math.min(4, inputPaths.length)
-  let nextIndex = 0
-
-  const workers = Array.from({ length: concurrency }, async () => {
-    while (true) {
-      const currentIndex = nextIndex++
-      if (currentIndex >= inputPaths.length) {
-        return
-      }
-
-      await readOne(inputPaths[currentIndex], currentIndex)
-    }
-  })
-
-  await Promise.all(workers)
-
   return results
 }

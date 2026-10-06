@@ -8,7 +8,7 @@ import { BUILTIN_TOOL_DEFINITIONS } from '../../../../shared/builtinToolDefiniti
 import { initializeAuth } from '../auth/runtime.js'
 import { ProviderTokenStore } from './providers/tokenStore.js'
 import { registerCapabilityRoutes } from './routes/capabilityRoutes.js'
-import { registerChatRoutes } from './routes/chatRoutes.js'
+import { registerChatRoutes, launchQueuedSuccessor } from './routes/chatRoutes.js'
 import { registerCrudRoutes } from './routes/crudRoutes.js'
 import { registerProviderAuthRoutes } from './routes/providerAuthRoutes.js'
 import { registerMobileUiRoutes } from './routes/mobileUiRoutes.js'
@@ -30,7 +30,9 @@ import { RunSessionRegistry } from './services/runSessionRegistry.js'
 import { CompactionService } from './services/compactionService.js'
 import { SubagentRunService } from './services/subagentRunService.js'
 import { createSubagentDispatchExecutor, createSubagentManagerExecutor } from './services/subagentToolExecutor.js'
+import { createWatchExecutor, watchService } from './services/watchService.js'
 import { createMultiCallDispatchExecutor } from './services/multiCallExecutor.js'
+import { createContextStatusExecutor } from './services/contextStatusTool.js'
 import { ProviderRouter, normalizeProviderRoute } from './services/providerRouter.js'
 import { resolveGatewayFlags } from './config/gatewayFlags.js'
 import type { ToolExecutor } from './services/toolLoopService.js'
@@ -65,6 +67,7 @@ const HEADLESS_RUNTIME_BUILTIN_TOOL_NAMES = new Set([
   'plan_md',
   'fetch_notes',
   'fetch_chats',
+  'context_status',
   'read_file',
   'read_file_continuation',
   'read_files',
@@ -86,6 +89,7 @@ const HEADLESS_RUNTIME_BUILTIN_TOOL_NAMES = new Set([
   'skill_manager',
   'subagent',
   'subagent_manager',
+  'watcher',
   'multi_call',
 ])
 
@@ -351,7 +355,9 @@ export function registerHeadlessServerRoutes(app: Express, deps: HeadlessServerR
     providerRouter,
   })
 
-  const multiCallToolExecutor = createMultiCallDispatchExecutor(executeToolViaOrchestrator)
+  const watcherExecutor = createWatchExecutor(executeToolViaOrchestrator, watchService,
+    id => deps.statements.getConversationById?.get(id)?.project_id ?? null)
+  const multiCallToolExecutor = createMultiCallDispatchExecutor(createContextStatusExecutor(watcherExecutor))
   const subagentRunService = new SubagentRunService({
     statements: deps.statements,
     tokenStore,
@@ -405,20 +411,39 @@ export function registerHeadlessServerRoutes(app: Express, deps: HeadlessServerR
   registerTestHarnessRoutes(app, {
     getDefaultTools: resolveDefaultInferenceTools,
   })
+  const chatOrchestrator = new ChatOrchestrator({
+    ...deps,
+    tokenStore,
+    providerRouter,
+    toolExecutor: chatToolExecutor,
+    defaultToolsProvider: resolveDefaultInferenceTools,
+    compactBranch: input => compactionService.compactBranch(input),
+    decisionBroker,
+    // Phase 3: in-process chat hooks (fires only when a request sets hooksEnabled).
+    hookRunner: runHookRequest,
+    // Phase 4: cloud (openrouter) free-tier relay + Railway id adoption. Default OFF.
+    cloudChatEnabled: gatewayFlags.chat,
+  })
+  if (gatewayFlags.resumableRuns) {
+    watchService.configureContinuation({
+      retain: context => chatOrchestrator.retainWatch(context),
+      deliver: (event, originStreamId) => {
+        const result = chatOrchestrator.submitWatchMessage(event.conversationId, event.lineageId, originStreamId, {
+          requestId: `watcher:${event.handle}`,
+          watcherCompletion: { handle: event.handle, originMessageId: event.messageId },
+          content: `Watcher completion: ${event.kind} watch ${event.handle} ${event.state}. This is an automated event from the watcher registered in this branch. Continue the original task using available results; inspect them with normal tools as needed.`,
+        })
+        if (result.restart) {
+          launchQueuedSuccessor(chatOrchestrator, runSessions, result.restart)
+          return { ...event, delivery: 'restarted', streamId: result.restart.streamId!, parentId: result.restart.parentId }
+        }
+        if (result.restartStreamId) return { ...event, delivery: 'restarted', streamId: result.restartStreamId }
+        return { ...event, delivery: 'queued', streamId: result.snapshot?.streamId }
+      },
+    })
+  }
   registerChatRoutes(app, {
-    orchestrator: new ChatOrchestrator({
-      ...deps,
-      tokenStore,
-      providerRouter,
-      toolExecutor: chatToolExecutor,
-      defaultToolsProvider: resolveDefaultInferenceTools,
-      compactBranch: input => compactionService.compactBranch(input),
-      decisionBroker,
-      // Phase 3: in-process chat hooks (fires only when a request sets hooksEnabled).
-      hookRunner: runHookRequest,
-      // Phase 4: cloud (openrouter) free-tier relay + Railway id adoption. Default OFF.
-      cloudChatEnabled: gatewayFlags.chat,
-    }),
+    orchestrator: chatOrchestrator,
     compactionService,
     decisionBroker,
     runSessions,

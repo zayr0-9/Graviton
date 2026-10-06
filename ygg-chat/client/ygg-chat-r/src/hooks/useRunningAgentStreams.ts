@@ -3,6 +3,7 @@ import type { Message, StreamEvent, StreamLifecycleStatus, StreamState } from '.
 import type { Conversation } from '../features/conversations/conversationTypes'
 import { useAppSelector } from './redux'
 import type { ResearchNoteItem } from './useQueries'
+import { isHeimdallScaffoldingMessage } from '../components/Heimdall/heimdallNodeVisibility'
 
 export type AgentStreamActivityKind = StreamEvent['type'] | 'idle'
 
@@ -88,7 +89,7 @@ export const buildAgentForkGroups = (
       const lineageId = stream.lineageIdConfirmed && stream.conversationId ? stream.lineageId : null
       group = {
         key,
-        displayName: lineageId ? `fork ${summarizeAgentStreamId(lineageId)}` : 'run · fork unresolved',
+        displayName: lineageId ? `fork ${lineageId.slice(0, 3)}` : 'run · fork unresolved',
         lineageId,
         activeStreams: [],
         completedStreams: [],
@@ -208,18 +209,16 @@ const getStreamActivity = (stream: StreamState): { activityKind: AgentStreamActi
 const normalizeMessagePreview = (message: Message | null | undefined): string | null => {
   if (!message) return null
   const rawContent =
+    message.content ||
     message.content_plain_text ||
     (message as any).plain_text_content ||
-    message.content ||
     (Array.isArray(message.content_blocks)
       ? message.content_blocks
           .map(block => ('content' in block && typeof block.content === 'string' ? block.content : ''))
           .filter(Boolean)
           .join(' ')
       : '')
-  const preview = String(rawContent || '')
-    .replace(/\s+/g, ' ')
-    .trim()
+  const preview = String(rawContent || '').trim()
   return preview.length > 0 ? preview : null
 }
 
@@ -232,7 +231,7 @@ const resolveParentMessage = (messagesById: Map<string, Message>, stream: Stream
   const explicitTriggerMessage = stream.triggerUserMessageId
     ? messagesById.get(String(stream.triggerUserMessageId))
     : null
-  if (explicitTriggerMessage?.role === 'user') return explicitTriggerMessage
+  if (explicitTriggerMessage?.role === 'user' && !isHeimdallScaffoldingMessage(explicitTriggerMessage)) return explicitTriggerMessage
 
   const candidateIds = [
     stream.triggerUserMessageId,
@@ -258,7 +257,7 @@ const resolveParentMessage = (messagesById: Map<string, Message>, stream: Stream
       if (visitedIds.has(currentId)) break
       visitedIds.add(currentId)
 
-      if (current.role === 'user') return current
+      if (current.role === 'user' && !isHeimdallScaffoldingMessage(current)) return current
       current = current.parent_id ? messagesById.get(String(current.parent_id)) : null
     }
   }
@@ -270,6 +269,7 @@ export function useRunningAgentStreams(notes: ResearchNoteItem[] = [], allConver
   const scopedConversations = useAppSelector(state => state.conversations.items)
   const streamingRoot = useAppSelector(state => state.chat.streaming)
   const messages = useAppSelector(state => state.chat.conversation.messages)
+  const retainedPreviews = useAppSelector(state => state.agentRunPreviews.byStreamId)
   const [streamHistory, setStreamHistory] = useState<AgentStreamListItem[]>([])
   const previousActiveStreamIdsRef = useRef<Set<string>>(new Set())
   const parentPreviewByStreamIdRef = useRef<Map<string, AgentParentPreview>>(new Map())
@@ -312,7 +312,9 @@ export function useRunningAgentStreams(notes: ResearchNoteItem[] = [], allConver
         stream.lineage.rootMessageId ||
         null
       const { activityKind, activityLabel } = getStreamActivity(stream)
-      const parentMessage = resolveParentMessage(messagesById, stream)
+      const preview = retainedPreviews[streamId]
+      const parentMessage = resolveParentMessage(messagesById, stream) ??
+        preview?.entries.find(entry => entry.message?.role === 'user' && !isHeimdallScaffoldingMessage(entry.message))?.message ?? null
       const parentPreview = retainAgentParentPreview(
         {
           messageId: parentMessage?.id ? String(parentMessage.id) : null,
@@ -327,8 +329,8 @@ export function useRunningAgentStreams(notes: ResearchNoteItem[] = [], allConver
         lineageId: stream.lineage.lineageId ? String(stream.lineage.lineageId) : null,
         lineageIdConfirmed: stream.lineage.lineageIdConfirmed === true,
         conversationId: streamConversationId,
-        projectId: convo?.project_id ? String(convo.project_id) : note?.project_id ? String(note.project_id) : null,
-        conversationTitle: convo?.title || note?.title || (streamConversationId ? `Conversation ${streamConversationId}` : null),
+        projectId: convo?.project_id ? String(convo.project_id) : note?.project_id ? String(note.project_id) : preview?.projectId ?? null,
+        conversationTitle: convo?.title || note?.title || preview?.conversationTitle || (streamConversationId ? `Conversation ${streamConversationId}` : null),
         anchorMessageId: anchorMessageId ? String(anchorMessageId) : null,
         hasError: Boolean(stream.error),
         createdAt: stream.createdAt,
@@ -351,7 +353,7 @@ export function useRunningAgentStreams(notes: ResearchNoteItem[] = [], allConver
         displayName: `agent-${displayIndex + 1}`,
       }
     },
-    [conversationsById, messagesById, notesByConversationId]
+    [conversationsById, messagesById, notesByConversationId, retainedPreviews]
   )
 
   const activeStreams = useMemo(() => {
@@ -412,9 +414,17 @@ export function useRunningAgentStreams(notes: ResearchNoteItem[] = [], allConver
     previousActiveStreamIdsRef.current = currentActiveIds
   }, [buildAgentStreamListItem, streamingRoot.activeIds, streamingRoot.byId])
 
+  const visibleHistory = useMemo(() => {
+    const byId = new Map(streamHistory.map(item => [item.streamId, item]))
+    for (const run of Object.values(retainedPreviews)) {
+      if (!run.stream.active) byId.set(run.streamId, buildAgentStreamListItem(run.streamId, run.stream, run.completedAt))
+    }
+    return [...byId.values()].sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+  }, [streamHistory, retainedPreviews, buildAgentStreamListItem])
+
   return {
     activeStreams,
-    streamHistory,
+    streamHistory: visibleHistory,
     buildAgentStreamListItem,
     streamingRoot,
   }

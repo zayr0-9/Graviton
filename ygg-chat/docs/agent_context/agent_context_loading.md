@@ -97,9 +97,19 @@ Graviton loads repository context the way Claude Code does. The reference rules 
   are pure functions of root + settings.
 - Providers never see `context_injection` blocks or `meta`; `foldContextInjectionsForModel`
   runs in `generateProviderTurn` on every history array.
-- `model:` / `effort:` in skills and agents are ignored (decision 12). Repo-sourced code
-  execution (`` !`cmd` ``, `allowed-tools`, per-project hooks, frontmatter hooks) is not
-  implemented (decision 8).
+- `model:` / `effort:` in skills and agents are ignored (decision 12). Dynamic skill
+  shell injection (`` !`cmd` ``) and skill `allowed-tools` / `disallowed-tools`
+  enforcement are not implemented.
+- Settings-based lifecycle command hooks **are implemented** by `server/hooks/hookRunner.ts`
+  and `chatHookService.ts`. Discovery prefers readable managed hook settings; only when
+  none exist does it walk cwd/home ancestor chains for `.ygg/settings.json` and
+  `.ygg/settings.local.json`. It does not merge these with the context `readDirs` setting.
+  Chat execution requires a wired hook runner, `hooksEnabled: true`, and a decision broker.
+- Skill-scoped frontmatter `hooks:` are a separate mechanism: `parseSkillFrontmatter`
+  retains the field, but skill activation does not register or execute it. A skill
+  description saying "Triggers on" guides model selection; it is not a lifecycle hook.
+  Skills load through `/name`, `skill_manager activate`, or matching frontmatter `paths`.
+  See `agent_hooks_system.md` for the implemented hook events and execution modes.
 - External `@path` imports from project files load only under the auto-approve tool
   policy; under the interactive policy they are skipped and logged (decision 5, partial).
 - Subagents receive the launch set in their **system prompt** (fresh run, still cacheable

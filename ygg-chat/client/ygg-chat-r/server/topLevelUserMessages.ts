@@ -25,7 +25,7 @@ export const TOP_LEVEL_USER_MESSAGES_SQL = `
     JOIN preview_candidates parent ON child.parent_id = parent.id
     WHERE parent.is_context_injection = 1
   )
-  SELECT m.id, m.conversation_id, m.content, m.plain_text_content, m.note, m.note_color, m.created_at
+  SELECT m.id, m.conversation_id, m.content, m.plain_text_content, m.note, m.note_color, m.created_at, m.role, m.parent_id, m.children_ids
   FROM messages m
   JOIN preview_candidates candidate ON candidate.id = m.id
   WHERE candidate.role = 'user' AND candidate.is_context_injection = 0

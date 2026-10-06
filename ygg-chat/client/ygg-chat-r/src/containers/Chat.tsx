@@ -40,6 +40,7 @@ import {
   ToolPermissionDialog,
 } from '../components'
 import { ChatErrorBubble } from '../components/ChatErrorBubble/ChatErrorBubble'
+import { isWatcherCompletionMessage, WatcherCompletionNotice } from '../components/ChatMessage/WatcherCompletionNotice'
 import { isExcludedFromProcessRunGrouping } from '../components/ChatMessage/chatMessageShared'
 import {
   ChatInputController,
@@ -137,7 +138,7 @@ import {
 import type { PlanClarificationAnswer } from '../features/chats/planToolTypes'
 import {
   estimateContentBlocksForContext,
-  openAIContextUsageHistory,
+  calculateBranchContextUsage,
   resolveContextTokens,
   safeEstimateTokenCount,
 } from '../features/chats/contextTokenEstimate'
@@ -3004,7 +3005,7 @@ function Chat() {
 
       const estimateForMessage = (message: Message) => {
         // Summaries draw only an h-8 notice with py-1, regardless of payload size.
-        if (message.note === AUTO_COMPACTION_NOTE) return smallChromeRowHeight(rootFontSize)
+        if (message.note === AUTO_COMPACTION_NOTE || isWatcherCompletionMessage(message)) return smallChromeRowHeight(rootFontSize)
         if (parseMessageMeta(message.meta)?.kind === 'operation_mode_change') return 32
         const blocks = (parsedMessageDataById.get(message.id) ?? EMPTY_PARSED_MESSAGE_DATA).contentBlocks
         // Mirrors `hasContent && canBranchMessage` in ChatMessage, which gates the actions row.
@@ -6649,57 +6650,16 @@ function Chat() {
 
   // Calculate context usage from displayed messages (current branch).
   // Includes project/conversation prompts + message content + nested content_blocks/tool_calls.
-  const tokenUsage = useMemo(() => {
-    let promptAndContextTokens = 0
-    let messageTokens = 0
-
-    // Include project system prompt and context.
-    promptAndContextTokens += safeEstimateTokenCount(selectedProject?.system_prompt)
-    promptAndContextTokens += safeEstimateTokenCount(selectedProject?.context)
-
-    // Include conversation system prompt and context.
-    promptAndContextTokens += safeEstimateTokenCount(currentConversation?.system_prompt)
-    promptAndContextTokens += safeEstimateTokenCount(currentConversation?.conversation_context)
-
-    // Count visible branch payload from the latest compaction marker (if any) onward.
-    let startIndex = 0
-    for (let i = displayMessages.length - 1; i >= 0; i--) {
-      if (displayMessages[i]?.note === AUTO_COMPACTION_NOTE) {
-        startIndex = i
-        break
-      }
-    }
-
-    displayMessages.slice(startIndex).forEach(msg => {
-      if (!msg) return
-
-      const contentTokens = safeEstimateTokenCount(msg.content)
-      const contentBlockTokens = estimateContentBlocksForContext((msg as any).content_blocks)
-      const toolCallTokens = safeEstimateTokenCount((msg as any).tool_calls)
-
-      // This ensures messages with empty content but non-empty content_blocks/tool_calls are counted.
-      messageTokens += contentTokens + contentBlockTokens + toolCallTokens
-    })
-
-    const estimatedContextTokens = promptAndContextTokens + messageTokens
-    const contextMessages = displayMessages.slice(startIndex)
-    const resolvedContext = resolveContextTokens({
-      providerName: providers.currentProvider,
-      estimatedTokens: estimatedContextTokens,
-      messages: contextMessages,
-    })
-    const openAIUsageHistory = openAIContextUsageHistory(contextMessages)
-
-    return {
-      promptAndContextTokens,
-      messageTokens,
-      estimatedContextTokens,
-      totalContextTokens: resolvedContext.effectiveTokens,
-      reportedUsage: resolvedContext.reportedUsage,
-      openAIUsageHistory,
-      source: resolvedContext.source,
-    }
-  }, [
+  const tokenUsage = useMemo(() => calculateBranchContextUsage({
+    providerName: providers.currentProvider,
+    messages: displayMessages,
+    prompts: [
+      selectedProject?.system_prompt,
+      selectedProject?.context,
+      currentConversation?.system_prompt,
+      currentConversation?.conversation_context,
+    ],
+  }), [
     displayMessages,
     selectedProject?.system_prompt,
     selectedProject?.context,
@@ -7285,6 +7245,15 @@ function Chat() {
                         }
 
                         const msg = row.message
+                        if (isWatcherCompletionMessage(msg)) {
+                          return (
+                            <VirtualizedRowContainer key={renderRow.key} id={`message-${msg.id}`}
+                              index={virtualRow.index} start={virtualRow.start} measureElement={virtualizer.measureElement} className='z-0'>
+                              <WatcherCompletionNotice content={msg.content} customTheme={customTheme}
+                                customThemeEnabled={customThemeEnabled} isDarkMode={isDarkMode} />
+                            </VirtualizedRowContainer>
+                          )
+                        }
                         if (msg.note === AUTO_COMPACTION_NOTE) {
                           return (
                             <VirtualizedRowContainer

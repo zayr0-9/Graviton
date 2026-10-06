@@ -9,7 +9,7 @@ import { editFile, multiEdit } from './tools/editFile.js'
 import { globSearch } from './tools/glob.js'
 import htmlRenderer from './tools/htmlRenderer.js'
 import { readFileContinuation, readTextFile } from './tools/readFile.js'
-import { formatReadFilesContent, readMultipleTextFiles } from './tools/readFiles.js'
+import { formatReadFilesResult, readMultipleTextFiles } from './tools/readFiles.js'
 import { ripgrepSearch } from './tools/ripgrep.js'
 import { viewImage } from './tools/viewImage.js'
 import { recordPreEditBackup, recordToolEditSuccess } from './tools/streamUndoManager.js'
@@ -110,10 +110,9 @@ async function ensureCustomToolsInitialized(): Promise<void> {
 }
 
 function initializeBuiltInToolRegistry(): void {
-  builtInTools.set('html_renderer', async args => {
-    const { html, allowUnsafe } = args
-    if (!html) throw new Error('html is required')
-    return await htmlRenderer.run({ html, allowUnsafe })
+  builtInTools.set('html_renderer', async (args, { rootPath }) => {
+    const { html, path: filePath, cwd, allowUnsafe } = args
+    return await htmlRenderer.run({ html, path: filePath, cwd: cwd ?? rootPath, allowUnsafe })
   })
 
   builtInTools.set('read_file', async (args, { rootPath }) => {
@@ -150,8 +149,7 @@ function initializeBuiltInToolRegistry(): void {
     if (!paths) throw new Error('paths are required')
     const effectiveCwd = resolveToolWorkspaceCwd(cwd, rootPath)
     const filesRes = await readMultipleTextFiles(paths, { baseDir, maxBytes, startLine, endLine, ranges, cwd: effectiveCwd })
-    const content = formatReadFilesContent(filesRes)
-    return { success: true, content, text: content, files: filesRes }
+    return formatReadFilesResult(filesRes, paths.length)
   })
 
   builtInTools.set('create_file', async (args, { rootPath, operationMode }) => {

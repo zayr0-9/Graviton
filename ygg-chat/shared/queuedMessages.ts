@@ -3,6 +3,7 @@ import type { HeadlessMessageRequest } from './headlessApi.js'
 export interface QueuedMessageSubmission {
   requestId: string
   content: string
+  watcherCompletion?: { handle: string; originMessageId: string }
   attachmentsBase64?: HeadlessMessageRequest['attachmentsBase64']
 }
 

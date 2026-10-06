@@ -37,9 +37,9 @@ Use this when changing:
 - `.ygg/settings.json` and `.ygg/settings.local.json`: hook config locations discovered by `hookRunner` (in addition to the managed hooks dir).
 
 ### Server-loop integration (this is where the chat loop fires hooks)
-- `client/ygg-chat-r/server/headlessServer/services/chatHookService.ts`: `createChatHookSession` — the per-run session that wraps `runHookRequest`, rebuilds lineage/metadata from `ConversationRepo`, accumulates `additionalContext`, and exposes the 5 lifecycle calls + the `ToolLoopHooks` adapter. Pure builders (`buildHookLineage`, `buildHookMetadata`, `buildSystemPromptWithHookContext`, `appendHookAdditionalContext`) are verbatim ports of the old renderer functions.
+- `client/ygg-chat-r/server/headlessServer/services/chatHookService.ts`: `createChatHookSession` — the per-run session that wraps `runHookRequest`, rebuilds lineage/metadata from `ConversationRepo`, accumulates `additionalContext`, and exposes the eight lifecycle calls + the `ToolLoopHooks` adapter. Pure builders (`buildHookLineage`, `buildHookMetadata`, `buildSystemPromptWithHookContext`, `appendHookAdditionalContext`) are verbatim ports of the old renderer functions.
 - `client/ygg-chat-r/server/headlessServer/services/chatOrchestrator.ts`: builds the hook session (`ChatOrchestrator.runMessage`, `chatOrchestrator.ts:314`), fires `UserPromptSubmit` (`:339`), and interleaves Pre/Post/Failure hooks inside the pausing tool executor (`createChatPausingExecutor`, `:95`).
-- `client/ygg-chat-r/server/headlessServer/services/toolLoopService.ts`: consumes `input.hooks` (`ToolLoopHooks`, `toolLoopService.ts:77`) — folds hook context into each turn's system prompt then clears it (`:649-651`), and calls `runStop` on a natural stop (`:726-727`).
+- `client/ygg-chat-r/server/headlessServer/services/toolLoopService.ts`: consumes `input.hooks` (`ToolLoopHooks`, `toolLoopService.ts:77`) — places main-chat hook context in the transcript (legacy system-prompt folding is optional), and calls `runStop` on a natural stop (`:726-727`).
 - `client/ygg-chat-r/server/headlessServer/index.ts:319`: wires `hookRunner: runHookRequest` (in-process) into the `ChatOrchestrator`.
 
 ### Renderer (thin-client) surface
@@ -48,7 +48,7 @@ Use this when changing:
 
 ## Lifecycle Events
 
-All five fire from the **server-owned loop, in-process**, only when the run opted in (see Gating below). Lineage/metadata for every payload is rebuilt per-call from `ConversationRepo.listMessages` (`chatHookService.ts` `buildHookMetadata`/`buildHookLineage`), not from renderer state.
+Eight lifecycle events are supported by the **server-owned loop, in-process**, only when the run opted in (see Gating below). Lineage/metadata for every payload is rebuilt per-call from `ConversationRepo.listMessages` (`chatHookService.ts` `buildHookMetadata`/`buildHookLineage`), not from renderer state.
 
 - `UserPromptSubmit` (`chatHookService.ts:246`, called at `chatOrchestrator.ts:339`): fires **before the user message is persisted**, for `send`/`branch`/`edit-branch` only (not `repeat`). Can rewrite `request.content` (the rewrite flows into both the persisted user row and the inference content) or block (throw → run finishes `error`). Carries project context.
 - `PreToolUse` (`chatHookService.ts:270`, called at `chatOrchestrator.ts:153`): fires **BEFORE any permission prompt or plan_md clarify**. `updatedInput` rewrites the effective tool arguments (the permission prompt then shows the rewritten args; `toolCallId` is unchanged); `permissionDecision === 'deny'` throws → surfaces as an `is_error` tool_result. No project context.
@@ -56,7 +56,11 @@ All five fire from the **server-owned loop, in-process**, only when the run opte
 - `PostToolUseFailure` (`chatHookService.ts:312`, called at `chatOrchestrator.ts:184`): error path. Fires on both a PreToolUse deny and a permission deny (single try/catch). **Does NOT fire on abort** — aborts rethrow unwrapped (`chatOrchestrator.ts:183`), a deliberate divergence from the renderer's fire-on-any-error behavior.
 - `Stop` (`chatHookService.ts:335`, called by the loop at `toolLoopService.ts:726-727` via `input.hooks.runStop`): fires on a would-be natural stop (no tool calls). `blocked === true` → force one more turn — the loop injects an empty user turn parented on the just-persisted assistant message and appends the reason to the hook-context buffer. No-op without hooks.
 
-`additionalContext` from every event accumulates into a shared `hookContext[]` buffer (`appendHookAdditionalContext`). Each turn the loop calls `foldSystemPrompt(base)` → appends one `[Hook context]` block per accumulated entry after the base prompt, then **clears the buffer** (`toolLoopService.ts:649-651`). A hooks-enabled run with no hook output is byte-for-byte identical to the non-hooks path.
+- `SessionStart`: fires with `source: startup` when a launch context injection is built, and with `source: compact` after automatic compaction.
+- `PreCompact`: fires before automatic compaction, with `trigger: auto` (the session also accepts `manual`).
+- `InstructionsLoaded`: the context loader reports loaded instruction batches with `load_reason` and file paths; the notification callback dispatches this event without awaiting it. This is not registration of skill-frontmatter hooks.
+
+Awaited hook `additionalContext` accumulates into a shared `hookContext[]` buffer. Main chat uses `hookContextPlacement: 'transcript'`: prompt/session output rides on the user message, tool-hook output on the triggering tool result, and Stop output on the continuation. The legacy `foldSystemPrompt` placement remains available behind `'system_prompt'`; it is not the main-chat default.
 
 ## Gating
 
@@ -70,7 +74,7 @@ Wiring: the executor Pre/Post/Failure hooks are interleaved inside `createChatPa
 
 (These are hook-engine behaviors in `hookRunner.ts`, unchanged by the migration.)
 
-- Some hook types must be synchronous because they make decisions or mutate prompt/tool input. `getDefaultExecutionMode` (`hookRunner.ts:114`): `UserPromptSubmit` and `PreToolUse` default `sync`; the rest default `async`.
+- `getDefaultExecutionMode`: `UserPromptSubmit`, `PreToolUse`, `SessionStart`, and `PreCompact` default `sync`; `PostToolUse`, `PostToolUseFailure`, `Stop`, and `InstructionsLoaded` default `async`. Context-producing hooks must be awaited to use their output.
 - `PreToolUse` is security/permission-sensitive and is **forced synchronous** even if misconfigured (`resolveExecutionMode`, `hookRunner.ts:120`).
 - Async hooks are fire-and-forget: their output is logged but cannot affect the current request.
 - Tool/prompt-mutating hooks should default to awaited/synchronous unless intentionally changed.
@@ -81,7 +85,7 @@ Wiring: the executor Pre/Post/Failure hooks are interleaved inside `createChatPa
 - The renderer never executes hook commands; the **server-owned chat loop** runs them in-process (same Electron main process, no HTTP). The renderer only sets `hooksEnabled` on its POST to the loop.
 - Hook commands receive JSON via stdin (`buildHookPayload`, `hookRunner.ts:354`); payload keys are snake_case.
 - Prefer JSON output from hooks for stable parsing; text output falls back to `interpretTextResult` (`hookRunner.ts:414`).
-- `additionalContext` is model feedback folded into the system prompt as a `[Hook context]` block, not a user message.
+- Main-chat `additionalContext` is model feedback placed in transcript context injections, not a per-turn system-prompt rewrite. Legacy system-prompt folding is an explicit alternative.
 - Deny/block decisions should produce explicit reasons; a PreToolUse deny reason surfaces in the thrown error / `is_error` tool_result.
 - PreToolUse runs (and can deny/rewrite) **before** the interactive permission prompt — the prompt reflects any rewritten arguments.
 
@@ -89,7 +93,8 @@ Wiring: the executor Pre/Post/Failure hooks are interleaved inside `createChatPa
 
 - Hook discovery (`collectYggSettingsFiles`, `hookRunner.ts:254`) checks the managed hooks dir first; if none, it walks upward from the active cwd and from user home for `.ygg/settings.json` + `settings.local.json`. cwd bugs can make hooks appear missing.
 - WSL/Windows path handling affects settings discovery and command execution.
-- Matchers apply only to `PreToolUse`/`PostToolUse`/`PostToolUseFailure`, matched against the tool name (`matchesHookMatcher`, `hookRunner.ts:173`); other events ignore matchers.
+- Tool-event matchers use the tool name. `SessionStart` matchers use `source` (`startup` / `compact`), `PreCompact` uses `trigger` (`auto` / `manual`), and `InstructionsLoaded` uses `loadReason`. Other events without a tool ignore matchers.
+- Settings-based hooks and skill-frontmatter hooks are distinct. `SKILL.md` `hooks:` is retained by discovery but is not registered or executed by skill activation. Description trigger phrases are model guidance, not hook handlers.
 - Errors from one sync hook are collected into `result.errors` while later hooks continue — check returned `errors`.
 - A hook-runner rejection is swallowed into a no-match result in `chatHookService` (`safeRun`) so a hook failure never aborts the chat.
 - Set `YGG_HOOK_DEBUG_LOGS=1` for verbose `[HookRunner]` tracing.

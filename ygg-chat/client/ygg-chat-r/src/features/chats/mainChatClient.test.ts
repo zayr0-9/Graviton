@@ -110,6 +110,10 @@ describe('runServerReattach', () => {
     expect(fetchMock).toHaveBeenCalledWith('http://local/api/streams/s-1?fromSeq=0', expect.anything())
     expect(res).toMatchObject({ gone: false, terminal: true, messageId: 'a1' })
     expect(deps.actions.length).toBeGreaterThan(0)
+    expect(deps.actions).toContainEqual(expect.objectContaining({
+      type: 'agentRunPreviews/messageReceived',
+      payload: expect.objectContaining({ streamId: 's-1', message: expect.objectContaining({ id: 'a1' }) }),
+    }))
   })
 
   it('returns gone:true when the server has no live run (410)', async () => {

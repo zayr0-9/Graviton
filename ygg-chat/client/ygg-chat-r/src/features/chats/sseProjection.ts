@@ -92,7 +92,7 @@ export function applyStreamProjectionPolicy(
   action: ProjectedAction,
   policy: StreamProjectionPolicy
 ): ProjectedAction {
-  if (action.type === chatSliceActions.queuedMessageInserted.type) {
+  if (action.type === chatSliceActions.queuedMessageInserted.type || action.type === chatSliceActions.operationModeNotificationReceived.type) {
     return { ...action, payload: { ...(action.payload as object), updatePath: policy.updatePath } }
   }
   if (action.type !== chatSliceActions.streamCompleted.type) return action

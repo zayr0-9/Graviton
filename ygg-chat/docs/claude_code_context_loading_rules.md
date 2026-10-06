@@ -790,14 +790,16 @@ These are product decisions, not Claude Code rules. All decided 2026-09-15 unles
    `context_injection` blocks and `meta.kind === 'context_injection'` messages on the **active branch
    path** at request-build time. No session-global set. Editing an earlier message and regenerating
    therefore starts a branch with the correct loaded set.
-8. **Repo-sourced code execution is out of scope for now. TODO.** Graviton has no `` !`cmd` ``
-   injection and no `allowed-tools` enforcement today. The plan does **not** implement: `` !`cmd` ``
-   and ```` ```! ```` blocks in skills (section 5.6), `allowed-tools` / `disallowed-tools` grants
-   from repo skills, per-project hook config from `<root>/<configDir>/settings.json`, frontmatter
-   `hooks:` in skills and agents, or a workspace trust dialog. When any of these is picked up, add
-   the trust gate first: a per-root trust flag asked once via `decisionBroker`; until trusted, load
-   instruction files and rules but run no repo-sourced hooks or shell commands. Section 11.2 marks
-   the affected rows TODO.
+8. **Skill-sourced execution remains TODO; settings-based hooks already run.** Graviton has no
+   dynamic `` !`cmd` `` injection, ```` ```! ```` execution, skill `allowed-tools` /
+   `disallowed-tools` grants, skill/agent frontmatter hook registration, or workspace trust dialog.
+   The trust-gate requirement remains a design constraint for those future features.
+   This must not be read as disabling the existing lifecycle command-hook runner:
+   `server/hooks/hookRunner.ts` reads managed `settings.json` / `settings.local.json` first;
+   only when neither is readable does it discover `.ygg` settings along cwd/home ancestor
+   chains. Project settings therefore work as a fallback, not as a merged configurable
+   `<configDir>` scope. Current behavior is recorded in section 11.6; section 11.2 is
+   the original planning map.
 9. **User scope follows `readDirs`.** Read `~/<readDir>/AGENTS.md`, `~/<readDir>/CLAUDE.md`,
    `~/<readDir>/rules/**`, `~/<readDir>/skills/*/SKILL.md`, and `~/<readDir>/agents/**` for each
    `readDirs` entry, in order. Selecting `.claude` shares an existing Claude Code setup unchanged.
@@ -833,8 +835,10 @@ single user-chosen subagent model (decision 12).
 
 ### 11.4 Config directory setting
 
-Every rule in sections 3, 5, 6, and 9 that names `.claude/` reads `<configDir>/` in Graviton, where
-`<configDir>` comes from this setting. Instruction files (section 2.7) are **not** affected: `AGENTS.md`
+Rules, skills, and agents in sections 3, 5, and 6 read `<configDir>/` in Graviton, where
+`<configDir>` comes from this setting. Lifecycle hook discovery (section 9) is separate:
+`hookRunner.ts` uses managed settings first and fixed `.ygg` project/home fallback paths;
+it does not use this setting. Instruction files (section 2.7) are **not** affected: `AGENTS.md`
 and `CLAUDE.md` sit at the directory root, and `.claude/CLAUDE.md` is kept as a fixed compatibility
 path.
 
@@ -972,6 +976,8 @@ relative to `client/ygg-chat-r/`.
 | §6.4 subagent receives instruction files | Implemented | In the subagent system prompt |
 | §7 output styles, §8 plugins, managed policy | Not implemented | — |
 | §9 `SessionStart`, `PreCompact`, `InstructionsLoaded` events and matchers | Implemented | `server/hooks/hookTypes.ts`, `hookRunner.ts`, `chatHookService.ts` |
+| §9 settings-based lifecycle command hooks | Implemented (managed-first, project/home fallback) | `hookRunner.ts` `collectYggSettingsFiles`, `loadHookEntriesForEvent`, `runHookRequest`; readable managed settings suppress fallback discovery; fallback uses `.ygg`, not context `readDirs` |
+| §9 skill/agent frontmatter `hooks:`, `once`, workspace trust dialog | Not implemented | Skill `hooks` is retained by `parseSkillFrontmatter` but is not registered by activation; settings-based hook execution is independent |
 | §9.4 `additionalContext` to the transcript tail | Implemented | `toolLoopService.ts` `hookContextPlacement: 'transcript'` (legacy fold behind `'system_prompt'`) |
 | §11.4 context directory setting | Implemented | `shared/contextDirectories.ts`, `src/helpers/contextDirectorySettingsStorage.ts`, Settings "Context files", request field `contextDirectories` |
 | Decision 6 `meta` column | Implemented | Schema migration v2 `messages_meta_column` (`server/MIGRATIONS.md`) |

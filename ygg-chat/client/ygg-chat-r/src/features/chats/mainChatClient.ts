@@ -20,6 +20,7 @@
  * `envelope.detail`, never for the screen. See shared/chatErrors + localChatErrors.
  */
 
+import { agentRunPreviewActions } from './agentRunPreviewSlice'
 import { buildLocalApiUrl } from '../../utils/api'
 import { isResumableRunsEnabled } from '../../helpers/serverLoopSettings'
 import { getStreamIdleTimeoutMs } from '../../helpers/toolExecutionSettings'
@@ -247,7 +248,14 @@ function makeHandleEvent(
     const nextSeq = typeof event.seq === 'number' && event.seq > acc.lastSeq ? event.seq : null
     if (nextSeq !== null) acc.lastSeq = nextSeq
     // (a) project to Redux, in order.
-    for (const action of projectServerEvent(event, ctx)) dispatch(action)
+    for (const action of projectServerEvent(event, ctx)) {
+      // Capture normalized, run-correlated rows even when the visible chat reducer
+      // rejects them because the user is viewing another conversation.
+      if (chatSliceActions.messageAdded.match(action) && action.payload?.id) {
+        dispatch(agentRunPreviewActions.messageReceived({ streamId: ctx.streamId, message: action.payload }))
+      }
+      dispatch(action)
+    }
     // (b) event-specific side effects that need the operation / return ids.
     if (event.type === 'tools_updated') {
       const discovered = event.tools.map((tool): ToolDefinition => {

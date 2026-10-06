@@ -44,6 +44,7 @@ import { HookActivityCard } from './HookActivityCard'
 import { MessageActions } from './MessageActions'
 import { DisclosurePanel, DisclosureRow } from './messagePrimitives'
 import { SummarisedMessage } from './SummarisedMessage'
+import { isWatcherCompletionMessage, WatcherCompletionNotice } from './WatcherCompletionNotice'
 import { ToolCallGroupCard, type McpViewerPayload } from './ToolCallGroupCard'
 import {
   buildToolCallGroupsFromBlocks,
@@ -115,6 +116,10 @@ interface ChatMessageProps {
   className?: string
   artifacts?: string[]
   showInlineActions?: boolean
+  /** Read-only transcript surfaces must not expose edit/branch context actions. */
+  readOnly?: boolean
+  /** Preview prose must never be folded into process disclosures, even separators. */
+  keepTextOutsideGroups?: boolean
   /** Font size offset in pixels applied to every block through `calc(1em + Npx)`. */
   fontSizeOffset?: number
   /** Group long consecutive reasoning/tool runs into one "Agent steps" disclosure. */
@@ -393,6 +398,8 @@ const ChatMessageBody: React.FC<ChatMessageProps> = React.memo(
     className,
     artifacts = [],
     showInlineActions = true,
+    readOnly = false,
+    keepTextOutsideGroups = false,
     fontSizeOffset = 0,
     groupToolReasoningRuns = false,
     truncateToolOutput = true,
@@ -690,6 +697,7 @@ const ChatMessageBody: React.FC<ChatMessageProps> = React.memo(
     const handleCloseArtifactModal = () => setSelectedArtifactUrl(null)
 
     const handleContextMenu = (e: React.MouseEvent) => {
+      if (readOnly) return
       e.preventDefault()
       const selection = window.getSelection()
       const rawText = selection?.toString() || ''
@@ -1112,7 +1120,7 @@ const ChatMessageBody: React.FC<ChatMessageProps> = React.memo(
     // Expanding a tool card registers its HTML entries so the viewer can open them later.
     const handleExpandToggle = (toggleKey: string, group: ToolCallRenderGroup) => {
       const isCurrentlyExpanded = expandedBlocks.toolCalls.has(toggleKey)
-      if (!isCurrentlyExpanded && htmlRegistry) {
+      if (!readOnly && !isCurrentlyExpanded && htmlRegistry) {
         if ((group.name ?? '').toLowerCase() === 'html_renderer' && typeof group.args?.html === 'string') {
           registerHtmlEntry(`${id}-html-renderer-${group.id}`)
         }
@@ -1140,6 +1148,7 @@ const ChatMessageBody: React.FC<ChatMessageProps> = React.memo(
           onExpandTransitionEnd={handleExpandTransitionEnd}
           contentStyle={messageContentStyle}
           truncateToolOutput={truncateToolOutput}
+          readOnly={readOnly}
           toolDefinitions={toolDefinitions}
           mcpLoadState={mcpLoadState}
           mcpReloadTokens={mcpReloadTokens}
@@ -1225,7 +1234,9 @@ const ChatMessageBody: React.FC<ChatMessageProps> = React.memo(
         const processItems = runItems.filter(item => item.kind === 'process')
 
         if (processItems.length >= PROCESS_RUN_GROUP_MIN_ITEMS) {
-          const groupKey = `process-run-${sourceKey}-${runItems[0].key}-${runItems[runItems.length - 1].key}`
+          const groupKey = keepTextOutsideGroups
+            ? `process-run-${sourceKey}-${runItems[0].key}`
+            : `process-run-${sourceKey}-${runItems[0].key}-${runItems[runItems.length - 1].key}`
           const isExpanded = expandedBlocks.groupRuns.has(groupKey)
           const toolCount = processItems.filter(item => item.processType === 'tool').length
           const summary = toolCount > 0 ? `${toolCount} tool${toolCount === 1 ? '' : 's'}` : undefined
@@ -1276,7 +1287,7 @@ const ChatMessageBody: React.FC<ChatMessageProps> = React.memo(
     const renderTextItem = (key: string, markdown: string): MessageRenderItem => ({
       key,
       kind: 'other',
-      ignoreForProcessRunGrouping: isProcessRunSeparatorText(markdown),
+      ignoreForProcessRunGrouping: !keepTextOutsideGroups && isProcessRunSeparatorText(markdown),
       node: renderMarkdownNode({ key, markdown, className: SHARED_TEXT_MARKDOWN_CLASS, style: messageContentStyle }),
     })
 
@@ -1726,7 +1737,7 @@ const ChatMessageBody: React.FC<ChatMessageProps> = React.memo(
       : baseRenderedNodes
 
     const hasSelection = selectedText.length > 0
-    const showActionsRow = hasContent && canBranchMessage && showInlineActions
+    const showActionsRow = !readOnly && hasContent && canBranchMessage && showInlineActions
     const contextHighlightClass = contextMenuOpen ? 'bg-black/[0.03] dark:bg-white/[0.03]' : ''
 
     return (
@@ -1886,14 +1897,21 @@ const ChatMessageBody: React.FC<ChatMessageProps> = React.memo(
                                   key !== 'artifacts' &&
                                   key !== 'content_plain_text'
                               )
-                              .map(([key, value]) => (
-                                <div key={key} className='flex gap-2'>
-                                  <span className='shrink-0 font-medium text-neutral-500 dark:text-neutral-400'>{key}:</span>
-                                  <span className='break-all text-neutral-800 dark:text-neutral-200'>
-                                    {typeof value === 'object' ? JSON.stringify(value, null, 2) : String(value)}
-                                  </span>
-                                </div>
-                              ))
+                              .map(([key, value]) => {
+                                const createdAt = key === 'created_at' && typeof value === 'string' ? new Date(value) : null
+                                const displayValue = createdAt && !Number.isNaN(createdAt.getTime())
+                                  ? createdAt.toLocaleString(undefined, { dateStyle: 'long', timeStyle: 'long' })
+                                  : typeof value === 'object' ? JSON.stringify(value, null, 2) : String(value)
+
+                                return (
+                                  <div key={key} className='flex gap-2'>
+                                    <span className='shrink-0 font-medium text-neutral-500 dark:text-neutral-400'>{key}:</span>
+                                    <span className='break-all text-neutral-800 dark:text-neutral-200'>
+                                      {displayValue}
+                                    </span>
+                                  </div>
+                                )
+                              })
                           ) : (
                             <p className='text-neutral-500 dark:text-neutral-400'>No message data found</p>
                           )}
@@ -2101,13 +2119,16 @@ const ChatMessageBody: React.FC<ChatMessageProps> = React.memo(
 
 ChatMessageBody.displayName = 'ChatMessageBody'
 
-// Keep summary payloads out of the rich renderer, including callers outside the main Chat.
+// Keep summary/watcher payloads out of rich bubbles, including shared transcript callers.
 // The stored message remains untouched; only its presentation changes.
 const ChatMessage: React.FC<ChatMessageProps> = React.memo(props => {
-  const isCompactionSummary = useSelector(
-    (state: RootState) => selectMessageByIdMap(state).get(String(props.id))?.note === AUTO_COMPACTION_NOTE
-  )
-  if (isCompactionSummary) {
+  const message = useSelector((state: RootState) => selectMessageByIdMap(state).get(String(props.id)))
+  if (isWatcherCompletionMessage(message)) {
+    return <WatcherCompletionNotice content={props.content} id={`message-${props.id}`}
+      className={`${props.width} ${props.className ?? ''}`} customTheme={props.customTheme}
+      customThemeEnabled={props.customThemeEnabled} isDarkMode={props.isDarkMode} />
+  }
+  if (message?.note === AUTO_COMPACTION_NOTE) {
     return (
       <SummarisedMessage
         id={`message-${props.id}`}

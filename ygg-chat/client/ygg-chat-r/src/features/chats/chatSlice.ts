@@ -412,12 +412,12 @@ export const chatSlice = createSlice({
         state.composition.input.content = ''
       }
 
-      if (streamType === 'primary') {
+      if (!action.payload?.preserveDrafts && streamType === 'primary') {
         if (!state.composition.imageDraftTarget || state.composition.imageDraftTarget.kind === 'composer') {
           state.composition.imageDrafts = []
           state.composition.imageDraftTarget = null
         }
-      } else if (streamType === 'branch') {
+      } else if (!action.payload?.preserveDrafts && streamType === 'branch') {
         if (!state.composition.imageDraftTarget || state.composition.imageDraftTarget.kind === 'branch') {
           state.composition.imageDrafts = []
           state.composition.imageDraftTarget = null
@@ -1567,9 +1567,9 @@ export const chatSlice = createSlice({
     },
 
     operationModeNotificationReceived: (state, action: PayloadAction<{
-      message: Message; mode: OperationMode; streamId?: string | null
+      message: Message; mode: OperationMode; streamId?: string | null; updatePath?: boolean
     }>) => {
-      const { message, mode, streamId } = action.payload
+      const { message, mode, streamId, updatePath } = action.payload
       const key = String(message.conversation_id)
       const pending = state.operationModeChanges?.[key]
       const matchesPending = pending?.mode === mode && (!pending.streamId || pending.streamId === streamId)
@@ -1584,7 +1584,7 @@ export const chatSlice = createSlice({
       const path = state.conversation.currentPath
       const tip = path[path.length - 1] ?? null
       // A notification on a background branch must not steal the selected path.
-      if (tip === message.parent_id || path.length === 0) {
+      if (updatePath !== false && (tip === message.parent_id || path.length === 0)) {
         state.conversation.currentPath = buildPathToMessage(state.conversation.messages, message.id)
         state.operationMode = mode
       } else if (matchesPending) {

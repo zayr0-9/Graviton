@@ -25,6 +25,8 @@ export type {
 export type HeadlessChatOperation = 'send' | 'repeat' | 'branch' | 'edit-branch'
 
 export interface HeadlessMessageRequest {
+  /** Internal provenance for a server-generated watcher input. */
+  watcherCompletion?: { handle: string; originMessageId: string }
   operation: HeadlessChatOperation
   conversationId: string
   parentId: string | null

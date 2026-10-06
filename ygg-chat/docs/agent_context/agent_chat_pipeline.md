@@ -432,3 +432,15 @@ resume resolver thunks, and the manual-compaction `compactBranch` thunk.
   does not consume the primary composer's attachment drafts.
 - Validation: `messageInputQueue.test.ts`, `messageQueueRoutes.test.ts`, renderer
   `messageQueue.test.ts` and `enqueueUserMessage.test.ts`, plus existing tool-loop/hooks tests.
+
+### Watcher completion input
+
+`watchService` completion is another producer of queued user input, not a second
+agent loop. `ChatOrchestrator.retainWatch` pins origin/latest same-lineage
+mailboxes; `submitWatchMessage` routes to that lineage's resolved live run or
+normally completed tail. `launchQueuedSuccessor` in `chatRoutes.ts` is shared
+with the composer completion-race path. Automated user rows carry
+`meta.kind = watcher_completion`; hooks and permissions are unchanged.
+Completion events carry delivery acceptance and stream identity so the renderer
+can use targeted `resumeInFlightStreams` without stealing navigation or drafts.
+See [watcher behavior and limitations](../watcher-tool.md).

@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { AnimatePresence, motion, useReducedMotion } from 'framer-motion'
 import { Eye, Maximize2, Minus, Pencil, Plus, Save, X } from 'lucide-react'
 import { createPortal } from 'react-dom'
@@ -16,6 +16,7 @@ interface PlanMdToolViewProps {
   args?: Record<string, unknown> | null
   result: unknown
   className?: string
+  readOnly?: boolean
 }
 
 type UnknownRecord = Record<string, unknown>
@@ -42,7 +43,7 @@ const PlanMarkdown = MarkdownContent
 const iconButtonClass =
   'flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-white/45 text-neutral-600 backdrop-blur-xl transition-[background-color,color,transform,opacity] duration-150 hover:bg-white/80 hover:text-neutral-950 active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400/70 disabled:cursor-not-allowed disabled:opacity-35 disabled:hover:bg-white/45 dark:bg-black/20 dark:text-neutral-300 dark:hover:bg-white/10 dark:hover:text-white dark:focus-visible:ring-orange-400/70 dark:disabled:hover:bg-black/20'
 
-export const PlanMdToolView: React.FC<PlanMdToolViewProps> = ({ args, result, className = '' }) => {
+export const PlanMdToolView: React.FC<PlanMdToolViewProps> = ({ args, result, className = '', readOnly = false }) => {
   const parsedResult = useMemo(() => parseRecord(result), [result])
   const name = toString(parsedResult.name) || toString(args?.name) || 'Plan'
   const path = toString(parsedResult.path)
@@ -65,7 +66,7 @@ export const PlanMdToolView: React.FC<PlanMdToolViewProps> = ({ args, result, cl
   const isDarkMode = useHtmlDarkMode()
 
   const isDirty = draftContent !== savedContent
-  const canSave = Boolean(path && exists && isDirty && !isSaving)
+  const canSave = Boolean(!readOnly && path && exists && isDirty && !isSaving)
 
   useEffect(() => {
     saveRequestIdRef.current += 1
@@ -75,9 +76,10 @@ export const PlanMdToolView: React.FC<PlanMdToolViewProps> = ({ args, result, cl
     setSaveError(null)
   }, [content, path])
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (!isFullscreen) return
-    window.requestAnimationFrame(() => closeButtonRef.current?.focus())
+    // Focus before paint so Escape cannot land on the pill's inline launcher.
+    closeButtonRef.current?.focus()
 
     const previousOverflow = document.body.style.overflow
     document.body.style.overflow = 'hidden'
@@ -95,15 +97,15 @@ export const PlanMdToolView: React.FC<PlanMdToolViewProps> = ({ args, result, cl
   }, [])
 
   const requestCloseFullscreen = useCallback(() => {
-    if (isDirty) {
+    if (!readOnly && isDirty) {
       if (!window.confirm('Discard your unsaved plan changes?')) return
       setDraftContent(savedContent)
     }
     closeFullscreen()
-  }, [closeFullscreen, isDirty, savedContent])
+  }, [closeFullscreen, isDirty, readOnly, savedContent])
 
   const saveDraft = useCallback(async () => {
-    if (!path || !exists || draftContent === savedContent || isSaving) return
+    if (readOnly || !path || !exists || draftContent === savedContent || isSaving) return
 
     const requestId = ++saveRequestIdRef.current
     const submittedContent = draftContent
@@ -123,12 +125,13 @@ export const PlanMdToolView: React.FC<PlanMdToolViewProps> = ({ args, result, cl
     } finally {
       if (saveRequestIdRef.current === requestId) setIsSaving(false)
     }
-  }, [draftContent, exists, isSaving, path, savedContent])
+  }, [draftContent, exists, isSaving, path, readOnly, savedContent])
 
   useEffect(() => {
     if (!isFullscreen) return
 
     const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.defaultPrevented) return
       if (event.key === 'Escape') {
         event.preventDefault()
         requestCloseFullscreen()
@@ -200,7 +203,16 @@ export const PlanMdToolView: React.FC<PlanMdToolViewProps> = ({ args, result, cl
       {isFullscreen && (
         <motion.div
           key='plan-fullscreen'
-          className='fixed inset-0 z-[1200] flex items-center justify-center bg-black/30 p-3 backdrop-blur-sm sm:p-6'
+          className={`fixed inset-0 ${readOnly ? 'z-[1800]' : 'z-[1200]'} flex items-center justify-center bg-black/30 p-3 backdrop-blur-sm sm:p-6`}
+          onKeyDown={event => {
+            // Portal events bubble through the pill's React tree. Close only the
+            // viewer on Escape, not the underlying transcript.
+            if (event.key === 'Escape') {
+              event.preventDefault()
+              event.stopPropagation()
+              requestCloseFullscreen()
+            }
+          }}
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}
           exit={{ opacity: 0 }}
@@ -227,12 +239,12 @@ export const PlanMdToolView: React.FC<PlanMdToolViewProps> = ({ args, result, cl
                   <h2 className='min-w-0 truncate text-sm font-semibold' title={name}>
                     {name}
                   </h2>
-                  {isDirty && <span className='text-[10px] text-amber-600 dark:text-amber-300' role='status'>Unsaved changes</span>}
+                  {!readOnly && isDirty && <span className='text-[10px] text-amber-600 dark:text-amber-300' role='status'>Unsaved changes</span>}
                 </div>
                 {path && <p className='mt-1 truncate font-mono text-[10px] text-neutral-400 dark:text-neutral-500' title={path}>{path}</p>}
               </div>
               <div className='flex shrink-0 items-center gap-2'>
-                <button
+                {!readOnly && <button
                   type='button'
                   onClick={() => setIsEditing(value => !value)}
                   className={`${iconButtonClass} ${isEditing ? 'bg-blue-50 text-blue-700 dark:bg-orange-500/15 dark:text-orange-100' : ''}`}
@@ -241,7 +253,7 @@ export const PlanMdToolView: React.FC<PlanMdToolViewProps> = ({ args, result, cl
                   aria-pressed={isEditing}
                 >
                   {isEditing ? <Eye size={18} strokeWidth={2.25} aria-hidden='true' /> : <Pencil size={18} strokeWidth={2.25} aria-hidden='true' />}
-                </button>
+                </button>}
                 <button
                   ref={closeButtonRef}
                   type='button'
@@ -256,7 +268,7 @@ export const PlanMdToolView: React.FC<PlanMdToolViewProps> = ({ args, result, cl
             </div>
 
             <AnimatePresence mode='wait' initial={false}>
-              {isEditing ? (
+              {!readOnly && isEditing ? (
                 <motion.div
                   key='editor'
                   className='min-h-0 flex-1 px-4 pb-24 sm:px-6'
@@ -285,7 +297,7 @@ export const PlanMdToolView: React.FC<PlanMdToolViewProps> = ({ args, result, cl
                   transition={motionPreferences.contentTransition}
                 >
                   <PlanMarkdown
-                    content={draftContent}
+                    content={readOnly ? savedContent : draftContent}
                     className='!text-[length:var(--plan-font-size)] sm:!text-[length:var(--plan-font-size)] xl:!text-[length:var(--plan-font-size)] 2xl:!text-[length:var(--plan-font-size)] 3xl:!text-[length:var(--plan-font-size)]'
                     style={zoomStyle}
                   />
@@ -324,6 +336,7 @@ export const PlanMdToolView: React.FC<PlanMdToolViewProps> = ({ args, result, cl
                 <button type='button' className={iconButtonClass} onClick={() => setZoom(value => Math.min(150, value + 5))} disabled={zoom >= 150} title='Zoom in' aria-label='Zoom in'>
                   <Plus size={17} strokeWidth={2.25} aria-hidden='true' />
                 </button>
+                {!readOnly && <>
                 <div className='mx-0.5 h-5 w-px bg-neutral-300/60 dark:bg-white/10' aria-hidden='true' />
                 <button
                   type='button'
@@ -336,6 +349,7 @@ export const PlanMdToolView: React.FC<PlanMdToolViewProps> = ({ args, result, cl
                   <Save size={16} strokeWidth={2.25} aria-hidden='true' />
                   {isSaving ? 'Saving…' : 'Save'}
                 </button>
+                </>}
               </div>
             </motion.div>
             {saveError && <p className='absolute bottom-16 left-1/2 -translate-x-1/2 rounded-full bg-red-100/90 px-3 py-1 text-xs text-red-700 backdrop-blur-xl dark:bg-red-500/15 dark:text-red-200' role='alert'>{saveError}</p>}

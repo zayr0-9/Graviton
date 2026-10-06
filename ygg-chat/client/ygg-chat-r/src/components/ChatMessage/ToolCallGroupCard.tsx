@@ -57,6 +57,7 @@ export interface ToolCallGroupCardProps {
   onExpandTransitionEnd?: () => void
   contentStyle?: React.CSSProperties
   truncateToolOutput: boolean
+  readOnly?: boolean
   toolDefinitions: ToolDefinition[]
   mcpLoadState: Record<string, boolean>
   mcpReloadTokens: Record<string, number>
@@ -157,6 +158,7 @@ export const ToolCallGroupCard: React.FC<ToolCallGroupCardProps> = ({
   onExpandTransitionEnd,
   contentStyle,
   truncateToolOutput,
+  readOnly = false,
   toolDefinitions,
   mcpLoadState,
   mcpReloadTokens,
@@ -216,10 +218,21 @@ export const ToolCallGroupCard: React.FC<ToolCallGroupCardProps> = ({
 
   const wrapperStyle = contentStyle
 
-  // html_renderer: the input HTML is the artifact. Always visible.
+  // Inspection-only previews share presentation, but never mount executable
+  // HTML/MCP apps or offer tool navigation/mutation actions.
+
+  // html_renderer: inline input or HTML loaded from a file is the artifact. Always visible.
   const isHtmlRenderer = normalizedName === 'html_renderer'
-  if (isHtmlRenderer && group.args && typeof group.args.html === 'string') {
-    const htmlPreviewKey = `${messageId}-html-renderer-${group.id}`
+  const htmlResultIndex = isHtmlRenderer
+    ? group.results.findIndex(result => !result.is_error && Boolean(extractHtmlFromToolResult(result.content)?.html))
+    : -1
+  const rendererHtml = isHtmlRenderer && typeof group.args?.html === 'string'
+    ? group.args.html
+    : htmlResultIndex >= 0 ? extractHtmlFromToolResult(group.results[htmlResultIndex].content)?.html : null
+  if (!readOnly && isHtmlRenderer && typeof rendererHtml === 'string') {
+    const htmlPreviewKey = typeof group.args?.html === 'string'
+      ? `${messageId}-html-renderer-${group.id}`
+      : `${messageId}-${group.id}-result-${htmlResultIndex}`
     return (
       <div className='min-w-0 max-w-full' style={wrapperStyle} data-chat-block='tool'>
         <div className={STATIC_ROW_CLASS}>
@@ -229,7 +242,7 @@ export const ToolCallGroupCard: React.FC<ToolCallGroupCardProps> = ({
         </div>
         <div className={DISCLOSURE_BODY_CLASS}>
           <div className={`${SURFACE_CARD_CLASS} p-1`}>
-            <HtmlIframe html={group.args.html} toolName={rawName || null} />
+            <HtmlIframe html={rendererHtml} toolName={rawName || null} />
           </div>
         </div>
       </div>
@@ -237,7 +250,7 @@ export const ToolCallGroupCard: React.FC<ToolCallGroupCardProps> = ({
   }
 
   // internalLink: a navigation affordance plus the resolved target.
-  if (normalizedName === 'internallink' || normalizedName === 'internal_link') {
+  if (!readOnly && (normalizedName === 'internallink' || normalizedName === 'internal_link')) {
     const resultPayload = hasResults ? group.results[group.results.length - 1].content : null
     const parsedPayload = parseToolJsonObject(resultPayload)
     const target = parsedPayload?.target && typeof parsedPayload.target === 'object' ? parsedPayload.target : null
@@ -305,7 +318,7 @@ export const ToolCallGroupCard: React.FC<ToolCallGroupCardProps> = ({
   // MCP app with a UI resource: the app is the artifact. Always visible.
   const mcpTool = toolDefinitions.find(t => t.isMcp && t.name === rawName)
   const mcpResourceUri = mcpTool?.mcpUi?.resourceUri
-  if (mcpTool && mcpResourceUri) {
+  if (!readOnly && mcpTool && mcpResourceUri) {
     const serverName = mcpTool.mcpServerName || parsedMcp?.serverName
     if (serverName) {
       const latestResult = hasResults ? group.results[group.results.length - 1] : null
@@ -371,7 +384,7 @@ export const ToolCallGroupCard: React.FC<ToolCallGroupCardProps> = ({
           <ToolName name={rawName || 'plan_md'} tone={tone} />
         </div>
         <div className={DISCLOSURE_BODY_CLASS}>
-          <PlanMdToolView args={group.args} result={planResult} />
+          <PlanMdToolView args={group.args} result={planResult} readOnly={readOnly} />
         </div>
       </div>
     )
@@ -411,14 +424,14 @@ export const ToolCallGroupCard: React.FC<ToolCallGroupCardProps> = ({
     )
     .filter((key): key is string => Boolean(key))
   const primaryHtmlResultKey = htmlResultKeys[0]
-  const hasHtmlOutput = htmlResultKeys.length > 0
+  const hasHtmlOutput = !readOnly && htmlResultKeys.length > 0
 
   const getGenericToolOutputPreview = (value: unknown) => {
     const text = stringifyToolValue(value)
     return truncateToolOutput ? truncateToolOutputPreview(text) : { text, truncated: false, omittedCharacters: 0 }
   }
 
-  const label = isSubagent ? (
+  const label = !readOnly && isSubagent ? (
     <SubagentToolName toolCallId={group.id} name={rawName || 'tool'} fallbackClass={toolNameClassForTone(tone)} />
   ) : (
     rawName || 'tool'
@@ -517,7 +530,7 @@ export const ToolCallGroupCard: React.FC<ToolCallGroupCardProps> = ({
                   key={`input-${callIdx}`}
                   index={callIdx}
                   title={toolName}
-                  actions={nestedSubagent ? transcriptPill(nestedSubagent.toolCallId) : undefined}
+                  actions={!readOnly && nestedSubagent ? transcriptPill(nestedSubagent.toolCallId) : undefined}
                 >
                   <FieldRows record={callArgs} fallback={callArgs ? undefined : { key: 'args', value: callRecord?.args ?? null }} />
                   {extraFields && Object.keys(extraFields).length > 0 && <FieldRows record={extraFields} />}
@@ -545,7 +558,7 @@ export const ToolCallGroupCard: React.FC<ToolCallGroupCardProps> = ({
   const renderResult = (result: { content: any; is_error?: boolean }, resultIdx: number) => {
     const resultKey = `${messageId}-${group.id}-result-${resultIdx}`
     const maybeHtml = extractHtmlFromToolResult(result.content)
-    if (maybeHtml?.html) {
+    if (!readOnly && maybeHtml?.html) {
       return (
         <div key={resultKey} className={`${SURFACE_CARD_CLASS} p-1`}>
           <HtmlIframe html={maybeHtml.html} toolName={maybeHtml.toolName ?? group.name ?? null} />
@@ -661,7 +674,7 @@ export const ToolCallGroupCard: React.FC<ToolCallGroupCardProps> = ({
         expanded={expanded}
         onToggle={onToggle}
         controlsId={panelId}
-        trailing={hasTrailing ? trailing : undefined}
+        trailing={!readOnly && hasTrailing ? trailing : undefined}
       />
       <DisclosurePanel
         id={panelId}

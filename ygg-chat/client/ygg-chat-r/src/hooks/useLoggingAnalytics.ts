@@ -1,5 +1,5 @@
-import { useQuery } from '@tanstack/react-query'
-import { useMemo } from 'react'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
+import { useEffect, useMemo } from 'react'
 import { useAuth } from './useAuth'
 import { isCloudSession } from '../config/runtimeMode'
 import { api, environment, localApi } from '../utils/api'
@@ -12,9 +12,34 @@ export interface LoggingFilters {
   providerRunStatus?: string | null
   toolName?: string | null
   toolStatus?: string | null
+  runStatus?: string | null
+}
+
+export interface OutcomeMetrics {
+  total: number
+  statusCounts: Record<string, number>
+  terminalTotal: number
+  failureRatePct: number | null
+  duration: { samples: number; averageMs: number | null; p50Ms: number | null; p90Ms: number | null }
 }
 
 export interface LoggingDashboardResponse {
+  generatedAt?: string
+  availability?: { costs: boolean; jobs: boolean; runs: boolean; executions: boolean }
+  costRecords?: number
+  localRuns?: OutcomeMetrics & { available: boolean; main: OutcomeMetrics; subagents: OutcomeMetrics }
+  executions?: {
+    available: boolean
+    root: OutcomeMetrics
+    nested: OutcomeMetrics
+    byTool: Array<OutcomeMetrics & { toolName: string; rootTotal: number; nestedTotal: number }>
+    daily: Array<{ date: string; root: number; nested: number; failed: number }>
+  }
+  reportedUsage?: {
+    samples: number; duplicateSamples: number; unidentifiedSamples: number
+    inputTokens: number; outputTokens: number; cachedInputTokens: number; reasoningTokens: number; totalTokens: number
+    cachedInputPct: number | null; assistantMessages: number; messagesWithUsage: number
+  }
   rangeDays: number
   source?: 'cloud' | 'local'
   filters: {
@@ -24,6 +49,7 @@ export interface LoggingDashboardResponse {
       providerRunStatuses: string[]
       toolNames: string[]
       toolJobStatuses?: string[]
+      runStatuses?: string[]
       projects: Array<{ id: string; name: string; storage_mode?: 'cloud' | 'local' | null }>
       conversations: Array<{
         id: string
@@ -45,6 +71,8 @@ export interface LoggingDashboardResponse {
     projectsCreated: number
     activeDays: number
     estimatedTotalTokens?: number
+    activeConversations?: number
+    activeProjects?: number
   }
   spend: {
     totals?: {
@@ -174,6 +202,7 @@ const buildQueryString = (filters: LoggingFilters): string => {
   if (filters.providerRunStatus) params.set('providerRunStatus', filters.providerRunStatus)
   if (filters.toolName) params.set('toolName', filters.toolName)
   if (filters.toolStatus) params.set('toolStatus', filters.toolStatus)
+  if (filters.runStatus) params.set('runStatus', filters.runStatus)
 
   return params.toString()
 }
@@ -182,13 +211,18 @@ export const useCloudLoggingAnalytics = (filters: LoggingFilters, enabled: boole
   const { accessToken, userId } = useAuth()
   const queryString = useMemo(() => buildQueryString(filters), [filters])
   const cloudSession = isCloudSession({ accessToken, userId })
+  const queryClient = useQueryClient()
+  useEffect(() => () => {
+    // Remove the previous account's in-memory analytics on identity change.
+    queryClient.removeQueries({ queryKey: ['logging-analytics', 'cloud', userId] })
+  }, [queryClient, userId])
 
   return useQuery({
-    queryKey: ['logging-analytics', 'cloud', queryString],
+    queryKey: ['logging-analytics', 'cloud', userId, queryString],
     queryFn: () => api.get<LoggingDashboardResponse>(`/analytics/dashboard?${queryString}`, accessToken),
     enabled: enabled && cloudSession,
     staleTime: 30 * 1000,
-    refetchOnMount: false,
+    refetchOnMount: true,
     refetchOnReconnect: false,
     refetchOnWindowFocus: false,
   })
@@ -202,7 +236,7 @@ export const useLocalLoggingAnalytics = (filters: LoggingFilters, enabled: boole
     queryFn: () => localApi.get<LoggingDashboardResponse>(`/local/analytics/dashboard?${queryString}`),
     enabled: enabled && environment === 'electron',
     staleTime: 15 * 1000,
-    refetchOnMount: false,
+    refetchOnMount: true,
     refetchOnReconnect: false,
     refetchOnWindowFocus: false,
   })

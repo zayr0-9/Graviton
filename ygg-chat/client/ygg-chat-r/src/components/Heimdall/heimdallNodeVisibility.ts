@@ -1,4 +1,16 @@
 import type { ChatNode } from '../../features/chats/chatTypes'
+import { isContextInjectionMessage, parseMessageMeta } from '../../../../../shared/contextInjection'
+
+/** Shared semantic-noise filter; do not hide real reasoning/tool activity. */
+export function isHeimdallScaffoldingMessage(message: unknown, filterEmptyMessages = true): boolean {
+  return shouldPromoteHeimdallNode({
+    isContextInjection: isContextInjectionMessage(message),
+    isOperationModeChange: parseMessageMeta((message as { meta?: unknown } | null)?.meta)?.kind === 'operation_mode_change',
+    isEmpty: false,
+    hasSiblings: false,
+    filterEmptyMessages,
+  })
+}
 
 /** Assemble the visible forest without bringing a filtered message root back. */
 export function buildHeimdallVisibleRoot(nodes: ChatNode[]): ChatNode | null {

@@ -149,7 +149,7 @@ Text, images, and the label of every disclosure row share one horizontal inset
 (`MESSAGE_BLOCK_INSET_CLASS`), so prose and process labels sit on the same left edge.
 
 - Reasoning, generic tool cards, and grouped "Agent steps" all use `DisclosureRow` (32px) plus `DisclosurePanel`.
-- Tool variants that are always visible (html_renderer, MCP app, plan_md, edit diff, internalLink) use a static 32px row with the same inset.
+- Tool variants that are always visible (html_renderer, MCP app, plan_md, edit diff, internalLink) use a static 32px row with the same inset. `html_renderer` renders inline `args.html` or file-loaded HTML from its successful result; file-backed fullscreen keys match the result entry registered by `ChatMessage`. Failed file reads remain ordinary error cards.
 - The MCP app iframe has one explicit height, shared by its loading box, clamped to `[240, 600]` px (`McpAppIframe/mcpAppSizing.ts`). The app moves it through `ui/notifications/size-changed`; the settled value is remembered per `${messageId}-${toolCallId}-mcp-app` in localStorage, so a remount and the row estimator both use it. `containerDimensions.maxHeight` advertises the same ceiling.
 - Structured tool detail uses `SurfaceCard` and `Badge`. Surfaces are tone only. No borders, no shadows.
 - User rows draw one tinted `rounded-2xl` surface with a small role caption. Assistant rows are flat.
@@ -302,3 +302,15 @@ Recommended checks after renderer changes:
 - `agent_chat_streaming_state.md`
 - `agent_chat_pipeline.md`
 - `agent_heimdall.md`
+
+## Automated watcher transcript notices
+
+User rows with `meta.kind = watcher_completion` render through
+`WatcherCompletionNotice`, not the tinted user bubble. It shares
+`CompactMessageNotice` chrome with `SummarisedMessage` (h-8, text-xs, muted
+light/dark/custom-theme text). The visible label shows outcome, watch kind and
+short handle; the full continuation text remains in the tooltip and canonical
+model/history content. Detection uses provenance metadata, not matching prose.
+`Chat.tsx` uses the compact virtual-height estimate; `ChatMessage` also guards
+shared callers such as the parallel transcript. Rendering tests:
+`WatcherCompletionNotice.test.tsx` and `SummarisedMessage.test.tsx`.

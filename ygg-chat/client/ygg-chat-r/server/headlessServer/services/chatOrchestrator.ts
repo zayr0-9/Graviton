@@ -18,6 +18,7 @@ import {
   ProviderErrorAssistantResponse,
   ToolLoopService,
   type ToolExecutor,
+  type ToolExecutionContext,
   type ToolLoopCompactor,
   type ToolLoopRunResult,
 } from './toolLoopService.js'
@@ -104,7 +105,7 @@ export function linkPreparedAttachmentsToMessage(
 }
 
 /** Tools that never prompt for permission (mirrors the renderer TOOL_PERMISSION_ALWAYS_BYPASS). */
-const ALWAYS_BYPASS_TOOLS = new Set(['skill_manager', 'mcp_manager', 'multi_call'])
+const ALWAYS_BYPASS_TOOLS = new Set(['skill_manager', 'mcp_manager', 'multi_call', 'context_status'])
 /** custom_tool_manager actions that are read-only/management (bypass) vs 'invoke' (prompt). */
 const CUSTOM_TOOL_MANAGER_BYPASS_ACTIONS = new Set([
   'list',
@@ -444,6 +445,64 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
     head: string | null; successor?: string; restartRequestId?: string; restartContent?: string; terminal?: 'completed' | 'failed'
   }>()
 
+  private readonly watchPins = new Map<string, { lineageId: string; count: number }>()
+
+  /** Retain origin + latest continuation config while a bounded watcher is active. */
+  retainWatch(context: ToolExecutionContext): () => void {
+    const streamId = context.streamId
+    const run = streamId ? this.inputRuns.get(streamId) : null
+    if (!streamId || !run || run.request.conversationId !== context.conversationId ||
+      run.queue.lineageId !== context.lineageId) throw new Error('Watcher requires a main-chat run on this branch')
+    const pin = this.watchPins.get(streamId) ?? { lineageId: context.lineageId!, count: 0 }
+    pin.count++
+    this.watchPins.set(streamId, pin)
+    let released = false
+    return () => {
+      if (released) return
+      released = true
+      if (--pin.count === 0) this.watchPins.delete(streamId)
+      this.pruneInputRuns()
+    }
+  }
+
+  private pruneInputRuns() {
+    const protectedIds = new Set(this.watchPins.keys())
+    for (const pin of this.watchPins.values()) {
+      const latest = [...this.inputRuns].reverse().find(([, run]) =>
+        (run.queue.lineageId ?? run.request.lineageId) === pin.lineageId)
+      if (latest) protectedIds.add(latest[0])
+    }
+    for (const [id, run] of this.inputRuns) {
+      if (this.inputRuns.size <= 64) break
+      if (run.terminal && !protectedIds.has(id)) this.inputRuns.delete(id)
+    }
+  }
+
+  /** Route a completion to the current execution/tail, never to an old tool-call parent. */
+  submitWatchMessage(conversationId: string, lineageId: string, originStreamId: string, submission: QueuedMessageSubmission) {
+    const origin = this.inputRuns.get(originStreamId)
+    const lineage = this.lineageRepo.get(lineageId)
+    if (!origin || origin.request.conversationId !== conversationId || origin.queue.lineageId !== lineageId ||
+      !lineage || lineage.status === 'archived' || lineage.conversation_id !== conversationId || !lineage.head_message_id) throw new Error('Watcher branch unavailable')
+    // A request's source lineage may fork during setup. Never inject into an
+    // unresolved run or launch competing work while its ownership is uncertain.
+    const trustedSuccessors = new Set([...this.inputRuns.values()]
+      .filter(run => run.request.conversationId === conversationId && run.queue.lineageId === lineageId)
+      .map(run => run.successor).filter((id): id is string => Boolean(id)))
+    if ([...this.inputRuns].some(([id, run]) => !run.terminal && !run.queue.lineageId &&
+      run.request.conversationId === conversationId && run.request.lineageId === lineageId && !trustedSuccessors.has(id))) {
+      throw new Error('Watcher branch is initializing')
+    }
+    const candidates = [...this.inputRuns].reverse().filter(([id, run]) =>
+      run.request.conversationId === conversationId && (run.queue.lineageId === lineageId ||
+        (!run.queue.lineageId && trustedSuccessors.has(id) && run.request.lineageId === lineageId)))
+    // The same request ID can never migrate to a second mailbox on retry.
+    const prior = candidates.find(([, run]) => run.queue.get(submission.requestId) || run.restartRequestId === submission.requestId)
+    const target = prior ?? candidates.find(([, run]) => !run.terminal) ?? candidates[0]
+    if (!target) throw new Error('Watcher run unavailable')
+    return this.submitQueuedMessage(conversationId, target[0], submission)
+  }
+
   getMessageQueue(conversationId: string, streamId: string): MessageQueueSnapshot {
     const run = this.inputRuns.get(streamId)
     if (!run || run.request.conversationId !== conversationId) throw new Error('Message queue not found in this conversation')
@@ -490,6 +549,7 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
     run.restartContent = submission.content
     return { restart: { ...run.request, operation: 'send', streamId: nextId, lineageId: lineage.id,
       parentId: run.head, messageId: null, operationId: null, content: submission.content,
+      watcherCompletion: submission.watcherCompletion,
       attachmentsBase64: submission.attachmentsBase64 ?? null, operationMode: run.control.mode,
       retrigger: false, isBranch: false } }
   }
@@ -672,6 +732,7 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
       content,
       modelName: request.modelName,
       contentBlocks,
+      meta: request.watcherCompletion ? { kind: 'watcher_completion', ...request.watcherCompletion } : undefined,
     })
 
     const linkedAttachments = linkPreparedAttachmentsToMessage(
@@ -789,12 +850,7 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
     }
     this.inputRuns.set(trackedStreamId, inputRun)
     // Bound retained terminal mailboxes; live runs are never evicted.
-    if (this.inputRuns.size > 64) {
-      for (const [id, run] of this.inputRuns) {
-        if (this.inputRuns.size <= 64) break
-        if (run.terminal) this.inputRuns.delete(id)
-      }
-    }
+    this.pruneInputRuns()
     const flushMode = (parentId: string | null, history: any[], throughRevision = Infinity) => {
       if (!modeReady) return []
       let parent = parentId
@@ -1047,6 +1103,11 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
       }
     }
 
+    // Autonomous continuation must never silently fork from a stale tail.
+    // This runs inside the existing synchronous message/lineage transaction.
+    if (request.watcherCompletion && (!sourceLineage || sourceLineage.head_message_id !== sourceMessageId)) {
+      throw new Error('Watcher branch advanced during continuation setup')
+    }
     const resolved = this.resolveExecution(request, {
       launchInjection,
       userMessageBlocks: userMessageBlocks.length > 0 ? userMessageBlocks : null,
@@ -1356,6 +1417,7 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
           }
           signal?.throwIfAborted()
           const submissionRequest = { ...request, operation: 'send' as const, content,
+            watcherCompletion: entry.submission.watcherCompletion,
             attachmentsBase64: entry.submission.attachmentsBase64 ?? null }
           const row = this.messageRepo.transaction(() => {
             const message = this.createUserMessage(submissionRequest, parent, content, blocks.length ? blocks : null)
@@ -1453,6 +1515,7 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
         subagentSystemPrompt: request.subagentModePrompt ?? null,
         autoCompactionEnabled: request.autoCompactionEnabled,
         contextLength: request.contextLength,
+        contextMeterPrompts: [project?.system_prompt, projectContext, conversation?.system_prompt, conversationContext],
         compactionThresholdPercent: request.compactionThresholdPercent,
         compactionProvider: request.compactionProvider,
         compactionModelName: request.compactionModelName,

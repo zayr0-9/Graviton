@@ -1,5 +1,5 @@
 import { useQueryClient } from '@tanstack/react-query'
-import { isContextInjectionMessage, parseMessageMeta } from '../../../../../shared/contextInjection'
+import { isContextInjectionMessage } from '../../../../../shared/contextInjection'
 import 'boxicons/css/boxicons.min.css'
 import { Flame, ListFilter, Maximize2, Minimize2, RotateCcw, ZoomIn, ZoomOut } from 'lucide-react'
 import type { JSX } from 'react'
@@ -26,7 +26,8 @@ import type { Conversation } from '../../features/conversations/conversationType
 import { Message } from '@/features/chats'
 import { ConversationId, MessageId } from '../../../../../shared/types'
 import { useIsMobile } from '../../hooks/useMediaQuery'
-import { useConversations } from '../../hooks/useQueries'
+import { useConversations, useProjects } from '../../hooks/useQueries'
+import { groupConversationsByProject } from './conversationProjectGroups'
 import type { RootState } from '../../store/store'
 import { parseId } from '../../utils/helpers'
 import stripMarkdownToText from '../../utils/markdownStripper'
@@ -34,7 +35,7 @@ import { isCompactionSummary, SUMMARY_PLACEHOLDER } from '../../features/chats/s
 // import { MarkdownLink } from '../MarkdownLink/MarkdownLink'
 import { environment, localApi } from '../../utils/api'
 import { DeleteConfirmModal } from '../DeleteConfirmModal/DeleteConfirmModal'
-import { buildHeimdallVisibleRoot, shouldPromoteHeimdallNode } from './heimdallNodeVisibility'
+import { buildHeimdallVisibleRoot, isHeimdallScaffoldingMessage, shouldPromoteHeimdallNode } from './heimdallNodeVisibility'
 import { TextArea } from '../TextArea/TextArea'
 import { TextField } from '../TextField/TextField'
 import {
@@ -270,6 +271,12 @@ export const Heimdall: React.FC<HeimdallProps> = ({
     isError: conversationsIsError,
     refetch: refetchConversations,
   } = useConversations(showConversationSelector)
+  const {
+    data: projects = [],
+    isLoading: projectsLoading,
+    isError: projectsIsError,
+    refetch: refetchProjects,
+  } = useProjects(showConversationSelector)
   const selectableConversations = useMemo(
     () =>
       conversations.filter(conversation => {
@@ -277,6 +284,10 @@ export const Heimdall: React.FC<HeimdallProps> = ({
         return sourceConversationId == null || String(conversation.id) !== String(sourceConversationId)
       }),
     [conversations, conversationId, currentConversationId]
+  )
+  const conversationProjectGroups = useMemo(
+    () => groupConversationsByProject(selectableConversations, projects),
+    [selectableConversations, projects]
   )
   // Track total messages to detect a truly empty conversation
   const messagesCount = useSelector((state: RootState) => state.chat.conversation.messages.length)
@@ -1695,7 +1706,6 @@ export const Heimdall: React.FC<HeimdallProps> = ({
     // A context-injection row is treated as empty so it is promoted away while its
     // descendants stay on the branch. Selection still expands to hidden nodes.
     const isHiddenContextInjection = fullMsg ? isContextInjectionMessage(fullMsg) : false
-    const isOperationModeChange = parseMessageMeta(fullMsg?.meta)?.kind === 'operation_mode_change'
 
     const hasContent =
       !isHiddenContextInjection &&
@@ -1714,9 +1724,9 @@ export const Heimdall: React.FC<HeimdallProps> = ({
 
     // 2. If node is empty, skip it and return its children (promotion)
     // Exception: Keep nodes that have siblings (parallel branches)
-    if (shouldPromoteHeimdallNode({
-      isContextInjection: isHiddenContextInjection,
-      isOperationModeChange,
+    if (isHeimdallScaffoldingMessage(fullMsg, filterEmptyMessages) || shouldPromoteHeimdallNode({
+      isContextInjection: false,
+      isOperationModeChange: false,
       isEmpty: !hasContent,
       hasSiblings,
       filterEmptyMessages,
@@ -2374,6 +2384,7 @@ export const Heimdall: React.FC<HeimdallProps> = ({
     setConversationSelectorError(null)
     setShowConversationSelector(true)
     void refetchConversations()
+    void refetchProjects()
   }
 
   const handleCloseConversationSelector = useCallback(() => {
@@ -4305,38 +4316,53 @@ export const Heimdall: React.FC<HeimdallProps> = ({
               )}
 
               {!conversationsLoading && !conversationsIsError && selectableConversations.length > 0 && (
-                <div className='space-y-1'>
-                  {selectableConversations.map(conversation => {
-                    const title = conversation.title?.trim() || 'Untitled conversation'
-                    const updatedAt = conversation.updated_at ? new Date(conversation.updated_at) : null
-                    const updatedLabel = updatedAt && !Number.isNaN(updatedAt.getTime()) ? updatedAt.toLocaleDateString() : null
-                    return (
-                      <button
-                        key={String(conversation.id)}
-                        type='button'
-                        disabled={isAddingToConversation}
-                        onClick={() => handleAddSelectionToConversation(conversation)}
-                        className='w-full text-left rounded-xl px-3 py-3 transition-colors hover:bg-stone-100 dark:hover:bg-neutral-800 disabled:opacity-60 disabled:cursor-wait'
-                      >
-                        <div className='flex items-center gap-3'>
-                          <div className='flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-stone-100 text-stone-500 dark:bg-neutral-800 dark:text-neutral-300'>
-                            <i className='bx bx-message-rounded-dots text-lg' />
-                          </div>
-                          <div className='min-w-0 flex-1'>
-                            <div className='truncate text-sm font-medium text-stone-800 dark:text-stone-100'>{title}</div>
-                            <div className='mt-0.5 flex items-center gap-2 text-[11px] text-stone-500 dark:text-stone-400'>
-                              {updatedLabel && <span>{updatedLabel}</span>}
-                              {conversation.storage_mode && (
-                                <span className='rounded-full bg-stone-100 px-1.5 py-0.5 uppercase dark:bg-neutral-800'>
-                                  {conversation.storage_mode}
-                                </span>
-                              )}
-                            </div>
-                          </div>
-                        </div>
-                      </button>
-                    )
-                  })}
+                <div className='space-y-4'>
+                  {(projectsLoading || projectsIsError) && (
+                    <p className='px-3 text-xs text-stone-500 dark:text-stone-400' style={heimdallContextMenuHeaderStyle} role='status'>
+                      {projectsLoading ? 'Loading project names...' : 'Could not load project names. Chats are still available.'}
+                    </p>
+                  )}
+                  {conversationProjectGroups.map(group => (
+                    <section key={group.projectId === null ? 'no-project' : `project-${group.projectId}`} aria-label={group.name}>
+                      <h4 className='px-3 pb-1 text-xs font-semibold text-stone-500 dark:text-stone-400 break-words' style={heimdallContextMenuHeaderStyle}>
+                        {group.name}
+                        <span className='ml-2 font-normal'>{group.conversations.length}</span>
+                      </h4>
+                      <div className='space-y-1'>
+                        {group.conversations.map(conversation => {
+                          const title = conversation.title?.trim() || 'Untitled conversation'
+                          const updatedAt = conversation.updated_at ? new Date(conversation.updated_at) : null
+                          const updatedLabel = updatedAt && !Number.isNaN(updatedAt.getTime()) ? updatedAt.toLocaleDateString() : null
+                          return (
+                            <button
+                              key={String(conversation.id)}
+                              type='button'
+                              disabled={isAddingToConversation}
+                              onClick={() => handleAddSelectionToConversation(conversation)}
+                              className='w-full text-left rounded-xl px-3 py-3 transition-colors hover:bg-stone-100 dark:hover:bg-neutral-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400/70 dark:focus-visible:ring-orange-400/70 disabled:opacity-60 disabled:cursor-wait'
+                            >
+                              <div className='flex items-center gap-3'>
+                                <div className='flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-stone-100 text-stone-500 dark:bg-neutral-800 dark:text-neutral-300'>
+                                  <i className='bx bx-message-rounded-dots text-lg' />
+                                </div>
+                                <div className='min-w-0 flex-1'>
+                                  <div className='truncate text-sm font-medium text-stone-800 dark:text-stone-100'>{title}</div>
+                                  <div className='mt-0.5 flex items-center gap-2 text-[11px] text-stone-500 dark:text-stone-400'>
+                                    {updatedLabel && <span>{updatedLabel}</span>}
+                                    {conversation.storage_mode && (
+                                      <span className='rounded-full bg-stone-100 px-1.5 py-0.5 uppercase dark:bg-neutral-800'>
+                                        {conversation.storage_mode}
+                                      </span>
+                                    )}
+                                  </div>
+                                </div>
+                              </div>
+                            </button>
+                          )
+                        })}
+                      </div>
+                    </section>
+                  ))}
                 </div>
               )}
             </div>
@@ -4580,7 +4606,7 @@ export const Heimdall: React.FC<HeimdallProps> = ({
               </div>
               {(() => {
                 // No Markdown parsing, syntax highlighting, or block traversal for summaries.
-                if (isSummary) return <p className='text-sm break-words'>{SUMMARY_PLACEHOLDER}</p>
+                if (isSummary) return <p className='text-sm break-words' style={{ color: heimdallNodeHoverModalTextColor }}>{SUMMARY_PLACEHOLDER}</p>
                 const hasContentBlocks = Array.isArray(contentBlocks) && contentBlocks.length > 0
 
                 // If we have content_blocks, render them

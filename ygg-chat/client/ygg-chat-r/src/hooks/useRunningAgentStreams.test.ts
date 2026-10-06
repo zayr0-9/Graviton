@@ -138,7 +138,8 @@ describe('fork-grouped agent presentation', () => {
     const second = buildAgentForkGroups([b, a], []).activeForks
     expect(first).toEqual(second)
     expect(first.map(fork => fork.lineageId)).toEqual(['fork-b', 'fork-a'])
-    expect(first[1].displayName).toBe('fork fork-a')
+    expect(first[1].displayName).toBe('fork for')
+    expect(buildAgentForkGroups([run('uuid', { lineageId: '5d123456-7890' })], []).activeForks[0].displayName).toBe('fork 5d1')
     expect(a.displayName).toBe('agent-1')
   })
 

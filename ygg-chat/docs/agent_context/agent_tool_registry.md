@@ -1,6 +1,7 @@
 ---
 paths:
   - "shared/builtinToolDefinitions.ts"
+  - "client/ygg-chat-r/server/headlessServer/services/contextStatusTool.ts"
   - "client/ygg-chat-r/server/builtinToolRegistry.ts"
   - "client/ygg-chat-r/src/features/chats/toolDefinitions.ts"
   - "client/ygg-chat-r/server/tools/customTool*.ts"
@@ -37,6 +38,7 @@ Use this when changing:
 
 - The model sees tool schemas built from the active registry.
 - Built-in tools have shared schemas and Electron implementations. `multi_call` is a headless-server composite implementation rather than a `toolOrchestrator` leaf handler: it expands nested calls and sends each through normal policy-aware execution.
+- `context_status` is an enabled, no-argument read-only built-in intercepted in-process by `server/headlessServer/services/contextStatusTool.ts`. `ToolLoopService` supplies a run-local meter callback; direct calls and nested `multi_call` use the invoking run's history/provider/model, never renderer navigation. It bypasses interactive permissions and is allowed in Chat mode. It calculates headroom against `totalContextLimit` (model/configured window, not credits) and returns only remaining tokens, rounded whole-number remaining percent, and a brief approximation note.
 - Custom tools should be discovered/managed through `custom_tool_manager`, not called directly by undeclared names.
 - MCP tools are discovered on demand. A successful MCP `tools/list` automatically registers execution handlers, refreshes the active server-owned loop before its next provider turn, and updates the renderer registry through the `tools_updated` SSE event; Settings refresh is not required.
 
