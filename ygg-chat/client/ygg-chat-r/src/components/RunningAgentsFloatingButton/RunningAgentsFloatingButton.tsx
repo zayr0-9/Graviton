@@ -21,6 +21,8 @@ import { AgentRunPreview } from './AgentRunPreview'
 import { AgentMessageTooltip } from './AgentMessageTooltip'
 import { Expand } from 'lucide-react'
 import { useAgentsPillResize } from './useAgentsPillResize'
+import { getAgentNotificationPreview } from './agentNotificationTarget'
+import { createEmptyStreamState } from '../../features/chats/streamHelpers'
 
 interface RunningAgentsFloatingButtonProps {
   notes?: ResearchNoteItem[]
@@ -391,7 +393,7 @@ export const RunningAgentsFloatingButton: React.FC<RunningAgentsFloatingButtonPr
   const dispatch = useAppDispatch()
   const shouldReduceMotion = useReducedMotion()
   const motionPreferences = useMotionPreferences(shouldReduceMotion)
-  const { activeStreams, streamHistory } = useRunningAgentStreams(notes, allConversations)
+  const { activeStreams, streamHistory, buildAgentStreamListItem, streamingRoot } = useRunningAgentStreams(notes, allConversations)
   const { activeForks, historyForks } = useMemo(
     () => buildAgentForkGroups(activeStreams, streamHistory),
     [activeStreams, streamHistory]
@@ -621,13 +623,27 @@ export const RunningAgentsFloatingButton: React.FC<RunningAgentsFloatingButtonPr
     }
   }, [])
 
-  const navigateToNotification = (notification: UiNotification) => {
+  const openNotification = (notification: UiNotification) => {
     if (notificationTimerRef.current) {
       clearTimeout(notificationTimerRef.current)
       notificationTimerRef.current = null
     }
     setInlineNotification(null)
     dispatch(uiActions.notificationDismissed(notification.id))
+    const preview = getAgentNotificationPreview(notification, [...activeStreams, ...streamHistory], streamId => {
+      const stream = streamingRoot.byId[streamId] ?? {
+        ...createEmptyStreamState('branch'),
+        conversationId: notification.conversationId,
+        createdAt: notification.createdAt,
+        status: 'completed' as const,
+        finalMessageId: notification.messageId,
+      }
+      return buildAgentStreamListItem(streamId, stream, notification.createdAt)
+    })
+    if (preview) {
+      openPreview(preview)
+      return
+    }
     navigate(getNotificationHref(notification))
   }
 
@@ -698,7 +714,10 @@ export const RunningAgentsFloatingButton: React.FC<RunningAgentsFloatingButtonPr
                   key={`notification-${inlineNotification.id}`}
                   type='button'
                   layout={!pillResize.dragging}
-                  onClick={() => navigateToNotification(inlineNotification)}
+                  onClick={event => {
+                    event.stopPropagation()
+                    openNotification(inlineNotification)
+                  }}
                   className={`group flex min-h-11 max-w-[min(19rem,calc(100vw-6rem))] items-center gap-2 rounded-full px-3 py-2 text-left outline-none transition-colors focus-visible:ring-2 focus-visible:ring-emerald-400/70 ${
                     customThemeEnabled
                       ? 'hover:bg-[var(--running-agents-floating-hover-bg)] dark:hover:bg-[var(--running-agents-floating-hover-bg)]'

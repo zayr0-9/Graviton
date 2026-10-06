@@ -28,6 +28,7 @@ import { ConversationId, MessageId } from '../../../../../shared/types'
 import { useIsMobile } from '../../hooks/useMediaQuery'
 import { useConversations, useProjects } from '../../hooks/useQueries'
 import { groupConversationsByProject } from './conversationProjectGroups'
+import { calculateDockedPreviewLayout, observeHeimdallViewport } from './heimdallViewport'
 import type { RootState } from '../../store/store'
 import { parseId } from '../../utils/helpers'
 import stripMarkdownToText from '../../utils/markdownStripper'
@@ -1959,16 +1960,14 @@ export const Heimdall: React.FC<HeimdallProps> = ({
   }, [positions, bounds, dimensions.width, dimensions.height, zoom, offsetX, offsetY, chatData, currentChatData?.id])
 
   useEffect(() => {
-    const updateDimensions = (): void => {
-      if (containerRef.current) {
-        const { offsetWidth, offsetHeight } = containerRef.current
-        setDimensions({ width: offsetWidth, height: offsetHeight })
-      }
-    }
+    const container = containerRef.current
+    if (!container) return
 
-    updateDimensions()
-    window.addEventListener('resize', updateDimensions)
-    return () => window.removeEventListener('resize', updateDimensions)
+    return observeHeimdallViewport(container, nextDimensions => {
+      setDimensions(current =>
+        current.width === nextDimensions.width && current.height === nextDimensions.height ? current : nextDimensions
+      )
+    })
   }, [])
 
   // When compact mode changes, re-fit the view using the updated bounds/layout.
@@ -2735,23 +2734,13 @@ export const Heimdall: React.FC<HeimdallProps> = ({
     maxHeight: number,
     fallbackPosition: { x: number; y: number }
   ) => {
-    // Dock on the panel half opposite the graph anchor so the preview never
-    // covers the interactive node or note pill that opened it.
-    const dockMargin = 12
-    const halfWidth = dimensions.width / 2
-    const width = Math.min(preferredWidth, Math.max(220, halfWidth - dockMargin * 2))
     const nodePos = positions[anchorNodeId]
     const screenTx = cullingPan.x + dimensions.width / 2
     const screenTy = cullingPan.y + 100
     const anchorCenterX = nodePos ? (nodePos.x + offsetX) * cullingZoom + screenTx : fallbackPosition.x
     const anchorTopY = nodePos ? (nodePos.y + offsetY) * cullingZoom + screenTy : fallbackPosition.y
-    const dockRight = anchorCenterX < halfWidth
 
-    return {
-      left: dockRight ? dimensions.width - width - dockMargin : dockMargin,
-      top: Math.max(10, Math.min(anchorTopY, dimensions.height - maxHeight - 10)),
-      width,
-    }
+    return calculateDockedPreviewLayout(dimensions, { x: anchorCenterX, y: anchorTopY }, preferredWidth, maxHeight)
   }
 
   const clearMessagePreviewCloseTimeout = useCallback(() => {
@@ -4596,7 +4585,7 @@ export const Heimdall: React.FC<HeimdallProps> = ({
                 onMouseLeave={handleMessagePreviewLeave}
                 style={{
                   width: `${dockedPreview.width}px`,
-                  maxHeight: `${popupMaxHeight}px`,
+                  maxHeight: `${dockedPreview.maxHeight}px`,
                   overflow: 'auto',
                   ...heimdallHoverPreviewStyle,
                 }}
@@ -4767,7 +4756,7 @@ export const Heimdall: React.FC<HeimdallProps> = ({
             onMouseLeave={handleNotePreviewLeave}
             style={{
               width: `${dockedPreview.width}px`,
-              maxHeight: `${NOTE_PREVIEW_MAX_HEIGHT}px`,
+              maxHeight: `${dockedPreview.maxHeight}px`,
               overflow: 'auto',
               ...heimdallHoverPreviewStyle,
             }}

@@ -60,7 +60,7 @@ Notification state:
 - Stream-completion notifications are repurposed into the same floating shell.
 - On completion, the inner `agents` content is temporarily replaced by an inline completion notification.
 - The shell widens smoothly, displays the notification, then collapses back to the normal `agents` state.
-- Clicking the inline notification dismisses it and navigates to the completed stream target.
+- Clicking a branch-completion notification dismisses it and opens that exact run's read-only preview inside the pill. Open chat is the explicit navigation action. Watcher notifications still navigate directly.
 
 ## Animation Recipe
 
@@ -151,7 +151,7 @@ flowchart TD
 - Main compact control should expose `aria-label` based on active stream count, or the notification title when notification content is showing.
 - Use buttons for clickable rows and notification content.
 - Clicking a stream/history row opens its read-only run preview inside the floating shell. Open chat explicitly navigates to `/chat/:projectId/:conversationId#messageId`.
-- Clicking inline notification dismisses it and navigates to its target route.
+- Clicking a branch-completion notification opens the in-pill preview using its `streamId`, not the latest run in the conversation. If that transcript was superseded, show the existing unavailable-preview message with Open chat targeting the notification's response. Watcher notifications retain direct navigation.
 - Respect reduced motion via `useReducedMotion()` and fall back to short opacity/timing transitions.
 
 ## Gotchas
@@ -171,7 +171,7 @@ flowchart TD
   3. Expanding and collapsing feel like reverse directions of the same motion.
   4. Apps expand button stays pinned far right in both collapsed and expanded/notification states.
   5. Stream-completion notification widens the shell, then returns to `agents` state.
-  6. Clicking notification navigates to the completed stream.
+  6. Clicking a branch-completion notification opens its exact run inside the pill without changing route; Open chat navigates to the completed response. Watcher notifications still navigate directly.
   7. Active and history lists scroll and remain sorted by the latest run's start/created time.
   8. Consecutive sends on one fork reuse one group; sibling forks remain separate, including while their server identity resolves.
   9. Expand recent runs and navigate to individual run targets; a fork with multiple active executions counts as one fork.

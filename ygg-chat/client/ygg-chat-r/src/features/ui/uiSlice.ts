@@ -12,15 +12,17 @@ import { ConversationId, MessageId, ProjectId } from '../../../../../shared/type
  * A NAVIGABLE notification: "your background branch finished, click to open it".
  *
  * Both branch replies and watcher completions require `conversationId` /
- * `messageId`. `RunningAgentsFloatingButton` renders these as a click-to-navigate
- * inline banner and builds `/chat/{projectId}/{conversationId}#{messageId}` from
- * them — widening this type to carry failures would push non-navigable errors
- * into a navigate-on-click surface and produce `/chat/unknown/undefined#undefined`.
+ * `messageId`. `RunningAgentsFloatingButton` opens branch replies in its run
+ * preview; watcher completions navigate directly. Both retain an explicit chat
+ * target — widening this type to carry failures would push non-navigable errors
+ * into this surface and produce `/chat/unknown/undefined#undefined`.
  * Failures get their own channel below (`UiErrorNotice`).
  */
 export type UiNotification = {
   id: string
   kind: 'branch_stream_completed' | 'watch_completed'
+  /** Exact execution to preview for a branch completion. */
+  streamId?: string
   title: string
   description?: string
   conversationId: ConversationId

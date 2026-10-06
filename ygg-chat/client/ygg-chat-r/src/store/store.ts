@@ -102,8 +102,9 @@ listenerMiddleware.startListening({
       uiActions.notificationAdded({
         id: `branch-complete:${streamId}:${String(messageId)}`,
         kind: 'branch_stream_completed',
+        streamId,
         title: conversation?.title?.trim() || 'Branch reply finished',
-        description: 'A background branch completed. Click to open it.',
+        description: 'A background branch completed. Click to preview the response.',
         conversationId,
         projectId: conversation?.project_id ?? null,
         messageId,
