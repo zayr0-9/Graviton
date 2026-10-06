@@ -47,6 +47,7 @@ import {
   saveToolOutputTruncationEnabled,
 } from '../../helpers/toolOutputTruncation'
 import { localApi } from '../../utils/api'
+import { executeToolAndWait } from '../../utils/executeToolAndWait'
 import { extractTextFromPdf } from '../../utils/pdfUtils'
 import { InputTextArea } from '../InputTextArea/InputTextArea'
 import { ThemeManager } from '../ThemeManager/ThemeManager'
@@ -513,7 +514,7 @@ export const SettingsPane: React.FC<SettingsPaneProps> = ({ open, onClose }) => 
     setSavedThemesError('')
 
     try {
-      const data = await localApi.post<{ result?: ThemeManagerListResult }>('/tools/execute', {
+      const data = await executeToolAndWait<ThemeManagerListResult>({
         toolName: 'theme_manager',
         args: {
           action: 'list',
@@ -541,7 +542,7 @@ export const SettingsPane: React.FC<SettingsPaneProps> = ({ open, onClose }) => 
     setSavedThemesError('')
 
     try {
-      const data = await localApi.post<{ result?: ThemeManagerReadResult }>('/tools/execute', {
+      const data = await executeToolAndWait<ThemeManagerReadResult>({
         toolName: 'theme_manager',
         args: {
           action: 'read',

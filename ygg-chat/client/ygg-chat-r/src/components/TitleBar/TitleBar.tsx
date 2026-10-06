@@ -1,8 +1,9 @@
 import { ChevronLeft, ChevronRight } from 'lucide-react'
 import { useEffect, useMemo, useState } from 'react'
-import { matchPath, useLocation } from 'react-router-dom'
+import { useLocation } from 'react-router-dom'
 import './TitleBar.css'
 import { useTitleBarHistory } from './useTitleBarHistory'
+import { getTitleBarProjectId } from './titleBarProject'
 
 import { getThemeModeColor, useCustomChatTheme, useHtmlDarkMode } from '../ThemeManager/themeConfig'
 import { chatSliceActions, selectCcCwd, selectCurrentConversationId } from '../../features/chats'
@@ -26,19 +27,11 @@ export const TitleBar = () => {
   const currentCwd = useAppSelector(selectCcCwd)
   const currentConversationId = useAppSelector(selectCurrentConversationId)
   const selectedProject = useAppSelector(selectSelectedProject)
-  const currentConversation = useAppSelector(state => {
-    if (!currentConversationId) return null
-    return state.conversations.items.find(conversation => String(conversation.id) === String(currentConversationId)) ?? null
-  })
+  const conversations = useAppSelector(state => state.conversations.items)
   const { data: allProjects = [] } = useProjects()
-
-  const chatRouteMatch = matchPath('/chat/:projectId/:conversationId', location.pathname)
-  const projectIdFromRoute = chatRouteMatch?.params.projectId && chatRouteMatch.params.projectId !== 'unknown'
-    ? chatRouteMatch.params.projectId
-    : null
+  const currentProjectId = getTitleBarProjectId(location.pathname, conversations)
 
   const currentProject = useMemo(() => {
-    const currentProjectId = currentConversation?.project_id || projectIdFromRoute || selectedProject?.id
     if (!currentProjectId) return null
 
     if (selectedProject && String(selectedProject.id) === String(currentProjectId)) {
@@ -46,7 +39,7 @@ export const TitleBar = () => {
     }
 
     return allProjects.find(project => String(project.id) === String(currentProjectId)) ?? null
-  }, [allProjects, currentConversation?.project_id, projectIdFromRoute, selectedProject])
+  }, [allProjects, currentProjectId, selectedProject])
   const currentProjectName = currentProject?.name
   const projectUpdatedDateLabel = useMemo(() => {
     if (!currentProject) return null

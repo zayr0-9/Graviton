@@ -234,6 +234,7 @@ import { useConversationSnapshotCoordinator } from '../hooks/useConversationSnap
 import { CHAT_INSERT_FILE_PATH_EVENT, type ChatInsertFilePathDetail } from '../helpers/chatInputBridge'
 import { dispatchOpenWorkspaceMutationDiffs } from '../helpers/workspaceMutationDiffBridge'
 import { cloneConversation, gwApi, localApi } from '../utils/api'
+import { executeToolAndWait } from '../utils/executeToolAndWait'
 import { getHookRunsRenderSignature } from '../components/ChatMessage/hookActivityState'
 import { getAssetPath } from '../utils/assetPath'
 import { parseId } from '../utils/helpers'
@@ -1729,7 +1730,7 @@ function Chat() {
 
   const applyThemeById = useCallback(async (themeId: string): Promise<boolean> => {
     try {
-      const data = await localApi.post<{ result?: ThemeManagerReadResult }>('/tools/execute', {
+      const data = await executeToolAndWait<ThemeManagerReadResult>({
         toolName: 'theme_manager',
         args: {
           action: 'read',
@@ -1791,7 +1792,7 @@ function Chat() {
       stopThemeDemo()
 
       try {
-        const data = await localApi.post<{ result?: ThemeManagerListResult }>('/tools/execute', {
+        const data = await executeToolAndWait<ThemeManagerListResult>({
           toolName: 'theme_manager',
           args: {
             action: 'list',

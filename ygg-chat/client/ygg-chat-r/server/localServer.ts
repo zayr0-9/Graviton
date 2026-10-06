@@ -2004,13 +2004,8 @@ function setupServer() {
 
   registerUndoRoutes(app)
 
-  // Tool execution + custom-tool management routes live in routes/toolExecutionRoutes.ts.
-  registerToolExecutionRoutes(app, {
-    builtInTools,
-    getToolSandbox: () => toolSandbox,
-    isUtilityRuntimeFallbackDisabled,
-    shouldUseUtilityRuntimeForCustomTool,
-  })
+  // Custom-tool management routes live in routes/toolExecutionRoutes.ts; execution uses jobRoutes.
+  registerToolExecutionRoutes(app)
 
   // App-store + restart routes live in routes/appStoreRoutes.ts.
   registerAppStoreRoutes(app)
