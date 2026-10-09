@@ -44,6 +44,9 @@ describe('registerChatRoutes', () => {
       compactionService: {
         async compactBranch(request) {
           seenCompactionRequests.push(request)
+          if (request.modelName === 'wait-for-abort') {
+            await new Promise<void>((_resolve, reject) => request.signal.addEventListener('abort', () => reject(request.signal.reason), { once: true }))
+          }
           return {
             message: {
               id: 'compact-1',
@@ -174,6 +177,19 @@ describe('registerChatRoutes', () => {
       subagentModePrompt: 'Custom Subagent baseline',
       planModeVerbosity: 'detailed',
     })
+  })
+
+  it('aborts compaction when the client cancels the request', async () => {
+    const controller = new AbortController()
+    const request = fetch(`${baseUrl}/api/conversations/c1/compact`, {
+      method: 'POST', headers: { 'content-type': 'application/json' }, signal: controller.signal,
+      body: JSON.stringify({ parentMessageId: 'a', modelName: 'wait-for-abort', messages: [{ role: 'user', content: 'Task' }, { role: 'assistant', content: 'Progress' }] }),
+    })
+    const settled = request.catch(error => error)
+    await expect.poll(() => seenCompactionRequests.length).toBe(1)
+    controller.abort()
+    await settled
+    await expect.poll(() => seenCompactionRequests[0].signal.aborted).toBe(true)
   })
 
   it('maps compact route to compaction service', async () => {

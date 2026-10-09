@@ -197,6 +197,7 @@ const makeInitialState = (): ChatState => {
       sending: false,
       compacting: false,
       compactingConversationId: null,
+      compactingParentMessageId: null,
       validationError: null,
       draftMessage: null,
       multiReplyCount: 1,
@@ -371,15 +372,17 @@ export const chatSlice = createSlice({
       state.composition.editingBranch = action.payload
     },
 
-    compactingStarted: (state, action: PayloadAction<{ conversationId?: ConversationId | null } | undefined>) => {
+    compactingStarted: (state, action: PayloadAction<{ conversationId?: ConversationId | null; parentMessageId?: MessageId | null } | undefined>) => {
       state.composition.compacting = true
       state.composition.compactingConversationId =
         action.payload?.conversationId ?? state.conversation.currentConversationId ?? null
+      state.composition.compactingParentMessageId = action.payload?.parentMessageId ?? null
     },
 
     compactingFinished: state => {
       state.composition.compacting = false
       state.composition.compactingConversationId = null
+      state.composition.compactingParentMessageId = null
     },
 
     sendingStarted: (state, action: PayloadAction<SendingStartedPayload | undefined>) => {

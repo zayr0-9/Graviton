@@ -82,6 +82,7 @@ import {
   blobToDataURL,
   chatSliceActions,
   compactBranch,
+  abortCompaction,
   deleteMessage,
   editMessageWithBranching,
   fetchConversationStreamUndo,
@@ -1172,6 +1173,8 @@ function Chat() {
   )
   const streamUndoRoot = useAppSelector(selectStreamUndoRoot)
   const compactingConversationId = useAppSelector(state => state.chat.composition.compactingConversationId)
+  const compactingParentMessageId = useAppSelector(state => state.chat.composition.compactingParentMessageId)
+
   // Current view stream - automatically selects the relevant stream based on currentPath
   const currentViewStream = useAppSelector(selectCurrentViewStream)
   const pendingViewStream = useAppSelector(state =>
@@ -1248,6 +1251,9 @@ function Chat() {
 
   const conversationMessages = useAppSelector(selectConversationMessages)
   const displayMessages = useAppSelector(selectDisplayMessages)
+  const canStopCompaction = sendingState.compacting && compactingConversationId != null &&
+    String(compactingConversationId) === String(currentConversationId) && compactingParentMessageId != null &&
+    displayMessages.some(message => String(message.id) === String(compactingParentMessageId))
   const toolCallPermissionRequest = useAppSelector(state =>
     streamState.id
       ? (state.chat.toolPermissionRequestsByStream[streamState.id] ?? null)
@@ -5631,6 +5637,10 @@ function Chat() {
   )
 
   const handleStopGeneration = useCallback(() => {
+    if (canStopCompaction && compactingConversationId != null && compactingParentMessageId != null) {
+      dispatch(abortCompaction({ conversationId: compactingConversationId, parentMessageId: compactingParentMessageId }))
+      return
+    }
     if (!streamState.id && !streamState.streamingMessageId) return
 
     dispatch(
@@ -5639,7 +5649,7 @@ function Chat() {
         messageId: streamState.streamingMessageId,
       })
     )
-  }, [streamState.id, streamState.streamingMessageId, dispatch])
+  }, [streamState.id, streamState.streamingMessageId, canStopCompaction, compactingConversationId, compactingParentMessageId, dispatch])
 
   // The error bubble owns exactly one button. This is where its `kind` becomes a real recovery.
   // Deliberately routed through the handlers that already exist in this container rather than
@@ -8320,10 +8330,10 @@ function Chat() {
                   ) : showGenerationLoadingAnimation ? (
                     <button
                       onClick={handleStopGeneration}
-                      disabled={!streamState.active}
+                      disabled={!streamState.active && !canStopCompaction}
                       title={
-                        isCurrentConversationCompacting
-                          ? 'Compacting context...'
+                        canStopCompaction
+                          ? 'Stop compaction'
                           : streamState.active
                             ? 'Stop generation'
                             : 'Generating...'

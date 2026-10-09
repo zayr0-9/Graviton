@@ -48,6 +48,7 @@ export interface CompactBranchInput {
   accessToken?: string | null
   accountId?: string | null
   systemPrompt?: string | null
+  signal?: AbortSignal
 }
 
 export interface GenerateCompactionSummaryInput {
@@ -59,6 +60,7 @@ export interface GenerateCompactionSummaryInput {
   accessToken?: string | null
   accountId?: string | null
   systemPrompt?: string | null
+  signal?: AbortSignal
 }
 
 interface CompactionServiceDeps {
@@ -515,6 +517,7 @@ export class CompactionService {
    * store the summary outside the main tree (e.g. the subagent transcript).
    */
   async generateCompactionSummary(input: GenerateCompactionSummaryInput): Promise<string> {
+    input.signal?.throwIfAborted()
     // R5: strip `excludeFromContext` rows BEFORE anything reads them. This is the single
     // choke point for every compaction caller — the in-loop compaction AND the manual
     // `chatRoutes` route, which feeds caller-supplied rows verbatim. Without it an error
@@ -565,7 +568,9 @@ export class CompactionService {
       accountId: input.accountId ?? null,
       tools: [],
       temperature: 0.2,
+      signal: input.signal,
     })
+    input.signal?.throwIfAborted()
 
     const summaryText = String(result?.content ?? '').trim()
     if (!summaryText) {
@@ -601,7 +606,9 @@ export class CompactionService {
       accessToken: input.accessToken,
       accountId: input.accountId,
       systemPrompt: input.systemPrompt,
+      signal: input.signal,
     })
+    input.signal?.throwIfAborted()
 
     const message = this.messageRepo.createMessage({
       conversationId: input.conversationId,

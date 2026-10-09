@@ -737,6 +737,7 @@ export class SubagentRunService {
     const transcriptCompactor: ToolLoopCompactor = async input => {
       const summaryText = await this.compactionService.generateCompactionSummary({
         messages: input.messages,
+        signal: input.signal,
         provider: input.provider,
         modelName: input.modelName,
         userId: input.userId,

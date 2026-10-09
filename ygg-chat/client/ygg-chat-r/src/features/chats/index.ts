@@ -32,6 +32,7 @@ export {
   respondToToolPermission,
   respondToToolPermissionAndEnableAll,
   compactBranch,
+  abortCompaction,
   sendMessage,
   sendMessageToBranch,
   syncConversationToLocal,

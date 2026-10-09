@@ -388,6 +388,7 @@ export interface CompositionState {
   sending: boolean
   compacting: boolean
   compactingConversationId: ConversationId | null
+  compactingParentMessageId: MessageId | null
   validationError: string | null
   draftMessage: String | null
   multiReplyCount: number

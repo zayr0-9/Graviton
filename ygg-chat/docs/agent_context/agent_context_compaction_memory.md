@@ -108,3 +108,11 @@ The in-loop compaction decision is computed server-side:
 - `agent_hooks_system.md`
 - `agent_chat_pipeline.md`
 - `agent_project_overview.md`
+
+## Compaction cancellation
+
+- Standalone `compactBranch` owns a renderer abort controller keyed by conversation and parent message. The primary composer enables Stop when that parent is on the displayed branch; summary marker rendering stays intentionally unchanged.
+- Stop cancels the compact HTTP request. The compact route aborts its provider signal on an unfinished response close; unlike resumable chat SSE, this standalone JSON request is disconnect-cancelled.
+- In-loop and subagent compactors forward the owning run signal to the summarizer. Abort is not wrapped as `compaction_failed`.
+- The summary service checks cancellation before generation and after provider completion, before persistence, so late provider success cannot install an aborted context boundary.
+- Regression tests: `compactionCancellation.test.ts`, `chatRoutes.test.ts`, and `compactionService.test.ts`.

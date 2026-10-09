@@ -971,6 +971,16 @@ interface CompactBranchPayload {
 // a UUID, exposed it to Redux, then fire-and-forgot `/sync/message`; a failed/racing write
 // left the next send parented to a row SQLite had never seen.
 const COMPACTION_TIMEOUT_MS = 120_000
+const compactionControllers = new Map<string, AbortController>()
+const compactionKey = (conversationId: ConversationId, parentMessageId: MessageId) =>
+  JSON.stringify([String(conversationId), String(parentMessageId)])
+
+export const abortCompaction = createAsyncThunk<void, { conversationId: ConversationId; parentMessageId: MessageId }>(
+  'chat/abortCompaction',
+  async ({ conversationId, parentMessageId }) => {
+    compactionControllers.get(compactionKey(conversationId, parentMessageId))?.abort()
+  }
+)
 
 export const compactBranch = createAsyncThunk<
   { message: Message | null },
@@ -980,9 +990,13 @@ export const compactBranch = createAsyncThunk<
   'chat/compactBranch',
   async (
     { conversationId, parentMessageId, messages, providerName, modelName },
-    { dispatch, getState, extra, rejectWithValue }
+    { dispatch, getState, extra, rejectWithValue, signal }
   ) => {
-    dispatch(chatSliceActions.compactingStarted({ conversationId }))
+    const controller = new AbortController()
+    const key = compactionKey(conversationId, parentMessageId)
+    compactionControllers.set(key, controller)
+    const requestSignal = AbortSignal.any([signal, controller.signal, AbortSignal.timeout(COMPACTION_TIMEOUT_MS)])
+    dispatch(chatSliceActions.compactingStarted({ conversationId, parentMessageId }))
 
     try {
       if (!parentMessageId) throw new Error('Compaction requires a persisted parent message')
@@ -1010,8 +1024,9 @@ export const compactBranch = createAsyncThunk<
           userId: extra.auth.userId,
           systemPrompt: providerSettings.compactionSystemPrompt?.trim() || null,
         },
-        { signal: AbortSignal.timeout(COMPACTION_TIMEOUT_MS) }
+        { signal: requestSignal }
       )
+      requestSignal.throwIfAborted()
 
       if (!response?.success || !response.message) {
         throw new Error(response?.error || 'Compaction failed before persistence')
@@ -1032,9 +1047,11 @@ export const compactBranch = createAsyncThunk<
 
       return { message: summaryMessage }
     } catch (error) {
+      if (controller.signal.aborted || signal.aborted) return { message: null }
       console.error('[compactBranch] failed', error)
       return rejectWithValue(error instanceof Error ? error.message : 'Failed to compact branch')
     } finally {
+      if (compactionControllers.get(key) === controller) compactionControllers.delete(key)
       dispatch(chatSliceActions.compactingFinished())
     }
   }

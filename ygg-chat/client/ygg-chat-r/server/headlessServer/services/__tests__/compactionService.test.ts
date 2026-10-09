@@ -186,6 +186,24 @@ describeIfSqlite('CompactionService', () => {
     expect(JSON.parse(reloadedParent.children_ids)).toContain(result.message.id)
   })
 
+  it('forwards cancellation and fences late provider success before summary persistence', async () => {
+    const user = messageRepo.createMessage({ conversationId: 'c1', parentId: null, role: 'user', content: 'Task' })
+    const assistant = messageRepo.createMessage({ conversationId: 'c1', parentId: user.id, role: 'assistant', content: 'Progress' })
+    const controller = new AbortController()
+    let receivedSignal: AbortSignal | undefined
+    providerRouter.generate = async (_provider: string, input: any) => {
+      receivedSignal = input.signal
+      controller.abort()
+      return { content: 'Late summary' } as any
+    }
+    await expect(service.compactBranch({
+      conversationId: 'c1', parentMessageId: assistant.id, messages: [user, assistant],
+      provider: 'openaichatgpt', modelName: 'test', signal: controller.signal,
+    })).rejects.toMatchObject({ name: 'AbortError' })
+    expect(receivedSignal).toBe(controller.signal)
+    expect(db.prepare('SELECT COUNT(*) AS count FROM messages WHERE note = ?').get(AUTO_COMPACTION_NOTE)).toEqual({ count: 0 })
+  })
+
   it('includes completed read and subagent tool interactions in the summary prompt and persisted context', async () => {
     const summary = await service.generateCompactionSummary({
       messages: [
@@ -270,5 +288,31 @@ describeIfSqlite('CompactionService', () => {
         modelName: 'gpt-test',
       })
     ).rejects.toThrow('Compaction returned empty summary')
+  })
+})
+
+describe('compaction cancellation without SQLite', () => {
+  it('passes the signal to the provider and rejects late success before creating a summary', async () => {
+    const controller = new AbortController()
+    let receivedSignal: AbortSignal | undefined
+    const service = new CompactionService({
+      db: {},
+      statements: {
+        getConversationById: { get: () => ({ id: 'c' }) },
+        getMessageById: { get: () => ({ id: 'a', conversation_id: 'c' }) },
+      },
+      providerRouter: {
+        generate: async (_provider: string, input: any) => {
+          receivedSignal = input.signal
+          controller.abort()
+          return { content: 'Late summary' }
+        },
+      } as any,
+    })
+    await expect(service.compactBranch({
+      conversationId: 'c', parentMessageId: 'a', messages: [{ role: 'user', content: 'Task' }],
+      provider: 'openaichatgpt', modelName: 'test', signal: controller.signal,
+    })).rejects.toMatchObject({ name: 'AbortError' })
+    expect(receivedSignal).toBe(controller.signal)
   })
 })

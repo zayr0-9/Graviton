@@ -602,6 +602,9 @@ export function registerChatRoutes(app: Express, deps: RegisterChatRoutesDeps): 
       return
     }
 
+    const controller = new AbortController()
+    const onClose = () => { if (!res.writableEnded) controller.abort() }
+    res.on('close', onClose)
     try {
       const body = req.body ?? {}
       const conversationIdParam = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id
@@ -623,6 +626,7 @@ export function registerChatRoutes(app: Express, deps: RegisterChatRoutesDeps): 
 
       const result = await compactionService.compactBranch({
         conversationId: conversationIdParam,
+        signal: controller.signal,
         parentMessageId: String(parentMessageId),
         messages,
         provider: body.provider ?? 'openaichatgpt',
@@ -635,6 +639,7 @@ export function registerChatRoutes(app: Express, deps: RegisterChatRoutesDeps): 
 
       res.status(201).json({ success: true, message: result.message })
     } catch (error) {
+      if (controller.signal.aborted) return
       // Raw text goes to `detail` only; the classifier owns what the user reads.
       const message = error instanceof Error ? error.message : String(error)
       const status = message.includes('not found') ? 404 : 500
@@ -642,6 +647,8 @@ export function registerChatRoutes(app: Express, deps: RegisterChatRoutesDeps): 
       envelope.status = status
       if (!envelope.detail) envelope.detail = message
       res.status(status).json({ error: message, envelope })
+    } finally {
+      res.off('close', onClose)
     }
   })
 

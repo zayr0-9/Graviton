@@ -85,6 +85,7 @@ export type ToolLoopCompactor = (input: {
   accessToken?: string | null
   accountId?: string | null
   systemPrompt?: string | null
+  signal?: AbortSignal
 }) => Promise<{ message: any }>
 
 interface ToolLoopServiceDeps {
@@ -1920,7 +1921,9 @@ export class ToolLoopService {
             accessToken: input.accessToken,
             accountId: input.accountId,
             systemPrompt: input.compactionSystemPrompt,
+            signal: input.signal,
           })
+          input.signal?.throwIfAborted()
           const summaryMessage = compacted?.message
           const validSummary =
             summaryMessage?.role === 'system' &&
@@ -1964,6 +1967,7 @@ export class ToolLoopService {
           }
           if (input.hooks?.runSessionStart) await input.hooks.runSessionStart('compact')
         } catch (error) {
+          if (input.signal?.aborted || isAbortError(error)) throw error
           const message = error instanceof Error ? error.message : String(error)
           emit({ type: 'context_compaction', status: 'failed', ...eventDetails, error: message })
           throw attachChatErrorCode(
