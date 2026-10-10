@@ -35,6 +35,7 @@ export interface HookRunRecord {
 }
 
 export interface Message extends BaseMessage {
+  attachments?: Array<{ id: string; mime_type?: string; file_path?: string; url?: string; [key: string]: unknown }>
   //media: Blob or path to file
   pastedContext: string[]
   artifacts: string[]
@@ -233,6 +234,7 @@ export type LineageId = string & { readonly __lineageIdBrand?: never }
 // Lineage metadata for tracking stream hierarchy (subagents, tool-spawned streams)
 export interface StreamLineage {
   lineageId?: LineageId          // Exact renderer branch/lineage identity
+  lineageIdConfirmed?: boolean  // Server resolved this run's lineage (not its initial source lineage)
   parentStreamId?: string        // If spawned from another stream
   rootMessageId?: MessageId      // The message whose branch this stream belongs to
   originMessageId?: MessageId    // The message that triggered this subagent/tool-run
@@ -244,6 +246,7 @@ export interface StreamState {
   // Explicit lifecycle status. `waiting_for_tool` is still an in-flight stream
   // and should stay visible/interruptible in branch-local UIs.
   status: StreamLifecycleStatus
+  compactionStatus?: 'started' | 'completed' | 'failed'
   buffer: string
   // separate buffer for reasoning/thinking tokens while streaming
   thinkingBuffer: string
@@ -263,6 +266,9 @@ export interface StreamState {
   branchAnchorMessageId: MessageId | null
   liveMessageId: MessageId | null
   lastCompletedMessageId: MessageId | null
+  // Persisted row for the current transient buffers only; cleared at each new turn.
+  // Unlike lastCompletedMessageId, this is not a branch anchor.
+  persistedTurnMessageId?: MessageId | null
   finalMessageId: MessageId | null
   // Incremented when stale chunks are ignored after abort/completion.
   suppressedEventCount: number
@@ -298,6 +304,8 @@ export interface StreamingRootState {
 
 // Action payloads for streaming actions
 export interface SendingStartedPayload {
+  /** Reattachment must not consume unrelated composer drafts. */
+  preserveDrafts?: boolean
   streamId: string
   streamType?: StreamType
   conversationId?: ConversationId | null
@@ -385,11 +393,17 @@ export interface CompositionState {
   sending: boolean
   compacting: boolean
   compactingConversationId: ConversationId | null
+  compactingParentMessageId: MessageId | null
+  compactingLineageId: LineageId | null
+  compactionSummaryMessageId: MessageId | null
   validationError: string | null
   draftMessage: String | null
   multiReplyCount: number
   imageDrafts: ImageDraft[] // base64-encoded images + metadata from drag/drop
   imageDraftTarget: ImageDraftTarget | null // explicit owner for imageDrafts; never infer from focused message
+  imagePreparationPending: number
+  imagePreparationError: string | null
+  imagePreparationGeneration: number
   editingBranch: boolean // true when user is editing a branch; controls UI like hiding image drafts
   optimisticMessage: Message | null // temp message for instant UI feedback in web mode only
   optimisticBranchMessage: Message | null // temp branched message for instant UI feedback in web mode only
@@ -478,6 +492,15 @@ export interface ChatState {
   planClarificationRequestsByStream: Record<string, PlanClarificationRequest>
   toolAutoApprove: boolean
   operationMode: OperationMode
+  messageQueues: Record<string, import('../../../../../shared/queuedMessages').MessageQueueSnapshot>
+  /** Unsent selections, keyed by conversation and selected branch tip. */
+  operationModeDrafts: Record<string, OperationMode>
+  operationModeChanges: Record<string, {
+    mode: OperationMode
+    status: 'requesting' | 'pending'
+    requestId: string
+    streamId?: string | null
+  }>
   freeTier: {
     freeGenerationsRemaining: number | null
     showLimitModal: boolean

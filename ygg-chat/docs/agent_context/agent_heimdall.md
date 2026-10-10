@@ -30,16 +30,14 @@ Use this when changing:
 - `client/ygg-chat-r/src/features/chats/chatSlice.ts`: selected nodes, current path, focused message, Heimdall data reducers.
 - `client/ygg-chat-r/src/features/chats/chatSelectors.ts`: `selectHeimdallData`, `selectCurrentPath`, `selectFocusedChatMessageId`.
 - `client/ygg-chat-r/src/features/chats/pathUtils.ts`: branch path construction used by Chat and Heimdall search/node selection.
-- `client/ygg-chat-r/electron/localServer.ts`: local `/messages/tree`, `/messages/bulk`, delete/update endpoints and tree conversion.
-- `client/ygg-chat-r/electron/headlessServer/routes/appAutomationRoutes.ts`: headless/local app equivalents for message tree APIs.
+- `client/ygg-chat-r/server/localServer.ts`: local `/messages/tree`, `/messages/bulk`, delete/update endpoints and tree conversion.
+- `client/ygg-chat-r/server/headlessServer/routes/appAutomationRoutes.ts`: headless/local app equivalents for message tree APIs.
 
 ## Data Flow
 
-1. `Chat.tsx` calls `useConversationMessages(conversationId, storageMode)`.
-2. The query returns both flat `messages` and a `tree` object.
-3. `Chat.tsx` dispatches:
-   - `chatSliceActions.messagesLoaded(messages)` for flat Redux message state;
-   - `chatSliceActions.heimdallDataLoaded({ treeData, subagentMap: {} })` for tree state.
+1. `Chat.tsx` calls `useConversationSnapshotCoordinator(conversationIdFromUrl, conversationStorageMode)`.
+2. The coordinator generation-gates the persisted fetch, reconciles active-stream and terminal-lease-protected rows, and rebuilds the tree with `buildConversationTree`.
+3. Only an accepted snapshot updates the exact Query cache and dispatches `conversationSnapshotApplied`, applying flat messages, tree, and path atomically.
 4. `Chat.tsx` renders `<Heimdall />` when `heimdallVisible && !isMobile`.
 5. Heimdall uses `chatData` for graph layout and `state.chat.conversation.messages` for full message metadata, notes, content blocks, hidden-node expansion, and actions.
 6. Clicking a node calls `onNodeSelect(nodeId, path)` back into `Chat.tsx`.
@@ -61,7 +59,7 @@ interface ChatNode {
 Important details:
 - The tree is derived from message `parent_id`/`children_ids` relationships.
 - Multiple top-level roots are wrapped under a synthetic root node with `id: 'root'` and `message: 'Conversation'`.
-- Heimdall receives the tree unchanged from `useConversationMessages`; it no longer strips or promotes `ex_agent` nodes as a special case.
+- Heimdall receives the coordinator-built tree and derives a visual filter locally. Context/mode scaffolding and eligible empty nodes may be promoted away; flat Redux messages remain authoritative for complete selected paths/actions.
 - `filterEmptyMessages` can hide empty/tool-only visual nodes; selection expansion then adds hidden in-between messages back into action inputs.
 
 ## Major Interaction Areas
@@ -111,6 +109,7 @@ For selected-message copying/moving:
 ### Notes
 
 - Note data lives on the message row: `note` and `note_color`.
+- The floating toolbar's palette button replaces the compact/full toggle and opens `NoteColorLegend.tsx` on hover, focus, or click. Each row prefixes its color dot and meaning with a live count of current-conversation human top-level prompt notes (non-empty `note`), matching the sidebar's `server/topLevelUserMessages.ts` selection: recursively promote children of generated context-injection user roots, stop at ordinary messages, and exclude nested notes and non-palette colors. Its five color meanings mirror `.ygg/hooks/root_note_stop.py`; the theme-aware anchored card uses transitions.dev open/close motion with a reduced-motion fallback, and dismisses on pointer leave (unless focused), blur, Escape, or outside click. Compact/full rendering remains supported by the `compactMode` prop.
 - Note edits debounce `updateMessage({ id, content, note, note_color })`.
 - Heimdall stores note dialog state locally and reads/writes the current message from Redux.
 - Message and note-pill hover previews share opposite-side docking: an anchor in the left half of the panel docks its preview right, and an anchor in the right half docks left. The shared layout derives the anchor's on-screen position from the same transform as `visiblePositions`, preventing the card from covering the interactive node or note pill. Preview width is capped to the opposite half on narrow panels.
@@ -168,7 +167,7 @@ For selected-message copying/moving:
 
 ## Testing and Validation
 
-- Build: `npm --prefix client/ygg-chat-r run build:web` or `npm --prefix client/ygg-chat-r run build:electron`.
+- Build: `npm --prefix client/ygg-chat-r run build:electron`.
 - Manual checks:
   - open a conversation with multiple branches and verify graph layout;
   - left-click nodes and confirm Chat scroll/path changes;

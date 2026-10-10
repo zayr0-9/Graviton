@@ -92,6 +92,9 @@ export function applyStreamProjectionPolicy(
   action: ProjectedAction,
   policy: StreamProjectionPolicy
 ): ProjectedAction {
+  if (action.type === chatSliceActions.queuedMessageInserted.type || action.type === chatSliceActions.operationModeNotificationReceived.type) {
+    return { ...action, payload: { ...(action.payload as object), updatePath: policy.updatePath } }
+  }
   if (action.type !== chatSliceActions.streamCompleted.type) return action
   const payload = action.payload as { streamId?: string; messageId?: MessageId } | undefined
   if (!payload || payload.streamId !== policy.streamId) return action
@@ -276,6 +279,23 @@ export function projectServerEvent(event: ServerStreamEvent, ctx: ProjectionCont
               }
             : {}),
         } as any),
+      ]
+    }
+
+    case 'message_queue_updated':
+      return [chatSliceActions.messageQueueUpdated(event.snapshot)]
+    case 'queued_user_message_persisted': {
+      const message = normalizeServerMessage(event.message)
+      return [chatSliceActions.messageAdded(message), chatSliceActions.queuedMessageInserted({ message, streamId })]
+    }
+    case 'operation_mode_decisions_cleared': {
+      return [chatSliceActions.operationModeDecisionsCleared({ streamId, toolCallIds: event.toolCallIds })]
+    }
+    case 'operation_mode_changed': {
+      const message = normalizeServerMessage(event.message)
+      return [
+        chatSliceActions.messageAdded(message),
+        chatSliceActions.operationModeNotificationReceived({ message, mode: event.mode, streamId }),
       ]
     }
 
@@ -528,11 +548,14 @@ export function projectServerEvent(event: ServerStreamEvent, ctx: ProjectionCont
       // START is announced by the server's own `notice{code:'compacting'}` frame,
       // emitted beside this one. Only the COMPLETED notice below is ours (the
       // server sends none), so the pause is explained exactly once.
-      if (event.status === 'started') return []
+      if (event.status === 'started') return [chatSliceActions.streamCompactionUpdated({ streamId, status: 'started' })]
       if (event.status === 'failed') {
         // Non-terminal here: the run either recovers or fails on its own terminal
         // frame. The `compact` action on the default envelope is the real remedy.
-        return [errorChunkAction(streamId, buildChatErrorEnvelope('compaction_failed', { detail: event.error }), false)]
+        return [
+          chatSliceActions.streamCompactionUpdated({ streamId, status: 'failed' }),
+          errorChunkAction(streamId, buildChatErrorEnvelope('compaction_failed', { detail: event.error }), false),
+        ]
       }
       if (event.status !== 'completed') return []
 
@@ -540,6 +563,7 @@ export function projectServerEvent(event: ServerStreamEvent, ctx: ProjectionCont
       // stream. Project its completed marker so the active branch and context meter
       // immediately share the same replay boundary as the server.
       const actions: ProjectedAction[] = [
+        chatSliceActions.streamCompactionUpdated({ streamId, status: 'completed' }),
         noticeAction(streamId, 'compacting', 'Summarised earlier turns to make room in the context window.'),
       ]
       if (!event.summaryMessage) return actions

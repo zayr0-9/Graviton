@@ -5,6 +5,7 @@
  */
 
 import { buildLocalApiUrl, createStreamingRequest, environment, localApi } from './api'
+import { executeToolAndWait } from './executeToolAndWait'
 
 type StreamState = {
   targets: Set<string>
@@ -227,8 +228,8 @@ export function createMessageHandler(
           }
 
           try {
-            const result = await localApi.post<{ result?: any; [key: string]: any }>('/tools/execute', {
-              tool,
+            const result = await executeToolAndWait<any>({
+              toolName: tool,
               args: toolArgs || {},
             })
             response = result.result || result

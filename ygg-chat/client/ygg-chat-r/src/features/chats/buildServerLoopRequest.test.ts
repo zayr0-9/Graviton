@@ -12,6 +12,25 @@ const base = {
 }
 
 describe('buildServerLoopRequest', () => {
+  it.each(['send', 'branch', 'edit'] as const)('never forwards direct MCP schemas for %s', op => {
+    const { body } = buildServerLoopRequest(op, { ...base, messageId: 'm1', tools: [
+      { name: 'mcp_manager' }, { name: 'mcp__server__echo' }, { name: 'legacy', isMcp: true },
+    ] })
+    expect((body.tools as any[]).map(tool => tool.name)).toEqual(['mcp_manager'])
+  })
+  it.each(['send', 'branch', 'edit'] as const)('forwards explicit full access for %s without changing other permissions', op => {
+    const params = { ...base, messageId: 'm1', rootPath: '/workspace', toolAutoApprove: false, operationMode: 'plan' as const }
+    expect(buildServerLoopRequest(op, params).body.fullAccess).toBe(false)
+    expect(buildServerLoopRequest(op, { ...params, fullAccess: true }).body).toMatchObject({
+      fullAccess: true, rootPath: '/workspace', cwd: '/workspace', toolAutoApprove: false, operationMode: 'plan',
+    })
+  })
+  it.each(['send', 'branch', 'edit'] as const)('forwards Codex service tier for %s and omits it when off', op => {
+    const params = { ...base, provider: 'openaichatgpt', modelName: 'gpt-6.1-sol', messageId: 'm1' }
+    expect(buildServerLoopRequest(op, { ...params, serviceTier: 'priority' }).body.serviceTier).toBe('priority')
+    expect(buildServerLoopRequest(op, params).body).not.toHaveProperty('serviceTier')
+  })
+
   it('builds the send route + core body fields', () => {
     const { path, body } = buildServerLoopRequest('send', { ...base, parentId: 'p1' })
     expect(path).toBe('/conversations/conv-1/messages')

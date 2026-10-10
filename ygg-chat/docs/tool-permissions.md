@@ -1,25 +1,37 @@
 ---
 paths:
-  - "docs/tool-permissions.md"
+  - "client/ygg-chat-r/server/headlessServer/services/chatOrchestrator.ts"
+  - "client/ygg-chat-r/server/headlessServer/services/decisionBroker.ts"
+  - "client/ygg-chat-r/server/headlessServer/services/toolLoopService.ts"
+  - "client/ygg-chat-r/server/headlessServer/routes/chatRoutes.ts"
+  - "client/ygg-chat-r/src/features/chats/chatActions.ts"
+  - "client/ygg-chat-r/src/features/chats/sseProjection.ts"
+  - "client/ygg-chat-r/src/containers/Chat.tsx"
 ---
 
 # Tool Permission Flow Overview
 
-This project uses an interactive tool execution flow that ensures users stay in control when the assistant needs to call a local tool. Below is a high-level description of how the feature works:
+Main-chat permission decisions pause the server-owned loop. The renderer displays
+and answers those decisions; it does not execute the provider/tool loop.
+Paths below are relative to `client/ygg-chat-r/`.
 
 ## Key Components
 
-- **Chat Thunks (`chatActions.ts`)**: The streaming thunks (`sendMessage`, `editMessageWithBranching`, `sendMessageToBranch`) handle assistant responses. When a tool call is detected in the assistant stream, they buffer the call and execute it **after** the assistant stream completes using `executeToolWithPermissionCheck`.
-- **`executeToolWithPermissionCheck`**: This helper checks the Redux state for auto-approve. If auto-approve is disabled, it dispatches `toolPermissionRequested` and waits for the user's decision. The helper either executes the tool locally (via `executeLocalTool`) or throws a specific error when the user denies permission. Throws are propagated back to the thunk to stop the generation and surface an error message.
-- **Tool Permission Dialog (`ToolPermissionDialog.tsx`)**: Rendered from `Chat.tsx` whenever `toolCallPermissionRequest` is populated. The dialog displays the requested tool name, arguments, and provides “Allow”, “Deny”, and “Allow All” buttons.
-- **User Response Handling (`respondToToolPermission`)**: The dialog buttons dispatch Redux thunks (`respondToToolPermission` / `respondToToolPermissionAndEnableAll`) that resolve the pending permission promise. On denial, the promise resolves with `false`, which now triggers an error from `executeToolWithPermissionCheck`, halting the ongoing generation.
+- **Server-owned loop**: `server/headlessServer/services/toolLoopService.ts` executes tool calls after the provider response. Renderer chat thunks start or reattach runs and project SSE.
+- **Permission gate**: `createChatPausingExecutor` in `server/headlessServer/services/chatOrchestrator.ts` checks run approval policy and pauses through `DecisionBroker`. PreToolUse hooks can deny or rewrite arguments before execution. Auto-approval skips permission prompts, not hooks or operation-mode policy.
+- **Renderer projection and dialog**: `src/features/chats/sseProjection.ts` projects `permission_required` into stream-keyed Redux state. `Chat.tsx` renders `ToolPermissionDialog.tsx`.
+- **User responses**: `respondToToolPermission` posts `allow_once` or `deny` to `POST /api/resume`, correlated by `streamId` and `toolCallId`. Allow All posts `allow_always`; the renderer updates its default only after successful server acceptance. Transient resume failures keep the dialog open.
+- **Execution**: Approved leaf calls use the shared tool orchestrator. `multi_call` bypasses its outer prompt, but nested calls re-enter normal permission and hook checks.
 
 ## User Denial Flow
 
-1. Assistant stream emits a tool call, stored in `assistantToolCalls`.
-2. When streaming finishes, thunks iterate remaining tool calls and call `executeToolWithPermissionCheck`.
-3. Permission dialog appears; user can grant or deny.
-4. If the user denies, `respondToToolPermission(false)` resolves the promise and `executeToolWithPermissionCheck` throws `Tool execution denied by user`.
-5. The surrounding thunk catches the error, dispatches an error chunk through `streamChunkReceived`, stops streaming, and rejects the async thunk so the UI can clear loading states and show the error.
+1. The server receives a tool call and reaches its permission gate.
+2. If approval is required, it emits `permission_required` and waits for a correlated decision.
+3. The dialog posts the user's decision to `POST /api/resume`.
+4. Denial prevents execution; the pausing executor throws `Tool execution denied by user`.
+5. The loop classifies this as `tool_denied`, emits and persists an error tool result, and supplies the failure to the model. Denial alone does not abort the run or guarantee that generation stops. Run cancellation is handled separately.
 
-This flow ensures tool executions happen only with consent, and cancellations do not leave stubbed tool results in the conversation.
+Permission prompts are one gate alongside hooks and operation-mode policy;
+auto-approved or explicitly bypassed calls do not require an interactive prompt.
+`plan_md` clarification and operation-mode upgrade decisions remain interactive
+independently of ordinary tool auto-approval.

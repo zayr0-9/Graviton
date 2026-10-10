@@ -1,8 +1,11 @@
 import { ChevronLeft, ChevronRight } from 'lucide-react'
 import { useEffect, useMemo, useState } from 'react'
-import { matchPath, useLocation, useNavigate } from 'react-router-dom'
+import { useLocation } from 'react-router-dom'
 import './TitleBar.css'
+import { useTitleBarHistory } from './useTitleBarHistory'
+import { getTitleBarProjectId } from './titleBarProject'
 
+import { getThemeModeColor, useCustomChatTheme, useHtmlDarkMode } from '../ThemeManager/themeConfig'
 import { chatSliceActions, selectCcCwd, selectCurrentConversationId } from '../../features/chats'
 import { selectSelectedProject } from '../../features/projects'
 import { buildRemoteMobileUrl, loadRemoteServerSettings } from '../../helpers/remoteServerSettingsStorage'
@@ -13,7 +16,9 @@ import { getLocalServerLanOrigin, getLocalServerOrigin } from '../../utils/api'
 export const TitleBar = () => {
   const dispatch = useAppDispatch()
   const location = useLocation()
-  const navigate = useNavigate()
+  const { canGoBack, canGoForward, goBack, goForward } = useTitleBarHistory()
+  const { theme: customTheme, enabled: customThemeEnabled } = useCustomChatTheme()
+  const isDarkMode = useHtmlDarkMode()
   const [platform, setPlatform] = useState<string>('')
   const [isElectron, setIsElectron] = useState(false)
   const [isCompact, setIsCompact] = useState(false)
@@ -22,27 +27,30 @@ export const TitleBar = () => {
   const currentCwd = useAppSelector(selectCcCwd)
   const currentConversationId = useAppSelector(selectCurrentConversationId)
   const selectedProject = useAppSelector(selectSelectedProject)
-  const currentConversation = useAppSelector(state => {
-    if (!currentConversationId) return null
-    return state.conversations.items.find(conversation => String(conversation.id) === String(currentConversationId)) ?? null
-  })
+  const conversations = useAppSelector(state => state.conversations.items)
   const { data: allProjects = [] } = useProjects()
+  const currentProjectId = getTitleBarProjectId(location.pathname, conversations)
 
-  const chatRouteMatch = matchPath('/chat/:projectId/:conversationId', location.pathname)
-  const projectIdFromRoute = chatRouteMatch?.params.projectId && chatRouteMatch.params.projectId !== 'unknown'
-    ? chatRouteMatch.params.projectId
-    : null
-
-  const currentProjectName = useMemo(() => {
-    const currentProjectId = currentConversation?.project_id || projectIdFromRoute || selectedProject?.id
+  const currentProject = useMemo(() => {
     if (!currentProjectId) return null
 
     if (selectedProject && String(selectedProject.id) === String(currentProjectId)) {
-      return selectedProject.name
+      return selectedProject
     }
 
-    return allProjects.find(project => String(project.id) === String(currentProjectId))?.name ?? null
-  }, [allProjects, currentConversation?.project_id, projectIdFromRoute, selectedProject])
+    return allProjects.find(project => String(project.id) === String(currentProjectId)) ?? null
+  }, [allProjects, currentProjectId, selectedProject])
+  const currentProjectName = currentProject?.name
+  const projectUpdatedDateLabel = useMemo(() => {
+    if (!currentProject) return null
+    const cachedProject = allProjects.find(project => String(project.id) === String(currentProject.id))
+    const value = cachedProject?.latest_conversation_updated_at || cachedProject?.updated_at || currentProject.updated_at
+    if (!value) return null
+    const date = new Date(value)
+    return Number.isNaN(date.getTime())
+      ? null
+      : date.toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short', hourCycle: 'h23' })
+  }, [allProjects, currentProject])
 
   useEffect(() => {
     const updateWindowStateClasses = (state: { isMaximized: boolean; isFullScreen: boolean }) => {
@@ -184,15 +192,23 @@ export const TitleBar = () => {
     >
       <div className='titlebar-drag-region'>
         <div className='titlebar-nav-controls'>
-          <button className='titlebar-control-button titlebar-nav-button' onClick={() => navigate(-1)} title='Go Back'>
+          <button
+            className='titlebar-control-button titlebar-nav-button'
+            onClick={goBack}
+            disabled={!canGoBack}
+            title='Go Back'
+            aria-label='Go Back'
+          >
             <span className='titlebar-control-icon-shell titlebar-nav-icon-shell acrylic-ultra-light-nb-3'>
               <ChevronLeft size={32} strokeWidth={2} />
             </span>
           </button>
           <button
             className='titlebar-control-button titlebar-nav-button'
-            onClick={() => navigate(1)}
+            onClick={goForward}
+            disabled={!canGoForward}
             title='Go Forward'
+            aria-label='Go Forward'
           >
             <span className='titlebar-control-icon-shell titlebar-nav-icon-shell acrylic-ultra-light-nb-3'>
               <ChevronRight size={16} strokeWidth={2} />
@@ -200,9 +216,19 @@ export const TitleBar = () => {
           </button>
         </div>
         {isChatPage && currentProjectName ? (
-          <div className='titlebar-project-name' title={currentProjectName}>
-            {currentProjectName}
-          </div>
+          <>
+            <div className='titlebar-project-name' title={currentProjectName}>
+              {currentProjectName}
+            </div>
+            {projectUpdatedDateLabel && (
+              <span
+                className='titlebar-project-updated'
+                style={customThemeEnabled ? { color: getThemeModeColor(customTheme.colors.toolJobsMutedText, isDarkMode) } : undefined}
+              >
+                Updated {projectUpdatedDateLabel}
+              </span>
+            )}
+          </>
         ) : null}
       </div>
       <div className='titlebar-controls'>

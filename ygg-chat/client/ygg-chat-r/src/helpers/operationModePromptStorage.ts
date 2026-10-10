@@ -1,6 +1,11 @@
-import defaultChatModePromptMarkdown from '../features/chats/prompts/default_chat_mode.md?raw'
-import defaultAgentModePromptMarkdown from '../features/chats/prompts/default_agent_mode.md?raw'
+import defaultOperationModesMarkdown from '../features/chats/prompts/default_operation_modes.md?raw'
 import defaultSubagentModePromptMarkdown from '../features/chats/prompts/default_subagent_mode.md?raw'
+
+// Settings edit conditional mode sections; inference always receives the combined baseline.
+const chatStart = defaultOperationModesMarkdown.indexOf('## Chat mode (plan) — conditional')
+const agentStart = defaultOperationModesMarkdown.indexOf('## Agent mode (execute) — conditional')
+const defaultChatModePromptMarkdown = defaultOperationModesMarkdown.slice(chatStart, agentStart)
+const defaultAgentModePromptMarkdown = defaultOperationModesMarkdown.slice(agentStart)
 
 const STORAGE_KEY = 'ygg_operation_mode_prompt_settings'
 
@@ -228,4 +233,14 @@ export function selectChatModePrompt(id: string): OperationModePromptSettings {
 export function resetChatModePromptSelectionToDefault(): OperationModePromptSettings {
   const settings = loadOperationModePromptSettings()
   return saveOperationModePromptSettings({ ...settings, selectedChatPromptId: DEFAULT_CHAT_MODE_PROMPT_ID })
+}
+
+/** Stable across mode switches; saved overrides retain their conditional scope. */
+export function getCombinedOperationModePrompt(): string {
+  const shared = defaultOperationModesMarkdown.slice(0, chatStart).trim()
+  return [
+    shared,
+    '## Chat mode (plan) — applies only while Chat mode is active\n\n' + getActiveChatModePrompt().prompt,
+    '## Agent mode (execute) — applies only while Agent mode is active\n\n' + getAgentModePrompt().prompt,
+  ].join('\n\n')
 }

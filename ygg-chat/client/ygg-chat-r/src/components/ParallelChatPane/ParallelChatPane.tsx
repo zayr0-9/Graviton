@@ -15,7 +15,8 @@ import {
   selectDisplayMessagesFor,
   sendMessage,
 } from '../../features/chats'
-import { readServerLoopRejection } from '../../features/chats/chatActions'
+import { enqueueUserMessage, loadMessageQueue, cancelQueuedMessage } from '../../features/chats/chatActions'
+import { QueuedMessages } from '../ChatMessage/QueuedMessages'
 import { selectChatErrorsForConversation } from '../../features/chats/chatSelectors'
 import type { PlanClarificationAnswer } from '../../features/chats/planToolTypes'
 import { generateStreamId } from '../../features/chats/streamHelpers'
@@ -32,6 +33,7 @@ import {
 } from '../ChatPane/ChatInputController'
 import { ChatPaneSurface } from '../ChatPane/ChatPaneSurface'
 import { ChatPaneToolbar } from '../ChatPane/ChatPaneToolbar'
+import { recordSentMessage } from '../ChatPane/sentMessageHistory'
 import { advancePanePath, selectErrorsForPane } from '../ChatPane/paneState'
 import { PlanClarificationPanel } from '../PlanClarificationPanel/PlanClarificationPanel'
 import { ReasoningLevelControl } from '../ReasoningLevelControl/ReasoningLevelControl'
@@ -153,7 +155,22 @@ export function ParallelChatPane({
   const effectiveStream = pendingStream?.active ? pendingStream : selectedStream ?? pendingStream
   const streamId = effectiveStream?.id ?? pendingStreamId
   const streamActive = Boolean(effectiveStream?.active)
-  const canSend = hasDraft && !streamActive
+  const [queueSubmitting, setQueueSubmitting] = useState(false)
+  const queueSubmittingRef = useRef(false)
+  const queue = useAppSelector(state => streamId ? state.chat.messageQueues?.[streamId] : undefined)
+  const canSend = hasDraft && !queueSubmitting
+  useEffect(() => {
+    if (streamActive && streamId) void dispatch(loadMessageQueue({ conversationId: target.conversationId, streamId }))
+  }, [dispatch, streamActive, streamId, target.conversationId])
+  useEffect(() => {
+    const anchor = effectiveStream?.currentBranchAnchorMessageId
+    if (anchor && messages.some(message => message.id === anchor)) {
+      setPath(previous => {
+        const next = advancePanePath(messages, previous, anchor, anchor)
+        return next.length === previous.length && next.every((id, index) => id === previous[index]) ? previous : next
+      })
+    }
+  }, [effectiveStream?.currentBranchAnchorMessageId, messages])
 
   const permissionRequest = useAppSelector(state =>
     streamId ? (state.chat.toolPermissionRequestsByStream[streamId] ?? null) : null
@@ -197,7 +214,20 @@ export function ParallelChatPane({
   const handleSend = useCallback(() => {
     const rawContent = inputControllerRef.current?.getValue() ?? ''
     const content = rawContent.trim()
-    if (!content || streamActive) return
+    if (!content || queueSubmittingRef.current) return
+    if (streamActive && streamId) {
+      queueSubmittingRef.current = true
+      setQueueSubmitting(true)
+      recordSentMessage(rawContent)
+      inputControllerRef.current?.clear()
+      void dispatch(enqueueUserMessage({ conversationId: target.conversationId, streamId, content,
+        requestId: crypto.randomUUID(), includeGlobalComposerContext: false, updatePath: false })).unwrap()
+        .catch(error => {
+          console.error('Failed to queue parallel message:', error)
+        })
+        .finally(() => { queueSubmittingRef.current = false; setQueueSubmitting(false) })
+      return
+    }
 
     const parent = path[path.length - 1] ?? target.messageId
     const sendGeneration = targetGenerationRef.current
@@ -209,6 +239,7 @@ export function ParallelChatPane({
       createdAt: new Date().toISOString(),
       parentId: parent ?? null,
     })
+    recordSentMessage(rawContent)
     inputControllerRef.current?.clear()
 
     void dispatch(
@@ -238,16 +269,13 @@ export function ParallelChatPane({
       })
       .catch(error => {
         if (targetGenerationRef.current !== sendGeneration) return
-        const rejection = readServerLoopRejection(error)
-        if (!rejection || rejection.envelope.code !== 'cancelled') {
-          updateDraft(previous => (previous.trim() ? `${content}\n\n${previous}` : content))
-        }
+        console.error('Failed to send parallel message:', error)
         setOptimisticMessage(null)
       })
       .finally(() => {
         if (targetGenerationRef.current === sendGeneration) setPendingStreamId(null)
       })
-  }, [dispatch, lineageId, messages, operationMode, path, reasoningConfig, streamActive, target.conversationId, target.messageId, think, updateDraft])
+  }, [dispatch, lineageId, messages, operationMode, path, reasoningConfig, streamActive, streamId, target.conversationId, target.messageId, think])
 
   const scrollToBottom = useCallback((behavior: ScrollBehavior = 'smooth') => {
     userScrolledRef.current = false
@@ -277,6 +305,7 @@ export function ParallelChatPane({
       }}
       sendButtonAnimation={getStoredSendButtonAnimation()}
       sendButtonColor={sendButtonColor}
+      borderClassName={customThemeEnabled ? 'outline-1 outline-neutral-200/70 dark:outline-neutral-700/50' : undefined}
       controlsLeft={
         <div className='flex min-w-0 flex-1 items-center gap-1'>
           <button
@@ -342,6 +371,9 @@ export function ParallelChatPane({
           onCancel={() => dispatch(cancelPlanClarification(clarificationRequest.streamId))}
         />
       )}
+      {queue && <QueuedMessages items={queue.items}
+        onRestore={content => updateDraft(previous => previous ? `${content}\n\n${previous}` : content)}
+        onCancel={requestId => dispatch(cancelQueuedMessage({ conversationId: target.conversationId, streamId: queue.streamId, requestId })).unwrap()} />}
       <ChatInputController
         ref={inputControllerRef}
         conversationId={target.conversationId}
@@ -449,7 +481,7 @@ export function ParallelChatPane({
           />
         )}
         {streamActive && effectiveStream && !effectiveStream.buffer && effectiveStream.events.length === 0 && (
-          <div className='px-2 pt-1'>
+          <div className='px-0 pt-1 sm:px-2'>
             <StreamingThinkingIndicator />
           </div>
         )}

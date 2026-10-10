@@ -3,7 +3,8 @@ import { useVirtualizer } from '@tanstack/react-virtual'
 import 'boxicons' // Types
 import 'boxicons/css/boxicons.min.css'
 import { AnimatePresence, motion } from 'framer-motion'
-import { MoreVertical, RefreshCw, Settings } from 'lucide-react'
+import { Settings } from 'lucide-react'
+import { ConversationToolbar } from '../components/ChatPane/ConversationToolbar'
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { batch } from 'react-redux'
 import { useLocation, useNavigate, useParams } from 'react-router-dom'
@@ -35,11 +36,17 @@ import {
   Select,
   SettingsPane,
   StreamingThinkingIndicator,
-  TextField,
   ToolJobsModal,
   ToolPermissionDialog,
 } from '../components'
 import { ChatErrorBubble } from '../components/ChatErrorBubble/ChatErrorBubble'
+import { ActionPopoverButton, ActionPopoverDisclosure, ActionPopoverSwitch } from '../components/ActionPopover/ActionPopoverControls'
+import { ClipboardCheck, CodeXml, MessageSquare, ShieldHalf } from 'lucide-react'
+import { isWatcherCompletionMessage, WatcherCompletionNotice } from '../components/ChatMessage/WatcherCompletionNotice'
+import { ImageAttachmentNotice, isImageAttachmentInfoMessage } from '../components/ChatMessage/ImageAttachmentNotice'
+import { prepareImageFiles, waitForImagePreparation } from '../features/chats/imagePreparation'
+import { hasAcceptedImageAttachments } from '../features/chats/acceptedImageAttachments'
+import { isExcludedFromProcessRunGrouping } from '../components/ChatMessage/chatMessageShared'
 import {
   ChatInputController,
   type ChatInputControllerHandle,
@@ -49,6 +56,8 @@ import {
 import { useHtmlIframeRegistry } from '../components/HtmlIframeRegistry/HtmlIframeRegistry'
 import { contentSpringTransition, softTransition } from '../components/motion'
 import { ContextUsageSparkline } from '../components/ContextUsageSparkline/ContextUsageSparkline'
+import { FastModeAnimationBackground } from '../components/FastModeAnimation/FastModeAnimation'
+import { useFastModeAnimation } from '../helpers/fastModeAnimationSettings'
 import { SubagentTranscriptModal } from '../components/SubagentTranscript/SubagentTranscript'
 import {
   ChatInputBorderAnimationType,
@@ -72,14 +81,15 @@ import {
   useHtmlDarkMode,
 } from '../components/ThemeManager/themeConfig'
 import { isCommunityMode } from '../config/runtimeMode'
+import { getCompactionPresentationScope, isCompactionVisibleFor, type CompactionOwner } from '../features/chats/compactionVisibility'
 import {
   abortGeneration,
   AUTO_COMPACTION_NOTE,
   cancelPlanClarification,
-  GENERATED_IMAGE_PATH_HINT_NOTE,
   blobToDataURL,
   chatSliceActions,
   compactBranch,
+  abortCompaction,
   deleteMessage,
   editMessageWithBranching,
   fetchConversationStreamUndo,
@@ -124,7 +134,10 @@ import type {
   ToolCall,
 } from '../features/chats/chatTypes'
 import { selectChatErrorsForConversation } from '../features/chats/chatSelectors'
-import { readServerLoopRejection } from '../features/chats/chatActions'
+import { changeOperationMode, enqueueUserMessage, loadMessageQueue, cancelQueuedMessage, readServerLoopRejection } from '../features/chats/chatActions'
+import { QueuedMessages } from '../components/ChatMessage/QueuedMessages'
+import { OperationModeNotice } from '../components/ChatMessage/OperationModeNotice'
+import { SummarisedMessage } from '../components/ChatMessage/SummarisedMessage'
 import {
   buildChatErrorRecord,
   classifyLocalChatError,
@@ -133,7 +146,7 @@ import {
 import type { PlanClarificationAnswer } from '../features/chats/planToolTypes'
 import {
   estimateContentBlocksForContext,
-  openAIContextUsageHistory,
+  calculateBranchContextUsage,
   resolveContextTokens,
   safeEstimateTokenCount,
 } from '../features/chats/contextTokenEstimate'
@@ -159,7 +172,8 @@ import {
   type OpenAIUsageSnapshot,
 } from '../features/chats/chatgptAccount'
 import { buildBranchPathForMessage } from '../features/chats/pathUtils'
-import { generateStreamId } from '../features/chats/streamHelpers'
+import { generateStreamId, isStreamMessageAlreadyRendered } from '../features/chats/streamHelpers'
+import { recordSentMessage } from '../components/ChatPane/sentMessageHistory'
 import {
   convContextSet,
   Conversation,
@@ -204,7 +218,9 @@ import {
   resolveProviderContextLength,
 } from '../helpers/providerSettingsStorage'
 import { isOrchestratorEnabled, toggleOrchestratorEnabled } from '../helpers/subagentToolSettings'
-import { loadModelShortcutSlots } from '../helpers/chatKeyboardShortcuts'
+import { useSyncExternalStore } from 'react'
+import { isFullAccessEnabled, setFullAccessEnabled, subscribeFullAccess } from '../helpers/fullAccessSettings'
+import { handleChatToggleShortcut, loadModelShortcutSlots } from '../helpers/chatKeyboardShortcuts'
 import {
   loadToolOutputTruncationEnabled,
   TOOL_OUTPUT_TRUNCATION_CHANGE_EVENT,
@@ -228,8 +244,8 @@ import { useConversationSnapshotCoordinator } from '../hooks/useConversationSnap
 import { CHAT_INSERT_FILE_PATH_EVENT, type ChatInsertFilePathDetail } from '../helpers/chatInputBridge'
 import { dispatchOpenWorkspaceMutationDiffs } from '../helpers/workspaceMutationDiffBridge'
 import { cloneConversation, gwApi, localApi } from '../utils/api'
+import { executeToolAndWait } from '../utils/executeToolAndWait'
 import { getHookRunsRenderSignature } from '../components/ChatMessage/hookActivityState'
-import { getAssetPath } from '../utils/assetPath'
 import { parseId } from '../utils/helpers'
 import { extractTextFromPdf } from '../utils/pdfUtils'
 import { addFileMentionLookupKeys } from '../../shared/fileMatchRanking'
@@ -808,6 +824,49 @@ const splitInstructionSetIntoEntries = (content: string, files: string[], reason
   return files.map(file => ({ path: file, label: 'instruction file', text: content, reason }))
 }
 
+const parseToolArgumentsForGrouping = (value: unknown): Record<string, any> | null => {
+  if (value == null || typeof value === 'object') return value as Record<string, any> | null
+  if (typeof value !== 'string') return null
+
+  try {
+    const parsed = JSON.parse(value)
+    return parsed && typeof parsed === 'object' ? (parsed as Record<string, any>) : null
+  } catch {
+    return null
+  }
+}
+
+const getExcludedGroupingToolIds = (parsed: ParsedMessageData): Set<string> => {
+  const excludedIds = new Set<string>()
+
+  for (const toolCall of parsed.toolCalls ?? []) {
+    if (isExcludedFromProcessRunGrouping(toolCall.name, parseToolArgumentsForGrouping(toolCall.arguments))) {
+      excludedIds.add(String(toolCall.id))
+    }
+  }
+
+  for (const block of parsed.contentBlocks ?? []) {
+    if (block.type === 'tool_use' && isExcludedFromProcessRunGrouping(block.name, block.input)) {
+      excludedIds.add(String(block.id))
+      continue
+    }
+
+    const record = block as unknown as Record<string, any>
+    if (record.type !== 'responses_output_items' || !Array.isArray(record.items)) continue
+    for (const item of record.items) {
+      if (!item || item.type !== 'function_call') continue
+      if (isExcludedFromProcessRunGrouping(item.name, parseToolArgumentsForGrouping(item.arguments))) {
+        excludedIds.add(String(item.call_id || item.id || ''))
+      }
+    }
+  }
+
+  excludedIds.delete('')
+  return excludedIds
+}
+
+const hasExcludedGroupingTool = (parsed: ParsedMessageData): boolean => getExcludedGroupingToolIds(parsed).size > 0
+
 const isProcessContentBlock = (block: ContentBlock): boolean => {
   if (
     block.type === 'thinking' ||
@@ -1122,6 +1181,12 @@ function Chat() {
   )
   const streamUndoRoot = useAppSelector(selectStreamUndoRoot)
   const compactingConversationId = useAppSelector(state => state.chat.composition.compactingConversationId)
+  const compactingParentMessageId = useAppSelector(state => state.chat.composition.compactingParentMessageId)
+  const compactingLineageId = useAppSelector(state => state.chat.composition.compactingLineageId)
+  const compactionSummaryMessageId = useAppSelector(state => state.chat.composition.compactionSummaryMessageId)
+  const compactionViewPath = useAppSelector(selectCurrentPath)
+  const compactionViewLineageId = useAppSelector(state => state.chat.conversation.currentLineageId)
+
   // Current view stream - automatically selects the relevant stream based on currentPath
   const currentViewStream = useAppSelector(selectCurrentViewStream)
   const pendingViewStream = useAppSelector(state =>
@@ -1145,6 +1210,7 @@ function Chat() {
       id: effectiveViewStream?.id ?? null,
       active: effectiveViewStream?.active ?? false,
       status: effectiveViewStream?.status ?? 'idle',
+      compactionStatus: effectiveViewStream?.compactionStatus,
       buffer: effectiveViewStream?.buffer ?? '',
       thinkingBuffer: effectiveViewStream?.thinkingBuffer ?? '',
       toolCalls: effectiveViewStream?.toolCalls ?? [],
@@ -1153,6 +1219,7 @@ function Chat() {
       branchAnchorMessageId: effectiveViewStream?.branchAnchorMessageId ?? null,
       liveMessageId: effectiveViewStream?.liveMessageId ?? effectiveViewStream?.streamingMessageId ?? null,
       lastCompletedMessageId: effectiveViewStream?.lastCompletedMessageId ?? null,
+      persistedTurnMessageId: effectiveViewStream?.persistedTurnMessageId ?? null,
       finalMessageId: effectiveViewStream?.finalMessageId ?? null,
       error: effectiveViewStream?.error ?? null,
       finished: effectiveViewStream?.finished ?? false,
@@ -1198,6 +1265,19 @@ function Chat() {
 
   const conversationMessages = useAppSelector(selectConversationMessages)
   const displayMessages = useAppSelector(selectDisplayMessages)
+  const compactionView = useMemo(() => ({
+    conversationId: currentConversationId,
+    lineageId: compactionViewLineageId,
+    path: compactionViewPath,
+    messages: conversationMessages,
+  }), [currentConversationId, compactionViewLineageId, compactionViewPath, conversationMessages])
+  const isCurrentBranchCompacting = sendingState.compacting && isCompactionVisibleFor({
+    conversationId: compactingConversationId,
+    parentMessageId: compactingParentMessageId,
+    lineageId: compactingLineageId,
+    summaryMessageId: compactionSummaryMessageId,
+  }, compactionView)
+  const canStopCompaction = isCurrentBranchCompacting
   const toolCallPermissionRequest = useAppSelector(state =>
     streamState.id
       ? (state.chat.toolPermissionRequestsByStream[streamState.id] ?? null)
@@ -1221,10 +1301,51 @@ function Chat() {
   // React Query for message fetching - MOVED BELOW after projectConversations is available
   // to enable passing storage_mode from cached conversations
   const selectedPath = useAppSelector(selectCurrentPath)
+  const modeChange = useAppSelector(state => {
+    const change = state.chat.operationModeChanges?.[String(currentConversationId)]
+    return streamState.active && change?.streamId === streamState.id ? change : undefined
+  })
+  const modeLineageId = useAppSelector(state => state.chat.conversation.currentLineageId)
+  const [queueSubmitting, setQueueSubmitting] = useState(false)
+  const queueRetryRef = useRef<{ streamId: string; content: string; requestId: string } | null>(null)
+  const queueSubmittingRef = useRef(false)
+  const [lastQueueStreamId, setLastQueueStreamId] = useState<string | null>(null)
+  const queueStreamId = streamState.active ? streamState.id : lastQueueStreamId
+  const queueBranchAnchor = useAppSelector(state => queueStreamId ? state.chat.streaming.byId[queueStreamId]?.currentBranchAnchorMessageId : null)
+  const queuedMessages = useAppSelector(state => queueStreamId ? state.chat.messageQueues?.[queueStreamId] : undefined)
+  useEffect(() => { setLastQueueStreamId(null) }, [currentConversationId])
+  useEffect(() => {
+    if (!streamState.active || !streamState.id || !currentConversationId) return
+    setLastQueueStreamId(streamState.id)
+    void dispatch(loadMessageQueue({ conversationId: currentConversationId, streamId: streamState.id }))
+  }, [dispatch, currentConversationId, streamState.id, streamState.active])
+  const isBranchEditing = useAppSelector(state => state.chat.composition.editingBranch)
+  const handleOperationModeChange = useCallback((mode: 'plan' | 'execute') => {
+    if (modeChange && !isBranchEditing) return
+    void dispatch(changeOperationMode({
+      mode, conversationId: currentConversationId,
+      // Branch editing selects the new run's mode without interrupting the current run.
+      streamId: streamState.active && !isBranchEditing ? streamState.id : null,
+      parentId: selectedPath[selectedPath.length - 1] ?? null,
+      lineageId: modeLineageId,
+    }))
+  }, [dispatch, currentConversationId, selectedPath, streamState.active, streamState.id, modeChange, modeLineageId, isBranchEditing])
+  const handleToggleOperationMode = useCallback(() => {
+    handleOperationModeChange(operationMode === 'plan' ? 'execute' : 'plan')
+  }, [handleOperationModeChange, operationMode])
+  const handleToggleFastServiceTier = useCallback(() => {
+    if (!isOpenAIChatGPTProvider) return
+    setFastServiceTierEnabled(prev => {
+      const next = !prev
+      try {
+        window.localStorage.setItem('chat:openaiFastServiceTier', String(next))
+      } catch {}
+      return next
+    })
+  }, [isOpenAIChatGPTProvider])
   const runningToolJobs = useRunningJobs()
   const multiReplyCount = useAppSelector(selectMultiReplyCount)
   const focusedChatMessageId = useAppSelector(selectFocusedChatMessageId)
-  const isBranchEditing = useAppSelector(state => state.chat.composition.editingBranch)
 
   // const streamingRoot = useAppSelector(state => state.chat.streaming)
   // const [streamDebugPanelOpen, setStreamDebugPanelOpen] = useState(true)
@@ -1400,6 +1521,7 @@ function Chat() {
   // Tool jobs modal state
   const [jobsModalOpen, setJobsModalOpen] = useState(false)
   const [orchestratorEnabled, setOrchestratorEnabledState] = useState(() => isOrchestratorEnabled())
+  const fullAccessEnabled = useSyncExternalStore(subscribeFullAccess, isFullAccessEnabled)
   // OpenRouter cloud-sign-in required modal state
   const [openRouterLoginRequiredModalOpen, setOpenRouterLoginRequiredModalOpen] = useState(false)
   // OpenAI ChatGPT login modal state
@@ -1650,7 +1772,7 @@ function Chat() {
 
   const applyThemeById = useCallback(async (themeId: string): Promise<boolean> => {
     try {
-      const data = await localApi.post<{ result?: ThemeManagerReadResult }>('/tools/execute', {
+      const data = await executeToolAndWait<ThemeManagerReadResult>({
         toolName: 'theme_manager',
         args: {
           action: 'read',
@@ -1712,7 +1834,7 @@ function Chat() {
       stopThemeDemo()
 
       try {
-        const data = await localApi.post<{ result?: ThemeManagerListResult }>('/tools/execute', {
+        const data = await executeToolAndWait<ThemeManagerListResult>({
           toolName: 'theme_manager',
           args: {
             action: 'list',
@@ -2146,9 +2268,9 @@ function Chat() {
     }
   }, [])
 
-  // Filtered messages for virtualization - removes nulls, invalid IDs, and model-only generated-image hints.
+  // Keep persisted image-reference notices in the transcript alongside other automated rows.
   const renderableMessages = useMemo(() => {
-    return displayMessages.filter(msg => msg && msg.id != null && msg.note !== GENERATED_IMAGE_PATH_HINT_NOTE)
+    return displayMessages.filter(msg => msg && msg.id != null)
   }, [displayMessages])
 
   const [groupToolReasoningRuns, setGroupToolReasoningRuns] = useState<boolean>(() => {
@@ -2309,7 +2431,7 @@ function Chat() {
         return false
       }
 
-      if (hasSubstantialTextOrImage(msg, parsed)) {
+      if (hasSubstantialTextOrImage(msg, parsed) || hasExcludedGroupingTool(parsed)) {
         return false
       }
 
@@ -2385,7 +2507,12 @@ function Chat() {
           const trailingHasSubstantialContent = hasSubstantialTextOrImage(trailingCandidate, trailingParsed)
           const trailingUsesOrderedResponsesItems = hasResponsesOutputItems(trailingParsed)
 
-          if (trailingHasProcessSignal && trailingHasSubstantialContent && !trailingUsesOrderedResponsesItems) {
+          if (
+            trailingHasProcessSignal &&
+            trailingHasSubstantialContent &&
+            !trailingUsesOrderedResponsesItems &&
+            !hasExcludedGroupingTool(trailingParsed)
+          ) {
             bridgedMessageId = trailingCandidate.id
             toolCount += countToolSignals(trailingParsed)
             reasoningCount += countReasoningSignals(trailingCandidate, trailingParsed)
@@ -2528,11 +2655,61 @@ function Chat() {
   // Determine if optimistic/streaming messages should be shown (all modes for instant feedback)
   const showOptimisticMessage = !!optimisticMessage
   const showOptimisticBranchMessage = !!optimisticBranchMessage
-  const isCurrentConversationCompacting =
-    sendingState.compacting &&
-    currentConversationId != null &&
-    compactingConversationId != null &&
-    String(compactingConversationId) === String(currentConversationId)
+  const compactionActive = isCurrentBranchCompacting ||
+    (currentViewStream?.active === true && currentViewStream.compactionStatus === 'started')
+  // Summary/mode rows can extend the same branch during completion. They must not
+  // reset its presentation, whereas navigating to a sibling branch must.
+  const compactionScope = getCompactionPresentationScope(
+    currentConversationId, currentViewStream?.id ?? null, compactionViewPath, conversationMessages, compactionSummaryMessageId
+  )
+  const [compactionPresentation, setCompactionPresentation] = useState<{
+    scope: string; owner: CompactionOwner | null; completed: boolean
+  } | null>(null)
+  useEffect(() => {
+    if (compactionActive) {
+      if (compactionPresentation?.scope === compactionScope && !compactionPresentation.completed) return
+      setCompactionPresentation({
+        scope: compactionScope,
+        owner: isCurrentBranchCompacting ? {
+          conversationId: compactingConversationId,
+          parentMessageId: compactingParentMessageId,
+          lineageId: compactingLineageId,
+        } : null,
+        completed: false,
+      })
+      return
+    }
+    if (!compactionPresentation) return
+    if (compactionPresentation.scope !== compactionScope) {
+      setCompactionPresentation(null)
+      return
+    }
+    const succeeded = compactionPresentation.owner != null
+      ? isCompactionVisibleFor({ ...compactionPresentation.owner, summaryMessageId: compactionSummaryMessageId }, compactionView) &&
+        displayMessages.some(message => message.note === AUTO_COMPACTION_NOTE &&
+          String(message.id) === String(compactionSummaryMessageId) &&
+          String(message.parent_id ?? '') === String(compactionPresentation.owner?.parentMessageId))
+      : currentViewStream?.compactionStatus === 'completed'
+    if (!succeeded) {
+      setCompactionPresentation(null)
+      return
+    }
+    if (!compactionPresentation.completed) {
+      setCompactionPresentation({ ...compactionPresentation, completed: true })
+      return
+    }
+  }, [compactionActive, compactionScope, compactingConversationId, compactingParentMessageId,
+    compactingLineageId, compactionSummaryMessageId, isCurrentBranchCompacting, compactionView,
+    currentViewStream?.compactionStatus, displayMessages, compactionPresentation])
+  useEffect(() => {
+    if (!compactionPresentation?.completed) return
+    const timeoutId = window.setTimeout(() => setCompactionPresentation(null), 600)
+    return () => window.clearTimeout(timeoutId)
+  }, [compactionPresentation])
+  const compactionCompleted = compactionPresentation?.scope === compactionScope && compactionPresentation.completed &&
+    (compactionPresentation.owner == null ||
+      isCompactionVisibleFor({ ...compactionPresentation.owner, summaryMessageId: compactionSummaryMessageId }, compactionView))
+  const showCompactionStatus = compactionActive || Boolean(compactionCompleted)
   const hasRunningToolJobForCurrentBranch = useMemo(() => {
     const conversationKey = currentConversationId != null ? String(currentConversationId) : null
     const currentStreamKey = streamState.id != null ? String(streamState.id) : null
@@ -2560,7 +2737,7 @@ function Chat() {
     streamState.status === 'waiting_for_tool' ||
     streamState.status === 'aborting'
   const showGenerationLoadingAnimation =
-    isCurrentConversationCompacting || streamLifecycleActive || hasRunningToolJobForCurrentBranch
+    showCompactionStatus || streamLifecycleActive || hasRunningToolJobForCurrentBranch
   const hasFinalTextStreaming = Boolean(streamState.buffer?.trim())
   const hasProcessStreamingContent =
     Boolean(streamState.thinkingBuffer) || streamState.toolCalls.length > 0 || streamState.events.length > 0
@@ -2570,24 +2747,9 @@ function Chat() {
   // token therefore renders no live row at all rather than an empty shell plus a second bubble.
   const hasStreamingMessageContent = hasFinalTextStreaming || hasProcessStreamingContent
 
-  const shouldPreserveProcessStreamRow = streamState.status === 'waiting_for_tool' || hasRunningToolJobForCurrentBranch
-  const liveDuplicateSuppressionMessageId = streamState.liveMessageId ?? streamState.streamingMessageId
-  const completedDuplicateSuppressionMessageId =
-    streamState.lastCompletedMessageId ?? streamState.messageId ?? streamState.finalMessageId
-  const isLiveStreamingMessageAlreadyRendered =
-    liveDuplicateSuppressionMessageId != null &&
-    messageRowIndexByMessageId.has(String(liveDuplicateSuppressionMessageId))
-  const isCompletedStreamMessageAlreadyRendered =
-    completedDuplicateSuppressionMessageId != null &&
-    messageRowIndexByMessageId.has(String(completedDuplicateSuppressionMessageId))
-  // During OpenAI multi-turn tool loops a completed assistant tool-call message can be
-  // persisted into the normal message list while the same tool-call events remain in
-  // the live stream during `waiting_for_tool`. Keep the lifecycle/loader active, but
-  // suppress the transient streaming row once that completed turn is already rendered.
-  const isStreamingMessageAlreadyRendered =
-    isLiveStreamingMessageAlreadyRendered ||
-    ((shouldPreserveProcessStreamRow || liveDuplicateSuppressionMessageId == null) &&
-      isCompletedStreamMessageAlreadyRendered)
+  // Suppress the persisted current turn, not the previous turn's branch anchor.
+  // New server-owned generations have no live message ID until persistence.
+  const isStreamingMessageAlreadyRendered = isStreamMessageAlreadyRendered(streamState, messageRowIndexByMessageId)
   const showStreamingMessage = !isStreamingMessageAlreadyRendered && hasStreamingMessageContent
   const showLiveStreamingTail = showStreamingMessage && hasFinalTextStreaming
   // Once the final answer is streaming, the live tail is rendered OUTSIDE TanStack Virtual as an
@@ -2920,6 +3082,9 @@ function Chat() {
       const containerWidth = messagesContainerWidth || 720
 
       const estimateForMessage = (message: Message) => {
+        // Summaries draw only an h-8 notice with py-1, regardless of payload size.
+        if (message.note === AUTO_COMPACTION_NOTE || isWatcherCompletionMessage(message) || isImageAttachmentInfoMessage(message)) return smallChromeRowHeight(rootFontSize)
+        if (parseMessageMeta(message.meta)?.kind === 'operation_mode_change') return 32
         const blocks = (parsedMessageDataById.get(message.id) ?? EMPTY_PARSED_MESSAGE_DATA).contentBlocks
         // Mirrors `hasContent && canBranchMessage` in ChatMessage, which gates the actions row.
         const hasText = typeof message.content === 'string' && message.content.trim().length > 0
@@ -2942,6 +3107,7 @@ function Chat() {
           fontSizeOffset,
           groupToolReasoningRuns,
           artifactCount: Array.isArray(message.artifacts) ? message.artifacts.length : 0,
+          hasAcceptedImages: hasAcceptedImageAttachments(message),
           showsActionsRow: (hasText || hasBlockContent) && canBranch,
           messageId: message.id,
           isMcpAppTool,
@@ -3384,50 +3550,27 @@ function Chat() {
   // Without this, {} !== {} on each render, causing the useEffect below to
   // dispatch on every render, triggering an infinite update loop
 
-  const [titleInput, setTitleInput] = useState(currentConversation?.title ?? '')
   const [editingTitle, setEditingTitle] = useState(false)
-  const [optionsOpen, setOptionsOpen] = useState(false)
   const editingTitleRef = useRef(false)
-  const optionsOpenRef = useRef(false)
   const [cloningConversation, setCloningConversation] = useState(false)
   const [isTitleBarVisible, setIsTitleBarVisible] = useState(true)
   const lastScrollTopRef = useRef(0)
-  const optionsRef = useRef<HTMLDivElement>(null)
 
-  useEffect(() => {
-    setTitleInput(currentConversation?.title ?? '')
-  }, [currentConversation?.title])
-
-  useEffect(() => {
-    editingTitleRef.current = editingTitle
-  }, [editingTitle])
-
-  useEffect(() => {
-    optionsOpenRef.current = optionsOpen
-  }, [optionsOpen])
+  const handleTitleEditingChange = useCallback((editing: boolean) => {
+    editingTitleRef.current = editing
+    setEditingTitle(editing)
+    if (editing) setIsTitleBarVisible(true)
+  }, [])
 
   useEffect(() => {
     setAddedIdeContexts([])
   }, [currentConversationId])
 
-  // Close options dropdown on outside click
-  useEffect(() => {
-    if (!optionsOpen) return
-
-    const handleClickOutside = (e: MouseEvent) => {
-      if (optionsRef.current && !optionsRef.current.contains(e.target as Node)) {
-        setOptionsOpen(false)
-      }
-    }
-
-    document.addEventListener('mousedown', handleClickOutside)
-    return () => document.removeEventListener('mousedown', handleClickOutside)
-  }, [optionsOpen])
-
   // Always reveal top bar when switching conversations.
   useEffect(() => {
     setIsTitleBarVisible(true)
-  }, [currentConversationId])
+    handleTitleEditingChange(false)
+  }, [currentConversationId, handleTitleEditingChange])
 
   // Hide title bar on scroll down, reveal on scroll up (modern collapsing header behavior).
   useEffect(() => {
@@ -3448,7 +3591,7 @@ function Chat() {
         if (nearTop) {
           setIsTitleBarVisible(true)
         } else if (absDelta > 8) {
-          if (delta > 0 && !editingTitleRef.current && !optionsOpenRef.current) {
+          if (delta > 0 && !editingTitleRef.current) {
             setIsTitleBarVisible(false)
           } else if (delta < 0) {
             setIsTitleBarVisible(true)
@@ -3467,67 +3610,15 @@ function Chat() {
     }
   }, [])
 
-  // Debounce title updates to avoid dispatching on every keystroke
-  useEffect(() => {
-    if (!currentConversationId) return
-    const trimmed = titleInput.trim()
-    const currentTrimmed = (currentConversation?.title ?? '').trim()
-    // No-op if unchanged
-    if (trimmed === currentTrimmed) return
-    const handle = setTimeout(() => {
-      dispatch(
-        updateConversationTitle({
-          id: currentConversationId,
-          title: trimmed,
-          storageMode: currentConversation?.storage_mode,
-        })
-      )
-        .unwrap()
-        .then(() => {
-          // Update React Query caches to reflect the new title
-          const projectId = selectedProject?.id || currentConversation?.project_id
-
-          // Update all conversations cache
-          const conversationsCache = queryClient.getQueryData<Conversation[]>(['conversations'])
-          if (conversationsCache) {
-            queryClient.setQueryData(
-              ['conversations'],
-              conversationsCache.map(conv => (conv.id === currentConversationId ? { ...conv, title: trimmed } : conv))
-            )
-          }
-
-          // Update project conversations cache if project exists
-          if (projectId) {
-            const projectConversationsCache = queryClient.getQueryData<Conversation[]>([
-              'conversations',
-              'project',
-              projectId,
-            ])
-            if (projectConversationsCache) {
-              queryClient.setQueryData(
-                ['conversations', 'project', projectId],
-                projectConversationsCache.map(conv =>
-                  conv.id === currentConversationId ? { ...conv, title: trimmed } : conv
-                )
-              )
-            }
-          }
-
-          // Update recent conversations cache
-          const recentCache = queryClient.getQueryData<Conversation[]>(['conversations', 'recent'])
-          if (recentCache) {
-            queryClient.setQueryData(
-              ['conversations', 'recent'],
-              recentCache.map(conv => (conv.id === currentConversationId ? { ...conv, title: trimmed } : conv))
-            )
-          }
-        })
-        .catch(error => {
-          console.error('Failed to update conversation title:', error)
-        })
-    }, 1000)
-    return () => clearTimeout(handle)
-  }, [titleInput, currentConversationId, currentConversation?.title, dispatch, queryClient, selectedProject?.id])
+  // The thunk owns Redux and cache synchronization; typing never persists a partial title.
+  const handleRenameConversation = useCallback(async (title: string) => {
+    if (!currentConversationId) throw new Error('No conversation selected')
+    await dispatch(updateConversationTitle({
+      id: currentConversationId,
+      title,
+      storageMode: conversationStorageMode,
+    })).unwrap()
+  }, [currentConversationId, conversationStorageMode, dispatch])
 
   // Clear only on an actual A -> B switch. A Chat -> Settings -> Back remount retains
   // the live same-conversation Redux/tree/path state while the coordinator refetches.
@@ -3625,14 +3716,6 @@ function Chat() {
   // Conversations are now fetched via React Query in Homepage/ConversationPage/SideBar
   // No need to fetch here - React Query automatically shares cached data across all components
   // This eliminates duplicate requests and rate limiting issues
-
-  // Sort conversations by updated_at descending for the Select dropdown
-  const sortedConversations = useMemo(() => {
-    const projectId = projectIdFromUrl || selectedProject?.id || currentConversation?.project_id
-    if (!projectId) return []
-
-    return [...projectConversations].sort((a, b) => new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime())
-  }, [projectConversations, projectIdFromUrl, selectedProject?.id, currentConversation?.project_id])
 
   // Resizable split-pane state
   const containerRef = useRef<HTMLDivElement>(null)
@@ -3782,10 +3865,13 @@ function Chat() {
   const effectiveChatInputBorderLightColor = effectiveAnimatedInputBorderColor ?? chatInputBorderLightColor
   const effectiveChatInputBorderDarkColor = effectiveAnimatedInputBorderColor ?? chatInputBorderDarkColor
 
-  const leftControlsBorderClasses =
-    operationMode === 'plan'
+  const leftControlsBorderClasses = customThemeEnabled
+    ? operationMode === 'plan'
       ? 'outline-1 outline-blue-200/70 dark:outline-neutral-700/50'
       : 'outline-1 outline-neutral-200/70 dark:outline-neutral-700/50'
+    : operationMode === 'plan'
+      ? 'outline-1 outline-blue-200/35 dark:outline-neutral-700/25'
+      : 'outline-1 outline-neutral-200/35 dark:outline-neutral-700/25'
 
   const [showTokenUsageBar, setShowTokenUsageBar] = useState<boolean>(() => loadShowTokenUsageBar())
   const [showTokenUsageHoverDetails, setShowTokenUsageHoverDetails] = useState<boolean>(() =>
@@ -5092,9 +5178,20 @@ function Chat() {
       selectModelMutation.mutate({ provider: assignment.provider, model: assignment.model })
     }
 
+    // Capture these toggles before editor autocomplete can consume Shift+Tab.
+    const handleChatToggleKeyDown = (event: KeyboardEvent) => {
+      handleChatToggleShortcut(event, {
+        toggleOperationMode: handleToggleOperationMode,
+        toggleFastServiceTier: isOpenAIChatGPTProvider ? handleToggleFastServiceTier : undefined,
+      })
+    }
+    window.addEventListener('keydown', handleChatToggleKeyDown, true)
     window.addEventListener('keydown', handleChatKeyboardShortcut)
-    return () => window.removeEventListener('keydown', handleChatKeyboardShortcut)
-  }, [dispatch, handleProviderSelect, navigate, providers.providers, selectModelMutation])
+    return () => {
+      window.removeEventListener('keydown', handleChatToggleKeyDown, true)
+      window.removeEventListener('keydown', handleChatKeyboardShortcut)
+    }
+  }, [dispatch, handleProviderSelect, handleToggleOperationMode, handleToggleFastServiceTier, isOpenAIChatGPTProvider, navigate, providers.providers, selectModelMutation])
 
   const handleComposerSlashCommandSelect = useCallback(
     (command: string): ComposerSlashCommandResult | void => {
@@ -5120,15 +5217,16 @@ function Chat() {
 
   // Local version of canSend that checks input controller state.
   const canSendLocal = useMemo(() => {
-    const isNotSending = !streamState.active && !isCurrentConversationCompacting
+    const isNotSending = !isCurrentBranchCompacting && !modeChange && !queueSubmitting
     const hasModel = !!selectedModel
 
     // Allow retrigger: empty input when last displayed message is from user
     const isRetrigger =
-      !hasLocalInput && displayMessages.length > 0 && displayMessages[displayMessages.length - 1]?.role === 'user'
+      !hasLocalInput && displayMessages.length > 0 && displayMessages[displayMessages.length - 1]?.role === 'user' &&
+      parseMessageMeta(displayMessages[displayMessages.length - 1]?.meta)?.kind !== 'operation_mode_change'
 
-    return (hasLocalInput || isRetrigger) && isNotSending && hasModel
-  }, [hasLocalInput, isCurrentConversationCompacting, streamState.active, selectedModel, displayMessages])
+    return (hasLocalInput || (!streamState.active && isRetrigger)) && isNotSending && hasModel
+  }, [hasLocalInput, isCurrentBranchCompacting, streamState.active, selectedModel, displayMessages, modeChange, queueSubmitting])
 
   /**
    * Re-run generation from the last user message on the current branch.
@@ -5144,7 +5242,7 @@ function Chat() {
       const lastUserMessage = displayMessages[displayMessages.length - 1]
 
       // Safety check: ensure lastUserMessage exists before accessing properties
-      if (!lastUserMessage || lastUserMessage.role !== 'user') {
+      if (!lastUserMessage || lastUserMessage.role !== 'user' || parseMessageMeta(lastUserMessage.meta)?.kind === 'operation_mode_change') {
         console.error('Cannot retrigger: No last user message found in displayMessages')
         return false
       }
@@ -5217,7 +5315,7 @@ function Chat() {
     ]
   )
 
-  const handleSend = useCallback(
+  const handlePreparedSend = useCallback(
     (value: number) => {
       const localInputValue = getLocalInput()
       const trimmedInputValue = localInputValue.trim()
@@ -5239,10 +5337,33 @@ function Chat() {
         return
       }
 
+      if (canSendLocal && currentConversationId && streamState.active && streamState.id) {
+        if (queueSubmittingRef.current) return
+        queueSubmittingRef.current = true
+        setQueueSubmitting(true)
+        const { content, pendingCwdValue } = withPendingCwdAnnouncement(currentConversationId,
+          appendIdeContextToMessage(replaceFileMentionsWithPath(localInputValue)))
+        const retry = queueRetryRef.current
+        const queuedSubmission = retry?.streamId === streamState.id && retry.content === content
+          ? retry : { streamId: streamState.id, content, requestId: crypto.randomUUID() }
+        queueRetryRef.current = queuedSubmission
+        recordSentMessage(localInputValue)
+        clearLocalInput()
+        void dispatch(enqueueUserMessage({ conversationId: currentConversationId, ...queuedSubmission })).unwrap().then(() => {
+          queueRetryRef.current = null
+          clearPendingCwdAnnouncement(currentConversationId, pendingCwdValue)
+          setAddedIdeContexts([])
+        }).catch(error => {
+          recordLocalChatError(error, { phase: 'open', conversationId: currentConversationId, streamId: streamState.id })
+        }).finally(() => { queueSubmittingRef.current = false; setQueueSubmitting(false) })
+        return
+      }
+
       if (canSendLocal && currentConversationId) {
         // Check if this is a retrigger scenario (empty input + last message is user)
         const isRetrigger =
-          !hasLocalInput && displayMessages.length > 0 && displayMessages[displayMessages.length - 1]?.role === 'user'
+          !hasLocalInput && displayMessages.length > 0 && displayMessages[displayMessages.length - 1]?.role === 'user' &&
+      parseMessageMeta(displayMessages[displayMessages.length - 1]?.meta)?.kind !== 'operation_mode_change'
 
         if (isRetrigger) {
           retriggerLastUserMessage(value)
@@ -5304,7 +5425,8 @@ function Chat() {
 
               // Use processed content for immediate send
               const inputToSend = { content: contentToSend }
-              // Clear local input immediately after sending
+              // Keep an in-memory history of raw user input, then clear the composer.
+              recordSentMessage(localInputValue)
               clearLocalInput()
 
               // Dispatch a single sendMessage with repeatNum set to value.
@@ -5343,18 +5465,14 @@ function Chat() {
                   // Note: Success case is handled in chatActions when user_message chunk arrives
                   dispatch(chatSliceActions.optimisticMessageCleared())
                   console.error('Failed to send message:', error)
-                  // Clearing the optimistic row is right (nothing was persisted) but on its own
-                  // it deletes the user's writing. Record a classified bubble so the
-                  // disappearance has a stated cause, then give the RAW typed text back to the
-                  // composer — not `contentToSend`, which has file mentions and IDE context
-                  // expanded into it. A deliberate cancel is exempt: the user meant that.
-                  const envelope = recordLocalChatError(error, {
+                  // Clearing the optimistic row is right when nothing was persisted. Keep the
+                  // composer clear; the raw input remains available through sent-message history.
+                  recordLocalChatError(error, {
                     phase: 'open',
                     conversationId: currentConversationId,
                     parentMessageId: parentForSend,
                     streamId,
                   })
-                  if (envelope?.code !== 'cancelled') restoreFailedSendText(localInputValue)
                 })
             }
 
@@ -5480,13 +5598,15 @@ function Chat() {
     },
     [
       canSendLocal,
+      streamState.active,
+      streamState.id,
       currentConversationId,
       selectedPath,
       think,
       dispatch,
       getLocalInput,
       hasLocalInput,
-      isCurrentConversationCompacting,
+      isCurrentBranchCompacting,
       sendingState.sending,
       sendingState.compacting,
       clearLocalInput,
@@ -5516,11 +5636,32 @@ function Chat() {
       composerImageDraftDataUrls,
       retriggerLastUserMessage,
       recordLocalChatError,
-      restoreFailedSendText,
     ]
   )
 
+  // Re-enter the latest render after waiting: active stream, selected branch and
+  // input may all have changed while the file was being prepared.
+  const preparedSendRef = useRef(handlePreparedSend)
+  preparedSendRef.current = handlePreparedSend
+  const imageSubmitPendingRef = useRef(false)
+  const handleSend = useCallback(async (value: number) => {
+    if (imageSubmitPendingRef.current) return
+    imageSubmitPendingRef.current = true
+    try {
+      await dispatch(waitForImagePreparation({ kind: 'composer' }))
+      preparedSendRef.current(value)
+    } catch (error) {
+      recordLocalChatError(error, { phase: 'preflight', conversationId: currentConversationId })
+    } finally {
+      imageSubmitPendingRef.current = false
+    }
+  }, [dispatch, currentConversationId, recordLocalChatError])
+
   const handleStopGeneration = useCallback(() => {
+    if (canStopCompaction && compactingConversationId != null && compactingParentMessageId != null) {
+      dispatch(abortCompaction({ conversationId: compactingConversationId, parentMessageId: compactingParentMessageId }))
+      return
+    }
     if (!streamState.id && !streamState.streamingMessageId) return
 
     dispatch(
@@ -5529,7 +5670,7 @@ function Chat() {
         messageId: streamState.streamingMessageId,
       })
     )
-  }, [streamState.id, streamState.streamingMessageId, dispatch])
+  }, [streamState.id, streamState.streamingMessageId, canStopCompaction, compactingConversationId, compactingParentMessageId, dispatch])
 
   // The error bubble owns exactly one button. This is where its `kind` becomes a real recovery.
   // Deliberately routed through the handlers that already exist in this container rather than
@@ -5567,7 +5708,7 @@ function Chat() {
         }
         case 'switch_mode': {
           // The only mode switch an error can ask for: the run needed write access.
-          dispatch(chatSliceActions.operationModeSet('execute'))
+          handleOperationModeChange('execute')
           dismissChatError(record)
           return
         }
@@ -5614,6 +5755,7 @@ function Chat() {
     [
       dismissChatError,
       dispatch,
+      handleOperationModeChange,
       handleManualCompactifyCommand,
       multiReplyCount,
       navigate,
@@ -5696,6 +5838,7 @@ function Chat() {
 
       const streamId = generateStreamId('branch')
       setPendingViewStreamId(streamId)
+      recordSentMessage(newContent)
 
       dispatch(
         editMessageWithBranching({
@@ -5720,16 +5863,13 @@ function Chat() {
           // Clear optimistic branch message on error
           dispatch(chatSliceActions.optimisticBranchMessageCleared())
           console.error('Failed to branch message:', error)
-          // The optimistic row was the only copy of the user's edit — dropping it silently
-          // destroyed their writing. State why the row vanished, then hand the RAW edited text
-          // back to the composer, which is the only place left that can hold it.
-          const envelope = recordLocalChatError(error, {
+          // The branch attempt failed; surface the error without mutating the main composer.
+          recordLocalChatError(error, {
             phase: 'open',
             conversationId: currentConversationId,
             parentMessageId: originalMessage.parent_id ?? null,
             streamId,
           })
-          if (envelope?.code !== 'cancelled') restoreFailedSendText(newContent)
         })
     },
     [
@@ -5748,7 +5888,6 @@ function Chat() {
       clearPendingCwdAnnouncement,
       getBranchImageDraftDataUrls,
       recordLocalChatError,
-      restoreFailedSendText,
     ]
   )
 
@@ -5824,6 +5963,7 @@ function Chat() {
 
       const streamId = generateStreamId('primary')
       setPendingViewStreamId(streamId)
+      recordSentMessage(newContent)
 
       dispatch(
         sendMessage({
@@ -5851,16 +5991,13 @@ function Chat() {
         .catch(error => {
           dispatch(chatSliceActions.optimisticMessageCleared())
           console.error('Failed to send explain-selection message:', error)
-          // Same regression as the main send path: the optimistic row is the only copy of what
-          // the user asked, so clearing it alone erases the question. Explain the failure and
-          // give the raw selection text back.
-          const envelope = recordLocalChatError(error, {
+          // Surface the failure without copying this branch prompt into the main composer.
+          recordLocalChatError(error, {
             phase: 'open',
             conversationId: currentConversationId,
             parentMessageId: parsedId,
             streamId,
           })
-          if (envelope?.code !== 'cancelled') restoreFailedSendText(newContent)
         })
     },
     [
@@ -5880,7 +6017,6 @@ function Chat() {
       withPendingCwdAnnouncement,
       clearPendingCwdAnnouncement,
       recordLocalChatError,
-      restoreFailedSendText,
     ]
   )
 
@@ -6366,6 +6502,13 @@ function Chat() {
       const pdfFiles = files.filter(file => file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf'))
       const imageFiles = files.filter(file => file.type.startsWith('image/'))
 
+      // Register image preparation before awaiting unrelated PDF extraction.
+      if (imageFiles.length) {
+        const target: ImageDraftTarget = activeBranchEditingMessageId != null
+          ? { kind: 'branch', messageId: parseId(activeBranchEditingMessageId) } : { kind: 'composer' }
+        void dispatch(prepareImageFiles(imageFiles, target))
+      }
+
       if (pdfFiles.length > 0) {
         try {
           const pdfTexts = await Promise.all(
@@ -6384,48 +6527,6 @@ function Chat() {
         }
       }
 
-      if (imageFiles.length > 0) {
-        Promise.all(
-          imageFiles.map(async image => {
-            const dataUrl = await blobToDataURL(image)
-            return { dataUrl, name: image.name, type: image.type, size: image.size }
-          })
-        )
-          .then(drafts => {
-            const branchTargetMessageId =
-              activeBranchEditingMessageId != null ? parseId(activeBranchEditingMessageId) : null
-            const target: ImageDraftTarget =
-              branchTargetMessageId != null
-                ? { kind: 'branch', messageId: branchTargetMessageId }
-                : { kind: 'composer' }
-
-            void (async () => {
-              try {
-                const result = await localApi.post<{ attachments?: Array<{ id: string; file_path: string; sha256: string }> }>(
-                  '/local/attachments/prepare-base64',
-                  { attachments: drafts }
-                )
-                const saved = Array.isArray(result?.attachments) ? result.attachments : []
-                if (saved.length !== drafts.length) throw new Error('Incomplete attachment persistence result')
-                const preparedDrafts = drafts.map((draft, index) => ({
-                  ...draft,
-                  filePath: saved[index].file_path,
-                  attachmentId: saved[index].id,
-                  sha256: saved[index].sha256,
-                }))
-                dispatch(chatSliceActions.imageDraftsAppended({ drafts: preparedDrafts, target }))
-
-                // Branch drafts stay in composition state until the server creates the
-                // sibling user message. Mutating the immutable source row here makes a
-                // newly pasted image appear on both the source and edited branch.
-              } catch (err) {
-                console.error('Failed to persist selected images locally', err)
-              }
-            })()
-
-          })
-          .catch(err => console.error('Failed to read selected images', err))
-      }
 
       e.target.value = ''
     },
@@ -6444,22 +6545,24 @@ function Chat() {
     if (!currentConversationId) return
 
     setCloningConversation(true)
-    setOptionsOpen(false)
 
     try {
       const result = await cloneConversation(currentConversationId, accessToken)
-      // Invalidate React Query cache to refetch conversations list
-      // This updates the dropdown and sidebar without duplicate API calls
-      queryClient.invalidateQueries({ queryKey: ['conversations'] })
+      // Refresh the sidebar's project ordering and flat/infinite conversation lists.
+      // Prefix matching also covers recent and collapsed-project caches.
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ['projects'] }),
+        queryClient.invalidateQueries({ queryKey: ['conversations'] }),
+      ])
       // Navigate to the cloned conversation
       navigate(`/chat/${result.project_id || projectIdFromUrl || 'unknown'}/${result.id}`)
     } catch (error) {
       console.error('Failed to clone conversation:', error)
-      // Could add error toast/notification here
+      throw error
     } finally {
       setCloningConversation(false)
     }
-  }, [currentConversationId, accessToken, navigate, queryClient])
+  }, [currentConversationId, accessToken, navigate, queryClient, projectIdFromUrl])
 
   const handleOpenToolHtmlModal = useCallback(
     (key?: string) => {
@@ -6546,57 +6649,16 @@ function Chat() {
 
   // Calculate context usage from displayed messages (current branch).
   // Includes project/conversation prompts + message content + nested content_blocks/tool_calls.
-  const tokenUsage = useMemo(() => {
-    let promptAndContextTokens = 0
-    let messageTokens = 0
-
-    // Include project system prompt and context.
-    promptAndContextTokens += safeEstimateTokenCount(selectedProject?.system_prompt)
-    promptAndContextTokens += safeEstimateTokenCount(selectedProject?.context)
-
-    // Include conversation system prompt and context.
-    promptAndContextTokens += safeEstimateTokenCount(currentConversation?.system_prompt)
-    promptAndContextTokens += safeEstimateTokenCount(currentConversation?.conversation_context)
-
-    // Count visible branch payload from the latest compaction marker (if any) onward.
-    let startIndex = 0
-    for (let i = displayMessages.length - 1; i >= 0; i--) {
-      if (displayMessages[i]?.note === AUTO_COMPACTION_NOTE) {
-        startIndex = i
-        break
-      }
-    }
-
-    displayMessages.slice(startIndex).forEach(msg => {
-      if (!msg) return
-
-      const contentTokens = safeEstimateTokenCount(msg.content)
-      const contentBlockTokens = estimateContentBlocksForContext((msg as any).content_blocks)
-      const toolCallTokens = safeEstimateTokenCount((msg as any).tool_calls)
-
-      // This ensures messages with empty content but non-empty content_blocks/tool_calls are counted.
-      messageTokens += contentTokens + contentBlockTokens + toolCallTokens
-    })
-
-    const estimatedContextTokens = promptAndContextTokens + messageTokens
-    const contextMessages = displayMessages.slice(startIndex)
-    const resolvedContext = resolveContextTokens({
-      providerName: providers.currentProvider,
-      estimatedTokens: estimatedContextTokens,
-      messages: contextMessages,
-    })
-    const openAIUsageHistory = openAIContextUsageHistory(contextMessages)
-
-    return {
-      promptAndContextTokens,
-      messageTokens,
-      estimatedContextTokens,
-      totalContextTokens: resolvedContext.effectiveTokens,
-      reportedUsage: resolvedContext.reportedUsage,
-      openAIUsageHistory,
-      source: resolvedContext.source,
-    }
-  }, [
+  const tokenUsage = useMemo(() => calculateBranchContextUsage({
+    providerName: providers.currentProvider,
+    messages: displayMessages,
+    prompts: [
+      selectedProject?.system_prompt,
+      selectedProject?.context,
+      currentConversation?.system_prompt,
+      currentConversation?.conversation_context,
+    ],
+  }), [
     displayMessages,
     selectedProject?.system_prompt,
     selectedProject?.context,
@@ -6676,6 +6738,8 @@ function Chat() {
         : isDarkMode
           ? '#c2410c'
           : '#93c5fd'
+  const fastModeAnimation = useFastModeAnimation()
+  const showFastModeAnimation = isOpenAIChatGPTProvider && fastServiceTierEnabled && fastModeAnimation !== 'none'
   const rightControlsTintStrength = isDarkMode ? 28 : 24
   const rightControlsTintStyle: React.CSSProperties | undefined =
     operationMode === 'plan'
@@ -6714,158 +6778,36 @@ function Chat() {
         }}
       >
         <div
-          className={`relative mx-4 flex flex-col thin-scrollbar rounded-lg bg-transparent dark:bg-transparent flex-1 min-h-0 min-w-0 overflow-hidden transition-[padding-bottom] duration-200 ${!heimdallVisible ? 'px-0 sm:px-0 md:pr-12 ' : ''}`}
+          className={`relative mx-4 flex flex-col thin-scrollbar rounded-lg bg-transparent dark:bg-transparent flex-1 min-h-0 min-w-0 overflow-hidden transition-[padding-bottom] duration-200 ${!heimdallVisible ? 'px-0 sm:px-0 ' : ''}`}
           style={{ paddingBottom: `0px`, backgroundColor: chatSurfaceBackgroundColor }}
         >
-          {/* Conversation Title Editor */}
+          {/* Conversation title and actions */}
           {currentConversationId && (
             <div
-              className={`absolute mb-2 mt-4 top-0 left-0 px-2 z-10 mx-auto right-0 transition-all duration-300 ease-out ${isTitleBarVisible ? 'opacity-100 translate-y-0 pointer-events-auto' : 'opacity-0 -translate-y-4 pointer-events-none'} ${!heimdallVisible ? 'max-w-full sm:max-w-xl md:max-w-2xl lg:max-w-3xl xl:max-w-3xl 2xl:max-w-4xl 3xl:max-w-6xl' : 'max-w-full sm:max-w-xl md:max-w-2xl lg:max-w-3xl xl:max-w-4xl 2xl:max-w-4xl'}`}
+              inert={!isTitleBarVisible}
+              className={`absolute my-2 top-0 left-0 px-2 z-10 mx-auto right-0 transition-[opacity,transform] duration-[var(--ygg-motion-duration-standard)] ease-out motion-reduce:transform-none ${isTitleBarVisible ? 'opacity-100 translate-y-0 pointer-events-auto' : 'opacity-0 -translate-y-4 pointer-events-none'} ${!heimdallVisible ? 'max-w-full sm:max-w-xl md:max-w-2xl lg:max-w-3xl xl:max-w-3xl 2xl:max-w-4xl 3xl:max-w-6xl' : 'max-w-full sm:max-w-xl md:max-w-2xl lg:max-w-3xl xl:max-w-4xl 2xl:max-w-4xl'}`}
             >
-              <div
-                className='flex items-center backdrop-blur-[12px] border rounded-full py-1 px-1.5 gap-1 shadow-[0_10px_30px_-10px_rgba(0,0,0,0.2)] dark:shadow-[0_10px_30px_-10px_rgba(0,0,0,0.5)]'
-                style={{
-                  backgroundColor: conversationToolbarBackgroundColor,
-                  borderColor: isDarkMode ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.08)',
+              <ConversationToolbar
+                key={String(currentConversationId)}
+                title={currentConversation?.title ?? ''}
+                backgroundColor={conversationToolbarBackgroundColor}
+                treeVisible={heimdallVisible}
+                cloning={cloningConversation}
+                customTheme={customTheme}
+                customThemeEnabled={customThemeEnabled}
+                isDarkMode={isDarkMode}
+                onToggleTree={() => {
+                  const newValue = !heimdallVisible
+                  setHeimdallVisible(newValue)
+                  try {
+                    window.localStorage.setItem('chat:heimdallVisible', String(newValue))
+                  } catch {}
                 }}
-              >
-                {/* Workspace Actions */}
-                {/* <Button
-                  variant='outline2'
-                  size='medium'
-                  className='!rounded-full !p-2 transition-all duration-200 hover:bg-black/5 dark:hover:bg-white/5'
-                  aria-label='Conversations'
-                  onClick={() => {
-                    const projectId = selectedProject?.id || currentConversation?.project_id
-                    navigate(projectId ? `/conversationPage?projectId=${projectId}` : '/conversationPage')
-                  }}
-                  title='New Chat'
-                >
-                  <i className='bx bx-chat text-lg' aria-hidden='true'></i>
-                </Button> */}
-
-                <Button
-                  variant='outline2'
-                  size='medium'
-                  className='!rounded-full !p-2 transition-all duration-200 hover:bg-black/5 dark:hover:bg-white/5'
-                  aria-label={heimdallVisible ? 'Hide Tree View' : 'Show Tree View'}
-                  onClick={() => {
-                    const newValue = !heimdallVisible
-                    setHeimdallVisible(newValue)
-                    try {
-                      window.localStorage.setItem('chat:heimdallVisible', String(newValue))
-                    } catch {}
-                  }}
-                  title={heimdallVisible ? 'Hide Tree View' : 'Show Tree View'}
-                >
-                  <img src={getAssetPath('img/branchlighmode.svg')} alt='tree view' className='w-4 h-4 dark:hidden' />
-                  <img
-                    src={getAssetPath('img/branchdarkmode.svg')}
-                    alt='tree view'
-                    className='w-4 h-4 hidden dark:block'
-                  />
-                </Button>
-
-                {/* Divider */}
-                <div className='w-px h-4 bg-black/[0.08] dark:bg-white/[0.08] mx-1' />
-
-                {/* Session Pill */}
-                {editingTitle ? (
-                  <>
-                    <TextField
-                      value={titleInput}
-                      onChange={val => {
-                        setTitleInput(val)
-                      }}
-                      placeholder='Conversation title'
-                      size='large'
-                      className='rounded-full'
-                    />
-                    <Button
-                      variant='outline2'
-                      size='medium'
-                      className='!rounded-full !p-2 transition-all duration-200 hover:bg-black/5 dark:hover:bg-white/5'
-                      aria-label='Confirm edit'
-                      onClick={() => setEditingTitle(false)}
-                    >
-                      <i className='bx bx-check text-lg' aria-hidden='true'></i>
-                    </Button>
-                  </>
-                ) : (
-                  <>
-                    <Select
-                      value={currentConversationId ? String(currentConversationId) : ''}
-                      onChange={val => {
-                        const conv = sortedConversations.find(c => String(c.id) === val)
-                        // Use setTimeout to defer navigation and allow Select to close properly
-                        setTimeout(
-                          () => navigate(`/chat/${conv?.project_id || projectIdFromUrl || 'unknown'}/${val}`),
-                          0
-                        )
-                      }}
-                      options={sortedConversations.map(conv => ({
-                        value: String(conv.id),
-                        label: conv.title || 'Untitled Conversation',
-                      }))}
-                      blur='high'
-                      placeholder='Select conversation...'
-                      disabled={sortedConversations.length === 0}
-                      className='flex-1 transition-transform min-w-0 rounded-full border-transparent hover:border-black/5 dark:hover:border-white/5'
-                      searchBarVisible={true}
-                    />
-                  </>
-                )}
-
-                {/* Divider */}
-                <div className='w-px h-4 bg-black/[0.08] dark:bg-white/[0.08] mx-1' />
-
-                {/* System Actions */}
-                <Button
-                  variant='outline2'
-                  size='medium'
-                  className='!rounded-full !p-2 transition-all duration-200 hover:bg-black/5 dark:hover:bg-white/5'
-                  aria-label='Refresh Messages'
-                  onClick={() => {
-                    if (currentConversationId) void refreshConversationSnapshot()
-                  }}
-                  title='Sync / Refresh'
-                >
-                  <RefreshCw className='h-4 w-4' strokeWidth={2.25} aria-hidden='true' />
-                </Button>
-
-                <div ref={optionsRef} className='relative'>
-                  <Button
-                    variant='outline2'
-                    size='medium'
-                    className='!rounded-full !p-2 transition-all duration-200 hover:bg-black/5 dark:hover:bg-white/5'
-                    aria-label='Options'
-                    onClick={() => setOptionsOpen(!optionsOpen)}
-                    title='Settings'
-                  >
-                    <MoreVertical className='h-4 w-4' strokeWidth={3} aria-hidden='true' />
-                  </Button>
-                  {optionsOpen && (
-                    <div className='absolute right-0 top-full mt-1 z-50 bg-white/90 dark:bg-neutral-900/90 backdrop-blur-[12px] border border-black/[0.08] dark:border-white/[0.08] rounded-xl shadow-[0_10px_30px_-10px_rgba(0,0,0,0.3)] w-max'>
-                      <button
-                        className='w-full text-left px-3 py-2 text-sm text-neutral-500 hover:text-neutral-200 hover:bg-black/5 dark:hover:bg-white/5 transition-colors rounded-t-xl whitespace-nowrap'
-                        onClick={() => {
-                          setEditingTitle(true)
-                          setOptionsOpen(false)
-                        }}
-                      >
-                        Edit
-                      </button>
-                      <button
-                        className='w-full text-left px-3 py-2 text-sm text-neutral-500 hover:text-neutral-200 hover:bg-black/5 dark:hover:bg-white/5 transition-colors rounded-b-xl whitespace-nowrap'
-                        onClick={handleCloneConversation}
-                        disabled={cloningConversation}
-                      >
-                        {cloningConversation ? 'Cloning...' : 'Clone Chat'}
-                      </button>
-                    </div>
-                  )}
-                </div>
-              </div>
+                onRefresh={() => { void refreshConversationSnapshot() }}
+                onClone={handleCloneConversation}
+                onRename={handleRenameConversation}
+                onEditingChange={handleTitleEditingChange}
+              />
             </div>
           )}
           {/* Messages Display. `isolate` keeps row z-indexes (focus-within:z-[70], the editing row's
@@ -6874,7 +6816,7 @@ function Chat() {
               portaled to body, so nothing in here needs to escape. */}
           <div
             ref={messagesContainerRef}
-            className={`isolate flex flex-col ${currentConversationId && isTitleBarVisible ? 'pt-25' : 'pt-6'} transition-[padding-top] duration-300 dark:border-neutral-700 border-stone-200 rounded-lg overflow-y-auto overflow-x-hidden thin-scrollbar overscroll-y-contain touch-pan-y`}
+            className={`isolate flex flex-col ${currentConversationId && isTitleBarVisible ? (editingTitle ? 'pt-28' : 'pt-22') : 'pt-6'} transition-[padding-top] duration-[var(--ygg-motion-duration-layout)] motion-reduce:transition-none dark:border-neutral-700 border-stone-200 rounded-lg overflow-y-auto overflow-x-hidden thin-scrollbar overscroll-y-contain touch-pan-y`}
             style={{
               ['overflowAnchor' as any]: 'none',
               willChange: 'scroll-position',
@@ -7049,8 +6991,10 @@ function Chat() {
                               start={virtualRow.start}
                               measureElement={virtualizer.measureElement}
                             >
-                              <div className={`${showStreamingMessage ? 'pt-2' : 'pt-1'} pl-2`}>
+                              <div className={`${showStreamingMessage ? 'pt-2' : 'pt-1'} px-0 sm:px-2`}>
                                 <StreamingThinkingIndicator
+                                  compacting={showCompactionStatus}
+                                  compactionCompleted={Boolean(compactionCompleted)}
                                   style={
                                     fontSizeOffset !== 0
                                       ? { fontSize: `calc(0.75em + ${fontSizeOffset}px)` }
@@ -7067,13 +7011,9 @@ function Chat() {
                         if (row.kind === 'process_group') {
                           const runId = String(row.id)
                           const isExpanded = expandedProcessMessageRuns.has(runId)
-                          const summaryParts: string[] = []
-                          if (row.toolCount > 0) {
-                            summaryParts.push(`${row.toolCount} tool${row.toolCount === 1 ? '' : 's'}`)
-                          }
-                          if (row.reasoningCount > 0) {
-                            summaryParts.push(`${row.reasoningCount} reasoning`)
-                          }
+                          const summary = row.toolCount > 0
+                            ? `${row.toolCount} tool${row.toolCount === 1 ? '' : 's'}`
+                            : undefined
 
                           return (
                             <VirtualizedRowContainer
@@ -7084,18 +7024,18 @@ function Chat() {
                               measureElement={virtualizer.measureElement}
                               className='z-0'
                             >
-                              <div
-                                className='min-w-0 px-0 py-1 sm:px-2'
-                                style={fontSizeOffset !== 0 ? { fontSize: `calc(1em + ${fontSizeOffset}px)` } : undefined}
-                              >
-                                <DisclosureRow
-                                  label='Agent steps'
-                                  meta={String(row.messages.length)}
-                                  summary={summaryParts.join(' · ')}
-                                  expanded={isExpanded}
-                                  onToggle={() => toggleProcessMessageRun(runId)}
-                                  controlsId={`message-group-${runId}-panel`}
-                                />
+                              <div className='min-w-0 px-0 py-1 sm:px-2'>
+                                {/* Nested messages apply their own offset; only scale the header here. */}
+                                <div style={fontSizeOffset !== 0 ? { fontSize: `calc(1em + ${fontSizeOffset}px)` } : undefined}>
+                                  <DisclosureRow
+                                    label='Agent steps'
+                                    labelSize='group'
+                                    summary={summary}
+                                    expanded={isExpanded}
+                                    onToggle={() => toggleProcessMessageRun(runId)}
+                                    controlsId={`message-group-${runId}-panel`}
+                                  />
+                                </div>
                                 <div
                                   id={`message-group-${runId}-panel`}
                                   className={`tool-expand-container ${isExpanded ? 'open' : ''}`}
@@ -7186,6 +7126,42 @@ function Chat() {
                         }
 
                         const msg = row.message
+                        if (isImageAttachmentInfoMessage(msg)) {
+                          return (
+                            <VirtualizedRowContainer key={renderRow.key} id={`message-${msg.id}`}
+                              index={virtualRow.index} start={virtualRow.start} measureElement={virtualizer.measureElement} className='z-0'>
+                              <ImageAttachmentNotice customTheme={customTheme}
+                                customThemeEnabled={customThemeEnabled} isDarkMode={isDarkMode} />
+                            </VirtualizedRowContainer>
+                          )
+                        }
+                        if (isWatcherCompletionMessage(msg)) {
+                          return (
+                            <VirtualizedRowContainer key={renderRow.key} id={`message-${msg.id}`}
+                              index={virtualRow.index} start={virtualRow.start} measureElement={virtualizer.measureElement} className='z-0'>
+                              <WatcherCompletionNotice content={msg.content} customTheme={customTheme}
+                                customThemeEnabled={customThemeEnabled} isDarkMode={isDarkMode} />
+                            </VirtualizedRowContainer>
+                          )
+                        }
+                        if (msg.note === AUTO_COMPACTION_NOTE) {
+                          return (
+                            <VirtualizedRowContainer
+                              key={renderRow.key}
+                              id={`message-${msg.id}`}
+                              index={virtualRow.index}
+                              start={virtualRow.start}
+                              measureElement={virtualizer.measureElement}
+                              className='z-0'
+                            >
+                              <SummarisedMessage
+                                customTheme={customTheme}
+                                customThemeEnabled={customThemeEnabled}
+                                isDarkMode={isDarkMode}
+                              />
+                            </VirtualizedRowContainer>
+                          )
+                        }
                         const { contentBlocks } =
                           parsedMessageDataById.get(msg.id) ?? EMPTY_PARSED_MESSAGE_DATA
                         const previousRenderRow = virtualRow.index > 0 ? virtualRows[virtualRow.index - 1] : null
@@ -7202,6 +7178,15 @@ function Chat() {
                             : contentBlocks
                         const assistantContainerClassName = assistantContainerClassByMessageId.get(String(msg.id))
 
+                        const modeMeta = parseMessageMeta(msg.meta)
+                        if (modeMeta?.kind === 'operation_mode_change' && (modeMeta.mode === 'plan' || modeMeta.mode === 'execute')) {
+                          return (
+                            <VirtualizedRowContainer key={renderRow.key} id={`message-${msg.id}`}
+                              index={virtualRow.index} start={virtualRow.start} measureElement={virtualizer.measureElement} className='z-0'>
+                              <OperationModeNotice mode={modeMeta.mode} initial={!modeMeta.previousMode} />
+                            </VirtualizedRowContainer>
+                          )
+                        }
                         if (isContextInjectionMessage(msg)) {
                           // Auto-loaded instruction files (AGENTS.md / CLAUDE.md, rules, MEMORY.md):
                           // a persisted user row the model reads in full. People get one collapsed line.
@@ -7368,7 +7353,7 @@ function Chat() {
           <div className='relative isolate'>
             {showGenerationLoadingAnimation && showStreamingThinkingInputTab && (
               <div className='absolute left-0 top-0 z-0 flex -translate-y-[calc(100%-8px)]'>
-                <StreamingThinkingIndicator variant='tab' />
+                <StreamingThinkingIndicator variant='tab' compacting={showCompactionStatus} compactionCompleted={Boolean(compactionCompleted)} />
               </div>
             )}
 
@@ -7676,6 +7661,14 @@ function Chat() {
                 </div>
               )}
 
+              {queuedMessages && queuedMessages.conversationId === currentConversationId &&
+                (streamState.active || (modeLineageId != null && queuedMessages.lineageId === modeLineageId) ||
+                  (queueBranchAnchor != null && selectedPath.includes(queueBranchAnchor))) && (
+                <QueuedMessages items={queuedMessages.items}
+                  onRestore={restoreFailedSendText}
+                  onCancel={requestId => dispatch(cancelQueuedMessage({ conversationId: currentConversationId!,
+                    streamId: queuedMessages.streamId, requestId })).unwrap()} />
+              )}
               {/* Textarea with shortcut hint */}
               <div className=''>
                 <ChatInputController
@@ -7910,9 +7903,16 @@ function Chat() {
                 </div>
                 {/* Right side controls */}
                 <div
-                  className={`flex h-10 xl:h-12 shrink-0 items-center gap-1 rounded-full ${leftControlsBorderClasses} bg-neutral-100/40 px-2 py-1 md:py-1 xl:py-1.5 backdrop-blur-xl transition-all duration-300 dark:bg-neutral-900/40`}
+                  className={`fm-controls flex h-10 xl:h-12 shrink-0 items-center gap-1 rounded-full ${leftControlsBorderClasses} bg-neutral-100/40 px-2 py-1 md:py-1 xl:py-1.5 backdrop-blur-xl transition-all duration-300 dark:bg-neutral-900/40`}
                   style={rightControlsTintStyle}
                 >
+                  {showFastModeAnimation && (
+                    <FastModeAnimationBackground
+                      animation={fastModeAnimation}
+                      dark={isDarkMode}
+                      theme={customThemeEnabled ? customTheme : undefined}
+                    />
+                  )}
                   {(isImageGenerationModel ||
                     think ||
                     (import.meta.env.VITE_ENVIRONMENT === 'electron' && conversationIdFromUrl)) && (
@@ -7926,33 +7926,24 @@ function Chat() {
                         (think && reasoningConfig.effort !== 'medium')
                       }
                       footer={
-                        <div className='flex flex-col gap-2'>
+                        <div className='action-cloud-fields'>
                           {import.meta.env.VITE_ENVIRONMENT === 'electron' && conversationIdFromUrl && (
-                            <>
-                              <span className='text-black dark:text-neutral-200 text-[16px]'>Work directory:</span>
-                              <div className='flex gap-2'>
+                            <div className='action-cloud-directory'>
+                              <label htmlFor='action-cloud-cwd'>Working directory</label>
+                              <div className='action-cloud-path' style={actionPopoverInputBorderColor ? { outline: `1px solid ${actionPopoverInputBorderColor}` } : undefined}>
                                 <input
+                                  id='action-cloud-cwd'
                                   type='text'
                                   value={ccCwd}
                                   onChange={e => setCcCwdFromUser(e.target.value)}
                                   placeholder='Working directory (optional)'
-                                  className='flex-1 px-3 py-2 text-sm border border-neutral-300 dark:border-neutral-900 rounded-lg bg-white dark:bg-neutral-900 text-neutral-800 dark:text-neutral-100 focus:outline-none focus:ring-1 focus:ring-blue-500 dark:focus:ring-orange-500/60'
-                                  style={
-                                    actionPopoverInputBorderColor
-                                      ? { borderColor: actionPopoverInputBorderColor }
-                                      : undefined
-                                  }
                                   title='Specify the working directory used by local agent backends'
                                 />
                                 <button
                                   type='button'
                                   onClick={handleSelectProjectFolder}
-                                  className='px-3 py-2 text-sm border border-neutral-300 dark:border-neutral-900 rounded-lg bg-white dark:bg-neutral-900 text-neutral-800 dark:text-neutral-100 hover:bg-neutral-100 dark:hover:bg-neutral-800 focus:outline-none focus:ring-1 focus:ring-blue-500 dark:focus:ring-orange-500/60'
-                                  style={
-                                    actionPopoverInputBorderColor
-                                      ? { borderColor: actionPopoverInputBorderColor }
-                                      : undefined
-                                  }
+                                  className='action-cloud-folder'
+                                  aria-label='Choose working directory'
                                   title='Select Folder to let the AI work in'
                                 >
                                   <svg
@@ -7971,201 +7962,149 @@ function Chat() {
                                   </svg>
                                 </button>
                               </div>
-                            </>
+                            </div>
                           )}
 
                           {/* Image Generation Options - shown only for image generation models */}
                           {isImageGenerationModel && (
-                            <>
-                              <h1 className='text-black dark:text-neutral-200 text-[16px]'>Image Options</h1>
-                              <div className='flex flex-col gap-1'>
-                                <label className='text-xs text-neutral-500 dark:text-neutral-400'>Aspect Ratio</label>
-                                <Select
-                                  value={imageConfig.aspectRatio || ''}
-                                  options={[
-                                    { value: '', label: 'Default' },
-                                    { value: '1:1', label: '1:1 (Square)' },
-                                    { value: '16:9', label: '16:9 (Landscape)' },
-                                    { value: '9:16', label: '9:16 (Portrait)' },
-                                    { value: '4:3', label: '4:3' },
-                                    { value: '3:4', label: '3:4' },
-                                    { value: '3:2', label: '3:2' },
-                                    { value: '2:3', label: '2:3' },
-                                    { value: '4:5', label: '4:5' },
-                                    { value: '5:4', label: '5:4' },
-                                    { value: '21:9', label: '21:9 (Ultrawide)' },
-                                  ]}
-                                  onChange={value =>
-                                    setImageConfig(prev => ({
-                                      ...prev,
-                                      aspectRatio: (value as ImageConfig['aspectRatio']) || undefined,
-                                    }))
-                                  }
-                                  placeholder='Select aspect ratio'
-                                  size='small'
-                                  dropdownZIndex={ACTION_POPOVER_SELECT_DROPDOWN_Z_INDEX}
-                                />
+                            <ActionPopoverDisclosure>
+                              <div className='action-cloud-image-fields'>
+                                <div className='flex flex-col gap-1'>
+                                  <label className='text-xs text-neutral-500 dark:text-neutral-400'>Aspect Ratio</label>
+                                  <Select
+                                    value={imageConfig.aspectRatio || 'default'}
+                                    options={[
+                                      { value: 'default', label: 'Default' },
+                                      { value: '1:1', label: '1:1 (Square)' },
+                                      { value: '16:9', label: '16:9 (Landscape)' },
+                                      { value: '9:16', label: '9:16 (Portrait)' },
+                                      { value: '4:3', label: '4:3' },
+                                      { value: '3:4', label: '3:4' },
+                                      { value: '3:2', label: '3:2' },
+                                      { value: '2:3', label: '2:3' },
+                                      { value: '4:5', label: '4:5' },
+                                      { value: '5:4', label: '5:4' },
+                                      { value: '21:9', label: '21:9 (Ultrawide)' },
+                                    ]}
+                                    onChange={value =>
+                                      setImageConfig(prev => ({
+                                        ...prev,
+                                        aspectRatio: value === 'default' ? undefined : value as ImageConfig['aspectRatio'],
+                                      }))
+                                    }
+                                    placeholder='Select aspect ratio'
+                                    size='small'
+                                    className='action-cloud-select'
+                                    dropdownZIndex={ACTION_POPOVER_SELECT_DROPDOWN_Z_INDEX}
+                                  />
+                                </div>
+                                <div className='flex flex-col gap-1'>
+                                  <label className='text-xs text-neutral-500 dark:text-neutral-400'>Image Size</label>
+                                  <Select
+                                    value={imageConfig.imageSize || 'default'}
+                                    options={[
+                                      { value: 'default', label: 'Default' },
+                                      { value: '1K', label: '1K' },
+                                      { value: '2K', label: '2K' },
+                                      { value: '4K', label: '4K' },
+                                    ]}
+                                    onChange={value =>
+                                      setImageConfig(prev => ({
+                                        ...prev,
+                                        imageSize: value === 'default' ? undefined : value as ImageConfig['imageSize'],
+                                      }))
+                                    }
+                                    placeholder='Select image size'
+                                    size='small'
+                                    className='action-cloud-select'
+                                    dropdownZIndex={ACTION_POPOVER_SELECT_DROPDOWN_Z_INDEX}
+                                  />
+                                </div>
                               </div>
-                              <div className='flex flex-col gap-1'>
-                                <label className='text-xs text-neutral-500 dark:text-neutral-400'>Image Size</label>
-                                <Select
-                                  value={imageConfig.imageSize || ''}
-                                  options={[
-                                    { value: '', label: 'Default' },
-                                    { value: '1K', label: '1K' },
-                                    { value: '2K', label: '2K' },
-                                    { value: '4K', label: '4K' },
-                                  ]}
-                                  onChange={value =>
-                                    setImageConfig(prev => ({
-                                      ...prev,
-                                      imageSize: (value as ImageConfig['imageSize']) || undefined,
-                                    }))
-                                  }
-                                  placeholder='Select image size'
-                                  size='small'
-                                  dropdownZIndex={ACTION_POPOVER_SELECT_DROPDOWN_Z_INDEX}
-                                />
-                              </div>
-                            </>
+                            </ActionPopoverDisclosure>
                           )}
                           {selectedModel?.thinking && (
-                            <div className='flex items-center justify-between gap-3'>
-                                <div className='flex flex-col'>
-                                  <span className='text-xs text-neutral-500 dark:text-neutral-400'>Fast mode</span>
-                                  <span className='text-[11px] text-neutral-400 dark:text-neutral-500'>
-                                    {isOpenAIChatGPTProvider
-                                      ? 'Use OpenAI priority service tier'
-                                      : 'Only sent for OpenAI ChatGPT provider'}
-                                  </span>
-                                </div>
-                                <button
-                                  type='button'
-                                  disabled={!isOpenAIChatGPTProvider}
-                                  onClick={() => {
-                                    if (!isOpenAIChatGPTProvider) return
-                                    setFastServiceTierEnabled(prev => {
-                                      const next = !prev
-                                      try {
-                                        window.localStorage.setItem('chat:openaiFastServiceTier', String(next))
-                                      } catch {}
-                                      return next
-                                    })
-                                  }}
-                                  className={`relative inline-flex h-5 w-9 shrink-0 items-center rounded-full transition-colors ${
-                                    isOpenAIChatGPTProvider && fastServiceTierEnabled
-                                      ? 'bg-blue-600'
-                                      : 'bg-neutral-300 dark:bg-neutral-600'
-                                  } ${!isOpenAIChatGPTProvider ? 'cursor-not-allowed opacity-50' : ''}`}
-                                  title={
-                                    !isOpenAIChatGPTProvider
-                                      ? 'Fast service tier is only sent for OpenAI ChatGPT, not OpenRouter'
-                                      : fastServiceTierEnabled
-                                        ? 'Fast OpenAI service tier enabled'
-                                        : 'Use standard OpenAI service tier'
-                                  }
-                                >
-                                  <span
-                                    className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
-                                      isOpenAIChatGPTProvider && fastServiceTierEnabled
-                                        ? 'translate-x-4'
-                                        : 'translate-x-0.5'
-                                    }`}
-                                  />
-                                </button>
+                            <div className='action-cloud-row action-cloud-row-fast'>
+                              <div className='flex min-w-0 flex-col'>
+                                <span>Fast mode</span>
+                                <span className='action-cloud-hint'>
+                                  {isOpenAIChatGPTProvider ? 'Use OpenAI priority service tier' : 'Only sent for OpenAI ChatGPT provider'}
+                                </span>
                               </div>
+                              <ActionPopoverSwitch
+                                label='Fast mode'
+                                checked={isOpenAIChatGPTProvider && fastServiceTierEnabled}
+                                disabled={!isOpenAIChatGPTProvider}
+                                onClick={handleToggleFastServiceTier}
+                                title={!isOpenAIChatGPTProvider ? 'Fast service tier is only sent for OpenAI ChatGPT, not OpenRouter' : fastServiceTierEnabled ? 'Fast OpenAI service tier enabled' : 'Use standard OpenAI service tier'}
+                              />
+                            </div>
                           )}
-                          {/* Orchestrator Mode Toggle */}
-                          <div className='flex items-center gap-2'>
-                            <span className='text-xs text-neutral-500 dark:text-neutral-400'>Orchestrator</span>
-                            <button
+                          <div className='action-cloud-row'>
+                            <span>Orchestrator</span>
+                            <ActionPopoverSwitch
+                              label='Orchestrator'
+                              checked={orchestratorEnabled}
                               onClick={() => {
                                 const newState = toggleOrchestratorEnabled()
                                 setOrchestratorEnabledState(newState)
                               }}
-                              className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors ${
-                                orchestratorEnabled ? 'bg-blue-600' : 'bg-neutral-300 dark:bg-neutral-600'
-                              }`}
-                              title={
-                                orchestratorEnabled
-                                  ? 'Subagent can use tools (click to disable)'
-                                  : 'Subagent cannot use tools (click to enable)'
-                              }
-                            >
-                              <span
-                                className={`inline-block h-3.5 w-3.5 transform rounded-full bg-white transition-transform ${
-                                  orchestratorEnabled ? 'translate-x-4.5' : 'translate-x-1'
-                                }`}
+                              title={orchestratorEnabled ? 'Subagent can use tools (click to disable)' : 'Subagent cannot use tools (click to enable)'}
+                            />
+                          </div>
+                          <div className='flex flex-col gap-1'>
+                            <div className='action-cloud-row'>
+                              <span>Full access</span>
+                              <ActionPopoverSwitch
+                                label='Full access'
+                                checked={fullAccessEnabled}
+                                onClick={() => setFullAccessEnabled(!fullAccessEnabled)}
+                                title='Allow tools outside the working directory on new runs'
                               />
-                            </button>
+                            </div>
+                            {fullAccessEnabled && (
+                              <p role='status' className='w-0 min-w-full text-[11px] text-amber-600 dark:text-amber-400'>
+                                Warning: access outside workspace.
+                                <br />
+                                New runs only; approvals still apply.
+                              </p>
+                            )}
                           </div>
                         </div>
                       }
                     >
                       {import.meta.env.VITE_ENVIRONMENT === 'electron' && conversationIdFromUrl && (
                         <>
-                          <Button
-                            variant='outline2'
-                            className='rounded-full'
-                            size='medium'
+                          <ActionPopoverButton
+                            label={jobsModalOpen ? 'Viewing' : 'Jobs'}
+                            icon={<ClipboardCheck size={16} />}
+                            active={jobsModalOpen}
+                            aria-haspopup='dialog'
+                            aria-expanded={jobsModalOpen}
                             onClick={() => setJobsModalOpen(true)}
                             title={isElectronEnv ? 'View tool jobs' : 'Tool jobs are available in the desktop app'}
                             disabled={!isElectronEnv}
-                          >
-                            <i className='bx bx-task pb-0.5' aria-hidden='true'></i>
-                            Jobs
-                          </Button>
-                          {/* Allow All / Ask toggle */}
-                          <Button
-                            variant='outline2'
-                            size='medium'
+                          />
+                          <ActionPopoverButton
+                            label={toolAutoApprove ? 'Allow all' : 'Ask'}
+                            icon={<ShieldHalf size={16} />}
+                            active={toolAutoApprove}
+                            aria-pressed={toolAutoApprove}
                             onClick={() => dispatch(chatSliceActions.toolAutoApproveToggled())}
-                            className={
-                              toolAutoApprove
-                                ? customThemeEnabled
-                                  ? 'dark:hover:bg-white/5'
-                                  : 'text-orange-700 dark:text-orange-400 bg-orange-50 dark:bg-orange-900/20 dark:hover:bg-white/5'
-                                : 'text-neutral-600 dark:text-neutral-200 dark:hover:bg-white/5'
-                            }
-                            style={toolAutoApprove && customThemeEnabled ? composerToggleActiveStyle : undefined}
-                            title={
-                              toolAutoApprove
-                                ? 'Auto-approving tools (click to disable)'
-                                : 'Asking for permission (click to auto-approve)'
-                            }
+                            title={toolAutoApprove ? 'Auto-approving tools (click to disable)' : 'Asking for permission (click to auto-approve)'}
                             aria-label={toolAutoApprove ? 'Disable auto-approve' : 'Enable auto-approve'}
-                          >
-                            <i className='bx bx-shield-quarter pr-1 pb-0.5'></i>
-                            {toolAutoApprove ? 'Allow all' : 'Ask'}
-                          </Button>
-
-                          {/* Chat / Agent toggle */}
-                          <Button
-                            variant='outline2'
-                            size='medium'
-                            onClick={() => dispatch(chatSliceActions.operationModeToggled())}
-                            className={
-                              operationMode === 'plan'
-                                ? 'text-fuchsia-700 dark:text-fuchsia-300 bg-blue-50 dark:bg-blue-900/30 hover:bg-blue-100 dark:hover:bg-white/5'
-                                : customThemeEnabled
-                                  ? 'hover:bg-neutral-100 dark:hover:bg-white/5'
-                                  : 'text-orange-700 dark:text-orange-400 bg-orange-50 dark:bg-orange-900/20 hover:bg-orange-100 dark:hover:bg-white/5'
-                            }
-                            style={
-                              operationMode !== 'plan' && customThemeEnabled ? composerToggleActiveStyle : undefined
-                            }
-                            title={
-                              operationMode === 'plan'
-                                ? 'Plan mode enabled (tools will be blocked)'
-                                : 'Execution mode enabled (tools may modify files)'
-                            }
+                          />
+                          <ActionPopoverButton
+                            label={modeChange && !isBranchEditing ? 'Switching…' : operationMode === 'plan' ? 'Chat' : 'Agent'}
+                            icon={operationMode === 'plan' ? <MessageSquare size={16} /> : <CodeXml size={16} />}
+                            active={operationMode !== 'plan'}
+                            aria-pressed={operationMode !== 'plan'}
+                            aria-busy={Boolean(modeChange) && !isBranchEditing}
+                            onClick={handleToggleOperationMode}
+                            disabled={Boolean(modeChange) && !isBranchEditing}
+                            title={operationMode === 'plan' ? 'Plan mode enabled (tools will be blocked)' : 'Execution mode enabled (tools may modify files)'}
                             aria-label={operationMode === 'plan' ? 'Switch to execution mode' : 'Switch to plan mode'}
-                          >
-                            <i
-                              className={`bx ${operationMode === 'plan' ? 'bx-clipboard' : 'bx-code-block'} mr-1 pb-0.5`}
-                            ></i>
-                            {operationMode === 'plan' ? 'Chat' : 'Agent'}
-                          </Button>
+                          />
                         </>
                       )}
                     </ActionPopover>
@@ -8201,15 +8140,23 @@ function Chat() {
                       <path d='m21.44 11.05-9.19 9.19a6 6 0 0 1-8.49-8.49l8.57-8.57A4 4 0 1 1 18 8.84l-8.59 8.51a2 2 0 0 1-2.83-2.83l8.49-8.48' />
                     </svg>
                   </button>
+                  {streamState.active && hasLocalInput && (
+                    <button type='button' onClick={() => handleSend(1)} disabled={!canSendLocal}
+                      title='Queue message' aria-label='Queue message'
+                      className='rounded-full px-3 py-2 text-xs bg-black/5 dark:bg-white/10 disabled:opacity-40 focus-visible:outline focus-visible:outline-2'
+                      style={customThemeEnabled ? composerToggleActiveStyle : undefined}>
+                      {queueSubmitting ? 'Queueing…' : 'Queue'}
+                    </button>
+                  )}
                   {!currentConversationId ? (
                     <span className='text-xs text-neutral-400 dark:text-neutral-500 px-2'>Creating...</span>
                   ) : showGenerationLoadingAnimation ? (
                     <button
                       onClick={handleStopGeneration}
-                      disabled={!streamState.active}
+                      disabled={!streamState.active && !canStopCompaction}
                       title={
-                        isCurrentConversationCompacting
-                          ? 'Compacting context...'
+                        canStopCompaction
+                          ? 'Stop compaction'
                           : streamState.active
                             ? 'Stop generation'
                             : 'Generating...'

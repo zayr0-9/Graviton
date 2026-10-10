@@ -19,6 +19,7 @@ export const createEmptyStreamState = (
   branchAnchorMessageId: lineage.rootMessageId ?? lineage.originMessageId ?? null,
   liveMessageId: null,
   lastCompletedMessageId: null,
+  persistedTurnMessageId: null,
   finalMessageId: null,
   suppressedEventCount: 0,
   error: null,
@@ -113,3 +114,15 @@ export const MAX_CONCURRENT_STREAMS = 10
  * Time in ms after which finished/errored streams can be pruned
  */
 export const STREAM_PRUNE_DELAY = 30000
+
+/** Only suppress buffers belonging to a row actually present in this transcript.
+ * A null live ID is normal before server persistence, including after tool turns.
+ */
+export const isStreamMessageAlreadyRendered = (
+  stream: Pick<StreamState, 'liveMessageId' | 'streamingMessageId' | 'persistedTurnMessageId'>,
+  renderedMessages: { has: (id: string) => boolean }
+): boolean => {
+  const liveId = stream.liveMessageId ?? stream.streamingMessageId
+  return (liveId != null && renderedMessages.has(String(liveId))) ||
+    (stream.persistedTurnMessageId != null && renderedMessages.has(String(stream.persistedTurnMessageId)))
+}

@@ -64,7 +64,7 @@ Behavioral detail:
 
 Adds:
 - `<ThemeManager />` editor section
-- “Saved custom themes” section that calls `theme_manager` tool via `localApi.post('/tools/execute', ...)`
+- “Saved custom themes” section that calls `theme_manager` tool via `executeToolAndWait` (`POST /api/jobs/execute-and-wait`, shared orchestrator)
   - list: `{ action: 'list' }`
   - read/apply: `{ action: 'read', name: themeId }`
 

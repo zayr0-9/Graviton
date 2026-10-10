@@ -3,6 +3,7 @@ import type { Message, StreamEvent, StreamLifecycleStatus, StreamState } from '.
 import type { Conversation } from '../features/conversations/conversationTypes'
 import { useAppSelector } from './redux'
 import type { ResearchNoteItem } from './useQueries'
+import { isHeimdallScaffoldingMessage } from '../components/Heimdall/heimdallNodeVisibility'
 
 export type AgentStreamActivityKind = StreamEvent['type'] | 'idle'
 
@@ -15,6 +16,7 @@ export type AgentStreamListItem = {
   streamId: string
   streamType: string
   lineageId: string | null
+  lineageIdConfirmed: boolean
   conversationId: string | null
   projectId: string | null
   conversationTitle: string | null
@@ -38,6 +40,87 @@ export type AgentStreamListItem = {
   activityLabel: string
   completedAt: string | null
   displayName: string
+}
+
+export type AgentForkGroup = {
+  key: string
+  displayName: string
+  lineageId: string | null
+  activeStreams: AgentStreamListItem[]
+  completedStreams: AgentStreamListItem[]
+  representative: AgentStreamListItem
+  hasError: boolean
+}
+
+export const getAgentForkKey = (stream: AgentStreamListItem): string =>
+  stream.conversationId && stream.lineageId && stream.lineageIdConfirmed
+    ? JSON.stringify(['fork', stream.conversationId, stream.lineageId])
+    : JSON.stringify(['run', stream.streamId])
+
+/** Reconcile late terminal metadata without losing snapshots of pruned runs. */
+export const refreshAgentStreamHistory = (
+  history: AgentStreamListItem[],
+  streamsById: Record<string, StreamState>,
+  buildItem: (streamId: string, stream: StreamState, completedAt: string | null, index: number) => AgentStreamListItem
+): AgentStreamListItem[] => {
+  let changed = false
+  const next = history.map((item, index) => {
+    const stream = streamsById[item.streamId]
+    if (!stream || stream.active) return item
+    const refreshed = buildItem(item.streamId, stream, item.completedAt, index)
+    if ((Object.keys(item) as Array<keyof AgentStreamListItem>).every(key => item[key] === refreshed[key])) return item
+    changed = true
+    return refreshed
+  })
+  return changed ? next : history
+}
+
+/** Presentation only: execution, cancellation and replay remain stream-scoped. */
+export const buildAgentForkGroups = (
+  activeStreams: readonly AgentStreamListItem[],
+  streamHistory: readonly AgentStreamListItem[]
+): { activeForks: AgentForkGroup[]; historyForks: AgentForkGroup[] } => {
+  const groups = new Map<string, AgentForkGroup>()
+  const activeIds = new Set(activeStreams.map(stream => stream.streamId))
+  const add = (stream: AgentStreamListItem, active: boolean) => {
+    const key = getAgentForkKey(stream)
+    let group = groups.get(key)
+    if (!group) {
+      const lineageId = stream.lineageIdConfirmed && stream.conversationId ? stream.lineageId : null
+      group = {
+        key,
+        displayName: lineageId ? `fork ${lineageId.slice(0, 3)}` : 'run · fork unresolved',
+        lineageId,
+        activeStreams: [],
+        completedStreams: [],
+        representative: stream,
+        hasError: false,
+      }
+      groups.set(key, group)
+    }
+    ;(active ? group.activeStreams : group.completedStreams).push(stream)
+  }
+  activeStreams.forEach(stream => add(stream, true))
+  streamHistory.forEach(stream => {
+    if (!activeIds.has(stream.streamId)) add(stream, false)
+  })
+
+  const newestFirst = (a: AgentStreamListItem, b: AgentStreamListItem) =>
+    b.createdAt.localeCompare(a.createdAt) || a.streamId.localeCompare(b.streamId)
+  for (const group of groups.values()) {
+    group.activeStreams.sort(newestFirst)
+    group.completedStreams.sort(newestFirst)
+    // Navigation/preview/status must describe live work, not an older completed run.
+    group.representative = group.activeStreams[0] ?? group.completedStreams[0]
+    group.hasError = group.activeStreams.length > 0
+      ? group.activeStreams.some(stream => stream.hasError)
+      : group.representative.hasError
+  }
+  const ordered = [...groups.values()].sort((a, b) => newestFirst(a.representative, b.representative))
+  return {
+    activeForks: ordered.filter(group => group.activeStreams.length > 0),
+    historyForks: ordered.filter(group => group.activeStreams.length === 0),
+  }
 }
 
 export const summarizeAgentStreamId = (value: string | null | undefined): string => {
@@ -126,18 +209,16 @@ const getStreamActivity = (stream: StreamState): { activityKind: AgentStreamActi
 const normalizeMessagePreview = (message: Message | null | undefined): string | null => {
   if (!message) return null
   const rawContent =
+    message.content ||
     message.content_plain_text ||
     (message as any).plain_text_content ||
-    message.content ||
     (Array.isArray(message.content_blocks)
       ? message.content_blocks
           .map(block => ('content' in block && typeof block.content === 'string' ? block.content : ''))
           .filter(Boolean)
           .join(' ')
       : '')
-  const preview = String(rawContent || '')
-    .replace(/\s+/g, ' ')
-    .trim()
+  const preview = String(rawContent || '').trim()
   return preview.length > 0 ? preview : null
 }
 
@@ -150,7 +231,7 @@ const resolveParentMessage = (messagesById: Map<string, Message>, stream: Stream
   const explicitTriggerMessage = stream.triggerUserMessageId
     ? messagesById.get(String(stream.triggerUserMessageId))
     : null
-  if (explicitTriggerMessage?.role === 'user') return explicitTriggerMessage
+  if (explicitTriggerMessage?.role === 'user' && !isHeimdallScaffoldingMessage(explicitTriggerMessage)) return explicitTriggerMessage
 
   const candidateIds = [
     stream.triggerUserMessageId,
@@ -176,7 +257,7 @@ const resolveParentMessage = (messagesById: Map<string, Message>, stream: Stream
       if (visitedIds.has(currentId)) break
       visitedIds.add(currentId)
 
-      if (current.role === 'user') return current
+      if (current.role === 'user' && !isHeimdallScaffoldingMessage(current)) return current
       current = current.parent_id ? messagesById.get(String(current.parent_id)) : null
     }
   }
@@ -188,6 +269,7 @@ export function useRunningAgentStreams(notes: ResearchNoteItem[] = [], allConver
   const scopedConversations = useAppSelector(state => state.conversations.items)
   const streamingRoot = useAppSelector(state => state.chat.streaming)
   const messages = useAppSelector(state => state.chat.conversation.messages)
+  const retainedPreviews = useAppSelector(state => state.agentRunPreviews.byStreamId)
   const [streamHistory, setStreamHistory] = useState<AgentStreamListItem[]>([])
   const previousActiveStreamIdsRef = useRef<Set<string>>(new Set())
   const parentPreviewByStreamIdRef = useRef<Map<string, AgentParentPreview>>(new Map())
@@ -230,7 +312,9 @@ export function useRunningAgentStreams(notes: ResearchNoteItem[] = [], allConver
         stream.lineage.rootMessageId ||
         null
       const { activityKind, activityLabel } = getStreamActivity(stream)
-      const parentMessage = resolveParentMessage(messagesById, stream)
+      const preview = retainedPreviews[streamId]
+      const parentMessage = resolveParentMessage(messagesById, stream) ??
+        preview?.entries.find(entry => entry.message?.role === 'user' && !isHeimdallScaffoldingMessage(entry.message))?.message ?? null
       const parentPreview = retainAgentParentPreview(
         {
           messageId: parentMessage?.id ? String(parentMessage.id) : null,
@@ -243,9 +327,10 @@ export function useRunningAgentStreams(notes: ResearchNoteItem[] = [], allConver
         streamId,
         streamType: stream.streamType,
         lineageId: stream.lineage.lineageId ? String(stream.lineage.lineageId) : null,
+        lineageIdConfirmed: stream.lineage.lineageIdConfirmed === true,
         conversationId: streamConversationId,
-        projectId: convo?.project_id ? String(convo.project_id) : note?.project_id ? String(note.project_id) : null,
-        conversationTitle: convo?.title || note?.title || (streamConversationId ? `Conversation ${streamConversationId}` : null),
+        projectId: convo?.project_id ? String(convo.project_id) : note?.project_id ? String(note.project_id) : preview?.projectId ?? null,
+        conversationTitle: convo?.title || note?.title || preview?.conversationTitle || (streamConversationId ? `Conversation ${streamConversationId}` : null),
         anchorMessageId: anchorMessageId ? String(anchorMessageId) : null,
         hasError: Boolean(stream.error),
         createdAt: stream.createdAt,
@@ -268,7 +353,7 @@ export function useRunningAgentStreams(notes: ResearchNoteItem[] = [], allConver
         displayName: `agent-${displayIndex + 1}`,
       }
     },
-    [conversationsById, messagesById, notesByConversationId]
+    [conversationsById, messagesById, notesByConversationId, retainedPreviews]
   )
 
   const activeStreams = useMemo(() => {
@@ -314,23 +399,32 @@ export function useRunningAgentStreams(notes: ResearchNoteItem[] = [], allConver
       completedItems.push(buildAgentStreamListItem(streamId, stream, new Date().toISOString(), completedItems.length))
     })
 
-    if (completedItems.length > 0) {
-      setStreamHistory(previous => {
-        const incomingById = new Map(completedItems.map(item => [item.streamId, item]))
-        const merged = [...previous.filter(item => !incomingById.has(item.streamId)), ...completedItems]
-        return merged
-          .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
-          .slice(0, 40)
-          .map((item, index) => ({ ...item, displayName: `agent-${index + 1}` }))
-      })
-    }
+    setStreamHistory(previous => {
+      const incomingById = new Map(completedItems.map(item => [item.streamId, item]))
+      const merged = [...previous.filter(item => !incomingById.has(item.streamId)), ...completedItems]
+      const retained = completedItems.length > 0
+        ? merged
+            .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+            .slice(0, 40)
+            .map((item, index) => ({ ...item, displayName: `agent-${index + 1}` }))
+        : previous
+      return refreshAgentStreamHistory(retained, streamingRoot.byId, buildAgentStreamListItem)
+    })
 
     previousActiveStreamIdsRef.current = currentActiveIds
   }, [buildAgentStreamListItem, streamingRoot.activeIds, streamingRoot.byId])
 
+  const visibleHistory = useMemo(() => {
+    const byId = new Map(streamHistory.map(item => [item.streamId, item]))
+    for (const run of Object.values(retainedPreviews)) {
+      if (!run.stream.active) byId.set(run.streamId, buildAgentStreamListItem(run.streamId, run.stream, run.completedAt))
+    }
+    return [...byId.values()].sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+  }, [streamHistory, retainedPreviews, buildAgentStreamListItem])
+
   return {
     activeStreams,
-    streamHistory,
+    streamHistory: visibleHistory,
     buildAgentStreamListItem,
     streamingRoot,
   }

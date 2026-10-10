@@ -1126,3 +1126,29 @@ html {
     transition-duration: 1ms !important;
   }
 }
+
+/* Simulated compaction progress: never imply completion before the server confirms it. */
+@keyframes compaction-progress {
+  from { transform: scaleX(0.04); }
+  to { transform: scaleX(0.92); }
+}
+
+.compaction-progress-fill {
+  animation: compaction-progress 120s linear forwards;
+}
+
+.compaction-progress-fill[data-completed='true'] {
+  animation: none;
+  transform: scaleX(1);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .compaction-progress-fill {
+    animation: none;
+    transform: scaleX(0.35);
+  }
+
+  .compaction-progress-fill[data-completed='true'] {
+    transform: scaleX(1);
+  }
+}

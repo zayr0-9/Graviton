@@ -5,7 +5,7 @@ paths:
 
 # Electron deleteFile Tool
 
-This document explains how the `deleteFile.ts` helper inside `client/ygg-chat-r/electron/tools` works and how it can safely delete files from the Electron build environment.
+This document explains how the `deleteFile.ts` helper inside `client/ygg-chat-r/server/tools` works and how it can safely delete files from the Electron build environment.
 
 ## Purpose
 
@@ -24,7 +24,7 @@ Both functions guard against executing destructive operations while the agent is
    - If targeting WSL and the path is relative, it prefixes the working `cwd` (if provided) to form an absolute POSIX path.
    - For native paths, it resolves the path against `cwd` or the current working directory using Node's `path.resolve`.
 3. **Workspace Validation**
-   - When `cwd` is supplied, the resolved path must reside within that workspace. WSL paths are compared with POSIX string checks, while native paths use `path.resolve` for canonical comparisons.
+   - With `cwd`, containment is lexical with managed-tool-path exceptions. WSL paths use prefix checks; native paths use `path.resolve`, not filesystem canonicalization. Symlinked ancestor targets are not validated.
    - Any attempt to escape the workspace results in an explicit `Access denied` error.
 4. **WSL Translation** – Paths identified as WSL are converted to Windows UNC paths via `resolveToWindowsPath` before touching the filesystem.
 5. **Existence Check** – Before deletion, `fs.access` ensures the file exists, and a descriptive `File not found` error is thrown otherwise.
@@ -38,6 +38,13 @@ Both functions guard against executing destructive operations while the agent is
 - **Sensitive Path Protection** – Deletes are blocked when the normalized path contains high-risk targets such as `/etc/passwd`, `/proc`, `.env`, `.git`, or `node_modules`.
 
 After validation passes, it calls `deleteFile` to reuse the core deletion and workspace-lockdown logic.
+
+## Runtime integration
+
+Public `delete_file` accepts `path` and optional `allowedExtensions`; runtime
+supplies workspace/mode. Registries select `safeDeleteFile` only when extensions
+are supplied. Otherwise they call `deleteFile` without sensitive-path substring
+checks. An empty array enables sensitive-path checks but no extension restriction.
 
 ## Usage Notes
 

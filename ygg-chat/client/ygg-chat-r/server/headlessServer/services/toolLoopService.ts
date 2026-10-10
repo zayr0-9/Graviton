@@ -33,7 +33,10 @@ import {
 } from '../providers/providerErrorFormatter.js'
 import { buildChatErrorEnvelope, type ChatErrorCode } from '../../../../../shared/chatErrors.js'
 import { trimHistoryToLatestCompaction } from './compactionService.js'
-import { assertToolAllowedForOperationMode, requiresAgentMode } from '../../../../../shared/operationModeToolPolicy.js'
+import { calculateBranchContextUsage } from '../../../shared/contextTokenEstimate.js'
+import type { BranchContextStatus } from './contextStatusTool.js'
+import { assertToolAllowedForOperationMode, filterToolsForOperationMode, requiresAgentMode } from '../../../../../shared/operationModeToolPolicy.js'
+import type { OperationModeControl } from './operationModeControl.js'
 import {
   extractOpenAIContextUsageFromBlocks,
   openAIModelContextLength,
@@ -46,10 +49,13 @@ export interface ToolExecutionContext {
   messageId: string
   streamId?: string | null
   rootPath?: string | null
+  fullAccess?: boolean
   operationMode?: 'plan' | 'execute'
   provider?: string
   modelName?: string
   autoApprove?: boolean
+  /** Parent request's service tier, inherited by Codex subagents. */
+  serviceTier?: 'priority'
   subagentReasoningEffort?: 'low' | 'medium' | 'high' | 'xhigh'
   /** Renderer-selected baseline inherited by server-owned child subagents. */
   subagentSystemPrompt?: string | null
@@ -58,9 +64,14 @@ export interface ToolExecutionContext {
   signal?: AbortSignal
   /** Policy-aware executor used by composite tools for each nested call. */
   nestedExecutor?: ToolExecutor
+  /** Host-owned tool allowlist; child REPL writer/private-fallback identity. */
+  allowedToolNames?: ReadonlySet<string>
+  replOwnerId?: string
   /** Durable execution identity of the currently executing parent tool. */
   parentToolInvocationId?: string | null
   lineageId?: string | null
+  /** Run-local meter callback; never uses renderer navigation or another branch. */
+  getContextStatus?: () => BranchContextStatus
   /** In-repo config directory setting of the parent chat (docs §11.4); subagents inherit it. */
   contextDirectories?: ContextDirectorySettings | null
 }
@@ -78,6 +89,7 @@ export type ToolLoopCompactor = (input: {
   accessToken?: string | null
   accountId?: string | null
   systemPrompt?: string | null
+  signal?: AbortSignal
 }) => Promise<{ message: any }>
 
 interface ToolLoopServiceDeps {
@@ -194,14 +206,19 @@ export interface ToolLoopRunInput {
   promptCacheRetention?: 'in_memory' | '24h'
   tools?: ProviderToolDefinition[]
   /**
-   * Optional live tool source. Re-evaluated before each provider turn so tools
-   * discovered by a manager tool become callable in the same ongoing run.
+   * Optional legacy per-turn definition refresh. Direct MCP definitions are always stripped;
+   * manager discovery must not change the provider's tool prefix.
    */
   refreshTools?: (currentTools: ProviderToolDefinition[]) => ProviderToolDefinition[]
   streamId?: string | null
   rootPath?: string | null
+  fullAccess?: boolean
   operationMode?: 'plan' | 'execute'
-  /** Agent-mode prompt selected by the orchestrator if this run is upgraded mid-turn. */
+  modeControl?: OperationModeControl
+  flushOperationMode?: (parentId: string | null, history: any[]) => any[]
+  flushQueuedMessages?: (parentId: string | null, history: any[]) => Promise<{ rows: any[]; delivered: number }>
+  closeInputQueue?: () => boolean
+  /** @deprecated Mode switches no longer replace the system prompt. */
   agentSystemPrompt?: string | null
   /** Server-owned prompt to switch the current Plan-mode run to Agent mode. */
   requestOperationModeUpgrade?: (toolCall: ProviderToolCall) => Promise<boolean>
@@ -215,6 +232,8 @@ export interface ToolLoopRunInput {
   authSessions?: { app: string; codex: string }
   autoCompactionEnabled?: boolean
   contextLength?: number
+  /** Project/conversation meter prompts. Direct/subagent calls use their runtime prompts. */
+  contextMeterPrompts?: unknown[]
   compactionThresholdPercent?: number
   compactionProvider?: string | null
   compactionModelName?: string | null
@@ -1233,6 +1252,14 @@ export class ToolLoopService {
     }
     let anyToolsExecuted = false
     let activeOperationMode = input.operationMode ?? 'execute'
+    const flushBoundaryInputs = async () => {
+      const result = input.flushQueuedMessages
+        ? await input.flushQueuedMessages(currentParentId, history)
+        : { rows: input.flushOperationMode?.(currentParentId, history) ?? [], delivered: 0 }
+      for (const row of result.rows) { history.push(row); currentParentId = row.id }
+      if (result.delivered) currentUserContent = '' // already present as first-class history rows
+      return result.delivered
+    }
     // Phase 3: true iff the most recent iteration was a natural stop (no tool calls)
     // that a Stop hook forced to continue. Used only at the max-turns boundary to
     // finalize gracefully with the valid persisted answer (parity with the renderer,
@@ -1242,6 +1269,11 @@ export class ToolLoopService {
     for (let turn = 1; turn <= maxTurns; turn++) {
       input.signal?.throwIfAborted()
       stopHookForcedContinue = false
+      if (input.flushQueuedMessages && turn > 1) await flushBoundaryInputs()
+      else {
+        const rows = input.flushOperationMode?.(currentParentId, history) ?? []
+        for (const row of rows) { history.push(row); currentParentId = row.id }
+      }
 
       // Phase 3: fold accumulated hook context into this turn's system prompt, then
       // clear the buffer (parity with the renderer's per-iteration fold+clear,
@@ -1263,37 +1295,12 @@ export class ToolLoopService {
         maxTurns,
       })
 
-      // A discovery/manager tool can add definitions while this run is active. Refresh
-      // immediately before every provider turn so the next continuation sees them.
-      if (input.refreshTools) {
-        const previousToolNames = new Set((input.tools ?? []).map(tool => tool.name))
-        const refreshedTools = input.refreshTools(input.tools ?? [])
-        input.tools = refreshedTools
-        const addedMcpTools = refreshedTools.filter(
-          tool => tool.name.startsWith('mcp__') && !previousToolNames.has(tool.name)
-        )
-        if (addedMcpTools.length > 0) {
-          const updatedTools = addedMcpTools.map(tool => {
-            const mcpTool = tool as ProviderToolDefinition & {
-              serverName?: string
-              toolName?: string
-              ui?: { resourceUri?: string; visibility?: Array<'model' | 'app'> }
-            }
-            return {
-              name: tool.name,
-              description: tool.description,
-              inputSchema: tool.inputSchema ?? { type: 'object', properties: {} },
-              ...(tool.name.startsWith('mcp__') ? {
-                serverName: mcpTool.serverName ?? tool.name.match(/^mcp__([^_]+)__(.+)$/)?.[1],
-                toolName: mcpTool.toolName ?? tool.name.match(/^mcp__([^_]+)__(.+)$/)?.[2],
-                ...(mcpTool.ui ? { ui: mcpTool.ui } : {}),
-              } : {}),
-            }
-          })
-          emit({ type: 'tools_updated', tools: updatedTools })
-        }
-      }
+      // Never advertise direct MCP schemas, including legacy callers/refresh hooks.
+      // Discovery and execution use the stable mcp_manager schema instead.
+      const refreshedTools = input.refreshTools ? input.refreshTools(input.tools ?? []) : input.tools
+      input.tools = refreshedTools ? filterToolsForOperationMode(refreshedTools, activeOperationMode) : undefined
 
+      const providerModeRevision = input.modeControl?.revision ?? 0
       // Generate the turn, retrying once on an empty response when enabled.
       let output = await this.generateProviderTurn({
         input,
@@ -1372,6 +1379,49 @@ export class ToolLoopService {
         : assistantMessage
       history.push(assistantForHistory)
       const assistantHistoryIndex = history.length - 1
+      // Capture this run's meter inputs, not a global/selected UI branch. The callback
+      // also survives multi_call context spreading without serializing the transcript.
+      const getContextStatus = (): BranchContextStatus => {
+        // Earlier calls in this same turn have live tool rows but are not merged
+        // into the assistant blocks until the whole batch settles. Include them once.
+        const pendingResults = history.slice(assistantHistoryIndex + 1).filter(message => message?.role === 'tool')
+        const meter = calculateBranchContextUsage({
+          providerName: input.provider,
+          messages: [
+            ...history.filter(message => message?.role !== 'tool'),
+            ...pendingResults.map(message => ({ content_blocks: [{
+              type: 'tool_result', tool_use_id: message.tool_call_id, content: message.content,
+            }] })),
+          ],
+          prompts: input.contextMeterPrompts ?? [
+            turnSystemPromptOverride ?? input.systemPrompt, input.conversationContext, input.projectContext,
+          ],
+        })
+        const router = this.providerRouter as ProviderRouter & {
+          resolveContextLength?: (provider: string, requested: number | undefined) => number | undefined
+        }
+        const resolvedLimit = router.resolveContextLength?.(input.provider, input.contextLength) ?? input.contextLength
+        const totalContextLimit = typeof resolvedLimit === 'number' && Number.isFinite(resolvedLimit) && resolvedLimit > 0
+          ? resolvedLimit
+          : route === 'openaichatgpt' ? openAIModelContextLength(input.modelName) : 128_000
+        const usedTokens = meter.totalContextTokens
+        const remainingTokens = Math.max(0, totalContextLimit - usedTokens)
+        return {
+          conversationId: input.conversationId,
+          lineageId: input.lineageId ?? null,
+          streamId: input.streamId ?? null,
+          messageId: assistantMessage.id,
+          provider: input.provider,
+          modelName: input.modelName,
+          usedTokens,
+          totalContextLimit,
+          remainingTokens,
+          usedPercent: Math.min(100, usedTokens / totalContextLimit * 100),
+          remainingPercent: remainingTokens / totalContextLimit * 100,
+          source: meter.source,
+          recordedAt: meter.reportedUsage?.recordedAt ?? new Date().toISOString(),
+        }
+      }
       emit({ type: 'assistant_message_persisted', message: assistantForHistory })
 
       if (!assistantToolCalls.length) {
@@ -1396,19 +1446,29 @@ export class ToolLoopService {
           }
         }
 
+        currentParentId = assistantMessage.id
+        const delivered = turn < maxTurns ? await flushBoundaryInputs() : 0
+        if (turn >= maxTurns) {
+          const rows = input.flushOperationMode?.(currentParentId, history) ?? []
+          for (const row of rows) { history.push(row); currentParentId = row.id }
+        }
+        if (delivered) {
+          emit({ type: 'tool_loop', status: 'turn_completed', turn, maxTurns, continued: true })
+          continue
+        }
         const strippedText = stripThinkingWrapper(output.content || '')
 
         // Tools ran but the model gave no visible answer: recover with a summary turn.
         if (!strippedText && robustness?.finalizeOnSilentToolEnd && anyToolsExecuted) {
-          return await this.runFinalizationTurn({
-            input,
-            history,
-            parentId: assistantMessage.id,
-            turnsSoFar: turn,
-            maxTurns,
-            anyToolsExecuted,
-            emit,
+          const finalized = await this.runFinalizationTurn({
+            input, history, parentId: currentParentId, turnsSoFar: turn,
+            maxTurns, anyToolsExecuted, emit,
           })
+          history.push(finalized.finalAssistantMessage)
+          lastAssistantMessage = finalized.finalAssistantMessage
+          currentParentId = finalized.finalAssistantMessage.id
+          if (turn < maxTurns && (await flushBoundaryInputs() || input.closeInputQueue?.() === false)) continue
+          return finalized
         }
 
         // Provider produced nothing and no tools ever ran: a real failure, not fake success.
@@ -1421,6 +1481,7 @@ export class ToolLoopService {
           })
         }
 
+        if (turn < maxTurns && input.closeInputQueue?.() === false) continue
         emit({
           type: 'tool_loop',
           status: 'turn_completed',
@@ -1492,9 +1553,14 @@ export class ToolLoopService {
         let toolErrorCode: ChatErrorCode | null = null
         /** A `skill_manager activate` body, delivered as a context injection instead of a JSON blob. */
         let skillInjection: ContextInjectionEntry | null = null
+        const replNestedCalls: ProviderToolCall[] = []
         const startedAt = Date.now()
 
         try {
+          activeOperationMode = input.modeControl?.mode ?? activeOperationMode
+          // A manual downgrade blocks this already-issued batch without immediately
+          // asking the user to undo their switch. Future model turns can request an upgrade.
+          if (input.modeControl && input.modeControl.revision !== providerModeRevision) input.modeControl.assertCanDispatch(toolCall)
           if (requiresAgentMode(toolCall, activeOperationMode)) {
             const upgraded = await input.requestOperationModeUpgrade?.(toolCall)
             if (!upgraded) {
@@ -1520,11 +1586,13 @@ export class ToolLoopService {
               )
             }
             activeOperationMode = 'execute'
-            input.systemPrompt = input.agentSystemPrompt ?? input.systemPrompt
+            if (input.modeControl) activeOperationMode = input.modeControl.mode
           }
+          input.modeControl?.assertCanDispatch(toolCall)
           assertToolAllowedForOperationModeClassified(toolCall, activeOperationMode)
 
           const executeNested: ToolExecutor = async (nestedCall, nestedContext) => {
+            input.modeControl?.assertCanDispatch(nestedCall)
             const nestedInvocation = input.lineageId && this.toolInvocationRepo
               ? this.toolInvocationRepo.create({
                   conversationId: input.conversationId,
@@ -1547,6 +1615,7 @@ export class ToolLoopService {
               })
               nestedInvocation && this.toolInvocationRepo?.finish(nestedInvocation.id, { status: 'completed' })
               emit({ type: 'tool_execution', status: 'completed', toolCallId: nestedCall.id, toolInvocationId: nestedInvocation?.id, lineageId: input.lineageId ?? null, toolName: nestedCall.name, durationMs: Math.max(0, Date.now() - nestedStartedAt) })
+              if (toolCall.name === 'repl') replNestedCalls.push(nestedCall)
               return nestedResult
             } catch (error) {
               const aborted = nestedContext.signal?.aborted || isAbortError(error)
@@ -1562,10 +1631,12 @@ export class ToolLoopService {
             messageId: assistantMessage.id,
             streamId: input.streamId ?? null,
             rootPath: input.rootPath ?? null,
+            fullAccess: input.fullAccess === true,
             operationMode: activeOperationMode,
             provider: input.provider,
             modelName: input.modelName,
             autoApprove: input.toolAutoApprove !== false,
+            serviceTier: input.serviceTier,
             subagentReasoningEffort: input.subagentReasoningEffort,
             subagentSystemPrompt: input.subagentSystemPrompt ?? null,
             authSessions: input.authSessions,
@@ -1574,6 +1645,8 @@ export class ToolLoopService {
             parentToolInvocationId: invocation?.id ?? null,
             lineageId: input.lineageId ?? null,
             nestedExecutor: executeNested,
+            allowedToolNames: new Set((input.tools ?? []).map(tool => tool.name)),
+            getContextStatus,
             contextDirectories: input.contextDirectories ?? null,
           })
 
@@ -1659,7 +1732,11 @@ export class ToolLoopService {
             for (const block of toolResultBlocks) {
               if (block?.type === 'context_injection' && typeof block.path === 'string' && block.path) alreadyLoaded.add(block.path)
             }
-            injectionEntries.push(...(await input.contextLoader.collectLazyInjections(toolCall, alreadyLoaded)))
+            for (const touchedCall of [toolCall, ...replNestedCalls]) {
+              const entries = await input.contextLoader.collectLazyInjections(touchedCall, alreadyLoaded)
+              injectionEntries.push(...entries)
+              for (const entry of entries) if (entry.path) alreadyLoaded.add(entry.path)
+            }
           } catch (error) {
             console.warn('[ToolLoop] lazy context load failed', { tool: toolCall.name, error: error instanceof Error ? error.message : String(error) })
           }
@@ -1831,7 +1908,9 @@ export class ToolLoopService {
             accessToken: input.accessToken,
             accountId: input.accountId,
             systemPrompt: input.compactionSystemPrompt,
+            signal: input.signal,
           })
+          input.signal?.throwIfAborted()
           const summaryMessage = compacted?.message
           const validSummary =
             summaryMessage?.role === 'system' &&
@@ -1875,6 +1954,7 @@ export class ToolLoopService {
           }
           if (input.hooks?.runSessionStart) await input.hooks.runSessionStart('compact')
         } catch (error) {
+          if (input.signal?.aborted || isAbortError(error)) throw error
           const message = error instanceof Error ? error.message : String(error)
           emit({ type: 'context_compaction', status: 'failed', ...eventDetails, error: message })
           throw attachChatErrorCode(
@@ -1885,6 +1965,7 @@ export class ToolLoopService {
         }
       }
 
+      if (turn < maxTurns) await flushBoundaryInputs()
       emit({
         type: 'tool_loop',
         status: 'turn_completed',

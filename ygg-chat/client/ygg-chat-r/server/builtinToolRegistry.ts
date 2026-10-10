@@ -7,8 +7,6 @@
 //   - `browse_web` is the one Electron-only tool. It is registered only when
 //     the host supplies a BrowserEngine capability, so a standalone host never
 //     advertises a tool it cannot run.
-//   - The 26th built-in, `memory_manage`, is a list-only handler registered
-//     next to the memory routes in localServer.ts because it closes over them.
 //
 // Database-backed handlers receive `statements` through accessor functions:
 // the SQLite prepared statements are (re)created per server start, after this
@@ -29,7 +27,7 @@ import { globSearch } from './tools/glob.js'
 import htmlRenderer from './tools/htmlRenderer.js'
 import { execute as executeMcpManagerTool } from './tools/mcpManagerTool.js'
 import { readFileContinuation, readTextFile } from './tools/readFile.js'
-import { formatReadFilesContent, readMultipleTextFiles } from './tools/readFiles.js'
+import { formatReadFilesResult, readMultipleTextFiles } from './tools/readFiles.js'
 import { ripgrepSearch } from './tools/ripgrep.js'
 import { viewImage } from './tools/viewImage.js'
 import { execute as executeThemeManager } from './tools/themeManager.js'
@@ -44,6 +42,7 @@ import { resolveToolWorkspaceCwd, validateAndResolvePath } from './toolPathPolic
 export type BuiltInToolHandler = (
   args: any,
   options: {
+    fullAccess?: boolean
     rootPath?: string
     operationMode?: 'plan' | 'execute'
     conversationId?: string | null
@@ -76,18 +75,15 @@ export interface BuiltInToolRegistryDeps {
 
 /**
  * Populate `builtInTools` with every built-in handler the host can run.
- * Must not clear the map: setupServer() registers `memory_manage` before this
- * runs, and Map.set overwrites make re-registration idempotent anyway.
+ * Map.set overwrites make re-registration idempotent.
  */
 export function registerBuiltInTools(builtInTools: Map<string, BuiltInToolHandler>, deps: BuiltInToolRegistryDeps): void {
-  builtInTools.set('html_renderer', async args => {
-    const { html, allowUnsafe } = args
-    if (!html) throw new Error('html is required')
-    const rendered = await htmlRenderer.run({ html, allowUnsafe })
-    return rendered
+  builtInTools.set('html_renderer', async (args, { rootPath }) => {
+    const { html, path: filePath, cwd, allowUnsafe } = args
+    return await htmlRenderer.run({ html, path: filePath, cwd: cwd ?? rootPath, allowUnsafe })
   })
 
-  builtInTools.set('read_file', async (args, { rootPath }) => {
+  builtInTools.set('read_file', async (args, { rootPath, signal, deadlineMs }) => {
     const { path: filePath, maxBytes, startLine, endLine, ranges, includeHash, cwd } = args
     if (!filePath) throw new Error('path is required')
     const effectiveCwd = resolveToolWorkspaceCwd(cwd, rootPath)
@@ -97,12 +93,12 @@ export function registerBuiltInTools(builtInTools: Map<string, BuiltInToolHandle
       endLine,
       ranges,
       includeHash,
-      cwd: effectiveCwd,
+      cwd: effectiveCwd, workspaceRoot: rootPath, signal, deadlineMs,
     })
     return { success: true, ...fileRes }
   })
 
-  builtInTools.set('read_file_continuation', async (args, { rootPath }) => {
+  builtInTools.set('read_file_continuation', async (args, { rootPath, signal, deadlineMs }) => {
     const { path: filePath, afterLine, numLines, maxBytes, includeHash, cwd } = args
     if (!filePath) throw new Error('path is required')
     if (afterLine === undefined) throw new Error('afterLine is required')
@@ -111,18 +107,17 @@ export function registerBuiltInTools(builtInTools: Map<string, BuiltInToolHandle
     const fileRes = await readFileContinuation(filePath, afterLine, numLines, {
       maxBytes,
       includeHash,
-      cwd: effectiveCwd,
+      cwd: effectiveCwd, workspaceRoot: rootPath, signal, deadlineMs,
     })
     return { success: true, ...fileRes }
   })
 
-  builtInTools.set('read_files', async (args, { rootPath }) => {
+  builtInTools.set('read_files', async (args, { rootPath, signal, deadlineMs }) => {
     const { paths, baseDir, maxBytes, startLine, endLine, ranges, cwd } = args
     if (!paths) throw new Error('paths are required')
     const effectiveCwd = resolveToolWorkspaceCwd(cwd, rootPath)
-    const filesRes = await readMultipleTextFiles(paths, { baseDir, maxBytes, startLine, endLine, ranges, cwd: effectiveCwd })
-    const content = formatReadFilesContent(filesRes)
-    return { success: true, content, text: content, files: filesRes }
+    const filesRes = await readMultipleTextFiles(paths, { baseDir, maxBytes, startLine, endLine, ranges, cwd: effectiveCwd, workspaceRoot: rootPath, signal, deadlineMs })
+    return formatReadFilesResult(filesRes, paths.length)
   })
 
   builtInTools.set('create_file', async (args, { rootPath, operationMode }) => {
@@ -160,8 +155,10 @@ export function registerBuiltInTools(builtInTools: Map<string, BuiltInToolHandle
     if (!filePath) throw new Error('path is required')
 
     const effectiveCwd = rootPath
-    const absolutePath = validateAndResolvePath(filePath, effectiveCwd, false)
-    if (operationMode === 'execute' && options.streamId) {
+    let absolutePath = ''
+    const beforeWrite = async (resolvedPath: string) => {
+      absolutePath = resolvedPath
+      if (operationMode !== 'execute' || !options.streamId) return
       await recordPreEditBackup({
         streamId: options.streamId,
         conversationId: options.conversationId ?? null,
@@ -176,6 +173,7 @@ export function registerBuiltInTools(builtInTools: Map<string, BuiltInToolHandle
     }
 
     const result = await editFile(filePath, operation, {
+      beforeWrite,
       searchPattern,
       replacement,
       content,
@@ -232,31 +230,25 @@ export function registerBuiltInTools(builtInTools: Map<string, BuiltInToolHandle
     if (!Array.isArray(edits) || edits.length === 0) throw new Error('edits are required')
 
     const effectiveCwd = rootPath
-    const editPaths = edits
-      .map((edit: any, index: number) => ({ edit, index, filePath: typeof edit?.path === 'string' ? edit.path : null }))
-      .filter((item: { filePath: string | null }): item is { edit: any; index: number; filePath: string } => Boolean(item.filePath))
-
-    if (operationMode === 'execute' && options.streamId) {
-      const seen = new Set<string>()
-      for (const item of editPaths) {
-        const absolutePath = validateAndResolvePath(item.filePath, effectiveCwd, false)
-        if (seen.has(absolutePath)) continue
-        seen.add(absolutePath)
-        await recordPreEditBackup({
-          streamId: options.streamId,
-          conversationId: options.conversationId ?? null,
-          messageId: options.messageId ?? null,
-          parentMessageId: options.parentMessageId ?? null,
-          rootPath: rootPath ?? null,
-          cwd: effectiveCwd ?? null,
-          toolCallId: options.toolCallId ?? null,
-          originalPath: item.filePath,
-          absolutePath,
-        })
-      }
+    const editedPaths = new Map<string, string>()
+    const beforeWrite = async (absolutePath: string, originalPath: string) => {
+      editedPaths.set(originalPath, absolutePath)
+      if (operationMode !== 'execute' || !options.streamId) return
+      await recordPreEditBackup({
+        streamId: options.streamId,
+        conversationId: options.conversationId ?? null,
+        messageId: options.messageId ?? null,
+        parentMessageId: options.parentMessageId ?? null,
+        rootPath: rootPath ?? null,
+        cwd: effectiveCwd ?? null,
+        toolCallId: options.toolCallId ?? null,
+        originalPath,
+        absolutePath,
+      })
     }
 
     const result = await multiEdit(edits, {
+      beforeWrite,
       stopOnError,
       createBackup,
       encoding,
@@ -277,7 +269,7 @@ export function registerBuiltInTools(builtInTools: Map<string, BuiltInToolHandle
         const sourceEdit = edits[item.index]
         const originalPath = item.path || sourceEdit?.path
         if (typeof originalPath !== 'string') continue
-        const absolutePath = validateAndResolvePath(originalPath, effectiveCwd, false)
+        const absolutePath = editedPaths.get(originalPath)!
         await recordToolEditSuccess({
           streamId: options.streamId,
           conversationId: options.conversationId ?? null,
@@ -542,6 +534,19 @@ export function registerBuiltInTools(builtInTools: Map<string, BuiltInToolHandle
     const statements = deps.getStatements()
     return await executeFetchChats(args, {
       currentConversationId: options?.conversationId ?? null,
+      listConversationsPage: ({ userId, projectId, updatedAfter, updatedBefore, query, limit, skip }) => {
+        const getter = statements?.getToolConversationsPage
+        if (!getter) throw new Error('Chat pagination query unavailable')
+        return getter.all({ userId: userId || null, projectId: projectId || null,
+          updatedAfter: updatedAfter || null, updatedBefore: updatedBefore || null,
+          query: query ? `%${query}%` : null,
+          normalizedQuery: query ? `%${query.toLowerCase().replace(/[\s_-]+/g, '')}%` : null, limit, skip })
+      },
+      countTopLevelUserMessages: conversationId => {
+        const getter = statements?.countToolTopLevelUserMessages
+        if (!getter) throw new Error('Chat root count query unavailable')
+        return getter.get(conversationId)?.count || 0
+      },
       listConversations: () => {
         const getter = statements?.getAllConversations
         if (!getter || typeof getter.all !== 'function') return []
@@ -623,8 +628,8 @@ export function registerBuiltInTools(builtInTools: Map<string, BuiltInToolHandle
     })
   })
 
-  builtInTools.set('mcp_manager', async args => {
-    return await executeMcpManagerTool(args)
+  builtInTools.set('mcp_manager', async (args, options) => {
+    return await executeMcpManagerTool(args, options)
   })
 
   builtInTools.set('skill_manager', async (args, { rootPath, conversationId }) => {

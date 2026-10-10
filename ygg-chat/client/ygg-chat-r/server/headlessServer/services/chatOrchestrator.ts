@@ -18,6 +18,7 @@ import {
   ProviderErrorAssistantResponse,
   ToolLoopService,
   type ToolExecutor,
+  type ToolExecutionContext,
   type ToolLoopCompactor,
   type ToolLoopRunResult,
 } from './toolLoopService.js'
@@ -25,7 +26,10 @@ import type { DecisionBroker, ClarifyDecision, PermissionDecision } from './deci
 import { createChatHookSession, type ChatHookSession } from './chatHookService.js'
 import { trimHistoryToLatestCompaction } from './compactionService.js'
 import type { HookRunRequest, HookRunResult } from '../../hooks/hookTypes.js'
-import { filterToolsForOperationMode } from '../../../../../shared/operationModeToolPolicy.js'
+import { filterToolsForOperationMode, requiresAgentMode } from '../../../../../shared/operationModeToolPolicy.js'
+import { OperationModeControl, modeNotificationContent } from './operationModeControl.js'
+import { MessageInputQueue } from './messageInputQueue.js'
+import type { QueuedMessageSubmission, MessageQueueSnapshot } from '../../../../../shared/queuedMessages.js'
 import {
   normalizeContextDirectorySettings,
   resolveContextDirectorySettingsFromEnv,
@@ -42,6 +46,7 @@ import { registerConversationContext } from '../../context/contextSessionRegistr
 import { loadSkillFromDirectory, type DiscoveredSkill } from '../../context/skillsDiscovery.js'
 import { skillRegistry } from '../../skills/skillLoader.js'
 import { tryGetServerConfig } from '../../serverHost.js'
+import { assertModelImageBudget, createModelImageHydrator } from './modelImageHistory.js'
 
 interface ChatOrchestratorDeps {
   db: any
@@ -101,7 +106,7 @@ export function linkPreparedAttachmentsToMessage(
 }
 
 /** Tools that never prompt for permission (mirrors the renderer TOOL_PERMISSION_ALWAYS_BYPASS). */
-const ALWAYS_BYPASS_TOOLS = new Set(['skill_manager', 'mcp_manager', 'multi_call'])
+const ALWAYS_BYPASS_TOOLS = new Set(['skill_manager', 'multi_call', 'context_status'])
 /** custom_tool_manager actions that are read-only/management (bypass) vs 'invoke' (prompt). */
 const CUSTOM_TOOL_MANAGER_BYPASS_ACTIONS = new Set([
   'list',
@@ -128,6 +133,7 @@ function parseToolArgs(raw: unknown): any {
 /** Whether a tool call skips the interactive permission prompt (server-side port of the renderer gate). */
 function shouldBypassPermission(toolName: string, args: any): boolean {
   if (ALWAYS_BYPASS_TOOLS.has(toolName)) return true
+  if (toolName === 'mcp_manager') return ['list', 'get', 'stop', 'list_tools'].includes(args?.action)
   if (toolName === 'custom_tool_manager') {
     // Normalize identically to the renderer (chatActions shouldBypassToolPermission)
     // so mixed-case/whitespace actions bypass on both sides.
@@ -309,10 +315,17 @@ export function createChatPausingExecutor(deps: {
   emit: (event: HeadlessStreamEvent) => void
   signal?: AbortSignal
   hookSession?: ChatHookSession
+  modeControl?: OperationModeControl
 }): ToolExecutor {
-  const { base, broker, streamId, emit, signal, hookSession } = deps
+  const { broker, streamId, emit, signal, hookSession, modeControl } = deps
+  // Recheck AFTER hooks/permission awaits, immediately before actual dispatch.
+  const base: ToolExecutor = (call, context) => {
+    modeControl?.assertCanDispatch(call)
+    return deps.base(call, { ...context, operationMode: modeControl?.mode ?? context.operationMode })
+  }
   const execute: ToolExecutor = async (toolCall, context) => {
     const sig = context.signal ?? signal
+    modeControl?.assertCanDispatch(toolCall)
     const args = parseToolArgs(toolCall.arguments)
     const approvedContext = () => ({ ...context, autoApprove: true, nestedExecutor: context.nestedExecutor ?? execute })
 
@@ -367,6 +380,7 @@ export function createChatPausingExecutor(deps: {
         throw new Error(pre.permissionDecisionReason || 'Tool blocked by hook')
       }
       const effArgs = parseToolArgs(effectiveToolCall.arguments)
+      modeControl?.assertCanDispatch(effectiveToolCall)
 
       let result: any
       if (isClarify(effectiveToolCall.name, effArgs)) {
@@ -405,6 +419,10 @@ export function createChatPausingExecutor(deps: {
 }
 
 export interface HeadlessChatOrchestrator {
+  submitQueuedMessage?(conversationId: string, streamId: string, submission: QueuedMessageSubmission): { snapshot?: MessageQueueSnapshot; restart?: HeadlessMessageRequest; restartStreamId?: string }
+  getMessageQueue?(conversationId: string, streamId: string): MessageQueueSnapshot
+  cancelQueuedMessage?(conversationId: string, streamId: string, requestId: string): MessageQueueSnapshot
+  changeOperationMode?(input: { conversationId: string; mode: 'plan' | 'execute'; requestId: string; streamId?: string | null; parentId?: string | null; lineageId?: string | null }): any
   /**
    * Run one chat turn to completion.
    *
@@ -424,7 +442,148 @@ export interface HeadlessChatOrchestrator {
 }
 
 export class ChatOrchestrator implements HeadlessChatOrchestrator {
+  private readonly inputRuns = new Map<string, {
+    queue: MessageInputQueue; request: HeadlessMessageRequest; control: OperationModeControl
+    head: string | null; successor?: string; restartRequestId?: string; restartContent?: string; terminal?: 'completed' | 'failed'
+  }>()
+
+  private readonly watchPins = new Map<string, { lineageId: string; count: number }>()
+
+  /** Retain origin + latest continuation config while a bounded watcher is active. */
+  retainWatch(context: ToolExecutionContext): () => void {
+    const streamId = context.streamId
+    const run = streamId ? this.inputRuns.get(streamId) : null
+    if (!streamId || !run || run.request.conversationId !== context.conversationId ||
+      run.queue.lineageId !== context.lineageId) throw new Error('Watcher requires a main-chat run on this branch')
+    const pin = this.watchPins.get(streamId) ?? { lineageId: context.lineageId!, count: 0 }
+    pin.count++
+    this.watchPins.set(streamId, pin)
+    let released = false
+    return () => {
+      if (released) return
+      released = true
+      if (--pin.count === 0) this.watchPins.delete(streamId)
+      this.pruneInputRuns()
+    }
+  }
+
+  private pruneInputRuns() {
+    const protectedIds = new Set(this.watchPins.keys())
+    for (const pin of this.watchPins.values()) {
+      const latest = [...this.inputRuns].reverse().find(([, run]) =>
+        (run.queue.lineageId ?? run.request.lineageId) === pin.lineageId)
+      if (latest) protectedIds.add(latest[0])
+    }
+    for (const [id, run] of this.inputRuns) {
+      if (this.inputRuns.size <= 64) break
+      if (run.terminal && !protectedIds.has(id)) this.inputRuns.delete(id)
+    }
+  }
+
+  /** Route a completion to the current execution/tail, never to an old tool-call parent. */
+  submitWatchMessage(conversationId: string, lineageId: string, originStreamId: string, submission: QueuedMessageSubmission) {
+    const origin = this.inputRuns.get(originStreamId)
+    const lineage = this.lineageRepo.get(lineageId)
+    if (!origin || origin.request.conversationId !== conversationId || origin.queue.lineageId !== lineageId ||
+      !lineage || lineage.status === 'archived' || lineage.conversation_id !== conversationId || !lineage.head_message_id) throw new Error('Watcher branch unavailable')
+    // A request's source lineage may fork during setup. Never inject into an
+    // unresolved run or launch competing work while its ownership is uncertain.
+    const trustedSuccessors = new Set([...this.inputRuns.values()]
+      .filter(run => run.request.conversationId === conversationId && run.queue.lineageId === lineageId)
+      .map(run => run.successor).filter((id): id is string => Boolean(id)))
+    if ([...this.inputRuns].some(([id, run]) => !run.terminal && !run.queue.lineageId &&
+      run.request.conversationId === conversationId && run.request.lineageId === lineageId && !trustedSuccessors.has(id))) {
+      throw new Error('Watcher branch is initializing')
+    }
+    const candidates = [...this.inputRuns].reverse().filter(([id, run]) =>
+      run.request.conversationId === conversationId && (run.queue.lineageId === lineageId ||
+        (!run.queue.lineageId && trustedSuccessors.has(id) && run.request.lineageId === lineageId)))
+    // The same request ID can never migrate to a second mailbox on retry.
+    const prior = candidates.find(([, run]) => run.queue.get(submission.requestId) || run.restartRequestId === submission.requestId)
+    const target = prior ?? candidates.find(([, run]) => !run.terminal) ?? candidates[0]
+    if (!target) throw new Error('Watcher run unavailable')
+    return this.submitQueuedMessage(conversationId, target[0], submission)
+  }
+
+  getMessageQueue(conversationId: string, streamId: string): MessageQueueSnapshot {
+    const run = this.inputRuns.get(streamId)
+    if (!run || run.request.conversationId !== conversationId) throw new Error('Message queue not found in this conversation')
+    return run.queue.snapshot()
+  }
+
+  cancelQueuedMessage(conversationId: string, streamId: string, requestId: string): MessageQueueSnapshot {
+    this.getMessageQueue(conversationId, streamId)
+    const run = this.inputRuns.get(streamId)!
+    if (!run.queue.cancel(requestId)) throw new Error('Message has already been delivered or is being processed')
+    return run.queue.snapshot()
+  }
+
+  submitQueuedMessage(conversationId: string, streamId: string, submission: QueuedMessageSubmission): { snapshot?: MessageQueueSnapshot; restart?: HeadlessMessageRequest; restartStreamId?: string } {
+    this.getMessageQueue(conversationId, streamId)
+    const run = this.inputRuns.get(streamId)!
+    if (!submission.requestId || !submission.content.trim()) throw new Error('Message content and request id are required')
+    const priorSubmission = run.queue.get(submission.requestId)
+    if (priorSubmission) {
+      run.queue.enqueue(submission, run.control.revision) // validates idempotent payload, including attachments
+      return { snapshot: run.queue.snapshot() }
+    }
+    if (run.successor) {
+      if (run.restartRequestId === submission.requestId) {
+        if (run.restartContent !== submission.content) throw new Error('Submission id already used for another message')
+        return { restartStreamId: run.successor }
+      }
+      return this.submitQueuedMessage(conversationId, run.successor, submission)
+    }
+    if (submission.attachmentsBase64?.length && !['openaichatgpt', 'openrouter'].includes(normalizeProviderRoute(run.request.provider))) {
+      throw new Error('Queued image attachments are supported for ChatGPT and OpenRouter; send text or wait for this run to finish')
+    }
+    if (!run.queue.closed) {
+      run.queue.enqueue(submission, run.control.revision)
+      return { snapshot: run.queue.snapshot() }
+    }
+    if (run.terminal !== 'completed' || !run.head) throw new Error('Run stopped or failed; send a new message on the selected branch')
+    const lineage = run.queue.lineageId ? this.lineageRepo.get(run.queue.lineageId) : null
+    if (!lineage || lineage.head_message_id !== run.head) throw new Error('Branch advanced; reload before sending')
+    // The route starts this successor synchronously before another intake can interleave.
+    const nextId = `queued:${submission.requestId}`
+    run.successor = nextId
+    run.restartRequestId = submission.requestId
+    run.restartContent = submission.content
+    return { restart: { ...run.request, operation: 'send', streamId: nextId, lineageId: lineage.id,
+      parentId: run.head, messageId: null, operationId: null, content: submission.content,
+      watcherCompletion: submission.watcherCompletion,
+      attachmentsBase64: submission.attachmentsBase64 ?? null, operationMode: run.control.mode,
+      retrigger: false, isBranch: false } }
+  }
+
+  private readonly modeRuns = new Map<string, { conversationId: string; control: OperationModeControl }>()
+
+  changeOperationMode(input: { conversationId: string; mode: 'plan' | 'execute'; requestId: string; streamId?: string | null; parentId?: string | null; lineageId?: string | null }): any {
+    if (input.streamId) {
+      const run = this.modeRuns.get(input.streamId)
+      if (!run || run.conversationId !== input.conversationId || run.control.closed) {
+        throw new Error('Run is no longer active; reload the branch before switching modes')
+      }
+      const accepted = run.control.change(input.mode, input.requestId)
+      return { status: run.control.hasPending ? 'pending' : 'applied', ...accepted }
+    }
+    // Idle mode is composer state, not transcript content. The next send carries
+    // its final selection; the loop announces it AFTER persisting that user message.
+    throw new Error('Live mode changes require streamId; send the selected idle mode with the next message')
+  }
+
+  private persistModeNotification(conversationId: string, parentId: string | null, mode: 'plan' | 'execute', previousMode: 'plan' | 'execute' | null, lineageId: string | null, revision: number): any {
+    return this.messageRepo.transaction(() => {
+      const message = this.messageRepo.createMessage({
+        conversationId, parentId, role: 'user', content: modeNotificationContent(mode),
+        meta: { kind: 'operation_mode_change', mode, previousMode, revision },
+      })
+      if (lineageId) this.lineageRepo.appendMessage(lineageId, message.id)
+      return message
+    })
+  }
   private readonly statements: any
+  private readonly hydrateModelImages: ReturnType<typeof createModelImageHydrator>
   private readonly conversationRepo: ConversationRepo
   private readonly messageRepo: MessageRepo
   private readonly projectRepo: ProjectRepo
@@ -444,6 +603,7 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
 
   constructor(deps: ChatOrchestratorDeps) {
     this.statements = deps.statements
+    this.hydrateModelImages = createModelImageHydrator(deps.db.name, deps.statements)
     this.conversationRepo = new ConversationRepo({ db: deps.db, statements: deps.statements })
     this.messageRepo = new MessageRepo({ db: deps.db, statements: deps.statements })
     this.projectRepo = new ProjectRepo({ db: deps.db })
@@ -477,10 +637,12 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
     streamId: string,
     emit: (event: HeadlessStreamEvent) => void,
     signal?: AbortSignal,
-    hookSession?: ChatHookSession
+    hookSession?: ChatHookSession,
+    modeControl?: OperationModeControl
   ): ToolExecutor {
     return createChatPausingExecutor({
       base: this.toolExecutor!,
+      modeControl,
       broker: this.decisionBroker!,
       streamId,
       emit,
@@ -561,6 +723,18 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
     return message
   }
 
+  private async prepareSubmittedImages(attachmentsBase64: any[] | null | undefined): Promise<any> {
+    const attachments = (attachmentsBase64 ?? []).map(image => {
+      const id = image.attachmentId ?? image.attachment_id
+      if (!id) throw new Error('Images must be prepared through /api/local/attachments/prepare-base64 before submission')
+      const stored = this.statements.getAttachmentById?.get(id)
+      if (!stored) throw new Error('Prepared image is unavailable. Reattach it before sending.')
+      return stored
+    }).filter(Boolean)
+    const [prepared] = await this.hydrateModelImages([{ role: 'user', attachments }], undefined, attachmentsBase64 ?? [])
+    return prepared
+  }
+
   private createUserMessage(
     request: HeadlessMessageRequest,
     parentId: string | null,
@@ -574,6 +748,7 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
       content,
       modelName: request.modelName,
       contentBlocks,
+      meta: request.watcherCompletion ? { kind: 'watcher_completion', ...request.watcherCompletion } : undefined,
     })
 
     const linkedAttachments = linkPreparedAttachmentsToMessage(
@@ -675,6 +850,61 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
     let lastPersistedAssistantId: string | null = null
     /** The run's message sink; null until the user message + lineage exist. */
     let runSink: MessageSink | null = null
+    let modeParentId: string | null = null
+    let modeReady = false
+    const waitingTools = new Map<string, string>()
+    const modeControl = new OperationModeControl(request.operationMode ?? 'execute', mode => {
+      const blocked = new Set([...waitingTools].filter(([, name]) => requiresAgentMode({ name }, mode)).map(([id]) => id))
+      const toolCallIds = this.decisionBroker?.reconcileOperationMode(trackedStreamId, mode, blocked) ?? []
+      if (toolCallIds.length) emit({ type: 'operation_mode_decisions_cleared', streamId: trackedStreamId, toolCallIds })
+    })
+    const inputQueue = new MessageInputQueue(trackedStreamId, request.conversationId, null,
+      snapshot => emit({ type: 'message_queue_updated', snapshot }))
+    const inputRun = { queue: inputQueue, request, control: modeControl, head: request.parentId ?? null } as {
+      queue: MessageInputQueue; request: HeadlessMessageRequest; control: OperationModeControl
+      head: string | null; successor?: string; terminal?: 'completed' | 'failed'
+    }
+    this.inputRuns.set(trackedStreamId, inputRun)
+    // Bound retained terminal mailboxes; live runs are never evicted.
+    this.pruneInputRuns()
+    const flushMode = (parentId: string | null, history: any[], throughRevision = Infinity) => {
+      if (!modeReady) return []
+      let parent = parentId
+      const rows = modeControl.flush(history, (mode, previousMode, revision) => {
+        const row = this.persistModeNotification(request.conversationId, parent, mode, previousMode, trackedLineageId, revision)
+        parent = row.id
+        modeParentId = row.id
+        emit({ type: 'operation_mode_changed', message: row, mode, revision, streamId: trackedStreamId })
+        return row
+      }, throughRevision)
+      return rows
+    }
+    const finishMode = () => {
+      if (modeControl.closed) return
+      if (modeReady) {
+        const parent = modeParentId ?? lastPersistedAssistantId ?? assistantParentId
+        flushMode(parent, parent ? trimHistoryToLatestCompaction(this.conversationRepo.listPathToMessage(request.conversationId, parent)) : [])
+      }
+      modeControl.closed = true
+    }
+    const rawEmit = emit
+    emit = event => {
+      if (event.type === 'permission_required' || event.type === 'operation_mode_upgrade_required') waitingTools.set(event.toolCallId, event.toolName)
+      if (event.type === 'tool_execution' && event.status !== 'started') waitingTools.delete(event.toolCallId)
+      if (event.type === 'assistant_message_persisted') modeParentId = event.message?.id ?? modeParentId
+      if (event.type === 'context_injection_persisted') modeParentId = event.message?.id ?? modeParentId
+      if (event.type === 'context_compaction' && event.status === 'completed') modeParentId = event.parentMessageId ?? modeParentId
+      if (event.type === 'complete' || (event.type === 'error' && event.terminal !== false)) {
+        finishMode()
+        inputRun.head = modeParentId ?? lastPersistedAssistantId ?? assistantParentId
+        inputRun.terminal = event.type === 'complete' && !event.providerError ? 'completed' : 'failed'
+        inputQueue.failRemaining(inputRun.terminal === 'completed'
+          ? 'Run ended before this message could be processed. Send it again.'
+          : 'Run stopped or failed before this message was delivered.')
+        inputRun.request = { ...inputRun.request, content: '', attachmentsBase64: null }
+      }
+      rawEmit(event)
+    }
     /** Terminal frames must never throw out of the catch (a disconnected SSE socket). */
     const safeEmit = (event: HeadlessStreamEvent) => {
       try {
@@ -684,6 +914,8 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
       }
     }
     try {
+    // Validate prepared files before minting a user row or acknowledging its images.
+    if (request.attachmentsBase64?.length) await this.prepareSubmittedImages(request.attachmentsBase64)
     const conversation = this.conversationRepo.getById(request.conversationId)
     if (!conversation) {
       throw new Error(`Conversation not found: ${request.conversationId}`)
@@ -889,6 +1121,11 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
       }
     }
 
+    // Autonomous continuation must never silently fork from a stale tail.
+    // This runs inside the existing synchronous message/lineage transaction.
+    if (request.watcherCompletion && (!sourceLineage || sourceLineage.head_message_id !== sourceMessageId)) {
+      throw new Error('Watcher branch advanced during continuation setup')
+    }
     const resolved = this.resolveExecution(request, {
       launchInjection,
       userMessageBlocks: userMessageBlocks.length > 0 ? userMessageBlocks : null,
@@ -944,6 +1181,7 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
     })
     const lineageId = activeLineage.id
     trackedLineageId = lineageId
+    inputQueue.lineageId = lineageId
     assistantParentId = resolved.assistantParentId
 
     // The EARLIEST point `started` can correctly be emitted. It is now above the
@@ -1032,44 +1270,28 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
     // model as its own prior words. This is the only server-side history assembly —
     // `listPathToMessage` has no other consumer — and the loop's compaction reuses this
     // same array, so the summary path is covered too.
-    const history = trimHistoryToLatestCompaction(
+    const history = await this.hydrateModelImages(trimHistoryToLatestCompaction(
       excludeContextExcludedMessages(
         this.conversationRepo.listPathToMessage(request.conversationId, resolved.historyLeafId)
       )
-    )
+    ), resolved.userMessage?.id, request.attachmentsBase64 ?? [])
 
+    modeReady = true
+    modeParentId = resolved.assistantParentId
+    emit({ type: 'message_queue_updated', snapshot: inputQueue.snapshot() })
+    this.modeRuns.set(trackedStreamId, { conversationId: request.conversationId, control: modeControl })
     const resolvedOperationMode = request.operationMode ?? 'execute'
     // An explicit tools array (even empty) is authoritative — only fall back to the
     // default tool set when the caller omits `tools` entirely. This lets a client
     // that disabled every tool send [] and get NO tools, rather than the defaults.
     const requestedTools = Array.isArray(request.tools) ? request.tools : null
     const initialDefaultTools = this.defaultToolsProvider()
-    const initialAvailableMcpNames = new Set(
-      initialDefaultTools.filter(tool => tool.name.startsWith('mcp__')).map(tool => tool.name)
-    )
+    // MCP discovery returns schemas in tool results, never in the model tool list.
+    // Keep this run's definitions stable across manager calls and connections.
     const resolvedTools = filterToolsForOperationMode(
       requestedTools ?? initialDefaultTools,
       resolvedOperationMode
     )
-    // Preserve an explicit client whitelist, including MCP tools the user disabled.
-    // Only MCP definitions that become available after this run starts are added.
-    const canDiscoverMcpTools = requestedTools === null || requestedTools.some(tool => tool.name === 'mcp_manager')
-    const refreshTools = !canDiscoverMcpTools
-      ? (currentTools: Array<{ name: string; description?: string; inputSchema?: Record<string, any> }>) => currentTools
-      : requestedTools
-        ? (currentTools: Array<{ name: string; description?: string; inputSchema?: Record<string, any> }>) => {
-            const byName = new Map(currentTools.map(tool => [tool.name, tool]))
-            for (const tool of this.defaultToolsProvider()) {
-              if (
-                tool.name.startsWith('mcp__') &&
-                (byName.has(tool.name) || !initialAvailableMcpNames.has(tool.name))
-              ) {
-                byName.set(tool.name, tool)
-              }
-            }
-            return filterToolsForOperationMode(Array.from(byName.values()), resolvedOperationMode)
-          }
-        : () => filterToolsForOperationMode(this.defaultToolsProvider(), resolvedOperationMode)
 
     // Skill / agent indexes and the memory pointer are part of the system prompt (§10
     // steps 3-4). They are a function of the root and the settings, so they are stable
@@ -1084,10 +1306,7 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
       buildHeadlessSystemPrompt({
         operationMode,
         includeOperationModePrompt: request.includeOperationModePrompt ?? true,
-        operationModePrompt:
-          operationMode === 'execute'
-            ? (request.agentModePrompt ?? request.operationModePrompt ?? null)
-            : (request.operationModePrompt ?? null),
+        operationModePrompt: request.operationModePrompt ?? null,
         requestPrompt: request.systemPrompt ?? null,
         projectPrompt: project?.system_prompt ?? null,
         conversationPrompt: conversation?.system_prompt ?? null,
@@ -1097,7 +1316,6 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
         autoMemoryPrompt: contextPromptParts.autoMemoryPrompt,
       })
     const systemPrompt = buildSystemPromptForMode(resolvedOperationMode)
-    const agentSystemPrompt = buildSystemPromptForMode('execute')
     // `trackedStreamId` is a `let` (reassigned at the streamingRunRepo.upsert above), so
     // TypeScript cannot carry the truthiness narrowing into the async closure below.
     // Capture the (now stable) value in a const so the narrowing survives.
@@ -1105,6 +1323,7 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
     const requestOperationModeUpgrade =
       this.decisionBroker && decisionStreamId
         ? async (toolCall: { id: string; name: string; arguments: unknown }) => {
+            const requestedRevision = modeControl.revision
             const toolInput = parseToolArgs(toolCall.arguments)
             emit({
               type: 'operation_mode_upgrade_required',
@@ -1119,6 +1338,8 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
               kind: 'operation_mode_upgrade',
               signal,
             })
+            if (requestedRevision !== modeControl.revision) return modeControl.mode === 'execute'
+            if (decision === 'switch_to_execute') modeControl.change('execute', `upgrade:${toolCall.id}`)
             return decision === 'switch_to_execute'
           }
         : undefined
@@ -1134,7 +1355,7 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
       providerRouter: this.providerRouter,
       executeTool:
         this.decisionBroker && this.toolExecutor
-          ? this.makePausingExecutor(trackedStreamId, emit, signal, hookSession ?? undefined)
+          ? this.makePausingExecutor(trackedStreamId, emit, signal, hookSession ?? undefined, modeControl)
           : this.toolExecutor,
       toolInvocationRepo: new ToolInvocationRepo({ statements: this.statements }),
       compactBranch: this.compactBranch,
@@ -1155,6 +1376,76 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
       } else {
         emit(event)
       }
+    }
+
+    const flushQueuedMessages = async (parentId: string | null, boundaryHistory: any[]) => {
+      const rows: any[] = []
+      let parent = parentId
+      let delivered = 0
+      const appendModes = (throughRevision = Infinity) => {
+        const modeRows = flushMode(parent, [...boundaryHistory, ...rows], throughRevision)
+        for (const row of modeRows) { rows.push(row); parent = row.id }
+      }
+      // Claim FIFO at the safe boundary, never while tool outputs are incomplete.
+      let entry = inputQueue.claim()
+      while (entry) {
+        appendModes(entry.modeRevision)
+        try {
+          signal?.throwIfAborted()
+          let content = entry.submission.content
+          if (hookSession) content = await hookSession.runUserPromptSubmit(content, parent, 'send')
+          const blocks: any[] = []
+          if (contextLoader) {
+            const launch = await contextLoader.buildLaunchInjection(collectLoadedContextPaths([...boundaryHistory, ...rows]))
+            if (launch) {
+              const contextRow = this.messageRepo.transaction(() => {
+                const contextMessage = this.persistContextInjectionMessage(request, parent, launch)
+                this.lineageRepo.appendMessage(lineageId, contextMessage.id)
+                return contextMessage
+              })
+              parent = contextRow.id
+              rows.push(contextRow)
+              emit({ type: 'context_injection_persisted', message: contextRow, lineageId })
+            }
+            const skill = await contextLoader.expandSlashInvocation(content)
+            if (skill) blocks.push(toContextInjectionBlock(skill))
+          }
+          for (const text of hookSession?.drainHookContext() ?? []) {
+            blocks.push(toContextInjectionBlock({ path: '', label: LABEL_HOOK_CONTEXT, text, reason: 'hook' }))
+          }
+          signal?.throwIfAborted()
+          const submissionRequest = { ...request, operation: 'send' as const, content,
+            watcherCompletion: entry.submission.watcherCompletion,
+            attachmentsBase64: entry.submission.attachmentsBase64 ?? null }
+          const preparedImages = await this.prepareSubmittedImages(submissionRequest.attachmentsBase64)
+          assertModelImageBudget([...boundaryHistory, ...rows, preparedImages])
+          const row = this.messageRepo.transaction(() => {
+            const message = this.createUserMessage(submissionRequest, parent, content, blocks.length ? blocks : null)
+            this.lineageRepo.appendMessage(lineageId, message.id)
+            return message
+          })
+          parent = row.id
+          modeParentId = row.id
+          // Images belong to THIS history row, not the latest user/mode row.
+          const modelImages = (entry.submission.attachmentsBase64 ?? []).filter(attachment =>
+            typeof attachment?.dataUrl === 'string' && attachment.dataUrl.startsWith('data:image/'))
+          const modelRow = { ...row, artifacts: preparedImages.artifacts ?? [], attachments: preparedImages.attachments ?? [] }
+          rows.push(modelRow)
+          delivered++
+          const displayRow = { ...row, artifacts: modelImages.map(attachment => attachment.dataUrl) }
+          emit({ type: 'queued_user_message_persisted', message: displayRow, requestId: entry.submission.requestId,
+            streamId: trackedStreamId, lineageId })
+          inputQueue.settle(entry.submission.requestId, { messageId: row.id })
+        } catch (error) {
+          hookSession?.drainHookContext() // blocked submission context must not leak to the next one
+          inputQueue.settle(entry.submission.requestId, { error: error instanceof Error ? error.message : String(error) })
+          if (signal?.aborted || isAbortError(error)) throw error
+          // A blocked submission is visible in its queue card, not a failed running answer.
+        }
+        entry = inputQueue.claim()
+      }
+      appendModes()
+      return { rows, delivered }
     }
 
     let toolLoopResult: ToolLoopRunResult
@@ -1178,7 +1469,8 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
         userId: request.userId ?? null,
         accessToken: request.accessToken ?? null,
         accountId: request.accountId ?? null,
-        attachmentsBase64: request.attachmentsBase64 ?? null,
+        // Images are now attached to their owning history rows on every provider turn.
+        attachmentsBase64: null,
         retrigger: request.retrigger,
         executionMode: request.executionMode ?? 'client',
         isBranch: request.isBranch ?? (request.operation === 'branch' || request.operation === 'edit-branch'),
@@ -1188,11 +1480,14 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
         serviceTier: request.serviceTier,
         promptCacheRetention: request.promptCacheRetention,
         tools: resolvedTools,
-        refreshTools,
         streamId: trackedStreamId,
         rootPath: request.rootPath ?? conversation?.cwd ?? null,
+        fullAccess: request.fullAccess === true,
         operationMode: resolvedOperationMode,
-        agentSystemPrompt,
+        modeControl,
+        flushOperationMode: flushMode,
+        flushQueuedMessages,
+        closeInputQueue: () => inputQueue.tryClose(),
         requestOperationModeUpgrade,
         toolTimeoutMs: request.toolTimeoutMs,
         toolAutoApprove: request.toolAutoApprove,
@@ -1218,6 +1513,7 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
         subagentSystemPrompt: request.subagentModePrompt ?? null,
         autoCompactionEnabled: request.autoCompactionEnabled,
         contextLength: request.contextLength,
+        contextMeterPrompts: [project?.system_prompt, projectContext, conversation?.system_prompt, conversationContext],
         compactionThresholdPercent: request.compactionThresholdPercent,
         compactionProvider: request.compactionProvider,
         compactionModelName: request.compactionModelName,
@@ -1261,17 +1557,18 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
         const errorRow = this.persistErrorAssistantMessage({
           sink,
           conversationId: request.conversationId,
-          parentId: loopMessage?.id ?? lastPersistedAssistantId ?? resolved.assistantParentId,
+          parentId: modeParentId ?? loopMessage?.id ?? lastPersistedAssistantId ?? resolved.assistantParentId,
           modelName: request.modelName,
           envelope,
           lineageId,
           emit: safeEmit,
         })
+        finishMode()
         this.streamingRunRepo.finish(trackedStreamId, {
           status: 'error',
           endReason: 'error',
           assistantMessageId: loopMessage?.id ?? null,
-          finalMessageId: errorRow?.id ?? loopMessage?.id ?? null,
+          finalMessageId: modeParentId ?? errorRow?.id ?? loopMessage?.id ?? null,
           error: error.providerError.originalMessage,
           metadata: {
             provider: error.providerError.provider,
@@ -1313,11 +1610,12 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
       throw error
     }
 
+    finishMode()
     this.streamingRunRepo.finish(trackedStreamId, {
       status: 'completed',
       endReason: 'completed',
       assistantMessageId: toolLoopResult.finalAssistantMessage?.id ?? null,
-      finalMessageId: toolLoopResult.finalAssistantMessage?.id ?? null,
+      finalMessageId: modeParentId ?? toolLoopResult.finalAssistantMessage?.id ?? null,
     })
 
     emit({ type: 'complete', message: toolLoopResult.finalAssistantMessage, lineageId })
@@ -1412,18 +1710,19 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
       const errorRow = this.persistErrorAssistantMessage({
         sink: runSink,
         conversationId: request.conversationId,
-        parentId: lastPersistedAssistantId ?? assistantParentId,
+        parentId: modeParentId ?? lastPersistedAssistantId ?? assistantParentId,
         modelName: request.modelName,
         envelope,
         lineageId,
         emit: safeEmit,
       })
 
+      finishMode()
       this.streamingRunRepo.finish(trackedStreamId, {
         status: 'error',
         endReason: 'error',
         assistantMessageId: lastPersistedAssistantId ?? errorRow?.id ?? null,
-        finalMessageId: errorRow?.id ?? lastPersistedAssistantId ?? null,
+        finalMessageId: modeParentId ?? errorRow?.id ?? lastPersistedAssistantId ?? null,
         error: errorMessage,
         metadata: {
           errorCode: envelope.code,
@@ -1460,6 +1759,7 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
       }
       throw markChatErrorPublished(new Error(errorMessage), envelope)
     } finally {
+      this.modeRuns.delete(trackedStreamId)
       // Drain any pending decisions + the per-stream session so a disconnected or
       // errored run never leaks a paused promise. rejectAllForStream also clears the session.
       if (this.decisionBroker && trackedStreamId) this.decisionBroker.rejectAllForStream(trackedStreamId)

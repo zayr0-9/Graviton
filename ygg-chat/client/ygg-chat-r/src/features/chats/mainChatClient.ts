@@ -20,6 +20,7 @@
  * `envelope.detail`, never for the screen. See shared/chatErrors + localChatErrors.
  */
 
+import { agentRunPreviewActions } from './agentRunPreviewSlice'
 import { buildLocalApiUrl } from '../../utils/api'
 import { isResumableRunsEnabled } from '../../helpers/serverLoopSettings'
 import { getStreamIdleTimeoutMs } from '../../helpers/toolExecutionSettings'
@@ -59,6 +60,7 @@ export interface RunServerChatLoopDeps {
    * by mobile/tests. See chatActions.refreshHeimdallTreeFromState.
    */
   onMessagePersisted?: () => void
+  onUserMessagePersisted?: () => void
   /** Data URLs captured before send. They bridge the optimistic temp row to the
    * server-assigned user-message ID; durable metadata linking is server-owned. */
   userMessageArtifacts?: string[]
@@ -239,7 +241,8 @@ function makeHandleEvent(
   operation: ServerLoopOperation,
   dispatch: (action: unknown) => unknown,
   onMessagePersisted?: () => void,
-  onSeq?: (seq: number, event: ServerStreamEvent) => void
+  onSeq?: (seq: number, event: ServerStreamEvent) => void,
+  onUserMessagePersisted?: () => void
 ): (event: ServerStreamEvent) => void {
   return (event: ServerStreamEvent): void => {
     if (!event || typeof event.type !== 'string') return
@@ -247,7 +250,14 @@ function makeHandleEvent(
     const nextSeq = typeof event.seq === 'number' && event.seq > acc.lastSeq ? event.seq : null
     if (nextSeq !== null) acc.lastSeq = nextSeq
     // (a) project to Redux, in order.
-    for (const action of projectServerEvent(event, ctx)) dispatch(action)
+    for (const action of projectServerEvent(event, ctx)) {
+      // Capture normalized, run-correlated rows even when the visible chat reducer
+      // rejects them because the user is viewing another conversation.
+      if (chatSliceActions.messageAdded.match(action) && action.payload?.id) {
+        dispatch(agentRunPreviewActions.messageReceived({ streamId: ctx.streamId, message: action.payload }))
+      }
+      dispatch(action)
+    }
     // (b) event-specific side effects that need the operation / return ids.
     if (event.type === 'tools_updated') {
       const discovered = event.tools.map((tool): ToolDefinition => {
@@ -274,6 +284,7 @@ function makeHandleEvent(
       dispatch(chatSliceActions.setTools(getAllTools()))
     } else if (event.type === 'user_message_persisted') {
       acc.userMessage = normalizeServerMessage(event.message)
+      onUserMessagePersisted?.()
       if (ctx.userMessageArtifacts?.length) {
         acc.userMessage.artifacts = Array.from(
           new Set([...(acc.userMessage.artifacts || []), ...ctx.userMessageArtifacts])
@@ -283,7 +294,7 @@ function makeHandleEvent(
       else if (operation === 'edit') dispatch(chatSliceActions.optimisticBranchMessageCleared())
       // 'branch' uses no optimistic bubble.
       onMessagePersisted?.()
-    } else if (event.type === 'assistant_message_persisted') {
+    } else if (event.type === 'assistant_message_persisted' || event.type === 'operation_mode_changed' || event.type === 'queued_user_message_persisted') {
       // Intermediate + re-emitted post-tool assistant rows: already projected to Redux
       // above; let the caller refresh derived views (Heimdall) so nodes appear per-turn.
       onMessagePersisted?.()
@@ -509,10 +520,10 @@ export async function runServerChatLoop(
   deps: RunServerChatLoopDeps
 ): Promise<RunServerChatLoopResult> {
   const { operation, conversationId, streamId, path, request, signal } = params
-  const { dispatch, getState, onMessagePersisted, onSeq, userMessageArtifacts } = deps
+  const { dispatch, getState, onMessagePersisted, onUserMessagePersisted, onSeq, userMessageArtifacts } = deps
   const ctx: ProjectionContext = { streamId, conversationId, userMessageArtifacts }
   const acc = newAccumulator()
-  const handleEvent = makeHandleEvent(acc, ctx, operation, dispatch, onMessagePersisted, onSeq)
+  const handleEvent = makeHandleEvent(acc, ctx, operation, dispatch, onMessagePersisted, onSeq, onUserMessagePersisted)
 
   if (operation === 'branch' || operation === 'edit') {
     const state = getState() as any

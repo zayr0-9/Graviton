@@ -23,6 +23,18 @@ const context = (overrides: Record<string, any> = {}) => ({
 })
 
 describe('createSubagentDispatchExecutor', () => {
+  it.each([
+    ['openaichatgpt', 'priority', 'priority'],
+    ['openaichatgpt', undefined, undefined],
+    ['openrouter', 'priority', 'priority'],
+    ['lmstudio', 'priority', undefined],
+  ])('inherits service tier only for Codex children (%s, %s)', async (provider, serviceTier, expected) => {
+    const runForTool = vi.fn(async (_request: HeadlessSubagentStreamRequest) => 'done')
+    const execute = createSubagentDispatchExecutor({ leafExecutor: vi.fn(), subagentRunner: { runForTool } })
+    await execute({ id: 'sub-tier', name: 'subagent', arguments: { prompt: 'Scout' } }, context({ provider, serviceTier }))
+    expect(runForTool.mock.calls[0][0].serviceTier).toBe(expected)
+  })
+
   it('delegates ordinary tools to the leaf executor', async () => {
     const leafExecutor = vi.fn(async () => 'leaf result')
     const runForTool = vi.fn()
@@ -195,6 +207,11 @@ class FakeManagerRunner implements SubagentManagerRunner {
     return { handle: run.handle, runId: run.id, streamId: `stream-${run.id}-resumed` }
   }
 
+  send = vi.fn((handle: string, message: string, requestId: string) =>
+    this.live.has(handle) ? { requestId, content: message, attachmentCount: 0, status: 'queued' as const } : null)
+
+  getMessageQueue() { return null }
+
   cancel(handle: string): boolean {
     this.cancelCalls.push(handle)
     if (!this.live.has(handle)) return false
@@ -261,6 +278,47 @@ class FakeManagerRunner implements SubagentManagerRunner {
 const spawnCall = (args: Record<string, any>) => ({ id: `mgr-${Math.random()}`, name: 'subagent_manager', arguments: args })
 
 describe('createSubagentManagerExecutor', () => {
+  it.each([false, true])('inherits priority when spawning a manager run (blocking: %s)', async blocking => {
+    const runner = new FakeManagerRunner()
+    const spawn = vi.spyOn(runner, blocking ? 'spawnBlocking' : 'spawnDetached')
+    const execute = createSubagentManagerExecutor({ leafExecutor: vi.fn(), runner })
+    await execute(spawnCall({ action: 'spawn', prompt: 'Scout', blocking }), context({ serviceTier: 'priority' }))
+    expect(spawn.mock.calls[0][0].serviceTier).toBe('priority')
+  })
+
+  it('queues owned steering and does not expose or send to other branches', async () => {
+    const runner = new FakeManagerRunner()
+    const execute = createSubagentManagerExecutor({ leafExecutor: vi.fn(), runner })
+    const spawned: any = await execute(spawnCall({ action: 'spawn', prompt: 'Scout' }), context())
+    const result: any = await execute(spawnCall({ action: 'send', handle: spawned.handle, message: 'Focus', requestId: 's1' }), context())
+    expect(result).toMatchObject({ accepted: true, requestId: 's1', delivery: { status: 'queued' } })
+    expect(runner.send).toHaveBeenCalledWith(spawned.handle, 'Focus', 's1')
+    const snapshot: any = { items: [{ requestId: 's1', status: 'queued' }] }
+    vi.spyOn(runner, 'getMessageQueue').mockReturnValue(snapshot)
+    const status: any = await execute(spawnCall({ action: 'status', handle: spawned.handle }), context())
+    expect(status.subagent.messageQueue).toBe(snapshot)
+    runner.send.mockClear()
+    const hidden: any = await execute(spawnCall({ action: 'send', handle: spawned.handle, message: 'Focus' }), context({ lineageId: 'other' }))
+    expect(hidden).toMatchObject({ found: false, accepted: false })
+    expect(runner.send).not.toHaveBeenCalled()
+    const generated: any = await execute(spawnCall({ action: 'send', handle: spawned.handle, message: 'Focus' }), context())
+    expect(generated.requestId).toMatch(/^[a-f0-9-]{36}$/)
+    runner.setStatus(spawned.handle, 'completed')
+    const late: any = await execute(spawnCall({ action: 'send', handle: spawned.handle, message: 'Late' }), context())
+    expect(late.accepted).toBe(false)
+  })
+
+  it('forwards an optional resume prompt separately from the original task', async () => {
+    const runner = new FakeManagerRunner()
+    const execute = createSubagentManagerExecutor({ leafExecutor: vi.fn(), runner })
+    const spawned: any = await execute(spawnCall({ action: 'spawn', prompt: 'Original' }), context())
+    runner.setStatus(spawned.handle, 'aborted')
+    await expect(execute(spawnCall({ action: 'resume', handle: spawned.handle, prompt: ' ' }), context())).rejects.toThrow('nonblank')
+    expect(runner.resumeCalls).toHaveLength(0)
+    await execute(spawnCall({ action: 'resume', handle: spawned.handle, prompt: 'New direction' }), context())
+    expect(runner.resumeCalls[0].request).toMatchObject({ prompt: 'Original', resumePrompt: 'New direction' })
+  })
+
   it('delegates non-manager tools to the leaf executor', async () => {
     const leafExecutor = vi.fn(async () => 'leaf result')
     const runner = new FakeManagerRunner()
@@ -426,7 +484,8 @@ describe('createSubagentManagerExecutor', () => {
     const spawn: any = await execute(spawnCall({ action: 'spawn', prompt: 'p' }), context())
     runner.setStatus(spawn.handle, 'error')
 
-    const resume: any = await execute(spawnCall({ action: 'resume', handle: spawn.handle }), context())
+    const resume: any = await execute(spawnCall({ action: 'resume', handle: spawn.handle }), context({ serviceTier: 'priority' }))
+    expect(runner.resumeCalls[0].request.serviceTier).toBe('priority')
     expect(resume.action).toBe('resume')
     expect(resume.resumed).toBe(true)
     expect(resume.status).toBe('running')

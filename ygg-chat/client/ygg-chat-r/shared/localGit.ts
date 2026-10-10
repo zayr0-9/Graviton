@@ -104,3 +104,10 @@ export interface LocalGitActionResponse {
   isGitRepo: boolean
   message: string
 }
+
+export interface LocalGitFileContextResponse {
+  path: string
+  repoRoot: string | null
+  relativePath: string | null
+  status: LocalGitStatusFile | null
+}

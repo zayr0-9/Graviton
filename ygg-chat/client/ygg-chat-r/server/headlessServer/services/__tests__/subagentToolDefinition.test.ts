@@ -17,6 +17,14 @@ describe('subagent tool definition', () => {
     expect(manager?.description).toContain('instead of repeatedly polling')
   })
 
+  it('exposes safe-boundary send and optional resume instructions', () => {
+    const manager = BUILTIN_TOOL_DEFINITIONS.find(tool => tool.name === 'subagent_manager')
+    expect(manager?.inputSchema.properties.action.enum).toContain('send')
+    expect(manager?.inputSchema.properties.message.maxLength).toBe(200000)
+    expect(manager?.inputSchema.properties.requestId.maxLength).toBe(128)
+    expect(manager?.inputSchema.properties.prompt.description).toContain('Optional for resume')
+  })
+
   it('no longer exposes the removed resume/session arguments', () => {
     const subagent = BUILTIN_TOOL_DEFINITIONS.find(tool => tool.name === 'subagent')
 

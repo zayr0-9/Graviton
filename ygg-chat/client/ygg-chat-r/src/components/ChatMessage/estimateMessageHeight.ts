@@ -1,6 +1,7 @@
 import type { ContentBlock } from '@/features/chats/chatTypes'
 import { buildMcpAppEntryKey, getMcpAppHeight } from '../McpAppIframe/mcpAppSizing'
 import { isProcessOnlyBlockSet, PROCESS_RUN_GROUP_MIN_ITEMS } from './chatMessageShared'
+import { stripAttachedImagePathMetadata } from '../../features/chats/attachedImagePaths'
 
 /**
  * Height estimate for one virtual row, derived from the blocks the row will draw.
@@ -219,6 +220,7 @@ export interface EstimateMessageRowInput {
   /** `chat:groupToolReasoningRuns`. Collapses long process runs into one row. */
   groupToolReasoningRuns: boolean
   artifactCount: number
+  hasAcceptedImages?: boolean
   /** Whether the row draws its actions row. Mirrors `hasContent && canBranchMessage`. */
   showsActionsRow: boolean
   /** Lets MCP app cards look up their remembered height. Omit for rows without a persisted id. */
@@ -296,7 +298,7 @@ export const estimateMessageRowHeight = (input: EstimateMessageRowInput): number
         injectionRun = false
       }
     }
-    pushText(content)
+    pushText(stripAttachedImagePathMetadata(content))
   } else if (blocks.length === 0) {
     // Fallback path: an old assistant row with only a `content` string.
     pushText(content)
@@ -349,8 +351,10 @@ export const estimateMessageRowHeight = (input: EstimateMessageRowInput): number
     }
   }
 
+  const imageNoticeHeight = isUserRow && input.hasAcceptedImages ? smallChromeRowHeight(rootFontSize) : 0
+  const chromeHeight = baseChrome(isUserRow, artifactCount, showsActionsRow, isProcessOnly, rootFontSize) + imageNoticeHeight
   if (!isUserRow && hookRunCount > 0) items.push([REM_CONTEXT_CARD * rootFontSize, 'other'])
-  if (items.length === 0) return baseChrome(isUserRow, artifactCount, showsActionsRow, isProcessOnly, rootFontSize)
+  if (items.length === 0) return chromeHeight
 
   // Long runs of process items collapse into a single "Agent steps" row. Build the list of
   // children the stack actually renders, then gap only between them.
@@ -387,7 +391,7 @@ export const estimateMessageRowHeight = (input: EstimateMessageRowInput): number
     blocksHeight += bothAreProcessBlocks ? PROCESS_RUN_GAP : stackGap
   }
 
-  return blocksHeight + baseChrome(isUserRow, artifactCount, showsActionsRow, isProcessOnly, rootFontSize)
+  return blocksHeight + chromeHeight
 }
 
 /** Padding, caption, attachments, and actions row that sit outside the block stack. */

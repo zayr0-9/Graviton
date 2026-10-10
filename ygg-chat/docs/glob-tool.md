@@ -30,6 +30,11 @@ The `client/ygg-chat-r/server/tools/glob.ts` module exposes `globSearch` for Ele
 * Returns an error if `pattern` is empty or whitespace.
 
 ### Supported options (all optional, with defaults)
+
+The public schema is in `shared/builtinToolDefinitions.ts`. `maxMatches`,
+`timeoutMs`, `signal`, and `deadlineMs` below are helper/runtime options, not public
+schema properties.
+
 * `cwd` – directory from which to run the glob (defaults to `process.cwd()` after being normalized). Supports both Windows and WSL paths.
 * `ignore` – additional glob patterns or a string of patterns to exclude from results.
 * `dot`, `absolute`, `mark`, `nosort`, `nocase`, `nodir`, `follow`, `realpath`, `stat`, `withFileTypes` – forwarded directly to the underlying `glob` implementation.

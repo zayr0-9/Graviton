@@ -1,16 +1,12 @@
-const KEYTAR_PRIMARY_SERVICE_NAME = 'ygg-chat'
-const KEYTAR_LEGACY_SERVICE_NAMES = ['ygg-chat-r', 'com.yggdrasil.chat']
+import { CredentialVault, type CredentialBackend } from './credentialVault.js'
+import { withCredentialVaultLock } from './credentialVaultLock.js'
 const BRAVE_SEARCH_API_KEY_ACCOUNT = 'api-key:brave-search'
 
-type KeytarModule = {
-  getPassword: (service: string, account: string) => Promise<string | null>
-  setPassword: (service: string, account: string, password: string) => Promise<void>
-  deletePassword: (service: string, account: string) => Promise<boolean>
-}
+type KeytarModule = CredentialBackend
 
 let cachedKeytar: KeytarModule | null | undefined
 
-const KEYTAR_SERVICE_NAMES = [KEYTAR_PRIMARY_SERVICE_NAME, ...KEYTAR_LEGACY_SERVICE_NAMES]
+const vault = new CredentialVault(getKeytar, withCredentialVaultLock)
 
 function getNodeRequire(): NodeRequire | null {
   try {
@@ -54,54 +50,33 @@ async function getKeytar(): Promise<KeytarModule> {
   } catch (error) {
     cachedKeytar = null
     throw new Error(
-      `Secure credential storage is unavailable because keytar could not be loaded: ${error instanceof Error ? error.message : String(error)}`
+      'Secure credential storage is unavailable because keytar could not be loaded.'
     )
   }
 }
 
-export async function getSecureSecret(account: string): Promise<string | null> {
-  const keytar = await getKeytar()
-
-  for (const serviceName of KEYTAR_SERVICE_NAMES) {
-    const value = await keytar.getPassword(serviceName, account)
-    if (value) {
-      if (serviceName !== KEYTAR_PRIMARY_SERVICE_NAME) {
-        try {
-          await keytar.setPassword(KEYTAR_PRIMARY_SERVICE_NAME, account, value)
-        } catch {
-          // Ignore migration write errors; returning the found value is more important.
-        }
-      }
-      return value
-    }
-  }
-
-  return null
+export async function getSecureSecret(account: string, requireConsolidation = false): Promise<string | null> {
+  return vault.get(account, requireConsolidation)
 }
 
 export async function setSecureSecret(account: string, value: string): Promise<void> {
-  const normalized = value.trim()
-  if (!normalized) {
-    throw new Error('Secret value cannot be empty')
-  }
-  const keytar = await getKeytar()
-  await keytar.setPassword(KEYTAR_PRIMARY_SERVICE_NAME, account, normalized)
+  return vault.set(account, value)
 }
 
 export async function deleteSecureSecret(account: string): Promise<boolean> {
-  const keytar = await getKeytar()
-  let deleted = false
+  return vault.delete(account)
+}
 
-  for (const serviceName of KEYTAR_SERVICE_NAMES) {
-    try {
-      const removed = await keytar.deletePassword(serviceName, account)
-      deleted = deleted || removed
-    } catch {
-      // Continue attempting other service names.
-    }
-  }
+export async function importLegacySecureSecret(account: string, value: string): Promise<void> {
+  return vault.importLegacy(account, value)
+}
 
-  return deleted
+export async function updateSecureSecret(account: string, transform: (current: string | null) => string | null): Promise<void> {
+  return vault.update(account, transform)
+}
+
+export async function consolidateSecureSecrets() {
+  return vault.consolidate()
 }
 
 export async function getBraveApiKey(): Promise<string | null> {

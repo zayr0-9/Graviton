@@ -39,14 +39,14 @@ Use this when changing:
 - `client/ygg-chat-r/src/features/chats/chatSelectors.ts`: current branch/display message selectors.
 - `client/ygg-chat-r/src/features/chats/pathUtils.ts`: path building over flat messages.
 - `client/ygg-chat-r/src/features/chats/sseProjection.ts`: projects server SSE `*_persisted` / `complete` rows into Redux (`normalizeServerMessage`).
-- `client/ygg-chat-r/electron/localServer.ts`: SQLite schema (`CREATE TABLE messages`), prepared statements (`upsertMessage` = INSERT ... ON CONFLICT(id) DO UPDATE), and the `messages_children_insert` trigger that maintains `children_ids`.
-- `client/ygg-chat-r/electron/headlessServer/routes/appAutomationRoutes.ts`: live `/api/app` message endpoints (`/messages`, `/messages/tree` with `buildMessageTree`, `/messages/bulk`).
-- `client/ygg-chat-r/electron/headlessServer/routes/gatewayRoutes.ts`: storage-aware `/api/gw` reads/writes that merge local (`/api/app/*` loopback) with Railway cloud; the renderer's CRUD entry point (message tree/list, bulk, message mutations, attachments).
-- `client/ygg-chat-r/electron/headlessServer/persistence/messageRepo.ts`: server message writes (`createMessage`, `updateAssistantToolState`) + JS-side `children_ids` maintenance.
-- `client/ygg-chat-r/electron/headlessServer/persistence/conversationRepo.ts`: read helpers (`listMessages`, `listPathToMessage`, `findNearestUserAncestor`, `touch`).
-- `client/ygg-chat-r/electron/headlessServer/services/messageSink.ts`: `TreeMessageSink` (local-authoritative) vs `CloudMirrorSink` (adopts Railway id) — the loop's persistence port.
-- `client/ygg-chat-r/electron/headlessServer/services/chatOrchestrator.ts`: persists the user message (via `BranchOrchestrator` → `createUserMessage`) and selects the sink per route.
-- `client/ygg-chat-r/electron/headlessServer/services/cloudMirrorService.ts`: server-side CRUD mirror of Railway entities into SQLite (replaces the renderer's `dualSyncManager` for CRUD).
+- `client/ygg-chat-r/server/localServer.ts`: SQLite schema (`CREATE TABLE messages`), prepared statements (`upsertMessage` = INSERT ... ON CONFLICT(id) DO UPDATE), and the `messages_children_insert` trigger that maintains `children_ids`.
+- `client/ygg-chat-r/server/headlessServer/routes/appAutomationRoutes.ts`: live `/api/app` message endpoints (`/messages`, `/messages/tree` with `buildMessageTree`, `/messages/bulk`).
+- `client/ygg-chat-r/server/headlessServer/routes/gatewayRoutes.ts`: storage-aware `/api/gw` reads/writes that merge local (`/api/app/*` loopback) with Railway cloud; the renderer's CRUD entry point (message tree/list, bulk, message mutations, attachments).
+- `client/ygg-chat-r/server/headlessServer/persistence/messageRepo.ts`: server message writes (`createMessage`, `updateAssistantToolState`) + JS-side `children_ids` maintenance.
+- `client/ygg-chat-r/server/headlessServer/persistence/conversationRepo.ts`: read helpers (`listMessages`, `listPathToMessage`, `findNearestUserAncestor`, `touch`).
+- `client/ygg-chat-r/server/headlessServer/services/messageSink.ts`: `TreeMessageSink` (local-authoritative) vs `CloudMirrorSink` (adopts Railway id) — the loop's persistence port.
+- `client/ygg-chat-r/server/headlessServer/services/chatOrchestrator.ts`: persists the user message (via `BranchOrchestrator` → `createUserMessage`) and selects the sink per route.
+- `client/ygg-chat-r/server/headlessServer/services/cloudMirrorService.ts`: server-side CRUD mirror of Railway entities into SQLite (replaces the renderer's `dualSyncManager` for CRUD).
 
 ## IDs and Storage Modes
 
@@ -82,6 +82,7 @@ interface BaseMessage {
   note_color?: string | null
   ex_agent_session_id?: string | null
   ex_agent_type?: string | null
+  meta?: string | Record<string, unknown> | null
 }
 ```
 
@@ -106,15 +107,22 @@ Important field meanings:
 - `ex_agent_session_id` / `ex_agent_type`: external-agent/subagent/persistent-agent metadata.
 - `artifacts`, `pastedContext`, and some attachment-derived data are frontend/runtime additions, not canonical DB columns.
 
+`updateAssistantToolState` directly updates existing `content_blocks`/`tool_calls`;
+it does not insert or reparent a message. Durable identity lives separately in
+`lineages`/`fork_operations`; `messages.lineage_id` records creation ownership,
+while `parent_id` remains structural ancestry. Lineage-aware sinks advance heads
+transactionally.
+
 ## Local SQLite Message Table
 
-Local Electron storage creates `messages` in `electron/localServer.ts` (`CREATE TABLE messages`):
+Local Electron storage creates `messages` in `server/localServer.ts` (`CREATE TABLE messages`):
 
 ```sql
 CREATE TABLE IF NOT EXISTS messages (
   id TEXT PRIMARY KEY,
   conversation_id TEXT NOT NULL,
   parent_id TEXT,
+  lineage_id TEXT,
   children_ids TEXT DEFAULT '[]',
   role TEXT NOT NULL CHECK (role IN ('user', 'assistant', 'system', 'ex_agent', 'tool')),
   content TEXT NOT NULL,
@@ -128,13 +136,14 @@ CREATE TABLE IF NOT EXISTS messages (
   ex_agent_session_id TEXT,
   ex_agent_type TEXT,
   content_blocks TEXT,
+  meta TEXT,
   created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
   FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE CASCADE,
   FOREIGN KEY (parent_id) REFERENCES messages(id) ON DELETE CASCADE
 )
 ```
 
-Writes go through the `upsertMessage` prepared statement (`localServer.ts`), which is `INSERT ... ON CONFLICT(id) DO UPDATE`: re-persisting an existing id (e.g. re-adopting a Railway id, or `updateAssistantToolState`) updates the row in place rather than inserting a duplicate.
+Writes go through the `upsertMessage` prepared statement (`localServer.ts`), which is `INSERT ... ON CONFLICT(id) DO UPDATE`: re-persisting an existing id (e.g. re-adopting a Railway id) updates the row in place rather than inserting a duplicate.
 
 Local indexes and helpers include:
 - `idx_messages_parent_id` for parent traversal.
@@ -198,7 +207,7 @@ Additional provider-specific blocks can appear in practice, for example `respons
 
 ## Fetching Messages for a Conversation
 
-`useConversationMessages(conversationId, storageMode)` (`src/hooks/useQueries.ts`) is the preferred UI fetch path used by `Chat.tsx`. It returns:
+`Chat.tsx` uses `useConversationSnapshotCoordinator`, which calls `fetchConversationMessagesTree`, reconciles protected rows, and applies accepted messages/tree/path atomically. The general `useConversationMessages(conversationId, storageMode)` hook remains in `src/hooks/useQueries.ts`. It returns:
 
 ```ts
 {
@@ -295,7 +304,7 @@ Assistant/tool turns are written through a `MessageSink` selected per run in `Ch
 
 ## Testing and Validation
 
-- Build: `npm --prefix client/ygg-chat-r run build:web` or `npm --prefix client/ygg-chat-r run build:electron`.
+- Build: `npm --prefix client/ygg-chat-r run build:electron`.
 - Headless/local tests where relevant: `npm --prefix client/ygg-chat-r run test:headless`.
 - Manual checks:
   - create a new top-level message and verify Heimdall root behaviour;

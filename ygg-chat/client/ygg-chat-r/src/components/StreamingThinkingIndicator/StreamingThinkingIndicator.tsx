@@ -1,5 +1,7 @@
 import React, { useEffect, useState } from 'react'
 import { useReducedMotion } from 'framer-motion'
+import { MESSAGE_BLOCK_INSET_CLASS } from '../ChatMessage/chatMessageShared'
+import { getThemeModeColor, useCustomChatTheme, useHtmlDarkMode } from '../ThemeManager/themeConfig'
 
 const STREAMING_THINKING_WORDS = [
   'Thinking',
@@ -19,6 +21,8 @@ type StreamingThinkingIndicatorVariant = 'inline' | 'tab'
 
 type StreamingThinkingIndicatorProps = {
   variant?: StreamingThinkingIndicatorVariant
+  compacting?: boolean
+  compactionCompleted?: boolean
   className?: string
   animatedBorderClassName?: string
   style?: React.CSSProperties
@@ -26,15 +30,20 @@ type StreamingThinkingIndicatorProps = {
 
 export const StreamingThinkingIndicator = React.memo(function StreamingThinkingIndicator({
   variant = 'inline',
+  compacting = false,
+  compactionCompleted = false,
   className = '',
   animatedBorderClassName = '',
   style,
 }: StreamingThinkingIndicatorProps) {
   const [wordIndex, setWordIndex] = useState(0)
   const shouldReduceMotion = useReducedMotion()
+  const { theme, enabled } = useCustomChatTheme()
+  const isDarkMode = useHtmlDarkMode()
+  const mutedColor = enabled ? getThemeModeColor(theme.colors.toolJobsMutedText, isDarkMode) : undefined
 
   useEffect(() => {
-    if (shouldReduceMotion || typeof window === 'undefined' || STREAMING_THINKING_WORDS.length <= 1) return
+    if (compacting || shouldReduceMotion || typeof window === 'undefined' || STREAMING_THINKING_WORDS.length <= 1) return
 
     const intervalId = window.setInterval(() => {
       setWordIndex(prev => (prev + 1) % STREAMING_THINKING_WORDS.length)
@@ -43,21 +52,21 @@ export const StreamingThinkingIndicator = React.memo(function StreamingThinkingI
     return () => {
       window.clearInterval(intervalId)
     }
-  }, [shouldReduceMotion])
+  }, [compacting, shouldReduceMotion])
 
   const variantClassName =
     variant === 'tab'
       ? `relative rounded-t-xl border border-b-0 border-neutral-300/60 bg-neutral-100/40 px-2 pb-3.5 pt-1.5 backdrop-blur-xl before:absolute before:inset-x-0 before:-bottom-[5px] before:h-[6px] before:bg-neutral-100/40 after:absolute after:-left-px after:-bottom-[8px] after:h-[9px] after:w-4 after:border-l after:border-neutral-300/60 after:bg-neutral-100/40 dark:border-neutral-700/70 dark:bg-neutral-900/40 dark:before:bg-neutral-900/40 dark:after:border-neutral-700/70 dark:after:bg-neutral-900/40 ${animatedBorderClassName}`
-      : 'rounded-md px-1 py-0.5'
+      : `rounded-md ${MESSAGE_BLOCK_INSET_CLASS} py-0.5`
 
   return (
     <div
       className={`inline-flex items-center gap-2 text-[0.75em] leading-[1.2] text-neutral-500 dark:text-neutral-400 ${variantClassName} ${className}`.trim()}
-      style={style}
+      style={{ color: mutedColor, ...style }}
       aria-live='polite'
-      aria-label='Assistant is working'
+      aria-label={compacting ? (compactionCompleted ? 'Context compacted' : 'Compacting context') : 'Assistant is working'}
     >
-      {variant === 'tab' && (
+      {variant === 'tab' && !compacting && (
         <span
           aria-hidden='true'
           className='relative z-10 grid h-3 w-4 grid-cols-2 grid-rows-2 gap-0.5'
@@ -68,8 +77,29 @@ export const StreamingThinkingIndicator = React.memo(function StreamingThinkingI
           <span className='streaming-pixel streaming-pixel-delay-3 h-1.5 w-1.5 rounded-[1px] bg-blue-500/60 dark:bg-orange-500/65' />
         </span>
       )}
-      <span className={`relative z-10 min-w-[5.75rem] font-medium leading-[1.2] ${shouldReduceMotion ? '' : 'tool-name-shimmer'}`}>
-        {STREAMING_THINKING_WORDS[wordIndex]}
+      <span className='relative z-10 flex min-w-[5.75rem] items-center gap-2'>
+        <span
+          className={`font-medium leading-[1.2] ${shouldReduceMotion || compactionCompleted ? '' : 'tool-name-shimmer'}`}
+          style={mutedColor ? { '--tool-shimmer-base': mutedColor } as React.CSSProperties : undefined}
+        >
+          {compacting ? (compactionCompleted ? 'Compacted' : 'Compacting') : STREAMING_THINKING_WORDS[wordIndex]}
+        </span>
+        {compacting && (
+          <span
+            role='progressbar'
+            aria-label='Context compaction progress'
+            aria-valuemin={0}
+            aria-valuemax={100}
+            aria-valuenow={compactionCompleted ? 100 : undefined}
+            aria-valuetext={compactionCompleted ? 'Complete' : 'Compacting; duration unknown'}
+            className='h-[2px] w-16 shrink-0 overflow-hidden rounded-full bg-current/10'
+          >
+            <span
+              className='compaction-progress-fill block h-full w-full origin-left rounded-full bg-current opacity-60'
+              data-completed={compactionCompleted}
+            />
+          </span>
+        )}
       </span>
     </div>
   )

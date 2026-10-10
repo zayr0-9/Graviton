@@ -24,9 +24,9 @@ Use this when changing:
 
 ## Key Files
 
-- `client/ygg-chat-r/electron/tools/customToolLoader.ts`: scans/parses custom tools.
-- `client/ygg-chat-r/electron/tools/customToolManager.ts`: management and invocation tool.
-- `client/ygg-chat-r/electron/utils/managedToolPaths.ts`: managed custom tool paths.
+- `client/ygg-chat-r/server/tools/customToolLoader.ts`: scans/parses custom tools.
+- `client/ygg-chat-r/server/tools/customToolManager.ts`: management and invocation tool.
+- `client/ygg-chat-r/server/utils/managedToolPaths.ts`: managed custom tool paths.
 - `client/ygg-chat-r/custom-tools/CUSTOM_TOOLS_GUIDE.md`: guide for custom tools.
 - `client/ygg-chat-r/custom-tools/RPC_TOOL_GUIDE.md`: RPC custom tool guide.
 - `client/ygg-chat-r/custom-tools/CUSTOM_TOOLS_LEGACY_GUIDE.md`: legacy reference.
@@ -38,15 +38,15 @@ Use this when changing:
 A custom tool usually contains:
 
 - `definition.json`: name, description, enabled flag, input schema, optional permissions.
-- `index.js`: CommonJS `execute` implementation.
+- `index.js`: implementation exposing a named `execute` function through dynamic import; bundled CommonJS tools are supported.
 - `ui.html`: optional UI asset for HTML-returning tools.
 
-Custom tools may include `appPermissions`, especially for iframe apps that need persistent-agent access.
+Custom tools may include `appPermissions` metadata, but the current iframe bridge does not expose persistent-agent access or enforce `appPermissions.agent`.
 
 ## Important Invariants
 
-- Agents should invoke custom tools through `custom_tool_manager`, not by calling undeclared tool names directly.
-- Loader should preserve `appPermissions` for iframe bridge enforcement.
+- Renderer-selected schemas use `custom_tool_manager`, not undeclared names. Server defaults may include enabled custom tools directly when requests omit `tools`.
+- Preserve `appPermissions` metadata, but do not treat it as an implemented iframe authorization boundary.
 - Invalid tool definitions should fail safely and report useful errors.
 - Managed paths must not allow arbitrary overwrite outside expected custom-tool directories.
 

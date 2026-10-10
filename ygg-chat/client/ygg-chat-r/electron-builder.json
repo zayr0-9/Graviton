@@ -12,11 +12,13 @@
     "electron/main.mjs",
     "electron/preload.mjs",
     "electron/toolRuntimeUtility.mjs",
+    "electron/localAnalyticsWorker.mjs",
     "src/features/chats/prompts/*.md",
     "server/headlessServer/ui/mobile/**/*",
     "server/headlessServer/routes/**/*.html"
   ],
   "asarUnpack": [
+    "electron/localAnalyticsWorker.mjs",
     "**/node_modules/better-sqlite3/**/*",
     "**/node_modules/bindings/**/*",
     "**/node_modules/file-uri-to-path/**/*",
@@ -65,6 +67,7 @@
     "icon": "public/img/graviton-dark.png",
     "maintainer": "YggChat <support@yggchat.com>"
   },
+  "beforePack": "scripts/runtime-packaging.mjs",
   "npmRebuild": true,
   "nativeRebuilder": "sequential",
   "publish": [

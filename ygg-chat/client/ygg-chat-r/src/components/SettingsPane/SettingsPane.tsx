@@ -47,6 +47,7 @@ import {
   saveToolOutputTruncationEnabled,
 } from '../../helpers/toolOutputTruncation'
 import { localApi } from '../../utils/api'
+import { executeToolAndWait } from '../../utils/executeToolAndWait'
 import { extractTextFromPdf } from '../../utils/pdfUtils'
 import { InputTextArea } from '../InputTextArea/InputTextArea'
 import { ThemeManager } from '../ThemeManager/ThemeManager'
@@ -60,12 +61,20 @@ import {
 } from '../ThemeManager/themeConfig'
 import { ChatInputBorderAnimationSettings } from './ChatInputBorderAnimationSettings'
 import { SendButtonAnimationSettings } from './SendButtonAnimationSettings'
+import { FastModeAnimationSettings } from './FastModeAnimationSettings'
 import { useSettingsSectionThemeColors } from './settingsSectionTheme'
 import { ToolsSettings } from './ToolsSettings'
 
 type SettingsPaneProps = {
   open: boolean
   onClose: () => void
+}
+
+const CELESTIAL_TEST_OAUTH_PRESET = {
+  clientId: '5391d6flv8jtvpgg0b6j9f50dv',
+  redirectUri: 'http://localhost:6274/oauth/callback',
+  scope: 'https://workbench.celestial.test.vega-alts.com/api/mcp-gp/rpc/invoke',
+  authorizationServer: 'https://cognito-idp.us-east-2.amazonaws.com/us-east-2_nSxSsgJuj',
 }
 
 type StreamingThinkingIndicatorPlacement = 'message' | 'input-tab'
@@ -299,6 +308,8 @@ export const SettingsPane: React.FC<SettingsPaneProps> = ({ open, onClose }) => 
       url?: string
       headers?: Record<string, string>
       oauth?: {
+        allowMissingPkceS256ForCelestialTest?: boolean
+        omitResourceForLocalCelestialTest?: boolean
         tokenEndpointAuthMethod?: 'client_secret_post' | 'none'
         clientId?: string
         redirectUri?: string
@@ -332,6 +343,8 @@ export const SettingsPane: React.FC<SettingsPaneProps> = ({ open, onClose }) => 
   const [newServerOauthClientSecret, setNewServerOauthClientSecret] = useState('')
   const [newServerOauthRedirectUri, setNewServerOauthRedirectUri] = useState('')
   const [newServerOauthScopes, setNewServerOauthScopes] = useState('')
+  const [newServerOauthOmitResource, setNewServerOauthOmitResource] = useState(false)
+  const [newServerOauthAllowMissingPkceS256ForCelestialTest, setNewServerOauthAllowMissingPkceS256ForCelestialTest] = useState(false)
   const [newServerOauthTokenAuthMethod, setNewServerOauthTokenAuthMethod] = useState<'client_secret_post' | 'none'>(
     'client_secret_post'
   )
@@ -350,6 +363,8 @@ export const SettingsPane: React.FC<SettingsPaneProps> = ({ open, onClose }) => 
   const [editServerOauthAccessToken, setEditServerOauthAccessToken] = useState('')
   const [editServerOauthRedirectUri, setEditServerOauthRedirectUri] = useState('')
   const [editServerOauthScopes, setEditServerOauthScopes] = useState('')
+  const [editServerOauthOmitResource, setEditServerOauthOmitResource] = useState(false)
+  const [editServerOauthAllowMissingPkceS256ForCelestialTest, setEditServerOauthAllowMissingPkceS256ForCelestialTest] = useState(false)
   const [editServerOauthTokenAuthMethod, setEditServerOauthTokenAuthMethod] = useState<'client_secret_post' | 'none'>('client_secret_post')
 
   // Font size offset state (persisted to localStorage)
@@ -500,7 +515,7 @@ export const SettingsPane: React.FC<SettingsPaneProps> = ({ open, onClose }) => 
     setSavedThemesError('')
 
     try {
-      const data = await localApi.post<{ result?: ThemeManagerListResult }>('/tools/execute', {
+      const data = await executeToolAndWait<ThemeManagerListResult>({
         toolName: 'theme_manager',
         args: {
           action: 'list',
@@ -528,7 +543,7 @@ export const SettingsPane: React.FC<SettingsPaneProps> = ({ open, onClose }) => 
     setSavedThemesError('')
 
     try {
-      const data = await localApi.post<{ result?: ThemeManagerReadResult }>('/tools/execute', {
+      const data = await executeToolAndWait<ThemeManagerReadResult>({
         toolName: 'theme_manager',
         args: {
           action: 'read',
@@ -654,14 +669,16 @@ export const SettingsPane: React.FC<SettingsPaneProps> = ({ open, onClose }) => 
     const url = skillUrl.trim()
     if (!url) return
 
+    const isGitHubSource = /^https?:\/\/github\.com\//i.test(url)
     setSkillInstallStatus('loading')
-    setSkillInstallMessage('Downloading and installing skill...')
+    setSkillInstallMessage(isGitHubSource ? 'Cloning repository and installing skill...' : 'Downloading and installing skill...')
     setSkillInstallCandidates([])
 
     try {
-      const data = await localApi.post<SkillInstallResult>('/skills/install/url', {
-        url,
-      })
+      const data = await localApi.post<SkillInstallResult>(
+        isGitHubSource ? '/skills/install/github' : '/skills/install/url',
+        isGitHubSource ? { source: url } : { url }
+      )
 
       if (data.success) {
         setSkillInstallStatus('success')
@@ -695,7 +712,7 @@ export const SettingsPane: React.FC<SettingsPaneProps> = ({ open, onClose }) => 
     if (!url || skillInstallCandidates.length === 0) return
 
     setSkillInstallStatus('loading')
-    setSkillInstallMessage('Downloading and installing all skills...')
+    setSkillInstallMessage('Cloning repository and installing all skills...')
 
     try {
       const data = await localApi.post<SkillInstallResult>('/skills/install/github/all', { source: url })
@@ -918,13 +935,22 @@ export const SettingsPane: React.FC<SettingsPaneProps> = ({ open, onClose }) => 
     }
 
     const parsedOAuth =
-      newServerTransport === 'http' && (oauthClientId || oauthClientSecret || oauthRedirectUri || oauthScopes.length > 0)
+      newServerTransport === 'http' && (
+        oauthClientId || oauthClientSecret || oauthRedirectUri || oauthScopes.length > 0 ||
+        newServerOauthAllowMissingPkceS256ForCelestialTest || newServerOauthOmitResource
+      )
         ? {
             clientId: oauthClientId || undefined,
             clientSecret: oauthClientSecret || undefined,
             redirectUri: oauthRedirectUri || undefined,
             scopes: oauthScopes.length > 0 ? oauthScopes : undefined,
             tokenEndpointAuthMethod: newServerOauthTokenAuthMethod,
+            allowMissingPkceS256ForCelestialTest: newServerOauthAllowMissingPkceS256ForCelestialTest,
+            omitResourceForLocalCelestialTest: newServerOauthOmitResource,
+            ...(newServerOauthAllowMissingPkceS256ForCelestialTest || newServerOauthOmitResource ? {
+              authorizationServer: CELESTIAL_TEST_OAUTH_PRESET.authorizationServer,
+              clientMode: 'configured' as const,
+            } : {}),
           }
         : undefined
 
@@ -966,6 +992,8 @@ export const SettingsPane: React.FC<SettingsPaneProps> = ({ open, onClose }) => 
         setNewServerOauthRedirectUri('')
         setNewServerOauthScopes('')
         setNewServerOauthTokenAuthMethod('client_secret_post')
+        setNewServerOauthOmitResource(false)
+        setNewServerOauthAllowMissingPkceS256ForCelestialTest(false)
         setNewServerTransport('stdio')
         setMcpAddMode(false)
         fetchMcpServers()
@@ -995,6 +1023,8 @@ export const SettingsPane: React.FC<SettingsPaneProps> = ({ open, onClose }) => 
     newServerOauthRedirectUri,
     newServerOauthScopes,
     newServerOauthTokenAuthMethod,
+    newServerOauthAllowMissingPkceS256ForCelestialTest,
+    newServerOauthOmitResource,
     fetchMcpServers,
     dispatch,
   ])
@@ -1016,6 +1046,8 @@ export const SettingsPane: React.FC<SettingsPaneProps> = ({ open, onClose }) => 
     setEditServerOauthRedirectUri(server.oauth?.redirectUri || '')
     setEditServerOauthScopes((server.oauth?.scopes || []).join(' '))
     setEditServerOauthTokenAuthMethod(server.oauth?.tokenEndpointAuthMethod || 'client_secret_post')
+    setEditServerOauthAllowMissingPkceS256ForCelestialTest(server.oauth?.allowMissingPkceS256ForCelestialTest === true)
+    setEditServerOauthOmitResource(server.oauth?.omitResourceForLocalCelestialTest === true)
     setMcpActionStatus(null)
   }, [])
 
@@ -1045,11 +1077,17 @@ export const SettingsPane: React.FC<SettingsPaneProps> = ({ open, onClose }) => 
     const oauth = editServerTransport === 'http'
       ? {
           clientId: editServerOauthClientId.trim() || undefined,
-          clientSecret: editServerOauthClientSecret.trim() || undefined,
+          clientSecret: editServerOauthClientSecret.trim() || (editServerOauthAllowMissingPkceS256ForCelestialTest ? '' : undefined),
           accessToken: editServerOauthAccessToken.trim() || undefined,
           redirectUri: editServerOauthRedirectUri.trim() || undefined,
           scopes: oauthScopes.length > 0 ? oauthScopes : undefined,
           tokenEndpointAuthMethod: editServerOauthTokenAuthMethod,
+          allowMissingPkceS256ForCelestialTest: editServerOauthAllowMissingPkceS256ForCelestialTest,
+          omitResourceForLocalCelestialTest: editServerOauthOmitResource,
+          ...(editServerOauthAllowMissingPkceS256ForCelestialTest || editServerOauthOmitResource ? {
+            authorizationServer: CELESTIAL_TEST_OAUTH_PRESET.authorizationServer,
+            clientMode: 'configured' as const,
+          } : {}),
         }
       : undefined
 
@@ -1089,6 +1127,8 @@ export const SettingsPane: React.FC<SettingsPaneProps> = ({ open, onClose }) => 
         return
       }
       setEditingMcpServerName(null)
+      setEditServerOauthOmitResource(false)
+      setEditServerOauthAllowMissingPkceS256ForCelestialTest(false)
       setMcpActionStatus({ type: 'success', message: `Server "${editingMcpServerName}" updated` })
       await fetchMcpServers()
       await localApi.post('/mcp/refresh-tools')
@@ -1114,6 +1154,8 @@ export const SettingsPane: React.FC<SettingsPaneProps> = ({ open, onClose }) => 
     editServerOauthRedirectUri,
     editServerOauthScopes,
     editServerOauthTokenAuthMethod,
+    editServerOauthAllowMissingPkceS256ForCelestialTest,
+    editServerOauthOmitResource,
     fetchMcpServers,
     dispatch,
   ])
@@ -2125,6 +2167,10 @@ ${block}`
                     </div>
                   </div>
 
+                  <div className='space-y-2'>
+                    <FastModeAnimationSettings sectionThemeColors={savedCustomThemesColors} />
+                  </div>
+
                   {/* Send Button Animation Section */}
                   <div className='space-y-2'>
                     <SendButtonAnimationSettings sectionThemeColors={savedCustomThemesColors} />
@@ -2178,9 +2224,9 @@ ${block}`
                         className='mt-0.5 text-xs text-neutral-500 dark:text-neutral-100'
                         style={savedCustomThemesColors ? { color: savedCustomThemesColors.bodyText } : undefined}
                       >
-                        Adds <code>.ygg/memory/memory.md</code>, <code>.ygg/memory/recent_memory.md</code>, and the
-                        active project&apos;s <code>project_memory.md</code> to new model requests after the system
-                        prompt. Disabling this does not delete memory or stop the Stop hook from updating the files.
+                        Loads the cwd-based <code>MEMORY.md</code> index at conversation start and after compaction
+                        (first 200 lines or 25 KB). Individual Markdown fact files are read on demand.
+                        Disabling this does not delete saved memories.
                       </p>
                     </div>
                   </div>
@@ -2542,7 +2588,7 @@ ${block}`
                       className='mt-0.5 text-xs text-neutral-500 dark:text-neutral-400'
                       style={settingsSectionBodyStyle}
                     >
-                      Configure tool access and availability for chats.
+                      Manage built-in, custom, and MCP tools in separate groups.
                     </p>
                   </div>
                 </div>
@@ -2881,7 +2927,8 @@ ${block}`
                   {/* Help text */}
                   <p className='text-xs text-neutral-500 dark:text-neutral-500'>
                     Supported URLs: ClawdHub pages, GitHub HTTPS clone links, skill folders, or repos. Multi-skill
-                    repos can be installed individually or grouped under the repo name.
+                    repos can be installed individually or grouped under the repo name. GitHub installs use a shallow
+                    clone instead of per-file downloads and require Git on this machine.
                   </p>
 
                   {/* Installed Skills List */}
@@ -3194,6 +3241,58 @@ ${block}`
                           </div>
 
                           <div className='space-y-2'>
+                            <label className='flex items-center gap-2 text-xs font-medium text-neutral-600 dark:text-neutral-400'>
+                              <input
+                                type='checkbox'
+                                checked={newServerOauthAllowMissingPkceS256ForCelestialTest}
+                                aria-describedby='new-server-celestial-test-pkce-help'
+                                onChange={e => {
+                                  const enabled = e.target.checked
+                                  setNewServerOauthAllowMissingPkceS256ForCelestialTest(enabled)
+                                  if (enabled) {
+                                    setNewServerOauthClientId(CELESTIAL_TEST_OAUTH_PRESET.clientId)
+                                    setNewServerOauthClientSecret('')
+                                    setNewServerOauthTokenAuthMethod('none')
+                                    setNewServerOauthRedirectUri(CELESTIAL_TEST_OAUTH_PRESET.redirectUri)
+                                    setNewServerOauthScopes(`${newServerOauthOmitResource ? 'openid profile email ' : ''}${CELESTIAL_TEST_OAUTH_PRESET.scope}`)
+                                  }
+                                }}
+                                className='h-4 w-4 rounded focus-visible:ring-2 focus-visible:ring-blue-400/60'
+                              />
+                              Celestial TEST only: allow missing PKCE discovery metadata (still S256)
+                            </label>
+                            <p id='new-server-celestial-test-pkce-help' className='text-[11px] text-neutral-500 dark:text-neutral-400'>
+                              Off by default. Only tolerates omitted PKCE methods for Celestial TEST; never plain or
+                              no PKCE. Enabling fills the TEST public-client ID, callback and scope, sets token auth to
+                              none and clears the client secret. Saving uses the Celestial TEST authorization server.
+                            </p>
+                          </div>
+
+                          <div className='space-y-2'>
+                            <label className='flex items-center gap-2 text-xs font-medium text-neutral-600 dark:text-neutral-400'>
+                              <input type='checkbox' checked={newServerOauthOmitResource}
+                                aria-describedby='new-server-local-celestial-resource-help'
+                                onChange={e => {
+                                  setNewServerOauthOmitResource(e.target.checked)
+                                  if (e.target.checked) {
+                                    setNewServerOauthClientId(CELESTIAL_TEST_OAUTH_PRESET.clientId)
+                                    setNewServerOauthTokenAuthMethod('none')
+                                    setNewServerOauthClientSecret('')
+                                    setNewServerOauthRedirectUri(CELESTIAL_TEST_OAUTH_PRESET.redirectUri)
+                                    setNewServerOauthScopes(`openid profile email ${CELESTIAL_TEST_OAUTH_PRESET.scope}`)
+                                  }
+                                }} className='h-4 w-4 rounded focus-visible:ring-2 focus-visible:ring-blue-400/60' />
+                              Local Celestial testing: omit OAuth resource binding
+                            </label>
+                            <p id='new-server-local-celestial-resource-help' className='text-[11px] text-neutral-500 dark:text-neutral-400'>
+                              Off by default; separate from the PKCE exception. Local development only at
+                              http://127.0.0.1:8081/api/mcp-gp/rpc. Omits explicit token audience binding from login,
+                              code exchange and refresh. Fills the TEST public client and openid profile email GP scopes;
+                              S256 and all other authentication checks remain enabled.
+                            </p>
+                          </div>
+
+                          <div className='space-y-2'>
                             <label className='text-xs font-medium text-neutral-600 dark:text-neutral-400'>
                               OAuth Client ID (optional)
                             </label>
@@ -3299,6 +3398,8 @@ ${block}`
                             setNewServerOauthRedirectUri('')
                             setNewServerOauthScopes('')
                             setNewServerOauthTokenAuthMethod('client_secret_post')
+                            setNewServerOauthOmitResource(false)
+                            setNewServerOauthAllowMissingPkceS256ForCelestialTest(false)
                           }}
                           className={smallPillButtonClass}
                         >
@@ -3392,6 +3493,16 @@ ${block}`
                                     : ''}
                                 </p>
                               )}
+                              {server.oauth?.allowMissingPkceS256ForCelestialTest === true && (
+                                <p className='text-xs text-neutral-500 dark:text-neutral-400 mt-0.5'>
+                                  Celestial TEST compatibility: discovery omits PKCE methods. This connection still uses S256.
+                                </p>
+                              )}
+                              {server.oauth?.omitResourceForLocalCelestialTest === true && (
+                                <p className='text-xs text-neutral-500 dark:text-neutral-400 mt-0.5'>
+                                  Local Celestial testing: explicit OAuth token audience binding is omitted. S256 remains enabled.
+                                </p>
+                              )}
                               {server.error && (
                                 <p className='text-xs text-red-500 dark:text-red-400 mt-0.5'>{server.error}</p>
                               )}
@@ -3451,8 +3562,58 @@ ${block}`
                                       <textarea value={editServerHeadersText} onChange={e => setEditServerHeadersText(e.target.value)} placeholder='Leave blank to preserve existing headers, or enter {"Authorization":"Bearer new-token"}' rows={3} className={inputSurfaceClass} />
                                       <p className='text-[11px] text-neutral-500 dark:text-neutral-400'>Existing values are hidden. Enter JSON only when replacing all static headers.</p>
                                     </div>
+                                    <div className='space-y-2'>
+                                      <label className='flex items-center gap-2 text-xs font-medium text-neutral-600 dark:text-neutral-400'>
+                                        <input
+                                          type='checkbox'
+                                          checked={editServerOauthAllowMissingPkceS256ForCelestialTest}
+                                          aria-describedby='edit-server-celestial-test-pkce-help'
+                                          onChange={e => {
+                                            const enabled = e.target.checked
+                                            setEditServerOauthAllowMissingPkceS256ForCelestialTest(enabled)
+                                            if (enabled) {
+                                              setEditServerOauthClientId(CELESTIAL_TEST_OAUTH_PRESET.clientId)
+                                              setEditServerOauthClientSecret('')
+                                              setEditServerOauthTokenAuthMethod('none')
+                                              setEditServerOauthRedirectUri(CELESTIAL_TEST_OAUTH_PRESET.redirectUri)
+                                              setEditServerOauthScopes(`${editServerOauthOmitResource ? 'openid profile email ' : ''}${CELESTIAL_TEST_OAUTH_PRESET.scope}`)
+                                            }
+                                          }}
+                                          className='h-4 w-4 rounded focus-visible:ring-2 focus-visible:ring-blue-400/60'
+                                        />
+                                        Celestial TEST only: allow missing PKCE discovery metadata (still S256)
+                                      </label>
+                                      <p id='edit-server-celestial-test-pkce-help' className='text-[11px] text-neutral-500 dark:text-neutral-400'>
+                                        Off by default. Only tolerates omitted PKCE methods for Celestial TEST; never plain or
+                                        no PKCE. Enabling fills the TEST public-client ID, callback and scope, sets token auth to
+                                        none and clears the client secret. Saving uses the Celestial TEST authorization server.
+                                      </p>
+                                    </div>
+                                    <div className='space-y-2'>
+                                      <label className='flex items-center gap-2 text-xs font-medium text-neutral-600 dark:text-neutral-400'>
+                                        <input type='checkbox' checked={editServerOauthOmitResource}
+                                          aria-describedby='edit-server-local-celestial-resource-help'
+                                          onChange={e => {
+                                            setEditServerOauthOmitResource(e.target.checked)
+                                            if (e.target.checked) {
+                                              setEditServerOauthClientId(CELESTIAL_TEST_OAUTH_PRESET.clientId)
+                                              setEditServerOauthTokenAuthMethod('none')
+                                              setEditServerOauthClientSecret('')
+                                              setEditServerOauthRedirectUri(CELESTIAL_TEST_OAUTH_PRESET.redirectUri)
+                                              setEditServerOauthScopes(`openid profile email ${CELESTIAL_TEST_OAUTH_PRESET.scope}`)
+                                            }
+                                          }} className='h-4 w-4 rounded focus-visible:ring-2 focus-visible:ring-blue-400/60' />
+                                        Local Celestial testing: omit OAuth resource binding
+                                      </label>
+                                      <p id='edit-server-local-celestial-resource-help' className='text-[11px] text-neutral-500 dark:text-neutral-400'>
+                                        Off by default; separate from the PKCE exception. Local development only at
+                                        http://127.0.0.1:8081/api/mcp-gp/rpc. Omits explicit token audience binding from login,
+                                        code exchange and refresh. Fills the TEST public client and openid profile email GP scopes;
+                                        S256 and all other authentication checks remain enabled. Changing this option clears this connection's cached credentials.
+                                      </p>
+                                    </div>
                                     <input value={editServerOauthClientId} onChange={e => setEditServerOauthClientId(e.target.value)} placeholder='OAuth client ID (optional)' className={inputSurfaceClass} />
-                                    <input type='password' value={editServerOauthClientSecret} onChange={e => setEditServerOauthClientSecret(e.target.value)} placeholder={server.oauth?.hasClientSecret ? 'New client secret (blank preserves existing)' : 'OAuth client secret (optional)'} className={inputSurfaceClass} />
+                                    <input type='password' value={editServerOauthClientSecret} onChange={e => setEditServerOauthClientSecret(e.target.value)} placeholder={editServerOauthAllowMissingPkceS256ForCelestialTest ? 'No client secret needed for the TEST public client' : server.oauth?.hasClientSecret ? 'New client secret (blank preserves existing)' : 'OAuth client secret (optional)'} className={inputSurfaceClass} />
                                     <div className='space-y-1'>
                                       <label className='text-xs font-medium text-neutral-600 dark:text-neutral-400'>New OAuth Bearer Access Token (optional)</label>
                                       <input type='password' value={editServerOauthAccessToken} onChange={e => setEditServerOauthAccessToken(e.target.value)} placeholder={server.oauth?.hasAccessToken ? 'Blank preserves current token' : 'Paste access token'} className={inputSurfaceClass} />
@@ -3474,7 +3635,18 @@ ${block}`
                                   <button type='button' onClick={handleUpdateMcpServer} disabled={mcpEditSaving} className='rounded-2xl bg-blue-500 px-3 py-1.5 text-sm text-white transition-colors hover:bg-blue-600 disabled:opacity-50'>
                                     {mcpEditSaving ? 'Saving…' : 'Save Changes'}
                                   </button>
-                                  <button type='button' onClick={() => setEditingMcpServerName(null)} disabled={mcpEditSaving} className={smallPillButtonClass}>Cancel</button>
+                                  <button
+                                    type='button'
+                                    onClick={() => {
+                                      setEditingMcpServerName(null)
+                                      setEditServerOauthOmitResource(false)
+                                      setEditServerOauthAllowMissingPkceS256ForCelestialTest(false)
+                                    }}
+                                    disabled={mcpEditSaving}
+                                    className={smallPillButtonClass}
+                                  >
+                                    Cancel
+                                  </button>
                                 </div>
                               </div>
                             )}

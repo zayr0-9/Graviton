@@ -4,6 +4,10 @@ import { MessageRepo } from '../../persistence/messageRepo.js'
 import type { MessageSink } from '../messageSink.js'
 import { ProviderRouter } from '../providerRouter.js'
 import { ProviderEmptyResponseError, ToolLoopService } from '../toolLoopService.js'
+import { createContextStatusExecutor } from '../contextStatusTool.js'
+import { createMultiCallDispatchExecutor } from '../multiCallExecutor.js'
+import { createReplDispatchExecutor, ReplSessions } from '../replExecutor.js'
+import { calculateBranchContextUsage } from '../../../../shared/contextTokenEstimate.js'
 
 let BetterSqlite3Ctor: (new (filename: string) => Database.Database) | null = null
 
@@ -751,8 +755,7 @@ describeIfSqlite('ToolLoopService plan mode runtime block list', () => {
     expect(requested).toEqual(['call-edit'])
     expect(executedModes).toEqual(['execute'])
     expect(providerRouter.calls[0].input.systemPrompt).toContain('Custom Plan baseline')
-    expect(providerRouter.calls[1].input.systemPrompt).toBe('Custom Agent baseline')
-    expect(providerRouter.calls[1].input.systemPrompt).not.toContain('## Plan Response Style')
+    expect(providerRouter.calls[1].input.systemPrompt).toBe(providerRouter.calls[0].input.systemPrompt)
   })
 
   it('blocks mutating tools in plan mode before invoking the executor', async () => {
@@ -834,7 +837,7 @@ const baseRunInput = {
 }
 
 describe('ToolLoopService signal + robustness (in-memory sink)', () => {
-  it('refreshes discovered tools before the next provider turn', async () => {
+  it('keeps MCP discovery out of model definitions even with a legacy refresh hook', async () => {
     const providerRouter = new FakeProviderRouter()
     providerRouter.enqueue({
       content: '',
@@ -870,14 +873,8 @@ describe('ToolLoopService signal + robustness (in-memory sink)', () => {
     )
 
     expect(providerRouter.calls[0].input.tools.map((tool: any) => tool.name)).toEqual(['mcp_manager'])
-    expect(providerRouter.calls[1].input.tools.map((tool: any) => tool.name)).toEqual([
-      'mcp_manager',
-      'mcp__demo__echo',
-    ])
-    expect(events).toContainEqual(expect.objectContaining({
-      type: 'tools_updated',
-      tools: [expect.objectContaining({ name: 'mcp__demo__echo' })],
-    }))
+    expect(providerRouter.calls[1].input.tools).toEqual(providerRouter.calls[0].input.tools)
+    expect(events.some(event => event.type === 'tools_updated')).toBe(false)
   })
 
   it('does not silently self-upgrade out of plan mode when no upgrade handler is wired', async () => {
@@ -1267,5 +1264,171 @@ describe('ToolLoopService signal + robustness (in-memory sink)', () => {
     ).rejects.toThrow('reached max turns (2)')
     expect(providerRouter.calls).toHaveLength(2)
     expect(events.some(event => event.type === 'tool_loop' && event.status === 'max_turns_reached' && event.maxTurns === 2)).toBe(true)
+  })
+})
+
+describe('ToolLoopService context_status (in-memory sink)', () => {
+  it('isolates concurrent branches, passes reported usage and each run context limit', async () => {
+    const reports: any[] = []
+    const leaf = vi.fn(async () => { throw new Error('Unexpected job dispatch') })
+    const dispatch = createMultiCallDispatchExecutor(createContextStatusExecutor(leaf))
+    const execute = async (call: any, context: any) => {
+      const result = await dispatch(call, context)
+      reports.push({ lineageId: context.lineageId, result })
+      return result
+    }
+    const run = async (lineageId: string, usedTokens: number, limit: number) => {
+      const providerRouter = new FakeProviderRouter()
+      providerRouter.enqueue({ content: '', contextUsage: {
+        provider: 'openai', usedTokens, inputTokens: usedTokens, outputTokens: 0,
+        cachedInputTokens: 0, reasoningTokens: 0, totalTokens: usedTokens, recordedAt: '2026-10-06T00:00:00.000Z',
+      }, toolCalls: [{ id: `batch-${lineageId}`, name: 'multi_call', arguments: { calls: [{ tool: 'context_status' }] } }] })
+      providerRouter.enqueue({ content: 'done' })
+      const service = new ToolLoopService({ sink: new FakeSink(), providerRouter: providerRouter as any, executeTool: execute })
+      await service.run({ ...baseRunInput, lineageId, streamId: `run-${lineageId}`, contextLength: limit, operationMode: 'plan' }, () => {})
+    }
+    await Promise.all([run('a', 200, 1000), run('b', 500, 2000)])
+    for (const [lineageId, usedTokens, totalContextLimit] of [['a', 200, 1000], ['b', 500, 2000]] as const) {
+      const report = reports.find(item => item.lineageId === lineageId && item.result.results).result.results[0].data
+      expect(report).toMatchObject({ remainingTokens: totalContextLimit - usedTokens,
+        remainingPercent: Math.round((totalContextLimit - usedTokens) / totalContextLimit * 100) })
+    }
+    expect(leaf).not.toHaveBeenCalled()
+  })
+
+  it('estimates only active branch history after compaction, using meter prompts and no duplicate tool rows', async () => {
+    const providerRouter = new FakeProviderRouter()
+    providerRouter.enqueue({ content: '', toolCalls: [{ id: 'status', name: 'context_status', arguments: {} }] })
+    providerRouter.enqueue({ content: 'done' })
+    const sink = new FakeSink()
+    const reports: any[] = []
+    const executor = createContextStatusExecutor(vi.fn())
+    const service = new ToolLoopService({ sink, providerRouter: providerRouter as any, executeTool: async (call, context) => {
+      const result = await executor(call, context)
+      reports.push(result)
+      return result
+    } })
+    const summary = { id: 'summary', role: 'system', note: '__auto_compaction_summary__', content: 'summary' }
+    const prompts = ['project prompt', 'conversation context']
+    let expectedTokens = 0
+    await service.run({ ...baseRunInput, provider: 'lmstudio', lineageId: 'branch', history: [
+      { role: 'user', content: 'old '.repeat(10000) }, summary,
+      { role: 'tool', content: 'duplicate tool result '.repeat(1000) },
+    ], contextMeterPrompts: prompts }, event => {
+      if (event.type === 'assistant_message_persisted' && reports.length === 0) {
+        expectedTokens = calculateBranchContextUsage({ providerName: 'lmstudio', messages: [summary, event.message], prompts }).totalContextTokens
+      }
+    })
+    expect(reports[0]).toMatchObject({ remainingTokens: Math.max(0, 128000 - expectedTokens),
+      remainingPercent: Math.round(Math.max(0, 128000 - expectedTokens) / 128000 * 100) })
+  })
+
+  it('uses the provider context resolver and clamps exhausted headroom to zero', async () => {
+    const providerRouter = new FakeProviderRouter()
+    ;(providerRouter as any).resolveContextLength = () => 1000
+    providerRouter.enqueue({ content: '', contextUsage: {
+      provider: 'openai', usedTokens: 1200, inputTokens: 1200, outputTokens: 0,
+      cachedInputTokens: 0, reasoningTokens: 0, totalTokens: 1200, recordedAt: '2026-10-06T00:00:00.000Z',
+    }, toolCalls: [{ id: 'status', name: 'context_status', arguments: {} }] })
+    providerRouter.enqueue({ content: 'done' })
+    let report: any
+    const executor = createContextStatusExecutor(vi.fn())
+    const service = new ToolLoopService({ sink: new FakeSink(), providerRouter: providerRouter as any, executeTool: async (call, context) => {
+      report = await executor(call, context)
+      return report
+    } })
+    await service.run({ ...baseRunInput, contextLength: 99999, autoCompactionEnabled: false }, () => {})
+    expect(report).toMatchObject({ remainingTokens: 0, remainingPercent: 0 })
+  })
+})
+
+describe('context_status estimated same-turn results', () => {
+  it('includes results from earlier top-level calls before their assistant blocks are merged', async () => {
+    const providerRouter = new FakeProviderRouter()
+    providerRouter.enqueue({ content: '', toolCalls: [
+      { id: 'read', name: 'read_file', arguments: {} },
+      { id: 'status', name: 'context_status', arguments: {} },
+    ] })
+    providerRouter.enqueue({ content: 'done' })
+    let report: any
+    const execute = createContextStatusExecutor(async () => 'large result '.repeat(4000))
+    const service = new ToolLoopService({ sink: new FakeSink(), providerRouter: providerRouter as any,
+      executeTool: async (call, context) => {
+        const result = await execute(call, context)
+        if (call.name === 'context_status') report = result
+        return result
+      },
+    })
+    await service.run({ ...baseRunInput, provider: 'lmstudio' }, () => {})
+    expect(report.remainingTokens).toBeLessThan(128000 - 4000)
+  })
+})
+
+
+describe('ToolLoopService REPL capture (in-memory sink)', () => {
+  it('keeps nested data out of model/history while retaining execution events and lazy instructions', async () => {
+    const providerRouter = new FakeProviderRouter()
+    providerRouter.enqueue({ content: '', toolCalls: [{ id: 'capture', name: 'repl', arguments: {
+      action: 'invoke', tool: 'read_file', args: { path: 'src/a.ts' }, assign: 'source',
+    } }] })
+    providerRouter.enqueue({ content: 'Stored for later processing.' })
+    const sessions = new ReplSessions()
+    const sink = new FakeSink()
+    const events: any[] = []
+    const collectLazyInjections = vi.fn(async () => [])
+    const executeTool = createReplDispatchExecutor(async () => ({ content: 'RAW_CONTENT_MUST_NOT_REACH_MODEL' }), sessions)
+    try {
+      const service = new ToolLoopService({ sink, providerRouter: providerRouter as any, executeTool })
+      await service.run({
+        ...baseRunInput, lineageId: 'repl-branch', operationMode: 'plan',
+        tools: ['repl', 'read_file'].map(name => ({ name, description: name, inputSchema: { type: 'object', properties: {} } })),
+        contextLoader: { collectLazyInjections, buildPostCompactionInjection: async () => null },
+      }, e => events.push(e))
+      expect(JSON.stringify(providerRouter.calls)).not.toContain('RAW_CONTENT_MUST_NOT_REACH_MODEL')
+      expect(JSON.stringify(sink.persisted)).not.toContain('RAW_CONTENT_MUST_NOT_REACH_MODEL')
+      expect(JSON.stringify(events)).not.toContain('RAW_CONTENT_MUST_NOT_REACH_MODEL')
+      expect(JSON.stringify(providerRouter.calls)).toContain('stored')
+      expect(events.some(e => e.type === 'tool_execution' && e.toolName === 'read_file' && e.status === 'completed')).toBe(true)
+      expect(collectLazyInjections.mock.calls.some(([call]) => (call as any).name === 'read_file')).toBe(true)
+    } finally { sessions.clear() }
+  })
+})
+
+describe('ToolLoopService REPL artifacts', () => {
+  it('keeps imported data and generated export arguments out of provider replay and persisted messages', async () => {
+    const providerRouter = new FakeProviderRouter()
+    providerRouter.enqueue({ content: '', toolCalls: [{ id: 'import', name: 'repl', arguments: {
+      action: 'import', path: 'input.json', assign: 'data',
+    } }] })
+    providerRouter.enqueue({ content: '', toolCalls: [{ id: 'export', name: 'repl', arguments: {
+      action: 'export', path: 'output.json', variable: 'data',
+    } }] })
+    providerRouter.enqueue({ content: 'Artifact saved.' })
+    const sessions = new ReplSessions()
+    const sink = new FakeSink()
+    const events: any[] = []
+    let exported = ''
+    const executeTool = createReplDispatchExecutor(async call => {
+      if (call.name === 'read_file') return { success: true, content: '{"marker":"PRIVATE_ARTIFACT_SENTINEL"}', truncated: false }
+      exported = (call.arguments as any).content
+      return { success: true }
+    }, sessions)
+    try {
+      const compactionInputs: any[] = []
+      const service = new ToolLoopService({ sink, providerRouter: providerRouter as any, executeTool,
+        compactBranch: async input => {
+          compactionInputs.push(input)
+          return { message: { id: `summary-${compactionInputs.length}`, parent_id: input.parentMessageId, role: 'system', content: 'Artifact metadata retained', note: '__auto_compaction_summary__' } }
+        },
+      })
+      await service.run({ ...baseRunInput, lineageId: 'artifact-branch', operationMode: 'execute',
+        autoCompactionEnabled: true, contextLength: 100,
+        tools: ['repl', 'read_file', 'create_file'].map(name => ({ name, description: name, inputSchema: { type: 'object', properties: {} } })),
+      }, event => events.push(event))
+      expect(exported).toContain('PRIVATE_ARTIFACT_SENTINEL')
+      expect(compactionInputs.length).toBeGreaterThan(0)
+      for (const output of [providerRouter.calls, sink.persisted, events, compactionInputs]) expect(JSON.stringify(output)).not.toContain('PRIVATE_ARTIFACT_SENTINEL')
+      expect(JSON.stringify(sink.persisted)).toContain('exported')
+    } finally { sessions.clear() }
   })
 })

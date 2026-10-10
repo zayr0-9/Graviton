@@ -3,7 +3,7 @@ import type { ContentBlock, StreamEvent } from '@/features/chats/chatTypes'
 
 // Configuration for collapsed content display
 export const COLLAPSED_CONTENT_WORD_LIMIT = 15
-export const PROCESS_RUN_GROUP_MIN_ITEMS = 4
+export const PROCESS_RUN_GROUP_MIN_ITEMS = 3
 
 /**
  * Chat message design tokens (docs/agent_context/agent_design.md).
@@ -141,6 +141,20 @@ export interface ToolCallRenderGroup {
   args?: Record<string, any> | null
   results: Array<{ content: any; is_error?: boolean }>
   anchorIndex: number
+}
+
+/** Interactive/visual tool surfaces must remain visible instead of being folded into Agent steps. */
+export const isExcludedFromProcessRunGrouping = (name?: string, args?: Record<string, any> | null): boolean => {
+  const normalizedName = String(name || '').trim().toLowerCase()
+  if (normalizedName.startsWith('mcp__') || normalizedName === 'html_renderer') return true
+  if (normalizedName === 'mcp_manager' && args?.action === 'invoke') return true
+
+  if (normalizedName === 'plan_md') {
+    const action = String(args?.action || '').trim().toLowerCase()
+    return action === 'display' || action === 'visualize' || action === 'visualise' || action === 'clarify'
+  }
+
+  return false
 }
 
 // Helper function to convert contentBlocks to editable text

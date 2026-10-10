@@ -4,6 +4,7 @@ import providersList from '../../../../../shared/providers.json'
 import { ConversationId, MessageId } from '../../../../../shared/types'
 import { isCommunityMode } from '../../config/runtimeMode'
 import { parseId } from '../../utils/helpers'
+import { parseMessageMeta } from '../../../../../shared/contextInjection'
 
 import {
   Attachment,
@@ -196,11 +197,17 @@ const makeInitialState = (): ChatState => {
       sending: false,
       compacting: false,
       compactingConversationId: null,
+      compactingParentMessageId: null,
+      compactingLineageId: null,
+      compactionSummaryMessageId: null,
       validationError: null,
       draftMessage: null,
       multiReplyCount: 1,
       imageDrafts: [],
       imageDraftTarget: null,
+      imagePreparationPending: 0,
+      imagePreparationError: null,
+      imagePreparationGeneration: 0,
       editingBranch: false,
       optimisticMessage: null,
       optimisticBranchMessage: null,
@@ -263,6 +270,9 @@ const makeInitialState = (): ChatState => {
     planClarificationRequestsByStream: {},
     toolAutoApprove: false,
     operationMode: 'plan',
+    operationModeChanges: {},
+    operationModeDrafts: {},
+    messageQueues: {},
     freeTier: {
       freeGenerationsRemaining: null,
       showLimitModal: false,
@@ -316,6 +326,9 @@ export const chatSlice = createSlice({
       state.composition.input = initialState.composition.input
       state.composition.validationError = null
       if (!state.composition.imageDraftTarget || state.composition.imageDraftTarget.kind === 'composer') {
+        state.composition.imagePreparationGeneration = (state.composition.imagePreparationGeneration ?? 0) + 1
+        state.composition.imagePreparationPending = 0
+        state.composition.imagePreparationError = null
         state.composition.imageDrafts = []
         state.composition.imageDraftTarget = null
       }
@@ -324,10 +337,23 @@ export const chatSlice = createSlice({
     imageDraftTargetSet: (state, action: PayloadAction<ImageDraftTarget | null>) => {
       if (!imageDraftTargetsEqual(state.composition.imageDraftTarget, action.payload)) {
         state.composition.imageDrafts = []
+        state.composition.imagePreparationGeneration = (state.composition.imagePreparationGeneration ?? 0) + 1
+        state.composition.imagePreparationPending = 0
+        state.composition.imagePreparationError = null
       }
       state.composition.imageDraftTarget = action.payload
     },
 
+    imagePreparationStarted: (state, _action: PayloadAction<{ target: ImageDraftTarget }>) => {
+      state.composition.imagePreparationPending = (state.composition.imagePreparationPending ?? 0) + 1
+      state.composition.imagePreparationError = null
+    },
+    imagePreparationFinished: state => {
+      state.composition.imagePreparationPending = Math.max(0, (state.composition.imagePreparationPending ?? 0) - 1)
+    },
+    imagePreparationFailed: (state, action: PayloadAction<{ error: string }>) => {
+      state.composition.imagePreparationError = action.payload.error
+    },
     imageDraftsAppended: (state, action: PayloadAction<ImageDraftsAppendedPayload>) => {
       const { drafts, target } = normalizeImageDraftAppendPayload(action.payload, state.composition.imageDraftTarget)
       if (!imageDraftTargetsEqual(state.composition.imageDraftTarget, target)) {
@@ -346,6 +372,9 @@ export const chatSlice = createSlice({
     imageDraftsCleared: (state, action: PayloadAction<{ target?: ImageDraftTarget | null } | undefined>) => {
       const target = action.payload?.target
       if (target && !imageDraftTargetsEqual(state.composition.imageDraftTarget, target)) return
+      state.composition.imagePreparationGeneration = (state.composition.imagePreparationGeneration ?? 0) + 1
+      state.composition.imagePreparationPending = 0
+      state.composition.imagePreparationError = null
       state.composition.imageDrafts = []
       state.composition.imageDraftTarget = null
     },
@@ -357,7 +386,7 @@ export const chatSlice = createSlice({
       if (index >= 0 && index < state.composition.imageDrafts.length) {
         state.composition.imageDrafts.splice(index, 1)
       }
-      if (state.composition.imageDrafts.length === 0) {
+      if (state.composition.imageDrafts.length === 0 && !state.composition.imagePreparationPending) {
         state.composition.imageDraftTarget = null
       }
     },
@@ -367,15 +396,32 @@ export const chatSlice = createSlice({
       state.composition.editingBranch = action.payload
     },
 
-    compactingStarted: (state, action: PayloadAction<{ conversationId?: ConversationId | null } | undefined>) => {
+    compactingStarted: (state, action: PayloadAction<{ conversationId?: ConversationId | null; parentMessageId?: MessageId | null } | undefined>) => {
       state.composition.compacting = true
+      state.composition.compactionSummaryMessageId = null
       state.composition.compactingConversationId =
         action.payload?.conversationId ?? state.conversation.currentConversationId ?? null
+      state.composition.compactingParentMessageId = action.payload?.parentMessageId ?? null
+      // Only capture the selected lineage when this request belongs to its path.
+      // Pre-branch compaction can target a different structural anchor.
+      state.composition.compactingLineageId =
+        String(state.composition.compactingConversationId) === String(state.conversation.currentConversationId) &&
+        state.conversation.currentPath.some(id => String(id) === String(state.composition.compactingParentMessageId))
+          ? state.conversation.currentLineageId
+          : null
+    },
+
+    compactionSummaryPersisted: (state, action: PayloadAction<{ conversationId: ConversationId; parentMessageId: MessageId; messageId: MessageId }>) => {
+      if (String(state.composition.compactingConversationId) !== String(action.payload.conversationId) ||
+        String(state.composition.compactingParentMessageId) !== String(action.payload.parentMessageId)) return
+      state.composition.compactionSummaryMessageId = action.payload.messageId
     },
 
     compactingFinished: state => {
       state.composition.compacting = false
       state.composition.compactingConversationId = null
+      state.composition.compactingParentMessageId = null
+      state.composition.compactingLineageId = null
     },
 
     sendingStarted: (state, action: PayloadAction<SendingStartedPayload | undefined>) => {
@@ -408,12 +454,12 @@ export const chatSlice = createSlice({
         state.composition.input.content = ''
       }
 
-      if (streamType === 'primary') {
+      if (!action.payload?.preserveDrafts && streamType === 'primary') {
         if (!state.composition.imageDraftTarget || state.composition.imageDraftTarget.kind === 'composer') {
           state.composition.imageDrafts = []
           state.composition.imageDraftTarget = null
         }
-      } else if (streamType === 'branch') {
+      } else if (!action.payload?.preserveDrafts && streamType === 'branch') {
         if (!state.composition.imageDraftTarget || state.composition.imageDraftTarget.kind === 'branch') {
           state.composition.imageDrafts = []
           state.composition.imageDraftTarget = null
@@ -456,10 +502,8 @@ export const chatSlice = createSlice({
           // back in the composer. Clearing the drafts unconditionally meant the words came
           // back but the attachments the user picked did not — silently, with no way to
           // recover them. A run that ended in error keeps its drafts for the retry.
-          if (!endedInError) {
-            state.composition.imageDrafts = []
-            state.composition.imageDraftTarget = null
-          }
+          // Drafts now may belong to a follow-up typed during this run. They are
+          // consumed at submission, never by completion of an earlier message.
         }
 
         // Clear primary if this was the primary stream
@@ -557,6 +601,7 @@ export const chatSlice = createSlice({
         stream.currentBranchAnchorMessageId = stream.triggerUserMessageId ?? stream.lineage.originMessageId ?? stream.lineage.rootMessageId ?? null
         stream.liveMessageId = null
         stream.lastCompletedMessageId = null
+        stream.persistedTurnMessageId = null
         stream.finalMessageId = null
         stream.streamingMessageId = null
         return
@@ -571,8 +616,9 @@ export const chatSlice = createSlice({
         if (chunk.messageId) {
           stream.currentBranchAnchorMessageId = chunk.messageId
         }
-        // Keep messageId/lastCompletedMessageId as branch anchors. Chat.tsx uses
-        // liveMessageId/streamingMessageId for duplicate suppression instead.
+        // Keep messageId/lastCompletedMessageId as branch anchors, but the new
+        // buffers no longer belong to that persisted row (even without a live ID).
+        stream.persistedTurnMessageId = null
         // Clear previous turn's transient render buffers for the new live answer.
         stream.events = []
         stream.buffer = ''
@@ -695,6 +741,7 @@ export const chatSlice = createSlice({
         const completedMessageId = chunk.message?.id || null
         stream.messageId = completedMessageId
         stream.lastCompletedMessageId = completedMessageId
+        stream.persistedTurnMessageId = completedMessageId
         if (completedMessageId) {
           stream.branchAnchorMessageId = completedMessageId
           stream.currentBranchAnchorMessageId = completedMessageId
@@ -777,7 +824,17 @@ export const chatSlice = createSlice({
       // Handle both old format (just messageId) and new format (with streamId and updatePath)
       const hasStreamId = 'streamId' in action.payload
       const streamId = hasStreamId ? (action.payload as StreamCompletedPayload).streamId : DEFAULT_STREAM_ID
-      const messageId = action.payload.messageId
+      let messageId = action.payload.messageId
+      // A mode notification may be the durable tail after a natural final answer.
+      // Keep that selected tail rather than rewinding to the returned assistant id.
+      const selectedPath = state.conversation.currentPath
+      const finalIndex = selectedPath.indexOf(messageId)
+      if (finalIndex >= 0 && selectedPath.slice(finalIndex + 1).every(id => {
+        const row = state.conversation.messages.find(message => message.id === id)
+        return parseMessageMeta(row?.meta)?.kind === 'operation_mode_change'
+      })) {
+        messageId = selectedPath[selectedPath.length - 1] ?? messageId
+      }
       const updatePath = hasStreamId ? ((action.payload as StreamCompletedPayload).updatePath ?? true) : true
 
       const stream = state.streaming.byId[streamId]
@@ -789,6 +846,7 @@ export const chatSlice = createSlice({
         stream.finished = true
         stream.messageId = messageId
         stream.lastCompletedMessageId = messageId
+        stream.persistedTurnMessageId = messageId
         stream.finalMessageId = messageId
         stream.currentBranchAnchorMessageId = messageId
         stream.liveMessageId = null
@@ -852,6 +910,14 @@ export const chatSlice = createSlice({
       }
     },
 
+    streamCompactionUpdated: (
+      state,
+      action: PayloadAction<{ streamId: string; status: 'started' | 'completed' | 'failed' }>
+    ) => {
+      const stream = state.streaming.byId[action.payload.streamId]
+      if (stream) stream.compactionStatus = action.payload.status
+    },
+
     // Update stream lineage after getting target parent ID
     // This is called when we know the actual parent of the streaming message
     streamLineageUpdated: (
@@ -896,6 +962,7 @@ export const chatSlice = createSlice({
             : streamBelongsToCurrentPath
 
           stream.lineage.lineageId = lineageId ?? undefined
+          stream.lineage.lineageIdConfirmed = Boolean(lineageId)
           if (
             lineageId &&
             stream.conversationId === state.conversation.currentConversationId &&
@@ -1002,6 +1069,11 @@ export const chatSlice = createSlice({
         state.heimdall.subagentMap = {}
       }
       if (conversationChanged) {
+        state.composition.imageDrafts = []
+        state.composition.imageDraftTarget = null
+        state.composition.imagePreparationPending = 0
+        state.composition.imagePreparationError = null
+        state.composition.imagePreparationGeneration = (state.composition.imagePreparationGeneration ?? 0) + 1
         state.conversation.currentLineageId = null
         state.conversation.currentPath = []
         state.conversation.focusedChatMessageId = null
@@ -1012,6 +1084,13 @@ export const chatSlice = createSlice({
     // Select conversation, exact lineage, visible path, and focus as one render-safe transition.
     lineageSelected: (state, action: PayloadAction<LineageSelectionPayload>) => {
       const { conversationId, lineageId, path, focus } = action.payload
+      if (state.conversation.currentConversationId != null && String(state.conversation.currentConversationId) !== String(conversationId)) {
+        state.composition.imageDrafts = []
+        state.composition.imageDraftTarget = null
+        state.composition.imagePreparationPending = 0
+        state.composition.imagePreparationError = null
+        state.composition.imagePreparationGeneration = (state.composition.imagePreparationGeneration ?? 0) + 1
+      }
       if (
         state.conversation.snapshotConversationId != null &&
         String(state.conversation.snapshotConversationId) !== String(conversationId)
@@ -1028,6 +1107,11 @@ export const chatSlice = createSlice({
     },
 
     conversationCleared: state => {
+      state.composition.imageDrafts = []
+      state.composition.imageDraftTarget = null
+      state.composition.imagePreparationPending = 0
+      state.composition.imagePreparationError = null
+      state.composition.imagePreparationGeneration = (state.composition.imagePreparationGeneration ?? 0) + 1
       state.conversation.currentConversationId = null
       state.conversation.currentLineageId = null
       state.conversation.snapshotConversationId = null
@@ -1236,8 +1320,15 @@ export const chatSlice = createSlice({
           ? state.conversation.currentPath[state.conversation.currentPath.length - 1]
           : null
 
-      const shouldSwitch =
+      const existingIndex = state.conversation.currentPath.indexOf(newMessage.id)
+      const preservesModeTail = existingIndex >= 0 && existingIndex < state.conversation.currentPath.length - 1 &&
+        state.conversation.currentPath.slice(existingIndex + 1).every(id => {
+          const row = state.conversation.messages.find(message => message.id === id)
+          return parseMessageMeta(row?.meta)?.kind === 'operation_mode_change'
+        })
+      const shouldSwitch = !preservesModeTail && (
         newMessage.role === 'user' || state.conversation.currentPath.length === 0 || currentTip === newMessage.parent_id
+      )
 
       if (shouldSwitch) {
         state.conversation.currentLineageId = null
@@ -1454,6 +1545,9 @@ export const chatSlice = createSlice({
 
     decisionRequestsClearedForStream: (state, action: PayloadAction<string>) => {
       const streamId = action.payload
+      for (const [key, change] of Object.entries(state.operationModeChanges ?? {})) {
+        if (change.streamId === streamId) delete state.operationModeChanges[key]
+      }
       delete state.toolPermissionRequestsByStream[streamId]
       delete state.operationModeUpgradeRequestsByStream[streamId]
       delete state.planClarificationRequestsByStream[streamId]
@@ -1472,6 +1566,107 @@ export const chatSlice = createSlice({
 
     toolAutoApproveToggled: state => {
       state.toolAutoApprove = !state.toolAutoApprove
+    },
+
+    operationModeDecisionsCleared: (state, action: PayloadAction<{ streamId: string; toolCallIds: string[] }>) => {
+      const { streamId, toolCallIds } = action.payload
+      const permission = state.toolPermissionRequestsByStream[streamId]
+      if (permission?.toolCallId && toolCallIds.includes(permission.toolCallId)) {
+        delete state.toolPermissionRequestsByStream[streamId]
+        if (state.toolCallPermissionRequest?.streamId === streamId) state.toolCallPermissionRequest = null
+      }
+      const upgrade = state.operationModeUpgradeRequestsByStream[streamId]
+      if (upgrade?.toolCallId && toolCallIds.includes(upgrade.toolCallId)) {
+        delete state.operationModeUpgradeRequestsByStream[streamId]
+        if (state.operationModeUpgradeRequest?.streamId === streamId) state.operationModeUpgradeRequest = null
+      }
+    },
+
+    messageQueueUpdated: (state, action: PayloadAction<import('../../../../../shared/queuedMessages').MessageQueueSnapshot>) => {
+      state.messageQueues ??= {}
+      const old = state.messageQueues[action.payload.streamId]
+      if (!old || action.payload.revision >= old.revision) state.messageQueues[action.payload.streamId] = action.payload
+    },
+
+    queuedMessageInserted: (state, action: PayloadAction<{ message: Message; streamId: string; updatePath?: boolean }>) => {
+      const { message, streamId } = action.payload
+      if (!isMessageForCurrentConversation(state, message)) return
+      const parent = state.conversation.messages.find(row => row.id === message.parent_id)
+      if (parent && !parent.children_ids.includes(message.id)) parent.children_ids.push(message.id)
+      const tip = state.conversation.currentPath.at(-1)
+      const nextPath = buildPathToMessage(state.conversation.messages, message.id)
+      if (action.payload.updatePath !== false && (!tip || nextPath.includes(tip))) {
+        state.conversation.currentPath = nextPath
+      }
+      const stream = state.streaming.byId[streamId]
+      if (stream) stream.currentBranchAnchorMessageId = message.id
+    },
+
+    operationModeDraftSet: (state, action: PayloadAction<{
+      conversationId: ConversationId; parentId: MessageId | null; mode: OperationMode
+    }>) => {
+      const { conversationId, parentId, mode } = action.payload
+      state.operationModeDrafts ??= {}
+      state.operationModeDrafts[JSON.stringify([String(conversationId), parentId == null ? null : String(parentId)])] = mode
+    },
+
+    operationModeChangeRequested: (state, action: PayloadAction<{
+      conversationId: ConversationId; mode: OperationMode; requestId: string; streamId?: string | null
+    }>) => {
+      const { conversationId, ...change } = action.payload
+      state.operationModeChanges ??= {}
+      state.operationModeChanges[String(conversationId)] = { ...change, status: 'requesting' }
+    },
+
+    operationModeChangeAccepted: (state, action: PayloadAction<{
+      conversationId: ConversationId; mode: OperationMode; requestId: string
+    }>) => {
+      const pending = state.operationModeChanges?.[String(action.payload.conversationId)]
+      // An SSE notification can arrive before the HTTP acknowledgement.
+      if (!pending || pending.requestId !== action.payload.requestId) return
+      pending.status = 'pending'
+      if (String(state.conversation.currentConversationId) === String(action.payload.conversationId)) {
+        state.operationMode = action.payload.mode
+      }
+    },
+
+    operationModeChangeFailed: (state, action: PayloadAction<{ conversationId: ConversationId; requestId: string }>) => {
+      const key = String(action.payload.conversationId)
+      if (state.operationModeChanges?.[key]?.requestId === action.payload.requestId) {
+        delete state.operationModeChanges[key]
+      }
+    },
+
+    operationModeNotificationReceived: (state, action: PayloadAction<{
+      message: Message; mode: OperationMode; streamId?: string | null; updatePath?: boolean
+    }>) => {
+      const { message, mode, streamId, updatePath } = action.payload
+      const key = String(message.conversation_id)
+      const pending = state.operationModeChanges?.[key]
+      const matchesPending = pending?.mode === mode && (!pending.streamId || pending.streamId === streamId)
+      if (matchesPending) delete state.operationModeChanges[key]
+      if (!isMessageForCurrentConversation(state, message)) return
+
+      const parent = state.conversation.messages.find(m => m.id === message.parent_id)
+      if (parent) {
+        const children = Array.isArray(parent.children_ids) ? parent.children_ids : []
+        if (!children.includes(message.id)) parent.children_ids = [...children, message.id]
+      }
+      const path = state.conversation.currentPath
+      const tip = path[path.length - 1] ?? null
+      // A notification on a background branch must not steal the selected path.
+      if (updatePath !== false && (tip === message.parent_id || path.length === 0)) {
+        state.conversation.currentPath = buildPathToMessage(state.conversation.messages, message.id)
+        state.operationMode = mode
+      } else if (matchesPending) {
+        state.operationMode = mode
+      }
+      if (streamId) {
+        const stream = state.streaming.byId[streamId]
+        if (stream) stream.currentBranchAnchorMessageId = message.id
+        delete state.operationModeUpgradeRequestsByStream[streamId]
+        if (state.operationModeUpgradeRequest?.streamId === streamId) state.operationModeUpgradeRequest = null
+      }
     },
 
     operationModeSet: (state, action: PayloadAction<OperationMode>) => {

@@ -12,10 +12,9 @@
  * hookRunner is wired AND the request set `hooksEnabled`. Subagents and the mobile
  * LAN UI never enable it, so their loop is byte-for-byte unchanged.
  *
- * NOTE (intentional scope, see Phase 3 risks): memory-context injection
- * (long-term/recent/project memory) that the renderer folds via the same
- * buildSystemPromptWithHookContext is NOT ported here — it is a separate feature,
- * orthogonal to hooks. Only hook context is folded server-side.
+ * Markdown auto-memory is independent of hooks: ConversationContextLoader loads
+ * the cwd-based MEMORY.md index at launch and after compaction. This service only
+ * handles hook lifecycle output; the legacy aggregate-memory system is retired.
  */
 import type { HeadlessStreamEvent } from '../../../../../shared/headlessApi.js'
 import type {
@@ -26,6 +25,7 @@ import type {
   HookTurnContext,
   InstructionsLoadReason,
 } from '../../hooks/hookTypes.js'
+import type { HeadlessChatOperation } from '../../../../../shared/headlessApi.js'
 import { attachChatErrorCode } from '../providers/providerErrorFormatter.js'
 import type { ToolExecutionContext, ToolLoopHooks } from './toolLoopService.js'
 import { toToolResultContent } from './toolLoopService.js'
@@ -290,7 +290,7 @@ export interface ChatHookSession {
   /** Mutable — set to the final tracked stream id after StreamingRunRepo.upsert. */
   streamId: string | null
   /** UserPromptSubmit — returns the effective prompt; throws if a hook blocks. */
-  runUserPromptSubmit(prompt: string, parentId: string | null): Promise<string>
+  runUserPromptSubmit(prompt: string, parentId: string | null, operation?: HeadlessChatOperation): Promise<string>
   /** PreToolUse — returns the raw result so the executor can rewrite args / enforce deny. */
   runPreToolUse(toolCall: any, ctx: ToolExecutionContext): Promise<HookRunResult>
   /** PostToolUse — success path; folds additionalContext. */
@@ -402,7 +402,7 @@ export function createChatHookSession(config: ChatHookSessionConfig): ChatHookSe
       localApiBase,
     })
 
-  const runUserPromptSubmit = async (prompt: string, parentId: string | null): Promise<string> => {
+  const runUserPromptSubmit = async (prompt: string, parentId: string | null, operation = config.operation): Promise<string> => {
     const meta = metadataFor({ parentId, includeProject: true })
     const result = await safeRun({
       event: 'UserPromptSubmit',
@@ -411,7 +411,7 @@ export function createChatHookSession(config: ChatHookSessionConfig): ChatHookSe
       cwd: config.cwd,
       provider: config.provider,
       model: config.model,
-      operation: config.operation,
+      operation,
       prompt,
       messageId: meta.messageId,
       parentId: meta.parentId,

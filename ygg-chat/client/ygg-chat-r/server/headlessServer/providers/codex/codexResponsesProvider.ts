@@ -18,14 +18,17 @@ function previewForCodexLog(value: unknown, maxLength = 1200): string {
   return raw.length > maxLength ? `${raw.slice(0, maxLength)}...<truncated:${raw.length}>` : raw
 }
 
-const RESPONSES_LITE_VERSION = '0.153.0'
+// Match the verified Codex desktop bundled CLI, not the desktop app version.
+// The live catalog exposes GPT-6.1 Sol at 0.159.2 but not 0.155.0, despite the
+// bundled catalog's lower minimum. Keep both identity headers on this version.
+const CODEX_CLIENT_VERSION = '0.159.2'
 const RESPONSES_LITE_HEADER = 'x-openai-internal-codex-responses-lite'
 const RESPONSES_LITE_WIRE_SESSION_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
 const MAX_RESPONSES_LITE_SESSIONS = 500
 const liteWireSessionIds = new Map<string, string>()
 
 function usesResponsesLite(model: string): boolean {
-  return /^(?:gpt-6-astra|gpt-5\.6-(?:sol|terra|luna))$/i.test(model)
+  return /^(?:gpt-6\.1-sol|gpt-6-(?:astra|sol|luna)|gpt-5\.6-(?:sol|terra|luna))$/i.test(model)
 }
 
 function toResponsesLiteTools(tools: any[]): any[] {
@@ -93,6 +96,7 @@ export class CodexResponsesProvider {
         ...(this.options.reasoningSummary === null ? {} : { summary: this.options.reasoningSummary || 'auto' }),
         ...(responsesLite ? { context: 'all_turns' } : {}),
       },
+      ...(input.providerInput.railwayTurn?.serviceTier === 'priority' ? { service_tier: 'priority' } : {}),
       store: false,
       stream: true,
       include: ['reasoning.encrypted_content', 'web_search_call.action.sources'],
@@ -101,17 +105,18 @@ export class CodexResponsesProvider {
         'x-codex-installation-id': promptCacheKey,
       },
     }
+    const originator = this.options.originator || CODEX_ORIGINATOR
     const headers = new Headers({
       accept: 'text/event-stream',
       'content-type': 'application/json',
       authorization: `Bearer ${this.options.auth.accessToken}`,
-      originator: this.options.originator || CODEX_ORIGINATOR,
-      'user-agent': this.options.userAgent || 'Qubit/0.1 Codex',
+      originator,
+      version: CODEX_CLIENT_VERSION,
+      'user-agent': this.options.userAgent || `${originator}/${CODEX_CLIENT_VERSION} (${process.platform}; ${process.arch}) Graviton`,
     })
     if (this.options.auth.accountId) headers.set('ChatGPT-Account-ID', this.options.auth.accountId)
     if (responsesLite) {
       headers.set(RESPONSES_LITE_HEADER, 'true')
-      headers.set('version', RESPONSES_LITE_VERSION)
       headers.set('x-session-affinity', promptCacheKey)
     }
     if (wireSessionId) {
@@ -135,7 +140,10 @@ export class CodexResponsesProvider {
         instructionsLength: instructions.length,
         usedFallbackInstructions: !parts.instructions?.trim(),
         responsesLite,
-        responsesLiteVersion: responsesLite ? RESPONSES_LITE_VERSION : null,
+        responsesLiteVersion: responsesLite ? CODEX_CLIENT_VERSION : null,
+        clientVersion: headers.get('version'),
+        originator: headers.get('originator'),
+        userAgent: headers.get('user-agent'),
         hasInstructionsInBody: typeof body.instructions === 'string' && body.instructions.length > 0,
         inputItems: parts.input.length,
         tools: parts.tools.length,

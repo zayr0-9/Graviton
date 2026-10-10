@@ -1,5 +1,7 @@
 ---
 paths:
+  - "client/ygg-chat-r/src/hooks/useConversationSnapshotCoordinator.ts"
+  - "client/ygg-chat-r/src/features/chats/conversationSnapshotCoordinator.ts"
   - "client/ygg-chat-r/src/containers/Chat.tsx"
   - "client/ygg-chat-r/src/components/ParallelChatPane/**"
 ---
@@ -165,7 +167,7 @@ Normal send flow:
 7. It creates optimistic user state and dispatches `sendMessage()` with explicit `streamId`.
 8. Success relies on SSE/user-message chunks and reducers rather than immediately refetching.
 
-After the headless thin-client migration, the three chat thunks (`sendMessage`, `editMessageWithBranching`, `sendMessageToBranch` in `chatActions.ts`) no longer run any loop in the renderer. They POST the send/edit/branch routes on the local headless server (`http://127.0.0.1:3002`), and the server-owned loop's SSE events are streamed by `runServerChatLoop` (`src/features/chats/mainChatClient.ts`) and projected onto the existing Redux stream vocabulary by `projectServerEvent` (`src/features/chats/sseProjection.ts`). These thunks require Electron and throw `'The server-owned chat loop requires Electron.'` otherwise. Chat.tsx's dispatch sites and the optimistic-bubble logic are unchanged; only what happens behind the thunk moved server-side.
+After the headless thin-client migration, the three chat thunks (`sendMessage`, `editMessageWithBranching`, `sendMessageToBranch` in `chatActions.ts`) no longer run any loop in the renderer. They POST the send/edit/branch routes on the local headless server (`http://127.0.0.1:3002`), and the server-owned loop's SSE events are streamed by `runServerChatLoop` (`src/features/chats/mainChatClient.ts`) and projected onto the existing Redux stream vocabulary by `projectServerEvent` (`src/features/chats/sseProjection.ts`). These thunks require a local-server runtime (Electron or the existing standalone target), not plain web. Chat.tsx's dispatch sites and the optimistic-bubble logic are unchanged; only what happens behind the thunk moved server-side.
 
 Slash commands currently include:
 - `/status-openai`
@@ -175,11 +177,11 @@ Slash commands currently include:
 
 ## Tool Permission and Plan Clarification Dialogs
 
-Chat.tsx renders the tool-permission panel and `PlanClarificationPanel` from the `state.chat.toolCallPermissionRequest` / `state.chat.planClarificationRequest` slice fields, and wires them to the resolver thunks `respondToToolPermission`, `respondToToolPermissionAndEnableAll`, `respondToPlanClarification`, and `cancelPlanClarification` (`chatActions.ts`).
+Chat selects permission, mode-upgrade, and clarification requests from per-stream maps using the effective view stream ID, with legacy singleton fallback when no ID exists. Resolver thunks POST `/api/resume` using request `streamId`/`toolCallId`; callers pass explicit stream IDs to avoid answering another pane's request.
 
 The dialogs are unchanged in Chat.tsx, but their **data source moved server-side** with the headless migration:
 - The server-owned chat loop pauses mid-turn and emits `permission_required` / `clarify_required` SSE events. `projectServerEvent` (`src/features/chats/sseProjection.ts`) projects these onto the **same existing reducers** (`toolPermissionRequested` / `planClarificationRequested` in `chatSlice.ts`), so the slice fields Chat reads are populated exactly as before — no renderer-side tool execution or pending-promise machinery is involved.
-- The four resolver thunks now `POST /api/resume` on the local server (shared helper `postDecisionResume`, `chatActions.ts`) instead of resolving in-renderer promises; the correlation ids (`streamId`, `toolCallId`) travel on the slice fields. Their public signatures are unchanged, which is why Chat.tsx needed no edits (zero-diff cutover).
+- The four resolver thunks now `POST /api/resume` on the local server (shared helper `postDecisionResume`, `chatActions.ts`) instead of resolving in-renderer promises; the correlation ids (`streamId`, `toolCallId`) travel on the slice fields. Current resolver APIs accept explicit stream identity passed by Chat; transient resume failures can retain the dialog and typed answers.
 
 ## Branch/Edit/Explain Actions
 
@@ -275,10 +277,10 @@ When adding new persistent UI settings, prefer helper modules in `src/helpers/*S
 
 ### Change how messages load
 
-1. Update `useConversationMessages` or the API endpoint first.
-2. Ensure Chat still receives both flat `messages` and `tree`.
-3. Keep Redux sync effects scoped to `conversationIdFromUrl` and `isConversationDataFetched`.
-4. Validate empty conversations and route switches.
+1. Update `fetchConversationMessagesTree` or the endpoint first.
+2. Preserve generation gating and protected-row reconciliation in `coordinateConversationSnapshot`.
+3. Apply accepted messages/tree/path atomically through `conversationSnapshotApplied`; do not restore separate loading effects.
+4. Validate empty conversations, same-conversation remounts, rapid route switches, and terminal reconciliation.
 
 ### Add a chat-level message action
 
@@ -331,8 +333,16 @@ When adding new persistent UI settings, prefer helper modules in `src/helpers/*S
 
 ## Active-run Compaction
 
-In-loop (mid-turn) auto-compaction now runs **server-side** inside the headless chat loop (`electron/headlessServer/services/compactionService.ts`, driven by `ToolLoopService`); the renderer no longer orchestrates compaction during a running send/edit/repeat/branch tool loop. The server-emitted `context_compaction` SSE events are received but currently no-op in the renderer projection (`sseProjection.ts` default case).
+In-loop (mid-turn) auto-compaction now runs **server-side** inside the headless chat loop (`server/headlessServer/services/compactionService.ts`, driven by `ToolLoopService`); the renderer no longer orchestrates compaction during a running send/edit/repeat/branch tool loop. The renderer projects `context_compaction` into stream status, notices/errors, and the completed summary row with updated anchors; it does not run active-loop compaction itself.
 
 The renderer keeps two client-side compaction controls, both via the `compactBranch` thunk (`chatActions.ts`):
 - the manual `/compactify` command (`handleManualCompactifyCommand` in `Chat.tsx`);
 - the pre-send auto-compaction guard in `handleSend` (runs before dispatching the send when usage reaches the 85% threshold), so the produced summary marker anchors the continuation without another user message.
+
+## Fast-mode Composer Background
+
+Chat Settings → Fast mode animation offers the 16 approved motion studies plus None. The preference (`chat:fastModeAnimation`) defaults to Tidal glass and syncs through `chatUi:fastModeAnimationChange` and native storage events in `src/helpers/fastModeAnimationSettings.ts`. It does not enable the service tier. Chat renders the decorative background only for `isOpenAIChatGPTProvider && fastServiceTierEnabled`.
+
+`src/components/FastModeAnimation/` owns the effect geometry, CSS and palette. Keep the controls above the non-interactive layer, and clip only that layer (not popovers). Default palettes follow the HTML studies; enabled custom themes borrow `composerToggleActiveBg`, `sendButtonAnimationColor`, `chatProgressBarFill`, `composerToggleActiveBorder` and `chatPanelBg`, resolved for the current mode. Dark palettes preserve hue without a dark overlay over the whole effect. Settings previews animate only on hover/focus and all effects respect reduced motion.
+
+Focused validation: `npm run test:renderer -- src/components/FastModeAnimation/FastModeAnimation.test.tsx` from the client package.

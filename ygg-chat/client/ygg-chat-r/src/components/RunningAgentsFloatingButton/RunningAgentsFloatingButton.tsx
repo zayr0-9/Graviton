@@ -1,5 +1,4 @@
-import { AnimatePresence, motion, useReducedMotion } from 'framer-motion'
-import React, { useEffect, useMemo, useRef, useState } from 'react'
+import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { selectCurrentConversationId, selectCurrentPath } from '../../features/chats'
 import type { Conversation } from '../../features/conversations/conversationTypes'
@@ -7,14 +6,24 @@ import type { BranchDebugData, BranchDebugRow } from '../../features/chats/branc
 import { uiActions, type UiNotification } from '../../features/ui'
 import { useAppDispatch, useAppSelector } from '../../hooks/redux'
 import {
+  buildAgentForkGroups,
   getAgentActivityBadgeClasses,
+  type AgentForkGroup,
   summarizeAgentStreamId,
   useRunningAgentStreams,
   type AgentStreamListItem,
 } from '../../hooks/useRunningAgentStreams'
 import { useConversationBranchDebugData, type ResearchNoteItem } from '../../hooks/useQueries'
 import { getThemeModeColor, useCustomChatTheme, useHtmlDarkMode } from '../ThemeManager/themeConfig'
-import { useMotionPreferences } from '../motion'
+import './agentsPillMotion.css'
+import { AgentRunPreview } from './AgentRunPreview'
+import { AgentMessageTooltip } from './AgentMessageTooltip'
+import { Expand, Layers } from 'lucide-react'
+import { AgentsViewSwitch } from './AgentsViewSwitch'
+import { AgentsMonitorGrid } from './AgentsMonitorGrid'
+import { useAgentsPillResize } from './useAgentsPillResize'
+import { getAgentNotificationPreview } from './agentNotificationTarget'
+import { createEmptyStreamState } from '../../features/chats/streamHelpers'
 
 interface RunningAgentsFloatingButtonProps {
   notes?: ResearchNoteItem[]
@@ -33,6 +42,45 @@ const getStreamHref = (stream: AgentStreamListItem): string | null => {
   const projectSegment = stream.projectId ? String(stream.projectId) : 'unknown'
   const hash = stream.anchorMessageId ? `#${stream.anchorMessageId}` : ''
   return `/chat/${projectSegment}/${stream.conversationId}${hash}`
+}
+
+const ForkRunDetails = ({
+  fork,
+  onNavigate,
+  style,
+}: {
+  fork: AgentForkGroup
+  onNavigate: (stream: AgentStreamListItem) => void
+  style?: React.CSSProperties
+}) => {
+  const runs = [...fork.activeStreams, ...fork.completedStreams]
+  if (runs.length < 2) return null
+
+  return (
+    <details className='mx-3 mb-2 mt-1 text-[11px] lg:text-xs text-neutral-500 dark:text-neutral-400' style={style}>
+      <summary className='cursor-pointer rounded px-1 py-1 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400'>
+        {runs.length} recent runs
+      </summary>
+      <div className='mt-1 space-y-1 border-l border-neutral-200 pl-2 dark:border-neutral-700'>
+        {runs.map(stream => (
+          <button
+            key={stream.streamId}
+            type='button'
+            onClick={() => onNavigate(stream)}
+            aria-label={`Preview run ${summarizeAgentStreamId(stream.streamId)}`}
+            className='block w-full rounded-lg px-2 py-1.5 text-left hover:bg-neutral-100/80 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400 disabled:opacity-60 dark:hover:bg-neutral-800/60'
+          >
+            <span className='flex items-center gap-2'>
+              <span>{formatAgentTime(stream.completedAt || stream.createdAt)}</span>
+              <span>{stream.hasError ? 'error' : stream.completedAt ? 'completed' : stream.activityLabel}</span>
+              <span className='truncate font-mono' title={stream.streamId}>{summarizeAgentStreamId(stream.streamId)}</span>
+            </span>
+            {stream.parentMessageText ? <AgentMessageTooltip text={stream.parentMessageText}><span className='mt-0.5 block truncate'>{stream.parentMessageText}</span></AgentMessageTooltip> : null}
+          </button>
+        ))}
+      </div>
+    </details>
+  )
 }
 
 const formatAgentTime = (value: string | null | undefined): string => {
@@ -298,37 +346,16 @@ const BranchDebugModal = ({
   )
 }
 
-const ParentMessageTicker = ({ text, reduceMotion }: { text: string | null | undefined; reduceMotion: boolean | null }) => {
+const ParentMessageTicker = ({ text }: { text: string | null | undefined }) => {
   const trimmed = String(text || '').trim()
   if (!trimmed) return null
 
-  const duration = 24
-
-  if (reduceMotion) {
-    return (
+  return (
+    <AgentMessageTooltip text={trimmed}>
       <div className='mt-1 truncate rounded-full bg-white/70 px-2 py-1 text-[10px] lg:text-[11px] font-medium text-neutral-500 dark:bg-neutral-950/30 dark:text-neutral-400'>
         {trimmed}
       </div>
-    )
-  }
-
-  return (
-    <div
-      className='mt-1 overflow-hidden rounded-full bg-white/70 px-2 py-1 text-[10px] lg:text-[11px] font-medium text-neutral-500 dark:bg-neutral-950/30 dark:text-neutral-400'
-      style={{ maskImage: 'linear-gradient(90deg, transparent, black 10%, black 90%, transparent)' }}
-      title={trimmed}
-    >
-      <motion.div
-        className='flex w-max whitespace-nowrap'
-        animate={{ x: ['0%', '-50%'] }}
-        transition={{ duration, ease: 'linear', repeat: Infinity }}
-      >
-        <span className='pr-8'>{trimmed}</span>
-        <span className='pr-8' aria-hidden='true'>
-          {trimmed}
-        </span>
-      </motion.div>
-    </div>
+    </AgentMessageTooltip>
   )
 }
 
@@ -341,22 +368,66 @@ export const RunningAgentsFloatingButton: React.FC<RunningAgentsFloatingButtonPr
 }) => {
   const navigate = useNavigate()
   const dispatch = useAppDispatch()
-  const shouldReduceMotion = useReducedMotion()
-  const motionPreferences = useMotionPreferences(shouldReduceMotion)
-  const { activeStreams, streamHistory } = useRunningAgentStreams(notes, allConversations)
+  const { activeStreams, streamHistory, buildAgentStreamListItem, streamingRoot } = useRunningAgentStreams(notes, allConversations)
+  const { activeForks, historyForks } = useMemo(
+    () => buildAgentForkGroups(activeStreams, streamHistory),
+    [activeStreams, streamHistory]
+  )
   const notifications = useAppSelector(state => state.ui.notifications)
   const currentConversationId = useAppSelector(selectCurrentConversationId)
   const currentPath = useAppSelector(selectCurrentPath)
   const branchDebugQuery = useConversationBranchDebugData(codexDevLogsEnabled ? currentConversationId : null)
   const [expanded, setExpanded] = useState(false)
+  const [gridView, setGridView] = useState(true)
+  const pillResize = useAgentsPillResize(expanded, className)
+  const [selectedRun, setSelectedRun] = useState<AgentStreamListItem | null>(null)
+  const [previewWholeFork, setPreviewWholeFork] = useState(false)
+  const [groupPreviewSteps, setGroupPreviewSteps] = useState(() => {
+    try { return localStorage.getItem('chat:groupToolReasoningRuns') === 'true' } catch { return false }
+  })
+  const selectedItem = selectedRun
+    ? [...activeStreams, ...streamHistory].find(item => item.streamId === selectedRun.streamId) ?? selectedRun
+    : null
+  const previewTriggerRef = useRef<HTMLElement | null>(null)
+  const openPreview = (stream: AgentStreamListItem, wholeFork = false) => {
+    setPreviewWholeFork(wholeFork)
+    previewTriggerRef.current = document.activeElement as HTMLElement | null
+    setSelectedRun(stream)
+    setExpanded(true)
+  }
+  const closePreview = () => {
+    setSelectedRun(null)
+    requestAnimationFrame(() => previewTriggerRef.current?.focus())
+  }
   const [branchDebugOpen, setBranchDebugOpen] = useState(false)
   const [inlineNotification, setInlineNotification] = useState<UiNotification | null>(null)
+  const gridBody = gridView && !selectedItem
+  const contentRef = useRef<HTMLDivElement>(null)
+  const [shellSize, setShellSize] = useState<{ width: number; height: number } | null>(null)
+
+  // Measure natural content, not the transitioning shell. One CSS transition owns
+  // both dimensions, including a saved user size, without layout transforms.
+  useLayoutEffect(() => {
+    const content = contentRef.current
+    if (!content) return
+    const measure = () => {
+      const rect = content.getBoundingClientRect()
+      const width = rect.width + 2
+      const height = rect.height + 2
+      setShellSize(current => current?.width === width && current.height === height ? current : { width, height })
+    }
+    measure()
+    const observer = new ResizeObserver(measure)
+    observer.observe(content)
+    return () => observer.disconnect()
+  }, [expanded, gridBody, inlineNotification, pillResize.size?.width, pillResize.size?.height])
+
   const seenNotificationIdsRef = useRef<Set<string>>(new Set())
   const notificationTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const hasActiveStreams = activeStreams.length > 0
   const hasErroredStream = activeStreams.some(stream => stream.hasError)
   const compactLabel = 'agents'
-  const activeCountLabel = activeStreams.length > 1 ? `+${activeStreams.length - 1}` : null
+  const activeCountLabel = activeForks.length > 1 ? `+${activeForks.length - 1}` : null
   const { theme: customTheme, enabled: customThemeEnabled } = useCustomChatTheme()
   const isDarkMode = useHtmlDarkMode()
 
@@ -512,14 +583,21 @@ export const RunningAgentsFloatingButton: React.FC<RunningAgentsFloatingButtonPr
   const ariaLabel = useMemo(() => {
     if (inlineNotification) return inlineNotification.title
     if (activeStreams.length === 0) return 'Running agents: none active'
-    return `Running agents: ${activeStreams.length} active`
-  }, [activeStreams.length, inlineNotification])
+    return `Running agents: ${activeForks.length} active forks, ${activeStreams.length} running executions`
+  }, [activeForks.length, activeStreams.length, inlineNotification])
 
   useEffect(() => {
     const activeIds = new Set(notifications.map(notification => notification.id))
     seenNotificationIdsRef.current.forEach(id => {
       if (!activeIds.has(id)) seenNotificationIdsRef.current.delete(id)
     })
+
+    // Suppress the whole batch while monitoring; closing to List must not replay
+    // a pending completion and immediately collapse the user's chosen view.
+    if (expanded && gridView && !selectedRun) {
+      notifications.forEach(notification => seenNotificationIdsRef.current.add(notification.id))
+      return
+    }
 
     const nextNotification = notifications
       .filter(notification => !seenNotificationIdsRef.current.has(notification.id))
@@ -528,6 +606,8 @@ export const RunningAgentsFloatingButton: React.FC<RunningAgentsFloatingButtonPr
     if (!nextNotification) return
 
     seenNotificationIdsRef.current.add(nextNotification.id)
+    // Completion must not steal the transcript the user is currently reading.
+    if (expanded && selectedRun) return
     setExpanded(false)
     setInlineNotification(nextNotification)
 
@@ -539,7 +619,7 @@ export const RunningAgentsFloatingButton: React.FC<RunningAgentsFloatingButtonPr
       setInlineNotification(current => (current?.id === nextNotification.id ? null : current))
       notificationTimerRef.current = null
     }, 4200)
-  }, [notifications])
+  }, [notifications, expanded, selectedRun, gridView])
 
   useEffect(() => {
     return () => {
@@ -549,13 +629,27 @@ export const RunningAgentsFloatingButton: React.FC<RunningAgentsFloatingButtonPr
     }
   }, [])
 
-  const navigateToNotification = (notification: UiNotification) => {
+  const openNotification = (notification: UiNotification) => {
     if (notificationTimerRef.current) {
       clearTimeout(notificationTimerRef.current)
       notificationTimerRef.current = null
     }
     setInlineNotification(null)
     dispatch(uiActions.notificationDismissed(notification.id))
+    const preview = getAgentNotificationPreview(notification, [...activeStreams, ...streamHistory], streamId => {
+      const stream = streamingRoot.byId[streamId] ?? {
+        ...createEmptyStreamState('branch'),
+        conversationId: notification.conversationId,
+        createdAt: notification.createdAt,
+        status: 'completed' as const,
+        finalMessageId: notification.messageId,
+      }
+      return buildAgentStreamListItem(streamId, stream, notification.createdAt)
+    })
+    if (preview) {
+      openPreview(preview)
+      return
+    }
     navigate(getNotificationHref(notification))
   }
 
@@ -563,6 +657,7 @@ export const RunningAgentsFloatingButton: React.FC<RunningAgentsFloatingButtonPr
     const href = getStreamHref(stream)
     if (!href) return
     navigate(href)
+    setSelectedRun(null)
     setExpanded(false)
   }
 
@@ -586,21 +681,27 @@ export const RunningAgentsFloatingButton: React.FC<RunningAgentsFloatingButtonPr
         activeStreams={activeStreams}
         onClose={() => setBranchDebugOpen(false)}
       />
-      <motion.div
-      layout
-      transition={motionPreferences.shellTransition}
-      className={`fixed z-[1500] ${className}`}
-      style={{ transformOrigin: 'bottom right' }}
-    >
-      <motion.div
-        layout
-        transition={motionPreferences.shellTransition}
-        className='overflow-hidden rounded-[28px] border border-neutral-200/60 bg-white/75 text-neutral-800 shadow-[0_18px_55px_rgba(15,23,42,0.18)] backdrop-blur-2xl will-change-[width,height,transform] dark:border-neutral-700/55 dark:bg-yBlack-900/75 dark:text-neutral-100'
+      <div
+      ref={pillResize.shellRef}
+      className={`t-resize agents-pill fixed z-[1500] ${className}`}
+      data-dragging={pillResize.dragging}
+      style={{ width: shellSize?.width, height: shellSize?.height }}
+      >
+      {expanded && <button type='button' {...pillResize.handleProps}
+        onClick={event => event.stopPropagation()}
+        aria-label='Resize agents panel. Arrow keys resize; Shift resizes faster; Home resets.'
+        title='Drag to resize · Double-click to reset'
+        className='absolute -left-1 -top-1 z-20 flex h-8 w-8 touch-none select-none items-center justify-center rounded-full bg-white/90 text-neutral-500 backdrop-blur hover:text-neutral-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400 dark:bg-neutral-800/90 dark:text-neutral-400 dark:hover:text-white'
+        style={{ cursor: 'nwse-resize', ...floatingControlButtonStyle }}>
+        <Expand size={14} strokeWidth={2.25} aria-hidden='true' />
+      </button>}
+      <div
+        className='h-full overflow-hidden rounded-[28px] border border-neutral-200/60 bg-white/75 text-neutral-800 shadow-[0_18px_55px_rgba(15,23,42,0.18)] backdrop-blur-2xl dark:border-neutral-700/55 dark:bg-yBlack-900/75 dark:text-neutral-100'
         style={floatingShellStyle}
       >
-        <div className='relative'>
-          <motion.div
-            layout
+        <div ref={contentRef} className='relative' style={{ width: pillResize.size ? pillResize.size.width - 2 : expanded && gridBody ? Math.min(1000, pillResize.limits.width - 2) : 'max-content' }}>
+          <div
+            ref={pillResize.headerRef}
             onClick={toggleExpanded}
             className={`relative flex w-full cursor-pointer items-center justify-between gap-1.5 p-1.5 outline-none transition-colors ${
               customThemeEnabled
@@ -609,23 +710,21 @@ export const RunningAgentsFloatingButton: React.FC<RunningAgentsFloatingButtonPr
             }`}
             style={floatingTopRowStyle}
           >
-            <AnimatePresence mode='popLayout' initial={false}>
+            <>
               {inlineNotification ? (
-                <motion.button
+                <button
                   key={`notification-${inlineNotification.id}`}
                   type='button'
-                  layout
-                  onClick={() => navigateToNotification(inlineNotification)}
+                  onClick={event => {
+                    event.stopPropagation()
+                    openNotification(inlineNotification)
+                  }}
                   className={`group flex min-h-11 max-w-[min(19rem,calc(100vw-6rem))] items-center gap-2 rounded-full px-3 py-2 text-left outline-none transition-colors focus-visible:ring-2 focus-visible:ring-emerald-400/70 ${
                     customThemeEnabled
                       ? 'hover:bg-[var(--running-agents-floating-hover-bg)] dark:hover:bg-[var(--running-agents-floating-hover-bg)]'
                       : 'hover:bg-neutral-100/75 dark:hover:bg-neutral-800/70'
                   }`}
                   style={floatingTopRowStyle}
-                  initial={shouldReduceMotion ? { opacity: 0 } : { opacity: 0, x: 10, scale: 0.985 }}
-                  animate={shouldReduceMotion ? { opacity: 1 } : { opacity: 1, x: 0, scale: 1 }}
-                  exit={shouldReduceMotion ? { opacity: 0 } : { opacity: 0, x: 8, scale: 0.985 }}
-                  transition={motionPreferences.contentTransition}
                   aria-label={inlineNotification.title}
                 >
                   <span
@@ -650,12 +749,11 @@ export const RunningAgentsFloatingButton: React.FC<RunningAgentsFloatingButtonPr
                       </span>
                     ) : null}
                   </span>
-                </motion.button>
+                </button>
               ) : (
-                <motion.button
+                <button
                   key='agent-compact'
                   type='button'
-                  layout
                   onClick={event => {
                     event.stopPropagation()
                     toggleExpanded()
@@ -666,133 +764,145 @@ export const RunningAgentsFloatingButton: React.FC<RunningAgentsFloatingButtonPr
                       : 'hover:bg-neutral-100/75 dark:hover:bg-neutral-800/70'
                   }`}
                   style={floatingTopRowStyle}
-                  initial={shouldReduceMotion ? { opacity: 0 } : { opacity: 0, x: -8, scale: 0.985 }}
-                  animate={shouldReduceMotion ? { opacity: 1 } : { opacity: 1, x: 0, scale: 1 }}
-                  exit={shouldReduceMotion ? { opacity: 0 } : { opacity: 0, x: -8, scale: 0.985 }}
-                  transition={motionPreferences.contentTransition}
                   aria-label={ariaLabel}
                   aria-expanded={expanded}
                 >
                   <span className='relative flex h-3.5 w-3.5 items-center justify-center' aria-hidden='true'>
-                    <motion.span
+                    <span
                       className={`relative h-2.5 w-2.5 rounded-full ${customThemeEnabled ? '' : statusTone}`}
                       style={floatingStatusDotStyle}
-                      animate={
-                        hasActiveStreams && !shouldReduceMotion
-                          ? { scale: [1, 1.16, 1], opacity: [1, 0.68, 1] }
-                          : { scale: 1, opacity: 1 }
-                      }
-                      transition={{ duration: 1.6, repeat: hasActiveStreams && !shouldReduceMotion ? Infinity : 0, ease: 'easeInOut' }}
                     />
                   </span>
 
-                  <motion.span layout className='whitespace-nowrap tracking-[-0.01em]' style={floatingPrimaryTextStyle}>
-                    {compactLabel}
-                  </motion.span>
+                  <span className='min-w-0 text-left'>
+                    <span className='block whitespace-nowrap tracking-[-0.01em]' style={floatingPrimaryTextStyle}>
+                      {compactLabel}
+                    </span>
+                    {expanded && (
+                      <span className='block text-[10px] font-medium text-neutral-500 dark:text-neutral-400 lg:text-xs' style={floatingMutedTextStyle}>
+                        {activeForks.length} active · {historyForks.length} completed
+                      </span>
+                    )}
+                  </span>
 
-                  <AnimatePresence mode='popLayout' initial={false}>
-                    {activeCountLabel ? (
-                      <motion.span
-                        layout
+                  <>
+                    {!expanded && activeCountLabel ? (
+                      <span
                         key='count'
-                        initial={{ opacity: 0, scale: 0.75, x: -4 }}
-                        animate={{ opacity: 1, scale: 1, x: 0 }}
-                        exit={{ opacity: 0, scale: 0.75, x: -4 }}
-                        transition={motionPreferences.contentTransition}
                         className='rounded-full bg-neutral-900/90 px-1.5 py-0.5 text-[10px] lg:text-[11px] font-bold leading-none text-white dark:bg-neutral-100 dark:text-neutral-900'
                         style={floatingBadgeStyle}
                       >
                         {activeCountLabel}
-                      </motion.span>
+                      </span>
                     ) : null}
-                  </AnimatePresence>
-                </motion.button>
+                  </>
+                </button>
               )}
-            </AnimatePresence>
+            </>
 
-            <AnimatePresence initial={false} mode='popLayout'>
+            <>
               {expanded ? (
-                <motion.div
+                <div
                   key='expanded-actions'
-                  layout
                   className='flex shrink-0 items-center gap-1.5'
-                  initial={shouldReduceMotion ? { opacity: 0 } : { opacity: 0, scale: 0.98, x: 8 }}
-                  animate={shouldReduceMotion ? { opacity: 1 } : { opacity: 1, scale: 1, x: 0 }}
-                  exit={shouldReduceMotion ? { opacity: 0 } : { opacity: 0, scale: 0.98, x: 8 }}
-                  transition={motionPreferences.contentTransition}
                 >
+                  <button type='button' aria-label='Group steps' title='Group steps' aria-pressed={groupPreviewSteps}
+                    onClick={event => {
+                      event.stopPropagation()
+                      setGroupPreviewSteps(value => !value)
+                    }}
+                    className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-full transition-[background-color,color] duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400 ${groupPreviewSteps
+                      ? 'bg-blue-50 text-blue-700 dark:bg-orange-500/15 dark:text-orange-100'
+                      : 'text-neutral-500 hover:bg-white/70 dark:text-neutral-400 dark:hover:bg-white/10'}`}
+                    style={customThemeEnabled ? groupPreviewSteps ? {
+                      backgroundColor: getThemeModeColor(customTheme.colors.composerToggleActiveBg, isDarkMode),
+                      color: getThemeModeColor(customTheme.colors.composerToggleActiveText, isDarkMode),
+                    } : { color: floatingButtonText } : undefined}>
+                    <Layers size={18} strokeWidth={2.25} aria-hidden='true' />
+                  </button>
+                  <AgentsViewSwitch
+                    gridView={gridView}
+                    onChange={grid => { setSelectedRun(null); setGridView(grid) }}
+                    inactiveStyle={customThemeEnabled ? { color: floatingButtonText } : undefined}
+                    activeStyle={customThemeEnabled ? {
+                      backgroundColor: getThemeModeColor(customTheme.colors.composerToggleActiveBg, isDarkMode),
+                      color: getThemeModeColor(customTheme.colors.composerToggleActiveText, isDarkMode),
+                    } : undefined}
+                  />
                   {codexDevLogsEnabled ? (
-                    <motion.button
+                    <button
                       key='branch-debug-button'
                       type='button'
-                      layout
                       onClick={openBranchDebug}
                       className='flex h-10 w-10 shrink-0 items-center justify-center rounded-full border border-amber-200/80 bg-amber-50/90 text-amber-700 shadow-sm transition-colors duration-150 hover:bg-amber-100 hover:text-amber-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-400/70 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-200 dark:hover:bg-amber-500/20'
-                      initial={shouldReduceMotion ? { opacity: 0 } : { opacity: 0, scale: 0.88, x: 8 }}
-                      animate={shouldReduceMotion ? { opacity: 1 } : { opacity: 1, scale: 1, x: 0 }}
-                      exit={shouldReduceMotion ? { opacity: 0 } : { opacity: 0, scale: 0.88, x: 8 }}
-                      transition={motionPreferences.contentTransition}
                       aria-label='Open branch diagnostics'
                       title='Open branch diagnostics'
                     >
-                      <motion.i
+                      <i
                         className='bx bx-git-branch text-lg'
-                        initial={shouldReduceMotion ? { opacity: 0 } : { opacity: 0, scale: 0.92, rotate: -8 }}
-                        animate={shouldReduceMotion ? { opacity: 1 } : { opacity: 1, scale: 1, rotate: 0 }}
-                        transition={motionPreferences.feedbackTransition}
                         aria-hidden='true'
                       />
-                    </motion.button>
+                    </button>
                   ) : null}
-                  <motion.button
+                  <button
                     key='apps-expand-button'
                   type='button'
-                  layout
                   onClick={event => {
                     event.stopPropagation()
                     onOpenApps()
                   }}
                   className='flex h-10 w-10 shrink-0 items-center justify-center rounded-full border border-neutral-200/70 bg-neutral-50/85 text-neutral-700 shadow-sm transition-colors duration-150 hover:bg-white hover:text-neutral-950 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-violet-400/70 dark:border-neutral-700/70 dark:bg-neutral-900/80 dark:text-neutral-200 dark:hover:bg-neutral-800'
                   style={floatingControlButtonStyle}
-                  initial={shouldReduceMotion ? { opacity: 0 } : { opacity: 0, scale: 0.88, x: 8 }}
-                  animate={shouldReduceMotion ? { opacity: 1 } : { opacity: 1, scale: 1, x: 0 }}
-                  exit={shouldReduceMotion ? { opacity: 0 } : { opacity: 0, scale: 0.88, x: 8 }}
-                  transition={motionPreferences.contentTransition}
                   aria-label={appsOpen ? 'Close apps modal' : 'Open apps modal'}
                   title={appsOpen ? 'Close apps' : 'Open apps'}
                 >
-                  <motion.i
+                  <i
                     key={appsOpen ? 'apps-close' : 'apps-expand'}
                     className={`bx ${appsOpen ? 'bx-x' : 'bx-expand-alt'} text-lg`}
-                    initial={shouldReduceMotion ? { opacity: 0 } : { opacity: 0, scale: 0.92, rotate: -8 }}
-                    animate={shouldReduceMotion ? { opacity: 1 } : { opacity: 1, scale: 1, rotate: 0 }}
-                    transition={motionPreferences.feedbackTransition}
                     aria-hidden='true'
                   />
-                  </motion.button>
-                </motion.div>
+                  </button>
+                </div>
               ) : null}
-            </AnimatePresence>
-          </motion.div>
+            </>
+          </div>
 
-          <AnimatePresence initial={false} mode='popLayout'>
+          <>
             {expanded && (
-              <motion.div
+              <div
                 key='details-shell'
-                initial={shouldReduceMotion ? { opacity: 0, height: 0 } : { opacity: 0, height: 0 }}
-                animate={shouldReduceMotion ? { opacity: 1, height: 'auto' } : { opacity: 1, height: 'auto' }}
-                exit={shouldReduceMotion ? { opacity: 0, height: 0 } : { opacity: 0, height: 0, transition: motionPreferences.shellTransition }}
-                transition={motionPreferences.shellTransition}
-                className='w-[min(22rem,calc(100vw-2rem))] overflow-hidden border-t border-neutral-200/70 dark:border-neutral-800/80'
-                style={floatingDividerStyle}
+                className='overflow-hidden border-t border-neutral-200/70 dark:border-neutral-800/80'
+                style={{ ...floatingDividerStyle,
+                  height: pillResize.size ? Math.max(0, pillResize.size.height - pillResize.headerHeight - 2) : gridBody ? Math.min(600, Math.max(0, pillResize.limits.height - pillResize.headerHeight - 2)) : undefined,
+                  width: pillResize.size || gridBody ? '100%' : `min(22rem,${pillResize.limits.width}px)`,
+                  maxHeight: Math.max(0, pillResize.limits.height - pillResize.headerHeight - 2),
+                }}
               >
-                <motion.div
-                  initial={shouldReduceMotion ? { opacity: 0 } : { opacity: 0, y: 10, scale: 0.985 }}
-                  animate={shouldReduceMotion ? { opacity: 1 } : { opacity: 1, y: 0, scale: 1 }}
-                  exit={shouldReduceMotion ? { opacity: 0 } : { opacity: 0, y: 10, scale: 0.985 }}
-                  transition={motionPreferences.contentTransition}
-                  className='px-2 pb-2 pt-1'
+                <div
+                  className={gridBody ? 'flex h-full min-h-0 flex-col overflow-hidden px-2 pb-2 pt-1' : pillResize.size ? `h-full min-h-0 px-2 pb-2 pt-1 ${selectedItem ? 'flex flex-col overflow-hidden' : 'overflow-y-auto thin-scrollbar'}` : 'overflow-y-auto px-2 pb-2 pt-1 thin-scrollbar'}
+                  style={{ maxHeight: Math.max(0, pillResize.limits.height - pillResize.headerHeight - 2) }}
                 >
+                {gridBody ? (
+                  <AgentsMonitorGrid
+                    activeStreams={activeStreams}
+                    streamHistory={streamHistory}
+                    grouped={groupPreviewSteps}
+                    onOpenFork={stream => openPreview(stream, true)}
+                    onOpenChat={navigateToStream}
+                  />
+                ) : selectedItem ? (
+                  <section className={pillResize.size ? 'flex min-h-0 flex-1 flex-col' : undefined} aria-label='Agent run preview' onKeyDown={event => {
+                    if (event.key === 'Escape') { event.stopPropagation(); closePreview() }
+                  }}>
+                    <div className='flex shrink-0 flex-wrap items-center gap-2 px-2 py-2 text-xs'>
+                      <button autoFocus type='button' onClick={closePreview} className='rounded-full px-2 py-1.5 hover:bg-black/5 dark:hover:bg-white/5'>← Back</button>
+                      <span className='min-w-0 flex-1 truncate font-semibold'>{selectedItem.conversationTitle || 'Run preview'}</span>
+                      <button type='button' disabled={!getStreamHref(selectedItem)} onClick={() => navigateToStream(selectedItem)}
+                        className='rounded-full bg-emerald-600 px-3 py-1.5 font-semibold text-white disabled:opacity-50'>Open chat ↗</button>
+                    </div>
+                    <AgentRunPreview key={`${selectedItem.streamId}:${previewWholeFork}`} streamId={selectedItem.streamId} grouped={groupPreviewSteps} wholeFork={previewWholeFork} transcriptLabel={previewWholeFork ? 'Full fork transcript' : 'Run transcript'} fillHeight={Boolean(pillResize.size)} />
+                  </section>
+                ) : <>
                 <div className='flex items-center justify-between px-2 py-2'>
                   <div className='flex items-center gap-2'>
                     <div
@@ -810,7 +920,7 @@ export const RunningAgentsFloatingButton: React.FC<RunningAgentsFloatingButtonPr
                         style={floatingStatusDotStyle}
                         aria-hidden='true'
                       />
-                      {activeStreams.length}
+                      {activeForks.length} {activeForks.length === 1 ? 'fork' : 'forks'}
                     </span>
                   </div>
                 </div>
@@ -823,25 +933,21 @@ export const RunningAgentsFloatingButton: React.FC<RunningAgentsFloatingButtonPr
                     Agents are idle. New running streams will appear here instantly.
                   </div>
                 ) : (
-                  <div className='max-h-72 space-y-1.5 overflow-y-auto pr-1 thin-scrollbar'>
-                    {activeStreams.map(stream => {
-                      const href = getStreamHref(stream)
+                  <div className={pillResize.size ? 'space-y-1.5 pr-1' : 'max-h-72 space-y-1.5 overflow-y-auto pr-1 thin-scrollbar'}>
+                    {activeForks.map(fork => {
+                      const stream = fork.representative
                       return (
-                        <motion.button
-                          key={stream.streamId}
+                        <div key={fork.key}>
+                        <button
                           type='button'
-                          layout
-                          onClick={() => navigateToStream(stream)}
-                          disabled={!href}
+                          onClick={() => openPreview(stream, true)}
+                          aria-label={`Preview ${fork.displayName}`} aria-expanded={selectedRun?.streamId === stream.streamId}
                           className={`group w-full rounded-2xl bg-neutral-50/80 px-3 py-2.5 text-left transition disabled:cursor-default disabled:opacity-60 ${
                             customThemeEnabled
                               ? 'hover:bg-[var(--running-agents-row-hover-bg)] dark:hover:bg-[var(--running-agents-row-hover-bg)]'
                               : 'hover:bg-neutral-100/90 dark:bg-neutral-900/45 dark:hover:bg-neutral-800/70'
                           }`}
                           style={floatingRowStyle}
-                          transition={motionPreferences.contentTransition}
-                          whileHover={shouldReduceMotion ? undefined : { scale: 1.004 }}
-                          whileTap={shouldReduceMotion ? undefined : { scale: 0.996 }}
                         >
                           <div className='flex items-start justify-between gap-3'>
                             <div className='min-w-0 flex-1'>
@@ -850,7 +956,7 @@ export const RunningAgentsFloatingButton: React.FC<RunningAgentsFloatingButtonPr
                                   className='shrink-0 text-[11px] lg:text-xs font-bold text-emerald-600 dark:text-emerald-300'
                                   style={floatingAgentNameStyle}
                                 >
-                                  {stream.displayName}
+                                  <span>{fork.displayName}</span>
                                 </span>
                                 <span className='shrink-0 text-[10px] lg:text-[11px] font-medium text-neutral-500 dark:text-neutral-400'
                                   style={floatingMutedTextStyle}>
@@ -863,17 +969,18 @@ export const RunningAgentsFloatingButton: React.FC<RunningAgentsFloatingButtonPr
                                   {stream.conversationTitle || `Conversation ${stream.conversationId || 'Unknown'}`}
                                 </span>
                               </div>
-                              <ParentMessageTicker text={stream.parentMessageText} reduceMotion={shouldReduceMotion} />
+                              <ParentMessageTicker text={stream.parentMessageText} />
                               <div className='mt-1 flex flex-wrap items-center gap-1.5 text-[11px] lg:text-xs'>
                                 <span className='relative flex h-4 w-4 items-center justify-center' aria-label='Agent stream active'>
-                                  <motion.span
+                                  <span
                                     className='h-2.5 w-2.5 rounded-full bg-emerald-500'
                                     style={floatingActiveDotStyle}
-                                    animate={shouldReduceMotion ? { scale: 1, opacity: 1 } : { scale: [1, 1.16, 1], opacity: [1, 0.68, 1] }}
-                                    transition={{ duration: 1.6, repeat: shouldReduceMotion ? 0 : Infinity, ease: 'easeInOut' }}
                                   />
                                 </span>
-                                {stream.hasError ? (
+                                <span style={floatingMutedTextStyle}>
+                                  {fork.activeStreams.length} running · {fork.completedStreams.length} recent
+                                </span>
+                                {fork.hasError ? (
                                   <span
                                     className='rounded-full bg-rose-100 px-2 py-0.5 text-[10px] lg:text-[11px] font-medium text-rose-700 dark:bg-rose-500/15 dark:text-rose-200'
                                     style={floatingErrorBadgeStyle}
@@ -890,7 +997,9 @@ export const RunningAgentsFloatingButton: React.FC<RunningAgentsFloatingButtonPr
                               />
                             </div>
                           </div>
-                        </motion.button>
+                        </button>
+                        <ForkRunDetails fork={fork} onNavigate={openPreview} style={floatingMutedTextStyle} />
+                        </div>
                       )
                     })}
                   </div>
@@ -904,40 +1013,36 @@ export const RunningAgentsFloatingButton: React.FC<RunningAgentsFloatingButtonPr
                     >
                       History
                     </div>
-                    {streamHistory.length > 0 ? (
+                    {historyForks.length > 0 ? (
                       <div className='text-[10px] lg:text-[11px] text-neutral-500 dark:text-neutral-400' style={floatingMutedTextStyle}>
-                        last {streamHistory.length}
+                        {historyForks.length} {historyForks.length === 1 ? 'fork' : 'forks'}
                       </div>
                     ) : null}
                   </div>
 
-                  {streamHistory.length === 0 ? (
+                  {historyForks.length === 0 ? (
                     <div
                       className='rounded-2xl bg-neutral-50/70 px-3 py-2.5 text-xs lg:text-sm text-neutral-500 dark:bg-neutral-900/40 dark:text-neutral-400'
                       style={floatingCardStyle}
                     >
-                      Completed streams will appear here.
+                      Idle forks will appear here. Recent runs of active forks stay above.
                     </div>
                   ) : (
-                    <div className='max-h-56 space-y-1.5 overflow-y-auto pr-1 thin-scrollbar'>
-                      {streamHistory.map(stream => {
-                        const href = getStreamHref(stream)
-                        return (
-                          <motion.button
-                            key={`history-${stream.streamId}`}
+                    <div className={pillResize.size ? 'space-y-1.5 pr-1' : 'max-h-56 space-y-1.5 overflow-y-auto pr-1 thin-scrollbar'}>
+                      {historyForks.map(fork => {
+                        const stream = fork.representative
+                          return (
+                          <div key={fork.key}>
+                          <button
                             type='button'
-                            layout
-                            onClick={() => navigateToStream(stream)}
-                            disabled={!href}
+                            onClick={() => openPreview(stream, true)}
+                            aria-label={`Preview ${fork.displayName}`} aria-expanded={selectedRun?.streamId === stream.streamId}
                             className={`group w-full rounded-2xl bg-stone-50/70 px-3 py-2.5 text-left opacity-90 transition hover:opacity-100 disabled:cursor-default disabled:opacity-60 ${
                               customThemeEnabled
                                 ? 'hover:bg-[var(--running-agents-row-hover-bg)] dark:hover:bg-[var(--running-agents-row-hover-bg)]'
                                 : 'hover:bg-neutral-100/90 dark:bg-neutral-900/35 dark:hover:bg-neutral-800/65'
                             }`}
                             style={floatingRowStyle}
-                            transition={motionPreferences.contentTransition}
-                            whileHover={shouldReduceMotion ? undefined : { scale: 1.004 }}
-                            whileTap={shouldReduceMotion ? undefined : { scale: 0.996 }}
                           >
                             <div className='flex items-start justify-between gap-3'>
                               <div className='min-w-0 flex-1'>
@@ -946,7 +1051,7 @@ export const RunningAgentsFloatingButton: React.FC<RunningAgentsFloatingButtonPr
                                     className='shrink-0 text-[11px] lg:text-xs font-bold text-neutral-500 dark:text-neutral-400'
                                     style={floatingAgentHistoryNameStyle}
                                   >
-                                    {stream.displayName}
+                                    <span>{fork.displayName}</span>
                                   </span>
                                   <span className='shrink-0 text-[10px] lg:text-[11px] font-medium text-neutral-500 dark:text-neutral-400'
                                   style={floatingMutedTextStyle}>
@@ -959,7 +1064,10 @@ export const RunningAgentsFloatingButton: React.FC<RunningAgentsFloatingButtonPr
                                     {stream.conversationTitle || `Conversation ${stream.conversationId || 'Unknown'}`}
                                   </span>
                                 </div>
-                                <ParentMessageTicker text={stream.parentMessageText} reduceMotion={shouldReduceMotion} />
+                                <ParentMessageTicker text={stream.parentMessageText} />
+                                <div className='mt-1 text-[11px] lg:text-xs' style={floatingMutedTextStyle}>
+                                  {fork.completedStreams.length} recent {fork.completedStreams.length === 1 ? 'run' : 'runs'}
+                                </div>
                                 <div className='mt-1 flex flex-wrap items-center gap-1.5 text-[11px] lg:text-xs'>
                                   <span
                                     className={`h-2.5 w-2.5 rounded-full ${customThemeEnabled ? '' : stream.hasError ? 'bg-rose-500' : 'bg-emerald-500'}`}
@@ -984,19 +1092,22 @@ export const RunningAgentsFloatingButton: React.FC<RunningAgentsFloatingButtonPr
                                 </div>
                               </div>
                             </div>
-                          </motion.button>
+                          </button>
+                          <ForkRunDetails fork={fork} onNavigate={openPreview} style={floatingMutedTextStyle} />
+                          </div>
                         )
                       })}
                     </div>
                   )}
                 </div>
-                </motion.div>
-              </motion.div>
+                </>}
+                </div>
+              </div>
             )}
-          </AnimatePresence>
+          </>
         </div>
-      </motion.div>
-    </motion.div>
+      </div>
+    </div>
     </>
   )
 }

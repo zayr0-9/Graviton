@@ -84,6 +84,9 @@ export function messageDate(message: any): Date {
 }
 
 export function toHyperMessages(input: ProviderGenerateInput): HyperMessage[] {
+  if (input.history?.some(message => message?.role === 'user' && message.artifacts?.length)) {
+    throw new Error('Image attachments are not supported by this provider adapter. Use ChatGPT, OpenRouter, or a vision-capable LM Studio model.')
+  }
   const messages: HyperMessage[] = []
 
   if (input.systemPrompt?.trim()) {

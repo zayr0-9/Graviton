@@ -61,7 +61,12 @@ export class ConversationRepo {
 
       const message = this.getMessageById(cursor)
       if (!message || message.conversation_id !== conversationId) return null
-      if (message.role === 'user') return message
+      // Harness mode notifications are user-role transport, not repeatable user prompts.
+      let meta = message.meta
+      if (typeof meta === 'string') {
+        try { meta = JSON.parse(meta) } catch { meta = null }
+      }
+      if (message.role === 'user' && meta?.kind !== 'operation_mode_change') return message
 
       cursor = message.parent_id || null
     }

@@ -2,6 +2,7 @@ import { createSelector } from '@reduxjs/toolkit'
 import { ConversationId, MessageId } from '../../../../../shared/types'
 import { RootState } from '../../store/store'
 import type { ChatErrorRecord } from './chatTypes'
+import { parseMessageMeta } from '../../../../../shared/contextInjection'
 
 // Base selector
 const selectChatState = (state: RootState) => state.chat
@@ -11,7 +12,24 @@ export const conversationContext = createSelector([selectChatState], chat => cha
 export const selectProviderState = createSelector([selectChatState], chat => chat.providerState)
 export const selectMultiReplyCount = createSelector([selectChatState], chat => chat.composition.multiReplyCount)
 export const getSelectedNodes = createSelector([selectChatState], chat => chat.selectedNodes)
-export const selectOperationMode = createSelector([selectChatState], chat => chat.operationMode)
+export const selectOperationMode = createSelector([selectChatState], chat => {
+  const pending = chat.operationModeChanges?.[String(chat.conversation.currentConversationId)]
+  const tip = chat.conversation.currentPath.at(-1) ?? null
+  const draft = chat.operationModeDrafts?.[JSON.stringify([String(chat.conversation.currentConversationId), tip == null ? null : String(tip)])]
+  if (draft) return draft
+  if (pending?.status === 'pending' && pending.streamId &&
+    selectCurrentViewStreamFor(chat.streaming, {
+      conversationId: chat.conversation.currentConversationId,
+      lineageId: chat.conversation.currentLineageId,
+      path: chat.conversation.currentPath,
+    })?.id === pending.streamId) return pending.mode
+  for (let index = chat.conversation.currentPath.length - 1; index >= 0; index--) {
+    const row = chat.conversation.messages.find(message => message.id === chat.conversation.currentPath[index])
+    const meta = parseMessageMeta(row?.meta)
+    if (meta?.kind === 'operation_mode_change' && (meta.mode === 'plan' || meta.mode === 'execute')) return meta.mode
+  }
+  return chat.operationMode
+})
 
 // Deprecated model availability selector (kept for backward compatibility)
 export const selectIsModelAvailable = () => false

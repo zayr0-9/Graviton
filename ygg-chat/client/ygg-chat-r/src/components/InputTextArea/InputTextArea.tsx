@@ -1,5 +1,8 @@
 import React, { useEffect, useId, useMemo, useRef, useState } from 'react'
-import { useDispatch, useSelector } from 'react-redux'
+import { useSelector } from 'react-redux'
+import { useAppDispatch } from '../../hooks/redux'
+import { prepareImageFiles } from '../../features/chats/imagePreparation'
+import { ChevronRight, Slash } from 'lucide-react'
 import { selectCcCwd } from '../../features/chats/chatSelectors'
 import { chatSliceActions } from '../../features/chats/chatSlice'
 import type { ImageDraftTarget } from '../../features/chats/chatTypes'
@@ -15,7 +18,6 @@ import { type DirectoryFileEntry, useDirectoryFileSearch, useDirectoryFiles } fr
 import type { RootState } from '../../store/store'
 import { getThemeModeColor, useCustomChatTheme, useHtmlDarkMode } from '../ThemeManager/themeConfig'
 import { readLocalMentionFile } from '../../utils/readLocalMentionFile'
-import { localApi } from '../../utils/api'
 import { rankFileMatches } from '../../../shared/fileMatchRanking'
 import { CHAT_NORMAL_TEXT_SIZE_CLASS, getChatFontSizeOffsetStyle } from '../ChatMessage/chatMessageShared'
 
@@ -174,7 +176,8 @@ export const InputTextArea: React.FC<TextAreaProps> = ({
   fontSizeOffset = 0,
   ...rest
 }) => {
-  const dispatch = useDispatch()
+  const dispatch = useAppDispatch()
+  const preparation = useSelector((s: RootState) => s.chat.composition)
   const imageDrafts = useSelector((s: RootState) => s.chat.composition.imageDrafts)
   const currentImageDraftTarget = useSelector((s: RootState) => s.chat.composition.imageDraftTarget)
   const currentSelection = useSelector(selectCurrentSelection)
@@ -371,12 +374,6 @@ export const InputTextArea: React.FC<TextAreaProps> = ({
   }
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-    if (e.key === 'Tab' && e.shiftKey) {
-      e.preventDefault()
-      dispatch(chatSliceActions.operationModeToggled())
-      return
-    }
-
     // Handle slash command list navigation
     if (showSlashList && filteredSlashCommands.length > 0) {
       switch (e.key) {
@@ -457,115 +454,23 @@ export const InputTextArea: React.FC<TextAreaProps> = ({
     setDragOver(false)
   }
 
-  const fileToDataUrl = (file: File) =>
-    new Promise<string>((resolve, reject) => {
-      const reader = new FileReader()
-      reader.onload = () => resolve(reader.result as string)
-      reader.onerror = reject
-      reader.readAsDataURL(file)
-    })
-
   const handleDrop = (e: React.DragEvent<HTMLTextAreaElement>) => {
     e.preventDefault()
     e.stopPropagation()
     setDragOver(false)
     if (state === 'disabled' || !enableImageAttachments) return
-
-    const files = Array.from(e.dataTransfer?.files || [])
-    const images = files.filter(f => f.type.startsWith('image/'))
-    if (images.length === 0) return
-
-    Promise.all(
-      images.map(async image => ({
-        dataUrl: await fileToDataUrl(image),
-        name: image.name,
-        type: image.type,
-        size: image.size,
-      }))
-    )
-      .then(drafts => {
-        void (async () => {
-          try {
-            const result = await localApi.post<{ attachments?: Array<{ id: string; file_path: string; sha256: string }> }>(
-              '/local/attachments/prepare-base64',
-              { attachments: drafts }
-            )
-            const saved = Array.isArray(result?.attachments) ? result.attachments : []
-            if (saved.length !== drafts.length) throw new Error('Incomplete attachment persistence result')
-            dispatch(chatSliceActions.imageDraftsAppended({
-              drafts: drafts.map((draft, index) => ({
-                ...draft,
-                filePath: saved[index].file_path,
-                attachmentId: saved[index].id,
-                sha256: saved[index].sha256,
-              })),
-              target: imageDraftTarget,
-            }))
-          } catch (err) {
-            console.error('Failed to persist image attachments locally', err)
-          }
-        })()
-      })
-      .catch(err => console.error('Failed to read dropped images', err))
+    const images = Array.from(e.dataTransfer?.files || []).filter(file => file.type.startsWith('image/'))
+    if (images.length) void dispatch(prepareImageFiles(images, imageDraftTarget))
   }
 
   const handlePaste = (e: React.ClipboardEvent<HTMLTextAreaElement>) => {
     onPaste?.(e)
     if (e.defaultPrevented || state === 'disabled' || !enableImageAttachments) return
-
-    const items = Array.from(e.clipboardData?.items || [])
-    const imageItems = items.filter(item => item.type.startsWith('image/'))
-
-    if (imageItems.length === 0) return
-
+    const images = Array.from(e.clipboardData?.items || [])
+      .filter(item => item.type.startsWith('image/')).map(item => item.getAsFile()).filter((file): file is File => !!file)
+    if (!images.length) return
     e.preventDefault()
-
-    Promise.all(
-      imageItems.map(async (item, index) => {
-        const file = item.getAsFile()
-        if (!file) return null
-
-        return {
-          dataUrl: await fileToDataUrl(file),
-          name: `pasted-image-${Date.now()}-${index}.${file.type.split('/')[1]}`,
-          type: file.type,
-          size: file.size,
-        }
-      })
-    )
-      .then(results => {
-        const drafts = results.filter(Boolean) as Array<{
-          dataUrl: string
-          name: string
-          type: string
-          size: number
-        }>
-
-        if (drafts.length > 0) {
-          void (async () => {
-            try {
-              const result = await localApi.post<{ attachments?: Array<{ id: string; file_path: string; sha256: string }> }>(
-                '/local/attachments/prepare-base64',
-                { attachments: drafts }
-              )
-              const saved = Array.isArray(result?.attachments) ? result.attachments : []
-              if (saved.length !== drafts.length) throw new Error('Incomplete attachment persistence result')
-              dispatch(chatSliceActions.imageDraftsAppended({
-                drafts: drafts.map((draft, index) => ({
-                  ...draft,
-                  filePath: saved[index].file_path,
-                  attachmentId: saved[index].id,
-                  sha256: saved[index].sha256,
-                })),
-                target: imageDraftTarget,
-              }))
-            } catch (err) {
-              console.error('Failed to persist image attachments locally', err)
-            }
-          })()
-        }
-      })
-      .catch(err => console.error('Failed to read pasted images', err))
+    void dispatch(prepareImageFiles(images, imageDraftTarget))
   }
 
   const handleFileSelection = (file: MentionableFileOption) => {
@@ -854,6 +759,29 @@ export const InputTextArea: React.FC<TextAreaProps> = ({
         disabled: `${baseStyles} bg-gray-900 text-stone-800 dark:text-stone-200 border-gray-700 placeholder-neutral-700 dark:placeholder-neutral-200 cursor-not-allowed`,
       }
 
+  const slashMenuStyle = customThemeEnabled
+    ? {
+        // Anchored inside acrylic/mica chrome; stay opaque even if the theme color has alpha.
+        backgroundColor: `rgb(from ${getThemeModeColor(customTheme.colors.settingsPaneBodyBg, isDarkMode)} r g b / 1)`,
+        color: getThemeModeColor(customTheme.colors.toolJobsPrimaryText, isDarkMode),
+      }
+    : undefined
+  const slashMutedTextStyle = customThemeEnabled
+    ? { color: getThemeModeColor(customTheme.colors.toolJobsMutedText, isDarkMode) }
+    : undefined
+  const slashSelectedStyle = customThemeEnabled
+    ? {
+        backgroundColor: getThemeModeColor(customTheme.colors.composerToggleActiveBg, isDarkMode),
+        color: getThemeModeColor(customTheme.colors.composerToggleActiveText, isDarkMode),
+      }
+    : undefined
+  const slashIconStyle = customThemeEnabled
+    ? {
+        backgroundColor: getThemeModeColor(customTheme.colors.settingsCustomThemesButtonBg, isDarkMode),
+        color: getThemeModeColor(customTheme.colors.settingsCustomThemesButtonText, isDarkMode),
+      }
+    : undefined
+
   const ideContextPillStyle = customThemeEnabled
     ? {
         backgroundColor: getThemeModeColor(customTheme.colors.ideContextPillBg, isDarkMode),
@@ -926,14 +854,23 @@ export const InputTextArea: React.FC<TextAreaProps> = ({
         {showSlashList && filteredSlashCommands.length > 0 && (
           <div
             ref={slashListRef}
-            className='absolute bottom-full left-0 z-50 mb-2 max-h-72 w-[min(22rem,calc(100vw-2rem))] overflow-y-auto rounded-[24px] border border-neutral-200/80 bg-white p-2 shadow-2xl shadow-black/20 backdrop-blur-2xl thin-scrollbar dark:border-white/10 dark:bg-neutral-950 dark:shadow-black/50'
+            className='absolute bottom-full left-0 z-50 mb-3 max-h-80 w-[min(22rem,calc(100vw-2rem))] overflow-y-auto rounded-3xl bg-white p-2 text-neutral-800 thin-scrollbar dark:bg-neutral-950 dark:text-neutral-100'
+            style={slashMenuStyle}
+            role='group'
+            aria-label='Slash commands'
           >
-            <div className='px-2 pb-2 pt-1'>
-              <div className='text-[10px] font-semibold uppercase tracking-[0.18em] text-neutral-500 dark:text-neutral-500'>
+            <div className='px-3 pb-3 pt-2'>
+              <div
+                className='text-[10px] font-semibold uppercase tracking-[0.18em] text-neutral-500 dark:text-neutral-400'
+                style={slashMutedTextStyle}
+              >
                 Commands
               </div>
-              <div className='mt-0.5 text-[11px] text-neutral-500/80 dark:text-neutral-400/80'>
-                Pick an action for this message
+              <div
+                className='mt-1 text-xs text-neutral-500 dark:text-neutral-400'
+                style={slashMutedTextStyle}
+              >
+                Pick an action for this conversation
               </div>
             </div>
             <div className='space-y-1'>
@@ -953,37 +890,43 @@ export const InputTextArea: React.FC<TextAreaProps> = ({
                   <button
                     key={command}
                     type='button'
-                    className={`group/slash flex w-full items-center gap-3 rounded-[18px] px-3 py-2.5 text-left transition-all duration-200 active:scale-[0.99] ${
+                    className={`group/slash flex w-full items-center gap-3 rounded-2xl px-3 py-2.5 text-left transition-colors duration-[var(--ygg-motion-duration-fast)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400/70 dark:focus-visible:ring-orange-400/70 ${
                       selected
                         ? 'bg-blue-500/10 text-blue-700 dark:bg-orange-500/15 dark:text-orange-100'
-                        : 'text-neutral-800 hover:bg-white/70 dark:text-neutral-100 dark:hover:bg-white/10'
+                        : 'text-inherit hover:bg-black/5 dark:hover:bg-white/5'
                     }`}
+                    style={selected ? slashSelectedStyle : undefined}
+                    onFocus={() => setSelectedSlashIndex(index)}
                     onMouseEnter={() => setSelectedSlashIndex(index)}
                     onClick={() => handleSlashCommandSelection(command)}
                   >
                     <span
-                      className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-full font-mono text-sm transition-colors ${
+                      className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-full transition-colors duration-[var(--ygg-motion-duration-fast)] ${
                         selected
                           ? 'bg-blue-500/15 text-blue-700 dark:bg-orange-400/15 dark:text-orange-100'
                           : 'bg-neutral-200/70 text-neutral-600 group-hover/slash:bg-neutral-200 dark:bg-white/10 dark:text-neutral-300 dark:group-hover/slash:bg-white/15'
                       }`}
+                      style={selected ? slashSelectedStyle : slashIconStyle}
                       aria-hidden='true'
                     >
-                      /
+                      <Slash size={18} strokeWidth={2.25} />
                     </span>
                     <span className='min-w-0 flex-1'>
                       <span className='block truncate text-sm font-semibold'>{commandLabel}</span>
-                      <span className='mt-0.5 block truncate text-[11px] text-neutral-500 dark:text-neutral-400'>
+                      <span
+                        className='mt-0.5 block truncate text-xs text-neutral-500 dark:text-neutral-400'
+                        style={slashMutedTextStyle}
+                      >
                         {commandDescription}
                       </span>
                     </span>
                     <span
-                      className={`text-lg leading-none transition-all duration-200 ${
-                        selected ? 'translate-x-0 opacity-100' : '-translate-x-1 opacity-0 group-hover/slash:opacity-60'
+                      className={`transition-opacity duration-[var(--ygg-motion-duration-fast)] ${
+                        selected ? 'opacity-100' : 'opacity-0 group-hover/slash:opacity-60'
                       }`}
                       aria-hidden='true'
                     >
-                      ›
+                      <ChevronRight size={16} strokeWidth={2.25} />
                     </span>
                   </button>
                 )
@@ -1000,6 +943,7 @@ export const InputTextArea: React.FC<TextAreaProps> = ({
             style={{
               bottom: '100%',
               left: 0,
+              border: 'none',
             }}
           >
             {filteredFiles.map((file, index) => (
@@ -1157,6 +1101,14 @@ export const InputTextArea: React.FC<TextAreaProps> = ({
       </div>
 
       {/* Image draft previews (hidden while editing a branch) */}
+      {enableImageAttachments && imageDraftTargetMatches && (preparation.imagePreparationPending > 0 || preparation.imagePreparationError) && (
+        <div role='status' className='px-3 py-1 text-xs text-stone-500 dark:text-stone-400'>
+          {preparation.imagePreparationError || 'Preparing image…'}
+          <button type='button' className='ml-2 underline' onClick={() => dispatch(chatSliceActions.imageDraftsCleared({ target: imageDraftTarget }))}>
+            Discard images
+          </button>
+        </div>
+      )}
       {visibleImageDrafts.length > 0 && (
         <div className='mt-2 px-2 flex flex-wrap gap-2'>
           {visibleImageDrafts.map((img, idx) => (

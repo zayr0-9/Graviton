@@ -28,7 +28,7 @@ export function ChatComposerFrame({
   onStop,
   sendButtonAnimation,
   sendButtonColor,
-  borderClassName = 'outline-1 outline-neutral-200/70 dark:outline-neutral-700/50',
+  borderClassName = 'outline-1 outline-neutral-200/35 dark:outline-neutral-700/25',
   surfaceStyle,
   className = '',
 }: ChatComposerFrameProps) {
@@ -49,6 +49,8 @@ export function ChatComposerFrame({
             className={`flex h-10 shrink-0 items-center gap-1 rounded-full ${borderClassName} bg-neutral-100/40 px-2 py-1 backdrop-blur-xl xl:h-12 xl:py-1.5 dark:bg-neutral-900/40`}
           >
             {controlsRight}
+            {streaming && canSend && <button type='button' onClick={onSend} title='Queue message' aria-label='Queue message'
+              className='rounded-full px-3 py-2 text-xs hover:bg-black/5 dark:hover:bg-white/10 focus-visible:outline focus-visible:outline-2'>Queue</button>}
             {streaming ? (
               <button
                 type='button'

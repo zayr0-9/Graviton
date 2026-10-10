@@ -6,6 +6,8 @@
     "target": "ES2022",
     "lib": ["ES2022"],
     "noEmit": true,
+    "incremental": true,
+    "tsBuildInfoFile": "../node_modules/.tmp/tsconfig.electron.tsbuildinfo",
     "sourceMap": true,
     "strict": true,
     "esModuleInterop": true,

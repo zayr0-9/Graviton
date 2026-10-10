@@ -33,9 +33,9 @@ with two callers. They diverge only in what each INJECTS, never in the loop body
   `executeTool(...)`; both differences live entirely in the injected executor.
 - **Optional `ToolLoopRunInput` fields** — main-loop-only behavior (`hooks`,
   `relayFreeTierEvents`, and the cloud sink) is opt-in and left UNSET for
-  subagents; subagent-only behavior (`robustness`) is opt-in and left unset for
-  the main loop. Every new field defaults off, so the subagent path through the
-  engine is byte-for-byte the same as before the main-loop migration.
+  subagents. Both callers enable transient provider-error retry through
+  `robustness`; subagents also enable empty-turn retry and silent-tool finalization.
+  Validate both callers when changing shared loop behavior.
 
 ## When to Open This File
 
@@ -49,50 +49,49 @@ Use this when changing:
 
 ## Key Files
 
-- `client/ygg-chat-r/electron/headlessServer/services/toolLoopService.ts`: the SHARED
+- `client/ygg-chat-r/server/headlessServer/services/toolLoopService.ts`: the SHARED
   loop engine. `MessageSink` port + `ToolExecutor` port; opt-in `ToolLoopRunInput`
   fields (`robustness`, `hooks`, `relayFreeTierEvents`, `signal`,
   `railwaySessionId`, `allowCommentaryFallbackText`). No permission/pause logic here.
-- `client/ygg-chat-r/electron/headlessServer/services/subagentRunService.ts`: the subagent
+- `client/ygg-chat-r/server/headlessServer/services/subagentRunService.ts`: the subagent
   caller of the engine — `run`/`runForTool`, validation, run + `streaming_runs` lifecycle, tool
   resolution, provider auth re-sync (`refreshProviderTokens`), the `countingExecutor`
   (static read-only/auto-approve gate + tool-call counting), the transcript
   compactor, and terminal-state mapping. Sets `robustness:{ retryEmptyTurn,
   finalizeOnSilentToolEnd }`; leaves `hooks`/`relayFreeTierEvents` unset.
-- `client/ygg-chat-r/electron/headlessServer/services/chatOrchestrator.ts`: the OTHER
+- `client/ygg-chat-r/server/headlessServer/services/chatOrchestrator.ts`: the OTHER
   caller of the engine (main chat loop). `createChatPausingExecutor` is the
   main-loop counterpart to `countingExecutor` — same `ToolExecutor` port, but it
   pauses via the `DecisionBroker` (permission_required / clarify_required) instead
   of the static gate. Included here for contrast; not part of the subagent path.
-- `client/ygg-chat-r/electron/headlessServer/services/decisionBroker.ts`: the main-loop
+- `client/ygg-chat-r/server/headlessServer/services/decisionBroker.ts`: the main-loop
   pause/resume registry (keyed `${streamId}::${toolCallId}`). NOT used by
   subagents — subagents never pause for an interactive decision.
 - `shared/operationModeToolPolicy.ts`: `assertToolAllowedWithoutAutoApprove` (the
   subagent auto-approve gate — `AUTO_APPROVE_REQUIRED_TOOL_NAMES` + all MCP/custom
   tools) and `filterToolsForOperationMode` (plan-mode tool filter, shared with the
   main loop).
-- `client/ygg-chat-r/electron/headlessServer/services/subagentToolExecutor.ts`:
+- `client/ygg-chat-r/server/headlessServer/services/subagentToolExecutor.ts`:
   `createSubagentDispatchExecutor`, the parent-chat composite executor that intercepts
   `subagent` and calls `SubagentRunService.runForTool` in-process; all other tools
   delegate to the leaf `ToolOrchestrator` executor.
-- `client/ygg-chat-r/electron/headlessServer/routes/subagentRoutes.ts`:
+- `client/ygg-chat-r/server/headlessServer/routes/subagentRoutes.ts`:
   `POST /api/headless/subagent/stream` (SSE + heartbeat + client-disconnect abort;
   rejects `openrouter` before opening the stream).
-- `client/ygg-chat-r/electron/headlessServer/services/subagentTranscriptSink.ts`:
+- `client/ygg-chat-r/server/headlessServer/services/subagentTranscriptSink.ts`:
   `MessageSink` that writes subagent turns to the transcript instead of the chat tree.
-- `client/ygg-chat-r/electron/headlessServer/persistence/subagentRunRepo.ts`: repo over
+- `client/ygg-chat-r/server/headlessServer/persistence/subagentRunRepo.ts`: repo over
   `subagent_runs` / `subagent_messages` (shared by the localServer CRUD routes and the engine).
-- `client/ygg-chat-r/electron/headlessServer/contracts/headlessApi.ts`:
+- `shared/headlessApi.ts`:
   `HeadlessSubagentStreamRequest` + `HeadlessSubagentStreamEvent` (subagent
   `started`/`complete`/`error`, plus the reused main-chat `HeadlessStreamEvent`s).
-- `client/ygg-chat-r/electron/headlessServer/index.ts`: wiring — the leaf
+- `client/ygg-chat-r/server/headlessServer/index.ts`: wiring — the leaf
   `executeToolViaOrchestrator` is injected into `SubagentRunService`; the main
   `ChatOrchestrator` receives `createSubagentDispatchExecutor({ leafExecutor,
   subagentRunner })`. This separation prevents nested subagents while keeping
   ordinary tools on the shared orchestrator.
-- `client/ygg-chat-r/electron/localServer.ts`: table DDL (`subagent_runs` /
-  `subagent_messages`) + `/api/subagents/*` and `/api/conversations/:id/subagents`
-  CRUD routes (delegate to `SubagentRunRepo`) that Heimdall polls.
+- `client/ygg-chat-r/server/localServer.ts`: subagent table DDL.
+- `client/ygg-chat-r/server/routes/runStateRoutes.ts`: transcript/run CRUD routes delegated to `SubagentRunRepo`, polled by Heimdall.
 - `client/ygg-chat-r/src/features/chats/subagentClient.ts`: renderer thin client.
   Exports `executeSubagentCall`, `abortSubagentControllers`,
   `resolveSubagentSystemPrompt`. NOTE: after the thin-client cutover only
@@ -151,6 +150,8 @@ Both entry paths now share the server-side `SubagentRunService`:
   without polling. It re-reads SQLite before returning the canonical terminal
   status/result. Aborting the parent releases only the waiter; it does not cancel
   the child (that remains the explicit `cancel` action).
+- `subagent_manager.send(handle, message, requestId?)` checks branch/conversation ownership and synchronously queues instructions in the running detached attempt's `MessageInputQueue`. The shared loop's `flushQueuedMessages` / `closeInputQueue` callbacks deliver FIFO only at safe boundaries, persisting user rows into the child transcript (not the chat tree). Receipts distinguish acceptance from delivery; status/list/wait expose `messageQueue`, and existing queue SSE events support live inspection. Request IDs deduplicate identical retries. Terminal/aborting/preparing/blocking runs reject sends rather than auto-restart. Pending messages fail on cancellation/error/turn limits; queues are memory-only, with at most 100 retained terminal mailboxes.
+- `subagent_manager.resume` accepts an optional `prompt`, appended to the saved transcript as a new user row before inference. The original task/tool history is preserved; omitting it retains existing resume behavior.
 - Parent operation mode, stream/message/tool-call lineage, root path, provider/model,
   abort signal, and auto-approve policy are forwarded. `orchestratorMode:true` uses
   the requested child tool names plus the always-required `multi_call` tool; otherwise
@@ -184,9 +185,11 @@ does not round-trip through the renderer or the unfinished `tool_request` bridge
   Plan Mode; child runs still cannot spawn nested agents.
 - **Local providers only.** `openrouter` subagents fall back to the default local
   provider client-side and are rejected server-side (`subagentRoutes.ts`).
-- **Abort = close the SSE connection.** The route aborts an `AbortController` on
-  `res` close; the signal threads into the provider request and tool jobs; run +
-  `streaming_runs` statuses become `aborted`. The client also runs a 60s idle watchdog.
+- **Cancellation depends on entry path.** Direct subagent SSE disconnect aborts
+  its route controller. Blocking parent dispatch inherits the parent signal.
+  Detached manager runs own their controller and survive parent cancellation;
+  manager `cancel` explicitly aborts them. Aborting a manager waiter releases only
+  that waiter. The retained direct renderer client has a 60s idle watchdog.
 - **Empty output is a typed failure**, never a fake-success "No response generated":
   the loop retries an empty turn once, finalizes when tools ran but produced no
   answer, and otherwise raises `ProviderEmptyResponseError`.
@@ -203,7 +206,7 @@ does not round-trip through the renderer or the unfinished `tool_request` bridge
 
 ```bash
 npm --prefix client/ygg-chat-r run test:headless          # engine, repo, route, tool-loop
-npx vitest run src/features/chats/subagentClient.test.ts   # thin client (request + SSE)
+npm --prefix client/ygg-chat-r run test:renderer -- src/features/chats/subagentClient.test.ts # request + SSE
 npm --prefix client/ygg-chat-r run build:electron:main
 ```
 

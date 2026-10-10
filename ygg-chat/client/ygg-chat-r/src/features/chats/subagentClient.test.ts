@@ -38,6 +38,8 @@ vi.mock('./toolDefinitions', () => ({
     { name: 'edit_file', enabled: false },
     { name: 'multi_call', enabled: true },
     { name: 'subagent', enabled: true },
+    { name: 'mcp_manager', enabled: true },
+    { name: 'mcp__demo__echo', enabled: true, isMcp: true },
   ]),
 }))
 
@@ -108,6 +110,22 @@ describe('resolveSubagentSystemPrompt', () => {
 })
 
 describe('executeSubagentCall request building', () => {
+  it.each([
+    ['OpenAI (ChatGPT)', 'priority', 'priority'],
+    ['OpenAI (ChatGPT)', undefined, undefined],
+    ['OpenRouter', 'priority', 'priority'],
+    ['LM Studio', 'priority', undefined],
+  ] as const)('forwards service tier only to resolved Codex children (%s, %s)', async (callerProvider, serviceTier, expected) => {
+    let capturedBody: any
+    vi.stubGlobal('fetch', vi.fn(async (_url: string, init: any) => {
+      capturedBody = JSON.parse(init.body)
+      return sseResponse([ev({ type: 'complete', result: 'ok' })])
+    }))
+    await executeSubagentCall({ id: 'tier', arguments: { prompt: 'Scout' } }, { ...baseContext(), callerProvider, serviceTier })
+    if (expected) expect(capturedBody.serviceTier).toBe(expected)
+    else expect(capturedBody).not.toHaveProperty('serviceTier')
+  })
+
   it('builds the request body from tool args + settings', async () => {
     let capturedBody: any = null
     vi.stubGlobal(
@@ -155,12 +173,12 @@ describe('executeSubagentCall request building', () => {
     )
 
     await executeSubagentCall(
-      { id: 'c', arguments: { prompt: 'x', orchestratorMode: true, tools: ['bash', 'edit_file', 'subagent'] } },
+      { id: 'c', arguments: { prompt: 'x', orchestratorMode: true, tools: ['bash', 'edit_file', 'subagent', 'mcp_manager', 'mcp__demo__echo'] } },
       baseContext()
     )
 
     // edit_file is disabled but requested -> bypass; subagent is excluded and multi_call is required.
-    expect(capturedBody.tools).toEqual(['bash', 'edit_file', 'multi_call'])
+    expect(capturedBody.tools).toEqual(['bash', 'edit_file', 'multi_call', 'mcp_manager'])
   })
 
   it('returns [] tools when the orchestrator is disabled', async () => {

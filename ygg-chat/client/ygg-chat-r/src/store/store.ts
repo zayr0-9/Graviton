@@ -8,12 +8,21 @@ import { default as searchReducer } from '../features/search/searchSlice'
 import { uiActions, uiReducer } from '../features/ui'
 import { usersReducer } from '../features/users'
 import { thunkExtraArg } from './thunkExtra'
+import { hasGenerationReader, resumeInFlightStreams } from '../features/chats/chatActions'
+import { adoptWatchContinuation } from '../features/chats/watchContinuation'
+import { toolJobManager } from '../services/ToolJobManager'
 import { recordTerminalSnapshotLease } from '../features/chats/conversationSnapshotCoordinator'
+
+import agentRunPreviewsReducer, { agentRunPreviewMiddleware } from '../features/chats/agentRunPreviewSlice'
+
+import runningAgentsUiReducer from '../features/ui/runningAgentsUiSlice'
 
 // Root reducer configuration
 const rootReducer = {
   users: usersReducer,
   chat: chatReducer,
+  agentRunPreviews: agentRunPreviewsReducer,
+  runningAgentsUi: runningAgentsUiReducer,
   conversations: conversationsReducer,
   search: searchReducer,
   projects: projectsReducer,
@@ -93,8 +102,9 @@ listenerMiddleware.startListening({
       uiActions.notificationAdded({
         id: `branch-complete:${streamId}:${String(messageId)}`,
         kind: 'branch_stream_completed',
+        streamId,
         title: conversation?.title?.trim() || 'Branch reply finished',
-        description: 'A background branch completed. Click to open it.',
+        description: 'A background branch completed. Click to preview the response.',
         conversationId,
         projectId: conversation?.project_id ?? null,
         messageId,
@@ -115,9 +125,30 @@ export const store = configureStore({
       serializableCheck: {
         ignoredActions: ['persist/PERSIST', 'persist/REHYDRATE'],
       },
-    }).prepend(listenerMiddleware.middleware),
+    }).prepend(listenerMiddleware.middleware, agentRunPreviewMiddleware),
   devTools: process.env.NODE_ENV !== 'production',
 })
+
+// Watch completion uses the live job transport, not status polling. Register the
+// listener before connection so subscription replay is visible after reconnect.
+toolJobManager.onWatchCompletion(event => {
+  const streamId = adoptWatchContinuation(event, hasGenerationReader)
+  if (streamId) void store.dispatch(resumeInFlightStreams({ conversationId: event.conversationId, streamId }))
+  store.dispatch(uiActions.notificationAdded({
+    id: `watch:${event.handle}`,
+    kind: 'watch_completed',
+    title: event.state === 'triggered' ? 'Watch triggered' : event.state === 'timed_out' ? 'Watch timed out' : 'Watch failed',
+    description: event.delivery === 'failed'
+      ? 'Could not deliver the completion to this branch. Click to open it and continue manually.'
+      : event.delivery ? 'Completion submitted to the originating branch. Click to open it.'
+      : `Watch ${event.handle.slice(0, 8)}. Click to open the originating branch.`,
+    conversationId: event.conversationId,
+    messageId: event.messageId,
+    projectId: event.projectId,
+    createdAt: event.completedAt,
+  }))
+})
+if (typeof window !== 'undefined') void toolJobManager.initialize()
 
 // Initialize custom tools and MCP tools at app startup (before any component renders)
 // This ensures tools are available immediately when Chat component mounts
@@ -141,7 +172,7 @@ export const setupStore = (preloadedState?: Partial<RootState>) => {
         serializableCheck: {
           ignoredActions: ['persist/PERSIST', 'persist/REHYDRATE'],
         },
-      }),
+      }).prepend(agentRunPreviewMiddleware),
     devTools: process.env.NODE_ENV !== 'production',
   })
 }

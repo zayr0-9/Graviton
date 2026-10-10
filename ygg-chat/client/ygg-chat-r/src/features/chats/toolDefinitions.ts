@@ -249,20 +249,11 @@ export const getCustomTools = (): ToolDefinition[] => {
 
 /**
  * Get tools to send to AI API.
- * Returns enabled built-in tools and MCP tools (excludes custom tools).
- * Custom tools are accessed via the custom_tool_manager tool.
- * MCP tools are sent directly since they're already namespaced (mcp__serverName__toolName).
+ * Returns enabled built-in tools. Custom and MCP tools are discovered/invoked
+ * through their managers, keeping the model's tool definitions stable.
  */
 export const getToolsForAI = (): ToolDefinition[] => {
-  // Use mergedToolDefinitions (mutable) to get current enabled state
-  // Include built-in and MCP tools, exclude custom tools (accessed via custom_tool_manager)
-  const enabled = mergedToolDefinitions.filter(t => t.enabled && !t.isCustom)
-  return enabled.filter(t => {
-    if (!t.isMcp) return true
-    const visibility = t.mcpUi?.visibility
-    if (!Array.isArray(visibility)) return true
-    return visibility.includes('model')
-  })
+  return mergedToolDefinitions.filter(t => t.enabled && !t.isCustom && !t.isMcp && !t.name.startsWith('mcp__'))
 }
 
 // OpenAI ChatGPT tool calls are executed locally in Electron.
@@ -271,12 +262,12 @@ export const getToolsForAI = (): ToolDefinition[] => {
 const OPENAI_LOCALLY_SUPPORTED_BUILTIN_TOOL_NAMES = new Set<string>([
   'todo_list',
   'plan_md',
-  'memory_manage',
   'theme_manager',
   'fetch_notes',
   'fetch_chats',
   'internalLink',
   'multi_call',
+  'repl',
   'read_file',
   'read_files',
   'read_file_continuation',
@@ -297,10 +288,11 @@ const OPENAI_LOCALLY_SUPPORTED_BUILTIN_TOOL_NAMES = new Set<string>([
   'skill_manager',
   'subagent',
   'subagent_manager',
+  'watcher',
 ])
 
 export const getToolsForOpenAIChatGPT = (): ToolDefinition[] => {
-  return getToolsForAI().filter(tool => tool.isMcp || OPENAI_LOCALLY_SUPPORTED_BUILTIN_TOOL_NAMES.has(tool.name))
+  return getToolsForAI().filter(tool => OPENAI_LOCALLY_SUPPORTED_BUILTIN_TOOL_NAMES.has(tool.name))
 }
 
 // Get tool by name

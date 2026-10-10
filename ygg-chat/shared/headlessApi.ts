@@ -25,6 +25,8 @@ export type {
 export type HeadlessChatOperation = 'send' | 'repeat' | 'branch' | 'edit-branch'
 
 export interface HeadlessMessageRequest {
+  /** Internal provenance for a server-generated watcher input. */
+  watcherCompletion?: { handle: string; originMessageId: string }
   operation: HeadlessChatOperation
   conversationId: string
   parentId: string | null
@@ -59,6 +61,8 @@ export interface HeadlessMessageRequest {
   promptCacheRetention?: 'in_memory' | '24h'
   tools?: Array<{ name: string; description?: string; inputSchema?: Record<string, any> }>
   rootPath?: string | null
+  /** User-selected workspace bypass; does not change approval or operation mode. */
+  fullAccess?: boolean
   operationMode?: 'plan' | 'execute'
   includeOperationModePrompt?: boolean
   planModeVerbosity?: 'concise' | 'normal' | 'detailed'
@@ -115,6 +119,8 @@ export interface HeadlessSubagentStreamRequest {
   /** Inherited content-branch ownership. Standalone subagent requests may omit it. */
   lineageId?: string | null
   prompt: string
+  /** Additional instructions appended to the saved transcript when resuming a run. */
+  resumePrompt?: string
   systemPrompt?: string | null
   provider: string
   modelName: string
@@ -122,12 +128,16 @@ export interface HeadlessSubagentStreamRequest {
   tools?: string[]
   maxTurns?: number
   temperature?: number
+  /** Optional priority service tier for a Codex child run. */
+  serviceTier?: 'priority'
   /** OpenAI ChatGPT reasoning effort for this child run. */
   reasoningEffort?: 'low' | 'medium' | 'high' | 'xhigh'
   operationMode?: 'plan' | 'execute'
   /** Parent's toolAutoApprove && inheritAutoApprove. When false, only read-only tools run. */
   autoApprove: boolean
   rootPath?: string | null
+  /** User-selected workspace bypass; does not change approval or operation mode. */
+  fullAccess?: boolean
   userId?: string | null
   accessToken?: string | null
   accountId?: string | null
@@ -187,6 +197,8 @@ export type HeadlessSubagentStreamEvent =
     }
 
 export type HeadlessStreamEvent =
+  | { type: 'message_queue_updated'; snapshot: import('./queuedMessages.js').MessageQueueSnapshot }
+  | { type: 'queued_user_message_persisted'; message: any; requestId: string; streamId: string; lineageId: string | null }
   | {
       type: 'started'
       operation: HeadlessChatOperation
@@ -198,6 +210,8 @@ export type HeadlessStreamEvent =
       lineageId?: string | null
     }
   | { type: 'user_message_persisted'; message: any; lineageId?: string | null }
+  | { type: 'operation_mode_changed'; message: any; mode: 'plan' | 'execute'; streamId?: string | null; revision?: number }
+  | { type: 'operation_mode_decisions_cleared'; streamId: string; toolCallIds: string[] }
   /**
    * A persisted `meta.kind === 'context_injection'` user row written mid-run (the
    * post-compaction re-injection). Renderers add it to the tree without moving the

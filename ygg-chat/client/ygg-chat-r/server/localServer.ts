@@ -17,6 +17,7 @@ import { WebSocket, WebSocketServer } from 'ws'
 import { isManagedToolPath } from './utils/managedToolPaths.js'
 
 // Runtime-neutral server graph (Phase 1 server/client separation)
+import { watchService } from './headlessServer/services/watchService.js'
 import { registerBuiltInTools, type BuiltInToolHandler } from './builtinToolRegistry.js'
 import { buildCorsOriginOption } from './corsPolicy.js'
 import type { ToolSandboxHost } from './hostCapabilities.js'
@@ -53,7 +54,6 @@ import { registerProxyRoutes } from './proxyGateway.js'
 import { registerOpenAiOAuthRoutes, startOpenAiOAuthCallbackServer, stopOpenAiOAuth } from './routes/managedOAuthRoutes.js'
 import { registerRunStateRoutes } from './routes/runStateRoutes.js'
 import { registerSyncStorageRoutes } from './routes/syncStorageRoutes.js'
-import { registerMemoryRoutes } from './routes/memoryRoutes.js'
 import { registerHookRoutes } from './routes/hookRoutes.js'
 import { HookRunRepo } from './headlessServer/persistence/hookRunRepo.js'
 import { configureHookRunTracker } from './hooks/hookRunner.js'
@@ -65,6 +65,7 @@ import { registerAnalyticsRoutes } from './routes/analyticsRoutes.js'
 import { registerUserProjectRoutes } from './routes/userProjectRoutes.js'
 import { registerNoteSearchRoutes } from './routes/noteSearchRoutes.js'
 import { registerConversationRoutes } from './routes/conversationRoutes.js'
+import { TOP_LEVEL_USER_MESSAGES_SQL } from './topLevelUserMessages.js'
 import { skillRegistry } from './skills/skillLoader.js'
 import { registerSkillRoutes } from './skills/skillRoutes.js'
 import { customToolRegistry, type CustomToolsChangedEvent, ToolResult } from './tools/customToolLoader.js'
@@ -119,8 +120,7 @@ function shouldUseUtilityRuntimeForCustomTool(toolName: string): boolean {
 }
 
 // Initialize built-in tools registry. The handlers live in the server-owned
-// registry module (electron/server/builtinToolRegistry.ts). The 26th built-in,
-// memory_manage, is registered inside setupServer() next to the memory routes.
+// registry module (server/builtinToolRegistry.ts).
 function initializeBuiltInToolRegistry() {
   const capabilities = getHostCapabilities()
   registerBuiltInTools(builtInTools, {
@@ -179,6 +179,7 @@ function registerCustomToolsWithOrchestrator(): number {
             signal: options.signal,
             deadlineMs: options.deadlineMs,
             rootPath: options?.rootPath,
+            fullAccess: options.fullAccess === true,
             operationMode: options?.operationMode,
             conversationId: options?.conversationId,
             messageId: options?.messageId,
@@ -447,6 +448,18 @@ const SCHEMA_MIGRATIONS: SchemaMigration[] = [
       createHookRunsSchema(database)
     },
   },
+  {
+    version: 4,
+    name: 'conversation_additional_cwds',
+    up: database => {
+      // Keep cwd as the default path; additional roots are a JSON array of strings.
+      // NULL means no additional roots for conversations written before this feature.
+      const columns = database.prepare('PRAGMA table_info(conversations)').all() as { name: string }[]
+      if (!columns.some(column => column.name === 'additional_cwds')) {
+        database.exec('ALTER TABLE conversations ADD COLUMN additional_cwds TEXT')
+      }
+    },
+  },
 ]
 
 /**
@@ -541,6 +554,7 @@ function initializeLocalDatabase(dbPath: string) {
       conversation_context TEXT,
       research_note TEXT,
       cwd TEXT,
+      additional_cwds TEXT,
       storage_mode TEXT NOT NULL CHECK (storage_mode IN ('cloud','local')) DEFAULT 'cloud',
       favorite INTEGER NOT NULL DEFAULT 0,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
@@ -1436,6 +1450,17 @@ function initializeLocalDatabase(dbPath: string) {
     deleteConversation: db.prepare('DELETE FROM conversations WHERE id = ?'),
     getConversationById: db.prepare('SELECT * FROM conversations WHERE id = ?'),
     getAllConversations: db.prepare('SELECT * FROM conversations ORDER BY updated_at DESC'),
+    getToolConversationsPage: db.prepare(`
+      SELECT id, title, created_at, updated_at FROM conversations
+      WHERE (@userId IS NULL OR user_id = @userId)
+        AND (@projectId IS NULL OR project_id = @projectId)
+        AND (@updatedAfter IS NULL OR julianday(updated_at) >= julianday(@updatedAfter))
+        AND (@updatedBefore IS NULL OR julianday(updated_at) < julianday(@updatedBefore))
+        AND (@query IS NULL OR title LIKE @query COLLATE NOCASE
+          OR replace(replace(replace(lower(title), ' ', ''), '-', ''), '_', '') LIKE @normalizedQuery)
+      ORDER BY updated_at DESC, id ASC LIMIT @limit OFFSET @skip
+    `),
+    countToolTopLevelUserMessages: db.prepare(`SELECT COUNT(*) AS count FROM (${TOP_LEVEL_USER_MESSAGES_SQL})`),
     getLocalConversations: db.prepare(
       "SELECT * FROM conversations WHERE user_id = ? AND storage_mode = 'local' ORDER BY updated_at DESC"
     ),
@@ -1505,14 +1530,7 @@ function initializeLocalDatabase(dbPath: string) {
     deleteMessage: db.prepare('DELETE FROM messages WHERE id = ?'),
     getMessageById: db.prepare('SELECT * FROM messages WHERE id = ?'),
     getMessagesByConversationId: db.prepare('SELECT * FROM messages WHERE conversation_id = ? ORDER BY created_at ASC'),
-    getTopLevelUserMessagesByConversationId: db.prepare(`
-      SELECT id, conversation_id, content, plain_text_content, note, note_color, created_at
-      FROM messages
-      WHERE conversation_id = ?
-        AND parent_id IS NULL
-        AND role = 'user'
-      ORDER BY created_at ASC
-    `),
+    getTopLevelUserMessagesByConversationId: db.prepare(TOP_LEVEL_USER_MESSAGES_SQL),
     getLastMessageByConversationId: db.prepare(
       'SELECT * FROM messages WHERE conversation_id = ? ORDER BY created_at DESC LIMIT 1'
     ),
@@ -1974,9 +1992,6 @@ function setupServer() {
   // Sync + local attachment storage routes live in routes/syncStorageRoutes.ts.
   registerSyncStorageRoutes(app, { db: db!, statements, getCurrentDbPath: () => currentDbPath })
 
-  // Memory routes + the memory_manage tool live in routes/memoryRoutes.ts.
-  registerMemoryRoutes(app, { statements, builtInTools })
-
   const hookRunRepo = new HookRunRepo({ db: db! })
   configureHookRunTracker(hookRunRepo)
   try {
@@ -1990,13 +2005,8 @@ function setupServer() {
 
   registerUndoRoutes(app)
 
-  // Tool execution + custom-tool management routes live in routes/toolExecutionRoutes.ts.
-  registerToolExecutionRoutes(app, {
-    builtInTools,
-    getToolSandbox: () => toolSandbox,
-    isUtilityRuntimeFallbackDisabled,
-    shouldUseUtilityRuntimeForCustomTool,
-  })
+  // Custom-tool management routes live in routes/toolExecutionRoutes.ts; execution uses jobRoutes.
+  registerToolExecutionRoutes(app)
 
   // App-store + restart routes live in routes/appStoreRoutes.ts.
   registerAppStoreRoutes(app)
@@ -2359,6 +2369,7 @@ export async function startLocalServer(
 export async function stopLocalServer(): Promise<void> {
   // Shutdown tool orchestrator first
   localAnalyticsWorkerClient.shutdown()
+  watchService.shutdown()
   toolOrchestrator.shutdown()
   customToolRegistry.shutdown()
   utilityRuntimeAvailable = false

@@ -96,10 +96,22 @@ function parseOAuthConfig(raw: unknown): McpOAuthConfig | undefined {
     tokenEndpointAuthMethod = tokenEndpointAuthMethodRaw
   }
 
+  const allowMissingPkceS256ForCelestialTest = source.allowMissingPkceS256ForCelestialTest
+  if (allowMissingPkceS256ForCelestialTest !== undefined && typeof allowMissingPkceS256ForCelestialTest !== 'boolean') {
+    throw new Error('"oauth.allowMissingPkceS256ForCelestialTest" must be a boolean')
+  }
+
+  const omitResourceForLocalCelestialTest = source.omitResourceForLocalCelestialTest
+  if (omitResourceForLocalCelestialTest !== undefined && typeof omitResourceForLocalCelestialTest !== 'boolean') {
+    throw new Error('"oauth.omitResourceForLocalCelestialTest" must be a boolean')
+  }
+
   const redirectUri = asString('redirectUri')
   if (redirectUri) parseMcpOAuthRedirectUri(redirectUri)
 
   return {
+    allowMissingPkceS256ForCelestialTest,
+    omitResourceForLocalCelestialTest,
     resourceMetadataUrl: asString('resourceMetadataUrl'),
     resource: asString('resource'),
     authorizationServer: asString('authorizationServer'),
@@ -123,6 +135,8 @@ function sanitizeOAuthForResponse(oauth: McpOAuthConfig | undefined): Record<str
   if (!oauth) return undefined
 
   return {
+    allowMissingPkceS256ForCelestialTest: oauth.allowMissingPkceS256ForCelestialTest === true,
+    omitResourceForLocalCelestialTest: oauth.omitResourceForLocalCelestialTest === true,
     authorizationServer: oauth.authorizationServer,
     resourceMetadataUrl: oauth.resourceMetadataUrl,
     tokenEndpoint: oauth.tokenEndpoint,

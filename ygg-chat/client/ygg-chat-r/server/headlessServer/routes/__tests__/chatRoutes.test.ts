@@ -21,6 +21,11 @@ describe('registerChatRoutes', () => {
 
     registerChatRoutes(app, {
       orchestrator: {
+        changeOperationMode(input) {
+          if (input.streamId === 'stale') throw new Error('Run is no longer active')
+          seenRequests.push(input)
+          return { status: input.streamId ? 'pending' : 'applied', mode: input.mode, revision: 1 }
+        },
         async runMessage(request, emit) {
           seenOperations.push(request.operation)
           seenRequests.push(request)
@@ -39,6 +44,9 @@ describe('registerChatRoutes', () => {
       compactionService: {
         async compactBranch(request) {
           seenCompactionRequests.push(request)
+          if (request.modelName === 'wait-for-abort') {
+            await new Promise<void>((_resolve, reject) => request.signal.addEventListener('abort', () => reject(request.signal.reason), { once: true }))
+          }
           return {
             message: {
               id: 'compact-1',
@@ -64,6 +72,19 @@ describe('registerChatRoutes', () => {
         else resolve()
       })
     })
+  })
+
+  it('routes live mode commands without starting inference and rejects invalid/stale commands', async () => {
+    const post = (body: any) => fetch(`${baseUrl}/api/conversations/c1/operation-mode`, {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body),
+    })
+    const response = await post({ mode: 'plan', streamId: 's1', requestId: 'r1' })
+    expect(response.status).toBe(200)
+    expect(await response.json()).toMatchObject({ status: 'pending', mode: 'plan' })
+    expect(seenRequests[0]).toMatchObject({ conversationId: 'c1', streamId: 's1', requestId: 'r1' })
+    expect(seenOperations).toEqual([])
+    expect((await post({ mode: 'other', requestId: 'r2' })).status).toBe(400)
+    expect((await post({ mode: 'execute', streamId: 'stale', requestId: 'r3' })).status).toBe(409)
   })
 
   it('streams SSE events from orchestrator', async () => {
@@ -156,6 +177,19 @@ describe('registerChatRoutes', () => {
       subagentModePrompt: 'Custom Subagent baseline',
       planModeVerbosity: 'detailed',
     })
+  })
+
+  it('aborts compaction when the client cancels the request', async () => {
+    const controller = new AbortController()
+    const request = fetch(`${baseUrl}/api/conversations/c1/compact`, {
+      method: 'POST', headers: { 'content-type': 'application/json' }, signal: controller.signal,
+      body: JSON.stringify({ parentMessageId: 'a', modelName: 'wait-for-abort', messages: [{ role: 'user', content: 'Task' }, { role: 'assistant', content: 'Progress' }] }),
+    })
+    const settled = request.catch(error => error)
+    await expect.poll(() => seenCompactionRequests.length).toBe(1)
+    controller.abort()
+    await settled
+    await expect.poll(() => seenCompactionRequests[0].signal.aborted).toBe(true)
   })
 
   it('maps compact route to compaction service', async () => {

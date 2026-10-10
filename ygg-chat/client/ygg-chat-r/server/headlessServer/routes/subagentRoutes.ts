@@ -26,7 +26,9 @@ function buildSubagentStreamRequest(body: any): HeadlessSubagentStreamRequest {
     ).trim(),
     toolCallId: body?.toolCallId ?? body?.tool_call_id ?? null,
     streamId: body?.streamId ?? body?.stream_id ?? null,
-    lineageId: body?.lineageId ?? body?.lineage_id ?? null,
+    // HTTP callers cannot grant themselves access to a branch's shared REPL.
+    // Only parent tool dispatch and owned manager resume supply trusted lineage.
+    lineageId: null,
     prompt: typeof body?.prompt === 'string' ? body.prompt : '',
     systemPrompt:
       typeof body?.systemPrompt === 'string'
@@ -44,12 +46,14 @@ function buildSubagentStreamRequest(body: any): HeadlessSubagentStreamRequest {
     tools: normalizeToolNames(body?.tools),
     maxTurns: typeof body?.maxTurns === 'number' ? body.maxTurns : undefined,
     temperature: typeof body?.temperature === 'number' ? body.temperature : undefined,
+    serviceTier: (body?.serviceTier ?? body?.service_tier) === 'priority' ? 'priority' : undefined,
     reasoningEffort:
       body?.reasoningEffort === 'low' || body?.reasoningEffort === 'medium' || body?.reasoningEffort === 'high' || body?.reasoningEffort === 'xhigh'
         ? body.reasoningEffort
         : undefined,
     operationMode: body?.operationMode === 'plan' || body?.operation_mode === 'plan' ? 'plan' : 'execute',
     autoApprove: body?.autoApprove === true || body?.auto_approve === true,
+    fullAccess: body?.fullAccess === true,
     rootPath: typeof body?.rootPath === 'string' ? body.rootPath : typeof body?.root_path === 'string' ? body.root_path : null,
     userId: typeof body?.userId === 'string' ? body.userId : typeof body?.user_id === 'string' ? body.user_id : null,
     accessToken: null,

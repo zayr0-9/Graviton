@@ -19,6 +19,7 @@ import {
   parseMcpQualifiedName,
   stringifyToolValue,
   SURFACE_CARD_CLASS,
+  TOOL_NAME_BASE_CLASS,
   TOOL_NAME_ERROR_CLASS,
   TOOL_NAME_RUNNING_CLASS,
   TOOL_NAME_SUCCESS_CLASS,
@@ -56,6 +57,7 @@ export interface ToolCallGroupCardProps {
   onExpandTransitionEnd?: () => void
   contentStyle?: React.CSSProperties
   truncateToolOutput: boolean
+  readOnly?: boolean
   toolDefinitions: ToolDefinition[]
   mcpLoadState: Record<string, boolean>
   mcpReloadTokens: Record<string, number>
@@ -128,11 +130,15 @@ const getToolPayloadStatus = (
   return fallbackIsError === false ? { label: 'ok', tone: 'success' } : null
 }
 
-const toneForGroup = (hasResults: boolean, hasError: boolean): DisclosureTone =>
-  hasError ? 'error' : hasResults ? 'success' : 'running'
+// The server persists this placeholder before a tool has a final result. Presentation only:
+// retain its is_error flag and content for persistence and model context.
+const isIncompleteToolResult = (result: { content: unknown }): boolean =>
+  result.content === 'Tool execution did not complete.'
 
 const toolNameClassForTone = (tone: DisclosureTone): string =>
-  tone === 'error' ? TOOL_NAME_ERROR_CLASS : tone === 'running' ? TOOL_NAME_RUNNING_CLASS : TOOL_NAME_SUCCESS_CLASS
+  tone === 'warning'
+    ? `${TOOL_NAME_BASE_CLASS} text-amber-700 dark:text-amber-400`
+    : tone === 'error' ? TOOL_NAME_ERROR_CLASS : tone === 'running' ? TOOL_NAME_RUNNING_CLASS : TOOL_NAME_SUCCESS_CLASS
 
 const ToolName: React.FC<{ name: string; tone: DisclosureTone }> = ({ name, tone }) => (
   <span className={`${DISCLOSURE_LABEL_CLASS} ${toolNameClassForTone(tone)}`}>{name}</span>
@@ -152,6 +158,7 @@ export const ToolCallGroupCard: React.FC<ToolCallGroupCardProps> = ({
   onExpandTransitionEnd,
   contentStyle,
   truncateToolOutput,
+  readOnly = false,
   toolDefinitions,
   mcpLoadState,
   mcpReloadTokens,
@@ -167,13 +174,17 @@ export const ToolCallGroupCard: React.FC<ToolCallGroupCardProps> = ({
 
   const rawName = group.name ?? ''
   const normalizedName = normalizeToolName(rawName)
-  const isMcpGroup = rawName.startsWith('mcp__')
-  const parsedMcp = isMcpGroup ? parseMcpQualifiedName(rawName) : null
+  const isMcpInvoke = normalizedName === 'mcp_manager' && group.args?.action === 'invoke'
+  const isMcpGroup = rawName.startsWith('mcp__') || isMcpInvoke
+  const parsedMcp = isMcpInvoke
+    ? { serverName: group.args?.name, toolName: group.args?.tool }
+    : isMcpGroup ? parseMcpQualifiedName(rawName) : null
   const mcpServerName = parsedMcp?.serverName
   const hasResults = group.results.length > 0
   const resultSummary = hasResults ? formatToolResultSummary(group.results[0].content) : null
-  const hasError = group.results.some(r => r.is_error) || resultSummary === 'failure'
-  const tone = toneForGroup(hasResults, hasError)
+  const hasIncompleteResult = group.results.some(isIncompleteToolResult)
+  const hasError = group.results.some(r => r.is_error && !isIncompleteToolResult(r)) || resultSummary === 'failure'
+  const tone: DisclosureTone = hasError ? 'error' : hasIncompleteResult ? 'warning' : hasResults ? 'success' : 'running'
   const panelId = `${toggleKey}-panel`
 
   const viewerPill = (entryKey: string) => (
@@ -210,20 +221,31 @@ export const ToolCallGroupCard: React.FC<ToolCallGroupCardProps> = ({
 
   const wrapperStyle = contentStyle
 
-  // html_renderer: the input HTML is the artifact. Always visible.
+  // Inspection-only previews share presentation, but never mount executable
+  // HTML/MCP apps or offer tool navigation/mutation actions.
+
+  // html_renderer: inline input or HTML loaded from a file is the artifact. Always visible.
   const isHtmlRenderer = normalizedName === 'html_renderer'
-  if (isHtmlRenderer && group.args && typeof group.args.html === 'string') {
-    const htmlPreviewKey = `${messageId}-html-renderer-${group.id}`
+  const htmlResultIndex = isHtmlRenderer
+    ? group.results.findIndex(result => !result.is_error && Boolean(extractHtmlFromToolResult(result.content)?.html))
+    : -1
+  const rendererHtml = isHtmlRenderer && typeof group.args?.html === 'string'
+    ? group.args.html
+    : htmlResultIndex >= 0 ? extractHtmlFromToolResult(group.results[htmlResultIndex].content)?.html : null
+  if (!readOnly && isHtmlRenderer && typeof rendererHtml === 'string') {
+    const htmlPreviewKey = typeof group.args?.html === 'string'
+      ? `${messageId}-html-renderer-${group.id}`
+      : `${messageId}-${group.id}-result-${htmlResultIndex}`
     return (
       <div className='min-w-0 max-w-full' style={wrapperStyle} data-chat-block='tool'>
         <div className={STATIC_ROW_CLASS}>
-          <ToolName name={rawName || 'html_renderer'} tone={hasResults ? 'success' : 'running'} />
+          <ToolName name={rawName || 'html_renderer'} tone={hasIncompleteResult ? tone : hasResults ? 'success' : 'running'} />
           <span className='min-w-0 flex-1' />
           {viewerPill(htmlPreviewKey)}
         </div>
         <div className={DISCLOSURE_BODY_CLASS}>
           <div className={`${SURFACE_CARD_CLASS} p-1`}>
-            <HtmlIframe html={group.args.html} toolName={rawName || null} />
+            <HtmlIframe html={rendererHtml} toolName={rawName || null} />
           </div>
         </div>
       </div>
@@ -231,7 +253,7 @@ export const ToolCallGroupCard: React.FC<ToolCallGroupCardProps> = ({
   }
 
   // internalLink: a navigation affordance plus the resolved target.
-  if (normalizedName === 'internallink' || normalizedName === 'internal_link') {
+  if (!readOnly && (normalizedName === 'internallink' || normalizedName === 'internal_link')) {
     const resultPayload = hasResults ? group.results[group.results.length - 1].content : null
     const parsedPayload = parseToolJsonObject(resultPayload)
     const target = parsedPayload?.target && typeof parsedPayload.target === 'object' ? parsedPayload.target : null
@@ -268,7 +290,7 @@ export const ToolCallGroupCard: React.FC<ToolCallGroupCardProps> = ({
     return (
       <div className='min-w-0 max-w-full' style={wrapperStyle} data-chat-block='tool'>
         <div className={STATIC_ROW_CLASS}>
-          <ToolName name={rawName || 'internalLink'} tone={linkFailed ? 'error' : 'success'} />
+          <ToolName name={rawName || 'internalLink'} tone={hasIncompleteResult ? tone : linkFailed ? 'error' : 'success'} />
           <span className='min-w-0 flex-1' />
           <button
             type='button'
@@ -297,9 +319,20 @@ export const ToolCallGroupCard: React.FC<ToolCallGroupCardProps> = ({
   }
 
   // MCP app with a UI resource: the app is the artifact. Always visible.
-  const mcpTool = toolDefinitions.find(t => t.isMcp && t.name === rawName)
+  const invokeResult = isMcpInvoke ? parseToolJsonObject(group.results.at(-1)?.content) : null
+  const invokedDefinition = invokeResult?.mcpToolDefinition
+  const mcpTool = toolDefinitions.find(t => t.isMcp && (isMcpInvoke
+    ? t.mcpServerName === parsedMcp?.serverName && t.mcpToolName === parsedMcp?.toolName
+    : t.name === rawName)) || (invokedDefinition ? {
+      ...invokedDefinition, enabled: true, isMcp: true,
+      name: invokedDefinition.qualifiedName || `mcp__${parsedMcp?.serverName}__${parsedMcp?.toolName}`,
+      mcpServerName: invokedDefinition.serverName, mcpToolName: invokedDefinition.name,
+      mcpUi: invokedDefinition._meta?.ui || (invokedDefinition._meta?.['ui/resourceUri']
+        ? { resourceUri: invokedDefinition._meta['ui/resourceUri'] } : undefined),
+    } : undefined)
+  const mcpToolArgs = isMcpInvoke ? group.args?.args : group.args
   const mcpResourceUri = mcpTool?.mcpUi?.resourceUri
-  if (mcpTool && mcpResourceUri) {
+  if (!readOnly && mcpTool && mcpResourceUri) {
     const serverName = mcpTool.mcpServerName || parsedMcp?.serverName
     if (serverName) {
       const latestResult = hasResults ? group.results[group.results.length - 1] : null
@@ -312,7 +345,7 @@ export const ToolCallGroupCard: React.FC<ToolCallGroupCardProps> = ({
         serverName,
         resourceUri: mcpResourceUri,
         qualifiedToolName: mcpTool.name,
-        toolArgs: group.args || undefined,
+        toolArgs: mcpToolArgs || undefined,
         toolResult: normalizedResult,
         toolDefinition: mcpTool,
         reloadToken: mcpReloadTokens[reloadKey] || 0,
@@ -320,7 +353,7 @@ export const ToolCallGroupCard: React.FC<ToolCallGroupCardProps> = ({
       return (
         <div className='min-w-0 max-w-full' style={wrapperStyle} data-chat-block='tool'>
           <div className={STATIC_ROW_CLASS}>
-            <ToolName name={rawName || 'mcp_app'} tone={latestResult?.is_error ? 'error' : latestResult ? 'success' : 'running'} />
+            <ToolName name={rawName || 'mcp_app'} tone={hasIncompleteResult ? tone : latestResult?.is_error ? 'error' : latestResult ? 'success' : 'running'} />
             <Badge tone='success'>MCP App</Badge>
             <span className='min-w-0 flex-1' />
             <button
@@ -342,7 +375,7 @@ export const ToolCallGroupCard: React.FC<ToolCallGroupCardProps> = ({
                 serverName={serverName}
                 qualifiedToolName={mcpTool.name}
                 resourceUri={mcpResourceUri}
-                toolArgs={group.args || undefined}
+                toolArgs={mcpToolArgs || undefined}
                 toolResult={normalizedResult}
                 toolDefinition={mcpTool}
                 reloadToken={mcpReloadTokens[reloadKey] || 0}
@@ -365,7 +398,7 @@ export const ToolCallGroupCard: React.FC<ToolCallGroupCardProps> = ({
           <ToolName name={rawName || 'plan_md'} tone={tone} />
         </div>
         <div className={DISCLOSURE_BODY_CLASS}>
-          <PlanMdToolView args={group.args} result={planResult} />
+          <PlanMdToolView args={group.args} result={planResult} readOnly={readOnly} />
         </div>
       </div>
     )
@@ -376,7 +409,7 @@ export const ToolCallGroupCard: React.FC<ToolCallGroupCardProps> = ({
     normalizedName === 'edit_file' || normalizedName === 'editfile' || normalizedName === 'multi_edit'
   if (isEditLikeTool && group.args) {
     const editResult = hasResults ? group.results[0].content : {}
-    const editTone: DisclosureTone = !hasResults
+    const editTone: DisclosureTone = hasIncompleteResult ? tone : !hasResults
       ? 'running'
       : formatToolResultSummary(editResult) === 'success'
         ? 'success'
@@ -405,14 +438,14 @@ export const ToolCallGroupCard: React.FC<ToolCallGroupCardProps> = ({
     )
     .filter((key): key is string => Boolean(key))
   const primaryHtmlResultKey = htmlResultKeys[0]
-  const hasHtmlOutput = htmlResultKeys.length > 0
+  const hasHtmlOutput = !readOnly && htmlResultKeys.length > 0
 
   const getGenericToolOutputPreview = (value: unknown) => {
     const text = stringifyToolValue(value)
     return truncateToolOutput ? truncateToolOutputPreview(text) : { text, truncated: false, omittedCharacters: 0 }
   }
 
-  const label = isSubagent ? (
+  const label = !readOnly && isSubagent ? (
     <SubagentToolName toolCallId={group.id} name={rawName || 'tool'} fallbackClass={toolNameClassForTone(tone)} />
   ) : (
     rawName || 'tool'
@@ -511,7 +544,7 @@ export const ToolCallGroupCard: React.FC<ToolCallGroupCardProps> = ({
                   key={`input-${callIdx}`}
                   index={callIdx}
                   title={toolName}
-                  actions={nestedSubagent ? transcriptPill(nestedSubagent.toolCallId) : undefined}
+                  actions={!readOnly && nestedSubagent ? transcriptPill(nestedSubagent.toolCallId) : undefined}
                 >
                   <FieldRows record={callArgs} fallback={callArgs ? undefined : { key: 'args', value: callRecord?.args ?? null }} />
                   {extraFields && Object.keys(extraFields).length > 0 && <FieldRows record={extraFields} />}
@@ -539,7 +572,7 @@ export const ToolCallGroupCard: React.FC<ToolCallGroupCardProps> = ({
   const renderResult = (result: { content: any; is_error?: boolean }, resultIdx: number) => {
     const resultKey = `${messageId}-${group.id}-result-${resultIdx}`
     const maybeHtml = extractHtmlFromToolResult(result.content)
-    if (maybeHtml?.html) {
+    if (!readOnly && maybeHtml?.html) {
       return (
         <div key={resultKey} className={`${SURFACE_CARD_CLASS} p-1`}>
           <HtmlIframe html={maybeHtml.html} toolName={maybeHtml.toolName ?? group.name ?? null} />
@@ -547,7 +580,10 @@ export const ToolCallGroupCard: React.FC<ToolCallGroupCardProps> = ({
       )
     }
 
-    const errorTextClass = result.is_error ? 'text-red-600 dark:text-red-400' : ''
+    const isIncomplete = isIncompleteToolResult(result)
+    const errorTextClass = isIncomplete
+      ? 'text-amber-700 dark:text-amber-400'
+      : result.is_error ? 'text-red-600 dark:text-red-400' : ''
     const outputPreview = getGenericToolOutputPreview(result.content)
     if (outputPreview.truncated) {
       return (
@@ -622,7 +658,9 @@ export const ToolCallGroupCard: React.FC<ToolCallGroupCardProps> = ({
     }
 
     const outputRecord = parseToolJsonObject(result.content)
-    const outputStatus = getToolPayloadStatus(outputRecord, result.is_error)
+    const outputStatus = isIncomplete
+      ? { label: 'in progress', tone: 'warning' as const }
+      : getToolPayloadStatus(outputRecord, result.is_error)
     return (
       <div key={resultKey} className='min-w-0 max-w-full'>
         <SectionLabel label='output'>{group.results.length > 1 && <Badge>{`result ${resultIdx + 1}`}</Badge>}</SectionLabel>
@@ -650,7 +688,7 @@ export const ToolCallGroupCard: React.FC<ToolCallGroupCardProps> = ({
         expanded={expanded}
         onToggle={onToggle}
         controlsId={panelId}
-        trailing={hasTrailing ? trailing : undefined}
+        trailing={!readOnly && hasTrailing ? trailing : undefined}
       />
       <DisclosurePanel
         id={panelId}

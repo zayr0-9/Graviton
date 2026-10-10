@@ -116,7 +116,7 @@ describe('registerEphemeralGenerateRoutes', () => {
     const nativeFetch = globalThis.fetch.bind(globalThis)
     const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation(async (_input, init) => {
       const body = JSON.parse(String(init?.body || '{}'))
-      expect(body.model).toBe('gpt-5.4-mini')
+      expect(body.model).toBe('gpt-6.1-sol')
       const events = [
         {
           type: 'response.output_item.added',
@@ -153,7 +153,7 @@ describe('registerEphemeralGenerateRoutes', () => {
     const res = await nativeFetch(`${baseUrl}/api/headless/ephemeral/chat`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ content: 'hello', modelName: 'GPT-5.4 Mini', history: [] }),
+      body: JSON.stringify({ content: 'hello', modelName: 'GPT-6.1 Sol', history: [] }),
     })
 
     expect(res.status).toBe(200)

@@ -1,3 +1,4 @@
+import { isFullAccessEnabled } from '../../helpers/fullAccessSettings'
 import { createAsyncThunk } from '@reduxjs/toolkit'
 import type { QueryClient } from '@tanstack/react-query'
 import {
@@ -31,6 +32,7 @@ import { convContextSet, systemPromptSet } from '../conversations/conversationSl
 import type { Conversation } from '../conversations/conversationTypes'
 import { selectSelectedProject } from '../projects/projectSelectors'
 import { chatSliceActions } from './chatSlice'
+import { selectOperationMode } from './chatSelectors'
 import { resolveAttachmentUrlFromOrigins } from './attachmentUrl'
 import {
   Attachment,
@@ -45,7 +47,7 @@ import {
 } from './chatTypes'
 // OpenAI OAuth is handled internally by OpenAIChatGPT module
 import { loadAutoCompactionEnabled } from '../../helpers/chatUiSettingsStorage'
-import { getAgentModePrompt, getActiveChatModePrompt, getSubagentModePrompt } from '../../helpers/operationModePromptStorage'
+import { getCombinedOperationModePrompt, getSubagentModePrompt } from '../../helpers/operationModePromptStorage'
 import { loadPlanModeResponseSettings } from '../../helpers/planModeResponseSettingsStorage'
 import { getSubagentReasoningEffort } from '../../helpers/subagentToolSettings'
 import { loadLongTermMemoryContextEnabled } from '../../helpers/longTermMemorySettingsStorage'
@@ -70,6 +72,8 @@ import {
 import { isResumableRunsEnabled } from '../../helpers/serverLoopSettings'
 import { buildServerLoopRequest } from './buildServerLoopRequest'
 import { buildConversationTree } from './conversationTree'
+import { AUTO_COMPACTION_NOTE, getTreeMessageText } from './summaryPresentation'
+export { AUTO_COMPACTION_NOTE } from './summaryPresentation'
 import { conversationQueryKeys } from './conversationQueryKeys'
 import type { ConversationMessagesTreeData } from './conversationMessagesApi'
 import { filterToolsForOperationMode } from './operationModeSystemPrompt'
@@ -79,7 +83,6 @@ import {
   setMcpTools,
   updateToolEnabled as updateToolEnabledInDefinitions,
 } from './toolDefinitions'
-import { type ChatHookProjectContext } from './chatHookClient'
 import { type PlanClarificationAnswer } from './planToolTypes'
 import { applyStreamProjectionPolicy, normalizeServerMessage } from './sseProjection'
 import { abortSubagentControllers } from './subagentClient'
@@ -175,13 +178,11 @@ const refreshHeimdallTreeFromState = (getState: () => RootState, dispatch: (acti
 
 /**
  * Renderer-local operation-mode settings are not visible to the Electron main process.
- * Send the selected Plan, Agent, and subagent baselines separately so the server can
- * assemble the final prompt without duplicating bundled defaults.
+ * Send the stable combined Chat/Agent baseline plus the subagent baseline so the
+ * server can assemble the final prompt without duplicating bundled defaults.
  */
-const buildOperationModePromptRequestParams = (operationMode: 'plan' | 'execute') => ({
-  operationModePrompt:
-    operationMode === 'plan' ? getActiveChatModePrompt().prompt : getAgentModePrompt().prompt,
-  agentModePrompt: getAgentModePrompt().prompt,
+const buildOperationModePromptRequestParams = (_operationMode: 'plan' | 'execute') => ({
+  operationModePrompt: getCombinedOperationModePrompt(),
   subagentModePrompt: getSubagentModePrompt().prompt,
   planModeVerbosity: loadPlanModeResponseSettings().verbosity,
 })
@@ -221,7 +222,7 @@ const addMessageToTree = (tree: any | null, newMessage: Message, parentId: Messa
   if (!tree) {
     return {
       id: newMessage.id.toString(),
-      message: newMessage.content,
+      message: getTreeMessageText(newMessage),
       sender: newMessage.role === 'user' ? 'user' : newMessage.role === 'ex_agent' ? 'ex_agent' : 'assistant',
       children: [],
     }
@@ -234,7 +235,7 @@ const addMessageToTree = (tree: any | null, newMessage: Message, parentId: Messa
       // Synthetic root exists - add as child
       const newChild = {
         id: newMessage.id.toString(),
-        message: newMessage.content,
+        message: getTreeMessageText(newMessage),
         sender: newMessage.role === 'user' ? 'user' : newMessage.role === 'ex_agent' ? 'ex_agent' : 'assistant',
         children: [],
       }
@@ -246,7 +247,7 @@ const addMessageToTree = (tree: any | null, newMessage: Message, parentId: Messa
       // Single root exists - create synthetic root with both
       const newChild = {
         id: newMessage.id.toString(),
-        message: newMessage.content,
+        message: getTreeMessageText(newMessage),
         sender: newMessage.role === 'user' ? 'user' : newMessage.role === 'ex_agent' ? 'ex_agent' : 'assistant',
         children: [],
       }
@@ -265,7 +266,7 @@ const addMessageToTree = (tree: any | null, newMessage: Message, parentId: Messa
     if (node.id === parentId.toString()) {
       const newChild = {
         id: newMessage.id.toString(),
-        message: newMessage.content,
+        message: getTreeMessageText(newMessage),
         sender: newMessage.role === 'user' ? 'user' : newMessage.role === 'ex_agent' ? 'ex_agent' : 'assistant',
         children: [],
       }
@@ -385,6 +386,14 @@ const updateMessageCache = (queryClient: QueryClient | null, conversationId: Con
   }
 }
 
+const waitForDraftImages = async (dispatch: any, getState: () => RootState, target: import('./chatTypes').ImageDraftTarget) => {
+  const composition = getState().chat.composition
+  if (composition.imagePreparationPending || composition.imagePreparationError) {
+    const { waitForImagePreparation } = await import('./imagePreparation')
+    await dispatch(waitForImagePreparation(target))
+  }
+}
+
 const getDraftsForTarget = (
   state: RootState,
   target: { kind: 'composer' } | { kind: 'branch'; messageId: MessageId }
@@ -396,6 +405,16 @@ const getDraftsForTarget = (
     if (draftTarget.kind !== 'branch' || String(draftTarget.messageId) !== String(target.messageId)) return []
   }
   return state.chat.composition.imageDrafts || []
+}
+
+const consumeImageDrafts = (dispatch: any, getState: () => RootState, target: import('./chatTypes').ImageDraftTarget, drafts: ImageDraft[], owner: RootState) => {
+  const currentState = getState()
+  if (currentState.chat.conversation.currentConversationId !== owner.chat.conversation.currentConversationId ||
+      currentState.chat.composition.imagePreparationGeneration !== owner.chat.composition.imagePreparationGeneration) return
+  for (const draft of drafts) {
+    const index = getDraftsForTarget(getState(), target).findIndex(current => current === draft)
+    if (index >= 0) dispatch(chatSliceActions.imageDraftRemoved({ index, target }))
+  }
 }
 
 type LocalAttachmentDraft = {
@@ -600,58 +619,8 @@ const resolveOpenRouterTemperature = (providerSlug: string): number | undefined 
 }
 
 
-type MemoryContexts = {
-  longTermMemory: string | null
-  recentMemory: string | null
-  projectMemory: string | null
-  projectName: string | null
-}
-
-const maybeLoadMemoryContexts = async (project?: ChatHookProjectContext | null): Promise<MemoryContexts> => {
-  const emptyMemoryContexts: MemoryContexts = { longTermMemory: null, recentMemory: null, projectMemory: null, projectName: null }
-  // Memory files are server-owned: any local-server runtime (Electron or the
-  // standalone browser target) can load them.
-  const isLocalEngineMode = isLocalServerRuntime() || (typeof __IS_ELECTRON__ !== 'undefined' && __IS_ELECTRON__)
-
-  if (!isLocalEngineMode || !loadLongTermMemoryContextEnabled()) return emptyMemoryContexts
-
-  try {
-    const params = new URLSearchParams({ maxChars: '10000', recentMaxChars: '10000', projectMaxChars: '12000' })
-    if (project?.projectId) params.set('projectId', project.projectId)
-    if (project?.projectName) params.set('projectName', project.projectName)
-    const result = await localApi.get<{
-      success?: boolean
-      memory?: string
-      recentMemory?: string
-      projectMemory?: string
-      projectName?: string | null
-    }>(`/memory/context?${params.toString()}`)
-    const longTermMemory = typeof result?.memory === 'string' ? result.memory.trim() : ''
-    const recentMemory = typeof result?.recentMemory === 'string' ? result.recentMemory.trim() : ''
-    const projectMemory = typeof result?.projectMemory === 'string' ? result.projectMemory.trim() : ''
-    return {
-      longTermMemory: longTermMemory || null,
-      recentMemory: recentMemory || null,
-      projectMemory: projectMemory || null,
-      projectName: typeof result?.projectName === 'string' && result.projectName.trim() ? result.projectName.trim() : project?.projectName ?? null,
-    }
-  } catch (error) {
-    console.warn('[longTermMemory] Failed to load memory context:', error)
-    return emptyMemoryContexts
-  }
-}
 
 
-const buildProjectContextForMemory = (project: { id?: string | null; name?: string | null } | null | undefined): ChatHookProjectContext | null => {
-  if (!project?.id && !project?.name) return null
-  return {
-    projectId: project?.id != null ? String(project.id) : null,
-    projectName: typeof project?.name === 'string' ? project.name : null,
-  }
-}
-
-
-export const AUTO_COMPACTION_NOTE = '__auto_compaction_summary__'
 export const GENERATED_IMAGE_PATH_HINT_NOTE = '__generated_image_path_hint__'
 
 const isAutoCompactionSummaryMessage = (msg: Message | undefined | null): boolean => {
@@ -1021,6 +990,16 @@ interface CompactBranchPayload {
 // a UUID, exposed it to Redux, then fire-and-forgot `/sync/message`; a failed/racing write
 // left the next send parented to a row SQLite had never seen.
 const COMPACTION_TIMEOUT_MS = 120_000
+const compactionControllers = new Map<string, AbortController>()
+const compactionKey = (conversationId: ConversationId, parentMessageId: MessageId) =>
+  JSON.stringify([String(conversationId), String(parentMessageId)])
+
+export const abortCompaction = createAsyncThunk<void, { conversationId: ConversationId; parentMessageId: MessageId }>(
+  'chat/abortCompaction',
+  async ({ conversationId, parentMessageId }) => {
+    compactionControllers.get(compactionKey(conversationId, parentMessageId))?.abort()
+  }
+)
 
 export const compactBranch = createAsyncThunk<
   { message: Message | null },
@@ -1030,9 +1009,13 @@ export const compactBranch = createAsyncThunk<
   'chat/compactBranch',
   async (
     { conversationId, parentMessageId, messages, providerName, modelName },
-    { dispatch, getState, extra, rejectWithValue }
+    { dispatch, getState, extra, rejectWithValue, signal }
   ) => {
-    dispatch(chatSliceActions.compactingStarted({ conversationId }))
+    const controller = new AbortController()
+    const key = compactionKey(conversationId, parentMessageId)
+    compactionControllers.set(key, controller)
+    const requestSignal = AbortSignal.any([signal, controller.signal, AbortSignal.timeout(COMPACTION_TIMEOUT_MS)])
+    dispatch(chatSliceActions.compactingStarted({ conversationId, parentMessageId }))
 
     try {
       if (!parentMessageId) throw new Error('Compaction requires a persisted parent message')
@@ -1060,8 +1043,9 @@ export const compactBranch = createAsyncThunk<
           userId: extra.auth.userId,
           systemPrompt: providerSettings.compactionSystemPrompt?.trim() || null,
         },
-        { signal: AbortSignal.timeout(COMPACTION_TIMEOUT_MS) }
+        { signal: requestSignal }
       )
+      requestSignal.throwIfAborted()
 
       if (!response?.success || !response.message) {
         throw new Error(response?.error || 'Compaction failed before persistence')
@@ -1076,17 +1060,27 @@ export const compactBranch = createAsyncThunk<
       if (!hasValidPersistedMarker) throw new Error('Compaction server returned an invalid persisted summary')
 
       // Only expose the server-assigned ID after the compact route has persisted it.
+      dispatch(chatSliceActions.compactionSummaryPersisted({
+        conversationId, parentMessageId, messageId: summaryMessage.id,
+      }))
       dispatch(chatSliceActions.messageAdded(summaryMessage))
       dispatch(chatSliceActions.messageBranchCreated({ newMessage: summaryMessage }))
       updateMessageCache(extra.queryClient, conversationId, summaryMessage)
 
       return { message: summaryMessage }
     } catch (error) {
+      if (controller.signal.aborted || signal.aborted) return { message: null }
       console.error('[compactBranch] failed', error)
       return rejectWithValue(error instanceof Error ? error.message : 'Failed to compact branch')
     } finally {
+      if (compactionControllers.get(key) === controller) compactionControllers.delete(key)
       dispatch(chatSliceActions.compactingFinished())
     }
+  },
+  {
+    // Standalone compaction still has one composition owner. Do not let a
+    // background request overwrite it when another branch starts a precheck.
+    condition: () => compactionControllers.size === 0,
   }
 )
 
@@ -1128,6 +1122,9 @@ export const sendMessage = createAsyncThunk<
     const streamId = providedStreamId ?? generateStreamId(streamType)
     const projectionDispatch = (action: unknown) =>
       dispatch(applyStreamProjectionPolicy(action as any, { streamId, streamType, updatePath }) as any)
+    try {
+      if (includeGlobalComposerContext) await waitForDraftImages(dispatch, getState, { kind: 'composer' })
+    } catch (error) { return rejectWithValue({ message: String(error) }) }
     const preSendState = getState() as RootState
     const preSendDrafts = includeGlobalComposerContext
       ? getDraftsForTarget(preSendState, { kind: 'composer' })
@@ -1166,6 +1163,7 @@ export const sendMessage = createAsyncThunk<
           streamId,
           streamType,
           conversationId,
+          preserveDrafts: true,
           lineage: {
             lineageId: sendLineageId ?? undefined,
             rootMessageId: parent,
@@ -1235,7 +1233,7 @@ export const sendMessage = createAsyncThunk<
 
       // Combine mode, user default, project, and conversation system prompts.
       const selectedProject = selectSelectedProject(state)
-      const operationModeAtSend = requestedOperationMode ?? state.chat.operationMode
+      const operationModeAtSend = requestedOperationMode ?? selectOperationMode(state)
       const projectContext = selectedProject?.context || null
       const conversationContextSource = state.conversations.convContext || null
       // Get selected files for chat captured before send start so UI can clear immediately
@@ -1277,6 +1275,7 @@ export const sendMessage = createAsyncThunk<
           subagentReasoningEffort: getSubagentReasoningEffort(),
           imageConfig,
           rootPath: effectiveToolRootPath,
+          fullAccess: isFullAccessEnabled(),
           conversationContext: conversationContextSource,
           projectContext,
           storageMode,
@@ -1290,10 +1289,12 @@ export const sendMessage = createAsyncThunk<
           localApiBase: getCachedLocalApiBase(),
           contextDirectories: loadContextDirectorySettings(),
           autoMemoryEnabled: loadLongTermMemoryContextEnabled(),
-          // Phase 4 openrouter parity: undefined for lmstudio/zai (omitted from body),
-          // so the local-provider request is unchanged; serviceTier only for openrouter.
+          // Forward priority for Codex and OpenRouter only; other providers omit it.
           temperature: openRouterTemperature,
-          serviceTier: providerSlug === 'openrouter' ? serviceTier : undefined,
+          serviceTier:
+            providerSlug === 'openrouter' || providerSlug === 'openaichatgpt' || providerSlug === 'openai(chatgpt)'
+              ? serviceTier
+              : undefined,
           // ChatGPT: forward fresh renderer tokens so the server resolves auth directly
           // (null for every other provider => omitted from the body).
           accessToken: chatgptServerAuth?.accessToken,
@@ -1315,6 +1316,7 @@ export const sendMessage = createAsyncThunk<
             dispatch: projectionDispatch,
             getState,
             onMessagePersisted: () => refreshHeimdallTreeFromState(getState, dispatch),
+            onUserMessagePersisted: () => consumeImageDrafts(dispatch, getState, { kind: 'composer' }, preSendDrafts, preSendState),
             userMessageArtifacts: (attachmentsBase64 || []).map(attachment => attachment.dataUrl),
             onSeq: (seq, event) => {
               if (
@@ -1556,7 +1558,10 @@ export const editMessageWithBranching = createAsyncThunk<
     // Generate or use provided stream ID
     const streamId = providedStreamId ?? generateStreamId('branch')
 
-    // Snapshot composition state before send start so UI can clear immediately.
+    try {
+      await waitForDraftImages(dispatch, getState, { kind: 'branch', messageId: originalMessageId })
+    } catch (error) { return rejectWithValue({ message: String(error) }) }
+    // Snapshot composition state only after image preparation is settled.
     const preSendState = getState() as RootState
     const preSendDrafts = getDraftsForTarget(preSendState, { kind: 'branch', messageId: originalMessageId })
     const preSendSelectedFilesForChat = preSendState.ideContext.selectedFilesForChat || []
@@ -1609,6 +1614,7 @@ export const editMessageWithBranching = createAsyncThunk<
           streamId,
           streamType: 'branch',
           conversationId,
+          preserveDrafts: true,
           lineage: {
             lineageId: editLineageId ?? undefined,
             originMessageId: originalMessageId,
@@ -1668,11 +1674,9 @@ export const editMessageWithBranching = createAsyncThunk<
 
       // Combine mode, user default, project, and conversation system prompts.
       const selectedProject = selectSelectedProject(state)
-      const operationModeAtSend = requestedOperationMode ?? state.chat.operationMode
+      const operationModeAtSend = requestedOperationMode ?? selectOperationMode(state)
       const projectContext = selectedProject?.context || null
       const conversationContextSource = state.conversations.convContext || null
-      const projectMemoryContext = buildProjectContextForMemory(selectedProject)
-      const memoryContexts = await maybeLoadMemoryContexts(projectMemoryContext)
 
       // Gather image drafts (new images being added) captured before send start.
       const drafts = preSendDrafts
@@ -1688,9 +1692,21 @@ export const editMessageWithBranching = createAsyncThunk<
         ? originalMessage.artifacts
         : []
       // Use whichever has artifacts (prefer cache, fallback to Redux)
-      const artifactsExisting = artifactsFromCache.length > 0 ? artifactsFromCache : artifactsFromRedux
+      let artifactsExisting = artifactsFromCache.length > 0 ? artifactsFromCache : artifactsFromRedux
 
       const deletedBackup: string[] = state.chat.attachments.backup?.[originalMessageId] || []
+      // A freshly opened branch can submit before thumbnail hydration finishes.
+      // Recover retained source attachments from metadata instead of silently losing them.
+      if (!artifactsExisting.length && !deletedBackup.length) {
+        const attached = originalMessage.attachments ?? cachedOriginalMessage?.attachments ?? []
+        artifactsExisting = await Promise.all(attached.filter(a => a.mime_type?.startsWith('image/')).map(async a => {
+          const url = resolveAttachmentUrl(a.url, a.file_path, a.id)
+          if (!url) throw new Error('Could not load original attached image. Reattach it before branching.')
+          const response = await fetch(url, { signal: controller.signal })
+          if (!response.ok) throw new Error('Could not load original attached image. Reattach it before branching.')
+          return blobToDataURL(await response.blob())
+        }))
+      }
       const existingMinusDeleted = artifactsExisting.filter(a => !deletedBackup.includes(a))
       const combinedArtifacts = Array.from(new Set([...existingMinusDeleted, ...draftDataUrls]))
 
@@ -1737,9 +1753,6 @@ export const editMessageWithBranching = createAsyncThunk<
       promptAndContextTokens += safeEstimateTokenCount(selectedProject?.context)
       promptAndContextTokens += safeEstimateTokenCount(state.conversations.systemPrompt)
       promptAndContextTokens += safeEstimateTokenCount(state.conversations.convContext)
-      promptAndContextTokens += safeEstimateTokenCount(memoryContexts.longTermMemory)
-      promptAndContextTokens += safeEstimateTokenCount(memoryContexts.recentMemory)
-      promptAndContextTokens += safeEstimateTokenCount(memoryContexts.projectMemory)
 
       let messageTokens = 0
       currentPathMessages.forEach(message => {
@@ -1876,6 +1889,7 @@ export const editMessageWithBranching = createAsyncThunk<
           think,
           subagentReasoningEffort: getSubagentReasoningEffort(),
           rootPath: effectiveToolRootPath,
+          fullAccess: isFullAccessEnabled(),
           conversationContext: conversationContextSource,
           projectContext,
           storageMode,
@@ -1889,10 +1903,12 @@ export const editMessageWithBranching = createAsyncThunk<
           localApiBase: getCachedLocalApiBase(),
           contextDirectories: loadContextDirectorySettings(),
           autoMemoryEnabled: loadLongTermMemoryContextEnabled(),
-          // Phase 4 openrouter parity: undefined for lmstudio/zai (omitted from body),
-          // so the local-provider request is unchanged; serviceTier only for openrouter.
+          // Forward priority for Codex and OpenRouter only; other providers omit it.
           temperature: openRouterTemperature,
-          serviceTier: providerSlug === 'openrouter' ? serviceTier : undefined,
+          serviceTier:
+            providerSlug === 'openrouter' || providerSlug === 'openaichatgpt' || providerSlug === 'openai(chatgpt)'
+              ? serviceTier
+              : undefined,
           // ChatGPT: forward fresh renderer tokens so the server resolves auth directly
           // (null for every other provider => omitted from the body).
           accessToken: chatgptServerAuth?.accessToken,
@@ -1915,6 +1931,7 @@ export const editMessageWithBranching = createAsyncThunk<
             dispatch,
             getState,
             onMessagePersisted: () => refreshHeimdallTreeFromState(getState, dispatch),
+            onUserMessagePersisted: () => consumeImageDrafts(dispatch, getState, { kind: 'branch', messageId: originalMessageId }, preSendDrafts, preSendState),
             userMessageArtifacts: (attachmentsBase64 || []).map(attachment => attachment.dataUrl),
             onSeq: (seq, event) => {
               if (
@@ -2014,6 +2031,9 @@ export const sendMessageToBranch = createAsyncThunk<
 
     // Generate or use provided stream ID
     const streamId = providedStreamId ?? generateStreamId('branch')
+    try {
+      await waitForDraftImages(dispatch, getState, { kind: 'branch', messageId: parentId })
+    } catch (error) { return rejectWithValue({ message: String(error) }) }
     const preSendState = getState() as RootState
     const preSendDrafts = getDraftsForTarget(preSendState, { kind: 'branch', messageId: parentId })
     const preSendAttachmentsBase64 = preSendDrafts.length
@@ -2043,6 +2063,7 @@ export const sendMessageToBranch = createAsyncThunk<
           streamId,
           streamType: 'branch',
           conversationId,
+          preserveDrafts: true,
           lineage: {
             lineageId: branchLineageId ?? undefined,
             rootMessageId: parentId,
@@ -2102,7 +2123,7 @@ export const sendMessageToBranch = createAsyncThunk<
       // Use React Query cache as fallback for storage mode detection (handles local conversations not yet in Redux)
       const storageMode = conversationMeta?.storage_mode || getStorageModeFromCache(extra.queryClient, conversationId)
       // Keep cwd for tool execution context only (do not inject cwd into system prompt)
-      const operationModeAtSend = requestedOperationMode ?? state.chat.operationMode
+      const operationModeAtSend = requestedOperationMode ?? selectOperationMode(state)
       const payloadCwd = typeof cwd === 'string' ? cwd.trim() : (cwd ?? null)
       const effectiveToolRootPath = payloadCwd || conversationMeta?.cwd || state.ideContext.workspace?.rootPath || null
 
@@ -2130,6 +2151,7 @@ export const sendMessageToBranch = createAsyncThunk<
           think,
           subagentReasoningEffort: getSubagentReasoningEffort(),
           rootPath: effectiveToolRootPath,
+          fullAccess: isFullAccessEnabled(),
           conversationContext: conversationContextSource,
           projectContext,
           storageMode,
@@ -2143,10 +2165,12 @@ export const sendMessageToBranch = createAsyncThunk<
           localApiBase: getCachedLocalApiBase(),
           contextDirectories: loadContextDirectorySettings(),
           autoMemoryEnabled: loadLongTermMemoryContextEnabled(),
-          // Phase 4 openrouter parity: undefined for lmstudio/zai (omitted from body),
-          // so the local-provider request is unchanged; serviceTier only for openrouter.
+          // Forward priority for Codex and OpenRouter only; other providers omit it.
           temperature: openRouterTemperature,
-          serviceTier: providerSlug === 'openrouter' ? serviceTier : undefined,
+          serviceTier:
+            providerSlug === 'openrouter' || providerSlug === 'openaichatgpt' || providerSlug === 'openai(chatgpt)'
+              ? serviceTier
+              : undefined,
           // ChatGPT: forward fresh renderer tokens so the server resolves auth directly
           // (null for every other provider => omitted from the body).
           accessToken: chatgptServerAuth?.accessToken,
@@ -2168,6 +2192,7 @@ export const sendMessageToBranch = createAsyncThunk<
             dispatch,
             getState,
             onMessagePersisted: () => refreshHeimdallTreeFromState(getState, dispatch),
+            onUserMessagePersisted: () => consumeImageDrafts(dispatch, getState, { kind: 'branch', messageId: parentId }, preSendDrafts, preSendState),
             userMessageArtifacts: (attachmentsBase64 || []).map(attachment => attachment.dataUrl),
             onSeq: (seq, event) => {
               if (
@@ -2853,11 +2878,11 @@ export const abortGeneration = createAsyncThunk<
  */
 export const resumeInFlightStreams = createAsyncThunk<
   void,
-  { conversationId: string },
+  { conversationId: string; streamId?: string },
   { state: RootState }
->('chat/resumeInFlightStreams', async ({ conversationId }, { dispatch, getState }) => {
+>('chat/resumeInFlightStreams', async ({ conversationId, streamId }, { dispatch, getState }) => {
   if (!isResumableRunsEnabled()) return
-  const records = listInflightStreams(String(conversationId))
+  const records = listInflightStreams(String(conversationId)).filter(record => !streamId || record.streamId === streamId)
   for (const rec of records) {
     // Route remounts must not replace the module-level reader that survived the Chat
     // unmount. RunSession attach is last-writer-wins, so ownership is checked per stream.
@@ -2872,6 +2897,7 @@ export const resumeInFlightStreams = createAsyncThunk<
       dispatch(
         chatSliceActions.sendingStarted({
           streamId: rec.streamId,
+          preserveDrafts: true,
           streamType: rec.streamType,
           conversationId: rec.conversationId,
           lineage: { rootMessageId: rec.parentMessageId ?? undefined },
@@ -2922,6 +2948,7 @@ export const resumeInFlightStreams = createAsyncThunk<
           envelope: reattachFailure,
         })
       }
+      void dispatch(loadMessageQueue({ conversationId: rec.conversationId, streamId: rec.streamId }))
       if (result.gone) dispatch(chatSliceActions.streamingAborted({ streamId: rec.streamId }))
       if (result.gone || result.terminal) removeInflightStream(rec.streamId)
     } catch (error) {
@@ -3287,6 +3314,120 @@ const settleDecisionResume = (
   if (typeof outcome.status === 'number' && outcome.status < 500) return { closeDialog: true }
   return { closeDialog: false }
 }
+
+export const loadMessageQueue = createAsyncThunk<void, { conversationId: string; streamId: string }, { state: RootState }>(
+  'chat/loadMessageQueue', async ({ conversationId, streamId }, { dispatch }) => {
+    const url = await buildLocalApiUrl(`/conversations/${encodeURIComponent(conversationId)}/streams/${encodeURIComponent(streamId)}/queue`)
+    const response = await fetch(url)
+    if (response.ok) dispatch(chatSliceActions.messageQueueUpdated(await response.json()))
+  }
+)
+
+export const cancelQueuedMessage = createAsyncThunk<void, { conversationId: string; streamId: string; requestId: string }, { state: RootState }>(
+  'chat/cancelQueuedMessage', async ({ conversationId, streamId, requestId }, { dispatch }) => {
+    const url = await buildLocalApiUrl(`/conversations/${encodeURIComponent(conversationId)}/streams/${encodeURIComponent(streamId)}/queue/${encodeURIComponent(requestId)}`)
+    const response = await fetch(url, { method: 'DELETE' })
+    const body = await response.json()
+    if (!response.ok) throw new Error(body.error || 'Could not cancel queued message')
+    dispatch(chatSliceActions.messageQueueUpdated(body))
+  }
+)
+
+export const enqueueUserMessage = createAsyncThunk<void, {
+  conversationId: string; streamId: string; content: string; requestId: string
+  includeGlobalComposerContext?: boolean; updatePath?: boolean
+}, { state: RootState; extra: ThunkExtraArgument }>('chat/enqueueUserMessage', async (params, { dispatch, getState }) => {
+  if (params.includeGlobalComposerContext !== false) await waitForDraftImages(dispatch, getState, { kind: 'composer' })
+  const draftOwner = getState()
+  const drafts = params.includeGlobalComposerContext === false ? [] : getDraftsForTarget(draftOwner, { kind: 'composer' })
+  const attachments = drafts.map(draft => ({ ...draft }))
+  const attachmentsBase64 = await prepareLocalAttachmentsForModel(attachments.length ? attachments : null, 'queued message attachments')
+  const url = await buildLocalApiUrl(`/conversations/${encodeURIComponent(params.conversationId)}/streams/${encodeURIComponent(params.streamId)}/queue`)
+  const body = JSON.stringify({ requestId: params.requestId, content: params.content, attachmentsBase64 })
+  // A lost HTTP acknowledgement is safe to retry with the SAME immutable id/payload.
+  let response: Response
+  try {
+    response = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body })
+  } catch {
+    response = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body })
+  }
+  const result = await response.json()
+  if (!response.ok) throw new Error(result.error || 'Could not queue message')
+  if (result.snapshot) dispatch(chatSliceActions.messageQueueUpdated(result.snapshot))
+  // Do not erase images added while attachment preparation/the POST was pending.
+  consumeImageDrafts(dispatch, getState, { kind: 'composer' }, drafts, draftOwner)
+  if ((result.restarted || result.streamId !== params.streamId) && result.streamId) {
+    addInflightStream({ streamId: result.streamId, conversationId: params.conversationId,
+      streamType: params.updatePath === false ? 'branch' : 'primary',
+      parentMessageId: result.parentId ?? null, updatePath: params.updatePath !== false })
+    void dispatch(resumeInFlightStreams({ conversationId: params.conversationId }))
+  }
+})
+
+export const changeOperationMode = createAsyncThunk<
+  { status: 'pending' | 'applied'; mode: 'plan' | 'execute' },
+  {
+    mode: 'plan' | 'execute'
+    conversationId?: ConversationId | null
+    streamId?: string | null
+    parentId?: MessageId | null
+    lineageId?: LineageId | null
+  },
+  { state: RootState; extra: ThunkExtraArgument }
+>('chat/changeOperationMode', async (params, { dispatch, getState, requestId, extra }) => {
+  const { mode, streamId, parentId, lineageId } = params
+  const conversationId = params.conversationId ?? getState().chat.conversation.currentConversationId
+  if (!conversationId) {
+    // A new, unsaved conversation will receive its initial mode on first send.
+    dispatch(chatSliceActions.operationModeSet(mode))
+    return { status: 'applied', mode }
+  }
+  if (!streamId) {
+    const selectedParent = parentId === undefined ? getState().chat.conversation.currentPath.at(-1) ?? null : parentId
+    dispatch(chatSliceActions.operationModeDraftSet({ conversationId, parentId: selectedParent, mode }))
+    return { status: 'applied', mode }
+  }
+  const existing = getState().chat.operationModeChanges?.[String(conversationId)]
+  if (existing) return { status: 'pending', mode: existing.mode }
+  dispatch(chatSliceActions.operationModeChangeRequested({ conversationId, mode, requestId, streamId }))
+  try {
+    const url = await buildLocalApiUrl(`/conversations/${encodeURIComponent(conversationId)}/operation-mode`)
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ mode, streamId, parentId: parentId ?? null, lineageId, requestId }),
+    })
+    const result = await response.json()
+    if (!response.ok) throw new Error(result.error || `Mode change rejected (HTTP ${response.status})`)
+    if (result.status === 'applied') {
+      if (result.message) {
+        const message = normalizeServerMessage(result.message)
+        dispatch(chatSliceActions.messageAdded(message))
+        dispatch(chatSliceActions.operationModeNotificationReceived({ message, mode, streamId }))
+        refreshHeimdallTreeFromState(getState, dispatch)
+      }
+      dispatch(chatSliceActions.operationModeChangeFailed({ conversationId, requestId }))
+      if (String(getState().chat.conversation.currentConversationId) === String(conversationId)) {
+        dispatch(chatSliceActions.operationModeSet(mode))
+      }
+      // The server owns persistence; refresh cached snapshots, not a second write.
+      void extra.queryClient?.invalidateQueries({ queryKey: conversationQueryKeys.messages(conversationId) })
+      return { status: 'applied', mode }
+    }
+    dispatch(chatSliceActions.operationModeChangeAccepted({ conversationId, mode, requestId }))
+    return { status: 'pending', mode }
+  } catch (error) {
+    dispatch(chatSliceActions.operationModeChangeFailed({ conversationId, requestId }))
+    recordLocalChatError(dispatch, error, {
+      conversationId,
+      phase: 'resume',
+      streamId: streamId ?? undefined,
+      parentMessageId: parentId ?? null,
+      lineageId: lineageId ?? null,
+    })
+    throw error
+  }
+})
 
 export const respondToToolPermission = createAsyncThunk<
   void,

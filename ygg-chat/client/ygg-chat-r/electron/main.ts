@@ -1,20 +1,24 @@
 import { getAuthManager, publicAuthState, disconnectAuth, importLegacyRenderer, enableLocalLogin } from '../server/auth/runtime.js'
 import { startAppLogin, completeAppCode, completeAppCallback, cancelAppLogin } from '../server/auth/appLogin.js'
 import Conf from 'conf'
-import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, nativeTheme, powerMonitor, screen, shell, Tray, webContents } from 'electron'
+import { app, autoUpdater as nativeAutoUpdater, BrowserWindow, dialog, ipcMain, Menu, nativeImage, nativeTheme, powerMonitor, screen, shell, Tray, webContents } from 'electron'
 import autoUpdaterPkg from 'electron-updater'
 import fs from 'fs'
 import http from 'http'
 import os from 'os'
 import path from 'path'
 import { fileURLToPath } from 'url'
+import { normalizeShellPath } from './shellPath.js'
+import { createQuitConfirmationGuard } from './quitConfirmation.js'
 import '../server/envLoader.js'
 import {
+  consolidateSecureSecrets,
   deleteBraveApiKey,
   getBraveApiKey,
   hasBraveApiKey,
   setBraveApiKey,
 } from '../server/keytarSecrets.js'
+import { mcpManager } from '../server/mcp/mcpManager.js'
 import { ensureManagedHooksInitialized } from '../server/hooks/hookStorage.js'
 import { buildElectronHostCapabilities, buildElectronServerConfig } from './electronHostAdapter.js'
 import { createYggServer, type YggServerHandle } from '../server/createYggServer.js'
@@ -33,6 +37,24 @@ let mainWindow: BrowserWindow | null = null
 let floatingWindow: BrowserWindow | null = null
 let tray: Tray | null = null
 let isQuitting = false
+const confirmQuit = createQuitConfirmationGuard({
+  platform: process.platform,
+  isReady: () => app.isReady(),
+  confirm: () => {
+    const options: Electron.MessageBoxSyncOptions = {
+      type: 'question',
+      title: 'Quit Graviton?',
+      message: 'Are you sure you want to quit Graviton?',
+      detail: 'Quitting stops running agents and closes terminal sessions.',
+      buttons: ['Cancel', 'Quit'],
+      defaultId: 0,
+      cancelId: 0,
+      noLink: true,
+    }
+    // Use an app-modal dialog even when the main window is hidden in the tray.
+    return dialog.showMessageBoxSync(options) === 1
+  },
+})
 let compactMode = false
 let savedBounds: Electron.Rectangle | null = null
 let localServerStarted = false
@@ -705,6 +727,23 @@ function createWindow() {
   mainWindow.on('leave-full-screen', sendWindowState)
   mainWindow.webContents.once('did-finish-load', sendWindowState)
 
+  // Never let target=_blank/window.open create an untrusted Electron window.
+  // Route ordinary web links to the user's OS default browser instead.
+  mainWindow.webContents.setWindowOpenHandler(({ url }) => {
+    try {
+      const parsedUrl = new URL(url)
+      if (parsedUrl.protocol === 'http:' || parsedUrl.protocol === 'https:') {
+        void shell.openExternal(parsedUrl.toString()).catch(error => {
+          console.error('[Electron] Failed to open external link:', error)
+        })
+      }
+    } catch (error) {
+      console.error('[Electron] Refused invalid external link:', url, error)
+    }
+
+    return { action: 'deny' }
+  })
+
   // applyTitleBarTheme(mainWindow)
 
   // Show window when ready to avoid flicker
@@ -852,7 +891,6 @@ function createTray() {
     {
       label: 'Quit',
       click: () => {
-        isQuitting = true
         app.quit()
       },
     },
@@ -1133,6 +1171,7 @@ app.whenReady().then(async () => {
     configureAutoUpdater()
   } catch (error) {
     console.error('[Electron] Failed to start:', error)
+    isQuitting = true // Startup failure is not a user-initiated quit.
     app.quit()
   }
 })
@@ -1167,7 +1206,18 @@ app.on('activate', () => {
   }
 })
 
-app.on('before-quit', () => {
+// Electron's updater emits this before its quit sequence; never block a restart
+// that the user already requested by installing an update.
+nativeAutoUpdater.on('before-quit-for-update', () => {
+  isQuitting = true
+})
+
+app.on('before-quit', event => {
+  if (!isQuitting && !confirmQuit()) {
+    event.preventDefault()
+    return
+  }
+
   isQuitting = true
   for (const sessionId of Array.from(activeTerminalSessions.keys())) {
     destroyTerminalSession(sessionId)
@@ -1316,7 +1366,18 @@ ipcMain.handle('storage:clear', async () => {
   }
 })
 
-ipcMain.handle('secrets:braveSearch:get', async () => {
+authHandle('secrets:consolidate', async () => {
+  try {
+    const result = await consolidateSecureSecrets()
+    await mcpManager.consolidatePlaintextCredentials()
+    return { success: true, ...result }
+  } catch {
+    // Native enumeration errors must not expose credential payloads over IPC.
+    return { success: false, error: 'Credential consolidation did not finish. Original credentials are retained unless their vault copy was verified. Allow Keychain access and retry.' }
+  }
+})
+
+authHandle('secrets:braveSearch:get', async () => {
   try {
     const value = await getBraveApiKey()
     return { success: true, value }
@@ -1326,7 +1387,7 @@ ipcMain.handle('secrets:braveSearch:get', async () => {
   }
 })
 
-ipcMain.handle('secrets:braveSearch:has', async () => {
+authHandle('secrets:braveSearch:has', async () => {
   try {
     const configured = await hasBraveApiKey()
     return { success: true, configured }
@@ -1336,8 +1397,9 @@ ipcMain.handle('secrets:braveSearch:has', async () => {
   }
 })
 
-ipcMain.handle('secrets:braveSearch:set', async (_event, value: string) => {
+authHandle('secrets:braveSearch:set', async (_event, value: string) => {
   try {
+    if (typeof value !== 'string') throw new Error('Secret value must be a string')
     await setBraveApiKey(value)
     return { success: true }
   } catch (error) {
@@ -1346,7 +1408,7 @@ ipcMain.handle('secrets:braveSearch:set', async (_event, value: string) => {
   }
 })
 
-ipcMain.handle('secrets:braveSearch:delete', async () => {
+authHandle('secrets:braveSearch:delete', async () => {
   try {
     await deleteBraveApiKey()
     return { success: true }
@@ -1403,11 +1465,11 @@ authHandle('auth:openExternal', async (_event, url: string) => {
   }
 })
 
-// Open a file or folder path in the system file explorer
+// Open files in their default application and folders in the system file manager.
 ipcMain.handle('shell:openPath', async (_event, path: string) => {
   // console.log('[Electron IPC] Opening path:', path)
   try {
-    const result = await shell.openPath(path)
+    const result = await shell.openPath(normalizeShellPath(path))
     if (result) {
       // openPath returns empty string on success, error message on failure
       return { success: false, error: result }

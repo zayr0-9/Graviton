@@ -21,6 +21,20 @@ import type { LineageId } from './chatTypes'
 const lineage = (value: string) => value as LineageId
 
 describe('renderer lineage state', () => {
+  it('confirms fork identity only after a server lineage update', () => {
+    let state = chatReducer(undefined, chatSliceActions.sendingStarted({
+      streamId: 'fork-run', streamType: 'branch', conversationId: 'conversation-a',
+      lineage: { lineageId: lineage('source-fork') },
+    }))
+    expect(state.streaming.byId['fork-run'].lineage.lineageIdConfirmed).not.toBe(true)
+    state = chatReducer(state, chatSliceActions.streamLineageUpdated({
+      streamId: 'fork-run', lineageId: lineage('new-fork'),
+    }))
+    expect(state.streaming.byId['fork-run'].lineage).toMatchObject({
+      lineageId: 'new-fork', lineageIdConfirmed: true,
+    })
+  })
+
   it('selects conversation, lineage, path, and focus atomically', () => {
     const state = chatReducer(undefined, chatSliceActions.lineageSelected({
       conversationId: 'conversation-a',

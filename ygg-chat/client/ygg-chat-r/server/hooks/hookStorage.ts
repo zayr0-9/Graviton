@@ -171,6 +171,59 @@ export function getManagedHooksWorkingDirectory(): string {
   return path.dirname(getManagedHooksDirectory())
 }
 
+// Retire only the old bundled writer. Preserve saved memories and all other hooks.
+export async function retireLegacyMemoryHook(managedHooksDir: string): Promise<void> {
+  const scriptPath = path.join(managedHooksDir, 'hooks', 'long_term_memory_stop.py')
+  const normalizedScript = scriptPath.replace(/\\/g, '/')
+  for (const name of YGG_SETTINGS_FILES) {
+    const file = path.join(managedHooksDir, name)
+    const raw = await readFileIfExists(file)
+    if (!raw) continue
+    let settings: any
+    try {
+      settings = JSON.parse(raw.toString('utf8'))
+    } catch {
+      // Never overwrite malformed user settings; surface the failure for repair.
+      throw new Error(`Cannot retire legacy memory hook: invalid JSON in ${file}`)
+    }
+    if (!settings?.hooks || typeof settings.hooks !== 'object') continue
+    let changed = false
+    for (const event of Object.keys(settings.hooks)) {
+      const groups = settings.hooks[event]
+      if (!Array.isArray(groups)) continue
+      settings.hooks[event] = groups.filter((group: any) => {
+        if (!Array.isArray(group?.hooks)) return true
+        const kept = group.hooks.filter((hook: any) => {
+          if (hook?.type !== 'command' || typeof hook.command !== 'string') return true
+          const tokens: string[] = (hook.command.match(/"[^"]*"|'[^']*'|[^\s]+/g) ?? [])
+            .map((token: string) => token.replace(/^["']|["']$/g, '').replace(/\\/g, '/'))
+          const executable = path.posix.basename(tokens[0] ?? '')
+          const script = /^(python(?:\d+(?:\.\d+)*)?|py)(?:\.exe)?$/.test(executable) ? tokens[1] : tokens[0]
+          const retired = script === '.ygg/hooks/long_term_memory_stop.py' ||
+            script === './.ygg/hooks/long_term_memory_stop.py' || script === normalizedScript
+          if (retired) changed = true
+          return !retired
+        })
+        const removed = kept.length !== group.hooks.length
+        if (removed) group.hooks = kept
+        return !removed || kept.length > 0
+      })
+    }
+    if (changed) await writeFileAtomically(file, Buffer.from(`${JSON.stringify(settings, null, 2)}\n`))
+  }
+  await fsPromises.rm(scriptPath, { force: true })
+  const cacheDir = path.join(managedHooksDir, 'hooks', '__pycache__')
+  const cached = await fsPromises.readdir(cacheDir).catch((error: NodeJS.ErrnoException) => {
+    if (error.code === 'ENOENT') return [] as string[]
+    throw error
+  })
+  for (const name of cached) {
+    if (/^long_term_memory_stop\.[\w-]+\.pyc$/.test(name)) {
+      await fsPromises.rm(path.join(cacheDir, name), { force: true })
+    }
+  }
+}
+
 async function initializeManagedHooks(): Promise<string> {
   const managedHooksDir = getManagedHooksDirectory()
   await fsPromises.mkdir(managedHooksDir, { recursive: true })
@@ -187,12 +240,14 @@ async function initializeManagedHooks(): Promise<string> {
 
   if (normalizedManaged === normalizedBundled) {
     logHookStorage('managed hooks directory is bundled hooks directory; skipping copy', { managedHooksDir })
+    await retireLegacyMemoryHook(managedHooksDir)
     hasInitializedManagedHooks = true
     return managedHooksDir
   }
 
   if (!(await pathExists(bundledHooksDir))) {
     logHookStorage('bundled hooks directory not found; using managed directory as-is', { bundledHooksDir, managedHooksDir })
+    await retireLegacyMemoryHook(managedHooksDir)
     hasInitializedManagedHooks = true
     return managedHooksDir
   }
@@ -213,6 +268,7 @@ async function initializeManagedHooks(): Promise<string> {
     logHookStorage('bundled hook scripts directory not found', { bundledHooksScriptsDir })
   }
 
+  await retireLegacyMemoryHook(managedHooksDir)
   hasInitializedManagedHooks = true
   logHookStorage('managed hooks initialized', { managedHooksDir })
   return managedHooksDir

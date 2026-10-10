@@ -43,6 +43,7 @@ interface ElectronAPI {
     clear: () => Promise<{ success: boolean; error?: string }>
   }
   secrets: {
+    consolidate: () => Promise<{ success: boolean; migrated?: number; removed?: number; complete?: boolean; warnings?: string[]; error?: string }>
     braveSearch: {
       get: () => Promise<{ success: boolean; value: string | null; error?: string }>
       has: () => Promise<{ success: boolean; configured: boolean; error?: string }>

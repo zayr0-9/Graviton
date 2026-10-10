@@ -92,3 +92,7 @@ ygg-chat/server/src/data/uploads/*node_modules/
 .agents
 .codex
 .ygg
+
+# Local skills and design previews
+/.claude/skills/
+/design-previews/

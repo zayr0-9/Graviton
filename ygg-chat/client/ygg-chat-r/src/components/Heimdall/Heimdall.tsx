@@ -1,7 +1,7 @@
 import { useQueryClient } from '@tanstack/react-query'
 import { isContextInjectionMessage } from '../../../../../shared/contextInjection'
 import 'boxicons/css/boxicons.min.css'
-import { Flame, ListFilter, Maximize2, Minimize2, RotateCcw, ZoomIn, ZoomOut } from 'lucide-react'
+import { Flame, ListFilter, RotateCcw, ZoomIn, ZoomOut } from 'lucide-react'
 import type { JSX } from 'react'
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import ReactMarkdown from 'react-markdown'
@@ -26,14 +26,19 @@ import type { Conversation } from '../../features/conversations/conversationType
 import { Message } from '@/features/chats'
 import { ConversationId, MessageId } from '../../../../../shared/types'
 import { useIsMobile } from '../../hooks/useMediaQuery'
-import { useConversations } from '../../hooks/useQueries'
+import { useConversations, useProjects } from '../../hooks/useQueries'
+import { groupConversationsByProject } from './conversationProjectGroups'
+import { NoteColorLegend } from './NoteColorLegend'
+import { calculateDockedPreviewLayout, observeHeimdallViewport } from './heimdallViewport'
+import { expandHeimdallSelectionToBranchMessages, selectHeimdallContextMenuNodes } from './heimdallSelection'
 import type { RootState } from '../../store/store'
 import { parseId } from '../../utils/helpers'
 import stripMarkdownToText from '../../utils/markdownStripper'
+import { isCompactionSummary, SUMMARY_PLACEHOLDER } from '../../features/chats/summaryPresentation'
 // import { MarkdownLink } from '../MarkdownLink/MarkdownLink'
 import { environment, localApi } from '../../utils/api'
 import { DeleteConfirmModal } from '../DeleteConfirmModal/DeleteConfirmModal'
-import { shouldPromoteHeimdallNode } from './heimdallNodeVisibility'
+import { buildHeimdallVisibleRoot, isHeimdallScaffoldingMessage, shouldPromoteHeimdallNode } from './heimdallNodeVisibility'
 import { TextArea } from '../TextArea/TextArea'
 import { TextField } from '../TextField/TextField'
 import {
@@ -269,6 +274,12 @@ export const Heimdall: React.FC<HeimdallProps> = ({
     isError: conversationsIsError,
     refetch: refetchConversations,
   } = useConversations(showConversationSelector)
+  const {
+    data: projects = [],
+    isLoading: projectsLoading,
+    isError: projectsIsError,
+    refetch: refetchProjects,
+  } = useProjects(showConversationSelector)
   const selectableConversations = useMemo(
     () =>
       conversations.filter(conversation => {
@@ -276,6 +287,10 @@ export const Heimdall: React.FC<HeimdallProps> = ({
         return sourceConversationId == null || String(conversation.id) !== String(sourceConversationId)
       }),
     [conversations, conversationId, currentConversationId]
+  )
+  const conversationProjectGroups = useMemo(
+    () => groupConversationsByProject(selectableConversations, projects),
+    [selectableConversations, projects]
   )
   // Track total messages to detect a truly empty conversation
   const messagesCount = useSelector((state: RootState) => state.chat.conversation.messages.length)
@@ -455,6 +470,7 @@ export const Heimdall: React.FC<HeimdallProps> = ({
       const map: Record<string, SubagentNode[]> = {}
 
       messages.forEach(msg => {
+        if (isCompactionSummary(msg)) return
         const blocks = normalizeContentBlocks(msg.content_blocks)
         if (msg.role === 'assistant' && blocks.length > 0 && msg.parent_id) {
           const subagentCalls = blocks.filter((block: any) => block.type === 'tool_use' && block.name === 'subagent')
@@ -779,14 +795,18 @@ export const Heimdall: React.FC<HeimdallProps> = ({
   const [plainMessages, setPlainMessages] = useState<any[]>([])
   useEffect(() => {
     let cancelled = false
+    // Search owns a display projection, not canonical rows used by copy/move/notes.
+    const searchMessages = flatMessages.map(message => isCompactionSummary(message)
+      ? { id: message.id, role: message.role, content: SUMMARY_PLACEHOLDER, content_plain_text: SUMMARY_PLACEHOLDER }
+      : message)
     ;(async () => {
       try {
-        const res = (await stripMarkdownToText(flatMessages as any)) as any
+        const res = (await stripMarkdownToText(searchMessages as any)) as any
         if (!cancelled) {
-          setPlainMessages(Array.isArray(res) ? (res as any[]) : (flatMessages as any[]))
+          setPlainMessages(Array.isArray(res) ? (res as any[]) : searchMessages)
         }
       } catch {
-        if (!cancelled) setPlainMessages(flatMessages as any[])
+        if (!cancelled) setPlainMessages(searchMessages)
       }
     })()
     return () => {
@@ -1267,17 +1287,7 @@ export const Heimdall: React.FC<HeimdallProps> = ({
     (params: { nodeId: string; clientX: number; clientY: number; ctrlKey?: boolean; metaKey?: boolean }): void => {
       const { nodeId, clientX, clientY, ctrlKey = false, metaKey = false } = params
       const nodeIdParsed = parseId(nodeId)
-      const isAlreadySelected = selectedNodes.includes(nodeIdParsed)
-
-      let newSelectedNodes: MessageId[]
-
-      if (ctrlKey || metaKey) {
-        newSelectedNodes = isAlreadySelected
-          ? selectedNodes.filter(id => id !== nodeIdParsed)
-          : [...selectedNodes, nodeIdParsed]
-      } else {
-        newSelectedNodes = isAlreadySelected ? selectedNodes.filter(id => id !== nodeIdParsed) : [nodeIdParsed]
-      }
+      const newSelectedNodes = selectHeimdallContextMenuNodes(selectedNodes, nodeIdParsed, ctrlKey || metaKey)
 
       dispatch(chatSliceActions.nodesSelected(newSelectedNodes))
 
@@ -1707,8 +1717,9 @@ export const Heimdall: React.FC<HeimdallProps> = ({
 
     // 2. If node is empty, skip it and return its children (promotion)
     // Exception: Keep nodes that have siblings (parallel branches)
-    if (shouldPromoteHeimdallNode({
-      isContextInjection: isHiddenContextInjection,
+    if (isHeimdallScaffoldingMessage(fullMsg, filterEmptyMessages) || shouldPromoteHeimdallNode({
+      isContextInjection: false,
+      isOperationModeChange: false,
       isEmpty: !hasContent,
       hasSiblings,
       filterEmptyMessages,
@@ -1717,7 +1728,7 @@ export const Heimdall: React.FC<HeimdallProps> = ({
     }
 
     // 3. Otherwise, keep the node with updated children
-    return [{ ...node, children: filteredChildren }]
+    return [{ ...node, message: isCompactionSummary(fullMsg) ? SUMMARY_PLACEHOLDER : node.message, children: filteredChildren }]
   }
 
   // Use provided data or fallback to last known (prevents flash on refresh). Do NOT show a fake empty node.
@@ -1728,14 +1739,8 @@ export const Heimdall: React.FC<HeimdallProps> = ({
     if (filterEmptyMessages || messageById.size > 0) {
       const result = filterEmptyNodes(rawData, false) // Root node has no siblings
 
-      if (result.length === 0) return null
-
-      // If we have exactly one root, use it
-      if (result.length === 1) return result[0]
-
-      // If the root was filtered out but left multiple children,
-      // we must keep the root to maintain a single tree structure.
-      return { ...rawData, children: result }
+      // Multiple promoted branches need a synthetic root, not the hidden message.
+      return buildHeimdallVisibleRoot(result)
     }
 
     return rawData
@@ -1947,16 +1952,14 @@ export const Heimdall: React.FC<HeimdallProps> = ({
   }, [positions, bounds, dimensions.width, dimensions.height, zoom, offsetX, offsetY, chatData, currentChatData?.id])
 
   useEffect(() => {
-    const updateDimensions = (): void => {
-      if (containerRef.current) {
-        const { offsetWidth, offsetHeight } = containerRef.current
-        setDimensions({ width: offsetWidth, height: offsetHeight })
-      }
-    }
+    const container = containerRef.current
+    if (!container) return
 
-    updateDimensions()
-    window.addEventListener('resize', updateDimensions)
-    return () => window.removeEventListener('resize', updateDimensions)
+    return observeHeimdallViewport(container, nextDimensions => {
+      setDimensions(current =>
+        current.width === nextDimensions.width && current.height === nextDimensions.height ? current : nextDimensions
+      )
+    })
   }, [])
 
   // When compact mode changes, re-fit the view using the updated bounds/layout.
@@ -2047,47 +2050,8 @@ export const Heimdall: React.FC<HeimdallProps> = ({
   // Expand a visual selection to include hidden messages that sit between selected visible nodes.
   // This keeps filtering as a rendering-only concern: tool-only/empty nodes can be hidden,
   // but actions on a selected branch still receive the complete message chain.
-  const expandSelectionToHiddenBranchMessages = (selectedVisibleIds: MessageId[]): MessageId[] => {
-    if (selectedVisibleIds.length <= 1 || !Array.isArray(allMessages) || allMessages.length === 0) {
-      return selectedVisibleIds
-    }
-
-    const selectedSet = new Set(selectedVisibleIds.map(id => String(id)))
-    const expandedSet = new Set<string>(selectedSet)
-    const messageByIdForSelection = new Map(allMessages.map(message => [String(message.id), message]))
-
-    selectedVisibleIds.forEach(id => {
-      const pathToSelectedAncestor: string[] = []
-      let cursorId: string | null = String(id)
-      const visited = new Set<string>()
-
-      while (cursorId && !visited.has(cursorId)) {
-        visited.add(cursorId)
-        pathToSelectedAncestor.push(cursorId)
-
-        const parentId = messageByIdForSelection.get(cursorId)?.parent_id
-        if (parentId == null) break
-
-        const parentKey = String(parentId)
-        if (selectedSet.has(parentKey)) {
-          pathToSelectedAncestor.push(parentKey)
-          pathToSelectedAncestor.forEach(pathId => expandedSet.add(pathId))
-          break
-        }
-
-        cursorId = parentKey
-      }
-    })
-
-    const expandedIds: MessageId[] = []
-    allMessages.forEach(message => {
-      if (expandedSet.has(String(message.id))) {
-        expandedIds.push(message.id)
-      }
-    })
-
-    return expandedIds
-  }
+  const expandSelectionToHiddenBranchMessages = (selectedVisibleIds: MessageId[]): MessageId[] =>
+    expandHeimdallSelectionToBranchMessages(allMessages, selectedVisibleIds)
 
   // Function to determine which nodes are within the selection rectangle
   const getNodesInSelectionRectangle = (): MessageId[] => {
@@ -2315,7 +2279,8 @@ export const Heimdall: React.FC<HeimdallProps> = ({
       const messagesById = new Map<string, string>()
       const visit = (node: ChatNode | null): void => {
         if (!node) return
-        messagesById.set(node.id, node.message)
+        // Display placeholders must not replace real content in clipboard actions.
+        messagesById.set(node.id, messageById.get(String(node.id))?.content ?? node.message)
         node.children?.forEach(visit)
       }
       visit(currentChatData)
@@ -2358,7 +2323,10 @@ export const Heimdall: React.FC<HeimdallProps> = ({
     }
   }
 
-  const buildMessagesToCopyFromSelection = () => buildMessageTransferPayload(allMessages, selectedNodes || [])
+  // Normalize at the action boundary as well as rectangle selection: individually
+  // selected visible nodes can have hidden messages connecting them.
+  const buildMessagesToCopyFromSelection = () =>
+    buildMessageTransferPayload(allMessages, expandSelectionToHiddenBranchMessages(selectedNodes || []))
 
   const handleOpenConversationSelector = (mode: ConversationTransferMode): void => {
     if (!selectedNodes || selectedNodes.length === 0) {
@@ -2371,6 +2339,7 @@ export const Heimdall: React.FC<HeimdallProps> = ({
     setConversationSelectorError(null)
     setShowConversationSelector(true)
     void refetchConversations()
+    void refetchProjects()
   }
 
   const handleCloseConversationSelector = useCallback(() => {
@@ -2385,7 +2354,8 @@ export const Heimdall: React.FC<HeimdallProps> = ({
     try {
       setConversationSelectorError(null)
       const messagesToCopy = buildMessagesToCopyFromSelection()
-      const idsToTransfer = [...(selectedNodes || [])]
+      // Move must validate and delete exactly the rows included in the copy.
+      const idsToTransfer = messagesToCopy.map(message => message.source_id)
 
       if (messagesToCopy.length === 0 || idsToTransfer.length === 0) {
         setConversationSelectorError('No selected messages could be transferred.')
@@ -2721,23 +2691,13 @@ export const Heimdall: React.FC<HeimdallProps> = ({
     maxHeight: number,
     fallbackPosition: { x: number; y: number }
   ) => {
-    // Dock on the panel half opposite the graph anchor so the preview never
-    // covers the interactive node or note pill that opened it.
-    const dockMargin = 12
-    const halfWidth = dimensions.width / 2
-    const width = Math.min(preferredWidth, Math.max(220, halfWidth - dockMargin * 2))
     const nodePos = positions[anchorNodeId]
     const screenTx = cullingPan.x + dimensions.width / 2
     const screenTy = cullingPan.y + 100
     const anchorCenterX = nodePos ? (nodePos.x + offsetX) * cullingZoom + screenTx : fallbackPosition.x
     const anchorTopY = nodePos ? (nodePos.y + offsetY) * cullingZoom + screenTy : fallbackPosition.y
-    const dockRight = anchorCenterX < halfWidth
 
-    return {
-      left: dockRight ? dimensions.width - width - dockMargin : dockMargin,
-      top: Math.max(10, Math.min(anchorTopY, dimensions.height - maxHeight - 10)),
-      width,
-    }
+    return calculateDockedPreviewLayout(dimensions, { x: anchorCenterX, y: anchorTopY }, preferredWidth, maxHeight)
   }
 
   const clearMessagePreviewCloseTimeout = useCallback(() => {
@@ -3484,6 +3444,8 @@ export const Heimdall: React.FC<HeimdallProps> = ({
                   }
                   const msg = getCurrentMessage(nodeIdParsed)
 
+                  if (isCompactionSummary(msg)) return <p className='line-clamp-3'>{SUMMARY_PLACEHOLDER}</p>
+
                   // Check for image blocks in content_blocks
                   if (msg?.content_blocks && Array.isArray(msg.content_blocks)) {
                     const imageBlocks = msg.content_blocks.filter(
@@ -4002,7 +3964,7 @@ export const Heimdall: React.FC<HeimdallProps> = ({
         </div>
       )}
       <div
-        className={`absolute bottom-12 left-4 z-10 flex items-center gap-2 rounded-full border border-stone-200/55 bg-white/30 p-1.5 shadow-[0_24px_56px_-30px_rgba(15,23,42,0.65)] backdrop-blur-2xl transition-all duration-200 dark:border-white/[0.04] dark:bg-black/20 ${isHovering ? 'translate-y-0 opacity-100' : 'translate-y-2 opacity-0'}`}
+        className={`absolute bottom-12 left-4 z-10 flex items-center gap-2 rounded-full border border-stone-200/55 bg-white/30 p-1.5 shadow-[0_24px_56px_-30px_rgba(15,23,42,0.65)] backdrop-blur-2xl transition-[opacity,transform] duration-200 focus-within:translate-y-0 focus-within:opacity-100 dark:border-white/[0.04] dark:bg-black/20 ${isHovering ? 'translate-y-0 opacity-100' : 'translate-y-2 opacity-0'}`}
         style={heimdallControlPanelStyle}
       >
         <button
@@ -4041,7 +4003,7 @@ export const Heimdall: React.FC<HeimdallProps> = ({
           className={`${heimdallControlButtonClass} ${filterEmptyMessages ? heimdallControlButtonActiveClass : ''}`}
           style={getHeimdallControlButtonStyle(filterEmptyMessages)}
           title={filterEmptyMessages ? 'Show Empty Messages' : 'Hide Empty Messages'}
-          aria-label={filterEmptyMessages ? 'Show empty messages' : 'Hide empty messages'}
+          aria-label={filterEmptyMessages ? 'Show filtered messages' : 'Hide empty and mode-change messages'}
           aria-pressed={filterEmptyMessages}
         >
           <ListFilter size={18} strokeWidth={2.25} />
@@ -4061,18 +4023,12 @@ export const Heimdall: React.FC<HeimdallProps> = ({
         >
           <Flame size={18} strokeWidth={2.25} fill={heatmapMode ? 'currentColor' : 'none'} />
         </button>
-        <button
-          type='button'
-          onClick={() => {
-            dispatch(chatSliceActions.heimdallCompactModeToggled())
-          }}
-          className={heimdallControlButtonClass}
-          style={getHeimdallControlButtonStyle()}
-          title={compactMode ? 'Switch to Full Mode' : 'Switch to Compact Mode'}
-          aria-label={compactMode ? 'Switch to full mode' : 'Switch to compact mode'}
-        >
-          {compactMode ? <Maximize2 size={18} strokeWidth={2.25} /> : <Minimize2 size={18} strokeWidth={2.25} />}
-        </button>
+        <NoteColorLegend
+          messages={allMessages}
+          conversationId={conversationId ?? currentConversationId}
+          buttonClassName={heimdallControlButtonClass}
+          buttonStyle={getHeimdallControlButtonStyle()}
+        />
       </div>
       <div className='absolute top-4 right-8 ml-100 z-10 flex flex-col gap-2 items-end'>
         <button
@@ -4202,16 +4158,13 @@ export const Heimdall: React.FC<HeimdallProps> = ({
                 autoFocus
                 className='bg-white/55 dark:bg-white/10'
               />
-              <div className='mt-2 text-xs text-stone-500 dark:text-stone-400'>
-                {searchQuery.trim()
-                  ? `${filteredResults.length} result${filteredResults.length === 1 ? '' : 's'}`
-                  : 'Start typing to see matching messages.'}
-              </div>
+              {searchQuery.trim() && (
+                <div className='mt-2 text-xs text-stone-500 dark:text-stone-400'>
+                  {`${filteredResults.length} result${filteredResults.length === 1 ? '' : 's'}`}
+                </div>
+              )}
             </div>
             <div className='overflow-y-auto flex-1 thin-scrollbar px-5 py-4' data-heimdall-wheel-exempt='true'>
-              {!searchQuery.trim() && (
-                <div className='text-sm text-stone-500 dark:text-stone-400'>Enter a search term to begin.</div>
-              )}
               {searchQuery.trim() && filteredResults.length === 0 && (
                 <div className='text-sm text-stone-500 dark:text-stone-400'>No matches found.</div>
               )}
@@ -4300,38 +4253,53 @@ export const Heimdall: React.FC<HeimdallProps> = ({
               )}
 
               {!conversationsLoading && !conversationsIsError && selectableConversations.length > 0 && (
-                <div className='space-y-1'>
-                  {selectableConversations.map(conversation => {
-                    const title = conversation.title?.trim() || 'Untitled conversation'
-                    const updatedAt = conversation.updated_at ? new Date(conversation.updated_at) : null
-                    const updatedLabel = updatedAt && !Number.isNaN(updatedAt.getTime()) ? updatedAt.toLocaleDateString() : null
-                    return (
-                      <button
-                        key={String(conversation.id)}
-                        type='button'
-                        disabled={isAddingToConversation}
-                        onClick={() => handleAddSelectionToConversation(conversation)}
-                        className='w-full text-left rounded-xl px-3 py-3 transition-colors hover:bg-stone-100 dark:hover:bg-neutral-800 disabled:opacity-60 disabled:cursor-wait'
-                      >
-                        <div className='flex items-center gap-3'>
-                          <div className='flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-stone-100 text-stone-500 dark:bg-neutral-800 dark:text-neutral-300'>
-                            <i className='bx bx-message-rounded-dots text-lg' />
-                          </div>
-                          <div className='min-w-0 flex-1'>
-                            <div className='truncate text-sm font-medium text-stone-800 dark:text-stone-100'>{title}</div>
-                            <div className='mt-0.5 flex items-center gap-2 text-[11px] text-stone-500 dark:text-stone-400'>
-                              {updatedLabel && <span>{updatedLabel}</span>}
-                              {conversation.storage_mode && (
-                                <span className='rounded-full bg-stone-100 px-1.5 py-0.5 uppercase dark:bg-neutral-800'>
-                                  {conversation.storage_mode}
-                                </span>
-                              )}
-                            </div>
-                          </div>
-                        </div>
-                      </button>
-                    )
-                  })}
+                <div className='space-y-4'>
+                  {(projectsLoading || projectsIsError) && (
+                    <p className='px-3 text-xs text-stone-500 dark:text-stone-400' style={heimdallContextMenuHeaderStyle} role='status'>
+                      {projectsLoading ? 'Loading project names...' : 'Could not load project names. Chats are still available.'}
+                    </p>
+                  )}
+                  {conversationProjectGroups.map(group => (
+                    <section key={group.projectId === null ? 'no-project' : `project-${group.projectId}`} aria-label={group.name}>
+                      <h4 className='px-3 pb-1 text-xs font-semibold text-stone-500 dark:text-stone-400 break-words' style={heimdallContextMenuHeaderStyle}>
+                        {group.name}
+                        <span className='ml-2 font-normal'>{group.conversations.length}</span>
+                      </h4>
+                      <div className='space-y-1'>
+                        {group.conversations.map(conversation => {
+                          const title = conversation.title?.trim() || 'Untitled conversation'
+                          const updatedAt = conversation.updated_at ? new Date(conversation.updated_at) : null
+                          const updatedLabel = updatedAt && !Number.isNaN(updatedAt.getTime()) ? updatedAt.toLocaleDateString() : null
+                          return (
+                            <button
+                              key={String(conversation.id)}
+                              type='button'
+                              disabled={isAddingToConversation}
+                              onClick={() => handleAddSelectionToConversation(conversation)}
+                              className='w-full text-left rounded-xl px-3 py-3 transition-colors hover:bg-stone-100 dark:hover:bg-neutral-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400/70 dark:focus-visible:ring-orange-400/70 disabled:opacity-60 disabled:cursor-wait'
+                            >
+                              <div className='flex items-center gap-3'>
+                                <div className='flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-stone-100 text-stone-500 dark:bg-neutral-800 dark:text-neutral-300'>
+                                  <i className='bx bx-message-rounded-dots text-lg' />
+                                </div>
+                                <div className='min-w-0 flex-1'>
+                                  <div className='truncate text-sm font-medium text-stone-800 dark:text-stone-100'>{title}</div>
+                                  <div className='mt-0.5 flex items-center gap-2 text-[11px] text-stone-500 dark:text-stone-400'>
+                                    {updatedLabel && <span>{updatedLabel}</span>}
+                                    {conversation.storage_mode && (
+                                      <span className='rounded-full bg-stone-100 px-1.5 py-0.5 uppercase dark:bg-neutral-800'>
+                                        {conversation.storage_mode}
+                                      </span>
+                                    )}
+                                  </div>
+                                </div>
+                              </div>
+                            </button>
+                          )
+                        })}
+                      </div>
+                    </section>
+                  ))}
                 </div>
               )}
             </div>
@@ -4543,7 +4511,8 @@ export const Heimdall: React.FC<HeimdallProps> = ({
               ? getCurrentMessage(nodeIdParsed)
               : null
 
-          const contentBlocks = msg?.content_blocks || []
+          const isSummary = isCompactionSummary(msg)
+          const contentBlocks = isSummary ? [] : msg?.content_blocks || []
           const hasImage =
             Array.isArray(contentBlocks) && contentBlocks.some((block: any) => block.type === 'image' && block.url)
 
@@ -4564,7 +4533,7 @@ export const Heimdall: React.FC<HeimdallProps> = ({
                 onMouseLeave={handleMessagePreviewLeave}
                 style={{
                   width: `${dockedPreview.width}px`,
-                  maxHeight: `${popupMaxHeight}px`,
+                  maxHeight: `${dockedPreview.maxHeight}px`,
                   overflow: 'auto',
                   ...heimdallHoverPreviewStyle,
                 }}
@@ -4573,6 +4542,8 @@ export const Heimdall: React.FC<HeimdallProps> = ({
                 {selectedNode.sender === 'user' ? 'User' : selectedNode.sender === 'ex_agent' ? 'Agent' : 'Assistant'}
               </div>
               {(() => {
+                // No Markdown parsing, syntax highlighting, or block traversal for summaries.
+                if (isSummary) return <p className='text-sm break-words' style={{ color: heimdallNodeHoverModalTextColor }}>{SUMMARY_PLACEHOLDER}</p>
                 const hasContentBlocks = Array.isArray(contentBlocks) && contentBlocks.length > 0
 
                 // If we have content_blocks, render them
@@ -4733,7 +4704,7 @@ export const Heimdall: React.FC<HeimdallProps> = ({
             onMouseLeave={handleNotePreviewLeave}
             style={{
               width: `${dockedPreview.width}px`,
-              maxHeight: `${NOTE_PREVIEW_MAX_HEIGHT}px`,
+              maxHeight: `${dockedPreview.maxHeight}px`,
               overflow: 'auto',
               ...heimdallHoverPreviewStyle,
             }}

@@ -9,6 +9,8 @@
  * - Emits events for real-time UI updates
  */
 
+import { withToolAccess } from '../../toolAccessContext.js'
+import type { WatchCompletionEvent } from '../../../../../shared/watchEvents.js'
 import type Database from 'better-sqlite3'
 import { v4 as uuidv4 } from 'uuid'
 import type { WebSocket } from 'ws'
@@ -39,6 +41,7 @@ type ToolHandler = (
   options: {
     signal?: AbortSignal
     deadlineMs?: number
+    fullAccess?: boolean
     rootPath?: string
     operationMode?: 'plan' | 'execute'
     conversationId?: string | null
@@ -80,6 +83,19 @@ export class ToolOrchestrator {
 
   // Event subscribers (WebSocket clients)
   private subscribers: Set<WebSocket> = new Set()
+  private watchCompletions = new Map<string, WatchCompletionEvent>()
+
+  /** Push fixed, secret-free watcher metadata over the existing live channel. */
+  publishWatchCompletion(event: WatchCompletionEvent): void {
+    if (this.shuttingDown || this.watchCompletions.has(event.handle)) return
+    this.watchCompletions.set(event.handle, event)
+    if (this.watchCompletions.size > 256) this.watchCompletions.delete(this.watchCompletions.keys().next().value!)
+    for (const ws of this.subscribers) {
+      if (ws.readyState === 1) {
+        try { ws.send(JSON.stringify({ type: 'watch_completion', data: event })) } catch { /* disconnected */ }
+      }
+    }
+  }
 
   // Cleanup timer
   private cleanupTimer: NodeJS.Timeout | null = null
@@ -269,6 +285,11 @@ export class ToolOrchestrator {
    */
   subscribe(ws: WebSocket): void {
     this.subscribers.add(ws)
+    for (const event of this.watchCompletions.values()) {
+      if (ws.readyState === 1) {
+        try { ws.send(JSON.stringify({ type: 'watch_completion', data: event })) } catch { /* disconnected */ }
+      }
+    }
     ws.on('close', () => this.subscribers.delete(ws))
   }
 
@@ -334,6 +355,7 @@ export class ToolOrchestrator {
       status: 'pending',
       priority: options.priority ?? 'normal',
       rootPath: options.rootPath ?? null,
+      fullAccess: options.fullAccess === true,
       operationMode: options.operationMode ?? 'execute',
       timeoutMs: options.timeoutMs ?? this.config.defaultTimeoutMs,
       deadlineMs: options.deadlineMs,
@@ -458,17 +480,18 @@ export class ToolOrchestrator {
 
     try {
       const result = await Promise.race([
-        controller.signal.aborted ? abortPromise : handler(job.args, {
+        controller.signal.aborted ? abortPromise : withToolAccess(job.fullAccess, () => handler(job.args, {
           signal: controller.signal,
           deadlineMs: jobEndMs - (isShell ? SHELL_RUNTIME_MARGIN_MS : 0),
           rootPath: job.rootPath ?? undefined,
+          fullAccess: job.fullAccess === true,
           operationMode: job.operationMode,
           conversationId: job.conversationId,
           messageId: job.messageId,
           parentMessageId: job.parentMessageId,
           streamId: job.streamId,
           toolCallId: job.toolCallId,
-        }),
+        })),
         abortPromise,
       ])
 
@@ -776,6 +799,7 @@ export class ToolOrchestrator {
     }
 
     this.subscribers.clear()
+    this.watchCompletions.clear()
     console.log('[ToolOrchestrator] Shutdown complete')
   }
 }

@@ -4,6 +4,7 @@ paths:
   - "client/ygg-chat-r/src/components/ThemeManager/**"
   - "client/ygg-chat-r/src/components/Heimdall/**"
   - "client/ygg-chat-r/src/index.css"
+  - "client/ygg-chat-r/src/components/motion.ts"
   - "client/ygg-chat-r/server/tools/themeManager.ts"
 ---
 
@@ -51,7 +52,7 @@ Use this as a starting point for compact circular buttons in the current minimal
 
 ```tsx
 const controlButtonClass =
-  'group/control relative flex h-11 w-11 items-center justify-center rounded-full bg-white/85 text-stone-700 backdrop-blur-xl transition-all duration-200 hover:-translate-y-0.5 hover:scale-105 hover:bg-white hover:text-stone-950 active:translate-y-0 active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400/70 focus-visible:ring-offset-2 focus-visible:ring-offset-neutral-50 dark:bg-yBlack-900/85 dark:text-stone-200 dark:hover:bg-neutral-900 dark:hover:text-white dark:focus-visible:ring-orange-400/70 dark:focus-visible:ring-offset-yBlack-900'
+  'group/control relative flex h-11 w-11 items-center justify-center rounded-full bg-white/85 text-stone-700 backdrop-blur-xl transition-[background-color,color,transform] duration-200 hover:-translate-y-0.5 hover:scale-105 hover:bg-white hover:text-stone-950 active:translate-y-0 active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400/70 focus-visible:ring-offset-2 focus-visible:ring-offset-neutral-50 dark:bg-yBlack-900/85 dark:text-stone-200 dark:hover:bg-neutral-900 dark:hover:text-white dark:focus-visible:ring-orange-400/70 dark:focus-visible:ring-offset-yBlack-900'
 ```
 
 For non-destructive active/toggled states, prefer fill/color changes rather than borders or shadows:

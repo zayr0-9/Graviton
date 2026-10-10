@@ -1,5 +1,6 @@
-import { describe, expect, it } from 'vitest'
-import { formatReadFilesContent, readMultipleTextFiles } from '../readFiles.js'
+import { describe, expect, it, vi } from 'vitest'
+import * as wslBridge from '../../utils/wslBridge.js'
+import { formatReadFilesContent, formatReadFilesResult, readMultipleTextFiles } from '../readFiles.js'
 import { createToolFsHarness } from './helpers/toolFsHarness.js'
 
 describe('readMultipleTextFiles', () => {
@@ -60,4 +61,57 @@ describe('readMultipleTextFiles', () => {
       { startLine: 5, endLine: 5, lineCount: 1 },
     ])
   })
+})
+
+describe('read_files aggregate UTF-8 budget', () => {
+  it('includes headers/separators and stops before later files', async () => {
+    const harness = await createToolFsHarness()
+    await harness.writeFile('a.txt', 'a'.repeat(100))
+    await harness.writeFile('b.txt', 'b'.repeat(100))
+    const files = await readMultipleTextFiles(['a.txt', 'b.txt', 'missing.txt'], { cwd: harness.workspaceDir, maxBytes: 150 })
+    const content = formatReadFilesContent(files)
+    expect(Buffer.byteLength(content)).toBeLessThanOrEqual(150)
+    expect(files).toHaveLength(2)
+    expect(files[1].truncated).toBe(true)
+    expect(content).not.toContain('missing.txt')
+    expect(formatReadFilesResult(files, 3)).toEqual({ success: true, content, truncated: true,
+      returnedCount: 2, omittedCount: 1, nextFileIndex: 1 })
+  })
+
+  it('caps line/range reads and does not split UTF-8 characters', async () => {
+    const harness = await createToolFsHarness()
+    await harness.writeFile('unicode.txt', '😀'.repeat(100) + '\nsecond')
+    for (const range of [{}, { startLine: 1, endLine: 1 }, { ranges: [{ startLine: 1, endLine: 2 }] }]) {
+      const files = await readMultipleTextFiles(['unicode.txt'], { cwd: harness.workspaceDir, maxBytes: 50, ...range })
+      expect(Buffer.byteLength(formatReadFilesContent(files))).toBeLessThanOrEqual(50)
+      expect(files[0].content).not.toContain('�')
+      expect(files[0].truncated).toBe(true)
+    }
+  })
+
+  it('bounds error placeholders and tiny budgets', async () => {
+    const harness = await createToolFsHarness()
+    const errors = await readMultipleTextFiles(['missing.txt'], { cwd: harness.workspaceDir, maxBytes: 40 })
+    expect(Buffer.byteLength(formatReadFilesContent(errors))).toBeLessThanOrEqual(40)
+    expect(errors[0].success).toBe(false)
+    const tiny = await readMultipleTextFiles(['missing.txt'], { cwd: harness.workspaceDir, maxBytes: 1 })
+    expect(formatReadFilesContent(tiny)).toBe('')
+  })
+})
+
+
+it('forwards cancellation/deadlines to WSL header resolution and stops before path work when cancelled', async () => {
+  const controller = new AbortController()
+  const deadlineMs = Date.now() + 10000
+  const isWsl = vi.spyOn(wslBridge, 'isWSLPath').mockReturnValue(true)
+  const resolve = vi.spyOn(wslBridge, 'resolveToWindowsPath').mockImplementation(async value => value)
+  try {
+    // Header does not fit, so no actual file access is necessary.
+    await readMultipleTextFiles(['/fake/file'], { maxBytes: 1, signal: controller.signal, deadlineMs })
+    expect(resolve).toHaveBeenCalledWith('/fake/file', expect.objectContaining({ signal: controller.signal, deadlineMs }))
+    resolve.mockClear()
+    controller.abort()
+    await expect(readMultipleTextFiles(['/fake/file'], { signal: controller.signal })).rejects.toThrow(/cancelled/)
+    expect(resolve).not.toHaveBeenCalled()
+  } finally { resolve.mockRestore(); isWsl.mockRestore() }
 })

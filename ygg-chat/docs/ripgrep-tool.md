@@ -8,6 +8,14 @@ paths:
 ## Purpose
 `ripgrep.ts` is an Electron helper that wraps the [ripgrep (`rg`)](https://github.com/BurntSushi/ripgrep) CLI to power the Ygg-Chat Electron app with fast, configurable file searching. It exposes the `ripgrepSearch` async helper, which runs `rg` with safe defaults, post-processes the output, enforces throttling limits, and normalizes cross-platform path handling.
 
+## Public schema versus helper
+
+The shared schema advertises older 500-match / 5000-character / 500-character-line
+limits; actual helper limits are below. `maxOutputChars`/`timeoutMs` are internal
+or registry-supported, not public schema properties. The helper defaults to
+case-insensitive, but both registries default omitted `caseSensitive` to true
+unless legacy `case_insensitive` is true. Pass `caseSensitive` explicitly.
+
 ## API Surface
 | Name | Description |
 | --- | --- |
@@ -49,7 +57,7 @@ Internal options `signal`, `deadlineMs` and `timeoutMs` are forwarded by both to
 ## Error Handling & Reliability
 - Detects ripgrep execution failures (`child.on('error')`) and surfaces clear instructions (e.g., ensure `rg` is installed).
 - Only exit codes `0` and `1` are successful. Other codes, signal termination, timeout and cancellation return failure with empty matches. No partial timeout output is presented as a complete search.
-- Wraps JSON parsing in a `try/catch`; falls back to simple regex parsing when necessary.
+- Invalid JSON records are skipped by per-record catches. Plain-text fallback exists only in the outer parser catch; malformed records do not reliably trigger it.
 
 ## Cross-Platform Notes
 - Uses `shouldUseWSL` to avoid incorrectly invoking native `rg` on Windows when the environment requires WSL paths.

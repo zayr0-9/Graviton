@@ -1,4 +1,6 @@
+import { randomUUID } from 'node:crypto'
 import type { HeadlessSubagentStreamRequest } from '../../../../../shared/headlessApi.js'
+import type { MessageQueueSnapshot, QueuedMessageView } from '../../../../../shared/queuedMessages.js'
 import type { ProviderToolCall } from '../providers/openRouterProvider.js'
 import type { SubagentRunRow, SubagentRunStatus } from '../persistence/subagentRunRepo.js'
 import type { ToolExecutionContext, ToolExecutor } from './toolLoopService.js'
@@ -41,6 +43,8 @@ export interface SubagentManagerRunner {
     runId: string,
     request: HeadlessSubagentStreamRequest
   ): Promise<{ handle: string | null; runId: string; streamId: string } | null>
+  send(handle: string, message: string, requestId: string): QueuedMessageView | null
+  getMessageQueue(handle: string): MessageQueueSnapshot | null
   cancel(handle: string): boolean
   isActive(handle: string): boolean
   waitForTerminal(handle: string, signal?: AbortSignal): Promise<SubagentRunRow | null>
@@ -180,9 +184,11 @@ async function buildSubagentRequest(toolCall: ProviderToolCall, context: ToolExe
     tools,
     temperature: typeof args.temperature === 'number' ? args.temperature : undefined,
     reasoningEffort: context.subagentReasoningEffort,
+    serviceTier: provider === 'openaichatgpt' ? context.serviceTier : undefined,
     operationMode: context.operationMode ?? 'execute',
     autoApprove: args.inheritAutoApprove !== false && context.autoApprove !== false,
     rootPath: context.rootPath ?? null,
+    fullAccess: context.fullAccess === true,
     userId: null,
     toolTimeoutMs: context.timeoutMs,
   }
@@ -212,9 +218,11 @@ function buildResumeRequest(run: SubagentRunRow, context: ToolExecutionContext):
     modelName: run.model_name || context.modelName || DEFAULT_SUBAGENT_MODEL,
     tools: undefined,
     reasoningEffort: context.subagentReasoningEffort,
+    serviceTier: provider === 'openaichatgpt' ? context.serviceTier : undefined,
     operationMode: context.operationMode ?? 'execute',
     autoApprove: context.autoApprove !== false,
     rootPath: context.rootPath ?? null,
+    fullAccess: context.fullAccess === true,
     userId: null,
     toolTimeoutMs: context.timeoutMs,
   }
@@ -359,7 +367,8 @@ function managerList(
     action: 'list',
     count: runs.length,
     ...(statusFilter ? { statusFilter } : {}),
-    subagents: runs.map(run => toRunView(run, run.handle ? runner.isActive(run.handle) : false)),
+    subagents: runs.map(run => ({ ...toRunView(run, run.handle ? runner.isActive(run.handle) : false),
+      messageQueue: run.handle ? runner.getMessageQueue(run.handle) : null })),
   }
 }
 
@@ -372,7 +381,9 @@ function managerStatus(
   if (!handle) throw new Error('subagent_manager status: a handle is required.')
   const run = runner.getRunByHandle(handle)
   if (!run || !ownsRun(run, context)) return notOwnedResult('status', handle)
-  return { action: 'status', found: true, subagent: toRunView(run, runner.isActive(handle)) }
+  return { action: 'status', found: true, subagent: {
+    ...toRunView(run, runner.isActive(handle)), messageQueue: runner.getMessageQueue(handle),
+  } }
 }
 
 async function managerWait(
@@ -387,7 +398,29 @@ async function managerWait(
 
   const terminal = await runner.waitForTerminal(handle, context.signal)
   if (!terminal || !ownsRun(terminal, context)) return notOwnedResult('wait', handle)
-  return { action: 'wait', found: true, subagent: toRunView(terminal, runner.isActive(handle)) }
+  return { action: 'wait', found: true, subagent: {
+    ...toRunView(terminal, runner.isActive(handle)), messageQueue: runner.getMessageQueue(handle),
+  } }
+}
+
+function managerSend(
+  runner: SubagentManagerRunner,
+  context: ToolExecutionContext,
+  args: Record<string, any>
+): Record<string, any> {
+  const handle = normalizeHandle(args.handle)
+  if (!handle) throw new Error('subagent_manager send: a handle is required.')
+  const run = runner.getRunByHandle(handle)
+  if (!run || !ownsRun(run, context)) return { ...notOwnedResult('send', handle), accepted: false }
+  const requestId = args.requestId === undefined ? randomUUID() : args.requestId
+  const entry = runner.send(handle, args.message, requestId)
+  return {
+    action: 'send', handle, found: true, accepted: !!entry,
+    ...(entry ? { requestId: entry.requestId, delivery: entry } : { status: run.status }),
+    message: entry
+      ? `Instructions ${entry.requestId} are ${entry.status}. Delivery occurs at the next safe boundary, not mid-tool or mid-provider turn.`
+      : `Sub-agent ${handle} is not accepting messages (terminal, aborting, preparing, or blocking); nothing was sent.`,
+  }
 }
 
 function managerCancel(
@@ -435,7 +468,12 @@ async function managerResume(
     }
   }
 
+  if (args.prompt !== undefined &&
+    (typeof args.prompt !== 'string' || !args.prompt.trim() || args.prompt.length > 200_000)) {
+    throw new Error('subagent_manager resume: prompt must be nonblank and at most 200000 characters.')
+  }
   const request = buildResumeRequest(run, context)
+  request.resumePrompt = args.prompt
   const outcome = await runner.resumeDetached(run.id, request)
   if (!outcome) {
     // Lost the reopen CAS race (another caller resumed it, or it is no longer terminal).
@@ -465,7 +503,7 @@ async function managerResume(
  * Intercept the global `subagent_manager` tool before ordinary calls reach the
  * registry. Every action reads the full ToolExecutionContext (crucially
  * `lineageId`, which an orchestrator-registered handler would drop) so list /
- * status / wait / cancel / resume can enforce branch ownership. Non-manager tools —
+ * status / wait / send / cancel / resume can enforce branch ownership. Non-manager tools —
  * including the legacy `subagent` tool — fall through to the leaf executor
  * (compose this over createSubagentDispatchExecutor). This never runs for a
  * child, so no-nested-subagents holds.
@@ -488,13 +526,15 @@ export function createSubagentManagerExecutor(deps: {
         return managerStatus(deps.runner, context, args)
       case 'wait':
         return managerWait(deps.runner, context, args)
+      case 'send':
+        return managerSend(deps.runner, context, args)
       case 'cancel':
         return managerCancel(deps.runner, context, args)
       case 'resume':
         return managerResume(deps.runner, context, args)
       default:
         throw new Error(
-          `subagent_manager: unknown action "${action || '(missing)'}". Use spawn | list | status | wait | cancel | resume.`
+          `subagent_manager: unknown action "${action || '(missing)'}". Use spawn | list | status | wait | send | cancel | resume.`
         )
     }
   }

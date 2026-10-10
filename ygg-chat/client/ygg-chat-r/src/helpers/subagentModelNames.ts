@@ -18,9 +18,12 @@ export function normalizeSubagentModelName(
   const slug = stripped.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '')
 
   if (slug.includes('gpt-6-astra')) return 'gpt-6-astra'
-  if (slug.includes('gpt-5-6-sol')) return 'gpt-5.6-sol'
+  if (slug.includes('gpt-6-1-sol')) return 'gpt-6.1-sol'
+  if (slug.includes('gpt-6-sol')) return 'gpt-6-sol'
+  if (slug.includes('gpt-6-luna')) return 'gpt-6-luna'
+  if (slug.includes('gpt-5-6-sol')) return 'gpt-6-sol'
   if (slug.includes('gpt-5-6-terra')) return 'gpt-5.6-terra'
-  if (slug.includes('gpt-5-6-luna')) return 'gpt-5.6-luna'
+  if (slug.includes('gpt-5-6-luna')) return 'gpt-6-luna'
   if (slug.includes('gpt-5-5-pro')) return 'gpt-5.5-pro'
   if (slug.includes('gpt-5-5')) return 'gpt-5.5'
   if (slug.includes('gpt-5-4')) return 'gpt-5.5'

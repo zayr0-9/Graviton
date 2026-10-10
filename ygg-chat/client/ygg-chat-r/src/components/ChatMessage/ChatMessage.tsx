@@ -6,6 +6,8 @@ import 'katex/dist/katex.min.css'
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { createSelector } from '@reduxjs/toolkit'
 import { createPortal } from 'react-dom'
+import { AnimatePresence, motion, useReducedMotion } from 'framer-motion'
+import { motionState, softTransition, useMotionPreferences } from '../motion'
 import ReactMarkdown from 'react-markdown'
 import { useNavigate } from 'react-router-dom'
 import { useSelector } from 'react-redux'
@@ -13,7 +15,7 @@ import rehypeHighlight from 'rehype-highlight'
 import rehypeKatex from 'rehype-katex'
 import remarkGfm from 'remark-gfm'
 import remarkMath from 'remark-math'
-import { Check, X } from 'lucide-react'
+import { Check, RotateCw, X } from 'lucide-react'
 import { AUTO_COMPACTION_NOTE, fetchMcpTools } from '../../features/chats/chatActions'
 import { chatSliceActions } from '../../features/chats/chatSlice'
 import {
@@ -27,7 +29,7 @@ import { environment, localApi } from '../../utils/api'
 import { ChatErrorBubble } from '../ChatErrorBubble/ChatErrorBubble'
 import { useHtmlIframeRegistry } from '../HtmlIframeRegistry/HtmlIframeRegistry'
 import { ImageModal } from '../ImageModal/ImageModal'
-import { MarkdownLink } from '../MarkdownLink/MarkdownLink'
+import { MarkdownLink, markdownUrlTransform } from '../MarkdownLink/MarkdownLink'
 import { MermaidDiagram, getMermaidSource, isMermaidCodeBlock, prepareMermaidMarkdown } from '../MermaidDiagram'
 import { TextArea } from '../TextArea/TextArea'
 import {
@@ -42,7 +44,13 @@ import {
 import { ContextInjectionCard, type ContextInjectionCardEntry } from './ContextInjectionCard'
 import { HookActivityCard } from './HookActivityCard'
 import { MessageActions } from './MessageActions'
-import { Badge, DisclosurePanel, DisclosureRow } from './messagePrimitives'
+import { DisclosurePanel, DisclosureRow } from './messagePrimitives'
+import { SummarisedMessage } from './SummarisedMessage'
+import { CompactMessageNotice } from './CompactMessageNotice'
+import { ImageAttachmentNotice, isImageAttachmentInfoMessage } from './ImageAttachmentNotice'
+import { waitForImagePreparation } from '../../features/chats/imagePreparation'
+import { hasAcceptedImageAttachments } from '../../features/chats/acceptedImageAttachments'
+import { isWatcherCompletionMessage, WatcherCompletionNotice } from './WatcherCompletionNotice'
 import { ToolCallGroupCard, type McpViewerPayload } from './ToolCallGroupCard'
 import {
   buildToolCallGroupsFromBlocks,
@@ -56,6 +64,7 @@ import {
   FAST_COLOR_TRANSITION_CLASS,
   FOCUS_RING_CLASS,
   getChatFontSizeOffsetStyle,
+  isExcludedFromProcessRunGrouping,
   isProcessOnlyBlockSet,
   MESSAGE_BLOCK_INSET_CLASS,
   MESSAGE_BLOCK_STACK_CLASS,
@@ -113,6 +122,10 @@ interface ChatMessageProps {
   className?: string
   artifacts?: string[]
   showInlineActions?: boolean
+  /** Read-only transcript surfaces must not expose edit/branch context actions. */
+  readOnly?: boolean
+  /** Preview prose must never be folded into process disclosures, even separators. */
+  keepTextOutsideGroups?: boolean
   /** Font size offset in pixels applied to every block through `calc(1em + Npx)`. */
   fontSizeOffset?: number
   /** Group long consecutive reasoning/tool runs into one "Agent steps" disclosure. */
@@ -368,7 +381,7 @@ const EXPLAIN_BUTTON_CLASS = `flex h-8 w-8 items-center justify-center rounded-f
 const FLOATING_SURFACE_CLASS =
   'rounded-2xl bg-white/95 backdrop-blur-xl ring-1 ring-black/[0.06] dark:bg-yBlack-900/95 dark:ring-white/[0.08]'
 
-const ChatMessage: React.FC<ChatMessageProps> = React.memo(
+const ChatMessageBody: React.FC<ChatMessageProps> = React.memo(
   ({
     id,
     role,
@@ -391,6 +404,8 @@ const ChatMessage: React.FC<ChatMessageProps> = React.memo(
     className,
     artifacts = [],
     showInlineActions = true,
+    readOnly = false,
+    keepTextOutsideGroups = false,
     fontSizeOffset = 0,
     groupToolReasoningRuns = false,
     truncateToolOutput = true,
@@ -437,6 +452,7 @@ const ChatMessage: React.FC<ChatMessageProps> = React.memo(
       groupRuns: new Set(),
     })
     const [showMoreMenu, setShowMoreMenu] = useState(false)
+    const { reducedMotion } = useMotionPreferences(useReducedMotion())
     const [moreMenuPlacement, setMoreMenuPlacement] = useState<MoreMenuPlacement | null>(null)
     const moreMenuRef = useRef<HTMLDivElement | null>(null)
     const [isHovering, setIsHovering] = useState(false)
@@ -474,7 +490,6 @@ const ChatMessage: React.FC<ChatMessageProps> = React.memo(
     }, [onLayoutChange])
 
     const messageData = useSelector((state: RootState) => selectMessageByIdMap(state).get(String(id)))
-    const isCompactionSummary = messageData?.note === AUTO_COMPACTION_NOTE
     const toolDefinitions = useSelector((state: RootState) => state.chat.tools)
     const conversationId = messageData?.conversation_id ?? null
     const projectId = useSelector((state: RootState) =>
@@ -587,15 +602,27 @@ const ChatMessage: React.FC<ChatMessageProps> = React.memo(
       onEditingStateChange?.(id, false, 'edit')
     }
 
-    const handleSaveBranch = () => {
-      if (onBranch) {
-        const trimmedContent = editContent.trim()
+    const branchSubmissionPending = useRef(false)
+    const latestBranchEdit = useRef({ editContent, onBranch })
+    latestBranchEdit.current = { editContent, onBranch }
+    const handleSaveBranch = async () => {
+      if (branchSubmissionPending.current) return
+      branchSubmissionPending.current = true
+      try {
+        await dispatch(waitForImagePreparation({ kind: 'branch', messageId: id }))
+      } catch {
+        // Preparation status/error remains visible and the editor/draft stays intact.
+        return
+      } finally {
+        branchSubmissionPending.current = false
+      }
+      if (latestBranchEdit.current.onBranch) {
+        const trimmedContent = latestBranchEdit.current.editContent.trim()
         const newContentBlocks = hasEditableBlocks ? editableTextToContentBlocks(trimmedContent) : undefined
-        onBranch(id, appendAttachedImagePathMetadata(trimmedContent, extractAttachedImagePaths(content)), newContentBlocks)
+        latestBranchEdit.current.onBranch(id, appendAttachedImagePathMetadata(trimmedContent, extractAttachedImagePaths(content)), newContentBlocks)
       }
       dispatch(chatSliceActions.editingBranchSet(false))
-      // Clear only drafts owned by this branch edit after branching is initiated.
-      dispatch(chatSliceActions.imageDraftsCleared({ target: { kind: 'branch', messageId: id } }))
+      // The submission thunk consumes the captured drafts; never clear them before it snapshots.
       setEditingState(false)
       onEditingStateChange?.(id, false, 'branch')
     }
@@ -689,6 +716,7 @@ const ChatMessage: React.FC<ChatMessageProps> = React.memo(
     const handleCloseArtifactModal = () => setSelectedArtifactUrl(null)
 
     const handleContextMenu = (e: React.MouseEvent) => {
+      if (readOnly) return
       e.preventDefault()
       const selection = window.getSelection()
       const rawText = selection?.toString() || ''
@@ -810,18 +838,6 @@ const ChatMessage: React.FC<ChatMessageProps> = React.memo(
       }
     }, [showExplainInput, getAdjustedExplainInputPosition])
 
-    // Click outside handler for explain input
-    useEffect(() => {
-      if (!showExplainInput) return
-      const handleClickOutside = (event: MouseEvent) => {
-        if (explainInputRef.current && !explainInputRef.current.contains(event.target as Node)) {
-          handleCancelExplainInput()
-        }
-      }
-      document.addEventListener('mousedown', handleClickOutside)
-      return () => document.removeEventListener('mousedown', handleClickOutside)
-    }, [showExplainInput])
-
     // Focus explain textarea without scrolling the virtual list
     useEffect(() => {
       if (!showExplainInput) return
@@ -868,7 +884,6 @@ const ChatMessage: React.FC<ChatMessageProps> = React.memo(
     const handleMoreClick = () => {
       if (showMoreMenu) {
         setShowMoreMenu(false)
-        setMoreMenuPlacement(null)
         return
       }
       const placement = computeMoreMenuPlacement()
@@ -885,8 +900,7 @@ const ChatMessage: React.FC<ChatMessageProps> = React.memo(
         const clickedTrigger = Boolean(moreButtonRef.current && moreButtonRef.current.contains(target))
         if (!clickedMenu && !clickedTrigger) {
           setShowMoreMenu(false)
-          setMoreMenuPlacement(null)
-        }
+          }
       }
       if (showMoreMenu) document.addEventListener('mousedown', handleClickOutside)
       return () => document.removeEventListener('mousedown', handleClickOutside)
@@ -896,7 +910,6 @@ const ChatMessage: React.FC<ChatMessageProps> = React.memo(
     useEffect(() => {
       if (contextMenuOpen) {
         setShowMoreMenu(false)
-        setMoreMenuPlacement(null)
       }
     }, [contextMenuOpen])
 
@@ -1019,6 +1032,7 @@ const ChatMessage: React.FC<ChatMessageProps> = React.memo(
           remarkPlugins={[remarkGfm, remarkMath]}
           rehypePlugins={[[rehypeHighlight, { ignoreMissing: true }], rehypeKatex]}
           components={MARKDOWN_COMPONENTS}
+          urlTransform={markdownUrlTransform}
         >
           {prepareMermaidMarkdown(markdown)}
         </ReactMarkdown>
@@ -1110,7 +1124,7 @@ const ChatMessage: React.FC<ChatMessageProps> = React.memo(
     // Expanding a tool card registers its HTML entries so the viewer can open them later.
     const handleExpandToggle = (toggleKey: string, group: ToolCallRenderGroup) => {
       const isCurrentlyExpanded = expandedBlocks.toolCalls.has(toggleKey)
-      if (!isCurrentlyExpanded && htmlRegistry) {
+      if (!readOnly && !isCurrentlyExpanded && htmlRegistry) {
         if ((group.name ?? '').toLowerCase() === 'html_renderer' && typeof group.args?.html === 'string') {
           registerHtmlEntry(`${id}-html-renderer-${group.id}`)
         }
@@ -1138,6 +1152,7 @@ const ChatMessage: React.FC<ChatMessageProps> = React.memo(
           onExpandTransitionEnd={handleExpandTransitionEnd}
           contentStyle={messageContentStyle}
           truncateToolOutput={truncateToolOutput}
+          readOnly={readOnly}
           toolDefinitions={toolDefinitions}
           mcpLoadState={mcpLoadState}
           mcpReloadTokens={mcpReloadTokens}
@@ -1223,25 +1238,27 @@ const ChatMessage: React.FC<ChatMessageProps> = React.memo(
         const processItems = runItems.filter(item => item.kind === 'process')
 
         if (processItems.length >= PROCESS_RUN_GROUP_MIN_ITEMS) {
-          const groupKey = `process-run-${sourceKey}-${runItems[0].key}-${runItems[runItems.length - 1].key}`
+          const groupKey = keepTextOutsideGroups
+            ? `process-run-${sourceKey}-${runItems[0].key}`
+            : `process-run-${sourceKey}-${runItems[0].key}-${runItems[runItems.length - 1].key}`
           const isExpanded = expandedBlocks.groupRuns.has(groupKey)
           const toolCount = processItems.filter(item => item.processType === 'tool').length
-          const reasoningCount = processItems.filter(item => item.processType === 'reasoning').length
-          const summaryParts: string[] = []
-          if (toolCount > 0) summaryParts.push(`${toolCount} tool${toolCount === 1 ? '' : 's'}`)
-          if (reasoningCount > 0) summaryParts.push(`${reasoningCount} reasoning`)
+          const summary = toolCount > 0 ? `${toolCount} tool${toolCount === 1 ? '' : 's'}` : undefined
           const panelId = `${id}-${groupKey}-panel`
 
           rendered.push(
-            <div key={groupKey} className='min-w-0 max-w-full' style={messageContentStyle}>
-              <DisclosureRow
-                label='Agent steps'
-                meta={String(processItems.length)}
-                summary={summaryParts.join(' · ')}
-                expanded={isExpanded}
-                onToggle={() => toggleBlock('groupRuns', groupKey)}
-                controlsId={panelId}
-              />
+            <div key={groupKey} className='min-w-0 max-w-full'>
+              {/* Keep the offset on the header only; each nested step applies its own. */}
+              <div style={messageContentStyle}>
+                <DisclosureRow
+                  label='Agent steps'
+                  labelSize='group'
+                  summary={summary}
+                  expanded={isExpanded}
+                  onToggle={() => toggleBlock('groupRuns', groupKey)}
+                  controlsId={panelId}
+                />
+              </div>
               <DisclosurePanel
                 id={panelId}
                 expanded={isExpanded}
@@ -1274,7 +1291,7 @@ const ChatMessage: React.FC<ChatMessageProps> = React.memo(
     const renderTextItem = (key: string, markdown: string): MessageRenderItem => ({
       key,
       kind: 'other',
-      ignoreForProcessRunGrouping: isProcessRunSeparatorText(markdown),
+      ignoreForProcessRunGrouping: !keepTextOutsideGroups && isProcessRunSeparatorText(markdown),
       node: renderMarkdownNode({ key, markdown, className: SHARED_TEXT_MARKDOWN_CLASS, style: messageContentStyle }),
     })
 
@@ -1351,7 +1368,7 @@ const ChatMessage: React.FC<ChatMessageProps> = React.memo(
             if (toolNode) {
               items.push({
                 key: `stream-tool-${groupedTool.id}-${idx}`,
-                kind: 'process',
+                kind: isExcludedFromProcessRunGrouping(groupedTool.name, groupedTool.args) ? 'other' : 'process',
                 processType: 'tool',
                 node: toolNode,
               })
@@ -1376,14 +1393,19 @@ const ChatMessage: React.FC<ChatMessageProps> = React.memo(
               key: noticeKey,
               kind: 'other',
               node: (
-                <div
+                <CompactMessageNotice
                   key={noticeKey}
-                  className={`flex h-8 items-center ${MESSAGE_BLOCK_INSET_CLASS} ${TEXT_LABEL_CLASS} italic text-neutral-500 dark:text-neutral-400`}
-                  style={messageContentStyle}
+                  kind='status'
+                  className='!p-0'
+                  title={`${noticeText}${counter}`}
+                  customTheme={customTheme}
+                  customThemeEnabled={customThemeEnabled}
+                  isDarkMode={isDarkMode}
+                  icon={<RotateCw size={14} className='shrink-0' aria-hidden='true' />}
                 >
                   {noticeText}
                   {counter}
-                </div>
+                </CompactMessageNotice>
               ),
             })
           }
@@ -1455,7 +1477,7 @@ const ChatMessage: React.FC<ChatMessageProps> = React.memo(
           if (fallbackNode) {
             items.push({
               key: `stream-fallback-tool-${toolCall.id}-${idx}`,
-              kind: 'process',
+              kind: isExcludedFromProcessRunGrouping(fallbackGroup.name, fallbackGroup.args) ? 'other' : 'process',
               processType: 'tool',
               node: fallbackNode,
             })
@@ -1515,11 +1537,12 @@ const ChatMessage: React.FC<ChatMessageProps> = React.memo(
           const callId = typeof item.call_id === 'string' ? item.call_id : typeof item.id === 'string' ? item.id : ''
           const name = typeof item.name === 'string' ? item.name : ''
           if (callId && name) {
+            const args = parseResponsesToolArgs(item.arguments) as Record<string, any> | null
             const toolNode = renderToolCallGroupCard(
               {
                 id: callId,
                 name,
-                args: parseResponsesToolArgs(item.arguments) as Record<string, any> | null,
+                args,
                 results: [],
                 anchorIndex: baseIndex + localIndex,
               },
@@ -1528,7 +1551,7 @@ const ChatMessage: React.FC<ChatMessageProps> = React.memo(
             if (toolNode) {
               items.push({
                 key: `responses-tool-${callId}-${baseIndex}-${localIndex}`,
-                kind: 'process',
+                kind: isExcludedFromProcessRunGrouping(name, args) ? 'other' : 'process',
                 processType: 'tool',
                 node: toolNode,
               })
@@ -1572,7 +1595,7 @@ const ChatMessage: React.FC<ChatMessageProps> = React.memo(
           if (toolNode) {
             items.push({
               key: `block-tool-${groupedTool.id}-${idx}`,
-              kind: 'process',
+              kind: isExcludedFromProcessRunGrouping(groupedTool.name, groupedTool.args) ? 'other' : 'process',
               processType: 'tool',
               node: toolNode,
             })
@@ -1723,7 +1746,7 @@ const ChatMessage: React.FC<ChatMessageProps> = React.memo(
       : baseRenderedNodes
 
     const hasSelection = selectedText.length > 0
-    const showActionsRow = hasContent && canBranchMessage && showInlineActions
+    const showActionsRow = !readOnly && hasContent && canBranchMessage && showInlineActions
     const contextHighlightClass = contextMenuOpen ? 'bg-black/[0.03] dark:bg-white/[0.03]' : ''
 
     return (
@@ -1742,22 +1765,14 @@ const ChatMessage: React.FC<ChatMessageProps> = React.memo(
           style={surfaceStyle}
         >
           {/* Role caption. Assistant rows stay unlabelled; the surface is the label for user rows. */}
-          {(isUserRow || isCompactionSummary) && (
+          {isUserRow && (
             <div className={`flex h-7 items-center gap-2 ${MESSAGE_BLOCK_INSET_CLASS}`}>
-              {isUserRow && (
-                <span
-                  className={`${TEXT_MICRO_CLASS} font-semibold uppercase tracking-[0.14em] ${roleLabelClass}`}
-                  style={roleLabelStyle}
-                >
-                  {roleLabel}
-                </span>
-              )}
-              {isCompactionSummary && (
-                <Badge tone='success'>
-                  <span className='mr-1.5 inline-block h-1.5 w-1.5 rounded-full bg-current' aria-hidden='true' />
-                  Compaction summary
-                </Badge>
-              )}
+              <span
+                className={`${TEXT_MICRO_CLASS} font-semibold uppercase tracking-[0.14em] ${roleLabelClass}`}
+                style={roleLabelStyle}
+              >
+                {roleLabel}
+              </span>
             </div>
           )}
 
@@ -1799,6 +1814,10 @@ const ChatMessage: React.FC<ChatMessageProps> = React.memo(
             </div>
           ) : (
             renderedNodes && <div className={MESSAGE_BLOCK_STACK_CLASS}>{renderedNodes}</div>
+          )}
+
+          {isUserRow && !editingState && hasAcceptedImageAttachments(messageData) && (
+            <ImageAttachmentNotice customTheme={customTheme} customThemeEnabled={customThemeEnabled} isDarkMode={isDarkMode} />
           )}
 
           {/* Attachments on non-assistant rows. */}
@@ -1867,16 +1886,21 @@ const ChatMessage: React.FC<ChatMessageProps> = React.memo(
                   isVisible={isHovering}
                   variant='default'
                 />
-                {showMoreMenu &&
-                  moreMenuPlacement &&
+                {moreMenuPlacement &&
                   createPortal(
-                    <div
+                    <AnimatePresence>
+                    {showMoreMenu && <motion.div
+                      key='message-info'
                       ref={moreMenuRef}
-                      className={`fixed z-[200] ${FLOATING_SURFACE_CLASS} [will-change:contents] [transform:translateZ(0)]`}
+                      {...motionState(reducedMotion, moreMenuPlacement.openUp ? 4 : -4)}
+                      transition={softTransition}
+                      className={`fixed z-[200] ${FLOATING_SURFACE_CLASS}`}
                       style={{
                         top: `${moreMenuPlacement.top}px`,
                         left: `${moreMenuPlacement.left}px`,
                         width: `${moreMenuPlacement.width}px`,
+                        transformOrigin: moreMenuPlacement.openUp ? 'bottom right' : 'top right',
+                        pointerEvents: showMoreMenu ? 'auto' : 'none',
                       }}
                     >
                       <div className='p-3'>
@@ -1891,20 +1915,28 @@ const ChatMessage: React.FC<ChatMessageProps> = React.memo(
                                   key !== 'artifacts' &&
                                   key !== 'content_plain_text'
                               )
-                              .map(([key, value]) => (
-                                <div key={key} className='flex gap-2'>
-                                  <span className='shrink-0 font-medium text-neutral-500 dark:text-neutral-400'>{key}:</span>
-                                  <span className='break-all text-neutral-800 dark:text-neutral-200'>
-                                    {typeof value === 'object' ? JSON.stringify(value, null, 2) : String(value)}
-                                  </span>
-                                </div>
-                              ))
+                              .map(([key, value]) => {
+                                const createdAt = key === 'created_at' && typeof value === 'string' ? new Date(value) : null
+                                const displayValue = createdAt && !Number.isNaN(createdAt.getTime())
+                                  ? createdAt.toLocaleString(undefined, { dateStyle: 'long', timeStyle: 'long' })
+                                  : typeof value === 'object' ? JSON.stringify(value, null, 2) : String(value)
+
+                                return (
+                                  <div key={key} className='flex gap-2'>
+                                    <span className='shrink-0 font-medium text-neutral-500 dark:text-neutral-400'>{key}:</span>
+                                    <span className='break-all text-neutral-800 dark:text-neutral-200'>
+                                      {displayValue}
+                                    </span>
+                                  </div>
+                                )
+                              })
                           ) : (
                             <p className='text-neutral-500 dark:text-neutral-400'>No message data found</p>
                           )}
                         </div>
                       </div>
-                    </div>,
+                    </motion.div>}
+                    </AnimatePresence>,
                     document.body
                   )}
               </div>
@@ -2057,7 +2089,7 @@ const ChatMessage: React.FC<ChatMessageProps> = React.memo(
                 placeholder='Ask a question about the selected text...'
                 width='w-full'
                 minRows={1}
-                maxRows={2}
+                maxRows={3}
                 fontSizeOffset={fontSizeOffset}
                 onKeyDown={e => {
                   if (e.key === 'Enter' && !e.shiftKey) {
@@ -2097,12 +2129,43 @@ const ChatMessage: React.FC<ChatMessageProps> = React.memo(
         <ImageModal
           isOpen={Boolean(selectedArtifactUrl)}
           imageUrl={selectedArtifactUrl ?? ''}
+          overlayZIndex={readOnly ? 1800 : undefined}
           onClose={handleCloseArtifactModal}
         />
       </div>
     )
   }
 )
+
+ChatMessageBody.displayName = 'ChatMessageBody'
+
+// Keep automated notice payloads out of rich bubbles, including shared transcript callers.
+// The stored message remains untouched; only its presentation changes.
+const ChatMessage: React.FC<ChatMessageProps> = React.memo(props => {
+  const message = useSelector((state: RootState) => selectMessageByIdMap(state).get(String(props.id)))
+  if (isImageAttachmentInfoMessage(message)) {
+    return <ImageAttachmentNotice id={`message-${props.id}`}
+      className={`${props.width} ${props.className ?? ''}`} customTheme={props.customTheme}
+      customThemeEnabled={props.customThemeEnabled} isDarkMode={props.isDarkMode} />
+  }
+  if (isWatcherCompletionMessage(message)) {
+    return <WatcherCompletionNotice content={props.content} id={`message-${props.id}`}
+      className={`${props.width} ${props.className ?? ''}`} customTheme={props.customTheme}
+      customThemeEnabled={props.customThemeEnabled} isDarkMode={props.isDarkMode} />
+  }
+  if (message?.note === AUTO_COMPACTION_NOTE) {
+    return (
+      <SummarisedMessage
+        id={`message-${props.id}`}
+        className={`${props.width} ${props.className ?? ''}`}
+        customTheme={props.customTheme}
+        customThemeEnabled={props.customThemeEnabled}
+        isDarkMode={props.isDarkMode}
+      />
+    )
+  }
+  return <ChatMessageBody {...props} />
+})
 
 ChatMessage.displayName = 'ChatMessage'
 

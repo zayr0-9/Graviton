@@ -266,18 +266,6 @@ const formatSize = (size?: number | null) => {
   return `${(kilo / 1024).toFixed(1)} MB`
 }
 
-const formatMemoryUpdatedAt = (value?: string | null) => {
-  if (!value) return 'Not created yet'
-  const timestamp = new Date(value)
-  if (Number.isNaN(timestamp.getTime())) return 'Updated recently'
-  return timestamp.toLocaleString(undefined, {
-    month: 'short',
-    day: 'numeric',
-    hour: '2-digit',
-    minute: '2-digit',
-  })
-}
-
 interface GoogleDriveStatus {
   connected: boolean
   connectedAt: string | null
@@ -300,34 +288,6 @@ interface LocalMergeResult {
   conversations: number
   providerCosts: number
   message?: string
-}
-
-type MemoryFileKind = 'global' | 'recent' | 'project'
-
-interface MemoryFileSummary {
-  id: string
-  kind: MemoryFileKind
-  label: string
-  description?: string
-  projectName?: string | null
-  exists: boolean
-  path?: string | null
-  sizeBytes?: number | null
-  updatedAt?: string | null
-}
-
-interface MemoryFilesResponse {
-  success: boolean
-  files: MemoryFileSummary[]
-  directory?: string
-  error?: string
-}
-
-interface MemoryFileContentResponse {
-  success: boolean
-  file?: MemoryFileSummary | null
-  content: string
-  error?: string
 }
 
 const Settings: React.FC = () => {
@@ -377,7 +337,9 @@ const Settings: React.FC = () => {
   const [providerSettings, setProviderSettings] = useState<ProviderSettings>(() => loadProviderSettings())
   const [braveApiKeyInput, setBraveApiKeyInput] = useState('')
   const [braveApiKeyConfigured, setBraveApiKeyConfigured] = useState(false)
-  const [braveApiKeyLoading, setBraveApiKeyLoading] = useState(import.meta.env.VITE_ENVIRONMENT === 'electron')
+  const [braveApiKeyLoading, setBraveApiKeyLoading] = useState(false)
+  const [braveApiKeyChecked, setBraveApiKeyChecked] = useState(false)
+  const [credentialsConsolidating, setCredentialsConsolidating] = useState(false)
   const [braveApiKeySaving, setBraveApiKeySaving] = useState(false)
   const [zaiApiKeyInput, setZaiApiKeyInput] = useState('')
   const [zaiApiKeyConfigured, setZaiApiKeyConfigured] = useState(false)
@@ -402,14 +364,6 @@ const Settings: React.FC = () => {
   const [lmStudioBaseUrlInput, setLmStudioBaseUrlInput] = useState<string>(() => loadProviderSettings().lmStudioBaseUrl ?? '')
   const [lmStudioBaseUrlTouched, setLmStudioBaseUrlTouched] = useState(false)
   const [memoryBackfillRunning, setMemoryBackfillRunning] = useState(false)
-  const [memoryFiles, setMemoryFiles] = useState<MemoryFileSummary[]>([])
-  const [memoryFilesLoading, setMemoryFilesLoading] = useState(false)
-  const [memoryFilesError, setMemoryFilesError] = useState<string | null>(null)
-  const [selectedMemoryFile, setSelectedMemoryFile] = useState<MemoryFileSummary | null>(null)
-  const [memoryModalOpen, setMemoryModalOpen] = useState(false)
-  const [memoryContent, setMemoryContent] = useState('')
-  const [memoryContentLoading, setMemoryContentLoading] = useState(false)
-  const [memoryContentError, setMemoryContentError] = useState<string | null>(null)
   const [compactionSystemPromptInput, setCompactionSystemPromptInput] = useState<string>(
     () => loadProviderSettings().compactionSystemPrompt
   )
@@ -681,46 +635,42 @@ const Settings: React.FC = () => {
       window.removeEventListener(BROWSER_SETTINGS_CHANGE_EVENT, handleBrowserSettingsChange as EventListener)
   }, [])
 
-  useEffect(() => {
-    if (import.meta.env.VITE_ENVIRONMENT !== 'electron') {
+  const handleLoadBraveApiKey = async () => {
+    setBraveApiKeyLoading(true)
+    try {
+      const value = await readBraveApiKeyFromSecureStore()
+      setBraveApiKeyInput(value ?? '')
+      setBraveApiKeyConfigured(Boolean(value))
+      setBraveApiKeyChecked(true)
+    } catch (error) {
+      showStatus({ type: 'error', text: error instanceof Error ? error.message : 'Could not load the Brave API key. Retry when ready.' })
+    } finally {
       setBraveApiKeyLoading(false)
+    }
+  }
+
+  const handleConsolidateCredentials = async () => {
+    const consolidate = window.electronAPI?.secrets?.consolidate
+    if (!consolidate) {
+      showStatus({ type: 'error', text: 'Credential consolidation is unavailable in this build.' })
       return
     }
-
-    let active = true
-
-    const loadBraveApiKey = async () => {
-      const maxAttempts = 3
-      for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-        try {
-          const value = await readBraveApiKeyFromSecureStore()
-          if (!active) return
-
-          setBraveApiKeyInput(value ?? '')
-          setBraveApiKeyConfigured(Boolean(value))
-          return
-        } catch (error) {
-          if (attempt >= maxAttempts) {
-            if (active) {
-              console.error('Failed to load Brave API key:', error)
-            }
-            return
-          }
-          await new Promise(resolve => setTimeout(resolve, attempt * 200))
-        }
-      }
+    setCredentialsConsolidating(true)
+    try {
+      const result = await consolidate()
+      if (!result.success) throw new Error(result.error || 'Credential consolidation failed.')
+      showStatus({
+        type: result.complete ? 'success' : 'error',
+        text: result.complete
+          ? `Credentials consolidated into one secure vault. Migrated ${result.migrated ?? 0} entries; removed ${result.removed ?? 0} old copies.`
+          : `Credentials saved in the vault, but cleanup is incomplete. ${result.warnings?.join(' ') ?? 'Retry consolidation.'}`,
+      })
+    } catch (error) {
+      showStatus({ type: 'error', text: error instanceof Error ? error.message : 'Credential consolidation failed. Retry when ready.' })
+    } finally {
+      setCredentialsConsolidating(false)
     }
-
-    void loadBraveApiKey().finally(() => {
-      if (active) {
-        setBraveApiKeyLoading(false)
-      }
-    })
-
-    return () => {
-      active = false
-    }
-  }, [])
+  }
 
   useEffect(() => {
     if (import.meta.env.VITE_ENVIRONMENT !== 'electron') {
@@ -1290,6 +1240,7 @@ const Settings: React.FC = () => {
 
       setBraveApiKeyInput(persistedValue)
       setBraveApiKeyConfigured(true)
+      setBraveApiKeyChecked(true)
       showStatus({ type: 'success', text: 'Brave Search API key saved securely.' })
     } catch (error) {
       console.error('Failed to save Brave API key:', error)
@@ -1488,71 +1439,6 @@ const Settings: React.FC = () => {
     setLmStudioBaseUrlTouched(true)
   }
 
-  const loadMemoryFiles = async () => {
-    if (import.meta.env.VITE_ENVIRONMENT !== 'electron') return
-
-    setMemoryFilesLoading(true)
-    setMemoryFilesError(null)
-    try {
-      const response = await localApi.get<MemoryFilesResponse>('/memory/files')
-      const files = Array.isArray(response.files) ? response.files : []
-      setMemoryFiles(
-        [...files].sort((a, b) => {
-          const rank = (file: MemoryFileSummary) => (file.kind === 'global' ? 0 : file.kind === 'recent' ? 1 : 2)
-          const rankDiff = rank(a) - rank(b)
-          if (rankDiff !== 0) return rankDiff
-          if (a.kind === 'project' && b.kind === 'project') {
-            const aUpdated = a.updatedAt ? new Date(a.updatedAt).getTime() : 0
-            const bUpdated = b.updatedAt ? new Date(b.updatedAt).getTime() : 0
-            if (aUpdated !== bUpdated) return bUpdated - aUpdated
-          }
-          return a.label.localeCompare(b.label)
-        })
-      )
-    } catch (error) {
-      console.error('Failed to load memory files:', error)
-      const message = error instanceof Error ? error.message : 'Failed to load memory files.'
-      setMemoryFilesError(message)
-    } finally {
-      setMemoryFilesLoading(false)
-    }
-  }
-
-  const openMemoryFile = async (file: MemoryFileSummary) => {
-    setSelectedMemoryFile(file)
-    setMemoryModalOpen(true)
-    setMemoryContent('')
-    setMemoryContentError(null)
-    setMemoryContentLoading(true)
-
-    try {
-      const response = await localApi.get<MemoryFileContentResponse>(`/memory/file?id=${encodeURIComponent(file.id)}`)
-      setMemoryContent(response.content || '')
-      if (response.file) {
-        setSelectedMemoryFile(response.file)
-      }
-    } catch (error) {
-      console.error('Failed to load memory file:', error)
-      setMemoryContentError(error instanceof Error ? error.message : 'Failed to load memory file.')
-    } finally {
-      setMemoryContentLoading(false)
-    }
-  }
-
-  const closeMemoryModal = () => {
-    setMemoryModalOpen(false)
-    setSelectedMemoryFile(null)
-    setMemoryContent('')
-    setMemoryContentError(null)
-    setMemoryContentLoading(false)
-  }
-
-  const refreshSelectedMemoryFile = async () => {
-    if (!selectedMemoryFile) return
-    await openMemoryFile(selectedMemoryFile)
-    await loadMemoryFiles()
-  }
-
   const handleMemoryBackfill = async () => {
     if (import.meta.env.VITE_ENVIRONMENT !== 'electron') {
       showStatus({ type: 'info', text: 'Memory indexing is only available in the Electron app.' })
@@ -1592,7 +1478,6 @@ const Settings: React.FC = () => {
           ? `Memory backfill finished. Embedded ${result.embedded}/${result.processed} notes${result.failed ? `, ${result.failed} failed` : ''}${result.skipped ? `, ${result.skipped} skipped` : ''}.`
           : 'Memory backfill finished.',
       })
-      await loadMemoryFiles()
     } catch (error) {
       console.error('Failed to backfill memory embeddings:', error)
       showStatus({
@@ -1849,11 +1734,6 @@ const Settings: React.FC = () => {
     if (import.meta.env.VITE_ENVIRONMENT !== 'electron') return
     fetchLocalUsers()
   }, [userId])
-
-  useEffect(() => {
-    if (import.meta.env.VITE_ENVIRONMENT !== 'electron') return
-    loadMemoryFiles()
-  }, [])
 
   const handleDefaultThinkingToggle = () => {
     const updated: ChatReasoningSettings = {
@@ -2152,18 +2032,17 @@ const Settings: React.FC = () => {
   }, [subagentSettings.maxTurns, subagentMaxTurnsTouched])
 
   useEffect(() => {
-    if (!isChangelogOpen && !memoryModalOpen) return
+    if (!isChangelogOpen) return
 
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key === 'Escape') {
         setIsChangelogOpen(false)
-        closeMemoryModal()
       }
     }
 
     window.addEventListener('keydown', handleKeyDown)
     return () => window.removeEventListener('keydown', handleKeyDown)
-  }, [isChangelogOpen, memoryModalOpen])
+  }, [isChangelogOpen])
 
   const handleToolCallTimeoutInputChange = (value: string) => {
     setToolCallTimeoutInput(value)
@@ -2469,29 +2348,6 @@ const Settings: React.FC = () => {
     )
   }
 
-  const globalMemoryFiles = memoryFiles.filter(file => file.kind !== 'project')
-  const projectMemoryFiles = memoryFiles.filter(file => file.kind === 'project')
-
-  const renderMemoryFileButton = (file: MemoryFileSummary) => (
-    <button
-      key={file.id}
-      type='button'
-      onClick={() => openMemoryFile(file)}
-      className='group flex w-full items-center justify-between gap-3 rounded-[1.75rem] bg-white/55 px-4 py-3 text-left backdrop-blur-xl transition hover:-translate-y-0.5 hover:bg-white/75 active:translate-y-0 active:scale-[0.99] dark:bg-white/5 dark:hover:bg-white/10'
-      aria-label={`View ${file.label}`}
-    >
-      <span className='min-w-0'>
-        <span className='block truncate text-sm font-medium text-stone-800 dark:text-stone-100'>{file.label}</span>
-        <span className='mt-0.5 block truncate text-xs text-stone-500 dark:text-stone-400'>
-          {file.description || 'memory file'} • {file.exists ? formatSize(file.sizeBytes) : 'not created'}
-        </span>
-      </span>
-      <span className='shrink-0 text-right text-[11px] text-stone-400 transition group-hover:text-stone-600 dark:text-stone-500 dark:group-hover:text-stone-300'>
-        {formatMemoryUpdatedAt(file.updatedAt)}
-      </span>
-    </button>
-  )
-
   return (
     <div className='h-full overflow-y-auto thin-scrollbar bg-transparent min-h-full'>
       <div className='mx-auto flex max-w-6xl flex-col gap-5 px-4 py-8'>
@@ -2560,59 +2416,6 @@ const Settings: React.FC = () => {
                     {changelogMarkdown}
                   </ReactMarkdown>
                 </div>
-              </div>
-            </div>
-          </div>
-        )}
-
-        {memoryModalOpen && selectedMemoryFile && (
-          <div className='fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4' onClick={closeMemoryModal}>
-            <div
-              className='w-full max-w-4xl max-h-[85vh] overflow-hidden rounded-[2.5rem] bg-white/90 backdrop-blur-xl dark:bg-zinc-900/95'
-              onClick={event => event.stopPropagation()}
-            >
-              <div className='flex items-start justify-between gap-4 px-5 py-4'>
-                <div className='min-w-0'>
-                  <p className='truncate text-sm font-semibold text-stone-900 dark:text-stone-100'>{selectedMemoryFile.label}</p>
-                  <p className='mt-1 truncate text-xs text-stone-500 dark:text-stone-400'>
-                    {selectedMemoryFile.description || 'memory.md'} • {selectedMemoryFile.exists ? formatSize(selectedMemoryFile.sizeBytes) : 'not created'}
-                  </p>
-                </div>
-                <div className='flex shrink-0 items-center gap-2'>
-                  <button
-                    type='button'
-                    onClick={refreshSelectedMemoryFile}
-                    disabled={memoryContentLoading}
-                    className='rounded-full bg-white/70 px-4 py-2 text-xs font-medium text-stone-600 backdrop-blur-xl transition hover:bg-white disabled:opacity-60 dark:bg-white/10 dark:text-stone-300 dark:hover:bg-white/15'
-                  >
-                    Refresh
-                  </button>
-                  <button
-                    type='button'
-                    onClick={closeMemoryModal}
-                    aria-label='Close memory preview'
-                    className='rounded-full p-2 text-stone-600 transition hover:bg-white/70 hover:text-stone-900 dark:text-stone-300 dark:hover:bg-white/10 dark:hover:text-stone-100'
-                  >
-                    <X size={18} strokeWidth={2.25} aria-hidden='true' />
-                  </button>
-                </div>
-              </div>
-              <div className='max-h-[calc(85vh-76px)] overflow-y-auto thin-scrollbar px-5 pb-5'>
-                {memoryContentLoading ? (
-                  <p className='rounded-[1.75rem] bg-white/55 px-4 py-3 text-sm text-stone-500 dark:bg-stone-800/45 dark:text-stone-300'>
-                    Loading memory file…
-                  </p>
-                ) : memoryContentError ? (
-                  <p className='rounded-[1.75rem] bg-rose-50 px-4 py-3 text-sm text-rose-700 dark:bg-rose-900/30 dark:text-rose-200'>
-                    {memoryContentError}
-                  </p>
-                ) : (
-                  <div className='prose prose-sm max-w-none dark:prose-invert prose-headings:font-semibold prose-pre:rounded-lg prose-pre:bg-stone-950'>
-                    <ReactMarkdown remarkPlugins={[remarkGfm, remarkMath]} rehypePlugins={[rehypeHighlight, rehypeKatex]}>
-                      {memoryContent || '_This memory file is empty._'}
-                    </ReactMarkdown>
-                  </div>
-                )}
               </div>
             </div>
           </div>
@@ -3253,11 +3056,11 @@ const Settings: React.FC = () => {
           <SettingsSection
             title='Memory'
             description='Build note embeddings for local memory search using your LM Studio embedding model. This does not run automatically.'
-            features={['Manual indexing', 'Runtime memory files', 'Global memory', 'Project memory']}
+            features={['Note search', 'Markdown auto-memory', 'Cwd-based scope']}
           >
             <div className='flex flex-col gap-4'>
               <div className='rounded-[1.75rem] bg-white/55 px-4 py-3 text-sm text-stone-600 dark:bg-stone-800/40 dark:text-stone-300'>
-                <p className='font-medium text-stone-800 dark:text-stone-100'>Manual memory indexing</p>
+                <p className='font-medium text-stone-800 dark:text-stone-100'>Manual note-summary indexing</p>
                 <p className='mt-1'>
                   This sends note summaries to LM Studio using <code>text-embedding-nomic-embed-text-v1.5</code>, stores the returned vectors in the local sqlite-vec index, and marks indexed notes as ready for hybrid memory search.
                 </p>
@@ -3275,56 +3078,22 @@ const Settings: React.FC = () => {
                 </p>
               </div>
 
-              <div className='mt-2 flex flex-col gap-3'>
-                <div className='flex flex-wrap items-center justify-between gap-3'>
-                  <div>
-                    <p className='text-base font-medium text-stone-900 dark:text-stone-100'>Runtime memory files</p>
-                    <p className='text-sm text-stone-500 dark:text-stone-400'>
-                      View the markdown memory files currently used by local runtime hooks.
-                    </p>
-                  </div>
-                  <Button variant='outline2' size='small' onClick={loadMemoryFiles} disabled={memoryFilesLoading}>
-                    {memoryFilesLoading ? 'Refreshing…' : 'Refresh'}
-                  </Button>
-                </div>
-
-                {memoryFilesError && (
-                  <p className='rounded-[1.75rem] bg-rose-50 px-4 py-3 text-sm text-rose-700 dark:bg-rose-900/30 dark:text-rose-200'>
-                    {memoryFilesError}
-                  </p>
-                )}
-
-                <div className='grid gap-3 md:grid-cols-[minmax(0,0.85fr)_minmax(0,1.15fr)]'>
-                  <div className='rounded-[1.75rem] bg-white/45 p-3 dark:bg-stone-800/25'>
-                    <p className='px-1 pb-2 text-xs font-semibold uppercase tracking-wide text-stone-500 dark:text-stone-400'>
-                      Global
-                    </p>
-                    <div className='flex flex-col gap-2'>
-                      {globalMemoryFiles.length > 0 ? (
-                        globalMemoryFiles.map(renderMemoryFileButton)
-                      ) : (
-                        <p className='px-3 py-2 text-sm text-stone-500 dark:text-stone-400'>No global memory files found.</p>
-                      )}
-                    </div>
-                  </div>
-
-                  <div className='rounded-[1.75rem] bg-white/45 p-3 dark:bg-stone-800/25'>
-                    <p className='px-1 pb-2 text-xs font-semibold uppercase tracking-wide text-stone-500 dark:text-stone-400'>
-                      Project memory
-                    </p>
-                    <div className='max-h-64 overflow-y-auto thin-scrollbar pr-1'>
-                      <div className='flex flex-col gap-2'>
-                        {projectMemoryFiles.length > 0 ? (
-                          projectMemoryFiles.map(renderMemoryFileButton)
-                        ) : (
-                          <p className='px-3 py-2 text-sm text-stone-500 dark:text-stone-400'>
-                            No project memory files found yet.
-                          </p>
-                        )}
-                      </div>
-                    </div>
-                  </div>
-                </div>
+              <div className='rounded-[1.75rem] bg-white/55 px-4 py-3 text-sm text-stone-600 dark:bg-stone-800/40 dark:text-stone-300'>
+                <p className='font-medium text-stone-800 dark:text-stone-100'>Markdown auto-memory</p>
+                <p className='mt-1'>
+                  Each chat uses its working directory or nearest Git root to select a memory directory under
+                  the app data directory: <code>.ygg/memory/projects/&lt;path-slug&gt;/</code>.
+                  Project names and IDs do not select memory.
+                </p>
+                <p className='mt-2'>
+                  The <code>MEMORY.md</code> index loads at conversation start and after compaction
+                  (first 200 lines or 25 KB). Individual fact files are read on demand and updated with normal file tools.
+                  Ask the agent for its exact memory directory. Use <code>autoMemoryDirectory</code> in context settings to share a directory explicitly.
+                </p>
+                <p className='mt-2 text-xs text-stone-500 dark:text-stone-400'>
+                  Legacy memory files are preserved but not auto-loaded. Migrate useful facts into the selected
+                  directory and link them from its index. Note-summary indexing above is separate from auto-memory.
+                </p>
               </div>
             </div>
           </SettingsSection>
@@ -3913,10 +3682,18 @@ const Settings: React.FC = () => {
                 {import.meta.env.VITE_ENVIRONMENT === 'electron' && (
           <SettingsSection
             title='API Keys'
-            description='Store local tool credentials securely in your OS keychain via keytar.'
+            description='Brave and MCP OAuth credentials share one secure OS credential vault.'
             features={['Brave Search key', 'Secure keychain storage', 'Save/remove credentials']}
           >
             <div className='flex flex-col gap-4'>
+              <div className='flex flex-col gap-2'>
+                <p className='text-sm text-stone-500 dark:text-stone-400'>
+                  Move existing Brave and MCP credentials into one Keychain item. macOS may ask permission for each old item during this one-time migration. New credentials use the shared vault automatically.
+                </p>
+                <Button variant='outline2' size='small' onClick={handleConsolidateCredentials} disabled={credentialsConsolidating || braveApiKeyLoading || braveApiKeySaving}>
+                  {credentialsConsolidating ? 'Consolidating…' : 'Consolidate credentials'}
+                </Button>
+              </div>
               <div className='flex flex-col gap-2'>
                 <div className='flex flex-wrap items-center gap-3'>
                   <p className='text-base font-medium text-stone-900 dark:text-stone-100'>Brave Search API Key</p>
@@ -3927,7 +3704,7 @@ const Settings: React.FC = () => {
                         : 'bg-stone-100 border-stone-200 text-stone-600 dark:bg-stone-800 dark:border-stone-700 dark:text-stone-300'
                     }`}
                   >
-                    {braveApiKeyLoading ? 'Loading…' : braveApiKeyConfigured ? 'Configured' : 'Not configured'}
+                    {braveApiKeyLoading ? 'Loading…' : braveApiKeyConfigured ? 'Configured' : braveApiKeyChecked ? 'Not configured' : 'Not checked'}
                   </span>
                 </div>
                 <p className='text-sm text-stone-500 dark:text-stone-400'>
@@ -3945,15 +3722,18 @@ const Settings: React.FC = () => {
                     variant='primary'
                     size='small'
                     onClick={handleSaveBraveApiKey}
-                    disabled={braveApiKeySaving || braveApiKeyLoading || !braveApiKeyInput.trim()}
+                    disabled={braveApiKeySaving || braveApiKeyLoading || credentialsConsolidating || !braveApiKeyInput.trim()}
                   >
                     {braveApiKeySaving ? 'Saving…' : 'Save Brave API Key'}
+                  </Button>
+                  <Button variant='outline2' size='small' onClick={handleLoadBraveApiKey} disabled={braveApiKeySaving || braveApiKeyLoading || credentialsConsolidating}>
+                    Load saved key
                   </Button>
                   <Button
                     variant='outline2'
                     size='small'
                     onClick={handleDeleteBraveApiKey}
-                    disabled={braveApiKeySaving || braveApiKeyLoading || !braveApiKeyConfigured}
+                    disabled={braveApiKeySaving || braveApiKeyLoading || credentialsConsolidating || !braveApiKeyConfigured}
                   >
                     Remove
                   </Button>

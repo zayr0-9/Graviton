@@ -182,6 +182,24 @@ export class DecisionBroker {
     this.sessions.delete(streamId)
   }
 
+  /** Settle only mode-obsolete waits; ordinary approvals and clarify remain independent. */
+  reconcileOperationMode(streamId: string, mode: 'plan' | 'execute', blockedIds: Set<string>): string[] {
+    const cleared: string[] = []
+    const prefix = `${streamId}::`
+    for (const [key, entry] of this.pending) {
+      if (!key.startsWith(prefix)) continue
+      const id = key.slice(prefix.length)
+      if (entry.kind === 'operation_mode_upgrade') {
+        this.resolve(streamId, id, mode === 'execute' ? 'switch_to_execute' : 'deny')
+        cleared.push(id)
+      } else if (entry.kind === 'permission' && mode === 'plan' && blockedIds.has(id)) {
+        this.resolve(streamId, id, 'deny')
+        cleared.push(id)
+      }
+    }
+    return cleared
+  }
+
   hasPending(streamId: string, toolCallId: string): boolean {
     return this.pending.has(keyFor(streamId, toolCallId))
   }

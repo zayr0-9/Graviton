@@ -184,10 +184,7 @@ describe('multiEdit behavior', () => {
       cwd: harness.workspaceDir,
       includeHash: true,
     })
-    const metadataWithoutInode = {
-      ...readResult.metadata,
-      inode: undefined,
-    }
+    const originalMetadata = readResult.metadata
 
     const result = await multiEdit(
       [
@@ -196,7 +193,7 @@ describe('multiEdit behavior', () => {
           operation: 'replace',
           searchPattern: 'alpha',
           replacement: 'ALPHA',
-          expectedMetadata: metadataWithoutInode,
+          expectedMetadata: originalMetadata,
           expectedHash: readResult.contentHash,
         },
         {
@@ -204,7 +201,7 @@ describe('multiEdit behavior', () => {
           operation: 'replace',
           searchPattern: 'beta',
           replacement: 'BETA',
-          expectedMetadata: metadataWithoutInode,
+          expectedMetadata: originalMetadata,
           expectedHash: readResult.contentHash,
         },
       ],
@@ -214,8 +211,8 @@ describe('multiEdit behavior', () => {
     expect(result.success).toBe(true)
     expect(result.applied).toBe(2)
     expect(result.failed).toBe(0)
-    expect(result.results[0]?.validation).toBeUndefined()
-    expect(result.results[1]?.validation).toBeUndefined()
+    expect(result.results[0]?.validation?.valid).toBe(true)
+    expect(result.results[1]?.validation?.valid).toBe(true)
     expect(await harness.readFile('shared.txt')).toBe('ALPHA\nBETA\n')
   })
 })
@@ -896,6 +893,7 @@ describe('editFile layered matching strategies', () => {
     await harness.writeFile('fuzzy-success.txt', 'const status = "ready";\nconsole.log(status);\n')
 
     const result = await editFile('fuzzy-success.txt', 'replace_first', {
+      enableFuzzyMatching: true,
       searchPattern: 'const status = "raedy";\nconsole.log(status);',
       replacement: 'const status = "done";\nconsole.log(status);',
       cwd: harness.workspaceDir,
@@ -915,6 +913,7 @@ describe('editFile layered matching strategies', () => {
     )
 
     const result = await editFile('fuzzy-replace-scope.txt', 'replace', {
+      enableFuzzyMatching: true,
       searchPattern: 'const status = "raedy";\nconsole.log(status);',
       replacement: 'const status = "done";\nconsole.log(status);',
       cwd: harness.workspaceDir,
@@ -956,7 +955,7 @@ describe('editFile layered matching strategies', () => {
 
     expect(result.success).toBe(false)
     expect(result.attemptedStrategies).toContain('exact')
-    expect(result.attemptedStrategies).toContain('fuzzy')
+    expect(result.attemptedStrategies).not.toContain('fuzzy')
     expect(result.message).toContain('Attempted strategies:')
   })
 })
@@ -1095,12 +1094,13 @@ describe('editFile replace regressions on localServer-sized fixture', () => {
     expect(await harness.readFile('fixture-whitespace-noop.ts')).toBe(original)
   })
 
-  it('uses single-span replacement for fuzzy matches in large fixture', async () => {
+  it('fails closed when a large fuzzy search exceeds its work budget', async () => {
     const harness = await createToolFsHarness()
     const original = await fs.readFile(fixturePath, 'utf8')
     await harness.writeFile('fixture-fuzzy-scope.ts', original)
 
     const result = await editFile('fixture-fuzzy-scope.ts', 'replace', {
+      enableFuzzyMatching: true,
       searchPattern:
         "console.log(\n        '[LocalServer] ✅ Bulk insreted',\n        createdMessages.length,\n        'messages into conversation:',\n        conversationId\n      )",
       replacement:
@@ -1110,11 +1110,9 @@ describe('editFile replace regressions on localServer-sized fixture', () => {
 
     const updated = await harness.readFile('fixture-fuzzy-scope.ts')
 
-    expect(result.success).toBe(true)
-    expect(result.matchStrategy).toBe('fuzzy')
-    expect(result.replacements).toBe(1)
-    expect((updated.match(/Bulk inserted \[patched\]/g) || []).length).toBe(1)
-    expect(updated).toContain('[LocalServer] ✅ Bulk inserted')
+    expect(result.success).toBe(false)
+    expect(result.replacements).toBe(0)
+    expect(updated).toBe(original)
   })
 })
 
@@ -1410,7 +1408,8 @@ describe('editFile non-fuzzy replacements on chatActions fixture via read_file w
   it('uses line_ending_normalized when read_file output is converted to LF only', async () => {
     const harness = await createToolFsHarness()
     const targetPath = 'fixture-chatActions-readflow-line-ending.ts'
-    await seedFixture(harness, targetPath)
+    const seeded = await seedFixture(harness, targetPath)
+    await harness.writeFile(targetPath, seeded.replace(/\r?\n/g, '\r\n'))
 
     const rawFromReadFile = await readExecutionModeBlock(harness, targetPath)
     const searchPattern = rawFromReadFile.replace(/\r\n/g, '\n')

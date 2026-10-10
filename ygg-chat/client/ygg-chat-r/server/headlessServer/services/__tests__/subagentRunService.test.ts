@@ -4,6 +4,8 @@ import type { ProviderRouter } from '../providerRouter.js'
 import type { SubagentRunRepo } from '../../persistence/subagentRunRepo.js'
 import type { StreamingRunRepo } from '../../persistence/streamingRunRepo.js'
 import { SubagentRunService, type ResolvedSubagentTools } from '../subagentRunService.js'
+import { createReplDispatchExecutor, ReplSessions } from '../replExecutor.js'
+import type { ToolExecutionContext } from '../toolLoopService.js'
 
 class FakeRunRepo {
   runs = new Map<string, any>()
@@ -227,6 +229,22 @@ async function waitFor(condition: () => boolean, timeoutMs = 1000): Promise<void
 }
 
 describe('SubagentRunService', () => {
+  it.each([
+    ['openaichatgpt', 'priority', 'priority'],
+    ['openaichatgpt', undefined, undefined],
+    ['lmstudio', 'priority', undefined],
+  ] as const)('forwards service tier on every child turn (%s, %s)', async (provider, serviceTier, expected) => {
+    const providerRouter = new FakeProviderRouter()
+    providerRouter.enqueue({ content: '', toolCalls: [{ id: 'read-tier', name: 'read_file', arguments: { path: 'README.md' } }] })
+    providerRouter.enqueue({ content: 'done' })
+    const toolExecutor = vi.fn(async (_call: any, _context: any) => 'read result')
+    const service = buildService({ providerRouter, runRepo: new FakeRunRepo(), streamingRunRepo: new FakeStreamingRunRepo(), toolExecutor })
+    await service.run(baseRequest({ provider, serviceTier }), () => {}, new AbortController().signal)
+    expect(providerRouter.calls).toHaveLength(2)
+    for (const call of providerRouter.calls) expect(call.input.railwayTurn?.serviceTier).toBe(expected)
+    expect(toolExecutor.mock.calls[0][1].serviceTier).toBe(expected)
+  })
+
   it('completes a simple run and records transcript + streaming rows', async () => {
     const providerRouter = new FakeProviderRouter()
     providerRouter.enqueue({ content: 'the final answer' })
@@ -361,13 +379,14 @@ describe('SubagentRunService', () => {
     ])
   })
 
-  it('keeps mcp tools model-visible in plan mode (execution is gated in the tool loop)', async () => {
+  it.each(['plan', 'execute'] as const)('exposes only the manager, not MCP schemas, in %s mode', async operationMode => {
     const providerRouter = new FakeProviderRouter()
     providerRouter.enqueue({ content: 'planned' })
     const runRepo = new FakeRunRepo()
     const streamingRunRepo = new FakeStreamingRunRepo()
     const toolsWithMcp = [
       { name: 'read_file', description: '', inputSchema: {} },
+      { name: 'mcp_manager', description: '', inputSchema: {} },
       { name: 'mcp__server__do', description: '', inputSchema: {} },
     ]
     const service = buildService({
@@ -378,16 +397,11 @@ describe('SubagentRunService', () => {
     })
 
     const events: HeadlessSubagentStreamEvent[] = []
-    await service.run(baseRequest({ operationMode: 'plan' }), event => events.push(event), new AbortController().signal)
+    await service.run(baseRequest({ operationMode }), event => events.push(event), new AbortController().signal)
 
-    // filterToolsForOperationMode is deliberately identity-valued: Agent-only schemas
-    // stay visible so the model can ASK for an Agent-mode upgrade. For a subagent no
-    // upgrade prompt exists (requestOperationModeUpgrade is unset), so ToolLoopService
-    // falls through to assertToolAllowedForOperationMode, which throws on `mcp__*`.
-    // See the plan-mode execution-gate test in operationModeSystemPrompt.test.ts.
     const started = events.find(e => e.type === 'started') as any
-    expect(started.resolvedToolNames).toEqual(['read_file', 'mcp__server__do'])
-    expect(providerRouter.calls[0].input.tools.map((t: any) => t.name)).toEqual(['read_file', 'mcp__server__do'])
+    expect(started.resolvedToolNames).toEqual(['read_file', 'mcp_manager'])
+    expect(providerRouter.calls[0].input.tools.map((t: any) => t.name)).toEqual(['read_file', 'mcp_manager'])
   })
 
   it('marks the run errored when the provider stays empty', async () => {
@@ -512,6 +526,74 @@ describe('SubagentRunService', () => {
     expect(runRepo.getRunById(runId)?.final_response).toBe('async answer')
     // Deregistered from the in-process active-run map once terminal.
     expect(service.isActive(handle!)).toBe(false)
+  })
+
+  it('delivers steering FIFO at a safe boundary and deduplicates retries', async () => {
+    const providerRouter = new FakeProviderRouter()
+    let release!: (value: any) => void
+    providerRouter.enqueue(new Promise(resolve => { release = resolve }))
+    providerRouter.enqueue({ content: 'updated answer' })
+    const runRepo = new FakeRunRepo()
+    const service = buildService({ providerRouter, runRepo, streamingRunRepo: new FakeStreamingRunRepo() })
+    const { handle, runId } = await service.spawnDetached(baseRequest({ autoApprove: false, operationMode: 'plan' }))
+    expect(service.send(handle!, 'First instruction', 'steer-1')?.status).toBe('queued')
+    expect(service.send(handle!, 'First instruction', 'steer-1')?.status).toBe('queued')
+    expect(() => service.send(handle!, 'Different', 'steer-1')).toThrow('already used')
+    service.send(handle!, 'Second instruction', 'steer-2')
+    expect(runRepo.getMessages(runId).filter(row => row.role === 'user')).toHaveLength(1)
+    release({ content: 'old answer' })
+    await service.waitForTerminal(handle!)
+    expect(providerRouter.calls).toHaveLength(2)
+    expect(runRepo.getMessages(runId).map(row => row.content)).toEqual([
+      'do the task', 'old answer', 'First instruction', 'Second instruction', 'updated answer',
+    ])
+    expect(providerRouter.calls[1].input.history.filter((row: any) => row.role === 'user').map((row: any) => row.content))
+      .toEqual(['do the task', 'First instruction', 'Second instruction'])
+    expect(service.getMessageQueue(handle!)?.items.map(row => row.status)).toEqual(['delivered', 'delivered'])
+    expect(service.send(handle!, 'Too late', 'late')).toBeNull()
+    expect(service.send(handle!, 'First instruction', 'steer-1')?.status).toBe('delivered')
+    expect(() => service.send(handle!, 'Changed retry', 'steer-1')).toThrow('already used')
+  })
+
+  it.each(['abort', 'limit', 'error'])('marks pending steering failed on %s', async reason => {
+    const providerRouter = new FakeProviderRouter()
+    let release!: (value: any) => void
+    providerRouter.enqueue(new Promise(resolve => { release = resolve }))
+    const runRepo = new FakeRunRepo()
+    const service = buildService({ providerRouter, runRepo, streamingRunRepo: new FakeStreamingRunRepo() })
+    const { handle, runId } = await service.spawnDetached(baseRequest({ maxTurns: 1 }))
+    expect(() => service.send(handle!, ' ', 'bad')).toThrow('nonblank')
+    expect(() => service.send(handle!, 'valid', '')).toThrow('requestId')
+    service.send(handle!, 'Not delivered', 'steer')
+    if (reason === 'abort') {
+      service.cancel(handle!)
+      expect(service.send(handle!, 'After stop', 'late')).toBeNull()
+    }
+    release(reason === 'error' ? new Error('fatal failure') : { content: 'old answer' })
+    await service.waitForTerminal(handle!)
+    expect(service.getMessageQueue(handle!)?.items[0]).toMatchObject({ status: 'failed', error: expect.any(String) })
+    expect(runRepo.getMessages(runId).some(row => row.content === 'Not delivered')).toBe(false)
+  })
+
+  it('does not deliver steering during an unfinished tool batch', async () => {
+    const providerRouter = new FakeProviderRouter()
+    providerRouter.enqueue({ content: '', toolCalls: [{ id: 'read-1', name: 'read_file', arguments: {} }] })
+    providerRouter.enqueue({ content: 'finished' })
+    let releaseTool!: (value: any) => void
+    const toolResult = new Promise(resolve => { releaseTool = resolve })
+    const runRepo = new FakeRunRepo()
+    const service = buildService({ providerRouter, runRepo, streamingRunRepo: new FakeStreamingRunRepo(),
+      toolExecutor: async () => toolResult })
+    const { handle, runId } = await service.spawnDetached(baseRequest())
+    await waitFor(() => runRepo.getMessages(runId).some(row => row.role === 'assistant'))
+    service.send(handle!, 'After tool', 'steer')
+    expect(runRepo.getMessages(runId).some(row => row.content === 'After tool')).toBe(false)
+    releaseTool('read result')
+    await service.waitForTerminal(handle!)
+    expect(service.getMessageQueue(handle!)?.items[0].status).toBe('delivered')
+    const history = providerRouter.calls[1].input.history
+    expect(history.findIndex((row: any) => row.role === 'tool')).toBeLessThan(
+      history.findIndex((row: any) => row.content === 'After tool'))
   })
 
   it('waitForTerminal blocks without polling and supports multiple waiters', async () => {
@@ -734,6 +816,34 @@ describe('SubagentRunService', () => {
     expect(lastUpsert.metadata).toMatchObject({ subagent_run_id: runId, resumed: true })
   })
 
+  it('appends an optional resume prompt after repaired tool history before inference', async () => {
+    const providerRouter = new FakeProviderRouter()
+    providerRouter.enqueue({ content: 'new answer' })
+    const runRepo = new FakeRunRepo()
+    const service = buildService({ providerRouter, runRepo, streamingRunRepo: new FakeStreamingRunRepo() })
+    const runId = seedTerminatedRun(runRepo, { danglingToolCall: true })
+    const outcome = await service.resumeDetached(runId, baseRequest({ resumePrompt: 'Now focus on tests' }))
+    await service.waitForTerminal(outcome!.handle!)
+    const rows = runRepo.getMessages(runId)
+    expect(rows.filter(row => row.role === 'user').map(row => row.content)).toEqual(['do the task', 'Now focus on tests'])
+    expect(runRepo.getRunById(runId)?.prompt).toBe('do the task')
+    const history = providerRouter.calls[0].input.history
+    expect(history.findIndex((row: any) => row.role === 'tool')).toBeLessThan(
+      history.findIndex((row: any) => row.content === 'Now focus on tests'))
+    expect(providerRouter.calls[0].input.userContent).toBe('Now focus on tests')
+  })
+
+  it('rejects an invalid resume prompt before reopening or changing the transcript', async () => {
+    const runRepo = new FakeRunRepo()
+    const service = buildService({ providerRouter: new FakeProviderRouter(), runRepo,
+      streamingRunRepo: new FakeStreamingRunRepo() })
+    const runId = seedTerminatedRun(runRepo)
+    await expect(service.resumeDetached(runId, baseRequest({ resumePrompt: ' ' }))).rejects.toThrow('nonblank')
+    expect(runRepo.getRunById(runId)?.status).toBe('error')
+    expect(runRepo.getRunById(runId)?.attempt).toBe(0)
+    expect(runRepo.getMessages(runId)).toHaveLength(2)
+  })
+
   it('lets waitForTerminal attach while a resumed attempt is still preparing', async () => {
     const providerRouter = new FakeProviderRouter()
     providerRouter.enqueue({ content: 'resumed after preparation' })
@@ -872,5 +982,48 @@ describe('SubagentRunService', () => {
     expect(runRepo.getRunById(done.id)?.status).toBe('completed')
     // Idempotent: a second sweep finds nothing still running.
     expect(service.reconcileOrphanedRuns()).toBe(0)
+  })
+})
+
+
+describe('SubagentRunService shared branch REPL', () => {
+  it('shares parent and sibling bindings through the real child loop without granting child tools', async () => {
+    const sessions = new ReplSessions()
+    const externalTool = vi.fn(async () => 'should not run')
+    const dispatch = createReplDispatchExecutor(externalTool, sessions)
+    const providerRouter = new FakeProviderRouter()
+    const runRepo = new FakeRunRepo()
+    const contexts: ToolExecutionContext[] = []
+    const service = buildService({
+      providerRouter, runRepo, streamingRunRepo: new FakeStreamingRunRepo(),
+      resolveToolsByName: makeResolver([{ name: 'repl', description: '', inputSchema: {} }]),
+      toolExecutor: async (call, context) => { contexts.push(context); return dispatch(call, context) },
+    })
+    const parent: ToolExecutionContext = { conversationId: 'c1', messageId: 'p1', lineageId: 'content-lineage-1', rootPath: '/project' }
+    let cellId = 0
+    const parentCell = (args: any) => dispatch({ id: `parent-${++cellId}`, name: 'repl', arguments: args }, parent)
+    try {
+      await parentCell({ action: 'exec', code: 'var findings = {parent: 1};' })
+      providerRouter.enqueue({ content: '', toolCalls: [{ id: 'child-write', name: 'repl', arguments: {
+        action: 'exec', code: 'findings.child = findings.parent + 1; var childValue = 42;',
+      } }] })
+      providerRouter.enqueue({ content: '', toolCalls: [{ id: 'restricted', name: 'repl', arguments: {
+        action: 'invoke', tool: 'edit_file', assign: 'denied', args: {},
+      } }] })
+      providerRouter.enqueue({ content: 'done' })
+      await service.run(baseRequest({ rootPath: '/project', autoApprove: false }), () => {}, new AbortController().signal)
+      expect((await parentCell({ action: 'show', variable: 'findings' })).content).toBe('{"parent":1,"child":2}')
+      expect((await parentCell({ action: 'show', variable: 'childValue' })).content).toBe('42')
+      expect((await parentCell({ action: 'show', variable: 'denied' })).content).toContain('not available to this caller')
+      expect(externalTool).not.toHaveBeenCalled()
+      expect(contexts.every(c => c.lineageId === parent.lineageId && c.replOwnerId === 'run-1')).toBe(true)
+      providerRouter.enqueue({ content: '', toolCalls: [{ id: 'sibling-write', name: 'repl', arguments: {
+        action: 'exec', code: 'findings.sibling = childValue;',
+      } }] })
+      providerRouter.enqueue({ content: 'done' })
+      await service.run(baseRequest({ rootPath: '/project' }), () => {}, new AbortController().signal)
+      expect((await parentCell({ action: 'show', variable: 'findings' })).content).toContain('"sibling":42')
+      expect(await parentCell({ action: 'list' })).toMatchObject({ lastWriter: 'run-2' })
+    } finally { sessions.clear() }
   })
 })

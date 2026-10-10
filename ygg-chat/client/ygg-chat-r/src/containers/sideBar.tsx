@@ -80,16 +80,17 @@ const PROJECT_CONVERSATIONS_EXPANSION_TRANSITION = {
 }
 
 const DATE_FORMATTER = new Intl.DateTimeFormat(undefined, { dateStyle: 'medium' })
+const DATE_TIME_FORMATTER = new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' })
 const CONVERSATION_SECTION_DATE_FORMATTER = new Intl.DateTimeFormat('en-GB', {
   day: 'numeric',
   month: 'long',
 })
 
-const formatDate = (value?: string | null) => {
+const formatDate = (value?: string | null, includeTime = false) => {
   if (!value) return null
   const parsedDate = new Date(value)
   if (Number.isNaN(parsedDate.getTime())) return null
-  return DATE_FORMATTER.format(parsedDate)
+  return (includeTime ? DATE_TIME_FORMATTER : DATE_FORMATTER).format(parsedDate)
 }
 
 const formatConversationSectionDate = (date: Date) => {
@@ -468,6 +469,7 @@ const ProjectConversationsPanel: React.FC<ProjectConversationsPanelProps> = memo
               {group.conversations.map(conversation => {
                 const isActive = String(activeConversationId) === String(conversation.id)
                 const isFavorite = favoriteConversationIds.has(conversation.id)
+                const updatedDateLabel = formatDate(conversation.updated_at, true)
                 const isPreviewHighlighted =
                   enableConversationHoverPreview &&
                   hoveredPreviewConversationId != null &&
@@ -505,6 +507,14 @@ const ProjectConversationsPanel: React.FC<ProjectConversationsPanelProps> = memo
                     <div
                       className={`${SIDEBAR_ROW_ACTIONS_OVERLAY_BASE_CLASS} group-hover/conv:pointer-events-auto group-hover/conv:opacity-100`}
                     >
+                      {updatedDateLabel && (
+                        <span
+                          className='px-2 text-[10px] whitespace-nowrap text-neutral-500 dark:text-neutral-400'
+                          style={customThemeEnabled ? { color: getThemeModeColor(customTheme.colors.toolJobsMutedText, isDarkMode) } : undefined}
+                        >
+                          Updated {updatedDateLabel}
+                        </span>
+                      )}
                       {isElectronMode && (
                         <Button
                           variant='outline2'
@@ -1756,6 +1766,7 @@ const SideBar: React.FC<SideBarProps> = ({
                     </div>
                     {group.conversations.map(conv => {
                       const isActive = activeConversationId === conv.id
+                      const updatedDateLabel = formatDate(conv.updated_at, true)
                       const isPreviewHighlighted =
                         enableMiniHoverPreview &&
                         hoveredConversationId != null &&
@@ -1797,6 +1808,14 @@ const SideBar: React.FC<SideBarProps> = ({
                             </div>
                           </button>
                           <div className={`${SIDEBAR_ROW_ACTIONS_OVERLAY_BASE_CLASS} group-hover/fav:pointer-events-auto group-hover/fav:opacity-100`}>
+                            {updatedDateLabel && (
+                              <span
+                                className='px-2 text-[10px] whitespace-nowrap text-neutral-500 dark:text-neutral-400'
+                                style={customThemeEnabled ? { color: getThemeModeColor(customTheme.colors.toolJobsMutedText, isDarkMode) } : undefined}
+                              >
+                                Updated {updatedDateLabel}
+                              </span>
+                            )}
                             {isElectronMode && (
                               <Button
                                 variant='outline2'
@@ -1931,6 +1950,7 @@ const SideBar: React.FC<SideBarProps> = ({
     error: topLevelUserPreviewError,
   } = useLocalTopLevelUserMessages(hoveredPreviewConversationId, shouldShowConversationPreviewPortal)
 
+  // The API projects through generated launch-context roots and returns real prompt IDs.
   const normalizedHoverPreviewSearch = hoverPreviewSearchQuery.trim().toLowerCase()
   const filteredTopLevelUserPreviewMessages = useMemo(() => {
     if (!normalizedHoverPreviewSearch) return topLevelUserPreviewMessages

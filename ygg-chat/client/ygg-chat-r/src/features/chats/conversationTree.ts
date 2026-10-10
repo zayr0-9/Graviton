@@ -1,4 +1,5 @@
 import type { Message, ChatNode } from './chatTypes'
+import { getTreeMessageText } from './summaryPresentation'
 
 const messageId = (message: Pick<Message, 'id'>): string => String(message.id)
 const parentId = (message: Pick<Message, 'parent_id'>): string | null =>
@@ -13,7 +14,7 @@ const compareMessages = (a: Message, b: Message): number => {
 
 const toNode = (message: Message, children: ChatNode[]): ChatNode => ({
   id: messageId(message),
-  message: message.content,
+  message: getTreeMessageText(message),
   sender: message.role === 'user' ? 'user' : message.role === 'ex_agent' ? 'ex_agent' : 'assistant',
   children,
 })

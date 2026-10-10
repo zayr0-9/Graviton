@@ -5,7 +5,7 @@ paths:
 
 # Directory Tool (`directory.ts`)
 
-This helper lives in `client/ygg-chat-r/electron/tools/directory.ts` and exports `extractDirectoryStructure`, a utility that safely walks a directory tree and returns a text-based tree listing. It is used by the Electron surface to answer requests for the contents of a folder while enforcing workspace boundaries and ignoring irrelevant files.
+This helper lives in `client/ygg-chat-r/server/tools/directory.ts` and exports `extractDirectoryStructure`, a utility that safely walks a directory tree and returns a text-based tree listing. It is used by the Electron surface to answer requests for the contents of a folder while enforcing workspace boundaries and ignoring irrelevant files.
 
 ## Main Responsibilities
 
@@ -20,6 +20,13 @@ This helper lives in `client/ygg-chat-r/electron/tools/directory.ts` and exports
    - Non-absolute paths are resolved relative to the workspace root, making it impossible to escape via `../`.
    - On Windows, Linux-style paths are converted to UNC paths via `resolveToWindowsPath` to keep Node.js API compatibility.
    - Final paths are validated with `ensurePathWithinWorkspace`, which rejects any directory that is outside the normalized workspace root.
+
+## Runtime integration
+
+Both registries register `directory` and return `{success, structure, path}`, but
+`shared/builtinToolDefinitions.ts` currently has no model-visible `directory`
+schema. The registries validate against the run workspace; the helper then applies
+its independently detected root, which can reject a directory allowed by the run.
 
 ## Usage Options (`DirectoryOptions`)
 
@@ -54,8 +61,8 @@ This helper lives in `client/ygg-chat-r/electron/tools/directory.ts` and exports
 
 ## Security Considerations
 
-- Path normalization ensures that even symbolic references or UNC paths are checked against the workspace root.
-- Root-level access is blocked and any attempt to specify `.`/`./` resolves to the workspace root itself.
+- Containment is lexical, not canonical. Traversal follows directory symlinks without rechecking targets; symlink escapes and cycles are not prevented.
+- Explicit filesystem-root paths are blocked; `.`/`./` resolves directly to the helper's detected workspace root.
 - Hidden files are opt-in only, limiting accidental exposure of dotfiles.
 
 ## Example
@@ -70,11 +77,10 @@ console.log(tree)
 The returned string looks like:
 
 ```
-client/
-  docs/
-    README.md (12.5KB)
-  src/
-    index.ts (8.3KB)
+docs/
+  README.md (12.5KB)
+src/
+  index.ts (8.3KB)
 ```
 
 This string is what the frontend displays when a user requests the contents of a directory.

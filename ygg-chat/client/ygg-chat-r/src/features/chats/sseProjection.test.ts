@@ -501,28 +501,31 @@ describe('projectServerEvent', () => {
       ctx
     )
     expect(types(a)).toEqual([
+      chatSliceActions.streamCompactionUpdated.type,
       chatSliceActions.streamChunkReceived.type,
       chatSliceActions.messageAdded.type,
       chatSliceActions.messageBranchCreated.type,
       chatSliceActions.streamLineageUpdated.type,
     ])
-    expect(chunkOf(a)).toMatchObject({ type: 'notice', code: 'compacting' })
-    expect((a[2].payload as any).newMessage.id).toBe('summary-1')
-    expect((a[3].payload as any)).toMatchObject({ streamId: 'stream-1', branchAnchorMessageId: 'summary-1' })
+    expect(a[0].payload).toEqual({ streamId: 'stream-1', status: 'completed' })
+    expect(chunkOf(a.slice(1))).toMatchObject({ type: 'notice', code: 'compacting' })
+    expect((a[3].payload as any).newMessage.id).toBe('summary-1')
+    expect((a[4].payload as any)).toMatchObject({ streamId: 'stream-1', branchAnchorMessageId: 'summary-1' })
   })
 
   // The server emits its own `notice{code:'compacting'}` beside this frame, so projecting a
   // second one here would explain the same pause twice. `completed` (below) IS ours — the
   // server sends nothing for it.
-  it('compaction started is a no-op — the server announces the pause itself', () => {
+  it('compaction started updates stream-local status without duplicating the server notice', () => {
     const a = projectServerEvent(partial({ type: 'context_compaction', status: 'started' }), ctx)
-    expect(a).toEqual([])
+    expect(a).toEqual([chatSliceActions.streamCompactionUpdated({ streamId: 'stream-1', status: 'started' })])
   })
 
   it('compaction completed with no summary row still projects the notice', () => {
     const a = projectServerEvent(partial({ type: 'context_compaction', status: 'completed' }), ctx)
-    expect(types(a)).toEqual([chatSliceActions.streamChunkReceived.type])
-    expect(chunkOf(a)).toMatchObject({ type: 'notice', code: 'compacting' })
+    expect(types(a)).toEqual([chatSliceActions.streamCompactionUpdated.type, chatSliceActions.streamChunkReceived.type])
+    expect(a[0].payload).toEqual({ streamId: 'stream-1', status: 'completed' })
+    expect(chunkOf(a.slice(1))).toMatchObject({ type: 'notice', code: 'compacting' })
   })
 
   it('compaction failed projects a real, non-terminal error carrying its detail', () => {
@@ -530,8 +533,9 @@ describe('projectServerEvent', () => {
       partial({ type: 'context_compaction', status: 'failed', error: 'summariser returned empty' }),
       ctx
     )
-    expect(types(a)).toEqual([chatSliceActions.streamChunkReceived.type])
-    const chunk = chunkOf(a)
+    expect(types(a)).toEqual([chatSliceActions.streamCompactionUpdated.type, chatSliceActions.streamChunkReceived.type])
+    expect(a[0].payload).toEqual({ streamId: 'stream-1', status: 'failed' })
+    const chunk = chunkOf(a.slice(1))
     expect(chunk).toMatchObject({ type: 'error', terminal: false })
     expect(chunk.errorEnvelope.code).toBe('compaction_failed')
     expect(chunk.errorEnvelope.action).toMatchObject({ kind: 'compact' })

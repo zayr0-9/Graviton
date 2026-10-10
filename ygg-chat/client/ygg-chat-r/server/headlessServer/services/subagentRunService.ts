@@ -16,6 +16,8 @@ import type { RunSession, RunSessionRegistry } from './runSessionRegistry.js'
 import { ProviderRouter } from './providerRouter.js'
 import type { GenerateCompactionSummaryInput } from './compactionService.js'
 import { SubagentTranscriptSink } from './subagentTranscriptSink.js'
+import { MessageInputQueue } from './messageInputQueue.js'
+import type { MessageQueueSnapshot, QueuedMessageView } from '../../../../../shared/queuedMessages.js'
 import {
   ProviderEmptyResponseError,
   ProviderErrorAssistantResponse,
@@ -163,6 +165,8 @@ export class SubagentRunService {
   private readonly runSessions?: RunSessionRegistry
   /** handle -> live detached attempt, shared by cancel(handle) and waitForTerminal(handle). */
   private readonly activeRuns = new Map<string, ActiveSubagentRun>()
+  /** Retain bounded terminal mailboxes so status/wait can report undelivered instructions. */
+  private readonly inputQueues = new Map<string, MessageInputQueue>()
 
   constructor(deps: SubagentRunServiceDeps) {
     this.runRepo = deps.runRepo ?? new SubagentRunRepo({ statements: deps.statements })
@@ -240,6 +244,7 @@ export class SubagentRunService {
     const active = this.activeRuns.get(handle)
     if (!active) return false
     active.controller.abort()
+    this.inputQueues.get(handle)?.failRemaining('Subagent aborted before delivery')
     return true
   }
 
@@ -327,6 +332,10 @@ export class SubagentRunService {
     runId: string,
     request: HeadlessSubagentStreamRequest
   ): Promise<{ handle: string | null; runId: string; streamId: string } | null> {
+    if (request.resumePrompt !== undefined &&
+      (typeof request.resumePrompt !== 'string' || !request.resumePrompt.trim() || request.resumePrompt.length > 200_000)) {
+      throw new Error('subagent_manager resume: prompt must be nonblank and at most 200000 characters.')
+    }
     // Reopen first, then immediately reserve the handle's lifecycle entry before
     // any asynchronous preparation. A concurrent waiter can now attach during
     // token refresh/tool resolution instead of observing a running row with no
@@ -353,7 +362,7 @@ export class SubagentRunService {
       throw error
     }
 
-    void this.driveRun(prepared.prepared, request, NOOP_EMIT, controller.signal, prepared.resumeState)
+    void this.driveRun(prepared.prepared, request, NOOP_EMIT, controller.signal, prepared.resumeState, true)
       .catch(error => this.persistUnexpectedFailure(prepared.prepared, error))
       .finally(() => {
         settleCompletion()
@@ -371,7 +380,7 @@ export class SubagentRunService {
   ): void {
     const controller = new AbortController()
     let entry!: ActiveSubagentRun
-    const completion = this.driveRun(prepared, request, NOOP_EMIT, controller.signal, resumeState)
+    const completion = this.driveRun(prepared, request, NOOP_EMIT, controller.signal, resumeState, true)
       .catch(error => this.persistUnexpectedFailure(prepared, error))
       .finally(() => {
         if (prepared.handle && this.activeRuns.get(prepared.handle) === entry) {
@@ -414,6 +423,27 @@ export class SubagentRunService {
   /** Resolve a run by its 6-digit handle (manager status/cancel/resume ownership checks). */
   getRunByHandle(handle: string): SubagentRunRow | null {
     return this.runRepo.getRunByHandle(handle)
+  }
+
+  /** Intake is synchronous with queue closure, so a completion race cannot lose a send. */
+  send(handle: string, message: string, requestId: string): QueuedMessageView | null {
+    if (typeof message !== 'string' || !message.trim() || message.length > 200_000) {
+      throw new Error('subagent_manager send: message must be nonblank and at most 200000 characters.')
+    }
+    if (typeof requestId !== 'string' || !requestId.trim() || requestId.length > 128) {
+      throw new Error('subagent_manager send: requestId must be nonblank and at most 128 characters.')
+    }
+    const active = this.activeRuns.get(handle)
+    const queue = this.inputQueues.get(handle)
+    // A retried receipt remains idempotent even if the child has since finished.
+    // enqueue validates the identical payload before checking the closed flag.
+    if (queue?.get(requestId)) return { ...queue.enqueue({ requestId, content: message }, 0) }
+    if (!active || active.controller.signal.aborted || !queue || queue.closed) return null
+    return { ...queue.enqueue({ requestId, content: message }, 0) }
+  }
+
+  getMessageQueue(handle: string): MessageQueueSnapshot | null {
+    return this.inputQueues.get(handle)?.snapshot() ?? null
   }
 
   /** Runs owned by a content lineage (+ optional status) — backs the manager's branch-scoped list. */
@@ -462,12 +492,7 @@ export class SubagentRunService {
       const denied = new Set(request.disallowedTools)
       tools = tools.filter(tool => !denied.has(tool.name) && !(denied.has('mcp__*') && tool.name.startsWith('mcp__')))
     }
-    if (operationMode === 'plan') {
-      tools = filterToolsForOperationMode(
-        tools.map(tool => ({ ...tool, isMcp: tool.name.startsWith('mcp__') })),
-        'plan'
-      )
-    }
+    tools = filterToolsForOperationMode(tools, operationMode)
     const resolvedToolNames = tools.map(tool => tool.name)
 
     const run = this.runRepo.createRun({
@@ -617,12 +642,7 @@ export class SubagentRunService {
       const denied = new Set(request.disallowedTools)
       tools = tools.filter(tool => !denied.has(tool.name) && !(denied.has('mcp__*') && tool.name.startsWith('mcp__')))
     }
-    if (operationMode === 'plan') {
-      tools = filterToolsForOperationMode(
-        tools.map(tool => ({ ...tool, isMcp: tool.name.startsWith('mcp__') })),
-        'plan'
-      )
-    }
+    tools = filterToolsForOperationMode(tools, operationMode)
     const resolvedToolNames = tools.map(tool => tool.name)
 
     // Fresh streaming row for this attempt: new streamId, same content ownership.
@@ -661,6 +681,13 @@ export class SubagentRunService {
     this.publishToSession(subStreamId, startedEvent)
     emit(startedEvent)
 
+    // Append, never replace, the original task and saved tool history. Only after
+    // preparation succeeds so a failed preparation does not duplicate new instructions.
+    if (request.resumePrompt !== undefined) {
+      messages.push(this.runRepo.appendMessage(runId, {
+        role: 'user', content: request.resumePrompt, contentBlocks: [],
+      }))
+    }
     const tailMessage = messages.length > 0 ? messages[messages.length - 1] : null
     const prepared: PreparedSubagentRun = {
       runId,
@@ -677,7 +704,7 @@ export class SubagentRunService {
     }
     const resumeState: ResumeState = {
       history: messages,
-      userContent: '',
+      userContent: request.resumePrompt ?? '',
       assistantParentId: tailMessage?.id ?? null,
       priorTurns,
     }
@@ -689,7 +716,8 @@ export class SubagentRunService {
     request: HeadlessSubagentStreamRequest,
     emit: (event: HeadlessSubagentStreamEvent) => void,
     signal: AbortSignal,
-    resume?: ResumeState
+    resume?: ResumeState,
+    controllable = false
   ): Promise<void> {
     const { runId, subStreamId, userMessage, provider, modelName, operationMode, maxTurns, tools } = prepared
 
@@ -709,6 +737,44 @@ export class SubagentRunService {
       emit(event)
     }
 
+    // Only detached manager attempts have a controllable mailbox. Blocking/direct
+    // callers retain their existing behavior and lifetime.
+    const inputQueue = prepared.handle && controllable
+      ? new MessageInputQueue(subStreamId, request.conversationId, request.lineageId ?? null,
+          snapshot => publishAndEmit({ type: 'message_queue_updated', snapshot }))
+      : null
+    if (inputQueue && prepared.handle) {
+      this.inputQueues.set(prepared.handle, inputQueue)
+      const terminalHandles = [...this.inputQueues.keys()].filter(handle =>
+        handle !== prepared.handle && !this.activeRuns.has(handle))
+      for (const handle of terminalHandles.slice(0, Math.max(0, terminalHandles.length - 100))) {
+        this.inputQueues.delete(handle)
+      }
+    }
+    const flushQueuedMessages = inputQueue ? async (parentId: string | null) => {
+      const rows: any[] = []
+      let parent = parentId
+      let entry = inputQueue.claim()
+      while (entry) {
+        try {
+          signal.throwIfAborted()
+          const row = { ...this.runRepo.appendMessage(runId, {
+            role: 'user', content: entry.submission.content, contentBlocks: [],
+          }), parent_id: parent, conversation_id: request.conversationId }
+          rows.push(row)
+          parent = row.id
+          inputQueue.settle(entry.submission.requestId, { messageId: row.id })
+          publishAndEmit({ type: 'queued_user_message_persisted', message: row,
+            requestId: entry.submission.requestId, streamId: subStreamId, lineageId: request.lineageId ?? null })
+        } catch (error) {
+          inputQueue.settle(entry.submission.requestId, { error: error instanceof Error ? error.message : String(error) })
+          if (signal.aborted || isAbortError(error)) throw error
+        }
+        entry = inputQueue.claim()
+      }
+      return { rows, delivered: rows.length }
+    } : undefined
+
     let turnsUsed = priorTurns
     let toolCallsUsed = 0
     const toolsExecuted: Array<{ name: string; success: boolean }> = []
@@ -724,7 +790,13 @@ export class SubagentRunService {
       }
       toolCallsUsed += 1
       try {
-        const result = await this.toolExecutor(toolCall, { ...context, nestedExecutor: countingExecutor })
+        const result = await this.toolExecutor(toolCall, {
+          ...context, nestedExecutor: context.nestedExecutor ?? countingExecutor, replOwnerId: runId,
+          // The child loop omits parent lineage; restore only trusted request ownership
+          // for the shared REPL. Direct HTTP child requests deliberately have none.
+          lineageId: request.lineageId ?? null,
+          allowedToolNames: new Set(tools.map(tool => tool.name)),
+        })
         toolsExecuted.push({ name: toolCall.name, success: true })
         return result
       } catch (error) {
@@ -737,6 +809,7 @@ export class SubagentRunService {
     const transcriptCompactor: ToolLoopCompactor = async input => {
       const summaryText = await this.compactionService.generateCompactionSummary({
         messages: input.messages,
+        signal: input.signal,
         provider: input.provider,
         modelName: input.modelName,
         userId: input.userId,
@@ -781,6 +854,7 @@ export class SubagentRunService {
           systemPrompt: request.systemPrompt ?? null,
           temperature: request.temperature,
           reasoningConfig: request.reasoningEffort ? { effort: request.reasoningEffort } : undefined,
+          serviceTier: provider === 'openaichatgpt' ? request.serviceTier : undefined,
           userId: request.userId ?? null,
           authSessionId: request.authSessionId,
           accessToken: request.accessToken ?? null,
@@ -788,6 +862,7 @@ export class SubagentRunService {
           tools,
           streamId: subStreamId,
           rootPath: request.rootPath ?? null,
+          fullAccess: request.fullAccess === true,
           operationMode,
           toolTimeoutMs: request.toolTimeoutMs,
           maxTurns: effectiveMaxTurns,
@@ -800,10 +875,13 @@ export class SubagentRunService {
           compactionProvider: provider,
           compactionModelName: modelName,
           robustness: { retryEmptyTurn: true, finalizeOnSilentToolEnd: true, retryProviderError: true },
+          flushQueuedMessages,
+          closeInputQueue: inputQueue ? () => inputQueue.tryClose() : undefined,
         },
         (event: HeadlessStreamEvent) => publishAndEmit(event)
       )
 
+      inputQueue?.failRemaining('Subagent completed before delivery (turn budget exhausted)')
       turnsUsed = priorTurns + result.turnsUsed
       const finalText = stripThinkingWrapper(result.finalAssistantMessage?.content ?? '')
 
@@ -828,6 +906,8 @@ export class SubagentRunService {
         stats: { turnsUsed, maxTurns, toolCallsUsed, toolsExecuted },
       })
     } catch (error) {
+      inputQueue?.failRemaining(signal.aborted || isAbortError(error)
+        ? 'Subagent aborted before delivery' : 'Subagent failed before delivery')
       if (signal.aborted || isAbortError(error)) {
         this.runRepo.updateRun(runId, {
           status: 'aborted',

@@ -203,7 +203,7 @@ export const MonacoGitDiffPane: React.FC<MonacoGitDiffPaneProps> = ({
         }
       `}</style>
       <div className='flex items-center gap-2 border-b border-neutral-200 px-2 py-2 dark:border-neutral-800'>
-        <div className='flex min-w-0 flex-1 items-center gap-1 overflow-x-auto'>
+        <div className='flex min-w-0 flex-1 items-center gap-1 overflow-x-auto overflow-y-hidden thin-scrollbar'>
           {tabs.map(tab => {
             const isActive = tab.id === activeTabId
             const kindLabel = getDockTabKindLabel(tab.kind)
@@ -221,7 +221,7 @@ export const MonacoGitDiffPane: React.FC<MonacoGitDiffPaneProps> = ({
                     onSelectTab(tab.id)
                   }
                 }}
-                className={`group flex min-w-0 max-w-[240px] cursor-pointer items-center gap-2 rounded-xl border px-3 py-1.5 text-xs transition-colors ${getDockTabToneClasses(tab.kind, isActive)}`}
+                className={`group flex w-[240px] min-w-0 shrink-0 cursor-pointer items-center gap-2 rounded-xl border px-3 py-1.5 text-xs transition-colors ${getDockTabToneClasses(tab.kind, isActive)}`}
                 title={tab.title || tab.label}
               >
                 <div className='flex min-w-0 flex-1 items-center gap-2 text-left'>
@@ -229,8 +229,8 @@ export const MonacoGitDiffPane: React.FC<MonacoGitDiffPaneProps> = ({
                     className={`h-2 w-2 flex-shrink-0 rounded-full ${getDockTabIndicatorClasses(tab.kind, tab.isDirty)}`}
                   />
                   <span className='truncate'>{tab.label}</span>
-                  {kindLabel ? <span className='text-[10px] opacity-70'>{kindLabel}</span> : null}
-                  {tab.isSaving ? <span className='text-[10px] opacity-70'>Saving…</span> : null}
+                  {kindLabel ? <span className='shrink-0 whitespace-nowrap text-[10px] opacity-70'>{kindLabel}</span> : null}
+                  {tab.isSaving ? <span className='shrink-0 whitespace-nowrap text-[10px] opacity-70'>Saving…</span> : null}
                 </div>
                 <button
                   type='button'
@@ -238,7 +238,7 @@ export const MonacoGitDiffPane: React.FC<MonacoGitDiffPaneProps> = ({
                     event.stopPropagation()
                     onCloseTab(tab.id)
                   }}
-                  className='rounded p-0.5 text-neutral-400 transition-colors hover:bg-neutral-200 hover:text-neutral-700 dark:hover:bg-neutral-700 dark:hover:text-neutral-100'
+                  className='shrink-0 rounded p-0.5 text-neutral-400 transition-colors hover:bg-neutral-200 hover:text-neutral-700 dark:hover:bg-neutral-700 dark:hover:text-neutral-100'
                   aria-label={`Close ${tab.label}`}
                   title='Close tab'
                 >

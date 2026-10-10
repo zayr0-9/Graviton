@@ -25,6 +25,7 @@ export interface ServerLoopToolInput {
   description?: string
   inputSchema?: Record<string, any>
   enabled?: boolean
+  isMcp?: boolean
 }
 
 export interface BuildServerLoopRequestParams {
@@ -39,9 +40,9 @@ export interface BuildServerLoopRequestParams {
   /** branch: the message branched FROM; edit: the message being edited. Required for those ops. */
   messageId?: string | null
   operationMode: 'plan' | 'execute'
-  /** Selected baseline for this request's current operation mode. */
+  /** Stable combined Chat/Agent baseline (mode is announced in transcript messages). */
   operationModePrompt?: string | null
-  /** Agent baseline retained for a possible Plan-to-Agent upgrade. */
+  /** Legacy request field; new clients send only the combined operationModePrompt. */
   agentModePrompt?: string | null
   /** Baseline inherited by server-owned subagent tool calls. */
   subagentModePrompt?: string | null
@@ -52,6 +53,7 @@ export interface BuildServerLoopRequestParams {
   subagentReasoningEffort?: 'low' | 'medium' | 'high' | 'xhigh'
   imageConfig?: unknown
   rootPath?: string | null
+  fullAccess?: boolean
   conversationContext?: string | null
   projectContext?: string | null
   storageMode?: string
@@ -87,8 +89,8 @@ export interface BuildServerLoopRequestParams {
    */
   temperature?: number
   /**
-   * Phase 4 (openrouter/cloud route): the paid-tier service tier. The shims pass it
-   * only for openrouter, so the lmstudio/zai body never gains this field.
+   * Optional priority service tier for Codex and the OpenRouter/cloud route.
+   * Other provider shims omit it, so their request bodies remain unchanged.
    */
   serviceTier?: 'priority'
   /**
@@ -127,7 +129,7 @@ function shapeTools(tools?: ServerLoopToolInput[]): Array<{ name: string; descri
   // the server does NOT substitute defaults and auto-run tools the user disabled.
   if (!Array.isArray(tools)) return undefined
   return tools
-    .filter(t => t.enabled !== false)
+    .filter(t => t.enabled !== false && !t.isMcp && !t.name.startsWith('mcp__'))
     .map(t => ({
       name: t.name,
       description: t.description,
@@ -174,6 +176,7 @@ export function buildServerLoopRequest(operation: ServerLoopOperation, params: B
     subagentReasoningEffort: params.subagentReasoningEffort,
     imageConfig: params.imageConfig,
     rootPath: params.rootPath ?? null,
+    fullAccess: params.fullAccess === true,
     cwd: params.rootPath ?? null,
     conversationContext: params.conversationContext ?? null,
     projectContext: params.projectContext ?? null,
