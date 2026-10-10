@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 
-const mocks = vi.hoisted(() => ({ bash: vi.fn(), powershell: vi.fn(), html: vi.fn(), glob: vi.fn(), ripgrep: vi.fn(), post: vi.fn(), receive: undefined as undefined | ((message: unknown) => void) }))
+const mocks = vi.hoisted(() => ({ bash: vi.fn(), powershell: vi.fn(), html: vi.fn(), glob: vi.fn(), ripgrep: vi.fn(), read: vi.fn(), continuation: vi.fn(), readFiles: vi.fn(), post: vi.fn(), receive: undefined as undefined | ((message: unknown) => void) }))
 vi.mock('../../bash.js', () => ({ runBashCommand: mocks.bash }))
 vi.mock('../../powershell.js', () => ({ runPowerShellCommand: mocks.powershell }))
 vi.mock('../../createFile.js', () => ({ createTextFile: vi.fn() }))
@@ -9,8 +9,8 @@ vi.mock('../../directory.js', () => ({ extractDirectoryStructure: vi.fn() }))
 vi.mock('../../editFile.js', () => ({ editFile: vi.fn(), multiEdit: vi.fn() }))
 vi.mock('../../glob.js', () => ({ globSearch: mocks.glob }))
 vi.mock('../../htmlRenderer.js', () => ({ default: { run: mocks.html } }))
-vi.mock('../../readFile.js', () => ({ readFileContinuation: vi.fn(), readTextFile: vi.fn() }))
-vi.mock('../../readFiles.js', () => ({ formatReadFilesContent: vi.fn(), readMultipleTextFiles: vi.fn() }))
+vi.mock('../../readFile.js', () => ({ readFileContinuation: mocks.continuation, readTextFile: mocks.read }))
+vi.mock('../../readFiles.js', () => ({ formatReadFilesResult: vi.fn(), readMultipleTextFiles: mocks.readFiles }))
 vi.mock('../../ripgrep.js', () => ({ ripgrepSearch: mocks.ripgrep }))
 vi.mock('../../viewImage.js', () => ({ viewImage: vi.fn() }))
 vi.mock('../../streamUndoManager.js', () => ({ recordPreEditBackup: vi.fn(), recordToolEditSuccess: vi.fn() }))
@@ -88,4 +88,23 @@ it('forwards raw HTML paths with rootPath as a base, without workspace validatio
     args: { path: 'page.html', cwd: '/another/base' }, options: { rootPath: '/workspace' } })
   await vi.advanceTimersByTimeAsync(0)
   expect(mocks.html).toHaveBeenLastCalledWith({ path: 'page.html', cwd: '/another/base', html: undefined, allowUnsafe: undefined })
+})
+
+
+it('forwards trusted workspace and request cancellation to all read tools', async () => {
+  mocks.read.mockResolvedValue({ content: 'one' })
+  mocks.continuation.mockResolvedValue({ content: 'two' })
+  mocks.readFiles.mockResolvedValue([])
+  for (const toolName of ['read_file', 'read_file_continuation', 'read_files']) {
+    mocks.receive!({ type: 'execute_tool', requestId: toolName, toolName,
+      args: { path: '../file', paths: ['../file'], cwd: 'src', maxBytes: 12, afterLine: 0, numLines: 2,
+        workspaceRoot: '/untrusted', signal: 'untrusted', deadlineMs: 1 },
+      options: { rootPath: '/workspace', deadlineMs: 123 } })
+  }
+  await vi.advanceTimersByTimeAsync(0)
+  const expected = expect.objectContaining({ cwd: '/workspace/src', workspaceRoot: '/workspace',
+    maxBytes: 12, deadlineMs: 123, signal: expect.any(AbortSignal) })
+  expect(mocks.read).toHaveBeenCalledWith('../file', expected)
+  expect(mocks.continuation).toHaveBeenCalledWith('../file', 0, 2, expected)
+  expect(mocks.readFiles).toHaveBeenCalledWith(['../file'], expected)
 })

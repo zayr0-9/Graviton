@@ -20,7 +20,8 @@ vi.mock('../../helpers/longTermMemorySettingsStorage', () => ({ loadLongTermMemo
 import type { RootState } from '../../store/store'
 import type { Message } from './chatTypes'
 import chatReducer, { chatSliceActions } from './chatSlice'
-import { editMessageWithBranching, readServerLoopRejection } from './chatActions'
+import { editMessageWithBranching, readServerLoopRejection, sendMessage, sendMessageToBranch } from './chatActions'
+import { prepareImageFiles } from './imagePreparation'
 import { runServerChatLoop } from './mainChatClient'
 import { createStreamingRun, finishStreamingRun } from './streamRunTracking'
 import { localApi } from '../../utils/api'
@@ -57,15 +58,16 @@ const setup = (live: Message[], cached: Message[]) => {
   const queryClient = new QueryClient()
   queryClient.setQueryData(['conversations', 'c1', 'messages'], { messages: cached, tree: null })
   const actions: any[] = []
-  const dispatch = (action: any) => {
+  const dispatch: any = (action: any) => {
+    if (typeof action === 'function') return action(dispatch, () => ({ ...state }), { queryClient, auth: { accessToken: null, userId: 'user' } })
     actions.push(action)
     state.chat = chatReducer(state.chat, action)
     return action
   }
   const fork = (id: string = 'u1') => editMessageWithBranching({
     conversationId: 'c1', originalMessageId: id, newContent: 'Forked prompt', modelOverride: 'test-model', streamId: 'branch-B', think: false,
-  })(dispatch, () => state, { queryClient, auth: { accessToken: null, userId: 'user' } })
-  return { state, actions, fork, queryClient }
+  })(dispatch, () => ({ ...state }), { queryClient, auth: { accessToken: null, userId: 'user' } })
+  return { state, actions, fork, queryClient, dispatch }
 }
 
 beforeEach(() => {
@@ -76,10 +78,47 @@ afterEach(() => {
   vi.clearAllTimers()
   vi.useRealTimers()
   vi.restoreAllMocks()
+  vi.unstubAllGlobals()
   vi.clearAllMocks()
 })
 
 describe('editMessageWithBranching live source resolution', () => {
+  it.each(['send', 'branch', 'edit'] as const)('%s waits for new image preparation before snapshotting and preserves it until accepted', async operation => {
+    vi.useRealTimers()
+    const { dispatch, state } = setup([message('u1')], [])
+    let reader: any
+    vi.stubGlobal('FileReader', class {
+      result = 'data:image/png;base64,aQ=='
+      onload?: () => void
+      readAsDataURL() { reader = this }
+    })
+    let save!: (value: any) => void
+    const saved = { attachments: [{ id: 'prepared', file_path: '/image.png', sha256: 'hash' }] }
+    vi.spyOn(localApi, 'post').mockImplementationOnce(() => new Promise(resolve => { save = resolve }))
+      .mockResolvedValue(saved)
+    const target = operation === 'send' ? { kind: 'composer' as const } : { kind: 'branch' as const, messageId: 'u1' }
+    const preparing = dispatch(prepareImageFiles([{ name: 'a.png', type: 'image/png', size: 1 } as File], target))
+    const common = { conversationId: 'c1', think: false, streamId: `image-${operation}` }
+    const running = dispatch(operation === 'send'
+      ? sendMessage({ ...common, parent: 'u1', repeatNum: 1, input: { content: 'inspect', modelOverride: 'test' } })
+      : operation === 'branch'
+        ? sendMessageToBranch({ ...common, parentId: 'u1', content: 'inspect', modelOverride: 'test' })
+        : editMessageWithBranching({ ...common, originalMessageId: 'u1', newContent: 'inspect', modelOverride: 'test' }))
+    expect(runServerChatLoop).not.toHaveBeenCalled()
+    reader.onload()
+    await vi.waitFor(() => expect(save).toBeTypeOf('function'))
+    expect(runServerChatLoop).not.toHaveBeenCalled()
+    vi.mocked(runServerChatLoop).mockImplementation(async (params, deps) => {
+      expect(params.request.attachmentsBase64).toEqual([expect.objectContaining({ attachmentId: 'prepared', dataUrl: reader.result })])
+      expect(state.chat.composition.imageDrafts).toHaveLength(1)
+      deps.onUserMessagePersisted?.()
+      expect(state.chat.composition.imageDrafts).toEqual([])
+      return { messageId: null, userMessage: null, providerError: false }
+    })
+    save(saved)
+    await preparing
+    expect((await running).meta.requestStatus).toBe('fulfilled')
+  })
   it.each([null, 'older'])('forks a persisted live message with parent %s while A runs tools and the nonempty cache is stale', async parent => {
     const older = message('older')
     const source = message('u1', parent)
@@ -117,6 +156,40 @@ describe('editMessageWithBranching live source resolution', () => {
     expect((await fork()).type).toBe(editMessageWithBranching.fulfilled.type)
     expect(post).toHaveBeenCalled()
     expect(runServerChatLoop).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ userMessageArtifacts: [dataUrl] }))
+  })
+
+  it('sends new branch images and consumes only the original draft on acknowledgement', async () => {
+    const { fork, dispatch, state } = setup([message('u1')], [])
+    const draft = { dataUrl: 'data:image/png;base64,aQ==', name: 'a.png', type: 'image/png', size: 1 }
+    const target = { kind: 'branch', messageId: 'u1' } as const
+    dispatch(chatSliceActions.imageDraftsAppended({ target, drafts: [draft] }))
+    vi.spyOn(localApi, 'post').mockResolvedValue({ attachments: [{ id: 'a', file_path: '/a.png', sha256: 'hash' }] })
+    vi.mocked(runServerChatLoop).mockImplementation(async (params, deps) => {
+      expect(params.request.attachmentsBase64).toEqual([expect.objectContaining({ attachmentId: 'a', dataUrl: draft.dataUrl })])
+      expect(state.chat.composition.imageDrafts).toHaveLength(1)
+      dispatch(chatSliceActions.imageDraftRemoved({ target, index: 0 }))
+      dispatch(chatSliceActions.imageDraftsAppended({ target, drafts: [{ ...draft }] }))
+      deps.onUserMessagePersisted?.()
+      expect(state.chat.composition.imageDrafts).toHaveLength(1)
+      return { messageId: null, userMessage: null, providerError: false }
+    })
+    expect((await fork()).type).toBe(editMessageWithBranching.fulfilled.type)
+  })
+
+  it('does not consume a newer conversation draft when an old branch is acknowledged', async () => {
+    const { fork, dispatch, state } = setup([message('u1')], [])
+    const draft = { dataUrl: 'data:image/png;base64,aQ==', name: 'a.png', type: 'image/png', size: 1 }
+    const target = { kind: 'branch', messageId: 'u1' } as const
+    dispatch(chatSliceActions.imageDraftsAppended({ target, drafts: [draft] }))
+    vi.spyOn(localApi, 'post').mockResolvedValue({ attachments: [{ id: 'a', file_path: '/a.png', sha256: 'hash' }] })
+    vi.mocked(runServerChatLoop).mockImplementation(async (_params, deps) => {
+      dispatch(chatSliceActions.conversationSet('c2'))
+      dispatch(chatSliceActions.imageDraftsAppended({ target, drafts: [draft] }))
+      deps.onUserMessagePersisted?.()
+      expect(state.chat.composition.imageDrafts).toHaveLength(1)
+      return { messageId: null, userMessage: null, providerError: false }
+    })
+    expect((await fork()).type).toBe(editMessageWithBranching.fulfilled.type)
   })
 
   it('does not resurrect a deleted source from a stale cache or start a stream for a missing message', async () => {

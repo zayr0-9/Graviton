@@ -35,6 +35,7 @@ export interface HookRunRecord {
 }
 
 export interface Message extends BaseMessage {
+  attachments?: Array<{ id: string; mime_type?: string; file_path?: string; url?: string; [key: string]: unknown }>
   //media: Blob or path to file
   pastedContext: string[]
   artifacts: string[]
@@ -245,6 +246,7 @@ export interface StreamState {
   // Explicit lifecycle status. `waiting_for_tool` is still an in-flight stream
   // and should stay visible/interruptible in branch-local UIs.
   status: StreamLifecycleStatus
+  compactionStatus?: 'started' | 'completed' | 'failed'
   buffer: string
   // separate buffer for reasoning/thinking tokens while streaming
   thinkingBuffer: string
@@ -264,6 +266,9 @@ export interface StreamState {
   branchAnchorMessageId: MessageId | null
   liveMessageId: MessageId | null
   lastCompletedMessageId: MessageId | null
+  // Persisted row for the current transient buffers only; cleared at each new turn.
+  // Unlike lastCompletedMessageId, this is not a branch anchor.
+  persistedTurnMessageId?: MessageId | null
   finalMessageId: MessageId | null
   // Incremented when stale chunks are ignored after abort/completion.
   suppressedEventCount: number
@@ -389,11 +394,16 @@ export interface CompositionState {
   compacting: boolean
   compactingConversationId: ConversationId | null
   compactingParentMessageId: MessageId | null
+  compactingLineageId: LineageId | null
+  compactionSummaryMessageId: MessageId | null
   validationError: string | null
   draftMessage: String | null
   multiReplyCount: number
   imageDrafts: ImageDraft[] // base64-encoded images + metadata from drag/drop
   imageDraftTarget: ImageDraftTarget | null // explicit owner for imageDrafts; never infer from focused message
+  imagePreparationPending: number
+  imagePreparationError: string | null
+  imagePreparationGeneration: number
   editingBranch: boolean // true when user is editing a branch; controls UI like hiding image drafts
   optimisticMessage: Message | null // temp message for instant UI feedback in web mode only
   optimisticBranchMessage: Message | null // temp branched message for instant UI feedback in web mode only

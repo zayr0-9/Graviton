@@ -46,6 +46,34 @@ describe('createTextFile workspace enforcement', () => {
     expect(await harness.readFile('deep/path/from-cwd.txt')).toBe('cwd-relative')
   })
 
+  it('does not overwrite when concurrent writers both see an absent file', async () => {
+    const harness = await createToolFsHarness()
+    const results = await Promise.all(['first', 'second'].map(content =>
+      createTextFile('race.txt', content, { cwd: harness.workspaceDir })))
+    expect(results.filter(result => result.success)).toHaveLength(1)
+    const winner = results[0].success ? 'first' : 'second'
+    expect(await harness.readFile('race.txt')).toBe(winner)
+    expect((await createTextFile('race.txt', 'replacement', { cwd: harness.workspaceDir, overwrite: true })).success).toBe(true)
+    expect(await harness.readFile('race.txt')).toBe('replacement')
+  })
+
+  it.skipIf(process.platform === 'win32')('rejects file, parent and dangling symlink escapes before creating directories', async () => {
+    const harness = await createToolFsHarness()
+    const outside = await createToolFsHarness()
+    await outside.writeFile('existing.txt', 'original')
+    await fs.symlink(outside.absolutePath('existing.txt'), harness.absolutePath('file-link'))
+    await fs.symlink(outside.workspaceDir, harness.absolutePath('dir-link'))
+    await fs.symlink(outside.absolutePath('missing.txt'), harness.absolutePath('dangling'))
+    for (const target of ['file-link', 'dir-link/new/nested.txt', 'dangling']) {
+      const result = await createTextFile(target, 'replacement', { cwd: harness.workspaceDir, overwrite: true })
+      expect(result.success).toBe(false)
+      expect(result.message).toMatch(/denied/)
+    }
+    expect(await outside.readFile('existing.txt')).toBe('original')
+    expect(await outside.fileExists('new')).toBe(false)
+    expect(await outside.fileExists('missing.txt')).toBe(false)
+  })
+
   if (process.platform === 'win32') {
     it('allows creation under drive-root workspace (regression)', async () => {
       const harness = await createToolFsHarness()

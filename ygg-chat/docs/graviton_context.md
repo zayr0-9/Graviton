@@ -23,7 +23,7 @@ That local backend is responsible for much more than persistence. It also handle
 - custom HTML apps
 - MCP and skills integration
 - local workspace operations
-- persistent background agent workflows
+- server-owned chat runs and branch-scoped asynchronous subagents/watchers
 
 ---
 
@@ -68,7 +68,7 @@ Key files:
 
 ### Embedded local server
 
-In desktop mode, the most important backend component is `electron/localServer.ts`.
+In desktop mode, the most important backend component is `server/localServer.ts`.
 
 Graviton runs a **local API and orchestration layer** on localhost. This creates a clean separation between UI concerns and execution concerns.
 
@@ -84,7 +84,7 @@ Its responsibilities include:
 
 Key file:
 
-- `electron/localServer.ts`
+- `server/localServer.ts`
 
 This local server is one of the central architectural decisions in the project because it provides a internal control plane that can be reused by multiple interfaces.
 
@@ -103,7 +103,9 @@ Core entities include:
 - attachments and attachment links
 - provider usage/cost data
 - HTML tool state
-- agent settings, sessions, tasks, and summaries
+- streaming runs, durable branch lineages, subagent runs, and tool invocations
+
+The retired Global Agent Loop's `agent_*` tables are not the current agent runtime.
 
 The most important modeling choice is that **messages are stored as a tree rather than a flat transcript**.
 
@@ -126,30 +128,31 @@ That storage model is directly reflected in the UI and is not just an implementa
 
 ## 3. Chat orchestration model
 
-The main chat orchestration logic lives in:
+The renderer's thin-client entry point lives in:
 
 - `src/features/chats/chatActions.ts`
 
-This layer is responsible for:
+It builds send/edit/branch requests and projects server SSE into Redux through
+`mainChatClient.ts` and `sseProjection.ts`; it does not own the provider/tool loop.
 
-- sending messages
-- branching from existing messages
-- editing with branching semantics
-- streaming provider responses
-- handling tool calls and tool results
-- continuing multi-turn tool loops
-- managing branch compaction when context grows large
+The orchestration engine lives in `server/headlessServer/`:
 
-This is crucial for the agent to work and provides state to the stateless api.
+- `routes/chatRoutes.ts`: SSE chat, resume, and stream lifecycle endpoints.
+- `services/chatOrchestrator.ts`: main-turn orchestration and permission decisions.
+- `services/branchOrchestrator.ts`: branch history and durable lineage resolution.
+- `services/toolLoopService.ts`: shared provider/tool loop, hooks, and compaction.
+- `services/messageSink.ts`: persisted message delivery and cloud mirroring.
+
+Paths in this overview's runtime sections are relative to `client/ygg-chat-r/`.
 
 ### Typical local chat flow
 
 A typical desktop/local turn looks like this:
 
 1. A message is submitted from `Chat.tsx`
-2. The chat orchestration layer builds the correct branch-aware message history
-3. The request is routed to the appropriate backend path
-4. In local mode, the embedded local server receives the request
+2. Renderer thunks build a request with branch placement hints and stream identity
+3. `mainChatClient` opens the local server's SSE chat route
+4. The server resolves branch history/lineage and runs `ToolLoopService`
 5. A provider response streams back incrementally
 6. If the model emits tool calls, the local tool runtime executes them
 7. Tool results are inserted back into the turn history
@@ -161,7 +164,7 @@ That same execution model is reused for:
 - regular chat turns
 - branch generation
 - subagent workflows
-- persistent background agent execution
+- branch-scoped asynchronous subagent execution
 
 Features are layered onto the same core orchestration stack rather than implemented as isolated one-off systems.
 
@@ -229,7 +232,7 @@ This includes:
 - notes
 - models
 - workspace and git data
-- background agent data
+- persisted subagent transcripts and run metadata
 
 The practical split is:
 
@@ -250,14 +253,18 @@ Core files:
 
 - `src/components/HtmlIframeRegistry/HtmlIframeRegistry.tsx`
 - `src/utils/iframeBridge.ts`
-- `electron/localToolsRoutes.ts`
+- `server/localToolsRoutes.ts`
 
 This subsystem provides:
 
 - persistence for HTML app state
 - lifecycle management for iframe instances
-- a permission-gated host bridge via `postMessage`
+- a source-window-checked host bridge via `postMessage` with RPC namespace allowlisting
 - a path for richer tool UIs than plain text tool output allows
+
+The bridge checks source-window identity and RPC namespaces, but does not currently
+enforce custom-tool `appPermissions.agent`; see the iframe subsystem guide. Do not
+treat provenance metadata as a per-tool authorization boundary.
 
 This is a novel part of the product architecture because it extends the system beyond chat into persistent, stateful mini-apps.
 
@@ -265,11 +272,19 @@ This is a novel part of the product architecture because it extends the system b
 
 If a concise set of files is needed to understand the system, the most representative ones are:
 
-1. `electron/localServer.ts`
+1. `server/localServer.ts`
 2. `src/features/chats/chatActions.ts`
 3. `src/components/Heimdall/Heimdall.tsx`
 4. `src/components/HtmlIframeRegistry/HtmlIframeRegistry.tsx`
-5. `src/services/GlobalAgentLoop.ts`
+5. `server/headlessServer/services/toolLoopService.ts`
+6. `server/createYggServer.ts`
+
+`createYggServer` is the host-neutral composition root. Electron supplies config
+and privileged capabilities through `electron/electronHostAdapter.ts`; the existing
+`server/standaloneEntry.ts` reuses the server without Electron. Desktop remains the
+supported app target; this does not make legacy web-mode behavior a requirement.
+The local port defaults to 3002 but can fall back; use the resolved server origin.
+The old renderer-owned `GlobalAgentLoop` has been removed.
 
 Together, these cover:
 
@@ -277,4 +292,4 @@ Together, these cover:
 - chat and tool execution flow
 - branching UX and graph rendering
 - HTML app runtime
-- persistent background agent execution
+- branch-scoped asynchronous subagent execution

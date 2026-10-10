@@ -4,13 +4,18 @@ import { SummarisedMessage } from './SummarisedMessage'
 import { createDefaultCustomChatTheme } from '../ThemeManager/themeConfig'
 
 const { state } = vi.hoisted(() => ({
-  state: { chat: { conversation: { messages: [{ id: 'summary', note: '__auto_compaction_summary__' }] } } },
+  state: { chat: { conversation: { messages: [
+    { id: 'summary', note: '__auto_compaction_summary__' },
+    { id: 'image-info', role: 'user', note: '__generated_image_path_hint__' },
+    { id: 'watch', role: 'user', meta: { kind: 'watcher_completion' } },
+  ] } } },
 }))
 
 vi.mock('react-redux', () => ({ useSelector: (selector: (value: unknown) => unknown) => selector(state) }))
 vi.mock('../../hooks/redux', () => ({ useAppDispatch: () => { throw new Error('Rich renderer mounted') } }))
 vi.mock('../../features/chats/chatActions', () => ({
   AUTO_COMPACTION_NOTE: '__auto_compaction_summary__',
+  GENERATED_IMAGE_PATH_HINT_NOTE: '__generated_image_path_hint__',
   fetchMcpTools: vi.fn(),
 }))
 vi.mock('../../features/chats/chatSlice', () => ({ chatSliceActions: {} }))
@@ -28,8 +33,18 @@ vi.mock('../MarkdownLink/MarkdownLink', () => ({ MarkdownLink: () => null, markd
 import { ChatMessage } from './ChatMessage'
 
 describe('SummarisedMessage', () => {
+  it('renders persisted image-reference rows as notices without mounting the rich renderer', () => {
+    const content = 'Model-only reference to /private/generated/image.png'
+    const html = renderToStaticMarkup(<ChatMessage id='image-info' role='user' content={content}
+      width='w-full' customThemeEnabled={false} />)
+    expect(html).toContain('Image attached')
+    expect(html).toContain('id="message-image-info"')
+    expect(html).toContain('data-chat-image-attachment="true"')
+    expect(html).not.toContain('/private/generated/image.png')
+    expect(html).not.toContain('rounded-2xl')
+    expect(content).toBe('Model-only reference to /private/generated/image.png')
+  })
   it('also bypasses rich user bubbles for provenance-tagged watcher completions', () => {
-    state.chat.conversation.messages.push({ id: 'watch', role: 'user', meta: { kind: 'watcher_completion' } } as any)
     const content = 'Watcher completion: process_exit watch 075f30b0-fd46-4839-9cd4-3793b8cc8444 triggered. Continue the original task.'
     const html = renderToStaticMarkup(<ChatMessage id='watch' role='user' content={content} width='w-full' customThemeEnabled={false} />)
     expect(html).toContain('Watcher triggered')

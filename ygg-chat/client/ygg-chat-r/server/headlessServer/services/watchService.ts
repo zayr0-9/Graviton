@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto'
 import { open, stat } from 'node:fs/promises'
 import { Worker } from 'node:worker_threads'
 import { validateAndResolvePath } from '../../toolPathPolicy.js'
+import { withToolAccess } from '../../toolAccessContext.js'
 import type { WatchCompletionEvent, WatchState } from '../../../../../shared/watchEvents.js'
 import type { ToolExecutionContext, ToolExecutor } from './toolLoopService.js'
 
@@ -182,7 +183,7 @@ export class WatchService {
       }
     }
     if (!['file_created', 'file_changed', 'log_match'].includes(args.kind)) throw new Error('Unknown watch kind')
-    const file = validateAndResolvePath(text(args.path), context.rootPath ?? undefined)
+    const file = withToolAccess(context.fullAccess, () => validateAndResolvePath(text(args.path), context.rootPath ?? undefined))
     let baseline: string | undefined
     let offset = 0
     let identity: string | undefined

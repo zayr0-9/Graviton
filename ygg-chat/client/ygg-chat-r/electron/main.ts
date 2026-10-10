@@ -1,7 +1,7 @@
 import { getAuthManager, publicAuthState, disconnectAuth, importLegacyRenderer, enableLocalLogin } from '../server/auth/runtime.js'
 import { startAppLogin, completeAppCode, completeAppCallback, cancelAppLogin } from '../server/auth/appLogin.js'
 import Conf from 'conf'
-import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, nativeTheme, powerMonitor, screen, shell, Tray, webContents } from 'electron'
+import { app, autoUpdater as nativeAutoUpdater, BrowserWindow, dialog, ipcMain, Menu, nativeImage, nativeTheme, powerMonitor, screen, shell, Tray, webContents } from 'electron'
 import autoUpdaterPkg from 'electron-updater'
 import fs from 'fs'
 import http from 'http'
@@ -9,6 +9,7 @@ import os from 'os'
 import path from 'path'
 import { fileURLToPath } from 'url'
 import { normalizeShellPath } from './shellPath.js'
+import { createQuitConfirmationGuard } from './quitConfirmation.js'
 import '../server/envLoader.js'
 import {
   deleteBraveApiKey,
@@ -34,6 +35,24 @@ let mainWindow: BrowserWindow | null = null
 let floatingWindow: BrowserWindow | null = null
 let tray: Tray | null = null
 let isQuitting = false
+const confirmQuit = createQuitConfirmationGuard({
+  platform: process.platform,
+  isReady: () => app.isReady(),
+  confirm: () => {
+    const options: Electron.MessageBoxSyncOptions = {
+      type: 'question',
+      title: 'Quit Graviton?',
+      message: 'Are you sure you want to quit Graviton?',
+      detail: 'Quitting stops running agents and closes terminal sessions.',
+      buttons: ['Cancel', 'Quit'],
+      defaultId: 0,
+      cancelId: 0,
+      noLink: true,
+    }
+    // Use an app-modal dialog even when the main window is hidden in the tray.
+    return dialog.showMessageBoxSync(options) === 1
+  },
+})
 let compactMode = false
 let savedBounds: Electron.Rectangle | null = null
 let localServerStarted = false
@@ -870,7 +889,6 @@ function createTray() {
     {
       label: 'Quit',
       click: () => {
-        isQuitting = true
         app.quit()
       },
     },
@@ -1151,6 +1169,7 @@ app.whenReady().then(async () => {
     configureAutoUpdater()
   } catch (error) {
     console.error('[Electron] Failed to start:', error)
+    isQuitting = true // Startup failure is not a user-initiated quit.
     app.quit()
   }
 })
@@ -1185,7 +1204,18 @@ app.on('activate', () => {
   }
 })
 
-app.on('before-quit', () => {
+// Electron's updater emits this before its quit sequence; never block a restart
+// that the user already requested by installing an update.
+nativeAutoUpdater.on('before-quit-for-update', () => {
+  isQuitting = true
+})
+
+app.on('before-quit', event => {
+  if (!isQuitting && !confirmQuit()) {
+    event.preventDefault()
+    return
+  }
+
   isQuitting = true
   for (const sessionId of Array.from(activeTerminalSessions.keys())) {
     destroyTerminalSession(sessionId)

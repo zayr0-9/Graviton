@@ -25,6 +25,7 @@ export interface ServerLoopToolInput {
   description?: string
   inputSchema?: Record<string, any>
   enabled?: boolean
+  isMcp?: boolean
 }
 
 export interface BuildServerLoopRequestParams {
@@ -52,6 +53,7 @@ export interface BuildServerLoopRequestParams {
   subagentReasoningEffort?: 'low' | 'medium' | 'high' | 'xhigh'
   imageConfig?: unknown
   rootPath?: string | null
+  fullAccess?: boolean
   conversationContext?: string | null
   projectContext?: string | null
   storageMode?: string
@@ -127,7 +129,7 @@ function shapeTools(tools?: ServerLoopToolInput[]): Array<{ name: string; descri
   // the server does NOT substitute defaults and auto-run tools the user disabled.
   if (!Array.isArray(tools)) return undefined
   return tools
-    .filter(t => t.enabled !== false)
+    .filter(t => t.enabled !== false && !t.isMcp && !t.name.startsWith('mcp__'))
     .map(t => ({
       name: t.name,
       description: t.description,
@@ -174,6 +176,7 @@ export function buildServerLoopRequest(operation: ServerLoopOperation, params: B
     subagentReasoningEffort: params.subagentReasoningEffort,
     imageConfig: params.imageConfig,
     rootPath: params.rootPath ?? null,
+    fullAccess: params.fullAccess === true,
     cwd: params.rootPath ?? null,
     conversationContext: params.conversationContext ?? null,
     projectContext: params.projectContext ?? null,

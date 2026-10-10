@@ -3,6 +3,7 @@ export interface ToolExecutionOptions {
   signal?: AbortSignal
   /** Absolute epoch time at which shell execution must stop. */
   deadlineMs?: number
+  fullAccess?: boolean
   rootPath?: string
   operationMode?: 'plan' | 'execute'
   conversationId?: string | null

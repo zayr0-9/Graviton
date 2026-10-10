@@ -1,0 +1,24 @@
+:root {
+  --resize-dur: 300ms;
+  --resize-ease: cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.t-resize {
+  transition:
+    width  var(--resize-dur) var(--resize-ease),
+    height var(--resize-dur) var(--resize-ease);
+  will-change: width, height;
+}
+
+/* A symmetric curve makes collapse the time-reverse of expansion. */
+.agents-pill {
+  --resize-ease: ease-in-out;
+}
+
+.agents-pill[data-dragging='true'] {
+  transition: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .t-resize { transition: none !important; }
+}

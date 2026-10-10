@@ -12,6 +12,7 @@ import type {
   LocalGitBranch,
   LocalGitCommit,
   LocalGitDiffResponse,
+  LocalGitFileContextResponse,
   LocalGitOverviewResponse,
   LocalGitStatusFile,
   LocalGitStatusGroups,
@@ -1000,6 +1001,74 @@ export function registerLocalOperationsRoutes(app: Express) {
       }
       console.error('Error loading git overview:', error)
       res.status(500).json({ error: 'Failed to load git overview' })
+    }
+  })
+
+  // Resolve from the file, not the workspace: a workspace can contain several repositories.
+  app.get('/api/local/git/file-context', async (req, res): Promise<void> => {
+    const requestedPath = String(req.query.path || '').trim()
+    const basePath = String(req.query.basePath || '').trim()
+    if (!requestedPath) {
+      res.status(400).json({ error: 'path query parameter is required' })
+      return
+    }
+
+    try {
+      const pathType = detectPathType(requestedPath)
+      const usePosixPath = pathType === 'linux' || (pathType === 'relative' && detectPathType(basePath) === 'linux')
+      const responsePathApi = isWindows() && usePosixPath ? path.posix : path
+      if (!responsePathApi.isAbsolute(requestedPath) && !basePath) {
+        res.status(400).json({ error: 'basePath is required for relative file paths' })
+        return
+      }
+      const filePath = responsePathApi.isAbsolute(requestedPath)
+        ? responsePathApi.normalize(requestedPath)
+        : responsePathApi.resolve(basePath, requestedPath)
+      let directoryPath = responsePathApi.dirname(filePath)
+      let gitContext: GitContext | null
+      // Deleted files may have deleted parent directories too. Only skip missing directories.
+      while (true) {
+        try {
+          gitContext = await resolveGitContext(directoryPath)
+          break
+        } catch (error: any) {
+          const parent = responsePathApi.dirname(directoryPath)
+          if (error.code !== 'ENOENT' || parent === directoryPath) throw error
+          directoryPath = parent
+        }
+      }
+
+      if (gitContext) {
+        // Git canonicalizes symlinked directories. Map its root back to the caller's path namespace.
+        const realDirectory = await fs.promises.realpath(gitContext.resolvedPath)
+        gitContext.repoRootResponse = responsePathApi.resolve(
+          directoryPath,
+          normalizeRelativePosix(path.relative(realDirectory, gitContext.repoRootFs))
+        )
+      }
+      const response: LocalGitFileContextResponse = {
+        path: filePath,
+        repoRoot: gitContext?.repoRootResponse || null,
+        relativePath: null,
+        status: null,
+      }
+      if (gitContext) {
+        const relativePath = normalizeRelativePosix(responsePathApi.relative(gitContext.repoRootResponse, filePath))
+        if (!relativePath || responsePathApi.isAbsolute(relativePath) || !sanitizeGitRelativePath(relativePath)) {
+          res.status(400).json({ error: 'File is outside the resolved repository' })
+          return
+        }
+        response.relativePath = relativePath
+        response.status = await getGitStatusEntry(gitContext, relativePath)
+      }
+      res.json(response)
+    } catch (error: any) {
+      if (error.code === 'EACCES') {
+        res.status(403).json({ error: 'Permission denied' })
+        return
+      }
+      console.error('Error resolving git file context:', error)
+      res.status(500).json({ error: 'Failed to resolve repository for file' })
     }
   })
 

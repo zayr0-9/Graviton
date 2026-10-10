@@ -23,6 +23,11 @@ describe('compaction cancellation', () => {
       { id: 'u', role: 'user', content: 'Task' }, { id: 'a', role: 'assistant', content: 'Progress' },
     ] as any, providerName: 'openaichatgpt', modelName: 'test' })(dispatch, () => state, extra)
     expect(state.chat.composition.compactingParentMessageId).toBe('a')
+    const competing = await compactBranch({ conversationId: 'c', parentMessageId: 'b', messages: [],
+      providerName: 'openaichatgpt', modelName: 'test',
+    })(dispatch, () => state, extra)
+    expect(competing.type).toBe(compactBranch.rejected.type)
+    expect(state.chat.composition.compactingParentMessageId).toBe('a')
     await abortCompaction({ conversationId: 'other', parentMessageId: 'a' })(dispatch, () => state, extra)
     await abortCompaction({ conversationId: 'c', parentMessageId: 'other' })(dispatch, () => state, extra)
     expect(signal.aborted).toBe(false)

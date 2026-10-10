@@ -9,7 +9,7 @@ agentMetadata:
     parallel investigation, adversarial review, or work that exceeds one agent's practical scope.
 -->
 
-Use `subagent_manager` to coordinate asynchronous subagents in the Graviton harness. Each spawned subagent performs one bounded task and returns either a result immediately (`blocking: true`) or a six-digit handle (`blocking: false`, the default) that can be used with `status`, `wait`, `cancel`, or `resume`.
+Use `subagent_manager` to coordinate asynchronous subagents in the Graviton harness. Each spawned subagent performs one bounded task and returns either a result immediately (`blocking: true`) or a six-digit handle (`blocking: false`, the default) that can be used with `status`, `wait`, `send`, `cancel`, or `resume`.
 
 Subagents are scoped to the current conversation branch. Only this branch can list or control the runs it spawned. Subagents cannot spawn nested subagents or call `subagent_manager` themselves.
 
@@ -34,8 +34,11 @@ Do not delegate tasks that require user judgment, access to secrets, or destruct
 - `list`: list runs owned by this branch, optionally filtered by status.
 - `status`: get a non-blocking snapshot for one handle.
 - `wait`: block until one run completes, errors, or is aborted, then return its canonical result.
-- `cancel`: explicitly abort a running subagent.
-- `resume`: restart a failed or aborted run using its existing task context.
+- `send`: queue new instructions for a running detached subagent: `{action:"send", handle:"123456", message:"Focus on the server only", requestId:"steer-1"}`. Returns immediately with acceptance, not delivery. Instructions are delivered FIFO at the next safe boundary, after the current provider turn and tool batch finish. Reuse the same requestId and identical message for retries; if omitted, an id is generated and returned. Inspect `status` or the eventual `wait` result's `messageQueue` for delivered/failed state, without busy polling. Terminal, aborting, preparing, and blocking runs reject sends; no successor is spawned.
+- `cancel`: explicitly abort a running detached subagent. This does not undo completed tool side effects.
+- `resume`: restart a failed or aborted run using its saved transcript. Optionally pass `prompt` with new instructions; it is appended as a user message before the next inference, not substituted for the original task.
+
+Use detached spawning for interactive supervision. While a blocking spawn or wait is pending, the parent cannot normally issue another steering call. Sending instructions does not alter the child's tool policy. Queued input is memory-only until delivery and does not survive a server restart; pending input fails on cancellation, errors, or exhausted turn budgets.
 
 Stopping or aborting the parent while it is waiting does not cancel the detached subagent. Use `cancel` when the child itself should stop.
 

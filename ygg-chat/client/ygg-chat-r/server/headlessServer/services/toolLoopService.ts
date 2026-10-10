@@ -35,7 +35,7 @@ import { buildChatErrorEnvelope, type ChatErrorCode } from '../../../../../share
 import { trimHistoryToLatestCompaction } from './compactionService.js'
 import { calculateBranchContextUsage } from '../../../shared/contextTokenEstimate.js'
 import type { BranchContextStatus } from './contextStatusTool.js'
-import { assertToolAllowedForOperationMode, requiresAgentMode } from '../../../../../shared/operationModeToolPolicy.js'
+import { assertToolAllowedForOperationMode, filterToolsForOperationMode, requiresAgentMode } from '../../../../../shared/operationModeToolPolicy.js'
 import type { OperationModeControl } from './operationModeControl.js'
 import {
   extractOpenAIContextUsageFromBlocks,
@@ -49,6 +49,7 @@ export interface ToolExecutionContext {
   messageId: string
   streamId?: string | null
   rootPath?: string | null
+  fullAccess?: boolean
   operationMode?: 'plan' | 'execute'
   provider?: string
   modelName?: string
@@ -63,6 +64,9 @@ export interface ToolExecutionContext {
   signal?: AbortSignal
   /** Policy-aware executor used by composite tools for each nested call. */
   nestedExecutor?: ToolExecutor
+  /** Host-owned tool allowlist; child REPL writer/private-fallback identity. */
+  allowedToolNames?: ReadonlySet<string>
+  replOwnerId?: string
   /** Durable execution identity of the currently executing parent tool. */
   parentToolInvocationId?: string | null
   lineageId?: string | null
@@ -202,12 +206,13 @@ export interface ToolLoopRunInput {
   promptCacheRetention?: 'in_memory' | '24h'
   tools?: ProviderToolDefinition[]
   /**
-   * Optional live tool source. Re-evaluated before each provider turn so tools
-   * discovered by a manager tool become callable in the same ongoing run.
+   * Optional legacy per-turn definition refresh. Direct MCP definitions are always stripped;
+   * manager discovery must not change the provider's tool prefix.
    */
   refreshTools?: (currentTools: ProviderToolDefinition[]) => ProviderToolDefinition[]
   streamId?: string | null
   rootPath?: string | null
+  fullAccess?: boolean
   operationMode?: 'plan' | 'execute'
   modeControl?: OperationModeControl
   flushOperationMode?: (parentId: string | null, history: any[]) => any[]
@@ -1290,36 +1295,10 @@ export class ToolLoopService {
         maxTurns,
       })
 
-      // A discovery/manager tool can add definitions while this run is active. Refresh
-      // immediately before every provider turn so the next continuation sees them.
-      if (input.refreshTools) {
-        const previousToolNames = new Set((input.tools ?? []).map(tool => tool.name))
-        const refreshedTools = input.refreshTools(input.tools ?? [])
-        input.tools = refreshedTools
-        const addedMcpTools = refreshedTools.filter(
-          tool => tool.name.startsWith('mcp__') && !previousToolNames.has(tool.name)
-        )
-        if (addedMcpTools.length > 0) {
-          const updatedTools = addedMcpTools.map(tool => {
-            const mcpTool = tool as ProviderToolDefinition & {
-              serverName?: string
-              toolName?: string
-              ui?: { resourceUri?: string; visibility?: Array<'model' | 'app'> }
-            }
-            return {
-              name: tool.name,
-              description: tool.description,
-              inputSchema: tool.inputSchema ?? { type: 'object', properties: {} },
-              ...(tool.name.startsWith('mcp__') ? {
-                serverName: mcpTool.serverName ?? tool.name.match(/^mcp__([^_]+)__(.+)$/)?.[1],
-                toolName: mcpTool.toolName ?? tool.name.match(/^mcp__([^_]+)__(.+)$/)?.[2],
-                ...(mcpTool.ui ? { ui: mcpTool.ui } : {}),
-              } : {}),
-            }
-          })
-          emit({ type: 'tools_updated', tools: updatedTools })
-        }
-      }
+      // Never advertise direct MCP schemas, including legacy callers/refresh hooks.
+      // Discovery and execution use the stable mcp_manager schema instead.
+      const refreshedTools = input.refreshTools ? input.refreshTools(input.tools ?? []) : input.tools
+      input.tools = refreshedTools ? filterToolsForOperationMode(refreshedTools, activeOperationMode) : undefined
 
       const providerModeRevision = input.modeControl?.revision ?? 0
       // Generate the turn, retrying once on an empty response when enabled.
@@ -1574,6 +1553,7 @@ export class ToolLoopService {
         let toolErrorCode: ChatErrorCode | null = null
         /** A `skill_manager activate` body, delivered as a context injection instead of a JSON blob. */
         let skillInjection: ContextInjectionEntry | null = null
+        const replNestedCalls: ProviderToolCall[] = []
         const startedAt = Date.now()
 
         try {
@@ -1635,6 +1615,7 @@ export class ToolLoopService {
               })
               nestedInvocation && this.toolInvocationRepo?.finish(nestedInvocation.id, { status: 'completed' })
               emit({ type: 'tool_execution', status: 'completed', toolCallId: nestedCall.id, toolInvocationId: nestedInvocation?.id, lineageId: input.lineageId ?? null, toolName: nestedCall.name, durationMs: Math.max(0, Date.now() - nestedStartedAt) })
+              if (toolCall.name === 'repl') replNestedCalls.push(nestedCall)
               return nestedResult
             } catch (error) {
               const aborted = nestedContext.signal?.aborted || isAbortError(error)
@@ -1650,6 +1631,7 @@ export class ToolLoopService {
             messageId: assistantMessage.id,
             streamId: input.streamId ?? null,
             rootPath: input.rootPath ?? null,
+            fullAccess: input.fullAccess === true,
             operationMode: activeOperationMode,
             provider: input.provider,
             modelName: input.modelName,
@@ -1663,6 +1645,7 @@ export class ToolLoopService {
             parentToolInvocationId: invocation?.id ?? null,
             lineageId: input.lineageId ?? null,
             nestedExecutor: executeNested,
+            allowedToolNames: new Set((input.tools ?? []).map(tool => tool.name)),
             getContextStatus,
             contextDirectories: input.contextDirectories ?? null,
           })
@@ -1749,7 +1732,11 @@ export class ToolLoopService {
             for (const block of toolResultBlocks) {
               if (block?.type === 'context_injection' && typeof block.path === 'string' && block.path) alreadyLoaded.add(block.path)
             }
-            injectionEntries.push(...(await input.contextLoader.collectLazyInjections(toolCall, alreadyLoaded)))
+            for (const touchedCall of [toolCall, ...replNestedCalls]) {
+              const entries = await input.contextLoader.collectLazyInjections(touchedCall, alreadyLoaded)
+              injectionEntries.push(...entries)
+              for (const entry of entries) if (entry.path) alreadyLoaded.add(entry.path)
+            }
           } catch (error) {
             console.warn('[ToolLoop] lazy context load failed', { tool: toolCall.name, error: error instanceof Error ? error.message : String(error) })
           }

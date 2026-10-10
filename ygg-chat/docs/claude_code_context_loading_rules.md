@@ -301,7 +301,7 @@ custom themes `<dataDir>/.ygg/custom-themes` (`electron/main.ts:1041`). Skills l
 | Toggles | `autoMemoryEnabled: false` (any scope) or `CLAUDE_CODE_DISABLE_AUTO_MEMORY=1` | `autoMemoryEnabled` setting (exists in the renderer as `loadLongTermMemoryContextEnabled()`) and `YGG_DISABLE_AUTO_MEMORY=1` |
 | Rendering | `Contents of <abs path> (user's auto-memory, persists across conversations):` inside the memory system-reminder, after CLAUDE.md files and rules (**observed**) | Same label, same slot, in the headless loop |
 | Compaction | `MEMORY.md` reloads after compaction | Same |
-| Subagents | Not loaded into subagents. A fork inherits it. A subagent with `memory:` has its own directory (section 6.5). | Same. Agent memory: `<dataDir>/.ygg/agent-memory/<name>/` for `user`; `<root>/<writeDir>/agent-memory/<name>/` for `project`; `<root>/<writeDir>/agent-memory-local/<name>/` for `local`. `<writeDir>` is the user's chosen in-repo config directory (section 11.4). |
+| Subagents | Not loaded into subagents. A fork inherits it. A subagent with `memory:` has its own directory (section 6.5). | Current divergence: unless `omitClaudeMd`, tool-spawned subagents receive the parent's complete launch set, including enabled auto-memory. Agent-owned memory loads separately without checking the auto-memory toggle. Paths: `<dataDir>/.ygg/agent-memory/<name>/` for `user`; `<root>/<writeDir>/agent-memory/<name>/` for `project`; `<root>/<writeDir>/agent-memory-local/<name>/` for `local`. |
 
 Retention: Claude Code excludes the memory directory from its transcript cleanup sweep. Graviton
 has no such sweep today. If one is added, exclude `.ygg/memory/`.
@@ -710,7 +710,7 @@ enforced by the client.
 State of `ygg-chat/client/ygg-chat-r` on 2026-09-15 (branch
 `fix/provider-stream-idle-timeout-persistence`).
 
-### 11.1 What exists
+### 11.1 Historical baseline before the 2026-09-15 implementation
 
 | Area | Location | Notes |
 | --- | --- | --- |
@@ -866,13 +866,14 @@ directory must be one of the read directories.
 
 **Read semantics with more than one directory.**
 
-- Discovery runs the same algorithm once per name, in `readDirs` order, inside every directory the
-  section 2 walk visits. So for `readDirs: ['.ygg', '.claude']` and a rule scan of `<dir>`, Graviton
-  reads `<dir>/.ygg/rules/**/*.md` then `<dir>/.claude/rules/**/*.md`.
+- Within a scanned directory, discovery follows `readDirs` order. Rules/skills
+  scan home and conversation root at launch, then descendants lazily; they do not
+  scan every instruction-file ancestor. Agents walk ancestors closest first.
 - Injection order follows `readDirs` order within one filesystem directory. Across directories the
   section 2.2 root-first order still wins.
-- Skills, agents, and rules with the same `name` in two config directories: the **first** `readDirs`
-  entry wins. Both stay listed in `/context`-style diagnostics with their full path.
+- Same-scope skill collisions use the first discovered entry; shadowed skills remain
+  in discovery results but not the startup index. Agent collisions keep only the
+  first definition. Rules have no name-based collision handling and dedupe by real path.
 - Real-path dedupe (section 2.7 rule 4) applies, so `.claude -> .ygg` symlinks load once.
 - `claudeMdExcludes`-style patterns match absolute paths and therefore work for any directory name.
 
@@ -898,11 +899,11 @@ repo can ship both `.claude/` and `.ygg/` and each tool reads what it understand
 Provider prompt caching (Anthropic, OpenAI, and OpenRouter pass-through) caches a **prefix** of the
 request. The prefix starts at byte 0 of the system prompt and runs through tool definitions into the
 message history. A cache hit requires every byte before the cache point to be identical to the
-previous call. Any change to the system prompt moves the first differing byte to the start of the
-request and invalidates the whole cached prefix. The next call re-bills every token of tool
-definitions and history at the uncached input price and pays full processing latency.
+previous call. System-prompt changes can reduce prefix-cache reuse, but exact
+cache boundaries, billing, and latency depend on the provider; do not assume
+all history/tool tokens are necessarily rebilled at uncached prices.
 
-**Current Graviton behaviour and its cost.** `foldSystemPrompt` (`chatHookService.ts:511-515`)
+**Historical pre-implementation Graviton behaviour and its cost.** `foldSystemPrompt` (`chatHookService.ts:511-515`)
 appends `[Hook context]` blocks to the base system prompt for one iteration, then the loop clears the
 buffer (`toolLoopService.ts:1146`). The system prompt therefore differs between iteration N and N+1
 whenever a hook returned text, and differs again at N+2 when the buffer is empty. Each flip drops the
@@ -929,8 +930,8 @@ costs tokens once per firing, not once per iteration, and the per-entry cap
 **Rules for the Graviton implementation.**
 
 1. Build the system prompt once per conversation: mode baseline, request/project/conversation
-   prompts, skill index, agent index. Do not change it between iterations. The plan→execute swap at
-   `toolLoopService.ts:1358` is the one accepted exception; it happens once.
+   prompts, skill index, agent index. Do not change it between iterations. Mode switches now use transcript context rather than replacing the system prompt;
+   `agentSystemPrompt` is deprecated.
 2. Deliver the launch-time instruction set (section 2) as one persisted user message directly
    after the system prompt, built once per conversation, tagged `meta.kind = 'context_injection'`
    (decision 6). Its content must be deterministic for the conversation so the cached prefix holds.
@@ -947,7 +948,10 @@ costs tokens once per firing, not once per iteration, and the per-entry cap
 7. Compaction is the one point where the prefix legitimately changes. Rebuild the tail content there
    as section 2.6 and section 5.4 describe.
 
-### 11.6 Implementation status (2026-09-15)
+### 11.6 Implementation status
+
+The implementation shipped on 2026-09-15. Qualifications below reflect the current
+source audit; upstream fetch dates and historical observations remain unchanged.
 
 Operational detail lives in `docs/agent_context/agent_context_loading.md`. Paths below are
 relative to `client/ygg-chat-r/`.
@@ -960,9 +964,9 @@ relative to `client/ygg-chat-r/`.
 | §2.3 external import approval | Partial (decision 5) | Loads under the auto-approve tool policy; skipped and logged under the interactive policy. `chatOrchestrator.ts` `approveExternalImports` |
 | §2.4 delivery as a user-side message with labels | Implemented | Persisted user row, `meta.kind = 'context_injection'`; `shared/contextInjection.ts` `renderInstructionSet` |
 | §2.2 step 3 nested lazy load; §3.4 path-scoped rules; §5.7 skill `paths`; nested skills | Implemented | `server/context/contextLoader.ts` `collectLazyInjections`, `toolLoopService.ts` tool-result blocks |
-| §2.5 `claudeMdExcludes` | Implemented | Read from `<dataDir>/.ygg/settings.json`, `~/<readDir>/settings.json`, `<root>/<readDir>/settings.json` (+ `.local.json`) |
-| §2.6 compaction re-injection; §5.4 skill re-attach 5,000 / 25,000 tokens | Implemented | `buildPostCompactionInjection`, `toolLoopService.ts` after `compactBranch` |
-| §3 rules: recursive, symlinks, circular detection, external rules gate, glob budget | Implemented | `server/context/rulesLoader.ts`, `server/context/globMatcher.ts` |
+| §2.5 `claudeMdExcludes` | Partial | Read from managed/user `settings.json` and root `settings.json` / `settings.local.json`. Applied to instructions and unconditional launch rules, not lazy conditional/nested rules. Managed/user local settings and ancestor settings are not read |
+| §2.6 compaction re-injection; §5.4 skill re-attach 5,000 / 25,000 tokens | Partial | Re-reads instruction files/`MEMORY.md`, reuses cached unconditional rules, and re-attaches recorded skills within character budgets. Re-attached skill records do not survive a second compaction unless invoked again. `buildPostCompactionInjection`, `toolLoopService.ts` |
+| §3 rules: recursive discovery, internal symlinks, circular detection, glob budget | Implemented; external-rule approval not wired | `server/context/rulesLoader.ts`, `server/context/globMatcher.ts`; conversation discovery always passes `allowExternal: false`, skipping external project/nested rules even under auto-approve |
 | §4 `MEMORY.md` 200 lines / 25 KB, repo-root slug, `autoMemoryEnabled`, `autoMemoryDirectory`, env toggles | Implemented | `server/context/autoMemory.ts`; memory prompt in the system prompt |
 | §4 `modified` frontmatter stamp on write | Not applicable | Graviton has no server memory write route; the model writes files with the edit tools |
 | §5.1 scopes personal > project > nested, legacy commands, collisions listed | Implemented | `server/context/skillsDiscovery.ts`, host installs as personal scope (decision 10) |
@@ -993,4 +997,4 @@ relative to `client/ygg-chat-r/`.
   gates in this document (`vX.Y.Z+`) come from the docs and may move.
 - Anything marked **observed** must be re-checked against a live session before it becomes a test
   fixture.
-- When Graviton implements a row of §11.2, move the row to §11.1 with the new file and line.
+- Preserve §11.1/§11.2 as historical baseline/planning notes; update current status in §11.6 with verified source paths and limitations.

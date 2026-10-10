@@ -14,7 +14,7 @@ Last reviewed: 2026-06-16
 
 ## Purpose
 
-Documents custom tool HTML UI rendering, iframe lifecycle/cache, host bridge IPC, and permission-gated persistent-agent access.
+Documents custom tool HTML UI rendering, iframe lifecycle/cache, and host bridge IPC. The current bridge does not expose the retired persistent-agent API or enforce custom-tool `appPermissions.agent`.
 
 ## When to Open This File
 
@@ -24,19 +24,19 @@ Use this when changing:
 - iframe bridge APIs;
 - custom app permissions;
 - `html_tools` persistence;
-- agent read/write access from iframe apps.
+- host API access from iframe apps.
 
 ## Key Files
 
 - `html_frame_context.md`: deep existing context doc.
 - `client/ygg-chat-r/src/components/HtmlIframeRegistry/HtmlIframeRegistry.tsx`: registry, caching, hibernation, positioning.
-- `client/ygg-chat-r/src/utils/iframeBridge.ts`: postMessage bridge and permission enforcement.
+- `client/ygg-chat-r/src/utils/iframeBridge.ts`: source-window-checked postMessage dispatch, Electron API forwarding, RPC namespace allowlisting, tool execution, and generation requests.
 - `client/ygg-chat-r/src/components/ChatMessage/HtmlIframe.tsx`: inline iframe rendering.
 - `client/ygg-chat-r/src/components/ChatMessage/ChatMessage.tsx`: tool result detection/rendering.
 - `client/ygg-chat-r/src/components/HtmlToolsModal/HtmlToolsModal.tsx`: modal surface.
 - `client/ygg-chat-r/src/components/HtmlToolsModalFullScreen/HtmlToolsModalFullScreen.tsx`: full-screen surface.
-- `client/ygg-chat-r/electron/localToolsRoutes.ts`: local SQLite CRUD for HTML tool entries.
-- `client/ygg-chat-r/electron/tools/customToolLoader.ts`: preserves custom tool `appPermissions`.
+- `client/ygg-chat-r/server/localToolsRoutes.ts`: local SQLite CRUD for HTML tool entries.
+- `client/ygg-chat-r/server/tools/customToolLoader.ts`: preserves custom tool `appPermissions`.
 
 ## Data Flow
 
@@ -44,20 +44,20 @@ Use this when changing:
 2. Chat inline renderer or registry modal creates iframe entry.
 3. Registry persists/cache metadata including `toolName` where available.
 4. Iframe sends `postMessage` requests to host bridge.
-5. Host bridge resolves iframe `toolName`, checks custom tool definition and `appPermissions`, and performs allowed actions.
+5. The bridge checks the request's source window and dispatches supported requests. RPC uses a namespace allowlist; the bridge does not consult `toolName` or custom-tool `appPermissions`.
 
 ## Important Invariants
 
-- Iframes are untrusted UI; host-side permission enforcement is mandatory.
-- `toolName` must be preserved for permission checks.
-- `appPermissions.agent` controls agent read/write access.
+- Treat iframe content as untrusted. Source-window and RPC namespace checks are implemented, but are not per-tool permission enforcement.
+- Preserve `toolName` as provenance/cache metadata; it is not currently an authorization gate.
+- The loader preserves `appPermissions.agent`, but the bridge does not enforce it or expose persistent-agent handlers. Additional host permissions are a security requirement, not a guarantee of the current implementation.
 - Cached old entries may lack new metadata; debugging should include cache eviction/re-render.
 - Do not add host bridge methods that bypass permission gates.
 
 ## Testing and Validation
 
-- Build web/electron target after bridge/type changes.
-- Manual verify inline iframe, registry modal, persistence reload, hibernation/favorite behaviour, and permission denied/allowed cases.
+- Build Electron after bridge/type changes: `npm --prefix client/ygg-chat-r run build:electron`.
+- Manually verify inline iframe, registry modal, persistence reload, hibernation/favorites, source-window rejection, and RPC namespace rejection.
 - Custom tool loader changes: `npm --prefix client/ygg-chat-r run test:tools`.
 
 ## Related Docs

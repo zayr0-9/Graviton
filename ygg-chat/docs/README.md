@@ -8,6 +8,9 @@ paths:
 Start with [the agent context index](agent_context/AGENT.md), then read the smallest
 relevant subsystem guide. This directory remains the canonical documentation source.
 
+See [the source audit](source-doc-audit.md) for the latest documentation review scope,
+validation, and implementation limitations that were documented rather than fixed.
+
 ## Frontmatter contract
 
 Use the same path-scoped rule format as Vega's `ai/cli/.claude/rules/`:

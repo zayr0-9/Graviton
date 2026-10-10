@@ -1,18 +1,26 @@
-import React, { useEffect, useState } from 'react'
+import React, { useEffect, useId, useState } from 'react'
+import { ChevronDown } from 'lucide-react'
 import { createPortal } from 'react-dom'
 import { fetchCustomTools, fetchTools, updateToolEnabled } from '../../features/chats/chatActions'
-// import { selectTools } from '../../features/chats/chatSelectors'
+import { selectTools } from '../../features/chats/chatSelectors'
 import { getAllTools } from '../../features/chats/toolDefinitions'
-import { useAppDispatch } from '../../hooks/redux'
+import { useAppDispatch, useAppSelector } from '../../hooks/redux'
 import { localApi } from '../../utils/api'
 import { useSettingsSectionThemeColors } from './settingsSectionTheme'
 
 export const ToolsSettings: React.FC = () => {
   const dispatch = useAppDispatch()
   // Use Redux tools as trigger for re-render, but get actual tools from toolDefinitions
-  // This ensures we always see the merged list (built-in + custom)
-  // const reduxTools = useAppSelector(selectTools)
+  // This ensures we always see the merged list (built-in + custom + MCP).
+  useAppSelector(selectTools)
   const tools = getAllTools()
+  const toolGroups = [
+    { title: 'Built-in Tools', tools: tools.filter(tool => !tool.isMcp && !tool.isCustom) },
+    { title: 'Custom Tools', tools: tools.filter(tool => !tool.isMcp && tool.isCustom) },
+    { title: 'MCP Tools', tools: tools.filter(tool => tool.isMcp) },
+  ]
+  const groupId = useId()
+  const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(new Set())
   const [updatingTools, setUpdatingTools] = useState<Set<string>>(new Set())
   const [showDesktopModal, setShowDesktopModal] = useState(false)
   const [showCustomToolsHelp, setShowCustomToolsHelp] = useState(false)
@@ -64,9 +72,6 @@ export const ToolsSettings: React.FC = () => {
       })
     }
   }
-
-  const someToolsEnabled = tools.some(tool => tool.enabled)
-  const valkyrieActive = someToolsEnabled
 
   const handleOpenCustomToolsFolder = async () => {
     setShowCustomToolsHelp(true)
@@ -154,13 +159,9 @@ export const ToolsSettings: React.FC = () => {
         </div>
       )} */}
 
-      {/* Individual Tools - Only show when Valkyrie is active and not in web mode */}
+      {/* Keep disabled tools visible so they can always be re-enabled. */}
       {!isWebMode && (
-        <div
-          className={`transition-all duration-500 ease-in-out ${
-            valkyrieActive ? 'opacity-100' : 'max-h-0 opacity-0 overflow-hidden'
-          }`}
-        >
+        <div>
           <div className='space-y-2 sm:space-y-3 lg:space-y-4'>
             {/* Tool List Header */}
             <div className='flex items-end justify-between'>
@@ -318,9 +319,40 @@ export const ToolsSettings: React.FC = () => {
               </div>
             )}
 
-            {/* Tool Cards */}
-            <div className='space-y-1.5 sm:space-y-4 pb-4 sm:pb-6'>
-              {tools.map(tool => (
+            {/* Separate tools by source; MCP metadata takes precedence over custom metadata. */}
+            {toolGroups.filter(group => group.tools.length > 0).map(group => (
+              <section key={group.title} aria-label={group.title} className='space-y-1.5 sm:space-y-4 pb-4 sm:pb-6'>
+                <h3>
+                  <button
+                    type='button'
+                    aria-expanded={!collapsedGroups.has(group.title)}
+                    aria-controls={`${groupId}-${group.title.replace(/\s+/g, '-').toLowerCase()}`}
+                    onClick={() => setCollapsedGroups(prev => {
+                      const next = new Set(prev)
+                      if (next.has(group.title)) next.delete(group.title)
+                      else next.add(group.title)
+                      return next
+                    })}
+                    className='flex w-full items-center justify-between gap-3 rounded-lg text-left text-sm font-medium text-neutral-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400/60 dark:text-neutral-200 dark:focus-visible:ring-orange-400/60'
+                    style={titleStyle}
+                  >
+                    <span>{group.title} ({group.tools.length})</span>
+                    <ChevronDown
+                      size={18}
+                      aria-hidden='true'
+                      className={`shrink-0 transition-transform duration-300 ease-in-out motion-reduce:transition-none ${collapsedGroups.has(group.title) ? '-rotate-90' : ''}`}
+                    />
+                  </button>
+                </h3>
+                <div
+                  id={`${groupId}-${group.title.replace(/\s+/g, '-').toLowerCase()}`}
+                  aria-hidden={collapsedGroups.has(group.title)}
+                  inert={collapsedGroups.has(group.title)}
+                  className={`grid transition-[grid-template-rows,opacity] duration-300 ease-in-out motion-reduce:transition-none ${collapsedGroups.has(group.title) ? 'grid-rows-[0fr] opacity-0' : 'grid-rows-[1fr] opacity-100'}`}
+                >
+                  <div className='min-h-0 overflow-hidden'>
+                    <div className='space-y-1.5 px-1 pt-1 sm:space-y-4'>
+              {group.tools.map(tool => (
                 <div
                   key={tool.name}
                   onClick={() => handleToggle(tool.name, tool.enabled)}
@@ -360,7 +392,7 @@ export const ToolsSettings: React.FC = () => {
                         className='truncate text-xs font-medium text-neutral-800 sm:text-[13px] lg:text-[15px] dark:text-neutral-200'
                         style={titleStyle}
                       >
-                        {tool.name.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase())}
+                        {(tool.mcpToolName || tool.name).replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase())}
                       </h3>
                       <p
                         className='mt-0 max-w-[150px] truncate text-[10px] text-neutral-500 sm:mt-0.5 sm:max-w-[250px] sm:text-[11px] lg:max-w-[400px] lg:text-xs dark:text-neutral-500'
@@ -377,7 +409,7 @@ export const ToolsSettings: React.FC = () => {
                       className='hidden font-mono text-[8px] uppercase text-neutral-400 sm:block sm:text-[9px] lg:text-[10px] dark:text-neutral-600'
                       style={tool.enabled ? { color: sectionThemeColors?.primaryButtonText ?? undefined } : bodyStyle}
                     >
-                      {tool.isCustom ? 'Custom' : 'Plugin'}
+                      {tool.isMcp ? tool.mcpServerName || 'MCP' : tool.isCustom ? 'Custom' : 'Built-in'}
                     </span>
                     <div
                       className={`w-6 h-6 sm:w-7 sm:h-7 lg:w-8 lg:h-8 rounded-full border flex items-center justify-center transition-all duration-200 ${
@@ -415,7 +447,11 @@ export const ToolsSettings: React.FC = () => {
                   </div>
                 </div>
               ))}
-            </div>
+                    </div>
+                  </div>
+                </div>
+              </section>
+            ))}
           </div>
         </div>
       )}

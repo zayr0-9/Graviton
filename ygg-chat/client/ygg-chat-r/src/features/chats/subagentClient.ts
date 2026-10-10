@@ -111,7 +111,7 @@ const getSubagentToolNames = (orchestratorMode: boolean, requestedTools: unknown
   const bypassEnabledCheck = useRequested
 
   return allTools
-    .filter(tool => (bypassEnabledCheck ? true : tool.enabled) && allowed.has(tool.name) && !excluded.has(tool.name))
+    .filter(tool => !tool.isMcp && !tool.name.startsWith('mcp__') && (bypassEnabledCheck ? true : tool.enabled) && allowed.has(tool.name) && !excluded.has(tool.name))
     .map(tool => tool.name)
 }
 

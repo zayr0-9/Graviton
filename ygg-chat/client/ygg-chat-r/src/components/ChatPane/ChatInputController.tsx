@@ -26,7 +26,6 @@ export type ChatInputControllerProps = {
   onSlashCommandSelect?: (command: string) => ComposerSlashCommandResult | void
   onHasTextChange: (hasText: boolean) => void
   onSubmit: () => void
-  onToggleOperationMode?: () => void
   onBlurPersist: (content: string) => void
   onAddCurrentIdeContext?: () => boolean
   onClearIdeContexts?: () => void
@@ -54,7 +53,6 @@ export const ChatInputController = React.memo(
         onSlashCommandSelect,
         onHasTextChange,
         onSubmit,
-        onToggleOperationMode,
         onBlurPersist,
         onAddCurrentIdeContext,
         onClearIdeContexts,
@@ -226,7 +224,6 @@ export const ChatInputController = React.memo(
           <InputTextArea
             value={value}
             onChange={handleChange}
-            onToggleOperationMode={onToggleOperationMode}
             onKeyDown={event => {
               if ((event.metaKey || event.ctrlKey) && event.shiftKey && event.code === 'KeyV') {
                 // macOS can release Shift before dispatching the native paste event for Cmd+Shift+V.

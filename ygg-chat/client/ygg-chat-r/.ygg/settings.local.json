@@ -1,17 +1,5 @@
 {
   "hooks": {
-    "UserPromptSubmit": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "python3 .ygg/hooks/inject_branch_point_prompt.py",
-            "timeoutMs": 30000,
-            "executionMode": "sync"
-          }
-        ]
-      }
-    ],
     "Stop": [
       {
         "hooks": [

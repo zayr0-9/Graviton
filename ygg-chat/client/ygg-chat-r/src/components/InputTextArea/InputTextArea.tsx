@@ -1,5 +1,7 @@
 import React, { useEffect, useId, useMemo, useRef, useState } from 'react'
-import { useDispatch, useSelector } from 'react-redux'
+import { useSelector } from 'react-redux'
+import { useAppDispatch } from '../../hooks/redux'
+import { prepareImageFiles } from '../../features/chats/imagePreparation'
 import { ChevronRight, Slash } from 'lucide-react'
 import { selectCcCwd } from '../../features/chats/chatSelectors'
 import { chatSliceActions } from '../../features/chats/chatSlice'
@@ -16,7 +18,6 @@ import { type DirectoryFileEntry, useDirectoryFileSearch, useDirectoryFiles } fr
 import type { RootState } from '../../store/store'
 import { getThemeModeColor, useCustomChatTheme, useHtmlDarkMode } from '../ThemeManager/themeConfig'
 import { readLocalMentionFile } from '../../utils/readLocalMentionFile'
-import { localApi } from '../../utils/api'
 import { rankFileMatches } from '../../../shared/fileMatchRanking'
 import { CHAT_NORMAL_TEXT_SIZE_CLASS, getChatFontSizeOffsetStyle } from '../ChatMessage/chatMessageShared'
 
@@ -35,7 +36,6 @@ interface TextAreaProps {
   value?: string
   onChange?: (value: string) => void
   onKeyDown?: (e: React.KeyboardEvent<HTMLTextAreaElement>) => void
-  onToggleOperationMode?: () => void
   onPaste?: (e: React.ClipboardEvent<HTMLTextAreaElement>) => void
   onBlur?: () => void
   state?: textAreaState
@@ -147,7 +147,6 @@ export const InputTextArea: React.FC<TextAreaProps> = ({
   value = '',
   onChange,
   onKeyDown,
-  onToggleOperationMode,
   onPaste,
   onBlur,
   state = 'default',
@@ -177,7 +176,8 @@ export const InputTextArea: React.FC<TextAreaProps> = ({
   fontSizeOffset = 0,
   ...rest
 }) => {
-  const dispatch = useDispatch()
+  const dispatch = useAppDispatch()
+  const preparation = useSelector((s: RootState) => s.chat.composition)
   const imageDrafts = useSelector((s: RootState) => s.chat.composition.imageDrafts)
   const currentImageDraftTarget = useSelector((s: RootState) => s.chat.composition.imageDraftTarget)
   const currentSelection = useSelector(selectCurrentSelection)
@@ -374,12 +374,6 @@ export const InputTextArea: React.FC<TextAreaProps> = ({
   }
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-    if (e.key === 'Tab' && e.shiftKey && onToggleOperationMode) {
-      e.preventDefault()
-      onToggleOperationMode()
-      return
-    }
-
     // Handle slash command list navigation
     if (showSlashList && filteredSlashCommands.length > 0) {
       switch (e.key) {
@@ -460,115 +454,23 @@ export const InputTextArea: React.FC<TextAreaProps> = ({
     setDragOver(false)
   }
 
-  const fileToDataUrl = (file: File) =>
-    new Promise<string>((resolve, reject) => {
-      const reader = new FileReader()
-      reader.onload = () => resolve(reader.result as string)
-      reader.onerror = reject
-      reader.readAsDataURL(file)
-    })
-
   const handleDrop = (e: React.DragEvent<HTMLTextAreaElement>) => {
     e.preventDefault()
     e.stopPropagation()
     setDragOver(false)
     if (state === 'disabled' || !enableImageAttachments) return
-
-    const files = Array.from(e.dataTransfer?.files || [])
-    const images = files.filter(f => f.type.startsWith('image/'))
-    if (images.length === 0) return
-
-    Promise.all(
-      images.map(async image => ({
-        dataUrl: await fileToDataUrl(image),
-        name: image.name,
-        type: image.type,
-        size: image.size,
-      }))
-    )
-      .then(drafts => {
-        void (async () => {
-          try {
-            const result = await localApi.post<{ attachments?: Array<{ id: string; file_path: string; sha256: string }> }>(
-              '/local/attachments/prepare-base64',
-              { attachments: drafts }
-            )
-            const saved = Array.isArray(result?.attachments) ? result.attachments : []
-            if (saved.length !== drafts.length) throw new Error('Incomplete attachment persistence result')
-            dispatch(chatSliceActions.imageDraftsAppended({
-              drafts: drafts.map((draft, index) => ({
-                ...draft,
-                filePath: saved[index].file_path,
-                attachmentId: saved[index].id,
-                sha256: saved[index].sha256,
-              })),
-              target: imageDraftTarget,
-            }))
-          } catch (err) {
-            console.error('Failed to persist image attachments locally', err)
-          }
-        })()
-      })
-      .catch(err => console.error('Failed to read dropped images', err))
+    const images = Array.from(e.dataTransfer?.files || []).filter(file => file.type.startsWith('image/'))
+    if (images.length) void dispatch(prepareImageFiles(images, imageDraftTarget))
   }
 
   const handlePaste = (e: React.ClipboardEvent<HTMLTextAreaElement>) => {
     onPaste?.(e)
     if (e.defaultPrevented || state === 'disabled' || !enableImageAttachments) return
-
-    const items = Array.from(e.clipboardData?.items || [])
-    const imageItems = items.filter(item => item.type.startsWith('image/'))
-
-    if (imageItems.length === 0) return
-
+    const images = Array.from(e.clipboardData?.items || [])
+      .filter(item => item.type.startsWith('image/')).map(item => item.getAsFile()).filter((file): file is File => !!file)
+    if (!images.length) return
     e.preventDefault()
-
-    Promise.all(
-      imageItems.map(async (item, index) => {
-        const file = item.getAsFile()
-        if (!file) return null
-
-        return {
-          dataUrl: await fileToDataUrl(file),
-          name: `pasted-image-${Date.now()}-${index}.${file.type.split('/')[1]}`,
-          type: file.type,
-          size: file.size,
-        }
-      })
-    )
-      .then(results => {
-        const drafts = results.filter(Boolean) as Array<{
-          dataUrl: string
-          name: string
-          type: string
-          size: number
-        }>
-
-        if (drafts.length > 0) {
-          void (async () => {
-            try {
-              const result = await localApi.post<{ attachments?: Array<{ id: string; file_path: string; sha256: string }> }>(
-                '/local/attachments/prepare-base64',
-                { attachments: drafts }
-              )
-              const saved = Array.isArray(result?.attachments) ? result.attachments : []
-              if (saved.length !== drafts.length) throw new Error('Incomplete attachment persistence result')
-              dispatch(chatSliceActions.imageDraftsAppended({
-                drafts: drafts.map((draft, index) => ({
-                  ...draft,
-                  filePath: saved[index].file_path,
-                  attachmentId: saved[index].id,
-                  sha256: saved[index].sha256,
-                })),
-                target: imageDraftTarget,
-              }))
-            } catch (err) {
-              console.error('Failed to persist image attachments locally', err)
-            }
-          })()
-        }
-      })
-      .catch(err => console.error('Failed to read pasted images', err))
+    void dispatch(prepareImageFiles(images, imageDraftTarget))
   }
 
   const handleFileSelection = (file: MentionableFileOption) => {
@@ -1198,6 +1100,14 @@ export const InputTextArea: React.FC<TextAreaProps> = ({
       </div>
 
       {/* Image draft previews (hidden while editing a branch) */}
+      {enableImageAttachments && imageDraftTargetMatches && (preparation.imagePreparationPending > 0 || preparation.imagePreparationError) && (
+        <div role='status' className='px-3 py-1 text-xs text-stone-500 dark:text-stone-400'>
+          {preparation.imagePreparationError || 'Preparing image…'}
+          <button type='button' className='ml-2 underline' onClick={() => dispatch(chatSliceActions.imageDraftsCleared({ target: imageDraftTarget }))}>
+            Discard images
+          </button>
+        </div>
+      )}
       {visibleImageDrafts.length > 0 && (
         <div className='mt-2 px-2 flex flex-wrap gap-2'>
           {visibleImageDrafts.map((img, idx) => (

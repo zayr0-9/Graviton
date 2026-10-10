@@ -3,6 +3,7 @@ paths:
   - "client/ygg-chat-r/server/headlessServer/services/compactionService.ts"
   - "client/ygg-chat-r/server/headlessServer/services/toolLoopService.ts"
   - "client/ygg-chat-r/src/features/chats/compactionContext.ts"
+  - "client/ygg-chat-r/src/features/chats/compactionVisibility.ts"
   - "client/ygg-chat-r/src/features/chats/contextTokenEstimate.ts"
   - "client/ygg-chat-r/shared/contextTokenEstimate.ts"
   - "client/ygg-chat-r/server/headlessServer/services/contextStatusTool.ts"
@@ -33,7 +34,7 @@ Use this when changing:
 
 ## Where compaction runs (post-migration)
 
-- IN-LOOP (auto) compaction is SERVER-OWNED. It fires inside the tool loop, not the renderer. `client/ygg-chat-r/electron/headlessServer/services/toolLoopService.ts` `ToolLoopService.run` evaluates compaction at a quiescent turn boundary (every requested tool has executed once and its result is durable) — the block at `toolLoopService.ts:939-1001`. When it decides to compact it calls `this.compactBranch(...)`, which `ChatOrchestrator` wires to `CompactionService.compactBranch` (`client/ygg-chat-r/electron/headlessServer/index.ts` builds `CompactionService` and passes `compactBranch: input => compactionService.compactBranch(input)`).
+- IN-LOOP (auto) compaction is SERVER-OWNED. It fires inside the tool loop, not the renderer. `client/ygg-chat-r/server/headlessServer/services/toolLoopService.ts` `ToolLoopService.run` evaluates compaction at a quiescent turn boundary (every requested tool has executed once and its result is durable). When it decides to compact it calls `this.compactBranch(...)`, which `ChatOrchestrator` wires to `CompactionService.compactBranch` (`client/ygg-chat-r/server/headlessServer/index.ts` builds `CompactionService` and passes `compactBranch: input => compactionService.compactBranch(input)`).
 - MANUAL compaction (the UI "compact" button) dispatches the renderer `compactBranch` thunk, but the thunk is now a thin client for `POST /api/conversations/:id/compact`. `CompactionService.compactBranch` generates and persists the summary before the renderer receives or exposes its server-assigned ID.
 - The renderer also keeps a PRE-BRANCH auto-compaction precheck inside `editMessageWithBranching` (`chatActions.ts`): if branch context ≥85%, it dispatches the same thin-client `compactBranch` thunk before sending the branch.
 - The renderer no longer imports `resolveOpenAIContinuationCompaction` or otherwise orchestrates in-loop compaction (grep-confirmed: zero hits in `src`).
@@ -51,21 +52,21 @@ The in-loop compaction decision is computed server-side:
 - In `toolLoopService.ts`: `projectedReplayTokens` (char/4 heuristic over system prompt + conversation/project context + full history) and `usageFromMessage` (reads provider-reported `context_usage` or extracts it from content blocks).
 - Decision (`resolveOpenAIContinuationCompaction`): `effectiveTokens = max(reportedTokens, projectedTokens)`; compact iff `enabled !== false` AND `isOpenAIProvider(provider)` AND `contextLength > 0` AND `effectiveTokens ≥ thresholdPercent% of contextLength` (default `thresholdPercent = 85`). So in-loop auto-compaction only fires for the OpenAI-family provider route.
 - Compaction knobs travel on the request contract (`shared/headlessApi.ts`: `autoCompactionEnabled`, `contextLength`, `compactionThresholdPercent`, `compactionProvider`, `compactionModelName`, `compactionSystemPrompt`) and are threaded through `ChatOrchestrator` into `ToolLoopRunInput`. The renderer forwards its auto-compaction setting plus the effective context length. OpenAI (ChatGPT) ignores per-model context metadata here and uses the global `openAiChatGptMaxContextTokens` provider setting (default 258,000); Electron mirrors it to `YGG_OPENAI_CHATGPT_MAX_CONTEXT_TOKENS` so direct/mobile/subagent server calls that omit `contextLength` use the same value; desktop requests carry the current value explicitly to avoid a storage-mirror race immediately after a settings change. Other providers keep their selected model context length. Threshold defaults to 85; compaction provider/model fall back to the turn's provider/model.
-- Estimation is validated by `client/ygg-chat-r/electron/headlessServer/providers/__tests__/contextTokenEstimate.test.ts`, which exercises `estimateContentBlocksForContext` (image-payload redaction) and `openAIContextUsageHistory` (ordered branch snapshots, dedup of duplicate provider response IDs) from `client/ygg-chat-r/src/features/chats/contextTokenEstimate.ts`.
+- Estimation is validated by `client/ygg-chat-r/server/headlessServer/providers/__tests__/contextTokenEstimate.test.ts`, which exercises `estimateContentBlocksForContext` (image-payload redaction) and `openAIContextUsageHistory` (ordered branch snapshots, dedup of duplicate provider response IDs) from `client/ygg-chat-r/src/features/chats/contextTokenEstimate.ts`.
 
 ## Key Files
 
 - `client/ygg-chat-r/.ygg/hooks/root_note_stop.py`: async Stop hook that updates root-note style conversation memory.
 - `client/ygg-chat-r/server/context/autoMemory.ts` and `contextLoader.ts`: resolve memory from chat cwd/nearest Git root, inject `MEMORY.md` (first 200 lines / 25 KB), and reload after compaction. Fact files are read/edited through ordinary file tools. No project-name/ID-based memory store or background fact writer.
 - `client/ygg-chat-r/.ygg/settings.local.json`: bundled hook settings copied into managed user-data hooks.
-- `client/ygg-chat-r/electron/hooks/hookRunner.ts`: hook loading, execution, and model feedback handling; now invoked IN-PROCESS by the server loop (wired as `hookRunner: runHookRequest` in `electron/headlessServer/index.ts`).
-- `client/ygg-chat-r/electron/hooks/hookStorage.ts`: bundled-to-managed hook initialization and settings storage.
+- `client/ygg-chat-r/server/hooks/hookRunner.ts`: hook loading, execution, and model feedback handling; now invoked IN-PROCESS by the server loop (wired as `hookRunner: runHookRequest` in `server/headlessServer/index.ts`).
+- `client/ygg-chat-r/server/hooks/hookStorage.ts`: bundled-to-managed hook initialization and settings storage.
 - `client/ygg-chat-r/server/headlessServer/services/chatHookService.ts`: runs Ygg hooks in-process at the loop's lifecycle points, including the root-note Stop hook. Markdown auto-memory injection is independent of hooks.
-- `client/ygg-chat-r/electron/headlessServer/services/toolLoopService.ts`: server chat/tool loop; owns the in-loop auto-compaction trigger (`ToolLoopService.run`, block `:939-1001`) and the server-side token projection (`projectedReplayTokens`, `usageFromMessage`).
-- `client/ygg-chat-r/electron/headlessServer/services/compactionService.ts`: `CompactionService` — headless summary generation (`generateCompactionSummary`, `:503`), bounded tool-context / write-op serialization, and summary persistence (`compactBranch`, `:559`). `AUTO_COMPACTION_NOTE = '__auto_compaction_summary__'` marker + resume-line prefix (`ensureCompactionSummaryResumeLine`).
-- `client/ygg-chat-r/electron/headlessServer/services/chatOrchestrator.ts`: wires `compactBranch` to `CompactionService.compactBranch` and threads the compaction knobs into `ToolLoopRunInput`.
-- `client/ygg-chat-r/electron/headlessServer/index.ts`: constructs `CompactionService` and the `ChatOrchestrator`; registers chat routes with the compaction service.
-- `client/ygg-chat-r/electron/headlessServer/routes/chatRoutes.ts`: `POST /api/conversations/:id/compact` manual-compaction route → `compactionService.compactBranch`.
+- `client/ygg-chat-r/server/headlessServer/services/toolLoopService.ts`: server chat/tool loop; owns the in-loop auto-compaction trigger (`ToolLoopService.run`) and the server-side token projection (`projectedReplayTokens`, `usageFromMessage`).
+- `client/ygg-chat-r/server/headlessServer/services/compactionService.ts`: `CompactionService` — headless summary generation (`generateCompactionSummary`), bounded tool-context / write-op serialization, and summary persistence (`compactBranch`). `AUTO_COMPACTION_NOTE = '__auto_compaction_summary__'` marker + resume-line prefix (`ensureCompactionSummaryResumeLine`).
+- `client/ygg-chat-r/server/headlessServer/services/chatOrchestrator.ts`: wires `compactBranch` to `CompactionService.compactBranch` and threads the compaction knobs into `ToolLoopRunInput`.
+- `client/ygg-chat-r/server/headlessServer/index.ts`: constructs `CompactionService` and the `ChatOrchestrator`; registers chat routes with the compaction service.
+- `client/ygg-chat-r/server/headlessServer/routes/chatRoutes.ts`: `POST /api/conversations/:id/compact` manual-compaction route → `compactionService.compactBranch`.
 - `shared/contextUsage.ts`: server-side compaction/token decision helpers (`resolveOpenAIContinuationCompaction`, `openAIModelContextLength`, `extractOpenAIContextUsageFromBlocks`, `shouldCompactAtPercent`, `isOpenAIProvider`).
 - `client/ygg-chat-r/src/helpers/providerSettingsStorage.ts`: stores and normalizes the global ChatGPT max-context override; `Settings.tsx`, Chat token meters/prechecks, request construction, and Electron's mirrored server fallback all consume it.
 - `client/ygg-chat-r/src/features/chats/contextTokenEstimate.ts`: token/content-block estimation helpers (`estimateContentBlocksForContext`, `openAIContextUsageHistory`, `safeEstimateTokenCount`); validated by the server-side test above and used by the renderer for its pre-branch token precheck.
@@ -75,8 +76,8 @@ The in-loop compaction decision is computed server-side:
 
 ## Important Invariants
 
-- In-loop auto-compaction runs server-side inside `ToolLoopService.run` at a quiescent turn boundary; the renderer no longer orchestrates it. Missing `compactBranch` or a compaction failure emits `context_compaction { status: 'failed' }` and throws (run finishes with `endReason: context_compaction_failed`).
-- In-loop auto-compaction fires only for the OpenAI-family provider route (`isOpenAIProvider`) and only when `effectiveTokens ≥ thresholdPercent%` of `contextLength`; it is server-defaulted ON because the renderer does not send the compaction knobs.
+- In-loop auto-compaction runs server-side inside `ToolLoopService.run` at a quiescent turn boundary; the renderer no longer orchestrates it. Missing `compactBranch` or a compaction failure emits `context_compaction { status: 'failed' }` and throws (the orchestrator records `endReason: 'error'` with code `compaction_failed`).
+- In-loop auto-compaction fires only for the OpenAI-family provider route (`isOpenAIProvider`) and only when `effectiveTokens ≥ thresholdPercent%` of `contextLength`; it defaults ON only when `autoCompactionEnabled` is omitted. Desktop requests forward the setting, including `false`, plus effective context length.
 - On a successful in-loop compaction the loop validates the persisted marker (`role: 'system'`, `note: '__auto_compaction_summary__'`, `parent_id === assistantMessage.id`), resets `history = [summaryMessage]`, and emits `context_compaction { status: 'completed', summaryMessage }`. On later runs, `ChatOrchestrator` and `ToolLoopService` both trim persisted lineage to the newest summary before provider replay; pre-summary rows remain in SQLite for tree/history navigation only.
 - The renderer projects `context_compaction.completed` into Redux as the summary branch message. Its context meter counts the selected path from that marker onward, so it immediately reflects the compacted replay context rather than the retained historical ancestry.
 - Compaction replaces pre-marker protocol history with a synthetic system summary. Before trimming, completed non-write tool calls are paired to results by call ID and included as a bounded tool-context appendix in both the summarizer prompt and persisted summary.
@@ -99,7 +100,7 @@ The in-loop compaction decision is computed server-side:
 - Validate hook settings JSON: `python3 -m json.tool client/ygg-chat-r/.ygg/settings.local.json`.
 - Build Electron/server code after storage/runner/loop changes: `npm --prefix client/ygg-chat-r run build:electron`.
 - Manually trigger several Stop hooks in quick succession and confirm no settings JSON parse warnings appear.
-- Run the server-side context/token estimation test: it validates image-payload redaction and context-usage ordering used by the compaction decision (`client/ygg-chat-r/electron/headlessServer/providers/__tests__/contextTokenEstimate.test.ts`).
+- Run the server-side context/token estimation test: it validates image-payload redaction and context-usage ordering used by the compaction decision (`client/ygg-chat-r/server/headlessServer/providers/__tests__/contextTokenEstimate.test.ts`).
 - Run headless compaction/tool-loop tests and verify read-tool and subagent results appear in both the summarizer input and persisted summary.
 - Verify this file remains listed in `docs/agent_context/AGENT.md` and exists in `docs/agent_context/`.
 
@@ -111,8 +112,8 @@ The in-loop compaction decision is computed server-side:
 
 ## Compaction cancellation
 
-- Standalone `compactBranch` owns a renderer abort controller keyed by conversation and parent message. The primary composer enables Stop when that parent is on the displayed branch; summary marker rendering stays intentionally unchanged.
+- Standalone `compactBranch` owns a renderer abort controller keyed by conversation and parent message; unlike in-loop compaction it has no SSE stream slot. Composition state captures its selected lineage at start. `compactionVisibility.ts` gates animation, send blocking, and Stop by conversation plus exact lineage (or the owning branch tip for legacy paths), not conversation-wide state or shared ancestor membership. The brief completion presentation is branch-scoped and tolerates only its own returned summary/mode-marker path extension; sibling summaries are not interchangeable. In-loop indicators use the branch-selected stream, never the pending conversation-only startup fallback. Standalone requests remain serialized while composition has a single owner; summary marker rendering stays intentionally unchanged.
 - Stop cancels the compact HTTP request. The compact route aborts its provider signal on an unfinished response close; unlike resumable chat SSE, this standalone JSON request is disconnect-cancelled.
 - In-loop and subagent compactors forward the owning run signal to the summarizer. Abort is not wrapped as `compaction_failed`.
 - The summary service checks cancellation before generation and after provider completion, before persistence, so late provider success cannot install an aborted context boundary.
-- Regression tests: `compactionCancellation.test.ts`, `chatRoutes.test.ts`, and `compactionService.test.ts`.
+- Regression tests: `compactionVisibility.test.ts` (branch switching, shared ancestors, completion ownership), `compactionCancellation.test.ts`, `chatRoutes.test.ts`, and `compactionService.test.ts`.

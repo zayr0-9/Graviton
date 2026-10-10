@@ -21,6 +21,8 @@ export interface JobOptions {
   /** Delay between retries in ms (default: 1000) */
   retryDelayMs?: number
   /** Root path for tool execution */
+  /** Live invocation only; restored jobs default to restricted access. */
+  fullAccess?: boolean
   rootPath?: string | null
   /** Operation mode (plan/execute) */
   operationMode?: 'plan' | 'execute'
@@ -50,6 +52,8 @@ export interface Job {
   /** Job priority */
   priority: JobPriority
   /** Root path for execution */
+  /** Not persisted: elevated access never survives a server restart. */
+  fullAccess?: boolean
   rootPath: string | null
   /** Operation mode */
   operationMode: 'plan' | 'execute'

@@ -548,11 +548,14 @@ export function projectServerEvent(event: ServerStreamEvent, ctx: ProjectionCont
       // START is announced by the server's own `notice{code:'compacting'}` frame,
       // emitted beside this one. Only the COMPLETED notice below is ours (the
       // server sends none), so the pause is explained exactly once.
-      if (event.status === 'started') return []
+      if (event.status === 'started') return [chatSliceActions.streamCompactionUpdated({ streamId, status: 'started' })]
       if (event.status === 'failed') {
         // Non-terminal here: the run either recovers or fails on its own terminal
         // frame. The `compact` action on the default envelope is the real remedy.
-        return [errorChunkAction(streamId, buildChatErrorEnvelope('compaction_failed', { detail: event.error }), false)]
+        return [
+          chatSliceActions.streamCompactionUpdated({ streamId, status: 'failed' }),
+          errorChunkAction(streamId, buildChatErrorEnvelope('compaction_failed', { detail: event.error }), false),
+        ]
       }
       if (event.status !== 'completed') return []
 
@@ -560,6 +563,7 @@ export function projectServerEvent(event: ServerStreamEvent, ctx: ProjectionCont
       // stream. Project its completed marker so the active branch and context meter
       // immediately share the same replay boundary as the server.
       const actions: ProjectedAction[] = [
+        chatSliceActions.streamCompactionUpdated({ streamId, status: 'completed' }),
         noticeAction(streamId, 'compacting', 'Summarised earlier turns to make room in the context window.'),
       ]
       if (!event.summaryMessage) return actions

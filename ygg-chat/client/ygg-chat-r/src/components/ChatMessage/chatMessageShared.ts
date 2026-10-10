@@ -147,6 +147,7 @@ export interface ToolCallRenderGroup {
 export const isExcludedFromProcessRunGrouping = (name?: string, args?: Record<string, any> | null): boolean => {
   const normalizedName = String(name || '').trim().toLowerCase()
   if (normalizedName.startsWith('mcp__') || normalizedName === 'html_renderer') return true
+  if (normalizedName === 'mcp_manager' && args?.action === 'invoke') return true
 
   if (normalizedName === 'plan_md') {
     const action = String(args?.action || '').trim().toLowerCase()

@@ -61,6 +61,8 @@ export interface HeadlessMessageRequest {
   promptCacheRetention?: 'in_memory' | '24h'
   tools?: Array<{ name: string; description?: string; inputSchema?: Record<string, any> }>
   rootPath?: string | null
+  /** User-selected workspace bypass; does not change approval or operation mode. */
+  fullAccess?: boolean
   operationMode?: 'plan' | 'execute'
   includeOperationModePrompt?: boolean
   planModeVerbosity?: 'concise' | 'normal' | 'detailed'
@@ -117,6 +119,8 @@ export interface HeadlessSubagentStreamRequest {
   /** Inherited content-branch ownership. Standalone subagent requests may omit it. */
   lineageId?: string | null
   prompt: string
+  /** Additional instructions appended to the saved transcript when resuming a run. */
+  resumePrompt?: string
   systemPrompt?: string | null
   provider: string
   modelName: string
@@ -132,6 +136,8 @@ export interface HeadlessSubagentStreamRequest {
   /** Parent's toolAutoApprove && inheritAutoApprove. When false, only read-only tools run. */
   autoApprove: boolean
   rootPath?: string | null
+  /** User-selected workspace bypass; does not change approval or operation mode. */
+  fullAccess?: boolean
   userId?: string | null
   accessToken?: string | null
   accountId?: string | null

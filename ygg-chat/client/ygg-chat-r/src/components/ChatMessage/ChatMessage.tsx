@@ -6,6 +6,8 @@ import 'katex/dist/katex.min.css'
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { createSelector } from '@reduxjs/toolkit'
 import { createPortal } from 'react-dom'
+import { AnimatePresence, motion, useReducedMotion } from 'framer-motion'
+import { motionState, softTransition, useMotionPreferences } from '../motion'
 import ReactMarkdown from 'react-markdown'
 import { useNavigate } from 'react-router-dom'
 import { useSelector } from 'react-redux'
@@ -13,7 +15,7 @@ import rehypeHighlight from 'rehype-highlight'
 import rehypeKatex from 'rehype-katex'
 import remarkGfm from 'remark-gfm'
 import remarkMath from 'remark-math'
-import { Check, X } from 'lucide-react'
+import { Check, RotateCw, X } from 'lucide-react'
 import { AUTO_COMPACTION_NOTE, fetchMcpTools } from '../../features/chats/chatActions'
 import { chatSliceActions } from '../../features/chats/chatSlice'
 import {
@@ -44,6 +46,10 @@ import { HookActivityCard } from './HookActivityCard'
 import { MessageActions } from './MessageActions'
 import { DisclosurePanel, DisclosureRow } from './messagePrimitives'
 import { SummarisedMessage } from './SummarisedMessage'
+import { CompactMessageNotice } from './CompactMessageNotice'
+import { ImageAttachmentNotice, isImageAttachmentInfoMessage } from './ImageAttachmentNotice'
+import { waitForImagePreparation } from '../../features/chats/imagePreparation'
+import { hasAcceptedImageAttachments } from '../../features/chats/acceptedImageAttachments'
 import { isWatcherCompletionMessage, WatcherCompletionNotice } from './WatcherCompletionNotice'
 import { ToolCallGroupCard, type McpViewerPayload } from './ToolCallGroupCard'
 import {
@@ -446,6 +452,7 @@ const ChatMessageBody: React.FC<ChatMessageProps> = React.memo(
       groupRuns: new Set(),
     })
     const [showMoreMenu, setShowMoreMenu] = useState(false)
+    const { reducedMotion } = useMotionPreferences(useReducedMotion())
     const [moreMenuPlacement, setMoreMenuPlacement] = useState<MoreMenuPlacement | null>(null)
     const moreMenuRef = useRef<HTMLDivElement | null>(null)
     const [isHovering, setIsHovering] = useState(false)
@@ -595,15 +602,27 @@ const ChatMessageBody: React.FC<ChatMessageProps> = React.memo(
       onEditingStateChange?.(id, false, 'edit')
     }
 
-    const handleSaveBranch = () => {
-      if (onBranch) {
-        const trimmedContent = editContent.trim()
+    const branchSubmissionPending = useRef(false)
+    const latestBranchEdit = useRef({ editContent, onBranch })
+    latestBranchEdit.current = { editContent, onBranch }
+    const handleSaveBranch = async () => {
+      if (branchSubmissionPending.current) return
+      branchSubmissionPending.current = true
+      try {
+        await dispatch(waitForImagePreparation({ kind: 'branch', messageId: id }))
+      } catch {
+        // Preparation status/error remains visible and the editor/draft stays intact.
+        return
+      } finally {
+        branchSubmissionPending.current = false
+      }
+      if (latestBranchEdit.current.onBranch) {
+        const trimmedContent = latestBranchEdit.current.editContent.trim()
         const newContentBlocks = hasEditableBlocks ? editableTextToContentBlocks(trimmedContent) : undefined
-        onBranch(id, appendAttachedImagePathMetadata(trimmedContent, extractAttachedImagePaths(content)), newContentBlocks)
+        latestBranchEdit.current.onBranch(id, appendAttachedImagePathMetadata(trimmedContent, extractAttachedImagePaths(content)), newContentBlocks)
       }
       dispatch(chatSliceActions.editingBranchSet(false))
-      // Clear only drafts owned by this branch edit after branching is initiated.
-      dispatch(chatSliceActions.imageDraftsCleared({ target: { kind: 'branch', messageId: id } }))
+      // The submission thunk consumes the captured drafts; never clear them before it snapshots.
       setEditingState(false)
       onEditingStateChange?.(id, false, 'branch')
     }
@@ -819,18 +838,6 @@ const ChatMessageBody: React.FC<ChatMessageProps> = React.memo(
       }
     }, [showExplainInput, getAdjustedExplainInputPosition])
 
-    // Click outside handler for explain input
-    useEffect(() => {
-      if (!showExplainInput) return
-      const handleClickOutside = (event: MouseEvent) => {
-        if (explainInputRef.current && !explainInputRef.current.contains(event.target as Node)) {
-          handleCancelExplainInput()
-        }
-      }
-      document.addEventListener('mousedown', handleClickOutside)
-      return () => document.removeEventListener('mousedown', handleClickOutside)
-    }, [showExplainInput])
-
     // Focus explain textarea without scrolling the virtual list
     useEffect(() => {
       if (!showExplainInput) return
@@ -877,7 +884,6 @@ const ChatMessageBody: React.FC<ChatMessageProps> = React.memo(
     const handleMoreClick = () => {
       if (showMoreMenu) {
         setShowMoreMenu(false)
-        setMoreMenuPlacement(null)
         return
       }
       const placement = computeMoreMenuPlacement()
@@ -894,8 +900,7 @@ const ChatMessageBody: React.FC<ChatMessageProps> = React.memo(
         const clickedTrigger = Boolean(moreButtonRef.current && moreButtonRef.current.contains(target))
         if (!clickedMenu && !clickedTrigger) {
           setShowMoreMenu(false)
-          setMoreMenuPlacement(null)
-        }
+          }
       }
       if (showMoreMenu) document.addEventListener('mousedown', handleClickOutside)
       return () => document.removeEventListener('mousedown', handleClickOutside)
@@ -905,7 +910,6 @@ const ChatMessageBody: React.FC<ChatMessageProps> = React.memo(
     useEffect(() => {
       if (contextMenuOpen) {
         setShowMoreMenu(false)
-        setMoreMenuPlacement(null)
       }
     }, [contextMenuOpen])
 
@@ -1389,14 +1393,19 @@ const ChatMessageBody: React.FC<ChatMessageProps> = React.memo(
               key: noticeKey,
               kind: 'other',
               node: (
-                <div
+                <CompactMessageNotice
                   key={noticeKey}
-                  className={`flex h-8 items-center ${MESSAGE_BLOCK_INSET_CLASS} ${TEXT_LABEL_CLASS} italic text-neutral-500 dark:text-neutral-400`}
-                  style={messageContentStyle}
+                  kind='status'
+                  className='!p-0'
+                  title={`${noticeText}${counter}`}
+                  customTheme={customTheme}
+                  customThemeEnabled={customThemeEnabled}
+                  isDarkMode={isDarkMode}
+                  icon={<RotateCw size={14} className='shrink-0' aria-hidden='true' />}
                 >
                   {noticeText}
                   {counter}
-                </div>
+                </CompactMessageNotice>
               ),
             })
           }
@@ -1807,6 +1816,10 @@ const ChatMessageBody: React.FC<ChatMessageProps> = React.memo(
             renderedNodes && <div className={MESSAGE_BLOCK_STACK_CLASS}>{renderedNodes}</div>
           )}
 
+          {isUserRow && !editingState && hasAcceptedImageAttachments(messageData) && (
+            <ImageAttachmentNotice customTheme={customTheme} customThemeEnabled={customThemeEnabled} isDarkMode={isDarkMode} />
+          )}
+
           {/* Attachments on non-assistant rows. */}
           {Array.isArray(artifacts) && artifacts.length > 0 && role !== 'assistant' && (
             <div className={`${MESSAGE_BLOCK_INSET_CLASS} flex flex-wrap justify-end gap-2 py-2`}>
@@ -1873,16 +1886,21 @@ const ChatMessageBody: React.FC<ChatMessageProps> = React.memo(
                   isVisible={isHovering}
                   variant='default'
                 />
-                {showMoreMenu &&
-                  moreMenuPlacement &&
+                {moreMenuPlacement &&
                   createPortal(
-                    <div
+                    <AnimatePresence>
+                    {showMoreMenu && <motion.div
+                      key='message-info'
                       ref={moreMenuRef}
-                      className={`fixed z-[200] ${FLOATING_SURFACE_CLASS} [will-change:contents] [transform:translateZ(0)]`}
+                      {...motionState(reducedMotion, moreMenuPlacement.openUp ? 4 : -4)}
+                      transition={softTransition}
+                      className={`fixed z-[200] ${FLOATING_SURFACE_CLASS}`}
                       style={{
                         top: `${moreMenuPlacement.top}px`,
                         left: `${moreMenuPlacement.left}px`,
                         width: `${moreMenuPlacement.width}px`,
+                        transformOrigin: moreMenuPlacement.openUp ? 'bottom right' : 'top right',
+                        pointerEvents: showMoreMenu ? 'auto' : 'none',
                       }}
                     >
                       <div className='p-3'>
@@ -1917,7 +1935,8 @@ const ChatMessageBody: React.FC<ChatMessageProps> = React.memo(
                           )}
                         </div>
                       </div>
-                    </div>,
+                    </motion.div>}
+                    </AnimatePresence>,
                     document.body
                   )}
               </div>
@@ -2070,7 +2089,7 @@ const ChatMessageBody: React.FC<ChatMessageProps> = React.memo(
                 placeholder='Ask a question about the selected text...'
                 width='w-full'
                 minRows={1}
-                maxRows={2}
+                maxRows={3}
                 fontSizeOffset={fontSizeOffset}
                 onKeyDown={e => {
                   if (e.key === 'Enter' && !e.shiftKey) {
@@ -2110,6 +2129,7 @@ const ChatMessageBody: React.FC<ChatMessageProps> = React.memo(
         <ImageModal
           isOpen={Boolean(selectedArtifactUrl)}
           imageUrl={selectedArtifactUrl ?? ''}
+          overlayZIndex={readOnly ? 1800 : undefined}
           onClose={handleCloseArtifactModal}
         />
       </div>
@@ -2119,10 +2139,15 @@ const ChatMessageBody: React.FC<ChatMessageProps> = React.memo(
 
 ChatMessageBody.displayName = 'ChatMessageBody'
 
-// Keep summary/watcher payloads out of rich bubbles, including shared transcript callers.
+// Keep automated notice payloads out of rich bubbles, including shared transcript callers.
 // The stored message remains untouched; only its presentation changes.
 const ChatMessage: React.FC<ChatMessageProps> = React.memo(props => {
   const message = useSelector((state: RootState) => selectMessageByIdMap(state).get(String(props.id)))
+  if (isImageAttachmentInfoMessage(message)) {
+    return <ImageAttachmentNotice id={`message-${props.id}`}
+      className={`${props.width} ${props.className ?? ''}`} customTheme={props.customTheme}
+      customThemeEnabled={props.customThemeEnabled} isDarkMode={props.isDarkMode} />
+  }
   if (isWatcherCompletionMessage(message)) {
     return <WatcherCompletionNotice content={props.content} id={`message-${props.id}`}
       className={`${props.width} ${props.className ?? ''}`} customTheme={props.customTheme}

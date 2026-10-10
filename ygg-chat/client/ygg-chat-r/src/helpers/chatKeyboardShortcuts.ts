@@ -75,3 +75,27 @@ export const wrapPastedTextInMarkdownFence = (text: string): string => {
   const fence = getMarkdownFenceForText(text)
   return `${fence}\n${text}\n${fence}`
 }
+
+/** Chat-window toggles run in capture phase so autocomplete cannot consume them. */
+export const handleChatToggleShortcut = (
+  event: KeyboardEvent,
+  actions: {
+    toggleOperationMode: () => void
+    toggleFastServiceTier?: () => void
+  }
+): boolean => {
+  if (event.defaultPrevented || event.isComposing || event.altKey) return false
+
+  let toggle: (() => void) | undefined
+  if (event.key === 'Tab' && event.shiftKey && !event.ctrlKey && !event.metaKey) {
+    toggle = actions.toggleOperationMode
+  } else if (event.code === 'KeyF' && event.ctrlKey && !event.metaKey && !event.shiftKey) {
+    toggle = actions.toggleFastServiceTier
+  }
+  if (!toggle) return false
+
+  event.preventDefault()
+  event.stopPropagation()
+  if (!event.repeat) toggle()
+  return true
+}

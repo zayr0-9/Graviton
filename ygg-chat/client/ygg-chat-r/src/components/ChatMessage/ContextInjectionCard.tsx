@@ -1,5 +1,6 @@
 import React, { useMemo, useState } from 'react'
 import { BookOpenText, ChevronRight } from 'lucide-react'
+import { DisclosurePanel } from './messagePrimitives'
 import {
   TEXT_DETAIL_CLASS,
   TEXT_LABEL_CLASS,
@@ -186,8 +187,8 @@ export const ContextInjectionCard: React.FC<ContextInjectionCardProps> = ({
         />
       </button>
 
-      {expanded && (
-        <ul className='flex flex-col gap-1 px-2 pb-2'>
+      <DisclosurePanel expanded={expanded} flush>
+        <ul className='flex flex-col gap-1 px-2 pb-2' inert={!expanded}>
           {entries.map((entry, index) => {
             const isOpen = openEntry === index
             return (
@@ -217,8 +218,8 @@ export const ContextInjectionCard: React.FC<ContextInjectionCardProps> = ({
                     {describeContextInjectionReason(entry.reason)}
                   </span>
                 </button>
-                {isOpen && (
-                  <div className='ml-6 mt-1 mb-1'>
+                <DisclosurePanel expanded={isOpen} flush>
+                  <div className='ml-6 mt-1 mb-1' inert={!expanded || !isOpen}>
                     {entry.path && (
                       <p className={`mb-1 text-[0.85em] ${mutedClass}`} style={color(palette.muted)}>
                         {entry.label}
@@ -231,12 +232,12 @@ export const ContextInjectionCard: React.FC<ContextInjectionCardProps> = ({
                       {entry.text}
                     </pre>
                   </div>
-                )}
+                </DisclosurePanel>
               </li>
             )
           })}
         </ul>
-      )}
+      </DisclosurePanel>
     </div>
   )
 }

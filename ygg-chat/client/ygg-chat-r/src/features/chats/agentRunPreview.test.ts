@@ -7,6 +7,7 @@ vi.hoisted(() => {
 import chatReducer, { chatSliceActions as chat } from './chatSlice'
 import previewReducer, { agentRunPreviewActions as preview, agentRunPreviewMiddleware } from './agentRunPreviewSlice'
 import { buildAgentPreviewRows } from '../../components/RunningAgentsFloatingButton/agentPreviewContent'
+import { buildForkPreviewRows, selectForkPreviewRuns } from '../../components/RunningAgentsFloatingButton/agentForkPreview'
 import type { Message } from './chatTypes'
 import { buildChatErrorEnvelope } from '../../../../../shared/chatErrors'
 
@@ -155,28 +156,30 @@ describe('agent run previews', () => {
     expect(store.getState().chat.conversation.messages).toEqual([])
   })
 
-  it('retains latest per confirmed fork; older concurrent completion cannot take ownership', () => {
+  it('retains all confirmed fork runs; older concurrent completion cannot take latest ownership', () => {
     const store = setup()
     start(store, 'a')
     start(store, 'z')
     start(store, 'sibling', 'other-fork')
     text(store, 'a', 'old')
     store.dispatch(chat.sendingCompleted({ streamId: 'a' }))
-    expect(store.getState().agentRunPreviews.byStreamId.a).toBeUndefined()
+    expect(store.getState().agentRunPreviews.byStreamId.a).toBeDefined()
     expect(store.getState().agentRunPreviews.byStreamId.z).toBeDefined()
     expect(store.getState().agentRunPreviews.byStreamId.sibling).toBeDefined()
+    expect(buildAgentPreviewRows(store.getState().agentRunPreviews.byStreamId.a)[0].blocks).toContainEqual(expect.objectContaining({ content: 'old' }))
+    expect(Object.values(store.getState().agentRunPreviews.latestByFork)).toContain('z')
     store.dispatch(chat.sendingCompleted({ streamId: 'a' }))
-    expect(store.getState().agentRunPreviews.byStreamId.a).toBeUndefined()
+    expect(store.getState().agentRunPreviews.byStreamId.a).toBeDefined()
   })
 
-  it('keeps source-lineage runs separate until confirmation and releases superseded payload', () => {
+  it('keeps source-lineage runs separate until confirmation and preserves older payload', () => {
     const store = setup()
     start(store, 'a')
     store.dispatch(chat.sendingCompleted({ streamId: 'a' }))
     store.dispatch(chat.sendingStarted({ streamId: 'z', conversationId: 'background', lineage: { lineageId: 'fork' } }))
     expect(Object.keys(store.getState().agentRunPreviews.byStreamId)).toHaveLength(2)
     store.dispatch(chat.streamLineageUpdated({ streamId: 'z', lineageId: 'fork' }))
-    expect(store.getState().agentRunPreviews.byStreamId.a).toBeUndefined()
+    expect(store.getState().agentRunPreviews.byStreamId.a).toBeDefined()
   })
 
   it('preserves partial output on stop and accepts the post-completion error chunk', () => {
@@ -207,5 +210,27 @@ describe('agent run previews', () => {
     const blocks = buildAgentPreviewRows(store.getState().agentRunPreviews.byStreamId.a)[0].blocks
     expect(blocks.map(block => block.type)).toEqual(['tool_use', 'tool_result', 'text'])
     expect(blocks[1]).toMatchObject({ content: 'done' })
+  })
+})
+
+
+describe('whole fork retention', () => {
+  it('retains successive completed/pruned runs and late enrichment in chronological transcript', () => {
+    const store = setup()
+    start(store, 'first')
+    text(store, 'first', 'First response')
+    store.dispatch(chat.sendingCompleted({ streamId: 'first' }))
+    store.dispatch(chat.streamPruned({ streamId: 'first' }))
+    start(store, 'second')
+    text(store, 'second', 'Second response')
+    store.dispatch(chat.sendingCompleted({ streamId: 'second' }))
+    store.dispatch(chat.streamPruned({ streamId: 'second' }))
+    store.dispatch(preview.messageReceived({ streamId: 'first', message: message('first-message', 'assistant', 'Enriched first response') }))
+    const runs = selectForkPreviewRuns(store.getState().agentRunPreviews.byStreamId, 'second')
+    expect(runs).toHaveLength(2)
+    const texts = buildForkPreviewRows(runs).flatMap(row => row.blocks).filter(block => block.type === 'text').map(block => block.content)
+    expect(texts).toEqual(['Enriched first response', 'Second response'])
+    store.dispatch({ type: 'users/clearUser' })
+    expect(store.getState().agentRunPreviews.byStreamId).toEqual({})
   })
 })

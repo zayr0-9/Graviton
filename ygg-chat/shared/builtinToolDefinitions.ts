@@ -1,5 +1,6 @@
 // shared/builtinToolDefinitions.ts
 // Canonical static built-in tool schemas shared by frontend + headless server.
+import { REPL_GUIDE } from './replGuide.js'
 
 export interface SharedToolDefinition {
   name: string
@@ -13,6 +14,30 @@ export interface SharedToolDefinition {
 }
 
 export const BUILTIN_TOOL_DEFINITIONS: SharedToolDefinition[] = [
+  {
+    name: 'repl',
+    enabled: true,
+    description: REPL_GUIDE,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        howto: { type: 'boolean', description: 'Set true to return the complete workflow guide again, without executing anything or changing session state. May be called alone as {"howto":true}; action is ignored when true.' },
+        action: { type: 'string', enum: ['invoke', 'exec', 'inspect', 'show', 'list', 'drop', 'reset', 'export', 'import'], description: 'Required unless howto:true. invoke captures a tool result; exec transforms stored data; inspect/show/list expose bounded information; drop/reset manage memory; export/import explicitly save/restore one plain JSON variable without printing its contents.' },
+        tool: { type: 'string', description: 'invoke: existing tool name available to this caller.' },
+        args: { type: 'object', description: 'invoke: arguments passed unchanged to the tool.' },
+        assign: { type: 'string', maxLength: 64, description: 'invoke/import: required destination variable name.' },
+        overwrite: { type: 'boolean', description: 'invoke/import: replace an existing writable variable; export: replace an existing file. Default false.' },
+        code: { type: 'string', maxLength: 32000, description: 'exec: synchronous JS, e.g. var matches = page.data.content.split("\\n").filter(x => x.includes("license")); No implicit output; optionally pass show:"matches" to reveal a named variable in the same call.' },
+        show: { type: 'string', maxLength: 64, description: 'exec only: optional variable name to display after successful execution, in the same queued cell. Uses offset/maxOutputChars and returns content, totalChars, truncated and nextOffset. Omit to keep exec silent; not an expression or boolean.' },
+        variable: { type: 'string', maxLength: 64, description: 'Required for inspect, show, drop and export.' },
+        path: { type: 'string', description: 'export/import: JSON artifact path within the workspace or allowed managed paths; maximum 5 MiB. Export requires Agent mode and create_file; import requires read_file. Contents are not printed.' },
+        offset: { type: 'integer', minimum: 0, description: 'show or exec with show: character offset into the string/JSON representation; default 0.' },
+        maxOutputChars: { type: 'integer', minimum: 1, maximum: 20000, description: 'show or exec with show: content budget, default 4000; returns nextOffset when truncated.' },
+        timeoutMs: { type: 'integer', minimum: 1, maximum: 250, description: 'exec CPU deadline in milliseconds; default 100. Tool invocation uses normal tool deadlines.' },
+      },
+      // Help can be requested without action; execution validates action at runtime.
+    },
+  },
   {
     name: 'context_status',
     enabled: true,
@@ -395,7 +420,7 @@ export const BUILTIN_TOOL_DEFINITIONS: SharedToolDefinition[] = [
     name: 'read_file',
     enabled: true,
     description:
-      'Read the contents of a text file (code, config, docs). Supports reading full files, single ranges, or multiple disjoint ranges. Returns file metadata (line endings, encoding, modification time) and optional content hash for validation. Range info is in metadata only - content returned matches exactly what is in the file. Rejects likely-binary files and truncates large files for safety.',
+      'Read UTF-8 text with a bounded content budget, including line/range reads. Full reads preserve all text. Line selections preserve internal line endings but exclude the final selected line terminator. Multiple ranges are returned in supplied order, separated by two LF characters. Line bounds, ranges and pagination fields are top-level; file properties are in metadata. On truncated line reads use nextLine (or afterLine: nextLine - 1); partialLastLine means reread that line with a larger maxBytes to avoid skipping its remainder. nextRangeIndex identifies the zero-based range to resume. totalLines/fileHash are omitted unless EOF was reached. Rejects likely-binary files; workspace and managed-path scope also applies to symlink targets.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -403,42 +428,46 @@ export const BUILTIN_TOOL_DEFINITIONS: SharedToolDefinition[] = [
         cwd: {
           type: 'string',
           description:
-            'Optional working directory to resolve relative paths from. Must stay within workspace scope when a workspace root is set.',
+            'Optional relative-path base, resolved against the workspace root. Must remain within the workspace or an allowed managed directory. Does not narrow the allowed workspace scope.',
         },
         maxBytes: {
           type: 'integer',
           minimum: 1,
           maximum: 5242880,
-          description: 'Optional safety limit on bytes to read (1 to 5MB); defaults to 204800 (200KB)',
+          description: 'UTF-8 byte budget for returned content, including range separators (1–5242880; default 204800). Applies to full, line and range reads. Metadata and bounded internal lookahead/scanning are additional. Truncation never splits a UTF-8 character.',
         },
         startLine: {
           type: 'integer',
           minimum: 1,
+          maximum: 9007199254740991,
           description:
             'Optional 1-based line number to start reading from (inclusive). Use for single range reads. Ignored if ranges is provided.',
         },
         endLine: {
           type: 'integer',
           minimum: 1,
+          maximum: 9007199254740991,
           description:
             'Optional 1-based line number to stop reading at (inclusive). Use with startLine for single range. Ignored if ranges is provided.',
         },
         ranges: {
           type: 'array',
+          minItems: 1,
+          maxItems: 32,
           items: {
             type: 'object',
             properties: {
-              startLine: { type: 'integer', minimum: 1, description: '1-based start line (inclusive)' },
-              endLine: { type: 'integer', minimum: 1, description: '1-based end line (inclusive)' },
+              startLine: { type: 'integer', minimum: 1, maximum: 9007199254740991, description: '1-based start line (inclusive)' },
+              endLine: { type: 'integer', minimum: 1, maximum: 9007199254740991, description: '1-based end line (inclusive)' },
             },
             required: ['startLine', 'endLine'],
           },
           description:
-            'Array of line range objects to read multiple disjoint sections. Format: [{"startLine": 10, "endLine": 50}, {"startLine": 100, "endLine": 150}]. Range details are returned in metadata.ranges field. Takes precedence over startLine/endLine params.',
+            '1–32 inclusive line ranges with endLine >= startLine. Example: [{"startLine": 10, "endLine": 50}, {"startLine": 100, "endLine": 150}]. Returned in supplied order (overlaps repeat content), sharing maxBytes. Actual returned bounds/counts are in top-level ranges; nextRangeIndex identifies an unfinished range. Overrides startLine/endLine.',
         },
         includeHash: {
           type: 'boolean',
-          description: 'Calculate SHA256 content hash for validation with edit_file (default false)',
+          description: 'Return SHA-256 contentHash of returned text and fileHash of raw file bytes only when the entire file was scanned (default false). Hashes are informational; edit_file does not reject hash mismatches.',
         },
       },
       required: ['path'],
@@ -466,7 +495,7 @@ export const BUILTIN_TOOL_DEFINITIONS: SharedToolDefinition[] = [
         cwd: {
           type: 'string',
           description:
-            'Optional working directory to resolve relative paths from. Must stay within workspace scope when a workspace root is set.',
+            'Optional relative-path base, resolved against the workspace root. Must remain within the workspace or an allowed managed directory. Does not narrow the allowed workspace scope.',
         },
         maxBytes: {
           type: 'integer',
@@ -477,25 +506,29 @@ export const BUILTIN_TOOL_DEFINITIONS: SharedToolDefinition[] = [
         startLine: {
           type: 'integer',
           minimum: 1,
+          maximum: 9007199254740991,
           description: 'Optional 1-based line number to start reading from (inclusive). Applies to all files.',
         },
         endLine: {
           type: 'integer',
           minimum: 1,
+          maximum: 9007199254740991,
           description: 'Optional 1-based line number to stop reading at (inclusive). Applies to all files.',
         },
         ranges: {
           type: 'array',
+          minItems: 1,
+          maxItems: 32,
           items: {
             type: 'object',
             properties: {
-              startLine: { type: 'integer', minimum: 1, description: '1-based start line (inclusive)' },
-              endLine: { type: 'integer', minimum: 1, description: '1-based end line (inclusive)' },
+              startLine: { type: 'integer', minimum: 1, maximum: 9007199254740991, description: '1-based start line (inclusive)' },
+              endLine: { type: 'integer', minimum: 1, maximum: 9007199254740991, description: '1-based end line (inclusive)' },
             },
             required: ['startLine', 'endLine'],
           },
           description:
-            'Array of line range objects to read multiple disjoint sections from every file. Format: [{"startLine": 10, "endLine": 50}, {"startLine": 100, "endLine": 150}]. Takes precedence over startLine/endLine.',
+            '1–32 inclusive line ranges applied to every file, in supplied order, with endLine >= startLine. Range sections use two LF separators and share the aggregate maxBytes budget. Overrides startLine/endLine.',
         },
       },
       required: ['paths'],
@@ -505,7 +538,7 @@ export const BUILTIN_TOOL_DEFINITIONS: SharedToolDefinition[] = [
     name: 'read_file_continuation',
     enabled: true,
     description:
-      'Read the next chunk of a file after a specific line number. Designed for pagination to avoid duplicate reads. Use this when you previously read a file up to line N and want to continue reading from line N+1. Returns file metadata and optional content hash for validation.',
+      'Read up to numLines after afterLine, subject to maxBytes. Uses the same UTF-8, workspace, metadata and hash behavior as read_file. Prefer afterLine: previousResult.nextLine - 1 for pagination. If partialLastLine is true, this rereads the incomplete line: increase maxBytes or narrow the selection; do not skip to endLine + 1. totalLines is present only when EOF was reached. Empty files and a trailing newline count as an empty line.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -513,27 +546,29 @@ export const BUILTIN_TOOL_DEFINITIONS: SharedToolDefinition[] = [
         cwd: {
           type: 'string',
           description:
-            'Optional working directory to resolve relative paths from. Must stay within workspace scope when a workspace root is set.',
+            'Optional relative-path base, resolved against the workspace root. Must remain within the workspace or an allowed managed directory. Does not narrow the allowed workspace scope.',
         },
         afterLine: {
           type: 'integer',
           minimum: 0,
+          maximum: 9007199254740990,
           description: '1-based line number to start reading after (exclusive). Use 0 to read from the beginning.',
         },
         numLines: {
           type: 'integer',
           minimum: 1,
-          description: 'Number of lines to read after the specified line',
+          maximum: 9007199254740991,
+          description: 'Maximum number of lines to read after afterLine; maxBytes may stop the read earlier. afterLine + numLines must be a safe integer.',
         },
         maxBytes: {
           type: 'integer',
           minimum: 1,
           maximum: 5242880,
-          description: 'Optional safety limit on bytes to read (1 to 5MB); defaults to 204800 (200KB)',
+          description: 'UTF-8 byte budget for returned content, including range separators (1–5242880; default 204800). Applies to full, line and range reads. Metadata and bounded internal lookahead/scanning are additional. Truncation never splits a UTF-8 character.',
         },
         includeHash: {
           type: 'boolean',
-          description: 'Calculate SHA256 content hash for validation with edit_file (default false)',
+          description: 'Return SHA-256 contentHash of returned text and fileHash of raw file bytes only when the entire file was scanned (default false). Hashes are informational; edit_file does not reject hash mismatches.',
         },
       },
       required: ['path', 'afterLine', 'numLines'],
@@ -612,7 +647,7 @@ export const BUILTIN_TOOL_DEFINITIONS: SharedToolDefinition[] = [
     name: 'edit_file',
     enabled: true,
     description:
-      'Edit a file using search/replace or append. Operations: "replace" (all occurrences), "replace_first" (first match only), "append" (add to end). Uses layered matching: exact -> line-ending normalized -> whitespace normalized -> fuzzy. approxStartLine and approxEndLine are required on every call; replace_first uses them to search a local window first, then falls back to full-file search if needed. Escape sequences like \\n, \\t, \\r are interpreted in search patterns by default. Replacement text is treated literally by default to avoid accidental source corruption. Supports content validation using hash and metadata from read_file to prevent editing stale content.',
+      'Edit a file using search/replace or append. Operations: "replace" (all exact occurrences; one span for normalized matches), "replace_first" (first matching span), "append" (add to end). Uses exact -> line-ending normalized -> whitespace normalized matching. Fuzzy matching is off by default; read the current file and retry when no match is found. Files and results are limited to 32 MiB. approxStartLine and approxEndLine are required on every call; replace_first uses them to search a local window first, then falls back to full-file search if needed. Escape sequences like \\n, \\t, \\r are interpreted in search patterns by default. Replacement text is treated literally by default to avoid accidental source corruption. Validates supplied metadata from read_file by default; hashes are advisory. Same-file batch edits track the version produced by preceding edits.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -1093,18 +1128,26 @@ export const BUILTIN_TOOL_DEFINITIONS: SharedToolDefinition[] = [
     name: 'mcp_manager',
     enabled: true,
     description:
-      'Discover MCP servers on demand. Use "list" to see configured servers, "get" for details, "stop" to stop a server, and "list_tools" to start a server if needed and retrieve its tools.',
+      'Discover and invoke MCP tools on demand without changing model tool definitions. Use "list" for servers, "get" for status, "list_tools" for tool names and schemas, "invoke" with name (server), tool and args to execute, and "stop" to disconnect.',
     inputSchema: {
       type: 'object',
       properties: {
         action: {
           type: 'string',
-          enum: ['list', 'get', 'stop', 'list_tools'],
+          enum: ['list', 'get', 'stop', 'list_tools', 'invoke'],
           description: 'Action to perform',
         },
         name: {
           type: 'string',
-          description: 'MCP server name (required for get/start/stop/restart/list_tools)',
+          description: 'MCP server name (required for get, stop, list_tools and invoke)',
+        },
+        tool: {
+          type: 'string',
+          description: 'For invoke: original tool name returned by list_tools.',
+        },
+        args: {
+          type: 'object',
+          description: 'For invoke: arguments matching the tool inputSchema returned by list_tools.',
         },
       },
       required: ['action'],
@@ -1193,18 +1236,28 @@ export const BUILTIN_TOOL_DEFINITIONS: SharedToolDefinition[] = [
     name: 'subagent_manager',
     enabled: true,
     description:
-      'Manage asynchronous sub-agents scoped to THIS branch. Fire off background sub-agents and get a short 6-digit handle back, then wait for completion, inspect status, cancel, or resume a failed run. Only sub-agents spawned by this branch are visible or controllable; parallel branches cannot access them. Nested sub-agents are not supported. Actions: "spawn" (start one sub-agent; blocking=true returns its result inline, otherwise returns a handle immediately), "list" (all branch-owned sub-agents, optionally filtered by status), "status" (a non-blocking snapshot), "wait" (block until one handle reaches completed/error/aborted and return its final result), "cancel" (abort a running handle), "resume" (restart a failed/aborted handle). After asynchronous delegation, continue independent work if any; when no other useful task remains, call "wait" once instead of repeatedly polling "status".',
+      'Manage asynchronous sub-agents scoped to THIS branch. Fire off background sub-agents and get a short 6-digit handle back, then wait for completion, inspect status, cancel, or resume a failed run. Only sub-agents spawned by this branch are visible or controllable; parallel branches cannot access them. Nested sub-agents are not supported. Actions: "spawn" (start one sub-agent; blocking=true returns its result inline, otherwise returns a handle immediately), "list" (all branch-owned sub-agents, optionally filtered by status), "status" (a non-blocking snapshot), "wait" (block until one handle reaches completed/error/aborted and return its final result), "send" (queue instructions for a running detached handle at the next safe boundary; returns acceptance, not delivery; inspect status/wait messageQueue), "cancel" (abort a running handle), "resume" (restart a failed/aborted handle from its transcript, optionally with an additional prompt). After asynchronous delegation, continue independent work if any; when no other useful task remains, call "wait" once instead of repeatedly polling "status".',
     inputSchema: {
       type: 'object',
       properties: {
         action: {
           type: 'string',
-          enum: ['spawn', 'list', 'status', 'wait', 'cancel', 'resume'],
+          enum: ['spawn', 'list', 'status', 'wait', 'send', 'cancel', 'resume'],
           description: 'The manager action to perform.',
+        },
+        message: {
+          type: 'string',
+          maxLength: 200000,
+          description: 'send only: nonblank instructions for a running detached sub-agent. Queued FIFO and delivered after the current provider turn and tool batch finish; does not abort work or change permissions.',
+        },
+        requestId: {
+          type: 'string',
+          maxLength: 128,
+          description: 'send only: optional unique id for deduplicating retries. Reuse the same id and identical message for a retry. Generated if omitted; returned in the receipt. Delivery state is available in status/wait messageQueue.',
         },
         prompt: {
           type: 'string',
-          description: 'spawn only: the task prompt for the sub-agent. Be specific and provide all necessary context. Required for spawn.',
+          description: 'Required for spawn: the task prompt. Optional for resume: additional instructions appended to the saved transcript before continuing; does not replace the original task.',
         },
         blocking: {
           type: 'boolean',
@@ -1244,7 +1297,7 @@ export const BUILTIN_TOOL_DEFINITIONS: SharedToolDefinition[] = [
         },
         handle: {
           type: 'string',
-          description: 'The 6-digit handle returned by spawn. Required for status, wait, cancel, and resume.',
+          description: 'The 6-digit handle returned by spawn. Required for status, wait, send, cancel, and resume.',
         },
       },
       required: ['action'],

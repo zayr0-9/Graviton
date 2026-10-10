@@ -1,4 +1,5 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
+import * as wslBridge from '../../utils/wslBridge.js'
 import { formatReadFilesContent, formatReadFilesResult, readMultipleTextFiles } from '../readFiles.js'
 import { createToolFsHarness } from './helpers/toolFsHarness.js'
 
@@ -96,4 +97,21 @@ describe('read_files aggregate UTF-8 budget', () => {
     const tiny = await readMultipleTextFiles(['missing.txt'], { cwd: harness.workspaceDir, maxBytes: 1 })
     expect(formatReadFilesContent(tiny)).toBe('')
   })
+})
+
+
+it('forwards cancellation/deadlines to WSL header resolution and stops before path work when cancelled', async () => {
+  const controller = new AbortController()
+  const deadlineMs = Date.now() + 10000
+  const isWsl = vi.spyOn(wslBridge, 'isWSLPath').mockReturnValue(true)
+  const resolve = vi.spyOn(wslBridge, 'resolveToWindowsPath').mockImplementation(async value => value)
+  try {
+    // Header does not fit, so no actual file access is necessary.
+    await readMultipleTextFiles(['/fake/file'], { maxBytes: 1, signal: controller.signal, deadlineMs })
+    expect(resolve).toHaveBeenCalledWith('/fake/file', expect.objectContaining({ signal: controller.signal, deadlineMs }))
+    resolve.mockClear()
+    controller.abort()
+    await expect(readMultipleTextFiles(['/fake/file'], { signal: controller.signal })).rejects.toThrow(/cancelled/)
+    expect(resolve).not.toHaveBeenCalled()
+  } finally { resolve.mockRestore(); isWsl.mockRestore() }
 })

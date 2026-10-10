@@ -22,7 +22,7 @@ Start here, then open the smallest relevant subsystem context file before editin
 ## Core
 
 - `agent_project_overview.md` - repository layout, workspace scripts, runtime map, and how to use the context set.
-- `agent_runtime_modes.md` - legacy runtime map; for this repository, apply the local-Electron-only scope above.
+- `agent_runtime_modes.md` - desktop/runtime map, resolved server origins, existing standalone host, and resumable-run flags; apply the desktop support scope above.
 - `../claude_code_context_loading_rules.md` - reference spec of Claude Code's CLAUDE.md + AGENTS.md (open standard) / rules / skills / agents / hooks auto-loading, with a Graviton parity map (section 11) and the implementation status (section 11.6).
 - `agent_context_loading.md` - the implemented auto-loading subsystem: `server/context/*`, the `context_injection` message/block contract, the context directory setting, and validation commands.
 
@@ -69,7 +69,7 @@ This MVP set deliberately covers the highest-risk agent-editing surfaces first. 
 
 - `agent_context_compaction_memory.md`
 
-Potential future context topics that do not yet have dedicated files in this checkout include projects/conversations/messages, providers/models, auth/provider tokens, local storage sync, frontend app shell, settings/preferences, theme UI, IDE/LSP context, and workspace mutations.
+Potential future context topics that do not yet have dedicated files in this checkout include projects/conversations/messages, providers/models, provider API-key settings, local storage sync, frontend app shell, settings/preferences, theme UI, IDE/LSP context, and workspace mutations.
 
 ## Maintenance Rules
 

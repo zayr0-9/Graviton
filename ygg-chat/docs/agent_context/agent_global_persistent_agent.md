@@ -25,7 +25,7 @@ The persistent/global renderer agent was a renderer-owned singleton loop that
 ticked against local SQLite-backed `/api/agent/*` endpoints. The headless
 migration moved **all** agent execution (main chat loop and subagents) out of the
 React renderer and into the server-owned engine
-(`electron/headlessServer/services/`: `chatOrchestrator.ts` → `branchOrchestrator.ts` →
+(`server/headlessServer/services/`: `chatOrchestrator.ts` → `branchOrchestrator.ts` →
 `toolLoopService.ts`, with the `DecisionBroker` pause/resume protocol). The
 renderer is now a thin client that only POSTs SSE routes on `:3002` and projects
 events onto Redux. A separate renderer-side "global agent loop" no longer has a
@@ -50,14 +50,14 @@ Retired in the same migration (paired subsystems):
   routes/thunks/reducers. DELETED.
 - `client/ygg-chat-r/src/features/chats/dualSyncManager.ts` and
   `client/ygg-chat-r/src/lib/sync/` — DELETED; replaced server-side by
-  `electron/headlessServer/services/cloudMirrorService.ts` + the `CloudMirrorSink`
+  `server/headlessServer/services/cloudMirrorService.ts` + the `CloudMirrorSink`
   (see [`agent_headless_server.md`](agent_headless_server.md)).
 
 ## Grep traps (do not be misled)
 
 - **Stale test fixtures still contain the old code as inert text.**
-  `electron/tools/__tests__/dummyfile.ts.test` (snapshot of the old
-  `localServer.ts`) and `electron/tools/__tests__/dummyFilechatAction.ts.test`
+  `server/tools/__tests__/dummyfile.ts.test` (snapshot of the old
+  `localServer.ts`) and `server/tools/__tests__/dummyFilechatAction.ts.test`
   (snapshot of the old `chatActions.ts`) are read as plain-text inputs by
   `editFile.test.ts`. They are never imported or compiled. They still mention
   `claudeCode`, `executeClaudeCode`, `agent_settings/agent_sessions/agent_tasks`,

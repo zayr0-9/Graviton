@@ -2030,6 +2030,10 @@ export class McpManager extends EventEmitter {
     }
 
     const [, serverName, toolName] = match
+    return this.callServerTool(serverName, toolName, args)
+  }
+
+  async callServerTool(serverName: string, toolName: string, args: any): Promise<McpToolCallResult> {
     const client = await this.ensureServerConnected(serverName)
     return client.callTool(toolName, args)
   }

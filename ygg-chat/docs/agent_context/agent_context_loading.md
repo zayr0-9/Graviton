@@ -12,8 +12,9 @@ paths:
 
 Last reviewed: 2026-09-15
 
-Graviton loads repository context the way Claude Code does. The reference rules are in
-`../claude_code_context_loading_rules.md`; this file points at the code.
+Graviton implements repository-context loading inspired by the dated Claude Code
+reference in `../claude_code_context_loading_rules.md`, with the limitations below.
+This describes current Graviton source, not live upstream parity.
 
 ## Entry files
 
@@ -74,9 +75,13 @@ Graviton loads repository context the way Claude Code does. The reference rules 
    `text`, `reason`) on the assistant row.
 4. Already-loaded set = `collectLoadedContextPaths(history after latest compaction)`.
    Derived per request from the active branch, never a global set.
-5. Compaction: `buildPostCompactionInjection` re-reads the launch set and re-attaches the
-   most recent body of each invoked skill (≈5,000 tokens each, ≈25,000 total) as a new
-   context row under the summary; `context_injection_persisted` SSE event.
+5. Compaction: `buildPostCompactionInjection` re-reads instruction files and `MEMORY.md`,
+   reuses the loader's cached unconditional rules, and re-attaches recorded skill
+   bodies within character budgets (≈5,000 tokens each, ≈25,000 total) as a context
+   row under the summary; `context_injection_persisted` SSE event.
+   Re-attached skills become rendered launch-row text, not `reason: 'skill'` blocks,
+   so a second compaction cannot collect them unless invoked again. Selection uses
+   map insertion order; re-invocation updates the body without refreshing order.
 6. Hooks: `additionalContext` from UserPromptSubmit / SessionStart rides on the user row;
    from PreToolUse / PostToolUse / PostToolUseFailure on the tool result; from Stop on the
    next user turn. `foldSystemPrompt` remains only behind
@@ -112,8 +117,10 @@ Graviton loads repository context the way Claude Code does. The reference rules 
   See `agent_hooks_system.md` for the implemented hook events and execution modes.
 - External `@path` imports from project files load only under the auto-approve tool
   policy; under the interactive policy they are skipped and logged (decision 5, partial).
-- Subagents receive the launch set in their **system prompt** (fresh run, still cacheable
-  across runs for one repo); they do not do lazy loads.
+- Tool-spawned subagents receive the parent's complete launch set, including enabled
+  parent auto-memory, in their **system prompt**, unless `omitClaudeMd`; they do not
+  do lazy loads. Agent-owned memory loads separately and currently does not check
+  the auto-memory toggle.
 
 ## Validation
 
@@ -126,12 +133,19 @@ npx tsc -p tsconfig.app.json --noEmit
 YGG_CONTEXT_DEBUG_LOGS=1 npm run dev:electron   # prints [ContextLoader] discovery lines
 ```
 
-## Known gaps (2026-09-15)
+## Known gaps
+
+- Conversation rule discovery always skips external project/nested symlink targets,
+  even under auto-approve; approval is wired for instruction imports, not rules.
+- `claudeMdExcludes` filters instructions and unconditional launch rules, but not
+  lazy conditional/nested rules. Managed/user local and ancestor settings are not read.
+- Compaction keeps cached unconditional rules and does not refresh startup indexes;
+  successive skill re-attachment and agent-memory-toggle limitations are above.
 
 - `/name` typed by the user is expanded server-side only; there is no renderer `/` menu
   for user-invocable skills yet.
 - Visibility in chat is the `ContextInjectionCard` (`src/components/ChatMessage/ContextInjectionCard.tsx`):
-  a sky-blue row per launch set, per tool result that triggered loads, and per user
+  a theme-aware card per launch set, per tool result that triggered loads, and per user
   message that carried a `/skill` expansion or hook output. A message with such a card is
   never folded into "Agent Steps".
 - `skillOverrides`, output styles, plugins, managed policy files are not implemented.

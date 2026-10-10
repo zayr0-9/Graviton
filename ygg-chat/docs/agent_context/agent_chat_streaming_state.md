@@ -18,8 +18,8 @@ Explains Redux multi-stream state, branch-aware stream selection, and how stream
 events become visible in the chat UI. Since the headless-agent-loop migration the
 main chat loop runs in the local headless server (`http://127.0.0.1:3002`, inside the
 Electron main process); the renderer is a thin client that **projects** server SSE
-events onto the pre-existing Redux `streamChunk` vocabulary. The stream reducers and
-state shape below are unchanged by that migration — only the data source changed.
+events onto the pre-existing Redux `streamChunk` vocabulary. The projection reuses the Redux stream vocabulary; current state also includes
+compaction, durable errors, stream-keyed decisions, mode changes, and queued inputs.
 
 ## When to Open This File
 
@@ -32,7 +32,7 @@ Use this when changing:
 
 ## Key Files
 
-### Redux state + selectors (unchanged by the migration)
+### Redux state + selectors
 - `client/ygg-chat-r/src/features/chats/chat-streaming-redux-context.md`: focused existing context doc.
 - `client/ygg-chat-r/src/features/chats/chatSlice.ts`: stream state shape and reducers (`streaming` init at :183; `streamChunkReceived` :468, `streamCompleted` :667, `streamLineageUpdated` :745, `sendingStarted` :342).
 - `client/ygg-chat-r/src/features/chats/chatSelectors.ts`: current view / current branch stream selectors.
@@ -44,14 +44,14 @@ Use this when changing:
 - `client/ygg-chat-r/src/features/chats/chatActions.ts`: the chat thunks build requests for the local server and drive projection. `sendMessage`, `editMessageWithBranching`, and `sendMessageToBranch` use the SSE loop routes; `compactBranch` uses the persisted compact route. They own no loop, tool execution, or permission/hook/compaction generation.
 - `client/ygg-chat-r/src/features/chats/buildServerLoopRequest.ts`: `buildServerLoopRequest` — assembles the POST body (`systemPrompt` deliberately omitted; the server assembles it).
 - `client/ygg-chat-r/src/features/chats/mainChatClient.ts`: `runServerChatLoop` — the SSE reader (`fetch` POST + `res.body.getReader()`, no `EventSource`); dispatches each event through the projection and captures return ids.
-- `client/ygg-chat-r/src/features/chats/sseProjection.ts`: `projectServerEvent` (pure; returns ordered RTK actions, never dispatches/throws) and `normalizeServerMessage`. Server SSE members map onto the existing `streamChunkReceived` / `streamCompleted` / `streamLineageUpdated` / `messageAdded` / `messageBranchCreated` reducers — no reducer changes.
-- Server SSE contract: `client/ygg-chat-r/electron/headlessServer/contracts/headlessApi.ts` (`HeadlessStreamEvent` union). SSE routes: `client/ygg-chat-r/electron/headlessServer/routes/chatRoutes.ts`; loop: `client/ygg-chat-r/electron/headlessServer/services/chatOrchestrator.ts`.
+- `client/ygg-chat-r/src/features/chats/sseProjection.ts`: `projectServerEvent` (pure; returns ordered RTK actions, never dispatches/throws) and `normalizeServerMessage`. Server SSE members map onto the existing `streamChunkReceived` / `streamCompleted` / `streamLineageUpdated` / `messageAdded` / `messageBranchCreated` reducers plus dedicated compaction/error/decision/mode/queue reducers.
+- Server SSE contract: `shared/headlessApi.ts` (`HeadlessStreamEvent` union). SSE routes: `client/ygg-chat-r/server/headlessServer/routes/chatRoutes.ts`; loop: `client/ygg-chat-r/server/headlessServer/services/chatOrchestrator.ts`.
 
 ### Durable stream-run lifecycle rows (`streaming_runs` SQLite table)
-- `client/ygg-chat-r/electron/headlessServer/persistence/streamingRunRepo.ts`: `StreamingRunRepo` — the **in-loop authority**. `ChatOrchestrator.runMessage` calls `upsert` (`chatOrchestrator.ts:344`, `source:'headless'`, `streamType` primary/branch) and `finish` (terminal status + `duration_ms`, `chatOrchestrator.ts:481/501/514/522`).
+- `client/ygg-chat-r/server/headlessServer/persistence/streamingRunRepo.ts`: `StreamingRunRepo` — the **in-loop authority**. `ChatOrchestrator.runMessage` calls `upsert` (`chatOrchestrator.ts:344`, `source:'headless'`, `streamType` primary/branch) and `finish` (terminal status + `duration_ms`, `chatOrchestrator.ts:481/501/514/522`).
 - `client/ygg-chat-r/src/features/chats/streamRunTracking.ts`: renderer best-effort helper — `createStreamingRun`/`finishStreamingRun` POST/PATCH `/api/streaming/runs` (`source:'renderer'`), still fired from the 3 thunks and `abortGeneration`. Both writers key on the same `streamId`.
-- `client/ygg-chat-r/electron/localServer.ts`: the `/api/streaming/runs` HTTP routes the renderer helper hits (`POST` :3563, `PATCH` :3623, `GET` :3666).
-- `client/ygg-chat-r/electron/tools/streamUndoManager.ts`: durable per-stream file-edit undo manifests/backups.
+- `client/ygg-chat-r/server/routes/runStateRoutes.ts`: `/api/streaming/runs` POST/PATCH/GET used by renderer tracking; mounted by `server/localServer.ts`.
+- `client/ygg-chat-r/server/tools/streamUndoManager.ts`: durable per-stream file-edit undo manifests/backups.
 
 ## Mental Model
 

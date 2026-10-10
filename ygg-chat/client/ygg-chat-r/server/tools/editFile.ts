@@ -1,19 +1,23 @@
 import * as crypto from 'crypto'
 import * as fs from 'fs'
 import * as path from 'path'
-import { isManagedToolPath } from '../utils/managedToolPaths.js'
-import { isWSLPath, resolveToWindowsPath } from '../utils/wslBridge.js'
+import { isWSLPath } from '../utils/wslBridge.js'
+import { withEditTarget } from './editFileIO.js'
 import { lspManager } from '../lsp/LspManager.js'
 import type { LspFileContext } from '../lsp/types.js'
-import { FileMetadata, readTextFile } from './readFile.js'
+import type { FileMetadata } from './readFile.js'
 
-const FULL_FILE_READ_MAX_BYTES = Number.MAX_SAFE_INTEGER
+const batchVersions = Symbol('batchVersions')
+const batchTargets = Symbol('batchTargets')
 const DEFAULT_LINE_HINT_WINDOW = 100
 
 export interface EditFileOptions {
+  [batchVersions]?: Map<string, fs.Stats>
+  [batchTargets]?: Map<string, string>
+  beforeWrite?: (absolutePath: string, originalPath: string) => Promise<void> // Runtime undo hook; never model supplied
   createBackup?: boolean
   encoding?: BufferEncoding
-  enableFuzzyMatching?: boolean // Enable layered matching strategies (default: false; fuzzy matching currently disabled)
+  enableFuzzyMatching?: boolean // Opt-in bounded fuzzy matching (default: false)
   fuzzyThreshold?: number // Similarity threshold for fuzzy matching (default: 0.8)
   preserveIndentation?: boolean // Preserve original indentation style (default: true)
   interpretEscapeSequences?: boolean // Deprecated: applies to both search/replacement when specific flags are absent
@@ -106,20 +110,6 @@ export interface MultiEditResult {
   stoppedEarly: boolean
 }
 
-async function readFullTextFileForEdit(filePath: string, cwd?: string) {
-  const fileData = await readTextFile(filePath, {
-    cwd,
-    maxBytes: FULL_FILE_READ_MAX_BYTES,
-    includeHash: false,
-  })
-
-  if (fileData.truncated) {
-    throw new Error(`Refusing to edit '${filePath}' because the file read was truncated.`)
-  }
-
-  return fileData
-}
-
 async function resolveLspContextFilePath(filePath: string, cwd?: string): Promise<string | null> {
   if (isWSLPath(filePath) || (cwd && isWSLPath(cwd))) {
     return null
@@ -163,12 +153,6 @@ function resolveEscapeHandling(options: EditFileOptions) {
   }
 }
 
-function isManagedPathException(workspacePath: string, targetPath: string, usePosix: boolean): boolean {
-  const workspaceIsManagedPath = isManagedToolPath(workspacePath, usePosix)
-  const targetIsManagedPath = isManagedToolPath(targetPath, usePosix)
-  return !workspaceIsManagedPath && targetIsManagedPath
-}
-
 /**
  * Edit a file using simple search and replace operations.
  * Much faster and more context-efficient than AST-based editing.
@@ -187,7 +171,7 @@ export async function editFileSearchReplace(
 ): Promise<EditFileResult> {
   const {
     encoding = 'utf8',
-    enableFuzzyMatching = true,
+    enableFuzzyMatching = false,
     fuzzyThreshold = 0.8,
     preserveIndentation = true,
     validateContent = true,
@@ -195,71 +179,19 @@ export async function editFileSearchReplace(
   const { interpretSearchEscapes, interpretReplacementEscapes } = resolveEscapeHandling(options)
 
   try {
-    // Resolve path for fs operations and track path type
-    let fsPath: string = filePath // Path for fs.promises operations
-    let pathType: 'windows' | 'wsl' | 'posix' = 'posix'
-    const willBeWsl = isWSLPath(filePath)
-
-    // For WSL paths, resolve to absolute Linux path first (for validation)
-    if (willBeWsl) {
-      pathType = 'wsl'
-      // Make path absolute using POSIX rules (before UNC conversion)
-      if (!filePath.startsWith('/')) {
-        fsPath = options.cwd ? `${options.cwd.replace(/\/$/, '')}/${filePath}` : filePath
-      }
-    } else {
-      const basePath = options.cwd || process.cwd()
-      fsPath = path.isAbsolute(filePath) ? filePath : path.resolve(basePath, filePath)
-      if (/^[a-zA-Z]:[\\/]/.test(fsPath)) {
-        pathType = 'windows'
-      }
+    if (typeof searchPattern !== 'string' || !searchPattern || typeof replacement !== 'string') {
+      throw new Error('A non-empty searchPattern and string replacement are required')
     }
-
-    // Workspace validation BEFORE UNC conversion (compare Linux to Linux)
-    if (options.cwd) {
-      if (pathType === 'wsl') {
-        // Both are Linux paths - compare directly using POSIX rules
-        const normalizedCwd = options.cwd.replace(/\/$/, '')
-        const normalizedPath = fsPath.replace(/\/$/, '')
-        const outsideWorkspace = !normalizedPath.startsWith(normalizedCwd + '/') && normalizedPath !== normalizedCwd
-        if (outsideWorkspace && !isManagedPathException(normalizedCwd, normalizedPath, true)) {
-          return {
-            success: false,
-            sizeBytes: 0,
-            replacements: 0,
-            message: `Access denied: Path '${filePath}' is outside the workspace '${options.cwd}'. File operations are restricted to the workspace directory.`,
-          }
-        }
-      } else {
-        // Windows or native paths - use Node's path module
-        const normalizedCwd = path.resolve(options.cwd)
-        const normalizedPath = path.resolve(fsPath)
-        const rel = path.relative(normalizedCwd, normalizedPath)
-        const outsideWorkspace = rel.startsWith('..') || path.isAbsolute(rel)
-        if (outsideWorkspace && !isManagedPathException(normalizedCwd, normalizedPath, false)) {
-          return {
-            success: false,
-            sizeBytes: 0,
-            replacements: 0,
-            message: `Access denied: Path '${filePath}' is outside the workspace '${options.cwd}'. File operations are restricted to the workspace directory.`,
-          }
-        }
-      }
-    }
-
-    // NOW convert to UNC for filesystem access
-    if (pathType === 'wsl') {
-      fsPath = await resolveToWindowsPath(fsPath)
-    }
+    return await withEditTarget(filePath, { ...options, allowCreate: false, versions: options[batchVersions], targets: options[batchTargets] }, async target => {
 
     // Read the file first
-    const fileData = await readFullTextFileForEdit(filePath, options.cwd)
+    const fileData = target
     const originalContent = fileData.content
 
     // Validate file content if expected state was provided
     let validation: FileValidationResult | undefined
     if (shouldValidateAgainstExpectations(options, validateContent)) {
-      validation = await validateFileContent(fsPath, originalContent, options)
+      validation = validateFileContent(target.stats, originalContent, { ...options, skipLastModifiedValidation: target.previouslyEdited || options.skipLastModifiedValidation })
       if (!validation.valid) {
         return await enrichEditFileResultWithLspContext(
           {
@@ -310,7 +242,7 @@ export async function editFileSearchReplace(
 
     // Apply indentation preservation if enabled and using non-exact match
     let finalReplacement = replacement
-    if (preserveIndentation && matchResult.strategy !== 'exact') {
+    if (preserveIndentation && (matchResult.strategy === 'whitespace_normalized' || matchResult.strategy === 'fuzzy')) {
       const originalIndentation = captureIndentation(matchResult.matchedText)
       finalReplacement = applyIndentation(replacement, originalIndentation)
     }
@@ -322,17 +254,14 @@ export async function editFileSearchReplace(
     let lineInfoScope: EditFileLineInfo['scope'] = 'single'
     if (matchResult.strategy === 'exact') {
       const exactRegex = new RegExp(escapeRegExp(processedSearchPattern), 'g')
-      const exactMatches = originalContent.match(exactRegex)
-      if (!exactMatches || exactMatches.length === 0 || processedSearchPattern === finalReplacement) {
+      if (processedSearchPattern === finalReplacement) {
         newContent = originalContent
         replacements = 0
       } else {
-        replacements = exactMatches.length
-        if (replacements > 1) {
-          lineInfoScope = 'first_of_many'
-        }
-        // Use a replacer function so replacement text is treated literally (no $&/$1 interpolation).
-        newContent = originalContent.replace(exactRegex, () => finalReplacement)
+        replacements = 0
+        // Count and replace in one pass; keep replacement text literal.
+        newContent = originalContent.replace(exactRegex, () => { replacements++; return finalReplacement })
+        if (replacements > 1) lineInfoScope = 'first_of_many'
       }
     } else {
       if (matchResult.matchedText === finalReplacement) {
@@ -355,11 +284,11 @@ export async function editFileSearchReplace(
       lineInfoScope
     )
 
-    const backup = replacements > 0 ? await createBackupIfNeeded(fsPath, originalContent, options, encoding) : undefined
+    const backup = replacements > 0 && options.createBackup ? await target.backup() : undefined
 
     // Write the modified content back to file
     if (replacements > 0) {
-      await fs.promises.writeFile(fsPath, newContent, encoding)
+      await target.write(newContent)
     }
 
     const strategyMessage =
@@ -379,6 +308,7 @@ export async function editFileSearchReplace(
       validation,
       lineInfo,
     }
+    })
   } catch (error: any) {
     return await enrichEditFileResultWithLspContext(
       {
@@ -404,7 +334,7 @@ export async function editFileSearchReplaceFirst(
 ): Promise<EditFileResult> {
   const {
     encoding = 'utf8',
-    enableFuzzyMatching = true,
+    enableFuzzyMatching = false,
     fuzzyThreshold = 0.8,
     preserveIndentation = true,
     validateContent = true,
@@ -413,70 +343,18 @@ export async function editFileSearchReplaceFirst(
   const { interpretSearchEscapes, interpretReplacementEscapes } = resolveEscapeHandling(options)
 
   try {
-    // Resolve path for fs operations and track path type
-    let fsPath: string = filePath // Path for fs.promises operations
-    let pathType: 'windows' | 'wsl' | 'posix' = 'posix'
-    const willBeWsl = isWSLPath(filePath)
-
-    // For WSL paths, resolve to absolute Linux path first (for validation)
-    if (willBeWsl) {
-      pathType = 'wsl'
-      // Make path absolute using POSIX rules (before UNC conversion)
-      if (!filePath.startsWith('/')) {
-        fsPath = options.cwd ? `${options.cwd.replace(/\/$/, '')}/${filePath}` : filePath
-      }
-    } else {
-      const basePath = options.cwd || process.cwd()
-      fsPath = path.isAbsolute(filePath) ? filePath : path.resolve(basePath, filePath)
-      if (/^[a-zA-Z]:[\\/]/.test(fsPath)) {
-        pathType = 'windows'
-      }
+    if (typeof searchPattern !== 'string' || !searchPattern || typeof replacement !== 'string') {
+      throw new Error('A non-empty searchPattern and string replacement are required')
     }
+    return await withEditTarget(filePath, { ...options, allowCreate: false, versions: options[batchVersions], targets: options[batchTargets] }, async target => {
 
-    // Workspace validation BEFORE UNC conversion (compare Linux to Linux)
-    if (options.cwd) {
-      if (pathType === 'wsl') {
-        // Both are Linux paths - compare directly using POSIX rules
-        const normalizedCwd = options.cwd.replace(/\/$/, '')
-        const normalizedPath = fsPath.replace(/\/$/, '')
-        const outsideWorkspace = !normalizedPath.startsWith(normalizedCwd + '/') && normalizedPath !== normalizedCwd
-        if (outsideWorkspace && !isManagedPathException(normalizedCwd, normalizedPath, true)) {
-          return {
-            success: false,
-            sizeBytes: 0,
-            replacements: 0,
-            message: `Access denied: Path '${filePath}' is outside the workspace '${options.cwd}'. File operations are restricted to the workspace directory.`,
-          }
-        }
-      } else {
-        // Windows or native paths - use Node's path module
-        const normalizedCwd = path.resolve(options.cwd)
-        const normalizedPath = path.resolve(fsPath)
-        const rel = path.relative(normalizedCwd, normalizedPath)
-        const outsideWorkspace = rel.startsWith('..') || path.isAbsolute(rel)
-        if (outsideWorkspace && !isManagedPathException(normalizedCwd, normalizedPath, false)) {
-          return {
-            success: false,
-            sizeBytes: 0,
-            replacements: 0,
-            message: `Access denied: Path '${filePath}' is outside the workspace '${options.cwd}'. File operations are restricted to the workspace directory.`,
-          }
-        }
-      }
-    }
-
-    // NOW convert to UNC for filesystem access
-    if (pathType === 'wsl') {
-      fsPath = await resolveToWindowsPath(fsPath)
-    }
-
-    const fileData = await readFullTextFileForEdit(filePath, options.cwd)
+    const fileData = target
     const originalContent = fileData.content
 
     // Validate file content if expected state was provided
     let validation: FileValidationResult | undefined
     if (shouldValidateAgainstExpectations(options, validateContent)) {
-      validation = await validateFileContent(fsPath, originalContent, options)
+      validation = validateFileContent(target.stats, originalContent, { ...options, skipLastModifiedValidation: target.previouslyEdited || options.skipLastModifiedValidation })
       if (!validation.valid) {
         return await enrichEditFileResultWithLspContext(
           {
@@ -523,7 +401,7 @@ export async function editFileSearchReplaceFirst(
 
     // Apply indentation preservation if enabled and using non-exact match
     let finalReplacement = replacement
-    if (preserveIndentation && matchResult.strategy !== 'exact') {
+    if (preserveIndentation && (matchResult.strategy === 'whitespace_normalized' || matchResult.strategy === 'fuzzy')) {
       const originalIndentation = captureIndentation(matchResult.matchedText)
       finalReplacement = applyIndentation(replacement, originalIndentation)
     }
@@ -545,11 +423,11 @@ export async function editFileSearchReplaceFirst(
       'single'
     )
 
-    const backup = hasChanges ? await createBackupIfNeeded(fsPath, originalContent, options, encoding) : undefined
+    const backup = hasChanges && options.createBackup ? await target.backup() : undefined
 
     // Write the modified content if needed
     if (hasChanges) {
-      await fs.promises.writeFile(fsPath, newContent, encoding)
+      await target.write(newContent)
     }
 
     const strategyMessage = matchResult.strategy !== 'exact' ? ` (matched using ${matchResult.strategy} strategy)` : ''
@@ -567,6 +445,7 @@ export async function editFileSearchReplaceFirst(
       validation,
       lineInfo,
     }
+    })
   } catch (error: any) {
     return await enrichEditFileResultWithLspContext(
       {
@@ -592,78 +471,16 @@ export async function appendToFile(
   const { encoding = 'utf8' } = options
 
   try {
-    // Resolve path for fs operations and track path type
-    let fsPath: string = filePath // Path for fs.promises operations
-    let pathType: 'windows' | 'wsl' | 'posix' = 'posix'
-    const willBeWsl = isWSLPath(filePath)
-
-    // For WSL paths, resolve to absolute Linux path first (for validation)
-    if (willBeWsl) {
-      pathType = 'wsl'
-      // Make path absolute using POSIX rules (before UNC conversion)
-      if (!filePath.startsWith('/')) {
-        fsPath = options.cwd ? `${options.cwd.replace(/\/$/, '')}/${filePath}` : filePath
-      }
-    } else {
-      const basePath = options.cwd || process.cwd()
-      fsPath = path.isAbsolute(filePath) ? filePath : path.resolve(basePath, filePath)
-      if (/^[a-zA-Z]:[\\/]/.test(fsPath)) {
-        pathType = 'windows'
-      }
+    return await withEditTarget(filePath, { ...options, allowCreate: true, versions: options[batchVersions], targets: options[batchTargets] }, async target => {
+    const existingStats = target.stats
+    const existingContent = target.content
+    let validation: FileValidationResult | undefined
+    if (shouldValidateAgainstExpectations(options, options.validateContent !== false)) {
+      validation = validateFileContent(existingStats, existingContent, { ...options, skipLastModifiedValidation: target.previouslyEdited || options.skipLastModifiedValidation })
+      if (!validation.valid) return { success: false, sizeBytes: target.sizeBytes, replacements: 0, message: `Validation failed: ${validation.reason}`, validation }
     }
-
-    // Workspace validation BEFORE UNC conversion (compare Linux to Linux)
-    if (options.cwd) {
-      if (pathType === 'wsl') {
-        // Both are Linux paths - compare directly using POSIX rules
-        const normalizedCwd = options.cwd.replace(/\/$/, '')
-        const normalizedPath = fsPath.replace(/\/$/, '')
-        const outsideWorkspace = !normalizedPath.startsWith(normalizedCwd + '/') && normalizedPath !== normalizedCwd
-        if (outsideWorkspace && !isManagedPathException(normalizedCwd, normalizedPath, true)) {
-          return {
-            success: false,
-            sizeBytes: 0,
-            replacements: 0,
-            message: `Access denied: Path '${filePath}' is outside the workspace '${options.cwd}'. File operations are restricted to the workspace directory.`,
-          }
-        }
-      } else {
-        // Windows or native paths - use Node's path module
-        const normalizedCwd = path.resolve(options.cwd)
-        const normalizedPath = path.resolve(fsPath)
-        const rel = path.relative(normalizedCwd, normalizedPath)
-        const outsideWorkspace = rel.startsWith('..') || path.isAbsolute(rel)
-        if (outsideWorkspace && !isManagedPathException(normalizedCwd, normalizedPath, false)) {
-          return {
-            success: false,
-            sizeBytes: 0,
-            replacements: 0,
-            message: `Access denied: Path '${filePath}' is outside the workspace '${options.cwd}'. File operations are restricted to the workspace directory.`,
-          }
-        }
-      }
-    }
-
-    // NOW convert to UNC for filesystem access
-    if (pathType === 'wsl') {
-      fsPath = await resolveToWindowsPath(fsPath)
-    }
-
-    const existingStats = await fs.promises.stat(fsPath).catch((error: NodeJS.ErrnoException) => {
-      if (error.code === 'ENOENT') return null
-      throw error
-    })
-
-    const existingContent = existingStats ? await fs.promises.readFile(fsPath, encoding) : ''
-
-    if (existingStats && !existingStats.isFile()) {
-      throw new Error(`'${filePath}' is not a file`)
-    }
-
-    const backup = existingStats ? await createBackupIfNeeded(fsPath, existingContent, options, encoding) : undefined
-
-    // Append content using fsPath (UNC format on Windows)
-    await fs.promises.appendFile(fsPath, content, encoding)
+    const backup = existingStats && options.createBackup ? await target.backup() : undefined
+    await target.write(content, true)
 
     const previousSizeBytes = existingStats?.size ?? 0
     const appendedSizeBytes = estimateTextSizeBytes(content, encoding)
@@ -675,9 +492,11 @@ export async function appendToFile(
       sizeBytes: previousSizeBytes + appendedSizeBytes,
       replacements: 1, // Consider append as one "replacement"
       message: `Successfully appended content to ${filePath}`,
+      validation,
       backup,
       lineInfo,
     }
+    })
   } catch (error: any) {
     return await enrichEditFileResultWithLspContext(
       {
@@ -793,6 +612,8 @@ export async function multiEdit(
 
   const stopOnError = options.stopOnError ?? true
   const results: MultiEditItemResult[] = []
+  const versions = new Map<string, fs.Stats>()
+  const targets = new Map<string, string>()
 
   for (const [index, edit] of edits.entries()) {
     const itemPath = typeof edit?.path === 'string' ? edit.path : ''
@@ -863,7 +684,8 @@ export async function multiEdit(
       approxEndLine: edit.approxEndLine,
       expectedHash: edit.expectedHash,
       expectedMetadata: edit.expectedMetadata,
-      skipLastModifiedValidation: true,
+      [batchVersions]: versions,
+      [batchTargets]: targets,
     })
 
     const itemResult: MultiEditItemResult = {
@@ -923,19 +745,6 @@ function shouldValidateAgainstExpectations(options: EditFileOptions, validateCon
 
 function estimateTextSizeBytes(content: string, encoding: BufferEncoding): number {
   return Buffer.byteLength(content, encoding)
-}
-
-async function createBackupIfNeeded(
-  absolutePath: string,
-  originalContent: string,
-  options: EditFileOptions,
-  encoding: BufferEncoding
-): Promise<string | undefined> {
-  if (!options.createBackup) return undefined
-
-  const backupPath = `${absolutePath}.backup.${Date.now()}`
-  await fs.promises.writeFile(backupPath, originalContent, encoding)
-  return backupPath
 }
 
 function countDisplayLines(text: string): number {
@@ -1050,7 +859,7 @@ function resolveLineHintBounds(content: string, bounds: LineHintBounds): Resolve
   const anchorEnd = normalizedEnd ?? normalizedStart!
   const orderedStart = Math.min(anchorStart, anchorEnd)
   const orderedEnd = Math.max(anchorStart, anchorEnd)
-  const windowSize = Math.max(0, coercePositiveInteger(bounds.lineHintWindow) ?? DEFAULT_LINE_HINT_WINDOW)
+  const windowSize = bounds.lineHintWindow === 0 ? 0 : coercePositiveInteger(bounds.lineHintWindow) ?? DEFAULT_LINE_HINT_WINDOW
 
   const totalLines = Math.max(1, lineNumberAtIndex(content, content.length))
   const startLine = clamp(orderedStart - windowSize, 1, totalLines)
@@ -1083,7 +892,19 @@ function findMatchWithLineHintFallback(
 
   const scopedContent = content.slice(resolvedHints.startIndex, resolvedHints.endIndex)
   const scopeLabel = `line_hint_window(${resolvedHints.startLine}-${resolvedHints.endLine})`
-  const scopedResult = findMatchWithStrategies(scopedContent, pattern, enableFuzzy, fuzzyThreshold, interpretEscapes)
+  const processedPattern = interpretEscapeSequences(pattern, interpretEscapes)
+  // Preserve the cheap local exact path; an approximate hint must not outrank
+  // an exact match elsewhere with a normalized or fuzzy candidate.
+  const localExact = scopedContent.indexOf(processedPattern)
+  const globalExact = localExact === -1 ? content.indexOf(processedPattern) : -1
+  if (globalExact !== -1) {
+    return {
+      found: true, startIndex: globalExact, endIndex: globalExact + processedPattern.length,
+      matchedText: processedPattern, strategy: 'exact',
+      attemptedStrategies: [`${scopeLabel}:exact`, `${scopeLabel}:fallback_to_full_file`, 'full_file:exact'],
+    }
+  }
+  const scopedResult = findMatchWithStrategies(scopedContent, processedPattern, false, fuzzyThreshold, false)
 
   if (scopedResult.found) {
     return {
@@ -1109,12 +930,12 @@ function findMatchWithLineHintFallback(
 /**
  * Validate file content hasn't changed since it was read
  */
-async function validateFileContent(
-  absolutePath: string,
+function validateFileContent(
+  stats: fs.Stats | null,
   content: string,
   options: EditFileOptions
-): Promise<FileValidationResult> {
-  if (!options.validateContent) {
+): FileValidationResult {
+  if (options.validateContent === false) {
     return { valid: true }
   }
 
@@ -1132,7 +953,7 @@ async function validateFileContent(
     }
   }
 
-  const stats = await fs.promises.stat(absolutePath)
+  if (!stats) return { valid: false, reason: 'Previously read file no longer exists' }
 
   if (expectedInode !== undefined && stats.ino !== expectedInode) {
     return {
@@ -1142,11 +963,11 @@ async function validateFileContent(
   }
 
   // Check modification time if metadata provided
-  if (expectedModified) {
+  if (expectedModified && !options.skipLastModifiedValidation) {
     const expectedTime = new Date(expectedModified).getTime()
     const actualTime = stats.mtime.getTime()
 
-    if (actualTime > expectedTime) {
+    if (!Number.isFinite(expectedTime) || actualTime !== expectedTime) {
       return {
         valid: false,
         reason: 'File has been modified since it was read',
@@ -1278,7 +1099,10 @@ function restoreProtectedLiterals(
   str: string,
   protectedLiterals: Array<{ placeholder: string; value: string }>
 ): string {
-  return protectedLiterals.reduce((output, entry) => output.split(entry.placeholder).join(entry.value), str)
+  if (!protectedLiterals.length) return str
+  // One pass, not a full-string split/join for every literal on minified lines.
+  const literals = new Map(protectedLiterals.map(entry => [entry.placeholder, entry.value]))
+  return str.replace(/\u0000(?:STRING|REGEX)_LITERAL_\d+\u0000/g, placeholder => literals.get(placeholder) ?? placeholder)
 }
 
 function isRegexLiteralStart(str: string, slashIndex: number): boolean {
@@ -1356,39 +1180,31 @@ function normalizeWhitespace(str: string): string {
 }
 
 function normalizeWhitespaceLine(line: string): string {
-  return line.trim().replace(/\s+/g, ' ')
+  // Fast path for ordinary lines; only tokenize lines that contain literal delimiters.
+  if (!/["'`/]/.test(line)) return line.trim().replace(/[ \t]+/g, ' ')
+  // Never collapse meaningful spaces inside string/regex literals.
+  const protectedText = protectRegexLiterals(line)
+  return restoreProtectedLiterals(protectedText.content.trim().replace(/[ \t]+/g, ' '), protectedText.protectedLiterals)
 }
 
 /**
  * Calculate Levenshtein distance between two strings
  */
 function levenshteinDistance(a: string, b: string): number {
-  const matrix: number[][] = []
-
-  // Initialize matrix
-  for (let i = 0; i <= b.length; i++) {
-    matrix[i] = [i]
-  }
-  for (let j = 0; j <= a.length; j++) {
-    matrix[0][j] = j
-  }
-
-  // Fill matrix
+  // Two typed rows instead of an O(m*n) heap of arrays.
+  let previous = new Uint32Array(a.length + 1)
+  let current = new Uint32Array(a.length + 1)
+  for (let j = 0; j <= a.length; j++) previous[j] = j
   for (let i = 1; i <= b.length; i++) {
+    current[0] = i
     for (let j = 1; j <= a.length; j++) {
-      if (b.charAt(i - 1) === a.charAt(j - 1)) {
-        matrix[i][j] = matrix[i - 1][j - 1]
-      } else {
-        matrix[i][j] = Math.min(
-          matrix[i - 1][j - 1] + 1, // substitution
-          matrix[i][j - 1] + 1, // insertion
-          matrix[i - 1][j] + 1 // deletion
-        )
-      }
+      current[j] = Math.min(previous[j - 1] + (b.charCodeAt(i - 1) === a.charCodeAt(j - 1) ? 0 : 1), previous[j] + 1, current[j - 1] + 1)
     }
+    const swap = previous
+    previous = current
+    current = swap
   }
-
-  return matrix[b.length][a.length]
+  return previous[a.length]
 }
 
 /**
@@ -1423,18 +1239,26 @@ function findFuzzyMatch(
     matchedText: '',
   }
 
-  // Slide through content line by line
+  // A deterministic total work budget bounds event-loop blocking. If exhausted,
+  // fail closed rather than accepting a candidate from an incomplete search.
+  if (!Number.isFinite(threshold) || threshold <= 0 || threshold > 1 || normalizedPattern.length > 4096) return bestMatch
+  let remainingCells = 2_000_000
+  const starts = getLineStartIndices(contentLines)
+  let ambiguous = false
   for (let i = 0; i <= contentLines.length - patternLines; i++) {
     const candidateLines = contentLines.slice(i, i + patternLines)
     const candidateText = candidateLines.join('\n')
     const normalizedCandidate = normalizeWhitespace(candidateText)
 
+    const maxLength = Math.max(normalizedPattern.length, normalizedCandidate.length)
+    if (Math.abs(normalizedPattern.length - normalizedCandidate.length) > (1 - threshold) * maxLength) continue
+    remainingCells -= normalizedPattern.length * normalizedCandidate.length
+    if (remainingCells < 0) return { found: false, startIndex: -1, endIndex: -1, similarity: 0, matchedText: '' }
     const similarity = calculateSimilarity(normalizedPattern, normalizedCandidate)
-
+    if (similarity === bestMatch.similarity && similarity >= threshold) ambiguous = true
     if (similarity > bestMatch.similarity && similarity >= threshold) {
-      // Calculate actual string indices
-      const linesBeforeMatch = contentLines.slice(0, i).join('\n')
-      const startIndex = linesBeforeMatch.length + (i > 0 ? 1 : 0) // +1 for newline
+      ambiguous = false
+      const startIndex = starts[i]
       const endIndex = startIndex + candidateText.length
 
       bestMatch = {
@@ -1447,7 +1271,7 @@ function findFuzzyMatch(
     }
   }
 
-  return bestMatch
+  return ambiguous ? { ...bestMatch, found: false } : bestMatch
 }
 
 /**
@@ -1484,11 +1308,10 @@ function applyIndentation(replacement: string, originalIndentation: string[]): s
       if (trimmedLine === '') return '' // Keep empty lines empty
 
       // Calculate how much this line is indented relative to the first replacement line
-      const relativeIndent =
-        lineIndent.length <= replacementBaseIndent.length ? '' : lineIndent.slice(replacementBaseIndent.length)
-
-      // Apply original base indent while preserving tabs/spaces from relative indentation
-      const newIndent = baseIndent + relativeIndent
+      const delta = lineIndent.length - replacementBaseIndent.length
+      const newIndent = delta < 0
+        ? baseIndent.slice(0, Math.max(0, baseIndent.length + delta))
+        : baseIndent + lineIndent.slice(replacementBaseIndent.length)
       return newIndent + trimmedLine
     })
     .join('\n')

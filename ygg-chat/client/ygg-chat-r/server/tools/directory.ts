@@ -1,3 +1,4 @@
+import { hasFullToolAccess } from '../toolAccessContext.js'
 import * as fs from 'fs'
 import * as path from 'path'
 import { fileURLToPath } from 'url'
@@ -95,6 +96,7 @@ function isSameOrSubPath(candidate: string, root: string): boolean {
 
 async function ensurePathWithinWorkspace(candidatePath: string): Promise<string> {
   const resolved = path.resolve(candidatePath)
+  if (hasFullToolAccess()) return resolved
   const normalized = normalizeForComparison(resolved)
   const workspaceRoot = await getWorkspaceRoot()
   const normalizedRoot = await getNormalizedWorkspaceRoot()
@@ -117,7 +119,7 @@ async function resolveRequestedDirectory(rawRootDir: string): Promise<string> {
     return workspaceRoot
   }
 
-  if (isFsRootPath(sanitized)) {
+  if (isFsRootPath(sanitized) && !hasFullToolAccess()) {
     throw new Error('Access to the filesystem root is not allowed.')
   }
 

@@ -6,6 +6,7 @@ import { ProviderRouter } from '../providerRouter.js'
 import { ProviderEmptyResponseError, ToolLoopService } from '../toolLoopService.js'
 import { createContextStatusExecutor } from '../contextStatusTool.js'
 import { createMultiCallDispatchExecutor } from '../multiCallExecutor.js'
+import { createReplDispatchExecutor, ReplSessions } from '../replExecutor.js'
 import { calculateBranchContextUsage } from '../../../../shared/contextTokenEstimate.js'
 
 let BetterSqlite3Ctor: (new (filename: string) => Database.Database) | null = null
@@ -836,7 +837,7 @@ const baseRunInput = {
 }
 
 describe('ToolLoopService signal + robustness (in-memory sink)', () => {
-  it('refreshes discovered tools before the next provider turn', async () => {
+  it('keeps MCP discovery out of model definitions even with a legacy refresh hook', async () => {
     const providerRouter = new FakeProviderRouter()
     providerRouter.enqueue({
       content: '',
@@ -872,14 +873,8 @@ describe('ToolLoopService signal + robustness (in-memory sink)', () => {
     )
 
     expect(providerRouter.calls[0].input.tools.map((tool: any) => tool.name)).toEqual(['mcp_manager'])
-    expect(providerRouter.calls[1].input.tools.map((tool: any) => tool.name)).toEqual([
-      'mcp_manager',
-      'mcp__demo__echo',
-    ])
-    expect(events).toContainEqual(expect.objectContaining({
-      type: 'tools_updated',
-      tools: [expect.objectContaining({ name: 'mcp__demo__echo' })],
-    }))
+    expect(providerRouter.calls[1].input.tools).toEqual(providerRouter.calls[0].input.tools)
+    expect(events.some(event => event.type === 'tools_updated')).toBe(false)
   })
 
   it('does not silently self-upgrade out of plan mode when no upgrade handler is wired', async () => {
@@ -1366,5 +1361,74 @@ describe('context_status estimated same-turn results', () => {
     })
     await service.run({ ...baseRunInput, provider: 'lmstudio' }, () => {})
     expect(report.remainingTokens).toBeLessThan(128000 - 4000)
+  })
+})
+
+
+describe('ToolLoopService REPL capture (in-memory sink)', () => {
+  it('keeps nested data out of model/history while retaining execution events and lazy instructions', async () => {
+    const providerRouter = new FakeProviderRouter()
+    providerRouter.enqueue({ content: '', toolCalls: [{ id: 'capture', name: 'repl', arguments: {
+      action: 'invoke', tool: 'read_file', args: { path: 'src/a.ts' }, assign: 'source',
+    } }] })
+    providerRouter.enqueue({ content: 'Stored for later processing.' })
+    const sessions = new ReplSessions()
+    const sink = new FakeSink()
+    const events: any[] = []
+    const collectLazyInjections = vi.fn(async () => [])
+    const executeTool = createReplDispatchExecutor(async () => ({ content: 'RAW_CONTENT_MUST_NOT_REACH_MODEL' }), sessions)
+    try {
+      const service = new ToolLoopService({ sink, providerRouter: providerRouter as any, executeTool })
+      await service.run({
+        ...baseRunInput, lineageId: 'repl-branch', operationMode: 'plan',
+        tools: ['repl', 'read_file'].map(name => ({ name, description: name, inputSchema: { type: 'object', properties: {} } })),
+        contextLoader: { collectLazyInjections, buildPostCompactionInjection: async () => null },
+      }, e => events.push(e))
+      expect(JSON.stringify(providerRouter.calls)).not.toContain('RAW_CONTENT_MUST_NOT_REACH_MODEL')
+      expect(JSON.stringify(sink.persisted)).not.toContain('RAW_CONTENT_MUST_NOT_REACH_MODEL')
+      expect(JSON.stringify(events)).not.toContain('RAW_CONTENT_MUST_NOT_REACH_MODEL')
+      expect(JSON.stringify(providerRouter.calls)).toContain('stored')
+      expect(events.some(e => e.type === 'tool_execution' && e.toolName === 'read_file' && e.status === 'completed')).toBe(true)
+      expect(collectLazyInjections.mock.calls.some(([call]) => (call as any).name === 'read_file')).toBe(true)
+    } finally { sessions.clear() }
+  })
+})
+
+describe('ToolLoopService REPL artifacts', () => {
+  it('keeps imported data and generated export arguments out of provider replay and persisted messages', async () => {
+    const providerRouter = new FakeProviderRouter()
+    providerRouter.enqueue({ content: '', toolCalls: [{ id: 'import', name: 'repl', arguments: {
+      action: 'import', path: 'input.json', assign: 'data',
+    } }] })
+    providerRouter.enqueue({ content: '', toolCalls: [{ id: 'export', name: 'repl', arguments: {
+      action: 'export', path: 'output.json', variable: 'data',
+    } }] })
+    providerRouter.enqueue({ content: 'Artifact saved.' })
+    const sessions = new ReplSessions()
+    const sink = new FakeSink()
+    const events: any[] = []
+    let exported = ''
+    const executeTool = createReplDispatchExecutor(async call => {
+      if (call.name === 'read_file') return { success: true, content: '{"marker":"PRIVATE_ARTIFACT_SENTINEL"}', truncated: false }
+      exported = (call.arguments as any).content
+      return { success: true }
+    }, sessions)
+    try {
+      const compactionInputs: any[] = []
+      const service = new ToolLoopService({ sink, providerRouter: providerRouter as any, executeTool,
+        compactBranch: async input => {
+          compactionInputs.push(input)
+          return { message: { id: `summary-${compactionInputs.length}`, parent_id: input.parentMessageId, role: 'system', content: 'Artifact metadata retained', note: '__auto_compaction_summary__' } }
+        },
+      })
+      await service.run({ ...baseRunInput, lineageId: 'artifact-branch', operationMode: 'execute',
+        autoCompactionEnabled: true, contextLength: 100,
+        tools: ['repl', 'read_file', 'create_file'].map(name => ({ name, description: name, inputSchema: { type: 'object', properties: {} } })),
+      }, event => events.push(event))
+      expect(exported).toContain('PRIVATE_ARTIFACT_SENTINEL')
+      expect(compactionInputs.length).toBeGreaterThan(0)
+      for (const output of [providerRouter.calls, sink.persisted, events, compactionInputs]) expect(JSON.stringify(output)).not.toContain('PRIVATE_ARTIFACT_SENTINEL')
+      expect(JSON.stringify(sink.persisted)).toContain('exported')
+    } finally { sessions.clear() }
   })
 })

@@ -1,5 +1,9 @@
 import type Database from 'better-sqlite3'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs'
+import os from 'node:os'
+import path from 'node:path'
+import { createHash } from 'node:crypto'
 import { MessageRepo } from '../../persistence/messageRepo.js'
 import {
   ChatOrchestrator,
@@ -53,6 +57,7 @@ function createSchema(db: Database.Database): void {
       id TEXT PRIMARY KEY,
       conversation_id TEXT NOT NULL,
       parent_id TEXT,
+      lineage_id TEXT,
       children_ids TEXT,
       role TEXT,
       content TEXT,
@@ -70,6 +75,17 @@ function createSchema(db: Database.Database): void {
       meta TEXT
     );
 
+    CREATE TABLE lineages (
+      id TEXT PRIMARY KEY, conversation_id TEXT NOT NULL, parent_lineage_id TEXT,
+      forked_from_message_id TEXT, root_message_id TEXT, head_message_id TEXT,
+      status TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+    );
+    CREATE TABLE fork_operations (
+      id TEXT PRIMARY KEY, conversation_id TEXT NOT NULL, source_lineage_id TEXT,
+      target_lineage_id TEXT NOT NULL, source_message_id TEXT, materialized_message_id TEXT,
+      operation TEXT NOT NULL, status TEXT NOT NULL, metadata_json TEXT,
+      created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+    );
     CREATE TABLE message_attachments (
       id TEXT PRIMARY KEY,
       file_path TEXT,
@@ -89,7 +105,15 @@ function createSchema(db: Database.Database): void {
 }
 
 function createStatements(db: Database.Database): any {
+  const invocations = new Map<string, any>()
   return {
+    insertToolInvocation: { run: (id: string, conversation_id: string, lineage_id: string, run_id: string, parent_tool_invocation_id: string, tool_call_id: string, assistant_message_id: string, tool_name: string, started_at: string) => {
+      invocations.set(id, { id, conversation_id, lineage_id, run_id, parent_tool_invocation_id, tool_call_id, assistant_message_id, tool_name, started_at, status: 'running' })
+    } },
+    getToolInvocationById: { get: (id: string) => invocations.get(id) },
+    finishToolInvocation: { run: (status: string, ended_at: string, duration_ms: number, error: string, _updated: string, id: string) => {
+      Object.assign(invocations.get(id), { status, ended_at, duration_ms, error })
+    } },
     upsertConversation: db.prepare(`
       INSERT INTO conversations (id, project_id, user_id, title, model_name, system_prompt, conversation_context, research_note, cwd, storage_mode, created_at, updated_at)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -134,6 +158,20 @@ function createStatements(db: Database.Database): any {
       JOIN message_attachments ma ON ma.id = mal.attachment_id
       WHERE mal.message_id = ? ORDER BY ma.created_at ASC
     `),
+    insertLineage: db.prepare('INSERT INTO lineages VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)'),
+    getLineageById: db.prepare('SELECT * FROM lineages WHERE id = ?'),
+    listLineagesByConversation: db.prepare('SELECT * FROM lineages WHERE conversation_id = ? ORDER BY created_at, id'),
+    resolveLineageByMessage: db.prepare('SELECT l.* FROM messages m JOIN lineages l ON l.id = m.lineage_id WHERE m.id = ?'),
+    resolveAncestorLineageByMessage: db.prepare(`WITH RECURSIVE ancestors(id, parent_id, lineage_id, depth) AS (
+      SELECT id, parent_id, lineage_id, 0 FROM messages WHERE id = ? UNION ALL
+      SELECT m.id, m.parent_id, m.lineage_id, a.depth + 1 FROM messages m JOIN ancestors a ON m.id = a.parent_id WHERE a.depth < 100
+    ) SELECT l.* FROM ancestors a JOIN lineages l ON l.id = a.lineage_id ORDER BY a.depth LIMIT 1`),
+    attachMessageToLineage: db.prepare('UPDATE messages SET lineage_id = ? WHERE id = ? AND conversation_id = (SELECT conversation_id FROM lineages WHERE id = ?) AND (lineage_id IS NULL OR lineage_id = ?)'),
+    advanceLineage: db.prepare('UPDATE lineages SET root_message_id = COALESCE(root_message_id, ?), head_message_id = ?, status = ?, updated_at = ? WHERE id = ?'),
+    insertForkOperation: db.prepare('INSERT INTO fork_operations VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'),
+    getForkOperationById: db.prepare('SELECT * FROM fork_operations WHERE id = ?'),
+    materializeForkOperation: db.prepare("UPDATE fork_operations SET materialized_message_id = ?, status = 'materialized', updated_at = ? WHERE id = ? AND status = 'pending'"),
+    attachStreamingRunToLineage: { run: () => {} },
     upsertStreamingRun: { run: () => {} },
     getStreamingRunById: { get: () => null },
     updateStreamingRun: { run: () => {} },
@@ -204,13 +242,16 @@ describeIfSqlite('ChatOrchestrator continuation semantics', () => {
   let messageRepo: MessageRepo
   let providerRouter: FakeProviderRouter
   let orchestrator: ChatOrchestrator
+  let testDirectory: string
 
   beforeEach(() => {
     if (!BetterSqlite3Ctor) {
       throw new Error('better-sqlite3 is unavailable in this runtime')
     }
 
-    db = new BetterSqlite3Ctor(':memory:')
+    testDirectory = mkdtempSync(path.join(os.tmpdir(), 'chat-image-lifecycle-'))
+    mkdirSync(path.join(testDirectory, 'user_images'))
+    db = new BetterSqlite3Ctor(path.join(testDirectory, 'chat.db'))
     createSchema(db)
     statements = createStatements(db)
 
@@ -226,6 +267,7 @@ describeIfSqlite('ChatOrchestrator continuation semantics', () => {
     if (db) {
       db.close()
     }
+    if (testDirectory) rmSync(testDirectory, { recursive: true, force: true })
   })
 
   it('send creates user then assistant', async () => {
@@ -291,7 +333,8 @@ describeIfSqlite('ChatOrchestrator continuation semantics', () => {
     const now = new Date().toISOString()
     db.prepare(
       'INSERT INTO message_attachments (id, file_path, mime_type, sha256, created_at) VALUES (?, ?, ?, ?, ?)'
-    ).run('att-1', '/tmp/image.png', 'image/png', 'sha-1', now)
+    ).run('att-1', path.join(testDirectory, 'user_images/image.png'), 'image/png', createHash('sha256').update('a').digest('hex'), now)
+    writeFileSync(path.join(testDirectory, 'user_images/image.png'), 'a')
 
     const events: any[] = []
     await orchestrator.runMessage(
@@ -322,6 +365,82 @@ describeIfSqlite('ChatOrchestrator continuation semantics', () => {
     expect(statements.getAttachmentsByMessageId.all(persisted.message.id)).toEqual([
       expect.objectContaining({ id: 'att-1' }),
     ])
+  })
+
+  it.each(['send', 'branch', 'edit-branch'] as const)('retains %s images through tool continuation, reload, repeat, and sibling isolation', async operation => {
+    const image = Buffer.from('durable-image')
+    const dataUrl = `data:image/png;base64,${image.toString('base64')}`
+    const filename = path.join(testDirectory, 'user_images/image.png')
+    writeFileSync(filename, image)
+    db.prepare('INSERT INTO message_attachments (id, file_path, mime_type, sha256, created_at) VALUES (?, ?, ?, ?, ?)')
+      .run('image-a', filename, 'image/png', createHash('sha256').update(image).digest('hex'), new Date().toISOString())
+    const source = messageRepo.createMessage({ conversationId: 'c1', parentId: null, role: 'user', content: 'source' })
+    providerRouter.enqueue({ content: '', toolCalls: [{ id: 'read', name: 'read_file', arguments: {} }] })
+    providerRouter.enqueue({ content: 'image understood' })
+    orchestrator = new ChatOrchestrator({ db, statements, providerRouter: providerRouter as any,
+      toolExecutor: async () => ({ content: 'done' }) })
+    const events: any[] = []
+    await orchestrator.runMessage({ operation, conversationId: 'c1', content: 'inspect',
+      messageId: operation === 'send' ? undefined : source.id,
+      parentId: operation === 'send' ? source.id : undefined,
+      provider: 'openaichatgpt', modelName: 'test', autoCompactionEnabled: false,
+      attachmentsBase64: [{ attachmentId: 'image-a', dataUrl }],
+    }, event => events.push(event))
+    const user = events.find(event => event.type === 'user_message_persisted').message
+    expect(providerRouter.calls).toHaveLength(2)
+    for (const call of providerRouter.calls) {
+      expect(call.history.find((row: any) => row.id === user.id).attachments).toEqual([{ dataUrl }])
+      expect(call.railwayTurn.attachmentsBase64).toBeNull()
+    }
+    expect(JSON.stringify(events)).not.toContain(dataUrl)
+    const last = events.find(event => event.type === 'complete').message
+    orchestrator = new ChatOrchestrator({ db, statements, providerRouter: providerRouter as any })
+    await orchestrator.runMessage({ operation: 'send', conversationId: 'c1', parentId: last.id,
+      content: 'look again', provider: 'openaichatgpt', modelName: 'test' }, () => {})
+    expect(providerRouter.calls.at(-1).history.find((row: any) => row.id === user.id).artifacts).toEqual([dataUrl])
+    await orchestrator.runMessage({ operation: 'repeat', conversationId: 'c1', messageId: user.id,
+      provider: 'openaichatgpt', modelName: 'test' }, () => {})
+    expect(providerRouter.calls.at(-1).history.find((row: any) => row.id === user.id).artifacts).toEqual([dataUrl])
+    await orchestrator.runMessage({ operation: 'branch', conversationId: 'c1', messageId: source.id,
+      content: 'unrelated sibling', provider: 'openaichatgpt', modelName: 'test' }, () => {})
+    expect(providerRouter.calls.at(-1).history.some((row: any) => row.artifacts?.length)).toBe(false)
+  })
+
+  it('hydrates queued ID-only images before acceptance and retains them in a later request', async () => {
+    const image = Buffer.from('queued-image')
+    const filename = path.join(testDirectory, 'user_images/queued.png')
+    const dataUrl = `data:image/png;base64,${image.toString('base64')}`
+    writeFileSync(filename, image)
+    db.prepare('INSERT INTO message_attachments (id, file_path, mime_type, sha256, created_at) VALUES (?, ?, ?, ?, ?)')
+      .run('queued-image', filename, 'image/png', createHash('sha256').update(image).digest('hex'), new Date().toISOString())
+    const events: any[] = []
+    let queued = false
+    await orchestrator.runMessage({ operation: 'send', conversationId: 'c1', streamId: 'queued-images',
+      content: 'start', provider: 'openaichatgpt', modelName: 'test' }, event => {
+      events.push(event)
+      if (event.type === 'assistant_message_persisted' && !queued) {
+        queued = true
+        orchestrator.submitQueuedMessage('c1', 'queued-images', { requestId: 'image-q', content: 'inspect queued',
+          attachmentsBase64: [{ attachmentId: 'queued-image' }] })
+      }
+    })
+    const row = events.find(event => event.type === 'queued_user_message_persisted').message
+    expect(row.attachments).toEqual([expect.objectContaining({ id: 'queued-image' })])
+    expect(providerRouter.calls.at(-1).history.find((item: any) => item.id === row.id).artifacts).toEqual([dataUrl])
+    const last = events.find(event => event.type === 'complete').message
+    orchestrator = new ChatOrchestrator({ db, statements, providerRouter: providerRouter as any })
+    await orchestrator.runMessage({ operation: 'send', conversationId: 'c1', parentId: last.id,
+      content: 'again', provider: 'openaichatgpt', modelName: 'test' }, () => {})
+    expect(providerRouter.calls.at(-1).history.find((item: any) => item.id === row.id).artifacts).toEqual([dataUrl])
+  })
+
+  it('rejects unprepared images before acknowledging or persisting the user row', async () => {
+    const events: any[] = []
+    await expect(orchestrator.runMessage({ operation: 'send', conversationId: 'c1', content: 'inspect',
+      provider: 'openaichatgpt', modelName: 'test', attachmentsBase64: [{ dataUrl: 'data:image/png;base64,YQ==' }],
+    }, event => events.push(event))).rejects.toThrow('must be prepared')
+    expect(events.some(event => event.type === 'user_message_persisted')).toBe(false)
+    expect(providerRouter.calls).toHaveLength(0)
   })
 
   it('replays only the latest compaction summary and subsequent branch messages', async () => {

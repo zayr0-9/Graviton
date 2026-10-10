@@ -480,7 +480,7 @@ export function ParallelChatPane({
           />
         )}
         {streamActive && effectiveStream && !effectiveStream.buffer && effectiveStream.events.length === 0 && (
-          <div className='px-2 pt-1'>
+          <div className='px-0 pt-1 sm:px-2'>
             <StreamingThinkingIndicator />
           </div>
         )}

@@ -1,3 +1,4 @@
+import { hasFullToolAccess } from '../toolAccessContext.js'
 import * as fs from 'fs'
 import * as path from 'path'
 import { isManagedToolPath } from '../utils/managedToolPaths.js'
@@ -49,7 +50,7 @@ function normalizeForCompare(value: string): string {
 }
 
 function assertWithinWorkspace(inputPath: string, resolvedPath: string, cwd?: string): void {
-  if (!cwd) return
+  if (!cwd || hasFullToolAccess()) return
 
   const normalizedRoot = normalizeForCompare(cwd)
   const normalizedTarget = normalizeForCompare(resolvedPath)

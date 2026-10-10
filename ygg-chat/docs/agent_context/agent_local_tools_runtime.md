@@ -2,6 +2,12 @@
 paths:
   - "client/ygg-chat-r/server/tools/**"
   - "client/ygg-chat-r/server/toolRuntimeUtility.ts"
+  - "client/ygg-chat-r/server/builtinToolRegistry.ts"
+  - "client/ygg-chat-r/server/headlessServer/index.ts"
+  - "client/ygg-chat-r/server/headlessServer/services/toolLoopService.ts"
+  - "client/ygg-chat-r/server/headlessServer/services/chatOrchestrator.ts"
+  - "client/ygg-chat-r/server/headlessServer/services/multiCallExecutor.ts"
+  - "client/ygg-chat-r/server/headlessServer/routes/chatRoutes.ts"
   - "client/ygg-chat-r/electron/UtilityToolRuntimeHost.ts"
   - "client/ygg-chat-r/server/routes/toolExecutionRoutes.ts"
   - "client/ygg-chat-r/server/routes/jobRoutes.ts"
@@ -46,10 +52,10 @@ The main chat agent loop no longer runs in the React renderer; it runs inside th
 
 1. `ChatOrchestrator.runMessage` (`server/headlessServer/services/chatOrchestrator.ts`) builds a per-run `ToolLoopService`.
 2. `ToolLoopService.run` (`toolLoopService.ts`) drives turns and calls `this.executeTool(toolCall, ctx)` for each tool call.
-3. `executeTool` is the pausing wrapper `createChatPausingExecutor` (`chatOrchestrator.ts:95`). Per tool call it optionally pauses on `DecisionBroker.requestDecision` (unless the stream is auto-approve or the tool is in `ALWAYS_BYPASS_TOOLS` = `skill_manager`/`mcp_manager`/`multi_call`, or a non-`invoke` `custom_tool_manager` action). PreToolUse hooks may deny/rewrite args before any prompt.
-4. On approval it delegates to the base executor `executeToolViaOrchestrator` (`index.ts:173`), which runs the tool through the shared in-process `toolOrchestrator` (same registered handlers as the job routes).
+3. `executeTool` is the pausing wrapper `createChatPausingExecutor` (`chatOrchestrator.ts`, `createChatPausingExecutor`). Per tool call it optionally pauses on `DecisionBroker.requestDecision` (unless the stream is auto-approve or the tool is in `ALWAYS_BYPASS_TOOLS` = `skill_manager`/`multi_call`/`context_status`, or a discovery/management `mcp_manager` or non-`invoke` `custom_tool_manager` action). PreToolUse hooks may deny/rewrite args before any prompt.
+4. On approval it delegates to the base executor `executeToolViaOrchestrator` (`index.ts`, `createOrchestratorToolExecutor`), which runs the tool through the shared in-process `toolOrchestrator` (same registered handlers as the job routes).
 
-Permission/clarify decisions are NOT renderer-owned pre-checks anymore. The loop pauses server-side and asks via SSE `permission_required` / `clarify_required`; the renderer answers with `POST /api/resume` (`server/headlessServer/routes/chatRoutes.ts`). Broker key = `` `${streamId}::${toolCallId}` `` (`server/headlessServer/services/decisionBroker.ts`). Abort/disconnect (`res.on('close')`) rejects pending decisions and cancels the in-flight orchestrator job. Subagents use the same base executor via `SubagentRunService`.
+Permission/clarify decisions are NOT renderer-owned pre-checks anymore. The loop pauses server-side and asks via SSE `permission_required` / `clarify_required`; the renderer answers with `POST /api/resume` (`server/headlessServer/routes/chatRoutes.ts`). Broker key = `` `${streamId}::${toolCallId}` `` (`server/headlessServer/services/decisionBroker.ts`). Run abort rejects pending decisions and cancels the in-flight job. Connection close aborts only non-resumable runs; resumable runs detach and continue until explicit cancellation or session cleanup. Subagents use the same base executor via `SubagentRunService`.
 
 ## Data Flow
 
@@ -100,8 +106,7 @@ For targeted Vitest runs, use the relevant config in `client/ygg-chat-r/vitest.t
 ## Related Docs
 
 - `agent_tool_registry.md`
-- `agent_tool_permissions.md` (future recommended — not yet present)
-- `docs/tool-permissions.md`
+- [Tool permission flow](../tool-permissions.md)
 
 ## Asynchronous watches
 
@@ -119,3 +124,7 @@ Stopped/failed/unavailable branches report delivery failure, not a silent fork.
 `stopLocalServer` cancels watches before transport teardown.
 See [watcher schema and limitations](../watcher-tool.md) and
 `server/headlessServer/services/__tests__/watchService.test.ts`.
+
+## Full access opt-in
+
+The Chat popover's **Full access** switch is a renderer-session-only default for new runs (off after reload). `fullAccess === true` travels separately from `rootPath`, operation mode and approval through chat requests, the shared loop, child requests and live tool jobs. Existing runs retain their launch setting. `toolAccessContext.ts` uses AsyncLocalStorage to scope the workspace bypass to one invocation; the utility process restores it from trusted execution options, never model arguments. Relative paths still use the original cwd. Only workspace containment checks are lifted; approval, Chat-mode policy, OS permissions, cancellation and file-integrity checks remain. The flag is not persisted with jobs, so restored jobs are restricted. REPL/multi-call nested tools inherit their caller's execution context.

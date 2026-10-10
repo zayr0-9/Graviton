@@ -3,14 +3,14 @@ paths:
   - "client/ygg-chat-r/server/tools/todoMd.ts"
 ---
 
-# TODO List Tool: `electron/tools/todoMd.ts`
+# TODO List Tool: `server/tools/todoMd.ts`
 
 This tool provides file-backed TODO storage as Markdown files. Names are **auto-generated** using a dictionary of fun words (e.g., "goku-sage-ember"). Four actions: create, list, read, edit.
 
 ## Storage Location
 
 - `YGG_TODO_DIRECTORY` (optional): Override the storage directory via environment variable.
-- Default: Electron's `userData` directory, or `${process.cwd()}/.ygg-chat-r/todos-storage` as fallback.
+- Default: the injected host data directory (Electron `userData` or standalone `YGG_DATA_DIR`), or `${process.cwd()}/.ygg-chat-r/todos-storage` as fallback.
 - All TODO files are stored in a `todos/` subfolder with `.md` extension.
 
 ## Actions
@@ -25,9 +25,9 @@ Create a new todo list with auto-generated name. The name uses the ID_DICTIONARY
 ```json
 {
   "success": true,
-  "name": "goku-sage-ember",
-  "path": "/path/to/todos/goku-sage-ember.md",
-  "created": true
+  "id": "goku-sage-ember",
+  "created": true,
+  "content": "# Tasks\n- [ ] Task 1"
 }
 ```
 
@@ -41,7 +41,7 @@ Returns the 5 most recently modified todo lists, sorted by modification time (ne
 {
   "success": true,
   "lists": [
-    { "name": "goku-sage-ember", "path": "/path/to/todos/goku-sage-ember.md", "modifiedAt": "2024-01-15T10:30:00.000Z" }
+    { "id": "goku-sage-ember", "modifiedAt": "2024-01-15T10:30:00.000Z" }
   ]
 }
 ```
@@ -56,8 +56,6 @@ Read the contents of a specific todo list.
 ```json
 {
   "success": true,
-  "name": "goku-sage-ember",
-  "path": "/path/to/todos/goku-sage-ember.md",
   "exists": true,
   "content": "# Tasks\n- [ ] Task 1\n- [x] Task 2"
 }
@@ -68,17 +66,24 @@ Find and replace a line in an existing todo list. Useful for marking items compl
 
 **Parameters:**
 - `name` (required): The todo list name
-- `search` (required): Text to search for (matches any line containing this text)
-- `replacement` (required): The full replacement line
+- `search` / `replacement`: Text to search for and the full replacement line; every line containing the search text is replaced.
+- `edits`: Alternative non-empty array of `{search, replacement}` operations, applied sequentially to evolving lines. If any search has no match, no changes are written.
 
 **Returns:**
 ```json
 {
-  "name": "goku-sage-ember",
-  "path": "/path/to/todos/goku-sage-ember.md",
   "success": true,
-  "linesMatched": 1,
-  "message": "Replaced 1 line(s) containing \"Buy milk\""
+  "message": "Updated 1 edit",
+  "content": "# Shopping List\n- [x] Buy milk",
+  "edits": [
+    {
+      "search": "Buy milk",
+      "replacement": "- [x] Buy milk",
+      "matchCount": 1,
+      "success": true,
+      "message": "Updated 1 line containing \"Buy milk\""
+    }
+  ]
 }
 ```
 
@@ -91,7 +96,7 @@ Find and replace a line in an existing todo list. Useful for marking items compl
   "content": "# Shopping List\n- [ ] Buy milk\n- [ ] Buy bread\n- [ ] Buy eggs"
 }
 ```
-Returns: `{ "name": "vegeta-aurora-drift", ... }`
+Returns: `{ "id": "vegeta-aurora-drift", ... }`. Pass that `id` as `name` to read/edit.
 
 ### Mark an item as complete
 ```json

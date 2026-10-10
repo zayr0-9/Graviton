@@ -20,7 +20,7 @@ Documents installation, discovery, normalization, and model activation for Agent
 - `client/ygg-chat-r/server/skills/skillRoutes.ts`: Settings API under `/api/skills/*`.
 - `client/ygg-chat-r/server/skills/skillManager.ts`: model-facing `skill_manager` list/activate/load-resource tool.
 - `client/ygg-chat-r/src/components/SettingsPane/SettingsPane.tsx`: install and installed-skill UI.
-- `client/ygg-chat-r/electron/tools/__tests__/skillInstaller.test.ts` and `skillLoader.test.ts`: installation and compatibility regressions.
+- `client/ygg-chat-r/server/tools/__tests__/skillInstaller.test.ts` and `skillLoader.test.ts`: installation and compatibility regressions.
 
 ## Runtime Data Flow
 
@@ -53,7 +53,7 @@ npm --prefix client/ygg-chat-r run build:electron:main
 For a focused check:
 
 ```bash
-npm --prefix client/ygg-chat-r exec vitest run --config vitest.tools.config.ts \
-  electron/tools/__tests__/skillInstaller.test.ts \
-  electron/tools/__tests__/skillLoader.test.ts
+npm --prefix client/ygg-chat-r run test:tools -- \
+  server/tools/__tests__/skillInstaller.test.ts \
+  server/tools/__tests__/skillLoader.test.ts
 ```

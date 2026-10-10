@@ -198,11 +198,16 @@ const makeInitialState = (): ChatState => {
       compacting: false,
       compactingConversationId: null,
       compactingParentMessageId: null,
+      compactingLineageId: null,
+      compactionSummaryMessageId: null,
       validationError: null,
       draftMessage: null,
       multiReplyCount: 1,
       imageDrafts: [],
       imageDraftTarget: null,
+      imagePreparationPending: 0,
+      imagePreparationError: null,
+      imagePreparationGeneration: 0,
       editingBranch: false,
       optimisticMessage: null,
       optimisticBranchMessage: null,
@@ -321,6 +326,9 @@ export const chatSlice = createSlice({
       state.composition.input = initialState.composition.input
       state.composition.validationError = null
       if (!state.composition.imageDraftTarget || state.composition.imageDraftTarget.kind === 'composer') {
+        state.composition.imagePreparationGeneration = (state.composition.imagePreparationGeneration ?? 0) + 1
+        state.composition.imagePreparationPending = 0
+        state.composition.imagePreparationError = null
         state.composition.imageDrafts = []
         state.composition.imageDraftTarget = null
       }
@@ -329,10 +337,23 @@ export const chatSlice = createSlice({
     imageDraftTargetSet: (state, action: PayloadAction<ImageDraftTarget | null>) => {
       if (!imageDraftTargetsEqual(state.composition.imageDraftTarget, action.payload)) {
         state.composition.imageDrafts = []
+        state.composition.imagePreparationGeneration = (state.composition.imagePreparationGeneration ?? 0) + 1
+        state.composition.imagePreparationPending = 0
+        state.composition.imagePreparationError = null
       }
       state.composition.imageDraftTarget = action.payload
     },
 
+    imagePreparationStarted: (state, _action: PayloadAction<{ target: ImageDraftTarget }>) => {
+      state.composition.imagePreparationPending = (state.composition.imagePreparationPending ?? 0) + 1
+      state.composition.imagePreparationError = null
+    },
+    imagePreparationFinished: state => {
+      state.composition.imagePreparationPending = Math.max(0, (state.composition.imagePreparationPending ?? 0) - 1)
+    },
+    imagePreparationFailed: (state, action: PayloadAction<{ error: string }>) => {
+      state.composition.imagePreparationError = action.payload.error
+    },
     imageDraftsAppended: (state, action: PayloadAction<ImageDraftsAppendedPayload>) => {
       const { drafts, target } = normalizeImageDraftAppendPayload(action.payload, state.composition.imageDraftTarget)
       if (!imageDraftTargetsEqual(state.composition.imageDraftTarget, target)) {
@@ -351,6 +372,9 @@ export const chatSlice = createSlice({
     imageDraftsCleared: (state, action: PayloadAction<{ target?: ImageDraftTarget | null } | undefined>) => {
       const target = action.payload?.target
       if (target && !imageDraftTargetsEqual(state.composition.imageDraftTarget, target)) return
+      state.composition.imagePreparationGeneration = (state.composition.imagePreparationGeneration ?? 0) + 1
+      state.composition.imagePreparationPending = 0
+      state.composition.imagePreparationError = null
       state.composition.imageDrafts = []
       state.composition.imageDraftTarget = null
     },
@@ -362,7 +386,7 @@ export const chatSlice = createSlice({
       if (index >= 0 && index < state.composition.imageDrafts.length) {
         state.composition.imageDrafts.splice(index, 1)
       }
-      if (state.composition.imageDrafts.length === 0) {
+      if (state.composition.imageDrafts.length === 0 && !state.composition.imagePreparationPending) {
         state.composition.imageDraftTarget = null
       }
     },
@@ -374,15 +398,30 @@ export const chatSlice = createSlice({
 
     compactingStarted: (state, action: PayloadAction<{ conversationId?: ConversationId | null; parentMessageId?: MessageId | null } | undefined>) => {
       state.composition.compacting = true
+      state.composition.compactionSummaryMessageId = null
       state.composition.compactingConversationId =
         action.payload?.conversationId ?? state.conversation.currentConversationId ?? null
       state.composition.compactingParentMessageId = action.payload?.parentMessageId ?? null
+      // Only capture the selected lineage when this request belongs to its path.
+      // Pre-branch compaction can target a different structural anchor.
+      state.composition.compactingLineageId =
+        String(state.composition.compactingConversationId) === String(state.conversation.currentConversationId) &&
+        state.conversation.currentPath.some(id => String(id) === String(state.composition.compactingParentMessageId))
+          ? state.conversation.currentLineageId
+          : null
+    },
+
+    compactionSummaryPersisted: (state, action: PayloadAction<{ conversationId: ConversationId; parentMessageId: MessageId; messageId: MessageId }>) => {
+      if (String(state.composition.compactingConversationId) !== String(action.payload.conversationId) ||
+        String(state.composition.compactingParentMessageId) !== String(action.payload.parentMessageId)) return
+      state.composition.compactionSummaryMessageId = action.payload.messageId
     },
 
     compactingFinished: state => {
       state.composition.compacting = false
       state.composition.compactingConversationId = null
       state.composition.compactingParentMessageId = null
+      state.composition.compactingLineageId = null
     },
 
     sendingStarted: (state, action: PayloadAction<SendingStartedPayload | undefined>) => {
@@ -562,6 +601,7 @@ export const chatSlice = createSlice({
         stream.currentBranchAnchorMessageId = stream.triggerUserMessageId ?? stream.lineage.originMessageId ?? stream.lineage.rootMessageId ?? null
         stream.liveMessageId = null
         stream.lastCompletedMessageId = null
+        stream.persistedTurnMessageId = null
         stream.finalMessageId = null
         stream.streamingMessageId = null
         return
@@ -576,8 +616,9 @@ export const chatSlice = createSlice({
         if (chunk.messageId) {
           stream.currentBranchAnchorMessageId = chunk.messageId
         }
-        // Keep messageId/lastCompletedMessageId as branch anchors. Chat.tsx uses
-        // liveMessageId/streamingMessageId for duplicate suppression instead.
+        // Keep messageId/lastCompletedMessageId as branch anchors, but the new
+        // buffers no longer belong to that persisted row (even without a live ID).
+        stream.persistedTurnMessageId = null
         // Clear previous turn's transient render buffers for the new live answer.
         stream.events = []
         stream.buffer = ''
@@ -700,6 +741,7 @@ export const chatSlice = createSlice({
         const completedMessageId = chunk.message?.id || null
         stream.messageId = completedMessageId
         stream.lastCompletedMessageId = completedMessageId
+        stream.persistedTurnMessageId = completedMessageId
         if (completedMessageId) {
           stream.branchAnchorMessageId = completedMessageId
           stream.currentBranchAnchorMessageId = completedMessageId
@@ -804,6 +846,7 @@ export const chatSlice = createSlice({
         stream.finished = true
         stream.messageId = messageId
         stream.lastCompletedMessageId = messageId
+        stream.persistedTurnMessageId = messageId
         stream.finalMessageId = messageId
         stream.currentBranchAnchorMessageId = messageId
         stream.liveMessageId = null
@@ -865,6 +908,14 @@ export const chatSlice = createSlice({
       if (state.streaming.lastCompletedId === streamId) {
         state.streaming.lastCompletedId = null
       }
+    },
+
+    streamCompactionUpdated: (
+      state,
+      action: PayloadAction<{ streamId: string; status: 'started' | 'completed' | 'failed' }>
+    ) => {
+      const stream = state.streaming.byId[action.payload.streamId]
+      if (stream) stream.compactionStatus = action.payload.status
     },
 
     // Update stream lineage after getting target parent ID
@@ -1018,6 +1069,11 @@ export const chatSlice = createSlice({
         state.heimdall.subagentMap = {}
       }
       if (conversationChanged) {
+        state.composition.imageDrafts = []
+        state.composition.imageDraftTarget = null
+        state.composition.imagePreparationPending = 0
+        state.composition.imagePreparationError = null
+        state.composition.imagePreparationGeneration = (state.composition.imagePreparationGeneration ?? 0) + 1
         state.conversation.currentLineageId = null
         state.conversation.currentPath = []
         state.conversation.focusedChatMessageId = null
@@ -1028,6 +1084,13 @@ export const chatSlice = createSlice({
     // Select conversation, exact lineage, visible path, and focus as one render-safe transition.
     lineageSelected: (state, action: PayloadAction<LineageSelectionPayload>) => {
       const { conversationId, lineageId, path, focus } = action.payload
+      if (state.conversation.currentConversationId != null && String(state.conversation.currentConversationId) !== String(conversationId)) {
+        state.composition.imageDrafts = []
+        state.composition.imageDraftTarget = null
+        state.composition.imagePreparationPending = 0
+        state.composition.imagePreparationError = null
+        state.composition.imagePreparationGeneration = (state.composition.imagePreparationGeneration ?? 0) + 1
+      }
       if (
         state.conversation.snapshotConversationId != null &&
         String(state.conversation.snapshotConversationId) !== String(conversationId)
@@ -1044,6 +1107,11 @@ export const chatSlice = createSlice({
     },
 
     conversationCleared: state => {
+      state.composition.imageDrafts = []
+      state.composition.imageDraftTarget = null
+      state.composition.imagePreparationPending = 0
+      state.composition.imagePreparationError = null
+      state.composition.imagePreparationGeneration = (state.composition.imagePreparationGeneration ?? 0) + 1
       state.conversation.currentConversationId = null
       state.conversation.currentLineageId = null
       state.conversation.snapshotConversationId = null

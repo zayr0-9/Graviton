@@ -1,4 +1,5 @@
 import path from 'path'
+import { hasFullToolAccess, withToolAccess } from './toolAccessContext.js'
 import { SHELL_CLEANUP_GRACE_MS } from './tools/shellExecutionPolicy.js'
 import { runBashCommand } from './tools/bash.js'
 import { runPowerShellCommand } from './tools/powershell.js'
@@ -70,7 +71,7 @@ function validateAndResolvePath(
   const outsideWorkspace =
     relativeToRoot === '..' || relativeToRoot.startsWith(`..${pathModule.sep}`) || pathModule.isAbsolute(relativeToRoot)
 
-  if (outsideWorkspace) {
+  if (outsideWorkspace && !hasFullToolAccess()) {
     const rootIsManagedPath = isManagedToolPath(normalizedRoot, usePosix)
     const targetIsManagedPath = isManagedToolPath(resolvedPath, usePosix)
     if (!rootIsManagedPath && targetIsManagedPath) {
@@ -115,7 +116,7 @@ function initializeBuiltInToolRegistry(): void {
     return await htmlRenderer.run({ html, path: filePath, cwd: cwd ?? rootPath, allowUnsafe })
   })
 
-  builtInTools.set('read_file', async (args, { rootPath }) => {
+  builtInTools.set('read_file', async (args, { rootPath, signal, deadlineMs }) => {
     const { path: filePath, maxBytes, startLine, endLine, ranges, includeHash, cwd } = args
     if (!filePath) throw new Error('path is required')
     const effectiveCwd = resolveToolWorkspaceCwd(cwd, rootPath)
@@ -125,12 +126,12 @@ function initializeBuiltInToolRegistry(): void {
       endLine,
       ranges,
       includeHash,
-      cwd: effectiveCwd,
+      cwd: effectiveCwd, workspaceRoot: rootPath, signal, deadlineMs,
     })
     return { success: true, ...fileRes }
   })
 
-  builtInTools.set('read_file_continuation', async (args, { rootPath }) => {
+  builtInTools.set('read_file_continuation', async (args, { rootPath, signal, deadlineMs }) => {
     const { path: filePath, afterLine, numLines, maxBytes, includeHash, cwd } = args
     if (!filePath) throw new Error('path is required')
     if (afterLine === undefined) throw new Error('afterLine is required')
@@ -139,16 +140,16 @@ function initializeBuiltInToolRegistry(): void {
     const fileRes = await readFileContinuation(filePath, afterLine, numLines, {
       maxBytes,
       includeHash,
-      cwd: effectiveCwd,
+      cwd: effectiveCwd, workspaceRoot: rootPath, signal, deadlineMs,
     })
     return { success: true, ...fileRes }
   })
 
-  builtInTools.set('read_files', async (args, { rootPath }) => {
+  builtInTools.set('read_files', async (args, { rootPath, signal, deadlineMs }) => {
     const { paths, baseDir, maxBytes, startLine, endLine, ranges, cwd } = args
     if (!paths) throw new Error('paths are required')
     const effectiveCwd = resolveToolWorkspaceCwd(cwd, rootPath)
-    const filesRes = await readMultipleTextFiles(paths, { baseDir, maxBytes, startLine, endLine, ranges, cwd: effectiveCwd })
+    const filesRes = await readMultipleTextFiles(paths, { baseDir, maxBytes, startLine, endLine, ranges, cwd: effectiveCwd, workspaceRoot: rootPath, signal, deadlineMs })
     return formatReadFilesResult(filesRes, paths.length)
   })
 
@@ -185,8 +186,10 @@ function initializeBuiltInToolRegistry(): void {
       approxEndLine,
     } = args
     if (!filePath) throw new Error('path is required')
-    const absolutePath = validateAndResolvePath(filePath, rootPath, false)
-    if (operationMode === 'execute' && options.streamId) {
+    let absolutePath = ''
+    const beforeWrite = async (resolvedPath: string) => {
+      absolutePath = resolvedPath
+      if (operationMode !== 'execute' || !options.streamId) return
       await recordPreEditBackup({
         streamId: options.streamId,
         conversationId: options.conversationId ?? null,
@@ -200,6 +203,7 @@ function initializeBuiltInToolRegistry(): void {
       })
     }
     const result = await editFile(filePath, operation, {
+      beforeWrite,
       searchPattern,
       replacement,
       content,
@@ -250,29 +254,24 @@ function initializeBuiltInToolRegistry(): void {
       validateContent,
     } = args
     if (!Array.isArray(edits) || edits.length === 0) throw new Error('edits are required')
-    const editPaths = edits
-      .map((edit: any, index: number) => ({ edit, index, filePath: typeof edit?.path === 'string' ? edit.path : null }))
-      .filter((item: { filePath: string | null }): item is { edit: any; index: number; filePath: string } => Boolean(item.filePath))
-    if (operationMode === 'execute' && options.streamId) {
-      const seen = new Set<string>()
-      for (const item of editPaths) {
-        const absolutePath = validateAndResolvePath(item.filePath, rootPath, false)
-        if (seen.has(absolutePath)) continue
-        seen.add(absolutePath)
-        await recordPreEditBackup({
-          streamId: options.streamId,
-          conversationId: options.conversationId ?? null,
-          messageId: options.messageId ?? null,
-          parentMessageId: options.parentMessageId ?? null,
-          rootPath: rootPath ?? null,
-          cwd: rootPath ?? null,
-          toolCallId: options.toolCallId ?? null,
-          originalPath: item.filePath,
-          absolutePath,
-        })
-      }
+    const editedPaths = new Map<string, string>()
+    const beforeWrite = async (absolutePath: string, originalPath: string) => {
+      editedPaths.set(originalPath, absolutePath)
+      if (operationMode !== 'execute' || !options.streamId) return
+      await recordPreEditBackup({
+        streamId: options.streamId,
+        conversationId: options.conversationId ?? null,
+        messageId: options.messageId ?? null,
+        parentMessageId: options.parentMessageId ?? null,
+        rootPath: rootPath ?? null,
+        cwd: rootPath ?? null,
+        toolCallId: options.toolCallId ?? null,
+        originalPath,
+        absolutePath,
+      })
     }
     const result = await multiEdit(edits, {
+      beforeWrite,
       stopOnError,
       createBackup,
       encoding,
@@ -292,7 +291,7 @@ function initializeBuiltInToolRegistry(): void {
         const sourceEdit = edits[item.index]
         const originalPath = item.path || sourceEdit?.path
         if (typeof originalPath !== 'string') continue
-        const absolutePath = validateAndResolvePath(originalPath, rootPath, false)
+        const absolutePath = editedPaths.get(originalPath)!
         await recordToolEditSuccess({
           streamId: options.streamId,
           conversationId: options.conversationId ?? null,
@@ -544,7 +543,7 @@ async function handleRequest(message: UtilityRuntimeRequest): Promise<void> {
 
   try {
     if (handler) {
-      const result = await handler(message.args, { ...message.options, signal: controller.signal })
+      const result = await withToolAccess(message.options?.fullAccess, () => handler(message.args, { ...message.options, signal: controller.signal }))
       const durationMs = Date.now() - startedAtMs
       postMessage({
         type: 'tool_result',
@@ -566,14 +565,14 @@ async function handleRequest(message: UtilityRuntimeRequest): Promise<void> {
 
     controller.signal.throwIfAborted()
     if (customToolRegistry.hasCustomTool(message.toolName)) {
-      const result = await customToolRegistry.executeTool(message.toolName, message.args, {
+      const result = await withToolAccess(message.options?.fullAccess, () => customToolRegistry.executeTool(message.toolName, message.args, {
         rootPath: message.options?.rootPath,
         operationMode: message.options?.operationMode,
         conversationId: message.options?.conversationId,
         messageId: message.options?.messageId,
         streamId: message.options?.streamId,
         cwd: message.options?.rootPath,
-      })
+      }))
       const durationMs = Date.now() - startedAtMs
       postMessage({
         type: 'tool_result',

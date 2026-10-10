@@ -48,8 +48,10 @@ function flattenRunToBlocks(run: SubagentRunRow): any[] {
   const messages = Array.isArray(run.messages) ? run.messages : []
   const prompt = (run.prompt ?? '').trim()
 
-  messages.forEach(message => {
-    if (message.role === 'user' && (message.content ?? '').trim() === prompt) return
+  messages.forEach((message, index) => {
+    // Only the initial prompt is shown separately. A later steering/resume message
+    // may repeat the task verbatim and must remain in the displayed chronology.
+    if (index === 0 && message.role === 'user' && (message.content ?? '').trim() === prompt) return
     const blocks = normalizeContentBlocks(message.content_blocks)
     const hasTextBlock = blocks.some((block: any) => block?.type === 'text')
     if (message.thinking_block) {
@@ -379,6 +381,10 @@ export function useSubagentLiveStream(
         textRef.current = ''
         reasoningRef.current = ''
         setState({ text: '', reasoning: '', done: false })
+        invalidatePersisted()
+      } else if (event.type === 'queued_user_message_persisted') {
+        // Steering landed in this child's transcript, never in the parent chat tree.
+        // Do not clear a new assistant tail if this persisted row is replayed.
         invalidatePersisted()
       } else if (event.type === 'complete' || event.type === 'error') {
         setState(s => ({ ...s, done: true }))

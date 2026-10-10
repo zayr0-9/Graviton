@@ -21,7 +21,7 @@ function isWithinDirectory(targetPath: string, parentPath: string, usePosix: boo
   return relative === '' || (!relative.startsWith('..') && !pathModule.isAbsolute(relative))
 }
 
-function getManagedToolRoots(usePosix: boolean): string[] {
+export function getManagedToolRoots(usePosix: boolean): string[] {
   const roots = new Set<string>()
 
   const addRoot = (candidatePath?: string | null) => {

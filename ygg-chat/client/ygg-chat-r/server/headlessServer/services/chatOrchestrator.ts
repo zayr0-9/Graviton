@@ -46,6 +46,7 @@ import { registerConversationContext } from '../../context/contextSessionRegistr
 import { loadSkillFromDirectory, type DiscoveredSkill } from '../../context/skillsDiscovery.js'
 import { skillRegistry } from '../../skills/skillLoader.js'
 import { tryGetServerConfig } from '../../serverHost.js'
+import { assertModelImageBudget, createModelImageHydrator } from './modelImageHistory.js'
 
 interface ChatOrchestratorDeps {
   db: any
@@ -105,7 +106,7 @@ export function linkPreparedAttachmentsToMessage(
 }
 
 /** Tools that never prompt for permission (mirrors the renderer TOOL_PERMISSION_ALWAYS_BYPASS). */
-const ALWAYS_BYPASS_TOOLS = new Set(['skill_manager', 'mcp_manager', 'multi_call', 'context_status'])
+const ALWAYS_BYPASS_TOOLS = new Set(['skill_manager', 'multi_call', 'context_status'])
 /** custom_tool_manager actions that are read-only/management (bypass) vs 'invoke' (prompt). */
 const CUSTOM_TOOL_MANAGER_BYPASS_ACTIONS = new Set([
   'list',
@@ -132,6 +133,7 @@ function parseToolArgs(raw: unknown): any {
 /** Whether a tool call skips the interactive permission prompt (server-side port of the renderer gate). */
 function shouldBypassPermission(toolName: string, args: any): boolean {
   if (ALWAYS_BYPASS_TOOLS.has(toolName)) return true
+  if (toolName === 'mcp_manager') return ['list', 'get', 'stop', 'list_tools'].includes(args?.action)
   if (toolName === 'custom_tool_manager') {
     // Normalize identically to the renderer (chatActions shouldBypassToolPermission)
     // so mixed-case/whitespace actions bypass on both sides.
@@ -581,6 +583,7 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
     })
   }
   private readonly statements: any
+  private readonly hydrateModelImages: ReturnType<typeof createModelImageHydrator>
   private readonly conversationRepo: ConversationRepo
   private readonly messageRepo: MessageRepo
   private readonly projectRepo: ProjectRepo
@@ -600,6 +603,7 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
 
   constructor(deps: ChatOrchestratorDeps) {
     this.statements = deps.statements
+    this.hydrateModelImages = createModelImageHydrator(deps.db.name, deps.statements)
     this.conversationRepo = new ConversationRepo({ db: deps.db, statements: deps.statements })
     this.messageRepo = new MessageRepo({ db: deps.db, statements: deps.statements })
     this.projectRepo = new ProjectRepo({ db: deps.db })
@@ -717,6 +721,18 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
       throw new Error(`Message not found in conversation: ${messageId}`)
     }
     return message
+  }
+
+  private async prepareSubmittedImages(attachmentsBase64: any[] | null | undefined): Promise<any> {
+    const attachments = (attachmentsBase64 ?? []).map(image => {
+      const id = image.attachmentId ?? image.attachment_id
+      if (!id) throw new Error('Images must be prepared through /api/local/attachments/prepare-base64 before submission')
+      const stored = this.statements.getAttachmentById?.get(id)
+      if (!stored) throw new Error('Prepared image is unavailable. Reattach it before sending.')
+      return stored
+    }).filter(Boolean)
+    const [prepared] = await this.hydrateModelImages([{ role: 'user', attachments }], undefined, attachmentsBase64 ?? [])
+    return prepared
   }
 
   private createUserMessage(
@@ -898,6 +914,8 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
       }
     }
     try {
+    // Validate prepared files before minting a user row or acknowledging its images.
+    if (request.attachmentsBase64?.length) await this.prepareSubmittedImages(request.attachmentsBase64)
     const conversation = this.conversationRepo.getById(request.conversationId)
     if (!conversation) {
       throw new Error(`Conversation not found: ${request.conversationId}`)
@@ -1252,11 +1270,11 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
     // model as its own prior words. This is the only server-side history assembly —
     // `listPathToMessage` has no other consumer — and the loop's compaction reuses this
     // same array, so the summary path is covered too.
-    const history = trimHistoryToLatestCompaction(
+    const history = await this.hydrateModelImages(trimHistoryToLatestCompaction(
       excludeContextExcludedMessages(
         this.conversationRepo.listPathToMessage(request.conversationId, resolved.historyLeafId)
       )
-    )
+    ), resolved.userMessage?.id, request.attachmentsBase64 ?? [])
 
     modeReady = true
     modeParentId = resolved.assistantParentId
@@ -1268,32 +1286,12 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
     // that disabled every tool send [] and get NO tools, rather than the defaults.
     const requestedTools = Array.isArray(request.tools) ? request.tools : null
     const initialDefaultTools = this.defaultToolsProvider()
-    const initialAvailableMcpNames = new Set(
-      initialDefaultTools.filter(tool => tool.name.startsWith('mcp__')).map(tool => tool.name)
-    )
+    // MCP discovery returns schemas in tool results, never in the model tool list.
+    // Keep this run's definitions stable across manager calls and connections.
     const resolvedTools = filterToolsForOperationMode(
       requestedTools ?? initialDefaultTools,
       resolvedOperationMode
     )
-    // Preserve an explicit client whitelist, including MCP tools the user disabled.
-    // Only MCP definitions that become available after this run starts are added.
-    const canDiscoverMcpTools = requestedTools === null || requestedTools.some(tool => tool.name === 'mcp_manager')
-    const refreshTools = !canDiscoverMcpTools
-      ? (currentTools: Array<{ name: string; description?: string; inputSchema?: Record<string, any> }>) => currentTools
-      : requestedTools
-        ? (currentTools: Array<{ name: string; description?: string; inputSchema?: Record<string, any> }>) => {
-            const byName = new Map(currentTools.map(tool => [tool.name, tool]))
-            for (const tool of this.defaultToolsProvider()) {
-              if (
-                tool.name.startsWith('mcp__') &&
-                (byName.has(tool.name) || !initialAvailableMcpNames.has(tool.name))
-              ) {
-                byName.set(tool.name, tool)
-              }
-            }
-            return filterToolsForOperationMode(Array.from(byName.values()), resolvedOperationMode)
-          }
-        : () => filterToolsForOperationMode(this.defaultToolsProvider(), resolvedOperationMode)
 
     // Skill / agent indexes and the memory pointer are part of the system prompt (§10
     // steps 3-4). They are a function of the root and the settings, so they are stable
@@ -1419,6 +1417,8 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
           const submissionRequest = { ...request, operation: 'send' as const, content,
             watcherCompletion: entry.submission.watcherCompletion,
             attachmentsBase64: entry.submission.attachmentsBase64 ?? null }
+          const preparedImages = await this.prepareSubmittedImages(submissionRequest.attachmentsBase64)
+          assertModelImageBudget([...boundaryHistory, ...rows, preparedImages])
           const row = this.messageRepo.transaction(() => {
             const message = this.createUserMessage(submissionRequest, parent, content, blocks.length ? blocks : null)
             this.lineageRepo.appendMessage(lineageId, message.id)
@@ -1429,10 +1429,7 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
           // Images belong to THIS history row, not the latest user/mode row.
           const modelImages = (entry.submission.attachmentsBase64 ?? []).filter(attachment =>
             typeof attachment?.dataUrl === 'string' && attachment.dataUrl.startsWith('data:image/'))
-          const modelRow = { ...row,
-            artifacts: modelImages.map(attachment => attachment.dataUrl),
-            attachments: [...(row.attachments ?? []), ...modelImages],
-          }
+          const modelRow = { ...row, artifacts: preparedImages.artifacts ?? [], attachments: preparedImages.attachments ?? [] }
           rows.push(modelRow)
           delivered++
           const displayRow = { ...row, artifacts: modelImages.map(attachment => attachment.dataUrl) }
@@ -1472,7 +1469,8 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
         userId: request.userId ?? null,
         accessToken: request.accessToken ?? null,
         accountId: request.accountId ?? null,
-        attachmentsBase64: request.attachmentsBase64 ?? null,
+        // Images are now attached to their owning history rows on every provider turn.
+        attachmentsBase64: null,
         retrigger: request.retrigger,
         executionMode: request.executionMode ?? 'client',
         isBranch: request.isBranch ?? (request.operation === 'branch' || request.operation === 'edit-branch'),
@@ -1482,9 +1480,9 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
         serviceTier: request.serviceTier,
         promptCacheRetention: request.promptCacheRetention,
         tools: resolvedTools,
-        refreshTools,
         streamId: trackedStreamId,
         rootPath: request.rootPath ?? conversation?.cwd ?? null,
+        fullAccess: request.fullAccess === true,
         operationMode: resolvedOperationMode,
         modeControl,
         flushOperationMode: flushMode,

@@ -174,8 +174,11 @@ export const ToolCallGroupCard: React.FC<ToolCallGroupCardProps> = ({
 
   const rawName = group.name ?? ''
   const normalizedName = normalizeToolName(rawName)
-  const isMcpGroup = rawName.startsWith('mcp__')
-  const parsedMcp = isMcpGroup ? parseMcpQualifiedName(rawName) : null
+  const isMcpInvoke = normalizedName === 'mcp_manager' && group.args?.action === 'invoke'
+  const isMcpGroup = rawName.startsWith('mcp__') || isMcpInvoke
+  const parsedMcp = isMcpInvoke
+    ? { serverName: group.args?.name, toolName: group.args?.tool }
+    : isMcpGroup ? parseMcpQualifiedName(rawName) : null
   const mcpServerName = parsedMcp?.serverName
   const hasResults = group.results.length > 0
   const resultSummary = hasResults ? formatToolResultSummary(group.results[0].content) : null
@@ -316,7 +319,18 @@ export const ToolCallGroupCard: React.FC<ToolCallGroupCardProps> = ({
   }
 
   // MCP app with a UI resource: the app is the artifact. Always visible.
-  const mcpTool = toolDefinitions.find(t => t.isMcp && t.name === rawName)
+  const invokeResult = isMcpInvoke ? parseToolJsonObject(group.results.at(-1)?.content) : null
+  const invokedDefinition = invokeResult?.mcpToolDefinition
+  const mcpTool = toolDefinitions.find(t => t.isMcp && (isMcpInvoke
+    ? t.mcpServerName === parsedMcp?.serverName && t.mcpToolName === parsedMcp?.toolName
+    : t.name === rawName)) || (invokedDefinition ? {
+      ...invokedDefinition, enabled: true, isMcp: true,
+      name: invokedDefinition.qualifiedName || `mcp__${parsedMcp?.serverName}__${parsedMcp?.toolName}`,
+      mcpServerName: invokedDefinition.serverName, mcpToolName: invokedDefinition.name,
+      mcpUi: invokedDefinition._meta?.ui || (invokedDefinition._meta?.['ui/resourceUri']
+        ? { resourceUri: invokedDefinition._meta['ui/resourceUri'] } : undefined),
+    } : undefined)
+  const mcpToolArgs = isMcpInvoke ? group.args?.args : group.args
   const mcpResourceUri = mcpTool?.mcpUi?.resourceUri
   if (!readOnly && mcpTool && mcpResourceUri) {
     const serverName = mcpTool.mcpServerName || parsedMcp?.serverName
@@ -331,7 +345,7 @@ export const ToolCallGroupCard: React.FC<ToolCallGroupCardProps> = ({
         serverName,
         resourceUri: mcpResourceUri,
         qualifiedToolName: mcpTool.name,
-        toolArgs: group.args || undefined,
+        toolArgs: mcpToolArgs || undefined,
         toolResult: normalizedResult,
         toolDefinition: mcpTool,
         reloadToken: mcpReloadTokens[reloadKey] || 0,
@@ -361,7 +375,7 @@ export const ToolCallGroupCard: React.FC<ToolCallGroupCardProps> = ({
                 serverName={serverName}
                 qualifiedToolName={mcpTool.name}
                 resourceUri={mcpResourceUri}
-                toolArgs={group.args || undefined}
+                toolArgs={mcpToolArgs || undefined}
                 toolResult={normalizedResult}
                 toolDefinition={mcpTool}
                 reloadToken={mcpReloadTokens[reloadKey] || 0}

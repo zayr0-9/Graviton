@@ -92,7 +92,7 @@ user rows have `meta.kind = watcher_completion`, handle and origin-message ID.
 - Active watches pin the originating and latest same-lineage continuation
   mailboxes so normal terminal-cache eviction does not lose run configuration.
   Pins release on completion/cancel/shutdown. Pin retention is bounded by watch
-  limits in addition to the usual 64 retained unpinned mailboxes.
+  limits. Normal pruning targets 64 total retained mailboxes, but does not evict live or watch-protected entries.
 - Failed/stopped, archived/deleted, unresolved-initializing, externally advanced
   (without a matching retained run), or turn-limit/closed-intake races can reject
   delivery. The banner reports **could not deliver**, and status reports

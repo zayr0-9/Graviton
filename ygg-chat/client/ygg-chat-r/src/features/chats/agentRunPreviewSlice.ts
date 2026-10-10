@@ -36,7 +36,7 @@ export const previewForkKey = (streamId: string, stream: StreamState): string =>
 
 const hasOutput = (stream: StreamState) => Boolean(stream.events.length || stream.buffer || stream.thinkingBuffer)
 
-/** Newest start wins, not newest completion. Keep older simultaneous runs only while active. */
+/** Track the newest start for navigation without evicting older fork transcripts. */
 function reconcileRetention(state: AgentRunPreviewState) {
   const latest: Record<string, string> = {}
   for (const run of Object.values(state.byStreamId)) {
@@ -48,11 +48,6 @@ function reconcileRetention(state: AgentRunPreviewState) {
     }
   }
   state.latestByFork = latest
-  for (const run of Object.values(state.byStreamId)) {
-    if (!run.stream.active && latest[previewForkKey(run.streamId, run.stream)] !== run.streamId) {
-      delete state.byStreamId[run.streamId]
-    }
-  }
 }
 
 const slice = createSlice({
@@ -67,7 +62,7 @@ const slice = createSlice({
       const { streamId, stream, start, boundary, projectId, conversationTitle, now } = action.payload
       let run = state.byStreamId[streamId]
       if (!run) {
-        // Never resurrect a superseded/pruned run on late terminal events.
+        // Unknown terminal events must not create a transcript without a captured start.
         if (!start) return
         run = state.byStreamId[streamId] = {
           streamId, stream, projectId, conversationTitle, completedAt: null,

@@ -141,6 +141,7 @@ function buildHeadlessMessageRequest(req: Request, operation: HeadlessChatOperat
     promptCacheRetention: body.promptCacheRetention ?? body.prompt_cache_retention,
     tools: Array.isArray(body.tools) ? body.tools : undefined,
     rootPath: body.rootPath ?? body.root_path ?? body.cwd ?? null,
+    fullAccess: body.fullAccess === true,
     operationMode: body.operationMode === 'plan' || body.operation_mode === 'plan' ? 'plan' : 'execute',
     includeOperationModePrompt:
       typeof body.includeOperationModePrompt === 'boolean'

@@ -67,6 +67,7 @@
     "icon": "public/img/graviton-dark.png",
     "maintainer": "YggChat <support@yggchat.com>"
   },
+  "beforePack": "scripts/runtime-packaging.mjs",
   "npmRebuild": true,
   "nativeRebuilder": "sequential",
   "publish": [

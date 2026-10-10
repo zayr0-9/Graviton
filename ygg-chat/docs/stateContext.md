@@ -1,6 +1,16 @@
 ---
 paths:
-  - "docs/stateContext.md"
+  - "client/ygg-chat-r/src/store/store.ts"
+  - "client/ygg-chat-r/src/hooks/useQueries.ts"
+  - "client/ygg-chat-r/src/features/chats/**"
+  - "client/ygg-chat-r/src/features/conversations/**"
+  - "client/ygg-chat-r/src/features/projects/**"
+  - "client/ygg-chat-r/src/features/ui/**"
+  - "client/ygg-chat-r/src/features/ideContext/**"
+  - "client/ygg-chat-r/src/containers/Chat.tsx"
+  - "client/ygg-chat-r/src/containers/sideBar.tsx"
+  - "client/ygg-chat-r/src/containers/Settings.tsx"
+  - "client/ygg-chat-r/src/containers/rightBar.tsx"
 ---
 
 # Graviton Application State Overview
@@ -58,7 +68,6 @@ TanStack Query manages resource-oriented data that comes from the local server o
 - model lists
 - directory listings and file search
 - local git data
-- global agent messages and queued tasks
 
 This logic is centralized in:
 
@@ -216,7 +225,7 @@ As with conversations, Query remains the main source of fetched project data, wh
 
 ### 3.4 UI slice
 
-The `ui` slice sir recent and manages shared UI chrome state, including:
+The `ui` slice manages shared UI chrome state, including:
 
 - right bar collapsed state
 - right bar width
@@ -267,7 +276,6 @@ It also contains logic to resolve `storage_mode` so the app can route correctly 
 - directory listing and search
 - git overview and diffs
 - local git mutations
-- global agent data
 
 ### Query behavior
 
@@ -474,7 +482,6 @@ The right bar acts as an integrated workspace pane. It brings together several c
 - git diff viewing
 - terminal sessions
 - embedded browser
-- agent activity and queue visibility
 
 ### State profile
 
@@ -491,7 +498,6 @@ The right bar uses hooks for:
 - directory file listing and search
 - git overview and git diffs
 - git actions such as branch checkout/creation and staging
-- global agent messages and queued tasks
 
 This lets the pane operate like a lightweight integrated workbench.
 
@@ -504,7 +510,6 @@ Many right bar concerns are intentionally local, for example:
 - browser tab state
 - terminal dock state
 - diff tab state
-- local scheduling drafts for agents
 
 These concerns are specific to the pane and do not need to be stored globally.
 
@@ -523,7 +528,7 @@ This ensures note changes are immediately reflected across navigation and chat v
 
 ### Agent visibility
 
-The right bar is also where background agent activity becomes visible in the UI. Query-backed hooks expose agent messages, queued tasks, and stream buffers, and the pane formats that into an operational view of currently running work.
+Running-agent previews and visibility use `agentRunPreviews` and `runningAgentsUi` Redux slices and the floating agents shell. The right bar is a workspace pane, not the retired global-agent Query/task view.
 
 ---
 
@@ -551,10 +556,11 @@ A thunk in `chatActions.ts`:
 
 - creates a stream id
 - records stream start in Redux
-- sends the request to the provider or local server
-- consumes stream chunks
-- handles tool calls and results
-- completes, aborts, or continues the stream loop
+- starts or reattaches a server-owned chat run
+- consumes/projects SSE, including tool calls and results
+- updates renderer state on completion, abort, or failure
+
+The server owns provider turns, tool execution, permission waits, persistence, and inference continuation; renderer thunks are thin clients.
 
 ### Step 4: selectors derive what the user should see
 
@@ -619,7 +625,7 @@ Each major page uses this split differently:
 - **Chat** is the core runtime surface, where Redux plays the largest role
 - **Sidebar** is a Query-driven navigation surface with optimistic cache updates
 - **Settings** is primarily a local configuration surface with selective global integration
-- **RightBar** is a mixed workbench surface for notes, code, git, browser, and agent visibility
+- **RightBar** is a mixed workbench surface for notes, code, git, browser, and terminals
 
 The result is a state architecture that supports both a responsive UI runtime and a coherent cached data layer across Graviton.
 

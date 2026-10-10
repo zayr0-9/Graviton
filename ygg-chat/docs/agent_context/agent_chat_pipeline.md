@@ -1,5 +1,6 @@
 ---
 paths:
+  - "shared/headlessApi.ts"
   - "client/ygg-chat-r/src/features/chats/chatActions.ts"
   - "client/ygg-chat-r/src/features/chats/buildServerLoopRequest.ts"
   - "client/ygg-chat-r/src/features/chats/mainChatClient.ts"
@@ -39,13 +40,12 @@ Use this when changing:
 
 ## Runtime Constraints
 
-- **Electron-only.** The 3 chat thunks guard on `isElectronMode` and **throw
-  `'The server-owned chat loop requires Electron.'`** on the non-Electron path
-  (`chatActions.ts:1309`, `:1837`, `:2047`). There is no renderer fallback loop. Web mode is not a
-  target.
-- The renderer talks **only** to `:3002` (`DEFAULT_LOCAL_SERVER_ORIGIN` in
-  `src/utils/api.ts`); it holds **no** loop control, tool execution, or
-  permission/hook/compaction orchestration.
+- The thunks require `isLocalServerRuntime()` (Electron or the existing standalone
+  target). Plain web is not a target and there is no renderer fallback loop.
+  Desktop remains the supported app scope.
+- The renderer uses the resolved local origin through `buildLocalApiUrl` in
+  `src/utils/api.ts`; `http://127.0.0.1:3002` is preferred, not a fixed runtime port.
+  It owns no provider/tool loop or permission/hook/active-loop compaction execution.
 - **Detach/reattach (`gateway.resumableRuns` / `isResumableRunsEnabled()`, default
   ON in Electron).** A client disconnect or Chat route unmount DETACHES rather than
   aborts: the run keeps running server-side and the renderer retains its module-level
@@ -60,7 +60,7 @@ Use this when changing:
 ## Key Files
 
 ### Renderer thin client (`client/ygg-chat-r/src/features/chats/`)
-- `chatActions.ts` (~3,000 lines) — the 3 chat thunks: `sendMessage` (`:1104`),
+- `chatActions.ts` — the 3 chat thunks: `sendMessage` (`:1104`),
   `editMessageWithBranching` (~`:1468`), `sendMessageToBranch` (~`:1865`). Also the 4
   resume resolvers and the KEPT manual-compaction `compactBranch` thunk (`:832`).
 - `buildServerLoopRequest.ts` — pure builder → `{ path, body }` for the headless POST.
@@ -93,12 +93,12 @@ Use this when changing:
 - `services/toolLoopService.ts` — `ToolLoopService.run` (`:626`): the actual multi-turn
   provider/tool loop for all providers.
 - `services/decisionBroker.ts` — pause/resume registry (`:58`); key `${streamId}::${toolCallId}`.
-- `services/chatHookService.ts` — `createChatHookSession` (`:210`): the 5 in-process chat hooks.
+- `services/chatHookService.ts` — `createChatHookSession` (`:210`): the eight in-process hook lifecycle events.
 - `services/compactionService.ts` — `compactBranch` (`:559`) + `generateCompactionSummary`.
 - `services/messageSink.ts` — `TreeMessageSink` (`:49`) / `CloudMirrorSink` (`:85`).
 - `services/providerRouter.ts` — `normalizeProviderRoute` (all 5 routes; unknown → `openaichatgpt`).
-- `contracts/headlessApi.ts` — the `HeadlessStreamEvent` SSE union (loosely mirrored in
-  `sseProjection.ts`).
+- `shared/headlessApi.ts` — the canonical `HeadlessStreamEvent` union imported by the renderer
+  projection through `HeadlessStreamFrame`. This path is relative to `ygg-chat/`.
 
 ### Cloud gateway / token layer
 - `routes/gatewayRoutes.ts` (`/api/gw/*`) — storage-aware CRUD/merge for
@@ -108,8 +108,8 @@ Use this when changing:
 - `services/railwayClient.ts` — injects the server-held Supabase JWT + relays SSE.
 - `services/cloudMirrorService.ts` + `CloudMirrorSink` — server-side replacement for the
   renderer's old `dualSyncManager`.
-- `services/appAuthTokenManager.ts` — the single-flight, process-wide Supabase-token
-  refresher (gated by `gateway.tokenOwner` / renderer `isServerTokenOwnerEnabled`).
+- `services/appAuthTokenManager.ts` — Railway adapter to canonical `server/auth`
+  credential ownership; no separate refresh lock or token-owner rollout flag.
 - `config/gatewayFlags.ts` — `resolveGatewayFlags()`.
 
 ## Data Flow (send / edit-branch / branch)
@@ -142,7 +142,7 @@ All 3 thunks share the same shape:
      message.
    - `streamingRunRepo.upsert` → final `trackedStreamId`.
    - `decisionBroker.initSession(trackedStreamId, { autoApproveAll: request.toolAutoApprove !== false })`
-     — **default auto-approve; pauses only on explicit `false`**.
+     — **ordinary tool permissions default auto-approve; prompts only on explicit `false`** (clarify/mode upgrades remain independent).
    - Emit `started`, `user_message_persisted` (if any), `provider_routed`.
    - `history = listPathToMessage(...)`;
      `resolvedTools = filterToolsForOperationMode(request.tools ?? defaultToolsProvider(), mode)`;
@@ -153,7 +153,7 @@ All 3 thunks share the same shape:
    - `loop.run(input, emit)`.
    - Terminal: `streamingRunRepo.finish('completed')` + emit `complete`;
      `ProviderErrorAssistantResponse` → `finish('error', 'provider_error')` +
-     `complete { providerError: true }`; abort → `finish('aborted')`, no error frame.
+     `complete { providerError: true }`; abort → `finish('aborted')` plus terminal `error` with a cancellation envelope; deliberate Stop creates no persisted error row or durable red bubble.
      **finally:** `decisionBroker.rejectAllForStream(trackedStreamId)`.
 4. **`ToolLoopService.run`** (`toolLoopService.ts`): the multi-turn loop. Per tool call
    it invokes the pausing executor; main-chat hook context is folded into transcript user/tool content,
@@ -186,13 +186,12 @@ The server loop pauses **mid-turn**, per tool call, to ask the renderer for a de
 - **Where it pauses**: `createChatPausingExecutor` (`chatOrchestrator.ts:95`) wraps the base
   executor. Before delegating it `await broker.requestDecision({ streamId, toolCallId, signal })`.
   Pause is skipped when `broker.isAutoApproveAll(streamId)` or `shouldBypassPermission(...)`
-  (`ALWAYS_BYPASS_TOOLS = skill_manager, mcp_manager, multi_call`; `custom_tool_manager`
-  non-`invoke` actions). `plan_md` with `action==='clarify'` is intercepted here and routed
+  (`ALWAYS_BYPASS_TOOLS = skill_manager, multi_call, context_status`; manager discovery/management actions bypass, but `mcp_manager invoke` and `custom_tool_manager invoke` require ordinary approval). `plan_md` with `action==='clarify'` is intercepted here and routed
   through the broker's clarify channel (the base executor always throws on it).
 - **Broker** (`decisionBroker.ts`): key `${streamId}::${toolCallId}` (conversationId is NOT
   part of the key). Holds one pending promise per (stream, toolCall) + per-stream
   auto-approve sessions; `requestDecision` rejects with `DecisionAbortedError`
-  (`name='AbortError'`) on signal abort; `rejectAllForStream` (`:134`) drains on disconnect.
+  (`name='AbortError'`) on signal abort; `rejectAllForStream` drains at run finalization; resumable disconnect only detaches.
 - **SSE decision events** (emitted by the pausing executor):
   `permission_required { streamId, toolCallId, toolName, toolInput }`,
   `clarify_required { streamId, toolCallId, toolName, questions }`.
@@ -203,8 +202,7 @@ The server loop pauses **mid-turn**, per tool call, to ask the renderer for a de
 - **Renderer resolvers** (`chatActions.ts`): `respondToToolPermission` (`:2880`),
   `respondToToolPermissionAndEnableAll` (`:2915`), `respondToPlanClarification` (`:2892`),
   `cancelPlanClarification` (`:2904`) — all POST `/api/resume` via `postDecisionResume`
-  (`:2869`), reading `{ streamId, toolCallId }` from Redux. Public signatures are unchanged
-  (zero `Chat.tsx` changes). The old module-level `pending*Resolve` promises are **removed**.
+  (`:2869`), reading `{ streamId, toolCallId }` from Redux. Current callers pass explicit stream identity so responses remain pane/run-scoped. The old module-level `pending*Resolve` promises are **removed**.
 - **Abort**: Stop first awaits `POST /api/streams/:id/abort`, then closes the local
   reader and clears UI state. If the abort request fails, the in-flight marker is retained
   for reconciliation; the run otherwise continues until completion or the detached reaper.
@@ -212,7 +210,7 @@ The server loop pauses **mid-turn**, per tool call, to ask the renderer for a de
 ## Hooks (server-side, in-process)
 
 `chatHookService.ts createChatHookSession` (`:210`) runs Ygg hooks **in the same Electron
-main process** (no HTTP) at 5 lifecycle points. Lineage/metadata are rebuilt from
+main process** (or standalone Node host; no HTTP) at eight lifecycle points. Lineage/metadata are rebuilt from
 `ConversationRepo` per call; main chat uses `hookContextPlacement: 'transcript'`, so
 `additionalContext` is delivered as user/tool-result text, not a changing system prompt.
 
@@ -225,8 +223,12 @@ main process** (no HTTP) at 5 lifecycle points. Lineage/metadata are rebuilt fro
 5. **Stop** — called by the loop on a natural stop (`toolLoopService.ts:727` via
    `input.hooks.runStop`); `blocked` forces one more (empty) turn.
 
+6. **SessionStart** — startup launch context and post-compaction restoration.
+7. **PreCompact** — before automatic compaction.
+8. **InstructionsLoaded** — context-loader notification, dispatched without awaiting.
+
 Wiring: the executor Pre/Post/Failure are interleaved inside `createChatPausingExecutor`;
-the loop side gets `hookSession.toolLoopHooks()` → `{ hookContext, foldSystemPrompt, runStop }`
+the loop side gets `hookSession.toolLoopHooks()` → `{ hookContext, foldSystemPrompt, runStop, runPreCompact, runSessionStart }`
 as `input.hooks`. Absent for subagents/tests/mobile ⇒ hooks off, loop behavior unchanged.
 
 ## Compaction (server-side)
@@ -237,7 +239,7 @@ Both paths run through `CompactionService`:
   the threshold it emits `context_compaction` (`threshold_reached → started`), calls
   `compactBranch`, re-anchors the stream to the `__auto_compaction_summary__` system marker,
   resets `history = [summaryMessage]` and emits `completed`. Failure → `failed` + throw
-  (`endReason: context_compaction_failed`).
+  (recorded `endReason: 'error'`, code `compaction_failed`).
 - **Manual button / renderer prechecks**: the renderer `compactBranch` thunk POSTs
   `/api/conversations/:id/compact` and projects only the returned persisted row.
   `compactionService.compactBranch` persists a `role:'system'`,
@@ -262,11 +264,11 @@ Both paths run through `CompactionService`:
 
 ## Feature flags
 
-`config/gatewayFlags.ts resolveGatewayFlags()` → `{ chat, tokenOwner, crud, cloudProxy }`.
+`config/gatewayFlags.ts resolveGatewayFlags()` → `{ chat, crud, cloudProxy, resumableRuns }`.
 - `chat` — **DEFAULT ON** post-cutover (Conf `gateway.chat !== false`; explicit `false` is the
   escape hatch). Feeds `cloudChatEnabled` into `ChatOrchestrator`.
-- `tokenOwner` — default OFF; consumed only by the `main.ts` IPC gate + renderer
-  `isServerTokenOwnerEnabled` (`src/helpers/serverLoopSettings.ts`).
+- `resumableRuns` — default ON; explicit false restores disconnect-abort behavior.
+- Authentication ownership is unconditional in `server/auth`; token-owner flags are removed.
 - `crud` / `cloudProxy` — **vestigial** (default-false; the routes mount with hardcoded
   `enabled: true`, so the flags are computed but not read at the mount site).
 - Master override env `YGG_GATEWAY_MODE` (truthy) turns all four on.
@@ -284,14 +286,24 @@ Both paths run through `CompactionService`:
 | `chunk` `tool_result` | `streamChunkReceived{ type:'chunk', part:'tool_result', toolResult }` |
 | `assistant_message_persisted` (per-turn) | `messageAdded` + `messageBranchCreated` + complete-**chunk** (NOT `streamCompleted`) |
 | `complete` (terminal, once) | `messageAdded` + `messageBranchCreated` + `streamCompleted{ updatePath:true }` |
-| `error` | `messageAdded(assistantMessage)` only if present; the error **chunk** is emitted by the thunk catch after `sendingCompleted` |
+| `error` | Terminal frames clear decisions; non-cancel failures without a persisted error ID record a durable error. Nonterminal failures emit an error chunk; terminal chunks come from the thunk catch. Cancellation creates no error bubble. |
 | `permission_required` | `toolPermissionRequested{ toolCall, streamId, toolCallId }` |
 | `clarify_required` | `planClarificationRequested{ id, questions, streamId, toolCallId }` |
 | `free_generations_update` | `freeGenerationsUpdated{ remaining, isFreeTier }` |
-| `generation_limit_reached` | `freeTierLimitModalShown()` |
-| `provider_routed`, `context_usage`, `context_compaction`, `tool_execution`, `tool_request` | `[]` (no-op) |
+| `generation_limit_reached` | `chatErrorRecorded` with `free_tier_exhausted`; no blocking modal |
+| `context_compaction` | Updates status; failure emits nonterminal error; completion emits notice, adds/branches summary and updates anchors when supplied |
+| `tool_execution` | Failed execution emits nonterminal error chunk; other statuses no-op |
+| `notice` | In-order notice chunk |
+| `reauth_required` | Durable `session_expired` error/sign-in action |
+| `hook_activity` | `hookActivityUpdated` when a message ID is present |
+| `context_injection_persisted` | Adds context row without replacing stream trigger |
+| `operation_mode_changed` | Adds row and applies `operationModeNotificationReceived` |
+| `operation_mode_decisions_cleared` | Clears indicated mode decisions |
+| `message_queue_updated` | `messageQueueUpdated` |
+| `queued_user_message_persisted` | Adds row and applies `queuedMessageInserted` |
+| `provider_routed`, `context_usage`, `tool_request` | `[]` (no-op) |
 
-Full union: `contracts/headlessApi.ts` `HeadlessStreamEvent`.
+Full union: `shared/headlessApi.ts` `HeadlessStreamEvent`.
 
 ## Important Invariants
 
@@ -326,7 +338,7 @@ These were part of the old renderer-owned world and are **gone**:
 - Renderer flags `isServerOwnedChatLoopEnabled` / `isCloudServerLoopEnabled` and the
   renderer's `executeToolWithPermissionCheck` + `pending*Resolve` promises.
 
-Note: two odd-extension test fixtures (`electron/tools/__tests__/dummyfile.ts.test`,
+Note: two odd-extension test fixtures (`server/tools/__tests__/dummyfile.ts.test`,
 `dummyFilechatAction.ts.test`) are verbatim snapshots of the pre-migration source read as
 plain text by `editFile.test.ts`; they are never imported/compiled. A grep for any deleted
 name above will hit these fixtures — they are not live code.
@@ -338,7 +350,7 @@ resume resolver thunks, and the manual-compaction `compactBranch` thunk.
 
 - Add provider behavior in `providerRouter.ts` + the relevant `providers/*` module.
 - Add a new SSE event only with (a) a `HeadlessStreamEvent` member in
-  `contracts/headlessApi.ts`, (b) an emitter in the loop, and (c) a `projectServerEvent`
+  `shared/headlessApi.ts`, (b) an emitter in the loop, and (c) a `projectServerEvent`
   case mapping it onto existing (or new) reducers.
 - Add tool-loop behavior in `ToolLoopService` behind an optional `ToolLoopRunInput` field so
   the subagent path stays unaffected.

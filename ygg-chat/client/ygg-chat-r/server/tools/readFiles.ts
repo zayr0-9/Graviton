@@ -101,8 +101,11 @@ export async function readMultipleTextFiles(
   // Ordered reads make the shared budget deterministic and stop I/O when it is
   // exhausted, rather than reading every file and discarding the extra output.
   for (const p of inputPaths) {
+    if (options.signal?.aborted) throw new Error('File read cancelled')
+    if (options.deadlineMs !== undefined && Date.now() >= options.deadlineMs) throw new Error('File read deadline reached')
+    if (remaining <= 0) break
     let absResolved = p
-    if (isWSLPath(p)) absResolved = await resolveToWindowsPath(p)
+    if (isWSLPath(p)) absResolved = await resolveToWindowsPath(p, options)
     else absResolved = path.isAbsolute(p) ? p : path.resolve(cwdBase, p)
     const filename = buildRelativeFilename(baseDir, absResolved)
     const headerBytes = Buffer.byteLength(`${results.length ? '\n\n' : ''}--- ${filename} ---\n`, 'utf8')
@@ -111,16 +114,15 @@ export async function readMultipleTextFiles(
     let result: ReadMultipleFileResult
     try {
       const res = await readTextFile(p, {
-        // Probe up to one extra UTF-8 character so the reader cannot decode a
-        // budget-boundary prefix as a replacement character before we trim it.
-        ...options, maxBytes: remaining + 4, includeHash: false,
+        ...options, maxBytes: remaining, includeHash: false,
       })
-      // read_file line/range reads do not apply maxBytes; enforce it here too.
+      // Defensive aggregate cap; readTextFile also enforces this budget.
       const content = truncateUtf8(res.content, remaining)
       result = { filename, content, totalLines: res.totalLines ?? res.content.split(/\r?\n/).length,
         success: true, truncated: res.truncated || content !== res.content,
         sizeBytes: res.sizeBytes, startLine: res.startLine, endLine: res.endLine, ranges: res.ranges }
     } catch (error: any) {
+      if (options.signal?.aborted || (options.deadlineMs !== undefined && Date.now() >= options.deadlineMs)) throw error
       const message = error instanceof Error ? error.message : String(error)
       const content = truncateUtf8(`[Error reading file: ${message}]`, remaining)
       result = { filename, content, totalLines: 0, success: false, error: message,

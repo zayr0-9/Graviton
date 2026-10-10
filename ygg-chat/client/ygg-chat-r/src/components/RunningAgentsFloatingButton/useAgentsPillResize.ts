@@ -22,7 +22,7 @@ export function useAgentsPillResize(expanded: boolean, anchorKey: string) {
   const measureSpace = useCallback(() => {
     const shell = shellRef.current
     if (!shell) return
-    // CSS anchor offsets remain correct even during Framer layout transforms.
+    // Read CSS anchor offsets independently of the shell's transitioning size.
     const style = getComputedStyle(shell)
     const right = parseFloat(style.right)
     const bottom = parseFloat(style.bottom)

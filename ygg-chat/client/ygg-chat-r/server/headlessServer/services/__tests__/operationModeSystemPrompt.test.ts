@@ -83,6 +83,24 @@ describe('plan mode tool filtering', () => {
     expect(requiresAgentMode({ name: 'subagent_manager' }, 'plan')).toBe(false)
   })
 
+  it('never exposes MCP definitions in either mode and gates manager invoke', () => {
+    const tools = [
+      { name: 'mcp_manager', enabled: true },
+      { name: 'mcp__demo__echo', enabled: true },
+      { name: 'unprefixed', enabled: true, isMcp: true },
+    ] as ToolDefinition[]
+    for (const mode of ['plan', 'execute'] as const) {
+      expect(filterToolsForOperationMode(tools, mode).map(tool => tool.name)).toEqual(['mcp_manager'])
+    }
+    for (const args of [{ action: 'invoke' }, JSON.stringify({ action: 'invoke' })]) {
+      const call = { name: 'mcp_manager', arguments: args }
+      expect(requiresAgentMode(call, 'plan')).toBe(true)
+      expect(() => assertToolAllowedForOperationMode(call, 'plan')).toThrow()
+      expect(requiresAgentMode(call, 'execute')).toBe(false)
+    }
+    expect(requiresAgentMode({ name: 'mcp_manager', arguments: { action: 'list_tools' } }, 'plan')).toBe(false)
+  })
+
   it('blocks file-mutating and mcp tools at execution time in plan mode', () => {
     // The counterpart to schema visibility: ToolLoopService calls this before every
     // tool call, so an Agent-only tool the model can SEE still cannot RUN in plan

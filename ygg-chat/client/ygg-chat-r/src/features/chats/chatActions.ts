@@ -1,3 +1,4 @@
+import { isFullAccessEnabled } from '../../helpers/fullAccessSettings'
 import { createAsyncThunk } from '@reduxjs/toolkit'
 import type { QueryClient } from '@tanstack/react-query'
 import {
@@ -385,6 +386,14 @@ const updateMessageCache = (queryClient: QueryClient | null, conversationId: Con
   }
 }
 
+const waitForDraftImages = async (dispatch: any, getState: () => RootState, target: import('./chatTypes').ImageDraftTarget) => {
+  const composition = getState().chat.composition
+  if (composition.imagePreparationPending || composition.imagePreparationError) {
+    const { waitForImagePreparation } = await import('./imagePreparation')
+    await dispatch(waitForImagePreparation(target))
+  }
+}
+
 const getDraftsForTarget = (
   state: RootState,
   target: { kind: 'composer' } | { kind: 'branch'; messageId: MessageId }
@@ -396,6 +405,16 @@ const getDraftsForTarget = (
     if (draftTarget.kind !== 'branch' || String(draftTarget.messageId) !== String(target.messageId)) return []
   }
   return state.chat.composition.imageDrafts || []
+}
+
+const consumeImageDrafts = (dispatch: any, getState: () => RootState, target: import('./chatTypes').ImageDraftTarget, drafts: ImageDraft[], owner: RootState) => {
+  const currentState = getState()
+  if (currentState.chat.conversation.currentConversationId !== owner.chat.conversation.currentConversationId ||
+      currentState.chat.composition.imagePreparationGeneration !== owner.chat.composition.imagePreparationGeneration) return
+  for (const draft of drafts) {
+    const index = getDraftsForTarget(getState(), target).findIndex(current => current === draft)
+    if (index >= 0) dispatch(chatSliceActions.imageDraftRemoved({ index, target }))
+  }
 }
 
 type LocalAttachmentDraft = {
@@ -1041,6 +1060,9 @@ export const compactBranch = createAsyncThunk<
       if (!hasValidPersistedMarker) throw new Error('Compaction server returned an invalid persisted summary')
 
       // Only expose the server-assigned ID after the compact route has persisted it.
+      dispatch(chatSliceActions.compactionSummaryPersisted({
+        conversationId, parentMessageId, messageId: summaryMessage.id,
+      }))
       dispatch(chatSliceActions.messageAdded(summaryMessage))
       dispatch(chatSliceActions.messageBranchCreated({ newMessage: summaryMessage }))
       updateMessageCache(extra.queryClient, conversationId, summaryMessage)
@@ -1054,6 +1076,11 @@ export const compactBranch = createAsyncThunk<
       if (compactionControllers.get(key) === controller) compactionControllers.delete(key)
       dispatch(chatSliceActions.compactingFinished())
     }
+  },
+  {
+    // Standalone compaction still has one composition owner. Do not let a
+    // background request overwrite it when another branch starts a precheck.
+    condition: () => compactionControllers.size === 0,
   }
 )
 
@@ -1095,6 +1122,9 @@ export const sendMessage = createAsyncThunk<
     const streamId = providedStreamId ?? generateStreamId(streamType)
     const projectionDispatch = (action: unknown) =>
       dispatch(applyStreamProjectionPolicy(action as any, { streamId, streamType, updatePath }) as any)
+    try {
+      if (includeGlobalComposerContext) await waitForDraftImages(dispatch, getState, { kind: 'composer' })
+    } catch (error) { return rejectWithValue({ message: String(error) }) }
     const preSendState = getState() as RootState
     const preSendDrafts = includeGlobalComposerContext
       ? getDraftsForTarget(preSendState, { kind: 'composer' })
@@ -1133,6 +1163,7 @@ export const sendMessage = createAsyncThunk<
           streamId,
           streamType,
           conversationId,
+          preserveDrafts: true,
           lineage: {
             lineageId: sendLineageId ?? undefined,
             rootMessageId: parent,
@@ -1244,6 +1275,7 @@ export const sendMessage = createAsyncThunk<
           subagentReasoningEffort: getSubagentReasoningEffort(),
           imageConfig,
           rootPath: effectiveToolRootPath,
+          fullAccess: isFullAccessEnabled(),
           conversationContext: conversationContextSource,
           projectContext,
           storageMode,
@@ -1284,6 +1316,7 @@ export const sendMessage = createAsyncThunk<
             dispatch: projectionDispatch,
             getState,
             onMessagePersisted: () => refreshHeimdallTreeFromState(getState, dispatch),
+            onUserMessagePersisted: () => consumeImageDrafts(dispatch, getState, { kind: 'composer' }, preSendDrafts, preSendState),
             userMessageArtifacts: (attachmentsBase64 || []).map(attachment => attachment.dataUrl),
             onSeq: (seq, event) => {
               if (
@@ -1525,7 +1558,10 @@ export const editMessageWithBranching = createAsyncThunk<
     // Generate or use provided stream ID
     const streamId = providedStreamId ?? generateStreamId('branch')
 
-    // Snapshot composition state before send start so UI can clear immediately.
+    try {
+      await waitForDraftImages(dispatch, getState, { kind: 'branch', messageId: originalMessageId })
+    } catch (error) { return rejectWithValue({ message: String(error) }) }
+    // Snapshot composition state only after image preparation is settled.
     const preSendState = getState() as RootState
     const preSendDrafts = getDraftsForTarget(preSendState, { kind: 'branch', messageId: originalMessageId })
     const preSendSelectedFilesForChat = preSendState.ideContext.selectedFilesForChat || []
@@ -1578,6 +1614,7 @@ export const editMessageWithBranching = createAsyncThunk<
           streamId,
           streamType: 'branch',
           conversationId,
+          preserveDrafts: true,
           lineage: {
             lineageId: editLineageId ?? undefined,
             originMessageId: originalMessageId,
@@ -1655,9 +1692,21 @@ export const editMessageWithBranching = createAsyncThunk<
         ? originalMessage.artifacts
         : []
       // Use whichever has artifacts (prefer cache, fallback to Redux)
-      const artifactsExisting = artifactsFromCache.length > 0 ? artifactsFromCache : artifactsFromRedux
+      let artifactsExisting = artifactsFromCache.length > 0 ? artifactsFromCache : artifactsFromRedux
 
       const deletedBackup: string[] = state.chat.attachments.backup?.[originalMessageId] || []
+      // A freshly opened branch can submit before thumbnail hydration finishes.
+      // Recover retained source attachments from metadata instead of silently losing them.
+      if (!artifactsExisting.length && !deletedBackup.length) {
+        const attached = originalMessage.attachments ?? cachedOriginalMessage?.attachments ?? []
+        artifactsExisting = await Promise.all(attached.filter(a => a.mime_type?.startsWith('image/')).map(async a => {
+          const url = resolveAttachmentUrl(a.url, a.file_path, a.id)
+          if (!url) throw new Error('Could not load original attached image. Reattach it before branching.')
+          const response = await fetch(url, { signal: controller.signal })
+          if (!response.ok) throw new Error('Could not load original attached image. Reattach it before branching.')
+          return blobToDataURL(await response.blob())
+        }))
+      }
       const existingMinusDeleted = artifactsExisting.filter(a => !deletedBackup.includes(a))
       const combinedArtifacts = Array.from(new Set([...existingMinusDeleted, ...draftDataUrls]))
 
@@ -1840,6 +1889,7 @@ export const editMessageWithBranching = createAsyncThunk<
           think,
           subagentReasoningEffort: getSubagentReasoningEffort(),
           rootPath: effectiveToolRootPath,
+          fullAccess: isFullAccessEnabled(),
           conversationContext: conversationContextSource,
           projectContext,
           storageMode,
@@ -1881,6 +1931,7 @@ export const editMessageWithBranching = createAsyncThunk<
             dispatch,
             getState,
             onMessagePersisted: () => refreshHeimdallTreeFromState(getState, dispatch),
+            onUserMessagePersisted: () => consumeImageDrafts(dispatch, getState, { kind: 'branch', messageId: originalMessageId }, preSendDrafts, preSendState),
             userMessageArtifacts: (attachmentsBase64 || []).map(attachment => attachment.dataUrl),
             onSeq: (seq, event) => {
               if (
@@ -1980,6 +2031,9 @@ export const sendMessageToBranch = createAsyncThunk<
 
     // Generate or use provided stream ID
     const streamId = providedStreamId ?? generateStreamId('branch')
+    try {
+      await waitForDraftImages(dispatch, getState, { kind: 'branch', messageId: parentId })
+    } catch (error) { return rejectWithValue({ message: String(error) }) }
     const preSendState = getState() as RootState
     const preSendDrafts = getDraftsForTarget(preSendState, { kind: 'branch', messageId: parentId })
     const preSendAttachmentsBase64 = preSendDrafts.length
@@ -2009,6 +2063,7 @@ export const sendMessageToBranch = createAsyncThunk<
           streamId,
           streamType: 'branch',
           conversationId,
+          preserveDrafts: true,
           lineage: {
             lineageId: branchLineageId ?? undefined,
             rootMessageId: parentId,
@@ -2096,6 +2151,7 @@ export const sendMessageToBranch = createAsyncThunk<
           think,
           subagentReasoningEffort: getSubagentReasoningEffort(),
           rootPath: effectiveToolRootPath,
+          fullAccess: isFullAccessEnabled(),
           conversationContext: conversationContextSource,
           projectContext,
           storageMode,
@@ -2136,6 +2192,7 @@ export const sendMessageToBranch = createAsyncThunk<
             dispatch,
             getState,
             onMessagePersisted: () => refreshHeimdallTreeFromState(getState, dispatch),
+            onUserMessagePersisted: () => consumeImageDrafts(dispatch, getState, { kind: 'branch', messageId: parentId }, preSendDrafts, preSendState),
             userMessageArtifacts: (attachmentsBase64 || []).map(attachment => attachment.dataUrl),
             onSeq: (seq, event) => {
               if (
@@ -3280,7 +3337,9 @@ export const enqueueUserMessage = createAsyncThunk<void, {
   conversationId: string; streamId: string; content: string; requestId: string
   includeGlobalComposerContext?: boolean; updatePath?: boolean
 }, { state: RootState; extra: ThunkExtraArgument }>('chat/enqueueUserMessage', async (params, { dispatch, getState }) => {
-  const drafts = params.includeGlobalComposerContext === false ? [] : getDraftsForTarget(getState(), { kind: 'composer' })
+  if (params.includeGlobalComposerContext !== false) await waitForDraftImages(dispatch, getState, { kind: 'composer' })
+  const draftOwner = getState()
+  const drafts = params.includeGlobalComposerContext === false ? [] : getDraftsForTarget(draftOwner, { kind: 'composer' })
   const attachments = drafts.map(draft => ({ ...draft }))
   const attachmentsBase64 = await prepareLocalAttachmentsForModel(attachments.length ? attachments : null, 'queued message attachments')
   const url = await buildLocalApiUrl(`/conversations/${encodeURIComponent(params.conversationId)}/streams/${encodeURIComponent(params.streamId)}/queue`)
@@ -3296,11 +3355,7 @@ export const enqueueUserMessage = createAsyncThunk<void, {
   if (!response.ok) throw new Error(result.error || 'Could not queue message')
   if (result.snapshot) dispatch(chatSliceActions.messageQueueUpdated(result.snapshot))
   // Do not erase images added while attachment preparation/the POST was pending.
-  for (const draft of drafts) {
-    const current = getDraftsForTarget(getState(), { kind: 'composer' })
-    const index = current.findIndex(item => item === draft || (item.dataUrl === draft.dataUrl && item.name === draft.name))
-    if (index >= 0) dispatch(chatSliceActions.imageDraftRemoved({ index, target: { kind: 'composer' } }))
-  }
+  consumeImageDrafts(dispatch, getState, { kind: 'composer' }, drafts, draftOwner)
   if ((result.restarted || result.streamId !== params.streamId) && result.streamId) {
     addInflightStream({ streamId: result.streamId, conversationId: params.conversationId,
       streamType: params.updatePath === false ? 'branch' : 'primary',

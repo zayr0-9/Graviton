@@ -110,7 +110,7 @@ describe('registerSubagentRoutes', () => {
     expect(seenRequests[0].serviceTier).toBe(expected)
   })
 
-  it('normalizes the request body (tool names, autoApprove, streamId, lineageId)', async () => {
+  it('normalizes request fields but ignores caller-supplied shared workspace lineage', async () => {
     await fetch(`${baseUrl}/api/headless/subagent/stream`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
@@ -124,7 +124,7 @@ describe('registerSubagentRoutes', () => {
     })
     expect(seenRequests[0]).toMatchObject({
       streamId: 'parent-s',
-      lineageId: 'content-lineage-1',
+      lineageId: null,
       tools: ['read_file', 'ripgrep'],
       autoApprove: false,
     })

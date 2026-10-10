@@ -179,6 +179,7 @@ function registerCustomToolsWithOrchestrator(): number {
             signal: options.signal,
             deadlineMs: options.deadlineMs,
             rootPath: options?.rootPath,
+            fullAccess: options.fullAccess === true,
             operationMode: options?.operationMode,
             conversationId: options?.conversationId,
             messageId: options?.messageId,

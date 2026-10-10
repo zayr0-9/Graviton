@@ -9,7 +9,7 @@ import { buildToolNameMap, sanitizeToolResultContentForModel } from './toolResul
 
 interface LmStudioMessage {
   role: 'system' | 'user' | 'assistant' | 'tool'
-  content: string
+  content: string | Array<{ type: 'text'; text: string } | { type: 'image_url'; image_url: { url: string } }>
   tool_calls?: Array<{
     id: string
     type: 'function'
@@ -107,7 +107,13 @@ function transformHistoryToMessages(history: any[], userContent: string, systemP
 
     if (msg.role === 'user') {
       const content = asText(msg.content).trim()
-      if (content) {
+      const images = Array.isArray(msg.artifacts) ? msg.artifacts.filter((url: unknown) => typeof url === 'string' && url.startsWith('data:image/')) : []
+      if (images.length) {
+        messages.push({ role: 'user', content: [
+          ...(content ? [{ type: 'text' as const, text: content }] : []),
+          ...images.map((url: string) => ({ type: 'image_url' as const, image_url: { url } })),
+        ] })
+      } else if (content) {
         messages.push({ role: 'user', content })
       }
       continue

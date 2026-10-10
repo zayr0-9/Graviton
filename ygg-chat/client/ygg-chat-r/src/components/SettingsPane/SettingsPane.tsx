@@ -2583,7 +2583,7 @@ ${block}`
                       className='mt-0.5 text-xs text-neutral-500 dark:text-neutral-400'
                       style={settingsSectionBodyStyle}
                     >
-                      Configure tool access and availability for chats.
+                      Manage built-in, custom, and MCP tools in separate groups.
                     </p>
                   </div>
                 </div>

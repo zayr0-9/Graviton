@@ -60,6 +60,7 @@ export interface RunServerChatLoopDeps {
    * by mobile/tests. See chatActions.refreshHeimdallTreeFromState.
    */
   onMessagePersisted?: () => void
+  onUserMessagePersisted?: () => void
   /** Data URLs captured before send. They bridge the optimistic temp row to the
    * server-assigned user-message ID; durable metadata linking is server-owned. */
   userMessageArtifacts?: string[]
@@ -240,7 +241,8 @@ function makeHandleEvent(
   operation: ServerLoopOperation,
   dispatch: (action: unknown) => unknown,
   onMessagePersisted?: () => void,
-  onSeq?: (seq: number, event: ServerStreamEvent) => void
+  onSeq?: (seq: number, event: ServerStreamEvent) => void,
+  onUserMessagePersisted?: () => void
 ): (event: ServerStreamEvent) => void {
   return (event: ServerStreamEvent): void => {
     if (!event || typeof event.type !== 'string') return
@@ -282,6 +284,7 @@ function makeHandleEvent(
       dispatch(chatSliceActions.setTools(getAllTools()))
     } else if (event.type === 'user_message_persisted') {
       acc.userMessage = normalizeServerMessage(event.message)
+      onUserMessagePersisted?.()
       if (ctx.userMessageArtifacts?.length) {
         acc.userMessage.artifacts = Array.from(
           new Set([...(acc.userMessage.artifacts || []), ...ctx.userMessageArtifacts])
@@ -517,10 +520,10 @@ export async function runServerChatLoop(
   deps: RunServerChatLoopDeps
 ): Promise<RunServerChatLoopResult> {
   const { operation, conversationId, streamId, path, request, signal } = params
-  const { dispatch, getState, onMessagePersisted, onSeq, userMessageArtifacts } = deps
+  const { dispatch, getState, onMessagePersisted, onUserMessagePersisted, onSeq, userMessageArtifacts } = deps
   const ctx: ProjectionContext = { streamId, conversationId, userMessageArtifacts }
   const acc = newAccumulator()
-  const handleEvent = makeHandleEvent(acc, ctx, operation, dispatch, onMessagePersisted, onSeq)
+  const handleEvent = makeHandleEvent(acc, ctx, operation, dispatch, onMessagePersisted, onSeq, onUserMessagePersisted)
 
   if (operation === 'branch' || operation === 'edit') {
     const state = getState() as any

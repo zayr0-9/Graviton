@@ -44,6 +44,29 @@ describe('changeOperationMode thunk', () => {
     expect(state.chat.streaming.activeIds).toEqual([])
   })
 
+  it('selects a local mode for a branch edit without notifying the ongoing run', async () => {
+    const fetchMock = vi.fn()
+    vi.stubGlobal('fetch', fetchMock)
+    const { state } = setup()
+    state.chat = {
+      ...state.chat,
+      composition: { ...state.chat.composition, editingBranch: true },
+      conversation: { ...state.chat.conversation, currentPath: ['tip'] },
+      operationModeChanges: { c: { mode: 'plan', status: 'pending', streamId: 's', requestId: 'ongoing' } },
+    }
+    const dispatch = (action: any) => { state.chat = reducer(state.chat, action); return action }
+
+    await changeOperationMode({ mode: 'execute', conversationId: 'c', parentId: 'tip', streamId: null })(
+      dispatch, () => state, { auth: { accessToken: null, userId: null }, queryClient: null }
+    )
+
+    expect(fetchMock).not.toHaveBeenCalled()
+    expect(selectOperationMode({ ...state })).toBe('execute')
+    expect(state.chat.operationModeChanges.c).toMatchObject({ mode: 'plan', streamId: 's', requestId: 'ongoing' })
+    expect(state.chat.conversation.currentPath).toEqual(['tip'])
+    expect(state.chat.conversation.messages).toEqual([])
+  })
+
   it('keeps idle selection local to the branch and overrides its previous announcement', () => {
     const { state } = setup()
     state.chat.conversation.messages = [{ id: 'a', role: 'user', meta: { kind: 'operation_mode_change', mode: 'plan' } } as any]

@@ -2,6 +2,7 @@ import * as esbuild from 'esbuild'
 import path from 'path'
 import { loadEnv } from 'vite'
 import { fileURLToPath } from 'url'
+import { runTasks } from '../scripts/build-tasks.mjs'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 
@@ -9,8 +10,11 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const publicEnv = loadEnv(process.env.NODE_ENV || 'production', path.join(__dirname, '..'), 'VITE_SUPABASE_')
 const authDefines = Object.fromEntries(['VITE_SUPABASE_URL', 'VITE_SUPABASE_ANON_KEY'].map(key => [`process.env.${key}`, JSON.stringify(process.env[key] || publicEnv[key] || '')]))
 
+// Each build has a separate output. Limit concurrency to two esbuild jobs.
+const tasks = []
+
 // Bundle main.ts with all dependencies
-await esbuild.build({
+tasks.push(() => esbuild.build({
   entryPoints: [path.join(__dirname, 'main.ts')],
   bundle: true,
   define: authDefines,
@@ -31,12 +35,10 @@ await esbuild.build({
   sourcemap: true,
   // Resolve .ts files when importing .js extensions
   resolveExtensions: ['.ts', '.js', '.mjs', '.json'],
-})
-
-console.log('✅ main.ts bundled to main.mjs')
+}).then(() => console.log('✅ main.ts bundled to main.mjs')))
 
 // Compile preload.ts (simple, no bundling needed - only uses electron)
-await esbuild.build({
+tasks.push(() => esbuild.build({
   entryPoints: [path.join(__dirname, 'preload.ts')],
   bundle: false,  // Don't bundle, just transpile
   platform: 'node',
@@ -44,12 +46,10 @@ await esbuild.build({
   outfile: path.join(__dirname, 'preload.mjs'),
   format: 'esm',
   sourcemap: true,
-})
-
-console.log('✅ preload.ts compiled to preload.mjs')
+}).then(() => console.log('✅ preload.ts compiled to preload.mjs')))
 
 // Bundle utility process runtime entry
-await esbuild.build({
+tasks.push(() => esbuild.build({
   entryPoints: [path.join(__dirname, '..', 'server', 'toolRuntimeUtility.ts')],
   bundle: true,
   platform: 'node',
@@ -65,12 +65,10 @@ await esbuild.build({
   },
   sourcemap: true,
   resolveExtensions: ['.ts', '.js', '.mjs', '.json'],
-})
-
-console.log('✅ toolRuntimeUtility.ts bundled to toolRuntimeUtility.mjs')
+}).then(() => console.log('✅ toolRuntimeUtility.ts bundled to toolRuntimeUtility.mjs')))
 
 // Bundle local analytics worker so expensive SQLite dashboard queries run off the main thread
-await esbuild.build({
+tasks.push(() => esbuild.build({
   entryPoints: [path.join(__dirname, '..', 'server', 'localAnalyticsWorker.ts')],
   bundle: true,
   platform: 'node',
@@ -85,12 +83,10 @@ await esbuild.build({
   },
   sourcemap: true,
   resolveExtensions: ['.ts', '.js', '.mjs', '.json'],
-})
-
-console.log('✅ localAnalyticsWorker.ts bundled to localAnalyticsWorker.mjs')
+}).then(() => console.log('✅ localAnalyticsWorker.ts bundled to localAnalyticsWorker.mjs')))
 
 // Bundle mobile headless UI (React) for LAN access
-await esbuild.build({
+tasks.push(() => esbuild.build({
   entryPoints: [path.join(__dirname, '..', 'server', 'headlessServer', 'ui', 'mobile', 'src', 'main.tsx')],
   bundle: true,
   platform: 'browser',
@@ -103,6 +99,6 @@ await esbuild.build({
   },
   resolveExtensions: ['.tsx', '.ts', '.js', '.mjs', '.json'],
   logLevel: 'info',
-})
+}).then(() => console.log('✅ mobile React UI bundled to server/headlessServer/ui/mobile/assets/mobile-app.js')))
 
-console.log('✅ mobile React UI bundled to server/headlessServer/ui/mobile/assets/mobile-app.js')
+await runTasks(tasks)

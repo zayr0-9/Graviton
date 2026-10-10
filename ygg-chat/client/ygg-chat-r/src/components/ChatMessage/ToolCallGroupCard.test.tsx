@@ -182,3 +182,15 @@ describe('file-backed HTML renderer', () => {
     expect(markup).not.toContain('data-test-html-preview')
   })
 })
+
+describe('manager-invoked MCP app', () => {
+  it('renders from persisted discovery metadata without injecting schemas into the registry', () => {
+    const html = renderCard([{ content: {
+      content: [{ type: 'text', text: 'done' }],
+      mcpToolDefinition: { name: 'echo', qualifiedName: 'mcp__demo_server__echo', serverName: 'demo_server',
+        inputSchema: { type: 'object', properties: {} }, _meta: { ui: { resourceUri: 'ui://echo' } } },
+    }, is_error: false }], 'mcp_manager', { action: 'invoke', name: 'demo_server', tool: 'echo', args: { text: 'x' } })
+    expect(html).toContain('data-test-mcp-app')
+    expect(html).toContain('MCP App')
+  })
+})
