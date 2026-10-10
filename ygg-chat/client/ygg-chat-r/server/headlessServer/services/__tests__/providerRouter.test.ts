@@ -1,4 +1,10 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
+
+// Never read the developer's persisted credentials or send real authenticated requests.
+vi.mock('../../../auth/runtime.js', () => ({ getAuthManager: () => ({
+  snapshot: () => ({ sessionId: null }),
+  resolve: async () => { throw new Error('Sign in again to continue.') },
+}) }))
 import { OpenAiChatgptProvider } from '../../providers/openaiChatgptProvider.js'
 import { ProviderRouter, normalizeProviderRoute } from '../providerRouter.js'
 
@@ -83,14 +89,16 @@ describe('provider routing', () => {
   })
 
   it('openai provider fails fast when auth is missing', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockRejectedValue(new Error('Unexpected network request'))
     const provider = new OpenAiChatgptProvider()
 
     await expect(
       provider.generate({
-        modelName: 'gpt-5.2-codex',
+        modelName: 'gpt-6.1-sol',
         history: [],
         userContent: 'hello',
       })
     ).rejects.toThrow('Sign in again to continue.')
+    expect(fetchMock).not.toHaveBeenCalled()
   })
 })

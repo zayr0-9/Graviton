@@ -54,29 +54,8 @@ interface RefreshedTokenPayload {
 }
 
 export function normalizeOpenAIChatGPTModel(model: string): string {
-  const m = (model || '').toLowerCase().replace(/\s+/g, '-')
-
-  if (m.includes('gpt-6-astra')) return 'gpt-6-astra'
-  if (m.includes('gpt-6.1-sol')) return 'gpt-6.1-sol'
-  if (m.includes('gpt-6-sol')) return 'gpt-6-sol'
-  if (m.includes('gpt-6-luna')) return 'gpt-6-luna'
-  if (m.includes('gpt-5.6-sol')) return 'gpt-6-sol'
-  if (m.includes('gpt-5.6-terra')) return 'gpt-5.6-terra'
-  if (m.includes('gpt-5.6-luna')) return 'gpt-6-luna'
-  if (m.includes('gpt-5.5-pro')) return 'gpt-5.5-pro'
-  if (m.includes('gpt-5.5')) return 'gpt-5.5'
-  if (m.includes('gpt-5.4')) return 'gpt-5.5'
-  if (m.includes('gpt-5.3-codex')) return 'gpt-5.3-codex'
-
-  // Retired ChatGPT Codex models: route stale saved/default selections to an available Codex model.
-  if (m.includes('gpt-5.2') || m.includes('gpt-5.1') || m.includes('gpt-5-codex') || m.includes('codex-mini-latest')) {
-    return 'gpt-5.3-codex'
-  }
-
-  if (m.includes('gpt-5')) return 'gpt-5.5'
-  if (m.includes('gpt-4o')) return 'gpt-5.5'
-
-  return model
+  // Normalize display labels without substituting a different model.
+  return (model || '').trim().replace(/^openaichatgpt\//i, '').toLowerCase().replace(/\s+/g, '-')
 }
 
 function shouldUseGPT53StrictTextAssembly(model: string): boolean {

@@ -78,13 +78,25 @@ describe('OpenAiChatgptProvider', () => {
     expect(normalizeOpenAIChatGPTModel('GPT-6.1 Sol')).toBe('gpt-6.1-sol')
     expect(normalizeOpenAIChatGPTModel('openaichatgpt/GPT-6.1 Sol')).toBe('gpt-6.1-sol')
     expect(normalizeOpenAIChatGPTModel('GPT-6-Luna')).toBe('gpt-6-luna')
-    expect(normalizeOpenAIChatGPTModel('GPT-5.6 Sol')).toBe('gpt-6-sol')
+    expect(normalizeOpenAIChatGPTModel('GPT-5.6 Sol')).toBe('gpt-5.6-sol')
     expect(normalizeOpenAIChatGPTModel('GPT-5.6 Terra')).toBe('gpt-5.6-terra')
-    expect(normalizeOpenAIChatGPTModel('GPT-5.6 Luna')).toBe('gpt-6-luna')
-    expect(normalizeOpenAIChatGPTModel('GPT-5.4 Mini')).toBe('gpt-5.5')
-    expect(normalizeOpenAIChatGPTModel('openaichatgpt/GPT-5.4 Mini')).toBe('gpt-5.5')
-    expect(normalizeOpenAIChatGPTModel('GPT-5.4 Pro')).toBe('gpt-5.5')
+    expect(normalizeOpenAIChatGPTModel('GPT-5.6 Luna')).toBe('gpt-5.6-luna')
+    expect(normalizeOpenAIChatGPTModel('GPT-5.4 Mini')).toBe('gpt-5.4-mini')
+    expect(normalizeOpenAIChatGPTModel('openaichatgpt/GPT-5.4 Mini')).toBe('gpt-5.4-mini')
+    expect(normalizeOpenAIChatGPTModel('GPT-5.4 Pro')).toBe('gpt-5.4-pro')
     expect(normalizeOpenAIChatGPTModel('GPT-5.3 Codex')).toBe('gpt-5.3-codex')
+  })
+
+  it.each([
+    'gpt-5.2-codex', 'gpt-5.1-codex', 'gpt-5-codex', 'codex-mini-latest',
+    'gpt-5.4-mini', 'gpt-5.5-pro', 'gpt-5.6-sol', 'gpt-5.6-luna', 'gpt-4o',
+    'gpt-5-future', 'gpt-6.1-sol-future',
+  ])('preserves the selected model ID without a compatibility fallback: %s', modelName => {
+    expect(normalizeOpenAIChatGPTModel(modelName)).toBe(modelName)
+  })
+
+  it('normalizes surrounding whitespace and provider prefixes without truncating model IDs', () => {
+    expect(normalizeOpenAIChatGPTModel('  OpenAIChatGPT/GPT-6.1 Sol Future  ')).toBe('gpt-6.1-sol-future')
   })
 
   it.each(['gpt-6-astra', 'gpt-6-sol', 'gpt-6.1-sol', 'gpt-6-luna', 'gpt-5.6-terra'])(

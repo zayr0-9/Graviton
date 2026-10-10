@@ -6778,7 +6778,7 @@ function Chat() {
         }}
       >
         <div
-          className={`relative mx-4 flex flex-col thin-scrollbar rounded-lg bg-transparent dark:bg-transparent flex-1 min-h-0 min-w-0 overflow-hidden transition-[padding-bottom] duration-200 ${!heimdallVisible ? 'px-0 sm:px-0 md:pr-12 ' : ''}`}
+          className={`relative mx-4 flex flex-col thin-scrollbar rounded-lg bg-transparent dark:bg-transparent flex-1 min-h-0 min-w-0 overflow-hidden transition-[padding-bottom] duration-200 ${!heimdallVisible ? 'px-0 sm:px-0 ' : ''}`}
           style={{ paddingBottom: `0px`, backgroundColor: chatSurfaceBackgroundColor }}
         >
           {/* Conversation title and actions */}
