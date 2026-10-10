@@ -1,6 +1,9 @@
 ---
 paths:
   - "client/ygg-chat-r/server/mcp/**"
+  - "client/ygg-chat-r/server/keytarSecrets.ts"
+  - "client/ygg-chat-r/server/credentialVault*.ts"
+  - "client/ygg-chat-r/src/containers/Settings.tsx"
   - "client/ygg-chat-r/src/components/SettingsPane/SettingsPane.tsx"
 ---
 
@@ -16,7 +19,10 @@ Documents local Electron MCP server configuration, transport behavior, remote OA
 
 - `client/ygg-chat-r/server/mcp/mcpManager.ts`: stdio/Streamable HTTP clients, capability discovery, OAuth flow, persistence, and lifecycle.
 - `client/ygg-chat-r/server/mcp/oauthDiscovery.ts`: Bearer challenge parsing and RFC 9728/RFC 8414 metadata URL candidates.
-- `client/ygg-chat-r/server/mcp/mcpOAuthSecrets.ts`: per-server secure OAuth credential storage.
+- `client/ygg-chat-r/server/mcp/mcpOAuthSecrets.ts`: per-server logical OAuth credential API backed by the shared vault.
+- `client/ygg-chat-r/server/credentialVault.ts` and `credentialVaultLock.ts`: single-item dictionary, migration safeguards and host coordination.
+- `client/ygg-chat-r/server/keytarSecrets.ts`: keytar adapter and Brave credential API.
+- `client/ygg-chat-r/src/containers/Settings.tsx`: full Settings page; explicit consolidation and saved Brave-key loading.
 - `client/ygg-chat-r/server/mcp/mcpRoutes.ts`: local management/status routes and response redaction.
 - `client/ygg-chat-r/src/components/SettingsPane/SettingsPane.tsx`: MCP settings UI.
 - `client/ygg-chat-r/server/tools/__tests__/oauthDiscovery.test.ts`: focused discovery tests.
@@ -86,7 +92,7 @@ Validation: `npm run test:tools -- --run server/tools/__tests__/localCelestialRe
 
 ## Remote OAuth Flow
 
-1. Startup loads configuration and securely stored credentials without connecting. The first explicit/model MCP use starts the target server, and Streamable HTTP sends an unauthenticated request when no OAuth credential exists.
+1. Startup loads configuration only, without Keychain reads or connections. The first explicit/model MCP use hydrates the target server's credentials from the shared vault before connecting. Streamable HTTP sends an unauthenticated request when no OAuth credential exists. Old unresolved OAuth configurations direct the user to Settings → API Keys → Consolidate credentials.
 2. A `401` Bearer challenge supplies optional `resource_metadata` and `scope` hints.
 3. The client discovers protected-resource and authorization-server metadata.
 4. It uses a configured client or dynamically registers one, creates PKCE/state, starts a loopback callback, and opens the system browser from Electron main.
@@ -98,11 +104,26 @@ Dynamic callback ports are ephemeral. Dynamic client registrations record their 
 ## Credential Persistence
 
 - Non-secret OAuth metadata stays in `mcp-servers.json`.
-- Access tokens, refresh tokens, and client secrets are stored through keytar under `mcp-oauth:<serverName>`.
-- Existing plaintext OAuth secrets are migrated to keytar and removed from JSON on load.
+- Access tokens, refresh tokens, client secrets and the Brave API key share one keytar item: service `ygg-chat`, account `graviton-credential-vault`. A versioned dictionary retains logical keys `mcp-oauth:<serverName>` and `api-key:brave-search`.
+- Settings → API Keys → Consolidate credentials explicitly imports old per-account items under `ygg-chat`, `ygg-chat-r` and `com.yggdrasil.chat`; old items are deleted only after a verified vault write. This one-time operation may prompt for each old item. Ordinary reads never probe those items.
+- Plaintext OAuth secrets are imported on explicit consolidation or target-server use, without replacing already resolved vault credentials or intentional deletion tombstones. JSON is sanitized only after secure persistence succeeds.
+- `server/credentialVault.ts` owns validation, logical-account transactions and consolidation; `credentialVaultLock.ts` coordinates cooperating hosts with an OS-user-wide lock. Crashed locks are not stolen automatically; errors provide manual recovery instructions. Keep credentials out of lock files/logs.
+- `credentialStorage` tracks new/migrated vault-backed entries and explicitly anonymous new entries. Metadata-only saves do not rewrite stored secrets. Secret patches, token rotation and removal are targeted operations.
+- Signing changes or dependency-owned Keychain items can still cause additional prompts. This consolidates application-managed items, not Chromium or external CLI storage. Downgrading after cleanup may require reauthentication.
 - Secure-storage failure is fail-closed for OAuth configurations; credentials are not silently written back to plaintext.
 - Ordinary stop/restart preserves credentials. Removing a server clears its secure credential entry.
 - Bearer tokens are constructed per request and must not be copied into generic static headers.
+
+### Running consolidation after an upgrade
+
+1. Open the **full Settings page**, not the chat's quick-settings pane.
+2. Scroll to **API Keys**, above the **Brave Search API Key** field.
+3. Click **Consolidate credentials**. A Brave key is not required; this also migrates MCP OAuth credentials.
+4. Wait for the completion status with migrated-entry and removed-copy counts. If cleanup is incomplete or access is denied, retry the same action when ready; migration preserves verified vault values and does not overwrite refreshed credentials.
+
+No MCP Keychain prompt at launch is expected: startup no longer reads those credentials. Consolidation may also finish without a dialog if macOS already permits access. Prompt count is not evidence that migration succeeded; use the completion status instead. The one-time migration can still prompt for separate old items, and later signing changes or a locked Keychain may require renewed approval.
+
+The Brave field starts as **Not checked**. **Load saved key** explicitly reads it; opening Settings does not read the key or automatically retry a denied request.
 
 ## Important Invariants
 

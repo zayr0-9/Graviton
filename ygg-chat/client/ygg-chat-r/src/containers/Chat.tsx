@@ -56,6 +56,8 @@ import {
 import { useHtmlIframeRegistry } from '../components/HtmlIframeRegistry/HtmlIframeRegistry'
 import { contentSpringTransition, softTransition } from '../components/motion'
 import { ContextUsageSparkline } from '../components/ContextUsageSparkline/ContextUsageSparkline'
+import { FastModeAnimationBackground } from '../components/FastModeAnimation/FastModeAnimation'
+import { useFastModeAnimation } from '../helpers/fastModeAnimationSettings'
 import { SubagentTranscriptModal } from '../components/SubagentTranscript/SubagentTranscript'
 import {
   ChatInputBorderAnimationType,
@@ -3863,10 +3865,13 @@ function Chat() {
   const effectiveChatInputBorderLightColor = effectiveAnimatedInputBorderColor ?? chatInputBorderLightColor
   const effectiveChatInputBorderDarkColor = effectiveAnimatedInputBorderColor ?? chatInputBorderDarkColor
 
-  const leftControlsBorderClasses =
-    operationMode === 'plan'
+  const leftControlsBorderClasses = customThemeEnabled
+    ? operationMode === 'plan'
       ? 'outline-1 outline-blue-200/70 dark:outline-neutral-700/50'
       : 'outline-1 outline-neutral-200/70 dark:outline-neutral-700/50'
+    : operationMode === 'plan'
+      ? 'outline-1 outline-blue-200/35 dark:outline-neutral-700/25'
+      : 'outline-1 outline-neutral-200/35 dark:outline-neutral-700/25'
 
   const [showTokenUsageBar, setShowTokenUsageBar] = useState<boolean>(() => loadShowTokenUsageBar())
   const [showTokenUsageHoverDetails, setShowTokenUsageHoverDetails] = useState<boolean>(() =>
@@ -6733,6 +6738,8 @@ function Chat() {
         : isDarkMode
           ? '#c2410c'
           : '#93c5fd'
+  const fastModeAnimation = useFastModeAnimation()
+  const showFastModeAnimation = isOpenAIChatGPTProvider && fastServiceTierEnabled && fastModeAnimation !== 'none'
   const rightControlsTintStrength = isDarkMode ? 28 : 24
   const rightControlsTintStyle: React.CSSProperties | undefined =
     operationMode === 'plan'
@@ -7896,9 +7903,16 @@ function Chat() {
                 </div>
                 {/* Right side controls */}
                 <div
-                  className={`flex h-10 xl:h-12 shrink-0 items-center gap-1 rounded-full ${leftControlsBorderClasses} bg-neutral-100/40 px-2 py-1 md:py-1 xl:py-1.5 backdrop-blur-xl transition-all duration-300 dark:bg-neutral-900/40`}
+                  className={`fm-controls flex h-10 xl:h-12 shrink-0 items-center gap-1 rounded-full ${leftControlsBorderClasses} bg-neutral-100/40 px-2 py-1 md:py-1 xl:py-1.5 backdrop-blur-xl transition-all duration-300 dark:bg-neutral-900/40`}
                   style={rightControlsTintStyle}
                 >
+                  {showFastModeAnimation && (
+                    <FastModeAnimationBackground
+                      animation={fastModeAnimation}
+                      dark={isDarkMode}
+                      theme={customThemeEnabled ? customTheme : undefined}
+                    />
+                  )}
                   {(isImageGenerationModel ||
                     think ||
                     (import.meta.env.VITE_ENVIRONMENT === 'electron' && conversationIdFromUrl)) && (

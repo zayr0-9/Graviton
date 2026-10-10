@@ -44,6 +44,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     clear: () => ipcRenderer.invoke('storage:clear'),
   },
   secrets: {
+    consolidate: () => ipcRenderer.invoke('secrets:consolidate'),
     braveSearch: {
       get: () => ipcRenderer.invoke('secrets:braveSearch:get'),
       has: () => ipcRenderer.invoke('secrets:braveSearch:has'),

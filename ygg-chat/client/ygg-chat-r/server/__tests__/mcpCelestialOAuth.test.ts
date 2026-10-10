@@ -150,6 +150,16 @@ describe('MCP Celestial TEST OAuth compatibility', () => {
       if (Object.keys(savedSecrets).length === 0) await mcpOAuthSecretStore.clear(name)
     })
 
+    vi.spyOn(mcpOAuthSecretStore, 'importLegacy').mockImplementation(async (name, secrets) => {
+      if (name === 'other') { if (!Object.keys(otherSecrets).length) otherSecrets = { ...secrets } }
+      else if (!Object.keys(savedSecrets).length) savedSecrets = { ...secrets }
+    })
+    vi.spyOn(mcpOAuthSecretStore, 'patch').mockImplementation(async (name, patch) => {
+      const current = name === 'other' ? otherSecrets : savedSecrets
+      const next = Object.fromEntries(Object.entries({ ...current, ...patch }).filter(([, value]) => Boolean(value)))
+      await mcpOAuthSecretStore.save(name, next)
+    })
+
     const events: string[] = []
     const callbacks: Array<{ status: number; body: string }> = []
     const openExternal = vi.fn(async (url: string) => {
@@ -336,7 +346,7 @@ describe('MCP Celestial TEST OAuth compatibility', () => {
     // The connected-status handler also persists asynchronously. Wait for that
     // write before reading/removing the fixture's configuration directory.
     await vi.waitFor(async () => {
-      expect(fixture.saveSecrets.mock.calls.length).toBeGreaterThanOrEqual(3)
+      expect(fixture.getSavedSecrets().accessToken).toBe(ACCESS_TOKEN)
       const savedText = await fs.readFile(fixture.configPath, 'utf8')
       const saved = JSON.parse(savedText)
       expect(saved.servers.remote.oauth).toMatchObject({
@@ -399,7 +409,7 @@ describe('MCP Celestial TEST OAuth compatibility', () => {
       },
     })
     expect(fixture.getSavedSecrets()).toEqual({ accessToken: ACCESS_TOKEN, refreshToken: REFRESH_TOKEN })
-    expect(fixture.loadSecrets).toHaveBeenCalledWith('remote')
+    expect(fixture.loadSecrets).not.toHaveBeenCalled()
 
     await fixture.manager.updateServer('remote', { oauth: { allowMissingPkceS256ForCelestialTest: false } })
 
@@ -448,7 +458,7 @@ describe('MCP Celestial TEST OAuth compatibility', () => {
     expect(createHash('sha256').update(exchange.get('code_verifier')!).digest('base64url'))
       .toBe(authorization.searchParams.get('code_challenge'))
     await vi.waitFor(async () => {
-      expect(fixture.saveSecrets.mock.calls.length).toBeGreaterThanOrEqual(3)
+      expect(fixture.getSavedSecrets().accessToken).toBe(ACCESS_TOKEN)
       const saved = JSON.parse(await fs.readFile(fixture.configPath, 'utf8'))
       expect(saved.servers.remote.url).toBe(localUrl)
       expect(saved.servers.remote.oauth.resource).toBe(flag === true ? localUrl : RESOURCE)
@@ -461,7 +471,7 @@ describe('MCP Celestial TEST OAuth compatibility', () => {
     expect(refresh.has('resource')).toBe(flag !== true)
     expect(refresh.has('client_secret')).toBe(false)
     expect(fixture.openExternal).toHaveBeenCalledTimes(1)
-    await vi.waitFor(() => expect(fixture.saveSecrets.mock.calls.length).toBeGreaterThanOrEqual(6))
+    await vi.waitFor(() => expect(fixture.tokenRequests.some(request => new URLSearchParams(String(request.body)).get('grant_type') === 'refresh_token')).toBe(true))
   })
 
   it.each([false, true])('does not substitute resource omission for PKCE approval (S256 advertised=%s)', async advertised => {
@@ -471,7 +481,7 @@ describe('MCP Celestial TEST OAuth compatibility', () => {
     if (advertised) {
       await fixture.manager.callTool('mcp__remote__echo', {})
       expect(new URL(fixture.openExternal.mock.calls[0]![0]).searchParams.has('resource')).toBe(false)
-      await vi.waitFor(() => expect(fixture.saveSecrets.mock.calls.length).toBeGreaterThanOrEqual(3))
+      await vi.waitFor(() => expect(fixture.getSavedSecrets().accessToken).toBe(ACCESS_TOKEN))
     } else {
       await expect(fixture.manager.callTool('mcp__remote__echo', {})).rejects.toThrow(/does not advertise PKCE/)
       expect(fixture.openExternal).not.toHaveBeenCalled()

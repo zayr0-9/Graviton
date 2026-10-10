@@ -338,3 +338,11 @@ In-loop (mid-turn) auto-compaction now runs **server-side** inside the headless 
 The renderer keeps two client-side compaction controls, both via the `compactBranch` thunk (`chatActions.ts`):
 - the manual `/compactify` command (`handleManualCompactifyCommand` in `Chat.tsx`);
 - the pre-send auto-compaction guard in `handleSend` (runs before dispatching the send when usage reaches the 85% threshold), so the produced summary marker anchors the continuation without another user message.
+
+## Fast-mode Composer Background
+
+Chat Settings → Fast mode animation offers the 16 approved motion studies plus None. The preference (`chat:fastModeAnimation`) defaults to Tidal glass and syncs through `chatUi:fastModeAnimationChange` and native storage events in `src/helpers/fastModeAnimationSettings.ts`. It does not enable the service tier. Chat renders the decorative background only for `isOpenAIChatGPTProvider && fastServiceTierEnabled`.
+
+`src/components/FastModeAnimation/` owns the effect geometry, CSS and palette. Keep the controls above the non-interactive layer, and clip only that layer (not popovers). Default palettes follow the HTML studies; enabled custom themes borrow `composerToggleActiveBg`, `sendButtonAnimationColor`, `chatProgressBarFill`, `composerToggleActiveBorder` and `chatPanelBg`, resolved for the current mode. Dark palettes preserve hue without a dark overlay over the whole effect. Settings previews animate only on hover/focus and all effects respect reduced motion.
+
+Focused validation: `npm run test:renderer -- src/components/FastModeAnimation/FastModeAnimation.test.tsx` from the client package.

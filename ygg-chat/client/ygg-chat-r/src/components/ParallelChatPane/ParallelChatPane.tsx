@@ -305,6 +305,7 @@ export function ParallelChatPane({
       }}
       sendButtonAnimation={getStoredSendButtonAnimation()}
       sendButtonColor={sendButtonColor}
+      borderClassName={customThemeEnabled ? 'outline-1 outline-neutral-200/70 dark:outline-neutral-700/50' : undefined}
       controlsLeft={
         <div className='flex min-w-0 flex-1 items-center gap-1'>
           <button

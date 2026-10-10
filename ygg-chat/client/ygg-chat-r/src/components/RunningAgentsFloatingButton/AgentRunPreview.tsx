@@ -25,11 +25,6 @@ export function AgentRunPreview({ streamId, grouped, fillHeight = false, transcr
 
   return (
     <div className={fillHeight ? 'relative flex min-h-0 flex-1 flex-col' : 'relative min-h-0'}>
-      <div className='shrink-0 px-3 py-2 text-xs text-neutral-500' role='status'>
-        {runs.some(item => item.stream.active) ? 'Live' : run.stream.error ? 'Ended with error' : 'Run ended'}
-        {wholeFork ? ` · ${runs.length} captured runs, oldest first` : ''}
-        {runs.some(item => item.partial) ? ' · Recovered preview may omit earlier turns' : ''}
-      </div>
       <div ref={scrollRef} className={`${fillHeight ? 'min-h-0 flex-1' : 'h-[min(52vh,34rem)]'} overflow-y-auto overscroll-contain px-1 pb-3 thin-scrollbar`}
         aria-label={transcriptLabel} tabIndex={0}
         onScroll={() => {
@@ -40,7 +35,6 @@ export function AgentRunPreview({ streamId, grouped, fillHeight = false, transcr
         }}>
         {rows.length === 0 ? <p className='p-3 text-sm text-neutral-500'>Waiting for run output…</p> : rows.map(row => (
           <div key={row.key}>
-          {row.firstInRun && <div className='px-3 py-2 text-xs text-neutral-500' title={row.streamId}>Run started {new Date(row.runStartedAt).toLocaleString()}</div>}
           <ChatMessage id={`agent-preview:${row.streamId}:${row.key}`} role={row.role}
             content={row.content} contentBlocks={row.blocks}
             width='w-full' showInlineActions={false} readOnly keepTextOutsideGroups

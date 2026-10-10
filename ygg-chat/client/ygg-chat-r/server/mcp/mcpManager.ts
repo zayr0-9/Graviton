@@ -19,6 +19,7 @@ import {
 } from './oauthDiscovery.js'
 import { mcpOAuthSecretStore, type McpOAuthSecrets } from './mcpOAuthSecrets.js'
 import { tryGetHostCapabilities, tryGetServerConfig } from '../serverHost.js'
+import { withCredentialVaultLock } from '../credentialVaultLock.js'
 
 // ============================================================================
 // Types and Interfaces
@@ -70,6 +71,7 @@ export interface McpServerConfig {
 
   // OAuth state for remote transport
   oauth?: McpOAuthConfig
+  credentialStorage?: 'vault' | 'anonymous'
 }
 
 export interface McpToolDefinition {
@@ -1628,6 +1630,14 @@ export class McpManager extends EventEmitter {
   private initialized = false
   private initPromise: Promise<void> | null = null
   private settings: { lazyStart: boolean } = { lazyStart: true }
+  private starts = new Map<string, Promise<void>>()
+  private configWrites: Promise<unknown> = Promise.resolve()
+
+  private serializeConfig<T>(work: () => Promise<T>): Promise<T> {
+    const result = this.configWrites.then(() => withCredentialVaultLock(work, `${this.configPath}.lock`))
+    this.configWrites = result.then(() => undefined, () => undefined)
+    return result
+  }
 
   getSettings(): { lazyStart: boolean } {
     return { ...this.settings }
@@ -1681,29 +1691,11 @@ export class McpManager extends EventEmitter {
       ? config.servers
       : config.mcpServers) || {}
 
-    let requiresSecretMigration = false
-    const configs = await Promise.all(Object.entries(rawServers).map(async ([name, serverConfig]) => {
+    const configs = Object.entries(rawServers).map(([name, serverConfig]) => {
       const transport = resolveTransport(serverConfig)
-      let storedSecrets: McpOAuthSecrets = {}
-      if (transport === 'http') {
-        try {
-          storedSecrets = await mcpOAuthSecretStore.load(name)
-        } catch (error) {
-          if (serverConfig.oauth) throw error
-          // Non-OAuth HTTP servers must not depend on keytar being available.
-        }
-      }
-      // Absent JSON fields must not overwrite credentials loaded from secure storage.
-      const plaintextSecrets = Object.fromEntries(
-        Object.entries(extractOAuthSecrets(serverConfig.oauth)).filter(([, value]) => value !== undefined)
-      ) as McpOAuthSecrets
-      if (hasOAuthSecrets(serverConfig.oauth)) {
-        await mcpOAuthSecretStore.save(name, { ...storedSecrets, ...plaintextSecrets })
-        requiresSecretMigration = true
-      }
-      const oauth = serverConfig.oauth
-        ? { ...stripOAuthSecrets(serverConfig.oauth), ...storedSecrets, ...plaintextSecrets }
-        : Object.keys(storedSecrets).length > 0 ? { ...storedSecrets } : undefined
+      // Configuration reads never access Keychain. Retain legacy plaintext until
+      // the selected server is used and its secure write has succeeded.
+      const oauth = serverConfig.oauth ? { ...serverConfig.oauth } : undefined
       const headers = serverConfig.headers ? { ...serverConfig.headers } : undefined
       if (oauth?.accessToken && headers?.Authorization?.startsWith('Bearer ')) {
         delete headers.Authorization
@@ -1722,12 +1714,9 @@ export class McpManager extends EventEmitter {
         url: serverConfig.url,
         headers,
         oauth,
+        credentialStorage: serverConfig.credentialStorage,
       }
-    }))
-
-    if (requiresSecretMigration) {
-      await this.saveConfig(configs, this.settings)
-    }
+    })
     return configs
   }
 
@@ -1755,7 +1744,7 @@ export class McpManager extends EventEmitter {
     }
   }
 
-  private async saveConfig(configs: McpServerConfig[], settings?: { lazyStart?: boolean }): Promise<void> {
+  private async saveConfig(configs: McpServerConfig[], settings?: { lazyStart?: boolean }, secretUpdates: string[] = []): Promise<void> {
     const configFile: McpConfigFile = {
       settings: settings ?? this.settings,
       servers: {},
@@ -1763,11 +1752,12 @@ export class McpManager extends EventEmitter {
 
     for (const config of configs) {
       const transport = resolveTransport(config)
-      if (config.oauth) {
+      if (secretUpdates.includes(config.name)) {
         await mcpOAuthSecretStore.save(config.name, extractOAuthSecrets(config.oauth))
       }
       configFile.servers![config.name] = {
         enabled: config.enabled,
+        credentialStorage: secretUpdates.includes(config.name) ? 'vault' : config.credentialStorage,
         autoStart: config.autoStart,
         transport,
         type: transport,
@@ -1777,14 +1767,25 @@ export class McpManager extends EventEmitter {
         stdioFraming: config.stdioFraming,
         url: config.url,
         headers: config.headers,
-        oauth: stripOAuthSecrets(config.oauth),
+        // Preserve un-migrated plaintext on unrelated metadata-only writes.
+        oauth: secretUpdates.includes(config.name) ? stripOAuthSecrets(config.oauth) : config.oauth,
       }
     }
 
-    await fs.writeFile(this.configPath, JSON.stringify(configFile, null, 2), 'utf-8')
+    const temporary = `${this.configPath}.${process.pid}.tmp`
+    try {
+      await fs.writeFile(temporary, JSON.stringify(configFile, null, 2), { encoding: 'utf-8', mode: 0o600 })
+      await fs.rename(temporary, this.configPath)
+    } finally {
+      await fs.unlink(temporary).catch(() => undefined)
+    }
   }
 
   private async persistClientConfig(name: string): Promise<void> {
+    return this.serializeConfig(() => this.persistClientConfigUnlocked(name))
+  }
+
+  private async persistClientConfigUnlocked(name: string): Promise<void> {
     try {
       const client = this.clients.get(name)
       if (!client) return
@@ -1796,6 +1797,8 @@ export class McpManager extends EventEmitter {
       configs[index] = {
         ...configs[index],
         ...client.config,
+        oauth: stripOAuthSecrets(client.config.oauth),
+        credentialStorage: configs[index].credentialStorage,
         name: configs[index].name,
       }
 
@@ -1805,15 +1808,41 @@ export class McpManager extends EventEmitter {
     }
   }
 
+  /** Called only by the user-initiated credential consolidation action. */
+  async consolidatePlaintextCredentials(): Promise<void> {
+    return this.serializeConfig(() => this.consolidatePlaintextCredentialsUnlocked())
+  }
+
+  private async consolidatePlaintextCredentialsUnlocked(): Promise<void> {
+    const configs = await this.loadConfig()
+    for (const config of configs) {
+      if (hasOAuthSecrets(config.oauth)) {
+        await mcpOAuthSecretStore.importLegacy(config.name, extractOAuthSecrets(config.oauth))
+        config.oauth = stripOAuthSecrets(config.oauth)
+      }
+      if (resolveTransport(config) === 'http' && config.credentialStorage !== 'anonymous') config.credentialStorage = 'vault'
+    }
+    await this.saveConfig(configs, this.settings)
+  }
+
   async updateSettings(_updates: { lazyStart?: boolean }): Promise<{ lazyStart: boolean }> {
-    const config = await this.loadConfigFile()
-    config.settings = { lazyStart: true }
-    await fs.writeFile(this.configPath, JSON.stringify(config, null, 2), 'utf-8')
-    this.settings = { lazyStart: true }
-    return this.getSettings()
+    return this.serializeConfig(async () => {
+      const configs = await this.loadConfig()
+      this.settings = { lazyStart: true }
+      await this.saveConfig(configs, this.settings)
+      return this.getSettings()
+    })
   }
 
   async startServer(config: McpServerConfig): Promise<void> {
+    const pending = this.starts.get(config.name)
+    if (pending) return pending
+    const operation = this.connectServer(config)
+    this.starts.set(config.name, operation)
+    try { await operation } finally { if (this.starts.get(config.name) === operation) this.starts.delete(config.name) }
+  }
+
+  private async connectServer(config: McpServerConfig): Promise<void> {
     // Check if already running
     const existing = this.clients.get(config.name)
     if (existing && existing.status === 'connected') {
@@ -1838,6 +1867,32 @@ export class McpManager extends EventEmitter {
       throw new Error(`MCP server '${config.name}' is configured for stdio but missing command`)
     }
 
+    if (transport === 'http' && config.credentialStorage !== 'anonymous') {
+      let storedSecrets: McpOAuthSecrets = {}
+      if (hasOAuthSecrets(config.oauth)) {
+        await mcpOAuthSecretStore.importLegacy(config.name, extractOAuthSecrets(config.oauth))
+      }
+      // Old entries without a storage marker are ambiguous: do not silently
+      // discard possible legacy credentials and fall back to anonymous OAuth.
+      storedSecrets = await mcpOAuthSecretStore.load(config.name, config.credentialStorage !== 'vault' && !hasOAuthSecrets(config.oauth))
+      normalizedConfig.oauth = config.oauth || Object.keys(storedSecrets).length
+        ? { ...stripOAuthSecrets(config.oauth), ...storedSecrets } : undefined
+      if (normalizedConfig.oauth?.accessToken && normalizedConfig.headers?.Authorization?.startsWith('Bearer ')) {
+        normalizedConfig.headers = { ...normalizedConfig.headers }
+        delete normalizedConfig.headers.Authorization
+      }
+      if (hasOAuthSecrets(config.oauth)) {
+        await this.serializeConfig(async () => {
+          const configs = await this.loadConfig()
+          const index = configs.findIndex(item => item.name === config.name)
+          if (index !== -1) {
+            configs[index] = { ...configs[index], oauth: stripOAuthSecrets(normalizedConfig.oauth), credentialStorage: 'vault' }
+            await this.saveConfig(configs, this.settings)
+          }
+        })
+      }
+    }
+
     // Create and connect client
     let client: McpClient
     client = new McpClient(
@@ -1845,12 +1900,14 @@ export class McpManager extends EventEmitter {
       normalizedConfig,
       async oauth => {
         normalizedConfig.oauth = { ...oauth }
-        const configs = await this.loadConfig()
-        const index = configs.findIndex(item => item.name === config.name)
-        if (index !== -1) {
-          configs[index] = { ...configs[index], ...client.config, oauth: { ...oauth }, name: config.name }
-          await this.saveConfig(configs, this.settings)
-        }
+        await this.serializeConfig(async () => {
+          const configs = await this.loadConfig()
+          const index = configs.findIndex(item => item.name === config.name)
+          if (index !== -1 && this.clients.get(config.name) === client) {
+            configs[index] = { ...configs[index], ...client.config, oauth: { ...oauth }, credentialStorage: 'vault', name: config.name }
+            await this.saveConfig(configs, this.settings, [config.name])
+          }
+        })
       },
       tools => {
         this.emit('toolsChanged', {
@@ -1862,13 +1919,11 @@ export class McpManager extends EventEmitter {
 
     client.on('statusChange', (status) => {
       this.emit('serverStatusChange', { name: config.name, status })
-      if (status === 'connected') {
-        void this.persistClientConfig(config.name)
-      }
     })
 
     this.clients.set(config.name, client)
     await client.connect()
+    await this.persistClientConfig(config.name)
   }
 
   async stopServer(name: string): Promise<void> {
@@ -1888,6 +1943,10 @@ export class McpManager extends EventEmitter {
   }
 
   async addServer(config: McpServerConfig): Promise<void> {
+    return this.serializeConfig(() => this.addServerUnlocked(config))
+  }
+
+  private async addServerUnlocked(config: McpServerConfig): Promise<void> {
     // Load current configs
     const configs = await this.loadConfig()
 
@@ -1906,14 +1965,26 @@ export class McpManager extends EventEmitter {
     }
 
     shouldOmitLocalCelestialResource(normalizedConfig.url, normalizedConfig.oauth, false)
+    normalizedConfig.credentialStorage = config.oauth ? 'vault' : 'anonymous'
     configs.push(normalizedConfig)
-    await this.saveConfig(configs, this.settings)
+    await this.saveConfig(configs, this.settings, hasOAuthSecrets(config.oauth) ? [config.name] : [])
 
     // Connections are intentionally deferred until an explicit start or MCP use.
     // In particular, adding an OAuth-backed server must not open a browser.
   }
 
   async updateServer(name: string, updates: Partial<McpServerConfig>): Promise<void> {
+    const client = this.clients.get(name)
+    const wasConnected = client?.status === 'connected'
+    if (client) {
+      await this.stopServer(name)
+      await client.waitForOAuthCompletion()
+    }
+    const config = await this.serializeConfig(() => this.updateServerUnlocked(name, updates))
+    if (wasConnected) await this.startServer(config)
+  }
+
+  private async updateServerUnlocked(name: string, updates: Partial<McpServerConfig>): Promise<McpServerConfig> {
     const configs = await this.loadConfig()
     const index = configs.findIndex(c => c.name === name)
 
@@ -1931,7 +2002,8 @@ export class McpManager extends EventEmitter {
       oauth: oauthUpdates ? { ...existing.oauth, ...oauthUpdates } : existing.oauth,
     }
     shouldOmitLocalCelestialResource(merged.url, merged.oauth, false)
-    const approvalChanged = existing.oauth?.authorizationServer !== merged.oauth?.authorizationServer ||
+    const approvalChanged = existing.url !== merged.url || existing.oauth?.clientId !== merged.oauth?.clientId ||
+      existing.oauth?.authorizationServer !== merged.oauth?.authorizationServer ||
       Boolean(existing.oauth?.allowMissingPkceS256ForCelestialTest) !== Boolean(merged.oauth?.allowMissingPkceS256ForCelestialTest) ||
       Boolean(existing.oauth?.omitResourceForLocalCelestialTest) !== Boolean(merged.oauth?.omitResourceForLocalCelestialTest)
     if (approvalChanged && merged.oauth) {
@@ -1962,27 +2034,35 @@ export class McpManager extends EventEmitter {
       stdioFraming: resolveStdioFraming(merged),
     }
 
-    // Cancel and drain old authorization before saving, so it cannot persist stale approval.
-    const client = this.clients.get(name)
-    const wasConnected = client?.status === 'connected'
-    if (client) {
-      await this.stopServer(name)
-      await client.waitForOAuthCompletion()
+    const secretPatch = extractOAuthSecrets(updates.oauth)
+    const changesSecrets = approvalChanged || Object.values(secretPatch).some(value => value !== undefined)
+    if (changesSecrets) {
+      if (hasOAuthSecrets(existing.oauth)) await mcpOAuthSecretStore.importLegacy(name, extractOAuthSecrets(existing.oauth))
+      const next: McpOAuthSecrets = Object.fromEntries(Object.entries(secretPatch).filter(([, value]) => value !== undefined))
+      if (approvalChanged) {
+        next.accessToken = undefined
+        next.refreshToken = undefined
+        if (merged.oauth?.clientSecret === undefined && merged.oauth?.tokenEndpointAuthMethod === 'none') next.clientSecret = undefined
+      }
+      await mcpOAuthSecretStore.patch(name, next)
+      configs[index].oauth = stripOAuthSecrets(configs[index].oauth)
+      configs[index].credentialStorage = 'vault'
     }
     await this.saveConfig(configs, this.settings)
 
-    if (wasConnected) await this.startServer(configs[index])
+    return configs[index]
   }
 
   async removeServer(name: string): Promise<void> {
     // Stop if running
     await this.stopServer(name)
 
-    // Remove from config
-    const configs = await this.loadConfig()
-    const filtered = configs.filter(c => c.name !== name)
-    await this.saveConfig(filtered, this.settings)
-    await mcpOAuthSecretStore.clear(name)
+    await this.serializeConfig(async () => {
+      const configs = await this.loadConfig()
+      const filtered = configs.filter(c => c.name !== name)
+      await mcpOAuthSecretStore.clear(name)
+      await this.saveConfig(filtered, this.settings)
+    })
   }
 
   // ============================================================================

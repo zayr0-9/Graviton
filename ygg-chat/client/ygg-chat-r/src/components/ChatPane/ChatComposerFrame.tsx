@@ -28,7 +28,7 @@ export function ChatComposerFrame({
   onStop,
   sendButtonAnimation,
   sendButtonColor,
-  borderClassName = 'outline-1 outline-neutral-200/70 dark:outline-neutral-700/50',
+  borderClassName = 'outline-1 outline-neutral-200/35 dark:outline-neutral-700/25',
   surfaceStyle,
   className = '',
 }: ChatComposerFrameProps) {

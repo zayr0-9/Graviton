@@ -943,6 +943,7 @@ export const InputTextArea: React.FC<TextAreaProps> = ({
             style={{
               bottom: '100%',
               left: 0,
+              border: 'none',
             }}
           >
             {filteredFiles.map((file, index) => (

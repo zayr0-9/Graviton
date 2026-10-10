@@ -18,7 +18,8 @@ import { getThemeModeColor, useCustomChatTheme, useHtmlDarkMode } from '../Theme
 import './agentsPillMotion.css'
 import { AgentRunPreview } from './AgentRunPreview'
 import { AgentMessageTooltip } from './AgentMessageTooltip'
-import { Expand, LayoutGrid, List } from 'lucide-react'
+import { Expand, Layers } from 'lucide-react'
+import { AgentsViewSwitch } from './AgentsViewSwitch'
 import { AgentsMonitorGrid } from './AgentsMonitorGrid'
 import { useAgentsPillResize } from './useAgentsPillResize'
 import { getAgentNotificationPreview } from './agentNotificationTarget'
@@ -377,7 +378,7 @@ export const RunningAgentsFloatingButton: React.FC<RunningAgentsFloatingButtonPr
   const currentPath = useAppSelector(selectCurrentPath)
   const branchDebugQuery = useConversationBranchDebugData(codexDevLogsEnabled ? currentConversationId : null)
   const [expanded, setExpanded] = useState(false)
-  const [gridView, setGridView] = useState(false)
+  const [gridView, setGridView] = useState(true)
   const pillResize = useAgentsPillResize(expanded, className)
   const [selectedRun, setSelectedRun] = useState<AgentStreamListItem | null>(null)
   const [previewWholeFork, setPreviewWholeFork] = useState(false)
@@ -419,7 +420,7 @@ export const RunningAgentsFloatingButton: React.FC<RunningAgentsFloatingButtonPr
     const observer = new ResizeObserver(measure)
     observer.observe(content)
     return () => observer.disconnect()
-  }, [expanded, inlineNotification, pillResize.size?.width, pillResize.size?.height])
+  }, [expanded, gridBody, inlineNotification, pillResize.size?.width, pillResize.size?.height])
 
   const seenNotificationIdsRef = useRef<Set<string>>(new Set())
   const notificationTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -773,12 +774,19 @@ export const RunningAgentsFloatingButton: React.FC<RunningAgentsFloatingButtonPr
                     />
                   </span>
 
-                  <span className='whitespace-nowrap tracking-[-0.01em]' style={floatingPrimaryTextStyle}>
-                    {compactLabel}
+                  <span className='min-w-0 text-left'>
+                    <span className='block whitespace-nowrap tracking-[-0.01em]' style={floatingPrimaryTextStyle}>
+                      {compactLabel}
+                    </span>
+                    {expanded && (
+                      <span className='block text-[10px] font-medium text-neutral-500 dark:text-neutral-400 lg:text-xs' style={floatingMutedTextStyle}>
+                        {activeForks.length} active · {historyForks.length} completed
+                      </span>
+                    )}
                   </span>
 
                   <>
-                    {activeCountLabel ? (
+                    {!expanded && activeCountLabel ? (
                       <span
                         key='count'
                         className='rounded-full bg-neutral-900/90 px-1.5 py-0.5 text-[10px] lg:text-[11px] font-bold leading-none text-white dark:bg-neutral-100 dark:text-neutral-900'
@@ -798,20 +806,29 @@ export const RunningAgentsFloatingButton: React.FC<RunningAgentsFloatingButtonPr
                   key='expanded-actions'
                   className='flex shrink-0 items-center gap-1.5'
                 >
-                  <div role='group' aria-label='Agents view' className='flex items-center gap-1 rounded-full bg-black/5 p-1 dark:bg-white/5'>
-                    <button type='button' aria-label='List view' title='List view' aria-pressed={!gridBody}
-                      onClick={event => { event.stopPropagation(); setSelectedRun(null); setGridView(false) }}
-                      className='flex h-10 w-10 items-center justify-center rounded-full bg-white/70 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400 dark:bg-white/10'
-                      style={floatingControlButtonStyle}>
-                      <List size={18} strokeWidth={2.25} aria-hidden='true' />
-                    </button>
-                    <button type='button' aria-label='Live grid view' title='Watch agents in live grid' aria-pressed={gridBody}
-                      onClick={event => { event.stopPropagation(); setSelectedRun(null); setGridView(true) }}
-                      className='flex h-10 w-10 items-center justify-center rounded-full transition-[background-color,color] duration-150 hover:bg-white/70 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400 dark:hover:bg-white/10'
-                      style={floatingControlButtonStyle}>
-                      <LayoutGrid size={18} strokeWidth={2.25} aria-hidden='true' />
-                    </button>
-                  </div>
+                  <button type='button' aria-label='Group steps' title='Group steps' aria-pressed={groupPreviewSteps}
+                    onClick={event => {
+                      event.stopPropagation()
+                      setGroupPreviewSteps(value => !value)
+                    }}
+                    className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-full transition-[background-color,color] duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400 ${groupPreviewSteps
+                      ? 'bg-blue-50 text-blue-700 dark:bg-orange-500/15 dark:text-orange-100'
+                      : 'text-neutral-500 hover:bg-white/70 dark:text-neutral-400 dark:hover:bg-white/10'}`}
+                    style={customThemeEnabled ? groupPreviewSteps ? {
+                      backgroundColor: getThemeModeColor(customTheme.colors.composerToggleActiveBg, isDarkMode),
+                      color: getThemeModeColor(customTheme.colors.composerToggleActiveText, isDarkMode),
+                    } : { color: floatingButtonText } : undefined}>
+                    <Layers size={18} strokeWidth={2.25} aria-hidden='true' />
+                  </button>
+                  <AgentsViewSwitch
+                    gridView={gridView}
+                    onChange={grid => { setSelectedRun(null); setGridView(grid) }}
+                    inactiveStyle={customThemeEnabled ? { color: floatingButtonText } : undefined}
+                    activeStyle={customThemeEnabled ? {
+                      backgroundColor: getThemeModeColor(customTheme.colors.composerToggleActiveBg, isDarkMode),
+                      color: getThemeModeColor(customTheme.colors.composerToggleActiveText, isDarkMode),
+                    } : undefined}
+                  />
                   {codexDevLogsEnabled ? (
                     <button
                       key='branch-debug-button'
@@ -869,7 +886,9 @@ export const RunningAgentsFloatingButton: React.FC<RunningAgentsFloatingButtonPr
                   <AgentsMonitorGrid
                     activeStreams={activeStreams}
                     streamHistory={streamHistory}
+                    grouped={groupPreviewSteps}
                     onOpenFork={stream => openPreview(stream, true)}
+                    onOpenChat={navigateToStream}
                   />
                 ) : selectedItem ? (
                   <section className={pillResize.size ? 'flex min-h-0 flex-1 flex-col' : undefined} aria-label='Agent run preview' onKeyDown={event => {
@@ -878,10 +897,6 @@ export const RunningAgentsFloatingButton: React.FC<RunningAgentsFloatingButtonPr
                     <div className='flex shrink-0 flex-wrap items-center gap-2 px-2 py-2 text-xs'>
                       <button autoFocus type='button' onClick={closePreview} className='rounded-full px-2 py-1.5 hover:bg-black/5 dark:hover:bg-white/5'>← Back</button>
                       <span className='min-w-0 flex-1 truncate font-semibold'>{selectedItem.conversationTitle || 'Run preview'}</span>
-                      <button type='button' aria-pressed={groupPreviewSteps} onClick={() => setGroupPreviewSteps(value => !value)}
-                        className='rounded-full border border-neutral-300 px-2 py-1.5 dark:border-neutral-700'>
-                        {groupPreviewSteps ? '✓ ' : ''}Group steps
-                      </button>
                       <button type='button' disabled={!getStreamHref(selectedItem)} onClick={() => navigateToStream(selectedItem)}
                         className='rounded-full bg-emerald-600 px-3 py-1.5 font-semibold text-white disabled:opacity-50'>Open chat ↗</button>
                     </div>

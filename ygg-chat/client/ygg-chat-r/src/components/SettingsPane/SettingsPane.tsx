@@ -61,6 +61,7 @@ import {
 } from '../ThemeManager/themeConfig'
 import { ChatInputBorderAnimationSettings } from './ChatInputBorderAnimationSettings'
 import { SendButtonAnimationSettings } from './SendButtonAnimationSettings'
+import { FastModeAnimationSettings } from './FastModeAnimationSettings'
 import { useSettingsSectionThemeColors } from './settingsSectionTheme'
 import { ToolsSettings } from './ToolsSettings'
 
@@ -2164,6 +2165,10 @@ ${block}`
                         </div>
                       </div>
                     </div>
+                  </div>
+
+                  <div className='space-y-2'>
+                    <FastModeAnimationSettings sectionThemeColors={savedCustomThemesColors} />
                   </div>
 
                   {/* Send Button Animation Section */}

@@ -12,11 +12,13 @@ import { normalizeShellPath } from './shellPath.js'
 import { createQuitConfirmationGuard } from './quitConfirmation.js'
 import '../server/envLoader.js'
 import {
+  consolidateSecureSecrets,
   deleteBraveApiKey,
   getBraveApiKey,
   hasBraveApiKey,
   setBraveApiKey,
 } from '../server/keytarSecrets.js'
+import { mcpManager } from '../server/mcp/mcpManager.js'
 import { ensureManagedHooksInitialized } from '../server/hooks/hookStorage.js'
 import { buildElectronHostCapabilities, buildElectronServerConfig } from './electronHostAdapter.js'
 import { createYggServer, type YggServerHandle } from '../server/createYggServer.js'
@@ -1364,7 +1366,18 @@ ipcMain.handle('storage:clear', async () => {
   }
 })
 
-ipcMain.handle('secrets:braveSearch:get', async () => {
+authHandle('secrets:consolidate', async () => {
+  try {
+    const result = await consolidateSecureSecrets()
+    await mcpManager.consolidatePlaintextCredentials()
+    return { success: true, ...result }
+  } catch {
+    // Native enumeration errors must not expose credential payloads over IPC.
+    return { success: false, error: 'Credential consolidation did not finish. Original credentials are retained unless their vault copy was verified. Allow Keychain access and retry.' }
+  }
+})
+
+authHandle('secrets:braveSearch:get', async () => {
   try {
     const value = await getBraveApiKey()
     return { success: true, value }
@@ -1374,7 +1387,7 @@ ipcMain.handle('secrets:braveSearch:get', async () => {
   }
 })
 
-ipcMain.handle('secrets:braveSearch:has', async () => {
+authHandle('secrets:braveSearch:has', async () => {
   try {
     const configured = await hasBraveApiKey()
     return { success: true, configured }
@@ -1384,8 +1397,9 @@ ipcMain.handle('secrets:braveSearch:has', async () => {
   }
 })
 
-ipcMain.handle('secrets:braveSearch:set', async (_event, value: string) => {
+authHandle('secrets:braveSearch:set', async (_event, value: string) => {
   try {
+    if (typeof value !== 'string') throw new Error('Secret value must be a string')
     await setBraveApiKey(value)
     return { success: true }
   } catch (error) {
@@ -1394,7 +1408,7 @@ ipcMain.handle('secrets:braveSearch:set', async (_event, value: string) => {
   }
 })
 
-ipcMain.handle('secrets:braveSearch:delete', async () => {
+authHandle('secrets:braveSearch:delete', async () => {
   try {
     await deleteBraveApiKey()
     return { success: true }

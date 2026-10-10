@@ -337,7 +337,9 @@ const Settings: React.FC = () => {
   const [providerSettings, setProviderSettings] = useState<ProviderSettings>(() => loadProviderSettings())
   const [braveApiKeyInput, setBraveApiKeyInput] = useState('')
   const [braveApiKeyConfigured, setBraveApiKeyConfigured] = useState(false)
-  const [braveApiKeyLoading, setBraveApiKeyLoading] = useState(import.meta.env.VITE_ENVIRONMENT === 'electron')
+  const [braveApiKeyLoading, setBraveApiKeyLoading] = useState(false)
+  const [braveApiKeyChecked, setBraveApiKeyChecked] = useState(false)
+  const [credentialsConsolidating, setCredentialsConsolidating] = useState(false)
   const [braveApiKeySaving, setBraveApiKeySaving] = useState(false)
   const [zaiApiKeyInput, setZaiApiKeyInput] = useState('')
   const [zaiApiKeyConfigured, setZaiApiKeyConfigured] = useState(false)
@@ -633,46 +635,42 @@ const Settings: React.FC = () => {
       window.removeEventListener(BROWSER_SETTINGS_CHANGE_EVENT, handleBrowserSettingsChange as EventListener)
   }, [])
 
-  useEffect(() => {
-    if (import.meta.env.VITE_ENVIRONMENT !== 'electron') {
+  const handleLoadBraveApiKey = async () => {
+    setBraveApiKeyLoading(true)
+    try {
+      const value = await readBraveApiKeyFromSecureStore()
+      setBraveApiKeyInput(value ?? '')
+      setBraveApiKeyConfigured(Boolean(value))
+      setBraveApiKeyChecked(true)
+    } catch (error) {
+      showStatus({ type: 'error', text: error instanceof Error ? error.message : 'Could not load the Brave API key. Retry when ready.' })
+    } finally {
       setBraveApiKeyLoading(false)
+    }
+  }
+
+  const handleConsolidateCredentials = async () => {
+    const consolidate = window.electronAPI?.secrets?.consolidate
+    if (!consolidate) {
+      showStatus({ type: 'error', text: 'Credential consolidation is unavailable in this build.' })
       return
     }
-
-    let active = true
-
-    const loadBraveApiKey = async () => {
-      const maxAttempts = 3
-      for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-        try {
-          const value = await readBraveApiKeyFromSecureStore()
-          if (!active) return
-
-          setBraveApiKeyInput(value ?? '')
-          setBraveApiKeyConfigured(Boolean(value))
-          return
-        } catch (error) {
-          if (attempt >= maxAttempts) {
-            if (active) {
-              console.error('Failed to load Brave API key:', error)
-            }
-            return
-          }
-          await new Promise(resolve => setTimeout(resolve, attempt * 200))
-        }
-      }
+    setCredentialsConsolidating(true)
+    try {
+      const result = await consolidate()
+      if (!result.success) throw new Error(result.error || 'Credential consolidation failed.')
+      showStatus({
+        type: result.complete ? 'success' : 'error',
+        text: result.complete
+          ? `Credentials consolidated into one secure vault. Migrated ${result.migrated ?? 0} entries; removed ${result.removed ?? 0} old copies.`
+          : `Credentials saved in the vault, but cleanup is incomplete. ${result.warnings?.join(' ') ?? 'Retry consolidation.'}`,
+      })
+    } catch (error) {
+      showStatus({ type: 'error', text: error instanceof Error ? error.message : 'Credential consolidation failed. Retry when ready.' })
+    } finally {
+      setCredentialsConsolidating(false)
     }
-
-    void loadBraveApiKey().finally(() => {
-      if (active) {
-        setBraveApiKeyLoading(false)
-      }
-    })
-
-    return () => {
-      active = false
-    }
-  }, [])
+  }
 
   useEffect(() => {
     if (import.meta.env.VITE_ENVIRONMENT !== 'electron') {
@@ -1242,6 +1240,7 @@ const Settings: React.FC = () => {
 
       setBraveApiKeyInput(persistedValue)
       setBraveApiKeyConfigured(true)
+      setBraveApiKeyChecked(true)
       showStatus({ type: 'success', text: 'Brave Search API key saved securely.' })
     } catch (error) {
       console.error('Failed to save Brave API key:', error)
@@ -3683,10 +3682,18 @@ const Settings: React.FC = () => {
                 {import.meta.env.VITE_ENVIRONMENT === 'electron' && (
           <SettingsSection
             title='API Keys'
-            description='Store local tool credentials securely in your OS keychain via keytar.'
+            description='Brave and MCP OAuth credentials share one secure OS credential vault.'
             features={['Brave Search key', 'Secure keychain storage', 'Save/remove credentials']}
           >
             <div className='flex flex-col gap-4'>
+              <div className='flex flex-col gap-2'>
+                <p className='text-sm text-stone-500 dark:text-stone-400'>
+                  Move existing Brave and MCP credentials into one Keychain item. macOS may ask permission for each old item during this one-time migration. New credentials use the shared vault automatically.
+                </p>
+                <Button variant='outline2' size='small' onClick={handleConsolidateCredentials} disabled={credentialsConsolidating || braveApiKeyLoading || braveApiKeySaving}>
+                  {credentialsConsolidating ? 'Consolidating…' : 'Consolidate credentials'}
+                </Button>
+              </div>
               <div className='flex flex-col gap-2'>
                 <div className='flex flex-wrap items-center gap-3'>
                   <p className='text-base font-medium text-stone-900 dark:text-stone-100'>Brave Search API Key</p>
@@ -3697,7 +3704,7 @@ const Settings: React.FC = () => {
                         : 'bg-stone-100 border-stone-200 text-stone-600 dark:bg-stone-800 dark:border-stone-700 dark:text-stone-300'
                     }`}
                   >
-                    {braveApiKeyLoading ? 'Loading…' : braveApiKeyConfigured ? 'Configured' : 'Not configured'}
+                    {braveApiKeyLoading ? 'Loading…' : braveApiKeyConfigured ? 'Configured' : braveApiKeyChecked ? 'Not configured' : 'Not checked'}
                   </span>
                 </div>
                 <p className='text-sm text-stone-500 dark:text-stone-400'>
@@ -3715,15 +3722,18 @@ const Settings: React.FC = () => {
                     variant='primary'
                     size='small'
                     onClick={handleSaveBraveApiKey}
-                    disabled={braveApiKeySaving || braveApiKeyLoading || !braveApiKeyInput.trim()}
+                    disabled={braveApiKeySaving || braveApiKeyLoading || credentialsConsolidating || !braveApiKeyInput.trim()}
                   >
                     {braveApiKeySaving ? 'Saving…' : 'Save Brave API Key'}
+                  </Button>
+                  <Button variant='outline2' size='small' onClick={handleLoadBraveApiKey} disabled={braveApiKeySaving || braveApiKeyLoading || credentialsConsolidating}>
+                    Load saved key
                   </Button>
                   <Button
                     variant='outline2'
                     size='small'
                     onClick={handleDeleteBraveApiKey}
-                    disabled={braveApiKeySaving || braveApiKeyLoading || !braveApiKeyConfigured}
+                    disabled={braveApiKeySaving || braveApiKeyLoading || credentialsConsolidating || !braveApiKeyConfigured}
                   >
                     Remove
                   </Button>
