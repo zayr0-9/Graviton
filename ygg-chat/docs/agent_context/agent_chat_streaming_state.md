@@ -173,3 +173,9 @@ messages and transport disconnects do not finalize statistics.
 - Footer eligibility uses the pane's canonical path. Process grouping stops at footer boundaries;
   footers stay outside collapsed disclosures and use stable stream-ID virtual row keys.
 - No statistics row enters inference history, persistence, compaction, or branch navigation.
+
+## Primary selection ownership
+
+`chatSelection.ts` / `chatSelectionController.ts` own explicit view-selection transactions. `ChatSelectionProvider` is the router facade used by primary navigation callers. Navigation never aborts runs or clears stream buffers/decision maps. Chat derives animations, live output, Stop/Queue and decisions from one effective view stream; no stream means no singleton decision fallback.
+
+`SendingStartedPayload.selectionRevision` captures the renderer request revision before async preparation. Stream path advancement is gated by view ownership; projected `messageBranchCreated` includes stream identity, and parallel `updatePath:false` applies to first-user/turn insertion as well as terminal completion. Reattach does not claim a new view merely by rebuilding a stream slot. Confirmed mismatched lineages are excluded from anchor-based stream selection.
