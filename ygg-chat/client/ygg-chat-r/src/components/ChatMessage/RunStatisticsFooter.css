@@ -1,0 +1,35 @@
+.run-statistics-reveal {
+  --run-statistics-slide-duration: 10s;
+  --run-statistics-slide-ease: cubic-bezier(0.45, 0, 0.55, 1);
+  display: inline-block;
+  max-width: 100%;
+  width: var(--run-statistics-summary-width, 100%);
+  overflow: hidden;
+  vertical-align: top;
+  text-align: left;
+}
+
+.run-statistics-track {
+  display: flex;
+  width: max-content;
+  white-space: nowrap;
+  transform: translateX(0);
+  transition-property: transform;
+  transition-duration: var(--run-statistics-slide-duration);
+  transition-timing-function: var(--run-statistics-slide-ease);
+}
+
+.run-statistics-reveal:is(:hover, :focus-visible, [data-expanded='true']) .run-statistics-track {
+  transform: translateX(var(--run-statistics-slide-offset, 0px));
+}
+
+.run-statistics-reveal:focus-visible {
+  outline: 1px solid currentColor;
+  outline-offset: 3px;
+  border-radius: 2px;
+}
+
+/* Details remain readable immediately without motion, including keyboard/touch access. */
+@media (prefers-reduced-motion: reduce) {
+  .run-statistics-track { transition: none; }
+}

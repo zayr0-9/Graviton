@@ -1,22 +1,35 @@
 import type { CSSProperties } from 'react'
-import { FAST_MODE_ANIMATIONS, type FastModeAnimation } from '../../helpers/fastModeAnimationSettings'
+import type { OperationMode } from '../../features/chats/chatTypes'
 import { getThemeModeColor, type CustomChatTheme } from '../ThemeManager/themeConfig'
 
-export const getFastModePalette = (animation: FastModeAnimation, dark: boolean, theme?: CustomChatTheme): CSSProperties => {
-  const colors = FAST_MODE_ANIMATIONS.find(option => option.id === animation)?.colors || FAST_MODE_ANIMATIONS[14].colors
-  const palette = theme
-    ? [theme.colors.composerToggleActiveBg, theme.colors.sendButtonAnimationColor,
-        theme.colors.chatProgressBarFill, theme.colors.composerToggleActiveBorder].map(color => getThemeModeColor(color, dark))
-    : colors
-  const surface = theme ? getThemeModeColor(theme.colors.chatPanelBg, dark) : '#162338'
-  // Retain hue in dark mode: tint the surface, rather than dimming the entire effect.
-  const mix = (color: string, amount: number) => `color-mix(in srgb, ${color} ${amount}%, ${surface})`
+export const resolveComposerAgentTint = (dark: boolean, theme?: CustomChatTheme, border?: {
+  animation: string
+  lightColor: string
+  darkColor: string
+}): string => {
+  if (theme) return getThemeModeColor(theme.colors.chatInputAreaBorder, dark)
+  if (border && border.animation !== 'none') return dark ? border.darkColor : border.lightColor
+  return dark ? '#c2410c' : '#93c5fd'
+}
+
+export const getFastModePalette = (dark: boolean, operationMode: OperationMode, theme?: CustomChatTheme,
+  agentTint = resolveComposerAgentTint(dark, theme)): CSSProperties => {
+  const surface = theme ? getThemeModeColor(theme.colors.chatPanelBg, dark) : dark ? '#172336' : '#eef2f7'
+  // Resolve the tint's hue without its border opacity, then control layer strength here.
+  // Chat stays near the neutral theme surface; Agent uses the existing composer tint.
+  const accent = operationMode === 'execute'
+    ? `rgb(from ${agentTint} r g b / 1)`
+    : theme
+      ? `color-mix(in srgb, ${surface} 78%, ${dark ? '#a5b8ce' : '#91a5c0'})`
+      : dark ? '#6a88ae' : '#91a5c0'
+  const mix = (color: string, amount: number, base = surface) => `color-mix(in srgb, ${color} ${amount}%, ${base})`
+  const light = dark ? mix(accent, 20, '#a5b8ce') : '#ffffff'
   return {
-    '--fm-base': dark ? mix(palette[0], 38) : palette[0],
-    '--fm-a': dark ? mix(palette[1], 65) : palette[1],
-    '--fm-b': dark ? mix(palette[2], 62) : palette[2],
-    '--fm-c': dark ? mix(palette[3], 60) : palette[3],
-    '--fm-light': dark ? mix(palette[1], 40) : theme ? `color-mix(in srgb, ${palette[1]} 18%, white)` : '#f4fbff',
-    '--fm-edge': dark ? mix(palette[2], 70) : theme ? `color-mix(in srgb, ${palette[2]} 30%, white)` : '#ffffff',
+    '--fm-base': mix(accent, 30),
+    '--fm-a': mix(accent, 67),
+    '--fm-b': mix(accent, 50),
+    '--fm-c': mix(accent, 37),
+    '--fm-light': mix(accent, 18, light),
+    '--fm-edge': mix(accent, 30, light),
   } as CSSProperties
 }

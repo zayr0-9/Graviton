@@ -309,9 +309,12 @@ export function projectServerEvent(event: ServerStreamEvent, ctx: ProjectionCont
 
     case 'user_message_persisted': {
       const message = normalizeServerMessage(event.message)
-      // The following real user row establishes the path and stream trigger.
-      // Do not put its images or branch anchors on this settings notice.
-      if (isFullAccessNotification(message)) return [chatSliceActions.messageAdded(message)]
+      // Extend the selected transcript after its user input, like a mode notice,
+      // without replacing the original trigger or attaching its image previews.
+      if (isFullAccessNotification(message)) return [
+        chatSliceActions.messageAdded(message),
+        chatSliceActions.queuedMessageInserted({ message, streamId }),
+      ]
       if (ctx.userMessageArtifacts?.length) {
         message.artifacts = Array.from(new Set([...(message.artifacts || []), ...ctx.userMessageArtifacts]))
       }

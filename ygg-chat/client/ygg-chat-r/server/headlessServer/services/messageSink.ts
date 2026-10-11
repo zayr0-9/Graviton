@@ -1,4 +1,4 @@
-import type { OpenAIContextUsage } from '../../../../../shared/contextUsage.js'
+import { extractOpenAIContextUsageFromBlocks, openAIContextUsageBlock, type OpenAIContextUsage } from '../../../../../shared/contextUsage.js'
 import type { MessageRepo } from '../persistence/messageRepo.js'
 import type { LineageRepo } from '../persistence/lineageRepo.js'
 import type { ProviderToolCall } from '../providers/openRouterProvider.js'
@@ -32,6 +32,14 @@ export interface AssistantMessageDraft {
    * other sink ignores it, and it is null off the cloud path.
    */
   providerMessageId?: string | null
+  statisticsKind?: 'model_response' | 'terminal_error'
+}
+
+function durableResponseBlocks(draft: AssistantMessageDraft): any[] | undefined {
+  if (!draft.contextUsage || extractOpenAIContextUsageFromBlocks(draft.contentBlocks)) return draft.contentBlocks ?? undefined
+  const blocks = draft.contentBlocks?.length ? draft.contentBlocks : draft.content
+    ? [{ type: 'text', content: draft.content, index: 0 }] : []
+  return [...blocks, openAIContextUsageBlock(draft.contextUsage)]
 }
 
 const runMessageTransaction = <T>(messageRepo: MessageRepo, operation: () => T): T => {
@@ -58,12 +66,16 @@ export class TreeMessageSink implements MessageSink {
   private readonly lineageRepo?: LineageRepo
   private readonly lineageId?: string | null
   private pendingOperationId?: string | null
+  private readonly streamId?: string
+  private readonly onModelResponse?: (id: string) => void
 
-  constructor(deps: { messageRepo: MessageRepo; lineageRepo?: LineageRepo; lineageId?: string | null; pendingOperationId?: string | null }) {
+  constructor(deps: { messageRepo: MessageRepo; lineageRepo?: LineageRepo; lineageId?: string | null; pendingOperationId?: string | null; streamId?: string; onModelResponse?: (id: string) => void }) {
     this.messageRepo = deps.messageRepo
     this.lineageRepo = deps.lineageRepo
     this.lineageId = deps.lineageId
     this.pendingOperationId = deps.pendingOperationId
+    this.streamId = deps.streamId
+    this.onModelResponse = deps.onModelResponse
   }
 
   persistAssistantMessage(draft: AssistantMessageDraft): any {
@@ -75,8 +87,11 @@ export class TreeMessageSink implements MessageSink {
         content: draft.content ?? '',
         modelName: draft.modelName,
         toolCalls: draft.toolCalls ?? undefined,
-        contentBlocks: draft.contentBlocks ?? undefined,
+        contentBlocks: durableResponseBlocks(draft),
         contextUsage: draft.contextUsage ?? undefined,
+        meta: this.streamId ? {
+          runStatistics: { version: 1, streamId: this.streamId, kind: draft.statisticsKind ?? 'model_response' },
+        } : undefined,
       })
       if (this.lineageRepo && this.lineageId) {
         if (this.pendingOperationId) {
@@ -86,6 +101,7 @@ export class TreeMessageSink implements MessageSink {
           this.lineageRepo.appendMessage(this.lineageId, message.id)
         }
       }
+      if (draft.statisticsKind !== 'terminal_error') this.onModelResponse?.(message.id)
       return message
     })
   }
@@ -111,12 +127,16 @@ export class CloudMirrorSink implements MessageSink {
   private readonly lineageRepo?: LineageRepo
   private readonly lineageId?: string | null
   private pendingOperationId?: string | null
+  private readonly streamId?: string
+  private readonly onModelResponse?: (id: string) => void
 
-  constructor(deps: { messageRepo: MessageRepo; lineageRepo?: LineageRepo; lineageId?: string | null; pendingOperationId?: string | null }) {
+  constructor(deps: { messageRepo: MessageRepo; lineageRepo?: LineageRepo; lineageId?: string | null; pendingOperationId?: string | null; streamId?: string; onModelResponse?: (id: string) => void }) {
     this.messageRepo = deps.messageRepo
     this.lineageRepo = deps.lineageRepo
     this.lineageId = deps.lineageId
     this.pendingOperationId = deps.pendingOperationId
+    this.streamId = deps.streamId
+    this.onModelResponse = deps.onModelResponse
   }
 
   persistAssistantMessage(draft: AssistantMessageDraft): any {
@@ -129,8 +149,11 @@ export class CloudMirrorSink implements MessageSink {
         content: draft.content ?? '',
         modelName: draft.modelName,
         toolCalls: draft.toolCalls ?? undefined,
-        contentBlocks: draft.contentBlocks ?? undefined,
+        contentBlocks: durableResponseBlocks(draft),
         contextUsage: draft.contextUsage ?? undefined,
+        meta: this.streamId ? {
+          runStatistics: { version: 1, streamId: this.streamId, kind: draft.statisticsKind ?? 'model_response' },
+        } : undefined,
       })
       if (this.lineageRepo && this.lineageId) {
         if (this.pendingOperationId) {
@@ -140,6 +163,7 @@ export class CloudMirrorSink implements MessageSink {
           this.lineageRepo.appendMessage(this.lineageId, message.id)
         }
       }
+      if (draft.statisticsKind !== 'terminal_error') this.onModelResponse?.(message.id)
       return message
     })
   }

@@ -1,3 +1,4 @@
+import type { OperationMode } from '../../features/chats/chatTypes'
 import type { FastModeAnimation as Animation } from '../../helpers/fastModeAnimationSettings'
 import type { CustomChatTheme } from '../ThemeManager/themeConfig'
 import { getFastModePalette } from './fastModePalette'
@@ -13,14 +14,16 @@ const counts: Partial<Record<Animation, number>> = {
   'tidal-glass': 3, 'pixel-packets': 4, 'pixel-rain': 7, 'caustic-tide': 1,
 }
 
-export const FastModeAnimationBackground = ({ animation, dark, theme }: {
+export const FastModeAnimationBackground = ({ animation, dark, operationMode, theme, agentTint }: {
   animation: Animation
   dark: boolean
+  operationMode: OperationMode
   theme?: CustomChatTheme
+  agentTint?: string
 }) => {
   if (animation === 'none') return null
   return (
-    <span className='fm-background' aria-hidden='true' style={getFastModePalette(animation, dark, theme)}>
+    <span className='fm-background' aria-hidden='true' style={getFastModePalette(dark, operationMode, theme, agentTint)}>
       {/* Match the approved study's geometry at any composer size, without resize listeners. */}
       <svg className='fm-viewport' viewBox='0 0 264 76' preserveAspectRatio='none'>
         <foreignObject width='264' height='76'>

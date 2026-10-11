@@ -1,9 +1,23 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
+import type { OperationMode } from '../../features/chats/chatTypes'
+import { resolveComposerAgentTint } from '../FastModeAnimation/fastModePalette'
+import {
+  getStoredChatInputBorderAnimation, getStoredChatInputBorderLightColor, getStoredChatInputBorderDarkColor,
+  CHAT_INPUT_BORDER_ANIMATION_STORAGE_KEY, CHAT_INPUT_BORDER_LIGHT_COLOR_STORAGE_KEY,
+  CHAT_INPUT_BORDER_DARK_COLOR_STORAGE_KEY,
+} from './ChatInputBorderAnimationSettings'
+
 import { ChevronDown, Zap } from 'lucide-react'
 import { FAST_MODE_ANIMATIONS, saveFastModeAnimation, useFastModeAnimation } from '../../helpers/fastModeAnimationSettings'
 import { FastModeAnimationBackground } from '../FastModeAnimation/FastModeAnimation'
 import { useCustomChatTheme, useHtmlDarkMode } from '../ThemeManager/themeConfig'
 import type { SettingsSectionThemeColors } from './settingsSectionTheme'
+
+const loadPreviewBorder = () => ({
+  animation: getStoredChatInputBorderAnimation(),
+  lightColor: getStoredChatInputBorderLightColor(),
+  darkColor: getStoredChatInputBorderDarkColor(),
+})
 
 export const FastModeAnimationSettings = ({ sectionThemeColors: colors }: {
   sectionThemeColors?: SettingsSectionThemeColors | null
@@ -12,6 +26,23 @@ export const FastModeAnimationSettings = ({ sectionThemeColors: colors }: {
   const selected = useFastModeAnimation()
   const { theme, enabled } = useCustomChatTheme()
   const dark = useHtmlDarkMode()
+  const [previewMode, setPreviewMode] = useState<OperationMode>('plan')
+  const [border, setBorder] = useState(loadPreviewBorder)
+  useEffect(() => {
+    const sync = () => setBorder(loadPreviewBorder())
+    const onStorage = (event: StorageEvent) => {
+      if (event.key === null || [CHAT_INPUT_BORDER_ANIMATION_STORAGE_KEY,
+        CHAT_INPUT_BORDER_LIGHT_COLOR_STORAGE_KEY, CHAT_INPUT_BORDER_DARK_COLOR_STORAGE_KEY].includes(event.key)) sync()
+    }
+    const events = ['inputBorderAnimationChange', 'inputBorderLightColorChange', 'inputBorderDarkColorChange']
+    events.forEach(event => window.addEventListener(event, sync))
+    window.addEventListener('storage', onStorage)
+    return () => {
+      events.forEach(event => window.removeEventListener(event, sync))
+      window.removeEventListener('storage', onStorage)
+    }
+  }, [])
+  const agentTint = resolveComposerAgentTint(dark, enabled ? theme : undefined, border)
   return (
     <section className='overflow-hidden rounded-2xl bg-neutral-50/70 dark:bg-neutral-900/10'
       style={colors ? { backgroundColor: colors.cardBg } : undefined}>
@@ -36,8 +67,21 @@ export const FastModeAnimationSettings = ({ sectionThemeColors: colors }: {
         {expanded && <div className='px-3 pb-3'>
           <p className='mb-3 text-xs text-neutral-500 dark:text-neutral-300'
             style={colors ? { color: colors.bodyText } : undefined}>
-            Hover or focus to preview. Default palettes match the design studies; custom themes supply the colors automatically. This does not enable the Fast service tier.
+            Hover or focus to preview. Color shows Chat or Agent mode; motion shows Fast mode. The preview switch does not change your actual mode or enable the Fast service tier.
           </p>
+          <div className='mb-3 flex items-center gap-2' role='group' aria-label='Preview operation mode'>
+            <span className='text-xs text-neutral-500 dark:text-neutral-300'
+              style={colors ? { color: colors.bodyText } : undefined}>Preview:</span>
+            {([{ mode: 'plan', label: 'Chat' }, { mode: 'execute', label: 'Agent' }] as const).map(option => (
+              <button key={option.mode} type='button' aria-pressed={previewMode === option.mode}
+                onClick={() => setPreviewMode(option.mode)}
+                className={`rounded-full px-3 py-1 text-xs focus-visible:outline focus-visible:outline-2 ${previewMode === option.mode ? 'bg-blue-100 text-blue-800 dark:bg-blue-900/50 dark:text-blue-100' : 'bg-neutral-100 text-neutral-600 dark:bg-neutral-800 dark:text-neutral-300'}`}
+                style={colors ? { backgroundColor: previewMode === option.mode ? colors.primaryButtonBg : colors.buttonBg,
+                  color: previewMode === option.mode ? colors.primaryButtonText : colors.buttonText } : undefined}>
+                {option.label}
+              </button>
+            ))}
+          </div>
           <div className='grid grid-cols-2 gap-2 sm:grid-cols-3'>
             {[{ id: 'none' as const, name: 'None' }, ...FAST_MODE_ANIMATIONS].map(option => (
               <button key={option.id} type='button' aria-pressed={selected === option.id}
@@ -46,7 +90,8 @@ export const FastModeAnimationSettings = ({ sectionThemeColors: colors }: {
                 style={colors ? { backgroundColor: selected === option.id ? colors.primaryButtonBg : colors.innerCardBg,
                   color: selected === option.id ? colors.primaryButtonText : colors.bodyText } : undefined}>
                 <span className='fm-preview relative mb-2 block h-10 overflow-hidden rounded-full bg-blue-100 dark:bg-slate-800'>
-                  <FastModeAnimationBackground animation={option.id} dark={dark} theme={enabled ? theme : undefined} />
+                  <FastModeAnimationBackground animation={option.id} dark={dark} operationMode={previewMode}
+                    agentTint={agentTint} theme={enabled ? theme : undefined} />
                 </span>
                 <span className='block'>{option.name}{selected === option.id ? ' ✓' : ''}</span>
               </button>

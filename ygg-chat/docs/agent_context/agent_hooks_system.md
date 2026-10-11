@@ -82,6 +82,8 @@ Wiring: the executor Pre/Post/Failure hooks are interleaved inside `createChatPa
 
 ## Important Invariants
 
+- Managed-hook initialization seeds missing bundled scripts and settings only; it never overwrites existing files, including local edits or empty files. The targeted legacy memory-writer retirement remains active.
+- The bundled branch-note Stop hook uses `gpt-6-luna`. Existing installed hooks must be updated explicitly; initialization does not upgrade their contents.
 - The renderer never executes hook commands; the **server-owned chat loop** runs them in-process (same server process, no HTTP). The renderer only sets `hooksEnabled` on its POST to the loop.
 - Hook commands receive JSON via stdin (`buildHookPayload`, `hookRunner.ts:354`); payload keys are snake_case.
 - Prefer JSON output from hooks for stable parsing; text output falls back to `interpretTextResult` (`hookRunner.ts:414`).

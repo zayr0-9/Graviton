@@ -42,6 +42,9 @@ import {
 import { ChatErrorBubble } from '../components/ChatErrorBubble/ChatErrorBubble'
 import { ActionPopoverButton, ActionPopoverDisclosure, ActionPopoverSwitch } from '../components/ActionPopover/ActionPopoverControls'
 import { ClipboardCheck, CodeXml, MessageSquare, ShieldHalf } from 'lucide-react'
+import { useConversationRunStatistics } from '../hooks/useConversationRunStatistics'
+import { deriveRunStatistics, placeRunFooters, interleaveRunFooters, type RunStatisticsFooterData } from '../features/chats/runStatistics'
+import { RunStatisticsFooter } from '../components/ChatMessage/RunStatisticsFooter'
 import { isWatcherCompletionMessage, WatcherCompletionNotice } from '../components/ChatMessage/WatcherCompletionNotice'
 import { ImageAttachmentNotice, isImageAttachmentInfoMessage } from '../components/ChatMessage/ImageAttachmentNotice'
 import { prepareImageFiles, waitForImagePreparation } from '../features/chats/imagePreparation'
@@ -57,6 +60,7 @@ import { useHtmlIframeRegistry } from '../components/HtmlIframeRegistry/HtmlIfra
 import { contentSpringTransition, softTransition } from '../components/motion'
 import { ContextUsageSparkline } from '../components/ContextUsageSparkline/ContextUsageSparkline'
 import { FastModeAnimationBackground } from '../components/FastModeAnimation/FastModeAnimation'
+import { resolveComposerAgentTint } from '../components/FastModeAnimation/fastModePalette'
 import { useFastModeAnimation } from '../helpers/fastModeAnimationSettings'
 import { SubagentTranscriptModal } from '../components/SubagentTranscript/SubagentTranscript'
 import {
@@ -276,6 +280,7 @@ type MessageRenderRow =
     }
 
 type VirtualRenderRow =
+  | { kind: 'run_stats'; key: string; statistics: RunStatisticsFooterData }
   | {
       kind: 'message_row'
       key: string
@@ -2275,6 +2280,14 @@ function Chat() {
     return displayMessages.filter(msg => msg && msg.id != null)
   }, [displayMessages])
 
+  const conversationRuns = useConversationRunStatistics(conversationIdFromUrl == null ? null : String(conversationIdFromUrl))
+  const runFooters = useMemo(() => deriveRunStatistics(conversationMessages, selectedPath, conversationRuns,
+    currentConversationId == null ? null : String(currentConversationId), modeLineageId),
+    [conversationMessages, selectedPath, conversationRuns, currentConversationId, modeLineageId])
+  const runFootersByAnchor = useMemo(() => placeRunFooters(runFooters, selectedPath, renderableMessages.map(m => String(m.id))),
+    [runFooters, selectedPath, renderableMessages])
+  const runBoundarySignature = [...runFootersByAnchor.keys()].join('|')
+
   const [groupToolReasoningRuns, setGroupToolReasoningRuns] = useState<boolean>(() => {
     try {
       const stored = localStorage.getItem('chat:groupToolReasoningRuns')
@@ -2331,7 +2344,7 @@ function Chat() {
     const debugProcessGrouping =
       typeof window !== 'undefined' && window.localStorage.getItem('chat:debugProcessGrouping') === 'true'
 
-    const rowsCacheKey = `${groupToolReasoningRuns ? 'grouped' : 'plain'}|${renderableMessagesSignature}`
+    const rowsCacheKey = `${groupToolReasoningRuns ? 'grouped' : 'plain'}|${renderableMessagesSignature}|${runBoundarySignature}`
     if (!debugProcessGrouping) {
       const cachedRows = messageRenderRowsCacheRef.current.get(rowsCacheKey)
       if (cachedRows) {
@@ -2488,6 +2501,7 @@ function Chat() {
         }
         runMessages.push(candidate)
         cursor += 1
+        if (runFootersByAnchor.has(String(candidate.id))) break
       }
 
       if (runMessages.length >= CROSS_MESSAGE_PROCESS_GROUP_MIN_MESSAGES) {
@@ -2503,7 +2517,8 @@ function Chat() {
 
         let bridgedMessageId: MessageId | undefined
         const trailingCandidate = renderableMessages[cursor]
-        if (trailingCandidate && (trailingCandidate.role === 'assistant' || trailingCandidate.role === 'ex_agent')) {
+        if (!runFootersByAnchor.has(String(runMessages[runMessages.length - 1]?.id)) &&
+            trailingCandidate && (trailingCandidate.role === 'assistant' || trailingCandidate.role === 'ex_agent')) {
           const trailingParsed = parsedMessageDataById.get(trailingCandidate.id) ?? EMPTY_PARSED_MESSAGE_DATA
           const trailingHasProcessSignal = hasProcessSignal(trailingCandidate, trailingParsed)
           const trailingHasSubstantialContent = hasSubstantialTextOrImage(trailingCandidate, trailingParsed)
@@ -2575,7 +2590,10 @@ function Chat() {
     }
 
     return rows
-  }, [renderableMessages, renderableMessagesSignature, groupToolReasoningRuns, parsedMessageDataById])
+  }, [renderableMessages, renderableMessagesSignature, groupToolReasoningRuns, parsedMessageDataById, runBoundarySignature, runFootersByAnchor])
+
+  const bridgedProcessMessageIds = useMemo(() => new Set(messageRenderRows.flatMap(row =>
+    row.kind === 'process_group' && row.bridgedMessageId ? [String(row.bridgedMessageId)] : [])), [messageRenderRows])
 
   const messageById = useMemo(() => {
     const map = new Map<string, Message>()
@@ -2588,23 +2606,14 @@ function Chat() {
   const messageRowIndexByMessageId = useMemo(() => {
     const rowIndexByMessageId = new Map<string, number>()
 
-    for (let index = 0; index < messageRenderRows.length; index++) {
-      const row = messageRenderRows[index]
-      if (row.kind === 'message') {
-        rowIndexByMessageId.set(String(row.message.id), index)
-        continue
-      }
-
-      for (const memberId of row.memberMessageIds) {
-        const key = String(memberId)
-        if (!rowIndexByMessageId.has(key)) {
-          rowIndexByMessageId.set(key, index)
-        }
-      }
+    let virtualIndex = 0
+    for (const row of messageRenderRows) {
+      const ids = row.kind === 'message' ? [row.message.id] : row.memberMessageIds
+      for (const id of ids) rowIndexByMessageId.set(String(id), virtualIndex)
+      virtualIndex += 1 + (runFootersByAnchor.get(String(ids[ids.length - 1]))?.length ?? 0)
     }
-
     return rowIndexByMessageId
-  }, [messageRenderRows])
+  }, [messageRenderRows, runFootersByAnchor])
 
   const assistantContainerClassByMessageId = useMemo(() => {
     const classByMessageId = new Map<string, string>()
@@ -2794,14 +2803,11 @@ function Chat() {
   }, [messageRenderRows, parsedMessageDataById])
 
   const virtualRows = useMemo<VirtualRenderRow[]>(() => {
-    const rows: VirtualRenderRow[] = messageRenderRows.map(row => ({
-      kind: 'message_row',
-      // Stable id-based keys are required: index keys reshuffle the virtualizer's itemSizeCache and
-      // elementsCache whenever a row is inserted/removed mid-list (delete, branch switch, streaming
-      // row appearing/disappearing), corrupting measured heights and remounting rows.
-      key: row.kind === 'message' ? `message-${row.message.id}` : `group-${row.id}`,
-      row,
-    }))
+    const rows: VirtualRenderRow[] = interleaveRunFooters(messageRenderRows, runFootersByAnchor).map(item => {
+      if (item.kind === 'run_stats') return { ...item, key: `run-stats-${item.statistics.streamId}` }
+      const row = item.row
+      return { kind: 'message_row', key: row.kind === 'message' ? `message-${row.message.id}` : `group-${row.id}`, row }
+    })
 
     if (showOptimisticMessage && optimisticMessage) {
       rows.push({
@@ -2852,6 +2858,7 @@ function Chat() {
     return rows
   }, [
     messageRenderRows,
+    runFootersByAnchor,
     showOptimisticMessage,
     optimisticMessage,
     showOptimisticBranchMessage,
@@ -2953,6 +2960,7 @@ function Chat() {
 
     const setCompletedTurnLabel = (targetUserMessageId: MessageId | string | number | null | undefined) => {
       if (!activeUserMessage || !latestAgentMessageAfterActiveUser || targetUserMessageId == null) return
+      if (runFooters.some(footer => footer.anchorMessageId === String(latestAgentMessageAfterActiveUser!.id))) return
 
       const userCreatedAtMs = parseCreatedAtMs(activeUserMessage.created_at)
       const agentCreatedAtMs = parseCreatedAtMs(latestAgentMessageAfterActiveUser.created_at)
@@ -2987,7 +2995,7 @@ function Chat() {
     }
 
     return labels
-  }, [virtualRows])
+  }, [virtualRows, runFooters])
 
   useEffect(() => {
     benchLatestMessageCountRef.current = renderableMessages.length
@@ -3118,6 +3126,8 @@ function Chat() {
       }
 
       switch (row.kind) {
+        case 'run_stats':
+          return 36
         case 'message_row':
           return row.row.kind === 'process_group'
             ? processGroupRowHeight(rootFontSize)
@@ -3772,9 +3782,6 @@ function Chat() {
     : isDarkMode
       ? 'rgba(23, 23, 23, 0.8)'
       : 'rgba(255, 255, 255, 0.8)'
-  const chatInputAreaBorderColor = customThemeEnabled
-    ? getThemeModeColor(customTheme.colors.chatInputAreaBorder, isDarkMode)
-    : undefined
   const chatProgressBarFillColor = customThemeEnabled
     ? getThemeModeColor(customTheme.colors.chatProgressBarFill, isDarkMode)
     : undefined
@@ -3859,13 +3866,6 @@ function Chat() {
   )
   const [chatInputBorderLightColor, setChatInputBorderLightColor] = useState<string>(getStoredChatInputBorderLightColor)
   const [chatInputBorderDarkColor, setChatInputBorderDarkColor] = useState<string>(getStoredChatInputBorderDarkColor)
-
-  const useCustomInputAreaBorderColor = customThemeEnabled && operationMode !== 'plan'
-  const chatInputBorderAnimationEnabled = operationMode !== 'plan' && chatInputBorderAnimation !== 'none'
-  const effectiveAnimatedInputBorderColor =
-    useCustomInputAreaBorderColor && chatInputAreaBorderColor ? chatInputAreaBorderColor : undefined
-  const effectiveChatInputBorderLightColor = effectiveAnimatedInputBorderColor ?? chatInputBorderLightColor
-  const effectiveChatInputBorderDarkColor = effectiveAnimatedInputBorderColor ?? chatInputBorderDarkColor
 
   const leftControlsBorderClasses = customThemeEnabled
     ? operationMode === 'plan'
@@ -6730,16 +6730,11 @@ function Chat() {
         backgroundImage: `linear-gradient(90deg, color-mix(in srgb, ${tokenUsageProgressColor} ${tokenUsageTintStrength}%, transparent) 0%, color-mix(in srgb, ${tokenUsageProgressColor} ${tokenUsageTintStrength}%, transparent) ${totalContextProgress}%, ${leftControlsTokenTintBaseColor} ${Math.min(totalContextProgress + 8, 100)}%)`,
       }
     : undefined
-  const rightControlsTintColor =
-    useCustomInputAreaBorderColor && chatInputAreaBorderColor
-      ? chatInputAreaBorderColor
-      : chatInputBorderAnimationEnabled
-        ? isDarkMode
-          ? effectiveChatInputBorderDarkColor
-          : effectiveChatInputBorderLightColor
-        : isDarkMode
-          ? '#c2410c'
-          : '#93c5fd'
+  const rightControlsTintColor = resolveComposerAgentTint(isDarkMode, customThemeEnabled ? customTheme : undefined, {
+    animation: chatInputBorderAnimation,
+    lightColor: chatInputBorderLightColor,
+    darkColor: chatInputBorderDarkColor,
+  })
   const fastModeAnimation = useFastModeAnimation()
   const showFastModeAnimation = isOpenAIChatGPTProvider && fastServiceTierEnabled && fastModeAnimation !== 'none'
   const rightControlsTintStrength = isDarkMode ? 28 : 24
@@ -6852,6 +6847,15 @@ function Chat() {
                         const renderRow = virtualRows[virtualRow.index]
                         if (!renderRow) return null
 
+                        if (renderRow.kind === 'run_stats') {
+                          return (
+                            <VirtualizedRowContainer key={renderRow.key} id={renderRow.key}
+                              index={virtualRow.index} start={virtualRow.start} measureElement={virtualizer.measureElement}>
+                              <RunStatisticsFooter statistics={renderRow.statistics} customTheme={customTheme}
+                                customThemeEnabled={customThemeEnabled} isDarkMode={isDarkMode} />
+                            </VirtualizedRowContainer>
+                          )
+                        }
                         if (renderRow.kind === 'optimistic_message') {
                           const message = renderRow.message
                           return (
@@ -7166,13 +7170,7 @@ function Chat() {
                         }
                         const { contentBlocks } =
                           parsedMessageDataById.get(msg.id) ?? EMPTY_PARSED_MESSAGE_DATA
-                        const previousRenderRow = virtualRow.index > 0 ? virtualRows[virtualRow.index - 1] : null
-                        const previousRow = previousRenderRow?.kind === 'message_row' ? previousRenderRow.row : null
-
-                        const isProcessBridgeSourceMessage =
-                          previousRow?.kind === 'process_group' &&
-                          previousRow.bridgedMessageId != null &&
-                          String(previousRow.bridgedMessageId) === String(msg.id)
+                        const isProcessBridgeSourceMessage = bridgedProcessMessageIds.has(String(msg.id))
 
                         const displayContentBlocks =
                           isProcessBridgeSourceMessage && Array.isArray(contentBlocks)
@@ -7920,6 +7918,8 @@ function Chat() {
                     <FastModeAnimationBackground
                       animation={fastModeAnimation}
                       dark={isDarkMode}
+                      operationMode={operationMode}
+                      agentTint={rightControlsTintColor}
                       theme={customThemeEnabled ? customTheme : undefined}
                     />
                   )}

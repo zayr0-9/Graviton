@@ -55,7 +55,6 @@ import { loadContextDirectorySettings } from '../../helpers/contextDirectorySett
 import { loadProviderSettings, resolveProviderContextLength } from '../../helpers/providerSettingsStorage'
 import { updateToolEnabledState } from '../../helpers/toolSettingsStorage'
 import { generateStreamId, STREAM_PRUNE_DELAY } from './streamHelpers'
-import { createStreamingRun, finishStreamingRun } from './streamRunTracking'
 import {
   runServerChatLoop,
   runServerReattach,
@@ -872,16 +871,6 @@ const handleServerLoopFailure = ({
   const envelope = envelopeCarriedOnError(error) ?? classifyLocalChatError(error, { phase, streamId })
   const detail = rawErrorText(error)
 
-  void finishStreamingRun(streamId, {
-    status: 'error',
-    // Branch on the classified code. The old `message.includes('context compaction')`
-    // test matched NONE of the strings the compaction paths actually raise
-    // ('Invalid branch compaction summary returned', 'Failed to compact branch', …),
-    // so this end reason was unreachable.
-    endReason: envelope.code === 'compaction_failed' ? 'context_compaction_failed' : 'error',
-    error: detail,
-  })
-
   dispatch(
     chatSliceActions.streamChunkReceived({
       streamId,
@@ -1170,15 +1159,6 @@ export const sendMessage = createAsyncThunk<
           },
         })
       )
-      void createStreamingRun({
-        streamId,
-        conversationId,
-        parentMessageId: parent ?? null,
-        streamType,
-        operation: 'send',
-        source: 'renderer',
-        lineage: { rootMessageId: parent },
-      })
       // Detach/reattach: mark this run in-flight so a reload can re-attach to it. Cleared
       // in the finally below on normal end; a reload kills the thunk first, leaving the
       // marker for mount-time resume (resumeInFlightStreams).
@@ -1330,12 +1310,6 @@ export const sendMessage = createAsyncThunk<
           }
         )
         if (result.messageId) {
-          void finishStreamingRun(streamId, {
-            status: result.providerError ? 'error' : 'completed',
-            endReason: result.providerError ? 'error' : 'completed',
-            assistantMessageId: result.messageId,
-            finalMessageId: result.messageId,
-          })
           void markStreamUndoFinalMessage(streamId, String(result.messageId))
             .then(summary => {
               if (summary)
@@ -1623,15 +1597,6 @@ export const editMessageWithBranching = createAsyncThunk<
           },
         })
       )
-      void createStreamingRun({
-        streamId,
-        conversationId,
-        parentMessageId: parentMessageId ?? null,
-        streamType: 'branch',
-        operation: 'edit-branch',
-        source: 'renderer',
-        lineage: { originMessageId: originalMessageId, rootMessageId: parentMessageId },
-      })
       if (isResumableRunsEnabled()) {
         addInflightStream({
           streamId,
@@ -1946,12 +1911,6 @@ export const editMessageWithBranching = createAsyncThunk<
           }
         )
         if (result.messageId) {
-          void finishStreamingRun(streamId, {
-            status: result.providerError ? 'error' : 'completed',
-            endReason: result.providerError ? 'error' : 'completed',
-            assistantMessageId: result.messageId,
-            finalMessageId: result.messageId,
-          })
           void markStreamUndoFinalMessage(streamId, String(result.messageId))
             .then(summary => {
               if (summary)
@@ -2072,15 +2031,6 @@ export const sendMessageToBranch = createAsyncThunk<
           },
         })
       )
-      void createStreamingRun({
-        streamId,
-        conversationId,
-        parentMessageId: parentId ?? null,
-        streamType: 'branch',
-        operation: 'branch',
-        source: 'renderer',
-        lineage: { rootMessageId: parentId },
-      })
       if (isResumableRunsEnabled()) {
         addInflightStream({
           streamId,
@@ -2208,12 +2158,6 @@ export const sendMessageToBranch = createAsyncThunk<
           }
         )
         if (result.messageId) {
-          void finishStreamingRun(streamId, {
-            status: result.providerError ? 'error' : 'completed',
-            endReason: result.providerError ? 'error' : 'completed',
-            assistantMessageId: result.messageId,
-            finalMessageId: result.messageId,
-          })
           void markStreamUndoFinalMessage(streamId, String(result.messageId))
             .then(summary => {
               if (summary)
@@ -2863,7 +2807,6 @@ export const abortGeneration = createAsyncThunk<
 
     if (streamId) {
       dispatch(chatSliceActions.streamingAborted({ streamId }))
-      void finishStreamingRun(streamId, { status: 'aborted', endReason: 'aborted', error: 'Generation aborted' })
       if (serverAbortSucceeded) removeInflightStream(streamId)
     } else {
       dispatch(chatSliceActions.allStreamsAborted())

@@ -1581,6 +1581,11 @@ function initializeLocalDatabase(dbPath: string) {
             updated_at = ?
         WHERE stream_id = ?
       `),
+    claimStreamingRun: db.prepare(`UPDATE streaming_runs SET status = 'running', source = 'headless',
+      started_at = ?, ended_at = NULL, duration_ms = NULL, end_reason = NULL, error = NULL,
+      assistant_message_id = NULL, final_message_id = NULL WHERE stream_id = ? AND source = 'renderer'`),
+    getToolCountsByConversation: db.prepare(`SELECT i.run_id, COUNT(*) AS count FROM tool_invocations i
+      JOIN streaming_runs r ON r.stream_id = i.run_id WHERE r.conversation_id = ? GROUP BY i.run_id`),
     getStreamingRunById: db.prepare('SELECT * FROM streaming_runs WHERE stream_id = ?'),
     getStreamingRunsByConversationId: db.prepare(
       'SELECT * FROM streaming_runs WHERE conversation_id = ? ORDER BY started_at ASC'

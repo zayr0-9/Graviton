@@ -19,6 +19,7 @@
  */
 
 import express from 'express'
+import { mergeLocalRunMetadata, mergeLocalUsageBlocks } from '../../../../../shared/runStatisticsMetadata.js'
 import type { Express, Request } from 'express'
 import type { RailwayClient } from '../services/railwayClient.js'
 import type { CloudMirrorService, CloudEntityKind } from '../services/cloudMirrorService.js'
@@ -635,9 +636,19 @@ export function registerGatewayRoutes(app: Express, deps: RegisterGatewayRoutesD
       list.push(run)
       byMessage.set(String(run.messageId), list)
     }
+    // Run attribution and usage are local operational metadata, like hook runs.
+    const runMetadata = new Map<string, any>((deps.db.prepare(
+      'SELECT id, meta, content_blocks FROM messages WHERE conversation_id = ?'
+    ).all(req.params.id) as any[]).map(row => [String(row.id), row]))
     res.status(r.status).json({
       ...r.body,
-      messages: r.body.messages.map((message: any) => ({ ...message, hook_runs: byMessage.get(String(message.id)) || [] })),
+      messages: r.body.messages.map((message: any) => {
+        const local = runMetadata.get(String(message.id))
+        return { ...message, hook_runs: byMessage.get(String(message.id)) || [],
+          meta: mergeLocalRunMetadata(message.meta, local?.meta),
+          content_blocks: mergeLocalUsageBlocks(message.content_blocks, local?.content_blocks),
+        }
+      }),
     })
   })
 

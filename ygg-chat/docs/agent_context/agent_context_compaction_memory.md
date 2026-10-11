@@ -92,7 +92,7 @@ The in-loop compaction decision is computed server-side:
 
 - The legacy global/recent/project aggregate-memory APIs, browser, tool, renderer token accounting, and long-term-memory Stop hook are removed. Existing Markdown data is preserved, not automatically mapped by project name. Migrate reviewed facts to the resolved cwd-based memory directory and link them in `MEMORY.md`; use `autoMemoryDirectory` to explicitly share across repositories.
 - In-loop, manual, pre-send, and pre-branch compaction all persist through `CompactionService.compactBranch`; the renderer thunk must never mint or expose a summary ID before that route succeeds.
-- Packaged Electron copies bundled `.ygg` hook resources into the user-data `.ygg` directory. Non-atomic overwrites can make JSON settings briefly unreadable to concurrent hook requests.
+- Packaged Electron seeds missing bundled `.ygg` hook scripts and settings into the user-data `.ygg` directory. Existing files are preserved, so bundled model changes do not automatically update installed hooks.
 - Root-note hooks run from the managed hooks working directory, so relative paths should be written with that runtime cwd in mind. Note summaries and their embedding index are independent of Markdown auto-memory.
 
 ## Testing and Validation

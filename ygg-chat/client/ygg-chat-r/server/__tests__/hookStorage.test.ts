@@ -79,3 +79,79 @@ describe('retire bundled legacy memory writer', () => {
     await expect(fs.access(path.join(managed, 'hooks', 'long_term_memory_stop.py'))).rejects.toThrow()
   })
 })
+
+
+describe('managed hook defaults', () => {
+  let temp: string
+  let managed: string
+  let template: string
+
+  async function write(base: string, name: string, content: string) {
+    const file = path.join(base, name)
+    await fs.mkdir(path.dirname(file), { recursive: true })
+    await fs.writeFile(file, content)
+  }
+
+  beforeEach(async () => {
+    vi.resetModules()
+    temp = await fs.mkdtemp(path.join(os.tmpdir(), 'graviton-hook-defaults-'))
+    managed = path.join(temp, 'managed')
+    template = path.join(temp, 'template')
+    vi.stubEnv('YGG_HOOKS_DIRECTORY', managed)
+    vi.stubEnv('YGG_HOOKS_TEMPLATE_DIRECTORY', template)
+    await write(template, 'settings.json', '{"hooks":{}}\n')
+    await write(template, 'settings.local.json', '{"hooks":{"Stop":[]}}\n')
+    await write(template, 'hooks/root_note_stop.py', "MODEL = 'gpt-6-luna'\n")
+    await write(template, 'hooks/nested/helper.py', 'bundled helper\n')
+  })
+
+  afterEach(async () => {
+    vi.unstubAllEnvs()
+    vi.resetModules()
+    await fs.rm(temp, { recursive: true, force: true })
+  })
+
+  it('seeds missing scripts and settings for a fresh installation', async () => {
+    const { ensureManagedHooksInitialized } = await import('../hooks/hookStorage.js')
+    await expect(ensureManagedHooksInitialized()).resolves.toBe(managed)
+    for (const name of ['settings.json', 'settings.local.json', 'hooks/root_note_stop.py', 'hooks/nested/helper.py']) {
+      expect(await fs.readFile(path.join(managed, name), 'utf8')).toBe(await fs.readFile(path.join(template, name), 'utf8'))
+    }
+  })
+
+  it('preserves edited scripts and settings across initialization and restarts while seeding missing files', async () => {
+    const installed = {
+      'settings.json': '{"hooks":{},"autoMemoryEnabled":false}\n',
+      'settings.local.json': '{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"python3 custom.py"}]}]}}\n',
+      'hooks/root_note_stop.py': "MODEL = 'my-custom-model'\n",
+    }
+    const modified = new Map<string, number>()
+    for (const [name, content] of Object.entries(installed)) {
+      await write(managed, name, content)
+      modified.set(name, (await fs.stat(path.join(managed, name))).mtimeMs)
+    }
+    for (let restart = 0; restart < 2; restart++) {
+      vi.resetModules()
+      const { ensureManagedHooksInitialized } = await import('../hooks/hookStorage.js')
+      await ensureManagedHooksInitialized()
+      for (const [name, content] of Object.entries(installed)) {
+        expect(await fs.readFile(path.join(managed, name), 'utf8')).toBe(content)
+        expect((await fs.stat(path.join(managed, name))).mtimeMs).toBe(modified.get(name))
+      }
+      expect(await fs.readFile(path.join(managed, 'hooks/nested/helper.py'), 'utf8')).toBe('bundled helper\n')
+      await write(template, 'hooks/root_note_stop.py', 'changed bundled default\n')
+    }
+  })
+
+  it('preserves an existing empty hook script', async () => {
+    await write(managed, 'hooks/root_note_stop.py', '')
+    const { ensureManagedHooksInitialized } = await import('../hooks/hookStorage.js')
+    await ensureManagedHooksInitialized()
+    expect(await fs.readFile(path.join(managed, 'hooks/root_note_stop.py'), 'utf8')).toBe('')
+  })
+
+  it('ships the branch-note hook with GPT-6 Luna', async () => {
+    const script = await fs.readFile(new URL('../../.ygg/hooks/root_note_stop.py', import.meta.url), 'utf8')
+    expect(script).toContain("MODEL = 'gpt-6-luna'")
+  })
+})

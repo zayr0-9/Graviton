@@ -148,3 +148,28 @@ The desktop parallel pane reuses canonical `conversation.messages` and `streamin
 ## Related Docs
 
 - `agent_chat_pipeline.md`
+
+## Per-run transcript statistics
+
+Desktop primary and parallel transcripts derive one display-only footer per terminal main run.
+`useConversationRunStatistics` reads the conversation streaming-run endpoint through Query;
+terminal Redux events trigger a coalesced, bounded refresh. Intermediate persisted assistant
+messages and transport disconnects do not finalize statistics.
+
+- Headless lifecycle is authoritative. Compatibility renderer POST/PATCH tracking cannot replace
+  server-owned rows; main chat thunks no longer write duplicate lifecycle timestamps.
+- Main sinks stamp `meta.runStatistics` with stream ID, version, and model-response/error kind.
+  Terminal metadata includes response count; cancelled runs retain separate assistant and
+  structural endpoints. Cloud tree reads enrich messages with locally recorded provenance.
+- Tool counts include all invocation rows for that run ID, including wrappers/nested attempts,
+  but never separate subagent streams. Historical missing recording is not treated as zero.
+- Default tokens are a `tokenx` estimate of raw payload in the bounded run slice: user input,
+  assistant/reasoning, and tool arguments/results counted once. Mirrored legacy fields,
+  usage blocks, setup notices, compaction summaries, and inherited history are excluded.
+  A `~` marks estimates; unknown slice boundaries remain unavailable. Provider-reported
+  cumulative request usage is separate hover detail, never the default token count.
+- Hover/focus slides the footer right-to-left slowly to reveal its slice breakdown and
+  request usage. The single-line height remains stable; reduced motion disables sliding.
+- Footer eligibility uses the pane's canonical path. Process grouping stops at footer boundaries;
+  footers stay outside collapsed disclosures and use stable stream-ID virtual row keys.
+- No statistics row enters inference history, persistence, compaction, or branch navigation.

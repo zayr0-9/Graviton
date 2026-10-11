@@ -62,6 +62,9 @@ export class StreamingRunRepo {
   upsert(input: UpsertStreamingRunInput): string {
     const streamId = input.streamId || uuidv4()
     const now = new Date().toISOString()
+    const existing = this.statements.getStreamingRunById.get(streamId)
+    if (existing && existing.source !== 'renderer' && existing.status !== 'running') return streamId
+    if (existing?.source === 'renderer') this.statements.claimStreamingRun?.run(now, streamId)
     const startedAt = now
     const isTerminal = input.status === 'completed' || input.status === 'aborted' || input.status === 'error'
     const endedAt = isTerminal ? now : null
@@ -121,16 +124,18 @@ export class StreamingRunRepo {
   finish(streamId: string | null | undefined, input: FinishStreamingRunInput): void {
     if (!streamId) return
     const existing = this.statements.getStreamingRunById.get(streamId)
-    if (!existing) return
+    if (!existing || existing.status !== 'running') return
+    let metadata: Record<string, any> = {}
+    try { metadata = JSON.parse(existing.metadata_json || '{}') ?? {} } catch { /* Legacy malformed metadata. */ }
     const endedAt = new Date().toISOString()
     this.statements.updateStreamingRun.run(
       input.status,
       input.endReason ?? input.status,
-      input.assistantMessageId ?? input.finalMessageId ?? null,
+      input.assistantMessageId ?? null,
       input.finalMessageId ?? null,
       input.userMessageId ?? null,
       input.error ?? null,
-      metadataToJson(input.metadata),
+      metadataToJson({ ...metadata, ...input.metadata }),
       endedAt,
       durationMs(existing.started_at, endedAt),
       endedAt,

@@ -1,5 +1,6 @@
 // store.ts
-import { configureStore, createListenerMiddleware } from '@reduxjs/toolkit'
+import { configureStore, createListenerMiddleware, isAnyOf } from '@reduxjs/toolkit'
+import { refreshRunStatistics } from '../features/chats/runStatisticsRefresh'
 import { chatReducer, chatSliceActions, fetchCustomTools, fetchMcpTools, fetchTools } from '../features/chats'
 import { conversationsReducer } from '../features/conversations'
 import { ideContextReducer } from '../features/ideContext'
@@ -36,6 +37,20 @@ type ListenerState = {
 }
 
 const listenerMiddleware = createListenerMiddleware()
+
+// Refresh durable decorations independently of transcript reconciliation and stream pruning.
+listenerMiddleware.startListening({
+  matcher: isAnyOf(chatSliceActions.streamCompleted, chatSliceActions.sendingCompleted,
+    chatSliceActions.streamingAborted, chatSliceActions.allStreamsAborted),
+  effect: async (action, api) => {
+    const state = api.getOriginalState() as ListenerState
+    const streamId = (action.payload as { streamId?: string } | undefined)?.streamId
+    const streams = streamId ? [[streamId, state.chat.streaming.byId[streamId]] as const] : Object.entries(state.chat.streaming.byId)
+    await Promise.all(streams.map(([id, stream]) => stream?.conversationId
+      ? refreshRunStatistics(thunkExtraArg.queryClient, String(stream.conversationId), id)
+      : Promise.resolve()))
+  },
+})
 
 // Provider/client failures can terminate via sendingCompleted without a terminal complete
 // event. Preserve any persisted live lineage until the coordinator confirms durability.

@@ -24,21 +24,21 @@ function fixture() {
 }
 
 describe('deferred Full access insertion', () => {
-  it.each(['send', 'branch', 'edit-branch'] as const)('orders context, access notice, and real input for %s', operation => {
+  it.each(['send', 'branch', 'edit-branch'] as const)('orders context, real input, and access notice for %s', operation => {
     const { orchestrator, rows, request } = fixture()
     const onAccessMessage = vi.fn()
     const resolved = orchestrator.resolveExecution({ ...request, operation }, {
       launchInjection: { text: 'instructions', files: [], reason: 'session_start' }, onAccessMessage,
     })
     expect(rows).toHaveLength(1)
-    expect(rows[0]).toMatchObject({ conversationId: 'c1', parentId: 'context', role: 'user',
+    expect(rows[0]).toMatchObject({ conversationId: 'c1', parentId: 'input', role: 'user',
       meta: { kind: 'full_access_change', requestId: 'toggle-1' } })
     expect(rows[0].content).toContain('<system-reminder>')
     expect(rows[0].content).toContain('Operation mode, tool approvals, and OS permissions still apply')
     expect(onAccessMessage).toHaveBeenCalledWith(rows[0], true)
-    expect(resolved.userMessage).toMatchObject({ id: 'input', content: 'new input', parent_id: rows[0].id })
-    expect(resolved.historyLeafId).toBe('input')
-    expect(resolved.assistantParentId).toBe('input')
+    expect(resolved.userMessage).toMatchObject({ id: 'input', content: 'new input', parent_id: 'context' })
+    expect(resolved.historyLeafId).toBe(rows[0].id)
+    expect(resolved.assistantParentId).toBe(rows[0].id)
   })
 
   it.each([

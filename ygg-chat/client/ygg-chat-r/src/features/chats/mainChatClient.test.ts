@@ -342,9 +342,9 @@ describe('deferred Full access acknowledgement', () => {
     const onUserMessagePersisted = vi.fn()
     const events = [
       { type: 'started', parentId: 'u1', seq: 1 },
-      { type: 'user_message_persisted', message: { id: 'notice', conversation_id: 'c1', role: 'user', meta: { kind: 'full_access_change', requestId } }, seq: 2 },
-      { type: 'user_message_persisted', message: { id: 'u1', conversation_id: 'c1', role: 'user', parent_id: 'notice', content: 'hello' }, seq: 3 },
-      { type: 'complete', message: { id: 'a1', parent_id: 'u1' }, seq: 4 },
+      { type: 'user_message_persisted', message: { id: 'u1', conversation_id: 'c1', role: 'user', parent_id: null, content: 'hello' }, seq: 2 },
+      { type: 'user_message_persisted', message: { id: 'notice', parent_id: 'u1', conversation_id: 'c1', role: 'user', meta: { kind: 'full_access_change', requestId } }, seq: 3 },
+      { type: 'complete', message: { id: 'a1', parent_id: 'notice' }, seq: 4 },
     ]
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(sseResponse(events)))
     const deps = collectDispatch()

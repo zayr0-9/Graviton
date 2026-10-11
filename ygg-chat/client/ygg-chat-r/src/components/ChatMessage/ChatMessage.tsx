@@ -1887,6 +1887,9 @@ const ChatMessageBody: React.FC<ChatMessageProps> = React.memo(
                   modelName={modelName}
                   isVisible={isHovering}
                   variant='default'
+                  customTheme={customTheme}
+                  customThemeEnabled={customThemeEnabled}
+                  isDarkMode={isDarkMode}
                 />
                 {moreMenuPlacement &&
                   createPortal(
@@ -2064,6 +2067,9 @@ const ChatMessageBody: React.FC<ChatMessageProps> = React.memo(
                 isVisible={true}
                 variant={hasSelection ? 'selection' : 'default'}
                 layout='menu'
+                customTheme={customTheme}
+                customThemeEnabled={customThemeEnabled}
+                isDarkMode={isDarkMode}
               />
             </div>,
             document.body

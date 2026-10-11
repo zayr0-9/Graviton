@@ -5,7 +5,7 @@ import { ConversationId, MessageId } from '../../../../../shared/types'
 import { isCommunityMode } from '../../config/runtimeMode'
 import { loadDefaultToolAutoApprove } from '../../helpers/toolApprovalSettingsStorage'
 import { parseId } from '../../utils/helpers'
-import { parseMessageMeta } from '../../../../../shared/contextInjection'
+import { isRunSettingsNotification } from '../../../../../shared/accessNotifications'
 
 import {
   Attachment,
@@ -832,7 +832,7 @@ export const chatSlice = createSlice({
       const finalIndex = selectedPath.indexOf(messageId)
       if (finalIndex >= 0 && selectedPath.slice(finalIndex + 1).every(id => {
         const row = state.conversation.messages.find(message => message.id === id)
-        return parseMessageMeta(row?.meta)?.kind === 'operation_mode_change'
+        return isRunSettingsNotification(row)
       })) {
         messageId = selectedPath[selectedPath.length - 1] ?? messageId
       }
@@ -1325,7 +1325,7 @@ export const chatSlice = createSlice({
       const preservesModeTail = existingIndex >= 0 && existingIndex < state.conversation.currentPath.length - 1 &&
         state.conversation.currentPath.slice(existingIndex + 1).every(id => {
           const row = state.conversation.messages.find(message => message.id === id)
-          return parseMessageMeta(row?.meta)?.kind === 'operation_mode_change'
+          return isRunSettingsNotification(row)
         })
       const shouldSwitch = !preservesModeTail && (
         newMessage.role === 'user' || state.conversation.currentPath.length === 0 || currentTip === newMessage.parent_id

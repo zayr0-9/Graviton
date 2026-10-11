@@ -898,7 +898,7 @@ const SideBar: React.FC<SideBarProps> = ({
   }, [projectNameById, searchedTopLevelMessages])
 
   // Floating-only sidebar: keep the rail mounted and use the portal as the only full sidebar UI.
-  const [isExpandPortalOpen, setIsExpandPortalOpen] = useState(true)
+  const [isExpandPortalOpen, setIsExpandPortalOpen] = useState(false)
   const [portalLeftOffset, setPortalLeftOffset] = useState(SIDEBAR_RAIL_WIDTH_PX + SIDEBAR_PORTAL_GAP_PX)
   const [expandPortalWidth, setExpandPortalWidth] = useState(SIDEBAR_PORTAL_MAX_WIDTH_PX)
   const [previewPortalLeftOffset, setPreviewPortalLeftOffset] = useState(

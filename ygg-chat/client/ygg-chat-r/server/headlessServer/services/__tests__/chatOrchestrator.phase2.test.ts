@@ -298,7 +298,7 @@ describe('source lineage membership validation', () => {
     if (testDirectory) rmSync(testDirectory, { recursive: true, force: true })
   })
 
-  it.each(['send', 'branch', 'edit-branch'] as const)('persists the deferred Full access notice before new input for %s', async operation => {
+  it.each(['send', 'branch', 'edit-branch'] as const)('persists the deferred Full access notice after new input for %s', async operation => {
     const original = messageRepo.createMessage({ conversationId: 'c1', parentId: null, role: 'user', content: 'original' })
     const events: any[] = []
     await orchestrator.runMessage({
@@ -310,8 +310,8 @@ describe('source lineage membership validation', () => {
     const notice = rows.find(row => JSON.parse(row.meta || '{}').kind === 'full_access_change')
     const user = rows.find(row => row.content === 'new input')
     expect(notice?.role).toBe('user')
-    expect(notice.parent_id).toBe(operation === 'edit-branch' ? null : original.id)
-    expect(user.parent_id).toBe(notice.id)
+    expect(user.parent_id).toBe(operation === 'edit-branch' ? null : original.id)
+    expect(notice.parent_id).toBe(user.id)
     expect(notice.lineage_id).toBe(user.lineage_id)
     const lineages = new LineageRepo({ db, statements })
     const countBefore = lineages.list('c1').length
@@ -320,8 +320,11 @@ describe('source lineage membership validation', () => {
     expect(notice.content).toContain('<system-reminder>')
     expect(notice.content).toContain('already-running run')
     const persisted = events.filter(event => event.type === 'user_message_persisted')
-    expect(persisted.map(event => event.message.id)).toEqual([notice.id, user.id])
+    expect(persisted.map(event => event.message.id)).toEqual([user.id, notice.id])
     expect(events.find(event => event.type === 'started').parentId).toBe(user.id)
+    const modelHistory = providerRouter.calls[0].history
+    expect(modelHistory.findIndex((row: any) => row.id === notice.id)).toBeGreaterThan(modelHistory.findIndex((row: any) => row.id === user.id))
+    expect(rows.find(row => JSON.parse(row.meta || '{}').kind === 'operation_mode_change')?.parent_id).toBe(notice.id)
     expect(JSON.stringify(providerRouter.calls)).toContain('Full access enabled for this new run')
     expect(events.at(-1).type).toBe('complete')
   })
@@ -340,7 +343,7 @@ describe('source lineage membership validation', () => {
     const notices = (statements.getMessagesByConversationId.all('c1') as any[])
       .filter(row => JSON.parse(row.meta || '{}').kind === 'full_access_change')
     expect(notices).toHaveLength(1)
-    expect(events.find(event => event.type === 'user_message_persisted').message.id).toBe(notice.id)
+    expect(events.filter(event => event.type === 'user_message_persisted').at(-1).message.id).toBe(notice.id)
     expect(messageRepo.findFullAccessNotification('other-conversation', 'toggle-retry')).toBeNull()
   })
 

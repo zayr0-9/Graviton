@@ -5,6 +5,7 @@ import { createPortal } from 'react-dom'
 import { getThemeModeColor, useCustomChatTheme, useHtmlDarkMode } from '../ThemeManager/themeConfig'
 import { getActionPopoverPosition } from './actionPopoverPosition'
 import { isActionPopoverInsideClick } from './actionPopoverDismissal'
+import { getActionPopoverThemeStyle } from './actionPopoverTheme'
 import './actionPopover.css'
 
 interface ActionPopoverProps {
@@ -27,20 +28,9 @@ export const ActionPopover: React.FC<ActionPopoverProps> = ({ children, isActive
   const [popoverPosition, setPopoverPosition] = useState<PopoverPosition | null>(null)
   const { theme: customTheme, enabled: customThemeEnabled } = useCustomChatTheme()
   const isDarkMode = useHtmlDarkMode()
-  const popoverSurfaceStyle: React.CSSProperties | undefined = customThemeEnabled
-    ? {
-        backgroundColor: getThemeModeColor(customTheme.colors.settingsCustomThemesCardBg, isDarkMode),
-        color: getThemeModeColor(customTheme.colors.toolJobsPrimaryText, isDarkMode),
-      }
+  const cloudThemeStyle = customThemeEnabled
+    ? getActionPopoverThemeStyle(customTheme, isDarkMode)
     : undefined
-  const cloudThemeStyle = customThemeEnabled ? {
-    '--cloud-field': getThemeModeColor(customTheme.colors.settingsCustomThemesInnerCardBg, isDarkMode),
-    '--cloud-button': getThemeModeColor(customTheme.colors.settingsCustomThemesButtonBg, isDarkMode),
-    '--cloud-muted': getThemeModeColor(customTheme.colors.toolJobsMutedText, isDarkMode),
-    '--cloud-button-text': getThemeModeColor(customTheme.colors.settingsCustomThemesButtonText, isDarkMode),
-    '--cloud-active-bg': getThemeModeColor(customTheme.colors.composerToggleActiveBg, isDarkMode),
-    '--cloud-active-text': getThemeModeColor(customTheme.colors.composerToggleActiveText, isDarkMode),
-  } as React.CSSProperties : undefined
   const triggerStyle: React.CSSProperties | undefined = customThemeEnabled
     ? isActive || open
       ? {
@@ -187,7 +177,6 @@ export const ActionPopover: React.FC<ActionPopoverProps> = ({ children, isActive
                     maxHeight: popoverPosition.maxHeight,
                     ...cloudThemeStyle,
                     left: `${popoverPosition.left}px`,
-                    ...popoverSurfaceStyle,
                     transformOrigin: popoverPosition.bottom !== undefined ? 'bottom center' : 'top center',
                   }}
                 >
