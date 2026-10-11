@@ -321,7 +321,7 @@ const EditFileDiffViewComponent: React.FC<EditFileDiffViewProps> = ({ args, resu
                   <Minus className='h-3 w-3' aria-label='Original' />
                 </div>
                 <div className={`${DIFF_SURFACE_CLASS} ${codeBlockStyles} overflow-x-auto`}>
-                  <ReactMarkdown rehypePlugins={[[rehypeHighlight, { ignoreMissing: true }]]}>
+                  <ReactMarkdown rehypePlugins={[[rehypeHighlight, { detect: true }]]}>
                     {originalMarkdown}
                   </ReactMarkdown>
                 </div>
@@ -332,7 +332,7 @@ const EditFileDiffViewComponent: React.FC<EditFileDiffViewProps> = ({ args, resu
                   <Plus className='h-3 w-3' aria-label='Replacement' />
                 </div>
                 <div className={`${DIFF_SURFACE_CLASS} ${codeBlockStyles} overflow-x-auto`}>
-                  <ReactMarkdown rehypePlugins={[[rehypeHighlight, { ignoreMissing: true }]]}>
+                  <ReactMarkdown rehypePlugins={[[rehypeHighlight, { detect: true }]]}>
                     {replacementMarkdown}
                   </ReactMarkdown>
                 </div>
@@ -348,7 +348,7 @@ const EditFileDiffViewComponent: React.FC<EditFileDiffViewProps> = ({ args, resu
                 <div
                   className={`${DIFF_SURFACE_CLASS} ${codeBlockStyles} overflow-x-auto max-h-[250px] overflow-y-auto`}
                 >
-                  <ReactMarkdown rehypePlugins={[[rehypeHighlight, { ignoreMissing: true }]]}>
+                  <ReactMarkdown rehypePlugins={[[rehypeHighlight, { detect: true }]]}>
                     {originalMarkdown}
                   </ReactMarkdown>
                 </div>
@@ -362,7 +362,7 @@ const EditFileDiffViewComponent: React.FC<EditFileDiffViewProps> = ({ args, resu
                 <div
                   className={`${DIFF_SURFACE_CLASS} ${codeBlockStyles} overflow-x-auto max-h-[250px] overflow-y-auto`}
                 >
-                  <ReactMarkdown rehypePlugins={[[rehypeHighlight, { ignoreMissing: true }]]}>
+                  <ReactMarkdown rehypePlugins={[[rehypeHighlight, { detect: true }]]}>
                     {replacementMarkdown}
                   </ReactMarkdown>
                 </div>

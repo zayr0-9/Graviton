@@ -1032,7 +1032,7 @@ const ChatMessageBody: React.FC<ChatMessageProps> = React.memo(
       <div key={key} id={nodeId} className={markdownClassName} style={{ ...markdownThemeVars, ...style }}>
         <ReactMarkdown
           remarkPlugins={[remarkGfm, remarkMath]}
-          rehypePlugins={[[rehypeHighlight, { ignoreMissing: true }], rehypeKatex]}
+          rehypePlugins={[[rehypeHighlight, { detect: true }], rehypeKatex]}
           components={MARKDOWN_COMPONENTS}
           urlTransform={markdownUrlTransform}
         >

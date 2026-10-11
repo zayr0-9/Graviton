@@ -2425,7 +2425,7 @@ const Settings: React.FC = () => {
               </div>
               <div className='max-h-[calc(85vh-60px)] overflow-y-auto thin-scrollbar p-4'>
                 <div className='prose prose-sm max-w-none dark:prose-invert prose-headings:font-semibold prose-pre:rounded-lg'>
-                  <ReactMarkdown remarkPlugins={[remarkGfm, remarkMath]} rehypePlugins={[rehypeHighlight, rehypeKatex]}>
+                  <ReactMarkdown remarkPlugins={[remarkGfm, remarkMath]} rehypePlugins={[[rehypeHighlight, { detect: true }], rehypeKatex]}>
                     {changelogMarkdown}
                   </ReactMarkdown>
                 </div>

@@ -28,8 +28,8 @@ export { ToolPermissionDialog } from './ToolPermissionDialog/ToolPermissionDialo
 export { UpdateModal } from './UpdateModal/UpdateModal'
 // export { ChatInputWithSend } from './components/ChatInputWithSend/ChatInputWithSend'
 // export { MessageList } from './components/MessageList/MessageList'
-export { MonacoFileEditorPane } from './MonacoFileEditorPane/MonacoFileEditorPane'
-export { MonacoGitDiffPane } from './MonacoGitDiffPane/MonacoGitDiffPane'
+// The Monaco panes are not exported here on purpose: load them through
+// components/Monaco/monacoWorkspace.ts so monaco-editor stays out of the startup bundle.
 export { XtermTerminalPane } from './XtermTerminalPane/XtermTerminalPane'
 
 export { ParallelChatPane, type ParallelChatPaneTarget } from './ParallelChatPane/ParallelChatPane'

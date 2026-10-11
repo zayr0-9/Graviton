@@ -4575,7 +4575,7 @@ export const Heimdall: React.FC<HeimdallProps> = ({
                             >
                               <ReactMarkdown
                                 remarkPlugins={[remarkGfm]}
-                                rehypePlugins={[[rehypeHighlight, { ignoreMissing: true }]]}
+                                rehypePlugins={[[rehypeHighlight, { detect: true }]]}
                               >
                                 {block.text}
                               </ReactMarkdown>
@@ -4651,7 +4651,7 @@ export const Heimdall: React.FC<HeimdallProps> = ({
                           <div className='prose prose-sm dark:prose-invert max-w-none text-sm break-words overflow-hidden ygg-line-clamp-8'>
                             <ReactMarkdown
                               remarkPlugins={[remarkGfm]}
-                              rehypePlugins={[[rehypeHighlight, { ignoreMissing: true }]]}
+                              rehypePlugins={[[rehypeHighlight, { detect: true }]]}
                             >
                               {selectedNode.message}
                             </ReactMarkdown>
@@ -4672,7 +4672,7 @@ export const Heimdall: React.FC<HeimdallProps> = ({
                   >
                     <ReactMarkdown
                       remarkPlugins={[remarkGfm]}
-                      rehypePlugins={[[rehypeHighlight, { ignoreMissing: true }]]}
+                      rehypePlugins={[[rehypeHighlight, { detect: true }]]}
                     >
                       {selectedNode.message || '...'}
                     </ReactMarkdown>
@@ -4717,7 +4717,7 @@ export const Heimdall: React.FC<HeimdallProps> = ({
                   : 'Assistant Note'}
             </div>
             <div className='prose prose-sm dark:prose-invert max-w-none text-sm break-words overflow-y-auto thin-scrollbar'>
-              <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[[rehypeHighlight, { ignoreMissing: true }]]}>
+              <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[[rehypeHighlight, { detect: true }]]}>
                 {hoveredNote.note}
               </ReactMarkdown>
             </div>
@@ -4783,7 +4783,7 @@ export const Heimdall: React.FC<HeimdallProps> = ({
                       Parent Task
                     </div>
                     <div className='prose prose-sm dark:prose-invert max-w-none text-stone-700 dark:text-stone-300 prose-p:my-1 prose-headings:my-2 prose-pre:my-2 prose-pre:bg-stone-100 dark:prose-pre:bg-neutral-800 prose-code:text-orange-600 dark:prose-code:text-orange-400'>
-                      <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeHighlight]}>
+                      <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[[rehypeHighlight, { detect: true }]]}>
                         {parentMessage?.content || 'Parent Task'}
                       </ReactMarkdown>
                     </div>
@@ -4827,7 +4827,7 @@ export const Heimdall: React.FC<HeimdallProps> = ({
                           {/* Show prompt/message first when it is not already present in content blocks */}
                           {shouldRenderNodeMessage && (
                             <div className='prose prose-sm dark:prose-invert max-w-none text-stone-800 dark:text-stone-200 prose-p:my-1 prose-headings:my-2 prose-pre:my-2 prose-pre:bg-stone-100 dark:prose-pre:bg-neutral-800 prose-code:text-orange-600 dark:prose-code:text-orange-400 prose-pre:text-xs prose-pre:overflow-x-auto mb-3'>
-                              <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeHighlight]}>
+                              <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[[rehypeHighlight, { detect: true }]]}>
                                 {node.message}
                               </ReactMarkdown>
                             </div>
@@ -4846,7 +4846,7 @@ export const Heimdall: React.FC<HeimdallProps> = ({
                                       key={blockIdx}
                                       className='prose prose-sm dark:prose-invert max-w-none text-stone-700 dark:text-stone-300 prose-p:my-1 prose-pre:my-2 prose-pre:bg-stone-100 dark:prose-pre:bg-neutral-800 prose-code:text-orange-600 dark:prose-code:text-orange-400 prose-pre:text-xs prose-pre:overflow-x-auto'
                                     >
-                                      <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeHighlight]}>
+                                      <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[[rehypeHighlight, { detect: true }]]}>
                                         {textContent}
                                       </ReactMarkdown>
                                     </div>
