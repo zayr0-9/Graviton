@@ -1,7 +1,7 @@
 import { getAssetPath } from '@/utils/assetPath'
 import { useQueryClient } from '@tanstack/react-query'
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useChatNavigate as useNavigate } from '../ChatSelection/ChatSelectionProvider'
 import { chatSliceActions, sendMessage } from '../../features/chats'
 import { Conversation, createConversation } from '../../features/conversations'
 import { convContextSet, systemPromptSet } from '../../features/conversations/conversationSlice'

@@ -1,0 +1,65 @@
+.search-list-panel,
+.search-list-input {
+  --cloud-surface: rgb(255 255 255 / 0.92);
+  --cloud-text: #292524;
+  --cloud-field: rgb(245 245 244 / 0.8);
+  --cloud-button: rgb(231 229 228 / 0.65);
+  --cloud-muted: #78716c;
+  --cloud-button-text: #57534e;
+  --cloud-active-bg: #eff6ff;
+  --cloud-active-text: #1d4ed8;
+  color: var(--cloud-text);
+}
+
+.dark .search-list-panel,
+.dark .search-list-input {
+  --cloud-surface: rgb(23 23 23 / 0.94);
+  --cloud-text: #f5f5f4;
+  --cloud-field: rgb(255 255 255 / 0.06);
+  --cloud-button: rgb(255 255 255 / 0.1);
+  --cloud-muted: #a8a29e;
+  --cloud-button-text: #e7e5e4;
+  --cloud-active-bg: rgb(249 115 22 / 0.15);
+  --cloud-active-text: #ffedd5;
+}
+
+.search-list-panel {
+  background: var(--cloud-surface);
+}
+
+.search-list-input input {
+  background: var(--cloud-field);
+  color: var(--cloud-text);
+}
+
+.search-list-input input:hover {
+  background: var(--search-hover-bg, var(--cloud-field));
+}
+
+.search-list-input input::placeholder,
+.search-list-muted {
+  color: var(--cloud-muted);
+}
+
+.search-list-control {
+  background: var(--search-control-bg, var(--cloud-button));
+  color: var(--cloud-button-text);
+}
+
+button.search-list-control:hover,
+.search-list-result:focus-visible {
+  background: var(--search-hover-bg, var(--cloud-active-bg));
+  color: var(--search-hover-text, var(--cloud-active-text));
+}
+
+.search-list-result:hover {
+  background: var(--search-hover-bg, var(--cloud-field));
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .search-list-input input,
+  .search-list-control,
+  .search-list-result {
+    transition: none;
+  }
+}

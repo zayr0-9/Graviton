@@ -1,4 +1,4 @@
-import { parseMessageMeta } from '../../../../../shared/contextInjection'
+import { isRunSettingsNotification } from '../../../../../shared/accessNotifications'
 import type { ConversationId, MessageId } from '../../../../../shared/types'
 import type { LineageId, Message } from './chatTypes'
 import { isCompactionSummary } from './summaryPresentation'
@@ -37,7 +37,7 @@ export const isCompactionVisibleFor = (
   return view.path.slice(parentIndex + 1).every(id => {
     const message = view.messages.find(row => String(row.id) === String(id))
     return (owner.summaryMessageId != null && String(id) === String(owner.summaryMessageId) &&
-      isCompactionSummary(message)) || parseMessageMeta(message?.meta)?.kind === 'operation_mode_change'
+      isCompactionSummary(message)) || isRunSettingsNotification(message)
   })
 }
 
@@ -55,6 +55,6 @@ export const getCompactionPresentationScope = (
   return JSON.stringify([conversationId, streamId, path.filter(id => {
     const message = byId.get(String(id))
     return !(summaryMessageId != null && String(id) === String(summaryMessageId) && isCompactionSummary(message)) &&
-      parseMessageMeta(message?.meta)?.kind !== 'operation_mode_change'
+      !isRunSettingsNotification(message)
   }).map(String)])
 }

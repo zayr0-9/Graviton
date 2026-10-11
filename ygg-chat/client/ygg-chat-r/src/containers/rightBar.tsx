@@ -1,15 +1,15 @@
 import { useQueryClient } from '@tanstack/react-query'
 import { Crosshair, Eraser, RotateCcw, X } from 'lucide-react'
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import React, { Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useDispatch, useSelector } from 'react-redux'
 import { ConversationId } from '../../../../shared/types'
+import { BrowserPane, Button, XtermTerminalPane } from '../components'
 import {
-  BrowserPane,
-  Button,
-  MonacoFileEditorPane,
-  MonacoGitDiffPane,
-  XtermTerminalPane,
-} from '../components'
+  LazyMonacoFileEditorPane as MonacoFileEditorPane,
+  LazyMonacoGitDiffPane as MonacoGitDiffPane,
+  loadMonacoWorkspace,
+  whenMonacoWorkspaceLoaded,
+} from '../components/Monaco/monacoWorkspace'
 import { TextArea } from '../components/TextArea/TextArea'
 import { useHtmlDarkMode } from '../components/ThemeManager/themeConfig'
 import { updateResearchNote } from '../features/conversations/conversationActions'
@@ -43,11 +43,15 @@ import {
   useGitUnstageFiles,
 } from '../hooks/useQueries'
 import { resolveLanguageInfo } from '../lib/lsp/languageIds'
-import { lspClientPool } from '../lib/lsp/lspClientPool'
-import { onTrackedModelContentChange, releaseModel, retainModel, setModelContent } from '../lib/lsp/modelRegistry'
 import type { RootState } from '../store/store'
 import { localApi } from '../utils/api'
 import type { LocalGitFileContextResponse } from '../../shared/localGit'
+
+const monacoDockFallback = (
+  <div className='flex h-full items-center justify-center text-xs text-neutral-500 dark:text-neutral-400'>
+    Loading editor…
+  </div>
+)
 
 interface RightBarProps {
   conversationId: ConversationId | null
@@ -391,35 +395,45 @@ const RightBar: React.FC<RightBarProps> = ({
   }, [activeFileEditor?.path, isLspStatusPanelOpen, isWeb, lspStatusRefreshNonce])
 
   useEffect(() => {
-    const subscription = onTrackedModelContentChange(({ filePath, content }) => {
-      setOpenFileEditors(prev => {
-        let changed = false
-        const nextEditors = prev.map(editor => {
-          if (editor.path !== filePath || editor.content === content) {
-            return editor
-          }
-          changed = true
-          return {
-            ...editor,
-            content,
-          }
-        })
+    // Subscribe once Monaco is loaded (by the first opened file); never load it just for this.
+    let subscription: { dispose: () => void } | null = null
+    const stopWaiting = whenMonacoWorkspaceLoaded(workspace => {
+      subscription = workspace.onTrackedModelContentChange(({ filePath, content }) => {
+        setOpenFileEditors(prev => {
+          let changed = false
+          const nextEditors = prev.map(editor => {
+            if (editor.path !== filePath || editor.content === content) {
+              return editor
+            }
+            changed = true
+            return {
+              ...editor,
+              content,
+            }
+          })
 
-        return changed ? nextEditors : prev
+          return changed ? nextEditors : prev
+        })
       })
     })
 
     return () => {
-      subscription.dispose()
+      stopWaiting()
+      subscription?.dispose()
     }
   }, [])
 
   useEffect(() => {
     return () => {
-      for (const editor of openFileEditorsRef.current) {
-        releaseModel(editor.path)
-        void lspClientPool.didCloseDocument(editor.path)
-      }
+      const openPaths = openFileEditorsRef.current.map(editor => editor.path)
+      if (openPaths.length === 0) return
+      // An open editor means the workspace load already started, so this never starts one.
+      void loadMonacoWorkspace().then(workspace => {
+        for (const filePath of openPaths) {
+          workspace.releaseModel(filePath)
+          void workspace.lspClientPool.didCloseDocument(filePath)
+        }
+      })
     }
   }, [])
 
@@ -1128,8 +1142,10 @@ const RightBar: React.FC<RightBarProps> = ({
   )
 
   const closeFileEditorResources = useCallback((filePath: string) => {
-    releaseModel(filePath)
-    void lspClientPool.didCloseDocument(filePath)
+    void loadMonacoWorkspace().then(workspace => {
+      workspace.releaseModel(filePath)
+      void workspace.lspClientPool.didCloseDocument(filePath)
+    })
   }, [])
 
   const confirmDiscardSingleEditor = useCallback(
@@ -1166,7 +1182,9 @@ const RightBar: React.FC<RightBarProps> = ({
       }
 
       if (!existingEditor) {
-        retainModel(filePath, '', languageInfo.monacoLanguageId)
+        void loadMonacoWorkspace().then(workspace => {
+          workspace.retainModel(filePath, '', languageInfo.monacoLanguageId)
+        })
         setOpenFileEditors(prev => [
           ...prev,
           {
@@ -1201,8 +1219,10 @@ const RightBar: React.FC<RightBarProps> = ({
           saving: false,
           error: null,
         }))
-        setModelContent(filePath, content)
-        void lspClientPool.didOpenDocument(filePath, content)
+        void loadMonacoWorkspace().then(workspace => {
+          workspace.setModelContent(filePath, content)
+          void workspace.lspClientPool.didOpenDocument(filePath, content)
+        })
       } catch (error) {
         if (fileEditorRequestIdRef.current[filePath] !== requestId) return
         updateOpenFileEditor(filePath, editor => ({
@@ -1222,7 +1242,9 @@ const RightBar: React.FC<RightBarProps> = ({
     (nextValue: string) => {
       if (!activeFileEditorPath) return
       updateOpenFileEditor(activeFileEditorPath, editor => ({ ...editor, content: nextValue }))
-      void lspClientPool.didChangeDocument(activeFileEditorPath, nextValue)
+      void loadMonacoWorkspace().then(workspace => {
+        void workspace.lspClientPool.didChangeDocument(activeFileEditorPath, nextValue)
+      })
     },
     [activeFileEditorPath, updateOpenFileEditor]
   )
@@ -1753,7 +1775,9 @@ const RightBar: React.FC<RightBarProps> = ({
         saving: false,
         error: null,
       }))
-      void lspClientPool.didSaveDocument(activeFileEditor.path, activeFileEditor.content)
+      void loadMonacoWorkspace().then(workspace => {
+        void workspace.lspClientPool.didSaveDocument(activeFileEditor.path, activeFileEditor.content)
+      })
     } catch (error) {
       updateOpenFileEditor(activeFileEditor.path, editor => ({
         ...editor,
@@ -2310,55 +2334,59 @@ const RightBar: React.FC<RightBarProps> = ({
               </div>
 
               {activeFileEditor ? (
-                <MonacoFileEditorPane
-                  filePath={activeFileEditor.path}
-                  relativePath={activeFileEditor.relativePath}
-                  value={activeFileEditor.content}
-                  loading={activeFileEditor.loading}
-                  error={activeFileEditor.error}
-                  isDirty={isEditorDirty}
-                  isSaving={activeFileEditor.saving}
-                  theme={monacoTheme}
-                  tabs={dockTabs}
-                  activeTabId={activeDockTabId}
-                  onChange={handleFileEditorChange}
-                  onSave={() => {
-                    void saveFileEditor()
-                  }}
-                  onClose={closeMonacoDock}
-                  onSelectTab={selectDockTab}
-                  onCloseTab={closeDockTab}
-                  tabToolbar={activeFileEditorTabToolbar}
-                  statusPanel={isLspStatusPanelOpen ? activeLspStatusPanel : null}
-                  onSelectionChange={handleMonacoSelectionChange}
-                />
+                <Suspense fallback={monacoDockFallback}>
+                  <MonacoFileEditorPane
+                    filePath={activeFileEditor.path}
+                    relativePath={activeFileEditor.relativePath}
+                    value={activeFileEditor.content}
+                    loading={activeFileEditor.loading}
+                    error={activeFileEditor.error}
+                    isDirty={isEditorDirty}
+                    isSaving={activeFileEditor.saving}
+                    theme={monacoTheme}
+                    tabs={dockTabs}
+                    activeTabId={activeDockTabId}
+                    onChange={handleFileEditorChange}
+                    onSave={() => {
+                      void saveFileEditor()
+                    }}
+                    onClose={closeMonacoDock}
+                    onSelectTab={selectDockTab}
+                    onCloseTab={closeDockTab}
+                    tabToolbar={activeFileEditorTabToolbar}
+                    statusPanel={isLspStatusPanelOpen ? activeLspStatusPanel : null}
+                    onSelectionChange={handleMonacoSelectionChange}
+                  />
+                </Suspense>
               ) : activeGitDiffTab ? (
-                <MonacoGitDiffPane
-                  title={activeGitDiffTab.displayPath}
-                  filePath={activeGitDiffTab.path}
-                  originalValue={gitDiffData?.original?.content ?? ''}
-                  modifiedValue={gitDiffData?.modified?.content ?? ''}
-                  originalLabel={gitDiffData?.original?.label ?? 'Original'}
-                  modifiedLabel={gitDiffData?.modified?.label ?? 'Modified'}
-                  loading={isLoadingGitDiff || isFetchingGitDiff}
-                  error={null}
-                  theme={monacoTheme}
-                  language={gitDiffData?.languageHint || 'plaintext'}
-                  message={gitDiffData?.message ?? null}
-                  patch={gitDiffData?.diff ?? ''}
-                  preferPatch={Boolean(gitDiffData?.preferPatch || (!gitDiffData?.original && !gitDiffData?.modified))}
-                  tabs={dockTabs}
-                  activeTabId={activeDockTabId}
-                  onClose={closeMonacoDock}
-                  onOpenFile={
-                    activeGitDiffTab.path
-                      ? () =>
-                          void openFileEditor(activeGitDiffTab.path, { relativePath: activeGitDiffTab.relativePath })
-                      : null
-                  }
-                  onSelectTab={selectDockTab}
-                  onCloseTab={closeDockTab}
-                />
+                <Suspense fallback={monacoDockFallback}>
+                  <MonacoGitDiffPane
+                    title={activeGitDiffTab.displayPath}
+                    filePath={activeGitDiffTab.path}
+                    originalValue={gitDiffData?.original?.content ?? ''}
+                    modifiedValue={gitDiffData?.modified?.content ?? ''}
+                    originalLabel={gitDiffData?.original?.label ?? 'Original'}
+                    modifiedLabel={gitDiffData?.modified?.label ?? 'Modified'}
+                    loading={isLoadingGitDiff || isFetchingGitDiff}
+                    error={null}
+                    theme={monacoTheme}
+                    language={gitDiffData?.languageHint || 'plaintext'}
+                    message={gitDiffData?.message ?? null}
+                    patch={gitDiffData?.diff ?? ''}
+                    preferPatch={Boolean(gitDiffData?.preferPatch || (!gitDiffData?.original && !gitDiffData?.modified))}
+                    tabs={dockTabs}
+                    activeTabId={activeDockTabId}
+                    onClose={closeMonacoDock}
+                    onOpenFile={
+                      activeGitDiffTab.path
+                        ? () =>
+                            void openFileEditor(activeGitDiffTab.path, { relativePath: activeGitDiffTab.relativePath })
+                        : null
+                    }
+                    onSelectTab={selectDockTab}
+                    onCloseTab={closeDockTab}
+                  />
+                </Suspense>
               ) : activeTerminalDock ? (
                 <XtermTerminalPane
                   tabId={getTerminalDockTabId(activeTerminalDock.id)}

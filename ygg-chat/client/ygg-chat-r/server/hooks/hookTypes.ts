@@ -81,6 +81,13 @@ export interface HookProjectContext {
   projectName?: string | null
 }
 
+/** Fields a `HookRunRequest.resolveLineage` thunk supplies once a handler matched. */
+export interface HookLineageFields {
+  messageId?: string | null
+  parentId?: string | null
+  lineage?: HookLineage | null
+}
+
 export interface HookRunRequest {
   event: HookEventName
   conversationId?: string | null
@@ -111,6 +118,12 @@ export interface HookRunRequest {
   runTracker?: HookRunTracker | null
   /** Called once after matching handlers are persisted as scheduled. */
   onActivity?: HookActivityListener | null
+  /**
+   * Deferred lineage. The runner calls this once, only after at least one handler
+   * matched, and the fields it returns override the eager ones. Lets a caller keep
+   * the conversation read behind the lineage walk off every event that has no hook.
+   */
+  resolveLineage?: (() => HookLineageFields) | null
 }
 
 export interface HookRunResult {

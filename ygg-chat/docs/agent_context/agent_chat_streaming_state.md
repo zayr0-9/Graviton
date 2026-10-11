@@ -132,7 +132,7 @@ The desktop parallel pane reuses canonical `conversation.messages` and `streamin
 ## Gotchas
 
 - Old code may still assume `DEFAULT_STREAM_ID`; preserve compatibility while preferring explicit stream IDs in new code.
-- The optimistic user bubble is set by `Chat.tsx` and cleared by `runServerChatLoop` on `user_message_persisted` (send/edit); branch has no bubble. Pending stream fallbacks in `Chat.tsx` are deliberately short-lived to avoid flicker during message materialization.
+- The optimistic user bubble is set by `Chat.tsx` and cleared by `runServerChatLoop` on `user_message_persisted` (send/edit); branch has no bubble. Pending stream fallbacks in `Chat.tsx` are scoped to conversation and the selection's fallback ownership revision. They remain eligible through message materialization and same-view refocus, but become ineligible after a different view is selected. Pending/failed navigation does not expose another branch's stream controls or decisions.
 - Multi-turn: `assistant_message_persisted` projects a complete-CHUNK (not `streamCompleted`) so `active` stays true; only the terminal `complete` sets `streamCompleted`. A `tool_loop` `turn_started` event synthesizes a per-turn boundary so turn N+1 text does not append to turn N.
 - Tool-result events and persisted tool messages are related but not identical; update both paths deliberately.
 - Stream Redux state is pruned; durable file-edit undo state lives under Electron app user-data `.ygg/backups/<stream>/`, keyed by `streamId` and parent user message ID.
@@ -148,3 +148,36 @@ The desktop parallel pane reuses canonical `conversation.messages` and `streamin
 ## Related Docs
 
 - `agent_chat_pipeline.md`
+
+## Per-run transcript statistics
+
+Desktop primary and parallel transcripts derive one display-only footer per terminal main run.
+`useConversationRunStatistics` reads the conversation streaming-run endpoint through Query;
+terminal Redux events trigger a coalesced, bounded refresh. Intermediate persisted assistant
+messages and transport disconnects do not finalize statistics.
+
+- Headless lifecycle is authoritative. Compatibility renderer POST/PATCH tracking cannot replace
+  server-owned rows; main chat thunks no longer write duplicate lifecycle timestamps.
+- Main sinks stamp `meta.runStatistics` with stream ID, version, and model-response/error kind.
+  Terminal metadata includes response count; cancelled runs retain separate assistant and
+  structural endpoints. Cloud tree reads enrich messages with locally recorded provenance.
+- Tool counts include all invocation rows for that run ID, including wrappers/nested attempts,
+  but never separate subagent streams. Historical missing recording is not treated as zero.
+- Default tokens are a `tokenx` estimate of raw payload in the bounded run slice: user input,
+  assistant/reasoning, and tool arguments/results counted once. Mirrored legacy fields,
+  usage blocks, setup notices, compaction summaries, and inherited history are excluded.
+  The footer shows `~6K ↑ · ~2K ↓`: input (↑) is user text plus tool results; output (↓)
+  is assistant/reasoning plus generated tool names/arguments. A `~` marks estimates;
+  unknown slice boundaries remain unavailable. Provider-reported cumulative request
+  usage is separate hover detail, never the default token count.
+- Hover/focus slides the footer right-to-left slowly to reveal cumulative request usage,
+  without a per-role token breakdown. The single-line height remains stable; reduced motion disables sliding.
+- Footer eligibility uses the pane's canonical path. Process grouping stops at footer boundaries;
+  footers stay outside collapsed disclosures and use stable stream-ID virtual row keys.
+- No statistics row enters inference history, persistence, compaction, or branch navigation.
+
+## Primary selection ownership
+
+`chatSelection.ts` / `chatSelectionController.ts` own explicit view-selection transactions. `ChatSelectionProvider` is the router facade used by primary navigation callers. Navigation never aborts runs or clears stream buffers/decision maps. Chat derives animations, live output, Stop/Queue and decisions from one effective view stream; no stream means no singleton decision fallback.
+
+`SendingStartedPayload.selectionRevision` captures the renderer request revision before async preparation. Stream path advancement is gated by view ownership; projected `messageBranchCreated` includes stream identity, and parallel `updatePath:false` applies to first-user/turn insertion as well as terminal completion. Reattach does not claim a new view merely by rebuilding a stream slot. Confirmed mismatched lineages are excluded from anchor-based stream selection.

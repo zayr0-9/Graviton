@@ -9,7 +9,7 @@ paths:
 
 # Agent Context: Markdown and Text Response Rendering
 
-Last reviewed: 2026-09-16
+Last reviewed: 2026-10-11
 
 ## Purpose
 
@@ -103,7 +103,7 @@ This priority is important: if `contentBlocks` or `streamEvents` exist, legacy `
 Plugins:
 - `remark-gfm` for GitHub-flavored Markdown such as tables/task-list syntax/autolinks;
 - `remark-math` for Markdown math parsing;
-- `rehype-highlight` with `{ ignoreMissing: true }` for fenced code highlighting;
+- `rehype-highlight` (v7, lowlight `common` grammars) with `{ detect: true }` for fenced code highlighting; unknown fence languages are ignored, not thrown;
 - `rehype-katex` for math rendering.
 
 Custom component renderers:
@@ -150,7 +150,9 @@ Each render item is exactly one child of that stack and carries no vertical marg
 Text, images, and the label of every disclosure row share one horizontal inset
 (`MESSAGE_BLOCK_INSET_CLASS`), so prose and process labels sit on the same left edge.
 
-- Reasoning, generic tool cards, and grouped "Agent steps" all use `DisclosureRow` (32px) plus `DisclosurePanel`.
+- Reasoning, generic tool cards, and grouped "Agent steps" all use `DisclosureRow` (32px) plus `DisclosurePanel`. The cross-message "Agent steps" row in `Chat.tsx` uses the same `DisclosurePanel`.
+- `DisclosurePanel` mounts its children only while open. On an animated close the children stay until the `grid-template-rows` transition ends (or a 400ms fallback), then unmount. With `disableTransition` (streaming rows) they unmount at once, because `transition: none` fires no `transitionend`. The collapsed track is 0fr, so this never changes the height the virtual list measures. The content wrapper is `inert` while collapsed, so hidden links and copy buttons leave the tab order and the accessibility tree. Mermaid and images inside collapsed reasoning therefore render after expand, not before.
+- `MarkdownBlock` (in `ChatMessage.tsx`) is the memoized `ReactMarkdown` wrapper behind `renderMarkdownNode`. It re-parses only when `markdown`, `className`, `themeVars`, `style`, or `id` change, so `markdownThemeVars` and `messageContentStyle` are memoized in `ChatMessage`. Keep their identity stable when adding props.
 - Tool variants that are always visible (html_renderer, MCP app, plan_md, edit diff, internalLink) use a static 32px row with the same inset. `html_renderer` renders inline `args.html` or file-loaded HTML from its successful result; file-backed fullscreen keys match the result entry registered by `ChatMessage`. Failed file reads remain ordinary error cards.
 - The MCP app iframe has one explicit height, shared by its loading box, clamped to `[240, 600]` px (`McpAppIframe/mcpAppSizing.ts`). The app moves it through `ui/notifications/size-changed`; the settled value is remembered per `${messageId}-${toolCallId}-mcp-app` in localStorage, so a remount and the row estimator both use it. `containerDimensions.maxHeight` advertises the same ceiling.
 - Structured tool detail uses `SurfaceCard` and `Badge`. Surfaces are tone only. No borders, no shadows.
@@ -174,7 +176,7 @@ Generic tool results are a renderer-only projection controlled by `chat:truncate
 - Tool inputs/arguments and specialized HTML, MCP app, edit diff, plan display, and internal-link renderers are not truncated.
 - Canonical Redux state, SSE payloads, persisted messages, hooks, and model-facing tool results remain complete. Disabling the global preference restores complete generic output.
 
-Collapsed generic tool cards do not construct their result subtree until expanded. Preserve this behavior when changing tool-card rendering so truncation continues to reduce DOM work rather than only hiding full content with CSS.
+Collapsed generic tool cards do not construct their result subtree until expanded, and `DisclosurePanel` mounts no children at all while collapsed. Preserve both behaviors when changing tool-card rendering so truncation continues to reduce DOM work rather than only hiding full content with CSS.
 
 ## Process/Tool/Reasoning Grouping
 
@@ -247,7 +249,7 @@ The `fontSizeOffset` is applied through inline `style` on Markdown containers or
 - Error blocks are app-authored failure UI, not model output. Preserve `excludeFromContext:true`; copy/edit/model-output paths must filter errors instead of replaying them as assistant prose.
 - Do not bypass `renderMarkdownNode` for model text unless a surface intentionally needs plain text.
 - Keep fenced code blocks selectable and copyable.
-- Keep `rehypeHighlight` configured with `ignoreMissing: true` so unknown code fence languages do not break rendering.
+- Keep `rehypeHighlight` at v7 or later and pass `{ detect: true }`. v7 ignores unknown code fence languages by itself (the old `ignoreMissing` option no longer exists) and registers only the lowlight `common` grammars, which keeps highlight.js out of the eager bundle.
 - Keep generated HTML/tool iframe rendering separate from Markdown. Tool HTML is registered/opened through the HTML iframe registry, not injected into ReactMarkdown.
 - Keep generic tool-output truncation renderer-only; never truncate canonical persisted, streamed, hook, or model-facing tool results.
 - Avoid adding untrusted raw HTML support to ReactMarkdown unless a separate sanitizer and threat model are introduced.

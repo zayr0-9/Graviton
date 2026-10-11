@@ -76,6 +76,21 @@ export const wrapPastedTextInMarkdownFence = (text: string): string => {
   return `${fence}\n${text}\n${fence}`
 }
 
+export const insertFencedText = (
+  value: string,
+  text: string,
+  selectionStart = value.length,
+  selectionEnd = selectionStart
+): { value: string; cursorPosition: number } => {
+  const before = value.slice(0, selectionStart)
+  const separator = before && !before.endsWith('\n') ? '\n' : ''
+  const insertion = separator + wrapPastedTextInMarkdownFence(text)
+  return {
+    value: before + insertion + value.slice(selectionEnd),
+    cursorPosition: selectionStart + insertion.length,
+  }
+}
+
 /** Chat-window toggles run in capture phase so autocomplete cannot consume them. */
 export const handleChatToggleShortcut = (
   event: KeyboardEvent,

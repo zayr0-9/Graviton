@@ -15,6 +15,8 @@
  * CRUD gateway, so the mirror only needs the row upsert.
  */
 
+import { mergeLocalRunMetadata, mergeLocalUsageBlocks } from '../../../../../shared/runStatisticsMetadata.js'
+
 export type CloudEntityKind =
   | 'user'
   | 'project'
@@ -185,8 +187,9 @@ class SqliteCloudMirrorService implements CloudMirrorService {
     }
 
     const messageCreatedAt = e.created_at || nowIso()
-    const normalizedContentBlocks =
-      typeof e.content_blocks === 'string' ? e.content_blocks : JSON.stringify(e.content_blocks || null)
+    const existingMessage = this.statements.getMessageById?.get(e.id)
+    const mergedBlocks = mergeLocalUsageBlocks(e.content_blocks, existingMessage?.content_blocks)
+    const normalizedContentBlocks = typeof mergedBlocks === 'string' ? mergedBlocks : JSON.stringify(mergedBlocks || null)
 
     this.statements.upsertMessage.run(
       e.id,
@@ -206,7 +209,7 @@ class SqliteCloudMirrorService implements CloudMirrorService {
       e.ex_agent_type || null,
       normalizedContentBlocks,
       messageCreatedAt,
-      typeof e.meta === 'string' ? e.meta : e.meta ? JSON.stringify(e.meta) : null
+      JSON.stringify(mergeLocalRunMetadata(e.meta, existingMessage?.meta))
     )
 
     // Touch conversation/project timestamps to reflect recent activity.

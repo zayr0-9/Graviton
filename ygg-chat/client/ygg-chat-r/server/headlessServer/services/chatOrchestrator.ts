@@ -28,6 +28,7 @@ import { trimHistoryToLatestCompaction } from './compactionService.js'
 import type { HookRunRequest, HookRunResult } from '../../hooks/hookTypes.js'
 import { filterToolsForOperationMode, requiresAgentMode } from '../../../../../shared/operationModeToolPolicy.js'
 import { OperationModeControl, modeNotificationContent } from './operationModeControl.js'
+import { FULL_ACCESS_NOTIFICATION_KIND, fullAccessNotificationContent } from '../../../../../shared/accessNotifications.js'
 import { MessageInputQueue } from './messageInputQueue.js'
 import type { QueuedMessageSubmission, MessageQueueSnapshot } from '../../../../../shared/queuedMessages.js'
 import {
@@ -706,6 +707,7 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
         content: params.envelope.userMessage,
         modelName: params.modelName ?? null,
         contentBlocks: [buildErrorContentBlock(params.envelope)],
+        statisticsKind: 'terminal_error',
       })
       params.emit({ type: 'assistant_message_persisted', message, lineageId: params.lineageId })
       return message
@@ -778,9 +780,10 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
       launchInjection?: LaunchInjection | null
       userMessageBlocks?: any[] | null
       onContextMessage?: (message: any) => void
+      onAccessMessage?: (message: any, created: boolean) => void
     } = {}
   ): ResolvedExecution {
-    return this.branchOrchestrator.resolve(request, {
+    const resolved = this.branchOrchestrator.resolve(request, {
       requireMessage: (messageId, conversationId) => this.requireMessage(messageId, conversationId),
       createUserMessage: (parentId, content) => {
         let effectiveParentId = parentId
@@ -794,6 +797,25 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
       findNearestUserAncestor: (messageId, conversationId) =>
         this.conversationRepo.findNearestUserAncestor(conversationId, messageId),
     })
+    // Like mode switches, announce access AFTER the real user input and BEFORE
+    // inference. The UI's Branch button uses edit-branch. Never inject into a
+    // live run, repeat, or automated successor.
+    if (resolved.userMessage && request.fullAccess === true && request.fullAccessNotificationId && !request.watcherCompletion) {
+      // Durable deduplication covers concurrent sends and lost SSE acknowledgements.
+      const existing = this.messageRepo.findFullAccessNotification(request.conversationId, request.fullAccessNotificationId)
+      if (existing) extras.onAccessMessage?.(existing, false)
+      else {
+        const accessMessage = this.messageRepo.createMessage({
+          conversationId: request.conversationId, parentId: resolved.userMessage.id, role: 'user',
+          content: fullAccessNotificationContent(), modelName: request.modelName,
+          meta: { kind: FULL_ACCESS_NOTIFICATION_KIND, requestId: request.fullAccessNotificationId },
+        })
+        extras.onAccessMessage?.(accessMessage, true)
+        resolved.historyLeafId = accessMessage.id
+        resolved.assistantParentId = accessMessage.id
+      }
+    }
+    return resolved
   }
 
   private persistContextInjectionMessage(
@@ -848,6 +870,8 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
     let assistantParentId: string | null = null
     /** Last assistant row the LOOP persisted: the D1 partial the error row hangs off. */
     let lastPersistedAssistantId: string | null = null
+    const runResponseIds = new Set<string>()
+    let runUsageIncomplete = false
     /** The run's message sink; null until the user message + lineage exist. */
     let runSink: MessageSink | null = null
     let modeParentId: string | null = null
@@ -889,6 +913,8 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
     }
     const rawEmit = emit
     emit = event => {
+      if ((event.type === 'context_compaction' && event.status === 'completed') ||
+          (event.type === 'tool_loop' && event.status === 'empty_turn_retry')) runUsageIncomplete = true
       if (event.type === 'permission_required' || event.type === 'operation_mode_upgrade_required') waitingTools.set(event.toolCallId, event.toolName)
       if (event.type === 'tool_execution' && event.status !== 'started') waitingTools.delete(event.toolCallId)
       if (event.type === 'assistant_message_persisted') modeParentId = event.message?.id ?? modeParentId
@@ -901,7 +927,7 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
         inputQueue.failRemaining(inputRun.terminal === 'completed'
           ? 'Run ended before this message could be processed. Send it again.'
           : 'Run stopped or failed before this message was delivered.')
-        inputRun.request = { ...inputRun.request, content: '', attachmentsBase64: null }
+        inputRun.request = { ...inputRun.request, content: '', attachmentsBase64: null, fullAccessNotificationId: undefined }
       }
       rawEmit(event)
     }
@@ -1021,6 +1047,8 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
     let launchInjection: LaunchInjection | null = null
     const userMessageBlocks: any[] = []
     let contextMessage: any = null
+    let accessMessage: any = null
+    let accessMessageCreated = false
     if (contextLoader && request.operation !== 'repeat') {
       const anchorId =
         request.operation === 'send'
@@ -1132,6 +1160,10 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
       onContextMessage: message => {
         contextMessage = message
       },
+      onAccessMessage: (message, created) => {
+        accessMessage = message
+        accessMessageCreated = created
+      },
     })
     const mustFork = request.operation !== 'send' || Boolean(sourceLineage && sourceLineage.head_message_id !== sourceMessageId)
     let activeLineage: LineageRow
@@ -1177,6 +1209,10 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
           }).operation.id
         : null
     }
+    if (accessMessageCreated) {
+      activeLineage = this.lineageRepo.appendMessage(activeLineage.id, accessMessage.id)
+      accessMessage = this.conversationRepo.getMessageById(accessMessage.id)
+    }
     return { resolved, activeLineage, pendingOperationId }
     })
     const lineageId = activeLineage.id
@@ -1198,7 +1234,7 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
       type: 'started',
       operation: request.operation,
       conversationId: request.conversationId,
-      parentId: resolved.assistantParentId,
+      parentId: resolved.userMessage?.id ?? resolved.assistantParentId,
       provider: request.provider,
       modelName: request.modelName,
       streamId: trackedStreamId,
@@ -1217,6 +1253,8 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
       lineageRepo: this.lineageRepo,
       lineageId,
       pendingOperationId,
+      streamId: trackedStreamId,
+      onModelResponse: (id: string) => { runResponseIds.add(id) },
     }
     // ONE sink instance for the run: the loop's turns and any terminal error row share
     // its pending-fork state, so whichever writes first materializes the fork.
@@ -1228,6 +1266,8 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
       lineageId,
       conversationId: request.conversationId,
       parentMessageId: resolved.assistantParentId,
+      userMessageId: resolved.userMessage?.id ?? null,
+      metadata: { runStatistics: { version: 1, invocationRecording: Boolean(lineageId && this.statements.insertToolInvocation) } },
       streamType: request.operation === 'branch' || request.operation === 'edit-branch' ? 'branch' : 'primary',
       provider: request.provider,
       modelName: request.modelName,
@@ -1254,6 +1294,9 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
     }
     if (resolved.userMessage) {
       emit({ type: 'user_message_persisted', message: resolved.userMessage, lineageId })
+    }
+    if (accessMessage) {
+      emit({ type: 'user_message_persisted', message: accessMessage, lineageId })
     }
 
     emit({
@@ -1571,6 +1614,8 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
           finalMessageId: modeParentId ?? errorRow?.id ?? loopMessage?.id ?? null,
           error: error.providerError.originalMessage,
           metadata: {
+            runResponseCount: runResponseIds.size,
+            runUsageIncomplete,
             provider: error.providerError.provider,
             retryExhausted: error.providerError.retryExhausted,
             status: error.providerError.status,
@@ -1614,6 +1659,7 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
     this.streamingRunRepo.finish(trackedStreamId, {
       status: 'completed',
       endReason: 'completed',
+      metadata: { runResponseCount: runResponseIds.size, runUsageIncomplete },
       assistantMessageId: toolLoopResult.finalAssistantMessage?.id ?? null,
       finalMessageId: modeParentId ?? toolLoopResult.finalAssistantMessage?.id ?? null,
     })
@@ -1664,9 +1710,13 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
       // Nothing else in this branch may start persisting on the cancel path without
       // breaking that contract.
       if (signal?.aborted || isAbortError(error)) {
+        finishMode()
         this.streamingRunRepo.finish(trackedStreamId, {
           status: 'aborted',
           endReason: 'aborted',
+          metadata: { runResponseCount: runResponseIds.size, runUsageIncomplete },
+          assistantMessageId: lastPersistedAssistantId,
+          finalMessageId: modeParentId ?? lastPersistedAssistantId ?? assistantParentId,
           error: 'Run aborted',
         })
         ensureStarted()
@@ -1725,6 +1775,8 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
         finalMessageId: modeParentId ?? errorRow?.id ?? lastPersistedAssistantId ?? null,
         error: errorMessage,
         metadata: {
+          runResponseCount: runResponseIds.size,
+          runUsageIncomplete,
           errorCode: envelope.code,
           recoverability: envelope.recoverability,
           provider: envelope.provider ?? null,

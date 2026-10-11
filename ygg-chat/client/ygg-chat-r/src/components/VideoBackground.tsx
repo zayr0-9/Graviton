@@ -3,6 +3,7 @@ import {
   BackgroundColorSettings,
   BackgroundMode,
   CustomVideoEntry,
+  DEFAULT_BACKGROUND_COLORS,
   getActiveTextColorMode,
   loadActiveCustomVideo,
   loadActiveCustomVideoId,
@@ -12,6 +13,20 @@ import {
   VIDEO_BACKGROUND_CHANGE_EVENT,
 } from '../helpers/videoBackgroundStorage'
 import { getThemeModeColor, useCustomChatTheme } from './ThemeManager/themeConfig'
+
+// Match the agents pill's CSS tinting without changing Electron's native backdrop.
+const getTranslucentCssColor = (color: string, alpha: number): string => {
+  const hexMatch = color.match(/^#([0-9a-f]{6})$/i)
+  if (hexMatch) {
+    const hex = hexMatch[1]
+    const r = parseInt(hex.slice(0, 2), 16)
+    const g = parseInt(hex.slice(2, 4), 16)
+    const b = parseInt(hex.slice(4, 6), 16)
+    return `rgba(${r}, ${g}, ${b}, ${alpha})`
+  }
+
+  return `color-mix(in srgb, ${color} ${Math.round(alpha * 100)}%, transparent)`
+}
 
 const VideoBackground: React.FC = () => {
   const { theme: customTheme, enabled: customThemeEnabled } = useCustomChatTheme()
@@ -131,13 +146,24 @@ const VideoBackground: React.FC = () => {
       : backgroundColors.light
 
   const hasActiveCustomVideo = backgroundMode === 'video' && Boolean(activeVideoMeta && activeVideoUrl)
+  // Native glass remains visible on macOS/Windows. Linux retains its solid
+  // fallback for window managers where desktop transparency is unreliable.
+  const backgroundStyle: React.CSSProperties = customThemeEnabled
+    ? {
+        backgroundColor: isDarkTheme ? DEFAULT_BACKGROUND_COLORS.dark : DEFAULT_BACKGROUND_COLORS.light,
+        backgroundImage: [
+          `radial-gradient(ellipse at 16% 0%, ${getTranslucentCssColor(colorBackgroundColor, 0.18)}, transparent 65%)`,
+          `linear-gradient(135deg, ${getTranslucentCssColor(colorBackgroundColor, 0.08)}, transparent 70%)`,
+        ].join(', '),
+      }
+    : { backgroundColor: colorBackgroundColor }
 
   if (!hasActiveCustomVideo) {
     return (
       <div
         key={colorBackgroundColor}
         className='fixed inset-0 w-full h-full pointer-events-none -z-10 transition-colors duration-300'
-        style={{ backgroundColor: colorBackgroundColor }}
+        style={backgroundStyle}
         aria-hidden='true'
       />
     )

@@ -793,6 +793,12 @@ export async function runHookRequest(req: HookRunRequest): Promise<HookRunResult
     return entry.handlers.filter(handler => handler.enabled !== false && matchesHookMatcher(req.event, handler.matcher, req))
   })
 
+  // Lineage is the one request field that costs a conversation read; hydrate it only
+  // now that a handler will actually consume it (payload + scheduled-run records).
+  if (matchingHandlers.length > 0 && typeof req.resolveLineage === 'function') {
+    req = { ...req, ...req.resolveLineage() }
+  }
+
   const handlersWithExecutionMode = matchingHandlers.map(handler => ({
     handler,
     executionMode: resolveExecutionMode(req.event, handler),

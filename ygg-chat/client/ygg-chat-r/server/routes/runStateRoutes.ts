@@ -84,11 +84,16 @@ export function registerRunStateRoutes(app: Express, deps: RunStateRoutesDeps): 
         return
       }
 
+      const existing = statements.getStreamingRunById.get(streamId)
+      if (existing && existing.source !== 'renderer' && existing.source !== 'unknown') {
+        res.json({ run: normalizeStreamingRunRow(existing) })
+        return
+      }
       const streamType = ['primary', 'branch', 'tool', 'subagent'].includes(body.stream_type || body.streamType)
         ? body.stream_type || body.streamType
         : 'primary'
       const status = ['running', 'completed', 'aborted', 'error'].includes(body.status) ? body.status : 'running'
-      const source = ['renderer', 'headless', 'subagent', 'tool', 'unknown'].includes(body.source) ? body.source : 'renderer'
+      const source = 'renderer' // HTTP compatibility writes are never authoritative.
       const now = new Date().toISOString()
       const startedAt = body.started_at || body.startedAt || now
       const endedAt = body.ended_at || body.endedAt || (isTerminalStreamingRunStatus(status) ? now : null)
@@ -144,6 +149,10 @@ export function registerRunStateRoutes(app: Express, deps: RunStateRoutesDeps): 
         return
       }
 
+      if (existing.source !== 'renderer' && existing.source !== 'unknown') {
+        res.json({ run: normalizeStreamingRunRow(existing) })
+        return
+      }
       const body = req.body || {}
       const status = ['running', 'completed', 'aborted', 'error'].includes(body.status) ? body.status : null
       const endedAt = body.ended_at || body.endedAt || (isTerminalStreamingRunStatus(status) ? new Date().toISOString() : null)
@@ -194,7 +203,16 @@ export function registerRunStateRoutes(app: Express, deps: RunStateRoutesDeps): 
 
   app.get('/api/conversations/:conversationId/streaming-runs', (req, res) => {
     try {
-      const runs = statements.getStreamingRunsByConversationId.all(req.params.conversationId).map(normalizeStreamingRunRow)
+      const counts = new Map<string, number>((statements.getToolCountsByConversation?.all(req.params.conversationId) ?? [])
+        .map((row: any) => [String(row.run_id), Number(row.count)]))
+      const runs = statements.getStreamingRunsByConversationId.all(req.params.conversationId).map((row: any) => {
+        const run = normalizeStreamingRunRow(row)
+        const count = counts.get(String(row.stream_id)) ?? 0
+        return { ...run, tool_statistics: {
+          count,
+          coverage: run.metadata?.runStatistics?.invocationRecording ? 'recorded' : count > 0 ? 'partial' : 'unavailable',
+        } }
+      })
       res.json({ runs })
     } catch (error) {
       console.error('[LocalServer] Error fetching conversation streaming runs:', error)

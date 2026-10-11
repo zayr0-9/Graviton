@@ -6,8 +6,8 @@ import { AnimatePresence, motion } from 'framer-motion'
 import { Settings } from 'lucide-react'
 import { ConversationToolbar } from '../components/ChatPane/ConversationToolbar'
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { batch } from 'react-redux'
-import { useLocation, useNavigate, useParams } from 'react-router-dom'
+import { useLocation, useParams } from 'react-router-dom'
+import { useChatNavigate as useNavigate } from '../components/ChatSelection/ChatSelectionProvider'
 import {
   ConversationId,
   ImageConfig,
@@ -42,6 +42,9 @@ import {
 import { ChatErrorBubble } from '../components/ChatErrorBubble/ChatErrorBubble'
 import { ActionPopoverButton, ActionPopoverDisclosure, ActionPopoverSwitch } from '../components/ActionPopover/ActionPopoverControls'
 import { ClipboardCheck, CodeXml, MessageSquare, ShieldHalf } from 'lucide-react'
+import { useConversationRunStatistics } from '../hooks/useConversationRunStatistics'
+import { deriveRunStatistics, placeRunFooters, interleaveRunFooters, type RunStatisticsFooterData } from '../features/chats/runStatistics'
+import { RunStatisticsFooter } from '../components/ChatMessage/RunStatisticsFooter'
 import { isWatcherCompletionMessage, WatcherCompletionNotice } from '../components/ChatMessage/WatcherCompletionNotice'
 import { ImageAttachmentNotice, isImageAttachmentInfoMessage } from '../components/ChatMessage/ImageAttachmentNotice'
 import { prepareImageFiles, waitForImagePreparation } from '../features/chats/imagePreparation'
@@ -57,6 +60,7 @@ import { useHtmlIframeRegistry } from '../components/HtmlIframeRegistry/HtmlIfra
 import { contentSpringTransition, softTransition } from '../components/motion'
 import { ContextUsageSparkline } from '../components/ContextUsageSparkline/ContextUsageSparkline'
 import { FastModeAnimationBackground } from '../components/FastModeAnimation/FastModeAnimation'
+import { resolveComposerAgentTint } from '../components/FastModeAnimation/fastModePalette'
 import { useFastModeAnimation } from '../helpers/fastModeAnimationSettings'
 import { SubagentTranscriptModal } from '../components/SubagentTranscript/SubagentTranscript'
 import {
@@ -109,7 +113,6 @@ import {
   // Chat selectors
   selectCurrentViewStream,
   selectDisplayMessages,
-  selectFocusedChatMessageId,
   selectHeimdallCompactMode,
   selectHeimdallData,
   selectHeimdallError,
@@ -137,6 +140,8 @@ import { selectChatErrorsForConversation } from '../features/chats/chatSelectors
 import { changeOperationMode, enqueueUserMessage, loadMessageQueue, cancelQueuedMessage, readServerLoopRejection } from '../features/chats/chatActions'
 import { QueuedMessages } from '../components/ChatMessage/QueuedMessages'
 import { OperationModeNotice } from '../components/ChatMessage/OperationModeNotice'
+import { FullAccessNotice } from '../components/ChatMessage/FullAccessNotice'
+import { isFullAccessNotification, isRunSettingsNotification } from '../../../../shared/accessNotifications'
 import { SummarisedMessage } from '../components/ChatMessage/SummarisedMessage'
 import {
   buildChatErrorRecord,
@@ -153,7 +158,7 @@ import {
 import { isOpenAIProvider } from '../../../../shared/contextUsage'
 import { isContextInjectionMessage, parseMessageMeta } from '../../../../shared/contextInjection'
 import { ContextInjectionCard, type ContextInjectionCardEntry } from '../components/ChatMessage/ContextInjectionCard'
-import { DisclosureRow } from '../components/ChatMessage/messagePrimitives'
+import { DisclosurePanel, DisclosureRow } from '../components/ChatMessage/messagePrimitives'
 import {
   chatErrorRowHeight,
   DEFAULT_ROOT_FONT_SIZE,
@@ -171,7 +176,6 @@ import {
   isOpenAIAuthenticated,
   type OpenAIUsageSnapshot,
 } from '../features/chats/chatgptAccount'
-import { buildBranchPathForMessage } from '../features/chats/pathUtils'
 import { generateStreamId, isStreamMessageAlreadyRendered } from '../features/chats/streamHelpers'
 import { recordSentMessage } from '../components/ChatPane/sentMessageHistory'
 import {
@@ -243,7 +247,9 @@ import { useSubscriptionStatus } from '../hooks/useSubscriptionStatus'
 import { useConversationSnapshotCoordinator } from '../hooks/useConversationSnapshotCoordinator'
 import { CHAT_INSERT_FILE_PATH_EVENT, type ChatInsertFilePathDetail } from '../helpers/chatInputBridge'
 import { dispatchOpenWorkspaceMutationDiffs } from '../helpers/workspaceMutationDiffBridge'
-import { cloneConversation, gwApi, localApi } from '../utils/api'
+import { localApi } from '../utils/api'
+import { useChatSelection } from '../components/ChatSelection/ChatSelectionProvider'
+import { chatSelectionScrollHandled, isPendingViewStreamOwned, type PendingViewStream } from '../features/chats/chatSelection'
 import { executeToolAndWait } from '../utils/executeToolAndWait'
 import { getHookRunsRenderSignature } from '../components/ChatMessage/hookActivityState'
 import { parseId } from '../utils/helpers'
@@ -274,6 +280,7 @@ type MessageRenderRow =
     }
 
 type VirtualRenderRow =
+  | { kind: 'run_stats'; key: string; statistics: RunStatisticsFooterData }
   | {
       kind: 'message_row'
       key: string
@@ -970,7 +977,7 @@ const parseMessageDataForRender = (msg: Message): ParsedMessageData => {
 
 function Chat() {
   const dispatch = useAppDispatch()
-  const { accessToken, userId } = useAuth()
+  const { userId } = useAuth()
   const navigate = useNavigate()
   const { ideContext, requestContext } = useIdeContext()
   const queryClient = useQueryClient()
@@ -980,7 +987,12 @@ function Chat() {
   const inputControllerRef = useRef<ChatInputControllerHandle | null>(null)
   const [hasLocalInput, setHasLocalInput] = useState(false)
   const [addedIdeContexts, setAddedIdeContexts] = useState<AddedIdeContext[]>([])
-  const [pendingViewStreamId, setPendingViewStreamId] = useState<string | null>(null)
+  const chatSelection = useChatSelection()
+  const selection = useAppSelector(state => state.chat.selection)
+  const selectionRevisionRef = useRef(selection.revision)
+  selectionRevisionRef.current = selection.revision
+  const [pendingViewStream, setPendingViewStream] = useState<PendingViewStream | null>(null)
+  const pendingViewStreamId = pendingViewStream?.streamId ?? null
   // Tool call whose persisted subagent transcript is open in the viewer modal (Phase 5).
   const [subagentTranscriptToolCallId, setSubagentTranscriptToolCallId] = useState<string | null>(null)
 
@@ -993,6 +1005,9 @@ function Chat() {
   }, [])
   const focusLocalInput = useCallback(() => {
     inputControllerRef.current?.focus()
+  }, [])
+  const handleAddToChat = useCallback((text: string) => {
+    inputControllerRef.current?.appendFencedText(text)
   }, [])
 
   useEffect(() => {
@@ -1058,7 +1073,7 @@ function Chat() {
 
 
   // Get conversation ID and project ID from URL params FIRST (before any hooks that depend on it)
-  const { id: conversationIdParam, projectId: projectIdParam, lineageId: lineageIdParam } = useParams<{
+  const { id: conversationIdParam, projectId: projectIdParam } = useParams<{
     id?: string
     projectId?: string
     lineageId?: string
@@ -1189,21 +1204,16 @@ function Chat() {
 
   // Current view stream - automatically selects the relevant stream based on currentPath
   const currentViewStream = useAppSelector(selectCurrentViewStream)
-  const pendingViewStream = useAppSelector(state =>
+  const pendingStreamState = useAppSelector(state =>
     pendingViewStreamId ? (state.chat.streaming.byId[pendingViewStreamId] ?? null) : null
   )
   const effectiveViewStream = useMemo(() => {
+    if (selection.status === 'pending' || selection.status === 'error') return null
     if (currentViewStream) return currentViewStream
-    if (!pendingViewStreamId || !pendingViewStream?.active) return null
-    if (
-      currentConversationId != null &&
-      pendingViewStream.conversationId != null &&
-      String(pendingViewStream.conversationId) !== String(currentConversationId)
-    ) {
-      return null
-    }
-    return { id: pendingViewStreamId, ...pendingViewStream }
-  }, [currentConversationId, currentViewStream, pendingViewStream, pendingViewStreamId])
+    if (!pendingViewStreamId || !pendingStreamState ||
+        !isPendingViewStreamOwned(pendingViewStream, currentConversationId, selection, pendingStreamState)) return null
+    return { id: pendingViewStreamId, ...pendingStreamState }
+  }, [currentConversationId, currentViewStream, pendingViewStream, pendingViewStreamId, pendingStreamState, selection])
   // Derived streamState object for compatibility (combines current/effective view stream data)
   const streamState = useMemo(
     () => ({
@@ -1236,13 +1246,13 @@ function Chat() {
     // before the branch path fully stabilizes for top-level sends/branches.
     // If we clear the fallback on the first selector match, the UI regresses back to
     // the idle/send state until the first real message lands.
-    if (pendingViewStream && (!pendingViewStream.active || pendingViewStream.finished)) {
-      setPendingViewStreamId(null)
+    if (pendingStreamState && (!pendingStreamState.active || pendingStreamState.finished)) {
+      setPendingViewStream(null)
     }
-  }, [pendingViewStream, pendingViewStreamId])
+  }, [pendingStreamState, pendingViewStreamId])
 
   useEffect(() => {
-    setPendingViewStreamId(null)
+    setPendingViewStream(null)
   }, [currentConversationId])
 
   useEffect(() => {
@@ -1281,17 +1291,17 @@ function Chat() {
   const toolCallPermissionRequest = useAppSelector(state =>
     streamState.id
       ? (state.chat.toolPermissionRequestsByStream[streamState.id] ?? null)
-      : state.chat.toolCallPermissionRequest
+      : null
   )
   const operationModeUpgradeRequest = useAppSelector(state =>
     streamState.id
       ? (state.chat.operationModeUpgradeRequestsByStream[streamState.id] ?? null)
-      : state.chat.operationModeUpgradeRequest
+      : null
   )
   const planClarificationRequest = useAppSelector(state =>
     streamState.id
       ? (state.chat.planClarificationRequestsByStream[streamState.id] ?? null)
-      : state.chat.planClarificationRequest
+      : null
   )
   const toolAutoApprove = useAppSelector(state => state.chat.toolAutoApprove)
   // D3: free-tier exhaustion is a chat bubble, not a blocking modal. `sseProjection` records the
@@ -1345,7 +1355,6 @@ function Chat() {
   }, [isOpenAIChatGPTProvider])
   const runningToolJobs = useRunningJobs()
   const multiReplyCount = useAppSelector(selectMultiReplyCount)
-  const focusedChatMessageId = useAppSelector(selectFocusedChatMessageId)
 
   // const streamingRoot = useAppSelector(state => state.chat.streaming)
   // const [streamDebugPanelOpen, setStreamDebugPanelOpen] = useState(true)
@@ -2139,21 +2148,16 @@ function Chat() {
 
   // Ref for auto-scroll
   const messagesContainerRef = useRef<HTMLDivElement>(null)
-  // Track whether the upcoming selection change came from an explicit user click in Heimdall
-  const selectionScrollCauseRef = useRef<'user' | null>(null)
   // Track if the user manually scrolled during the current stream; disables bottom pin until finished
   const userScrolledDuringStreamRef = useRef<boolean>(false)
   const streamActiveRef = useRef<boolean>(false)
   const finalTextStreamingStartedRef = useRef<boolean>(false)
   const liveStreamingContentRef = useRef<HTMLDivElement>(null)
   const skippedInitialLiveTailFollowRef = useRef<boolean>(false)
-  const previousFocusedChatMessageIdRef = useRef<MessageId | null>(null)
   // Sentinel at the end of the list for robust bottom scrolling
   const bottomRef = useRef<HTMLDivElement>(null)
   // rAF id to coalesce frequent scroll requests during streaming
   const scrollRafRef = useRef<number | null>(null)
-  // Remember the last focused message we already scrolled to (to avoid repeated jumps)
-  const lastFocusedScrollIdRef = useRef<MessageId | null>(null)
   // Track the most visible text-response message ID for Heimdall highlighting.
   // When the viewport moves over tool/reasoning-only rows, keep this sticky ref
   // pointing at the previous eligible message until the next text response appears.
@@ -2167,9 +2171,7 @@ function Chat() {
   const attachmentInputRef = useRef<HTMLInputElement>(null)
 
   // Track if we already applied URL-driven selection to avoid overriding later user branch switches.
-  const hashAppliedRef = useRef<MessageId | null>(null)
-  const lineageRouteAttemptedRef = useRef<string | null>(null)
-  const manualLineageSelectionEpochRef = useRef(0)
+  const handledSelectionScrollRef = useRef<string | null>(null)
 
 
   // Lock page scroll while chat is mounted
@@ -2273,6 +2275,14 @@ function Chat() {
     return displayMessages.filter(msg => msg && msg.id != null)
   }, [displayMessages])
 
+  const conversationRuns = useConversationRunStatistics(conversationIdFromUrl == null ? null : String(conversationIdFromUrl))
+  const runFooters = useMemo(() => deriveRunStatistics(conversationMessages, selectedPath, conversationRuns,
+    currentConversationId == null ? null : String(currentConversationId), modeLineageId),
+    [conversationMessages, selectedPath, conversationRuns, currentConversationId, modeLineageId])
+  const runFootersByAnchor = useMemo(() => placeRunFooters(runFooters, selectedPath, renderableMessages.map(m => String(m.id))),
+    [runFooters, selectedPath, renderableMessages])
+  const runBoundarySignature = [...runFootersByAnchor.keys()].join('|')
+
   const [groupToolReasoningRuns, setGroupToolReasoningRuns] = useState<boolean>(() => {
     try {
       const stored = localStorage.getItem('chat:groupToolReasoningRuns')
@@ -2329,7 +2339,7 @@ function Chat() {
     const debugProcessGrouping =
       typeof window !== 'undefined' && window.localStorage.getItem('chat:debugProcessGrouping') === 'true'
 
-    const rowsCacheKey = `${groupToolReasoningRuns ? 'grouped' : 'plain'}|${renderableMessagesSignature}`
+    const rowsCacheKey = `${groupToolReasoningRuns ? 'grouped' : 'plain'}|${renderableMessagesSignature}|${runBoundarySignature}`
     if (!debugProcessGrouping) {
       const cachedRows = messageRenderRowsCacheRef.current.get(rowsCacheKey)
       if (cachedRows) {
@@ -2486,6 +2496,7 @@ function Chat() {
         }
         runMessages.push(candidate)
         cursor += 1
+        if (runFootersByAnchor.has(String(candidate.id))) break
       }
 
       if (runMessages.length >= CROSS_MESSAGE_PROCESS_GROUP_MIN_MESSAGES) {
@@ -2501,7 +2512,8 @@ function Chat() {
 
         let bridgedMessageId: MessageId | undefined
         const trailingCandidate = renderableMessages[cursor]
-        if (trailingCandidate && (trailingCandidate.role === 'assistant' || trailingCandidate.role === 'ex_agent')) {
+        if (!runFootersByAnchor.has(String(runMessages[runMessages.length - 1]?.id)) &&
+            trailingCandidate && (trailingCandidate.role === 'assistant' || trailingCandidate.role === 'ex_agent')) {
           const trailingParsed = parsedMessageDataById.get(trailingCandidate.id) ?? EMPTY_PARSED_MESSAGE_DATA
           const trailingHasProcessSignal = hasProcessSignal(trailingCandidate, trailingParsed)
           const trailingHasSubstantialContent = hasSubstantialTextOrImage(trailingCandidate, trailingParsed)
@@ -2573,7 +2585,10 @@ function Chat() {
     }
 
     return rows
-  }, [renderableMessages, renderableMessagesSignature, groupToolReasoningRuns, parsedMessageDataById])
+  }, [renderableMessages, renderableMessagesSignature, groupToolReasoningRuns, parsedMessageDataById, runBoundarySignature, runFootersByAnchor])
+
+  const bridgedProcessMessageIds = useMemo(() => new Set(messageRenderRows.flatMap(row =>
+    row.kind === 'process_group' && row.bridgedMessageId ? [String(row.bridgedMessageId)] : [])), [messageRenderRows])
 
   const messageById = useMemo(() => {
     const map = new Map<string, Message>()
@@ -2586,23 +2601,14 @@ function Chat() {
   const messageRowIndexByMessageId = useMemo(() => {
     const rowIndexByMessageId = new Map<string, number>()
 
-    for (let index = 0; index < messageRenderRows.length; index++) {
-      const row = messageRenderRows[index]
-      if (row.kind === 'message') {
-        rowIndexByMessageId.set(String(row.message.id), index)
-        continue
-      }
-
-      for (const memberId of row.memberMessageIds) {
-        const key = String(memberId)
-        if (!rowIndexByMessageId.has(key)) {
-          rowIndexByMessageId.set(key, index)
-        }
-      }
+    let virtualIndex = 0
+    for (const row of messageRenderRows) {
+      const ids = row.kind === 'message' ? [row.message.id] : row.memberMessageIds
+      for (const id of ids) rowIndexByMessageId.set(String(id), virtualIndex)
+      virtualIndex += 1 + (runFootersByAnchor.get(String(ids[ids.length - 1]))?.length ?? 0)
     }
-
     return rowIndexByMessageId
-  }, [messageRenderRows])
+  }, [messageRenderRows, runFootersByAnchor])
 
   const assistantContainerClassByMessageId = useMemo(() => {
     const classByMessageId = new Map<string, string>()
@@ -2737,7 +2743,7 @@ function Chat() {
     streamState.status === 'waiting_for_tool' ||
     streamState.status === 'aborting'
   const showGenerationLoadingAnimation =
-    showCompactionStatus || streamLifecycleActive || hasRunningToolJobForCurrentBranch
+    selection.status !== 'pending' && selection.status !== 'error' && (showCompactionStatus || streamLifecycleActive || hasRunningToolJobForCurrentBranch)
   const hasFinalTextStreaming = Boolean(streamState.buffer?.trim())
   const hasProcessStreamingContent =
     Boolean(streamState.thinkingBuffer) || streamState.toolCalls.length > 0 || streamState.events.length > 0
@@ -2792,14 +2798,11 @@ function Chat() {
   }, [messageRenderRows, parsedMessageDataById])
 
   const virtualRows = useMemo<VirtualRenderRow[]>(() => {
-    const rows: VirtualRenderRow[] = messageRenderRows.map(row => ({
-      kind: 'message_row',
-      // Stable id-based keys are required: index keys reshuffle the virtualizer's itemSizeCache and
-      // elementsCache whenever a row is inserted/removed mid-list (delete, branch switch, streaming
-      // row appearing/disappearing), corrupting measured heights and remounting rows.
-      key: row.kind === 'message' ? `message-${row.message.id}` : `group-${row.id}`,
-      row,
-    }))
+    const rows: VirtualRenderRow[] = interleaveRunFooters(messageRenderRows, runFootersByAnchor).map(item => {
+      if (item.kind === 'run_stats') return { ...item, key: `run-stats-${item.statistics.streamId}` }
+      const row = item.row
+      return { kind: 'message_row', key: row.kind === 'message' ? `message-${row.message.id}` : `group-${row.id}`, row }
+    })
 
     if (showOptimisticMessage && optimisticMessage) {
       rows.push({
@@ -2850,6 +2853,7 @@ function Chat() {
     return rows
   }, [
     messageRenderRows,
+    runFootersByAnchor,
     showOptimisticMessage,
     optimisticMessage,
     showOptimisticBranchMessage,
@@ -2951,6 +2955,7 @@ function Chat() {
 
     const setCompletedTurnLabel = (targetUserMessageId: MessageId | string | number | null | undefined) => {
       if (!activeUserMessage || !latestAgentMessageAfterActiveUser || targetUserMessageId == null) return
+      if (runFooters.some(footer => footer.anchorMessageId === String(latestAgentMessageAfterActiveUser!.id))) return
 
       const userCreatedAtMs = parseCreatedAtMs(activeUserMessage.created_at)
       const agentCreatedAtMs = parseCreatedAtMs(latestAgentMessageAfterActiveUser.created_at)
@@ -2985,7 +2990,7 @@ function Chat() {
     }
 
     return labels
-  }, [virtualRows])
+  }, [virtualRows, runFooters])
 
   useEffect(() => {
     benchLatestMessageCountRef.current = renderableMessages.length
@@ -3084,7 +3089,7 @@ function Chat() {
       const estimateForMessage = (message: Message) => {
         // Summaries draw only an h-8 notice with py-1, regardless of payload size.
         if (message.note === AUTO_COMPACTION_NOTE || isWatcherCompletionMessage(message) || isImageAttachmentInfoMessage(message)) return smallChromeRowHeight(rootFontSize)
-        if (parseMessageMeta(message.meta)?.kind === 'operation_mode_change') return 32
+        if (isRunSettingsNotification(message)) return 32
         const blocks = (parsedMessageDataById.get(message.id) ?? EMPTY_PARSED_MESSAGE_DATA).contentBlocks
         // Mirrors `hasContent && canBranchMessage` in ChatMessage, which gates the actions row.
         const hasText = typeof message.content === 'string' && message.content.trim().length > 0
@@ -3116,6 +3121,8 @@ function Chat() {
       }
 
       switch (row.kind) {
+        case 'run_stats':
+          return 36
         case 'message_row':
           return row.row.kind === 'process_group'
             ? processGroupRowHeight(rootFontSize)
@@ -3522,6 +3529,8 @@ function Chat() {
     data: conversationData,
     isFetched: isConversationDataFetched,
     acceptedConversationId,
+    error: snapshotError,
+    isFetching: isSnapshotFetching,
     refresh: refreshConversationSnapshot,
   } = useConversationSnapshotCoordinator(conversationIdFromUrl, conversationStorageMode)
 
@@ -3552,7 +3561,6 @@ function Chat() {
 
   const [editingTitle, setEditingTitle] = useState(false)
   const editingTitleRef = useRef(false)
-  const [cloningConversation, setCloningConversation] = useState(false)
   const [isTitleBarVisible, setIsTitleBarVisible] = useState(true)
   const lastScrollTopRef = useRef(0)
 
@@ -3770,9 +3778,6 @@ function Chat() {
     : isDarkMode
       ? 'rgba(23, 23, 23, 0.8)'
       : 'rgba(255, 255, 255, 0.8)'
-  const chatInputAreaBorderColor = customThemeEnabled
-    ? getThemeModeColor(customTheme.colors.chatInputAreaBorder, isDarkMode)
-    : undefined
   const chatProgressBarFillColor = customThemeEnabled
     ? getThemeModeColor(customTheme.colors.chatProgressBarFill, isDarkMode)
     : undefined
@@ -3857,13 +3862,6 @@ function Chat() {
   )
   const [chatInputBorderLightColor, setChatInputBorderLightColor] = useState<string>(getStoredChatInputBorderLightColor)
   const [chatInputBorderDarkColor, setChatInputBorderDarkColor] = useState<string>(getStoredChatInputBorderDarkColor)
-
-  const useCustomInputAreaBorderColor = customThemeEnabled && operationMode !== 'plan'
-  const chatInputBorderAnimationEnabled = operationMode !== 'plan' && chatInputBorderAnimation !== 'none'
-  const effectiveAnimatedInputBorderColor =
-    useCustomInputAreaBorderColor && chatInputAreaBorderColor ? chatInputAreaBorderColor : undefined
-  const effectiveChatInputBorderLightColor = effectiveAnimatedInputBorderColor ?? chatInputBorderLightColor
-  const effectiveChatInputBorderDarkColor = effectiveAnimatedInputBorderColor ?? chatInputBorderDarkColor
 
   const leftControlsBorderClasses = customThemeEnabled
     ? operationMode === 'plan'
@@ -4399,6 +4397,12 @@ function Chat() {
     streamActiveRef.current = streamState.active
   }, [streamState.active])
 
+  useEffect(() => {
+    finalTextStreamingStartedRef.current = false
+    skippedInitialLiveTailFollowRef.current = false
+    if (scrollRafRef.current != null) cancelAnimationFrame(scrollRafRef.current)
+  }, [streamState.id])
+
   // Detect user scroll intent during a stream from INPUT events only — wheel, touch, keyboard
   // navigation, and scrollbar drags. The previous version inferred intent from raw scrollTop
   // deltas, but app follow-scrolls and the virtualizer's own resize adjustments also dispatch
@@ -4552,59 +4556,24 @@ function Chat() {
     virtualRows.length,
   ])
 
-  // Scroll to selected node when path changes (only for user-initiated selections)
+  // A navigation intent is consumed once, only after its target row exists. Token updates and
+  // completion never replay an old focus; an explicit re-click gets a new request ID.
   useEffect(() => {
-    if (selectionScrollCauseRef.current === 'user' && selectedPath && selectedPath.length > 0) {
-      const targetId = focusedChatMessageId
-      // Find the index of the target message in renderableMessages for virtualizer
-      const targetIndex = findMessageRowIndex(targetId)
-
-      if (targetIndex !== -1) {
-        // Use virtualizer to scroll to the message index
-        scrollToMessageRowIndex(targetIndex, 'start')
-
-        // Record that we've scrolled to this focused target so the hash/search focus effect below
-        // skips a redundant second scroll. Record regardless of id type — in local/electron mode ids
-        // are strings, and the previous numeric-only guard let every user click run both effects
-        // (double scroll + a forced userScrolled during streams).
-        lastFocusedScrollIdRef.current = targetId
-      }
-
-      // After handling, reset so programmatic path changes (e.g., during send/stream) won't recenter
-      selectionScrollCauseRef.current = null
-    }
-  }, [selectedPath, focusedChatMessageId, findMessageRowIndex, scrollToMessageRowIndex])
-
-  // Scroll to the focused message when focus actually changes via hash/search (non user-click cases).
-  // Do not re-run this because virtual rows, message indexes, or the virtualizer instance changed:
-  // stream completion changes those dependencies and was jumping to stale focused messages.
-  useEffect(() => {
-    const previousFocusedChatMessageId = previousFocusedChatMessageIdRef.current
-    previousFocusedChatMessageIdRef.current = focusedChatMessageId
-
-    // Skip if no focus, unchanged focus, or a user-initiated selection will handle scrolling.
-    if (focusedChatMessageId == null) return
-    if (previousFocusedChatMessageId === focusedChatMessageId) return
-    if (selectionScrollCauseRef.current === 'user') return
-
-    // If we've already scrolled to this focused message, don't re-run on every list change
-    if (lastFocusedScrollIdRef.current === focusedChatMessageId) return
-
-    // If focus changed programmatically during streaming, temporarily disable bottom pinning.
-    if (streamActiveRef.current) {
+    const intent = selection.scroll
+    if (!intent || handledSelectionScrollRef.current === intent.requestId) return
+    if (intent.mode === 'focus' && intent.focus != null) {
+      const index = findMessageRowIndex(intent.focus)
+      if (index === -1) return
       userScrolledDuringStreamRef.current = true
+      scrollToMessageRowIndex(index, 'start')
+    } else {
+      if (!virtualRows.length && conversationMessages.length) return
+      scrollToBottomNow('auto')
     }
-
-    // Find the index of the target message in renderableMessages for virtualizer
-    const targetIndex = findMessageRowIndex(focusedChatMessageId)
-
-    if (targetIndex !== -1) {
-      // Use virtualizer to scroll to the message index
-      scrollToMessageRowIndex(targetIndex, 'start')
-      // Mark this focus as handled so we don't keep re-centering on subsequent renders
-      lastFocusedScrollIdRef.current = focusedChatMessageId
-    }
-  }, [focusedChatMessageId])
+    handledSelectionScrollRef.current = intent.requestId
+    dispatch(chatSelectionScrollHandled(intent.requestId))
+  }, [selection.scroll, findMessageRowIndex, scrollToMessageRowIndex, scrollToBottomNow,
+    virtualRows.length, conversationMessages.length, dispatch])
 
   // Helper to check if a message can drive Heimdall's current viewport highlight.
   // Only simple text-response content should move the outline. Tool calls, tool
@@ -4769,120 +4738,16 @@ function Chat() {
     updateVisibleMessageRef.current?.()
   }, [renderableMessagesSignature, virtualRows])
 
-  // Apply a canonical lineage deep link only after the matching conversation snapshot is installed.
-  // The endpoint is authoritative for the branch path. Route and manual-selection guards prevent a
-  // late response from switching either the conversation or a branch the user chose while it loaded.
+  // Route and in-place navigation share one resolution pipeline. Snapshot loading remains
+  // owned by this Chat instance; selection never installs a second copy of fetched rows.
   useEffect(() => {
-    if (!lineageIdParam || conversationIdFromUrl == null) return
-    if (!isConversationDataFetched || acceptedConversationId !== String(conversationIdFromUrl)) return
-    if (snapshotConversationId == null || String(snapshotConversationId) !== String(conversationIdFromUrl)) return
-
-    const routeKey = `${String(conversationIdFromUrl)}:${lineageIdParam}`
-    if (lineageRouteAttemptedRef.current === routeKey) return
-    lineageRouteAttemptedRef.current = routeKey
-
-    const manualSelectionEpoch = manualLineageSelectionEpochRef.current
-    let cancelled = false
-
-    void gwApi
-      .get<{
-        pathMessageIds?: Array<MessageId | string | number>
-        path?: Array<{ id?: MessageId | string | number } | MessageId | string | number>
-        head_message_id?: MessageId | string | number | null
-      }>(
-        `/conversations/${encodeURIComponent(String(conversationIdFromUrl))}/lineages/${encodeURIComponent(lineageIdParam)}`
-      )
-      .then(detail => {
-        if (cancelled || manualLineageSelectionEpochRef.current !== manualSelectionEpoch) return
-        if (acceptedConversationId !== String(conversationIdFromUrl)) return
-
-        const rawPath =
-          detail.pathMessageIds ??
-          detail.path?.map(item => (typeof item === 'object' && item !== null ? item.id : item)) ??
-          []
-        const path = rawPath
-          .map(id => parseId(String(id)))
-          .filter((id): id is MessageId =>
-            typeof id === 'string' || (typeof id === 'number' && !Number.isNaN(id))
-          )
-        if (path.length === 0) return
-
-        const requestedFocusValue = new URLSearchParams(location.search).get('focus')
-        const requestedFocus = requestedFocusValue == null ? null : parseId(requestedFocusValue)
-        const focusInPath =
-          requestedFocus != null && path.some(messageId => String(messageId) === String(requestedFocus))
-        const parsedHead = detail.head_message_id == null ? path[path.length - 1] : parseId(String(detail.head_message_id))
-        const focus = focusInPath ? requestedFocus : parsedHead
-
-        dispatch(
-          chatSliceActions.lineageSelected({
-            conversationId: conversationIdFromUrl,
-            lineageId: lineageIdParam,
-            path,
-            focus,
-          })
-        )
-      })
-      .catch(error => {
-        // A missing/stale lineage link should still open the conversation's normal branch.
-        console.warn('[Chat] Failed to apply lineage deep link:', error)
-      })
-
-    return () => {
-      cancelled = true
+    if (snapshotError && !isSnapshotFetching && !acceptedConversationId && conversationIdFromUrl) {
+      chatSelection.snapshotFailed(String(conversationIdFromUrl))
+    } else {
+      void chatSelection.resolve(acceptedConversationId, refreshConversationSnapshot)
     }
-  }, [
-    acceptedConversationId,
-    conversationIdFromUrl,
-    dispatch,
-    isConversationDataFetched,
-    lineageIdParam,
-    location.search,
-    snapshotConversationId,
-  ])
-
-  // If URL contains a #messageId fragment, capture it once
-  // const location = useLocation() // Moved to top
-  const hashMessageId = React.useMemo(() => {
-    if (location.hash && location.hash.startsWith('#')) {
-      const idNum = parseId(location.hash.substring(1))
-      return typeof idNum === 'number' && isNaN(idNum) ? null : idNum
-    }
-    return null
-  }, [location.hash])
-
-  // When we have messages loaded and a hashMessageId, build path to that message and set it ONCE per hash.
-  // This avoids resetting currentPath when the user switches branches after landing from a search result.
-  useEffect(() => {
-    // If hash cleared, allow future re-application when a new hash appears
-    if (!hashMessageId) {
-      hashAppliedRef.current = null
-      return
-    }
-    // Skip if we've already applied this hash
-    if (hashAppliedRef.current === hashMessageId) return
-
-    if (conversationMessages.length > 0) {
-      // Guard: only proceed if the target hash message exists
-      const exists = conversationMessages.some(m => m.id === hashMessageId)
-      if (!exists) return
-
-      const path = buildBranchPathForMessage(conversationMessages, hashMessageId)
-      if (!path.length) return
-
-      dispatch(chatSliceActions.conversationPathSet(path))
-      // Ensure the focused message id is set so scrolling targets the correct element
-      dispatch(chatSliceActions.focusedChatMessageSet(hashMessageId))
-      hashAppliedRef.current = hashMessageId
-    }
-  }, [hashMessageId, conversationMessages, dispatch])
-
-  // Reset the hash application guard when switching conversations
-  useEffect(() => {
-    hashAppliedRef.current = null
-    // Allow programmatic focus in the new conversation to scroll once
-    lastFocusedScrollIdRef.current = null
-  }, [currentConversationId])
+  }, [chatSelection, acceptedConversationId, refreshConversationSnapshot, selection.requestId, conversationMessages,
+    snapshotError, isSnapshotFetching, conversationIdFromUrl])
 
   // Clear selectedFilesForChat on route change
   useEffect(() => {
@@ -4896,49 +4761,7 @@ function Chat() {
     }
   }, [dispatch])
 
-  // useEffect(() => {
-  //   if (focusedChatMessageId && conversationMessages.length > 0) {
-  //     const path = getParentPath(conversationMessages, focusedChatMessageId)
-  //     dispatch(chatSliceActions.conversationPathSet(path))
-  //   }
-  // }, [focusedChatMessageId, conversationMessages, dispatch])
 
-  // Auto-select latest branch when messages first load
-  useEffect(() => {
-    if (conversationMessages.length > 0 && (!selectedPath || selectedPath.length === 0)) {
-      // If URL has a hash message that exists, skip auto-selecting latest branch
-      if (hashMessageId && conversationMessages.some(m => m.id === hashMessageId)) {
-        return
-      }
-      // latest message by timestamp
-      const latest = [...conversationMessages].sort(
-        (a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
-      )[0]
-      if (latest) {
-        // Use buildBranchPathForMessage to get the complete path including leaf nodes
-        const pathNums = buildBranchPathForMessage(conversationMessages, latest.id)
-        if (pathNums.length) {
-          // console.log(`path nums ${pathNums}`)
-          dispatch(chatSliceActions.conversationPathSet(pathNums))
-        }
-      }
-    }
-  }, [conversationMessages, selectedPath, dispatch, hashMessageId])
-
-  // One-shot scroll to the latest message when a conversation's rows first load. Without this,
-  // conversations open scrolled to the very top. Guarded per-conversation, and skipped when a URL
-  // hash targets a specific message (that path drives its own scroll).
-  const initialScrollConversationRef = useRef<string | null>(null)
-  useEffect(() => {
-    if (!conversationIdFromUrl || !isConversationDataFetched) return
-    if (virtualRows.length === 0) return
-    const key = String(conversationIdFromUrl)
-    if (initialScrollConversationRef.current === key) return
-    initialScrollConversationRef.current = key
-    if (hashMessageId != null) return
-    const rafId = requestAnimationFrame(() => scrollToBottomNow('auto'))
-    return () => cancelAnimationFrame(rafId)
-  }, [conversationIdFromUrl, isConversationDataFetched, virtualRows.length, hashMessageId, scrollToBottomNow])
 
   // Models are now loaded automatically via React Query hooks
   // No manual loading needed - React Query handles caching and refetching
@@ -5036,18 +4859,9 @@ function Chat() {
     }
   }, [providerSettings.showProviderSelector, providerSettings.defaultProvider, dispatch])
 
-  // Initialize or set conversation based on route param
+  // Creation remains separate from navigation; routed conversations are owned by the controller.
   useEffect(() => {
-    if (conversationIdFromUrl) {
-      if (
-        (typeof conversationIdFromUrl === 'number' && !isNaN(conversationIdFromUrl)) ||
-        typeof conversationIdFromUrl === 'string'
-      ) {
-        dispatch(chatSliceActions.conversationSet(conversationIdFromUrl))
-      }
-    } else {
-      dispatch(initializeUserAndConversation())
-    }
+    if (!conversationIdFromUrl) dispatch(initializeUserAndConversation())
   }, [conversationIdFromUrl, dispatch])
 
   // Handle model selection
@@ -5217,16 +5031,16 @@ function Chat() {
 
   // Local version of canSend that checks input controller state.
   const canSendLocal = useMemo(() => {
-    const isNotSending = !isCurrentBranchCompacting && !modeChange && !queueSubmitting
+    const isNotSending = selection.status !== 'pending' && selection.status !== 'error' && !isCurrentBranchCompacting && !modeChange && !queueSubmitting
     const hasModel = !!selectedModel
 
     // Allow retrigger: empty input when last displayed message is from user
     const isRetrigger =
       !hasLocalInput && displayMessages.length > 0 && displayMessages[displayMessages.length - 1]?.role === 'user' &&
-      parseMessageMeta(displayMessages[displayMessages.length - 1]?.meta)?.kind !== 'operation_mode_change'
+      !isRunSettingsNotification(displayMessages[displayMessages.length - 1])
 
     return (hasLocalInput || (!streamState.active && isRetrigger)) && isNotSending && hasModel
-  }, [hasLocalInput, isCurrentBranchCompacting, streamState.active, selectedModel, displayMessages, modeChange, queueSubmitting])
+  }, [hasLocalInput, isCurrentBranchCompacting, streamState.active, selectedModel, displayMessages, modeChange, queueSubmitting, selection.status])
 
   /**
    * Re-run generation from the last user message on the current branch.
@@ -5242,7 +5056,7 @@ function Chat() {
       const lastUserMessage = displayMessages[displayMessages.length - 1]
 
       // Safety check: ensure lastUserMessage exists before accessing properties
-      if (!lastUserMessage || lastUserMessage.role !== 'user' || parseMessageMeta(lastUserMessage.meta)?.kind === 'operation_mode_change') {
+      if (!lastUserMessage || lastUserMessage.role !== 'user' || isRunSettingsNotification(lastUserMessage)) {
         console.error('Cannot retrigger: No last user message found in displayMessages')
         return false
       }
@@ -5256,7 +5070,7 @@ function Chat() {
 
       // Dispatch sendMessage with retrigger flag
       const streamId = generateStreamId('primary')
-      setPendingViewStreamId(streamId)
+      setPendingViewStream({ streamId, conversationId: currentConversationId!, selectionRevision: selection.fallbackRevision })
 
       dispatch(
         sendMessage({
@@ -5271,6 +5085,9 @@ function Chat() {
           serviceTier: openAIServiceTier,
           cwd: ccCwd || undefined,
           operationMode,
+          selectionRevision: selection.revision,
+          lineageId: modeLineageId,
+          branchPath: selectedPath,
           streamId,
         })
       )
@@ -5301,6 +5118,10 @@ function Chat() {
     [
       ccCwd,
       clearPendingCwdAnnouncement,
+      selection.revision,
+      selection.fallbackRevision,
+      modeLineageId,
+      selectedPath,
       currentConversationId,
       dispatch,
       displayMessages,
@@ -5363,7 +5184,7 @@ function Chat() {
         // Check if this is a retrigger scenario (empty input + last message is user)
         const isRetrigger =
           !hasLocalInput && displayMessages.length > 0 && displayMessages[displayMessages.length - 1]?.role === 'user' &&
-      parseMessageMeta(displayMessages[displayMessages.length - 1]?.meta)?.kind !== 'operation_mode_change'
+      !isRunSettingsNotification(displayMessages[displayMessages.length - 1])
 
         if (isRetrigger) {
           retriggerLastUserMessage(value)
@@ -5398,6 +5219,7 @@ function Chat() {
             }
 
             const sendWithParent = (parentForSend: MessageId | null) => {
+              if (selectionRevisionRef.current !== selection.revision) return
               const { content: contentToSend, pendingCwdValue } = withPendingCwdAnnouncement(
                 currentConversationId,
                 contentWithIdeContext
@@ -5431,7 +5253,7 @@ function Chat() {
 
               // Dispatch a single sendMessage with repeatNum set to value.
               const streamId = generateStreamId('primary')
-              setPendingViewStreamId(streamId)
+              setPendingViewStream({ streamId, conversationId: currentConversationId!, selectionRevision: selection.fallbackRevision })
 
               dispatch(
                 sendMessage({
@@ -5445,6 +5267,9 @@ function Chat() {
                   serviceTier: openAIServiceTier,
                   cwd: ccCwd || undefined,
                   operationMode,
+                  selectionRevision: selection.revision,
+                  lineageId: modeLineageId,
+                  branchPath: selectedPath,
                   streamId,
                 })
               )
@@ -5598,6 +5423,9 @@ function Chat() {
     },
     [
       canSendLocal,
+      selection.revision,
+      selection.fallbackRevision,
+      modeLineageId,
       streamState.active,
       streamState.id,
       currentConversationId,
@@ -5647,9 +5475,10 @@ function Chat() {
   const handleSend = useCallback(async (value: number) => {
     if (imageSubmitPendingRef.current) return
     imageSubmitPendingRef.current = true
+    const revision = selectionRevisionRef.current
     try {
       await dispatch(waitForImagePreparation({ kind: 'composer' }))
-      preparedSendRef.current(value)
+      if (selectionRevisionRef.current === revision) preparedSendRef.current(value)
     } catch (error) {
       recordLocalChatError(error, { phase: 'preflight', conversationId: currentConversationId })
     } finally {
@@ -5658,6 +5487,7 @@ function Chat() {
   }, [dispatch, currentConversationId, recordLocalChatError])
 
   const handleStopGeneration = useCallback(() => {
+    if (selection.status === 'pending' || selection.status === 'error') return
     if (canStopCompaction && compactingConversationId != null && compactingParentMessageId != null) {
       dispatch(abortCompaction({ conversationId: compactingConversationId, parentMessageId: compactingParentMessageId }))
       return
@@ -5670,7 +5500,7 @@ function Chat() {
         messageId: streamState.streamingMessageId,
       })
     )
-  }, [streamState.id, streamState.streamingMessageId, canStopCompaction, compactingConversationId, compactingParentMessageId, dispatch])
+  }, [selection.status, streamState.id, streamState.streamingMessageId, canStopCompaction, compactingConversationId, compactingParentMessageId, dispatch])
 
   // The error bubble owns exactly one button. This is where its `kind` becomes a real recovery.
   // Deliberately routed through the handlers that already exist in this container rather than
@@ -5795,7 +5625,7 @@ function Chat() {
 
   const submitMessageAsBranch = useCallback(
     (id: string, newContent: string, _newContentBlocks?: any) => {
-      if (!currentConversationId) return
+      if (!currentConversationId || selection.status === 'pending' || selection.status === 'error') return
 
       // Replace any @file mentions with actual file contents before branching.
       const processed = replaceFileMentionsWithPath(newContent)
@@ -5837,7 +5667,7 @@ function Chat() {
       dispatch(chatSliceActions.optimisticBranchMessageSet(optimisticBranchMessage))
 
       const streamId = generateStreamId('branch')
-      setPendingViewStreamId(streamId)
+      setPendingViewStream({ streamId, conversationId: currentConversationId!, selectionRevision: selection.fallbackRevision })
       recordSentMessage(newContent)
 
       dispatch(
@@ -5850,6 +5680,9 @@ function Chat() {
           serviceTier: openAIServiceTier,
           cwd: ccCwd || undefined,
           operationMode,
+          selectionRevision: selection.revision,
+          lineageId: modeLineageId,
+          branchPath: selectedPath,
           streamId,
         })
       )
@@ -5873,6 +5706,11 @@ function Chat() {
         })
     },
     [
+      selection.revision,
+      selection.fallbackRevision,
+      modeLineageId,
+      selectedPath,
+      selection.status,
       currentConversationId,
       selectedModel?.name,
       think,
@@ -5927,7 +5765,7 @@ function Chat() {
 
   const handleExplainFromSelection = useCallback(
     (id: string, newContent: string) => {
-      if (!currentConversationId) return
+      if (!currentConversationId || selection.status === 'pending' || selection.status === 'error') return
 
       // Explain selection should always create a new user child under the selected message,
       // even when that message already has children.
@@ -5962,7 +5800,7 @@ function Chat() {
       dispatch(chatSliceActions.optimisticMessageSet(optimisticUserMessage))
 
       const streamId = generateStreamId('primary')
-      setPendingViewStreamId(streamId)
+      setPendingViewStream({ streamId, conversationId: currentConversationId!, selectionRevision: selection.fallbackRevision })
       recordSentMessage(newContent)
 
       dispatch(
@@ -5977,6 +5815,9 @@ function Chat() {
           serviceTier: openAIServiceTier,
           cwd: ccCwd || undefined,
           operationMode,
+          selectionRevision: selection.revision,
+          lineageId: modeLineageId,
+          branchPath: selectedPath,
           streamId,
         })
       )
@@ -6001,6 +5842,11 @@ function Chat() {
         })
     },
     [
+      selection.revision,
+      selection.fallbackRevision,
+      modeLineageId,
+      selectedPath,
+      selection.status,
       currentConversationId,
       selectedModel?.name,
       think,
@@ -6052,74 +5898,13 @@ function Chat() {
 
   const handleNodeSelect = useCallback(
     (nodeId: string, path: string[]) => {
-      if (!nodeId || !path || path.length === 0) return // ignore clicks on empty space
-      manualLineageSelectionEpochRef.current += 1
-
-      const parsedNodeId = parseId(nodeId)
-      const isValidNodeId =
-        typeof parsedNodeId === 'string' || (typeof parsedNodeId === 'number' && !Number.isNaN(parsedNodeId))
-      if (!isValidNodeId) return
-
-      const parsedPath = path
-        .map(id => parseId(id))
-        .filter(id => typeof id === 'string' || (typeof id === 'number' && !Number.isNaN(id)))
-
-      if (parsedPath.length === 0) return
-
-      const samePath =
-        selectedPath.length === parsedPath.length &&
-        selectedPath.every((id, index) => String(id) === String(parsedPath[index]))
-      const sameFocus = focusedChatMessageId != null && String(focusedChatMessageId) === String(parsedNodeId)
-
-      if (samePath && sameFocus) {
-        // Re-clicking the same already-focused node should still re-scroll to it.
-        if (streamState.active) {
-          userScrolledDuringStreamRef.current = true
-        }
-        const targetIndex = findMessageRowIndex(parsedNodeId)
-        if (targetIndex !== -1) {
-          scrollToMessageRowIndex(targetIndex, 'start')
-          lastFocusedScrollIdRef.current = parsedNodeId
-        }
-        return
-      }
-
-      // Only trigger scroll if clicking a different node than currently visible
-      // This allows re-scrolling after manual navigation, but prevents redundant scrolls
-      if (String(parsedNodeId) !== String(visibleMessageId)) {
-        // Mark this selection as user-initiated so the scroll-to-selection effect may run
-        selectionScrollCauseRef.current = 'user'
-      }
-
-      // Treat user selection during streaming as an override to bottom pinning
-      if (streamState.active) {
-        userScrolledDuringStreamRef.current = true
-      }
-
-      React.startTransition(() => {
-        batch(() => {
-          if (!samePath) {
-            // User explicitly switched branches. Drop the local pending-stream fallback so
-            // another branch can be interacted with independently while a different
-            // branch keeps streaming in the background.
-            setPendingViewStreamId(null)
-            dispatch(chatSliceActions.conversationPathSet(parsedPath))
-          }
-          if (!sameFocus) {
-            dispatch(chatSliceActions.focusedChatMessageSet(parsedNodeId))
-          }
-        })
-      })
+      if (!nodeId || !path.length || !currentConversationId) return
+      chatSelection.select({
+        kind: 'message', conversationId: currentConversationId,
+        messageId: nodeId, path,
+      }, { inPlace: true, source: 'heimdall' })
     },
-    [
-      dispatch,
-      focusedChatMessageId,
-      selectedPath,
-      streamState.active,
-      visibleMessageId,
-      findMessageRowIndex,
-      scrollToMessageRowIndex,
-    ]
+    [chatSelection, currentConversationId]
   )
 
   const handleOpenParallel = useCallback(
@@ -6540,30 +6325,6 @@ function Chat() {
   //   }
   // }
 
-  // Clone conversation
-  const handleCloneConversation = useCallback(async () => {
-    if (!currentConversationId) return
-
-    setCloningConversation(true)
-
-    try {
-      const result = await cloneConversation(currentConversationId, accessToken)
-      // Refresh the sidebar's project ordering and flat/infinite conversation lists.
-      // Prefix matching also covers recent and collapsed-project caches.
-      await Promise.all([
-        queryClient.invalidateQueries({ queryKey: ['projects'] }),
-        queryClient.invalidateQueries({ queryKey: ['conversations'] }),
-      ])
-      // Navigate to the cloned conversation
-      navigate(`/chat/${result.project_id || projectIdFromUrl || 'unknown'}/${result.id}`)
-    } catch (error) {
-      console.error('Failed to clone conversation:', error)
-      throw error
-    } finally {
-      setCloningConversation(false)
-    }
-  }, [currentConversationId, accessToken, navigate, queryClient, projectIdFromUrl])
-
   const handleOpenToolHtmlModal = useCallback(
     (key?: string) => {
       htmlRegistry?.openModal(key)
@@ -6728,16 +6489,11 @@ function Chat() {
         backgroundImage: `linear-gradient(90deg, color-mix(in srgb, ${tokenUsageProgressColor} ${tokenUsageTintStrength}%, transparent) 0%, color-mix(in srgb, ${tokenUsageProgressColor} ${tokenUsageTintStrength}%, transparent) ${totalContextProgress}%, ${leftControlsTokenTintBaseColor} ${Math.min(totalContextProgress + 8, 100)}%)`,
       }
     : undefined
-  const rightControlsTintColor =
-    useCustomInputAreaBorderColor && chatInputAreaBorderColor
-      ? chatInputAreaBorderColor
-      : chatInputBorderAnimationEnabled
-        ? isDarkMode
-          ? effectiveChatInputBorderDarkColor
-          : effectiveChatInputBorderLightColor
-        : isDarkMode
-          ? '#c2410c'
-          : '#93c5fd'
+  const rightControlsTintColor = resolveComposerAgentTint(isDarkMode, customThemeEnabled ? customTheme : undefined, {
+    animation: chatInputBorderAnimation,
+    lightColor: chatInputBorderLightColor,
+    darkColor: chatInputBorderDarkColor,
+  })
   const fastModeAnimation = useFastModeAnimation()
   const showFastModeAnimation = isOpenAIChatGPTProvider && fastServiceTierEnabled && fastModeAnimation !== 'none'
   const rightControlsTintStrength = isDarkMode ? 28 : 24
@@ -6792,7 +6548,6 @@ function Chat() {
                 title={currentConversation?.title ?? ''}
                 backgroundColor={conversationToolbarBackgroundColor}
                 treeVisible={heimdallVisible}
-                cloning={cloningConversation}
                 customTheme={customTheme}
                 customThemeEnabled={customThemeEnabled}
                 isDarkMode={isDarkMode}
@@ -6804,7 +6559,6 @@ function Chat() {
                   } catch {}
                 }}
                 onRefresh={() => { void refreshConversationSnapshot() }}
-                onClone={handleCloneConversation}
                 onRename={handleRenameConversation}
                 onEditingChange={handleTitleEditingChange}
               />
@@ -6850,6 +6604,15 @@ function Chat() {
                         const renderRow = virtualRows[virtualRow.index]
                         if (!renderRow) return null
 
+                        if (renderRow.kind === 'run_stats') {
+                          return (
+                            <VirtualizedRowContainer key={renderRow.key} id={renderRow.key}
+                              index={virtualRow.index} start={virtualRow.start} measureElement={virtualizer.measureElement}>
+                              <RunStatisticsFooter statistics={renderRow.statistics} customTheme={customTheme}
+                                customThemeEnabled={customThemeEnabled} isDarkMode={isDarkMode} />
+                            </VirtualizedRowContainer>
+                          )
+                        }
                         if (renderRow.kind === 'optimistic_message') {
                           const message = renderRow.message
                           return (
@@ -7036,11 +6799,9 @@ function Chat() {
                                     controlsId={`message-group-${runId}-panel`}
                                   />
                                 </div>
-                                <div
-                                  id={`message-group-${runId}-panel`}
-                                  className={`tool-expand-container ${isExpanded ? 'open' : ''}`}
-                                >
-                                  <div className='tool-expand-content pl-2.5'>
+                                {/* Member rows mount only while open, so a collapsed run costs no per-message work. */}
+                                <DisclosurePanel id={`message-group-${runId}-panel`} expanded={isExpanded} flush>
+                                  <div className='pl-2.5'>
                                     {row.messages.map(groupedMessage => {
                                       const { contentBlocks } =
                                         parsedMessageDataById.get(groupedMessage.id) ?? EMPTY_PARSED_MESSAGE_DATA
@@ -7119,7 +6880,7 @@ function Chat() {
                                       )
                                     })()}
                                   </div>
-                                </div>
+                                </DisclosurePanel>
                               </div>
                             </VirtualizedRowContainer>
                           )
@@ -7164,13 +6925,7 @@ function Chat() {
                         }
                         const { contentBlocks } =
                           parsedMessageDataById.get(msg.id) ?? EMPTY_PARSED_MESSAGE_DATA
-                        const previousRenderRow = virtualRow.index > 0 ? virtualRows[virtualRow.index - 1] : null
-                        const previousRow = previousRenderRow?.kind === 'message_row' ? previousRenderRow.row : null
-
-                        const isProcessBridgeSourceMessage =
-                          previousRow?.kind === 'process_group' &&
-                          previousRow.bridgedMessageId != null &&
-                          String(previousRow.bridgedMessageId) === String(msg.id)
+                        const isProcessBridgeSourceMessage = bridgedProcessMessageIds.has(String(msg.id))
 
                         const displayContentBlocks =
                           isProcessBridgeSourceMessage && Array.isArray(contentBlocks)
@@ -7178,6 +6933,14 @@ function Chat() {
                             : contentBlocks
                         const assistantContainerClassName = assistantContainerClassByMessageId.get(String(msg.id))
 
+                        if (isFullAccessNotification(msg)) {
+                          return (
+                            <VirtualizedRowContainer key={renderRow.key} id={`message-${msg.id}`}
+                              index={virtualRow.index} start={virtualRow.start} measureElement={virtualizer.measureElement} className='z-0'>
+                              <FullAccessNotice />
+                            </VirtualizedRowContainer>
+                          )
+                        }
                         const modeMeta = parseMessageMeta(msg.meta)
                         if (modeMeta?.kind === 'operation_mode_change' && (modeMeta.mode === 'plan' || modeMeta.mode === 'execute')) {
                           return (
@@ -7260,6 +7023,7 @@ function Chat() {
                               onDelete={handleRequestDelete}
                               onResend={handleResend}
                               onAddToNote={handleAddToNote}
+                              onAddToChat={handleAddToChat}
                               onExplainFromSelection={handleExplainFromSelection}
                               onOpenToolHtmlModal={openToolHtmlModal}
                               onOpenSubagentTranscript={openSubagentTranscript}
@@ -7351,6 +7115,22 @@ function Chat() {
 
           {/* Textarea (bottom, grows upward because wrapper is bottom-pinned) */}
           <div className='relative isolate'>
+            {selection.status === 'pending' && (
+              <div role='status' className='px-3 py-1 text-xs opacity-70'>Opening conversation…</div>
+            )}
+            {selection.error && (
+              <div role='status' className='px-3 py-1 text-xs opacity-70'>
+                {selection.error}{' '}
+                <button type='button' className='underline' disabled={isSnapshotFetching} onClick={() => {
+                  const revision = selection.revision
+                  void refreshConversationSnapshot().then(data => {
+                    if (data && selectionRevisionRef.current === revision && selection.target) {
+                      chatSelection.select(selection.target, { inPlace: true, source: 'retry' })
+                    }
+                  })
+                }}>Retry</button>
+              </div>
+            )}
             {showGenerationLoadingAnimation && showStreamingThinkingInputTab && (
               <div className='absolute left-0 top-0 z-0 flex -translate-y-[calc(100%-8px)]'>
                 <StreamingThinkingIndicator variant='tab' compacting={showCompactionStatus} compactionCompleted={Boolean(compactionCompleted)} />
@@ -7910,6 +7690,8 @@ function Chat() {
                     <FastModeAnimationBackground
                       animation={fastModeAnimation}
                       dark={isDarkMode}
+                      operationMode={operationMode}
+                      agentTint={rightControlsTintColor}
                       theme={customThemeEnabled ? customTheme : undefined}
                     />
                   )}
@@ -8058,7 +7840,7 @@ function Chat() {
                               <ActionPopoverSwitch
                                 label='Full access'
                                 checked={fullAccessEnabled}
-                                onClick={() => setFullAccessEnabled(!fullAccessEnabled)}
+                                onClick={() => setFullAccessEnabled(!fullAccessEnabled, currentConversationId)}
                                 title='Allow tools outside the working directory on new runs'
                               />
                             </div>
@@ -8153,7 +7935,7 @@ function Chat() {
                   ) : showGenerationLoadingAnimation ? (
                     <button
                       onClick={handleStopGeneration}
-                      disabled={!streamState.active && !canStopCompaction}
+                      disabled={selection.status === 'pending' || (!streamState.active && !canStopCompaction)}
                       title={
                         canStopCompaction
                           ? 'Stop compaction'

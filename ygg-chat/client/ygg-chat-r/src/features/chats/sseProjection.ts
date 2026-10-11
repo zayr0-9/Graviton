@@ -39,6 +39,7 @@
 
 import { chatSliceActions } from './chatSlice'
 import { parseMessageMeta } from '../../../../../shared/contextInjection'
+import { isFullAccessNotification } from '../../../../../shared/accessNotifications'
 import { buildChatErrorRecord } from './localChatErrors'
 import type { ContentBlock, LineageId, Message, StreamType } from './chatTypes'
 import {
@@ -92,7 +93,7 @@ export function applyStreamProjectionPolicy(
   action: ProjectedAction,
   policy: StreamProjectionPolicy
 ): ProjectedAction {
-  if (action.type === chatSliceActions.queuedMessageInserted.type || action.type === chatSliceActions.operationModeNotificationReceived.type) {
+  if (action.type === chatSliceActions.messageBranchCreated.type || action.type === chatSliceActions.queuedMessageInserted.type || action.type === chatSliceActions.operationModeNotificationReceived.type) {
     return { ...action, payload: { ...(action.payload as object), updatePath: policy.updatePath } }
   }
   if (action.type !== chatSliceActions.streamCompleted.type) return action
@@ -308,12 +309,18 @@ export function projectServerEvent(event: ServerStreamEvent, ctx: ProjectionCont
 
     case 'user_message_persisted': {
       const message = normalizeServerMessage(event.message)
+      // Extend the selected transcript after its user input, like a mode notice,
+      // without replacing the original trigger or attaching its image previews.
+      if (isFullAccessNotification(message)) return [
+        chatSliceActions.messageAdded(message),
+        chatSliceActions.queuedMessageInserted({ message, streamId }),
+      ]
       if (ctx.userMessageArtifacts?.length) {
         message.artifacts = Array.from(new Set([...(message.artifacts || []), ...ctx.userMessageArtifacts]))
       }
       return [
         chatSliceActions.messageAdded(message),
-        chatSliceActions.messageBranchCreated({ newMessage: message }),
+        chatSliceActions.messageBranchCreated({ newMessage: message, streamId }),
         chatSliceActions.streamLineageUpdated({
           streamId,
           lineageId: event.lineageId ?? (message as any).lineage_id ?? undefined,
@@ -405,7 +412,7 @@ export function projectServerEvent(event: ServerStreamEvent, ctx: ProjectionCont
       const lineageId = event.lineageId ?? (message as any).lineage_id ?? null
       return [
         chatSliceActions.messageAdded(message),
-        chatSliceActions.messageBranchCreated({ newMessage: message }),
+        chatSliceActions.messageBranchCreated({ newMessage: message, streamId }),
         ...(lineageId
           ? [chatSliceActions.streamLineageUpdated({ streamId, lineageId } as any)]
           : []),
@@ -421,7 +428,7 @@ export function projectServerEvent(event: ServerStreamEvent, ctx: ProjectionCont
       const lineageId = event.lineageId ?? (message as any)?.lineage_id ?? null
       return [
         ...(message
-          ? [chatSliceActions.messageAdded(message), chatSliceActions.messageBranchCreated({ newMessage: message })]
+          ? [chatSliceActions.messageAdded(message), chatSliceActions.messageBranchCreated({ newMessage: message, streamId })]
           : []),
         ...(lineageId
           ? [chatSliceActions.streamLineageUpdated({ streamId, lineageId } as any)]
@@ -570,7 +577,7 @@ export function projectServerEvent(event: ServerStreamEvent, ctx: ProjectionCont
       const message = normalizeServerMessage(event.summaryMessage)
       actions.push(
         chatSliceActions.messageAdded(message),
-        chatSliceActions.messageBranchCreated({ newMessage: message }),
+        chatSliceActions.messageBranchCreated({ newMessage: message, streamId }),
         chatSliceActions.streamLineageUpdated({
           streamId,
           branchAnchorMessageId: message.id,

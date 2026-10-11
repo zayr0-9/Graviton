@@ -4,7 +4,9 @@ import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { createHash } from 'node:crypto'
+import { createRequire } from 'node:module'
 import { MessageRepo } from '../../persistence/messageRepo.js'
+import { LineageRepo } from '../../persistence/lineageRepo.js'
 import {
   ChatOrchestrator,
   linkPreparedAttachmentsToMessage,
@@ -12,6 +14,7 @@ import {
 } from '../chatOrchestrator.js'
 
 let BetterSqlite3Ctor: (new (filename: string) => Database.Database) | null = null
+let FullAccessSqliteCtor: (new (filename: string) => Database.Database) | null = null
 
 try {
   const sqliteModule = await import('better-sqlite3')
@@ -20,8 +23,35 @@ try {
   probe.close()
   BetterSqlite3Ctor = candidate
 } catch {
-  BetterSqlite3Ctor = null
+  // Match topLevelUserMessages.test.ts: use real Node SQLite when the installed
+  // addon targets Electron. Savepoints preserve the repos' nested transactions.
+  try {
+    const { DatabaseSync } = createRequire(import.meta.url)('node:sqlite')
+    FullAccessSqliteCtor = class {
+      private db: any
+      private savepoint = 0
+      constructor(filename: string) { this.db = new DatabaseSync(filename) }
+      prepare(sql: string) { return this.db.prepare(sql) }
+      exec(sql: string) { return this.db.exec(sql) }
+      close() { this.db.close() }
+      transaction<T>(run: () => T): () => T {
+        return () => {
+          const name = `test_${this.savepoint++}`
+          this.db.exec(`SAVEPOINT ${name}`)
+          try {
+            const result = run()
+            this.db.exec(`RELEASE ${name}`)
+            return result
+          } catch (error) {
+            this.db.exec(`ROLLBACK TO ${name}; RELEASE ${name}`)
+            throw error
+          }
+        }
+      }
+    } as unknown as new (filename: string) => Database.Database
+  } catch { FullAccessSqliteCtor = null }
 }
+FullAccessSqliteCtor ??= BetterSqlite3Ctor
 
 const describeIfSqlite = BetterSqlite3Ctor ? describe : describe.skip
 
@@ -234,6 +264,99 @@ describe('source lineage membership validation', () => {
     expect(shouldRejectSourceLineageMismatch('lineage-c', false)).toBe(true)
     expect(shouldRejectSourceLineageMismatch('lineage-c', true)).toBe(false)
   })
+})
+
+;(FullAccessSqliteCtor ? describe : describe.skip)('ChatOrchestrator Full access notifications', () => {
+  let db: Database.Database
+  let statements: any
+  let messageRepo: MessageRepo
+  let providerRouter: FakeProviderRouter
+  let orchestrator: ChatOrchestrator
+  let testDirectory: string
+
+  beforeEach(() => {
+    if (!FullAccessSqliteCtor) throw new Error('SQLite is unavailable in this runtime')
+
+    testDirectory = mkdtempSync(path.join(os.tmpdir(), 'chat-image-lifecycle-'))
+    mkdirSync(path.join(testDirectory, 'user_images'))
+    db = new FullAccessSqliteCtor(path.join(testDirectory, 'chat.db'))
+    createSchema(db)
+    statements = createStatements(db)
+
+    const now = new Date().toISOString()
+    statements.upsertConversation.run('c1', null, 'u1', 'Conversation', 'gpt-5.1-codex-mini', null, null, null, null, 'local', now, now)
+
+    messageRepo = new MessageRepo({ db, statements })
+    providerRouter = new FakeProviderRouter()
+    orchestrator = new ChatOrchestrator({ db, statements, providerRouter: providerRouter as any })
+  })
+
+  afterEach(() => {
+    if (db) {
+      db.close()
+    }
+    if (testDirectory) rmSync(testDirectory, { recursive: true, force: true })
+  })
+
+  it.each(['send', 'branch', 'edit-branch'] as const)('persists the deferred Full access notice after new input for %s', async operation => {
+    const original = messageRepo.createMessage({ conversationId: 'c1', parentId: null, role: 'user', content: 'original' })
+    const events: any[] = []
+    await orchestrator.runMessage({
+      operation, conversationId: 'c1', parentId: original.id, messageId: original.id,
+      content: 'new input', provider: 'openaichatgpt', modelName: 'test',
+      fullAccess: true, fullAccessNotificationId: 'toggle-1',
+    }, event => events.push(event))
+    const rows = statements.getMessagesByConversationId.all('c1') as any[]
+    const notice = rows.find(row => JSON.parse(row.meta || '{}').kind === 'full_access_change')
+    const user = rows.find(row => row.content === 'new input')
+    expect(notice?.role).toBe('user')
+    expect(user.parent_id).toBe(operation === 'edit-branch' ? null : original.id)
+    expect(notice.parent_id).toBe(user.id)
+    expect(notice.lineage_id).toBe(user.lineage_id)
+    const lineages = new LineageRepo({ db, statements })
+    const countBefore = lineages.list('c1').length
+    lineages.reconcileLegacyConversation('c1')
+    expect(lineages.list('c1')).toHaveLength(countBefore)
+    expect(notice.content).toContain('<system-reminder>')
+    expect(notice.content).toContain('already-running run')
+    const persisted = events.filter(event => event.type === 'user_message_persisted')
+    expect(persisted.map(event => event.message.id)).toEqual([user.id, notice.id])
+    expect(events.find(event => event.type === 'started').parentId).toBe(user.id)
+    const modelHistory = providerRouter.calls[0].history
+    expect(modelHistory.findIndex((row: any) => row.id === notice.id)).toBeGreaterThan(modelHistory.findIndex((row: any) => row.id === user.id))
+    expect(rows.find(row => JSON.parse(row.meta || '{}').kind === 'operation_mode_change')?.parent_id).toBe(notice.id)
+    expect(JSON.stringify(providerRouter.calls)).toContain('Full access enabled for this new run')
+    expect(events.at(-1).type).toBe('complete')
+  })
+
+  it('deduplicates a committed toggle when its first SSE acknowledgement was lost', async () => {
+    const request = { operation: 'send' as const, conversationId: 'c1', parentId: null,
+      content: 'first', provider: 'openaichatgpt', modelName: 'test',
+      fullAccess: true, fullAccessNotificationId: 'toggle-retry' }
+    await expect(orchestrator.runMessage(request, event => {
+      if (event.type === 'started') throw new Error('disconnected after commit')
+    })).rejects.toThrow('disconnected after commit')
+    const notice = messageRepo.findFullAccessNotification('c1', 'toggle-retry')
+    expect(notice).toBeTruthy()
+    const events: any[] = []
+    await orchestrator.runMessage({ ...request, content: 'second' }, event => events.push(event))
+    const notices = (statements.getMessagesByConversationId.all('c1') as any[])
+      .filter(row => JSON.parse(row.meta || '{}').kind === 'full_access_change')
+    expect(notices).toHaveLength(1)
+    expect(events.filter(event => event.type === 'user_message_persisted').at(-1).message.id).toBe(notice.id)
+    expect(messageRepo.findFullAccessNotification('other-conversation', 'toggle-retry')).toBeNull()
+  })
+
+  it.each([
+    { fullAccess: false, fullAccessNotificationId: 'toggle-1' },
+    { fullAccess: true },
+  ])('does not announce without an enabled pending human toggle: %j', async access => {
+    await orchestrator.runMessage({ operation: 'send', conversationId: 'c1', parentId: null,
+      content: 'input', provider: 'openaichatgpt', modelName: 'test', ...access }, () => {})
+    const rows = statements.getMessagesByConversationId.all('c1') as any[]
+    expect(rows.some(row => JSON.parse(row.meta || '{}').kind === 'full_access_change')).toBe(false)
+  })
+
 })
 
 describeIfSqlite('ChatOrchestrator continuation semantics', () => {

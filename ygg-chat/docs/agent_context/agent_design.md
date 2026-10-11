@@ -1,6 +1,8 @@
 ---
 paths:
   - "client/ygg-chat-r/src/components/Button/**"
+  - "client/ygg-chat-r/src/components/ActionPopover/**"
+  - "client/ygg-chat-r/src/components/InputTextArea/**"
   - "client/ygg-chat-r/src/components/ThemeManager/**"
   - "client/ygg-chat-r/src/components/Heimdall/**"
   - "client/ygg-chat-r/src/index.css"
@@ -85,6 +87,25 @@ isHovering ? 'translate-y-0 opacity-100' : 'translate-y-2 opacity-0'
 - Avoid `border-*` as the default card/input style. Use `border-transparent` only when a shared component requires a border reset.
 - Keep modal chrome simple: translucent backdrop, rounded container, no heavy outline, no drop shadow.
 - Sticky headers/footers should use background opacity and blur rather than dividing borders or shadows when possible.
+
+### Unified Soft Popover and Modal Surfaces
+
+Use the agent options popover (`src/components/ActionPopover/ActionPopover.tsx`, composed in `src/containers/Chat.tsx`) as the visual reference for compact menus and modal chrome. The slash command menu uses the same palette and shell rules. This is tonal hierarchy, not raised-card styling.
+
+- Keep the outer shell softly rounded (26px for compact popovers), borderless, and readable above the composer. Use 8px shell padding, then more inset for labels and fields. Do not add drop shadows or bevels for separation.
+- Use `settingsCustomThemesCardBg` for the shell, not `settingsPaneBodyBg`. Pane/background colors often flatten a menu into the surrounding chrome. For anchored composer overlays, resolve the shell color to opaque RGB so alpha theme colors cannot leak busy content through it; retain blur for the unthemed fallback.
+- Use `settingsCustomThemesInnerCardBg` for fields and quiet hover fills, `settingsCustomThemesButtonBg/Text` for circular icon badges and secondary pills, and `composerToggleActiveBg/Text` for selected rows and active pills. Keep primary text and muted descriptions distinct with `toolJobsPrimaryText` and `toolJobsMutedText`.
+- Do not fill both a selected row and its nested icon badge with the same active tint. Give the badge its own contrasting shell/secondary surface so the menu retains visible layers.
+- Reuse `getActionPopoverThemeStyle()` from `src/components/ActionPopover/actionPopoverTheme.ts` for composer popovers and command menus. Its shared `--cloud-*` palette keeps light/dark custom-theme updates consistent; keep dimensions and interaction semantics specific to each menu.
+- Preserve keyboard selection, focus-visible rings, dismissal, scrolling, disabled states, and reduced-motion support. A style unification is not an excuse to replace these behaviors or make every modal share the same size.
+
+### Theme-Aware Switches
+
+- Switch controls must theme the **on track, off track, and thumb**, not just the surrounding row. Do not leave a hard-coded blue enabled track inside a custom-colored popover.
+- In the soft popover palette, use `composerToggleActiveText` as the stronger on-track color and its paired `composerToggleActiveBg` as the on thumb. Use a muted-text/shell mix for the off track and `settingsCustomThemesButtonBg` for the off thumb. Reserve blue/white defaults for custom-theme-disabled mode.
+- Check track/thumb contrast in light and dark themes. Do not use a pale active tint for both the track and thumb; keep an obvious on/off distinction even when motion is disabled.
+- Use a semantic button with `role='switch'`, `aria-checked`, an accessible label, and native `disabled` behavior. Keep thumb position as a second state cue, and include a focus-visible ring.
+- Prefer shared controls such as `ActionPopoverSwitch` and inherited palette variables over per-call-site colors. Preserve the existing restrained thumb motion and its reduced-motion guard.
 
 ### Custom Theme Integration
 

@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react'
 import type { ConversationId } from '../../../../../shared/types'
 import type { ImageDraftTarget } from '../../features/chats/chatTypes'
-import { wrapPastedTextInMarkdownFence } from '../../helpers/chatKeyboardShortcuts'
+import { insertFencedText } from '../../helpers/chatKeyboardShortcuts'
 import { InputTextArea } from '../InputTextArea/InputTextArea'
 import { getSentMessageHistory } from './sentMessageHistory'
 
@@ -12,6 +12,7 @@ export type ChatInputControllerHandle = {
   setValue: (next: ChatInputUpdater) => void
   clear: () => void
   focus: () => void
+  appendFencedText: (text: string) => void
 }
 
 export type ComposerSlashCommandResult = {
@@ -119,10 +120,25 @@ export const ChatInputController = React.memo(
         onHasTextChange(hasText)
       }, [conversationId, initialValue, onHasTextChange])
 
+      const insertMarkdownText = useCallback(
+        (text: string, selectionStart = valueRef.current.length, selectionEnd = selectionStart) => {
+          if (!text) return
+          const next = insertFencedText(valueRef.current, text, selectionStart, selectionEnd)
+          historyIndexRef.current = null
+          historyDraftRef.current = ''
+          setValue(next.value)
+          window.requestAnimationFrame(() => {
+            focus()
+            wrapperRef.current?.querySelector('textarea')?.setSelectionRange(next.cursorPosition, next.cursorPosition)
+          })
+        },
+        [focus, setValue]
+      )
+
       React.useImperativeHandle(
         ref,
-        () => ({ getValue: () => valueRef.current, setValue, clear, focus }),
-        [clear, focus, setValue]
+        () => ({ getValue: () => valueRef.current, setValue, clear, focus, appendFencedText: insertMarkdownText }),
+        [clear, focus, insertMarkdownText, setValue]
       )
 
       useEffect(() => {
@@ -205,18 +221,9 @@ export const ChatInputController = React.memo(
           const textarea = event.currentTarget
           const selectionStart = textarea.selectionStart ?? valueRef.current.length
           const selectionEnd = textarea.selectionEnd ?? selectionStart
-          const fencedText = wrapPastedTextInMarkdownFence(pastedText)
-          const nextValue =
-            valueRef.current.slice(0, selectionStart) + fencedText + valueRef.current.slice(selectionEnd)
-          const nextCursorPosition = selectionStart + fencedText.length
-
-          setValue(nextValue)
-          window.requestAnimationFrame(() => {
-            textarea.focus()
-            textarea.setSelectionRange(nextCursorPosition, nextCursorPosition)
-          })
+          insertMarkdownText(pastedText, selectionStart, selectionEnd)
         },
-        [setValue]
+        [insertMarkdownText]
       )
 
       return (

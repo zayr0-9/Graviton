@@ -29,6 +29,7 @@ vi.mock('../../helpers/serverLoopSettings', () => ({ isResumableRunsEnabled: () 
 vi.mock('../../helpers/toolExecutionSettings', () => ({ getStreamIdleTimeoutMs: () => 1_000 }))
 
 import { runServerChatLoop, runServerReattach, postStreamAbort, getChatStreamErrorEnvelope } from './mainChatClient'
+import { getPendingFullAccessNotification, setFullAccessEnabled } from '../../helpers/fullAccessSettings'
 
 /** Build a fake SSE Response from a list of events (one `data:` frame each). */
 function sseResponse(events: unknown[], opts: { status?: number } = {}): Response {
@@ -331,5 +332,30 @@ describe('runServerChatLoop reauthentication', () => {
     // The whole point of the change: no side effect yanks the user anywhere.
     expect(dispatchEvent).not.toHaveBeenCalled()
     expect((globalThis as any).window.location.hash).toBe('')
+  })
+})
+
+describe('deferred Full access acknowledgement', () => {
+  it('acknowledges only the notice and leaves image consumption/optimistic clearing to the real user row', async () => {
+    setFullAccessEnabled(true, 'c1')
+    const requestId = getPendingFullAccessNotification('c1')!
+    const onUserMessagePersisted = vi.fn()
+    const events = [
+      { type: 'started', parentId: 'u1', seq: 1 },
+      { type: 'user_message_persisted', message: { id: 'u1', conversation_id: 'c1', role: 'user', parent_id: null, content: 'hello' }, seq: 2 },
+      { type: 'user_message_persisted', message: { id: 'notice', parent_id: 'u1', conversation_id: 'c1', role: 'user', meta: { kind: 'full_access_change', requestId } }, seq: 3 },
+      { type: 'complete', message: { id: 'a1', parent_id: 'notice' }, seq: 4 },
+    ]
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(sseResponse(events)))
+    const deps = collectDispatch()
+    const result = await runServerChatLoop({ operation: 'send', conversationId: 'c1', streamId: 's1',
+      path: '/conversations/c1/messages', request: {}, signal: new AbortController().signal },
+      { ...deps, onUserMessagePersisted, userMessageArtifacts: ['data:image/png;base64,YQ=='] })
+    expect(getPendingFullAccessNotification('c1')).toBeUndefined()
+    expect(onUserMessagePersisted).toHaveBeenCalledOnce()
+    expect(result.userMessage?.id).toBe('u1')
+    expect(result.userMessage?.artifacts).toEqual(['data:image/png;base64,YQ=='])
+    expect(deps.actions.filter(action => action.type === 'chat/optimisticMessageCleared')).toHaveLength(1)
+    setFullAccessEnabled(false)
   })
 })

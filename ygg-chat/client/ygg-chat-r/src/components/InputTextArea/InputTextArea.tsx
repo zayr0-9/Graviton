@@ -3,6 +3,8 @@ import { useSelector } from 'react-redux'
 import { useAppDispatch } from '../../hooks/redux'
 import { prepareImageFiles } from '../../features/chats/imagePreparation'
 import { ChevronRight, Slash } from 'lucide-react'
+import { getActionPopoverThemeStyle } from '../ActionPopover/actionPopoverTheme'
+import '../ActionPopover/actionPopover.css'
 import { selectCcCwd } from '../../features/chats/chatSelectors'
 import { chatSliceActions } from '../../features/chats/chatSlice'
 import type { ImageDraftTarget } from '../../features/chats/chatTypes'
@@ -760,26 +762,7 @@ export const InputTextArea: React.FC<TextAreaProps> = ({
       }
 
   const slashMenuStyle = customThemeEnabled
-    ? {
-        // Anchored inside acrylic/mica chrome; stay opaque even if the theme color has alpha.
-        backgroundColor: `rgb(from ${getThemeModeColor(customTheme.colors.settingsPaneBodyBg, isDarkMode)} r g b / 1)`,
-        color: getThemeModeColor(customTheme.colors.toolJobsPrimaryText, isDarkMode),
-      }
-    : undefined
-  const slashMutedTextStyle = customThemeEnabled
-    ? { color: getThemeModeColor(customTheme.colors.toolJobsMutedText, isDarkMode) }
-    : undefined
-  const slashSelectedStyle = customThemeEnabled
-    ? {
-        backgroundColor: getThemeModeColor(customTheme.colors.composerToggleActiveBg, isDarkMode),
-        color: getThemeModeColor(customTheme.colors.composerToggleActiveText, isDarkMode),
-      }
-    : undefined
-  const slashIconStyle = customThemeEnabled
-    ? {
-        backgroundColor: getThemeModeColor(customTheme.colors.settingsCustomThemesButtonBg, isDarkMode),
-        color: getThemeModeColor(customTheme.colors.settingsCustomThemesButtonText, isDarkMode),
-      }
+    ? getActionPopoverThemeStyle(customTheme, isDarkMode)
     : undefined
 
   const ideContextPillStyle = customThemeEnabled
@@ -854,7 +837,7 @@ export const InputTextArea: React.FC<TextAreaProps> = ({
         {showSlashList && filteredSlashCommands.length > 0 && (
           <div
             ref={slashListRef}
-            className='absolute bottom-full left-0 z-50 mb-3 max-h-80 w-[min(22rem,calc(100vw-2rem))] overflow-y-auto rounded-3xl bg-white p-2 text-neutral-800 thin-scrollbar dark:bg-neutral-950 dark:text-neutral-100'
+            className='slash-cloud absolute bottom-full left-0 z-50 mb-3 max-h-80 w-[min(22rem,calc(100vw-2rem))] overflow-y-auto p-2 thin-scrollbar'
             style={slashMenuStyle}
             role='group'
             aria-label='Slash commands'
@@ -862,13 +845,13 @@ export const InputTextArea: React.FC<TextAreaProps> = ({
             <div className='px-3 pb-3 pt-2'>
               <div
                 className='text-[10px] font-semibold uppercase tracking-[0.18em] text-neutral-500 dark:text-neutral-400'
-                style={slashMutedTextStyle}
+                style={{ color: 'var(--cloud-muted)' }}
               >
                 Commands
               </div>
               <div
                 className='mt-1 text-xs text-neutral-500 dark:text-neutral-400'
-                style={slashMutedTextStyle}
+                style={{ color: 'var(--cloud-muted)' }}
               >
                 Pick an action for this conversation
               </div>
@@ -890,32 +873,27 @@ export const InputTextArea: React.FC<TextAreaProps> = ({
                   <button
                     key={command}
                     type='button'
-                    className={`group/slash flex w-full items-center gap-3 rounded-2xl px-3 py-2.5 text-left transition-colors duration-[var(--ygg-motion-duration-fast)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400/70 dark:focus-visible:ring-orange-400/70 ${
-                      selected
-                        ? 'bg-blue-500/10 text-blue-700 dark:bg-orange-500/15 dark:text-orange-100'
-                        : 'text-inherit hover:bg-black/5 dark:hover:bg-white/5'
-                    }`}
-                    style={selected ? slashSelectedStyle : undefined}
+                    className='slash-cloud-command group/slash flex w-full items-center gap-3 rounded-2xl px-3 py-2.5 text-left transition-colors duration-[var(--ygg-motion-duration-fast)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400/70 dark:focus-visible:ring-orange-400/70'
+                    data-selected={selected}
                     onFocus={() => setSelectedSlashIndex(index)}
                     onMouseEnter={() => setSelectedSlashIndex(index)}
                     onClick={() => handleSlashCommandSelection(command)}
                   >
                     <span
-                      className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-full transition-colors duration-[var(--ygg-motion-duration-fast)] ${
-                        selected
-                          ? 'bg-blue-500/15 text-blue-700 dark:bg-orange-400/15 dark:text-orange-100'
-                          : 'bg-neutral-200/70 text-neutral-600 group-hover/slash:bg-neutral-200 dark:bg-white/10 dark:text-neutral-300 dark:group-hover/slash:bg-white/15'
-                      }`}
-                      style={selected ? slashSelectedStyle : slashIconStyle}
+                      className='slash-cloud-icon flex h-9 w-9 shrink-0 items-center justify-center rounded-full transition-colors duration-[var(--ygg-motion-duration-fast)]'
                       aria-hidden='true'
                     >
-                      <Slash size={18} strokeWidth={2.25} />
+                      <Slash
+                        size={18}
+                        strokeWidth={2.25}
+                        className='origin-center transition-transform duration-[var(--ygg-motion-duration-layout)] ease-[var(--ygg-motion-ease-emphasized)] group-data-[selected=true]/slash:rotate-[20deg] motion-reduce:transform-none motion-reduce:transition-none'
+                      />
                     </span>
                     <span className='min-w-0 flex-1'>
                       <span className='block truncate text-sm font-semibold'>{commandLabel}</span>
                       <span
                         className='mt-0.5 block truncate text-xs text-neutral-500 dark:text-neutral-400'
-                        style={slashMutedTextStyle}
+                        style={{ color: 'var(--cloud-muted)' }}
                       >
                         {commandDescription}
                       </span>

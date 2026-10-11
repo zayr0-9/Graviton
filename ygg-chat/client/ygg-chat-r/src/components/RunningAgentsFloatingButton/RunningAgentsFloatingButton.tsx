@@ -1,5 +1,6 @@
 import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useChatNavigate as useNavigate } from '../ChatSelection/ChatSelectionProvider'
+import { getChatSelectionHref } from '../../features/chats/chatSelection'
 import { selectCurrentConversationId, selectCurrentPath } from '../../features/chats'
 import type { Conversation } from '../../features/conversations/conversationTypes'
 import type { BranchDebugData, BranchDebugRow } from '../../features/chats/branchDebug'
@@ -39,9 +40,13 @@ const codexDevLogsEnabled =
 
 const getStreamHref = (stream: AgentStreamListItem): string | null => {
   if (!stream.conversationId) return null
-  const projectSegment = stream.projectId ? String(stream.projectId) : 'unknown'
-  const hash = stream.anchorMessageId ? `#${stream.anchorMessageId}` : ''
-  return `/chat/${projectSegment}/${stream.conversationId}${hash}`
+  const destination = { conversationId: String(stream.conversationId), projectId: stream.projectId == null ? null : String(stream.projectId) }
+  if (stream.lineageIdConfirmed && stream.lineageId) {
+    return getChatSelectionHref({ ...destination, kind: 'lineage', lineageId: stream.lineageId, messageId: stream.anchorMessageId })
+  }
+  return getChatSelectionHref(stream.anchorMessageId
+    ? { ...destination, kind: 'message', messageId: stream.anchorMessageId }
+    : { ...destination, kind: 'conversation' })
 }
 
 const ForkRunDetails = ({

@@ -39,8 +39,6 @@ interface MonacoFileEditorPaneProps {
   onSelectionChange?: (selection: SelectionInfo | null) => void
 }
 
-ensureMonacoLspBootstrap()
-
 export const MonacoFileEditorPane: React.FC<MonacoFileEditorPaneProps> = ({
   filePath,
   relativePath = null,
@@ -61,6 +59,9 @@ export const MonacoFileEditorPane: React.FC<MonacoFileEditorPaneProps> = ({
   statusPanel,
   onSelectionChange,
 }) => {
+  // Before <Editor> mounts: points @monaco-editor/react at the bundled Monaco and
+  // registers the LSP providers. Idempotent, so every pane calls it.
+  ensureMonacoLspBootstrap()
   const editorRef = useRef<MonacoEditor.editor.IStandaloneCodeEditor | null>(null)
   const selectionListenersRef = useRef<MonacoEditor.IDisposable[]>([])
   const saveStateRef = useRef({ loading, isSaving, isDirty, onSave })

@@ -116,3 +116,12 @@ describe('compaction completion presentation scope', () => {
     expect(scope).not.toBe(getCompactionPresentationScope('c', 'run-b', ['root', 'a'], messages))
   })
 })
+
+it('keeps the compaction presentation stable through an access-notice extension', () => {
+  const accessMessages = [...messages, row('access', 'summary', { role: 'user', meta: { kind: 'full_access_change' } })]
+  expect(isCompactionVisibleFor({ ...owner, summaryMessageId: 'summary' }, {
+    ...view(['root', 'a', 'summary', 'access']), messages: accessMessages,
+  })).toBe(true)
+  expect(getCompactionPresentationScope('c', null, ['root', 'a', 'summary', 'access'], accessMessages, 'summary'))
+    .toBe(getCompactionPresentationScope('c', null, ['root', 'a'], accessMessages, 'summary'))
+})

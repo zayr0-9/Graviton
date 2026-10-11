@@ -43,7 +43,7 @@ Use this when changing:
 - `client/ygg-chat-r/server/headlessServer/routes/appAutomationRoutes.ts`: live `/api/app` message endpoints (`/messages`, `/messages/tree` with `buildMessageTree`, `/messages/bulk`).
 - `client/ygg-chat-r/server/headlessServer/routes/gatewayRoutes.ts`: storage-aware `/api/gw` reads/writes that merge local (`/api/app/*` loopback) with Railway cloud; the renderer's CRUD entry point (message tree/list, bulk, message mutations, attachments).
 - `client/ygg-chat-r/server/headlessServer/persistence/messageRepo.ts`: server message writes (`createMessage`, `updateAssistantToolState`) + JS-side `children_ids` maintenance.
-- `client/ygg-chat-r/server/headlessServer/persistence/conversationRepo.ts`: read helpers (`listMessages`, `listPathToMessage`, `findNearestUserAncestor`, `touch`).
+- `client/ygg-chat-r/server/headlessServer/persistence/conversationRepo.ts`: read helpers (`listMessages`, `listMessageLineage`, `listPathToMessage`, `findNearestUserAncestor`, `touch`).
 - `client/ygg-chat-r/server/headlessServer/services/messageSink.ts`: `TreeMessageSink` (local-authoritative) vs `CloudMirrorSink` (adopts Railway id) — the loop's persistence port.
 - `client/ygg-chat-r/server/headlessServer/services/chatOrchestrator.ts`: persists the user message (via `BranchOrchestrator` → `createUserMessage`) and selects the sink per route.
 - `client/ygg-chat-r/server/headlessServer/services/cloudMirrorService.ts`: server-side CRUD mirror of Railway entities into SQLite (replaces the renderer's `dualSyncManager` for CRUD).
@@ -100,7 +100,7 @@ Important field meanings:
 - `content`: primary text content. Can be empty when structured blocks carry the useful payload.
 - `content_plain_text`: plain text copy/search field. Local SQLite also has older `plain_text_content` in some query results.
 - `thinking_block`: legacy single reasoning/thinking string. Newer streams prefer `content_blocks`.
-- `tool_calls`: assistant tool-call metadata. May be stored as JSON text in SQLite or already parsed in cloud responses.
+- `tool_calls`: assistant tool-call metadata (legacy flat list: `id`, `name`, `arguments`, `status`). May be stored as JSON text in SQLite or already parsed in cloud responses. The server-owned loop no longer mirrors each tool output into `tool_calls[].result`; the `tool_result` block in `content_blocks` is the only copy. Rows written before 2026-10-11 may still carry `result`, and readers treat it as a fallback only.
 - `tool_call_id`: for `role: 'tool'` messages, links result to assistant tool use.
 - `content_blocks`: structured ordered blocks for text, reasoning, tools, tool results, images, responses output items, etc. May be JSON text or parsed arrays depending on source.
 - `note` / `note_color`: user-authored annotation metadata used by Chat and Heimdall.
@@ -185,11 +185,14 @@ Multiple top-level roots are valid. Heimdall wraps them in a synthetic visual ro
 
 ## Normalization Rules
 
-The live `/messages/tree` endpoint (`appAutomationRoutes.ts`, served under `/api/app` and reached by the renderer via the `/api/gw` gateway) normalizes SQLite rows before returning them:
+The live `/messages/tree` endpoint (`buildConversationMessagesTreePayload` in `appAutomationRoutes.ts`, served under `/api/app` and called in-process by the `/api/gw` gateway for local conversations) normalizes SQLite rows before returning them:
 - parse `children_ids` JSON text into arrays;
 - parse `tool_calls` JSON text into objects/arrays or `null`;
 - parse `content_blocks` JSON text into arrays or `null`;
-- include attachment metadata and counts.
+- include attachment metadata and counts (`attachments`, `attachments_count`, `has_attachments`);
+- include every hook run recorded against the message as `hook_runs`, newest first.
+
+The builder runs three queries regardless of conversation size: the messages, every attachment linked to any of them, and every hook run for them (`HookRunRepo.listForConversationMessages`, uncapped). Do not reintroduce a per-message query or a row cap here; the renderer refetches this payload on every stream end. Regression coverage: `routes/__tests__/appAutomationRoutes.messagesTree.test.ts`.
 
 Frontend code must still be defensive because payloads may come from cloud, local SQLite, SSE chunks, optimistic messages, or older cached state. Existing renderers often accept both string and object forms for `tool_calls` and `content_blocks`. Server SSE rows projected into Redux go through `normalizeServerMessage` (`sseProjection.ts`), which parses the same JSON-string fields.
 

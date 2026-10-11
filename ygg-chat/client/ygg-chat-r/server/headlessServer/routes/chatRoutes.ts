@@ -142,6 +142,8 @@ function buildHeadlessMessageRequest(req: Request, operation: HeadlessChatOperat
     tools: Array.isArray(body.tools) ? body.tools : undefined,
     rootPath: body.rootPath ?? body.root_path ?? body.cwd ?? null,
     fullAccess: body.fullAccess === true,
+    fullAccessNotificationId: typeof body.fullAccessNotificationId === 'string' && body.fullAccessNotificationId.length <= 128
+      ? body.fullAccessNotificationId : undefined,
     operationMode: body.operationMode === 'plan' || body.operation_mode === 'plan' ? 'plan' : 'execute',
     includeOperationModePrompt:
       typeof body.includeOperationModePrompt === 'boolean'

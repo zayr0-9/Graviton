@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { BaseModel } from '../../../../shared/types'
 import {
   getMarkdownFenceForText,
+  insertFencedText,
   handleChatToggleShortcut,
   loadModelShortcutSlots,
   MODEL_SHORTCUT_SLOTS_STORAGE_KEY,
@@ -125,5 +126,29 @@ describe('chat-window toggle shortcuts', () => {
     expect(toggleFastServiceTier).not.toHaveBeenCalled()
     expect(event.preventDefault).toHaveBeenCalledTimes(1)
     expect(event.stopPropagation).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('fenced composer insertion', () => {
+  it.each([
+    ['', '```\nselected\n```'],
+    ['Existing draft', 'Existing draft\n```\nselected\n```'],
+    ['Existing draft\n', 'Existing draft\n```\nselected\n```'],
+  ])('appends a block on its own line to %j', (draft, expected) => {
+    expect(insertFencedText(draft, 'selected')).toEqual({ value: expected, cursorPosition: expected.length })
+  })
+
+  it('replaces the selected composer text and preserves the suffix', () => {
+    const next = insertFencedText('Before replace after', 'selected', 7, 14)
+    expect(next.value).toBe('Before \n```\nselected\n``` after')
+    expect(next.cursorPosition).toBe(next.value.length - ' after'.length)
+  })
+
+  it('preserves multiline text and nested fences on repeated appends', () => {
+    const first = insertFencedText('', 'line 1\n```\nline 2')
+    expect(first.value).toBe('````\nline 1\n```\nline 2\n````')
+    const second = insertFencedText(first.value, 'next')
+    expect(second.value).toBe(`${first.value}\n\`\`\`\nnext\n\`\`\``)
+    expect(second.cursorPosition).toBe(second.value.length)
   })
 })

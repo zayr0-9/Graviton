@@ -1,6 +1,7 @@
 import * as Diff from 'diff'
 import React, { useMemo, useState } from 'react'
-import { ChevronDown, ChevronUp } from 'lucide-react'
+import { AlignLeft, ChevronDown, Columns2, FileText, GitCompareArrows, Minus, Plus, X } from 'lucide-react'
+import { getThemeModeColor, useCustomChatTheme, useHtmlDarkMode } from '../ThemeManager/themeConfig'
 import ReactMarkdown from 'react-markdown'
 import rehypeHighlight from 'rehype-highlight'
 
@@ -37,6 +38,7 @@ interface EditFileDiffViewProps {
   args: EditFileArgs
   result: EditFileResult | string
   className?: string
+  editNumber?: number
 }
 
 type ViewMode = 'unified' | 'split' | 'inline'
@@ -99,7 +101,7 @@ function parseResult(result: EditFileResult | string): EditFileResult {
 
 function getFilename(path: string): string {
   if (!path) return 'unknown'
-  return path.split('/').pop() || path
+  return path.split(/[/\\]/).pop() || path
 }
 
 interface InlineDiffLineProps {
@@ -109,39 +111,28 @@ interface InlineDiffLineProps {
   newLineNumber?: number
 }
 
+const ADDED_TEXT_CLASS = 'text-[color:var(--edit-added,#28714b)] dark:text-[color:var(--edit-added,#9dc5a7)]'
+const REMOVED_TEXT_CLASS = 'text-[color:var(--edit-removed,#a64b4b)] dark:text-[color:var(--edit-removed,#dfaaa4)]'
+const MUTED_TEXT_CLASS = 'text-[color:var(--edit-muted,#747670)] dark:text-[color:var(--edit-muted,#a2a49c)]'
+const DIFF_SURFACE_CLASS =
+  'rounded-xl bg-[color:var(--edit-surface,rgba(80,85,75,0.035))] dark:bg-[color:var(--edit-surface,rgba(0,0,0,0.12))]'
+
 const InlineDiffLine: React.FC<InlineDiffLineProps> = ({ type, content, oldLineNumber, newLineNumber }) => {
-  const bgClass =
-    type === 'added'
-      ? 'bg-emerald-100 dark:bg-emerald-500/15'
-      : type === 'removed'
-        ? 'bg-red-100 dark:bg-red-500/15'
-        : 'bg-transparent'
-
-  const textClass =
-    type === 'added'
-      ? 'text-emerald-800 dark:text-emerald-300'
-      : type === 'removed'
-        ? 'text-red-800 dark:text-red-300 line-through'
-        : 'text-neutral-700 dark:text-neutral-300'
-
-  const prefixIcon =
-    type === 'added' ? (
-      <span className='text-emerald-600 dark:text-emerald-400 select-none'>+</span>
-    ) : type === 'removed' ? (
-      <span className='text-red-600 dark:text-red-400 select-none'>−</span>
-    ) : (
-      <span className='text-neutral-400 dark:text-neutral-600 select-none'> </span>
-    )
-
-  const lineCellClass =
-    'w-10 flex-shrink-0 text-right pr-2 text-neutral-400 dark:text-neutral-600 select-none border-r border-neutral-200 dark:border-neutral-700'
+  const textClass = type === 'added' ? ADDED_TEXT_CLASS : type === 'removed' ? REMOVED_TEXT_CLASS : MUTED_TEXT_CLASS
+  const lineNumber = type === 'removed' ? oldLineNumber : newLineNumber
+  const lineLabel = type === 'removed' ? `Original line ${oldLineNumber}` : `New line ${newLineNumber}`
 
   return (
-    <div className={`flex ${bgClass} font-mono text-[0.625em] leading-snug`}>
-      <span className={lineCellClass}>{oldLineNumber ?? ''}</span>
-      <span className={lineCellClass}>{newLineNumber ?? ''}</span>
-      <span className='w-4 flex-shrink-0 text-center'>{prefixIcon}</span>
-      <span className={`flex-1 whitespace-pre-wrap break-all ${textClass}`}>{content || ' '}</span>
+    <div className={`flex min-w-max px-3 font-mono text-[0.625em] leading-[1.85] ${textClass}`}>
+      <span
+        className='w-10 shrink-0 pr-3.5 text-right text-[color:var(--edit-muted,#94968f)] dark:text-[color:var(--edit-muted,#767970)] select-none'
+        title={lineLabel}
+        aria-label={lineLabel}
+      >
+        {lineNumber}
+      </span>
+      <span className='w-[18px] shrink-0 select-none'>{type === 'added' ? '+' : type === 'removed' ? '−' : ' '}</span>
+      <span className='flex-1 whitespace-pre'>{content || ' '}</span>
     </div>
   )
 }
@@ -191,17 +182,7 @@ const InlineDiffView: React.FC<InlineDiffViewProps> = ({ original, replacement, 
   }, [original, replacement, lineInfo])
 
   return (
-    <div className='overflow-x-auto max-h-[300px] overflow-y-auto'>
-      <div className='sticky top-0 z-10 flex font-mono text-[0.5625em] uppercase tracking-wide text-neutral-500 dark:text-neutral-400 bg-neutral-100 dark:bg-neutral-800 border-b border-neutral-200 dark:border-neutral-700'>
-        <span className='w-10 flex-shrink-0 text-right pr-2 border-r border-neutral-200 dark:border-neutral-700'>
-          old
-        </span>
-        <span className='w-10 flex-shrink-0 text-right pr-2 border-r border-neutral-200 dark:border-neutral-700'>
-          new
-        </span>
-        <span className='w-4 flex-shrink-0 text-center'>±</span>
-        <span className='flex-1 pl-1'>code</span>
-      </div>
+    <div className={`${DIFF_SURFACE_CLASS} overflow-auto max-h-[300px] py-2`}>
       {diffLines.map((line, idx) => (
         <InlineDiffLine
           key={idx}
@@ -215,7 +196,7 @@ const InlineDiffView: React.FC<InlineDiffViewProps> = ({ original, replacement, 
   )
 }
 
-const EditFileDiffViewComponent: React.FC<EditFileDiffViewProps> = ({ args, result, className = '' }) => {
+const EditFileDiffViewComponent: React.FC<EditFileDiffViewProps> = ({ args, result, className = '', editNumber }) => {
   const [viewMode, setViewMode] = useState<ViewMode>('inline')
   const [expanded, setExpanded] = useState(false)
 
@@ -226,6 +207,31 @@ const EditFileDiffViewComponent: React.FC<EditFileDiffViewProps> = ({ args, resu
   const hasChanges = (parsedResult.replacements ?? 0) > 0
   const isAppendOperation = (args.operation ?? '').toLowerCase() === 'append'
   const lineInfo = parsedResult.lineInfo
+  const { theme, enabled: customThemeEnabled } = useCustomChatTheme()
+  const isDarkMode = useHtmlDarkMode()
+  const themeStyle = customThemeEnabled ? {
+    '--edit-primary': getThemeModeColor(theme.colors.toolJobsPrimaryText, isDarkMode),
+    '--edit-surface': getThemeModeColor(theme.colors.toolJobsCodeBg, isDarkMode),
+    '--edit-code-text': getThemeModeColor(theme.colors.toolJobsCodeText, isDarkMode),
+    '--edit-muted': getThemeModeColor(theme.colors.toolJobsMutedText, isDarkMode),
+    '--edit-added': getThemeModeColor(theme.colors.toolJobsStatusCompletedText, isDarkMode),
+    '--edit-removed': getThemeModeColor(theme.colors.toolJobsStatusFailedText, isDarkMode),
+    '--edit-active-bg': getThemeModeColor(theme.colors.composerToggleActiveBg, isDarkMode),
+    '--edit-active-text': getThemeModeColor(theme.colors.composerToggleActiveText, isDarkMode),
+    '--edit-error-bg': getThemeModeColor(theme.colors.toolJobsErrorBg, isDarkMode),
+    '--edit-error-border': getThemeModeColor(theme.colors.toolJobsErrorBorder, isDarkMode),
+    '--edit-error-text': getThemeModeColor(theme.colors.toolJobsErrorText, isDarkMode),
+    color: getThemeModeColor(theme.colors.toolJobsPrimaryText, isDarkMode),
+  } as React.CSSProperties : undefined
+  const changeCounts = useMemo(() => {
+    const changes = Diff.diffLines(isAppendOperation ? '' : args.searchPattern || '',
+      isAppendOperation ? args.content || '' : args.replacement || '')
+    return changes.reduce((counts, change) => ({
+      added: counts.added + (change.added ? change.count ?? 0 : 0),
+      removed: counts.removed + (change.removed ? change.count ?? 0 : 0),
+    }), { added: 0, removed: 0 })
+  }, [isAppendOperation, args.searchPattern, args.content, args.replacement])
+  const operationLabel = (args.operation || 'replace').replace(/_/g, ' ')
 
   const originalMarkdown = useMemo(() => {
     if (!expanded || isAppendOperation || viewMode === 'inline') return ''
@@ -240,104 +246,93 @@ const EditFileDiffViewComponent: React.FC<EditFileDiffViewProps> = ({ args, resu
   }, [args.path, args.replacement, expanded, isAppendOperation, viewMode])
 
   const codeBlockStyles =
-    '[&_pre]:!m-0 [&_pre]:!p-2 [&_pre]:!bg-transparent [&_pre]:!border-0 [&_code]:!text-[0.625em] [&_code]:!leading-snug [&_code]:!font-mono [&_code]:!bg-transparent [&_.hljs]:!bg-transparent [&_pre_code]:!p-0'
+    '[&_pre]:!m-0 [&_pre]:!p-2 [&_pre]:!bg-transparent [&_pre]:!border-0 [&_code]:!text-[0.625em] [&_code]:!leading-snug [&_code]:!font-mono [&_code]:!bg-transparent [&_.hljs]:!bg-transparent [&_pre_code]:!p-0' +
+    (customThemeEnabled ? ' [&_code]:!text-[color:var(--edit-code-text)] [&_code_span]:!text-[color:var(--edit-code-text)]' : '')
 
   return (
-    <div className={`leading-none overflow-hidden ${className}`}>
-      <div
-        className='flex rounded-[4px] items-center justify-between gap-2 px-2 py-1 cursor-pointer select-none'
-        onClick={() => setExpanded(prev => !prev)}
-      >
-        <div className='flex min-w-0 flex-1 items-center gap-2'>
-          <span className='text-[0.5625em] font-bold uppercase tracking-wide rounded text-blue-600 dark:text-blue-400'>
-            {args.operation || 'replace'}
-          </span>
-
-          <span
-            className='flex min-w-0 items-center gap-1 text-[0.625em] font-mono overflow-left text-neutral-600 dark:text-neutral-500'
-            title={args.path}
-          >
-            <span className='block min-w-0 max-w-[150px] sm:max-w-[250px] md:max-w-[350px] lg:max-w-[600px] truncate'>
-              {filename}
+    <div className={`leading-none min-w-0 ${className}`} style={themeStyle}>
+      <div className='flex min-h-8 min-w-0 items-center' data-edit-header>
+        <button
+          type='button'
+          className='flex min-h-8 flex-1 min-w-0 items-center gap-2 rounded-lg px-2 text-left bg-transparent hover:bg-black/[0.025] dark:hover:bg-white/[0.025] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400/70 dark:focus-visible:ring-orange-400/70'
+          onClick={() => setExpanded(prev => !prev)}
+          aria-expanded={expanded}
+          aria-label={`${expanded ? 'Collapse' : 'Expand'} edit for ${filename}, ${operationLabel}, preview: ${changeCounts.added} added and ${changeCounts.removed} removed lines${hasChanges && parsedResult.replacements > 1 ? `, ${parsedResult.replacements} replacements` : ''}`}
+          title={args.path}
+        >
+          {editNumber !== undefined && (
+            <span className={`shrink-0 font-mono text-[0.5625em] ${MUTED_TEXT_CLASS}`} aria-label={`Edit ${editNumber}`}>
+              {editNumber}
             </span>
+          )}
+          <FileText className={`h-4 w-4 shrink-0 ${MUTED_TEXT_CLASS}`} aria-hidden='true' />
+          <span className='min-w-0 truncate text-[0.625em] font-medium text-[color:var(--edit-primary,#383936)] dark:text-[color:var(--edit-primary,#dedfd9)]'>{filename}</span>
+          <span className={`${DIFF_SURFACE_CLASS} ${MUTED_TEXT_CLASS} hidden sm:inline shrink-0 rounded-full px-2 py-1 text-[0.5625em] capitalize`}>
+            {operationLabel}
           </span>
-        </div>
-
-        <div className='flex shrink-0 items-center gap-1'>
+          <span className='flex-1' />
           {hasChanges && parsedResult.replacements > 1 && (
-            <span className='px-1.5 py-0.5 text-[0.5625em] ml-1 font-medium rounded bg-emerald-500/15 text-emerald-600 dark:text-emerald-400'>
-              {parsedResult.replacements}
+            <span className={`${MUTED_TEXT_CLASS} shrink-0 text-[0.5625em]`}>
+              {parsedResult.replacements} replacements
             </span>
           )}
-
-          {expanded && !isAppendOperation && (
-            <div className='flex items-center rounded p-0.5' onClick={e => e.stopPropagation()}>
-              <button
-                className={`px-1 py-0.5 rounded text-[0.625em] transition-all ${viewMode === 'inline' ? 'bg-white dark:bg-neutral-700 text-neutral-800 dark:text-white shadow-sm' : 'text-neutral-500 hover:text-neutral-700 dark:hover:text-neutral-300'}`}
-                onClick={() => setViewMode('inline')}
-                title='Inline diff (git-style merged)'
-              >
-                <i className='bx bx-git-compare' />
-              </button>
-              <button
-                className={`px-1 py-0.5 rounded text-[0.625em] transition-all ${viewMode === 'unified' ? 'bg-white dark:bg-neutral-600 text-neutral-800 dark:text-white shadow-sm' : 'text-neutral-500 hover:text-neutral-700 dark:hover:text-neutral-300'}`}
-                onClick={() => setViewMode('unified')}
-                title='Unified view (stacked)'
-              >
-                <i className='bx bx-align-left' />
-              </button>
-              <button
-                className={`px-1 py-0.5 rounded text-[0.625em] transition-all ${viewMode === 'split' ? 'bg-white dark:bg-neutral-600 text-neutral-800 dark:text-white shadow-sm' : 'text-neutral-500 hover:text-neutral-700 dark:hover:text-neutral-300'}`}
-                onClick={() => setViewMode('split')}
-                title='Split view (side-by-side)'
-              >
-                <i className='bx bx-columns' />
-              </button>
-            </div>
-          )}
-
-          <span className='text-neutral-400 dark:text-neutral-500'>
-            {expanded ? <ChevronUp className='w-3 h-3' /> : <ChevronDown className='w-3 h-3' />}
+          <span className='flex shrink-0 gap-2 font-mono text-[0.5625em]' aria-label='Preview line changes'>
+            {changeCounts.added > 0 && <span className={ADDED_TEXT_CLASS}>+{changeCounts.added}</span>}
+            {changeCounts.removed > 0 && <span className={REMOVED_TEXT_CLASS}>−{changeCounts.removed}</span>}
           </span>
-        </div>
+          <ChevronDown className={`h-3.5 w-3.5 shrink-0 ${MUTED_TEXT_CLASS} ${expanded ? '' : '-rotate-90'}`} aria-hidden='true' />
+        </button>
+        {!isAppendOperation && (
+          <div className='t-resize edit-view-slot' data-open={expanded} inert={!expanded} aria-hidden={!expanded}>
+            <div className='edit-view-controls flex items-center gap-0.5' role='group' aria-label='Diff view'>
+              {([
+                { mode: 'inline', label: 'Inline diff (git-style merged)', Icon: GitCompareArrows },
+                { mode: 'unified', label: 'Unified view (stacked)', Icon: AlignLeft },
+                { mode: 'split', label: 'Split view (side-by-side)', Icon: Columns2 },
+              ] as const).map(({ mode, label, Icon }) => (
+                <button
+                  key={mode}
+                  type='button'
+                  className={`flex h-7 w-7 items-center justify-center rounded-full focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400/70 dark:focus-visible:ring-orange-400/70 ${viewMode === mode ? 'bg-[color:var(--edit-active-bg,rgba(80,85,75,0.065))] dark:bg-[color:var(--edit-active-bg,rgba(255,255,255,0.055))] text-[color:var(--edit-active-text,#383936)] dark:text-[color:var(--edit-active-text,#dedfd9)]' : `bg-transparent ${MUTED_TEXT_CLASS} hover:bg-black/5 dark:hover:bg-white/5`}`}
+                  onClick={() => setViewMode(mode)}
+                  title={label}
+                  aria-label={label}
+                  aria-pressed={viewMode === mode}
+                >
+                  <Icon className='h-3.5 w-3.5' aria-hidden='true' />
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
       </div>
       {expanded && (
-        <div className='p-1 rounded-[10px] origin-top edit-diff-slide-down'>
-          {isAppendOperation ? (
-            <div className='rounded-[10px] overflow-hidden pb-1'>
-              <div className='bg-neutral-50 dark:bg-neutral-900'>
-                <InlineDiffView original='' replacement={args.content || ''} lineInfo={lineInfo} />
-              </div>
-            </div>
-          ) : viewMode === 'inline' ? (
-            <div className='rounded-[10px] overflow-hidden pb-1'>
-              <div className='bg-neutral-50 dark:bg-neutral-900'>
-                <InlineDiffView
-                  original={args.searchPattern || ''}
-                  replacement={args.replacement || ''}
-                  lineInfo={lineInfo}
-                />
-              </div>
-            </div>
+        <div className='mt-1 space-y-1'>
+          {isAppendOperation || viewMode === 'inline' ? (
+            <InlineDiffView
+              original={isAppendOperation ? '' : args.searchPattern || ''}
+              replacement={isAppendOperation ? args.content || '' : args.replacement || ''}
+              lineInfo={lineInfo}
+            />
           ) : viewMode === 'unified' ? (
             <div className='space-y-1'>
               <div className='rounded-[10px] overflow-hidden'>
-                <div className='flex items-center gap-1 px-2 py-0.5 bg-red-100 dark:bg-red-500/10 border-b border-red-200 dark:border-red-500/20'>
-                  <i className='bx bx-minus text-[0.625em] text-red-600 dark:text-red-400' />
+                <div className={`flex items-center gap-1 px-2 py-1 ${REMOVED_TEXT_CLASS}`}>
+                  <Minus className='h-3 w-3' aria-label='Original' />
                 </div>
-                <div className={`bg-red-50 dark:bg-red-500/5 ${codeBlockStyles} overflow-x-auto`}>
-                  <ReactMarkdown rehypePlugins={[[rehypeHighlight, { ignoreMissing: true }]]}>
+                <div className={`${DIFF_SURFACE_CLASS} ${codeBlockStyles} overflow-x-auto`}>
+                  <ReactMarkdown rehypePlugins={[[rehypeHighlight, { detect: true }]]}>
                     {originalMarkdown}
                   </ReactMarkdown>
                 </div>
               </div>
 
               <div className='rounded-[10px] overflow-hidden'>
-                <div className='flex items-center gap-1 px-2 py-0.5 bg-emerald-100 dark:bg-emerald-500/10 border-b border-emerald-200 dark:border-emerald-500/20'>
-                  <i className='bx bx-plus text-[0.625em] text-emerald-600 dark:text-emerald-400' />
+                <div className={`flex items-center gap-1 px-2 py-1 ${ADDED_TEXT_CLASS}`}>
+                  <Plus className='h-3 w-3' aria-label='Replacement' />
                 </div>
-                <div className={`bg-emerald-50 dark:bg-emerald-500/5 ${codeBlockStyles} overflow-x-auto`}>
-                  <ReactMarkdown rehypePlugins={[[rehypeHighlight, { ignoreMissing: true }]]}>
+                <div className={`${DIFF_SURFACE_CLASS} ${codeBlockStyles} overflow-x-auto`}>
+                  <ReactMarkdown rehypePlugins={[[rehypeHighlight, { detect: true }]]}>
                     {replacementMarkdown}
                   </ReactMarkdown>
                 </div>
@@ -346,28 +341,28 @@ const EditFileDiffViewComponent: React.FC<EditFileDiffViewProps> = ({ args, resu
           ) : (
             <div className='grid grid-cols-2 gap-1'>
               <div className='rounded-[10px] overflow-hidden'>
-                <div className='flex items-center gap-1 px-2 py-0.5 bg-red-100 dark:bg-red-500/10 border-b border-red-200 dark:border-red-500/20'>
-                  <i className='bx bx-minus text-[0.625em] text-red-600 dark:text-red-400' />
-                  <span className='text-[0.5625em] font-medium text-red-700 dark:text-red-400/80'>Original</span>
+                <div className={`flex items-center gap-1 px-2 py-1 ${REMOVED_TEXT_CLASS}`}>
+                  <Minus className='h-3 w-3' aria-label='Original' />
+                  <span className='text-[0.5625em] font-medium'>Original</span>
                 </div>
                 <div
-                  className={`bg-red-50 dark:bg-red-500/5 ${codeBlockStyles} overflow-x-auto max-h-[250px] overflow-y-auto`}
+                  className={`${DIFF_SURFACE_CLASS} ${codeBlockStyles} overflow-x-auto max-h-[250px] overflow-y-auto`}
                 >
-                  <ReactMarkdown rehypePlugins={[[rehypeHighlight, { ignoreMissing: true }]]}>
+                  <ReactMarkdown rehypePlugins={[[rehypeHighlight, { detect: true }]]}>
                     {originalMarkdown}
                   </ReactMarkdown>
                 </div>
               </div>
 
               <div className='rounded-[10px] overflow-hidden'>
-                <div className='flex items-center gap-1 px-2 py-0.5 bg-emerald-100 dark:bg-emerald-500/10 border-b border-emerald-200 dark:border-emerald-500/20'>
-                  <i className='bx bx-plus text-[0.625em] text-emerald-600 dark:text-emerald-400' />
-                  <span className='text-[0.5625em] font-medium text-emerald-700 dark:text-emerald-400/80'>Replacement</span>
+                <div className={`flex items-center gap-1 px-2 py-1 ${ADDED_TEXT_CLASS}`}>
+                  <Plus className='h-3 w-3' aria-label='Replacement' />
+                  <span className='text-[0.5625em] font-medium'>Replacement</span>
                 </div>
                 <div
-                  className={`bg-emerald-50 dark:bg-emerald-500/5 ${codeBlockStyles} overflow-x-auto max-h-[250px] overflow-y-auto`}
+                  className={`${DIFF_SURFACE_CLASS} ${codeBlockStyles} overflow-x-auto max-h-[250px] overflow-y-auto`}
                 >
-                  <ReactMarkdown rehypePlugins={[[rehypeHighlight, { ignoreMissing: true }]]}>
+                  <ReactMarkdown rehypePlugins={[[rehypeHighlight, { detect: true }]]}>
                     {replacementMarkdown}
                   </ReactMarkdown>
                 </div>
@@ -377,9 +372,16 @@ const EditFileDiffViewComponent: React.FC<EditFileDiffViewProps> = ({ args, resu
         </div>
       )}
       {expanded && !isSuccess && parsedResult.message && (
-        <div className='rounded-[10px] flex items-center gap-1.5 px-2 py-1 text-[0.5625em] border font-mono bg-red-50 dark:bg-red-500/5 border-red-200 dark:border-red-500/20 text-red-700 dark:text-red-400/90'>
-          <i className='bx bx-x text-[0.75em]' />
-          <span className='flex-1 truncate'>{parsedResult.message}</span>
+        <div
+          className='rounded-[10px] flex items-center gap-1.5 px-2 py-1 text-[0.5625em] border font-mono bg-red-50 dark:bg-red-500/5 border-red-200 dark:border-red-500/20 text-red-700 dark:text-red-400/90'
+          style={customThemeEnabled ? {
+            backgroundColor: 'var(--edit-error-bg)',
+            borderColor: 'var(--edit-error-border)',
+            color: 'var(--edit-error-text)',
+          } : undefined}
+        >
+          <X className='h-3 w-3 shrink-0' aria-hidden='true' />
+          <span className='min-w-0 flex-1 whitespace-pre-wrap break-words'>{parsedResult.message}</span>
           {parsedResult.matchStrategy && parsedResult.matchStrategy !== 'exact' && (
             <span className='px-1 py-0.5 text-[0.5em] uppercase rounded bg-amber-100 dark:bg-amber-500/20 text-amber-700 dark:text-amber-400'>
               {parsedResult.matchStrategy}

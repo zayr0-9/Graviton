@@ -11,6 +11,10 @@ dist-electron/
 build/
 *.tsbuildinfo
 
+# Generated mobile UI bundle
+/server/headlessServer/ui/mobile/assets/mobile-app.js
+/server/headlessServer/ui/mobile/assets/mobile-app.js.map
+
 # Compiled electron files
 electron/*.cjs
 electron/*.js

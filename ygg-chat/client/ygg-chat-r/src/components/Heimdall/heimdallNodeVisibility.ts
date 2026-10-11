@@ -1,11 +1,12 @@
 import type { ChatNode } from '../../features/chats/chatTypes'
-import { isContextInjectionMessage, parseMessageMeta } from '../../../../../shared/contextInjection'
+import { isContextInjectionMessage } from '../../../../../shared/contextInjection'
+import { isRunSettingsNotification } from '../../../../../shared/accessNotifications'
 
 /** Shared semantic-noise filter; do not hide real reasoning/tool activity. */
 export function isHeimdallScaffoldingMessage(message: unknown, filterEmptyMessages = true): boolean {
   return shouldPromoteHeimdallNode({
     isContextInjection: isContextInjectionMessage(message),
-    isOperationModeChange: parseMessageMeta((message as { meta?: unknown } | null)?.meta)?.kind === 'operation_mode_change',
+    isOperationModeChange: isRunSettingsNotification(message),
     isEmpty: false,
     hasSiblings: false,
     filterEmptyMessages,

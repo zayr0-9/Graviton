@@ -2,7 +2,7 @@ import { renderToStaticMarkup } from 'react-dom/server'
 import type { ReactNode } from 'react'
 import { describe, expect, it, vi } from 'vitest'
 import { buildAgentForkGroups, type AgentStreamListItem } from '../../hooks/useRunningAgentStreams'
-import { AgentsMonitorGrid } from './AgentsMonitorGrid'
+import { AgentsMonitorGrid, getAgentGridCardHeight } from './AgentsMonitorGrid'
 import { createEmptyStreamState } from '../../features/chats/streamHelpers'
 import type { AgentRunPreview } from '../../features/chats/agentRunPreviewSlice'
 
@@ -76,6 +76,13 @@ describe('fork grid', () => {
     expect(html).toContain('md:[grid-template-columns:repeat(auto-fit,minmax(min(100%,max(18rem,calc((100%_-_0.75rem)/2))),1fr))]')
     expect(html).toContain('xl:[grid-template-columns:repeat(auto-fit,minmax(min(100%,max(18rem,calc((100%_-_1.5rem)/3))),1fr))]')
   })
+  it.each([
+    [1, 'max(20rem, min(52dvh, 28rem))'],
+    [2, 'max(25rem, min(65dvh, 35rem))'],
+    [3, 'max(30rem, min(78dvh, 42rem))'],
+  ])('scales card height for %i actual grid columns', (columns, height) => {
+    expect(getAgentGridCardHeight(columns)).toBe(height)
+  })
   it('offers a separate chat button beside status for active and completed forks', () => {
     const html = render([run('a')], [run('old', { lineageId: 'other-fork', status: 'completed' })])
     expect(html.match(/Open chat ↗/g)).toHaveLength(2)
@@ -103,6 +110,36 @@ describe('fork grid', () => {
     expect(html).not.toContain('role="status"')
     expect(html).toContain('Transcript a')
     expect(html).toContain('aria-label="Preview First chat · fork sam"')
+  })
+  it('reuses Chat’s streaming animation only for active forks', () => {
+    const html = render([run('a')], [run('old', { lineageId: 'other-fork', status: 'completed' })])
+    expect(html.match(/aria-label="Assistant is working"/g)).toHaveLength(1)
+    expect(html).toContain('tool-name-shimmer')
+    expect(html).toContain('Thinking')
+    expect(html.indexOf('Transcript a')).toBeLessThan(html.indexOf('aria-label="Assistant is working"'))
+    expect(render([], [run('old', { status: 'completed' })])).not.toContain('Assistant is working')
+  })
+  it('shows the animation while waiting for the first streaming output', () => {
+    render([run('a')])
+    const preview = capture.byStreamId.a
+    preview.stream.buffer = ''
+    preview.entries[0].stream.buffer = ''
+    const html = renderToStaticMarkup(<AgentsMonitorGrid activeStreams={[run('a')]} streamHistory={[]} grouped={false} onOpenFork={() => {}} onOpenChat={() => {}} />)
+    expect(html).toContain('Assistant is working')
+    expect(html).not.toContain('Waiting for run output')
+  })
+  it('wraps long user paths within narrow preview cards without changing assistant code layout', () => {
+    render([run('a')])
+    const path = '@/Users/karansingh/Projects/Graviton/ygg-chat/client/ygg-chat-r/src/containers/Settings.tsx'
+    capture.byStreamId.a.entries.unshift({ key: 'request', message: {
+      id: 'request', conversation_id: 'chat-1', role: 'user', content: `Update ${path}`,
+      content_plain_text: `Update ${path}`, children_ids: [], created_at: '2026-10-10T12:00:00Z',
+      model_name: '', partial: false, pastedContext: [], artifacts: [],
+    } })
+    const html = renderToStaticMarkup(<AgentsMonitorGrid activeStreams={[run('a')]} streamHistory={[]} grouped={false} onOpenFork={() => {}} onOpenChat={() => {}} />)
+    expect(html).toContain(path)
+    expect(html.match(/\[&amp;_\.chat-markdown\]:\[overflow-wrap:anywhere\]/g)).toHaveLength(1)
+    expect(html).toContain('Transcript a')
   })
   it('has an empty state', () => { expect(render([])).toContain('No captured agent forks yet.') })
 })

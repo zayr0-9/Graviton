@@ -30,7 +30,7 @@ export const MarkdownContent: React.FC<MarkdownContentProps> = ({ content, class
   >
     <ReactMarkdown
       remarkPlugins={[remarkGfm]}
-      rehypePlugins={[[rehypeHighlight, { ignoreMissing: true }]]}
+      rehypePlugins={[[rehypeHighlight, { detect: true }]]}
       components={MARKDOWN_COMPONENTS}
     >
       {prepareMermaidMarkdown(content)}

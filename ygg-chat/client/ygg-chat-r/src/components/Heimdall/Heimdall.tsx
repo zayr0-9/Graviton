@@ -1,12 +1,12 @@
 import { useQueryClient } from '@tanstack/react-query'
 import { isContextInjectionMessage } from '../../../../../shared/contextInjection'
 import 'boxicons/css/boxicons.min.css'
-import { Flame, ListFilter, RotateCcw, ZoomIn, ZoomOut } from 'lucide-react'
+import { ChevronRight, Flame, ListFilter, RotateCcw, ZoomIn, ZoomOut } from 'lucide-react'
 import type { JSX } from 'react'
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import ReactMarkdown from 'react-markdown'
 import { useDispatch, useSelector } from 'react-redux'
-import { useNavigate } from 'react-router-dom'
+import { useChatNavigate as useNavigate } from '../ChatSelection/ChatSelectionProvider'
 import rehypeHighlight from 'rehype-highlight'
 import remarkGfm from 'remark-gfm'
 import {
@@ -861,15 +861,12 @@ export const Heimdall: React.FC<HeimdallProps> = ({
       if (!item) return
       searchFocusPendingRef.current = true
       const path = buildBranchPathForMessage(flatMessages as any, item.id)
-      if (path.length > 0) {
-        dispatch(chatSliceActions.conversationPathSet(path))
-      }
-      dispatch(chatSliceActions.focusedChatMessageSet(item.id))
+      if (path.length > 0) onNodeSelect?.(String(item.id), path.map(String))
       setSearchOpen(false)
       setSearchQuery('')
       setSearchHoverIndex(-1)
     },
-    [dispatch, flatMessages]
+    [onNodeSelect, flatMessages]
   )
   const handleSearchClose = useCallback(() => {
     setSearchOpen(false)
@@ -1498,15 +1495,7 @@ export const Heimdall: React.FC<HeimdallProps> = ({
         // But when the same focused node is clicked again, route through onNodeSelect
         // so Chat can force a re-scroll to that message.
         if (currentPathIds && currentPathIds.includes(nodeIdParsed)) {
-          const isSameFocusedNode =
-            focusedChatMessageId != null && String(focusedChatMessageId) === String(nodeIdParsed)
-
-          if (isSameFocusedNode) {
-            const currentPath = (currentPathIds ?? []).map(id => String(id))
-            onNodeSelect(nodeId, currentPath.length > 0 ? currentPath : getPathWithDescendants(nodeId))
-          } else {
-            dispatch(chatSliceActions.focusedChatMessageSet(nodeIdParsed))
-          }
+          onNodeSelect(nodeId, currentPathIds.map(String))
         } else {
           const path = getPathWithDescendants(nodeId)
           onNodeSelect(nodeId, path)
@@ -4260,12 +4249,16 @@ export const Heimdall: React.FC<HeimdallProps> = ({
                     </p>
                   )}
                   {conversationProjectGroups.map(group => (
-                    <section key={group.projectId === null ? 'no-project' : `project-${group.projectId}`} aria-label={group.name}>
-                      <h4 className='px-3 pb-1 text-xs font-semibold text-stone-500 dark:text-stone-400 break-words' style={heimdallContextMenuHeaderStyle}>
-                        {group.name}
-                        <span className='ml-2 font-normal'>{group.conversations.length}</span>
-                      </h4>
-                      <div className='space-y-1'>
+                    <details key={group.projectId === null ? 'no-project' : `project-${group.projectId}`} className='group/project' aria-label={group.name}>
+                      <summary
+                        className='flex cursor-pointer list-none items-center gap-2 rounded-xl px-3 py-2 text-xs font-semibold text-stone-500 hover:bg-stone-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400/70 dark:text-stone-400 dark:hover:bg-neutral-800 dark:focus-visible:ring-orange-400/70 [&::-webkit-details-marker]:hidden'
+                        style={heimdallContextMenuHeaderStyle}
+                      >
+                        <ChevronRight size={16} className='shrink-0 group-open/project:rotate-90' aria-hidden='true' />
+                        <span className='min-w-0 flex-1 break-words'>{group.name}</span>
+                        <span className='shrink-0 font-normal'>{group.conversations.length}</span>
+                      </summary>
+                      <div className='mt-1 space-y-1'>
                         {group.conversations.map(conversation => {
                           const title = conversation.title?.trim() || 'Untitled conversation'
                           const updatedAt = conversation.updated_at ? new Date(conversation.updated_at) : null
@@ -4298,7 +4291,7 @@ export const Heimdall: React.FC<HeimdallProps> = ({
                           )
                         })}
                       </div>
-                    </section>
+                    </details>
                   ))}
                 </div>
               )}
@@ -4575,7 +4568,7 @@ export const Heimdall: React.FC<HeimdallProps> = ({
                             >
                               <ReactMarkdown
                                 remarkPlugins={[remarkGfm]}
-                                rehypePlugins={[[rehypeHighlight, { ignoreMissing: true }]]}
+                                rehypePlugins={[[rehypeHighlight, { detect: true }]]}
                               >
                                 {block.text}
                               </ReactMarkdown>
@@ -4651,7 +4644,7 @@ export const Heimdall: React.FC<HeimdallProps> = ({
                           <div className='prose prose-sm dark:prose-invert max-w-none text-sm break-words overflow-hidden ygg-line-clamp-8'>
                             <ReactMarkdown
                               remarkPlugins={[remarkGfm]}
-                              rehypePlugins={[[rehypeHighlight, { ignoreMissing: true }]]}
+                              rehypePlugins={[[rehypeHighlight, { detect: true }]]}
                             >
                               {selectedNode.message}
                             </ReactMarkdown>
@@ -4672,7 +4665,7 @@ export const Heimdall: React.FC<HeimdallProps> = ({
                   >
                     <ReactMarkdown
                       remarkPlugins={[remarkGfm]}
-                      rehypePlugins={[[rehypeHighlight, { ignoreMissing: true }]]}
+                      rehypePlugins={[[rehypeHighlight, { detect: true }]]}
                     >
                       {selectedNode.message || '...'}
                     </ReactMarkdown>
@@ -4717,7 +4710,7 @@ export const Heimdall: React.FC<HeimdallProps> = ({
                   : 'Assistant Note'}
             </div>
             <div className='prose prose-sm dark:prose-invert max-w-none text-sm break-words overflow-y-auto thin-scrollbar'>
-              <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[[rehypeHighlight, { ignoreMissing: true }]]}>
+              <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[[rehypeHighlight, { detect: true }]]}>
                 {hoveredNote.note}
               </ReactMarkdown>
             </div>
@@ -4783,7 +4776,7 @@ export const Heimdall: React.FC<HeimdallProps> = ({
                       Parent Task
                     </div>
                     <div className='prose prose-sm dark:prose-invert max-w-none text-stone-700 dark:text-stone-300 prose-p:my-1 prose-headings:my-2 prose-pre:my-2 prose-pre:bg-stone-100 dark:prose-pre:bg-neutral-800 prose-code:text-orange-600 dark:prose-code:text-orange-400'>
-                      <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeHighlight]}>
+                      <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[[rehypeHighlight, { detect: true }]]}>
                         {parentMessage?.content || 'Parent Task'}
                       </ReactMarkdown>
                     </div>
@@ -4827,7 +4820,7 @@ export const Heimdall: React.FC<HeimdallProps> = ({
                           {/* Show prompt/message first when it is not already present in content blocks */}
                           {shouldRenderNodeMessage && (
                             <div className='prose prose-sm dark:prose-invert max-w-none text-stone-800 dark:text-stone-200 prose-p:my-1 prose-headings:my-2 prose-pre:my-2 prose-pre:bg-stone-100 dark:prose-pre:bg-neutral-800 prose-code:text-orange-600 dark:prose-code:text-orange-400 prose-pre:text-xs prose-pre:overflow-x-auto mb-3'>
-                              <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeHighlight]}>
+                              <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[[rehypeHighlight, { detect: true }]]}>
                                 {node.message}
                               </ReactMarkdown>
                             </div>
@@ -4846,7 +4839,7 @@ export const Heimdall: React.FC<HeimdallProps> = ({
                                       key={blockIdx}
                                       className='prose prose-sm dark:prose-invert max-w-none text-stone-700 dark:text-stone-300 prose-p:my-1 prose-pre:my-2 prose-pre:bg-stone-100 dark:prose-pre:bg-neutral-800 prose-code:text-orange-600 dark:prose-code:text-orange-400 prose-pre:text-xs prose-pre:overflow-x-auto'
                                     >
-                                      <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeHighlight]}>
+                                      <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[[rehypeHighlight, { detect: true }]]}>
                                         {textContent}
                                       </ReactMarkdown>
                                     </div>

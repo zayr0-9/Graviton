@@ -9,7 +9,7 @@ import { createPortal } from 'react-dom'
 import { AnimatePresence, motion, useReducedMotion } from 'framer-motion'
 import { motionState, softTransition, useMotionPreferences } from '../motion'
 import ReactMarkdown from 'react-markdown'
-import { useNavigate } from 'react-router-dom'
+import { useChatNavigate as useNavigate } from '../ChatSelection/ChatSelectionProvider'
 import { useSelector } from 'react-redux'
 import rehypeHighlight from 'rehype-highlight'
 import rehypeKatex from 'rehype-katex'
@@ -51,6 +51,8 @@ import { ImageAttachmentNotice, isImageAttachmentInfoMessage } from './ImageAtta
 import { waitForImagePreparation } from '../../features/chats/imagePreparation'
 import { hasAcceptedImageAttachments } from '../../features/chats/acceptedImageAttachments'
 import { isWatcherCompletionMessage, WatcherCompletionNotice } from './WatcherCompletionNotice'
+import { isFullAccessNotification } from '../../../../../shared/accessNotifications'
+import { FullAccessNotice } from './FullAccessNotice'
 import { ToolCallGroupCard, type McpViewerPayload } from './ToolCallGroupCard'
 import {
   buildToolCallGroupsFromBlocks,
@@ -111,6 +113,7 @@ interface ChatMessageProps {
   onCopy?: (content: string) => void
   onResend?: (id: string) => void
   onAddToNote?: (text: string) => void
+  onAddToChat?: (text: string) => void
   onExplainFromSelection?: (id: string, newContent: string) => void
   onOpenToolHtmlModal?: (key?: string) => void
   onOpenSubagentTranscript?: (toolCallId: string) => void
@@ -313,6 +316,38 @@ const CodeRenderer: React.FC<any> = ({ inline, className, children, ...props }) 
 
 // Stable components map so ReactMarkdown does not treat its renderers as changed each render.
 const MARKDOWN_COMPONENTS = { pre: PreRenderer, code: CodeRenderer, a: MarkdownLink }
+type MarkdownPlugins = NonNullable<React.ComponentProps<typeof ReactMarkdown>['rehypePlugins']>
+const MARKDOWN_REMARK_PLUGINS: MarkdownPlugins = [remarkGfm, remarkMath]
+const MARKDOWN_REHYPE_PLUGINS: MarkdownPlugins = [[rehypeHighlight, { detect: true }], rehypeKatex]
+
+interface MarkdownBlockProps {
+  markdown: string
+  className: string
+  themeVars: ReturnType<typeof getMarkdownThemeVars>
+  style?: React.CSSProperties
+  id?: string
+}
+
+/**
+ * One rendered markdown node. Memoized on its props, so a re-render of the message for a hover,
+ * a menu, or a stream chunk in another block does not re-run remark/rehype for text that did not
+ * change. `themeVars` and `style` must therefore keep their identity across such renders.
+ */
+const MarkdownBlock = React.memo(function MarkdownBlock({ markdown, className, themeVars, style, id }: MarkdownBlockProps) {
+  const mergedStyle = useMemo(() => ({ ...themeVars, ...style }), [themeVars, style])
+  return (
+    <div id={id} className={className} style={mergedStyle}>
+      <ReactMarkdown
+        remarkPlugins={MARKDOWN_REMARK_PLUGINS}
+        rehypePlugins={MARKDOWN_REHYPE_PLUGINS}
+        components={MARKDOWN_COMPONENTS}
+        urlTransform={markdownUrlTransform}
+      >
+        {prepareMermaidMarkdown(markdown)}
+      </ReactMarkdown>
+    </div>
+  )
+})
 
 /**
  * R5 — `excludeFromContext` means EVERYWHERE, not just the server's history builder.
@@ -394,6 +429,7 @@ const ChatMessageBody: React.FC<ChatMessageProps> = React.memo(
     onDelete,
     onCopy,
     onAddToNote,
+    onAddToChat,
     onExplainFromSelection,
     onOpenToolHtmlModal,
     onOpenSubagentTranscript,
@@ -688,11 +724,16 @@ const ChatMessageBody: React.FC<ChatMessageProps> = React.memo(
 
       // Rendered HTML for rich paste support. `.prose` is only ever a rendered-markdown node, so
       // the error bubble (a sibling, never inside one) cannot leak into the rich-text flavour.
+      // Reasoning and tool detail are markdown too, so skip every `.prose` inside a process
+      // block: the answer is the prose that sits directly in the message stack.
       let html: string | undefined
       const messageEl = document.getElementById(`message-${id}`)
       if (messageEl) {
-        const proseEl = messageEl.querySelector('.prose')
-        if (proseEl) html = proseEl.innerHTML
+        const answerHtml = Array.from(messageEl.querySelectorAll('.prose'))
+          .filter(node => !node.closest('[data-chat-block="reasoning"], [data-chat-block="tool"]'))
+          .map(node => node.innerHTML)
+          .join('')
+        if (answerHtml) html = answerHtml
       }
 
       const ok = await copyRichText(copyText, html)
@@ -1005,14 +1046,16 @@ const ChatMessageBody: React.FC<ChatMessageProps> = React.memo(
     const surfaceStyle: React.CSSProperties | undefined =
       drawSurface && roleTheme ? { backgroundColor: getThemeModeColor(roleTheme.containerBg, isDarkMode) } : undefined
 
-    const markdownThemeVars = getMarkdownThemeVars(
-      customThemeEnabled ? customTheme : createDefaultCustomChatTheme(),
-      isDarkMode
+    // Both objects are props of the memoized `MarkdownBlock`, so they keep their identity across
+    // renders that change neither the theme nor the font offset.
+    const markdownThemeVars = useMemo(
+      () => getMarkdownThemeVars(customThemeEnabled ? customTheme : createDefaultCustomChatTheme(), isDarkMode),
+      [customThemeEnabled, customTheme, isDarkMode]
     )
 
     // Style object for content areas that scale with fontSizeOffset. Disclosure labels use
     // em-based sizes so they inherit it too.
-    const messageContentStyle = getChatFontSizeOffsetStyle(fontSizeOffset)
+    const messageContentStyle = useMemo(() => getChatFontSizeOffsetStyle(fontSizeOffset), [fontSizeOffset])
 
     const renderMarkdownNode = ({
       key,
@@ -1027,16 +1070,14 @@ const ChatMessageBody: React.FC<ChatMessageProps> = React.memo(
       style?: React.CSSProperties
       id?: string
     }) => (
-      <div key={key} id={nodeId} className={markdownClassName} style={{ ...markdownThemeVars, ...style }}>
-        <ReactMarkdown
-          remarkPlugins={[remarkGfm, remarkMath]}
-          rehypePlugins={[[rehypeHighlight, { ignoreMissing: true }], rehypeKatex]}
-          components={MARKDOWN_COMPONENTS}
-          urlTransform={markdownUrlTransform}
-        >
-          {prepareMermaidMarkdown(markdown)}
-        </ReactMarkdown>
-      </div>
+      <MarkdownBlock
+        key={key}
+        id={nodeId}
+        markdown={markdown}
+        className={markdownClassName}
+        themeVars={markdownThemeVars}
+        style={style}
+      />
     )
 
     const renderImageNode = ({ key, url, onClick }: { key: string; url: string; onClick?: () => void }) => (
@@ -1885,6 +1926,9 @@ const ChatMessageBody: React.FC<ChatMessageProps> = React.memo(
                   modelName={modelName}
                   isVisible={isHovering}
                   variant='default'
+                  customTheme={customTheme}
+                  customThemeEnabled={customThemeEnabled}
+                  isDarkMode={isDarkMode}
                 />
                 {moreMenuPlacement &&
                   createPortal(
@@ -2013,6 +2057,14 @@ const ChatMessageBody: React.FC<ChatMessageProps> = React.memo(
                       }
                     : undefined
                 }
+                onAddToChatSelection={
+                  hasSelection && onAddToChat
+                    ? () => {
+                        closeFloatingActions()
+                        onAddToChat(selectedText)
+                      }
+                    : undefined
+                }
                 onSave={
                   !hasSelection
                     ? () => {
@@ -2062,6 +2114,9 @@ const ChatMessageBody: React.FC<ChatMessageProps> = React.memo(
                 isVisible={true}
                 variant={hasSelection ? 'selection' : 'default'}
                 layout='menu'
+                customTheme={customTheme}
+                customThemeEnabled={customThemeEnabled}
+                isDarkMode={isDarkMode}
               />
             </div>,
             document.body
@@ -2148,6 +2203,7 @@ const ChatMessage: React.FC<ChatMessageProps> = React.memo(props => {
       className={`${props.width} ${props.className ?? ''}`} customTheme={props.customTheme}
       customThemeEnabled={props.customThemeEnabled} isDarkMode={props.isDarkMode} />
   }
+  if (isFullAccessNotification(message)) return <FullAccessNotice />
   if (isWatcherCompletionMessage(message)) {
     return <WatcherCompletionNotice content={props.content} id={`message-${props.id}`}
       className={`${props.width} ${props.className ?? ''}`} customTheme={props.customTheme}

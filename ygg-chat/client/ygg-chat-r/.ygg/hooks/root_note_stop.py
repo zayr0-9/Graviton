@@ -2,7 +2,7 @@ import json
 import sys
 from urllib import request, error
 
-MODEL = 'gpt-5.4-mini'
+MODEL = 'gpt-6-luna'
 PROVIDER = 'openai'
 
 # Semantic note-pill color scheme. Each color maps to one category; the

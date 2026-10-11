@@ -125,8 +125,8 @@ export function buildHookLineage(params: {
 }
 
 export interface ConversationRepoLike {
-  listMessages(conversationId: string): any[]
-  getMessageById(messageId: string): any
+  /** `{ id, parent_id }` for every message of the conversation — all the lineage walk reads. */
+  listMessageLineage(conversationId: string): ChatHookMessageLike[]
 }
 
 export interface ChatHookMetadata {
@@ -142,8 +142,10 @@ export interface ChatHookMetadata {
 /**
  * Port of chatActions.ts buildHookMetadata (:1311-1347). The renderer sources
  * messages from the RQ cache / Redux; the server sources them from
- * ConversationRepo.listMessages (all rows for the conversation, created_at ASC) —
- * the full id->message map the lineage walk needs.
+ * ConversationRepo.listMessageLineage — `{ id, parent_id }` for every row of the
+ * conversation, the full parent map the walk needs and nothing more (no
+ * content_blocks payloads). With neither messageId nor parentId there is nothing to
+ * walk from and the lineage is the constant empty root, so the read is skipped.
  */
 export function buildHookMetadata(params: {
   conversationRepo: ConversationRepoLike
@@ -157,10 +159,13 @@ export function buildHookMetadata(params: {
   const conversationId = params.conversationId != null ? String(params.conversationId) : null
   const messageId = params.messageId != null ? String(params.messageId) : null
   let parentId = params.parentId != null ? String(params.parentId) : null
-  const messages = conversationId ? params.conversationRepo.listMessages(conversationId) : []
+  const messages =
+    conversationId && (messageId != null || parentId != null)
+      ? params.conversationRepo.listMessageLineage(conversationId)
+      : []
 
   if (messageId && parentId == null) {
-    const currentMessage = messages.find((message: any) => String(message.id) === messageId)
+    const currentMessage = messages.find(message => String(message.id) === messageId)
     if (currentMessage?.parent_id != null) {
       parentId = String(currentMessage.parent_id)
     }
@@ -262,6 +267,12 @@ export function createPreToolUseDenyError(
 // ── Session (the wiring surface handed to the orchestrator + loop) ───────────
 
 export type HookRunFn = (req: HookRunRequest) => Promise<HookRunResult>
+
+/** The per-event request fragment `metadataFor` builds; its doc says what is eager vs deferred. */
+type HookRequestMetadata = Pick<
+  HookRunRequest,
+  'conversationId' | 'messageId' | 'parentId' | 'lookup' | 'turn' | 'project' | 'resolveLineage'
+>
 
 export interface ChatHookSessionConfig {
   conversationRepo: ConversationRepoLike
@@ -384,40 +395,53 @@ export function createChatHookSession(config: ChatHookSessionConfig): ChatHookSe
     emitNotice(describeHookOutputTruncation(event))
   }
 
+  /**
+   * The request fields every event shares. Identity fields are eager; the lineage
+   * walk (buildHookMetadata reads every message row of the conversation) goes to the
+   * runner as `resolveLineage`, which it calls only once a handler has matched. A run
+   * with no hooks for the event never touches the repo, and a repo failure inside the
+   * walk now lands in safeRun's catch instead of aborting the chat.
+   */
   const metadataFor = (opts: {
     messageId?: string | null
     parentId?: string | null
     turn?: HookTurnContext | null
     includeProject?: boolean
-  }): ChatHookMetadata =>
-    buildHookMetadata({
-      conversationRepo: config.conversationRepo,
+  }): HookRequestMetadata => {
+    const messageId = opts.messageId != null ? String(opts.messageId) : null
+    const parentId = opts.parentId != null ? String(opts.parentId) : null
+    return {
       conversationId: config.conversationId,
-      messageId: opts.messageId ?? null,
-      parentId: opts.parentId ?? null,
-      turn: opts.turn ?? null,
+      messageId,
+      parentId,
+      lookup: { localApiBase },
+      turn: opts.turn ?? undefined,
       // Renderer asymmetry (parity): only UserPromptSubmit + Stop carry project; the
       // tool hooks (Pre/Post/Failure) do not (chatActions.ts:2408-2413 / 2467-2473).
-      project: opts.includeProject ? project : null,
-      localApiBase,
-    })
+      project: opts.includeProject ? (project ?? undefined) : undefined,
+      resolveLineage: () => {
+        const meta = buildHookMetadata({
+          conversationRepo: config.conversationRepo,
+          conversationId: config.conversationId,
+          messageId,
+          parentId,
+          localApiBase,
+        })
+        return { messageId: meta.messageId, parentId: meta.parentId, lineage: meta.lineage }
+      },
+    }
+  }
 
   const runUserPromptSubmit = async (prompt: string, parentId: string | null, operation = config.operation): Promise<string> => {
-    const meta = metadataFor({ parentId, includeProject: true })
     const result = await safeRun({
       event: 'UserPromptSubmit',
-      conversationId: meta.conversationId,
+      ...metadataFor({ parentId, includeProject: true }),
       streamId,
       cwd: config.cwd,
       provider: config.provider,
       model: config.model,
       operation,
       prompt,
-      messageId: meta.messageId,
-      parentId: meta.parentId,
-      lineage: meta.lineage,
-      lookup: meta.lookup,
-      project: meta.project,
     })
     foldAdditionalContext('UserPromptSubmit', result.additionalContext)
     if (result.blocked) {
@@ -427,30 +451,24 @@ export function createChatHookSession(config: ChatHookSessionConfig): ChatHookSe
   }
 
   const runPreToolUse = async (toolCall: any, ctx: ToolExecutionContext): Promise<HookRunResult> => {
-    const meta = metadataFor({ messageId: ctx.messageId ?? null })
     const result = await safeRun({
       event: 'PreToolUse',
-      conversationId: meta.conversationId,
+      ...metadataFor({ messageId: ctx.messageId ?? null }),
       streamId,
       cwd: ctx.rootPath ?? config.cwd,
       provider: config.provider,
       model: config.model,
       operation: config.operation,
       toolCall,
-      messageId: meta.messageId,
-      parentId: meta.parentId,
-      lineage: meta.lineage,
-      lookup: meta.lookup,
     })
     foldAdditionalContext('PreToolUse', result.additionalContext)
     return result
   }
 
   const runPostToolUse = async (effectiveToolCall: any, toolResult: any, ctx: ToolExecutionContext): Promise<void> => {
-    const meta = metadataFor({ messageId: ctx.messageId ?? null })
     const result = await safeRun({
       event: 'PostToolUse',
-      conversationId: meta.conversationId,
+      ...metadataFor({ messageId: ctx.messageId ?? null }),
       streamId,
       cwd: ctx.rootPath ?? config.cwd,
       provider: config.provider,
@@ -460,19 +478,14 @@ export function createChatHookSession(config: ChatHookSessionConfig): ChatHookSe
       // Match the renderer's serialized persisted content (chatActions.ts:2474); the
       // hook payload JSON-stringifies this into `tool_result`.
       toolResult: toToolResultContent(toolResult),
-      messageId: meta.messageId,
-      parentId: meta.parentId,
-      lineage: meta.lineage,
-      lookup: meta.lookup,
     })
     foldAdditionalContext('PostToolUse', result.additionalContext)
   }
 
   const runPostToolUseFailure = async (effectiveToolCall: any, error: unknown, ctx: ToolExecutionContext): Promise<void> => {
-    const meta = metadataFor({ messageId: ctx.messageId ?? null })
     const result = await safeRun({
       event: 'PostToolUseFailure',
-      conversationId: meta.conversationId,
+      ...metadataFor({ messageId: ctx.messageId ?? null }),
       streamId,
       cwd: ctx.rootPath ?? config.cwd,
       provider: config.provider,
@@ -480,10 +493,6 @@ export function createChatHookSession(config: ChatHookSessionConfig): ChatHookSe
       operation: config.operation,
       toolCall: effectiveToolCall,
       error: error instanceof Error ? error.message : String(error),
-      messageId: meta.messageId,
-      parentId: meta.parentId,
-      lineage: meta.lineage,
-      lookup: meta.lookup,
     })
     foldAdditionalContext('PostToolUseFailure', result.additionalContext)
   }
@@ -496,27 +505,20 @@ export function createChatHookSession(config: ChatHookSessionConfig): ChatHookSe
     if (!lastAssistantMessage) return false
     const lastAssistantMessageId = lastAssistantMessage?.id != null ? String(lastAssistantMessage.id) : null
     const lastUserMessageId = lastAssistantMessage?.parent_id != null ? String(lastAssistantMessage.parent_id) : null
-    const meta = metadataFor({
-      messageId: lastAssistantMessageId,
-      parentId: lastUserMessageId,
-      turn: { lastUserMessageId, lastAssistantMessageId },
-      includeProject: true,
-    })
     const result = await safeRun({
       event: 'Stop',
-      conversationId: meta.conversationId,
+      ...metadataFor({
+        messageId: lastAssistantMessageId,
+        parentId: lastUserMessageId,
+        turn: { lastUserMessageId, lastAssistantMessageId },
+        includeProject: true,
+      }),
       streamId: params.streamId ?? streamId,
       cwd: config.cwd,
       provider: config.provider,
       model: config.model,
       operation: config.operation,
       lastAssistantMessage: getAssistantMessageTextForHook(lastAssistantMessage),
-      messageId: meta.messageId,
-      parentId: meta.parentId,
-      lineage: meta.lineage,
-      lookup: meta.lookup,
-      turn: meta.turn,
-      project: meta.project,
       onActivity: emitHookActivity('Stop', lastAssistantMessageId),
     })
     foldAdditionalContext('Stop', result.additionalContext)
@@ -531,20 +533,14 @@ export function createChatHookSession(config: ChatHookSessionConfig): ChatHookSe
     event: 'SessionStart' | 'PreCompact' | 'InstructionsLoaded',
     extra: Pick<HookRunRequest, 'source' | 'trigger' | 'loadReason' | 'filePaths'>
   ): Promise<void> => {
-    const meta = metadataFor({ includeProject: true })
     const result = await safeRun({
       event,
-      conversationId: meta.conversationId,
+      ...metadataFor({ includeProject: true }),
       streamId,
       cwd: config.cwd,
       provider: config.provider,
       model: config.model,
       operation: config.operation,
-      messageId: meta.messageId,
-      parentId: meta.parentId,
-      lineage: meta.lineage,
-      lookup: meta.lookup,
-      project: meta.project,
       ...extra,
     })
     foldAdditionalContext(event, result.additionalContext)

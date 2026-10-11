@@ -23,7 +23,7 @@ export const FAST_MODE_ANIMATIONS = [
 ] as const
 
 export type FastModeAnimation = (typeof FAST_MODE_ANIMATIONS)[number]['id'] | 'none'
-export const DEFAULT_FAST_MODE_ANIMATION: FastModeAnimation = 'tidal-glass'
+export const DEFAULT_FAST_MODE_ANIMATION: FastModeAnimation = 'pixel-packets'
 
 export const normalizeFastModeAnimation = (value: unknown): FastModeAnimation =>
   value === 'none' || FAST_MODE_ANIMATIONS.some(option => option.id === value)

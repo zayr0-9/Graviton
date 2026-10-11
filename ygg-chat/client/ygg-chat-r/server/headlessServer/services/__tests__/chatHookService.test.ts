@@ -101,11 +101,10 @@ describe('appendHookAdditionalContext / getAssistantMessageTextForHook', () => {
 
 describe('buildHookMetadata', () => {
   const repo: ConversationRepoLike = {
-    listMessages: () => [
+    listMessageLineage: () => [
       { id: 'u1', parent_id: null },
       { id: 'a1', parent_id: 'u1' },
     ],
-    getMessageById: () => null,
   }
 
   it('back-fills parentId from the message row when messageId is set and parentId is null', () => {
@@ -123,32 +122,38 @@ describe('buildHookMetadata', () => {
   })
 
   it('null conversationId => no messages queried, empty lineage', () => {
-    const listMessages = vi.fn(() => [])
-    const meta = buildHookMetadata({ conversationRepo: { listMessages, getMessageById: () => null }, conversationId: null })
-    expect(listMessages).not.toHaveBeenCalled()
+    const listMessageLineage = vi.fn(() => [])
+    const meta = buildHookMetadata({ conversationRepo: { listMessageLineage }, conversationId: null })
+    expect(listMessageLineage).not.toHaveBeenCalled()
     expect(meta.conversationId).toBeNull()
     expect(meta.lineage.ancestorIds).toEqual([])
+  })
+
+  it('no messageId and no parentId => no read either; the lineage is the empty root', () => {
+    const listMessageLineage = vi.fn(() => [])
+    const meta = buildHookMetadata({ conversationRepo: { listMessageLineage }, conversationId: 'c1' })
+    expect(listMessageLineage).not.toHaveBeenCalled()
+    expect(meta.lineage).toEqual({ rootMessageId: null, ancestorIds: [], depth: 0, isRoot: true })
   })
 })
 
 // ── Session ────────────────────────────────────────────────────────────────
 
 const repo: ConversationRepoLike = {
-  listMessages: () => [
+  listMessageLineage: () => [
     { id: 'u1', parent_id: null },
     { id: 'a1', parent_id: 'u1' },
   ],
-  getMessageById: () => null,
 }
 
-function makeSession(runHook: (req: HookRunRequest) => Promise<HookRunResult>) {
+function makeSession(runHook: (req: HookRunRequest) => Promise<HookRunResult>, conversationRepo: ConversationRepoLike = repo) {
   const calls: HookRunRequest[] = []
   const wrapped = async (req: HookRunRequest) => {
     calls.push(req)
     return runHook(req)
   }
   const session = createChatHookSession({
-    conversationRepo: repo,
+    conversationRepo,
     runHook: wrapped,
     conversationId: 'c1',
     cwd: '/root',
@@ -243,5 +248,37 @@ describe('ChatHookSession dispatch + parity', () => {
     expect(hooks.foldSystemPrompt(null)).toBeNull()
     hooks.hookContext.push('extra')
     expect(hooks.foldSystemPrompt('BASE')).toBe('BASE\n\n[Hook context]\nextra')
+  })
+
+  it('defers the lineage walk: the repo is read only when the runner calls resolveLineage', async () => {
+    const listMessageLineage = vi.fn(() => [
+      { id: 'u1', parent_id: null },
+      { id: 'a1', parent_id: 'u1' },
+    ])
+    const { session, calls } = makeSession(async () => noop, { listMessageLineage })
+    await session.runPreToolUse({ id: 't1', name: 'read_file', arguments: {} }, { conversationId: 'c1', messageId: 'a1' } as any)
+    const req = calls[0]
+    expect(listMessageLineage).not.toHaveBeenCalled()
+    expect(req.lineage).toBeUndefined()
+    expect(req.parentId).toBeNull() // back-filled from the row only on resolve
+    expect(req.resolveLineage!()).toEqual({
+      messageId: 'a1',
+      parentId: 'u1',
+      lineage: { rootMessageId: 'u1', ancestorIds: ['u1', 'a1'], depth: 1, isRoot: false },
+    })
+    expect(listMessageLineage).toHaveBeenCalledTimes(1)
+  })
+
+  it('a repo failure inside the deferred walk is swallowed like any other hook failure', async () => {
+    const { session } = makeSession(
+      async req => {
+        req.resolveLineage?.()
+        return noop
+      },
+      { listMessageLineage: () => { throw new Error('db gone') } }
+    )
+    await expect(
+      session.runPreToolUse({ id: 't1', name: 'bash', arguments: {} }, { conversationId: 'c1', messageId: 'a1' } as any)
+    ).resolves.toEqual({ matched: false, hookCount: 0, errors: ['db gone'] })
   })
 })

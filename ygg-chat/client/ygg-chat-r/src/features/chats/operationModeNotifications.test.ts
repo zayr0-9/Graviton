@@ -1,7 +1,7 @@
 import './__testSupport__/localStorageShim'
 import { describe, expect, it } from 'vitest'
 import reducer, { chatSliceActions as actions } from './chatSlice'
-import { normalizeServerMessage, projectServerEvent } from './sseProjection'
+import { applyStreamProjectionPolicy, normalizeServerMessage, projectServerEvent } from './sseProjection'
 
 const ctx = { streamId: 's1', conversationId: 'c1' }
 const row = (id: string, parent: string | null, mode?: 'plan' | 'execute') => normalizeServerMessage({
@@ -53,5 +53,39 @@ describe('pending operation mode requests', () => {
     state = reducer(state, actions.operationModeChangeAccepted({ conversationId: 'c1', requestId: 'old', mode: 'plan' }))
     state = reducer(state, actions.operationModeChangeFailed({ conversationId: 'c1', requestId: 'old' }))
     expect(state.operationModeChanges.c1).toMatchObject({ requestId: 'new', status: 'requesting', mode: 'execute' })
+  })
+})
+
+describe('Full access notification ordering', () => {
+  const access = (id: string, parent: string) => normalizeServerMessage({
+    id, parent_id: parent, conversation_id: 'c1', role: 'user',
+    meta: { kind: 'full_access_change', requestId: 'toggle-1' },
+  })
+  it('shows user input then notice before any assistant output, retaining the original trigger', () => {
+    let state = setup()
+    state = reducer(state, actions.sendingStarted({ streamId: 's1', conversationId: 'c1' }))
+    const user = normalizeServerMessage({ ...row('a1', null), role: 'user', content: 'new input' })
+    for (const action of projectServerEvent({ type: 'user_message_persisted', message: user }, ctx)) state = reducer(state, action)
+    for (const action of projectServerEvent({ type: 'user_message_persisted', message: access('n1', 'a1') }, ctx)) state = reducer(state, action)
+    expect(state.conversation.currentPath).toEqual(['a1', 'n1'])
+    expect(state.streaming.byId.s1.triggerUserMessageId).toBe('a1')
+    expect(state.streaming.byId.s1.currentBranchAnchorMessageId).toBe('n1')
+    // Replay/reconciliation must not rewind the selected settings tail.
+    state = reducer(state, actions.messageBranchCreated({ newMessage: row('a1', null) }))
+    expect(state.conversation.currentPath).toEqual(['a1', 'n1'])
+    for (const action of projectServerEvent({ type: 'operation_mode_changed', message: row('mode', 'n1', 'execute'), mode: 'execute' }, ctx)) state = reducer(state, action)
+    expect(state.conversation.currentPath).toEqual(['a1', 'n1', 'mode'])
+  })
+  it('does not steal navigation for a background branch or parallel pane', () => {
+    for (const parallel of [false, true]) {
+      let state = setup()
+      const parentId = parallel ? 'a1' : 'a2'
+      state = reducer(state, actions.messageAdded(row('a2', null)))
+      for (const projected of projectServerEvent({ type: 'user_message_persisted', message: access('n2', parentId) }, ctx)) {
+        const action = parallel ? applyStreamProjectionPolicy(projected, { streamId: 's1', streamType: 'branch', updatePath: false }) : projected
+        state = reducer(state, action)
+      }
+      expect(state.conversation.currentPath).toEqual(['a1'])
+    }
   })
 })

@@ -1,4 +1,4 @@
-import { isFullAccessEnabled } from '../../helpers/fullAccessSettings'
+import { getPendingFullAccessNotification, isFullAccessEnabled } from '../../helpers/fullAccessSettings'
 import { createAsyncThunk } from '@reduxjs/toolkit'
 import type { QueryClient } from '@tanstack/react-query'
 import {
@@ -55,7 +55,6 @@ import { loadContextDirectorySettings } from '../../helpers/contextDirectorySett
 import { loadProviderSettings, resolveProviderContextLength } from '../../helpers/providerSettingsStorage'
 import { updateToolEnabledState } from '../../helpers/toolSettingsStorage'
 import { generateStreamId, STREAM_PRUNE_DELAY } from './streamHelpers'
-import { createStreamingRun, finishStreamingRun } from './streamRunTracking'
 import {
   runServerChatLoop,
   runServerReattach,
@@ -872,16 +871,6 @@ const handleServerLoopFailure = ({
   const envelope = envelopeCarriedOnError(error) ?? classifyLocalChatError(error, { phase, streamId })
   const detail = rawErrorText(error)
 
-  void finishStreamingRun(streamId, {
-    status: 'error',
-    // Branch on the classified code. The old `message.includes('context compaction')`
-    // test matched NONE of the strings the compaction paths actually raise
-    // ('Invalid branch compaction summary returned', 'Failed to compact branch', …),
-    // so this end reason was unreachable.
-    endReason: envelope.code === 'compaction_failed' ? 'context_compaction_failed' : 'error',
-    error: detail,
-  })
-
   dispatch(
     chatSliceActions.streamChunkReceived({
       streamId,
@@ -1104,6 +1093,7 @@ export const sendMessage = createAsyncThunk<
       cwd,
       operationMode: requestedOperationMode,
       streamId: providedStreamId,
+      selectionRevision: requestedSelectionRevision,
       lineageId: providedLineageId,
       branchPath: providedBranchPath,
       streamType: requestedStreamType,
@@ -1113,6 +1103,7 @@ export const sendMessage = createAsyncThunk<
     { dispatch, getState, extra, rejectWithValue, signal }
   ) => {
     const { auth } = extra
+    const selectionRevision = requestedSelectionRevision ?? getState().chat.selection?.revision ?? 0
 
     // Primary ownership remains the default for existing callers. Parallel panes opt
     // into branch ownership and keep their terminal completion off the global path.
@@ -1163,6 +1154,8 @@ export const sendMessage = createAsyncThunk<
           streamId,
           streamType,
           conversationId,
+          updatePath,
+          selectionRevision,
           preserveDrafts: true,
           lineage: {
             lineageId: sendLineageId ?? undefined,
@@ -1170,15 +1163,6 @@ export const sendMessage = createAsyncThunk<
           },
         })
       )
-      void createStreamingRun({
-        streamId,
-        conversationId,
-        parentMessageId: parent ?? null,
-        streamType,
-        operation: 'send',
-        source: 'renderer',
-        lineage: { rootMessageId: parent },
-      })
       // Detach/reattach: mark this run in-flight so a reload can re-attach to it. Cleared
       // in the finally below on normal end; a reload kills the thunk first, leaving the
       // marker for mount-time resume (resumeInFlightStreams).
@@ -1276,6 +1260,7 @@ export const sendMessage = createAsyncThunk<
           imageConfig,
           rootPath: effectiveToolRootPath,
           fullAccess: isFullAccessEnabled(),
+          fullAccessNotificationId: getPendingFullAccessNotification(String(conversationId)),
           conversationContext: conversationContextSource,
           projectContext,
           storageMode,
@@ -1329,12 +1314,6 @@ export const sendMessage = createAsyncThunk<
           }
         )
         if (result.messageId) {
-          void finishStreamingRun(streamId, {
-            status: result.providerError ? 'error' : 'completed',
-            endReason: result.providerError ? 'error' : 'completed',
-            assistantMessageId: result.messageId,
-            finalMessageId: result.messageId,
-          })
           void markStreamUndoFinalMessage(streamId, String(result.messageId))
             .then(summary => {
               if (summary)
@@ -1548,12 +1527,14 @@ export const editMessageWithBranching = createAsyncThunk<
       cwd,
       operationMode: requestedOperationMode,
       streamId: providedStreamId,
+      selectionRevision: requestedSelectionRevision,
       lineageId: providedLineageId,
       branchPath: providedBranchPath,
     },
     { dispatch, getState, extra, rejectWithValue, signal }
   ) => {
     const { auth } = extra
+    const selectionRevision = requestedSelectionRevision ?? getState().chat.selection?.revision ?? 0
 
     // Generate or use provided stream ID
     const streamId = providedStreamId ?? generateStreamId('branch')
@@ -1614,6 +1595,7 @@ export const editMessageWithBranching = createAsyncThunk<
           streamId,
           streamType: 'branch',
           conversationId,
+          selectionRevision,
           preserveDrafts: true,
           lineage: {
             lineageId: editLineageId ?? undefined,
@@ -1622,15 +1604,6 @@ export const editMessageWithBranching = createAsyncThunk<
           },
         })
       )
-      void createStreamingRun({
-        streamId,
-        conversationId,
-        parentMessageId: parentMessageId ?? null,
-        streamType: 'branch',
-        operation: 'edit-branch',
-        source: 'renderer',
-        lineage: { originMessageId: originalMessageId, rootMessageId: parentMessageId },
-      })
       if (isResumableRunsEnabled()) {
         addInflightStream({
           streamId,
@@ -1890,6 +1863,7 @@ export const editMessageWithBranching = createAsyncThunk<
           subagentReasoningEffort: getSubagentReasoningEffort(),
           rootPath: effectiveToolRootPath,
           fullAccess: isFullAccessEnabled(),
+          fullAccessNotificationId: getPendingFullAccessNotification(String(conversationId)),
           conversationContext: conversationContextSource,
           projectContext,
           storageMode,
@@ -1944,12 +1918,6 @@ export const editMessageWithBranching = createAsyncThunk<
           }
         )
         if (result.messageId) {
-          void finishStreamingRun(streamId, {
-            status: result.providerError ? 'error' : 'completed',
-            endReason: result.providerError ? 'error' : 'completed',
-            assistantMessageId: result.messageId,
-            finalMessageId: result.messageId,
-          })
           void markStreamUndoFinalMessage(streamId, String(result.messageId))
             .then(summary => {
               if (summary)
@@ -2023,11 +1991,13 @@ export const sendMessageToBranch = createAsyncThunk<
       cwd,
       operationMode: requestedOperationMode,
       streamId: providedStreamId,
+      selectionRevision: requestedSelectionRevision,
       lineageId: providedLineageId,
     },
     { dispatch, getState, extra, rejectWithValue, signal }
   ) => {
     const { auth } = extra
+    const selectionRevision = requestedSelectionRevision ?? getState().chat.selection?.revision ?? 0
 
     // Generate or use provided stream ID
     const streamId = providedStreamId ?? generateStreamId('branch')
@@ -2063,6 +2033,7 @@ export const sendMessageToBranch = createAsyncThunk<
           streamId,
           streamType: 'branch',
           conversationId,
+          selectionRevision,
           preserveDrafts: true,
           lineage: {
             lineageId: branchLineageId ?? undefined,
@@ -2070,15 +2041,6 @@ export const sendMessageToBranch = createAsyncThunk<
           },
         })
       )
-      void createStreamingRun({
-        streamId,
-        conversationId,
-        parentMessageId: parentId ?? null,
-        streamType: 'branch',
-        operation: 'branch',
-        source: 'renderer',
-        lineage: { rootMessageId: parentId },
-      })
       if (isResumableRunsEnabled()) {
         addInflightStream({
           streamId,
@@ -2152,6 +2114,7 @@ export const sendMessageToBranch = createAsyncThunk<
           subagentReasoningEffort: getSubagentReasoningEffort(),
           rootPath: effectiveToolRootPath,
           fullAccess: isFullAccessEnabled(),
+          fullAccessNotificationId: getPendingFullAccessNotification(String(conversationId)),
           conversationContext: conversationContextSource,
           projectContext,
           storageMode,
@@ -2205,12 +2168,6 @@ export const sendMessageToBranch = createAsyncThunk<
           }
         )
         if (result.messageId) {
-          void finishStreamingRun(streamId, {
-            status: result.providerError ? 'error' : 'completed',
-            endReason: result.providerError ? 'error' : 'completed',
-            assistantMessageId: result.messageId,
-            finalMessageId: result.messageId,
-          })
           void markStreamUndoFinalMessage(streamId, String(result.messageId))
             .then(summary => {
               if (summary)
@@ -2860,7 +2817,6 @@ export const abortGeneration = createAsyncThunk<
 
     if (streamId) {
       dispatch(chatSliceActions.streamingAborted({ streamId }))
-      void finishStreamingRun(streamId, { status: 'aborted', endReason: 'aborted', error: 'Generation aborted' })
       if (serverAbortSucceeded) removeInflightStream(streamId)
     } else {
       dispatch(chatSliceActions.allStreamsAborted())
@@ -2897,6 +2853,8 @@ export const resumeInFlightStreams = createAsyncThunk<
       dispatch(
         chatSliceActions.sendingStarted({
           streamId: rec.streamId,
+          selectionRevision: -1, // Reattach does not claim the currently selected view.
+          updatePath: rec.updatePath ?? rec.streamType !== 'branch',
           preserveDrafts: true,
           streamType: rec.streamType,
           conversationId: rec.conversationId,

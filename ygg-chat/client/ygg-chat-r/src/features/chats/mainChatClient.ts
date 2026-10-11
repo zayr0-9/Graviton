@@ -21,6 +21,9 @@
  */
 
 import { agentRunPreviewActions } from './agentRunPreviewSlice'
+import { isFullAccessNotification } from '../../../../../shared/accessNotifications'
+import { parseMessageMeta } from '../../../../../shared/contextInjection'
+import { acknowledgeFullAccessNotification } from '../../helpers/fullAccessSettings'
 import { buildLocalApiUrl } from '../../utils/api'
 import { isResumableRunsEnabled } from '../../helpers/serverLoopSettings'
 import { getStreamIdleTimeoutMs } from '../../helpers/toolExecutionSettings'
@@ -283,6 +286,13 @@ function makeHandleEvent(
       setMcpTools(Array.from(byName.values()))
       dispatch(chatSliceActions.setTools(getAllTools()))
     } else if (event.type === 'user_message_persisted') {
+      if (isFullAccessNotification(event.message)) {
+        const requestId = parseMessageMeta(event.message.meta)?.requestId
+        if (typeof requestId === 'string') acknowledgeFullAccessNotification(String(ctx.conversationId), requestId)
+        onMessagePersisted?.()
+        if (nextSeq !== null) onSeq?.(nextSeq, event)
+        return
+      }
       acc.userMessage = normalizeServerMessage(event.message)
       onUserMessagePersisted?.()
       if (ctx.userMessageArtifacts?.length) {

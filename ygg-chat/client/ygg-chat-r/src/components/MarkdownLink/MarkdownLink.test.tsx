@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { MarkdownLink, markdownUrlTransform } from './MarkdownLink'
 
 const { navigate } = vi.hoisted(() => ({ navigate: vi.fn() }))
-vi.mock('react-router-dom', () => ({ useNavigate: () => navigate }))
+vi.mock('../ChatSelection/ChatSelectionProvider', () => ({ useChatNavigate: () => navigate }))
 
 const fileUrl = 'file:///Users/karansingh/Vega/coinvest-agent-api-gaps.md'
 

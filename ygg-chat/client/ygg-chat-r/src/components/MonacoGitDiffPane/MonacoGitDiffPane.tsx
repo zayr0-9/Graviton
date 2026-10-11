@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react'
 import { DiffEditor, Editor } from '@monaco-editor/react'
 import type * as MonacoEditor from 'monaco-editor'
 import { Button } from '../Button/button'
+import { ensureMonacoLspBootstrap } from '../Monaco/MonacoLspBootstrap'
 import { getDockTabIndicatorClasses, getDockTabKindLabel, getDockTabToneClasses } from '../dockTabStyles'
 import type { MonacoPaneTabItem } from '../MonacoFileEditorPane/MonacoFileEditorPane'
 
@@ -142,6 +143,9 @@ export const MonacoGitDiffPane: React.FC<MonacoGitDiffPaneProps> = ({
   onCloseTab,
   tabToolbar,
 }) => {
+  // Before <Editor>/<DiffEditor> mount: points @monaco-editor/react at the bundled Monaco
+  // and registers the LSP providers. Idempotent, so every pane calls it.
+  ensureMonacoLspBootstrap()
   const editorRef = useRef<MonacoEditor.editor.IStandaloneDiffEditor | null>(null)
   const patchEditorRef = useRef<MonacoEditor.editor.IStandaloneCodeEditor | null>(null)
   const patchDecorationsRef = useRef<MonacoEditor.editor.IEditorDecorationsCollection | null>(null)

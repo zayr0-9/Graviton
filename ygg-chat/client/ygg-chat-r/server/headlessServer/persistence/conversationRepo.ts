@@ -1,3 +1,5 @@
+import { isRunSettingsNotification } from '../../../../../shared/accessNotifications.js'
+
 interface ConversationRepoDeps {
   db: any
   statements: any
@@ -26,6 +28,11 @@ export class ConversationRepo {
 
   listMessages(conversationId: string): any[] {
     return this.statements.getMessagesByConversationId.all(conversationId)
+  }
+
+  /** `{ id, parent_id }` per message — the parent map a lineage walk needs, without content payloads. */
+  listMessageLineage(conversationId: string): Array<{ id: string; parent_id: string | null }> {
+    return this.statements.getMessageLineageByConversationId.all(conversationId)
   }
 
   listPathToMessage(conversationId: string, messageId: string | null): any[] {
@@ -61,12 +68,8 @@ export class ConversationRepo {
 
       const message = this.getMessageById(cursor)
       if (!message || message.conversation_id !== conversationId) return null
-      // Harness mode notifications are user-role transport, not repeatable user prompts.
-      let meta = message.meta
-      if (typeof meta === 'string') {
-        try { meta = JSON.parse(meta) } catch { meta = null }
-      }
-      if (message.role === 'user' && meta?.kind !== 'operation_mode_change') return message
+      // Harness settings notices are user-role transport, not repeatable user prompts.
+      if (message.role === 'user' && !isRunSettingsNotification(message)) return message
 
       cursor = message.parent_id || null
     }

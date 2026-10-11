@@ -11,9 +11,9 @@ import { createDefaultCustomChatTheme } from '../ThemeManager/themeConfig'
 
 const theme = createDefaultCustomChatTheme()
 const props = {
-  title: 'Design review', backgroundColor: 'rgba(255,255,255,0.8)', treeVisible: true, cloning: false,
+  title: 'Design review', backgroundColor: 'rgba(255,255,255,0.8)', treeVisible: true,
   customTheme: theme, customThemeEnabled: false, isDarkMode: false,
-  onToggleTree: vi.fn(), onRefresh: vi.fn(), onClone: vi.fn(), onRename: vi.fn(), onEditingChange: vi.fn(),
+  onToggleTree: vi.fn(), onRefresh: vi.fn(), onRename: vi.fn(), onEditingChange: vi.fn(),
 }
 
 beforeEach(() => {
@@ -34,23 +34,11 @@ describe('ConversationToolbar', () => {
     expect(html).not.toContain('pt-2 pb-1')
   })
 
-  it('renders a compact copy confirmation with explicit cancel and copy actions', () => {
-    vi.mocked(useState).mockReturnValueOnce([false, vi.fn()]).mockReturnValueOnce([true, vi.fn()])
+  it('does not offer copying from the top bar', () => {
     const html = renderToStaticMarkup(<ConversationToolbar {...props} />)
-    expect(html).toContain('<dialog')
-    expect(html).toContain('aria-labelledby=')
-    expect(html).toContain('Copy conversation?')
-    expect(html).toContain('The original stays unchanged.')
-    expect(html).toContain('>Cancel</button>')
-    expect(html).toContain('>Copy</button>')
-    expect(html).not.toContain('Could not copy')
-  })
-
-  it('disables confirmation actions while copying', () => {
-    vi.mocked(useState).mockReturnValueOnce([false, vi.fn()]).mockReturnValueOnce([true, vi.fn()])
-    const html = renderToStaticMarkup(<ConversationToolbar {...props} cloning />)
-    expect(html).toMatch(/disabled=""[^>]*>Cancel<\/button>/)
-    expect(html).toMatch(/disabled=""[^>]*>Copying…<\/button>/)
+    expect(html).not.toContain('Clone conversation')
+    expect(html).not.toContain('Copy conversation')
+    expect(html).not.toContain('<dialog')
   })
 
   it('shows the title and direct circular controls without a conversation list, outline, or shadow', () => {
@@ -58,7 +46,6 @@ describe('ConversationToolbar', () => {
     expect(html).toContain('Design review')
     expect(html).toContain('aria-label="Edit conversation title"')
     expect(html).toContain('aria-label="Refresh messages"')
-    expect(html).toContain('aria-label="Clone conversation"')
     expect(html).toContain('aria-pressed="true"')
     expect(html).toContain('h-11 w-11')
     expect(html).toContain('backdrop-blur-[12px]')
@@ -66,13 +53,11 @@ describe('ConversationToolbar', () => {
     expect(html).not.toMatch(/combobox|listbox|<select|shadow-|border|transition-all/)
   })
 
-  it('provides an untitled fallback, a tree toggle label, and a disabled clone state', () => {
-    const html = renderToStaticMarkup(<ConversationToolbar {...props} title='' treeVisible={false} cloning />)
+  it('provides an untitled fallback and a tree toggle label', () => {
+    const html = renderToStaticMarkup(<ConversationToolbar {...props} title='' treeVisible={false} />)
     expect(html).toContain('Untitled conversation')
     expect(html).toContain('aria-label="Show tree view"')
     expect(html).toContain('aria-pressed="false"')
-    expect(html).toContain('disabled=""')
-    expect(html).toContain('aria-busy="true"')
   })
 
   it('uses semantic custom theme colors for title, controls, and active tree toggle', () => {

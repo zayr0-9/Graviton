@@ -80,15 +80,17 @@ async function writeFileAtomically(targetPath: string, content: Buffer): Promise
 }
 
 async function syncBundledFile(sourcePath: string, targetPath: string): Promise<void> {
-  const sourceContent = await fsPromises.readFile(sourcePath)
-  const targetContent = await readFileIfExists(targetPath)
-  if (targetContent && Buffer.compare(sourceContent, targetContent) === 0) {
-    logHookStorage('bundled hook file already up to date', { sourcePath, targetPath })
+  // Bundled files are defaults only. Preserve installed scripts and settings,
+  // including local edits, empty files, and files created during initialization.
+  try {
+    await fsPromises.copyFile(sourcePath, targetPath, fs.constants.COPYFILE_EXCL)
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException)?.code !== 'EEXIST') throw error
+    logHookStorage('preserved existing hook file', { sourcePath, targetPath })
     return
   }
 
-  await writeFileAtomically(targetPath, sourceContent)
-  logHookStorage('copied bundled hook file', { sourcePath, targetPath, bytes: sourceContent.byteLength })
+  logHookStorage('seeded missing hook file', { sourcePath, targetPath })
 }
 
 async function syncBundledTree(sourcePath: string, targetPath: string): Promise<void> {

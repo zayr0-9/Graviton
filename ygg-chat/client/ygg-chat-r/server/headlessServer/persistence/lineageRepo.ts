@@ -298,6 +298,12 @@ export class LineageRepo {
     }
   }
 
+  /** Assign transport scaffolding to its run without moving the content head. */
+  attachMessage(lineageId: string, messageId: string): void {
+    this.requireLineage(lineageId)
+    this.attachMessageOrThrow(lineageId, messageId)
+  }
+
   appendMessage(lineageId: string, messageId: string): LineageRow {
     const lineage = this.requireLineage(lineageId)
     const now = new Date().toISOString()

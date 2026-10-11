@@ -5,6 +5,8 @@ export const normalizeConversationId = (conversationId: ConversationId | string 
 
 export const conversationQueryKeys = {
   all: ['conversations'] as const,
+  runStatistics: (conversationId: ConversationId | string | number) =>
+    ['conversations', normalizeConversationId(conversationId), 'run-statistics'] as const,
   messages: (conversationId: ConversationId | string | number) =>
     ['conversations', normalizeConversationId(conversationId), 'messages'] as const,
 }

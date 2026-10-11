@@ -42,3 +42,16 @@ describe('CloudMirrorSink', () => {
     expect(repo.createMessage.mock.calls[0][0].id).toBeUndefined()
   })
 })
+
+describe('run attribution', () => {
+  it.each([TreeMessageSink, CloudMirrorSink])('stamps responses and distinguishes terminal error rows through %s', Sink => {
+    const repo = makeFakeRepo()
+    const sink = new Sink({ messageRepo: repo, streamId: 'run-1' })
+    sink.persistAssistantMessage(draft)
+    sink.persistAssistantMessage({ ...draft, statisticsKind: 'terminal_error' })
+    expect(repo.createMessage.mock.calls[0][0].meta).toEqual({
+      runStatistics: { version: 1, streamId: 'run-1', kind: 'model_response' },
+    })
+    expect(repo.createMessage.mock.calls[1][0].meta.runStatistics.kind).toBe('terminal_error')
+  })
+})

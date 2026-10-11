@@ -187,6 +187,8 @@ export const selectCurrentViewStreamFor = (
 ) => {
     const activeStreams = Object.entries(streaming.byId).filter(([, stream]) => {
       if (!stream.active) return false
+      if (currentLineageId != null && stream.lineage.lineageIdConfirmed && stream.lineage.lineageId != null &&
+          String(stream.lineage.lineageId) !== String(currentLineageId)) return false
       if (currentConversationId == null) return true
       return stream.conversationId != null && String(stream.conversationId) === String(currentConversationId)
     })

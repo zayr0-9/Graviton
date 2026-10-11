@@ -12,6 +12,7 @@ import {
   updateResearchNote,
 } from './conversationActions'
 import { Conversation, ConversationsState } from './conversationTypes'
+import { chatSelectionRequested } from '../chats/chatSelection'
 
 const initialState: ConversationsState = {
   items: [],
@@ -55,6 +56,9 @@ const conversationSlice = createSlice({
   },
   extraReducers: builder => {
     builder
+      .addCase(chatSelectionRequested, (state, { payload }) => {
+        state.activeConversationId = payload.target.conversationId
+      })
       // fetch list
       .addCase(fetchConversations.pending, state => {
         state.loading = true

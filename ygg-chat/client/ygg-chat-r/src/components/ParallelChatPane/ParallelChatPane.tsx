@@ -1,4 +1,7 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useConversationRunStatistics } from '../../hooks/useConversationRunStatistics'
+import { deriveRunStatistics, placeRunFooters } from '../../features/chats/runStatistics'
+import { RunStatisticsFooter } from '../ChatMessage/RunStatisticsFooter'
 import { ChevronDown, Settings } from 'lucide-react'
 import { ConversationId, MessageId, ReasoningConfig } from '../../../../../shared/types'
 import type { ChatErrorActionKind } from '../../../../../shared/chatErrors'
@@ -138,6 +141,11 @@ export function ParallelChatPane({
   }, [target.conversationId, target.messageId, target.path, target.lineageId])
 
   const displayMessages = useMemo(() => selectDisplayMessagesFor(messages, path), [messages, path])
+  const conversationRuns = useConversationRunStatistics(String(target.conversationId))
+  const footersByAnchor = useMemo(() => placeRunFooters(
+    deriveRunStatistics(messages, path, conversationRuns, String(target.conversationId), lineageId),
+    path, displayMessages.map(message => String(message.id))
+  ), [messages, path, conversationRuns, target.conversationId, lineageId, displayMessages])
   const selectedStream = useMemo(
     () =>
       selectCurrentViewStreamFor(streaming, {
@@ -420,8 +428,8 @@ export function ParallelChatPane({
     >
       <div className='flex shrink-0 flex-col px-0 pb-4'>
         {displayMessages.map(message => (
+          <Fragment key={`parallel-${message.id}`}>
           <ChatMessage
-            key={`parallel-${message.id}`}
             id={`parallel-${message.id}`}
             role={message.role}
             content={message.content}
@@ -444,6 +452,10 @@ export function ParallelChatPane({
             onOpenToolHtmlModal={onOpenToolHtmlModal}
             onOpenSubagentTranscript={onOpenSubagentTranscript}
           />
+          {(footersByAnchor.get(String(message.id)) ?? []).map(statistics =>
+            <RunStatisticsFooter key={`run-stats-${statistics.streamId}`} statistics={statistics}
+              customTheme={customTheme} customThemeEnabled={customThemeEnabled} isDarkMode={isDarkMode} />)}
+          </Fragment>
         ))}
         {optimisticMessage && (
           <ChatMessage

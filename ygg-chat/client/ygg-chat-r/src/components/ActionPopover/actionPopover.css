@@ -1,28 +1,27 @@
-.action-cloud {
+.action-cloud, .slash-cloud {
   --cloud-field: #f5f6f9;
   --cloud-button: #f5f6f9;
   --cloud-muted: #82848b;
   --cloud-active-bg: #fff7ec;
   --cloud-active-text: #cc3b00;
   --cloud-ease: cubic-bezier(0.22, 1, 0.36, 1);
-  width: min(336px, calc(100vw - 16px));
-  padding: 8px;
   border-radius: 26px;
-  background: rgb(255 255 255 / .94);
-  color: #25262a;
+  background: var(--cloud-surface, rgb(255 255 255 / .94));
+  color: var(--cloud-text, #25262a);
   backdrop-filter: blur(24px);
   overflow-y: auto;
   overscroll-behavior: contain;
   scrollbar-width: thin;
 }
-.dark .action-cloud {
+.action-cloud { width: min(336px, calc(100vw - 16px)); padding: 8px; }
+.dark .action-cloud, .dark .slash-cloud {
   --cloud-field: #ffffff08;
   --cloud-button: #ffffff08;
   --cloud-muted: #a6aab5;
   --cloud-active-bg: #ffab7814;
   --cloud-active-text: #ffab78;
-  background: rgb(41 44 51 / .94);
-  color: #f2f3f5;
+  background: var(--cloud-surface, rgb(41 44 51 / .94));
+  color: var(--cloud-text, #f2f3f5);
 }
 .action-cloud-actions { display: grid; grid-template-columns: .85fr 1.18fr 1fr; gap: 6px; padding: 2px; margin-bottom: 4px; }
 .action-cloud-actions:empty { display: none; }
@@ -45,9 +44,10 @@
 .action-cloud-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 34px; font-size: 14px; }
 .action-cloud-row-fast { min-height: 48px; }
 .action-cloud-hint { font-size: 11px; color: var(--cloud-muted); }
-.action-cloud-switch { width: 36px; height: 22px; padding: 3px; flex-shrink: 0; border-radius: 999px; background: #88888850; }
-.action-cloud-switch[aria-checked='true'] { background: #205dff; }
-.action-cloud-switch > span { display: block; height: 16px; width: 16px; border-radius: 50%; background: white; transform: translateX(0); }
+.action-cloud-switch { width: 36px; height: 22px; padding: 3px; flex-shrink: 0; border-radius: 999px; background: var(--cloud-switch-off, #88888850); transition: background-color var(--ygg-motion-duration-fast) ease-in-out; }
+.action-cloud-switch[aria-checked='true'] { background: var(--cloud-switch-on, #205dff); }
+.action-cloud-switch > span { display: block; height: 16px; width: 16px; border-radius: 50%; background: var(--cloud-switch-thumb, white); transform: translateX(0); transition: background-color var(--ygg-motion-duration-fast) ease-in-out; }
+.action-cloud-switch[aria-checked='true'] > span { background: var(--cloud-switch-thumb-on, white); }
 .action-cloud-switch[aria-checked='true'] > span { transform: translateX(14px); }
 .action-cloud-switch[data-interacted='true'][aria-checked='true'] > span { animation: cloud-switch-on 350ms cubic-bezier(.34,1.35,.64,1); }
 .action-cloud-switch[data-interacted='true'][aria-checked='false'] > span { animation: cloud-switch-off 350ms cubic-bezier(.34,1.35,.64,1); }
@@ -67,6 +67,14 @@
 .action-cloud button:focus-visible { outline: 2px solid #6097ff; outline-offset: 2px; }
 .action-cloud button:disabled { opacity: .45; cursor: not-allowed; }
 @media (prefers-reduced-motion: reduce) {
-  .action-cloud *, .action-cloud *::before { animation: none !important; transition: none !important; }
+  .action-cloud *, .action-cloud *::before, .slash-cloud * { animation: none !important; transition: none !important; }
   .action-cloud-pill:active { transform: none; }
 }
+
+/* Command menus share the options popover shell, with quiet rows and distinct icon pills. */
+.slash-cloud-command { color: inherit; background: transparent; }
+.slash-cloud-command:hover, .slash-cloud-command:focus-visible { background: var(--cloud-field); }
+.slash-cloud-command[data-selected='true'] { background: var(--cloud-active-bg); color: var(--cloud-active-text); }
+.slash-cloud-icon { background: var(--cloud-button); color: var(--cloud-button-text, inherit); }
+.slash-cloud-command[data-selected='true'] .slash-cloud-icon { background: var(--cloud-surface, rgb(255 255 255 / .94)); color: var(--cloud-active-text); }
+.dark .slash-cloud-command[data-selected='true'] .slash-cloud-icon { background: var(--cloud-surface, rgb(41 44 51 / .94)); }
