@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { ChatNode } from '../../features/chats/chatTypes'
-import { buildHeimdallVisibleRoot, shouldPromoteHeimdallNode } from './heimdallNodeVisibility'
+import { buildHeimdallVisibleRoot, isHeimdallScaffoldingMessage, shouldPromoteHeimdallNode } from './heimdallNodeVisibility'
 
 describe('shouldPromoteHeimdallNode', () => {
   it('always promotes persisted context-injection rows, including roots with siblings', () => {
@@ -86,5 +86,14 @@ describe('buildHeimdallVisibleRoot', () => {
   it('preserves an existing synthetic root without nesting another wrapper', () => {
     const root: ChatNode = { id: 'root', message: 'Conversation', sender: 'assistant', children: [promptA, promptB] }
     expect(buildHeimdallVisibleRoot([root])).toBe(root)
+  })
+})
+
+describe('Full access node visibility', () => {
+  it('filters access notices like mode notices, but leaves them inspectable when filtering is off', () => {
+    const row = { role: 'user', meta: '{"kind":"full_access_change"}' }
+    expect(isHeimdallScaffoldingMessage(row)).toBe(true)
+    expect(isHeimdallScaffoldingMessage(row, false)).toBe(false)
+    expect(isHeimdallScaffoldingMessage({ role: 'user', content: 'Full access enabled' })).toBe(false)
   })
 })

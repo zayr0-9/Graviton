@@ -137,6 +137,8 @@ import { selectChatErrorsForConversation } from '../features/chats/chatSelectors
 import { changeOperationMode, enqueueUserMessage, loadMessageQueue, cancelQueuedMessage, readServerLoopRejection } from '../features/chats/chatActions'
 import { QueuedMessages } from '../components/ChatMessage/QueuedMessages'
 import { OperationModeNotice } from '../components/ChatMessage/OperationModeNotice'
+import { FullAccessNotice } from '../components/ChatMessage/FullAccessNotice'
+import { isFullAccessNotification, isRunSettingsNotification } from '../../../../shared/accessNotifications'
 import { SummarisedMessage } from '../components/ChatMessage/SummarisedMessage'
 import {
   buildChatErrorRecord,
@@ -3084,7 +3086,7 @@ function Chat() {
       const estimateForMessage = (message: Message) => {
         // Summaries draw only an h-8 notice with py-1, regardless of payload size.
         if (message.note === AUTO_COMPACTION_NOTE || isWatcherCompletionMessage(message) || isImageAttachmentInfoMessage(message)) return smallChromeRowHeight(rootFontSize)
-        if (parseMessageMeta(message.meta)?.kind === 'operation_mode_change') return 32
+        if (isRunSettingsNotification(message)) return 32
         const blocks = (parsedMessageDataById.get(message.id) ?? EMPTY_PARSED_MESSAGE_DATA).contentBlocks
         // Mirrors `hasContent && canBranchMessage` in ChatMessage, which gates the actions row.
         const hasText = typeof message.content === 'string' && message.content.trim().length > 0
@@ -5223,7 +5225,7 @@ function Chat() {
     // Allow retrigger: empty input when last displayed message is from user
     const isRetrigger =
       !hasLocalInput && displayMessages.length > 0 && displayMessages[displayMessages.length - 1]?.role === 'user' &&
-      parseMessageMeta(displayMessages[displayMessages.length - 1]?.meta)?.kind !== 'operation_mode_change'
+      !isRunSettingsNotification(displayMessages[displayMessages.length - 1])
 
     return (hasLocalInput || (!streamState.active && isRetrigger)) && isNotSending && hasModel
   }, [hasLocalInput, isCurrentBranchCompacting, streamState.active, selectedModel, displayMessages, modeChange, queueSubmitting])
@@ -5242,7 +5244,7 @@ function Chat() {
       const lastUserMessage = displayMessages[displayMessages.length - 1]
 
       // Safety check: ensure lastUserMessage exists before accessing properties
-      if (!lastUserMessage || lastUserMessage.role !== 'user' || parseMessageMeta(lastUserMessage.meta)?.kind === 'operation_mode_change') {
+      if (!lastUserMessage || lastUserMessage.role !== 'user' || isRunSettingsNotification(lastUserMessage)) {
         console.error('Cannot retrigger: No last user message found in displayMessages')
         return false
       }
@@ -5363,7 +5365,7 @@ function Chat() {
         // Check if this is a retrigger scenario (empty input + last message is user)
         const isRetrigger =
           !hasLocalInput && displayMessages.length > 0 && displayMessages[displayMessages.length - 1]?.role === 'user' &&
-      parseMessageMeta(displayMessages[displayMessages.length - 1]?.meta)?.kind !== 'operation_mode_change'
+      !isRunSettingsNotification(displayMessages[displayMessages.length - 1])
 
         if (isRetrigger) {
           retriggerLastUserMessage(value)
@@ -7178,6 +7180,14 @@ function Chat() {
                             : contentBlocks
                         const assistantContainerClassName = assistantContainerClassByMessageId.get(String(msg.id))
 
+                        if (isFullAccessNotification(msg)) {
+                          return (
+                            <VirtualizedRowContainer key={renderRow.key} id={`message-${msg.id}`}
+                              index={virtualRow.index} start={virtualRow.start} measureElement={virtualizer.measureElement} className='z-0'>
+                              <FullAccessNotice />
+                            </VirtualizedRowContainer>
+                          )
+                        }
                         const modeMeta = parseMessageMeta(msg.meta)
                         if (modeMeta?.kind === 'operation_mode_change' && (modeMeta.mode === 'plan' || modeMeta.mode === 'execute')) {
                           return (
@@ -8058,7 +8068,7 @@ function Chat() {
                               <ActionPopoverSwitch
                                 label='Full access'
                                 checked={fullAccessEnabled}
-                                onClick={() => setFullAccessEnabled(!fullAccessEnabled)}
+                                onClick={() => setFullAccessEnabled(!fullAccessEnabled, currentConversationId)}
                                 title='Allow tools outside the working directory on new runs'
                               />
                             </div>

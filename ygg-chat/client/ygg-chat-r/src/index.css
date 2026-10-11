@@ -783,6 +783,85 @@ html {
   }
 }
 
+/* transitions.dev card-resize: reserve space only for the local view controls,
+   never animate virtualized chat-row height or streaming diff growth. */
+:root {
+  --resize-dur: 300ms;
+  --resize-ease: cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.t-resize {
+  transition:
+    width  var(--resize-dur) var(--resize-ease),
+    height var(--resize-dur) var(--resize-ease);
+  will-change: width, height;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .t-resize { transition: none !important; }
+}
+
+.edit-view-slot,
+.edit-batch-reveal {
+  --edit-reveal-duration: 400ms;
+}
+
+.edit-view-slot {
+  --resize-dur: var(--edit-reveal-duration);
+  --resize-ease: var(--ygg-motion-ease-emphasized);
+  width: 0;
+  flex-shrink: 0;
+  overflow: hidden;
+}
+
+.edit-view-slot[data-open='true'] {
+  width: 92px;
+}
+
+.edit-view-controls {
+  width: 92px;
+  padding-left: 4px;
+  opacity: 0;
+  transform: translateX(4px);
+  transition:
+    opacity var(--edit-reveal-duration) var(--ygg-motion-ease-emphasized),
+    transform var(--edit-reveal-duration) var(--ygg-motion-ease-emphasized);
+}
+
+.edit-view-slot[data-open='true'] .edit-view-controls {
+  opacity: 1;
+  transform: translateX(0);
+}
+
+@keyframes edit-batch-reveal {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+.edit-batch-reveal {
+  animation: edit-batch-reveal var(--edit-reveal-duration) var(--ygg-motion-ease-emphasized);
+}
+
+.edit-diff-animations-disabled .edit-view-slot,
+.edit-diff-animations-disabled .edit-view-controls {
+  transition: none !important;
+  will-change: auto;
+}
+
+.edit-diff-animations-disabled .edit-batch-reveal {
+  animation: none !important;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .edit-view-slot,
+  .edit-view-controls {
+    transition: none !important;
+    will-change: auto;
+  }
+  .edit-view-controls { transform: none; }
+  .edit-batch-reveal { animation: none !important; }
+}
+
 /* Edit diff expansion animation: defined once globally to avoid per-row <style> tags in virtualized lists. */
 @keyframes edit-diff-slide-down {
   from {

@@ -63,6 +63,8 @@ export interface HeadlessMessageRequest {
   rootPath?: string | null
   /** User-selected workspace bypass; does not change approval or operation mode. */
   fullAccess?: boolean
+  /** Deferred conversation-scoped toggle notice. Not a live permission update. */
+  fullAccessNotificationId?: string
   operationMode?: 'plan' | 'execute'
   includeOperationModePrompt?: boolean
   planModeVerbosity?: 'concise' | 'normal' | 'detailed'

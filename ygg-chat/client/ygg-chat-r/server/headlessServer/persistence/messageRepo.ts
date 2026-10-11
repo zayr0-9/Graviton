@@ -1,4 +1,5 @@
 import { v4 as uuidv4 } from 'uuid'
+import { FULL_ACCESS_NOTIFICATION_KIND } from '../../../../../shared/accessNotifications.js'
 import type { OpenAIContextUsage } from '../../../../../shared/contextUsage.js'
 
 interface MessageRepoDeps {
@@ -43,6 +44,12 @@ export class MessageRepo {
 
   transaction<T>(operation: () => T): T {
     return this.db.transaction(operation)()
+  }
+
+  findFullAccessNotification(conversationId: string, requestId: string): any | null {
+    return this.db.prepare(`SELECT * FROM messages WHERE conversation_id = ? AND role = 'user'
+      AND CASE WHEN json_valid(meta) THEN json_extract(meta, '$.kind') = '${FULL_ACCESS_NOTIFICATION_KIND}'
+        AND json_extract(meta, '$.requestId') = ? ELSE 0 END LIMIT 1`).get(conversationId, requestId) ?? null
   }
 
   createMessage(input: CreateMessageInput): any {

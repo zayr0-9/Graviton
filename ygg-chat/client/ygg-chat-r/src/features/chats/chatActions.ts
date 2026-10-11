@@ -1,4 +1,4 @@
-import { isFullAccessEnabled } from '../../helpers/fullAccessSettings'
+import { getPendingFullAccessNotification, isFullAccessEnabled } from '../../helpers/fullAccessSettings'
 import { createAsyncThunk } from '@reduxjs/toolkit'
 import type { QueryClient } from '@tanstack/react-query'
 import {
@@ -1276,6 +1276,7 @@ export const sendMessage = createAsyncThunk<
           imageConfig,
           rootPath: effectiveToolRootPath,
           fullAccess: isFullAccessEnabled(),
+          fullAccessNotificationId: getPendingFullAccessNotification(String(conversationId)),
           conversationContext: conversationContextSource,
           projectContext,
           storageMode,
@@ -1890,6 +1891,7 @@ export const editMessageWithBranching = createAsyncThunk<
           subagentReasoningEffort: getSubagentReasoningEffort(),
           rootPath: effectiveToolRootPath,
           fullAccess: isFullAccessEnabled(),
+          fullAccessNotificationId: getPendingFullAccessNotification(String(conversationId)),
           conversationContext: conversationContextSource,
           projectContext,
           storageMode,
@@ -2152,6 +2154,7 @@ export const sendMessageToBranch = createAsyncThunk<
           subagentReasoningEffort: getSubagentReasoningEffort(),
           rootPath: effectiveToolRootPath,
           fullAccess: isFullAccessEnabled(),
+          fullAccessNotificationId: getPendingFullAccessNotification(String(conversationId)),
           conversationContext: conversationContextSource,
           projectContext,
           storageMode,

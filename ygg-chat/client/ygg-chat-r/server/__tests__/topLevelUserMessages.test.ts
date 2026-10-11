@@ -78,6 +78,15 @@ describe('shared human top-level message selector', () => {
     expect(db.prepare('SELECT * FROM messages ORDER BY id').all()).toEqual(before)
   })
 
+  it('promotes real prompts through Full access notices without previewing the generated reminder', () => {
+    addMessage('context', null, { meta: injectionMeta })
+    addMessage('access', 'context', { meta: JSON.stringify({ kind: 'full_access_change', requestId: 'toggle-1' }) })
+    addMessage('prompt', 'access')
+    addMessage('reply', 'prompt', { role: 'assistant' })
+    addMessage('follow-up', 'reply')
+    expect(selectedIds()).toEqual(['prompt'])
+  })
+
   it('orders promoted branches together with ordinary roots by their real timestamps', () => {
     addMessage('reminder', null, { meta: injectionMeta, createdAt: '2026-09-30T10:00:00Z' })
     addMessage('last-prompt', 'reminder', { createdAt: '2026-09-30T13:00:00Z' })

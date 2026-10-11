@@ -51,6 +51,8 @@ import { ImageAttachmentNotice, isImageAttachmentInfoMessage } from './ImageAtta
 import { waitForImagePreparation } from '../../features/chats/imagePreparation'
 import { hasAcceptedImageAttachments } from '../../features/chats/acceptedImageAttachments'
 import { isWatcherCompletionMessage, WatcherCompletionNotice } from './WatcherCompletionNotice'
+import { isFullAccessNotification } from '../../../../../shared/accessNotifications'
+import { FullAccessNotice } from './FullAccessNotice'
 import { ToolCallGroupCard, type McpViewerPayload } from './ToolCallGroupCard'
 import {
   buildToolCallGroupsFromBlocks,
@@ -2148,6 +2150,7 @@ const ChatMessage: React.FC<ChatMessageProps> = React.memo(props => {
       className={`${props.width} ${props.className ?? ''}`} customTheme={props.customTheme}
       customThemeEnabled={props.customThemeEnabled} isDarkMode={props.isDarkMode} />
   }
+  if (isFullAccessNotification(message)) return <FullAccessNotice />
   if (isWatcherCompletionMessage(message)) {
     return <WatcherCompletionNotice content={props.content} id={`message-${props.id}`}
       className={`${props.width} ${props.className ?? ''}`} customTheme={props.customTheme}

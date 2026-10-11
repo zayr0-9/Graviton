@@ -39,6 +39,7 @@
 
 import { chatSliceActions } from './chatSlice'
 import { parseMessageMeta } from '../../../../../shared/contextInjection'
+import { isFullAccessNotification } from '../../../../../shared/accessNotifications'
 import { buildChatErrorRecord } from './localChatErrors'
 import type { ContentBlock, LineageId, Message, StreamType } from './chatTypes'
 import {
@@ -308,6 +309,9 @@ export function projectServerEvent(event: ServerStreamEvent, ctx: ProjectionCont
 
     case 'user_message_persisted': {
       const message = normalizeServerMessage(event.message)
+      // The following real user row establishes the path and stream trigger.
+      // Do not put its images or branch anchors on this settings notice.
+      if (isFullAccessNotification(message)) return [chatSliceActions.messageAdded(message)]
       if (ctx.userMessageArtifacts?.length) {
         message.artifacts = Array.from(new Set([...(message.artifacts || []), ...ctx.userMessageArtifacts]))
       }

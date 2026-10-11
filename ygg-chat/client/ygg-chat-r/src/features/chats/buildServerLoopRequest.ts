@@ -54,6 +54,8 @@ export interface BuildServerLoopRequestParams {
   imageConfig?: unknown
   rootPath?: string | null
   fullAccess?: boolean
+  /** Deferred toggle notice for this conversation, acknowledged after persistence. */
+  fullAccessNotificationId?: string
   conversationContext?: string | null
   projectContext?: string | null
   storageMode?: string
@@ -177,6 +179,7 @@ export function buildServerLoopRequest(operation: ServerLoopOperation, params: B
     imageConfig: params.imageConfig,
     rootPath: params.rootPath ?? null,
     fullAccess: params.fullAccess === true,
+    fullAccessNotificationId: params.fullAccess === true ? params.fullAccessNotificationId : undefined,
     cwd: params.rootPath ?? null,
     conversationContext: params.conversationContext ?? null,
     projectContext: params.projectContext ?? null,

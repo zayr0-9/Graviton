@@ -28,6 +28,7 @@ import { trimHistoryToLatestCompaction } from './compactionService.js'
 import type { HookRunRequest, HookRunResult } from '../../hooks/hookTypes.js'
 import { filterToolsForOperationMode, requiresAgentMode } from '../../../../../shared/operationModeToolPolicy.js'
 import { OperationModeControl, modeNotificationContent } from './operationModeControl.js'
+import { FULL_ACCESS_NOTIFICATION_KIND, fullAccessNotificationContent } from '../../../../../shared/accessNotifications.js'
 import { MessageInputQueue } from './messageInputQueue.js'
 import type { QueuedMessageSubmission, MessageQueueSnapshot } from '../../../../../shared/queuedMessages.js'
 import {
@@ -778,6 +779,7 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
       launchInjection?: LaunchInjection | null
       userMessageBlocks?: any[] | null
       onContextMessage?: (message: any) => void
+      onAccessMessage?: (message: any, created: boolean) => void
     } = {}
   ): ResolvedExecution {
     return this.branchOrchestrator.resolve(request, {
@@ -788,6 +790,23 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
           const contextMessage = this.persistContextInjectionMessage(request, parentId, extras.launchInjection)
           extras.onContextMessage?.(contextMessage)
           effectiveParentId = contextMessage.id
+        }
+        // The UI's Branch button uses edit-branch; both branch routes create new
+        // user input. Never inject into a live run, repeat, or automated successor.
+        if (request.fullAccess === true && request.fullAccessNotificationId && !request.watcherCompletion &&
+          (request.operation === 'send' || request.operation === 'branch' || request.operation === 'edit-branch')) {
+          // Durable deduplication covers concurrent sends and lost SSE acknowledgements.
+          const existing = this.messageRepo.findFullAccessNotification(request.conversationId, request.fullAccessNotificationId)
+          if (existing) extras.onAccessMessage?.(existing, false)
+          else {
+            const accessMessage = this.messageRepo.createMessage({
+              conversationId: request.conversationId, parentId: effectiveParentId, role: 'user',
+              content: fullAccessNotificationContent(), modelName: request.modelName,
+              meta: { kind: FULL_ACCESS_NOTIFICATION_KIND, requestId: request.fullAccessNotificationId },
+            })
+            extras.onAccessMessage?.(accessMessage, true)
+            effectiveParentId = accessMessage.id
+          }
         }
         return this.createUserMessage(request, effectiveParentId, content, extras.userMessageBlocks ?? null)
       },
@@ -901,7 +920,7 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
         inputQueue.failRemaining(inputRun.terminal === 'completed'
           ? 'Run ended before this message could be processed. Send it again.'
           : 'Run stopped or failed before this message was delivered.')
-        inputRun.request = { ...inputRun.request, content: '', attachmentsBase64: null }
+        inputRun.request = { ...inputRun.request, content: '', attachmentsBase64: null, fullAccessNotificationId: undefined }
       }
       rawEmit(event)
     }
@@ -1021,6 +1040,8 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
     let launchInjection: LaunchInjection | null = null
     const userMessageBlocks: any[] = []
     let contextMessage: any = null
+    let accessMessage: any = null
+    let accessMessageCreated = false
     if (contextLoader && request.operation !== 'repeat') {
       const anchorId =
         request.operation === 'send'
@@ -1132,6 +1153,10 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
       onContextMessage: message => {
         contextMessage = message
       },
+      onAccessMessage: (message, created) => {
+        accessMessage = message
+        accessMessageCreated = created
+      },
     })
     const mustFork = request.operation !== 'send' || Boolean(sourceLineage && sourceLineage.head_message_id !== sourceMessageId)
     let activeLineage: LineageRow
@@ -1176,6 +1201,10 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
             operation: request.operation,
           }).operation.id
         : null
+    }
+    if (accessMessageCreated) {
+      this.lineageRepo.attachMessage(activeLineage.id, accessMessage.id)
+      accessMessage = this.conversationRepo.getMessageById(accessMessage.id)
     }
     return { resolved, activeLineage, pendingOperationId }
     })
@@ -1251,6 +1280,9 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
     // the renderer's branch anchor ends on the user's own message.
     if (contextMessage) {
       emit({ type: 'user_message_persisted', message: contextMessage, lineageId })
+    }
+    if (accessMessage) {
+      emit({ type: 'user_message_persisted', message: accessMessage, lineageId })
     }
     if (resolved.userMessage) {
       emit({ type: 'user_message_persisted', message: resolved.userMessage, lineageId })

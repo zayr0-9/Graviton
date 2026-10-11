@@ -58,6 +58,13 @@ describe('NoteColorLegend', () => {
       .toEqual({ '#22c55e': 1, '#ef4444': 0, '#8b5cf6': 2, '#3b82f6': 0, '#f59e0b': 0 })
   })
 
+  it('counts the real root prompt through a deferred access notice', () => {
+    const notice = branch({ meta: { kind: 'full_access_change' }, note: '' })
+    const prompt = branch({ parent_id: notice.id, note_color: '#22c55e' })
+    expect(countTopLevelBranchNoteColors([notice, prompt], 'current'))
+      .toEqual({ '#22c55e': 1, '#ef4444': 0, '#8b5cf6': 0, '#3b82f6': 0, '#f59e0b': 0 })
+  })
+
   it('does not treat malformed or unrelated metadata as a transparent root', () => {
     for (const meta of ['{broken', '{}', '{"kind":"operation_mode_change"}', null]) {
       const root = branch({ meta })

@@ -2,6 +2,7 @@ import { Palette } from 'lucide-react'
 import { useEffect, useId, useMemo, useRef, useState } from 'react'
 import type { BaseMessage, ConversationId } from '../../../../../shared/types'
 import { isContextInjectionMessage } from '../../../../../shared/contextInjection'
+import { isFullAccessNotification } from '../../../../../shared/accessNotifications'
 import type { CSSProperties } from 'react'
 import { getThemeModeColor, useCustomChatTheme, useHtmlDarkMode } from '../ThemeManager/themeConfig'
 import './noteColorLegend.css'
@@ -22,7 +23,7 @@ export function countTopLevelBranchNoteColors(messages: readonly BranchNote[], c
   if (conversationId == null) return counts
 
   // Match server/topLevelUserMessages.ts, used by the sidebar preview:
-  // launch-context user roots are transparent, but ordinary messages stop traversal.
+  // launch-context/access-notice roots are transparent; ordinary messages stop traversal.
   const roots: BranchNote[] = []
   const childrenByParent = new Map<string, BranchNote[]>()
   for (const message of messages) {
@@ -45,7 +46,7 @@ export function countTopLevelBranchNoteColors(messages: readonly BranchNote[], c
     if (visited.has(id)) continue
     visited.add(id)
     if (message.role !== 'user') continue
-    if (isContextInjectionMessage(message)) {
+    if (isContextInjectionMessage(message) || isFullAccessNotification(message)) {
       pending.push(...(childrenByParent.get(id) ?? []))
       continue
     }

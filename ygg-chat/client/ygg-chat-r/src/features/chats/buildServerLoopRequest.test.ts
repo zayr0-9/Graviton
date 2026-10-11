@@ -31,6 +31,12 @@ describe('buildServerLoopRequest', () => {
     expect(buildServerLoopRequest(op, params).body).not.toHaveProperty('serviceTier')
   })
 
+  it.each(['send', 'branch', 'edit'] as const)('forwards the deferred notice only with full access for %s', op => {
+    const params = { ...base, messageId: 'm1', fullAccessNotificationId: 'toggle-1' }
+    expect(buildServerLoopRequest(op, params).body.fullAccessNotificationId).toBeUndefined()
+    expect(buildServerLoopRequest(op, { ...params, fullAccess: true }).body.fullAccessNotificationId).toBe('toggle-1')
+  })
+
   it('builds the send route + core body fields', () => {
     const { path, body } = buildServerLoopRequest('send', { ...base, parentId: 'p1' })
     expect(path).toBe('/conversations/conv-1/messages')

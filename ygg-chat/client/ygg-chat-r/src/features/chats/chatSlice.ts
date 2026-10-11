@@ -3,6 +3,7 @@ import { normalizeChatErrorEnvelope } from '../../../../../shared/chatErrors'
 import providersList from '../../../../../shared/providers.json'
 import { ConversationId, MessageId } from '../../../../../shared/types'
 import { isCommunityMode } from '../../config/runtimeMode'
+import { loadDefaultToolAutoApprove } from '../../helpers/toolApprovalSettingsStorage'
 import { parseId } from '../../utils/helpers'
 import { parseMessageMeta } from '../../../../../shared/contextInjection'
 
@@ -268,7 +269,7 @@ const makeInitialState = (): ChatState => {
     toolPermissionRequestsByStream: {},
     operationModeUpgradeRequestsByStream: {},
     planClarificationRequestsByStream: {},
-    toolAutoApprove: false,
+    toolAutoApprove: loadDefaultToolAutoApprove(),
     operationMode: 'plan',
     operationModeChanges: {},
     operationModeDrafts: {},

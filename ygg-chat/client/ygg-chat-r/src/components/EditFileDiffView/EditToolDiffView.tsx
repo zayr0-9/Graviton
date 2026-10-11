@@ -161,14 +161,9 @@ const EditToolDiffViewComponent: React.FC<EditToolDiffViewProps> = ({ toolName, 
       </div>
 
       {expanded && (
-        <div className='origin-top edit-diff-slide-down'>
+        <div className='space-y-1 edit-batch-reveal'>
           {viewModel.items.map(item => (
-            <div key={item.key} className='p-1'>
-              <div className='px-1.5 pb-1 text-[0.625em] font-mono text-neutral-500 dark:text-neutral-400'>
-                edit {item.index + 1}
-              </div>
-              <EditFileDiffView args={item.args} result={item.result} />
-            </div>
+            <EditFileDiffView key={item.key} args={item.args} result={item.result} editNumber={item.index + 1} />
           ))}
 
           {showSummaryMessage ? (

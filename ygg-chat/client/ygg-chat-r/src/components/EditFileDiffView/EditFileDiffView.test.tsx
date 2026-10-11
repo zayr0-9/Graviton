@@ -1,4 +1,5 @@
 import { renderToStaticMarkup } from 'react-dom/server'
+import { readFileSync } from 'node:fs'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { EditFileDiffView, type EditFileArgs, type EditFileResult } from './EditFileDiffView'
 import { EditToolDiffView } from './EditToolDiffView'
@@ -113,6 +114,34 @@ describe('inline file edit design', () => {
     expect(html).toContain('aria-label="Inline diff (git-style merged)" aria-pressed="true"')
   })
 
+  it('keeps the three view modes in the header as sibling buttons, not a separate toolbar row', () => {
+    harness.expanded = true
+    const html = renderEdit(replacementArgs, { success: true })
+    expect(html).toContain('class="flex min-h-8 min-w-0 items-center" data-edit-header="true"')
+    expect(html).toMatch(/<\/button><div class="t-resize edit-view-slot" data-open="true" aria-hidden="false"><div class="edit-view-controls flex items-center gap-0\.5" role="group" aria-label="Diff view">/)
+    expect(html).toContain('aria-label="Split view (side-by-side)"')
+    expect(html).toContain('aria-label="Unified view (stacked)"')
+    expect(html).not.toContain('justify-end gap-1 py-1')
+    expect(html).not.toMatch(/<button\b[^>]*>(?:(?!<\/button>)[\s\S])*<button\b/)
+  })
+
+  it('keeps closed view controls mounted for the width transition but inert and hidden', () => {
+    const html = renderEdit(replacementArgs, { success: true })
+    expect(html).toContain('class="t-resize edit-view-slot" data-open="false" inert="" aria-hidden="true"')
+    expect(html).toContain('aria-label="Split view (side-by-side)"')
+    expect(html).not.toContain('const value =')
+  })
+
+  it('limits layout motion to the control slot and disables motion when requested', () => {
+    const css = readFileSync(new URL('../../index.css', import.meta.url), 'utf8')
+    expect(css).toContain(".edit-view-slot[data-open='true'] {\n  width: 92px;")
+    expect(css).toContain('--resize-dur: var(--edit-reveal-duration)')
+    expect(css).toContain('--edit-reveal-duration: 400ms')
+    expect(css).toMatch(/@media \(prefers-reduced-motion: reduce\) \{\s*\.edit-view-slot,\s*\.edit-view-controls \{\s*transition: none !important;/)
+    expect(css).toContain('.edit-batch-reveal { animation: none !important; }')
+    expect(css).toContain('.edit-diff-animations-disabled .edit-view-slot')
+  })
+
   it.each(['unified', 'split'])('preserves the %s alternative without heavy diff surfaces', mode => {
     harness.expanded = true
     harness.mode = mode
@@ -154,6 +183,7 @@ describe('inline file edit design', () => {
     expect(html).toContain(`--edit-added:${dark ? '#99ccaa' : '#227744'}`)
     expect(html).toContain(`--edit-muted:${dark ? '#aaaaaa' : '#555555'}`)
     expect(html).toContain(`color:${dark ? '#eeeeee' : '#111111'}`)
+    expect(html).toContain(`--edit-primary:${dark ? '#eeeeee' : '#111111'}`)
   })
 
   it('pairs custom code backgrounds with readable foregrounds in alternative views', () => {
@@ -166,8 +196,13 @@ describe('inline file edit design', () => {
     expect(html).toContain('preview: 1 added and 1 removed lines')
   })
 
-  it('uses fallback styles with custom themes disabled', () => {
-    expect(renderEdit()).not.toContain('--edit-surface:')
+  it('uses explicit light/dark filename and active-control colors with custom themes disabled', () => {
+    harness.dark = true
+    harness.expanded = true
+    const html = renderEdit(replacementArgs, { success: true })
+    expect(html).not.toContain('--edit-surface:')
+    expect(html).toContain('text-[color:var(--edit-primary,#383936)] dark:text-[color:var(--edit-primary,#dedfd9)]')
+    expect(html).toContain('text-[color:var(--edit-active-text,#383936)] dark:text-[color:var(--edit-active-text,#dedfd9)]')
   })
 
   it('also applies to multi_edit items without changing batch result semantics', () => {
@@ -181,5 +216,11 @@ describe('inline file edit design', () => {
     expect(html).toContain('Collapse edit for .gitignore')
     expect(html).toContain('Collapse edit for file.ts')
     expect(html).toContain('No match')
+    expect(html).toContain('space-y-1 edit-batch-reveal')
+    expect(html).toContain('aria-label="Edit 1"')
+    expect(html).toContain('aria-label="Edit 2"')
+    expect(html).not.toContain('edit 1</div>')
+    expect(html).not.toContain('edit 2</div>')
+    expect(html).not.toContain('class="p-1"')
   })
 })

@@ -1,8 +1,9 @@
 import { CONTEXT_INJECTION_KIND } from '../../../shared/contextInjection.js'
+import { FULL_ACCESS_NOTIFICATION_KIND } from '../../../shared/accessNotifications.js'
 
 /**
  * Human top-level prompts for sidebar previews and chat-history summaries.
- * Generated launch-context user rows are transparent only at the root boundary:
+ * Generated launch-context/access-notice user rows are transparent at the root boundary:
  * walk their children, but stop at ordinary messages so later turns stay excluded.
  * Keep the compact response shape and original IDs; never change the stored tree.
  */
@@ -11,7 +12,7 @@ export const TOP_LEVEL_USER_MESSAGES_SQL = `
   scoped_messages AS (
     SELECT id, parent_id, role,
       CASE WHEN role = 'user' AND json_valid(meta)
-        THEN COALESCE(json_extract(meta, '$.kind') = '${CONTEXT_INJECTION_KIND}', 0)
+        THEN COALESCE(json_extract(meta, '$.kind') IN ('${CONTEXT_INJECTION_KIND}', '${FULL_ACCESS_NOTIFICATION_KIND}'), 0)
         ELSE 0
       END AS is_context_injection
     FROM messages

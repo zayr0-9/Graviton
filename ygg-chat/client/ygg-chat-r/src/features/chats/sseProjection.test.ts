@@ -597,3 +597,14 @@ describe('projectServerEvent', () => {
     }
   })
 })
+
+describe('Full access notification projection', () => {
+  it('adds the durable notice without moving anchors or consuming user image previews', () => {
+    const actions = projectServerEvent({ type: 'user_message_persisted', message: {
+      id: 'access-1', role: 'user', conversation_id: 'conv-1',
+      meta: JSON.stringify({ kind: 'full_access_change', requestId: 'toggle-1' }),
+    } }, { ...ctx, userMessageArtifacts: ['data:image/png;base64,YQ=='] })
+    expect(types(actions)).toEqual([chatSliceActions.messageAdded.type])
+    expect((actions[0].payload as any).artifacts).toEqual([])
+  })
+})

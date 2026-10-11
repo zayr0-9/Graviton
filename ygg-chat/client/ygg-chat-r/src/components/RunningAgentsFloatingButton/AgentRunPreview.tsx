@@ -1,11 +1,12 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useAppSelector } from '../../hooks/redux'
 import { ChatMessage } from '../ChatMessage/ChatMessage'
+import { StreamingThinkingIndicator } from '../StreamingThinkingIndicator'
 import { buildAgentPreviewRows } from './agentPreviewContent'
 import { buildForkPreviewRows, selectForkPreviewRuns } from './agentForkPreview'
 import { useCustomChatTheme, useHtmlDarkMode } from '../ThemeManager/themeConfig'
 
-export function AgentRunPreview({ streamId, grouped, fillHeight = false, transcriptLabel = 'Run transcript', wholeFork = false }: { streamId: string; grouped: boolean; fillHeight?: boolean; transcriptLabel?: string; wholeFork?: boolean }) {
+export function AgentRunPreview({ streamId, grouped, fillHeight = false, transcriptLabel = 'Run transcript', wholeFork = false, isStreaming = false }: { streamId: string; grouped: boolean; fillHeight?: boolean; transcriptLabel?: string; wholeFork?: boolean; isStreaming?: boolean }) {
   const previews = useAppSelector(state => state.agentRunPreviews.byStreamId)
   const run = previews[streamId]
   const runs = useMemo(() => wholeFork ? selectForkPreviewRuns(previews, streamId) : run ? [run] : [], [previews, streamId, run, wholeFork])
@@ -19,7 +20,7 @@ export function AgentRunPreview({ streamId, grouped, fillHeight = false, transcr
   useEffect(() => {
     const element = scrollRef.current
     if (element && followRef.current) element.scrollTop = element.scrollHeight
-  }, [rows, grouped])
+  }, [rows, grouped, isStreaming])
 
   if (!run) return <p className='p-4 text-sm text-neutral-500'>No captured transcript is available for this run. Use Open chat to view saved messages.</p>
 
@@ -33,14 +34,19 @@ export function AgentRunPreview({ streamId, grouped, fillHeight = false, transcr
           followRef.current = element.scrollHeight - element.scrollTop - element.clientHeight < 48
           setFollowing(followRef.current)
         }}>
-        {rows.length === 0 ? <p className='p-3 text-sm text-neutral-500'>Waiting for run output…</p> : rows.map(row => (
-          <div key={row.key}>
+        {rows.length === 0 ? !isStreaming && <p className='p-3 text-sm text-neutral-500'>Waiting for run output…</p> : rows.map(row => (
+          <div key={row.key} className={row.role === 'user' ? 'min-w-0 [&_.chat-markdown]:[overflow-wrap:anywhere]' : 'min-w-0'}>
           <ChatMessage id={`agent-preview:${row.streamId}:${row.key}`} role={row.role}
             content={row.content} contentBlocks={row.blocks}
             width='w-full' showInlineActions={false} readOnly keepTextOutsideGroups
             groupToolReasoningRuns={grouped} customTheme={theme} customThemeEnabled={enabled} isDarkMode={isDarkMode} />
           </div>
         ))}
+        {isStreaming && (
+          <div className={`${rows.length > 0 ? 'pt-2' : 'pt-1'} px-0 sm:px-2`}>
+            <StreamingThinkingIndicator />
+          </div>
+        )}
       </div>
       {!following && <button type='button' className='absolute bottom-3 right-3 rounded-full bg-neutral-800 px-3 py-1.5 text-xs text-white shadow'
         onClick={() => {

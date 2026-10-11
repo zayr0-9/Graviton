@@ -38,6 +38,7 @@ interface EditFileDiffViewProps {
   args: EditFileArgs
   result: EditFileResult | string
   className?: string
+  editNumber?: number
 }
 
 type ViewMode = 'unified' | 'split' | 'inline'
@@ -195,7 +196,7 @@ const InlineDiffView: React.FC<InlineDiffViewProps> = ({ original, replacement, 
   )
 }
 
-const EditFileDiffViewComponent: React.FC<EditFileDiffViewProps> = ({ args, result, className = '' }) => {
+const EditFileDiffViewComponent: React.FC<EditFileDiffViewProps> = ({ args, result, className = '', editNumber }) => {
   const [viewMode, setViewMode] = useState<ViewMode>('inline')
   const [expanded, setExpanded] = useState(false)
 
@@ -209,6 +210,7 @@ const EditFileDiffViewComponent: React.FC<EditFileDiffViewProps> = ({ args, resu
   const { theme, enabled: customThemeEnabled } = useCustomChatTheme()
   const isDarkMode = useHtmlDarkMode()
   const themeStyle = customThemeEnabled ? {
+    '--edit-primary': getThemeModeColor(theme.colors.toolJobsPrimaryText, isDarkMode),
     '--edit-surface': getThemeModeColor(theme.colors.toolJobsCodeBg, isDarkMode),
     '--edit-code-text': getThemeModeColor(theme.colors.toolJobsCodeText, isDarkMode),
     '--edit-muted': getThemeModeColor(theme.colors.toolJobsMutedText, isDarkMode),
@@ -249,52 +251,61 @@ const EditFileDiffViewComponent: React.FC<EditFileDiffViewProps> = ({ args, resu
 
   return (
     <div className={`leading-none min-w-0 ${className}`} style={themeStyle}>
-      <button
-        type='button'
-        className='flex min-h-[38px] w-full min-w-0 items-center gap-2 rounded-lg px-2 text-left bg-transparent hover:bg-black/[0.025] dark:hover:bg-white/[0.025] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400/70 dark:focus-visible:ring-orange-400/70'
-        onClick={() => setExpanded(prev => !prev)}
-        aria-expanded={expanded}
-        aria-label={`${expanded ? 'Collapse' : 'Expand'} edit for ${filename}, ${operationLabel}, preview: ${changeCounts.added} added and ${changeCounts.removed} removed lines${hasChanges && parsedResult.replacements > 1 ? `, ${parsedResult.replacements} replacements` : ''}`}
-        title={args.path}
-      >
-        <FileText className={`h-4 w-4 shrink-0 ${MUTED_TEXT_CLASS}`} aria-hidden='true' />
-        <span className='min-w-0 truncate text-[0.625em] font-medium'>{filename}</span>
-        <span className={`${DIFF_SURFACE_CLASS} ${MUTED_TEXT_CLASS} hidden sm:inline shrink-0 rounded-full px-2 py-1 text-[0.5625em] capitalize`}>
-          {operationLabel}
-        </span>
-        <span className='flex-1' />
-        {hasChanges && parsedResult.replacements > 1 && (
-          <span className={`${MUTED_TEXT_CLASS} shrink-0 text-[0.5625em]`}>
-            {parsedResult.replacements} replacements
+      <div className='flex min-h-8 min-w-0 items-center' data-edit-header>
+        <button
+          type='button'
+          className='flex min-h-8 flex-1 min-w-0 items-center gap-2 rounded-lg px-2 text-left bg-transparent hover:bg-black/[0.025] dark:hover:bg-white/[0.025] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400/70 dark:focus-visible:ring-orange-400/70'
+          onClick={() => setExpanded(prev => !prev)}
+          aria-expanded={expanded}
+          aria-label={`${expanded ? 'Collapse' : 'Expand'} edit for ${filename}, ${operationLabel}, preview: ${changeCounts.added} added and ${changeCounts.removed} removed lines${hasChanges && parsedResult.replacements > 1 ? `, ${parsedResult.replacements} replacements` : ''}`}
+          title={args.path}
+        >
+          {editNumber !== undefined && (
+            <span className={`shrink-0 font-mono text-[0.5625em] ${MUTED_TEXT_CLASS}`} aria-label={`Edit ${editNumber}`}>
+              {editNumber}
+            </span>
+          )}
+          <FileText className={`h-4 w-4 shrink-0 ${MUTED_TEXT_CLASS}`} aria-hidden='true' />
+          <span className='min-w-0 truncate text-[0.625em] font-medium text-[color:var(--edit-primary,#383936)] dark:text-[color:var(--edit-primary,#dedfd9)]'>{filename}</span>
+          <span className={`${DIFF_SURFACE_CLASS} ${MUTED_TEXT_CLASS} hidden sm:inline shrink-0 rounded-full px-2 py-1 text-[0.5625em] capitalize`}>
+            {operationLabel}
           </span>
+          <span className='flex-1' />
+          {hasChanges && parsedResult.replacements > 1 && (
+            <span className={`${MUTED_TEXT_CLASS} shrink-0 text-[0.5625em]`}>
+              {parsedResult.replacements} replacements
+            </span>
+          )}
+          <span className='flex shrink-0 gap-2 font-mono text-[0.5625em]' aria-label='Preview line changes'>
+            {changeCounts.added > 0 && <span className={ADDED_TEXT_CLASS}>+{changeCounts.added}</span>}
+            {changeCounts.removed > 0 && <span className={REMOVED_TEXT_CLASS}>−{changeCounts.removed}</span>}
+          </span>
+          <ChevronDown className={`h-3.5 w-3.5 shrink-0 ${MUTED_TEXT_CLASS} ${expanded ? '' : '-rotate-90'}`} aria-hidden='true' />
+        </button>
+        {!isAppendOperation && (
+          <div className='t-resize edit-view-slot' data-open={expanded} inert={!expanded} aria-hidden={!expanded}>
+            <div className='edit-view-controls flex items-center gap-0.5' role='group' aria-label='Diff view'>
+              {([
+                { mode: 'inline', label: 'Inline diff (git-style merged)', Icon: GitCompareArrows },
+                { mode: 'unified', label: 'Unified view (stacked)', Icon: AlignLeft },
+                { mode: 'split', label: 'Split view (side-by-side)', Icon: Columns2 },
+              ] as const).map(({ mode, label, Icon }) => (
+                <button
+                  key={mode}
+                  type='button'
+                  className={`flex h-7 w-7 items-center justify-center rounded-full focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400/70 dark:focus-visible:ring-orange-400/70 ${viewMode === mode ? 'bg-[color:var(--edit-active-bg,rgba(80,85,75,0.065))] dark:bg-[color:var(--edit-active-bg,rgba(255,255,255,0.055))] text-[color:var(--edit-active-text,#383936)] dark:text-[color:var(--edit-active-text,#dedfd9)]' : `bg-transparent ${MUTED_TEXT_CLASS} hover:bg-black/5 dark:hover:bg-white/5`}`}
+                  onClick={() => setViewMode(mode)}
+                  title={label}
+                  aria-label={label}
+                  aria-pressed={viewMode === mode}
+                >
+                  <Icon className='h-3.5 w-3.5' aria-hidden='true' />
+                </button>
+              ))}
+            </div>
+          </div>
         )}
-        <span className='flex shrink-0 gap-2 font-mono text-[0.5625em]' aria-label='Preview line changes'>
-          {changeCounts.added > 0 && <span className={ADDED_TEXT_CLASS}>+{changeCounts.added}</span>}
-          {changeCounts.removed > 0 && <span className={REMOVED_TEXT_CLASS}>−{changeCounts.removed}</span>}
-        </span>
-        <ChevronDown className={`h-3.5 w-3.5 shrink-0 ${MUTED_TEXT_CLASS} ${expanded ? '' : '-rotate-90'}`} aria-hidden='true' />
-      </button>
-      {expanded && !isAppendOperation && (
-        <div className='flex justify-end gap-1 py-1' role='group' aria-label='Diff view'>
-          {([
-            { mode: 'inline', label: 'Inline diff (git-style merged)', Icon: GitCompareArrows },
-            { mode: 'unified', label: 'Unified view (stacked)', Icon: AlignLeft },
-            { mode: 'split', label: 'Split view (side-by-side)', Icon: Columns2 },
-          ] as const).map(({ mode, label, Icon }) => (
-            <button
-              key={mode}
-              type='button'
-              className={`flex h-7 w-7 items-center justify-center rounded-full focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400/70 dark:focus-visible:ring-orange-400/70 ${viewMode === mode ? 'bg-[color:var(--edit-active-bg,rgba(80,85,75,0.065))] dark:bg-[color:var(--edit-active-bg,rgba(255,255,255,0.055))] text-[color:var(--edit-active-text)]' : `bg-transparent ${MUTED_TEXT_CLASS} hover:bg-black/5 dark:hover:bg-white/5`}`}
-              onClick={() => setViewMode(mode)}
-              title={label}
-              aria-label={label}
-              aria-pressed={viewMode === mode}
-            >
-              <Icon className='h-3.5 w-3.5' aria-hidden='true' />
-            </button>
-          ))}
-        </div>
-      )}
+      </div>
       {expanded && (
         <div className='mt-1 space-y-1'>
           {isAppendOperation || viewMode === 'inline' ? (

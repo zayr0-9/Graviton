@@ -32,6 +32,7 @@ import {
   REASONING_EFFORT_OPTIONS,
   saveChatReasoningSettings,
 } from '../helpers/chatReasoningSettingsStorage'
+import { loadDefaultToolAutoApprove, saveDefaultToolAutoApprove } from '../helpers/toolApprovalSettingsStorage'
 import {
   loadAutoCompactionEnabled,
   loadShowAddedFilesPills,
@@ -389,6 +390,7 @@ const Settings: React.FC = () => {
     String(loadToolExecutionSettings().bashTimeoutMs)
   )
   const [bashTimeoutTouched, setBashTimeoutTouched] = useState(false)
+  const [defaultToolAutoApprove, setDefaultToolAutoApprove] = useState(() => loadDefaultToolAutoApprove())
   const [chatReasoningSettings, setChatReasoningSettings] = useState<ChatReasoningSettings>(() =>
     loadChatReasoningSettings()
   )
@@ -1735,6 +1737,17 @@ const Settings: React.FC = () => {
     fetchLocalUsers()
   }, [userId])
 
+  const handleDefaultToolApprovalChange = (value: string) => {
+    const enabled = value === 'allow-all'
+    saveDefaultToolAutoApprove(enabled)
+    setDefaultToolAutoApprove(enabled)
+    dispatch(enabled ? chatSliceActions.toolAutoApproveEnabled() : chatSliceActions.toolAutoApproveDisabled())
+    showStatus({
+      type: 'success',
+      text: `Default tool approval set to ${enabled ? 'Allow all' : 'Ask'}.`,
+    })
+  }
+
   const handleDefaultThinkingToggle = () => {
     const updated: ChatReasoningSettings = {
       ...chatReasoningSettings,
@@ -2625,6 +2638,30 @@ const Settings: React.FC = () => {
           </div>
           </SettingsSection>
         )}
+
+        <SettingsSection
+          title='Tool Approval Defaults'
+          description='Choose the tool approval mode restored on launch. The Chat toggle changes only the current session.'
+          features={['Ask', 'Allow all']}
+        >
+          <div className='flex flex-col gap-2'>
+            <div>
+              <p className='text-base font-medium text-stone-900 dark:text-stone-100'>Default Tool Approval</p>
+              <p className='text-sm text-stone-500 dark:text-stone-400'>
+                Ask requests permission before running tools. Allow all runs tools without asking, including tools that modify files or run commands. Chat mode restrictions still apply.
+              </p>
+            </div>
+            <Select
+              value={defaultToolAutoApprove ? 'allow-all' : 'ask'}
+              onChange={handleDefaultToolApprovalChange}
+              options={[
+                { value: 'ask', label: 'Ask' },
+                { value: 'allow-all', label: 'Allow all' },
+              ]}
+              className='max-w-xs'
+            />
+          </div>
+        </SettingsSection>
 
         <SettingsSection
           title='Chat Reasoning Defaults'
