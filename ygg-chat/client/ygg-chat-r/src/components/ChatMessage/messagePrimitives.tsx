@@ -1,5 +1,6 @@
-import React from 'react'
+import React, { useEffect, useState } from 'react'
 import { ChevronRight } from 'lucide-react'
+import { COLLAPSE_UNMOUNT_FALLBACK_MS, isPanelCollapseTransitionEnd, resolvePanelChildrenMounted } from './disclosurePanelState'
 import {
   DISCLOSURE_BODY_CLASS,
   DISCLOSURE_CHEVRON_CLASS,
@@ -129,24 +130,48 @@ export const DisclosurePanel: React.FC<DisclosurePanelProps> = ({
   disableTransition,
   onTransitionEnd,
   flush,
-}) => (
-  <div
-    id={id}
-    className={`tool-expand-container ${expanded ? 'open' : ''}`}
-    style={disableTransition ? { transition: 'none' } : undefined}
-    onTransitionEnd={onTransitionEnd}
-  >
-    {/*
-      `.tool-expand-content` is the grid child that collapses to a 0fr track. It must carry no
-      vertical padding: with border-box sizing the used height can never fall below padding, so
-      padding here keeps a collapsed panel that many pixels tall on every closed disclosure.
-      The body padding therefore goes one level deeper.
-    */}
-    <div className='tool-expand-content'>
-      <div className={flush ? '' : DISCLOSURE_BODY_CLASS}>{children}</div>
+}) => {
+  // A collapsed panel renders no children, so hidden reasoning markdown and tool detail cost no
+  // DOM or parse work. The collapsed track is already 0fr, so mounting or unmounting children
+  // never changes the height the virtual list measures. Initial state follows `expanded`, so
+  // static markup and the first client render agree.
+  const [mounted, setMounted] = useState(expanded)
+  const shouldMount = resolvePanelChildrenMounted(expanded, mounted, Boolean(disableTransition))
+  if (shouldMount !== mounted) setMounted(shouldMount)
+
+  // Fallback for a close whose `transitionend` never arrives (background tab, interrupted
+  // transition). A reopen before it fires clears it.
+  useEffect(() => {
+    if (expanded || !mounted || disableTransition) return
+    const timer = window.setTimeout(() => setMounted(false), COLLAPSE_UNMOUNT_FALLBACK_MS)
+    return () => window.clearTimeout(timer)
+  }, [expanded, mounted, disableTransition])
+
+  const handleTransitionEnd = (event: React.TransitionEvent<HTMLDivElement>) => {
+    onTransitionEnd?.()
+    if (!expanded && isPanelCollapseTransitionEnd(event)) setMounted(false)
+  }
+
+  return (
+    <div
+      id={id}
+      className={`tool-expand-container ${expanded ? 'open' : ''}`}
+      style={disableTransition ? { transition: 'none' } : undefined}
+      onTransitionEnd={handleTransitionEnd}
+    >
+      {/*
+        `.tool-expand-content` is the grid child that collapses to a 0fr track. It must carry no
+        vertical padding: with border-box sizing the used height can never fall below padding, so
+        padding here keeps a collapsed panel that many pixels tall on every closed disclosure.
+        The body padding therefore goes one level deeper. `inert` keeps the content that is still
+        mounted during the close fade out of the tab order and the accessibility tree.
+      */}
+      <div className='tool-expand-content' inert={!expanded}>
+        {shouldMount && <div className={flush ? '' : DISCLOSURE_BODY_CLASS}>{children}</div>}
+      </div>
     </div>
-  </div>
-)
+  )
+}
 
 export type BadgeTone = 'neutral' | 'success' | 'error' | 'info' | 'warning'
 

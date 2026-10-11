@@ -1,7 +1,7 @@
 import { useQueryClient } from '@tanstack/react-query'
 import { isContextInjectionMessage } from '../../../../../shared/contextInjection'
 import 'boxicons/css/boxicons.min.css'
-import { Flame, ListFilter, RotateCcw, ZoomIn, ZoomOut } from 'lucide-react'
+import { ChevronRight, Flame, ListFilter, RotateCcw, ZoomIn, ZoomOut } from 'lucide-react'
 import type { JSX } from 'react'
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import ReactMarkdown from 'react-markdown'
@@ -4260,12 +4260,16 @@ export const Heimdall: React.FC<HeimdallProps> = ({
                     </p>
                   )}
                   {conversationProjectGroups.map(group => (
-                    <section key={group.projectId === null ? 'no-project' : `project-${group.projectId}`} aria-label={group.name}>
-                      <h4 className='px-3 pb-1 text-xs font-semibold text-stone-500 dark:text-stone-400 break-words' style={heimdallContextMenuHeaderStyle}>
-                        {group.name}
-                        <span className='ml-2 font-normal'>{group.conversations.length}</span>
-                      </h4>
-                      <div className='space-y-1'>
+                    <details key={group.projectId === null ? 'no-project' : `project-${group.projectId}`} className='group/project' aria-label={group.name}>
+                      <summary
+                        className='flex cursor-pointer list-none items-center gap-2 rounded-xl px-3 py-2 text-xs font-semibold text-stone-500 hover:bg-stone-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400/70 dark:text-stone-400 dark:hover:bg-neutral-800 dark:focus-visible:ring-orange-400/70 [&::-webkit-details-marker]:hidden'
+                        style={heimdallContextMenuHeaderStyle}
+                      >
+                        <ChevronRight size={16} className='shrink-0 group-open/project:rotate-90' aria-hidden='true' />
+                        <span className='min-w-0 flex-1 break-words'>{group.name}</span>
+                        <span className='shrink-0 font-normal'>{group.conversations.length}</span>
+                      </summary>
+                      <div className='mt-1 space-y-1'>
                         {group.conversations.map(conversation => {
                           const title = conversation.title?.trim() || 'Untitled conversation'
                           const updatedAt = conversation.updated_at ? new Date(conversation.updated_at) : null
@@ -4298,7 +4302,7 @@ export const Heimdall: React.FC<HeimdallProps> = ({
                           )
                         })}
                       </div>
-                    </section>
+                    </details>
                   ))}
                 </div>
               )}

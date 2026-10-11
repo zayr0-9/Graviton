@@ -159,7 +159,7 @@ import {
 import { isOpenAIProvider } from '../../../../shared/contextUsage'
 import { isContextInjectionMessage, parseMessageMeta } from '../../../../shared/contextInjection'
 import { ContextInjectionCard, type ContextInjectionCardEntry } from '../components/ChatMessage/ContextInjectionCard'
-import { DisclosureRow } from '../components/ChatMessage/messagePrimitives'
+import { DisclosurePanel, DisclosureRow } from '../components/ChatMessage/messagePrimitives'
 import {
   chatErrorRowHeight,
   DEFAULT_ROOT_FONT_SIZE,
@@ -7015,11 +7015,9 @@ function Chat() {
                                     controlsId={`message-group-${runId}-panel`}
                                   />
                                 </div>
-                                <div
-                                  id={`message-group-${runId}-panel`}
-                                  className={`tool-expand-container ${isExpanded ? 'open' : ''}`}
-                                >
-                                  <div className='tool-expand-content pl-2.5'>
+                                {/* Member rows mount only while open, so a collapsed run costs no per-message work. */}
+                                <DisclosurePanel id={`message-group-${runId}-panel`} expanded={isExpanded} flush>
+                                  <div className='pl-2.5'>
                                     {row.messages.map(groupedMessage => {
                                       const { contentBlocks } =
                                         parsedMessageDataById.get(groupedMessage.id) ?? EMPTY_PARSED_MESSAGE_DATA
@@ -7098,7 +7096,7 @@ function Chat() {
                                       )
                                     })()}
                                   </div>
-                                </div>
+                                </DisclosurePanel>
                               </div>
                             </VirtualizedRowContainer>
                           )

@@ -315,6 +315,38 @@ const CodeRenderer: React.FC<any> = ({ inline, className, children, ...props }) 
 
 // Stable components map so ReactMarkdown does not treat its renderers as changed each render.
 const MARKDOWN_COMPONENTS = { pre: PreRenderer, code: CodeRenderer, a: MarkdownLink }
+type MarkdownPlugins = NonNullable<React.ComponentProps<typeof ReactMarkdown>['rehypePlugins']>
+const MARKDOWN_REMARK_PLUGINS: MarkdownPlugins = [remarkGfm, remarkMath]
+const MARKDOWN_REHYPE_PLUGINS: MarkdownPlugins = [[rehypeHighlight, { detect: true }], rehypeKatex]
+
+interface MarkdownBlockProps {
+  markdown: string
+  className: string
+  themeVars: ReturnType<typeof getMarkdownThemeVars>
+  style?: React.CSSProperties
+  id?: string
+}
+
+/**
+ * One rendered markdown node. Memoized on its props, so a re-render of the message for a hover,
+ * a menu, or a stream chunk in another block does not re-run remark/rehype for text that did not
+ * change. `themeVars` and `style` must therefore keep their identity across such renders.
+ */
+const MarkdownBlock = React.memo(function MarkdownBlock({ markdown, className, themeVars, style, id }: MarkdownBlockProps) {
+  const mergedStyle = useMemo(() => ({ ...themeVars, ...style }), [themeVars, style])
+  return (
+    <div id={id} className={className} style={mergedStyle}>
+      <ReactMarkdown
+        remarkPlugins={MARKDOWN_REMARK_PLUGINS}
+        rehypePlugins={MARKDOWN_REHYPE_PLUGINS}
+        components={MARKDOWN_COMPONENTS}
+        urlTransform={markdownUrlTransform}
+      >
+        {prepareMermaidMarkdown(markdown)}
+      </ReactMarkdown>
+    </div>
+  )
+})
 
 /**
  * R5 — `excludeFromContext` means EVERYWHERE, not just the server's history builder.
@@ -690,11 +722,16 @@ const ChatMessageBody: React.FC<ChatMessageProps> = React.memo(
 
       // Rendered HTML for rich paste support. `.prose` is only ever a rendered-markdown node, so
       // the error bubble (a sibling, never inside one) cannot leak into the rich-text flavour.
+      // Reasoning and tool detail are markdown too, so skip every `.prose` inside a process
+      // block: the answer is the prose that sits directly in the message stack.
       let html: string | undefined
       const messageEl = document.getElementById(`message-${id}`)
       if (messageEl) {
-        const proseEl = messageEl.querySelector('.prose')
-        if (proseEl) html = proseEl.innerHTML
+        const answerHtml = Array.from(messageEl.querySelectorAll('.prose'))
+          .filter(node => !node.closest('[data-chat-block="reasoning"], [data-chat-block="tool"]'))
+          .map(node => node.innerHTML)
+          .join('')
+        if (answerHtml) html = answerHtml
       }
 
       const ok = await copyRichText(copyText, html)
@@ -1007,14 +1044,16 @@ const ChatMessageBody: React.FC<ChatMessageProps> = React.memo(
     const surfaceStyle: React.CSSProperties | undefined =
       drawSurface && roleTheme ? { backgroundColor: getThemeModeColor(roleTheme.containerBg, isDarkMode) } : undefined
 
-    const markdownThemeVars = getMarkdownThemeVars(
-      customThemeEnabled ? customTheme : createDefaultCustomChatTheme(),
-      isDarkMode
+    // Both objects are props of the memoized `MarkdownBlock`, so they keep their identity across
+    // renders that change neither the theme nor the font offset.
+    const markdownThemeVars = useMemo(
+      () => getMarkdownThemeVars(customThemeEnabled ? customTheme : createDefaultCustomChatTheme(), isDarkMode),
+      [customThemeEnabled, customTheme, isDarkMode]
     )
 
     // Style object for content areas that scale with fontSizeOffset. Disclosure labels use
     // em-based sizes so they inherit it too.
-    const messageContentStyle = getChatFontSizeOffsetStyle(fontSizeOffset)
+    const messageContentStyle = useMemo(() => getChatFontSizeOffsetStyle(fontSizeOffset), [fontSizeOffset])
 
     const renderMarkdownNode = ({
       key,
@@ -1029,16 +1068,14 @@ const ChatMessageBody: React.FC<ChatMessageProps> = React.memo(
       style?: React.CSSProperties
       id?: string
     }) => (
-      <div key={key} id={nodeId} className={markdownClassName} style={{ ...markdownThemeVars, ...style }}>
-        <ReactMarkdown
-          remarkPlugins={[remarkGfm, remarkMath]}
-          rehypePlugins={[[rehypeHighlight, { detect: true }], rehypeKatex]}
-          components={MARKDOWN_COMPONENTS}
-          urlTransform={markdownUrlTransform}
-        >
-          {prepareMermaidMarkdown(markdown)}
-        </ReactMarkdown>
-      </div>
+      <MarkdownBlock
+        key={key}
+        id={nodeId}
+        markdown={markdown}
+        className={markdownClassName}
+        themeVars={markdownThemeVars}
+        style={style}
+      />
     )
 
     const renderImageNode = ({ key, url, onClick }: { key: string; url: string; onClick?: () => void }) => (
