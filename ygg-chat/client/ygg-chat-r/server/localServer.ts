@@ -504,6 +504,19 @@ function runSchemaMigrations(database: Database.Database): void {
   }
 }
 
+// Checkpoint the WAL into the main file and close. Keeps local-sync.db-wal
+// small across restarts; a failed checkpoint must not prevent the close.
+function closeLocalDatabase() {
+  if (!db) return
+  try {
+    db.pragma('wal_checkpoint(TRUNCATE)')
+  } catch (error) {
+    console.warn('[LocalServer] WAL checkpoint on close failed:', error)
+  }
+  db.close()
+  db = null
+}
+
 // Initialize database at specified path
 function initializeLocalDatabase(dbPath: string) {
   currentDbPath = dbPath
@@ -522,6 +535,15 @@ function initializeLocalDatabase(dbPath: string) {
   // }
 
   db = new Database(dbPath)
+  // WAL + synchronous=NORMAL: one append per commit instead of two fsyncs, and
+  // readers (analytics worker) no longer block the single writer. journal_mode
+  // persists in the file header; synchronous is per connection, so set it on
+  // every open. WAL is unavailable on network file systems, so log the fallback.
+  const journalMode = db.pragma('journal_mode = WAL', { simple: true })
+  if (journalMode !== 'wal') {
+    console.warn(`[LocalServer] WAL unavailable, journal_mode=${String(journalMode)}`)
+  }
+  db.pragma('synchronous = NORMAL')
   db.pragma('foreign_keys = ON')
 
   const sqliteVecStatus = tryEnableSqliteVec(db)
@@ -2054,10 +2076,7 @@ export async function stopLocalServer(): Promise<void> {
   return new Promise(resolve => {
 
     const finalizeWithoutServer = () => {
-      if (db) {
-        db.close()
-        db = null
-      }
+      closeLocalDatabase()
       currentDbPath = null
       clients.clear()
       extensionsMap.clear()
@@ -2089,10 +2108,7 @@ export async function stopLocalServer(): Promise<void> {
           closeIdeContextWebSocketServer()
           server.close(() => {
             console.log('[LocalServer] Server stopped')
-            if (db) {
-              db.close()
-              db = null
-            }
+            closeLocalDatabase()
             server = null
             currentDbPath = null
             resolve()
