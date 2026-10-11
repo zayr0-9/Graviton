@@ -15,13 +15,19 @@ if (migrationStart < 0 || migrationEnd < 0) throw new Error('Cannot locate produ
 const migrationCode = ts.transpileModule(source.slice(migrationStart, migrationEnd), {
   compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS },
 }).outputText
+// v5 (search_index_rowid_rebuild) delegates to server/searchIndexSchema.ts, which has its
+// own tests; here it only needs to be wired into the runner.
+const rebuildSearchIndexes = vi.fn()
 const migrations = runInNewContext(`${migrationCode}\n({ SCHEMA_MIGRATIONS, runSchemaMigrations })`, {
   console: { log: vi.fn(), error: vi.fn() },
+  rebuildSearchIndexes,
 }) as {
   SCHEMA_MIGRATIONS: { version: number; name: string; up: (db: any) => void }[]
   runSchemaMigrations: (db: any) => void
 }
 const migration = migrations.SCHEMA_MIGRATIONS.find(entry => entry.name === 'conversation_additional_cwds')!
+const versions = migrations.SCHEMA_MIGRATIONS.map(entry => entry.version)
+const latestVersion = Math.max(...versions)
 const freshSchema = source.match(/CREATE TABLE IF NOT EXISTS conversations \([\s\S]*?\n    \)/)?.[0]
 if (!freshSchema) throw new Error('Cannot locate production conversations schema')
 
@@ -62,13 +68,15 @@ describe('conversation additional_cwds migration', () => {
   beforeEach(() => {
     db = openDatabase()
     db.pragma('user_version = 3')
+    rebuildSearchIndexes.mockClear()
   })
 
   afterEach(() => db.close())
 
   it('registers v4 and runs migrations during initialization before preparing statements', () => {
     expect(migration.version).toBe(4)
-    expect(migrations.SCHEMA_MIGRATIONS.map(entry => entry.version)).toEqual([1, 2, 3, 4])
+    expect(versions).toEqual(versions.map((_, index) => index + 1))
+    expect(latestVersion).toBeGreaterThanOrEqual(4)
     const initialization = source.slice(source.indexOf('function initializeLocalDatabase('))
     const runnerCall = initialization.indexOf('runSchemaMigrations(db)')
     expect(runnerCall).toBeGreaterThan(initialization.indexOf('CREATE TABLE IF NOT EXISTS conversations'))
@@ -82,7 +90,8 @@ describe('conversation additional_cwds migration', () => {
 
     migrations.runSchemaMigrations(db)
 
-    expect(db.pragma('user_version', { simple: true })).toBe(4)
+    expect(db.pragma('user_version', { simple: true })).toBe(latestVersion)
+    expect(rebuildSearchIndexes).toHaveBeenCalledTimes(1)
     expect(columns(db).find(column => column.name === 'additional_cwds')).toMatchObject({ type: 'TEXT', notnull: 0 })
     expect(db.prepare('SELECT * FROM conversations WHERE id = ?').get('old')).toEqual({
       id: 'old', cwd: '/projects/frontend', title: 'Existing chat', additional_cwds: null,
@@ -122,6 +131,6 @@ describe('conversation additional_cwds migration', () => {
     expect(db.pragma('user_version', { simple: true })).toBe(3)
     db.exec('CREATE TABLE conversations (id TEXT PRIMARY KEY, cwd TEXT)')
     migrations.runSchemaMigrations(db)
-    expect(db.pragma('user_version', { simple: true })).toBe(4)
+    expect(db.pragma('user_version', { simple: true })).toBe(latestVersion)
   })
 })

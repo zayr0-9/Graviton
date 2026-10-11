@@ -6,7 +6,12 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { INSTRUCTION_SET_PREAMBLE } from '../../../../shared/contextInjection.js'
 import { registerAppAutomationRoutes } from '../headlessServer/routes/appAutomationRoutes.js'
 import { registerConversationRoutes } from '../routes/conversationRoutes.js'
-import { TOP_LEVEL_USER_MESSAGES_SQL, TOP_LEVEL_USER_MESSAGE_SEARCH_INDEX_SQL } from '../topLevelUserMessages.js'
+import {
+  TOP_LEVEL_USER_MESSAGES_SQL,
+  TOP_LEVEL_USER_MESSAGE_SEARCH_REBUILD_SQL,
+  TOP_LEVEL_USER_MESSAGE_SEARCH_SCHEMA_SQL,
+  TOP_LEVEL_USER_MESSAGE_SEARCH_TRIGGER_NAMES,
+} from '../topLevelUserMessages.js'
 import { registerNoteSearchRoutes } from '../routes/noteSearchRoutes.js'
 
 const require = createRequire(import.meta.url)
@@ -160,6 +165,12 @@ describe('shared human top-level message selector', () => {
 
   const indexIds = () => db.prepare('SELECT message_id FROM top_level_user_message_search ORDER BY message_id')
     .all().map((row: any) => row.message_id)
+  const indexRowids = () => db.prepare('SELECT rowid FROM top_level_user_message_search ORDER BY rowid')
+    .all().map((row: any) => row.rowid)
+  const triggerNames = () => db.prepare(
+    `SELECT name FROM sqlite_master WHERE type = 'trigger' AND name LIKE 'top_level_user_message_search%' ORDER BY name`
+  ).all().map((row: any) => row.name)
+  const expectedTriggerNames = [...TOP_LEVEL_USER_MESSAGE_SEARCH_TRIGGER_NAMES].sort()
 
   it('backfills the index from the hover selector and replaces legacy triggers', () => {
     addMessage('context', null, { meta: injectionMeta })
@@ -172,16 +183,48 @@ describe('shared human top-level message selector', () => {
     addMessage('orphan', 'missing')
     addMessage('foreign-child', 'context', { conversationId: 'conversation-2' })
     db.exec(`CREATE TRIGGER top_level_user_message_search_insert AFTER INSERT ON messages BEGIN SELECT 1; END;`)
-    db.exec(TOP_LEVEL_USER_MESSAGE_SEARCH_INDEX_SQL)
+    db.exec(`CREATE TRIGGER top_level_user_message_search_update AFTER UPDATE ON messages BEGIN SELECT 1; END;`)
+    db.exec(TOP_LEVEL_USER_MESSAGE_SEARCH_REBUILD_SQL)
     expect(indexIds()).toEqual([...selectedIds()].sort())
+    expect(triggerNames()).toEqual(expectedTriggerNames)
     addMessage('prompt-c', 'access')
     expect(indexIds()).toEqual([...selectedIds()].sort())
-    db.exec(TOP_LEVEL_USER_MESSAGE_SEARCH_INDEX_SQL)
+    db.exec(TOP_LEVEL_USER_MESSAGE_SEARCH_REBUILD_SQL)
     expect(indexIds()).toEqual([...selectedIds()].sort())
   })
 
+  it('boot schema is create-only: running it again keeps index rows and triggers', () => {
+    db.exec(TOP_LEVEL_USER_MESSAGE_SEARCH_SCHEMA_SQL)
+    addMessage('root')
+    db.exec(`INSERT INTO top_level_user_message_search (rowid, message_id, content, plain_text_content, note)
+      VALUES (999, 'sentinel', 'sentinel', '', '')`)
+    db.exec(TOP_LEVEL_USER_MESSAGE_SEARCH_SCHEMA_SQL)
+    expect(indexIds()).toEqual(['root', 'sentinel'])
+    expect(triggerNames()).toEqual(expectedTriggerNames)
+  })
+
+  it('keys index rows by the message rowid and ignores ordinary follow-up turns', () => {
+    db.exec(TOP_LEVEL_USER_MESSAGE_SEARCH_SCHEMA_SQL)
+    addMessage('root')
+    addMessage('reply', 'root', { role: 'assistant' })
+    addMessage('follow-up', 'reply')
+    addMessage('tool-result', 'follow-up', { role: 'tool' })
+    expect(indexIds()).toEqual(['root'])
+    const rootRowid = db.prepare('SELECT rowid FROM messages WHERE id = ?').get('root').rowid
+    expect(indexRowids()).toEqual([rootRowid])
+    // Streaming content updates and children_ids maintenance must not disturb the index.
+    db.prepare('UPDATE messages SET content = ? WHERE id = ?').run('streamed delta', 'reply')
+    db.prepare('UPDATE messages SET children_ids = ? WHERE id = ?').run('["reply"]', 'root')
+    expect(indexRowids()).toEqual([rootRowid])
+    db.prepare('UPDATE messages SET note = ? WHERE id = ?').run('rootnote', 'follow-up')
+    expect(db.prepare(`SELECT message_id FROM top_level_user_message_search WHERE top_level_user_message_search MATCH ?`)
+      .all('rootnote')).toEqual([])
+    db.prepare('DELETE FROM messages WHERE id = ?').run('root')
+    expect(db.prepare('SELECT count(*) AS n FROM top_level_user_message_search WHERE rowid = ?').get(rootRowid).n).toBe(0)
+  })
+
   it('keeps the index aligned after ancestor changes, note edits, reparenting, and deletes', () => {
-    db.exec(TOP_LEVEL_USER_MESSAGE_SEARCH_INDEX_SQL)
+    db.exec(TOP_LEVEL_USER_MESSAGE_SEARCH_SCHEMA_SQL)
     addMessage('context', null, { meta: injectionMeta })
     addMessage('prompt', 'context')
     addMessage('child', 'prompt')
@@ -204,7 +247,7 @@ describe('shared human top-level message selector', () => {
   })
 
   it('indexes out-of-order mirrored prompts and refreshes both conversations when moved', () => {
-    db.exec(TOP_LEVEL_USER_MESSAGE_SEARCH_INDEX_SQL)
+    db.exec(TOP_LEVEL_USER_MESSAGE_SEARCH_SCHEMA_SQL)
     addMessage('prompt', 'context')
     expect(indexIds()).toEqual([])
     addMessage('context', null, { meta: injectionMeta })
@@ -221,7 +264,7 @@ describe('shared human top-level message selector', () => {
 
   it('removes indexed descendants on cascading deletes', () => {
     db.exec('PRAGMA foreign_keys = ON')
-    db.exec(TOP_LEVEL_USER_MESSAGE_SEARCH_INDEX_SQL)
+    db.exec(TOP_LEVEL_USER_MESSAGE_SEARCH_SCHEMA_SQL)
     addMessage('context', null, { meta: injectionMeta })
     addMessage('prompt-a', 'context')
     addMessage('prompt-b', 'context')
@@ -238,7 +281,7 @@ describe('shared human top-level message selector', () => {
     );
     INSERT INTO conversations VALUES ('conversation-1', 'user-1', 'project-1', 'local', 'Title', '2026-10-01', '2026-10-01');
     INSERT INTO conversations VALUES ('conversation-2', 'user-2', 'project-2', 'local', 'Other', '2026-10-01', '2026-10-01');`)
-    if (useFts) db.exec(TOP_LEVEL_USER_MESSAGE_SEARCH_INDEX_SQL)
+    if (useFts) db.exec(TOP_LEVEL_USER_MESSAGE_SEARCH_SCHEMA_SQL)
     addMessage('context', null, { meta: injectionMeta })
     addMessage('access', 'context', { meta: JSON.stringify({ kind: 'full_access_change' }) })
     addMessage('prompt-a', 'access')

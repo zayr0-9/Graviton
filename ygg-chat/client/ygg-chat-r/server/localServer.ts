@@ -65,7 +65,8 @@ import { registerAnalyticsRoutes } from './routes/analyticsRoutes.js'
 import { registerUserProjectRoutes } from './routes/userProjectRoutes.js'
 import { registerNoteSearchRoutes } from './routes/noteSearchRoutes.js'
 import { registerConversationRoutes } from './routes/conversationRoutes.js'
-import { TOP_LEVEL_USER_MESSAGES_SQL, TOP_LEVEL_USER_MESSAGE_SEARCH_INDEX_SQL } from './topLevelUserMessages.js'
+import { TOP_LEVEL_USER_MESSAGES_SQL, TOP_LEVEL_USER_MESSAGE_SEARCH_SCHEMA_SQL } from './topLevelUserMessages.js'
+import { NOTE_SEARCH_FTS_SQL, NOTE_SEARCH_TABLES_SQL, rebuildSearchIndexes } from './searchIndexSchema.js'
 import { skillRegistry } from './skills/skillLoader.js'
 import { registerSkillRoutes } from './skills/skillRoutes.js'
 import { customToolRegistry, type CustomToolsChangedEvent, ToolResult } from './tools/customToolLoader.js'
@@ -458,6 +459,19 @@ const SCHEMA_MIGRATIONS: SchemaMigration[] = [
       if (!columns.some(column => column.name === 'additional_cwds')) {
         database.exec('ALTER TABLE conversations ADD COLUMN additional_cwds TEXT')
       }
+    },
+  },
+  {
+    version: 5,
+    name: 'search_index_rowid_rebuild',
+    up: database => {
+      // Boot used to empty and refill both FTS indexes and recreate their triggers on
+      // every launch, and the triggers deleted by message_id (a full FTS scan per row).
+      // Rebuild both indexes once, keyed by the base-table rowid, sync note_search_docs
+      // without resetting note_updated_at for unchanged notes, and install the current
+      // trigger generation. From here on boot only runs CREATE ... IF NOT EXISTS.
+      // Idempotent and savepoint-wrapped, so a crash before the stamp is harmless.
+      rebuildSearchIndexes(database)
     },
   },
 ]
@@ -879,11 +893,11 @@ function initializeLocalDatabase(dbPath: string) {
       WHERE parent_id IS NULL AND role = 'user';
   `)
 
-  // Full-text index for top-level user message search (best effort)
+  // Full-text index for top-level user message search (best effort). Create-only:
+  // migration v5 backfilled the rows and the triggers keep them current.
   let topLevelMessageFtsAvailable = false
   try {
-    db.exec(TOP_LEVEL_USER_MESSAGE_SEARCH_INDEX_SQL)
-
+    db.exec(TOP_LEVEL_USER_MESSAGE_SEARCH_SCHEMA_SQL)
     topLevelMessageFtsAvailable = true
   } catch (ftsError) {
     console.warn(
@@ -896,54 +910,11 @@ function initializeLocalDatabase(dbPath: string) {
     console.log('[LocalServer] Top-level message FTS index ready')
   }
 
-  // Note search docs + FTS index for per-message notes (best effort)
+  // Note search docs + FTS index for per-message notes (best effort). Create-only, same
+  // as above; see server/searchIndexSchema.ts and MIGRATIONS.md (v5).
   let noteSearchFtsAvailable = false
   try {
-    db.exec(`
-      CREATE TABLE IF NOT EXISTS note_search_docs (
-        message_id TEXT PRIMARY KEY,
-        conversation_id TEXT NOT NULL,
-        project_id TEXT,
-        user_id TEXT NOT NULL,
-        storage_mode TEXT NOT NULL CHECK (storage_mode IN ('cloud','local')) DEFAULT 'local',
-        conversation_title TEXT,
-        note TEXT NOT NULL,
-        message_created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-        note_updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-        FOREIGN KEY (message_id) REFERENCES messages(id) ON DELETE CASCADE,
-        FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE CASCADE,
-        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
-      );
-
-      CREATE INDEX IF NOT EXISTS idx_note_search_docs_user_note_updated
-        ON note_search_docs(user_id, note_updated_at DESC);
-      CREATE INDEX IF NOT EXISTS idx_note_search_docs_user_project_note_updated
-        ON note_search_docs(user_id, project_id, note_updated_at DESC);
-      CREATE INDEX IF NOT EXISTS idx_note_search_docs_conversation_id
-        ON note_search_docs(conversation_id);
-
-      CREATE TABLE IF NOT EXISTS note_search_embedding_state (
-        message_id TEXT PRIMARY KEY,
-        content_hash TEXT,
-        embedding_model TEXT,
-        embedding_dimensions INTEGER,
-        embedding_updated_at DATETIME,
-        embedding_status TEXT NOT NULL DEFAULT 'pending'
-          CHECK (embedding_status IN ('pending','ready','error','stale')),
-        last_error TEXT,
-        FOREIGN KEY (message_id) REFERENCES messages(id) ON DELETE CASCADE
-      );
-
-      CREATE TABLE IF NOT EXISTS note_search_vector_config (
-        id INTEGER PRIMARY KEY CHECK (id = 1),
-        embedding_model TEXT,
-        embedding_dimensions INTEGER,
-        vector_table_name TEXT,
-        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
-      );
-
-      INSERT OR IGNORE INTO note_search_vector_config (id, vector_table_name) VALUES (1, 'note_search_vec');
-    `)
+    db.exec(NOTE_SEARCH_TABLES_SQL)
 
     try {
       const vectorConfigColumns = db.prepare(`PRAGMA table_info(note_search_vector_config)`).all() as { name: string }[]
@@ -989,266 +960,7 @@ function initializeLocalDatabase(dbPath: string) {
       }
     }
 
-    db.exec(`
-      CREATE VIRTUAL TABLE IF NOT EXISTS note_search_fts USING fts5(
-        message_id UNINDEXED,
-        conversation_title,
-        note,
-        tokenize = 'unicode61 remove_diacritics 2'
-      );
-    `)
-
-    db.exec(`
-      DROP TRIGGER IF EXISTS note_search_docs_fts_insert;
-      DROP TRIGGER IF EXISTS note_search_docs_fts_update;
-      DROP TRIGGER IF EXISTS note_search_docs_fts_delete;
-      DROP TRIGGER IF EXISTS note_search_docs_from_messages_insert;
-      DROP TRIGGER IF EXISTS note_search_docs_from_messages_update;
-      DROP TRIGGER IF EXISTS note_search_docs_from_messages_delete;
-      DROP TRIGGER IF EXISTS note_search_docs_from_conversations_update;
-    `)
-
-    db.exec(`
-      CREATE TRIGGER note_search_docs_fts_insert
-      AFTER INSERT ON note_search_docs
-      BEGIN
-        INSERT INTO note_search_fts (message_id, conversation_title, note)
-        VALUES (
-          NEW.message_id,
-          COALESCE(NEW.conversation_title, ''),
-          COALESCE(NEW.note, '')
-        );
-      END;
-
-      CREATE TRIGGER note_search_docs_fts_update
-      AFTER UPDATE ON note_search_docs
-      BEGIN
-        DELETE FROM note_search_fts WHERE message_id = OLD.message_id;
-        INSERT INTO note_search_fts (message_id, conversation_title, note)
-        VALUES (
-          NEW.message_id,
-          COALESCE(NEW.conversation_title, ''),
-          COALESCE(NEW.note, '')
-        );
-      END;
-
-      CREATE TRIGGER note_search_docs_fts_delete
-      AFTER DELETE ON note_search_docs
-      BEGIN
-        DELETE FROM note_search_fts WHERE message_id = OLD.message_id;
-      END;
-
-      CREATE TRIGGER note_search_docs_from_messages_insert
-      AFTER INSERT ON messages
-      WHEN LENGTH(TRIM(COALESCE(NEW.note, ''))) > 0
-      BEGIN
-        INSERT INTO note_search_docs (
-          message_id,
-          conversation_id,
-          project_id,
-          user_id,
-          storage_mode,
-          conversation_title,
-          note,
-          message_created_at,
-          note_updated_at
-        )
-        SELECT
-          NEW.id,
-          NEW.conversation_id,
-          c.project_id,
-          c.user_id,
-          c.storage_mode,
-          c.title,
-          NEW.note,
-          COALESCE(NEW.created_at, CURRENT_TIMESTAMP),
-          CURRENT_TIMESTAMP
-        FROM conversations c
-        WHERE c.id = NEW.conversation_id
-        ON CONFLICT(message_id) DO UPDATE SET
-          conversation_id = excluded.conversation_id,
-          project_id = excluded.project_id,
-          user_id = excluded.user_id,
-          storage_mode = excluded.storage_mode,
-          conversation_title = excluded.conversation_title,
-          note = excluded.note,
-          message_created_at = excluded.message_created_at,
-          note_updated_at = excluded.note_updated_at;
-
-        INSERT INTO note_search_embedding_state (
-          message_id,
-          content_hash,
-          embedding_model,
-          embedding_dimensions,
-          embedding_updated_at,
-          embedding_status,
-          last_error
-        ) VALUES (
-          NEW.id,
-          NULL,
-          NULL,
-          NULL,
-          NULL,
-          'pending',
-          NULL
-        )
-        ON CONFLICT(message_id) DO UPDATE SET
-          content_hash = NULL,
-          embedding_status = CASE
-            WHEN note_search_embedding_state.embedding_status = 'ready' THEN 'stale'
-            ELSE note_search_embedding_state.embedding_status
-          END,
-          last_error = NULL;
-      END;
-
-      CREATE TRIGGER note_search_docs_from_messages_update
-      AFTER UPDATE ON messages
-      WHEN COALESCE(OLD.note, '') IS NOT COALESCE(NEW.note, '')
-      BEGIN
-        DELETE FROM note_search_docs
-        WHERE message_id = OLD.id
-          AND LENGTH(TRIM(COALESCE(NEW.note, ''))) = 0;
-
-        INSERT INTO note_search_docs (
-          message_id,
-          conversation_id,
-          project_id,
-          user_id,
-          storage_mode,
-          conversation_title,
-          note,
-          message_created_at,
-          note_updated_at
-        )
-        SELECT
-          NEW.id,
-          NEW.conversation_id,
-          c.project_id,
-          c.user_id,
-          c.storage_mode,
-          c.title,
-          NEW.note,
-          COALESCE(NEW.created_at, CURRENT_TIMESTAMP),
-          CURRENT_TIMESTAMP
-        FROM conversations c
-        WHERE c.id = NEW.conversation_id
-          AND LENGTH(TRIM(COALESCE(NEW.note, ''))) > 0
-        ON CONFLICT(message_id) DO UPDATE SET
-          conversation_id = excluded.conversation_id,
-          project_id = excluded.project_id,
-          user_id = excluded.user_id,
-          storage_mode = excluded.storage_mode,
-          conversation_title = excluded.conversation_title,
-          note = excluded.note,
-          message_created_at = excluded.message_created_at,
-          note_updated_at = excluded.note_updated_at;
-
-        DELETE FROM note_search_embedding_state
-        WHERE message_id = OLD.id
-          AND LENGTH(TRIM(COALESCE(NEW.note, ''))) = 0;
-
-        INSERT INTO note_search_embedding_state (
-          message_id,
-          content_hash,
-          embedding_model,
-          embedding_dimensions,
-          embedding_updated_at,
-          embedding_status,
-          last_error
-        )
-        SELECT
-          NEW.id,
-          NULL,
-          NULL,
-          NULL,
-          NULL,
-          'pending',
-          NULL
-        WHERE LENGTH(TRIM(COALESCE(NEW.note, ''))) > 0
-        ON CONFLICT(message_id) DO UPDATE SET
-          content_hash = NULL,
-          embedding_status = CASE
-            WHEN COALESCE(OLD.note, '') IS COALESCE(NEW.note, '') THEN note_search_embedding_state.embedding_status
-            WHEN note_search_embedding_state.embedding_status = 'ready' THEN 'stale'
-            ELSE 'pending'
-          END,
-          last_error = NULL;
-      END;
-
-      CREATE TRIGGER note_search_docs_from_messages_delete
-      AFTER DELETE ON messages
-      BEGIN
-        DELETE FROM note_search_docs WHERE message_id = OLD.id;
-        DELETE FROM note_search_embedding_state WHERE message_id = OLD.id;
-      END;
-
-      CREATE TRIGGER note_search_docs_from_conversations_update
-      AFTER UPDATE ON conversations
-      BEGIN
-        UPDATE note_search_docs
-        SET
-          project_id = NEW.project_id,
-          user_id = NEW.user_id,
-          storage_mode = NEW.storage_mode,
-          conversation_title = NEW.title,
-          note_updated_at = CURRENT_TIMESTAMP
-        WHERE conversation_id = NEW.id;
-      END;
-    `)
-
-    db.exec(`DELETE FROM note_search_docs;`)
-    db.exec(`DELETE FROM note_search_fts;`)
-    db.exec(`
-      INSERT INTO note_search_docs (
-        message_id,
-        conversation_id,
-        project_id,
-        user_id,
-        storage_mode,
-        conversation_title,
-        note,
-        message_created_at,
-        note_updated_at
-      )
-      SELECT
-        m.id,
-        m.conversation_id,
-        c.project_id,
-        c.user_id,
-        c.storage_mode,
-        c.title,
-        m.note,
-        COALESCE(m.created_at, CURRENT_TIMESTAMP),
-        CURRENT_TIMESTAMP
-      FROM messages m
-      INNER JOIN conversations c ON c.id = m.conversation_id
-      WHERE LENGTH(TRIM(COALESCE(m.note, ''))) > 0;
-    `)
-
-    db.exec(`
-      DELETE FROM note_search_embedding_state
-      WHERE message_id NOT IN (SELECT message_id FROM note_search_docs);
-    `)
-    db.exec(`
-      INSERT OR IGNORE INTO note_search_embedding_state (
-        message_id,
-        content_hash,
-        embedding_model,
-        embedding_dimensions,
-        embedding_updated_at,
-        embedding_status,
-        last_error
-      )
-      SELECT
-        d.message_id,
-        NULL,
-        NULL,
-        NULL,
-        NULL,
-        'pending',
-        NULL
-      FROM note_search_docs d;
-    `)
+    db.exec(NOTE_SEARCH_FTS_SQL)
 
     noteSearchFtsAvailable = true
   } catch (noteSearchError) {
