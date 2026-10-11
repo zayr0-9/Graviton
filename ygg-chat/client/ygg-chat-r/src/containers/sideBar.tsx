@@ -2044,7 +2044,7 @@ const SideBar: React.FC<SideBarProps> = ({
                   role='dialog'
                   aria-modal='true'
                   aria-label='Sidebar panel'
-                  className='absolute top-3 bottom-3 overflow-hidden rounded-xl border border-neutral-200/90 bg-white/75 shadow-2xl backdrop-blur-2xl dark:border-neutral-700/80 dark:bg-yBlack-900/75'
+                  className='absolute top-3 bottom-3 overflow-hidden rounded-xl border border-neutral-200/90 bg-white/55 shadow-2xl backdrop-blur-xl dark:border-neutral-700/80 dark:bg-yBlack-900/25'
                   style={{
                     left: `${portalLeftOffset}px`,
                     width: `${expandPortalWidth}px`,
