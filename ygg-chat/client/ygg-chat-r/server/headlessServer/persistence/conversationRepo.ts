@@ -30,6 +30,11 @@ export class ConversationRepo {
     return this.statements.getMessagesByConversationId.all(conversationId)
   }
 
+  /** `{ id, parent_id }` per message — the parent map a lineage walk needs, without content payloads. */
+  listMessageLineage(conversationId: string): Array<{ id: string; parent_id: string | null }> {
+    return this.statements.getMessageLineageByConversationId.all(conversationId)
+  }
+
   listPathToMessage(conversationId: string, messageId: string | null): any[] {
     if (!messageId) return this.listMessages(conversationId)
 

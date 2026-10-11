@@ -15,7 +15,7 @@ function makeHookSession(byEvent: Partial<Record<HookEventName, HookRunResult>>)
     return byEvent[req.event] ?? { matched: false, hookCount: 0 }
   }
   const session = createChatHookSession({
-    conversationRepo: { listMessages: () => [], getMessageById: () => null },
+    conversationRepo: { listMessageLineage: () => [] },
     runHook,
     conversationId: 'c1',
     cwd: '/root',
@@ -223,6 +223,7 @@ function createStatements(db: Database.Database): any {
     upsertMessage: db.prepare(`INSERT INTO messages (id, conversation_id, parent_id, children_ids, role, content, plain_text_content, thinking_block, tool_calls, tool_call_id, model_name, note, note_color, ex_agent_session_id, ex_agent_type, content_blocks, created_at, meta) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET content = excluded.content, plain_text_content = excluded.plain_text_content, thinking_block = excluded.thinking_block, tool_calls = excluded.tool_calls, content_blocks = excluded.content_blocks, meta = COALESCE(excluded.meta, messages.meta)`),
     getMessageById: db.prepare('SELECT * FROM messages WHERE id = ?'),
     getMessagesByConversationId: db.prepare('SELECT * FROM messages WHERE conversation_id = ? ORDER BY created_at ASC'),
+    getMessageLineageByConversationId: db.prepare('SELECT id, parent_id FROM messages WHERE conversation_id = ?'),
     upsertStreamingRun: { run: () => {} },
     getStreamingRunById: { get: () => null },
     updateStreamingRun: { run: () => {} },

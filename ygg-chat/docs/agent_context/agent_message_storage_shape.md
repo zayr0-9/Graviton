@@ -43,7 +43,7 @@ Use this when changing:
 - `client/ygg-chat-r/server/headlessServer/routes/appAutomationRoutes.ts`: live `/api/app` message endpoints (`/messages`, `/messages/tree` with `buildMessageTree`, `/messages/bulk`).
 - `client/ygg-chat-r/server/headlessServer/routes/gatewayRoutes.ts`: storage-aware `/api/gw` reads/writes that merge local (`/api/app/*` loopback) with Railway cloud; the renderer's CRUD entry point (message tree/list, bulk, message mutations, attachments).
 - `client/ygg-chat-r/server/headlessServer/persistence/messageRepo.ts`: server message writes (`createMessage`, `updateAssistantToolState`) + JS-side `children_ids` maintenance.
-- `client/ygg-chat-r/server/headlessServer/persistence/conversationRepo.ts`: read helpers (`listMessages`, `listPathToMessage`, `findNearestUserAncestor`, `touch`).
+- `client/ygg-chat-r/server/headlessServer/persistence/conversationRepo.ts`: read helpers (`listMessages`, `listMessageLineage`, `listPathToMessage`, `findNearestUserAncestor`, `touch`).
 - `client/ygg-chat-r/server/headlessServer/services/messageSink.ts`: `TreeMessageSink` (local-authoritative) vs `CloudMirrorSink` (adopts Railway id) — the loop's persistence port.
 - `client/ygg-chat-r/server/headlessServer/services/chatOrchestrator.ts`: persists the user message (via `BranchOrchestrator` → `createUserMessage`) and selects the sink per route.
 - `client/ygg-chat-r/server/headlessServer/services/cloudMirrorService.ts`: server-side CRUD mirror of Railway entities into SQLite (replaces the renderer's `dualSyncManager` for CRUD).

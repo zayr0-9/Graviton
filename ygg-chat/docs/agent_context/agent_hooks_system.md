@@ -48,7 +48,7 @@ Use this when changing:
 
 ## Lifecycle Events
 
-Eight lifecycle events are supported by the **server-owned loop, in-process**, only when the run opted in (see Gating below). Lineage/metadata for every payload is rebuilt per-call from `ConversationRepo.listMessages` (`chatHookService.ts` `buildHookMetadata`/`buildHookLineage`), not from renderer state.
+Eight lifecycle events are supported by the **server-owned loop, in-process**, only when the run opted in (see Gating below). Lineage/metadata for every payload is rebuilt per call from `ConversationRepo.listMessageLineage` (`id` + `parent_id` only; `chatHookService.ts` `buildHookMetadata`/`buildHookLineage`), not from renderer state. The walk is deferred: the session hands it to the runner as `HookRunRequest.resolveLineage`, and `runHookRequest` calls it only after a handler matched, so an event with no configured hook never reads the conversation.
 
 - `UserPromptSubmit` (`chatHookService.ts:246`, called at `chatOrchestrator.ts:339`): fires **before the user message is persisted**, for `send`/`branch`/`edit-branch` only (not `repeat`). Can rewrite `request.content` (the rewrite flows into both the persisted user row and the inference content) or block (throw → run finishes `error`). Carries project context.
 - `PreToolUse` (`chatHookService.ts:270`, called at `chatOrchestrator.ts:153`): fires **BEFORE any permission prompt or plan_md clarify**. `updatedInput` rewrites the effective tool arguments (the permission prompt then shows the rewritten args; `toolCallId` is unchanged); `permissionDecision === 'deny'` throws → surfaces as an `is_error` tool_result. No project context.

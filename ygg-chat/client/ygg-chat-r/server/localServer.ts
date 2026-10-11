@@ -1188,6 +1188,8 @@ function initializeLocalDatabase(dbPath: string) {
     deleteMessage: db.prepare('DELETE FROM messages WHERE id = ?'),
     getMessageById: db.prepare('SELECT * FROM messages WHERE id = ?'),
     getMessagesByConversationId: db.prepare('SELECT * FROM messages WHERE conversation_id = ? ORDER BY created_at ASC'),
+    // Hook lineage walks follow parent_id: no payload columns, no sort.
+    getMessageLineageByConversationId: db.prepare('SELECT id, parent_id FROM messages WHERE conversation_id = ?'),
     getTopLevelUserMessagesByConversationId: db.prepare(TOP_LEVEL_USER_MESSAGES_SQL),
     getLastMessageByConversationId: db.prepare(
       'SELECT * FROM messages WHERE conversation_id = ? ORDER BY created_at DESC LIMIT 1'

@@ -145,7 +145,7 @@ The loop pauses mid-turn to ask the renderer for a tool-permission or `plan_md` 
 
 ## In-process chat hooks (`chatHookService.ts`)
 
-`createChatHookSession` runs eight lifecycle events in-process in the server. Lineage/metadata are rebuilt from `ConversationRepo` per call. Awaited `additionalContext` is buffered into transcript context injections: prompt/session output on the user message, tool-hook output on tool results, Stop output on continuation. Main chat sets `hookContextPlacement: 'transcript'`; system-prompt folding is an explicit legacy alternative.
+`createChatHookSession` runs eight lifecycle events in-process in the server. Lineage/metadata are rebuilt from `ConversationRepo.listMessageLineage` per call, but only once the runner has matched a handler (`HookRunRequest.resolveLineage`); an event with no hook never reads the conversation. Awaited `additionalContext` is buffered into transcript context injections: prompt/session output on the user message, tool-hook output on tool results, Stop output on continuation. Main chat sets `hookContextPlacement: 'transcript'`; system-prompt folding is an explicit legacy alternative.
 
 1. **UserPromptSubmit** — before user-message persistence (`send`/`branch`/`edit-branch`); returns the effective prompt; `blocked` → throw (run finishes `error`). Carries `project`.
 2. **PreToolUse** — in the pausing executor BEFORE any permission prompt/clarify; `updatedInput` rewrites the tool arguments; `permissionDecision === 'deny'` → throw (→ `is_error` tool_result).
