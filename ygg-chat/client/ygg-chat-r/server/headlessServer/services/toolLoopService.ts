@@ -1793,20 +1793,12 @@ export class ToolLoopService {
         const updatedBlocks = [...existingBlocks, ...toolResultBlocks]
         const anyToolErrors = toolResultBlocks.some(block => block.is_error)
 
-        const updatedToolCalls = assistantToolCalls.map(call => {
-          const resultBlock = toolResultBlocks.find(block => block.tool_use_id === call.id)
-          return {
-            ...call,
-            status: 'complete',
-            result: resultBlock?.content,
-          }
-        })
-
-        const inMemoryAssistant = {
-          ...assistantMessage,
-          content_blocks: JSON.stringify(updatedBlocks),
-          tool_calls: JSON.stringify(updatedToolCalls),
-        }
+        // `tool_calls` is the legacy flat list. The result itself lives only in the
+        // `tool_result` block above; mirroring it here as `result` stored every tool
+        // output twice in the row, and again in every SSE frame and history entry that
+        // carries the row. Readers prefer the block and treat `tool_calls[].result`
+        // as a fallback for rows written before this change.
+        const updatedToolCalls = assistantToolCalls.map(call => ({ ...call, status: 'complete' }))
 
         const persistResult = await persistWithFallback({
           attemptPersist: async () => {
@@ -1826,7 +1818,14 @@ export class ToolLoopService {
           policy: this.persistencePolicy,
         })
 
-        const assistantForContinuation = persistResult.result ?? inMemoryAssistant
+        // Serialise the fallback row only when the persist actually failed; building it
+        // eagerly stringified both arrays on every turn and then threw them away.
+        const assistantForContinuation =
+          persistResult.result ?? {
+            ...assistantMessage,
+            content_blocks: JSON.stringify(updatedBlocks),
+            tool_calls: JSON.stringify(updatedToolCalls),
+          }
         lastAssistantMessage = assistantForContinuation
         // openaiChatgpt and lmStudio build their tool outputs from the assistant row's
         // content_blocks (codex even de-dupes the matching `role:'tool'` entry away),

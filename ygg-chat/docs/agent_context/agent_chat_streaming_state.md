@@ -168,8 +168,8 @@ messages and transport disconnects do not finalize statistics.
   usage blocks, setup notices, compaction summaries, and inherited history are excluded.
   A `~` marks estimates; unknown slice boundaries remain unavailable. Provider-reported
   cumulative request usage is separate hover detail, never the default token count.
-- Hover/focus slides the footer right-to-left slowly to reveal its slice breakdown and
-  request usage. The single-line height remains stable; reduced motion disables sliding.
+- Hover/focus slides the footer right-to-left slowly to reveal cumulative request usage,
+  without a per-role token breakdown. The single-line height remains stable; reduced motion disables sliding.
 - Footer eligibility uses the pane's canonical path. Process grouping stops at footer boundaries;
   footers stay outside collapsed disclosures and use stable stream-ID virtual row keys.
 - No statistics row enters inference history, persistence, compaction, or branch navigation.

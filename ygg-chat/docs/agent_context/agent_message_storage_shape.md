@@ -100,7 +100,7 @@ Important field meanings:
 - `content`: primary text content. Can be empty when structured blocks carry the useful payload.
 - `content_plain_text`: plain text copy/search field. Local SQLite also has older `plain_text_content` in some query results.
 - `thinking_block`: legacy single reasoning/thinking string. Newer streams prefer `content_blocks`.
-- `tool_calls`: assistant tool-call metadata. May be stored as JSON text in SQLite or already parsed in cloud responses.
+- `tool_calls`: assistant tool-call metadata (legacy flat list: `id`, `name`, `arguments`, `status`). May be stored as JSON text in SQLite or already parsed in cloud responses. The server-owned loop no longer mirrors each tool output into `tool_calls[].result`; the `tool_result` block in `content_blocks` is the only copy. Rows written before 2026-10-11 may still carry `result`, and readers treat it as a fallback only.
 - `tool_call_id`: for `role: 'tool'` messages, links result to assistant tool use.
 - `content_blocks`: structured ordered blocks for text, reasoning, tools, tool results, images, responses output items, etc. May be JSON text or parsed arrays depending on source.
 - `note` / `note_color`: user-authored annotation metadata used by Chat and Heimdall.

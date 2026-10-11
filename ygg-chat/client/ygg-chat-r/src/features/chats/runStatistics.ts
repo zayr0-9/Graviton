@@ -136,13 +136,10 @@ export function placeRunFooters(
 const formatTokens = (value: number) => new Intl.NumberFormat('en', { notation: 'compact', maximumFractionDigits: 1 }).format(value)
 
 export function formatRunStatisticsDetails(footer: RunStatisticsFooterData): string {
-  const { breakdown, requestTotal, requestCoverage } = footer.tokens
-  const slice = breakdown ? `Slice estimate: ${formatTokens(breakdown.user)} user · ${formatTokens(breakdown.assistant)} assistant/reasoning · ${formatTokens(breakdown.tools)} tools`
-    : 'Slice tokens unavailable'
-  const requests = requestCoverage && requestCoverage !== 'unavailable'
+  const { requestTotal, requestCoverage } = footer.tokens
+  return requestCoverage && requestCoverage !== 'unavailable'
     ? `Request usage: ${formatTokens(requestTotal ?? 0)} tokens cumulative${requestCoverage === 'partial' ? ' (partial)' : ''}`
     : 'Request usage unavailable'
-  return `${slice} · ${requests}`
 }
 
 export function formatRunStatistics(footer: RunStatisticsFooterData): string {
