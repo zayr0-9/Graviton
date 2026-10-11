@@ -3,6 +3,7 @@ import type { Express } from 'express'
 import { v4 as uuidv4 } from 'uuid'
 import { toSafeHookRunRecord } from '../../hooks/hookDiagnostics.js'
 import { HookRunRepo } from '../persistence/hookRunRepo.js'
+import { buildTopLevelUserMessagesCte } from '../../topLevelUserMessages.js'
 
 interface AppAutomationRouteDeps {
   db: Database.Database
@@ -304,6 +305,9 @@ function searchTopLevelUserMessages(db: Database.Database, params: {
     const recentRows = db
       .prepare(
         `
+        ${buildTopLevelUserMessagesCte(`conversation_id IN (
+          SELECT c.id FROM conversations c WHERE c.user_id = ? ${scopeClause}
+        )`)}
         SELECT
           m.id AS message_id,
           m.conversation_id AS conversation_id,
@@ -316,11 +320,8 @@ function searchTopLevelUserMessages(db: Database.Database, params: {
           m.plain_text_content AS message_plain_text_content,
           m.note AS message_note
         FROM messages m
+        INNER JOIN human_top_level_user_message_ids candidate ON candidate.id = m.id
         INNER JOIN conversations c ON c.id = m.conversation_id
-        WHERE c.user_id = ?
-          ${scopeClause}
-          AND m.parent_id IS NULL
-          AND m.role = 'user'
         ORDER BY datetime(COALESCE(c.updated_at, c.created_at)) DESC, datetime(m.created_at) DESC
         LIMIT ?
       `

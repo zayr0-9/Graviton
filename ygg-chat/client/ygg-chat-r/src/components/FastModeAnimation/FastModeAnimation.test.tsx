@@ -67,8 +67,8 @@ describe('fast-mode backgrounds', () => {
   it('resolves four distinct states and reuses the actual composer Agent tint', () => {
     const states = [false, true].flatMap(dark => [getFastModePalette(dark, 'plan'), getFastModePalette(dark, 'execute')])
     expect(new Set(states.map(state => JSON.stringify(state))).size).toBe(4)
-    expect(getFastModePalette(false, 'plan')).toMatchObject({ '--fm-base': 'color-mix(in srgb, #91a5c0 30%, #eef2f7)' })
-    expect(getFastModePalette(true, 'execute', undefined, '#f97316')).toMatchObject({ '--fm-a': 'color-mix(in srgb, rgb(from #f97316 r g b / 1) 67%, #172336)' })
+    expect(getFastModePalette(false, 'plan')).toMatchObject({ '--fm-base': 'color-mix(in srgb, #91a5c0 24%, #eef2f7)' })
+    expect(getFastModePalette(true, 'execute', undefined, '#f97316')).toMatchObject({ '--fm-a': 'color-mix(in srgb, oklch(from rgb(from #f97316 r g b / 1) clamp(0.60, l, 0.74) c h / 1) 78%, #172336)' })
     const border = { animation: 'digital-breath', lightColor: '#123456', darkColor: '#654321' }
     expect(resolveComposerAgentTint(false, undefined, border)).toBe('#123456')
     expect(resolveComposerAgentTint(true, undefined, border)).toBe('#654321')
@@ -83,10 +83,27 @@ describe('fast-mode backgrounds', () => {
       const surface = dark ? '#15291f' : '#edf4ee'
       const accent = dark ? '#47b88f' : 'rgba(44, 156, 131, 0.7)'
       expect(resolveComposerAgentTint(dark, theme, { animation: 'none', lightColor: '#fff', darkColor: '#fff' })).toBe(accent)
-      expect(getFastModePalette(dark, 'execute', theme)).toMatchObject({ '--fm-a': `color-mix(in srgb, rgb(from ${accent} r g b / 1) 67%, ${surface})` })
+      expect(getFastModePalette(dark, 'execute', theme)).toMatchObject({ '--fm-a': `color-mix(in srgb, oklch(from rgb(from ${accent} r g b / 1) clamp(${dark ? '0.60, l, 0.74' : '0.48, l, 0.62'}) c h / 1) ${dark ? 78 : 86}%, ${surface})` })
       expect(JSON.stringify(getFastModePalette(dark, 'plan', theme))).not.toContain(accent)
       expect(JSON.stringify(getFastModePalette(dark, 'plan', theme))).toContain(surface)
       expect(getFastModePalette(dark, 'execute', theme)).not.toEqual(getFastModePalette(dark, 'plan', theme))
+    }
+  })
+  it('separates moving-layer luminance from the surface even with pale custom accents', () => {
+    const theme = createDefaultCustomChatTheme()
+    theme.colors.chatPanelBg = { light: '#ffffff', dark: '#101820' }
+    theme.colors.chatInputAreaBorder = { light: '#fafafa', dark: '#111111' }
+    for (const mode of ['plan', 'execute'] as const) {
+      const light = getFastModePalette(false, mode, theme) as Record<string, string>
+      const dark = getFastModePalette(true, mode, theme) as Record<string, string>
+      expect(light['--fm-a']).toContain('clamp(0.48, l, 0.62)')
+      expect(light['--fm-a']).toContain('86%')
+      expect(dark['--fm-a']).toContain('clamp(0.60, l, 0.74)')
+      expect(dark['--fm-a']).toContain('78%')
+      expect(light['--fm-base']).not.toContain('clamp(')
+      expect(dark['--fm-base']).not.toContain('clamp(')
+      expect(light['--fm-edge']).toContain('54%')
+      expect(dark['--fm-light']).toContain('#c2d0e2')
     }
   })
   it('documents the independent Chat/Agent preview without enabling Fast mode', () => {

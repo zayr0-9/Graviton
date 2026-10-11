@@ -4158,8 +4158,9 @@ const Settings: React.FC = () => {
             })}
           </div>
           <p className='mt-4 text-xs text-stone-500 dark:text-stone-400'>
-            Solid colors automatically switch with the theme, and you can still set either theme to transparent if you
-            want. When you’re ready for motion, switch back to video wallpapers.
+            {customThemeEnabled
+              ? 'Custom theme background colors add a soft gradient tint over the default app backdrop. Set a color to transparent to remove its tint. Video wallpapers are unchanged.'
+              : 'Solid colors automatically switch with the theme, and you can still set either theme to transparent if you want. When you’re ready for motion, switch back to video wallpapers.'}
           </p>
         </SettingsSection>
 

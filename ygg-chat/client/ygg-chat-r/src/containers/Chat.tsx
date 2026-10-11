@@ -249,7 +249,7 @@ import { useSubscriptionStatus } from '../hooks/useSubscriptionStatus'
 import { useConversationSnapshotCoordinator } from '../hooks/useConversationSnapshotCoordinator'
 import { CHAT_INSERT_FILE_PATH_EVENT, type ChatInsertFilePathDetail } from '../helpers/chatInputBridge'
 import { dispatchOpenWorkspaceMutationDiffs } from '../helpers/workspaceMutationDiffBridge'
-import { cloneConversation, gwApi, localApi } from '../utils/api'
+import { gwApi, localApi } from '../utils/api'
 import { executeToolAndWait } from '../utils/executeToolAndWait'
 import { getHookRunsRenderSignature } from '../components/ChatMessage/hookActivityState'
 import { parseId } from '../utils/helpers'
@@ -977,7 +977,7 @@ const parseMessageDataForRender = (msg: Message): ParsedMessageData => {
 
 function Chat() {
   const dispatch = useAppDispatch()
-  const { accessToken, userId } = useAuth()
+  const { userId } = useAuth()
   const navigate = useNavigate()
   const { ideContext, requestContext } = useIdeContext()
   const queryClient = useQueryClient()
@@ -3564,7 +3564,6 @@ function Chat() {
 
   const [editingTitle, setEditingTitle] = useState(false)
   const editingTitleRef = useRef(false)
-  const [cloningConversation, setCloningConversation] = useState(false)
   const [isTitleBarVisible, setIsTitleBarVisible] = useState(true)
   const lastScrollTopRef = useRef(0)
 
@@ -6542,30 +6541,6 @@ function Chat() {
   //   }
   // }
 
-  // Clone conversation
-  const handleCloneConversation = useCallback(async () => {
-    if (!currentConversationId) return
-
-    setCloningConversation(true)
-
-    try {
-      const result = await cloneConversation(currentConversationId, accessToken)
-      // Refresh the sidebar's project ordering and flat/infinite conversation lists.
-      // Prefix matching also covers recent and collapsed-project caches.
-      await Promise.all([
-        queryClient.invalidateQueries({ queryKey: ['projects'] }),
-        queryClient.invalidateQueries({ queryKey: ['conversations'] }),
-      ])
-      // Navigate to the cloned conversation
-      navigate(`/chat/${result.project_id || projectIdFromUrl || 'unknown'}/${result.id}`)
-    } catch (error) {
-      console.error('Failed to clone conversation:', error)
-      throw error
-    } finally {
-      setCloningConversation(false)
-    }
-  }, [currentConversationId, accessToken, navigate, queryClient, projectIdFromUrl])
-
   const handleOpenToolHtmlModal = useCallback(
     (key?: string) => {
       htmlRegistry?.openModal(key)
@@ -6789,7 +6764,6 @@ function Chat() {
                 title={currentConversation?.title ?? ''}
                 backgroundColor={conversationToolbarBackgroundColor}
                 treeVisible={heimdallVisible}
-                cloning={cloningConversation}
                 customTheme={customTheme}
                 customThemeEnabled={customThemeEnabled}
                 isDarkMode={isDarkMode}
@@ -6801,7 +6775,6 @@ function Chat() {
                   } catch {}
                 }}
                 onRefresh={() => { void refreshConversationSnapshot() }}
-                onClone={handleCloneConversation}
                 onRename={handleRenameConversation}
                 onEditingChange={handleTitleEditingChange}
               />

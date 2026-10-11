@@ -65,7 +65,7 @@ import { registerAnalyticsRoutes } from './routes/analyticsRoutes.js'
 import { registerUserProjectRoutes } from './routes/userProjectRoutes.js'
 import { registerNoteSearchRoutes } from './routes/noteSearchRoutes.js'
 import { registerConversationRoutes } from './routes/conversationRoutes.js'
-import { TOP_LEVEL_USER_MESSAGES_SQL } from './topLevelUserMessages.js'
+import { TOP_LEVEL_USER_MESSAGES_SQL, TOP_LEVEL_USER_MESSAGE_SEARCH_INDEX_SQL } from './topLevelUserMessages.js'
 import { skillRegistry } from './skills/skillLoader.js'
 import { registerSkillRoutes } from './skills/skillRoutes.js'
 import { customToolRegistry, type CustomToolsChangedEvent, ToolResult } from './tools/customToolLoader.js'
@@ -882,61 +882,7 @@ function initializeLocalDatabase(dbPath: string) {
   // Full-text index for top-level user message search (best effort)
   let topLevelMessageFtsAvailable = false
   try {
-    db.exec(`
-      CREATE VIRTUAL TABLE IF NOT EXISTS top_level_user_message_search USING fts5(
-        message_id UNINDEXED,
-        content,
-        plain_text_content,
-        note,
-        tokenize = 'unicode61 remove_diacritics 2'
-      );
-    `)
-
-    db.exec(`
-      CREATE TRIGGER IF NOT EXISTS top_level_user_message_search_insert
-      AFTER INSERT ON messages
-      WHEN NEW.parent_id IS NULL AND NEW.role = 'user'
-      BEGIN
-        INSERT INTO top_level_user_message_search (message_id, content, plain_text_content, note)
-        VALUES (
-          NEW.id,
-          COALESCE(NEW.content, ''),
-          COALESCE(NEW.plain_text_content, ''),
-          COALESCE(NEW.note, '')
-        );
-      END;
-
-      CREATE TRIGGER IF NOT EXISTS top_level_user_message_search_update
-      AFTER UPDATE ON messages
-      BEGIN
-        DELETE FROM top_level_user_message_search WHERE message_id = OLD.id;
-        INSERT INTO top_level_user_message_search (message_id, content, plain_text_content, note)
-        SELECT
-          NEW.id,
-          COALESCE(NEW.content, ''),
-          COALESCE(NEW.plain_text_content, ''),
-          COALESCE(NEW.note, '')
-        WHERE NEW.parent_id IS NULL AND NEW.role = 'user';
-      END;
-
-      CREATE TRIGGER IF NOT EXISTS top_level_user_message_search_delete
-      AFTER DELETE ON messages
-      BEGIN
-        DELETE FROM top_level_user_message_search WHERE message_id = OLD.id;
-      END;
-    `)
-
-    db.exec(`DELETE FROM top_level_user_message_search;`)
-    db.exec(`
-      INSERT INTO top_level_user_message_search (message_id, content, plain_text_content, note)
-      SELECT
-        id,
-        COALESCE(content, ''),
-        COALESCE(plain_text_content, ''),
-        COALESCE(note, '')
-      FROM messages
-      WHERE parent_id IS NULL AND role = 'user';
-    `)
+    db.exec(TOP_LEVEL_USER_MESSAGE_SEARCH_INDEX_SQL)
 
     topLevelMessageFtsAvailable = true
   } catch (ftsError) {

@@ -1,18 +1,16 @@
 import React, { useEffect, useId, useRef, useState } from 'react'
-import { Check, Copy, GitBranch, Pencil, RefreshCw, X } from 'lucide-react'
+import { Check, GitBranch, Pencil, RefreshCw, X } from 'lucide-react'
 import { getThemeModeColor, type CustomChatTheme, type ThemeColorPair } from '../ThemeManager/themeConfig'
 
 interface ConversationToolbarProps {
   title: string
   backgroundColor: string
   treeVisible: boolean
-  cloning: boolean
   customTheme: CustomChatTheme
   customThemeEnabled: boolean
   isDarkMode: boolean
   onToggleTree: () => void
   onRefresh: () => void
-  onClone: () => Promise<void>
   onRename: (title: string) => Promise<void>
   onEditingChange: (editing: boolean) => void
 }
@@ -25,15 +23,10 @@ const controlClass = 'flex h-11 w-11 shrink-0 items-center justify-center rounde
 
 /** A local rename draft only reaches persistence on explicit confirmation. */
 export function ConversationToolbar({
-  title, backgroundColor, treeVisible, cloning, customTheme, customThemeEnabled, isDarkMode,
-  onToggleTree, onRefresh, onClone, onRename, onEditingChange,
+  title, backgroundColor, treeVisible, customTheme, customThemeEnabled, isDarkMode,
+  onToggleTree, onRefresh, onRename, onEditingChange,
 }: ConversationToolbarProps) {
   const [editing, setEditing] = useState(false)
-  const [confirmingClone, setConfirmingClone] = useState(false)
-  const [cloneError, setCloneError] = useState<string | null>(null)
-  const cloneDialogRef = useRef<HTMLDialogElement>(null)
-  const cloneRef = useRef<HTMLButtonElement>(null)
-  const cloningRef = useRef(false)
   const [draft, setDraft] = useState(title)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -65,35 +58,6 @@ export function ConversationToolbar({
       inputRef.current?.select()
     }
   }, [editing])
-
-  useEffect(() => {
-    if (confirmingClone) cloneDialogRef.current?.showModal()
-  }, [confirmingClone])
-
-  const closeCloneConfirmation = () => {
-    if (cloningRef.current) return
-    setConfirmingClone(false)
-    setCloneError(null)
-    onEditingChange(false)
-    requestAnimationFrame(() => {
-      if (mountedRef.current) cloneRef.current?.focus()
-    })
-  }
-
-  const confirmClone = async () => {
-    if (cloningRef.current) return
-    cloningRef.current = true
-    setCloneError(null)
-    try {
-      await onClone()
-      cloningRef.current = false
-      if (mountedRef.current) closeCloneConfirmation()
-    } catch {
-      if (mountedRef.current) setCloneError('Could not copy the conversation. Try again.')
-    } finally {
-      cloningRef.current = false
-    }
-  }
 
   const finishEditing = () => {
     setEditing(false)
@@ -202,37 +166,7 @@ export function ConversationToolbar({
           <button type='button' className={controlClass} style={controlStyle} title='Refresh messages' aria-label='Refresh messages' onClick={onRefresh}>
             <RefreshCw size={18} strokeWidth={2.25} aria-hidden='true' />
           </button>
-          <button ref={cloneRef} type='button' className={controlClass} style={controlStyle} disabled={cloning} title={cloning ? 'Copying conversation…' : 'Clone conversation'} aria-label='Clone conversation' aria-busy={cloning} onClick={() => {
-            setCloneError(null)
-            setConfirmingClone(true)
-            onEditingChange(true)
-          }}>
-            <Copy size={18} strokeWidth={2.25} aria-hidden='true' />
-          </button>
         </div>
-      )}
-      {confirmingClone && (
-        <dialog
-          ref={cloneDialogRef}
-          aria-labelledby={`${fieldId}-clone-title`}
-          aria-describedby={`${fieldId}-clone-description`}
-          aria-busy={cloning}
-          onCancel={event => { event.preventDefault(); closeCloneConfirmation() }}
-          className='fixed inset-0 m-auto w-[calc(100%-2rem)] max-w-sm rounded-3xl bg-white p-4 text-stone-900 backdrop:bg-black/45 backdrop:backdrop-blur-sm dark:bg-stone-900 dark:text-stone-100'
-          style={{ backgroundColor: color('settingsCustomThemesInnerCardBg'), color: color('toolJobsPrimaryText') }}
-        >
-          <h2 id={`${fieldId}-clone-title`} className='text-sm font-medium'>Copy conversation?</h2>
-          <p id={`${fieldId}-clone-description`} className='mt-2 text-sm text-stone-500 dark:text-stone-400' style={{ color: color('toolJobsMutedText') }}>
-            Create a separate copy of “{title || 'Untitled conversation'}”? The original stays unchanged.
-          </p>
-          {cloneError && <p role='alert' className='mt-2 text-xs text-red-600 dark:text-red-400'>{cloneError}</p>}
-          <div className='mt-4 flex justify-end gap-2'>
-            <button type='button' autoFocus disabled={cloning} onClick={closeCloneConfirmation} className='rounded-full bg-black/5 px-4 py-2 text-sm disabled:opacity-40 dark:bg-white/10' style={controlStyle}>Cancel</button>
-            <button type='button' disabled={cloning} onClick={() => { void confirmClone() }} className='rounded-full bg-blue-600 px-4 py-2 text-sm text-white disabled:opacity-40 dark:bg-orange-500 dark:text-stone-950' style={primaryStyle}>
-              {cloning ? 'Copying…' : 'Copy'}
-            </button>
-          </div>
-        </dialog>
       )}
     </div>
   )

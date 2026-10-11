@@ -23,13 +23,17 @@ export const getFastModePalette = (dark: boolean, operationMode: OperationMode, 
       ? `color-mix(in srgb, ${surface} 78%, ${dark ? '#a5b8ce' : '#91a5c0'})`
       : dark ? '#6a88ae' : '#91a5c0'
   const mix = (color: string, amount: number, base = surface) => `color-mix(in srgb, ${color} ${amount}%, ${base})`
-  const light = dark ? mix(accent, 20, '#a5b8ce') : '#ffffff'
+  // Pastel/theme accents can be almost as light as the surface. Separate luminance,
+  // not hue: darker moving colors on light surfaces, brighter colors on dark ones.
+  // Clamp only the layer color; leave the mode-colored background restrained.
+  const layer = `oklch(from ${accent} clamp(${dark ? '0.60, l, 0.74' : '0.48, l, 0.62'}) c h / 1)`
+  const light = dark ? mix(layer, 16, '#c2d0e2') : '#ffffff'
   return {
-    '--fm-base': mix(accent, 30),
-    '--fm-a': mix(accent, 67),
-    '--fm-b': mix(accent, 50),
-    '--fm-c': mix(accent, 37),
-    '--fm-light': mix(accent, 18, light),
-    '--fm-edge': mix(accent, 30, light),
+    '--fm-base': mix(accent, dark ? 26 : 24),
+    '--fm-a': mix(layer, dark ? 78 : 86),
+    '--fm-b': mix(layer, dark ? 62 : 68),
+    '--fm-c': mix(layer, dark ? 46 : 50),
+    '--fm-light': mix(layer, dark ? 12 : 8, light),
+    '--fm-edge': mix(layer, dark ? 24 : 54, light),
   } as CSSProperties
 }

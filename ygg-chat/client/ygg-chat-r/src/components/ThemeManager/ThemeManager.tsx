@@ -537,7 +537,7 @@ export const ThemeManager: React.FC = () => {
               onChange={(mode, value) => handleChatSurfaceChange('settingsSolidColorSectionBg', mode, value)}
             />
             <PairEditor
-              label='App solid background colors (Settings > Solid Color Background)'
+              label='App background tint colors (Settings > Solid Color Background)'
               value={theme.colors.appBackgroundColor}
               onChange={(mode, value) => handleChatSurfaceChange('appBackgroundColor', mode, value)}
             />

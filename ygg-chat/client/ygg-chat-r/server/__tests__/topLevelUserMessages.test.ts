@@ -6,7 +6,8 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { INSTRUCTION_SET_PREAMBLE } from '../../../../shared/contextInjection.js'
 import { registerAppAutomationRoutes } from '../headlessServer/routes/appAutomationRoutes.js'
 import { registerConversationRoutes } from '../routes/conversationRoutes.js'
-import { TOP_LEVEL_USER_MESSAGES_SQL } from '../topLevelUserMessages.js'
+import { TOP_LEVEL_USER_MESSAGES_SQL, TOP_LEVEL_USER_MESSAGE_SEARCH_INDEX_SQL } from '../topLevelUserMessages.js'
+import { registerNoteSearchRoutes } from '../routes/noteSearchRoutes.js'
 
 const require = createRequire(import.meta.url)
 
@@ -43,10 +44,13 @@ describe('shared human top-level message selector', () => {
 
   beforeEach(() => {
     db = openDatabase()
+    // Malformed-tree regressions intentionally insert orphans/out-of-order rows.
+    db.exec('PRAGMA foreign_keys = OFF')
     db.exec(`CREATE TABLE messages (
       id TEXT PRIMARY KEY, conversation_id TEXT NOT NULL, parent_id TEXT, role TEXT NOT NULL,
       content TEXT NOT NULL, plain_text_content TEXT, note TEXT, note_color TEXT, created_at TEXT,
-      meta TEXT, content_blocks TEXT, children_ids TEXT DEFAULT '[]'
+      meta TEXT, content_blocks TEXT, children_ids TEXT DEFAULT '[]',
+      FOREIGN KEY (parent_id) REFERENCES messages(id) ON DELETE CASCADE
     )`)
   })
 
@@ -152,6 +156,121 @@ describe('shared human top-level message selector', () => {
     expect(selectedIds()).toEqual([])
     addMessage('reminder', null, { meta: injectionMeta })
     expect(selectedIds()).toEqual([])
+  })
+
+  const indexIds = () => db.prepare('SELECT message_id FROM top_level_user_message_search ORDER BY message_id')
+    .all().map((row: any) => row.message_id)
+
+  it('backfills the index from the hover selector and replaces legacy triggers', () => {
+    addMessage('context', null, { meta: injectionMeta })
+    addMessage('access', 'context', { meta: JSON.stringify({ kind: 'full_access_change' }) })
+    addMessage('prompt-a', 'access')
+    addMessage('prompt-b', 'access')
+    addMessage('ordinary')
+    addMessage('reply', 'prompt-a', { role: 'assistant' })
+    addMessage('follow-up', 'reply')
+    addMessage('orphan', 'missing')
+    addMessage('foreign-child', 'context', { conversationId: 'conversation-2' })
+    db.exec(`CREATE TRIGGER top_level_user_message_search_insert AFTER INSERT ON messages BEGIN SELECT 1; END;`)
+    db.exec(TOP_LEVEL_USER_MESSAGE_SEARCH_INDEX_SQL)
+    expect(indexIds()).toEqual([...selectedIds()].sort())
+    addMessage('prompt-c', 'access')
+    expect(indexIds()).toEqual([...selectedIds()].sort())
+    db.exec(TOP_LEVEL_USER_MESSAGE_SEARCH_INDEX_SQL)
+    expect(indexIds()).toEqual([...selectedIds()].sort())
+  })
+
+  it('keeps the index aligned after ancestor changes, note edits, reparenting, and deletes', () => {
+    db.exec(TOP_LEVEL_USER_MESSAGE_SEARCH_INDEX_SQL)
+    addMessage('context', null, { meta: injectionMeta })
+    addMessage('prompt', 'context')
+    addMessage('child', 'prompt')
+    expect(indexIds()).toEqual(['prompt'])
+    db.prepare('UPDATE messages SET note = ? WHERE id = ?').run('uniquenote', 'prompt')
+    expect(db.prepare(`SELECT message_id FROM top_level_user_message_search WHERE top_level_user_message_search MATCH ?`)
+      .all('uniquenote').map((row: any) => row.message_id)).toEqual(['prompt'])
+    db.prepare('UPDATE messages SET meta = NULL WHERE id = ?').run('context')
+    expect(indexIds()).toEqual(['context'])
+    db.prepare('UPDATE messages SET meta = ? WHERE id = ?').run(injectionMeta, 'context')
+    expect(indexIds()).toEqual(['prompt'])
+    db.prepare('UPDATE messages SET parent_id = NULL WHERE id = ?').run('child')
+    expect(indexIds()).toEqual(['child', 'prompt'])
+    db.prepare('UPDATE messages SET role = ? WHERE id = ?').run('assistant', 'prompt')
+    expect(indexIds()).toEqual(['child'])
+    db.prepare('DELETE FROM messages WHERE id = ?').run('context')
+    expect(indexIds()).toEqual(['child'])
+    db.prepare('DELETE FROM messages WHERE id = ?').run('child')
+    expect(indexIds()).toEqual([])
+  })
+
+  it('indexes out-of-order mirrored prompts and refreshes both conversations when moved', () => {
+    db.exec(TOP_LEVEL_USER_MESSAGE_SEARCH_INDEX_SQL)
+    addMessage('prompt', 'context')
+    expect(indexIds()).toEqual([])
+    addMessage('context', null, { meta: injectionMeta })
+    expect(indexIds()).toEqual(['prompt'])
+    db.prepare('UPDATE messages SET conversation_id = ? WHERE id = ?').run('conversation-2', 'context')
+    expect(indexIds()).toEqual([])
+    db.prepare('UPDATE messages SET conversation_id = ? WHERE id = ?').run('conversation-2', 'prompt')
+    expect(indexIds()).toEqual(['prompt'])
+    db.prepare('UPDATE messages SET parent_id = ? WHERE id = ?').run('missing', 'context')
+    expect(indexIds()).toEqual([])
+    db.prepare('UPDATE messages SET parent_id = NULL WHERE id = ?').run('context')
+    expect(indexIds()).toEqual(['prompt'])
+  })
+
+  it('removes indexed descendants on cascading deletes', () => {
+    db.exec('PRAGMA foreign_keys = ON')
+    db.exec(TOP_LEVEL_USER_MESSAGE_SEARCH_INDEX_SQL)
+    addMessage('context', null, { meta: injectionMeta })
+    addMessage('prompt-a', 'context')
+    addMessage('prompt-b', 'context')
+    expect(indexIds()).toEqual(['prompt-a', 'prompt-b'])
+    db.prepare('DELETE FROM messages WHERE id = ?').run('context')
+    expect(indexIds()).toEqual([])
+    expect(selectedIds()).toEqual([])
+  })
+
+  it.each([true, false])('searches the hover-visible prompts and notes on both endpoints (FTS: %s)', async useFts => {
+    db.exec(`CREATE TABLE conversations (
+      id TEXT PRIMARY KEY, user_id TEXT, project_id TEXT, storage_mode TEXT,
+      title TEXT, created_at TEXT, updated_at TEXT
+    );
+    INSERT INTO conversations VALUES ('conversation-1', 'user-1', 'project-1', 'local', 'Title', '2026-10-01', '2026-10-01');
+    INSERT INTO conversations VALUES ('conversation-2', 'user-2', 'project-2', 'local', 'Other', '2026-10-01', '2026-10-01');`)
+    if (useFts) db.exec(TOP_LEVEL_USER_MESSAGE_SEARCH_INDEX_SQL)
+    addMessage('context', null, { meta: injectionMeta })
+    addMessage('access', 'context', { meta: JSON.stringify({ kind: 'full_access_change' }) })
+    addMessage('prompt-a', 'access')
+    addMessage('prompt-b', 'access')
+    addMessage('ordinary')
+    addMessage('reply', 'prompt-a', { role: 'assistant' })
+    addMessage('follow-up', 'reply')
+    addMessage('orphan', 'missing')
+    addMessage('foreign', null, { conversationId: 'conversation-2' })
+    db.prepare('UPDATE messages SET content = ?, plain_text_content = ?, note = ?')
+      .run('contentneedle', 'plainneedle', 'noteneedle')
+    const app = express()
+    registerAppAutomationRoutes(app, { db, statements: {} })
+    registerNoteSearchRoutes(app, {
+      db, statements: {}, getSqliteVecAvailable: () => false, getSqliteVecLoadError: () => null,
+    })
+    await new Promise<void>((resolve, reject) => {
+      server = app.listen(0, '127.0.0.1', resolve)
+      server.once('error', reject)
+    })
+    const { port } = server!.address() as AddressInfo
+    for (const prefix of ['app', 'local']) {
+      for (const query of ['plainneedle', 'noteneedle', 'noteneedlz']) {
+        const response = await fetch(`http://127.0.0.1:${port}/api/${prefix}/conversations/search/top-level-users?userId=user-1&projectId=project-1&q=${query}`)
+        expect(response.status).toBe(200)
+        const hits = await response.json() as any[]
+        expect(hits.map(hit => hit.message_id).sort()).toEqual([...selectedIds()].sort())
+        expect(hits.every(hit => hit.match_type === (useFts && query !== 'noteneedlz' ? 'fts' : 'fuzzy'))).toBe(true)
+      }
+      const response = await fetch(`http://127.0.0.1:${port}/api/${prefix}/conversations/search/top-level-users?userId=user-1&projectId=other&q=noteneedle`)
+      expect(await response.json()).toEqual([])
+    }
   })
 
   it('serves the same real prompt IDs and compact payload from app and legacy endpoints', async () => {

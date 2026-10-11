@@ -49,7 +49,7 @@ import {
   useRecentConversations,
   useSearchTopLevelUserMessages,
 } from '../hooks/useQueries'
-import { localApi } from '../utils/api'
+import { cloneConversation, localApi } from '../utils/api'
 
 type SidebarProject = Project & {
   latest_conversation_updated_at?: string | null
@@ -776,7 +776,7 @@ const SideBar: React.FC<SideBarProps> = ({
   activeConversationId = null,
 }) => {
   const dispatch = useAppDispatch()
-  const { userId } = useAuth()
+  const { userId, accessToken } = useAuth()
   const queryClient = useQueryClient()
   const navigate = useNavigate()
   const location = useLocation()
@@ -791,6 +791,10 @@ const SideBar: React.FC<SideBarProps> = ({
   const [showEditProjectModal, setShowEditProjectModal] = useState(false)
   const [editingProject, setEditingProject] = useState<SidebarProject | null>(null)
   const [showMoveModal, setShowMoveModal] = useState(false)
+  const [conversationAction, setConversationAction] = useState<'move' | 'copy' | null>(null)
+  const [copyingConversation, setCopyingConversation] = useState(false)
+  const copyingConversationRef = useRef(false)
+  const [copyError, setCopyError] = useState<string | null>(null)
   const [showMoveConfirm, setShowMoveConfirm] = useState(false)
   const [conversationToMove, setConversationToMove] = useState<Conversation | null>(null)
   const [destinationProject, setDestinationProject] = useState<{ id: string; name: string } | null>(null)
@@ -1286,11 +1290,46 @@ const SideBar: React.FC<SideBarProps> = ({
   )
 
   const handleOpenMoveConversation = useCallback((conversation: Conversation) => {
+    if (copyingConversationRef.current) return
     setConversationToMove(conversation)
+    setConversationAction(null)
+    setCopyError(null)
     setDestinationProject(null)
     setShowMoveConfirm(false)
     setShowMoveModal(true)
   }, [])
+
+  const closeConversationActions = useCallback(() => {
+    if (copyingConversationRef.current) return
+    setShowMoveModal(false)
+    setConversationAction(null)
+    setCopyError(null)
+  }, [])
+
+  const confirmCopyConversation = useCallback(async () => {
+    if (!conversationToMove || copyingConversationRef.current) return
+    copyingConversationRef.current = true
+    setCopyingConversation(true)
+    setCopyError(null)
+    try {
+      const result = await cloneConversation(conversationToMove.id, accessToken)
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ['projects'] }),
+        queryClient.invalidateQueries({ queryKey: ['conversations'] }),
+      ])
+      setShowMoveModal(false)
+      setConversationToMove(null)
+      navigate(`/chat/${result.project_id || conversationToMove.project_id || 'unknown'}/${result.id}`, {
+        state: conversationToMove.storage_mode ? { storageMode: conversationToMove.storage_mode } : undefined,
+      })
+    } catch (error) {
+      console.error('Failed to copy conversation:', error)
+      setCopyError('Could not copy the conversation. Try again.')
+    } finally {
+      copyingConversationRef.current = false
+      setCopyingConversation(false)
+    }
+  }, [conversationToMove, accessToken, queryClient, navigate])
 
   const handleSelectDestinationProject = useCallback((project: { id: string; name: string }) => {
     setDestinationProject(project)
@@ -2293,11 +2332,11 @@ const SideBar: React.FC<SideBarProps> = ({
         </div>
       )}
 
-      {/* Move Project Modal */}
+      {/* Conversation Actions Modal */}
       {showMoveModal && conversationToMove && (
         <div
           className='fixed inset-0 bg-neutral-400/40 dark:bg-black/30 bg-opacity-50 backdrop-blur-sm flex items-center justify-center z-[1300] p-4'
-          onClick={() => setShowMoveModal(false)}
+          onClick={closeConversationActions}
         >
           <div
             className='bg-neutral-100 text-neutral-900 mica-medium dark:bg-yBlack-900 rounded-3xl border border-gray-200 dark:border-zinc-700 w-full max-w-md p-6 shadow-[0_8px_32px_rgba(0,0,0,0.1)] dark:shadow-[0_8px_32px_rgba(0,0,0,0.3)]'
@@ -2310,49 +2349,95 @@ const SideBar: React.FC<SideBarProps> = ({
               ".
             </p>
 
-            <h4 className='text-sm font-semibold mb-2 dark:text-neutral-200'>
-              Move to Project
-              <span className='ml-2 text-xs font-normal text-neutral-500 dark:text-neutral-400'>
-                ({conversationToMove.storage_mode === 'local' ? 'Local' : 'Cloud'} projects only)
-              </span>
-            </h4>
-            <div className='max-h-[400px] overflow-y-auto space-y-3 thin-scrollbar'>
-              {projectData
-                .filter(project => {
-                  const convMode = conversationToMove.storage_mode || 'cloud'
-                  const projMode = project.storage_mode || 'cloud'
-                  return project.id !== conversationToMove.project_id && projMode === convMode
-                })
-                .map(project => (
-                  <button
-                    key={project.id}
-                    className='w-full text-left px-4 py-3 rounded-xl border border-neutral-300 dark:border-neutral-700 hover:bg-neutral-50 dark:hover:bg-neutral-800/50 transition-colors flex items-center justify-between'
-                    onClick={() => handleSelectDestinationProject({ id: project.id, name: project.name })}
-                  >
-                    <span className='font-medium dark:text-neutral-100'>{project.name}</span>
-                    <i className='bx bx-chevron-right text-lg text-neutral-400' aria-hidden='true'></i>
-                  </button>
-                ))}
-              {projectData.filter(project => {
-                const convMode = conversationToMove.storage_mode || 'cloud'
-                const projMode = project.storage_mode || 'cloud'
-                return project.id !== conversationToMove.project_id && projMode === convMode
-              }).length === 0 && (
-                <p className='text-sm text-neutral-500 dark:text-neutral-400 text-center py-4'>
-                  No other {conversationToMove.storage_mode === 'local' ? 'local' : 'cloud'} projects available.
+            {!conversationAction && (
+              <div className='space-y-3'>
+                <button
+                  type='button'
+                  className='w-full text-left px-4 py-3 rounded-xl border border-neutral-300 dark:border-neutral-700 hover:bg-neutral-50 dark:hover:bg-neutral-800/50'
+                  onClick={() => setConversationAction('move')}
+                >
+                  <span className='font-medium'>Move conversation</span>
+                  <span className='block text-sm text-neutral-500 dark:text-neutral-400'>Move to another project.</span>
+                </button>
+                <button
+                  type='button'
+                  className='w-full text-left px-4 py-3 rounded-xl border border-neutral-300 dark:border-neutral-700 hover:bg-neutral-50 dark:hover:bg-neutral-800/50'
+                  onClick={() => setConversationAction('copy')}
+                >
+                  <span className='font-medium'>Copy conversation</span>
+                  <span className='block text-sm text-neutral-500 dark:text-neutral-400'>Create a separate copy in the same project.</span>
+                </button>
+              </div>
+            )}
+            {conversationAction === 'copy' && (
+              <div>
+                <h4 className='text-sm font-semibold mb-2'>Copy conversation?</h4>
+                <p className='text-sm text-neutral-600 dark:text-neutral-400'>
+                  Create a separate copy of this conversation? The original stays unchanged.
                 </p>
-              )}
-            </div>
+                {copyError && <p role='alert' className='mt-2 text-sm text-red-600 dark:text-red-400'>{copyError}</p>}
+              </div>
+            )}
+            {conversationAction === 'move' && (
+              <>
+                <h4 className='text-sm font-semibold mb-2 dark:text-neutral-200'>
+                  Move to Project
+                  <span className='ml-2 text-xs font-normal text-neutral-500 dark:text-neutral-400'>
+                    ({conversationToMove.storage_mode === 'local' ? 'Local' : 'Cloud'} projects only)
+                  </span>
+                </h4>
+                <div className='max-h-[400px] overflow-y-auto space-y-3 thin-scrollbar'>
+                  {projectData
+                    .filter(project => {
+                      const convMode = conversationToMove.storage_mode || 'cloud'
+                      const projMode = project.storage_mode || 'cloud'
+                      return project.id !== conversationToMove.project_id && projMode === convMode
+                    })
+                    .map(project => (
+                      <button
+                        key={project.id}
+                        className='w-full text-left px-4 py-3 rounded-xl border border-neutral-300 dark:border-neutral-700 hover:bg-neutral-50 dark:hover:bg-neutral-800/50 transition-colors flex items-center justify-between'
+                        onClick={() => handleSelectDestinationProject({ id: project.id, name: project.name })}
+                      >
+                        <span className='font-medium dark:text-neutral-100'>{project.name}</span>
+                        <i className='bx bx-chevron-right text-lg text-neutral-400' aria-hidden='true'></i>
+                      </button>
+                    ))}
+                  {projectData.filter(project => {
+                    const convMode = conversationToMove.storage_mode || 'cloud'
+                    const projMode = project.storage_mode || 'cloud'
+                    return project.id !== conversationToMove.project_id && projMode === convMode
+                  }).length === 0 && (
+                    <p className='text-sm text-neutral-500 dark:text-neutral-400 text-center py-4'>
+                      No other {conversationToMove.storage_mode === 'local' ? 'local' : 'cloud'} projects available.
+                    </p>
+                  )}
+                </div>
+              </>
+            )}
             <div className='flex gap-3 justify-end mt-4'>
+              {conversationAction && (
+                <Button variant='outline2' size='circle' rounded='full' disabled={copyingConversation}
+                  onClick={() => { setConversationAction(null); setCopyError(null) }}>
+                  Back
+                </Button>
+              )}
               <Button
                 variant='outline2'
                 size='circle'
                 rounded='full'
                 className='group'
-                onClick={() => setShowMoveModal(false)}
+                onClick={closeConversationActions}
+                disabled={copyingConversation}
               >
                 <p className='transition-transform duration-100 group-active:scale-95'>Cancel</p>
               </Button>
+              {conversationAction === 'copy' && (
+                <Button variant='outline2' size='circle' rounded='full' disabled={copyingConversation}
+                  onClick={() => { void confirmCopyConversation() }}>
+                  {copyingConversation ? 'Copying…' : 'Copy'}
+                </Button>
+              )}
             </div>
           </div>
         </div>
