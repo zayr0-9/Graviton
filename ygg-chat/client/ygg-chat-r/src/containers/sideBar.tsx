@@ -2008,7 +2008,7 @@ const SideBar: React.FC<SideBarProps> = ({
     <>
       <aside
         ref={sidebarRef}
-        className={`acrylic-subtle-2 relative z-10 ${isWeb ? 'h-[100vh]' : 'h-full'} flex w-12 flex-col flex-shrink-0 overflow-hidden bg-transparent shadow-sm dark:bg-transparent ${className}`}
+        className={`relative z-10 ${isWeb ? 'h-[100vh]' : 'h-full'} flex w-12 flex-col flex-shrink-0 overflow-hidden bg-transparent dark:bg-transparent ${className}`}
         aria-label='Sidebar rail'
       >
         <div className='flex items-center justify-center py-3 my-1 md:py-2.5 lg:p-1 xl:p-1 2xl:px-1 2xl:py-2'>
