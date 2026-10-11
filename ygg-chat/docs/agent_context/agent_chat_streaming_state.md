@@ -166,8 +166,10 @@ messages and transport disconnects do not finalize statistics.
 - Default tokens are a `tokenx` estimate of raw payload in the bounded run slice: user input,
   assistant/reasoning, and tool arguments/results counted once. Mirrored legacy fields,
   usage blocks, setup notices, compaction summaries, and inherited history are excluded.
-  A `~` marks estimates; unknown slice boundaries remain unavailable. Provider-reported
-  cumulative request usage is separate hover detail, never the default token count.
+  The footer shows `~6K ↑ · ~2K ↓`: input (↑) is user text plus tool results; output (↓)
+  is assistant/reasoning plus generated tool names/arguments. A `~` marks estimates;
+  unknown slice boundaries remain unavailable. Provider-reported cumulative request
+  usage is separate hover detail, never the default token count.
 - Hover/focus slides the footer right-to-left slowly to reveal cumulative request usage,
   without a per-role token breakdown. The single-line height remains stable; reduced motion disables sliding.
 - Footer eligibility uses the pane's canonical path. Process grouping stops at footer boundaries;

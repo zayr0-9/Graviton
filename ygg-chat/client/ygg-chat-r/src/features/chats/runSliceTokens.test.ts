@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { estimateRunSliceMessage } from './runSliceTokens'
-import { safeEstimateTokenCount } from './contextTokenEstimate'
+import { estimateContentBlocksForContext, safeEstimateTokenCount } from './contextTokenEstimate'
 import { deriveRunStatistics } from './runStatistics'
 import type { Message } from './chatTypes'
 import type { ConversationRunStatistics } from '../../../../../shared/runStatistics'
@@ -26,6 +26,7 @@ describe('raw run slice tokens', () => {
     ])]
     const [stats] = deriveRunStatistics(messages, ['old', 'u', 'a'], [run], 'c')
     expect(stats.tokens.total).toBe(safeEstimateTokenCount(user) + safeEstimateTokenCount(content))
+    expect(stats.tokens.breakdown).toMatchObject({ input: safeEstimateTokenCount(user), output: safeEstimateTokenCount(content) })
     expect(stats.tokens.requestTotal).toBe(100020)
     expect(stats.tokens.coverage).toBe('estimated')
   })
@@ -39,6 +40,8 @@ describe('raw run slice tokens', () => {
     expect(stats.tokens.requestCoverage).toBe('unavailable')
     expect(stats.tokens.breakdown?.user).toBe(safeEstimateTokenCount('first input') + safeEstimateTokenCount('another input'))
     expect(stats.tokens.breakdown!.tools).toBeGreaterThan(0)
+    expect(stats.tokens.breakdown!.input).toBe(safeEstimateTokenCount('first input') + safeEstimateTokenCount('another input') + safeEstimateTokenCount('file contents'))
+    expect(stats.tokens.breakdown!.output).toBe(safeEstimateTokenCount('first output') + safeEstimateTokenCount('final answer'))
     expect(stats.tokens.total).toBeLessThan(100)
   })
   it('does not duplicate text, reasoning, tool calls or results stored in legacy fields', () => {
@@ -61,5 +64,39 @@ describe('raw run slice tokens', () => {
     const response = attributed('a', 'answer', [{ type: 'responses_output_items', items: [{ type: 'message', content: [{ type: 'output_text', text: 'answer' }] }] }])
     expect(estimateRunSliceMessage(response).assistant).toBe(safeEstimateTokenCount('answer'))
     expect(estimateRunSliceMessage({ ...response, content_blocks: JSON.stringify(response.content_blocks) as any })).toEqual(estimateRunSliceMessage(response))
+  })
+})
+
+describe('run slice token directions', () => {
+  it('counts tool results as input and generated calls/text/reasoning as output', () => {
+    const input = { path: 'a.ts' }
+    const estimate = estimateRunSliceMessage(attributed('a', 'answer', [
+      { type: 'text', content: 'answer' }, { type: 'thinking', content: 'reasoning' },
+      { type: 'tool_use', id: 'call', name: 'read_file', input },
+      { type: 'tool_result', tool_use_id: 'call', content: 'tool response' },
+    ]))
+    expect(estimate.input).toBe(safeEstimateTokenCount('tool response'))
+    expect(estimate.output).toBe(safeEstimateTokenCount('answer') + safeEstimateTokenCount('reasoning') +
+      safeEstimateTokenCount('read_file') + estimateContentBlocksForContext([{ content: input }]))
+    expect(estimate.total).toBe(estimate.input + estimate.output)
+  })
+  it('supports legacy tool calls/results without changing direction or counting duplicates', () => {
+    const call = { id: 'call', name: 'read_file', arguments: { path: 'a.ts' }, result: 'tool response' }
+    const estimate = estimateRunSliceMessage({ ...attributed('a', 'answer'), tool_calls: [call, call] })
+    expect(estimate.input).toBe(safeEstimateTokenCount(call.result))
+    expect(estimate.output).toBe(safeEstimateTokenCount('answer') + safeEstimateTokenCount(call.name) + estimateContentBlocksForContext([{ content: call.arguments }]))
+    expect(estimate.total).toBe(estimate.input + estimate.output)
+  })
+  it('counts standalone tool messages as input, using blocks instead of mirrored content', () => {
+    const legacy = row('tool', 'tool', 'tool response')
+    const canonical = { ...legacy, content_blocks: [{ type: 'tool_result', index: 0, tool_use_id: 'call', content: 'tool response', is_error: false }] as Message['content_blocks'] }
+    expect(estimateRunSliceMessage(legacy)).toEqual(estimateRunSliceMessage(canonical))
+    expect(estimateRunSliceMessage(canonical)).toMatchObject({ input: safeEstimateTokenCount('tool response'), output: 0 })
+  })
+  it('excludes an assistant parent from both directions when a continuation starts after it', () => {
+    const messages = [row('old', 'assistant', 'earlier response '.repeat(1000)), row('queued', 'user', 'new input'), attributed('a', 'new output')]
+    const [stats] = deriveRunStatistics(messages, messages.map(m => m.id), [{ ...run, user_message_id: null, parent_message_id: 'old' }], 'c')
+    expect(stats.tokens.breakdown).toMatchObject({ input: safeEstimateTokenCount('new input'), output: safeEstimateTokenCount('new output') })
+    expect(stats.tokens.total).toBe(safeEstimateTokenCount('new input') + safeEstimateTokenCount('new output'))
   })
 })

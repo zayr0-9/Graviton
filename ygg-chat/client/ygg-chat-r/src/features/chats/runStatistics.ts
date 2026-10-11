@@ -96,6 +96,8 @@ export function deriveRunStatistics(
     const startInclusive = start == null || !parentMessage ? undefined : start + (parentMessage.role === 'user' ? 0 : 1)
     const slice = startInclusive == null || startInclusive > end ? undefined : {
       total: slicePrefixes[end + 1].total - slicePrefixes[startInclusive].total,
+      input: slicePrefixes[end + 1].input - slicePrefixes[startInclusive].input,
+      output: slicePrefixes[end + 1].output - slicePrefixes[startInclusive].output,
       user: slicePrefixes[end + 1].user - slicePrefixes[startInclusive].user,
       assistant: slicePrefixes[end + 1].assistant - slicePrefixes[startInclusive].assistant,
       tools: slicePrefixes[end + 1].tools - slicePrefixes[startInclusive].tools,
@@ -149,8 +151,8 @@ export function formatRunStatistics(footer: RunStatisticsFooterData): string {
       : `${Math.floor(seconds / 60)}m ${seconds % 60}s`
   const tools = !footer.tools || footer.tools.coverage === 'unavailable' ? 'Tools unavailable'
     : `${footer.tools.count} tool ${footer.tools.count === 1 ? 'call' : 'calls'}${footer.tools.coverage === 'partial' ? ' (partial)' : ''}`
-  const tokens = footer.tokens.coverage === 'unavailable' ? 'Tokens unavailable'
-    : `~${formatTokens(footer.tokens.total)} tokens${footer.tokens.coverage === 'partial' ? ' (partial)' : ''}`
+  const tokens = footer.tokens.coverage === 'unavailable' || !footer.tokens.breakdown ? 'Tokens unavailable'
+    : `~${formatTokens(footer.tokens.breakdown.input)} ↑ · ~${formatTokens(footer.tokens.breakdown.output)} ↓${footer.tokens.coverage === 'partial' ? ' (partial)' : ''}`
   return [footer.status === 'aborted' ? 'Stopped' : footer.status === 'error' ? 'Failed' : null, duration, tools, tokens].filter(Boolean).join(' · ')
 }
 

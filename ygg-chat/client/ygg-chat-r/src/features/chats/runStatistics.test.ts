@@ -27,7 +27,7 @@ describe('run statistics', () => {
     expect(stats.map(s => [s.streamId, s.anchorMessageId, s.tokens.requestTotal])).toEqual([['r1', 'b', 30], ['r2', 'c', 5]])
     expect(stats[0].tokens.coverage).toBe('estimated')
     expect(stats[0].tokens.total).toBe(0) // usage blocks are metadata, not raw transcript payload
-    expect(formatRunStatistics(stats[0])).toBe('42s · 12 tool calls · ~0 tokens')
+    expect(formatRunStatistics(stats[0])).toBe('42s · 12 tool calls · ~0 ↑ · ~0 ↓')
     expect(formatRunStatisticsDetails(stats[0])).toContain('Request usage: 30 tokens cumulative')
   })
   it('retains shared-prefix footers on descendant branches but not a run cut before its terminus', () => {
@@ -96,4 +96,14 @@ it('keeps the footer outside a collapsed process group and before the next run',
     { kind: 'message' as const, message: { id: 'next' } },
   ], new Map([['b', [stats]]]))
   expect(rows.map(row => row.kind)).toEqual(['transcript', 'run_stats', 'transcript'])
+})
+
+it('formats compact input/output estimates and retains partial/unavailable states', () => {
+  const [stats] = deriveRunStatistics([message('u'), message('a', 'r')], ['u', 'a'], [{ ...run('r', 'a'), user_message_id: 'u' }], 'c')
+  const tokens = { ...stats.tokens, total: 8000, coverage: 'estimated' as const,
+    breakdown: { total: 8000, input: 6000, output: 2000, user: 1000, assistant: 1000, tools: 6000 } }
+  expect(formatRunStatistics({ ...stats, tokens })).toBe('42s · 12 tool calls · ~6K ↑ · ~2K ↓')
+  expect(formatRunStatistics({ ...stats, tokens: { ...tokens, coverage: 'partial' } })).toContain('~6K ↑ · ~2K ↓ (partial)')
+  expect(formatRunStatistics({ ...stats, tokens: { ...tokens, coverage: 'unavailable' } })).toContain('Tokens unavailable')
+  expect(formatRunStatistics({ ...stats, tokens: { ...tokens, breakdown: undefined } })).toContain('Tokens unavailable')
 })

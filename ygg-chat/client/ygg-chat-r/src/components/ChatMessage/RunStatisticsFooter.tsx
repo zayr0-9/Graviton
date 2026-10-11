@@ -41,7 +41,7 @@ export const RunStatisticsFooter = memo(function RunStatisticsFooter({ statistic
       aria-label='Run statistics'>
       <span ref={viewportRef} className='run-statistics-reveal' style={revealStyle} tabIndex={0} role='button'
         aria-expanded={expanded} data-expanded={expanded ? 'true' : undefined}
-        aria-label={`${summary}. ${details}. Slice tokens estimate transcript content once, excluding replayed history. Hover or focus for details.`}
+        aria-label={`${summary}. ${details}. Slice tokens estimate transcript content once, excluding replayed history. Up arrow: input tokens (user text and tool results). Down arrow: output tokens (assistant/reasoning and tool calls). Hover or focus for details.`}
         onClick={() => setExpanded(value => !value)}
         onKeyDown={event => {
           if (event.key === 'Escape') setExpanded(false)

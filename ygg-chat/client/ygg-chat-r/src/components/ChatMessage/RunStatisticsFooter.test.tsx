@@ -30,9 +30,12 @@ describe('RunStatisticsFooter', () => {
 it('reveals cumulative request usage without a per-role token breakdown', () => {
   const html = renderToStaticMarkup(<RunStatisticsFooter statistics={{ ...statistics, status: 'completed', tokens: {
     total: 120, covered: 2, responses: 2, coverage: 'estimated',
-    breakdown: { total: 120, user: 20, assistant: 30, tools: 70 }, requestTotal: 100000, requestCoverage: 'reported',
+    breakdown: { total: 120, input: 80, output: 40, user: 20, assistant: 30, tools: 70 }, requestTotal: 100000, requestCoverage: 'reported',
   } }} />)
-  expect(html).toContain('~120 tokens')
+  expect(html).toContain('~80 ↑ · ~40 ↓')
+  expect(html).not.toContain('~120 tokens')
+  expect(html).toContain('Up arrow: input tokens (user text and tool results).')
+  expect(html).toContain('Down arrow: output tokens (assistant/reasoning and tool calls).')
   expect(html).not.toContain('Slice estimate:')
   expect(html).not.toContain('20 user')
   expect(html).not.toContain('30 assistant/reasoning')

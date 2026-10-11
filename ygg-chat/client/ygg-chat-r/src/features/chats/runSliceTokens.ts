@@ -4,6 +4,8 @@ import type { Message } from './chatTypes'
 
 export interface SliceTokenEstimate {
   total: number
+  input: number
+  output: number
   user: number
   assistant: number
   tools: number
@@ -19,7 +21,9 @@ function array(value: unknown): any[] {
 
 /** Count one canonical copy of transcript payloads, not provider usage or replay history. */
 export function estimateRunSliceMessage(message: Message): SliceTokenEstimate {
-  const result: SliceTokenEstimate = { total: 0, user: 0, assistant: 0, tools: 0 }
+  const result: SliceTokenEstimate = { total: 0, input: 0, output: 0, user: 0, assistant: 0, tools: 0 }
+  let toolInput = 0
+  let toolOutput = 0
   const meta = parseMessageMeta(message.meta)
   // App-authored notices/context setup are not new user/model/tool work.
   if (message.role === 'system' || meta?.runStatistics && (meta.runStatistics as any).kind === 'terminal_error' ||
@@ -47,11 +51,11 @@ export function estimateRunSliceMessage(message: Message): SliceTokenEstimate {
       const id = String(block.id ?? JSON.stringify([block.name, block.input]))
       if (!calls.has(id)) {
         calls.add(id)
-        result.tools += safeEstimateTokenCount(block.name) + countPayload(block.input)
+        toolOutput += safeEstimateTokenCount(block.name) + countPayload(block.input)
       }
     } else if (block.type === 'tool_result') {
       const id = String(block.tool_use_id ?? JSON.stringify(block.content))
-      if (!results.has(id)) { results.add(id); result.tools += countPayload(block.content) }
+      if (!results.has(id)) { results.add(id); toolInput += countPayload(block.content) }
     }
   }
   // Responses items are an alternate copy of the same output, not additional content.
@@ -71,7 +75,7 @@ export function estimateRunSliceMessage(message: Message): SliceTokenEstimate {
     result.user = safeEstimateTokenCount(message.content)
     result.assistant = 0
   } else if (message.role === 'tool') {
-    result.tools += safeEstimateTokenCount(message.content)
+    if (results.size === 0) toolInput += countPayload(message.content)
     result.assistant = 0
   } else {
     if (text.size === 0) result.assistant += countText(message.content, text)
@@ -81,21 +85,25 @@ export function estimateRunSliceMessage(message: Message): SliceTokenEstimate {
     const id = String(call.id ?? JSON.stringify([call.name, call.arguments]))
     if (!calls.has(id)) {
       calls.add(id)
-      result.tools += safeEstimateTokenCount(call.name) + countPayload(call.arguments)
+      toolOutput += safeEstimateTokenCount(call.name) + countPayload(call.arguments)
     }
-    if (call.result != null && !results.has(id)) { results.add(id); result.tools += countPayload(call.result) }
+    if (call.result != null && !results.has(id)) { results.add(id); toolInput += countPayload(call.result) }
   }
-  result.total = result.user + result.assistant + result.tools
+  result.tools = toolInput + toolOutput
+  result.input = result.user + toolInput
+  result.output = result.assistant + toolOutput
+  result.total = result.input + result.output
   return result
 }
 
 /** Prefix totals make several run slices linear rather than rescanning the branch per run. */
 export function runSliceTokenPrefixes(messages: readonly (Message | undefined)[]): SliceTokenEstimate[] {
-  const prefixes: SliceTokenEstimate[] = [{ total: 0, user: 0, assistant: 0, tools: 0 }]
+  const prefixes: SliceTokenEstimate[] = [{ total: 0, input: 0, output: 0, user: 0, assistant: 0, tools: 0 }]
   for (const message of messages) {
-    const count = message ? estimateRunSliceMessage(message) : { total: 0, user: 0, assistant: 0, tools: 0 }
+    const count = message ? estimateRunSliceMessage(message) : { total: 0, input: 0, output: 0, user: 0, assistant: 0, tools: 0 }
     const previous = prefixes[prefixes.length - 1]
-    prefixes.push({ total: previous.total + count.total, user: previous.user + count.user,
+    prefixes.push({ total: previous.total + count.total,
+      input: previous.input + count.input, output: previous.output + count.output, user: previous.user + count.user,
       assistant: previous.assistant + count.assistant, tools: previous.tools + count.tools })
   }
   return prefixes
