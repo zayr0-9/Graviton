@@ -35,6 +35,7 @@ import {
 } from '../features/conversations'
 import { deleteProject } from '../features/projects'
 import { type ConversationTab } from '../helpers/sidebarPreferences'
+import { getSearchResultHref } from '../helpers/searchResultNavigation'
 import EditProject from './EditProject'
 // import { searchActions, selectSearchLoading, selectSearchQuery, selectSearchResults } from '../features/search'
 import { useAppDispatch } from '../hooks/redux'
@@ -1088,7 +1089,7 @@ const SideBar: React.FC<SideBarProps> = ({
     closeExpandPortal(false)
     dispatch(chatSliceActions.conversationSet(match.conversation_id))
     dispatch(activeConversationIdSet(match.conversation_id))
-    navigate(`/chat/${match.project_id || 'unknown'}/${match.conversation_id}`, {
+    navigate(getSearchResultHref(match), {
       state: match.storage_mode ? { storageMode: match.storage_mode } : undefined,
     })
 
@@ -1714,6 +1715,7 @@ const SideBar: React.FC<SideBarProps> = ({
                 dropdownVariant='neutral'
                 dropdownZIndex={enableMiniHoverPreview ? 1301 : 50}
                 inputRounding='full'
+                fillViewport
                 inputClassName='border-0 bg-white/55 px-4 py-2.5 text-neutral-800 placeholder:text-neutral-500 shadow-none outline-none focus:border-transparent focus:ring-2 focus:ring-blue-400/50 dark:border-0 dark:bg-white/10 dark:text-neutral-100 dark:placeholder:text-neutral-400 dark:focus:border-transparent dark:focus:ring-orange-400/40'
               />
             </div>
@@ -2054,7 +2056,7 @@ const SideBar: React.FC<SideBarProps> = ({
                   role='dialog'
                   aria-modal='true'
                   aria-label='Sidebar panel'
-                  className='absolute top-3 bottom-3 overflow-hidden rounded-xl border border-neutral-200/90 bg-neutral-50 shadow-2xl dark:border-neutral-700/80 dark:bg-transparent'
+                  className='absolute top-3 bottom-3 overflow-hidden rounded-xl border border-neutral-200/90 bg-white/75 shadow-2xl backdrop-blur-2xl dark:border-neutral-700/80 dark:bg-yBlack-900/75'
                   style={{
                     left: `${portalLeftOffset}px`,
                     width: `${expandPortalWidth}px`,
@@ -2065,7 +2067,7 @@ const SideBar: React.FC<SideBarProps> = ({
                   exit={{ opacity: 0, x: -10, scale: 0.985 }}
                   transition={shellSpringTransition}
                 >
-                  <div className='acrylic-subtle-no-hover h-full min-h-0 flex flex-col overflow-hidden rounded-xl'>
+                  <div className='h-full min-h-0 flex flex-col overflow-hidden rounded-xl'>
                     <div className='flex items-center justify-between px-3 py-2 border-b border-neutral-200/80 dark:border-neutral-800/80'>
                       <h2 className='text-sm font-semibold text-neutral-800 dark:text-neutral-100'>Sidebar</h2>
                       <div className='flex items-center gap-1'>

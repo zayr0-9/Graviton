@@ -235,6 +235,24 @@ export class HookRunRepo {
     return rows.map((row) => toRecord(row) as HookRunRecord)
   }
 
+  /**
+   * Every run recorded against a message of one conversation, newest first. Unlike `list`
+   * this is uncapped: the tree read attaches runs per message, and a 500-row cap silently
+   * dropped the oldest messages' runs in long conversations.
+   */
+  listForConversationMessages(conversationId: string): HookRunRecord[] {
+    const rows = this.db
+      .prepare(`
+        SELECT ${COLUMNS.join(', ')}
+        FROM hook_runs
+        WHERE conversation_id = ? AND message_id IS NOT NULL
+        ORDER BY created_at DESC, id DESC
+      `)
+      .all(conversationId) as HookRunRow[]
+
+    return rows.map((row) => toRecord(row) as HookRunRecord)
+  }
+
   recoverStaleRuns(): number {
     const now = new Date().toISOString()
     const result = this.db

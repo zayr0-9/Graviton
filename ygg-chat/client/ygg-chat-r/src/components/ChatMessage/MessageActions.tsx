@@ -5,6 +5,7 @@ import {
   Copy,
   GitBranch,
   MessageCircleQuestion,
+  MessageSquarePlus,
   MoreHorizontal,
   NotebookPen,
   Pencil,
@@ -27,6 +28,7 @@ export interface MessageActionsProps {
   onCopySelection?: () => void
   onExplainSelection?: (position?: { x: number; y: number }) => void
   onAddToNoteSelection?: () => void
+  onAddToChatSelection?: () => void
   onResend?: () => void
   onSave?: () => void
   onCancel?: () => void
@@ -79,6 +81,7 @@ export const MessageActions: React.FC<MessageActionsProps> = ({
   onCopySelection,
   onExplainSelection,
   onAddToNoteSelection,
+  onAddToChatSelection,
   onSave,
   onCancel,
   onSaveBranch,
@@ -233,6 +236,15 @@ export const MessageActions: React.FC<MessageActionsProps> = ({
               label: 'Add to note',
               tone: 'warning',
               icon: <NotebookPen size={ICON_SIZE} strokeWidth={ICON_STROKE} aria-hidden='true' />,
+            })}
+          {onAddToChatSelection &&
+            renderAction({
+              key: 'chat',
+              onClick: onAddToChatSelection,
+              title: 'Add to chat',
+              label: 'Add to chat',
+              tone: 'info',
+              icon: <MessageSquarePlus size={ICON_SIZE} strokeWidth={ICON_STROKE} aria-hidden='true' />,
             })}
         </>
       ) : (

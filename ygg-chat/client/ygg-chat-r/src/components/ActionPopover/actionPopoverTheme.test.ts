@@ -14,16 +14,19 @@ describe('Shared soft popover palette', () => {
     expect(style['--cloud-muted']).toBe(theme.colors.toolJobsMutedText[mode])
   })
 
-  it('derives switch track and thumb colors from the active theme instead of blue/white', () => {
+  it.each([false, true])('uses secondary-button colors instead of subtle background tints for switch thumbs (dark=%s)', isDarkMode => {
     const theme = createDefaultCustomChatTheme()
-    theme.colors.composerToggleActiveText.light = '#6f4e37'
-    theme.colors.composerToggleActiveBg.light = '#eedfce'
-    theme.colors.settingsCustomThemesButtonBg.light = '#faf7f2'
-    const style = getActionPopoverThemeStyle(theme, false) as Record<string, string>
-    expect(style['--cloud-switch-on']).toBe('#6f4e37')
-    expect(style['--cloud-switch-thumb-on']).toBe('#eedfce')
-    expect(style['--cloud-switch-thumb']).toBe('#faf7f2')
-    expect(style['--cloud-switch-off']).toContain(theme.colors.toolJobsMutedText.light)
-    expect(style['--cloud-switch-off']).toContain(theme.colors.settingsCustomThemesCardBg.light)
+    const mode = isDarkMode ? 'dark' : 'light'
+    theme.colors.composerToggleActiveText[mode] = isDarkMode ? '#eeedf0' : '#6f4e37'
+    theme.colors.composerToggleActiveBg[mode] = isDarkMode ? '#e1daf2' : '#eedfce'
+    theme.colors.settingsCustomThemesButtonBg[mode] = isDarkMode ? '#242424' : '#faf7f2'
+    theme.colors.settingsCustomThemesButtonText[mode] = isDarkMode ? '#eeedf0' : '#262626'
+    const style = getActionPopoverThemeStyle(theme, isDarkMode) as Record<string, string>
+    expect(style['--cloud-switch-on']).toBe(theme.colors.composerToggleActiveText[mode])
+    expect(style['--cloud-switch-thumb-on']).toBe(theme.colors.settingsCustomThemesButtonBg[mode])
+    expect(style['--cloud-switch-thumb']).toBe(theme.colors.settingsCustomThemesButtonText[mode])
+    expect(style['--cloud-switch-thumb-on']).not.toBe(theme.colors.composerToggleActiveBg[mode])
+    expect(style['--cloud-switch-off']).toContain(theme.colors.toolJobsMutedText[mode])
+    expect(style['--cloud-switch-off']).toContain(theme.colors.settingsCustomThemesCardBg[mode])
   })
 })

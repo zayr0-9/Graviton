@@ -1001,6 +1001,9 @@ function Chat() {
   const focusLocalInput = useCallback(() => {
     inputControllerRef.current?.focus()
   }, [])
+  const handleAddToChat = useCallback((text: string) => {
+    inputControllerRef.current?.appendFencedText(text)
+  }, [])
 
   useEffect(() => {
     const handleFilePathInsert = (event: Event) => {
@@ -7239,6 +7242,7 @@ function Chat() {
                               onDelete={handleRequestDelete}
                               onResend={handleResend}
                               onAddToNote={handleAddToNote}
+                              onAddToChat={handleAddToChat}
                               onExplainFromSelection={handleExplainFromSelection}
                               onOpenToolHtmlModal={openToolHtmlModal}
                               onOpenSubagentTranscript={openSubagentTranscript}

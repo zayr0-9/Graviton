@@ -185,11 +185,14 @@ Multiple top-level roots are valid. Heimdall wraps them in a synthetic visual ro
 
 ## Normalization Rules
 
-The live `/messages/tree` endpoint (`appAutomationRoutes.ts`, served under `/api/app` and reached by the renderer via the `/api/gw` gateway) normalizes SQLite rows before returning them:
+The live `/messages/tree` endpoint (`buildConversationMessagesTreePayload` in `appAutomationRoutes.ts`, served under `/api/app` and called in-process by the `/api/gw` gateway for local conversations) normalizes SQLite rows before returning them:
 - parse `children_ids` JSON text into arrays;
 - parse `tool_calls` JSON text into objects/arrays or `null`;
 - parse `content_blocks` JSON text into arrays or `null`;
-- include attachment metadata and counts.
+- include attachment metadata and counts (`attachments`, `attachments_count`, `has_attachments`);
+- include every hook run recorded against the message as `hook_runs`, newest first.
+
+The builder runs three queries regardless of conversation size: the messages, every attachment linked to any of them, and every hook run for them (`HookRunRepo.listForConversationMessages`, uncapped). Do not reintroduce a per-message query or a row cap here; the renderer refetches this payload on every stream end. Regression coverage: `routes/__tests__/appAutomationRoutes.messagesTree.test.ts`.
 
 Frontend code must still be defensive because payloads may come from cloud, local SQLite, SSE chunks, optimistic messages, or older cached state. Existing renderers often accept both string and object forms for `tool_calls` and `content_blocks`. Server SSE rows projected into Redux go through `normalizeServerMessage` (`sseProjection.ts`), which parses the same JSON-string fields.
 

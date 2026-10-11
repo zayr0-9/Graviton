@@ -113,6 +113,7 @@ interface ChatMessageProps {
   onCopy?: (content: string) => void
   onResend?: (id: string) => void
   onAddToNote?: (text: string) => void
+  onAddToChat?: (text: string) => void
   onExplainFromSelection?: (id: string, newContent: string) => void
   onOpenToolHtmlModal?: (key?: string) => void
   onOpenSubagentTranscript?: (toolCallId: string) => void
@@ -428,6 +429,7 @@ const ChatMessageBody: React.FC<ChatMessageProps> = React.memo(
     onDelete,
     onCopy,
     onAddToNote,
+    onAddToChat,
     onExplainFromSelection,
     onOpenToolHtmlModal,
     onOpenSubagentTranscript,
@@ -2052,6 +2054,14 @@ const ChatMessageBody: React.FC<ChatMessageProps> = React.memo(
                     ? () => {
                         closeFloatingActions()
                         handleAddSelectionToNote()
+                      }
+                    : undefined
+                }
+                onAddToChatSelection={
+                  hasSelection && onAddToChat
+                    ? () => {
+                        closeFloatingActions()
+                        onAddToChat(selectedText)
                       }
                     : undefined
                 }

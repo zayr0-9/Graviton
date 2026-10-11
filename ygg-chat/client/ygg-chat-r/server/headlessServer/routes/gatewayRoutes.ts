@@ -26,6 +26,7 @@ import type { CloudMirrorService, CloudEntityKind } from '../services/cloudMirro
 import type { AppAuthTokenManager } from '../services/appAuthTokenManager.js'
 import { toSafeHookRunRecord } from '../../hooks/hookDiagnostics.js'
 import { HookRunRepo } from '../persistence/hookRunRepo.js'
+import { buildConversationMessagesTreePayload } from './appAutomationRoutes.js'
 
 export const GW_PAGE_SIZE = 50
 
@@ -617,8 +618,15 @@ export function registerGatewayRoutes(app: Express, deps: RegisterGatewayRoutesD
   app.get('/api/gw/conversations/:id/messages/tree', async (req, res) => {
     const mode = localRowStorageMode('conversations', req.params.id)
     if (mode === 'local') {
-      const r = await localLeg(req, `/api/app/conversations/${req.params.id}/messages/tree`)
-      res.status(r.status).json(r.body)
+      // The hot read. Built in-process rather than via the loopback leg: the loopback
+      // re-parsed and re-serialised the whole payload, which is tens of MB for a long
+      // tool-heavy conversation, and the renderer refetches it on every stream end.
+      try {
+        res.json(buildConversationMessagesTreePayload(deps.db, deps.statements, req.params.id))
+      } catch (error) {
+        console.error('[gateway] Error building local message tree:', error)
+        res.status(500).json({ error: 'Failed to fetch message tree' })
+      }
       return
     }
     const r = await cloudLeg('GET', `/conversations/${req.params.id}/messages/tree`)
@@ -628,10 +636,9 @@ export function registerGatewayRoutes(app: Express, deps: RegisterGatewayRoutesD
     }
     // Hook runs are local operational metadata even for cloud-backed conversations.
     // Enrich the authoritative cloud tree by message id without sending diagnostics to Railway.
-    const localRuns = new HookRunRepo({ db: deps.db }).list({ conversationId: req.params.id, limit: 500 }).map(toSafeHookRunRecord)
+    const localRuns = new HookRunRepo({ db: deps.db }).listForConversationMessages(req.params.id).map(toSafeHookRunRecord)
     const byMessage = new Map<string, typeof localRuns>()
     for (const run of localRuns) {
-      if (!run.messageId) continue
       const list = byMessage.get(String(run.messageId)) || []
       list.push(run)
       byMessage.set(String(run.messageId), list)

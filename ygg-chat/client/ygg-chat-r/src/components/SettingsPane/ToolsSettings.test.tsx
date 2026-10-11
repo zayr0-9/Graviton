@@ -11,6 +11,9 @@ vi.mock('../../features/chats/toolDefinitions', () => ({ getAllTools: () => mock
 vi.mock('../../hooks/redux', () => ({ useAppDispatch: () => vi.fn(), useAppSelector: vi.fn() }))
 vi.mock('../../utils/api', () => ({ localApi: {} }))
 vi.mock('./settingsSectionTheme', () => ({ useSettingsSectionThemeColors: () => null }))
+vi.mock('../ThemeManager/themeConfig', () => ({
+  useCustomChatTheme: () => ({ enabled: false }), useHtmlDarkMode: () => false,
+}))
 
 import { ToolsSettings } from './ToolsSettings'
 
@@ -20,7 +23,7 @@ const tool = (name: string, metadata: Partial<ToolDefinition> = {}): ToolDefinit
 })
 
 const section = (html: string, label: string) =>
-  html.match(new RegExp(`<section[^>]*aria-label="${label}"[^>]*>(.*?)</section>`))?.[1] || ''
+  html.match(new RegExp(`<section[^>]*aria-label="${label}"[^>]*>(.*?)</section>`, 's'))?.[1] || ''
 
 describe('ToolsSettings source groups', () => {
   beforeEach(() => {

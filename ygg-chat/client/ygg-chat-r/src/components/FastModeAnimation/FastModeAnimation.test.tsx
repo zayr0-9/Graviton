@@ -14,10 +14,10 @@ const css = readFileSync(new URL('./fastModeAnimation.css', import.meta.url), 'u
 afterEach(() => vi.unstubAllGlobals())
 
 describe('fast-mode animation settings', () => {
-  it('offers all sixteen approved studies and defaults to Tidal glass', () => {
+  it('offers all sixteen approved studies and defaults to Packet express', () => {
     expect(FAST_MODE_ANIMATIONS).toHaveLength(16)
     expect(new Set(FAST_MODE_ANIMATIONS.map(option => option.id)).size).toBe(16)
-    expect(DEFAULT_FAST_MODE_ANIMATION).toBe('tidal-glass')
+    expect(DEFAULT_FAST_MODE_ANIMATION).toBe('pixel-packets')
     for (const option of FAST_MODE_ANIMATIONS) expect(normalizeFastModeAnimation(option.id)).toBe(option.id)
     expect(normalizeFastModeAnimation('none')).toBe('none')
     for (const value of [null, undefined, 'pixel-aurora', {}, 5]) {
@@ -30,13 +30,13 @@ describe('fast-mode animation settings', () => {
     vi.stubGlobal('localStorage', { getItem: (key: string) => values.get(key), setItem: (key: string, value: string) => values.set(key, value) })
     vi.stubGlobal('window', { dispatchEvent })
     vi.stubGlobal('CustomEvent', class { constructor(public type: string, public options: { detail: string }) {} })
-    expect(loadFastModeAnimation()).toBe('tidal-glass')
+    expect(loadFastModeAnimation()).toBe('pixel-packets')
     saveFastModeAnimation('pixel-rain')
     expect(values.get(FAST_MODE_ANIMATION_KEY)).toBe('pixel-rain')
     expect(loadFastModeAnimation()).toBe('pixel-rain')
     expect(dispatchEvent.mock.calls[0][0]).toMatchObject({ type: FAST_MODE_ANIMATION_CHANGE_EVENT, options: { detail: 'pixel-rain' } })
     vi.stubGlobal('localStorage', { getItem: () => { throw new Error('blocked') }, setItem: () => { throw new Error('blocked') } })
-    expect(loadFastModeAnimation()).toBe('tidal-glass')
+    expect(loadFastModeAnimation()).toBe('pixel-packets')
     expect(() => saveFastModeAnimation('none')).not.toThrow()
     expect(dispatchEvent).toHaveBeenCalledTimes(2)
   })

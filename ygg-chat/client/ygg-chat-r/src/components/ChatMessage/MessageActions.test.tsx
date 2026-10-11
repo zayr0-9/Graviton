@@ -52,3 +52,16 @@ describe('MessageActions custom theme', () => {
     expect(editing).toContain(`--message-action-hover-text:${customTheme.colors.toolJobsStatusFailedText.light}`)
   })
 })
+
+describe('Add to chat selection action', () => {
+  it('shows the action in the selection menu when a handler is supplied', () => {
+    const html = renderActions({ variant: 'selection', layout: 'menu', onAddToChatSelection: noop })
+    expect(html).toContain('aria-label="Add to chat"')
+    expect(html).toContain('>Add to chat</span>')
+  })
+
+  it('does not show the action without a handler or outside selection mode', () => {
+    expect(renderActions({ variant: 'selection', layout: 'menu' })).not.toContain('Add to chat')
+    expect(renderActions({ layout: 'menu', onAddToChatSelection: noop })).not.toContain('Add to chat')
+  })
+})

@@ -85,6 +85,65 @@ function buildMessageTree(messages: any[]): ChatNode | null {
   }
 }
 
+/**
+ * One conversation's persisted message tree, exactly as GET /api/app/conversations/:id/messages/tree
+ * serves it. Exported so the gateway's local leg can build it in-process instead of looping back
+ * over HTTP. Three queries regardless of conversation size: the messages, every attachment linked
+ * to any of them, and every hook run recorded against them.
+ */
+export function buildConversationMessagesTreePayload(
+  db: Database.Database,
+  statements: any,
+  conversationId: string
+): { messages: any[]; tree: ChatNode | null; meta: { storage_mode: string } } {
+  const messages = statements.getMessagesByConversationId.all(conversationId) as any[]
+  const conversation = statements.getConversationById.get(conversationId) as { storage_mode?: string } | undefined
+  const storage_mode = conversation?.storage_mode || 'local'
+  if (messages.length === 0) return { messages: [], tree: null, meta: { storage_mode } }
+
+  // Same rows and per-message order as statements.getAttachmentsByMessageId, in one query.
+  const attachmentsByMessage = new Map<string, any[]>()
+  const attachmentRows = db
+    .prepare(`
+      SELECT mal.message_id AS link_message_id, ma.*
+      FROM message_attachment_links mal
+      JOIN message_attachments ma ON ma.id = mal.attachment_id
+      WHERE mal.message_id IN (SELECT id FROM messages WHERE conversation_id = ?)
+      ORDER BY ma.created_at ASC, ma.id ASC
+    `)
+    .all(conversationId) as Array<Record<string, unknown> & { link_message_id: string }>
+  for (const { link_message_id, ...attachment } of attachmentRows) {
+    const key = String(link_message_id)
+    const list = attachmentsByMessage.get(key) || []
+    list.push(attachment)
+    attachmentsByMessage.set(key, list)
+  }
+
+  const hookRunsByMessage = new Map<string, ReturnType<typeof toSafeHookRunRecord>[]>()
+  for (const run of new HookRunRepo({ db }).listForConversationMessages(conversationId)) {
+    const key = String(run.messageId)
+    const list = hookRunsByMessage.get(key) || []
+    list.push(toSafeHookRunRecord(run))
+    hookRunsByMessage.set(key, list)
+  }
+
+  const normalizedMessages = messages.map(msg => {
+    const attachments = attachmentsByMessage.get(String(msg.id)) || []
+    return {
+      ...msg,
+      hook_runs: hookRunsByMessage.get(String(msg.id)) || [],
+      children_ids: msg.children_ids ? JSON.parse(msg.children_ids) : [],
+      tool_calls: msg.tool_calls ? JSON.parse(msg.tool_calls) : null,
+      content_blocks: msg.content_blocks ? JSON.parse(msg.content_blocks) : null,
+      attachments,
+      attachments_count: attachments.length,
+      has_attachments: attachments.length > 0,
+    }
+  })
+
+  return { messages: normalizedMessages, tree: buildMessageTree(normalizedMessages), meta: { storage_mode } }
+}
+
 type TopLevelMessageSearchCandidate = {
   message_id: string
   conversation_id: string
@@ -870,36 +929,7 @@ export function registerAppAutomationRoutes(app: Express, deps: AppAutomationRou
 
   app.get('/api/app/conversations/:id/messages/tree', (req, res) => {
     try {
-      const { id } = req.params
-      const messages = statements.getMessagesByConversationId.all(id)
-
-      const hookRuns = new HookRunRepo({ db }).list({ conversationId: id, limit: 500 }).map(toSafeHookRunRecord)
-      const hookRunsByMessage = new Map<string, typeof hookRuns>()
-      for (const run of hookRuns) {
-        if (!run.messageId) continue
-        const list = hookRunsByMessage.get(String(run.messageId)) || []
-        list.push(run)
-        hookRunsByMessage.set(String(run.messageId), list)
-      }
-      const normalizedMessages = messages.map((msg: any) => {
-        const attachments = statements.getAttachmentsByMessageId.all(msg.id) as any[]
-        return {
-          ...msg,
-          hook_runs: hookRunsByMessage.get(String(msg.id)) || [],
-          children_ids: msg.children_ids ? JSON.parse(msg.children_ids) : [],
-          tool_calls: msg.tool_calls ? JSON.parse(msg.tool_calls) : null,
-          content_blocks: msg.content_blocks ? JSON.parse(msg.content_blocks) : null,
-          attachments,
-          attachments_count: attachments.length,
-          has_attachments: attachments.length > 0,
-        }
-      })
-
-      const treeData = buildMessageTree(normalizedMessages)
-      const conversation = statements.getConversationById.get(id) as { storage_mode?: string } | undefined
-      const storage_mode = conversation?.storage_mode || 'local'
-
-      res.json({ messages: normalizedMessages, tree: treeData, meta: { storage_mode } })
+      res.json(buildConversationMessagesTreePayload(db, statements, req.params.id))
     } catch (error) {
       console.error('[HeadlessServer] Error fetching app message tree:', error)
       res.status(500).json({ error: 'Failed to fetch message tree' })

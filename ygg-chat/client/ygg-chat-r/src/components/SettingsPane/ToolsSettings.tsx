@@ -1,5 +1,5 @@
 import React, { useEffect, useId, useState } from 'react'
-import { ChevronDown } from 'lucide-react'
+import { ChevronDown, Plus, RefreshCw } from 'lucide-react'
 import { createPortal } from 'react-dom'
 import { fetchCustomTools, fetchTools, updateToolEnabled } from '../../features/chats/chatActions'
 import { selectTools } from '../../features/chats/chatSelectors'
@@ -7,6 +7,7 @@ import { getAllTools } from '../../features/chats/toolDefinitions'
 import { useAppDispatch, useAppSelector } from '../../hooks/redux'
 import { localApi } from '../../utils/api'
 import { useSettingsSectionThemeColors } from './settingsSectionTheme'
+import { ToolSettingsRow } from './ToolSettingsRow'
 
 export const ToolsSettings: React.FC = () => {
   const dispatch = useAppDispatch()
@@ -122,12 +123,6 @@ export const ToolsSettings: React.FC = () => {
     : undefined
   const titleStyle = sectionThemeColors ? { color: sectionThemeColors.titleText } : undefined
   const bodyStyle = sectionThemeColors ? { color: sectionThemeColors.bodyText } : undefined
-  const badgeStyle = sectionThemeColors
-    ? {
-        backgroundColor: sectionThemeColors.badgeBg,
-        color: sectionThemeColors.badgeText,
-      }
-    : undefined
   const buttonStyle = sectionThemeColors
     ? {
         backgroundColor: sectionThemeColors.buttonBg,
@@ -144,7 +139,7 @@ export const ToolsSettings: React.FC = () => {
 
 
   return (
-    <div className='space-y-4 sm:space-y-6 lg:space-y-10 pb-16'>
+    <div className='space-y-4 pb-6'>
 
       {/* WSL Configuration
       {!isWebMode && (
@@ -162,40 +157,28 @@ export const ToolsSettings: React.FC = () => {
       {/* Keep disabled tools visible so they can always be re-enabled. */}
       {!isWebMode && (
         <div>
-          <div className='space-y-2 sm:space-y-3 lg:space-y-4'>
+          <div className='space-y-3'>
             {/* Tool List Header */}
-            <div className='flex items-end justify-between'>
-              <span
-                className='rounded-lg px-2 py-1 font-mono text-[14px] uppercase tracking-[0.1em] text-neutral-400 sm:tracking-[0.15em] dark:text-neutral-200'
-                style={badgeStyle}
-              >
-                TOOLS
-              </span>
-              <div className='flex items-center gap-2 sm:gap-3 lg:gap-4'>
+            <div className='flex justify-end'>
+              <div className='flex items-center gap-2'>
                 <button
+                  type='button'
                   onClick={handleReloadTools}
                   disabled={reloadingTools}
-                  className='flex cursor-pointer items-center gap-1 rounded-lg px-2 py-1 font-mono text-[14px] uppercase tracking-[0.1em] transition-all duration-150 hover:bg-neutral-200 active:scale-[0.98] active:bg-neutral-300 disabled:opacity-50 sm:gap-1.5 sm:tracking-[0.15em] dark:hover:bg-neutral-700 dark:active:bg-neutral-700/90'
+                  className='inline-flex items-center gap-1.5 rounded-full bg-white/60 px-3 py-1.5 text-xs text-stone-600 transition-[background-color,transform] duration-150 hover:bg-white/80 active:scale-[0.98] disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400/60 dark:bg-white/5 dark:text-stone-300 dark:hover:bg-white/10 dark:focus-visible:ring-orange-400/60 motion-reduce:transition-none'
                   style={buttonStyle}
                 >
-                  {reloadingTools && (
-                    <svg
-                      className='w-2.5 h-2.5 sm:w-3 sm:h-3 animate-spin'
-                      viewBox='0 0 24 24'
-                      fill='none'
-                      stroke='currentColor'
-                    >
-                      <path d='M4 12a8 8 0 018-8v4l4-4-4-4v4a8 8 0 100 16 8 8 0 008-8h-4' strokeWidth={2} />
-                    </svg>
-                  )}
+                  <RefreshCw size={14} strokeWidth={2.25} aria-hidden='true' className={reloadingTools ? 'animate-spin motion-reduce:animate-none' : undefined} />
                   {reloadingTools ? 'Reloading' : 'Reload'}
                 </button>
                 <button
+                  type='button'
                   onClick={handleOpenCustomToolsFolder}
-                  className='cursor-pointer rounded-lg px-2 py-1 font-mono text-[14px] uppercase tracking-[0.1em] transition-all duration-150 hover:bg-neutral-200 active:scale-[0.98] active:bg-neutral-300 sm:tracking-[0.15em] dark:hover:bg-neutral-700 dark:active:bg-neutral-700/90'
+                  className='inline-flex items-center gap-1.5 rounded-full bg-white/60 px-3 py-1.5 text-xs text-stone-600 transition-[background-color,transform] duration-150 hover:bg-white/80 active:scale-[0.98] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400/60 dark:bg-white/5 dark:text-stone-300 dark:hover:bg-white/10 dark:focus-visible:ring-orange-400/60 motion-reduce:transition-none'
                   style={buttonStyle}
                 >
-                  + Custom Apps
+                  <Plus size={14} strokeWidth={2.25} aria-hidden='true' />
+                  Custom Apps
                 </button>
               </div>
             </div>
@@ -321,7 +304,7 @@ export const ToolsSettings: React.FC = () => {
 
             {/* Separate tools by source; MCP metadata takes precedence over custom metadata. */}
             {toolGroups.filter(group => group.tools.length > 0).map(group => (
-              <section key={group.title} aria-label={group.title} className='space-y-1.5 sm:space-y-4 pb-4 sm:pb-6'>
+              <section key={group.title} aria-label={group.title} className='space-y-2 pb-2'>
                 <h3>
                   <button
                     type='button'
@@ -351,102 +334,15 @@ export const ToolsSettings: React.FC = () => {
                   className={`grid transition-[grid-template-rows,opacity] duration-300 ease-in-out motion-reduce:transition-none ${collapsedGroups.has(group.title) ? 'grid-rows-[0fr] opacity-0' : 'grid-rows-[1fr] opacity-100'}`}
                 >
                   <div className='min-h-0 overflow-hidden'>
-                    <div className='space-y-1.5 px-1 pt-1 sm:space-y-4'>
-              {group.tools.map(tool => (
-                <div
-                  key={tool.name}
-                  onClick={() => handleToggle(tool.name, tool.enabled)}
-                  className={`group flex items-center justify-between p-2.5 px-3 sm:p-3 sm:px-4 lg:p-4 lg:px-5 rounded-xl sm:rounded-2xl border cursor-pointer transition-all duration-300 hover:-translate-y-0.5 ${
-                    tool.enabled
-                      ? 'bg-neutral-100 dark:bg-neutral-800/50 border-neutral-200 dark:border-white/10 hover:bg-neutral-150 dark:hover:bg-neutral-800 hover:border-neutral-300 dark:hover:border-white/15'
-                      : 'bg-neutral-50 dark:bg-neutral-900/50 border-neutral-200 dark:border-white/5 hover:bg-neutral-100 dark:hover:bg-neutral-800/50 hover:border-neutral-300 dark:hover:border-white/10'
-                  }`}
-                >
-                  {/* Tool Identity */}
-                  <div className='flex items-center gap-2.5 sm:gap-3 lg:gap-5 min-w-0'>
-                    {/* Icon Box */}
-                    <div
-                      className={`w-8 h-8 sm:w-9 sm:h-9 lg:w-11 lg:h-11 rounded-lg sm:rounded-xl border flex items-center justify-center transition-all duration-200 flex-shrink-0 ${
-                        tool.enabled
-                          ? tool.isCustom
-                            ? 'bg-orange-50 dark:bg-orange-500/10 border-orange-200 dark:border-orange-500/20 text-orange-500'
-                            : 'bg-blue-50 dark:bg-blue-500/10 border-blue-200 dark:border-blue-500/20 text-blue-500'
-                          : tool.isCustom
-                            ? 'bg-neutral-100 dark:bg-white/[0.03] border-neutral-200 dark:border-white/10 text-neutral-400 dark:text-neutral-600 group-hover:text-orange-500 group-hover:bg-orange-50 dark:group-hover:bg-orange-500/10 group-hover:border-orange-200 dark:group-hover:border-orange-500/20'
-                            : 'bg-neutral-100 dark:bg-white/[0.03] border-neutral-200 dark:border-white/10 text-neutral-400 dark:text-neutral-600 group-hover:text-blue-500 group-hover:bg-blue-50 dark:group-hover:bg-blue-500/10 group-hover:border-blue-200 dark:group-hover:border-blue-500/20'
-                      }`}
-                    >
-                      <svg
-                        className='w-3.5 h-3.5 sm:w-4 sm:h-4 lg:w-[18px] lg:h-[18px]'
-                        fill='none'
-                        viewBox='0 0 24 24'
-                        stroke='currentColor'
-                        strokeWidth={2}
-                      >
-                        <path d='M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2' />
-                      </svg>
-                    </div>
-                    {/* Tool Meta */}
-                    <div className='min-w-0'>
-                      <h3
-                        className='truncate text-xs font-medium text-neutral-800 sm:text-[13px] lg:text-[15px] dark:text-neutral-200'
-                        style={titleStyle}
-                      >
-                        {(tool.mcpToolName || tool.name).replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase())}
-                      </h3>
-                      <p
-                        className='mt-0 max-w-[150px] truncate text-[10px] text-neutral-500 sm:mt-0.5 sm:max-w-[250px] sm:text-[11px] lg:max-w-[400px] lg:text-xs dark:text-neutral-500'
-                        style={bodyStyle}
-                      >
-                        {tool.description}
-                      </p>
-                    </div>
-                  </div>
-
-                  {/* Status Indicator */}
-                  <div className='flex items-center gap-2 sm:gap-4 lg:gap-6 flex-shrink-0'>
-                    <span
-                      className='hidden font-mono text-[8px] uppercase text-neutral-400 sm:block sm:text-[9px] lg:text-[10px] dark:text-neutral-600'
-                      style={tool.enabled ? { color: sectionThemeColors?.primaryButtonText ?? undefined } : bodyStyle}
-                    >
-                      {tool.isMcp ? tool.mcpServerName || 'MCP' : tool.isCustom ? 'Custom' : 'Built-in'}
-                    </span>
-                    <div
-                      className={`w-6 h-6 sm:w-7 sm:h-7 lg:w-8 lg:h-8 rounded-full border flex items-center justify-center transition-all duration-200 ${
-                        updatingTools.has(tool.name)
-                          ? 'border-neutral-300 dark:border-white/10 text-neutral-400'
-                          : tool.enabled
-                            ? 'bg-emerald-50 dark:bg-emerald-500/10 border-emerald-200 dark:border-emerald-500/20 text-emerald-500'
-                            : 'border-neutral-200 dark:border-white/5 text-red-400 opacity-30'
-                      }`}
-                    >
-                      {updatingTools.has(tool.name) ? (
-                        <span className='text-[10px] sm:text-xs'>...</span>
-                      ) : tool.enabled ? (
-                        <svg
-                          className='w-3.5 h-3.5 sm:w-4 sm:h-4 lg:w-[18px] lg:h-[18px]'
-                          fill='none'
-                          viewBox='0 0 24 24'
-                          stroke='currentColor'
-                          strokeWidth={3}
-                        >
-                          <path d='m5 13 4 4L19 7' />
-                        </svg>
-                      ) : (
-                        <svg
-                          className='w-3.5 h-3.5 sm:w-4 sm:h-4 lg:w-[18px] lg:h-[18px]'
-                          fill='none'
-                          viewBox='0 0 24 24'
-                          stroke='currentColor'
-                          strokeWidth={3}
-                        >
-                          <path d='M18 6L6 18M6 6l12 12' />
-                        </svg>
-                      )}
-                    </div>
-                  </div>
-                </div>
-              ))}
+                    <div className='space-y-1.5 px-1 pt-1'>
+                      {group.tools.map(tool => (
+                        <ToolSettingsRow
+                          key={tool.name}
+                          tool={tool}
+                          updating={updatingTools.has(tool.name)}
+                          onToggle={() => handleToggle(tool.name, tool.enabled)}
+                        />
+                      ))}
                     </div>
                   </div>
                 </div>
