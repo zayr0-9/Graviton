@@ -19,7 +19,8 @@ import {
   X,
 } from 'lucide-react'
 import { createPortal } from 'react-dom'
-import { useLocation, useNavigate } from 'react-router-dom'
+import { useLocation } from 'react-router-dom'
+import { useChatNavigate as useNavigate } from '../components/ChatSelection/ChatSelectionProvider'
 import { ConversationId, Project } from '../../../../shared/types'
 import { Button } from '../components'
 import { MarkdownContent } from '../components/MarkdownContent/MarkdownContent'
@@ -28,7 +29,6 @@ import { getThemeModeColor, useCustomChatTheme, useHtmlDarkMode } from '../compo
 import { contentSpringTransition, shellSpringTransition, softTransition } from '../components/motion'
 import { chatSliceActions } from '../features/chats'
 import {
-  activeConversationIdSet,
   Conversation,
   createConversation,
   deleteConversation,
@@ -1087,8 +1087,6 @@ const SideBar: React.FC<SideBarProps> = ({
     if (!match) return
 
     closeExpandPortal(false)
-    dispatch(chatSliceActions.conversationSet(match.conversation_id))
-    dispatch(activeConversationIdSet(match.conversation_id))
     navigate(getSearchResultHref(match), {
       state: match.storage_mode ? { storageMode: match.storage_mode } : undefined,
     })
@@ -1118,16 +1116,12 @@ const SideBar: React.FC<SideBarProps> = ({
   const handleSelect = (id: ConversationId) => {
     const conversation = favoriteConversations.find(c => c.id === id)
     closeExpandPortal(false)
-    dispatch(chatSliceActions.conversationSet(id))
-    dispatch(activeConversationIdSet(id))
     navigate(`/chat/${conversation?.project_id || 'unknown'}/${id}`)
   }
 
   const handleProjectConversationSelect = useCallback(
     (conversation: Conversation) => {
       closeExpandPortal(false)
-      dispatch(chatSliceActions.conversationSet(conversation.id))
-      dispatch(activeConversationIdSet(conversation.id))
       navigate(`/chat/${conversation.project_id || 'unknown'}/${conversation.id}`, {
         state: conversation.storage_mode ? { storageMode: conversation.storage_mode } : undefined,
       })
@@ -1144,8 +1138,6 @@ const SideBar: React.FC<SideBarProps> = ({
 
       closeExpandPortal(false)
       setHoverPreviewSearchQuery('')
-      dispatch(chatSliceActions.conversationSet(targetConversation.id))
-      dispatch(activeConversationIdSet(targetConversation.id))
       navigate(`/chat/${targetConversation.project_id || 'unknown'}/${targetConversation.id}#${encodedMessageId}`, {
         state: targetConversation.storage_mode ? { storageMode: targetConversation.storage_mode } : undefined,
       })
@@ -1267,8 +1259,6 @@ const SideBar: React.FC<SideBarProps> = ({
             })
 
             if (fallbackConversation?.id && fallbackConversation.project_id) {
-              dispatch(chatSliceActions.conversationSet(fallbackConversation.id))
-              dispatch(activeConversationIdSet(fallbackConversation.id))
               navigate(`/chat/${fallbackConversation.project_id}/${fallbackConversation.id}`, {
                 replace: true,
                 state: fallbackConversation.storage_mode
@@ -1500,8 +1490,6 @@ const SideBar: React.FC<SideBarProps> = ({
         closeExpandPortal(false)
         const inheritedCwd = createdConversation.storage_mode === 'local' ? createdConversation.cwd || project.cwd || '' : ''
         dispatch(chatSliceActions.ccCwdSet(inheritedCwd))
-        dispatch(chatSliceActions.conversationSet(createdConversation.id))
-        dispatch(activeConversationIdSet(createdConversation.id))
         navigate(`/chat/${createdConversation.project_id || project.id}/${createdConversation.id}`, {
           state: {
             storageMode: createdConversation.storage_mode || project.storage_mode || 'cloud',

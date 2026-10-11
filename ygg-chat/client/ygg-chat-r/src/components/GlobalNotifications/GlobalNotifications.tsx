@@ -1,5 +1,5 @@
 import React, { useEffect, useRef } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useChatNavigate as useNavigate } from '../ChatSelection/ChatSelectionProvider'
 import { buildChatErrorEnvelope, type ChatErrorActionKind } from '../../../../../shared/chatErrors'
 import { uiActions } from '../../features/ui'
 import type { UiErrorNotice } from '../../features/ui/uiSlice'

@@ -8,6 +8,7 @@ import { HtmlIframeRegistryProvider, useHtmlIframeRegistry } from './components/
 import { GlobalNotifications } from './components/GlobalNotifications/GlobalNotifications'
 import { HtmlToolsModal } from './components/HtmlToolsModal/HtmlToolsModal'
 import { RunningAgentsFloatingButton } from './components/RunningAgentsFloatingButton'
+import { ChatSelectionProvider } from './components/ChatSelection/ChatSelectionProvider'
 import { LiquidGlassSVG } from './components/LiquidGlassSVG'
 import ProtectedRoute from './components/ProtectedRoute'
 import { TitleBar } from './components/TitleBar/TitleBar'
@@ -361,11 +362,13 @@ function App() {
   return (
     <>
       <Router>
-        {isElectron ? (
-          <HtmlIframeRegistryProvider resetKey={resetKey}>{appShell}</HtmlIframeRegistryProvider>
-        ) : (
-          appShell
-        )}
+        <ChatSelectionProvider>
+          {isElectron ? (
+            <HtmlIframeRegistryProvider resetKey={resetKey}>{appShell}</HtmlIframeRegistryProvider>
+          ) : (
+            appShell
+          )}
+        </ChatSelectionProvider>
       </Router>
       {!isElectron && <Analytics />}
     </>

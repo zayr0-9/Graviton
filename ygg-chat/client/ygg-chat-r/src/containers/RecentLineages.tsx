@@ -1,6 +1,7 @@
 import { ArrowLeft, GitBranch, MessageSquare, RefreshCw } from 'lucide-react'
 import React, { useMemo } from 'react'
-import { useNavigate, useParams } from 'react-router-dom'
+import { useParams } from 'react-router-dom'
+import { useChatNavigate as useNavigate } from '../components/ChatSelection/ChatSelectionProvider'
 import { type RecentLineage, useProject, useRecentLineages } from '../hooks/useQueries'
 
 const panelClass =

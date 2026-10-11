@@ -93,7 +93,7 @@ export function applyStreamProjectionPolicy(
   action: ProjectedAction,
   policy: StreamProjectionPolicy
 ): ProjectedAction {
-  if (action.type === chatSliceActions.queuedMessageInserted.type || action.type === chatSliceActions.operationModeNotificationReceived.type) {
+  if (action.type === chatSliceActions.messageBranchCreated.type || action.type === chatSliceActions.queuedMessageInserted.type || action.type === chatSliceActions.operationModeNotificationReceived.type) {
     return { ...action, payload: { ...(action.payload as object), updatePath: policy.updatePath } }
   }
   if (action.type !== chatSliceActions.streamCompleted.type) return action
@@ -320,7 +320,7 @@ export function projectServerEvent(event: ServerStreamEvent, ctx: ProjectionCont
       }
       return [
         chatSliceActions.messageAdded(message),
-        chatSliceActions.messageBranchCreated({ newMessage: message }),
+        chatSliceActions.messageBranchCreated({ newMessage: message, streamId }),
         chatSliceActions.streamLineageUpdated({
           streamId,
           lineageId: event.lineageId ?? (message as any).lineage_id ?? undefined,
@@ -412,7 +412,7 @@ export function projectServerEvent(event: ServerStreamEvent, ctx: ProjectionCont
       const lineageId = event.lineageId ?? (message as any).lineage_id ?? null
       return [
         chatSliceActions.messageAdded(message),
-        chatSliceActions.messageBranchCreated({ newMessage: message }),
+        chatSliceActions.messageBranchCreated({ newMessage: message, streamId }),
         ...(lineageId
           ? [chatSliceActions.streamLineageUpdated({ streamId, lineageId } as any)]
           : []),
@@ -428,7 +428,7 @@ export function projectServerEvent(event: ServerStreamEvent, ctx: ProjectionCont
       const lineageId = event.lineageId ?? (message as any)?.lineage_id ?? null
       return [
         ...(message
-          ? [chatSliceActions.messageAdded(message), chatSliceActions.messageBranchCreated({ newMessage: message })]
+          ? [chatSliceActions.messageAdded(message), chatSliceActions.messageBranchCreated({ newMessage: message, streamId })]
           : []),
         ...(lineageId
           ? [chatSliceActions.streamLineageUpdated({ streamId, lineageId } as any)]
@@ -577,7 +577,7 @@ export function projectServerEvent(event: ServerStreamEvent, ctx: ProjectionCont
       const message = normalizeServerMessage(event.summaryMessage)
       actions.push(
         chatSliceActions.messageAdded(message),
-        chatSliceActions.messageBranchCreated({ newMessage: message }),
+        chatSliceActions.messageBranchCreated({ newMessage: message, streamId }),
         chatSliceActions.streamLineageUpdated({
           streamId,
           branchAnchorMessageId: message.id,

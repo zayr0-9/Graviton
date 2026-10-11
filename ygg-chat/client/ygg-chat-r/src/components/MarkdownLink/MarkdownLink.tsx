@@ -1,5 +1,5 @@
 import React from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useChatNavigate as useNavigate } from '../ChatSelection/ChatSelectionProvider'
 import { defaultUrlTransform, type UrlTransform } from 'react-markdown'
 
 // Keep ReactMarkdown's sanitization, allowing local files only as clickable links.

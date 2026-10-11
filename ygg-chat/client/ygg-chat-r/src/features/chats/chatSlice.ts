@@ -30,6 +30,7 @@ import {
   UserSystemPrompt,
 } from './chatTypes'
 import { createEmptyStreamState, DEFAULT_STREAM_ID } from './streamHelpers'
+import { chatSelectionRequested, chatSelectionCommitted, chatSelectionFailed, chatSelectionCancelled, chatSelectionScrollHandled, initialChatSelection } from './chatSelection'
 import { buildPathToConversationMessage } from './conversationTree'
 import toolDefinitions, { ToolDefinition } from './toolDefinitions'
 
@@ -231,6 +232,7 @@ const makeInitialState = (): ChatState => {
     ui: {
       modelSelectorOpen: false,
     },
+    selection: initialChatSelection(),
     conversation: {
       currentConversationId: null,
       currentLineageId: null,
@@ -292,6 +294,45 @@ const makeInitialState = (): ChatState => {
       error: null,
     },
   }
+}
+
+// Shared by legacy initialization and the central selection transaction.
+function setConversationIdentity(state: ChatState, nextConversationId: ConversationId) {
+  const changed = state.conversation.currentConversationId != null &&
+    String(state.conversation.currentConversationId) !== String(nextConversationId)
+  if (state.conversation.snapshotConversationId != null &&
+      String(state.conversation.snapshotConversationId) !== String(nextConversationId)) {
+    state.conversation.messages = []
+    state.conversation.snapshotConversationId = null
+    state.heimdall.treeData = null
+    state.heimdall.subagentMap = {}
+  }
+  if (changed) {
+    state.composition.imageDrafts = []
+    state.composition.imageDraftTarget = null
+    state.composition.imagePreparationPending = 0
+    state.composition.imagePreparationError = null
+    state.composition.imagePreparationGeneration = (state.composition.imagePreparationGeneration ?? 0) + 1
+    state.conversation.currentLineageId = null
+    state.conversation.currentPath = []
+    state.conversation.focusedChatMessageId = null
+  }
+  state.conversation.currentConversationId = nextConversationId
+}
+
+function streamCanAdvanceSelection(state: ChatState, streamId?: string | null): boolean {
+  if (state.selection?.status === 'pending' || state.selection?.status === 'error') return false
+  if (!streamId) return true // Non-stream mutation/repair callers retain their structural policy.
+  const stream = state.streaming.byId[streamId]
+  if (!stream) return true // Legacy projected actions may precede a reconstructed slot.
+  if (stream.updatePath === false || String(stream.conversationId) !== String(state.conversation.currentConversationId)) return false
+  if (stream.selectionRevision === (state.selection?.revision ?? 0)) return true
+  if (state.conversation.currentLineageId && stream.lineage.lineageIdConfirmed) {
+    return state.conversation.currentLineageId === stream.lineage.lineageId
+  }
+  const tip = state.conversation.currentPath.at(-1)
+  return tip != null && [stream.triggerUserMessageId, stream.currentBranchAnchorMessageId,
+    stream.liveMessageId, stream.lastCompletedMessageId].some(id => id != null && String(id) === String(tip))
 }
 
 const initialState: ChatState = makeInitialState()
@@ -437,6 +478,8 @@ export const chatSlice = createSlice({
         active: true,
         status: 'active',
         conversationId,
+        selectionRevision: action.payload?.selectionRevision ?? state.selection?.revision ?? 0,
+        updatePath: action.payload?.updatePath,
       }
 
       // Add to active list (dedupe)
@@ -860,7 +903,7 @@ export const chatSlice = createSlice({
         state.streaming.lastCompletedId = streamId
 
         // CRITICAL: Only update currentPath if explicitly requested AND conditions are met
-        if (updatePath) {
+        if (updatePath && streamCanAdvanceSelection(state, streamId)) {
           const shouldUpdatePath =
             state.conversation.currentPath.length === 0 ||
             isOnCurrentBranch(state.conversation.currentPath, state.conversation.messages, messageId)
@@ -967,7 +1010,7 @@ export const chatSlice = createSlice({
           if (
             lineageId &&
             stream.conversationId === state.conversation.currentConversationId &&
-            streamOwnsSelection
+            streamOwnsSelection && streamCanAdvanceSelection(state, streamId)
           ) {
             // A stream may continue in the background after the user selects another
             // branch. Keep its exact identity stream-local unless it still represents
@@ -1056,52 +1099,13 @@ export const chatSlice = createSlice({
     },
 
     conversationSet: (state, action: PayloadAction<ConversationId>) => {
-      const nextConversationId = action.payload
-      const conversationChanged =
-        state.conversation.currentConversationId != null &&
-        String(state.conversation.currentConversationId) !== String(nextConversationId)
-      if (
-        state.conversation.snapshotConversationId != null &&
-        String(state.conversation.snapshotConversationId) !== String(nextConversationId)
-      ) {
-        state.conversation.messages = []
-        state.conversation.snapshotConversationId = null
-        state.heimdall.treeData = null
-        state.heimdall.subagentMap = {}
-      }
-      if (conversationChanged) {
-        state.composition.imageDrafts = []
-        state.composition.imageDraftTarget = null
-        state.composition.imagePreparationPending = 0
-        state.composition.imagePreparationError = null
-        state.composition.imagePreparationGeneration = (state.composition.imagePreparationGeneration ?? 0) + 1
-        state.conversation.currentLineageId = null
-        state.conversation.currentPath = []
-        state.conversation.focusedChatMessageId = null
-      }
-      state.conversation.currentConversationId = nextConversationId
+      setConversationIdentity(state, action.payload)
     },
 
     // Select conversation, exact lineage, visible path, and focus as one render-safe transition.
     lineageSelected: (state, action: PayloadAction<LineageSelectionPayload>) => {
       const { conversationId, lineageId, path, focus } = action.payload
-      if (state.conversation.currentConversationId != null && String(state.conversation.currentConversationId) !== String(conversationId)) {
-        state.composition.imageDrafts = []
-        state.composition.imageDraftTarget = null
-        state.composition.imagePreparationPending = 0
-        state.composition.imagePreparationError = null
-        state.composition.imagePreparationGeneration = (state.composition.imagePreparationGeneration ?? 0) + 1
-      }
-      if (
-        state.conversation.snapshotConversationId != null &&
-        String(state.conversation.snapshotConversationId) !== String(conversationId)
-      ) {
-        state.conversation.messages = []
-        state.conversation.snapshotConversationId = null
-        state.heimdall.treeData = null
-        state.heimdall.subagentMap = {}
-      }
-      state.conversation.currentConversationId = conversationId
+      setConversationIdentity(state, conversationId)
       state.conversation.currentLineageId = lineageId
       state.conversation.currentPath = path
       state.conversation.focusedChatMessageId = focus
@@ -1276,7 +1280,7 @@ export const chatSlice = createSlice({
     },
 
     // Branching support
-    messageBranchCreated: (state, action: PayloadAction<{ newMessage: Message }>) => {
+    messageBranchCreated: (state, action: PayloadAction<{ newMessage: Message; streamId?: string; updatePath?: boolean }>) => {
       const { newMessage } = action.payload
       if (!isMessageForCurrentConversation(state, newMessage)) {
         return
@@ -1331,8 +1335,9 @@ export const chatSlice = createSlice({
         newMessage.role === 'user' || state.conversation.currentPath.length === 0 || currentTip === newMessage.parent_id
       )
 
-      if (shouldSwitch) {
-        state.conversation.currentLineageId = null
+      if (shouldSwitch && action.payload.updatePath !== false && streamCanAdvanceSelection(state, action.payload.streamId)) {
+        const stream = action.payload.streamId ? state.streaming.byId[action.payload.streamId] : null
+        state.conversation.currentLineageId = stream?.lineage.lineageIdConfirmed ? stream.lineage.lineageId ?? null : null
         state.conversation.currentPath = buildPathToMessage(newMessage.id)
       }
     },
@@ -1341,6 +1346,9 @@ export const chatSlice = createSlice({
     conversationPathSet: (state, action: PayloadAction<MessageId[]>) => {
       state.conversation.currentLineageId = null
       state.conversation.currentPath = action.payload
+      if (state.selection.scroll?.focus != null && !action.payload.includes(state.selection.scroll.focus)) {
+        state.selection.scroll = null
+      }
     },
 
     // Set selected node path (string IDs from Heimdall)
@@ -1596,7 +1604,7 @@ export const chatSlice = createSlice({
       if (parent && !parent.children_ids.includes(message.id)) parent.children_ids.push(message.id)
       const tip = state.conversation.currentPath.at(-1)
       const nextPath = buildPathToMessage(state.conversation.messages, message.id)
-      if (action.payload.updatePath !== false && (!tip || nextPath.includes(tip))) {
+      if (action.payload.updatePath !== false && streamCanAdvanceSelection(state, streamId) && (!tip || nextPath.includes(tip))) {
         state.conversation.currentPath = nextPath
       }
       const stream = state.streaming.byId[streamId]
@@ -1656,7 +1664,7 @@ export const chatSlice = createSlice({
       const path = state.conversation.currentPath
       const tip = path[path.length - 1] ?? null
       // A notification on a background branch must not steal the selected path.
-      if (updatePath !== false && (tip === message.parent_id || path.length === 0)) {
+      if (updatePath !== false && streamCanAdvanceSelection(state, streamId) && (tip === message.parent_id || path.length === 0)) {
         state.conversation.currentPath = buildPathToMessage(state.conversation.messages, message.id)
         state.operationMode = mode
       } else if (matchesPending) {
@@ -1781,6 +1789,57 @@ export const chatSlice = createSlice({
     },
 
     stateReset: () => makeInitialState(),
+  },
+  extraReducers: builder => {
+    builder
+      .addCase(chatSelectionRequested, (state, { payload }) => {
+        const conversationChanged = String(state.conversation.currentConversationId) !== String(payload.target.conversationId)
+        setConversationIdentity(state, payload.target.conversationId)
+        state.selection = {
+          fallbackRevision: conversationChanged ? (state.selection?.revision ?? 0) + 1 : state.selection?.fallbackRevision ?? 0,
+          revision: (state.selection?.revision ?? 0) + 1,
+          requestId: payload.requestId, target: payload.target, source: payload.source,
+          status: 'pending', error: null, scroll: null,
+        }
+      })
+      .addCase(chatSelectionCommitted, (state, { payload }) => {
+        if (state.selection.requestId !== payload.requestId || state.selection.status !== 'pending' ||
+            String(state.conversation.currentConversationId) !== String(payload.conversationId)) return
+        const sameView = state.conversation.currentLineageId === payload.lineageId &&
+          state.conversation.currentPath.length === payload.path.length &&
+          state.conversation.currentPath.every((id, index) => String(id) === String(payload.path[index]))
+        if (!sameView) state.selection.fallbackRevision = state.selection.revision
+        else {
+          // Same-view focus is a new scroll intent, not a transfer away from an unmaterialized send.
+          for (const stream of Object.values(state.streaming.byId)) {
+            if (stream.active && String(stream.conversationId) === String(payload.conversationId) &&
+                stream.selectionRevision != null && stream.selectionRevision >= state.selection.fallbackRevision) {
+              stream.selectionRevision = state.selection.revision
+            }
+          }
+        }
+        state.conversation.currentLineageId = payload.lineageId
+        state.conversation.currentPath = payload.path
+        state.conversation.focusedChatMessageId = payload.focus
+        state.selection.status = 'ready'
+        state.selection.error = payload.error ?? null
+        state.selection.scroll = payload.scrollMode === 'none' ? null : {
+          requestId: payload.requestId, focus: payload.focus,
+          mode: payload.scrollMode ?? (payload.focus == null ? 'latest' : 'focus'),
+        }
+      })
+      .addCase(chatSelectionFailed, (state, { payload }) => {
+        if (state.selection.requestId !== payload.requestId || state.selection.status !== 'pending') return
+        state.selection.status = 'error'
+        state.selection.error = payload.error
+      })
+      .addCase(chatSelectionCancelled, state => {
+        const revision = (state.selection?.revision ?? 0) + 1
+        state.selection = { ...initialChatSelection(), revision, fallbackRevision: revision }
+      })
+      .addCase(chatSelectionScrollHandled, (state, { payload }) => {
+        if (state.selection.scroll?.requestId === payload) state.selection.scroll = null
+      })
   },
 })
 

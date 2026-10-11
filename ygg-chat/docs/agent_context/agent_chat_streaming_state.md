@@ -132,7 +132,7 @@ The desktop parallel pane reuses canonical `conversation.messages` and `streamin
 ## Gotchas
 
 - Old code may still assume `DEFAULT_STREAM_ID`; preserve compatibility while preferring explicit stream IDs in new code.
-- The optimistic user bubble is set by `Chat.tsx` and cleared by `runServerChatLoop` on `user_message_persisted` (send/edit); branch has no bubble. Pending stream fallbacks in `Chat.tsx` are deliberately short-lived to avoid flicker during message materialization.
+- The optimistic user bubble is set by `Chat.tsx` and cleared by `runServerChatLoop` on `user_message_persisted` (send/edit); branch has no bubble. Pending stream fallbacks in `Chat.tsx` are scoped to conversation and the selection's fallback ownership revision. They remain eligible through message materialization and same-view refocus, but become ineligible after a different view is selected. Pending/failed navigation does not expose another branch's stream controls or decisions.
 - Multi-turn: `assistant_message_persisted` projects a complete-CHUNK (not `streamCompleted`) so `active` stays true; only the terminal `complete` sets `streamCompleted`. A `tool_loop` `turn_started` event synthesizes a per-turn boundary so turn N+1 text does not append to turn N.
 - Tool-result events and persisted tool messages are related but not identical; update both paths deliberately.
 - Stream Redux state is pruned; durable file-edit undo state lives under Electron app user-data `.ygg/backups/<stream>/`, keyed by `streamId` and parent user message ID.

@@ -1093,6 +1093,7 @@ export const sendMessage = createAsyncThunk<
       cwd,
       operationMode: requestedOperationMode,
       streamId: providedStreamId,
+      selectionRevision: requestedSelectionRevision,
       lineageId: providedLineageId,
       branchPath: providedBranchPath,
       streamType: requestedStreamType,
@@ -1102,6 +1103,7 @@ export const sendMessage = createAsyncThunk<
     { dispatch, getState, extra, rejectWithValue, signal }
   ) => {
     const { auth } = extra
+    const selectionRevision = requestedSelectionRevision ?? getState().chat.selection?.revision ?? 0
 
     // Primary ownership remains the default for existing callers. Parallel panes opt
     // into branch ownership and keep their terminal completion off the global path.
@@ -1152,6 +1154,8 @@ export const sendMessage = createAsyncThunk<
           streamId,
           streamType,
           conversationId,
+          updatePath,
+          selectionRevision,
           preserveDrafts: true,
           lineage: {
             lineageId: sendLineageId ?? undefined,
@@ -1523,12 +1527,14 @@ export const editMessageWithBranching = createAsyncThunk<
       cwd,
       operationMode: requestedOperationMode,
       streamId: providedStreamId,
+      selectionRevision: requestedSelectionRevision,
       lineageId: providedLineageId,
       branchPath: providedBranchPath,
     },
     { dispatch, getState, extra, rejectWithValue, signal }
   ) => {
     const { auth } = extra
+    const selectionRevision = requestedSelectionRevision ?? getState().chat.selection?.revision ?? 0
 
     // Generate or use provided stream ID
     const streamId = providedStreamId ?? generateStreamId('branch')
@@ -1589,6 +1595,7 @@ export const editMessageWithBranching = createAsyncThunk<
           streamId,
           streamType: 'branch',
           conversationId,
+          selectionRevision,
           preserveDrafts: true,
           lineage: {
             lineageId: editLineageId ?? undefined,
@@ -1984,11 +1991,13 @@ export const sendMessageToBranch = createAsyncThunk<
       cwd,
       operationMode: requestedOperationMode,
       streamId: providedStreamId,
+      selectionRevision: requestedSelectionRevision,
       lineageId: providedLineageId,
     },
     { dispatch, getState, extra, rejectWithValue, signal }
   ) => {
     const { auth } = extra
+    const selectionRevision = requestedSelectionRevision ?? getState().chat.selection?.revision ?? 0
 
     // Generate or use provided stream ID
     const streamId = providedStreamId ?? generateStreamId('branch')
@@ -2024,6 +2033,7 @@ export const sendMessageToBranch = createAsyncThunk<
           streamId,
           streamType: 'branch',
           conversationId,
+          selectionRevision,
           preserveDrafts: true,
           lineage: {
             lineageId: branchLineageId ?? undefined,
@@ -2843,6 +2853,8 @@ export const resumeInFlightStreams = createAsyncThunk<
       dispatch(
         chatSliceActions.sendingStarted({
           streamId: rec.streamId,
+          selectionRevision: -1, // Reattach does not claim the currently selected view.
+          updatePath: rec.updatePath ?? rec.streamType !== 'branch',
           preserveDrafts: true,
           streamType: rec.streamType,
           conversationId: rec.conversationId,

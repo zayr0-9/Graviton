@@ -242,6 +242,9 @@ export interface StreamLineage {
 }
 
 export interface StreamState {
+  /** Renderer view ownership; never sent to the server. */
+  selectionRevision?: number
+  updatePath?: boolean
   active: boolean
   // Explicit lifecycle status. `waiting_for_tool` is still an in-flight stream
   // and should stay visible/interruptible in branch-local UIs.
@@ -304,6 +307,8 @@ export interface StreamingRootState {
 
 // Action payloads for streaming actions
 export interface SendingStartedPayload {
+  selectionRevision?: number
+  updatePath?: boolean
   /** Reattachment must not consume unrelated composer drafts. */
   preserveDrafts?: boolean
   streamId: string
@@ -472,6 +477,7 @@ export interface ChatState {
   ui: {
     modelSelectorOpen: boolean
   }
+  selection: import('./chatSelection').ChatSelectionState
   conversation: ConversationState
   heimdall: HeimdallState
   initialization: InitializationState
@@ -548,6 +554,7 @@ export interface LineageSelectionPayload {
 
 export interface SendMessagePayload {
   conversationId: ConversationId
+  selectionRevision?: number
   /** Immutable branch context captured by a transcript pane before dispatch. */
   lineageId?: LineageId | null
   branchPath?: MessageId[]
@@ -572,6 +579,7 @@ export interface SendMessagePayload {
 
 export interface EditMessagePayload {
   conversationId: ConversationId
+  selectionRevision?: number
   /** Immutable branch context captured by a transcript pane before dispatch. */
   lineageId?: LineageId | null
   branchPath?: MessageId[]
@@ -588,6 +596,7 @@ export interface EditMessagePayload {
 
 export interface BranchMessagePayload {
   conversationId: ConversationId
+  selectionRevision?: number
   /** Immutable branch context captured by a transcript pane before dispatch. */
   lineageId?: LineageId | null
   branchPath?: MessageId[]

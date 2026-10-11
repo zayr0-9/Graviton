@@ -41,7 +41,7 @@ Use this when changing:
 4. `Chat.tsx` renders `<Heimdall />` when `heimdallVisible && !isMobile`.
 5. Heimdall uses `chatData` for graph layout and `state.chat.conversation.messages` for full message metadata, notes, content blocks, hidden-node expansion, and actions.
 6. Clicking a node calls `onNodeSelect(nodeId, path)` back into `Chat.tsx`.
-7. `Chat.tsx` parses IDs, sets `conversationPathSet(path)`, sets `focusedChatMessageSet(nodeId)`, and scrolls the virtualized message list to the focused message.
+7. `Chat.tsx` submits an in-place message target to `useChatSelection`. The central controller validates and commits path/focus together; Chat consumes the request-keyed scroll intent. Graph clicks (including on-path focus) and search all use `onNodeSelect`, never independent path/focus dispatches.
 
 ## Tree Shape
 

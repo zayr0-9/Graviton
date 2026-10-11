@@ -1,6 +1,6 @@
 import { useQueryClient } from '@tanstack/react-query'
 import React, { useEffect, useRef, useState } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useChatNavigate as useNavigate } from '../components/ChatSelection/ChatSelectionProvider'
 import { Project, ProjectWithLatestConversation } from '../../../../shared/types'
 import { chatSliceActions } from '../features/chats'
 import { createConversation } from '../features/conversations'

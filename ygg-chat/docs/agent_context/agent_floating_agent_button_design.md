@@ -145,7 +145,7 @@ flowchart TD
 
 - Main compact control should expose `aria-label` based on active stream count, or the notification title when notification content is showing.
 - Use buttons for clickable rows and notification content.
-- Clicking a stream/history row opens its read-only run preview inside the floating shell. Open chat explicitly navigates to `/chat/:projectId/:conversationId#messageId`.
+- Clicking a stream/history row opens its read-only run preview inside the floating shell. Open chat uses the central chat-navigation facade. Confirmed fork identity opens `/chat/:projectId/:conversationId/lineage/:lineageId?focus=messageId`; legacy/unconfirmed runs retain message-hash navigation. Repeated Open chat clicks are fresh selection intents.
 - Clicking a branch-completion notification opens the in-pill preview using its `streamId`, not the latest run in the conversation. If that transcript was superseded, show the existing unavailable-preview message with Open chat targeting the notification's response. Watcher notifications retain direct navigation.
 - Respect reduced motion via `useReducedMotion()` and fall back to short opacity/timing transitions.
 

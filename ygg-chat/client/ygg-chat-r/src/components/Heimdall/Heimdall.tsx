@@ -6,7 +6,7 @@ import type { JSX } from 'react'
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import ReactMarkdown from 'react-markdown'
 import { useDispatch, useSelector } from 'react-redux'
-import { useNavigate } from 'react-router-dom'
+import { useChatNavigate as useNavigate } from '../ChatSelection/ChatSelectionProvider'
 import rehypeHighlight from 'rehype-highlight'
 import remarkGfm from 'remark-gfm'
 import {
@@ -861,15 +861,12 @@ export const Heimdall: React.FC<HeimdallProps> = ({
       if (!item) return
       searchFocusPendingRef.current = true
       const path = buildBranchPathForMessage(flatMessages as any, item.id)
-      if (path.length > 0) {
-        dispatch(chatSliceActions.conversationPathSet(path))
-      }
-      dispatch(chatSliceActions.focusedChatMessageSet(item.id))
+      if (path.length > 0) onNodeSelect?.(String(item.id), path.map(String))
       setSearchOpen(false)
       setSearchQuery('')
       setSearchHoverIndex(-1)
     },
-    [dispatch, flatMessages]
+    [onNodeSelect, flatMessages]
   )
   const handleSearchClose = useCallback(() => {
     setSearchOpen(false)
@@ -1498,15 +1495,7 @@ export const Heimdall: React.FC<HeimdallProps> = ({
         // But when the same focused node is clicked again, route through onNodeSelect
         // so Chat can force a re-scroll to that message.
         if (currentPathIds && currentPathIds.includes(nodeIdParsed)) {
-          const isSameFocusedNode =
-            focusedChatMessageId != null && String(focusedChatMessageId) === String(nodeIdParsed)
-
-          if (isSameFocusedNode) {
-            const currentPath = (currentPathIds ?? []).map(id => String(id))
-            onNodeSelect(nodeId, currentPath.length > 0 ? currentPath : getPathWithDescendants(nodeId))
-          } else {
-            dispatch(chatSliceActions.focusedChatMessageSet(nodeIdParsed))
-          }
+          onNodeSelect(nodeId, currentPathIds.map(String))
         } else {
           const path = getPathWithDescendants(nodeId)
           onNodeSelect(nodeId, path)

@@ -3,6 +3,8 @@ paths:
   - "client/ygg-chat-r/src/hooks/useConversationSnapshotCoordinator.ts"
   - "client/ygg-chat-r/src/features/chats/conversationSnapshotCoordinator.ts"
   - "client/ygg-chat-r/src/containers/Chat.tsx"
+  - "client/ygg-chat-r/src/components/ChatSelection/**"
+  - "client/ygg-chat-r/src/features/chats/chatSelection*.ts"
   - "client/ygg-chat-r/src/components/ParallelChatPane/**"
 ---
 
@@ -139,19 +141,14 @@ Do not reintroduce unconditional auto-scroll on every stream chunk. Long final a
 
 ### Heimdall node selection
 
-`handleNodeSelect(nodeId, path)`:
-1. Parses the clicked node ID and path.
-2. Checks whether the selected path/focus already matches current state.
-3. Marks selection as user-initiated when the click should scroll the message list.
-4. During active streams, marks user scroll override to avoid bottom pinning fighting branch navigation.
-5. Dispatches `conversationPathSet(parsedPath)` and `focusedChatMessageSet(parsedNodeId)` in a transition/batch.
+`handleNodeSelect(nodeId, path)` submits one in-place message target to `useChatSelection`. Heimdall graph, on-path focus clicks, and search all use this callback. `chatSelectionController.ts` resolves the target against the accepted snapshot and commits primary conversation/lineage/path/focus atomically. The transcript consumes a request-keyed scroll intent; repeated target clicks receive new request IDs.
 
 ### Message-list scrolling
 
-- User-initiated Heimdall selections scroll via virtualizer to the focused row.
-- Programmatic focused-message changes from URL hash/search scroll once using `lastFocusedScrollIdRef` as a guard.
-- URL hash selection is applied once per hash via `hashAppliedRef` so it does not override later manual branch switches.
-- If no path is selected after messages load, Chat auto-selects the latest branch unless a valid hash target is present.
+- All explicit selections produce a controller-owned scroll intent, acknowledged only when the target row can be rendered/scrolled.
+- Route ingestion distinguishes visits from URLs, so Back/Forward and repeated Open chat work while snapshot/token updates cannot replay stale focus.
+- In-place Heimdall selection keeps history unchanged and supersedes pending route resolution.
+- Conversation-only targets preserve a valid current path or resolve the latest branch; exact lineages use the existing gateway endpoint. Snapshot failures surface a retryable navigation error rather than an infinite pending state.
 
 ## Composer and Send Flow
 
@@ -177,7 +174,7 @@ Slash commands currently include:
 
 ## Tool Permission and Plan Clarification Dialogs
 
-Chat selects permission, mode-upgrade, and clarification requests from per-stream maps using the effective view stream ID, with legacy singleton fallback when no ID exists. Resolver thunks POST `/api/resume` using request `streamId`/`toolCallId`; callers pass explicit stream IDs to avoid answering another pane's request.
+Chat selects permission, mode-upgrade, and clarification requests only from per-stream maps using the effective view stream ID. With no selected stream, it does not show another branch's singleton request. Resolver thunks POST `/api/resume` using request `streamId`/`toolCallId`; callers pass explicit stream IDs to avoid answering another pane's request.
 
 The dialogs are unchanged in Chat.tsx, but their **data source moved server-side** with the headless migration:
 - The server-owned chat loop pauses mid-turn and emits `permission_required` / `clarify_required` SSE events. `projectServerEvent` (`src/features/chats/sseProjection.ts`) projects these onto the **same existing reducers** (`toolPermissionRequested` / `planClarificationRequested` in `chatSlice.ts`), so the slice fields Chat reads are populated exactly as before — no renderer-side tool execution or pending-promise machinery is involved.
@@ -346,3 +343,13 @@ Chat Settings → Fast mode animation offers the 16 approved motion studies plus
 `src/components/FastModeAnimation/` owns the effect geometry, CSS and palette. Keep the controls above the non-interactive layer, and clip only that layer (not popovers). Motion geometry follows the HTML studies; color communicates Chat/Agent mode in both light and dark appearances. `resolveComposerAgentTint` shares the original pill tint between animated/non-animated composer and previews: theme `chatInputAreaBorder`, otherwise configured border-animation colors, otherwise blue/light and orange/dark fallbacks. `getFastModePalette` keeps Chat near the neutral `chatPanelBg` surface and accents Agent across the base and moving layers. Translucent border accents supply their hue without reusing border opacity. No theme schema or preference migration is required. Mode changes update CSS variables without remounting the animation. Settings has a preview-only Chat/Agent switch, previews animate only on hover/focus, and all effects respect reduced motion.
 
 Focused validation: `npm run test:renderer -- src/components/FastModeAnimation/FastModeAnimation.test.tsx` from the client package.
+
+## Central primary navigation
+
+`src/components/ChatSelection/ChatSelectionProvider.tsx` is mounted under the router in App. Primary navigation callers use `useChatNavigate` (recognized chat URLs) or `useChatSelection().select` (typed targets). The injected controller in `src/features/chats/chatSelectionController.ts` is independent of DOM/router APIs; `chatSelection.ts` defines target/route validation and shared Redux actions. Initial routes, history, links, search, sidebar and agent-pill navigation share this pipeline.
+
+Chat remains the sole snapshot owner and supplies accepted snapshot readiness/refresh. The controller establishes conversation identity before fetching, then commits resolved selection under request/conversation guards. Late responses cannot supersede a newer request. Selection state is renderer-session only; background generation, retained previews and parallel-pane local navigation remain separate.
+
+`selection.revision` identifies every explicit intent. `selection.fallbackRevision` changes when view ownership changes, allowing same-view refocus without losing a startup stream. Async sends capture their initiating revision and branch context. Do not restore independent UI path/focus dispatches; automatic stream advancement and deletion repair are separate, guarded operations.
+
+Validation: `chatSelection.test.ts`, `chatSelectionController.test.ts`, existing lineage/projection/snapshot tests, full renderer suite, renderer typecheck and Electron build. Manually check virtualized scrolling and live navigation in Electron.
