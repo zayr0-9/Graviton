@@ -39,9 +39,11 @@ export function useConversationSnapshotCoordinator(
   const [isFetched, setIsFetched] = useState(false)
   const [error, setError] = useState<Error | null>(null)
   const mountedConversationRef = useRef(conversationId == null ? null : String(conversationId))
+  const refreshRevisionRef = useRef(0)
   const previousActiveKeyRef = useRef(activeStreamKey)
 
   useEffect(() => {
+    refreshRevisionRef.current += 1
     mountedConversationRef.current = conversationId == null ? null : String(conversationId)
     setData(
       conversationId == null
@@ -49,13 +51,25 @@ export function useConversationSnapshotCoordinator(
         : queryClient.getQueryData<ConversationMessagesTreeData>(conversationQueryKeys.messages(conversationId))
     )
     setAcceptedConversationId(null)
+    setIsFetching(false)
     setIsFetched(false)
     setError(null)
+    return () => { refreshRevisionRef.current += 1 }
   }, [conversationId, queryClient])
 
   const refresh = useCallback(async (): Promise<ConversationMessagesTreeData | undefined> => {
     if (conversationId == null) return undefined
     const requestedId = String(conversationId)
+    // A completed send/branch can retain a refresh callback from the prior route.
+    // It must not take loading ownership away from the newly mounted conversation.
+    if (mountedConversationRef.current !== requestedId ||
+        String(reduxStore.getState().chat.conversation.currentConversationId ?? '') !== requestedId) return undefined
+    const revision = ++refreshRevisionRef.current
+    // Conversation identity alone is insufficient: same-chat refreshes overlap,
+    // and an A -> B -> A visit must not revive a request from the earlier visit.
+    const ownsRefresh = () => refreshRevisionRef.current === revision &&
+      mountedConversationRef.current === requestedId &&
+      String(reduxStore.getState().chat.conversation.currentConversationId ?? '') === requestedId
     setIsFetching(true)
     setError(null)
     try {
@@ -67,7 +81,8 @@ export function useConversationSnapshotCoordinator(
         getState: reduxStore.getState,
         dispatch: action => dispatch(action),
       })
-      if (result.accepted && mountedConversationRef.current === requestedId) {
+      if (result.accepted && ownsRefresh()) {
+        setError(null)
         setData(result.data)
         setAcceptedConversationId(requestedId)
         setIsFetched(true)
@@ -75,13 +90,13 @@ export function useConversationSnapshotCoordinator(
       }
       return undefined
     } catch (cause) {
-      if (mountedConversationRef.current === requestedId && !(cause instanceof DOMException && cause.name === 'AbortError')) {
+      if (ownsRefresh() && !(cause instanceof DOMException && cause.name === 'AbortError')) {
         setError(cause instanceof Error ? cause : new Error(String(cause)))
         setIsFetched(true)
       }
       return undefined
     } finally {
-      if (mountedConversationRef.current === requestedId) setIsFetching(false)
+      if (ownsRefresh()) setIsFetching(false)
     }
   }, [accessToken, conversationId, dispatch, queryClient, reduxStore, storageMode])
 
@@ -100,13 +115,17 @@ export function useConversationSnapshotCoordinator(
     if (previous && !activeStreamKey) void refresh()
   }, [activeStreamKey, refresh])
 
-  const ownsCurrentConversation = acceptedConversationId === (conversationId == null ? null : String(conversationId))
+  const routeConversationId = conversationId == null ? null : String(conversationId)
+  const ownsCurrentConversation = acceptedConversationId === routeConversationId
+  // Effects reset state after render. Never expose A's failure to Chat's selection
+  // effect on the first B render, before those resets have committed.
+  const ownsMountedConversation = mountedConversationRef.current === routeConversationId
   return {
     data: ownsCurrentConversation ? data : undefined,
     acceptedConversationId: ownsCurrentConversation ? acceptedConversationId : null,
     isFetched: ownsCurrentConversation && isFetched,
-    isFetching,
-    error,
+    isFetching: ownsMountedConversation && isFetching,
+    error: ownsMountedConversation ? error : null,
     refresh,
   }
 }

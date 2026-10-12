@@ -155,6 +155,14 @@ export async function coordinateConversationSnapshot({
       if (lease.messageIds.every(id => fetchedIds.has(id))) terminalLeases.delete(leaseKey(normalizedId, lease.streamId))
     }
     return { accepted: true, generation, data }
+  } catch (cause) {
+    // Transport wrappers may turn AbortError into an ordinary Error. Supersession
+    // is still cancellation, not a failure of the replacement snapshot/selection.
+    if (controller.signal.aborted || requestGenerations.get(normalizedId) !== generation ||
+        String(getState().chat.conversation.currentConversationId ?? '') !== normalizedId) {
+      return { accepted: false, generation }
+    }
+    throw cause
   } finally {
     if (requestControllers.get(normalizedId) === controller) requestControllers.delete(normalizedId)
   }
