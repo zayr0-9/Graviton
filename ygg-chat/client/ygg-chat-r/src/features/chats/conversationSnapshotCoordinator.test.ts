@@ -65,6 +65,41 @@ describe('coordinateConversationSnapshot', () => {
     expect(queryClient.getQueryData<any>(conversationQueryKeys.messages('c1')).messages[0].id).toBe('new')
   })
 
+  it('treats a wrapped abort as supersession rather than a snapshot failure', async () => {
+    const queryClient = new QueryClient()
+    const currentState = state('c1', [])
+    const dispatch = vi.fn()
+    const first = coordinateConversationSnapshot({
+      conversationId: 'c1', queryClient, getState: () => currentState, dispatch,
+      fetchSnapshot: (_id, options) => new Promise((_resolve, reject) => {
+        options?.signal?.addEventListener('abort', () => {
+          reject(new Error('Local API error (messages/tree): signal is aborted without reason'))
+        }, { once: true })
+      }),
+    })
+    let resolveSecond!: (value: any) => void
+    const second = coordinateConversationSnapshot({
+      conversationId: 'c1', queryClient, getState: () => currentState, dispatch,
+      fetchSnapshot: () => new Promise(resolve => { resolveSecond = resolve }),
+    })
+
+    await expect(first).resolves.toMatchObject({ accepted: false })
+    expect(dispatch).not.toHaveBeenCalled()
+    expect(queryClient.getQueryData(conversationQueryKeys.messages('c1'))).toBeUndefined()
+    resolveSecond({ messages: [], tree: null })
+    await expect(second).resolves.toMatchObject({ accepted: true, data: { messages: [] } })
+    expect(dispatch).toHaveBeenCalledTimes(1)
+  })
+
+  it('still rejects a genuine failure of the current snapshot', async () => {
+    const queryClient = new QueryClient()
+    const failure = new Error('Database unavailable')
+    await expect(coordinateConversationSnapshot({
+      conversationId: 'c1', queryClient, getState: () => state('c1', []), dispatch: vi.fn(),
+      fetchSnapshot: async () => { throw failure },
+    })).rejects.toBe(failure)
+  })
+
   it('rejects a response after the route conversation changes', async () => {
     const queryClient = new QueryClient()
     let currentState = state('c1', [])

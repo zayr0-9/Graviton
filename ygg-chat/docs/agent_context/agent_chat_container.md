@@ -350,6 +350,8 @@ Focused validation: `npm run test:renderer -- src/components/FastModeAnimation/F
 
 Chat remains the sole snapshot owner and supplies accepted snapshot readiness/refresh. The controller establishes conversation identity before fetching, then commits resolved selection under request/conversation guards. Late responses cannot supersede a newer request. Selection state is renderer-session only; background generation, retained previews and parallel-pane local navigation remain separate.
 
+Snapshot cancellation is not a selection failure. The coordinator returns `accepted: false` for superseded/aborted requests even when the transport wraps `AbortError`. The hook also gates data, error, and loading updates by refresh revision and mounted conversation; an older request cannot clear a replacement's loading state, and a prior route's error must not reach the new route's first render. Preserve these guards on refresh, route switches, and unmount. Regression coverage lives in `src/hooks/useConversationSnapshotCoordinator.test.ts` and `src/features/chats/conversationSnapshotCoordinator.test.ts`.
+
 `selection.revision` identifies every explicit intent. `selection.fallbackRevision` changes when view ownership changes, allowing same-view refocus without losing a startup stream. Async sends capture their initiating revision and branch context. Do not restore independent UI path/focus dispatches; automatic stream advancement and deletion repair are separate, guarded operations.
 
 Validation: `chatSelection.test.ts`, `chatSelectionController.test.ts`, existing lineage/projection/snapshot tests, full renderer suite, renderer typecheck and Electron build. Manually check virtualized scrolling and live navigation in Electron.
