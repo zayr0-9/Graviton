@@ -141,12 +141,9 @@ const formatTokens = (value: number) => new Intl.NumberFormat('en', { notation: 
 
 export function formatRunStatisticsDetails(footer: RunStatisticsFooterData): string {
   const { requestTotal, requestCoverage } = footer.tokens
-  const usage = requestCoverage && requestCoverage !== 'unavailable'
+  return requestCoverage && requestCoverage !== 'unavailable'
     ? `Request usage: ${formatTokens(requestTotal ?? 0)} tokens cumulative${requestCoverage === 'partial' ? ' (partial)' : ''}`
     : 'Request usage unavailable'
-  return footer.modelThroughput
-    ? `${usage} · ChatGPT throughput: reported output tokens per second of provider request time, including latency and reasoning; excludes local tools, permission waits, hooks and compaction. Not backend decoding speed.`
-    : usage
 }
 
 export function formatRunStatistics(footer: RunStatisticsFooterData): string {

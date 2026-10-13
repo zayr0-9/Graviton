@@ -50,7 +50,7 @@ it('keeps throughput in the persistent summary rather than hover-only details', 
       requestDurationMs: 4000, requests: 2, measuredRequests: 2, coverage: 'complete' },
   }} />)
   expect(html).toContain('class="run-statistics-summary" aria-hidden="true">42s · 3 tool calls · Tokens unavailable · 100 tokens/s')
-  expect(html).toContain('including latency and reasoning')
-  expect(html).toContain('excludes local tools, permission waits, hooks and compaction')
+  expect(html).not.toContain('ChatGPT throughput:')
+  expect(html).not.toContain('Not backend decoding speed.')
   expect(html).not.toContain('run-statistics-track')
 })

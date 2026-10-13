@@ -118,7 +118,7 @@ describe('ChatGPT request throughput', () => {
   it('uses request time, not total run duration or estimated transcript tokens', () => {
     const stats = derive()
     expect(formatRunStatistics(stats)).toBe('42s · 12 tool calls · Tokens unavailable · 100 tokens/s')
-    expect(formatRunStatisticsDetails(stats)).toContain('reported output tokens per second of provider request time')
+    expect(formatRunStatisticsDetails(stats)).toBe('Request usage unavailable')
     expect(formatRunStatistics(derive({ ...metric, outputTokens: 123, requestDurationMs: 2000 }))).toContain('61.5 tokens/s')
     expect(formatRunStatistics(derive({ ...metric, outputTokens: 0 }))).toContain('0 tokens/s')
   })
