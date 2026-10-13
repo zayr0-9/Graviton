@@ -1,6 +1,6 @@
 import type { ChatState } from './chatTypes'
 import {
-  chatSelectionCancelled, chatSelectionCommitted, chatSelectionFailed, chatSelectionRequested,
+  chatSelectionCancelled, chatSelectionCommitted, chatSelectionFailed, chatSelectionRequested, chatSelectionResumed,
   isValidSelectionPath, resolveLocalChatSelection,
   type ChatSelectionTarget, type ResolvedChatSelection,
 } from './chatSelection'
@@ -11,7 +11,7 @@ export interface LineageSelectionDetail {
   head_message_id?: string | null
 }
 
-type SelectionAction = ReturnType<typeof chatSelectionRequested | typeof chatSelectionCommitted | typeof chatSelectionFailed | typeof chatSelectionCancelled>
+type SelectionAction = ReturnType<typeof chatSelectionRequested | typeof chatSelectionCommitted | typeof chatSelectionFailed | typeof chatSelectionResumed | typeof chatSelectionCancelled>
 
 export function createChatSelectionController(deps: {
   getState: () => ChatState
@@ -43,9 +43,13 @@ export function createChatSelectionController(deps: {
     const { selection, conversation } = deps.getState()
     const target = selection.target
     const requestId = selection.requestId
-    if (selection.status !== 'pending' || !target || !requestId || pending?.id === requestId) return
+    if ((selection.status !== 'pending' && selection.status !== 'error') || !target || !requestId || pending?.id === requestId) return
     if (String(target.conversationId) !== acceptedConversationId ||
+        String(conversation.currentConversationId) !== acceptedConversationId ||
         String(conversation.snapshotConversationId) !== acceptedConversationId) return
+    // A replacement snapshot can succeed after an earlier load failed. Resume the
+    // same intent, rather than inventing navigation or weakening submission guards.
+    if (selection.status === 'error') deps.dispatch(chatSelectionResumed({ requestId }))
     const abort = new AbortController()
     pending = { id: requestId, abort }
     const ownsRequest = () => {
@@ -94,14 +98,19 @@ export function createChatSelectionController(deps: {
         scrollMode: result.focus != null ? 'focus' : 'latest',
       }))
     } finally {
-      if (pending?.id === requestId) pending = null
+      if (pending?.abort === abort) pending = null
     }
   }
-  const snapshotFailed = (conversationId: string) => {
-    const { selection } = deps.getState()
-    if (selection.status !== 'pending' || !selection.requestId || String(selection.target?.conversationId) !== conversationId) return
-    deps.dispatch(chatSelectionFailed({ requestId: selection.requestId,
-      error: 'This conversation could not be loaded. Retry when the connection is available.' }))
+  const snapshotFailed = (conversationId: string, requestId: string | null) => {
+    const { selection, conversation } = deps.getState()
+    if (selection.status !== 'pending' || !requestId || selection.requestId !== requestId ||
+        String(selection.target?.conversationId) !== conversationId || String(conversation.currentConversationId) !== conversationId) return
+    pending?.abort.abort()
+    pending = null
+    deps.dispatch(chatSelectionFailed({ requestId,
+      error: 'This conversation could not be loaded. Retry to load it again.' }))
   }
-  return { request, cancel, resolve, snapshotFailed }
+  // Teardown must abort owned work without cancelling another provider's selection.
+  const dispose = () => { pending?.abort.abort(); pending = null }
+  return { request, cancel, resolve, snapshotFailed, dispose }
 }

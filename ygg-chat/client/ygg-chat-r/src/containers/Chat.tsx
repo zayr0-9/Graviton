@@ -3530,6 +3530,7 @@ function Chat() {
     isFetched: isConversationDataFetched,
     acceptedConversationId,
     error: snapshotError,
+    isCurrentError: isCurrentSnapshotError,
     isFetching: isSnapshotFetching,
     refresh: refreshConversationSnapshot,
   } = useConversationSnapshotCoordinator(conversationIdFromUrl, conversationStorageMode)
@@ -4741,13 +4742,13 @@ function Chat() {
   // Route and in-place navigation share one resolution pipeline. Snapshot loading remains
   // owned by this Chat instance; selection never installs a second copy of fetched rows.
   useEffect(() => {
-    if (snapshotError && !isSnapshotFetching && !acceptedConversationId && conversationIdFromUrl) {
-      chatSelection.snapshotFailed(String(conversationIdFromUrl))
+    if (snapshotError && isCurrentSnapshotError() && !isSnapshotFetching && !acceptedConversationId && conversationIdFromUrl) {
+      chatSelection.snapshotFailed(String(conversationIdFromUrl), selection.requestId)
     } else {
       void chatSelection.resolve(acceptedConversationId, refreshConversationSnapshot)
     }
   }, [chatSelection, acceptedConversationId, refreshConversationSnapshot, selection.requestId, conversationMessages,
-    snapshotError, isSnapshotFetching, conversationIdFromUrl])
+    snapshotError, isCurrentSnapshotError, isSnapshotFetching, conversationIdFromUrl])
 
   // Clear selectedFilesForChat on route change
   useEffect(() => {
@@ -5625,7 +5626,7 @@ function Chat() {
 
   const submitMessageAsBranch = useCallback(
     (id: string, newContent: string, _newContentBlocks?: any) => {
-      if (!currentConversationId || selection.status === 'pending' || selection.status === 'error') return
+      if (!currentConversationId || selection.status === 'pending' || selection.status === 'error') return false
 
       // Replace any @file mentions with actual file contents before branching.
       const processed = replaceFileMentionsWithPath(newContent)
@@ -5639,7 +5640,7 @@ function Chat() {
 
       if (!originalMessage) {
         console.error('Message not found for branch/edit:', id)
-        return
+        return false
       }
 
       // Keep artifacts so pasted images do not flicker away during branch send.
@@ -5704,6 +5705,7 @@ function Chat() {
             streamId,
           })
         })
+      return true
     },
     [
       selection.revision,
@@ -5758,14 +5760,14 @@ function Chat() {
 
   const handleMessageBranch = useCallback(
     (id: string, newContent: string, newContentBlocks?: any) => {
-      submitMessageAsBranch(id, newContent, newContentBlocks)
+      return submitMessageAsBranch(id, newContent, newContentBlocks)
     },
     [submitMessageAsBranch]
   )
 
   const handleExplainFromSelection = useCallback(
     (id: string, newContent: string) => {
-      if (!currentConversationId || selection.status === 'pending' || selection.status === 'error') return
+      if (!currentConversationId || selection.status === 'pending' || selection.status === 'error') return false
 
       // Explain selection should always create a new user child under the selected message,
       // even when that message already has children.
@@ -5780,7 +5782,7 @@ function Chat() {
 
       if (!originalMessage) {
         console.error('Message not found:', id)
-        return
+        return false
       }
 
       const optimisticUserMessage: Message = {
@@ -5840,6 +5842,7 @@ function Chat() {
             streamId,
           })
         })
+      return true
     },
     [
       selection.revision,
@@ -7025,6 +7028,7 @@ function Chat() {
                               onAddToNote={handleAddToNote}
                               onAddToChat={handleAddToChat}
                               onExplainFromSelection={handleExplainFromSelection}
+                              branchSubmissionDisabled={selection.status === 'pending' || selection.status === 'error'}
                               onOpenToolHtmlModal={openToolHtmlModal}
                               onOpenSubagentTranscript={openSubagentTranscript}
                               onChatErrorAction={handlePersistedChatErrorAction}
@@ -7122,12 +7126,10 @@ function Chat() {
               <div role='status' className='px-3 py-1 text-xs opacity-70'>
                 {selection.error}{' '}
                 <button type='button' className='underline' disabled={isSnapshotFetching} onClick={() => {
-                  const revision = selection.revision
-                  void refreshConversationSnapshot().then(data => {
-                    if (data && selectionRevisionRef.current === revision && selection.target) {
-                      chatSelection.select(selection.target, { inPlace: true, source: 'retry' })
-                    }
-                  })
+                  // Retry is a new intent before any I/O. The snapshot owner reloads
+                  // failed selections; accepted snapshots resolve missing targets through
+                  // the controller. No superseded refresh promise can strand this retry.
+                  if (selection.target) chatSelection.select(selection.target, { inPlace: true, source: 'retry' })
                 }}>Retry</button>
               </div>
             )}

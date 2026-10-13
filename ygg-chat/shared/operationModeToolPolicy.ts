@@ -104,21 +104,13 @@ export function filterToolsForOperationMode<T extends OperationModeToolPolicyDef
   return tools.filter(tool => !tool.isMcp && !tool.name.startsWith('mcp__'))
 }
 
-function isMcpInvoke(toolCall: any): boolean {
-  if (toolCall?.name !== 'mcp_manager') return false
-  try {
-    const args = typeof toolCall.arguments === 'string' ? JSON.parse(toolCall.arguments) : toolCall.arguments
-    return args?.action === 'invoke'
-  } catch { return false }
-}
-
 export function requiresAgentMode(toolCall: any, operationMode: OperationMode): boolean {
   if (operationMode !== 'plan') return false
   const toolName = typeof toolCall?.name === 'string' ? toolCall.name : ''
   // Custom and MCP definitions do not retain their registry flags on a provider
   // tool call. Anything outside the Plan-mode allow list therefore needs an
   // explicit Agent-mode upgrade before it can execute.
-  return isMcpInvoke(toolCall) || isReplExport(toolCall) || (Boolean(toolName) && !CHAT_MODE_ALLOWED_TOOL_NAMES.has(toolName))
+  return isReplExport(toolCall) || (Boolean(toolName) && !CHAT_MODE_ALLOWED_TOOL_NAMES.has(toolName))
 }
 
 export function assertToolAllowedForOperationMode(toolCall: any, operationMode: OperationMode): void {
@@ -127,7 +119,7 @@ export function assertToolAllowedForOperationMode(toolCall: any, operationMode: 
   const toolName = typeof toolCall?.name === 'string' ? toolCall.name : ''
   if (!toolName) return
 
-  if (CHAT_MODE_BLOCKED_TOOL_NAMES.has(toolName) || toolName.startsWith('mcp__') || isMcpInvoke(toolCall) || isReplExport(toolCall)) {
+  if (CHAT_MODE_BLOCKED_TOOL_NAMES.has(toolName) || toolName.startsWith('mcp__') || isReplExport(toolCall)) {
     throw new Error(
       `Tool "${toolName}" is not available in Chat Mode. Switch to Agent Mode to run tools that can modify files, system state, or app state.`
     )

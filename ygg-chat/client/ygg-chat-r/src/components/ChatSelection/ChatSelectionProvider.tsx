@@ -15,7 +15,7 @@ interface SelectionOptions extends NavigateOptions {
 interface SelectionContextValue {
   select: (target: ChatSelectionTarget, options?: SelectionOptions) => void
   navigate: (to: To | number, options?: NavigateOptions) => void
-  snapshotFailed: (conversationId: string) => void
+  snapshotFailed: (conversationId: string, requestId: string | null) => void
   resolve: (acceptedConversationId: string | null, refresh: () => Promise<unknown>) => Promise<void>
 }
 const SelectionContext = createContext<SelectionContextValue | null>(null)
@@ -33,6 +33,7 @@ export function ChatSelectionProvider({ children }: { children: ReactNode }) {
       { signal }
     ),
   }), [store])
+  useLayoutEffect(() => () => controller.dispose(), [controller])
   const routeGate = useMemo(createChatRouteGate, [])
   const previousUserRef = useRef(userId)
 

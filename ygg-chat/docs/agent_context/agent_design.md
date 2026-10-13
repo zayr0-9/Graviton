@@ -36,6 +36,14 @@ The current preferred direction is minimalist glass that is also theme-aware: ro
 - Prefer borrowing existing semantic theme tokens over adding new ones. If a component resembles an existing surface, reuse tokens such as `settingsPaneBodyBg`, `settingsCustomThemesCardBg`, `settingsCustomThemesInnerCardBg`, `conversationToolbarBg`, `authModalBackdrop`, `toolJobsPrimaryText`, `toolJobsMutedText`, `settingsCustomThemesButtonBg`, `composerToggleActiveBg`, and related text/border tokens.
 - Add new theme tokens only when no existing semantic token fits. When adding tokens, update both frontend and Electron theme schemas in lockstep, plus the ThemeManager editor controls.
 
+### Typography and Copy
+
+- Use normal letter spacing. Do not add `tracking-*` utilities or custom `letter-spacing`, including negative tracking on headings.
+- Use sentence case for headings, labels, badges, and table headers. Do not use `uppercase`, `text-transform: uppercase`, or programmatic uppercasing as decoration. Preserve genuine acronyms, market symbols, and initials.
+- Do not add page descriptions or redundant introductory subtitles by default. Add explanatory copy only when a complicated feature needs it; do not use marketing filler to occupy space.
+- Keep useful instructions, contextual metadata, option descriptions that clarify a choice, and safety/demo disclosures.
+- Treat these rules as the current direction even when older source examples contain tracking, decorative all-caps labels, or unnecessary descriptions.
+
 ### Controls and Buttons
 
 - Prefer fully circular controls for compact icon actions: `h-11 w-11 rounded-full`.

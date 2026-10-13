@@ -33,6 +33,7 @@ export interface MessageActionsProps {
   onSave?: () => void
   onCancel?: () => void
   onSaveBranch?: () => void
+  saveDisabled?: boolean
   onMore?: () => void
   onUndoEdits?: () => void
   undoLabel?: string
@@ -85,6 +86,7 @@ export const MessageActions: React.FC<MessageActionsProps> = ({
   onSave,
   onCancel,
   onSaveBranch,
+  saveDisabled = false,
   onMore,
   onUndoEdits,
   undoLabel,
@@ -193,6 +195,7 @@ export const MessageActions: React.FC<MessageActionsProps> = ({
         <>
           {renderAction({
             key: 'save',
+            disabled: saveDisabled,
             onClick: editMode === 'branch' ? onSaveBranch : onSave,
             title: editMode === 'branch' ? 'Create branch' : 'Save changes',
             label: editMode === 'branch' ? 'Create branch' : 'Save',

@@ -30,7 +30,7 @@ import {
   UserSystemPrompt,
 } from './chatTypes'
 import { createEmptyStreamState, DEFAULT_STREAM_ID } from './streamHelpers'
-import { chatSelectionRequested, chatSelectionCommitted, chatSelectionFailed, chatSelectionCancelled, chatSelectionScrollHandled, initialChatSelection } from './chatSelection'
+import { chatSelectionRequested, chatSelectionCommitted, chatSelectionFailed, chatSelectionResumed, chatSelectionCancelled, chatSelectionScrollHandled, initialChatSelection } from './chatSelection'
 import { buildPathToConversationMessage } from './conversationTree'
 import toolDefinitions, { ToolDefinition } from './toolDefinitions'
 
@@ -1832,6 +1832,11 @@ export const chatSlice = createSlice({
         if (state.selection.requestId !== payload.requestId || state.selection.status !== 'pending') return
         state.selection.status = 'error'
         state.selection.error = payload.error
+      })
+      .addCase(chatSelectionResumed, (state, { payload }) => {
+        if (state.selection.requestId !== payload.requestId || state.selection.status !== 'error') return
+        state.selection.status = 'pending'
+        state.selection.error = null
       })
       .addCase(chatSelectionCancelled, state => {
         const revision = (state.selection?.revision ?? 0) + 1

@@ -65,3 +65,15 @@ describe('Add to chat selection action', () => {
     expect(renderActions({ layout: 'menu', onAddToChatSelection: noop })).not.toContain('Add to chat')
   })
 })
+
+
+describe('blocked branch admission', () => {
+  it.each(['pill', 'menu'] as const)('disables save but preserves cancel in %s', layout => {
+    const html = renderActions({ layout, isEditing: true, editMode: 'branch', onSaveBranch: noop, onCancel: noop, saveDisabled: true })
+    const buttons: string[] = html.match(/<button\b[^>]*>/g) ?? []
+    expect(buttons.find(button => button.includes('aria-label="Create branch"'))).toContain('disabled=""')
+    expect(buttons.find(button => button.includes('aria-label="Cancel editing"'))).not.toContain('disabled=""')
+    const ready = renderActions({ layout, isEditing: true, editMode: 'branch', onSaveBranch: noop, saveDisabled: false })
+    expect(ready).not.toContain('disabled=""')
+  })
+})

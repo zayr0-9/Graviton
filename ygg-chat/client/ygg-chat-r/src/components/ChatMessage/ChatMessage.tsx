@@ -44,6 +44,7 @@ import {
 import { ContextInjectionCard, type ContextInjectionCardEntry } from './ContextInjectionCard'
 import { HookActivityCard } from './HookActivityCard'
 import { MessageActions } from './MessageActions'
+import { submitMessageDraft } from './messageSubmission'
 import { DisclosurePanel, DisclosureRow } from './messagePrimitives'
 import { SummarisedMessage } from './SummarisedMessage'
 import { CompactMessageNotice } from './CompactMessageNotice'
@@ -108,13 +109,14 @@ interface ChatMessageProps {
   hookRuns?: HookRunRecord[]
   timestamp?: string | Date
   onEdit?: (id: string, newContent: string, newContentBlocks?: ContentBlock[]) => void
-  onBranch?: (id: string, newContent: string, newContentBlocks?: ContentBlock[]) => void
+  onBranch?: (id: string, newContent: string, newContentBlocks?: ContentBlock[]) => boolean
+  branchSubmissionDisabled?: boolean
   onDelete?: (id: string) => void
   onCopy?: (content: string) => void
   onResend?: (id: string) => void
   onAddToNote?: (text: string) => void
   onAddToChat?: (text: string) => void
-  onExplainFromSelection?: (id: string, newContent: string) => void
+  onExplainFromSelection?: (id: string, newContent: string) => boolean
   onOpenToolHtmlModal?: (key?: string) => void
   onOpenSubagentTranscript?: (toolCallId: string) => void
   isEditing?: boolean
@@ -431,6 +433,7 @@ const ChatMessageBody: React.FC<ChatMessageProps> = React.memo(
     onAddToNote,
     onAddToChat,
     onExplainFromSelection,
+    branchSubmissionDisabled = false,
     onOpenToolHtmlModal,
     onOpenSubagentTranscript,
     isEditing = false,
@@ -639,10 +642,10 @@ const ChatMessageBody: React.FC<ChatMessageProps> = React.memo(
     }
 
     const branchSubmissionPending = useRef(false)
-    const latestBranchEdit = useRef({ editContent, onBranch })
-    latestBranchEdit.current = { editContent, onBranch }
+    const latestBranchEdit = useRef({ editContent, onBranch, branchSubmissionDisabled })
+    latestBranchEdit.current = { editContent, onBranch, branchSubmissionDisabled }
     const handleSaveBranch = async () => {
-      if (branchSubmissionPending.current) return
+      if (branchSubmissionPending.current || branchSubmissionDisabled) return
       branchSubmissionPending.current = true
       try {
         await dispatch(waitForImagePreparation({ kind: 'branch', messageId: id }))
@@ -652,15 +655,18 @@ const ChatMessageBody: React.FC<ChatMessageProps> = React.memo(
       } finally {
         branchSubmissionPending.current = false
       }
-      if (latestBranchEdit.current.onBranch) {
-        const trimmedContent = latestBranchEdit.current.editContent.trim()
-        const newContentBlocks = hasEditableBlocks ? editableTextToContentBlocks(trimmedContent) : undefined
-        latestBranchEdit.current.onBranch(id, appendAttachedImagePathMetadata(trimmedContent, extractAttachedImagePaths(content)), newContentBlocks)
-      }
-      dispatch(chatSliceActions.editingBranchSet(false))
-      // The submission thunk consumes the captured drafts; never clear them before it snapshots.
-      setEditingState(false)
-      onEditingStateChange?.(id, false, 'branch')
+      const latest = latestBranchEdit.current
+      const trimmedContent = latest.editContent.trim()
+      const newContentBlocks = hasEditableBlocks ? editableTextToContentBlocks(trimmedContent) : undefined
+      const submitBranch = latest.onBranch
+      submitMessageDraft(latest.branchSubmissionDisabled,
+        submitBranch && (() => submitBranch(id, appendAttachedImagePathMetadata(trimmedContent, extractAttachedImagePaths(content)), newContentBlocks)),
+        () => {
+          dispatch(chatSliceActions.editingBranchSet(false))
+          // Only an admitted submission consumes the captured drafts and closes the editor.
+          setEditingState(false)
+          onEditingStateChange?.(id, false, 'branch')
+        })
     }
 
     const handleCancel = () => {
@@ -779,11 +785,12 @@ const ChatMessageBody: React.FC<ChatMessageProps> = React.memo(
     const handleSendExplainInput = () => {
       if (onExplainFromSelection && selectedText && explainInputValue.trim()) {
         const branchContent = `${explainInputValue.trim()}\n\nSelected text:\n\`\`\`\n${selectedText}\n\`\`\``
-        onExplainFromSelection(id, branchContent)
-        setShowExplainInput(false)
-        setExplainInputFixedPosition(null)
-        setExplainInputValue('')
-        setSelectedText('')
+        submitMessageDraft(branchSubmissionDisabled, () => onExplainFromSelection(id, branchContent), () => {
+          setShowExplainInput(false)
+          setExplainInputFixedPosition(null)
+          setExplainInputValue('')
+          setSelectedText('')
+        })
       }
     }
 
@@ -1915,6 +1922,7 @@ const ChatMessageBody: React.FC<ChatMessageProps> = React.memo(
                   onCopy={handleCopy}
                   onSave={handleSave}
                   onSaveBranch={handleSaveBranch}
+                  saveDisabled={editMode === 'branch' && branchSubmissionDisabled}
                   onCancel={handleCancel}
                   onMore={handleMoreClick}
                   onUndoEdits={isUserRow && undoState?.available ? onUndoStreamEdits : undefined}
@@ -2073,6 +2081,7 @@ const ChatMessageBody: React.FC<ChatMessageProps> = React.memo(
                       }
                     : undefined
                 }
+                saveDisabled={editMode === 'branch' && branchSubmissionDisabled}
                 onSaveBranch={
                   !hasSelection
                     ? () => {
@@ -2169,7 +2178,8 @@ const ChatMessageBody: React.FC<ChatMessageProps> = React.memo(
                 <button
                   type='button'
                   onClick={handleSendExplainInput}
-                  disabled={!explainInputValue.trim()}
+                  disabled={branchSubmissionDisabled || !explainInputValue.trim()}
+                  aria-description={branchSubmissionDisabled ? 'Load the conversation before sending.' : undefined}
                   title='Send'
                   aria-label='Send'
                   className={`${EXPLAIN_BUTTON_CLASS} hover:bg-emerald-500/12 hover:text-emerald-600 dark:hover:text-emerald-300`}
