@@ -15,7 +15,8 @@ describe('RunStatisticsFooter', () => {
     expect(html).toContain('aria-label="Run statistics"')
     expect(html).toContain('Stopped · 42s · 3 tool calls · Tokens unavailable')
     expect(html).not.toContain('prose')
-    expect(html).toContain('run-statistics-track')
+    expect(html).toContain('run-statistics-summary')
+    expect(html).toContain('run-statistics-details')
     expect(html).toContain('tabindex="0"')
     expect(html).toContain('Slice tokens estimate transcript content once, excluding replayed history.')
   })
@@ -41,4 +42,15 @@ it('reveals cumulative request usage without a per-role token breakdown', () => 
   expect(html).not.toContain('30 assistant/reasoning')
   expect(html).not.toContain('70 tools')
   expect(html).toContain('Request usage: 100K tokens cumulative')
+})
+
+it('keeps throughput in the persistent summary rather than hover-only details', () => {
+  const html = renderToStaticMarkup(<RunStatisticsFooter statistics={{ ...statistics, status: 'completed',
+    modelThroughput: { version: 1, provider: 'openaichatgpt', basis: 'provider_request', outputTokens: 400,
+      requestDurationMs: 4000, requests: 2, measuredRequests: 2, coverage: 'complete' },
+  }} />)
+  expect(html).toContain('class="run-statistics-summary" aria-hidden="true">42s · 3 tool calls · Tokens unavailable · 100 tokens/s')
+  expect(html).toContain('including latency and reasoning')
+  expect(html).toContain('excludes local tools, permission waits, hooks and compaction')
+  expect(html).not.toContain('run-statistics-track')
 })

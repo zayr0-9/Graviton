@@ -1,6 +1,7 @@
 import type Database from 'better-sqlite3'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { MessageRepo } from '../../persistence/messageRepo.js'
+import { createModelThroughput, recordModelRequest, readModelThroughput } from '../../../../../../shared/runStatistics.js'
 import type { MessageSink } from '../messageSink.js'
 import { ProviderRouter } from '../providerRouter.js'
 import { ProviderEmptyResponseError, ToolLoopService } from '../toolLoopService.js'
@@ -1430,5 +1431,88 @@ describe('ToolLoopService REPL artifacts', () => {
       for (const output of [providerRouter.calls, sink.persisted, events, compactionInputs]) expect(JSON.stringify(output)).not.toContain('PRIVATE_ARTIFACT_SENTINEL')
       expect(JSON.stringify(sink.persisted)).toContain('exported')
     } finally { sessions.clear() }
+  })
+})
+
+describe('ChatGPT model request measurements', () => {
+  afterEach(() => { vi.restoreAllMocks(); vi.useRealTimers() })
+
+  it('weights multiple requests and excludes tool/permission wait time', async () => {
+    let now = 0
+    vi.spyOn(performance, 'now').mockImplementation(() => now)
+    let call = 0
+    const router = { generate: async () => {
+      call += 1
+      now += call === 1 ? 1000 : 3000
+      return call === 1
+        ? { content: '', toolCalls: [{ id: 't', name: 'read_file', arguments: {} }], raw: { usage: { output_tokens: 100 } } }
+        : { content: 'done', raw: { usage: { output_tokens: 300, output_tokens_details: { reasoning_tokens: 200 } } } }
+    } }
+    const total = createModelThroughput()
+    const service = new ToolLoopService({ sink: new FakeSink(), providerRouter: router as any,
+      executeTool: async () => { now += 60000; return { success: true } } })
+    await service.run({ ...baseRunInput, provider: 'OpenAI (ChatGPT)', autoCompactionEnabled: false,
+      onModelRequest: measurement => recordModelRequest(total, measurement) }, () => {})
+    expect(total).toMatchObject({ outputTokens: 400, requestDurationMs: 4000, requests: 2, measuredRequests: 2, coverage: 'complete' })
+    expect(readModelThroughput(total)).toBe(total)
+    expect(total.outputTokens * 1000 / total.requestDurationMs).toBe(100)
+  })
+
+  it.each([undefined, -1, NaN, Infinity, '100'])('marks missing/invalid raw output usage partial: %s', async outputTokens => {
+    vi.spyOn(performance, 'now').mockReturnValueOnce(0).mockReturnValue(1000)
+    const total = createModelThroughput()
+    const router = new FakeProviderRouter()
+    router.enqueue({ content: 'done', contextUsage: { outputTokens: 0 }, raw: { usage: { output_tokens: outputTokens } } })
+    await new ToolLoopService({ sink: new FakeSink(), providerRouter: router as any }).run({ ...baseRunInput,
+      onModelRequest: measurement => recordModelRequest(total, measurement) }, () => {})
+    expect(total).toMatchObject({ requests: 1, measuredRequests: 0, coverage: 'partial' })
+    expect(readModelThroughput(total)).toBeUndefined()
+  })
+
+  it('records explicitly reported zero and leaves other providers alone', async () => {
+    vi.spyOn(performance, 'now').mockReturnValueOnce(0).mockReturnValue(1000)
+    const onModelRequest = vi.fn()
+    const router = new FakeProviderRouter()
+    router.enqueue({ content: 'done', raw: { usage: { output_tokens: 0 } } })
+    router.enqueue({ content: 'done', raw: { usage: { output_tokens: 100 } } })
+    const service = new ToolLoopService({ sink: new FakeSink(), providerRouter: router as any })
+    await service.run({ ...baseRunInput, onModelRequest }, () => {})
+    expect(onModelRequest).toHaveBeenCalledTimes(1)
+    expect(onModelRequest).toHaveBeenCalledWith({ durationMs: 1000, outputTokens: 0 })
+    await service.run({ ...baseRunInput, provider: 'openrouter', onModelRequest }, () => {})
+    expect(onModelRequest).toHaveBeenCalledTimes(1)
+  })
+
+  it('records a timed-out request once and ignores its late successful result', async () => {
+    vi.useFakeTimers()
+    let resolveLate!: (output: any) => void
+    const router = { generate: () => new Promise<any>(resolve => { resolveLate = resolve }) }
+    const onModelRequest = vi.fn()
+    const service = new ToolLoopService({ sink: new FakeSink(), providerRouter: router as any, providerTurnTimeoutMs: 5000 })
+    const result = service.run({ ...baseRunInput, onModelRequest }, () => {}).catch(error => error)
+    await vi.advanceTimersByTimeAsync(5001)
+    expect(await result).toBeInstanceOf(Error)
+    expect(onModelRequest).toHaveBeenCalledTimes(1)
+    expect(onModelRequest.mock.calls[0][0].outputTokens).toBeNull()
+    resolveLate({ content: 'late', raw: { usage: { output_tokens: 100 } } })
+    await vi.advanceTimersByTimeAsync(1)
+    expect(onModelRequest).toHaveBeenCalledTimes(1)
+  })
+
+  it('keeps failed retry attempts incomplete instead of overstating throughput', async () => {
+    let now = 0
+    vi.spyOn(performance, 'now').mockImplementation(() => now)
+    let calls = 0
+    const router = { generate: async () => {
+      now += 1000
+      if (++calls === 1) throw new Error('fetch failed')
+      return { content: 'done', raw: { usage: { output_tokens: 100 } } }
+    } }
+    const total = createModelThroughput()
+    await new ToolLoopService({ sink: new FakeSink(), providerRouter: router as any }).run({ ...baseRunInput,
+      robustness: { retryProviderError: true, maxProviderRetries: 1, providerRetryBackoffMs: 0 },
+      onModelRequest: measurement => recordModelRequest(total, measurement) }, () => {})
+    expect(total).toMatchObject({ requests: 2, measuredRequests: 1, coverage: 'partial' })
+    expect(readModelThroughput(total)).toBeUndefined()
   })
 })

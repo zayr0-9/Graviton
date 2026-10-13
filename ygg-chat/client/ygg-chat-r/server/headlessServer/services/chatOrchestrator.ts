@@ -1,5 +1,6 @@
 import { v4 as uuidv4 } from 'uuid'
 import type { HeadlessMessageRequest, HeadlessStreamEvent } from '../../../../../shared/headlessApi.js'
+import { createModelThroughput, recordModelRequest } from '../../../../../shared/runStatistics.js'
 import { buildChatErrorEnvelope, type ChatErrorEnvelope } from '../../../../../shared/chatErrors.js'
 import { ConversationRepo } from '../persistence/conversationRepo.js'
 import { MessageRepo } from '../persistence/messageRepo.js'
@@ -871,6 +872,7 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
     /** Last assistant row the LOOP persisted: the D1 partial the error row hangs off. */
     let lastPersistedAssistantId: string | null = null
     const runResponseIds = new Set<string>()
+    const modelThroughput = createModelThroughput()
     let runUsageIncomplete = false
     /** The run's message sink; null until the user message + lineage exist. */
     let runSink: MessageSink | null = null
@@ -1497,6 +1499,7 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
       toolLoopResult = await loop.run(
       {
         provider: request.provider,
+        onModelRequest: measurement => recordModelRequest(modelThroughput, measurement),
         operation: request.operation,
         modelName: request.modelName,
         conversationId: request.conversationId,
@@ -1659,7 +1662,8 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
     this.streamingRunRepo.finish(trackedStreamId, {
       status: 'completed',
       endReason: 'completed',
-      metadata: { runResponseCount: runResponseIds.size, runUsageIncomplete },
+      metadata: { runResponseCount: runResponseIds.size, runUsageIncomplete,
+        ...(modelThroughput.requests > 0 ? { modelThroughput } : {}) },
       assistantMessageId: toolLoopResult.finalAssistantMessage?.id ?? null,
       finalMessageId: modeParentId ?? toolLoopResult.finalAssistantMessage?.id ?? null,
     })

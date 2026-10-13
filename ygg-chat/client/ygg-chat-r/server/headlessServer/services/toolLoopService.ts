@@ -1,5 +1,6 @@
 import { getAuthManager } from '../../auth/runtime.js'
 import type { HeadlessStreamEvent } from '../../../../../shared/headlessApi.js'
+import type { ModelRequestMeasurement } from '../../../../../shared/runStatistics.js'
 import { MessageRepo } from '../persistence/messageRepo.js'
 import { ToolInvocationRepo } from '../persistence/toolInvocationRepo.js'
 import { TreeMessageSink, type MessageSink } from './messageSink.js'
@@ -178,6 +179,8 @@ export type HookContextPlacement = 'transcript' | 'system_prompt'
 
 export interface ToolLoopRunInput {
   provider: string
+  /** Main-run accounting only; excludes tools, hooks, and compaction calls. */
+  onModelRequest?: (measurement: ModelRequestMeasurement) => void
   operation?: 'send' | 'repeat' | 'branch' | 'edit-branch'
   modelName: string
   conversationId: string
@@ -968,10 +971,17 @@ export class ToolLoopService {
         toolCalls: [],
       }
       let output: ProviderGenerateOutput
+      let requestStartedAt: number | undefined
+      const recordRequest = (outputTokens: number | null) => {
+        if (providerRoute === 'openaichatgpt' && requestStartedAt != null) {
+          input.onModelRequest?.({ durationMs: performance.now() - requestStartedAt, outputTokens })
+        }
+      }
       try {
         output = await withIdleTimeoutAndAbort(
-          ({ signal: attemptSignal, touch, isActive }) =>
-            this.providerRouter.generate(input.provider, { ...providerInput, signal: attemptSignal }, event => {
+          ({ signal: attemptSignal, touch, isActive }) => {
+            requestStartedAt = performance.now()
+            return this.providerRouter.generate(input.provider, { ...providerInput, signal: attemptSignal }, event => {
               if (!isActive()) return
               touch()
 
@@ -1018,13 +1028,17 @@ export class ToolLoopService {
                 })
               }
               emit(event)
-            }),
+            })
+          },
           this.providerTurnIdleTimeoutMs,
           'The model provider',
           input.signal,
           () => streamedPartial
         )
+        const outputTokens = output.raw?.usage?.output_tokens
+        recordRequest(typeof outputTokens === 'number' && Number.isFinite(outputTokens) && outputTokens >= 0 ? outputTokens : null)
       } catch (caughtError) {
+        recordRequest(null)
         let error = caughtError
         // Some providers use AbortError for a remote/provider-side "aborted" frame.
         // Only the run's parent signal is authoritative for user cancellation; convert

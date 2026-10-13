@@ -260,7 +260,7 @@ export const PlanClarificationPanel: React.FC<PlanClarificationPanelProps> = ({ 
           onClick={handleSubmit}
           disabled={!canSubmit}
           className='rounded-full bg-blue-600 px-3.5 py-1.5 text-xs font-semibold text-white transition-all duration-200 hover:bg-blue-500 active:scale-95 disabled:cursor-not-allowed disabled:bg-neutral-300 disabled:text-neutral-500 dark:disabled:bg-neutral-800 dark:disabled:text-neutral-500'
-          style={canSubmit ? primaryButtonStyle : undefined}
+          style={canSubmit ? primaryButtonStyle : secondaryButtonStyle && { ...secondaryButtonStyle, opacity: 0.5 }}
         >
           Submit answers
         </button>

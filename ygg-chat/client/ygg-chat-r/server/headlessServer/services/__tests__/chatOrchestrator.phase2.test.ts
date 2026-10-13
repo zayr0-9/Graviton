@@ -1,5 +1,5 @@
 import type Database from 'better-sqlite3'
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
@@ -296,6 +296,44 @@ describe('source lineage membership validation', () => {
       db.close()
     }
     if (testDirectory) rmSync(testDirectory, { recursive: true, force: true })
+  })
+
+  it('persists request throughput before completion and isolates consecutive runs', async () => {
+    const runs = new Map<string, any>()
+    statements.getStreamingRunById = { get: (id: string) => runs.get(id) }
+    statements.upsertStreamingRun = { run: (...values: any[]) => {
+      runs.set(values[0], { status: values[7], metadata_json: values[18], started_at: values[19] })
+    } }
+    statements.updateStreamingRun = { run: (...values: any[]) => {
+      Object.assign(runs.get(values[10]), { status: values[0], metadata_json: values[6] })
+    } }
+    let now = 0
+    const clock = vi.spyOn(performance, 'now').mockImplementation(() => now)
+    const generate = vi.spyOn(providerRouter, 'generate').mockImplementation(async () => {
+      now += 2000
+      return { content: 'done', raw: { usage: { output_tokens: 100 } } }
+    })
+    try {
+      for (const streamId of ['throughput-1', 'throughput-2']) {
+        let completed = false
+        await orchestrator.runMessage({ operation: 'send', conversationId: 'c1', content: 'hello',
+          provider: 'openaichatgpt', modelName: 'test', streamId }, event => {
+          if (event.type !== 'complete') return
+          completed = true
+          const row = runs.get(streamId)
+          expect(row.status).toBe('completed')
+          const metadata = JSON.parse(row.metadata_json)
+          expect(metadata.runResponseCount).toBe(1)
+          expect(metadata.runStatistics.version).toBe(1)
+          expect(metadata.modelThroughput).toMatchObject({ outputTokens: 100, requestDurationMs: 2000,
+            requests: 1, measuredRequests: 1, coverage: 'complete' })
+        })
+        expect(completed).toBe(true)
+      }
+    } finally {
+      clock.mockRestore()
+      generate.mockRestore()
+    }
   })
 
   it.each(['send', 'branch', 'edit-branch'] as const)('persists the deferred Full access notice after new input for %s', async operation => {
