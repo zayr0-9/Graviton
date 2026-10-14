@@ -30,6 +30,7 @@ import { ChatErrorBubble } from '../ChatErrorBubble/ChatErrorBubble'
 import { useHtmlIframeRegistry } from '../HtmlIframeRegistry/HtmlIframeRegistry'
 import { ImageModal } from '../ImageModal/ImageModal'
 import { MarkdownLink, markdownUrlTransform } from '../MarkdownLink/MarkdownLink'
+import { MarkdownTable } from '../MarkdownContent/MarkdownTable'
 import { MermaidDiagram, getMermaidSource, isMermaidCodeBlock, prepareMermaidMarkdown } from '../MermaidDiagram'
 import { TextArea } from '../TextArea/TextArea'
 import {
@@ -317,7 +318,7 @@ const CodeRenderer: React.FC<any> = ({ inline, className, children, ...props }) 
 }
 
 // Stable components map so ReactMarkdown does not treat its renderers as changed each render.
-const MARKDOWN_COMPONENTS = { pre: PreRenderer, code: CodeRenderer, a: MarkdownLink }
+const MARKDOWN_COMPONENTS = { pre: PreRenderer, code: CodeRenderer, a: MarkdownLink, table: MarkdownTable }
 type MarkdownPlugins = NonNullable<React.ComponentProps<typeof ReactMarkdown>['rehypePlugins']>
 const MARKDOWN_REMARK_PLUGINS: MarkdownPlugins = [remarkGfm, remarkMath]
 const MARKDOWN_REHYPE_PLUGINS: MarkdownPlugins = [[rehypeHighlight, { detect: true }], rehypeKatex]

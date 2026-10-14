@@ -10,7 +10,8 @@ import type { SubagentRunRow } from '../../../../../shared/types'
 import { useSubagentByToolCall } from '../../hooks/useQueries'
 import { buildLocalApiUrl, environment } from '../../utils/api'
 import { Button } from '../Button/button'
-import { getThemeModeColor, useCustomChatTheme, useHtmlDarkMode } from '../ThemeManager/themeConfig'
+import { getMarkdownThemeVars, getThemeModeColor, useCustomChatTheme, useHtmlDarkMode } from '../ThemeManager/themeConfig'
+import { MarkdownTable } from '../MarkdownContent/MarkdownTable'
 import {
   REASONING_CHEVRON_BASE_CLASS,
   REASONING_TEXT_MARKDOWN_CLASS,
@@ -187,6 +188,18 @@ const CollapsibleBlock: React.FC<{
   )
 }
 
+const REASONING_MARKDOWN_COMPONENTS = { table: MarkdownTable }
+
+const TranscriptReasoning: React.FC<{ content: string }> = ({ content }) => {
+  const { theme, enabled } = useCustomChatTheme()
+  const isDarkMode = useHtmlDarkMode()
+  return (
+    <div className={REASONING_TEXT_MARKDOWN_CLASS} style={enabled ? getMarkdownThemeVars(theme, isDarkMode) : undefined}>
+      <ReactMarkdown remarkPlugins={[remarkGfm]} components={REASONING_MARKDOWN_COMPONENTS}>{content}</ReactMarkdown>
+    </div>
+  )
+}
+
 const TranscriptBlock: React.FC<{ block: any }> = ({ block }) => {
   if (block.type === 'text') {
     const textContent = block.content ?? block.text
@@ -241,9 +254,7 @@ const TranscriptBlock: React.FC<{ block: any }> = ({ block }) => {
         chevronBaseClass={REASONING_CHEVRON_BASE_CLASS}
         lineLabelClass='text-[0.8125em] leading-none text-neutral-800 dark:text-neutral-500'
         content={
-          <div className={REASONING_TEXT_MARKDOWN_CLASS}>
-            <ReactMarkdown remarkPlugins={[remarkGfm]}>{block.content}</ReactMarkdown>
-          </div>
+          <TranscriptReasoning content={block.content} />
         }
       />
     )

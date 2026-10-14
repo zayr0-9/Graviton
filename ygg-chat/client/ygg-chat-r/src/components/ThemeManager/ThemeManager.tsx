@@ -1026,6 +1026,20 @@ export const ThemeManager: React.FC = () => {
           </div>
 
           <div className='space-y-3'>
+            <h4 className='text-sm font-semibold text-stone-700 dark:text-stone-200'>Agents pill grid cards</h4>
+            <PairEditor
+              label='Streaming card background'
+              value={theme.colors.agentsGridStreamingCardBg}
+              onChange={(mode, value) => handleChatSurfaceChange('agentsGridStreamingCardBg', mode, value)}
+            />
+            <PairEditor
+              label='Non-streaming card background'
+              value={theme.colors.agentsGridIdleCardBg}
+              onChange={(mode, value) => handleChatSurfaceChange('agentsGridIdleCardBg', mode, value)}
+            />
+          </div>
+
+          <div className='space-y-3'>
             <h4 className='text-sm font-semibold text-stone-700 dark:text-stone-200'>Tool Jobs modal</h4>
             <PairEditor
               label='Modal backdrop'

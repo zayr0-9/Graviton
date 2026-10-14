@@ -1,6 +1,6 @@
 import { renderToStaticMarkup } from 'react-dom/server'
 import type { ReactNode } from 'react'
-import { describe, expect, it, vi } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { buildAgentForkGroups, type AgentStreamListItem } from '../../hooks/useRunningAgentStreams'
 import { AgentsMonitorGrid, getAgentGridCardHeight } from './AgentsMonitorGrid'
 import { createEmptyStreamState } from '../../features/chats/streamHelpers'
@@ -10,10 +10,22 @@ const capture = vi.hoisted(() => ({ byStreamId: {} as Record<string, AgentRunPre
 vi.mock('../../hooks/redux', () => ({ useAppSelector: (selector: (state: any) => unknown) => selector({ agentRunPreviews: capture }) }))
 vi.mock('../ChatMessage/ChatMessage', () => ({ ChatMessage: ({ contentBlocks }: any) => <p>{contentBlocks.filter((block: any) => block.type === 'text').map((block: any) => block.content).join(' ')}</p> }))
 
-vi.mock('../ThemeManager/themeConfig', () => ({
-  useCustomChatTheme: () => ({ enabled: false, theme: { colors: {} } }),
-  useHtmlDarkMode: () => false, getThemeModeColor: () => undefined,
-}))
+const themeState = vi.hoisted(() => ({ enabled: false, dark: false }))
+vi.mock('../ThemeManager/themeConfig', async importOriginal => {
+  const actual = await importOriginal<typeof import('../ThemeManager/themeConfig')>()
+  return {
+    ...actual,
+    useCustomChatTheme: () => ({ enabled: themeState.enabled, theme: {
+      ...actual.createDefaultCustomChatTheme(),
+      colors: {
+        ...actual.createDefaultCustomChatTheme().colors,
+        agentsGridStreamingCardBg: { light: '#aabbcc', dark: '#112233' },
+        agentsGridIdleCardBg: { light: '#ddeeff', dark: '#445566' },
+      },
+    } }),
+    useHtmlDarkMode: () => themeState.dark,
+  }
+})
 vi.mock('./AgentMessageTooltip', () => ({ AgentMessageTooltip: ({ children }: { children: ReactNode }) => <>{children}</> }))
 
 const run = (streamId: string, overrides: Partial<AgentStreamListItem> = {}): AgentStreamListItem => ({
@@ -39,6 +51,38 @@ const render = (active: AgentStreamListItem[], history: AgentStreamListItem[] = 
 }
 
 describe('fork grid', () => {
+  beforeEach(() => {
+    themeState.enabled = false
+    themeState.dark = false
+  })
+
+  it('distinguishes streaming and idle cards without a custom theme', () => {
+    const html = render([run('live')], [run('old', { lineageId: 'other-fork', status: 'completed' })])
+    expect(html).toContain('bg-emerald-500/[0.12] dark:bg-emerald-500/[0.16]')
+    expect(html).toContain('bg-black/[0.035] dark:bg-white/5')
+  })
+
+  it.each([false, true])('uses independent custom card backgrounds and updates after completion (dark=%s)', dark => {
+    themeState.enabled = true
+    themeState.dark = dark
+    const streamingColor = dark ? '#112233' : '#aabbcc'
+    const idleColor = dark ? '#445566' : '#ddeeff'
+    const live = run('live')
+    const html = render([live], [run('old', { lineageId: 'other-fork', status: 'completed', hasError: true })])
+    expect(html).toContain(`background-color:${streamingColor}`)
+    expect(html).toContain(`background-color:${idleColor}`)
+    const completed = render([], [{ ...live, status: 'completed' }])
+    expect(completed).toContain(`background-color:${idleColor}`)
+    expect(completed).not.toContain(`background-color:${streamingColor}`)
+  })
+
+  it('keeps the streaming background while any same-fork run is active', () => {
+    themeState.enabled = true
+    const html = render([run('live')], [run('old', { status: 'completed' })])
+    expect(html.match(/aria-label="Preview /g)).toHaveLength(1)
+    expect(html).toContain('background-color:#aabbcc')
+    expect(html).not.toContain('background-color:#ddeeff')
+  })
   it('shows one card for concurrent and historical runs on the same fork', () => {
     const html = render([run('a'), run('b')], [run('old', { status: 'completed' })])
     expect(html.match(/aria-label="Preview /g)).toHaveLength(1)

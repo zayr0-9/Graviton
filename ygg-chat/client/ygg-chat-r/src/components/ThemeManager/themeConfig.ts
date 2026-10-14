@@ -110,6 +110,8 @@ export interface CustomChatTheme {
     ideContextClearButtonBorder: ThemeColorPair
     ideContextClearButtonText: ThemeColorPair
     ideContextAddedText: ThemeColorPair
+    agentsGridStreamingCardBg: ThemeColorPair
+    agentsGridIdleCardBg: ThemeColorPair
     toolJobsModalBackdrop: ThemeColorPair
     toolJobsModalBg: ThemeColorPair
     toolJobsModalBorder: ThemeColorPair
@@ -586,6 +588,14 @@ export const createDefaultCustomChatTheme = (): CustomChatTheme => ({
     ideContextAddedText: {
       light: '#1d4ed8',
       dark: '#fdba74',
+    },
+    agentsGridStreamingCardBg: {
+      light: 'rgba(16, 185, 129, 0.12)',
+      dark: 'rgba(16, 185, 129, 0.16)',
+    },
+    agentsGridIdleCardBg: {
+      light: 'rgba(0, 0, 0, 0.035)',
+      dark: 'rgba(255, 255, 255, 0.05)',
     },
     toolJobsModalBackdrop: {
       light: 'rgba(0, 0, 0, 0.6)',
@@ -1378,6 +1388,8 @@ export const sanitizeCustomTheme = (value: unknown): CustomChatTheme => {
         defaults.colors.ideContextClearButtonText
       ),
       ideContextAddedText: readColorPair(rawColors.ideContextAddedText, defaults.colors.ideContextAddedText),
+      agentsGridStreamingCardBg: readColorPair(rawColors.agentsGridStreamingCardBg, defaults.colors.agentsGridStreamingCardBg),
+      agentsGridIdleCardBg: readColorPair(rawColors.agentsGridIdleCardBg, defaults.colors.agentsGridIdleCardBg),
       toolJobsModalBackdrop: readColorPair(rawColors.toolJobsModalBackdrop, defaults.colors.toolJobsModalBackdrop),
       toolJobsModalBg: readColorPair(rawColors.toolJobsModalBg, defaults.colors.toolJobsModalBg),
       toolJobsModalBorder: readColorPair(rawColors.toolJobsModalBorder, defaults.colors.toolJobsModalBorder),
