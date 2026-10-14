@@ -2855,10 +2855,12 @@ export const resumeInFlightStreams = createAsyncThunk<
           streamId: rec.streamId,
           selectionRevision: -1, // Reattach does not claim the currently selected view.
           updatePath: rec.updatePath ?? rec.streamType !== 'branch',
+          watchContinuation: rec.watchContinuation,
           preserveDrafts: true,
           streamType: rec.streamType,
           conversationId: rec.conversationId,
-          lineage: { rootMessageId: rec.parentMessageId ?? undefined },
+          lineage: { rootMessageId: rec.parentMessageId ?? undefined,
+            ...(rec.watchContinuation ? { lineageId: rec.watchContinuation.lineageId, lineageIdConfirmed: true } : {}) },
         })
       )
       const result = await runServerReattach(

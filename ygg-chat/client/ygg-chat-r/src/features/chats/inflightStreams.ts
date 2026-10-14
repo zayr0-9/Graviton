@@ -14,6 +14,8 @@
  * before replay: conversationId, streamType, and the parent message id.
  */
 
+import type { WatchContinuationOwner } from './chatTypes'
+
 export interface InflightStreamRecord {
   streamId: string
   conversationId: string
@@ -21,6 +23,7 @@ export interface InflightStreamRecord {
   parentMessageId: string | null
   /** Whether terminal replay may advance the singleton primary conversation path. */
   updatePath?: boolean
+  watchContinuation?: WatchContinuationOwner
   /** Highest server event sequence projected by this renderer. */
   lastSeq?: number
 }

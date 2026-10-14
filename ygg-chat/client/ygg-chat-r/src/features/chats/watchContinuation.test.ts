@@ -14,10 +14,11 @@ const event: WatchCompletionEvent = { handle: 'watch', state: 'triggered', kind:
   delivery: 'restarted', streamId: 'successor', parentId: 'current-tail' }
 
 describe('watcher continuation adoption', () => {
-  it('adopts a new successor as background without advancing selected path', () => {
+  it('adopts a new successor without primary ownership, with guarded continuation following', () => {
     expect(adoptWatchContinuation(event, () => false)).toBe('successor')
     expect(listInflightStreams()).toEqual([{ streamId: 'successor', conversationId: 'chat', streamType: 'branch',
-      parentMessageId: 'current-tail', updatePath: false }])
+      parentMessageId: 'current-tail', updatePath: true,
+      watchContinuation: { lineageId: 'branch', parentMessageId: 'current-tail' } }])
   })
   it('preserves an existing primary cursor/path policy and skips an owned reader', () => {
     const primary = { streamId: 'successor', conversationId: 'chat', streamType: 'primary' as const, parentMessageId: 'parent', lastSeq: 42, updatePath: true }
@@ -33,6 +34,24 @@ describe('watcher continuation adoption', () => {
     expect(listInflightStreams()).toEqual([])
     expect(adoptWatchContinuation({ ...event, state: 'timed_out', delivery: 'queued' }, () => false)).toBe('successor')
   })
+  it('primary reattachment preserves unsent text and images without changing normal send behavior', async () => {
+    const { default: reducer, chatSliceActions: actions } = await import('./chatSlice')
+    const state = structuredClone(reducer(undefined, { type: 'init' }))
+    state.composition.input.content = 'unsent text'
+    state.composition.imageDrafts = [{ name: 'draft', dataUrl: 'data:image/png;base64,AAA' } as any]
+    const primary = { streamId: 'successor', conversationId: 'chat', streamType: 'primary' as const,
+      parentMessageId: 'parent', lastSeq: 42, updatePath: true }
+    addInflightStream(primary)
+    adoptWatchContinuation(event, () => false)
+    const record = listInflightStreams()[0]
+    const resumed = reducer(state, actions.sendingStarted({ ...record, preserveDrafts: true }))
+    expect(resumed.composition.input.content).toBe('unsent text')
+    expect(resumed.composition.imageDrafts).toEqual(state.composition.imageDrafts)
+    const sent = reducer(state, actions.sendingStarted({ ...record }))
+    expect(sent.composition.input.content).toBe('')
+    expect(sent.composition.imageDrafts).toEqual([])
+  })
+
   it('background reattachment preserves image drafts, composer and primary selection', async () => {
     const { default: chatReducer, chatSliceActions } = await import('./chatSlice')
     const state = structuredClone(chatReducer(undefined, { type: 'init' }))
