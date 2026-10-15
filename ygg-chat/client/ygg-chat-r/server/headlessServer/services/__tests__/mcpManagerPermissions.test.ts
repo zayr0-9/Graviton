@@ -22,29 +22,29 @@ describe('MCP manager permissions', () => {
     expect(base).toHaveBeenCalledOnce()
   })
 
-  it('allows approved invocation and still requires unattended subagent approval', async () => {
+  it.each(['plan', 'execute'])('allows approved invocation in %s mode and still requires unattended subagent approval', async operationMode => {
     const broker = new DecisionBroker()
     broker.initSession('mcp-run', { autoApproveAll: false })
     const base = vi.fn().mockResolvedValue({ success: true })
     const execute = createChatPausingExecutor({ broker, streamId: 'mcp-run', base, emit: () => {} })
     const call = { id: 'invoke', name: 'mcp_manager', arguments: { action: 'invoke', name: 'demo', tool: 'echo' } }
-    const pending = execute(call, context)
+    const pending = execute(call, { ...context, operationMode })
     broker.resolve('mcp-run', 'invoke', 'allow_once')
     await expect(pending).resolves.toEqual({ success: true })
     expect(base).toHaveBeenCalledOnce()
     expect(() => assertToolAllowedWithoutAutoApprove(call)).toThrow('requires auto-approve')
   })
 
-  it('blocks invoke after a live switch to Plan mode during approval', async () => {
+  it('allows invoke after a live switch to Chat mode during approval', async () => {
     const broker = new DecisionBroker()
     broker.initSession('mcp-run', { autoApproveAll: false })
     const modeControl = new OperationModeControl('execute')
-    const base = vi.fn()
+    const base = vi.fn().mockResolvedValue({ success: true })
     const execute = createChatPausingExecutor({ broker, streamId: 'mcp-run', base, modeControl, emit: () => {} })
     const pending = execute({ id: 'invoke', name: 'mcp_manager', arguments: { action: 'invoke' } }, context)
     modeControl.change('plan', 'switch')
     broker.resolve('mcp-run', 'invoke', 'allow_once')
-    await expect(pending).rejects.toThrow()
-    expect(base).not.toHaveBeenCalled()
+    await expect(pending).resolves.toEqual({ success: true })
+    expect(base).toHaveBeenCalledOnce()
   })
 })

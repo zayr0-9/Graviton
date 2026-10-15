@@ -1,3 +1,4 @@
+import { contextUsageAfterCompaction } from '../../../shared/compaction'
 import { estimateTokenCount } from 'tokenx'
 import {
   effectiveOpenAIContextTokens,
@@ -163,14 +164,7 @@ export function calculateBranchContextUsage(params: {
   messages: Array<ContextMeterMessage | null | undefined>
   prompts?: unknown[]
 }) {
-  let startIndex = 0
-  for (let index = params.messages.length - 1; index >= 0; index--) {
-    if (params.messages[index]?.note === '__auto_compaction_summary__') {
-      startIndex = index
-      break
-    }
-  }
-  const contextMessages = params.messages.slice(startIndex)
+  const contextMessages = contextUsageAfterCompaction(params.messages.filter(Boolean))
   const promptAndContextTokens = (params.prompts ?? []).reduce<number>(
     (total, prompt) => total + safeEstimateTokenCount(prompt), 0
   )

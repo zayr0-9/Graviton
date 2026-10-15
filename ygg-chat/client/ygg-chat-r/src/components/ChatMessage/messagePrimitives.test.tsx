@@ -21,14 +21,18 @@ describe('DisclosureRow label sizing', () => {
     expect(html).not.toContain('text-[calc(0.8125em+1pt)]')
   })
 
-  it.each([false, true])('makes group labels 1pt larger with expanded=%s', expanded => {
+  it.each([false, true])('uses quiet group chrome with expanded=%s', expanded => {
     const html = renderRow('group', expanded)
-    expect(html).toContain('text-[calc(0.8125em+1pt)] font-medium leading-tight')
+    expect(html).toContain(DISCLOSURE_LABEL_CLASS)
+    expect(html).not.toContain('text-[calc(0.8125em+1pt)]')
+    expect(html).toContain('lucide-list-checks')
+    expect(html).toContain('rounded-lg')
+    expect(html).toContain('width="16"')
     expect(html).toContain('Agent steps')
     expect(html).toContain(`aria-expanded="${expanded}"`)
-    // Increasing the heading does not scale the summary or the entire row.
+    // Preserve virtual row height; metadata is smaller than the shared label.
     expect(html).toContain('class="flex h-8')
-    if (!expanded) expect(html).toContain('truncate text-[0.8125em] leading-none')
+    if (!expanded) expect(html).toContain('truncate text-[0.75em] leading-tight')
   })
 })
 

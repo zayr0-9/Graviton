@@ -1,7 +1,12 @@
-import React, { useMemo, useState } from 'react'
+import React, { useId, useMemo, useState } from 'react'
 import { BookOpenText, ChevronRight } from 'lucide-react'
 import { DisclosurePanel } from './messagePrimitives'
 import {
+  DISCLOSURE_LABEL_CLASS,
+  QUIET_CHEVRON_CLASS,
+  QUIET_MUTED_CLASS,
+  QUIET_ROW_CLASS,
+  MESSAGE_NOTICE_WRAPPER_CLASS,
   TEXT_DETAIL_CLASS,
   TEXT_LABEL_CLASS,
   TEXT_MICRO_CLASS,
@@ -19,8 +24,8 @@ import {
  * §11.3 decisions 6 and 7): instruction files, path-scoped rules, skills, and hook
  * output that the model received at this point of the transcript.
  *
- * Design (docs/agent_context/agent_design.md): a borderless glass surface. Hierarchy
- * comes from background tone, blur, whitespace and typography — no outline, no shadow.
+ * Quiet transcript row: shared label/icon geometry, with a background only on hover.
+ * Expanded content retains the context theme palette — no outline, no shadow.
  * Colours follow the custom chat theme (`contextCard*` keys) when it is enabled; the
  * Tailwind classes below are the disabled-theme fallback. Transitions name their
  * properties and run at the fast token (150ms).
@@ -39,6 +44,7 @@ interface ContextInjectionCardProps {
   variant?: 'launch' | 'inline'
   fontSizeOffset?: number
   className?: string
+  sourceLabel?: string
   customTheme?: CustomChatTheme
   customThemeEnabled?: boolean
   isDarkMode?: boolean
@@ -95,10 +101,12 @@ export const ContextInjectionCard: React.FC<ContextInjectionCardProps> = ({
   variant = 'inline',
   fontSizeOffset = 0,
   className,
+  sourceLabel,
   customTheme: customThemeProp,
   customThemeEnabled: customThemeEnabledProp,
   isDarkMode: isDarkModeProp,
 }) => {
+  const panelId = useId()
   const [expanded, setExpanded] = useState(false)
   const [openEntry, setOpenEntry] = useState<number | null>(null)
   const [hoveredRow, setHoveredRow] = useState<'header' | number | null>(null)
@@ -134,13 +142,11 @@ export const ContextInjectionCard: React.FC<ContextInjectionCardProps> = ({
   const isLaunch = variant === 'launch'
 
   // Disabled-theme fallback classes. Inline styles from the palette win when themed.
-  const surfaceClass = themed ? '' : 'bg-white/50 dark:bg-black/15'
-  const headerHoverClass = themed ? '' : 'hover:bg-white/70 dark:hover:bg-white/5'
   const rowHoverClass = themed ? '' : 'hover:bg-white/60 dark:hover:bg-white/5'
-  const titleClass = themed ? '' : 'text-violet-700 dark:text-violet-300'
-  const metaClass = themed ? '' : 'text-violet-700/80 dark:text-violet-200/80'
+  const titleClass = themed ? '' : 'text-neutral-700 dark:text-neutral-300'
+  const metaClass = themed ? '' : QUIET_MUTED_CLASS
   const pathClass = themed ? '' : 'text-stone-700 dark:text-stone-200'
-  const mutedClass = themed ? '' : 'text-stone-500 dark:text-stone-400'
+  const mutedClass = themed ? '' : QUIET_MUTED_CLASS
   const badgeClass = themed ? '' : 'bg-black/5 text-stone-600 dark:bg-white/10 dark:text-stone-300'
   const codeClass = themed ? '' : 'bg-black/5 text-stone-800 dark:bg-white/5 dark:text-stone-200'
 
@@ -148,12 +154,11 @@ export const ContextInjectionCard: React.FC<ContextInjectionCardProps> = ({
   const hoverFill = (key: 'header' | number): React.CSSProperties | undefined =>
     themed && hoveredRow === key ? { backgroundColor: palette.hoverBg } : undefined
 
-  return (
+  const card = (
     <div
-      className={`rounded-2xl backdrop-blur-xl ${surfaceClass} ${isLaunch ? 'mx-2 my-2' : ''} ${className ?? ''}`}
+      className={`min-w-0 ${className ?? ''}`}
       style={{
         ...(fontSizeOffset !== 0 ? { fontSize: `calc(1em + ${fontSizeOffset}px)` } : {}),
-        ...(themed ? { backgroundColor: palette.bg } : {}),
       }}
       data-testid='context-injection-card'
     >
@@ -162,32 +167,35 @@ export const ContextInjectionCard: React.FC<ContextInjectionCardProps> = ({
         onClick={() => setExpanded(value => !value)}
         onMouseEnter={() => setHoveredRow('header')}
         onMouseLeave={() => setHoveredRow(current => (current === 'header' ? null : current))}
-        className={`flex w-full items-center gap-2.5 rounded-2xl px-3.5 py-2.5 text-left ${FAST_COLOR_TRANSITION} ${headerHoverClass} ${FOCUS_RING}`}
+        className={QUIET_ROW_CLASS}
         style={hoverFill('header')}
         aria-expanded={expanded}
         aria-label={`${title}: ${countLabel}`}
+        aria-controls={panelId}
       >
-        <BookOpenText size={18} strokeWidth={2.25} className={`shrink-0 ${titleClass}`} style={color(palette.title)} />
-        <span className={`font-mono ${TEXT_MICRO_CLASS} font-bold uppercase tracking-[0.12em] ${titleClass}`} style={color(palette.title)}>
+        <BookOpenText size={16} strokeWidth={1.75} aria-hidden='true' className={`shrink-0 ${mutedClass}`} style={color(palette.muted)} />
+        <span className={`${DISCLOSURE_LABEL_CLASS} ${titleClass}`} style={color(palette.title)}>
           {title}
         </span>
-        <span className={`${TEXT_DETAIL_CLASS} ${metaClass}`} style={color(palette.meta)}>
+        <span className={`shrink-0 ${TEXT_DETAIL_CLASS} ${metaClass}`} style={color(palette.meta)}>
           {countLabel}
         </span>
         {!expanded && (
-          <span className={`ml-1 min-w-0 flex-1 truncate font-mono text-[0.75em] ${mutedClass}`} style={color(palette.muted)}>
+          <span className={`min-w-0 flex-1 truncate font-mono ${TEXT_MICRO_CLASS} ${mutedClass}`} style={color(palette.muted)} title={entries.map(entry => entry.path || entry.label).join(' · ')}>
             {entries.map(shortContextPath).join(' · ')}
           </span>
         )}
+        {sourceLabel && <span className={`shrink-0 ${TEXT_MICRO_CLASS} ${mutedClass}`} style={color(palette.muted)}>{sourceLabel}</span>}
         <ChevronRight
-          size={18}
+          size={14}
           strokeWidth={2.25}
-          className={`ml-auto shrink-0 transition-transform duration-150 ease-out motion-reduce:transition-none ${titleClass} ${expanded ? 'rotate-90' : ''}`}
-          style={color(palette.title)}
+          aria-hidden='true'
+          className={`${QUIET_CHEVRON_CLASS} ${expanded ? 'rotate-90' : ''}`}
+          style={color(palette.muted)}
         />
       </button>
 
-      <DisclosurePanel expanded={expanded} flush>
+      <DisclosurePanel id={panelId} expanded={expanded} disableTransition flush>
         <ul className='flex flex-col gap-1 px-2 pb-2' inert={!expanded}>
           {entries.map((entry, index) => {
             const isOpen = openEntry === index
@@ -212,13 +220,13 @@ export const ContextInjectionCard: React.FC<ContextInjectionCardProps> = ({
                     {entry.path || entry.label}
                   </span>
                   <span
-                    className={`shrink-0 rounded-full px-2 py-[2px] ${TEXT_MICRO_CLASS} uppercase tracking-wider ${badgeClass}`}
+                    className={`shrink-0 rounded-full px-2 py-[2px] ${TEXT_MICRO_CLASS} ${badgeClass}`}
                     style={themed ? { backgroundColor: palette.badgeBg, color: palette.badgeText } : undefined}
                   >
                     {describeContextInjectionReason(entry.reason)}
                   </span>
                 </button>
-                <DisclosurePanel expanded={isOpen} flush>
+                <DisclosurePanel expanded={isOpen} disableTransition flush>
                   <div className='ml-6 mt-1 mb-1' inert={!expanded || !isOpen}>
                     {entry.path && (
                       <p className={`mb-1 text-[0.85em] ${mutedClass}`} style={color(palette.muted)}>
@@ -240,6 +248,7 @@ export const ContextInjectionCard: React.FC<ContextInjectionCardProps> = ({
       </DisclosurePanel>
     </div>
   )
+  return isLaunch ? <div className={MESSAGE_NOTICE_WRAPPER_CLASS}>{card}</div> : card
 }
 
 export default ContextInjectionCard

@@ -52,6 +52,15 @@ function loopHarness(opts: { outputs: any[]; onProvider?: (call: number, queue: 
   const persisted: any[] = []
   const requests: any[] = []
   const sink = {
+    persistControlMessage(draft: any) {
+      const row = { ...draft, id: `control-${persisted.length}`, role: 'user', parent_id: draft.parentId }
+      persisted.push(row); return row
+    },
+    finaliseCompaction(id: string, update: any) {
+      const row = persisted.find(row => row.id === id)
+      Object.assign(row, { content: update.content, content_blocks: JSON.stringify(update.contentBlocks), meta: update.meta })
+      return row
+    },
     persistAssistantMessage(draft: any) {
       const row = { id: `a${persisted.length}`, role: 'assistant', content: draft.content, parent_id: draft.parentId,
         content_blocks: JSON.stringify(draft.contentBlocks), tool_calls: JSON.stringify(draft.toolCalls) }
@@ -78,7 +87,7 @@ function loopHarness(opts: { outputs: any[]; onProvider?: (call: number, queue: 
   const run = () => loop.run({
     provider: 'openaichatgpt', modelName: 'test', conversationId: 'c', assistantParentId: 'u',
     history: [{ id: 'u', role: 'user', content: 'original' }], userContent: 'original',
-    systemPrompt: 'stable', autoCompactionEnabled: opts.compact ?? false, contextLength: 100,
+    systemPrompt: 'stable', autoCompactionEnabled: opts.compact ?? false, contextLength: 10000,
     robustness: { finalizeOnSilentToolEnd: true },
     closeInputQueue: () => queue.tryClose(),
     flushQueuedMessages: async (parentId, history) => {
@@ -138,11 +147,14 @@ describe('queued input safe boundaries', () => {
 
   it('inserts after tools and compaction, not into a partial tool batch', async () => {
     const h = loopHarness({ compact: true, outputs: [
-      { content: '', toolCalls: [{ id: 't1', name: 'read_file', arguments: {} }] }, { content: 'answer' },
+      { content: '', toolCalls: [{ id: 't1', name: 'read_file', arguments: {} }], contextUsage: { provider: 'openai', usedTokens: 9000 } },
+      { content: 'summary' }, { content: 'answer' },
     ], onTool(queue) { queue.enqueue({ requestId: 'q1', content: 'new instruction' }, 0) } })
     await h.run()
-    expect(h.requests[1].history.map((row: any) => row.id)).toEqual(['summary', 'q1'])
-    expect(h.persisted.find(row => row.id === 'q1').parent_id).toBe('summary')
+    expect(h.requests[1].history.some((row: any) => row.id === 'q1')).toBe(false)
+    expect(h.requests[2].history[0].meta.kind).toBe('compaction_summary')
+    expect(h.requests[2].history.at(-1).id).toBe('q1')
+    expect(h.persisted.find(row => row.id === 'q1').parent_id).toBe(h.requests[2].history.at(-2).id)
   })
 
   it('keeps image payload on its own queued user row, not a later notification/user message', async () => {
@@ -175,9 +187,10 @@ describe('queue intake completion race', () => {
     queue.claim(); queue.settle('q', { messageId: 'delivered' }); queue.tryClose()
     run.terminal = 'completed'
     expect(orchestrator.submitQueuedMessage('c', 's', submission).snapshot.items[0].messageId).toBe('delivered')
-    const next = { requestId: 'next', content: 'after completion' }
+    const next = { requestId: 'next', content: 'after completion', fullAccess: true, fullAccessNotificationId: 'toggle-1' }
     const result = orchestrator.submitQueuedMessage('c', 's', next)
-    expect(result.restart).toMatchObject({ operation: 'send', parentId: 'final', lineageId: 'l', content: 'after completion', operationMode: 'plan' })
+    expect(result.restart).toMatchObject({ operation: 'send', parentId: 'final', lineageId: 'l', content: 'after completion', operationMode: 'plan',
+      fullAccess: true, fullAccessNotificationId: 'toggle-1' })
     expect(orchestrator.submitQueuedMessage('c', 's', next)).toEqual({ restartStreamId: result.restart.streamId })
   })
 })

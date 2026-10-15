@@ -1,3 +1,4 @@
+import { isCompactionMessage } from '../../../../../shared/compaction'
 import type { ChatNode } from '../../features/chats/chatTypes'
 import { isContextInjectionMessage } from '../../../../../shared/contextInjection'
 import { isRunSettingsNotification } from '../../../../../shared/accessNotifications'
@@ -6,6 +7,7 @@ import { isRunSettingsNotification } from '../../../../../shared/accessNotificat
 export function isHeimdallScaffoldingMessage(message: unknown, filterEmptyMessages = true): boolean {
   return shouldPromoteHeimdallNode({
     isContextInjection: isContextInjectionMessage(message),
+    isCompaction: isCompactionMessage(message),
     isOperationModeChange: isRunSettingsNotification(message),
     isEmpty: false,
     hasSiblings: false,
@@ -21,6 +23,7 @@ export function buildHeimdallVisibleRoot(nodes: ChatNode[]): ChatNode | null {
 }
 
 export interface HeimdallNodeVisibilityInput {
+  isCompaction?: boolean
   isContextInjection: boolean
   isOperationModeChange: boolean
   isEmpty: boolean
@@ -35,6 +38,7 @@ export interface HeimdallNodeVisibilityInput {
  * structure users may need to inspect.
  */
 export function shouldPromoteHeimdallNode({
+  isCompaction,
   isContextInjection,
   isOperationModeChange,
   isEmpty,
@@ -45,6 +49,6 @@ export function shouldPromoteHeimdallNode({
   // visual-noise filter: keep them inspectable when filtering is off, but promote
   // their descendants even across branch points when filtering is on.
   if (isContextInjection) return true
-  if (isOperationModeChange) return filterEmptyMessages
+  if (isOperationModeChange || isCompaction) return filterEmptyMessages
   return filterEmptyMessages && isEmpty && !hasSiblings
 }

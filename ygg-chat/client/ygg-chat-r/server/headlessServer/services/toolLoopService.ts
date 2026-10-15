@@ -1,5 +1,6 @@
 import { getAuthManager } from '../../auth/runtime.js'
 import type { HeadlessStreamEvent } from '../../../../../shared/headlessApi.js'
+import type { ModelRequestMeasurement } from '../../../../../shared/runStatistics.js'
 import { MessageRepo } from '../persistence/messageRepo.js'
 import { ToolInvocationRepo } from '../persistence/toolInvocationRepo.js'
 import { TreeMessageSink, type MessageSink } from './messageSink.js'
@@ -32,7 +33,8 @@ import {
   type FormattedProviderError,
 } from '../providers/providerErrorFormatter.js'
 import { buildChatErrorEnvelope, type ChatErrorCode } from '../../../../../shared/chatErrors.js'
-import { trimHistoryToLatestCompaction } from './compactionService.js'
+import { trimHistoryToLatestCompaction, finaliseCompactionContent } from './compactionService.js'
+import { compactionInstruction, compactionResumeInstruction, contextUsageAfterCompaction, excludeAbandonedCompactionControls } from '../../../../../shared/compaction.js'
 import { calculateBranchContextUsage } from '../../../shared/contextTokenEstimate.js'
 import type { BranchContextStatus } from './contextStatusTool.js'
 import { assertToolAllowedForOperationMode, filterToolsForOperationMode, requiresAgentMode } from '../../../../../shared/operationModeToolPolicy.js'
@@ -54,6 +56,9 @@ export interface ToolExecutionContext {
   provider?: string
   modelName?: string
   autoApprove?: boolean
+  autoCompactionEnabled?: boolean
+  compactionThresholdPercent?: number
+  contextLength?: number
   /** Parent request's service tier, inherited by Codex subagents. */
   serviceTier?: 'priority'
   subagentReasoningEffort?: 'low' | 'medium' | 'high' | 'xhigh'
@@ -145,7 +150,7 @@ export interface ToolLoopHooks {
    */
   foldSystemPrompt(baseSystemPrompt: string | null): string | null
   /** Stop hook: returns true to force one more turn on a would-be natural stop. */
-  runStop(params: { assistantMessage: any; streamId: string | null }): Promise<boolean>
+  runStop(params: { assistantMessage: any; streamId: string | null; compactionPhase?: 'summarising' }): Promise<boolean>
   /** PreCompact hook (`trigger: auto`), fired before an in-loop compaction. Optional. */
   runPreCompact?(): Promise<void>
   /** SessionStart hook with `source: compact`, fired after an in-loop compaction. Optional. */
@@ -178,6 +183,8 @@ export type HookContextPlacement = 'transcript' | 'system_prompt'
 
 export interface ToolLoopRunInput {
   provider: string
+  /** Main-run accounting only; excludes tools, hooks, and compaction calls. */
+  onModelRequest?: (measurement: ModelRequestMeasurement) => void
   operation?: 'send' | 'repeat' | 'branch' | 'edit-branch'
   modelName: string
   conversationId: string
@@ -238,6 +245,8 @@ export interface ToolLoopRunInput {
   compactionProvider?: string | null
   compactionModelName?: string | null
   compactionSystemPrompt?: string | null
+  /** Idle manual compaction uses normal generation and ends after its summary. */
+  manualCompaction?: boolean
   /** Per-run turn cap; clamped to [1, service maxTurns]. Defaults to service maxTurns. */
   maxTurns?: number
   /** Abort signal; checked between turns and before each tool, and forwarded to the provider. */
@@ -793,7 +802,6 @@ export class ToolLoopService {
   private readonly persistencePolicy?: Partial<ToolResultPersistencePolicy>
   /** Compatibility input, now interpreted as time with no provider events. */
   private readonly providerTurnIdleTimeoutMs: number
-  private readonly compactBranch?: ToolLoopCompactor
 
   constructor(deps: ToolLoopServiceDeps) {
     if (deps.sink) {
@@ -812,7 +820,6 @@ export class ToolLoopService {
       5_000,
       deps.providerTurnTimeoutMs ?? DEFAULT_PROVIDER_TURN_IDLE_TIMEOUT_MS
     )
-    this.compactBranch = deps.compactBranch
   }
 
   /**
@@ -831,6 +838,7 @@ export class ToolLoopService {
     input: ToolLoopRunInput
     parentId: string | null
     error: unknown
+    assistantMeta?: Record<string, unknown>
     emit: (event: HeadlessStreamEvent) => void
   }): any | null {
     const partial = readPartialProviderOutput(params.error)
@@ -855,6 +863,7 @@ export class ToolLoopService {
         toolCalls: toolCalls.length ? toolCalls : null,
         contentBlocks,
         thinkingBlock: partial.reasoning || null,
+        meta: params.assistantMeta,
       })
       // The live renderer adopts this row instead of throwing its stream buffer away,
       // and the orchestrator's "last persisted assistant id" tracker (which reads this
@@ -895,6 +904,7 @@ export class ToolLoopService {
      * agrees with the `assistant_message_persisted` frame the orchestrator tracks.
      */
     recordAssistant?: (message: any) => void
+    assistantMeta?: Record<string, unknown>
   }): Promise<ProviderGenerateOutput> {
     const { input, emit, turn, maxTurns } = params
     const providerRoute = normalizeProviderRoute(input.provider)
@@ -968,10 +978,17 @@ export class ToolLoopService {
         toolCalls: [],
       }
       let output: ProviderGenerateOutput
+      let requestStartedAt: number | undefined
+      const recordRequest = (outputTokens: number | null) => {
+        if (providerRoute === 'openaichatgpt' && requestStartedAt != null) {
+          input.onModelRequest?.({ durationMs: performance.now() - requestStartedAt, outputTokens })
+        }
+      }
       try {
         output = await withIdleTimeoutAndAbort(
-          ({ signal: attemptSignal, touch, isActive }) =>
-            this.providerRouter.generate(input.provider, { ...providerInput, signal: attemptSignal }, event => {
+          ({ signal: attemptSignal, touch, isActive }) => {
+            requestStartedAt = performance.now()
+            return this.providerRouter.generate(input.provider, { ...providerInput, signal: attemptSignal }, event => {
               if (!isActive()) return
               touch()
 
@@ -1018,13 +1035,17 @@ export class ToolLoopService {
                 })
               }
               emit(event)
-            }),
+            })
+          },
           this.providerTurnIdleTimeoutMs,
           'The model provider',
           input.signal,
           () => streamedPartial
         )
+        const outputTokens = output.raw?.usage?.output_tokens
+        recordRequest(typeof outputTokens === 'number' && Number.isFinite(outputTokens) && outputTokens >= 0 ? outputTokens : null)
       } catch (caughtError) {
+        recordRequest(null)
         let error = caughtError
         // Some providers use AbortError for a remote/provider-side "aborted" frame.
         // Only the run's parent signal is authoritative for user cancellation; convert
@@ -1046,6 +1067,7 @@ export class ToolLoopService {
           const partialAssistantMessage = this.persistPartialProviderOutput({
             input,
             parentId: params.parentId,
+            assistantMeta: params.assistantMeta,
             error,
             emit,
           })
@@ -1095,6 +1117,7 @@ export class ToolLoopService {
         const partialAssistantMessage = this.persistPartialProviderOutput({
           input,
           parentId: params.parentId,
+          assistantMeta: params.assistantMeta,
           error,
           emit,
         })
@@ -1241,7 +1264,10 @@ export class ToolLoopService {
     let currentUserContent = input.userContent
     // Defend the provider boundary for direct callers as well as ChatOrchestrator.
     // Persistence retains the full branch; model replay begins at its latest summary.
-    let history = trimHistoryToLatestCompaction(input.history || [])
+    const activeManualInstruction = input.manualCompaction ? [...(input.history || [])].reverse().find(row => {
+      try { return (typeof row.meta === 'string' ? JSON.parse(row.meta) : row.meta)?.kind === 'compaction_instruction' } catch { return false }
+    })?.id : undefined
+    let history = trimHistoryToLatestCompaction(excludeAbandonedCompactionControls(input.history || [], activeManualInstruction))
     let lastAssistantMessage: any = null
     // The loop's "last persisted assistant id" tracker. R1(b): a partial persisted on a
     // mid-stream provider failure must land here too, so this and the
@@ -1252,7 +1278,56 @@ export class ToolLoopService {
     }
     let anyToolsExecuted = false
     let activeOperationMode = input.operationMode ?? 'execute'
+    const phaseState: { current: { instruction: any; source: any[]; resume: boolean; details: any } | null } = { current: null }
+    let latestUsage: OpenAIContextUsage | null | undefined
+    let manualPending = input.manualCompaction === true
+    const persistControl = (content: string, meta: Record<string, unknown>) => {
+      if (!this.sink.persistControlMessage) throw attachChatErrorCode(new Error('Compaction persistence is not configured'), 'compaction_failed')
+      const row = this.sink.persistControlMessage({ conversationId: input.conversationId, parentId: currentParentId, content, meta })
+      history.push(row)
+      currentParentId = row.id
+      currentUserContent = ''
+      emit({ type: 'compaction_control_persisted', message: row, lineageId: input.lineageId ?? null })
+      return row
+    }
+    const beginCompaction = async (turn: number, resume: boolean) => {
+      if (phaseState.current) return false
+      const replay = contextUsageAfterCompaction(history)
+      const router = this.providerRouter as ProviderRouter & { resolveContextLength?: (provider: string, requested?: number) => number | undefined }
+      const decision = resolveOpenAIContinuationCompaction({
+        providerName: input.provider,
+        reportedUsage: latestUsage ?? [...replay].reverse().map(usageFromMessage).find(Boolean),
+        projectedTokens: projectedReplayTokens(input, replay),
+        contextLength: router.resolveContextLength?.(input.provider, input.contextLength) ?? input.contextLength ??
+          (normalizeProviderRoute(input.provider) === 'openaichatgpt' ? openAIModelContextLength(input.modelName) : 128_000),
+        enabled: input.autoCompactionEnabled, thresholdPercent: input.compactionThresholdPercent,
+      })
+      if (!manualPending && !decision.shouldCompact) return false
+      if (!history.length) return false
+      if (turn + (resume ? 2 : 1) > maxTurns) throw attachChatErrorCode(new Error('Not enough turns remaining for context compaction and continuation'), 'compaction_failed')
+      const details = { ...decision, turn, parentMessageId: currentParentId }
+      emit({ type: 'context_compaction', status: 'started', ...details })
+      await input.hooks?.runPreCompact?.()
+      input.signal?.throwIfAborted()
+      const existingInstruction = manualPending ? [...history].reverse().find(row => {
+        try { return (typeof row.meta === 'string' ? JSON.parse(row.meta) : row.meta)?.kind === 'compaction_instruction' } catch { return false }
+      }) : null
+      const source = existingInstruction ? history.filter(row => row.id !== existingInstruction.id) : [...history]
+      const instruction = existingInstruction ?? persistControl(compactionInstruction(input.compactionSystemPrompt), {
+        kind: 'compaction_instruction', version: 1, sourceTipId: currentParentId,
+        trigger: manualPending ? 'manual' : 'auto', resume,
+      })
+      currentUserContent = ''
+      phaseState.current = { instruction, source, resume, details }
+      manualPending = false
+      return true
+    }
     const flushBoundaryInputs = async () => {
+      if (phaseState.current) {
+        const rows = input.flushOperationMode?.(currentParentId, history) ?? []
+        for (const row of rows) { history.push(row); currentParentId = row.id }
+        return 0
+      }
       const result = input.flushQueuedMessages
         ? await input.flushQueuedMessages(currentParentId, history)
         : { rows: input.flushOperationMode?.(currentParentId, history) ?? [], delivered: 0 }
@@ -1266,6 +1341,7 @@ export class ToolLoopService {
     // which exits its while loop at MAX_TURNS and completes) instead of hard-erroring.
     let stopHookForcedContinue = false
 
+    try {
     for (let turn = 1; turn <= maxTurns; turn++) {
       input.signal?.throwIfAborted()
       stopHookForcedContinue = false
@@ -1274,6 +1350,8 @@ export class ToolLoopService {
         const rows = input.flushOperationMode?.(currentParentId, history) ?? []
         for (const row of rows) { history.push(row); currentParentId = row.id }
       }
+
+      if (history.length) await beginCompaction(turn - 1, !input.manualCompaction)
 
       // Phase 3: fold accumulated hook context into this turn's system prompt, then
       // clear the buffer (parity with the renderer's per-iteration fold+clear,
@@ -1302,7 +1380,10 @@ export class ToolLoopService {
 
       const providerModeRevision = input.modeControl?.revision ?? 0
       // Generate the turn, retrying once on an empty response when enabled.
+      const assistantMeta = phaseState.current
+        ? { compactionId: phaseState.current.instruction.id, compactionPhase: 'summarising' } : undefined
       let output = await this.generateProviderTurn({
+        assistantMeta,
         input,
         history,
         userContent: currentUserContent,
@@ -1320,6 +1401,7 @@ export class ToolLoopService {
         const baseDelay = robustness.emptyTurnRetryDelayMs ?? EMPTY_TURN_RETRY_BASE_MS
         await abortAwareSleep(baseDelay + Math.floor(Math.random() * EMPTY_TURN_RETRY_JITTER_MS), input.signal)
         output = await this.generateProviderTurn({
+          assistantMeta,
           input,
           history,
           userContent: currentUserContent,
@@ -1332,6 +1414,7 @@ export class ToolLoopService {
         })
       }
 
+      latestUsage = output.contextUsage ?? latestUsage
       const assistantToolCalls = Array.isArray(output.toolCalls)
         ? output.toolCalls.map(normalizeToolCall).filter((call): call is ProviderToolCall => Boolean(call))
         : []
@@ -1369,6 +1452,7 @@ export class ToolLoopService {
         // complete frame). Only CloudMirrorSink adopts it; TreeMessageSink ignores it,
         // and it is null for native providers / streamed-only frames => mint parity.
         providerMessageId: output.raw && typeof output.raw.id === 'string' ? output.raw.id : null,
+        meta: assistantMeta,
       })
 
       lastAssistantMessage = assistantMessage
@@ -1434,6 +1518,7 @@ export class ToolLoopService {
           const forceContinue = await input.hooks.runStop({
             assistantMessage,
             streamId: input.streamId ?? null,
+            compactionPhase: phaseState.current ? 'summarising' : undefined,
           })
           if (forceContinue) {
             emit({ type: 'tool_loop', status: 'turn_completed', turn, maxTurns, continued: true })
@@ -1447,6 +1532,55 @@ export class ToolLoopService {
         }
 
         currentParentId = assistantMessage.id
+        if (phaseState.current) {
+          const phase = phaseState.current
+          if (!String(output.content ?? '').trim()) throw attachChatErrorCode(new Error('Compaction returned an empty summary'), 'compaction_failed')
+          if (!this.sink.finaliseCompaction) throw attachChatErrorCode(new Error('Compaction persistence is not configured'), 'compaction_failed')
+          const during = history.slice(history.findIndex(row => row.id === phase.instruction.id) + 1, -1)
+          const update = finaliseCompactionContent(assistantMessage, [...phase.source, ...during], phase.instruction)
+          const candidate = { ...assistantMessage, content: update.content, content_blocks: update.contentBlocks, meta: update.meta }
+          if (projectedReplayTokens(input, contextUsageAfterCompaction([candidate])) * 100 >= phase.details.contextLength * phase.details.thresholdPercent) {
+            throw attachChatErrorCode(new Error('Summary and preserved context exceed the compaction threshold'), 'compaction_failed')
+          }
+          input.signal?.throwIfAborted()
+          const summaryMessage = this.sink.finaliseCompaction(assistantMessage.id, update)
+          history = [summaryMessage]
+          latestUsage = null
+          currentParentId = summaryMessage.id
+          lastAssistantMessage = summaryMessage
+          emit({ type: 'context_compaction', status: 'completed', ...phase.details, summaryMessage, parentMessageId: summaryMessage.id })
+          if (input.contextLoader && input.persistContextInjection) {
+            const injection = await input.contextLoader.buildPostCompactionInjection(phase.source)
+            input.signal?.throwIfAborted()
+            if (injection) {
+              const row = input.persistContextInjection({ parentId: currentParentId!, ...injection })
+              if (row) {
+                history.push(row); currentParentId = row.id
+                emit({ type: 'context_injection_persisted', message: row, lineageId: input.lineageId ?? null })
+              }
+            }
+          }
+          await input.hooks?.runSessionStart?.('compact')
+          input.signal?.throwIfAborted()
+          const modeRows = input.flushOperationMode?.(currentParentId, history) ?? []
+          for (const row of modeRows) { history.push(row); currentParentId = row.id }
+          const compactedTokens = projectedReplayTokens(input, contextUsageAfterCompaction(history))
+          if (compactedTokens * 100 >= phase.details.contextLength * phase.details.thresholdPercent) {
+            throw attachChatErrorCode(new Error('Compacted context still exceeds the threshold. Reduce preserved context or increase the context limit.'), 'compaction_failed')
+          }
+          phaseState.current = null
+          if (phase.resume) {
+            if (turn >= maxTurns) throw attachChatErrorCode(new Error('Compaction completed but no continuation turns remain'), 'compaction_failed')
+            persistControl(compactionResumeInstruction(), { kind: 'compaction_resume', compactionId: phase.instruction.id })
+            await flushBoundaryInputs()
+            continue
+          }
+          if (!input.manualCompaction && turn < maxTurns &&
+            (await flushBoundaryInputs() || input.closeInputQueue?.() === false)) continue
+          input.closeInputQueue?.()
+          return { finalAssistantMessage: summaryMessage, turnsUsed: turn, anyToolsExecuted }
+        }
+        if (await beginCompaction(turn, false)) continue
         const delivered = turn < maxTurns ? await flushBoundaryInputs() : 0
         if (turn >= maxTurns) {
           const rows = input.flushOperationMode?.(currentParentId, history) ?? []
@@ -1636,6 +1770,9 @@ export class ToolLoopService {
             provider: input.provider,
             modelName: input.modelName,
             autoApprove: input.toolAutoApprove !== false,
+            autoCompactionEnabled: input.autoCompactionEnabled,
+            compactionThresholdPercent: input.compactionThresholdPercent,
+            contextLength: input.contextLength,
             serviceTier: input.serviceTier,
             subagentReasoningEffort: input.subagentReasoningEffort,
             subagentSystemPrompt: input.subagentSystemPrompt ?? null,
@@ -1850,119 +1987,7 @@ export class ToolLoopService {
       currentParentId = assistantMessage.id
       currentUserContent = ''
 
-      const reportedUsage = output.contextUsage ?? usageFromMessage(lastAssistantMessage)
-      const routerWithContextResolver = this.providerRouter as ProviderRouter & {
-        resolveContextLength?: (providerName: string, requestedContextLength: number | undefined) => number | undefined
-      }
-      const compactionDecision = resolveOpenAIContinuationCompaction({
-        providerName: input.provider,
-        reportedUsage,
-        projectedTokens: projectedReplayTokens(input, history),
-        contextLength:
-          (typeof routerWithContextResolver.resolveContextLength === 'function'
-            ? routerWithContextResolver.resolveContextLength(input.provider, input.contextLength)
-            : input.contextLength) ?? openAIModelContextLength(input.modelName),
-        enabled: input.autoCompactionEnabled ?? true,
-        thresholdPercent: input.compactionThresholdPercent,
-      })
-
-      if (compactionDecision.shouldCompact) {
-        const eventDetails = {
-          turn,
-          reportedTokens: compactionDecision.reportedTokens,
-          projectedTokens: compactionDecision.projectedTokens,
-          effectiveTokens: compactionDecision.effectiveTokens,
-          contextLength: compactionDecision.contextLength,
-          thresholdPercent: compactionDecision.thresholdPercent,
-          parentMessageId: assistantMessage.id,
-        }
-        emit({ type: 'context_compaction', status: 'threshold_reached', ...eventDetails })
-        emit({ type: 'context_compaction', status: 'started', ...eventDetails })
-        // In-loop compaction is a whole extra model call. Without this the run just
-        // goes quiet mid-answer, which reads as a hang.
-        emit({
-          type: 'notice',
-          code: 'compacting',
-          message: 'This conversation is getting long — summarising it so I can keep going.',
-          lineageId: input.lineageId ?? null,
-        })
-
-        if (!this.compactBranch) {
-          const error = 'Automatic context compaction is not configured; continuation paused before context overflow.'
-          emit({ type: 'context_compaction', status: 'failed', ...eventDetails, error })
-          throw attachChatErrorCode(new Error(error), 'compaction_failed')
-        }
-
-        try {
-          if (input.hooks?.runPreCompact) await input.hooks.runPreCompact()
-          const historyBeforeCompaction = history
-          const compacted = await this.compactBranch({
-            conversationId: input.conversationId,
-            parentMessageId: assistantMessage.id,
-            messages: history,
-            provider: input.compactionProvider || input.provider,
-            modelName: input.compactionModelName || input.modelName,
-            userId: input.userId,
-            authSessionId: authSessions[normalizeProviderRoute(input.compactionProvider || input.provider) === 'openrouter' ? 'app' : 'codex'],
-            accessToken: input.accessToken,
-            accountId: input.accountId,
-            systemPrompt: input.compactionSystemPrompt,
-            signal: input.signal,
-          })
-          input.signal?.throwIfAborted()
-          const summaryMessage = compacted?.message
-          const validSummary =
-            summaryMessage?.role === 'system' &&
-            summaryMessage?.note === '__auto_compaction_summary__' &&
-            String(summaryMessage?.parent_id ?? '') === String(assistantMessage.id)
-          if (!validSummary) throw new Error('Compaction returned an invalid branch summary marker')
-
-          history = [summaryMessage]
-          currentParentId = summaryMessage.id
-          emit({
-            type: 'context_compaction',
-            status: 'completed',
-            ...eventDetails,
-            parentMessageId: summaryMessage.id,
-            summaryMessage,
-          })
-
-          // Docs §2.6 / §5.4 / §11.5 rule 7: the prefix legitimately changed, so rebuild
-          // the tail once — launch set re-read from disk plus invoked skill bodies — as a
-          // persisted context row under the summary. SessionStart(compact) hook output
-          // accumulates and rides on the next tool result.
-          if (input.contextLoader && input.persistContextInjection) {
-            try {
-              const reinjection = await input.contextLoader.buildPostCompactionInjection(historyBeforeCompaction)
-              if (reinjection) {
-                const row = input.persistContextInjection({
-                  parentId: summaryMessage.id,
-                  text: reinjection.text,
-                  files: reinjection.files,
-                  reason: reinjection.reason,
-                })
-                if (row) {
-                  history.push(row)
-                  currentParentId = row.id
-                  emit({ type: 'context_injection_persisted', message: row, lineageId: input.lineageId ?? null })
-                }
-              }
-            } catch (error) {
-              console.warn('[ToolLoop] post-compaction context re-injection failed', error)
-            }
-          }
-          if (input.hooks?.runSessionStart) await input.hooks.runSessionStart('compact')
-        } catch (error) {
-          if (input.signal?.aborted || isAbortError(error)) throw error
-          const message = error instanceof Error ? error.message : String(error)
-          emit({ type: 'context_compaction', status: 'failed', ...eventDetails, error: message })
-          throw attachChatErrorCode(
-            new Error(`Automatic context compaction failed; continuation paused: ${message}`),
-            'compaction_failed',
-            { detail: message }
-          )
-        }
-      }
+      await beginCompaction(turn, true)
 
       if (turn < maxTurns) await flushBoundaryInputs()
       emit({
@@ -1972,6 +1997,15 @@ export class ToolLoopService {
         maxTurns,
         continued: true,
       })
+    }
+
+    } catch (error) {
+      if (phaseState.current && !input.signal?.aborted && !isAbortError(error)) {
+        emit({ type: 'context_compaction', status: 'failed', ...phaseState.current.details,
+          error: error instanceof Error ? error.message : String(error) })
+        throw attachChatErrorCode(error instanceof Error ? error : new Error(String(error)), 'compaction_failed')
+      }
+      throw error
     }
 
     emit({
@@ -1992,6 +2026,8 @@ export class ToolLoopService {
       maxAttempts: maxTurns,
       lineageId: input.lineageId ?? null,
     })
+
+    if (phaseState.current) throw attachChatErrorCode(new Error('Compaction exhausted its turn budget before completion'), 'compaction_failed')
 
     // Phase 3: if a Stop hook forced continuation past the turn cap, the last turn was
     // a valid natural stop (no pending tool calls) already persisted. Finalize with it

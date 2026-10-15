@@ -241,10 +241,18 @@ export interface StreamLineage {
   branchId?: string              // Legacy optional branch disambiguator
 }
 
+export interface WatchContinuationOwner {
+  lineageId: LineageId
+  /** Actual successor parent, not the message that originally registered the watch. */
+  parentMessageId: MessageId | null
+}
+
 export interface StreamState {
   /** Renderer view ownership; never sent to the server. */
   selectionRevision?: number
   updatePath?: boolean
+  /** Follow only the selected continuation chain; never claim navigation ownership. */
+  watchContinuation?: WatchContinuationOwner
   active: boolean
   // Explicit lifecycle status. `waiting_for_tool` is still an in-flight stream
   // and should stay visible/interruptible in branch-local UIs.
@@ -309,6 +317,8 @@ export interface StreamingRootState {
 export interface SendingStartedPayload {
   selectionRevision?: number
   updatePath?: boolean
+  /** Follow only the selected continuation chain; never claim navigation ownership. */
+  watchContinuation?: WatchContinuationOwner
   /** Reattachment must not consume unrelated composer drafts. */
   preserveDrafts?: boolean
   streamId: string
@@ -501,6 +511,7 @@ export interface ChatState {
   messageQueues: Record<string, import('../../../../../shared/queuedMessages').MessageQueueSnapshot>
   /** Unsent selections, keyed by conversation and selected branch tip. */
   operationModeDrafts: Record<string, OperationMode>
+  branchModelDrafts?: Record<string, import('./branchModelSelection').BranchModelSelection>
   operationModeChanges: Record<string, {
     mode: OperationMode
     status: 'requesting' | 'pending'

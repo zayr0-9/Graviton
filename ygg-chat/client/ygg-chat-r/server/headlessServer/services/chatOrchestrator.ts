@@ -1,5 +1,7 @@
+import { compactionInstruction } from '../../../../../shared/compaction.js'
 import { v4 as uuidv4 } from 'uuid'
 import type { HeadlessMessageRequest, HeadlessStreamEvent } from '../../../../../shared/headlessApi.js'
+import { createModelThroughput, recordModelRequest } from '../../../../../shared/runStatistics.js'
 import { buildChatErrorEnvelope, type ChatErrorEnvelope } from '../../../../../shared/chatErrors.js'
 import { ConversationRepo } from '../persistence/conversationRepo.js'
 import { MessageRepo } from '../persistence/messageRepo.js'
@@ -538,6 +540,7 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
     if (submission.attachmentsBase64?.length && !['openaichatgpt', 'openrouter'].includes(normalizeProviderRoute(run.request.provider))) {
       throw new Error('Queued image attachments are supported for ChatGPT and OpenRouter; send text or wait for this run to finish')
     }
+    if (run.request.manualCompaction && !run.terminal) throw new Error('Wait for manual compaction to finish before sending')
     if (!run.queue.closed) {
       run.queue.enqueue(submission, run.control.revision)
       return { snapshot: run.queue.snapshot() }
@@ -553,6 +556,8 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
     return { restart: { ...run.request, operation: 'send', streamId: nextId, lineageId: lineage.id,
       parentId: run.head, messageId: null, operationId: null, content: submission.content,
       watcherCompletion: submission.watcherCompletion,
+      fullAccess: submission.fullAccess ?? run.request.fullAccess,
+      fullAccessNotificationId: submission.fullAccessNotificationId,
       attachmentsBase64: submission.attachmentsBase64 ?? null, operationMode: run.control.mode,
       retrigger: false, isBranch: false } }
   }
@@ -750,7 +755,11 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
       content,
       modelName: request.modelName,
       contentBlocks,
-      meta: request.watcherCompletion ? { kind: 'watcher_completion', ...request.watcherCompletion } : undefined,
+      meta: {
+        ...(request.manualCompaction ? { kind: 'compaction_instruction', version: 1, trigger: 'manual', sourceTipId: parentId, resume: false }
+          : request.watcherCompletion ? { kind: 'watcher_completion', ...request.watcherCompletion } : {}),
+        modelSelection: { provider: request.provider, model: request.modelName },
+      },
     })
 
     const linkedAttachments = linkPreparedAttachmentsToMessage(
@@ -855,6 +864,13 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
     emit: (event: HeadlessStreamEvent) => void,
     signal?: AbortSignal
   ): Promise<void> {
+    if (request.manualCompaction) {
+      if ([...this.inputRuns.values()].some(run => !run.terminal && run.request.conversationId === request.conversationId &&
+        (request.lineageId ? run.queue.lineageId === request.lineageId : run.head === request.parentId))) {
+        throw new Error('Wait for the active run to finish before compacting')
+      }
+      request = { ...request, content: compactionInstruction(request.compactionSystemPrompt), attachmentsBase64: null }
+    }
     // Mint the stream id BEFORE any persistence so `started` — and every terminal frame
     // a pre-persist failure produces — carries the id the client reconnects with.
     // `streamingRunRepo.upsert` adopts a supplied id verbatim, so the row is unchanged.
@@ -871,6 +887,7 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
     /** Last assistant row the LOOP persisted: the D1 partial the error row hangs off. */
     let lastPersistedAssistantId: string | null = null
     const runResponseIds = new Set<string>()
+    const modelThroughput = createModelThroughput()
     let runUsageIncomplete = false
     /** The run's message sink; null until the user message + lineage exist. */
     let runSink: MessageSink | null = null
@@ -918,7 +935,7 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
       if (event.type === 'permission_required' || event.type === 'operation_mode_upgrade_required') waitingTools.set(event.toolCallId, event.toolName)
       if (event.type === 'tool_execution' && event.status !== 'started') waitingTools.delete(event.toolCallId)
       if (event.type === 'assistant_message_persisted') modeParentId = event.message?.id ?? modeParentId
-      if (event.type === 'context_injection_persisted') modeParentId = event.message?.id ?? modeParentId
+      if (event.type === 'context_injection_persisted' || event.type === 'compaction_control_persisted') modeParentId = event.message?.id ?? modeParentId
       if (event.type === 'context_compaction' && event.status === 'completed') modeParentId = event.parentMessageId ?? modeParentId
       if (event.type === 'complete' || (event.type === 'error' && event.terminal !== false)) {
         finishMode()
@@ -1255,6 +1272,7 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
       pendingOperationId,
       streamId: trackedStreamId,
       onModelResponse: (id: string) => { runResponseIds.add(id) },
+      modelSelection: { provider: request.provider, model: request.modelName },
     }
     // ONE sink instance for the run: the loop's turns and any terminal error row share
     // its pending-fork state, so whichever writes first materializes the fork.
@@ -1478,6 +1496,26 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
           const displayRow = { ...row, artifacts: modelImages.map(attachment => attachment.dataUrl) }
           emit({ type: 'queued_user_message_persisted', message: displayRow, requestId: entry.submission.requestId,
             streamId: trackedStreamId, lineageId })
+          const { fullAccess, fullAccessNotificationId, watcherCompletion } = entry.submission
+          if (fullAccess === true && fullAccessNotificationId && !watcherCompletion) {
+            const access = this.messageRepo.transaction(() => {
+              const existing = this.messageRepo.findFullAccessNotification(request.conversationId, fullAccessNotificationId)
+              if (existing) return { message: existing, created: false }
+              const message = this.messageRepo.createMessage({
+                conversationId: request.conversationId, parentId: parent, role: 'user',
+                content: fullAccessNotificationContent(true), modelName: request.modelName,
+                meta: { kind: FULL_ACCESS_NOTIFICATION_KIND, requestId: fullAccessNotificationId },
+              })
+              this.lineageRepo.appendMessage(lineageId, message.id)
+              return { message, created: true }
+            })
+            if (access.created) {
+              rows.push(access.message)
+              parent = access.message.id
+              modeParentId = access.message.id
+            }
+            emit({ type: 'user_message_persisted', message: access.message, lineageId })
+          }
           inputQueue.settle(entry.submission.requestId, { messageId: row.id })
         } catch (error) {
           hookSession?.drainHookContext() // blocked submission context must not leak to the next one
@@ -1497,6 +1535,7 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
       toolLoopResult = await loop.run(
       {
         provider: request.provider,
+        onModelRequest: measurement => recordModelRequest(modelThroughput, measurement),
         operation: request.operation,
         modelName: request.modelName,
         conversationId: request.conversationId,
@@ -1554,6 +1593,7 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
         robustness: { retryProviderError: true },
         subagentReasoningEffort: request.subagentReasoningEffort,
         subagentSystemPrompt: request.subagentModePrompt ?? null,
+        manualCompaction: request.manualCompaction,
         autoCompactionEnabled: request.autoCompactionEnabled,
         contextLength: request.contextLength,
         contextMeterPrompts: [project?.system_prompt, projectContext, conversation?.system_prompt, conversationContext],
@@ -1659,7 +1699,8 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
     this.streamingRunRepo.finish(trackedStreamId, {
       status: 'completed',
       endReason: 'completed',
-      metadata: { runResponseCount: runResponseIds.size, runUsageIncomplete },
+      metadata: { runResponseCount: runResponseIds.size, runUsageIncomplete,
+        ...(modelThroughput.requests > 0 ? { modelThroughput } : {}) },
       assistantMessageId: toolLoopResult.finalAssistantMessage?.id ?? null,
       finalMessageId: modeParentId ?? toolLoopResult.finalAssistantMessage?.id ?? null,
     })

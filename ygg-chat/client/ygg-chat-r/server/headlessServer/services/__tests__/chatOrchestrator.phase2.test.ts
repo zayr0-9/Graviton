@@ -1,5 +1,5 @@
 import type Database from 'better-sqlite3'
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
@@ -296,6 +296,73 @@ describe('source lineage membership validation', () => {
       db.close()
     }
     if (testDirectory) rmSync(testDirectory, { recursive: true, force: true })
+  })
+
+  it('inserts one Full access notice after queued input without upgrading the live run', async () => {
+    const events: any[] = []
+    let call = 0
+    vi.spyOn(providerRouter, 'generate').mockImplementation(async (_provider, input) => {
+      expect((orchestrator as any).inputRuns.get('active').request.fullAccess).toBe(false)
+      if (++call === 1) {
+        for (const requestId of ['q1', 'q2']) {
+          orchestrator.submitQueuedMessage('c1', 'active', { requestId, content: requestId,
+            fullAccess: true, fullAccessNotificationId: 'toggle-queued' })
+        }
+      } else {
+        const notices = input.history.filter((row: any) => JSON.parse(row.meta || '{}').kind === 'full_access_change')
+        expect(notices).toHaveLength(1)
+        expect(notices[0].content).toContain('does not change this active run')
+        expect(notices[0].parent_id).toBe(events.find(event => event.type === 'queued_user_message_persisted').message.id)
+      }
+      return { content: 'answer' }
+    })
+    await orchestrator.runMessage({ operation: 'send', conversationId: 'c1', content: 'original',
+      provider: 'openaichatgpt', modelName: 'test', streamId: 'active', fullAccess: false }, event => events.push(event))
+    expect(call).toBe(2)
+    const accessEvents = events.filter(event => event.type === 'user_message_persisted' &&
+      JSON.parse(event.message.meta || '{}').kind === 'full_access_change')
+    expect(accessEvents).toHaveLength(2) // the second input acknowledges the same durable notice
+    expect(accessEvents[0].message.id).toBe(accessEvents[1].message.id)
+    const queuedEvents = events.filter(event => event.type === 'queued_user_message_persisted')
+    expect(queuedEvents[1].message.parent_id).toBe(accessEvents[0].message.id)
+  })
+
+  it('persists request throughput before completion and isolates consecutive runs', async () => {
+    const runs = new Map<string, any>()
+    statements.getStreamingRunById = { get: (id: string) => runs.get(id) }
+    statements.upsertStreamingRun = { run: (...values: any[]) => {
+      runs.set(values[0], { status: values[7], metadata_json: values[18], started_at: values[19] })
+    } }
+    statements.updateStreamingRun = { run: (...values: any[]) => {
+      Object.assign(runs.get(values[10]), { status: values[0], metadata_json: values[6] })
+    } }
+    let now = 0
+    const clock = vi.spyOn(performance, 'now').mockImplementation(() => now)
+    const generate = vi.spyOn(providerRouter, 'generate').mockImplementation(async () => {
+      now += 2000
+      return { content: 'done', raw: { usage: { output_tokens: 100 } } }
+    })
+    try {
+      for (const streamId of ['throughput-1', 'throughput-2']) {
+        let completed = false
+        await orchestrator.runMessage({ operation: 'send', conversationId: 'c1', content: 'hello',
+          provider: 'openaichatgpt', modelName: 'test', streamId }, event => {
+          if (event.type !== 'complete') return
+          completed = true
+          const row = runs.get(streamId)
+          expect(row.status).toBe('completed')
+          const metadata = JSON.parse(row.metadata_json)
+          expect(metadata.runResponseCount).toBe(1)
+          expect(metadata.runStatistics.version).toBe(1)
+          expect(metadata.modelThroughput).toMatchObject({ outputTokens: 100, requestDurationMs: 2000,
+            requests: 1, measuredRequests: 1, coverage: 'complete' })
+        })
+        expect(completed).toBe(true)
+      }
+    } finally {
+      clock.mockRestore()
+      generate.mockRestore()
+    }
   })
 
   it.each(['send', 'branch', 'edit-branch'] as const)('persists the deferred Full access notice after new input for %s', async operation => {

@@ -222,3 +222,7 @@ shows the transcript and `subagent_runs.status` ends `completed`/`aborted`.
 - `agent_heimdall.md`
 - `agent_local_tools_runtime.md`
 - `agent_context_compaction_memory.md`
+
+## Normal-turn child compaction (2026-10-14)
+
+The injected separate transcript summariser is retired. Children use the shared loop's ordinary compaction phase with their existing `subagent:${runId}` provider session and unchanged tools/policy. `SubagentTranscriptSink` persists tagged user controls and commits completed assistant summaries; nullable transcript `meta` survives resume. Parent auto-compaction enable/threshold settings are inherited. Summary completion is internal to the run, not the child's final returned task result while interrupted work remains.

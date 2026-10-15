@@ -12,6 +12,7 @@
 // the SQLite prepared statements are (re)created per server start, after this
 // registry is populated.
 
+import { claudeBridge } from './tools/claudeBridge.js'
 import { runBashCommand } from './tools/bash.js'
 import { runPowerShellCommand } from './tools/powershell.js'
 import { braveSearch } from './tools/braveSearch.js'
@@ -78,6 +79,8 @@ export interface BuiltInToolRegistryDeps {
  * Map.set overwrites make re-registration idempotent.
  */
 export function registerBuiltInTools(builtInTools: Map<string, BuiltInToolHandler>, deps: BuiltInToolRegistryDeps): void {
+  builtInTools.set('claude_bridge', (args, options) => claudeBridge.execute(args, options))
+
   builtInTools.set('html_renderer', async (args, { rootPath }) => {
     const { html, path: filePath, cwd, allowUnsafe } = args
     return await htmlRenderer.run({ html, path: filePath, cwd: cwd ?? rootPath, allowUnsafe })

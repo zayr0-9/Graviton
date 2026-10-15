@@ -1340,9 +1340,10 @@ export function useSelectModel() {
  * Usage:
  * const selectedModel = useSelectedModel(currentProvider)
  */
-export function useSelectedModel(provider: string | null) {
+export function useSelectedModel(provider: string | null, modelName?: string | null) {
   const { data } = useModels(provider)
-  return data?.selected || null
+  // A saved but unavailable model must not silently send using a different model.
+  return modelName ? data?.models.find(model => model.name === modelName) ?? null : data?.selected || null
 }
 
 /**

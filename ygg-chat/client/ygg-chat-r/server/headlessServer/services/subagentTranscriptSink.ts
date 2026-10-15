@@ -26,6 +26,7 @@ export class SubagentTranscriptSink implements MessageSink {
       thinkingBlock: draft.thinkingBlock ?? null,
       toolCalls,
       contentBlocks,
+      meta: draft.meta,
     })
 
     return {
@@ -37,6 +38,15 @@ export class SubagentTranscriptSink implements MessageSink {
       conversation_id: draft.conversationId,
       ...(draft.contextUsage ? { context_usage: draft.contextUsage } : {}),
     }
+  }
+
+  persistControlMessage(draft: { conversationId: string; parentId: string | null; content: string; meta: Record<string, unknown> }): any {
+    const row = this.runRepo.appendMessage(this.runId, { role: 'user', content: draft.content, meta: draft.meta })
+    return { ...row, parent_id: draft.parentId, conversation_id: draft.conversationId }
+  }
+
+  finaliseCompaction(messageId: string, update: { content: string; contentBlocks: any[]; meta: Record<string, unknown> }): any {
+    return this.runRepo.finaliseCompaction(this.runId, messageId, update)
   }
 
   updateAssistantToolState(

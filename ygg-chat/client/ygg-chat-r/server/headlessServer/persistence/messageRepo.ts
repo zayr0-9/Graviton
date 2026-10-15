@@ -99,6 +99,18 @@ export class MessageRepo {
     return input.contextUsage ? { ...createdMessage, context_usage: input.contextUsage } : createdMessage
   }
 
+  finaliseCompaction(messageId: string, update: { content: string; contentBlocks: any[]; meta: Record<string, unknown> }): any {
+    return this.transaction(() => {
+      const row = this.statements.getMessageById.get(messageId)
+      if (!row || row.role !== 'assistant') throw new Error('Compaction response not found')
+      const meta = typeof row.meta === 'string' ? JSON.parse(row.meta || '{}') : row.meta
+      if (meta?.kind === 'compaction_summary' && meta.state === 'committed') return row
+      this.db.prepare('UPDATE messages SET content = ?, plain_text_content = ?, content_blocks = ?, meta = ? WHERE id = ?')
+        .run(update.content, update.content, JSON.stringify(update.contentBlocks), JSON.stringify(update.meta), messageId)
+      return this.statements.getMessageById.get(messageId)
+    })
+  }
+
   updateAssistantToolState(
     messageId: string,
     update: {

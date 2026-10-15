@@ -38,6 +38,44 @@ describe.sequential('theme_manager tool', () => {
     }
   })
 
+  it('includes distinct grid card defaults in templates and older saved themes', async () => {
+    const template = await execute({ action: 'template' })
+    expect(template.success).toBe(true)
+    expect(template.theme?.colors.agentsGridStreamingCardBg.light).toBe('var(--agents-grid-streaming-bg)')
+    expect(template.theme?.colors.agentsGridIdleCardBg.dark).toBe('var(--agents-grid-idle-bg)')
+    const saved = await execute({ action: 'save', theme: { name: 'Older theme' } })
+    expect(saved.success).toBe(true)
+    for (const mode of ['light', 'dark'] as const) {
+      expect(template.theme?.colors.agentsGridStreamingCardBg[mode]).not.toBe(template.theme?.colors.agentsGridIdleCardBg[mode])
+      expect(saved.theme?.colors.agentsGridStreamingCardBg[mode]).toBe(template.theme?.colors.agentsGridStreamingCardBg[mode])
+      expect(saved.theme?.colors.agentsGridIdleCardBg[mode]).toBe(template.theme?.colors.agentsGridIdleCardBg[mode])
+    }
+  })
+
+  it('migrates saved fixed grid defaults to theme references', async () => {
+    const saved = await execute({ action: 'save', theme: { name: 'Legacy grid', colors: {
+      agentsGridStreamingCardBg: { light: 'rgba(16, 185, 129, 0.12)', dark: 'rgba(16, 185, 129, 0.16)' },
+      agentsGridIdleCardBg: { light: 'rgba(0, 0, 0, 0.035)', dark: 'rgba(255, 255, 255, 0.05)' },
+    } } })
+    expect(saved.success).toBe(true)
+    const read = await execute({ action: 'read', name: 'legacy-grid' })
+    expect(read.theme?.colors.agentsGridStreamingCardBg).toEqual({ light: 'var(--agents-grid-streaming-bg)', dark: 'var(--agents-grid-streaming-bg)' })
+    expect(read.theme?.colors.agentsGridIdleCardBg).toEqual({ light: 'var(--agents-grid-idle-bg)', dark: 'var(--agents-grid-idle-bg)' })
+  })
+
+  it('round-trips independently customized streaming and idle grid backgrounds', async () => {
+    const colors = {
+      agentsGridStreamingCardBg: { light: '#aabbcc', dark: '#112233' },
+      agentsGridIdleCardBg: { light: '#ddeeff', dark: '#445566' },
+    }
+    const saved = await execute({ action: 'save', theme: { name: 'Grid colors', colors } })
+    expect(saved.success).toBe(true)
+    const read = await execute({ action: 'read', name: 'grid-colors' })
+    expect(read.success).toBe(true)
+    expect(read.theme?.colors.agentsGridStreamingCardBg).toEqual(colors.agentsGridStreamingCardBg)
+    expect(read.theme?.colors.agentsGridIdleCardBg).toEqual(colors.agentsGridIdleCardBg)
+  })
+
   it('copies bundled themes into the managed directory when listing', async () => {
     await fs.writeFile(
       path.join(bundledDir, 'starter.json'),

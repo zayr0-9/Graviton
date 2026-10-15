@@ -48,12 +48,14 @@ Use this when changing:
 
 - Tool schema names must match execution names exactly.
 - Keep shared schemas in sync with server implementations and utility-runtime registrations.
+- `mcp_manager`, `custom_tool_manager`, and `skill_manager` are available in Chat and Agent modes, including invocation actions. Manager availability does not bypass normal tool approval or unattended-subagent auto-approve gates. Direct MCP tools remain unavailable in Chat mode.
 - Do not expose unsafe capabilities without permission and operation-mode gates.
 - App/iframe permissions are separate from normal model tool visibility.
 
 ## Extension Points
 
-- Add built-ins by updating shared definitions, server implementation/registration, applicable utility-runtime registration, and tests.
+- Add built-ins by updating shared definitions, server implementation/registration, headless built-in and OpenAI allowlists, applicable utility-runtime registration, and tests.
+- `claude_bridge` is a server-owned built-in for resumable, read-only Claude CLI review conversations. It runs asynchronous jobs outside the utility process, is excluded from child tool sets, and shuts down with the server. See [Claude bridge](../claude-bridge-tool.md) for its scope, persistence, permissions and live validation.
 - Add custom tool capabilities in custom tool loader/manager and docs.
 - Add MCP visibility changes in MCP manager/routes and frontend merge logic.
 

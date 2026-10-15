@@ -184,7 +184,7 @@ There are two related grouping layers.
 
 ### Cross-message grouping in `Chat.tsx`
 
-When `chat:groupToolReasoningRuns` is enabled, `Chat.tsx` can collapse consecutive process-only assistant/ex-agent messages into a single `process_group` row if the run has at least `CROSS_MESSAGE_PROCESS_GROUP_MIN_MESSAGES` messages.
+When `chat:groupToolReasoningRuns` is enabled, `Chat.tsx` groups consecutive process-only assistant/ex-agent messages into a single `process_group` from its first message. Context injections and message-owned hook records are projected below its collapsed history through `MessageActivity`; they do not split the run. User/compaction rows, substantive or trailing prose, errors, interactive output, and run footers remain boundaries.
 
 A message is process-only when it has reasoning/tool/process signals but no substantial text or image content. `Chat.tsx` identifies process signals from:
 - `thinking_block`;
@@ -196,7 +196,7 @@ If a following assistant message contains both process content and substantial f
 
 ### Within-message grouping in `ChatMessage.tsx`
 
-`ChatMessage` can group long runs of process items within a single message or stream. Process items include reasoning and tool cards. Text that looks like a short process annotation is allowed not to break the group. Interactive/visual surfaces remain outside grouped runs: all legacy `mcp__*` calls and `mcp_manager invoke` calls, `html_renderer`, and `plan_md` visualisation/clarification actions (`display`, `visualize`/`visualise`, and `clarify`). These tools also prevent their containing message from entering a cross-message process group. Group summaries show only the tool count and omit the duplicate run/reasoning counts.
+`ChatMessage` groups process items from the first item within a message or stream. Process items include reasoning and tool cards; context and hooks are visible attachments rather than run boundaries. Text that looks like a short process annotation is allowed not to break the group. Interactive/visual surfaces remain outside grouped runs: all legacy `mcp__*` calls and `mcp_manager invoke` calls, `html_renderer`, and `plan_md` visualisation/clarification actions (`display`, `visualize`/`visualise`, and `clarify`). These tools also prevent their containing message from entering a cross-message process group. Group summaries show only the tool count and omit the duplicate run/reasoning counts.
 
 The relevant CSS utilities are `tool-expand-container`, `tool-expand-content`, and `tool-chevron` in `index.css`.
 
@@ -319,3 +319,33 @@ model/history content. Detection uses provenance metadata, not matching prose.
 `Chat.tsx` uses the compact virtual-height estimate; `ChatMessage` also guards
 shared callers such as the parallel transcript. Rendering tests:
 `WatcherCompletionNotice.test.tsx` and `SummarisedMessage.test.tsx`.
+
+## Attached agent activity
+
+`AgentSteps.tsx` is the shared group shell. Only history collapses; `MessageActivity.tsx`
+keeps context and hook cards mounted below it. Hooks retain their real message IDs for
+polling and Redux reconciliation. Context with a `tool_use_id` shows its tool step;
+hooks have message ownership only, so the renderer does not invent a step association.
+
+`agentActivity.ts` partitions within-message process/activity/prose, splits the leading
+live process segment from visible output, and computes result-based counts. Pending
+calls are labelled awaiting result, not guaranteed executing. Active hooks take priority
+in the status line. Short trailing answers remain outside history even if followed by
+context. The grouping preference still restores ungrouped rendering.
+
+`Chat.tsx` attaches the current turn's process events to the trailing group only when
+its branch anchor belongs to that group and no user/compaction/footer boundary intervenes.
+The existing persisted-turn suppression owns deduplication: retained transient buffers
+are not replayed after persistence; the next generation's reset events can append.
+Final text stays in the existing in-flow streaming tail outside the virtualizer.
+Group keys use their first member/item, not the last appended tool.
+
+`agentActivity.css` uses shared motion tokens for opacity-only entry and reduced-motion
+fallback. No streaming height tweening is added. Counts remain visible while expanded.
+Shared labels use `leading-tight` rather than `leading-none` with truncation to avoid
+clipping descenders. Focus rings and independent context/hook toggles remain available.
+
+Regression tests: `src/components/ChatMessage/agentActivity.test.tsx` plus existing
+context, disclosure, hook state, and stream projection tests. Manual checks should cover
+an open group across provider turns, collapsed hook polling, long-answer scrolling,
+branch changes, abort/error, disabled grouping, custom themes and reduced motion.

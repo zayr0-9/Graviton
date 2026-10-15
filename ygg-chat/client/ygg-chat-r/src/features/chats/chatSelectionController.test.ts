@@ -4,7 +4,7 @@ vi.hoisted(() => {
 })
 import reducer, { chatSliceActions as actions } from './chatSlice'
 import { createChatSelectionController, type LineageSelectionDetail } from './chatSelectionController'
-import { chatSelectionScrollHandled } from './chatSelection'
+import { chatSelectionScrollHandled, isPendingViewStreamOwned } from './chatSelection'
 import { selectCurrentViewStreamFor } from './chatSelectors'
 import type { Message } from './chatTypes'
 import { applyStreamProjectionPolicy, projectServerEvent } from './sseProjection'
@@ -158,9 +158,9 @@ describe('review regressions', () => {
   it('turns initial snapshot failure into a retryable error rather than an infinite pending state', () => {
     const h = setup()
     h.controller.request({ kind: 'conversation', conversationId: 'c' }, 'route')
-    h.controller.snapshotFailed('other')
+    h.controller.snapshotFailed('other', h.get().selection.requestId)
     expect(h.get().selection.status).toBe('pending')
-    h.controller.snapshotFailed('c')
+    h.controller.snapshotFailed('c', h.get().selection.requestId)
     expect(h.get().selection.status).toBe('error')
     h.controller.request({ kind: 'conversation', conversationId: 'c' }, 'retry')
     expect(h.get().selection.status).toBe('pending')
@@ -195,4 +195,137 @@ it('keeps first-user advancement after same-view focus while the startup stream 
   const message = { ...rows[0], id: 'new-user', parent_id: 'a' }
   for (const action of projectServerEvent({ type: 'user_message_persisted', message } as any, { streamId: 'run', conversationId: 'c' })) h.dispatch(action)
   expect(h.get().conversation.currentPath).toEqual(['root', 'a', 'new-user'])
+})
+
+
+describe('failed-selection recovery ownership', () => {
+  it('recovers only with matching snapshot authority and keeps the same intent revisions', async () => {
+    const h = setup()
+    const requestId = h.controller.request({ kind: 'message', conversationId: 'c', messageId: 'b' }, 'route')
+    h.controller.snapshotFailed('c', requestId)
+    const failed = h.get().selection
+    await h.controller.resolve('c', vi.fn())
+    expect(h.get().selection.status).toBe('error')
+    h.snapshot()
+    await h.controller.resolve('other', vi.fn())
+    expect(h.get().selection.status).toBe('error')
+    await h.controller.resolve('c', vi.fn())
+    expect(h.get().selection).toMatchObject({ status: 'ready', error: null, requestId,
+      revision: failed.revision, fallbackRevision: failed.fallbackRevision })
+    expect(h.get().conversation.currentPath).toEqual(['root', 'b'])
+  })
+
+  it('does not let a prior same-chat failure poison a newer request', () => {
+    const h = setup()
+    const previous = h.controller.request({ kind: 'conversation', conversationId: 'c' }, 'route')
+    const latest = h.controller.request({ kind: 'message', conversationId: 'c', messageId: 'b' }, 'search')
+    h.controller.snapshotFailed('c', previous)
+    expect(h.get().selection).toMatchObject({ requestId: latest, status: 'pending', error: null })
+  })
+
+  it('aborts old same-ID resolver attempts and prevents their cleanup from clearing a replacement', async () => {
+    const old = deferred<LineageSelectionDetail>()
+    const next = deferred<LineageSelectionDetail>()
+    const loader = vi.fn().mockImplementationOnce(() => old.promise).mockImplementationOnce(() => next.promise)
+    const h = setup(loader)
+    const requestId = h.controller.request({ kind: 'lineage', conversationId: 'c', lineageId: 'fork' }, 'route')
+    h.snapshot()
+    const first = h.controller.resolve('c', vi.fn())
+    h.controller.snapshotFailed('c', requestId)
+    expect(loader.mock.calls[0][1].aborted).toBe(true)
+    const replacement = h.controller.resolve('c', vi.fn())
+    old.resolve({ pathMessageIds: ['root', 'a'] })
+    await first
+    await h.controller.resolve('c', vi.fn())
+    expect(loader).toHaveBeenCalledTimes(2)
+    next.resolve({ pathMessageIds: ['root', 'b'] })
+    await replacement
+    expect(h.get().conversation.currentPath).toEqual(['root', 'b'])
+  })
+
+  it('teardown aborts a lookup without cancelling selection or background generation', async () => {
+    const response = deferred<LineageSelectionDetail>()
+    const h = setup(vi.fn(() => response.promise))
+    h.controller.request({ kind: 'lineage', conversationId: 'c', lineageId: 'fork' }, 'route')
+    h.snapshot()
+    h.dispatch(actions.sendingStarted({ streamId: 'run', conversationId: 'c', updatePath: false }))
+    const pending = h.controller.resolve('c', vi.fn())
+    const selection = h.get().selection
+    h.controller.dispose()
+    response.resolve({ pathMessageIds: ['root', 'a'] })
+    await pending
+    expect(h.get().selection).toBe(selection)
+    expect(h.get().streaming.byId.run.active).toBe(true)
+  })
+
+  it('retains background persisted rows but blocks path stealing during failure and recovery', async () => {
+    const h = setup()
+    h.controller.request({ kind: 'message', conversationId: 'c', messageId: 'a' }, 'route')
+    h.snapshot()
+    await h.controller.resolve('c', vi.fn())
+    h.dispatch(actions.sendingStarted({ streamId: 'old', conversationId: 'c' }))
+    const requestId = h.controller.request({ kind: 'message', conversationId: 'c', messageId: 'b' }, 'route')
+    h.controller.snapshotFailed('c', requestId)
+    const message = { ...rows[0], id: 'background-user', parent_id: 'a' }
+    for (const action of projectServerEvent({ type: 'user_message_persisted', message } as any, { streamId: 'old', conversationId: 'c' })) h.dispatch(action)
+    expect(h.get().conversation.messages.some(row => row.id === message.id)).toBe(true)
+    expect(h.get().conversation.currentPath).toEqual(['root', 'a'])
+    await h.controller.resolve('c', vi.fn())
+    expect(h.get().selection.status).toBe('ready')
+    expect(h.get().conversation.currentPath).toEqual(['root', 'b'])
+    expect(h.get().streaming.byId.old.active).toBe(true)
+  })
+
+  it('cannot recover a cancelled request or replay its target after later navigation', async () => {
+    const h = setup()
+    const requestId = h.controller.request({ kind: 'message', conversationId: 'c', messageId: 'a' }, 'route')
+    h.controller.snapshotFailed('c', requestId)
+    h.snapshot()
+    h.controller.cancel()
+    await h.controller.resolve('c', vi.fn())
+    expect(h.get().selection.status).toBe('idle')
+    h.controller.request({ kind: 'message', conversationId: 'c', messageId: 'b' }, 'search')
+    await h.controller.resolve('c', vi.fn())
+    h.controller.snapshotFailed('c', requestId)
+    await h.controller.resolve('c', vi.fn())
+    expect(h.get().conversation.currentPath).toEqual(['root', 'b'])
+    expect(h.get().selection.status).toBe('ready')
+  })
+})
+
+
+it('same-view recovery restores startup ownership without exposing it during loading', async () => {
+  const h = setup()
+  const target = { kind: 'message' as const, conversationId: 'c', messageId: 'a' }
+  h.controller.request(target, 'route')
+  h.snapshot()
+  await h.controller.resolve('c', vi.fn())
+  h.dispatch(actions.sendingStarted({ streamId: 'run', conversationId: 'c' }))
+  const owner = { streamId: 'run', conversationId: 'c', selectionRevision: h.get().selection.fallbackRevision }
+  const requestId = h.controller.request(target, 'route')
+  h.controller.snapshotFailed('c', requestId)
+  expect(isPendingViewStreamOwned(owner, 'c', h.get().selection, h.get().streaming.byId.run)).toBe(false)
+  await h.controller.resolve('c', vi.fn())
+  expect(isPendingViewStreamOwned(owner, 'c', h.get().selection, h.get().streaming.byId.run)).toBe(true)
+  const message = { ...rows[0], id: 'new-user', parent_id: 'a' }
+  for (const action of projectServerEvent({ type: 'user_message_persisted', message } as any, { streamId: 'run', conversationId: 'c' })) h.dispatch(action)
+  expect(h.get().conversation.currentPath).toEqual(['root', 'a', 'new-user'])
+})
+
+it('recovery to a deleted target falls back without restoring an old startup owner', async () => {
+  const h = setup()
+  const target = { kind: 'message' as const, conversationId: 'c', messageId: 'a' }
+  h.controller.request(target, 'route')
+  h.snapshot()
+  await h.controller.resolve('c', vi.fn())
+  h.dispatch(actions.sendingStarted({ streamId: 'run', conversationId: 'c' }))
+  const owner = { streamId: 'run', conversationId: 'c', selectionRevision: h.get().selection.fallbackRevision }
+  const requestId = h.controller.request(target, 'route')
+  h.controller.snapshotFailed('c', requestId)
+  h.dispatch(actions.conversationSnapshotApplied({ conversationId: 'c', messages: [rows[0], rows[2]], tree: null }))
+  await h.controller.resolve('c', vi.fn(async () => {}))
+  expect(h.get().selection.status).toBe('ready')
+  expect(h.get().selection.error).toContain('no longer available')
+  expect(h.get().conversation.currentPath).not.toContain('a')
+  expect(isPendingViewStreamOwned(owner, 'c', h.get().selection, h.get().streaming.byId.run)).toBe(false)
 })

@@ -47,6 +47,8 @@ export const chatSelectionCommitted = createAction<ResolvedChatSelection & {
   requestId: string; error?: string; scrollMode?: 'focus' | 'latest' | 'none'
 }>('chat/selectionCommitted')
 export const chatSelectionFailed = createAction<{ requestId: string; error: string }>('chat/selectionFailed')
+// Recovery of the same intent is not navigation: preserve revision and stream ownership.
+export const chatSelectionResumed = createAction<{ requestId: string }>('chat/selectionResumed')
 export const chatSelectionCancelled = createAction('chat/selectionCancelled')
 export const chatSelectionScrollHandled = createAction<string>('chat/selectionScrollHandled')
 

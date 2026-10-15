@@ -16,3 +16,11 @@ describe('manager-only MCP model exposure', () => {
     }
   })
 })
+
+it('exposes the Claude bridge as a built-in on both model selectors', () => {
+  for (const tools of [getToolsForAI(), getToolsForOpenAIChatGPT()]) {
+    const bridge = tools.find(tool => tool.name === 'claude_bridge')
+    expect(bridge).toBeDefined()
+    expect(bridge?.isCustom).toBeUndefined()
+  }
+})

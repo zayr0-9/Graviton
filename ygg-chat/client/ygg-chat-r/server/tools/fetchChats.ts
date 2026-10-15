@@ -1,3 +1,4 @@
+import { isCompactionControl } from '../../../../shared/compaction.js'
 import { createHash } from 'node:crypto'
 import { isContextInjectionMessage } from '../../../../shared/contextInjection.js'
 
@@ -697,7 +698,7 @@ async function executePage(
   const { chain, stoppedReason, nextBranchChildIds } = buildLinearBranchFromMessage(startMessage, messageMap)
   const eligible = chain.filter(msg =>
     (args.includeToolMessages || ['user', 'assistant'].includes(safeText(msg.role))) &&
-    (args.includeSyntheticMessages || (!isContextInjectionMessage(msg) && msg.note !== '__auto_compaction_summary__')))
+    (args.includeSyntheticMessages || (!isContextInjectionMessage(msg) && !isCompactionControl(msg) && msg.note !== '__auto_compaction_summary__')))
   const offset = clampInt(args?.offset, DEFAULT_BRANCH_OFFSET, 1, MAX_BRANCH_OFFSET)
   const sliced = eligible.slice(skip, skip + offset)
   return { success: true, action, conversationId, messageId, skip, offset,

@@ -20,7 +20,7 @@ describe('ImageAttachmentNotice', () => {
     expect(html).toContain('Image attached')
     expect(html).toContain('id="message-image"')
     expect(html).toContain('data-chat-image-attachment="true"')
-    expect(html).toContain('flex h-8 items-center gap-2 px-2.5 text-xs text-stone-500 dark:text-stone-400')
+    expect(html).toContain('flex h-8 min-w-0 w-full items-center gap-2 px-2.5 text-xs text-stone-500 dark:text-stone-400')
     expect(html).not.toContain('rounded-2xl')
   })
 

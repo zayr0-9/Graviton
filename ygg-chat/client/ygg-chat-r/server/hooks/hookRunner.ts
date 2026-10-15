@@ -472,6 +472,7 @@ function buildHookPayload(req: HookRunRequest): Record<string, unknown> {
   if (req.provider) payload.provider = req.provider
   if (req.model) payload.model = req.model
   if (req.prompt != null) payload.prompt = req.prompt
+  if (req.compactionPhase) payload.compaction_phase = req.compactionPhase
   if (req.lastAssistantMessage != null) payload.last_assistant_message = req.lastAssistantMessage
 
   if (req.toolCall) {

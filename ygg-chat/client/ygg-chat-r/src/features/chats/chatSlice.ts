@@ -1,4 +1,5 @@
 import { createSlice, PayloadAction } from '@reduxjs/toolkit'
+import { branchModelKey, loadBranchModelDrafts, saveBranchModelDrafts, type BranchModelSelection } from './branchModelSelection'
 import { normalizeChatErrorEnvelope } from '../../../../../shared/chatErrors'
 import providersList from '../../../../../shared/providers.json'
 import { ConversationId, MessageId } from '../../../../../shared/types'
@@ -30,8 +31,9 @@ import {
   UserSystemPrompt,
 } from './chatTypes'
 import { createEmptyStreamState, DEFAULT_STREAM_ID } from './streamHelpers'
-import { chatSelectionRequested, chatSelectionCommitted, chatSelectionFailed, chatSelectionCancelled, chatSelectionScrollHandled, initialChatSelection } from './chatSelection'
+import { chatSelectionRequested, chatSelectionCommitted, chatSelectionFailed, chatSelectionResumed, chatSelectionCancelled, chatSelectionScrollHandled, initialChatSelection } from './chatSelection'
 import { buildPathToConversationMessage } from './conversationTree'
+import { canFollowWatchContinuation } from './watchContinuation'
 import toolDefinitions, { ToolDefinition } from './toolDefinitions'
 
 // Helper to deep clone tool definitions for mutable Redux state
@@ -275,6 +277,7 @@ const makeInitialState = (): ChatState => {
     operationMode: 'plan',
     operationModeChanges: {},
     operationModeDrafts: {},
+    branchModelDrafts: loadBranchModelDrafts(),
     messageQueues: {},
     freeTier: {
       freeGenerationsRemaining: null,
@@ -320,12 +323,13 @@ function setConversationIdentity(state: ChatState, nextConversationId: Conversat
   state.conversation.currentConversationId = nextConversationId
 }
 
-function streamCanAdvanceSelection(state: ChatState, streamId?: string | null): boolean {
+function streamCanAdvanceSelection(state: ChatState, streamId?: string | null, targetMessageId?: MessageId): boolean {
   if (state.selection?.status === 'pending' || state.selection?.status === 'error') return false
   if (!streamId) return true // Non-stream mutation/repair callers retain their structural policy.
   const stream = state.streaming.byId[streamId]
   if (!stream) return true // Legacy projected actions may precede a reconstructed slot.
   if (stream.updatePath === false || String(stream.conversationId) !== String(state.conversation.currentConversationId)) return false
+  if (stream.watchContinuation) return canFollowWatchContinuation(state, stream, targetMessageId)
   if (stream.selectionRevision === (state.selection?.revision ?? 0)) return true
   if (state.conversation.currentLineageId && stream.lineage.lineageIdConfirmed) {
     return state.conversation.currentLineageId === stream.lineage.lineageId
@@ -341,6 +345,14 @@ export const chatSlice = createSlice({
   name: 'chat',
   initialState,
   reducers: {
+    branchModelSelected: (state, action: PayloadAction<BranchModelSelection>) => {
+      const { currentConversationId, currentPath, currentLineageId } = state.conversation
+      if (!currentConversationId) return
+      state.branchModelDrafts ??= {}
+      const anchor = currentLineageId ? `lineage:${currentLineageId}` : currentPath.at(-1)
+      state.branchModelDrafts[branchModelKey(currentConversationId, anchor)] = action.payload
+      saveBranchModelDrafts(state.branchModelDrafts)
+    },
     //provider management
     providerSelected: (state, action: PayloadAction<string>) => {
       if (!state.providerState.providers.some(provider => provider.name === action.payload)) {
@@ -480,6 +492,7 @@ export const chatSlice = createSlice({
         conversationId,
         selectionRevision: action.payload?.selectionRevision ?? state.selection?.revision ?? 0,
         updatePath: action.payload?.updatePath,
+        watchContinuation: action.payload?.watchContinuation,
       }
 
       // Add to active list (dedupe)
@@ -495,7 +508,7 @@ export const chatSlice = createSlice({
       // Legacy: Keep composition.sending in sync for primary streams
       if (streamType === 'primary') {
         state.composition.sending = true
-        state.composition.input.content = ''
+        if (!action.payload?.preserveDrafts) state.composition.input.content = ''
       }
 
       if (!action.payload?.preserveDrafts && streamType === 'primary') {
@@ -669,6 +682,9 @@ export const chatSlice = createSlice({
         stream.thinkingBuffer = ''
         stream.toolCalls = []
       } else if (chunk.type === 'chunk') {
+        // Compaction has its own animation. Canonical persisted rows retain the full
+        // response; transient model text/reasoning/tools must not enter live bubbles.
+        if (stream.compactionStatus === 'started') return
         if (chunk.part === 'reasoning') {
           const delta = chunk.delta ?? chunk.content ?? ''
           if (delta) {
@@ -758,6 +774,7 @@ export const chatSlice = createSlice({
           }
         }
       } else if (chunk.type === 'tool_call') {
+        if (stream.compactionStatus === 'started') return
         // Handle legacy tool_call format (chunk.type === 'tool_call' directly)
         if (chunk.toolCall) {
           const existingIndex = stream.toolCalls.findIndex(tc => tc.id === chunk.toolCall!.id)
@@ -903,7 +920,7 @@ export const chatSlice = createSlice({
         state.streaming.lastCompletedId = streamId
 
         // CRITICAL: Only update currentPath if explicitly requested AND conditions are met
-        if (updatePath && streamCanAdvanceSelection(state, streamId)) {
+        if (updatePath && streamCanAdvanceSelection(state, streamId, messageId)) {
           const shouldUpdatePath =
             state.conversation.currentPath.length === 0 ||
             isOnCurrentBranch(state.conversation.currentPath, state.conversation.messages, messageId)
@@ -959,7 +976,15 @@ export const chatSlice = createSlice({
       action: PayloadAction<{ streamId: string; status: 'started' | 'completed' | 'failed' }>
     ) => {
       const stream = state.streaming.byId[action.payload.streamId]
-      if (stream) stream.compactionStatus = action.payload.status
+      if (stream) {
+        stream.compactionStatus = action.payload.status
+        // Clear at both boundaries, including failure, so summary text cannot flash
+        // after the animation stops. Preserve anchors, decisions and error events.
+        stream.buffer = ''
+        stream.thinkingBuffer = ''
+        stream.toolCalls = []
+        stream.events = stream.events.filter(event => event.type === 'error')
+      }
     },
 
     // Update stream lineage after getting target parent ID
@@ -1332,10 +1357,11 @@ export const chatSlice = createSlice({
           return isRunSettingsNotification(row)
         })
       const shouldSwitch = !preservesModeTail && (
-        newMessage.role === 'user' || state.conversation.currentPath.length === 0 || currentTip === newMessage.parent_id
+        newMessage.role === 'user' || state.conversation.currentPath.length === 0 || currentTip === newMessage.parent_id ||
+        Boolean(action.payload.streamId && state.streaming.byId[action.payload.streamId]?.watchContinuation)
       )
 
-      if (shouldSwitch && action.payload.updatePath !== false && streamCanAdvanceSelection(state, action.payload.streamId)) {
+      if (shouldSwitch && action.payload.updatePath !== false && streamCanAdvanceSelection(state, action.payload.streamId, newMessage.id)) {
         const stream = action.payload.streamId ? state.streaming.byId[action.payload.streamId] : null
         state.conversation.currentLineageId = stream?.lineage.lineageIdConfirmed ? stream.lineage.lineageId ?? null : null
         state.conversation.currentPath = buildPathToMessage(newMessage.id)
@@ -1604,7 +1630,7 @@ export const chatSlice = createSlice({
       if (parent && !parent.children_ids.includes(message.id)) parent.children_ids.push(message.id)
       const tip = state.conversation.currentPath.at(-1)
       const nextPath = buildPathToMessage(state.conversation.messages, message.id)
-      if (action.payload.updatePath !== false && streamCanAdvanceSelection(state, streamId) && (!tip || nextPath.includes(tip))) {
+      if (action.payload.updatePath !== false && streamCanAdvanceSelection(state, streamId, message.id) && (!tip || nextPath.includes(tip))) {
         state.conversation.currentPath = nextPath
       }
       const stream = state.streaming.byId[streamId]
@@ -1664,7 +1690,7 @@ export const chatSlice = createSlice({
       const path = state.conversation.currentPath
       const tip = path[path.length - 1] ?? null
       // A notification on a background branch must not steal the selected path.
-      if (updatePath !== false && streamCanAdvanceSelection(state, streamId) && (tip === message.parent_id || path.length === 0)) {
+      if (updatePath !== false && streamCanAdvanceSelection(state, streamId, message.id) && (tip === message.parent_id || path.length === 0)) {
         state.conversation.currentPath = buildPathToMessage(state.conversation.messages, message.id)
         state.operationMode = mode
       } else if (matchesPending) {
@@ -1832,6 +1858,11 @@ export const chatSlice = createSlice({
         if (state.selection.requestId !== payload.requestId || state.selection.status !== 'pending') return
         state.selection.status = 'error'
         state.selection.error = payload.error
+      })
+      .addCase(chatSelectionResumed, (state, { payload }) => {
+        if (state.selection.requestId !== payload.requestId || state.selection.status !== 'error') return
+        state.selection.status = 'pending'
+        state.selection.error = null
       })
       .addCase(chatSelectionCancelled, state => {
         const revision = (state.selection?.revision ?? 0) + 1

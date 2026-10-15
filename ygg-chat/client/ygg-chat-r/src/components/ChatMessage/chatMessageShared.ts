@@ -16,6 +16,9 @@ export const PROCESS_RUN_GROUP_MIN_ITEMS = 3
  */
 export const MESSAGE_BLOCK_STACK_CLASS = 'flex min-w-0 w-full flex-col gap-1.5'
 export const MESSAGE_BLOCK_INSET_CLASS = 'px-2.5'
+/** Standalone automated rows share the message gutter and one icon/label grid. */
+export const MESSAGE_NOTICE_WRAPPER_CLASS = 'min-w-0 px-0 py-1 sm:px-2'
+export const MESSAGE_NOTICE_ROW_CLASS = `flex h-8 min-w-0 w-full items-center gap-2 ${MESSAGE_BLOCK_INSET_CLASS}`
 
 /**
  * Type scale for message chrome. Four steps only, because near-duplicate sizes read as noise
@@ -43,10 +46,14 @@ export const FOCUS_RING_CLASS =
 
 /** Collapsible header row shared by reasoning, tool cards, and grouped agent steps. */
 export const DISCLOSURE_ROW_CLASS = `flex h-8 min-w-0 w-full items-center gap-2 rounded-xl ${MESSAGE_BLOCK_INSET_CLASS} text-left hover:bg-black/[0.04] dark:hover:bg-white/[0.05] ${FAST_COLOR_TRANSITION_CLASS} ${FOCUS_RING_CLASS}`
+/** Quiet transcript chrome: shared geometry for mode, grouped steps, and context rows. */
+export const QUIET_ROW_CLASS = `${MESSAGE_NOTICE_ROW_CLASS} rounded-lg text-left hover:bg-black/[0.04] dark:hover:bg-white/[0.05] ${FAST_COLOR_TRANSITION_CLASS} ${FOCUS_RING_CLASS}`
+export const QUIET_MUTED_CLASS = 'text-neutral-500 dark:text-neutral-400'
+export const QUIET_CHEVRON_CLASS = `ml-auto shrink-0 ${QUIET_MUTED_CLASS} transition-transform duration-150 ease-out motion-reduce:transition-none`
 /** Layout of the label slot, with no typography, for a caller-supplied node. */
 export const DISCLOSURE_LABEL_LAYOUT_CLASS = 'min-w-0 shrink-0 max-w-[60%] truncate'
-export const DISCLOSURE_LABEL_CLASS = `${DISCLOSURE_LABEL_LAYOUT_CLASS} ${TEXT_LABEL_CLASS} font-medium leading-none`
-export const DISCLOSURE_SUMMARY_CLASS = `min-w-0 flex-1 truncate ${TEXT_LABEL_CLASS} leading-none text-neutral-500 dark:text-neutral-500`
+export const DISCLOSURE_LABEL_CLASS = `${DISCLOSURE_LABEL_LAYOUT_CLASS} ${TEXT_LABEL_CLASS} font-medium leading-tight`
+export const DISCLOSURE_SUMMARY_CLASS = `min-w-0 flex-1 truncate ${TEXT_LABEL_CLASS} leading-tight text-neutral-500 dark:text-neutral-500`
 export const DISCLOSURE_CHEVRON_CLASS =
   'shrink-0 text-neutral-400 dark:text-neutral-600 transition-transform duration-150 ease-out motion-reduce:transition-none'
 /** Legacy chevron classes still used by SubagentTranscript. Same motion token as `DISCLOSURE_CHEVRON_CLASS`. */

@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useAppSelector } from '../../hooks/redux'
 import { ChatMessage } from '../ChatMessage/ChatMessage'
+import { SummarisedMessage } from '../ChatMessage/SummarisedMessage'
 import { StreamingThinkingIndicator } from '../StreamingThinkingIndicator'
 import { buildAgentPreviewRows } from './agentPreviewContent'
 import { buildForkPreviewRows, selectForkPreviewRuns } from './agentForkPreview'
@@ -11,6 +12,10 @@ export function AgentRunPreview({ streamId, grouped, fillHeight = false, transcr
   const run = previews[streamId]
   const runs = useMemo(() => wholeFork ? selectForkPreviewRuns(previews, streamId) : run ? [run] : [], [previews, streamId, run, wholeFork])
   const rows = useMemo(() => wholeFork ? buildForkPreviewRows(runs) : run ? buildAgentPreviewRows(run).map(row => ({ ...row, streamId, firstInRun: false, runStartedAt: run.stream.createdAt })) : [], [runs, run, wholeFork, streamId])
+  // Read run-scoped state, not Chat's currently selected branch. A whole-fork
+  // preview may include a compacting run other than its representative.
+  const compacting = runs.some(preview => preview.stream.active && preview.stream.compactionStatus === 'started')
+  const showActivity = isStreaming || compacting
   const scrollRef = useRef<HTMLDivElement>(null)
   const followRef = useRef(true)
   const [following, setFollowing] = useState(true)
@@ -20,7 +25,7 @@ export function AgentRunPreview({ streamId, grouped, fillHeight = false, transcr
   useEffect(() => {
     const element = scrollRef.current
     if (element && followRef.current) element.scrollTop = element.scrollHeight
-  }, [rows, grouped, isStreaming])
+  }, [rows, grouped, showActivity, compacting])
 
   if (!run) return <p className='p-4 text-sm text-neutral-500'>No captured transcript is available for this run. Use Open chat to view saved messages.</p>
 
@@ -34,17 +39,19 @@ export function AgentRunPreview({ streamId, grouped, fillHeight = false, transcr
           followRef.current = element.scrollHeight - element.scrollTop - element.clientHeight < 48
           setFollowing(followRef.current)
         }}>
-        {rows.length === 0 ? !isStreaming && <p className='p-3 text-sm text-neutral-500'>Waiting for run output…</p> : rows.map(row => (
+        {rows.length === 0 ? !showActivity && <p className='p-3 text-sm text-neutral-500'>Waiting for run output…</p> : rows.map(row => (
           <div key={row.key} className={row.role === 'user' ? 'min-w-0 [&_.chat-markdown]:[overflow-wrap:anywhere]' : 'min-w-0'}>
+          {row.summarised ? <SummarisedMessage id={`agent-preview:${row.streamId}:${row.key}`} className='w-full'
+            customTheme={theme} customThemeEnabled={enabled} isDarkMode={isDarkMode} /> :
           <ChatMessage id={`agent-preview:${row.streamId}:${row.key}`} role={row.role}
             content={row.content} contentBlocks={row.blocks}
             width='w-full' showInlineActions={false} readOnly keepTextOutsideGroups
-            groupToolReasoningRuns={grouped} customTheme={theme} customThemeEnabled={enabled} isDarkMode={isDarkMode} />
+            groupToolReasoningRuns={grouped} customTheme={theme} customThemeEnabled={enabled} isDarkMode={isDarkMode} />}
           </div>
         ))}
-        {isStreaming && (
+        {showActivity && (
           <div className={`${rows.length > 0 ? 'pt-2' : 'pt-1'} px-0 sm:px-2`}>
-            <StreamingThinkingIndicator />
+            <StreamingThinkingIndicator compacting={compacting} />
           </div>
         )}
       </div>

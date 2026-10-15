@@ -1,6 +1,6 @@
 import type { ContentBlock } from '@/features/chats/chatTypes'
 import { buildMcpAppEntryKey, getMcpAppHeight } from '../McpAppIframe/mcpAppSizing'
-import { isProcessOnlyBlockSet, PROCESS_RUN_GROUP_MIN_ITEMS } from './chatMessageShared'
+import { isProcessOnlyBlockSet, isExcludedFromProcessRunGrouping } from './chatMessageShared'
 import { stripAttachedImagePathMetadata } from '../../features/chats/attachedImagePaths'
 
 /**
@@ -41,8 +41,8 @@ const REM_TEXT_BLOCK_PADDING = 0.5
 const REM_DISCLOSURE_ROW = 2
 /** Image block `py-1`, both sides. */
 const REM_IMAGE_PADDING = 0.5
-/** `ContextInjectionCard` collapsed header: `py-2.5` around an 18px icon row. */
-const REM_CONTEXT_CARD = 1.25
+/** Context and hook rows use the shared h-8 quiet header. */
+const REM_CONTEXT_CARD = 2
 /** Outer wrapper `pt-3 pb-1` on user rows, `py-1` on ordinary rows. */
 const REM_OUTER_PADDING_USER = 1
 const REM_OUTER_PADDING_OTHER = 0.5
@@ -231,7 +231,7 @@ export interface EstimateMessageRowInput {
   hookRunCount?: number
 }
 
-type ItemKind = 'tool' | 'reasoning' | 'other'
+type ItemKind = 'tool' | 'reasoning' | 'activity' | 'other'
 
 /**
  * Estimated pixel height of one message row.
@@ -265,7 +265,7 @@ export const estimateMessageRowHeight = (input: EstimateMessageRowInput): number
   const disclosureRow = REM_DISCLOSURE_ROW * rootFontSize
   const textBlockPadding = REM_TEXT_BLOCK_PADDING * rootFontSize
   const imageBlock = REM_IMAGE_PADDING * rootFontSize + IMAGE_CONTENT
-  const contextCard = REM_CONTEXT_CARD * rootFontSize + 18
+  const contextCard = REM_CONTEXT_CARD * rootFontSize
   const stackGap = REM_STACK_GAP * rootFontSize
 
   const contentWidth = Math.max(
@@ -326,7 +326,7 @@ export const estimateMessageRowHeight = (input: EstimateMessageRowInput): number
           break
         }
         case 'tool_use': {
-          items.push([estimateSpecialToolCard(block, rootFontSize, messageId, isMcpAppTool) ?? disclosureRow, 'tool'])
+          items.push([estimateSpecialToolCard(block, rootFontSize, messageId, isMcpAppTool) ?? disclosureRow, isExcludedFromProcessRunGrouping(block.name, block.input) ? 'other' : 'tool'])
           break
         }
         case 'image': {
@@ -339,7 +339,7 @@ export const estimateMessageRowHeight = (input: EstimateMessageRowInput): number
         }
         case 'context_injection': {
           // Consecutive injection blocks become one card.
-          if (blocks[index - 1]?.type !== 'context_injection') items.push([contextCard, 'other'])
+          if (blocks[index - 1]?.type !== 'context_injection') items.push([contextCard, 'activity'])
           break
         }
         // tool_result folds into its tool_use group. reasoning_details, provider bookkeeping
@@ -353,7 +353,7 @@ export const estimateMessageRowHeight = (input: EstimateMessageRowInput): number
 
   const imageNoticeHeight = isUserRow && input.hasAcceptedImages ? smallChromeRowHeight(rootFontSize) : 0
   const chromeHeight = baseChrome(isUserRow, artifactCount, showsActionsRow, isProcessOnly, rootFontSize) + imageNoticeHeight
-  if (!isUserRow && hookRunCount > 0) items.push([REM_CONTEXT_CARD * rootFontSize, 'other'])
+  if (!isUserRow && hookRunCount > 0) items.push([contextCard, 'activity'])
   if (items.length === 0) return chromeHeight
 
   // Long runs of process items collapse into a single "Agent steps" row. Build the list of
@@ -363,10 +363,9 @@ export const estimateMessageRowHeight = (input: EstimateMessageRowInput): number
 
   const flushRun = () => {
     if (run.length === 0) return
-    if (groupToolReasoningRuns && run.length >= PROCESS_RUN_GROUP_MIN_ITEMS) {
-      // The collapsed "Agent steps" row is a disclosure row, not a process card, so it does not
-      // take the tighter run gap.
-      children.push([disclosureRow, 'other'])
+    if (groupToolReasoningRuns && !isUserRow && run.some(item => isProcessKind(item[1]))) {
+      const attachments = run.filter(item => item[1] === 'activity')
+      children.push([disclosureRow + attachments.reduce((height, item) => height + item[0], 0), 'other'])
     } else {
       children.push(...run)
     }
@@ -374,7 +373,7 @@ export const estimateMessageRowHeight = (input: EstimateMessageRowInput): number
   }
 
   for (const item of items) {
-    if (isProcessKind(item[1])) {
+    if (isProcessKind(item[1]) || item[1] === 'activity') {
       run.push(item)
       continue
     }

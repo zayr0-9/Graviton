@@ -227,6 +227,7 @@ export type SubagentRunStatus = 'running' | 'completed' | 'error' | 'aborted'
 export type SubagentMessageRole = 'user' | 'assistant' | 'tool' | 'system'
 
 export interface SubagentMessageRow {
+  meta?: string | Record<string, unknown> | null
   id: string
   run_id: string
   role: string

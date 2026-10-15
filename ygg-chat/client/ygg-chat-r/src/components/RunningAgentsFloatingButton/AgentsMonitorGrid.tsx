@@ -1,8 +1,10 @@
-import { useLayoutEffect, useRef, useState } from 'react'
+import { useLayoutEffect, useRef, useState, type CSSProperties } from 'react'
 import { buildAgentForkGroups, type AgentStreamListItem } from '../../hooks/useRunningAgentStreams'
 import { getThemeModeColor, useCustomChatTheme, useHtmlDarkMode } from '../ThemeManager/themeConfig'
 import { AgentMessageTooltip } from './AgentMessageTooltip'
 import { AgentRunPreview } from './AgentRunPreview'
+import { AgentGridRow } from './AgentGridRow'
+import { getAgentGridColumns } from './agentGridSplit'
 
 interface AgentsMonitorGridProps {
   activeStreams: AgentStreamListItem[]
@@ -25,17 +27,19 @@ export function AgentsMonitorGrid({ activeStreams, streamHistory, grouped, onOpe
   const dark = useHtmlDarkMode()
   const { activeForks, historyForks } = buildAgentForkGroups(activeStreams, streamHistory)
   const forks = [...activeForks, ...historyForks]
-  const textStyle = { color: enabled ? getThemeModeColor(theme.colors.toolJobsPrimaryText, dark) : undefined }
+  const textStyle: CSSProperties & Record<'--agents-grid-streaming-bg' | '--agents-grid-idle-bg', string | undefined> = {
+    color: enabled ? getThemeModeColor(theme.colors.toolJobsPrimaryText, dark) : undefined,
+    '--agents-grid-streaming-bg': enabled ? getThemeModeColor(theme.colors.composerToggleActiveBg, dark) : undefined,
+    '--agents-grid-idle-bg': enabled ? getThemeModeColor(theme.colors.settingsCustomThemesInnerCardBg, dark) : undefined,
+  }
   const mutedStyle = { color: enabled ? getThemeModeColor(theme.colors.toolJobsMutedText, dark) : undefined }
-  const cardStyle = { backgroundColor: enabled ? getThemeModeColor(theme.colors.settingsCustomThemesInnerCardBg, dark) : undefined }
 
   useLayoutEffect(() => {
     const grid = gridRef.current
     if (!grid) return
     const updateColumns = () => {
-      const tracks = getComputedStyle(grid).gridTemplateColumns.trim()
-      const visibleTracks = tracks.split(/\s+/).filter(track => parseFloat(track) > 0)
-      setColumns(Math.max(1, Math.min(3, visibleTracks.length)))
+      const rem = parseFloat(getComputedStyle(document.documentElement).fontSize) || 16
+      setColumns(getAgentGridColumns(grid.getBoundingClientRect().width, window.innerWidth, rem, forks.length))
     }
     updateColumns()
     const observer = new ResizeObserver(updateColumns)
@@ -52,13 +56,17 @@ export function AgentsMonitorGrid({ activeStreams, streamHistory, grouped, onOpe
     <section aria-label='Agent forks' className='flex h-full min-h-0 flex-1 flex-col overflow-hidden' style={textStyle}>
       <div className='min-h-0 flex-1 overflow-y-auto overscroll-contain px-2 pb-2 thin-scrollbar'>
         {forks.length === 0 && <p className='p-3 text-sm text-neutral-500' style={mutedStyle}>No captured agent forks yet.</p>}
-        <div ref={gridRef} className='grid grid-cols-1 gap-3 md:[grid-template-columns:repeat(auto-fit,minmax(min(100%,max(18rem,calc((100%_-_0.75rem)/2))),1fr))] xl:[grid-template-columns:repeat(auto-fit,minmax(min(100%,max(18rem,calc((100%_-_1.5rem)/3))),1fr))]'>
-          {forks.map(fork => {
+        <div ref={gridRef} className='flex flex-col gap-3'>
+          {Array.from({ length: Math.ceil(forks.length / columns) }, (_, rowIndex) => {
+            const row = forks.slice(rowIndex * columns, (rowIndex + 1) * columns)
+            return <AgentGridRow key={rowIndex} label={`Agent row ${rowIndex + 1}`}>
+          {row.map(fork => {
             const stream = fork.representative
             const active = fork.activeStreams.length > 0
+            const cardStyle = { backgroundColor: enabled ? getThemeModeColor(theme.colors[active ? 'agentsGridStreamingCardBg' : 'agentsGridIdleCardBg'], dark) : undefined }
             const name = stream.conversationTitle || `Conversation ${stream.conversationId || 'Unknown'}`
             return (
-              <section key={fork.key} aria-label={`${name} · ${fork.displayName}`} className='flex min-w-0 flex-col overflow-hidden rounded-2xl bg-black/[0.035] dark:bg-white/5' style={{ ...cardStyle, height: getAgentGridCardHeight(columns) }}>
+              <section key={fork.key} aria-label={`${name} · ${fork.displayName}`} className={`flex min-w-0 flex-col overflow-hidden rounded-2xl ${active ? 'bg-orange-50 dark:bg-orange-900/20' : 'bg-black/[0.035] dark:bg-white/5'}`} style={{ ...cardStyle, height: getAgentGridCardHeight(columns) }}>
                 <div className='flex w-full min-w-0 shrink-0 flex-col gap-1 px-3 py-2'>
                   <button type='button' onClick={() => onOpenFork(stream)} aria-label={`Preview ${name} · ${fork.displayName}`}
                     className='flex w-full min-w-0 items-center gap-2 rounded-lg text-left hover:bg-black/5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400 dark:hover:bg-white/5'>
@@ -89,6 +97,8 @@ export function AgentsMonitorGrid({ activeStreams, streamHistory, grouped, onOpe
                 <AgentRunPreview streamId={stream.streamId} grouped={grouped} isStreaming={active} wholeFork fillHeight transcriptLabel={`${name} · ${fork.displayName} transcript`} />
               </section>
             )
+          })}
+            </AgentGridRow>
           })}
         </div>
       </div>

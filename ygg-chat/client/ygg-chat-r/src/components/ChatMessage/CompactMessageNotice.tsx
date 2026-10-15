@@ -1,4 +1,5 @@
 import type { ReactNode } from 'react'
+import { MESSAGE_NOTICE_ROW_CLASS, MESSAGE_NOTICE_WRAPPER_CLASS } from './chatMessageShared'
 import {
   type CustomChatTheme,
   getCustomChatThemeEnabled,
@@ -22,11 +23,11 @@ export function CompactMessageNotice({
   icon, children, title, kind,
 }: CompactMessageNoticeProps & { icon: ReactNode; children: ReactNode; title: string; kind: 'summary' | 'watcher' | 'image' | 'status' }) {
   return (
-    <div id={id} className={`px-0 py-1 sm:px-2 ${className ?? ''}`}
+    <div id={id} className={`${MESSAGE_NOTICE_WRAPPER_CLASS} ${className ?? ''}`}
       data-chat-summary={kind === 'summary' ? 'true' : undefined}
       data-chat-watcher={kind === 'watcher' ? 'true' : undefined}
       data-chat-image-attachment={kind === 'image' ? 'true' : undefined}>
-      <div className='flex h-8 items-center gap-2 px-2.5 text-xs text-stone-500 dark:text-stone-400'
+      <div className={`${MESSAGE_NOTICE_ROW_CLASS} text-xs text-stone-500 dark:text-stone-400`}
         style={customThemeEnabled ? { color: getThemeModeColor(customTheme.colors.toolJobsMutedText, isDarkMode) } : undefined}
         title={title}>
         {icon}

@@ -500,7 +500,7 @@ export function createChatHookSession(config: ChatHookSessionConfig): ChatHookSe
   // Port of chatActions.ts shouldContinueFromStopHook (:1396-1455). Returns true to
   // force one more turn; appends additionalContext (+ the reason on continue) to the
   // shared buffer so the loop folds it into the next turn's system prompt.
-  const runStop = async (params: { assistantMessage: any; streamId: string | null }): Promise<boolean> => {
+  const runStop = async (params: { assistantMessage: any; streamId: string | null; compactionPhase?: 'summarising' }): Promise<boolean> => {
     const lastAssistantMessage = params.assistantMessage
     if (!lastAssistantMessage) return false
     const lastAssistantMessageId = lastAssistantMessage?.id != null ? String(lastAssistantMessage.id) : null
@@ -518,6 +518,7 @@ export function createChatHookSession(config: ChatHookSessionConfig): ChatHookSe
       provider: config.provider,
       model: config.model,
       operation: config.operation,
+      compactionPhase: params.compactionPhase,
       lastAssistantMessage: getAssistantMessageTextForHook(lastAssistantMessage),
       onActivity: emitHookActivity('Stop', lastAssistantMessageId),
     })

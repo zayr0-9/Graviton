@@ -29,6 +29,7 @@ interface TextAreaProps {
   maxLength?: number
   width?: textAreaWidth
   className?: string
+  style?: React.CSSProperties
   minRows?: number
   maxRows?: number
   /**
@@ -107,6 +108,7 @@ export const TextArea: React.FC<TextAreaProps> = ({
   maxLength = 2000000,
   width = 'max-w-full',
   className = '',
+  style,
   minRows = 1,
   maxRows = 25,
   maxHeightViewportRatio,
@@ -561,7 +563,7 @@ export const TextArea: React.FC<TextAreaProps> = ({
           aria-invalid={state === 'error'}
           aria-describedby={state === 'error' && errorMessage ? errorId : undefined}
           autoFocus={autoFocus}
-          style={textareaStyle}
+          style={{ ...textareaStyle, ...style }}
           {...rest}
         />
 

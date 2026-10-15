@@ -1,3 +1,8 @@
+import { useModelSwitchConfirmation } from '../hooks/useModelSwitchConfirmation'
+import { ModelSwitchDialog } from '../components/ModelSelectControl/ModelSwitchDialog'
+import { resolveBranchModelSelection } from '../features/chats/branchModelSelection'
+import { isCommittedCompaction } from '../../../../shared/compaction'
+import { isHiddenCompactionMessage } from '../features/chats/summaryPresentation'
 import { useQueryClient } from '@tanstack/react-query'
 import { useVirtualizer } from '@tanstack/react-virtual'
 import 'boxicons' // Types
@@ -88,7 +93,6 @@ import { isCommunityMode } from '../config/runtimeMode'
 import { getCompactionPresentationScope, isCompactionVisibleFor, type CompactionOwner } from '../features/chats/compactionVisibility'
 import {
   abortGeneration,
-  AUTO_COMPACTION_NOTE,
   cancelPlanClarification,
   blobToDataURL,
   chatSliceActions,
@@ -150,15 +154,14 @@ import {
 } from '../features/chats/localChatErrors'
 import type { PlanClarificationAnswer } from '../features/chats/planToolTypes'
 import {
-  estimateContentBlocksForContext,
   calculateBranchContextUsage,
-  resolveContextTokens,
-  safeEstimateTokenCount,
 } from '../features/chats/contextTokenEstimate'
 import { isOpenAIProvider } from '../../../../shared/contextUsage'
 import { isContextInjectionMessage, parseMessageMeta } from '../../../../shared/contextInjection'
 import { ContextInjectionCard, type ContextInjectionCardEntry } from '../components/ChatMessage/ContextInjectionCard'
-import { DisclosurePanel, DisclosureRow } from '../components/ChatMessage/messagePrimitives'
+import { AgentSteps } from '../components/ChatMessage/AgentSteps'
+import { MessageActivity } from '../components/ChatMessage/MessageActivity'
+import { getAgentProgress, splitLiveAgentEvents, hasTrailingAgentProse, canAttachLiveAgentGroup } from '../components/ChatMessage/agentActivity'
 import {
   chatErrorRowHeight,
   DEFAULT_ROOT_FONT_SIZE,
@@ -365,7 +368,7 @@ type StreamingThinkingIndicatorPlacement = 'message' | 'input-tab'
 const EMPTY_PARSED_MESSAGE_DATA: ParsedMessageData = {}
 const COMPOSER_SLASH_COMMANDS = [
   'status-openai',
-  'compactify',
+  'compact',
   'bench on',
   'bench off',
   'bench status',
@@ -374,7 +377,7 @@ const COMPOSER_SLASH_COMMANDS = [
   'theme-demo on',
   'theme-demo off',
 ]
-const CROSS_MESSAGE_PROCESS_GROUP_MIN_MESSAGES = 3
+const CROSS_MESSAGE_PROCESS_GROUP_MIN_MESSAGES = 1
 const DERIVED_RENDER_CACHE_LIMIT = 40
 const ACTION_POPOVER_SELECT_DROPDOWN_Z_INDEX = 100001
 const BENCH_MAX_SAMPLES = 3000
@@ -1002,7 +1005,10 @@ function Chat() {
   }, [])
   const clearLocalInput = useCallback(() => {
     inputControllerRef.current?.clear()
-  }, [])
+    // The controller restores this draft when initialValue changes. Clear both copies
+    // without inputCleared(), which would discard images before sendMessage captures them.
+    dispatch(chatSliceActions.inputChanged({ content: '' }))
+  }, [dispatch])
   const focusLocalInput = useCallback(() => {
     inputControllerRef.current?.focus()
   }, [])
@@ -1094,6 +1100,7 @@ function Chat() {
   // Redux selectors
   const currentUser = useAppSelector(selectCurrentUser)
   const providers = useAppSelector(selectProviderState)
+  const branchModelSelection = useAppSelector(state => resolveBranchModelSelection(state.chat))
   const toolDefinitions = useAppSelector(state => state.chat.tools)
   // MCP tools with a UI resource draw the always-open app card (ToolCallGroupCard). The row
   // estimator needs the same distinction, or every plain MCP call is guessed 600px too tall.
@@ -1906,7 +1913,7 @@ function Chat() {
     const latestCompaction = (() => {
       for (let i = displayMessages.length - 1; i >= 0; i--) {
         const message = displayMessages[i]
-        if (message?.role === 'system' && message?.note === AUTO_COMPACTION_NOTE) {
+        if (isCommittedCompaction(message)) {
           return { index: i, message }
         }
       }
@@ -1918,10 +1925,10 @@ function Chat() {
     ).filter(Boolean)
 
     const lastMessage = displayMessages[displayMessages.length - 1]
-    if (!lastMessage || lastMessage.note === AUTO_COMPACTION_NOTE || compactionSourceMessages.length < 2) {
+    if (!lastMessage || isCommittedCompaction(lastMessage) || compactionSourceMessages.length < 2) {
       console.warn('[ManualCompaction] skipped: insufficient source context', {
         hasLastMessage: Boolean(lastMessage),
-        lastIsCompaction: lastMessage?.note === AUTO_COMPACTION_NOTE,
+        lastIsCompaction: isCommittedCompaction(lastMessage),
         sourceCount: compactionSourceMessages.length,
       })
       return { handled: true, clearInput: true }
@@ -1940,10 +1947,7 @@ function Chat() {
       ).unwrap()
 
       const compactedMessage = compactionResult?.message ?? null
-      const hasValidCompactionMarker =
-        compactedMessage?.role === 'system' &&
-        compactedMessage?.note === AUTO_COMPACTION_NOTE &&
-        String(compactedMessage?.parent_id ?? '') === String(lastMessage.id)
+      const hasValidCompactionMarker = isCommittedCompaction(compactedMessage)
 
       if (!compactedMessage || !hasValidCompactionMarker) {
         console.error('[ManualCompaction] invalid summary message returned')
@@ -1990,7 +1994,7 @@ function Chat() {
         return { handled: true, clearInput: true }
       }
 
-      if (normalized === 'compactify') {
+      if ((normalized === 'compact' || normalized === 'compactify')) {
         return handleManualCompactifyCommand()
       }
 
@@ -2272,7 +2276,7 @@ function Chat() {
 
   // Keep persisted image-reference notices in the transcript alongside other automated rows.
   const renderableMessages = useMemo(() => {
-    return displayMessages.filter(msg => msg && msg.id != null)
+    return displayMessages.filter(msg => msg && msg.id != null && !isHiddenCompactionMessage(msg))
   }, [displayMessages])
 
   const conversationRuns = useConversationRunStatistics(conversationIdFromUrl == null ? null : String(conversationIdFromUrl))
@@ -2286,9 +2290,9 @@ function Chat() {
   const [groupToolReasoningRuns, setGroupToolReasoningRuns] = useState<boolean>(() => {
     try {
       const stored = localStorage.getItem('chat:groupToolReasoningRuns')
-      return stored === null ? false : stored === 'true'
+      return stored === null ? true : stored === 'true'
     } catch {
-      return false
+      return true
     }
   })
   const [truncateToolOutput, setTruncateToolOutput] = useState<boolean>(loadToolOutputTruncationEnabled)
@@ -2327,7 +2331,7 @@ function Chat() {
 
     const parsedById = new Map<MessageId, ParsedMessageData>()
     for (const msg of renderableMessages) {
-      parsedById.set(msg.id, parseMessageDataForRender(msg))
+      parsedById.set(msg.id, isCommittedCompaction(msg) ? EMPTY_PARSED_MESSAGE_DATA : parseMessageDataForRender(msg))
     }
 
     setLimitedCacheEntry(parsedMessageDataCacheRef.current, cacheKey, parsedById)
@@ -2359,6 +2363,8 @@ function Chat() {
         : false
 
     const hasSubstantialTextOrImage = (msg: Message, parsed: ParsedMessageData): boolean => {
+      if (hasTrailingAgentProse(parsed.contentBlocks ?? [])) return true
+      if (!parsed.contentBlocks?.some(block => block.type === 'text') && msg.content?.trim()) return true
       if (
         typeof msg.content === 'string' &&
         msg.content.trim().length > 0 &&
@@ -2379,10 +2385,10 @@ function Chat() {
           if (block.type === 'image') {
             return Boolean(block.url)
           }
-          // A loaded-context card is a visible row; never fold its message into "Agent Steps".
-          if (block.type === 'context_injection') {
-            return true
-          }
+          // Context is projected below the collapsed history, so it no longer splits a run.
+          if (block.type === 'context_injection') return false
+          // Errors must remain visible outside process groups.
+          if (block.type === 'error') return true
 
           const responseTexts = getResponsesOutputAssistantTexts(block)
           return responseTexts.some(text => text.trim().length > 0 && !isLikelyProcessAnnotationText(text))
@@ -2432,12 +2438,13 @@ function Chat() {
     }
 
     const isProcessOnlyAssistantStep = (msg: Message): boolean => {
+      if (isCommittedCompaction(msg)) return false
       if (msg.role !== 'assistant' && msg.role !== 'ex_agent') {
         return false
       }
 
       const parsed = parsedMessageDataById.get(msg.id) ?? EMPTY_PARSED_MESSAGE_DATA
-      if (!hasProcessSignal(msg, parsed)) {
+      if (!hasProcessSignal(msg, parsed) && !msg.hook_runs?.length && !parsed.contentBlocks?.some(block => block.type === 'context_injection')) {
         return false
       }
 
@@ -2692,7 +2699,7 @@ function Chat() {
     }
     const succeeded = compactionPresentation.owner != null
       ? isCompactionVisibleFor({ ...compactionPresentation.owner, summaryMessageId: compactionSummaryMessageId }, compactionView) &&
-        displayMessages.some(message => message.note === AUTO_COMPACTION_NOTE &&
+        displayMessages.some(message => isCommittedCompaction(message) &&
           String(message.id) === String(compactionSummaryMessageId) &&
           String(message.parent_id ?? '') === String(compactionPresentation.owner?.parentMessageId))
       : currentViewStream?.compactionStatus === 'completed'
@@ -2756,17 +2763,27 @@ function Chat() {
   // Suppress the persisted current turn, not the previous turn's branch anchor.
   // New server-owned generations have no live message ID until persistence.
   const isStreamingMessageAlreadyRendered = isStreamMessageAlreadyRendered(streamState, messageRowIndexByMessageId)
-  const showStreamingMessage = !isStreamingMessageAlreadyRendered && hasStreamingMessageContent
-  const showLiveStreamingTail = showStreamingMessage && hasFinalTextStreaming
+  const showStreamingMessage = !compactionActive && !isStreamingMessageAlreadyRendered && hasStreamingMessageContent
+  const liveAgentEvents = useMemo(() => splitLiveAgentEvents(streamState.events), [streamState.events])
+  const trailingAgentRow = messageRenderRows[messageRenderRows.length - 1]
+  const liveAgentGroupId = canAttachLiveAgentGroup({
+    enabled: groupToolReasoningRuns, active: streamLifecycleActive, compacting: compactionActive,
+    optimistic: showOptimisticMessage || showOptimisticBranchMessage, trailing: trailingAgentRow,
+    anchor: streamState.lastCompletedMessageId ?? streamState.branchAnchorMessageId,
+    boundaryAfter: trailingAgentRow?.kind === 'process_group' && runFootersByAnchor.has(String(trailingAgentRow.memberMessageIds[trailingAgentRow.memberMessageIds.length - 1])),
+  }) ? String(trailingAgentRow.id) : null
+  const visibleLiveEvents = liveAgentGroupId ? liveAgentEvents.outside : streamState.events
+  const showStandaloneStreamingMessage = showStreamingMessage && (!liveAgentGroupId || visibleLiveEvents.length > 0)
+  const showLiveStreamingTail = showStandaloneStreamingMessage && hasFinalTextStreaming
   // Once the final answer is streaming, the live tail is rendered OUTSIDE TanStack Virtual as an
   // in-flow sibling (see the message list render) so its token-by-token growth never enters
   // virtualizer geometry or the ResizeObserver, and can never drag scrollTop. Only the
   // process-only phase (thinking/tools, no text yet) is kept as a measured virtual row.
-  const showStreamingMessageInVirtualList = showStreamingMessage && !showLiveStreamingTail
+  const showStreamingMessageInVirtualList = showStandaloneStreamingMessage && !showLiveStreamingTail
   const showStreamingThinkingMessageRow = streamingThinkingIndicatorPlacement === 'message'
   const showStreamingThinkingInputTab = streamingThinkingIndicatorPlacement === 'input-tab'
   const showGenerationLoaderRow = showGenerationLoadingAnimation && showStreamingThinkingMessageRow
-  const showGenerationLoaderInVirtualList = showGenerationLoaderRow && !showLiveStreamingTail
+  const showGenerationLoaderInVirtualList = showGenerationLoaderRow && !showLiveStreamingTail && !liveAgentGroupId
   // The in-flow bottom sentinel is the sole trailing spacer (paddingEnd is 0). Sized to mirror the
   // previous paddingEnd so scroll-to-bottom lands the last message in the same place. It must be
   // flexShrink:0 in the render, otherwise the flex column collapses it to 0 and there is no room to
@@ -3088,7 +3105,7 @@ function Chat() {
 
       const estimateForMessage = (message: Message) => {
         // Summaries draw only an h-8 notice with py-1, regardless of payload size.
-        if (message.note === AUTO_COMPACTION_NOTE || isWatcherCompletionMessage(message) || isImageAttachmentInfoMessage(message)) return smallChromeRowHeight(rootFontSize)
+        if (isCommittedCompaction(message) || isWatcherCompletionMessage(message) || isImageAttachmentInfoMessage(message)) return smallChromeRowHeight(rootFontSize)
         if (isRunSettingsNotification(message)) return 32
         const blocks = (parsedMessageDataById.get(message.id) ?? EMPTY_PARSED_MESSAGE_DATA).contentBlocks
         // Mirrors `hasContent && canBranchMessage` in ChatMessage, which gates the actions row.
@@ -3125,7 +3142,12 @@ function Chat() {
           return 36
         case 'message_row':
           return row.row.kind === 'process_group'
-            ? processGroupRowHeight(rootFontSize)
+            ? processGroupRowHeight(rootFontSize) + row.row.messages.reduce((height, message) => {
+                const blocks = parsedMessageDataById.get(message.id)?.contentBlocks ?? []
+                const cards = blocks.filter((block, index) => block.type === 'context_injection' &&
+                  (blocks[index - 1]?.type !== 'context_injection' || (blocks[index - 1] as any).tool_use_id !== block.tool_use_id)).length
+                return height + (cards + (message.hook_runs?.length ? 1 : 0)) * 2 * rootFontSize
+              }, 0)
             : estimateForMessage(row.row.message)
         case 'optimistic_message':
         case 'optimistic_branch_message':
@@ -3381,7 +3403,7 @@ function Chat() {
   // const { data: recentModelsData } = useRecentModels(5)
   // const refreshModelsMutation = useRefreshModels()
   const selectModelMutation = useSelectModel()
-  const selectedModel = useSelectedModel(providers.currentProvider)
+  const selectedModel = useSelectedModel(providers.currentProvider, branchModelSelection?.model)
   const models = modelsData?.models || []
 
   // Helper to check if selected model can use image generation controls.
@@ -3530,6 +3552,7 @@ function Chat() {
     isFetched: isConversationDataFetched,
     acceptedConversationId,
     error: snapshotError,
+    isCurrentError: isCurrentSnapshotError,
     isFetching: isSnapshotFetching,
     refresh: refreshConversationSnapshot,
   } = useConversationSnapshotCoordinator(conversationIdFromUrl, conversationStorageMode)
@@ -3878,6 +3901,17 @@ function Chat() {
   const [autoCompactionEnabled, setAutoCompactionEnabled] = useState<boolean>(() => loadAutoCompactionEnabled())
   const [showAddedFilesPills, setShowAddedFilesPills] = useState<boolean>(() => loadShowAddedFilesPills())
   const [expandedProcessMessageRuns, setExpandedProcessMessageRuns] = useState<Set<string>>(() => new Set())
+  const transientProcessGroupKey = `live:${streamState.id}`
+  useEffect(() => {
+    if (!liveAgentGroupId) return
+    setExpandedProcessMessageRuns(previous => {
+      if (!previous.has(transientProcessGroupKey)) return previous
+      const next = new Set(previous)
+      next.delete(transientProcessGroupKey)
+      next.add(liveAgentGroupId)
+      return next
+    })
+  }, [liveAgentGroupId, transientProcessGroupKey])
   useEffect(() => {
     // Listen for custom event from SettingsPane (same window)
     const handleCustomEvent = (e: Event) => {
@@ -3922,8 +3956,8 @@ function Chat() {
     }
 
     const handleStorageEvent = (e: StorageEvent) => {
-      if (e.key === 'chat:groupToolReasoningRuns' && e.newValue !== null) {
-        setGroupToolReasoningRuns(e.newValue === 'true')
+      if (e.key === 'chat:groupToolReasoningRuns') {
+        setGroupToolReasoningRuns(e.newValue === null ? true : e.newValue === 'true')
       }
       if (e.key === TOOL_OUTPUT_TRUNCATION_ENABLED_KEY) {
         setTruncateToolOutput(e.newValue === 'false' ? false : true)
@@ -4741,13 +4775,13 @@ function Chat() {
   // Route and in-place navigation share one resolution pipeline. Snapshot loading remains
   // owned by this Chat instance; selection never installs a second copy of fetched rows.
   useEffect(() => {
-    if (snapshotError && !isSnapshotFetching && !acceptedConversationId && conversationIdFromUrl) {
-      chatSelection.snapshotFailed(String(conversationIdFromUrl))
+    if (snapshotError && isCurrentSnapshotError() && !isSnapshotFetching && !acceptedConversationId && conversationIdFromUrl) {
+      chatSelection.snapshotFailed(String(conversationIdFromUrl), selection.requestId)
     } else {
       void chatSelection.resolve(acceptedConversationId, refreshConversationSnapshot)
     }
   }, [chatSelection, acceptedConversationId, refreshConversationSnapshot, selection.requestId, conversationMessages,
-    snapshotError, isSnapshotFetching, conversationIdFromUrl])
+    snapshotError, isCurrentSnapshotError, isSnapshotFetching, conversationIdFromUrl])
 
   // Clear selectedFilesForChat on route change
   useEffect(() => {
@@ -4864,17 +4898,27 @@ function Chat() {
     if (!conversationIdFromUrl) dispatch(initializeUserAndConversation())
   }, [conversationIdFromUrl, dispatch])
 
+  const modelSwitchScope = JSON.stringify([currentConversationId, modeLineageId, selection.revision])
+  const openaiSelectionScopeRef = useRef<string | null>(null)
+  const { pending: pendingModelSwitch, request: requestModelSwitch, cancel: cancelModelSwitch, confirm: confirmModelSwitch } =
+    useModelSwitchConfirmation(modelSwitchScope, branchModelSelection ? {
+      provider: providers.currentProvider, model: selectedModel?.name ?? branchModelSelection.model,
+    } : null)
+
   // Handle model selection
   const handleModelSelect = useCallback(
     (modelName: string) => {
       const model = models.find(m => m.name === modelName)
       if (model) {
-        selectModelMutation.mutate({ provider: providers.currentProvider, model })
+        requestModelSwitch({ provider: providers.currentProvider, model: model.name }, () => {
+          dispatch(chatSliceActions.branchModelSelected({ provider: providers.currentProvider, model: model.name }))
+          selectModelMutation.mutate({ provider: providers.currentProvider, model })
+        })
       } else {
         console.warn('Selected model not found:', modelName)
       }
     },
-    [models, selectModelMutation, providers.currentProvider, selectedModel?.name]
+    [models, selectModelMutation, providers.currentProvider, requestModelSwitch, dispatch]
   )
 
   const handleExtensionSelection = useCallback(
@@ -4914,6 +4958,7 @@ function Chat() {
 
   const handleProviderSelect = useCallback(
     async (providerName: string) => {
+      if (providerName === providers.currentProvider) return
       if (providerName === 'OpenRouter' && isCommunityMode) {
         setOpenRouterLoginRequiredModalOpen(true)
         return
@@ -4921,6 +4966,7 @@ function Chat() {
 
       // Check if OpenAI ChatGPT provider is selected and user is not authenticated
       if (providerName === 'OpenAI (ChatGPT)' && !isOpenAIAuthenticated()) {
+        openaiSelectionScopeRef.current = modelSwitchScope
         // Request OAuth flow from local server (server generates and stores PKCE)
         try {
           const data = await localApi.post<{ success?: boolean; authUrl?: string; state?: string; error?: string }>(
@@ -4942,9 +4988,12 @@ function Chat() {
         }
         return // Don't select provider until authenticated
       }
-      dispatch(chatSliceActions.providerSelected(providerName))
+      requestModelSwitch({ provider: providerName, model: null }, () => {
+        dispatch(chatSliceActions.branchModelSelected({ provider: providerName, model: null }))
+        dispatch(chatSliceActions.providerSelected(providerName))
+      })
     },
-    [dispatch, openOpenaiAuthUrl]
+    [dispatch, openOpenaiAuthUrl, requestModelSwitch, providers.currentProvider, modelSwitchScope]
   )
 
   useEffect(() => {
@@ -4988,8 +5037,11 @@ function Chat() {
       }
 
       event.preventDefault()
-      dispatch(chatSliceActions.providerSelected(assignment.provider))
-      selectModelMutation.mutate({ provider: assignment.provider, model: assignment.model })
+      requestModelSwitch({ provider: assignment.provider, model: assignment.model.name }, () => {
+        dispatch(chatSliceActions.branchModelSelected({ provider: assignment.provider, model: assignment.model.name }))
+        dispatch(chatSliceActions.providerSelected(assignment.provider))
+        selectModelMutation.mutate({ provider: assignment.provider, model: assignment.model })
+      })
     }
 
     // Capture these toggles before editor autocomplete can consume Shift+Tab.
@@ -5005,14 +5057,14 @@ function Chat() {
       window.removeEventListener('keydown', handleChatToggleKeyDown, true)
       window.removeEventListener('keydown', handleChatKeyboardShortcut)
     }
-  }, [dispatch, handleProviderSelect, handleToggleOperationMode, handleToggleFastServiceTier, isOpenAIChatGPTProvider, navigate, providers.providers, selectModelMutation])
+  }, [dispatch, handleProviderSelect, handleToggleOperationMode, handleToggleFastServiceTier, isOpenAIChatGPTProvider, navigate, providers.providers, selectModelMutation, requestModelSwitch])
 
   const handleComposerSlashCommandSelect = useCallback(
     (command: string): ComposerSlashCommandResult | void => {
       const normalized = command.trim().toLowerCase().replace(/^\/+/, '')
       const isKnownSlashCommand =
         normalized === 'status-openai' ||
-        normalized === 'compactify' ||
+        (normalized === 'compact' || normalized === 'compactify') ||
         parseBenchAction(command) != null ||
         parseThemeDemoAction(command) != null
 
@@ -5145,7 +5197,7 @@ function Chat() {
       const slashThemeDemoAction = parseThemeDemoAction(trimmedInputValue)
       const isKnownSlashCommand =
         normalizedInput === 'status-openai' ||
-        normalizedInput === 'compactify' ||
+        (normalizedInput === 'compact' || normalizedInput === 'compactify') ||
         slashBenchAction != null ||
         slashThemeDemoAction != null
 
@@ -5199,7 +5251,7 @@ function Chat() {
             const latestCompaction = (() => {
               for (let i = displayMessages.length - 1; i >= 0; i--) {
                 const message = displayMessages[i]
-                if (message?.role === 'system' && message?.note === AUTO_COMPACTION_NOTE) {
+                if (isCommittedCompaction(message)) {
                   return { index: i, message }
                 }
               }
@@ -5224,9 +5276,6 @@ function Chat() {
                 currentConversationId,
                 contentWithIdeContext
               )
-
-              // Update Redux state with processed content before sending
-              dispatch(chatSliceActions.inputChanged({ content: contentToSend }))
 
               // Create optimistic message for instant UI feedback
               const optimisticUserMessage: Message = {
@@ -5301,121 +5350,8 @@ function Chat() {
                 })
             }
 
-            void (async () => {
-              const usageStartIndex = latestCompaction.index >= 0 ? latestCompaction.index : 0
-              const usageMessages = displayMessages.slice(usageStartIndex)
-              const compactionSourceMessages = (
-                latestCompaction.index >= 0 ? displayMessages.slice(latestCompaction.index + 1) : displayMessages
-              ).filter(Boolean)
-
-              let promptAndContextTokens = 0
-              promptAndContextTokens += safeEstimateTokenCount(selectedProject?.system_prompt)
-              promptAndContextTokens += safeEstimateTokenCount(selectedProject?.context)
-              promptAndContextTokens += safeEstimateTokenCount(currentConversation?.system_prompt)
-              promptAndContextTokens += safeEstimateTokenCount(currentConversation?.conversation_context)
-
-              let messageTokens = 0
-              usageMessages.forEach(message => {
-                if (!message) return
-                messageTokens += safeEstimateTokenCount(message.content)
-                messageTokens += estimateContentBlocksForContext((message as any).content_blocks)
-                messageTokens += safeEstimateTokenCount((message as any).tool_calls)
-              })
-
-              const estimatedContextTokens = promptAndContextTokens + messageTokens
-              const resolvedContext = resolveContextTokens({
-                providerName: providers.currentProvider,
-                estimatedTokens:
-                  estimatedContextTokens +
-                  (isOpenAIProvider(providers.currentProvider) ? safeEstimateTokenCount(contentWithIdeContext) : 0),
-                messages: usageMessages,
-              })
-              const totalContextTokens = resolvedContext.effectiveTokens
-              const usdValue = (currentUser?.cached_current_credits ?? 0) / 100
-              const totalContextLimit =
-                resolveProviderContextLength(providers.currentProvider, selectedModel?.contextLength, providerSettings) || 128_000
-              const promptCostPer1K = selectedModel?.promptCost ?? 0
-              const completionCostPer1K = selectedModel?.completionCost ?? 0
-
-              let creditInputLimit = Infinity
-              let creditOutputLimit = Infinity
-              if (promptCostPer1K > 0) {
-                creditInputLimit = Math.floor((usdValue * 1000) / promptCostPer1K)
-              }
-              if (completionCostPer1K > 0) {
-                creditOutputLimit = Math.floor((usdValue * 1000) / completionCostPer1K)
-              }
-
-              const totalBudget = Math.max(0, Math.min(totalContextLimit, creditInputLimit, creditOutputLimit))
-              const totalContextProgress = totalBudget > 0 ? Math.min((totalContextTokens / totalBudget) * 100, 100) : 0
-              const modelContextProgress =
-                totalContextLimit > 0 ? Math.min((totalContextTokens / totalContextLimit) * 100, 100) : 0
-
-              const lastMessage = displayMessages[displayMessages.length - 1]
-              const shouldAutoCompact =
-                autoCompactionEnabled &&
-                totalContextLimit > 0 &&
-                (modelContextProgress >= 85 || totalContextProgress >= 85) &&
-                Boolean(lastMessage) &&
-                lastMessage?.note !== AUTO_COMPACTION_NOTE &&
-                compactionSourceMessages.length >= 2 &&
-                !autoCompactionInFlightRef.current
-
-              if (shouldAutoCompact && lastMessage) {
-                autoCompactionInFlightRef.current = true
-
-                try {
-                  const compactionResult = await dispatch(
-                    compactBranch({
-                      conversationId: currentConversationId,
-                      parentMessageId: lastMessage.id,
-                      messages: compactionSourceMessages,
-                      providerName: providerSettings.compactionProvider || providers.currentProvider,
-                      modelName: providerSettings.compactionModel || selectedModel?.name || null,
-                    })
-                  ).unwrap()
-
-                  const compactedMessage = compactionResult?.message ?? null
-                  const hasValidCompactionMarker =
-                    compactedMessage?.role === 'system' &&
-                    compactedMessage?.note === AUTO_COMPACTION_NOTE &&
-                    String(compactedMessage?.parent_id ?? '') === String(lastMessage.id)
-
-                  console.log('[AutoCompaction][send] compactBranch result', {
-                    messageId: compactedMessage?.id ?? null,
-                    role: compactedMessage?.role ?? null,
-                    note: compactedMessage?.note ?? null,
-                    parentId: compactedMessage?.parent_id ?? null,
-                    hasValidCompactionMarker,
-                  })
-
-                  if (!compactedMessage || !hasValidCompactionMarker) {
-                    console.error('[AutoCompaction][send] invalid attached summary message. Send aborted.')
-                    return
-                  }
-
-                  effectiveParent = compactedMessage.id
-                } catch (error) {
-                  console.error('[AutoCompaction][send] compactBranch failed. Send aborted:', error)
-                  return
-                } finally {
-                  autoCompactionInFlightRef.current = false
-                }
-              } else {
-                console.log('[AutoCompaction][send] skip compactBranch', {
-                  reason: {
-                    disabledInSettings: !autoCompactionEnabled,
-                    noContextLimit: totalContextLimit <= 0,
-                    belowThreshold: modelContextProgress < 85 && totalContextProgress < 85,
-                    missingLastMessage: !lastMessage,
-                    lastIsCompaction: lastMessage?.note === AUTO_COMPACTION_NOTE,
-                    tooFewSourceMessages: compactionSourceMessages.length < 2,
-                    inFlight: autoCompactionInFlightRef.current,
-                  },
-                })
-              }
-              sendWithParent(effectiveParent)
-            })()
+            // Context checks and compaction belong to the server's safe boundary.
+            sendWithParent(effectiveParent)
         }
       } else if (!currentConversationId) {
         console.error('📤 No conversation ID available')
@@ -5625,7 +5561,7 @@ function Chat() {
 
   const submitMessageAsBranch = useCallback(
     (id: string, newContent: string, _newContentBlocks?: any) => {
-      if (!currentConversationId || selection.status === 'pending' || selection.status === 'error') return
+      if (!currentConversationId || selection.status === 'pending' || selection.status === 'error') return false
 
       // Replace any @file mentions with actual file contents before branching.
       const processed = replaceFileMentionsWithPath(newContent)
@@ -5639,7 +5575,7 @@ function Chat() {
 
       if (!originalMessage) {
         console.error('Message not found for branch/edit:', id)
-        return
+        return false
       }
 
       // Keep artifacts so pasted images do not flicker away during branch send.
@@ -5704,6 +5640,7 @@ function Chat() {
             streamId,
           })
         })
+      return true
     },
     [
       selection.revision,
@@ -5758,14 +5695,14 @@ function Chat() {
 
   const handleMessageBranch = useCallback(
     (id: string, newContent: string, newContentBlocks?: any) => {
-      submitMessageAsBranch(id, newContent, newContentBlocks)
+      return submitMessageAsBranch(id, newContent, newContentBlocks)
     },
     [submitMessageAsBranch]
   )
 
   const handleExplainFromSelection = useCallback(
     (id: string, newContent: string) => {
-      if (!currentConversationId || selection.status === 'pending' || selection.status === 'error') return
+      if (!currentConversationId || selection.status === 'pending' || selection.status === 'error') return false
 
       // Explain selection should always create a new user child under the selected message,
       // even when that message already has children.
@@ -5780,7 +5717,7 @@ function Chat() {
 
       if (!originalMessage) {
         console.error('Message not found:', id)
-        return
+        return false
       }
 
       const optimisticUserMessage: Message = {
@@ -5840,6 +5777,7 @@ function Chat() {
             streamId,
           })
         })
+      return true
     },
     [
       selection.revision,
@@ -6049,7 +5987,10 @@ function Chat() {
       // The server committed the connection; no OAuth credentials cross this boundary.
 
       // Successfully authenticated, select the provider
-      dispatch(chatSliceActions.providerSelected('OpenAI (ChatGPT)'))
+      requestModelSwitch({ provider: 'OpenAI (ChatGPT)', model: null }, () => {
+        dispatch(chatSliceActions.branchModelSelected({ provider: 'OpenAI (ChatGPT)', model: null }))
+        dispatch(chatSliceActions.providerSelected('OpenAI (ChatGPT)'))
+      }, openaiSelectionScopeRef.current ?? modelSwitchScope)
       closeOpenaiLoginModal()
       return 'success'
     } catch (error) {
@@ -6567,10 +6508,13 @@ function Chat() {
           {/* Messages Display. `isolate` keeps row z-indexes (focus-within:z-[70], the editing row's
               zIndex 80) local to this list. Without it they compete in the root stacking context
               and paint over the right bar (`relative z-10` in rightBar.tsx). Message popovers are
-              portaled to body, so nothing in here needs to escape. */}
+              portaled to body, so nothing in here needs to escape.
+              Keep toolbar clearance independent of visibility: shrinking padding at the bottom
+              clamps scrollTop, which the direction listener mistakes for an upward user scroll.
+              Only the absolute toolbar animates; hiding it must not change transcript geometry. */}
           <div
             ref={messagesContainerRef}
-            className={`isolate flex flex-col ${currentConversationId && isTitleBarVisible ? (editingTitle ? 'pt-28' : 'pt-22') : 'pt-6'} transition-[padding-top] duration-[var(--ygg-motion-duration-layout)] motion-reduce:transition-none dark:border-neutral-700 border-stone-200 rounded-lg overflow-y-auto overflow-x-hidden thin-scrollbar overscroll-y-contain touch-pan-y`}
+            className={`isolate flex flex-col ${currentConversationId ? (editingTitle ? 'pt-28' : 'pt-22') : 'pt-6'} dark:border-neutral-700 border-stone-200 rounded-lg overflow-y-auto overflow-x-hidden thin-scrollbar overscroll-y-contain touch-pan-y`}
             style={{
               ['overflowAnchor' as any]: 'none',
               willChange: 'scroll-position',
@@ -6703,7 +6647,10 @@ function Chat() {
                                 id='streaming'
                                 role='assistant'
                                 content={streamState.buffer}
-                                streamEvents={streamState.events}
+                                streamEvents={visibleLiveEvents}
+                    processRunActive={streamLifecycleActive}
+                    firstProcessGroupExpanded={!liveAgentGroupId ? expandedProcessMessageRuns.has(transientProcessGroupKey) : undefined}
+                    onFirstProcessGroupToggle={() => toggleProcessMessageRun(transientProcessGroupKey)}
                                 width='w-full'
                                 fontSizeOffset={fontSizeOffset}
                                 groupToolReasoningRuns={groupToolReasoningRuns}
@@ -6773,10 +6720,24 @@ function Chat() {
 
                         if (row.kind === 'process_group') {
                           const runId = String(row.id)
-                          const isExpanded = expandedProcessMessageRuns.has(runId)
-                          const summary = row.toolCount > 0
-                            ? `${row.toolCount} tool${row.toolCount === 1 ? '' : 's'}`
-                            : undefined
+                          const liveHere = liveAgentGroupId === runId
+                          const isExpanded = expandedProcessMessageRuns.has(runId) || (liveHere && expandedProcessMessageRuns.has(transientProcessGroupKey))
+                          const liveEvents = liveHere && showStreamingMessage ? liveAgentEvents.process : []
+                          const activityMessages = row.bridgedMessageId ? [...row.messages, ...(messageById.has(String(row.bridgedMessageId)) ? [messageById.get(String(row.bridgedMessageId))!] : [])] : row.messages
+                          const groupedBlocks = activityMessages.flatMap(message => parsedMessageDataById.get(message.id)?.contentBlocks ?? [])
+                          const groupedHooks = activityMessages.flatMap(message => message.hook_runs ?? [])
+                          const progress = getAgentProgress(groupedBlocks, liveEvents, groupedHooks, liveHere)
+                          const summary = progress.toolCount ? `${progress.completed} completed${progress.active && progress.pending ? ` · ${progress.pending} pending` : ''}` : row.toolCount ? `${row.toolCount} tools` : undefined
+                          let toolOffset = 0
+                          const activity = activityMessages.map(message => {
+                            const blocks = parsedMessageDataById.get(message.id)?.contentBlocks ?? []
+                            const offset = toolOffset
+                            toolOffset += blocks.filter(block => block.type === 'tool_use').length
+                            return <MessageActivity key={message.id} messageId={String(message.id)} blocks={blocks} hooks={message.hook_runs}
+                              toolOffset={offset} fontSizeOffset={fontSizeOffset} customTheme={customTheme} customThemeEnabled={customThemeEnabled}
+                              isDarkMode={isDarkMode} onHookRunsUpdated={handleHookRunsUpdated} onHookRunsSettled={handleHookRunsSettled} />
+                          })
+                          const hasActivity = groupedHooks.length > 0 || groupedBlocks.some(block => block.type === 'context_injection')
 
                           return (
                             <VirtualizedRowContainer
@@ -6788,20 +6749,10 @@ function Chat() {
                               className='z-0'
                             >
                               <div className='min-w-0 px-0 py-1 sm:px-2'>
-                                {/* Nested messages apply their own offset; only scale the header here. */}
-                                <div style={fontSizeOffset !== 0 ? { fontSize: `calc(1em + ${fontSizeOffset}px)` } : undefined}>
-                                  <DisclosureRow
-                                    label='Agent steps'
-                                    labelSize='group'
-                                    summary={summary}
-                                    expanded={isExpanded}
-                                    onToggle={() => toggleProcessMessageRun(runId)}
-                                    controlsId={`message-group-${runId}-panel`}
-                                  />
-                                </div>
-                                {/* Member rows mount only while open, so a collapsed run costs no per-message work. */}
-                                <DisclosurePanel id={`message-group-${runId}-panel`} expanded={isExpanded} flush>
-                                  <div className='pl-2.5'>
+                                <AgentSteps id={`message-group-${runId}`} expanded={isExpanded} onToggle={() => toggleProcessMessageRun(runId)}
+                                  summary={summary} activity={hasActivity ? activity : undefined} status={progress.status} active={progress.active}
+                                  style={fontSizeOffset !== 0 ? { fontSize: `calc(1em + ${fontSizeOffset}px)` } : undefined}
+                                  history={<div>
                                     {row.messages.map(groupedMessage => {
                                       const { contentBlocks } =
                                         parsedMessageDataById.get(groupedMessage.id) ?? EMPTY_PARSED_MESSAGE_DATA
@@ -6811,8 +6762,7 @@ function Chat() {
                                           id={groupedMessage.id.toString()}
                                           role={groupedMessage.role}
                                           content={groupedMessage.content}
-                                          contentBlocks={contentBlocks}
-                                          hookRuns={groupedMessage.hook_runs}
+                                          contentBlocks={contentBlocks?.filter(block => block.type !== 'context_injection')}
                                           timestamp={groupedMessage.created_at}
                                           width='w-full'
                                           modelName={groupedMessage.model_name}
@@ -6879,8 +6829,11 @@ function Chat() {
                                         />
                                       )
                                     })()}
-                                  </div>
-                                </DisclosurePanel>
+                                    {liveEvents.length > 0 && <ChatMessage id={`streaming-${runId}`} role='assistant' content='' streamEvents={liveEvents}
+                                      width='w-full' fontSizeOffset={fontSizeOffset} groupToolReasoningRuns={false} truncateToolOutput={truncateToolOutput}
+                                      customTheme={customTheme} customThemeEnabled={customThemeEnabled} isDarkMode={isDarkMode}
+                                      onOpenToolHtmlModal={openToolHtmlModal} onOpenSubagentTranscript={openSubagentTranscript} />}
+                                  </div>} />
                               </div>
                             </VirtualizedRowContainer>
                           )
@@ -6905,7 +6858,7 @@ function Chat() {
                             </VirtualizedRowContainer>
                           )
                         }
-                        if (msg.note === AUTO_COMPACTION_NOTE) {
+                        if (isCommittedCompaction(msg)) {
                           return (
                             <VirtualizedRowContainer
                               key={renderRow.key}
@@ -6929,7 +6882,7 @@ function Chat() {
 
                         const displayContentBlocks =
                           isProcessBridgeSourceMessage && Array.isArray(contentBlocks)
-                            ? contentBlocks.filter(block => !isProcessContentBlock(block))
+                            ? contentBlocks.filter(block => !isProcessContentBlock(block) && block.type !== 'context_injection')
                             : contentBlocks
                         const assistantContainerClassName = assistantContainerClassByMessageId.get(String(msg.id))
 
@@ -6999,7 +6952,7 @@ function Chat() {
                               role={msg.role}
                               content={msg.content}
                               contentBlocks={displayContentBlocks}
-                              hookRuns={msg.hook_runs}
+                              hookRuns={isProcessBridgeSourceMessage ? undefined : msg.hook_runs}
                               timestamp={msg.created_at}
                               width='w-full'
                               modelName={msg.model_name}
@@ -7025,6 +6978,7 @@ function Chat() {
                               onAddToNote={handleAddToNote}
                               onAddToChat={handleAddToChat}
                               onExplainFromSelection={handleExplainFromSelection}
+                              branchSubmissionDisabled={selection.status === 'pending' || selection.status === 'error'}
                               onOpenToolHtmlModal={openToolHtmlModal}
                               onOpenSubagentTranscript={openSubagentTranscript}
                               onChatErrorAction={handlePersistedChatErrorAction}
@@ -7051,7 +7005,10 @@ function Chat() {
                     id='streaming'
                     role='assistant'
                     content={streamState.buffer}
-                    streamEvents={streamState.events}
+                    streamEvents={visibleLiveEvents}
+                    processRunActive={streamLifecycleActive}
+                    firstProcessGroupExpanded={!liveAgentGroupId ? expandedProcessMessageRuns.has(transientProcessGroupKey) : undefined}
+                    onFirstProcessGroupToggle={() => toggleProcessMessageRun(transientProcessGroupKey)}
                     width='w-full'
                     fontSizeOffset={fontSizeOffset}
                     groupToolReasoningRuns={groupToolReasoningRuns}
@@ -7122,12 +7079,10 @@ function Chat() {
               <div role='status' className='px-3 py-1 text-xs opacity-70'>
                 {selection.error}{' '}
                 <button type='button' className='underline' disabled={isSnapshotFetching} onClick={() => {
-                  const revision = selection.revision
-                  void refreshConversationSnapshot().then(data => {
-                    if (data && selectionRevisionRef.current === revision && selection.target) {
-                      chatSelection.select(selection.target, { inPlace: true, source: 'retry' })
-                    }
-                  })
+                  // Retry is a new intent before any I/O. The snapshot owner reloads
+                  // failed selections; accepted snapshots resolve missing targets through
+                  // the controller. No superseded refresh promise can strand this retry.
+                  if (selection.target) chatSelection.select(selection.target, { inPlace: true, source: 'retry' })
                 }}>Retry</button>
               </div>
             )}
@@ -8095,6 +8050,11 @@ function Chat() {
         />
       )}
 
+      {pendingModelSwitch && (
+        <ModelSwitchDialog from={pendingModelSwitch.from} to={pendingModelSwitch.to}
+          onCancel={cancelModelSwitch} onConfirm={confirmModelSwitch} />
+      )}
+
       {/* Desktop: side-by-side layout */}
       {heimdallVisible && !isMobile && (
         <div className='flex-1 min-w-0 mb-2'>
@@ -8331,7 +8291,10 @@ function Chat() {
                     variant='outline2'
                     className='bg-emerald-600 hover:bg-emerald-700 border-emerald-700 text-white active:scale-90'
                     onClick={() => {
-                      dispatch(chatSliceActions.providerSelected('OpenAI (ChatGPT)'))
+                      requestModelSwitch({ provider: 'OpenAI (ChatGPT)', model: null }, () => {
+                        dispatch(chatSliceActions.branchModelSelected({ provider: 'OpenAI (ChatGPT)', model: null }))
+                        dispatch(chatSliceActions.providerSelected('OpenAI (ChatGPT)'))
+                      }, openaiSelectionScopeRef.current ?? modelSwitchScope)
                       closeOpenaiLoginModal()
                     }}
                     style={authModalPrimaryButtonStyle}

@@ -89,6 +89,7 @@ export interface HookLineageFields {
 }
 
 export interface HookRunRequest {
+  compactionPhase?: 'summarising'
   event: HookEventName
   conversationId?: string | null
   streamId?: string | null

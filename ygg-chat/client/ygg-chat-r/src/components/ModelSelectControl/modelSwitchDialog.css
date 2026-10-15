@@ -1,0 +1,75 @@
+.model-switch-dialog {
+  /* Reuse the shared transitions.dev modal; closing is deliberately quicker. */
+  --modal-close-dur: 150ms;
+  --switch-button-dur: 150ms;
+  outline: none;
+  border: 0;
+  background: var(--switch-surface);
+  color: var(--switch-body);
+}
+
+.model-switch-dialog h3 {
+  color: var(--switch-title);
+}
+
+.model-switch-dialog::backdrop {
+  background: var(--switch-backdrop);
+  opacity: 0;
+  transition: opacity var(--modal-open-dur) var(--modal-ease);
+}
+
+.model-switch-dialog.is-open::backdrop {
+  opacity: 1;
+}
+
+.model-switch-dialog.is-closing::backdrop {
+  opacity: 0;
+  transition-duration: var(--modal-close-dur);
+}
+
+.model-switch-button {
+  --button-bg: var(--switch-secondary-bg);
+  --button-text: var(--switch-secondary-text);
+  outline: none;
+  border: 0;
+  background: var(--button-bg);
+  color: var(--button-text);
+  transform: translateY(0) scale(1);
+  transition:
+    background-color var(--switch-button-dur) var(--modal-ease),
+    color var(--switch-button-dur) var(--modal-ease),
+    transform var(--switch-button-dur) var(--modal-ease);
+}
+
+.model-switch-button-primary {
+  --button-bg: var(--switch-primary-bg);
+  --button-text: var(--switch-primary-text);
+}
+
+.model-switch-button:hover {
+  background: color-mix(in srgb, var(--button-bg) 85%, var(--switch-accent));
+  transform: translateY(-1px);
+}
+
+/* Focus remains visible through a theme-colored fill, never an outline/ring. */
+.model-switch-button:focus-visible {
+  background: color-mix(in srgb, var(--button-bg) 72%, var(--switch-accent));
+  color: var(--button-text);
+  transform: translateY(-2px) scale(1.03);
+}
+
+.model-switch-button:active {
+  transform: translateY(0) scale(0.97);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .model-switch-dialog::backdrop,
+  .model-switch-button {
+    transition: none !important;
+  }
+  .model-switch-button:hover,
+  .model-switch-button:focus-visible,
+  .model-switch-button:active {
+    transform: none;
+  }
+}

@@ -26,7 +26,11 @@ describe('registerChatRoutes', () => {
           seenRequests.push(input)
           return { status: input.streamId ? 'pending' : 'applied', mode: input.mode, revision: 1 }
         },
-        async runMessage(request, emit) {
+        async runMessage(request, emit, signal) {
+          if (request.modelName === 'wait-for-abort') {
+            seenCompactionRequests.push({ ...request, signal })
+            await new Promise<void>((_resolve, reject) => signal!.addEventListener('abort', () => reject(signal!.reason), { once: true }))
+          }
           seenOperations.push(request.operation)
           seenRequests.push(request)
           emit({
@@ -192,7 +196,7 @@ describe('registerChatRoutes', () => {
     await expect.poll(() => seenCompactionRequests[0].signal.aborted).toBe(true)
   })
 
-  it('maps compact route to compaction service', async () => {
+  it('maps compact route to the ordinary streamed chat pipeline', async () => {
     const res = await fetch(`${baseUrl}/api/conversations/c1/compact`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
@@ -208,20 +212,13 @@ describe('registerChatRoutes', () => {
       }),
     })
 
-    expect(res.status).toBe(201)
-    const payload = await res.json()
-    expect(payload).toMatchObject({
-      success: true,
-      message: {
-        id: 'compact-1',
-        role: 'system',
-        note: '__auto_compaction_summary__',
-        parent_id: 'm2',
-      },
-    })
-    expect(seenCompactionRequests[0]).toMatchObject({
+    expect(res.status).toBe(200)
+    expect(await res.text()).toContain('"type":"complete"')
+    expect(seenCompactionRequests).toEqual([])
+    expect(seenRequests[0]).toMatchObject({
+      manualCompaction: true,
       conversationId: 'c1',
-      parentMessageId: 'm2',
+      parentId: 'm2',
       provider: 'openaichatgpt',
       modelName: 'gpt-test',
       userId: 'u1',

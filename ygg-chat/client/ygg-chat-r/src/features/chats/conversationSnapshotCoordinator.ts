@@ -84,6 +84,8 @@ export interface CoordinateConversationSnapshotOptions {
   getState: () => RootState
   dispatch: (action: ReturnType<typeof chatSliceActions.conversationSnapshotApplied>) => unknown
   fetchSnapshot?: typeof fetchConversationMessagesTree
+  /** The mounted caller owns cache/Redux commits as well as local hook state. */
+  isCurrent?: () => boolean
 }
 
 export interface CoordinateConversationSnapshotResult {
@@ -101,8 +103,10 @@ export async function coordinateConversationSnapshot({
   getState,
   dispatch,
   fetchSnapshot = fetchConversationMessagesTree,
+  isCurrent = () => true,
 }: CoordinateConversationSnapshotOptions): Promise<CoordinateConversationSnapshotResult> {
   const normalizedId = normalizeConversationId(conversationId)
+  if (!isCurrent()) return { accepted: false, generation: requestGenerations.get(normalizedId) ?? 0 }
   const generation = (requestGenerations.get(normalizedId) ?? 0) + 1
   requestGenerations.set(normalizedId, generation)
   requestControllers.get(normalizedId)?.abort()
@@ -116,7 +120,7 @@ export async function coordinateConversationSnapshot({
       queryClient,
       signal: controller.signal,
     })
-    if (controller.signal.aborted || requestGenerations.get(normalizedId) !== generation) {
+    if (!isCurrent() || controller.signal.aborted || requestGenerations.get(normalizedId) !== generation) {
       return { accepted: false, generation }
     }
 
@@ -142,7 +146,7 @@ export async function coordinateConversationSnapshot({
     }
 
     // Check once more immediately before committing both accepted authorities.
-    if (requestGenerations.get(normalizedId) !== generation ||
+    if (!isCurrent() || requestGenerations.get(normalizedId) !== generation ||
         String(getState().chat.conversation.currentConversationId ?? '') !== normalizedId) {
       return { accepted: false, generation }
     }
@@ -158,7 +162,7 @@ export async function coordinateConversationSnapshot({
   } catch (cause) {
     // Transport wrappers may turn AbortError into an ordinary Error. Supersession
     // is still cancellation, not a failure of the replacement snapshot/selection.
-    if (controller.signal.aborted || requestGenerations.get(normalizedId) !== generation ||
+    if (!isCurrent() || controller.signal.aborted || requestGenerations.get(normalizedId) !== generation ||
         String(getState().chat.conversation.currentConversationId ?? '') !== normalizedId) {
       return { accepted: false, generation }
     }

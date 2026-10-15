@@ -2,7 +2,8 @@ import React, { useEffect, useMemo, useRef, useState } from 'react'
 import { Activity, ChevronRight, CircleCheck, CircleDashed, CircleX, Clock3 } from 'lucide-react'
 import type { HookRunRecord } from '../../features/chats/chatTypes'
 import { localApi } from '../../utils/api'
-import { TEXT_DETAIL_CLASS, TEXT_MICRO_CLASS } from './chatMessageShared'
+import { getThemeModeColor, useCustomChatTheme, useHtmlDarkMode } from '../ThemeManager/themeConfig'
+import { DISCLOSURE_LABEL_CLASS, QUIET_ROW_CLASS, QUIET_CHEVRON_CLASS, QUIET_MUTED_CLASS, TEXT_DETAIL_CLASS } from './chatMessageShared'
 import { ACTIVE_HOOK_RUN_STATUSES, areHookRunSetsEqual, didHookRunsSettle, hasActiveHookRuns } from './hookActivityState'
 
 interface HookActivityCardProps {
@@ -37,12 +38,16 @@ export function summarizeHookRuns(runs: HookRunRecord[]): string {
 
 function statusIcon(status: HookRunRecord['status']) {
   if (status === 'failed' || status === 'timed_out') return <CircleX size={15} className='text-red-500' />
-  if (ACTIVE_HOOK_RUN_STATUSES.has(status)) return <CircleDashed size={15} className='animate-spin text-amber-500' />
+  if (ACTIVE_HOOK_RUN_STATUSES.has(status)) return <CircleDashed size={15} className='animate-spin motion-reduce:animate-none text-amber-500' />
   if (status === 'skipped') return <Clock3 size={15} className='text-stone-500' />
   return <CircleCheck size={15} className='text-emerald-500' />
 }
 
 export const HookActivityCard: React.FC<HookActivityCardProps> = ({ initialRuns, messageId, event, fontSizeOffset = 0, onLayoutChange, onRunsUpdated, onRunsSettled }) => {
+  const { theme, enabled } = useCustomChatTheme()
+  const dark = useHtmlDarkMode()
+  const mutedStyle = enabled ? { color: getThemeModeColor(theme.colors.toolJobsMutedText, dark) } : undefined
+  const primaryStyle = enabled ? { color: getThemeModeColor(theme.colors.toolJobsPrimaryText, dark) } : undefined
   const [runs, setRuns] = useState(initialRuns)
   const [expanded, setExpanded] = useState(false)
   const [openId, setOpenId] = useState<string | null>(null)
@@ -93,12 +98,12 @@ export const HookActivityCard: React.FC<HookActivityCardProps> = ({ initialRuns,
   if (runs.length === 0) return null
 
   return (
-    <div className='rounded-2xl bg-white/50 backdrop-blur-xl dark:bg-black/15' style={fontSizeOffset ? { fontSize: `calc(1em + ${fontSizeOffset}px)` } : undefined} data-testid='hook-activity-card'>
-      <button type='button' className='flex w-full items-center gap-2.5 rounded-2xl px-3.5 py-2.5 text-left hover:bg-white/70 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400/70 dark:hover:bg-white/5' onClick={() => setExpanded(value => !value)} aria-expanded={expanded}>
-        <Activity size={18} className={runs.some(run => run.status === 'failed' || run.status === 'timed_out') ? 'text-red-500' : 'text-cyan-600 dark:text-cyan-300'} />
-        <span className={`font-mono ${TEXT_MICRO_CLASS} font-bold uppercase tracking-[0.12em] text-cyan-700 dark:text-cyan-300`}>Hooks</span>
-        <span className={`${TEXT_DETAIL_CLASS} text-stone-600 dark:text-stone-300`}>· {new Set(runs.map(run => run.event)).size === 1 ? eventLabel(event || runs[0].event) : 'Multiple lifecycle points'} · {summary}</span>
-        <ChevronRight size={18} className={`ml-auto transition-transform duration-150 ${expanded ? 'rotate-90' : ''}`} />
+    <div className='min-w-0' style={fontSizeOffset ? { fontSize: `calc(1em + ${fontSizeOffset}px)` } : undefined} data-testid='hook-activity-card'>
+      <button type='button' className={QUIET_ROW_CLASS} style={mutedStyle} onClick={() => setExpanded(value => !value)} aria-expanded={expanded}>
+        <Activity size={16} strokeWidth={1.75} aria-hidden='true' className={`shrink-0 ${runs.some(run => run.status === 'failed' || run.status === 'timed_out') ? 'text-red-500' : QUIET_MUTED_CLASS}`} />
+        <span className={`${DISCLOSURE_LABEL_CLASS} text-neutral-700 dark:text-neutral-300`} style={primaryStyle}>Hooks</span>
+        <span className={`min-w-0 truncate ${TEXT_DETAIL_CLASS} leading-tight text-stone-600 dark:text-stone-300`} style={mutedStyle}>· {new Set(runs.map(run => run.event)).size === 1 ? eventLabel(event || runs[0].event) : 'Multiple lifecycle points'} · {summary}</span>
+        <ChevronRight size={14} strokeWidth={2.25} aria-hidden='true' className={`${QUIET_CHEVRON_CLASS} ${expanded ? 'rotate-90' : ''}`} />
       </button>
       {expanded && <ul className='space-y-1 px-2 pb-2'>
         {runs.map(run => {
@@ -109,7 +114,7 @@ export const HookActivityCard: React.FC<HookActivityCardProps> = ({ initialRuns,
               {statusIcon(run.status)}
               <span className='min-w-0 flex-1 truncate font-mono text-xs text-stone-800 dark:text-stone-100'>{run.label}</span>
               <span className='text-[11px] text-stone-500'>{eventLabel(run.event)} · {scopeLabel(run.scope)}</span>
-              <span className={`rounded-full px-2 py-0.5 text-[10px] uppercase ${failed ? 'bg-red-500/10 text-red-600 dark:text-red-300' : 'bg-black/5 text-stone-600 dark:bg-white/10 dark:text-stone-300'}`}>{run.status}</span>
+              <span className={`rounded-full px-2 py-0.5 text-[10px] ${failed ? 'bg-red-500/10 text-red-600 dark:text-red-300' : 'bg-black/5 text-stone-600 dark:bg-white/10 dark:text-stone-300'}`}>{run.status}</span>
               <span className='w-10 text-right text-[11px] text-stone-500'>{durationLabel(run.durationMs)}</span>
             </button>
             {detailOpen && <div className='space-y-2 px-3 pb-3 text-xs text-stone-600 dark:text-stone-300'>
@@ -133,6 +138,6 @@ export const HookActivityCard: React.FC<HookActivityCardProps> = ({ initialRuns,
   )
 }
 
-const Details: React.FC<{ label: string; value: string }> = ({ label, value }) => <div><p className='mb-1 font-mono text-[10px] uppercase tracking-wider'>{label}</p><pre className='max-h-40 overflow-auto whitespace-pre-wrap rounded-lg bg-black/5 p-2 dark:bg-white/5'>{value}</pre></div>
+const Details: React.FC<{ label: string; value: string }> = ({ label, value }) => <div><p className='mb-1 font-mono text-[10px]'>{label}</p><pre className='max-h-40 overflow-auto whitespace-pre-wrap rounded-lg bg-black/5 p-2 dark:bg-white/5'>{value}</pre></div>
 
 export default HookActivityCard

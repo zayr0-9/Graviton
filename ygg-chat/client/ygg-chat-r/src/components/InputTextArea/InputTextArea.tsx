@@ -863,7 +863,7 @@ export const InputTextArea: React.FC<TextAreaProps> = ({
                 const commandDescription = (() => {
                   const normalized = command.replace(/^\/+/, '').toLowerCase()
                   if (normalized === 'status-openai') return 'Show Codex usage limits'
-                  if (normalized === 'compactify') return 'Summarize this branch context'
+                  if (normalized === 'compact') return 'Summarize this branch context'
                   if (normalized.startsWith('bench')) return 'Benchmark chat rendering'
                   if (normalized.startsWith('theme-demo')) return 'Cycle saved custom themes'
                   return 'Insert command'

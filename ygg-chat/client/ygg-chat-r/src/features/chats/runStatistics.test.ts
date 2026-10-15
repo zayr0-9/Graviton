@@ -107,3 +107,34 @@ it('formats compact input/output estimates and retains partial/unavailable state
   expect(formatRunStatistics({ ...stats, tokens: { ...tokens, coverage: 'unavailable' } })).toContain('Tokens unavailable')
   expect(formatRunStatistics({ ...stats, tokens: { ...tokens, breakdown: undefined } })).toContain('Tokens unavailable')
 })
+
+describe('ChatGPT request throughput', () => {
+  const metric = { version: 1, provider: 'openaichatgpt', basis: 'provider_request', outputTokens: 400,
+    requestDurationMs: 4000, requests: 2, measuredRequests: 2, coverage: 'complete' }
+  const derive = (value: unknown = metric, status: ConversationRunStatistics['status'] = 'completed') =>
+    deriveRunStatistics([message('a', 'r')], ['a'], [{ ...run('r', 'a', status),
+      metadata: { modelThroughput: value } }], 'c')[0]
+
+  it('uses request time, not total run duration or estimated transcript tokens', () => {
+    const stats = derive()
+    expect(formatRunStatistics(stats)).toBe('42s · 12 tool calls · Tokens unavailable · 100 tokens/s')
+    expect(formatRunStatisticsDetails(stats)).toBe('Request usage unavailable')
+    expect(formatRunStatistics(derive({ ...metric, outputTokens: 123, requestDurationMs: 2000 }))).toContain('61.5 tokens/s')
+    expect(formatRunStatistics(derive({ ...metric, outputTokens: 0 }))).toContain('0 tokens/s')
+  })
+
+  it.each([
+    null, {}, { ...metric, provider: 'openrouter' }, { ...metric, version: 2 },
+    { ...metric, coverage: 'partial' }, { ...metric, requests: 0 }, { ...metric, requests: 1.5 },
+    { ...metric, measuredRequests: 1 }, { ...metric, outputTokens: -1 },
+    { ...metric, outputTokens: Infinity }, { ...metric, requestDurationMs: 0 },
+    { ...metric, requestDurationMs: NaN }, { ...metric, basis: 'whole_run' },
+  ])('omits missing, unsupported or incomplete measurements: %j', value => {
+    expect(derive(value).modelThroughput).toBeUndefined()
+    expect(formatRunStatistics(derive(value))).not.toContain('tokens/s')
+  })
+
+  it.each(['aborted', 'error'] as const)('omits the rate for %s runs', status => {
+    expect(derive(metric, status).modelThroughput).toBeUndefined()
+  })
+})

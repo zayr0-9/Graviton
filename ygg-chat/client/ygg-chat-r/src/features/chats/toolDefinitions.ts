@@ -260,6 +260,7 @@ export const getToolsForAI = (): ToolDefinition[] => {
 // Only expose built-in tools that have a local executor (or are handled specially in chatActions).
 // This prevents server-only tools like search_history from being advertised on the OpenAI route.
 const OPENAI_LOCALLY_SUPPORTED_BUILTIN_TOOL_NAMES = new Set<string>([
+  'claude_bridge',
   'todo_list',
   'plan_md',
   'theme_manager',

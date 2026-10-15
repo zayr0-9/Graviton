@@ -1,4 +1,5 @@
 import { createSelector } from '@reduxjs/toolkit'
+import { resolveBranchModelSelection } from './branchModelSelection'
 import { ConversationId, MessageId } from '../../../../../shared/types'
 import { RootState } from '../../store/store'
 import type { ChatErrorRecord } from './chatTypes'
@@ -9,7 +10,10 @@ const selectChatState = (state: RootState) => state.chat
 
 // Top-level selectors
 export const conversationContext = createSelector([selectChatState], chat => chat.conversation.context)
-export const selectProviderState = createSelector([selectChatState], chat => chat.providerState)
+export const selectBranchModelSelection = createSelector([selectChatState], chat => resolveBranchModelSelection(chat))
+export const selectProviderState = createSelector([selectChatState, selectBranchModelSelection], (chat, selection) =>
+  selection ? { ...chat.providerState, currentProvider: selection.provider } : chat.providerState
+)
 export const selectMultiReplyCount = createSelector([selectChatState], chat => chat.composition.multiReplyCount)
 export const getSelectedNodes = createSelector([selectChatState], chat => chat.selectedNodes)
 export const selectOperationMode = createSelector([selectChatState], chat => {

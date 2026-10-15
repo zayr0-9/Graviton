@@ -109,6 +109,7 @@ export interface BuildServerLoopRequestParams {
    * per-model default window instead of the selected model's). Forwarded only-when-set:
    * autoCompactionEnabled is sent even when false (that is how the user disables it).
    */
+  manualCompaction?: boolean
   autoCompactionEnabled?: boolean
   /** The SELECTED model's context window; sizes the compaction trigger (server falls back per-model). */
   contextLength?: number
@@ -220,6 +221,7 @@ export function buildServerLoopRequest(operation: ServerLoopOperation, params: B
 
   // Auto-compaction / context settings: forward only-when-set (server keeps its default when
   // a field is absent). autoCompactionEnabled is sent even when false — that disables it.
+  if (params.manualCompaction) body.manualCompaction = true
   if (typeof params.autoCompactionEnabled === 'boolean') body.autoCompactionEnabled = params.autoCompactionEnabled
   if (typeof params.contextLength === 'number') body.contextLength = params.contextLength
   if (typeof params.compactionThresholdPercent === 'number')

@@ -97,3 +97,25 @@ describe('Full access node visibility', () => {
     expect(isHeimdallScaffoldingMessage({ role: 'user', content: 'Full access enabled' })).toBe(false)
   })
 })
+
+describe('compaction node visibility', () => {
+  const rows = [
+    { role: 'user', meta: { kind: 'compaction_instruction' } },
+    { role: 'user', meta: { kind: 'compaction_resume' } },
+    { role: 'assistant', meta: { compactionPhase: 'summarising' } },
+    { role: 'assistant', meta: { kind: 'compaction_summary', state: 'committed' } },
+    { role: 'system', note: '__auto_compaction_summary__' },
+    { role: 'system', content: 'Following is summary of the session, you have to resume the work.' },
+  ]
+  it.each(rows)('promotes compaction descendants by default, but allows inspection with the filter off: %j', row => {
+    for (const message of [row, { ...row, meta: JSON.stringify(row.meta) }]) {
+      expect(isHeimdallScaffoldingMessage(message)).toBe(true)
+      expect(isHeimdallScaffoldingMessage(message, false)).toBe(false)
+    }
+    expect(shouldPromoteHeimdallNode({ isCompaction: true, isContextInjection: false,
+      isOperationModeChange: false, isEmpty: false, hasSiblings: true, filterEmptyMessages: true })).toBe(true)
+  })
+  it('does not filter ordinary prose mentioning compaction', () => {
+    expect(isHeimdallScaffoldingMessage({ role: 'assistant', content: 'Compaction requested' })).toBe(false)
+  })
+})

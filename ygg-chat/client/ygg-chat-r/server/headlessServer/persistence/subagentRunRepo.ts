@@ -42,6 +42,7 @@ export interface AppendSubagentMessageInput {
   toolCalls?: any
   toolCallId?: string | null
   contentBlocks?: any
+  meta?: Record<string, unknown>
   sequence?: number
   createdAt?: string
 }
@@ -178,6 +179,7 @@ export class SubagentRunRepo {
       resolvedSequence,
       createdAt
     )
+    if (input.meta) this.statements.updateSubagentMessageMetadata.run(JSON.stringify(input.meta), messageId, runId)
 
     return (
       this.findMessage(runId, messageId) ??
@@ -223,6 +225,15 @@ export class SubagentRunRepo {
     )
 
     return this.findMessage(runId, messageId)
+  }
+
+  finaliseCompaction(runId: string, messageId: string, update: { content: string; contentBlocks: any[]; meta: Record<string, unknown> }): SubagentMessageRow {
+    const row = this.findMessage(runId, messageId)
+    if (!row || row.role !== 'assistant') throw new Error('Compaction response not found')
+    const meta = safeJsonParse<any>((row as any).meta, {})
+    if (meta?.kind === 'compaction_summary' && meta.state === 'committed') return row
+    this.statements.finaliseSubagentCompaction.run(update.content, JSON.stringify(update.contentBlocks), JSON.stringify(update.meta), messageId, runId)
+    return this.findMessage(runId, messageId)!
   }
 
   getRunById(runId: string): SubagentRunRow | null {

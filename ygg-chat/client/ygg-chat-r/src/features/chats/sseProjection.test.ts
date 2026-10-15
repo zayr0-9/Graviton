@@ -608,3 +608,41 @@ describe('Full access notification projection', () => {
     expect((actions[0].payload as any).artifacts).toEqual([])
   })
 })
+
+describe('compaction live presentation', () => {
+  it.each(['completed', 'failed', 'cancelled'])('hides streamed summary payloads through %s and keeps canonical rows', outcome => {
+    let state = chatReducer(undefined, chatSliceActions.sendingStarted({ streamId: ctx.streamId, conversationId: ctx.conversationId }))
+    state = chatReducer(state, chatSliceActions.sendingStarted({ streamId: 'sibling', conversationId: ctx.conversationId }))
+    const apply = (event: Record<string, unknown>) => {
+      for (const action of projectServerEvent(partial(event), ctx)) state = chatReducer(state, action)
+    }
+    apply({ type: 'context_compaction', status: 'started' })
+    apply({ type: 'tool_loop', status: 'turn_started' })
+    for (const part of ['text', 'reasoning', 'image', 'tool_call', 'tool_result']) {
+      apply({ type: 'chunk', part, delta: 'SECRET_SUMMARY', url: 'SECRET_IMAGE',
+        toolCall: { id: 't', name: 'read_file', arguments: {} }, toolResult: { tool_use_id: 't', content: 'SECRET_RESULT' } })
+    }
+    const live = state.streaming.byId[ctx.streamId]
+    expect(live.buffer).toBe('')
+    expect(live.thinkingBuffer).toBe('')
+    expect(live.events).toEqual([])
+    expect(live.toolCalls).toEqual([])
+    state = chatReducer(state, chatSliceActions.streamChunkReceived({ streamId: 'sibling', chunk: { type: 'chunk', part: 'text', delta: 'Ordinary sibling' } }))
+    expect(state.streaming.byId.sibling.buffer).toBe('Ordinary sibling')
+    apply({ type: 'permission_required', toolCallId: 't', toolName: 'read_file', toolInput: {} })
+    expect(state.streaming.byId[ctx.streamId].active).toBe(true)
+    const message = { id: 'summary', role: 'assistant', content: 'SECRET_SUMMARY',
+      meta: { compactionPhase: 'summarising', ...(outcome === 'completed' ? { kind: 'compaction_summary', state: 'committed' } : {}) } }
+    apply({ type: 'assistant_message_persisted', message })
+    if (outcome === 'cancelled') state = chatReducer(state, chatSliceActions.streamingAborted({ streamId: ctx.streamId }))
+    else apply({ type: 'context_compaction', status: outcome, summaryMessage: outcome === 'completed' ? message : undefined })
+    expect(state.conversation.messages.find(row => row.id === 'summary')?.content).toBe('SECRET_SUMMARY')
+    expect(state.streaming.byId[ctx.streamId].buffer).toBe('')
+    expect(JSON.stringify(state.streaming.byId[ctx.streamId].events)).not.toContain('SECRET_')
+    if (outcome === 'completed') {
+      apply({ type: 'tool_loop', status: 'turn_started' })
+      apply({ type: 'chunk', part: 'text', delta: 'Resumed task' })
+      expect(state.streaming.byId[ctx.streamId].buffer).toBe('Resumed task')
+    }
+  })
+})

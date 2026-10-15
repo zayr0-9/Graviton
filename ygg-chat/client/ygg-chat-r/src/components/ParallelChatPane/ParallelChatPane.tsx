@@ -24,6 +24,7 @@ import { selectChatErrorsForConversation } from '../../features/chats/chatSelect
 import type { PlanClarificationAnswer } from '../../features/chats/planToolTypes'
 import { generateStreamId } from '../../features/chats/streamHelpers'
 import { useAppDispatch, useAppSelector } from '../../hooks/redux'
+import { resolveBranchModelSelection } from '../../features/chats/branchModelSelection'
 import { useSelectedModel } from '../../hooks/useQueries'
 import { Button } from '../Button/button'
 import { ChatErrorBubble } from '../ChatErrorBubble/ChatErrorBubble'
@@ -110,16 +111,19 @@ export function ParallelChatPane({
 
   const messages = useAppSelector(state => state.chat.conversation.messages)
   const streaming = useAppSelector(state => state.chat.streaming)
-  const providers = useAppSelector(state => state.chat.providerState)
+  const providerState = useAppSelector(state => state.chat.providerState)
   const operationMode = useAppSelector(state => state.chat.operationMode)
   const toolAutoApprove = useAppSelector(state => state.chat.toolAutoApprove)
   const errors = useAppSelector(state => selectChatErrorsForConversation(state, target.conversationId))
-  const selectedModel = useSelectedModel(providers.currentProvider)
+
   const { theme: customTheme, enabled: customThemeEnabled } = useCustomChatTheme()
   const isDarkMode = useHtmlDarkMode()
 
   const [path, setPath] = useState<MessageId[]>(target.path)
   const [lineageId, setLineageId] = useState<LineageId | null>(target.lineageId ?? null)
+  const branchSelection = useAppSelector(state => resolveBranchModelSelection(state.chat, path, target.conversationId, lineageId))
+  const providers = { ...providerState, currentProvider: branchSelection?.provider ?? providerState.currentProvider }
+  const selectedModel = useSelectedModel(providers.currentProvider, branchSelection?.model)
   const [hasDraft, setHasDraft] = useState(false)
   const [pendingStreamId, setPendingStreamId] = useState<string | null>(null)
   const [optimisticMessage, setOptimisticMessage] = useState<{
@@ -474,7 +478,7 @@ export function ParallelChatPane({
             className='opacity-70'
           />
         )}
-        {streamActive && effectiveStream && (
+        {streamActive && effectiveStream && effectiveStream.compactionStatus !== 'started' && (
           <ChatMessage
             id={`parallel-streaming-${effectiveStream.id}`}
             role='assistant'
@@ -492,9 +496,10 @@ export function ParallelChatPane({
             onOpenSubagentTranscript={onOpenSubagentTranscript}
           />
         )}
-        {streamActive && effectiveStream && !effectiveStream.buffer && effectiveStream.events.length === 0 && (
+        {streamActive && effectiveStream && (effectiveStream.compactionStatus === 'started' ||
+          (!effectiveStream.buffer && effectiveStream.events.length === 0)) && (
           <div className='px-0 pt-1 sm:px-2'>
-            <StreamingThinkingIndicator />
+            <StreamingThinkingIndicator compacting={effectiveStream.compactionStatus === 'started'} />
           </div>
         )}
         {paneErrors.map(record => (

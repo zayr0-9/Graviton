@@ -2,7 +2,7 @@
 
 **Status: approved visual direction.** This guide records the current, user-approved sea-glass study. Preserve this treatment when extending the component family; do not return to earlier glossy, bulky, or highly transparent versions.
 
-**Working reference:** [sea-glass.html](design-previews/sea-glass.html). The latest screenshot supplied with this guide request is the visual acceptance reference. The screenshot is conversation-attached, not a checked-in image. The HTML is currently in a Git-ignored preview directory; this guide is intentionally at the repository root so the design decisions can be versioned independently.
+**Working reference:** [sea-glass-v2.html](design-previews/sea-glass-v2.html). V2 is the current approved material reference: stronger lower internal illumination with a small, soft exterior spill and reduced grounding shadow. The light-mode defaults and exact recipe below supersede older material values and shadow examples. [sea-glass.html](design-previews/sea-glass.html) remains an unchanged historical comparison. The supplied Figma screenshot is conversation-attached, not a checked-in image; the final tuned V2 implementation, not the raw Figma export, is authoritative. The previews are Git-ignored; this root guide records the recipe independently.
 
 ## 1. The intended feeling
 
@@ -13,7 +13,7 @@ The glass is translucent, lightly granular, softly rounded, and coloured through
 The approved screenshot shows:
 
 - An off-white, slightly warm background.
-- A cornflower search bar, orchid primary button and composer, and honey icon button and collection panel.
+- A sky-blue search bar, orchid primary button and composer, and honey icon button and collection panel.
 - Fine, restrained surface grain that is apparent on inspection rather than visually busy.
 - Soft internal illumination, without a permanent white outline or bevel.
 - Muted, colour-related text rather than generic black on every surface.
@@ -27,7 +27,7 @@ Those colour assignments are an approved example, not fixed meanings. All specim
 1. **Translucent, not see-through:** sense the scene behind the material; do not make underlying text legible.
 2. **Texture belongs to the material:** static, fine grain; never animated television noise.
 3. **No fake glossy outline:** no continuous bright rim, white stroke, hard bevel, or chrome-like edge.
-4. **Lighting stays restrained:** a static internal underglow plus a small pointer-responsive edge segment.
+4. **Lighting has separate layers:** visible static lower internal illumination, a tight colour-matched spill, a small neutral grounding shadow, and an independent pointer-responsive edge segment. Do not enlarge the exterior shadow to strengthen the inner glow.
 5. **Compact, not padded-out:** preserve the reduced padding and text sizes.
 6. **Content stays crisp:** do not lower opacity or blur the entire component.
 7. **Motion communicates interaction:** small hover/press feedback, anchored dropdowns, no ambient wobble or dramatic tilt.
@@ -38,20 +38,27 @@ These are the current baseline, not suggested ranges.
 
 | Setting | Default | Implementation |
 | --- | ---: | --- |
-| Fine grain | **8%** | `--grain: .08` |
-| Surface wear | **4%** | `--coarse: .04` |
-| Transmission control | **54%** | `--body-opacity: .46` |
+| Fine grain, light theme | **36%** | `--grain: .36` |
+| Surface wear, light theme | **11%** | `--coarse: .11` |
+| Transmission control, light theme | **46%** | `--body-opacity: .54` |
+| Fine grain / surface wear / transmission, dark theme | **8% / 4% / 54%** | `.08 / .04 / .46` body opacity; retained dark preset, not newly approved values |
+| Responsive light | **On** | Pointer response enabled, subject to touch/reduced-motion safeguards |
+| Nearby reflection (global) | **On** | Every existing glass surface starts enabled in V2; no initial mixed state |
 | Backdrop scatter | **24px** | `blur(24px)` |
 | Backdrop saturation | **1.22** | `saturate(1.22)` |
 | Light strength, light theme | **67%** | `--light-gain: .67` |
 | Light strength, dark theme | **16%** | `--light-gain: .16`, applied by theme JS |
 | Pointer influence distance | **160px** | Distance from the component rectangle |
 | Local edge-highlight feather radius | **48px** | Radial mask on the lighting layer only |
-| Static underglow alpha, light / dark | **.24 / .16** | `--underglow-alpha` |
+| Static underglow alpha, light / dark | **.85 / .36** | `--underglow-alpha` |
+| Exterior spill alpha, light / dark | **.60 / .28** | `--spill-alpha` |
+| Neutral grounding alpha, light / dark | **.10 / .20** | `--ground-alpha` |
+| Bottom inner-light alpha, light / dark | **.40 / .14** | `--bottom-light-alpha` |
+| Top inner-light alpha, light / dark | **.25 / .06** | `--top-light-alpha` |
 
-**Transmission is an artistic density control, not measured optical transmittance.** The base body opacity is `1 − transmission / 100`, but several gradients and backdrop filtering combine in the final material. A setting of 54% does not mean every pixel is exactly 54% transparent.
+**Transmission is an artistic density control, not measured optical transmittance.** The base body opacity is `1 − transmission / 100`, but several gradients and backdrop filtering combine in the final material. The approved 46% transmission means `.54` base body opacity, not 46% opacity; it does not mean every pixel is exactly 46% transparent.
 
-The theme toggle updates the light-strength slider and its readout together. Manual light-strength changes are remembered separately for light and dark mode during the current page session. There is no persistence across reloads in the study.
+The theme toggle updates grain, wear, transmission, light strength, and their readouts together. Manual material and light-strength changes are remembered separately for light and dark mode during the current page session. There is no persistence across reloads. Only the light preset was newly approved; V2 retains the previous dark grain/wear/transmission and pointer-strength defaults, with its existing darker underglow adaptation.
 
 ## 3. Material construction
 
@@ -63,7 +70,7 @@ Static fine grain + static fine surface-wear texture
 Localized, masked inset lighting — reacts to pointer proximity
 Tinted body + cloudy center + soft internal lower underglow
 Blurred, slightly saturated backdrop — colour passes through, detail scatters
-Neutral grounding shadows + very restrained tinted shadow
+Tight pale exterior spill + small neutral grounding shadow
 Page or components underneath
 ```
 
@@ -71,26 +78,48 @@ This is an appearance approximation using HTML, CSS, embedded SVG textures, and 
 
 ### Body and internal light
 
-Use a transparent component border for sizing, not a visible decorative stroke. Keep the static illumination within the body:
+Use a transparent component border for sizing, not a visible decorative stroke. Copy this V2 layer order exactly: the soft white wash sits above the lower illumination, cloudy tint, depth tint, and body. Do not apply the raw Figma blend modes; V2 uses normal compositing for these body gradients.
 
 ```css
-background:
-  radial-gradient(
-    ellipse 90% 100% at 50% 110%,
-    rgba(var(--glow), var(--underglow-alpha)), transparent 85%
-  ),
-  radial-gradient(ellipse at 50% 48%, rgba(var(--tint), .28), transparent 78%),
-  radial-gradient(ellipse at 72% 90%, rgba(var(--deep), .19), transparent 68%),
-  linear-gradient(
-    168deg,
-    rgba(var(--tint), var(--body-opacity)),
-    rgba(var(--glow), calc(var(--body-opacity) * .78))
-  );
-backdrop-filter: blur(24px) saturate(1.22);
--webkit-backdrop-filter: blur(24px) saturate(1.22);
+:root {
+  --grain: .36; --coarse: .11;
+  --body-opacity: .54; --scatter: 24px;
+  --light-gain: .67; --reflection-theme-gain: 2;
+  --underglow-alpha: .85;
+  --ground-alpha: .10; --spill-alpha: .60;
+  --bottom-light-alpha: .40; --top-light-alpha: .25;
+}
+:root[data-theme="dark"] {
+  --grain: .08; --coarse: .04; --body-opacity: .46;
+  --reflection-theme-gain: 1;
+  --underglow-alpha: .36;
+  --ground-alpha: .20; --spill-alpha: .28;
+  --bottom-light-alpha: .14; --top-light-alpha: .06;
+  /* Theme JS applies --light-gain: .16 and synchronizes controls. */
+}
+.glass {
+  position: relative;
+  isolation: isolate;
+  border: 1px solid transparent;
+  color: var(--material-ink, #244d42);
+  --glass-paint:
+    linear-gradient(180deg, rgba(255,255,255,.15), rgba(255,255,255,.1125)),
+    radial-gradient(ellipse 100% 60% at 50% 100%,
+      rgba(var(--glow),var(--underglow-alpha)) 0%,
+      rgba(var(--glow),calc(var(--underglow-alpha) * .70)) 30%,
+      transparent 90%),
+    radial-gradient(ellipse at 50% 48%, rgba(var(--tint),.28), transparent 78%),
+    radial-gradient(ellipse at 72% 90%, rgba(var(--deep),.19), transparent 68%),
+    linear-gradient(168deg,
+      rgba(var(--tint),var(--body-opacity)),
+      rgba(var(--glow),calc(var(--body-opacity) * .78)));
+  background: var(--glass-paint);
+  backdrop-filter: blur(var(--scatter)) saturate(1.22);
+  -webkit-backdrop-filter: blur(var(--scatter)) saturate(1.22);
+}
 ```
 
-The lower underglow is broad and static. It is not a moving spotlight. Preserve the center's cloudy pigment and slight depth variation without adding a bright upper rim.
+The visible lower glow is broad and static, centered at the bottom edge (`50% 100%`), with a 30% colour plateau that fades at 90%. Do not revert to the older faint ellipse centered outside the body at `50% 110%`. Keep grain and foreground content separate. Pointer and reflection layers must not modulate this static recipe.
 
 If backdrop filtering is unsupported, fall back to a solid tinted base. A slightly opaque fallback is preferable to sharp underlying text showing through.
 
@@ -100,8 +129,8 @@ Both textures are embedded SVG data URLs; no downloaded image or continuously ge
 
 | Texture | Source | Display scale | Blend | Default opacity |
 | --- | --- | --- | --- | ---: |
-| Fine grain | `feTurbulence`, fractal noise, frequency `.86`, 3 octaves, seed `17`, stitched, desaturated | `180px × 180px` tile | `soft-light` | `.08` |
-| Surface wear | Fractal noise, frequency `.19`, 3 octaves, seed `8`, stitched, desaturated, discrete levels `0 .2 .65 1` | **`80px × 80px`** display tile from a 240px SVG | `overlay` | `.04` |
+| Fine grain | `feTurbulence`, fractal noise, frequency `.86`, 3 octaves, seed `17`, stitched, desaturated | `180px × 180px` tile | `soft-light` | `.36` light / `.08` dark |
+| Surface wear | Fractal noise, frequency `.19`, 3 octaves, seed `8`, stitched, desaturated, discrete levels `0 .2 .65 1` | **`80px × 80px`** display tile from a 240px SVG | `overlay` | `.11` light / `.04` dark |
 
 Surface wear was deliberately made three times finer than the original 240px display tile. Do not restore the coarse, visibly mottled texture. Its purpose is tiny irregularities in the finish, not large pits or stains.
 
@@ -109,20 +138,42 @@ Texture and light layers must be noninteractive and remain behind foreground con
 
 ### Shadow recipe
 
-Retain this restrained grounding stack:
+Use the final approved V2 stack, including its strong inner lower light and reduced exterior shadow:
 
 ```css
-box-shadow:
-  1px 4px 5px -2px rgba(40, 56, 49, .04),
-  5px 12px 12px -9px rgba(37, 49, 43, .10),
-  2px 8px 12px -11px rgba(var(--tint), .14);
+.glass {
+  --glass-shadow:
+    0 9px 7px -6px rgba(var(--glow),var(--spill-alpha)),
+    0 6px 3px -3px rgba(0,0,0,var(--ground-alpha)),
+    inset 0 -21px 31.1px -7px rgba(255,255,255,var(--bottom-light-alpha)),
+    inset 0 3px 5px rgba(var(--deep),.07),
+    inset 0 12px 20px -4px rgba(255,255,255,var(--top-light-alpha));
+  box-shadow: var(--glass-shadow);
+}
 ```
 
-This softer recipe supersedes the earlier, stronger shadow. The V2 silhouette shadows follow the same reduction: neutral alpha `.10` at `(4px, 8px)` with `6px` blur, tint alpha `.09` at `(1px, 5px)` with `5px` blur. Small badges and progress fills have no exterior shadow; chips and control marks use only faint local grounding. Internal underglow and pointer edge lighting are unchanged.
+**Layer order matters.** The first shadow is the tight, pale spill in `--glow`, not the darker `--tint`. The second is neutral depth. The third brightens the lower interior; the fourth and fifth add soft upper colour and diffuse internal light without a hard perimeter highlight. Keep these values in CSS pixels; do not scale them up to screenshot pixels or substitute the raw Figma `29px`/`22px` exterior offsets.
 
-The first two layers provide neutral contact and directional depth. The last is a small hint of transmitted colour. Its blur, offset, negative spread, and opacity have been reduced repeatedly on purpose. Do not replace it with a wide coloured halo.
+The stronger intermediate spill (`0 15px 10px -6px`, alpha `.90`) and neutral shadow (`0 9px 3.3px -3px`, alpha `.15`) were rejected as too large and strong. The final external values above were reduced without weakening the approved internal glow (`.85` gradient and `.40` lower inset alpha in light mode). These replace the historical shadow recipe. Do not remove the diffuse inset lighting under a blanket “no inset shadows” rule; prohibit hard glossy rims and bevels instead.
 
-There are no static bright inset bevels in the main material. Inner controls and selected list rows also avoid decorative outline/bevel treatments. Accessibility focus indicators and selected colour-swatch indicators are separate from material styling.
+Small badges and progress fills retain their V2 `box-shadow: none`; chips, tooltip, alert, and control marks retain their own faint local grounding overrides. Inner controls and selected list rows do not gain this full exterior stack. Accessibility focus indicators and selected colour-swatch indicators remain separate.
+
+### Optional organic silhouette parity
+
+Smooth glass remains the default. The optional organic specimens in V2 share `--glass-paint` and textures on a clipped `.organic-material`; `.glass.organic-shell` has no rectangular background, shadow, or backdrop filter of its own. Their external shadows use the same contour in SVG, not a rectangular box shadow:
+
+```css
+.organic-shadow-main {
+  fill: rgba(0,0,0,var(--ground-alpha));
+  transform: translate(0, 6px); filter: blur(3px);
+}
+.organic-shadow-tint {
+  fill: rgba(var(--glow),var(--spill-alpha));
+  transform: translate(0, 9px); filter: blur(7px);
+}
+```
+
+Append the neutral path first and coloured path second so the spill paints above the neutral shadow. Both are in a group masked to the outside of the unshifted contour. Allow SVG overflow for blurred shadows. The organic body receives lower illumination through the shared gradients; it does **not** currently reproduce the rectangular inset-shadow stack. Preserve that implementation distinction rather than painting a rectangular inset over an organic outline.
 
 ## 4. Colour system
 
@@ -133,7 +184,7 @@ Every colour has four coordinated values: body tint, depth tint, glow tint, and 
 | Variant | CSS class | Body RGB | Depth RGB | Glow RGB | Ink |
 | --- | --- | --- | --- | --- | --- |
 | Seafoam | `.glass` baseline | `148, 211, 188` | `89, 157, 132` | `213, 250, 220` | `#244d42` |
-| Cornflower | `.blue` | `154, 181, 241` | `98, 132, 203` | `184, 230, 250` | `#2c487b` |
+| Sky blue (V2; historical palette label: Cornflower) | `.blue` | `112, 201, 246` | `0, 153, 255` | `198, 232, 255` | `#285775` |
 | Orchid | `.pink` | `232, 166, 228` | `177, 108, 186` | `250, 206, 236` | `#754580` |
 | Honey | `.amber` | `237, 193, 111` | `193, 144, 52` | `255, 233, 172` | `#725223` |
 | Coral | `.coral` | `245, 168, 161` | `207, 111, 107` | `255, 218, 205` | `#8e3938` |
@@ -173,9 +224,18 @@ Dark mode is a separate tinted palette, not a black overlay or an inversion filt
 
 ## 5. Geometry, density, and typography
 
+### Typography and copy rules
+
+- Use normal letter spacing. Do not add `tracking-*` utilities or custom `letter-spacing`, including negative tracking on headings.
+- Use sentence case for headings, labels, badges, and table headers. Do not use `uppercase`, `text-transform: uppercase`, or programmatic uppercasing as decoration. Preserve genuine acronyms, market symbols, and initials.
+- Do not add page descriptions or redundant introductory subtitles by default. Add explanatory copy only when a complicated feature needs it; do not use marketing filler to occupy space.
+- Keep useful instructions, contextual metadata, option descriptions that clarify a choice, and safety/demo disclosures.
+
+These rules supersede any decorative tracking, all-caps labels, or unnecessary introductory descriptions in older specimens and examples.
+
 ### Library direction: smooth by default, organic by choice
 
-The intended destination is a reusable component library; the HTML remains a demonstration, not the library implementation. **Smooth sea-glass surfaces are the default.** The “V2 / A barely imperfect edge” treatment is an optional shape variant, not a replacement or a new default for the component family.
+The intended destination is a reusable component library; the HTML remains a demonstration, not the library implementation. **Smooth sea-glass surfaces are the default.** The “Optional organic edges” treatment within the V2 file is an optional shape variant, not a replacement or a new default for the component family.
 
 - Opting into organic edges must be explicit. Theme, colour, hover, or pointer lighting must never enable deformation implicitly.
 - The demo's **Organic edges (optional)** checkbox starts unchecked and affects only its V2 specimens. Unchecking restores a smooth silhouette while retaining the tuning values for the next comparison.
@@ -249,7 +309,7 @@ The material background and exterior shadows stay static. Only the dedicated `.e
 
 Also supply the `-webkit-mask-image` declaration as in the reference. The mask applies **only to the lighting layer**, never the whole component. The 48px feather radius is not the 160px pointer influence distance; these control different things.
 
-Use a single animation-frame loop, batch geometry reads before style writes, skip hidden/offscreen surfaces, and stop scheduling frames when settled. Reset on window blur, pointer cancellation, hidden document, or disabling the effect. On touch/coarse pointers or reduced motion, keep only the static internal underglow.
+Use a single animation-frame loop, batch geometry reads before style writes, skip hidden/offscreen surfaces, and stop scheduling frames when settled. Reset on window blur, pointer cancellation, hidden document, or disabling the effect. On touch/coarse pointers or reduced motion, retain the static body, internal underglow, exterior spill, and grounding shadow; only the responsive lighting is disabled.
 
 The reference initializes its surface list once. A production component system must register/unregister newly mounted surfaces and clean up listeners/observers; copying the initialization literally would miss dynamically created components.
 
@@ -353,7 +413,7 @@ The demo API defaults to `enabled: false` and inherits the current theme's defau
 
 - [ ] **TODO — standardize reflection strengths:** replace raw numeric values in the future public component API with named strength categories backed by shared design tokens. Choose names and calibrated light/dark mappings after visual tuning; do not treat today's numbers as finalized categories.
 
-- The experiment starts enabled, with a **Nearby reflection (global)** master checkbox in the top material-control bar. Switching it on enables every registered component; switching it off disables every registered component. Individual strengths are preserved. It displays a mixed state when only some components are enabled (including the initial two-component demo). Per-component toggles and API updates synchronize the global checkbox. Range and default-strength tuning remain beside the floating specimen. Range defaults to **48px** (tunable 16–80px); **Reflection strength** defaults to **38% in light mode** and **93% in dark mode** (tunable 0–100%), independently of pointer-light strength. Its alpha is proximity × min(source strength, receiver strength) × `.65` × theme gain, with no pointer-strength multiplier. Theme gain is **2 in light mode** and **1 in dark mode**; CSS alpha saturates at 1. The shorter range, distance falloff, and borrowed colour remain unchanged; perceived brightness can still differ from mouse lighting.
+- The experiment starts enabled, with a **Nearby reflection (global)** master checkbox in the top material-control bar. Switching it on enables every registered component; switching it off disables every registered component. Individual strengths are preserved. V2 starts with all existing glass surfaces enabled and the global switch checked, not mixed; it displays a mixed state only after some components are disabled individually. The historical original starts with two enabled surfaces. Per-component toggles and API updates synchronize the global checkbox. Range and default-strength tuning remain beside the floating specimen. Range defaults to **48px** (tunable 16–80px); **Reflection strength** defaults to **38% in light mode** and **93% in dark mode** (tunable 0–100%), independently of pointer-light strength. Its alpha is proximity × min(source strength, receiver strength) × `.65` × theme gain, with no pointer-strength multiplier. Theme gain is **2 in light mode** and **1 in dark mode**; CSS alpha saturates at 1. The shorter range, distance falloff, and borrowed colour remain unchanged; perceived brightness can still differ from mouse lighting.
 - Measure the gap between rectangle edges, not centres. Use facing-edge midpoints or closest corners and a smooth proximity falloff. Fade out if the surfaces intersect; do not pretend to model overlapping/occluded light transport.
 - Each surface receives the other surface's base tint mixed with 30% white. Theme and palette changes update the source colours. Never feed reflected output back into either source.
 - Treat the neighbour as an area source, not a point: use a separate softly feathered elliptical inset patch. Along the shared facing edge, its radius is half the shared span plus a 40px shoulder, bounded to 64–200px; across that edge it is 44px. Diagonal neighbours use 64px radii on both axes. Smooth radius changes with position/strength changes. Use 26px inset blur with −8px spread and mask stops at 0%, 25%, 65%, and 100% to diffuse the light without an external halo. The mouse retains its independent 48px mask, 14px blur, and 160px range. On opted-in surfaces, mouse light uses the receiving surface's pale tint instead of white. Opted-out surfaces retain the original pointer treatment.
@@ -464,7 +524,7 @@ This does **not** mean removing keyboard focus from every control:
 | Permanent white outline or shiny bevel | Border-free body with static internal underglow |
 | A bright moving spotlight across the face | Local masked response inside a short edge segment |
 | Lighting the entire side or corner | 48px feathered light mask |
-| Wide coloured shadow halos | Tight, low-opacity tint beneath neutral depth shadows |
+| Wide coloured shadow halos | Tight pale spill painted above a small neutral grounding shadow; exact V2 values in section 3 |
 | Coarse, blotchy surface noise | Fine stationary grain and finely scaled surface wear |
 | Large padding, oversized type, swollen controls | The compact geometry in this guide |
 | Centered model-picker modal | Trigger-anchored list |
@@ -474,9 +534,12 @@ This does **not** mean removing keyboard focus from every control:
 
 ## 10. Review checklist
 
-Use the current screenshot for the resting light-theme appearance and the HTML for interactions.
+Use the final V2 HTML for the resting light-theme material and interactions; the Figma screenshot guides the lower-glow character, not literal component dimensions.
 
-- [ ] Fine grain 8%, surface wear 4%, transmission 54% on a fresh load.
+- [ ] Light mode on a fresh load: fine grain 36%, surface wear 11%, transmission 46% (`--body-opacity: .54`); controls/readouts agree.
+- [ ] Responsive light and Nearby reflection (global) start on; the global checkbox is not indeterminate.
+- [ ] Exact V2 lower gradient and five-layer shadow stack from section 3; light alphas `.85 / .60 / .10 / .40 / .25` for underglow/spill/ground/bottom/top.
+- [ ] Strong inner underglow remains visible with the smaller exterior shadow: coloured offset/blur/spread `9px / 7px / -6px`, neutral `6px / 3px / -3px`.
 - [ ] Light strength 67% in light mode and 16% in dark mode; slider/readout stay synchronized.
 - [ ] No static glossy perimeter, hard bevel, or visible decorative border on the main material.
 - [ ] Background colour passes through; background text is not sharply readable.
@@ -499,13 +562,13 @@ Use the current screenshot for the resting light-theme appearance and the HTML f
 
 The reference is a standalone prototype, not a production component library or a live AI integration. It uses no external fonts, image assets, animation libraries, or WebGL. Embedded textures and CSS provide the material; JavaScript provides theme/colour controls, proximity lighting, modal behavior, and dragging.
 
-During the study, browser checks covered computed material values, theme switching, colour selection, edge-mask tracking, reset behavior, compact dimensions, and model selection. Drag tests used synthetic pointer events with capture mocked; physical pointer capture and touch dragging still require manual verification. Those checks are not a cross-browser visual review or an accessibility audit.
+During the study, browser checks covered computed material values, theme switching, colour selection, edge-mask tracking, reset behavior, compact dimensions, and model selection. Drag tests used synthetic pointer events with capture mocked; physical pointer capture and touch dragging still require manual verification. Those checks are not a cross-browser visual review or an accessibility audit. The focused [V2 preset harness](design-previews/sea-glass-v2.test.cjs) also checks control/CSS agreement, light/dark preset isolation and session tuning, global reflection toggling, and the computed lower-glow/shadow stack. Run it from the repository root with `node design-previews/sea-glass-v2.test.cjs`, then open `http://127.0.0.1:47850`; it is loopback-only and stops after three minutes.
 
 **Extension rule:** add new components by reusing this material, palette, density, and interaction language. Change one material property at a time and compare against the approved baseline. If a change makes the result more glossy, more outlined, more bulky, or more visibly animated, it is probably moving away from the intended design.
 
 ## 12. Component library design — per-component material configuration
 
-**Design requirement only; no library implementation or demo changes in this update.** The material controls must be configurable on each component instance by passing values/configuration. They must not depend on global demo sliders or require a settings UI inside every component. An application can expose sliders or preferences and pass the user's choices to the component.
+**Proposed library contract, not an implemented library API.** The light preset below now matches the approved V2 demo defaults. The material controls must be configurable on each component instance by passing values/configuration. They must not depend on global demo sliders or require a settings UI inside every component. An application can expose sliders or preferences and pass the user's choices to the component.
 
 ### Configuration surface
 
@@ -513,9 +576,9 @@ The following illustrates the intended contract; names and framework syntax are 
 
 ```ts
 const material = {
-  fineGrain: 18,
-  surfaceWear: 8,
-  transmission: 54,
+  fineGrain: 36,
+  surfaceWear: 11,
+  transmission: 46,
   responsiveLight: true,
   lightStrength: { light: 67, dark: 16 },
 };
@@ -527,13 +590,13 @@ const material = {
 
 | Configuration | Meaning | Example / initial library preset |
 | --- | --- | --- |
-| `fineGrain` | Fine texture opacity, expressed as a percentage | **18%** |
-| `surfaceWear` | Fine surface-wear texture opacity, expressed as a percentage | **8%** |
-| `transmission` | Artistic transmission control; base pigment opacity is `1 - value / 100` | **54%** |
+| `fineGrain` | Fine texture opacity, expressed as a percentage | **36%** light |
+| `surfaceWear` | Fine surface-wear texture opacity, expressed as a percentage | **11%** light |
+| `transmission` | Artistic transmission control; base pigment opacity is `1 - value / 100` | **46%** light |
 | `responsiveLight` | Enable or disable localized pointer-driven edge lighting | `true` |
 | `lightStrength` | Response intensity, as one percentage for both themes or separate light/dark percentages | `{ light: 67, dark: 16 }` |
 
-The 18% grain / 8% wear / 54% transmission values above record the latest configuration example and initial library preset. They do **not** silently change the existing demo's 8% / 4% / 54% defaults or the historical baseline documented in section 2. No new light-strength value was supplied in this request, so the existing 67% light / 16% dark values remain the starting preset.
+The approved light library preset and V2 defaults are now **36% grain / 11% wear / 46% transmission**, responsive light on, with **67% pointer-light strength**. Apply the exact section 3 underglow/shadow recipe to the material; do not use the earlier 18% / 8% / 54% configuration example. Nearby reflection is globally on in V2; the proposed per-component reflection API remains independent of `responsiveLight`. The existing dark preset remains **8% / 4% / 54%** with **16% pointer-light strength** unless explicitly overridden. A consuming library must resolve theme presets before applying instance overrides. The historical original HTML is not rewritten.
 
 ### Resolution and isolation
 

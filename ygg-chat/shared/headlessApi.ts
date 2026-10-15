@@ -81,6 +81,7 @@ export interface HeadlessMessageRequest {
    * (the mobile LAN UI never sends it, so it always auto-approves).
    */
   toolAutoApprove?: boolean
+  manualCompaction?: boolean
   autoCompactionEnabled?: boolean
   contextLength?: number
   compactionThresholdPercent?: number
@@ -199,6 +200,7 @@ export type HeadlessSubagentStreamEvent =
     }
 
 export type HeadlessStreamEvent =
+  | { type: 'compaction_control_persisted'; message: any; lineageId?: string | null }
   | { type: 'message_queue_updated'; snapshot: import('./queuedMessages.js').MessageQueueSnapshot }
   | { type: 'queued_user_message_persisted'; message: any; requestId: string; streamId: string; lineageId: string | null }
   | {

@@ -1,3 +1,4 @@
+import { isCommittedCompaction } from '../../../../../shared/compaction'
 import type { ContentBlock, HookRunRecord, StreamEvent } from '@/features/chats/chatTypes'
 import type { ChatErrorActionKind, ChatErrorEnvelope } from '../../../../../shared/chatErrors'
 import type { MessageId } from '../../../../../shared/types'
@@ -16,7 +17,7 @@ import rehypeKatex from 'rehype-katex'
 import remarkGfm from 'remark-gfm'
 import remarkMath from 'remark-math'
 import { Check, RotateCw, X } from 'lucide-react'
-import { AUTO_COMPACTION_NOTE, fetchMcpTools } from '../../features/chats/chatActions'
+import { fetchMcpTools } from '../../features/chats/chatActions'
 import { chatSliceActions } from '../../features/chats/chatSlice'
 import {
   appendAttachedImagePathMetadata,
@@ -30,8 +31,10 @@ import { ChatErrorBubble } from '../ChatErrorBubble/ChatErrorBubble'
 import { useHtmlIframeRegistry } from '../HtmlIframeRegistry/HtmlIframeRegistry'
 import { ImageModal } from '../ImageModal/ImageModal'
 import { MarkdownLink, markdownUrlTransform } from '../MarkdownLink/MarkdownLink'
+import { MarkdownTable } from '../MarkdownContent/MarkdownTable'
 import { MermaidDiagram, getMermaidSource, isMermaidCodeBlock, prepareMermaidMarkdown } from '../MermaidDiagram'
 import { TextArea } from '../TextArea/TextArea'
+import './explainSelection.css'
 import {
   type CustomChatTheme,
   createDefaultCustomChatTheme,
@@ -43,9 +46,13 @@ import {
 } from '../ThemeManager/themeConfig'
 import { ContextInjectionCard, type ContextInjectionCardEntry } from './ContextInjectionCard'
 import { HookActivityCard } from './HookActivityCard'
+import { AgentSteps } from './AgentSteps'
+import { partitionAgentItems, isProcessRunSeparatorText, getAgentProgress } from './agentActivity'
 import { MessageActions } from './MessageActions'
+import { submitMessageDraft } from './messageSubmission'
 import { DisclosurePanel, DisclosureRow } from './messagePrimitives'
 import { SummarisedMessage } from './SummarisedMessage'
+import { getCompactionPlaceholder, isHiddenCompactionMessage } from '../../features/chats/summaryPresentation'
 import { CompactMessageNotice } from './CompactMessageNotice'
 import { ImageAttachmentNotice, isImageAttachmentInfoMessage } from './ImageAttachmentNotice'
 import { waitForImagePreparation } from '../../features/chats/imagePreparation'
@@ -73,7 +80,6 @@ import {
   MESSAGE_IMAGE_CLASS,
   MESSAGE_IMAGE_WRAPPER_CLASS,
   normalizeReasoningTextForComparison,
-  PROCESS_RUN_GROUP_MIN_ITEMS,
   REASONING_TEXT_MARKDOWN_CLASS,
   SHARED_TEXT_MARKDOWN_CLASS,
   TEXT_DETAIL_CLASS,
@@ -108,13 +114,14 @@ interface ChatMessageProps {
   hookRuns?: HookRunRecord[]
   timestamp?: string | Date
   onEdit?: (id: string, newContent: string, newContentBlocks?: ContentBlock[]) => void
-  onBranch?: (id: string, newContent: string, newContentBlocks?: ContentBlock[]) => void
+  onBranch?: (id: string, newContent: string, newContentBlocks?: ContentBlock[]) => boolean
+  branchSubmissionDisabled?: boolean
   onDelete?: (id: string) => void
   onCopy?: (content: string) => void
   onResend?: (id: string) => void
   onAddToNote?: (text: string) => void
   onAddToChat?: (text: string) => void
-  onExplainFromSelection?: (id: string, newContent: string) => void
+  onExplainFromSelection?: (id: string, newContent: string) => boolean
   onOpenToolHtmlModal?: (key?: string) => void
   onOpenSubagentTranscript?: (toolCallId: string) => void
   isEditing?: boolean
@@ -133,6 +140,9 @@ interface ChatMessageProps {
   fontSizeOffset?: number
   /** Group long consecutive reasoning/tool runs into one "Agent steps" disclosure. */
   groupToolReasoningRuns?: boolean
+  processRunActive?: boolean
+  firstProcessGroupExpanded?: boolean
+  onFirstProcessGroupToggle?: () => void
   /** Display-only projection; canonical tool results remain complete. */
   truncateToolOutput?: boolean
   customTheme?: CustomChatTheme
@@ -173,7 +183,7 @@ type ProcessEntryType = 'tool' | 'reasoning'
 
 interface MessageRenderItem {
   key: string
-  kind: 'process' | 'other'
+  kind: 'process' | 'activity' | 'other'
   processType?: ProcessEntryType
   ignoreForProcessRunGrouping?: boolean
   node: React.ReactNode
@@ -315,7 +325,7 @@ const CodeRenderer: React.FC<any> = ({ inline, className, children, ...props }) 
 }
 
 // Stable components map so ReactMarkdown does not treat its renderers as changed each render.
-const MARKDOWN_COMPONENTS = { pre: PreRenderer, code: CodeRenderer, a: MarkdownLink }
+const MARKDOWN_COMPONENTS = { pre: PreRenderer, code: CodeRenderer, a: MarkdownLink, table: MarkdownTable }
 type MarkdownPlugins = NonNullable<React.ComponentProps<typeof ReactMarkdown>['rehypePlugins']>
 const MARKDOWN_REMARK_PLUGINS: MarkdownPlugins = [remarkGfm, remarkMath]
 const MARKDOWN_REHYPE_PLUGINS: MarkdownPlugins = [[rehypeHighlight, { detect: true }], rehypeKatex]
@@ -378,16 +388,6 @@ const getCollapsedReasoningSummary = (text: string | any): string => {
   return truncateWords(content)
 }
 
-const isProcessRunSeparatorText = (text: string): boolean => {
-  const trimmed = text.trim()
-  if (!trimmed) return true
-  // Keep obviously structured markdown content out of process-run grouping.
-  if (trimmed.startsWith('#') || trimmed.startsWith('```')) return false
-  // Short connective text (even if multiline) should not break an Agent Steps run.
-  const words = trimmed.split(/\s+/).filter(Boolean)
-  return words.length <= 12
-}
-
 const parseResponsesToolArgs = (rawArgs: unknown): unknown => {
   if (typeof rawArgs !== 'string') return rawArgs
   try {
@@ -411,7 +411,7 @@ const ROLE_LABEL_CLASS: Record<string, string> = {
   ex_agent: 'text-orange-700 dark:text-orange-400',
 }
 
-const EXPLAIN_BUTTON_CLASS = `flex h-8 w-8 items-center justify-center rounded-full bg-black/[0.05] text-neutral-600 disabled:cursor-not-allowed disabled:opacity-50 dark:bg-white/[0.06] dark:text-neutral-300 ${FAST_COLOR_TRANSITION_CLASS} ${FOCUS_RING_CLASS}`
+const EXPLAIN_BUTTON_CLASS = `flex h-11 w-11 items-center justify-center rounded-full transition-[background-color,color,transform,opacity] duration-[var(--ygg-motion-duration-fast)] hover:opacity-80 active:scale-95 disabled:cursor-not-allowed disabled:opacity-40 disabled:active:scale-100 outline-none focus-visible:ring-0 motion-reduce:transform-none motion-reduce:transition-none`
 
 const FLOATING_SURFACE_CLASS =
   'rounded-2xl bg-white/95 backdrop-blur-xl ring-1 ring-black/[0.06] dark:bg-yBlack-900/95 dark:ring-white/[0.08]'
@@ -431,6 +431,7 @@ const ChatMessageBody: React.FC<ChatMessageProps> = React.memo(
     onAddToNote,
     onAddToChat,
     onExplainFromSelection,
+    branchSubmissionDisabled = false,
     onOpenToolHtmlModal,
     onOpenSubagentTranscript,
     isEditing = false,
@@ -444,6 +445,9 @@ const ChatMessageBody: React.FC<ChatMessageProps> = React.memo(
     keepTextOutsideGroups = false,
     fontSizeOffset = 0,
     groupToolReasoningRuns = false,
+    processRunActive = false,
+    firstProcessGroupExpanded,
+    onFirstProcessGroupToggle,
     truncateToolOutput = true,
     customTheme: customThemeProp,
     customThemeEnabled: customThemeEnabledProp,
@@ -508,7 +512,15 @@ const ChatMessageBody: React.FC<ChatMessageProps> = React.memo(
     const streamToolGroupsByIndex = useMemo(() => buildToolCallGroupsFromStream(streamEvents), [streamEvents])
     const contentToolGroupsByIndex = useMemo(() => buildToolCallGroupsFromBlocks(contentBlocks), [contentBlocks])
     const htmlRegistry = useHtmlIframeRegistry()
+    const explainThemeColor = (key:
+      | 'settingsCustomThemesCardBg' | 'settingsCustomThemesInnerCardBg'
+      | 'toolJobsPrimaryText' | 'toolJobsMutedText'
+      | 'settingsCustomThemesButtonBg' | 'settingsCustomThemesButtonText'
+      | 'composerToggleActiveBg' | 'composerToggleActiveText'
+    ) =>
+      customThemeEnabled ? getThemeModeColor(customTheme.colors[key], isDarkMode) : undefined
     const [showExplainInput, setShowExplainInput] = useState(false)
+    const [explainInputClosing, setExplainInputClosing] = useState(false)
     const [explainInputValue, setExplainInputValue] = useState('')
     const explainInputPosition = useRef<{ x: number; y: number } | null>(null)
     const explainInputRef = useRef<HTMLDivElement | null>(null)
@@ -639,10 +651,10 @@ const ChatMessageBody: React.FC<ChatMessageProps> = React.memo(
     }
 
     const branchSubmissionPending = useRef(false)
-    const latestBranchEdit = useRef({ editContent, onBranch })
-    latestBranchEdit.current = { editContent, onBranch }
+    const latestBranchEdit = useRef({ editContent, onBranch, branchSubmissionDisabled })
+    latestBranchEdit.current = { editContent, onBranch, branchSubmissionDisabled }
     const handleSaveBranch = async () => {
-      if (branchSubmissionPending.current) return
+      if (branchSubmissionPending.current || branchSubmissionDisabled) return
       branchSubmissionPending.current = true
       try {
         await dispatch(waitForImagePreparation({ kind: 'branch', messageId: id }))
@@ -652,15 +664,18 @@ const ChatMessageBody: React.FC<ChatMessageProps> = React.memo(
       } finally {
         branchSubmissionPending.current = false
       }
-      if (latestBranchEdit.current.onBranch) {
-        const trimmedContent = latestBranchEdit.current.editContent.trim()
-        const newContentBlocks = hasEditableBlocks ? editableTextToContentBlocks(trimmedContent) : undefined
-        latestBranchEdit.current.onBranch(id, appendAttachedImagePathMetadata(trimmedContent, extractAttachedImagePaths(content)), newContentBlocks)
-      }
-      dispatch(chatSliceActions.editingBranchSet(false))
-      // The submission thunk consumes the captured drafts; never clear them before it snapshots.
-      setEditingState(false)
-      onEditingStateChange?.(id, false, 'branch')
+      const latest = latestBranchEdit.current
+      const trimmedContent = latest.editContent.trim()
+      const newContentBlocks = hasEditableBlocks ? editableTextToContentBlocks(trimmedContent) : undefined
+      const submitBranch = latest.onBranch
+      submitMessageDraft(latest.branchSubmissionDisabled,
+        submitBranch && (() => submitBranch(id, appendAttachedImagePathMetadata(trimmedContent, extractAttachedImagePaths(content)), newContentBlocks)),
+        () => {
+          dispatch(chatSliceActions.editingBranchSet(false))
+          // Only an admitted submission consumes the captured drafts and closes the editor.
+          setEditingState(false)
+          onEditingStateChange?.(id, false, 'branch')
+        })
     }
 
     const handleCancel = () => {
@@ -779,20 +794,32 @@ const ChatMessageBody: React.FC<ChatMessageProps> = React.memo(
     const handleSendExplainInput = () => {
       if (onExplainFromSelection && selectedText && explainInputValue.trim()) {
         const branchContent = `${explainInputValue.trim()}\n\nSelected text:\n\`\`\`\n${selectedText}\n\`\`\``
-        onExplainFromSelection(id, branchContent)
-        setShowExplainInput(false)
-        setExplainInputFixedPosition(null)
-        setExplainInputValue('')
-        setSelectedText('')
+        submitMessageDraft(branchSubmissionDisabled, () => onExplainFromSelection(id, branchContent), () => {
+          setExplainInputClosing(true)
+        })
       }
     }
 
     const handleCancelExplainInput = () => {
-      setShowExplainInput(false)
-      setExplainInputFixedPosition(null)
-      setExplainInputValue('')
-      setSelectedText('')
+      setExplainInputClosing(true)
     }
+
+    useEffect(() => {
+      if (!explainInputClosing) return
+      const duration = getComputedStyle(explainInputRef.current ?? document.documentElement)
+        .getPropertyValue('--modal-close-dur').trim()
+      const closeMs = reducedMotion ? 0 : duration
+        ? parseFloat(duration) * (duration.endsWith('ms') ? 1 : 1000)
+        : 250
+      const timer = window.setTimeout(() => {
+        setShowExplainInput(false)
+        setExplainInputClosing(false)
+        setExplainInputFixedPosition(null)
+        setExplainInputValue('')
+        setSelectedText('')
+      }, closeMs)
+      return () => window.clearTimeout(timer)
+    }, [explainInputClosing, reducedMotion])
 
     const handleCopySelection = async () => {
       if (!selectedText) return
@@ -812,6 +839,7 @@ const ChatMessageBody: React.FC<ChatMessageProps> = React.memo(
       } else if (contextMenuPosition) {
         explainInputPosition.current = { ...contextMenuPosition }
       }
+      setExplainInputClosing(false)
       setExplainInputValue('')
       setExplainInputFixedPosition(null)
       setShowExplainInput(true)
@@ -826,7 +854,8 @@ const ChatMessageBody: React.FC<ChatMessageProps> = React.memo(
     const getAdjustedExplainInputPosition = useCallback(() => {
       if (!explainInputPosition.current || !explainInputRef.current) return null
 
-      const inputRect = explainInputRef.current.getBoundingClientRect()
+      // Measure unscaled height so the opening transform does not affect placement.
+      const inputRect = { height: explainInputRef.current.offsetHeight }
       const viewportWidth = window.innerWidth
       const viewportHeight = window.innerHeight
       const offset = 12
@@ -1243,88 +1272,31 @@ const ChatMessageBody: React.FC<ChatMessageProps> = React.memo(
     }
 
     const renderItemsWithOptionalProcessGrouping = (items: MessageRenderItem[], sourceKey: string): React.ReactNode[] => {
-      if (!groupToolReasoningRuns) return items.map(item => item.node)
-
-      const rendered: React.ReactNode[] = []
-      let index = 0
-
-      while (index < items.length) {
-        const current = items[index]
-        if (current.kind !== 'process') {
-          rendered.push(current.node)
-          index += 1
-          continue
-        }
-
-        let runEnd = index
-        while (runEnd < items.length) {
-          const candidate = items[runEnd]
-          if (!candidate) break
-          if (candidate.kind === 'process') {
-            runEnd += 1
-            continue
-          }
-          if (candidate.ignoreForProcessRunGrouping) {
-            let lookahead = runEnd + 1
-            while (lookahead < items.length && items[lookahead]?.ignoreForProcessRunGrouping) lookahead += 1
-            if (lookahead < items.length && items[lookahead]?.kind === 'process') {
-              runEnd += 1
-              continue
-            }
-          }
-          break
-        }
-
-        const runItems = items.slice(index, runEnd)
-        const processItems = runItems.filter(item => item.kind === 'process')
-
-        if (processItems.length >= PROCESS_RUN_GROUP_MIN_ITEMS) {
-          const groupKey = keepTextOutsideGroups
-            ? `process-run-${sourceKey}-${runItems[0].key}`
-            : `process-run-${sourceKey}-${runItems[0].key}-${runItems[runItems.length - 1].key}`
-          const isExpanded = expandedBlocks.groupRuns.has(groupKey)
-          const toolCount = processItems.filter(item => item.processType === 'tool').length
-          const summary = toolCount > 0 ? `${toolCount} tool${toolCount === 1 ? '' : 's'}` : undefined
-          const panelId = `${id}-${groupKey}-panel`
-
-          rendered.push(
-            <div key={groupKey} className='min-w-0 max-w-full'>
-              {/* Keep the offset on the header only; each nested step applies its own. */}
-              <div style={messageContentStyle}>
-                <DisclosureRow
-                  label='Agent steps'
-                  labelSize='group'
-                  summary={summary}
-                  expanded={isExpanded}
-                  onToggle={() => toggleBlock('groupRuns', groupKey)}
-                  controlsId={panelId}
-                />
-              </div>
-              <DisclosurePanel
-                id={panelId}
-                expanded={isExpanded}
-                disableTransition={isStreamingRender}
-                onTransitionEnd={handleExpandTransitionEnd}
-              >
-                <div className={MESSAGE_BLOCK_STACK_CLASS}>{runItems.map(item => item.node)}</div>
-              </DisclosurePanel>
-            </div>
-          )
-        } else {
-          rendered.push(...runItems.map(item => item.node))
-        }
-
-        index = runEnd
-      }
-
-      return rendered
+      if (!groupToolReasoningRuns || isUserRow) return items.map(item => item.node)
+      let firstGroup = true
+      return partitionAgentItems(items).map(part => {
+        if (!('history' in part)) return part.node
+        // First-item identity survives appended tools, context loads and hook updates.
+        const groupKey = `process-run-${sourceKey}-${part.key}`
+        const controlled = firstGroup && firstProcessGroupExpanded !== undefined && onFirstProcessGroupToggle
+        firstGroup = false
+        const toolCount = part.history.filter(item => item.processType === 'tool').length
+        const isLiveTail = processRunActive && [...part.history, ...part.activity].includes(items[items.length - 1])
+        const progress = isLiveTail ? getAgentProgress([], streamEvents ?? [], hookRuns ?? [], true) : undefined
+        return <AgentSteps key={groupKey} id={`${id}-${groupKey}`} style={messageContentStyle}
+          expanded={controlled ? firstProcessGroupExpanded! : expandedBlocks.groupRuns.has(groupKey)} onToggle={controlled ? onFirstProcessGroupToggle! : () => toggleBlock('groupRuns', groupKey)}
+          summary={progress?.toolCount ? `${progress.completed} completed${progress.pending ? ` · ${progress.pending} pending` : ''}` : toolCount ? `${toolCount} tool${toolCount === 1 ? '' : 's'}` : undefined}
+          status={progress?.status} active={progress?.active}
+          activity={part.activity.length ? part.activity.map(item => item.node) : undefined}
+          history={<div className={MESSAGE_BLOCK_STACK_CLASS}>{part.history.map(item => item.node)}</div>} />
+      })
     }
 
     const renderHookActivityItem = (): MessageRenderItem | null => {
       if (!hookRuns?.length || role !== 'assistant') return null
       return {
         key: 'hook-activity',
-        kind: 'other',
+        kind: 'activity',
         node: <HookActivityCard key='hook-activity' initialRuns={hookRuns} messageId={id} event={hookRuns[0]?.event} fontSizeOffset={fontSizeOffset} onLayoutChange={onLayoutChange} onRunsUpdated={runs => onHookRunsUpdated?.(id, runs)} onRunsSettled={onHookRunsSettled} />,
       }
     }
@@ -1355,8 +1327,8 @@ const ChatMessageBody: React.FC<ChatMessageProps> = React.memo(
 
     const renderContextInjectionItem = (key: string, entries: ContextInjectionCardEntry[]): MessageRenderItem => ({
       key,
-      // `kind: 'other'` is load-bearing: the card must never fold into the collapsed run.
-      kind: 'other',
+      // An attachment stays visible without terminating the surrounding tool history.
+      kind: 'activity',
       node: (
         <ContextInjectionCard
           key={key}
@@ -1774,17 +1746,15 @@ const ChatMessageBody: React.FC<ChatMessageProps> = React.memo(
 
     // `contentToolGroupsByIndex` is keyed by index into `contentBlocks`. A user row never has tool
     // blocks and the fallback text block sits alone, so the map stays valid for `renderableBlocks`.
-    const baseRenderedNodes = editingState
-      ? null
-      : hasStreamEvents
-        ? renderItemsWithOptionalProcessGrouping(buildStreamRenderItems(), `stream-${id}`)
-        : renderableBlocks.length > 0
-          ? renderItemsWithOptionalProcessGrouping(buildContentBlockRenderItems(renderableBlocks), `blocks-${id}`)
-          : null
     const hookActivityItem = renderHookActivityItem()
-    const renderedNodes = hookActivityItem
-      ? [...(Array.isArray(baseRenderedNodes) ? baseRenderedNodes : baseRenderedNodes ? [baseRenderedNodes] : []), hookActivityItem.node]
-      : baseRenderedNodes
+    const renderItems = editingState ? [] : hasStreamEvents ? buildStreamRenderItems() : buildContentBlockRenderItems(renderableBlocks)
+    // Hook records have message ownership but no tool-call correlation. Attach them to the
+    // last process segment before final prose; never invent a per-tool step number.
+    if (hookActivityItem) {
+      const lastProcess = renderItems.reduce((last, item, index) => item.kind === 'process' || item.kind === 'activity' ? index : last, -1)
+      renderItems.splice(lastProcess + 1, 0, hookActivityItem)
+    }
+    const renderedNodes = editingState ? null : renderItemsWithOptionalProcessGrouping(renderItems, hasStreamEvents ? `stream-${id}` : `blocks-${id}`)
 
     const hasSelection = selectedText.length > 0
     const showActionsRow = !readOnly && hasContent && canBranchMessage && showInlineActions
@@ -1802,14 +1772,14 @@ const ChatMessageBody: React.FC<ChatMessageProps> = React.memo(
         onTouchStart={handleMobileMessageActivate}
       >
         <div
-          className={`min-w-0 rounded-2xl ${drawSurface ? 'px-1.5 pt-2 pb-1' : ''} ${surfaceClass} ${contextHighlightClass} ${FAST_COLOR_TRANSITION_CLASS}`}
+          className={`min-w-0 rounded-2xl ${drawSurface ? 'pt-2 pb-1' : ''} ${surfaceClass} ${contextHighlightClass} ${FAST_COLOR_TRANSITION_CLASS}`}
           style={surfaceStyle}
         >
           {/* Role caption. Assistant rows stay unlabelled; the surface is the label for user rows. */}
           {isUserRow && (
             <div className={`flex h-7 items-center gap-2 ${MESSAGE_BLOCK_INSET_CLASS}`}>
               <span
-                className={`${TEXT_MICRO_CLASS} font-semibold uppercase tracking-[0.14em] ${roleLabelClass}`}
+                className={`${TEXT_MICRO_CLASS} font-semibold ${roleLabelClass}`}
                 style={roleLabelStyle}
               >
                 {roleLabel}
@@ -1915,6 +1885,7 @@ const ChatMessageBody: React.FC<ChatMessageProps> = React.memo(
                   onCopy={handleCopy}
                   onSave={handleSave}
                   onSaveBranch={handleSaveBranch}
+                  saveDisabled={editMode === 'branch' && branchSubmissionDisabled}
                   onCancel={handleCancel}
                   onMore={handleMoreClick}
                   onUndoEdits={isUserRow && undoState?.available ? onUndoStreamEdits : undefined}
@@ -2073,6 +2044,7 @@ const ChatMessageBody: React.FC<ChatMessageProps> = React.memo(
                       }
                     : undefined
                 }
+                saveDisabled={editMode === 'branch' && branchSubmissionDisabled}
                 onSaveBranch={
                   !hasSelection
                     ? () => {
@@ -2128,21 +2100,40 @@ const ChatMessageBody: React.FC<ChatMessageProps> = React.memo(
           createPortal(
             <div
               ref={explainInputRef}
-              className={`fixed z-[100] w-[320px] p-2 sm:w-[400px] ${FLOATING_SURFACE_CLASS} [will-change:contents] [transform:translateZ(0)]`}
+              role='dialog'
+              aria-label='Explain selection'
+              inert={explainInputClosing}
+              className={`t-modal ${explainInputClosing ? 'is-closing' : explainInputFixedPosition ? 'is-open' : ''} fixed z-[100] w-[320px] rounded-[26px] bg-white/95 p-2 text-neutral-900 backdrop-blur-xl sm:w-[400px] dark:bg-yBlack-900/95 dark:text-neutral-100 [&_label]:!text-inherit`}
               style={{
+                backgroundColor: explainThemeColor('settingsCustomThemesCardBg'),
+                color: explainThemeColor('toolJobsPrimaryText'),
                 left: `${explainInputFixedPosition?.x ?? explainInputPosition.current?.x ?? 0}px`,
                 top: `${explainInputFixedPosition?.y ?? explainInputPosition.current?.y ?? 0}px`,
                 width: explainInputFixedPosition ? `${explainInputFixedPosition.width}px` : undefined,
               }}
             >
-              <div className='thin-scrollbar mb-2 max-h-[100px] overflow-y-auto rounded-xl bg-black/[0.04] p-2 dark:bg-white/[0.05]'>
-                <div className={`line-clamp-4 ${TEXT_DETAIL_CLASS} italic text-neutral-600 dark:text-neutral-400`}>“{selectedText}”</div>
+              <div className={`px-3 pb-3 pt-2 font-semibold ${TEXT_LABEL_CLASS}`}>Explain selection</div>
+              <div
+                className='thin-scrollbar mb-2 max-h-[100px] overflow-y-auto rounded-2xl bg-black/[0.04] px-3 py-2.5 text-neutral-600 dark:bg-white/[0.05] dark:text-neutral-400'
+                style={{
+                  backgroundColor: explainThemeColor('settingsCustomThemesInnerCardBg'),
+                  color: explainThemeColor('toolJobsMutedText'),
+                }}
+              >
+                <div className={`line-clamp-4 break-words ${TEXT_DETAIL_CLASS}`}>“{selectedText}”</div>
               </div>
               <TextArea
                 value={explainInputValue}
                 onChange={setExplainInputValue}
-                placeholder='Ask a question about the selected text...'
+                label='Your question'
+                placeholder='Ask a question about the selected text…'
                 width='w-full'
+                className='!rounded-2xl !border-0 !outline-none focus:!ring-0 focus-visible:!ring-0 !transition-colors !duration-[var(--ygg-motion-duration-fast)] placeholder:!text-[color:var(--explain-muted)]'
+                style={{
+                  backgroundColor: explainThemeColor('settingsCustomThemesInnerCardBg') ?? (isDarkMode ? 'rgba(255,255,255,0.05)' : 'rgba(0,0,0,0.04)'),
+                  color: explainThemeColor('toolJobsPrimaryText'),
+                  '--explain-muted': explainThemeColor('toolJobsMutedText'),
+                } as React.CSSProperties}
                 minRows={1}
                 maxRows={3}
                 fontSizeOffset={fontSizeOffset}
@@ -2156,25 +2147,34 @@ const ChatMessageBody: React.FC<ChatMessageProps> = React.memo(
                   }
                 }}
               />
-              <div className='mt-2 flex justify-end gap-1.5'>
+              <div className='mt-2 flex justify-end gap-2 px-1 pb-1'>
                 <button
                   type='button'
                   onClick={handleCancelExplainInput}
                   title='Cancel'
                   aria-label='Cancel'
-                  className={`${EXPLAIN_BUTTON_CLASS} hover:bg-red-500/12 hover:text-red-600 dark:hover:text-red-300`}
+                  className={`${EXPLAIN_BUTTON_CLASS} bg-black/[0.05] text-neutral-600 dark:bg-white/[0.06] dark:text-neutral-300`}
+                  style={{
+                    backgroundColor: explainThemeColor('settingsCustomThemesButtonBg'),
+                    color: explainThemeColor('settingsCustomThemesButtonText'),
+                  }}
                 >
-                  <X size={15} strokeWidth={2.25} aria-hidden='true' />
+                  <X size={18} strokeWidth={2.25} aria-hidden='true' />
                 </button>
                 <button
                   type='button'
                   onClick={handleSendExplainInput}
-                  disabled={!explainInputValue.trim()}
+                  disabled={branchSubmissionDisabled || !explainInputValue.trim()}
+                  aria-description={branchSubmissionDisabled ? 'Load the conversation before sending.' : undefined}
                   title='Send'
                   aria-label='Send'
-                  className={`${EXPLAIN_BUTTON_CLASS} hover:bg-emerald-500/12 hover:text-emerald-600 dark:hover:text-emerald-300`}
+                  className={`${EXPLAIN_BUTTON_CLASS} bg-blue-50 text-blue-700 dark:bg-orange-500/15 dark:text-orange-100`}
+                  style={{
+                    backgroundColor: explainThemeColor('composerToggleActiveBg'),
+                    color: explainThemeColor('composerToggleActiveText'),
+                  }}
                 >
-                  <Check size={15} strokeWidth={2.25} aria-hidden='true' />
+                  <Check size={18} strokeWidth={2.25} aria-hidden='true' />
                 </button>
               </div>
             </div>,
@@ -2209,7 +2209,7 @@ const ChatMessage: React.FC<ChatMessageProps> = React.memo(props => {
       className={`${props.width} ${props.className ?? ''}`} customTheme={props.customTheme}
       customThemeEnabled={props.customThemeEnabled} isDarkMode={props.isDarkMode} />
   }
-  if (message?.note === AUTO_COMPACTION_NOTE) {
+  if (isCommittedCompaction(message)) {
     return (
       <SummarisedMessage
         id={`message-${props.id}`}
@@ -2219,6 +2219,15 @@ const ChatMessage: React.FC<ChatMessageProps> = React.memo(props => {
         isDarkMode={props.isDarkMode}
       />
     )
+  }
+  // Internal requests and unfinished summaries stay durable, but never occupy visible rows.
+  if (isHiddenCompactionMessage(message)) return null
+  const compactionPlaceholder = getCompactionPlaceholder(message)
+  if (compactionPlaceholder) {
+    return <CompactMessageNotice kind='status' icon={<RotateCw size={14} className='shrink-0' aria-hidden='true' />} title={compactionPlaceholder} id={`message-${props.id}`}
+      customTheme={props.customTheme} customThemeEnabled={props.customThemeEnabled} isDarkMode={props.isDarkMode}>
+      {compactionPlaceholder}
+    </CompactMessageNotice>
   }
   return <ChatMessageBody {...props} />
 })

@@ -34,6 +34,12 @@ An installed app therefore upgrades itself once per migration and never re-runs 
 | 4 | `conversation_additional_cwds` | `conversations` gains nullable `additional_cwds TEXT` containing a JSON array of directory strings; `cwd` is unchanged. | Add storage for extra conversation roots without changing the existing default-directory contract. | 2026-09-29 |
 | 5 | `search_index_rowid_rebuild` | Rebuilds `top_level_user_message_search` and `note_search_fts` once, keyed by the base-table rowid; syncs `note_search_docs` and `note_search_embedding_state` while keeping `note_updated_at` for unchanged notes; replaces all 11 search triggers. | Boot used to empty and refill both indexes and recreate 7 triggers on every launch (one full `messages` scan, and every `note_updated_at` reset to the boot time). Trigger deletes by `message_id` scanned the whole FTS index. | 2026-10-11 |
 
+## Compaction transcript metadata (v6)
+
+| Version | Name | Change | Why | Added |
+| --- | --- | --- | --- | --- |
+| 6 | `subagent_message_metadata` | Adds nullable `subagent_messages.meta TEXT`; existing rows remain NULL. | Persist normal compaction instruction/assistant boundary metadata across child resume. | 2026-10-14 |
+
 ## Conversation directory storage (v4)
 
 - `cwd` remains a single default working-directory path (or `NULL`).

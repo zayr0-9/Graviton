@@ -1,4 +1,4 @@
-import type { ConversationRunStatistics, RunMessageAttribution } from '../../../../../shared/runStatistics'
+import { readModelThroughput, type ModelThroughput, type ConversationRunStatistics, type RunMessageAttribution } from '../../../../../shared/runStatistics'
 import { parseMessageMeta } from '../../../../../shared/contextInjection'
 import { extractOpenAIContextUsageFromBlocks } from '../../../../../shared/contextUsage'
 import type { Message } from './chatTypes'
@@ -9,6 +9,7 @@ export interface RunStatisticsFooterData {
   anchorMessageId: string
   status: 'completed' | 'aborted' | 'error'
   durationMs: number | null
+  modelThroughput?: ModelThroughput
   tools: ConversationRunStatistics['tool_statistics']
   tokens: { total: number; covered: number; responses: number; coverage: 'estimated' | 'partial' | 'unavailable';
     breakdown?: SliceTokenEstimate; requestTotal?: number; requestCoverage?: 'reported' | 'partial' | 'unavailable' }
@@ -106,6 +107,7 @@ export function deriveRunStatistics(
     result.push({
       streamId: run.stream_id, anchorMessageId: anchor, status: run.status,
       durationMs: run.duration_ms, tools: run.tool_statistics,
+      modelThroughput: run.status === 'completed' ? readModelThroughput(run.metadata?.modelThroughput) : undefined,
       tokens: { total: slice?.total ?? 0, covered, responses: responses.length, breakdown: slice,
         coverage: !slice ? 'unavailable' : completeAttribution ? 'estimated' : 'partial',
         requestTotal: total,
@@ -153,7 +155,9 @@ export function formatRunStatistics(footer: RunStatisticsFooterData): string {
     : `${footer.tools.count} tool ${footer.tools.count === 1 ? 'call' : 'calls'}${footer.tools.coverage === 'partial' ? ' (partial)' : ''}`
   const tokens = footer.tokens.coverage === 'unavailable' || !footer.tokens.breakdown ? 'Tokens unavailable'
     : `~${formatTokens(footer.tokens.breakdown.input)} ↑ · ~${formatTokens(footer.tokens.breakdown.output)} ↓${footer.tokens.coverage === 'partial' ? ' (partial)' : ''}`
-  return [footer.status === 'aborted' ? 'Stopped' : footer.status === 'error' ? 'Failed' : null, duration, tools, tokens].filter(Boolean).join(' · ')
+  const metric = footer.modelThroughput
+  const rate = metric ? `${new Intl.NumberFormat('en', { maximumFractionDigits: 1 }).format(metric.outputTokens * 1000 / metric.requestDurationMs)} tokens/s` : null
+  return [footer.status === 'aborted' ? 'Stopped' : footer.status === 'error' ? 'Failed' : null, duration, tools, tokens, rate].filter(Boolean).join(' · ')
 }
 
 /** Shared logical-row projection; footer rows never become message navigation targets. */

@@ -6,6 +6,10 @@ import { createDefaultCustomChatTheme } from '../ThemeManager/themeConfig'
 const { state } = vi.hoisted(() => ({
   state: { chat: { conversation: { messages: [
     { id: 'summary', note: '__auto_compaction_summary__' },
+    { id: 'committed', role: 'assistant', meta: { kind: 'compaction_summary', state: 'committed' } },
+    { id: 'summarising', role: 'assistant', meta: { compactionPhase: 'summarising' } },
+    { id: 'instruction', role: 'user', meta: { kind: 'compaction_instruction' } },
+    { id: 'resume', role: 'user', meta: { kind: 'compaction_resume' } },
     { id: 'image-info', role: 'user', note: '__generated_image_path_hint__' },
     { id: 'watch', role: 'user', meta: { kind: 'watcher_completion' } },
   ] } } },
@@ -71,11 +75,11 @@ describe('SummarisedMessage', () => {
     expect(html).toContain('color:#123456')
   })
 
-  it('never mounts the rich renderer or exposes summary payloads through ChatMessage', () => {
+  it.each(['summary', 'committed'])('never mounts the rich renderer or exposes %s payloads through ChatMessage', id => {
     const content = '# Full summary\n'.repeat(10000)
     const blocks = [{ type: 'text' as const, index: 0, content: 'Hidden block summary' }]
     const html = renderToStaticMarkup(
-      <ChatMessage id='summary' role='system' content={content} contentBlocks={blocks}
+      <ChatMessage id={id} role={id === 'summary' ? 'system' : 'assistant'} content={content} contentBlocks={blocks}
         width='w-full' customThemeEnabled={false} />
     )
     expect(html).toContain('Conversation summarised')
@@ -84,4 +88,13 @@ describe('SummarisedMessage', () => {
     expect(html.length).toBeLessThan(2000)
     expect(blocks[0].content).toBe('Hidden block summary')
   })
+})
+
+it.each(['instruction', 'resume', 'summarising'])('does not expose %s content, even in a tooltip', id => {
+  const html = renderToStaticMarkup(<ChatMessage id={id} role={id === 'summarising' ? 'assistant' : 'user'}
+    content='SECRET_SUMMARY_PAYLOAD' contentBlocks={[{ type: 'text', index: 0, content: 'SECRET_BLOCK' }]}
+    width='w-full' customThemeEnabled={false} />)
+  expect(html).not.toContain('SECRET_')
+  if (id === 'instruction' || id === 'summarising') expect(html).toBe('')
+  else expect(html).toContain('Resuming after compaction')
 })

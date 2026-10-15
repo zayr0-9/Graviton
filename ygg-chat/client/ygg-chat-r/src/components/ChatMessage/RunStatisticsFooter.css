@@ -1,35 +1,43 @@
 .run-statistics-reveal {
-  --run-statistics-slide-duration: 10s;
-  --run-statistics-slide-ease: cubic-bezier(0.45, 0, 0.55, 1);
+  position: relative;
   display: inline-block;
-  max-width: 100%;
-  width: var(--run-statistics-summary-width, 100%);
-  overflow: hidden;
+  width: 100%;
   vertical-align: top;
-  text-align: left;
+  text-align: right;
 }
 
-.run-statistics-track {
-  display: flex;
+/* Never clip the rate, even in a narrow parallel pane. Wrap instead. */
+.run-statistics-summary {
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+/* Overlay details rather than sliding the always-visible summary out of view. */
+.run-statistics-details {
+  display: none;
+  position: absolute;
+  bottom: 100%;
+  right: 0;
+  z-index: 10;
   width: max-content;
-  white-space: nowrap;
-  transform: translateX(0);
-  transition-property: transform;
-  transition-duration: var(--run-statistics-slide-duration);
-  transition-timing-function: var(--run-statistics-slide-ease);
+  max-width: 100%;
+  padding: 0.5rem 0.75rem;
+  border-radius: 0.5rem;
+  background: var(--color-neutral-100, #f5f5f5);
+  text-align: left;
+  white-space: normal;
 }
 
-.run-statistics-reveal:is(:hover, :focus-visible, [data-expanded='true']) .run-statistics-track {
-  transform: translateX(var(--run-statistics-slide-offset, 0px));
+.dark .run-statistics-details {
+  background: var(--color-neutral-900, #171717);
+}
+
+.run-statistics-reveal:is(:hover, :focus-visible, [data-expanded='true']) .run-statistics-details {
+  display: block;
 }
 
 .run-statistics-reveal:focus-visible {
   outline: 1px solid currentColor;
   outline-offset: 3px;
   border-radius: 2px;
-}
-
-/* Details remain readable immediately without motion, including keyboard/touch access. */
-@media (prefers-reduced-motion: reduce) {
-  .run-statistics-track { transition: none; }
 }
