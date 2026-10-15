@@ -191,6 +191,9 @@ async function buildSubagentRequest(toolCall: ProviderToolCall, context: ToolExe
     fullAccess: context.fullAccess === true,
     userId: null,
     toolTimeoutMs: context.timeoutMs,
+    autoCompactionEnabled: context.autoCompactionEnabled,
+    compactionThresholdPercent: context.compactionThresholdPercent,
+    contextLength: provider === context.provider ? context.contextLength : undefined,
   }
 }
 
@@ -225,6 +228,9 @@ function buildResumeRequest(run: SubagentRunRow, context: ToolExecutionContext):
     fullAccess: context.fullAccess === true,
     userId: null,
     toolTimeoutMs: context.timeoutMs,
+    autoCompactionEnabled: context.autoCompactionEnabled,
+    compactionThresholdPercent: context.compactionThresholdPercent,
+    contextLength: provider === context.provider ? context.contextLength : undefined,
   }
 }
 

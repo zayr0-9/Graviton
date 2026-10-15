@@ -1,3 +1,6 @@
+import { resolveBranchModelSelection } from '../features/chats/branchModelSelection'
+import { isCommittedCompaction } from '../../../../shared/compaction'
+import { isHiddenCompactionMessage } from '../features/chats/summaryPresentation'
 import { useQueryClient } from '@tanstack/react-query'
 import { useVirtualizer } from '@tanstack/react-virtual'
 import 'boxicons' // Types
@@ -88,7 +91,6 @@ import { isCommunityMode } from '../config/runtimeMode'
 import { getCompactionPresentationScope, isCompactionVisibleFor, type CompactionOwner } from '../features/chats/compactionVisibility'
 import {
   abortGeneration,
-  AUTO_COMPACTION_NOTE,
   cancelPlanClarification,
   blobToDataURL,
   chatSliceActions,
@@ -150,10 +152,7 @@ import {
 } from '../features/chats/localChatErrors'
 import type { PlanClarificationAnswer } from '../features/chats/planToolTypes'
 import {
-  estimateContentBlocksForContext,
   calculateBranchContextUsage,
-  resolveContextTokens,
-  safeEstimateTokenCount,
 } from '../features/chats/contextTokenEstimate'
 import { isOpenAIProvider } from '../../../../shared/contextUsage'
 import { isContextInjectionMessage, parseMessageMeta } from '../../../../shared/contextInjection'
@@ -365,7 +364,7 @@ type StreamingThinkingIndicatorPlacement = 'message' | 'input-tab'
 const EMPTY_PARSED_MESSAGE_DATA: ParsedMessageData = {}
 const COMPOSER_SLASH_COMMANDS = [
   'status-openai',
-  'compactify',
+  'compact',
   'bench on',
   'bench off',
   'bench status',
@@ -1094,6 +1093,7 @@ function Chat() {
   // Redux selectors
   const currentUser = useAppSelector(selectCurrentUser)
   const providers = useAppSelector(selectProviderState)
+  const branchModelSelection = useAppSelector(state => resolveBranchModelSelection(state.chat))
   const toolDefinitions = useAppSelector(state => state.chat.tools)
   // MCP tools with a UI resource draw the always-open app card (ToolCallGroupCard). The row
   // estimator needs the same distinction, or every plain MCP call is guessed 600px too tall.
@@ -1906,7 +1906,7 @@ function Chat() {
     const latestCompaction = (() => {
       for (let i = displayMessages.length - 1; i >= 0; i--) {
         const message = displayMessages[i]
-        if (message?.role === 'system' && message?.note === AUTO_COMPACTION_NOTE) {
+        if (isCommittedCompaction(message)) {
           return { index: i, message }
         }
       }
@@ -1918,10 +1918,10 @@ function Chat() {
     ).filter(Boolean)
 
     const lastMessage = displayMessages[displayMessages.length - 1]
-    if (!lastMessage || lastMessage.note === AUTO_COMPACTION_NOTE || compactionSourceMessages.length < 2) {
+    if (!lastMessage || isCommittedCompaction(lastMessage) || compactionSourceMessages.length < 2) {
       console.warn('[ManualCompaction] skipped: insufficient source context', {
         hasLastMessage: Boolean(lastMessage),
-        lastIsCompaction: lastMessage?.note === AUTO_COMPACTION_NOTE,
+        lastIsCompaction: isCommittedCompaction(lastMessage),
         sourceCount: compactionSourceMessages.length,
       })
       return { handled: true, clearInput: true }
@@ -1940,10 +1940,7 @@ function Chat() {
       ).unwrap()
 
       const compactedMessage = compactionResult?.message ?? null
-      const hasValidCompactionMarker =
-        compactedMessage?.role === 'system' &&
-        compactedMessage?.note === AUTO_COMPACTION_NOTE &&
-        String(compactedMessage?.parent_id ?? '') === String(lastMessage.id)
+      const hasValidCompactionMarker = isCommittedCompaction(compactedMessage)
 
       if (!compactedMessage || !hasValidCompactionMarker) {
         console.error('[ManualCompaction] invalid summary message returned')
@@ -1990,7 +1987,7 @@ function Chat() {
         return { handled: true, clearInput: true }
       }
 
-      if (normalized === 'compactify') {
+      if ((normalized === 'compact' || normalized === 'compactify')) {
         return handleManualCompactifyCommand()
       }
 
@@ -2272,7 +2269,7 @@ function Chat() {
 
   // Keep persisted image-reference notices in the transcript alongside other automated rows.
   const renderableMessages = useMemo(() => {
-    return displayMessages.filter(msg => msg && msg.id != null)
+    return displayMessages.filter(msg => msg && msg.id != null && !isHiddenCompactionMessage(msg))
   }, [displayMessages])
 
   const conversationRuns = useConversationRunStatistics(conversationIdFromUrl == null ? null : String(conversationIdFromUrl))
@@ -2327,7 +2324,7 @@ function Chat() {
 
     const parsedById = new Map<MessageId, ParsedMessageData>()
     for (const msg of renderableMessages) {
-      parsedById.set(msg.id, parseMessageDataForRender(msg))
+      parsedById.set(msg.id, isCommittedCompaction(msg) ? EMPTY_PARSED_MESSAGE_DATA : parseMessageDataForRender(msg))
     }
 
     setLimitedCacheEntry(parsedMessageDataCacheRef.current, cacheKey, parsedById)
@@ -2432,6 +2429,7 @@ function Chat() {
     }
 
     const isProcessOnlyAssistantStep = (msg: Message): boolean => {
+      if (isCommittedCompaction(msg)) return false
       if (msg.role !== 'assistant' && msg.role !== 'ex_agent') {
         return false
       }
@@ -2692,7 +2690,7 @@ function Chat() {
     }
     const succeeded = compactionPresentation.owner != null
       ? isCompactionVisibleFor({ ...compactionPresentation.owner, summaryMessageId: compactionSummaryMessageId }, compactionView) &&
-        displayMessages.some(message => message.note === AUTO_COMPACTION_NOTE &&
+        displayMessages.some(message => isCommittedCompaction(message) &&
           String(message.id) === String(compactionSummaryMessageId) &&
           String(message.parent_id ?? '') === String(compactionPresentation.owner?.parentMessageId))
       : currentViewStream?.compactionStatus === 'completed'
@@ -2756,7 +2754,7 @@ function Chat() {
   // Suppress the persisted current turn, not the previous turn's branch anchor.
   // New server-owned generations have no live message ID until persistence.
   const isStreamingMessageAlreadyRendered = isStreamMessageAlreadyRendered(streamState, messageRowIndexByMessageId)
-  const showStreamingMessage = !isStreamingMessageAlreadyRendered && hasStreamingMessageContent
+  const showStreamingMessage = !compactionActive && !isStreamingMessageAlreadyRendered && hasStreamingMessageContent
   const showLiveStreamingTail = showStreamingMessage && hasFinalTextStreaming
   // Once the final answer is streaming, the live tail is rendered OUTSIDE TanStack Virtual as an
   // in-flow sibling (see the message list render) so its token-by-token growth never enters
@@ -3088,7 +3086,7 @@ function Chat() {
 
       const estimateForMessage = (message: Message) => {
         // Summaries draw only an h-8 notice with py-1, regardless of payload size.
-        if (message.note === AUTO_COMPACTION_NOTE || isWatcherCompletionMessage(message) || isImageAttachmentInfoMessage(message)) return smallChromeRowHeight(rootFontSize)
+        if (isCommittedCompaction(message) || isWatcherCompletionMessage(message) || isImageAttachmentInfoMessage(message)) return smallChromeRowHeight(rootFontSize)
         if (isRunSettingsNotification(message)) return 32
         const blocks = (parsedMessageDataById.get(message.id) ?? EMPTY_PARSED_MESSAGE_DATA).contentBlocks
         // Mirrors `hasContent && canBranchMessage` in ChatMessage, which gates the actions row.
@@ -3381,7 +3379,7 @@ function Chat() {
   // const { data: recentModelsData } = useRecentModels(5)
   // const refreshModelsMutation = useRefreshModels()
   const selectModelMutation = useSelectModel()
-  const selectedModel = useSelectedModel(providers.currentProvider)
+  const selectedModel = useSelectedModel(providers.currentProvider, branchModelSelection?.model)
   const models = modelsData?.models || []
 
   // Helper to check if selected model can use image generation controls.
@@ -4870,6 +4868,7 @@ function Chat() {
     (modelName: string) => {
       const model = models.find(m => m.name === modelName)
       if (model) {
+        dispatch(chatSliceActions.branchModelSelected({ provider: providers.currentProvider, model: model.name }))
         selectModelMutation.mutate({ provider: providers.currentProvider, model })
       } else {
         console.warn('Selected model not found:', modelName)
@@ -4943,6 +4942,7 @@ function Chat() {
         }
         return // Don't select provider until authenticated
       }
+      dispatch(chatSliceActions.branchModelSelected({ provider: providerName, model: null }))
       dispatch(chatSliceActions.providerSelected(providerName))
     },
     [dispatch, openOpenaiAuthUrl]
@@ -4989,6 +4989,7 @@ function Chat() {
       }
 
       event.preventDefault()
+      dispatch(chatSliceActions.branchModelSelected({ provider: assignment.provider, model: assignment.model.name }))
       dispatch(chatSliceActions.providerSelected(assignment.provider))
       selectModelMutation.mutate({ provider: assignment.provider, model: assignment.model })
     }
@@ -5013,7 +5014,7 @@ function Chat() {
       const normalized = command.trim().toLowerCase().replace(/^\/+/, '')
       const isKnownSlashCommand =
         normalized === 'status-openai' ||
-        normalized === 'compactify' ||
+        (normalized === 'compact' || normalized === 'compactify') ||
         parseBenchAction(command) != null ||
         parseThemeDemoAction(command) != null
 
@@ -5146,7 +5147,7 @@ function Chat() {
       const slashThemeDemoAction = parseThemeDemoAction(trimmedInputValue)
       const isKnownSlashCommand =
         normalizedInput === 'status-openai' ||
-        normalizedInput === 'compactify' ||
+        (normalizedInput === 'compact' || normalizedInput === 'compactify') ||
         slashBenchAction != null ||
         slashThemeDemoAction != null
 
@@ -5200,7 +5201,7 @@ function Chat() {
             const latestCompaction = (() => {
               for (let i = displayMessages.length - 1; i >= 0; i--) {
                 const message = displayMessages[i]
-                if (message?.role === 'system' && message?.note === AUTO_COMPACTION_NOTE) {
+                if (isCommittedCompaction(message)) {
                   return { index: i, message }
                 }
               }
@@ -5302,121 +5303,8 @@ function Chat() {
                 })
             }
 
-            void (async () => {
-              const usageStartIndex = latestCompaction.index >= 0 ? latestCompaction.index : 0
-              const usageMessages = displayMessages.slice(usageStartIndex)
-              const compactionSourceMessages = (
-                latestCompaction.index >= 0 ? displayMessages.slice(latestCompaction.index + 1) : displayMessages
-              ).filter(Boolean)
-
-              let promptAndContextTokens = 0
-              promptAndContextTokens += safeEstimateTokenCount(selectedProject?.system_prompt)
-              promptAndContextTokens += safeEstimateTokenCount(selectedProject?.context)
-              promptAndContextTokens += safeEstimateTokenCount(currentConversation?.system_prompt)
-              promptAndContextTokens += safeEstimateTokenCount(currentConversation?.conversation_context)
-
-              let messageTokens = 0
-              usageMessages.forEach(message => {
-                if (!message) return
-                messageTokens += safeEstimateTokenCount(message.content)
-                messageTokens += estimateContentBlocksForContext((message as any).content_blocks)
-                messageTokens += safeEstimateTokenCount((message as any).tool_calls)
-              })
-
-              const estimatedContextTokens = promptAndContextTokens + messageTokens
-              const resolvedContext = resolveContextTokens({
-                providerName: providers.currentProvider,
-                estimatedTokens:
-                  estimatedContextTokens +
-                  (isOpenAIProvider(providers.currentProvider) ? safeEstimateTokenCount(contentWithIdeContext) : 0),
-                messages: usageMessages,
-              })
-              const totalContextTokens = resolvedContext.effectiveTokens
-              const usdValue = (currentUser?.cached_current_credits ?? 0) / 100
-              const totalContextLimit =
-                resolveProviderContextLength(providers.currentProvider, selectedModel?.contextLength, providerSettings) || 128_000
-              const promptCostPer1K = selectedModel?.promptCost ?? 0
-              const completionCostPer1K = selectedModel?.completionCost ?? 0
-
-              let creditInputLimit = Infinity
-              let creditOutputLimit = Infinity
-              if (promptCostPer1K > 0) {
-                creditInputLimit = Math.floor((usdValue * 1000) / promptCostPer1K)
-              }
-              if (completionCostPer1K > 0) {
-                creditOutputLimit = Math.floor((usdValue * 1000) / completionCostPer1K)
-              }
-
-              const totalBudget = Math.max(0, Math.min(totalContextLimit, creditInputLimit, creditOutputLimit))
-              const totalContextProgress = totalBudget > 0 ? Math.min((totalContextTokens / totalBudget) * 100, 100) : 0
-              const modelContextProgress =
-                totalContextLimit > 0 ? Math.min((totalContextTokens / totalContextLimit) * 100, 100) : 0
-
-              const lastMessage = displayMessages[displayMessages.length - 1]
-              const shouldAutoCompact =
-                autoCompactionEnabled &&
-                totalContextLimit > 0 &&
-                (modelContextProgress >= 85 || totalContextProgress >= 85) &&
-                Boolean(lastMessage) &&
-                lastMessage?.note !== AUTO_COMPACTION_NOTE &&
-                compactionSourceMessages.length >= 2 &&
-                !autoCompactionInFlightRef.current
-
-              if (shouldAutoCompact && lastMessage) {
-                autoCompactionInFlightRef.current = true
-
-                try {
-                  const compactionResult = await dispatch(
-                    compactBranch({
-                      conversationId: currentConversationId,
-                      parentMessageId: lastMessage.id,
-                      messages: compactionSourceMessages,
-                      providerName: providerSettings.compactionProvider || providers.currentProvider,
-                      modelName: providerSettings.compactionModel || selectedModel?.name || null,
-                    })
-                  ).unwrap()
-
-                  const compactedMessage = compactionResult?.message ?? null
-                  const hasValidCompactionMarker =
-                    compactedMessage?.role === 'system' &&
-                    compactedMessage?.note === AUTO_COMPACTION_NOTE &&
-                    String(compactedMessage?.parent_id ?? '') === String(lastMessage.id)
-
-                  console.log('[AutoCompaction][send] compactBranch result', {
-                    messageId: compactedMessage?.id ?? null,
-                    role: compactedMessage?.role ?? null,
-                    note: compactedMessage?.note ?? null,
-                    parentId: compactedMessage?.parent_id ?? null,
-                    hasValidCompactionMarker,
-                  })
-
-                  if (!compactedMessage || !hasValidCompactionMarker) {
-                    console.error('[AutoCompaction][send] invalid attached summary message. Send aborted.')
-                    return
-                  }
-
-                  effectiveParent = compactedMessage.id
-                } catch (error) {
-                  console.error('[AutoCompaction][send] compactBranch failed. Send aborted:', error)
-                  return
-                } finally {
-                  autoCompactionInFlightRef.current = false
-                }
-              } else {
-                console.log('[AutoCompaction][send] skip compactBranch', {
-                  reason: {
-                    disabledInSettings: !autoCompactionEnabled,
-                    noContextLimit: totalContextLimit <= 0,
-                    belowThreshold: modelContextProgress < 85 && totalContextProgress < 85,
-                    missingLastMessage: !lastMessage,
-                    lastIsCompaction: lastMessage?.note === AUTO_COMPACTION_NOTE,
-                    tooFewSourceMessages: compactionSourceMessages.length < 2,
-                    inFlight: autoCompactionInFlightRef.current,
-                  },
-                })
-              }
-              sendWithParent(effectiveParent)
-            })()
+            // Context checks and compaction belong to the server's safe boundary.
+            sendWithParent(effectiveParent)
         }
       } else if (!currentConversationId) {
         console.error('📤 No conversation ID available')
@@ -6052,6 +5940,7 @@ function Chat() {
       // The server committed the connection; no OAuth credentials cross this boundary.
 
       // Successfully authenticated, select the provider
+      dispatch(chatSliceActions.branchModelSelected({ provider: 'OpenAI (ChatGPT)', model: null }))
       dispatch(chatSliceActions.providerSelected('OpenAI (ChatGPT)'))
       closeOpenaiLoginModal()
       return 'success'
@@ -6908,7 +6797,7 @@ function Chat() {
                             </VirtualizedRowContainer>
                           )
                         }
-                        if (msg.note === AUTO_COMPACTION_NOTE) {
+                        if (isCommittedCompaction(msg)) {
                           return (
                             <VirtualizedRowContainer
                               key={renderRow.key}
@@ -8333,6 +8222,7 @@ function Chat() {
                     variant='outline2'
                     className='bg-emerald-600 hover:bg-emerald-700 border-emerald-700 text-white active:scale-90'
                     onClick={() => {
+                      dispatch(chatSliceActions.branchModelSelected({ provider: 'OpenAI (ChatGPT)', model: null }))
                       dispatch(chatSliceActions.providerSelected('OpenAI (ChatGPT)'))
                       closeOpenaiLoginModal()
                     }}

@@ -1,6 +1,7 @@
 // Provider Settings Storage
 // Simple localStorage-based persistence for provider visibility and default selection
 
+import { normalizeCompactionThreshold } from '../../../../shared/compaction'
 import { isCommunityMode } from '../config/runtimeMode'
 
 const STORAGE_KEY = 'ygg_provider_settings'
@@ -29,6 +30,7 @@ export interface ProviderSettings {
   compactionModel: string | null
   /** System prompt used by auto-compaction summarization. */
   compactionSystemPrompt: string
+  compactionThresholdPercent: number
   /** Optional LM Studio server base URL override. Null = use app default. */
   lmStudioBaseUrl: string | null
   /** Global context-window limit used by every OpenAI (ChatGPT) model and its auto-compaction threshold. */
@@ -44,6 +46,7 @@ const DEFAULT_SETTINGS: ProviderSettings = {
   compactionProvider: null,
   compactionModel: null,
   compactionSystemPrompt: DEFAULT_COMPACTION_SYSTEM_PROMPT,
+  compactionThresholdPercent: 85,
   lmStudioBaseUrl: null,
   openAiChatGptMaxContextTokens: DEFAULT_OPENAI_CHATGPT_MAX_CONTEXT_TOKENS,
   openAiPromptCacheRetention: 'in_memory',
@@ -157,6 +160,7 @@ export function loadProviderSettings(): ProviderSettings {
       compactionProvider: parsed.compactionProvider ?? DEFAULT_SETTINGS.compactionProvider,
       compactionModel: parsed.compactionModel ?? DEFAULT_SETTINGS.compactionModel,
       compactionSystemPrompt: normalizeCompactionSystemPrompt(parsed.compactionSystemPrompt),
+      compactionThresholdPercent: normalizeCompactionThreshold(parsed.compactionThresholdPercent),
       lmStudioBaseUrl: normalizeLmStudioBaseUrl(parsed.lmStudioBaseUrl),
       openAiChatGptMaxContextTokens: normalizeOpenAiChatGptMaxContextTokens(parsed.openAiChatGptMaxContextTokens),
       openAiPromptCacheRetention: normalizeOpenAiPromptCacheRetention(parsed.openAiPromptCacheRetention),
@@ -177,6 +181,7 @@ export function saveProviderSettings(settings: ProviderSettings): void {
     ...settings,
     openRouterTemperature: normalizeOpenRouterTemperature(settings.openRouterTemperature),
     compactionSystemPrompt: normalizeCompactionSystemPrompt(settings.compactionSystemPrompt),
+    compactionThresholdPercent: normalizeCompactionThreshold(settings.compactionThresholdPercent),
     lmStudioBaseUrl: normalizeLmStudioBaseUrl(settings.lmStudioBaseUrl),
     openAiChatGptMaxContextTokens: normalizeOpenAiChatGptMaxContextTokens(settings.openAiChatGptMaxContextTokens),
     openAiPromptCacheRetention: normalizeOpenAiPromptCacheRetention(settings.openAiPromptCacheRetention),

@@ -2,7 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react'
 import { Activity, ChevronRight, CircleCheck, CircleDashed, CircleX, Clock3 } from 'lucide-react'
 import type { HookRunRecord } from '../../features/chats/chatTypes'
 import { localApi } from '../../utils/api'
-import { TEXT_DETAIL_CLASS, TEXT_MICRO_CLASS } from './chatMessageShared'
+import { MESSAGE_NOTICE_ROW_CLASS, TEXT_DETAIL_CLASS } from './chatMessageShared'
 import { ACTIVE_HOOK_RUN_STATUSES, areHookRunSetsEqual, didHookRunsSettle, hasActiveHookRuns } from './hookActivityState'
 
 interface HookActivityCardProps {
@@ -94,11 +94,11 @@ export const HookActivityCard: React.FC<HookActivityCardProps> = ({ initialRuns,
 
   return (
     <div className='rounded-2xl bg-white/50 backdrop-blur-xl dark:bg-black/15' style={fontSizeOffset ? { fontSize: `calc(1em + ${fontSizeOffset}px)` } : undefined} data-testid='hook-activity-card'>
-      <button type='button' className='flex w-full items-center gap-2.5 rounded-2xl px-3.5 py-2.5 text-left hover:bg-white/70 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400/70 dark:hover:bg-white/5' onClick={() => setExpanded(value => !value)} aria-expanded={expanded}>
-        <Activity size={18} className={runs.some(run => run.status === 'failed' || run.status === 'timed_out') ? 'text-red-500' : 'text-cyan-600 dark:text-cyan-300'} />
-        <span className={`font-mono ${TEXT_MICRO_CLASS} font-bold uppercase tracking-[0.12em] text-cyan-700 dark:text-cyan-300`}>Hooks</span>
-        <span className={`${TEXT_DETAIL_CLASS} text-stone-600 dark:text-stone-300`}>· {new Set(runs.map(run => run.event)).size === 1 ? eventLabel(event || runs[0].event) : 'Multiple lifecycle points'} · {summary}</span>
-        <ChevronRight size={18} className={`ml-auto transition-transform duration-150 ${expanded ? 'rotate-90' : ''}`} />
+      <button type='button' className={`${MESSAGE_NOTICE_ROW_CLASS} rounded-2xl text-left hover:bg-white/70 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400/70 dark:hover:bg-white/5`} onClick={() => setExpanded(value => !value)} aria-expanded={expanded}>
+        <Activity size={14} className={`shrink-0 ${runs.some(run => run.status === 'failed' || run.status === 'timed_out') ? 'text-red-500' : 'text-cyan-600 dark:text-cyan-300'}`} />
+        <span className={`shrink-0 ${TEXT_DETAIL_CLASS} font-medium text-cyan-700 dark:text-cyan-300`}>Hooks</span>
+        <span className={`min-w-0 truncate ${TEXT_DETAIL_CLASS} text-stone-600 dark:text-stone-300`}>· {new Set(runs.map(run => run.event)).size === 1 ? eventLabel(event || runs[0].event) : 'Multiple lifecycle points'} · {summary}</span>
+        <ChevronRight size={18} className={`ml-auto shrink-0 transition-transform duration-150 ${expanded ? 'rotate-90' : ''}`} />
       </button>
       {expanded && <ul className='space-y-1 px-2 pb-2'>
         {runs.map(run => {

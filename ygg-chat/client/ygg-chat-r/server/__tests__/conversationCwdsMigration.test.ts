@@ -67,6 +67,7 @@ describe('conversation additional_cwds migration', () => {
 
   beforeEach(() => {
     db = openDatabase()
+    db.exec('CREATE TABLE subagent_messages (id TEXT PRIMARY KEY)')
     db.pragma('user_version = 3')
     rebuildSearchIndexes.mockClear()
   })

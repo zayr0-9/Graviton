@@ -14,7 +14,7 @@ describe('FullAccessNotice', () => {
   it('shares exact mode-notice chrome and custom-theme text', () => {
     const access = renderToStaticMarkup(<FullAccessNotice />)
     const mode = renderToStaticMarkup(<OperationModeNotice mode='execute' />)
-    const chrome = 'flex items-center gap-2 px-3 py-2 text-xs text-stone-500 dark:text-stone-400'
+    const chrome = 'flex h-8 min-w-0 w-full items-center gap-2 px-2.5 text-xs text-stone-500 dark:text-stone-400'
     expect(access).toContain(chrome)
     expect(mode).toContain(chrome)
     expect(access).toContain('color:#123456')

@@ -1,3 +1,5 @@
+import { normalizeCompactionThreshold } from './compaction.js'
+
 export interface OpenAIContextUsage {
   provider: 'openai'
   model?: string
@@ -130,16 +132,12 @@ export function resolveOpenAIContinuationCompaction(params: {
   const reportedTokens = finiteNonNegative(params.reportedUsage?.usedTokens)
   const projectedTokens = finiteNonNegative(params.projectedTokens)
   const contextLength = finiteNonNegative(params.contextLength)
-  const thresholdPercent =
-    typeof params.thresholdPercent === 'number' && Number.isFinite(params.thresholdPercent)
-      ? Math.max(0, params.thresholdPercent)
-      : 85
+  const thresholdPercent = normalizeCompactionThreshold(params.thresholdPercent)
   const effectiveTokens = Math.max(reportedTokens, projectedTokens)
 
   return {
     shouldCompact:
       params.enabled !== false &&
-      isOpenAIProvider(params.providerName) &&
       contextLength > 0 &&
       shouldCompactAtPercent(effectiveTokens, contextLength, thresholdPercent),
     reportedTokens,

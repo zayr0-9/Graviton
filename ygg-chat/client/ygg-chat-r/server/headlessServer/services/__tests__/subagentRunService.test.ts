@@ -50,6 +50,7 @@ class FakeRunRepo {
       tool_calls: input.toolCalls ?? null,
       tool_call_id: input.toolCallId ?? null,
       content_blocks: input.contentBlocks ?? null,
+      meta: input.meta,
       sequence: list.length,
       created_at: 'now',
     }
@@ -64,6 +65,12 @@ class FakeRunRepo {
     if (idx < 0) return null
     list[idx] = { ...list[idx], content_blocks: update.contentBlocks ?? null, tool_calls: update.toolCalls ?? null }
     return { ...list[idx] }
+  }
+
+  finaliseCompaction(runId: string, id: string, update: any) {
+    const row = this.messages.get(runId)!.find(row => row.id === id)
+    Object.assign(row, { content: update.content, content_blocks: update.contentBlocks, meta: update.meta })
+    return { ...row }
   }
 
   updateRun(runId: string, patch: any): any | null {
@@ -724,6 +731,7 @@ describe('SubagentRunService', () => {
         recordedAt: '2026-01-01T00:00:00.000Z',
       },
     })
+    providerRouter.enqueue({ content: 'session summary' })
     providerRouter.enqueue({ content: 'after compaction' })
     const runRepo = new FakeRunRepo()
     const streamingRunRepo = new FakeStreamingRunRepo()
@@ -746,11 +754,13 @@ describe('SubagentRunService', () => {
       new AbortController().signal
     )
 
-    expect(compactionCalls).toBe(1)
+    expect(compactionCalls).toBe(0)
     expect(events.some(e => e.type === 'context_compaction' && (e as any).status === 'completed')).toBe(true)
     const runId = (events.find(e => e.type === 'started') as any).subagentRunId
-    const systemRow = runRepo.getMessages(runId).find(m => m.role === 'system')
-    expect(systemRow?.content).toContain('Following is summary of the session')
+    const summary = runRepo.getMessages(runId).find(m => m.meta?.kind === 'compaction_summary')
+    expect(summary?.role).toBe('assistant')
+    expect(summary?.content).toContain('session summary')
+    expect(runRepo.getRunById(runId).final_response).toBe('after compaction')
   })
 
   // Seed a terminated run + its transcript directly on the fake repo (as a crash

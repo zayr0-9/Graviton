@@ -474,6 +474,14 @@ const SCHEMA_MIGRATIONS: SchemaMigration[] = [
       rebuildSearchIndexes(database)
     },
   },
+  {
+    version: 6,
+    name: 'subagent_message_metadata',
+    up: database => {
+      const columns = database.prepare('PRAGMA table_info(subagent_messages)').all() as { name: string }[]
+      if (!columns.some(column => column.name === 'meta')) database.exec('ALTER TABLE subagent_messages ADD COLUMN meta TEXT')
+    },
+  },
 ]
 
 /**
@@ -804,6 +812,7 @@ function initializeLocalDatabase(dbPath: string) {
       tool_calls TEXT,
       tool_call_id TEXT,
       content_blocks TEXT,
+      meta TEXT,
       sequence INTEGER NOT NULL,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       FOREIGN KEY (run_id) REFERENCES subagent_runs(id) ON DELETE CASCADE
@@ -1296,6 +1305,8 @@ function initializeLocalDatabase(dbPath: string) {
             updated_at = ?
         WHERE id = ?
       `),
+    updateSubagentMessageMetadata: db.prepare('UPDATE subagent_messages SET meta = ? WHERE id = ? AND run_id = ?'),
+    finaliseSubagentCompaction: db.prepare('UPDATE subagent_messages SET content = ?, content_blocks = ?, meta = ? WHERE id = ? AND run_id = ?'),
     insertSubagentMessage: db.prepare(`
         INSERT INTO subagent_messages (id, run_id, role, content, thinking_block, tool_calls, tool_call_id, content_blocks, sequence, created_at)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)

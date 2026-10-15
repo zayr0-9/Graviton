@@ -14,7 +14,7 @@ describe('CompactMessageNotice status', () => {
         {label}
       </CompactMessageNotice>,
     )
-    expect(html).toContain('flex h-8 items-center gap-2 px-2.5 text-xs text-stone-500 dark:text-stone-400')
+    expect(html).toContain('flex h-8 min-w-0 w-full items-center gap-2 px-2.5 text-xs text-stone-500 dark:text-stone-400')
     expect(html).toContain(`title="${label}"`)
     expect(html).toContain(`>${label}</span>`)
     expect(html).toContain('aria-hidden="true"')

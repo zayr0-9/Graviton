@@ -36,14 +36,14 @@ describe('OpenAI context usage', () => {
     expect(decision.shouldCompact).toBe(true)
   })
 
-  it('does not activate mid-run compaction for other providers', () => {
+  it('activates mid-run compaction for other providers', () => {
     expect(
       resolveOpenAIContinuationCompaction({
         providerName: 'OpenRouter',
         projectedTokens: 250_000,
         contextLength: 258_000,
       }).shouldCompact
-    ).toBe(false)
+    ).toBe(true)
   })
   it('normalizes OpenAI usage without subtracting cached input tokens', () => {
     const usage = normalizeOpenAIContextUsage(

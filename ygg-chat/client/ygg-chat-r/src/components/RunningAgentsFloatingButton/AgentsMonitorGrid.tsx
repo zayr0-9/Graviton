@@ -1,4 +1,4 @@
-import { useLayoutEffect, useRef, useState } from 'react'
+import { useLayoutEffect, useRef, useState, type CSSProperties } from 'react'
 import { buildAgentForkGroups, type AgentStreamListItem } from '../../hooks/useRunningAgentStreams'
 import { getThemeModeColor, useCustomChatTheme, useHtmlDarkMode } from '../ThemeManager/themeConfig'
 import { AgentMessageTooltip } from './AgentMessageTooltip'
@@ -25,7 +25,11 @@ export function AgentsMonitorGrid({ activeStreams, streamHistory, grouped, onOpe
   const dark = useHtmlDarkMode()
   const { activeForks, historyForks } = buildAgentForkGroups(activeStreams, streamHistory)
   const forks = [...activeForks, ...historyForks]
-  const textStyle = { color: enabled ? getThemeModeColor(theme.colors.toolJobsPrimaryText, dark) : undefined }
+  const textStyle: CSSProperties & Record<'--agents-grid-streaming-bg' | '--agents-grid-idle-bg', string | undefined> = {
+    color: enabled ? getThemeModeColor(theme.colors.toolJobsPrimaryText, dark) : undefined,
+    '--agents-grid-streaming-bg': enabled ? getThemeModeColor(theme.colors.composerToggleActiveBg, dark) : undefined,
+    '--agents-grid-idle-bg': enabled ? getThemeModeColor(theme.colors.settingsCustomThemesInnerCardBg, dark) : undefined,
+  }
   const mutedStyle = { color: enabled ? getThemeModeColor(theme.colors.toolJobsMutedText, dark) : undefined }
 
   useLayoutEffect(() => {
@@ -58,7 +62,7 @@ export function AgentsMonitorGrid({ activeStreams, streamHistory, grouped, onOpe
             const cardStyle = { backgroundColor: enabled ? getThemeModeColor(theme.colors[active ? 'agentsGridStreamingCardBg' : 'agentsGridIdleCardBg'], dark) : undefined }
             const name = stream.conversationTitle || `Conversation ${stream.conversationId || 'Unknown'}`
             return (
-              <section key={fork.key} aria-label={`${name} · ${fork.displayName}`} className={`flex min-w-0 flex-col overflow-hidden rounded-2xl ${active ? 'bg-emerald-500/[0.12] dark:bg-emerald-500/[0.16]' : 'bg-black/[0.035] dark:bg-white/5'}`} style={{ ...cardStyle, height: getAgentGridCardHeight(columns) }}>
+              <section key={fork.key} aria-label={`${name} · ${fork.displayName}`} className={`flex min-w-0 flex-col overflow-hidden rounded-2xl ${active ? 'bg-orange-50 dark:bg-orange-900/20' : 'bg-black/[0.035] dark:bg-white/5'}`} style={{ ...cardStyle, height: getAgentGridCardHeight(columns) }}>
                 <div className='flex w-full min-w-0 shrink-0 flex-col gap-1 px-3 py-2'>
                   <button type='button' onClick={() => onOpenFork(stream)} aria-label={`Preview ${name} · ${fork.displayName}`}
                     className='flex w-full min-w-0 items-center gap-2 rounded-lg text-left hover:bg-black/5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400 dark:hover:bg-white/5'>

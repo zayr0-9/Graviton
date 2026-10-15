@@ -23,7 +23,6 @@ import {
   ProviderErrorAssistantResponse,
   ToolLoopService,
   type ToolExecutor,
-  type ToolLoopCompactor,
 } from './toolLoopService.js'
 import {
   assertToolAllowedWithoutAutoApprove,
@@ -49,7 +48,8 @@ interface SubagentRunServiceDeps {
   providerRouter?: ProviderRouter
   toolExecutor: ToolExecutor
   resolveToolsByName: (names: string[] | undefined) => ResolvedSubagentTools
-  compactionService: CompactionSummaryGenerator
+  /** @deprecated Normal loop owns generation. */
+  compactionService?: CompactionSummaryGenerator
   refreshProviderTokens?: (provider: string) => Promise<void> | void
   providerTurnTimeoutMs?: number
   /**
@@ -159,7 +159,6 @@ export class SubagentRunService {
   private readonly providerRouter: ProviderRouter
   private readonly toolExecutor: ToolExecutor
   private readonly resolveToolsByName: (names: string[] | undefined) => ResolvedSubagentTools
-  private readonly compactionService: CompactionSummaryGenerator
   private readonly refreshProviderTokens?: (provider: string) => Promise<void> | void
   private readonly providerTurnTimeoutMs: number
   private readonly runSessions?: RunSessionRegistry
@@ -174,7 +173,6 @@ export class SubagentRunService {
     this.providerRouter = deps.providerRouter ?? new ProviderRouter({ tokenStore: deps.tokenStore })
     this.toolExecutor = deps.toolExecutor
     this.resolveToolsByName = deps.resolveToolsByName
-    this.compactionService = deps.compactionService
     this.refreshProviderTokens = deps.refreshProviderTokens
     this.providerTurnTimeoutMs = Math.max(5_000, deps.providerTurnTimeoutMs ?? DEFAULT_PROVIDER_TURN_TIMEOUT_MS)
     this.runSessions = deps.runSessions
@@ -806,39 +804,10 @@ export class SubagentRunService {
       }
     }
 
-    const transcriptCompactor: ToolLoopCompactor = async input => {
-      const summaryText = await this.compactionService.generateCompactionSummary({
-        messages: input.messages,
-        signal: input.signal,
-        provider: input.provider,
-        modelName: input.modelName,
-        userId: input.userId,
-        authSessionId: input.authSessionId,
-        accessToken: input.accessToken,
-        accountId: input.accountId,
-        systemPrompt: input.systemPrompt,
-      })
-      const row = this.runRepo.appendMessage(runId, {
-        role: 'system',
-        content: summaryText,
-        contentBlocks: [],
-      })
-      return {
-        message: {
-          ...row,
-          role: 'system',
-          note: '__auto_compaction_summary__',
-          parent_id: input.parentMessageId,
-          conversation_id: input.conversationId,
-        },
-      }
-    }
-
     const loop = new ToolLoopService({
       sink: new SubagentTranscriptSink({ runRepo: this.runRepo, runId }),
       providerRouter: this.providerRouter,
       executeTool: countingExecutor,
-      compactBranch: transcriptCompactor,
       providerTurnTimeoutMs: this.providerTurnTimeoutMs,
     })
 

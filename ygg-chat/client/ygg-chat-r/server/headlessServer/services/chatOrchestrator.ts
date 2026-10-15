@@ -1,3 +1,4 @@
+import { compactionInstruction } from '../../../../../shared/compaction.js'
 import { v4 as uuidv4 } from 'uuid'
 import type { HeadlessMessageRequest, HeadlessStreamEvent } from '../../../../../shared/headlessApi.js'
 import { createModelThroughput, recordModelRequest } from '../../../../../shared/runStatistics.js'
@@ -539,6 +540,7 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
     if (submission.attachmentsBase64?.length && !['openaichatgpt', 'openrouter'].includes(normalizeProviderRoute(run.request.provider))) {
       throw new Error('Queued image attachments are supported for ChatGPT and OpenRouter; send text or wait for this run to finish')
     }
+    if (run.request.manualCompaction && !run.terminal) throw new Error('Wait for manual compaction to finish before sending')
     if (!run.queue.closed) {
       run.queue.enqueue(submission, run.control.revision)
       return { snapshot: run.queue.snapshot() }
@@ -751,7 +753,11 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
       content,
       modelName: request.modelName,
       contentBlocks,
-      meta: request.watcherCompletion ? { kind: 'watcher_completion', ...request.watcherCompletion } : undefined,
+      meta: {
+        ...(request.manualCompaction ? { kind: 'compaction_instruction', version: 1, trigger: 'manual', sourceTipId: parentId, resume: false }
+          : request.watcherCompletion ? { kind: 'watcher_completion', ...request.watcherCompletion } : {}),
+        modelSelection: { provider: request.provider, model: request.modelName },
+      },
     })
 
     const linkedAttachments = linkPreparedAttachmentsToMessage(
@@ -856,6 +862,13 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
     emit: (event: HeadlessStreamEvent) => void,
     signal?: AbortSignal
   ): Promise<void> {
+    if (request.manualCompaction) {
+      if ([...this.inputRuns.values()].some(run => !run.terminal && run.request.conversationId === request.conversationId &&
+        (request.lineageId ? run.queue.lineageId === request.lineageId : run.head === request.parentId))) {
+        throw new Error('Wait for the active run to finish before compacting')
+      }
+      request = { ...request, content: compactionInstruction(request.compactionSystemPrompt), attachmentsBase64: null }
+    }
     // Mint the stream id BEFORE any persistence so `started` — and every terminal frame
     // a pre-persist failure produces — carries the id the client reconnects with.
     // `streamingRunRepo.upsert` adopts a supplied id verbatim, so the row is unchanged.
@@ -920,7 +933,7 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
       if (event.type === 'permission_required' || event.type === 'operation_mode_upgrade_required') waitingTools.set(event.toolCallId, event.toolName)
       if (event.type === 'tool_execution' && event.status !== 'started') waitingTools.delete(event.toolCallId)
       if (event.type === 'assistant_message_persisted') modeParentId = event.message?.id ?? modeParentId
-      if (event.type === 'context_injection_persisted') modeParentId = event.message?.id ?? modeParentId
+      if (event.type === 'context_injection_persisted' || event.type === 'compaction_control_persisted') modeParentId = event.message?.id ?? modeParentId
       if (event.type === 'context_compaction' && event.status === 'completed') modeParentId = event.parentMessageId ?? modeParentId
       if (event.type === 'complete' || (event.type === 'error' && event.terminal !== false)) {
         finishMode()
@@ -1257,6 +1270,7 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
       pendingOperationId,
       streamId: trackedStreamId,
       onModelResponse: (id: string) => { runResponseIds.add(id) },
+      modelSelection: { provider: request.provider, model: request.modelName },
     }
     // ONE sink instance for the run: the loop's turns and any terminal error row share
     // its pending-fork state, so whichever writes first materializes the fork.
@@ -1557,6 +1571,7 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
         robustness: { retryProviderError: true },
         subagentReasoningEffort: request.subagentReasoningEffort,
         subagentSystemPrompt: request.subagentModePrompt ?? null,
+        manualCompaction: request.manualCompaction,
         autoCompactionEnabled: request.autoCompactionEnabled,
         contextLength: request.contextLength,
         contextMeterPrompts: [project?.system_prompt, projectContext, conversation?.system_prompt, conversationContext],

@@ -4,7 +4,6 @@ import { buildChatErrorEnvelope } from '../../../../../shared/chatErrors.js'
 import type { HeadlessChatOperation, HeadlessMessageRequest, HeadlessStreamEvent } from '../../../../../shared/headlessApi.js'
 import { classifyChatError } from '../providers/providerErrorFormatter.js'
 import type { HeadlessChatOrchestrator } from '../services/chatOrchestrator.js'
-import type { CompactionService } from '../services/compactionService.js'
 import type { Decision, DecisionBroker } from '../services/decisionBroker.js'
 import type { RunSessionRegistry, RunSubscriber } from '../services/runSessionRegistry.js'
 import { initializeSse, startSseHeartbeat, writeSseEvent } from '../stream/sseWriter.js'
@@ -69,7 +68,8 @@ function sendJsonError(
 
 interface RegisterChatRoutesDeps {
   orchestrator: HeadlessChatOrchestrator
-  compactionService?: CompactionService
+  /** @deprecated Ignored; retained for older callers during migration. */
+  compactionService?: unknown
   /** Shared pause/resume registry; also injected into the ChatOrchestrator. */
   decisionBroker?: DecisionBroker
   /**
@@ -107,6 +107,7 @@ function buildHeadlessMessageRequest(req: Request, operation: HeadlessChatOperat
 
   return {
     operation,
+    manualCompaction: body.manualCompaction === true,
     conversationId: conversationIdParam || '',
     parentId: body.parentId ?? body.parent_id ?? null,
     messageId: messageIdParam ?? body.messageId ?? body.message_id ?? null,
@@ -599,60 +600,11 @@ export function registerChatRoutes(app: Express, deps: RegisterChatRoutesDeps): 
     sendJsonError(res, 404, 'No live run for that streamId', 'stop_not_confirmed', {}, { success: false })
   })
 
+  // Compatibility endpoint: compaction is now an ordinary streamed chat turn.
   app.post('/api/conversations/:id/compact', async (req, res) => {
-    if (!compactionService) {
-      sendJsonError(res, 501, 'Compaction service is not configured', 'compaction_failed', { recoverability: 'fatal' })
-      return
-    }
-
-    const controller = new AbortController()
-    const onClose = () => { if (!res.writableEnded) controller.abort() }
-    res.on('close', onClose)
-    try {
-      const body = req.body ?? {}
-      const conversationIdParam = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id
-      const parentMessageId = body.parentMessageId ?? body.parent_message_id ?? null
-      const messages = Array.isArray(body.messages) ? body.messages : []
-
-      if (!conversationIdParam) {
-        sendJsonError(res, 400, 'conversation id is required', 'server_rejected_request')
-        return
-      }
-      if (!parentMessageId) {
-        sendJsonError(res, 400, 'parentMessageId is required', 'server_rejected_request')
-        return
-      }
-      if (messages.length < 2) {
-        sendJsonError(res, 400, 'At least two source messages are required', 'server_rejected_request')
-        return
-      }
-
-      const result = await compactionService.compactBranch({
-        conversationId: conversationIdParam,
-        signal: controller.signal,
-        parentMessageId: String(parentMessageId),
-        messages,
-        provider: body.provider ?? 'openaichatgpt',
-        modelName: body.modelName ?? body.model_name ?? 'gpt-5.6-sol',
-        userId: body.userId ?? body.user_id ?? null,
-        accessToken: body.accessToken ?? body.access_token ?? null,
-        accountId: body.accountId ?? body.account_id ?? null,
-        systemPrompt: body.systemPrompt ?? body.system_prompt ?? null,
-      })
-
-      res.status(201).json({ success: true, message: result.message })
-    } catch (error) {
-      if (controller.signal.aborted) return
-      // Raw text goes to `detail` only; the classifier owns what the user reads.
-      const message = error instanceof Error ? error.message : String(error)
-      const status = message.includes('not found') ? 404 : 500
-      const envelope = classifyChatError(error, { phase: 'compaction' })
-      envelope.status = status
-      if (!envelope.detail) envelope.detail = message
-      res.status(status).json({ error: message, envelope })
-    } finally {
-      res.off('close', onClose)
-    }
+    req.body = { ...req.body, manualCompaction: true,
+      parentId: req.body?.parentId ?? req.body?.parentMessageId, content: '/compact' }
+    await runSseOrchestrator(orchestrator, req, res, 'send', { runSessions, resumableRuns })
   })
 
   const sseOpts = { runSessions, resumableRuns }

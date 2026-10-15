@@ -1,12 +1,8 @@
-import { MessageRepo } from '../persistence/messageRepo.js'
-import { ProviderRouter } from './providerRouter.js'
+import { isCommittedCompaction } from '../../../../../shared/compaction.js'
 import { excludeContextExcludedMessages } from '../../../../../shared/contextExclusion.js'
 
 export const AUTO_COMPACTION_NOTE = '__auto_compaction_summary__'
 export const AUTO_COMPACTION_SUMMARY_RESUME_LINE = 'Following is summary of the session, you have to resume the work.'
-
-const DEFAULT_COMPACTION_SYSTEM_PROMPT =
-  'You compact chat history. Return detailed markdown that preserves goals, hard requirements, key facts, decisions, pending tasks, and unresolved questions. Do not include tool protocol chatter, but include general context around changes made instead. Include full absolute paths of files touched/edited, and brief summary of what changed.'
 
 const INCLUDED_WRITE_TOOL_NAMES = new Set(['edit_file', 'multi_edit', 'create_file', 'delete_file'])
 const MAX_COMPACTION_WRITE_APPENDIX_CHARS = 40000
@@ -35,6 +31,7 @@ export interface CompactionMessageLike {
   tool_call_id?: string | null
   content_blocks?: unknown
   note?: string | null
+  meta?: unknown
 }
 
 export interface CompactBranchInput {
@@ -61,13 +58,6 @@ export interface GenerateCompactionSummaryInput {
   accountId?: string | null
   systemPrompt?: string | null
   signal?: AbortSignal
-}
-
-interface CompactionServiceDeps {
-  db: any
-  statements: any
-  providerRouter?: ProviderRouter
-  tokenStore?: any
 }
 
 type ParsedToolCall = {
@@ -471,19 +461,7 @@ export const ensureCompactionSummaryResumeLine = (content: string | null | undef
   return `${AUTO_COMPACTION_SUMMARY_RESUME_LINE}\n\n${trimmed}`
 }
 
-export const isAutoCompactionSummaryMessage = (message: CompactionMessageLike | undefined | null): boolean => {
-  if (!message) return false
-  if (typeof message.note === 'string' && message.note === AUTO_COMPACTION_NOTE) return true
-
-  // Older/manual summaries may have been persisted without the marker but retain
-  // the stable resume-line prefix. Treat them as the same inference boundary.
-  const content = message.content ?? message.plain_text_content ?? message.content_plain_text ?? ''
-  return (
-    (message.role === 'system' || message.role === 'developer') &&
-    typeof content === 'string' &&
-    content.trim().startsWith(AUTO_COMPACTION_SUMMARY_RESUME_LINE)
-  )
-}
+export const isAutoCompactionSummaryMessage = isCommittedCompaction
 
 export const trimHistoryToLatestCompaction = (messages: Array<CompactionMessageLike | undefined>): CompactionMessageLike[] => {
   const resolved = messages.filter(Boolean) as CompactionMessageLike[]
@@ -500,127 +478,21 @@ export const trimHistoryToLatestCompaction = (messages: Array<CompactionMessageL
   return latestCompactionIndex >= 0 ? resolved.slice(latestCompactionIndex) : resolved
 }
 
-export class CompactionService {
-  private readonly statements: any
-  private readonly messageRepo: MessageRepo
-  private readonly providerRouter: ProviderRouter
 
-  constructor(deps: CompactionServiceDeps) {
-    this.statements = deps.statements
-    this.messageRepo = new MessageRepo({ db: deps.db, statements: deps.statements })
-    this.providerRouter = deps.providerRouter ?? new ProviderRouter({ tokenStore: deps.tokenStore })
-  }
-
-  /**
-   * Compact an arbitrary message array into a single resume-line-prefixed summary
-   * string. Does not touch any persistence, so it is reusable by callers that
-   * store the summary outside the main tree (e.g. the subagent transcript).
-   */
-  async generateCompactionSummary(input: GenerateCompactionSummaryInput): Promise<string> {
-    input.signal?.throwIfAborted()
-    // R5: strip `excludeFromContext` rows BEFORE anything reads them. This is the single
-    // choke point for every compaction caller — the in-loop compaction AND the manual
-    // `chatRoutes` route, which feeds caller-supplied rows verbatim. Without it an error
-    // row (whose `content` mirrors `envelope.userMessage`) gets summarised INTO the
-    // conversation memory and then replayed to the model as established history forever.
-    // Applied above `trimHistoryToLatestCompaction` so the tool/write appendices are
-    // covered too, not just the history lines.
-    const contextEligibleMessages = excludeContextExcludedMessages(
-      Array.isArray(input.messages) ? input.messages : []
-    )
-    const compactableHistory = trimHistoryToLatestCompaction(contextEligibleMessages)
-    const historyLines = buildCompactionHistoryLines(compactableHistory)
-    const toolContextAppendix = buildCompactionToolContextAppendix(compactableHistory)
-    const writeOpAppendix = buildCompactionWriteOpAppendix(compactableHistory)
-
-    if (historyLines.length === 0 && !toolContextAppendix && !writeOpAppendix) {
-      throw new Error('No compactable branch context')
-    }
-
-    const historyText =
-      historyLines.length > 0
-        ? historyLines.join('\n\n')
-        : '(No non-tool conversational text remained after filtering tool outputs.)'
-
-    const compactionSystemPrompt = input.systemPrompt?.trim() || DEFAULT_COMPACTION_SYSTEM_PROMPT
-    const compactionUserPrompt = [
-      'Compact this branch context for continued conversation.',
-      'Output sections:',
-      '1) Objective',
-      '2) Confirmed facts',
-      '3) Decisions made',
-      '4) Open tasks / next steps',
-      '5) Risks / ambiguities',
-      '',
-      'Conversation history:',
-      historyText,
-      ...(toolContextAppendix ? ['', toolContextAppendix] : []),
-    ].join('\n')
-
-    const result = await this.providerRouter.generate(input.provider, {
-      modelName: input.modelName,
-      systemPrompt: compactionSystemPrompt,
-      history: [],
-      userContent: compactionUserPrompt,
-      userId: input.userId ?? null,
-      authSessionId: input.authSessionId,
-      accessToken: input.accessToken ?? null,
-      accountId: input.accountId ?? null,
-      tools: [],
-      temperature: 0.2,
-      signal: input.signal,
-    })
-    input.signal?.throwIfAborted()
-
-    const summaryText = String(result?.content ?? '').trim()
-    if (!summaryText) {
-      throw new Error('Compaction returned empty summary')
-    }
-
-    const fencedToolContextAppendix = toolContextAppendix ? `\`\`\`\n${toolContextAppendix}\n\`\`\`` : ''
-    const fencedWriteOpAppendix = writeOpAppendix ? `\`\`\`\n${writeOpAppendix}\n\`\`\`` : ''
-    return ensureCompactionSummaryResumeLine(
-      [summaryText, fencedToolContextAppendix, fencedWriteOpAppendix]
-        .filter(section => typeof section === 'string' && section.trim().length > 0)
-        .join('\n\n')
-    )
-  }
-
-  async compactBranch(input: CompactBranchInput): Promise<{ message: any }> {
-    const conversation = this.statements.getConversationById.get(input.conversationId) as any
-    if (!conversation) {
-      throw new Error(`Conversation not found: ${input.conversationId}`)
-    }
-
-    const parentMessage = this.statements.getMessageById.get(input.parentMessageId) as any
-    if (!parentMessage || String(parentMessage.conversation_id) !== String(input.conversationId)) {
-      throw new Error(`Parent message not found in conversation: ${input.parentMessageId}`)
-    }
-
-    const persistedSummaryContent = await this.generateCompactionSummary({
-      messages: input.messages,
-      provider: input.provider,
-      modelName: input.modelName,
-      userId: input.userId ?? conversation.user_id ?? null,
-      authSessionId: input.authSessionId,
-      accessToken: input.accessToken,
-      accountId: input.accountId,
-      systemPrompt: input.systemPrompt,
-      signal: input.signal,
-    })
-    input.signal?.throwIfAborted()
-
-    const message = this.messageRepo.createMessage({
-      conversationId: input.conversationId,
-      parentId: input.parentMessageId,
-      role: 'system',
-      content: persistedSummaryContent,
-      modelName: input.modelName,
-      toolCalls: [],
-      contentBlocks: [],
-      note: AUTO_COMPACTION_NOTE,
-    })
-
-    return { message }
-  }
+/** Harness context is appended only after the ordinary response has finished. */
+export function finaliseCompactionContent(message: any, messages: CompactionMessageLike[], instruction: any) {
+  const eligible = excludeContextExcludedMessages(messages)
+  const appendix = [buildCompactionToolContextAppendix(eligible), buildCompactionWriteOpAppendix(eligible)]
+    .filter(Boolean).map(text => `\`\`\`\n${text}\n\`\`\``).join('\n\n')
+  const content = [String(message.content ?? '').trim(), appendix].filter(Boolean).join('\n\n')
+  let blocks = message.content_blocks
+  if (typeof blocks === 'string') { try { blocks = JSON.parse(blocks) } catch { blocks = [] } }
+  blocks = Array.isArray(blocks) ? [...blocks] : []
+  if (!blocks.some((block: any) => block.type === 'text') && message.content) blocks.push({ type: 'text', content: message.content })
+  const nextIndex = blocks.reduce((max: number, block: any, index: number) => Math.max(max, typeof block.index === 'number' ? block.index : index), -1) + 1
+  if (appendix) blocks.push({ type: 'text', content: `\n\n${appendix}`, source: 'compaction_appendix', index: nextIndex })
+  let meta = message.meta
+  if (typeof meta === 'string') { try { meta = JSON.parse(meta) } catch { meta = {} } }
+  return { content, contentBlocks: blocks, meta: { ...meta, kind: 'compaction_summary', state: 'committed', version: 1,
+    compactionId: instruction.id, instructionId: instruction.id } }
 }

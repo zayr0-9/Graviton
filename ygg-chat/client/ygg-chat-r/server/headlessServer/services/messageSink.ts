@@ -32,6 +32,7 @@ export interface AssistantMessageDraft {
    * other sink ignores it, and it is null off the cloud path.
    */
   providerMessageId?: string | null
+  meta?: Record<string, unknown>
   statisticsKind?: 'model_response' | 'terminal_error'
 }
 
@@ -49,6 +50,8 @@ const runMessageTransaction = <T>(messageRepo: MessageRepo, operation: () => T):
 }
 
 export interface MessageSink {
+  persistControlMessage?(draft: { conversationId: string; parentId: string | null; content: string; meta: Record<string, unknown> }): any
+  finaliseCompaction?(messageId: string, update: { content: string; contentBlocks: any[]; meta: Record<string, unknown> }): any
   persistAssistantMessage(draft: AssistantMessageDraft): any
   updateAssistantToolState(
     messageId: string,
@@ -67,14 +70,16 @@ export class TreeMessageSink implements MessageSink {
   private readonly lineageId?: string | null
   private pendingOperationId?: string | null
   private readonly streamId?: string
+  private readonly modelSelection?: { provider: string; model?: string | null }
   private readonly onModelResponse?: (id: string) => void
 
-  constructor(deps: { messageRepo: MessageRepo; lineageRepo?: LineageRepo; lineageId?: string | null; pendingOperationId?: string | null; streamId?: string; onModelResponse?: (id: string) => void }) {
+  constructor(deps: { messageRepo: MessageRepo; lineageRepo?: LineageRepo; lineageId?: string | null; pendingOperationId?: string | null; streamId?: string; onModelResponse?: (id: string) => void; modelSelection?: { provider: string; model?: string | null } }) {
     this.messageRepo = deps.messageRepo
     this.lineageRepo = deps.lineageRepo
     this.lineageId = deps.lineageId
     this.pendingOperationId = deps.pendingOperationId
     this.streamId = deps.streamId
+    this.modelSelection = deps.modelSelection
     this.onModelResponse = deps.onModelResponse
   }
 
@@ -89,9 +94,9 @@ export class TreeMessageSink implements MessageSink {
         toolCalls: draft.toolCalls ?? undefined,
         contentBlocks: durableResponseBlocks(draft),
         contextUsage: draft.contextUsage ?? undefined,
-        meta: this.streamId ? {
+        meta: { ...draft.meta, ...(this.modelSelection ? { modelSelection: this.modelSelection } : {}), ...(this.streamId ? {
           runStatistics: { version: 1, streamId: this.streamId, kind: draft.statisticsKind ?? 'model_response' },
-        } : undefined,
+        } : {}) },
       })
       if (this.lineageRepo && this.lineageId) {
         if (this.pendingOperationId) {
@@ -104,6 +109,23 @@ export class TreeMessageSink implements MessageSink {
       if (draft.statisticsKind !== 'terminal_error') this.onModelResponse?.(message.id)
       return message
     })
+  }
+
+  persistControlMessage(draft: { conversationId: string; parentId: string | null; content: string; meta: Record<string, unknown> }): any {
+    return runMessageTransaction(this.messageRepo, () => {
+      const row = this.messageRepo.createMessage({ ...draft, role: 'user' })
+      if (this.lineageRepo && this.lineageId) {
+        if (this.pendingOperationId) {
+          this.lineageRepo.materialize(this.pendingOperationId, row.id)
+          this.pendingOperationId = null
+        } else this.lineageRepo.appendMessage(this.lineageId, row.id)
+      }
+      return row
+    })
+  }
+
+  finaliseCompaction(messageId: string, update: { content: string; contentBlocks: any[]; meta: Record<string, unknown> }): any {
+    return this.messageRepo.finaliseCompaction(messageId, update)
   }
 
   updateAssistantToolState(
@@ -128,14 +150,16 @@ export class CloudMirrorSink implements MessageSink {
   private readonly lineageId?: string | null
   private pendingOperationId?: string | null
   private readonly streamId?: string
+  private readonly modelSelection?: { provider: string; model?: string | null }
   private readonly onModelResponse?: (id: string) => void
 
-  constructor(deps: { messageRepo: MessageRepo; lineageRepo?: LineageRepo; lineageId?: string | null; pendingOperationId?: string | null; streamId?: string; onModelResponse?: (id: string) => void }) {
+  constructor(deps: { messageRepo: MessageRepo; lineageRepo?: LineageRepo; lineageId?: string | null; pendingOperationId?: string | null; streamId?: string; onModelResponse?: (id: string) => void; modelSelection?: { provider: string; model?: string | null } }) {
     this.messageRepo = deps.messageRepo
     this.lineageRepo = deps.lineageRepo
     this.lineageId = deps.lineageId
     this.pendingOperationId = deps.pendingOperationId
     this.streamId = deps.streamId
+    this.modelSelection = deps.modelSelection
     this.onModelResponse = deps.onModelResponse
   }
 
@@ -151,9 +175,9 @@ export class CloudMirrorSink implements MessageSink {
         toolCalls: draft.toolCalls ?? undefined,
         contentBlocks: durableResponseBlocks(draft),
         contextUsage: draft.contextUsage ?? undefined,
-        meta: this.streamId ? {
+        meta: { ...draft.meta, ...(this.modelSelection ? { modelSelection: this.modelSelection } : {}), ...(this.streamId ? {
           runStatistics: { version: 1, streamId: this.streamId, kind: draft.statisticsKind ?? 'model_response' },
-        } : undefined,
+        } : {}) },
       })
       if (this.lineageRepo && this.lineageId) {
         if (this.pendingOperationId) {
@@ -166,6 +190,23 @@ export class CloudMirrorSink implements MessageSink {
       if (draft.statisticsKind !== 'terminal_error') this.onModelResponse?.(message.id)
       return message
     })
+  }
+
+  persistControlMessage(draft: { conversationId: string; parentId: string | null; content: string; meta: Record<string, unknown> }): any {
+    return runMessageTransaction(this.messageRepo, () => {
+      const row = this.messageRepo.createMessage({ ...draft, role: 'user' })
+      if (this.lineageRepo && this.lineageId) {
+        if (this.pendingOperationId) {
+          this.lineageRepo.materialize(this.pendingOperationId, row.id)
+          this.pendingOperationId = null
+        } else this.lineageRepo.appendMessage(this.lineageId, row.id)
+      }
+      return row
+    })
+  }
+
+  finaliseCompaction(messageId: string, update: { content: string; contentBlocks: any[]; meta: Record<string, unknown> }): any {
+    return this.messageRepo.finaliseCompaction(messageId, update)
   }
 
   updateAssistantToolState(

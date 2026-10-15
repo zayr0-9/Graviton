@@ -464,8 +464,6 @@ const Settings: React.FC = () => {
     ;[readDirs[index], readDirs[target]] = [readDirs[target], readDirs[index]]
     applyContextDirectories({ readDirs, writeDir: contextDirectories.writeDir }, 'custom')
   }
-  const compactionProviderForModels = providerSettings.compactionProvider || providers.currentProvider || 'OpenRouter'
-  const { data: compactionModelsData } = useModels(compactionProviderForModels)
   const normalizedRemoteBaseUrlInput = normalizeRemoteBaseUrl(remoteBaseUrlInput)
   const effectiveRemoteMobileUrl =
     buildRemoteMobileUrl(normalizedRemoteBaseUrlInput) || buildRemoteMobileUrl(detectedLocalServerOrigin)
@@ -885,34 +883,6 @@ const Settings: React.FC = () => {
     })
   }
 
-  const handleCompactionProviderChange = (providerName: string) => {
-    const updated = {
-      ...providerSettings,
-      compactionProvider: providerName || null,
-      compactionModel: null,
-    }
-    saveProviderSettings(updated)
-    setProviderSettings(updated)
-    showStatus({
-      type: 'success',
-      text: providerName
-        ? `Compaction provider set to "${providerName}".`
-        : 'Compaction provider will follow the current chat provider.',
-    })
-  }
-
-  const handleCompactionModelChange = (modelName: string) => {
-    const updated = {
-      ...providerSettings,
-      compactionModel: modelName || null,
-    }
-    saveProviderSettings(updated)
-    setProviderSettings(updated)
-    showStatus({
-      type: 'success',
-      text: modelName ? 'Compaction model updated.' : 'Compaction model will use provider default/current model.',
-    })
-  }
 
   const handleCompactionSystemPromptInputChange = (value: string) => {
     setCompactionSystemPromptInput(value)
@@ -2804,7 +2774,7 @@ const Settings: React.FC = () => {
                 <div>
                   <p className='text-base font-medium text-stone-900 dark:text-stone-100'>ChatGPT Max Context Tokens</p>
                   <p className='text-sm text-stone-500 dark:text-stone-400'>
-                    Global context-window limit for all OpenAI (ChatGPT) models. This also controls their token meter and 85% auto-compaction boundary.
+                    Global context-window limit for OpenAI (ChatGPT) models. Auto-compaction uses the threshold configured below.
                   </p>
                 </div>
                 <div className='flex flex-wrap items-center gap-2'>
@@ -2839,39 +2809,20 @@ const Settings: React.FC = () => {
                 </p>
               </div>
 
-              <div className='flex flex-col gap-2 pt-2 pt-2'>
-                <div>
-                  <p className='text-base font-medium text-stone-900 dark:text-stone-100'>Auto-Compaction Provider</p>
-                  <p className='text-sm text-stone-500 dark:text-stone-400'>
-                    Provider/model used when chat auto-compacts context near the token limit.
-                  </p>
-                </div>
-                <Select
-                  value={providerSettings.compactionProvider || ''}
-                  onChange={handleCompactionProviderChange}
-                  options={[
-                    { value: '', label: 'Follow current chat provider' },
-                    ...providers.providers.map(p => ({ value: p.name, label: p.name })),
-                  ]}
-                  placeholder='Follow current chat provider'
-                  className='max-w-xs'
-                />
-                <Select
-                  value={providerSettings.compactionModel || ''}
-                  onChange={handleCompactionModelChange}
-                  options={[
-                    { value: '', label: 'Use provider default/current model' },
-                    ...((compactionModelsData?.models || []).map(model => ({
-                      value: model.name,
-                      label: model.name,
-                    })) as any[]),
-                  ]}
-                  placeholder='Use provider default/current model'
-                  className='max-w-xl'
-                />
+              <div className='flex flex-col gap-2 pt-2'>
+                <label className='text-base font-medium text-stone-900 dark:text-stone-100' htmlFor='compaction-threshold'>Auto-compaction threshold (%)</label>
+                <input id='compaction-threshold' type='number' min={1} max={95} step={1}
+                  value={providerSettings.compactionThresholdPercent}
+                  onChange={event => {
+                    const value = Number(event.target.value)
+                    if (!Number.isFinite(value)) return
+                    const updated = { ...providerSettings, compactionThresholdPercent: Math.max(1, Math.min(95, Math.round(value))) }
+                    saveProviderSettings(updated)
+                    setProviderSettings(updated)
+                  }} className={`w-48 ${settingsInputClass}`} />
                 <div className='flex flex-col gap-2 pt-2'>
                   <div>
-                    <p className='text-base font-medium text-stone-900 dark:text-stone-100'>Compaction System Prompt</p>
+                    <p className='text-base font-medium text-stone-900 dark:text-stone-100'>Compaction instructions</p>
                     <p className='text-sm text-stone-500 dark:text-stone-400'>
                       Used when generating auto-compaction summaries before continued conversation.
                     </p>

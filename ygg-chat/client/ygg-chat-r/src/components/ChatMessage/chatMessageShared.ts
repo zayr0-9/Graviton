@@ -16,6 +16,9 @@ export const PROCESS_RUN_GROUP_MIN_ITEMS = 3
  */
 export const MESSAGE_BLOCK_STACK_CLASS = 'flex min-w-0 w-full flex-col gap-1.5'
 export const MESSAGE_BLOCK_INSET_CLASS = 'px-2.5'
+/** Standalone automated rows share the message gutter and one icon/label grid. */
+export const MESSAGE_NOTICE_WRAPPER_CLASS = 'min-w-0 px-0 py-1 sm:px-2'
+export const MESSAGE_NOTICE_ROW_CLASS = `flex h-8 min-w-0 w-full items-center gap-2 ${MESSAGE_BLOCK_INSET_CLASS}`
 
 /**
  * Type scale for message chrome. Four steps only, because near-duplicate sizes read as noise

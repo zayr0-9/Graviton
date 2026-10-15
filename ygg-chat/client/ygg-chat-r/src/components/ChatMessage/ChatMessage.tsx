@@ -1,3 +1,4 @@
+import { isCommittedCompaction } from '../../../../../shared/compaction'
 import type { ContentBlock, HookRunRecord, StreamEvent } from '@/features/chats/chatTypes'
 import type { ChatErrorActionKind, ChatErrorEnvelope } from '../../../../../shared/chatErrors'
 import type { MessageId } from '../../../../../shared/types'
@@ -16,7 +17,7 @@ import rehypeKatex from 'rehype-katex'
 import remarkGfm from 'remark-gfm'
 import remarkMath from 'remark-math'
 import { Check, RotateCw, X } from 'lucide-react'
-import { AUTO_COMPACTION_NOTE, fetchMcpTools } from '../../features/chats/chatActions'
+import { fetchMcpTools } from '../../features/chats/chatActions'
 import { chatSliceActions } from '../../features/chats/chatSlice'
 import {
   appendAttachedImagePathMetadata,
@@ -33,6 +34,7 @@ import { MarkdownLink, markdownUrlTransform } from '../MarkdownLink/MarkdownLink
 import { MarkdownTable } from '../MarkdownContent/MarkdownTable'
 import { MermaidDiagram, getMermaidSource, isMermaidCodeBlock, prepareMermaidMarkdown } from '../MermaidDiagram'
 import { TextArea } from '../TextArea/TextArea'
+import './explainSelection.css'
 import {
   type CustomChatTheme,
   createDefaultCustomChatTheme,
@@ -48,6 +50,7 @@ import { MessageActions } from './MessageActions'
 import { submitMessageDraft } from './messageSubmission'
 import { DisclosurePanel, DisclosureRow } from './messagePrimitives'
 import { SummarisedMessage } from './SummarisedMessage'
+import { getCompactionPlaceholder, isHiddenCompactionMessage } from '../../features/chats/summaryPresentation'
 import { CompactMessageNotice } from './CompactMessageNotice'
 import { ImageAttachmentNotice, isImageAttachmentInfoMessage } from './ImageAttachmentNotice'
 import { waitForImagePreparation } from '../../features/chats/imagePreparation'
@@ -414,7 +417,7 @@ const ROLE_LABEL_CLASS: Record<string, string> = {
   ex_agent: 'text-orange-700 dark:text-orange-400',
 }
 
-const EXPLAIN_BUTTON_CLASS = `flex h-8 w-8 items-center justify-center rounded-full bg-black/[0.05] text-neutral-600 disabled:cursor-not-allowed disabled:opacity-50 dark:bg-white/[0.06] dark:text-neutral-300 ${FAST_COLOR_TRANSITION_CLASS} ${FOCUS_RING_CLASS}`
+const EXPLAIN_BUTTON_CLASS = `flex h-11 w-11 items-center justify-center rounded-full transition-[background-color,color,transform,opacity] duration-[var(--ygg-motion-duration-fast)] hover:opacity-80 active:scale-95 disabled:cursor-not-allowed disabled:opacity-40 disabled:active:scale-100 outline-none focus-visible:ring-0 motion-reduce:transform-none motion-reduce:transition-none`
 
 const FLOATING_SURFACE_CLASS =
   'rounded-2xl bg-white/95 backdrop-blur-xl ring-1 ring-black/[0.06] dark:bg-yBlack-900/95 dark:ring-white/[0.08]'
@@ -512,7 +515,15 @@ const ChatMessageBody: React.FC<ChatMessageProps> = React.memo(
     const streamToolGroupsByIndex = useMemo(() => buildToolCallGroupsFromStream(streamEvents), [streamEvents])
     const contentToolGroupsByIndex = useMemo(() => buildToolCallGroupsFromBlocks(contentBlocks), [contentBlocks])
     const htmlRegistry = useHtmlIframeRegistry()
+    const explainThemeColor = (key:
+      | 'settingsCustomThemesCardBg' | 'settingsCustomThemesInnerCardBg'
+      | 'toolJobsPrimaryText' | 'toolJobsMutedText'
+      | 'settingsCustomThemesButtonBg' | 'settingsCustomThemesButtonText'
+      | 'composerToggleActiveBg' | 'composerToggleActiveText'
+    ) =>
+      customThemeEnabled ? getThemeModeColor(customTheme.colors[key], isDarkMode) : undefined
     const [showExplainInput, setShowExplainInput] = useState(false)
+    const [explainInputClosing, setExplainInputClosing] = useState(false)
     const [explainInputValue, setExplainInputValue] = useState('')
     const explainInputPosition = useRef<{ x: number; y: number } | null>(null)
     const explainInputRef = useRef<HTMLDivElement | null>(null)
@@ -787,20 +798,31 @@ const ChatMessageBody: React.FC<ChatMessageProps> = React.memo(
       if (onExplainFromSelection && selectedText && explainInputValue.trim()) {
         const branchContent = `${explainInputValue.trim()}\n\nSelected text:\n\`\`\`\n${selectedText}\n\`\`\``
         submitMessageDraft(branchSubmissionDisabled, () => onExplainFromSelection(id, branchContent), () => {
-          setShowExplainInput(false)
-          setExplainInputFixedPosition(null)
-          setExplainInputValue('')
-          setSelectedText('')
+          setExplainInputClosing(true)
         })
       }
     }
 
     const handleCancelExplainInput = () => {
-      setShowExplainInput(false)
-      setExplainInputFixedPosition(null)
-      setExplainInputValue('')
-      setSelectedText('')
+      setExplainInputClosing(true)
     }
+
+    useEffect(() => {
+      if (!explainInputClosing) return
+      const duration = getComputedStyle(explainInputRef.current ?? document.documentElement)
+        .getPropertyValue('--modal-close-dur').trim()
+      const closeMs = reducedMotion ? 0 : duration
+        ? parseFloat(duration) * (duration.endsWith('ms') ? 1 : 1000)
+        : 250
+      const timer = window.setTimeout(() => {
+        setShowExplainInput(false)
+        setExplainInputClosing(false)
+        setExplainInputFixedPosition(null)
+        setExplainInputValue('')
+        setSelectedText('')
+      }, closeMs)
+      return () => window.clearTimeout(timer)
+    }, [explainInputClosing, reducedMotion])
 
     const handleCopySelection = async () => {
       if (!selectedText) return
@@ -820,6 +842,7 @@ const ChatMessageBody: React.FC<ChatMessageProps> = React.memo(
       } else if (contextMenuPosition) {
         explainInputPosition.current = { ...contextMenuPosition }
       }
+      setExplainInputClosing(false)
       setExplainInputValue('')
       setExplainInputFixedPosition(null)
       setShowExplainInput(true)
@@ -834,7 +857,8 @@ const ChatMessageBody: React.FC<ChatMessageProps> = React.memo(
     const getAdjustedExplainInputPosition = useCallback(() => {
       if (!explainInputPosition.current || !explainInputRef.current) return null
 
-      const inputRect = explainInputRef.current.getBoundingClientRect()
+      // Measure unscaled height so the opening transform does not affect placement.
+      const inputRect = { height: explainInputRef.current.offsetHeight }
       const viewportWidth = window.innerWidth
       const viewportHeight = window.innerHeight
       const offset = 12
@@ -1810,14 +1834,14 @@ const ChatMessageBody: React.FC<ChatMessageProps> = React.memo(
         onTouchStart={handleMobileMessageActivate}
       >
         <div
-          className={`min-w-0 rounded-2xl ${drawSurface ? 'px-1.5 pt-2 pb-1' : ''} ${surfaceClass} ${contextHighlightClass} ${FAST_COLOR_TRANSITION_CLASS}`}
+          className={`min-w-0 rounded-2xl ${drawSurface ? 'pt-2 pb-1' : ''} ${surfaceClass} ${contextHighlightClass} ${FAST_COLOR_TRANSITION_CLASS}`}
           style={surfaceStyle}
         >
           {/* Role caption. Assistant rows stay unlabelled; the surface is the label for user rows. */}
           {isUserRow && (
             <div className={`flex h-7 items-center gap-2 ${MESSAGE_BLOCK_INSET_CLASS}`}>
               <span
-                className={`${TEXT_MICRO_CLASS} font-semibold uppercase tracking-[0.14em] ${roleLabelClass}`}
+                className={`${TEXT_MICRO_CLASS} font-semibold ${roleLabelClass}`}
                 style={roleLabelStyle}
               >
                 {roleLabel}
@@ -2138,21 +2162,40 @@ const ChatMessageBody: React.FC<ChatMessageProps> = React.memo(
           createPortal(
             <div
               ref={explainInputRef}
-              className={`fixed z-[100] w-[320px] p-2 sm:w-[400px] ${FLOATING_SURFACE_CLASS} [will-change:contents] [transform:translateZ(0)]`}
+              role='dialog'
+              aria-label='Explain selection'
+              inert={explainInputClosing}
+              className={`t-modal ${explainInputClosing ? 'is-closing' : explainInputFixedPosition ? 'is-open' : ''} fixed z-[100] w-[320px] rounded-[26px] bg-white/95 p-2 text-neutral-900 backdrop-blur-xl sm:w-[400px] dark:bg-yBlack-900/95 dark:text-neutral-100 [&_label]:!text-inherit`}
               style={{
+                backgroundColor: explainThemeColor('settingsCustomThemesCardBg'),
+                color: explainThemeColor('toolJobsPrimaryText'),
                 left: `${explainInputFixedPosition?.x ?? explainInputPosition.current?.x ?? 0}px`,
                 top: `${explainInputFixedPosition?.y ?? explainInputPosition.current?.y ?? 0}px`,
                 width: explainInputFixedPosition ? `${explainInputFixedPosition.width}px` : undefined,
               }}
             >
-              <div className='thin-scrollbar mb-2 max-h-[100px] overflow-y-auto rounded-xl bg-black/[0.04] p-2 dark:bg-white/[0.05]'>
-                <div className={`line-clamp-4 ${TEXT_DETAIL_CLASS} italic text-neutral-600 dark:text-neutral-400`}>“{selectedText}”</div>
+              <div className={`px-3 pb-3 pt-2 font-semibold ${TEXT_LABEL_CLASS}`}>Explain selection</div>
+              <div
+                className='thin-scrollbar mb-2 max-h-[100px] overflow-y-auto rounded-2xl bg-black/[0.04] px-3 py-2.5 text-neutral-600 dark:bg-white/[0.05] dark:text-neutral-400'
+                style={{
+                  backgroundColor: explainThemeColor('settingsCustomThemesInnerCardBg'),
+                  color: explainThemeColor('toolJobsMutedText'),
+                }}
+              >
+                <div className={`line-clamp-4 break-words ${TEXT_DETAIL_CLASS}`}>“{selectedText}”</div>
               </div>
               <TextArea
                 value={explainInputValue}
                 onChange={setExplainInputValue}
-                placeholder='Ask a question about the selected text...'
+                label='Your question'
+                placeholder='Ask a question about the selected text…'
                 width='w-full'
+                className='!rounded-2xl !border-0 !outline-none focus:!ring-0 focus-visible:!ring-0 !transition-colors !duration-[var(--ygg-motion-duration-fast)] placeholder:!text-[color:var(--explain-muted)]'
+                style={{
+                  backgroundColor: explainThemeColor('settingsCustomThemesInnerCardBg') ?? (isDarkMode ? 'rgba(255,255,255,0.05)' : 'rgba(0,0,0,0.04)'),
+                  color: explainThemeColor('toolJobsPrimaryText'),
+                  '--explain-muted': explainThemeColor('toolJobsMutedText'),
+                } as React.CSSProperties}
                 minRows={1}
                 maxRows={3}
                 fontSizeOffset={fontSizeOffset}
@@ -2166,15 +2209,19 @@ const ChatMessageBody: React.FC<ChatMessageProps> = React.memo(
                   }
                 }}
               />
-              <div className='mt-2 flex justify-end gap-1.5'>
+              <div className='mt-2 flex justify-end gap-2 px-1 pb-1'>
                 <button
                   type='button'
                   onClick={handleCancelExplainInput}
                   title='Cancel'
                   aria-label='Cancel'
-                  className={`${EXPLAIN_BUTTON_CLASS} hover:bg-red-500/12 hover:text-red-600 dark:hover:text-red-300`}
+                  className={`${EXPLAIN_BUTTON_CLASS} bg-black/[0.05] text-neutral-600 dark:bg-white/[0.06] dark:text-neutral-300`}
+                  style={{
+                    backgroundColor: explainThemeColor('settingsCustomThemesButtonBg'),
+                    color: explainThemeColor('settingsCustomThemesButtonText'),
+                  }}
                 >
-                  <X size={15} strokeWidth={2.25} aria-hidden='true' />
+                  <X size={18} strokeWidth={2.25} aria-hidden='true' />
                 </button>
                 <button
                   type='button'
@@ -2183,9 +2230,13 @@ const ChatMessageBody: React.FC<ChatMessageProps> = React.memo(
                   aria-description={branchSubmissionDisabled ? 'Load the conversation before sending.' : undefined}
                   title='Send'
                   aria-label='Send'
-                  className={`${EXPLAIN_BUTTON_CLASS} hover:bg-emerald-500/12 hover:text-emerald-600 dark:hover:text-emerald-300`}
+                  className={`${EXPLAIN_BUTTON_CLASS} bg-blue-50 text-blue-700 dark:bg-orange-500/15 dark:text-orange-100`}
+                  style={{
+                    backgroundColor: explainThemeColor('composerToggleActiveBg'),
+                    color: explainThemeColor('composerToggleActiveText'),
+                  }}
                 >
-                  <Check size={15} strokeWidth={2.25} aria-hidden='true' />
+                  <Check size={18} strokeWidth={2.25} aria-hidden='true' />
                 </button>
               </div>
             </div>,
@@ -2220,7 +2271,7 @@ const ChatMessage: React.FC<ChatMessageProps> = React.memo(props => {
       className={`${props.width} ${props.className ?? ''}`} customTheme={props.customTheme}
       customThemeEnabled={props.customThemeEnabled} isDarkMode={props.isDarkMode} />
   }
-  if (message?.note === AUTO_COMPACTION_NOTE) {
+  if (isCommittedCompaction(message)) {
     return (
       <SummarisedMessage
         id={`message-${props.id}`}
@@ -2230,6 +2281,15 @@ const ChatMessage: React.FC<ChatMessageProps> = React.memo(props => {
         isDarkMode={props.isDarkMode}
       />
     )
+  }
+  // Internal requests and unfinished summaries stay durable, but never occupy visible rows.
+  if (isHiddenCompactionMessage(message)) return null
+  const compactionPlaceholder = getCompactionPlaceholder(message)
+  if (compactionPlaceholder) {
+    return <CompactMessageNotice kind='status' icon={<RotateCw size={14} className='shrink-0' aria-hidden='true' />} title={compactionPlaceholder} id={`message-${props.id}`}
+      customTheme={props.customTheme} customThemeEnabled={props.customThemeEnabled} isDarkMode={props.isDarkMode}>
+      {compactionPlaceholder}
+    </CompactMessageNotice>
   }
   return <ChatMessageBody {...props} />
 })

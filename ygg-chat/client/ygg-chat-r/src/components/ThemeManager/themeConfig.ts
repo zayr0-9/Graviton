@@ -253,6 +253,15 @@ const readColorPair = (value: unknown, fallback: ThemeColorPair): ThemeColorPair
   }
 }
 
+// Earlier grid defaults were fixed tints; let untouched values inherit the theme palette.
+const readAgentGridColorPair = (value: unknown, fallback: ThemeColorPair, legacy: ThemeColorPair): ThemeColorPair => {
+  const pair = readColorPair(value, fallback)
+  return {
+    light: pair.light === legacy.light ? fallback.light : pair.light,
+    dark: pair.dark === legacy.dark ? fallback.dark : pair.dark,
+  }
+}
+
 export const createDefaultCustomChatTheme = (): CustomChatTheme => ({
   version: 1,
   name: 'Custom Theme',
@@ -590,12 +599,12 @@ export const createDefaultCustomChatTheme = (): CustomChatTheme => ({
       dark: '#fdba74',
     },
     agentsGridStreamingCardBg: {
-      light: 'rgba(16, 185, 129, 0.12)',
-      dark: 'rgba(16, 185, 129, 0.16)',
+      light: 'var(--agents-grid-streaming-bg)',
+      dark: 'var(--agents-grid-streaming-bg)',
     },
     agentsGridIdleCardBg: {
-      light: 'rgba(0, 0, 0, 0.035)',
-      dark: 'rgba(255, 255, 255, 0.05)',
+      light: 'var(--agents-grid-idle-bg)',
+      dark: 'var(--agents-grid-idle-bg)',
     },
     toolJobsModalBackdrop: {
       light: 'rgba(0, 0, 0, 0.6)',
@@ -1388,8 +1397,12 @@ export const sanitizeCustomTheme = (value: unknown): CustomChatTheme => {
         defaults.colors.ideContextClearButtonText
       ),
       ideContextAddedText: readColorPair(rawColors.ideContextAddedText, defaults.colors.ideContextAddedText),
-      agentsGridStreamingCardBg: readColorPair(rawColors.agentsGridStreamingCardBg, defaults.colors.agentsGridStreamingCardBg),
-      agentsGridIdleCardBg: readColorPair(rawColors.agentsGridIdleCardBg, defaults.colors.agentsGridIdleCardBg),
+      agentsGridStreamingCardBg: readAgentGridColorPair(rawColors.agentsGridStreamingCardBg, defaults.colors.agentsGridStreamingCardBg, {
+        light: 'rgba(16, 185, 129, 0.12)', dark: 'rgba(16, 185, 129, 0.16)',
+      }),
+      agentsGridIdleCardBg: readAgentGridColorPair(rawColors.agentsGridIdleCardBg, defaults.colors.agentsGridIdleCardBg, {
+        light: 'rgba(0, 0, 0, 0.035)', dark: 'rgba(255, 255, 255, 0.05)',
+      }),
       toolJobsModalBackdrop: readColorPair(rawColors.toolJobsModalBackdrop, defaults.colors.toolJobsModalBackdrop),
       toolJobsModalBg: readColorPair(rawColors.toolJobsModalBg, defaults.colors.toolJobsModalBg),
       toolJobsModalBorder: readColorPair(rawColors.toolJobsModalBorder, defaults.colors.toolJobsModalBorder),

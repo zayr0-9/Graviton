@@ -511,6 +511,7 @@ export interface ChatState {
   messageQueues: Record<string, import('../../../../../shared/queuedMessages').MessageQueueSnapshot>
   /** Unsent selections, keyed by conversation and selected branch tip. */
   operationModeDrafts: Record<string, OperationMode>
+  branchModelDrafts?: Record<string, import('./branchModelSelection').BranchModelSelection>
   operationModeChanges: Record<string, {
     mode: OperationMode
     status: 'requesting' | 'pending'

@@ -2,6 +2,8 @@ import React, { useMemo, useState } from 'react'
 import { BookOpenText, ChevronRight } from 'lucide-react'
 import { DisclosurePanel } from './messagePrimitives'
 import {
+  MESSAGE_NOTICE_ROW_CLASS,
+  MESSAGE_NOTICE_WRAPPER_CLASS,
   TEXT_DETAIL_CLASS,
   TEXT_LABEL_CLASS,
   TEXT_MICRO_CLASS,
@@ -148,9 +150,9 @@ export const ContextInjectionCard: React.FC<ContextInjectionCardProps> = ({
   const hoverFill = (key: 'header' | number): React.CSSProperties | undefined =>
     themed && hoveredRow === key ? { backgroundColor: palette.hoverBg } : undefined
 
-  return (
+  const card = (
     <div
-      className={`rounded-2xl backdrop-blur-xl ${surfaceClass} ${isLaunch ? 'mx-2 my-2' : ''} ${className ?? ''}`}
+      className={`min-w-0 rounded-2xl backdrop-blur-xl ${surfaceClass} ${className ?? ''}`}
       style={{
         ...(fontSizeOffset !== 0 ? { fontSize: `calc(1em + ${fontSizeOffset}px)` } : {}),
         ...(themed ? { backgroundColor: palette.bg } : {}),
@@ -162,16 +164,16 @@ export const ContextInjectionCard: React.FC<ContextInjectionCardProps> = ({
         onClick={() => setExpanded(value => !value)}
         onMouseEnter={() => setHoveredRow('header')}
         onMouseLeave={() => setHoveredRow(current => (current === 'header' ? null : current))}
-        className={`flex w-full items-center gap-2.5 rounded-2xl px-3.5 py-2.5 text-left ${FAST_COLOR_TRANSITION} ${headerHoverClass} ${FOCUS_RING}`}
+        className={`${MESSAGE_NOTICE_ROW_CLASS} rounded-2xl text-left ${FAST_COLOR_TRANSITION} ${headerHoverClass} ${FOCUS_RING}`}
         style={hoverFill('header')}
         aria-expanded={expanded}
         aria-label={`${title}: ${countLabel}`}
       >
-        <BookOpenText size={18} strokeWidth={2.25} className={`shrink-0 ${titleClass}`} style={color(palette.title)} />
-        <span className={`font-mono ${TEXT_MICRO_CLASS} font-bold uppercase tracking-[0.12em] ${titleClass}`} style={color(palette.title)}>
+        <BookOpenText size={14} strokeWidth={2.25} className={`shrink-0 ${titleClass}`} style={color(palette.title)} />
+        <span className={`min-w-0 truncate ${TEXT_DETAIL_CLASS} font-medium ${titleClass}`} style={color(palette.title)}>
           {title}
         </span>
-        <span className={`${TEXT_DETAIL_CLASS} ${metaClass}`} style={color(palette.meta)}>
+        <span className={`shrink-0 ${TEXT_DETAIL_CLASS} ${metaClass}`} style={color(palette.meta)}>
           {countLabel}
         </span>
         {!expanded && (
@@ -212,7 +214,7 @@ export const ContextInjectionCard: React.FC<ContextInjectionCardProps> = ({
                     {entry.path || entry.label}
                   </span>
                   <span
-                    className={`shrink-0 rounded-full px-2 py-[2px] ${TEXT_MICRO_CLASS} uppercase tracking-wider ${badgeClass}`}
+                    className={`shrink-0 rounded-full px-2 py-[2px] ${TEXT_MICRO_CLASS} ${badgeClass}`}
                     style={themed ? { backgroundColor: palette.badgeBg, color: palette.badgeText } : undefined}
                   >
                     {describeContextInjectionReason(entry.reason)}
@@ -240,6 +242,7 @@ export const ContextInjectionCard: React.FC<ContextInjectionCardProps> = ({
       </DisclosurePanel>
     </div>
   )
+  return isLaunch ? <div className={MESSAGE_NOTICE_WRAPPER_CLASS}>{card}</div> : card
 }
 
 export default ContextInjectionCard

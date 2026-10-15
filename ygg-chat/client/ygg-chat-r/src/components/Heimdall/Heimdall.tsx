@@ -34,7 +34,7 @@ import { expandHeimdallSelectionToBranchMessages, selectHeimdallContextMenuNodes
 import type { RootState } from '../../store/store'
 import { parseId } from '../../utils/helpers'
 import stripMarkdownToText from '../../utils/markdownStripper'
-import { isCompactionSummary, SUMMARY_PLACEHOLDER } from '../../features/chats/summaryPresentation'
+import { getCompactionPlaceholder } from '../../features/chats/summaryPresentation'
 // import { MarkdownLink } from '../MarkdownLink/MarkdownLink'
 import { environment, localApi } from '../../utils/api'
 import { DeleteConfirmModal } from '../DeleteConfirmModal/DeleteConfirmModal'
@@ -470,7 +470,7 @@ export const Heimdall: React.FC<HeimdallProps> = ({
       const map: Record<string, SubagentNode[]> = {}
 
       messages.forEach(msg => {
-        if (isCompactionSummary(msg)) return
+        if (getCompactionPlaceholder(msg)) return
         const blocks = normalizeContentBlocks(msg.content_blocks)
         if (msg.role === 'assistant' && blocks.length > 0 && msg.parent_id) {
           const subagentCalls = blocks.filter((block: any) => block.type === 'tool_use' && block.name === 'subagent')
@@ -796,8 +796,8 @@ export const Heimdall: React.FC<HeimdallProps> = ({
   useEffect(() => {
     let cancelled = false
     // Search owns a display projection, not canonical rows used by copy/move/notes.
-    const searchMessages = flatMessages.map(message => isCompactionSummary(message)
-      ? { id: message.id, role: message.role, content: SUMMARY_PLACEHOLDER, content_plain_text: SUMMARY_PLACEHOLDER }
+    const searchMessages = flatMessages.map(message => getCompactionPlaceholder(message)
+      ? { id: message.id, role: message.role, content: getCompactionPlaceholder(message), content_plain_text: getCompactionPlaceholder(message) }
       : message)
     ;(async () => {
       try {
@@ -1717,7 +1717,7 @@ export const Heimdall: React.FC<HeimdallProps> = ({
     }
 
     // 3. Otherwise, keep the node with updated children
-    return [{ ...node, message: isCompactionSummary(fullMsg) ? SUMMARY_PLACEHOLDER : node.message, children: filteredChildren }]
+    return [{ ...node, message: getCompactionPlaceholder(fullMsg) ?? node.message, children: filteredChildren }]
   }
 
   // Use provided data or fallback to last known (prevents flash on refresh). Do NOT show a fake empty node.
@@ -3433,7 +3433,7 @@ export const Heimdall: React.FC<HeimdallProps> = ({
                   }
                   const msg = getCurrentMessage(nodeIdParsed)
 
-                  if (isCompactionSummary(msg)) return <p className='line-clamp-3'>{SUMMARY_PLACEHOLDER}</p>
+                  if (getCompactionPlaceholder(msg)) return <p className='line-clamp-3'>{getCompactionPlaceholder(msg)}</p>
 
                   // Check for image blocks in content_blocks
                   if (msg?.content_blocks && Array.isArray(msg.content_blocks)) {
@@ -4504,7 +4504,7 @@ export const Heimdall: React.FC<HeimdallProps> = ({
               ? getCurrentMessage(nodeIdParsed)
               : null
 
-          const isSummary = isCompactionSummary(msg)
+          const isSummary = getCompactionPlaceholder(msg)
           const contentBlocks = isSummary ? [] : msg?.content_blocks || []
           const hasImage =
             Array.isArray(contentBlocks) && contentBlocks.some((block: any) => block.type === 'image' && block.url)
@@ -4536,7 +4536,7 @@ export const Heimdall: React.FC<HeimdallProps> = ({
               </div>
               {(() => {
                 // No Markdown parsing, syntax highlighting, or block traversal for summaries.
-                if (isSummary) return <p className='text-sm break-words' style={{ color: heimdallNodeHoverModalTextColor }}>{SUMMARY_PLACEHOLDER}</p>
+                if (isSummary) return <p className='text-sm break-words' style={{ color: heimdallNodeHoverModalTextColor }}>{getCompactionPlaceholder(msg)}</p>
                 const hasContentBlocks = Array.isArray(contentBlocks) && contentBlocks.length > 0
 
                 // If we have content_blocks, render them

@@ -300,6 +300,7 @@ export function projectServerEvent(event: ServerStreamEvent, ctx: ProjectionCont
       ]
     }
 
+    case 'compaction_control_persisted':
     case 'context_injection_persisted': {
       // A mid-run context row (post-compaction re-injection). Add it to the tree only;
       // it is not a branch anchor and must not move the stream's trigger message.

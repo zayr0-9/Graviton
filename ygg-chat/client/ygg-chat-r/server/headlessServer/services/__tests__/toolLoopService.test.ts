@@ -266,6 +266,7 @@ describeIfSqlite('ToolLoopService', () => {
         recordedAt: '2026-01-01T00:00:00.000Z',
       },
     })
+    providerRouter.enqueue({ content: 'Compacted context' })
     providerRouter.enqueue({ content: 'Continued after compaction.' })
 
     let compactionCalls = 0
@@ -305,13 +306,13 @@ describeIfSqlite('ToolLoopService', () => {
     )
 
     expect(result.finalAssistantMessage.content).toBe('Continued after compaction.')
-    expect(compactionCalls).toBe(1)
-    expect(providerRouter.calls[1].input.history).toHaveLength(1)
-    expect(providerRouter.calls[1].input.history[0].note).toBe('__auto_compaction_summary__')
+    expect(compactionCalls).toBe(0)
+    expect(providerRouter.calls[1].input.history.at(-1).role).toBe('user')
+    expect(JSON.parse(providerRouter.calls[2].input.history[0].meta).kind).toBe('compaction_summary')
     expect(events.some(event => event.type === 'context_compaction' && event.status === 'completed')).toBe(true)
   })
 
-  it('pauses before another provider call when mid-run compaction fails', async () => {
+  it('pauses continuation when the ordinary summary request fails', async () => {
     const providerRouter = new FakeProviderRouter()
     providerRouter.enqueue({
       content: '',
@@ -328,13 +329,11 @@ describeIfSqlite('ToolLoopService', () => {
       },
     })
 
+    providerRouter.enqueue(new Error('summary provider unavailable'))
     const service = new ToolLoopService({
       messageRepo,
       providerRouter: providerRouter as unknown as ProviderRouter,
       executeTool: async () => 'README body',
-      compactBranch: async () => {
-        throw new Error('summary provider unavailable')
-      },
     })
     const events: any[] = []
 
@@ -352,9 +351,9 @@ describeIfSqlite('ToolLoopService', () => {
         },
         event => events.push(event)
       )
-    ).rejects.toThrow('continuation paused')
+    ).rejects.toThrow('summary provider unavailable')
 
-    expect(providerRouter.calls).toHaveLength(1)
+    expect(providerRouter.calls).toHaveLength(2)
     expect(events.some(event => event.type === 'context_compaction' && event.status === 'failed')).toBe(true)
   })
 
@@ -802,6 +801,15 @@ describeIfSqlite('ToolLoopService plan mode runtime block list', () => {
 // injecting an in-memory MessageSink, so they run in every environment.
 class FakeSink implements MessageSink {
   readonly persisted: any[] = []
+  persistControlMessage(draft: any) {
+    const row = { ...draft, id: `control-${this.persisted.length}`, role: 'user', parent_id: draft.parentId }
+    this.persisted.push(row); return row
+  }
+  finaliseCompaction(id: string, update: any) {
+    const row = this.persisted.find(row => row.id === id)
+    Object.assign(row, { content: update.content, content_blocks: JSON.stringify(update.contentBlocks), meta: update.meta })
+    return row
+  }
   private seq = 0
 
   persistAssistantMessage(draft: any): any {
@@ -1404,7 +1412,8 @@ describe('ToolLoopService REPL artifacts', () => {
     providerRouter.enqueue({ content: '', toolCalls: [{ id: 'export', name: 'repl', arguments: {
       action: 'export', path: 'output.json', variable: 'data',
     } }] })
-    providerRouter.enqueue({ content: 'Artifact saved.' })
+    providerRouter.enqueue({ content: 'Artifact saved.', contextUsage: { provider: 'openai', usedTokens: 9000 } })
+    providerRouter.enqueue({ content: 'Artifact metadata summary.' })
     const sessions = new ReplSessions()
     const sink = new FakeSink()
     const events: any[] = []
@@ -1423,11 +1432,12 @@ describe('ToolLoopService REPL artifacts', () => {
         },
       })
       await service.run({ ...baseRunInput, lineageId: 'artifact-branch', operationMode: 'execute',
-        autoCompactionEnabled: true, contextLength: 100,
+        autoCompactionEnabled: true, contextLength: 10000,
         tools: ['repl', 'read_file', 'create_file'].map(name => ({ name, description: name, inputSchema: { type: 'object', properties: {} } })),
       }, event => events.push(event))
       expect(exported).toContain('PRIVATE_ARTIFACT_SENTINEL')
-      expect(compactionInputs.length).toBeGreaterThan(0)
+      expect(compactionInputs).toEqual([])
+      expect(sink.persisted.some(row => row.meta?.kind === 'compaction_summary')).toBe(true)
       for (const output of [providerRouter.calls, sink.persisted, events, compactionInputs]) expect(JSON.stringify(output)).not.toContain('PRIVATE_ARTIFACT_SENTINEL')
       expect(JSON.stringify(sink.persisted)).toContain('exported')
     } finally { sessions.clear() }

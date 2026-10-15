@@ -10,7 +10,7 @@ const capture = vi.hoisted(() => ({ byStreamId: {} as Record<string, AgentRunPre
 vi.mock('../../hooks/redux', () => ({ useAppSelector: (selector: (state: any) => unknown) => selector({ agentRunPreviews: capture }) }))
 vi.mock('../ChatMessage/ChatMessage', () => ({ ChatMessage: ({ contentBlocks }: any) => <p>{contentBlocks.filter((block: any) => block.type === 'text').map((block: any) => block.content).join(' ')}</p> }))
 
-const themeState = vi.hoisted(() => ({ enabled: false, dark: false }))
+const themeState = vi.hoisted(() => ({ enabled: false, dark: false, overrideCardColors: true }))
 vi.mock('../ThemeManager/themeConfig', async importOriginal => {
   const actual = await importOriginal<typeof import('../ThemeManager/themeConfig')>()
   return {
@@ -19,8 +19,12 @@ vi.mock('../ThemeManager/themeConfig', async importOriginal => {
       ...actual.createDefaultCustomChatTheme(),
       colors: {
         ...actual.createDefaultCustomChatTheme().colors,
-        agentsGridStreamingCardBg: { light: '#aabbcc', dark: '#112233' },
-        agentsGridIdleCardBg: { light: '#ddeeff', dark: '#445566' },
+        composerToggleActiveBg: { light: '#ffeedd', dark: '#332211' },
+        settingsCustomThemesInnerCardBg: { light: '#f0f0f0', dark: '#202020' },
+        ...(themeState.overrideCardColors ? {
+          agentsGridStreamingCardBg: { light: '#aabbcc', dark: '#112233' },
+          agentsGridIdleCardBg: { light: '#ddeeff', dark: '#445566' },
+        } : {}),
       },
     } }),
     useHtmlDarkMode: () => themeState.dark,
@@ -54,12 +58,25 @@ describe('fork grid', () => {
   beforeEach(() => {
     themeState.enabled = false
     themeState.dark = false
+    themeState.overrideCardColors = true
   })
 
   it('distinguishes streaming and idle cards without a custom theme', () => {
     const html = render([run('live')], [run('old', { lineageId: 'other-fork', status: 'completed' })])
-    expect(html).toContain('bg-emerald-500/[0.12] dark:bg-emerald-500/[0.16]')
+    expect(html).toContain('bg-orange-50 dark:bg-orange-900/20')
     expect(html).toContain('bg-black/[0.035] dark:bg-white/5')
+  })
+
+  it.each([false, true])('borrows the current custom theme palette by default (dark=%s)', dark => {
+    themeState.enabled = true
+    themeState.dark = dark
+    themeState.overrideCardColors = false
+    const html = render([run('live')], [run('old', { lineageId: 'other-fork', status: 'completed' })])
+    expect(html).toContain(`--agents-grid-streaming-bg:${dark ? '#332211' : '#ffeedd'}`)
+    expect(html).toContain(`--agents-grid-idle-bg:${dark ? '#202020' : '#f0f0f0'}`)
+    expect(html).toContain('background-color:var(--agents-grid-streaming-bg)')
+    expect(html).toContain('background-color:var(--agents-grid-idle-bg)')
+    expect(html).not.toContain('rgba(16, 185, 129')
   })
 
   it.each([false, true])('uses independent custom card backgrounds and updates after completion (dark=%s)', dark => {

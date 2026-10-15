@@ -10,7 +10,7 @@ describe('WatcherCompletionNotice', () => {
   it('shares compaction CSS and renders a compact event label with full text in the tooltip', () => {
     const html = renderToStaticMarkup(<WatcherCompletionNotice content={content} id='message-watch' customThemeEnabled={false} />)
     const summary = renderToStaticMarkup(<SummarisedMessage customThemeEnabled={false} />)
-    const chrome = 'flex h-8 items-center gap-2 px-2.5 text-xs text-stone-500 dark:text-stone-400'
+    const chrome = 'flex h-8 min-w-0 w-full items-center gap-2 px-2.5 text-xs text-stone-500 dark:text-stone-400'
     expect(html).toContain(chrome)
     expect(summary).toContain(chrome)
     expect(html).toContain('Watcher triggered · process_exit · 075f30b0')

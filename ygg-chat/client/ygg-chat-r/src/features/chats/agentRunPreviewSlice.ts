@@ -125,7 +125,7 @@ interface PreviewRoot {
 
 const previewTrackedActions = new Set([
   'chat/sendingStarted', 'chat/streamChunkReceived', 'chat/streamLineageUpdated',
-  'chat/streamCompleted', 'chat/sendingCompleted', 'chat/streamingAborted',
+  'chat/streamCompleted', 'chat/sendingCompleted', 'chat/streamingAborted', 'chat/streamCompactionUpdated',
 ])
 
 /** Synchronous capture survives component unmounts and batched turn-reset actions. */

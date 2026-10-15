@@ -1,4 +1,5 @@
 import { createSlice, PayloadAction } from '@reduxjs/toolkit'
+import { branchModelKey, loadBranchModelDrafts, saveBranchModelDrafts, type BranchModelSelection } from './branchModelSelection'
 import { normalizeChatErrorEnvelope } from '../../../../../shared/chatErrors'
 import providersList from '../../../../../shared/providers.json'
 import { ConversationId, MessageId } from '../../../../../shared/types'
@@ -276,6 +277,7 @@ const makeInitialState = (): ChatState => {
     operationMode: 'plan',
     operationModeChanges: {},
     operationModeDrafts: {},
+    branchModelDrafts: loadBranchModelDrafts(),
     messageQueues: {},
     freeTier: {
       freeGenerationsRemaining: null,
@@ -343,6 +345,14 @@ export const chatSlice = createSlice({
   name: 'chat',
   initialState,
   reducers: {
+    branchModelSelected: (state, action: PayloadAction<BranchModelSelection>) => {
+      const { currentConversationId, currentPath, currentLineageId } = state.conversation
+      if (!currentConversationId) return
+      state.branchModelDrafts ??= {}
+      const anchor = currentLineageId ? `lineage:${currentLineageId}` : currentPath.at(-1)
+      state.branchModelDrafts[branchModelKey(currentConversationId, anchor)] = action.payload
+      saveBranchModelDrafts(state.branchModelDrafts)
+    },
     //provider management
     providerSelected: (state, action: PayloadAction<string>) => {
       if (!state.providerState.providers.some(provider => provider.name === action.payload)) {
@@ -672,6 +682,9 @@ export const chatSlice = createSlice({
         stream.thinkingBuffer = ''
         stream.toolCalls = []
       } else if (chunk.type === 'chunk') {
+        // Compaction has its own animation. Canonical persisted rows retain the full
+        // response; transient model text/reasoning/tools must not enter live bubbles.
+        if (stream.compactionStatus === 'started') return
         if (chunk.part === 'reasoning') {
           const delta = chunk.delta ?? chunk.content ?? ''
           if (delta) {
@@ -761,6 +774,7 @@ export const chatSlice = createSlice({
           }
         }
       } else if (chunk.type === 'tool_call') {
+        if (stream.compactionStatus === 'started') return
         // Handle legacy tool_call format (chunk.type === 'tool_call' directly)
         if (chunk.toolCall) {
           const existingIndex = stream.toolCalls.findIndex(tc => tc.id === chunk.toolCall!.id)
@@ -962,7 +976,15 @@ export const chatSlice = createSlice({
       action: PayloadAction<{ streamId: string; status: 'started' | 'completed' | 'failed' }>
     ) => {
       const stream = state.streaming.byId[action.payload.streamId]
-      if (stream) stream.compactionStatus = action.payload.status
+      if (stream) {
+        stream.compactionStatus = action.payload.status
+        // Clear at both boundaries, including failure, so summary text cannot flash
+        // after the animation stops. Preserve anchors, decisions and error events.
+        stream.buffer = ''
+        stream.thinkingBuffer = ''
+        stream.toolCalls = []
+        stream.events = stream.events.filter(event => event.type === 'error')
+      }
     },
 
     // Update stream lineage after getting target parent ID

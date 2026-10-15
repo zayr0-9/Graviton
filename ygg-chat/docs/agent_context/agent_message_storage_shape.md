@@ -330,3 +330,7 @@ Assistant/tool turns are written through a `MessageSink` selected per run in `Ch
 ## Provider Context Metadata
 
 OpenAI assistant messages may include nullable `context_usage`, a normalized provider-reported token snapshot. The same snapshot is also stored as an `openai_context_usage` content block for compatibility with existing SQLite message persistence. Consumers must scope it to the selected parent/child branch and ignore snapshots before the latest `__auto_compaction_summary__` marker. Non-OpenAI messages continue to use estimate-only context accounting.
+
+## Committed assistant compaction boundaries
+
+New compaction instruction/resume rows are ordinary user rows tagged in `meta`. New summaries are ordinary assistant rows with `meta.kind = compaction_summary`, `state = committed` and an instruction/compaction ID. The repository updates content, plain text, text blocks and metadata atomically, preserving IDs, ancestry, raw provider output and run statistics. Only committed summaries trim inference history; legacy system/note markers remain readable. `subagent_messages.meta` is nullable JSON (migration v6), persisted and reloaded by the transcript sink.

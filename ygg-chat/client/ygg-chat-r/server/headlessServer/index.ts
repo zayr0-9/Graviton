@@ -26,7 +26,6 @@ import { runHookRequest } from '../hooks/hookRunner.js'
 import { ChatOrchestrator } from './services/chatOrchestrator.js'
 import { DecisionBroker } from './services/decisionBroker.js'
 import { RunSessionRegistry } from './services/runSessionRegistry.js'
-import { CompactionService } from './services/compactionService.js'
 import { SubagentRunService } from './services/subagentRunService.js'
 import { createSubagentDispatchExecutor, createSubagentManagerExecutor } from './services/subagentToolExecutor.js'
 import { createWatchExecutor, watchService } from './services/watchService.js'
@@ -321,11 +320,6 @@ export function registerHeadlessServerRoutes(app: Express, deps: HeadlessServerR
     registerCloudProxyRoutes(app, { railway, enabled: true })
   }
 
-  const compactionService = new CompactionService({
-    ...deps,
-    tokenStore,
-    providerRouter,
-  })
 
   const watcherExecutor = createWatchExecutor(executeToolViaOrchestrator, watchService,
     id => deps.statements.getConversationById?.get(id)?.project_id ?? null)
@@ -338,7 +332,6 @@ export function registerHeadlessServerRoutes(app: Express, deps: HeadlessServerR
     // subagent dispatcher, preserving the no-nested-subagents invariant.
     toolExecutor: multiCallToolExecutor,
     resolveToolsByName: resolveInferenceToolsByName,
-    compactionService,
 
     // Share the chat RunSessionRegistry so background subagent runs publish their
     // stream events to a session the existing GET /api/streams/:streamId route can
@@ -389,7 +382,6 @@ export function registerHeadlessServerRoutes(app: Express, deps: HeadlessServerR
     providerRouter,
     toolExecutor: chatToolExecutor,
     defaultToolsProvider: resolveDefaultInferenceTools,
-    compactBranch: input => compactionService.compactBranch(input),
     decisionBroker,
     // Phase 3: in-process chat hooks (fires only when a request sets hooksEnabled).
     hookRunner: runHookRequest,
@@ -416,7 +408,6 @@ export function registerHeadlessServerRoutes(app: Express, deps: HeadlessServerR
   }
   registerChatRoutes(app, {
     orchestrator: chatOrchestrator,
-    compactionService,
     decisionBroker,
     runSessions,
     resumableRuns: gatewayFlags.resumableRuns,

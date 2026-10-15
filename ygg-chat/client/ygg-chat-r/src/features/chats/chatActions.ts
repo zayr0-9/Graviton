@@ -1,10 +1,8 @@
+import { resolveBranchModelSelection } from './branchModelSelection'
+import { isCommittedCompaction } from '../../../../../shared/compaction'
 import { getPendingFullAccessNotification, isFullAccessEnabled } from '../../helpers/fullAccessSettings'
 import { createAsyncThunk } from '@reduxjs/toolkit'
 import type { QueryClient } from '@tanstack/react-query'
-import {
-  estimateContentBlocksForContext,
-  safeEstimateTokenCount,
-} from './contextTokenEstimate'
 import { ConversationId, MessageId } from '../../../../../shared/types'
 import { normalizeChatErrorEnvelope, type ChatErrorEnvelope } from '../../../../../shared/chatErrors'
 import {
@@ -71,7 +69,6 @@ import {
 import { isResumableRunsEnabled } from '../../helpers/serverLoopSettings'
 import { buildServerLoopRequest } from './buildServerLoopRequest'
 import { buildConversationTree } from './conversationTree'
-import { AUTO_COMPACTION_NOTE, getTreeMessageText } from './summaryPresentation'
 export { AUTO_COMPACTION_NOTE } from './summaryPresentation'
 import { conversationQueryKeys } from './conversationQueryKeys'
 import type { ConversationMessagesTreeData } from './conversationMessagesApi'
@@ -195,6 +192,7 @@ const buildCompactionRequestParams = (
   providerName: string
 ): {
   autoCompactionEnabled: boolean
+  compactionThresholdPercent: number
   contextLength: number | undefined
   compactionProvider: string | null
   compactionModelName: string | null
@@ -205,86 +203,14 @@ const buildCompactionRequestParams = (
     modelsData?.models?.find(m => m.name === modelName) || modelsData?.selected || modelsData?.default || null
   return {
     autoCompactionEnabled: loadAutoCompactionEnabled(),
+    compactionThresholdPercent: settings.compactionThresholdPercent,
     contextLength: resolveProviderContextLength(providerName, model?.contextLength, settings),
-    compactionProvider: settings.compactionProvider,
-    compactionModelName: settings.compactionModel,
+    compactionProvider: null,
+    compactionModelName: null,
     compactionSystemPrompt: settings.compactionSystemPrompt,
   }
 }
 
-/**
- * Recursively adds a new message to the tree structure at the correct parent location
- * Uses parent_id to find where to insert the new message as a child
- */
-const addMessageToTree = (tree: any | null, newMessage: Message, parentId: MessageId | null): any | null => {
-  // No existing tree - create new root node
-  if (!tree) {
-    return {
-      id: newMessage.id.toString(),
-      message: getTreeMessageText(newMessage),
-      sender: newMessage.role === 'user' ? 'user' : newMessage.role === 'ex_agent' ? 'ex_agent' : 'assistant',
-      children: [],
-    }
-  }
-
-  // If this is a root message (no parent), handle specially
-  if (!parentId || parentId === null) {
-    // For root messages, check if tree has a synthetic root or is a single root
-    if (tree.id === 'root') {
-      // Synthetic root exists - add as child
-      const newChild = {
-        id: newMessage.id.toString(),
-        message: getTreeMessageText(newMessage),
-        sender: newMessage.role === 'user' ? 'user' : newMessage.role === 'ex_agent' ? 'ex_agent' : 'assistant',
-        children: [],
-      }
-      return {
-        ...tree,
-        children: [...tree.children, newChild],
-      }
-    } else {
-      // Single root exists - create synthetic root with both
-      const newChild = {
-        id: newMessage.id.toString(),
-        message: getTreeMessageText(newMessage),
-        sender: newMessage.role === 'user' ? 'user' : newMessage.role === 'ex_agent' ? 'ex_agent' : 'assistant',
-        children: [],
-      }
-      return {
-        id: 'root',
-        message: 'Conversation',
-        sender: 'assistant',
-        children: [tree, newChild],
-      }
-    }
-  }
-
-  // Helper to recursively traverse and update tree
-  const updateNode = (node: any): any => {
-    // Found the parent - add new message as child
-    if (node.id === parentId.toString()) {
-      const newChild = {
-        id: newMessage.id.toString(),
-        message: getTreeMessageText(newMessage),
-        sender: newMessage.role === 'user' ? 'user' : newMessage.role === 'ex_agent' ? 'ex_agent' : 'assistant',
-        children: [],
-      }
-
-      return {
-        ...node,
-        children: [...node.children, newChild],
-      }
-    }
-
-    // Not the parent - recurse into children
-    return {
-      ...node,
-      children: node.children.map(updateNode),
-    }
-  }
-
-  return updateNode(tree)
-}
 
 /**
  * Removes deleted messages from React Query cache and rebuilds tree
@@ -366,24 +292,6 @@ const updateMessageInCache = (
  * Keeps React Query cache in sync with Redux state when messages are added via SSE stream
  * Updates both messages array AND tree structure incrementally
  */
-const updateMessageCache = (queryClient: QueryClient | null, conversationId: ConversationId, newMessage: Message) => {
-  if (!queryClient) return
-
-  // Update the messages cache
-  const cacheKey = conversationQueryKeys.messages(conversationId)
-  const existingData = queryClient.getQueryData<ConversationMessagesTreeData>(cacheKey)
-
-  if (existingData) {
-    const updatedMessages = [...existingData.messages, newMessage]
-    const updatedTree = addMessageToTree(existingData.tree, newMessage, newMessage.parent_id ?? null)
-
-    queryClient.setQueryData(cacheKey, {
-      ...existingData,
-      messages: updatedMessages,
-      tree: updatedTree,
-    })
-  }
-}
 
 const waitForDraftImages = async (dispatch: any, getState: () => RootState, target: import('./chatTypes').ImageDraftTarget) => {
   const composition = getState().chat.composition
@@ -622,10 +530,7 @@ const resolveOpenRouterTemperature = (providerSlug: string): number | undefined 
 
 export const GENERATED_IMAGE_PATH_HINT_NOTE = '__generated_image_path_hint__'
 
-const isAutoCompactionSummaryMessage = (msg: Message | undefined | null): boolean => {
-  if (!msg) return false
-  return typeof msg.note === 'string' && msg.note === AUTO_COMPACTION_NOTE
-}
+const isAutoCompactionSummaryMessage = isCommittedCompaction
 
 const isGeneratedImagePathHintMessage = (msg: Message | undefined | null): boolean => {
   if (!msg) return false
@@ -978,7 +883,6 @@ interface CompactBranchPayload {
 // Compaction IDs must come from durable server persistence. The old renderer path minted
 // a UUID, exposed it to Redux, then fire-and-forgot `/sync/message`; a failed/racing write
 // left the next send parented to a row SQLite had never seen.
-const COMPACTION_TIMEOUT_MS = 120_000
 const compactionControllers = new Map<string, AbortController>()
 const compactionKey = (conversationId: ConversationId, parentMessageId: MessageId) =>
   JSON.stringify([String(conversationId), String(parentMessageId)])
@@ -996,80 +900,22 @@ export const compactBranch = createAsyncThunk<
   { state: RootState; extra: ThunkExtraArgument }
 >(
   'chat/compactBranch',
-  async (
-    { conversationId, parentMessageId, messages, providerName, modelName },
-    { dispatch, getState, extra, rejectWithValue, signal }
-  ) => {
-    const controller = new AbortController()
-    const key = compactionKey(conversationId, parentMessageId)
-    compactionControllers.set(key, controller)
-    const requestSignal = AbortSignal.any([signal, controller.signal, AbortSignal.timeout(COMPACTION_TIMEOUT_MS)])
-    dispatch(chatSliceActions.compactingStarted({ conversationId, parentMessageId }))
-
+  async ({ conversationId, parentMessageId }, { dispatch, getState, rejectWithValue, signal }) => {
+    const state = getState()
+    if (state.chat.streaming.activeIds.some(id => {
+      const stream = state.chat.streaming.byId[id]
+      return stream?.active && String(stream.conversationId) === String(conversationId)
+    })) return rejectWithValue('Wait for the active run to finish before compacting')
     try {
-      if (!parentMessageId) throw new Error('Compaction requires a persisted parent message')
-
-      const state = getState() as RootState
-      const provider = providerName || state.chat.providerState.currentProvider || 'OpenRouter'
-      const modelsData = extra.queryClient?.getQueryData<{ models: Model[]; default: Model; selected: Model }>([
-        'models',
-        provider,
-      ])
-      const resolvedModelName = modelName || modelsData?.selected?.name || modelsData?.default?.name
-      if (!resolvedModelName) throw new Error('No model selected for compaction')
-
-      const compactableHistory = trimHistoryToLatestCompaction(messages)
-      if (compactableHistory.length < 2) return { message: null }
-
-      const providerSettings = loadProviderSettings()
-      const response = await localApi.post<{ success?: boolean; message?: unknown; error?: string }>(
-        `/conversations/${encodeURIComponent(String(conversationId))}/compact`,
-        {
-          parentMessageId: String(parentMessageId),
-          messages: compactableHistory,
-          provider,
-          modelName: resolvedModelName,
-          userId: extra.auth.userId,
-          systemPrompt: providerSettings.compactionSystemPrompt?.trim() || null,
-        },
-        { signal: requestSignal }
-      )
-      requestSignal.throwIfAborted()
-
-      if (!response?.success || !response.message) {
-        throw new Error(response?.error || 'Compaction failed before persistence')
-      }
-
-      const summaryMessage = normalizeServerMessage(response.message)
-      const hasValidPersistedMarker =
-        summaryMessage?.id != null &&
-        summaryMessage.role === 'system' &&
-        summaryMessage.note === AUTO_COMPACTION_NOTE &&
-        String(summaryMessage.parent_id ?? '') === String(parentMessageId)
-      if (!hasValidPersistedMarker) throw new Error('Compaction server returned an invalid persisted summary')
-
-      // Only expose the server-assigned ID after the compact route has persisted it.
-      dispatch(chatSliceActions.compactionSummaryPersisted({
-        conversationId, parentMessageId, messageId: summaryMessage.id,
-      }))
-      dispatch(chatSliceActions.messageAdded(summaryMessage))
-      dispatch(chatSliceActions.messageBranchCreated({ newMessage: summaryMessage }))
-      updateMessageCache(extra.queryClient, conversationId, summaryMessage)
-
-      return { message: summaryMessage }
-    } catch (error) {
-      if (controller.signal.aborted || signal.aborted) return { message: null }
-      console.error('[compactBranch] failed', error)
-      return rejectWithValue(error instanceof Error ? error.message : 'Failed to compact branch')
-    } finally {
-      if (compactionControllers.get(key) === controller) compactionControllers.delete(key)
-      dispatch(chatSliceActions.compactingFinished())
-    }
-  },
-  {
-    // Standalone compaction still has one composition owner. Do not let a
-    // background request overwrite it when another branch starts a precheck.
-    condition: () => compactionControllers.size === 0,
+      const pending = dispatch(sendMessage({ conversationId, parent: parentMessageId,
+        input: { content: '/compact' }, repeatNum: 1, think: false, manualCompaction: true, includeGlobalComposerContext: false }))
+      const abort = () => pending.abort()
+      signal.addEventListener('abort', abort, { once: true })
+      try {
+        const result = await pending.unwrap()
+        return { message: getState().chat.conversation.messages.find(message => message.id === result.messageId) ?? null }
+      } finally { signal.removeEventListener('abort', abort) }
+    } catch (error) { return rejectWithValue(error instanceof Error ? error.message : 'Compaction failed') }
   }
 )
 
@@ -1077,7 +923,7 @@ export const compactBranch = createAsyncThunk<
 
 export const sendMessage = createAsyncThunk<
   { messageId: MessageId | null; userMessage: any; streamId: string },
-  SendMessagePayload & { streamId?: string },
+  SendMessagePayload & { streamId?: string; manualCompaction?: boolean },
   { state: RootState; extra: ThunkExtraArgument }
 >(
   'chat/sendMessage',
@@ -1085,6 +931,7 @@ export const sendMessage = createAsyncThunk<
     {
       conversationId,
       input,
+      manualCompaction,
       parent,
       think,
       imageConfig,
@@ -1104,6 +951,7 @@ export const sendMessage = createAsyncThunk<
   ) => {
     const { auth } = extra
     const selectionRevision = requestedSelectionRevision ?? getState().chat.selection?.revision ?? 0
+    const modelSelectionState = getState().chat
 
     // Primary ownership remains the default for existing callers. Parallel panes opt
     // into branch ownership and keep their terminal completion off the global path.
@@ -1197,16 +1045,17 @@ export const sendMessage = createAsyncThunk<
       }
       // Read selected model from React Query cache
       // Use original provider case for cache lookup (React Query keys are case-sensitive)
-      const provider = state.chat.providerState.currentProvider
+      const branchSelection = resolveBranchModelSelection(modelSelectionState, providedBranchPath ?? modelSelectionState.conversation.currentPath, modelSelectionState.conversation.currentConversationId, providedLineageId === undefined ? modelSelectionState.conversation.currentLineageId : providedLineageId)
+      const provider = branchSelection?.provider ?? modelSelectionState.providerState.currentProvider
       const modelsData = extra.queryClient?.getQueryData<{
         models: Model[]
         default: Model
         selected: Model
       }>(['models', provider])
-      const selectedName = modelsData?.selected?.name || modelsData?.default?.name
+      const selectedName = branchSelection?.model || modelsData?.selected?.name || modelsData?.default?.name
       const modelName = input.modelOverride || selectedName
       // Map UI provider to server provider id
-      const providerRaw = state.chat.providerState.currentProvider || 'ollama'
+      const providerRaw = provider || 'ollama'
       const appProvider = providerRaw.toLowerCase()
       const providerSlug = appProvider.replace(/\s+/g, '')
       const serverProvider =
@@ -1246,6 +1095,7 @@ export const sendMessage = createAsyncThunk<
         // refreshing) so the server uses them directly. null for every other provider.
         const chatgptServerAuth = null as { accessToken?: string; accountId?: string } | null
         const { path, body } = buildServerLoopRequest('send', {
+          manualCompaction,
           conversationId: String(conversationId),
           content: input.content.trim(),
           provider: serverProvider,
@@ -1529,12 +1379,12 @@ export const editMessageWithBranching = createAsyncThunk<
       streamId: providedStreamId,
       selectionRevision: requestedSelectionRevision,
       lineageId: providedLineageId,
-      branchPath: providedBranchPath,
     },
     { dispatch, getState, extra, rejectWithValue, signal }
   ) => {
     const { auth } = extra
     const selectionRevision = requestedSelectionRevision ?? getState().chat.selection?.revision ?? 0
+    const modelSelectionState = getState().chat
 
     // Generate or use provided stream ID
     const streamId = providedStreamId ?? generateStreamId('branch')
@@ -1617,28 +1467,20 @@ export const editMessageWithBranching = createAsyncThunk<
       signal.addEventListener('abort', () => controller?.abort())
       unregisterGenerationAbortController = registerGenerationAbortController(streamId, controller)
 
-      const currentPathIds = (providedBranchPath ?? state.chat.conversation.currentPath).filter(id => id !== 'root')
-      // Truncate path to only include messages strictly before the originalMessageId
-      const idxOriginal = currentPathIds.findIndex(id => String(id) === String(originalMessageId))
-      const truncatedPathIds = idxOriginal >= 0 ? currentPathIds.slice(0, idxOriginal) : currentPathIds
-      const currentPathMessages = appendGeneratedImagePathHintsForHistory(
-        trimHistoryToLatestCompaction(truncatedPathIds.map(id => currentMessages.find(m => String(m.id) === String(id)))),
-        currentMessages
-      )
 
       // Read selected model from React Query cache
-      const provider = state.chat.providerState.currentProvider
+      const branchSelection = resolveBranchModelSelection(modelSelectionState)
+      const provider = branchSelection?.provider ?? modelSelectionState.providerState.currentProvider
       const modelsData = extra.queryClient?.getQueryData<{
         models: Model[]
         default: Model
         selected: Model
       }>(['models', provider])
-      const selectedName = modelsData?.selected?.name || modelsData?.default?.name
+      const selectedName = branchSelection?.model || modelsData?.selected?.name || modelsData?.default?.name
       const modelName = modelOverride || selectedName
-      let activeParentId = originalMessage.parent_id
 
       // Map UI provider to server provider id
-      const providerRaw = state.chat.providerState.currentProvider || 'ollama'
+      const providerRaw = provider || 'ollama'
       const appProvider = providerRaw.toLowerCase()
       const providerSlug = appProvider.replace(/\s+/g, '')
       const serverProvider =
@@ -1714,120 +1556,7 @@ export const editMessageWithBranching = createAsyncThunk<
         throw attachLocalChatErrorCode(new Error('No model selected'), 'model_not_found')
       }
 
-      const resolvedModel =
-        modelsData?.models?.find(model => model.name === modelName) ||
-        modelsData?.selected ||
-        modelsData?.default ||
-        null
-      const branchContextLimit = resolveProviderContextLength(providerSlug, resolvedModel?.contextLength) || 128_000
-
-      let promptAndContextTokens = 0
-      promptAndContextTokens += safeEstimateTokenCount(selectedProject?.system_prompt)
-      promptAndContextTokens += safeEstimateTokenCount(selectedProject?.context)
-      promptAndContextTokens += safeEstimateTokenCount(state.conversations.systemPrompt)
-      promptAndContextTokens += safeEstimateTokenCount(state.conversations.convContext)
-
-      let messageTokens = 0
-      currentPathMessages.forEach(message => {
-        if (!message) return
-        messageTokens += safeEstimateTokenCount(message.content)
-        messageTokens += estimateContentBlocksForContext((message as any).content_blocks)
-        messageTokens += safeEstimateTokenCount((message as any).tool_calls)
-      })
-
-      const branchContextTokens = promptAndContextTokens + messageTokens
-      const branchContextProgress =
-        branchContextLimit > 0 ? Math.min((branchContextTokens / branchContextLimit) * 100, 100) : 0
-
-      const currentCreditsUsd = Number((state as any)?.users?.currentUser?.cached_current_credits ?? 0) / 100
-      const promptCostPer1K = resolvedModel?.promptCost ?? 0
-      const completionCostPer1K = resolvedModel?.completionCost ?? 0
-      let creditInputLimit = Infinity
-      let creditOutputLimit = Infinity
-      if (promptCostPer1K > 0) {
-        creditInputLimit = Math.floor((currentCreditsUsd * 1000) / promptCostPer1K)
-      }
-      if (completionCostPer1K > 0) {
-        creditOutputLimit = Math.floor((currentCreditsUsd * 1000) / completionCostPer1K)
-      }
-      const branchTotalBudget = Math.max(0, Math.min(branchContextLimit, creditInputLimit, creditOutputLimit))
-      const branchTotalProgress =
-        branchTotalBudget > 0 ? Math.min((branchContextTokens / branchTotalBudget) * 100, 100) : 0
-
-      const autoCompactionEnabled = loadAutoCompactionEnabled()
-      const shouldAutoCompactBranch =
-        autoCompactionEnabled &&
-        branchContextLimit > 0 &&
-        (branchContextProgress >= 85 || branchTotalProgress >= 85) &&
-        currentPathMessages.length >= 2 &&
-        activeParentId != null
-
-      console.log('[AutoCompaction][branch] precheck', {
-        conversationId,
-        originalMessageId,
-        activeParentId,
-        autoCompactionEnabled,
-        branchContextTokens,
-        branchContextLimit,
-        branchContextProgress,
-        branchTotalBudget,
-        branchTotalProgress,
-        historyCount: currentPathMessages.length,
-        shouldAutoCompactBranch,
-      })
-
-      if (shouldAutoCompactBranch && activeParentId != null) {
-        try {
-          console.log('[AutoCompaction][branch] dispatch compactBranch', {
-            conversationId,
-            parentMessageId: activeParentId,
-            sourceMessagesCount: currentPathMessages.length,
-            providerName: provider,
-            modelName,
-          })
-
-          const compactionResult = await dispatch(
-            compactBranch({
-              conversationId,
-              parentMessageId: activeParentId,
-              messages: currentPathMessages,
-              providerName: provider,
-              modelName,
-            })
-          ).unwrap()
-
-          const compactedMessage = compactionResult?.message ?? null
-          const hasValidCompaction =
-            compactedMessage?.role === 'system' &&
-            compactedMessage?.note === AUTO_COMPACTION_NOTE &&
-            String(compactedMessage?.parent_id ?? '') === String(activeParentId)
-
-          console.log('[AutoCompaction][branch] compactBranch result', {
-            messageId: compactedMessage?.id ?? null,
-            role: compactedMessage?.role ?? null,
-            note: compactedMessage?.note ?? null,
-            parentId: compactedMessage?.parent_id ?? null,
-            hasValidCompaction,
-          })
-
-          if (!compactedMessage || !hasValidCompaction) {
-            throw new Error('Invalid branch compaction summary returned')
-          }
-
-          activeParentId = compactedMessage.id
-        } catch (error) {
-          console.error('[AutoCompaction][branch] compaction failed. Branch send aborted:', error)
-          // Tag the real cause. The old catch guessed at this with
-          // `message.includes('context compaction')`, which matched none of the strings
-          // this path actually raises ('Invalid branch compaction summary returned',
-          // 'Failed to compact branch', a rejected `compactBranch` payload), so the
-          // compaction end reason and its "Compact conversation" action were unreachable.
-          throw attachLocalChatErrorCode(
-            error instanceof Error ? error : new Error(String(error)),
-            'compaction_failed'
-          )
-        }
-      }
+      // The server evaluates context at its safe insertion boundary.
 
       const selectedFilesForChat = preSendSelectedFilesForChat
 
@@ -1998,6 +1727,7 @@ export const sendMessageToBranch = createAsyncThunk<
   ) => {
     const { auth } = extra
     const selectionRevision = requestedSelectionRevision ?? getState().chat.selection?.revision ?? 0
+    const modelSelectionState = getState().chat
 
     // Generate or use provided stream ID
     const streamId = providedStreamId ?? generateStreamId('branch')
@@ -2057,16 +1787,17 @@ export const sendMessageToBranch = createAsyncThunk<
       const state = getState() as RootState
 
       // Read selected model from React Query cache
-      const provider = state.chat.providerState.currentProvider
+      const branchSelection = resolveBranchModelSelection(modelSelectionState)
+      const provider = branchSelection?.provider ?? modelSelectionState.providerState.currentProvider
       const modelsData = extra.queryClient?.getQueryData<{
         models: Model[]
         default: Model
         selected: Model
       }>(['models', provider])
-      const selectedName = modelsData?.selected?.name || modelsData?.default?.name
+      const selectedName = branchSelection?.model || modelsData?.selected?.name || modelsData?.default?.name
       const modelName = modelOverride || selectedName
       // Map UI provider to server provider id
-      const providerRaw = state.chat.providerState.currentProvider || 'ollama'
+      const providerRaw = provider || 'ollama'
       const appProvider = providerRaw.toLowerCase()
       const providerSlug = appProvider.replace(/\s+/g, '')
       const serverProvider =

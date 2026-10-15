@@ -55,3 +55,14 @@ describe('run attribution', () => {
     expect(repo.createMessage.mock.calls[1][0].meta.runStatistics.kind).toBe('terminal_error')
   })
 })
+
+describe('branch model attribution', () => {
+  it.each([TreeMessageSink, CloudMirrorSink])('persists provider/model metadata without changing inference text through %s', Sink => {
+    const repo = makeFakeRepo()
+    const modelSelection = { provider: 'openaichatgpt', model: 'gpt-test' }
+    new Sink({ messageRepo: repo, streamId: 'run', modelSelection }).persistAssistantMessage({ ...draft, meta: { existing: true } })
+    const saved = repo.createMessage.mock.calls[0][0]
+    expect(saved.content).toBe(draft.content)
+    expect(saved.meta).toMatchObject({ existing: true, modelSelection, runStatistics: { streamId: 'run' } })
+  })
+})

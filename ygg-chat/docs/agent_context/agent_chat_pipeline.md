@@ -456,3 +456,7 @@ with the composer completion-race path. Automated user rows carry
 Completion events carry delivery acceptance and stream identity so the renderer
 can use targeted `resumeInFlightStreams` without stealing navigation or drafts.
 See [watcher behavior and limitations](../watcher-tool.md).
+
+## Persistent compaction turns (2026-10-14)
+
+Compaction now uses the normal `ToolLoopService` provider/tool path. Safe-boundary insertion emits `compaction_control_persisted` for tagged user instruction/resume rows without replacing the original stream trigger. The stream ID, permissions and SSE reader remain unchanged. After ordinary summary generation completes, the sink atomically updates that assistant row with preserved tool/write text and committed boundary metadata; `context_compaction.completed` projects the updated row. Queue delivery waits until restoration. Manual idle `/compact` goes through `sendMessage` with `manualCompaction`; it ends after summarisation. Old renderer prechecks and standalone JSON summarisation are no longer used. All providers consume the configurable threshold (default 85%, 1–95%).

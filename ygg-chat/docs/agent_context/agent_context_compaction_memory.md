@@ -117,3 +117,17 @@ The in-loop compaction decision is computed server-side:
 - In-loop and subagent compactors forward the owning run signal to the summarizer. Abort is not wrapped as `compaction_failed`.
 - The summary service checks cancellation before generation and after provider completion, before persistence, so late provider success cannot install an aborted context boundary.
 - Regression tests: `compactionVisibility.test.ts` (branch switching, shared ancestors, completion ownership), `compactionCancellation.test.ts`, `chatRoutes.test.ts`, and `compactionService.test.ts`.
+
+## Ordinary-turn compaction (2026-10-14)
+
+This section supersedes the separate summariser/system-marker generation described above. `ToolLoopService` now persists a `compaction_instruction` user row at a settled boundary and generates a normal assistant response in the same run/session, retaining model, tools, prompts, hooks and permissions. Tool calls during summarisation execute normally. Ordinary queued input waits until commit; mode dispatch policy remains live.
+
+`shared/compaction.ts` recognises committed assistant metadata and legacy system markers. The final response and deterministic tool/write appendices are persisted together through the message sink before replay trimming. Summary-request usage remains available for statistics but is excluded from post-boundary context accounting. Cancelled/empty/failed summaries do not become boundaries; abandoned instruction rows are filtered on subsequent normal runs. Main and child transcripts use the same loop; child metadata is durable via migration v6.
+
+Automatic thresholds apply to all providers, default to 85%, and are configurable from 1–95%. Limits and estimates—not credits—drive the decision. `/compact` (`/compactify` alias) is idle-only and uses the normal streaming send path, ending after the summary. Automatic interrupted work resumes through a tagged user continuation. Renderer pre-send/edit compaction requests and separate provider/model overrides are retired. The compatibility `/compact` endpoint now returns normal SSE, not the old JSON summary response.
+
+Validation: `normalTurnCompaction.test.ts`, deterministic `compactionService.test.ts`, queue/mode/child/route tests, renderer cancellation/projection tests; build both Electron renderer and main.
+
+### Compaction presentation
+
+Ordinary-turn generation does not imply ordinary-turn display. The renderer suppresses live summary text/reasoning/tool chunks while the owning stream has `compactionStatus: started`, retaining the existing compaction animation and permission/clarification handling. Persisted intermediate and cancelled responses retain `compactionPhase: summarising` metadata and are not rich chat bubbles. Committed assistant summaries use the same `SummarisedMessage` notice as legacy summaries; canonical content/blocks remain unchanged. Heimdall's default scaffolding filter promotes compaction instructions, resumes and responses (including legacy summaries); disabling the filter exposes only safe placeholder previews, never raw summary payloads. The slash menu advertises `/compact` only; typed `/compactify` remains a compatibility alias.

@@ -8,6 +8,15 @@ function harness(control: OperationModeControl, outputs: any[], execute: any, co
   const rows: any[] = []
   const requests: any[] = []
   const sink = {
+    persistControlMessage(draft: any) {
+      const row = { ...draft, id: `control-${rows.length}`, role: 'user', parent_id: draft.parentId }
+      rows.push(row); return row
+    },
+    finaliseCompaction(id: string, update: any) {
+      const row = rows.find(row => row.id === id)
+      Object.assign(row, { content: update.content, content_blocks: JSON.stringify(update.contentBlocks), meta: update.meta })
+      return row
+    },
     persistAssistantMessage(draft: any) {
       const row = { id: `a${rows.length}`, role: 'assistant', parent_id: draft.parentId, content: draft.content,
         content_blocks: JSON.stringify(draft.contentBlocks), tool_calls: JSON.stringify(draft.toolCalls) }
@@ -30,7 +39,7 @@ function harness(control: OperationModeControl, outputs: any[], execute: any, co
   const input = {
     provider: 'openaichatgpt', modelName: 'test', conversationId: 'c', assistantParentId: 'u',
     history: [{ id: 'u', role: 'user', content: 'task' }], userContent: 'task', systemPrompt: 'stable combined prompt',
-    operationMode: control.mode, modeControl: control, autoCompactionEnabled: Boolean(compactBranch), contextLength: 100,
+    operationMode: control.mode, modeControl: control, autoCompactionEnabled: Boolean(compactBranch), contextLength: 10000,
     flushOperationMode(parentId: string | null, history: any[]) {
       let parent = parentId
       return control.flush(history, (mode, previousMode, revision) => {
@@ -99,13 +108,15 @@ describe('live operation mode', () => {
 
   it('inserts after compaction and restores unchanged modes after history truncation', async () => {
     const control = new OperationModeControl('execute')
-    const h = harness(control, [{ content: '', toolCalls: [{ id: 'read', name: 'read_file', arguments: {} }] }, { content: 'done' }],
+    const h = harness(control, [{ content: '', toolCalls: [{ id: 'read', name: 'read_file', arguments: {} }], contextUsage: { provider: 'openai', usedTokens: 9000 } }, { content: 'summary' }, { content: 'done' }],
       async () => 'x'.repeat(1000), async (input: any) => ({ message: {
         id: 'summary', role: 'system', content: 'summary', parent_id: input.parentMessageId, note: '__auto_compaction_summary__',
       } }))
     await h.run()
-    expect(h.requests[1].history[0].id).toBe('summary')
-    expect(h.requests[1].history.at(-1)).toMatchObject({ role: 'user', parent_id: 'summary', meta: { mode: 'execute' } })
+    const summary = h.requests[2].history[0]
+    expect(summary.meta.kind).toBe('compaction_summary')
+    expect(h.requests[2].history.find((row: any) => row.meta?.kind === 'operation_mode_change'))
+      .toMatchObject({ role: 'user', parent_id: summary.id, meta: { mode: 'execute' } })
   })
 
   it('rechecks after a permission await without broadening auto-approval', async () => {
