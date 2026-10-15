@@ -10,13 +10,49 @@ Historical gaps have been reconstructed from Git tags, app-version changes, and 
 
 ### Added
 
+- Added draggable dividers for resizing agent-monitor grid cards within each row.
+
 ### Changed
+
+- Refreshed searchable select dropdowns and the sign-in screen with theme-aware styling.
+- Matched the floating agent monitor's accent to the theme's streaming color.
 
 ### Fixed
 
-## [0.3.17]
+- Cleared both local and stored composer drafts after sending so submitted text does not reappear, while preserving attached images for the request.
+- Restored focus to select controls after selection or dismissal and prevented keyboard selection of disabled options.
+- Kept Heimdall selection and visibility highlights readable when zoomed out.
+- Rendered compaction summaries consistently in agent previews.
+
+## [0.3.19]
 
 Pending release.
+
+### Added
+
+- Added ChatGPT output-token throughput to run statistics and widened the statistics footer.
+- Added separate theme colors for streaming and idle agent-monitor cards.
+
+### Changed
+
+- Routed manual and automatic compaction through the normal server turn pipeline, with explicit compaction metadata and shared summary handling across chat and subagent runs.
+- Improved theme-aware Markdown rendering, scrollable tables, message notices, and agent-monitor previews.
+
+### Fixed
+
+- Hardened chat selection and snapshot coordination against stale asynchronous updates and rapid navigation.
+- Followed watcher continuations only when their originating branch remains selected, without stealing navigation from another conversation.
+- Resolved branch model selection from the selected message's ancestry instead of unrelated conversation messages.
+- Kept compaction control messages out of normal chat and graph presentation while preserving committed summaries for context and persistence.
+- Prevented duplicate message submissions and kept clarification controls usable in compact layouts.
+
+## [0.3.18] - 2026-10-12
+
+### Fixed
+
+- Prevented conversation snapshot races from blocking chat selection, including stale in-flight requests and snapshot application during navigation.
+
+## [0.3.17] - 2026-10-11
 
 ### Fixed
 

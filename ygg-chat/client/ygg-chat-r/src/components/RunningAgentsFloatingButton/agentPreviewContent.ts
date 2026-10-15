@@ -9,6 +9,7 @@ export interface PreviewRow {
   role: 'user' | 'assistant' | 'system' | 'ex_agent' | 'tool'
   content: string
   blocks: ContentBlock[]
+  summarised?: boolean
 }
 
 function eventBlocks(events: StreamEvent[]): ContentBlock[] {
@@ -90,8 +91,8 @@ export function buildAgentPreviewRows(run: AgentRunPreview): PreviewRow[] {
   for (const entry of run.entries) {
     // Rendering-only: retained canonical rows still include model-history scaffolding.
     if (isCompactionSummary(entry.message)) {
-      rows.push({ key: entry.key, role: 'system', content: SUMMARY_PLACEHOLDER,
-        blocks: [{ type: 'text', index: 0, content: SUMMARY_PLACEHOLDER }] })
+      rows.push({ key: entry.key, role: 'system', content: SUMMARY_PLACEHOLDER, summarised: true,
+        blocks: [] })
       continue
     }
     if (entry.message && isHeimdallScaffoldingMessage(entry.message)) continue

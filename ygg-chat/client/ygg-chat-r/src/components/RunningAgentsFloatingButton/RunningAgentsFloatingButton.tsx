@@ -476,7 +476,7 @@ export const RunningAgentsFloatingButton: React.FC<RunningAgentsFloatingButtonPr
     ? getTranslucentCssColor(getThemeModeColor(customTheme.colors.settingsCustomThemesInnerCardBg, isDarkMode), 0.62)
     : undefined
   const floatingTintColor = customThemeEnabled
-    ? getThemeModeColor(customTheme.colors.settingsCustomThemesPrimaryButtonBg, isDarkMode)
+    ? getThemeModeColor(customTheme.colors.streamingAnimationColor, isDarkMode)
     : undefined
   const floatingActiveDotColor = customThemeEnabled
     ? getThemeModeColor(customTheme.colors.toolJobsProgressRunning, isDarkMode)
@@ -508,7 +508,7 @@ export const RunningAgentsFloatingButton: React.FC<RunningAgentsFloatingButtonPr
     ? {
         background: [
           floatingTintColor ? `radial-gradient(circle at 16% 0%, ${getTranslucentCssColor(floatingTintColor, 0.18)}, transparent 42%)` : null,
-          floatingAccentBg ? `linear-gradient(135deg, ${getTranslucentCssColor(floatingAccentBg, 0.22)}, transparent 56%)` : null,
+          floatingTintColor ? `linear-gradient(135deg, ${getTranslucentCssColor(floatingTintColor, 0.22)}, transparent 56%)` : null,
           floatingSurfaceBaseBg ? getTranslucentCssColor(floatingSurfaceBaseBg, 0.78) : null,
         ]
           .filter(Boolean)

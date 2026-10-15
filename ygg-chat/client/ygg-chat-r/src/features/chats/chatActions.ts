@@ -3034,7 +3034,9 @@ export const enqueueUserMessage = createAsyncThunk<void, {
   const attachments = drafts.map(draft => ({ ...draft }))
   const attachmentsBase64 = await prepareLocalAttachmentsForModel(attachments.length ? attachments : null, 'queued message attachments')
   const url = await buildLocalApiUrl(`/conversations/${encodeURIComponent(params.conversationId)}/streams/${encodeURIComponent(params.streamId)}/queue`)
-  const body = JSON.stringify({ requestId: params.requestId, content: params.content, attachmentsBase64 })
+  const body = JSON.stringify({ requestId: params.requestId, content: params.content, attachmentsBase64,
+    fullAccess: isFullAccessEnabled(),
+    fullAccessNotificationId: getPendingFullAccessNotification(params.conversationId) })
   // A lost HTTP acknowledgement is safe to retry with the SAME immutable id/payload.
   let response: Response
   try {

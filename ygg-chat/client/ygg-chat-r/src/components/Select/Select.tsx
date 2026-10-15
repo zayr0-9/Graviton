@@ -1,4 +1,5 @@
 import { AnimatePresence, motion, useReducedMotion } from 'framer-motion'
+import { Check, ChevronDown, Expand, LockKeyhole, MoreVertical, Search, Star } from 'lucide-react'
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import type { BaseModel } from '../../../../../shared/types'
@@ -9,7 +10,10 @@ import {
   toggleModelFavorite,
 } from '../../utils/favorites'
 import { Button } from '../Button/button'
-import { contentSpringTransition, reducedMotionTransition, shellSpringTransition } from '../motion'
+import { reducedMotionTransition, shellSpringTransition } from '../motion'
+import { getActionPopoverThemeStyle } from '../ActionPopover/actionPopoverTheme'
+import { useCustomChatTheme, useHtmlDarkMode } from '../ThemeManager/themeConfig'
+import './select.css'
 import { ModelInfoModal } from '../ModelInfoModal/ModelInfoModal'
 
 export type SelectOption = { value: string; label?: string }
@@ -93,6 +97,11 @@ export const Select: React.FC<SelectProps> = ({
     width: number
   } | null>(null)
   const isMobile = useIsMobile()
+  const { theme: customTheme, enabled: customThemeEnabled } = useCustomChatTheme()
+  const isDarkMode = useHtmlDarkMode()
+  const dropdownThemeStyle = customThemeEnabled
+    ? getActionPopoverThemeStyle(customTheme, isDarkMode)
+    : undefined
 
   const computeDropdownMetrics = useCallback(() => {
     const btn = btnRef.current
@@ -247,6 +256,7 @@ export const Select: React.FC<SelectProps> = ({
 
     if (e.key === 'Escape') {
       e.preventDefault()
+      btnRef.current?.focus()
       setOpen(false)
       return
     }
@@ -263,10 +273,7 @@ export const Select: React.FC<SelectProps> = ({
     if (e.key === 'Enter') {
       e.preventDefault()
       const opt = filteredOptions[activeIndex]
-      if (opt) {
-        onChange(opt.value)
-        setOpen(false)
-      }
+      if (opt) handleSelect(opt.value)
       return
     }
   }
@@ -280,6 +287,7 @@ export const Select: React.FC<SelectProps> = ({
   const handleSelect = (val: string) => {
     if (disabled || isOptionDisabled(val)) return
     onChange(val)
+    btnRef.current?.focus()
     setOpen(false)
   }
 
@@ -304,7 +312,7 @@ export const Select: React.FC<SelectProps> = ({
         <span className='min-w-0 truncate overflow-left text-left flex-1 text-[12px] text-neutral-500 dark:text-neutral-200'>
           {selected ? selected.label : placeholder}
         </span>
-        <i className={`bx bx-chevron-down shrink-0 transition-transform ${open ? 'rotate-180' : ''}`} aria-hidden='true' />
+        <ChevronDown size={16} strokeWidth={2.25} className={`shrink-0 transition-transform motion-reduce:transition-none ${open ? 'rotate-180' : ''}`} aria-hidden='true' />
       </Button>
 
       {dropdownPosition &&
@@ -317,12 +325,16 @@ export const Select: React.FC<SelectProps> = ({
                 tabIndex={-1}
                 data-ygg-overlay='select-dropdown'
                 layout
-                className={`fixed flex flex-col overflow-hidden rounded-2xl border border-neutral-200 bg-white/60 shadow-xl backdrop-blur-md will-change-[transform,opacity] dark:border-0 dark:border-neutral-700 dark:bg-neutral-950/45`}
+                className='select-cloud fixed flex flex-col overflow-hidden p-2 backdrop-blur-xl'
+                onKeyDown={e => {
+                  if (e.key === 'Escape' || e.target === searchRef.current || e.target === listRef.current) onKeyDown(e)
+                }}
                 initial={prefersReducedMotion ? { opacity: 0 } : { opacity: 0, y: dropdownPosition.bottom ? -8 : 8, scale: 0.965 }}
                 animate={prefersReducedMotion ? { opacity: 1 } : { opacity: 1, y: 0, scale: 1 }}
                 exit={prefersReducedMotion ? { opacity: 0 } : { opacity: 0, y: dropdownPosition.bottom ? -8 : 8, scale: 0.965 }}
                 transition={prefersReducedMotion ? reducedMotionTransition : shellSpringTransition}
                 style={{
+                  ...dropdownThemeStyle,
                   zIndex: dropdownZIndex,
                   maxHeight: listMaxHeight,
                   top: dropdownPosition.top !== undefined ? `${dropdownPosition.top}px` : undefined,
@@ -332,37 +344,36 @@ export const Select: React.FC<SelectProps> = ({
                   transformOrigin: dropdownPosition.bottom ? 'bottom center' : 'top center',
                 }}
               >
-                <motion.div
-                  className='flex min-h-0 flex-1 flex-col'
-                  initial={prefersReducedMotion ? { opacity: 0 } : { opacity: 0, y: 10, scale: 0.985 }}
-                  animate={prefersReducedMotion ? { opacity: 1 } : { opacity: 1, y: 0, scale: 1 }}
-                  exit={prefersReducedMotion ? { opacity: 0 } : { opacity: 0, y: 10, scale: 0.985 }}
-                  transition={prefersReducedMotion ? reducedMotionTransition : contentSpringTransition}
-                >
+                <div className='flex min-h-0 flex-1 flex-col gap-1'>
             {filterUI && (
-              <div className='border-b border-neutral-200 bg-white/35 px-2 py-2 backdrop-blur-md dark:border-neutral-900 dark:bg-neutral-950/25'>
+              <div className='px-2 py-1'>
                 {filterUI}
               </div>
             )}
             {searchBarVisible && (
-              <div className='border-b border-neutral-200 bg-white/35 px-2 py-2 backdrop-blur-md dark:border-neutral-900 dark:bg-neutral-950/25'>
+              <div className='select-cloud-search mx-1 mb-1 flex shrink-0 items-center gap-2 rounded-full px-3'>
+                <Search size={16} strokeWidth={2.25} aria-hidden='true' className='shrink-0' />
                 <input
                   ref={searchRef}
                   type='text'
                   value={searchTerm}
-                  onChange={e => setSearchTerm(e.target.value)}
+                  onChange={e => {
+                    setSearchTerm(e.target.value)
+                    setActiveIndex(-1)
+                  }}
+                  aria-label='Search options'
                   placeholder='Search...'
-                  className='w-full rounded-lg px-1 py-1.5 text-[12px] sm:text-[12px] md:text-[12px] lg:text-[14px] 2xl:text-[16px] 3xl:text-[18px] 4xl:text-[22px]rounded border-neutral-300 dark:border-neutral-900 bg-transparent dark:bg-transparent text-stone-800 dark:text-stone-100 focus:outline-none focus:ring-1 focus:ring-neutral-300 dark:focus:ring-2 dark:focus:ring-neutral-800 dark:border-0'
+                  className='min-w-0 w-full border-0 bg-transparent py-2.5 text-sm outline-none'
                   autoFocus={!isMobile}
                 />
               </div>
             )}
             <div
-              className={`min-h-0 flex-1 overflow-y-scroll bg-white/25 backdrop-blur-md no-scrollbar dark:bg-neutral-950/20 ${blur === 'high' ? 'supports-[backdrop-filter]:bg-white/30 dark:supports-[backdrop-filter]:bg-neutral-950/30' : ''}`}
+              className='min-h-0 flex-1 space-y-0.5 overflow-y-auto overscroll-contain no-scrollbar'
               style={{ maxHeight: searchBarVisible ? (listMaxHeight || 280) - 50 : listMaxHeight }}
             >
               {filteredOptions.length === 0 ? (
-                <div className='px-3 py-2 text-[13px] sm:text-[13px] md:text-[13px] lg:text-[12px] 2xl:text-[14px] 3xl:text-[16px] 4xl:text-[20px] text-neutral-500 dark:text-neutral-400'>
+                <div className='select-cloud-empty px-3 py-3 text-sm'>
                   {searchBarVisible && searchTerm.trim() ? 'No matching options' : 'No options'}
                 </div>
               ) : (
@@ -371,10 +382,8 @@ export const Select: React.FC<SelectProps> = ({
                   const modelInfo = modelData?.[opt.value]
                   const optDisabled = isOptionDisabled(opt.value)
                   return (
-                    <div key={opt.value} className={`flex items-center gap-0 ${optDisabled ? 'opacity-50' : ''}`}>
-                      <Button
-                        variant='outline2'
-                        size='small'
+                    <div key={opt.value} className={`select-cloud-row flex items-center gap-1 rounded-[18px] ${optDisabled ? 'opacity-50' : ''}`} data-selected={isSelected} data-active={idx === activeIndex && !optDisabled}>
+                      <button
                         type='button'
                         role='option'
                         aria-selected={isSelected}
@@ -391,12 +400,12 @@ export const Select: React.FC<SelectProps> = ({
                           e.stopPropagation()
                           if (!optDisabled) handleSelect(opt.value)
                         }}
-                        className={`flex-1 transition-colors duration-150 line-clamp-3 justify-start text-left text-[13px] sm:text-[13px] md:text-[13px] lg:text-[14px] 2xl:text-[14px] 3xl:text-[14px] 4xl:text-[14px] ${isSelected ? 'font-medium' : ''} ${optDisabled ? 'cursor-not-allowed' : 'hover:bg-neutral-200'}`}
+                        className={`select-cloud-option flex min-w-0 flex-1 items-center gap-2 rounded-[18px] px-3 py-2.5 text-left text-sm ${isSelected ? 'font-medium' : 'font-normal'} ${optDisabled ? 'cursor-not-allowed' : ''}`}
                         title={optDisabled ? 'Upgrade to access this model' : undefined}
                       >
-                        {opt.label}
-                        {optDisabled && <i className='bx bx-lock-alt ml-1 text-xs' aria-hidden='true' />}
-                      </Button>
+                        <span className='min-w-0 flex-1 line-clamp-3 break-words'>{opt.label}</span>
+                        {optDisabled ? <LockKeyhole size={14} aria-hidden='true' className='shrink-0' /> : isSelected && <Check size={16} strokeWidth={2.25} aria-hidden='true' className='shrink-0' />}
+                      </button>
                       {modelInfo && (
                         <>
                           <button
@@ -406,12 +415,12 @@ export const Select: React.FC<SelectProps> = ({
                               e.stopPropagation()
                               toggleFavorite(opt.value)
                             }}
-                            className='px-2 py-2 hover:bg-neutral-200 dark:hover:bg-neutral-700/20 transition-colors rounded-lg'
+                            className='select-cloud-icon mr-1 flex h-8 w-8 shrink-0 items-center justify-center rounded-full'
                             aria-label={isFavorite(opt.value) ? 'Remove from favorites' : 'Add to favorites'}
+                            title={isFavorite(opt.value) ? 'Remove from favorites' : 'Add to favorites'}
+                            aria-pressed={isFavorite(opt.value)}
                           >
-                            <i
-                              className={`bx ${isFavorite(opt.value) ? 'bxs-star' : 'bx-star'} text-neutral-600 dark:text-neutral-300`}
-                            />
+                            <Star size={16} strokeWidth={2.25} fill={isFavorite(opt.value) ? 'currentColor' : 'none'} aria-hidden='true' />
                           </button>
                           <button
                             type='button'
@@ -421,10 +430,11 @@ export const Select: React.FC<SelectProps> = ({
                               setSelectedModelForInfo(modelInfo)
                               setShowModelInfo(true)
                             }}
-                            className='px-2 py-2 hover:bg-neutral-200 dark:hover:bg-neutral-700/20 transition-colors rounded-lg'
+                            className='select-cloud-icon mr-1 flex h-8 w-8 shrink-0 items-center justify-center rounded-full'
                             aria-label='View model details'
+                            title='View model details'
                           >
-                            <i className='bx bx-dots-vertical-rounded text-neutral-600 dark:text-neutral-300' />
+                            <MoreVertical size={16} strokeWidth={2.25} aria-hidden='true' />
                           </button>
                         </>
                       )}
@@ -435,11 +445,10 @@ export const Select: React.FC<SelectProps> = ({
             </div>
             {/* View All Models button */}
             {showExpandButton && allFilteredCount > DROPDOWN_LIMIT && (
-              <div className='border-t border-neutral-200 bg-white/35 backdrop-blur-md dark:border-neutral-700 dark:bg-neutral-950/25'>
-                <Button
-                  variant='outline2'
-                  size='medium'
-                  className='w-full'
+              <div className='select-cloud-footer mt-1 rounded-[18px] p-1'>
+                <button
+                  type='button'
+                  className='select-cloud-option flex w-full items-center justify-center gap-2 rounded-full px-3 py-2.5 text-sm'
                   onClick={e => {
                     e.preventDefault()
                     e.stopPropagation()
@@ -447,19 +456,17 @@ export const Select: React.FC<SelectProps> = ({
                     setOpen(false)
                   }}
                 >
-                  <i className='bx bx-expand-alt mr-1' />
-                  <div className='text-[13px] sm:text-[13px] md:text-[13px] lg:text-[14px] 2xl:text-[16px] 3xl:text-[18px] 4xl:text-[20px] text-neutral-500 dark:text-neutral-200'>
-                    View All Models ({allFilteredCount})
-                  </div>
-                </Button>
+                  <Expand size={16} strokeWidth={2.25} aria-hidden='true' />
+                  <span>View all models ({allFilteredCount})</span>
+                </button>
               </div>
             )}
             {footerContent && (
-              <div className='border-t border-neutral-200 bg-white/35 backdrop-blur-md dark:border-neutral-700 dark:bg-neutral-950/25'>
+              <div className='select-cloud-footer mt-1 rounded-[18px] p-1'>
                 {footerContent}
               </div>
             )}
-                </motion.div>
+                </div>
               </motion.div>
             )}
           </AnimatePresence>,

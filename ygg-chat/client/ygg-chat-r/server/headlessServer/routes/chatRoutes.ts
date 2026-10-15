@@ -439,9 +439,11 @@ export function registerChatRoutes(app: Express, deps: RegisterChatRoutesDeps): 
     } catch (error) { res.status(409).json({ error: error instanceof Error ? error.message : String(error) }) }
   })
   app.post('/api/conversations/:id/streams/:streamId/queue', (req, res) => {
-    const { requestId, content, attachmentsBase64 } = req.body ?? {}
+    const { requestId, content, attachmentsBase64, fullAccess, fullAccessNotificationId } = req.body ?? {}
     if (typeof requestId !== 'string' || !requestId || requestId.length > 128 || typeof content !== 'string' || !content.trim() ||
-      content.length > 200_000 || (attachmentsBase64 != null && (!Array.isArray(attachmentsBase64) || attachmentsBase64.length > 20 ||
+      content.length > 200_000 || (fullAccess != null && typeof fullAccess !== 'boolean') ||
+      (fullAccessNotificationId != null && (typeof fullAccessNotificationId !== 'string' || !fullAccessNotificationId || fullAccessNotificationId.length > 128)) ||
+      (attachmentsBase64 != null && (!Array.isArray(attachmentsBase64) || attachmentsBase64.length > 20 ||
         attachmentsBase64.some((attachment: any) => !attachment || typeof attachment.dataUrl !== 'string' ||
           !attachment.dataUrl.startsWith('data:image/') || typeof attachment.attachmentId !== 'string')))) {
       res.status(400).json({ error: 'Valid requestId, content and attachment list required' })
@@ -450,7 +452,7 @@ export function registerChatRoutes(app: Express, deps: RegisterChatRoutesDeps): 
     try {
       if (!orchestrator.submitQueuedMessage || !runSessions || !resumableRuns) throw new Error('Queued messages require resumable runs')
       const result = orchestrator.submitQueuedMessage(String(req.params.id), String(req.params.streamId), {
-        requestId, content, attachmentsBase64,
+        requestId, content, attachmentsBase64, fullAccess, fullAccessNotificationId,
       })
       if (result.restart) {
         const request = result.restart

@@ -1001,7 +1001,10 @@ function Chat() {
   }, [])
   const clearLocalInput = useCallback(() => {
     inputControllerRef.current?.clear()
-  }, [])
+    // The controller restores this draft when initialValue changes. Clear both copies
+    // without inputCleared(), which would discard images before sendMessage captures them.
+    dispatch(chatSliceActions.inputChanged({ content: '' }))
+  }, [dispatch])
   const focusLocalInput = useCallback(() => {
     inputControllerRef.current?.focus()
   }, [])
@@ -5226,9 +5229,6 @@ function Chat() {
                 currentConversationId,
                 contentWithIdeContext
               )
-
-              // Update Redux state with processed content before sending
-              dispatch(chatSliceActions.inputChanged({ content: contentToSend }))
 
               // Create optimistic message for instant UI feedback
               const optimisticUserMessage: Message = {

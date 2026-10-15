@@ -3,6 +3,7 @@ import type { ReactNode } from 'react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { buildAgentForkGroups, type AgentStreamListItem } from '../../hooks/useRunningAgentStreams'
 import { AgentsMonitorGrid, getAgentGridCardHeight } from './AgentsMonitorGrid'
+import { AgentRunPreview as AgentRunPreviewComponent } from './AgentRunPreview'
 import { createEmptyStreamState } from '../../features/chats/streamHelpers'
 import type { AgentRunPreview } from '../../features/chats/agentRunPreviewSlice'
 
@@ -131,11 +132,10 @@ describe('fork grid', () => {
     expect(groups.activeForks[0].representative).toBe(live)
     expect(groups.activeForks).toHaveLength(1)
   })
-  it('uses responsive column caps while retaining a minimum card width', () => {
+  it('uses independent row tracks and omits splitters for single-cell rows', () => {
     const html = render([run('a')])
-    expect(html).toContain('grid-cols-1')
-    expect(html).toContain('md:[grid-template-columns:repeat(auto-fit,minmax(min(100%,max(18rem,calc((100%_-_0.75rem)/2))),1fr))]')
-    expect(html).toContain('xl:[grid-template-columns:repeat(auto-fit,minmax(min(100%,max(18rem,calc((100%_-_1.5rem)/3))),1fr))]')
+    expect(html).toContain('grid-template-columns:minmax(min(160px, 100%), 1fr)')
+    expect(html).not.toContain('role="separator"')
   })
   it.each([
     [1, 'max(20rem, min(52dvh, 28rem))'],
@@ -180,6 +180,74 @@ describe('fork grid', () => {
     expect(html.indexOf('Transcript a')).toBeLessThan(html.indexOf('aria-label="Assistant is working"'))
     expect(render([], [run('old', { status: 'completed' })])).not.toContain('Assistant is working')
   })
+  it('replaces streaming with Chat’s compaction animation only for the compacting fork', () => {
+    const active = [run('compacting'), run('other', { lineageId: 'other-fork' })]
+    render(active)
+    capture.byStreamId.compacting.stream.compactionStatus = 'started'
+    const html = renderToStaticMarkup(<AgentsMonitorGrid activeStreams={active} streamHistory={[]} grouped={false} onOpenFork={() => {}} onOpenChat={() => {}} />)
+    expect(html.match(/aria-label="Compacting context"/g)).toHaveLength(1)
+    expect(html.match(/aria-label="Assistant is working"/g)).toHaveLength(1)
+    expect(html).toContain('compaction-progress-fill')
+    expect(html).toContain('duration unknown')
+  })
+
+  it('shows compaction in selected-run previews even without the grid streaming prop', () => {
+    render([run('a')])
+    capture.byStreamId.a.stream.compactionStatus = 'started'
+    const html = renderToStaticMarkup(<AgentRunPreviewComponent streamId='a' grouped={false} />)
+    expect(html).toContain('aria-label="Compacting context"')
+    expect(html).not.toContain('Assistant is working')
+    expect(html).not.toContain('Waiting for run output')
+  })
+
+  it('finds compaction in another active run of a whole-fork preview', () => {
+    render([run('a'), run('b')])
+    capture.byStreamId.a.stream.compactionStatus = 'started'
+    const html = renderToStaticMarkup(<AgentRunPreviewComponent streamId='b' grouped={false} wholeFork isStreaming />)
+    expect(html.match(/aria-label="Compacting context"/g)).toHaveLength(1)
+    expect(html).not.toContain('Assistant is working')
+    const singleRun = renderToStaticMarkup(<AgentRunPreviewComponent streamId='b' grouped={false} isStreaming />)
+    expect(singleRun).not.toContain('Compacting context')
+    expect(singleRun).toContain('Assistant is working')
+  })
+
+  it.each(['completed', 'failed'] as const)('restores streaming after compaction %s', status => {
+    render([run('a')])
+    capture.byStreamId.a.stream.compactionStatus = status
+    const html = renderToStaticMarkup(<AgentRunPreviewComponent streamId='a' grouped={false} isStreaming />)
+    expect(html).not.toContain('Compacting context')
+    expect(html).toContain('Assistant is working')
+    expect(html).not.toContain('compaction-progress-fill')
+  })
+
+  it.each([false, true])('renders the shared summary icon/notice without exposing payloads (wholeFork=%s)', wholeFork => {
+    themeState.enabled = true
+    render([run('a')])
+    capture.byStreamId.a.entries.push({ key: 'summary', message: {
+      id: 'summary', conversation_id: 'chat-1', role: 'assistant',
+      content: 'PRIVATE_SUMMARY_PAYLOAD', content_plain_text: 'PRIVATE_SUMMARY_PAYLOAD',
+      content_blocks: [{ type: 'text', index: 0, content: 'PRIVATE_BLOCK_PAYLOAD' }],
+      meta: { kind: 'compaction_summary', state: 'committed' },
+      children_ids: [], created_at: '2026-10-10T12:01:00Z', model_name: '', partial: false, pastedContext: [], artifacts: [],
+    } })
+    const html = renderToStaticMarkup(<AgentRunPreviewComponent streamId='a' grouped={false} wholeFork={wholeFork} />)
+    expect(html).toContain('Conversation summarised')
+    expect(html).toContain('data-chat-summary="true"')
+    expect(html).toContain('lucide-archive')
+    expect(html).toContain('color:#737373')
+    expect(html).not.toContain('PRIVATE_')
+    expect(html).not.toContain('Earlier context is preserved for the model.')
+    expect(capture.byStreamId.a.entries.at(-1)?.message?.content).toBe('PRIVATE_SUMMARY_PAYLOAD')
+  })
+
+  it('never animates a retained completed run with stale compaction state', () => {
+    render([], [run('old', { status: 'completed' })])
+    capture.byStreamId.old.stream.compactionStatus = 'started'
+    const html = renderToStaticMarkup(<AgentRunPreviewComponent streamId='old' grouped={false} />)
+    expect(html).not.toContain('Compacting context')
+    expect(html).not.toContain('Assistant is working')
+  })
+
   it('shows the animation while waiting for the first streaming output', () => {
     render([run('a')])
     const preview = capture.byStreamId.a

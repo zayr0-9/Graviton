@@ -113,7 +113,7 @@ Shell:
 - Disabled-theme fallback: `bg-white/75`, `dark:bg-yBlack-900/75`, `backdrop-blur-2xl`.
 - The existing shell retains a border/drop shadow, not a shared requirement for new UI.
 - Preserve `useCustomChatTheme()`, `useHtmlDarkMode()`, and `getThemeModeColor()` integration for shell, text, badges, status, hover surfaces, and controls.
-- Enabled-theme shell layers a primary-button radial tint (18%), accent linear tint (22%), and card fill (78%). Transcript and request tooltips also consume custom-theme/light-dark state.
+- Enabled-theme shell borrows `streamingAnimationColor` for both its radial tint (18%) and linear tint (22%), over the settings card fill (78%). This follows the active theme's light/dark agent-activity color rather than settings-panel button/accent colors. Transcript and request tooltips also consume custom-theme/light-dark state.
 
 Lists:
 
@@ -189,7 +189,9 @@ Validation: `npm run test:renderer`, `npx tsc -p tsconfig.app.json --noEmit`, an
 
 Fork labels display only the first three lineage-ID characters (`fork 5d1`); grouping still uses the complete identity. Parent-request ticker and recent-run request rows show the full message on hover/focus in `AgentMessageTooltip`, portalled outside the shell's clipping containers. The tooltip preserves line breaks, is scrollable for long requests, and uses explicit light/dark/custom-theme colors. Escape, underlying scroll, and navigation dismiss it.
 
-The run viewer and request previews share Heimdall's `isHeimdallScaffoldingMessage` semantic filter: context-injection and operation-mode reminder rows are hidden from presentation, not deleted from retained state. Compaction summaries use Heimdall's `SUMMARY_PLACEHOLDER`. Unlike graph empty-node promotion, the transcript keeps real reasoning/tool-only turns so live agent work remains inspectable.
+Grid cards and selected-run previews reuse Chat's `StreamingThinkingIndicator` with `compacting` while an active retained run has `compactionStatus === 'started'`. The compaction shimmer/progress bar replaces normal streaming feedback; completion/failure restores the existing activity state. Whole-fork previews check all retained same-fork runs, not just the representative; sibling forks and inactive history never borrow another run's animation.
+
+The run viewer and request previews share Heimdall's `isHeimdallScaffoldingMessage` semantic filter: context-injection and operation-mode reminder rows are hidden from presentation, not deleted from retained state. Compaction summaries carry a presentation-only flag and render the shared `SummarisedMessage` notice with its Archive icon, “Conversation summarised” label, shared CSS layout and custom-theme muted color. Raw summary content/blocks never reach the preview renderer; retained canonical entries remain unchanged. Unlike graph empty-node promotion, the transcript keeps real reasoning/tool-only turns so live agent work remains inspectable.
 
 ## Expanded size (renderer-session only)
 
@@ -198,3 +200,11 @@ Expanded list and transcript modes share a top-left corner resize handle; the bo
 Drag left/up to grow, right/down to shrink. Arrow keys resize by 8px, Shift+arrows by 32px; Home or double-click restores automatic sizing. Pointer cancellation restores the prior preference. Viewport/anchor changes clamp the rendered size while preserving the preferred dimensions for a later larger window. The transcript flex-fills the available body; resized lists use a single scrolling body instead of fixed-height sublists. The CSS width/height transition is disabled during active dragging.
 
 Validation includes `agentsPillResize.test.ts` (geometry and session state), the renderer suite, and Electron build. Manual checks: drag while streaming, release outside the handle, pointer cancellation, viewport shrinking/restoration, list/transcript mode switch, collapse/reopen/remount, keyboard/reset, and theme/reduced-motion behavior.
+
+## Row-specific grid splits
+
+`AgentsMonitorGrid.tsx` measures available width and retains the responsive one/two/three-card cap and 18rem automatic card target. Each row renders independent tracks in `AgentGridRow.tsx`. Drag the full-height empty gutter to trade width only between adjacent cards in that row; other rows and a third card keep their ratios. No dependency or disk persistence is involved.
+
+Rows retain ratios while mounted with unchanged membership. Membership changes reset that row to equal widths; surviving cards in the same row retain their React identity. Cards moving between rows remount. Collapse, switching away from the grid, or renderer reload resets splits. An incomplete last row fills its available width. CSS enforces a 160px minimum while resizing the outer pill; one-column cards still fit narrower containers. Track weights are normalized so every track is at least 1fr: fractional weights below 1fr can leave unused row space when another card reaches its minimum. There is no per-card maximum-width cap. Pointer capture, animation-frame updates, cancellation, and cleanup live in the row component; `agentGridSplit.ts` contains pure responsive-count and neighboring-pair geometry.
+
+Keyboard: focus a gutter and use Left/Right (8px), Shift+Left/Right (32px), Home to equalize the row, or Escape to cancel a drag. Double-click a gutter also equalizes its row. Manual validation: independently resize two rows, move both dividers of a three-cell row, release outside the pill, cancel a drag, resize the outer pill across breakpoints, and verify live transcript scrolling, custom themes, and single-cell rows. Automated coverage lives in `AgentGridRow.test.tsx` and `agentGridSplit.test.ts`.

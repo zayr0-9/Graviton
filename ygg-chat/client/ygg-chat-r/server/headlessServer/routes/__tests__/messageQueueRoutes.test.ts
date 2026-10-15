@@ -18,6 +18,16 @@ const setup = (orchestrator: any) => {
 const post = (base: string, body: any) => fetch(base, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
 
 describe('message queue routes', () => {
+  it('forwards Full access settings and rejects malformed notification settings', async () => {
+    const submitQueuedMessage = vi.fn(() => ({ snapshot: { streamId: 's' } }))
+    const { base } = setup({ submitQueuedMessage })
+    const body = { requestId: 'q', content: 'follow up', fullAccess: true, fullAccessNotificationId: 'toggle-1' }
+    expect((await post(base, body)).status).toBe(200)
+    expect(submitQueuedMessage).toHaveBeenCalledWith('c', 's', expect.objectContaining(body))
+    expect((await post(base, { ...body, fullAccess: 'true' })).status).toBe(400)
+    expect((await post(base, { ...body, fullAccessNotificationId: 123 })).status).toBe(400)
+  })
+
   it('queues and cancels without starting another run; rejects invalid payloads and cross-conversation ownership', async () => {
     const runMessage = vi.fn()
     const snapshot = { streamId: 's', conversationId: 'c', lineageId: 'l', revision: 1, items: [] }

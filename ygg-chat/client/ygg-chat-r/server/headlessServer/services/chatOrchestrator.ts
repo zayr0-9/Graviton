@@ -556,6 +556,8 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
     return { restart: { ...run.request, operation: 'send', streamId: nextId, lineageId: lineage.id,
       parentId: run.head, messageId: null, operationId: null, content: submission.content,
       watcherCompletion: submission.watcherCompletion,
+      fullAccess: submission.fullAccess ?? run.request.fullAccess,
+      fullAccessNotificationId: submission.fullAccessNotificationId,
       attachmentsBase64: submission.attachmentsBase64 ?? null, operationMode: run.control.mode,
       retrigger: false, isBranch: false } }
   }
@@ -1494,6 +1496,26 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
           const displayRow = { ...row, artifacts: modelImages.map(attachment => attachment.dataUrl) }
           emit({ type: 'queued_user_message_persisted', message: displayRow, requestId: entry.submission.requestId,
             streamId: trackedStreamId, lineageId })
+          const { fullAccess, fullAccessNotificationId, watcherCompletion } = entry.submission
+          if (fullAccess === true && fullAccessNotificationId && !watcherCompletion) {
+            const access = this.messageRepo.transaction(() => {
+              const existing = this.messageRepo.findFullAccessNotification(request.conversationId, fullAccessNotificationId)
+              if (existing) return { message: existing, created: false }
+              const message = this.messageRepo.createMessage({
+                conversationId: request.conversationId, parentId: parent, role: 'user',
+                content: fullAccessNotificationContent(true), modelName: request.modelName,
+                meta: { kind: FULL_ACCESS_NOTIFICATION_KIND, requestId: fullAccessNotificationId },
+              })
+              this.lineageRepo.appendMessage(lineageId, message.id)
+              return { message, created: true }
+            })
+            if (access.created) {
+              rows.push(access.message)
+              parent = access.message.id
+              modeParentId = access.message.id
+            }
+            emit({ type: 'user_message_persisted', message: access.message, lineageId })
+          }
           inputQueue.settle(entry.submission.requestId, { messageId: row.id })
         } catch (error) {
           hookSession?.drainHookContext() // blocked submission context must not leak to the next one

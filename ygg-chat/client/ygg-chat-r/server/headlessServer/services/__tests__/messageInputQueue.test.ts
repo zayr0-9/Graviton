@@ -187,9 +187,10 @@ describe('queue intake completion race', () => {
     queue.claim(); queue.settle('q', { messageId: 'delivered' }); queue.tryClose()
     run.terminal = 'completed'
     expect(orchestrator.submitQueuedMessage('c', 's', submission).snapshot.items[0].messageId).toBe('delivered')
-    const next = { requestId: 'next', content: 'after completion' }
+    const next = { requestId: 'next', content: 'after completion', fullAccess: true, fullAccessNotificationId: 'toggle-1' }
     const result = orchestrator.submitQueuedMessage('c', 's', next)
-    expect(result.restart).toMatchObject({ operation: 'send', parentId: 'final', lineageId: 'l', content: 'after completion', operationMode: 'plan' })
+    expect(result.restart).toMatchObject({ operation: 'send', parentId: 'final', lineageId: 'l', content: 'after completion', operationMode: 'plan',
+      fullAccess: true, fullAccessNotificationId: 'toggle-1' })
     expect(orchestrator.submitQueuedMessage('c', 's', next)).toEqual({ restartStreamId: result.restart.streamId })
   })
 })

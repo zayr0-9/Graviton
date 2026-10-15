@@ -3,6 +3,8 @@ import { buildAgentForkGroups, type AgentStreamListItem } from '../../hooks/useR
 import { getThemeModeColor, useCustomChatTheme, useHtmlDarkMode } from '../ThemeManager/themeConfig'
 import { AgentMessageTooltip } from './AgentMessageTooltip'
 import { AgentRunPreview } from './AgentRunPreview'
+import { AgentGridRow } from './AgentGridRow'
+import { getAgentGridColumns } from './agentGridSplit'
 
 interface AgentsMonitorGridProps {
   activeStreams: AgentStreamListItem[]
@@ -36,9 +38,8 @@ export function AgentsMonitorGrid({ activeStreams, streamHistory, grouped, onOpe
     const grid = gridRef.current
     if (!grid) return
     const updateColumns = () => {
-      const tracks = getComputedStyle(grid).gridTemplateColumns.trim()
-      const visibleTracks = tracks.split(/\s+/).filter(track => parseFloat(track) > 0)
-      setColumns(Math.max(1, Math.min(3, visibleTracks.length)))
+      const rem = parseFloat(getComputedStyle(document.documentElement).fontSize) || 16
+      setColumns(getAgentGridColumns(grid.getBoundingClientRect().width, window.innerWidth, rem, forks.length))
     }
     updateColumns()
     const observer = new ResizeObserver(updateColumns)
@@ -55,8 +56,11 @@ export function AgentsMonitorGrid({ activeStreams, streamHistory, grouped, onOpe
     <section aria-label='Agent forks' className='flex h-full min-h-0 flex-1 flex-col overflow-hidden' style={textStyle}>
       <div className='min-h-0 flex-1 overflow-y-auto overscroll-contain px-2 pb-2 thin-scrollbar'>
         {forks.length === 0 && <p className='p-3 text-sm text-neutral-500' style={mutedStyle}>No captured agent forks yet.</p>}
-        <div ref={gridRef} className='grid grid-cols-1 gap-3 md:[grid-template-columns:repeat(auto-fit,minmax(min(100%,max(18rem,calc((100%_-_0.75rem)/2))),1fr))] xl:[grid-template-columns:repeat(auto-fit,minmax(min(100%,max(18rem,calc((100%_-_1.5rem)/3))),1fr))]'>
-          {forks.map(fork => {
+        <div ref={gridRef} className='flex flex-col gap-3'>
+          {Array.from({ length: Math.ceil(forks.length / columns) }, (_, rowIndex) => {
+            const row = forks.slice(rowIndex * columns, (rowIndex + 1) * columns)
+            return <AgentGridRow key={rowIndex} label={`Agent row ${rowIndex + 1}`}>
+          {row.map(fork => {
             const stream = fork.representative
             const active = fork.activeStreams.length > 0
             const cardStyle = { backgroundColor: enabled ? getThemeModeColor(theme.colors[active ? 'agentsGridStreamingCardBg' : 'agentsGridIdleCardBg'], dark) : undefined }
@@ -93,6 +97,8 @@ export function AgentsMonitorGrid({ activeStreams, streamHistory, grouped, onOpe
                 <AgentRunPreview streamId={stream.streamId} grouped={grouped} isStreaming={active} wholeFork fillHeight transcriptLabel={`${name} · ${fork.displayName} transcript`} />
               </section>
             )
+          })}
+            </AgentGridRow>
           })}
         </div>
       </div>

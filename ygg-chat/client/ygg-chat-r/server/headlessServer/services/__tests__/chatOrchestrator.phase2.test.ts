@@ -298,6 +298,35 @@ describe('source lineage membership validation', () => {
     if (testDirectory) rmSync(testDirectory, { recursive: true, force: true })
   })
 
+  it('inserts one Full access notice after queued input without upgrading the live run', async () => {
+    const events: any[] = []
+    let call = 0
+    vi.spyOn(providerRouter, 'generate').mockImplementation(async (_provider, input) => {
+      expect((orchestrator as any).inputRuns.get('active').request.fullAccess).toBe(false)
+      if (++call === 1) {
+        for (const requestId of ['q1', 'q2']) {
+          orchestrator.submitQueuedMessage('c1', 'active', { requestId, content: requestId,
+            fullAccess: true, fullAccessNotificationId: 'toggle-queued' })
+        }
+      } else {
+        const notices = input.history.filter((row: any) => JSON.parse(row.meta || '{}').kind === 'full_access_change')
+        expect(notices).toHaveLength(1)
+        expect(notices[0].content).toContain('does not change this active run')
+        expect(notices[0].parent_id).toBe(events.find(event => event.type === 'queued_user_message_persisted').message.id)
+      }
+      return { content: 'answer' }
+    })
+    await orchestrator.runMessage({ operation: 'send', conversationId: 'c1', content: 'original',
+      provider: 'openaichatgpt', modelName: 'test', streamId: 'active', fullAccess: false }, event => events.push(event))
+    expect(call).toBe(2)
+    const accessEvents = events.filter(event => event.type === 'user_message_persisted' &&
+      JSON.parse(event.message.meta || '{}').kind === 'full_access_change')
+    expect(accessEvents).toHaveLength(2) // the second input acknowledges the same durable notice
+    expect(accessEvents[0].message.id).toBe(accessEvents[1].message.id)
+    const queuedEvents = events.filter(event => event.type === 'queued_user_message_persisted')
+    expect(queuedEvents[1].message.parent_id).toBe(accessEvents[0].message.id)
+  })
+
   it('persists request throughput before completion and isolates consecutive runs', async () => {
     const runs = new Map<string, any>()
     statements.getStreamingRunById = { get: (id: string) => runs.get(id) }

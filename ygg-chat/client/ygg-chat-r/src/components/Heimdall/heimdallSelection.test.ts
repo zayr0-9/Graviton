@@ -104,3 +104,86 @@ describe('expandHeimdallSelectionToBranchMessages', () => {
     expect(expandHeimdallSelectionToBranchMessages([], ['a', 'c'])).toEqual(['a', 'c'])
   })
 })
+
+describe('hidden branch tails', () => {
+  const summary: Message = {
+    ...message('summary', 'last-user', 'assistant'),
+    content: 'Persisted compaction summary',
+    meta: { kind: 'compaction_summary', state: 'committed' },
+  }
+  const tail = [
+    message('resume', 'summary'),
+    summary,
+    message('last-user', 'hidden-context'),
+    message('hidden-context', 'first-user'),
+    message('first-user', null),
+  ]
+  const visibleIds = new Set(['first-user', 'last-user'])
+  const transfer = (ids: Message['id'][], visible = visibleIds) =>
+    buildMessageTransferPayload(tail, expandHeimdallSelectionToBranchMessages(tail, ids, visible))
+
+  it('includes the hidden compaction tail and connecting rows when selecting the visible branch', () => {
+    const payload = transfer(['last-user', 'first-user'])
+    expect(relations(payload)).toEqual([
+      ['first-user', null],
+      ['hidden-context', 'first-user'],
+      ['last-user', 'hidden-context'],
+      ['summary', 'last-user'],
+      ['resume', 'summary'],
+    ])
+    expect(payload.find(row => row.source_id === 'summary')).toMatchObject({
+      content: summary.content,
+      meta: summary.meta,
+    })
+    expect(hasUnselectedDescendants(tail, payload.map(row => row.source_id))).toBe(false)
+  })
+
+  it('includes a hidden tail for a single selected visible leaf without adding ancestors', () => {
+    expect(relations(transfer(['last-user']))).toEqual([
+      ['last-user', null], ['summary', 'last-user'], ['resume', 'summary'],
+    ])
+    expect(expandHeimdallSelectionToBranchMessages(tail, [], visibleIds)).toEqual([])
+  })
+
+  it('is idempotent when a rectangle selection is expanded again for transfer', () => {
+    const expanded = expandHeimdallSelectionToBranchMessages(tail, ['first-user', 'last-user'], visibleIds)
+    expect(expandHeimdallSelectionToBranchMessages(tail, expanded, visibleIds)).toEqual(expanded)
+  })
+
+  it('does not include the tail when those messages are visible with filtering off', () => {
+    const allVisible = new Set(tail.map(row => String(row.id)))
+    const payload = transfer(['last-user'], allVisible)
+    expect(relations(payload)).toEqual([['last-user', null]])
+    expect(hasUnselectedDescendants(tail, payload.map(row => row.source_id))).toBe(true)
+  })
+
+  it('does not absorb a hidden prefix leading to an unselected visible turn', () => {
+    const continued = [...tail, message('next-turn', 'resume')]
+    const visible = new Set([...visibleIds, 'next-turn'])
+    const expanded = expandHeimdallSelectionToBranchMessages(continued, ['last-user'], visible)
+    expect(expanded).toEqual(['last-user'])
+    expect(hasUnselectedDescendants(continued, expanded)).toBe(true)
+  })
+
+  it('includes hidden-only forks but not visible sibling branches or unrelated hidden roots', () => {
+    const branched = [
+      ...tail,
+      message('hidden-fork', 'summary'),
+      message('visible-sibling', 'last-user'),
+      message('sibling-tail', 'visible-sibling'),
+      message('unrelated-hidden-root', null),
+    ]
+    const visible = new Set([...visibleIds, 'visible-sibling'])
+    const expanded = expandHeimdallSelectionToBranchMessages(branched, ['last-user'], visible)
+    expect(new Set(expanded)).toEqual(new Set(['last-user', 'summary', 'resume', 'hidden-fork']))
+    expect(hasUnselectedDescendants(branched, expanded)).toBe(true)
+  })
+
+  it('normalizes numeric IDs and terminates on cyclic descendants', () => {
+    // Legacy runtime rows can contain numeric IDs despite the current string-only type.
+    const numeric = [{ ...message('1', null), id: 1 }, { ...message('2', '1'), id: 2 }] as unknown as Message[]
+    expect(expandHeimdallSelectionToBranchMessages(numeric, ['1'], new Set(['1']))).toEqual([1, 2])
+    const cyclic = [message('a', 'b'), message('b', 'a')]
+    expect(expandHeimdallSelectionToBranchMessages(cyclic, ['a'], new Set(['a']))).toEqual(['a'])
+  })
+})

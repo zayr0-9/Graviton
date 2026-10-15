@@ -1040,6 +1040,8 @@ export const Heimdall: React.FC<HeimdallProps> = ({
         'transform',
         `translate(${nextPan.x + dimensions.width / 2}, ${nextPan.y + 100}) scale(${nextZoom})`
       )
+      // Keep highlights readable while zoomed out without rebuilding node JSX during gestures.
+      graphTransformRef.current?.style.setProperty('--heimdall-highlight-stroke-scale', String(Math.max(1, 1 / nextZoom)))
     },
     [dimensions.width]
   )
@@ -1735,6 +1737,18 @@ export const Heimdall: React.FC<HeimdallProps> = ({
     return rawData
   }, [chatData, messageById, filterEmptyMessages])
 
+  // Use the complete filtered tree, never viewport-culling results, for action visibility.
+  const visibleMessageIds = useMemo(() => {
+    const ids = new Set<string>()
+    const pending = currentChatData ? [currentChatData] : []
+    while (pending.length > 0) {
+      const node = pending.pop()!
+      ids.add(String(node.id))
+      pending.push(...node.children)
+    }
+    return ids
+  }, [currentChatData])
+
   // Get the complete branch path for a selected node
   // Uses unfiltered flatMessages to ensure filtered nodes are included in the path
   const getPathWithDescendants = (targetNodeId: string): string[] => {
@@ -2036,11 +2050,11 @@ export const Heimdall: React.FC<HeimdallProps> = ({
     }
   }, [applyZoomAtPoint, flushPendingInteractionFrame])
 
-  // Expand a visual selection to include hidden messages that sit between selected visible nodes.
+  // Include connecting messages and hidden-only tails after selected visible nodes.
   // This keeps filtering as a rendering-only concern: tool-only/empty nodes can be hidden,
   // but actions on a selected branch still receive the complete message chain.
   const expandSelectionToHiddenBranchMessages = (selectedVisibleIds: MessageId[]): MessageId[] =>
-    expandHeimdallSelectionToBranchMessages(allMessages, selectedVisibleIds)
+    expandHeimdallSelectionToBranchMessages(allMessages, selectedVisibleIds, visibleMessageIds)
 
   // Function to determine which nodes are within the selection rectangle
   const getNodesInSelectionRectangle = (): MessageId[] => {
@@ -3352,6 +3366,9 @@ export const Heimdall: React.FC<HeimdallProps> = ({
                 fill='none'
                 stroke={nodeOutlineStroke || 'currentColor'}
                 strokeWidth={isNodeSelected ? HEIMDALL_NODE_SELECTED_STROKE_WIDTH : HEIMDALL_NODE_VISIBLE_STROKE_WIDTH}
+                style={{
+                  strokeWidth: `calc(${isNodeSelected ? HEIMDALL_NODE_SELECTED_STROKE_WIDTH : HEIMDALL_NODE_VISIBLE_STROKE_WIDTH}px * var(--heimdall-highlight-stroke-scale, 1))`,
+                }}
                 className={`transition-colors duration-200 ${
                   nodeOutlineStroke
                     ? ''
@@ -3609,6 +3626,9 @@ export const Heimdall: React.FC<HeimdallProps> = ({
                 fill='none'
                 stroke={nodeOutlineStroke || 'currentColor'}
                 strokeWidth={isNodeSelected ? HEIMDALL_NODE_SELECTED_STROKE_WIDTH : HEIMDALL_NODE_VISIBLE_STROKE_WIDTH}
+                style={{
+                  strokeWidth: `calc(${isNodeSelected ? HEIMDALL_NODE_SELECTED_STROKE_WIDTH : HEIMDALL_NODE_VISIBLE_STROKE_WIDTH}px * var(--heimdall-highlight-stroke-scale, 1))`,
+                }}
                 className={`transition-colors duration-200 ${
                   nodeOutlineStroke
                     ? ''
