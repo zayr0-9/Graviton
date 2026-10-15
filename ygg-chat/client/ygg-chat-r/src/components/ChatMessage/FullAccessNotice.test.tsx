@@ -14,7 +14,7 @@ describe('FullAccessNotice', () => {
   it('shares exact mode-notice chrome and custom-theme text', () => {
     const access = renderToStaticMarkup(<FullAccessNotice />)
     const mode = renderToStaticMarkup(<OperationModeNotice mode='execute' />)
-    const chrome = 'flex h-8 min-w-0 w-full items-center gap-2 px-2.5 text-xs text-stone-500 dark:text-stone-400'
+    const chrome = 'flex h-8 min-w-0 w-full items-center gap-2 px-2.5 text-neutral-500 dark:text-neutral-400'
     expect(access).toContain(chrome)
     expect(mode).toContain(chrome)
     expect(access).toContain('color:#123456')
@@ -22,6 +22,11 @@ describe('FullAccessNotice', () => {
     expect(access).toContain('Full access enabled')
     expect(access).toContain('Approvals still apply')
     expect(mode).toContain('Switched to Agent')
+    expect(mode).toContain('text-[0.8125em] font-medium')
+    expect(mode).toContain('text-[0.75em]')
+    expect(mode).toContain('width="16"')
+    expect(mode).not.toContain('<button')
+    expect(mode).not.toContain('opacity-70')
   })
   it('uses provenance, not lookalike prose, and keeps access separate from mode', () => {
     expect(isFullAccessNotification({ meta: '{"kind":"full_access_change"}' })).toBe(true)

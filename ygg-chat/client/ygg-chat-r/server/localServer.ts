@@ -2,6 +2,7 @@
 // Embedded local SQLite server for dual-sync in Electron mode
 // This server prefers port 3002 and falls back to available local ports.
 
+import { claudeBridge } from './tools/claudeBridge.js'
 import { stopAuth } from './auth/runtime.js'
 import { cancelAppLogin } from './auth/appLogin.js'
 import AdmZip from 'adm-zip'
@@ -2065,6 +2066,7 @@ export async function startLocalServer(
 
 // Stop the server
 export async function stopLocalServer(): Promise<void> {
+  await claudeBridge.shutdown()
   // Shutdown tool orchestrator first
   localAnalyticsWorkerClient.shutdown()
   watchService.shutdown()

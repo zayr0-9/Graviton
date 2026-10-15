@@ -146,6 +146,7 @@ YGG_CONTEXT_DEBUG_LOGS=1 npm run dev:electron   # prints [ContextLoader] discove
   for user-invocable skills yet.
 - Visibility in chat is the `ContextInjectionCard` (`src/components/ChatMessage/ContextInjectionCard.tsx`):
   a theme-aware card per launch set, per tool result that triggered loads, and per user
-  message that carried a `/skill` expansion or hook output. A message with such a card is
-  never folded into "Agent Steps".
+  message that carried a `/skill` expansion or hook output. Assistant context cards remain
+  visible as attached activity below collapsed Agent steps, without splitting subsequent
+  tools into another group. Launch/user instruction rows remain separate boundaries.
 - `skillOverrides`, output styles, plugins, managed policy files are not implemented.

@@ -54,7 +54,8 @@ Use this when changing:
 
 ## Extension Points
 
-- Add built-ins by updating shared definitions, server implementation/registration, applicable utility-runtime registration, and tests.
+- Add built-ins by updating shared definitions, server implementation/registration, headless built-in and OpenAI allowlists, applicable utility-runtime registration, and tests.
+- `claude_bridge` is a server-owned built-in for resumable, read-only Claude CLI review conversations. It runs asynchronous jobs outside the utility process, is excluded from child tool sets, and shuts down with the server. See [Claude bridge](../claude-bridge-tool.md) for its scope, persistence, permissions and live validation.
 - Add custom tool capabilities in custom tool loader/manager and docs.
 - Add MCP visibility changes in MCP manager/routes and frontend merge logic.
 

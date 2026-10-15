@@ -1,0 +1,14 @@
+/* Chat uses the transitions.dev opacity/chevron pattern without layout tweening.
+   Inserting streamed rows must not animate virtualizer measurements. */
+.agent-attached-activity > *,
+.agent-history-reveal {
+  animation: agent-activity-enter var(--ygg-motion-duration-standard, 180ms) var(--ygg-motion-ease-emphasized, cubic-bezier(0.22, 1, 0.36, 1));
+}
+@keyframes agent-activity-enter {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .agent-attached-activity > *,
+  .agent-history-reveal { animation: none; }
+}

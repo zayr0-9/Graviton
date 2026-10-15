@@ -1,3 +1,5 @@
+import { useModelSwitchConfirmation } from '../hooks/useModelSwitchConfirmation'
+import { ModelSwitchDialog } from '../components/ModelSelectControl/ModelSwitchDialog'
 import { resolveBranchModelSelection } from '../features/chats/branchModelSelection'
 import { isCommittedCompaction } from '../../../../shared/compaction'
 import { isHiddenCompactionMessage } from '../features/chats/summaryPresentation'
@@ -157,7 +159,9 @@ import {
 import { isOpenAIProvider } from '../../../../shared/contextUsage'
 import { isContextInjectionMessage, parseMessageMeta } from '../../../../shared/contextInjection'
 import { ContextInjectionCard, type ContextInjectionCardEntry } from '../components/ChatMessage/ContextInjectionCard'
-import { DisclosurePanel, DisclosureRow } from '../components/ChatMessage/messagePrimitives'
+import { AgentSteps } from '../components/ChatMessage/AgentSteps'
+import { MessageActivity } from '../components/ChatMessage/MessageActivity'
+import { getAgentProgress, splitLiveAgentEvents, hasTrailingAgentProse, canAttachLiveAgentGroup } from '../components/ChatMessage/agentActivity'
 import {
   chatErrorRowHeight,
   DEFAULT_ROOT_FONT_SIZE,
@@ -373,7 +377,7 @@ const COMPOSER_SLASH_COMMANDS = [
   'theme-demo on',
   'theme-demo off',
 ]
-const CROSS_MESSAGE_PROCESS_GROUP_MIN_MESSAGES = 3
+const CROSS_MESSAGE_PROCESS_GROUP_MIN_MESSAGES = 1
 const DERIVED_RENDER_CACHE_LIMIT = 40
 const ACTION_POPOVER_SELECT_DROPDOWN_Z_INDEX = 100001
 const BENCH_MAX_SAMPLES = 3000
@@ -2286,9 +2290,9 @@ function Chat() {
   const [groupToolReasoningRuns, setGroupToolReasoningRuns] = useState<boolean>(() => {
     try {
       const stored = localStorage.getItem('chat:groupToolReasoningRuns')
-      return stored === null ? false : stored === 'true'
+      return stored === null ? true : stored === 'true'
     } catch {
-      return false
+      return true
     }
   })
   const [truncateToolOutput, setTruncateToolOutput] = useState<boolean>(loadToolOutputTruncationEnabled)
@@ -2359,6 +2363,8 @@ function Chat() {
         : false
 
     const hasSubstantialTextOrImage = (msg: Message, parsed: ParsedMessageData): boolean => {
+      if (hasTrailingAgentProse(parsed.contentBlocks ?? [])) return true
+      if (!parsed.contentBlocks?.some(block => block.type === 'text') && msg.content?.trim()) return true
       if (
         typeof msg.content === 'string' &&
         msg.content.trim().length > 0 &&
@@ -2379,10 +2385,10 @@ function Chat() {
           if (block.type === 'image') {
             return Boolean(block.url)
           }
-          // A loaded-context card is a visible row; never fold its message into "Agent Steps".
-          if (block.type === 'context_injection') {
-            return true
-          }
+          // Context is projected below the collapsed history, so it no longer splits a run.
+          if (block.type === 'context_injection') return false
+          // Errors must remain visible outside process groups.
+          if (block.type === 'error') return true
 
           const responseTexts = getResponsesOutputAssistantTexts(block)
           return responseTexts.some(text => text.trim().length > 0 && !isLikelyProcessAnnotationText(text))
@@ -2438,7 +2444,7 @@ function Chat() {
       }
 
       const parsed = parsedMessageDataById.get(msg.id) ?? EMPTY_PARSED_MESSAGE_DATA
-      if (!hasProcessSignal(msg, parsed)) {
+      if (!hasProcessSignal(msg, parsed) && !msg.hook_runs?.length && !parsed.contentBlocks?.some(block => block.type === 'context_injection')) {
         return false
       }
 
@@ -2758,16 +2764,26 @@ function Chat() {
   // New server-owned generations have no live message ID until persistence.
   const isStreamingMessageAlreadyRendered = isStreamMessageAlreadyRendered(streamState, messageRowIndexByMessageId)
   const showStreamingMessage = !compactionActive && !isStreamingMessageAlreadyRendered && hasStreamingMessageContent
-  const showLiveStreamingTail = showStreamingMessage && hasFinalTextStreaming
+  const liveAgentEvents = useMemo(() => splitLiveAgentEvents(streamState.events), [streamState.events])
+  const trailingAgentRow = messageRenderRows[messageRenderRows.length - 1]
+  const liveAgentGroupId = canAttachLiveAgentGroup({
+    enabled: groupToolReasoningRuns, active: streamLifecycleActive, compacting: compactionActive,
+    optimistic: showOptimisticMessage || showOptimisticBranchMessage, trailing: trailingAgentRow,
+    anchor: streamState.lastCompletedMessageId ?? streamState.branchAnchorMessageId,
+    boundaryAfter: trailingAgentRow?.kind === 'process_group' && runFootersByAnchor.has(String(trailingAgentRow.memberMessageIds[trailingAgentRow.memberMessageIds.length - 1])),
+  }) ? String(trailingAgentRow.id) : null
+  const visibleLiveEvents = liveAgentGroupId ? liveAgentEvents.outside : streamState.events
+  const showStandaloneStreamingMessage = showStreamingMessage && (!liveAgentGroupId || visibleLiveEvents.length > 0)
+  const showLiveStreamingTail = showStandaloneStreamingMessage && hasFinalTextStreaming
   // Once the final answer is streaming, the live tail is rendered OUTSIDE TanStack Virtual as an
   // in-flow sibling (see the message list render) so its token-by-token growth never enters
   // virtualizer geometry or the ResizeObserver, and can never drag scrollTop. Only the
   // process-only phase (thinking/tools, no text yet) is kept as a measured virtual row.
-  const showStreamingMessageInVirtualList = showStreamingMessage && !showLiveStreamingTail
+  const showStreamingMessageInVirtualList = showStandaloneStreamingMessage && !showLiveStreamingTail
   const showStreamingThinkingMessageRow = streamingThinkingIndicatorPlacement === 'message'
   const showStreamingThinkingInputTab = streamingThinkingIndicatorPlacement === 'input-tab'
   const showGenerationLoaderRow = showGenerationLoadingAnimation && showStreamingThinkingMessageRow
-  const showGenerationLoaderInVirtualList = showGenerationLoaderRow && !showLiveStreamingTail
+  const showGenerationLoaderInVirtualList = showGenerationLoaderRow && !showLiveStreamingTail && !liveAgentGroupId
   // The in-flow bottom sentinel is the sole trailing spacer (paddingEnd is 0). Sized to mirror the
   // previous paddingEnd so scroll-to-bottom lands the last message in the same place. It must be
   // flexShrink:0 in the render, otherwise the flex column collapses it to 0 and there is no room to
@@ -3126,7 +3142,12 @@ function Chat() {
           return 36
         case 'message_row':
           return row.row.kind === 'process_group'
-            ? processGroupRowHeight(rootFontSize)
+            ? processGroupRowHeight(rootFontSize) + row.row.messages.reduce((height, message) => {
+                const blocks = parsedMessageDataById.get(message.id)?.contentBlocks ?? []
+                const cards = blocks.filter((block, index) => block.type === 'context_injection' &&
+                  (blocks[index - 1]?.type !== 'context_injection' || (blocks[index - 1] as any).tool_use_id !== block.tool_use_id)).length
+                return height + (cards + (message.hook_runs?.length ? 1 : 0)) * 2 * rootFontSize
+              }, 0)
             : estimateForMessage(row.row.message)
         case 'optimistic_message':
         case 'optimistic_branch_message':
@@ -3880,6 +3901,17 @@ function Chat() {
   const [autoCompactionEnabled, setAutoCompactionEnabled] = useState<boolean>(() => loadAutoCompactionEnabled())
   const [showAddedFilesPills, setShowAddedFilesPills] = useState<boolean>(() => loadShowAddedFilesPills())
   const [expandedProcessMessageRuns, setExpandedProcessMessageRuns] = useState<Set<string>>(() => new Set())
+  const transientProcessGroupKey = `live:${streamState.id}`
+  useEffect(() => {
+    if (!liveAgentGroupId) return
+    setExpandedProcessMessageRuns(previous => {
+      if (!previous.has(transientProcessGroupKey)) return previous
+      const next = new Set(previous)
+      next.delete(transientProcessGroupKey)
+      next.add(liveAgentGroupId)
+      return next
+    })
+  }, [liveAgentGroupId, transientProcessGroupKey])
   useEffect(() => {
     // Listen for custom event from SettingsPane (same window)
     const handleCustomEvent = (e: Event) => {
@@ -3924,8 +3956,8 @@ function Chat() {
     }
 
     const handleStorageEvent = (e: StorageEvent) => {
-      if (e.key === 'chat:groupToolReasoningRuns' && e.newValue !== null) {
-        setGroupToolReasoningRuns(e.newValue === 'true')
+      if (e.key === 'chat:groupToolReasoningRuns') {
+        setGroupToolReasoningRuns(e.newValue === null ? true : e.newValue === 'true')
       }
       if (e.key === TOOL_OUTPUT_TRUNCATION_ENABLED_KEY) {
         setTruncateToolOutput(e.newValue === 'false' ? false : true)
@@ -4866,18 +4898,27 @@ function Chat() {
     if (!conversationIdFromUrl) dispatch(initializeUserAndConversation())
   }, [conversationIdFromUrl, dispatch])
 
+  const modelSwitchScope = JSON.stringify([currentConversationId, modeLineageId, selection.revision])
+  const openaiSelectionScopeRef = useRef<string | null>(null)
+  const { pending: pendingModelSwitch, request: requestModelSwitch, cancel: cancelModelSwitch, confirm: confirmModelSwitch } =
+    useModelSwitchConfirmation(modelSwitchScope, branchModelSelection ? {
+      provider: providers.currentProvider, model: selectedModel?.name ?? branchModelSelection.model,
+    } : null)
+
   // Handle model selection
   const handleModelSelect = useCallback(
     (modelName: string) => {
       const model = models.find(m => m.name === modelName)
       if (model) {
-        dispatch(chatSliceActions.branchModelSelected({ provider: providers.currentProvider, model: model.name }))
-        selectModelMutation.mutate({ provider: providers.currentProvider, model })
+        requestModelSwitch({ provider: providers.currentProvider, model: model.name }, () => {
+          dispatch(chatSliceActions.branchModelSelected({ provider: providers.currentProvider, model: model.name }))
+          selectModelMutation.mutate({ provider: providers.currentProvider, model })
+        })
       } else {
         console.warn('Selected model not found:', modelName)
       }
     },
-    [models, selectModelMutation, providers.currentProvider, selectedModel?.name]
+    [models, selectModelMutation, providers.currentProvider, requestModelSwitch, dispatch]
   )
 
   const handleExtensionSelection = useCallback(
@@ -4917,6 +4958,7 @@ function Chat() {
 
   const handleProviderSelect = useCallback(
     async (providerName: string) => {
+      if (providerName === providers.currentProvider) return
       if (providerName === 'OpenRouter' && isCommunityMode) {
         setOpenRouterLoginRequiredModalOpen(true)
         return
@@ -4924,6 +4966,7 @@ function Chat() {
 
       // Check if OpenAI ChatGPT provider is selected and user is not authenticated
       if (providerName === 'OpenAI (ChatGPT)' && !isOpenAIAuthenticated()) {
+        openaiSelectionScopeRef.current = modelSwitchScope
         // Request OAuth flow from local server (server generates and stores PKCE)
         try {
           const data = await localApi.post<{ success?: boolean; authUrl?: string; state?: string; error?: string }>(
@@ -4945,10 +4988,12 @@ function Chat() {
         }
         return // Don't select provider until authenticated
       }
-      dispatch(chatSliceActions.branchModelSelected({ provider: providerName, model: null }))
-      dispatch(chatSliceActions.providerSelected(providerName))
+      requestModelSwitch({ provider: providerName, model: null }, () => {
+        dispatch(chatSliceActions.branchModelSelected({ provider: providerName, model: null }))
+        dispatch(chatSliceActions.providerSelected(providerName))
+      })
     },
-    [dispatch, openOpenaiAuthUrl]
+    [dispatch, openOpenaiAuthUrl, requestModelSwitch, providers.currentProvider, modelSwitchScope]
   )
 
   useEffect(() => {
@@ -4992,9 +5037,11 @@ function Chat() {
       }
 
       event.preventDefault()
-      dispatch(chatSliceActions.branchModelSelected({ provider: assignment.provider, model: assignment.model.name }))
-      dispatch(chatSliceActions.providerSelected(assignment.provider))
-      selectModelMutation.mutate({ provider: assignment.provider, model: assignment.model })
+      requestModelSwitch({ provider: assignment.provider, model: assignment.model.name }, () => {
+        dispatch(chatSliceActions.branchModelSelected({ provider: assignment.provider, model: assignment.model.name }))
+        dispatch(chatSliceActions.providerSelected(assignment.provider))
+        selectModelMutation.mutate({ provider: assignment.provider, model: assignment.model })
+      })
     }
 
     // Capture these toggles before editor autocomplete can consume Shift+Tab.
@@ -5010,7 +5057,7 @@ function Chat() {
       window.removeEventListener('keydown', handleChatToggleKeyDown, true)
       window.removeEventListener('keydown', handleChatKeyboardShortcut)
     }
-  }, [dispatch, handleProviderSelect, handleToggleOperationMode, handleToggleFastServiceTier, isOpenAIChatGPTProvider, navigate, providers.providers, selectModelMutation])
+  }, [dispatch, handleProviderSelect, handleToggleOperationMode, handleToggleFastServiceTier, isOpenAIChatGPTProvider, navigate, providers.providers, selectModelMutation, requestModelSwitch])
 
   const handleComposerSlashCommandSelect = useCallback(
     (command: string): ComposerSlashCommandResult | void => {
@@ -5940,8 +5987,10 @@ function Chat() {
       // The server committed the connection; no OAuth credentials cross this boundary.
 
       // Successfully authenticated, select the provider
-      dispatch(chatSliceActions.branchModelSelected({ provider: 'OpenAI (ChatGPT)', model: null }))
-      dispatch(chatSliceActions.providerSelected('OpenAI (ChatGPT)'))
+      requestModelSwitch({ provider: 'OpenAI (ChatGPT)', model: null }, () => {
+        dispatch(chatSliceActions.branchModelSelected({ provider: 'OpenAI (ChatGPT)', model: null }))
+        dispatch(chatSliceActions.providerSelected('OpenAI (ChatGPT)'))
+      }, openaiSelectionScopeRef.current ?? modelSwitchScope)
       closeOpenaiLoginModal()
       return 'success'
     } catch (error) {
@@ -6459,10 +6508,13 @@ function Chat() {
           {/* Messages Display. `isolate` keeps row z-indexes (focus-within:z-[70], the editing row's
               zIndex 80) local to this list. Without it they compete in the root stacking context
               and paint over the right bar (`relative z-10` in rightBar.tsx). Message popovers are
-              portaled to body, so nothing in here needs to escape. */}
+              portaled to body, so nothing in here needs to escape.
+              Keep toolbar clearance independent of visibility: shrinking padding at the bottom
+              clamps scrollTop, which the direction listener mistakes for an upward user scroll.
+              Only the absolute toolbar animates; hiding it must not change transcript geometry. */}
           <div
             ref={messagesContainerRef}
-            className={`isolate flex flex-col ${currentConversationId && isTitleBarVisible ? (editingTitle ? 'pt-28' : 'pt-22') : 'pt-6'} transition-[padding-top] duration-[var(--ygg-motion-duration-layout)] motion-reduce:transition-none dark:border-neutral-700 border-stone-200 rounded-lg overflow-y-auto overflow-x-hidden thin-scrollbar overscroll-y-contain touch-pan-y`}
+            className={`isolate flex flex-col ${currentConversationId ? (editingTitle ? 'pt-28' : 'pt-22') : 'pt-6'} dark:border-neutral-700 border-stone-200 rounded-lg overflow-y-auto overflow-x-hidden thin-scrollbar overscroll-y-contain touch-pan-y`}
             style={{
               ['overflowAnchor' as any]: 'none',
               willChange: 'scroll-position',
@@ -6595,7 +6647,10 @@ function Chat() {
                                 id='streaming'
                                 role='assistant'
                                 content={streamState.buffer}
-                                streamEvents={streamState.events}
+                                streamEvents={visibleLiveEvents}
+                    processRunActive={streamLifecycleActive}
+                    firstProcessGroupExpanded={!liveAgentGroupId ? expandedProcessMessageRuns.has(transientProcessGroupKey) : undefined}
+                    onFirstProcessGroupToggle={() => toggleProcessMessageRun(transientProcessGroupKey)}
                                 width='w-full'
                                 fontSizeOffset={fontSizeOffset}
                                 groupToolReasoningRuns={groupToolReasoningRuns}
@@ -6665,10 +6720,24 @@ function Chat() {
 
                         if (row.kind === 'process_group') {
                           const runId = String(row.id)
-                          const isExpanded = expandedProcessMessageRuns.has(runId)
-                          const summary = row.toolCount > 0
-                            ? `${row.toolCount} tool${row.toolCount === 1 ? '' : 's'}`
-                            : undefined
+                          const liveHere = liveAgentGroupId === runId
+                          const isExpanded = expandedProcessMessageRuns.has(runId) || (liveHere && expandedProcessMessageRuns.has(transientProcessGroupKey))
+                          const liveEvents = liveHere && showStreamingMessage ? liveAgentEvents.process : []
+                          const activityMessages = row.bridgedMessageId ? [...row.messages, ...(messageById.has(String(row.bridgedMessageId)) ? [messageById.get(String(row.bridgedMessageId))!] : [])] : row.messages
+                          const groupedBlocks = activityMessages.flatMap(message => parsedMessageDataById.get(message.id)?.contentBlocks ?? [])
+                          const groupedHooks = activityMessages.flatMap(message => message.hook_runs ?? [])
+                          const progress = getAgentProgress(groupedBlocks, liveEvents, groupedHooks, liveHere)
+                          const summary = progress.toolCount ? `${progress.completed} completed${progress.active && progress.pending ? ` · ${progress.pending} pending` : ''}` : row.toolCount ? `${row.toolCount} tools` : undefined
+                          let toolOffset = 0
+                          const activity = activityMessages.map(message => {
+                            const blocks = parsedMessageDataById.get(message.id)?.contentBlocks ?? []
+                            const offset = toolOffset
+                            toolOffset += blocks.filter(block => block.type === 'tool_use').length
+                            return <MessageActivity key={message.id} messageId={String(message.id)} blocks={blocks} hooks={message.hook_runs}
+                              toolOffset={offset} fontSizeOffset={fontSizeOffset} customTheme={customTheme} customThemeEnabled={customThemeEnabled}
+                              isDarkMode={isDarkMode} onHookRunsUpdated={handleHookRunsUpdated} onHookRunsSettled={handleHookRunsSettled} />
+                          })
+                          const hasActivity = groupedHooks.length > 0 || groupedBlocks.some(block => block.type === 'context_injection')
 
                           return (
                             <VirtualizedRowContainer
@@ -6680,20 +6749,10 @@ function Chat() {
                               className='z-0'
                             >
                               <div className='min-w-0 px-0 py-1 sm:px-2'>
-                                {/* Nested messages apply their own offset; only scale the header here. */}
-                                <div style={fontSizeOffset !== 0 ? { fontSize: `calc(1em + ${fontSizeOffset}px)` } : undefined}>
-                                  <DisclosureRow
-                                    label='Agent steps'
-                                    labelSize='group'
-                                    summary={summary}
-                                    expanded={isExpanded}
-                                    onToggle={() => toggleProcessMessageRun(runId)}
-                                    controlsId={`message-group-${runId}-panel`}
-                                  />
-                                </div>
-                                {/* Member rows mount only while open, so a collapsed run costs no per-message work. */}
-                                <DisclosurePanel id={`message-group-${runId}-panel`} expanded={isExpanded} flush>
-                                  <div className='pl-2.5'>
+                                <AgentSteps id={`message-group-${runId}`} expanded={isExpanded} onToggle={() => toggleProcessMessageRun(runId)}
+                                  summary={summary} activity={hasActivity ? activity : undefined} status={progress.status} active={progress.active}
+                                  style={fontSizeOffset !== 0 ? { fontSize: `calc(1em + ${fontSizeOffset}px)` } : undefined}
+                                  history={<div>
                                     {row.messages.map(groupedMessage => {
                                       const { contentBlocks } =
                                         parsedMessageDataById.get(groupedMessage.id) ?? EMPTY_PARSED_MESSAGE_DATA
@@ -6703,8 +6762,7 @@ function Chat() {
                                           id={groupedMessage.id.toString()}
                                           role={groupedMessage.role}
                                           content={groupedMessage.content}
-                                          contentBlocks={contentBlocks}
-                                          hookRuns={groupedMessage.hook_runs}
+                                          contentBlocks={contentBlocks?.filter(block => block.type !== 'context_injection')}
                                           timestamp={groupedMessage.created_at}
                                           width='w-full'
                                           modelName={groupedMessage.model_name}
@@ -6771,8 +6829,11 @@ function Chat() {
                                         />
                                       )
                                     })()}
-                                  </div>
-                                </DisclosurePanel>
+                                    {liveEvents.length > 0 && <ChatMessage id={`streaming-${runId}`} role='assistant' content='' streamEvents={liveEvents}
+                                      width='w-full' fontSizeOffset={fontSizeOffset} groupToolReasoningRuns={false} truncateToolOutput={truncateToolOutput}
+                                      customTheme={customTheme} customThemeEnabled={customThemeEnabled} isDarkMode={isDarkMode}
+                                      onOpenToolHtmlModal={openToolHtmlModal} onOpenSubagentTranscript={openSubagentTranscript} />}
+                                  </div>} />
                               </div>
                             </VirtualizedRowContainer>
                           )
@@ -6821,7 +6882,7 @@ function Chat() {
 
                         const displayContentBlocks =
                           isProcessBridgeSourceMessage && Array.isArray(contentBlocks)
-                            ? contentBlocks.filter(block => !isProcessContentBlock(block))
+                            ? contentBlocks.filter(block => !isProcessContentBlock(block) && block.type !== 'context_injection')
                             : contentBlocks
                         const assistantContainerClassName = assistantContainerClassByMessageId.get(String(msg.id))
 
@@ -6891,7 +6952,7 @@ function Chat() {
                               role={msg.role}
                               content={msg.content}
                               contentBlocks={displayContentBlocks}
-                              hookRuns={msg.hook_runs}
+                              hookRuns={isProcessBridgeSourceMessage ? undefined : msg.hook_runs}
                               timestamp={msg.created_at}
                               width='w-full'
                               modelName={msg.model_name}
@@ -6944,7 +7005,10 @@ function Chat() {
                     id='streaming'
                     role='assistant'
                     content={streamState.buffer}
-                    streamEvents={streamState.events}
+                    streamEvents={visibleLiveEvents}
+                    processRunActive={streamLifecycleActive}
+                    firstProcessGroupExpanded={!liveAgentGroupId ? expandedProcessMessageRuns.has(transientProcessGroupKey) : undefined}
+                    onFirstProcessGroupToggle={() => toggleProcessMessageRun(transientProcessGroupKey)}
                     width='w-full'
                     fontSizeOffset={fontSizeOffset}
                     groupToolReasoningRuns={groupToolReasoningRuns}
@@ -7986,6 +8050,11 @@ function Chat() {
         />
       )}
 
+      {pendingModelSwitch && (
+        <ModelSwitchDialog from={pendingModelSwitch.from} to={pendingModelSwitch.to}
+          onCancel={cancelModelSwitch} onConfirm={confirmModelSwitch} />
+      )}
+
       {/* Desktop: side-by-side layout */}
       {heimdallVisible && !isMobile && (
         <div className='flex-1 min-w-0 mb-2'>
@@ -8222,8 +8291,10 @@ function Chat() {
                     variant='outline2'
                     className='bg-emerald-600 hover:bg-emerald-700 border-emerald-700 text-white active:scale-90'
                     onClick={() => {
-                      dispatch(chatSliceActions.branchModelSelected({ provider: 'OpenAI (ChatGPT)', model: null }))
-                      dispatch(chatSliceActions.providerSelected('OpenAI (ChatGPT)'))
+                      requestModelSwitch({ provider: 'OpenAI (ChatGPT)', model: null }, () => {
+                        dispatch(chatSliceActions.branchModelSelected({ provider: 'OpenAI (ChatGPT)', model: null }))
+                        dispatch(chatSliceActions.providerSelected('OpenAI (ChatGPT)'))
+                      }, openaiSelectionScopeRef.current ?? modelSwitchScope)
                       closeOpenaiLoginModal()
                     }}
                     style={authModalPrimaryButtonStyle}

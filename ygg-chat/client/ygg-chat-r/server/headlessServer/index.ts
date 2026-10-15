@@ -62,6 +62,7 @@ type InferenceToolDefinition = {
 }
 
 const HEADLESS_RUNTIME_BUILTIN_TOOL_NAMES = new Set([
+  'claude_bridge',
   'todo_list',
   'plan_md',
   'fetch_notes',
@@ -137,8 +138,8 @@ const resolveDefaultInferenceTools = (): InferenceToolDefinition[] => {
   return dedupeToolsByName(tools)
 }
 
-// The subagent + subagent_manager tools are always excluded (no nested subagents).
-const SUBAGENT_EXCLUDED_TOOL_NAMES = new Set(['subagent', 'subagent_manager'])
+// Delegation tools are always excluded (no nested subagents or external reviewers).
+const SUBAGENT_EXCLUDED_TOOL_NAMES = new Set(['subagent', 'subagent_manager', 'claude_bridge'])
 
 // These orchestration tools are always exposed to a child, including when a
 // parent supplies an explicit tool whitelist.

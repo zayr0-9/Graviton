@@ -7,6 +7,7 @@ export interface OperationModeToolPolicyDefinition {
 }
 
 export const CHAT_MODE_ALLOWED_TOOL_NAMES = new Set([
+  'claude_bridge', // Enforced read-only CLI toolset, restricted mode, no hooks/MCP.
   'bash',
   'browse_web',
   'brave_search',
@@ -50,6 +51,7 @@ export const CHAT_MODE_BLOCKED_TOOL_NAMES = new Set([
  * without auto-approval must be held to genuinely read-only tools.
  */
 export const AUTO_APPROVE_REQUIRED_TOOL_NAMES = new Set([
+  'claude_bridge', // External account usage and persistent reviewer sessions require parent approval.
   ...CHAT_MODE_BLOCKED_TOOL_NAMES,
   'bash',
   'powershell',

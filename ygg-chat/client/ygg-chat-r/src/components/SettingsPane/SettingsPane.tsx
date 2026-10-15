@@ -1,3 +1,4 @@
+import { useActivityStepLabels, saveActivityStepLabels } from '../../helpers/activityStepLabelsSettings'
 import { useQueryClient } from '@tanstack/react-query'
 import mammoth from 'mammoth'
 import {
@@ -380,11 +381,13 @@ export const SettingsPane: React.FC<SettingsPaneProps> = ({ open, onClose }) => 
   const [groupToolReasoningRuns, setGroupToolReasoningRuns] = useState<boolean>(() => {
     try {
       const stored = localStorage.getItem('chat:groupToolReasoningRuns')
-      return stored === null ? false : stored === 'true'
+      return stored === null ? true : stored === 'true'
     } catch {
-      return false
+      return true
     }
   })
+
+  const showActivityStepLabels = useActivityStepLabels()
 
   const [truncateToolOutput, setTruncateToolOutput] = useState<boolean>(loadToolOutputTruncationEnabled)
 
@@ -2004,6 +2007,21 @@ ${block}`
                         </button>
                       </div>
                     </div>
+                  </div>
+
+                  <div className='flex items-center justify-between gap-3 rounded-2xl bg-neutral-50/70 px-3 py-3 dark:bg-neutral-900/10'
+                    style={savedCustomThemesColors ? { backgroundColor: savedCustomThemesColors.cardBg } : undefined}>
+                    <label id='activity-step-labels-label' className='text-sm font-medium text-stone-700 dark:text-neutral-100'
+                      style={savedCustomThemesColors ? { color: savedCustomThemesColors.titleText } : undefined}>
+                      Show “After step” labels
+                    </label>
+                    <button type='button' className={iconButtonClass} aria-labelledby='activity-step-labels-label'
+                      aria-pressed={showActivityStepLabels} onClick={() => saveActivityStepLabels(!showActivityStepLabels)}
+                      title={showActivityStepLabels ? 'Hide step labels' : 'Show step labels'}
+                      style={savedCustomThemesColors ? { backgroundColor: savedCustomThemesColors.buttonBg, color: savedCustomThemesColors.buttonText } : undefined}>
+                      {showActivityStepLabels ? <Check {...lucideIconProps}
+                        style={savedCustomThemesColors ? { color: savedCustomThemesColors.primaryButtonBg } : undefined} /> : <X {...lucideIconProps} />}
+                    </button>
                   </div>
 
                   {/* Edit Diff Expansion Animation Section */}

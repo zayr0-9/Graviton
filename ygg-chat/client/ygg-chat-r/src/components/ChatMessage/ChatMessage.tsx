@@ -46,6 +46,8 @@ import {
 } from '../ThemeManager/themeConfig'
 import { ContextInjectionCard, type ContextInjectionCardEntry } from './ContextInjectionCard'
 import { HookActivityCard } from './HookActivityCard'
+import { AgentSteps } from './AgentSteps'
+import { partitionAgentItems, isProcessRunSeparatorText, getAgentProgress } from './agentActivity'
 import { MessageActions } from './MessageActions'
 import { submitMessageDraft } from './messageSubmission'
 import { DisclosurePanel, DisclosureRow } from './messagePrimitives'
@@ -78,7 +80,6 @@ import {
   MESSAGE_IMAGE_CLASS,
   MESSAGE_IMAGE_WRAPPER_CLASS,
   normalizeReasoningTextForComparison,
-  PROCESS_RUN_GROUP_MIN_ITEMS,
   REASONING_TEXT_MARKDOWN_CLASS,
   SHARED_TEXT_MARKDOWN_CLASS,
   TEXT_DETAIL_CLASS,
@@ -139,6 +140,9 @@ interface ChatMessageProps {
   fontSizeOffset?: number
   /** Group long consecutive reasoning/tool runs into one "Agent steps" disclosure. */
   groupToolReasoningRuns?: boolean
+  processRunActive?: boolean
+  firstProcessGroupExpanded?: boolean
+  onFirstProcessGroupToggle?: () => void
   /** Display-only projection; canonical tool results remain complete. */
   truncateToolOutput?: boolean
   customTheme?: CustomChatTheme
@@ -179,7 +183,7 @@ type ProcessEntryType = 'tool' | 'reasoning'
 
 interface MessageRenderItem {
   key: string
-  kind: 'process' | 'other'
+  kind: 'process' | 'activity' | 'other'
   processType?: ProcessEntryType
   ignoreForProcessRunGrouping?: boolean
   node: React.ReactNode
@@ -384,16 +388,6 @@ const getCollapsedReasoningSummary = (text: string | any): string => {
   return truncateWords(content)
 }
 
-const isProcessRunSeparatorText = (text: string): boolean => {
-  const trimmed = text.trim()
-  if (!trimmed) return true
-  // Keep obviously structured markdown content out of process-run grouping.
-  if (trimmed.startsWith('#') || trimmed.startsWith('```')) return false
-  // Short connective text (even if multiline) should not break an Agent Steps run.
-  const words = trimmed.split(/\s+/).filter(Boolean)
-  return words.length <= 12
-}
-
 const parseResponsesToolArgs = (rawArgs: unknown): unknown => {
   if (typeof rawArgs !== 'string') return rawArgs
   try {
@@ -451,6 +445,9 @@ const ChatMessageBody: React.FC<ChatMessageProps> = React.memo(
     keepTextOutsideGroups = false,
     fontSizeOffset = 0,
     groupToolReasoningRuns = false,
+    processRunActive = false,
+    firstProcessGroupExpanded,
+    onFirstProcessGroupToggle,
     truncateToolOutput = true,
     customTheme: customThemeProp,
     customThemeEnabled: customThemeEnabledProp,
@@ -1275,88 +1272,31 @@ const ChatMessageBody: React.FC<ChatMessageProps> = React.memo(
     }
 
     const renderItemsWithOptionalProcessGrouping = (items: MessageRenderItem[], sourceKey: string): React.ReactNode[] => {
-      if (!groupToolReasoningRuns) return items.map(item => item.node)
-
-      const rendered: React.ReactNode[] = []
-      let index = 0
-
-      while (index < items.length) {
-        const current = items[index]
-        if (current.kind !== 'process') {
-          rendered.push(current.node)
-          index += 1
-          continue
-        }
-
-        let runEnd = index
-        while (runEnd < items.length) {
-          const candidate = items[runEnd]
-          if (!candidate) break
-          if (candidate.kind === 'process') {
-            runEnd += 1
-            continue
-          }
-          if (candidate.ignoreForProcessRunGrouping) {
-            let lookahead = runEnd + 1
-            while (lookahead < items.length && items[lookahead]?.ignoreForProcessRunGrouping) lookahead += 1
-            if (lookahead < items.length && items[lookahead]?.kind === 'process') {
-              runEnd += 1
-              continue
-            }
-          }
-          break
-        }
-
-        const runItems = items.slice(index, runEnd)
-        const processItems = runItems.filter(item => item.kind === 'process')
-
-        if (processItems.length >= PROCESS_RUN_GROUP_MIN_ITEMS) {
-          const groupKey = keepTextOutsideGroups
-            ? `process-run-${sourceKey}-${runItems[0].key}`
-            : `process-run-${sourceKey}-${runItems[0].key}-${runItems[runItems.length - 1].key}`
-          const isExpanded = expandedBlocks.groupRuns.has(groupKey)
-          const toolCount = processItems.filter(item => item.processType === 'tool').length
-          const summary = toolCount > 0 ? `${toolCount} tool${toolCount === 1 ? '' : 's'}` : undefined
-          const panelId = `${id}-${groupKey}-panel`
-
-          rendered.push(
-            <div key={groupKey} className='min-w-0 max-w-full'>
-              {/* Keep the offset on the header only; each nested step applies its own. */}
-              <div style={messageContentStyle}>
-                <DisclosureRow
-                  label='Agent steps'
-                  labelSize='group'
-                  summary={summary}
-                  expanded={isExpanded}
-                  onToggle={() => toggleBlock('groupRuns', groupKey)}
-                  controlsId={panelId}
-                />
-              </div>
-              <DisclosurePanel
-                id={panelId}
-                expanded={isExpanded}
-                disableTransition={isStreamingRender}
-                onTransitionEnd={handleExpandTransitionEnd}
-              >
-                <div className={MESSAGE_BLOCK_STACK_CLASS}>{runItems.map(item => item.node)}</div>
-              </DisclosurePanel>
-            </div>
-          )
-        } else {
-          rendered.push(...runItems.map(item => item.node))
-        }
-
-        index = runEnd
-      }
-
-      return rendered
+      if (!groupToolReasoningRuns || isUserRow) return items.map(item => item.node)
+      let firstGroup = true
+      return partitionAgentItems(items).map(part => {
+        if (!('history' in part)) return part.node
+        // First-item identity survives appended tools, context loads and hook updates.
+        const groupKey = `process-run-${sourceKey}-${part.key}`
+        const controlled = firstGroup && firstProcessGroupExpanded !== undefined && onFirstProcessGroupToggle
+        firstGroup = false
+        const toolCount = part.history.filter(item => item.processType === 'tool').length
+        const isLiveTail = processRunActive && [...part.history, ...part.activity].includes(items[items.length - 1])
+        const progress = isLiveTail ? getAgentProgress([], streamEvents ?? [], hookRuns ?? [], true) : undefined
+        return <AgentSteps key={groupKey} id={`${id}-${groupKey}`} style={messageContentStyle}
+          expanded={controlled ? firstProcessGroupExpanded! : expandedBlocks.groupRuns.has(groupKey)} onToggle={controlled ? onFirstProcessGroupToggle! : () => toggleBlock('groupRuns', groupKey)}
+          summary={progress?.toolCount ? `${progress.completed} completed${progress.pending ? ` · ${progress.pending} pending` : ''}` : toolCount ? `${toolCount} tool${toolCount === 1 ? '' : 's'}` : undefined}
+          status={progress?.status} active={progress?.active}
+          activity={part.activity.length ? part.activity.map(item => item.node) : undefined}
+          history={<div className={MESSAGE_BLOCK_STACK_CLASS}>{part.history.map(item => item.node)}</div>} />
+      })
     }
 
     const renderHookActivityItem = (): MessageRenderItem | null => {
       if (!hookRuns?.length || role !== 'assistant') return null
       return {
         key: 'hook-activity',
-        kind: 'other',
+        kind: 'activity',
         node: <HookActivityCard key='hook-activity' initialRuns={hookRuns} messageId={id} event={hookRuns[0]?.event} fontSizeOffset={fontSizeOffset} onLayoutChange={onLayoutChange} onRunsUpdated={runs => onHookRunsUpdated?.(id, runs)} onRunsSettled={onHookRunsSettled} />,
       }
     }
@@ -1387,8 +1327,8 @@ const ChatMessageBody: React.FC<ChatMessageProps> = React.memo(
 
     const renderContextInjectionItem = (key: string, entries: ContextInjectionCardEntry[]): MessageRenderItem => ({
       key,
-      // `kind: 'other'` is load-bearing: the card must never fold into the collapsed run.
-      kind: 'other',
+      // An attachment stays visible without terminating the surrounding tool history.
+      kind: 'activity',
       node: (
         <ContextInjectionCard
           key={key}
@@ -1806,17 +1746,15 @@ const ChatMessageBody: React.FC<ChatMessageProps> = React.memo(
 
     // `contentToolGroupsByIndex` is keyed by index into `contentBlocks`. A user row never has tool
     // blocks and the fallback text block sits alone, so the map stays valid for `renderableBlocks`.
-    const baseRenderedNodes = editingState
-      ? null
-      : hasStreamEvents
-        ? renderItemsWithOptionalProcessGrouping(buildStreamRenderItems(), `stream-${id}`)
-        : renderableBlocks.length > 0
-          ? renderItemsWithOptionalProcessGrouping(buildContentBlockRenderItems(renderableBlocks), `blocks-${id}`)
-          : null
     const hookActivityItem = renderHookActivityItem()
-    const renderedNodes = hookActivityItem
-      ? [...(Array.isArray(baseRenderedNodes) ? baseRenderedNodes : baseRenderedNodes ? [baseRenderedNodes] : []), hookActivityItem.node]
-      : baseRenderedNodes
+    const renderItems = editingState ? [] : hasStreamEvents ? buildStreamRenderItems() : buildContentBlockRenderItems(renderableBlocks)
+    // Hook records have message ownership but no tool-call correlation. Attach them to the
+    // last process segment before final prose; never invent a per-tool step number.
+    if (hookActivityItem) {
+      const lastProcess = renderItems.reduce((last, item, index) => item.kind === 'process' || item.kind === 'activity' ? index : last, -1)
+      renderItems.splice(lastProcess + 1, 0, hookActivityItem)
+    }
+    const renderedNodes = editingState ? null : renderItemsWithOptionalProcessGrouping(renderItems, hasStreamEvents ? `stream-${id}` : `blocks-${id}`)
 
     const hasSelection = selectedText.length > 0
     const showActionsRow = !readOnly && hasContent && canBranchMessage && showInlineActions

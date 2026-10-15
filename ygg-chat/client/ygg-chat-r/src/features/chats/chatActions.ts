@@ -30,7 +30,7 @@ import { convContextSet, systemPromptSet } from '../conversations/conversationSl
 import type { Conversation } from '../conversations/conversationTypes'
 import { selectSelectedProject } from '../projects/projectSelectors'
 import { chatSliceActions } from './chatSlice'
-import { selectOperationMode } from './chatSelectors'
+import { selectCurrentViewStreamFor, selectOperationMode } from './chatSelectors'
 import { resolveAttachmentUrlFromOrigins } from './attachmentUrl'
 import {
   Attachment,
@@ -902,12 +902,17 @@ export const compactBranch = createAsyncThunk<
   'chat/compactBranch',
   async ({ conversationId, parentMessageId }, { dispatch, getState, rejectWithValue, signal }) => {
     const state = getState()
-    if (state.chat.streaming.activeIds.some(id => {
-      const stream = state.chat.streaming.byId[id]
-      return stream?.active && String(stream.conversationId) === String(conversationId)
-    })) return rejectWithValue('Wait for the active run to finish before compacting')
+    const { currentConversationId, currentLineageId, currentPath } = state.chat.conversation
+    const isSelectedConversation = String(currentConversationId) === String(conversationId)
+    const lineageId = isSelectedConversation ? currentLineageId : null
+    const branchPath = isSelectedConversation ? [...currentPath] : parentMessageId == null ? [] : [parentMessageId]
+    // Compaction owns one branch, not every run in the conversation. Use the same
+    // lineage/legacy-anchor matching as the selected view; the server revalidates it.
+    if (selectCurrentViewStreamFor(state.chat.streaming, { conversationId, lineageId, path: branchPath })) {
+      return rejectWithValue('Wait for the active run to finish before compacting')
+    }
     try {
-      const pending = dispatch(sendMessage({ conversationId, parent: parentMessageId,
+      const pending = dispatch(sendMessage({ conversationId, parent: parentMessageId, lineageId, branchPath,
         input: { content: '/compact' }, repeatNum: 1, think: false, manualCompaction: true, includeGlobalComposerContext: false }))
       const abort = () => pending.abort()
       signal.addEventListener('abort', abort, { once: true })

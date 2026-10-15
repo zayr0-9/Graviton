@@ -1,21 +1,8 @@
-import React, { useEffect, useState } from 'react'
+import React from 'react'
+import { useStreamingThinkingWord } from './useStreamingThinkingWord'
 import { useReducedMotion } from 'framer-motion'
 import { MESSAGE_BLOCK_INSET_CLASS } from '../ChatMessage/chatMessageShared'
 import { getThemeModeColor, useCustomChatTheme, useHtmlDarkMode } from '../ThemeManager/themeConfig'
-
-const STREAMING_THINKING_WORDS = [
-  'Thinking',
-  'Reading',
-  'Tracing',
-  'Checking',
-  'Reviewing',
-  'Inspecting',
-  'Planning',
-  'Composing',
-  'Working',
-]
-
-const STREAMING_THINKING_WORD_INTERVAL_MS = 3200
 
 type StreamingThinkingIndicatorVariant = 'inline' | 'tab'
 
@@ -36,23 +23,11 @@ export const StreamingThinkingIndicator = React.memo(function StreamingThinkingI
   animatedBorderClassName = '',
   style,
 }: StreamingThinkingIndicatorProps) {
-  const [wordIndex, setWordIndex] = useState(0)
+  const thinkingWord = useStreamingThinkingWord(!compacting)
   const shouldReduceMotion = useReducedMotion()
   const { theme, enabled } = useCustomChatTheme()
   const isDarkMode = useHtmlDarkMode()
   const mutedColor = enabled ? getThemeModeColor(theme.colors.toolJobsMutedText, isDarkMode) : undefined
-
-  useEffect(() => {
-    if (compacting || shouldReduceMotion || typeof window === 'undefined' || STREAMING_THINKING_WORDS.length <= 1) return
-
-    const intervalId = window.setInterval(() => {
-      setWordIndex(prev => (prev + 1) % STREAMING_THINKING_WORDS.length)
-    }, STREAMING_THINKING_WORD_INTERVAL_MS)
-
-    return () => {
-      window.clearInterval(intervalId)
-    }
-  }, [compacting, shouldReduceMotion])
 
   const variantClassName =
     variant === 'tab'
@@ -82,7 +57,7 @@ export const StreamingThinkingIndicator = React.memo(function StreamingThinkingI
           className={`font-medium leading-[1.2] ${shouldReduceMotion || compactionCompleted ? '' : 'tool-name-shimmer'}`}
           style={mutedColor ? { '--tool-shimmer-base': mutedColor } as React.CSSProperties : undefined}
         >
-          {compacting ? (compactionCompleted ? 'Compacted' : 'Compacting') : STREAMING_THINKING_WORDS[wordIndex]}
+          {compacting ? (compactionCompleted ? 'Compacted' : 'Compacting') : thinkingWord}
         </span>
         {compacting && (
           <span

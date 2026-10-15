@@ -19,7 +19,7 @@ describe('transcript notice alignment', () => {
     const html = renderToStaticMarkup(node)
     expect(html).toContain(MESSAGE_NOTICE_WRAPPER_CLASS)
     expect(html).toContain(MESSAGE_NOTICE_ROW_CLASS)
-    expect(html).toContain('width="14" height="14"')
+    expect(html).toContain(_name === 'summary' ? 'width="14" height="14"' : 'width="16" height="16"')
   })
 
   it('aligns inline instruction and hook cards without adding a second outer gutter', () => {

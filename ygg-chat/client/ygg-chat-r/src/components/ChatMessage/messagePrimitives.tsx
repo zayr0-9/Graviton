@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react'
-import { ChevronRight } from 'lucide-react'
+import { ChevronRight, ListChecks } from 'lucide-react'
 import { COLLAPSE_UNMOUNT_FALLBACK_MS, isPanelCollapseTransitionEnd, resolvePanelChildrenMounted } from './disclosurePanelState'
 import {
   DISCLOSURE_BODY_CLASS,
@@ -10,6 +10,9 @@ import {
   DISCLOSURE_SUMMARY_CLASS,
   MONO_DETAIL_CLASS,
   MONO_KEY_CLASS,
+  QUIET_CHEVRON_CLASS,
+  QUIET_MUTED_CLASS,
+  QUIET_ROW_CLASS,
   stringifyToolValue,
   SURFACE_CARD_PADDING_CLASS,
   SURFACE_INNER_CLASS,
@@ -39,7 +42,7 @@ const TONE_LABEL_CLASS: Record<DisclosureTone, string> = {
 interface DisclosureRowProps {
   /** Primary label. A string gets the tone class; a node is rendered as is. */
   label: React.ReactNode
-  /** Group headings are 1pt larger than ordinary row labels. Applies to string labels. */
+  /** Group rows use quiet transcript chrome with a leading steps icon. */
   labelSize?: 'default' | 'group'
   /** Optional muted text shown while collapsed. */
   summary?: React.ReactNode
@@ -75,9 +78,9 @@ export const DisclosureRow: React.FC<DisclosureRowProps> = ({
   const showSummary = summary != null && summary !== '' && (!expanded || !hideSummaryWhenExpanded)
   // A node label brings its own typography, so it gets the layout slot WITHOUT a text size.
   // Applying one here as well would multiply two em-relative sizes and render it small.
-  const labelClass = labelSize === 'group'
-    ? `${DISCLOSURE_LABEL_LAYOUT_CLASS} text-[calc(0.8125em+1pt)] font-medium leading-tight`
-    : DISCLOSURE_LABEL_CLASS
+  const isGroup = labelSize === 'group'
+  const labelClass = DISCLOSURE_LABEL_CLASS
+  const leadingIcon = leading ?? (isGroup ? <ListChecks size={16} strokeWidth={1.75} aria-hidden='true' /> : null)
   const labelNode =
     typeof label === 'string' ? (
       <span className={`${labelClass} ${TONE_LABEL_CLASS[tone]}`}>{label}</span>
@@ -90,21 +93,21 @@ export const DisclosureRow: React.FC<DisclosureRowProps> = ({
       <button
         type='button'
         onClick={onToggle}
-        className={`${DISCLOSURE_ROW_CLASS} min-w-0 flex-1`}
+        className={`${isGroup ? QUIET_ROW_CLASS : DISCLOSURE_ROW_CLASS} min-w-0 flex-1`}
         aria-expanded={expanded}
         aria-controls={controlsId}
       >
-        {leading && <span className='flex shrink-0 items-center text-neutral-400 dark:text-neutral-500'>{leading}</span>}
+        {leadingIcon && <span className={`flex shrink-0 items-center ${isGroup ? QUIET_MUTED_CLASS : 'text-neutral-400 dark:text-neutral-500'}`}>{leadingIcon}</span>}
         {labelNode}
         {meta != null && meta !== '' && (
-          <span className={`shrink-0 truncate ${TEXT_DETAIL_CLASS} leading-none text-neutral-500 dark:text-neutral-500`}>{meta}</span>
+          <span className={`shrink-0 truncate ${TEXT_DETAIL_CLASS} leading-tight text-neutral-500 dark:text-neutral-500`}>{meta}</span>
         )}
-        {showSummary ? <span className={DISCLOSURE_SUMMARY_CLASS}>{summary}</span> : <span className='min-w-0 flex-1' />}
+        {showSummary ? <span className={isGroup ? `min-w-0 flex-1 truncate ${TEXT_DETAIL_CLASS} leading-tight ${QUIET_MUTED_CLASS}` : DISCLOSURE_SUMMARY_CLASS}>{summary}</span> : <span className='min-w-0 flex-1' />}
         <ChevronRight
           size={14}
           strokeWidth={2.25}
           aria-hidden='true'
-          className={`${DISCLOSURE_CHEVRON_CLASS} ${expanded ? 'rotate-90' : ''}`}
+          className={`${isGroup ? QUIET_CHEVRON_CLASS : DISCLOSURE_CHEVRON_CLASS} ${expanded ? 'rotate-90' : ''}`}
         />
       </button>
       {trailing && <div className='flex shrink-0 items-center gap-1 pr-1'>{trailing}</div>}
