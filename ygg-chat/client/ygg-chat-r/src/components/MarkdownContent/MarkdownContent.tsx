@@ -5,6 +5,7 @@ import remarkGfm from 'remark-gfm'
 import { SHARED_TEXT_MARKDOWN_CLASS } from '../ChatMessage/chatMessageShared'
 import { MermaidDiagram, getMermaidSource, isMermaidCodeBlock, prepareMermaidMarkdown } from '../MermaidDiagram'
 import { MarkdownTable } from './MarkdownTable'
+import { MarkdownCodeBlock } from './MarkdownCodeBlock'
 import { getMarkdownThemeVars, useCustomChatTheme, useHtmlDarkMode } from '../ThemeManager/themeConfig'
 
 interface MarkdownContentProps {
@@ -18,7 +19,7 @@ const MarkdownPre: React.FC<React.HTMLAttributes<HTMLPreElement> & ExtraProps> =
   void _node
   const codeChild = React.Children.toArray(children).find(isMermaidCodeBlock)
   if (codeChild) return <MermaidDiagram chart={getMermaidSource(codeChild)} />
-  return <pre {...props}>{children}</pre>
+  return <MarkdownCodeBlock {...props}>{children}</MarkdownCodeBlock>
 }
 
 const MARKDOWN_COMPONENTS = { pre: MarkdownPre, table: MarkdownTable }

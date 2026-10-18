@@ -183,3 +183,36 @@ For selected-message copying/moving:
 - `agent_message_storage_shape.md`
 - `agent_chat_pipeline.md`
 - `agent_chat_streaming_state.md`
+
+## Shared keyboard commands
+
+The app shell mounts `src/keyboard/KeyboardProvider.tsx` and `NavigationCommands.tsx`
+inside the router. The latter owns the single title-bar history controller used by
+both buttons and Back/Forward shortcuts. See `src/keyboard/README.md` for the catalog,
+registration, overlay-blocking rules, and initial platform bindings.
+
+Chat registers `heimdall.focus` (Cmd/Ctrl+Shift+E), opens the tree if hidden, and sends
+an acknowledged one-shot focus request. Heimdall registers focused graph commands:
+Up/Down explore parent/child (prefer the active path); Left/Right traverse the current
+visible depth in visual order, crossing parent boundaries, and immediately open the
+new branch. Enter activates the explored node through the existing `onNodeSelect`
+pipeline; Space toggles action selection; Shift+F10 opens the action group. The SVG
+is one Tab stop with an active descendant and a solid theme-aware keyboard focus
+ring (no dotted/dashed cursor outline). `heimdallKeyboard.ts` operates on the complete
+filtered tree, excluding the synthetic root, not the culled viewport. Vertical
+exploration does not change the primary branch; horizontal movement does. Canonical
+activation paths retain hidden messages; on-path activation preserves the current
+branch. Horizontal movement stops at row edges without wrapping.
+
+Legacy Heimdall overlays and Chat settings register command blockers. Chat Settings
+→ Shortcuts opens `SettingsPane/KeyboardShortcutsModal.tsx`, which records, clears,
+resets, validates, and saves catalog bindings via `keyboard/shortcutPreferences.ts`.
+Saved localStorage overrides update routing and labels immediately; drafts cancel
+without changing runtime bindings. Existing Chat mode/model shortcuts are not
+migrated. Browser/iframe input contexts, workspace-region cycling, and a command
+palette remain outside scope.
+
+Validation: renderer suite (including `commandRegistry.test.ts` and
+`heimdallKeyboard.test.ts`), `node scripts/test-chat-selection-electron.cjs` for real
+StrictMode/provider/history integration, and `npm run build:electron`. Manually check
+large streaming trees, note/action focus transitions, and screen-reader behavior.

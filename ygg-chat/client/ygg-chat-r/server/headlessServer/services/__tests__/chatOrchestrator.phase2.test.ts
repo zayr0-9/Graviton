@@ -298,6 +298,65 @@ describe('source lineage membership validation', () => {
     if (testDirectory) rmSync(testDirectory, { recursive: true, force: true })
   })
 
+  it.each([true, false])('persists Fast mode %s on user and assistant rows', async fastMode => {
+    const events: any[] = []
+    await orchestrator.runMessage({
+      operation: 'send', conversationId: 'c1', content: 'hello', provider: 'openaichatgpt',
+      modelName: 'test', streamId: 'fast-run', serviceTier: fastMode ? 'priority' : undefined,
+    }, event => events.push(event))
+    const user = events.find(event => event.type === 'user_message_persisted').message
+    const assistant = events.find(event => event.type === 'complete').message
+    for (const row of [user, assistant]) {
+      const meta = typeof row.meta === 'string' ? JSON.parse(row.meta) : row.meta
+      expect(meta.fastMode).toBe(fastMode)
+      expect(meta.modelSelection).toEqual({ provider: 'openaichatgpt', model: 'test' })
+    }
+  })
+
+  it('accepts FIFO follow-ups during manual compaction and delivers only after summary commit', async () => {
+    orchestrator = new ChatOrchestrator({ db, statements, providerRouter: providerRouter as any,
+      toolExecutor: async () => 'Read result' })
+    const events: any[] = []
+    let call = 0
+    vi.spyOn(providerRouter, 'generate').mockImplementation(async (_provider, input) => {
+      call++
+      if (call <= 2) {
+        const requestId = `q${call}`
+        const accepted = orchestrator.submitQueuedMessage('c1', 'manual', { requestId, content: `Follow-up ${call}` })
+        expect(accepted.snapshot?.items.find(item => item.requestId === requestId)?.status).toBe('queued')
+        expect(events.some(event => event.type === 'queued_user_message_persisted')).toBe(false)
+        expect(input.history.some((row: any) => row.content?.startsWith('Follow-up'))).toBe(false)
+        if (call === 1) return { content: '', toolCalls: [{ id: 'read', name: 'read_file', arguments: {} }] }
+        return { content: 'Committed summary' }
+      }
+      expect(input.history[0].meta).toContain('compaction_summary')
+      expect(input.history.filter((row: any) => row.content?.startsWith('Follow-up')).map((row: any) => row.content))
+        .toEqual(['Follow-up 1', 'Follow-up 2'])
+      return { content: 'Follow-ups answered' }
+    })
+    await orchestrator.runMessage({ operation: 'send', conversationId: 'c1', content: '/compact',
+      provider: 'openaichatgpt', modelName: 'test', streamId: 'manual', manualCompaction: true }, event => events.push(event))
+    expect(call).toBe(3)
+    const completedIndex = events.findIndex(event => event.type === 'context_compaction' && event.status === 'completed')
+    const queued = events.filter(event => event.type === 'queued_user_message_persisted')
+    expect(queued).toHaveLength(2)
+    for (const event of queued) {
+      expect(events.indexOf(event)).toBeGreaterThan(completedIndex)
+      expect(JSON.parse(event.message.meta || '{}').kind).not.toBe('compaction_instruction')
+    }
+    expect(queued[1].message.parent_id).toBe(queued[0].message.id)
+    expect(events.find(event => event.type === 'complete').message.content).toBe('Follow-ups answered')
+    expect(orchestrator.getMessageQueue('c1', 'manual').items.map(item => item.status)).toEqual(['delivered', 'delivered'])
+
+    const successor = orchestrator.submitQueuedMessage('c1', 'manual', { requestId: 'late', content: 'One more follow-up' })
+    expect(successor.restart).toMatchObject({ content: 'One more follow-up', manualCompaction: false })
+    const nextEvents: any[] = []
+    providerRouter.generate = async () => ({ content: 'Late follow-up answered' })
+    await orchestrator.runMessage(successor.restart!, event => nextEvents.push(event))
+    expect(nextEvents.some(event => event.type === 'context_compaction')).toBe(false)
+    expect(nextEvents.find(event => event.type === 'user_message_persisted').message.content).toBe('One more follow-up')
+  })
+
   it('inserts one Full access notice after queued input without upgrading the live run', async () => {
     const events: any[] = []
     let call = 0

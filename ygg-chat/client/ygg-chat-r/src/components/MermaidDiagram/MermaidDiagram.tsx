@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useId, useRef, useState } from 'react'
+import React, { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react'
 import { AnimatePresence, motion, useReducedMotion } from 'framer-motion'
 import { Maximize2, Minus, Plus, RotateCcw, Scan, X } from 'lucide-react'
 import { createPortal } from 'react-dom'
@@ -13,6 +13,13 @@ import {
   type MermaidSize,
   type MermaidViewTransform,
 } from './mermaidViewport'
+import {
+  getMermaidRenderKey,
+  loadMermaidRender,
+  mermaidRenderCache,
+  namespaceMermaidSvg,
+  type MermaidRenderResult,
+} from './mermaidRenderCache'
 
 interface MermaidDiagramProps {
   chart: string
@@ -57,57 +64,57 @@ export const MermaidDiagram: React.FC<MermaidDiagramProps> = ({ chart, className
   const dialogRef = useRef<HTMLDivElement | null>(null)
   const viewportRef = useRef<HTMLDivElement | null>(null)
   const panGestureRef = useRef<PanGesture | null>(null)
-  const [renderedSvg, setRenderedSvg] = useState('')
-  const [diagramSize, setDiagramSize] = useState<MermaidSize>(defaultDiagramSize)
-  const [error, setError] = useState<string | null>(null)
-  const [themeRevision, setThemeRevision] = useState(0)
+  const isDarkMode = useHtmlDarkMode()
+  const renderKey = getMermaidRenderKey(chart, isDarkMode)
+  const [renderState, setRenderState] = useState<{
+    key: string
+    result?: MermaidRenderResult
+    error?: string
+  }>(() => ({ key: renderKey, result: mermaidRenderCache.get(renderKey) }))
+  // Read synchronously: a virtual-row remount must never commit a short loading
+  // placeholder before restoring its previously measured diagram.
+  const result = renderState.key === renderKey ? renderState.result : mermaidRenderCache.get(renderKey)
+  const error = renderState.key === renderKey ? renderState.error : undefined
+  const diagramSize = result?.size ?? defaultDiagramSize
+  const renderedSvg = useMemo(() => result ? namespaceMermaidSvg(result.svg, renderId) : '', [result, renderId])
   const [isFullscreen, setIsFullscreen] = useState(false)
+  const fullscreenSvg = useMemo(
+    () => isFullscreen && result ? namespaceMermaidSvg(result.svg, `${renderId}-viewer`) : '',
+    [isFullscreen, result, renderId]
+  )
   const [isPanning, setIsPanning] = useState(false)
   const [transform, setTransform] = useState<MermaidViewTransform>(defaultTransform)
   const shouldReduceMotion = useReducedMotion()
   const motionPreferences = useMotionPreferences(shouldReduceMotion)
   const { theme: customTheme, enabled: customThemeEnabled } = useCustomChatTheme()
-  const isDarkMode = useHtmlDarkMode()
-
-  useEffect(() => {
-    const root = document.documentElement
-    const observer = new MutationObserver(records => {
-      if (records.some(record => record.attributeName === 'class')) setThemeRevision(value => value + 1)
-    })
-    observer.observe(root, { attributes: true, attributeFilter: ['class'] })
-    return () => observer.disconnect()
-  }, [])
 
   useEffect(() => {
     let cancelled = false
-    setRenderedSvg('')
-    setError(null)
     if (!chart.trim()) return
 
-    void import('mermaid')
-      .then(async ({ default: mermaid }) => {
-        const darkMode = document.documentElement.classList.contains('dark')
-        mermaid.initialize({
-          startOnLoad: false,
-          securityLevel: 'strict',
-          suppressErrorRendering: true,
-          theme: darkMode ? 'dark' : 'default',
-        })
-        const { svg } = await mermaid.render(renderId, chart)
-        if (cancelled) return
-        setDiagramSize(readDiagramSize(svg))
-        setRenderedSvg(svg)
+    void loadMermaidRender(renderKey, async id => {
+      const { default: mermaid } = await import('mermaid')
+      mermaid.initialize({
+        startOnLoad: false,
+        securityLevel: 'strict',
+        suppressErrorRendering: true,
+        theme: isDarkMode ? 'dark' : 'default',
       })
-      .catch(reason => {
-        if (cancelled) return
-        setRenderedSvg('')
-        setError(reason instanceof Error ? reason.message : 'Unable to render Mermaid diagram')
+      const { svg } = await mermaid.render(id, chart)
+      return { svg, size: readDiagramSize(svg) }
+    }, () => !cancelled).then(result => {
+      if (!cancelled) setRenderState({ key: renderKey, result })
+    }).catch(reason => {
+      if (!cancelled) setRenderState({
+        key: renderKey,
+        error: reason instanceof Error ? reason.message : 'Unable to render Mermaid diagram',
       })
+    })
 
     return () => {
       cancelled = true
     }
-  }, [chart, renderId, themeRevision])
+  }, [chart, renderKey, isDarkMode])
 
   const getViewportSize = useCallback((): MermaidSize | null => {
     const viewport = viewportRef.current
@@ -349,7 +356,7 @@ export const MermaidDiagram: React.FC<MermaidDiagramProps> = ({ chart, className
                         transform: `translate3d(${transform.x}px, ${transform.y}px, 0) scale(${transform.scale})`,
                         transformOrigin: '0 0',
                       }}
-                      dangerouslySetInnerHTML={{ __html: renderedSvg }}
+                      dangerouslySetInnerHTML={{ __html: fullscreenSvg }}
                     />
                   </div>
 
@@ -424,10 +431,11 @@ export const MermaidDiagram: React.FC<MermaidDiagramProps> = ({ chart, className
           </button>
         </div>
         <div className='thin-scrollbar max-h-[60vh] min-h-32 overflow-auto px-3 pb-3 text-center'>
-          {renderedSvg && !isFullscreen ? (
+          {renderedSvg ? (
             <div
               className='inline-block min-w-fit [&_svg]:block [&_svg]:h-auto [&_svg]:max-w-none'
-              style={{ width: `${diagramSize.width}px` }}
+              style={{ width: `${diagramSize.width}px`, height: `${diagramSize.height}px`, visibility: isFullscreen ? 'hidden' : undefined }}
+              aria-hidden={isFullscreen || undefined}
               dangerouslySetInnerHTML={{ __html: renderedSvg }}
             />
           ) : !isFullscreen ? (

@@ -40,6 +40,8 @@ import { useIsMobile } from './hooks/useMediaQuery'
 import { useConversations, useResearchNotes } from './hooks/useQueries'
 import { dispatchChatInsertFilePath } from './helpers/chatInputBridge'
 import IdeContextBootstrap from './IdeContextBootstrap'
+import { KeyboardProvider } from './keyboard/KeyboardProvider'
+import { NavigationCommands } from './keyboard/NavigationCommands'
 
 // Use HashRouter for Electron (file:// protocol requires hash-based routing)
 // Use BrowserRouter for web (standard HTML5 history API)
@@ -362,13 +364,17 @@ function App() {
   return (
     <>
       <Router>
-        <ChatSelectionProvider>
-          {isElectron ? (
-            <HtmlIframeRegistryProvider resetKey={resetKey}>{appShell}</HtmlIframeRegistryProvider>
-          ) : (
-            appShell
-          )}
-        </ChatSelectionProvider>
+        <KeyboardProvider>
+          <NavigationCommands>
+            <ChatSelectionProvider>
+              {isElectron ? (
+                <HtmlIframeRegistryProvider resetKey={resetKey}>{appShell}</HtmlIframeRegistryProvider>
+              ) : (
+                appShell
+              )}
+            </ChatSelectionProvider>
+          </NavigationCommands>
+        </KeyboardProvider>
       </Router>
       {!isElectron && <Analytics />}
     </>

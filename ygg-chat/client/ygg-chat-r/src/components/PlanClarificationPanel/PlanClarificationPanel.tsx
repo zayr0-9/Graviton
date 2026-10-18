@@ -28,7 +28,20 @@ export const PlanClarificationPanel: React.FC<PlanClarificationPanelProps> = ({ 
   const { theme: customTheme, enabled: customThemeEnabled } = useCustomChatTheme()
   const isDarkMode = useHtmlDarkMode()
 
-  const questions = request.questions
+  const questions = useMemo(() => request.questions.map(question => {
+    if (question.options?.some(option => option.manual)) return question
+    const options = question.options || []
+    let manualId = 'manual'
+    while (options.some(option => getOptionId(option) === manualId)) manualId += '-answer'
+    return {
+      ...question,
+      options: [...options, {
+        id: manualId,
+        label: question.manualLabel?.trim() || 'Write my own answer',
+        manual: true,
+      }],
+    }
+  }), [request.questions])
 
   const panelStyle: React.CSSProperties | undefined = customThemeEnabled
     ? {
@@ -96,11 +109,11 @@ export const PlanClarificationPanel: React.FC<PlanClarificationPanelProps> = ({ 
     }))
   }
 
-  const updateManualText = (questionId: string, manualText: string) => {
+  const updateManualText = (questionId: string, optionId: string, manualText: string) => {
     setSelectionByQuestionId(prev => ({
       ...prev,
       [questionId]: {
-        optionId: prev[questionId]?.optionId || 'manual',
+        optionId,
         manualText,
       },
     }))
@@ -141,7 +154,7 @@ export const PlanClarificationPanel: React.FC<PlanClarificationPanelProps> = ({ 
               <CircleHelp size={16} strokeWidth={2.25} />
             </span>
             <div className='min-w-0'>
-              <h3 className='text-sm font-semibold tracking-tight text-neutral-800 dark:text-neutral-100' style={titleStyle}>
+              <h3 className='text-sm font-semibold text-neutral-800 dark:text-neutral-100' style={titleStyle}>
                 Plan clarification
               </h3>
               <p className='mt-0.5 text-[11px] leading-4 text-neutral-500 dark:text-neutral-400' style={mutedTextStyle}>
@@ -165,8 +178,7 @@ export const PlanClarificationPanel: React.FC<PlanClarificationPanelProps> = ({ 
         {questions.map((question, questionIndex) => {
           const questionId = question.id || question.question
           const selected = selectionByQuestionId[questionId]
-          const selectedOption = question.options?.find(option => getOptionId(option) === selected?.optionId)
-          const manualSelected = Boolean(selectedOption?.manual)
+          const manualOption = question.options!.find(option => option.manual)!
 
           return (
             <div key={questionId} className='rounded-2xl px-1.5 py-1.5'>
@@ -198,7 +210,8 @@ export const PlanClarificationPanel: React.FC<PlanClarificationPanelProps> = ({ 
                       key={optionId}
                       type='button'
                       onClick={() => updateSelection(questionId, option)}
-                      className={`w-full rounded-2xl px-2.5 py-2 text-left transition-all duration-200 active:scale-[0.99] ${
+                      aria-pressed={checked}
+                      className={`w-full rounded-2xl px-2.5 py-2 text-left transition-[background-color,color,transform] duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400/70 dark:focus-visible:ring-orange-400/70 active:scale-[0.99] ${
                         checked
                           ? 'bg-blue-500/10 text-blue-700 dark:bg-orange-500/15 dark:text-orange-100'
                           : 'bg-transparent text-neutral-700 hover:bg-white/45 dark:text-neutral-200 dark:hover:bg-white/5'
@@ -232,15 +245,20 @@ export const PlanClarificationPanel: React.FC<PlanClarificationPanelProps> = ({ 
                 })}
               </div>
 
-              {manualSelected && (
-                <textarea
-                  value={selected?.manualText || ''}
-                  onChange={event => updateManualText(questionId, event.target.value)}
-                  placeholder='Tell Graviton what to do instead...'
-                  className='mt-2 min-h-18 w-full resize-y rounded-2xl border-0 bg-white/55 px-3 py-2 text-sm text-neutral-800 outline-none backdrop-blur-xl transition-colors placeholder:text-neutral-400 focus:bg-white/75 focus:ring-2 focus:ring-blue-400/30 dark:bg-black/20 dark:text-neutral-100 dark:focus:bg-black/30 dark:focus:ring-orange-400/25'
-                  style={manualInputStyle}
-                />
-              )}
+              <textarea
+                rows={1}
+                aria-label={`Your answer: ${question.question}`}
+                value={selected?.manualText || ''}
+                ref={element => {
+                  if (!element) return
+                  element.style.height = 'auto'
+                  element.style.height = `${element.scrollHeight}px`
+                }}
+                onChange={event => updateManualText(questionId, getOptionId(manualOption), event.target.value)}
+                placeholder='Write your own answer...'
+                className='mt-2 max-h-[76px] w-full resize-none overflow-y-auto rounded-2xl border-0 bg-white/55 px-3 py-2 text-sm leading-5 text-neutral-800 outline-none backdrop-blur-xl transition-colors placeholder:text-neutral-400 focus:bg-white/75 focus:ring-2 focus:ring-blue-400/30 dark:bg-black/20 dark:text-neutral-100 dark:focus:bg-black/30 dark:focus:ring-orange-400/25'
+                style={manualInputStyle}
+              />
             </div>
           )
         })}
@@ -250,7 +268,7 @@ export const PlanClarificationPanel: React.FC<PlanClarificationPanelProps> = ({ 
         <button
           type='button'
           onClick={onCancel}
-          className='rounded-full px-3 py-1.5 text-xs font-medium text-neutral-500 transition-all duration-200 hover:bg-white/45 hover:text-neutral-800 active:scale-95 dark:text-neutral-400 dark:hover:bg-white/5 dark:hover:text-neutral-100'
+          className='rounded-full px-3 py-1.5 text-xs font-medium text-neutral-500 transition-[background-color,color,transform] duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400/70 dark:focus-visible:ring-orange-400/70 hover:bg-white/45 hover:text-neutral-800 active:scale-95 dark:text-neutral-400 dark:hover:bg-white/5 dark:hover:text-neutral-100'
           style={secondaryButtonStyle}
         >
           Cancel
@@ -259,7 +277,7 @@ export const PlanClarificationPanel: React.FC<PlanClarificationPanelProps> = ({ 
           type='button'
           onClick={handleSubmit}
           disabled={!canSubmit}
-          className='rounded-full bg-blue-600 px-3.5 py-1.5 text-xs font-semibold text-white transition-all duration-200 hover:bg-blue-500 active:scale-95 disabled:cursor-not-allowed disabled:bg-neutral-300 disabled:text-neutral-500 dark:disabled:bg-neutral-800 dark:disabled:text-neutral-500'
+          className='rounded-full bg-blue-600 px-3.5 py-1.5 text-xs font-semibold text-white transition-[background-color,color,transform] duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400/70 dark:focus-visible:ring-orange-400/70 hover:bg-blue-500 active:scale-95 disabled:cursor-not-allowed disabled:bg-neutral-300 disabled:text-neutral-500 dark:disabled:bg-neutral-800 dark:disabled:text-neutral-500'
           style={canSubmit ? primaryButtonStyle : secondaryButtonStyle && { ...secondaryButtonStyle, opacity: 0.5 }}
         >
           Submit answers

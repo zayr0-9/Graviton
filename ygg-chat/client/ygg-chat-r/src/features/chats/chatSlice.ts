@@ -1,4 +1,5 @@
 import { createSlice, PayloadAction } from '@reduxjs/toolkit'
+import { loadBranchFastModeDrafts, saveBranchFastModeDrafts } from './branchFastMode'
 import { branchModelKey, loadBranchModelDrafts, saveBranchModelDrafts, type BranchModelSelection } from './branchModelSelection'
 import { normalizeChatErrorEnvelope } from '../../../../../shared/chatErrors'
 import providersList from '../../../../../shared/providers.json'
@@ -278,6 +279,7 @@ const makeInitialState = (): ChatState => {
     operationModeChanges: {},
     operationModeDrafts: {},
     branchModelDrafts: loadBranchModelDrafts(),
+    branchFastModeDrafts: loadBranchFastModeDrafts(),
     messageQueues: {},
     freeTier: {
       freeGenerationsRemaining: null,
@@ -352,6 +354,19 @@ export const chatSlice = createSlice({
       const anchor = currentLineageId ? `lineage:${currentLineageId}` : currentPath.at(-1)
       state.branchModelDrafts[branchModelKey(currentConversationId, anchor)] = action.payload
       saveBranchModelDrafts(state.branchModelDrafts)
+    },
+    branchFastModeSelected: (state, action: PayloadAction<boolean>) => {
+      if (state.composition.editingBranch) {
+        state.composition.branchEditModes ??= {}
+        state.composition.branchEditModes.fastMode = action.payload
+        return
+      }
+      const { currentConversationId, currentPath, currentLineageId } = state.conversation
+      if (!currentConversationId) return
+      state.branchFastModeDrafts ??= {}
+      const anchor = currentLineageId ? `lineage:${currentLineageId}` : currentPath.at(-1)
+      state.branchFastModeDrafts[branchModelKey(currentConversationId, anchor)] = action.payload
+      saveBranchFastModeDrafts(state.branchFastModeDrafts)
     },
     //provider management
     providerSelected: (state, action: PayloadAction<string>) => {
@@ -448,6 +463,12 @@ export const chatSlice = createSlice({
     // Branch editing flag
     editingBranchSet: (state, action: PayloadAction<boolean>) => {
       state.composition.editingBranch = action.payload
+      state.composition.branchEditModes = undefined
+    },
+    branchEditOperationModeSelected: (state, action: PayloadAction<OperationMode>) => {
+      if (!state.composition.editingBranch) return
+      state.composition.branchEditModes ??= {}
+      state.composition.branchEditModes.operationMode = action.payload
     },
 
     compactingStarted: (state, action: PayloadAction<{ conversationId?: ConversationId | null; parentMessageId?: MessageId | null } | undefined>) => {

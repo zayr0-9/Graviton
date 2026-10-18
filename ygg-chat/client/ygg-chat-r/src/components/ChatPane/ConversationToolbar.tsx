@@ -1,5 +1,7 @@
 import React, { useEffect, useId, useRef, useState } from 'react'
 import { Check, GitBranch, Pencil, RefreshCw, X } from 'lucide-react'
+import { formatShortcut, isMacKeyboard } from '../../keyboard/commands'
+import { useShortcutOverrides } from '../../keyboard/useShortcutOverrides'
 import { getThemeModeColor, type CustomChatTheme, type ThemeColorPair } from '../ThemeManager/themeConfig'
 
 interface ConversationToolbarProps {
@@ -30,6 +32,7 @@ export function ConversationToolbar({
   const [draft, setDraft] = useState(title)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const shortcutOverrides = useShortcutOverrides()
   const inputRef = useRef<HTMLInputElement>(null)
   const editRef = useRef<HTMLButtonElement>(null)
   const mountedRef = useRef(false)
@@ -147,7 +150,7 @@ export function ConversationToolbar({
       ) : (
         <div className='flex min-w-0 items-center gap-1'>
           <button type='button' className={`${controlClass} ${treeVisible ? 'bg-blue-50 text-blue-700 dark:bg-orange-500/15 dark:text-orange-100' : ''}`} style={treeVisible ? { backgroundColor: color('composerToggleActiveBg'), color: color('composerToggleActiveText') } : controlStyle}
-            aria-pressed={treeVisible} title={treeVisible ? 'Hide tree view' : 'Show tree view'} aria-label={treeVisible ? 'Hide tree view' : 'Show tree view'} onClick={onToggleTree}>
+            aria-pressed={treeVisible} title={`${treeVisible ? 'Hide tree view' : 'Show tree view'} · Focus tree: ${formatShortcut('heimdall.focus', isMacKeyboard(), shortcutOverrides)}`} aria-label={treeVisible ? 'Hide tree view' : 'Show tree view'} onClick={onToggleTree}>
             <GitBranch size={18} strokeWidth={2.25} aria-hidden='true' />
           </button>
           <div className='min-w-0 flex-1 px-2'>

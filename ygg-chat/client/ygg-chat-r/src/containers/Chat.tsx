@@ -1,6 +1,7 @@
 import { useModelSwitchConfirmation } from '../hooks/useModelSwitchConfirmation'
 import { ModelSwitchDialog } from '../components/ModelSelectControl/ModelSwitchDialog'
 import { resolveBranchModelSelection } from '../features/chats/branchModelSelection'
+import { resolveBranchFastMode } from '../features/chats/branchFastMode'
 import { isCommittedCompaction } from '../../../../shared/compaction'
 import { isHiddenCompactionMessage } from '../features/chats/summaryPresentation'
 import { useQueryClient } from '@tanstack/react-query'
@@ -181,6 +182,7 @@ import {
 } from '../features/chats/chatgptAccount'
 import { generateStreamId, isStreamMessageAlreadyRendered } from '../features/chats/streamHelpers'
 import { recordSentMessage } from '../components/ChatPane/sentMessageHistory'
+import { getComposerSubmissionAvailability } from '../components/ChatPane/composerSubmission'
 import {
   convContextSet,
   Conversation,
@@ -228,6 +230,7 @@ import { isOrchestratorEnabled, toggleOrchestratorEnabled } from '../helpers/sub
 import { useSyncExternalStore } from 'react'
 import { isFullAccessEnabled, setFullAccessEnabled, subscribeFullAccess } from '../helpers/fullAccessSettings'
 import { handleChatToggleShortcut, loadModelShortcutSlots } from '../helpers/chatKeyboardShortcuts'
+import { useCommandBlocker, useCommands } from '../keyboard/KeyboardProvider'
 import {
   loadToolOutputTruncationEnabled,
   TOOL_OUTPUT_TRUNCATION_CHANGE_EVENT,
@@ -1069,13 +1072,10 @@ function Chat() {
   const [reasoningConfig, setReasoningConfig] = useState<ReasoningConfig>(() => ({
     effort: chatReasoningSettings.defaultReasoningEffort,
   }))
-  const [fastServiceTierEnabled, setFastServiceTierEnabled] = useState<boolean>(() => {
-    try {
-      return window.localStorage.getItem('chat:openaiFastServiceTier') === 'true'
-    } catch {
-      return false
-    }
-  })
+  const fastServiceTierEnabled = useAppSelector(state =>
+    (state.chat.composition.editingBranch ? state.chat.composition.branchEditModes?.fastMode : undefined)
+      ?? resolveBranchFastMode(state.chat)
+  )
 
 
   // Get conversation ID and project ID from URL params FIRST (before any hooks that depend on it)
@@ -1117,7 +1117,10 @@ function Chat() {
   const openAIServiceTier: OpenAIServiceTier | undefined =
     isOpenAIChatGPTProvider && fastServiceTierEnabled ? 'priority' : undefined
   const messageInput = useAppSelector(selectMessageInput)
-  const operationMode = useAppSelector(selectOperationMode)
+  const operationMode = useAppSelector(state =>
+    (state.chat.composition.editingBranch ? state.chat.composition.branchEditModes?.operationMode : undefined)
+      ?? selectOperationMode(state)
+  )
   // const canSendFromRedux = useAppSelector(selectCanSend)
   const sendingState = useAppSelector(selectSendingState)
   const currentConversationId = useAppSelector(selectCurrentConversationId)
@@ -1352,14 +1355,8 @@ function Chat() {
   }, [handleOperationModeChange, operationMode])
   const handleToggleFastServiceTier = useCallback(() => {
     if (!isOpenAIChatGPTProvider) return
-    setFastServiceTierEnabled(prev => {
-      const next = !prev
-      try {
-        window.localStorage.setItem('chat:openaiFastServiceTier', String(next))
-      } catch {}
-      return next
-    })
-  }, [isOpenAIChatGPTProvider])
+    dispatch(chatSliceActions.branchFastModeSelected(!fastServiceTierEnabled))
+  }, [dispatch, isOpenAIChatGPTProvider, fastServiceTierEnabled])
   const runningToolJobs = useRunningJobs()
   const multiReplyCount = useAppSelector(selectMultiReplyCount)
 
@@ -3181,7 +3178,7 @@ function Chat() {
     getItemKey: getVirtualItemKey,
     getScrollElement: () => messagesContainerRef.current,
     estimateSize: estimateVirtualRowSize,
-    overscan: 6, // Buffer rows above/below viewport
+    overscan: 16, // Buffer rows above/below viewport
     // No paddingEnd: trailing scroll room comes from the in-flow bottom sentinel instead, so the
     // out-of-flow live tail sits flush under the last persisted message.
     paddingEnd: virtualizerPaddingEnd,
@@ -3774,6 +3771,7 @@ function Chat() {
   const [parallelPane, setParallelPane] = useState<ParallelChatPaneTarget | null>(null)
   const [activeChatPane, setActiveChatPane] = useState<'primary' | 'parallel'>('primary')
   const [settingsOpen, setSettingsOpen] = useState(false)
+  useCommandBlocker(settingsOpen)
   const [think, setThink] = useState<boolean>(chatReasoningSettings.defaultThinkingEnabled)
   const [heimdallVisible, setHeimdallVisible] = useState<boolean>(() => {
     try {
@@ -3788,6 +3786,16 @@ function Chat() {
       return isMobileDevice ? false : true
     }
   })
+
+  const [treeFocusRequest, setTreeFocusRequest] = useState(0)
+  useCommands([{
+    id: 'heimdall.focus',
+    enabled: () => Boolean(currentConversationId),
+    run: () => {
+      setHeimdallVisible(true)
+      setTreeFocusRequest(request => request + 1)
+    },
+  }])
 
   const { theme: customTheme, enabled: customThemeEnabled } = useCustomChatTheme()
   const isDarkMode = useHtmlDarkMode()
@@ -5046,6 +5054,8 @@ function Chat() {
 
     // Capture these toggles before editor autocomplete can consume Shift+Tab.
     const handleChatToggleKeyDown = (event: KeyboardEvent) => {
+      // The shortcut recorder owns keys before this legacy capture-phase handler.
+      if (document.querySelector('[data-shortcut-editor]')) return
       handleChatToggleShortcut(event, {
         toggleOperationMode: handleToggleOperationMode,
         toggleFastServiceTier: isOpenAIChatGPTProvider ? handleToggleFastServiceTier : undefined,
@@ -5081,18 +5091,18 @@ function Chat() {
     [runComposerCommand]
   )
 
-  // Local version of canSend that checks input controller state.
-  const canSendLocal = useMemo(() => {
-    const isNotSending = selection.status !== 'pending' && selection.status !== 'error' && !isCurrentBranchCompacting && !modeChange && !queueSubmitting
-    const hasModel = !!selectedModel
-
-    // Allow retrigger: empty input when last displayed message is from user
-    const isRetrigger =
-      !hasLocalInput && displayMessages.length > 0 && displayMessages[displayMessages.length - 1]?.role === 'user' &&
-      !isRunSettingsNotification(displayMessages[displayMessages.length - 1])
-
-    return (hasLocalInput || (!streamState.active && isRetrigger)) && isNotSending && hasModel
-  }, [hasLocalInput, isCurrentBranchCompacting, streamState.active, selectedModel, displayMessages, modeChange, queueSubmitting, selection.status])
+  const { canSend: canSendImmediately, canQueue: canQueueLocal } = getComposerSubmissionAvailability({
+    ready: selection.status !== 'pending' && selection.status !== 'error',
+    hasInput: hasLocalInput,
+    isRetrigger: !hasLocalInput && displayMessages.length > 0 && displayMessages[displayMessages.length - 1]?.role === 'user' &&
+      !isRunSettingsNotification(displayMessages[displayMessages.length - 1]),
+    hasModel: !!selectedModel,
+    streamActive: streamState.active,
+    compacting: isCurrentBranchCompacting,
+    modeChanging: !!modeChange,
+    queueSubmitting,
+  })
+  const canSendLocal = canSendImmediately || canQueueLocal
 
   /**
    * Re-run generation from the last user message on the current branch.
@@ -5210,7 +5220,7 @@ function Chat() {
         return
       }
 
-      if (canSendLocal && currentConversationId && streamState.active && streamState.id) {
+      if (canQueueLocal && currentConversationId && streamState.id) {
         if (queueSubmittingRef.current) return
         queueSubmittingRef.current = true
         setQueueSubmitting(true)
@@ -5232,7 +5242,7 @@ function Chat() {
         return
       }
 
-      if (canSendLocal && currentConversationId) {
+      if (canSendImmediately && currentConversationId) {
         // Check if this is a retrigger scenario (empty input + last message is user)
         const isRetrigger =
           !hasLocalInput && displayMessages.length > 0 && displayMessages[displayMessages.length - 1]?.role === 'user' &&
@@ -5358,7 +5368,8 @@ function Chat() {
       }
     },
     [
-      canSendLocal,
+      canSendImmediately,
+      canQueueLocal,
       selection.revision,
       selection.fallbackRevision,
       modeLineageId,
@@ -7878,7 +7889,7 @@ function Chat() {
                     </svg>
                   </button>
                   {streamState.active && hasLocalInput && (
-                    <button type='button' onClick={() => handleSend(1)} disabled={!canSendLocal}
+                    <button type='button' onClick={() => handleSend(1)} disabled={!canQueueLocal}
                       title='Queue message' aria-label='Queue message'
                       className='rounded-full px-3 py-2 text-xs bg-black/5 dark:bg-white/10 disabled:opacity-40 focus-visible:outline focus-visible:outline-2'
                       style={customThemeEnabled ? composerToggleActiveStyle : undefined}>
@@ -8060,6 +8071,8 @@ function Chat() {
         <div className='flex-1 min-w-0 mb-2'>
           <Heimdall
             key={currentConversationId ?? 'none'}
+            keyboardFocusRequest={treeFocusRequest}
+            onKeyboardFocusHandled={() => setTreeFocusRequest(0)}
             chatData={heimdallData}
             loading={loading}
             error={error}
@@ -8114,6 +8127,8 @@ function Chat() {
                 <div className='h-[calc(100%-3rem)] overflow-hidden'>
                   <Heimdall
                     key={currentConversationId ?? 'none'}
+                    keyboardFocusRequest={treeFocusRequest}
+                    onKeyboardFocusHandled={() => setTreeFocusRequest(0)}
                     chatData={heimdallData}
                     loading={loading}
                     error={error}

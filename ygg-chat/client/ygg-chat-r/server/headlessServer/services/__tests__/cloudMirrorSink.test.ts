@@ -66,3 +66,15 @@ describe('branch model attribution', () => {
     expect(saved.meta).toMatchObject({ existing: true, modelSelection, runStatistics: { streamId: 'run' } })
   })
 })
+
+describe('branch Fast mode attribution', () => {
+  it.each([TreeMessageSink, CloudMirrorSink])('persists on and off choices without changing response content through %s', Sink => {
+    for (const fastMode of [true, false]) {
+      const repo = makeFakeRepo()
+      new Sink({ messageRepo: repo, fastMode }).persistAssistantMessage({ ...draft, meta: { existing: true } })
+      const saved = repo.createMessage.mock.calls[0][0]
+      expect(saved.content).toBe(draft.content)
+      expect(saved.meta).toEqual({ existing: true, fastMode })
+    }
+  })
+})

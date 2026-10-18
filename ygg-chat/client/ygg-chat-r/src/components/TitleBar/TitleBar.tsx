@@ -2,7 +2,9 @@ import { ChevronLeft, ChevronRight } from 'lucide-react'
 import { useEffect, useMemo, useState } from 'react'
 import { useLocation } from 'react-router-dom'
 import './TitleBar.css'
-import { useTitleBarHistory } from './useTitleBarHistory'
+import { useAppNavigation } from '../../keyboard/NavigationCommands'
+import { formatShortcut } from '../../keyboard/commands'
+import { useShortcutOverrides } from '../../keyboard/useShortcutOverrides'
 import { getTitleBarProjectId } from './titleBarProject'
 
 import { getThemeModeColor, useCustomChatTheme, useHtmlDarkMode } from '../ThemeManager/themeConfig'
@@ -15,8 +17,9 @@ import { getLocalServerLanOrigin, getLocalServerOrigin } from '../../utils/api'
 
 export const TitleBar = () => {
   const dispatch = useAppDispatch()
+  const shortcutOverrides = useShortcutOverrides()
   const location = useLocation()
-  const { canGoBack, canGoForward, goBack, goForward } = useTitleBarHistory()
+  const { canGoBack, canGoForward, goBack, goForward } = useAppNavigation()
   const { theme: customTheme, enabled: customThemeEnabled } = useCustomChatTheme()
   const isDarkMode = useHtmlDarkMode()
   const [platform, setPlatform] = useState<string>('')
@@ -196,7 +199,7 @@ export const TitleBar = () => {
             className='titlebar-control-button titlebar-nav-button'
             onClick={goBack}
             disabled={!canGoBack}
-            title='Go Back'
+            title={`Go back (${formatShortcut('navigation.back', isMac, shortcutOverrides)})`}
             aria-label='Go Back'
           >
             <span className='titlebar-control-icon-shell titlebar-nav-icon-shell acrylic-ultra-light-nb-3'>
@@ -207,7 +210,7 @@ export const TitleBar = () => {
             className='titlebar-control-button titlebar-nav-button'
             onClick={goForward}
             disabled={!canGoForward}
-            title='Go Forward'
+            title={`Go forward (${formatShortcut('navigation.forward', isMac, shortcutOverrides)})`}
             aria-label='Go Forward'
           >
             <span className='titlebar-control-icon-shell titlebar-nav-icon-shell acrylic-ultra-light-nb-3'>

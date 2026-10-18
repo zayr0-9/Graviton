@@ -22,5 +22,10 @@ it('exposes the Claude bridge as a built-in on both model selectors', () => {
     const bridge = tools.find(tool => tool.name === 'claude_bridge')
     expect(bridge).toBeDefined()
     expect(bridge?.isCustom).toBeUndefined()
+    expect(bridge?.inputSchema.properties.action.enum).toEqual(expect.arrayContaining(['lookup', 'resume', 'fork', 'models']))
+    expect(bridge?.inputSchema.properties).toHaveProperty('name')
+    expect(bridge?.inputSchema.properties).toHaveProperty('model')
+    expect(bridge?.inputSchema.properties).toHaveProperty('directory')
+    expect(bridge?.inputSchema.properties.source.enum).toEqual(['all', 'bridge', 'claude'])
   }
 })

@@ -232,3 +232,89 @@ describe('editMessageWithBranching live source resolution', () => {
     expect(readServerLoopRejection(result.payload)?.envelope?.code).toBe('stream_interrupted')
   })
 })
+
+describe('branch-scoped Fast mode requests', () => {
+  it.each([true, false])('captures isolated edit mode choices (Fast: %s) before the editor closes', async enabled => {
+    const { dispatch, state } = setup([{ ...message('u1'), meta: { fastMode: !enabled } }], [])
+    state.chat = { ...state.chat, providerState: { ...state.chat.providerState, currentProvider: 'OpenAI (ChatGPT)' } }
+    const sourceDrafts = state.chat.branchFastModeDrafts
+    const sourceModeDrafts = state.chat.operationModeDrafts
+    dispatch(chatSliceActions.editingBranchSet(true))
+    dispatch(chatSliceActions.branchFastModeSelected(enabled))
+    dispatch(chatSliceActions.branchEditOperationModeSelected('execute'))
+    expect(state.chat.branchFastModeDrafts).toEqual(sourceDrafts)
+    expect(state.chat.operationModeDrafts).toEqual(sourceModeDrafts)
+    const pending = dispatch(editMessageWithBranching({
+      conversationId: 'c1', originalMessageId: 'u1', newContent: 'hello',
+      modelOverride: 'test', think: false, streamId: 'edit-modes',
+    }))
+    dispatch(chatSliceActions.editingBranchSet(false))
+    expect(state.chat.composition.branchEditModes).toBeUndefined()
+    expect((await pending).meta.requestStatus).toBe('fulfilled')
+    const request = vi.mocked(runServerChatLoop).mock.calls[0][0].request
+    expect(request.serviceTier).toBe(enabled ? 'priority' : undefined)
+    expect(request.operationMode).toBe('execute')
+    expect(state.chat.branchFastModeDrafts).toEqual(sourceDrafts)
+    expect(state.chat.operationModeDrafts).toEqual(sourceModeDrafts)
+  })
+
+  it('discards cancelled edit choices without persisting them or reusing them on reopen', () => {
+    const { dispatch, state } = setup([message('u1')], [])
+    const sourceDrafts = state.chat.branchFastModeDrafts
+    dispatch(chatSliceActions.editingBranchSet(true))
+    dispatch(chatSliceActions.branchFastModeSelected(true))
+    dispatch(chatSliceActions.branchEditOperationModeSelected('execute'))
+    dispatch(chatSliceActions.editingBranchSet(false))
+    expect(state.chat.branchFastModeDrafts).toEqual(sourceDrafts)
+    expect(state.chat.composition.branchEditModes).toBeUndefined()
+    dispatch(chatSliceActions.editingBranchSet(true))
+    expect(state.chat.composition.branchEditModes).toBeUndefined()
+  })
+  it.each(['send', 'branch', 'edit'] as const)('%s uses the branch choice for priority and standard requests', async operation => {
+    for (const enabled of [true, false]) {
+      vi.mocked(runServerChatLoop).mockClear()
+      const source = { ...message('u1'), meta: { fastMode: enabled } }
+      const { dispatch, state } = setup([source], [])
+      state.chat = { ...state.chat, providerState: { ...state.chat.providerState, currentProvider: 'OpenAI (ChatGPT)' } }
+      const common = { conversationId: 'c1', think: false, streamId: `fast-${operation}-${enabled}`, serviceTier: 'priority' as const }
+      const result = await dispatch(operation === 'send'
+        ? sendMessage({ ...common, parent: 'u1', repeatNum: 1, input: { content: 'hello', modelOverride: 'test' } })
+        : operation === 'branch'
+          ? sendMessageToBranch({ ...common, parentId: 'u1', content: 'hello', modelOverride: 'test' })
+          : editMessageWithBranching({ ...common, originalMessageId: 'u1', newContent: 'hello', modelOverride: 'test' }))
+      expect(result.meta.requestStatus).toBe('fulfilled')
+      const request = vi.mocked(runServerChatLoop).mock.calls[0][0].request
+      expect(request.serviceTier).toBe(enabled ? 'priority' : undefined)
+    }
+  })
+
+  it.each(['send', 'branch', 'edit'] as const)('%s uses explicit pane path and lineage rather than the primary draft', async operation => {
+    const { dispatch, state } = setup([
+      { ...message('u1'), meta: { fastMode: true } },
+      { ...message('parallel', 'u1'), meta: { fastMode: false } },
+    ], [])
+    state.chat = { ...state.chat, providerState: { ...state.chat.providerState, currentProvider: 'OpenAI (ChatGPT)' } }
+    state.chat = { ...state.chat, conversation: { ...state.chat.conversation, currentLineageId: 'primary' } }
+    state.chat = { ...state.chat, branchFastModeDrafts: { '["c1","lineage:primary"]': true } }
+    const common = {
+      conversationId: 'c1', think: false, streamId: 'parallel-run', lineageId: null,
+      branchPath: ['u1', 'parallel'],
+    }
+    const result = await dispatch(operation === 'send'
+      ? sendMessage({ ...common, parent: 'parallel', input: { content: 'hello', modelOverride: 'test' },
+        repeatNum: 1, streamType: 'branch', updatePath: false })
+      : operation === 'branch'
+        ? sendMessageToBranch({ ...common, parentId: 'parallel', content: 'hello', modelOverride: 'test' })
+        : editMessageWithBranching({ ...common, originalMessageId: 'parallel', newContent: 'hello', modelOverride: 'test' }))
+    expect(result.meta.requestStatus).toBe('fulfilled')
+    expect(vi.mocked(runServerChatLoop).mock.calls[0][0].request.serviceTier).toBeUndefined()
+  })
+
+  it('persists a reducer toggle under the stable lineage and restores an explicit off choice', () => {
+    const { dispatch, state } = setup([message('u1')], [])
+    state.chat = { ...state.chat, conversation: { ...state.chat.conversation, currentLineageId: 'primary' } }
+    dispatch(chatSliceActions.branchFastModeSelected(true))
+    dispatch(chatSliceActions.branchFastModeSelected(false))
+    expect(state.chat.branchFastModeDrafts).toEqual({ '["c1","lineage:primary"]': false })
+  })
+})
