@@ -66,7 +66,7 @@ Important details:
 
 ### Graph layout, pan, zoom, culling
 
-- Heimdall computes `positions` from `currentChatData` using recursive subtree width layout.
+- Heimdall computes `positions` from `currentChatData` using iterative postorder subtree widths and preorder positioning (`heimdallTreeTraversal.ts`). Filtering, keyboard indexing and copy/transfer walks are also iterative; never introduce recursion proportional to conversation depth.
 - It keeps stable offsets in refs so trees do not jump when nodes are added/removed.
 - Wheel and pinch gestures zoom around pointer position.
 - Pointer drag pans the graph; right-drag on empty space starts rectangle selection.
@@ -216,3 +216,13 @@ Validation: renderer suite (including `commandRegistry.test.ts` and
 `heimdallKeyboard.test.ts`), `node scripts/test-chat-selection-electron.cjs` for real
 StrictMode/provider/history integration, and `npm run build:electron`. Manually check
 large streaming trees, note/action focus transitions, and screen-reader behavior.
+
+## Deep conversation safety
+
+`buildConversationTree` constructs the derived hierarchy iteratively. `finalizeChatTree` validates/copies external trees and freezes every node and children array using an explicit stack. Both Redux tree actions prepare finalized payloads; ingress middleware also handles literal/replayed actions. Keep Immer auto-freezing enabled. Canonical trees are replaced, not edited in place.
+
+The store's serializability check skips only trees registered by that validator; all other data remains checked. Its recursive frozen-value cache is disabled. Redux DevTools serialization substitutes a diagnostic tree ID marker rather than serializing the derived hierarchy; the actual application state is not truncated.
+
+Authoritative desktop snapshots request `includeTree=false`. App-local/gateway-local routes return all enriched message rows and `tree:null` without constructing a server tree. Default responses remain compatible. Cloud upstream still uses its existing enriched tree endpoint (outside this repository); only the local gateway's outgoing tree is omitted, so upstream serialization depth is not fixed here.
+
+Regression coverage: `deepConversationTree.test.ts` uses 20,000-deep trees with real Redux middleware/QueryClient and graph helpers; the Electron selection smoke covers deep load/refetch/route return. Route tests verify flat enriched snapshots serialize at that depth. Never use recursive deep-equality/stringification to inspect stress-test trees.

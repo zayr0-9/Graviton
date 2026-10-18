@@ -34,6 +34,7 @@ import {
 import { createEmptyStreamState, DEFAULT_STREAM_ID } from './streamHelpers'
 import { chatSelectionRequested, chatSelectionCommitted, chatSelectionFailed, chatSelectionResumed, chatSelectionCancelled, chatSelectionScrollHandled, initialChatSelection } from './chatSelection'
 import { buildPathToConversationMessage } from './conversationTree'
+import { finalizeChatTree } from './immutableChatTree'
 import { canFollowWatchContinuation } from './watchContinuation'
 import toolDefinitions, { ToolDefinition } from './toolDefinitions'
 
@@ -1292,37 +1293,38 @@ export const chatSlice = createSlice({
       }
     },
 
-    conversationSnapshotApplied: (
-      state,
-      action: PayloadAction<{
+    conversationSnapshotApplied: {
+      prepare: (payload: { conversationId: ConversationId; messages: Message[]; tree: ChatState['heimdall']['treeData'] }) =>
+        ({ payload: { ...payload, tree: finalizeChatTree(payload.tree) } }),
+      reducer: (state, action: PayloadAction<{
         conversationId: ConversationId
         messages: Message[]
         tree: ChatState['heimdall']['treeData']
-      }>
-    ) => {
-      if (String(state.conversation.currentConversationId ?? '') !== String(action.payload.conversationId)) return
+      }>) => {
+        if (String(state.conversation.currentConversationId ?? '') !== String(action.payload.conversationId)) return
 
-      const existingArtifactsById = new Map<string, string[]>()
-      for (const message of state.conversation.messages) {
-        if (message.artifacts?.length) existingArtifactsById.set(String(message.id), message.artifacts)
-      }
-      state.conversation.snapshotConversationId = action.payload.conversationId
-      state.conversation.messages = action.payload.messages.map(message => {
-        if (message.artifacts?.length) return message
-        const attachmentMeta = message as Message & { has_attachments?: boolean; attachments_count?: number }
-        if (attachmentMeta.has_attachments === false || attachmentMeta.attachments_count === 0) return message
-        const artifacts = existingArtifactsById.get(String(message.id))
-        return artifacts?.length ? { ...message, artifacts } : message
-      })
+        const existingArtifactsById = new Map<string, string[]>()
+        for (const message of state.conversation.messages) {
+          if (message.artifacts?.length) existingArtifactsById.set(String(message.id), message.artifacts)
+        }
+        state.conversation.snapshotConversationId = action.payload.conversationId
+        state.conversation.messages = action.payload.messages.map(message => {
+          if (message.artifacts?.length) return message
+          const attachmentMeta = message as Message & { has_attachments?: boolean; attachments_count?: number }
+          if (attachmentMeta.has_attachments === false || attachmentMeta.attachments_count === 0) return message
+          const artifacts = existingArtifactsById.get(String(message.id))
+          return artifacts?.length ? { ...message, artifacts } : message
+        })
 
-      const previousTip = state.conversation.currentPath.at(-1)
-      state.conversation.currentPath = previousTip == null
-        ? []
-        : buildPathToConversationMessage(state.conversation.messages, String(previousTip))
-      state.heimdall.treeData = action.payload.tree
-      state.heimdall.subagentMap = {}
-      state.heimdall.loading = false
-      state.heimdall.error = null
+        const previousTip = state.conversation.currentPath.at(-1)
+        state.conversation.currentPath = previousTip == null
+          ? []
+          : buildPathToConversationMessage(state.conversation.messages, String(previousTip))
+        state.heimdall.treeData = finalizeChatTree(action.payload.tree)
+        state.heimdall.subagentMap = {}
+        state.heimdall.loading = false
+        state.heimdall.error = null
+      },
     },
 
     // Branching support
@@ -1418,11 +1420,15 @@ export const chatSlice = createSlice({
       state.heimdall.loading = true
       state.heimdall.error = null
     },
-    heimdallDataLoaded: (state, action: PayloadAction<{ treeData: any; subagentMap?: Record<string, any[]> }>) => {
-      state.heimdall.treeData = action.payload.treeData
-      state.heimdall.subagentMap = action.payload.subagentMap ?? {}
-      state.heimdall.loading = false
-      state.heimdall.error = null
+    heimdallDataLoaded: {
+      prepare: (payload: { treeData: ChatState['heimdall']['treeData']; subagentMap?: Record<string, any[]> }) =>
+        ({ payload: { ...payload, treeData: finalizeChatTree(payload.treeData) } }),
+      reducer: (state, action: PayloadAction<{ treeData: ChatState['heimdall']['treeData']; subagentMap?: Record<string, any[]> }>) => {
+        state.heimdall.treeData = finalizeChatTree(action.payload.treeData)
+        state.heimdall.subagentMap = action.payload.subagentMap ?? {}
+        state.heimdall.loading = false
+        state.heimdall.error = null
+      },
     },
     heimdallError: (state, action: PayloadAction<string>) => {
       state.heimdall.error = action.payload

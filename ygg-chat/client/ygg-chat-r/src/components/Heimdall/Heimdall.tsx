@@ -1,3 +1,4 @@
+import { filterChatTree, layoutChatTree, walkChatTree } from './heimdallTreeTraversal'
 import { useQueryClient } from '@tanstack/react-query'
 import { isContextInjectionMessage } from '../../../../../shared/contextInjection'
 import 'boxicons/css/boxicons.min.css'
@@ -1709,8 +1710,8 @@ export const Heimdall: React.FC<HeimdallProps> = ({
     }
   }, [chatData])
 
-  // Helper to recursively filter and flatten empty visual nodes
-  const filterEmptyNodes = (node: ChatNode, hasSiblings = false): ChatNode[] => {
+  // Filtering is visual-only; canonical messages and paths remain unchanged.
+  const filterEmptyNodes = (root: ChatNode, hasSiblings = false): ChatNode[] => filterChatTree(root, (node, hasSiblings) => {
     // Look up full message to check for structured content (blocks, tools, etc.)
     const fullMsg = messageById.get(String(node.id))
 
@@ -1726,28 +1727,14 @@ export const Heimdall: React.FC<HeimdallProps> = ({
           (Array.isArray(fullMsg.content_blocks) &&
             fullMsg.content_blocks.some((b: any) => b.type === 'text' && b.text && b.text.trim().length > 0)))))
 
-    // 1. Process children first using flatMap to flatten the results
-    let filteredChildren: ChatNode[] = []
-    if (node.children && node.children.length > 0) {
-      const childrenHaveSiblings = node.children.length > 1
-      filteredChildren = node.children.flatMap(child => filterEmptyNodes(child, childrenHaveSiblings))
-    }
-
-    // 2. If node is empty, skip it and return its children (promotion)
-    // Exception: Keep nodes that have siblings (parallel branches)
-    if (isHeimdallScaffoldingMessage(fullMsg, filterEmptyMessages) || shouldPromoteHeimdallNode({
+    return { promote: isHeimdallScaffoldingMessage(fullMsg, filterEmptyMessages) || shouldPromoteHeimdallNode({
       isContextInjection: false,
       isOperationModeChange: false,
       isEmpty: !hasContent,
       hasSiblings,
       filterEmptyMessages,
-    })) {
-      return filteredChildren
-    }
-
-    // 3. Otherwise, keep the node with updated children
-    return [{ ...node, message: getCompactionPlaceholder(fullMsg) ?? node.message, children: filteredChildren }]
-  }
+    }), message: getCompactionPlaceholder(fullMsg) ?? node.message }
+  }, hasSiblings)
 
   // Use provided data or fallback to last known (prevents flash on refresh). Do NOT show a fake empty node.
   const currentChatData = useMemo(() => {
@@ -1831,43 +1818,8 @@ export const Heimdall: React.FC<HeimdallProps> = ({
   // Calculate tree layout in two linear passes. The previous implementation
   // recalculated subtree widths recursively for each sibling and ancestor, which
   // becomes very expensive on large/deep image-heavy trees.
-  const calculateTreeLayout = (node: ChatNode): Record<string, Position> => {
-    const positions: Record<string, Position> = {}
-    const subtreeWidths = new Map<string, number>()
-
-    const calculateSubtreeWidth = (current: ChatNode): number => {
-      const children = current.children || []
-      if (children.length === 0) {
-        subtreeWidths.set(current.id, 1)
-        return 1
-      }
-
-      const width = children.reduce((sum, child) => sum + calculateSubtreeWidth(child), 0)
-      subtreeWidths.set(current.id, width)
-      return width
-    }
-
-    const layoutNode = (current: ChatNode, x: number, y: number): void => {
-      positions[current.id] = { x, y, node: current }
-
-      const children = current.children || []
-      if (children.length === 0) return
-
-      const totalWidth = subtreeWidths.get(current.id) ?? 1
-      let currentX = x - ((totalWidth - 1) * horizontalSpacing) / 2
-
-      children.forEach(child => {
-        const childWidth = subtreeWidths.get(child.id) ?? 1
-        const childX = currentX + ((childWidth - 1) * horizontalSpacing) / 2
-        layoutNode(child, childX, y + verticalSpacing)
-        currentX += childWidth * horizontalSpacing
-      })
-    }
-
-    calculateSubtreeWidth(node)
-    layoutNode(node, 0, 0)
-    return positions
-  }
+  const calculateTreeLayout = (node: ChatNode): Record<string, Position> =>
+    layoutChatTree(node, horizontalSpacing, verticalSpacing)
 
   // Memoize layout so it only recomputes when inputs actually change (e.g., data or spacings)
   const positions = useMemo(
@@ -2391,13 +2343,10 @@ export const Heimdall: React.FC<HeimdallProps> = ({
       }
       // Build id -> message map from the current tree
       const messagesById = new Map<string, string>()
-      const visit = (node: ChatNode | null): void => {
-        if (!node) return
+      for (const node of walkChatTree(currentChatData)) {
         // Display placeholders must not replace real content in clipboard actions.
         messagesById.set(node.id, messageById.get(String(node.id))?.content ?? node.message)
-        node.children?.forEach(visit)
       }
-      visit(currentChatData)
 
       // Collect only selected nodes' messages, preserving the selectedNodes order
       const messages: string[] = []

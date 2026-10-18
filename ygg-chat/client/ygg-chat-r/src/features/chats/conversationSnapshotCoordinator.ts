@@ -115,6 +115,7 @@ export async function coordinateConversationSnapshot({
 
   try {
     const fetched = await fetchSnapshot(conversationId, {
+      includeTree: false,
       storageMode,
       accessToken,
       queryClient,

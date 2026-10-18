@@ -1,4 +1,5 @@
 // store.ts
+import { chatTreeSerializableCheck, chatTreeDevToolsReplacer, chatTreeIngressMiddleware } from '../features/chats/immutableChatTree'
 import { configureStore, createListenerMiddleware, isAnyOf } from '@reduxjs/toolkit'
 import { refreshRunStatistics } from '../features/chats/runStatisticsRefresh'
 import { chatReducer, chatSliceActions, fetchCustomTools, fetchMcpTools, fetchTools } from '../features/chats'
@@ -138,10 +139,11 @@ export const store = configureStore({
         extraArgument: thunkExtraArg,
       },
       serializableCheck: {
+        ...chatTreeSerializableCheck,
         ignoredActions: ['persist/PERSIST', 'persist/REHYDRATE'],
       },
-    }).prepend(listenerMiddleware.middleware, agentRunPreviewMiddleware),
-  devTools: process.env.NODE_ENV !== 'production',
+    }).prepend(chatTreeIngressMiddleware, listenerMiddleware.middleware, agentRunPreviewMiddleware),
+  devTools: process.env.NODE_ENV !== 'production' ? { serialize: { replacer: chatTreeDevToolsReplacer } } : false,
 })
 
 // Watch completion uses the live job transport, not status polling. Register the
@@ -187,10 +189,11 @@ export const setupStore = (preloadedState?: Partial<RootState>) => {
           extraArgument: thunkExtraArg,
         },
         serializableCheck: {
-          ignoredActions: ['persist/PERSIST', 'persist/REHYDRATE'],
+          ...chatTreeSerializableCheck,
+        ignoredActions: ['persist/PERSIST', 'persist/REHYDRATE'],
         },
-      }).prepend(agentRunPreviewMiddleware),
-    devTools: process.env.NODE_ENV !== 'production',
+      }).prepend(chatTreeIngressMiddleware, agentRunPreviewMiddleware),
+    devTools: process.env.NODE_ENV !== 'production' ? { serialize: { replacer: chatTreeDevToolsReplacer } } : false,
   })
 }
 

@@ -5,6 +5,9 @@ import { configureStore } from '@reduxjs/toolkit'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { HashRouter, Route, Routes, useParams } from 'react-router-dom'
 import reducer from '../src/features/chats/chatSlice'
+import { chatTreeSerializableCheck } from '../src/features/chats/immutableChatTree'
+import { filterChatTree, layoutChatTree, walkChatTree } from '../src/components/Heimdall/heimdallTreeTraversal'
+import { buildKeyboardTree } from '../src/components/Heimdall/heimdallKeyboard'
 import { ChatSelectionProvider, useChatSelection } from '../src/components/ChatSelection/ChatSelectionProvider'
 import { useConversationSnapshotCoordinator } from '../src/hooks/useConversationSnapshotCoordinator'
 import { NavigationCommands, useAppNavigation } from '../src/keyboard/NavigationCommands'
@@ -24,7 +27,8 @@ window.__fetchSnapshot = (id, options) => new Promise((resolve, reject) => {
   requests.push({ id, resolve, reject })
   options.signal?.addEventListener('abort', () => reject(new Error('Wrapped transport abort')), { once: true })
 })
-const store = configureStore({ reducer: { chat: reducer, users: () => ({ currentUser: { id: 'smoke-user' } }) } })
+const store = configureStore({ reducer: { chat: reducer, users: () => ({ currentUser: { id: 'smoke-user' } }) },
+  middleware: getDefault => getDefault({ serializableCheck: chatTreeSerializableCheck }) })
 const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: Infinity } } })
 let snapshot: ReturnType<typeof useConversationSnapshotCoordinator>
 let navigation: ReturnType<typeof useChatSelection>
@@ -244,6 +248,33 @@ window.__runSelectionSmoke = async () => {
   await until(ready, 'missing target ready')
   assert(store.getState().chat.conversation.focusedChatMessageId === 'late', 'Replacement target not selected')
   checks.push('Missing target resolver waits for superseding snapshot')
+  const beforeDeep = requests.length
+  navigation.navigate('/chat/p/deep')
+  await until(() => requests.length > beforeDeep && latest().id === 'deep', 'deep conversation request')
+  const deepRows = Array.from({ length: 20000 }, (_, i) => ({
+    id: `deep-${i}`, conversation_id: 'deep', parent_id: i ? `deep-${i - 1}` : null,
+    children_ids: i < 19999 ? [`deep-${i + 1}`] : [], role: 'assistant', content: 'text',
+    created_at: new Date(1700000000000 + i).toISOString(),
+  }))
+  latest().resolve({ messages: deepRows, tree: null })
+  await until(ready, 'deep conversation ready')
+  const deepTree = store.getState().chat.heimdall.treeData!
+  assert(Array.from(walkChatTree(deepTree)).length === 20000, 'Deep tree lost messages')
+  const visible = filterChatTree(deepTree, node => ({ promote: false, message: node.message }))[0]
+  assert(Object.keys(layoutChatTree(visible, 20, 30)).length === 20000, 'Deep layout lost nodes')
+  assert(buildKeyboardTree(visible).size === 20000, 'Deep keyboard index lost nodes')
+  const refreshDeep = snapshot.refresh()
+  latest().resolve({ messages: deepRows, tree: null })
+  await refreshDeep
+  await until(ready, 'deep replacement ready')
+  navigation.navigate('/settings')
+  await tick()
+  const beforeDeepReturn = requests.length
+  navigation.navigate('/chat/p/deep')
+  await until(() => requests.length > beforeDeepReturn, 'deep return request')
+  latest().resolve({ messages: deepRows, tree: null })
+  await until(ready, 'deep return ready')
+  checks.push('20,000-deep tree loads, refreshes, lays out, indexes and survives route return in Electron')
   root.unmount()
   queryClient.clear()
   return checks

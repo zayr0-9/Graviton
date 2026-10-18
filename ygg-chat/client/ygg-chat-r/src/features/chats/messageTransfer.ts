@@ -89,11 +89,16 @@ export function buildMessageTransferPayload(
   const sourceOrder = new Map<string, number>()
   const sourceVisited = new Set<string>()
   const visitSourceTree = (message: Message): void => {
-    const id = String(message.id)
-    if (sourceVisited.has(id)) return
-    sourceVisited.add(id)
-    sourceOrder.set(id, sourceOrder.size)
-    for (const child of childrenByParent.get(id) ?? []) visitSourceTree(child)
+    const pending = [message]
+    while (pending.length) {
+      const current = pending.pop()!
+      const id = String(current.id)
+      if (sourceVisited.has(id)) continue
+      sourceVisited.add(id)
+      sourceOrder.set(id, sourceOrder.size)
+      const children = childrenByParent.get(id) ?? []
+      for (let i = children.length - 1; i >= 0; i--) pending.push(children[i])
+    }
   }
   const sourceRoots = [...messageById.values()]
     .filter(message => message.parent_id == null || !messageById.has(String(message.parent_id)))
@@ -108,12 +113,16 @@ export function buildMessageTransferPayload(
   const orderedMessages: Message[] = []
   const visited = new Set<string>()
   const visitSelectedSubtree = (message: Message): void => {
-    const id = String(message.id)
-    if (visited.has(id) || !selectedSet.has(id)) return
-
-    visited.add(id)
-    orderedMessages.push(message)
-    for (const child of childrenByParent.get(id) ?? []) visitSelectedSubtree(child)
+    const pending = [message]
+    while (pending.length) {
+      const current = pending.pop()!
+      const id = String(current.id)
+      if (visited.has(id) || !selectedSet.has(id)) continue
+      visited.add(id)
+      orderedMessages.push(current)
+      const children = childrenByParent.get(id) ?? []
+      for (let i = children.length - 1; i >= 0; i--) pending.push(children[i])
+    }
   }
 
   const selectedRoots = [...messageById.values()]

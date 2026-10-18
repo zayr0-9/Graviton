@@ -11,20 +11,22 @@ export type KeyboardTreeEntry = {
 export const buildKeyboardTree = (root: KeyboardTreeNode | null) => {
   const entries = new Map<string, KeyboardTreeEntry>()
   const rows = new Map<number, string[]>()
-  const visit = (nodes: KeyboardTreeNode[], parent: string | null, level: number) => {
+  const roots = root?.id === 'root' ? root.children : root ? [root] : []
+  type Frame = { node: KeyboardTreeNode; parent: string | null; level: number; siblings: string[] }
+  const pending: Frame[] = []
+  const add = (nodes: KeyboardTreeNode[], parent: string | null, level: number) => {
     const siblings = nodes.map(node => node.id)
-    nodes.forEach(node => {
-      // Depth-first traversal preserves left-to-right layout order within each row.
-      // Share the row array so peers include nodes under different parents.
-      const horizontalPeers = rows.get(level) ?? []
-      rows.set(level, horizontalPeers)
-      horizontalPeers.push(node.id)
-      entries.set(node.id, { node, parent, level, siblings, horizontalPeers })
-      visit(node.children, node.id, level + 1)
-    })
+    for (let i = nodes.length - 1; i >= 0; i--) pending.push({ node: nodes[i], parent, level, siblings })
   }
-  // The synthetic root is not an actionable message.
-  visit(root?.id === 'root' ? root.children : root ? [root] : [], null, 1)
+  add(roots, null, 1)
+  while (pending.length) {
+    const { node, parent, level, siblings } = pending.pop()!
+    const horizontalPeers = rows.get(level) ?? []
+    rows.set(level, horizontalPeers)
+    horizontalPeers.push(node.id)
+    entries.set(node.id, { node, parent, level, siblings, horizontalPeers })
+    add(node.children, node.id, level + 1)
+  }
   return entries
 }
 

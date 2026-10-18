@@ -70,6 +70,7 @@ import {
 import { isResumableRunsEnabled } from '../../helpers/serverLoopSettings'
 import { buildServerLoopRequest } from './buildServerLoopRequest'
 import { buildConversationTree } from './conversationTree'
+import { finalizeChatTree } from './immutableChatTree'
 export { AUTO_COMPACTION_NOTE } from './summaryPresentation'
 import { conversationQueryKeys } from './conversationQueryKeys'
 import type { ConversationMessagesTreeData } from './conversationMessagesApi'
@@ -2110,12 +2111,15 @@ export const fetchMessageTree = createAsyncThunk<
     // Storage-aware fetch via the gateway (routes local vs cloud server-side).
     void storageMode
     response = await gwApi.get<{ messages: Message[]; tree: any }>(
-      `/conversations/${conversationId}/messages/tree`
+      `/conversations/${conversationId}/messages/tree?includeTree=false`
     )
 
     // Handle both old and new response formats for backward compatibility
-    const treeData = response.tree || response
     const messages = response.messages
+    const treeData = Array.isArray(messages) ? buildConversationTree(messages)
+      : finalizeChatTree(response.tree ?? response as any)
+    // Fulfilled thunk payloads also pass through development middleware.
+    response = { ...response, tree: treeData }
 
     // If messages are included, load them into state
     if (messages && Array.isArray(messages)) {
@@ -2132,7 +2136,7 @@ export const fetchMessageTree = createAsyncThunk<
       dispatch(chatSliceActions.conversationSnapshotApplied({
         conversationId,
         messages: normalizedMessages,
-        tree: buildConversationTree(normalizedMessages),
+        tree: treeData,
       }))
 
       // Conditional attachments fetch: only when metadata indicates or when metadata absent
@@ -2239,7 +2243,7 @@ export const initializeConversationData = createAsyncThunk<
     // 1. Fetch tree data (now includes messages - optimized single call)
     const treeResponse = await dispatch(fetchMessageTree(conversationId)).unwrap()
     const messages = treeResponse.messages || []
-    const treeData = treeResponse.tree || treeResponse
+    const treeData = treeResponse.tree ?? null
 
     // 2. Fetch system prompt and context in parallel (these are lightweight)
     const [systemPromptRes, contextRes] = await Promise.all([

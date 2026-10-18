@@ -94,7 +94,8 @@ function buildMessageTree(messages: any[]): ChatNode | null {
 export function buildConversationMessagesTreePayload(
   db: Database.Database,
   statements: any,
-  conversationId: string
+  conversationId: string,
+  includeTree = true
 ): { messages: any[]; tree: ChatNode | null; meta: { storage_mode: string } } {
   const messages = statements.getMessagesByConversationId.all(conversationId) as any[]
   const conversation = statements.getConversationById.get(conversationId) as { storage_mode?: string } | undefined
@@ -141,7 +142,7 @@ export function buildConversationMessagesTreePayload(
     }
   })
 
-  return { messages: normalizedMessages, tree: buildMessageTree(normalizedMessages), meta: { storage_mode } }
+  return { messages: normalizedMessages, tree: includeTree ? buildMessageTree(normalizedMessages) : null, meta: { storage_mode } }
 }
 
 type TopLevelMessageSearchCandidate = {
@@ -929,7 +930,7 @@ export function registerAppAutomationRoutes(app: Express, deps: AppAutomationRou
 
   app.get('/api/app/conversations/:id/messages/tree', (req, res) => {
     try {
-      res.json(buildConversationMessagesTreePayload(db, statements, req.params.id))
+      res.json(buildConversationMessagesTreePayload(db, statements, req.params.id, req.query.includeTree !== 'false'))
     } catch (error) {
       console.error('[HeadlessServer] Error fetching app message tree:', error)
       res.status(500).json({ error: 'Failed to fetch message tree' })
