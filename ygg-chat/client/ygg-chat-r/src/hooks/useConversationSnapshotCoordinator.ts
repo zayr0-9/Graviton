@@ -114,6 +114,11 @@ export function useConversationSnapshotCoordinator(
         // The coordinator already filters owned cancellation; any remaining error
         // belongs to this load, including an unsolicited transport AbortError.
         if (ownsRefresh()) {
+          console.error('[ConversationSnapshot] Failed to load conversation:', {
+            conversationId: requestedId,
+            requestId: reduxStore.getState().chat.selection.requestId,
+            revision,
+          }, cause)
           setFailure({ error: cause instanceof Error ? cause : new Error(String(cause)), revision,
             requestId: reduxStore.getState().chat.selection.requestId })
           setIsFetched(true)

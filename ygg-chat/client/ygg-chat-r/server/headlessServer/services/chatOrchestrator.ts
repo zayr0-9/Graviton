@@ -540,7 +540,6 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
     if (submission.attachmentsBase64?.length && !['openaichatgpt', 'openrouter'].includes(normalizeProviderRoute(run.request.provider))) {
       throw new Error('Queued image attachments are supported for ChatGPT and OpenRouter; send text or wait for this run to finish')
     }
-    if (run.request.manualCompaction && !run.terminal) throw new Error('Wait for manual compaction to finish before sending')
     if (!run.queue.closed) {
       run.queue.enqueue(submission, run.control.revision)
       return { snapshot: run.queue.snapshot() }
@@ -554,7 +553,7 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
     run.restartRequestId = submission.requestId
     run.restartContent = submission.content
     return { restart: { ...run.request, operation: 'send', streamId: nextId, lineageId: lineage.id,
-      parentId: run.head, messageId: null, operationId: null, content: submission.content,
+      parentId: run.head, messageId: null, operationId: null, content: submission.content, manualCompaction: false,
       watcherCompletion: submission.watcherCompletion,
       fullAccess: submission.fullAccess ?? run.request.fullAccess,
       fullAccessNotificationId: submission.fullAccessNotificationId,
@@ -759,6 +758,7 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
         ...(request.manualCompaction ? { kind: 'compaction_instruction', version: 1, trigger: 'manual', sourceTipId: parentId, resume: false }
           : request.watcherCompletion ? { kind: 'watcher_completion', ...request.watcherCompletion } : {}),
         modelSelection: { provider: request.provider, model: request.modelName },
+        fastMode: request.serviceTier === 'priority',
       },
     })
 
@@ -1273,6 +1273,7 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
       streamId: trackedStreamId,
       onModelResponse: (id: string) => { runResponseIds.add(id) },
       modelSelection: { provider: request.provider, model: request.modelName },
+      fastMode: request.serviceTier === 'priority',
     }
     // ONE sink instance for the run: the loop's turns and any terminal error row share
     // its pending-fork state, so whichever writes first materializes the fork.
@@ -1475,7 +1476,7 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
             blocks.push(toContextInjectionBlock({ path: '', label: LABEL_HOOK_CONTEXT, text, reason: 'hook' }))
           }
           signal?.throwIfAborted()
-          const submissionRequest = { ...request, operation: 'send' as const, content,
+          const submissionRequest = { ...request, operation: 'send' as const, content, manualCompaction: false,
             watcherCompletion: entry.submission.watcherCompletion,
             attachmentsBase64: entry.submission.attachmentsBase64 ?? null }
           const preparedImages = await this.prepareSubmittedImages(submissionRequest.attachmentsBase64)

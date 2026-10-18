@@ -28,6 +28,8 @@ import { DecisionBroker } from './services/decisionBroker.js'
 import { RunSessionRegistry } from './services/runSessionRegistry.js'
 import { SubagentRunService } from './services/subagentRunService.js'
 import { createSubagentDispatchExecutor, createSubagentManagerExecutor } from './services/subagentToolExecutor.js'
+import { claudeBridge } from '../tools/claudeBridge.js'
+import { withToolAccess } from '../toolAccessContext.js'
 import { createWatchExecutor, watchService } from './services/watchService.js'
 import { createMultiCallDispatchExecutor } from './services/multiCallExecutor.js'
 import { createReplDispatchExecutor } from './services/replExecutor.js'
@@ -322,7 +324,17 @@ export function registerHeadlessServerRoutes(app: Express, deps: HeadlessServerR
   }
 
 
-  const watcherExecutor = createWatchExecutor(executeToolViaOrchestrator, watchService,
+  const bridgeWaitExecutor: ToolExecutor = async (call, context) => {
+    if (call.name !== 'claude_bridge') return executeToolViaOrchestrator(call, context)
+    const args = typeof call.arguments === 'string' ? JSON.parse(call.arguments) : call.arguments
+    if (args?.action !== 'wait') return executeToolViaOrchestrator(call, context)
+    return withToolAccess(context.fullAccess, () => claudeBridge.execute(args, {
+      ...context, rootPath: context.rootPath ?? undefined,
+      registerWait: (jobId, completion) => watchService.registerBridgeJob(jobId, completion, context,
+        deps.statements.getConversationById?.get(context.conversationId)?.project_id ?? null, call.id),
+    }))
+  }
+  const watcherExecutor = createWatchExecutor(bridgeWaitExecutor, watchService,
     id => deps.statements.getConversationById?.get(id)?.project_id ?? null)
   const multiCallToolExecutor = createMultiCallDispatchExecutor(createReplDispatchExecutor(createContextStatusExecutor(watcherExecutor)))
   const subagentRunService = new SubagentRunService({
@@ -392,11 +404,13 @@ export function registerHeadlessServerRoutes(app: Express, deps: HeadlessServerR
   if (gatewayFlags.resumableRuns) {
     watchService.configureContinuation({
       retain: context => chatOrchestrator.retainWatch(context),
-      deliver: (event, originStreamId) => {
+      deliver: (event, originStreamId, content) => {
         const result = chatOrchestrator.submitWatchMessage(event.conversationId, event.lineageId, originStreamId, {
           requestId: `watcher:${event.handle}`,
-          watcherCompletion: { handle: event.handle, originMessageId: event.messageId },
-          content: `Watcher completion: ${event.kind} watch ${event.handle} ${event.state}. This is an automated event from the watcher registered in this branch. Continue the original task using available results; inspect them with normal tools as needed.`,
+          watcherCompletion: { handle: event.handle, originMessageId: event.messageId,
+            ...(event.source ? { source: event.source } : {}),
+            ...(event.registrationToolCallId ? { registrationToolCallId: event.registrationToolCallId } : {}) },
+          content: content ?? `Watcher completion: ${event.kind} watch ${event.handle} ${event.state}. This is an automated event from the watcher registered in this branch. Continue the original task using available results; inspect them with normal tools as needed.`,
         })
         if (result.restart) {
           launchQueuedSuccessor(chatOrchestrator, runSessions, result.restart)

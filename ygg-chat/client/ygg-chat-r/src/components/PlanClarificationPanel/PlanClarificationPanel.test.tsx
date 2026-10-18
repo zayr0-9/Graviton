@@ -73,3 +73,47 @@ describe('PlanClarificationPanel button colours', () => {
     expect(buttonMarkup(html, 'Submit answers')).not.toContain('style=')
   })
 })
+
+describe('PlanClarificationPanel manual answers', () => {
+  it('always renders a one-row manual input, capped at three lines', () => {
+    const html = renderToStaticMarkup(<PlanClarificationPanel {...props} />)
+    expect(html).toContain('Write my own answer')
+    expect(html).toContain('rows="1"')
+    expect(html).toContain('max-h-[76px]')
+    expect(html).toContain('resize-none overflow-y-auto')
+    expect(html).toContain('aria-label="Your answer: Which scope?"')
+  })
+
+  it('uses the custom manual label even when no suggested options exist', () => {
+    const request = { id: 'freeform', questions: [{ question: 'What next?', manualLabel: 'Something else' }] }
+    const html = renderToStaticMarkup(<PlanClarificationPanel {...props} request={request} />)
+    expect(html).toContain('Something else')
+    expect(html).toContain('<textarea')
+  })
+
+  it('keeps existing manual options without duplicating them', () => {
+    const request = { ...props.request, questions: [{
+      ...props.request.questions[0],
+      options: [{ id: 'custom', label: 'Other answer', manual: true }],
+    }] }
+    const html = renderToStaticMarkup(<PlanClarificationPanel {...props} request={request} />)
+    expect(html).toContain('Other answer')
+    expect(html).not.toContain('Write my own answer')
+  })
+
+  it.each(['', '   ', 'My preferred approach'])('validates manual answer %j', manualText => {
+    vi.mocked(useState).mockReturnValue([{ scope: { optionId: 'manual', manualText } }, vi.fn()])
+    const submit = buttonMarkup(renderToStaticMarkup(<PlanClarificationPanel {...props} />), 'Submit answers')
+    expect(submit.includes('disabled=""')).toBe(!manualText.trim())
+  })
+
+  it('does not confuse a model option named manual with the custom answer', () => {
+    const request = { ...props.request, questions: [{
+      ...props.request.questions[0], options: [{ id: 'manual', label: 'Manual installation' }],
+    }] }
+    vi.mocked(useState).mockReturnValue([{ scope: { optionId: 'manual', manualText: '' } }, vi.fn()])
+    const html = renderToStaticMarkup(<PlanClarificationPanel {...props} request={request} />)
+    expect(html).toContain('Write my own answer')
+    expect(buttonMarkup(html, 'Submit answers')).not.toContain('disabled=""')
+  })
+})

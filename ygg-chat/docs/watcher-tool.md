@@ -117,6 +117,12 @@ No paths, URLs, regexes, log matches, response bodies or raw errors enter notice
 Tool invocation arguments remain subject to the harness's usual logging rules:
 do not put credentials in URLs, patterns or paths.
 
+## Claude bridge job completion
+
+Main-chat `claude_bridge wait` uses a host-only `registerBridgeJob` entrypoint on this service. It subscribes to the owned job's completion promise rather than polling a condition, returns immediately, and shares capacity, branch pins, status/cancel handles, safe-boundary delivery, deduplication and notification replay. This is not a new public `watcher start` kind; only the trusted host can register it. Job timeout remains owned by the bridge. Small bridge registration tombstones survive status-row eviction until shutdown (maximum 4096; further new registrations fail closed rather than discard deduplication).
+
+The internal notification kind is `claude_bridge`. A bounded exact-job reply is supplied separately to the branch continuation queue, never embedded in broadcast/replayed events or watch status. Queued rows use existing `watcher_completion` provenance, extended with the original bridge launch `source` and a distinct wait `registrationToolCallId`. The model-visible completion text explicitly references the launch tool call; `originMessageId` continues to identify the wait-registration assistant message for routing provenance. Bridge waits have no watcher deadline and ignore `waitMs`; only the independent CLI job runtime limit applies. Cancelled jobs, cancelled watches and shutdown do not submit messages. `autoResume:false` explicitly means visible-only. See [Claude bridge](claude-bridge-tool.md).
+
 ## Condition semantics and limitations
 
 - Polling conditions run asynchronously in the server, never through arbitrary

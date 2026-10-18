@@ -622,7 +622,7 @@ export function registerGatewayRoutes(app: Express, deps: RegisterGatewayRoutesD
       // re-parsed and re-serialised the whole payload, which is tens of MB for a long
       // tool-heavy conversation, and the renderer refetches it on every stream end.
       try {
-        res.json(buildConversationMessagesTreePayload(deps.db, deps.statements, req.params.id))
+        res.json(buildConversationMessagesTreePayload(deps.db, deps.statements, req.params.id, req.query.includeTree !== 'false'))
       } catch (error) {
         console.error('[gateway] Error building local message tree:', error)
         res.status(500).json({ error: 'Failed to fetch message tree' })
@@ -649,6 +649,8 @@ export function registerGatewayRoutes(app: Express, deps: RegisterGatewayRoutesD
     ).all(req.params.id) as any[]).map(row => [String(row.id), row]))
     res.status(r.status).json({
       ...r.body,
+      // Preserve upstream cloud metadata, but do not reserialize its redundant tree.
+      ...(req.query.includeTree === 'false' ? { tree: null } : {}),
       messages: r.body.messages.map((message: any) => {
         const local = runMetadata.get(String(message.id))
         return { ...message, hook_runs: byMessage.get(String(message.id)) || [],

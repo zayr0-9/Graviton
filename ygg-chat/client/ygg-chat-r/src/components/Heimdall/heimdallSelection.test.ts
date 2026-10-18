@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import type { Message } from '../../features/chats/chatTypes'
 import { buildMessageTransferPayload, hasUnselectedDescendants } from '../../features/chats/messageTransfer'
-import { expandHeimdallSelectionToBranchMessages, selectHeimdallContextMenuNodes } from './heimdallSelection'
+import { expandHeimdallSelectionToBranchMessages, getHeimdallTransferScopes, selectHeimdallContextMenuNodes } from './heimdallSelection'
 
 const message = (id: string, parentId: string | null, role: Message['role'] = 'user'): Message => ({
   id,
@@ -185,5 +185,52 @@ describe('hidden branch tails', () => {
     expect(expandHeimdallSelectionToBranchMessages(numeric, ['1'], new Set(['1']))).toEqual([1, 2])
     const cyclic = [message('a', 'b'), message('b', 'a')]
     expect(expandHeimdallSelectionToBranchMessages(cyclic, ['a'], new Set(['a']))).toEqual(['a'])
+  })
+})
+
+describe('getHeimdallTransferScopes', () => {
+  const path = ['before', 'a', 'hidden-a', 'b', 'hidden-b', 'c', 'after']
+  const visible = new Set(['before', 'a', 'b', 'c', 'after', 'other-branch'])
+
+  it('offers the complete active root-to-tip path, independent of the right-click position', () => {
+    const scopes = getHeimdallTransferScopes(messages, ['b'], path, 'b', visible)
+    expect(scopes.selectionIds).toEqual(['b'])
+    expect(scopes.activeBranchIds).toEqual(path)
+    expect(relations(buildMessageTransferPayload(messages, scopes.activeBranchIds))).toEqual([
+      ['before', null], ['a', 'before'], ['hidden-a', 'a'], ['b', 'hidden-a'],
+      ['hidden-b', 'b'], ['c', 'hidden-b'], ['after', 'c'],
+    ])
+    expect(hasUnselectedDescendants(messages, scopes.activeBranchIds)).toBe(true)
+  })
+
+  it('does not offer active-branch scope for an off-path node or rectangle selection', () => {
+    expect(getHeimdallTransferScopes(messages, ['other-branch'], path, 'other-branch').activeBranchIds).toEqual([])
+    expect(getHeimdallTransferScopes(messages, ['a', 'b'], path, null).activeBranchIds).toEqual([])
+  })
+
+  it('keeps multi-selection expansion separate from branch scope', () => {
+    const scopes = getHeimdallTransferScopes(messages, ['c', 'a', 'b'], path, 'b', visible)
+    expect(relations(buildMessageTransferPayload(messages, scopes.selectionIds))).toEqual(expectedMiddleBranch)
+    expect(scopes.activeBranchIds).toEqual(path)
+  })
+
+  it('does not absorb hidden sibling branches into the active path', () => {
+    const forked = [...messages, message('hidden-sibling', 'b', 'tool')]
+    const scopes = getHeimdallTransferScopes(forked, ['b'], path, 'b', visible)
+    expect(scopes.selectionIds).toContain('hidden-sibling')
+    expect(scopes.activeBranchIds).not.toContain('hidden-sibling')
+  })
+
+  it('allows moving a full path with no unselected descendants', () => {
+    const chain = messages.filter(row => row.id !== 'other-branch')
+    const scopes = getHeimdallTransferScopes(chain, ['b'], path, 'b', visible)
+    expect(hasUnselectedDescendants(chain, scopes.activeBranchIds)).toBe(false)
+  })
+
+  it('normalizes legacy numeric IDs, omits missing and synthetic IDs, and deduplicates paths', () => {
+    const numeric = [{ ...message('1', null), id: 1 }, message('2', '1')] as unknown as Message[]
+    expect(getHeimdallTransferScopes(numeric, ['1', 'missing'], ['root', '1', '2', '2', 'missing'], 1 as unknown as Message['id']))
+      .toEqual({ selectionIds: [1], activeBranchIds: ['1', '2'] })
+    expect(getHeimdallTransferScopes([], [], [], null)).toEqual({ selectionIds: [], activeBranchIds: [] })
   })
 })

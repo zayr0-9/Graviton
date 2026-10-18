@@ -12,6 +12,7 @@ import { buildLocalApiUrl, environment } from '../../utils/api'
 import { Button } from '../Button/button'
 import { getMarkdownThemeVars, getThemeModeColor, useCustomChatTheme, useHtmlDarkMode } from '../ThemeManager/themeConfig'
 import { MarkdownTable } from '../MarkdownContent/MarkdownTable'
+import { SCROLLABLE_MARKDOWN_COMPONENTS } from '../MarkdownContent/MarkdownCodeBlock'
 import {
   REASONING_CHEVRON_BASE_CLASS,
   REASONING_TEXT_MARKDOWN_CLASS,
@@ -188,7 +189,7 @@ const CollapsibleBlock: React.FC<{
   )
 }
 
-const REASONING_MARKDOWN_COMPONENTS = { table: MarkdownTable }
+const REASONING_MARKDOWN_COMPONENTS = { ...SCROLLABLE_MARKDOWN_COMPONENTS, table: MarkdownTable }
 
 const TranscriptReasoning: React.FC<{ content: string }> = ({ content }) => {
   const { theme, enabled } = useCustomChatTheme()
@@ -206,7 +207,7 @@ const TranscriptBlock: React.FC<{ block: any }> = ({ block }) => {
     if (!textContent) return null
     return (
       <div className='prose prose-sm dark:prose-invert max-w-none text-stone-700 dark:text-stone-300 prose-p:my-1 prose-pre:my-2 prose-pre:bg-stone-100 dark:prose-pre:bg-neutral-800 prose-code:text-orange-600 dark:prose-code:text-orange-400 prose-pre:text-xs prose-pre:overflow-x-auto'>
-        <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[[rehypeHighlight, { detect: true }]]}>
+        <ReactMarkdown components={SCROLLABLE_MARKDOWN_COMPONENTS} remarkPlugins={[remarkGfm]} rehypePlugins={[[rehypeHighlight, { detect: true }]]}>
           {textContent}
         </ReactMarkdown>
       </div>
@@ -299,7 +300,7 @@ export const SubagentRunView: React.FC<{ run: SubagentRunRow; index?: number; to
             Prompt
           </div>
           <div className='prose prose-sm dark:prose-invert max-w-none text-stone-800 dark:text-stone-200 prose-p:my-1 prose-pre:my-2 prose-pre:bg-stone-100 dark:prose-pre:bg-neutral-800 prose-code:text-orange-600 dark:prose-code:text-orange-400 prose-pre:text-xs prose-pre:overflow-x-auto'>
-            <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[[rehypeHighlight, { detect: true }]]}>
+            <ReactMarkdown components={SCROLLABLE_MARKDOWN_COMPONENTS} remarkPlugins={[remarkGfm]} rehypePlugins={[[rehypeHighlight, { detect: true }]]}>
               {prompt}
             </ReactMarkdown>
           </div>
@@ -592,12 +593,12 @@ export const SubagentTranscriptModal: React.FC<SubagentTranscriptModalProps> = (
               </div>
               {live.reasoning && (
                 <div className='mb-2 prose prose-sm dark:prose-invert max-w-none text-stone-500 dark:text-stone-400 prose-p:my-1'>
-                  <ReactMarkdown remarkPlugins={[remarkGfm]}>{live.reasoning}</ReactMarkdown>
+                  <ReactMarkdown components={REASONING_MARKDOWN_COMPONENTS} remarkPlugins={[remarkGfm]}>{live.reasoning}</ReactMarkdown>
                 </div>
               )}
               {live.text && (
                 <div className='prose prose-sm dark:prose-invert max-w-none text-stone-700 dark:text-stone-300 prose-p:my-1 prose-pre:my-2 prose-pre:bg-stone-100 dark:prose-pre:bg-neutral-800 prose-code:text-orange-600 dark:prose-code:text-orange-400 prose-pre:text-xs prose-pre:overflow-x-auto'>
-                  <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[[rehypeHighlight, { detect: true }]]}>
+                  <ReactMarkdown components={SCROLLABLE_MARKDOWN_COMPONENTS} remarkPlugins={[remarkGfm]} rehypePlugins={[[rehypeHighlight, { detect: true }]]}>
                     {live.text}
                   </ReactMarkdown>
                 </div>

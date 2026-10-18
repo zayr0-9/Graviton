@@ -94,3 +94,20 @@ export function expandHeimdallSelectionToBranchMessages(
 
   return messages.filter(message => expandedSet.has(String(message.id))).map(message => message.id)
 }
+
+/** Branch transfers use the authoritative active path, never visual-tree descendants. */
+export function getHeimdallTransferScopes(
+  messages: Message[],
+  selectedIds: Message['id'][],
+  currentPathIds: Message['id'][],
+  contextNodeId: Message['id'] | null,
+  visibleNodeIds?: ReadonlySet<string>
+): { selectionIds: Message['id'][]; activeBranchIds: Message['id'][] } {
+  const knownIds = new Set(messages.map(message => String(message.id)))
+  const selectionIds = expandHeimdallSelectionToBranchMessages(messages, selectedIds, visibleNodeIds)
+    .filter(id => knownIds.has(String(id)))
+  const pathIds = [...new Set(currentPathIds.map(String))].filter(id => knownIds.has(id))
+  const canUseActiveBranch = contextNodeId != null && pathIds.includes(String(contextNodeId))
+
+  return { selectionIds, activeBranchIds: canUseActiveBranch ? pathIds : [] }
+}

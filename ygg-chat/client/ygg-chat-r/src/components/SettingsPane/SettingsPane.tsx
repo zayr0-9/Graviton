@@ -11,6 +11,7 @@ import {
   FileJson,
   FolderOpen,
   GitBranch,
+  Keyboard,
   LoaderCircle,
   Maximize2,
   Palette,
@@ -65,6 +66,7 @@ import { SendButtonAnimationSettings } from './SendButtonAnimationSettings'
 import { FastModeAnimationSettings } from './FastModeAnimationSettings'
 import { useSettingsSectionThemeColors } from './settingsSectionTheme'
 import { ToolsSettings } from './ToolsSettings'
+import { KeyboardShortcutsModal } from './KeyboardShortcutsModal'
 
 type SettingsPaneProps = {
   open: boolean
@@ -270,6 +272,7 @@ export const SettingsPane: React.FC<SettingsPaneProps> = ({ open, onClose }) => 
   const [promptContextExpanded, setPromptContextExpanded] = useState(false)
   const [chatSettingsExpanded, setChatSettingsExpanded] = useState(false)
   const [appStoreOpen, setAppStoreOpen] = useState(false)
+  const [shortcutsOpen, setShortcutsOpen] = useState(false)
 
   // Saved custom themes state
   const [savedThemes, setSavedThemes] = useState<ThemeListItem[]>([])
@@ -1360,15 +1363,16 @@ ${block}`
   useEffect(() => {
     if (!open) return
     const onKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose()
+      if (e.key === 'Escape' && !shortcutsOpen && !e.defaultPrevented) onClose()
     }
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
-  }, [open, onClose])
+  }, [open, onClose, shortcutsOpen])
 
   useEffect(() => {
     if (!open) {
       setAppStoreOpen(false)
+      setShortcutsOpen(false)
     }
   }, [open])
 
@@ -1438,7 +1442,12 @@ ${block}`
         >
           <div className='sticky top-0 z-10 mb-4 flex items-center justify-between rounded-full bg-white/35 px-4 py-3 backdrop-blur-2xl dark:bg-white/5'>
             <h2 className='text-2xl font-semibold text-stone-800 dark:text-stone-200'>Chat Settings</h2>
-            <div className='flex items-center gap-2'>
+            <div className='flex flex-wrap items-center gap-2'>
+              <button type='button' onClick={() => setShortcutsOpen(true)} className={pillButtonClass}
+                aria-label='Open keyboard shortcuts' title='Keyboard shortcuts'>
+                <Keyboard size={16} strokeWidth={2.25} />
+                Shortcuts
+              </button>
               <button
                 onClick={() => setAppStoreOpen(true)}
                 className={pillButtonClass}
@@ -3681,6 +3690,9 @@ ${block}`
         </div>
           </motion.div>
           <AppStoreModal open={appStoreOpen} onClose={() => setAppStoreOpen(false)} />
+          <AnimatePresence>
+            {shortcutsOpen && <KeyboardShortcutsModal onClose={() => setShortcutsOpen(false)} />}
+          </AnimatePresence>
         </motion.div>
         )}
       </AnimatePresence>

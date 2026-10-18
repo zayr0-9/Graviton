@@ -61,7 +61,12 @@ describe('changeOperationMode thunk', () => {
     )
 
     expect(fetchMock).not.toHaveBeenCalled()
-    expect(selectOperationMode({ ...state })).toBe('execute')
+    expect(state.chat.composition.branchEditModes?.operationMode).toBe('execute')
+    expect(state.chat.operationModeDrafts).toEqual({})
+    expect(selectOperationMode({ ...state })).toBe('plan')
+    state.chat = reducer(state.chat, chatSliceActions.editingBranchSet(false))
+    expect(state.chat.composition.branchEditModes).toBeUndefined()
+    expect(selectOperationMode({ ...state })).toBe('plan')
     expect(state.chat.operationModeChanges.c).toMatchObject({ mode: 'plan', streamId: 's', requestId: 'ongoing' })
     expect(state.chat.conversation.currentPath).toEqual(['tip'])
     expect(state.chat.conversation.messages).toEqual([])

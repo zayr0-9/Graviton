@@ -22,11 +22,13 @@ export type {
   ChatNoticeCode,
 } from './chatErrors.js'
 
+import type { WatcherCompletionProvenance } from './watchEvents.js'
+
 export type HeadlessChatOperation = 'send' | 'repeat' | 'branch' | 'edit-branch'
 
 export interface HeadlessMessageRequest {
   /** Internal provenance for a server-generated watcher input. */
-  watcherCompletion?: { handle: string; originMessageId: string }
+  watcherCompletion?: WatcherCompletionProvenance
   operation: HeadlessChatOperation
   conversationId: string
   parentId: string | null

@@ -3,6 +3,7 @@ import React, { useMemo, useState } from 'react'
 import { AlignLeft, ChevronDown, Columns2, FileText, GitCompareArrows, Minus, Plus, X } from 'lucide-react'
 import { getThemeModeColor, useCustomChatTheme, useHtmlDarkMode } from '../ThemeManager/themeConfig'
 import ReactMarkdown from 'react-markdown'
+import { SCROLLABLE_MARKDOWN_COMPONENTS } from '../MarkdownContent/MarkdownCodeBlock'
 import rehypeHighlight from 'rehype-highlight'
 
 export interface EditFileArgs {
@@ -182,7 +183,7 @@ const InlineDiffView: React.FC<InlineDiffViewProps> = ({ original, replacement, 
   }, [original, replacement, lineInfo])
 
   return (
-    <div className={`${DIFF_SURFACE_CLASS} overflow-auto max-h-[300px] py-2`}>
+    <div className={`${DIFF_SURFACE_CLASS} thin-scrollbar overflow-auto max-h-[300px] py-2`}>
       {diffLines.map((line, idx) => (
         <InlineDiffLine
           key={idx}
@@ -320,8 +321,8 @@ const EditFileDiffViewComponent: React.FC<EditFileDiffViewProps> = ({ args, resu
                 <div className={`flex items-center gap-1 px-2 py-1 ${REMOVED_TEXT_CLASS}`}>
                   <Minus className='h-3 w-3' aria-label='Original' />
                 </div>
-                <div className={`${DIFF_SURFACE_CLASS} ${codeBlockStyles} overflow-x-auto`}>
-                  <ReactMarkdown rehypePlugins={[[rehypeHighlight, { detect: true }]]}>
+                <div className={`${DIFF_SURFACE_CLASS} ${codeBlockStyles} thin-scrollbar overflow-x-auto`}>
+                  <ReactMarkdown components={SCROLLABLE_MARKDOWN_COMPONENTS} rehypePlugins={[[rehypeHighlight, { detect: true }]]}>
                     {originalMarkdown}
                   </ReactMarkdown>
                 </div>
@@ -331,8 +332,8 @@ const EditFileDiffViewComponent: React.FC<EditFileDiffViewProps> = ({ args, resu
                 <div className={`flex items-center gap-1 px-2 py-1 ${ADDED_TEXT_CLASS}`}>
                   <Plus className='h-3 w-3' aria-label='Replacement' />
                 </div>
-                <div className={`${DIFF_SURFACE_CLASS} ${codeBlockStyles} overflow-x-auto`}>
-                  <ReactMarkdown rehypePlugins={[[rehypeHighlight, { detect: true }]]}>
+                <div className={`${DIFF_SURFACE_CLASS} ${codeBlockStyles} thin-scrollbar overflow-x-auto`}>
+                  <ReactMarkdown components={SCROLLABLE_MARKDOWN_COMPONENTS} rehypePlugins={[[rehypeHighlight, { detect: true }]]}>
                     {replacementMarkdown}
                   </ReactMarkdown>
                 </div>
@@ -346,9 +347,9 @@ const EditFileDiffViewComponent: React.FC<EditFileDiffViewProps> = ({ args, resu
                   <span className='text-[0.5625em] font-medium'>Original</span>
                 </div>
                 <div
-                  className={`${DIFF_SURFACE_CLASS} ${codeBlockStyles} overflow-x-auto max-h-[250px] overflow-y-auto`}
+                  className={`${DIFF_SURFACE_CLASS} ${codeBlockStyles} thin-scrollbar overflow-x-auto max-h-[250px] overflow-y-auto`}
                 >
-                  <ReactMarkdown rehypePlugins={[[rehypeHighlight, { detect: true }]]}>
+                  <ReactMarkdown components={SCROLLABLE_MARKDOWN_COMPONENTS} rehypePlugins={[[rehypeHighlight, { detect: true }]]}>
                     {originalMarkdown}
                   </ReactMarkdown>
                 </div>
@@ -360,9 +361,9 @@ const EditFileDiffViewComponent: React.FC<EditFileDiffViewProps> = ({ args, resu
                   <span className='text-[0.5625em] font-medium'>Replacement</span>
                 </div>
                 <div
-                  className={`${DIFF_SURFACE_CLASS} ${codeBlockStyles} overflow-x-auto max-h-[250px] overflow-y-auto`}
+                  className={`${DIFF_SURFACE_CLASS} ${codeBlockStyles} thin-scrollbar overflow-x-auto max-h-[250px] overflow-y-auto`}
                 >
-                  <ReactMarkdown rehypePlugins={[[rehypeHighlight, { detect: true }]]}>
+                  <ReactMarkdown components={SCROLLABLE_MARKDOWN_COMPONENTS} rehypePlugins={[[rehypeHighlight, { detect: true }]]}>
                     {replacementMarkdown}
                   </ReactMarkdown>
                 </div>

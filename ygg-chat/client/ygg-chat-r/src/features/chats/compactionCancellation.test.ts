@@ -11,6 +11,24 @@ import { createEmptyStreamState } from './streamHelpers'
 import type { RootState } from '../../store/store'
 
 describe('compaction cancellation', () => {
+  it('returns the committed summary when queued input extends a manual-compaction run', async () => {
+    const state = { chat: reducer(undefined, { type: 'init' }) } as RootState
+    state.chat = { ...state.chat, conversation: { ...state.chat.conversation, messages: [
+      { id: 'before', role: 'assistant', content: 'Original answer' },
+      { id: 'summary', parent_id: 'before', role: 'assistant', content: 'Summary',
+        meta: { kind: 'compaction_summary', state: 'committed' } },
+      { id: 'follow-up', parent_id: 'summary', role: 'user', content: 'Next task' },
+      { id: 'answer', parent_id: 'follow-up', role: 'assistant', content: 'Next answer' },
+    ] as any } }
+    const dispatch = (action: any) => {
+      if (typeof action === 'function') return { unwrap: async () => ({ messageId: 'answer' }), abort: vi.fn() }
+      state.chat = reducer(state.chat, action); return action
+    }
+    const result = await compactBranch({ conversationId: 'c', parentMessageId: 'before', messages: [] })(
+      dispatch, () => state, { auth: { accessToken: null, userId: null }, queryClient: null })
+    expect(result.payload).toMatchObject({ message: { id: 'summary' } })
+  })
+
   it('uses the normal send abort handle, not a standalone HTTP compactor', async () => {
     const state = { chat: reducer(undefined, { type: 'init' }) } as RootState
     let rejectSend!: (error: Error) => void

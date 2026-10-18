@@ -1351,7 +1351,7 @@ export class ToolLoopService {
         for (const row of rows) { history.push(row); currentParentId = row.id }
       }
 
-      if (history.length) await beginCompaction(turn - 1, !input.manualCompaction)
+      if (history.length) await beginCompaction(turn - 1, !manualPending)
 
       // Phase 3: fold accumulated hook context into this turn's system prompt, then
       // clear the buffer (parity with the renderer's per-iteration fold+clear,
@@ -1575,7 +1575,9 @@ export class ToolLoopService {
             await flushBoundaryInputs()
             continue
           }
-          if (!input.manualCompaction && turn < maxTurns &&
+          // Manual compaction ends at the summary only when no follow-up is waiting.
+          // Intake stays open while summarising; delivery starts after restoration.
+          if (turn < maxTurns &&
             (await flushBoundaryInputs() || input.closeInputQueue?.() === false)) continue
           input.closeInputQueue?.()
           return { finalAssistantMessage: summaryMessage, turnsUsed: turn, anyToolsExecuted }
