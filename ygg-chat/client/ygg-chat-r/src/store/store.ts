@@ -156,7 +156,9 @@ toolJobManager.onWatchCompletion(event => {
     kind: 'watch_completed',
     title: event.kind === 'claude_bridge'
       ? event.state === 'triggered' ? 'Claude review ready' : 'Claude review failed'
-      : event.state === 'triggered' ? 'Watch triggered' : event.state === 'timed_out' ? 'Watch timed out' : 'Watch failed',
+      : event.kind === 'subagent'
+        ? event.state === 'triggered' ? 'Subagent result ready' : 'Subagent failed'
+        : event.state === 'triggered' ? 'Watch triggered' : event.state === 'timed_out' ? 'Watch timed out' : 'Watch failed',
     description: event.delivery === 'failed'
       ? 'Could not deliver the completion to this branch. Click to open it and continue manually.'
       : event.delivery ? 'Completion submitted to the originating branch. Click to open it.'

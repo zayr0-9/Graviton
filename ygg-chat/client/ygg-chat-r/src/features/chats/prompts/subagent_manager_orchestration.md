@@ -33,12 +33,12 @@ Do not delegate tasks that require user judgment, access to secrets, or destruct
 - `spawn`: start a subagent. With `blocking: false` or omitted, returns immediately with a handle. With `blocking: true`, waits and returns the result inline.
 - `list`: list runs owned by this branch, optionally filtered by status.
 - `status`: get a non-blocking snapshot for one handle.
-- `wait`: block until one run completes, errors, or is aborted, then return its canonical result.
-- `send`: queue new instructions for a running detached subagent: `{action:"send", handle:"123456", message:"Focus on the server only", requestId:"steer-1"}`. Returns immediately with acceptance, not delivery. Instructions are delivered FIFO at the next safe boundary, after the current provider turn and tool batch finish. Reuse the same requestId and identical message for retries; if omitted, an id is generated and returned. Inspect `status` or the eventual `wait` result's `messageQueue` for delivered/failed state, without busy polling. Terminal, aborting, preparing, and blocking runs reject sends; no successor is spawned.
+- `wait`: in main chat, register a nonblocking completion watch and return immediately with `autoResume` and a watcher handle. The result is inserted into this branch at a safe boundary, referencing the original spawn tool call; a visible notification also appears. Call once, then do other work or end the turn—do not poll. With `autoResume:false`, inspect `status` manually. Legacy non-chat callers keep blocking lifecycle-backed waits. Cancelled children and server shutdown do not auto-continue chat.
+- `send`: queue new instructions for a running detached subagent: `{action:"send", handle:"123456", message:"Focus on the server only", requestId:"steer-1"}`. Returns immediately with acceptance, not delivery. Instructions are delivered FIFO at the next safe boundary, after the current provider turn and tool batch finish. Reuse the same requestId and identical message for retries; if omitted, an id is generated and returned. Inspect `status` and its `messageQueue` for delivered/failed state, without busy polling. Terminal, aborting, preparing, and blocking runs reject sends; no successor is spawned.
 - `cancel`: explicitly abort a running detached subagent. This does not undo completed tool side effects.
 - `resume`: restart a failed or aborted run using its saved transcript. Optionally pass `prompt` with new instructions; it is appended as a user message before the next inference, not substituted for the original task.
 
-Use detached spawning for interactive supervision. While a blocking spawn or wait is pending, the parent cannot normally issue another steering call. Sending instructions does not alter the child's tool policy. Queued input is memory-only until delivery and does not survive a server restart; pending input fails on cancellation, errors, or exhausted turn budgets.
+Use detached spawning for interactive supervision. While a blocking spawn is pending, the parent cannot normally issue another steering call. Main-chat `wait` does not block steering. Sending instructions does not alter the child's tool policy. Queued input is memory-only until delivery and does not survive a server restart; pending input fails on cancellation, errors, or exhausted turn budgets.
 
 Stopping or aborting the parent while it is waiting does not cancel the detached subagent. Use `cancel` when the child itself should stop.
 
@@ -70,8 +70,8 @@ Typical sequence:
 2. Call `spawn` once for each track and retain every returned handle.
 3. Continue independent parent work instead of idling.
 4. Use `status` only when a non-blocking progress snapshot is genuinely useful.
-5. Once no other useful work remains and a result is needed, call `wait` once for that handle. Do not repeatedly poll `status`.
-6. Inspect and verify each result before relying on it.
+5. Call `wait` once per handle/attempt to register automatic completion delivery, then continue useful work or end the turn. Do not repeatedly poll `status` or `wait`.
+6. When the automated completion arrives, inspect and verify each result before relying on it.
 7. Resolve conflicts, integrate conclusions or changes, and run parent-level validation.
 
 Independent spawn calls may be batched with `multi_call` in parallel when their inputs are already known. Do not parallelize calls whose prompts depend on earlier results, and do not hide risky or permission-sensitive operations inside a batch.

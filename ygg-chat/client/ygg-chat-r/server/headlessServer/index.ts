@@ -373,6 +373,9 @@ export function registerHeadlessServerRoutes(app: Express, deps: HeadlessServerR
   const chatToolExecutor = createSubagentManagerExecutor({
     leafExecutor: subagentDispatchExecutor,
     runner: subagentRunService,
+    registerWait: (runId, attempt, completion, context, toolCallId) => watchService.registerSubagentRun(
+      runId, attempt, completion, context,
+      deps.statements.getConversationById?.get(context.conversationId)?.project_id ?? null, toolCallId),
   })
 
   registerSubagentRoutes(app, {

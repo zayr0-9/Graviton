@@ -47,7 +47,7 @@ export interface SubagentManagerRunner {
   getMessageQueue(handle: string): MessageQueueSnapshot | null
   cancel(handle: string): boolean
   isActive(handle: string): boolean
-  waitForTerminal(handle: string, signal?: AbortSignal): Promise<SubagentRunRow | null>
+  waitForTerminal(handle: string, signal?: AbortSignal, expectedAttempt?: number): Promise<SubagentRunRow | null>
   getRunByHandle(handle: string): SubagentRunRow | null
   listByLineage(lineageId: string, status?: SubagentRunStatus): SubagentRunRow[]
 }
@@ -392,16 +392,39 @@ function managerStatus(
   } }
 }
 
+type RegisterSubagentWait = (runId: string, attempt: number, completion: Promise<Record<string, any>>,
+  context: ToolExecutionContext, toolCallId: string) => Record<string, any>
+
 async function managerWait(
   runner: SubagentManagerRunner,
   context: ToolExecutionContext,
-  args: Record<string, any>
+  args: Record<string, any>,
+  registerWait?: RegisterSubagentWait,
+  toolCallId?: string
 ): Promise<Record<string, any>> {
   const handle = normalizeHandle(args.handle)
   if (!handle) throw new Error('subagent_manager wait: a handle is required.')
   const run = runner.getRunByHandle(handle)
   if (!run || !ownsRun(run, context)) return notOwnedResult('wait', handle)
 
+  if (registerWait) {
+    // Subscribe without the foreground signal: ending the parent turn must not lose delivery.
+    const attempt = run.attempt
+    const completion = runner.waitForTerminal(handle, undefined, attempt).then(terminal => {
+      if (!terminal || !ownsRun(terminal, context) || terminal.id !== run.id || terminal.attempt !== attempt) {
+        throw new Error('Subagent attempt unavailable for completion delivery')
+      }
+      const text = terminal.final_response || terminal.error || ''
+      return { handle, attempt: terminal.attempt, content: text.slice(0, 12000), truncated: text.length > 12000,
+        job: { id: terminal.id, status: terminal.status, error: terminal.error,
+          source: terminal.tool_call_id ? { action: 'spawn', toolCallId: terminal.tool_call_id, messageId: terminal.parent_message_id } : undefined } }
+    })
+    // Registration can fail closed at capacity; still consume a later lifecycle rejection.
+    void completion.catch(() => {})
+    const registration = registerWait(run.id, attempt, completion, context, toolCallId!)
+    return { action: 'wait', found: true, ...registration, handle, watchHandle: registration.handle, runId: run.id, attempt,
+      message: 'Completion watch registered. Do other work or end this turn; the result will be inserted into this branch automatically when autoResume is true. Do not poll.' }
+  }
   const terminal = await runner.waitForTerminal(handle, context.signal)
   if (!terminal || !ownsRun(terminal, context)) return notOwnedResult('wait', handle)
   return { action: 'wait', found: true, subagent: {
@@ -517,6 +540,8 @@ async function managerResume(
 export function createSubagentManagerExecutor(deps: {
   leafExecutor: ToolExecutor
   runner: SubagentManagerRunner
+  /** Trusted main-chat watcher registration; omitted for legacy blocking callers. */
+  registerWait?: RegisterSubagentWait
 }): ToolExecutor {
   return async (toolCall, context) => {
     if (toolCall.name !== 'subagent_manager') return deps.leafExecutor(toolCall, context)
@@ -531,7 +556,7 @@ export function createSubagentManagerExecutor(deps: {
       case 'status':
         return managerStatus(deps.runner, context, args)
       case 'wait':
-        return managerWait(deps.runner, context, args)
+        return managerWait(deps.runner, context, args, deps.registerWait, toolCall.id)
       case 'send':
         return managerSend(deps.runner, context, args)
       case 'cancel':

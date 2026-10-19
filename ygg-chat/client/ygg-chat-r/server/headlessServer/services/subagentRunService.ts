@@ -256,9 +256,12 @@ export class SubagentRunService {
    * polling. Aborting the supplied signal releases only this waiter; it never
    * aborts the detached child (cancel(handle) owns that behavior).
    */
-  async waitForTerminal(handle: string, signal?: AbortSignal): Promise<SubagentRunRow | null> {
+  async waitForTerminal(handle: string, signal?: AbortSignal, expectedAttempt?: number): Promise<SubagentRunRow | null> {
     for (;;) {
       const run = this.runRepo.getRunByHandle(handle)
+      if (run && expectedAttempt !== undefined && run.attempt !== expectedAttempt) {
+        throw new Error('Subagent attempt changed before completion delivery; inspect status manually.')
+      }
       if (!run || run.status !== 'running') return run
 
       const active = this.activeRuns.get(handle)
