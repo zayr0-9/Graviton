@@ -39,6 +39,8 @@ import { getSearchResultHref } from '../helpers/searchResultNavigation'
 import EditProject from './EditProject'
 // import { searchActions, selectSearchLoading, selectSearchQuery, selectSearchResults } from '../features/search'
 import { useAppDispatch } from '../hooks/redux'
+import { useIsMobile } from '../hooks/useMediaQuery'
+import { isNativeShell } from '../platform/clientCapabilities'
 import { useAuth } from '../hooks/useAuth'
 import { useIntersectionObserver } from '../hooks/useIntersectionObserver'
 import {
@@ -1934,6 +1936,8 @@ const SideBar: React.FC<SideBarProps> = ({
   const hoveredPreviewConversationId = hoveredPreviewConversation?.id ?? null
   const shouldShowConversationPreviewPortal =
     showExpandedPortal && hoveredPreviewConversation?.storage_mode === 'local' && !!hoveredPreviewConversationId
+  const isMobile = useIsMobile()
+  const horizontalRail = !isNativeShell && isMobile
   const sidebarToggleAriaLabel = showExpandedPortal ? 'Close sidebar panel' : 'Open sidebar panel'
   const sidebarToggleIcon = showExpandedPortal ? (
     <PanelLeftClose className='h-5 w-5' strokeWidth={2.25} aria-hidden='true' />
@@ -1998,10 +2002,10 @@ const SideBar: React.FC<SideBarProps> = ({
     <>
       <aside
         ref={sidebarRef}
-        className={`relative z-10 ${isWeb ? 'h-[100vh]' : 'h-full'} flex w-12 flex-col flex-shrink-0 overflow-hidden bg-transparent dark:bg-transparent ${className}`}
+        className={`sidebar-rail relative z-10 ${horizontalRail ? 'flex h-14 w-full flex-row items-center overflow-x-auto pr-28' : `${isWeb ? 'h-[100vh]' : 'h-full'} flex w-12 flex-col overflow-hidden`} flex-shrink-0 bg-transparent dark:bg-transparent ${className}`}
         aria-label='Sidebar rail'
       >
-        <div className='flex items-center justify-center py-3 my-1 md:py-2.5 lg:p-1 xl:p-1 2xl:px-1 2xl:py-2'>
+        <div className={`flex shrink-0 items-center justify-center ${horizontalRail ? 'px-1' : 'py-3 my-1 md:py-2.5 lg:p-1 xl:p-1 2xl:px-1 2xl:py-2'}`}>
           <Button
             ref={expandButtonRef}
             variant='outline2'
@@ -2017,7 +2021,16 @@ const SideBar: React.FC<SideBarProps> = ({
           </Button>
         </div>
 
-        {renderSidebarBody(true, false, hoveredPreviewConversationId)}
+        {horizontalRail ? (
+          <div className='flex shrink-0 items-center'>
+            {sidebarActions.map(action => (
+              <button key={action.key} type='button' onClick={action.onClick} title={action.title}
+                aria-label={action.ariaLabel} className='flex h-11 w-11 shrink-0 items-center justify-center rounded-full text-stone-900 dark:text-neutral-300'>
+                {action.icon}
+              </button>
+            ))}
+          </div>
+        ) : renderSidebarBody(true, false, hoveredPreviewConversationId)}
       </aside>
 
       {typeof document !== 'undefined' &&

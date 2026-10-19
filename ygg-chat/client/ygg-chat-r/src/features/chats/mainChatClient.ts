@@ -265,6 +265,11 @@ function makeHandleEvent(
         throw createChatStreamError(buildChatErrorEnvelope('history_truncated'))
       }
       const rows = new Map(snapshot.persisted.map(ref => [ref.id, ref.row]))
+      const started = snapshot.events.find(event => event.type === 'started')
+      dispatch(agentRunPreviewActions.bootstrapReceived({ streamId: ctx.streamId,
+        messages: snapshot.persisted.map(ref => normalizeServerMessage(ref.row)),
+        parentId: started?.type === 'started' && !snapshot.events.some(event =>
+          'message' in event && event.message?.id === started.parentId) ? started.parentId : undefined }))
       dispatch(chatSliceActions.streamBootstrapReset({ streamId: ctx.streamId, conversationId: String(ctx.conversationId) }))
       dispatch(chatSliceActions.decisionRequestsClearedForStream(ctx.streamId))
       for (const id of snapshot.deletedMessageIds ?? []) dispatch(chatSliceActions.messageDeleted(id))

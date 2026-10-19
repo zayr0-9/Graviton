@@ -6473,7 +6473,7 @@ function Chat() {
       exit={{ opacity: 0, x: -10 }}
       transition={{ duration: 0.3, ease: 'easeOut' }}
       ref={containerRef}
-      className='flex h-full overflow-hidden bg-transparent dark:bg-transparent'
+      className='chat-layout flex h-full min-h-0 min-w-0 overflow-hidden bg-transparent dark:bg-transparent'
     >
       <div
         data-chat-pane-surface='true'

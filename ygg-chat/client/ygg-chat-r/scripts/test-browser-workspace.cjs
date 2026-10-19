@@ -137,6 +137,26 @@ if (!process.versions.electron) {
       await wait(window, `!!document.querySelector('textarea[placeholder="Type your message..."]')`, 'Composer missing')
       if (await window.webContents.executeJavaScript('!!window.electronAPI')) throw new Error('Unexpected preload')
     }
+    // Real layout bounds: selectors must remain visible and usable on small web viewports.
+    for (const width of [320, 390, 767, 820]) {
+      windows[1].setContentSize(width, 900)
+      await new Promise(resolve => setTimeout(resolve, 400))
+      const layout = await windows[1].webContents.executeJavaScript(`(()=>{
+        const rect = el => { const r=el.getBoundingClientRect(); return {left:r.left,right:r.right,top:r.top,bottom:r.bottom,width:r.width,height:r.height} };
+        const selectors=document.querySelector('.composer-controls-left-selectors');
+        const rail=document.querySelector('[aria-label="Sidebar rail"]');
+        return { width:innerWidth, rail:rect(rail), railOverflow:rail.scrollHeight > rail.clientHeight, chat:rect(document.querySelector('.chat-layout')),
+          buttons:[...selectors.querySelectorAll(':scope > div > button')].map(rect), display:getComputedStyle(selectors).display };
+      })()`)
+      if (layout.display === 'none' || layout.buttons.length < 2 || layout.buttons.some(r => r.width < 42 || r.left < 0 || r.right > layout.width + 1 || r.bottom > 901)) throw new Error(`Phone selectors clipped: ${JSON.stringify(layout)}`)
+      if (width < 768 && (layout.railOverflow || layout.rail.height > 70 || layout.rail.width < width - 1 || layout.chat.top < layout.rail.bottom - 1 || layout.chat.width > width + 1)) throw new Error(`Phone top bar/layout invalid: ${JSON.stringify(layout)}`)
+    }
+    windows[1].setContentSize(390, 844)
+    await new Promise(resolve => setTimeout(resolve, 300))
+    await click(windows[1], '[aria-label="Open sidebar panel"]')
+    await wait(windows[1], `(()=>{const panel=document.querySelector('[role="dialog"][aria-label="Sidebar panel"]'); if(!panel)return false; const r=panel.getBoundingClientRect(); return r.width > 200 && r.left >= 0 && r.right <= innerWidth && r.top >= 0 && r.bottom <= innerHeight;})()`, 'Phone sidebar panel not visible within viewport')
+    await click(windows[1], 'button[aria-label="Close sidebar panel"]')
+    console.log('PASS responsive web selectors at 320/390/767/820px, horizontal phone navigation and sidebar panel')
     // Test actual computed canvas colors, not only React inline-style strings.
     const assertBackground = async (dark, color, enabled = true, video = false) => {
       const actual = await windows[0].webContents.executeJavaScript(`(async()=>{
