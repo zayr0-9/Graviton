@@ -212,7 +212,9 @@ function createSchema(db: Database.Database): void {
   db.exec(`
     CREATE TABLE projects (id TEXT PRIMARY KEY, name TEXT, user_id TEXT, context TEXT, system_prompt TEXT, storage_mode TEXT, created_at TEXT, updated_at TEXT);
     CREATE TABLE conversations (id TEXT PRIMARY KEY, project_id TEXT, user_id TEXT, title TEXT, model_name TEXT, system_prompt TEXT, conversation_context TEXT, research_note TEXT, cwd TEXT, storage_mode TEXT, created_at TEXT, updated_at TEXT);
-    CREATE TABLE messages (id TEXT PRIMARY KEY, conversation_id TEXT NOT NULL, parent_id TEXT, children_ids TEXT, role TEXT, content TEXT, plain_text_content TEXT, thinking_block TEXT, tool_calls TEXT, tool_call_id TEXT, model_name TEXT, note TEXT, note_color TEXT, ex_agent_session_id TEXT, ex_agent_type TEXT, content_blocks TEXT, created_at TEXT, meta TEXT);
+    CREATE TABLE messages (id TEXT PRIMARY KEY, conversation_id TEXT NOT NULL, parent_id TEXT, lineage_id TEXT, children_ids TEXT, role TEXT, content TEXT, plain_text_content TEXT, thinking_block TEXT, tool_calls TEXT, tool_call_id TEXT, model_name TEXT, note TEXT, note_color TEXT, ex_agent_session_id TEXT, ex_agent_type TEXT, content_blocks TEXT, created_at TEXT, meta TEXT);
+    CREATE TABLE lineages (id TEXT PRIMARY KEY, conversation_id TEXT NOT NULL, parent_lineage_id TEXT, forked_from_message_id TEXT, root_message_id TEXT, head_message_id TEXT, status TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+    CREATE TABLE fork_operations (id TEXT PRIMARY KEY, conversation_id TEXT NOT NULL, source_lineage_id TEXT, target_lineage_id TEXT NOT NULL, source_message_id TEXT, materialized_message_id TEXT, operation TEXT NOT NULL, status TEXT NOT NULL, metadata_json TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
   `)
 }
 
@@ -224,6 +226,16 @@ function createStatements(db: Database.Database): any {
     getMessageById: db.prepare('SELECT * FROM messages WHERE id = ?'),
     getMessagesByConversationId: db.prepare('SELECT * FROM messages WHERE conversation_id = ? ORDER BY created_at ASC'),
     getMessageLineageByConversationId: db.prepare('SELECT id, parent_id FROM messages WHERE conversation_id = ?'),
+    insertLineage: db.prepare('INSERT INTO lineages VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)'),
+    getLineageById: db.prepare('SELECT * FROM lineages WHERE id = ?'),
+    listLineagesByConversation: db.prepare('SELECT * FROM lineages WHERE conversation_id = ? ORDER BY created_at, id'),
+    resolveLineageByMessage: db.prepare('SELECT l.* FROM messages m JOIN lineages l ON l.id = m.lineage_id WHERE m.id = ?'),
+    attachMessageToLineage: db.prepare('UPDATE messages SET lineage_id = ? WHERE id = ? AND conversation_id = (SELECT conversation_id FROM lineages WHERE id = ?) AND (lineage_id IS NULL OR lineage_id = ?)'),
+    advanceLineage: db.prepare('UPDATE lineages SET root_message_id = COALESCE(root_message_id, ?), head_message_id = ?, status = ?, updated_at = ? WHERE id = ?'),
+    insertForkOperation: db.prepare('INSERT INTO fork_operations VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'),
+    getForkOperationById: db.prepare('SELECT * FROM fork_operations WHERE id = ?'),
+    materializeForkOperation: db.prepare("UPDATE fork_operations SET materialized_message_id = ?, status = 'materialized', updated_at = ? WHERE id = ? AND status = 'pending'"),
+    attachStreamingRunToLineage: { run: () => {} },
     upsertStreamingRun: { run: () => {} },
     getStreamingRunById: { get: () => null },
     updateStreamingRun: { run: () => {} },
@@ -281,7 +293,8 @@ describeIfSqlite('ChatOrchestrator chat hooks (integration)', () => {
     const user = (statements.getMessagesByConversationId.all('c1') as any[]).find(m => m.role === 'user')
     expect(user.content).toBe('REWRITTEN')
     expect(providerRouter.calls[0].userContent).toBe('REWRITTEN')
-    expect(providerRouter.calls[0].systemPrompt).toContain('[Hook context]\nups-ctx')
+    expect(JSON.stringify(user.content_blocks)).toContain('ups-ctx')
+    expect(providerRouter.calls[0].systemPrompt).not.toContain('ups-ctx')
   })
 
   it('regression: hooksEnabled unset => the hook runner is never called and content is untouched', async () => {

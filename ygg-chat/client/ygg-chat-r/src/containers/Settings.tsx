@@ -1,3 +1,5 @@
+import { HOST_EXECUTION_CHANGED } from '../services/hostExecutionClient'
+import { buildSharedBrowserUrl } from '../helpers/remoteServerSettingsStorage'
 import React, { useEffect, useRef, useState } from 'react'
 import { ArrowLeft, ChevronDown, LogOut, Moon, RefreshCw, Star, Sun, Trash2, X } from 'lucide-react'
 import ReactMarkdown from 'react-markdown'
@@ -330,6 +332,7 @@ const Settings: React.FC = () => {
     () => loadRemoteServerSettings().remoteBaseUrl ?? ''
   )
   const [detectedLocalServerOrigin, setDetectedLocalServerOrigin] = useState<string>('')
+  const [hostExposureStatus, setHostExposureStatus] = useState('')
   const [localUsers, setLocalUsers] = useState<LocalUserSummary[]>([])
   const [localUsersLoading, setLocalUsersLoading] = useState(false)
   const [migratingOwnership, setMigratingOwnership] = useState(false)
@@ -432,8 +435,10 @@ const Settings: React.FC = () => {
     ? validateContextDirectoryName(customContextDirectoryInput) ??
       (contextDirectories.readDirs.includes(customContextDirectoryInput.trim()) ? 'Directory is already in the list.' : null)
     : null
-  const applyContextDirectories = (next: ContextDirectorySettings, preset: ContextDirectoryPreset) => {
-    const saved = saveContextDirectorySettings(next)
+  const applyContextDirectories = async (next: ContextDirectorySettings, preset: ContextDirectoryPreset) => {
+    let saved: ContextDirectorySettings
+    try { saved = await saveContextDirectorySettings(next) }
+    catch (error) { showStatus({ type: 'error', text: error instanceof Error ? error.message : 'Could not save settings' }); return }
     setContextDirectories(saved)
     setContextDirectoryPreset(preset)
   }
@@ -468,8 +473,9 @@ const Settings: React.FC = () => {
   const normalizedRemoteBaseUrlInput = normalizeRemoteBaseUrl(remoteBaseUrlInput)
   const effectiveRemoteMobileUrl =
     buildRemoteMobileUrl(normalizedRemoteBaseUrlInput) || buildRemoteMobileUrl(detectedLocalServerOrigin)
-  const remoteQrCodeImageUrl = effectiveRemoteMobileUrl
-    ? `https://api.qrserver.com/v1/create-qr-code/?size=220x220&data=${encodeURIComponent(effectiveRemoteMobileUrl)}`
+  const effectiveSharedBrowserUrl = buildSharedBrowserUrl(normalizedRemoteBaseUrlInput || detectedLocalServerOrigin)
+  const remoteQrCodeImageUrl = effectiveSharedBrowserUrl
+    ? `https://api.qrserver.com/v1/create-qr-code/?size=220x220&data=${encodeURIComponent(effectiveSharedBrowserUrl)}`
     : null
   const subagentProviderForModels = subagentSettings.defaultProvider || providers.currentProvider || 'OpenRouter'
   const { data: subagentModelsData } = useModels(subagentProviderForModels)
@@ -562,6 +568,9 @@ const Settings: React.FC = () => {
 
     let active = true
 
+    void window.electronAPI?.sync?.status().then(status => {
+      if (active) setHostExposureStatus(`Bound ${status.localServerBindHost || 'unknown'}:${status.localServerPort ?? 'not listening'} · ${status.localServerExposure || 'unknown exposure'} · no device authentication`)
+    }).catch(() => {})
     Promise.all([getLocalServerLanOrigin(), getLocalServerOrigin()])
       .then(([lanOrigin, fallbackOrigin]) => {
         if (!active) return
@@ -569,11 +578,7 @@ const Settings: React.FC = () => {
         const preferredOrigin = lanOrigin || fallbackOrigin
         setDetectedLocalServerOrigin(preferredOrigin)
 
-        const saved = loadRemoteServerSettings()
-        if (!saved.remoteBaseUrl && lanOrigin) {
-          const autoSaved = saveRemoteServerSettings({ remoteBaseUrl: lanOrigin })
-          setRemoteBaseUrlInput(autoSaved.remoteBaseUrl ?? '')
-        }
+        // Keep auto-detected IP/port live, not persisted as a stale override.
       })
       .catch(error => {
         console.error('Failed to resolve local server origin for remote access settings:', error)
@@ -635,6 +640,31 @@ const Settings: React.FC = () => {
     return () =>
       window.removeEventListener(BROWSER_SETTINGS_CHANGE_EVENT, handleBrowserSettingsChange as EventListener)
   }, [])
+
+  useEffect(() => {
+    const refresh = () => {
+      // Keep the complete form domain and its original CAS base together while
+      // any text is dirty. Remote changes never silently rebase unsaved edits.
+      const providerDirty = openRouterTemperatureTouched || openAiChatGptMaxContextTouched || lmStudioBaseUrlTouched || compactionSystemPromptTouched
+      const timeoutDirty = toolCallTimeoutTouched || bashTimeoutTouched || streamIdleTimeoutTouched
+      const modeDirty = chatModePromptNameInput !== selectedChatModePrompt.name || chatModePromptInput !== selectedChatModePrompt.prompt ||
+        agentModePromptInput !== (operationModePromptSettings.agentModePromptOverride || defaultAgentModePrompt.prompt) ||
+        subagentModePromptInput !== (operationModePromptSettings.subagentModePromptOverride || defaultSubagentModePrompt.prompt)
+      if (!providerDirty) setProviderSettings(loadProviderSettings())
+      if (!timeoutDirty) setToolExecutionSettings(loadToolExecutionSettings())
+      if (!subagentMaxTurnsTouched) setSubagentSettings(loadSubagentToolSettings())
+      if (!modeDirty) setOperationModePromptSettings(loadOperationModePromptSettings())
+      setDefaultToolAutoApprove(loadDefaultToolAutoApprove())
+      setAutoCompactionEnabled(loadAutoCompactionEnabled())
+      setPlanModeResponseSettings(loadPlanModeResponseSettings())
+      if (providerDirty || timeoutDirty || subagentMaxTurnsTouched || modeDirty)
+        showStatus({ type: 'error', text: 'Host settings changed. Unsaved text is retained. If saving conflicts, reopen Settings to load the latest values before editing again.' })
+    }
+    window.addEventListener(HOST_EXECUTION_CHANGED, refresh)
+    return () => window.removeEventListener(HOST_EXECUTION_CHANGED, refresh)
+  }, [openRouterTemperatureTouched, openAiChatGptMaxContextTouched, lmStudioBaseUrlTouched, compactionSystemPromptTouched,
+    toolCallTimeoutTouched, bashTimeoutTouched, streamIdleTimeoutTouched, subagentMaxTurnsTouched,
+    chatModePromptNameInput, chatModePromptInput, agentModePromptInput, subagentModePromptInput, operationModePromptSettings])
 
   const handleLoadBraveApiKey = async () => {
     setBraveApiKeyLoading(true)
@@ -858,12 +888,13 @@ const Settings: React.FC = () => {
     }
   }, [])
 
-  const handleProviderVisibilityToggle = () => {
+  const handleProviderVisibilityToggle = async () => {
     const updated = {
       ...providerSettings,
       showProviderSelector: !providerSettings.showProviderSelector,
     }
-    saveProviderSettings(updated)
+    try { await saveProviderSettings(updated) }
+    catch (error) { showStatus({ type: 'error', text: error instanceof Error ? error.message : 'Could not save provider settings' }); return }
     setProviderSettings(updated)
     showStatus({
       type: 'success',
@@ -871,12 +902,13 @@ const Settings: React.FC = () => {
     })
   }
 
-  const handleDefaultProviderChange = (providerName: string) => {
+  const handleDefaultProviderChange = async (providerName: string) => {
     const updated = {
       ...providerSettings,
       defaultProvider: providerName || null,
     }
-    saveProviderSettings(updated)
+    try { await saveProviderSettings(updated) }
+    catch (error) { showStatus({ type: 'error', text: error instanceof Error ? error.message : 'Could not save provider settings' }); return }
     setProviderSettings(updated)
     showStatus({
       type: 'success',
@@ -890,7 +922,7 @@ const Settings: React.FC = () => {
     setCompactionSystemPromptTouched(true)
   }
 
-  const commitCompactionSystemPromptChange = (value: string) => {
+  const commitCompactionSystemPromptChange = async (value: string) => {
     const normalized = value.trim()
     const fallback = loadProviderSettings().compactionSystemPrompt
     const nextPrompt = normalized || fallback
@@ -899,7 +931,8 @@ const Settings: React.FC = () => {
       ...providerSettings,
       compactionSystemPrompt: nextPrompt,
     }
-    saveProviderSettings(updated)
+    try { await saveProviderSettings(updated) }
+    catch (error) { showStatus({ type: 'error', text: error instanceof Error ? error.message : 'Could not save provider settings' }); return }
     setProviderSettings(updated)
     setCompactionSystemPromptTouched(false)
     setCompactionSystemPromptInput(nextPrompt)
@@ -1305,18 +1338,18 @@ const Settings: React.FC = () => {
     }
   }
 
-  const handleCopyRemoteMobileUi = async () => {
-    if (!effectiveRemoteMobileUrl) {
-      showStatus({ type: 'error', text: 'No remote mobile URL to copy.' })
+  const handleCopySharedBrowserUi = async () => {
+    if (!effectiveSharedBrowserUrl) {
+      showStatus({ type: 'error', text: 'No shared UI URL to copy.' })
       return
     }
 
     try {
-      await navigator.clipboard.writeText(effectiveRemoteMobileUrl)
-      showStatus({ type: 'success', text: 'Remote mobile URL copied to clipboard.' })
+      await navigator.clipboard.writeText(effectiveSharedBrowserUrl)
+      showStatus({ type: 'success', text: 'Shared UI URL copied to clipboard.' })
     } catch (error) {
-      console.error('Failed to copy remote mobile URL:', error)
-      showStatus({ type: 'error', text: 'Failed to copy remote mobile URL. Copy it manually from the field.' })
+      console.error('Failed to copy shared UI URL:', error)
+      showStatus({ type: 'error', text: 'Failed to copy shared UI URL. Copy it manually from the field.' })
     }
   }
 
@@ -1325,14 +1358,15 @@ const Settings: React.FC = () => {
     setOpenRouterTemperatureTouched(true)
   }
 
-  const commitOpenRouterTemperatureChange = (value: string) => {
+  const commitOpenRouterTemperatureChange = async (value: string) => {
     const trimmed = value.trim()
     if (!trimmed) {
       const updated = {
         ...providerSettings,
         openRouterTemperature: null,
       }
-      saveProviderSettings(updated)
+      try { await saveProviderSettings(updated) }
+    catch (error) { showStatus({ type: 'error', text: error instanceof Error ? error.message : 'Could not save provider settings' }); return }
       setProviderSettings(updated)
       setOpenRouterTemperatureTouched(false)
       setOpenRouterTemperatureInput('')
@@ -1356,7 +1390,8 @@ const Settings: React.FC = () => {
       ...providerSettings,
       openRouterTemperature: normalized,
     }
-    saveProviderSettings(updated)
+    try { await saveProviderSettings(updated) }
+    catch (error) { showStatus({ type: 'error', text: error instanceof Error ? error.message : 'Could not save provider settings' }); return }
     setProviderSettings(updated)
     setOpenRouterTemperatureTouched(false)
     setOpenRouterTemperatureInput(String(normalized))
@@ -1377,7 +1412,7 @@ const Settings: React.FC = () => {
     setOpenAiChatGptMaxContextTouched(true)
   }
 
-  const commitOpenAiChatGptMaxContextChange = (value: string) => {
+  const commitOpenAiChatGptMaxContextChange = async (value: string) => {
     const parsed = Number(value)
     if (!Number.isFinite(parsed) || parsed <= 0) {
       setOpenAiChatGptMaxContextTouched(false)
@@ -1391,7 +1426,8 @@ const Settings: React.FC = () => {
       ...providerSettings,
       openAiChatGptMaxContextTokens: normalized,
     }
-    saveProviderSettings(updated)
+    try { await saveProviderSettings(updated) }
+    catch (error) { showStatus({ type: 'error', text: error instanceof Error ? error.message : 'Could not save provider settings' }); return }
     setProviderSettings(updated)
     setOpenAiChatGptMaxContextTouched(false)
     setOpenAiChatGptMaxContextInput(String(normalized))
@@ -1462,14 +1498,15 @@ const Settings: React.FC = () => {
     }
   }
 
-  const commitLmStudioBaseUrlChange = (value: string) => {
+  const commitLmStudioBaseUrlChange = async (value: string) => {
     const trimmed = value.trim()
     if (!trimmed) {
       const updated = {
         ...providerSettings,
         lmStudioBaseUrl: null,
       }
-      saveProviderSettings(updated)
+      try { await saveProviderSettings(updated) }
+    catch (error) { showStatus({ type: 'error', text: error instanceof Error ? error.message : 'Could not save provider settings' }); return }
       setProviderSettings(updated)
       setLmStudioBaseUrlTouched(false)
       setLmStudioBaseUrlInput('')
@@ -1492,20 +1529,23 @@ const Settings: React.FC = () => {
       ...providerSettings,
       lmStudioBaseUrl: normalized,
     }
-    saveProviderSettings(updated)
+    try { await saveProviderSettings(updated) }
+    catch (error) { showStatus({ type: 'error', text: error instanceof Error ? error.message : 'Could not save provider settings' }); return }
     setProviderSettings(updated)
     setLmStudioBaseUrlTouched(false)
     setLmStudioBaseUrlInput(normalized)
     showStatus({ type: 'success', text: `LM Studio server URL saved: ${normalized}` })
   }
 
-  const persistSubagentSettings = (nextSettings: SubagentToolSettings, successText: string) => {
-    saveSubagentToolSettings(nextSettings)
+  const persistSubagentSettings = async (nextSettings: SubagentToolSettings, successText: string) => {
+    try { await saveSubagentToolSettings(nextSettings) }
+    catch (error) { showStatus({ type: 'error', text: error instanceof Error ? error.message : 'Could not save subagent settings' }); return false }
     setSubagentSettings(nextSettings)
     showStatus({ type: 'success', text: successText })
+    return true
   }
 
-  const commitSubagentMaxTurnsChange = (value: string) => {
+  const commitSubagentMaxTurnsChange = async (value: string) => {
     const parsed = Number(value)
     if (!Number.isFinite(parsed) || parsed <= 0) {
       setSubagentMaxTurnsTouched(false)
@@ -1515,13 +1555,14 @@ const Settings: React.FC = () => {
     }
 
     const maxTurns = Math.floor(parsed)
-    persistSubagentSettings(
+    const saved = await persistSubagentSettings(
       {
         ...subagentSettings,
         maxTurns,
       },
       `Subagent max turns updated to ${maxTurns}.`
     )
+    if (!saved) return
     setSubagentMaxTurnsTouched(false)
     setSubagentMaxTurnsInput(String(maxTurns))
   }
@@ -1708,9 +1749,10 @@ const Settings: React.FC = () => {
     fetchLocalUsers()
   }, [userId])
 
-  const handleDefaultToolApprovalChange = (value: string) => {
+  const handleDefaultToolApprovalChange = async (value: string) => {
     const enabled = value === 'allow-all'
-    saveDefaultToolAutoApprove(enabled)
+    try { await saveDefaultToolAutoApprove(enabled) }
+    catch (error) { showStatus({ type: 'error', text: error instanceof Error ? error.message : 'Could not save settings' }); return }
     setDefaultToolAutoApprove(enabled)
     dispatch(enabled ? chatSliceActions.toolAutoApproveEnabled() : chatSliceActions.toolAutoApproveDisabled())
     showStatus({
@@ -1766,69 +1808,83 @@ const Settings: React.FC = () => {
     })
   }
 
-  const handleChatModePromptSelect = (promptId: string) => {
-    const saved = selectChatModePrompt(promptId)
+  const saveModePrompt = async (save: () => Promise<OperationModePromptSettings>) => {
+    try { return await save() }
+    catch (error) { showStatus({ type: 'error', text: error instanceof Error ? error.message : 'Could not save mode prompt' }); return null }
+  }
+  const handleChatModePromptSelect = async (promptId: string) => {
+    const saved = await saveModePrompt(() => selectChatModePrompt(promptId, operationModePromptSettings))
+    if (!saved) return
     setOperationModePromptSettings(saved)
     showStatus({ type: 'success', text: 'Chat Mode prompt selected.' })
   }
 
-  const handlePlanModeVerbosityChange = (value: string) => {
+  const handlePlanModeVerbosityChange = async (value: string) => {
     const verbosity = PLAN_MODE_VERBOSITY_OPTIONS.includes(value as PlanModeResponseSettings['verbosity'])
       ? (value as PlanModeResponseSettings['verbosity'])
       : 'concise'
-    const saved = savePlanModeResponseSettings({ ...planModeResponseSettings, verbosity })
+    let saved: PlanModeResponseSettings
+    try { saved = await savePlanModeResponseSettings({ ...planModeResponseSettings, verbosity }) }
+    catch (error) { showStatus({ type: 'error', text: error instanceof Error ? error.message : 'Could not save settings' }); return }
     setPlanModeResponseSettings(saved)
     showStatus({ type: 'success', text: `Plan verbosity set to ${verbosity}.` })
   }
 
-  const handleSaveNewChatModePrompt = () => {
-    const saved = addChatModePrompt(chatModePromptNameInput, chatModePromptInput)
+  const handleSaveNewChatModePrompt = async () => {
+    const saved = await saveModePrompt(() => addChatModePrompt(chatModePromptNameInput, chatModePromptInput, operationModePromptSettings))
+    if (!saved) return
     setOperationModePromptSettings(saved)
     showStatus({ type: 'success', text: 'Chat Mode prompt saved.' })
   }
 
-  const handleUpdateChatModePrompt = () => {
+  const handleUpdateChatModePrompt = async () => {
     if (isDefaultChatModePromptSelected) {
       handleSaveNewChatModePrompt()
       return
     }
-    const saved = updateChatModePrompt(selectedChatModePrompt.id, {
+    const saved = await saveModePrompt(() => updateChatModePrompt(selectedChatModePrompt.id, {
       name: chatModePromptNameInput,
       prompt: chatModePromptInput,
-    })
+    }, operationModePromptSettings))
+    if (!saved) return
     setOperationModePromptSettings(saved)
     showStatus({ type: 'success', text: 'Chat Mode prompt updated.' })
   }
 
-  const handleDeleteChatModePrompt = (promptId: string = selectedChatModePrompt.id) => {
+  const handleDeleteChatModePrompt = async (promptId: string = selectedChatModePrompt.id) => {
     if (promptId === DEFAULT_CHAT_MODE_PROMPT_ID) return
     const confirmed = window.confirm('Delete this saved Chat Mode prompt?')
     if (!confirmed) return
-    const saved = deleteChatModePrompt(promptId)
+    const saved = await saveModePrompt(() => deleteChatModePrompt(promptId))
+    if (!saved) return
     setOperationModePromptSettings(saved)
     showStatus({ type: 'success', text: 'Chat Mode prompt deleted.' })
   }
 
-  const handleResetChatModePromptToDefault = () => {
-    const saved = resetChatModePromptSelectionToDefault()
+  const handleResetChatModePromptToDefault = async () => {
+    const saved = await saveModePrompt(() => resetChatModePromptSelectionToDefault())
+    if (!saved) return
     setOperationModePromptSettings(saved)
     showStatus({ type: 'success', text: 'Chat Mode prompt reset to default.' })
   }
 
-  const handleSaveAgentModePrompt = () => {
-    const saved = saveAgentModePromptOverride(agentModePromptInput)
+  const handleSaveAgentModePrompt = async () => {
+    const saved = await saveModePrompt(() => saveAgentModePromptOverride(agentModePromptInput, operationModePromptSettings))
+    if (!saved) return
     setOperationModePromptSettings(saved)
     showStatus({ type: 'success', text: saved.agentModePromptOverride ? 'Agent Mode prompt saved.' : 'Agent Mode prompt reset to default.' })
   }
 
-  const handleResetAgentModePrompt = () => {
-    const saved = resetAgentModePromptOverride()
+  const handleResetAgentModePrompt = async () => {
+    const saved = await saveModePrompt(() => resetAgentModePromptOverride())
+    if (!saved) return
     setOperationModePromptSettings(saved)
     showStatus({ type: 'success', text: 'Agent Mode prompt reset to default.' })
   }
 
-  const handleSaveSubagentModePrompt = () => {
-    const saved = saveSubagentModePromptOverride(subagentModePromptInput)
+  const handleSaveSubagentModePrompt = async () => {
+    const saved = await saveModePrompt(() => saveSubagentModePromptOverride(subagentModePromptInput, operationModePromptSettings))
+    if (!saved) return
     setOperationModePromptSettings(saved)
     showStatus({
       type: 'success',
@@ -1836,15 +1892,17 @@ const Settings: React.FC = () => {
     })
   }
 
-  const handleResetSubagentModePrompt = () => {
-    const saved = resetSubagentModePromptOverride()
+  const handleResetSubagentModePrompt = async () => {
+    const saved = await saveModePrompt(() => resetSubagentModePromptOverride())
+    if (!saved) return
     setOperationModePromptSettings(saved)
     showStatus({ type: 'success', text: 'Subagent system prompt reset to default.' })
   }
 
-  const handleAutoCompactionToggle = () => {
+  const handleAutoCompactionToggle = async () => {
     const nextValue = !autoCompactionEnabled
-    saveAutoCompactionEnabled(nextValue)
+    try { await saveAutoCompactionEnabled(nextValue) }
+    catch (error) { showStatus({ type: 'error', text: error instanceof Error ? error.message : 'Could not save compaction default' }); return }
     setAutoCompactionEnabled(nextValue)
     showStatus({
       type: 'success',
@@ -2048,7 +2106,7 @@ const Settings: React.FC = () => {
     setSubagentMaxTurnsTouched(true)
   }
 
-  const commitToolCallTimeoutChange = (value: string) => {
+  const commitToolCallTimeoutChange = async (value: string) => {
     const parsed = Number(value)
     if (!Number.isFinite(parsed) || parsed <= 0) {
       setToolCallTimeoutTouched(false)
@@ -2062,7 +2120,8 @@ const Settings: React.FC = () => {
       ...toolExecutionSettings,
       toolCallTimeoutMs: clamped,
     }
-    saveToolExecutionSettings(nextSettings)
+    try { await saveToolExecutionSettings(nextSettings) }
+    catch (error) { showStatus({ type: 'error', text: error instanceof Error ? error.message : 'Could not save tool settings' }); return }
     setToolExecutionSettings(nextSettings)
     setToolCallTimeoutTouched(false)
     setToolCallTimeoutInput(String(clamped))
@@ -2078,7 +2137,7 @@ const Settings: React.FC = () => {
     showStatus({ type: 'success', text: 'Default tool call timeout updated.' })
   }
 
-  const commitStreamIdleTimeoutChange = (value: string) => {
+  const commitStreamIdleTimeoutChange = async (value: string) => {
     const parsed = Number(value)
     if (!Number.isFinite(parsed) || parsed <= 0) {
       setStreamIdleTimeoutTouched(false)
@@ -2095,7 +2154,8 @@ const Settings: React.FC = () => {
       ...toolExecutionSettings,
       streamIdleTimeoutMs: clamped,
     }
-    saveToolExecutionSettings(nextSettings)
+    try { await saveToolExecutionSettings(nextSettings) }
+    catch (error) { showStatus({ type: 'error', text: error instanceof Error ? error.message : 'Could not save tool settings' }); return }
     setToolExecutionSettings(nextSettings)
     setStreamIdleTimeoutTouched(false)
     setStreamIdleTimeoutInput(String(clamped))
@@ -2111,7 +2171,7 @@ const Settings: React.FC = () => {
     showStatus({ type: 'success', text: 'Chat stream idle timeout updated.' })
   }
 
-  const commitBashTimeoutChange = (value: string) => {
+  const commitBashTimeoutChange = async (value: string) => {
     const parsed = Number(value)
     if (!Number.isFinite(parsed) || parsed <= 0) {
       setBashTimeoutTouched(false)
@@ -2125,7 +2185,8 @@ const Settings: React.FC = () => {
       ...toolExecutionSettings,
       bashTimeoutMs: clamped,
     }
-    saveToolExecutionSettings(nextSettings)
+    try { await saveToolExecutionSettings(nextSettings) }
+    catch (error) { showStatus({ type: 'error', text: error instanceof Error ? error.message : 'Could not save tool settings' }); return }
     setToolExecutionSettings(nextSettings)
     setBashTimeoutTouched(false)
     setBashTimeoutInput(String(clamped))
@@ -2814,11 +2875,12 @@ const Settings: React.FC = () => {
                 <label className='text-base font-medium text-stone-900 dark:text-stone-100' htmlFor='compaction-threshold'>Auto-compaction threshold (%)</label>
                 <input id='compaction-threshold' type='number' min={1} max={95} step={1}
                   value={providerSettings.compactionThresholdPercent}
-                  onChange={event => {
+                  onChange={async event => {
                     const value = Number(event.target.value)
                     if (!Number.isFinite(value)) return
                     const updated = { ...providerSettings, compactionThresholdPercent: Math.max(1, Math.min(95, Math.round(value))) }
-                    saveProviderSettings(updated)
+                    try { await saveProviderSettings(updated) }
+    catch (error) { showStatus({ type: 'error', text: error instanceof Error ? error.message : 'Could not save provider settings' }); return }
                     setProviderSettings(updated)
                   }} className={`w-48 ${settingsInputClass}`} />
                 <div className='flex flex-col gap-2 pt-2'>
@@ -3771,8 +3833,8 @@ const Settings: React.FC = () => {
 
         {import.meta.env.VITE_ENVIRONMENT === 'electron' && (
           <SettingsSection
-            title='Remote Mobile Access'
-            description='Configure a LAN URL for your phone/tablet (same Wi-Fi), then open or scan the QR code.'
+            title='Remote UI Access'
+            description='Keep Graviton running. Open the shared UI URL on another device on your trusted network. This grants host access without device authentication.'
             features={['Remote server URL', 'Mobile URL actions', 'QR code', 'Detected local origin']}
           >
             <div className='grid gap-5 lg:grid-cols-[minmax(0,1fr)_240px]'>
@@ -3788,6 +3850,7 @@ const Settings: React.FC = () => {
                   />
                   <p className='text-xs text-stone-500 dark:text-stone-400'>
                     Leave blank to use detected local origin: {detectedLocalServerOrigin || 'resolving...'}
+                    {hostExposureStatus && <span className='block mt-1'>{hostExposureStatus}</span>}
                   </p>
                 </div>
 
@@ -3815,21 +3878,30 @@ const Settings: React.FC = () => {
                     onClick={handleOpenRemoteMobileUi}
                     disabled={!effectiveRemoteMobileUrl}
                   >
-                    Open Mobile UI
+                    Open legacy mobile UI
                   </Button>
+                  <Button variant='outline2' size='small' disabled={!effectiveSharedBrowserUrl} onClick={async () => {
+                    if (!effectiveSharedBrowserUrl) return
+                    if (!window.confirm('Experimental shared UI: reachable clients can access host files and tools. Use a trusted network only. Continue?')) return
+                    try {
+                      const result = await window.electronAPI?.auth?.openExternal(effectiveSharedBrowserUrl)
+                      if (!result?.success) throw new Error('Could not open the shared browser UI.')
+                    } catch (error) { showStatus({ type: 'error', text: error instanceof Error ? error.message : 'Could not open the shared browser UI.' }) }
+                  }}>Open shared UI preview</Button>
                   <Button
                     variant='outline2'
                     size='small'
-                    onClick={handleCopyRemoteMobileUi}
-                    disabled={!effectiveRemoteMobileUrl}
+                    onClick={handleCopySharedBrowserUi}
+                    disabled={!effectiveSharedBrowserUrl}
                   >
-                    Copy URL
+                    Copy shared UI URL
                   </Button>
                 </div>
 
                 <div className='rounded-[1.75rem] bg-white/45 px-3 py-2 text-xs text-stone-600 dark:bg-stone-800/40 dark:text-stone-300 break-all'>
-                  <p className='font-medium mb-1 text-stone-700 dark:text-stone-200'>Effective mobile URL</p>
-                  <p>{effectiveRemoteMobileUrl || 'Unavailable'}</p>
+                  <p className='font-medium mb-1 text-stone-700 dark:text-stone-200'>Shared UI URL</p>
+                  <p>{effectiveSharedBrowserUrl || 'Unavailable'}</p>
+                  <p className='mt-1'>Legacy mobile: {effectiveRemoteMobileUrl || 'Unavailable'}</p>
                 </div>
               </div>
 
@@ -3838,7 +3910,7 @@ const Settings: React.FC = () => {
                 {remoteQrCodeImageUrl ? (
                   <img
                     src={remoteQrCodeImageUrl}
-                    alt='QR code for remote mobile URL'
+                    alt='QR code for shared UI URL'
                     className='h-[220px] w-[220px] rounded-[1.75rem] bg-white p-3 dark:border-stone-700'
                   />
                 ) : (

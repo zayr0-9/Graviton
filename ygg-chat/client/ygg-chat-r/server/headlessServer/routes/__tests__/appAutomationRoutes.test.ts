@@ -258,9 +258,9 @@ describeIfSqlite('registerAppAutomationRoutes', () => {
     const response = await fetch(`${baseUrl}/api/app/conversations/${conversationId}/messages/top-level-users`)
     expect(response.status).toBe(200)
     expect(await response.json()).toEqual([
-      { id: 'prompt-a', conversation_id: conversationId, content: 'Original request',
+      { id: 'prompt-a', conversation_id: conversationId, content: 'Original request', role: 'user', parent_id: 'reminder', children_ids: '["answer"]',
         plain_text_content: null, note: null, note_color: null, created_at: '2026-09-30T10:01:00Z' },
-      { id: 'prompt-b', conversation_id: conversationId, content: 'Edited request',
+      { id: 'prompt-b', conversation_id: conversationId, content: 'Edited request', role: 'user', parent_id: 'reminder', children_ids: '[]',
         plain_text_content: null, note: null, note_color: null, created_at: '2026-09-30T10:02:00Z' },
     ])
     expect((db!.prepare('SELECT parent_id FROM messages WHERE id = ?').get('prompt-a') as any).parent_id)

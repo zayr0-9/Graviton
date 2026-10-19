@@ -1,3 +1,5 @@
+import { isHostClient } from '../platform/clientCapabilities'
+
 type RuntimeAuthSnapshot = {
   accessToken: string | null
   userId: string | null
@@ -31,13 +33,13 @@ const readRuntimeSnapshotFromStorage = (): RuntimeAuthSnapshot => runtimeIdentit
 let cloudSessionEnabled = isCloudSession(readRuntimeSnapshotFromStorage())
 
 export let isCommunityMode = !cloudSessionEnabled
-export let isElectronCommunityMode = isElectronMode && isCommunityMode
+export let isElectronCommunityMode = isHostClient && isCommunityMode
 export let isCloudBackendAllowed = cloudSessionEnabled
 
 const applyRuntimeAuthMode = (enabled: boolean) => {
   cloudSessionEnabled = enabled
   isCommunityMode = !enabled
-  isElectronCommunityMode = isElectronMode && isCommunityMode
+  isElectronCommunityMode = isHostClient && isCommunityMode
   isCloudBackendAllowed = enabled
 }
 

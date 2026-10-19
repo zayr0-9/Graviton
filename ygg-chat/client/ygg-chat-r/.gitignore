@@ -8,6 +8,7 @@ yarn-error.log*
 # Build outputs
 dist/
 dist-electron/
+dist-browser/
 build/
 *.tsbuildinfo
 

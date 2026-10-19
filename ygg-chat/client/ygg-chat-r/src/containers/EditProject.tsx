@@ -1,3 +1,5 @@
+import { isHostClient } from '../platform/clientCapabilities'
+import { selectHostFolder } from '../platform/hostPathPicker'
 import { useQueryClient } from '@tanstack/react-query'
 import { Cloud, Eraser, FolderOpen, HardDrive, Plus, Save, Sparkles, Star, X } from 'lucide-react'
 import React, { useEffect, useState } from 'react'
@@ -115,9 +117,7 @@ const EditProject: React.FC<EditProjectProps> = ({ isOpen, onClose, editingProje
   const [projectCwd, setProjectCwd] = useState('')
   const [storageMode, setStorageMode] = useState<StorageMode>(isCommunityMode ? 'local' : 'cloud')
 
-  const isElectronMode =
-    import.meta.env.VITE_ENVIRONMENT === 'electron' ||
-    (typeof process !== 'undefined' && process.env?.VITE_ENVIRONMENT === 'electron')
+  const isElectronMode = isHostClient
 
   const isEditing = Boolean(editingProject)
   const canSubmit = newProjectName.trim().length > 0
@@ -256,7 +256,8 @@ const EditProject: React.FC<EditProjectProps> = ({ isOpen, onClose, editingProje
   }
 
   const handleSelectProjectCwd = async () => {
-    const result = await window.electronAPI?.dialog?.selectFolder()
+    const result = await selectHostFolder(projectCwd)
+    if (result.error) window.alert(result.error)
     if (result?.success && result.path) {
       setProjectCwd(result.path)
     }

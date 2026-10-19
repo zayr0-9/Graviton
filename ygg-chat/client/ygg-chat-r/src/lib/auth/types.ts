@@ -42,6 +42,7 @@ export interface AuthProvider {
    * Should be called once at app startup
    */
   initialize(): Promise<void>
+  dispose?(): void
 
   /**
    * Get the current session from storage (no network calls)

@@ -177,3 +177,46 @@ describe('DecisionBroker', () => {
     await expect(second).resolves.toBe('allow_once')
   })
 })
+
+it('broadcasts each settlement once and returns identical retry receipts without a new execution', async () => {
+  const broker = new DecisionBroker()
+  const events: any[] = []
+  broker.subscribe(event => events.push(event))
+  const prompt = { type: 'permission_required' as const, streamId: 's', toolCallId: 'a', toolName: 'read_file', toolInput: {} }
+  const a = broker.requestDecision({ streamId: 's', toolCallId: 'a', kind: 'permission', prompt })
+  const b = broker.requestDecision({ streamId: 's', toolCallId: 'b', kind: 'permission', prompt: { ...prompt, toolCallId: 'b' } })
+  expect(broker.snapshot('s').pending).toHaveLength(2)
+  expect(broker.resolve('s', 'a', 'allow_always')).toBe(true)
+  await Promise.all([a, b])
+  expect(events.map(event => event.toolCallId)).toEqual(['a', 'b'])
+  expect(broker.snapshot('s').pending).toEqual([])
+  expect(broker.resolve('s', 'a', 'allow_always')).toBe(true)
+  expect(broker.resolve('s', 'a', 'deny')).toBe(false)
+  expect(events).toHaveLength(2)
+  expect(broker.receipt('s', 'a')?.outcome).toBe('resolved')
+})
+
+it('canonicalizes clarification retries and publishes cancellation without answer text', async () => {
+  const broker = new DecisionBroker()
+  const pending = broker.requestDecision({ streamId: 's', toolCallId: 'q', kind: 'clarify' })
+  broker.resolve('s', 'q', { answers: [{ answer: 'private', question: 'q' }], cancelled: false })
+  await pending
+  expect(broker.resolve('s', 'q', { cancelled: false, answers: [{ question: 'q', answer: 'private' }] })).toBe(true)
+  expect(JSON.stringify(broker.receipt('s', 'q'))).not.toContain('private')
+  const controller = new AbortController()
+  const wait = broker.requestDecision({ streamId: 's', toolCallId: 'cancel', signal: controller.signal })
+  controller.abort()
+  await expect(wait).rejects.toThrow('aborted')
+  expect(broker.receipt('s', 'cancel')?.outcome).toBe('aborted')
+})
+
+it('permits an upgrade and approval for the same tool call, but not a second approval identity', async () => {
+  const broker = new DecisionBroker()
+  const upgrade = broker.requestDecision({ streamId: 's', toolCallId: 't', kind: 'operation_mode_upgrade' })
+  expect(broker.resolve('s', 't', 'switch_to_execute')).toBe(true)
+  await upgrade
+  const approval = broker.requestDecision({ streamId: 's', toolCallId: 't', kind: 'permission' })
+  expect(broker.resolve('s', 't', 'allow_once')).toBe(true)
+  await approval
+  await expect(broker.requestDecision({ streamId: 's', toolCallId: 't', kind: 'permission' })).rejects.toThrow('already settled')
+})

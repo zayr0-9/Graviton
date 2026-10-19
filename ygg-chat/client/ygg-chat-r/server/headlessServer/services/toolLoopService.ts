@@ -61,11 +61,13 @@ export interface ToolExecutionContext {
   contextLength?: number
   /** Parent request's service tier, inherited by Codex subagents. */
   serviceTier?: 'priority'
+  subagentDefaults?: import('../../../../../shared/hostSubagentPreferences.js').HostSubagentPreferences
   subagentReasoningEffort?: 'low' | 'medium' | 'high' | 'xhigh'
   /** Renderer-selected baseline inherited by server-owned child subagents. */
   subagentSystemPrompt?: string | null
   authSessions?: { app: string; codex: string }
   timeoutMs?: number
+  bashTimeoutMs?: number
   signal?: AbortSignal
   /** Policy-aware executor used by composite tools for each nested call. */
   nestedExecutor?: ToolExecutor
@@ -230,9 +232,11 @@ export interface ToolLoopRunInput {
   /** Server-owned prompt to switch the current Plan-mode run to Agent mode. */
   requestOperationModeUpgrade?: (toolCall: ProviderToolCall) => Promise<boolean>
   toolTimeoutMs?: number
+  bashTimeoutMs?: number
   /** Parent tool-approval policy, forwarded to server-owned subagent calls. */
   toolAutoApprove?: boolean
   /** Reasoning effort to apply to child subagent calls. */
+  subagentDefaults?: import('../../../../../shared/hostSubagentPreferences.js').HostSubagentPreferences
   subagentReasoningEffort?: 'low' | 'medium' | 'high' | 'xhigh'
   /** Renderer-selected baseline inherited by server-owned child subagents. */
   subagentSystemPrompt?: string | null
@@ -1777,9 +1781,11 @@ export class ToolLoopService {
             contextLength: input.contextLength,
             serviceTier: input.serviceTier,
             subagentReasoningEffort: input.subagentReasoningEffort,
+            subagentDefaults: input.subagentDefaults,
             subagentSystemPrompt: input.subagentSystemPrompt ?? null,
             authSessions: input.authSessions,
             timeoutMs: input.toolTimeoutMs,
+            bashTimeoutMs: input.bashTimeoutMs,
             signal: input.signal,
             parentToolInvocationId: invocation?.id ?? null,
             lineageId: input.lineageId ?? null,

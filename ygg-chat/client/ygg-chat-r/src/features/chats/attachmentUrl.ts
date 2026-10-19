@@ -42,7 +42,16 @@ export function resolveAttachmentUrlFromOrigins({
   }
 
   if (urlOrPath) {
-    if (/^https?:\/\//i.test(urlOrPath)) return urlOrPath
+    if (/^https?:\/\//i.test(urlOrPath)) {
+      try {
+        const legacy = new URL(urlOrPath)
+        // Rewrite only recognized host-local attachment routes, never arbitrary
+        // external URLs or provider localhost endpoints.
+        if (['localhost', '127.0.0.1', '[::1]'].includes(legacy.hostname) && /^\/api\/local\/attachments\/[^/]+\/file$/.test(legacy.pathname))
+          return `${localOrigin}${legacy.pathname}${legacy.search}`
+      } catch { return null }
+      return urlOrPath
+    }
     const localRoute = resolveLocalRoute(urlOrPath, localOrigin)
     if (localRoute) return localRoute
     if (urlOrPath.startsWith('/')) return `${remoteOrigin}${urlOrPath}`

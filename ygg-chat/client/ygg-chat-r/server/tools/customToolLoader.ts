@@ -1,6 +1,7 @@
 // server/tools/customToolLoader.ts
 // Dynamic loader for user-defined custom tools from userData/custom-tools/
 
+import { getSettingsStore as getHostSettingsStore } from '../headlessServer/config/settingsStore.js'
 import Conf from 'conf'
 import { EventEmitter } from 'events'
 import fs, { FSWatcher } from 'fs'
@@ -210,8 +211,9 @@ function getSettingsStore(): Conf<Record<string, unknown>> | null {
 
 function getCustomToolExecutionTimeoutMs(): number {
   try {
-    const settingsStore = getSettingsStore()
-    const storedSettings = (settingsStore?.get(TOOL_EXECUTION_SETTINGS_STORAGE_KEY) ?? null) as {
+    const settingsStore = tryGetServerConfig() ? getHostSettingsStore() : getSettingsStore()
+    const hostSettings = settingsStore?.get('host_execution_preferences_v1') as { values?: { toolTimeouts?: { toolCallTimeoutMs?: number } } } | undefined
+    const storedSettings = (hostSettings?.values?.toolTimeouts ?? settingsStore?.get(TOOL_EXECUTION_SETTINGS_STORAGE_KEY) ?? null) as {
       toolCallTimeoutMs?: unknown
     } | null
 

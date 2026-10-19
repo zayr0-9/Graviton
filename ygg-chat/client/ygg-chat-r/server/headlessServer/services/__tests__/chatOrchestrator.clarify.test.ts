@@ -59,3 +59,14 @@ describe('createChatPausingExecutor — plan_md clarify pause/resume', () => {
     expect(result).toMatchObject({ clarified: false, cancelled: true })
   })
 })
+
+it('registers a decision before a synchronous observer can answer it', async () => {
+  const broker = new DecisionBroker()
+  const exec = createChatPausingExecutor({ base: vi.fn(), broker, streamId: 's1', emit: event => {
+    if (event.type === 'clarify_required') {
+      expect(broker.snapshot('s1').pending).toHaveLength(1)
+      expect(broker.resolve('s1', event.toolCallId, { answers: [] })).toBe(true)
+    }
+  } })
+  await expect(exec(clarifyCall as any, ctx)).resolves.toMatchObject({ clarified: true })
+})

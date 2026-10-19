@@ -182,7 +182,7 @@ describeIfSqlite('ToolLoopService', () => {
         { id: 'new-user', role: 'user', content: 'new context' },
       ],
       userContent: 'continue',
-    })
+    }, () => {})
 
     expect(providerRouter.calls[0].input.history.map((message: any) => message.id)).toEqual(['summary', 'new-user'])
   })
@@ -409,7 +409,7 @@ describeIfSqlite('ToolLoopService', () => {
     expect(providerRouter.calls[1].input.history.some((entry: any) => entry.role === 'tool' && entry.tool_call_id === 'call-1')).toBe(true)
   })
 
-  it('persists a user-facing assistant response when OpenAI fails after retries', async () => {
+  it('forwards classified provider failures without duplicating orchestrator-owned error rows', async () => {
     const providerRouter = new FakeProviderRouter()
     providerRouter.enqueue(
       new Error(
@@ -439,13 +439,9 @@ describeIfSqlite('ToolLoopService', () => {
     ).rejects.toMatchObject({ name: 'ProviderErrorAssistantResponse' })
 
     const messages = statements.getMessagesByConversationId.all('c1') as any[]
-    const assistant = messages.find((msg: any) => msg.role === 'assistant')
-    expect(assistant.content).toContain('I could not complete the OpenAI ChatGPT (gpt-5.4-mini) response after retrying')
-    expect(assistant.content).toContain('The usage limit has been reached')
-    expect(assistant.content).toContain('HTTP status: 429')
-    expect(assistant.content).toContain('Error type: usage_limit_reached')
-    expect(events.some((evt: any) => evt.type === 'chunk' && evt.part === 'text' && evt.delta.includes('usage limit'))).toBe(true)
-    expect(events.some((evt: any) => evt.type === 'assistant_message_persisted' && evt.message.id === assistant.id)).toBe(true)
+    expect(messages.filter((msg: any) => msg.role === 'assistant')).toEqual([])
+    expect(events.some((evt: any) => evt.type === 'chunk' && evt.part === 'text')).toBe(false)
+    expect(events.some((evt: any) => evt.type === 'assistant_message_persisted')).toBe(false)
     expect(events.some((evt: any) => evt.type === 'error')).toBe(false)
   })
 
@@ -550,7 +546,7 @@ describeIfSqlite('ToolLoopService model-facing tool result sanitization', () => 
       assistantParentId: null,
       history: [],
       userContent: 'inspect the image',
-    })
+    }, () => {})
 
     const messages = statements.getMessagesByConversationId.all('c1') as any[]
     const firstAssistant = messages.find((msg: any) => msg.role === 'assistant' && msg.content === '')
@@ -599,7 +595,7 @@ describeIfSqlite('ToolLoopService model-facing tool result sanitization', () => 
       assistantParentId: null,
       history: [],
       userContent: 'display the plan',
-    })
+    }, () => {})
 
     const messages = statements.getMessagesByConversationId.all('c1') as any[]
     const firstAssistant = messages.find((msg: any) => msg.role === 'assistant' && msg.content === '')

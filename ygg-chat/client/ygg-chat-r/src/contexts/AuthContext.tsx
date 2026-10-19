@@ -1,7 +1,8 @@
+import { isBrowserClient } from '../platform/clientCapabilities'
 import { getPublicAuth } from '../lib/auth/publicState'
 import { cloudApi } from '../utils/api'
 import { Session, User } from '@supabase/supabase-js'
-import React, { createContext, useCallback, useEffect, useMemo, useState } from 'react'
+import React, { createContext, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { isCommunityMode, isElectronMode, syncRuntimeAuthMode } from '../config/runtimeMode'
 import { clearUser, setUser } from '../features/users/usersSlice'
 import { getAuthProvider, type AuthProvider as IAuthProvider } from '../lib/auth'
@@ -50,8 +51,19 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
   // Store the auth provider instance
   const [provider, setProvider] = useState<IAuthProvider | null>(null)
 
+  const authIdentityRef = useRef<string | null | undefined>(undefined)
   // Update auth state helper
   const updateAuthState = useCallback((state: Partial<AuthState>) => {
+    if ('userId' in state) {
+      const nextIdentity = state.userId ?? null
+      if (authIdentityRef.current !== undefined && authIdentityRef.current !== nextIdentity) {
+        window.dispatchEvent(new CustomEvent('graviton:host-account-changed'))
+        store.dispatch(clearUser())
+      }
+      authIdentityRef.current = nextIdentity
+      syncRuntimeAuthMode({ accessToken: state.accessToken ?? null, userId: state.userId ?? null })
+      updateThunkExtraAuth(state.accessToken ?? null, state.userId ?? null)
+    }
     setAuthState(prev => {
       const newState = { ...prev, ...state, loading: false }
 
@@ -248,6 +260,7 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
 
   // Sign out using the provider
   const signOut = useCallback(async () => {
+    if (isBrowserClient && !window.confirm('Sign out of the Graviton host? This signs out every connected client.')) return
     // console.log('[AuthContext] Signing out...')
 
     if (!provider) {

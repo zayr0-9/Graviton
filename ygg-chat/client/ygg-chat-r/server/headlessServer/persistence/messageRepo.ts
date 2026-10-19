@@ -42,6 +42,10 @@ export class MessageRepo {
     this.statements = deps.statements
   }
 
+  get(messageId: string): any | null {
+    return this.statements.getMessageById.get(messageId) ?? null
+  }
+
   transaction<T>(operation: () => T): T {
     return this.db.transaction(operation)()
   }

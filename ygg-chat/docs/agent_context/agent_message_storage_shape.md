@@ -334,3 +334,9 @@ OpenAI assistant messages may include nullable `context_usage`, a normalized pro
 ## Committed assistant compaction boundaries
 
 New compaction instruction/resume rows are ordinary user rows tagged in `meta`. New summaries are ordinary assistant rows with `meta.kind = compaction_summary`, `state = committed` and an instruction/compaction ID. The repository updates content, plain text, text blocks and metadata atomically, preserving IDs, ancestry, raw provider output and run statistics. Only committed summaries trim inference history; legacy system/note markers remain readable. `subagent_messages.meta` is nullable JSON (migration v6), persisted and reloaded by the transcript sink.
+
+## Shared-client revision foundation (2026-10-19)
+
+`messages.revision` is a host-owned integer (migration 7, default zero). `server/messageRevisionSchema.ts` owns increments in a SQLite trigger for actual non-revision-column changes, covering direct routes, mirrors, children lists and lineage attachment. JavaScript must not increment/reset it. New columns require a migration updating trigger coverage. Sinks reread after lineage mutation before emitting rows. `BaseMessage.revision` remains optional for remote/optimistic rows without a known local revision.
+
+Migration 8's `client_changes` transactional metadata outbox observes messages/conversations/projects, including background writers; rollback rolls back its events. Browser/desktop change consumers feed the existing snapshot coordinator and preserve selection/drafts. This is a migration foundation, not yet complete snapshot/deletion/conflict coverage; see `../shared-ui-implementation-status.md`.

@@ -39,6 +39,8 @@ export interface SelectedFileContent {
 }
 
 export interface BaseMessage {
+  /** Host SQLite revision; absent for unmirrored cloud/optimistic rows. */
+  revision?: number | null
   id: MessageId
   conversation_id: ConversationId
   role: 'user' | 'assistant' | 'system' | 'ex_agent' | 'tool'

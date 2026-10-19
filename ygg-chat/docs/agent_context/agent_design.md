@@ -177,3 +177,7 @@ Graviton uses expressive but disciplined motion: movement should explain a spati
 - **Anchored menu/portal:** set transform origin toward the trigger, use a modest directional offset, and keep backdrop opacity independent from surface movement.
 - **Hover-revealed action cluster:** combine a short opacity transition with a small vertical offset; avoid scaling the containing row.
 - **Resizable panes and graph canvases:** turn off dimension transitions during direct manipulation and leave requestAnimationFrame interaction loops imperative.
+
+## Browser delivery background invariant
+
+Non-native delivery always uses a solid app canvas, including default/custom themes and saved transparent/video preferences. `src/helpers/opaqueAppBackground.ts` removes alpha from supported custom CSS colors and falls back to light `#F5F5F4` / dark `#0C0A09` for transparent/invalid/unresolved inputs or browsers without relative-color support. `VideoBackground.tsx` publishes the resolved color to `--browser-app-background`; `main.tsx` marks browser documents before bootstrap, and `index.css` covers html/body/root. Native glass/tint/video behavior stays unchanged. Pixel regression: `node scripts/test-browser-workspace.cjs`; unit coverage: `VideoBackground.test.tsx`, `opaqueAppBackground.test.ts`.

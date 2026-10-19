@@ -1,3 +1,5 @@
+import { isBrowserClient } from '../../platform/clientCapabilities'
+import { OPEN_HOST_FILE, hostPathFromFileUrl } from '../../helpers/hostFileNavigation'
 import React from 'react'
 import { useChatNavigate as useNavigate } from '../ChatSelection/ChatSelectionProvider'
 import { defaultUrlTransform, type UrlTransform } from 'react-markdown'
@@ -25,6 +27,11 @@ export const MarkdownLink: React.FC<MarkdownLinkProps> = ({ href, children, ...p
 
     if (/^file:/i.test(href)) {
       e.preventDefault()
+      if (isBrowserClient) {
+        const path = hostPathFromFileUrl(href)
+        if (path) window.dispatchEvent(new CustomEvent(OPEN_HOST_FILE, { detail: { path } }))
+        return
+      }
       if (!window.electronAPI?.shell?.openPath) {
         console.error('Opening local file links requires the desktop app')
         return

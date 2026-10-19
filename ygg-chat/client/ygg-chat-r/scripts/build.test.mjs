@@ -3,9 +3,11 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { createRequire } from 'node:module'
-import { fileURLToPath } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 import test from 'node:test'
 import { runTasks } from './build-tasks.mjs'
+import { build } from 'esbuild'
+import { nodeEsmBanner, assertNodeSyntax } from './node-esm.mjs'
 import beforePack, { collectRuntimePackages, runtimeExclusions } from './runtime-packaging.mjs'
 
 const require = createRequire(import.meta.url)
@@ -108,4 +110,32 @@ test('failed tasks block scheduling and wait for active writers before rejecting
   ]), /check failed/)
   assert.equal(finished, true)
   assert.equal(scheduled, false)
+})
+
+test('ESM banner coexists with bundled createRequire imports and supplies CommonJS require', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'graviton-esm-'))
+  const outfile = path.join(root, 'fixture.mjs')
+  try {
+    await build({
+      stdin: { contents: "import { createRequire } from 'node:module'; export const nativeRequire = createRequire(import.meta.url); export const basename = require('node:path').basename;", sourcefile: 'terminal-fixture.mjs' },
+      outfile, bundle: true, platform: 'node', target: 'node20', format: 'esm', banner: { js: nodeEsmBanner },
+    })
+    assertNodeSyntax(outfile)
+    const fixture = await import(pathToFileURL(outfile).href)
+    assert.equal(typeof fixture.nativeRequire, 'function')
+    assert.equal(fixture.basename('/work/example.txt'), 'example.txt')
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('emitted module guard rejects a banner/source duplicate declaration', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'graviton-esm-invalid-'))
+  const outfile = path.join(root, 'invalid.mjs')
+  try {
+    fs.writeFileSync(outfile, "import { createRequire } from 'module'; const require = createRequire(import.meta.url);\nimport { createRequire } from 'node:module';")
+    assert.throws(() => assertNodeSyntax(outfile), /Identifier 'createRequire' has already been declared/)
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true })
+  }
 })

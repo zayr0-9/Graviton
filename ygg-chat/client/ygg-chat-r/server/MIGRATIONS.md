@@ -87,3 +87,35 @@ sqlite3 /path/to/local-sync.db 'PRAGMA user_version; PRAGMA table_info(conversat
 
 Start the server once against a copy of a pre-migration database. The log prints
 `[LocalServer] Applied schema migration v<N> (<name>)` once, and never again on the next start.
+
+## Message revisions (v7)
+
+| Version | Name | Change | Why | Added |
+| --- | --- | --- | --- | --- |
+| 7 | `message_revisions` | Adds `messages.revision INTEGER NOT NULL DEFAULT 0` and `messages_revision_update`. | Version host-owned rows for multi-client reconciliation, including direct SQL/background/mirror writers. | 2026-10-19 |
+
+Inserts begin at zero. SQLite increments on actual non-revision column changes, including children lists and lineage attachment; no-op updates do not increment. JavaScript writers must not increment or reset revisions. Multiple real mutations in one transaction can advance a row more than once. Unknown cloud revisions remain absent until mirrored locally. The trigger excludes revision-only updates so recursive triggers are safe. New message columns require an append-only migration replacing this trigger to include them.
+
+## Client change outbox (v8)
+
+| Version | Name | Change | Why | Added |
+| --- | --- | --- | --- | --- |
+| 8 | `client_change_outbox` | Adds bounded `client_changes` metadata outbox and INSERT/UPDATE/DELETE triggers for messages, conversations and projects. | Cross-client invalidation observes committed SQL writes including background/mirror writers; rolled-back writes publish nothing. | 2026-10-19 |
+
+The feed retains 10,000 records; old/future cursors and different process epochs require a baseline refresh. Message updates publish only when the host revision changes. Tokens and transcript bodies are excluded. Settings/catalog changes are not covered by this outbox.
+
+## Command acceptance receipts (v9)
+
+| Version | Name | Change | Why | Added |
+| --- | --- | --- | --- | --- |
+| 9 | `operation_receipts` | Adds operation ID, SHA-256 request fingerprint, host epoch and compact admission receipt. | Admission retries cannot repeat accepted work after in-memory mailbox eviction or process restart. | 2026-10-19 |
+
+Accepted commands from earlier epochs become interrupted/uncertain, never automatically resumed. Unknown old-epoch commands are rejected. Tombstones retain no prompts, attachments, provider tokens or tool output; they are not expired into executable new commands.
+
+## Decision settlement receipts (v10)
+
+| Version | Name | Change | Why | Added |
+| --- | --- | --- | --- | --- |
+| 10 | `decision_receipts` | Adds `(stream_id, tool_call_id, kind)` keyed settlement fingerprints and metadata. | Identical lost-acknowledgement answers remain recognizable after restart; conflicting answers never reopen execution. No raw answers or tool inputs are stored. | 2026-10-19 |
+
+| 11 | `decision_receipt_kinds` | Idempotently upgrades early prototype two-column receipt keys to kind-scoped keys, preserving old records as `any`. | A test database that already stamped v10 must not lose receipts or fail interactive decisions. | 2026-10-19 |

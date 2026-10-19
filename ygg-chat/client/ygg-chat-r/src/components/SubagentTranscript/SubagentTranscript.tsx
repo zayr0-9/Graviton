@@ -1,3 +1,4 @@
+import { hydrateSnapshotEvent } from '../../services/snapshotPayloadClient'
 import 'boxicons'
 import 'boxicons/css/boxicons.min.css'
 import React, { useEffect, useRef, useState } from 'react'
@@ -8,7 +9,8 @@ import rehypeHighlight from 'rehype-highlight'
 import remarkGfm from 'remark-gfm'
 import type { SubagentRunRow } from '../../../../../shared/types'
 import { useSubagentByToolCall } from '../../hooks/useQueries'
-import { buildLocalApiUrl, environment } from '../../utils/api'
+import { isHostClient } from '../../platform/clientCapabilities'
+import { buildLocalApiUrl } from '../../utils/api'
 import { Button } from '../Button/button'
 import { getMarkdownThemeVars, getThemeModeColor, useCustomChatTheme, useHtmlDarkMode } from '../ThemeManager/themeConfig'
 import { MarkdownTable } from '../MarkdownContent/MarkdownTable'
@@ -364,7 +366,7 @@ export function useSubagentLiveStream(
   const reasoningRef = useRef('')
 
   useEffect(() => {
-    if (!active || !streamId || environment !== 'electron') {
+    if (!active || !streamId || !isHostClient) {
       setState(EMPTY_LIVE)
       return
     }
@@ -378,8 +380,37 @@ export function useSubagentLiveStream(
       void queryClient.invalidateQueries({ queryKey: ['subagents', 'by-tool-call', toolCallId] })
     }
 
-    const applyEvent = (event: any) => {
+    let lastSeq = 0
+    let terminalSeen = false
+    let needsBootstrap = true
+    let retryAttempt = 0
+    let retryTimer: ReturnType<typeof setTimeout> | undefined
+    const applyEvent = async (event: any) => {
       if (cancelled || !event || typeof event.type !== 'string') return
+      if (event.type === 'child_bootstrap') {
+        const snapshot = event.snapshot
+        if (snapshot?.kind !== 'child' || snapshot.schema !== 1 || snapshot.streamId !== streamId || !Number.isSafeInteger(snapshot.stateSeq)) throw new Error('Invalid child snapshot')
+        if (snapshot.persistedRun) {
+          if (snapshot.persistedRun.id !== snapshot.subagentRunId) throw new Error('Invalid child transcript boundary')
+          await queryClient.cancelQueries({ queryKey: ['subagents', 'by-tool-call', toolCallId] })
+          queryClient.setQueryData(['subagents', 'by-tool-call', toolCallId], (previous: any) => ({
+            ...previous, streamId, runs: [...(previous?.runs ?? []).filter((run: any) => run.id !== snapshot.subagentRunId), snapshot.persistedRun],
+          }))
+        }
+        textRef.current = snapshot.text; reasoningRef.current = snapshot.reasoning
+        setState({ text: snapshot.text, reasoning: snapshot.reasoning, done: snapshot.terminal })
+        lastSeq = snapshot.stateSeq
+        terminalSeen = snapshot.terminal
+        needsBootstrap = false; retryAttempt = 0
+        if (!snapshot.persistedRun) invalidatePersisted()
+        return
+      }
+      if (event.type === 'observer_resync_required') { needsBootstrap = true; throw new Error('Child observer recovery required') }
+      if (typeof event.seq === 'number') {
+        if (event.seq <= lastSeq) return
+        if (lastSeq && event.seq !== lastSeq + 1) throw new Error('Child stream sequence gap')
+        lastSeq = event.seq
+      }
       if (event.type === 'chunk' && typeof event.delta === 'string') {
         if (event.part === 'text') {
           textRef.current += event.delta
@@ -398,22 +429,28 @@ export function useSubagentLiveStream(
         // Steering landed in this child's transcript, never in the parent chat tree.
         // Do not clear a new assistant tail if this persisted row is replayed.
         invalidatePersisted()
-      } else if (event.type === 'complete' || event.type === 'error') {
+      } else if (event.type === 'error' && event.envelope?.code === 'history_truncated') {
+        throw new Error('Child snapshot temporarily unavailable')
+      } else if (event.type === 'complete' || (event.type === 'error' && event.terminal !== false)) {
+        terminalSeen = true
         setState(s => ({ ...s, done: true }))
         invalidatePersisted()
       }
     }
 
     const run = async () => {
+      let reader: ReadableStreamDefaultReader<Uint8Array> | undefined
       try {
-        const url = await buildLocalApiUrl(`/streams/${encodeURIComponent(streamId)}?fromSeq=0`)
+        const url = await buildLocalApiUrl(`/streams/${encodeURIComponent(streamId)}?fromSeq=${lastSeq}${needsBootstrap ? '&bootstrap=1' : ''}`)
         const res = await fetch(url, { signal: controller.signal })
-        if (!res.ok || !res.body) {
-          // 410 => the run already ended and its session was reaped; persisted stands.
+        if (res.status === 410) {
+          terminalSeen = true
+          invalidatePersisted()
           if (!cancelled) setState(s => ({ ...s, done: true }))
           return
         }
-        const reader = res.body.getReader()
+        if (!res.ok || !res.body) throw new Error('Child stream unavailable')
+        reader = res.body.getReader()
         const decoder = new TextDecoder()
         let buffer = ''
         // eslint-disable-next-line no-constant-condition
@@ -427,22 +464,27 @@ export function useSubagentLiveStream(
             if (!line.startsWith('data:')) continue
             const data = line.slice('data:'.length).trim()
             if (!data || data === '[DONE]') continue
-            try {
-              applyEvent(JSON.parse(data))
-            } catch {
-              /* ignore malformed frame */
-            }
+            const event = JSON.parse(data)
+            const referenced = event.type === 'snapshot_reference' || event.type === 'event_reference' || event.snapshot?.eventsReference
+            if (referenced) await reader.cancel()
+            await applyEvent(await hydrateSnapshotEvent(event, controller.signal))
+            if (referenced) return
           }
         }
       } catch {
-        // Network error / aborted — leave the persisted transcript as the source of truth.
-        if (!cancelled) setState(s => ({ ...s, done: true }))
+        needsBootstrap = true
+        // A gap or network loss rebuilds the live tail from a new boundary;
+        // never silently append an unverifiable suffix to resident output.
+      } finally {
+        await reader?.cancel().catch(() => {})
+        if (!cancelled && !terminalSeen) retryTimer = setTimeout(() => { void run() }, Math.min(15000, 500 * 2 ** Math.min(retryAttempt++, 5)))
       }
     }
     void run()
 
     return () => {
       cancelled = true
+      clearTimeout(retryTimer)
       controller.abort()
     }
   }, [toolCallId, streamId, active, queryClient])

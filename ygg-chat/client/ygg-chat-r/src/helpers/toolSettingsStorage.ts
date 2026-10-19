@@ -1,6 +1,7 @@
 // Tool Settings Storage
 // Persists tool enabled/disabled states to localStorage
 
+import { getHostExecutionPreferences, saveHostExecutionPreference } from '../services/hostExecutionClient'
 const STORAGE_KEY = 'ygg_tool_settings'
 
 export interface ToolEnabledStates {
@@ -11,6 +12,8 @@ export interface ToolEnabledStates {
  * Load tool enabled states from localStorage
  */
 export function loadToolEnabledStates(): ToolEnabledStates {
+  const host = getHostExecutionPreferences()
+  if (host) return { ...host.tools }
   try {
     const stored = localStorage.getItem(STORAGE_KEY)
     if (!stored) return {}
@@ -23,7 +26,8 @@ export function loadToolEnabledStates(): ToolEnabledStates {
 /**
  * Save tool enabled states to localStorage
  */
-export function saveToolEnabledStates(states: ToolEnabledStates): void {
+export async function saveToolEnabledStates(states: ToolEnabledStates): Promise<void> {
+  if (getHostExecutionPreferences()) { await saveHostExecutionPreference({ tools: states }); return }
   try {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(states))
   } catch (error) {
@@ -34,10 +38,11 @@ export function saveToolEnabledStates(states: ToolEnabledStates): void {
 /**
  * Update a single tool's enabled state and persist
  */
-export function updateToolEnabledState(toolName: string, enabled: boolean): void {
+export async function updateToolEnabledState(toolName: string, enabled: boolean): Promise<void> {
+  if (getHostExecutionPreferences()) { await saveHostExecutionPreference({ tools: { [toolName]: enabled } }); return }
   const states = loadToolEnabledStates()
   states[toolName] = enabled
-  saveToolEnabledStates(states)
+  await saveToolEnabledStates(states)
 }
 
 /**

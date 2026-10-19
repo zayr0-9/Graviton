@@ -65,3 +65,9 @@ describe('resolveAttachmentUrlFromOrigins', () => {
     ).toBeNull()
   })
 })
+
+it('rewrites recognized legacy loopback attachment URLs but preserves external URLs', () => {
+  expect(resolveAttachmentUrlFromOrigins({ ...origins, urlOrPath: 'http://localhost:3002/api/local/attachments/a/file' })).toBe(`${origins.localOrigin}/api/local/attachments/a/file`)
+  expect(resolveAttachmentUrlFromOrigins({ ...origins, urlOrPath: 'https://external.example/api/local/attachments/a/file' })).toBe('https://external.example/api/local/attachments/a/file')
+  expect(resolveAttachmentUrlFromOrigins({ ...origins, urlOrPath: 'http://localhost:1234/model' })).toBe('http://localhost:1234/model')
+})

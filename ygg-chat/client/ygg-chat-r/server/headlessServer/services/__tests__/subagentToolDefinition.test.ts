@@ -14,7 +14,7 @@ describe('subagent tool definition', () => {
 
     expect(manager?.inputSchema.properties.action.enum).toContain('wait')
     expect(manager?.inputSchema.properties.handle.description).toContain('wait')
-    expect(manager?.description).toContain('instead of repeatedly polling')
+    expect(manager?.description).toContain('do not poll')
   })
 
   it('exposes safe-boundary send and optional resume instructions', () => {

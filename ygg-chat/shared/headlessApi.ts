@@ -76,6 +76,7 @@ export interface HeadlessMessageRequest {
   /** Idempotency/audit identity for a fork operation; distinct from streamId. */
   operationId?: string | null
   toolTimeoutMs?: number
+  bashTimeoutMs?: number
   /**
    * Interactive tool-permission policy for the server-owned loop.
    * OPTIONAL and undefined-by-default: absence == auto-approve. The loop pauses
@@ -91,6 +92,7 @@ export interface HeadlessMessageRequest {
   compactionModelName?: string | null
   compactionSystemPrompt?: string | null
   /** Reasoning effort forwarded to child subagents spawned by this chat run. */
+  subagentDefaults?: import('./hostSubagentPreferences.js').HostSubagentPreferences
   subagentReasoningEffort?: 'low' | 'medium' | 'high' | 'xhigh'
   /**
    * Phase 3 opt-in: run the 5 lifecycle chat hooks in the server loop (parity with
@@ -147,6 +149,7 @@ export interface HeadlessSubagentStreamRequest {
   accessToken?: string | null
   accountId?: string | null
   toolTimeoutMs?: number
+  bashTimeoutMs?: number
   autoCompactionEnabled?: boolean
   contextLength?: number
   compactionThresholdPercent?: number
@@ -202,6 +205,12 @@ export type HeadlessSubagentStreamEvent =
     }
 
 export type HeadlessStreamEvent =
+  | { type: 'observer_resync_required'; streamId: string }
+  | { type: 'event_reference'; streamId: string; reference: import('./snapshotPayload.js').SnapshotPayloadReference }
+  | { type: 'snapshot_reference'; streamId: string; reference: import('./snapshotPayload.js').SnapshotPayloadReference }
+  | { type: 'child_bootstrap'; snapshot: import('./runProtocol.js').ChildRunBootstrap }
+  | { type: 'bootstrap'; snapshot: import('./runProtocol.js').MainRunBootstrap }
+  | { type: 'decision_settled'; streamId: string; toolCallId: string; outcome: 'resolved' | 'aborted'; revision: number }
   | { type: 'compaction_control_persisted'; message: any; lineageId?: string | null }
   | { type: 'message_queue_updated'; snapshot: import('./queuedMessages.js').MessageQueueSnapshot }
   | { type: 'queued_user_message_persisted'; message: any; requestId: string; streamId: string; lineageId: string | null }

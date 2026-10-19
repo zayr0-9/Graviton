@@ -1,3 +1,5 @@
+import { getHostExecutionPreferences, getHostExecutionRevision, saveHostExecutionPreference } from '../services/hostExecutionClient'
+const BASE_REVISION = Symbol('tool-timeouts-base-revision')
 const STORAGE_KEY = 'ygg_tool_execution_settings'
 export const TOOL_EXECUTION_SETTINGS_CHANGE_EVENT = 'ygg-tool-execution-settings-change'
 
@@ -14,6 +16,7 @@ export const MAX_BASH_TIMEOUT_MS = 600000
 export const DEFAULT_BASH_TIMEOUT_MS = 60000
 
 export interface ToolExecutionSettings {
+  [BASE_REVISION]?: number
   toolCallTimeoutMs: number
   streamIdleTimeoutMs: number
   bashTimeoutMs: number
@@ -62,9 +65,11 @@ async function syncToolExecutionSettingsToElectronStore(settings: ToolExecutionS
 export function loadToolExecutionSettings(): ToolExecutionSettings {
   try {
     const stored = localStorage.getItem(STORAGE_KEY)
+    let parsed: Partial<ToolExecutionSettings> = {}
+    try { parsed = stored ? JSON.parse(stored) : {} } catch { /* Corrupt client watchdog settings cannot hide canonical host values. */ }
+    const host = getHostExecutionPreferences()
+    if (host) return { ...host.toolTimeouts, streamIdleTimeoutMs: clampStreamIdleTimeoutMs(parsed.streamIdleTimeoutMs), [BASE_REVISION]: getHostExecutionRevision('toolTimeouts') }
     if (!stored) return { ...DEFAULT_SETTINGS }
-
-    const parsed = JSON.parse(stored) as Partial<ToolExecutionSettings>
     const normalized = {
       toolCallTimeoutMs: clampToolCallTimeoutMs(parsed.toolCallTimeoutMs),
       streamIdleTimeoutMs: clampStreamIdleTimeoutMs(parsed.streamIdleTimeoutMs),
@@ -78,13 +83,25 @@ export function loadToolExecutionSettings(): ToolExecutionSettings {
   }
 }
 
-export function saveToolExecutionSettings(settings: ToolExecutionSettings): void {
+export async function saveToolExecutionSettings(settings: ToolExecutionSettings): Promise<void> {
   const normalized: ToolExecutionSettings = {
     toolCallTimeoutMs: clampToolCallTimeoutMs(settings.toolCallTimeoutMs),
     streamIdleTimeoutMs: clampStreamIdleTimeoutMs(settings.streamIdleTimeoutMs),
     bashTimeoutMs: clampBashTimeoutMs(settings.bashTimeoutMs),
   }
 
+  if (getHostExecutionPreferences()) {
+    const revision = settings[BASE_REVISION]
+    if (!Number.isSafeInteger(revision)) throw new Error('Reload tool settings before saving')
+    const toolTimeouts = { toolCallTimeoutMs: normalized.toolCallTimeoutMs, bashTimeoutMs: normalized.bashTimeoutMs }
+    const current = getHostExecutionPreferences()!.toolTimeouts
+    if (current.toolCallTimeoutMs !== toolTimeouts.toolCallTimeoutMs || current.bashTimeoutMs !== toolTimeouts.bashTimeoutMs)
+      await saveHostExecutionPreference({ toolTimeouts }, revision)
+    settings[BASE_REVISION] = getHostExecutionRevision('toolTimeouts')
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({ streamIdleTimeoutMs: normalized.streamIdleTimeoutMs }))
+    window.dispatchEvent(new CustomEvent(TOOL_EXECUTION_SETTINGS_CHANGE_EVENT, { detail: settings }))
+    return
+  }
   try {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(normalized))
     void syncToolExecutionSettingsToElectronStore(normalized)

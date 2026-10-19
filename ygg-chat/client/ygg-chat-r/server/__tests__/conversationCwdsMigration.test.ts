@@ -21,6 +21,12 @@ const rebuildSearchIndexes = vi.fn()
 const migrations = runInNewContext(`${migrationCode}\n({ SCHEMA_MIGRATIONS, runSchemaMigrations })`, {
   console: { log: vi.fn(), error: vi.fn() },
   rebuildSearchIndexes,
+  // Later migrations have dedicated real SQLite coverage; this fixture isolates v4.
+  installMessageRevisions: vi.fn(),
+  installClientChangeSchema: vi.fn(),
+  OPERATION_RECEIPT_SCHEMA: 'SELECT 1',
+  DECISION_RECEIPT_SCHEMA: 'SELECT 1',
+  installDecisionReceiptSchema: vi.fn(),
 }) as {
   SCHEMA_MIGRATIONS: { version: number; name: string; up: (db: any) => void }[]
   runSchemaMigrations: (db: any) => void

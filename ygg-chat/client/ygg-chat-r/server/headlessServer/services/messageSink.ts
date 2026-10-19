@@ -109,7 +109,7 @@ export class TreeMessageSink implements MessageSink {
         }
       }
       if (draft.statisticsKind !== 'terminal_error') this.onModelResponse?.(message.id)
-      return message
+      return { ...message, ...(this.messageRepo.get?.(message.id) ?? {}) }
     })
   }
 
@@ -122,7 +122,7 @@ export class TreeMessageSink implements MessageSink {
           this.pendingOperationId = null
         } else this.lineageRepo.appendMessage(this.lineageId, row.id)
       }
-      return row
+      return this.messageRepo.get?.(row.id) ?? row
     })
   }
 
@@ -192,7 +192,7 @@ export class CloudMirrorSink implements MessageSink {
         }
       }
       if (draft.statisticsKind !== 'terminal_error') this.onModelResponse?.(message.id)
-      return message
+      return { ...message, ...(this.messageRepo.get?.(message.id) ?? {}) }
     })
   }
 
@@ -205,7 +205,7 @@ export class CloudMirrorSink implements MessageSink {
           this.pendingOperationId = null
         } else this.lineageRepo.appendMessage(this.lineageId, row.id)
       }
-      return row
+      return this.messageRepo.get?.(row.id) ?? row
     })
   }
 

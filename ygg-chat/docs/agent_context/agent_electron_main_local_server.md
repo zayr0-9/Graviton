@@ -117,3 +117,21 @@ Use this when changing:
 - `agent_local_tools_runtime.md`
 - `agent_headless_server.md`
 - `agent_hooks_system.md`
+
+## Attached browser workspace foundation (2026-10-19)
+
+Browser clients use the same React source, built separately into `dist-browser`; Electron keeps `loadFile` and its preload. `server/routes/browserUiRoutes.ts` serves only that configured public tree. Bootstrap/status metadata is token-free; browser identity uses typed auth HTTP while native migration stays IPC-only.
+
+`server/terminal/terminalLaunch.ts` shares native/WSL launch resolution with Electron. `terminalService.ts`/`routes/terminalRoutes.ts` currently own separate browser PTYs with bounded output and a 60-second lease; `stopLocalServer` shuts them down. Native terminal IPC/WebContents ownership remains unchanged. LSP sessions are client/server/workspace scoped. `editorFileStore.ts` serializes hash-precondition saves; conflicts preserve local edits. These changes do not yet satisfy the full workspace/mobile migration; see `../shared-ui-implementation-status.md`.
+
+## Shared-client local integration
+
+Native terminal IPC is now a thin sender-scoped adapter over `server/terminal/terminalService.ts`; native sessions use push events and no browser reconnect lease. Browser sessions remain independent with bounded polling/output and a lease. Native renderer navigation/crash/destruction cleans its terminals.
+
+`nativeClientFence.ts` distinguishes opaque browser apps from Electron requests: main injects a per-process header only to the exact owned listener through native session webRequest. It is not returned by public bootstrap or preload, and is not network-device authentication. Opaque-origin mutations across `/api` require that native fence; attached browser commands use same-origin requests through typed bridges. Browser custom HTML gets restrictive connection CSP by default, native requests preserve prior behavior. `YGG_BROWSER_ALLOWED_ORIGINS` configures explicit root-path proxy authorities; it does not protect against reachable trusted-network peers.
+
+### Native host bootstrap regression
+
+`hostClientPolicy` accepts cross-site file-loaded HTTP requests only with the main-injected native session fence (legacy opaque GET compatibility remains separate). Chromium can omit `Origin` on `loadFile` fetch while sending `Sec-Fetch-Site: cross-site`; testing only `Origin: null` misses this case. Run `node scripts/test-native-host-bootstrap.cjs` for real Chromium bootstrap → renderer admission → host preference PATCH against production policies, with isolated user data and no provider execution. A bootstrap 404 instead indicates an older running host/UI mismatch; fully quit old copies and verify the installed archive contains `/api/host/runtime` and `dist-browser` before testing.
+
+`electron/nativeHostSession.ts` installs the native fence idempotently on the main/floating window sessions before load; `session-created` is secondary. This explicitly covers a default session created before the lifecycle listener. The native fixture calls the production installer twice after window creation to cover this path.

@@ -3,6 +3,7 @@ import path from 'path'
 import { loadEnv } from 'vite'
 import { fileURLToPath } from 'url'
 import { runTasks } from '../scripts/build-tasks.mjs'
+import { nodeEsmBanner, assertNodeSyntax } from '../scripts/node-esm.mjs'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 
@@ -30,7 +31,7 @@ tasks.push(() => esbuild.build({
   ],
   banner: {
     // Required for ESM to use require() for native modules
-    js: "import { createRequire } from 'module'; const require = createRequire(import.meta.url);"
+    js: nodeEsmBanner
   },
   sourcemap: true,
   // Resolve .ts files when importing .js extensions
@@ -61,7 +62,7 @@ tasks.push(() => esbuild.build({
     'better-sqlite3',
   ],
   banner: {
-    js: "import { createRequire } from 'module'; const require = createRequire(import.meta.url);"
+    js: nodeEsmBanner
   },
   sourcemap: true,
   resolveExtensions: ['.ts', '.js', '.mjs', '.json'],
@@ -79,7 +80,7 @@ tasks.push(() => esbuild.build({
     'better-sqlite3',
   ],
   banner: {
-    js: "import { createRequire } from 'module'; const require = createRequire(import.meta.url);"
+    js: nodeEsmBanner
   },
   sourcemap: true,
   resolveExtensions: ['.ts', '.js', '.mjs', '.json'],
@@ -102,3 +103,9 @@ tasks.push(() => esbuild.build({
 }).then(() => console.log('✅ mobile React UI bundled to server/headlessServer/ui/mobile/assets/mobile-app.js')))
 
 await runTasks(tasks)
+
+// esbuild does not validate declarations injected through banners.
+for (const name of ['main.mjs', 'preload.mjs', 'toolRuntimeUtility.mjs', 'localAnalyticsWorker.mjs']) {
+  assertNodeSyntax(path.join(__dirname, name))
+}
+console.log('✅ Electron emitted module syntax checked')

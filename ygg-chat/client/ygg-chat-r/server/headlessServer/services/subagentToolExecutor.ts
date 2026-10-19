@@ -1,3 +1,4 @@
+import { normalizeProviderRoute } from './providerRouter.js'
 import { randomUUID } from 'node:crypto'
 import type { HeadlessSubagentStreamRequest } from '../../../../../shared/headlessApi.js'
 import type { MessageQueueSnapshot, QueuedMessageView } from '../../../../../shared/queuedMessages.js'
@@ -129,9 +130,16 @@ async function buildSubagentRequest(toolCall: ProviderToolCall, context: ToolExe
   const prompt = typeof args.prompt === 'string' ? args.prompt.trim() : ''
   if (!prompt) throw new Error('Subagent requires a prompt')
 
-  const inheritedProvider = context.provider || 'openaichatgpt'
+  const defaults = context.subagentDefaults
+  const inheritedProvider = defaults?.defaultProvider ? normalizeProviderRoute(defaults.defaultProvider) : context.provider || 'openaichatgpt'
   const provider = inheritedProvider === 'openrouter' ? 'openaichatgpt' : inheritedProvider
-  const modelName = inheritedProvider === 'openrouter' ? DEFAULT_SUBAGENT_MODEL : context.modelName || DEFAULT_SUBAGENT_MODEL
+  const parentProvider = normalizeProviderRoute(context.provider || 'openaichatgpt')
+  const providerDefault = provider === 'lmstudio' ? process.env.LMSTUDIO_MODEL || 'local-model'
+    : provider === 'zai' ? process.env.ZAI_MODEL || 'glm-5.1'
+    : provider === 'bedrock' ? process.env.AWS_BEDROCK_MODEL || 'anthropic.claude-3-5-sonnet-20241022-v2:0'
+    : DEFAULT_SUBAGENT_MODEL
+  const modelName = inheritedProvider === 'openrouter' ? DEFAULT_SUBAGENT_MODEL
+    : defaults?.defaultModel || (parentProvider === provider ? context.modelName : null) || providerDefault
 
   // Docs §6: an `agent_type` selects a `<configDir>/agents/<name>.md` definition.
   const agentTypeRaw =
@@ -156,7 +164,7 @@ async function buildSubagentRequest(toolCall: ProviderToolCall, context: ToolExe
       ]
     : undefined
   // The definition's allow-list wins over the model's ad-hoc list (it is the author's contract).
-  const tools = definition.tools ?? requestedTools
+  const tools = definition.tools ?? requestedTools ?? (defaults ? (defaults.orchestratorEnabled ? defaults.enabledTools : []) : undefined)
   const requestedSystemPrompt = typeof args.systemPrompt === 'string' ? args.systemPrompt.trim() : ''
   const inheritedSystemPrompt =
     typeof context.subagentSystemPrompt === 'string' && context.subagentSystemPrompt.trim()
@@ -167,7 +175,7 @@ async function buildSubagentRequest(toolCall: ProviderToolCall, context: ToolExe
   return {
     agentType: agent?.name ?? null,
     disallowedTools: definition.disallowedTools.length > 0 ? definition.disallowedTools : undefined,
-    maxTurns: definition.maxTurns,
+    maxTurns: definition.maxTurns ?? defaults?.maxTurns,
     contextDirectories: context.contextDirectories ?? loader?.settings ?? null,
     conversationId: context.conversationId,
     parentMessageId: context.messageId,
@@ -191,6 +199,7 @@ async function buildSubagentRequest(toolCall: ProviderToolCall, context: ToolExe
     fullAccess: context.fullAccess === true,
     userId: null,
     toolTimeoutMs: context.timeoutMs,
+    bashTimeoutMs: context.bashTimeoutMs,
     autoCompactionEnabled: context.autoCompactionEnabled,
     compactionThresholdPercent: context.compactionThresholdPercent,
     contextLength: provider === context.provider ? context.contextLength : undefined,
@@ -228,6 +237,7 @@ function buildResumeRequest(run: SubagentRunRow, context: ToolExecutionContext):
     fullAccess: context.fullAccess === true,
     userId: null,
     toolTimeoutMs: context.timeoutMs,
+    bashTimeoutMs: context.bashTimeoutMs,
     autoCompactionEnabled: context.autoCompactionEnabled,
     compactionThresholdPercent: context.compactionThresholdPercent,
     contextLength: provider === context.provider ? context.contextLength : undefined,

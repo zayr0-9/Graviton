@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 vi.mock('../config/runtimeMode', () => ({ isElectronMode: true }))
+vi.mock('../platform/clientCapabilities', () => ({ isHostClient: true }))
 
 import { isResumableRunsEnabled, setResumableRunsEnabled } from './serverLoopSettings'
 
@@ -25,10 +26,10 @@ describe('resumable run settings', () => {
     expect(isResumableRunsEnabled()).toBe(true)
   })
 
-  it('persists explicit enable and disable values', () => {
+  it('ignores legacy opt-out for the shared host lifetime', () => {
     setResumableRunsEnabled(false)
     expect(localStorage.getItem('ygg.resumableRuns')).toBe('false')
-    expect(isResumableRunsEnabled()).toBe(false)
+    expect(isResumableRunsEnabled()).toBe(true)
 
     setResumableRunsEnabled(true)
     expect(localStorage.getItem('ygg.resumableRuns')).toBe('true')

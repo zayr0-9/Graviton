@@ -357,33 +357,23 @@ describe('source lineage membership validation', () => {
     expect(nextEvents.find(event => event.type === 'user_message_persisted').message.content).toBe('One more follow-up')
   })
 
-  it('inserts one Full access notice after queued input without upgrading the live run', async () => {
+  it('requires acknowledgement of the active access policy before accepting queued input', async () => {
     const events: any[] = []
     let call = 0
-    vi.spyOn(providerRouter, 'generate').mockImplementation(async (_provider, input) => {
+    vi.spyOn(providerRouter, 'generate').mockImplementation(async () => {
       expect((orchestrator as any).inputRuns.get('active').request.fullAccess).toBe(false)
       if (++call === 1) {
-        for (const requestId of ['q1', 'q2']) {
-          orchestrator.submitQueuedMessage('c1', 'active', { requestId, content: requestId,
-            fullAccess: true, fullAccessNotificationId: 'toggle-queued' })
-        }
-      } else {
-        const notices = input.history.filter((row: any) => JSON.parse(row.meta || '{}').kind === 'full_access_change')
-        expect(notices).toHaveLength(1)
-        expect(notices[0].content).toContain('does not change this active run')
-        expect(notices[0].parent_id).toBe(events.find(event => event.type === 'queued_user_message_persisted').message.id)
+        expect(() => orchestrator.submitQueuedMessage('c1', 'active', { requestId: 'elevated', content: 'keep draft',
+          fullAccess: true, fullAccessNotificationId: 'toggle-queued' })).toThrow('access policy')
+        orchestrator.submitQueuedMessage('c1', 'active', { requestId: 'acknowledged', content: 'follow up', fullAccess: false })
       }
       return { content: 'answer' }
     })
     await orchestrator.runMessage({ operation: 'send', conversationId: 'c1', content: 'original',
       provider: 'openaichatgpt', modelName: 'test', streamId: 'active', fullAccess: false }, event => events.push(event))
     expect(call).toBe(2)
-    const accessEvents = events.filter(event => event.type === 'user_message_persisted' &&
-      JSON.parse(event.message.meta || '{}').kind === 'full_access_change')
-    expect(accessEvents).toHaveLength(2) // the second input acknowledges the same durable notice
-    expect(accessEvents[0].message.id).toBe(accessEvents[1].message.id)
-    const queuedEvents = events.filter(event => event.type === 'queued_user_message_persisted')
-    expect(queuedEvents[1].message.parent_id).toBe(accessEvents[0].message.id)
+    expect(events.filter(event => event.type === 'queued_user_message_persisted')).toHaveLength(1)
+    expect(events.filter(event => event.type === 'user_message_persisted' && JSON.parse(event.message.meta || '{}').kind === 'full_access_change')).toHaveLength(0)
   })
 
   it('persists request throughput before completion and isolates consecutive runs', async () => {
@@ -539,7 +529,9 @@ describeIfSqlite('ChatOrchestrator continuation semantics', () => {
 
     expect(user).toBeTruthy()
     expect(assistant).toBeTruthy()
-    expect(assistant.parent_id).toBe(user.id)
+    const modeRow = messages.find(m => m.id === assistant.parent_id)
+    expect(JSON.parse(modeRow.meta).kind).toBe('operation_mode_change')
+    expect(modeRow.parent_id).toBe(user.id)
     expect(events.some(evt => evt.type === 'user_message_persisted')).toBe(true)
     expect(events[events.length - 1].type).toBe('complete')
   })
@@ -728,12 +720,17 @@ describeIfSqlite('ChatOrchestrator continuation semantics', () => {
       () => {}
     )
 
-    expect(providerRouter.calls[0].history.map((message: any) => message.id)).toEqual([summary.id])
+    const replay = providerRouter.calls[0].history
+    expect(replay[0].id).toBe(summary.id)
+    expect(replay.some((message: any) => message.content === 'continue from the summary')).toBe(true)
+    expect(JSON.parse(replay.at(-1).meta).kind).toBe('operation_mode_change')
     expect(providerRouter.calls[0].history[0].note).toBe('__auto_compaction_summary__')
   })
 
   it('turns post-retry OpenAI provider errors into a persisted assistant response', async () => {
-    providerRouter.enqueue(
+    // Main chat retries transient errors twice. Keep every attempt failing;
+    // otherwise this fixture's fallback succeeds on the first retry.
+    for (let attempt = 0; attempt < 3; attempt++) providerRouter.enqueue(
       new Error(
         'ChatGPT backend request failed (429): {"error":{"type":"usage_limit_reached","message":"The usage limit has been reached","resets_at":1782168563}}'
       )
@@ -764,7 +761,8 @@ describeIfSqlite('ChatOrchestrator continuation semantics', () => {
     // R1(c): the error row hangs off the D1 partial when the loop wrote one, and off the
     // user turn when it did not. Either way it is a descendant of this turn.
     const partialIds = assistants.filter((msg: any) => msg.id !== errorRow.id).map((msg: any) => msg.id)
-    expect([user.id, ...partialIds]).toContain(errorRow.parent_id)
+    const modeIds = messages.filter((msg: any) => JSON.parse(msg.meta || '{}').kind === 'operation_mode_change').map((msg: any) => msg.id)
+    expect([user.id, ...modeIds, ...partialIds]).toContain(errorRow.parent_id)
     expect(events.some(evt => evt.type === 'assistant_message_persisted' && evt.message.id === errorRow.id)).toBe(true)
     expect(events.some(evt => evt.type === 'error')).toBe(false)
     // CHANGED DELIBERATELY (was `message: { id: <prose row> }`). `complete.message` is
@@ -811,13 +809,15 @@ describeIfSqlite('ChatOrchestrator continuation semantics', () => {
     )
 
     const messages = statements.getMessagesByConversationId.all('c1') as any[]
-    const users = messages.filter(m => m.role === 'user')
+    const users = messages.filter(m => m.role === 'user' && JSON.parse(m.meta || '{}').kind !== 'operation_mode_change')
     const assistants = messages.filter(m => m.role === 'assistant')
     const newestAssistant = assistants[assistants.length - 1]
 
     expect(users).toHaveLength(1)
     expect(assistants.length).toBe(2)
-    expect(newestAssistant.parent_id).toBe(user.id)
+    const modeRow = messages.find(m => m.id === newestAssistant.parent_id)
+    expect(JSON.parse(modeRow.meta).kind).toBe('operation_mode_change')
+    expect(modeRow.parent_id).toBe(user.id)
     expect(providerRouter.calls[0].userContent).toBe('original question')
   })
 
@@ -845,7 +845,8 @@ describeIfSqlite('ChatOrchestrator continuation semantics', () => {
 
     const messages = statements.getMessagesByConversationId.all('c1') as any[]
     const branchedUser = messages.find(m => m.role === 'user' && m.content === 'new branch prompt')
-    const branchedAssistant = messages.find(m => m.role === 'assistant' && m.parent_id === branchedUser.id)
+    const modeRow = messages.find(m => m.parent_id === branchedUser.id && JSON.parse(m.meta || '{}').kind === 'operation_mode_change')
+    const branchedAssistant = messages.find(m => m.role === 'assistant' && m.parent_id === modeRow?.id)
 
     expect(branchedUser.parent_id).toBe(rootUser.id)
     expect(branchedAssistant).toBeTruthy()
@@ -875,7 +876,8 @@ describeIfSqlite('ChatOrchestrator continuation semantics', () => {
 
     const messages = statements.getMessagesByConversationId.all('c1') as any[]
     const editedUser = messages.find(m => m.role === 'user' && m.content === 'edited user text')
-    const editedAssistant = messages.find(m => m.role === 'assistant' && m.parent_id === editedUser.id)
+    const modeRow = messages.find(m => m.parent_id === editedUser.id && JSON.parse(m.meta || '{}').kind === 'operation_mode_change')
+    const editedAssistant = messages.find(m => m.role === 'assistant' && m.parent_id === modeRow?.id)
 
     expect(editedUser.parent_id).toBeNull()
     expect(editedAssistant).toBeTruthy()
@@ -954,7 +956,7 @@ describeIfSqlite('ChatOrchestrator continuation semantics', () => {
 
     const firstAssistantCalls = JSON.parse(firstAssistant.tool_calls || '[]') as any[]
     expect(firstAssistantCalls[0]?.status).toBe('complete')
-    expect(firstAssistantCalls[0]?.result).toContain('README file contents')
+    expect(firstAssistantBlocks.find(block => block.type === 'tool_result' && block.tool_use_id === 'call-1')?.content).toContain('README file contents')
 
     const finalAssistant = assistantMessages[1]
     expect(finalAssistant.content).toBe('Final answer after tool.')
@@ -1204,7 +1206,7 @@ describeIfSqlite('ChatOrchestrator plan mode tool policy', () => {
     expect(toolNames).toContain('bash')
     expect(toolNames).toContain('powershell')
     expect(toolNames).toContain('read_file')
-    expect(toolNames).not.toContain('edit_file')
+    expect(toolNames).toContain('edit_file') // Visible for an explicit mode-upgrade request; execution remains gated.
     expect(toolNames).not.toContain('mcp__server__tool')
   })
 })

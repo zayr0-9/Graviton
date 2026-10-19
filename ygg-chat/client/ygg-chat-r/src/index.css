@@ -1285,3 +1285,17 @@ html {
     transform: scaleX(1);
   }
 }
+
+/* Native transparency is intentional; browser delivery always has a solid canvas.
+ * Apply to every document layer so negative-z backgrounds cannot expose white. */
+html[data-solid-app-background='true'] {
+  --browser-default-background: #F5F5F4;
+}
+html[data-solid-app-background='true'].dark {
+  --browser-default-background: #0C0A09;
+}
+html[data-solid-app-background='true'],
+html[data-solid-app-background='true'] body,
+html[data-solid-app-background='true'] #root {
+  background-color: var(--browser-app-background, var(--browser-default-background)) !important;
+}

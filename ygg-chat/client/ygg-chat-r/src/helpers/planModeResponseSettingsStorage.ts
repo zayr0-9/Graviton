@@ -1,3 +1,4 @@
+import { getHostExecutionPreferences, saveHostExecutionPreference } from '../services/hostExecutionClient'
 const STORAGE_KEY = 'ygg_plan_mode_response_settings'
 export const PLAN_MODE_RESPONSE_SETTINGS_CHANGE_EVENT = 'ygg-plan-mode-response-settings-change'
 
@@ -32,6 +33,8 @@ export function getDefaultPlanModeResponseSettings(): PlanModeResponseSettings {
 }
 
 export function loadPlanModeResponseSettings(): PlanModeResponseSettings {
+  const host = getHostExecutionPreferences()
+  if (host) return { verbosity: host.planModeVerbosity }
   try {
     if (typeof localStorage === 'undefined') return getDefaultPlanModeResponseSettings()
     const stored = localStorage.getItem(STORAGE_KEY)
@@ -43,8 +46,9 @@ export function loadPlanModeResponseSettings(): PlanModeResponseSettings {
   }
 }
 
-export function savePlanModeResponseSettings(settings: PlanModeResponseSettings): PlanModeResponseSettings {
+export async function savePlanModeResponseSettings(settings: PlanModeResponseSettings): Promise<PlanModeResponseSettings> {
   const normalized = normalizePlanModeResponseSettings(settings)
+  if (getHostExecutionPreferences()) { await saveHostExecutionPreference({ planModeVerbosity: normalized.verbosity }); return normalized }
 
   try {
     if (typeof localStorage !== 'undefined') {

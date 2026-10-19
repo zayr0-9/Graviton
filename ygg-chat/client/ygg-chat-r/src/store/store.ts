@@ -169,16 +169,16 @@ toolJobManager.onWatchCompletion(event => {
     createdAt: event.completedAt,
   }))
 })
-if (typeof window !== 'undefined') void toolJobManager.initialize()
-
-// Initialize custom tools and MCP tools at app startup (before any component renders)
-// This ensures tools are available immediately when Chat component mounts
-Promise.all([
-  store.dispatch(fetchCustomTools() as any),
-  store.dispatch(fetchMcpTools() as any),
-]).then(() => {
-  store.dispatch(fetchTools() as any)
-})
+let servicesStarted = false
+export function startStoreServices(): void {
+  if (servicesStarted) return
+  servicesStarted = true
+  void toolJobManager.initialize()
+  void Promise.all([
+    store.dispatch(fetchCustomTools() as any),
+    store.dispatch(fetchMcpTools() as any),
+  ]).then(() => { store.dispatch(fetchTools() as any) })
+}
 
 // Store factory for testing with preloaded state
 export const setupStore = (preloadedState?: Partial<RootState>) => {

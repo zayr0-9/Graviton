@@ -2,6 +2,15 @@
 // Embedded local SQLite server for dual-sync in Electron mode
 // This server prefers port 3002 and falls back to available local ports.
 
+import { opaqueMutationFence } from './nativeClientFence.js'
+import { allowsClientUpgrade } from './clientOriginPolicy.js'
+import { DECISION_RECEIPT_SCHEMA, installDecisionReceiptSchema } from './headlessServer/persistence/decisionReceiptRepo.js'
+import { TerminalService } from './terminal/terminalService.js'
+import { registerTerminalRoutes } from './routes/terminalRoutes.js'
+import { OPERATION_RECEIPT_SCHEMA } from './headlessServer/persistence/operationReceiptRepo.js'
+import { CLIENT_CHANGE_SCHEMA, installClientChangeSchema } from './clientChangeSchema.js'
+import { registerClientChangeRoutes } from './routes/clientChangeRoutes.js'
+import { installMessageRevisions } from './messageRevisionSchema.js'
 import { claudeBridge } from './tools/claudeBridge.js'
 import { stopAuth } from './auth/runtime.js'
 import { cancelAppLogin } from './auth/appLogin.js'
@@ -37,7 +46,9 @@ import { canFallbackToLocalExecution } from './tools/runtime/toolRuntimeSandbox.
 // Tool imports
 // Individual built-in tool handler imports moved to
 // server/server/builtinToolRegistry.ts with the registrations.
-import { registerHeadlessServerRoutes } from './headlessServer/index.js'
+import { registerHeadlessServerRoutes, stopHeadlessSessions } from './headlessServer/index.js'
+import { registerBrowserUiRoutes } from './routes/browserUiRoutes.js'
+import { setServerInternalOrigin } from './serverHost.js'
 import { attachChatErrorCode } from './headlessServer/providers/providerErrorFormatter.js'
 import {
   handleLspWebSocketUpgrade,
@@ -483,6 +494,31 @@ const SCHEMA_MIGRATIONS: SchemaMigration[] = [
       if (!columns.some(column => column.name === 'meta')) database.exec('ALTER TABLE subagent_messages ADD COLUMN meta TEXT')
     },
   },
+  {
+    version: 7,
+    name: 'message_revisions',
+    up: database => installMessageRevisions(database),
+  },
+  {
+    version: 8,
+    name: 'client_change_outbox',
+    up: database => installClientChangeSchema(database),
+  },
+  {
+    version: 9,
+    name: 'operation_receipts',
+    up: database => database.exec(OPERATION_RECEIPT_SCHEMA),
+  },
+  {
+    version: 10,
+    name: 'decision_receipts',
+    up: database => installDecisionReceiptSchema(database),
+  },
+  {
+    version: 11,
+    name: 'decision_receipt_kinds',
+    up: database => installDecisionReceiptSchema(database),
+  },
 ]
 
 /**
@@ -679,6 +715,7 @@ function initializeLocalDatabase(dbPath: string) {
   db.exec(`
     CREATE TABLE IF NOT EXISTS messages (
       id TEXT PRIMARY KEY,
+      revision INTEGER NOT NULL DEFAULT 0,
       conversation_id TEXT NOT NULL,
       parent_id TEXT,
       lineage_id TEXT,
@@ -852,6 +889,9 @@ function initializeLocalDatabase(dbPath: string) {
   // AFTER the CREATE TABLE ... blocks above so every table exists, and BEFORE the
   // prepared statements below (which reference the migrated columns). See
   // runSchemaMigrations / SCHEMA_MIGRATIONS for the ordered list.
+  db.exec(CLIENT_CHANGE_SCHEMA)
+  db.exec(OPERATION_RECEIPT_SCHEMA)
+  db.exec(DECISION_RECEIPT_SCHEMA)
   runSchemaMigrations(db)
 
   db.exec(`
@@ -1467,7 +1507,8 @@ function initializeWebSocketServer(serverInstance: any) {
   wss = new WebSocketServer({ noServer: true })
 
   serverInstance.on('upgrade', (request: any, socket: any, head: Buffer) => {
-    const url = new URL(request.url || '/', `http://${request.headers.host || '127.0.0.1'}`)
+    if (!allowsClientUpgrade(request)) { socket.write('HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n'); socket.destroy(); return }
+    const url = new URL(request.url || '/', 'http://host.invalid')
 
     if (url.pathname === '/ide-context') {
       wss!.handleUpgrade(request, socket, head, ws => {
@@ -1643,6 +1684,8 @@ function initializeWebSocketServer(serverInstance: any) {
   })
 }
 
+let browserTerminals: TerminalService | null = null
+
 // Setup Express app
 function setupServer() {
   const corsPolicy = tryGetServerConfig()?.cors ?? { mode: 'permissive' as const, allowedOrigins: [] }
@@ -1664,6 +1707,7 @@ function setupServer() {
       exposedHeaders: ['Authorization'],
     })
   )
+  app.use('/api', opaqueMutationFence)
   app.use(express.json({ limit: '25mb' }))
 
   // Health check
@@ -1674,12 +1718,15 @@ function setupServer() {
   if (db) {
     registerToolsRoutes(app, db, statements)
     registerHeadlessServerRoutes(app, { db, statements, orchestrator: toolOrchestrator })
+    registerClientChangeRoutes(app, db)
   }
   registerProxyRoutes(app)
   registerLocalOperationsRoutes(app)
   registerSkillRoutes(app)
   registerMcpRoutes(app)
   registerLspRoutes(app)
+  browserTerminals = new TerminalService()
+  registerTerminalRoutes(app, browserTerminals)
 
   // OpenAI ChatGPT OAuth endpoints + callback-server lifecycle live in
   // routes/openaiOAuthRoutes.ts.
@@ -1734,6 +1781,7 @@ function setupServer() {
   // Conversation + message CRUD routes live in routes/conversationRoutes.ts.
   // Registered after the note-search routes so /search* wins over /:id.
   registerConversationRoutes(app, { db: db!, statements })
+  registerBrowserUiRoutes(app, tryGetServerConfig()?.browserUiDir)
 
   // ============================================================================
   // CLAUDE CODE AGENT ENDPOINTS
@@ -2019,6 +2067,8 @@ export async function startLocalServer(
       try {
         const { serverInstance, actualPort } = await listenOnPort(candidatePort, host)
         server = serverInstance
+        const internalHost = host === '0.0.0.0' ? '127.0.0.1' : host === '::' ? '[::1]' : host.includes(':') ? `[${host}]` : host
+        setServerInternalOrigin(`http://${internalHost}:${actualPort}`)
 
         // Initialize WebSocket Server after HTTP server is running
         initializeWebSocketServer(server)
@@ -2066,6 +2116,9 @@ export async function startLocalServer(
 
 // Stop the server
 export async function stopLocalServer(): Promise<void> {
+  stopHeadlessSessions()
+  browserTerminals?.shutdown()
+  browserTerminals = null
   // Suppress asynchronous completion delivery before cancelling owned CLI processes.
   watchService.shutdown()
   await claudeBridge.shutdown()

@@ -14,6 +14,8 @@
  * before replay: conversationId, streamType, and the parent message id.
  */
 
+import { isBrowserClient } from '../../platform/clientCapabilities'
+const inflightStorage = () => isBrowserClient ? sessionStorage : localStorage
 import type { WatchContinuationOwner } from './chatTypes'
 
 export interface InflightStreamRecord {
@@ -23,7 +25,11 @@ export interface InflightStreamRecord {
   parentMessageId: string | null
   /** Whether terminal replay may advance the singleton primary conversation path. */
   updatePath?: boolean
+  /** Current-document intent only; a reload must not reclaim view ownership. */
+  selectionRevision?: number
+  clientId?: string
   watchContinuation?: WatchContinuationOwner
+  followSelectedTip?: boolean
   /** Highest server event sequence projected by this renderer. */
   lastSeq?: number
 }
@@ -33,7 +39,7 @@ const STORAGE_KEY = 'ygg.inflightStreams'
 function readAll(): Record<string, InflightStreamRecord> {
   try {
     if (typeof localStorage === 'undefined') return {}
-    const raw = localStorage.getItem(STORAGE_KEY)
+    const raw = inflightStorage().getItem(STORAGE_KEY)
     if (!raw) return {}
     const parsed = JSON.parse(raw)
     return parsed && typeof parsed === 'object' ? (parsed as Record<string, InflightStreamRecord>) : {}
@@ -45,7 +51,7 @@ function readAll(): Record<string, InflightStreamRecord> {
 function writeAll(map: Record<string, InflightStreamRecord>): void {
   try {
     if (typeof localStorage === 'undefined') return
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(map))
+    inflightStorage().setItem(STORAGE_KEY, JSON.stringify(map))
   } catch {
     // ignore (storage unavailable / quota)
   }

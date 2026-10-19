@@ -1,30 +1,23 @@
+import { readCachedHostPrompts, saveHostPrompts } from '../services/hostPromptClient'
+import { newClientId } from './clientId'
 import { LOCAL_AUTH_USER_ID } from '../config/runtimeMode'
-import type { UserSystemPromptCached } from '../hooks/useQueries'
+import type { HostPrompt } from '../../../../shared/hostPrompts'
 
 export type UserSystemPromptStorageMode = 'cloud' | 'local'
+export type UserSystemPromptRecord = HostPrompt
 
-export type UserSystemPromptRecord = UserSystemPromptCached & {
-  storage_mode: UserSystemPromptStorageMode
-}
-
-const STORAGE_KEY = 'ygg_user_system_prompts'
 const LOCAL_OWNER_ID = LOCAL_AUTH_USER_ID || 'local'
 
 export const USER_SYSTEM_PROMPTS_STORAGE_CHANGE_EVENT = 'ygg-user-system-prompts-storage-change'
 
-const makeId = (): string => {
-  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
-    return `local-${crypto.randomUUID()}`
-  }
-  return `local-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`
-}
+const makeId = (): string => `local-${newClientId()}`
 
 const normalizePrompt = (prompt: Partial<UserSystemPromptRecord> | null | undefined): UserSystemPromptRecord | null => {
   if (!prompt || typeof prompt !== 'object') return null
 
   const id = typeof prompt.id === 'string' ? prompt.id.trim() : ''
-  const name = typeof prompt.name === 'string' ? prompt.name.trim() : ''
-  const content = typeof prompt.content === 'string' ? prompt.content.trim() : ''
+  const name = typeof prompt.name === 'string' ? prompt.name : ''
+  const content = typeof prompt.content === 'string' ? prompt.content : ''
 
   if (!id || !name || !content) return null
 
@@ -77,44 +70,38 @@ const emitChange = (prompts: UserSystemPromptRecord[]) => {
   }
 }
 
-export const loadLocalUserSystemPrompts = (): UserSystemPromptRecord[] => {
-  try {
-    if (typeof localStorage === 'undefined') return []
-    const stored = localStorage.getItem(STORAGE_KEY)
-    if (!stored) return []
-    return normalizePrompts(JSON.parse(stored))
-  } catch {
-    return []
-  }
-}
+export const loadLocalUserSystemPrompts = (): UserSystemPromptRecord[] =>
+  normalizePrompts(readCachedHostPrompts()?.prompts ?? [])
 
-export const saveLocalUserSystemPrompts = (prompts: UserSystemPromptRecord[]): UserSystemPromptRecord[] => {
+export const saveLocalUserSystemPrompts = async (prompts: UserSystemPromptRecord[]): Promise<UserSystemPromptRecord[]> => {
   const normalized = normalizePrompts(prompts)
-  try {
-    if (typeof localStorage !== 'undefined') {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(normalized))
-    }
-    emitChange(normalized)
-  } catch (error) {
-    console.error('[UserSystemPromptStorage] Failed to save local prompts:', error)
-  }
+  await saveHostPrompts(normalized)
+  emitChange(normalized)
   return normalized
 }
 
-export const createLocalUserSystemPrompt = ({
+export const createLocalUserSystemPrompt = async ({
+  id = makeId(),
   name,
   content,
   description = null,
   isDefault = false,
 }: {
+  id?: string
   name: string
   content: string
   description?: string | null
   isDefault?: boolean
-}): UserSystemPromptRecord => {
+}): Promise<UserSystemPromptRecord> => {
+  const existing = loadLocalUserSystemPrompts()
+  const acknowledged = existing.find(prompt => prompt.id === id)
+  if (acknowledged) {
+    if (acknowledged.name !== name.trim() || acknowledged.content !== content.trim()) throw new Error('This prompt save was already accepted with different content.')
+    return acknowledged
+  }
   const now = new Date().toISOString()
   const prompt: UserSystemPromptRecord = {
-    id: makeId(),
+    id,
     owner_id: LOCAL_OWNER_ID,
     name: name.trim(),
     content: content.trim(),
@@ -125,14 +112,13 @@ export const createLocalUserSystemPrompt = ({
     storage_mode: 'local',
   }
 
-  const existing = loadLocalUserSystemPrompts()
   const next = prompt.is_default ? existing.map(item => ({ ...item, is_default: false })) : existing
-  saveLocalUserSystemPrompts([...next, prompt])
+  await saveLocalUserSystemPrompts([...next, prompt])
 
   return prompt
 }
 
-export const setDefaultLocalUserSystemPrompt = (id: string): UserSystemPromptRecord | null => {
+export const setDefaultLocalUserSystemPrompt = async (id: string): Promise<UserSystemPromptRecord | null> => {
   let updatedPrompt: UserSystemPromptRecord | null = null
   const prompts = loadLocalUserSystemPrompts().map(prompt => {
     const isDefault = prompt.id === id
@@ -141,11 +127,11 @@ export const setDefaultLocalUserSystemPrompt = (id: string): UserSystemPromptRec
     return next
   })
 
-  saveLocalUserSystemPrompts(prompts)
+  await saveLocalUserSystemPrompts(prompts)
   return updatedPrompt
 }
 
-export const clearDefaultLocalUserSystemPrompt = (): UserSystemPromptRecord[] => {
+export const clearDefaultLocalUserSystemPrompt = (): Promise<UserSystemPromptRecord[]> => {
   const prompts = loadLocalUserSystemPrompts().map(prompt => ({ ...prompt, is_default: false }))
   return saveLocalUserSystemPrompts(prompts)
 }

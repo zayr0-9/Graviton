@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 vi.mock('../../utils/api', async original => ({ ...await original<typeof import('../../utils/api')>(),
   buildLocalApiUrl: async (path: string) => `http://localhost/api${path}`,
 }))
+vi.mock('./runAdmissionClient', () => ({ getAdmissionEpoch: async () => 'epoch' }))
 import { enqueueUserMessage } from './chatActions'
 import reducer from './chatSlice'
 import type { RootState } from '../../store/store'

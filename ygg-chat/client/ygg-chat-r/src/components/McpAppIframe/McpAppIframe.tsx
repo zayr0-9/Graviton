@@ -1,3 +1,5 @@
+import { isolateBrowserAppHtml } from '../../utils/browserAppIsolation'
+import { isBrowserClient } from '../../platform/clientCapabilities'
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { localApi, environment } from '../../utils/api'
 import {
@@ -469,14 +471,14 @@ export const McpAppIframe: React.FC<McpAppIframeProps> = ({
   return (
     <iframe
       ref={iframeRef}
-      srcDoc={html}
+      srcDoc={isBrowserClient ? isolateBrowserAppHtml(html) : html}
       className={className ?? 'w-full rounded-lg bg-white'}
       style={{ border: 'none', height }}
       title='MCP App'
       allow={allowAttr}
       allowFullScreen
       referrerPolicy='strict-origin-when-cross-origin'
-      sandbox='allow-scripts allow-same-origin'
+      sandbox={isBrowserClient ? 'allow-scripts' : 'allow-scripts allow-same-origin'}
     />
   )
 }

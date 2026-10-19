@@ -20,6 +20,8 @@ import {
   type HtmlToolRecord,
 } from '../../hooks/useQueries'
 import { buildCachedLocalApiUrl, environment, localApi } from '../../utils/api'
+import { isolateBrowserAppHtml } from '../../utils/browserAppIsolation'
+import { isBrowserClient } from '../../platform/clientCapabilities'
 import { attachMessageBridge as attachSharedMessageBridge } from '../../utils/iframeBridge'
 import {
   buildCspValue,
@@ -507,7 +509,7 @@ const configureIframeElement = (iframe: HTMLIFrameElement) => {
     'fullscreen; accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share'
   )
   iframe.setAttribute('referrerpolicy', 'strict-origin-when-cross-origin')
-  iframe.setAttribute('sandbox', 'allow-scripts allow-same-origin')
+  iframe.setAttribute('sandbox', isBrowserClient ? 'allow-scripts' : 'allow-scripts allow-same-origin')
 }
 
 // Uses shared iframeBridge for consistent IPC support
@@ -534,12 +536,12 @@ const createIframeRecord = (
   iframe.className = getIframeClassName(fullHeight)
   const customTool = toolName ? getToolByName(toolName) : undefined
   const src = customTool?.isCustom && customTool.ui?.entry
-    ? buildCachedLocalApiUrl(`/headless/custom-tools/ui/${encodeURIComponent(customTool.name)}/`)
+    ? buildCachedLocalApiUrl(`/headless/custom-tools/ui/${encodeURIComponent(customTool.name)}/${isBrowserClient ? '?browserApp=1' : ''}`)
     : null
   if (src) {
     iframe.src = src
   } else {
-    iframe.srcdoc = html
+    iframe.srcdoc = isBrowserClient ? isolateBrowserAppHtml(html) : html
   }
   const record: IframeRecord = {
     iframe,
@@ -561,7 +563,7 @@ const configureMcpIframeElement = (iframe: HTMLIFrameElement, className?: string
   iframe.className = className ?? 'w-full h-full bg-white'
   iframe.setAttribute('allow', BASE_ALLOW)
   iframe.setAttribute('referrerpolicy', 'strict-origin-when-cross-origin')
-  iframe.setAttribute('sandbox', 'allow-scripts allow-same-origin allow-forms allow-popups allow-presentation')
+  iframe.setAttribute('sandbox', isBrowserClient ? 'allow-scripts allow-presentation' : 'allow-scripts allow-same-origin allow-forms allow-popups allow-presentation')
 }
 
 const createMcpIframeRecord = (payload: {
@@ -1213,7 +1215,7 @@ export const HtmlIframeRegistryProvider: React.FC<{
       const nextSrc = (() => {
         const customTool = nextToolName ? getToolByName(nextToolName) : undefined
         return customTool?.isCustom && customTool.ui?.entry
-          ? buildCachedLocalApiUrl(`/headless/custom-tools/ui/${encodeURIComponent(customTool.name)}/`)
+          ? buildCachedLocalApiUrl(`/headless/custom-tools/ui/${encodeURIComponent(customTool.name)}/${isBrowserClient ? '?browserApp=1' : ''}`)
           : null
       })()
       const nextEntry: HtmlIframeHtmlEntry = {
@@ -1426,18 +1428,18 @@ export const HtmlIframeRegistryProvider: React.FC<{
         record.toolName = meta?.toolName ?? record.toolName ?? null
         const customTool = record.toolName ? getToolByName(record.toolName) : undefined
         const nextSrc = customTool?.isCustom && customTool.ui?.entry
-          ? buildCachedLocalApiUrl(`/headless/custom-tools/ui/${encodeURIComponent(customTool.name)}/`)
+          ? buildCachedLocalApiUrl(`/headless/custom-tools/ui/${encodeURIComponent(customTool.name)}/${isBrowserClient ? '?browserApp=1' : ''}`)
           : null
         if (record.src !== nextSrc) {
           record.src = nextSrc
           if (nextSrc) {
             record.iframe.src = nextSrc
           } else {
-            record.iframe.srcdoc = html
+            record.iframe.srcdoc = isBrowserClient ? isolateBrowserAppHtml(html) : html
           }
         }
         if (!record.src && record.html !== html) {
-          record.iframe.srcdoc = html
+          record.iframe.srcdoc = isBrowserClient ? isolateBrowserAppHtml(html) : html
           record.html = html
         } else {
           record.html = html
@@ -1457,7 +1459,7 @@ export const HtmlIframeRegistryProvider: React.FC<{
       const nextSrc = (() => {
         const customTool = nextToolName ? getToolByName(nextToolName) : undefined
         return customTool?.isCustom && customTool.ui?.entry
-          ? buildCachedLocalApiUrl(`/headless/custom-tools/ui/${encodeURIComponent(customTool.name)}/`)
+          ? buildCachedLocalApiUrl(`/headless/custom-tools/ui/${encodeURIComponent(customTool.name)}/${isBrowserClient ? '?browserApp=1' : ''}`)
           : null
       })()
       const nextEntry: HtmlIframeHtmlEntry = {
@@ -1528,7 +1530,7 @@ export const HtmlIframeRegistryProvider: React.FC<{
       record.uiMeta = resourceUi
       const allowAttr = buildIframeAllow(resourceUi?.permissions as McpUiPermissions | undefined, BASE_ALLOW)
       record.iframe.setAttribute('allow', allowAttr)
-      record.iframe.srcdoc = htmlWithCsp
+      record.iframe.srcdoc = isBrowserClient ? isolateBrowserAppHtml(htmlWithCsp) : htmlWithCsp
       record.appReady = false
       record.toolInputSent = false
       record.lastResultHash = null
@@ -1902,13 +1904,13 @@ export const HtmlIframeSlot: React.FC<{
     return (
       <div className={className}>
         <iframe
-          srcDoc={html}
+          srcDoc={isBrowserClient ? isolateBrowserAppHtml(html) : html}
           className={getIframeClassName(fullHeight)}
           style={{ border: 'none' }}
           title='HTML Preview'
           allow='fullscreen; accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share'
           referrerPolicy='strict-origin-when-cross-origin'
-          sandbox='allow-scripts allow-same-origin allow-forms allow-popups allow-presentation'
+          sandbox={isBrowserClient ? 'allow-scripts allow-presentation' : 'allow-scripts allow-same-origin allow-forms allow-popups allow-presentation'}
         />
       </div>
     )

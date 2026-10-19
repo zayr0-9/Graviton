@@ -1,3 +1,4 @@
+import { HOST_SKILLS_CHANGED } from '../../services/hostCatalogClient'
 import { useActivityStepLabels, saveActivityStepLabels } from '../../helpers/activityStepLabelsSettings'
 import { useQueryClient } from '@tanstack/react-query'
 import mammoth from 'mammoth'
@@ -656,11 +657,12 @@ export const SettingsPane: React.FC<SettingsPaneProps> = ({ open, onClose }) => 
     }
   }, [hooksExpanded, fetchManagedHooks, isWebMode])
 
-  // Fetch skills when section is expanded
+  // An already-open section observes host changes without installation/reload effects.
   useEffect(() => {
-    if (skillsExpanded) {
-      fetchInstalledSkills()
-    }
+    const refresh = (event: Event) => { if (skillsExpanded) setInstalledSkills((event as CustomEvent).detail) }
+    window.addEventListener(HOST_SKILLS_CHANGED, refresh)
+    if (skillsExpanded) void fetchInstalledSkills()
+    return () => window.removeEventListener(HOST_SKILLS_CHANGED, refresh)
   }, [skillsExpanded, fetchInstalledSkills])
 
   // Fetch saved themes when custom theme library section is opened

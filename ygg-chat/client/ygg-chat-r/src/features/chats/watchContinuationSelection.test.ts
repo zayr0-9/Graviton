@@ -212,7 +212,7 @@ describe('watcher reattachment wiring', () => {
     const h = setup(undefined, null)
     updateInflightStreamCursor('successor', 42)
     vi.mocked(runServerReattach).mockImplementationOnce(async (request, deps) => {
-      expect(request.fromSeq).toBe(42)
+      expect(request.fromSeq).toBe(0) // Rebuilt state must bootstrap, not reuse a persisted cursor.
       expect(h.get().streaming.byId.successor.watchContinuation).toEqual({ lineageId: 'branch', parentMessageId: 'tail' })
       for (const event of [userEvent(), answerEvent(), completeEvent()]) {
         for (const action of projectServerEvent(event, { streamId: request.streamId, conversationId: request.conversationId })) {

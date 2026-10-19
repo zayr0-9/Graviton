@@ -112,7 +112,10 @@ export const PlanMdToolView: React.FC<PlanMdToolViewProps> = ({ args, result, cl
     setIsSaving(true)
     setSaveError(null)
     try {
+      const current = await localApi.get<{ content: string; contentHash: string }>(`/local/file-content?path=${encodeURIComponent(path)}`, { cache: 'no-store' })
+      if (current.content !== savedContent) throw new Error('This plan changed on the host. Your draft is preserved; compare with the current file before saving.')
       const response = await localApi.post<{ saved?: boolean }>('/local/file-content', {
+        expectedHash: current.contentHash,
         path,
         content: submittedContent,
       })

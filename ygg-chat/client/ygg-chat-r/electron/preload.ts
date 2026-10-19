@@ -38,6 +38,16 @@ contextBridge.exposeInMainWorld('electronAPI', {
       }
     },
   },
+  executionPreferences: {
+    read: () => ipcRenderer.invoke('execution-preferences:read'),
+    save: (request: unknown) => ipcRenderer.invoke('execution-preferences:save', request),
+    importLegacy: (raw: unknown) => ipcRenderer.invoke('execution-preferences:import', raw),
+  },
+  prompts: {
+    read: () => ipcRenderer.invoke('prompts:read'),
+    save: (revision: number, prompts: unknown, identity: { hostId: string; epoch: string }) => ipcRenderer.invoke('prompts:save', revision, prompts, identity),
+    importLegacy: (prompts: unknown) => ipcRenderer.invoke('prompts:import', prompts),
+  },
   storage: {
     get: (key: string) => ipcRenderer.invoke('storage:get', key),
     set: (key: string, value: any) => ipcRenderer.invoke('storage:set', key, value),

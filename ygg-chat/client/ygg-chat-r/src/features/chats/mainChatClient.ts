@@ -20,6 +20,10 @@
  * `envelope.detail`, never for the screen. See shared/chatErrors + localChatErrors.
  */
 
+import { newClientId } from '../../helpers/clientId'
+import { hydrateSnapshotEvent } from '../../services/snapshotPayloadClient'
+import { admitRun } from './runAdmissionClient'
+import { isHostClient } from '../../platform/clientCapabilities'
 import { agentRunPreviewActions } from './agentRunPreviewSlice'
 import { isFullAccessNotification } from '../../../../../shared/accessNotifications'
 import { parseMessageMeta } from '../../../../../shared/contextInjection'
@@ -72,6 +76,8 @@ export interface RunServerChatLoopDeps {
 }
 
 export interface RunServerChatLoopResult {
+  queuedStreamId?: string
+  queuedParentId?: string | null
   messageId: MessageId | null
   userMessage: Message | null
   /** True when the terminal `complete` carried a provider error (message still rendered). */
@@ -177,6 +183,8 @@ interface StreamAccumulator {
   /** SSE frames that failed to parse. A run that ends having dropped frames has a
    * hole in what the user saw, which is `history_truncated`, not a generic failure. */
   droppedFrames: number
+  needsBootstrap?: boolean
+  epoch?: string
 }
 
 function newAccumulator(startSeq = 0): StreamAccumulator {
@@ -249,9 +257,66 @@ function makeHandleEvent(
 ): (event: ServerStreamEvent) => void {
   return (event: ServerStreamEvent): void => {
     if (!event || typeof event.type !== 'string') return
+    if (event.type === 'bootstrap') {
+      const snapshot = event.snapshot
+      if (snapshot.kind !== 'main' || snapshot.schema !== 1 || snapshot.streamId !== ctx.streamId ||
+        snapshot.conversationId !== ctx.conversationId || !Number.isSafeInteger(snapshot.stateSeq) ||
+        snapshot.persisted.some(ref => !Number.isSafeInteger(ref.revision) || ref.row?.id !== ref.id || ref.row?.revision !== ref.revision)) {
+        throw createChatStreamError(buildChatErrorEnvelope('history_truncated'))
+      }
+      const rows = new Map(snapshot.persisted.map(ref => [ref.id, ref.row]))
+      dispatch(chatSliceActions.streamBootstrapReset({ streamId: ctx.streamId, conversationId: String(ctx.conversationId) }))
+      dispatch(chatSliceActions.decisionRequestsClearedForStream(ctx.streamId))
+      for (const id of snapshot.deletedMessageIds ?? []) dispatch(chatSliceActions.messageDeleted(id))
+      for (const ref of snapshot.persisted) dispatch(chatSliceActions.messageAdded(normalizeServerMessage(ref.row)))
+      Object.assign(acc, newAccumulator())
+      const install = makeHandleEvent(acc, { ...ctx, userMessageArtifacts: undefined }, 'branch', dispatch, undefined, undefined, undefined)
+      for (const projected of snapshot.events) {
+        // Referenced rows are mutable; use the exact captured revision rather than
+        // an earlier event's pre-tool/pre-lineage copy of that same row.
+        const id = 'message' in projected && projected.message?.id
+        const row = id ? rows.get(id) : undefined
+        if (id && !row) {
+          // A deleted row is not resurrected from an older event payload.
+          if (projected.type === 'complete') install({ ...projected, message: null } as ServerStreamEvent)
+          continue
+        }
+        if (projected.type === 'context_compaction' && projected.summaryMessage?.id) {
+          const summary = rows.get(projected.summaryMessage.id)
+          if (!summary) continue
+          install({ ...projected, summaryMessage: summary })
+        } else install((row ? { ...projected, message: row } : projected) as ServerStreamEvent)
+      }
+      dispatch(chatSliceActions.decisionRequestsClearedForStream(ctx.streamId))
+      for (const prompt of snapshot.pendingDecisions) install(prompt)
+      dispatch(chatSliceActions.streamBootstrapReconciled({ streamId: ctx.streamId,
+        messageIds: snapshot.events.flatMap(projected => {
+          if (projected.type === 'context_compaction' && projected.summaryMessage?.id) return [projected.summaryMessage.id]
+          return 'message' in projected && projected.message?.id ? [projected.message.id] : []
+        }) }))
+      acc.lastSeq = snapshot.stateSeq
+      acc.epoch = snapshot.epoch
+      acc.needsBootstrap = false
+      if (onUserMessagePersisted && acc.userMessage) {
+        onUserMessagePersisted()
+        if (operation === 'send') dispatch(chatSliceActions.optimisticMessageCleared())
+        else if (operation === 'edit') dispatch(chatSliceActions.optimisticBranchMessageCleared())
+      }
+      onMessagePersisted?.()
+      onSeq?.(acc.lastSeq, event)
+      return
+    }
+    if (event.type === 'observer_resync_required') {
+      acc.needsBootstrap = true
+      throw createChatStreamError(buildChatErrorEnvelope('history_truncated'))
+    }
     // Track the replay cursor. Present only on the resumable (session) path.
-    const nextSeq = typeof event.seq === 'number' && event.seq > acc.lastSeq ? event.seq : null
-    if (nextSeq !== null) acc.lastSeq = nextSeq
+    if (typeof event.seq === 'number' && event.seq <= acc.lastSeq) return
+    const nextSeq = typeof event.seq === 'number' ? event.seq : null
+    if (nextSeq !== null && (!Number.isSafeInteger(nextSeq) || nextSeq !== acc.lastSeq + 1)) {
+      acc.needsBootstrap = true
+      throw createChatStreamError(buildChatErrorEnvelope('history_truncated'))
+    }
     // (a) project to Redux, in order.
     for (const action of projectServerEvent(event, ctx)) {
       // Capture normalized, run-correlated rows even when the visible chat reducer
@@ -290,7 +355,7 @@ function makeHandleEvent(
         const requestId = parseMessageMeta(event.message.meta)?.requestId
         if (typeof requestId === 'string') acknowledgeFullAccessNotification(String(ctx.conversationId), requestId)
         onMessagePersisted?.()
-        if (nextSeq !== null) onSeq?.(nextSeq, event)
+        if (nextSeq !== null) { acc.lastSeq = nextSeq; onSeq?.(nextSeq, event) }
         return
       }
       acc.userMessage = normalizeServerMessage(event.message)
@@ -304,7 +369,7 @@ function makeHandleEvent(
       else if (operation === 'edit') dispatch(chatSliceActions.optimisticBranchMessageCleared())
       // 'branch' uses no optimistic bubble.
       onMessagePersisted?.()
-    } else if (event.type === 'assistant_message_persisted' || event.type === 'operation_mode_changed' || event.type === 'queued_user_message_persisted' || event.type === 'compaction_control_persisted') {
+    } else if (event.type === 'assistant_message_persisted' || event.type === 'operation_mode_changed' || event.type === 'queued_user_message_persisted' || event.type === 'compaction_control_persisted' || event.type === 'context_injection_persisted') {
       // Intermediate + re-emitted post-tool assistant rows: already projected to Redux
       // above; let the caller refresh derived views (Heimdall) so nodes appear per-turn.
       onMessagePersisted?.()
@@ -327,6 +392,10 @@ function makeHandleEvent(
         : buildChatErrorEnvelope('session_expired', { detail: raw, status: 401 })
       acc.streamError = raw
     } else if (event.type === 'error') {
+      if (event.error === 'stream_buffer_truncated') {
+        acc.needsBootstrap = true
+        throw createChatStreamError(buildChatErrorEnvelope('history_truncated'))
+      }
       // Contract: `terminal` absent === true. An explicit `false` is a failure the server
       // loop recovered from — it is projected, but it must not end the run.
       const terminal = event.terminal !== false
@@ -346,7 +415,7 @@ function makeHandleEvent(
     }
     // Checkpoint only after projection and side effects succeed. Pending decision frames
     // are filtered by the caller so reload can replay them and rebuild their dialogs.
-    if (nextSeq !== null) onSeq?.(nextSeq, event)
+    if (nextSeq !== null) { acc.lastSeq = nextSeq; onSeq?.(nextSeq, event) }
   }
 }
 
@@ -360,13 +429,14 @@ function makeHandleEvent(
  *  - dropped-frame accounting. A frame that fails to parse used to vanish silently;
  *    it is now counted (and logged once) so the run can end as `history_truncated`.
  */
-async function pump(res: Response, acc: StreamAccumulator, handleEvent: (event: ServerStreamEvent) => void): Promise<void> {
+async function pump(res: Response, acc: StreamAccumulator, handleEvent: (event: ServerStreamEvent) => void, signal?: AbortSignal): Promise<void> {
   const reader = res.body!.getReader()
   const decoder = new TextDecoder()
   const streamIdleTimeoutMs = getStreamIdleTimeout()
   let buffer = ''
+  let detachedForSnapshot = false
 
-  const processLine = (line: string): void => {
+  const processLine = async (line: string): Promise<void> => {
     const trimmed = line.trim()
     if (!trimmed.startsWith('data:')) return // heartbeat/comment frames: not projected, but they DID rearm the watchdog
     const payload = trimmed.slice(5).trim()
@@ -386,9 +456,17 @@ async function pump(res: Response, acc: StreamAccumulator, handleEvent: (event: 
       }
       return
     }
-    handleEvent(event)
+    try {
+      if (event.type === 'snapshot_reference' || event.type === 'event_reference' || ((event.type === 'bootstrap' || event.type === 'child_bootstrap') && event.snapshot.eventsReference)) {
+        detachedForSnapshot = true
+        await reader.cancel()
+      }
+      handleEvent(await hydrateSnapshotEvent(event, signal))
+    }
+    catch (error) { acc.needsBootstrap = true; throw error }
   }
 
+  try {
   while (true) {
     let idleTimer: ReturnType<typeof setTimeout> | undefined
     const idle = new Promise<typeof IDLE_TIMEOUT>(resolve => {
@@ -403,7 +481,6 @@ async function pump(res: Response, acc: StreamAccumulator, handleEvent: (event: 
 
     if (step === IDLE_TIMEOUT) {
       // The abandoned read() is released by cancelling the reader; we never read again.
-      void Promise.resolve(reader.cancel()).catch(() => {})
       const raw = `No SSE activity for ${streamIdleTimeoutMs}ms (heartbeat interval is 15000ms)`
       throw createChatStreamError(classifyLocalChatError(new Error(raw), { phase: 'stream', code: 'stream_stalled' }), raw)
     }
@@ -413,9 +490,15 @@ async function pump(res: Response, acc: StreamAccumulator, handleEvent: (event: 
     buffer += decoder.decode(value, { stream: true })
     const lines = buffer.split('\n')
     buffer = lines.pop() ?? ''
-    for (const line of lines) processLine(line)
+    for (const line of lines) {
+      await processLine(line)
+      if (detachedForSnapshot) return // reconnect from S after hydration, not bootstrap again
+    }
   }
-  if (buffer.trim()) processLine(buffer)
+  if (buffer.trim()) await processLine(buffer)
+  } finally {
+    void Promise.resolve(reader.cancel()).catch(() => {})
+  }
 }
 
 /** Delay that resolves early (does not reject) when the signal aborts. */
@@ -477,7 +560,7 @@ async function resubscribeUntilTerminal(
 
     let res: Response
     try {
-      const url = await buildLocalApiUrl(`/streams/${encodeURIComponent(streamId)}?fromSeq=${acc.lastSeq}`)
+      const url = await buildLocalApiUrl(`/streams/${encodeURIComponent(streamId)}?fromSeq=${acc.lastSeq}${acc.needsBootstrap ? '&bootstrap=1' : ''}`)
       res = await fetch(url, { signal })
     } catch (error) {
       if (isAbortError(error)) return outcome
@@ -500,8 +583,9 @@ async function resubscribeUntilTerminal(
       continue // transient → retry
     }
 
+    const priorSeq = acc.lastSeq
     try {
-      await pump(res, acc, handleEvent)
+      await pump(res, acc, handleEvent, signal)
     } catch (error) {
       if (isAbortError(error)) return outcome
       const envelope = getChatStreamErrorEnvelope(error) ?? classifyLocalChatError(error, { phase: 'reattach', streamId })
@@ -515,6 +599,7 @@ async function resubscribeUntilTerminal(
       continue // dropped again → retry with a longer backoff
     }
     if (acc.sawTerminal || acc.streamError) return outcome
+    if (!acc.needsBootstrap && acc.lastSeq > priorSeq) attempt = 0 // Hydrated progress is not a failed reconnect attempt.
     // else dropped again → loop retries with a longer backoff
   }
   return outcome
@@ -558,10 +643,26 @@ export async function runServerChatLoop(
     })
   }
 
-  const url = await buildLocalApiUrl(path)
+  const useAdmission = isHostClient && operation === 'send'
+  let admission: Awaited<ReturnType<typeof admitRun>> | undefined
+  if (useAdmission) {
+    try { admission = await admitRun(conversationId, request, signal) }
+    catch (error) {
+      const mismatch = error as { code?: string; fullAccess?: boolean }
+      if (mismatch.code !== 'configuration_mismatch' || typeof mismatch.fullAccess !== 'boolean' ||
+        !window.confirm(`This active run uses ${mismatch.fullAccess ? 'Full access' : 'restricted workspace access'}. Queue this input under that policy? Your current setting will not change.`)) throw error
+      admission = await admitRun(conversationId, { ...request, operationId: newClientId(), fullAccess: mismatch.fullAccess }, signal)
+    }
+    if (admission.disposition === 'queued' || admission.streamId !== streamId) {
+      dispatch(chatSliceActions.optimisticMessageCleared())
+      onUserMessagePersisted?.()
+      return { messageId: null, userMessage: null, providerError: false, queuedStreamId: admission.streamId, queuedParentId: admission.parentId }
+    }
+  }
+  const url = await buildLocalApiUrl(admission ? `/streams/${encodeURIComponent(streamId)}?bootstrap=1` : path)
   let res: Response
   try {
-    res = await fetch(url, {
+    res = admission ? await fetch(url, { signal }) : await fetch(url, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify(request),
@@ -587,7 +688,7 @@ export async function runServerChatLoop(
    */
   let dropFailure: { envelope: ChatErrorEnvelope; raw?: string } | null = null
   try {
-    await pump(res, acc, handleEvent)
+    await pump(res, acc, handleEvent, signal)
   } catch (error) {
     if (isAbortError(error) || signal.aborted) throw error
     const envelope = getChatStreamErrorEnvelope(error) ?? classifyLocalChatError(error, { phase: 'stream', streamId })
@@ -710,7 +811,7 @@ export async function runServerReattach(
   const handleEvent = makeHandleEvent(acc, ctx, operation, dispatch, onMessagePersisted, onSeq)
 
   try {
-    const url = await buildLocalApiUrl(`/streams/${encodeURIComponent(streamId)}?fromSeq=${fromSeq}`)
+    const url = await buildLocalApiUrl(`/streams/${encodeURIComponent(streamId)}?fromSeq=${fromSeq}${fromSeq === 0 ? '&bootstrap=1' : ''}`)
     const res = await fetch(url, { signal })
     if (res.status === 410) {
       // Not an error the user caused, but not a no-op either: this reply never finished
@@ -735,7 +836,9 @@ export async function runServerReattach(
         envelope: classifyLocalChatError(new Error(raw), { phase: 'reattach', status: res.status, streamId }),
       }
     }
-    await pump(res, acc, handleEvent)
+    try { await pump(res, acc, handleEvent, signal) } catch (error) {
+      if (!acc.needsBootstrap) throw error
+    }
     // A mid-replay drop (still not terminal) → keep resubscribing.
     if (!acc.sawTerminal && !acc.streamError && !signal.aborted && isResumableRunsEnabled()) {
       try {

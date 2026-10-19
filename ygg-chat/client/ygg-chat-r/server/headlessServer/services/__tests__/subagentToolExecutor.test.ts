@@ -645,3 +645,12 @@ describe('createSubagentManagerExecutor', () => {
     expect(list.subagents).toEqual([])
   })
 })
+
+it('does not send a parent ChatGPT model to a configured LM Studio child', async () => {
+  const runForTool = vi.fn(async (_request: HeadlessSubagentStreamRequest) => 'done')
+  const execute = createSubagentDispatchExecutor({ leafExecutor: vi.fn(), subagentRunner: { runForTool } })
+  await execute({ id: 'configured-child', name: 'subagent', arguments: { prompt: 'Scout' } }, context({
+    subagentDefaults: { defaultProvider: 'LM Studio', defaultModel: null, enabledTools: ['read_file'], orchestratorEnabled: true, maxTurns: 42, reasoningEffort: 'medium' },
+  }))
+  expect(runForTool.mock.calls[0][0]).toMatchObject({ provider: 'lmstudio', modelName: process.env.LMSTUDIO_MODEL || 'local-model', maxTurns: 42, tools: ['read_file'] })
+})

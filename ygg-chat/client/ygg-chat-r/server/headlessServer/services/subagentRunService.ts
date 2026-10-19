@@ -1,3 +1,4 @@
+import { installChildRunSnapshot } from './childRunSnapshot.js'
 import type {
   HeadlessStreamEvent,
   HeadlessSubagentStreamEvent,
@@ -526,7 +527,8 @@ export class SubagentRunService {
 
     // Session keyed by the child streamId so GET /api/streams/:streamId can replay
     // this run live to the transcript viewer (created before the first publish).
-    this.runSessions?.create(subStreamId, request.conversationId)
+    const childSession = this.runSessions?.create(subStreamId, request.conversationId)
+    if (childSession) installChildRunSnapshot(childSession, runId, () => this.runRepo.getRunWithMessages(runId))
 
     const startedEvent: HeadlessSubagentStreamEvent = {
       type: 'started',
@@ -663,7 +665,8 @@ export class SubagentRunService {
 
     // Fresh session for the resumed attempt's NEW streamId. The renderer re-targets
     // by re-reading the run's latest streamId (see the by-tool-call route).
-    this.runSessions?.create(subStreamId, request.conversationId)
+    const childSession = this.runSessions?.create(subStreamId, request.conversationId)
+    if (childSession) installChildRunSnapshot(childSession, runId, () => this.runRepo.getRunWithMessages(runId))
 
     const startedEvent: HeadlessSubagentStreamEvent = {
       type: 'started',
@@ -721,6 +724,8 @@ export class SubagentRunService {
     controllable = false
   ): Promise<void> {
     const { runId, subStreamId, userMessage, provider, modelName, operationMode, maxTurns, tools } = prepared
+    const childSignal = this.runSessions?.get(subStreamId)?.signal
+    if (childSignal) signal = AbortSignal.any([signal, childSignal])
 
     // On resume we continue the persisted transcript instead of starting a fresh
     // single user turn, and the remaining turn budget excludes turns already spent.
@@ -837,6 +842,7 @@ export class SubagentRunService {
           fullAccess: request.fullAccess === true,
           operationMode,
           toolTimeoutMs: request.toolTimeoutMs,
+          bashTimeoutMs: request.bashTimeoutMs,
           maxTurns: effectiveMaxTurns,
           signal,
           railwaySessionId: `subagent:${runId}`,

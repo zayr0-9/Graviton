@@ -19,6 +19,7 @@
  */
 
 import express from 'express'
+import { getServerInternalOrigin } from '../../serverHost.js'
 import { mergeLocalRunMetadata, mergeLocalUsageBlocks } from '../../../../../shared/runStatisticsMetadata.js'
 import type { Express, Request } from 'express'
 import type { RailwayClient } from '../services/railwayClient.js'
@@ -238,7 +239,7 @@ export function registerGatewayRoutes(app: Express, deps: RegisterGatewayRoutesD
 
   const fetchImpl = deps.fetchImpl || fetch
 
-  const localOrigin = (req: Request): string => deps.localOrigin || `http://${req.get('host')}`
+  const localOrigin = (_req: Request): string => deps.localOrigin || getServerInternalOrigin()
 
   async function localLeg(req: Request, path: string, init?: RequestInit): Promise<LegResult> {
     try {

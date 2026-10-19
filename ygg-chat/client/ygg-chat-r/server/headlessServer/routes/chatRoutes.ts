@@ -1,3 +1,7 @@
+import { randomUUID } from 'node:crypto'
+import { hostEpoch } from '../../hostEpoch.js'
+import type { RunAdmissionService } from '../services/runAdmissionService.js'
+import { createRunSubscriber } from '../stream/runSubscriber.js'
 import type { Express, Request, Response } from 'express'
 import type { ChatErrorCode, ChatErrorEnvelope } from '../../../../../shared/chatErrors.js'
 import { buildChatErrorEnvelope } from '../../../../../shared/chatErrors.js'
@@ -67,6 +71,7 @@ function sendJsonError(
 }
 
 interface RegisterChatRoutesDeps {
+  admissions?: RunAdmissionService
   orchestrator: HeadlessChatOrchestrator
   /** @deprecated Ignored; retained for older callers during migration. */
   compactionService?: unknown
@@ -83,21 +88,18 @@ interface RegisterChatRoutesDeps {
 
 /** Adapt an Express SSE response to the registry's transport-agnostic sink. */
 function makeSubscriber(res: Response): RunSubscriber {
-  const r = res as unknown as { writableEnded?: boolean; destroyed?: boolean }
-  return {
-    send: frame => {
-      if (r.writableEnded || r.destroyed) return
-      // seq rides alongside the event so a reconnecting client can resume from a cursor.
-      writeSseEvent(res, { ...(frame.event as Record<string, unknown>), seq: frame.seq })
-    },
-    end: () => {
-      if (!r.writableEnded) res.end()
-    },
-  }
+  return createRunSubscriber(res)
 }
 
+function validSelectedFiles(value: unknown): boolean {
+  return value == null || (Array.isArray(value) && value.length <= 100 && JSON.stringify(value).length <= 2_000_000 && value.every(file =>
+    file && typeof file === 'object' && !Array.isArray(file) && typeof file.path === 'string' && file.path.length <= 4096 &&
+    typeof file.relativePath === 'string' && file.relativePath.length <= 4096 && typeof file.contents === 'string' &&
+    Number.isSafeInteger(file.contentLength) && file.contentLength >= 0 && file.contentLength <= 2_000_000))
+}
 function buildHeadlessMessageRequest(req: Request, operation: HeadlessChatOperation): HeadlessMessageRequest {
   const body = req.body ?? {}
+  if (!validSelectedFiles(body.selectedFiles ?? body.selected_files)) throw new Error('Invalid selected file context')
 
   const headerUserId = req.headers['x-user-id']
   const userIdFromHeader = Array.isArray(headerUserId) ? headerUserId[0] : headerUserId
@@ -234,8 +236,36 @@ async function runSseOrchestrator(
   req: Request,
   res: Response,
   operation: HeadlessChatOperation,
-  opts: { runSessions?: RunSessionRegistry; resumableRuns?: boolean }
+  opts: { runSessions?: RunSessionRegistry; resumableRuns?: boolean; admissions?: RunAdmissionService }
 ): Promise<void> {
+  if (opts.admissions && opts.runSessions) {
+    // Compatibility POSTs use the same admission/receipt/session owner. Missing
+    // IDs are new intent; clients that need retry safety must supply operationId.
+    const request = buildHeadlessMessageRequest(req, operation)
+    request.operationId ||= request.streamId || randomUUID()
+    request.streamId ||= randomUUID()
+    try {
+      const receipt = opts.admissions.admit(request, typeof req.body?.epoch === 'string' ? req.body.epoch : hostEpoch)
+      if (receipt.status !== 'accepted') { res.status(409).json(receipt); return }
+      const session = opts.runSessions.get(receipt.streamId)
+      if (!session) { res.status(410).json({ error: 'Run no longer retained', receipt }); return }
+      initializeSse(res)
+      const stop = startSseHeartbeat(res)
+      const subscriber = makeSubscriber(res)
+      res.once('close', () => { stop(); session.detach(subscriber) })
+      const attached = session.attach(subscriber, 0)
+      if (attached.status === 'truncated') {
+        writeSseEvent(res, { type: 'error', error: 'stream_buffer_truncated', terminal: true,
+          envelope: buildChatErrorEnvelope('history_truncated') })
+        stop(); subscriber.end()
+      }
+      return
+    } catch (error) {
+      if (!res.headersSent) res.status(409).json({ error: error instanceof Error ? error.message : String(error), code: (error as any)?.code, fullAccess: (error as any)?.fullAccess })
+      else res.end()
+      return
+    }
+  }
   const body = req.body ?? {}
   const streamId = body.streamId ?? body.stream_id
   const useSession = Boolean(opts.resumableRuns && opts.runSessions && streamId)
@@ -317,11 +347,16 @@ async function runSseOrchestrator(
       stopHeartbeat()
       existingSession.detach(subscriber)
     })
-    existingSession.attach(subscriber)
+    const attached = existingSession.attach(subscriber)
+    if (attached.status === 'truncated') {
+      writeSseEvent(res, { type: 'error', error: 'stream_buffer_truncated', terminal: true,
+        envelope: buildChatErrorEnvelope('history_truncated', { action: { kind: 'reload_conversation', label: 'Reload conversation' } }) })
+      subscriber.end()
+    }
     return
   }
 
-  const session = registry.create(normalizedStreamId, conversationId || null)
+  const session = registry.createMain(normalizedStreamId, conversationId)
   res.on('close', () => {
     stopHeartbeat()
     session.detach(subscriber) // keep the run alive; only release this socket
@@ -412,8 +447,7 @@ function sendStreamGone(res: Response, registry: RunSessionRegistry, streamId: s
  */
 export function launchQueuedSuccessor(orchestrator: HeadlessChatOrchestrator, runSessions: RunSessionRegistry, request: HeadlessMessageRequest): void {
   if (runSessions.get(request.streamId!)) return
-  const session = runSessions.create(request.streamId!, request.conversationId)
-  session.detach() // Unattended launches must obey the existing detached-run reaper.
+  const session = runSessions.createMain(request.streamId!, request.conversationId)
   void orchestrator.runMessage(request, event => session.publish(event), session.signal).catch(error => {
     if (!orchestratorAlreadyPublished(error)) session.publish(buildRouteErrorEvent(error, request))
   })
@@ -421,6 +455,59 @@ export function launchQueuedSuccessor(orchestrator: HeadlessChatOrchestrator, ru
 
 export function registerChatRoutes(app: Express, deps: RegisterChatRoutesDeps): void {
   const { orchestrator, compactionService, decisionBroker, runSessions, resumableRuns } = deps
+  decisionBroker?.subscribe(event => runSessions?.get(event.streamId)?.publish(event))
+
+  app.get('/api/conversations/:id/admissions/:operationId', (req, res) => {
+    const receipt = deps.admissions?.lookup(String(req.params.operationId))
+    if (!receipt || receipt.conversationId !== req.params.id) { res.status(404).json({ error: 'Unknown operation' }); return }
+    res.setHeader('Cache-Control', 'no-store')
+    res.json(receipt)
+  })
+  app.post('/api/conversations/:id/admissions', (req, res) => {
+    if (!deps.admissions) { res.status(501).json({ error: 'Admission unavailable' }); return }
+    const body = req.body ?? {}
+    if (typeof body.operationId !== 'string' || !body.operationId || body.operationId.length > 128 ||
+      typeof body.epoch !== 'string' || typeof body.content !== 'string' || body.content.length > 200000 ||
+      [body.streamId, body.parentId, body.lineageId].some(value => value != null && (typeof value !== 'string' || value.length > 256))) {
+      res.status(400).json({ error: 'Valid epoch, operationId, content and string IDs are required' }); return
+    }
+    try {
+      const receipt = deps.admissions.admit(buildHeadlessMessageRequest(req, 'send'), body.epoch)
+      res.status(receipt.status === 'accepted' ? 200 : 409).json(receipt)
+    } catch (error) {
+      res.status(409).json({ error: error instanceof Error ? error.message : String(error), code: (error as any)?.code, fullAccess: (error as any)?.fullAccess })
+    }
+  })
+
+  app.get('/api/host/runs', (_req, res) => {
+    res.setHeader('Cache-Control', 'no-store')
+    res.json({ runs: (runSessions?.list() ?? []).filter(session => session.kind === 'main' && !session.isTerminal()).map(session => ({
+      streamId: session.streamId, conversationId: session.conversationId, lineageId: session.lineageId,
+      parentId: session.parentId, createdAt: session.createdAt, effectiveConfiguration: session.effectiveConfiguration,
+    })) })
+  })
+
+  app.get('/api/conversations/:id/live-runs', (req, res) => {
+    res.setHeader('Cache-Control', 'no-store')
+    res.json({ runs: (runSessions?.list(String(req.params.id)) ?? []).filter(session => session.kind === 'main' && !session.isTerminal()).map(session => ({
+      streamId: session.streamId, conversationId: session.conversationId, status: session.status, seq: session.latestSeq,
+      lineageId: session.lineageId, parentId: session.parentId, createdAt: session.createdAt, effectiveConfiguration: session.effectiveConfiguration,
+    })) })
+  })
+
+  app.get('/api/streams/:streamId/snapshots/:snapshotId/parts/:part', (req, res) => {
+    res.setHeader('Cache-Control', 'no-store')
+    const session = runSessions?.get(String(req.params.streamId))
+    const part = /^\d+$/.test(String(req.params.part)) ? Number(req.params.part) : NaN
+    const payload = session?.snapshotPayloads.readPart(String(req.params.snapshotId), part)
+    if (!payload) { res.status(410).json({ error: 'Snapshot expired; request a fresh bootstrap' }); return }
+    res.type('application/octet-stream').send(payload)
+  })
+
+  app.get('/api/streams/:streamId/decisions', (req, res) => {
+    if (!decisionBroker) { res.status(501).json({ error: 'Decision broker not configured' }); return }
+    res.json(decisionBroker.snapshot(String(req.params.streamId)))
+  })
 
   // Pause/resume: the renderer answers a permission_required / clarify_required
   // event by resolving the paused decision on the ALREADY-OPEN SSE stream. Plain
@@ -439,9 +526,9 @@ export function registerChatRoutes(app: Express, deps: RegisterChatRoutesDeps): 
     } catch (error) { res.status(409).json({ error: error instanceof Error ? error.message : String(error) }) }
   })
   app.post('/api/conversations/:id/streams/:streamId/queue', (req, res) => {
-    const { requestId, content, attachmentsBase64, fullAccess, fullAccessNotificationId } = req.body ?? {}
+    const { requestId, content, attachmentsBase64, selectedFiles, fullAccess, fullAccessNotificationId } = req.body ?? {}
     if (typeof requestId !== 'string' || !requestId || requestId.length > 128 || typeof content !== 'string' || !content.trim() ||
-      content.length > 200_000 || (fullAccess != null && typeof fullAccess !== 'boolean') ||
+      content.length > 200_000 || !validSelectedFiles(selectedFiles) || (fullAccess != null && typeof fullAccess !== 'boolean') ||
       (fullAccessNotificationId != null && (typeof fullAccessNotificationId !== 'string' || !fullAccessNotificationId || fullAccessNotificationId.length > 128)) ||
       (attachmentsBase64 != null && (!Array.isArray(attachmentsBase64) || attachmentsBase64.length > 20 ||
         attachmentsBase64.some((attachment: any) => !attachment || typeof attachment.dataUrl !== 'string' ||
@@ -451,8 +538,14 @@ export function registerChatRoutes(app: Express, deps: RegisterChatRoutesDeps): 
     }
     try {
       if (!orchestrator.submitQueuedMessage || !runSessions || !resumableRuns) throw new Error('Queued messages require resumable runs')
+      if (deps.admissions) {
+        const result = deps.admissions.enqueue(String(req.params.id), String(req.params.streamId),
+          { requestId, content, attachmentsBase64, selectedFiles, fullAccess, fullAccessNotificationId },
+          typeof req.body?.epoch === 'string' ? req.body.epoch : hostEpoch)
+        res.json(result); return
+      }
       const result = orchestrator.submitQueuedMessage(String(req.params.id), String(req.params.streamId), {
-        requestId, content, attachmentsBase64, fullAccess, fullAccessNotificationId,
+        requestId, content, attachmentsBase64, selectedFiles, fullAccess, fullAccessNotificationId,
       })
       if (result.restart) {
         const request = result.restart
@@ -463,7 +556,10 @@ export function registerChatRoutes(app: Express, deps: RegisterChatRoutesDeps): 
       } else {
         res.json({ snapshot: result.snapshot, streamId: result.snapshot?.streamId })
       }
-    } catch (error) { res.status(409).json({ error: error instanceof Error ? error.message : String(error) }) }
+    } catch (error) {
+      res.status(409).json({ error: error instanceof Error ? error.message : String(error),
+        code: (error as any)?.code, fullAccess: (error as any)?.fullAccess })
+    }
   })
 
   app.post('/api/conversations/:id/operation-mode', (req, res) => {
@@ -527,7 +623,7 @@ export function registerChatRoutes(app: Express, deps: RegisterChatRoutesDeps): 
         'No pending decision for that stream/toolCall',
         'decision_not_delivered',
         { action: { kind: 'reload_conversation', label: 'Reload conversation' } },
-        { success: false }
+        { success: false, settlement: decisionBroker.receipt(String(streamId), String(toolCallId)) }
       )
     }
   })
@@ -563,7 +659,13 @@ export function registerChatRoutes(app: Express, deps: RegisterChatRoutesDeps): 
       session.detach(subscriber)
     })
 
-    const result = session.attach(subscriber, fromSeq)
+    let result
+    try { result = req.query.bootstrap === '1' ? session.attachSnapshot(subscriber) : session.attach(subscriber, fromSeq) }
+    catch {
+      writeSseEvent(res, { type: 'error', error: 'Run bootstrap unavailable', terminal: true,
+        envelope: buildChatErrorEnvelope('history_truncated') })
+      stopHeartbeat(); subscriber.end(); return
+    }
     if (result.status === 'truncated') {
       // The client's cursor predates the retained buffer — it must reload from storage.
       // `error` keeps the machine token for logs; the envelope is the user-facing form.
@@ -606,10 +708,10 @@ export function registerChatRoutes(app: Express, deps: RegisterChatRoutesDeps): 
   app.post('/api/conversations/:id/compact', async (req, res) => {
     req.body = { ...req.body, manualCompaction: true,
       parentId: req.body?.parentId ?? req.body?.parentMessageId, content: '/compact' }
-    await runSseOrchestrator(orchestrator, req, res, 'send', { runSessions, resumableRuns })
+    await runSseOrchestrator(orchestrator, req, res, 'send', { runSessions, resumableRuns, admissions: deps.admissions })
   })
 
-  const sseOpts = { runSessions, resumableRuns }
+  const sseOpts = { runSessions, resumableRuns, admissions: deps.admissions }
 
   app.post('/api/conversations/:id/messages', async (req, res) => {
     await runSseOrchestrator(orchestrator, req, res, 'send', sseOpts)

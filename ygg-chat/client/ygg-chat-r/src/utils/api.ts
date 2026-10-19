@@ -1,6 +1,8 @@
 // utils/api.ts
 import { ConversationId, StorageMode } from '../../../../shared/types'
 import { isCommunityMode } from '../config/runtimeMode'
+import { isHostClient, isBrowserClient } from '../platform/clientCapabilities'
+import { getHostRuntime, verifyBrowserHost } from '../services/hostRuntimeBootstrap'
 import { attachLocalChatErrorCode } from '../features/chats/localChatErrors'
 import { logClientError } from '../services/clientTelemetry'
 
@@ -189,7 +191,7 @@ function isElectronRuntimeWithSyncIpc(): boolean {
  * on Electron specifically.
  */
 export function isLocalServerRuntime(): boolean {
-  return environment === 'electron' || environment === 'standalone'
+  return isHostClient
 }
 
 /**
@@ -198,6 +200,7 @@ export function isLocalServerRuntime(): boolean {
  * standalone browser target -> loopback default (local development).
  */
 function resolveBrowserFallbackOrigin(): string {
+  if (isBrowserClient && typeof window !== 'undefined') return window.location.origin
   if (CONFIGURED_LOCAL_SERVER_ORIGIN) return CONFIGURED_LOCAL_SERVER_ORIGIN
   if (environment === 'standalone' && typeof window !== 'undefined') {
     const sameOrigin = normalizeOrigin(window.location.origin)
@@ -318,6 +321,7 @@ export function getCachedLocalServerOrigin(): string {
  * is the hook a caller uses to refuse or warn instead of writing blind.
  */
 export function isLocalServerOriginVerified(): boolean {
+  if (isBrowserClient) return Boolean(getHostRuntime())
   if (lastLocalServerStatusProbeFailed) return false
   return Boolean(cachedLocalServerStatus?.localServerRunning && normalizeOrigin(cachedLocalServerStatus?.localServerUrl))
 }
@@ -341,6 +345,7 @@ export function getCachedLocalApiBase(): string {
 }
 
 export async function buildLocalApiUrl(endpoint: string): Promise<string> {
+  if (isBrowserClient) await verifyBrowserHost()
   return `${await getLocalApiBase()}${normalizeEndpoint(endpoint)}`
 }
 
@@ -361,7 +366,7 @@ export function buildCachedLocalWebSocketUrl(pathname: string): string {
 // app and the standalone browser target talk to the local Ygg server.
 export function shouldUseLocalApi(storageMode?: StorageMode, env?: string): boolean {
   const runtimeEnv = env || environment
-  const localServerCapable = runtimeEnv === 'electron' || runtimeEnv === 'standalone'
+  const localServerCapable = runtimeEnv === 'electron' || runtimeEnv === 'standalone' || runtimeEnv === 'browser-client'
   if (isCommunityMode && localServerCapable) return true
   return storageMode === 'local' && localServerCapable
 }

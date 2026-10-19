@@ -1,3 +1,14 @@
+import { registerHostAppBridgeRoutes } from '../routes/hostAppBridgeRoutes.js'
+import { join } from 'node:path'
+import { getServerTempDir } from '../serverHost.js'
+import { configureSnapshotScratch, disposeSnapshotScratch } from './services/snapshotPayloadStore.js'
+import { DecisionReceiptRepo } from './persistence/decisionReceiptRepo.js'
+import { applyHostProviderEnvironment, readHostExecutionPreferences } from '../hostExecutionStore.js'
+import { RunSnapshotProjector } from './services/runSnapshotProjector.js'
+import { OperationReceiptRepo } from './persistence/operationReceiptRepo.js'
+import { RunAdmissionService } from './services/runAdmissionService.js'
+import { hostEpoch } from '../hostEpoch.js'
+import { reconcileHeadlessRuns } from './persistence/reconcileHeadlessRuns.js'
 import type Database from 'better-sqlite3'
 import type { Express } from 'express'
 import { customToolRegistry } from '../tools/customToolLoader.js'
@@ -11,6 +22,7 @@ import { registerChatRoutes, launchQueuedSuccessor } from './routes/chatRoutes.j
 import { registerCrudRoutes } from './routes/crudRoutes.js'
 import { registerProviderAuthRoutes } from './routes/providerAuthRoutes.js'
 import { registerMobileUiRoutes } from './routes/mobileUiRoutes.js'
+import { registerHostRuntimeRoutes } from '../routes/hostRuntimeRoutes.js'
 import { registerCustomToolsRoutes } from './routes/customToolsRoutes.js'
 import { registerCustomToolRpcRoutes } from './routes/customToolRpcRoutes.js'
 import { registerEphemeralGenerateRoutes } from './routes/ephemeralGenerateRoutes.js'
@@ -205,6 +217,8 @@ const createOrchestratorToolExecutor = (toolOrchestrator: OrchestratorLike): Too
         })()
       : toolCall.arguments ?? {}
 
+  if ((toolCall.name === 'bash' || toolCall.name === 'powershell') && parsedArguments.timeoutMs === undefined && context.bashTimeoutMs !== undefined)
+    parsedArguments.timeoutMs = Math.min(180000, Math.max(1000, context.bashTimeoutMs))
   const signal = context.signal
   if (signal?.aborted) {
     const abortError = new Error('Tool execution aborted')
@@ -287,20 +301,60 @@ export function registerHeadlessServerRoutes(app: Express, deps: HeadlessServerR
 
   // One shared pause/resume registry across the chat orchestrator (which pauses the
   // loop) and the POST /api/resume route (which resolves the paused decision).
-  const decisionBroker = new DecisionBroker()
+  applyHostProviderEnvironment()
+  reconcileHeadlessRuns(deps.db, hostEpoch)
+  const decisionBroker = new DecisionBroker(new DecisionReceiptRepo(deps.db))
 
   // Detach/reattach registry (gateway.resumableRuns, default ON). A chat run's lifetime
   // is owned by its RunSession rather than the SSE socket, so route changes and renderer
   // reloads detach instead of aborting. Explicit false retains the legacy
   // disconnect==abort path and leaves the reaper stopped.
+  const operationReceipts = new OperationReceiptRepo(deps.db)
+  configureSnapshotScratch(join(getServerTempDir(), 'snapshots'))
   const runSessions = new RunSessionRegistry()
-  if (gatewayFlags.resumableRuns) runSessions.startReaper()
+  activeRegistries.add(runSessions)
+  const readSnapshotMessage = deps.db.prepare('SELECT * FROM messages WHERE id=? AND conversation_id=?')
+  runSessions.setMainSessionFactory(session => {
+    const projector = new RunSnapshotProjector(session.snapshotPayloads)
+    session.setProjector(event => projector.apply(event))
+    session.setEventObserver(event => {
+      if (event.type === 'message_queue_updated') {
+        for (const item of event.snapshot.items) {
+          if (item.status === 'delivered' || item.status === 'failed' || item.status === 'cancelled')
+            operationReceipts.settleQueue(item.requestId, item.status === 'delivered' ? 'completed' : item.status)
+        }
+      }
+      if (event.type === 'complete' || (event.type === 'error' && event.terminal !== false)) {
+        operationReceipts.finishStream(session.streamId, session.signal.aborted ? 'cancelled'
+          : event.type === 'complete' && !event.providerError ? 'completed' : 'failed')
+      }
+    })
+    session.setSnapshotProvider(() => {
+      // better-sqlite3 reads and capture are synchronous: no mutation can interleave
+      // between these exact rows, the decision map and sequence S.
+      const referencedIds = projector.referencedMessageIds()
+      const rows = referencedIds.map(id => readSnapshotMessage.get(id, session.conversationId)).filter(Boolean) as any[]
+      const present = new Set(rows.map(row => row.id))
+      const snapshot = projector.snapshot({ epoch: hostEpoch, streamId: session.streamId,
+        conversationId: session.conversationId!, stateSeq: session.latestSeq, effectiveConfiguration: session.effectiveConfiguration,
+        persisted: rows.map(row => ({ id: row.id, revision: row.revision, row })),
+        deletedMessageIds: referencedIds.filter(id => !present.has(id)),
+        pendingDecisions: decisionBroker.snapshot(session.streamId).pending })
+      return snapshot
+    })
+  })
+  if (gatewayFlags.resumableRuns) reaperStops.add(runSessions.startReaper())
 
   registerCrudRoutes(app, deps)
   registerProviderAuthRoutes(app, { tokenStore })
   registerMobileUiRoutes(app)
+  registerHostRuntimeRoutes(app, () => {
+    deps.db.prepare('INSERT OR IGNORE INTO users (id, username) VALUES (?, ?)')
+      .run('a7c485cb-99e7-4cf2-82a9-6e23b55cdfc3', 'community-user')
+  })
   registerCustomToolsRoutes(app)
   registerCustomToolRpcRoutes(app)
+  registerHostAppBridgeRoutes(app)
   registerCapabilityRoutes(app, { getDefaultTools: resolveDefaultInferenceTools })
   registerEphemeralGenerateRoutes(app, { tokenStore })
   registerLineageRoutes(app, deps)
@@ -425,9 +479,21 @@ export function registerHeadlessServerRoutes(app: Express, deps: HeadlessServerR
     })
   }
   registerChatRoutes(app, {
+    admissions: new RunAdmissionService({ epoch: hostEpoch, receipts: operationReceipts,
+      orchestrator: chatOrchestrator, sessions: runSessions, executionDefaults: () => readHostExecutionPreferences().values }),
     orchestrator: chatOrchestrator,
     decisionBroker,
     runSessions,
     resumableRuns: gatewayFlags.resumableRuns,
   })
+}
+
+const activeRegistries = new Set<RunSessionRegistry>()
+const reaperStops = new Set<() => void>()
+export function stopHeadlessSessions(): void {
+  for (const stop of reaperStops) stop()
+  reaperStops.clear()
+  for (const registry of activeRegistries) registry.disposeAll()
+  activeRegistries.clear()
+  disposeSnapshotScratch()
 }

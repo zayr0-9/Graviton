@@ -1,6 +1,7 @@
 // Provider Settings Storage
 // Simple localStorage-based persistence for provider visibility and default selection
 
+import { getHostExecutionPreferences, getHostExecutionRevision, saveHostExecutionPreference } from '../services/hostExecutionClient'
 import { normalizeCompactionThreshold } from '../../../../shared/compaction'
 import { isCommunityMode } from '../config/runtimeMode'
 
@@ -17,7 +18,9 @@ export const DEFAULT_LMSTUDIO_BASE_URL = import.meta.env.VITE_LMSTUDIO_BASE || '
 
 export type OpenAIPromptCacheRetention = 'in_memory' | '24h'
 
+const HOST_PROVIDER_BASE_REVISION = Symbol('host-provider-base-revision')
 export interface ProviderSettings {
+  [HOST_PROVIDER_BASE_REVISION]?: number
   /** Whether the provider selector is visible in the chat UI */
   showProviderSelector: boolean
   /** Default provider to use when selector is hidden (provider name string) */
@@ -145,7 +148,9 @@ function syncProviderSettingsToElectronStore(settings: ProviderSettings): void {
 export function loadProviderSettings(): ProviderSettings {
   try {
     const stored = localStorage.getItem(STORAGE_KEY)
-    const parsed = stored ? (JSON.parse(stored) as Partial<ProviderSettings>) : DEFAULT_SETTINGS
+    const local = stored ? (JSON.parse(stored) as Partial<ProviderSettings>) : DEFAULT_SETTINGS
+    const host = getHostExecutionPreferences()
+    const parsed = host ? { ...host.provider, showProviderSelector: local.showProviderSelector } : local
 
     const resolvedDefaultProvider = parsed.defaultProvider ?? DEFAULT_SETTINGS.defaultProvider
     const communityDefaultProvider =
@@ -154,6 +159,7 @@ export function loadProviderSettings(): ProviderSettings {
         : COMMUNITY_FALLBACK_PROVIDER
 
     return {
+      ...(host ? { [HOST_PROVIDER_BASE_REVISION]: getHostExecutionRevision('provider') } : {}),
       showProviderSelector: isCommunityMode ? true : (parsed.showProviderSelector ?? DEFAULT_SETTINGS.showProviderSelector),
       defaultProvider: isCommunityMode ? communityDefaultProvider : resolvedDefaultProvider,
       openRouterTemperature: normalizeOpenRouterTemperature(parsed.openRouterTemperature),
@@ -176,7 +182,7 @@ export function loadProviderSettings(): ProviderSettings {
 /**
  * Save provider settings to localStorage and emit change event
  */
-export function saveProviderSettings(settings: ProviderSettings): void {
+export async function saveProviderSettings(settings: ProviderSettings): Promise<void> {
   const normalized: ProviderSettings = {
     ...settings,
     openRouterTemperature: normalizeOpenRouterTemperature(settings.openRouterTemperature),
@@ -187,6 +193,18 @@ export function saveProviderSettings(settings: ProviderSettings): void {
     openAiPromptCacheRetention: normalizeOpenAiPromptCacheRetention(settings.openAiPromptCacheRetention),
   }
 
+  if (getHostExecutionPreferences()) {
+    const { showProviderSelector, [HOST_PROVIDER_BASE_REVISION]: revision, ...provider } = normalized
+    if (!Number.isSafeInteger(revision)) throw new Error('Reload provider settings before saving; the edit base is missing.')
+    const current = getHostExecutionPreferences()!.provider
+    if ((Object.keys(current) as Array<keyof typeof current>).some(key => provider[key] !== current[key]))
+      await saveHostExecutionPreference({ provider }, revision)
+    normalized[HOST_PROVIDER_BASE_REVISION] = getHostExecutionRevision('provider')
+    settings[HOST_PROVIDER_BASE_REVISION] = getHostExecutionRevision('provider')
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({ showProviderSelector }))
+    window.dispatchEvent(new CustomEvent(PROVIDER_SETTINGS_CHANGE_EVENT, { detail: normalized }))
+    return
+  }
   try {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(normalized))
     window.dispatchEvent(new CustomEvent(PROVIDER_SETTINGS_CHANGE_EVENT, { detail: normalized }))
@@ -199,12 +217,12 @@ export function saveProviderSettings(settings: ProviderSettings): void {
 /**
  * Update a single setting and persist
  */
-export function updateProviderSetting<K extends keyof ProviderSettings>(
+export async function updateProviderSetting<K extends keyof ProviderSettings>(
   key: K,
   value: ProviderSettings[K]
-): ProviderSettings {
+): Promise<ProviderSettings> {
   const current = loadProviderSettings()
   const updated = { ...current, [key]: value }
-  saveProviderSettings(updated)
+  await saveProviderSettings(updated)
   return updated
 }

@@ -1,4 +1,6 @@
 import { getPublicAuth } from '../../lib/auth/publicState'
+import { isBrowserClient } from '../../platform/clientCapabilities'
+import { disconnectHostCodex, readHostCodexUsage } from '../../lib/auth/transport'
 import { loadProviderSettings } from '../../helpers/providerSettingsStorage'
 export type { OpenAIUsageSnapshot, OpenAIUsageResult } from '../../../server/auth/codexUsage'
 import type { OpenAIUsageResult } from '../../../server/auth/codexUsage'
@@ -14,8 +16,12 @@ export function isOpenAIAuthenticated(): boolean {
   return status === 'ready' || status === 'refreshing'
 }
 export function getOpenAIAccountEmail(): string | null { return getPublicAuth()?.codex.email ?? null }
-export async function clearTokens(): Promise<void> { await window.electronAPI!.openaiChatGPT.clearTokens() }
+export async function clearTokens(): Promise<void> {
+  if (isBrowserClient) await disconnectHostCodex()
+  else await window.electronAPI!.openaiChatGPT.clearTokens()
+}
 export async function fetchOpenAIUsageStatus(): Promise<OpenAIUsageResult> {
+  if (isBrowserClient) return readHostCodexUsage<OpenAIUsageResult>()
   return window.electronAPI!.openaiChatGPT.usage() as Promise<OpenAIUsageResult>
 }
 const models = [

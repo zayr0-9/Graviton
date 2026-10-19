@@ -253,6 +253,10 @@ export interface StreamState {
   updatePath?: boolean
   /** Follow only the selected continuation chain; never claim navigation ownership. */
   watchContinuation?: WatchContinuationOwner
+  /** Discovery observer may extend its selected tip without claiming navigation. */
+  followSelectedTip?: boolean
+  /** Snapshot replay hydrates rows before one guarded selection reconciliation. */
+  bootstrapInstalling?: boolean
   active: boolean
   // Explicit lifecycle status. `waiting_for_tool` is still an in-flight stream
   // and should stay visible/interruptible in branch-local UIs.
@@ -319,6 +323,8 @@ export interface SendingStartedPayload {
   updatePath?: boolean
   /** Follow only the selected continuation chain; never claim navigation ownership. */
   watchContinuation?: WatchContinuationOwner
+  /** Discovery observer may extend its selected tip without claiming navigation. */
+  followSelectedTip?: boolean
   /** Reattachment must not consume unrelated composer drafts. */
   preserveDrafts?: boolean
   streamId: string
@@ -508,6 +514,7 @@ export interface ChatState {
   operationModeUpgradeRequestsByStream: Record<string, OperationModeUpgradeRequest>
   planClarificationRequestsByStream: Record<string, PlanClarificationRequest>
   toolAutoApprove: boolean
+  toolAutoApproveOverridden?: boolean
   operationMode: OperationMode
   messageQueues: Record<string, import('../../../../../shared/queuedMessages').MessageQueueSnapshot>
   /** Unsent selections, keyed by conversation and selected branch tip. */

@@ -34,11 +34,12 @@ import {
   type UserSystemPromptStorageMode,
 } from '../helpers/userSystemPromptStorage'
 import { PROVIDER_SETTINGS_CHANGE_EVENT } from '../helpers/providerSettingsStorage'
+import { isHostClient } from '../platform/clientCapabilities'
 import { cloudApi, environment, gwApi, localApi } from '../utils/api'
 import { getFavoritedModels } from '../utils/favorites'
 import { useAuth } from './useAuth'
 
-const isElectronCommunityMode = () => environment === 'electron' && isCommunityMode
+const isElectronCommunityMode = () => isHostClient && isCommunityMode
 
 export type { ConversationMessagesTreeData } from '../features/chats/conversationMessagesApi'
 
@@ -314,7 +315,7 @@ export function useRecentLineages(projectId: ProjectId | string | null, limit: n
         `/projects/${encodeURIComponent(String(projectId))}/recent-lineages?limit=${safeLimit}`
       )
     },
-    enabled: !!projectId && environment === 'electron',
+    enabled: !!projectId && isHostClient,
     staleTime: 30 * 1000,
     refetchOnMount: 'always',
     refetchOnReconnect: false,
@@ -370,7 +371,7 @@ export function useFavoritedConversations(limit: number | null = 8) {
       }
       return localApi.get<Conversation[]>(`/app/conversations/favorites?${params}`)
     },
-    enabled: !!userId && environment === 'electron',
+    enabled: !!userId && isHostClient,
     staleTime: 5 * 60 * 1000,
     refetchOnMount: false,
     refetchOnReconnect: false,
@@ -447,7 +448,7 @@ export function useConversationStorageMode(conversationId: ConversationId | null
       }
 
       // 2. If in Electron, try fetching from local server first (fastest for local)
-      if (environment === 'electron') {
+      if (isHostClient) {
         try {
           const localConv = await localApi.get<Conversation>(`/app/conversations/${conversationId}`)
           if (localConv) {
@@ -490,7 +491,7 @@ export function useLocalTopLevelUserMessages(conversationId: ConversationId | nu
       if (!conversationId) throw new Error('Conversation ID is required')
       return localApi.get<TopLevelUserMessagePreview[]>(`/app/conversations/${conversationId}/messages/top-level-users`)
     },
-    enabled: enabled && !!conversationId && environment === 'electron',
+    enabled: enabled && !!conversationId && isHostClient,
     staleTime: 60 * 1000,
     refetchOnMount: false,
     refetchOnReconnect: false,
@@ -509,13 +510,13 @@ export function useLocalTopLevelUserMessages(conversationId: ConversationId | nu
 export function useSubagentByToolCall(toolCallId: string | null, enabled: boolean = true) {
   return useQuery({
     queryKey: ['subagents', 'by-tool-call', toolCallId],
-    queryFn: async () => {
+    queryFn: async ({ signal }) => {
       if (!toolCallId) throw new Error('toolCallId is required')
       return localApi.get<{ runs: SubagentRunRow[]; streamId?: string | null }>(
-        `/subagents/by-tool-call/${toolCallId}`
+        `/subagents/by-tool-call/${toolCallId}`, { signal }
       )
     },
-    enabled: enabled && !!toolCallId && environment === 'electron',
+    enabled: enabled && !!toolCallId && isHostClient,
     staleTime: 30 * 1000,
     refetchOnWindowFocus: false,
   })
@@ -1184,7 +1185,7 @@ export function useMoveConversationToProject() {
       }
 
       // Route to appropriate API based on storage mode
-      if (storageMode === 'local' && environment === 'electron') {
+      if (storageMode === 'local' && isHostClient) {
         // Use local API for local conversations
         return localApi.patch<any>(`/conversations/${conversationId}/project`, { projectId: destinationProjectId })
       }
@@ -1578,7 +1579,7 @@ export function useSearchTopLevelUserMessages(
     async (query: string): Promise<TopLevelUserMessageSearchHit[]> => {
       if (!query.trim()) return []
 
-      if (environment === 'electron') {
+      if (isHostClient) {
         if (!userId) {
           console.warn('[useSearchTopLevelUserMessages] No userId available, skipping local search')
           return []
@@ -1758,7 +1759,7 @@ export function useSearchConversations(
     async (query: string): Promise<Conversation[]> => {
       if (!query.trim()) return []
 
-      if (environment === 'electron') {
+      if (isHostClient) {
         if (!userId) {
           console.warn('[useSearchConversations] No userId available, skipping local search')
           return []
@@ -1941,8 +1942,7 @@ export const getUserSystemPromptsFromCache = (
 ): UserSystemPromptCached[] => {
   const cached = queryClient && userId ? queryClient.getQueryData<UserSystemPromptCached[]>(['userSystemPrompts', userId]) || [] : []
   const localPrompts = loadLocalUserSystemPrompts()
-  const cachedIds = new Set(cached.map(prompt => prompt.id))
-  return [...cached, ...localPrompts.filter(prompt => !cachedIds.has(prompt.id))]
+  return [...cached.filter(prompt => prompt.storage_mode !== 'local' && !prompt.id.startsWith('local-')), ...localPrompts]
 }
 
 /**
@@ -1982,7 +1982,7 @@ export function useHtmlToolsCache(userId: string | null | undefined, enabled: bo
       if (!userId || environment !== 'electron') return []
       return localApi.get<HtmlToolRecord[]>(`/local/tools?userId=${userId}`)
     },
-    enabled: enabled && !!userId && environment === 'electron',
+    enabled: enabled && !!userId && isHostClient,
     staleTime: Infinity,
     gcTime: Infinity,
     refetchOnMount: false,
@@ -2097,7 +2097,7 @@ export function useGitOverview(directoryPath: string | null | undefined, enabled
       const params = new URLSearchParams({ path: directoryPath })
       return localApi.get<LocalGitOverviewResponse>(`/local/git/overview?${params}`)
     },
-    enabled: enabled && !!directoryPath && directoryPath.trim().length > 0 && environment === 'electron',
+    enabled: enabled && !!directoryPath && directoryPath.trim().length > 0 && isHostClient,
     staleTime: 10 * 1000,
     refetchOnMount: 'always',
     refetchOnReconnect: false,
@@ -2131,7 +2131,7 @@ export function useGitDiff(
       !!directoryPath &&
       directoryPath.trim().length > 0 &&
       normalizedRelativePath.length > 0 &&
-      environment === 'electron',
+      isHostClient,
     staleTime: 5 * 1000,
     refetchOnMount: 'always',
     refetchOnReconnect: false,

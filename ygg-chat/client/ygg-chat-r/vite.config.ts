@@ -36,7 +36,8 @@ export default defineConfig(() => {
   const buildTarget = process.env.BUILD_TARGET || 'local'
   const isElectron = buildTarget === 'electron'
   const isWeb = buildTarget === 'web'
-  const isStandalone = buildTarget === 'standalone'
+  const isBrowserClient = buildTarget === 'browser-client'
+  const isStandalone = buildTarget === 'standalone' || isBrowserClient
   // Standalone browser target: the dev proxy forwards /api and the WebSocket
   // paths to the standalone Ygg server (start it with `npm run start:server`).
   const standaloneServerTarget = process.env.YGG_SERVER_PROXY_TARGET || 'http://127.0.0.1:3002'
@@ -44,18 +45,18 @@ export default defineConfig(() => {
     ? {
         '/api': {
           target: standaloneServerTarget,
-          changeOrigin: true,
+          changeOrigin: !isBrowserClient,
           secure: false,
         },
         '/lsp': {
           target: standaloneServerTarget,
-          changeOrigin: true,
+          changeOrigin: !isBrowserClient,
           secure: false,
           ws: true,
         },
         '/ide-context': {
           target: standaloneServerTarget,
-          changeOrigin: true,
+          changeOrigin: !isBrowserClient,
           secure: false,
           ws: true,
         },
@@ -63,7 +64,7 @@ export default defineConfig(() => {
     : {
         '/api': {
           target: 'http://localhost:3001',
-          changeOrigin: true,
+          changeOrigin: !isBrowserClient,
           secure: false,
         },
       }
@@ -85,6 +86,10 @@ export default defineConfig(() => {
 
     // Define compile-time constants for conditional code
     define: {
+      ...(isBrowserClient ? {
+        'import.meta.env.VITE_ENVIRONMENT': JSON.stringify('browser-client'),
+        'import.meta.env.VITE_API_URL': JSON.stringify('/api'),
+      } : {}),
       __BUILD_TARGET__: JSON.stringify(buildTarget),
       __IS_ELECTRON__: JSON.stringify(isElectron),
       __IS_WEB__: JSON.stringify(isWeb),
@@ -102,7 +107,7 @@ export default defineConfig(() => {
 
     // Build configuration
     build: {
-      outDir: isElectron ? 'dist-electron' : 'dist',
+      outDir: isElectron ? 'dist-electron' : isBrowserClient ? 'dist-browser' : 'dist',
       sourcemap: false,
 
       rollupOptions: {

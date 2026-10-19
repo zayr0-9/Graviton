@@ -11,6 +11,7 @@
  */
 
 import { isElectronMode } from '../config/runtimeMode'
+import { isHostClient } from '../platform/clientCapabilities'
 
 // Authentication ownership is unconditional and lives in server/auth.
 
@@ -39,6 +40,8 @@ function readResumableRunsEnvOverride(): boolean | null {
 }
 
 export function isResumableRunsEnabled(): boolean {
+  // Shared-host Stop must cancel on the server, never merely close its viewer.
+  if (isHostClient) return true
   const envOverride = readResumableRunsEnvOverride()
   if (envOverride !== null) return envOverride
   try {

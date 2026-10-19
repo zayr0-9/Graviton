@@ -1,3 +1,5 @@
+import { getAdmissionEpoch, resetAdmissionEpoch } from './runAdmissionClient'
+import { getClientId, newClientId } from '../../helpers/clientId'
 import { resolveBranchModelSelection } from './branchModelSelection'
 import { resolveBranchFastMode } from './branchFastMode'
 import { isCommittedCompaction } from '../../../../../shared/compaction'
@@ -1182,6 +1184,12 @@ export const sendMessage = createAsyncThunk<
             },
           }
         )
+        if (result.queuedStreamId) {
+          addInflightStream({ streamId: result.queuedStreamId, conversationId: String(conversationId),
+            streamType, parentMessageId: result.queuedParentId ?? null, updatePath,
+            clientId: getClientId(), selectionRevision: getState().chat.streaming.byId[streamId]?.selectionRevision })
+          void dispatch(resumeInFlightStreams({ conversationId: String(conversationId), streamId: result.queuedStreamId }))
+        }
         if (result.messageId) {
           void markStreamUndoFinalMessage(streamId, String(result.messageId))
             .then(summary => {
@@ -2599,11 +2607,23 @@ export const resumeInFlightStreams = createAsyncThunk<
   { state: RootState }
 >('chat/resumeInFlightStreams', async ({ conversationId, streamId }, { dispatch, getState }) => {
   if (!isResumableRunsEnabled()) return
+  // Host discovery, not this document's storage, owns liveness. Child transcripts
+  // keep their separate reader contract; this endpoint lists main runs only.
+  try {
+    const response = await fetch(await buildLocalApiUrl(`/conversations/${encodeURIComponent(conversationId)}/live-runs`))
+    if (response.ok) {
+      const { runs } = await response.json()
+      for (const run of runs ?? []) if ((!streamId || run.streamId === streamId) && !hasGenerationReader(run.streamId)) {
+        const existing = listInflightStreams(conversationId).find(record => record.streamId === run.streamId)
+        if (!existing) addInflightStream({ streamId: run.streamId, conversationId, streamType: 'branch', parentMessageId: null, updatePath: false, followSelectedTip: true })
+      }
+    }
+  } catch { /* Existing markers can still reconnect during a transient discovery failure. */ }
   const records = listInflightStreams(String(conversationId)).filter(record => !streamId || record.streamId === streamId)
-  for (const rec of records) {
+  await Promise.all(records.map(async rec => {
     // Route remounts must not replace the module-level reader that survived the Chat
     // unmount. RunSession attach is last-writer-wins, so ownership is checked per stream.
-    if (hasGenerationReader(rec.streamId)) continue
+    if (hasGenerationReader(rec.streamId)) return
 
     const controller = new AbortController()
     const unregister = registerGenerationAbortController(rec.streamId, controller)
@@ -2614,9 +2634,10 @@ export const resumeInFlightStreams = createAsyncThunk<
       dispatch(
         chatSliceActions.sendingStarted({
           streamId: rec.streamId,
-          selectionRevision: -1, // Reattach does not claim the currently selected view.
+          selectionRevision: rec.clientId === getClientId() ? rec.selectionRevision ?? -1 : -1, // Reload does not claim the view.
           updatePath: rec.updatePath ?? rec.streamType !== 'branch',
           watchContinuation: rec.watchContinuation,
+          followSelectedTip: rec.followSelectedTip || (rec.updatePath !== false && !rec.watchContinuation),
           preserveDrafts: true,
           streamType: rec.streamType,
           conversationId: rec.conversationId,
@@ -2629,7 +2650,8 @@ export const resumeInFlightStreams = createAsyncThunk<
           streamId: rec.streamId,
           conversationId: rec.conversationId,
           operation: rec.streamType === 'branch' ? 'branch' : 'send',
-          fromSeq: rec.lastSeq ?? 0,
+          // A rebuilt reducer has no resident projection. A persisted cursor is not state.
+          fromSeq: 0,
           signal: controller.signal,
         },
         {
@@ -2689,7 +2711,7 @@ export const resumeInFlightStreams = createAsyncThunk<
       dispatch(chatSliceActions.sendingCompleted({ streamId: rec.streamId }))
       unregister()
     }
-  }
+  }))
 })
 
 // Fetch available tools - now returns local tool definitions
@@ -2709,10 +2731,9 @@ export const updateToolEnabled = createAsyncThunk<
   { toolName: string; enabled: boolean },
   { state: RootState }
 >('chat/updateToolEnabled', async ({ toolName, enabled }, { dispatch }) => {
-  // Update toolDefinitions module (source of truth for merged tools)
+  // Publish the host acknowledgement before changing this renderer's definitions.
+  await updateToolEnabledState(toolName, enabled)
   updateToolEnabledInDefinitions(toolName, enabled)
-  // Persist to localStorage so state survives app restarts
-  updateToolEnabledState(toolName, enabled)
   // Update Redux state for UI reactivity
   dispatch(chatSliceActions.toolEnabledUpdated({ toolName, enabled }))
 
@@ -2931,6 +2952,7 @@ export const insertBulkMessages = createAsyncThunk<
 
 interface DecisionResumeOutcome {
   ok: boolean
+  settled?: boolean
   status?: number
   envelope?: ChatErrorEnvelope
 }
@@ -2969,6 +2991,9 @@ const postDecisionResume = async (
     // Prefer it — it knows things this side cannot, e.g. that a 501 broker-not-configured
     // is fatal rather than retryable.
     const payload = await res.json().catch(() => null)
+    if (res.status === 409 && payload?.settlement?.streamId === body.streamId &&
+      payload.settlement.toolCallId === body.toolCallId &&
+      ['resolved', 'aborted'].includes(payload.settlement.outcome)) return { ok: false, settled: true, status }
     const carried = payload && typeof payload === 'object' ? (payload as { envelope?: unknown }).envelope : null
     const envelope =
       carried && typeof carried === 'object'
@@ -3014,7 +3039,7 @@ const settleDecisionResume = (
   streamId: string,
   outcome: DecisionResumeOutcome
 ): { closeDialog: boolean } => {
-  if (outcome.ok) return { closeDialog: true }
+  if (outcome.ok || outcome.settled) return { closeDialog: true }
 
   const stream = state.chat.streaming.byId?.[streamId]
   const conversationId = state.chat.conversation.currentConversationId
@@ -3062,9 +3087,11 @@ export const enqueueUserMessage = createAsyncThunk<void, {
   const draftOwner = getState()
   const drafts = params.includeGlobalComposerContext === false ? [] : getDraftsForTarget(draftOwner, { kind: 'composer' })
   const attachments = drafts.map(draft => ({ ...draft }))
+  const selectedFiles = params.includeGlobalComposerContext === false ? [] : structuredClone(draftOwner.ideContext.selectedFilesForChat || [])
   const attachmentsBase64 = await prepareLocalAttachmentsForModel(attachments.length ? attachments : null, 'queued message attachments')
   const url = await buildLocalApiUrl(`/conversations/${encodeURIComponent(params.conversationId)}/streams/${encodeURIComponent(params.streamId)}/queue`)
-  const body = JSON.stringify({ requestId: params.requestId, content: params.content, attachmentsBase64,
+  const epoch = await getAdmissionEpoch()
+  let body = JSON.stringify({ epoch, requestId: params.requestId, content: params.content, attachmentsBase64, selectedFiles,
     fullAccess: isFullAccessEnabled(),
     fullAccessNotificationId: getPendingFullAccessNotification(params.conversationId) })
   // A lost HTTP acknowledgement is safe to retry with the SAME immutable id/payload.
@@ -3074,8 +3101,22 @@ export const enqueueUserMessage = createAsyncThunk<void, {
   } catch {
     response = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body })
   }
-  const result = await response.json()
-  if (!response.ok) throw new Error(result.error || 'Could not queue message')
+  let result = await response.json()
+  if (!response.ok && result.code === 'configuration_mismatch' && typeof result.fullAccess === 'boolean' &&
+    window.confirm(`This run uses ${result.fullAccess ? 'Full access' : 'restricted workspace access'}. Queue this input under that existing policy? Your current setting will not change.`)) {
+    // A rejected ID is a durable tombstone. The explicit acknowledgement is a
+    // new intent with its own identity; never mutate/reuse the rejected payload.
+    body = JSON.stringify({ ...JSON.parse(body), requestId: newClientId(), fullAccess: result.fullAccess })
+    response = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body })
+    result = await response.json()
+  }
+  if (!response.ok) {
+    if (result.code === 'epoch_mismatch') resetAdmissionEpoch()
+    throw new Error(result.error || 'Could not queue message')
+  }
+  if (result.receipt?.outcome === 'failed' || result.receipt?.outcome === 'cancelled') {
+    throw new Error(`This queued message was ${result.receipt.outcome}. Your draft has been preserved.`)
+  }
   if (result.snapshot) dispatch(chatSliceActions.messageQueueUpdated(result.snapshot))
   // Do not erase images added while attachment preparation/the POST was pending.
   consumeImageDrafts(dispatch, getState, { kind: 'composer' }, drafts, draftOwner)
@@ -3194,8 +3235,8 @@ export const respondToOperationModeUpgrade = createAsyncThunk<
       decision: approved ? 'switch_to_execute' : 'deny',
     })
     if (!settleDecisionResume(dispatch, getState(), req.streamId, outcome).closeDialog) return
+    if (approved && outcome.ok) dispatch(chatSliceActions.operationModeSet('execute'))
   }
-  if (approved) dispatch(chatSliceActions.operationModeSet('execute'))
   if (req?.streamId) dispatch(chatSliceActions.operationModeUpgradeRespondedForStream(req.streamId))
   else dispatch(chatSliceActions.operationModeUpgradeResponded())
 })
@@ -3254,7 +3295,7 @@ export const respondToToolPermissionAndEnableAll = createAsyncThunk<
   // Change the renderer default only after the server atomically promoted the current
   // stream and released its pending permission waiters. A failed resume must not make
   // unrelated future branches appear auto-approved while this run remains parked.
-  dispatch(chatSliceActions.toolAutoApproveEnabled())
+  if (outcome.ok) dispatch(chatSliceActions.toolAutoApproveEnabled())
 
   // Clear only the branch/run prompt that was answered.
   if (req?.streamId) dispatch(chatSliceActions.toolPermissionRespondedForStream(req.streamId))

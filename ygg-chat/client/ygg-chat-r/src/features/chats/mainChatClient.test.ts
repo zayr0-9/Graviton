@@ -23,6 +23,7 @@ vi.mock('../../utils/api', () => ({
   buildLocalApiUrl: async (p: string) => `http://local/api${p}`,
   FORCE_LOGOUT_EVENT: 'force-logout',
 }))
+vi.mock('../../platform/clientCapabilities', () => ({ isHostClient: false }))
 // Force resumable behavior on (decoupled from localStorage/env).
 vi.mock('../../helpers/serverLoopSettings', () => ({ isResumableRunsEnabled: () => true }))
 // Keep watchdog tests fast and prove mainChatClient reads the persisted setting.
@@ -108,7 +109,7 @@ describe('runServerReattach', () => {
       deps
     )
 
-    expect(fetchMock).toHaveBeenCalledWith('http://local/api/streams/s-1?fromSeq=0', expect.anything())
+    expect(fetchMock).toHaveBeenCalledWith('http://local/api/streams/s-1?fromSeq=0&bootstrap=1', expect.anything())
     expect(res).toMatchObject({ gone: false, terminal: true, messageId: 'a1' })
     expect(deps.actions.length).toBeGreaterThan(0)
     expect(deps.actions).toContainEqual(expect.objectContaining({
@@ -358,4 +359,88 @@ describe('deferred Full access acknowledgement', () => {
     expect(deps.actions.filter(action => action.type === 'chat/optimisticMessageCleared')).toHaveLength(1)
     setFullAccessEnabled(false)
   })
+})
+
+describe('multi-client replay sequence', () => {
+  it('does not project a duplicate token frame twice', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(sseResponse([
+      { type: 'started', parentId: 'p1', seq: 1 },
+      { type: 'chunk', part: 'text', delta: 'once', seq: 2 },
+      { type: 'chunk', part: 'text', delta: 'once', seq: 2 },
+      { type: 'complete', message: { id: 'answer' }, seq: 3 },
+    ])))
+    const deps = collectDispatch()
+    await runServerReattach({ streamId: 's', conversationId: 'c', operation: 'send', fromSeq: 0, signal: new AbortController().signal }, deps)
+    const chunks = deps.actions.filter(action => JSON.stringify(action).includes('"delta":"once"'))
+    expect(chunks).toHaveLength(1)
+  })
+})
+
+it('installs a fresh bootstrap at S and projects only deltas newer than S', async () => {
+  const deps = collectDispatch()
+  vi.stubGlobal('fetch', vi.fn().mockResolvedValue(sseResponse([
+    { type: 'bootstrap', seq: 50, snapshot: { kind: 'main', schema: 1, epoch: 'e', streamId: 's', conversationId: 'c', stateSeq: 50,
+      persisted: [], pendingDecisions: [], queueRevision: 0, events: [{ type: 'chunk', part: 'text', delta: 'before' }] } },
+    { type: 'chunk', part: 'text', delta: 'after', seq: 51 },
+    { type: 'complete', message: { id: 'm' }, seq: 52 },
+  ])))
+  const result = await runServerReattach({ streamId: 's', conversationId: 'c', operation: 'send', signal: new AbortController().signal }, deps)
+  expect(result.terminal).toBe(true)
+  expect(deps.actions.some(action => action.type === 'chat/streamBootstrapReset')).toBe(true)
+  expect(deps.actions.filter(action => action.payload?.chunk?.delta).map(action => action.payload.chunk.delta)).toEqual(['before', 'after'])
+})
+
+// Production snapshots retain only the previous anchor/current turn, not every
+// assistant persistence event. Offline turns arrive as rows without navigation events.
+it.each(['primary', 'observer', 'sibling', 'parallel'])('recovers compact reconnect history without rewinding %s', async kind => {
+  const { default: reducer, chatSliceActions: actions } = await import('./chatSlice')
+  const { applyStreamProjectionPolicy } = await import('./sseProjection')
+  const row = (id: string, parent_id: string | null, role = 'assistant') => ({ id, parent_id, role,
+    conversation_id: 'c', revision: 1, content: '', children_ids: [], created_at: '2026-01-01', content_blocks: [] }) as any
+  const rows = [row('u', null, 'user'), row('a1', 'u'), row('a2', 'a1'), row('a3', 'a2')]
+  let state = reducer(undefined, { type: 'init' })
+  const dispatch = (action: any) => { state = reducer(state, applyStreamProjectionPolicy(action,
+    { streamId: 's', streamType: kind === 'primary' ? 'primary' : 'branch', updatePath: kind === 'primary' })) }
+  dispatch(actions.conversationSet('c'))
+  for (const message of rows.slice(0, 2)) dispatch(actions.messageAdded(message))
+  dispatch(actions.messageAdded(row('sibling', 'u')))
+  dispatch(actions.conversationPathSet(['u', kind === 'sibling' ? 'sibling' : 'a1']))
+  dispatch(actions.sendingStarted({ streamId: 's', conversationId: 'c', updatePath: kind === 'primary',
+    followSelectedTip: kind === 'observer' || kind === 'sibling' }))
+  const bootstrap = { type: 'bootstrap', snapshot: { kind: 'main', schema: 1, epoch: 'e', streamId: 's',
+    conversationId: 'c', stateSeq: 50, persisted: rows.map(row => ({ id: row.id, revision: 1, row })),
+    events: [{ type: 'started', parentId: 'u' }, { type: 'user_message_persisted', message: rows[0] },
+      { type: 'assistant_message_persisted', message: rows[3] }, { type: 'tool_loop', status: 'turn_started', turn: 4 }],
+    pendingDecisions: [], queueRevision: 0 } }
+  vi.stubGlobal('fetch', vi.fn().mockResolvedValue(sseResponse([bootstrap,
+    { type: 'complete', message: row('final', 'a3'), seq: 51 }])))
+  await runServerReattach({ streamId: 's', conversationId: 'c', operation: 'send', signal: new AbortController().signal },
+    { dispatch, getState: () => ({ chat: state }) } as any)
+  expect(state.conversation.currentPath).toEqual(kind === 'sibling' ? ['u', 'sibling'] :
+    kind === 'parallel' ? ['u', 'a1'] : ['u', 'a1', 'a2', 'a3', 'final'])
+})
+
+it.each([false, true])('keeps restored context through terminal compact bootstrap (observer=%s)', async observer => {
+  const { default: reducer, chatSliceActions: actions } = await import('./chatSlice')
+  const { applyStreamProjectionPolicy } = await import('./sseProjection')
+  const row = (id: string, parent_id: string | null, role = 'assistant', meta?: object) => ({ id, parent_id, role, meta,
+    conversation_id: 'c', revision: 1, content: '', children_ids: [], created_at: '2026-01-01', content_blocks: [] }) as any
+  const rows = [row('u', null, 'user'), row('summary', 'u'), row('context', 'summary', 'user', { kind: 'context_injection' })]
+  let state = reducer(undefined, { type: 'init' })
+  const dispatch = (action: any) => { state = reducer(state, applyStreamProjectionPolicy(action,
+    { streamId: 's', streamType: 'primary', updatePath: !observer })) }
+  dispatch(actions.conversationSet('c'))
+  dispatch(actions.messageAdded(rows[0]))
+  dispatch(actions.conversationPathSet(['u']))
+  dispatch(actions.sendingStarted({ streamId: 's', conversationId: 'c', updatePath: !observer, followSelectedTip: observer }))
+  vi.stubGlobal('fetch', vi.fn().mockResolvedValue(sseResponse([{ type: 'bootstrap', snapshot: {
+    kind: 'main', schema: 1, epoch: 'e', streamId: 's', conversationId: 'c', stateSeq: 50,
+    persisted: rows.map(row => ({ id: row.id, revision: 1, row })), pendingDecisions: [], queueRevision: 0,
+    events: [{ type: 'user_message_persisted', message: rows[0] }, { type: 'assistant_message_persisted', message: rows[1] },
+      { type: 'context_injection_persisted', message: rows[2] }, { type: 'complete', message: rows[1] }] } }])))
+  const result = await runServerReattach({ streamId: 's', conversationId: 'c', operation: 'send', signal: new AbortController().signal },
+    { dispatch, getState: () => ({ chat: state }) } as any)
+  expect(result.terminal).toBe(true)
+  expect(state.conversation.currentPath).toEqual(['u', 'summary', 'context'])
+  expect(state.streaming.byId.s.finalMessageId).toBe('context')
 })

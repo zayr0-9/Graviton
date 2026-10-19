@@ -1,6 +1,7 @@
 import type { QueryClient } from '@tanstack/react-query'
 import type { ConversationId, ProjectWithLatestConversation } from '../../../../../shared/types'
-import { environment, gwApi, localApi } from '../../utils/api'
+import { gwApi, localApi } from '../../utils/api'
+import { isHostClient } from '../../platform/clientCapabilities'
 import { isCommunityMode } from '../../config/runtimeMode'
 import type { Conversation } from '../conversations/conversationTypes'
 import type { ChatNode, Message } from './chatTypes'
@@ -20,7 +21,7 @@ export interface FetchConversationMessagesTreeOptions {
   signal?: AbortSignal
 }
 
-const isElectronCommunityMode = (): boolean => environment === 'electron' && isCommunityMode
+const isElectronCommunityMode = (): boolean => isHostClient && isCommunityMode
 
 export async function fetchConversationMessagesTree(
   conversationId: ConversationId,
@@ -61,7 +62,7 @@ export async function fetchConversationMessagesTree(
     }
   }
 
-  if (!effectiveStorageMode && environment === 'electron') {
+  if (!effectiveStorageMode && isHostClient) {
     try {
       return await localApi.get<ConversationMessagesTreeData>(
         `/app/conversations/${conversationId}/messages/tree${treeQuery}`,

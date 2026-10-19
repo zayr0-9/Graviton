@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { hostAuthTransport } from '../lib/auth/transport'
 import { useNavigate } from 'react-router-dom'
 import { useAuth } from '../hooks/useAuth'
 import { getThemeModeColor, useCustomChatTheme, useHtmlDarkMode } from '../components/ThemeManager/themeConfig'
@@ -21,15 +22,15 @@ export default function ManagedLogin() {
   const [provider, setProvider] = useState<'google' | 'github'>('google')
   // Do not redirect an existing-but-expired identity away from its reconnect screen.
   void user
-  useEffect(() => window.electronAPI!.auth.onChanged(state => {
+  useEffect(() => hostAuthTransport().onChanged(state => {
     if (state.app.status === 'ready') { setWaiting(false); navigate('/homepage', { replace: true }) }
   }), [navigate])
-  useEffect(() => window.electronAPI!.auth.onLoginError(message => { setError(message); setWaiting(false) }), [])
+  useEffect(() => hostAuthTransport().onLoginError(message => { setError(message); setWaiting(false) }), [])
   const start = async (selected: 'google' | 'github', oob = false) => {
     setError(''); setProvider(selected)
     try {
-      const { url } = await window.electronAPI!.auth.start(selected, oob)
-      const opened = await window.electronAPI!.auth.openExternal(url)
+      const { url } = await hostAuthTransport().start(selected, oob)
+      const opened = await hostAuthTransport().openExternal(url)
       if (!opened.success) throw new Error('Could not open your browser')
       setWaiting(true)
     } catch (e) { setError(e instanceof Error ? e.message : 'Sign-in failed') }
@@ -72,8 +73,8 @@ export default function ManagedLogin() {
           onChange={e => setCode(e.target.value)}
         />
         <div className='flex flex-wrap gap-3'>
-          <button type='button' className={`${secondaryButtonClass} flex-1`} style={secondaryButtonStyle} onClick={() => { void window.electronAPI!.auth.code(code.trim()).then(() => setWaiting(false)).catch(e => setError(e.message)) }}>Verify code</button>
-          <button type='button' className={secondaryButtonClass} style={secondaryButtonStyle} onClick={() => { void window.electronAPI!.auth.cancel(); setWaiting(false) }}>Cancel</button>
+          <button type='button' className={`${secondaryButtonClass} flex-1`} style={secondaryButtonStyle} onClick={() => { void hostAuthTransport().code(code.trim()).then(() => setWaiting(false)).catch(e => setError(e.message)) }}>Verify code</button>
+          <button type='button' className={secondaryButtonClass} style={secondaryButtonStyle} onClick={() => { void hostAuthTransport().cancel(); setWaiting(false) }}>Cancel</button>
         </div>
       </div>}
       <button

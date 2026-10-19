@@ -10,6 +10,7 @@ Historical gaps have been reconstructed from Git tags, app-version changes, and 
 
 ### Added
 
+- Added an experimental attached-browser build of the shared Electron UI, with shared host identity/settings, multi-observer run recovery, queue/decision controls, independent host terminals and a phone workspace panel. This trusted-network preview has no device authentication; physical-device acceptance and legacy-mobile retirement remain pending.
 - Added draggable dividers for resizing agent-monitor grid cards within each row.
 
 ### Changed

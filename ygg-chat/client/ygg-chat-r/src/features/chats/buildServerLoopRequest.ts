@@ -16,6 +16,7 @@
  * - attachmentsBase64 is turn-1 only (sent once on the initial request).
  */
 
+import { newClientId } from '../../helpers/clientId'
 import type { ContextDirectorySettings } from '../../../../../shared/contextDirectories'
 
 export type ServerLoopOperation = 'send' | 'edit' | 'branch'
@@ -140,14 +141,7 @@ function shapeTools(tools?: ServerLoopToolInput[]): Array<{ name: string; descri
     }))
 }
 
-function generateOperationId(): string {
-  if (typeof globalThis.crypto !== 'undefined' && typeof globalThis.crypto.randomUUID === 'function') {
-    return globalThis.crypto.randomUUID()
-  }
-  // Older Electron/test runtimes may not expose randomUUID. Keep the fallback local,
-  // dependency-free, and collision-resistant enough for a renderer operation identity.
-  return `op-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}-${Math.random().toString(36).slice(2)}`
-}
+const generateOperationId = newClientId
 
 export function buildServerLoopRequest(operation: ServerLoopOperation, params: BuildServerLoopRequestParams): ServerLoopRequest {
   const { conversationId } = params

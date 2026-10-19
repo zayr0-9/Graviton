@@ -52,3 +52,8 @@ describe('reconcileConversationSnapshot', () => {
     expect(result.map(row => row.id)).toEqual(['root', 'terminal'])
   })
 })
+
+it('explicit host deletion wins over protected live and stale fetched rows', () => {
+  const row = message('deleted', null)
+  expect(reconcileConversationSnapshot({ fetchedMessages: [row], liveMessages: [row], protections: [{ messageIds: ['deleted'] }], deletedMessageIds: ['deleted'] })).toEqual([])
+})

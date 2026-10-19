@@ -614,7 +614,7 @@ async function applyWorkspaceEditsToFileOnDisk(uri: string, edits: any[]): Promi
   }
 
   try {
-    const response = await localApi.get<{ content?: string }>(`/local/file-content?path=${encodeURIComponent(filePath)}`, {
+    const response = await localApi.get<{ content?: string; contentHash?: string }>(`/local/file-content?path=${encodeURIComponent(filePath)}`, {
       cache: 'no-store',
     })
     const originalContent = typeof response?.content === 'string' ? response.content : ''
@@ -625,6 +625,7 @@ async function applyWorkspaceEditsToFileOnDisk(uri: string, edits: any[]): Promi
       await localApi.post('/local/file-content', {
         path: filePath,
         content: tempModel.getValue(),
+        expectedHash: response.contentHash,
       })
     } finally {
       tempModel.dispose()

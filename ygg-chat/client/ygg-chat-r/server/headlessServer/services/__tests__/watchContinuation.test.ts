@@ -109,16 +109,17 @@ describe('watcher branch continuation', () => {
     expect(successor.queue.snapshot().items).toHaveLength(1)
   })
 
-  it('reaps an unattended successor rather than leaking a permission waiter', () => {
+  it('keeps an unattended successor alive until explicit cancellation', () => {
     const sessions = new RunSessionRegistry()
     const request = { conversationId: 'chat', streamId: 'unattended', operation: 'send' as const, content: 'completion', provider: 'openaichatgpt', modelName: 'test' }
     const runMessage = vi.fn(() => new Promise<void>(() => {}))
     launchQueuedSuccessor({ runMessage }, sessions, request)
     const session = sessions.get('unattended')!
-    expect(session.detachedAt).not.toBeNull()
     sessions.reap(Date.now() + 600000)
+    expect(session.signal.aborted).toBe(false)
+    expect(sessions.get('unattended')).toBe(session)
+    sessions.cancel('unattended')
     expect(session.signal.aborted).toBe(true)
-    expect(sessions.get('unattended')).toBeUndefined()
   })
 
   it('retains origin/latest mailboxes while watching and releases the pin once', () => {

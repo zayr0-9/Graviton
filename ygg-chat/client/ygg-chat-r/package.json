@@ -1,7 +1,7 @@
 {
   "name": "graviton",
   "private": true,
-  "version": "0.3.20",
+  "version": "0.3.21",
   "description": "YggChat desktop client",
   "homepage": "https://yggchat.com",
   "author": {
@@ -15,6 +15,8 @@
     "dev": "cross-env BUILD_TARGET=web vite",
     "dev:local": "cross-env BUILD_TARGET=local vite",
     "dev:electron": "cross-env BUILD_TARGET=electron vite",
+    "dev:browser-client": "cross-env BUILD_TARGET=browser-client VITE_ENVIRONMENT=browser-client VITE_API_URL=/api vite --host",
+    "build:browser-client": "tsc -b && cross-env BUILD_TARGET=browser-client VITE_ENVIRONMENT=browser-client VITE_API_URL=/api vite build",
     "dev:standalone": "cross-env BUILD_TARGET=standalone VITE_ENVIRONMENT=standalone vite",
     "build": "cross-env BUILD_TARGET=web tsc -b && cross-env BUILD_TARGET=web vite build",
     "build:web": "cross-env BUILD_TARGET=web tsc -b && cross-env BUILD_TARGET=web vite build",

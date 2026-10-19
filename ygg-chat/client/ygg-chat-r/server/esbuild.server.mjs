@@ -18,6 +18,7 @@ import * as esbuild from 'esbuild'
 import fs from 'fs'
 import path from 'path'
 import { fileURLToPath } from 'url'
+import { nodeEsmBanner, assertNodeSyntax } from '../scripts/node-esm.mjs'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const packageRoot = path.resolve(__dirname, '..')
@@ -33,7 +34,7 @@ const sharedOptions = {
   sourcemap: true,
   resolveExtensions: ['.ts', '.js', '.mjs', '.json'],
   banner: {
-    js: "import { createRequire } from 'module'; const require = createRequire(import.meta.url);",
+    js: nodeEsmBanner,
   },
 }
 
@@ -108,4 +109,8 @@ if (copyDir(path.join(packageRoot, '.ygg', 'custom-themes'), path.join(outDir, '
   console.log('✅ copied bundled theme templates')
 }
 
+for (const name of ['ygg-server.mjs', 'toolRuntimeUtility.mjs']) {
+  assertNodeSyntax(path.join(outDir, name))
+}
+console.log('✅ standalone emitted module syntax checked')
 console.log('✅ dist-server build complete')

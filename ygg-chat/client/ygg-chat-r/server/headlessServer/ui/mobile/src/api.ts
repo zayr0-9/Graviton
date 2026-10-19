@@ -243,8 +243,8 @@ export const mobileApi = {
     }
   },
 
-  async getLocalFileContent(filePath: string): Promise<{ path: string; content: string; size: number }> {
-    const payload = await jsonFetch<{ path?: string; content?: string; size?: number }>(
+  async getLocalFileContent(filePath: string): Promise<{ path: string; content: string; size: number; contentHash?: string }> {
+    const payload = await jsonFetch<{ path?: string; content?: string; size?: number; contentHash?: string }>(
       `/api/local/file-content?path=${encodeURIComponent(filePath)}`,
       { method: 'GET' }
     )
@@ -252,16 +252,18 @@ export const mobileApi = {
     return {
       path: typeof payload?.path === 'string' ? payload.path : filePath,
       content: typeof payload?.content === 'string' ? payload.content : '',
+      contentHash: payload.contentHash,
       size: typeof payload?.size === 'number' ? payload.size : 0,
     }
   },
 
-  async saveLocalFileContent(filePath: string, content: string): Promise<{ path: string; size: number; saved: boolean }> {
-    const payload = await jsonFetch<{ path?: string; size?: number; saved?: boolean }>('/api/local/file-content', {
+  async saveLocalFileContent(filePath: string, content: string, expectedHash?: string): Promise<{ path: string; size: number; saved: boolean; contentHash?: string }> {
+    const payload = await jsonFetch<{ path?: string; size?: number; saved?: boolean; contentHash?: string }>('/api/local/file-content', {
       method: 'POST',
       body: JSON.stringify({
         path: filePath,
         content,
+        expectedHash,
       }),
     })
 
@@ -269,6 +271,7 @@ export const mobileApi = {
       path: typeof payload?.path === 'string' ? payload.path : filePath,
       size: typeof payload?.size === 'number' ? payload.size : content.length,
       saved: Boolean(payload?.saved),
+      contentHash: payload.contentHash,
     }
   },
 

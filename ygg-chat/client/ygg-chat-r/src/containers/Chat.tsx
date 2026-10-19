@@ -1,3 +1,7 @@
+import { selectHostFolder } from '../platform/hostPathPicker'
+import { newClientId } from '../helpers/clientId'
+import { isBrowserClient, isHostClient } from '../platform/clientCapabilities'
+import { ConversationOpeningOverlay } from '../components/ChatPane/ConversationOpeningOverlay'
 import { useModelSwitchConfirmation } from '../hooks/useModelSwitchConfirmation'
 import { ModelSwitchDialog } from '../components/ModelSelectControl/ModelSwitchDialog'
 import { resolveBranchModelSelection } from '../features/chats/branchModelSelection'
@@ -3482,11 +3486,12 @@ function Chat() {
   )
 
   const handleSelectProjectFolder = useCallback(async () => {
-    const result = await window.electronAPI?.dialog?.selectFolder()
+    const result = await selectHostFolder(ccCwd)
+    if (result.error) window.alert(result.error)
     if (result?.success && result.path) {
       setCcCwdFromUser(result.path)
     }
-  }, [setCcCwdFromUser])
+  }, [setCcCwdFromUser, ccCwd])
 
   const setCcCwdFromSystem = useCallback(
     (nextValue: string) => {
@@ -3572,7 +3577,10 @@ function Chat() {
   // per stream; only orphaned localStorage markers reattach to the main-process run.
   useEffect(() => {
     if (!conversationIdFromUrl) return
-    void dispatch(resumeInFlightStreams({ conversationId: String(conversationIdFromUrl) }))
+    const discover = () => { void dispatch(resumeInFlightStreams({ conversationId: String(conversationIdFromUrl) })) }
+    discover()
+    const timer = setInterval(discover, 3000)
+    return () => clearInterval(timer)
   }, [conversationIdFromUrl, dispatch])
 
   // Use useMemo to ensure stable reference for empty object fallback
@@ -5228,7 +5236,7 @@ function Chat() {
           appendIdeContextToMessage(replaceFileMentionsWithPath(localInputValue)))
         const retry = queueRetryRef.current
         const queuedSubmission = retry?.streamId === streamState.id && retry.content === content
-          ? retry : { streamId: streamState.id, content, requestId: crypto.randomUUID() }
+          ? retry : { streamId: streamState.id, content, requestId: newClientId() }
         queueRetryRef.current = queuedSubmission
         recordSentMessage(localInputValue)
         clearLocalInput()
@@ -6489,6 +6497,7 @@ function Chat() {
           className={`relative mx-4 flex flex-col thin-scrollbar rounded-lg bg-transparent dark:bg-transparent flex-1 min-h-0 min-w-0 overflow-hidden transition-[padding-bottom] duration-200 ${!heimdallVisible ? 'px-0 sm:px-0 ' : ''}`}
           style={{ paddingBottom: `0px`, backgroundColor: chatSurfaceBackgroundColor }}
         >
+          <ConversationOpeningOverlay visible={isBrowserClient && selection.status === 'pending'} />
           {/* Conversation title and actions */}
           {currentConversationId && (
             <div
@@ -7083,7 +7092,7 @@ function Chat() {
 
           {/* Textarea (bottom, grows upward because wrapper is bottom-pinned) */}
           <div className='relative isolate'>
-            {selection.status === 'pending' && (
+            {!isBrowserClient && selection.status === 'pending' && (
               <div role='status' className='px-3 py-1 text-xs opacity-70'>Opening conversation…</div>
             )}
             {selection.error && (
@@ -7540,7 +7549,7 @@ function Chat() {
                     />
                   </button>
                   <div className='composer-controls-left-selectors relative z-10 flex min-w-0 shrink items-center gap-1 flex-nowrap overflow-hidden'>
-                    {import.meta.env.VITE_ENVIRONMENT === 'electron' && extensions.length > 0 && (
+                    {isHostClient && extensions.length > 0 && (
                       <Select
                         value={selectedExtensionId || ''}
                         onChange={handleExtensionSelection}
@@ -7563,7 +7572,7 @@ function Chat() {
                     )}
 
                     {/* Provider selector - visibility controlled by user settings */}
-                    {import.meta.env.VITE_ENVIRONMENT === 'electron' && providerSettings.showProviderSelector && (
+                    {isHostClient && providerSettings.showProviderSelector && (
                       <Select
                         value={providers.currentProvider || ''}
                         onChange={handleProviderSelect}
@@ -7663,7 +7672,7 @@ function Chat() {
                   )}
                   {(isImageGenerationModel ||
                     think ||
-                    (import.meta.env.VITE_ENVIRONMENT === 'electron' && conversationIdFromUrl)) && (
+                    (isHostClient && conversationIdFromUrl)) && (
                     <ActionPopover
                       isActive={
                         toolAutoApprove ||
@@ -7675,7 +7684,7 @@ function Chat() {
                       }
                       footer={
                         <div className='action-cloud-fields'>
-                          {import.meta.env.VITE_ENVIRONMENT === 'electron' && conversationIdFromUrl && (
+                          {isHostClient && conversationIdFromUrl && (
                             <div className='action-cloud-directory'>
                               <label htmlFor='action-cloud-cwd'>Working directory</label>
                               <div className='action-cloud-path' style={actionPopoverInputBorderColor ? { outline: `1px solid ${actionPopoverInputBorderColor}` } : undefined}>
@@ -7793,9 +7802,9 @@ function Chat() {
                             <ActionPopoverSwitch
                               label='Orchestrator'
                               checked={orchestratorEnabled}
-                              onClick={() => {
-                                const newState = toggleOrchestratorEnabled()
-                                setOrchestratorEnabledState(newState)
+                              onClick={async () => {
+                                try { setOrchestratorEnabledState(await toggleOrchestratorEnabled()) }
+                                catch (error) { window.alert(error instanceof Error ? error.message : 'Could not save subagent setting') }
                               }}
                               title={orchestratorEnabled ? 'Subagent can use tools (click to disable)' : 'Subagent cannot use tools (click to enable)'}
                             />
@@ -7821,7 +7830,7 @@ function Chat() {
                         </div>
                       }
                     >
-                      {import.meta.env.VITE_ENVIRONMENT === 'electron' && conversationIdFromUrl && (
+                      {isHostClient && conversationIdFromUrl && (
                         <>
                           <ActionPopoverButton
                             label={jobsModalOpen ? 'Viewing' : 'Jobs'}
@@ -7830,8 +7839,8 @@ function Chat() {
                             aria-haspopup='dialog'
                             aria-expanded={jobsModalOpen}
                             onClick={() => setJobsModalOpen(true)}
-                            title={isElectronEnv ? 'View tool jobs' : 'Tool jobs are available in the desktop app'}
-                            disabled={!isElectronEnv}
+                            title={isHostClient ? 'View tool jobs' : 'Connect to the Graviton host to view tool jobs'}
+                            disabled={!isHostClient}
                           />
                           <ActionPopoverButton
                             label={toolAutoApprove ? 'Allow all' : 'Ask'}

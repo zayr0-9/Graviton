@@ -282,3 +282,15 @@ Manual harness: `http://localhost:<local-server-port>/headless/openai-test` when
 - `agent_chat_pipeline.md`
 - `agent_local_tools_runtime.md`
 - `agent_subagents_orchestration.md`
+
+## Shared-client migration overrides (2026-10-19)
+
+Historical single-subscriber/idle-reaper/opt-out statements above are superseded. Production host resumability is mandatory; viewers detach independently and never cancel execution by disappearing. The reaper evicts terminal payloads only. Shared source builds serve attached browsers without making the host a separate web product.
+
+`runAdmissionService.ts` and `operationReceiptRepo.ts` own JSON ordinary-send acceptance and durable retry tombstones. Compatible active-lineage sends queue, access-policy changes require acknowledgement, and interrupted commands are not replayed after restart. `runSnapshotProjector.ts` provides main-run bootstrap at S with exact host revisions and current decisions/queue. Fresh reducers cannot reuse only a persisted cursor. `DecisionBroker` registers before emitting prompts and broadcasts metadata-only settlements to all run readers. Receipt outcome recording is independent of projector failures.
+
+Child/oversized snapshot support, full settings/iframe parity and mobile retirement remain incomplete. Runtime still advertises `sharedRuns:false`; see `../shared-ui-implementation-status.md` for acceptance limits and actual validation.
+
+## Snapshot payload and receipt continuation
+
+Current turn events spill through `SnapshotEventJournal` into private server-temp scratch with a process-wide 512 MiB budget. Immutable prefix leases supply bounded parts for bootstrap and large individual events; viewers detach while hydrating then replay above S. Capacity errors do not cancel execution. Main bootstrap includes exact rows/deletion IDs; child bootstrap includes its persisted transcript and current tail. Scratch is disposed on host stop/terminal eviction; confirmed-dead PID directories are reclaimed. Decision receipts are kind-scoped (upgrade and approval may share a tool-call ID); migrations 10–11 preserve prototype receipts. Compact retry tombstones are not pruned into permission to reexecute old commands.

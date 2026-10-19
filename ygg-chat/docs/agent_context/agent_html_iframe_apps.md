@@ -65,3 +65,9 @@ Use this when changing:
 - `agent_custom_tools.md`
 - `agent_global_persistent_agent.md`
 - `html_frame_context.md`
+
+## Attached browser transport
+
+Browser iframe operations use `src/platform/hostAppClient.ts` and the explicit `server/routes/hostAppBridgeRoutes.ts` methods. The parent supplies workspace, mode, tool provenance and session-only access; mutating actions require confirmation. Existing-file writes require read hash. RPC never exposes storage/Conf or arbitrary IPC. HTTP is public-destination-only with pinned DNS and no ambient credentials. Browser frames are opaque sandbox origins (no `allow-same-origin`) so app scripts cannot reach the parent store or mint host sessions directly. Native preload behavior stays separate. `appPermissions.agent` still does not expose the retired agent product.
+
+`YGG_BROWSER_ALLOWED_ORIGINS` is a comma-separated explicit HTTP(S) origin list for a root-path reverse proxy that rewrites Host. It is not authentication. See `shared-ui-implementation-status.md` for acceptance limitations.

@@ -25,8 +25,8 @@ function normalizeWorkspacePath(workspacePath: string): string {
   return process.platform === 'win32' ? resolvedPath.toLowerCase() : resolvedPath
 }
 
-export function createLspSessionKey(serverId: string, workspacePath: string): string {
-  return `${serverId}::${normalizeWorkspacePath(workspacePath)}`
+export function createLspSessionKey(serverId: string, workspacePath: string, clientId = 'legacy'): string {
+  return JSON.stringify([clientId, serverId, normalizeWorkspacePath(workspacePath)])
 }
 
 function buildWorkspaceUri(workspacePath: string): string {
@@ -44,7 +44,7 @@ export class LspManager {
     return Array.from(this.sessions.values()).map(session => session.getSummary())
   }
 
-  resolveFile(filePath: string, preferredServerId?: string | null): LspResolveResult {
+  resolveFile(filePath: string, preferredServerId?: string | null, clientId = 'legacy'): LspResolveResult {
     const resolvedFilePath = path.resolve(filePath)
     const languageMatch = getLspLanguageForFilePath(resolvedFilePath)
 
@@ -71,7 +71,7 @@ export class LspManager {
 
     const workspacePath = findWorkspaceRoot(resolvedFilePath, serverDefinition.rootMarkers)
     const workspaceUri = buildWorkspaceUri(workspacePath)
-    const sessionKey = createLspSessionKey(serverDefinition.id, workspacePath)
+    const sessionKey = createLspSessionKey(serverDefinition.id, workspacePath, clientId)
     const resolvedCommand = resolveLspCommand(serverDefinition)
 
     if (!resolvedCommand) {
@@ -111,8 +111,8 @@ export class LspManager {
     }
   }
 
-  private buildSession(serverDefinition: LspServerDefinition, workspacePath: string, resolvedCommand: ResolvedLspCommand): LspSession {
-    const sessionKey = createLspSessionKey(serverDefinition.id, workspacePath)
+  private buildSession(serverDefinition: LspServerDefinition, workspacePath: string, resolvedCommand: ResolvedLspCommand, clientId: string): LspSession {
+    const sessionKey = createLspSessionKey(serverDefinition.id, workspacePath, clientId)
     return new LspSession({
       sessionKey,
       serverDefinition,
@@ -122,19 +122,20 @@ export class LspManager {
     })
   }
 
-  ensureSession(serverId: string, workspacePath: string): LspSession {
+  ensureSession(serverId: string, workspacePath: string, clientId = 'legacy'): LspSession {
     const serverDefinition = getLspServerDefinition(serverId)
     if (!serverDefinition) {
       throw new Error(`Unknown LSP server '${serverId}'.`)
     }
 
     const resolvedWorkspacePath = path.resolve(workspacePath)
-    const sessionKey = createLspSessionKey(serverId, resolvedWorkspacePath)
+    const sessionKey = createLspSessionKey(serverId, resolvedWorkspacePath, clientId)
     const existingSession = this.sessions.get(sessionKey)
     if (existingSession) {
       return existingSession
     }
 
+    if (this.sessions.size >= 32) throw new Error('LSP session limit reached; close an unused editor first')
     const resolvedCommand = resolveLspCommand(serverDefinition)
     if (!resolvedCommand) {
       throw new Error(
@@ -142,14 +143,29 @@ export class LspManager {
       )
     }
 
-    const session = this.buildSession(serverDefinition, resolvedWorkspacePath, resolvedCommand)
+    const session = this.buildSession(serverDefinition, resolvedWorkspacePath, resolvedCommand, clientId)
     this.sessions.set(sessionKey, session)
     return session
   }
 
   async attachSocket(options: LspSessionAttachOptions): Promise<void> {
-    const session = this.ensureSession(options.serverId, options.workspacePath)
-    await session.attachSocket(options)
+    const clientId = options.clientId || 'legacy'
+    const session = this.ensureSession(options.serverId, options.workspacePath, clientId)
+    try { await session.attachSocket(options) } catch (error) {
+      if (!session.getSummary().attached && this.sessions.get(session.sessionKey) === session) {
+        this.sessions.delete(session.sessionKey)
+        await session.stop(true)
+      }
+      throw error
+    }
+    // A new JSON-RPC connection initializes its own process/document state. On
+    // disconnect destroy only this client session; never reuse stale protocol IDs.
+    options.socket.once('close', () => {
+      if (session.getSummary().attached) return
+      if (this.sessions.get(session.sessionKey) !== session) return
+      this.sessions.delete(session.sessionKey)
+      void session.stop(true)
+    })
   }
 
   async collectFileContext(filePath: string, preferredServerId?: string | null): Promise<LspFileContext | null> {
@@ -157,14 +173,16 @@ export class LspManager {
     return collectLspFileContext(resolved)
   }
 
-  async restartSession(serverId: string, workspacePath: string): Promise<LspSessionSummary> {
-    const session = this.ensureSession(serverId, workspacePath)
-    await session.restart()
+  async restartSession(serverId: string, workspacePath: string, clientId = 'legacy'): Promise<LspSessionSummary> {
+    const session = this.ensureSession(serverId, workspacePath, clientId)
+    // Close the old protocol connection; the client reinitializes and replays its documents.
+    this.sessions.delete(session.sessionKey)
+    await session.stop(true)
     return session.getSummary()
   }
 
-  async shutdownSession(serverId: string, workspacePath: string): Promise<boolean> {
-    const sessionKey = createLspSessionKey(serverId, workspacePath)
+  async shutdownSession(serverId: string, workspacePath: string, clientId = 'legacy'): Promise<boolean> {
+    const sessionKey = createLspSessionKey(serverId, workspacePath, clientId)
     const session = this.sessions.get(sessionKey)
     if (!session) return false
     await session.stop(true)

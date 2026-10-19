@@ -302,10 +302,10 @@ export function projectServerEvent(event: ServerStreamEvent, ctx: ProjectionCont
 
     case 'compaction_control_persisted':
     case 'context_injection_persisted': {
-      // A mid-run context row (post-compaction re-injection). Add it to the tree only;
-      // it is not a branch anchor and must not move the stream's trigger message.
+      // Context/control rows advance the durable head, but are not a new user
+      // trigger. Use the guarded continuation path, preserving pane ownership.
       const message = normalizeServerMessage(event.message)
-      return message ? [chatSliceActions.messageAdded(message)] : []
+      return message ? [chatSliceActions.messageAdded(message), chatSliceActions.queuedMessageInserted({ message, streamId })] : []
     }
 
     case 'user_message_persisted': {
@@ -489,6 +489,9 @@ export function projectServerEvent(event: ServerStreamEvent, ctx: ProjectionCont
       }
       return actions
     }
+
+    case 'decision_settled':
+      return [chatSliceActions.decisionSettled({ streamId: event.streamId, toolCallId: event.toolCallId })]
 
     case 'permission_required': {
       // Carry streamId + toolCallId so the resolver thunk can POST /resume (Phase 2).

@@ -7,13 +7,6 @@ interface ProtectedRouteProps {
 }
 
 const ProtectedRoute: React.FC<ProtectedRouteProps> = ({ children }) => {
-  // Bypass authentication in local environment
-  const isLocal = import.meta.env.VITE_ENVIRONMENT === 'local'
-
-  if (isLocal) {
-    return <>{children}</>
-  }
-
   const { user, loading } = useAuth()
 
   if (loading) {

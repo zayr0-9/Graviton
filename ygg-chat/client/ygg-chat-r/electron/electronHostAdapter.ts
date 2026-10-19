@@ -42,7 +42,8 @@ export function buildElectronServerConfig(options: ElectronServerOptions): YggSe
     tempDir: app.getPath('temp'),
     dbPath: path.join(userDataDir, 'local-sync.db'),
     resourcesDir: app.isPackaged ? process.resourcesPath : app.getAppPath(),
-    cors: { mode: 'permissive', allowedOrigins: [] },
+    browserUiDir: path.join(app.getAppPath(), 'dist-browser'),
+    cors: { mode: 'permissive', allowedOrigins: (process.env.YGG_BROWSER_ALLOWED_ORIGINS || '').split(',').map(value => value.trim()).filter(Boolean) },
     oauth: { enabled: true, callbackHost: '127.0.0.1', callbackPort: 1455 },
     toolRuntime: {
       mode: process.env.YGG_TOOLS_RUNTIME?.trim().toLowerCase() === 'utility' ? 'utility' : 'local',

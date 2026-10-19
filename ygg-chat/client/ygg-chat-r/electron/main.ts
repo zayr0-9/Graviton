@@ -1,3 +1,7 @@
+import { createNativeHostSessionInstaller } from './nativeHostSession.js'
+import { TerminalService } from '../server/terminal/terminalService.js'
+import { readHostExecutionPreferences, saveHostExecutionPreferences, importHostExecutionPreferences } from '../server/hostExecutionStore.js'
+import { getHostPromptStore } from '../server/hostPromptStore.js'
 import { getAuthManager, publicAuthState, disconnectAuth, importLegacyRenderer, enableLocalLogin } from '../server/auth/runtime.js'
 import { startAppLogin, completeAppCode, completeAppCallback, cancelAppLogin } from '../server/auth/appLogin.js'
 import Conf from 'conf'
@@ -24,7 +28,7 @@ import { buildElectronHostCapabilities, buildElectronServerConfig } from './elec
 import { createYggServer, type YggServerHandle } from '../server/createYggServer.js'
 import { ensureManagedCustomToolsInitialized } from '../server/tools/customToolLoader.js'
 import { ensureManagedThemesInitialized } from '../server/tools/themeManager.js'
-import { detectPathType, getWSLCommandArgs, isWindows } from '../server/utils/wslBridge.js'
+import { clampTerminalDimension, resolveTerminalLaunch } from '../server/terminal/terminalLaunch.js'
 import { OpenAiChatgptProvider } from '../server/headlessServer/providers/openaiChatgptProvider.js'
 import { fetchOpenAIUsageStatus } from '../server/auth/codexUsage.js'
 
@@ -63,6 +67,8 @@ let localServerPort: number | null = null
 let localServerUrl: string | null = null
 let localServerLanUrl: string | null = null
 let localServerError: string | null = null
+const installNativeHostSession = createNativeHostSessionInstaller(() => localServerUrl,
+  id => id === mainWindow?.webContents.id || id === floatingWindow?.webContents.id)
 
 const LOCAL_SERVER_PREFERRED_PORT = 3002
 const LOCAL_SERVER_FALLBACK_PORTS = Array.from({ length: 13 }, (_, index) => LOCAL_SERVER_PREFERRED_PORT + 1 + index)
@@ -268,7 +274,6 @@ const activeReadStreams = new Map<
 
 type TerminalSessionRecord = {
   sessionId: string
-  pty: import('node-pty').IPty
   sender: Electron.WebContents
   cwd: string
   shell: string
@@ -277,6 +282,14 @@ type TerminalSessionRecord = {
 }
 
 const activeTerminalSessions = new Map<string, TerminalSessionRecord>()
+const terminalOwners = new Set<number>()
+const nativeTerminals = new TerminalService((...args) => getNodePtyModule().spawn(...args), 0)
+nativeTerminals.subscribe((owner, type, payload) => {
+  const session = activeTerminalSessions.get(payload.sessionId)
+  if (!session || owner !== String(session.sender.id)) return
+  sendTerminalEvent(session.sender, `terminal:${type}`, payload)
+  if (type === 'exit') activeTerminalSessions.delete(payload.sessionId)
+})
 
 function getNodePtyModule(): typeof import('node-pty') {
   return require('node-pty') as typeof import('node-pty')
@@ -286,75 +299,6 @@ function makeTerminalSessionId(): string {
   return `terminal_${Date.now()}_${Math.random().toString(16).slice(2)}`
 }
 
-function clampTerminalDimension(value: number | undefined, fallback: number, min: number, max: number): number {
-  if (!Number.isFinite(value)) return fallback
-  return Math.min(max, Math.max(min, Math.floor(value as number)))
-}
-
-function normalizeTerminalCwd(inputCwd?: string): string {
-  const trimmed = inputCwd?.trim()
-  if (!trimmed) {
-    return process.cwd()
-  }
-
-  if (!isWindows()) {
-    return path.isAbsolute(trimmed) ? trimmed : path.resolve(trimmed)
-  }
-
-  const pathType = detectPathType(trimmed)
-  if (pathType === 'linux') {
-    return trimmed
-  }
-  if (pathType === 'windows') {
-    return path.win32.normalize(trimmed)
-  }
-  return path.win32.resolve(trimmed)
-}
-
-async function resolveTerminalLaunch(inputCwd?: string): Promise<{
-  file: string
-  args: string[]
-  spawnCwd: string
-  displayCwd: string
-  shellLabel: string
-}> {
-  const normalizedCwd = normalizeTerminalCwd(inputCwd)
-
-  if (!isWindows()) {
-    const shellPath = process.env.SHELL?.trim() || '/bin/bash'
-    return {
-      file: shellPath,
-      args: ['-i'],
-      spawnCwd: normalizedCwd,
-      displayCwd: normalizedCwd,
-      shellLabel: path.posix.basename(shellPath) || shellPath,
-    }
-  }
-
-  if (detectPathType(normalizedCwd) === 'linux') {
-    const [file, args] = await getWSLCommandArgs('bash', ['-i'], normalizedCwd)
-    return {
-      file,
-      args,
-      spawnCwd: process.cwd(),
-      displayCwd: normalizedCwd,
-      shellLabel: 'wsl bash',
-    }
-  }
-
-  const configuredShell = process.env.YGG_TERMINAL_SHELL?.trim()
-  const shellPath = configuredShell || 'powershell.exe'
-  const shellBaseName = path.win32.basename(shellPath).toLowerCase()
-  const args = shellBaseName === 'powershell.exe' || shellBaseName === 'pwsh.exe' ? ['-NoLogo'] : []
-
-  return {
-    file: shellPath,
-    args,
-    spawnCwd: normalizedCwd,
-    displayCwd: normalizedCwd,
-    shellLabel: path.win32.basename(shellPath) || shellPath,
-  }
-}
 
 function sendTerminalEvent(sender: Electron.WebContents, channel: string, payload: Record<string, any>): void {
   if (!sender.isDestroyed()) {
@@ -367,7 +311,7 @@ function destroyTerminalSession(sessionId: string): boolean {
   if (!session) return false
   activeTerminalSessions.delete(sessionId)
   try {
-    session.pty.kill()
+    nativeTerminals.kill(String(session.sender.id), sessionId)
   } catch (error) {
     console.warn('[Electron Terminal] Failed to kill session:', error)
   }
@@ -585,7 +529,7 @@ function isGuestBrowserDevToolsEnabled(): boolean {
 
 function syncLmStudioBaseUrlFromStore(): void {
   try {
-    const providerSettings = getFromStore('ygg_provider_settings')
+    const providerSettings = getFromStore('host_execution_preferences_v1')?.values?.provider ?? getFromStore('ygg_provider_settings')
     const rawValue = typeof providerSettings?.lmStudioBaseUrl === 'string' ? providerSettings.lmStudioBaseUrl.trim() : ''
     if (rawValue) {
       const normalized = rawValue.replace(/\/+$/, '').replace(/\/v1$/i, '')
@@ -601,7 +545,7 @@ function syncLmStudioBaseUrlFromStore(): void {
 
 function syncOpenAiChatGptMaxContextFromStore(): void {
   try {
-    const providerSettings = getFromStore('ygg_provider_settings')
+    const providerSettings = getFromStore('host_execution_preferences_v1')?.values?.provider ?? getFromStore('ygg_provider_settings')
     const rawValue = providerSettings?.openAiChatGptMaxContextTokens
     if (typeof rawValue === 'number' && Number.isFinite(rawValue) && rawValue > 0) {
       process.env.YGG_OPENAI_CHATGPT_MAX_CONTEXT_TOKENS = String(Math.floor(rawValue))
@@ -616,7 +560,7 @@ function syncOpenAiChatGptMaxContextFromStore(): void {
 
 function getOpenAiPromptCacheRetentionFromStore(): 'in_memory' | '24h' {
   try {
-    const providerSettings = getFromStore('ygg_provider_settings')
+    const providerSettings = getFromStore('host_execution_preferences_v1')?.values?.provider ?? getFromStore('ygg_provider_settings')
     return providerSettings?.openAiPromptCacheRetention === '24h' ? '24h' : 'in_memory'
   } catch {
     return 'in_memory'
@@ -704,6 +648,14 @@ function createWindow() {
           }),
     show: false, // Don't show until ready
   })
+
+  installNativeHostSession(mainWindow.webContents.session)
+
+  // A login reservation belongs to the initiating document, not a dead frame.
+  mainWindow.webContents.on('did-start-navigation', (_event, _url, isInPlace, isMainFrame) => {
+    if (isMainFrame && !isInPlace) cancelAppLogin()
+  })
+  mainWindow.webContents.on('render-process-gone', () => cancelAppLogin())
 
   if (process.platform === 'win32' && isWin11) {
     mainWindow.setBackgroundMaterial('acrylic')
@@ -930,6 +882,8 @@ function createFloatingWindow() {
     },
   })
 
+  installNativeHostSession(floatingWindow.webContents.session)
+
   // Set floating level for better visibility over fullscreen apps
   floatingWindow.setAlwaysOnTop(true, 'floating', 1)
   // Make window visible on all workspaces (including fullscreen apps)
@@ -1072,6 +1026,9 @@ function handleOAuthCallback(url: string) {
 
 // App lifecycle
 app.whenReady().then(async () => {
+  app.on('session-created', installNativeHostSession)
+  if (!app.isPackaged) process.env.YGG_CLIENT_DEV_ORIGIN = 'http://localhost:5173'
+  else delete process.env.YGG_CLIENT_DEV_ORIGIN
   try {
     await initializeStore()
     syncLmStudioBaseUrlFromStore()
@@ -1219,6 +1176,7 @@ app.on('before-quit', event => {
   }
 
   isQuitting = true
+  nativeTerminals.shutdown()
   for (const sessionId of Array.from(activeTerminalSessions.keys())) {
     destroyTerminalSession(sessionId)
   }
@@ -1271,10 +1229,30 @@ function authHandle(channel: string, handler: (...args: any[]) => any): void {
     return handler(event, ...args)
   })
 }
+function promptHandle(channel: string, handler: (...args: any[]) => any): void {
+  ipcMain.handle(channel, (event, ...args) => {
+    const trusted = [mainWindow, floatingWindow].some(window => window && !window.isDestroyed() && window.webContents === event.sender)
+    if (!trusted || event.senderFrame !== event.sender.mainFrame) throw new Error('Untrusted prompt caller')
+    return handler(event, ...args)
+  })
+}
+promptHandle('execution-preferences:read', () => readHostExecutionPreferences())
+promptHandle('execution-preferences:save', (_event, request) => saveHostExecutionPreferences(request))
+promptHandle('execution-preferences:import', (event, raw) => event.sender === mainWindow?.webContents ? importHostExecutionPreferences(raw) : readHostExecutionPreferences())
+promptHandle('prompts:read', () => getHostPromptStore().snapshot())
+promptHandle('prompts:save', (_event, revision: number, prompts: unknown, identity: { hostId: string; epoch: string }) => {
+  try { return { snapshot: getHostPromptStore().save(revision, prompts, identity) } }
+  catch (error) { return { error: error instanceof Error ? error.message : 'Could not save prompts', conflict: (error as any)?.status === 409 } }
+})
+promptHandle('prompts:import', (event, prompts: unknown) => {
+  if (event.sender !== mainWindow?.webContents) return getHostPromptStore().snapshot()
+  return getHostPromptStore().importLegacy(prompts)
+})
 authHandle('auth:status', () => publicAuthState())
-authHandle('auth:start', (_event, provider: string, oob: boolean) => ({ url: startAppLogin(provider, oob) }))
-authHandle('auth:code', async (_event, code: string) => { const result = await completeAppCode(code); await syncAuthenticatedProfile(result.user); return publicAuthState() })
-authHandle('auth:cancel', () => { cancelAppLogin(); return true })
+const loginOwner = (event: Electron.IpcMainInvokeEvent) => `${event.sender.id}:${event.senderFrame?.processId}:${event.senderFrame?.routingId}`
+authHandle('auth:start', (event, provider: string, oob: boolean) => ({ url: startAppLogin(provider, oob, loginOwner(event)) }))
+authHandle('auth:code', async (event, code: string) => { const result = await completeAppCode(code, loginOwner(event)); await syncAuthenticatedProfile(result.user); return publicAuthState() })
+authHandle('auth:cancel', event => { cancelAppLogin(loginOwner(event)); return true })
 authHandle('auth:migrate', (_event, values) => { importLegacyRenderer(values); return publicAuthState() })
 authHandle('auth:check', async () => { await getAuthManager().check(); return publicAuthState() })
 let authEventsAttached = false
@@ -1689,10 +1667,10 @@ ipcMain.handle(
 )
 
 // Abort an active file stream
-ipcMain.handle('fs:abortReadFileStream', async (_event, streamId: string) => {
+ipcMain.handle('fs:abortReadFileStream', async (event, streamId: string) => {
   // console.log('[Electron IPC] Aborting file stream:', streamId)
   const meta = activeReadStreams.get(streamId)
-  if (!meta) {
+  if (!meta || meta.sender.id !== event.sender.id) {
     return { success: false, error: 'Stream not found' }
   }
 
@@ -1776,70 +1754,28 @@ ipcMain.handle(
     }
   ) => {
     try {
-      const launch = await resolveTerminalLaunch(options?.cwd)
-      const { spawn } = getNodePtyModule()
-      const cols = clampTerminalDimension(options?.cols, 120, 20, 400)
-      const rows = clampTerminalDimension(options?.rows, 32, 5, 200)
-      const sessionId = makeTerminalSessionId()
-      const pty = spawn(launch.file, launch.args, {
-        name: 'xterm-256color',
-        cols,
-        rows,
-        cwd: launch.spawnCwd,
-        env: {
-          ...process.env,
-          TERM: 'xterm-256color',
-          COLORTERM: 'truecolor',
-        },
-        ...(process.platform === 'win32' ? { useConpty: true } : {}),
-      })
+      const created = await nativeTerminals.create(String(event.sender.id), makeTerminalSessionId(), options ?? {})
+      const { sessionId, cols, rows, cwd, shell } = created
 
       const session: TerminalSessionRecord = {
         sessionId,
-        pty,
         sender: event.sender,
-        cwd: launch.displayCwd,
-        shell: launch.shellLabel,
+        cwd,
+        shell,
         cols,
         rows,
       }
       activeTerminalSessions.set(sessionId, session)
 
-      event.sender.once('destroyed', () => {
-        cleanupTerminalSessionsForSender(event.sender)
-      })
-
-      pty.onData(data => {
-        const activeSession = activeTerminalSessions.get(sessionId)
-        if (!activeSession) return
-        sendTerminalEvent(activeSession.sender, 'terminal:data', {
-          sessionId,
-          data,
-        })
-      })
-
-      pty.onExit(({ exitCode, signal }) => {
-        const activeSession = activeTerminalSessions.get(sessionId)
-        if (!activeSession) return
-        activeTerminalSessions.delete(sessionId)
-        sendTerminalEvent(activeSession.sender, 'terminal:exit', {
-          sessionId,
-          exitCode,
-          signal,
-          cwd: activeSession.cwd,
-          shell: activeSession.shell,
-        })
-      })
-
-      return {
-        success: true,
-        sessionId,
-        cwd: launch.displayCwd,
-        shell: launch.shellLabel,
-        cols,
-        rows,
-        title: options?.title || 'Terminal',
+      if (!terminalOwners.has(event.sender.id)) {
+        terminalOwners.add(event.sender.id)
+        event.sender.once('destroyed', () => { cleanupTerminalSessionsForSender(event.sender); terminalOwners.delete(event.sender.id) })
+        event.sender.on('did-start-navigation', (_event, _url, _inPlace, isMainFrame) => { if (isMainFrame) cleanupTerminalSessionsForSender(event.sender) })
+        event.sender.on('render-process-gone', () => cleanupTerminalSessionsForSender(event.sender))
       }
+
+      if (event.sender.isDestroyed()) { destroyTerminalSession(sessionId); return { success: false, error: 'Terminal view closed' } }
+      return created
     } catch (error) {
       console.error('[Electron Terminal] Failed to create terminal session:', error)
       return { success: false, error: error instanceof Error ? error.message : String(error) }
@@ -1854,7 +1790,7 @@ ipcMain.handle('terminal:write', async (event, sessionId: string, data: string) 
   }
 
   try {
-    session.pty.write(typeof data === 'string' ? data : String(data ?? ''))
+    nativeTerminals.write(String(event.sender.id), sessionId, typeof data === 'string' ? data : String(data ?? ''))
     return { success: true }
   } catch (error) {
     console.error('[Electron Terminal] Failed to write to terminal session:', error)
@@ -1873,7 +1809,7 @@ ipcMain.handle('terminal:resize', async (event, sessionId: string, cols: number,
     const nextRows = clampTerminalDimension(rows, session.rows || 32, 5, 200)
     session.cols = nextCols
     session.rows = nextRows
-    session.pty.resize(nextCols, nextRows)
+    nativeTerminals.resize(String(event.sender.id), sessionId, nextCols, nextRows)
     return { success: true }
   } catch (error) {
     console.error('[Electron Terminal] Failed to resize terminal session:', error)
@@ -2335,6 +2271,8 @@ ipcMain.handle('sync:status', async () => {
     localServerPort,
     localServerUrl,
     localServerLanUrl,
+    localServerBindHost: LOCAL_SERVER_HOST,
+    localServerExposure: LOCAL_SERVER_ALLOW_REMOTE ? 'trusted-network-unprotected' : 'loopback',
     localServerError: health.ok ? null : (health.error ?? localServerError),
     localServerForeign: health.foreign,
   }

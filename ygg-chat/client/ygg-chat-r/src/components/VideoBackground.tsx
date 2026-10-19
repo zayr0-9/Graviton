@@ -1,4 +1,6 @@
-import React, { useEffect, useState } from 'react'
+import React, { useEffect, useLayoutEffect, useState } from 'react'
+import { isNativeShell } from '../platform/clientCapabilities'
+import { opaqueAppBackground } from '../helpers/opaqueAppBackground'
 import {
   BackgroundColorSettings,
   BackgroundMode,
@@ -55,7 +57,7 @@ const VideoBackground: React.FC = () => {
   }, [])
 
   useEffect(() => {
-    if (backgroundMode !== 'video') {
+    if (!isNativeShell || backgroundMode !== 'video') {
       setActiveVideoUrl(null)
       return
     }
@@ -124,7 +126,7 @@ const VideoBackground: React.FC = () => {
 
     const root = document.documentElement
     const textColorMode =
-      backgroundMode === 'video' ? getActiveTextColorMode() : isDarkTheme ? 'light' : 'dark'
+      isNativeShell && backgroundMode === 'video' ? getActiveTextColorMode() : isDarkTheme ? 'light' : 'dark'
 
     root.classList.remove('video-text-light', 'video-text-dark')
 
@@ -145,10 +147,20 @@ const VideoBackground: React.FC = () => {
       ? backgroundColors.dark
       : backgroundColors.light
 
-  const hasActiveCustomVideo = backgroundMode === 'video' && Boolean(activeVideoMeta && activeVideoUrl)
+  const solidBrowserColor = opaqueAppBackground(colorBackgroundColor, isDarkTheme)
+  useLayoutEffect(() => {
+    if (isNativeShell) return
+    const style = document.documentElement.style
+    style.setProperty('--browser-app-background', solidBrowserColor)
+    return () => { style.removeProperty('--browser-app-background') }
+  }, [solidBrowserColor])
+
+  const hasActiveCustomVideo = isNativeShell && backgroundMode === 'video' && Boolean(activeVideoMeta && activeVideoUrl)
   // Native glass remains visible on macOS/Windows. Linux retains its solid
   // fallback for window managers where desktop transparency is unreliable.
-  const backgroundStyle: React.CSSProperties = customThemeEnabled
+  const backgroundStyle: React.CSSProperties = !isNativeShell
+    ? { backgroundColor: solidBrowserColor }
+    : customThemeEnabled
     ? {
         backgroundColor: isDarkTheme ? DEFAULT_BACKGROUND_COLORS.dark : DEFAULT_BACKGROUND_COLORS.light,
         backgroundImage: [

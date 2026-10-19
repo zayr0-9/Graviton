@@ -193,7 +193,7 @@ describe('registerChatRoutes — resumable runs (detach/reattach)', () => {
     harness.release()
     const replay = await duplicateEvents
     expect(replay.map(event => event.type)).toEqual(['started', 'complete'])
-    await firstEvents
+    expect((await firstEvents).map(event => event.type)).toEqual(['started', 'complete'])
   })
 
   it('POST /api/streams/:id/abort is the only thing that cancels a live run', async () => {

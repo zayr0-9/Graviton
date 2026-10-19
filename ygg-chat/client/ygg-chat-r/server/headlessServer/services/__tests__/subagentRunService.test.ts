@@ -194,6 +194,8 @@ class FakeRunSessionRegistry {
     const record = this.sessions.get(streamId)
     if (!record) return undefined
     return {
+      setProjector: (_project: unknown) => {},
+      setChildSnapshotProvider: (_provider: unknown) => {},
       publish: (event: any) => {
         record.published.push(event)
         if (event.type === 'complete' || event.type === 'error') record.terminal = true

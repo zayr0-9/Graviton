@@ -1,6 +1,7 @@
+import { OPEN_HOST_FILE } from './helpers/hostFileNavigation'
 import { Analytics } from '@vercel/analytics/react'
 import { AnimatePresence } from 'framer-motion'
-import { useCallback, useEffect, useRef } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { getThemeModeColor, useCustomChatTheme, useHtmlDarkMode } from './components/ThemeManager/themeConfig'
 import { BrowserRouter, HashRouter, Navigate, Route, Routes, useLocation } from 'react-router-dom'
 import './App.css'
@@ -45,10 +46,9 @@ import { NavigationCommands } from './keyboard/NavigationCommands'
 
 // Use HashRouter for Electron (file:// protocol requires hash-based routing)
 // Use BrowserRouter for web (standard HTML5 history API)
-const isElectron =
-  (typeof __IS_ELECTRON__ !== 'undefined' && __IS_ELECTRON__) || import.meta.env.VITE_ENVIRONMENT === 'electron'
+import { isHostClient } from './platform/clientCapabilities'
 
-const Router = isElectron ? HashRouter : BrowserRouter
+const Router = isHostClient ? HashRouter : BrowserRouter
 
 const TOOL_VIEWER_HIDDEN_ROUTES = new Set([
   '/',
@@ -157,11 +157,10 @@ const HtmlToolsShell = ({ enabled }: { enabled: boolean }) => {
 
 const SideBarShell = () => {
   const location = useLocation()
-  const isMobile = useIsMobile()
   const currentUser = useAppSelector(selectCurrentUser)
   const currentConversationId = useAppSelector(selectCurrentConversationId)
 
-  if (!currentUser || isMobile) return null
+  if (!currentUser) return null
 
   const isVisibleRoute = SIDEBAR_VISIBLE_ROUTE_PATTERNS.some(pattern => pattern.test(location.pathname))
 
@@ -170,7 +169,20 @@ const SideBarShell = () => {
 
 const RightBarShell = () => {
   const location = useLocation()
+  const [mobileOpen, setMobileOpen] = useState(false)
+  const workspaceDialog = useRef<HTMLDialogElement>(null)
   const isMobile = useIsMobile()
+  useEffect(() => {
+    const dialog = workspaceDialog.current
+    if (!dialog?.isConnected) return
+    if (mobileOpen && !dialog.open) dialog.showModal()
+    else if (!mobileOpen && dialog.open) dialog.close()
+  }, [mobileOpen, isMobile, location.pathname])
+  useEffect(() => {
+    const open = () => setMobileOpen(true)
+    window.addEventListener(OPEN_HOST_FILE, open)
+    return () => window.removeEventListener(OPEN_HOST_FILE, open)
+  }, [])
   const currentConversationId = useAppSelector(selectCurrentConversationId)
   const ccCwd = useAppSelector(selectCcCwd)
   const { data: notes = [], isLoading: isLoadingNotes } = useResearchNotes()
@@ -180,12 +192,12 @@ const RightBarShell = () => {
     dispatchChatInsertFilePath(path)
   }, [])
 
-  if (isMobile) return null
   if (RIGHTBAR_HIDDEN_ROUTES.has(location.pathname) || RECENT_LINEAGES_ROUTE_PATTERN.test(location.pathname))
     return null
 
-  return (
+  const workspace = (
     <RightBar
+      fullscreenWorkspace={isMobile}
       conversationId={isChatRoute ? currentConversationId : null}
       notes={notes}
       isLoadingNotes={isLoadingNotes}
@@ -193,6 +205,16 @@ const RightBarShell = () => {
       onFilePathInsert={isChatRoute ? handleFilePathInsert : undefined}
     />
   )
+  if (!isMobile) return workspace
+  return <>
+    <button type='button' className='fixed right-3 top-3 z-40 rounded-full bg-white/90 px-3 py-2 text-sm dark:bg-neutral-800' aria-expanded={mobileOpen} onClick={() => setMobileOpen(true)}>Workspace</button>
+    <dialog ref={workspaceDialog} className='fixed inset-0 m-0 h-[100dvh] max-h-none w-screen max-w-none border-0 bg-white p-0 text-inherit dark:bg-neutral-950' aria-label='Workspace' onCancel={() => setMobileOpen(false)} onClose={() => setMobileOpen(false)}>
+      <div className='flex h-full min-h-0 flex-col' style={{ paddingTop: 'env(safe-area-inset-top)', paddingBottom: 'env(safe-area-inset-bottom)' }}>
+        <button type='button' className='min-h-11 self-end px-4 py-3' onClick={() => setMobileOpen(false)}>Close workspace</button>
+        <div className='min-h-0 flex-1 overflow-auto'>{workspace}</div>
+      </div>
+    </dialog>
+  </>
 }
 
 function AnimatedRoutes() {
@@ -226,7 +248,7 @@ function AnimatedRoutes() {
             </ProtectedRoute>
           }
         />
-        <Route path='/' element={isElectron ? <Navigate to='/login' replace /> : <LandingPage />} />
+        <Route path='/' element={isHostClient ? <Navigate to='/login' replace /> : <LandingPage />} />
         <Route
           path='/homepage'
           element={
@@ -254,7 +276,7 @@ function AnimatedRoutes() {
         <Route
           path='/projects/:projectId/lineages/recent'
           element={
-            isElectron ? (
+            isHostClient ? (
               <ProtectedRoute>
                 <RecentLineages />
               </ProtectedRoute>
@@ -356,7 +378,7 @@ function App() {
         </div>
         <RightBarShell />
       </div>
-      <HtmlToolsShell enabled={isElectron} />
+      <HtmlToolsShell enabled={isHostClient} />
       <GlobalNotifications />
     </>
   )
@@ -367,7 +389,7 @@ function App() {
         <KeyboardProvider>
           <NavigationCommands>
             <ChatSelectionProvider>
-              {isElectron ? (
+              {isHostClient ? (
                 <HtmlIframeRegistryProvider resetKey={resetKey}>{appShell}</HtmlIframeRegistryProvider>
               ) : (
                 appShell
@@ -376,7 +398,7 @@ function App() {
           </NavigationCommands>
         </KeyboardProvider>
       </Router>
-      {!isElectron && <Analytics />}
+      {!isHostClient && <Analytics />}
     </>
   )
 }

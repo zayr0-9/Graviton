@@ -1,3 +1,4 @@
+import { newClientId } from '../../helpers/clientId'
 import type { ChatState } from './chatTypes'
 import {
   chatSelectionCancelled, chatSelectionCommitted, chatSelectionFailed, chatSelectionRequested, chatSelectionResumed,
@@ -30,7 +31,7 @@ export function createChatSelectionController(deps: {
   const request = (target: ChatSelectionTarget, source: string) => {
     pending?.abort.abort()
     pending = null
-    const requestId = deps.createRequestId?.() ?? crypto.randomUUID()
+    const requestId = deps.createRequestId?.() ?? newClientId()
     deps.dispatch(chatSelectionRequested({ requestId, target, source }))
     return requestId
   }

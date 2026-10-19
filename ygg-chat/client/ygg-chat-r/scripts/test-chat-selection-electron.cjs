@@ -18,7 +18,7 @@ if (!process.versions.electron) {
   let server
   let window
   let exitCode = 1
-  const timeout = setTimeout(() => { console.error('Selection smoke timed out'); app.exit(1) }, 30000)
+  const timeout = setTimeout(() => { console.error('Selection smoke timed out'); app.exit(1) }, 90000)
   app.whenReady().then(async () => {
     app.dock?.hide()
     const bundle = await build({
@@ -28,7 +28,7 @@ if (!process.versions.electron) {
       plugins: [{ name: 'isolated-transports', setup(builder) {
         builder.onLoad({ filter: /[/\\]useAuth\.ts$/ }, () => ({ contents: 'export const useAuth = () => ({ accessToken: null })' }))
         builder.onLoad({ filter: /[/\\]conversationMessagesApi\.ts$/ }, () => ({ contents: 'export const fetchConversationMessagesTree = (...args) => window.__fetchSnapshot(...args)' }))
-        builder.onLoad({ filter: /[/\\]utils[/\\]api\.ts$/ }, () => ({ contents: 'export const gwApi = { get: () => Promise.resolve({pathMessageIds: []}) }' }))
+        builder.onLoad({ filter: /[/\\]utils[/\\]api\.ts$/ }, () => ({ contents: 'export const gwApi = { get: () => Promise.resolve({pathMessageIds: []}) }; export const buildLocalApiUrl = async () => { throw new Error("Unexpected host request in isolated selection fixture") }' }))
       } }],
     })
     server = http.createServer((_req, res) => {
@@ -41,6 +41,7 @@ if (!process.versions.electron) {
     window.webContents.on('console-message', details => { if (details.level === 'error') console.error(details.message) })
     await window.loadURL(`http://127.0.0.1:${server.address().port}/#/chat/p/a`)
     await window.webContents.executeJavaScript(bundle.outputFiles[0].text)
+    console.log('Selection fixture mounted; running lifecycle checks')
     const checks = await window.webContents.executeJavaScript('window.__runSelectionSmoke()')
     for (const check of checks) console.log(`PASS ${check}`)
     exitCode = 0

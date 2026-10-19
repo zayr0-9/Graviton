@@ -1,3 +1,5 @@
+import { selectHostFolder } from '../../platform/hostPathPicker'
+import { isHostClient } from '../../platform/clientCapabilities'
 import { ChevronLeft, ChevronRight } from 'lucide-react'
 import { useEffect, useMemo, useState } from 'react'
 import { useLocation } from 'react-router-dom'
@@ -145,12 +147,12 @@ export const TitleBar = () => {
   }
 
   const isChatPage = location.pathname.startsWith('/chat/')
-  const canPickCwd = isChatPage && Boolean(currentConversationId) && Boolean(window.electronAPI?.dialog?.selectFolder)
+  const canPickCwd = isChatPage && Boolean(currentConversationId) && isHostClient
 
   const handlePickCwd = async () => {
     if (!canPickCwd) return
     try {
-      const result = await window.electronAPI?.dialog?.selectFolder()
+      const result = await selectHostFolder()
       if (result?.success && result.path) {
         dispatch(chatSliceActions.ccCwdSet(result.path))
       }

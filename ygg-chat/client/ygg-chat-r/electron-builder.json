@@ -9,6 +9,7 @@
   "artifactName": "Graviton-${version}-${os}-${arch}.${ext}",
   "files": [
     "dist-electron/**/*",
+    "dist-browser/**/*",
     "electron/main.mjs",
     "electron/preload.mjs",
     "electron/toolRuntimeUtility.mjs",

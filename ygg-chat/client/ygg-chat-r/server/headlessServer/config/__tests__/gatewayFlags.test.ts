@@ -78,9 +78,9 @@ describe('resolveGatewayFlags', () => {
     expect(resolveGatewayFlags()).toEqual({ chat: true, crud: true, cloudProxy: true, resumableRuns: true })
   })
 
-  it('reads gateway.resumableRuns independently and only explicit false opts out', () => {
+  it('ignores the obsolete connection-owned lifetime opt-out', () => {
     mockConf.get = key => (key === 'gateway.resumableRuns' ? false : undefined)
-    expect(resolveGatewayFlags()).toEqual({ chat: true, crud: false, cloudProxy: false, resumableRuns: false })
+    expect(resolveGatewayFlags()).toEqual({ chat: true, crud: false, cloudProxy: false, resumableRuns: true })
 
     mockConf.get = key => (key === 'gateway.resumableRuns' ? 'yes' : undefined)
     expect(resolveGatewayFlags()).toEqual({ chat: true, crud: false, cloudProxy: false, resumableRuns: true })

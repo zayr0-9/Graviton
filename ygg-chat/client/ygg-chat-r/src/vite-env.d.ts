@@ -1,7 +1,7 @@
 /// <reference types="vite/client" />
 
 // Build-time constants defined in vite.config.ts
-declare const __BUILD_TARGET__: 'web' | 'electron' | 'local' | 'standalone'
+declare const __BUILD_TARGET__: 'web' | 'electron' | 'local' | 'standalone' | 'browser-client'
 declare const __IS_ELECTRON__: boolean
 declare const __IS_WEB__: boolean
 declare const __IS_LOCAL__: boolean
@@ -9,7 +9,7 @@ declare const __YGG_CODEX_DEV_LOGS__: boolean
 
 interface ImportMetaEnv {
   readonly VITE_API_URL?: string
-  readonly VITE_ENVIRONMENT?: 'web' | 'local' | 'electron' | 'standalone'
+  readonly VITE_ENVIRONMENT?: 'web' | 'local' | 'electron' | 'standalone' | 'browser-client'
   readonly VITE_YGG_SERVER_ORIGIN?: string
   readonly VITE_SUPABASE_URL?: string
   readonly VITE_SUPABASE_ANON_KEY?: string
@@ -22,6 +22,16 @@ interface ImportMeta {
 
 // Electron API types (available when running in Electron)
 interface ElectronAPI {
+  executionPreferences: {
+    read: () => Promise<import('../../../shared/hostExecutionPreferences').HostExecutionSnapshot>
+    save: (request: unknown) => Promise<import('../../../shared/hostExecutionPreferences').HostExecutionSnapshot>
+    importLegacy: (raw: unknown) => Promise<import('../../../shared/hostExecutionPreferences').HostExecutionSnapshot>
+  }
+  prompts: {
+    read: () => Promise<import('../../../shared/hostPrompts').HostPromptSnapshot>
+    save: (revision: number, prompts: unknown, identity: { hostId: string; epoch: string }) => Promise<{ snapshot?: import('../../../shared/hostPrompts').HostPromptSnapshot; error?: string; conflict?: boolean }>
+    importLegacy: (prompts: unknown) => Promise<import('../../../shared/hostPrompts').HostPromptSnapshot>
+  }
   auth: {
     onLoginError: (callback: (message: string) => void) => () => void
     status: () => Promise<any>
@@ -76,6 +86,8 @@ interface ElectronAPI {
       localServerPort: number | null
       localServerUrl: string | null
       localServerLanUrl?: string | null
+      localServerBindHost?: string
+      localServerExposure?: string
       localServerError?: string | null
     }>
   }

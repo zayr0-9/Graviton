@@ -31,7 +31,7 @@ import type { HookRunRequest, HookRunResult } from '../../hooks/hookTypes.js'
 import { filterToolsForOperationMode, requiresAgentMode } from '../../../../../shared/operationModeToolPolicy.js'
 import { OperationModeControl, modeNotificationContent } from './operationModeControl.js'
 import { FULL_ACCESS_NOTIFICATION_KIND, fullAccessNotificationContent } from '../../../../../shared/accessNotifications.js'
-import { MessageInputQueue } from './messageInputQueue.js'
+import { MessageInputQueue, queuedSubmissionFingerprint } from './messageInputQueue.js'
 import type { QueuedMessageSubmission, MessageQueueSnapshot } from '../../../../../shared/queuedMessages.js'
 import {
   normalizeContextDirectorySettings,
@@ -337,14 +337,11 @@ export function createChatPausingExecutor(deps: {
     // clarify channel instead of executed. `call`/`cArgs` are the effective (possibly
     // hook-rewritten) call so a PreToolUse updatedInput reaches the clarify questions.
     const runClarify = async (call: typeof toolCall, cArgs: any) => {
-      emit({
-        type: 'clarify_required',
-        streamId,
-        toolCallId: toolCall.id,
-        toolName: call.name,
-        questions: Array.isArray(cArgs?.questions) ? cArgs.questions : [],
-      })
-      const decision = await broker.requestDecision<ClarifyDecision>({ streamId, toolCallId: toolCall.id, kind: 'clarify', signal: sig })
+      const prompt = { type: 'clarify_required' as const, streamId, toolCallId: toolCall.id,
+        toolName: call.name, questions: Array.isArray(cArgs?.questions) ? cArgs.questions : [] }
+      const pending = broker.requestDecision<ClarifyDecision>({ streamId, toolCallId: toolCall.id, kind: 'clarify', signal: sig, prompt })
+      if (broker.hasPending(streamId, toolCall.id)) emit(prompt)
+      const decision = await pending
       return {
         clarified: !decision.cancelled,
         cancelled: decision.cancelled ?? false,
@@ -361,8 +358,10 @@ export function createChatPausingExecutor(deps: {
       if (isClarify(toolCall.name, args)) return runClarify(toolCall, args)
       if (broker.isAutoApproveAll(streamId)) return base(toolCall, approvedContext())
       if (shouldBypassPermission(toolCall.name, args)) return base(toolCall, { ...context, nestedExecutor: context.nestedExecutor ?? execute })
-      emit({ type: 'permission_required', streamId, toolCallId: toolCall.id, toolName: toolCall.name, toolInput: args })
-      const decision = await broker.requestDecision<PermissionDecision>({ streamId, toolCallId: toolCall.id, kind: 'permission', signal: sig })
+      const prompt = { type: 'permission_required' as const, streamId, toolCallId: toolCall.id, toolName: toolCall.name, toolInput: args }
+      const pending = broker.requestDecision<PermissionDecision>({ streamId, toolCallId: toolCall.id, kind: 'permission', signal: sig, prompt })
+      if (broker.hasPending(streamId, toolCall.id)) emit(prompt)
+      const decision = await pending
       if (decision === 'deny') throw new Error('Tool execution denied by user')
       if (decision === 'allow_always') broker.setAutoApproveAll(streamId)
       return base(toolCall, decision === 'allow_always' ? approvedContext() : { ...context, nestedExecutor: context.nestedExecutor ?? execute })
@@ -397,8 +396,10 @@ export function createChatPausingExecutor(deps: {
       } else {
         // Prompt shows the rewritten args. toolCallId stays the original id (a rewrite
         // only touches arguments), so the /resume correlation is unchanged.
-        emit({ type: 'permission_required', streamId, toolCallId: toolCall.id, toolName: effectiveToolCall.name, toolInput: effArgs })
-        const decision = await broker.requestDecision<PermissionDecision>({ streamId, toolCallId: toolCall.id, kind: 'permission', signal: sig })
+        const prompt = { type: 'permission_required' as const, streamId, toolCallId: toolCall.id, toolName: effectiveToolCall.name, toolInput: effArgs }
+        const pending = broker.requestDecision<PermissionDecision>({ streamId, toolCallId: toolCall.id, kind: 'permission', signal: sig, prompt })
+        if (broker.hasPending(streamId, toolCall.id)) emit(prompt)
+        const decision = await pending
         if (decision === 'deny') throw new Error('Tool execution denied by user')
         if (decision === 'allow_always') broker.setAutoApproveAll(streamId)
         result = await base(
@@ -422,6 +423,7 @@ export function createChatPausingExecutor(deps: {
 }
 
 export interface HeadlessChatOrchestrator {
+  classifyOrdinarySend?(request: HeadlessMessageRequest): { lineageId: string | null; parentId: string | null; activeStreamId?: string }
   submitQueuedMessage?(conversationId: string, streamId: string, submission: QueuedMessageSubmission): { snapshot?: MessageQueueSnapshot; restart?: HeadlessMessageRequest; restartStreamId?: string }
   getMessageQueue?(conversationId: string, streamId: string): MessageQueueSnapshot
   cancelQueuedMessage?(conversationId: string, streamId: string, requestId: string): MessageQueueSnapshot
@@ -447,7 +449,7 @@ export interface HeadlessChatOrchestrator {
 export class ChatOrchestrator implements HeadlessChatOrchestrator {
   private readonly inputRuns = new Map<string, {
     queue: MessageInputQueue; request: HeadlessMessageRequest; control: OperationModeControl
-    head: string | null; successor?: string; restartRequestId?: string; restartContent?: string; terminal?: 'completed' | 'failed'
+    head: string | null; successor?: string; restartRequestId?: string; restartFingerprint?: string; terminal?: 'completed' | 'failed'; signal?: AbortSignal
   }>()
 
   private readonly watchPins = new Map<string, { lineageId: string; count: number }>()
@@ -508,6 +510,42 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
     return this.submitQueuedMessage(conversationId, target[0], submission)
   }
 
+  /** Read-only admission classification. Never reconcile/create a lineage merely
+   * to decide where a second client's stale-parent input belongs. */
+  classifyOrdinarySend(request: HeadlessMessageRequest): { lineageId: string | null; parentId: string | null; activeStreamId?: string } {
+    const mismatch = () => { throw Object.assign(new Error('The selected parent is not the current branch head. Reload or explicitly branch.'), { code: 'lineage_mismatch' }) }
+    if (!this.conversationRepo.getById(request.conversationId)) return mismatch()
+    const parent = request.parentId ? this.conversationRepo.getMessageById(request.parentId) : null
+    if (request.parentId && (!parent || parent.conversation_id !== request.conversationId)) return mismatch()
+    const lineage = request.lineageId ? this.lineageRepo.get(request.lineageId)
+      : this.lineageRepo.resolve({ messageId: request.parentId })
+    if ((request.lineageId && !lineage) || (lineage && (lineage.conversation_id !== request.conversationId || lineage.status === 'archived'))) return mismatch()
+    const detail = lineage ? this.lineageRepo.getDetail(request.conversationId, lineage.id) : null
+    if (parent && lineage && !detail?.pathMessageIds.includes(parent.id)) return mismatch()
+    for (const [streamId, run] of this.inputRuns) {
+      if (run.terminal || run.request.conversationId !== request.conversationId) continue
+      if (run.signal?.aborted && (run.queue.lineageId === lineage?.id || run.request.parentId === request.parentId)) {
+        throw Object.assign(new Error('The previous run is stopping. Wait for it to settle before sending.'), { code: 'run_unavailable' })
+      }
+      const ownedLineage = run.queue.lineageId ?? (run.request.operation === 'send' ? run.request.lineageId : null)
+      const sameLineage = lineage && ownedLineage === lineage.id
+      const samePendingAnchor = !run.queue.lineageId && run.request.operation === 'send' &&
+        (run.request.parentId ?? null) === (request.parentId ?? null) &&
+        (!request.lineageId || run.request.lineageId === request.lineageId || sameLineage ||
+          (!run.request.lineageId && lineage?.id === request.lineageId))
+      const emptyReservation = !request.parentId && !request.lineageId && run.request.operation === 'send' && !run.request.parentId &&
+        (!run.queue.lineageId || this.lineageRepo.list(request.conversationId).filter(row => row.status !== 'archived').length === 1)
+      if (sameLineage || samePendingAnchor || emptyReservation) {
+        return { lineageId: run.queue.lineageId ?? lineage?.id ?? null, parentId: run.head, activeStreamId: streamId }
+      }
+    }
+    if (lineage && lineage.head_message_id !== request.parentId) return mismatch()
+    if (!parent) {
+      if (this.conversationRepo.listMessages(request.conversationId).length) return mismatch()
+    } else if (!lineage && this.conversationRepo.listMessages(request.conversationId).some((row: any) => row.parent_id === parent.id)) return mismatch()
+    return { lineageId: lineage?.id ?? null, parentId: request.parentId }
+  }
+
   getMessageQueue(conversationId: string, streamId: string): MessageQueueSnapshot {
     const run = this.inputRuns.get(streamId)
     if (!run || run.request.conversationId !== conversationId) throw new Error('Message queue not found in this conversation')
@@ -525,6 +563,7 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
     this.getMessageQueue(conversationId, streamId)
     const run = this.inputRuns.get(streamId)!
     if (!submission.requestId || !submission.content.trim()) throw new Error('Message content and request id are required')
+    if (run.signal?.aborted) throw new Error('Run stopped; send a new message on the selected branch')
     const priorSubmission = run.queue.get(submission.requestId)
     if (priorSubmission) {
       run.queue.enqueue(submission, run.control.revision) // validates idempotent payload, including attachments
@@ -532,10 +571,15 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
     }
     if (run.successor) {
       if (run.restartRequestId === submission.requestId) {
-        if (run.restartContent !== submission.content) throw new Error('Submission id already used for another message')
+        if (run.restartFingerprint !== queuedSubmissionFingerprint(submission)) throw new Error('Submission id already used for another message')
         return { restartStreamId: run.successor }
       }
       return this.submitQueuedMessage(conversationId, run.successor, submission)
+    }
+    if (submission.fullAccess !== undefined && submission.fullAccess !== (run.request.fullAccess === true)) {
+      throw Object.assign(new Error('Queued messages must use the active run’s access policy. Confirm that policy or start a separate run.'), {
+        code: 'configuration_mismatch', fullAccess: run.request.fullAccess === true,
+      })
     }
     if (submission.attachmentsBase64?.length && !['openaichatgpt', 'openrouter'].includes(normalizeProviderRoute(run.request.provider))) {
       throw new Error('Queued image attachments are supported for ChatGPT and OpenRouter; send text or wait for this run to finish')
@@ -548,14 +592,15 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
     const lineage = run.queue.lineageId ? this.lineageRepo.get(run.queue.lineageId) : null
     if (!lineage || lineage.head_message_id !== run.head) throw new Error('Branch advanced; reload before sending')
     // The route starts this successor synchronously before another intake can interleave.
-    const nextId = `queued:${submission.requestId}`
+    const nextId = uuidv4()
     run.successor = nextId
     run.restartRequestId = submission.requestId
-    run.restartContent = submission.content
+    run.restartFingerprint = queuedSubmissionFingerprint(submission)
     return { restart: { ...run.request, operation: 'send', streamId: nextId, lineageId: lineage.id,
       parentId: run.head, messageId: null, operationId: null, content: submission.content, manualCompaction: false,
       watcherCompletion: submission.watcherCompletion,
-      fullAccess: submission.fullAccess ?? run.request.fullAccess,
+      selectedFiles: submission.selectedFiles ?? [],
+      fullAccess: run.request.fullAccess === true,
       fullAccessNotificationId: submission.fullAccessNotificationId,
       attachmentsBase64: submission.attachmentsBase64 ?? null, operationMode: run.control.mode,
       retrigger: false, isBranch: false } }
@@ -584,7 +629,7 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
         meta: { kind: 'operation_mode_change', mode, previousMode, revision },
       })
       if (lineageId) this.lineageRepo.appendMessage(lineageId, message.id)
-      return message
+      return { ...message, ...this.messageRepo.get(message.id) }
     })
   }
   private readonly statements: any
@@ -901,9 +946,9 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
     })
     const inputQueue = new MessageInputQueue(trackedStreamId, request.conversationId, null,
       snapshot => emit({ type: 'message_queue_updated', snapshot }))
-    const inputRun = { queue: inputQueue, request, control: modeControl, head: request.parentId ?? null } as {
+    const inputRun = { queue: inputQueue, request, control: modeControl, head: request.parentId ?? null, signal } as {
       queue: MessageInputQueue; request: HeadlessMessageRequest; control: OperationModeControl
-      head: string | null; successor?: string; terminal?: 'completed' | 'failed'
+      head: string | null; successor?: string; terminal?: 'completed' | 'failed'; signal?: AbortSignal
     }
     this.inputRuns.set(trackedStreamId, inputRun)
     // Bound retained terminal mailboxes; live runs are never evicted.
@@ -1166,6 +1211,13 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
       }
     }
 
+    // Admission reserved before asynchronous hooks/context loading. Recheck the
+    // head inside the persistence transaction: an explicit operation must not
+    // turn this ordinary continuation into an unintended fork while it waited.
+    if (request.operation === 'send' && !request.isBranch && !request.retrigger && sourceLineage && sourceLineage.head_message_id !== sourceMessageId) {
+      throw Object.assign(new Error('Branch advanced during setup. Reload before sending or explicitly branch.'), { code: 'lineage_mismatch' })
+    }
+
     // Autonomous continuation must never silently fork from a stale tail.
     // This runs inside the existing synchronous message/lineage transaction.
     if (request.watcherCompletion && (!sourceLineage || sourceLineage.head_message_id !== sourceMessageId)) {
@@ -1230,6 +1282,7 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
       activeLineage = this.lineageRepo.appendMessage(activeLineage.id, accessMessage.id)
       accessMessage = this.conversationRepo.getMessageById(accessMessage.id)
     }
+    if (resolved.userMessage) resolved.userMessage = { ...resolved.userMessage, ...this.messageRepo.get(resolved.userMessage.id) }
     return { resolved, activeLineage, pendingOperationId }
     })
     const lineageId = activeLineage.id
@@ -1387,19 +1440,13 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
         ? async (toolCall: { id: string; name: string; arguments: unknown }) => {
             const requestedRevision = modeControl.revision
             const toolInput = parseToolArgs(toolCall.arguments)
-            emit({
-              type: 'operation_mode_upgrade_required',
-              streamId: decisionStreamId,
-              toolCallId: toolCall.id,
-              toolName: toolCall.name,
-              toolInput,
+            const prompt = { type: 'operation_mode_upgrade_required' as const, streamId: decisionStreamId,
+              toolCallId: toolCall.id, toolName: toolCall.name, toolInput }
+            const pending = this.decisionBroker!.requestDecision({
+              streamId: decisionStreamId, toolCallId: toolCall.id, kind: 'operation_mode_upgrade', signal, prompt,
             })
-            const decision = await this.decisionBroker!.requestDecision({
-              streamId: decisionStreamId,
-              toolCallId: toolCall.id,
-              kind: 'operation_mode_upgrade',
-              signal,
-            })
+            if (this.decisionBroker!.hasPending(decisionStreamId, toolCall.id)) emit(prompt)
+            const decision = await pending
             if (requestedRevision !== modeControl.revision) return modeControl.mode === 'execute'
             if (decision === 'switch_to_execute') modeControl.change('execute', `upgrade:${toolCall.id}`)
             return decision === 'switch_to_execute'
@@ -1478,13 +1525,14 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
           signal?.throwIfAborted()
           const submissionRequest = { ...request, operation: 'send' as const, content, manualCompaction: false,
             watcherCompletion: entry.submission.watcherCompletion,
+            selectedFiles: entry.submission.selectedFiles ?? [],
             attachmentsBase64: entry.submission.attachmentsBase64 ?? null }
           const preparedImages = await this.prepareSubmittedImages(submissionRequest.attachmentsBase64)
           assertModelImageBudget([...boundaryHistory, ...rows, preparedImages])
           const row = this.messageRepo.transaction(() => {
             const message = this.createUserMessage(submissionRequest, parent, content, blocks.length ? blocks : null)
             this.lineageRepo.appendMessage(lineageId, message.id)
-            return message
+            return { ...message, ...this.messageRepo.get(message.id) }
           })
           parent = row.id
           modeParentId = row.id
@@ -1573,6 +1621,7 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
         closeInputQueue: () => inputQueue.tryClose(),
         requestOperationModeUpgrade,
         toolTimeoutMs: request.toolTimeoutMs,
+        bashTimeoutMs: request.bashTimeoutMs,
         toolAutoApprove: request.toolAutoApprove,
         /**
          * Retry a TRANSIENT provider failure before giving up.
@@ -1593,6 +1642,7 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
          */
         robustness: { retryProviderError: true },
         subagentReasoningEffort: request.subagentReasoningEffort,
+        subagentDefaults: request.subagentDefaults,
         subagentSystemPrompt: request.subagentModePrompt ?? null,
         manualCompaction: request.manualCompaction,
         autoCompactionEnabled: request.autoCompactionEnabled,

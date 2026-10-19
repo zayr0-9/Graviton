@@ -247,7 +247,7 @@ describe('operation mode prompt overrides', () => {
     expect(chat).toContain('applies only while Agent mode is active')
   })
 
-  it('treats blank overrides as resets without disturbing Chat prompt settings', () => {
+  it('treats blank overrides as resets without disturbing Chat prompt settings', async () => {
     storage.set(
       'ygg_operation_mode_prompt_settings',
       JSON.stringify({
@@ -256,7 +256,7 @@ describe('operation mode prompt overrides', () => {
       })
     )
 
-    const saved = saveAgentModePromptOverride('   ')
+    const saved = await saveAgentModePromptOverride('   ')
 
     expect(saved.agentModePromptOverride).toBeNull()
     expect(saved.selectedChatPromptId).toBe('custom-chat')

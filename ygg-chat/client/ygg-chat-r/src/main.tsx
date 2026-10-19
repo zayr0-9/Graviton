@@ -1,3 +1,10 @@
+import { startHostCatalogRefresh } from './services/hostCatalogClient'
+import { setHostAppContextProvider } from './platform/hostAppClient'
+import { updateToolEnabled as updateToolDefinitionEnabled } from './features/chats/toolDefinitions'
+import { initializeHostExecutionPreferences, getHostExecutionPreferences, HOST_EXECUTION_CHANGED } from './services/hostExecutionClient'
+import { chatSliceActions } from './features/chats/chatSlice'
+import { initializeHostPrompts, startHostPromptRefresh } from './services/hostPromptClient'
+import { startHostChangeClient } from './services/hostChangeClient'
 // import { StrictMode } from 'react'
 // import { createRoot } from 'react-dom/client'
 // import './index.css'
@@ -22,8 +29,13 @@ import { AuthProvider } from './contexts/AuthContext'
 import './index.css'
 import { applyAppFontSettings, FONT_SETTINGS_CHANGE_EVENT, FONT_SETTINGS_STORAGE_KEY } from './helpers/fontSettingsStorage'
 import { initClientTelemetry } from './services/clientTelemetry'
-import { store } from './store/store'
+import { store, startStoreServices } from './store/store'
+import { bootstrapHostRuntime, getHostRuntime } from './services/hostRuntimeBootstrap'
+import { isBrowserClient, isNativeShell } from './platform/clientCapabilities'
 import { updateThunkExtraQueryClient } from './store/thunkExtra'
+
+// Mark the document before host bootstrap/React: browsers must never use native glass.
+if (!isNativeShell) document.documentElement.dataset.solidAppBackground = 'true'
 
 // Configure React Query
 const queryClient = new QueryClient({
@@ -65,7 +77,7 @@ queryClient.setQueryDefaults(['projects'], {
 // React Query cache persistence configuration
 // Persists conversations and projects to localStorage to survive page refresh
 const persister = createSyncStoragePersister({
-  storage: window.localStorage,
+  storage: isBrowserClient ? window.sessionStorage : window.localStorage,
   key: 'ygg-react-query-cache',
 })
 
@@ -185,6 +197,40 @@ if (!rootElement) {
 
 const root = ReactDOM.createRoot(rootElement)
 
+void bootstrapHostRuntime().then(async () => {
+await initializeHostPrompts()
+await initializeHostExecutionPreferences()
+const syncHostApproval = () => {
+  const defaults = getHostExecutionPreferences()
+  store.dispatch(chatSliceActions.hostToolApprovalDefaultReceived(defaults?.toolAutoApprove ?? false))
+  for (const [toolName, enabled] of Object.entries(defaults?.tools ?? {})) {
+    updateToolDefinitionEnabled(toolName, enabled)
+    store.dispatch(chatSliceActions.toolEnabledUpdated({ toolName, enabled }))
+  }
+}
+syncHostApproval()
+window.addEventListener(HOST_EXECUTION_CHANGED, syncHostApproval)
+import.meta.hot?.dispose(() => window.removeEventListener(HOST_EXECUTION_CHANGED, syncHostApproval))
+const stopPrompts = startHostPromptRefresh()
+window.addEventListener('pagehide', stopPrompts, { once: true })
+import.meta.hot?.dispose(stopPrompts)
+startStoreServices()
+const stopCatalog = startHostCatalogRefresh(tools => store.dispatch(chatSliceActions.setTools(tools)))
+window.addEventListener('pagehide', stopCatalog, { once: true })
+import.meta.hot?.dispose(stopCatalog)
+setHostAppContextProvider(() => ({ rootPath: store.getState().chat.conversation.ccCwd || null, mode: store.getState().chat.operationMode }))
+const clearAccountCache = () => { void queryClient.cancelQueries(); queryClient.clear(); void persister.removeClient() }
+window.addEventListener('graviton:foreign-host', () => {
+  clearAccountCache()
+  const notice = document.createElement('div')
+  notice.setAttribute('role', 'alert'); notice.textContent = 'Another Graviton host is using this address. Requests are blocked. Copy unsaved drafts, then reload to choose this host.'
+  notice.style.cssText = 'position:fixed;inset:0 0 auto;z-index:10000;padding:16px;background:#fff3cd;color:#332701'
+  document.body.append(notice)
+})
+window.addEventListener('graviton:host-account-changed', clearAccountCache)
+const stopChanges = startHostChangeClient(queryClient)
+window.addEventListener('pagehide', stopChanges, { once: true })
+import.meta.hot?.dispose(() => { stopChanges(); window.removeEventListener('graviton:host-account-changed', clearAccountCache) })
 root.render(
   // StrictMode temporarily disabled to prevent double-mounting in development
   // which causes duplicate API requests and triggers rate limiting
@@ -194,6 +240,7 @@ root.render(
     client={queryClient}
     persistOptions={{
       persister,
+      buster: isBrowserClient ? `${getHostRuntime()?.hostId}:${getHostRuntime()?.auth.user?.id ?? 'signed-out'}` : undefined,
       maxAge: 24 * 60 * 60 * 1000, // Persist cache for 24 hours max
       dehydrateOptions: {
         // Persist lightweight conversation/project queries, but exclude heavy per-conversation message payloads.
@@ -220,3 +267,14 @@ root.render(
   </PersistQueryClientProvider>
   // </React.StrictMode>
 )
+
+}).catch(error => {
+  rootElement.replaceChildren()
+  const message = document.createElement('p')
+  message.setAttribute('role', 'alert')
+  message.textContent = error instanceof Error ? error.message : 'Could not connect to Graviton.'
+  const retry = document.createElement('button')
+  retry.textContent = 'Retry connection'
+  retry.onclick = () => window.location.reload()
+  rootElement.append(message, retry)
+})

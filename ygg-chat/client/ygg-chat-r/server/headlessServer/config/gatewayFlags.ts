@@ -66,7 +66,8 @@ export function resolveGatewayFlags(): GatewayFlags {
     chat = store.get('gateway.chat') !== false
     crud = store.get('gateway.crud') === true
     cloudProxy = store.get('gateway.cloudProxy') === true
-    resumableRuns = store.get('gateway.resumableRuns') !== false
+    // Shared clients require server-owned lifetime; the old opt-out is obsolete.
+    resumableRuns = true
   } catch {
     // A missing/corrupt Conf store must never break startup; keep chat/resumable on.
   }

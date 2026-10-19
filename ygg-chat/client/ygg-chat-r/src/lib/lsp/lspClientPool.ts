@@ -1,3 +1,4 @@
+import { getClientId } from '../../helpers/clientId'
 import * as monaco from 'monaco-editor'
 import { buildLocalWebSocketUrl, localApi } from '../../utils/api'
 import { applyLspWorkspaceEdit } from './monacoMappings'
@@ -453,7 +454,7 @@ class LspTransportSession {
         const params = new URLSearchParams({
           serverId: String(this.descriptor.serverId || ''),
           workspacePath: String(this.descriptor.workspacePath || ''),
-          clientId: 'renderer',
+          clientId: getClientId(),
         })
         const websocketUrl = await buildLocalWebSocketUrl(`/lsp?${params.toString()}`)
         const socket = new WebSocket(websocketUrl)
@@ -642,7 +643,7 @@ class LspClientPool {
     if (cachedDescriptor) return cachedDescriptor
 
     try {
-      const response = await localApi.get<LspResolveResponse>(`/lsp/resolve?path=${encodeURIComponent(filePath)}`, {
+      const response = await localApi.get<LspResolveResponse>(`/lsp/resolve?path=${encodeURIComponent(filePath)}&clientId=${encodeURIComponent(getClientId())}`, {
         cache: 'no-store',
       })
       this.resolvedFiles.set(normalizedFileKey, response)
