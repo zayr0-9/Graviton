@@ -672,6 +672,8 @@ describe('SubagentRunService', () => {
     const completed = runRepo.createRun(baseRequest())
     runRepo.updateRun(completed.id, { status: 'completed', finalResponse: 'done' })
     await expect(service.waitForTerminal(completed.handle)).resolves.toMatchObject({ status: 'completed' })
+    await expect(service.waitForTerminal(completed.handle, undefined, completed.attempt + 1)).rejects.toThrow('attempt changed')
+    await expect(service.waitForTerminal(completed.handle, undefined, completed.attempt)).resolves.toMatchObject({ status: 'completed' })
 
     const orphan = runRepo.createRun(baseRequest())
     await expect(service.waitForTerminal(orphan.handle)).rejects.toThrow('no active runtime')

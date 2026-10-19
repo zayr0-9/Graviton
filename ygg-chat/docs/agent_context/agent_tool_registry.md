@@ -55,7 +55,7 @@ Use this when changing:
 ## Extension Points
 
 - Add built-ins by updating shared definitions, server implementation/registration, headless built-in and OpenAI allowlists, applicable utility-runtime registration, and tests.
-- `claude_bridge` is a server-owned built-in for resumable, read-only Claude CLI review conversations. It runs asynchronous jobs outside the utility process, is excluded from child tool sets, and shuts down with the server. See [Claude bridge](../claude-bridge-tool.md) for its scope, persistence, permissions and live validation.
+- `claude_bridge` is a server-owned built-in for resumable, read-only Claude CLI review conversations. Global metadata discovery/name lookup finds existing sessions across directories; explicit resume/fork attaches history to the caller. Cross-workspace content and execution require trusted Full access. `models` exposes documented choices (not account entitlements); `model` persists across turns and allows between-turn switching while preserving history. It runs asynchronous jobs outside the utility process, is excluded from child tool sets, and shuts down with the server. Main-chat `wait` registers immediate, job-specific result delivery via watcher continuation instead of blocking/polling; bounded legacy waits remain for non-chat callers. See [Claude bridge](../claude-bridge-tool.md) for storage limits, ownership, permissions and live validation.
 - Add custom tool capabilities in custom tool loader/manager and docs.
 - Add MCP visibility changes in MCP manager/routes and frontend merge logic.
 

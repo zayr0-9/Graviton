@@ -26,7 +26,7 @@ describe('buildOperationModeSystemPrompt', () => {
     expect(prompt).toContain('Agent Prompt: Chat and Agent modes')
     expect(prompt).toContain('## Plan Response Style')
     expect(prompt).toContain('Use short, concise plans')
-    expect(prompt).toContain('call `wait` once rather than polling')
+    expect(prompt).toContain('Call `wait` once to register automatic completion delivery')
     expect(prompt).toContain('Chat mode (plan)')
   })
 
@@ -44,9 +44,69 @@ describe('buildOperationModeSystemPrompt', () => {
     const prompt = buildOperationModeSystemPrompt({ operationMode: 'execute', includeCustomToolsPrompt: false })
 
     expect(prompt).toContain('Agent Prompt: Chat and Agent modes')
-    expect(prompt).toContain('call `wait` once rather than polling')
+    expect(prompt).toContain('Call `wait` once to register automatic completion delivery')
     expect(prompt).toContain('## Plan Response Style (only while Chat mode is active)')
     expect(prompt).toBe(buildOperationModeSystemPrompt({ operationMode: 'plan', includeCustomToolsPrompt: false }))
+  })
+})
+
+describe('web research delegation guidance', () => {
+  it('requires automatic delegation for online lookups in both modes', () => {
+    for (const operationMode of ['plan', 'execute'] as const) {
+      const prompt = buildOperationModeSystemPrompt({ operationMode, includeCustomToolsPrompt: false })
+
+      expect(prompt).toContain('### Web search and online research')
+      expect(prompt).toContain('always delegate the online research to a subagent before using web/search tools')
+      expect(prompt).toContain('the user does not need to request subagents explicitly')
+      expect(prompt).toContain('even to a single quick lookup')
+      expect(prompt).toContain('takes precedence over guidance to handle small tasks directly')
+      expect(prompt).toContain('Keep raw search results and page contents out of the main conversation')
+      expect(prompt).toContain('source URLs, supporting evidence')
+      expect(prompt).toContain('delegates follow-up browsing')
+      expect(prompt).toContain('explain the limitation instead of silently bypassing delegation')
+      expect(prompt).toContain('they must not attempt nested delegation')
+    }
+  })
+})
+
+describe('shared REPL collaboration guidance', () => {
+  it('includes reusable context-first delegation and selective persistence in both modes', () => {
+    for (const operationMode of ['plan', 'execute'] as const) {
+      const prompt = buildOperationModeSystemPrompt({ operationMode, includeCustomToolsPrompt: false })
+
+      expect(prompt).toContain('shared collaboration workspace')
+      expect(prompt).toContain('#### Context-first delegation')
+      expect(prompt).toContain('prepare or reuse a named general task-context variable')
+      expect(prompt).toContain("contextVariable: 'taskContext'")
+      expect(prompt).toContain("outputVariable: 'reviewFindings'")
+      expect(prompt).toContain('Reuse the general context for later delegates')
+      expect(prompt).toContain('include `repl` along with the other tools')
+      expect(prompt).toContain('direct HTTP subagents have private workspaces')
+      expect(prompt).toContain('include the relevant context in its prompt instead')
+      expect(prompt).toContain('expired after 30 minutes idle')
+      expect(prompt).toContain('"action":"export","variable":"taskContext"')
+      expect(prompt).toContain('"action":"import"')
+      expect(prompt).toContain('Export requires Agent mode')
+      expect(prompt).toContain('Record the artifact path in the handoff')
+      expect(prompt).toContain('revalidate stale assumptions')
+      expect(prompt).toContain('Artifacts are plaintext')
+    }
+  })
+
+  it('guides delegates to consume shared context and return reusable findings safely', () => {
+    const prompt = getDefaultSubagentModePrompt().prompt
+
+    expect(prompt).toContain('read the caller-named general task context plus your focused assignment')
+    expect(prompt).toContain('do not work from the assignment alone')
+    expect(prompt).toContain('Direct HTTP agents have private workspaces')
+    expect(prompt).toContain('do not overwrite or drop parent/sibling inputs without coordination')
+    expect(prompt).toContain('verified context additions and decisions')
+    expect(prompt).toContain('Report the output variable names')
+    expect(prompt).toContain('expired after 30 minutes idle')
+    expect(prompt).toContain('propose an export to the caller')
+    expect(prompt).toContain('Agent mode/write approval')
+    expect(prompt).toContain('Report any saved artifact path in your handoff')
+    expect(prompt).toContain('exclude secrets and unnecessary private data')
   })
 })
 

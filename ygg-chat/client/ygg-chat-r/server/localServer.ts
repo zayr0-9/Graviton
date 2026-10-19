@@ -2066,10 +2066,11 @@ export async function startLocalServer(
 
 // Stop the server
 export async function stopLocalServer(): Promise<void> {
+  // Suppress asynchronous completion delivery before cancelling owned CLI processes.
+  watchService.shutdown()
   await claudeBridge.shutdown()
   // Shutdown tool orchestrator first
   localAnalyticsWorkerClient.shutdown()
-  watchService.shutdown()
   toolOrchestrator.shutdown()
   customToolRegistry.shutdown()
   utilityRuntimeAvailable = false

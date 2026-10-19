@@ -1,4 +1,5 @@
 import { resolveBranchModelSelection } from './branchModelSelection'
+import { resolveBranchFastMode } from './branchFastMode'
 import { isCommittedCompaction } from '../../../../../shared/compaction'
 import { getPendingFullAccessNotification, isFullAccessEnabled } from '../../helpers/fullAccessSettings'
 import { createAsyncThunk } from '@reduxjs/toolkit'
@@ -69,6 +70,7 @@ import {
 import { isResumableRunsEnabled } from '../../helpers/serverLoopSettings'
 import { buildServerLoopRequest } from './buildServerLoopRequest'
 import { buildConversationTree } from './conversationTree'
+import { finalizeChatTree } from './immutableChatTree'
 export { AUTO_COMPACTION_NOTE } from './summaryPresentation'
 import { conversationQueryKeys } from './conversationQueryKeys'
 import type { ConversationMessagesTreeData } from './conversationMessagesApi'
@@ -918,7 +920,18 @@ export const compactBranch = createAsyncThunk<
       signal.addEventListener('abort', abort, { once: true })
       try {
         const result = await pending.unwrap()
-        return { message: getState().chat.conversation.messages.find(message => message.id === result.messageId) ?? null }
+        const messages = getState().chat.conversation.messages
+        let message = messages.find(message => message.id === result.messageId) ?? null
+        const visited = new Set<string>()
+        // A queued follow-up can extend this run beyond its committed summary.
+        // Keep compactBranch's result scoped to the compaction, not that later answer.
+        while (message && !isCommittedCompaction(message) && String(message.id) !== String(parentMessageId)) {
+          const id = String(message.id)
+          if (visited.has(id)) return { message: null }
+          visited.add(id)
+          message = messages.find(row => String(row.id) === String(message!.parent_id)) ?? null
+        }
+        return { message: message && isCommittedCompaction(message) ? message : null }
       } finally { signal.removeEventListener('abort', abort) }
     } catch (error) { return rejectWithValue(error instanceof Error ? error.message : 'Compaction failed') }
   }
@@ -1051,6 +1064,7 @@ export const sendMessage = createAsyncThunk<
       // Read selected model from React Query cache
       // Use original provider case for cache lookup (React Query keys are case-sensitive)
       const branchSelection = resolveBranchModelSelection(modelSelectionState, providedBranchPath ?? modelSelectionState.conversation.currentPath, modelSelectionState.conversation.currentConversationId, providedLineageId === undefined ? modelSelectionState.conversation.currentLineageId : providedLineageId)
+      const fastMode = resolveBranchFastMode(modelSelectionState, providedBranchPath ?? modelSelectionState.conversation.currentPath, conversationId, providedLineageId === undefined ? modelSelectionState.conversation.currentLineageId : providedLineageId)
       const provider = branchSelection?.provider ?? modelSelectionState.providerState.currentProvider
       const modelsData = extra.queryClient?.getQueryData<{
         models: Model[]
@@ -1132,9 +1146,9 @@ export const sendMessage = createAsyncThunk<
           // Forward priority for Codex and OpenRouter only; other providers omit it.
           temperature: openRouterTemperature,
           serviceTier:
-            providerSlug === 'openrouter' || providerSlug === 'openaichatgpt' || providerSlug === 'openai(chatgpt)'
-              ? serviceTier
-              : undefined,
+            providerSlug === 'openaichatgpt' || providerSlug === 'openai(chatgpt)'
+              ? fastMode ? 'priority' : undefined
+              : providerSlug === 'openrouter' ? serviceTier : undefined,
           // ChatGPT: forward fresh renderer tokens so the server resolves auth directly
           // (null for every other provider => omitted from the body).
           accessToken: chatgptServerAuth?.accessToken,
@@ -1384,6 +1398,7 @@ export const editMessageWithBranching = createAsyncThunk<
       streamId: providedStreamId,
       selectionRevision: requestedSelectionRevision,
       lineageId: providedLineageId,
+      branchPath: providedBranchPath,
     },
     { dispatch, getState, extra, rejectWithValue, signal }
   ) => {
@@ -1475,6 +1490,9 @@ export const editMessageWithBranching = createAsyncThunk<
 
       // Read selected model from React Query cache
       const branchSelection = resolveBranchModelSelection(modelSelectionState)
+      // Capture the edit-session choice before ChatMessage closes the editor.
+      const fastMode = (modelSelectionState.composition.editingBranch ? modelSelectionState.composition.branchEditModes?.fastMode : undefined)
+        ?? resolveBranchFastMode(modelSelectionState, providedBranchPath ?? modelSelectionState.conversation.currentPath, conversationId, providedLineageId === undefined ? modelSelectionState.conversation.currentLineageId : providedLineageId)
       const provider = branchSelection?.provider ?? modelSelectionState.providerState.currentProvider
       const modelsData = extra.queryClient?.getQueryData<{
         models: Model[]
@@ -1494,7 +1512,9 @@ export const editMessageWithBranching = createAsyncThunk<
 
       // Combine mode, user default, project, and conversation system prompts.
       const selectedProject = selectSelectedProject(state)
-      const operationModeAtSend = requestedOperationMode ?? selectOperationMode(state)
+      const operationModeAtSend = requestedOperationMode
+        ?? (modelSelectionState.composition.editingBranch ? modelSelectionState.composition.branchEditModes?.operationMode : undefined)
+        ?? selectOperationMode(state)
       const projectContext = selectedProject?.context || null
       const conversationContextSource = state.conversations.convContext || null
 
@@ -1614,9 +1634,9 @@ export const editMessageWithBranching = createAsyncThunk<
           // Forward priority for Codex and OpenRouter only; other providers omit it.
           temperature: openRouterTemperature,
           serviceTier:
-            providerSlug === 'openrouter' || providerSlug === 'openaichatgpt' || providerSlug === 'openai(chatgpt)'
-              ? serviceTier
-              : undefined,
+            providerSlug === 'openaichatgpt' || providerSlug === 'openai(chatgpt)'
+              ? fastMode ? 'priority' : undefined
+              : providerSlug === 'openrouter' ? serviceTier : undefined,
           // ChatGPT: forward fresh renderer tokens so the server resolves auth directly
           // (null for every other provider => omitted from the body).
           accessToken: chatgptServerAuth?.accessToken,
@@ -1727,6 +1747,7 @@ export const sendMessageToBranch = createAsyncThunk<
       streamId: providedStreamId,
       selectionRevision: requestedSelectionRevision,
       lineageId: providedLineageId,
+      branchPath: providedBranchPath,
     },
     { dispatch, getState, extra, rejectWithValue, signal }
   ) => {
@@ -1793,6 +1814,7 @@ export const sendMessageToBranch = createAsyncThunk<
 
       // Read selected model from React Query cache
       const branchSelection = resolveBranchModelSelection(modelSelectionState)
+      const fastMode = resolveBranchFastMode(modelSelectionState, providedBranchPath ?? modelSelectionState.conversation.currentPath, conversationId, providedLineageId === undefined ? modelSelectionState.conversation.currentLineageId : providedLineageId)
       const provider = branchSelection?.provider ?? modelSelectionState.providerState.currentProvider
       const modelsData = extra.queryClient?.getQueryData<{
         models: Model[]
@@ -1867,9 +1889,9 @@ export const sendMessageToBranch = createAsyncThunk<
           // Forward priority for Codex and OpenRouter only; other providers omit it.
           temperature: openRouterTemperature,
           serviceTier:
-            providerSlug === 'openrouter' || providerSlug === 'openaichatgpt' || providerSlug === 'openai(chatgpt)'
-              ? serviceTier
-              : undefined,
+            providerSlug === 'openaichatgpt' || providerSlug === 'openai(chatgpt)'
+              ? fastMode ? 'priority' : undefined
+              : providerSlug === 'openrouter' ? serviceTier : undefined,
           // ChatGPT: forward fresh renderer tokens so the server resolves auth directly
           // (null for every other provider => omitted from the body).
           accessToken: chatgptServerAuth?.accessToken,
@@ -2089,12 +2111,15 @@ export const fetchMessageTree = createAsyncThunk<
     // Storage-aware fetch via the gateway (routes local vs cloud server-side).
     void storageMode
     response = await gwApi.get<{ messages: Message[]; tree: any }>(
-      `/conversations/${conversationId}/messages/tree`
+      `/conversations/${conversationId}/messages/tree?includeTree=false`
     )
 
     // Handle both old and new response formats for backward compatibility
-    const treeData = response.tree || response
     const messages = response.messages
+    const treeData = Array.isArray(messages) ? buildConversationTree(messages)
+      : finalizeChatTree(response.tree ?? response as any)
+    // Fulfilled thunk payloads also pass through development middleware.
+    response = { ...response, tree: treeData }
 
     // If messages are included, load them into state
     if (messages && Array.isArray(messages)) {
@@ -2111,7 +2136,7 @@ export const fetchMessageTree = createAsyncThunk<
       dispatch(chatSliceActions.conversationSnapshotApplied({
         conversationId,
         messages: normalizedMessages,
-        tree: buildConversationTree(normalizedMessages),
+        tree: treeData,
       }))
 
       // Conditional attachments fetch: only when metadata indicates or when metadata absent
@@ -2218,7 +2243,7 @@ export const initializeConversationData = createAsyncThunk<
     // 1. Fetch tree data (now includes messages - optimized single call)
     const treeResponse = await dispatch(fetchMessageTree(conversationId)).unwrap()
     const messages = treeResponse.messages || []
-    const treeData = treeResponse.tree || treeResponse
+    const treeData = treeResponse.tree ?? null
 
     // 2. Fetch system prompt and context in parallel (these are lightweight)
     const [systemPromptRes, contextRes] = await Promise.all([
@@ -3074,6 +3099,10 @@ export const changeOperationMode = createAsyncThunk<
   { state: RootState; extra: ThunkExtraArgument }
 >('chat/changeOperationMode', async (params, { dispatch, getState, requestId, extra }) => {
   const { mode, streamId, parentId, lineageId } = params
+  if (getState().chat.composition.editingBranch && !streamId) {
+    dispatch(chatSliceActions.branchEditOperationModeSelected(mode))
+    return { status: 'applied', mode }
+  }
   const conversationId = params.conversationId ?? getState().chat.conversation.currentConversationId
   if (!conversationId) {
     // A new, unsaved conversation will receive its initial mode on first send.

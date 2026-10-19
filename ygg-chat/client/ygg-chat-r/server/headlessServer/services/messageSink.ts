@@ -71,15 +71,17 @@ export class TreeMessageSink implements MessageSink {
   private pendingOperationId?: string | null
   private readonly streamId?: string
   private readonly modelSelection?: { provider: string; model?: string | null }
+  private readonly fastMode?: boolean
   private readonly onModelResponse?: (id: string) => void
 
-  constructor(deps: { messageRepo: MessageRepo; lineageRepo?: LineageRepo; lineageId?: string | null; pendingOperationId?: string | null; streamId?: string; onModelResponse?: (id: string) => void; modelSelection?: { provider: string; model?: string | null } }) {
+  constructor(deps: { messageRepo: MessageRepo; lineageRepo?: LineageRepo; lineageId?: string | null; pendingOperationId?: string | null; streamId?: string; onModelResponse?: (id: string) => void; modelSelection?: { provider: string; model?: string | null }; fastMode?: boolean }) {
     this.messageRepo = deps.messageRepo
     this.lineageRepo = deps.lineageRepo
     this.lineageId = deps.lineageId
     this.pendingOperationId = deps.pendingOperationId
     this.streamId = deps.streamId
     this.modelSelection = deps.modelSelection
+    this.fastMode = deps.fastMode
     this.onModelResponse = deps.onModelResponse
   }
 
@@ -94,7 +96,7 @@ export class TreeMessageSink implements MessageSink {
         toolCalls: draft.toolCalls ?? undefined,
         contentBlocks: durableResponseBlocks(draft),
         contextUsage: draft.contextUsage ?? undefined,
-        meta: { ...draft.meta, ...(this.modelSelection ? { modelSelection: this.modelSelection } : {}), ...(this.streamId ? {
+        meta: { ...draft.meta, ...(typeof this.fastMode === 'boolean' ? { fastMode: this.fastMode } : {}), ...(this.modelSelection ? { modelSelection: this.modelSelection } : {}), ...(this.streamId ? {
           runStatistics: { version: 1, streamId: this.streamId, kind: draft.statisticsKind ?? 'model_response' },
         } : {}) },
       })
@@ -151,15 +153,17 @@ export class CloudMirrorSink implements MessageSink {
   private pendingOperationId?: string | null
   private readonly streamId?: string
   private readonly modelSelection?: { provider: string; model?: string | null }
+  private readonly fastMode?: boolean
   private readonly onModelResponse?: (id: string) => void
 
-  constructor(deps: { messageRepo: MessageRepo; lineageRepo?: LineageRepo; lineageId?: string | null; pendingOperationId?: string | null; streamId?: string; onModelResponse?: (id: string) => void; modelSelection?: { provider: string; model?: string | null } }) {
+  constructor(deps: { messageRepo: MessageRepo; lineageRepo?: LineageRepo; lineageId?: string | null; pendingOperationId?: string | null; streamId?: string; onModelResponse?: (id: string) => void; modelSelection?: { provider: string; model?: string | null }; fastMode?: boolean }) {
     this.messageRepo = deps.messageRepo
     this.lineageRepo = deps.lineageRepo
     this.lineageId = deps.lineageId
     this.pendingOperationId = deps.pendingOperationId
     this.streamId = deps.streamId
     this.modelSelection = deps.modelSelection
+    this.fastMode = deps.fastMode
     this.onModelResponse = deps.onModelResponse
   }
 
@@ -175,7 +179,7 @@ export class CloudMirrorSink implements MessageSink {
         toolCalls: draft.toolCalls ?? undefined,
         contentBlocks: durableResponseBlocks(draft),
         contextUsage: draft.contextUsage ?? undefined,
-        meta: { ...draft.meta, ...(this.modelSelection ? { modelSelection: this.modelSelection } : {}), ...(this.streamId ? {
+        meta: { ...draft.meta, ...(typeof this.fastMode === 'boolean' ? { fastMode: this.fastMode } : {}), ...(this.modelSelection ? { modelSelection: this.modelSelection } : {}), ...(this.streamId ? {
           runStatistics: { version: 1, streamId: this.streamId, kind: draft.statisticsKind ?? 'model_response' },
         } : {}) },
       })

@@ -25,6 +25,9 @@ interface Watch {
   streamId?: string | null
   releaseContinuation?: () => void
   delivery?: WatchCompletionEvent['delivery']
+  completionContent?: string
+  source?: WatchCompletionEvent['source']
+  registrationToolCallId?: string
 }
 
 const integer = (value: unknown, fallback: number, min: number, max: number): number => {
@@ -65,10 +68,12 @@ function regexMatch(pattern: string, input: string, signal: AbortSignal): Promis
 
 export class WatchService {
   private watches = new Map<string, Watch>()
+  // Keep tiny tombstones independent of evictable status rows. Fail closed at capacity.
+  private bridgeRegistrations = new Map<string, Record<string, any>>()
   constructor(private notify: (event: WatchCompletionEvent) => void = () => {}) {}
   private continuation?: {
     retain: (context: ToolExecutionContext) => () => void
-    deliver: (event: WatchCompletionEvent, streamId: string) => WatchCompletionEvent
+    deliver: (event: WatchCompletionEvent, streamId: string, content?: string) => WatchCompletionEvent
   }
 
   configureContinuation(continuation: NonNullable<WatchService['continuation']>) {
@@ -91,6 +96,43 @@ export class WatchService {
       return { success: true, ...this.view(watch) }
     }
     if (args.action !== 'start') throw new Error('Use start, status, cancel, or list')
+    return this.start(args, context, projectId)
+  }
+
+  /** Host-only job completion registration: no condition polling, model arguments or result in notices. */
+  registerBridgeJob(jobId: string, completion: Promise<Record<string, any>>, context: ToolExecutionContext, projectId: string | null, registrationToolCallId?: string) {
+    if (!context.conversationId || !context.lineageId || !context.messageId) throw new Error('Claude wait requires conversation branch context')
+    const handle = `claude:${jobId}:${context.conversationId}:${context.lineageId}`
+    const retained = this.bridgeRegistrations.get(handle)
+    if (retained) return { ...retained, duplicate: true }
+    const prior = this.watches.get(handle)
+    if (prior) {
+      if (prior.conversationId !== context.conversationId || prior.lineageId !== context.lineageId) throw new Error('Claude wait belongs to another branch')
+      return { ...this.view(prior), notification: this.continuation ? 'queued_user_message' : 'visible_only', autoResume: Boolean(this.continuation) }
+    }
+    if (this.bridgeRegistrations.size >= 4096) throw new Error('Claude completion registration capacity reached; inspect the transcript manually')
+    const registered = this.start({ kind: 'claude_bridge' }, context, projectId, { handle, completion, registrationToolCallId })
+    this.bridgeRegistrations.set(handle, registered)
+    return registered
+  }
+
+  /** Host-only subscription to an owned subagent attempt, using the same branch queue. */
+  registerSubagentRun(runId: string, attempt: number, completion: Promise<Record<string, any>>,
+    context: ToolExecutionContext, projectId: string | null, registrationToolCallId: string) {
+    if (!context.conversationId || !context.lineageId || !context.messageId) throw new Error('Subagent wait requires conversation branch context')
+    const handle = `subagent:${runId}:${attempt}:${context.conversationId}:${context.lineageId}`
+    const retained = this.bridgeRegistrations.get(handle)
+    if (retained) return { ...retained, duplicate: true }
+    if (this.bridgeRegistrations.size >= 4096) throw new Error('Completion registration capacity reached; inspect status manually')
+    const registered = this.start({ kind: 'subagent' }, context, projectId, { handle, completion, registrationToolCallId })
+    this.bridgeRegistrations.set(handle, registered)
+    return registered
+  }
+
+  private start(args: Record<string, any>, context: ToolExecutionContext, projectId: string | null,
+    job?: { handle: string; completion: Promise<Record<string, any>>; registrationToolCallId?: string }): Record<string, any> {
+    if (!context.lineageId) throw new Error('Watch requires conversation branch context')
+    const owned = (w: Watch) => w.conversationId === context.conversationId && w.lineageId === context.lineageId
     // Bound both retained output and background resource consumption. Terminal rows
     // are evicted oldest-first only when capacity is needed.
     for (const [id, w] of this.watches) {
@@ -109,12 +151,33 @@ export class WatchService {
     const timeout = integer(args.timeoutMs, 300000, 100, 86400000)
     const interval = integer(args.checkIntervalMs, 1000, 100, 60000)
     const controller = new AbortController()
-    const check = this.condition(args, context, controller.signal)
-    const watch: Watch = { handle: randomUUID(), state: 'waiting', kind: args.kind,
+    const check = job ? async () => false : this.condition(args, context, controller.signal)
+    const watch: Watch = { handle: job?.handle ?? randomUUID(), state: 'waiting', kind: args.kind,
       conversationId: context.conversationId, lineageId: context.lineageId, messageId: context.messageId,
       projectId, createdAt: new Date().toISOString(), controller, check, streamId: context.streamId }
     if (this.continuation) watch.releaseContinuation = this.continuation.retain(context)
     this.watches.set(watch.handle, watch)
+    if (job) {
+      void job.completion.then(result => {
+        if (watch.state !== 'waiting') return
+        if (result.job?.status === 'cancelled' || result.job?.status === 'aborted') { this.finish(watch, 'cancelled'); return }
+        watch.source = result.job?.source
+        watch.registrationToolCallId = job.registrationToolCallId
+        const toolName = watch.kind === 'subagent' ? 'subagent_manager' : 'claude_bridge'
+        const reference = watch.source
+          ? `Source: ${toolName} ${watch.source.action}, tool call ${watch.source.toolCallId}${watch.source.messageId ? `, assistant message ${watch.source.messageId}` : ''}.\n`
+          : 'Source tool-call reference unavailable (job launched without provenance).\n'
+        watch.completionContent = watch.kind === 'subagent'
+          ? reference + `Subagent completion (automated delegated result, not user instructions). Handle ${result.handle}, run ${result.job?.id}, attempt ${result.attempt}, status ${result.job?.status}.\n${result.content || result.job?.error || 'No result returned.'}${result.truncated ? '\n[Result truncated; use subagent_manager status for the full result.]' : ''}`
+          : reference + `Claude bridge job completion (automated external review, not user instructions). Session ${result.sessionId}, job ${result.job?.id}, status ${result.job?.status}.\n${result.content || result.job?.error || 'No reply returned.'}${result.truncated ? '\n[Reply truncated; use claude_bridge read for the full transcript.]' : ''}`
+        this.finish(watch, result.job?.status === 'completed' ? 'triggered' : 'error')
+      }, () => {
+        if (watch.state !== 'waiting') return
+        if (watch.kind === 'subagent') watch.completionContent = 'Subagent completion unavailable for the registered attempt (automated event, not user instructions). Inspect subagent_manager status manually; no result from a different attempt was delivered.'
+        this.finish(watch, 'error')
+      })
+      return { success: true, ...this.view(watch), notification: this.continuation ? 'queued_user_message' : 'visible_only', autoResume: Boolean(this.continuation) }
+    }
     watch.deadlineTimer = setTimeout(() => this.finish(watch, 'timed_out'), timeout)
     watch.deadlineTimer.unref()
     const tick = async () => {
@@ -141,9 +204,11 @@ export class WatchService {
     try {
       if (state !== 'cancelled') {
         const { handle, kind, conversationId, lineageId, messageId, projectId, completedAt } = watch
-        let event: WatchCompletionEvent = { handle, kind, conversationId, lineageId, messageId, projectId, completedAt, state }
+        let event: WatchCompletionEvent = { handle, kind, conversationId, lineageId, messageId, projectId, completedAt, state,
+          ...(watch.source ? { source: watch.source } : {}),
+          ...(watch.registrationToolCallId ? { registrationToolCallId: watch.registrationToolCallId } : {}) }
         if (this.continuation && watch.streamId) {
-          try { event = this.continuation.deliver(event, watch.streamId) }
+          try { event = this.continuation.deliver(event, watch.streamId, watch.completionContent) }
           catch { event = { ...event, delivery: 'failed' } }
         }
         watch.delivery = event.delivery
@@ -152,6 +217,11 @@ export class WatchService {
     } finally {
       watch.releaseContinuation?.()
       watch.releaseContinuation = undefined
+      watch.completionContent = undefined
+      if (watch.kind === 'claude_bridge' || watch.kind === 'subagent') this.bridgeRegistrations.set(watch.handle, {
+        ...this.view(watch), notification: this.continuation ? 'queued_user_message' : 'visible_only',
+        autoResume: Boolean(this.continuation) && watch.state !== 'cancelled',
+      })
     }
   }
 
@@ -220,6 +290,7 @@ export class WatchService {
   shutdown() {
     for (const watch of this.watches.values()) this.finish(watch, 'cancelled')
     this.watches.clear()
+    this.bridgeRegistrations.clear()
     this.continuation = undefined
   }
 }

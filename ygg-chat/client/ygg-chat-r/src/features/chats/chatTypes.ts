@@ -420,6 +420,7 @@ export interface CompositionState {
   imagePreparationError: string | null
   imagePreparationGeneration: number
   editingBranch: boolean // true when user is editing a branch; controls UI like hiding image drafts
+  branchEditModes?: { operationMode?: OperationMode; fastMode?: boolean }
   optimisticMessage: Message | null // temp message for instant UI feedback in web mode only
   optimisticBranchMessage: Message | null // temp branched message for instant UI feedback in web mode only
 }
@@ -512,6 +513,7 @@ export interface ChatState {
   /** Unsent selections, keyed by conversation and selected branch tip. */
   operationModeDrafts: Record<string, OperationMode>
   branchModelDrafts?: Record<string, import('./branchModelSelection').BranchModelSelection>
+  branchFastModeDrafts?: Record<string, boolean>
   operationModeChanges: Record<string, {
     mode: OperationMode
     status: 'requesting' | 'pending'

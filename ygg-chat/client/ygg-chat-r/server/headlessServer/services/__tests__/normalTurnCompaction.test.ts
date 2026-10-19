@@ -122,6 +122,20 @@ describe('ordinary persisted compaction turns', () => {
     expect(h.calls[2].input.history.some((row: any) => row.id === 'queued')).toBe(true)
   })
 
+  it.each(['failure', 'cancellation'])('does not deliver queued input when manual compaction ends in %s', async outcome => {
+    const controller = new AbortController()
+    const h = harness([])
+    h.router.generate.mockImplementationOnce(async () => {
+      if (outcome === 'cancellation') controller.abort()
+      throw new Error('Summary failed')
+    })
+    const flushQueuedMessages = vi.fn(async () => ({ rows: [], delivered: 0 }))
+    await expect(h.service.run({ ...base, manualCompaction: true, signal: controller.signal,
+      flushQueuedMessages }, () => {})).rejects.toThrow()
+    expect(flushQueuedMessages).not.toHaveBeenCalled()
+    expect(h.sink.rows.some(isCommittedCompaction)).toBe(false)
+  })
+
   it('never commits an empty or cancelled summary', async () => {
     const empty = harness([{ content: '' }])
     await expect(empty.service.run({ ...base, manualCompaction: true }, () => {})).rejects.toThrow('empty summary')

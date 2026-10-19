@@ -26,6 +26,43 @@ function harness() {
 }
 
 describe('watcher branch continuation', () => {
+  it.each(['claude_bridge', 'subagent'])('queues a completed %s result into the latest same-lineage run without polling', async kind => {
+    const h = harness(); h.add('origin', 'completed'); h.setHead('new-head')
+    const latest = h.add('latest')
+    const sibling = h.add('sibling', undefined, 'fork')
+    const service = new WatchService()
+    service.configureContinuation({
+      retain: context => h.orchestrator.retainWatch(context),
+      deliver: (event, streamId, content) => {
+        h.orchestrator.submitWatchMessage(event.conversationId, event.lineageId, streamId, {
+          requestId: `watcher:${event.handle}`, content,
+          watcherCompletion: { handle: event.handle, originMessageId: event.messageId,
+            source: event.source, registrationToolCallId: event.registrationToolCallId },
+        })
+        return { ...event, delivery: 'queued' }
+      },
+    })
+    try {
+      const source = { action: kind === 'subagent' ? 'spawn' : 'send', toolCallId: 'launch-call', messageId: 'launch-message' }
+      const completion = Promise.resolve({ sessionId: 'session', handle: '123456', attempt: 0,
+        job: { id: 'job', status: 'completed', source }, content: 'Review evidence' })
+      const register = () => kind === 'subagent'
+        ? service.registerSubagentRun('job', 0, completion, h.context, null, 'wait-call')
+        : service.registerBridgeJob('job', completion, h.context, null, 'wait-call')
+      register()
+      await Promise.resolve()
+      const queued = latest.queue.claim()?.submission
+      expect(queued.content).toContain('Review evidence')
+      expect(queued.watcherCompletion).toMatchObject({ originMessageId: 'tool-parent', source, registrationToolCallId: 'wait-call' })
+      expect(queued.content).toContain('tool call launch-call')
+      expect(sibling.queue.snapshot().items).toHaveLength(0)
+      register()
+      await Promise.resolve()
+      expect(latest.queue.snapshot().items).toHaveLength(1)
+      expect(h.orchestrator.watchPins.size).toBe(0)
+    } finally { service.shutdown() }
+  })
+
   it('queues into the live origin with stable request-id deduplication', () => {
     const h = harness(); const origin = h.add('origin')
     h.orchestrator.retainWatch(h.context)
@@ -47,6 +84,8 @@ describe('watcher branch continuation', () => {
 
   it('starts one successor from current tail with permissions/mode/provenance intact', () => {
     const h = harness(); h.add('origin', 'completed'); h.setHead('new-tail'); h.add('latest', 'completed')
+    Object.assign(h.submission.watcherCompletion, { source: { action: 'start', toolCallId: 'launch-call', messageId: 'launch-message' },
+      registrationToolCallId: 'wait-call' })
     const result = h.orchestrator.submitWatchMessage('chat', 'branch', 'origin', h.submission)
     expect(result.restart).toMatchObject({ parentId: 'new-tail', lineageId: 'branch', operation: 'send',
       operationMode: 'plan', toolAutoApprove: false, hooksEnabled: true, watcherCompletion: h.submission.watcherCompletion })
@@ -99,13 +138,19 @@ describe('watcher branch continuation', () => {
     const h = harness()
     h.orchestrator.messageRepo = { createMessage: vi.fn(draft => ({ id: 'user', ...draft })) }
     h.orchestrator.statements = {}
+    const source = { action: 'send', toolCallId: 'launch-call', messageId: 'launch-message' }
+    Object.assign(h.submission.watcherCompletion, { source, registrationToolCallId: 'wait-call' })
     h.orchestrator.createUserMessage({ conversationId: 'chat', modelName: 'test', watcherCompletion: h.submission.watcherCompletion },
       'safe-tail', h.submission.content)
     expect(h.orchestrator.messageRepo.createMessage).toHaveBeenLastCalledWith(expect.objectContaining({
-      parentId: 'safe-tail', role: 'user', meta: { kind: 'watcher_completion', handle: 'handle', originMessageId: 'tool-parent' },
+      parentId: 'safe-tail', role: 'user', meta: expect.objectContaining({ kind: 'watcher_completion',
+        handle: 'handle', originMessageId: 'tool-parent', source, registrationToolCallId: 'wait-call' }),
     }))
     h.orchestrator.createUserMessage({ conversationId: 'chat', modelName: 'test' }, 'next-tail', 'normal input')
-    expect(h.orchestrator.messageRepo.createMessage).toHaveBeenLastCalledWith(expect.objectContaining({ meta: undefined }))
+    const normalMeta = h.orchestrator.messageRepo.createMessage.mock.lastCall[0].meta
+    expect(normalMeta).not.toHaveProperty('kind')
+    expect(normalMeta).not.toHaveProperty('source')
+    expect(normalMeta).not.toHaveProperty('registrationToolCallId')
   })
 
   it('rejects ambiguous initializing ownership rather than routing into a fork', () => {

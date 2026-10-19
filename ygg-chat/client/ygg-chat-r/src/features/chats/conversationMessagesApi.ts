@@ -13,6 +13,8 @@ export interface ConversationMessagesTreeData {
 
 export interface FetchConversationMessagesTreeOptions {
   storageMode?: 'local' | 'cloud'
+  /** Omit the redundant server tree when the caller rebuilds from messages. */
+  includeTree?: boolean
   accessToken?: string | null
   queryClient?: QueryClient | null
   signal?: AbortSignal
@@ -26,10 +28,12 @@ export async function fetchConversationMessagesTree(
 ): Promise<ConversationMessagesTreeData> {
   const { queryClient, signal } = options
   const requestOptions = signal ? { signal } : undefined
+  // The authoritative renderer snapshot builds its tree from enriched flat rows.
+  const treeQuery = options.includeTree === false ? '?includeTree=false' : ''
 
   if (isElectronCommunityMode()) {
     return localApi.get<ConversationMessagesTreeData>(
-      `/app/conversations/${conversationId}/messages/tree`,
+      `/app/conversations/${conversationId}/messages/tree${treeQuery}`,
       requestOptions
     )
   }
@@ -60,7 +64,7 @@ export async function fetchConversationMessagesTree(
   if (!effectiveStorageMode && environment === 'electron') {
     try {
       return await localApi.get<ConversationMessagesTreeData>(
-        `/app/conversations/${conversationId}/messages/tree`,
+        `/app/conversations/${conversationId}/messages/tree${treeQuery}`,
         requestOptions
       )
     } catch (error) {
@@ -70,7 +74,7 @@ export async function fetchConversationMessagesTree(
   }
 
   return gwApi.get<ConversationMessagesTreeData>(
-    `/conversations/${conversationId}/messages/tree`,
+    `/conversations/${conversationId}/messages/tree${treeQuery}`,
     requestOptions
   )
 }

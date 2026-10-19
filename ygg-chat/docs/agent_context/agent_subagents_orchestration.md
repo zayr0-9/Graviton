@@ -145,11 +145,7 @@ Both entry paths now share the server-side `SubagentRunService`:
   Parent-chat `multi_call` batches may invoke `subagent` through the parent dispatcher;
   `multi_call` still rejects recursive `multi_call`, and `SubagentRunService` never
   receives the parent subagent dispatcher, so recursive agents remain impossible.
-- `subagent_manager.wait(handle)` verifies the same branch/conversation ownership
-  as `status`, then awaits the detached attempt's in-process completion promise
-  without polling. It re-reads SQLite before returning the canonical terminal
-  status/result. Aborting the parent releases only the waiter; it does not cancel
-  the child (that remains the explicit `cancel` action).
+- Main-chat `subagent_manager.wait(handle)` checks branch/conversation ownership, registers the current attempt with WatchService and returns immediately with a watcher handle and `autoResume`. Completion inserts a bounded result into the same branch at a safe boundary and pushes a notification, referencing the persisted original spawn tool call. Repeated waits deduplicate by run/attempt/lineage, including finished runs. There is no watch deadline; cancelled children, cancelled watches and shutdown do not deliver. If an attempt changes before its result can be read, delivery reports unavailable instead of mislabelling a newer result. With `autoResume:false`, inspect status manually. Legacy non-chat executors retain blocking lifecycle-backed waits; parent abort releases that waiter without cancelling the child.
 - `subagent_manager.send(handle, message, requestId?)` checks branch/conversation ownership and synchronously queues instructions in the running detached attempt's `MessageInputQueue`. The shared loop's `flushQueuedMessages` / `closeInputQueue` callbacks deliver FIFO only at safe boundaries, persisting user rows into the child transcript (not the chat tree). Receipts distinguish acceptance from delivery; status/list/wait expose `messageQueue`, and existing queue SSE events support live inspection. Request IDs deduplicate identical retries. Terminal/aborting/preparing/blocking runs reject sends rather than auto-restart. Pending messages fail on cancellation/error/turn limits; queues are memory-only, with at most 100 retained terminal mailboxes.
 - `subagent_manager.resume` accepts an optional `prompt`, appended to the saved transcript as a new user row before inference. The original task/tool history is preserved; omitting it retains existing resume behavior.
 - Parent operation mode, stream/message/tool-call lineage, root path, provider/model,
@@ -197,9 +193,7 @@ does not round-trip through the renderer or the unfinished `tool_request` bridge
   on each parent chat request; server-owned `subagent` / `subagent_manager` calls inherit
   it and append any per-call `systemPrompt`. Direct subagent requests still provide their
   composed prompt explicitly. The server stores no prompt setting between runs.
-- **Wait is lifecycle-backed, not timer-backed.** Manager `wait` shares the active
-  attempt's completion promise, supports multiple waiters, and has no default
-  timeout. Persisted terminal state remains authoritative; startup reconciliation
+- **Wait is lifecycle-backed, not timer-backed.** Main-chat manager `wait` returns an immediate watch registration; the host subscribes to the active attempt's completion promise without the foreground abort signal. Legacy non-chat waiters still block. No wait deadline applies. Persisted terminal state remains authoritative; startup reconciliation
   turns process-lost running rows into resumable errors.
 
 ## Testing and Validation

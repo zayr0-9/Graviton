@@ -1,4 +1,5 @@
 // store.ts
+import { chatTreeSerializableCheck, chatTreeDevToolsReplacer, chatTreeIngressMiddleware } from '../features/chats/immutableChatTree'
 import { configureStore, createListenerMiddleware, isAnyOf } from '@reduxjs/toolkit'
 import { refreshRunStatistics } from '../features/chats/runStatisticsRefresh'
 import { chatReducer, chatSliceActions, fetchCustomTools, fetchMcpTools, fetchTools } from '../features/chats'
@@ -138,10 +139,11 @@ export const store = configureStore({
         extraArgument: thunkExtraArg,
       },
       serializableCheck: {
+        ...chatTreeSerializableCheck,
         ignoredActions: ['persist/PERSIST', 'persist/REHYDRATE'],
       },
-    }).prepend(listenerMiddleware.middleware, agentRunPreviewMiddleware),
-  devTools: process.env.NODE_ENV !== 'production',
+    }).prepend(chatTreeIngressMiddleware, listenerMiddleware.middleware, agentRunPreviewMiddleware),
+  devTools: process.env.NODE_ENV !== 'production' ? { serialize: { replacer: chatTreeDevToolsReplacer } } : false,
 })
 
 // Watch completion uses the live job transport, not status polling. Register the
@@ -152,7 +154,11 @@ toolJobManager.onWatchCompletion(event => {
   store.dispatch(uiActions.notificationAdded({
     id: `watch:${event.handle}`,
     kind: 'watch_completed',
-    title: event.state === 'triggered' ? 'Watch triggered' : event.state === 'timed_out' ? 'Watch timed out' : 'Watch failed',
+    title: event.kind === 'claude_bridge'
+      ? event.state === 'triggered' ? 'Claude review ready' : 'Claude review failed'
+      : event.kind === 'subagent'
+        ? event.state === 'triggered' ? 'Subagent result ready' : 'Subagent failed'
+        : event.state === 'triggered' ? 'Watch triggered' : event.state === 'timed_out' ? 'Watch timed out' : 'Watch failed',
     description: event.delivery === 'failed'
       ? 'Could not deliver the completion to this branch. Click to open it and continue manually.'
       : event.delivery ? 'Completion submitted to the originating branch. Click to open it.'
@@ -185,10 +191,11 @@ export const setupStore = (preloadedState?: Partial<RootState>) => {
           extraArgument: thunkExtraArg,
         },
         serializableCheck: {
-          ignoredActions: ['persist/PERSIST', 'persist/REHYDRATE'],
+          ...chatTreeSerializableCheck,
+        ignoredActions: ['persist/PERSIST', 'persist/REHYDRATE'],
         },
-      }).prepend(agentRunPreviewMiddleware),
-    devTools: process.env.NODE_ENV !== 'production',
+      }).prepend(chatTreeIngressMiddleware, agentRunPreviewMiddleware),
+    devTools: process.env.NODE_ENV !== 'production' ? { serialize: { replacer: chatTreeDevToolsReplacer } } : false,
   })
 }
 

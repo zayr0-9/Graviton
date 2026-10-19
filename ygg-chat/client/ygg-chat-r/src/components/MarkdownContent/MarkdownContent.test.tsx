@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { createDefaultCustomChatTheme, getMarkdownThemeVars } from '../ThemeManager/themeConfig'
 import { MarkdownContent } from './MarkdownContent'
 import { MarkdownTable } from './MarkdownTable'
+import { MarkdownCodeBlock, SCROLLABLE_MARKDOWN_COMPONENTS } from './MarkdownCodeBlock'
 
 const themeState = vi.hoisted(() => ({ enabled: false, dark: false }))
 
@@ -71,10 +72,36 @@ describe('shared Markdown tables', () => {
   })
 })
 
+describe('shared Markdown code-block scrollbars', () => {
+  it('preserves native pre props and children without forwarding the parser node', () => {
+    const html = renderToStaticMarkup(
+      <MarkdownCodeBlock
+        id='code-sample'
+        className='existing-code-class'
+        tabIndex={0}
+        style={{ maxHeight: 200 }}
+        node={{ type: 'element', tagName: 'pre', properties: {}, children: [] }}
+      >
+        <code>Long code line</code>
+      </MarkdownCodeBlock>
+    )
+    expect(html).toContain('id="code-sample"')
+    expect(html).toContain('class="thin-scrollbar existing-code-class"')
+    expect(html).toContain('tabindex="0"')
+    expect(html).toContain('max-height:200px')
+    expect(html).toContain('<code>Long code line</code>')
+    expect(html).not.toContain('node=')
+  })
+
+  it('provides a stable renderer map for Markdown surfaces', () => {
+    expect(SCROLLABLE_MARKDOWN_COMPONENTS.pre).toBe(MarkdownCodeBlock)
+  })
+})
+
 describe('Markdown rendering compatibility', () => {
   it('keeps ordinary and unknown-language fenced code selectable as pre/code markup', () => {
     const html = render('```javascript\nconst value = 1\n```\n\n```unregistered-language\nraw code\n```')
-    expect(html.match(/<pre>/g)).toHaveLength(2)
+    expect(html.match(/<pre class="thin-scrollbar">/g)).toHaveLength(2)
     expect(html).toContain('language-javascript')
     expect(html).toContain('hljs-keyword')
     expect(html).toContain('raw code')
@@ -92,7 +119,7 @@ describe('Markdown rendering compatibility', () => {
   it('continues routing completed Mermaid fences to the diagram renderer', () => {
     const html = render('```mermaid\ngraph TD\nA --> B\n```')
     expect(html).toContain('data-mermaid="graph TD')
-    expect(html).not.toContain('<pre>')
+    expect(html).not.toContain('<pre')
   })
 
   it('does not enable raw HTML', () => {

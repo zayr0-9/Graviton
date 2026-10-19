@@ -233,6 +233,27 @@ describeIfSqlite('messages/tree read', () => {
     expect(railway.passthrough).not.toHaveBeenCalled()
   })
 
+  it('flat snapshots retain all enrichment and serialize a 20,000-deep conversation', async () => {
+    const legacy = await get('/api/app/conversations/c1/messages/tree')
+    for (const prefix of ['app', 'gw']) {
+      const flat = await get(`/api/${prefix}/conversations/c1/messages/tree?includeTree=false`)
+      expect(flat.status).toBe(200)
+      expect(flat.body).toEqual({ ...legacy.body, tree: null })
+    }
+    const insert = db.prepare('INSERT INTO messages (id, conversation_id, parent_id, children_ids, role, content, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)')
+    db.transaction(() => {
+      for (let i = 0; i < 20000; i++) insert.run(`deep-${i}`, 'c-empty', i ? `deep-${i - 1}` : null,
+        JSON.stringify(i < 19999 ? [`deep-${i + 1}`] : []), 'assistant', 'text', at(i))
+    })()
+    for (const prefix of ['app', 'gw']) {
+      const flat = await get(`/api/${prefix}/conversations/c-empty/messages/tree?includeTree=false`)
+      expect(flat.status).toBe(200)
+      expect(flat.body.tree).toBeNull()
+      expect(flat.body.messages).toHaveLength(20000)
+      expect(flat.body.messages.at(-1).parent_id).toBe('deep-19998')
+    }
+  })
+
   it('gateway still routes an unknown conversation to the cloud leg', async () => {
     const gw = await get('/api/gw/conversations/not-local/messages/tree')
     expect(gw.status).toBe(404)

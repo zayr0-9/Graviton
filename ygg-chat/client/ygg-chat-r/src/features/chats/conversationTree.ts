@@ -1,5 +1,6 @@
 import type { Message, ChatNode } from './chatTypes'
 import { getTreeMessageText } from './summaryPresentation'
+import { finalizeChatTree } from './immutableChatTree'
 
 const messageId = (message: Pick<Message, 'id'>): string => String(message.id)
 const parentId = (message: Pick<Message, 'parent_id'>): string | null =>
@@ -14,7 +15,7 @@ const compareMessages = (a: Message, b: Message): number => {
 
 const toNode = (message: Message, children: ChatNode[]): ChatNode => ({
   id: messageId(message),
-  message: getTreeMessageText(message),
+  message: getTreeMessageText(message) ?? '',
   sender: message.role === 'user' ? 'user' : message.role === 'ex_agent' ? 'ex_agent' : 'assistant',
   children,
 })
@@ -61,28 +62,36 @@ export function buildConversationTree(messages: Message[]): ChatNode | null {
   }
 
   const visited = new Set<string>()
-  const buildNode = (message: Message, ancestors: Set<string>): ChatNode => {
-    const id = messageId(message)
-    visited.add(id)
-    const nextAncestors = new Set(ancestors).add(id)
-    const children = (childrenByParent.get(id) ?? [])
-      .filter(child => !nextAncestors.has(messageId(child)))
-      .map(child => buildNode(child, nextAncestors))
-    return toNode(message, children)
+  const buildNode = (message: Message): ChatNode => {
+    const root = toNode(message, [])
+    visited.add(root.id)
+    const pending = [root]
+    while (pending.length) {
+      const node = pending.pop()!
+      for (const child of childrenByParent.get(node.id) ?? []) {
+        const id = messageId(child)
+        if (visited.has(id)) continue
+        visited.add(id)
+        const childNode = toNode(child, [])
+        node.children.push(childNode)
+      }
+      for (let i = node.children.length - 1; i >= 0; i--) pending.push(node.children[i])
+    }
+    return root
   }
 
   const roots = [...rootIds]
     .map(id => byId.get(id)!)
     .sort(compareMessages)
-    .map(message => buildNode(message, new Set()))
+    .map(message => buildNode(message))
 
   // Pure cycles have no natural root. Promote each still-unvisited component once.
   for (const message of [...byId.values()].sort(compareMessages)) {
-    if (!visited.has(messageId(message))) roots.push(buildNode(message, new Set()))
+    if (!visited.has(messageId(message))) roots.push(buildNode(message))
   }
 
-  if (roots.length === 1) return roots[0]
-  return { id: 'root', message: 'Conversation', sender: 'assistant', children: roots }
+  return finalizeChatTree(roots.length === 1 ? roots[0]
+    : { id: 'root', message: 'Conversation', sender: 'assistant', children: roots })
 }
 
 export function buildPathToConversationMessage(messages: Message[], targetId: string): string[] {

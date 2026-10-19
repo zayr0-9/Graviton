@@ -5,9 +5,15 @@ import { configureStore } from '@reduxjs/toolkit'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { HashRouter, Route, Routes, useParams } from 'react-router-dom'
 import reducer from '../src/features/chats/chatSlice'
+import { chatTreeSerializableCheck } from '../src/features/chats/immutableChatTree'
+import { filterChatTree, layoutChatTree, walkChatTree } from '../src/components/Heimdall/heimdallTreeTraversal'
+import { buildKeyboardTree } from '../src/components/Heimdall/heimdallKeyboard'
 import { ChatSelectionProvider, useChatSelection } from '../src/components/ChatSelection/ChatSelectionProvider'
 import { useConversationSnapshotCoordinator } from '../src/hooks/useConversationSnapshotCoordinator'
-import { useTitleBarHistory } from '../src/components/TitleBar/useTitleBarHistory'
+import { NavigationCommands, useAppNavigation } from '../src/keyboard/NavigationCommands'
+import { KeyboardProvider, useCommandBlocker, useCommands } from '../src/keyboard/KeyboardProvider'
+import { KeyboardShortcutsModal } from '../src/components/SettingsPane/KeyboardShortcutsModal'
+import { loadShortcutOverrides, saveShortcutOverrides } from '../src/keyboard/shortcutPreferences'
 
 declare global {
   interface Window {
@@ -21,17 +27,42 @@ window.__fetchSnapshot = (id, options) => new Promise((resolve, reject) => {
   requests.push({ id, resolve, reject })
   options.signal?.addEventListener('abort', () => reject(new Error('Wrapped transport abort')), { once: true })
 })
-const store = configureStore({ reducer: { chat: reducer, users: () => ({ currentUser: { id: 'smoke-user' } }) } })
+const store = configureStore({ reducer: { chat: reducer, users: () => ({ currentUser: { id: 'smoke-user' } }) },
+  middleware: getDefault => getDefault({ serializableCheck: chatTreeSerializableCheck }) })
 const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: Infinity } } })
 let snapshot: ReturnType<typeof useConversationSnapshotCoordinator>
 let navigation: ReturnType<typeof useChatSelection>
-let history: ReturnType<typeof useTitleBarHistory>
+let history: ReturnType<typeof useAppNavigation>
+let setCommandsBlocked: (blocked: boolean) => void
+let setProbeEnabled: (enabled: boolean) => void
+let probeMoves = 0
 
 function Controls() {
   navigation = useChatSelection()
-  history = useTitleBarHistory()
-  return null
+  history = useAppNavigation()
+  const [blocked, setBlocked] = React.useState(false)
+  const [enabled, setEnabled] = React.useState(true)
+  const [moves, setMoves] = React.useState(0)
+  const graph = React.useRef<HTMLDivElement>(null)
+  const [editorOpen, setEditorOpen] = React.useState(false)
+  setCommandsBlocked = setBlocked
+  setProbeEnabled = setEnabled
+  probeMoves = moves
+  useCommandBlocker(blocked)
+  useCommands([{
+    id: 'heimdall.parent', scope: () => graph.current, enabled: () => enabled,
+    run: () => setMoves(moves + 1),
+  }])
+  return <><input id='keyboard-input' /><div id='keyboard-probe' ref={graph} tabIndex={0} />
+    <button id='open-shortcuts' onClick={() => setEditorOpen(true)}>Shortcuts</button>
+    {editorOpen && <KeyboardShortcutsModal onClose={() => setEditorOpen(false)} />}
+  </>
 }
+
+const pressBack = () => document.getElementById('keyboard-input')!.dispatchEvent(new KeyboardEvent('keydown', {
+  bubbles: true, cancelable: true,
+  ...(/Mac/.test(navigator.platform) ? { key: '[', metaKey: true } : { key: 'ArrowLeft', altKey: true }),
+}))
 function ChatProbe() {
   const { id } = useParams()
   snapshot = useConversationSnapshotCoordinator(id!, 'local')
@@ -63,10 +94,10 @@ const ready = () => store.getState().chat.selection.status === 'ready'
 window.__runSelectionSmoke = async () => {
   const checks: string[] = []
   root.render(<StrictMode><Provider store={store}><QueryClientProvider client={queryClient}>
-    <HashRouter><ChatSelectionProvider><Controls /><Routes>
+    <HashRouter><KeyboardProvider><NavigationCommands><ChatSelectionProvider><Controls /><Routes>
       <Route path='/chat/:projectId/:id' element={<ChatProbe />} />
       <Route path='/settings' element={<div>Settings</div>} />
-    </Routes></ChatSelectionProvider></HashRouter>
+    </Routes></ChatSelectionProvider></NavigationCommands></KeyboardProvider></HashRouter>
   </QueryClientProvider></Provider></StrictMode>)
   await until(() => requests.length >= 1, 'StrictMode route request')
   await tick()
@@ -74,12 +105,77 @@ window.__runSelectionSmoke = async () => {
   await until(ready, 'initial selection')
   checks.push('Real StrictMode mount and snapshot acceptance')
 
+  const graph = document.getElementById('keyboard-probe')!
+  graph.focus()
+  const up = () => graph.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowUp', bubbles: true, cancelable: true }))
+  up()
+  await until(() => probeMoves === 1, 'first scoped command')
+  up()
+  await until(() => probeMoves === 2, 'live command callback')
+  setProbeEnabled(false)
+  await tick()
+  assert(up(), 'Disabled widget consumed its key')
+  assert(probeMoves === 2, 'Disabled widget ran')
+  setProbeEnabled(true)
+  await tick()
+  checks.push('StrictMode registers once, refreshes callbacks and honors availability')
+
+  const openEditor = async () => {
+    document.getElementById('open-shortcuts')!.focus()
+    document.getElementById('open-shortcuts')!.click()
+    await until(() => Boolean(document.querySelector('[data-shortcut-editor]')), 'shortcut editor')
+    await tick()
+  }
+  await openEditor()
+  assert(document.activeElement?.getAttribute('aria-label') === 'Close keyboard shortcuts', 'Modal did not take focus')
+  const change = document.querySelector<HTMLButtonElement>('[aria-label="Change Parent message shortcut"]')!
+  change.focus()
+  change.click()
+  await tick()
+  change.dispatchEvent(new KeyboardEvent('keydown', { key: 'j', bubbles: true, cancelable: true }))
+  await tick()
+  assert(change.textContent === 'J', 'Recorder did not show captured key')
+  assert(loadShortcutOverrides()['heimdall.parent'] === undefined, 'Draft changed saved preferences')
+  const saveButton = [...document.querySelectorAll<HTMLButtonElement>('[role="dialog"] button')].find(button => button.textContent === 'Save shortcuts')!
+  saveButton.click()
+  await until(() => !document.querySelector('[data-shortcut-editor]'), 'save shortcuts')
+  await tick()
+  assert(document.activeElement?.id === 'open-shortcuts', 'Modal did not restore focus')
+  graph.focus()
+  assert(up(), 'Old default remained active after rebind')
+  graph.dispatchEvent(new KeyboardEvent('keydown', { key: 'j', bubbles: true, cancelable: true }))
+  await until(() => probeMoves === 3, 'saved shortcut immediately active')
+  await openEditor()
+  const changeAgain = document.querySelector<HTMLButtonElement>('[aria-label="Change Parent message shortcut"]')!
+  changeAgain.focus()
+  changeAgain.click()
+  await tick()
+  changeAgain.dispatchEvent(new KeyboardEvent('keydown', { key: 'k', bubbles: true, cancelable: true }))
+  await tick()
+  document.activeElement?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }))
+  await until(() => !document.querySelector('[data-shortcut-editor]'), 'cancel draft')
+  assert(loadShortcutOverrides()['heimdall.parent']?.[0]?.key === 'j', 'Cancel persisted a draft')
+  saveShortcutOverrides({})
+  await tick()
+  graph.focus()
+  up()
+  await until(() => probeMoves === 4, 'default restored after reset')
+  checks.push('Shortcut modal captures, saves live bindings, cancels drafts and restores focus')
+
   const oldRefresh = snapshot.refresh
   navigation.navigate('/settings')
   await until(() => location.hash === '#/settings' && history.canGoBack, 'Settings history entry')
   await tick()
   const count = requests.length
-  history.goBack()
+  document.getElementById('keyboard-input')!.focus()
+  setCommandsBlocked(true)
+  await tick()
+  assert(pressBack(), 'Overlay-blocked shortcut consumed key')
+  await tick()
+  assert(location.hash === '#/settings', 'Overlay allowed background navigation')
+  setCommandsBlocked(false)
+  await tick()
+  assert(!pressBack(), 'Back shortcut was not consumed in input')
   await until(() => requests.length > count, 'topbar Back remount')
   const afterMount = requests.length
   await oldRefresh()
@@ -152,6 +248,33 @@ window.__runSelectionSmoke = async () => {
   await until(ready, 'missing target ready')
   assert(store.getState().chat.conversation.focusedChatMessageId === 'late', 'Replacement target not selected')
   checks.push('Missing target resolver waits for superseding snapshot')
+  const beforeDeep = requests.length
+  navigation.navigate('/chat/p/deep')
+  await until(() => requests.length > beforeDeep && latest().id === 'deep', 'deep conversation request')
+  const deepRows = Array.from({ length: 20000 }, (_, i) => ({
+    id: `deep-${i}`, conversation_id: 'deep', parent_id: i ? `deep-${i - 1}` : null,
+    children_ids: i < 19999 ? [`deep-${i + 1}`] : [], role: 'assistant', content: 'text',
+    created_at: new Date(1700000000000 + i).toISOString(),
+  }))
+  latest().resolve({ messages: deepRows, tree: null })
+  await until(ready, 'deep conversation ready')
+  const deepTree = store.getState().chat.heimdall.treeData!
+  assert(Array.from(walkChatTree(deepTree)).length === 20000, 'Deep tree lost messages')
+  const visible = filterChatTree(deepTree, node => ({ promote: false, message: node.message }))[0]
+  assert(Object.keys(layoutChatTree(visible, 20, 30)).length === 20000, 'Deep layout lost nodes')
+  assert(buildKeyboardTree(visible).size === 20000, 'Deep keyboard index lost nodes')
+  const refreshDeep = snapshot.refresh()
+  latest().resolve({ messages: deepRows, tree: null })
+  await refreshDeep
+  await until(ready, 'deep replacement ready')
+  navigation.navigate('/settings')
+  await tick()
+  const beforeDeepReturn = requests.length
+  navigation.navigate('/chat/p/deep')
+  await until(() => requests.length > beforeDeepReturn, 'deep return request')
+  latest().resolve({ messages: deepRows, tree: null })
+  await until(ready, 'deep return ready')
+  checks.push('20,000-deep tree loads, refreshes, lays out, indexes and survives route return in Electron')
   root.unmount()
   queryClient.clear()
   return checks
