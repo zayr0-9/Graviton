@@ -574,6 +574,8 @@ export interface LineageSelectionPayload {
 
 export interface SendMessagePayload {
   conversationId: ConversationId
+  /** Explicit child creation at a historical parent (Explain selection), not continuation. */
+  isBranch?: boolean
   selectionRevision?: number
   /** Immutable branch context captured by a transcript pane before dispatch. */
   lineageId?: LineageId | null

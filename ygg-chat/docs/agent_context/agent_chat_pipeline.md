@@ -464,3 +464,7 @@ Compaction now uses the normal `ToolLoopService` provider/tool path. Safe-bounda
 ### Queue intake during compaction
 
 Compaction blocks delivery, not queue admission. Primary composer eligibility separates immediate sends from active-stream queueing; both automatic and manual compaction accept follow-ups. `ToolLoopService` holds them through summary commit and context/session restoration, then drains FIFO and continues the same run. An idle manual compaction still ends at its summary when nothing is queued. Queued user rows and completion-race successors explicitly clear `manualCompaction` so follow-ups are ordinary messages, not another compaction request. `compactBranch` resolves the committed summary along the final answer's ancestry when queued input extends its run.
+
+## Pending explicit-operation queue isolation
+
+`classifyOrdinarySend` may use a pending ordinary send's source lineage/anchor as a reservation while context/hooks load. A send marked `isBranch` or `retrigger` must not use this fallback, including empty-anchor reservation: it may fork during setup. Once `queue.lineageId` is assigned, that real lineage remains authoritative and normal queueing resumes. Abort-in-progress rejection is unchanged. Regression: `runAdmissionService.test.ts` covers both flags, ordinary pending ownership and assigned queues.

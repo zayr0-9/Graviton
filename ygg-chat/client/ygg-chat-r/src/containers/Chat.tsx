@@ -5763,6 +5763,9 @@ function Chat() {
         sendMessage({
           conversationId: currentConversationId,
           input: { content: contentWithCwdAnnouncement },
+          // Keep normal-send UI/settings, but explicitly authorize a child at this
+          // selected historical message rather than ordinary head continuation.
+          isBranch: true,
           parent: parsedId,
           repeatNum: 1,
           think: think,

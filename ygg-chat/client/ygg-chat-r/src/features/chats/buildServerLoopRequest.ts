@@ -110,6 +110,8 @@ export interface BuildServerLoopRequestParams {
    * per-model default window instead of the selected model's). Forwarded only-when-set:
    * autoCompactionEnabled is sent even when false (that is how the user disables it).
    */
+  /** Existing server contract: explicitly create a child instead of ordinary head admission. */
+  isBranch?: boolean
   manualCompaction?: boolean
   autoCompactionEnabled?: boolean
   /** The SELECTED model's context window; sizes the compaction trigger (server falls back per-model). */
@@ -160,6 +162,7 @@ export function buildServerLoopRequest(operation: ServerLoopOperation, params: B
   const tools = shapeTools(params.tools)
 
   const body: Record<string, unknown> = {
+    ...(params.isBranch === true ? { isBranch: true } : {}),
     content: params.content,
     provider: params.provider,
     modelName: params.modelName,

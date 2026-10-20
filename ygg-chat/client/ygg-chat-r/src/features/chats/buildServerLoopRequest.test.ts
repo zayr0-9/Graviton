@@ -197,3 +197,13 @@ describe('buildServerLoopRequest', () => {
     expect(body.subagentReasoningEffort).toBe('xhigh')
   })
 })
+
+it('marks Explain as explicit child creation without changing ordinary sends or settings', () => {
+  const params = { ...base, parentId: 'historical', reasoningConfig: { effort: 'high' }, imageConfig: { size: 'large' } }
+  const ordinary = buildServerLoopRequest('send', params)
+  const explain = buildServerLoopRequest('send', { ...params, operationId: 'explain', isBranch: true })
+  expect(ordinary.body).not.toHaveProperty('isBranch')
+  expect(explain.path).toBe(ordinary.path)
+  expect(explain.body).toMatchObject({ parentId: 'historical', isBranch: true,
+    reasoningConfig: params.reasoningConfig, imageConfig: params.imageConfig })
+})

@@ -952,6 +952,7 @@ export const sendMessage = createAsyncThunk<
       conversationId,
       input,
       manualCompaction,
+      isBranch,
       parent,
       think,
       imageConfig,
@@ -1117,6 +1118,7 @@ export const sendMessage = createAsyncThunk<
         const chatgptServerAuth = null as { accessToken?: string; accountId?: string } | null
         const { path, body } = buildServerLoopRequest('send', {
           manualCompaction,
+          isBranch,
           conversationId: String(conversationId),
           content: input.content.trim(),
           provider: serverProvider,

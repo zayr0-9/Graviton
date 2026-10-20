@@ -318,3 +318,13 @@ describe('branch-scoped Fast mode requests', () => {
     expect(state.chat.branchFastModeDrafts).toEqual({ '["c1","lineage:primary"]': false })
   })
 })
+
+it('forwards explicit Explain child intent through sendMessage without reparenting the selected message', async () => {
+  const h = setup([message('old'), message('head', 'old')], [])
+  await sendMessage({ conversationId: 'c1', input: { content: 'Explain selected text' }, parent: 'old',
+    isBranch: true, repeatNum: 1, think: false, streamId: 'explain' })(h.dispatch, () => h.state,
+    { queryClient: h.queryClient, auth: { accessToken: null, userId: 'user' } })
+  expect(vi.mocked(runServerChatLoop)).toHaveBeenCalledWith(expect.objectContaining({
+    operation: 'send', request: expect.objectContaining({ parentId: 'old', isBranch: true, content: 'Explain selected text' }),
+  }), expect.anything())
+})

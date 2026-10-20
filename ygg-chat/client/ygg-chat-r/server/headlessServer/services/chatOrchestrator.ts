@@ -527,13 +527,16 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
       if (run.signal?.aborted && (run.queue.lineageId === lineage?.id || run.request.parentId === request.parentId)) {
         throw Object.assign(new Error('The previous run is stopping. Wait for it to settle before sending.'), { code: 'run_unavailable' })
       }
-      const ownedLineage = run.queue.lineageId ?? (run.request.operation === 'send' ? run.request.lineageId : null)
+      // An explicit child/retrigger may still fork after async setup. Until its
+      // queue has a real lineage, it cannot reserve the source lineage or anchor.
+      const pendingOrdinarySend = run.request.operation === 'send' && !run.request.isBranch && !run.request.retrigger
+      const ownedLineage = run.queue.lineageId ?? (pendingOrdinarySend ? run.request.lineageId : null)
       const sameLineage = lineage && ownedLineage === lineage.id
-      const samePendingAnchor = !run.queue.lineageId && run.request.operation === 'send' &&
+      const samePendingAnchor = !run.queue.lineageId && pendingOrdinarySend &&
         (run.request.parentId ?? null) === (request.parentId ?? null) &&
         (!request.lineageId || run.request.lineageId === request.lineageId || sameLineage ||
           (!run.request.lineageId && lineage?.id === request.lineageId))
-      const emptyReservation = !request.parentId && !request.lineageId && run.request.operation === 'send' && !run.request.parentId &&
+      const emptyReservation = !request.parentId && !request.lineageId && pendingOrdinarySend && !run.request.parentId &&
         (!run.queue.lineageId || this.lineageRepo.list(request.conversationId).filter(row => row.status !== 'archived').length === 1)
       if (sameLineage || samePendingAnchor || emptyReservation) {
         return { lineageId: run.queue.lineageId ?? lineage?.id ?? null, parentId: run.head, activeStreamId: streamId }

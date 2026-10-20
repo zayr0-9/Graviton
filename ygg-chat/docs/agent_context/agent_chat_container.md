@@ -361,3 +361,7 @@ Regression coverage lives in `src/hooks/useConversationSnapshotCoordinator.test.
 `selection.revision` identifies every explicit intent. `selection.fallbackRevision` changes when view ownership changes, allowing same-view refocus without losing a startup stream. Async sends capture their initiating revision and branch context. Do not restore independent UI path/focus dispatches; automatic stream advancement and deletion repair are separate, guarded operations.
 
 Validation: `chatSelection.test.ts`, `chatSelectionController.test.ts`, existing lineage/projection/snapshot tests, full renderer suite, renderer typecheck and Electron build. Manually check virtualized scrolling and live navigation in Electron.
+
+## Explain selection child intent
+
+`handleExplainFromSelection` retains the normal-send optimistic bubble, attachments and image/reasoning settings, but passes `isBranch:true` through `SendMessagePayload` and `buildServerLoopRequest`. This uses the existing host explicit-child contract: historical selected parents bypass ordinary head-only admission and fork structurally when needed. Do not replace the parent with the current head or relax ordinary admission. Regular edit-branch remains sibling semantics and unchanged. Regression coverage: `buildServerLoopRequest.test.ts`, `editMessageWithBranching.test.ts`.

@@ -54,6 +54,31 @@ describe('read-only lineage admission', () => {
     host.inputRuns = new Map([['active', { queue: { lineageId: 'l' }, request: { conversationId: 'c', operation: 'send', parentId: 'old' }, head: 'head' }]])
     return host
   }
+  it.each(['isBranch', 'retrigger'] as const)('does not route ordinary input into an unresolved %s send', flag => {
+    const host = fixture()
+    const run = host.inputRuns.get('active')
+    run.queue.lineageId = null
+    run.request = { ...run.request, lineageId: 'l', [flag]: true }
+    // Another client can continue the original head while context/hooks for the
+    // explicit operation are still pending. It must not enter that future fork.
+    expect(host.classifyOrdinarySend({ ...request('head'), parentId: 'head', lineageId: 'l' }))
+      .toEqual({ parentId: 'head', lineageId: 'l' })
+    expect(() => host.classifyOrdinarySend({ ...request('old'), parentId: 'old', lineageId: 'l' })).toThrow('branch head')
+    // Once assigned, the real queue lineage is authoritative, even for an
+    // explicit operation; later input on that lineage must still queue normally.
+    run.queue.lineageId = 'l'
+    expect(host.classifyOrdinarySend({ ...request('later'), parentId: 'head', lineageId: 'l' }).activeStreamId).toBe('active')
+  })
+  it('retains pending ordinary-send ownership and abort-in-progress rejection', () => {
+    const host = fixture()
+    const run = host.inputRuns.get('active')
+    run.queue.lineageId = null
+    run.request.lineageId = 'l'
+    expect(host.classifyOrdinarySend({ ...request('a'), parentId: 'head', lineageId: 'l' }).activeStreamId).toBe('active')
+    run.request.isBranch = true
+    run.signal = { aborted: true }
+    expect(() => host.classifyOrdinarySend({ ...request('b'), parentId: 'old', lineageId: 'l' })).toThrow('previous run is stopping')
+  })
   it('queues a historical ancestor but rejects siblings, missing and foreign parents', () => {
     const host = fixture()
     expect(host.classifyOrdinarySend({ ...request('a'), parentId: 'old', lineageId: 'l' }).activeStreamId).toBe('active')
