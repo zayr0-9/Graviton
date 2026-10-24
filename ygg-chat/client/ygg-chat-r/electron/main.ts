@@ -11,7 +11,8 @@ import fs from 'fs'
 import http from 'http'
 import os from 'os'
 import path from 'path'
-import { fileURLToPath } from 'url'
+import { fileURLToPath, pathToFileURL } from 'url'
+import { installRendererRecovery, type RendererRecovery } from './rendererRecovery.js'
 import { normalizeShellPath } from './shellPath.js'
 import { createQuitConfirmationGuard } from './quitConfirmation.js'
 import '../server/envLoader.js'
@@ -38,6 +39,7 @@ const { autoUpdater } = autoUpdaterPkg
 // ESM: Get __dirname from import.meta.url
 const __dirname = fileURLToPath(new URL('.', import.meta.url))
 let mainWindow: BrowserWindow | null = null
+let mainRecovery: RendererRecovery | null = null
 let floatingWindow: BrowserWindow | null = null
 let tray: Tray | null = null
 let isQuitting = false
@@ -649,7 +651,24 @@ function createWindow() {
     show: false, // Don't show until ready
   })
 
-  installNativeHostSession(mainWindow.webContents.session)
+  const window = mainWindow
+  const entryUrl = app.isPackaged
+    ? pathToFileURL(path.join(__dirname, '../dist-electron/index.html')).href
+    : 'http://localhost:5173/'
+  const recovery = installRendererRecovery(window, {
+    entryUrl,
+    isQuitting: () => isQuitting,
+    log: record => fs.appendFileSync(getClientErrorLogPath(), `${JSON.stringify(record)}\n`, 'utf-8'),
+    logPath: getClientErrorLogPath,
+    versions: { app: app.getVersion(), electron: process.versions.electron,
+      chrome: process.versions.chrome, platform: process.platform, arch: process.arch },
+    showDialog: options => dialog.showMessageBox(window, options),
+    changed: () => updateTrayMenu(),
+  })
+  mainRecovery = recovery
+  updateTrayMenu()
+
+  installNativeHostSession(window.webContents.session)
 
   // A login reservation belongs to the initiating document, not a dead frame.
   mainWindow.webContents.on('did-start-navigation', (_event, _url, isInPlace, isMainFrame) => {
@@ -712,38 +731,9 @@ function createWindow() {
     mainWindow.removeMenu() // defensive (older Electron versions)
   }
 
-  if (isDev) {
-    // Development: Load from Vite dev server
-    mainWindow.loadURL('http://localhost:5173')
-  } else {
-    // Production: Load from built files
-    const indexPath = path.join(__dirname, '../dist-electron/index.html')
-    console.log('[Electron] Production mode - loading from:', indexPath)
-
-    // Add error listeners BEFORE loading
-    mainWindow.webContents.on('did-fail-load', (_event, errorCode, errorDescription, validatedURL) => {
-      console.error('[Electron] Failed to load:', { errorCode, errorDescription, validatedURL })
-    })
-
-    mainWindow.webContents.on('did-finish-load', () => {
-      console.log('[Electron] Page finished loading')
-    })
-
-    // mainWindow.webContents.on('console-message', (_event, level, message, line, sourceId) => {
-    //   // console.log('[Renderer Console]', { level, message, line, sourceId })
-    // })
-
-    mainWindow.loadFile(indexPath)
-
-    // DEBUG: Force DevTools to open after a delay
-    if (!app.isPackaged) {
-      // if (true) {
-      setTimeout(() => {
-        console.log('[Electron] Force opening DevTools...')
-        mainWindow?.webContents.openDevTools({ mode: 'detach' })
-      }, 3000)
-    }
-  }
+  // The controller handles both navigation errors and rejected load promises.
+  // It reloads this same window/session without restarting the embedded server.
+  void recovery.load()
 
   if (shouldOpenDetachedDevTools) {
     // Open detached devtools as soon as possible, then retry once after load for reliability.
@@ -763,8 +753,13 @@ function createWindow() {
     }
   })
 
-  mainWindow.on('closed', () => {
-    mainWindow = null
+  window.on('closed', () => {
+    recovery.dispose()
+    if (mainWindow === window) {
+      mainWindow = null
+      mainRecovery = null
+      updateTrayMenu()
+    }
   })
 
   // Custom context menu with spell check
@@ -828,6 +823,11 @@ function createTray() {
     }
   })
 
+  updateTrayMenu()
+}
+
+function updateTrayMenu() {
+  if (!tray) return
   const contextMenu = Menu.buildFromTemplate([
     {
       label: 'Open',
@@ -839,6 +839,11 @@ function createTray() {
           createWindow()
         }
       },
+    },
+    {
+      label: 'Recover UI…',
+      enabled: mainRecovery?.needsRecovery() ?? false,
+      click: () => mainRecovery?.recover(),
     },
     {
       label: 'Quit',

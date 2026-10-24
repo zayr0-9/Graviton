@@ -129,7 +129,7 @@ describe('safe edit transactions', () => {
     const read = await readTextFile('state.txt', { cwd: h.workspaceDir })
     const result = await multiEdit([
       { path: '../outside.txt', operation: 'append', content: 'no' },
-      { path: 'state.txt', operation: 'replace', searchPattern: 'alpha', replacement: 'ALPHA', expectedMetadata: { ...read.metadata, lastModified: new Date(0), inode: undefined } },
+      { path: 'state.txt', operation: 'replace', searchPattern: 'alpha', replacement: 'ALPHA', expectedMetadata: { ...read.metadata, lastModified: new Date(0).toISOString(), inode: undefined } },
       { path: 'state.txt', operation: 'replace', searchPattern: 'beta', replacement: 'BETA', expectedMetadata: read.metadata },
     ], { cwd: h.workspaceDir, stopOnError: false })
     expect(result.results.map(r => r.success)).toEqual([false, false, true])

@@ -11,7 +11,7 @@ describe('deterministic compaction finalisation', () => {
     const appendix = buildCompactionToolContextAppendix(messages)
     expect(appendix).toContain('read_file success')
     expect(appendix).toContain('/workspace/chat.ts')
-    expect(appendix).toContain('export const compact = true')
+    expect(appendix).not.toContain('export const compact = true')
     expect(appendix).toContain('Child found the context bug.')
   })
 
@@ -22,10 +22,11 @@ describe('deterministic compaction finalisation', () => {
       { type: 'tool_use', id: 'edit', name: 'edit_file', input: { path: '/a.ts', searchPattern: 'before', replacement: 'after' } },
       { type: 'tool_result', tool_use_id: 'edit', content: { success: true }, is_error: false },
     ] }]
-    expect(buildCompactionToolContextAppendix(messages)).toContain('src/a.ts')
+    expect(buildCompactionToolContextAppendix(messages)).not.toContain('src/a.ts')
     expect(buildCompactionToolContextAppendix(messages)).not.toContain('edit_file')
-    expect(buildCompactionWriteOpAppendix(messages)).toContain('before/search:\nbefore')
-    expect(buildCompactionWriteOpAppendix(messages)).toContain('after/replacement:\nafter')
+    expect(buildCompactionWriteOpAppendix(messages)).toContain('/a.ts')
+    expect(buildCompactionWriteOpAppendix(messages)).not.toContain('searchPattern')
+    expect(buildCompactionWriteOpAppendix(messages)).not.toContain('replacement')
   })
 
   it('updates canonical text and blocks while retaining raw output and statistics', () => {
@@ -33,8 +34,9 @@ describe('deterministic compaction finalisation', () => {
     const update = finaliseCompactionContent({ content: 'Summary', content_blocks: [raw, { type: 'text', content: 'Summary' }],
       meta: JSON.stringify({ runStatistics: { streamId: 's' } }) }, [{ role: 'assistant',
       tool_calls: [{ id: 'r', name: 'read_file', arguments: {} }], content_blocks: [{ type: 'tool_result', tool_use_id: 'r', content: 'evidence' }] }], { id: 'instruction' })
-    expect(update.content).toContain('evidence')
-    expect(update.contentBlocks.at(-1).content).toContain('evidence')
+    expect(update.content).not.toContain('evidence')
+    expect(update.contentBlocks.at(-1).content).toContain('read_file')
+    expect(update.contentBlocks.at(-1).content).not.toContain('evidence')
     expect(update.contentBlocks[0]).toEqual(raw)
     expect(update.meta).toMatchObject({ kind: 'compaction_summary', state: 'committed', instructionId: 'instruction', runStatistics: { streamId: 's' } })
   })

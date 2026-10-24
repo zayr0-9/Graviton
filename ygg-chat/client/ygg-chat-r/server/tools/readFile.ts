@@ -28,7 +28,7 @@ export interface FileMetadata {
   lineEnding: '\n' | '\r\n' | 'mixed'
   hasBOM: boolean
   encoding: BufferEncoding
-  lastModified: Date
+  lastModified: string // ISO timestamp; keep tool results plain JSON for in-process consumers
   inode?: number // Unix inode number for change detection
 }
 
@@ -377,7 +377,7 @@ export async function readTextFile(inputPath: string, options: ReadFileOptions =
     const probe = await readPrefix(fd, 4096, options)
     if (isLikelyBinary(probe)) throw new Error('Binary file detected; reading binary is not supported by this tool')
     const metadata: FileMetadata = {
-      lineEnding: '\n', hasBOM: hasBOM(probe), encoding: 'utf8', lastModified: stats.mtime, inode: stats.ino,
+      lineEnding: '\n', hasBOM: hasBOM(probe), encoding: 'utf8', lastModified: stats.mtime.toISOString(), inode: stats.ino,
     }
     const needsLines = options.ranges !== undefined || options.startLine !== undefined || options.endLine !== undefined
     if (!needsLines) {

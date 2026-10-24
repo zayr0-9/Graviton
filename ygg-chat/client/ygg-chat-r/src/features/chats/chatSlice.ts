@@ -1878,6 +1878,13 @@ export const chatSlice = createSlice({
       else state.errorNotices.byConversationId[key] = remaining
     },
 
+    chatReattachErrorCleared: (state, action: PayloadAction<{ conversationId: ConversationId; streamId: string }>) => {
+      const key = String(action.payload.conversationId)
+      const bucket = state.errorNotices.byConversationId[key]
+      if (bucket) state.errorNotices.byConversationId[key] = bucket.filter(record =>
+        record.streamId !== action.payload.streamId || record.envelope.code !== 'run_expired')
+    },
+
     chatErrorsClearedForConversation: (state, action: PayloadAction<ConversationId>) => {
       delete state.errorNotices.byConversationId[String(action.payload)]
     },

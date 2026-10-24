@@ -72,7 +72,8 @@ describe('ordinary persisted compaction turns', () => {
     expect(summaryRequest.history.some((row: any) => row.content_blocks?.some?.((b: any) => b.type === 'tool_result'))).toBe(true)
     const summary = h.sink.rows.find(isCommittedCompaction)
     expect(summary.role).toBe('assistant')
-    expect(summary.content).toContain('README contents')
+    expect(summary.content).toContain('README')
+    expect(summary.content).not.toContain('README contents')
     expect(h.calls[2].input.history[0].id).toBe(summary.id)
     expect(h.calls[2].input.history.at(-1).meta.kind).toBe('compaction_resume')
     expect(events.filter(event => event.type === 'context_compaction' && event.status === 'completed')).toHaveLength(1)
@@ -105,7 +106,7 @@ describe('ordinary persisted compaction turns', () => {
     await h.service.run({ ...base, manualCompaction: true }, () => {})
     expect(h.sink.rows.filter(isCommittedCompaction)).toHaveLength(1)
     expect(h.sink.rows.find(isCommittedCompaction).content).toContain('during')
-    expect(h.sink.rows.find(isCommittedCompaction).content).toContain('README contents')
+    expect(h.sink.rows.find(isCommittedCompaction).content).not.toContain('README contents')
   })
 
   it('holds queued input until summary commits, then answers it after an otherwise completed task', async () => {
@@ -170,8 +171,10 @@ describe('ordinary persisted compaction turns', () => {
     await h.service.run({ ...base, history, manualCompaction: true }, () => {})
     const summary = h.sink.rows.find(isCommittedCompaction)
     const input = { modelName: 'test', history: [summary], userContent: '', tools: [] }
-    expect(JSON.stringify(toCodexMessages(input))).toContain('preserved evidence')
-    expect(JSON.stringify(toHyperMessages(input))).toContain('preserved evidence')
+    expect(JSON.stringify(toCodexMessages(input))).toContain('read_file')
+    expect(JSON.stringify(toHyperMessages(input))).toContain('read_file')
+    expect(JSON.stringify(toCodexMessages(input))).not.toContain('preserved evidence')
+    expect(JSON.stringify(toHyperMessages(input))).not.toContain('preserved evidence')
   })
 
   it('recognises only committed boundaries and drops old request usage from the live meter', () => {

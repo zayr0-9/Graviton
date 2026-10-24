@@ -9,7 +9,8 @@ import { resolveBranchFastMode } from '../features/chats/branchFastMode'
 import { isCommittedCompaction } from '../../../../shared/compaction'
 import { isHiddenCompactionMessage } from '../features/chats/summaryPresentation'
 import { useQueryClient } from '@tanstack/react-query'
-import { useVirtualizer } from '@tanstack/react-virtual'
+import { defaultRangeExtractor, useVirtualizer } from '@tanstack/react-virtual'
+import { resolveLiveExplainSource, updateLiveExplainSurface, type LiveExplainSource, type LiveExplainSurface } from '../components/ChatMessage/liveExplainSelection'
 import 'boxicons' // Types
 import 'boxicons/css/boxicons.min.css'
 import { AnimatePresence, motion } from 'framer-motion'
@@ -2773,14 +2774,36 @@ function Chat() {
     anchor: streamState.lastCompletedMessageId ?? streamState.branchAnchorMessageId,
     boundaryAfter: trailingAgentRow?.kind === 'process_group' && runFootersByAnchor.has(String(trailingAgentRow.memberMessageIds[trailingAgentRow.memberMessageIds.length - 1])),
   }) ? String(trailingAgentRow.id) : null
+  const [liveExplainSurface, setLiveExplainSurface] = useState<LiveExplainSurface | null>(null)
+  const liveExplainSourceRef = useRef<LiveExplainSource | null>(null)
+  const handleLiveExplainOpenChange = useCallback((surface: LiveExplainSurface, open: boolean) => {
+    if (open) {
+      liveExplainSourceRef.current = {
+        streamId: streamState.id,
+        messageId: streamState.liveMessageId ?? streamState.persistedTurnMessageId,
+        previousCompletedId: streamState.lastCompletedMessageId,
+      }
+    }
+    setLiveExplainSurface(current => updateLiveExplainSurface(current, surface, open))
+  }, [streamState.id, streamState.liveMessageId, streamState.persistedTurnMessageId, streamState.lastCompletedMessageId])
+  const liveExplainOpenChangeRef = useRef(handleLiveExplainOpenChange)
+  liveExplainOpenChangeRef.current = handleLiveExplainOpenChange
+  const handleTailExplainOpenChange = useCallback((open: boolean) => liveExplainOpenChangeRef.current('tail', open), [])
+  const handleVirtualExplainOpenChange = useCallback((open: boolean) => liveExplainOpenChangeRef.current('virtual', open), [])
+  if (liveExplainSurface && liveExplainSourceRef.current) {
+    liveExplainSourceRef.current = resolveLiveExplainSource(liveExplainSourceRef.current, streamState, conversationMessages)
+  }
+  const liveExplainSourceReady = liveExplainSourceRef.current?.messageId != null && conversationMessages.some(
+    message => String(message.id) === String(liveExplainSourceRef.current?.messageId)
+  )
   const visibleLiveEvents = liveAgentGroupId ? liveAgentEvents.outside : streamState.events
   const showStandaloneStreamingMessage = showStreamingMessage && (!liveAgentGroupId || visibleLiveEvents.length > 0)
-  const showLiveStreamingTail = showStandaloneStreamingMessage && hasFinalTextStreaming
+  const showLiveStreamingTail = showStandaloneStreamingMessage && hasFinalTextStreaming && liveExplainSurface !== 'virtual'
   // Once the final answer is streaming, the live tail is rendered OUTSIDE TanStack Virtual as an
   // in-flow sibling (see the message list render) so its token-by-token growth never enters
   // virtualizer geometry or the ResizeObserver, and can never drag scrollTop. Only the
   // process-only phase (thinking/tools, no text yet) is kept as a measured virtual row.
-  const showStreamingMessageInVirtualList = showStandaloneStreamingMessage && !showLiveStreamingTail
+  const showStreamingMessageInVirtualList = (showStandaloneStreamingMessage && !showLiveStreamingTail) || liveExplainSurface === 'virtual'
   const showStreamingThinkingMessageRow = streamingThinkingIndicatorPlacement === 'message'
   const showStreamingThinkingInputTab = streamingThinkingIndicatorPlacement === 'input-tab'
   const showGenerationLoaderRow = showGenerationLoadingAnimation && showStreamingThinkingMessageRow
@@ -3183,6 +3206,11 @@ function Chat() {
     getScrollElement: () => messagesContainerRef.current,
     estimateSize: estimateVirtualRowSize,
     overscan: 16, // Buffer rows above/below viewport
+    rangeExtractor: range => {
+      const indices = defaultRangeExtractor(range)
+      const explainIndex = liveExplainSurface === 'virtual' ? virtualRows.findIndex(row => row.kind === 'streaming_message') : -1
+      return explainIndex >= 0 && !indices.includes(explainIndex) ? [...indices, explainIndex].sort((a, b) => a - b) : indices
+    },
     // No paddingEnd: trailing scroll room comes from the in-flow bottom sentinel instead, so the
     // out-of-flow live tail sits flush under the last persisted message.
     paddingEnd: virtualizerPaddingEnd,
@@ -5721,13 +5749,18 @@ function Chat() {
 
   const handleExplainFromSelection = useCallback(
     (id: string, newContent: string) => {
-      if (!currentConversationId || selection.status === 'pending' || selection.status === 'error') return false
+      if (!currentConversationId || selection.status === 'pending' || selection.status === 'error' || streamLifecycleActive || compactionActive) return false
 
       // Explain selection should always create a new user child under the selected message,
       // even when that message already has children.
       const processed = replaceFileMentionsWithPath(newContent)
       const contentWithIdeContext = appendIdeContextToMessage(processed)
-      const parsedId = parseId(id)
+      // The live row has a UI-only id; branch only from a confirmed persisted response.
+      const sourceId = id === 'streaming'
+        ? liveExplainSourceRef.current?.messageId
+        : id
+      if (sourceId == null) return false
+      const parsedId = parseId(String(sourceId))
       const originalMessage = conversationMessages.find(m => m.id === parsedId)
       const { content: contentWithCwdAnnouncement, pendingCwdValue } = withPendingCwdAnnouncement(
         currentConversationId,
@@ -5802,6 +5835,8 @@ function Chat() {
       return true
     },
     [
+      streamLifecycleActive,
+      compactionActive,
       selection.revision,
       selection.fallbackRevision,
       modeLineageId,
@@ -6649,7 +6684,7 @@ function Chat() {
                         }
 
                         if (renderRow.kind === 'streaming_message') {
-                          if (!hasStreamingMessageContent) return null
+                          if (!hasStreamingMessageContent && liveExplainSurface !== 'virtual') return null
 
                           // R4: no error bubble here. A failed stream is drawn by the message
                           // list only — see the `chat_error` row below (tier 2) or the persisted
@@ -6666,6 +6701,7 @@ function Chat() {
                               start={virtualRow.start}
                               measureElement={virtualizer.measureElement}
                             >
+                              <div hidden={!showStreamingMessage}>
                               <ChatMessage
                                 id='streaming'
                                 role='assistant'
@@ -6683,10 +6719,17 @@ function Chat() {
                                 isDarkMode={isDarkMode}
                                 modelName={selectedModel?.name || undefined}
                                 className=''
+                                onAddToNote={handleAddToNote}
+                                onAddToChat={handleAddToChat}
+                                onExplainFromSelection={handleExplainFromSelection}
+                                branchSubmissionDisabled={selection.status === 'pending' || selection.status === 'error'}
+                                explainSubmissionDisabled={streamLifecycleActive || compactionActive || !liveExplainSourceReady}
+                                onExplainInputOpenChange={handleVirtualExplainOpenChange}
                                 onOpenToolHtmlModal={openToolHtmlModal}
                                 onOpenSubagentTranscript={openSubagentTranscript}
                                 onChatErrorAction={handlePersistedChatErrorAction}
                               />
+                              </div>
                             </VirtualizedRowContainer>
                           )
                         }
@@ -7002,6 +7045,7 @@ function Chat() {
                               onAddToChat={handleAddToChat}
                               onExplainFromSelection={handleExplainFromSelection}
                               branchSubmissionDisabled={selection.status === 'pending' || selection.status === 'error'}
+                              explainSubmissionDisabled={streamLifecycleActive || compactionActive}
                               onOpenToolHtmlModal={openToolHtmlModal}
                               onOpenSubagentTranscript={openSubagentTranscript}
                               onChatErrorAction={handlePersistedChatErrorAction}
@@ -7021,8 +7065,8 @@ function Chat() {
                 geometry or the ResizeObserver, so it can never drag scrollTop. `flexShrink: 0` keeps
                 the flex column from collapsing it (mirrors the totalSize div). Auto-follow targets
                 liveStreamingContentRef via getBoundingClientRect, which is layout-agnostic. */}
-            {showLiveStreamingTail && (
-              <div style={{ flexShrink: 0 }} data-live-streaming-tail='true'>
+            {(showLiveStreamingTail || liveExplainSurface === 'tail') && (
+              <div hidden={!showLiveStreamingTail} style={{ flexShrink: 0 }} data-live-streaming-tail='true'>
                 <div ref={liveStreamingContentRef}>
                   <ChatMessage
                     id='streaming'
@@ -7041,6 +7085,12 @@ function Chat() {
                     isDarkMode={isDarkMode}
                     modelName={selectedModel?.name || undefined}
                     className=''
+                    onAddToNote={handleAddToNote}
+                    onAddToChat={handleAddToChat}
+                    onExplainFromSelection={handleExplainFromSelection}
+                    branchSubmissionDisabled={selection.status === 'pending' || selection.status === 'error'}
+                    explainSubmissionDisabled={streamLifecycleActive || compactionActive || !liveExplainSourceReady}
+                    onExplainInputOpenChange={handleTailExplainOpenChange}
                     onOpenToolHtmlModal={openToolHtmlModal}
                     onOpenSubagentTranscript={openSubagentTranscript}
                     onChatErrorAction={handlePersistedChatErrorAction}

@@ -418,7 +418,7 @@ describe('claude_bridge', () => {
     expect(first.job.source).toEqual(source)
     let completion!: Promise<Record<string, any>>
     const registerWait = vi.fn((jobId, result) => { completion = result; return { handle: `watch:${jobId}`, autoResume: true } })
-    const waiting = await bridge.execute({ action: 'wait', sessionId: first.sessionId, waitMs: 0 },
+    const waiting = await bridge.execute({ action: 'wait', sessionId: first.sessionId },
       { ...context, toolCallId: 'wait-call', messageId: 'wait-message', registerWait })
     expect(waiting).toMatchObject({ success: true, autoResume: true, job: { status: 'running' } })
     expect(registerWait).toHaveBeenCalledTimes(1)
@@ -453,14 +453,30 @@ describe('claude_bridge', () => {
     expect(sent.job.source).toEqual({ action: 'send', toolCallId: 'actual-send' })
   })
 
-  it('bounds waits independently without stopping the job', async () => {
+  it('waits for completion without a separate polling timeout', async () => {
     vi.useFakeTimers()
     const first = await bridge.execute({ action: 'start', message: 'Review' }, context)
-    const waiting = bridge.execute({ action: 'wait', sessionId: first.sessionId, waitMs: 50 }, context)
-    await vi.advanceTimersByTimeAsync(51)
-    expect((await waiting).job.status).toBe('running')
+    let settled = false
+    const waiting = bridge.execute({ action: 'wait', sessionId: first.sessionId }, context)
+      .then(result => { settled = true; return result })
+    await vi.advanceTimersByTimeAsync(30001)
+    expect(settled).toBe(false)
     children[0].reply(first.sessionId)
-    expect((await bridge.execute({ action: 'wait', sessionId: first.sessionId }, context)).job.status).toBe('completed')
+    expect((await waiting).job.status).toBe('completed')
+  })
+
+  it.each([false, true])('allows caller cancellation of a wait without stopping the job (already aborted: %s)', async alreadyAborted => {
+    const first = await bridge.execute({ action: 'start', message: 'Review' }, context)
+    const controller = new AbortController()
+    if (alreadyAborted) controller.abort()
+    const waiting = bridge.execute({ action: 'wait', sessionId: first.sessionId }, { ...context, signal: controller.signal })
+    controller.abort()
+    const result = await waiting
+    if (alreadyAborted) expect(result).toMatchObject({ success: false, error: 'Request cancelled' })
+    else expect(result.job.status).toBe('running')
+    expect((await bridge.execute({ action: 'status', sessionId: first.sessionId }, context)).job.status).toBe('running')
+    children[0].reply(first.sessionId)
+    expect((await bridge.execute({ action: 'status', sessionId: first.sessionId }, context)).job.status).toBe('completed')
   })
 })
 
@@ -474,10 +490,7 @@ describe.skipIf(process.env.CLAUDE_BRIDGE_LIVE_TEST !== '1')('Claude bridge live
     const marker = `bridge-${Date.now()}`
     fs.writeFileSync(path.join(directory, 'review.txt'), marker)
     const waitForJob = async (sessionId: string) => {
-      let result
-      do {
-        result = await bridge.execute({ action: 'wait', sessionId, waitMs: 30000 }, context)
-      } while (result.job?.status === 'running')
+      const result = await bridge.execute({ action: 'wait', sessionId }, context)
       expect(result.job?.status, JSON.stringify(result)).toBe('completed')
       expect(result.job.modelsUsed?.length).toBeGreaterThan(0)
       return result
@@ -509,8 +522,7 @@ describe.skipIf(process.env.CLAUDE_BRIDGE_LIVE_TEST !== '1')('Claude bridge live
       const fork = await bridge.execute({ action: 'fork', name: title, source: 'claude', newName: `${title} fork`, model: 'opus', message: 'Without tools, repeat the file contents you remember from our earlier conversation.', timeoutMs: 60000 }, externalContext)
       expect(fork.success, JSON.stringify(fork)).toBe(true)
       expect(fork.sessionId).not.toBe(first.sessionId)
-      let forkResult
-      do { forkResult = await bridge.execute({ action: 'wait', sessionId: fork.sessionId, waitMs: 30000 }, externalContext) } while (forkResult.job?.status === 'running')
+      const forkResult = await bridge.execute({ action: 'wait', sessionId: fork.sessionId }, externalContext)
       expect(forkResult.job?.status, JSON.stringify(forkResult)).toBe('completed')
       expect(forkResult.job.modelsUsed.some((model: string) => model.includes('opus'))).toBe(true)
       const forkTranscript = await bridge.execute({ action: 'read', sessionId: fork.sessionId }, externalContext)

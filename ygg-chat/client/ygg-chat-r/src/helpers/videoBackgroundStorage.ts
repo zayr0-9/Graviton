@@ -14,7 +14,7 @@ export interface CustomVideoEntry {
   textColorMode?: 'light' | 'dark' | 'auto'
 }
 
-export type BackgroundMode = 'video' | 'color'
+export type BackgroundMode = 'video' | 'color' | 'matrix'
 
 export interface BackgroundColorSettings {
   light: string
@@ -85,7 +85,7 @@ const readBackgroundPreference = (): { mode: BackgroundMode; colors: BackgroundC
 
   const stored = safeParse(window.localStorage.getItem(BACKGROUND_PREFERENCE_KEY)) as StoredBackgroundPreference | null
   const normalized: StoredBackgroundPreference = typeof stored === 'object' && stored !== null ? stored : {}
-  const mode = normalized.mode === 'video' ? 'video' : 'color'
+  const mode = normalized.mode === 'video' || normalized.mode === 'matrix' ? normalized.mode : 'color'
 
   const colors = normalizeColorSettings({
     light: normalized.colors?.light ?? DEFAULT_BACKGROUND_COLORS.light,

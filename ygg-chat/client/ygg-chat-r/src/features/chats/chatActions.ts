@@ -1,3 +1,4 @@
+import { HOST_DATA_CHANGED } from '../../services/hostChangeEvents'
 import { getAdmissionEpoch, resetAdmissionEpoch } from './runAdmissionClient'
 import { getClientId, newClientId } from '../../helpers/clientId'
 import { resolveBranchModelSelection } from './branchModelSelection'
@@ -2683,6 +2684,14 @@ export const resumeInFlightStreams = createAsyncThunk<
       // reattach/replay failed — including a terminal error frame, which nothing on this
       // path throws, so the envelope is the only way it is ever surfaced. Absent means
       // "healthy, still running" and stays silent.
+      if (result.recovered) {
+        dispatch(chatSliceActions.chatReattachErrorCleared({ conversationId: rec.conversationId, streamId: rec.streamId }))
+        // Ask the existing visit-fenced snapshot coordinator to load saved output.
+        // Do not replay a terminal row or change selection from an old stream.
+        if (typeof window !== 'undefined') window.dispatchEvent(new CustomEvent(HOST_DATA_CHANGED, {
+          detail: { conversationIds: [rec.conversationId], reset: false },
+        }))
+      }
       const reattachFailure = reattachEnvelopeOf(result)
       if (reattachFailure) {
         recordLocalChatError(dispatch, null, {
@@ -2693,7 +2702,7 @@ export const resumeInFlightStreams = createAsyncThunk<
           envelope: reattachFailure,
         })
       }
-      void dispatch(loadMessageQueue({ conversationId: rec.conversationId, streamId: rec.streamId }))
+      if (!result.gone) void dispatch(loadMessageQueue({ conversationId: rec.conversationId, streamId: rec.streamId }))
       if (result.gone) dispatch(chatSliceActions.streamingAborted({ streamId: rec.streamId }))
       if (result.gone || result.terminal) removeInflightStream(rec.streamId)
     } catch (error) {

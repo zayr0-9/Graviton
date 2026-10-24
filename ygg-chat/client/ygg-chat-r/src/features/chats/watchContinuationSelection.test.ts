@@ -234,3 +234,31 @@ describe('watcher reattachment wiring', () => {
     expect(h.get().composition.input.content).toBe('unsent draft')
   })
 })
+
+it('retires an old successful reattach without disturbing a different live stream or draft', async () => {
+  const { resumeInFlightStreams } = await import('./chatActions')
+  const { runServerReattach } = await import('./mainChatClient')
+  const { buildChatErrorRecord } = await import('./localChatErrors')
+  const { buildChatErrorEnvelope } = await import('../../../../../shared/chatErrors')
+  const h = setup(undefined, null)
+  h.dispatch(actions.sendingStarted({ streamId: 'live', conversationId: 'chat', preserveDrafts: true }))
+  const notice = (streamId: string, code: 'run_expired' | 'provider_timeout') => buildChatErrorRecord(buildChatErrorEnvelope(code), {
+    conversationId: 'chat', streamId, parentMessageId: 'tail',
+  })
+  h.dispatch(actions.chatErrorRecorded(notice('successor', 'run_expired')))
+  h.dispatch(actions.chatErrorRecorded(notice('live', 'provider_timeout')))
+  vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify({ runs: [] }))))
+  vi.mocked(runServerReattach).mockResolvedValueOnce({ gone: true, terminal: false, recovered: 'completed',
+    messageId: null, userMessage: null, providerError: false })
+  try {
+    await resumeInFlightStreams({ conversationId: 'chat', streamId: 'successor' })(h.dispatch as any,
+      () => ({ chat: h.get() }) as RootState, {} as any)
+    expect(listInflightStreams()).toEqual([])
+    expect(h.get().streaming.byId.live.active).toBe(true)
+    expect(h.get().streaming.byId.successor).toMatchObject({ active: false, status: 'completed', error: null })
+    expect(h.get().conversation.currentPath).toEqual(['root', 'tail'])
+    expect(h.get().composition.input.content).toBe('unsent draft')
+    expect(h.get().errorNotices.byConversationId.chat.map(notice => notice.streamId)).toEqual(['live'])
+    expect(fetch).toHaveBeenCalledTimes(1) // discovery only, no expired queue fetch
+  } finally { vi.unstubAllGlobals() }
+})

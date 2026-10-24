@@ -444,3 +444,13 @@ it.each([false, true])('keeps restored context through terminal compact bootstra
   expect(state.conversation.currentPath).toEqual(['u', 'summary', 'context'])
   expect(state.streaming.byId.s.finalMessageId).toBe('context')
 })
+
+it('treats an evicted successful run as reconciled, not as an expired-reply error', async () => {
+  const fetchMock = vi.fn().mockResolvedValueOnce(goneResponse()).mockResolvedValueOnce(new Response(JSON.stringify({
+    run: { stream_id: 'old', conversation_id: 'c', source: 'headless', status: 'completed', end_reason: 'completed' },
+  })))
+  vi.stubGlobal('fetch', fetchMock)
+  const result = await runServerReattach({ streamId: 'old', conversationId: 'c', operation: 'send', signal: new AbortController().signal }, collectDispatch())
+  expect(result).toMatchObject({ gone: true, recovered: 'completed' })
+  expect(result.envelope).toBeUndefined()
+})

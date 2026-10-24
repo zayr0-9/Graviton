@@ -20,6 +20,7 @@
  * `envelope.detail`, never for the screen. See shared/chatErrors + localChatErrors.
  */
 
+import { reconcileGoneRun } from './reattachRunOutcome'
 import { newClientId } from '../../helpers/clientId'
 import { hydrateSnapshotEvent } from '../../services/snapshotPayloadClient'
 import { admitRun } from './runAdmissionClient'
@@ -783,6 +784,8 @@ export async function runServerChatLoop(
 export interface RunServerReattachResult extends RunServerChatLoopResult {
   /** The server had no live run for that streamId (410) — the caller should reconcile. */
   gone: boolean
+  /** Durable host ledger confirmed an already finished/cancelled run. */
+  recovered?: 'completed' | 'cancelled'
   /** A terminal event was observed during (re)attach. */
   terminal: boolean
   /**
@@ -819,16 +822,9 @@ export async function runServerReattach(
     const url = await buildLocalApiUrl(`/streams/${encodeURIComponent(streamId)}?fromSeq=${fromSeq}${fromSeq === 0 ? '&bootstrap=1' : ''}`)
     const res = await fetch(url, { signal })
     if (res.status === 410) {
-      // Not an error the user caused, but not a no-op either: this reply never finished
-      // in front of them and the server no longer has it.
-      return {
-        messageId: null,
-        userMessage: null,
-        providerError: false,
-        gone: true,
-        terminal: false,
-        envelope: buildChatErrorEnvelope('run_expired', { status: 410, detail: `GET /streams/${streamId} → 410` }),
-      }
+      const outcome = await reconcileGoneRun(streamId, conversationId, signal)
+      return { messageId: null, userMessage: null, providerError: false,
+        gone: true, terminal: false, ...outcome }
     }
     if (!res.ok || !res.body) {
       const raw = `Stream reattach failed (HTTP ${res.status})`

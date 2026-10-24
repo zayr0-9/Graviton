@@ -6,7 +6,7 @@ const state = vi.hoisted(() => ({
   enabled: true,
   colors: { light: '#123456', dark: '#654321' },
   backgroundColors: { light: '#fefefe', dark: '#121212' },
-  mode: 'color' as 'color' | 'video',
+  mode: 'color' as 'color' | 'video' | 'matrix',
   activeVideo: null as { id: string; mimeType: string } | null,
   activeVideoUrl: null as string | null,
   baseColors: { light: 'transparent', dark: 'transparent' },
@@ -39,6 +39,8 @@ vi.mock('react', async importOriginal => {
     useState: (initial: unknown) => actual.useState(initial === null ? state.activeVideoUrl : initial),
   }
 })
+
+vi.mock('./MatrixBackground', () => ({ default: () => <div data-matrix-wallpaper='true' /> }))
 
 import VideoBackground from './VideoBackground'
 
@@ -110,6 +112,18 @@ describe('custom-theme background tint', () => {
     expect(html).not.toContain('<video')
     expect(html).toContain('background-color:transparent')
     expect(html).toContain('radial-gradient')
+  })
+})
+
+describe('live Matrix background', () => {
+  it('selects the live renderer only in the desktop shell', () => {
+    state.mode = 'matrix'
+    expect(renderBackground()).toContain('data-matrix-wallpaper')
+    state.native = false
+    const html = renderBackground()
+    expect(html).not.toContain('data-matrix-wallpaper')
+    expect(html).not.toContain('<iframe')
+    expect(html).toContain('background-color:rgb(from #123456 r g b / 1)')
   })
 })
 

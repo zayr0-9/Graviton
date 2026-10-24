@@ -1,3 +1,4 @@
+import MatrixBackgroundSettings from '../components/MatrixBackgroundSettings'
 import { HOST_EXECUTION_CHANGED } from '../services/hostExecutionClient'
 import { buildSharedBrowserUrl } from '../helpers/remoteServerSettingsStorage'
 import React, { useEffect, useRef, useState } from 'react'
@@ -2287,7 +2288,7 @@ const Settings: React.FC = () => {
     setBackgroundMode(mode)
     showStatus({
       type: 'success',
-      text: mode === 'color' ? 'Solid color background enabled.' : 'Video wallpaper enabled.',
+      text: mode === 'color' ? 'Solid color background enabled.' : mode === 'matrix' ? 'Live Matrix wallpaper enabled.' : 'Video wallpaper enabled.',
     })
   }
 
@@ -4064,6 +4065,8 @@ const Settings: React.FC = () => {
           </div>
         </SettingsSection>
 
+        <MatrixBackgroundSettings mode={backgroundMode} onModeChange={handleBackgroundModeChange} />
+
         <SettingsSection
           title='Custom Upload'
           description='Drag in an MP4 or WebM and keep it ready for motion wallpapers.'
@@ -4209,7 +4212,7 @@ const Settings: React.FC = () => {
               </div>
             ) : (
               videos.map(video => {
-                const isActive = video.id === activeVideoId
+                const isActive = backgroundMode === 'video' && video.id === activeVideoId
                 return (
                   <div
                     key={video.id}

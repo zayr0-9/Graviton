@@ -32,7 +32,6 @@ export interface ClaudeBridgeArgs {
   source?: 'all' | 'bridge' | 'claude'
   limit?: number
   timeoutMs?: number
-  waitMs?: number
   offset?: number
   maxOutputChars?: number
 }
@@ -508,12 +507,10 @@ export class ClaudeBridge {
           return { success: true, ...this.summary(session), ...registration }
         }
         if (active && active.jobId === session.job?.id) {
-          const waitMs = integer(args.waitMs, 25000, 1, 30000)
           await new Promise<void>(resolve => {
-            const onAbort = () => finish()
-            const finish = () => { clearTimeout(timer); context.signal?.removeEventListener('abort', onAbort); resolve() }
-            const timer = setTimeout(finish, waitMs)
-            context.signal?.addEventListener('abort', onAbort, { once: true })
+            const finish = () => { context.signal?.removeEventListener('abort', finish); resolve() }
+            if (context.signal?.aborted) return finish()
+            context.signal?.addEventListener('abort', finish, { once: true })
             void active.done.then(finish)
           })
           session = this.load(scope, session.id)

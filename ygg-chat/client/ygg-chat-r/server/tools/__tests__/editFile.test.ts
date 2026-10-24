@@ -1264,7 +1264,7 @@ describe('editFile read/edit validation coordination', () => {
     await harness.writeFile('validation-metadata-fail.txt', 'meta=true\n')
     const absolutePath = harness.absolutePath('validation-metadata-fail.txt')
     const readResult = await readTextFile('validation-metadata-fail.txt', { cwd: harness.workspaceDir })
-    const newerTime = new Date(readResult.metadata.lastModified.getTime() + 5000)
+    const newerTime = new Date(new Date(readResult.metadata.lastModified).getTime() + 5000)
 
     await fs.utimes(absolutePath, newerTime, newerTime)
 

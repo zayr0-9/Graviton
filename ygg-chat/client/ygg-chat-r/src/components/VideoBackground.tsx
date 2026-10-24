@@ -1,4 +1,5 @@
 import React, { useEffect, useLayoutEffect, useState } from 'react'
+import MatrixBackground from './MatrixBackground'
 import { isNativeShell } from '../platform/clientCapabilities'
 import { opaqueAppBackground } from '../helpers/opaqueAppBackground'
 import {
@@ -126,6 +127,7 @@ const VideoBackground: React.FC = () => {
 
     const root = document.documentElement
     const textColorMode =
+      isNativeShell && backgroundMode === 'matrix' ? 'light' :
       isNativeShell && backgroundMode === 'video' ? getActiveTextColorMode() : isDarkTheme ? 'light' : 'dark'
 
     root.classList.remove('video-text-light', 'video-text-dark')
@@ -169,6 +171,8 @@ const VideoBackground: React.FC = () => {
         ].join(', '),
       }
     : { backgroundColor: colorBackgroundColor }
+
+  if (isNativeShell && backgroundMode === 'matrix') return <MatrixBackground />
 
   if (!hasActiveCustomVideo) {
     return (

@@ -5,6 +5,9 @@ import { DecisionBroker } from '../decisionBroker.js'
 import { REPL_GUIDE } from '../../../../../../shared/replGuide.js'
 import { BUILTIN_TOOL_DEFINITIONS } from '../../../../../../shared/builtinToolDefinitions.js'
 import type { ToolExecutionContext, ToolExecutor } from '../toolLoopService.js'
+import { promises as fs } from 'fs'
+import { readTextFile, readFileContinuation } from '../../../tools/readFile.js'
+import { createToolFsHarness } from '../../../tools/__tests__/helpers/toolFsHarness.js'
 
 const stores: ReplSessions[] = []
 afterEach(() => { for (const store of stores.splice(0)) store.clear() })
@@ -62,6 +65,32 @@ describe('replExecutor', () => {
     await run({ action: 'exec', code: 'var matches = page.content.split("\\n").filter(p => p.includes("license"));' })
     expect(await run({ action: 'show', variable: 'matches' })).toMatchObject({ content: '["license: MIT"]', truncated: false })
     expect(await run({ action: 'list' })).toMatchObject({ variables: [{ variable: 'page' }, { variable: 'matches' }] })
+  })
+
+  it.each(['full', 'range', 'continuation'] as const)('captures a real %s file read with JSON-safe metadata and unchanged CSS', async mode => {
+    const harness = await createToolFsHarness()
+    const css = '/* café */\r\nbody { color: red; }\r\n'
+    const path = await harness.writeFile('editorial-kit.css', css)
+    const before = await fs.stat(path)
+    const { run } = setup(async call => {
+      const args = call.arguments as { path: string }
+      const options = { cwd: harness.workspaceDir }
+      const result = mode === 'continuation'
+        ? await readFileContinuation(args.path, 0, 2, options)
+        : await readTextFile(args.path, mode === 'range' ? { ...options, startLine: 1, endLine: 2 } : options)
+      return { success: true, ...result }
+    })
+    const tool = mode === 'continuation' ? 'read_file_continuation' : 'read_file'
+    const args = mode === 'continuation' ? { path, afterLine: 0, numLines: 2 }
+      : mode === 'range' ? { path, startLine: 1, endLine: 2 } : { path }
+    expect(await run({ action: 'invoke', tool, args, assign: 'css' }, {
+      allowedToolNames: new Set([tool]),
+    })).toMatchObject({ status: 'stored', toolStatus: 'success' })
+    await run({ action: 'exec', code: 'var text = css.content; var modified = css.metadata.lastModified;' })
+    expect((await run({ action: 'show', variable: 'text' })).content).toBe(mode === 'full' ? css : css.slice(0, -2))
+    expect((await run({ action: 'show', variable: 'modified' })).content).toBe(before.mtime.toISOString())
+    expect(await fs.readFile(path, 'utf8')).toBe(css)
+    expect((await fs.stat(path)).mtimeMs).toBe(before.mtimeMs)
   })
 
   it('isolates branches and workspaces; shares agents and survives a new stream on the same branch', async () => {

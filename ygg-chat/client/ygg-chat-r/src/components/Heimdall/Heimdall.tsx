@@ -1,4 +1,7 @@
 import { filterChatTree, layoutChatTree, walkChatTree } from './heimdallTreeTraversal'
+import type { HiddenTreeBoundary } from './heimdallTreeTraversal'
+import { buildCompactionDividers } from './heimdallCompactionDividers'
+import { isCommittedCompaction } from '../../../../../shared/compaction'
 import { useQueryClient } from '@tanstack/react-query'
 import { isContextInjectionMessage } from '../../../../../shared/contextInjection'
 import 'boxicons/css/boxicons.min.css'
@@ -1711,7 +1714,7 @@ export const Heimdall: React.FC<HeimdallProps> = ({
   }, [chatData])
 
   // Filtering is visual-only; canonical messages and paths remain unchanged.
-  const filterEmptyNodes = (root: ChatNode, hasSiblings = false): ChatNode[] => filterChatTree(root, (node, hasSiblings) => {
+  const filterEmptyNodes = (root: ChatNode, boundaries: HiddenTreeBoundary[]): ChatNode[] => filterChatTree(root, (node, hasSiblings) => {
     // Look up full message to check for structured content (blocks, tools, etc.)
     const fullMsg = messageById.get(String(node.id))
 
@@ -1733,22 +1736,23 @@ export const Heimdall: React.FC<HeimdallProps> = ({
       isEmpty: !hasContent,
       hasSiblings,
       filterEmptyMessages,
-    }), message: getCompactionPlaceholder(fullMsg) ?? node.message }
-  }, hasSiblings)
+    }), message: getCompactionPlaceholder(fullMsg) ?? node.message, hiddenBoundary: isCommittedCompaction(fullMsg) }
+  }, false, boundaries)
 
   // Use provided data or fallback to last known (prevents flash on refresh). Do NOT show a fake empty node.
-  const currentChatData = useMemo(() => {
+  const { currentChatData, compactionBoundaries } = useMemo(() => {
     const rawData = chatData ?? lastDataRef.current ?? null
-    if (!rawData) return null
+    const compactionBoundaries: HiddenTreeBoundary[] = []
+    if (!rawData) return { currentChatData: null, compactionBoundaries }
 
     if (filterEmptyMessages || messageById.size > 0) {
-      const result = filterEmptyNodes(rawData, false) // Root node has no siblings
+      const result = filterEmptyNodes(rawData, compactionBoundaries)
 
       // Multiple promoted branches need a synthetic root, not the hidden message.
-      return buildHeimdallVisibleRoot(result)
+      return { currentChatData: buildHeimdallVisibleRoot(result), compactionBoundaries }
     }
 
-    return rawData
+    return { currentChatData: rawData, compactionBoundaries }
   }, [chatData, messageById, filterEmptyMessages])
 
   // Use the complete filtered tree, never viewport-culling results, for action visibility.
@@ -1818,13 +1822,15 @@ export const Heimdall: React.FC<HeimdallProps> = ({
   // Calculate tree layout in two linear passes. The previous implementation
   // recalculated subtree widths recursively for each sibling and ancestor, which
   // becomes very expensive on large/deep image-heavy trees.
+  const compactionGapBefore = useMemo(() => new Set(compactionBoundaries.flatMap(boundary => boundary.childIds)),
+    [compactionBoundaries])
   const calculateTreeLayout = (node: ChatNode): Record<string, Position> =>
-    layoutChatTree(node, horizontalSpacing, verticalSpacing)
+    layoutChatTree(node, horizontalSpacing, verticalSpacing, compactionGapBefore)
 
   // Memoize layout so it only recomputes when inputs actually change (e.g., data or spacings)
   const positions = useMemo(
     () => (currentChatData ? calculateTreeLayout(currentChatData) : {}),
-    [currentChatData, horizontalSpacing, verticalSpacing]
+    [currentChatData, horizontalSpacing, verticalSpacing, compactionGapBefore]
   )
   const positionEntries = useMemo(() => Object.entries(positions), [positions])
   const positionValues = useMemo(() => positionEntries.map(([, pos]) => pos), [positionEntries])
@@ -1833,13 +1839,17 @@ export const Heimdall: React.FC<HeimdallProps> = ({
   const currentPathSet = useMemo(() => new Set(currentPathIds ?? []), [currentPathIds])
   const selectedNodeSet = useMemo(() => new Set((selectedNodes ?? []).map(id => String(id))), [selectedNodes])
 
+  const compactionDividers = useMemo(() => buildCompactionDividers(compactionBoundaries, positions, {
+    compactMode, focusedNodeId, nodeWidth, nodeHeight, circleRadius, verticalSpacing,
+  }), [compactionBoundaries, positions, compactMode, focusedNodeId, verticalSpacing])
+
   // Calculate SVG bounds (memoized)
   const bounds = useMemo(() => {
     const values = positionValues
     if (values.length === 0) {
       return { minX: 0, maxX: 0, minY: 0, maxY: 0 }
     }
-    return values.reduce<Bounds>(
+    const result = values.reduce<Bounds>(
       (acc, pos) => {
         const isExpanded = !compactMode || pos.node.id === focusedNodeId
         const halfWidth = isExpanded ? nodeWidth / 2 : circleRadius
@@ -1854,7 +1864,14 @@ export const Heimdall: React.FC<HeimdallProps> = ({
       },
       { minX: Infinity, maxX: -Infinity, minY: Infinity, maxY: -Infinity }
     )
-  }, [positionValues, compactMode, focusedNodeId])
+    for (const divider of compactionDividers) {
+      result.minX = Math.min(result.minX, divider.x1)
+      result.maxX = Math.max(result.maxX, divider.x2)
+      result.minY = Math.min(result.minY, divider.y)
+      result.maxY = Math.max(result.maxY, divider.y)
+    }
+    return result
+  }, [positionValues, compactMode, focusedNodeId, compactionDividers])
 
   // Initialize offsets once (when we have real data) so the tree doesn't jump when nodes change
   useEffect(() => {
@@ -2856,6 +2873,10 @@ export const Heimdall: React.FC<HeimdallProps> = ({
     scheduleCloseMessagePreview()
   }, [scheduleCloseMessagePreview])
 
+  const compactionDividerStroke = customThemeEnabled
+    ? getThemeModeColor(customTheme.colors.toolJobsMutedText, isDarkMode)
+    : undefined
+
   const renderConnections = (): JSX.Element[] => {
     const connections: JSX.Element[] = []
     const drawnConnections = new Set<string>() // Track to avoid duplicates
@@ -3016,6 +3037,27 @@ export const Heimdall: React.FC<HeimdallProps> = ({
         drawConnection(parentPos, pos, node)
       }
     })
+
+    // Check marker extents independently: both neighbouring cards may be culled.
+    for (const divider of compactionDividers) {
+      if (!segmentIntersectsViewport(toScreenPoint(divider.x1, divider.y), toScreenPoint(divider.x2, divider.y))) continue
+      connections.push(
+        <line
+          key={divider.key}
+          data-compaction-divider='true'
+          role='img'
+          aria-label='Context compacted'
+          x1={divider.x1}
+          x2={divider.x2}
+          y1={divider.y}
+          y2={divider.y}
+          className='stroke-stone-400/70 dark:stroke-stone-400/60'
+          style={{ stroke: compactionDividerStroke, pointerEvents: 'none' }}
+          strokeWidth={1.5}
+          strokeLinecap='round'
+        />
+      )
+    }
 
     return connections
   }
@@ -3910,6 +3952,8 @@ export const Heimdall: React.FC<HeimdallProps> = ({
   const connectionElements = useMemo(
     () => renderConnections(),
     [
+      compactionDividers,
+      compactionDividerStroke,
       visiblePositionValues,
       positions,
       parentByChildId,

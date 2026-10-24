@@ -116,6 +116,8 @@ interface ChatMessageProps {
   onEdit?: (id: string, newContent: string, newContentBlocks?: ContentBlock[]) => void
   onBranch?: (id: string, newContent: string, newContentBlocks?: ContentBlock[]) => boolean
   branchSubmissionDisabled?: boolean
+  explainSubmissionDisabled?: boolean
+  onExplainInputOpenChange?: (open: boolean) => void
   onDelete?: (id: string) => void
   onCopy?: (content: string) => void
   onResend?: (id: string) => void
@@ -432,6 +434,8 @@ const ChatMessageBody: React.FC<ChatMessageProps> = React.memo(
     onAddToChat,
     onExplainFromSelection,
     branchSubmissionDisabled = false,
+    explainSubmissionDisabled = false,
+    onExplainInputOpenChange,
     onOpenToolHtmlModal,
     onOpenSubagentTranscript,
     isEditing = false,
@@ -520,6 +524,10 @@ const ChatMessageBody: React.FC<ChatMessageProps> = React.memo(
     ) =>
       customThemeEnabled ? getThemeModeColor(customTheme.colors[key], isDarkMode) : undefined
     const [showExplainInput, setShowExplainInput] = useState(false)
+    useEffect(() => {
+      onExplainInputOpenChange?.(showExplainInput)
+      return () => onExplainInputOpenChange?.(false)
+    }, [showExplainInput, onExplainInputOpenChange])
     const [explainInputClosing, setExplainInputClosing] = useState(false)
     const [explainInputValue, setExplainInputValue] = useState('')
     const explainInputPosition = useRef<{ x: number; y: number } | null>(null)
@@ -794,7 +802,7 @@ const ChatMessageBody: React.FC<ChatMessageProps> = React.memo(
     const handleSendExplainInput = () => {
       if (onExplainFromSelection && selectedText && explainInputValue.trim()) {
         const branchContent = `${explainInputValue.trim()}\n\nSelected text:\n\`\`\`\n${selectedText}\n\`\`\``
-        submitMessageDraft(branchSubmissionDisabled, () => onExplainFromSelection(id, branchContent), () => {
+        submitMessageDraft(branchSubmissionDisabled || explainSubmissionDisabled, () => onExplainFromSelection(id, branchContent), () => {
           setExplainInputClosing(true)
         })
       }
@@ -2164,8 +2172,8 @@ const ChatMessageBody: React.FC<ChatMessageProps> = React.memo(
                 <button
                   type='button'
                   onClick={handleSendExplainInput}
-                  disabled={branchSubmissionDisabled || !explainInputValue.trim()}
-                  aria-description={branchSubmissionDisabled ? 'Load the conversation before sending.' : undefined}
+                  disabled={branchSubmissionDisabled || explainSubmissionDisabled || !explainInputValue.trim()}
+                  aria-description={branchSubmissionDisabled ? 'Load the conversation before sending.' : explainSubmissionDisabled ? 'Wait for the selected response to finish and be saved before sending.' : undefined}
                   title='Send'
                   aria-label='Send'
                   className={`${EXPLAIN_BUTTON_CLASS} bg-blue-50 text-blue-700 dark:bg-orange-500/15 dark:text-orange-100`}
