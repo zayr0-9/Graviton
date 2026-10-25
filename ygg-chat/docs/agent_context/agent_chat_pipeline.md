@@ -468,3 +468,7 @@ Compaction blocks delivery, not queue admission. Primary composer eligibility se
 ## Pending explicit-operation queue isolation
 
 `classifyOrdinarySend` may use a pending ordinary send's source lineage/anchor as a reservation while context/hooks load. A send marked `isBranch` or `retrigger` must not use this fallback, including empty-anchor reservation: it may fork during setup. Once `queue.lineageId` is assigned, that real lineage remains authoritative and normal queueing resumes. Abort-in-progress rejection is unchanged. Regression: `runAdmissionService.test.ts` covers both flags, ordinary pending ownership and assigned queues.
+
+## Claude Code backend exception
+
+Claude v1 uses shared host admission, lineage/persistence and SSE UI, but not Graviton's model/tool loop. `services/claudeSessionService.ts` owns the SDK execution bridge; native session checkpoints rather than reconstructed Graviton history drive continuation/forks. Provider/model and workspace are locked; existing other-provider histories cannot switch to Claude. Native approvals route through DecisionBroker with no Allow All; mode changes happen between turns. See `../claude-provider-v1.md`.

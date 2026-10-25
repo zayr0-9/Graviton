@@ -1,3 +1,4 @@
+import { isClaudeProvider } from '../../../../../shared/claudeProvider.js'
 import { resolveHostModePromptDefaults } from './hostModePromptDefaults.js'
 import type { HostExecutionPreferences } from '../../../../../shared/hostExecutionPreferences.js'
 import { randomUUID } from 'node:crypto'
@@ -33,6 +34,7 @@ export class RunAdmissionService {
     }
     if (epoch !== this.deps.epoch) throw Object.assign(new Error('The host restarted. Reconcile before sending a new command.'), { code: 'epoch_mismatch' })
     if (!orchestrator.classifyOrdinarySend || !orchestrator.submitQueuedMessage) throw new Error('Admission unavailable')
+    orchestrator.validateExecutionSelection?.(request)
     const ordinary = request.operation === 'send' && !request.manualCompaction && !request.retrigger && !request.isBranch
     const target = ordinary || request.manualCompaction ? orchestrator.classifyOrdinarySend(request) : { lineageId: null, parentId: request.parentId }
     if (request.manualCompaction && target.activeStreamId) throw Object.assign(new Error('Wait for this branch run to finish before compacting'), { code: 'run_unavailable' })
@@ -128,6 +130,7 @@ export class RunAdmissionService {
   }
 
   private launch(request: HeadlessMessageRequest): void {
+    if (isClaudeProvider(request.provider)) request = { ...request, toolAutoApprove: false, fullAccess: false, fullAccessNotificationId: undefined }
     const session = this.deps.sessions.createMain(request.streamId!, request.conversationId)
     session.effectiveConfiguration = { provider: request.provider, modelName: request.modelName,
       fullAccess: request.fullAccess === true, toolAutoApprove: request.toolAutoApprove !== false,

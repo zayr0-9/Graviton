@@ -220,3 +220,16 @@ it('permits an upgrade and approval for the same tool call, but not a second app
   await approval
   await expect(broker.requestDecision({ streamId: 's', toolCallId: 't', kind: 'permission' })).rejects.toThrow('already settled')
 })
+
+it('Claude sessions cannot be promoted to allow-all through a stale or external client', async () => {
+  const broker = new DecisionBroker()
+  broker.initSession('claude', { autoApproveAll: true, allowAlways: false })
+  expect(broker.isAutoApproveAll('claude')).toBe(false)
+  const pending = broker.requestDecision({ streamId: 'claude', toolCallId: 't', kind: 'permission' })
+  expect(broker.resolve('claude', 't', 'allow_always')).toBe(false)
+  expect(broker.hasPending('claude', 't')).toBe(true)
+  broker.setAutoApproveAll('claude')
+  expect(broker.isAutoApproveAll('claude')).toBe(false)
+  expect(broker.resolve('claude', 't', 'allow_once')).toBe(true)
+  await expect(pending).resolves.toBe('allow_once')
+})

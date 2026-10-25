@@ -1,3 +1,4 @@
+import { isClaudeTranscriptMessage } from '../../../../../shared/claudeProvider.js'
 import type Database from 'better-sqlite3'
 import type { Express } from 'express'
 import { v4 as uuidv4 } from 'uuid'
@@ -1203,6 +1204,10 @@ export function registerAppAutomationRoutes(app: Express, deps: AppAutomationRou
         return
       }
 
+      if ((content !== undefined || content_blocks !== undefined) && isClaudeTranscriptMessage(existing)) {
+        res.status(409).json({ error: 'Claude owns this transcript. Create an edit branch instead of changing saved messages.' })
+        return
+      }
       let finalContent = content
       if (!finalContent && content_blocks) {
         const textBlocks = Array.isArray(content_blocks) ? content_blocks.filter((b: any) => b.type === 'text') : []
@@ -1284,6 +1289,10 @@ export function registerAppAutomationRoutes(app: Express, deps: AppAutomationRou
   app.delete('/api/app/messages/:id', (req, res) => {
     try {
       const { id } = req.params
+      if (isClaudeTranscriptMessage(statements.getMessageById.get(id))) {
+        res.status(409).json({ error: 'Claude transcript messages cannot be deleted individually. Delete the conversation instead.' })
+        return
+      }
       statements.deleteMessage.run(id)
       res.json({ success: true })
     } catch (error) {
@@ -1300,6 +1309,10 @@ export function registerAppAutomationRoutes(app: Express, deps: AppAutomationRou
         return
       }
 
+      if (ids.some(id => isClaudeTranscriptMessage(statements.getMessageById.get(id)))) {
+        res.status(409).json({ error: 'Claude transcript messages cannot be deleted individually. Delete the conversation instead.' })
+        return
+      }
       const deleteTransaction = db.transaction((messageIds: string[]) => {
         for (const id of messageIds) {
           statements.deleteMessage.run(id)

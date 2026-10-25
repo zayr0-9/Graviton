@@ -1,3 +1,4 @@
+import { isClaudeProvider } from '../../../../../shared/claudeProvider'
 import { parseMessageMeta } from '../../../../../shared/contextInjection'
 import type { ChatState } from './chatTypes'
 
@@ -18,6 +19,8 @@ export function resolveBranchModelSelection(
   conversationId = chat.conversation.currentConversationId,
   lineageId = chat.conversation.currentLineageId,
 ): BranchModelSelection | null {
+  const locked = resolveClaudeBranchLock(chat, path)
+  if (locked) return locked
   const lineageDraft = lineageId ? chat.branchModelDrafts?.[branchModelKey(conversationId, `lineage:${lineageId}`)] : null
   if (lineageDraft && chat.providerState.providers.some(item => item.name === lineageDraft.provider)) return lineageDraft
   const messages = new Map(chat.conversation.messages.map(row => [String(row.id), row]))
@@ -49,4 +52,15 @@ export function loadBranchModelDrafts(): Record<string, BranchModelSelection> {
 export function saveBranchModelDrafts(drafts: Record<string, BranchModelSelection>): void {
   try { localStorage.setItem(DRAFT_STORAGE_KEY, JSON.stringify(drafts)) }
   catch (error) { console.warn('Unable to save branch model selections', error) }
+}
+
+/** Persisted Claude identity wins over all renderer-local model drafts. */
+export function resolveClaudeBranchLock(chat: ChatState, path = chat.conversation.currentPath): BranchModelSelection | null {
+  const ids = new Set(path.map(String))
+  for (const row of chat.conversation.messages) {
+    if (!ids.has(String(row.id))) continue
+    const pair = parseMessageMeta(row.meta)?.modelSelection as BranchModelSelection | undefined
+    if (pair && isClaudeProvider(pair.provider)) return { provider: 'Claude Code', model: pair.model }
+  }
+  return null
 }

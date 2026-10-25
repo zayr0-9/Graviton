@@ -4,7 +4,8 @@ import { isBrowserClient, isHostClient } from '../platform/clientCapabilities'
 import { ConversationOpeningOverlay } from '../components/ChatPane/ConversationOpeningOverlay'
 import { useModelSwitchConfirmation } from '../hooks/useModelSwitchConfirmation'
 import { ModelSwitchDialog } from '../components/ModelSelectControl/ModelSwitchDialog'
-import { resolveBranchModelSelection } from '../features/chats/branchModelSelection'
+import { isClaudeProvider } from '../../../../shared/claudeProvider'
+import { resolveBranchModelSelection, resolveClaudeBranchLock } from '../features/chats/branchModelSelection'
 import { resolveBranchFastMode } from '../features/chats/branchFastMode'
 import { isCommittedCompaction } from '../../../../shared/compaction'
 import { isHiddenCompactionMessage } from '../features/chats/summaryPresentation'
@@ -1105,7 +1106,10 @@ function Chat() {
   // Redux selectors
   const currentUser = useAppSelector(selectCurrentUser)
   const providers = useAppSelector(selectProviderState)
-  const branchModelSelection = useAppSelector(state => resolveBranchModelSelection(state.chat))
+  const branchModelSelection = useAppSelector(state => resolveBranchModelSelection(state.chat), (a, b) => a?.provider === b?.provider && a?.model === b?.model)
+  const claudeBranchLock = useAppSelector(state => resolveClaudeBranchLock(state.chat), (a, b) => a?.provider === b?.provider && a?.model === b?.model)
+  const hasSelectedHistory = useAppSelector(state => state.chat.conversation.currentPath.length > 0)
+  const isClaudeSession = isClaudeProvider(branchModelSelection?.provider ?? providers.currentProvider)
   const toolDefinitions = useAppSelector(state => state.chat.tools)
   // MCP tools with a UI resource draw the always-open app card (ToolCallGroupCard). The row
   // estimator needs the same distinction, or every plain MCP call is guessed 600px too tall.
@@ -1346,7 +1350,7 @@ function Chat() {
   }, [dispatch, currentConversationId, streamState.id, streamState.active])
   const isBranchEditing = useAppSelector(state => state.chat.composition.editingBranch)
   const handleOperationModeChange = useCallback((mode: 'plan' | 'execute') => {
-    if (modeChange && !isBranchEditing) return
+    if ((modeChange && !isBranchEditing) || (isClaudeSession && streamState.active && !isBranchEditing)) return
     void dispatch(changeOperationMode({
       mode, conversationId: currentConversationId,
       // Branch editing selects the new run's mode without interrupting the current run.
@@ -1354,7 +1358,7 @@ function Chat() {
       parentId: selectedPath[selectedPath.length - 1] ?? null,
       lineageId: modeLineageId,
     }))
-  }, [dispatch, currentConversationId, selectedPath, streamState.active, streamState.id, modeChange, modeLineageId, isBranchEditing])
+  }, [dispatch, currentConversationId, selectedPath, streamState.active, streamState.id, modeChange, modeLineageId, isBranchEditing, isClaudeSession])
   const handleToggleOperationMode = useCallback(() => {
     handleOperationModeChange(operationMode === 'plan' ? 'execute' : 'plan')
   }, [handleOperationModeChange, operationMode])
@@ -1893,6 +1897,10 @@ function Chat() {
   )
 
   const handleManualCompactifyCommand = useCallback(async (): Promise<ComposerSlashCommandResult> => {
+    if (isClaudeSession) {
+      window.alert('Claude manages its own context and compaction. Graviton compaction is unavailable for Claude sessions.')
+      return { handled: true, clearInput: false }
+    }
     if (!currentConversationId) {
       console.warn('[ManualCompaction] skipped: missing conversation id')
       return { handled: true, clearInput: true }
@@ -1962,6 +1970,7 @@ function Chat() {
 
     return { handled: true, clearInput: true }
   }, [
+    isClaudeSession,
     compactingConversationId,
     currentConversationId,
     dispatch,
@@ -4952,6 +4961,7 @@ function Chat() {
   // Handle model selection
   const handleModelSelect = useCallback(
     (modelName: string) => {
+      if (claudeBranchLock) return
       const model = models.find(m => m.name === modelName)
       if (model) {
         requestModelSwitch({ provider: providers.currentProvider, model: model.name }, () => {
@@ -4962,7 +4972,7 @@ function Chat() {
         console.warn('Selected model not found:', modelName)
       }
     },
-    [models, selectModelMutation, providers.currentProvider, requestModelSwitch, dispatch]
+    [models, selectModelMutation, providers.currentProvider, requestModelSwitch, dispatch, claudeBranchLock]
   )
 
   const handleExtensionSelection = useCallback(
@@ -5002,7 +5012,7 @@ function Chat() {
 
   const handleProviderSelect = useCallback(
     async (providerName: string) => {
-      if (providerName === providers.currentProvider) return
+      if (providerName === providers.currentProvider || claudeBranchLock || (hasSelectedHistory && isClaudeProvider(providerName))) return
       if (providerName === 'OpenRouter' && isCommunityMode) {
         setOpenRouterLoginRequiredModalOpen(true)
         return
@@ -5037,7 +5047,7 @@ function Chat() {
         dispatch(chatSliceActions.providerSelected(providerName))
       })
     },
-    [dispatch, openOpenaiAuthUrl, requestModelSwitch, providers.currentProvider, modelSwitchScope]
+    [dispatch, openOpenaiAuthUrl, requestModelSwitch, providers.currentProvider, modelSwitchScope, claudeBranchLock, hasSelectedHistory]
   )
 
   useEffect(() => {
@@ -5127,7 +5137,7 @@ function Chat() {
     [runComposerCommand]
   )
 
-  const { canSend: canSendImmediately, canQueue: canQueueLocal } = getComposerSubmissionAvailability({
+  const { canSend: canSendImmediately, canQueue: canQueueAvailable } = getComposerSubmissionAvailability({
     ready: selection.status !== 'pending' && selection.status !== 'error',
     hasInput: hasLocalInput,
     isRetrigger: !hasLocalInput && displayMessages.length > 0 && displayMessages[displayMessages.length - 1]?.role === 'user' &&
@@ -5138,6 +5148,7 @@ function Chat() {
     modeChanging: !!modeChange,
     queueSubmitting,
   })
+  const canQueueLocal = canQueueAvailable && !isClaudeSession
   const canSendLocal = canSendImmediately || canQueueLocal
 
   /**
@@ -7037,7 +7048,7 @@ function Chat() {
                               onUndoStreamEdits={
                                 msg.role === 'user' ? undoHandlerByMessageId.get(String(msg.id)) : undefined
                               }
-                              onEdit={handleMessageEdit}
+                              onEdit={isClaudeSession ? undefined : handleMessageEdit}
                               onBranch={handleMessageBranch}
                               onDelete={handleRequestDelete}
                               onResend={handleResend}
@@ -7196,7 +7207,7 @@ function Chat() {
                   onDeny={() =>
                     dispatch(respondToToolPermission({ allowed: false, streamId: toolCallPermissionRequest.streamId }))
                   }
-                  onAllowAll={() => dispatch(respondToToolPermissionAndEnableAll(toolCallPermissionRequest.streamId))}
+                  onAllowAll={isClaudeSession ? undefined : () => dispatch(respondToToolPermissionAndEnableAll(toolCallPermissionRequest.streamId))}
                 />
               )}
               {planClarificationRequest && (
@@ -7631,17 +7642,20 @@ function Chat() {
                         onChange={handleProviderSelect}
                         options={providers.providers.map(p => p.name)}
                         placeholder='Select a provider...'
-                        disabled={providers.providers.length === 0}
+                        disabled={Boolean(claudeBranchLock) || providers.providers.length === 0}
+                        disabledOptions={hasSelectedHistory && !claudeBranchLock ? ['Claude Code'] : []}
                         className='w-[94px] min-w-[42px] max-w-[180px] shrink transition-[width,transform] duration-150 hover:w-[180px] focus-within:w-[180px] data-[open=true]:w-[180px] active:scale-97 [&>button]:!rounded-full [&_.bx-chevron-down]:!text-[14px] 2xl:[&_.bx-chevron-down]:!text-[15px] 3xl:[&_.bx-chevron-down]:!text-xl 4xl:[&_.bx-chevron-down]:!text-2xl'
                         searchBarVisible={true}
                         size='large'
                         dropdownMinWidth={220}
                       />
                     )}
+                    {isClaudeSession && <span className='text-xs text-neutral-500 dark:text-neutral-400' title='Claude owns tools, context and compaction. Provider/model lock after the first send. Queueing and image attachments are unavailable in v1.'>Claude session{claudeBranchLock ? ' · locked' : ''}</span>}
                     <ModelSelectControl
                       provider={providers.currentProvider}
                       selectedModelName={selectedModel?.name || ''}
                       onChange={handleModelSelect}
+                      disabled={Boolean(claudeBranchLock)}
                       placeholder='Select a model...'
                       blur='low'
                       className='w-[120px] min-w-[42px] max-w-[170px] shrink transition-[width,transform] duration-150 hover:w-[170px] focus-within:w-[170px] data-[open=true]:w-[170px] active:scale-99 [&>button]:!rounded-full'
@@ -7854,7 +7868,8 @@ function Chat() {
                             <span>Orchestrator</span>
                             <ActionPopoverSwitch
                               label='Orchestrator'
-                              checked={orchestratorEnabled}
+                              disabled={isClaudeSession}
+                              checked={!isClaudeSession && orchestratorEnabled}
                               onClick={async () => {
                                 try { setOrchestratorEnabledState(await toggleOrchestratorEnabled()) }
                                 catch (error) { window.alert(error instanceof Error ? error.message : 'Could not save subagent setting') }
@@ -7867,7 +7882,8 @@ function Chat() {
                               <span>Full access</span>
                               <ActionPopoverSwitch
                                 label='Full access'
-                                checked={fullAccessEnabled}
+                                disabled={isClaudeSession}
+                                checked={!isClaudeSession && fullAccessEnabled}
                                 onClick={() => setFullAccessEnabled(!fullAccessEnabled, currentConversationId)}
                                 title='Allow tools outside the working directory on new runs'
                               />
@@ -7896,10 +7912,11 @@ function Chat() {
                             disabled={!isHostClient}
                           />
                           <ActionPopoverButton
-                            label={toolAutoApprove ? 'Allow all' : 'Ask'}
+                            label={!isClaudeSession && toolAutoApprove ? 'Allow all' : 'Ask'}
                             icon={<ShieldHalf size={16} />}
-                            active={toolAutoApprove}
-                            aria-pressed={toolAutoApprove}
+                            active={!isClaudeSession && toolAutoApprove}
+                            disabled={isClaudeSession}
+                            aria-pressed={!isClaudeSession && toolAutoApprove}
                             onClick={() => dispatch(chatSliceActions.toolAutoApproveToggled())}
                             title={toolAutoApprove ? 'Auto-approving tools (click to disable)' : 'Asking for permission (click to auto-approve)'}
                             aria-label={toolAutoApprove ? 'Disable auto-approve' : 'Enable auto-approve'}
@@ -7911,7 +7928,7 @@ function Chat() {
                             aria-pressed={operationMode !== 'plan'}
                             aria-busy={Boolean(modeChange) && !isBranchEditing}
                             onClick={handleToggleOperationMode}
-                            disabled={Boolean(modeChange) && !isBranchEditing}
+                            disabled={(Boolean(modeChange) || (isClaudeSession && streamState.active)) && !isBranchEditing}
                             title={operationMode === 'plan' ? 'Plan mode enabled (tools will be blocked)' : 'Execution mode enabled (tools may modify files)'}
                             aria-label={operationMode === 'plan' ? 'Switch to execution mode' : 'Switch to plan mode'}
                           />

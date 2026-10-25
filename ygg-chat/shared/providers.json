@@ -24,6 +24,12 @@
       "description": "Z.AI GLM models via local BYOK headless provider"
     },
 
+    "claude": {
+      "name": "Claude Code",
+      "url": "https://code.claude.com",
+      "description": "Claude-managed sessions and native tools on the host"
+    },
+
     "bedrock": {
       "name": "Amazon Bedrock",
       "url": "https://aws.amazon.com/bedrock/",

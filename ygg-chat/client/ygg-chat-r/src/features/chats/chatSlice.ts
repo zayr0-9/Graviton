@@ -90,8 +90,8 @@ const mergeArtifacts = (existing: string[] | undefined, incoming: string[]): str
   return merged
 }
 
-const webHiddenProviders = new Set(['OpenAI (ChatGPT)', 'LM Studio', 'Z.AI / GLM', 'Amazon Bedrock'])
-const communityAllowedProviders = new Set(['LM Studio', 'OpenAI (ChatGPT)', 'OpenRouter', 'Z.AI / GLM'])
+const webHiddenProviders = new Set(['OpenAI (ChatGPT)', 'LM Studio', 'Z.AI / GLM', 'Amazon Bedrock', 'Claude Code'])
+const communityAllowedProviders = new Set(['LM Studio', 'OpenAI (ChatGPT)', 'OpenRouter', 'Z.AI / GLM', 'Claude Code'])
 
 const getAvailableProviders = () => {
   const allProviders = Object.values(providersList.providers)

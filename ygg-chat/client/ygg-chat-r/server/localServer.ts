@@ -2,6 +2,7 @@
 // Embedded local SQLite server for dual-sync in Electron mode
 // This server prefers port 3002 and falls back to available local ports.
 
+import { CLAUDE_SESSION_SCHEMA } from './headlessServer/persistence/claudeSessionRepo.js'
 import { opaqueMutationFence } from './nativeClientFence.js'
 import { allowsClientUpgrade } from './clientOriginPolicy.js'
 import { DECISION_RECEIPT_SCHEMA, installDecisionReceiptSchema } from './headlessServer/persistence/decisionReceiptRepo.js'
@@ -519,6 +520,11 @@ const SCHEMA_MIGRATIONS: SchemaMigration[] = [
     name: 'decision_receipt_kinds',
     up: database => installDecisionReceiptSchema(database),
   },
+  {
+    version: 12,
+    name: 'claude_branch_sessions',
+    up: database => database.exec(CLAUDE_SESSION_SCHEMA),
+  },
 ]
 
 /**
@@ -892,6 +898,7 @@ function initializeLocalDatabase(dbPath: string) {
   db.exec(CLIENT_CHANGE_SCHEMA)
   db.exec(OPERATION_RECEIPT_SCHEMA)
   db.exec(DECISION_RECEIPT_SCHEMA)
+  db.exec(CLAUDE_SESSION_SCHEMA)
   runSchemaMigrations(db)
 
   db.exec(`

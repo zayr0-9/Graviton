@@ -152,6 +152,8 @@ function createStatements(db: Database.Database): any {
         ex_agent_type = excluded.ex_agent_type,
         content_blocks = excluded.content_blocks
     `),
+    updateMessage: db.prepare('UPDATE messages SET content = ?, note = ?, note_color = ?, content_blocks = ? WHERE id = ?'),
+    deleteMessage: db.prepare('DELETE FROM messages WHERE id = ?'),
     getMessageById: db.prepare('SELECT * FROM messages WHERE id = ?'),
     getMessagesByConversationId: db.prepare('SELECT * FROM messages WHERE conversation_id = ? ORDER BY created_at ASC'),
     getTopLevelUserMessagesByConversationId: db.prepare(TOP_LEVEL_USER_MESSAGES_SQL),
@@ -345,6 +347,22 @@ describeIfSqlite('registerAppAutomationRoutes', () => {
     const leafRecord = db!.prepare('SELECT * FROM messages WHERE id = ?').get(byContent.get('branch-a-leaf')?.id) as any
     expect(leafRecord.tool_call_id).toBe('tool-1')
     expect(created.map(message => message.created_at)).toEqual([...created.map(message => message.created_at)].sort())
+  })
+
+  it('protects Claude native transcript projections from direct edits and single/bulk deletion while retaining notes', async () => {
+    const created = await postJson(baseUrl, '/api/app/conversations', { title: 'Claude', user_id: 'claude-user' })
+    const conversationId = ((await created.json()) as any).id
+    const root = await postJson(baseUrl, '/api/app/messages', { conversation_id: conversationId, role: 'user', content: 'original' })
+    const id = ((await root.json()) as any).id
+    db!.prepare('UPDATE messages SET meta = ? WHERE id = ?').run(JSON.stringify({ modelSelection: { provider: 'claudecode', model: 'm' } }), id)
+    const edit = await fetch(`${baseUrl}/api/app/messages/${id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ content: 'changed' }) })
+    expect(edit.status).toBe(409)
+    const note = await fetch(`${baseUrl}/api/app/messages/${id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ note: 'my note' }) })
+    expect(note.status).toBe(200)
+    expect((await note.json() as any).content).toBe('original')
+    expect((await fetch(`${baseUrl}/api/app/messages/${id}`, { method: 'DELETE' })).status).toBe(409)
+    expect((await postJson(baseUrl, '/api/app/messages/deleteMany', { ids: [id] })).status).toBe(409)
+    expect(db!.prepare('SELECT content FROM messages WHERE id = ?').get(id)).toMatchObject({ content: 'original' })
   })
 
   it('rolls back the complete bulk copy when one message cannot be persisted', async () => {

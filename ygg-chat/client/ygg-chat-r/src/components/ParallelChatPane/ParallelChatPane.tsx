@@ -1,3 +1,4 @@
+import { isClaudeProvider } from '../../../../../shared/claudeProvider'
 import { newClientId } from '../../helpers/clientId'
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useConversationRunStatistics } from '../../hooks/useConversationRunStatistics'
@@ -171,7 +172,7 @@ export function ParallelChatPane({
   const [queueSubmitting, setQueueSubmitting] = useState(false)
   const queueSubmittingRef = useRef(false)
   const queue = useAppSelector(state => streamId ? state.chat.messageQueues?.[streamId] : undefined)
-  const canSend = hasDraft && !queueSubmitting
+  const canSend = hasDraft && !queueSubmitting && !(streamActive && isClaudeProvider(providers.currentProvider))
   useEffect(() => {
     if (streamActive && streamId) void dispatch(loadMessageQueue({ conversationId: target.conversationId, streamId }))
   }, [dispatch, streamActive, streamId, target.conversationId])
@@ -227,7 +228,7 @@ export function ParallelChatPane({
   const handleSend = useCallback(() => {
     const rawContent = inputControllerRef.current?.getValue() ?? ''
     const content = rawContent.trim()
-    if (!content || queueSubmittingRef.current) return
+    if (!content || queueSubmittingRef.current || (streamActive && isClaudeProvider(providers.currentProvider))) return
     if (streamActive && streamId) {
       queueSubmittingRef.current = true
       setQueueSubmitting(true)
@@ -288,7 +289,7 @@ export function ParallelChatPane({
       .finally(() => {
         if (targetGenerationRef.current === sendGeneration) setPendingStreamId(null)
       })
-  }, [dispatch, lineageId, messages, operationMode, path, reasoningConfig, streamActive, streamId, target.conversationId, target.messageId, think])
+  }, [dispatch, lineageId, messages, operationMode, path, reasoningConfig, streamActive, streamId, target.conversationId, target.messageId, think, providers.currentProvider])
 
   const scrollToBottom = useCallback((behavior: ScrollBehavior = 'smooth') => {
     userScrolledRef.current = false
@@ -372,7 +373,7 @@ export function ParallelChatPane({
           toolCall={permissionRequest.toolCall}
           onGrant={() => dispatch(respondToToolPermission({ allowed: true, streamId: permissionRequest.streamId }))}
           onDeny={() => dispatch(respondToToolPermission({ allowed: false, streamId: permissionRequest.streamId }))}
-          onAllowAll={() => dispatch(respondToToolPermissionAndEnableAll(permissionRequest.streamId))}
+          onAllowAll={isClaudeProvider(providers.currentProvider) ? undefined : () => dispatch(respondToToolPermissionAndEnableAll(permissionRequest.streamId))}
         />
       )}
       {clarificationRequest && (

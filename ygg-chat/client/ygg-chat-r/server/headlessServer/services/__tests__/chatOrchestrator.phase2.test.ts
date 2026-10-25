@@ -5,6 +5,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { createHash } from 'node:crypto'
 import { createRequire } from 'node:module'
+import { CLAUDE_SESSION_SCHEMA } from '../../persistence/claudeSessionRepo.js'
 import { MessageRepo } from '../../persistence/messageRepo.js'
 import { LineageRepo } from '../../persistence/lineageRepo.js'
 import {
@@ -296,6 +297,55 @@ describe('source lineage membership validation', () => {
       db.close()
     }
     if (testDirectory) rmSync(testDirectory, { recursive: true, force: true })
+  })
+
+  it('dispatches Claude outside the Graviton loop, locks identity and preserves historical fork placement', async () => {
+    db.exec(CLAUDE_SESSION_SCHEMA)
+    const calls: any[] = []
+    const claudeSessions = { run: vi.fn(async (input: any) => {
+      calls.push(input)
+      const message = input.sink.persistAssistantMessage({ conversationId: input.request.conversationId,
+        parentId: input.parentId, modelName: input.request.modelName, content: `Claude ${calls.length}`,
+        meta: { claude: { sessionId: 's', messageUuid: `uuid-${calls.length}` } } })
+      db.prepare('INSERT INTO claude_message_checkpoints VALUES (?, ?, ?, ?, 1)').run(message.id, 's', `uuid-${calls.length}`, testDirectory)
+      input.emit({ type: 'assistant_message_persisted', message, lineageId: input.lineageId })
+      return message
+    }) }
+    orchestrator = new ChatOrchestrator({ db, statements, providerRouter: providerRouter as any, claudeSessions: claudeSessions as any })
+    const events: any[] = []
+    const base: any = { operation: 'send', conversationId: 'c1', provider: 'claudecode', modelName: 'claude-haiku-5-5',
+      content: 'hello', rootPath: testDirectory, operationMode: 'plan' }
+    await orchestrator.runMessage(base, event => events.push(event))
+    const first = events.find(event => event.type === 'complete').message
+    expect(providerRouter.calls).toHaveLength(0)
+    expect(events.filter(event => event.type === 'user_message_persisted')).toHaveLength(1)
+    expect(events.some(event => event.type === 'operation_mode_changed' || event.type === 'context_injection_persisted')).toBe(false)
+    await expect(orchestrator.runMessage({ ...base, parentId: first.id, modelName: 'different' }, () => {})).rejects.toThrow('fixed provider')
+    await expect(orchestrator.runMessage({ ...base, parentId: first.id, provider: 'openaichatgpt' }, () => {})).rejects.toThrow('fixed provider')
+    await orchestrator.runMessage({ ...base, parentId: first.id, content: 'continue' }, () => {})
+    await orchestrator.runMessage({ ...base, operation: 'branch', messageId: first.id, content: 'fork' }, () => {})
+    expect(calls[2]).toMatchObject({ sourceMessageId: first.id, fork: true })
+    expect(statements.getMessageById.get(calls[2].parentId).parent_id).toBe(first.id)
+    expect(calls[2].lineageId).not.toBe(calls[0].lineageId)
+    const originalUser = events.find(event => event.type === 'user_message_persisted').message
+    await orchestrator.runMessage({ ...base, operation: 'edit-branch', messageId: originalUser.id, content: 'edited root' }, () => {})
+    expect(calls[3]).toMatchObject({ sourceMessageId: null, fork: true })
+    await orchestrator.runMessage({ ...base, operation: 'repeat', parentId: originalUser.id }, () => {})
+    expect(calls[4]).toMatchObject({ sourceMessageId: null, fork: true, request: { content: 'hello' } })
+    expect(calls[4].parentId).toBe(originalUser.id)
+    const count = db.prepare('SELECT COUNT(*) AS n FROM messages').get() as any
+    const partial = messageRepo.createMessage({ conversationId: 'c1', parentId: first.id, role: 'assistant', content: 'partial', meta: { modelSelection: { provider: 'claudecode', model: base.modelName }, claude: { partial: true } } })
+    const afterPartial = (db.prepare('SELECT COUNT(*) AS n FROM messages').get() as any).n
+    expect(afterPartial).toBe(count.n + 1)
+    await expect(orchestrator.runMessage({ ...base, parentId: partial.id }, () => {})).rejects.toThrow('incomplete')
+    expect((db.prepare('SELECT COUNT(*) AS n FROM messages').get() as any).n).toBe(afterPartial)
+    const currentHead = db.prepare('SELECT head_message_id FROM lineages WHERE id=?').get(calls[0].lineageId) as any
+    db.prepare("UPDATE claude_branch_sessions SET state='uncertain' WHERE lineage_id=?").run(calls[0].lineageId)
+    await expect(orchestrator.runMessage({ ...base, parentId: currentHead.head_message_id, lineageId: calls[0].lineageId }, () => {})).rejects.toThrow('interrupted')
+    expect((db.prepare('SELECT COUNT(*) AS n FROM messages').get() as any).n).toBe(afterPartial)
+    await orchestrator.runMessage({ ...base, retrigger: true, parentId: first.id, lineageId: calls[0].lineageId, content: 'retry stopped input' }, () => {})
+    expect(calls[5].lineageId).not.toBe(calls[0].lineageId)
+    expect(calls[5].sourceMessageId).toBe(first.id)
   })
 
   it.each([true, false])('persists Fast mode %s on user and assistant rows', async fastMode => {

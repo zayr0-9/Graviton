@@ -119,3 +119,26 @@ it('rejects manual compaction while its lineage has an active reservation', () =
     expect(() => service.admit({ ...request('compact'), manualCompaction: true }, 'e')).toThrow('finish before compacting')
   } finally { db.close() }
 })
+
+it('advertises the actual Claude approval policy and refuses invalid checkpoints before reserving a command', () => {
+  const db = new Database(':memory:')
+  const sessions = new RunSessionRegistry()
+  try {
+    db.exec(OPERATION_RECEIPT_SCHEMA)
+    const receipts = new OperationReceiptRepo(db)
+    let invalid = false
+    const orchestrator = {
+      validateExecutionSelection: () => { if (invalid) throw Object.assign(new Error('incomplete Claude checkpoint'), { code: 'configuration_mismatch' }) },
+      classifyOrdinarySend: () => ({ lineageId: null, parentId: null }),
+      submitQueuedMessage: () => ({}),
+      runMessage: async (input: any) => { expect(input).toMatchObject({ toolAutoApprove: false, fullAccess: false }) },
+    }
+    const service = new RunAdmissionService({ epoch: 'one', receipts, sessions, orchestrator })
+    service.admit({ ...request('claude'), provider: 'claudecode', toolAutoApprove: true, fullAccess: true }, 'one')
+    expect(sessions.get('s-claude')?.effectiveConfiguration).toMatchObject({ toolAutoApprove: false, fullAccess: false })
+    invalid = true
+    expect(() => service.admit({ ...request('invalid'), provider: 'claudecode' }, 'one')).toThrow('incomplete')
+    expect(receipts.get('invalid')).toBeNull()
+    expect(sessions.get('s-invalid')).toBeUndefined()
+  } finally { sessions.disposeAll(); db.close() }
+})

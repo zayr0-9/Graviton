@@ -47,3 +47,12 @@ describe('branch model selection', () => {
     expect(resolveBranchModelSelection(chat)).toBeNull()
   })
 })
+
+it('Claude persisted identity overrides tip/lineage drafts and is inherited by forks', () => {
+  const chat = state()
+  chat.providerState.providers.push({ name: 'Claude Code' } as any)
+  chat.conversation.messages[0].meta = { modelSelection: { provider: 'claudecode', model: 'claude-opus-5-5' } }
+  chat.branchModelDrafts = { [branchModelKey('c', 'lineage:a')]: pairB }
+  expect(resolveBranchModelSelection(chat)).toEqual({ provider: 'Claude Code', model: 'claude-opus-5-5' })
+  expect(resolveBranchModelSelection(chat, ['root', 'fork'], 'c', 'fork')).toEqual({ provider: 'Claude Code', model: 'claude-opus-5-5' })
+})

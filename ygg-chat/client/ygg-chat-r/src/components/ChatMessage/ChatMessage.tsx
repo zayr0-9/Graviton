@@ -4,6 +4,7 @@ import type { ChatErrorActionKind, ChatErrorEnvelope } from '../../../../../shar
 import type { MessageId } from '../../../../../shared/types'
 import type { RootState } from '@/store/store'
 import 'katex/dist/katex.min.css'
+import { isClaudeTranscriptMessage, isClaudeCheckpoint } from '../../../../../shared/claudeProvider'
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { createSelector } from '@reduxjs/toolkit'
 import { createPortal } from 'react-dom'
@@ -620,7 +621,11 @@ const ChatMessageBody: React.FC<ChatMessageProps> = React.memo(
       return normalized.trim().length > 0 ? normalized : ''
     }, [hasExcludedBlocks, modelOutputBlocks, role, visibleContent])
 
+    const claudeTranscript = isClaudeTranscriptMessage(messageData)
+    const canEditMessage = Boolean(onEdit) && !claudeTranscript
+    const canDeleteMessage = Boolean(onDelete) && !claudeTranscript
     const canBranchMessage = role === 'user' || (role === 'assistant' && messageData?.parent_id == null)
+    const canExplainMessage = !claudeTranscript || isClaudeCheckpoint(messageData)
 
     const getEditableText = () =>
       hasEditableBlocks
@@ -628,6 +633,7 @@ const ChatMessageBody: React.FC<ChatMessageProps> = React.memo(
         : visibleContent
 
     const handleEdit = () => {
+      if (!canEditMessage) return
       dispatch(chatSliceActions.editingBranchSet(false))
       setEditingState(true)
       setEditContent(getEditableText())
@@ -769,6 +775,7 @@ const ChatMessageBody: React.FC<ChatMessageProps> = React.memo(
     }
 
     const handleDelete = () => {
+      if (!canDeleteMessage) return
       if (onDelete) onDelete(id)
     }
 
@@ -1887,9 +1894,9 @@ const ChatMessageBody: React.FC<ChatMessageProps> = React.memo(
               )}
               <div ref={moreButtonRef} className='relative shrink-0'>
                 <MessageActions
-                  onEdit={isUserRow ? handleEdit : undefined}
+                  onEdit={isUserRow && canEditMessage ? handleEdit : undefined}
                   onBranch={handleBranch}
-                  onDelete={isUserRow ? handleDelete : undefined}
+                  onDelete={isUserRow && canDeleteMessage ? handleDelete : undefined}
                   onCopy={handleCopy}
                   onSave={handleSave}
                   onSaveBranch={handleSaveBranch}
@@ -1982,7 +1989,7 @@ const ChatMessageBody: React.FC<ChatMessageProps> = React.memo(
             >
               <MessageActions
                 onEdit={
-                  !hasSelection
+                  !hasSelection && canEditMessage
                     ? () => {
                         closeFloatingActions()
                         handleEdit()
@@ -1998,7 +2005,7 @@ const ChatMessageBody: React.FC<ChatMessageProps> = React.memo(
                     : undefined
                 }
                 onDelete={
-                  !hasSelection
+                  !hasSelection && canDeleteMessage
                     ? () => {
                         closeFloatingActions()
                         handleDelete()
@@ -2021,7 +2028,7 @@ const ChatMessageBody: React.FC<ChatMessageProps> = React.memo(
                     : undefined
                 }
                 onExplainSelection={
-                  hasSelection && onExplainFromSelection
+                  hasSelection && onExplainFromSelection && canExplainMessage
                     ? (position?: { x: number; y: number }) => {
                         closeFloatingActions()
                         handleExplainSelection(position)

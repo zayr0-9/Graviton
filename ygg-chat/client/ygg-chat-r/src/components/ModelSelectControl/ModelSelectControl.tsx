@@ -15,6 +15,7 @@ type ModelSelectControlProps = {
   blur?: 'low' | 'high'
   showFilters?: boolean
   footerContent?: React.ReactNode
+  disabled?: boolean
 }
 
 export const ModelSelectControl: React.FC<ModelSelectControlProps> = ({
@@ -27,6 +28,7 @@ export const ModelSelectControl: React.FC<ModelSelectControlProps> = ({
   blur = 'low',
   showFilters = false,
   footerContent,
+  disabled = false,
 }) => {
   const { data: modelsData } = useModels(provider)
   const { filteredModels, filters, sortOptions, applyFilters, clearFilters, applySorting, refreshFavorites } =
@@ -65,7 +67,7 @@ export const ModelSelectControl: React.FC<ModelSelectControlProps> = ({
         options={sortedFilteredModels.map(m => m.name)}
         placeholder={placeholder}
         blur={blur}
-        disabled={sortedFilteredModels.length === 0}
+        disabled={disabled || sortedFilteredModels.length === 0}
         disabledOptions={disabledModelOptions}
         className={className}
         searchBarVisible={true}
@@ -96,7 +98,7 @@ export const ModelSelectControl: React.FC<ModelSelectControlProps> = ({
         models={sortedFilteredModels}
         provider={provider}
         selectedModelName={selectedModelName}
-        onSelect={onChange}
+        onSelect={model => { if (!disabled) onChange(model) }}
         disabledOptions={disabledModelOptions}
       />
     </>

@@ -67,6 +67,7 @@ interface PendingEntry {
 
 interface StreamSession {
   autoApproveAll: boolean
+  allowAlways?: boolean
 }
 
 /** Composite key: one pending decision per (stream, toolCall). */
@@ -202,6 +203,7 @@ export class DecisionBroker {
       decisionMatchesKind(kind, decision) && (this.settlements.get(`${key}::${kind}`) ?? this.receipts?.get(streamId, toolCallId, kind))?.fingerprint === this.fingerprint(decision))
     if (!decisionMatchesKind(entry.kind, decision)) return false
 
+    if (entry.kind === 'permission' && decision === 'allow_always' && this.sessions.get(streamId)?.allowAlways === false) return false
     if (entry.kind === 'permission' && decision === 'allow_always') {
       // Several parallel multi_call workers can already be parked by the time the user
       // answers the one prompt the renderer can display. Atomically promote the stream
@@ -276,8 +278,8 @@ export class DecisionBroker {
 
   // ── Per-stream sessions (auto-approve / allow-always) ──
 
-  initSession(streamId: string, opts?: { autoApproveAll?: boolean }): void {
-    this.sessions.set(streamId, { autoApproveAll: opts?.autoApproveAll ?? false })
+  initSession(streamId: string, opts?: { autoApproveAll?: boolean; allowAlways?: boolean }): void {
+    this.sessions.set(streamId, { autoApproveAll: opts?.allowAlways === false ? false : opts?.autoApproveAll ?? false, allowAlways: opts?.allowAlways })
   }
 
   isAutoApproveAll(streamId: string): boolean {
@@ -286,6 +288,7 @@ export class DecisionBroker {
 
   setAutoApproveAll(streamId: string): void {
     const session = this.sessions.get(streamId)
+    if (session?.allowAlways === false) return
     if (session) session.autoApproveAll = true
     else this.sessions.set(streamId, { autoApproveAll: true })
   }

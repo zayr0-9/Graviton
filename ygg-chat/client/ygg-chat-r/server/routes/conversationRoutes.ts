@@ -1,3 +1,4 @@
+import { isClaudeTranscriptMessage } from '../../../../shared/claudeProvider.js'
 // server/routes/conversationRoutes.ts
 //
 // Local conversation + message CRUD APIs, extracted verbatim from
@@ -590,6 +591,10 @@ export function registerConversationRoutes(app: Express, deps: ConversationRoute
         return
       }
 
+      if ((content !== undefined || content_blocks !== undefined) && isClaudeTranscriptMessage(existing)) {
+        res.status(409).json({ error: 'Claude owns this transcript. Create an edit branch instead of changing saved messages.' })
+        return
+      }
       // Update message
       statements.updateMessage.run(
         finalContent ?? existing.content,
@@ -611,7 +616,10 @@ export function registerConversationRoutes(app: Express, deps: ConversationRoute
   app.delete('/api/local/messages/:id', (req, res) => {
     try {
       const { id } = req.params
-      // console.log('[LocalServer] 🗑️ DELETE /api/local/messages/:id - messageId:', id)
+      if (isClaudeTranscriptMessage(statements.getMessageById.get(id))) {
+        res.status(409).json({ error: 'Claude transcript messages cannot be deleted individually. Delete the conversation instead.' })
+        return
+      }
       statements.deleteMessage.run(id)
       // console.log('[LocalServer] ✅ Message deleted:', id)
       res.json({ success: true })
@@ -632,6 +640,10 @@ export function registerConversationRoutes(app: Express, deps: ConversationRoute
         return
       }
 
+      if (ids.some(id => isClaudeTranscriptMessage(statements.getMessageById.get(id)))) {
+        res.status(409).json({ error: 'Claude transcript messages cannot be deleted individually. Delete the conversation instead.' })
+        return
+      }
       // Delete each message in a transaction
       if (!db) {
         res.status(500).json({ error: 'Database not initialized' })

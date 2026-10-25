@@ -1,3 +1,6 @@
+import { CLAUDE_MODELS, isClaudeProvider } from '../../../../../shared/claudeProvider.js'
+import { ClaudeSessionRepo, assertClaudeBranchSelection } from '../persistence/claudeSessionRepo.js'
+import { ClaudeSessionService } from './claudeSessionService.js'
 import { compactionInstruction } from '../../../../../shared/compaction.js'
 import { v4 as uuidv4 } from 'uuid'
 import type { HeadlessMessageRequest, HeadlessStreamEvent } from '../../../../../shared/headlessApi.js'
@@ -72,6 +75,7 @@ interface ChatOrchestratorDeps {
    *  free-tier SSE events and adopts Railway message ids (CloudMirrorSink). Default
    *  false => the cloud route behaves exactly as before (drop frames, mint ids). */
   cloudChatEnabled?: boolean
+  claudeSessions?: ClaudeSessionService
 }
 
 export function linkPreparedAttachmentsToMessage(
@@ -424,6 +428,7 @@ export function createChatPausingExecutor(deps: {
 }
 
 export interface HeadlessChatOrchestrator {
+  validateExecutionSelection?(request: HeadlessMessageRequest): void
   classifyOrdinarySend?(request: HeadlessMessageRequest): { lineageId: string | null; parentId: string | null; activeStreamId?: string }
   submitQueuedMessage?(conversationId: string, streamId: string, submission: QueuedMessageSubmission): { snapshot?: MessageQueueSnapshot; restart?: HeadlessMessageRequest; restartStreamId?: string }
   getMessageQueue?(conversationId: string, streamId: string): MessageQueueSnapshot
@@ -511,6 +516,38 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
     return this.submitQueuedMessage(conversationId, target[0], submission)
   }
 
+  validateExecutionSelection(request: HeadlessMessageRequest): void {
+    const sourceId = request.operation === 'send' ? request.parentId : request.messageId ?? request.parentId
+    const path = sourceId ? this.conversationRepo.listPathToMessage(request.conversationId, sourceId) : []
+    // A second pending send cannot switch a newly accepted Claude run before its first row exists.
+    const pending = [...this.inputRuns.values()].find(run => !run.terminal && run.request.conversationId === request.conversationId &&
+      ((request.lineageId && (run.queue.lineageId ?? run.request.lineageId) === request.lineageId) ||
+       (!request.parentId && !run.request.parentId)))
+    if (pending && (isClaudeProvider(pending.request.provider) || isClaudeProvider(request.provider)) &&
+      (isClaudeProvider(pending.request.provider) !== isClaudeProvider(request.provider) || pending.request.modelName !== request.modelName)) {
+      throw Object.assign(new Error('The accepted branch provider and model are locked.'), { code: 'configuration_mismatch' })
+    }
+    assertClaudeBranchSelection(request, path)
+    if (isClaudeProvider(request.provider)) {
+      if (!(CLAUDE_MODELS as readonly string[]).includes(request.modelName)) throw new Error('Select a supported Claude model before sending.')
+      if (!(request.rootPath ?? this.conversationRepo.getById(request.conversationId)?.cwd)) throw new Error('Choose a workspace folder before starting Claude.')
+      if (request.manualCompaction) throw new Error('Claude manages compaction; Graviton manual compaction is unavailable for this provider.')
+      if (request.attachmentsBase64?.length) throw new Error('Claude v1 supports text and selected files; image attachments are not yet supported.')
+      const source = request.operation === 'edit-branch' ? this.requireMessage(request.messageId!, request.conversationId).parent_id
+        : request.operation === 'repeat' ? this.conversationRepo.findNearestUserAncestor(request.conversationId, sourceId ?? null)?.parent_id
+        : sourceId
+      if (source && !this.claudeSessionRepo.checkpoint(source)?.resumable) {
+        throw Object.assign(new Error('This Claude turn is incomplete. Retry or edit-branch the user prompt, or fork from a completed response.'), { code: 'configuration_mismatch' })
+      }
+      const lineage = request.lineageId ? this.lineageRepo.get(request.lineageId) : this.lineageRepo.resolve({ messageId: sourceId })
+      const native = lineage ? this.claudeSessionRepo.branch(lineage.id) : null
+      const appendsInPlace = request.operation === 'send' && !request.isBranch && !request.retrigger && lineage?.head_message_id === (request.parentId ?? null)
+      if (appendsInPlace && native && ['uncertain', 'running'].includes(native.state)) {
+        throw Object.assign(new Error('This Claude session was interrupted or is still running. Retry/edit the prompt or fork a completed response.'), { code: 'configuration_mismatch' })
+      }
+    }
+  }
+
   /** Read-only admission classification. Never reconcile/create a lineage merely
    * to decide where a second client's stale-parent input belongs. */
   classifyOrdinarySend(request: HeadlessMessageRequest): { lineageId: string | null; parentId: string | null; activeStreamId?: string } {
@@ -568,6 +605,7 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
     const run = this.inputRuns.get(streamId)!
     if (!submission.requestId || !submission.content.trim()) throw new Error('Message content and request id are required')
     if (run.signal?.aborted) throw new Error('Run stopped; send a new message on the selected branch')
+    if (isClaudeProvider(run.request.provider)) throw new Error('Claude v1 does not support queued input. Wait for this turn to finish.')
     const priorSubmission = run.queue.get(submission.requestId)
     if (priorSubmission) {
       run.queue.enqueue(submission, run.control.revision) // validates idempotent payload, including attachments
@@ -614,6 +652,7 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
 
   changeOperationMode(input: { conversationId: string; mode: 'plan' | 'execute'; requestId: string; streamId?: string | null; parentId?: string | null; lineageId?: string | null }): any {
     if (input.streamId) {
+      if (isClaudeProvider(this.inputRuns.get(input.streamId)?.request.provider)) throw new Error('Change Claude mode between turns, not during an active run.')
       const run = this.modeRuns.get(input.streamId)
       if (!run || run.conversationId !== input.conversationId || run.control.closed) {
         throw new Error('Run is no longer active; reload the branch before switching modes')
@@ -654,6 +693,8 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
   private readonly decisionBroker?: DecisionBroker
   private readonly hookRunner?: (req: HookRunRequest) => Promise<HookRunResult>
   private readonly cloudChatEnabled: boolean
+  private readonly claudeSessionRepo: ClaudeSessionRepo
+  private readonly claudeSessions: ClaudeSessionService
 
   constructor(deps: ChatOrchestratorDeps) {
     this.statements = deps.statements
@@ -670,6 +711,8 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
     this.decisionBroker = deps.decisionBroker
     this.hookRunner = deps.hookRunner
     this.cloudChatEnabled = deps.cloudChatEnabled ?? false
+    this.claudeSessionRepo = new ClaudeSessionRepo(deps.db)
+    this.claudeSessions = deps.claudeSessions ?? new ClaudeSessionService({ sessions: this.claudeSessionRepo, messages: this.messageRepo, broker: deps.decisionBroker })
     this.toolLoopService =
       deps.toolLoopService ??
       new ToolLoopService({
@@ -913,6 +956,8 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
     emit: (event: HeadlessStreamEvent) => void,
     signal?: AbortSignal
   ): Promise<void> {
+    this.validateExecutionSelection(request)
+    if (isClaudeProvider(request.provider)) request = { ...request, fullAccess: false, fullAccessNotificationId: undefined, toolAutoApprove: false }
     if (request.manualCompaction) {
       if ([...this.inputRuns.values()].some(run => !run.terminal && run.request.conversationId === request.conversationId &&
         (request.lineageId ? run.queue.lineageId === request.lineageId : run.head === request.parentId))) {
@@ -1027,8 +1072,9 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
     // Phase 3: build a per-run chat-hook session when a hook runner is wired, the
     // request opted in, AND the interactive (broker) path is active — hooks live on the
     // pausing executor, so they require the broker. Absent for subagents/mobile/tests.
+    const claudeRun = isClaudeProvider(request.provider)
     const hookSession =
-      this.hookRunner && request.hooksEnabled === true && this.decisionBroker
+      !claudeRun && this.hookRunner && request.hooksEnabled === true && this.decisionBroker
         ? createChatHookSession({
             conversationRepo: this.conversationRepo,
             runHook: this.hookRunner,
@@ -1081,7 +1127,7 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
       resolveContextDirectorySettingsFromEnv()
     )
     let contextLoader: ConversationContextLoader | null = null
-    if (contextRootPath) {
+    if (contextRootPath && !claudeRun) {
       contextLoader = createConversationContextLoader({
         conversationId: request.conversationId,
         rootPath: contextRootPath,
@@ -1286,6 +1332,7 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
       activeLineage = this.lineageRepo.appendMessage(activeLineage.id, accessMessage.id)
       accessMessage = this.conversationRepo.getMessageById(accessMessage.id)
     }
+    if (claudeRun) this.claudeSessionRepo.reserve(activeLineage.id, request.conversationId, request.modelName, contextRootPath!)
     if (resolved.userMessage) resolved.userMessage = { ...resolved.userMessage, ...this.messageRepo.get(resolved.userMessage.id) }
     return { resolved, activeLineage, pendingOperationId }
     })
@@ -1356,7 +1403,7 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
     // auto-approve; pause only when the caller EXPLICITLY sent toolAutoApprove:false
     // (the mobile LAN UI never sends it, so it always auto-approves).
     if (this.decisionBroker && trackedStreamId) {
-      this.decisionBroker.initSession(trackedStreamId, { autoApproveAll: request.toolAutoApprove !== false })
+      this.decisionBroker.initSession(trackedStreamId, { autoApproveAll: !claudeRun && request.toolAutoApprove !== false, allowAlways: !claudeRun })
     }
 
     // Re-point the hook session at the FINAL (post-upsert) stream id so hook payloads
@@ -1380,6 +1427,22 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
       provider: request.provider,
       modelName: request.modelName,
     })
+
+    if (claudeRun) {
+      const sourceId = request.operation === 'edit-branch'
+        ? this.requireMessage(request.messageId!, request.conversationId).parent_id ?? null
+        : request.operation === 'repeat'
+          ? this.requireMessage(resolved.assistantParentId!, request.conversationId).parent_id ?? null
+          : request.operation === 'branch' ? request.messageId ?? request.parentId : request.parentId
+      const finalMessage = await this.claudeSessions.run({ request: { ...request, content: resolved.userContentForInference, streamId: trackedStreamId }, lineageId,
+        userMessage: resolved.userMessage, parentId: resolved.assistantParentId, sourceMessageId: sourceId ?? null,
+        fork: request.operation !== 'send' || Boolean(request.isBranch), cwd: contextRootPath!, sink, signal,
+        emit: event => { if (event.type === 'assistant_message_persisted') lastPersistedAssistantId = event.message?.id ?? lastPersistedAssistantId; emit(event) } })
+      this.streamingRunRepo.finish(trackedStreamId, { status: 'completed', endReason: 'completed',
+        assistantMessageId: finalMessage.id, finalMessageId: finalMessage.id })
+      emit({ type: 'complete', message: finalMessage, lineageId })
+      return
+    }
 
     // Keep the full parent chain in SQLite for branch navigation/auditability, but never
     // replay ancestors that a compaction summary has replaced. This restores the legacy

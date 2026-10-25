@@ -1,3 +1,4 @@
+import { isClaudeProvider } from '../../../../../shared/claudeProvider.js'
 import { HyperRouterBedrockProvider } from '../providers/hyperRouterBedrockProvider.js'
 import { HyperRouterZaiProvider } from '../providers/hyperRouterZaiProvider.js'
 import { LmStudioProvider } from '../providers/lmStudioProvider.js'
@@ -69,6 +70,7 @@ export class ProviderRouter {
     input: ProviderGenerateInput,
     emit?: ProviderStreamEventHandler
   ): Promise<ProviderGenerateOutput> {
+    if (isClaudeProvider(providerName)) throw new Error('Claude Code uses the session backend and is unavailable in Graviton subagents or compaction.')
     const route = normalizeProviderRoute(providerName)
     const provider = this.providers[route]
     return provider.generate(input, emit)

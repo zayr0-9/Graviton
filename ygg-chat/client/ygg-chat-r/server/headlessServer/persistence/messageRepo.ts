@@ -103,6 +103,13 @@ export class MessageRepo {
     return input.contextUsage ? { ...createdMessage, context_usage: input.contextUsage } : createdMessage
   }
 
+  /** Update one Claude API response as its streamed blocks arrive. Identity/ancestry never change. */
+  updateClaudeProjection(messageId: string, content: string, contentBlocks: any[], meta: Record<string, unknown>): any {
+    this.db.prepare('UPDATE messages SET content = ?, plain_text_content = ?, content_blocks = ?, meta = ? WHERE id = ?')
+      .run(content, content, JSON.stringify(contentBlocks), JSON.stringify(meta), messageId)
+    return this.get(messageId)
+  }
+
   finaliseCompaction(messageId: string, update: { content: string; contentBlocks: any[]; meta: Record<string, unknown> }): any {
     return this.transaction(() => {
       const row = this.statements.getMessageById.get(messageId)

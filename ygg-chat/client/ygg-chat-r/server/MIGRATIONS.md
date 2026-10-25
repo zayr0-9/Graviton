@@ -119,3 +119,9 @@ Accepted commands from earlier epochs become interrupted/uncertain, never automa
 | 10 | `decision_receipts` | Adds `(stream_id, tool_call_id, kind)` keyed settlement fingerprints and metadata. | Identical lost-acknowledgement answers remain recognizable after restart; conflicting answers never reopen execution. No raw answers or tool inputs are stored. | 2026-10-19 |
 
 | 11 | `decision_receipt_kinds` | Idempotently upgrades early prototype two-column receipt keys to kind-scoped keys, preserving old records as `any`. | A test database that already stamped v10 must not lose receipts or fail interactive decisions. | 2026-10-19 |
+
+## Claude session backend (v12)
+
+| Version | Name | Change | Why | Added |
+| --- | --- | --- | --- | --- |
+| 12 | `claude_branch_sessions` | Adds `claude_branch_sessions` and `claude_message_checkpoints`, cascading with local conversations/messages/lineages. | Persist locked model/workspace, native session ownership and exact-message historical fork checkpoints. No transcript rewrites. | 2026-10-25 |
