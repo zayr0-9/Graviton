@@ -41,7 +41,7 @@ Use this when changing:
 - `repl` is a branch-shared (parent and children) composite dispatcher, not a leaf job: invoke stores nested results via the caller's policy-aware executor; synchronous QuickJS exec processes values and show explicitly reveals bounded output. See [REPL tool](../repl-tool.md) for scope, limits, direct-only exceptions and restart behavior.
 - Built-in tools have shared schemas and server-owned implementations hosted by the local server. `multi_call` is a headless-server composite implementation rather than a `toolOrchestrator` leaf handler: it expands nested calls and sends each through normal policy-aware execution.
 - `context_status` is an enabled, no-argument read-only built-in intercepted in-process by `server/headlessServer/services/contextStatusTool.ts`. `ToolLoopService` supplies a run-local meter callback; direct calls and nested `multi_call` use the invoking run's history/provider/model, never renderer navigation. It bypasses interactive permissions and is allowed in Chat mode. It calculates headroom against `totalContextLimit` (model/configured window, not credits) and returns only remaining tokens, rounded whole-number remaining percent, and a brief approximation note.
-- Renderer-selected schemas exclude custom tools; discover/invoke them through `custom_tool_manager`. Server requests omitting `tools` use defaults that also include enabled custom definitions directly.
+- Renderer-selected schemas exclude custom tools; discover/invoke them through `custom_tool_manager`. Server requests omitting `tools` also use built-in-only defaults. Installed custom descriptions/schemas are disclosed through manager search/get results only.
 - MCP tools are discovered/invoked through the stable `mcp_manager` schema (`list`, `list_tools`, `invoke`). Individual MCP schemas appear only in discovery tool results, never in model tool definitions. Shared policy, request shaping and the loop strip direct MCP schemas, including legacy client inputs/refresh hooks. Settings/iframe registries and direct host handlers remain available separately.
 
 ## Important Invariants
@@ -71,3 +71,7 @@ Use this when changing:
 - `agent_custom_tools.md`
 - `agent_html_iframe_apps.md`
 - `docs/tool-permissions.md`
+
+## Search-first progressive disclosure
+
+All three managers support `action: "search"`, required `query` (literal, case-insensitive, all words), `limit` (default 20, range 1–100) and `offset` (default 0). Results expose only matching entries, `totalCount` and optional `nextOffset`. Custom search returns summaries; use `get` for selected schemas. Skill search returns summaries; use `activate` for instructions. MCP search connects enabled servers on demand (optional server `name` scope), excludes app-only tools and returns matching tool schemas with `serverName`; `serverErrors` reports partial catalog coverage. No tool is invoked by search. MCP and custom schemas are not inserted into initial model tool definitions; existing UI registries/host execution remain separate.

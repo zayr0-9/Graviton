@@ -272,3 +272,18 @@ describe('fork grid', () => {
   })
   it('has an empty state', () => { expect(render([])).toContain('No captured agent forks yet.') })
 })
+
+describe('deferred grid transcripts', () => {
+  it('does not construct offscreen transcripts before the first visibility measurement', () => {
+    vi.stubGlobal('IntersectionObserver', class {})
+    try {
+      const html = render(Array.from({ length: 100 }, (_, index) => run(`run-${index}`, { lineageId: `fork-${index}` })))
+      expect(html.match(/aria-label="Preview /g)).toHaveLength(100)
+      expect(html).not.toContain('Transcript run-')
+      expect(html.match(/data-agent-grid-row=/g)).toHaveLength(100)
+      expect(html).toContain('height:max(20rem, min(52dvh, 28rem))')
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
+})

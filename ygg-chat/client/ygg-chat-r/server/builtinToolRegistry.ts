@@ -81,9 +81,9 @@ export interface BuiltInToolRegistryDeps {
 export function registerBuiltInTools(builtInTools: Map<string, BuiltInToolHandler>, deps: BuiltInToolRegistryDeps): void {
   builtInTools.set('claude_bridge', (args, options) => claudeBridge.execute(args, options))
 
-  builtInTools.set('html_renderer', async (args, { rootPath }) => {
-    const { html, path: filePath, cwd, allowUnsafe } = args
-    return await htmlRenderer.run({ html, path: filePath, cwd: cwd ?? rootPath, allowUnsafe })
+  builtInTools.set('html_renderer', async (args, context) => {
+    const cwd = args.action === 'export' ? args.cwd : args.cwd ?? context.rootPath
+    return await htmlRenderer.run({ ...args, cwd }, context)
   })
 
   builtInTools.set('read_file', async (args, { rootPath, signal, deadlineMs }) => {

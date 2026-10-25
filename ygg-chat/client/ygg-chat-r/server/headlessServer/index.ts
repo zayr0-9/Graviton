@@ -11,7 +11,6 @@ import { hostEpoch } from '../hostEpoch.js'
 import { reconcileHeadlessRuns } from './persistence/reconcileHeadlessRuns.js'
 import type Database from 'better-sqlite3'
 import type { Express } from 'express'
-import { customToolRegistry } from '../tools/customToolLoader.js'
 import { toolOrchestrator as defaultToolOrchestrator } from '../tools/orchestrator/index.js'
 import { isBuiltInToolAvailable } from '../serverHost.js'
 import { BUILTIN_TOOL_DEFINITIONS } from '../../../../shared/builtinToolDefinitions.js'
@@ -133,21 +132,8 @@ const dedupeToolsByName = (tools: InferenceToolDefinition[]): InferenceToolDefin
 const resolveDefaultInferenceTools = (): InferenceToolDefinition[] => {
   const tools: InferenceToolDefinition[] = getBuiltInInferenceTools()
 
-  try {
-    const customTools = customToolRegistry
-      .getDefinitions()
-      .filter(def => def.enabled)
-      .map(def => ({
-        name: def.name,
-        description: def.description,
-        inputSchema: def.inputSchema,
-      }))
-    tools.push(...customTools)
-  } catch {
-    // Ignore custom tool discovery failures in request-path fallback.
-  }
-
-  // MCP tools are available only through mcp_manager list_tools/invoke.
+  // Custom/MCP tools are discovered and invoked only through their managers.
+  // Never preload installed tools' descriptions or schemas into model context.
 
   return dedupeToolsByName(tools)
 }

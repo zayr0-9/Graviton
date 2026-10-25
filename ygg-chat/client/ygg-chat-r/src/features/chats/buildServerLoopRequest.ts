@@ -27,6 +27,7 @@ export interface ServerLoopToolInput {
   inputSchema?: Record<string, any>
   enabled?: boolean
   isMcp?: boolean
+  isCustom?: boolean
 }
 
 export interface BuildServerLoopRequestParams {
@@ -135,7 +136,7 @@ function shapeTools(tools?: ServerLoopToolInput[]): Array<{ name: string; descri
   // the server does NOT substitute defaults and auto-run tools the user disabled.
   if (!Array.isArray(tools)) return undefined
   return tools
-    .filter(t => t.enabled !== false && !t.isMcp && !t.name.startsWith('mcp__'))
+    .filter(t => t.enabled !== false && !t.isCustom && !t.isMcp && !t.name.startsWith('mcp__'))
     .map(t => ({
       name: t.name,
       description: t.description,

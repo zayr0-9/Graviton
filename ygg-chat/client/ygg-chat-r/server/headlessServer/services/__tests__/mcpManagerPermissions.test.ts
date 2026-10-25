@@ -7,6 +7,17 @@ import { assertToolAllowedWithoutAutoApprove } from '../../../../../../shared/op
 const context = { operationMode: 'execute' } as any
 
 describe('MCP manager permissions', () => {
+  it.each(['mcp_manager', 'custom_tool_manager'])('bypasses %s search without weakening invocation approval', async toolName => {
+    const broker = new DecisionBroker()
+    broker.initSession('search-run', { autoApproveAll: false })
+    const base = vi.fn().mockResolvedValue({ success: true })
+    const emit = vi.fn()
+    const execute = createChatPausingExecutor({ broker, streamId: 'search-run', base, emit })
+    await execute({ id: 'search', name: toolName, arguments: { action: 'search', query: 'echo' } }, context)
+    expect(base).toHaveBeenCalledOnce()
+    expect(emit).not.toHaveBeenCalled()
+  })
+
   it('bypasses discovery but prompts for invoke, and denial prevents execution', async () => {
     const broker = new DecisionBroker()
     broker.initSession('mcp-run', { autoApproveAll: false })

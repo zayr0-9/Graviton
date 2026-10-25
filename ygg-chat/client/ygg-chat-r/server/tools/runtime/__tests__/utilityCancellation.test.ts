@@ -81,13 +81,13 @@ it('forwards raw HTML paths with rootPath as a base, without workspace validatio
   mocks.receive!({ type: 'execute_tool', requestId: 'html', toolName: 'html_renderer',
     args: { path: '/outside/page.html' }, options: { rootPath: '/workspace' } })
   await vi.advanceTimersByTimeAsync(0)
-  expect(mocks.html).toHaveBeenCalledWith({ path: '/outside/page.html', cwd: '/workspace', html: undefined, allowUnsafe: undefined })
+  expect(mocks.html).toHaveBeenCalledWith({ path: '/outside/page.html', cwd: '/workspace' }, expect.objectContaining({ rootPath: '/workspace' }))
   expect(mocks.post).toHaveBeenCalledWith(expect.objectContaining({ requestId: 'html', result: { success: true, html: '<h1>disk</h1>' } }))
 
   mocks.receive!({ type: 'execute_tool', requestId: 'html-cwd', toolName: 'html_renderer',
     args: { path: 'page.html', cwd: '/another/base' }, options: { rootPath: '/workspace' } })
   await vi.advanceTimersByTimeAsync(0)
-  expect(mocks.html).toHaveBeenLastCalledWith({ path: 'page.html', cwd: '/another/base', html: undefined, allowUnsafe: undefined })
+  expect(mocks.html).toHaveBeenLastCalledWith({ path: 'page.html', cwd: '/another/base' }, expect.objectContaining({ rootPath: '/workspace' }))
 })
 
 
@@ -107,4 +107,17 @@ it('forwards trusted workspace and request cancellation to all read tools', asyn
   expect(mocks.read).toHaveBeenCalledWith('../file', expected)
   expect(mocks.continuation).toHaveBeenCalledWith('../file', 0, 2, expected)
   expect(mocks.readFiles).toHaveBeenCalledWith(['../file'], expected)
+})
+
+
+it('forwards HTML export IDs and trusted context without injecting cwd into export', async () => {
+  mocks.html.mockResolvedValue({ success: true, path: '/managed/document.html' })
+  mocks.receive!({ type: 'execute_tool', requestId: 'html-export', toolName: 'html_renderer',
+    args: { action: 'export', documentId: 'html_saved', conversationId: 'spoofed' },
+    options: { rootPath: '/workspace', conversationId: 'trusted-conversation' } })
+  await vi.advanceTimersByTimeAsync(0)
+  expect(mocks.html).toHaveBeenCalledWith(
+    expect.objectContaining({ action: 'export', documentId: 'html_saved', cwd: undefined }),
+    expect.objectContaining({ rootPath: '/workspace', conversationId: 'trusted-conversation' })
+  )
 })

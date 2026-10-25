@@ -116,6 +116,21 @@ describe('centralized compaction policies', () => {
     expect(compactionToolStatus({ success: false, cancelled: true }, undefined, 'bash')).toBe('cancelled')
   })
 
+  it('retains saved HTML IDs through compaction without carrying large source bodies', () => {
+    const html = secret.repeat(2000)
+    const documentId = 'html_saved'
+    for (const result of [{ success: true, html, documentId }, JSON.stringify({ success: true, html, documentId })]) {
+      const projection = projectCompactionTool('html_renderer', { html }, result)
+      expect(projection).toEqual({ input: {}, output: { success: true, documentId } })
+      const appendix = buildCompactionAppendix([call('html_renderer', { html }, result)])
+      expect(appendix).toContain(documentId)
+      expect(appendix).not.toContain(secret)
+    }
+    expect(projectCompactionTool('html_renderer', { action: 'export', documentId }, {
+      success: true, action: 'export', documentId, path: '/managed/export.html', sizeBytes: 42,
+    }).output).toEqual({ success: true, action: 'export', documentId, path: '/managed/export.html', sizeBytes: 42 })
+  })
+
   it('preserves small HTML calls and bounds unknown tools conservatively', () => {
     expect(projectCompactionTool('html_renderer', { html: '<h1>Hi</h1>' }, 'rendered').output).toBe('rendered')
     expect(estimateTokenCount(projectCompactionTool('future_tool', {}, 'result '.repeat(10000)).output as string)).toBeLessThanOrEqual(300)

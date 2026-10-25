@@ -103,7 +103,7 @@ export function filterToolsForOperationMode<T extends OperationModeToolPolicyDef
   // to switch modes when the model needs one. Execution remains gated below.
   // MCP schemas are discovered and invoked through the stable mcp_manager tool.
   // Also strip legacy/client-supplied direct definitions at the server boundary.
-  return tools.filter(tool => !tool.isMcp && !tool.name.startsWith('mcp__'))
+  return tools.filter(tool => !tool.isCustom && !tool.isMcp && !tool.name.startsWith('mcp__'))
 }
 
 export function requiresAgentMode(toolCall: any, operationMode: OperationMode): boolean {

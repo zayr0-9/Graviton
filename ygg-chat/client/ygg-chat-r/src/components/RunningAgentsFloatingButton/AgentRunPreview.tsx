@@ -1,26 +1,32 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { useAppSelector } from '../../hooks/redux'
 import { ChatMessage } from '../ChatMessage/ChatMessage'
 import { SummarisedMessage } from '../ChatMessage/SummarisedMessage'
 import { StreamingThinkingIndicator } from '../StreamingThinkingIndicator'
 import { buildAgentPreviewRows } from './agentPreviewContent'
-import { buildForkPreviewRows, selectForkPreviewRuns } from './agentForkPreview'
+import { buildForkPreviewRows, createAgentPreviewRunsSelector } from './agentForkPreview'
 import { useCustomChatTheme, useHtmlDarkMode } from '../ThemeManager/themeConfig'
 
-export function AgentRunPreview({ streamId, grouped, fillHeight = false, transcriptLabel = 'Run transcript', wholeFork = false, isStreaming = false }: { streamId: string; grouped: boolean; fillHeight?: boolean; transcriptLabel?: string; wholeFork?: boolean; isStreaming?: boolean }) {
-  const previews = useAppSelector(state => state.agentRunPreviews.byStreamId)
-  const run = previews[streamId]
-  const runs = useMemo(() => wholeFork ? selectForkPreviewRuns(previews, streamId) : run ? [run] : [], [previews, streamId, run, wholeFork])
+export interface AgentPreviewScrollState { top: number; following: boolean }
+
+export const AgentRunPreview = memo(function AgentRunPreview({ streamId, grouped, fillHeight = false, transcriptLabel = 'Run transcript', wholeFork = false, isStreaming = false, scrollState }: { streamId: string; grouped: boolean; fillHeight?: boolean; transcriptLabel?: string; wholeFork?: boolean; isStreaming?: boolean; scrollState?: AgentPreviewScrollState }) {
+  const selectRuns = useMemo(() => createAgentPreviewRunsSelector(streamId, wholeFork), [streamId, wholeFork])
+  const runs = useAppSelector(selectRuns)
+  const run = runs.find(preview => preview.streamId === streamId)
   const rows = useMemo(() => wholeFork ? buildForkPreviewRows(runs) : run ? buildAgentPreviewRows(run).map(row => ({ ...row, streamId, firstInRun: false, runStartedAt: run.stream.createdAt })) : [], [runs, run, wholeFork, streamId])
   // Read run-scoped state, not Chat's currently selected branch. A whole-fork
   // preview may include a compacting run other than its representative.
   const compacting = runs.some(preview => preview.stream.active && preview.stream.compactionStatus === 'started')
   const showActivity = isStreaming || compacting
   const scrollRef = useRef<HTMLDivElement>(null)
-  const followRef = useRef(true)
-  const [following, setFollowing] = useState(true)
+  const followRef = useRef(scrollState?.following ?? true)
+  const [following, setFollowing] = useState(followRef.current)
   const { theme, enabled } = useCustomChatTheme()
   const isDarkMode = useHtmlDarkMode()
+
+  useLayoutEffect(() => {
+    if (scrollRef.current && scrollState && !scrollState.following) scrollRef.current.scrollTop = scrollState.top
+  }, [scrollState])
 
   useEffect(() => {
     const element = scrollRef.current
@@ -38,6 +44,7 @@ export function AgentRunPreview({ streamId, grouped, fillHeight = false, transcr
           if (!element) return
           followRef.current = element.scrollHeight - element.scrollTop - element.clientHeight < 48
           setFollowing(followRef.current)
+          if (scrollState) { scrollState.top = element.scrollTop; scrollState.following = followRef.current }
         }}>
         {rows.length === 0 ? !showActivity && <p className='p-3 text-sm text-neutral-500'>Waiting for run output…</p> : rows.map(row => (
           <div key={row.key} className={row.role === 'user' ? 'min-w-0 [&_.chat-markdown]:[overflow-wrap:anywhere]' : 'min-w-0'}>
@@ -58,10 +65,11 @@ export function AgentRunPreview({ streamId, grouped, fillHeight = false, transcr
       {!following && <button type='button' className='absolute bottom-3 right-3 rounded-full bg-neutral-800 px-3 py-1.5 text-xs text-white shadow'
         onClick={() => {
           followRef.current = true
+          if (scrollState) scrollState.following = true
           setFollowing(true)
           const element = scrollRef.current
           if (element) element.scrollTop = element.scrollHeight
         }}>Jump to latest</button>}
     </div>
   )
-}
+})

@@ -112,6 +112,7 @@ export function linkPreparedAttachmentsToMessage(
 const ALWAYS_BYPASS_TOOLS = new Set(['skill_manager', 'multi_call', 'context_status'])
 /** custom_tool_manager actions that are read-only/management (bypass) vs 'invoke' (prompt). */
 const CUSTOM_TOOL_MANAGER_BYPASS_ACTIONS = new Set([
+  'search',
   'list',
   'get',
   'enable',
@@ -136,7 +137,7 @@ function parseToolArgs(raw: unknown): any {
 /** Whether a tool call skips the interactive permission prompt (server-side port of the renderer gate). */
 function shouldBypassPermission(toolName: string, args: any): boolean {
   if (ALWAYS_BYPASS_TOOLS.has(toolName)) return true
-  if (toolName === 'mcp_manager') return ['list', 'get', 'stop', 'list_tools'].includes(args?.action)
+  if (toolName === 'mcp_manager') return ['search', 'list', 'get', 'stop', 'list_tools'].includes(args?.action)
   if (toolName === 'custom_tool_manager') {
     // Normalize identically to the renderer (chatActions shouldBypassToolPermission)
     // so mixed-case/whitespace actions bypass on both sides.

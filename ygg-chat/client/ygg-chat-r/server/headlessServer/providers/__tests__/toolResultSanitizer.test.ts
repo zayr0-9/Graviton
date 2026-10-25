@@ -11,6 +11,17 @@ describe('sanitizeToolResultContentForModel', () => {
     expect(result).toBe('displaying html_renderer ui now')
   })
 
+  it('preserves HTML document IDs in compact model results and history replay', () => {
+    const payload = { success: true, html: '<p>large source</p>', documentId: 'html_saved' }
+    for (const content of [payload, JSON.stringify(payload)]) {
+      expect(JSON.parse(sanitizeToolResultContentForModel(content, 'html_renderer'))).toEqual({
+        success: true, displayed: true, documentId: 'html_saved',
+      })
+    }
+    const exported = { success: true, action: 'export', documentId: 'html_saved', path: '/managed/export.html' }
+    expect(sanitizeToolResultContentForModel(exported, 'html_renderer')).toEqual(exported)
+  })
+
   it('uses plan_md modelContent instead of full displayed plan content', () => {
     const result = sanitizeToolResultContentForModel(
       {

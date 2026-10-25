@@ -158,6 +158,10 @@ export function sanitizeToolResultContentForModel(content: any, toolName?: strin
   const htmlPayload = extractHtmlPayload(content)
   if (htmlPayload?.html) {
     const resolvedName = toolName ?? htmlPayload.toolName ?? null
+    const resolved = typeof content === 'string' ? parseJson(content) : content
+    if (normalizedToolName === 'html_renderer' && typeof resolved?.documentId === 'string') {
+      return JSON.stringify({ success: true, displayed: true, documentId: resolved.documentId })
+    }
     return `displaying ${resolvedName || 'custom tool'} ui now`
   }
   return content

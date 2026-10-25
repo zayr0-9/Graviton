@@ -1,10 +1,11 @@
-import { useLayoutEffect, useRef, useState, type CSSProperties } from 'react'
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
 import { buildAgentForkGroups, type AgentStreamListItem } from '../../hooks/useRunningAgentStreams'
 import { getThemeModeColor, useCustomChatTheme, useHtmlDarkMode } from '../ThemeManager/themeConfig'
 import { AgentMessageTooltip } from './AgentMessageTooltip'
-import { AgentRunPreview } from './AgentRunPreview'
+import { AgentRunPreview, type AgentPreviewScrollState } from './AgentRunPreview'
 import { AgentGridRow } from './AgentGridRow'
 import { getAgentGridColumns } from './agentGridSplit'
+import { useVisibleAgentGridRows } from './useVisibleAgentGridRows'
 
 interface AgentsMonitorGridProps {
   activeStreams: AgentStreamListItem[]
@@ -22,11 +23,22 @@ export function getAgentGridCardHeight(columns: number): string {
 /** One live transcript per fork; expanding is optional, never required to monitor output. */
 export function AgentsMonitorGrid({ activeStreams, streamHistory, grouped, onOpenFork, onOpenChat }: AgentsMonitorGridProps) {
   const gridRef = useRef<HTMLDivElement>(null)
+  const scrollRef = useRef<HTMLDivElement>(null)
+  // View state only: transcript data stays in Redux, even while offscreen.
+  const scrollStates = useRef(new Map<string, AgentPreviewScrollState>())
   const [columns, setColumns] = useState(1)
   const { theme, enabled } = useCustomChatTheme()
   const dark = useHtmlDarkMode()
-  const { activeForks, historyForks } = buildAgentForkGroups(activeStreams, streamHistory)
-  const forks = [...activeForks, ...historyForks]
+  const forks = useMemo(() => {
+    const { activeForks, historyForks } = buildAgentForkGroups(activeStreams, streamHistory)
+    return [...activeForks, ...historyForks]
+  }, [activeStreams, streamHistory])
+  useEffect(() => {
+    const keys = new Set(forks.map(fork => fork.key))
+    for (const key of scrollStates.current.keys()) if (!keys.has(key)) scrollStates.current.delete(key)
+  }, [forks])
+  const rowCount = Math.ceil(forks.length / columns)
+  const visibleRows = useVisibleAgentGridRows(gridRef, scrollRef, rowCount, columns)
   const textStyle: CSSProperties & Record<'--agents-grid-streaming-bg' | '--agents-grid-idle-bg', string | undefined> = {
     color: enabled ? getThemeModeColor(theme.colors.toolJobsPrimaryText, dark) : undefined,
     '--agents-grid-streaming-bg': enabled ? getThemeModeColor(theme.colors.composerToggleActiveBg, dark) : undefined,
@@ -54,14 +66,20 @@ export function AgentsMonitorGrid({ activeStreams, streamHistory, grouped, onOpe
 
   return (
     <section aria-label='Agent forks' className='flex h-full min-h-0 flex-1 flex-col overflow-hidden' style={textStyle}>
-      <div className='min-h-0 flex-1 overflow-y-auto overscroll-contain px-2 pb-2 thin-scrollbar'>
+      <div ref={scrollRef} className='min-h-0 flex-1 overflow-y-auto overscroll-contain px-2 pb-2 thin-scrollbar'>
         {forks.length === 0 && <p className='p-3 text-sm text-neutral-500' style={mutedStyle}>No captured agent forks yet.</p>}
         <div ref={gridRef} className='flex flex-col gap-3'>
-          {Array.from({ length: Math.ceil(forks.length / columns) }, (_, rowIndex) => {
+          {Array.from({ length: rowCount }, (_, rowIndex) => {
             const row = forks.slice(rowIndex * columns, (rowIndex + 1) * columns)
-            return <AgentGridRow key={rowIndex} label={`Agent row ${rowIndex + 1}`}>
+            return <div key={rowIndex} data-agent-grid-row={rowIndex}>
+              <AgentGridRow label={`Agent row ${rowIndex + 1}`}>
           {row.map(fork => {
             const stream = fork.representative
+            let scrollState = scrollStates.current.get(fork.key)
+            if (!scrollState) {
+              scrollState = { top: 0, following: true }
+              scrollStates.current.set(fork.key, scrollState)
+            }
             const active = fork.activeStreams.length > 0
             const cardStyle = { backgroundColor: enabled ? getThemeModeColor(theme.colors[active ? 'agentsGridStreamingCardBg' : 'agentsGridIdleCardBg'], dark) : undefined }
             const name = stream.conversationTitle || `Conversation ${stream.conversationId || 'Unknown'}`
@@ -94,11 +112,12 @@ export function AgentsMonitorGrid({ activeStreams, streamHistory, grouped, onOpe
                     <p className='truncate text-xs text-neutral-500 dark:text-neutral-400' style={mutedStyle}>{stream.parentMessageText}</p>
                   </AgentMessageTooltip>
                 </div>}
-                <AgentRunPreview streamId={stream.streamId} grouped={grouped} isStreaming={active} wholeFork fillHeight transcriptLabel={`${name} · ${fork.displayName} transcript`} />
+                {(visibleRows === null || visibleRows.has(rowIndex)) && <AgentRunPreview scrollState={scrollState} streamId={stream.streamId} grouped={grouped} isStreaming={active} wholeFork fillHeight transcriptLabel={`${name} · ${fork.displayName} transcript`} />}
               </section>
             )
           })}
-            </AgentGridRow>
+              </AgentGridRow>
+            </div>
           })}
         </div>
       </div>

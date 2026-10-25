@@ -38,6 +38,33 @@ describe('mcp_manager discovery and invoke', () => {
     expect(manager.callServerTool).not.toHaveBeenCalled()
   })
 
+  it('searches across enabled servers and returns only matching model-visible schemas', async () => {
+    manager.getConfigs.mockResolvedValue([{ name: 'demo_server', enabled: true }, { name: 'disabled', enabled: false }])
+    manager.getServerStatus.mockReturnValue({ tools: [
+      { ...definition, description: 'Echo messages' },
+      { ...definition, name: 'unrelated' },
+      { ...definition, name: 'private_echo', _meta: { ui: { visibility: ['app'] } } },
+    ] })
+    const result = await execute({ action: 'search', query: 'DEMO echo', limit: 1 })
+    expect(result).toMatchObject({ success: true, totalCount: 1, tools: [{ name: 'echo', serverName: 'demo_server', inputSchema: definition.inputSchema }] })
+    expect(manager.startServer).toHaveBeenCalledOnce()
+    expect(manager.callServerTool).not.toHaveBeenCalled()
+  })
+
+  it('rejects scoped searches on disabled or unknown servers', async () => {
+    manager.getConfigs.mockResolvedValue([{ name: 'disabled', enabled: false }])
+    expect(await execute({ action: 'search', query: 'echo', name: 'disabled' })).toMatchObject({ success: false, error: 'MCP server "disabled" is disabled' })
+    expect(await execute({ action: 'search', query: 'echo', name: 'unknown' })).toMatchObject({ success: false, error: 'MCP server "unknown" not found' })
+    expect(manager.startServer).not.toHaveBeenCalled()
+  })
+
+  it('reports partial search failures and validates the query before connecting', async () => {
+    expect((await execute({ action: 'search', query: ' ' })).success).toBe(false)
+    expect(manager.startServer).not.toHaveBeenCalled()
+    manager.startServer.mockRejectedValue(new Error('offline'))
+    expect(await execute({ action: 'search', query: 'echo' })).toMatchObject({ success: true, totalCount: 0, serverErrors: [{ name: 'demo_server', error: 'offline' }] })
+  })
+
   it('invokes by server and original tool name, including underscores in server names', async () => {
     const result = await execute({ action: 'invoke', name: 'demo_server', tool: 'echo', args: { text: 'hello' } })
     expect(manager.callServerTool).toHaveBeenCalledWith('demo_server', 'echo', { text: 'hello' })

@@ -982,11 +982,13 @@ export const BUILTIN_TOOL_DEFINITIONS: SharedToolDefinition[] = [
     name: 'html_renderer',
     enabled: true,
     description:
-      'Render HTML from an inline string or a local file path. Provide exactly one of html or path. File reads are read-only and are not restricted by workspace location or path provenance. Returns HTML suitable for embedding as a content block; always treat output as untrusted.',
+      'Render HTML from html, path, or a saved documentId (exactly one). Rendering saves the source in the host app-data .ygg/html-documents folder and returns a persistent documentId. Use action: "export" with documentId only to export the saved source as an .html file in that managed folder without resending HTML; returns its absolute path, not another preview. IDs are scoped to the current conversation (or workspace outside chat). Existing documents created before ID support must be rendered once to obtain an ID. File reads may be outside the workspace. Output is untrusted; export saves source, not live iframe state or PDF/images.',
     inputSchema: {
       type: 'object',
       properties: {
-        html: { type: 'string', description: 'Inline HTML to render. Provide either html or path, not both.' },
+        action: { type: 'string', enum: ['render', 'export'], description: 'Defaults to render. Export uses documentId only and writes to the managed app-data folder.' },
+        documentId: { type: 'string', description: 'Persistent ID from an earlier render in this conversation/workspace. Use to render again or export without resending HTML.' },
+        html: { type: 'string', description: 'Inline HTML to render. Provide exactly one of html, path, or documentId.' },
         path: {
           type: 'string',
           description: 'Raw local HTML file path (absolute, relative, or ~/). May be outside the workspace; no path-source restrictions. Read as UTF-8.',
@@ -1096,16 +1098,19 @@ export const BUILTIN_TOOL_DEFINITIONS: SharedToolDefinition[] = [
     name: 'custom_tool_manager',
     enabled: true,
     description:
-      'Manage and invoke custom tools on demand. Actions: list/get definitions, invoke a custom tool by name, enable/disable tools, add/remove tools, reload definitions, and configure auto-refresh watcher settings.',
+      'Search custom tools with action "search" and query, then "get" matching definitions and "invoke" by name. Descriptions/schemas are disclosed on demand, not preloaded. Actions: list/get definitions, invoke a custom tool by name, enable/disable tools, add/remove tools, reload definitions, and configure auto-refresh watcher settings.',
     inputSchema: {
       type: 'object',
       properties: {
         action: {
           type: 'string',
-          enum: ['list', 'get', 'invoke', 'enable', 'disable', 'add', 'remove', 'reload', 'settings'],
+          enum: ['search', 'list', 'get', 'invoke', 'enable', 'disable', 'add', 'remove', 'reload', 'settings'],
           description:
             'Action to perform: "list" and "get" discover tools, "invoke" executes a custom tool, "enable"/"disable" toggle availability, "add"/"remove" manage tool folders, "reload" re-scan tools, and "settings" gets/updates auto-refresh watcher settings.',
         },
+        query: { type: 'string', maxLength: 500, description: 'Required for search: case-insensitive keywords in names/descriptions; all words must match.' },
+        limit: { type: 'integer', minimum: 1, maximum: 100, description: 'Search page size; default 20.' },
+        offset: { type: 'integer', minimum: 0, description: 'Search offset; default 0. Continue with nextOffset.' },
         names: {
           type: 'array',
           items: { type: 'string' },
@@ -1152,19 +1157,22 @@ export const BUILTIN_TOOL_DEFINITIONS: SharedToolDefinition[] = [
     name: 'mcp_manager',
     enabled: true,
     description:
-      'Discover and invoke MCP tools on demand without changing model tool definitions. Use "list" for servers, "get" for status, "list_tools" for tool names and schemas, "invoke" with name (server), tool and args to execute, and "stop" to disconnect.',
+      'Search MCP tools with action "search" and query (optional server name); only matching descriptions/schemas are returned. Individual tools are never preloaded. Use "list" for servers, "get" for status, "list_tools" for tool names and schemas, "invoke" with name (server), tool and args to execute, and "stop" to disconnect.',
     inputSchema: {
       type: 'object',
       properties: {
         action: {
           type: 'string',
-          enum: ['list', 'get', 'stop', 'list_tools', 'invoke'],
+          enum: ['search', 'list', 'get', 'stop', 'list_tools', 'invoke'],
           description: 'Action to perform',
         },
         name: {
           type: 'string',
-          description: 'MCP server name (required for get, stop, list_tools and invoke)',
+          description: 'MCP server name (required for get, stop, list_tools and invoke; optional search scope).',
         },
+        query: { type: 'string', maxLength: 500, description: 'Required for search: case-insensitive keywords in server/tool names and descriptions; all words must match. Search connects enabled servers, optionally scoped by name, and returns matching schemas only.' },
+        limit: { type: 'integer', minimum: 1, maximum: 100, description: 'Search page size; default 20.' },
+        offset: { type: 'integer', minimum: 0, description: 'Search offset; default 0. Continue with nextOffset.' },
         tool: {
           type: 'string',
           description: 'For invoke: original tool name returned by list_tools.',
@@ -1181,13 +1189,13 @@ export const BUILTIN_TOOL_DEFINITIONS: SharedToolDefinition[] = [
     name: 'skill_manager',
     enabled: true,
     description:
-      'Discover and activate specialized skills that provide detailed instructions for specific tasks. Use "list" to see available skills, "activate" to load a skill\'s instructions, or "load_resource" to fetch additional files (scripts, references, assets) from a skill.',
+      'Discover and activate specialized skills that provide detailed instructions for specific tasks. Use "search" with query to find relevant skills without listing the catalog; descriptions and instructions are disclosed only on demand. Use "list" to see available skills, "activate" to load a skill\'s instructions, or "load_resource" to fetch additional files (scripts, references, assets) from a skill.',
     inputSchema: {
       type: 'object',
       properties: {
         action: {
           type: 'string',
-          enum: ['list', 'activate', 'load_resource'],
+          enum: ['search', 'list', 'activate', 'load_resource'],
           description:
             'Action to perform: "list" = show all enabled skills; "activate" = load skill instructions; "load_resource" = fetch a resource file from the skill',
         },
@@ -1195,6 +1203,9 @@ export const BUILTIN_TOOL_DEFINITIONS: SharedToolDefinition[] = [
           type: 'string',
           description: 'Skill name (required for activate and load_resource actions)',
         },
+        query: { type: 'string', maxLength: 500, description: 'Required for search: case-insensitive keywords in names/descriptions; all words must match.' },
+        limit: { type: 'integer', minimum: 1, maximum: 100, description: 'Search page size; default 20.' },
+        offset: { type: 'integer', minimum: 0, description: 'Search offset; default 0. Continue with nextOffset.' },
         resourcePath: {
           type: 'string',
           description:

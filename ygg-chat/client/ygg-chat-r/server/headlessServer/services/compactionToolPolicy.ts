@@ -182,6 +182,12 @@ export function projectCompactionTool(name: string, args: Record<string, unknown
       ? { target: pick(result.target, ['routeType', 'projectId', 'conversationId', 'messageId', 'route', 'canNavigate']) } : {}),
   } }
   if (policy === 'legacy') {
+    if (name === 'html_renderer' && isCompactionRecord(result) && typeof result.documentId === 'string') {
+      return {
+        input: pick(args, ['action', 'documentId', 'path', 'cwd', 'allowUnsafe']),
+        output: pick(result, ['success', 'action', 'documentId', 'path', 'sizeBytes', 'error']),
+      }
+    }
     const snippet = (value: unknown, maxChars: number) => {
       const normalized = (typeof value === 'string' ? value : JSON.stringify(value, null, 2) ?? '').replace(/\r\n/g, '\n').trim()
       if (normalized.length <= maxChars) return normalized
