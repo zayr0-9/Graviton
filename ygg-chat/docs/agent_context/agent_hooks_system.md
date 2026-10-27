@@ -83,7 +83,7 @@ Wiring: the executor Pre/Post/Failure hooks are interleaved inside `createChatPa
 ## Important Invariants
 
 - Managed-hook initialization seeds missing bundled scripts and settings only; it never overwrites existing files, including local edits or empty files. The targeted legacy memory-writer retirement remains active.
-- The bundled branch-note Stop hook uses `gpt-6-luna`. Existing installed hooks must be updated explicitly; initialization does not upgrade their contents.
+- Hook text generation uses the host-owned `hookGeneration` settings domain (Hooks section): Auto, OpenAI / ChatGPT or Claude Code, with independent model values. Auto selects configured OpenAI unless signed out/reconnect-required, then Claude; errors after dispatch never switch providers. The managed generation endpoint overrides legacy script provider/model hints, so installed scripts need not be overwritten. Bundled scripts are provider-neutral; the OpenAI default remains `gpt-6-luna`.
 - The renderer never executes hook commands; the **server-owned chat loop** runs them in-process (same server process, no HTTP). The renderer only sets `hooksEnabled` on its POST to the loop.
 - Hook commands receive JSON via stdin (`buildHookPayload`, `hookRunner.ts:354`); payload keys are snake_case.
 - Prefer JSON output from hooks for stable parsing; text output falls back to `interpretTextResult` (`hookRunner.ts:414`).
@@ -113,3 +113,15 @@ Wiring: the executor Pre/Post/Failure hooks are interleaved inside `createChatPa
 - `agent_chat_pipeline.md`
 - `agent_local_tools_runtime.md`
 - `client/ygg-chat-r/docs/hookInstruction.md`
+
+## Claude native backend: Stop side effects
+
+Claude main-chat runs opted into hooks dispatch the shared `ChatHookSession.runStop` after successful durable native response projection and before terminal completion. This supports configured sync/async `.ygg` Stop commands (including branch-note generation), shared diagnostics/activity and local API callbacks. The actual initiating user ID is supplied separately from the final assistant's immediate parent, since native tool turns can create intervening assistant rows. Failed/aborted runs and idle manual compaction do not dispatch this completion hook.
+
+Only Stop side effects are bridged: native prompt/tool/compaction lifecycles remain Claude-owned and external SDK hooks remain disabled. Stop output does not inject context or force a new native turn; a synchronous block request produces an explicit nonterminal unsupported notice rather than silently reexecuting a session. Existing non-Claude Stop continuation behavior is unchanged. Coverage: `claudeStopHook.integration.test.ts` runs the real Python script with isolated callback fixtures for sync and async execution; `chatOrchestrator.phase2.test.ts` covers dispatch/ownership/gating.
+
+## Hook generation provider selection
+
+`shared/hostHookGeneration.ts` validates the host `hookGeneration` preference; `HookGenerationSettings.tsx` edits it with domain revision ownership. `hookGenerationService.ts` snapshots policy once per generation and limits concurrency to two requests and lifetime to 40 seconds. `/api/headless/ygg-hooks/status` returns selection and CLI installation metadata only, without running paid inference or claiming Claude login was verified. `/generate` returns `{text, provider, modelName}`; legacy script provider/model/auth fields do not override host configuration. Other ephemeral endpoints are unchanged.
+
+`claudeHookGeneration.ts` starts a shell-free, ephemeral, tool-free `claude -p` in a private temporary directory, with stdin content, a private system-prompt file, empty settings/MCP and external hooks disabled. It retains the CLI's own login environment (not `--bare`, which disables subscription OAuth), never joins chat sessions and drains/redacts subprocess failures. Host admin-managed policy remains Claude-owned; this is not an OS sandbox. Private prompts/credential material are not logged. Existing managed scripts/settings are preserved. Tests cover model/provider resolution, CAS, UI draft ownership, HTTP cancellation, subprocess cleanup and actual Python callback integration; live print smoke is opt-in with `CLAUDE_HOOK_LIVE_TEST=1`.

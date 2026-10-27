@@ -316,6 +316,8 @@ export interface ChatHookSession {
   runInstructionsLoaded(reason: InstructionsLoadReason, filePaths: string[]): Promise<void>
   /** Take every accumulated context entry out of the buffer (docs §11.5 rule 3). */
   drainHookContext(): string[]
+  /** Stop after a persisted response; native providers supply the actual turn's user anchor. */
+  runStop(params: { assistantMessage: any; streamId: string | null; lastUserMessageId?: string | null; compactionPhase?: 'summarising' }): Promise<boolean>
   /** Adapter handed to ToolLoopService via input.hooks (Stop + per-turn fold). */
   toolLoopHooks(): ToolLoopHooks
 }
@@ -500,16 +502,17 @@ export function createChatHookSession(config: ChatHookSessionConfig): ChatHookSe
   // Port of chatActions.ts shouldContinueFromStopHook (:1396-1455). Returns true to
   // force one more turn; appends additionalContext (+ the reason on continue) to the
   // shared buffer so the loop folds it into the next turn's system prompt.
-  const runStop = async (params: { assistantMessage: any; streamId: string | null; compactionPhase?: 'summarising' }): Promise<boolean> => {
+  const runStop: ChatHookSession['runStop'] = async (params) => {
     const lastAssistantMessage = params.assistantMessage
     if (!lastAssistantMessage) return false
     const lastAssistantMessageId = lastAssistantMessage?.id != null ? String(lastAssistantMessage.id) : null
-    const lastUserMessageId = lastAssistantMessage?.parent_id != null ? String(lastAssistantMessage.parent_id) : null
+    const parentId = lastAssistantMessage?.parent_id != null ? String(lastAssistantMessage.parent_id) : null
+    const lastUserMessageId = params.lastUserMessageId !== undefined ? params.lastUserMessageId : parentId
     const result = await safeRun({
       event: 'Stop',
       ...metadataFor({
         messageId: lastAssistantMessageId,
-        parentId: lastUserMessageId,
+        parentId,
         turn: { lastUserMessageId, lastAssistantMessageId },
         includeProject: true,
       }),
@@ -576,6 +579,7 @@ export function createChatHookSession(config: ChatHookSessionConfig): ChatHookSe
     runSessionStart,
     runPreCompact,
     runInstructionsLoaded,
+    runStop,
     drainHookContext,
     toolLoopHooks(): ToolLoopHooks {
       return { hookContext, foldSystemPrompt, runStop, runPreCompact: () => runPreCompact('auto'), runSessionStart }

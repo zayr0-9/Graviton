@@ -42,7 +42,7 @@ export async function saveHostExecutionPreference(patch: Partial<HostExecutionPr
   if (snapshot.repairNeeded) throw new Error(snapshot.repairNeeded)
   const keys = Object.keys(patch) as Array<keyof HostExecutionPreferences>
   const expectedRevisions = snapshot.revisions ? Object.fromEntries(keys.map(key => [key,
-    (key === 'provider' || key === 'subagent' || key === 'modePrompts' || key === 'toolTimeouts') ? expectedRevision : snapshot!.revisions![key]])) : undefined
+    (key === 'provider' || key === 'subagent' || key === 'modePrompts' || key === 'toolTimeouts' || key === 'hookGeneration') ? expectedRevision : snapshot!.revisions![key]])) : undefined
   const request = { hostId: snapshot.hostId, epoch: snapshot.epoch, expectedRevision, expectedRevisions, patch }
   if (isNativeShell) { install(await window.electronAPI!.executionPreferences.save(request)); return }
   const response = await fetch(await buildLocalApiUrl('/host/execution-preferences'), {

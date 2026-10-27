@@ -1,3 +1,4 @@
+import { executionPathAfterHandoff } from '../../../../../shared/summaryHandoff.js'
 import { claudeMessageMetadata, isClaudeProvider } from '../../../../../shared/claudeProvider.js'
 import type { HeadlessMessageRequest } from '../../../../../shared/headlessApi.js'
 
@@ -39,11 +40,20 @@ export class ClaudeSessionRepo {
       ON CONFLICT(message_id) DO UPDATE SET session_id=excluded.session_id, message_uuid=excluded.message_uuid,
       cwd=excluded.cwd, resumable=excluded.resumable`).run(messageId, sessionId, uuid, cwd, resumable ? 1 : 0)
   }
+  /** Branches whose last run never reached a result. At host startup none can still be live. */
+  interruptedBranches(): Array<{ lineage_id: string; session_id: string | null; cwd: string; head_message_id: string | null }> {
+    return this.db.prepare(`SELECT b.lineage_id, b.session_id, b.cwd, l.head_message_id FROM claude_branch_sessions b
+      JOIN lineages l ON l.id = b.lineage_id WHERE b.state IN ('running', 'uncertain')`).all()
+  }
+  setState(lineageId: string, state: string): void {
+    this.db.prepare('UPDATE claude_branch_sessions SET state = ? WHERE lineage_id = ?').run(state, lineageId)
+  }
 }
 
 /** Validate against persisted ancestry, never a renderer draft. Does not change existing API-provider switching. */
 export function assertClaudeBranchSelection(request: HeadlessMessageRequest, path: any[]): void {
   const selected = isClaudeProvider(request.provider)
+  path = executionPathAfterHandoff(path)
   const recorded = path.map(row => claudeMessageMetadata(row.meta)?.modelSelection).filter(Boolean)
   const claude = recorded.find(pair => isClaudeProvider(pair.provider))
   if (claude && (!selected || request.modelName !== claude.model)) {

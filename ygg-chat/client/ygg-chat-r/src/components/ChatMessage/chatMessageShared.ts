@@ -150,10 +150,22 @@ export interface ToolCallRenderGroup {
   anchorIndex: number
 }
 
+/** Claude's ExitPlanMode call carries the plan the server attached when escalating to Agent mode. */
+export const claudePlanFromToolCall = (
+  name?: string,
+  args?: Record<string, any> | null
+): { name: string; plan: string; path?: string } | null => {
+  if (name !== 'ExitPlanMode' || typeof args?.plan !== 'string' || !args.plan.trim()) return null
+  const path = typeof args.planFilePath === 'string' ? args.planFilePath : undefined
+  const fileName = path?.split(/[\\/]/).pop()?.replace(/\.md$/i, '')
+  return { name: fileName || 'Plan', plan: args.plan, ...(path ? { path } : {}) }
+}
+
 /** Interactive/visual tool surfaces must remain visible instead of being folded into Agent steps. */
 export const isExcludedFromProcessRunGrouping = (name?: string, args?: Record<string, any> | null): boolean => {
   const normalizedName = String(name || '').trim().toLowerCase()
   if (normalizedName.startsWith('mcp__') || normalizedName === 'html_renderer') return true
+  if (claudePlanFromToolCall(name, args)) return true
   if (normalizedName === 'mcp_manager' && args?.action === 'invoke') return true
 
   if (normalizedName === 'plan_md') {

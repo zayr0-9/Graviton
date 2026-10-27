@@ -1,8 +1,10 @@
+import { isClaudeProvider, isClaudeTranscriptMessage } from '../../../../../shared/claudeProvider'
 import { HOST_DATA_CHANGED } from '../../services/hostChangeEvents'
 import { getAdmissionEpoch, resetAdmissionEpoch } from './runAdmissionClient'
 import { getClientId, newClientId } from '../../helpers/clientId'
-import { resolveBranchModelSelection } from './branchModelSelection'
+import { isCleanStartBranchEdit, isSummaryBranchEdit, isProviderHandoffEdit, resolveBranchModelSelection, resolveEditBranchModelSelection, resolveClaudeBranchLock, resolveSummaryContinuation } from './branchModelSelection'
 import { resolveBranchFastMode } from './branchFastMode'
+import { resolveAnchoredToolApproval, resolveBranchToolApproval, resolveHandoffToolApproval } from './branchToolApproval'
 import { isCommittedCompaction } from '../../../../../shared/compaction'
 import { getPendingFullAccessNotification, isFullAccessEnabled } from '../../helpers/fullAccessSettings'
 import { createAsyncThunk } from '@reduxjs/toolkit'
@@ -1117,7 +1119,15 @@ export const sendMessage = createAsyncThunk<
         // ChatGPT auth: resolve fresh {accessToken, accountId} from the renderer (auto-
         // refreshing) so the server uses them directly. null for every other provider.
         const chatgptServerAuth = null as { accessToken?: string; accountId?: string } | null
-        const { path, body } = buildServerLoopRequest('send', {
+        // Import only a committed summary into a fresh Claude session, never the
+        // old provider's raw history or its restored launch-context tail.
+        const selectedPath = providedBranchPath ?? modelSelectionState.conversation.currentPath
+        const summaryHandoff = !manualCompaction && !isBranch && isClaudeProvider(provider) &&
+          !resolveClaudeBranchLock(modelSelectionState, selectedPath)
+          ? resolveSummaryContinuation(modelSelectionState, selectedPath) : null
+        const operation = summaryHandoff ? 'branch' : 'send'
+        const { path, body } = buildServerLoopRequest(operation, {
+          messageId: summaryHandoff ? String(summaryHandoff.id) : undefined,
           manualCompaction,
           isBranch,
           conversationId: String(conversationId),
@@ -1125,7 +1135,7 @@ export const sendMessage = createAsyncThunk<
           provider: serverProvider,
           modelName,
           userId: auth.userId,
-          parentId: parent ?? null,
+          parentId: summaryHandoff?.id ?? parent ?? null,
           operationMode: operationModeAtSend,
           ...buildOperationModePromptRequestParams(operationModeAtSend),
           think,
@@ -1143,7 +1153,10 @@ export const sendMessage = createAsyncThunk<
           tools: filterToolsForOperationMode(getAllTools(), operationModeAtSend),
           streamId,
           currentLineageId: providedLineageId === undefined ? state.chat.conversation.currentLineageId : providedLineageId,
-          toolAutoApprove: state.chat.toolAutoApprove,
+          toolAutoApprove: summaryHandoff ? resolveHandoffToolApproval(modelSelectionState, summaryHandoff.id)
+            : isBranch ? resolveAnchoredToolApproval(modelSelectionState, parent, conversationId)
+            : resolveBranchToolApproval(modelSelectionState, providedBranchPath ?? modelSelectionState.conversation.currentPath, conversationId, providedLineageId === undefined ? modelSelectionState.conversation.currentLineageId : providedLineageId),
+          claudeAutoMode: modelSelectionState.claudeAutoMode,
           hooksEnabled: isElectronMode,
           localApiBase: getCachedLocalApiBase(),
           contextDirectories: loadContextDirectorySettings(),
@@ -1164,7 +1177,8 @@ export const sendMessage = createAsyncThunk<
         })
         const result = await runServerChatLoop(
           {
-            operation: 'send',
+            operation,
+            optimisticBubble: 'message',
             conversationId: String(conversationId),
             streamId,
             path,
@@ -1446,7 +1460,12 @@ export const editMessageWithBranching = createAsyncThunk<
       ? state.chat.conversation.messages.filter(m => String(m.conversation_id) === String(conversationId))
       : cachedMessages
     const originalMessage = currentMessages.find(m => String(m.id) === String(originalMessageId))
-    const parentMessageId = originalMessage?.parent_id
+    const branchSelection = resolveEditBranchModelSelection(modelSelectionState, originalMessageId)
+    const provider = branchSelection?.provider ?? modelSelectionState.providerState.currentProvider
+    const summaryBranch = isSummaryBranchEdit(modelSelectionState, originalMessageId)
+    const freshExecution = isCleanStartBranchEdit(modelSelectionState, originalMessageId) &&
+      (isClaudeProvider(provider) || isClaudeTranscriptMessage(originalMessage))
+    const parentMessageId = summaryBranch ? originalMessageId : freshExecution ? null : originalMessage?.parent_id
 
     const editLineageId =
       (providedLineageId === undefined ? preSendState.chat.conversation.currentLineageId : providedLineageId) ?? null
@@ -1500,11 +1519,9 @@ export const editMessageWithBranching = createAsyncThunk<
 
 
       // Read selected model from React Query cache
-      const branchSelection = resolveBranchModelSelection(modelSelectionState)
       // Capture the edit-session choice before ChatMessage closes the editor.
       const fastMode = (modelSelectionState.composition.editingBranch ? modelSelectionState.composition.branchEditModes?.fastMode : undefined)
         ?? resolveBranchFastMode(modelSelectionState, providedBranchPath ?? modelSelectionState.conversation.currentPath, conversationId, providedLineageId === undefined ? modelSelectionState.conversation.currentLineageId : providedLineageId)
-      const provider = branchSelection?.provider ?? modelSelectionState.providerState.currentProvider
       const modelsData = extra.queryClient?.getQueryData<{
         models: Model[]
         default: Model
@@ -1614,7 +1631,7 @@ export const editMessageWithBranching = createAsyncThunk<
         // ChatGPT auth: resolve fresh {accessToken, accountId} from the renderer (auto-
         // refreshing) so the server uses them directly. null for every other provider.
         const chatgptServerAuth = null as { accessToken?: string; accountId?: string } | null
-        const { path, body } = buildServerLoopRequest('edit', {
+        const { path, body } = buildServerLoopRequest(summaryBranch ? 'branch' : 'edit', {
           conversationId: String(conversationId),
           content: newContent,
           provider: serverProvider,
@@ -1637,7 +1654,10 @@ export const editMessageWithBranching = createAsyncThunk<
           tools: filterToolsForOperationMode(getAllTools(), operationModeAtSend),
           streamId,
           currentLineageId: providedLineageId === undefined ? state.chat.conversation.currentLineageId : providedLineageId,
-          toolAutoApprove: state.chat.toolAutoApprove,
+          toolAutoApprove: (modelSelectionState.composition.editingBranch ? modelSelectionState.composition.branchEditModes?.toolAutoApprove : undefined)
+            ?? (isProviderHandoffEdit(modelSelectionState, originalMessageId) ? modelSelectionState.toolAutoApprove
+              : resolveAnchoredToolApproval(modelSelectionState, parentMessageId, conversationId)),
+          claudeAutoMode: modelSelectionState.claudeAutoMode,
           hooksEnabled: isElectronMode,
           localApiBase: getCachedLocalApiBase(),
           contextDirectories: loadContextDirectorySettings(),
@@ -1659,7 +1679,8 @@ export const editMessageWithBranching = createAsyncThunk<
         serverLoopStarted = true
         const result = await runServerChatLoop(
           {
-            operation: 'edit',
+            operation: summaryBranch ? 'branch' : 'edit',
+            optimisticBubble: 'branch',
             conversationId: String(conversationId),
             streamId,
             path,
@@ -1892,7 +1913,9 @@ export const sendMessageToBranch = createAsyncThunk<
           tools: filterToolsForOperationMode(getAllTools(), operationModeAtSend),
           streamId,
           currentLineageId: providedLineageId === undefined ? state.chat.conversation.currentLineageId : providedLineageId,
-          toolAutoApprove: state.chat.toolAutoApprove,
+          toolAutoApprove: isSummaryBranchEdit(modelSelectionState, parentId) ? modelSelectionState.toolAutoApprove
+            : resolveAnchoredToolApproval(modelSelectionState, parentId, conversationId),
+          claudeAutoMode: modelSelectionState.claudeAutoMode,
           hooksEnabled: isElectronMode,
           localApiBase: getCachedLocalApiBase(),
           contextDirectories: loadContextDirectorySettings(),
@@ -3296,6 +3319,8 @@ export const respondToToolPermissionAndEnableAll = createAsyncThunk<
   const req = streamId ? (chat.toolPermissionRequestsByStream[streamId] ?? null) : chat.toolCallPermissionRequest
   if (!req?.streamId || !req?.toolCallId) return
 
+  // Capture the answering run, not the selected branch after the HTTP await.
+  const owner = chat.streaming.byId[req.streamId]
   const outcome = await postDecisionResume({
     streamId: req.streamId,
     toolCallId: req.toolCallId,
@@ -3303,10 +3328,12 @@ export const respondToToolPermissionAndEnableAll = createAsyncThunk<
   })
   if (!settleDecisionResume(dispatch, getState(), req.streamId, outcome).closeDialog) return
 
-  // Change the renderer default only after the server atomically promoted the current
-  // stream and released its pending permission waiters. A failed resume must not make
-  // unrelated future branches appear auto-approved while this run remains parked.
-  if (outcome.ok) dispatch(chatSliceActions.toolAutoApproveEnabled())
+  // The SSE policy update is canonical. Also retain the captured owner's draft if
+  // the HTTP acknowledgement beats its event; never change the renderer-wide default.
+  if (outcome.ok && owner?.conversationId && owner.lineage.lineageId) {
+    dispatch(chatSliceActions.branchToolApprovalSelected({ enabled: true,
+      conversationId: owner.conversationId, lineageId: owner.lineage.lineageId }))
+  }
 
   // Clear only the branch/run prompt that was answered.
   if (req?.streamId) dispatch(chatSliceActions.toolPermissionRespondedForStream(req.streamId))

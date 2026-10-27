@@ -49,6 +49,7 @@ import { getCompactionPlaceholder } from '../../features/chats/summaryPresentati
 import { environment, localApi } from '../../utils/api'
 import { DeleteConfirmModal } from '../DeleteConfirmModal/DeleteConfirmModal'
 import { buildHeimdallVisibleRoot, isHeimdallScaffoldingMessage, shouldPromoteHeimdallNode } from './heimdallNodeVisibility'
+import { getIntermediateAgentTextIds, hasHeimdallTextContent } from './heimdallAgentTextVisibility'
 import { TextArea } from '../TextArea/TextArea'
 import { TextField } from '../TextField/TextField'
 import {
@@ -1714,7 +1715,7 @@ export const Heimdall: React.FC<HeimdallProps> = ({
   }, [chatData])
 
   // Filtering is visual-only; canonical messages and paths remain unchanged.
-  const filterEmptyNodes = (root: ChatNode, boundaries: HiddenTreeBoundary[]): ChatNode[] => filterChatTree(root, (node, hasSiblings) => {
+  const filterEmptyNodes = (root: ChatNode, boundaries: HiddenTreeBoundary[], intermediateTextIds: ReadonlySet<string>): ChatNode[] => filterChatTree(root, (node, hasSiblings) => {
     // Look up full message to check for structured content (blocks, tools, etc.)
     const fullMsg = messageById.get(String(node.id))
 
@@ -1722,15 +1723,10 @@ export const Heimdall: React.FC<HeimdallProps> = ({
     // descendants stay on the branch. Selection still expands to hidden nodes.
     const isHiddenContextInjection = fullMsg ? isContextInjectionMessage(fullMsg) : false
 
-    const hasContent =
-      !isHiddenContextInjection &&
-      ((node.message && node.message.trim().length > 0) ||
-      (fullMsg &&
-        ((fullMsg.content && fullMsg.content.trim().length > 0) ||
-          (Array.isArray(fullMsg.content_blocks) &&
-            fullMsg.content_blocks.some((b: any) => b.type === 'text' && b.text && b.text.trim().length > 0)))))
+    const hasContent = !filterEmptyMessages || !isHiddenContextInjection &&
+      (Boolean(node.message?.trim()) || Boolean(fullMsg && hasHeimdallTextContent(fullMsg)))
 
-    return { promote: isHeimdallScaffoldingMessage(fullMsg, filterEmptyMessages) || shouldPromoteHeimdallNode({
+    return { promote: intermediateTextIds.has(String(node.id)) || isHeimdallScaffoldingMessage(fullMsg, filterEmptyMessages) || shouldPromoteHeimdallNode({
       isContextInjection: false,
       isOperationModeChange: false,
       isEmpty: !hasContent,
@@ -1746,7 +1742,8 @@ export const Heimdall: React.FC<HeimdallProps> = ({
     if (!rawData) return { currentChatData: null, compactionBoundaries }
 
     if (filterEmptyMessages || messageById.size > 0) {
-      const result = filterEmptyNodes(rawData, compactionBoundaries)
+      const intermediateTextIds = filterEmptyMessages ? getIntermediateAgentTextIds(rawData, messageById) : new Set<string>()
+      const result = filterEmptyNodes(rawData, compactionBoundaries, intermediateTextIds)
 
       // Multiple promoted branches need a synthetic root, not the hidden message.
       return { currentChatData: buildHeimdallVisibleRoot(result), compactionBoundaries }
@@ -4171,8 +4168,8 @@ export const Heimdall: React.FC<HeimdallProps> = ({
           onClick={toggleFilterEmptyMessages}
           className={`${heimdallControlButtonClass} ${filterEmptyMessages ? heimdallControlButtonActiveClass : ''}`}
           style={getHeimdallControlButtonStyle(filterEmptyMessages)}
-          title={filterEmptyMessages ? 'Show Empty Messages' : 'Hide Empty Messages'}
-          aria-label={filterEmptyMessages ? 'Show filtered messages' : 'Hide empty and mode-change messages'}
+          title={filterEmptyMessages ? 'Show filtered messages' : 'Hide empty messages and intermediate agent text'}
+          aria-label={filterEmptyMessages ? 'Show filtered messages' : 'Hide empty, mode-change and intermediate agent messages'}
           aria-pressed={filterEmptyMessages}
         >
           <ListFilter size={18} strokeWidth={2.25} />

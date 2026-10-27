@@ -48,6 +48,7 @@ function truncate(value: string, maxLength = MAX_DETAIL_LENGTH): string {
  */
 const ATTACHED_CODE_KEY = Symbol.for('ygg.chat.errorCode')
 const ATTACHED_OVERRIDES_KEY = Symbol.for('ygg.chat.errorOverrides')
+const ADMISSION_REJECTION_CODES = new Set(['configuration_mismatch', 'lineage_mismatch', 'run_unavailable'])
 
 export type ChatErrorPhase = 'provider' | 'tool' | 'hook' | 'compaction' | 'lifecycle' | 'transport'
 
@@ -755,6 +756,13 @@ export function classifyChatError(error: unknown, context: ChatErrorClassificati
   const attached = getAttachedChatErrorCode(error)
   if (attached) {
     return buildChatErrorEnvelope(attached, { ...base, ...withoutCode(getAttachedChatErrorOverrides(error)) })
+  }
+
+  // Admission rejections (branch locks, lineage conflicts) are thrown with prose written
+  // for the user; falling through would mislabel them as an interrupted stream.
+  if (error instanceof Error && ADMISSION_REJECTION_CODES.has((error as any).code)) {
+    return buildChatErrorEnvelope('server_rejected_request', { ...base, userMessage: error.message,
+      recoverability: 'user_action', action: { kind: 'reload_conversation', label: 'Reload conversation' } })
   }
 
   const code =

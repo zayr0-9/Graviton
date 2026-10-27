@@ -5,8 +5,9 @@ import time
 import traceback
 from urllib import request, error, parse
 
-MODEL = 'gpt-6-luna'
-PROVIDER = 'openai'
+# The host's Hooks settings choose the generation provider/model.
+MODEL = 'unresolved'
+PROVIDER = 'host-selected'
 
 # Semantic note-pill color scheme. Each color maps to one category; the
 # note model assigns it strictly from the nature of the summary. This is a
@@ -231,12 +232,15 @@ def _emit_outcome(outcome_code, outcome_summary, additional_context=''):
         'outcomeCode': outcome_code,
         'outcomeSummary': outcome_summary,
     }
+    if PROVIDER != 'host-selected':
+        result['diagnostic'] = {'provider': PROVIDER, 'model': MODEL}
     if additional_context:
         result['additionalContext'] = f'[root_note_stop] {additional_context}'
     print(json.dumps(result))
 
 
 def main():
+    global MODEL, PROVIDER
     started = time.monotonic()
     stage = 'read_input'
     try:
@@ -431,8 +435,6 @@ def main():
             f'{local_api_base}/headless/ygg-hooks/generate',
             method='POST',
             payload={
-                'provider': PROVIDER,
-                'modelName': MODEL,
                 'systemPrompt': SYSTEM_PROMPT,
                 'content': model_input,
             },
@@ -444,6 +446,8 @@ def main():
         stage = 'parse_generation'
         if not isinstance(generation, dict) or not isinstance(generation.get('text'), str):
             raise HookFailure('invalid_response_shape', stage, 'Expected a generation object with a text string', responseType=type(generation).__name__)
+        PROVIDER = _safe_text(generation.get('provider')) or PROVIDER
+        MODEL = _safe_text(generation.get('modelName')) or MODEL
         model_text = _safe_text(generation.get('text'))
         model_json = _parse_model_json(model_text)
         if not isinstance(model_json, dict):

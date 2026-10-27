@@ -46,8 +46,17 @@ import {
 
 export type ServerLoopOperation = 'send' | 'edit' | 'branch'
 
+/** Which composer optimistic row this run owns; cleared once its user message persists. */
+export type OptimisticBubble = 'message' | 'branch' | null
+
+// Claude summary handoffs use the 'branch' route but still show a composer/edit bubble.
+const defaultOptimisticBubble = (operation: ServerLoopOperation): OptimisticBubble =>
+  operation === 'send' ? 'message' : operation === 'edit' ? 'branch' : null
+
 export interface RunServerChatLoopParams {
   operation: ServerLoopOperation
+  /** Defaults from operation; set explicitly when the route differs from the UI bubble. */
+  optimisticBubble?: OptimisticBubble
   conversationId: string
   streamId: string
   /** Relative headless route path (resolved to the local server origin here). */
@@ -85,6 +94,7 @@ export interface RunServerChatLoopResult {
   providerError: boolean
 }
 
+const ADMISSION_REJECTION_CODES = new Set(['configuration_mismatch', 'lineage_mismatch', 'run_unavailable'])
 const RESUBSCRIBE_MAX_ATTEMPTS = 5
 const RESUBSCRIBE_BASE_DELAY_MS = 300
 
@@ -250,7 +260,7 @@ function envelopeForErrorFrame(
 function makeHandleEvent(
   acc: StreamAccumulator,
   ctx: ProjectionContext,
-  operation: ServerLoopOperation,
+  optimisticBubble: OptimisticBubble,
   dispatch: (action: unknown) => unknown,
   onMessagePersisted?: () => void,
   onSeq?: (seq: number, event: ServerStreamEvent) => void,
@@ -296,17 +306,19 @@ function makeHandleEvent(
       dispatch(chatSliceActions.decisionRequestsClearedForStream(ctx.streamId))
       for (const prompt of snapshot.pendingDecisions) install(prompt)
       dispatch(chatSliceActions.streamBootstrapReconciled({ streamId: ctx.streamId,
-        messageIds: snapshot.events.flatMap(projected => {
+        // Compact events omit some persisted control rows (for example Full access).
+        // Include their exact IDs so observer adjacency resumes at the durable head.
+        messageIds: [...snapshot.persisted.map(ref => ref.id), ...snapshot.events.flatMap(projected => {
           if (projected.type === 'context_compaction' && projected.summaryMessage?.id) return [projected.summaryMessage.id]
           return 'message' in projected && projected.message?.id ? [projected.message.id] : []
-        }) }))
+        })] }))
       acc.lastSeq = snapshot.stateSeq
       acc.epoch = snapshot.epoch
       acc.needsBootstrap = false
       if (onUserMessagePersisted && acc.userMessage) {
         onUserMessagePersisted()
-        if (operation === 'send') dispatch(chatSliceActions.optimisticMessageCleared())
-        else if (operation === 'edit') dispatch(chatSliceActions.optimisticBranchMessageCleared())
+        if (optimisticBubble === 'message') dispatch(chatSliceActions.optimisticMessageCleared())
+        else if (optimisticBubble === 'branch') dispatch(chatSliceActions.optimisticBranchMessageCleared())
       }
       onMessagePersisted?.()
       onSeq?.(acc.lastSeq, event)
@@ -371,9 +383,8 @@ function makeHandleEvent(
           new Set([...(acc.userMessage.artifacts || []), ...ctx.userMessageArtifacts])
         )
       }
-      if (operation === 'send') dispatch(chatSliceActions.optimisticMessageCleared())
-      else if (operation === 'edit') dispatch(chatSliceActions.optimisticBranchMessageCleared())
-      // 'branch' uses no optimistic bubble.
+      if (optimisticBubble === 'message') dispatch(chatSliceActions.optimisticMessageCleared())
+      else if (optimisticBubble === 'branch') dispatch(chatSliceActions.optimisticBranchMessageCleared())
       onMessagePersisted?.()
     } else if (event.type === 'assistant_message_persisted' || event.type === 'operation_mode_changed' || event.type === 'queued_user_message_persisted' || event.type === 'compaction_control_persisted' || event.type === 'context_injection_persisted') {
       // Intermediate + re-emitted post-tool assistant rows: already projected to Redux
@@ -624,7 +635,8 @@ export async function runServerChatLoop(
   const { dispatch, getState, onMessagePersisted, onUserMessagePersisted, onSeq, userMessageArtifacts } = deps
   const ctx: ProjectionContext = { streamId, conversationId, userMessageArtifacts }
   const acc = newAccumulator()
-  const handleEvent = makeHandleEvent(acc, ctx, operation, dispatch, onMessagePersisted, onSeq, onUserMessagePersisted)
+  const optimisticBubble = params.optimisticBubble === undefined ? defaultOptimisticBubble(operation) : params.optimisticBubble
+  const handleEvent = makeHandleEvent(acc, ctx, optimisticBubble, dispatch, onMessagePersisted, onSeq, onUserMessagePersisted)
 
   if (operation === 'branch' || operation === 'edit') {
     const state = getState() as any
@@ -654,9 +666,16 @@ export async function runServerChatLoop(
   if (useAdmission) {
     try { admission = await admitRun(conversationId, request, signal) }
     catch (error) {
-      const mismatch = error as { code?: string; fullAccess?: boolean }
+      const mismatch = error as { code?: string; fullAccess?: boolean; message?: string }
       if (mismatch.code !== 'configuration_mismatch' || typeof mismatch.fullAccess !== 'boolean' ||
-        !window.confirm(`This active run uses ${mismatch.fullAccess ? 'Full access' : 'restricted workspace access'}. Queue this input under that policy? Your current setting will not change.`)) throw error
+        !window.confirm(`This active run uses ${mismatch.fullAccess ? 'Full access' : 'restricted workspace access'}. Queue this input under that policy? Your current setting will not change.`)) {
+        // The host explains its own rejections (e.g. Claude branch locks); unclassified, they read as a cut-off stream.
+        if (mismatch.message && ADMISSION_REJECTION_CODES.has(mismatch.code ?? '')) {
+          throw createChatStreamError(buildChatErrorEnvelope('server_rejected_request', { userMessage: mismatch.message,
+            recoverability: 'user_action', action: { kind: 'reload_conversation', label: 'Reload conversation' }, status: 409, detail: mismatch.message }), mismatch.message)
+        }
+        throw error
+      }
       admission = await admitRun(conversationId, { ...request, operationId: newClientId(), fullAccess: mismatch.fullAccess }, signal)
     }
     if (admission.disposition === 'queued' || admission.streamId !== streamId) {
@@ -816,7 +835,7 @@ export async function runServerReattach(
   const { dispatch, onMessagePersisted, onSeq } = deps
   const ctx: ProjectionContext = { streamId, conversationId }
   const acc = newAccumulator(fromSeq)
-  const handleEvent = makeHandleEvent(acc, ctx, operation, dispatch, onMessagePersisted, onSeq)
+  const handleEvent = makeHandleEvent(acc, ctx, defaultOptimisticBubble(operation), dispatch, onMessagePersisted, onSeq)
 
   try {
     const url = await buildLocalApiUrl(`/streams/${encodeURIComponent(streamId)}?fromSeq=${fromSeq}${fromSeq === 0 ? '&bootstrap=1' : ''}`)

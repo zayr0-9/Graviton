@@ -175,7 +175,8 @@ Tools + runtime execution:
 
 - `tools?: [{ name, description?, inputSchema? }]`
 - `rootPath?: string | null`
-- `operationMode?: "plan" | "execute"` (default `execute`)
+- `operationMode?: "plan" | "execute"` (default `execute`). For the Claude provider, `plan` (Chat) removes file-edit tools; it does not use native plan mode.
+- `claudePermissionMode?: "auto"`: Claude provider only. Runs the CLI in auto mode; calls the classifier can't decide still go through the approval gate.
 - `streamId?: string | null`
 - `toolTimeoutMs?: number`
 

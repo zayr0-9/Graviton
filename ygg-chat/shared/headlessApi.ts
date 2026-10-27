@@ -84,6 +84,12 @@ export interface HeadlessMessageRequest {
    * (the mobile LAN UI never sends it, so it always auto-approves).
    */
   toolAutoApprove?: boolean
+  /**
+   * Claude provider only. 'auto' runs the CLI in auto mode (a classifier approves
+   * routine calls; uncertain ones still reach the approval gate). Sent only when
+   * toolAutoApprove is off; absent == 'default'.
+   */
+  claudePermissionMode?: 'auto'
   manualCompaction?: boolean
   autoCompactionEnabled?: boolean
   contextLength?: number
@@ -210,6 +216,7 @@ export type HeadlessStreamEvent =
   | { type: 'snapshot_reference'; streamId: string; reference: import('./snapshotPayload.js').SnapshotPayloadReference }
   | { type: 'child_bootstrap'; snapshot: import('./runProtocol.js').ChildRunBootstrap }
   | { type: 'bootstrap'; snapshot: import('./runProtocol.js').MainRunBootstrap }
+  | { type: 'tool_approval_changed'; conversationId: string; lineageId: string; streamId: string; enabled: boolean; message: any }
   | { type: 'decision_settled'; streamId: string; toolCallId: string; outcome: 'resolved' | 'aborted'; revision: number }
   | { type: 'compaction_control_persisted'; message: any; lineageId?: string | null }
   | { type: 'message_queue_updated'; snapshot: import('./queuedMessages.js').MessageQueueSnapshot }

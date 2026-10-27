@@ -421,3 +421,13 @@ describe('classifyChatError: network loss mid-stream', () => {
     for (const [, error] of connectivityCases) expect(isTransientProviderError(error)).toBe(true)
   })
 })
+
+describe('classifyChatError: admission rejections', () => {
+  it('shows the host’s own explanation instead of a cut-off stream', () => {
+    const error = Object.assign(new Error('This Claude session is still running. Wait for it to finish or fork a completed response.'), { code: 'configuration_mismatch' })
+    const envelope = classifyChatError(error, { phase: 'lifecycle' })
+    expect(envelope.code).toBe('server_rejected_request')
+    expect(envelope.userMessage).toBe(error.message)
+    expect(envelope.recoverability).toBe('user_action')
+  })
+})

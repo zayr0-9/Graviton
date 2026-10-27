@@ -22,3 +22,21 @@ export async function saveDefaultToolAutoApprove(enabled: boolean): Promise<void
     console.error('Failed to save default tool approval:', error)
   }
 }
+
+export const CLAUDE_AUTO_MODE_STORAGE_KEY = 'chat:claudeAutoMode'
+
+export function loadClaudeAutoMode(): boolean {
+  try {
+    return typeof localStorage !== 'undefined' && localStorage.getItem(CLAUDE_AUTO_MODE_STORAGE_KEY) === 'true'
+  } catch {
+    return false
+  }
+}
+
+export function saveClaudeAutoMode(enabled: boolean): void {
+  try {
+    if (typeof localStorage !== 'undefined') localStorage.setItem(CLAUDE_AUTO_MODE_STORAGE_KEY, String(enabled))
+  } catch (error) {
+    console.error('Failed to save Claude auto mode:', error)
+  }
+}

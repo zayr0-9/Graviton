@@ -4,6 +4,7 @@ import { OperationReceiptRepo, OPERATION_RECEIPT_SCHEMA } from '../../persistenc
 import { RunAdmissionService } from '../runAdmissionService.js'
 import { RunSessionRegistry } from '../runSessionRegistry.js'
 import { ChatOrchestrator } from '../chatOrchestrator.js'
+import { normalizeHostExecutionPreferences } from '../../../../../../shared/hostExecutionPreferences.js'
 import type { HeadlessMessageRequest } from '../../../../../../shared/headlessApi.js'
 
 const request = (id: string): HeadlessMessageRequest => ({ operation: 'send', conversationId: 'c', parentId: null,
@@ -131,14 +132,30 @@ it('advertises the actual Claude approval policy and refuses invalid checkpoints
       validateExecutionSelection: () => { if (invalid) throw Object.assign(new Error('incomplete Claude checkpoint'), { code: 'configuration_mismatch' }) },
       classifyOrdinarySend: () => ({ lineageId: null, parentId: null }),
       submitQueuedMessage: () => ({}),
-      runMessage: async (input: any) => { expect(input).toMatchObject({ toolAutoApprove: false, fullAccess: false }) },
+      runMessage: async (input: any) => { expect(input).toMatchObject({ toolAutoApprove: true, fullAccess: false }) },
     }
     const service = new RunAdmissionService({ epoch: 'one', receipts, sessions, orchestrator })
     service.admit({ ...request('claude'), provider: 'claudecode', toolAutoApprove: true, fullAccess: true }, 'one')
-    expect(sessions.get('s-claude')?.effectiveConfiguration).toMatchObject({ toolAutoApprove: false, fullAccess: false })
+    expect(sessions.get('s-claude')?.effectiveConfiguration).toMatchObject({ toolAutoApprove: true, fullAccess: false })
     invalid = true
     expect(() => service.admit({ ...request('invalid'), provider: 'claudecode' }, 'one')).toThrow('incomplete')
     expect(receipts.get('invalid')).toBeNull()
     expect(sessions.get('s-invalid')).toBeUndefined()
+  } finally { sessions.disposeAll(); db.close() }
+})
+
+it.each([true, false, undefined])('preserves Claude request approval %s through actual admission, falling back to branch before host', toolAutoApprove => {
+  const db = new Database(':memory:')
+  const sessions = new RunSessionRegistry()
+  try {
+    db.exec(OPERATION_RECEIPT_SCHEMA)
+    const inputs: HeadlessMessageRequest[] = []
+    const service = new RunAdmissionService({ epoch: 'e', receipts: new OperationReceiptRepo(db), sessions,
+      executionDefaults: () => normalizeHostExecutionPreferences({ toolAutoApprove: false }),
+      orchestrator: { classifyOrdinarySend: () => ({ lineageId: 'l', parentId: 'head' }), submitQueuedMessage: () => ({}),
+        resolveToolApproval: () => true, runMessage: async input => { inputs.push(input) } } })
+    service.admit({ ...request('native'), provider: 'claudecode', toolAutoApprove }, 'e')
+    expect(inputs[0].toolAutoApprove).toBe(toolAutoApprove ?? true)
+    expect(sessions.get('s-native')?.effectiveConfiguration?.toolAutoApprove).toBe(toolAutoApprove ?? true)
   } finally { sessions.disposeAll(); db.close() }
 })

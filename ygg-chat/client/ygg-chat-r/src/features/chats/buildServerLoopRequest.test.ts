@@ -37,6 +37,17 @@ describe('buildServerLoopRequest', () => {
     expect(buildServerLoopRequest(op, { ...params, fullAccess: true }).body.fullAccessNotificationId).toBe('toggle-1')
   })
 
+  it.each(['send', 'branch', 'edit'] as const)('forwards Claude slider settings for %s', op => {
+    const params = { ...base, provider: 'Claude Code', modelName: 'claude-sonnet-5-5', messageId: 'm1' }
+    for (const effort of ['low', 'medium', 'high', 'xhigh']) {
+      const { body } = buildServerLoopRequest(op, { ...params, think: true, reasoningConfig: { effort } })
+      expect(body).toMatchObject({ think: true, reasoningConfig: { effort } })
+    }
+    const { body } = buildServerLoopRequest(op, { ...params, think: false })
+    expect(body.think).toBe(false)
+    expect(body.reasoningConfig).toBeUndefined()
+  })
+
   it('builds the send route + core body fields', () => {
     const { path, body } = buildServerLoopRequest('send', { ...base, parentId: 'p1' })
     expect(path).toBe('/conversations/conv-1/messages')
@@ -130,6 +141,14 @@ describe('buildServerLoopRequest', () => {
     expect(buildServerLoopRequest('send', { ...base, toolAutoApprove: true }).body.toolAutoApprove).toBe(true)
     expect(buildServerLoopRequest('send', { ...base, toolAutoApprove: false }).body.toolAutoApprove).toBe(false)
     expect(buildServerLoopRequest('send', { ...base }).body.toolAutoApprove).toBeUndefined()
+  })
+
+  it('sends Claude auto mode only for Claude when tool approval is set to ask', () => {
+    const claude = { ...base, provider: 'Claude Code', claudeAutoMode: true }
+    expect(buildServerLoopRequest('send', { ...claude, toolAutoApprove: false }).body.claudePermissionMode).toBe('auto')
+    expect(buildServerLoopRequest('send', { ...claude, toolAutoApprove: true }).body.claudePermissionMode).toBeUndefined()
+    expect(buildServerLoopRequest('send', { ...claude, claudeAutoMode: false, toolAutoApprove: false }).body.claudePermissionMode).toBeUndefined()
+    expect(buildServerLoopRequest('send', { ...base, claudeAutoMode: true, toolAutoApprove: false }).body.claudePermissionMode).toBeUndefined()
   })
 
   it('forwards hooksEnabled verbatim and localApiBase (defaulting null)', () => {

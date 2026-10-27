@@ -78,13 +78,15 @@ if (!process.versions.electron) {
     assert.ok(staticFrame.equals((await window.webContents.capturePage()).toPNG()), 'Reduced-motion launch must draw a static frame')
     console.log('PASS reduced-motion launch draws visible static rain without animation')
     await window.webContents.debugger.sendCommand('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-reduced-motion', value: 'no-preference' }] })
-    for (const preset of ['resurrections', 'operator']) {
+    for (const preset of ['resurrections', 'operator', 'twilight']) {
       const readyCount = await window.webContents.executeJavaScript('statuses.filter(s=>s==="ready").length')
       await window.webContents.executeJavaScript(`(()=>{const select=document.querySelector('select'); const setter=Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype,'value').set; setter.call(select,${JSON.stringify(preset)}); select.dispatchEvent(new Event('change',{bubbles:true}));})()`)
       await waitFor(`statuses.filter(s=>s==='ready').length>${readyCount}`, `Preset ${preset} did not load`)
       assert.ok(!await window.webContents.executeJavaScript('statuses.includes("error")'), `Preset ${preset} failed`)
     }
-    console.log('PASS presets reload their local glyph assets')
+    assert.ok(requests.some(url => url.includes('/assets/huberfish_d_msdf.png')), 'Twilight must load its own local glyph atlas')
+    assert.equal(await window.webContents.executeJavaScript('JSON.parse(localStorage.getItem("graviton_matrix_background")).preset'), 'twilight')
+    console.log('PASS presets including Twilight reload their local glyph assets')
     const sliderReadyCount = await window.webContents.executeJavaScript('statuses.filter(s=>s==="ready").length')
     await window.webContents.executeJavaScript(`(()=>{const input=document.querySelectorAll('input[type=range]')[1];const setter=Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set;for(const value of ['40','60','90']){setter.call(input,value);input.dispatchEvent(new Event('input',{bubbles:true}));}})()`)
     await new Promise(resolve => setTimeout(resolve, 150))

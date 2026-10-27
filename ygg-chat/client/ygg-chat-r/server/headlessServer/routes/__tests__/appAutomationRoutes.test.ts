@@ -435,3 +435,34 @@ describeIfSqlite('registerAppAutomationRoutes', () => {
     expect(JSON.parse(child1Record.children_ids ?? '[]')).toEqual([grandChildId])
   })
 })
+
+// Exercise the public route, not only the persistence helper.
+describeIfSqlite('message deletion lineage repair routes', () => {
+  it.each(['single', 'bulk'])('repairs a deleted branch head through %s deletion', async kind => {
+    const db = new BetterSqlite3Ctor!(':memory:')
+    let server: Server | undefined
+    try {
+      createSchema(db)
+      db.exec(`CREATE TABLE lineages (id TEXT PRIMARY KEY, conversation_id TEXT, head_message_id TEXT,
+        root_message_id TEXT, forked_from_message_id TEXT, status TEXT, updated_at TEXT);
+        INSERT INTO users (id, username) VALUES ('u', 'user');
+        INSERT INTO conversations (id, user_id) VALUES ('c', 'u');
+        INSERT INTO messages (id, conversation_id, parent_id, role, content) VALUES ('parent', 'c', NULL, 'user', 'hello');
+        INSERT INTO messages (id, conversation_id, parent_id, role, content) VALUES ('answer', 'c', 'parent', 'assistant', 'reply');
+        INSERT INTO lineages VALUES ('l', 'c', 'answer', 'parent', NULL, 'active', 'before');`)
+      const app = express(); app.use(express.json())
+      registerAppAutomationRoutes(app, { db, statements: createStatements(db) })
+      server = app.listen(0)
+      const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}`
+      const response = kind === 'single'
+        ? await fetch(`${url}/api/app/messages/answer`, { method: 'DELETE' })
+        : await postJson(url, '/api/app/messages/deleteMany', { ids: ['answer'] })
+      expect(response.status).toBe(200)
+      expect(db.prepare('SELECT head_message_id FROM lineages WHERE id = ?').get('l')).toEqual({ head_message_id: 'parent' })
+      expect(db.prepare('SELECT children_ids FROM messages WHERE id = ?').get('parent')).toEqual({ children_ids: '[]' })
+    } finally {
+      if (server) await new Promise<void>(resolve => server!.close(() => resolve()))
+      db.close()
+    }
+  })
+})

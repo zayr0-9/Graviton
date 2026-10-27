@@ -1,10 +1,12 @@
+import { SummarisedMessage } from './SummarisedMessage'
+import { SummaryBranchMessage } from './SummaryBranchMessage'
 import { isCommittedCompaction } from '../../../../../shared/compaction'
 import type { ContentBlock, HookRunRecord, StreamEvent } from '@/features/chats/chatTypes'
 import type { ChatErrorActionKind, ChatErrorEnvelope } from '../../../../../shared/chatErrors'
 import type { MessageId } from '../../../../../shared/types'
 import type { RootState } from '@/store/store'
 import 'katex/dist/katex.min.css'
-import { isClaudeTranscriptMessage, isClaudeCheckpoint } from '../../../../../shared/claudeProvider'
+import { isClaudeTranscriptMessage } from '../../../../../shared/claudeProvider'
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { createSelector } from '@reduxjs/toolkit'
 import { createPortal } from 'react-dom'
@@ -52,7 +54,6 @@ import { partitionAgentItems, isProcessRunSeparatorText, getAgentProgress } from
 import { MessageActions } from './MessageActions'
 import { submitMessageDraft } from './messageSubmission'
 import { DisclosurePanel, DisclosureRow } from './messagePrimitives'
-import { SummarisedMessage } from './SummarisedMessage'
 import { getCompactionPlaceholder, isHiddenCompactionMessage } from '../../features/chats/summaryPresentation'
 import { CompactMessageNotice } from './CompactMessageNotice'
 import { ImageAttachmentNotice, isImageAttachmentInfoMessage } from './ImageAttachmentNotice'
@@ -102,7 +103,7 @@ type ChatMessageWidth =
   | 'w-full'
   | 'w-3/5'
 
-interface ChatMessageProps {
+export interface ChatMessageProps {
   id: string
   role: MessageRole
   /**
@@ -625,7 +626,6 @@ const ChatMessageBody: React.FC<ChatMessageProps> = React.memo(
     const canEditMessage = Boolean(onEdit) && !claudeTranscript
     const canDeleteMessage = Boolean(onDelete) && !claudeTranscript
     const canBranchMessage = role === 'user' || (role === 'assistant' && messageData?.parent_id == null)
-    const canExplainMessage = !claudeTranscript || isClaudeCheckpoint(messageData)
 
     const getEditableText = () =>
       hasEditableBlocks
@@ -643,6 +643,7 @@ const ChatMessageBody: React.FC<ChatMessageProps> = React.memo(
 
     const handleBranch = () => {
       dispatch(chatSliceActions.editingBranchSet(true))
+      dispatch(chatSliceActions.branchEditMessageSelected(id))
       setEditingState(true)
       setEditContent(getEditableText())
       setEditMode('branch')
@@ -2028,7 +2029,7 @@ const ChatMessageBody: React.FC<ChatMessageProps> = React.memo(
                     : undefined
                 }
                 onExplainSelection={
-                  hasSelection && onExplainFromSelection && canExplainMessage
+                  hasSelection && onExplainFromSelection
                     ? (position?: { x: number; y: number }) => {
                         closeFloatingActions()
                         handleExplainSelection(position)
@@ -2224,17 +2225,9 @@ const ChatMessage: React.FC<ChatMessageProps> = React.memo(props => {
       className={`${props.width} ${props.className ?? ''}`} customTheme={props.customTheme}
       customThemeEnabled={props.customThemeEnabled} isDarkMode={props.isDarkMode} />
   }
-  if (isCommittedCompaction(message)) {
-    return (
-      <SummarisedMessage
-        id={`message-${props.id}`}
-        className={`${props.width} ${props.className ?? ''}`}
-        customTheme={props.customTheme}
-        customThemeEnabled={props.customThemeEnabled}
-        isDarkMode={props.isDarkMode}
-      />
-    )
-  }
+  if (isCommittedCompaction(message)) return props.onBranch && !props.readOnly ? <SummaryBranchMessage {...props} /> :
+    <SummarisedMessage id={`message-${props.id}`} className={`${props.width} ${props.className ?? ''}`}
+      customTheme={props.customTheme} customThemeEnabled={props.customThemeEnabled} isDarkMode={props.isDarkMode} />
   // Internal requests and unfinished summaries stay durable, but never occupy visible rows.
   if (isHiddenCompactionMessage(message)) return null
   const compactionPlaceholder = getCompactionPlaceholder(message)

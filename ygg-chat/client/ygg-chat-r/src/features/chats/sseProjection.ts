@@ -490,6 +490,12 @@ export function projectServerEvent(event: ServerStreamEvent, ctx: ProjectionCont
       return actions
     }
 
+    case 'tool_approval_changed':
+      return [
+        chatSliceActions.messageAdded(normalizeServerMessage(event.message)),
+        chatSliceActions.branchToolApprovalSelected({ enabled: event.enabled, conversationId: event.conversationId, lineageId: event.lineageId }),
+      ]
+
     case 'decision_settled':
       return [chatSliceActions.decisionSettled({ streamId: event.streamId, toolCallId: event.toolCallId })]
 

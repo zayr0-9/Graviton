@@ -68,6 +68,7 @@ interface PendingEntry {
 interface StreamSession {
   autoApproveAll: boolean
   allowAlways?: boolean
+  onAllowAlways?: () => void
 }
 
 /** Composite key: one pending decision per (stream, toolCall). */
@@ -205,6 +206,8 @@ export class DecisionBroker {
 
     if (entry.kind === 'permission' && decision === 'allow_always' && this.sessions.get(streamId)?.allowAlways === false) return false
     if (entry.kind === 'permission' && decision === 'allow_always') {
+      // Persist the originating branch policy before unblocking tools or acknowledging.
+      this.sessions.get(streamId)?.onAllowAlways?.()
       // Several parallel multi_call workers can already be parked by the time the user
       // answers the one prompt the renderer can display. Atomically promote the stream
       // and release every existing permission waiter. Clarification and operation-mode
@@ -278,8 +281,8 @@ export class DecisionBroker {
 
   // ── Per-stream sessions (auto-approve / allow-always) ──
 
-  initSession(streamId: string, opts?: { autoApproveAll?: boolean; allowAlways?: boolean }): void {
-    this.sessions.set(streamId, { autoApproveAll: opts?.allowAlways === false ? false : opts?.autoApproveAll ?? false, allowAlways: opts?.allowAlways })
+  initSession(streamId: string, opts?: { autoApproveAll?: boolean; allowAlways?: boolean; onAllowAlways?: () => void }): void {
+    this.sessions.set(streamId, { autoApproveAll: opts?.allowAlways === false ? false : opts?.autoApproveAll ?? false, allowAlways: opts?.allowAlways, onAllowAlways: opts?.onAllowAlways })
   }
 
   isAutoApproveAll(streamId: string): boolean {

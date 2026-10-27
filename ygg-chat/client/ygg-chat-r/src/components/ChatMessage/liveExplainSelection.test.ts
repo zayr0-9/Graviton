@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { resolveLiveExplainSource, updateLiveExplainSurface, type LiveExplainSource } from './liveExplainSelection'
+import { resolveExplainAnchorId, resolveLiveExplainSource, updateLiveExplainSurface, type LiveExplainSource } from './liveExplainSelection'
 
 const source: LiveExplainSource = { streamId: 'run', messageId: null, previousCompletedId: 'old' }
 const messages = [
@@ -55,5 +55,34 @@ describe('live Explain source identity', () => {
   it('retains a known live message id after abort rather than falling back to an older turn', () => {
     const known = { ...source, messageId: 'live' }
     expect(resolveLiveExplainSource(known, { id: 'run', lastCompletedMessageId: 'old' }, messages)).toBe(known)
+  })
+})
+
+describe('Explain anchor', () => {
+  const claude = (checkpoint: boolean) => JSON.stringify({ claude: { sessionId: 's', checkpoint } })
+  const rows = [
+    { id: 'u1', role: 'user', meta: JSON.stringify({ modelSelection: { provider: 'Claude Code' } }) },
+    { id: 'a1', role: 'assistant', meta: claude(false) },
+    { id: 'a2', role: 'assistant', meta: claude(true) },
+    { id: 'u2', role: 'user', meta: JSON.stringify({ modelSelection: { provider: 'Claude Code' } }) },
+    { id: 'a3', role: 'assistant', meta: claude(false) },
+    { id: 'plain', role: 'assistant', meta: null },
+  ]
+  const path = ['u1', 'a1', 'a2', 'u2', 'a3']
+
+  it('keeps non-Claude rows and Claude checkpoints as their own anchor', () => {
+    expect(resolveExplainAnchorId('plain', rows, [])).toBe('plain')
+    expect(resolveExplainAnchorId('a2', rows, path)).toBe('a2')
+  })
+
+  it('anchors an intermediate Claude row at the checkpoint ending its turn', () => {
+    expect(resolveExplainAnchorId('a1', rows, path)).toBe('a2')
+    expect(resolveExplainAnchorId('u1', rows, path)).toBe('a2')
+  })
+
+  it('refuses a turn without a completed checkpoint or off the selected path', () => {
+    expect(resolveExplainAnchorId('a3', rows, path)).toBeNull()
+    expect(resolveExplainAnchorId('a1', rows, ['u1'])).toBeNull()
+    expect(resolveExplainAnchorId('missing', rows, path)).toBeNull()
   })
 })

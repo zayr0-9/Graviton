@@ -257,6 +257,8 @@ export interface StreamState {
   followSelectedTip?: boolean
   /** Snapshot replay hydrates rows before one guarded selection reconciliation. */
   bootstrapInstalling?: boolean
+  /** A persisted advance deferred by this exact pending navigation transaction. */
+  blockedSelectionRevision?: number
   active: boolean
   // Explicit lifecycle status. `waiting_for_tool` is still an in-flight stream
   // and should stay visible/interruptible in branch-local UIs.
@@ -426,7 +428,9 @@ export interface CompositionState {
   imagePreparationError: string | null
   imagePreparationGeneration: number
   editingBranch: boolean // true when user is editing a branch; controls UI like hiding image drafts
-  branchEditModes?: { operationMode?: OperationMode; fastMode?: boolean }
+  branchEditModes?: { operationMode?: OperationMode; fastMode?: boolean; toolAutoApprove?: boolean }
+  branchEditMessageId?: MessageId
+  branchEditModelSelection?: { provider: string; model: string | null }
   optimisticMessage: Message | null // temp message for instant UI feedback in web mode only
   optimisticBranchMessage: Message | null // temp branched message for instant UI feedback in web mode only
 }
@@ -515,12 +519,15 @@ export interface ChatState {
   planClarificationRequestsByStream: Record<string, PlanClarificationRequest>
   toolAutoApprove: boolean
   toolAutoApproveOverridden?: boolean
+  /** Claude provider: use the CLI's auto mode when tool approval is set to ask. */
+  claudeAutoMode?: boolean
   operationMode: OperationMode
   messageQueues: Record<string, import('../../../../../shared/queuedMessages').MessageQueueSnapshot>
   /** Unsent selections, keyed by conversation and selected branch tip. */
   operationModeDrafts: Record<string, OperationMode>
   branchModelDrafts?: Record<string, import('./branchModelSelection').BranchModelSelection>
   branchFastModeDrafts?: Record<string, boolean>
+  branchToolApprovalDrafts?: Record<string, boolean>
   operationModeChanges: Record<string, {
     mode: OperationMode
     status: 'requesting' | 'pending'

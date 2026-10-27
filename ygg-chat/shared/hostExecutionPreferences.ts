@@ -2,7 +2,9 @@ import { validateHostModePrompts, type HostModePrompts } from './hostModePrompts
 import { validateHostSubagentPreferences, type HostSubagentPreferences } from './hostSubagentPreferences.js'
 import { validateHostProviderPreferences, type HostProviderPreferences } from './hostProviderPreferences.js'
 import { normalizeContextDirectorySettings, type ContextDirectorySettings } from './contextDirectories.js'
+import { validateHostHookGeneration, type HostHookGeneration } from './hostHookGeneration.js'
 export interface HostExecutionPreferences {
+  hookGeneration: HostHookGeneration
   provider: HostProviderPreferences
   tools: Record<string, boolean>
   subagent: HostSubagentPreferences
@@ -25,7 +27,7 @@ export interface HostExecutionSnapshot {
 export function normalizeHostExecutionPreferences(input: unknown): HostExecutionPreferences {
   if (!input || typeof input !== 'object' || Array.isArray(input)) throw new Error('Invalid execution preferences')
   const value = input as Record<string, unknown>
-  const allowed = new Set(['toolAutoApprove', 'autoCompactionEnabled', 'longTermMemoryContextEnabled', 'contextDirectories', 'planModeVerbosity', 'provider', 'tools', 'subagent', 'modePrompts', 'toolTimeouts'])
+  const allowed = new Set(['toolAutoApprove', 'autoCompactionEnabled', 'longTermMemoryContextEnabled', 'contextDirectories', 'planModeVerbosity', 'provider', 'tools', 'subagent', 'modePrompts', 'toolTimeouts', 'hookGeneration'])
   if (Object.keys(value).some(key => !allowed.has(key))) throw new Error('Unknown execution preference')
   for (const key of ['toolAutoApprove', 'autoCompactionEnabled', 'longTermMemoryContextEnabled']) {
     if (value[key] !== undefined && typeof value[key] !== 'boolean') throw new Error(`Invalid ${key}`)
@@ -37,7 +39,7 @@ export function normalizeHostExecutionPreferences(input: unknown): HostExecution
   if (Object.keys(toolTimeouts).some(key => !['toolCallTimeoutMs', 'bashTimeoutMs'].includes(key)) ||
     !Number.isSafeInteger(toolTimeouts.toolCallTimeoutMs) || toolTimeouts.toolCallTimeoutMs < 1000 || toolTimeouts.toolCallTimeoutMs > 6000000 ||
     !Number.isSafeInteger(toolTimeouts.bashTimeoutMs) || toolTimeouts.bashTimeoutMs < 1000 || toolTimeouts.bashTimeoutMs > 600000) throw new Error('Invalid tool timeouts')
-  return { toolTimeouts, modePrompts: validateHostModePrompts(value.modePrompts ?? {}), subagent: validateHostSubagentPreferences(value.subagent ?? {}), tools: { ...tools } as Record<string, boolean>, provider: validateHostProviderPreferences(value.provider ?? {}), autoCompactionEnabled: value.autoCompactionEnabled !== false, toolAutoApprove: value.toolAutoApprove === true, longTermMemoryContextEnabled: value.longTermMemoryContextEnabled !== false,
+  return { hookGeneration: validateHostHookGeneration(value.hookGeneration ?? {}), toolTimeouts, modePrompts: validateHostModePrompts(value.modePrompts ?? {}), subagent: validateHostSubagentPreferences(value.subagent ?? {}), tools: { ...tools } as Record<string, boolean>, provider: validateHostProviderPreferences(value.provider ?? {}), autoCompactionEnabled: value.autoCompactionEnabled !== false, toolAutoApprove: value.toolAutoApprove === true, longTermMemoryContextEnabled: value.longTermMemoryContextEnabled !== false,
     contextDirectories: normalizeContextDirectorySettings(value.contextDirectories),
     planModeVerbosity: (value.planModeVerbosity ?? 'concise') as HostExecutionPreferences['planModeVerbosity'] }
 }

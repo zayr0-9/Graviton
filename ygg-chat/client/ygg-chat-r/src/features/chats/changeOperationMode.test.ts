@@ -92,4 +92,15 @@ describe('changeOperationMode thunk', () => {
     expect(state.chat.operationMode).toBe('plan')
     expect(state.chat.operationModeChanges.c).toBeUndefined()
   })
+
+  it('restores a Claude branch mode from its user row and lets later notifications win', () => {
+    const { state } = setup()
+    const claudeUser = { id: 'u', role: 'user', conversation_id: 'c', parent_id: null, meta: JSON.stringify({ operationMode: 'execute' }) }
+    const assistant = { id: 'a', role: 'assistant', conversation_id: 'c', parent_id: 'u', meta: null }
+    state.chat = { ...state.chat, operationMode: 'plan', conversation: { ...state.chat.conversation, messages: [claudeUser, assistant] as any, currentPath: ['u', 'a'] } }
+    expect(selectOperationMode({ ...state })).toBe('execute')
+    const notice = { id: 'n', role: 'user', conversation_id: 'c', parent_id: 'a', meta: JSON.stringify({ kind: 'operation_mode_change', mode: 'plan' }) }
+    state.chat = { ...state.chat, conversation: { ...state.chat.conversation, messages: [claudeUser, assistant, notice] as any, currentPath: ['u', 'a', 'n'] } }
+    expect(selectOperationMode({ ...state })).toBe('plan')
+  })
 })

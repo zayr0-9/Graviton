@@ -74,7 +74,7 @@ export class RunAdmissionService {
           subagentReasoningEffort: request.subagentReasoningEffort ?? defaults?.subagent.reasoningEffort,
           toolTimeoutMs: request.toolTimeoutMs ?? defaults?.toolTimeouts.toolCallTimeoutMs,
           bashTimeoutMs: request.bashTimeoutMs ?? defaults?.toolTimeouts.bashTimeoutMs,
-          toolAutoApprove: request.toolAutoApprove ?? defaults?.toolAutoApprove,
+          toolAutoApprove: request.toolAutoApprove ?? orchestrator.resolveToolApproval?.(request) ?? defaults?.toolAutoApprove,
           autoCompactionEnabled: request.autoCompactionEnabled ?? defaults?.autoCompactionEnabled,
           contextDirectories: request.contextDirectories ?? defaults?.contextDirectories,
           autoMemoryEnabled: request.autoMemoryEnabled ?? defaults?.longTermMemoryContextEnabled,
@@ -130,12 +130,17 @@ export class RunAdmissionService {
   }
 
   private launch(request: HeadlessMessageRequest): void {
-    if (isClaudeProvider(request.provider)) request = { ...request, toolAutoApprove: false, fullAccess: false, fullAccessNotificationId: undefined }
+    if (isClaudeProvider(request.provider)) request = { ...request, fullAccess: false, fullAccessNotificationId: undefined }
     const session = this.deps.sessions.createMain(request.streamId!, request.conversationId)
     session.effectiveConfiguration = { provider: request.provider, modelName: request.modelName,
       fullAccess: request.fullAccess === true, toolAutoApprove: request.toolAutoApprove !== false,
       operationMode: request.operationMode === 'plan' ? 'plan' : 'execute' }
-    const emit = (event: HeadlessStreamEvent) => session.publish(event)
+    const emit = (event: HeadlessStreamEvent) => {
+      if (event.type === 'tool_approval_changed' && session.effectiveConfiguration) {
+        session.effectiveConfiguration.toolAutoApprove = event.enabled
+      }
+      session.publish(event)
+    }
     void this.deps.orchestrator.runMessage(request, emit, session.signal).catch(error => {
       if (!(error as any)?.chatErrorPublished) emit({ type: 'error', terminal: true, error: 'Run failed during setup',
         envelope: buildChatErrorEnvelope('internal_error') })

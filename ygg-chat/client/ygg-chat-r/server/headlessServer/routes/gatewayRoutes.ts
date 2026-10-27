@@ -18,6 +18,7 @@
  * Phase 5, gated behind the `gateway.crud` flag; no-op when disabled.
  */
 
+import { assertMessagesNotInActiveRun, deleteMessagesWithLineageRepair, withMessageDeletionLock } from '../persistence/deleteMessages.js'
 import express from 'express'
 import { getServerInternalOrigin } from '../../serverHost.js'
 import { mergeLocalRunMetadata, mergeLocalUsageBlocks } from '../../../../../shared/runStatisticsMetadata.js'
@@ -721,8 +722,16 @@ export function registerGatewayRoutes(app: Express, deps: RegisterGatewayRoutesD
       res.status(r.status).json(r.body)
       return
     }
-    const r = await cloudLeg('DELETE', `/messages/${req.params.id}`)
-    res.status(r.status).json(r.body)
+    try {
+      await withMessageDeletionLock(deps.db, [req.params.id], async () => {
+        assertMessagesNotInActiveRun(deps.db, [req.params.id])
+        const r = await cloudLeg('DELETE', `/messages/${req.params.id}`)
+        if (r.ok) deleteMessagesWithLineageRepair(deps.db, [req.params.id])
+        res.status(r.status).json(r.body)
+      })
+    } catch (error) {
+      res.status((error as { status?: number }).status ?? 500).json({ error: error instanceof Error ? error.message : 'Failed to delete message' })
+    }
   })
 
   app.post('/api/gw/messages/deleteMany', async (req, res) => {
@@ -732,8 +741,21 @@ export function registerGatewayRoutes(app: Express, deps: RegisterGatewayRoutesD
       res.status(r.status).json(r.body)
       return
     }
-    const r = await cloudLeg('POST', `/messages/deleteMany`, req.body)
-    res.status(r.status).json(r.body)
+    try {
+      const ids = req.body?.ids
+      if (!Array.isArray(ids) || !ids.length || ids.some(id => typeof id !== 'string')) {
+        res.status(400).json({ error: 'ids must be a non-empty array of message IDs' })
+        return
+      }
+      await withMessageDeletionLock(deps.db, ids, async () => {
+        assertMessagesNotInActiveRun(deps.db, ids)
+        const r = await cloudLeg('POST', `/messages/deleteMany`, req.body)
+        if (r.ok) deleteMessagesWithLineageRepair(deps.db, ids)
+        res.status(r.status).json(r.body)
+      })
+    } catch (error) {
+      res.status((error as { status?: number }).status ?? 500).json({ error: error instanceof Error ? error.message : 'Failed to bulk delete messages' })
+    }
   })
 
   // ---- Attachments (storage-aware; authority follows the message's conversation) ----

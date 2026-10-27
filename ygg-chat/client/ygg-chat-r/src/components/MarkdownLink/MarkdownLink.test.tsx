@@ -8,6 +8,8 @@ const { navigate } = vi.hoisted(() => ({ navigate: vi.fn() }))
 vi.mock('../ChatSelection/ChatSelectionProvider', () => ({ useChatNavigate: () => navigate }))
 
 const fileUrl = 'file:///Users/karansingh/Vega/coinvest-agent-api-gaps.md'
+const chatRoute = '/chat/a7dd257e-52ab-4963-a56f-2843cc82cf7d/b441a3dd-b8d9-4bda-91e9-dd610e09b720#bef47fca-59fb-4097-b9b9-8ebe0a0383db'
+const gravitonUrl = `graviton://${chatRoute}`
 
 async function clickLink(href?: string, props = {}) {
   const anchor = MarkdownLink({ href, ...props }) as React.ReactElement<{
@@ -18,7 +20,7 @@ async function clickLink(href?: string, props = {}) {
   return preventDefault
 }
 
-describe('Markdown file links', () => {
+describe('Markdown links', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     vi.spyOn(console, 'error').mockImplementation(() => {})
@@ -93,6 +95,53 @@ describe('Markdown file links', () => {
     expect(await clickLink('/chat/123')).toHaveBeenCalledOnce()
     expect(navigate).toHaveBeenCalledOnce()
     expect(navigate).toHaveBeenCalledWith('/chat/123')
+  })
+
+  it('renders the reported graviton chat link as an internal route with its message anchor', () => {
+    const html = renderToStaticMarkup(
+      <ReactMarkdown components={{ a: MarkdownLink }} urlTransform={markdownUrlTransform}>
+        {`[Open that chat](${gravitonUrl})`}
+      </ReactMarkdown>
+    )
+    expect(html).toContain(`href="${chatRoute}"`)
+    expect(html).toContain('Open that chat')
+  })
+
+  it.each([
+    [gravitonUrl, chatRoute],
+    [gravitonUrl.replace('graviton:', 'GRAVITON:'), chatRoute],
+    ['graviton:///chat/project/conversation?view=tree#message%20id', '/chat/project/conversation?view=tree#message%20id'],
+    ['graviton:///conversationPage?projectId=project', '/conversationPage?projectId=project'],
+  ])('routes %s internally without opening a browser or OS protocol handler', async (url, route) => {
+    const openExternal = vi.fn()
+    const open = vi.fn()
+    vi.stubGlobal('window', { electronAPI: { auth: { openExternal } }, open })
+    expect(await clickLink(url)).toHaveBeenCalledOnce()
+    expect(navigate).toHaveBeenCalledOnce()
+    expect(navigate).toHaveBeenCalledWith(route)
+    expect(openExternal).not.toHaveBeenCalled()
+    expect(open).not.toHaveBeenCalled()
+    expect(markdownUrlTransform(url, 'href', { type: 'element', tagName: 'a', properties: {}, children: [] })).toBe(route)
+  })
+
+  it('does not allow graviton URLs as image sources', () => {
+    expect(markdownUrlTransform(gravitonUrl, 'src', { type: 'element', tagName: 'img', properties: {}, children: [] })).toBe('')
+  })
+
+  it.each([
+    'graviton://example.com/chat/project/conversation',
+    'graviton:////example.com/chat/project/conversation',
+    'graviton:///settings',
+    'graviton:///chat/project',
+    'graviton:///chat/project/conversation/extra',
+    'graviton:///conversationPage',
+    'graviton:///conversationPage?projectId=',
+    'graviton:///chat/project/../../../example.com',
+    'graviton:///%',
+  ])('blocks malformed or unsupported graviton navigation: %s', async url => {
+    expect(markdownUrlTransform(url, 'href', { type: 'element', tagName: 'a', properties: {}, children: [] })).toBe('')
+    expect(await clickLink(url)).toHaveBeenCalledOnce()
+    expect(navigate).not.toHaveBeenCalled()
   })
 
   it('leaves hash navigation unchanged', async () => {

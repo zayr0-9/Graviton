@@ -17,6 +17,7 @@
  */
 
 import { newClientId } from '../../helpers/clientId'
+import { isClaudeProvider } from '../../../../../shared/claudeProvider'
 import type { ContextDirectorySettings } from '../../../../../shared/contextDirectories'
 
 export type ServerLoopOperation = 'send' | 'edit' | 'branch'
@@ -79,6 +80,8 @@ export interface BuildServerLoopRequestParams {
    * server default (auto-approve). The 3 shims pass state.chat.toolAutoApprove (a boolean).
    */
   toolAutoApprove?: boolean
+  /** Claude auto mode preference; sent as claudePermissionMode only for Claude with toolAutoApprove off. */
+  claudeAutoMode?: boolean
   /**
    * Phase 3: opt into the server-owned loop's chat hooks (parity with the renderer's
    * always-on-in-electron hooks). The 3 shims pass isElectronMode. Forwarded verbatim.
@@ -189,6 +192,9 @@ export function buildServerLoopRequest(operation: ServerLoopOperation, params: B
     operationId: params.operationId ?? generateOperationId(),
     // Forward verbatim (no undefined -> false coercion): drives the server's pause gate.
     toolAutoApprove: params.toolAutoApprove,
+    // Allow all wins: auto mode only replaces Ask, so classifier-uncertain calls still prompt.
+    ...(params.claudeAutoMode && params.toolAutoApprove === false && isClaudeProvider(params.provider)
+      ? { claudePermissionMode: 'auto' as const } : {}),
     // Phase 3 hooks: forward verbatim. The server gates on `=== true`, so undefined = off.
     hooksEnabled: params.hooksEnabled,
     localApiBase: params.localApiBase ?? null,

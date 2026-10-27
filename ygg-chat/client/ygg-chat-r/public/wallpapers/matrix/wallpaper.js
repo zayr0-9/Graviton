@@ -7,12 +7,12 @@ const finite = (name, fallback, min, max) => {
   const value = Number(params.get(name) ?? fallback);
   return Number.isFinite(value) ? Math.min(max, Math.max(min, value)) : fallback;
 };
-const preset = ['classic', 'resurrections', 'operator'].includes(params.get('preset')) ? params.get('preset') : 'classic';
+const preset = ['classic', 'resurrections', 'operator', 'twilight'].includes(params.get('preset')) ? params.get('preset') : 'classic';
 const config = makeConfig({
   version: preset,
   fps: String(finite('fps', 30, 15, 60)),
   animationSpeed: String(finite('speed', 1, 0.25, 2)),
-  numColumns: String(Math.round(finite('columns', { classic: 80, resurrections: 70, operator: 108 }[preset], 20, 120))),
+  numColumns: String(Math.round(finite('columns', { classic: 80, resurrections: 70, operator: 108, twilight: 50 }[preset], 20, 120))),
   resolution: '0.5',
 });
 const canvas = document.querySelector('canvas');

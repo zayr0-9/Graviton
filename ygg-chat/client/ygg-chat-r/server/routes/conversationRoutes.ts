@@ -1,3 +1,4 @@
+import { deleteMessagesWithLineageRepair } from '../headlessServer/persistence/deleteMessages.js'
 import { isClaudeTranscriptMessage } from '../../../../shared/claudeProvider.js'
 // server/routes/conversationRoutes.ts
 //
@@ -620,12 +621,12 @@ export function registerConversationRoutes(app: Express, deps: ConversationRoute
         res.status(409).json({ error: 'Claude transcript messages cannot be deleted individually. Delete the conversation instead.' })
         return
       }
-      statements.deleteMessage.run(id)
+      deleteMessagesWithLineageRepair(db, [id])
       // console.log('[LocalServer] ✅ Message deleted:', id)
       res.json({ success: true })
     } catch (error) {
       console.error('[LocalServer] ❌ Error deleting message:', error)
-      res.status(500).json({ error: 'Failed to delete message' })
+      res.status((error as { status?: number }).status ?? 500).json({ error: error instanceof Error ? error.message : 'Failed to delete message' })
     }
   })
 
@@ -635,8 +636,8 @@ export function registerConversationRoutes(app: Express, deps: ConversationRoute
       const { ids } = req.body
       // console.log('[LocalServer] 🗑️ POST /api/local/messages/deleteMany - ids:', ids)
 
-      if (!Array.isArray(ids) || ids.length === 0) {
-        res.status(400).json({ error: 'ids must be a non-empty array' })
+      if (!Array.isArray(ids) || ids.length === 0 || ids.some(id => typeof id !== 'string')) {
+        res.status(400).json({ error: 'ids must be a non-empty array of message IDs' })
         return
       }
 
@@ -649,18 +650,12 @@ export function registerConversationRoutes(app: Express, deps: ConversationRoute
         res.status(500).json({ error: 'Database not initialized' })
         return
       }
-      const deleteTransaction = db.transaction((messageIds: string[]) => {
-        for (const id of messageIds) {
-          statements.deleteMessage.run(id)
-        }
-      })
-
-      deleteTransaction(ids)
+      deleteMessagesWithLineageRepair(db, ids)
       // console.log('[LocalServer] ✅ Bulk deleted', ids.length, 'messages')
       res.json({ deleted: ids.length })
     } catch (error) {
       console.error('[LocalServer] ❌ Error bulk deleting messages:', error)
-      res.status(500).json({ error: 'Failed to bulk delete messages' })
+      res.status((error as { status?: number }).status ?? 500).json({ error: error instanceof Error ? error.message : 'Failed to bulk delete messages' })
     }
   })
 }

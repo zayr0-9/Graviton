@@ -1,5 +1,6 @@
 import React from 'react'
 import { ToolCall } from '../../features/chats/chatTypes'
+import { claudePlanFromToolCall } from '../ChatMessage/chatMessageShared'
 import { getThemeModeColor, useCustomChatTheme, useHtmlDarkMode } from '../ThemeManager/themeConfig'
 
 interface ToolPermissionDialogProps {
@@ -17,7 +18,10 @@ export const ToolPermissionDialog: React.FC<ToolPermissionDialogProps> = ({
   onAllowAll,
   variant = 'permission',
 }) => {
-  const formattedArgs = JSON.stringify(toolCall.arguments, null, 2)
+  const claudePlan = variant === 'operation-mode-upgrade' ? claudePlanFromToolCall(toolCall.name, toolCall.arguments) : null
+  const isClaudePlanExit = variant === 'operation-mode-upgrade' && toolCall.name === 'ExitPlanMode'
+  // The full plan renders in the transcript; the dialog previews it as text.
+  const formattedArgs = claudePlan ? claudePlan.plan : JSON.stringify(toolCall.arguments, null, 2)
   const bashDescription =
     toolCall.name === 'bash' && typeof toolCall.arguments?.description === 'string'
       ? toolCall.arguments.description.trim()
@@ -143,7 +147,9 @@ export const ToolPermissionDialog: React.FC<ToolPermissionDialogProps> = ({
 
       {variant === 'operation-mode-upgrade' && (
         <p className='px-1 text-[11px]' style={{ color: badgeTextColor }}>
-          This tool requires Agent Mode because it can modify files, system state, or app state.
+          {isClaudePlanExit
+            ? 'Claude finished planning. Switch to Agent Mode to let it implement the plan.'
+            : 'This tool requires Agent Mode because it can modify files, system state, or app state.'}
         </p>
       )}
 

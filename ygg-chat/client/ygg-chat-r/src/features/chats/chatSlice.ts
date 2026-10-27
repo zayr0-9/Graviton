@@ -1,11 +1,12 @@
 import { createSlice, PayloadAction } from '@reduxjs/toolkit'
+import { composerApprovalHandoff, loadBranchToolApprovalDrafts, resolveComposerToolApproval, saveBranchToolApprovalDrafts } from './branchToolApproval'
 import { loadBranchFastModeDrafts, saveBranchFastModeDrafts } from './branchFastMode'
 import { branchModelKey, loadBranchModelDrafts, saveBranchModelDrafts, type BranchModelSelection } from './branchModelSelection'
 import { normalizeChatErrorEnvelope } from '../../../../../shared/chatErrors'
 import providersList from '../../../../../shared/providers.json'
 import { ConversationId, MessageId } from '../../../../../shared/types'
 import { isCommunityMode } from '../../config/runtimeMode'
-import { loadDefaultToolAutoApprove } from '../../helpers/toolApprovalSettingsStorage'
+import { loadClaudeAutoMode, loadDefaultToolAutoApprove, saveClaudeAutoMode } from '../../helpers/toolApprovalSettingsStorage'
 import { parseId } from '../../utils/helpers'
 import { isStreamContinuationTail } from './streamContinuationTail'
 import { canFollowSelectedTip } from './followSelectedTip'
@@ -277,11 +278,13 @@ const makeInitialState = (): ChatState => {
     operationModeUpgradeRequestsByStream: {},
     planClarificationRequestsByStream: {},
     toolAutoApprove: loadDefaultToolAutoApprove(),
+    claudeAutoMode: loadClaudeAutoMode(),
     operationMode: 'plan',
     operationModeChanges: {},
     operationModeDrafts: {},
     branchModelDrafts: loadBranchModelDrafts(),
     branchFastModeDrafts: loadBranchFastModeDrafts(),
+    branchToolApprovalDrafts: loadBranchToolApprovalDrafts(),
     messageQueues: {},
     freeTier: {
       freeGenerationsRemaining: null,
@@ -315,6 +318,10 @@ function setConversationIdentity(state: ChatState, nextConversationId: Conversat
     state.heimdall.subagentMap = {}
   }
   if (changed) {
+    state.composition.editingBranch = false
+    state.composition.branchEditModes = undefined
+    state.composition.branchEditMessageId = undefined
+    state.composition.branchEditModelSelection = undefined
     state.composition.imageDrafts = []
     state.composition.imageDraftTarget = null
     state.composition.imagePreparationPending = 0
@@ -328,7 +335,14 @@ function setConversationIdentity(state: ChatState, nextConversationId: Conversat
 }
 
 function streamCanAdvanceSelection(state: ChatState, streamId?: string | null, targetMessageId?: MessageId): boolean {
-  if (state.selection?.status === 'pending' || state.selection?.status === 'error') return false
+  if (state.selection?.status === 'pending' || state.selection?.status === 'error') {
+    const stream = streamId ? state.streaming.byId[streamId] : null
+    if (state.selection.status === 'pending' && stream && targetMessageId &&
+        String(stream.conversationId) === String(state.conversation.currentConversationId)) {
+      stream.blockedSelectionRevision = state.selection.revision
+    }
+    return false
+  }
   if (!streamId) return true // Non-stream mutation/repair callers retain their structural policy.
   const stream = state.streaming.byId[streamId]
   if (!stream) return true // Legacy projected actions may precede a reconstructed slot.
@@ -352,6 +366,10 @@ export const chatSlice = createSlice({
   initialState,
   reducers: {
     branchModelSelected: (state, action: PayloadAction<BranchModelSelection>) => {
+      if (state.composition.editingBranch) {
+        state.composition.branchEditModelSelection = action.payload
+        return
+      }
       const { currentConversationId, currentPath, currentLineageId } = state.conversation
       if (!currentConversationId) return
       state.branchModelDrafts ??= {}
@@ -468,6 +486,11 @@ export const chatSlice = createSlice({
     editingBranchSet: (state, action: PayloadAction<boolean>) => {
       state.composition.editingBranch = action.payload
       state.composition.branchEditModes = undefined
+      state.composition.branchEditMessageId = undefined
+      state.composition.branchEditModelSelection = undefined
+    },
+    branchEditMessageSelected: (state, action: PayloadAction<MessageId>) => {
+      state.composition.branchEditMessageId = action.payload
     },
     branchEditOperationModeSelected: (state, action: PayloadAction<OperationMode>) => {
       if (!state.composition.editingBranch) return
@@ -521,6 +544,7 @@ export const chatSlice = createSlice({
       // Snapshot events are compact, not a complete turn journal. Catch up only
       // along descendants of the still-selected tip, never through a sibling.
       if (stream.watchContinuation || (!stream.followSelectedTip && stream.updatePath === false)) return
+      if (state.selection.status === 'pending') stream.blockedSelectionRevision = state.selection.revision
       const allowEmpty = !stream.followSelectedTip && stream.selectionRevision === state.selection.revision
       for (const id of action.payload.messageIds) {
         if (canFollowSelectedTip(state, { ...stream, followSelectedTip: true }, id,
@@ -1197,12 +1221,20 @@ export const chatSlice = createSlice({
     lineageSelected: (state, action: PayloadAction<LineageSelectionPayload>) => {
       const { conversationId, lineageId, path, focus } = action.payload
       setConversationIdentity(state, conversationId)
+      state.composition.editingBranch = false
+      state.composition.branchEditModes = undefined
+      state.composition.branchEditMessageId = undefined
+      state.composition.branchEditModelSelection = undefined
       state.conversation.currentLineageId = lineageId
       state.conversation.currentPath = path
       state.conversation.focusedChatMessageId = focus
     },
 
     conversationCleared: state => {
+      state.composition.editingBranch = false
+      state.composition.branchEditModes = undefined
+      state.composition.branchEditMessageId = undefined
+      state.composition.branchEditModelSelection = undefined
       state.composition.imageDrafts = []
       state.composition.imageDraftTarget = null
       state.composition.imagePreparationPending = 0
@@ -1286,11 +1318,26 @@ export const chatSlice = createSlice({
 
     messageDeleted: (state, action: PayloadAction<MessageId>) => {
       const id = action.payload
-      state.conversation.messages = state.conversation.messages.filter(m => m.id !== id)
-      for (const message of state.conversation.messages) message.children_ids = message.children_ids.filter(child => child !== id)
-      const position = state.conversation.currentPath.indexOf(id)
+      const deleted = new Set<MessageId>([id])
+      const children = new Map<MessageId, MessageId[]>()
+      for (const message of state.conversation.messages) {
+        if (message.parent_id == null) continue
+        const siblings = children.get(message.parent_id) ?? []
+        siblings.push(message.id)
+        children.set(message.parent_id, siblings)
+      }
+      const pending = [id]
+      while (pending.length) {
+        for (const child of children.get(pending.pop()!) ?? []) {
+          if (!deleted.has(child)) { deleted.add(child); pending.push(child) }
+        }
+      }
+      state.conversation.messages = state.conversation.messages.filter(m => !deleted.has(m.id))
+      for (const message of state.conversation.messages) message.children_ids = message.children_ids.filter(child => !deleted.has(child))
+      const position = state.conversation.currentPath.findIndex(value => deleted.has(value))
       if (position >= 0) state.conversation.currentPath = state.conversation.currentPath.slice(0, position)
-      if (state.conversation.focusedChatMessageId === id) state.conversation.focusedChatMessageId = null
+      if (!state.conversation.messages.length) state.conversation.currentLineageId = null
+      if (state.conversation.focusedChatMessageId != null && deleted.has(state.conversation.focusedChatMessageId)) state.conversation.focusedChatMessageId = null
     },
 
     messagesLoaded: (state, action: PayloadAction<Message[]>) => {
@@ -1693,9 +1740,39 @@ export const chatSlice = createSlice({
       state.toolAutoApprove = false
     },
 
+    claudeAutoModeSet: (state, action: PayloadAction<boolean>) => {
+      state.claudeAutoMode = action.payload
+      saveClaudeAutoMode(action.payload)
+    },
+
+    branchToolApprovalSelected: (state, action: PayloadAction<{
+      enabled: boolean; conversationId: ConversationId; lineageId?: LineageId | null; parentId?: MessageId | null
+    }>) => {
+      const { enabled, conversationId, lineageId, parentId } = action.payload
+      state.branchToolApprovalDrafts ??= {}
+      const anchor = lineageId ? `lineage:${lineageId}` : parentId
+      state.branchToolApprovalDrafts[branchModelKey(conversationId, anchor)] = enabled
+      saveBranchToolApprovalDrafts(state.branchToolApprovalDrafts)
+    },
+
     toolAutoApproveToggled: state => {
-      state.toolAutoApproveOverridden = true
-      state.toolAutoApprove = !state.toolAutoApprove
+      const enabled = !resolveComposerToolApproval(state)
+      if (state.composition.editingBranch) {
+        state.composition.branchEditModes ??= {}
+        state.composition.branchEditModes.toolAutoApprove = enabled
+        return
+      }
+      const { currentConversationId, currentLineageId, currentPath } = state.conversation
+      if (!currentConversationId) {
+        state.toolAutoApproveOverridden = true
+        state.toolAutoApprove = enabled
+        return
+      }
+      state.branchToolApprovalDrafts ??= {}
+      const handoff = composerApprovalHandoff(state)
+      const anchor = handoff ? `handoff:${handoff.id}` : currentLineageId ? `lineage:${currentLineageId}` : currentPath.at(-1)
+      state.branchToolApprovalDrafts[branchModelKey(currentConversationId, anchor)] = enabled
+      saveBranchToolApprovalDrafts(state.branchToolApprovalDrafts)
     },
 
     operationModeDecisionsCleared: (state, action: PayloadAction<{ streamId: string; toolCallIds: string[] }>) => {
@@ -1921,6 +1998,10 @@ export const chatSlice = createSlice({
   extraReducers: builder => {
     builder
       .addCase(chatSelectionRequested, (state, { payload }) => {
+        state.composition.editingBranch = false
+        state.composition.branchEditModes = undefined
+        state.composition.branchEditMessageId = undefined
+        state.composition.branchEditModelSelection = undefined
         const conversationChanged = String(state.conversation.currentConversationId) !== String(payload.target.conversationId)
         setConversationIdentity(state, payload.target.conversationId)
         state.selection = {
@@ -1950,6 +2031,45 @@ export const chatSlice = createSlice({
         state.conversation.currentPath = payload.path
         state.conversation.focusedChatMessageId = payload.focus
         state.selection.status = 'ready'
+        // Persistence can finish while an explicit same-view refocus is pending.
+        // Reconcile only its owning runs; a different view must never be pulled back.
+        if (sameView) {
+          for (const stream of Object.values(state.streaming.byId)) {
+            if (String(stream.conversationId) !== String(payload.conversationId) ||
+                (stream.updatePath === false && !stream.followSelectedTip) || stream.watchContinuation ||
+                stream.blockedSelectionRevision !== state.selection.revision) continue
+            delete stream.blockedSelectionRevision
+            const candidates = [stream.finalMessageId, stream.lastCompletedMessageId, stream.currentBranchAnchorMessageId]
+              .filter((id): id is MessageId => id != null)
+              .filter(id => canFollowSelectedTip(state, { ...stream, followSelectedTip: true }, id,
+                { allowDescendants: true, allowEmpty: !stream.followSelectedTip && payload.path.length === 0 }))
+              .sort((a, b) => buildPathToMessage(state.conversation.messages, b).length - buildPathToMessage(state.conversation.messages, a).length)
+            const anchor = candidates[0]
+            if (anchor && canFollowSelectedTip(state, { ...stream, followSelectedTip: true }, anchor,
+              { allowDescendants: true, allowEmpty: !stream.followSelectedTip && payload.path.length === 0 })) {
+              state.conversation.currentPath = buildPathToMessage(state.conversation.messages, anchor)
+              // Only an unambiguous control tail can extend a final response;
+              // never choose between real user/assistant branches here.
+              const seen = new Set(state.conversation.currentPath)
+              let tip = anchor
+              while (true) {
+                const children = state.conversation.messages.filter(row => row.parent_id === tip)
+                if (children.length !== 1 || seen.has(children[0].id) || !isStreamContinuationTail(children[0])) break
+                tip = children[0].id
+                seen.add(tip)
+                state.conversation.currentPath.push(tip)
+              }
+              state.conversation.currentLineageId = stream.lineage.lineageIdConfirmed ? stream.lineage.lineageId ?? null : null
+              stream.currentBranchAnchorMessageId = tip
+              if (stream.finished) {
+                stream.finalMessageId = tip
+                stream.messageId = tip
+                stream.lastCompletedMessageId = tip
+                stream.persistedTurnMessageId = tip
+              }
+            }
+          }
+        }
         state.selection.error = payload.error ?? null
         state.selection.scroll = payload.scrollMode === 'none' ? null : {
           requestId: payload.requestId, focus: payload.focus,

@@ -10,6 +10,7 @@ import {
 export interface CompactMessageNoticeProps {
   id?: string
   className?: string
+  action?: ReactNode
   customTheme?: CustomChatTheme
   customThemeEnabled?: boolean
   isDarkMode?: boolean
@@ -20,7 +21,7 @@ export function CompactMessageNotice({
   id, className, customTheme = getStoredCustomChatTheme(),
   customThemeEnabled = getCustomChatThemeEnabled(),
   isDarkMode = typeof document !== 'undefined' && document.documentElement.classList.contains('dark'),
-  icon, children, title, kind,
+  icon, children, title, kind, action,
 }: CompactMessageNoticeProps & { icon: ReactNode; children: ReactNode; title: string; kind: 'summary' | 'watcher' | 'image' | 'status' }) {
   return (
     <div id={id} className={`${MESSAGE_NOTICE_WRAPPER_CLASS} ${className ?? ''}`}
@@ -32,6 +33,7 @@ export function CompactMessageNotice({
         title={title}>
         {icon}
         <span className='min-w-0 truncate'>{children}</span>
+        {action}
       </div>
     </div>
   )

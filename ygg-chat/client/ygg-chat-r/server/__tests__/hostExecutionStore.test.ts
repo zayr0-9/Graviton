@@ -55,3 +55,16 @@ it('preserves untouched domain bases while importing a newly added domain', () =
   expect(imported.revisions?.subagent).toBe((saved.revisions?.subagent ?? 0) + 1)
   expect(imported.values.subagent.maxTurns).toBe(42)
 })
+
+it('defaults old settings to Auto and persists hook policy with independent revision ownership', () => {
+  const initial = readHostExecutionPreferences()
+  expect(initial.values.hookGeneration).toEqual({ provider: 'auto', openAiModel: 'gpt-6-luna', claudeModel: '' })
+  const request = { ...initial, expectedRevision: initial.revision, expectedRevisions: initial.revisions }
+  saveHostExecutionPreferences({ ...request, patch: { toolAutoApprove: true } })
+  const saved = saveHostExecutionPreferences({ ...request, patch: { hookGeneration: { ...initial.values.hookGeneration, provider: 'claudecode', claudeModel: 'sonnet' } } })
+  expect(readHostExecutionPreferences().values.hookGeneration).toEqual(saved.values.hookGeneration)
+  expect(() => saveHostExecutionPreferences({ ...request, patch: { hookGeneration: initial.values.hookGeneration } })).toThrow('changed')
+  for (const invalid of [{ provider: 'other' }, { claudeModel: '--dangerous' }, { openAiModel: '' }, { claudeModel: 'a b' }]) {
+    expect(() => saveHostExecutionPreferences({ ...saved, expectedRevision: saved.revision, patch: { hookGeneration: { ...saved.values.hookGeneration, ...invalid } as any } })).toThrow('hook')
+  }
+})

@@ -1,3 +1,5 @@
+import { isClaudeCheckpoint, isClaudeTranscriptMessage } from '../../../../../shared/claudeProvider'
+
 export type LiveExplainSurface = 'tail' | 'virtual'
 
 /** A closed/non-owning live row must not dismiss the other row's modal. */
@@ -7,6 +9,29 @@ export function updateLiveExplainSurface(
   open: boolean
 ): LiveExplainSurface | null {
   return open ? surface : current === surface ? null : current
+}
+
+/**
+ * Claude splits one turn into several rows, but only the turn's final row is a resumable
+ * native checkpoint. Explaining text in an earlier row branches from the checkpoint that
+ * ends its turn on the selected path. Null while that turn has not completed.
+ */
+export function resolveExplainAnchorId(
+  id: string | number,
+  messages: ReadonlyArray<{ id: string | number; role: string; meta?: unknown }>,
+  path: ReadonlyArray<string | number>
+): string | number | null {
+  const byId = new Map(messages.map(message => [String(message.id), message]))
+  const selected = byId.get(String(id))
+  if (!selected || !isClaudeTranscriptMessage(selected) || isClaudeCheckpoint(selected)) return selected ? selected.id : null
+  const start = path.findIndex(pathId => String(pathId) === String(id))
+  if (start < 0) return null
+  for (const pathId of path.slice(start + 1)) {
+    const row = byId.get(String(pathId))
+    if (!row || row.role === 'user' || !isClaudeTranscriptMessage(row)) return null
+    if (isClaudeCheckpoint(row)) return row.id
+  }
+  return null
 }
 
 export interface LiveExplainSource {

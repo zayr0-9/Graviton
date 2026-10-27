@@ -4,9 +4,27 @@ import React from 'react'
 import { useChatNavigate as useNavigate } from '../ChatSelection/ChatSelectionProvider'
 import { defaultUrlTransform, type UrlTransform } from 'react-markdown'
 
-// Keep ReactMarkdown's sanitization, allowing local files only as clickable links.
+// Only tool-generated chat/project routes are supported; never hand these to the OS.
+function gravitonNavigationRoute(href: string): string | null {
+  if (!/^graviton:\/\/\//i.test(href)) return null
+  try {
+    const url = new URL(href)
+    if (url.host || url.username || url.password) return null
+    const isChat = /^\/chat\/[^/]+\/[^/]+$/.test(url.pathname)
+    const isProject = url.pathname === '/conversationPage' && !!url.searchParams.get('projectId')?.trim()
+    if (!isChat && !isProject) return null
+    return `${url.pathname}${url.search}${url.hash}`
+  } catch {
+    return null
+  }
+}
+
+// Keep ReactMarkdown's sanitization; extra schemes are allowed only as clickable links.
 export const markdownUrlTransform: UrlTransform = (url, key, node) => {
-  if (node.tagName === 'a' && key === 'href' && /^file:/i.test(url)) return url
+  if (node.tagName === 'a' && key === 'href') {
+    if (/^file:/i.test(url)) return url
+    if (/^graviton:/i.test(url)) return gravitonNavigationRoute(url) ?? ''
+  }
   return defaultUrlTransform(url)
 }
 
@@ -22,6 +40,13 @@ export const MarkdownLink: React.FC<MarkdownLinkProps> = ({ href, children, ...p
   const handleClick = async (e: React.MouseEvent<HTMLAnchorElement>) => {
     if (!href) {
       e.preventDefault()
+      return
+    }
+
+    if (/^graviton:/i.test(href)) {
+      e.preventDefault()
+      const route = gravitonNavigationRoute(href)
+      if (route) navigate(route)
       return
     }
 

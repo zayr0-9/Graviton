@@ -4,6 +4,7 @@ export const MATRIX_PRESETS = [
   { value: 'classic', label: 'Classic', columns: 80 },
   { value: 'resurrections', label: 'Resurrections', columns: 70 },
   { value: 'operator', label: 'Operator', columns: 108 },
+  { value: 'twilight', label: 'Twilight', columns: 50 },
 ] as const
 
 export interface MatrixBackgroundSettings {

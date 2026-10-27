@@ -689,7 +689,7 @@ export function useModels(provider: string | null) {
 
       if (isClaudeProvider(provider)) {
         const models = CLAUDE_MODELS.map(name => ({ ...stringToModel(name), contextLength: 200000,
-          inputTokenLimit: 200000, outputTokenLimit: 32000, thinking: false }))
+          inputTokenLimit: 200000, outputTokenLimit: 32000, thinking: true }))
         return { models, default: models[0], selected: models.find(model => model.name === getStoredSelectedModel()?.name) ?? models[0], userIsFreeTier: false }
       }
 

@@ -10,6 +10,7 @@
 // happens after DB init. getCurrentDbPath() stays a getter because the
 // attachment/image directories are resolved next to the live DB file.
 
+import { deleteMessagesWithLineageRepair } from '../headlessServer/persistence/deleteMessages.js'
 import type Database from 'better-sqlite3'
 import crypto from 'crypto'
 import type { Express } from 'express'
@@ -628,12 +629,12 @@ export function registerSyncStorageRoutes(app: Express, deps: SyncStorageRoutesD
   app.delete('/api/sync/message/:id', (req, res) => {
     try {
       const { id } = req.params
-      statements.deleteMessage.run(id)
+      deleteMessagesWithLineageRepair(db, [id])
       // console.log('[LocalServer] Deleted message:', id)
       res.json({ success: true, id })
     } catch (error) {
       console.error('[LocalServer] Error deleting message:', error)
-      res.status(500).json({ error: 'Failed to delete message' })
+      res.status((error as { status?: number }).status ?? 500).json({ error: error instanceof Error ? error.message : 'Failed to delete message' })
     }
   })
 
@@ -1101,7 +1102,7 @@ export function registerSyncStorageRoutes(app: Express, deps: SyncStorageRoutesD
                 )
                 results.push({ success: true, type: 'message', id: op.data.id })
               } else if (op.action === 'delete') {
-                statements.deleteMessage.run(op.data.id)
+                deleteMessagesWithLineageRepair(db, [op.data.id])
                 results.push({ success: true, type: 'message', id: op.data.id })
               }
               break

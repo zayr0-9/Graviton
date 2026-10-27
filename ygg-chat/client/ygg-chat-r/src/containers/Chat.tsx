@@ -4,14 +4,15 @@ import { isBrowserClient, isHostClient } from '../platform/clientCapabilities'
 import { ConversationOpeningOverlay } from '../components/ChatPane/ConversationOpeningOverlay'
 import { useModelSwitchConfirmation } from '../hooks/useModelSwitchConfirmation'
 import { ModelSwitchDialog } from '../components/ModelSelectControl/ModelSwitchDialog'
-import { isClaudeProvider } from '../../../../shared/claudeProvider'
-import { resolveBranchModelSelection, resolveClaudeBranchLock } from '../features/chats/branchModelSelection'
+import { isClaudeProvider, isClaudeTranscriptMessage } from '../../../../shared/claudeProvider'
+import { isCleanStartBranchEdit, isProviderHandoffEdit, resolveComposerModelSelection, resolveComposerClaudeLock, resolveSummaryContinuation } from '../features/chats/branchModelSelection'
 import { resolveBranchFastMode } from '../features/chats/branchFastMode'
+import { resolveComposerToolApproval } from '../features/chats/branchToolApproval'
 import { isCommittedCompaction } from '../../../../shared/compaction'
 import { isHiddenCompactionMessage } from '../features/chats/summaryPresentation'
 import { useQueryClient } from '@tanstack/react-query'
 import { defaultRangeExtractor, useVirtualizer } from '@tanstack/react-virtual'
-import { resolveLiveExplainSource, updateLiveExplainSurface, type LiveExplainSource, type LiveExplainSurface } from '../components/ChatMessage/liveExplainSelection'
+import { resolveExplainAnchorId, resolveLiveExplainSource, updateLiveExplainSurface, type LiveExplainSource, type LiveExplainSurface } from '../components/ChatMessage/liveExplainSelection'
 import 'boxicons' // Types
 import 'boxicons/css/boxicons.min.css'
 import { AnimatePresence, motion } from 'framer-motion'
@@ -53,7 +54,7 @@ import {
 } from '../components'
 import { ChatErrorBubble } from '../components/ChatErrorBubble/ChatErrorBubble'
 import { ActionPopoverButton, ActionPopoverDisclosure, ActionPopoverSwitch } from '../components/ActionPopover/ActionPopoverControls'
-import { ClipboardCheck, CodeXml, MessageSquare, ShieldHalf } from 'lucide-react'
+import { ClipboardCheck, CodeXml, MessageSquare, ShieldCheck, ShieldHalf, ShieldQuestion } from 'lucide-react'
 import { useConversationRunStatistics } from '../hooks/useConversationRunStatistics'
 import { deriveRunStatistics, placeRunFooters, interleaveRunFooters, type RunStatisticsFooterData } from '../features/chats/runStatistics'
 import { RunStatisticsFooter } from '../components/ChatMessage/RunStatisticsFooter'
@@ -153,7 +154,7 @@ import { QueuedMessages } from '../components/ChatMessage/QueuedMessages'
 import { OperationModeNotice } from '../components/ChatMessage/OperationModeNotice'
 import { FullAccessNotice } from '../components/ChatMessage/FullAccessNotice'
 import { isFullAccessNotification, isRunSettingsNotification } from '../../../../shared/accessNotifications'
-import { SummarisedMessage } from '../components/ChatMessage/SummarisedMessage'
+import { SummaryBranchMessage } from '../components/ChatMessage/SummaryBranchMessage'
 import {
   buildChatErrorRecord,
   classifyLocalChatError,
@@ -1106,9 +1107,11 @@ function Chat() {
   // Redux selectors
   const currentUser = useAppSelector(selectCurrentUser)
   const providers = useAppSelector(selectProviderState)
-  const branchModelSelection = useAppSelector(state => resolveBranchModelSelection(state.chat), (a, b) => a?.provider === b?.provider && a?.model === b?.model)
-  const claudeBranchLock = useAppSelector(state => resolveClaudeBranchLock(state.chat), (a, b) => a?.provider === b?.provider && a?.model === b?.model)
-  const hasSelectedHistory = useAppSelector(state => state.chat.conversation.currentPath.length > 0)
+  const branchModelSelection = useAppSelector(state => resolveComposerModelSelection(state.chat), (a, b) => a?.provider === b?.provider && a?.model === b?.model)
+  const claudeBranchLock = useAppSelector(state => resolveComposerClaudeLock(state.chat), (a, b) => a?.provider === b?.provider && a?.model === b?.model)
+  const hasSelectedHistory = useAppSelector(state => state.chat.conversation.currentPath.length > 0 &&
+    !resolveSummaryContinuation(state.chat) &&
+    !(state.chat.composition.editingBranch && isProviderHandoffEdit(state.chat)))
   const isClaudeSession = isClaudeProvider(branchModelSelection?.provider ?? providers.currentProvider)
   const toolDefinitions = useAppSelector(state => state.chat.tools)
   // MCP tools with a UI resource draw the always-open app card (ToolCallGroupCard). The row
@@ -1322,7 +1325,10 @@ function Chat() {
       ? (state.chat.planClarificationRequestsByStream[streamState.id] ?? null)
       : null
   )
-  const toolAutoApprove = useAppSelector(state => state.chat.toolAutoApprove)
+  const toolAutoApprove = useAppSelector(state => resolveComposerToolApproval(state.chat))
+  const claudeAutoMode = useAppSelector(state => state.chat.claudeAutoMode === true)
+  // Claude cycles Ask -> Auto -> Allow all; Auto is the CLI classifier and only replaces Ask.
+  const claudeApproval = toolAutoApprove ? 'allow_all' : claudeAutoMode ? 'auto' : 'ask'
   // D3: free-tier exhaustion is a chat bubble, not a blocking modal. `sseProjection` records the
   // `free_tier_exhausted` bubble directly on `generation_limit_reached` and never raises
   // `freeTier.showLimitModal`, so the flag is dead and the modal is not rendered from here.
@@ -1897,10 +1903,6 @@ function Chat() {
   )
 
   const handleManualCompactifyCommand = useCallback(async (): Promise<ComposerSlashCommandResult> => {
-    if (isClaudeSession) {
-      window.alert('Claude manages its own context and compaction. Graviton compaction is unavailable for Claude sessions.')
-      return { handled: true, clearInput: false }
-    }
     if (!currentConversationId) {
       console.warn('[ManualCompaction] skipped: missing conversation id')
       return { handled: true, clearInput: true }
@@ -2677,8 +2679,11 @@ function Chat() {
   const virtualizerPaddingEnd = 0
 
   // Determine if optimistic/streaming messages should be shown (all modes for instant feedback)
-  const showOptimisticMessage = !!optimisticMessage
-  const showOptimisticBranchMessage = !!optimisticBranchMessage
+  // The optimistic slots are global; never render another chat's pending bubble here.
+  const showOptimisticMessage = !!optimisticMessage &&
+    String(optimisticMessage.conversation_id) === String(currentConversationId)
+  const showOptimisticBranchMessage = !!optimisticBranchMessage &&
+    String(optimisticBranchMessage.conversation_id) === String(currentConversationId)
   const compactionActive = isCurrentBranchCompacting ||
     (currentViewStream?.active === true && currentViewStream.compactionStatus === 'started')
   // Summary/mode rows can extend the same branch during completion. They must not
@@ -4951,7 +4956,7 @@ function Chat() {
     if (!conversationIdFromUrl) dispatch(initializeUserAndConversation())
   }, [conversationIdFromUrl, dispatch])
 
-  const modelSwitchScope = JSON.stringify([currentConversationId, modeLineageId, selection.revision])
+  const modelSwitchScope = JSON.stringify([currentConversationId, modeLineageId, selection.revision, activeBranchEditingMessageId])
   const openaiSelectionScopeRef = useRef<string | null>(null)
   const { pending: pendingModelSwitch, request: requestModelSwitch, cancel: cancelModelSwitch, confirm: confirmModelSwitch } =
     useModelSwitchConfirmation(modelSwitchScope, branchModelSelection ? {
@@ -4966,13 +4971,13 @@ function Chat() {
       if (model) {
         requestModelSwitch({ provider: providers.currentProvider, model: model.name }, () => {
           dispatch(chatSliceActions.branchModelSelected({ provider: providers.currentProvider, model: model.name }))
-          selectModelMutation.mutate({ provider: providers.currentProvider, model })
+          if (!isBranchEditing) selectModelMutation.mutate({ provider: providers.currentProvider, model })
         })
       } else {
         console.warn('Selected model not found:', modelName)
       }
     },
-    [models, selectModelMutation, providers.currentProvider, requestModelSwitch, dispatch, claudeBranchLock]
+    [models, selectModelMutation, providers.currentProvider, requestModelSwitch, dispatch, claudeBranchLock, isBranchEditing]
   )
 
   const handleExtensionSelection = useCallback(
@@ -5044,10 +5049,10 @@ function Chat() {
       }
       requestModelSwitch({ provider: providerName, model: null }, () => {
         dispatch(chatSliceActions.branchModelSelected({ provider: providerName, model: null }))
-        dispatch(chatSliceActions.providerSelected(providerName))
+        if (!isBranchEditing) dispatch(chatSliceActions.providerSelected(providerName))
       })
     },
-    [dispatch, openOpenaiAuthUrl, requestModelSwitch, providers.currentProvider, modelSwitchScope, claudeBranchLock, hasSelectedHistory]
+    [dispatch, openOpenaiAuthUrl, requestModelSwitch, providers.currentProvider, modelSwitchScope, claudeBranchLock, hasSelectedHistory, isBranchEditing]
   )
 
   useEffect(() => {
@@ -5070,7 +5075,7 @@ function Chat() {
 
       const slot = Number(event.code.slice(-1))
       const assignment = loadModelShortcutSlots()[slot]
-      if (!assignment) return
+      if (!assignment || claudeBranchLock || (hasSelectedHistory && isClaudeProvider(assignment.provider))) return
 
       const providerExists = providers.providers.some(provider => provider.name === assignment.provider)
       if (!providerExists) {
@@ -5093,8 +5098,8 @@ function Chat() {
       event.preventDefault()
       requestModelSwitch({ provider: assignment.provider, model: assignment.model.name }, () => {
         dispatch(chatSliceActions.branchModelSelected({ provider: assignment.provider, model: assignment.model.name }))
-        dispatch(chatSliceActions.providerSelected(assignment.provider))
-        selectModelMutation.mutate({ provider: assignment.provider, model: assignment.model })
+        if (!isBranchEditing) dispatch(chatSliceActions.providerSelected(assignment.provider))
+        if (!isBranchEditing) selectModelMutation.mutate({ provider: assignment.provider, model: assignment.model })
       })
     }
 
@@ -5113,7 +5118,7 @@ function Chat() {
       window.removeEventListener('keydown', handleChatToggleKeyDown, true)
       window.removeEventListener('keydown', handleChatKeyboardShortcut)
     }
-  }, [dispatch, handleProviderSelect, handleToggleOperationMode, handleToggleFastServiceTier, isOpenAIChatGPTProvider, navigate, providers.providers, selectModelMutation, requestModelSwitch])
+  }, [dispatch, handleProviderSelect, handleToggleOperationMode, handleToggleFastServiceTier, isOpenAIChatGPTProvider, navigate, providers.providers, selectModelMutation, requestModelSwitch, claudeBranchLock, hasSelectedHistory, isBranchEditing])
 
   const handleComposerSlashCommandSelect = useCallback(
     (command: string): ComposerSlashCommandResult | void => {
@@ -5650,7 +5655,9 @@ function Chat() {
         role: 'user' as const,
         content: contentWithCwdAnnouncement,
         content_plain_text: contentWithCwdAnnouncement,
-        parent_id: originalMessage.parent_id,
+        parent_id: isCommittedCompaction(originalMessage) ? originalMessage.id :
+          isCleanStartBranchEdit({ conversation: { currentConversationId, messages: conversationMessages } }, parsedId) &&
+          (isClaudeSession || isClaudeTranscriptMessage(originalMessage)) ? null : originalMessage.parent_id,
         children_ids: [],
         created_at: new Date().toISOString(),
         model_name: selectedModel?.name || '',
@@ -5716,6 +5723,7 @@ function Chat() {
       replaceFileMentionsWithPath,
       appendIdeContextToMessage,
       conversationMessages,
+      isClaudeSession,
       refreshConversationSnapshot,
       withPendingCwdAnnouncement,
       clearPendingCwdAnnouncement,
@@ -5767,9 +5775,11 @@ function Chat() {
       const processed = replaceFileMentionsWithPath(newContent)
       const contentWithIdeContext = appendIdeContextToMessage(processed)
       // The live row has a UI-only id; branch only from a confirmed persisted response.
-      const sourceId = id === 'streaming'
+      const selectedId = id === 'streaming'
         ? liveExplainSourceRef.current?.messageId
         : id
+      // Claude can only fork at the completed checkpoint that ends the selected turn.
+      const sourceId = selectedId == null ? null : resolveExplainAnchorId(selectedId, conversationMessages, selectedPath)
       if (sourceId == null) return false
       const parsedId = parseId(String(sourceId))
       const originalMessage = conversationMessages.find(m => m.id === parsedId)
@@ -6057,7 +6067,7 @@ function Chat() {
       // Successfully authenticated, select the provider
       requestModelSwitch({ provider: 'OpenAI (ChatGPT)', model: null }, () => {
         dispatch(chatSliceActions.branchModelSelected({ provider: 'OpenAI (ChatGPT)', model: null }))
-        dispatch(chatSliceActions.providerSelected('OpenAI (ChatGPT)'))
+        if (!isBranchEditing) dispatch(chatSliceActions.providerSelected('OpenAI (ChatGPT)'))
       }, openaiSelectionScopeRef.current ?? modelSwitchScope)
       closeOpenaiLoginModal()
       return 'success'
@@ -6945,7 +6955,9 @@ function Chat() {
                               measureElement={virtualizer.measureElement}
                               className='z-0'
                             >
-                              <SummarisedMessage
+                              <SummaryBranchMessage id={String(msg.id)} content='' role={msg.role} width='w-full'
+                                onBranch={submitMessageAsBranch}
+                                branchSubmissionDisabled={selection.status === 'pending' || selection.status === 'error'}
                                 customTheme={customTheme}
                                 customThemeEnabled={customThemeEnabled}
                                 isDarkMode={isDarkMode}
@@ -7056,7 +7068,7 @@ function Chat() {
                               onAddToChat={handleAddToChat}
                               onExplainFromSelection={handleExplainFromSelection}
                               branchSubmissionDisabled={selection.status === 'pending' || selection.status === 'error'}
-                              explainSubmissionDisabled={streamLifecycleActive || compactionActive}
+                              explainSubmissionDisabled={streamLifecycleActive || compactionActive || resolveExplainAnchorId(msg.id, conversationMessages, selectedPath) == null}
                               onOpenToolHtmlModal={openToolHtmlModal}
                               onOpenSubagentTranscript={openSubagentTranscript}
                               onChatErrorAction={handlePersistedChatErrorAction}
@@ -7207,7 +7219,7 @@ function Chat() {
                   onDeny={() =>
                     dispatch(respondToToolPermission({ allowed: false, streamId: toolCallPermissionRequest.streamId }))
                   }
-                  onAllowAll={isClaudeSession ? undefined : () => dispatch(respondToToolPermissionAndEnableAll(toolCallPermissionRequest.streamId))}
+                  onAllowAll={() => dispatch(respondToToolPermissionAndEnableAll(toolCallPermissionRequest.streamId))}
                 />
               )}
               {planClarificationRequest && (
@@ -7650,7 +7662,7 @@ function Chat() {
                         dropdownMinWidth={220}
                       />
                     )}
-                    {isClaudeSession && <span className='text-xs text-neutral-500 dark:text-neutral-400' title='Claude owns tools, context and compaction. Provider/model lock after the first send. Queueing and image attachments are unavailable in v1.'>Claude session{claudeBranchLock ? ' · locked' : ''}</span>}
+                    {isClaudeSession && <span className='text-xs text-neutral-500 dark:text-neutral-400' title='Claude owns tools, context and compaction. Provider/model lock after the first send. Queueing is unavailable in v1.'>Claude session{claudeBranchLock ? ' · locked' : ''}</span>}
                     <ModelSelectControl
                       provider={providers.currentProvider}
                       selectedModelName={selectedModel?.name || ''}
@@ -7743,6 +7755,7 @@ function Chat() {
                     <ActionPopover
                       isActive={
                         toolAutoApprove ||
+                        (isClaudeSession && claudeAutoMode) ||
                         operationMode === 'plan' ||
                         !!imageConfig.aspectRatio ||
                         !!imageConfig.imageSize ||
@@ -7911,16 +7924,35 @@ function Chat() {
                             title={isHostClient ? 'View tool jobs' : 'Connect to the Graviton host to view tool jobs'}
                             disabled={!isHostClient}
                           />
-                          <ActionPopoverButton
-                            label={!isClaudeSession && toolAutoApprove ? 'Allow all' : 'Ask'}
-                            icon={<ShieldHalf size={16} />}
-                            active={!isClaudeSession && toolAutoApprove}
-                            disabled={isClaudeSession}
-                            aria-pressed={!isClaudeSession && toolAutoApprove}
-                            onClick={() => dispatch(chatSliceActions.toolAutoApproveToggled())}
-                            title={toolAutoApprove ? 'Auto-approving tools (click to disable)' : 'Asking for permission (click to auto-approve)'}
-                            aria-label={toolAutoApprove ? 'Disable auto-approve' : 'Enable auto-approve'}
-                          />
+                          {isClaudeSession ? (
+                            <ActionPopoverButton
+                              label={claudeApproval === 'allow_all' ? 'Allow all' : claudeApproval === 'auto' ? 'Auto' : 'Ask'}
+                              icon={claudeApproval === 'allow_all' ? <ShieldHalf size={16} />
+                                : claudeApproval === 'auto' ? <ShieldCheck size={16} /> : <ShieldQuestion size={16} />}
+                              active={claudeApproval !== 'ask'}
+                              onClick={() => {
+                                if (claudeApproval === 'ask') dispatch(chatSliceActions.claudeAutoModeSet(true))
+                                else {
+                                  if (claudeApproval === 'auto') dispatch(chatSliceActions.claudeAutoModeSet(false))
+                                  dispatch(chatSliceActions.toolAutoApproveToggled())
+                                }
+                              }}
+                              title={claudeApproval === 'allow_all' ? 'Approving every Claude tool call (click to ask)'
+                                : claudeApproval === 'auto' ? "Claude's classifier approves routine actions and asks you when unsure (click to allow all)"
+                                : 'Asking for permission (click for auto mode)'}
+                              aria-label={`Tool approval: ${claudeApproval === 'allow_all' ? 'allow all' : claudeApproval}. Click to change.`}
+                            />
+                          ) : (
+                            <ActionPopoverButton
+                              label={toolAutoApprove ? 'Allow all' : 'Ask'}
+                              icon={<ShieldHalf size={16} />}
+                              active={toolAutoApprove}
+                              aria-pressed={toolAutoApprove}
+                              onClick={() => dispatch(chatSliceActions.toolAutoApproveToggled())}
+                              title={toolAutoApprove ? 'Auto-approving tools (click to disable)' : 'Asking for permission (click to auto-approve)'}
+                              aria-label={toolAutoApprove ? 'Disable auto-approve' : 'Enable auto-approve'}
+                            />
+                          )}
                           <ActionPopoverButton
                             label={modeChange && !isBranchEditing ? 'Switching…' : operationMode === 'plan' ? 'Chat' : 'Agent'}
                             icon={operationMode === 'plan' ? <MessageSquare size={16} /> : <CodeXml size={16} />}
@@ -7929,7 +7961,9 @@ function Chat() {
                             aria-busy={Boolean(modeChange) && !isBranchEditing}
                             onClick={handleToggleOperationMode}
                             disabled={(Boolean(modeChange) || (isClaudeSession && streamState.active)) && !isBranchEditing}
-                            title={operationMode === 'plan' ? 'Plan mode enabled (tools will be blocked)' : 'Execution mode enabled (tools may modify files)'}
+                            title={operationMode === 'plan'
+                              ? isClaudeSession ? 'Chat mode: file edits disabled' : 'Plan mode enabled (tools will be blocked)'
+                              : 'Execution mode enabled (tools may modify files)'}
                             aria-label={operationMode === 'plan' ? 'Switch to execution mode' : 'Switch to plan mode'}
                           />
                         </>
@@ -8387,7 +8421,7 @@ function Chat() {
                     onClick={() => {
                       requestModelSwitch({ provider: 'OpenAI (ChatGPT)', model: null }, () => {
                         dispatch(chatSliceActions.branchModelSelected({ provider: 'OpenAI (ChatGPT)', model: null }))
-                        dispatch(chatSliceActions.providerSelected('OpenAI (ChatGPT)'))
+                        if (!isBranchEditing) dispatch(chatSliceActions.providerSelected('OpenAI (ChatGPT)'))
                       }, openaiSelectionScopeRef.current ?? modelSwitchScope)
                       closeOpenaiLoginModal()
                     }}

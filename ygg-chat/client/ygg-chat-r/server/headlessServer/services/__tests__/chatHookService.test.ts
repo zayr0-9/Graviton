@@ -231,6 +231,13 @@ describe('ChatHookSession dispatch + parity', () => {
     expect(await stop.session.toolLoopHooks().runStop({ assistantMessage: { id: 'a1', parent_id: 'u1' }, streamId: 's1' })).toBe(false)
   })
 
+  it('native Stop preserves the immediate parent but carries an explicit user-turn anchor', async () => {
+    const { session, calls } = makeSession(async () => noop)
+    await session.runStop({ assistantMessage: { id: 'a2', parent_id: 'a1', content: 'final' }, streamId: 'native', lastUserMessageId: 'u1' })
+    expect(calls[0]).toMatchObject({ event: 'Stop', messageId: 'a2', parentId: 'a1',
+      turn: { lastUserMessageId: 'u1', lastAssistantMessageId: 'a2' }, lastAssistantMessage: 'final' })
+  })
+
   it('swallows a runHook rejection (parity with the renderer chatHookClient swallow)', async () => {
     const { session } = makeSession(async () => {
       throw new Error('discovery failed')

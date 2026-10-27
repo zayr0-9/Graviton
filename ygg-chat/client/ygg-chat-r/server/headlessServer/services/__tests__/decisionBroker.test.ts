@@ -233,3 +233,23 @@ it('Claude sessions cannot be promoted to allow-all through a stale or external 
   expect(broker.resolve('claude', 't', 'allow_once')).toBe(true)
   await expect(pending).resolves.toBe('allow_once')
 })
+
+it('persists allow-all before releasing waits, only once across retries, and fails closed on storage failure', async () => {
+  const broker = new DecisionBroker()
+  let writes = 0
+  let fail = true
+  broker.initSession('owner', { autoApproveAll: false, onAllowAlways: () => {
+    expect(broker.hasPending('owner', 'tool')).toBe(true)
+    if (fail) throw new Error('storage unavailable')
+    writes++
+  } })
+  const pending = broker.requestDecision({ streamId: 'owner', toolCallId: 'tool', kind: 'permission' })
+  expect(() => broker.resolve('owner', 'tool', 'allow_always')).toThrow('storage unavailable')
+  expect(broker.isAutoApproveAll('owner')).toBe(false)
+  expect(broker.hasPending('owner', 'tool')).toBe(true)
+  fail = false
+  expect(broker.resolve('owner', 'tool', 'allow_always')).toBe(true)
+  await expect(pending).resolves.toBe('allow_always')
+  expect(broker.resolve('owner', 'tool', 'allow_always')).toBe(true)
+  expect(writes).toBe(1)
+})

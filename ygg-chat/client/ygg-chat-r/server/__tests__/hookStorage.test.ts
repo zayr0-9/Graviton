@@ -150,8 +150,12 @@ describe('managed hook defaults', () => {
     expect(await fs.readFile(path.join(managed, 'hooks/root_note_stop.py'), 'utf8')).toBe('')
   })
 
-  it('ships the branch-note hook with GPT-6 Luna', async () => {
+  it('ships a provider-neutral branch-note hook using host generation settings', async () => {
     const script = await fs.readFile(new URL('../../.ygg/hooks/root_note_stop.py', import.meta.url), 'utf8')
-    expect(script).toContain("MODEL = 'gpt-6-luna'")
+    expect(script).toContain("PROVIDER = 'host-selected'")
+    const generationPayload = script.slice(script.indexOf("stage = 'generate_note'"), script.indexOf("stage = 'parse_generation'"))
+    expect(generationPayload).not.toContain("'provider':")
+    expect(generationPayload).not.toContain("'modelName':")
+    expect(script).toContain("generation.get('provider')")
   })
 })

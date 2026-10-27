@@ -9,6 +9,7 @@ import { SubagentToolName } from '../SubagentTranscript/SubagentTranscript'
 import { HtmlIframe } from './HtmlIframe'
 import {
   ACTION_PILL_CLASS,
+  claudePlanFromToolCall,
   DISCLOSURE_BODY_CLASS,
   DISCLOSURE_LABEL_CLASS,
   extractHtmlFromToolResult,
@@ -399,6 +400,25 @@ export const ToolCallGroupCard: React.FC<ToolCallGroupCardProps> = ({
         </div>
         <div className={DISCLOSURE_BODY_CLASS}>
           <PlanMdToolView args={group.args} result={planResult} readOnly={readOnly} />
+        </div>
+      </div>
+    )
+  }
+
+  // Claude ExitPlanMode: render the attached native plan like plan_md display.
+  const claudePlan = claudePlanFromToolCall(rawName, group.args)
+  if (claudePlan) {
+    return (
+      <div className='min-w-0 max-w-full' style={wrapperStyle} data-chat-block='tool'>
+        <div className={STATIC_ROW_CLASS}>
+          <ToolName name={rawName} tone={tone} />
+        </div>
+        <div className={DISCLOSURE_BODY_CLASS}>
+          <PlanMdToolView
+            args={{ name: claudePlan.name }}
+            result={{ displayed: true, exists: true, name: claudePlan.name, path: claudePlan.path, content: claudePlan.plan }}
+            readOnly={readOnly}
+          />
         </div>
       </div>
     )

@@ -1,4 +1,7 @@
-import { CLAUDE_MODELS, isClaudeProvider } from '../../../../../shared/claudeProvider.js'
+import { assertConversationNotDeleting } from '../persistence/deleteMessages.js'
+import { executionPathAfterHandoff, portableSummaryText } from '../../../../../shared/summaryHandoff.js'
+import { isCleanStartUserBranch } from '../../../../../shared/cleanStartBranch.js'
+import { CLAUDE_MODELS, claudeMessageMetadata, isClaudeProvider, isClaudeTranscriptMessage } from '../../../../../shared/claudeProvider.js'
 import { ClaudeSessionRepo, assertClaudeBranchSelection } from '../persistence/claudeSessionRepo.js'
 import { ClaudeSessionService } from './claudeSessionService.js'
 import { compactionInstruction } from '../../../../../shared/compaction.js'
@@ -10,6 +13,7 @@ import { ConversationRepo } from '../persistence/conversationRepo.js'
 import { MessageRepo } from '../persistence/messageRepo.js'
 import { ProjectRepo } from '../persistence/projectRepo.js'
 import { StreamingRunRepo } from '../persistence/streamingRunRepo.js'
+import { parseMessageMeta } from '../../../../../shared/contextInjection.js'
 import { LineageRepo, type LineageRow } from '../persistence/lineageRepo.js'
 import { ToolInvocationRepo } from '../persistence/toolInvocationRepo.js'
 import { TreeMessageSink, CloudMirrorSink, type MessageSink } from './messageSink.js'
@@ -33,7 +37,7 @@ import { trimHistoryToLatestCompaction } from './compactionService.js'
 import type { HookRunRequest, HookRunResult } from '../../hooks/hookTypes.js'
 import { filterToolsForOperationMode, requiresAgentMode } from '../../../../../shared/operationModeToolPolicy.js'
 import { OperationModeControl, modeNotificationContent } from './operationModeControl.js'
-import { FULL_ACCESS_NOTIFICATION_KIND, fullAccessNotificationContent } from '../../../../../shared/accessNotifications.js'
+import { FULL_ACCESS_NOTIFICATION_KIND, fullAccessNotificationContent, isRunSettingsNotification } from '../../../../../shared/accessNotifications.js'
 import { MessageInputQueue, queuedSubmissionFingerprint } from './messageInputQueue.js'
 import type { QueuedMessageSubmission, MessageQueueSnapshot } from '../../../../../shared/queuedMessages.js'
 import {
@@ -43,6 +47,7 @@ import {
 } from '../../../../../shared/contextDirectories.js'
 import {
   CONTEXT_INJECTION_KIND,
+  isContextInjectionMessage,
   LABEL_HOOK_CONTEXT,
   collectLoadedContextPaths,
   toContextInjectionBlock,
@@ -429,6 +434,7 @@ export function createChatPausingExecutor(deps: {
 
 export interface HeadlessChatOrchestrator {
   validateExecutionSelection?(request: HeadlessMessageRequest): void
+  resolveToolApproval?(request: HeadlessMessageRequest): boolean | undefined
   classifyOrdinarySend?(request: HeadlessMessageRequest): { lineageId: string | null; parentId: string | null; activeStreamId?: string }
   submitQueuedMessage?(conversationId: string, streamId: string, submission: QueuedMessageSubmission): { snapshot?: MessageQueueSnapshot; restart?: HeadlessMessageRequest; restartStreamId?: string }
   getMessageQueue?(conversationId: string, streamId: string): MessageQueueSnapshot
@@ -516,34 +522,85 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
     return this.submitQueuedMessage(conversationId, target[0], submission)
   }
 
+  private summaryHandoff(request: HeadlessMessageRequest): any | null {
+    if (request.operation === 'branch' && request.messageId) {
+      const source = this.requireMessage(request.messageId, request.conversationId)
+      return portableSummaryText(source) ? source : null
+    }
+    if (request.operation !== 'edit-branch' && request.operation !== 'repeat') return null
+    const targetId = request.operation === 'edit-branch' ? request.messageId : request.parentId ?? request.messageId
+    if (!targetId) return null
+    const target = this.requireMessage(targetId, request.conversationId)
+    const user = request.operation === 'edit-branch' ? target : this.conversationRepo.findNearestUserAncestor(request.conversationId, target.role === 'assistant' ? target.parent_id : target.id)
+    if (!user || user.role !== 'user') return null
+    const path = this.conversationRepo.listPathToMessage(request.conversationId, user.id)
+    const handoffId = claudeMessageMetadata(user.meta)?.executionHandoff?.summaryMessageId
+    if (handoffId) return path.find(row => row.id === handoffId && portableSummaryText(row)) ?? null
+    // The first ordinary prompt after native/manual compaction can be redone as a fresh handoff.
+    for (let index = path.length - 2; index >= 0; index--) {
+      if (portableSummaryText(path[index])) return path[index]
+      if (!isContextInjectionMessage(path[index]) && !isRunSettingsNotification(path[index])) break
+    }
+    return null
+  }
+
+  private startsFreshExecution(request: HeadlessMessageRequest): boolean {
+    if (this.summaryHandoff(request)) return true
+    if (request.operation !== 'edit-branch' || !request.messageId) return false
+    const path = this.conversationRepo.listPathToMessage(request.conversationId, request.messageId)
+    return path.at(-1)?.id === request.messageId && isCleanStartUserBranch(path) &&
+      (isClaudeProvider(request.provider) || path.some(isClaudeTranscriptMessage))
+  }
+
+  /** Startup only: make Claude branches cut off by a stop, sleep, quit or crash continuable. */
+  recoverInterruptedClaudeBranches(): Promise<number> {
+    return this.claudeSessions.recoverInterruptedBranches?.() ?? Promise.resolve(0)
+  }
+
   validateExecutionSelection(request: HeadlessMessageRequest): void {
+    assertConversationNotDeleting(this.db, request.conversationId)
     const sourceId = request.operation === 'send' ? request.parentId : request.messageId ?? request.parentId
     const path = sourceId ? this.conversationRepo.listPathToMessage(request.conversationId, sourceId) : []
     // A second pending send cannot switch a newly accepted Claude run before its first row exists.
-    const pending = [...this.inputRuns.values()].find(run => !run.terminal && run.request.conversationId === request.conversationId &&
-      ((request.lineageId && (run.queue.lineageId ?? run.request.lineageId) === request.lineageId) ||
-       (!request.parentId && !run.request.parentId)))
+    const freshExecution = this.startsFreshExecution(request)
+    const pending = !freshExecution && [...this.inputRuns.values()].find(run => {
+      if (run.terminal || run.request.conversationId !== request.conversationId) return false
+      const pendingOrdinary = run.request.operation === 'send' && !run.request.isBranch && !run.request.retrigger
+      // An unmaterialized edit/fork does not own the source lineage's execution identity.
+      const ownedLineage = run.queue.lineageId ?? (pendingOrdinary ? run.request.lineageId : null)
+      return Boolean((request.lineageId && ownedLineage === request.lineageId) ||
+        (pendingOrdinary && !request.parentId && !run.request.parentId))
+    })
     if (pending && (isClaudeProvider(pending.request.provider) || isClaudeProvider(request.provider)) &&
       (isClaudeProvider(pending.request.provider) !== isClaudeProvider(request.provider) || pending.request.modelName !== request.modelName)) {
       throw Object.assign(new Error('The accepted branch provider and model are locked.'), { code: 'configuration_mismatch' })
     }
-    assertClaudeBranchSelection(request, path)
+    assertClaudeBranchSelection(request, freshExecution ? [] : path)
     if (isClaudeProvider(request.provider)) {
+      if (!request.manualCompaction && /^\s*\//.test(request.content ?? '')) throw new Error('Use Graviton’s /compact command for Claude compaction. Other native slash commands are not supported.')
       if (!(CLAUDE_MODELS as readonly string[]).includes(request.modelName)) throw new Error('Select a supported Claude model before sending.')
       if (!(request.rootPath ?? this.conversationRepo.getById(request.conversationId)?.cwd)) throw new Error('Choose a workspace folder before starting Claude.')
-      if (request.manualCompaction) throw new Error('Claude manages compaction; Graviton manual compaction is unavailable for this provider.')
-      if (request.attachmentsBase64?.length) throw new Error('Claude v1 supports text and selected files; image attachments are not yet supported.')
-      const source = request.operation === 'edit-branch' ? this.requireMessage(request.messageId!, request.conversationId).parent_id
+      // Reject formats the Anthropic API refuses before a user row is minted.
+      for (const image of request.attachmentsBase64 ?? []) {
+        const id = image?.attachmentId ?? image?.attachment_id
+        const mime = String((id ? this.statements.getAttachmentById?.get(id)?.mime_type : null) ?? /^data:([^;]+);/.exec(image?.dataUrl ?? '')?.[1] ?? '').toLowerCase()
+        if (!['image/png', 'image/jpeg', 'image/gif', 'image/webp'].includes(mime)) throw new Error('Claude accepts PNG, JPEG, GIF or WebP images only.')
+      }
+      const source = freshExecution ? null : request.operation === 'edit-branch' ? this.requireMessage(request.messageId!, request.conversationId).parent_id
         : request.operation === 'repeat' ? this.conversationRepo.findNearestUserAncestor(request.conversationId, sourceId ?? null)?.parent_id
         : sourceId
-      if (source && !this.claudeSessionRepo.checkpoint(source)?.resumable) {
-        throw Object.assign(new Error('This Claude turn is incomplete. Retry or edit-branch the user prompt, or fork from a completed response.'), { code: 'configuration_mismatch' })
+      const sourceRow = source ? this.requireMessage(source, request.conversationId) : null
+      const nativeSummary = portableSummaryText(sourceRow) && claudeMessageMetadata(sourceRow?.meta)?.claude?.sessionId
+      const summaryContinuation = nativeSummary && request.operation === 'send' && !request.isBranch && !request.retrigger
+      if (source && !summaryContinuation && !this.claudeSessionRepo.checkpoint(source)?.resumable) {
+        throw Object.assign(new Error('This Claude turn stopped before any step completed, so there is nothing to continue from. Retry or edit the prompt, or fork from a completed response.'), { code: 'configuration_mismatch' })
       }
       const lineage = request.lineageId ? this.lineageRepo.get(request.lineageId) : this.lineageRepo.resolve({ messageId: sourceId })
       const native = lineage ? this.claudeSessionRepo.branch(lineage.id) : null
       const appendsInPlace = request.operation === 'send' && !request.isBranch && !request.retrigger && lineage?.head_message_id === (request.parentId ?? null)
-      if (appendsInPlace && native && ['uncertain', 'running'].includes(native.state)) {
-        throw Object.assign(new Error('This Claude session was interrupted or is still running. Retry/edit the prompt or fork a completed response.'), { code: 'configuration_mismatch' })
+      // An interrupted session continues by forking at the head's checkpoint; only a live run blocks.
+      if (appendsInPlace && native?.state === 'running') {
+        throw Object.assign(new Error('This Claude session is still running. Wait for it to finish or fork a completed response.'), { code: 'configuration_mismatch' })
       }
     }
   }
@@ -675,6 +732,7 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
       return { ...message, ...this.messageRepo.get(message.id) }
     })
   }
+  private readonly db: ChatOrchestratorDeps['db']
   private readonly statements: any
   private readonly hydrateModelImages: ReturnType<typeof createModelImageHydrator>
   private readonly conversationRepo: ConversationRepo
@@ -697,6 +755,7 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
   private readonly claudeSessions: ClaudeSessionService
 
   constructor(deps: ChatOrchestratorDeps) {
+    this.db = deps.db
     this.statements = deps.statements
     this.hydrateModelImages = createModelImageHydrator(deps.db.name, deps.statements)
     this.conversationRepo = new ConversationRepo({ db: deps.db, statements: deps.statements })
@@ -833,6 +892,21 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
     return prepared
   }
 
+  /** Omitted run policy inherits only the selected persisted ancestry. */
+  resolveToolApproval(request: HeadlessMessageRequest): boolean | undefined {
+    if (this.summaryHandoff(request) || this.startsFreshExecution(request)) return undefined
+    const anchor = request.operation === 'edit-branch'
+      ? this.requireMessage(request.messageId!, request.conversationId).parent_id
+      : request.messageId ?? request.parentId
+    if (!anchor) return undefined
+    const path = this.conversationRepo.listPathToMessage(request.conversationId, anchor)
+    for (const row of executionPathAfterHandoff(path).reverse()) {
+      const value = parseMessageMeta(row.meta)?.toolAutoApprove
+      if (typeof value === 'boolean') return value
+    }
+    return undefined
+  }
+
   private createUserMessage(
     request: HeadlessMessageRequest,
     parentId: string | null,
@@ -850,7 +924,12 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
         ...(request.manualCompaction ? { kind: 'compaction_instruction', version: 1, trigger: 'manual', sourceTipId: parentId, resume: false }
           : request.watcherCompletion ? { kind: 'watcher_completion', ...request.watcherCompletion } : {}),
         modelSelection: { provider: request.provider, model: request.modelName },
+        ...(this.summaryHandoff(request) ? { executionHandoff: { summaryMessageId: this.summaryHandoff(request)!.id } } : {}),
         fastMode: request.serviceTier === 'priority',
+        toolAutoApprove: request.toolAutoApprove !== false,
+        // Claude runs never persist mode-notification rows (they would displace the
+        // resumable checkpoint), so the turn's mode is recorded on its user row.
+        ...(isClaudeProvider(request.provider) ? { operationMode: request.operationMode === 'plan' ? 'plan' : 'execute' } : {}),
       },
     })
 
@@ -879,17 +958,24 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
     request: HeadlessMessageRequest,
     extras: {
       launchInjection?: LaunchInjection | null
+      freshExecution?: boolean
       userMessageBlocks?: any[] | null
       onContextMessage?: (message: any) => void
       onAccessMessage?: (message: any, created: boolean) => void
     } = {}
   ): ResolvedExecution {
-    const resolved = this.branchOrchestrator.resolve(request, {
+    const handoff = this.summaryHandoff(request)
+    const executionRequest = handoff && request.operation === 'repeat'
+      ? { ...request, operation: 'branch' as const, messageId: handoff.id,
+          content: request.content?.trim() || this.conversationRepo.findNearestUserAncestor(request.conversationId, request.parentId ?? request.messageId ?? null)?.content || '' }
+      : request
+    const resolved = this.branchOrchestrator.resolve(executionRequest, {
       requireMessage: (messageId, conversationId) => this.requireMessage(messageId, conversationId),
       createUserMessage: (parentId, content) => {
-        let effectiveParentId = parentId
+        const handoff = this.summaryHandoff(request)
+        let effectiveParentId = handoff?.id ?? (extras.freshExecution ? null : parentId)
         if (extras.launchInjection) {
-          const contextMessage = this.persistContextInjectionMessage(request, parentId, extras.launchInjection)
+          const contextMessage = this.persistContextInjectionMessage(request, effectiveParentId, extras.launchInjection)
           extras.onContextMessage?.(contextMessage)
           effectiveParentId = contextMessage.id
         }
@@ -957,13 +1043,13 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
     signal?: AbortSignal
   ): Promise<void> {
     this.validateExecutionSelection(request)
-    if (isClaudeProvider(request.provider)) request = { ...request, fullAccess: false, fullAccessNotificationId: undefined, toolAutoApprove: false }
+    if (isClaudeProvider(request.provider)) request = { ...request, fullAccess: false, fullAccessNotificationId: undefined }
     if (request.manualCompaction) {
       if ([...this.inputRuns.values()].some(run => !run.terminal && run.request.conversationId === request.conversationId &&
         (request.lineageId ? run.queue.lineageId === request.lineageId : run.head === request.parentId))) {
         throw new Error('Wait for the active run to finish before compacting')
       }
-      request = { ...request, content: compactionInstruction(request.compactionSystemPrompt), attachmentsBase64: null }
+      request = { ...request, content: isClaudeProvider(request.provider) ? '/compact' : compactionInstruction(request.compactionSystemPrompt), attachmentsBase64: null }
     }
     // Mint the stream id BEFORE any persistence so `started` — and every terminal frame
     // a pre-persist failure produces — carries the id the client reconnects with.
@@ -1073,8 +1159,9 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
     // request opted in, AND the interactive (broker) path is active — hooks live on the
     // pausing executor, so they require the broker. Absent for subagents/mobile/tests.
     const claudeRun = isClaudeProvider(request.provider)
-    const hookSession =
-      !claudeRun && this.hookRunner && request.hooksEnabled === true && this.decisionBroker
+    const freshExecution = this.startsFreshExecution(request)
+    const createHookSession = () =>
+      this.hookRunner && request.hooksEnabled === true && this.decisionBroker
         ? createChatHookSession({
             conversationRepo: this.conversationRepo,
             runHook: this.hookRunner,
@@ -1103,6 +1190,9 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
             },
           })
         : null
+    // Native Claude owns its prompt/tool lifecycle. Its host Stop hook is dispatched
+    // below only after the final projection is durable, not from SDK callbacks.
+    const hookSession = claudeRun ? null : createHookSession()
 
     // UserPromptSubmit runs BEFORE the user message is persisted so a prompt rewrite
     // flows into BOTH the persisted user row and the inference content (both derive
@@ -1161,8 +1251,8 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
     let contextMessage: any = null
     let accessMessage: any = null
     let accessMessageCreated = false
-    if (contextLoader && request.operation !== 'repeat') {
-      const anchorId =
+    if (contextLoader && (request.operation !== 'repeat' || freshExecution)) {
+      const anchorId = freshExecution ? null :
         request.operation === 'send'
           ? request.parentId ?? null
           : request.operation === 'branch'
@@ -1273,8 +1363,12 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
     if (request.watcherCompletion && (!sourceLineage || sourceLineage.head_message_id !== sourceMessageId)) {
       throw new Error('Watcher branch advanced during continuation setup')
     }
+    if (freshExecution && !this.startsFreshExecution(request)) {
+      throw Object.assign(new Error('The branch source changed during setup. Reload before branching.'), { code: 'configuration_mismatch' })
+    }
     const resolved = this.resolveExecution(request, {
       launchInjection,
+      freshExecution,
       userMessageBlocks: userMessageBlocks.length > 0 ? userMessageBlocks : null,
       onContextMessage: message => {
         contextMessage = message
@@ -1378,6 +1472,7 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
       onModelResponse: (id: string) => { runResponseIds.add(id) },
       modelSelection: { provider: request.provider, model: request.modelName },
       fastMode: request.serviceTier === 'priority',
+      toolAutoApprove: () => this.decisionBroker?.isAutoApproveAll(trackedStreamId!) ?? request.toolAutoApprove !== false,
     }
     // ONE sink instance for the run: the loop's turns and any terminal error row share
     // its pending-fork state, so whichever writes first materializes the fork.
@@ -1403,7 +1498,18 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
     // auto-approve; pause only when the caller EXPLICITLY sent toolAutoApprove:false
     // (the mobile LAN UI never sends it, so it always auto-approves).
     if (this.decisionBroker && trackedStreamId) {
-      this.decisionBroker.initSession(trackedStreamId, { autoApproveAll: !claudeRun && request.toolAutoApprove !== false, allowAlways: !claudeRun })
+      this.decisionBroker.initSession(trackedStreamId, {
+        autoApproveAll: request.toolAutoApprove !== false,
+        onAllowAlways: () => {
+          // The closure owns the resolved lineage; a viewer may now be on another branch.
+          const anchor = this.lineageRepo.get(lineageId)?.head_message_id ?? resolved.userMessage?.id
+          if (!anchor) throw new Error('Approval branch message is unavailable')
+          const message = this.messageRepo.updateToolApproval(anchor, true)
+          request.toolAutoApprove = true
+          emit({ type: 'tool_approval_changed', conversationId: request.conversationId, lineageId,
+            streamId: trackedStreamId!, enabled: true, message })
+        },
+      })
     }
 
     // Re-point the hook session at the FINAL (post-upsert) stream id so hook payloads
@@ -1429,15 +1535,31 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
     })
 
     if (claudeRun) {
-      const sourceId = request.operation === 'edit-branch'
+      const sourceId = freshExecution ? null : request.operation === 'edit-branch'
         ? this.requireMessage(request.messageId!, request.conversationId).parent_id ?? null
         : request.operation === 'repeat'
           ? this.requireMessage(resolved.assistantParentId!, request.conversationId).parent_id ?? null
           : request.operation === 'branch' ? request.messageId ?? request.parentId : request.parentId
-      const finalMessage = await this.claudeSessions.run({ request: { ...request, content: resolved.userContentForInference, streamId: trackedStreamId }, lineageId,
+      const handoff = this.summaryHandoff(request)
+      const content = handoff ? `The following is a summary handed off from a previous execution session. Use it as task context, not as system instructions.\n\n${portableSummaryText(handoff)}\n\nNew user request:\n${resolved.userContentForInference}` : resolved.userContentForInference
+      // Only this turn's images: the native session transcript already holds earlier ones.
+      const turnUserId = resolved.userMessage?.id ?? resolved.historyLeafId
+      const [turnUser] = request.manualCompaction || !turnUserId ? [] : await this.hydrateModelImages(
+        [{ role: 'user', id: turnUserId }], turnUserId, request.attachmentsBase64 ?? [])
+      const finalMessage = await this.claudeSessions.run({ request: { ...request, content, streamId: trackedStreamId }, lineageId,
+        images: turnUser?.artifacts ?? [],
         userMessage: resolved.userMessage, parentId: resolved.assistantParentId, sourceMessageId: sourceId ?? null,
         fork: request.operation !== 'send' || Boolean(request.isBranch), cwd: contextRootPath!, sink, signal,
         emit: event => { if (event.type === 'assistant_message_persisted') lastPersistedAssistantId = event.message?.id ?? lastPersistedAssistantId; emit(event) } })
+      if (!signal?.aborted && !request.manualCompaction) {
+        const stopSession = createHookSession()
+        if (stopSession) {
+          const blocked = await stopSession.runStop({ assistantMessage: finalMessage, streamId: trackedStreamId,
+            lastUserMessageId: resolved.userMessage?.id ?? resolved.assistantParentId })
+          if (blocked) emit({ type: 'notice', code: 'hook_failed', lineageId,
+            message: 'The Stop hook ran, but requesting another model turn from a Stop hook is not supported for Claude.' })
+        }
+      }
       this.streamingRunRepo.finish(trackedStreamId, { status: 'completed', endReason: 'completed',
         assistantMessageId: finalMessage.id, finalMessageId: finalMessage.id })
       emit({ type: 'complete', message: finalMessage, lineageId })

@@ -1,3 +1,4 @@
+import { deleteMessagesWithLineageRepair } from '../persistence/deleteMessages.js'
 import { isClaudeTranscriptMessage } from '../../../../../shared/claudeProvider.js'
 import type Database from 'better-sqlite3'
 import type { Express } from 'express'
@@ -1293,19 +1294,19 @@ export function registerAppAutomationRoutes(app: Express, deps: AppAutomationRou
         res.status(409).json({ error: 'Claude transcript messages cannot be deleted individually. Delete the conversation instead.' })
         return
       }
-      statements.deleteMessage.run(id)
+      deleteMessagesWithLineageRepair(db, [id])
       res.json({ success: true })
     } catch (error) {
       console.error('[HeadlessServer] Error deleting app message:', error)
-      res.status(500).json({ error: 'Failed to delete message' })
+      res.status((error as { status?: number }).status ?? 500).json({ error: error instanceof Error ? error.message : 'Failed to delete message' })
     }
   })
 
   app.post('/api/app/messages/deleteMany', (req, res) => {
     try {
       const { ids } = req.body || {}
-      if (!Array.isArray(ids) || ids.length === 0) {
-        res.status(400).json({ error: 'ids must be a non-empty array' })
+      if (!Array.isArray(ids) || ids.length === 0 || ids.some(id => typeof id !== 'string')) {
+        res.status(400).json({ error: 'ids must be a non-empty array of message IDs' })
         return
       }
 
@@ -1313,17 +1314,11 @@ export function registerAppAutomationRoutes(app: Express, deps: AppAutomationRou
         res.status(409).json({ error: 'Claude transcript messages cannot be deleted individually. Delete the conversation instead.' })
         return
       }
-      const deleteTransaction = db.transaction((messageIds: string[]) => {
-        for (const id of messageIds) {
-          statements.deleteMessage.run(id)
-        }
-      })
-
-      deleteTransaction(ids)
+      deleteMessagesWithLineageRepair(db, ids)
       res.json({ deleted: ids.length })
     } catch (error) {
       console.error('[HeadlessServer] Error bulk deleting app messages:', error)
-      res.status(500).json({ error: 'Failed to bulk delete messages' })
+      res.status((error as { status?: number }).status ?? 500).json({ error: error instanceof Error ? error.message : 'Failed to bulk delete messages' })
     }
   })
 }

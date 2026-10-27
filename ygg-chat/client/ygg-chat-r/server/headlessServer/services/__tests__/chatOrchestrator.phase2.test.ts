@@ -8,6 +8,11 @@ import { createRequire } from 'node:module'
 import { CLAUDE_SESSION_SCHEMA } from '../../persistence/claudeSessionRepo.js'
 import { MessageRepo } from '../../persistence/messageRepo.js'
 import { LineageRepo } from '../../persistence/lineageRepo.js'
+import { normalizeHostExecutionPreferences } from '../../../../../../shared/hostExecutionPreferences.js'
+import { DecisionBroker } from '../decisionBroker.js'
+import { RunAdmissionService } from '../runAdmissionService.js'
+import { RunSessionRegistry } from '../runSessionRegistry.js'
+import { OperationReceiptRepo, OPERATION_RECEIPT_SCHEMA } from '../../persistence/operationReceiptRepo.js'
 import {
   ChatOrchestrator,
   linkPreparedAttachmentsToMessage,
@@ -299,6 +304,17 @@ describe('source lineage membership validation', () => {
     if (testDirectory) rmSync(testDirectory, { recursive: true, force: true })
   })
 
+  it('fences real constructor admission during cloud deletion and releases it afterward', async () => {
+    const { withMessageDeletionLock } = await import('../../persistence/deleteMessages.js')
+    const source = messageRepo.createMessage({ conversationId: 'c1', parentId: null, role: 'user', content: 'source' })
+    await withMessageDeletionLock(db, [source.id], async () => {
+      expect(() => orchestrator.validateExecutionSelection({ operation: 'send', conversationId: 'c1',
+        provider: 'openaichatgpt', modelName: 'test', content: 'next', parentId: source.id } as any)).toThrow('deletion is in progress')
+    })
+    expect(() => orchestrator.validateExecutionSelection({ operation: 'send', conversationId: 'c1',
+      provider: 'openaichatgpt', modelName: 'test', content: 'next', parentId: source.id } as any)).not.toThrow()
+  })
+
   it('dispatches Claude outside the Graviton loop, locks identity and preserves historical fork placement', async () => {
     db.exec(CLAUDE_SESSION_SCHEMA)
     const calls: any[] = []
@@ -323,8 +339,12 @@ describe('source lineage membership validation', () => {
     await expect(orchestrator.runMessage({ ...base, parentId: first.id, modelName: 'different' }, () => {})).rejects.toThrow('fixed provider')
     await expect(orchestrator.runMessage({ ...base, parentId: first.id, provider: 'openaichatgpt' }, () => {})).rejects.toThrow('fixed provider')
     await orchestrator.runMessage({ ...base, parentId: first.id, content: 'continue' }, () => {})
-    await orchestrator.runMessage({ ...base, operation: 'branch', messageId: first.id, content: 'fork' }, () => {})
+    await orchestrator.runMessage({ ...base, operation: 'branch', messageId: first.id, content: 'fork', operationMode: 'execute' }, () => {})
     expect(calls[2]).toMatchObject({ sourceMessageId: first.id, fork: true })
+    // No mode-notification rows: each Claude user row records its own turn's mode.
+    const metaOf = (row: any) => typeof row.meta === 'string' ? JSON.parse(row.meta) : row.meta
+    expect(metaOf(events.find(event => event.type === 'user_message_persisted').message).operationMode).toBe('plan')
+    expect(metaOf(statements.getMessageById.get(calls[2].parentId)).operationMode).toBe('execute')
     expect(statements.getMessageById.get(calls[2].parentId).parent_id).toBe(first.id)
     expect(calls[2].lineageId).not.toBe(calls[0].lineageId)
     const originalUser = events.find(event => event.type === 'user_message_persisted').message
@@ -337,15 +357,351 @@ describe('source lineage membership validation', () => {
     const partial = messageRepo.createMessage({ conversationId: 'c1', parentId: first.id, role: 'assistant', content: 'partial', meta: { modelSelection: { provider: 'claudecode', model: base.modelName }, claude: { partial: true } } })
     const afterPartial = (db.prepare('SELECT COUNT(*) AS n FROM messages').get() as any).n
     expect(afterPartial).toBe(count.n + 1)
-    await expect(orchestrator.runMessage({ ...base, parentId: partial.id }, () => {})).rejects.toThrow('incomplete')
+    await expect(orchestrator.runMessage({ ...base, parentId: partial.id }, () => {})).rejects.toThrow('nothing to continue from')
     expect((db.prepare('SELECT COUNT(*) AS n FROM messages').get() as any).n).toBe(afterPartial)
     const currentHead = db.prepare('SELECT head_message_id FROM lineages WHERE id=?').get(calls[0].lineageId) as any
-    db.prepare("UPDATE claude_branch_sessions SET state='uncertain' WHERE lineage_id=?").run(calls[0].lineageId)
-    await expect(orchestrator.runMessage({ ...base, parentId: currentHead.head_message_id, lineageId: calls[0].lineageId }, () => {})).rejects.toThrow('interrupted')
+    db.prepare("UPDATE claude_branch_sessions SET state='running' WHERE lineage_id=?").run(calls[0].lineageId)
+    await expect(orchestrator.runMessage({ ...base, parentId: currentHead.head_message_id, lineageId: calls[0].lineageId }, () => {})).rejects.toThrow('still running')
     expect((db.prepare('SELECT COUNT(*) AS n FROM messages').get() as any).n).toBe(afterPartial)
+    // An interrupted head with a checkpoint continues in place; the session service forks natively.
+    db.prepare("UPDATE claude_branch_sessions SET state='interrupted' WHERE lineage_id=?").run(calls[0].lineageId)
+    await orchestrator.runMessage({ ...base, parentId: currentHead.head_message_id, lineageId: calls[0].lineageId, content: 'after sleep' }, () => {})
+    expect(calls[5]).toMatchObject({ lineageId: calls[0].lineageId, sourceMessageId: currentHead.head_message_id, fork: false })
     await orchestrator.runMessage({ ...base, retrigger: true, parentId: first.id, lineageId: calls[0].lineageId, content: 'retry stopped input' }, () => {})
-    expect(calls[5].lineageId).not.toBe(calls[0].lineageId)
-    expect(calls[5].sourceMessageId).toBe(first.id)
+    expect(calls[6].lineageId).not.toBe(calls[0].lineageId)
+    expect(calls[6].sourceMessageId).toBe(first.id)
+  })
+
+  it('runs Claude Stop once after durable output with the real turn anchor for send, branch, edit and repeat', async () => {
+    db.exec(CLAUDE_SESSION_SCHEMA)
+    const events: any[] = []
+    const inputs: any[] = []
+    const hooks: any[] = []
+    const hookRunner = vi.fn(async (req: any) => {
+      expect(req.event).toBe('Stop')
+      expect(events.at(-1)?.type).toBe('assistant_message_persisted')
+      expect(statements.getMessageById.get(req.messageId).content).toBe('final answer')
+      hooks.push({ ...req, ...req.resolveLineage() })
+      return { matched: true, hookCount: 1, launchedAsyncHookCount: 1 }
+    })
+    const claudeSessions = { run: vi.fn(async (input: any) => {
+      inputs.push(input)
+      const intermediate = input.sink.persistAssistantMessage({ conversationId: 'c1', parentId: input.parentId,
+        modelName: input.request.modelName, content: 'using tools' })
+      const message = input.sink.persistAssistantMessage({ conversationId: 'c1', parentId: intermediate.id,
+        modelName: input.request.modelName, content: 'final answer',
+        meta: { claude: { sessionId: 'native', messageUuid: `uuid-${inputs.length}` } } })
+      db.prepare('INSERT INTO claude_message_checkpoints VALUES (?, ?, ?, ?, 1)').run(message.id, 'native', `uuid-${inputs.length}`, testDirectory)
+      input.emit({ type: 'assistant_message_persisted', message, lineageId: input.lineageId })
+      return message
+    }) }
+    orchestrator = new ChatOrchestrator({ db, statements, providerRouter: providerRouter as any,
+      decisionBroker: new DecisionBroker(), hookRunner, claudeSessions: claudeSessions as any })
+    const base: any = { operation: 'send', conversationId: 'c1', provider: 'claudecode', modelName: 'claude-sonnet-5-5',
+      content: 'hello', rootPath: testDirectory, hooksEnabled: true, localApiBase: 'http://127.0.0.1:3002/api' }
+    await orchestrator.runMessage(base, event => events.push(event))
+    const first = events.find(event => event.type === 'complete').message
+    const userId = inputs[0].parentId
+    await orchestrator.runMessage({ ...base, operation: 'branch', messageId: first.id, content: 'fork' }, event => events.push(event))
+    await orchestrator.runMessage({ ...base, operation: 'edit-branch', messageId: userId, content: 'edited' }, event => events.push(event))
+    await orchestrator.runMessage({ ...base, operation: 'repeat', parentId: userId, content: '' }, event => events.push(event))
+    expect(hookRunner).toHaveBeenCalledTimes(4)
+    hooks.forEach((req, index) => {
+      expect(req).toMatchObject({ conversationId: 'c1', cwd: testDirectory, provider: 'claudecode', model: base.modelName,
+        operation: ['send', 'branch', 'edit-branch', 'repeat'][index], lastAssistantMessage: 'final answer',
+        lookup: { localApiBase: base.localApiBase }, turn: { lastUserMessageId: inputs[index].parentId, lastAssistantMessageId: req.messageId } })
+      expect(req.parentId).not.toBe(req.turn.lastUserMessageId)
+      expect(req.lineage.ancestorIds).toContain(req.turn.lastUserMessageId)
+      expect(req.lineage.ancestorIds.at(-1)).toBe(req.messageId)
+      expect(req.streamId).toBe(inputs[index].request.streamId)
+    })
+    expect(providerRouter.calls).toHaveLength(0)
+    expect(events.filter(event => event.type === 'complete')).toHaveLength(4)
+  })
+
+  it.each(['disabled', 'no-runner', 'no-broker', 'failed', 'aborted', 'compact', 'hook-failed', 'hook-blocked'])('handles Claude Stop gating and %s without duplicate native execution', async scenario => {
+    db.exec(CLAUDE_SESSION_SCHEMA)
+    const controller = new AbortController()
+    const hookRunner = vi.fn(async () => {
+      if (scenario === 'hook-failed') throw new Error('hook discovery unavailable')
+      return { matched: true, hookCount: 1, blocked: scenario === 'hook-blocked' }
+    })
+    const claudeSessions = { run: vi.fn(async (input: any) => {
+      const message = input.sink.persistAssistantMessage({ conversationId: 'c1', parentId: input.parentId,
+        modelName: input.request.modelName, content: 'answer' })
+      if (scenario === 'failed') throw new Error('native failure')
+      if (scenario === 'aborted') controller.abort()
+      return message
+    }) }
+    orchestrator = new ChatOrchestrator({ db, statements, providerRouter: providerRouter as any,
+      decisionBroker: scenario === 'no-broker' ? undefined : new DecisionBroker(),
+      hookRunner: scenario === 'no-runner' ? undefined : hookRunner, claudeSessions: claudeSessions as any })
+    const events: any[] = []
+    const run = orchestrator.runMessage({ operation: 'send', conversationId: 'c1', provider: 'claudecode',
+      modelName: 'claude-sonnet-5-5', content: 'hello', rootPath: testDirectory,
+      hooksEnabled: scenario !== 'disabled', manualCompaction: scenario === 'compact' }, event => events.push(event), controller.signal)
+    if (scenario === 'failed') await expect(run).rejects.toThrow('native failure')
+    else await run
+    expect(hookRunner).toHaveBeenCalledTimes(scenario.startsWith('hook-') ? 1 : 0)
+    expect(claudeSessions.run).toHaveBeenCalledOnce()
+    if (scenario.startsWith('hook-')) {
+      expect(events.some(event => event.type === 'notice' && event.code === 'hook_failed')).toBe(true)
+      expect(events.filter(event => event.type === 'complete')).toHaveLength(1)
+    }
+  })
+
+  it.each([undefined, true, false])('initializes Claude approval from the accepted toolAutoApprove=%s setting', async toolAutoApprove => {
+    db.exec(CLAUDE_SESSION_SCHEMA)
+    const broker = new DecisionBroker()
+    const claudeSessions = { run: vi.fn(async (input: any) => {
+      expect(broker.isAutoApproveAll(input.request.streamId)).toBe(toolAutoApprove !== false)
+      if (toolAutoApprove === false) {
+        const pending = broker.requestDecision({ streamId: input.request.streamId, toolCallId: 'native-tool', kind: 'permission' })
+        expect(broker.resolve(input.request.streamId, 'native-tool', 'allow_always')).toBe(true)
+        await expect(pending).resolves.toBe('allow_always')
+      }
+      return input.sink.persistAssistantMessage({ conversationId: 'c1', parentId: input.parentId,
+        modelName: input.request.modelName, content: 'native answer' })
+    }) }
+    orchestrator = new ChatOrchestrator({ db, statements, providerRouter: providerRouter as any,
+      decisionBroker: broker, claudeSessions: claudeSessions as any })
+    await orchestrator.runMessage({ operation: 'send', conversationId: 'c1', provider: 'claudecode',
+      modelName: 'claude-sonnet-5-5', content: 'hello', streamId: 'approval-stream', rootPath: testDirectory, toolAutoApprove }, () => {})
+    expect(claudeSessions.run).toHaveBeenCalledOnce()
+  })
+
+  it('carries Claude Allow all across completed runs and host reconstruction through actual admission, retaining explicit Ask', async () => {
+    db.exec(CLAUDE_SESSION_SCHEMA)
+    db.exec(OPERATION_RECEIPT_SCHEMA)
+    let broker = new DecisionBroker()
+    const sessions = new RunSessionRegistry()
+    const policies: boolean[] = []
+    const answers: any[] = []
+    const events: any[] = []
+    const claudeSessions = { run: vi.fn(async (input: any) => {
+      const streamId = input.request.streamId
+      policies.push(broker.isAutoApproveAll(streamId))
+      if (policies.length === 1) {
+        // An assistant tool row can already exist when the permission is answered.
+        input.sink.persistAssistantMessage({ conversationId: 'c1', parentId: input.parentId,
+          modelName: input.request.modelName, content: 'using tool' })
+        const pending = broker.requestDecision({ streamId, toolCallId: 'write', kind: 'permission' })
+        expect(broker.resolve(streamId, 'write', 'allow_always')).toBe(true)
+        await expect(pending).resolves.toBe('allow_always')
+      }
+      const message = input.sink.persistAssistantMessage({ conversationId: 'c1', parentId: input.parentId,
+        modelName: input.request.modelName, content: 'done', meta: { claude: { sessionId: 'native' } } })
+      db.prepare('INSERT INTO claude_message_checkpoints VALUES (?, ?, ?, ?, 1)').run(message.id, 'native', `uuid-${answers.length}`, testDirectory)
+      answers.push(message)
+      return message
+    }) }
+    const createAdmission = () => {
+      orchestrator = new ChatOrchestrator({ db, statements, providerRouter: providerRouter as any, decisionBroker: broker, claudeSessions: claudeSessions as any })
+      const receipts = new OperationReceiptRepo(db)
+      return new RunAdmissionService({ epoch: 'e', receipts, sessions, orchestrator,
+        executionDefaults: () => normalizeHostExecutionPreferences({ toolAutoApprove: false }) })
+    }
+    try {
+      let admission = createAdmission()
+      const base: any = { operation: 'send', conversationId: 'c1', provider: 'claudecode', modelName: 'claude-sonnet-5-5', rootPath: testDirectory, content: 'work' }
+      admission.admit({ ...base, operationId: 'first', streamId: 'first', toolAutoApprove: false }, 'e')
+      await vi.waitFor(() => expect(sessions.get('first')?.isTerminal()).toBe(true))
+      expect(sessions.get('first')?.effectiveConfiguration?.toolAutoApprove).toBe(true)
+      expect(JSON.parse(messageRepo.get(answers[0].id).meta).toolAutoApprove).toBe(true)
+      expect(sessions.get('first')?.attach({ send: frame => events.push(frame.event), end: () => {} })).toMatchObject({ status: 'replayed-terminal' })
+      expect(events.some(event => event.type === 'tool_approval_changed')).toBe(true)
+      // Recreate all runtime approval state; only persisted ancestry remains.
+      broker = new DecisionBroker()
+      admission = createAdmission()
+      admission.admit({ ...base, operationId: 'second', streamId: 'second', parentId: answers[0].id }, 'e')
+      await vi.waitFor(() => expect(sessions.get('second')?.isTerminal()).toBe(true))
+      admission.admit({ ...base, operationId: 'third', streamId: 'third', parentId: answers[1].id, toolAutoApprove: false }, 'e')
+      await vi.waitFor(() => expect(sessions.get('third')?.isTerminal()).toBe(true))
+      const summary = messageRepo.createMessage({ conversationId: 'c1', parentId: answers[0].id, role: 'assistant', content: 'portable',
+        meta: { kind: 'compaction_summary', state: 'committed', toolAutoApprove: true } })
+      expect(orchestrator.resolveToolApproval({ ...base, operation: 'branch', messageId: summary.id })).toBeUndefined()
+      expect(policies).toEqual([false, true, false])
+      expect(JSON.parse(messageRepo.get(answers[2].id).meta).toolAutoApprove).toBe(false)
+    } finally { sessions.disposeAll() }
+  })
+
+  it('starts clean provider branches in both directions without carrying old scaffolding or mutating the source', async () => {
+    db.exec(CLAUDE_SESSION_SCHEMA)
+    writeFileSync(path.join(testDirectory, 'AGENTS.md'), 'Fresh workspace instructions')
+    const oldContext = messageRepo.createMessage({ conversationId: 'c1', parentId: null, role: 'user',
+      content: 'STALE launch instructions', meta: { kind: 'context_injection', files: [path.join(testDirectory, 'AGENTS.md')] } })
+    const original = messageRepo.createMessage({ conversationId: 'c1', parentId: oldContext.id, role: 'user',
+      content: 'original prompt', meta: { modelSelection: { provider: 'openaichatgpt', model: 'test' } } })
+    const sourceLineage = new LineageRepo({ db, statements }).createRoot({ conversationId: 'c1', rootMessageId: original.id })
+    const nativeCalls: any[] = []
+    const claudeSessions = { run: vi.fn(async (input: any) => {
+      nativeCalls.push(input)
+      return input.sink.persistAssistantMessage({ conversationId: 'c1', parentId: input.parentId,
+        content: 'Claude answer', modelName: input.request.modelName, meta: { claude: { sessionId: 'native' } } })
+    }) }
+    orchestrator = new ChatOrchestrator({ db, statements, providerRouter: providerRouter as any, claudeSessions: claudeSessions as any })
+    vi.spyOn(orchestrator as any, 'loadHostSkills').mockResolvedValue([])
+    const base: any = { operation: 'edit-branch', conversationId: 'c1', messageId: original.id, lineageId: sourceLineage.id,
+      provider: 'claudecode', modelName: 'claude-sonnet-5-5', content: 'new native prompt', rootPath: testDirectory, autoMemoryEnabled: false }
+    // An accepted source run must not reserve a separate fresh edit's provider.
+    ;(orchestrator as any).inputRuns.set('source-pending', { terminal: false, request: { ...base, operation: 'send', provider: 'openaichatgpt' }, queue: {} })
+    const nativeEvents: any[] = []
+    await orchestrator.runMessage(base, event => nativeEvents.push(event))
+    const nativeUser = nativeEvents.find(event => event.type === 'user_message_persisted').message
+    expect(nativeUser.parent_id).toBeNull()
+    expect(nativeEvents.filter(event => event.type === 'user_message_persisted')).toHaveLength(1)
+    expect(nativeCalls[0]).toMatchObject({ sourceMessageId: null, fork: true, request: { content: 'new native prompt' } })
+    expect(providerRouter.calls).toHaveLength(0)
+    expect(nativeUser.lineage_id).not.toBe(sourceLineage.id)
+    expect(statements.getLineageById.get(sourceLineage.id)).toMatchObject({ head_message_id: original.id })
+    expect(statements.getMessageById.get(original.id)).toMatchObject({ parent_id: oldContext.id, content: 'original prompt' })
+    const nativeSessionBefore = db.prepare('SELECT * FROM claude_branch_sessions WHERE lineage_id=?').get(nativeUser.lineage_id)
+    ;(orchestrator as any).inputRuns.delete('source-pending')
+    ;(orchestrator as any).inputRuns.set('fresh-pending', { terminal: false, request: base, queue: {} })
+    expect(() => orchestrator.validateExecutionSelection({ ...base, operation: 'send', parentId: original.id,
+      provider: 'openaichatgpt', modelName: 'test' })).not.toThrow()
+    ;(orchestrator as any).inputRuns.delete('fresh-pending')
+    const normalEvents: any[] = []
+    await orchestrator.runMessage({ ...base, messageId: nativeUser.id, lineageId: nativeUser.lineage_id,
+      provider: 'openaichatgpt', modelName: 'test', content: 'back to normal' }, event => normalEvents.push(event))
+    const normalUser = normalEvents.filter(event => event.type === 'user_message_persisted').map(event => event.message).find(row => row.content === 'back to normal')
+    expect(normalUser.lineage_id).not.toBe(nativeUser.lineage_id)
+    const newContext = statements.getMessageById.get(normalUser.parent_id)
+    expect(JSON.parse(newContext.meta).kind).toBe('context_injection')
+    expect(newContext.parent_id).toBeNull()
+    expect(newContext.content).toContain('Fresh workspace instructions')
+    expect(providerRouter.calls).toHaveLength(1)
+    expect(JSON.stringify(providerRouter.calls[0])).not.toContain('STALE launch instructions')
+    expect(JSON.stringify(providerRouter.calls[0])).not.toContain('Claude answer')
+    expect(db.prepare('SELECT * FROM claude_branch_sessions WHERE lineage_id=?').get(nativeUser.lineage_id)).toEqual(nativeSessionBefore)
+    expect(statements.getMessageById.get(nativeUser.id).parent_id).toBeNull()
+    // Returning to the original first prompt can choose a different Claude model/session.
+    await orchestrator.runMessage({ ...base, messageId: normalUser.id, lineageId: normalUser.lineage_id,
+      modelName: 'claude-opus-5-5', content: 'native again' }, () => {})
+    expect(nativeCalls[1].sourceMessageId).toBeNull()
+    expect(nativeCalls[1].lineageId).not.toBe(nativeCalls[0].lineageId)
+    expect(nativeCalls[1].request.modelName).toBe('claude-opus-5-5')
+  })
+
+  it('routes manual Claude compaction natively and rejects unmarked native slash commands before persistence', async () => {
+    db.exec(CLAUDE_SESSION_SCHEMA)
+    let captured: any
+    const claudeSessions = { run: vi.fn(async (input: any) => {
+      captured = input
+      const row = input.sink.persistAssistantMessage({ conversationId: 'c1', parentId: input.parentId, modelName: input.request.modelName,
+        content: 'native compact state', statisticsKind: 'compaction_summary', meta: { kind: 'compaction_summary', state: 'committed', claude: { sessionId: 'source-native' } } })
+      input.emit({ type: 'context_compaction', status: 'completed', summaryMessage: row, parentMessageId: row.id,
+        turn: 0, reportedTokens: 0, projectedTokens: 0, effectiveTokens: 0, contextLength: 0, thresholdPercent: 0 })
+      return row
+    }) }
+    orchestrator = new ChatOrchestrator({ db, statements, providerRouter: providerRouter as any, claudeSessions: claudeSessions as any })
+    const source = messageRepo.createMessage({ conversationId: 'c1', parentId: null, role: 'assistant', content: 'native response',
+      meta: { modelSelection: { provider: 'claudecode', model: 'claude-sonnet-5-5' } } })
+    const lineage = new LineageRepo({ db, statements }).createRoot({ conversationId: 'c1', rootMessageId: source.id })
+    db.prepare('INSERT INTO claude_branch_sessions VALUES (?, ?, ?, ?, ?, ?)').run(lineage.id, 'c1', 'claude-sonnet-5-5', testDirectory, 'source-native', 'ready')
+    db.prepare('INSERT INTO claude_message_checkpoints VALUES (?, ?, ?, ?, 1)').run(source.id, 'source-native', 'a', testDirectory)
+    const base: any = { operation: 'send', conversationId: 'c1', parentId: source.id, lineageId: lineage.id,
+      provider: 'claudecode', modelName: 'claude-sonnet-5-5', content: '/compact', rootPath: testDirectory }
+    const before = (db.prepare('SELECT COUNT(*) AS n FROM messages').get() as any).n
+    expect(() => orchestrator.validateExecutionSelection({ ...base, content: '/compact focus' })).toThrow('slash commands')
+    expect((db.prepare('SELECT COUNT(*) AS n FROM messages').get() as any).n).toBe(before)
+    const events: any[] = []
+    await orchestrator.runMessage({ ...base, manualCompaction: true }, event => events.push(event))
+    expect(captured.request).toMatchObject({ manualCompaction: true, content: '/compact', provider: 'claudecode' })
+    expect(captured.sourceMessageId).toBe(source.id)
+    expect(providerRouter.calls).toHaveLength(0)
+    const summary = events.find(event => event.type === 'complete').message
+    expect(JSON.parse(summary.meta)).toMatchObject({ kind: 'compaction_summary', state: 'committed' })
+    expect(() => orchestrator.validateExecutionSelection({ ...base, parentId: summary.id, content: 'followup' })).not.toThrow()
+  })
+
+  it('hands off committed summaries in both directions and preserves source sessions and history', async () => {
+    db.exec(CLAUDE_SESSION_SCHEMA)
+    const calls: any[] = []
+    const claudeSessions = { run: vi.fn(async (input: any) => {
+      calls.push(input)
+      return input.sink.persistAssistantMessage({ conversationId: 'c1', parentId: input.parentId,
+        modelName: input.request.modelName, content: 'native answer', meta: { claude: { sessionId: 'new-native' } } })
+    }) }
+    orchestrator = new ChatOrchestrator({ db, statements, providerRouter: providerRouter as any, claudeSessions: claudeSessions as any })
+    vi.spyOn(orchestrator as any, 'loadHostSkills').mockResolvedValue([])
+    const source = messageRepo.createMessage({ conversationId: 'c1', parentId: null, role: 'user', content: 'SECRET OLD RAW HISTORY',
+      meta: { modelSelection: { provider: 'claudecode', model: 'claude-opus-5-5' } } })
+    const summary = messageRepo.createMessage({ conversationId: 'c1', parentId: source.id, role: 'assistant', content: 'Portable task state',
+      meta: { kind: 'compaction_summary', state: 'committed', claude: { sessionId: 'source-native' }, modelSelection: { provider: 'claudecode', model: 'claude-opus-5-5' } } })
+    const lineage = new LineageRepo({ db, statements }).createRoot({ conversationId: 'c1', rootMessageId: source.id })
+    new LineageRepo({ db, statements }).appendMessage(lineage.id, summary.id)
+    db.prepare('INSERT INTO claude_branch_sessions VALUES (?, ?, ?, ?, ?, ?)').run(lineage.id, 'c1', 'claude-opus-5-5', testDirectory, 'source-native', 'ready')
+    const originalSession = db.prepare('SELECT * FROM claude_branch_sessions WHERE lineage_id=?').get(lineage.id)
+    const events: any[] = []
+    await orchestrator.runMessage({ operation: 'branch', conversationId: 'c1', messageId: summary.id, lineageId: lineage.id,
+      provider: 'openaichatgpt', modelName: 'test', content: 'continue outside Claude', rootPath: testDirectory }, event => events.push(event))
+    expect(JSON.stringify(providerRouter.calls)).toContain('Portable task state')
+    expect(JSON.stringify(providerRouter.calls)).not.toContain('SECRET OLD RAW HISTORY')
+    const handoff = events.find(event => event.type === 'user_message_persisted' && event.message.content === 'continue outside Claude').message
+    expect(JSON.parse(handoff.meta).executionHandoff.summaryMessageId).toBe(summary.id)
+    expect(handoff.lineage_id).not.toBe(lineage.id)
+    // Subsequent sends resolve only the new execution's identity, not the old Claude ancestors.
+    const final = events.find(event => event.type === 'complete').message
+    expect(() => orchestrator.validateExecutionSelection({ operation: 'send', conversationId: 'c1', parentId: final.id,
+      lineageId: handoff.lineage_id, provider: 'openaichatgpt', modelName: 'test', content: 'follow up' })).not.toThrow()
+    const normalSummary = messageRepo.createMessage({ conversationId: 'c1', parentId: final.id, role: 'assistant', content: 'Second portable state',
+      meta: { kind: 'compaction_summary', state: 'committed' } })
+    new LineageRepo({ db, statements }).appendMessage(handoff.lineage_id, normalSummary.id)
+    await orchestrator.runMessage({ operation: 'branch', conversationId: 'c1', messageId: normalSummary.id, lineageId: handoff.lineage_id,
+      provider: 'claudecode', modelName: 'claude-sonnet-5-5', content: 'back to Claude', rootPath: testDirectory }, () => {})
+    expect(calls[0].sourceMessageId).toBeNull()
+    expect(calls[0].request.content).toContain('Second portable state')
+    expect(calls[0].request.content).toContain('back to Claude')
+    expect(calls[0].request.content).not.toContain('SECRET OLD RAW HISTORY')
+    expect(calls[0].lineageId).not.toBe(lineage.id)
+    const redoEvents: any[] = []
+    await orchestrator.runMessage({ operation: 'edit-branch', conversationId: 'c1', messageId: handoff.id, lineageId: handoff.lineage_id,
+      provider: 'openaichatgpt', modelName: 'test', content: 'edited handoff', rootPath: testDirectory }, event => redoEvents.push(event))
+    const redo = redoEvents.find(event => event.type === 'user_message_persisted' && event.message.content === 'edited handoff').message
+    expect(JSON.parse(redo.meta).executionHandoff.summaryMessageId).toBe(summary.id)
+    expect(JSON.stringify(providerRouter.calls.at(-1))).not.toContain('SECRET OLD RAW HISTORY')
+    const nativeUser = statements.getMessageById.get(calls[0].parentId)
+    await orchestrator.runMessage({ operation: 'repeat', conversationId: 'c1', parentId: nativeUser.id, lineageId: calls[0].lineageId,
+      provider: 'claudecode', modelName: 'claude-sonnet-5-5', content: '', rootPath: testDirectory }, () => {})
+    expect(calls[1].sourceMessageId).toBeNull()
+    expect(calls[1].request.content).toContain('Second portable state')
+    expect(calls[1].request.content).toContain('back to Claude')
+    expect(calls[1].lineageId).not.toBe(calls[0].lineageId)
+    expect(db.prepare('SELECT * FROM claude_branch_sessions WHERE lineage_id=?').get(lineage.id)).toEqual(originalSession)
+    expect(statements.getLineageById.get(lineage.id).head_message_id).toBe(summary.id)
+    // An ordinary send at the source summary is not a handoff.
+    expect(() => orchestrator.validateExecutionSelection({ operation: 'send', conversationId: 'c1', parentId: summary.id,
+      lineageId: lineage.id, provider: 'openaichatgpt', modelName: 'test', content: 'no implicit switch' })).toThrow('fixed provider')
+  })
+
+  it('refuses cross-provider mid-history edits, hidden tool/summary ancestors and ordinary continuations before persistence', async () => {
+    db.exec(CLAUDE_SESSION_SCHEMA)
+    for (const ancestor of [
+      { role: 'assistant', content: '', meta: {} },
+      { role: 'system', content: 'summary', meta: { kind: 'compaction_summary', state: 'committed' } },
+      { role: 'user', content: 'earlier user', meta: {} },
+    ]) {
+      const prior = messageRepo.createMessage({ conversationId: 'c1', parentId: null, ...ancestor })
+      const prompt = messageRepo.createMessage({ conversationId: 'c1', parentId: prior.id, role: 'user', content: 'not a fresh root',
+        meta: { modelSelection: { provider: 'openaichatgpt', model: 'test' } } })
+      const before = (db.prepare('SELECT COUNT(*) AS n FROM messages').get() as any).n
+      await expect(orchestrator.runMessage({ operation: 'edit-branch', conversationId: 'c1', messageId: prompt.id,
+        provider: 'claudecode', modelName: 'claude-sonnet-5-5', content: 'no import', rootPath: testDirectory }, () => {})).rejects.toThrow('existing provider history')
+      expect((db.prepare('SELECT COUNT(*) AS n FROM messages').get() as any).n).toBe(before)
+    }
+    const native = messageRepo.createMessage({ conversationId: 'c1', parentId: null, role: 'user', content: 'native root',
+      meta: { modelSelection: { provider: 'claudecode', model: 'claude-sonnet-5-5' } } })
+    const later = messageRepo.createMessage({ conversationId: 'c1', parentId: native.id, role: 'user', content: 'later prompt' })
+    const before = (db.prepare('SELECT COUNT(*) AS n FROM messages').get() as any).n
+    for (const request of [
+      { operation: 'edit-branch', messageId: later.id },
+      { operation: 'branch', messageId: native.id },
+      { operation: 'send', parentId: native.id },
+    ]) {
+      await expect(orchestrator.runMessage({ ...request, conversationId: 'c1', provider: 'openaichatgpt', modelName: 'test', content: 'no switch' } as any, () => {})).rejects.toThrow('fixed provider')
+    }
+    expect((db.prepare('SELECT COUNT(*) AS n FROM messages').get() as any).n).toBe(before)
   })
 
   it.each([true, false])('persists Fast mode %s on user and assistant rows', async fastMode => {

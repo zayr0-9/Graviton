@@ -31,6 +31,14 @@ describe('Matrix wallpaper preferences', () => {
     expect(normalizeMatrixSettings({ columns: 42.8 }).columns).toBe(43)
   })
 
+  it('persists Twilight without falling back to Classic', () => {
+    installWindow()
+    const settings = { preset: 'twilight', fps: 30, speed: 1, columns: 50 } as const
+    expect(normalizeMatrixSettings(settings)).toEqual(settings)
+    saveMatrixSettings(settings)
+    expect(loadMatrixSettings()).toEqual(settings)
+  })
+
   it('persists selection and notifies the existing background channel', () => {
     const { dispatchEvent } = installWindow()
     const settings = { preset: 'operator', fps: 15, speed: 0.5, columns: 40 } as const

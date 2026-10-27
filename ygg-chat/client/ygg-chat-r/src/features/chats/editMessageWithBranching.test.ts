@@ -20,11 +20,16 @@ vi.mock('../../helpers/longTermMemorySettingsStorage', () => ({ loadLongTermMemo
 import type { RootState } from '../../store/store'
 import type { Message } from './chatTypes'
 import chatReducer, { chatSliceActions } from './chatSlice'
-import { editMessageWithBranching, readServerLoopRejection, sendMessage, sendMessageToBranch } from './chatActions'
+import { resolveBranchToolApproval } from './branchToolApproval'
+import { branchModelKey } from './branchModelSelection'
+import { editMessageWithBranching, readServerLoopRejection, respondToToolPermissionAndEnableAll, sendMessage, sendMessageToBranch } from './chatActions'
 import { prepareImageFiles } from './imagePreparation'
 import { runServerChatLoop } from './mainChatClient'
 import { createStreamingRun, finishStreamingRun } from './streamRunTracking'
 import { localApi } from '../../utils/api'
+import { chatSelectionRequested } from './chatSelection'
+import * as inflightStreams from './inflightStreams'
+import { projectServerEvent, type ServerStreamEvent } from './sseProjection'
 
 const message = (id: string | number, parent: string | number | null = null): Message => ({
   id,
@@ -327,4 +332,175 @@ it('forwards explicit Explain child intent through sendMessage without reparenti
   expect(vi.mocked(runServerChatLoop)).toHaveBeenCalledWith(expect.objectContaining({
     operation: 'send', request: expect.objectContaining({ parentId: 'old', isBranch: true, content: 'Explain selected text' }),
   }), expect.anything())
+})
+
+describe('first-prompt provider edit isolation', () => {
+  it.each([
+    ['claudecode', 'claude-sonnet-5-5', 'OpenRouter', 'other-model', 'openrouter'],
+    ['openrouter', 'other-model', 'Claude Code', 'claude-sonnet-5-5', 'claudecode'],
+  ])('captures %s → %s in the edit request without changing source drafts', async (sourceProvider, sourceModel, provider, model, wireProvider) => {
+    const source = { ...message('u1'), meta: { modelSelection: { provider: sourceProvider, model: sourceModel } } }
+    const { dispatch, state } = setup([source], [])
+    state.chat = { ...state.chat, providerState: { ...state.chat.providerState,
+      currentProvider: sourceProvider === 'claudecode' ? 'Claude Code' : 'OpenRouter',
+      providers: [{ name: 'Claude Code' }, { name: 'OpenRouter' }] as any } }
+    const sourceDrafts = state.chat.branchModelDrafts
+    dispatch(chatSliceActions.editingBranchSet(true))
+    dispatch(chatSliceActions.branchEditMessageSelected('u1'))
+    dispatch(chatSliceActions.branchModelSelected({ provider, model }))
+    expect(state.chat.branchModelDrafts).toEqual(sourceDrafts)
+    const pending = dispatch(editMessageWithBranching({ conversationId: 'c1', originalMessageId: 'u1',
+      newContent: 'fresh prompt', think: false, streamId: 'fresh-branch' }))
+    dispatch(chatSliceActions.editingBranchSet(false))
+    expect((await pending).meta.requestStatus).toBe('fulfilled')
+    expect(vi.mocked(runServerChatLoop).mock.calls[0][0].request).toMatchObject({ provider: wireProvider, modelName: model })
+    expect(state.chat.branchModelDrafts).toEqual(sourceDrafts)
+    expect(state.chat.composition.branchEditModelSelection).toBeUndefined()
+    expect(state.chat.providerState.currentProvider).not.toBe(provider)
+  })
+  it('discards a cancelled provider choice and does not reuse it on reopen', () => {
+    const { dispatch, state } = setup([message('u1')], [])
+    dispatch(chatSliceActions.editingBranchSet(true))
+    dispatch(chatSliceActions.branchEditMessageSelected('u1'))
+    dispatch(chatSliceActions.branchModelSelected({ provider: 'Claude Code', model: 'claude-sonnet-5-5' }))
+    dispatch(chatSliceActions.editingBranchSet(false))
+    dispatch(chatSliceActions.editingBranchSet(true))
+    dispatch(chatSliceActions.branchEditMessageSelected('u1'))
+    expect(state.chat.composition.branchEditModelSelection).toBeUndefined()
+    expect(state.chat.branchModelDrafts).toEqual({})
+  })
+})
+
+it.each(['conversation', 'selection', 'clear'] as const)('drops an unsent provider edit on %s navigation', kind => {
+  const { dispatch, state } = setup([message('u1')], [])
+  dispatch(chatSliceActions.editingBranchSet(true))
+  dispatch(chatSliceActions.branchEditMessageSelected('u1'))
+  dispatch(chatSliceActions.branchModelSelected({ provider: 'Claude Code', model: 'claude-sonnet-5-5' }))
+  if (kind === 'conversation') dispatch(chatSliceActions.conversationSet('c2'))
+  else if (kind === 'clear') dispatch(chatSliceActions.conversationCleared())
+  else dispatch(chatSelectionRequested({ requestId: 'nav', target: { kind: 'message', conversationId: 'c1', messageId: 'u1' }, source: 'heimdall' }))
+  expect(state.chat.composition.editingBranch).toBe(false)
+  expect(state.chat.composition.branchEditMessageId).toBeUndefined()
+  expect(state.chat.composition.branchEditModelSelection).toBeUndefined()
+  expect(state.chat.branchModelDrafts).toEqual({})
+})
+
+it.each(['Claude Code', 'OpenRouter'])('uses clean root optimistic/reconnect anchors when switching to %s from launch scaffolding', async provider => {
+  const context = { ...message('context'), meta: { kind: 'context_injection' } }
+  const source = { ...message('u1', 'context'), meta: { modelSelection: {
+    provider: provider === 'Claude Code' ? 'openrouter' : 'claudecode', model: 'old-model',
+  } } }
+  const { dispatch, state, actions } = setup([context, source], [])
+  state.chat = { ...state.chat, providerState: { ...state.chat.providerState,
+    providers: [{ name: 'Claude Code' }, { name: 'OpenRouter' }] as any } }
+  const inflight = vi.spyOn(inflightStreams, 'addInflightStream')
+  dispatch(chatSliceActions.editingBranchSet(true))
+  dispatch(chatSliceActions.branchEditMessageSelected('u1'))
+  dispatch(chatSliceActions.branchModelSelected({ provider, model: 'new-model' }))
+  const result = await dispatch(editMessageWithBranching({ conversationId: 'c1', originalMessageId: 'u1',
+    newContent: 'clean fork', think: false, streamId: 'clean-fork' }))
+  expect(result.meta.requestStatus).toBe('fulfilled')
+  expect(actions.find(action => action.type === chatSliceActions.sendingStarted.type && action.payload.streamId === 'clean-fork')?.payload.lineage.rootMessageId).toBeNull()
+  expect(inflight).toHaveBeenCalledWith(expect.objectContaining({ streamId: 'clean-fork', parentMessageId: null }))
+  expect(vi.mocked(runServerChatLoop).mock.calls[0][0].request.parentId).toBeNull()
+})
+
+it('branches after a committed summary instead of editing it or importing the source identity', async () => {
+  const summary = { ...message('summary', 'u1'), role: 'assistant', content: 'Portable state', meta: { kind: 'compaction_summary', state: 'committed' } } as Message
+  const source = { ...message('u1'), meta: { modelSelection: { provider: 'claudecode', model: 'claude-opus-5-5' } } }
+  const f = setup([source, summary], [])
+  f.dispatch(chatSliceActions.editingBranchSet(true))
+  f.dispatch(chatSliceActions.branchEditMessageSelected('summary'))
+  f.dispatch(chatSliceActions.branchModelSelected({ provider: 'lmstudio', model: 'test-model' }))
+  await f.fork('summary')
+  expect(vi.mocked(runServerChatLoop).mock.calls[0][0]).toMatchObject({ operation: 'branch',
+    path: expect.stringContaining('/summary/branch'), request: { parentId: 'summary', provider: 'lmstudio' } })
+})
+
+it.each([false, true])('normal composer hands off to Claude after summary with restored tail=%s', async restoredTail => {
+  const source = { ...message('u1'), meta: { modelSelection: { provider: 'openrouter', model: 'old-model' } } }
+  const summary = { ...message('summary', 'u1'), role: 'assistant', content: 'Portable state',
+    meta: { kind: 'compaction_summary', state: 'committed' } } as Message
+  const tail = [
+    { ...message('context', 'summary'), meta: { kind: 'context_injection' } },
+    { ...message('mode', 'context'), meta: { kind: 'operation_mode_change' } },
+  ]
+  const h = setup([source, summary, ...(restoredTail ? tail : [])], [])
+  h.state.chat = { ...h.state.chat, conversation: { ...h.state.chat.conversation, currentLineageId: 'source' },
+    providerState: { ...h.state.chat.providerState, providers: [{ name: 'Claude Code' }, { name: 'OpenRouter' }] as any } }
+  h.dispatch(chatSliceActions.branchModelSelected({ provider: 'Claude Code', model: 'claude-sonnet-5-5' }))
+  vi.mocked(runServerChatLoop).mockImplementationOnce(async (params, deps) => {
+    const user = { ...message('handoff', 'summary'), lineage_id: 'fresh-native',
+      meta: { executionHandoff: { summaryMessageId: 'summary' }, modelSelection: { provider: 'claudecode', model: 'claude-sonnet-5-5' } } }
+    const answer = { ...message('native-answer', 'handoff'), role: 'assistant', lineage_id: 'fresh-native' }
+    const events = [
+      { type: 'started', parentId: user.id, lineageId: 'fresh-native' },
+      { type: 'user_message_persisted', message: user, lineageId: 'fresh-native' },
+      { type: 'complete', message: answer, lineageId: 'fresh-native' },
+    ]
+    for (const event of events) for (const action of projectServerEvent(event as unknown as ServerStreamEvent,
+      { streamId: params.streamId, conversationId: params.conversationId })) deps.dispatch(action)
+    return { messageId: null, userMessage: user as Message, providerError: false }
+  })
+  const result = await h.dispatch(sendMessage({ conversationId: 'c1', parent: restoredTail ? 'mode' : 'summary',
+    input: { content: 'continue with Claude' }, repeatNum: 1, think: false, streamId: 'summary-composer' }))
+  expect(result.meta.requestStatus).toBe('fulfilled')
+  expect(vi.mocked(runServerChatLoop).mock.calls[0][0]).toMatchObject({ operation: 'branch',
+    path: '/conversations/c1/messages/summary/branch', request: { parentId: 'summary', lineageId: 'source',
+      provider: 'claudecode', modelName: 'claude-sonnet-5-5', content: 'continue with Claude' } })
+  expect(h.state.chat.conversation.currentLineageId).toBe('fresh-native')
+  expect(h.state.chat.conversation.currentPath).toEqual(['u1', 'summary', 'handoff', 'native-answer'])
+})
+
+it('keeps a same-provider post-summary send as an ordinary continuation', async () => {
+  const summary = { ...message('summary'), role: 'assistant', content: 'Portable state',
+    meta: { kind: 'compaction_summary', state: 'committed', modelSelection: { provider: 'claudecode', model: 'claude-sonnet-5-5' } } } as Message
+  const h = setup([summary], [])
+  h.state.chat = { ...h.state.chat, providerState: { ...h.state.chat.providerState, providers: [{ name: 'Claude Code' }] as any } }
+  const result = await h.dispatch(sendMessage({ conversationId: 'c1', parent: 'summary',
+    input: { content: 'continue' }, repeatNum: 1, think: false, streamId: 'native-continue' }))
+  expect(result.meta.requestStatus).toBe('fulfilled')
+  expect(vi.mocked(runServerChatLoop).mock.calls[0][0]).toMatchObject({ operation: 'send',
+    path: '/conversations/c1/messages', request: { parentId: 'summary', provider: 'claudecode' } })
+})
+
+describe('branch-scoped permission carryover', () => {
+  it.each(['send', 'branch', 'edit'] as const)('%s scopes approval to its continuation or historical cut, not a global/latest-source flag', async operation => {
+    const { dispatch, state } = setup([message('u1')], [])
+    state.chat = { ...state.chat, toolAutoApprove: false,
+      branchToolApprovalDrafts: { [branchModelKey('c1', 'lineage:owner')]: true } }
+    const common = { conversationId: 'c1', think: false, streamId: `approval-${operation}`, lineageId: 'owner', branchPath: ['u1'] }
+    await dispatch(operation === 'send'
+      ? sendMessage({ ...common, parent: 'u1', repeatNum: 1, input: { content: 'next', modelOverride: 'test' } })
+      : operation === 'branch'
+        ? sendMessageToBranch({ ...common, parentId: 'u1', content: 'next', modelOverride: 'test' })
+        : editMessageWithBranching({ ...common, originalMessageId: 'u1', newContent: 'next', modelOverride: 'test' }))
+    expect(vi.mocked(runServerChatLoop).mock.calls.at(-1)?.[0].request.toolAutoApprove).toBe(operation === 'send')
+    expect(state.chat.toolAutoApprove).toBe(false)
+  })
+
+  it.each([true, false])('Allow all ack success=%s changes only the original stream branch after navigation', async ok => {
+    vi.useRealTimers()
+    const { dispatch, state } = setup([message('u1')], [])
+    state.chat = chatReducer(state.chat, chatSliceActions.streamLineageUpdated({ streamId: 'branch-A', lineageId: 'owner' }))
+    state.chat = chatReducer(state.chat, chatSliceActions.toolPermissionRequested({ streamId: 'branch-A', toolCallId: 'native', toolCall: { id: 'native', name: 'Write', arguments: {}, status: 'pending' } as any }))
+    state.chat = { ...state.chat, toolAutoApprove: false, branchToolApprovalDrafts: {} }
+    let acknowledge!: (response: Response) => void
+    vi.stubGlobal('fetch', vi.fn(() => new Promise<Response>(resolve => { acknowledge = resolve })))
+    const pending = dispatch(respondToToolPermissionAndEnableAll('branch-A'))
+    await vi.waitFor(() => expect(acknowledge).toBeTypeOf('function'))
+    state.chat = { ...state.chat, conversation: { ...state.chat.conversation, currentLineageId: 'other', currentPath: [] } }
+    acknowledge(new Response(JSON.stringify(ok ? { success: true } : { error: 'temporarily unavailable' }), { status: ok ? 200 : 503, headers: { 'Content-Type': 'application/json' } }))
+    await pending
+    expect(resolveBranchToolApproval(state.chat, ['u1'], 'c1', 'owner')).toBe(ok)
+    expect(resolveBranchToolApproval(state.chat)).toBe(false)
+    expect(state.chat.toolAutoApprove).toBe(false)
+    if (ok) {
+      // Return to the answering branch and send again without refreshing its tree.
+      state.chat = { ...state.chat, conversation: { ...state.chat.conversation, currentLineageId: 'owner', currentPath: ['u1'] } }
+      await dispatch(sendMessage({ conversationId: 'c1', parent: 'u1', repeatNum: 1, think: false,
+        input: { content: 'message 2', modelOverride: 'test' }, streamId: 'second-run' }))
+      expect(vi.mocked(runServerChatLoop).mock.calls.at(-1)?.[0].request.toolAutoApprove).toBe(true)
+    }
+  })
 })

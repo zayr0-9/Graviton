@@ -1,4 +1,5 @@
 import { isClaudeProvider } from '../../../../../shared/claudeProvider'
+import { resolveComposerToolApproval } from '../../features/chats/branchToolApproval'
 import { newClientId } from '../../helpers/clientId'
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useConversationRunStatistics } from '../../hooks/useConversationRunStatistics'
@@ -115,7 +116,6 @@ export function ParallelChatPane({
   const streaming = useAppSelector(state => state.chat.streaming)
   const providerState = useAppSelector(state => state.chat.providerState)
   const operationMode = useAppSelector(state => state.chat.operationMode)
-  const toolAutoApprove = useAppSelector(state => state.chat.toolAutoApprove)
   const errors = useAppSelector(state => selectChatErrorsForConversation(state, target.conversationId))
 
   const { theme: customTheme, enabled: customThemeEnabled } = useCustomChatTheme()
@@ -123,6 +123,11 @@ export function ParallelChatPane({
 
   const [path, setPath] = useState<MessageId[]>(target.path)
   const [lineageId, setLineageId] = useState<LineageId | null>(target.lineageId ?? null)
+  const toolAutoApprove = useAppSelector(state => resolveComposerToolApproval({
+    ...state.chat,
+    conversation: { ...state.chat.conversation, currentConversationId: target.conversationId, currentPath: path, currentLineageId: lineageId },
+    composition: { ...state.chat.composition, editingBranch: false },
+  }))
   const branchSelection = useAppSelector(state => resolveBranchModelSelection(state.chat, path, target.conversationId, lineageId))
   const providers = { ...providerState, currentProvider: branchSelection?.provider ?? providerState.currentProvider }
   const selectedModel = useSelectedModel(providers.currentProvider, branchSelection?.model)
@@ -373,7 +378,7 @@ export function ParallelChatPane({
           toolCall={permissionRequest.toolCall}
           onGrant={() => dispatch(respondToToolPermission({ allowed: true, streamId: permissionRequest.streamId }))}
           onDeny={() => dispatch(respondToToolPermission({ allowed: false, streamId: permissionRequest.streamId }))}
-          onAllowAll={isClaudeProvider(providers.currentProvider) ? undefined : () => dispatch(respondToToolPermissionAndEnableAll(permissionRequest.streamId))}
+          onAllowAll={() => dispatch(respondToToolPermissionAndEnableAll(permissionRequest.streamId))}
         />
       )}
       {clarificationRequest && (

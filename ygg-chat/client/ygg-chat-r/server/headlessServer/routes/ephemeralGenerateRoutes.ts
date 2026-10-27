@@ -1,4 +1,5 @@
 import type { Express } from 'express'
+import { HookGenerationService, HookGenerationError } from '../services/hookGenerationService.js'
 import { getAuthManager } from '../../auth/runtime.js'
 import { LmStudioProvider } from '../providers/lmStudioProvider.js'
 import { HyperRouterBedrockProvider } from '../providers/hyperRouterBedrockProvider.js'
@@ -379,74 +380,22 @@ function registerEphemeralChatHandler(
   })
 }
 
-function registerYggHookGenerateRoute(app: Express, openAiProvider: OpenAiChatgptProvider): void {
+export function registerYggHookGenerateRoute(app: Express, service: HookGenerationService): void {
+  app.get('/api/headless/ygg-hooks/status', async (_req, res) => {
+    try { res.json(await service.availability()) }
+    catch { res.status(503).json({ error: 'Hook generation settings are unavailable.' }) }
+  })
   app.post('/api/headless/ygg-hooks/generate', async (req, res) => {
-    const startedAt = Date.now()
+    const controller = new AbortController()
+    const disconnect = () => { if (!res.writableEnded) controller.abort() }
+    res.on('close', disconnect)
     try {
-      const body = req.body ?? {}
-      const provider = typeof body.provider === 'string' ? body.provider.trim().toLowerCase() : 'openai'
-      const shouldLogHookGenerate = /^(1|true|yes|on)$/i.test(process.env.YGG_HOOK_DEBUG_LOGS || '')
-      if (shouldLogHookGenerate) {
-        console.info('[YggHookGenerate] request', {
-          provider,
-          modelName: typeof body.modelName === 'string' ? body.modelName : typeof body.model === 'string' ? body.model : null,
-          contentLength: typeof body.content === 'string' ? body.content.length : 0,
-          promptLength: typeof body.prompt === 'string' ? body.prompt.length : 0,
-          systemPromptLength: typeof body.systemPrompt === 'string' ? body.systemPrompt.length : 0,
-          historyLength: Array.isArray(body.history) ? body.history.length : 0,
-          hasAccessToken: typeof body.accessToken === 'string' && body.accessToken.length > 0,
-          hasAccountId: typeof body.accountId === 'string' && body.accountId.length > 0,
-        })
-      }
-      if (provider && provider !== 'openai' && provider !== 'openaichatgpt') {
-        res.status(400).json({ success: false, error: 'Only openai/openaichatgpt is supported for ygg hook generation.' })
-        return
-      }
-
-      const result = await runLocalProviderGenerate('openaichatgpt', openAiProvider, {
-        modelName: body.modelName,
-        content: body.content,
-        systemPrompt: body.systemPrompt,
-        history: Array.isArray(body.history) ? body.history : [],
-        userId: typeof body.userId === 'string' ? body.userId : null,
-        accessToken: typeof body.accessToken === 'string' ? body.accessToken : null,
-        accountId: typeof body.accountId === 'string' ? body.accountId : null,
-      })
-
-      if ('error' in result) {
-        console.warn('[YggHookGenerate] failed', {
-          elapsedMs: Date.now() - startedAt,
-          status: result.status,
-          error: result.error,
-        })
-        res.status(result.status).json({ success: false, error: result.error })
-        return
-      }
-
-      if (shouldLogHookGenerate) {
-        console.info('[YggHookGenerate] succeeded', {
-          elapsedMs: Date.now() - startedAt,
-          modelName: result.payload.modelName,
-          textLength: typeof result.payload.message?.content === 'string' ? result.payload.message.content.length : 0,
-        })
-      }
-
-      res.status(200).json({
-        success: true,
-        provider: 'openaichatgpt',
-        modelName: result.payload.modelName,
-        text: result.payload.message?.content || '',
-        message: result.payload.message,
-        raw: result.payload.raw || null,
-      })
+      // Saved host policy wins over legacy script provider/model hints.
+      res.json(await service.generate(req.body, controller.signal))
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error)
-      console.error('[YggHookGenerate] error', {
-        elapsedMs: Date.now() - startedAt,
-        error: message,
-      })
-      res.status(500).json({ success: false, error: message })
-    }
+      const safe = error instanceof HookGenerationError ? error : new HookGenerationError('Hook generation failed.')
+      if (!res.destroyed) res.status(safe.status).json({ success: false, error: safe.message })
+    } finally { res.off('close', disconnect) }
   })
 }
 
@@ -458,5 +407,9 @@ export function registerEphemeralGenerateRoutes(app: Express, deps: RegisterEphe
 
   registerDirectOpenAiGenerateHandler(app, '/api/headless/provider/openai/responses', openAiProvider)
   registerEphemeralChatHandler(app, deps.tokenStore, openAiProvider, lmStudioProvider, zaiProvider, bedrockProvider)
-  registerYggHookGenerateRoute(app, openAiProvider)
+  registerYggHookGenerateRoute(app, new HookGenerationService({ openAi: async input => {
+    const result = await openAiProvider.generate({ modelName: input.modelName, userContent: input.content,
+      systemPrompt: input.systemPrompt, history: [], tools: [], signal: input.signal })
+    return { text: result.content, modelName: input.modelName }
+  } }))
 }

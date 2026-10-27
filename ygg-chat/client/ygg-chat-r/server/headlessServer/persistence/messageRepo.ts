@@ -103,6 +103,18 @@ export class MessageRepo {
     return input.contextUsage ? { ...createdMessage, context_usage: input.contextUsage } : createdMessage
   }
 
+  /** Merge host execution metadata without rewriting transcript content or identity. */
+  updateToolApproval(messageId: string, enabled: boolean): any {
+    return this.transaction(() => {
+      const row = this.get(messageId)
+      if (!row) throw new Error('Approval branch message is unavailable')
+      const meta = typeof row.meta === 'string' ? JSON.parse(row.meta || '{}') : row.meta ?? {}
+      this.db.prepare('UPDATE messages SET meta = ? WHERE id = ?')
+        .run(JSON.stringify({ ...meta, toolAutoApprove: enabled }), messageId)
+      return this.get(messageId)
+    })
+  }
+
   /** Update one Claude API response as its streamed blocks arrive. Identity/ancestry never change. */
   updateClaudeProjection(messageId: string, content: string, contentBlocks: any[], meta: Record<string, unknown>): any {
     this.db.prepare('UPDATE messages SET content = ?, plain_text_content = ?, content_blocks = ?, meta = ? WHERE id = ?')

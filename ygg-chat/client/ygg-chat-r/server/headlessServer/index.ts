@@ -444,6 +444,9 @@ export function registerHeadlessServerRoutes(app: Express, deps: HeadlessServerR
     // Phase 4: cloud (openrouter) free-tier relay + Railway id adoption. Default OFF.
     cloudChatEnabled: gatewayFlags.chat,
   })
+  // Synchronously releases stale 'running' Claude branches, then checkpoints their heads.
+  void chatOrchestrator.recoverInterruptedClaudeBranches().catch(error =>
+    console.warn('[ClaudeSession] interrupted branch recovery failed', error instanceof Error ? error.message : error))
   if (gatewayFlags.resumableRuns) {
     watchService.configureContinuation({
       retain: context => chatOrchestrator.retainWatch(context),
