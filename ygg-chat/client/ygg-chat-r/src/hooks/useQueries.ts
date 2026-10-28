@@ -710,6 +710,24 @@ export function useModels(provider: string | null) {
         }
       }
 
+      if (normalizedSlug === 'openrouterbyok') {
+        const response = await localApi.get<{ success?: boolean; models?: Model[]; error?: string }>(
+          '/provider-auth/openrouter-byok/models'
+        )
+        const models = Array.isArray(response?.models) ? response.models : []
+        if (models.length === 0) throw new Error(response?.error || 'No OpenRouter models available.')
+        const defaultModel = models.find(m => m.name === 'openai/gpt-5-mini') || models[0]
+        const storedSelection = getStoredSelectedModel()
+        const selectedModel = storedSelection ? models.find(m => m.name === storedSelection.name) || defaultModel : defaultModel
+
+        return {
+          models,
+          default: defaultModel,
+          selected: selectedModel,
+          userIsFreeTier: false,
+        }
+      }
+
       if (normalizedSlug === 'z.ai/glm' || normalizedSlug === 'zai/glm' || normalizedSlug === 'zai' || normalizedSlug === 'glm') {
         const models = ['glm-5.1', 'glm-4.6'].map(name => ({
           ...stringToModel(name),

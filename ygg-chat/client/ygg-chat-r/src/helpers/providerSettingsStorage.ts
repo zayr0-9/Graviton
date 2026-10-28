@@ -55,7 +55,7 @@ const DEFAULT_SETTINGS: ProviderSettings = {
   openAiPromptCacheRetention: 'in_memory',
 }
 
-const COMMUNITY_ALLOWED_PROVIDERS = new Set(['LM Studio', 'OpenAI (ChatGPT)', 'Z.AI / GLM'])
+const COMMUNITY_ALLOWED_PROVIDERS = new Set(['LM Studio', 'OpenAI (ChatGPT)', 'OpenRouter BYOK', 'Z.AI / GLM'])
 const COMMUNITY_FALLBACK_PROVIDER = 'LM Studio'
 
 function normalizeOpenRouterTemperature(value: unknown): number | null {

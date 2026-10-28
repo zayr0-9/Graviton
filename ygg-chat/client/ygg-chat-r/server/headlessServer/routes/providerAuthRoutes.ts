@@ -2,6 +2,7 @@ import { getAuthManager, disconnectAuth } from '../../auth/runtime.js'
 import type { Express } from 'express'
 const JWT_CLAIM_PATH = 'https://api.openai.com/auth'
 import type { ProviderTokenStore } from '../providers/tokenStore.js'
+import { fetchOpenRouterByokModels, OPENROUTER_BYOK_PROVIDER_KEY } from '../providers/hyperRouterOpenRouterProvider.js'
 
 interface RegisterProviderAuthRoutesDeps {
   tokenStore: ProviderTokenStore
@@ -124,7 +125,7 @@ export function registerProviderAuthRoutes(app: Express, deps: RegisterProviderA
     }
   }
 
-  const registerTokenRoutes = (providerSlug: 'openai' | 'openrouter' | 'zai' | 'bedrock', providerKey: string, opts?: { deriveAccountId?: boolean }) => {
+  const registerTokenRoutes = (providerSlug: 'openai' | 'openrouter' | 'openrouter-byok' | 'zai' | 'bedrock', providerKey: string, opts?: { deriveAccountId?: boolean }) => {
     app.post(`/api/provider-auth/${providerSlug}/token`, (req, res) => {
       if (providerSlug === 'openai' || providerSlug === 'openrouter') { res.status(410).json({ error: 'OAuth tokens are server-owned. Use the login flow.' }); return }
       const payload = normalizePayload(req.body)
@@ -187,6 +188,15 @@ export function registerProviderAuthRoutes(app: Express, deps: RegisterProviderA
   registerTokenRoutes('openrouter', 'openrouter')
   registerTokenRoutes('zai', 'zai')
   registerTokenRoutes('bedrock', 'bedrock')
+  registerTokenRoutes('openrouter-byok', OPENROUTER_BYOK_PROVIDER_KEY)
+
+  app.get('/api/provider-auth/openrouter-byok/models', async (_req, res) => {
+    try {
+      res.json({ success: true, models: await fetchOpenRouterByokModels() })
+    } catch (error) {
+      res.status(502).json({ success: false, error: error instanceof Error ? error.message : 'Failed to load OpenRouter models' })
+    }
+  })
 
   app.get('/api/provider-auth/models', async (req, res) => {
     const userId = String(req.query.userId ?? req.query.user_id ?? '').trim()

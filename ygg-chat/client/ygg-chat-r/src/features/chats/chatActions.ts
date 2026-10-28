@@ -527,7 +527,7 @@ export const resolveAttachmentUrl = (
 
 
 const resolveOpenRouterTemperature = (providerSlug: string): number | undefined => {
-  if (providerSlug !== 'openrouter') return undefined
+  if (providerSlug !== 'openrouter' && providerSlug !== 'openrouterbyok') return undefined
   const configured = loadProviderSettings().openRouterTemperature
   return typeof configured === 'number' ? configured : undefined
 }

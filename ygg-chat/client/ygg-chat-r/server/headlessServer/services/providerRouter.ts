@@ -1,5 +1,6 @@
 import { isClaudeProvider } from '../../../../../shared/claudeProvider.js'
 import { HyperRouterBedrockProvider } from '../providers/hyperRouterBedrockProvider.js'
+import { HyperRouterOpenRouterProvider } from '../providers/hyperRouterOpenRouterProvider.js'
 import { HyperRouterZaiProvider } from '../providers/hyperRouterZaiProvider.js'
 import { LmStudioProvider } from '../providers/lmStudioProvider.js'
 import {
@@ -16,7 +17,7 @@ import {
 import type { ProviderTokenStore } from '../providers/tokenStore.js'
 import type { AppAuthTokenManager } from './appAuthTokenManager.js'
 
-export type ProviderRoute = 'openrouter' | 'openaichatgpt' | 'lmstudio' | 'zai' | 'bedrock'
+export type ProviderRoute = 'openrouter' | 'openrouterbyok' | 'openaichatgpt' | 'lmstudio' | 'zai' | 'bedrock'
 
 export function normalizeProviderRoute(providerName: string): ProviderRoute {
   const normalized = providerName.trim().toLowerCase().replace(/\s+/g, '')
@@ -36,6 +37,7 @@ export function normalizeProviderRoute(providerName: string): ProviderRoute {
     return 'bedrock'
   }
   if (normalized === 'openrouter') return 'openrouter'
+  if (normalized === 'openrouterbyok' || normalized === 'openrouter-byok' || normalized === 'openrouter(byok)') return 'openrouterbyok'
   // MVP default path is OpenAI ChatGPT.
   return 'openaichatgpt'
 }
@@ -55,6 +57,7 @@ export class ProviderRouter {
       lmstudio: new LmStudioProvider(),
       zai: new HyperRouterZaiProvider({ tokenStore: deps.tokenStore }),
       bedrock: new HyperRouterBedrockProvider({ tokenStore: deps.tokenStore }),
+      openrouterbyok: new HyperRouterOpenRouterProvider({ tokenStore: deps.tokenStore }),
     }
   }
 

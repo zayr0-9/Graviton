@@ -351,6 +351,10 @@ const Settings: React.FC = () => {
   const [zaiApiKeyConfigured, setZaiApiKeyConfigured] = useState(false)
   const [zaiApiKeyLoading, setZaiApiKeyLoading] = useState(import.meta.env.VITE_ENVIRONMENT === 'electron')
   const [zaiApiKeySaving, setZaiApiKeySaving] = useState(false)
+  const [openRouterByokApiKeyInput, setOpenRouterByokApiKeyInput] = useState('')
+  const [openRouterByokApiKeyConfigured, setOpenRouterByokApiKeyConfigured] = useState(false)
+  const [openRouterByokApiKeyLoading, setOpenRouterByokApiKeyLoading] = useState(import.meta.env.VITE_ENVIRONMENT === 'electron')
+  const [openRouterByokApiKeySaving, setOpenRouterByokApiKeySaving] = useState(false)
   const [bedrockRegionInput, setBedrockRegionInput] = useState('us-east-1')
   const [bedrockAccessKeyIdInput, setBedrockAccessKeyIdInput] = useState('')
   const [bedrockSecretAccessKeyInput, setBedrockSecretAccessKeyInput] = useState('')
@@ -728,6 +732,39 @@ const Settings: React.FC = () => {
       })
       .finally(() => {
         if (active) setZaiApiKeyLoading(false)
+      })
+
+    return () => {
+      active = false
+    }
+  }, [userId])
+
+  useEffect(() => {
+    if (import.meta.env.VITE_ENVIRONMENT !== 'electron') {
+      setOpenRouterByokApiKeyLoading(false)
+      return
+    }
+
+    let active = true
+    const effectiveUserId = userId || LOCAL_AUTH_USER_ID
+
+    localApi
+      .get<{ success?: boolean; hasToken?: boolean }>(
+        `/provider-auth/openrouter-byok/token?userId=${encodeURIComponent(effectiveUserId)}`
+      )
+      .then(status => {
+        if (!active) return
+        setOpenRouterByokApiKeyConfigured(Boolean(status?.hasToken))
+        setOpenRouterByokApiKeyInput('')
+      })
+      .catch(error => {
+        if (active) {
+          console.error('Failed to load OpenRouter API key status:', error)
+          setOpenRouterByokApiKeyConfigured(false)
+        }
+      })
+      .finally(() => {
+        if (active) setOpenRouterByokApiKeyLoading(false)
       })
 
     return () => {
@@ -1153,6 +1190,47 @@ const Settings: React.FC = () => {
       showStatus({ type: 'error', text: error instanceof Error ? error.message : 'Failed to delete Z.AI API key.' })
     } finally {
       setZaiApiKeySaving(false)
+    }
+  }
+
+  const handleSaveOpenRouterByokApiKey = async () => {
+    const normalized = openRouterByokApiKeyInput.trim()
+    if (!normalized) {
+      showStatus({ type: 'error', text: 'Enter an OpenRouter API key before saving.' })
+      return
+    }
+
+    const effectiveUserId = userId || LOCAL_AUTH_USER_ID
+    setOpenRouterByokApiKeySaving(true)
+    try {
+      await localApi.post('/provider-auth/openrouter-byok/token', {
+        userId: effectiveUserId,
+        accessToken: normalized,
+      })
+      setOpenRouterByokApiKeyInput('')
+      setOpenRouterByokApiKeyConfigured(true)
+      showStatus({ type: 'success', text: 'OpenRouter API key saved locally.' })
+    } catch (error) {
+      console.error('Failed to save OpenRouter API key:', error)
+      showStatus({ type: 'error', text: error instanceof Error ? error.message : 'Failed to save OpenRouter API key.' })
+    } finally {
+      setOpenRouterByokApiKeySaving(false)
+    }
+  }
+
+  const handleDeleteOpenRouterByokApiKey = async () => {
+    const effectiveUserId = userId || LOCAL_AUTH_USER_ID
+    setOpenRouterByokApiKeySaving(true)
+    try {
+      await localApi.delete(`/provider-auth/openrouter-byok/token?userId=${encodeURIComponent(effectiveUserId)}`)
+      setOpenRouterByokApiKeyInput('')
+      setOpenRouterByokApiKeyConfigured(false)
+      showStatus({ type: 'success', text: 'OpenRouter API key removed.' })
+    } catch (error) {
+      console.error('Failed to delete OpenRouter API key:', error)
+      showStatus({ type: 'error', text: error instanceof Error ? error.message : 'Failed to delete OpenRouter API key.' })
+    } finally {
+      setOpenRouterByokApiKeySaving(false)
     }
   }
 
@@ -2748,7 +2826,7 @@ const Settings: React.FC = () => {
           <SettingsSection
             title='Provider Settings'
             description='Configure how providers appear in the chat interface.'
-            features={['Provider selector', 'Default provider', 'ChatGPT max context', 'Auto-compaction provider', 'LM Studio URL', 'Provider credentials', 'ChatGPT OAuth']}
+            features={['Provider selector', 'Default provider', 'ChatGPT max context', 'Auto-compaction provider', 'LM Studio URL', 'Provider credentials', 'OpenRouter BYOK key', 'ChatGPT OAuth']}
           >
             <div className='flex flex-col gap-4'>
               {/* Visibility Toggle */}
@@ -3012,6 +3090,54 @@ const Settings: React.FC = () => {
                     {zaiApiKeyConfigured ? 'Replace key' : 'Save key'}
                   </Button>
                   <Button variant='outline2' size='small' onClick={handleDeleteZaiApiKey} disabled={zaiApiKeySaving || !zaiApiKeyConfigured}>
+                    Clear key
+                  </Button>
+                </div>
+              </div>
+
+              <div className='flex flex-col gap-2 pt-2 pt-2'>
+                <div>
+                  <p className='text-base font-medium text-stone-900 dark:text-stone-100'>OpenRouter API Key (BYOK)</p>
+                  <p className='text-sm text-stone-500 dark:text-stone-400'>
+                    Store your own OpenRouter key locally for the OpenRouter BYOK provider. Requests go directly to OpenRouter and bill your OpenRouter account. You can also set OPENROUTER_API_KEY.
+                  </p>
+                </div>
+                <div className='flex flex-wrap items-center gap-2'>
+                  <span
+                    className={`text-xs px-2 py-1 rounded-full border ${
+                      openRouterByokApiKeyConfigured
+                        ? 'bg-emerald-50 border-emerald-200 text-emerald-700 dark:bg-emerald-900/30 dark:border-emerald-700 dark:text-emerald-300'
+                        : 'bg-stone-100 border-stone-200 text-stone-600 dark:bg-stone-800 dark:border-stone-700 dark:text-stone-300'
+                    }`}
+                  >
+                    {openRouterByokApiKeyLoading ? 'Checking…' : openRouterByokApiKeyConfigured ? 'Key saved' : 'No key'}
+                  </span>
+                  <input
+                    type='password'
+                    value={openRouterByokApiKeyInput}
+                    placeholder={openRouterByokApiKeyConfigured ? 'Enter new key to replace' : 'Enter OpenRouter API key (sk-or-…)'}
+                    onChange={e => setOpenRouterByokApiKeyInput(e.target.value)}
+                    onKeyDown={e => {
+                      if (e.key === 'Enter') {
+                        void handleSaveOpenRouterByokApiKey()
+                      }
+                    }}
+                    className={`w-full max-w-md ${settingsInputClass}`}
+                  />
+                  <Button
+                    variant='outline2'
+                    size='small'
+                    onClick={handleSaveOpenRouterByokApiKey}
+                    disabled={openRouterByokApiKeySaving || !openRouterByokApiKeyInput.trim()}
+                  >
+                    {openRouterByokApiKeyConfigured ? 'Replace key' : 'Save key'}
+                  </Button>
+                  <Button
+                    variant='outline2'
+                    size='small'
+                    onClick={handleDeleteOpenRouterByokApiKey}
+                    disabled={openRouterByokApiKeySaving || !openRouterByokApiKeyConfigured}
+                  >
                     Clear key
                   </Button>
                 </div>

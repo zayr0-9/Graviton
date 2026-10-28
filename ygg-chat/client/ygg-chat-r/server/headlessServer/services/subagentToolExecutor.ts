@@ -1,4 +1,5 @@
 import { normalizeProviderRoute } from './providerRouter.js'
+import { DEFAULT_OPENROUTER_BYOK_MODEL } from '../providers/hyperRouterOpenRouterProvider.js'
 import { randomUUID } from 'node:crypto'
 import type { HeadlessSubagentStreamRequest } from '../../../../../shared/headlessApi.js'
 import type { MessageQueueSnapshot, QueuedMessageView } from '../../../../../shared/queuedMessages.js'
@@ -137,6 +138,7 @@ async function buildSubagentRequest(toolCall: ProviderToolCall, context: ToolExe
   const providerDefault = provider === 'lmstudio' ? process.env.LMSTUDIO_MODEL || 'local-model'
     : provider === 'zai' ? process.env.ZAI_MODEL || 'glm-5.1'
     : provider === 'bedrock' ? process.env.AWS_BEDROCK_MODEL || 'anthropic.claude-3-5-sonnet-20241022-v2:0'
+    : provider === 'openrouterbyok' ? DEFAULT_OPENROUTER_BYOK_MODEL
     : DEFAULT_SUBAGENT_MODEL
   const modelName = inheritedProvider === 'openrouter' ? DEFAULT_SUBAGENT_MODEL
     : defaults?.defaultModel || (parentProvider === provider ? context.modelName : null) || providerDefault

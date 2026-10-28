@@ -515,6 +515,7 @@ function isByokOrLocalProvider(provider: string | undefined): boolean {
     normalized === 'bedrock' ||
     normalized === 'awsbedrock' ||
     normalized === 'amazonbedrock' ||
+    normalized === 'openrouterbyok' ||
     normalized === 'anthropic'
   )
 }

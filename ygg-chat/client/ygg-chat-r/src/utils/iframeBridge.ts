@@ -26,7 +26,7 @@ type BridgeContext = {
   registerCleanup?: (cleanup: () => void) => void
 }
 
-type GenerationProvider = 'openrouter' | 'openaichatgpt' | 'lmstudio' | 'zai' | 'bedrock'
+type GenerationProvider = 'openrouter' | 'openrouterbyok' | 'openaichatgpt' | 'lmstudio' | 'zai' | 'bedrock'
 
 type GenerationStreamResult = {
   text: string
@@ -36,6 +36,7 @@ type GenerationStreamResult = {
 function normalizeGenerationProvider(provider: string): GenerationProvider | null {
   const normalized = provider.trim().toLowerCase()
   if (normalized === 'openrouter') return 'openrouter'
+  if (normalized.replace(/\s+/g, '') === 'openrouterbyok') return 'openrouterbyok'
   if (normalized === 'lmstudio') return 'lmstudio'
   if (normalized === 'zai' || normalized === 'z.ai' || normalized === 'glm') return 'zai'
   if (

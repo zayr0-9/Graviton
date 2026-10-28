@@ -4,6 +4,7 @@ import { getAuthManager } from '../../auth/runtime.js'
 import { LmStudioProvider } from '../providers/lmStudioProvider.js'
 import { HyperRouterBedrockProvider } from '../providers/hyperRouterBedrockProvider.js'
 import { HyperRouterZaiProvider } from '../providers/hyperRouterZaiProvider.js'
+import { DEFAULT_OPENROUTER_BYOK_MODEL, HyperRouterOpenRouterProvider } from '../providers/hyperRouterOpenRouterProvider.js'
 import { OpenAiChatgptProvider, normalizeOpenAIChatGPTModel } from '../providers/openaiChatgptProvider.js'
 import type { ProviderGenerateOutput, ProviderToolDefinition } from '../providers/openRouterProvider.js'
 import type { ProviderTokenStore } from '../providers/tokenStore.js'
@@ -96,7 +97,7 @@ function inferEphemeralProvider(body: any): ProviderRoute {
 }
 
 function normalizeModelName(rawModelName: any, provider: ProviderRoute): string {
-  const fallback = provider === 'lmstudio' ? 'local-model' : provider === 'openrouter' ? 'openai/gpt-4o-mini' : provider === 'zai' ? 'glm-5.1' : provider === 'bedrock' ? process.env.AWS_BEDROCK_MODEL || 'anthropic.claude-3-5-sonnet-20241022-v2:0' : 'gpt-5.6-sol'
+  const fallback = provider === 'lmstudio' ? 'local-model' : provider === 'openrouter' ? 'openai/gpt-4o-mini' : provider === 'openrouterbyok' ? DEFAULT_OPENROUTER_BYOK_MODEL : provider === 'zai' ? 'glm-5.1' : provider === 'bedrock' ? process.env.AWS_BEDROCK_MODEL || 'anthropic.claude-3-5-sonnet-20241022-v2:0' : 'gpt-5.6-sol'
   const raw = typeof rawModelName === 'string' && rawModelName.trim() ? rawModelName.trim() : fallback
 
   if (provider === 'openaichatgpt') {
@@ -156,8 +157,8 @@ function buildSuccessPayload(provider: ProviderRoute, modelName: string, upstrea
 }
 
 async function runLocalProviderGenerate(
-  providerName: 'openaichatgpt' | 'lmstudio' | 'zai' | 'bedrock',
-  provider: OpenAiChatgptProvider | LmStudioProvider | HyperRouterZaiProvider | HyperRouterBedrockProvider,
+  providerName: 'openaichatgpt' | 'lmstudio' | 'zai' | 'bedrock' | 'openrouterbyok',
+  provider: OpenAiChatgptProvider | LmStudioProvider | HyperRouterZaiProvider | HyperRouterBedrockProvider | HyperRouterOpenRouterProvider,
   body: any
 ) {
   const parsed = buildEphemeralGenerateInput(body)
@@ -349,7 +350,8 @@ function registerEphemeralChatHandler(
   openAiProvider: OpenAiChatgptProvider,
   lmStudioProvider: LmStudioProvider,
   zaiProvider: HyperRouterZaiProvider,
-  bedrockProvider: HyperRouterBedrockProvider
+  bedrockProvider: HyperRouterBedrockProvider,
+  openRouterByokProvider: HyperRouterOpenRouterProvider
 ): void {
   app.post('/api/headless/ephemeral/chat', async (req, res) => {
     try {
@@ -365,7 +367,9 @@ function registerEphemeralChatHandler(
               ? await runLocalProviderGenerate('zai', zaiProvider, body)
               : provider === 'bedrock'
                 ? await runLocalProviderGenerate('bedrock', bedrockProvider, body)
-                : await runLocalProviderGenerate('openaichatgpt', openAiProvider, body)
+                : provider === 'openrouterbyok'
+                  ? await runLocalProviderGenerate('openrouterbyok', openRouterByokProvider, body)
+                  : await runLocalProviderGenerate('openaichatgpt', openAiProvider, body)
 
       if ('error' in result) {
         res.status(result.status).json({ success: false, error: result.error })
@@ -404,9 +408,10 @@ export function registerEphemeralGenerateRoutes(app: Express, deps: RegisterEphe
   const lmStudioProvider = new LmStudioProvider()
   const zaiProvider = new HyperRouterZaiProvider({ tokenStore: deps.tokenStore })
   const bedrockProvider = new HyperRouterBedrockProvider({ tokenStore: deps.tokenStore })
+  const openRouterByokProvider = new HyperRouterOpenRouterProvider({ tokenStore: deps.tokenStore })
 
   registerDirectOpenAiGenerateHandler(app, '/api/headless/provider/openai/responses', openAiProvider)
-  registerEphemeralChatHandler(app, deps.tokenStore, openAiProvider, lmStudioProvider, zaiProvider, bedrockProvider)
+  registerEphemeralChatHandler(app, deps.tokenStore, openAiProvider, lmStudioProvider, zaiProvider, bedrockProvider, openRouterByokProvider)
   registerYggHookGenerateRoute(app, new HookGenerationService({ openAi: async input => {
     const result = await openAiProvider.generate({ modelName: input.modelName, userContent: input.content,
       systemPrompt: input.systemPrompt, history: [], tools: [], signal: input.signal })

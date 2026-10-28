@@ -21,7 +21,7 @@ const SUBAGENT_STREAM_IDLE_TIMEOUT_MS = 60_000
 const normalizeProviderSlug = (providerName: string | null | undefined): string =>
   (providerName || '').toLowerCase().replace(/\s+/g, '')
 
-export type SubagentInheritedProvider = 'openaichatgpt' | 'openrouter' | 'lmstudio' | 'zai' | 'bedrock'
+export type SubagentInheritedProvider = 'openaichatgpt' | 'openrouter' | 'openrouterbyok' | 'lmstudio' | 'zai' | 'bedrock'
 
 const resolveInheritedSubagentProvider = (
   callerProviderName: string | null | undefined
@@ -29,6 +29,7 @@ const resolveInheritedSubagentProvider = (
   const slug = normalizeProviderSlug(callerProviderName)
   if (slug === 'openaichatgpt' || slug === 'openai(chatgpt)') return 'openaichatgpt'
   if (slug === 'openrouter') return 'openrouter'
+  if (slug === 'openrouterbyok') return 'openrouterbyok'
   if (slug === 'lmstudio') return 'lmstudio'
   if (slug === 'z.ai/glm' || slug === 'zai/glm' || slug === 'zai' || slug === 'z.ai' || slug === 'glm') return 'zai'
   if (

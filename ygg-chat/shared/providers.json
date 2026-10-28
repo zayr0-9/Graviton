@@ -6,6 +6,12 @@
       "description": "OpenRouter's LLM API"
     },
 
+    "openrouterbyok": {
+      "name": "OpenRouter BYOK",
+      "url": "https://openrouter.ai",
+      "description": "OpenRouter models with your own API key via local headless provider"
+    },
+
     "lmstudio": {
       "name": "LM Studio",
       "url": "http://127.0.0.1:1234",
