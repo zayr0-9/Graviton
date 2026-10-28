@@ -15,7 +15,8 @@ const providerKey = (name: string) => {
   return key === 'google' ? 'gemini' : key === 'awsbedrock' || key === 'amazonbedrock' ? 'bedrock' : key === 'glm' ? 'zai' : key
 }
 
-/** Resolve only the selected ancestry. Metadata never becomes an instruction to the model. */
+/** Resolve only the selected ancestry. Metadata never becomes an instruction to the model.
+ * A Claude branch fixes only its provider: Claude-model drafts still apply, other providers' never do. */
 export function resolveBranchModelSelection(
   chat: ChatState,
   path = chat.conversation.currentPath,
@@ -23,21 +24,21 @@ export function resolveBranchModelSelection(
   lineageId = chat.conversation.currentLineageId,
 ): BranchModelSelection | null {
   const locked = resolveClaudeBranchLock(chat, path)
-  if (locked) return locked
   const lineageDraft = lineageId ? chat.branchModelDrafts?.[branchModelKey(conversationId, `lineage:${lineageId}`)] : null
-  if (lineageDraft && chat.providerState.providers.some(item => item.name === lineageDraft.provider)) return lineageDraft
+  if (lineageDraft && (!locked || isClaudeProvider(lineageDraft.provider)) &&
+    chat.providerState.providers.some(item => item.name === lineageDraft.provider)) return lineageDraft
   const messages = new Map(chat.conversation.messages.map(row => [String(row.id), row]))
   const ancestry: Array<string | null> = path.length ? [...path].reverse() : [null]
   for (const id of ancestry) {
     const draft = chat.branchModelDrafts?.[branchModelKey(conversationId, id)]
     const recorded = parseMessageMeta(messages.get(String(id))?.meta)?.modelSelection as BranchModelSelection | undefined
     const selection = draft ?? recorded
-    if (!selection || typeof selection.provider !== 'string') continue
+    if (!selection || typeof selection.provider !== 'string' || (locked && !isClaudeProvider(selection.provider))) continue
     const provider = chat.providerState.providers.find(item => providerKey(item.name) === providerKey(selection.provider))?.name
     if (!provider) continue
     return { provider, model: typeof selection.model === 'string' ? selection.model : null }
   }
-  return null
+  return locked
 }
 
 const DRAFT_STORAGE_KEY = 'chat:branchModelDrafts'
@@ -57,12 +58,11 @@ export function saveBranchModelDrafts(drafts: Record<string, BranchModelSelectio
   catch (error) { console.warn('Unable to save branch model selections', error) }
 }
 
-/** Persisted Claude identity wins over all renderer-local model drafts. */
+/** Persisted Claude provider wins over other providers' renderer-local drafts. The model is the nearest recorded one. */
 export function resolveClaudeBranchLock(chat: ChatState, path = chat.conversation.currentPath): BranchModelSelection | null {
   const messages = new Map(chat.conversation.messages.map(row => [String(row.id), row]))
-  const ids = new Set(executionPathAfterHandoff(path.map(id => messages.get(String(id))).filter((row): row is NonNullable<typeof row> => Boolean(row))).map(row => String(row.id)))
-  for (const row of chat.conversation.messages) {
-    if (!ids.has(String(row.id))) continue
+  const rows = executionPathAfterHandoff(path.map(id => messages.get(String(id))).filter((row): row is NonNullable<typeof row> => Boolean(row)))
+  for (const row of [...rows].reverse()) {
     const pair = parseMessageMeta(row.meta)?.modelSelection as BranchModelSelection | undefined
     if (pair && isClaudeProvider(pair.provider)) return { provider: 'Claude Code', model: pair.model }
   }
@@ -95,7 +95,7 @@ export function resolveEditBranchModelSelection(chat: ChatState, messageId: unkn
   if (chat.composition?.editingBranch && String(chat.composition.branchEditMessageId) === String(messageId)) {
     const draft = chat.composition.branchEditModelSelection
     const lock = resolveClaudeBranchLock(chat)
-    if (draft && (!lock || isProviderHandoffEdit(chat, messageId))) return draft
+    if (draft && (!lock || isClaudeProvider(draft.provider) || isProviderHandoffEdit(chat, messageId))) return draft
   }
   return resolveBranchModelSelection(chat)
 }

@@ -1,4 +1,4 @@
-import { CLAUDE_MODELS, isClaudeProvider } from '../../../../shared/claudeProvider'
+import { CLAUDE_CONTEXT_LENGTH, CLAUDE_MODELS, isClaudeProvider } from '../../../../shared/claudeProvider'
 // React Query hooks for data fetching with automatic caching and deduplication
 import { QueryClient, useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useCallback, useEffect, useMemo, useState } from 'react'
@@ -688,8 +688,8 @@ export function useModels(provider: string | null) {
       const normalizedSlug = normalizedProvider.replace(/\s+/g, '')
 
       if (isClaudeProvider(provider)) {
-        const models = CLAUDE_MODELS.map(name => ({ ...stringToModel(name), contextLength: 200000,
-          inputTokenLimit: 200000, outputTokenLimit: 32000, thinking: true }))
+        const models = CLAUDE_MODELS.map(name => ({ ...stringToModel(name), contextLength: CLAUDE_CONTEXT_LENGTH,
+          inputTokenLimit: CLAUDE_CONTEXT_LENGTH, outputTokenLimit: 32000, thinking: true }))
         return { models, default: models[0], selected: models.find(model => model.name === getStoredSelectedModel()?.name) ?? models[0], userIsFreeTier: false }
       }
 

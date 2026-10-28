@@ -47,7 +47,6 @@ interface McpManagerResult {
   tools?: Array<ToolSummary & { serverName?: string }>
   totalCount?: number
   nextOffset?: number
-  serverErrors?: Array<{ name: string; error: string }>
 }
 
 const toServerSummary = (config: McpServerConfig, status?: ReturnType<typeof mcpManager.getServerStatus>): McpServerSummary => ({
@@ -80,9 +79,6 @@ export async function execute(
 ): Promise<McpManagerResult> {
   const { action, name } = args
   options.signal?.throwIfAborted()
-  if (action === 'invoke' && options.operationMode === 'plan') {
-    throw new Error('MCP tool invocation requires Agent Mode. Switch to Agent Mode to invoke MCP tools.')
-  }
 
   await mcpManager.initialize()
 
@@ -104,26 +100,21 @@ export async function execute(
     if (name && !configs.find(config => config.name === name)?.enabled) {
       return { success: false, error: `MCP server "${name}" is disabled` }
     }
+    // Search only already-connected servers. Connecting here would fan out MCP
+    // initialization (and interactive OAuth) to every configured server.
     const tools: Array<ToolSummary & { serverName: string }> = []
-    const serverErrors: Array<{ name: string; error: string }> = []
     for (const config of configs.filter(config => config.enabled && (!name || config.name === name))) {
-      options.signal?.throwIfAborted()
-      try {
-        await mcpManager.startServer(config)
-        options.signal?.throwIfAborted()
-        for (const tool of mcpManager.getServerStatus(config.name)?.tools ?? []) {
-          const visibility = tool._meta?.ui?.visibility
-          if (Array.isArray(visibility) && !visibility.includes('model')) continue
-          tools.push({ ...toToolSummary(tool), serverName: config.name })
-        }
-      } catch (error) {
-        options.signal?.throwIfAborted()
-        serverErrors.push({ name: config.name, error: error instanceof Error ? error.message : String(error) })
+      const status = mcpManager.getServerStatus(config.name)
+      if (status?.status !== 'connected') continue
+      for (const tool of status.tools ?? []) {
+        const visibility = tool._meta?.ui?.visibility
+        if (Array.isArray(visibility) && !visibility.includes('model')) continue
+        tools.push({ ...toToolSummary(tool), serverName: config.name })
       }
     }
     const { items, ...page } = searchDiscovery(tools, args,
       tool => `${tool.serverName} ${tool.name} ${tool.description ?? ''}`)
-    return { success: true, tools: items, ...page, ...(serverErrors.length ? { serverErrors } : {}) }
+    return { success: true, tools: items, ...page }
   }
 
   if (!name) {

@@ -63,7 +63,6 @@ describe('createSubagentDispatchExecutor', () => {
           temperature: 0.2,
           orchestratorMode: true,
           tools: ['read_file', 'ripgrep', 'subagent'],
-          inheritAutoApprove: true,
         },
       },
       context({ operationMode: 'plan', subagentSystemPrompt: 'Custom Subagent baseline' })
@@ -96,7 +95,7 @@ describe('createSubagentDispatchExecutor', () => {
     )
   })
 
-  it('uses server defaults when orchestrator mode is off and honors inherited approval denial', async () => {
+  it('uses server defaults when orchestrator mode is off and inherits parent approval denial', async () => {
     const runForTool = vi.fn(async () => 'done')
     const execute = createSubagentDispatchExecutor({ leafExecutor: vi.fn(), subagentRunner: { runForTool } })
 
@@ -104,9 +103,9 @@ describe('createSubagentDispatchExecutor', () => {
       {
         id: 'sub-2',
         name: 'subagent',
-        arguments: { prompt: 'Scout', orchestratorMode: false, tools: ['bash'], inheritAutoApprove: false },
+        arguments: { prompt: 'Scout', orchestratorMode: false, tools: ['bash'] },
       },
-      context()
+      context({ autoApprove: false })
     )
 
     const request = runForTool.mock.calls[0][0]

@@ -315,7 +315,29 @@ describe('source lineage membership validation', () => {
       provider: 'openaichatgpt', modelName: 'test', content: 'next', parentId: source.id } as any)).not.toThrow()
   })
 
-  it('dispatches Claude outside the Graviton loop, locks identity and preserves historical fork placement', async () => {
+  it('forks an explicit branch send from the lineage head instead of appending in place', async () => {
+    db.exec(CLAUDE_SESSION_SCHEMA)
+    const claudeSessions = { run: vi.fn(async (input: any) => {
+      const message = input.sink.persistAssistantMessage({ conversationId: input.request.conversationId,
+        parentId: input.parentId, modelName: input.request.modelName, content: 'reply', meta: { claude: { sessionId: 's' } } })
+      db.prepare('INSERT INTO claude_message_checkpoints VALUES (?, ?, ?, ?, 1)').run(message.id, 's', `uuid-${message.id}`, testDirectory)
+      return message
+    }) }
+    orchestrator = new ChatOrchestrator({ db, statements, providerRouter: providerRouter as any, claudeSessions: claudeSessions as any })
+    const base: any = { operation: 'send', conversationId: 'c1', provider: 'claudecode', modelName: 'claude-haiku-5-5',
+      content: 'hello', rootPath: testDirectory, operationMode: 'plan' }
+    const events: any[] = []
+    await orchestrator.runMessage(base, event => events.push(event))
+    const head = events.find(event => event.type === 'complete')
+    const branchEvents: any[] = []
+    await orchestrator.runMessage({ ...base, parentId: head.message.id, lineageId: head.lineageId, isBranch: true, content: 'explain' },
+      event => branchEvents.push(event))
+    const branchLineage = branchEvents.find(event => event.type === 'complete').lineageId
+    expect(branchLineage).not.toBe(head.lineageId)
+    expect((db.prepare('SELECT head_message_id FROM lineages WHERE id=?').get(head.lineageId) as any).head_message_id).toBe(head.message.id)
+  })
+
+  it('dispatches Claude outside the Graviton loop, locks provider and preserves historical fork placement', async () => {
     db.exec(CLAUDE_SESSION_SCHEMA)
     const calls: any[] = []
     const claudeSessions = { run: vi.fn(async (input: any) => {
@@ -336,7 +358,7 @@ describe('source lineage membership validation', () => {
     expect(providerRouter.calls).toHaveLength(0)
     expect(events.filter(event => event.type === 'user_message_persisted')).toHaveLength(1)
     expect(events.some(event => event.type === 'operation_mode_changed' || event.type === 'context_injection_persisted')).toBe(false)
-    await expect(orchestrator.runMessage({ ...base, parentId: first.id, modelName: 'different' }, () => {})).rejects.toThrow('fixed provider')
+    await expect(orchestrator.runMessage({ ...base, parentId: first.id, modelName: 'different' }, () => {})).rejects.toThrow('supported Claude model')
     await expect(orchestrator.runMessage({ ...base, parentId: first.id, provider: 'openaichatgpt' }, () => {})).rejects.toThrow('fixed provider')
     await orchestrator.runMessage({ ...base, parentId: first.id, content: 'continue' }, () => {})
     await orchestrator.runMessage({ ...base, operation: 'branch', messageId: first.id, content: 'fork', operationMode: 'execute' }, () => {})
@@ -370,6 +392,11 @@ describe('source lineage membership validation', () => {
     await orchestrator.runMessage({ ...base, retrigger: true, parentId: first.id, lineageId: calls[0].lineageId, content: 'retry stopped input' }, () => {})
     expect(calls[6].lineageId).not.toBe(calls[0].lineageId)
     expect(calls[6].sourceMessageId).toBe(first.id)
+    // The model is not part of the lock: the same native lineage continues under another Claude model.
+    const head = (db.prepare('SELECT head_message_id FROM lineages WHERE id=?').get(calls[0].lineageId) as any).head_message_id
+    await orchestrator.runMessage({ ...base, parentId: head, lineageId: calls[0].lineageId, modelName: 'claude-opus-5-5', content: 'switch model' }, () => {})
+    expect(calls[7]).toMatchObject({ lineageId: calls[0].lineageId, sourceMessageId: head, request: { modelName: 'claude-opus-5-5' } })
+    expect(db.prepare('SELECT model FROM claude_branch_sessions WHERE lineage_id=?').get(calls[0].lineageId)).toEqual({ model: 'claude-opus-5-5' })
   })
 
   it('runs Claude Stop once after durable output with the real turn anchor for send, branch, edit and repeat', async () => {
@@ -378,7 +405,7 @@ describe('source lineage membership validation', () => {
     const inputs: any[] = []
     const hooks: any[] = []
     const hookRunner = vi.fn(async (req: any) => {
-      expect(req.event).toBe('Stop')
+      if (req.event !== 'Stop') return { matched: false, hookCount: 0 }
       expect(events.at(-1)?.type).toBe('assistant_message_persisted')
       expect(statements.getMessageById.get(req.messageId).content).toBe('final answer')
       hooks.push({ ...req, ...req.resolveLineage() })
@@ -405,7 +432,10 @@ describe('source lineage membership validation', () => {
     await orchestrator.runMessage({ ...base, operation: 'branch', messageId: first.id, content: 'fork' }, event => events.push(event))
     await orchestrator.runMessage({ ...base, operation: 'edit-branch', messageId: userId, content: 'edited' }, event => events.push(event))
     await orchestrator.runMessage({ ...base, operation: 'repeat', parentId: userId, content: '' }, event => events.push(event))
-    expect(hookRunner).toHaveBeenCalledTimes(4)
+    // SessionStart only where a new native session starts: the first send and editing the root prompt.
+    expect(hookRunner.mock.calls.map(([req]: any[]) => req.event)).toEqual(['UserPromptSubmit', 'SessionStart', 'Stop',
+      'UserPromptSubmit', 'Stop', 'UserPromptSubmit', 'SessionStart', 'Stop', 'Stop'])
+    expect(inputs.every(input => input.hookSession)).toBe(true)
     hooks.forEach((req, index) => {
       expect(req).toMatchObject({ conversationId: 'c1', cwd: testDirectory, provider: 'claudecode', model: base.modelName,
         operation: ['send', 'branch', 'edit-branch', 'repeat'][index], lastAssistantMessage: 'final answer',
@@ -422,7 +452,8 @@ describe('source lineage membership validation', () => {
   it.each(['disabled', 'no-runner', 'no-broker', 'failed', 'aborted', 'compact', 'hook-failed', 'hook-blocked'])('handles Claude Stop gating and %s without duplicate native execution', async scenario => {
     db.exec(CLAUDE_SESSION_SCHEMA)
     const controller = new AbortController()
-    const hookRunner = vi.fn(async () => {
+    const hookRunner = vi.fn(async (req: any) => {
+      if (req.event !== 'Stop') return { matched: false, hookCount: 0 }
       if (scenario === 'hook-failed') throw new Error('hook discovery unavailable')
       return { matched: true, hookCount: 1, blocked: scenario === 'hook-blocked' }
     })
@@ -442,12 +473,53 @@ describe('source lineage membership validation', () => {
       hooksEnabled: scenario !== 'disabled', manualCompaction: scenario === 'compact' }, event => events.push(event), controller.signal)
     if (scenario === 'failed') await expect(run).rejects.toThrow('native failure')
     else await run
-    expect(hookRunner).toHaveBeenCalledTimes(scenario.startsWith('hook-') ? 1 : 0)
+    expect(hookRunner.mock.calls.filter(([req]: any[]) => req.event === 'Stop')).toHaveLength(scenario.startsWith('hook-') ? 1 : 0)
+    if (scenario === 'compact') expect(hookRunner).not.toHaveBeenCalled()
     expect(claudeSessions.run).toHaveBeenCalledOnce()
     if (scenario.startsWith('hook-')) {
       expect(events.some(event => event.type === 'notice' && event.code === 'hook_failed')).toBe(true)
       expect(events.filter(event => event.type === 'complete')).toHaveLength(1)
     }
+  })
+
+  it('expands a /skill and hook context into the Claude prompt and the persisted user message', async () => {
+    db.exec(CLAUDE_SESSION_SCHEMA)
+    mkdirSync(path.join(testDirectory, '.ygg', 'skills', 'greet-native'), { recursive: true })
+    writeFileSync(path.join(testDirectory, '.ygg', 'skills', 'greet-native', 'SKILL.md'),
+      '---\nname: greet-native\ndescription: Greets\n---\nSay hello to $ARGUMENTS.\n')
+    const hookRunner = vi.fn(async (req: any) => req.event === 'UserPromptSubmit'
+      ? { matched: true, hookCount: 1, additionalContext: 'prompt hook context' }
+      : { matched: false, hookCount: 0 })
+    const claudeSessions = { run: vi.fn(async (input: any) => input.sink.persistAssistantMessage({ conversationId: 'c1',
+      parentId: input.parentId, modelName: input.request.modelName, content: 'hi' })) }
+    orchestrator = new ChatOrchestrator({ db, statements, providerRouter: providerRouter as any,
+      decisionBroker: new DecisionBroker(), hookRunner, claudeSessions: claudeSessions as any })
+    await orchestrator.runMessage({ operation: 'send', conversationId: 'c1', provider: 'claudecode', modelName: 'claude-sonnet-5-5',
+      content: '/greet-native world', rootPath: testDirectory, hooksEnabled: true }, () => {})
+    const prompt: string = claudeSessions.run.mock.calls[0][0].request.content
+    expect(prompt.startsWith('<system-reminder>')).toBe(true)
+    expect(prompt).toContain('Say hello to world.')
+    expect(prompt).toContain('prompt hook context')
+    expect(prompt.endsWith('\n\n/greet-native world')).toBe(true)
+    const user = statements.getMessageById.get(claudeSessions.run.mock.calls[0][0].parentId)
+    expect(user.content).toBe('/greet-native world')
+    const blocks = JSON.parse(user.content_blocks)
+    expect(blocks.map((block: any) => [block.type, block.reason])).toEqual([['context_injection', 'skill'], ['context_injection', 'hook']])
+
+    db.prepare('INSERT INTO claude_message_checkpoints VALUES (?, ?, ?, ?, 1)').run(user.id, 'native', 'u1', testDirectory)
+    await orchestrator.runMessage({ operation: 'repeat', conversationId: 'c1', parentId: user.id, provider: 'claudecode',
+      modelName: 'claude-sonnet-5-5', content: '', rootPath: testDirectory, hooksEnabled: true }, () => {})
+    const repeated: string = claudeSessions.run.mock.calls[1][0].request.content
+    expect(repeated).toContain('Say hello to world.')
+    expect(repeated.endsWith('\n\n/greet-native world')).toBe(true)
+
+    const before = (db.prepare('SELECT COUNT(*) AS n FROM messages').get() as any).n
+    const events: any[] = []
+    await orchestrator.runMessage({ operation: 'send', conversationId: 'c1', provider: 'claudecode', modelName: 'claude-sonnet-5-5',
+      content: '/init', rootPath: testDirectory, hooksEnabled: true }, event => events.push(event)).catch(() => {})
+    expect(events.some(event => event.type === 'error' && /native slash commands/.test(event.error ?? event.message ?? ''))).toBe(true)
+    expect((db.prepare('SELECT COUNT(*) AS n FROM messages').get() as any).n).toBe(before)
+    expect(claudeSessions.run).toHaveBeenCalledTimes(2)
   })
 
   it.each([undefined, true, false])('initializes Claude approval from the accepted toolAutoApprove=%s setting', async toolAutoApprove => {

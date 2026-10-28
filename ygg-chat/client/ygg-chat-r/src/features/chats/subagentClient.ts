@@ -190,14 +190,7 @@ const extractFinalText = (event: SubagentStreamEvent): string | null => {
  */
 export const executeSubagentCall = async (toolCall: any, context: SubagentClientContext): Promise<string> => {
   const args = toolCall?.arguments || {}
-  const {
-    prompt,
-    systemPrompt,
-    temperature,
-    orchestratorMode = false,
-    tools: requestedTools,
-    inheritAutoApprove = true,
-  } = args
+  const { prompt, systemPrompt, temperature, orchestratorMode = false, tools: requestedTools } = args
 
   if (!prompt) {
     throw new Error('Subagent requires a prompt')
@@ -206,7 +199,7 @@ export const executeSubagentCall = async (toolCall: any, context: SubagentClient
   const getState = context.getState ?? null
   const callerProvider = context.callerProvider ?? getState?.().chat.providerState.currentProvider ?? null
   const { provider, model } = resolveSubagentDefaults(callerProvider, context.queryClient)
-  const autoApprove = inheritAutoApprove !== false && (getState?.().chat.toolAutoApprove ?? false)
+  const autoApprove = getState?.().chat.toolAutoApprove ?? false
 
   const requestBody = {
     conversationId: context.conversationId,

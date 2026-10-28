@@ -1157,7 +1157,7 @@ export const BUILTIN_TOOL_DEFINITIONS: SharedToolDefinition[] = [
     name: 'mcp_manager',
     enabled: true,
     description:
-      'Search MCP tools with action "search" and query (optional server name); only matching descriptions/schemas are returned. Individual tools are never preloaded. Use "list" for servers, "get" for status, "list_tools" for tool names and schemas, "invoke" with name (server), tool and args to execute, and "stop" to disconnect.',
+      'Search MCP tools with action "search" and query (optional server name); only tools on already-connected servers are searched and only matching descriptions/schemas are returned. Use "list_tools" with a server name to connect a disconnected server. Individual tools are never preloaded. Use "list" for servers, "get" for status, "list_tools" for tool names and schemas, "invoke" with name (server), tool and args to execute, and "stop" to disconnect.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -1258,11 +1258,6 @@ export const BUILTIN_TOOL_DEFINITIONS: SharedToolDefinition[] = [
           description:
             'Tool names to enable for subagent (only used when orchestratorMode=true). Example: ["read_file", "bash", "ripgrep", "brave_search"]. The subagent tool itself is always excluded to prevent recursion.',
         },
-        inheritAutoApprove: {
-          type: 'boolean',
-          description:
-            'If true, inherit parent auto-approve setting for tool calls. If false, the subagent is restricted to read-only tools. Default: true.',
-        },
       },
       required: ['prompt'],
     },
@@ -1313,11 +1308,6 @@ export const BUILTIN_TOOL_DEFINITIONS: SharedToolDefinition[] = [
           items: { type: 'string' },
           description:
             'spawn only: tool names to enable for the sub-agent (only used when orchestratorMode=true). `subagent` and `subagent_manager` are always excluded to prevent nesting.',
-        },
-        inheritAutoApprove: {
-          type: 'boolean',
-          description:
-            'spawn only: if true, inherit the parent auto-approve setting. If false, the sub-agent is restricted to read-only tools. Default: true.',
         },
         temperature: {
           type: 'number',

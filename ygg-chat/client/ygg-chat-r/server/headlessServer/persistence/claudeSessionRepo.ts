@@ -26,11 +26,12 @@ export class ClaudeSessionRepo {
   checkpoint(messageId: string): ClaudeCheckpoint | undefined {
     return this.db.prepare('SELECT * FROM claude_message_checkpoints WHERE message_id = ?').get(messageId)
   }
+  /** The workspace is fixed per native session; the model may change between turns (`model` records the latest). */
   reserve(lineageId: string, conversationId: string, model: string, cwd: string): void {
+    const existing = this.branch(lineageId)
+    if (existing && existing.cwd !== cwd) throw new Error('Claude branch workspace is locked. Start a new conversation.')
     this.db.prepare(`INSERT INTO claude_branch_sessions (lineage_id, conversation_id, model, cwd) VALUES (?, ?, ?, ?)
-      ON CONFLICT(lineage_id) DO NOTHING`).run(lineageId, conversationId, model, cwd)
-    const branch = this.branch(lineageId)
-    if (branch.model !== model || branch.cwd !== cwd) throw new Error('Claude branch model and workspace are locked. Start a new conversation.')
+      ON CONFLICT(lineage_id) DO UPDATE SET model = excluded.model`).run(lineageId, conversationId, model, cwd)
   }
   session(lineageId: string, sessionId: string, state: string): void {
     this.db.prepare('UPDATE claude_branch_sessions SET session_id = ?, state = ? WHERE lineage_id = ?').run(sessionId, state, lineageId)
@@ -50,14 +51,15 @@ export class ClaudeSessionRepo {
   }
 }
 
-/** Validate against persisted ancestry, never a renderer draft. Does not change existing API-provider switching. */
+/** Validate against persisted ancestry, never a renderer draft. Does not change existing API-provider switching.
+ * Only the provider is fixed: the native session resumes under any Claude model. */
 export function assertClaudeBranchSelection(request: HeadlessMessageRequest, path: any[]): void {
   const selected = isClaudeProvider(request.provider)
   path = executionPathAfterHandoff(path)
   const recorded = path.map(row => claudeMessageMetadata(row.meta)?.modelSelection).filter(Boolean)
   const claude = recorded.find(pair => isClaudeProvider(pair.provider))
-  if (claude && (!selected || request.modelName !== claude.model)) {
-    throw Object.assign(new Error('Claude branches have a fixed provider and model. Start a new conversation to change them.'), { code: 'configuration_mismatch' })
+  if (claude && !selected) {
+    throw Object.assign(new Error('Claude branches have a fixed provider. Start a new conversation or branch from a summary to change it.'), { code: 'configuration_mismatch' })
   }
   if (selected && path.length && !claude) {
     throw Object.assign(new Error('Claude requires a new conversation; existing provider history cannot be imported.'), { code: 'configuration_mismatch' })

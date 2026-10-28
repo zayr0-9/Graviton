@@ -33,6 +33,6 @@ describe('subagent tool definition', () => {
     // Retained arguments the thin client maps to the request contract.
     expect(subagent?.inputSchema.properties).toHaveProperty('prompt')
     expect(subagent?.inputSchema.properties).toHaveProperty('tools')
-    expect(subagent?.inputSchema.properties).toHaveProperty('inheritAutoApprove')
+    expect(subagent?.inputSchema.properties).not.toHaveProperty('inheritAutoApprove')
   })
 })

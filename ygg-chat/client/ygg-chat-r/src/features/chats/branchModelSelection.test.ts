@@ -57,6 +57,25 @@ it('Claude persisted identity overrides tip/lineage drafts and is inherited by f
   expect(resolveBranchModelSelection(chat, ['root', 'fork'], 'c', 'fork')).toEqual({ provider: 'Claude Code', model: 'claude-opus-5-5' })
 })
 
+it('Claude branches lock only the provider: Claude model drafts and the nearest recorded model apply', () => {
+  const chat = state()
+  chat.providerState.providers.push({ name: 'Claude Code' } as any)
+  chat.conversation.messages[0].meta = { modelSelection: { provider: 'claudecode', model: 'claude-opus-5-5' } }
+  chat.conversation.messages[1].meta = { modelSelection: { provider: 'claudecode', model: 'claude-haiku-5-5' } }
+  expect(resolveComposerClaudeLock(chat)).toEqual({ provider: 'Claude Code', model: 'claude-haiku-5-5' })
+  expect(resolveBranchModelSelection(chat)).toEqual({ provider: 'Claude Code', model: 'claude-haiku-5-5' })
+  const sonnet = { provider: 'Claude Code', model: 'claude-sonnet-5-5' }
+  chat.branchModelDrafts = { [branchModelKey('c', 'lineage:a')]: sonnet }
+  expect(resolveBranchModelSelection(chat)).toEqual(sonnet)
+  expect(resolveComposerClaudeLock(chat)).not.toBeNull()
+  // A non-handoff editor may change the Claude model but not the provider.
+  chat.conversation.messages[1] = { ...chat.conversation.messages[1], conversation_id: 'c', parent_id: 'root', role: 'user' } as any
+  chat.composition = { editingBranch: true, branchEditMessageId: 'a', branchEditModelSelection: sonnet } as any
+  expect(resolveComposerModelSelection(chat)).toEqual(sonnet)
+  chat.composition.branchEditModelSelection = pairB
+  expect(resolveComposerModelSelection(chat)?.provider).toBe('Claude Code')
+})
+
 describe('fresh first-prompt branch selection', () => {
   function editing(prefix: any[] = []) {
     const chat = state()

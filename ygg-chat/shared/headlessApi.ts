@@ -146,7 +146,7 @@ export interface HeadlessSubagentStreamRequest {
   /** OpenAI ChatGPT reasoning effort for this child run. */
   reasoningEffort?: 'low' | 'medium' | 'high' | 'xhigh'
   operationMode?: 'plan' | 'execute'
-  /** Parent's toolAutoApprove && inheritAutoApprove. When false, only read-only tools run. */
+  /** Inherited from the parent's toolAutoApprove. When false, only read-only tools run. */
   autoApprove: boolean
   rootPath?: string | null
   /** User-selected workspace bypass; does not change approval or operation mode. */

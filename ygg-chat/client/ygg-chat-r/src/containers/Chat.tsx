@@ -4966,7 +4966,8 @@ function Chat() {
   // Handle model selection
   const handleModelSelect = useCallback(
     (modelName: string) => {
-      if (claudeBranchLock) return
+      // A Claude branch fixes its provider, not its model.
+      if (claudeBranchLock && !isClaudeProvider(providers.currentProvider)) return
       const model = models.find(m => m.name === modelName)
       if (model) {
         requestModelSwitch({ provider: providers.currentProvider, model: model.name }, () => {
@@ -5075,7 +5076,7 @@ function Chat() {
 
       const slot = Number(event.code.slice(-1))
       const assignment = loadModelShortcutSlots()[slot]
-      if (!assignment || claudeBranchLock || (hasSelectedHistory && isClaudeProvider(assignment.provider))) return
+      if (!assignment || (claudeBranchLock ? !isClaudeProvider(assignment.provider) : hasSelectedHistory && isClaudeProvider(assignment.provider))) return
 
       const providerExists = providers.providers.some(provider => provider.name === assignment.provider)
       if (!providerExists) {
@@ -7662,12 +7663,11 @@ function Chat() {
                         dropdownMinWidth={220}
                       />
                     )}
-                    {isClaudeSession && <span className='text-xs text-neutral-500 dark:text-neutral-400' title='Claude owns tools, context and compaction. Provider/model lock after the first send. Queueing is unavailable in v1.'>Claude session{claudeBranchLock ? ' · locked' : ''}</span>}
+                    {isClaudeSession && <span className='text-xs text-neutral-500 dark:text-neutral-400' title='Claude owns tools, context and compaction. Provider locks after the first send; the Claude model can still change between turns. Queueing is unavailable in v1.'>Claude session{claudeBranchLock ? ' · provider locked' : ''}</span>}
                     <ModelSelectControl
                       provider={providers.currentProvider}
                       selectedModelName={selectedModel?.name || ''}
                       onChange={handleModelSelect}
-                      disabled={Boolean(claudeBranchLock)}
                       placeholder='Select a model...'
                       blur='low'
                       className='w-[120px] min-w-[42px] max-w-[170px] shrink transition-[width,transform] duration-150 hover:w-[170px] focus-within:w-[170px] data-[open=true]:w-[170px] active:scale-99 [&>button]:!rounded-full'
@@ -7972,7 +7972,8 @@ function Chat() {
                   )}
                   <ReasoningLevelControl
                     supported={Boolean(selectedModel?.thinking)}
-                    level={think ? reasoningConfig.effort : 'off'}
+                    level={think || isClaudeSession ? reasoningConfig.effort : 'off'}
+                    allowOff={!isClaudeSession}
                     onLevelChange={level => {
                       if (level === 'off') {
                         setThink(false)

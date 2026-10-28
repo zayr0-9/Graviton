@@ -11,6 +11,8 @@ type ReasoningLevelControlProps = {
   supported: boolean
   level: ReasoningLevel
   onLevelChange: (level: ReasoningLevel) => void
+  /** False for providers whose models cannot turn thinking off (Claude). */
+  allowOff?: boolean
 }
 
 const LEVELS: Array<{ value: ReasoningLevel; label: string }> = [
@@ -33,10 +35,12 @@ const FIZZ_PARTICLES = Array.from({ length: 16 }, (_, index) => ({
   delay: -(index % 7) * 0.31,
 }))
 
-const getLevelIndex = (level: ReasoningLevel) => Math.max(0, LEVELS.findIndex(option => option.value === level))
-const getLevelLabel = (level: ReasoningLevel) => LEVELS[getLevelIndex(level)]?.label ?? 'Off'
+const ON_LEVELS = LEVELS.filter(option => option.value !== 'off')
 
-export const ReasoningLevelControl = ({ supported, level, onLevelChange }: ReasoningLevelControlProps) => {
+export const ReasoningLevelControl = ({ supported, level, onLevelChange, allowOff = true }: ReasoningLevelControlProps) => {
+  const levels = allowOff ? LEVELS : ON_LEVELS
+  const getLevelIndex = (value: ReasoningLevel) => Math.max(0, levels.findIndex(option => option.value === value))
+  const getLevelLabel = (value: ReasoningLevel) => levels[getLevelIndex(value)].label
   const [open, setOpen] = useState(false)
   const [position, setPosition] = useState<{ top: number; left: number; transformOrigin: string } | null>(null)
   const [dragLevel, setDragLevel] = useState<ReasoningLevel | null>(null)
@@ -50,7 +54,7 @@ export const ReasoningLevelControl = ({ supported, level, onLevelChange }: Reaso
 
   const displayedLevel = dragLevel ?? level
   const levelIndex = getLevelIndex(displayedLevel)
-  const fillPercent = levelIndex * 25
+  const fillPercent = (levelIndex / (levels.length - 1)) * 100
   const activeColor = customThemeEnabled
     ? getThemeModeColor(theme.colors.composerToggleActiveText, isDarkMode)
     : isDarkMode
@@ -128,23 +132,23 @@ export const ReasoningLevelControl = ({ supported, level, onLevelChange }: Reaso
       if (!slider) return
       const rect = slider.getBoundingClientRect()
       const ratio = Math.min(1, Math.max(0, (rect.bottom - clientY) / rect.height))
-      const nextLevel = LEVELS[Math.round(ratio * (LEVELS.length - 1))].value
+      const nextLevel = levels[Math.round(ratio * (levels.length - 1))].value
       setDragLevel(nextLevel)
       if (nextLevel !== level) onLevelChange(nextLevel)
     },
-    [level, onLevelChange]
+    [level, levels, onLevelChange]
   )
 
   const handleSliderKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
     const currentIndex = getLevelIndex(level)
     let nextIndex: number | null = null
-    if (event.key === 'ArrowUp' || event.key === 'ArrowRight') nextIndex = Math.min(LEVELS.length - 1, currentIndex + 1)
+    if (event.key === 'ArrowUp' || event.key === 'ArrowRight') nextIndex = Math.min(levels.length - 1, currentIndex + 1)
     if (event.key === 'ArrowDown' || event.key === 'ArrowLeft') nextIndex = Math.max(0, currentIndex - 1)
     if (event.key === 'Home') nextIndex = 0
-    if (event.key === 'End') nextIndex = LEVELS.length - 1
+    if (event.key === 'End') nextIndex = levels.length - 1
     if (nextIndex === null) return
     event.preventDefault()
-    onLevelChange(LEVELS[nextIndex].value)
+    onLevelChange(levels[nextIndex].value)
   }
 
   const popoverStyle = useMemo<React.CSSProperties | undefined>(() => {
@@ -213,7 +217,7 @@ export const ReasoningLevelControl = ({ supported, level, onLevelChange }: Reaso
                       tabIndex={0}
                       aria-label='Reasoning level'
                       aria-valuemin={0}
-                      aria-valuemax={4}
+                      aria-valuemax={levels.length - 1}
                       aria-valuenow={levelIndex}
                       aria-valuetext={getLevelLabel(displayedLevel)}
                       className='relative h-44 w-12 touch-none cursor-ns-resize select-none focus-visible:outline-none'

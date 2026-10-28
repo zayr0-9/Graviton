@@ -345,7 +345,8 @@ export function ParallelChatPane({
       controlsRight={
         <ReasoningLevelControl
           supported={Boolean(selectedModel?.thinking)}
-          level={think ? reasoningConfig.effort : 'off'}
+          level={think || isClaudeProvider(providers.currentProvider) ? reasoningConfig.effort : 'off'}
+          allowOff={!isClaudeProvider(providers.currentProvider)}
           onLevelChange={level => {
             if (level === 'off') {
               setThink(false)

@@ -58,7 +58,7 @@ Prefer non-overlapping workstreams. Avoid assigning multiple mutating subagents 
 
 When `orchestratorMode` is `true`, explicitly list every tool the child needs. Include `multi_call` when the child should batch operations, along with all underlying tools it may invoke through `multi_call`, such as `read_file`, `glob`, and `ripgrep`. When `orchestratorMode` is false or omitted, the configured default child tool set is used.
 
-Set `inheritAutoApprove: false` for read-only delegation. Set it to `true` only when the child genuinely needs mutation or command execution and inheriting the parent approval policy is appropriate.
+Sub-agents always inherit the parent approval policy. For read-only delegation, restrict the child to read-only tools via `orchestratorMode` and `tools`, and say so in the prompt.
 
 ## Asynchronous Coordination
 
@@ -79,7 +79,7 @@ Independent spawn calls may be batched with `multi_call` in parallel when their 
 Example calls:
 
 ```json
-{"action":"spawn","prompt":"Inspect the authentication data flow in the listed files. Read only. Return paths, symbols, verified findings, assumptions, and test gaps.","orchestratorMode":true,"tools":["multi_call","read_file","glob","ripgrep"],"inheritAutoApprove":false}
+{"action":"spawn","prompt":"Inspect the authentication data flow in the listed files. Read only. Return paths, symbols, verified findings, assumptions, and test gaps.","orchestratorMode":true,"tools":["multi_call","read_file","glob","ripgrep"]}
 ```
 
 ```json

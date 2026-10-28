@@ -211,7 +211,7 @@ describe('executeSubagentCall request building', () => {
     expect(capturedBody.modelName).toBe('gpt-5.6-sol')
   })
 
-  it('captures autoApprove from live state when inheritAutoApprove is set', async () => {
+  it('captures autoApprove from live parent state', async () => {
     let capturedBody: any = null
     vi.stubGlobal(
       'fetch',

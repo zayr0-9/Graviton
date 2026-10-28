@@ -5,6 +5,7 @@ import path from 'node:path'
 import { ClaudeSessionService, interruptedResumePoint, safeResumePoint } from '../claudeSessionService.js'
 import { assertClaudeBranchSelection } from '../../persistence/claudeSessionRepo.js'
 import { DecisionBroker } from '../decisionBroker.js'
+import { createChatHookSession } from '../chatHookService.js'
 
 function fixture(events: any[] = []) {
   const rows: any[] = []
@@ -79,14 +80,16 @@ describe('Claude native session backend', () => {
     expect(f.sessions.reserve).not.toHaveBeenCalled()
     expect(f.sdk.query).not.toHaveBeenCalled()
   })
-  it('disables thinking for slider Off even with stale effort', async () => {
-    const f = fixture([assistant(), success])
-    f.input.request.think = false
-    f.input.request.reasoningConfig = { effort: 'xhigh' }
-    await f.service.run(f.input)
-    const options = f.sdk.query.mock.calls[0][0].options
-    expect(options.thinking).toEqual({ type: 'disabled' })
-    expect(options).not.toHaveProperty('effort')
+  it('never disables thinking: a stale Off keeps the selected effort or the native default', async () => {
+    for (const reasoningConfig of [{ effort: 'xhigh' }, undefined]) {
+      const f = fixture([assistant(), success])
+      f.input.request.think = false
+      f.input.request.reasoningConfig = reasoningConfig
+      await f.service.run(f.input)
+      const options = f.sdk.query.mock.calls[0][0].options
+      if (reasoningConfig) expect(options).toMatchObject({ thinking: { type: 'adaptive' }, effort: 'xhigh' })
+      else expect(options).not.toHaveProperty('thinking')
+    }
   })
   it.each([undefined, { effort: 'invalid' }])('preserves native defaults when no valid reasoning selection is provided: %j', async reasoningConfig => {
     const f = fixture([assistant(), success])
@@ -261,9 +264,9 @@ describe('Interrupted Claude branch recovery', () => {
 describe('Claude branch locks', () => {
   const request: any = { provider: 'Claude Code', modelName: 'm' }
   const path = [{ meta: JSON.stringify({ modelSelection: { provider: 'Claude Code', model: 'm' } }) }]
-  it('inherits exact identity and rejects provider/model changes', () => {
+  it('inherits the provider, allows Claude model changes and rejects provider changes', () => {
     expect(() => assertClaudeBranchSelection(request, path)).not.toThrow()
-    expect(() => assertClaudeBranchSelection({ ...request, modelName: 'other' }, path)).toThrow('fixed provider')
+    expect(() => assertClaudeBranchSelection({ ...request, modelName: 'other' }, path)).not.toThrow()
     expect(() => assertClaudeBranchSelection({ ...request, provider: 'openrouter' }, path)).toThrow('fixed provider')
   })
   it('rejects importing other-provider history but accepts an empty conversation', () => {
@@ -599,4 +602,64 @@ it('Allow all releases concurrent Claude permissions and auto-approves later cal
   const stopped = new AbortController()
   stopped.abort()
   await expect(permission('Bash', {}, { signal: stopped.signal, toolUseID: 'stopped' })).resolves.toMatchObject({ behavior: 'deny', interrupt: true })
+})
+
+describe('Graviton chat hooks on native Claude tools', () => {
+  const signal = () => new AbortController().signal
+  function hooked(runHook: (req: any) => Promise<any>) {
+    const f = fixture()
+    const hookSession = createChatHookSession({ conversationRepo: { listMessageLineage: () => [] }, runHook, conversationId: 'c',
+      cwd: '/workspace', provider: 'Claude Code', model: 'claude-sonnet-5-5', operation: 'send', streamId: 'stream' })
+    f.input.hookSession = hookSession
+    return f
+  }
+  const toolUse = (id: string) => assistant(`a-${id}`, [{ type: 'tool_use', id, name: 'Bash', input: { command: 'ls' } }])
+
+  it('runs Pre/Post hooks with Claude tool names, enforces deny and returns hook context to Claude', async () => {
+    const requests: any[] = []
+    const f = hooked(async req => {
+      requests.push(req)
+      if (req.event === 'PreToolUse' && req.toolCall.id === 'blocked') return { matched: true, hookCount: 1, permissionDecision: 'deny', permissionDecisionReason: 'no ls' }
+      if (req.event === 'PreToolUse') return { matched: true, hookCount: 1, updatedInput: { command: 'ls -a' } }
+      return { matched: true, hookCount: 1, additionalContext: `${req.event} context` }
+    })
+    const outputs: any[] = []
+    f.sdk.query.mockImplementation(({ options }: any) => Object.assign((async function* () {
+      yield { type: 'system', subtype: 'init', session_id: 's' }
+      // A hook can arrive before the envelope that owns its tool_use.
+      const early = options.hooks.PreToolUse[0].hooks[0]({ hook_event_name: 'PreToolUse', session_id: 's', tool_name: 'Bash', tool_input: { command: 'ls' }, tool_use_id: 'ok' }, 'ok', { signal: signal() })
+      yield toolUse('ok')
+      outputs.push(await early)
+      outputs.push(await options.hooks.PostToolUse[0].hooks[0]({ hook_event_name: 'PostToolUse', session_id: 's', tool_name: 'Bash', tool_input: { command: 'ls -a' }, tool_response: { stdout: 'a' }, tool_use_id: 'ok' }, 'ok', { signal: signal() }))
+      yield toolUse('blocked')
+      outputs.push(await options.hooks.PreToolUse[0].hooks[0]({ hook_event_name: 'PreToolUse', session_id: 's', tool_name: 'Bash', tool_input: { command: 'ls' }, tool_use_id: 'blocked' }, 'blocked', { signal: signal() }))
+      outputs.push(await options.hooks.PostToolUseFailure[0].hooks[0]({ hook_event_name: 'PostToolUseFailure', session_id: 's', tool_name: 'Bash', tool_input: {}, tool_use_id: 'blocked', error: 'boom' }, 'blocked', { signal: signal() }))
+      // Child-agent tools and interrupts never reach Graviton hooks.
+      outputs.push(await options.hooks.PreToolUse[0].hooks[0]({ hook_event_name: 'PreToolUse', session_id: 's', agent_id: 'child', tool_name: 'Bash', tool_input: {}, tool_use_id: 'child' }, 'child', { signal: signal() }))
+      outputs.push(await options.hooks.PostToolUseFailure[0].hooks[0]({ hook_event_name: 'PostToolUseFailure', session_id: 's', tool_name: 'Bash', tool_input: {}, tool_use_id: 'blocked', error: 'stop', is_interrupt: true }, 'blocked', { signal: signal() }))
+      outputs.push(await options.hooks.SessionStart[0].hooks[0]({ hook_event_name: 'SessionStart', session_id: 's', source: 'compact' }, undefined, { signal: signal() }))
+      outputs.push(await options.hooks.SessionStart[0].hooks[0]({ hook_event_name: 'SessionStart', session_id: 's', source: 'resume' }, undefined, { signal: signal() }))
+      yield assistant(); yield success
+    })(), { close: vi.fn() }) as any)
+    await f.service.run(f.input)
+    expect(requests.map(req => [req.event, req.toolCall?.name ?? null, req.messageId])).toEqual([
+      ['PreToolUse', 'Bash', 'row0'], ['PostToolUse', 'Bash', 'row0'], ['PreToolUse', 'Bash', 'row1'], ['PostToolUseFailure', 'Bash', 'row1'], ['SessionStart', null, null]])
+    expect(requests[1].toolResult).toBe(JSON.stringify({ stdout: 'a' }))
+    expect(outputs).toEqual([
+      // A rewrite stays behind the host approval prompt.
+      { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'ask', updatedInput: { command: 'ls -a' } } },
+      { hookSpecificOutput: { hookEventName: 'PostToolUse', additionalContext: 'PostToolUse context' } },
+      { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: 'no ls' } },
+      { hookSpecificOutput: { hookEventName: 'PostToolUseFailure', additionalContext: 'PostToolUseFailure context' } },
+      {}, {},
+      { hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext: 'SessionStart context' } },
+      {},
+    ])
+  })
+
+  it('registers no tool hooks without a hook session', async () => {
+    const f = fixture([assistant(), success])
+    await f.service.run(f.input)
+    expect(Object.keys(f.sdk.query.mock.calls[0][0].options.hooks).sort()).toEqual(['PostCompact', 'PreCompact'])
+  })
 })

@@ -5,7 +5,7 @@ import { claudeProcessEnvironment } from '../claudeProcessConfig.js'
 import { isClaudeTranscriptMessage } from '../../../../../../shared/claudeProvider.js'
 
 describe('Claude durable session state', () => {
-  it('creates idempotent schema, locks model/workspace and cascades projection checkpoints', () => {
+  it('creates idempotent schema, locks workspace, tracks the latest model and cascades projection checkpoints', () => {
     const db = new Database(':memory:')
     try {
       db.pragma('foreign_keys = ON')
@@ -14,11 +14,11 @@ describe('Claude durable session state', () => {
       db.exec("INSERT INTO conversations VALUES ('c'); INSERT INTO lineages VALUES ('l'); INSERT INTO messages VALUES ('m');")
       const repo = new ClaudeSessionRepo(db)
       repo.reserve('l', 'c', 'model', '/workspace')
-      expect(() => repo.reserve('l', 'c', 'other', '/workspace')).toThrow('locked')
-      expect(() => repo.reserve('l', 'c', 'model', '/other')).toThrow('locked')
+      repo.reserve('l', 'c', 'other', '/workspace')
+      expect(() => repo.reserve('l', 'c', 'third', '/other')).toThrow('workspace is locked')
       repo.session('l', 'session', 'ready')
       repo.record('m', 'session', 'uuid', '/workspace', true)
-      expect(repo.branch('l')).toMatchObject({ session_id: 'session', model: 'model', state: 'ready' })
+      expect(repo.branch('l')).toMatchObject({ session_id: 'session', model: 'other', cwd: '/workspace', state: 'ready' })
       expect(repo.checkpoint('m')).toMatchObject({ message_uuid: 'uuid', resumable: 1 })
       db.exec("DELETE FROM messages WHERE id='m'; DELETE FROM conversations WHERE id='c';")
       expect(repo.checkpoint('m')).toBeUndefined()

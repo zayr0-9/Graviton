@@ -194,7 +194,7 @@ async function buildSubagentRequest(toolCall: ProviderToolCall, context: ToolExe
     reasoningEffort: context.subagentReasoningEffort,
     serviceTier: provider === 'openaichatgpt' ? context.serviceTier : undefined,
     operationMode: context.operationMode ?? 'execute',
-    autoApprove: args.inheritAutoApprove !== false && context.autoApprove !== false,
+    autoApprove: context.autoApprove !== false,
     rootPath: context.rootPath ?? null,
     fullAccess: context.fullAccess === true,
     userId: null,

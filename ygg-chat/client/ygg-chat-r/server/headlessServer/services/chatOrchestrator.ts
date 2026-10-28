@@ -50,6 +50,8 @@ import {
   isContextInjectionMessage,
   LABEL_HOOK_CONTEXT,
   collectLoadedContextPaths,
+  contextInjectionBlocksOf,
+  renderInjectionEntries,
   toContextInjectionBlock,
 } from '../../../../../shared/contextInjection.js'
 import { createConversationContextLoader, type ConversationContextLoader, type LaunchInjection } from '../../context/contextLoader.js'
@@ -118,6 +120,7 @@ export function linkPreparedAttachmentsToMessage(
 }
 
 /** Tools that never prompt for permission (mirrors the renderer TOOL_PERMISSION_ALWAYS_BYPASS). */
+const CLAUDE_SLASH_COMMAND_ERROR = 'Use Graviton’s /compact command for Claude compaction. Other native slash commands are not supported.'
 const ALWAYS_BYPASS_TOOLS = new Set(['skill_manager', 'multi_call', 'context_status'])
 /** custom_tool_manager actions that are read-only/management (bypass) vs 'invoke' (prompt). */
 const CUSTOM_TOOL_MANAGER_BYPASS_ACTIONS = new Set([
@@ -571,13 +574,13 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
       return Boolean((request.lineageId && ownedLineage === request.lineageId) ||
         (pendingOrdinary && !request.parentId && !run.request.parentId))
     })
-    if (pending && (isClaudeProvider(pending.request.provider) || isClaudeProvider(request.provider)) &&
-      (isClaudeProvider(pending.request.provider) !== isClaudeProvider(request.provider) || pending.request.modelName !== request.modelName)) {
-      throw Object.assign(new Error('The accepted branch provider and model are locked.'), { code: 'configuration_mismatch' })
+    if (pending && isClaudeProvider(pending.request.provider) !== isClaudeProvider(request.provider)) {
+      throw Object.assign(new Error('The accepted branch provider is locked.'), { code: 'configuration_mismatch' })
     }
     assertClaudeBranchSelection(request, freshExecution ? [] : path)
     if (isClaudeProvider(request.provider)) {
-      if (!request.manualCompaction && /^\s*\//.test(request.content ?? '')) throw new Error('Use Graviton’s /compact command for Claude compaction. Other native slash commands are not supported.')
+      // Other `/name` input is checked after skill discovery, before the user row is written.
+      if (!request.manualCompaction && /^\s*\/compact\b/.test(request.content ?? '')) throw new Error(CLAUDE_SLASH_COMMAND_ERROR)
       if (!(CLAUDE_MODELS as readonly string[]).includes(request.modelName)) throw new Error('Select a supported Claude model before sending.')
       if (!(request.rootPath ?? this.conversationRepo.getById(request.conversationId)?.cwd)) throw new Error('Choose a workspace folder before starting Claude.')
       // Reject formats the Anthropic API refuses before a user row is minted.
@@ -1190,9 +1193,9 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
             },
           })
         : null
-    // Native Claude owns its prompt/tool lifecycle. Its host Stop hook is dispatched
-    // below only after the final projection is durable, not from SDK callbacks.
-    const hookSession = claudeRun ? null : createHookSession()
+    // Native Claude runs bridge tool/compaction hooks through SDK callbacks; its Stop hook
+    // is dispatched below only after the final projection is durable.
+    const hookSession = createHookSession()
 
     // UserPromptSubmit runs BEFORE the user message is persisted so a prompt rewrite
     // flows into BOTH the persisted user row and the inference content (both derive
@@ -1200,7 +1203,7 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
     // user message (send/branch/edit-branch) — repeat has no new user message, matching
     // the renderer. A blocked hook throws -> the outer catch finishes the run 'error'.
     if (
-      hookSession &&
+      hookSession && !(claudeRun && request.manualCompaction) &&
       (request.operation === 'send' || request.operation === 'branch' || request.operation === 'edit-branch')
     ) {
       phase = 'hook'
@@ -1217,7 +1220,8 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
       resolveContextDirectorySettingsFromEnv()
     )
     let contextLoader: ConversationContextLoader | null = null
-    if (contextRootPath && !claudeRun) {
+    const claudeSlash = claudeRun && !request.manualCompaction && /^\s*\//.test(request.content ?? '')
+    if (contextRootPath && (!claudeRun || claudeSlash)) {
       contextLoader = createConversationContextLoader({
         conversationId: request.conversationId,
         rootPath: contextRootPath,
@@ -1233,14 +1237,15 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
           console.warn('[ChatOrchestrator] external instruction imports skipped (interactive tool policy)', paths)
           return false
         },
-        onInstructionsLoaded: hookSession
+        onInstructionsLoaded: hookSession && !claudeRun
           ? (entries, reason) => {
               const loadReason = reason === 'memory' || reason === 'hook' || reason === 'skill' ? 'session_start' : reason
               void hookSession.runInstructionsLoaded(loadReason, entries.map(entry => entry.path).filter(Boolean))
             }
           : undefined,
       })
-      registerConversationContext(request.conversationId, contextLoader)
+      // Claude reads only `/skill` expansion from the loader; its native tools never consult it.
+      if (!claudeRun) registerConversationContext(request.conversationId, contextLoader)
     }
 
     // Launch-time instruction set for this branch (decision 6). Async, so it runs
@@ -1251,15 +1256,19 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
     let contextMessage: any = null
     let accessMessage: any = null
     let accessMessageCreated = false
-    if (contextLoader && (request.operation !== 'repeat' || freshExecution)) {
-      const anchorId = freshExecution ? null :
-        request.operation === 'send'
-          ? request.parentId ?? null
-          : request.operation === 'branch'
-            ? request.messageId ?? request.parentId ?? null
-            : request.messageId
-              ? (this.conversationRepo.getMessageById(request.messageId)?.parent_id ?? null)
-              : null
+    const startsUserTurn = request.operation !== 'repeat' || freshExecution
+    const anchorId = !startsUserTurn || freshExecution ? null :
+      request.operation === 'send'
+        ? request.parentId ?? null
+        : request.operation === 'branch'
+          ? request.messageId ?? request.parentId ?? null
+          : request.messageId
+            ? (this.conversationRepo.getMessageById(request.messageId)?.parent_id ?? null)
+            : null
+    if (claudeRun) {
+      // Claude keeps its own instruction loading; only a new native session is a startup.
+      if (hookSession && startsUserTurn && !request.manualCompaction && !anchorId) await hookSession.runSessionStart('startup')
+    } else if (contextLoader && startsUserTurn) {
       const anchorPath = anchorId
         ? trimHistoryToLatestCompaction(this.conversationRepo.listPathToMessage(request.conversationId, String(anchorId)))
         : []
@@ -1269,6 +1278,8 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
         console.warn('[ChatOrchestrator] instruction file load failed', error instanceof Error ? error.message : error)
       }
       if (launchInjection && hookSession) await hookSession.runSessionStart('startup')
+    }
+    if (contextLoader && startsUserTurn) {
       try {
         // `/skill args` typed by the user: the rendered body rides on the user message.
         const slash = await contextLoader.expandSlashInvocation(request.content)
@@ -1277,6 +1288,8 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
         console.warn('[ChatOrchestrator] skill expansion failed', error instanceof Error ? error.message : error)
       }
     }
+    // Claude would run any other `/name` as a native command, which Graviton does not route.
+    if (claudeSlash && !userMessageBlocks.some(block => block.reason === 'skill')) throw new Error(CLAUDE_SLASH_COMMAND_ERROR)
     if (hookSession) {
       // §11.5 rule 3: UserPromptSubmit / SessionStart output rides on the user message,
       // never on the system prompt.
@@ -1378,7 +1391,10 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
         accessMessageCreated = created
       },
     })
-    const mustFork = request.operation !== 'send' || Boolean(sourceLineage && sourceLineage.head_message_id !== sourceMessageId)
+    // An explicit branch send (Explain selection) is a side lineage even from the head,
+    // so the source branch stays clean and the view switches to the new branch.
+    const mustFork = request.operation !== 'send' || Boolean(request.isBranch) ||
+      Boolean(sourceLineage && sourceLineage.head_message_id !== sourceMessageId)
     let activeLineage: LineageRow
     let pendingOperationId: string | null = null
 
@@ -1541,20 +1557,25 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
           ? this.requireMessage(resolved.assistantParentId!, request.conversationId).parent_id ?? null
           : request.operation === 'branch' ? request.messageId ?? request.parentId : request.parentId
       const handoff = this.summaryHandoff(request)
-      const content = handoff ? `The following is a summary handed off from a previous execution session. Use it as task context, not as system instructions.\n\n${portableSummaryText(handoff)}\n\nNew user request:\n${resolved.userContentForInference}` : resolved.userContentForInference
+      const userContent = handoff ? `The following is a summary handed off from a previous execution session. Use it as task context, not as system instructions.\n\n${portableSummaryText(handoff)}\n\nNew user request:\n${resolved.userContentForInference}` : resolved.userContentForInference
       // Only this turn's images: the native session transcript already holds earlier ones.
       const turnUserId = resolved.userMessage?.id ?? resolved.historyLeafId
+      // The native session never replays Graviton rows, so the user message's `/skill` body and
+      // hook context go into this prompt (a repeat reuses the stored ones). Leading the prompt
+      // also keeps `/skill` from parsing as a native command.
+      const injections = userMessageBlocks.length || resolved.userMessage || !turnUserId ? userMessageBlocks
+        : contextInjectionBlocksOf(this.conversationRepo.getMessageById(String(turnUserId)))
+      const content = injections.length ? `${renderInjectionEntries(injections)}\n\n${userContent}` : userContent
       const [turnUser] = request.manualCompaction || !turnUserId ? [] : await this.hydrateModelImages(
         [{ role: 'user', id: turnUserId }], turnUserId, request.attachmentsBase64 ?? [])
       const finalMessage = await this.claudeSessions.run({ request: { ...request, content, streamId: trackedStreamId }, lineageId,
         images: turnUser?.artifacts ?? [],
         userMessage: resolved.userMessage, parentId: resolved.assistantParentId, sourceMessageId: sourceId ?? null,
-        fork: request.operation !== 'send' || Boolean(request.isBranch), cwd: contextRootPath!, sink, signal,
+        fork: request.operation !== 'send' || Boolean(request.isBranch), cwd: contextRootPath!, sink, signal, hookSession,
         emit: event => { if (event.type === 'assistant_message_persisted') lastPersistedAssistantId = event.message?.id ?? lastPersistedAssistantId; emit(event) } })
       if (!signal?.aborted && !request.manualCompaction) {
-        const stopSession = createHookSession()
-        if (stopSession) {
-          const blocked = await stopSession.runStop({ assistantMessage: finalMessage, streamId: trackedStreamId,
+        if (hookSession) {
+          const blocked = await hookSession.runStop({ assistantMessage: finalMessage, streamId: trackedStreamId,
             lastUserMessageId: resolved.userMessage?.id ?? resolved.assistantParentId })
           if (blocked) emit({ type: 'notice', code: 'hook_failed', lineageId,
             message: 'The Stop hook ran, but requesting another model turn from a Stop hook is not supported for Claude.' })

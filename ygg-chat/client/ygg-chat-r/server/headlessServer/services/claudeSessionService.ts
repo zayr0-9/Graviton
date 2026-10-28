@@ -4,12 +4,14 @@ import { randomUUID } from 'node:crypto'
 import { readFile, realpath } from 'node:fs/promises'
 import path from 'node:path'
 import { claudeProcessEnvironment, resolveClaudeExecutable } from './claudeProcessConfig.js'
-import type { Options, SDKUserMessage } from '@anthropic-ai/claude-agent-sdk'
+import type { HookInput, Options, SDKUserMessage } from '@anthropic-ai/claude-agent-sdk'
 import type { HeadlessMessageRequest, HeadlessStreamEvent } from '../../../../../shared/headlessApi.js'
 import { ClaudeSessionRepo } from '../persistence/claudeSessionRepo.js'
 import type { MessageRepo } from '../persistence/messageRepo.js'
 import type { MessageSink } from './messageSink.js'
 import type { DecisionBroker, OperationModeUpgradeDecision, PermissionDecision } from './decisionBroker.js'
+import type { ChatHookSession } from './chatHookService.js'
+import type { ToolExecutionContext } from './toolLoopService.js'
 
 // Lazy import keeps the native CLI launcher out of renderer and ordinary provider startup.
 export type ClaudeSdk = Pick<typeof import('@anthropic-ai/claude-agent-sdk'), 'query' | 'forkSession' | 'getSessionMessages'>
@@ -29,6 +31,8 @@ function claudeImageBlock(url: string) {
 export const CLAUDE_PLANS_DIRECTORY = path.join('.ygg', 'plans')
 const PLAN_WRITE_TOOLS = new Set(['Write', 'Edit', 'MultiEdit'])
 const MAX_PLAN_BYTES = 1024 * 1024
+// How long a tool hook waits for its tool_use envelope before recording against the current head.
+const OWNER_WAIT_MS = 2000
 // Chat mode matches Graviton's: a normal conversation with file edits removed, not native plan mode.
 export const CHAT_MODE_DISALLOWED_TOOLS = ['Edit', 'Write', 'MultiEdit', 'NotebookEdit', 'EnterPlanMode', 'ExitPlanMode']
 
@@ -108,12 +112,63 @@ export class ClaudeSessionService {
     return recovered
   }
 
+  /**
+   * Graviton's PreToolUse/PostToolUse/PostToolUseFailure hooks around native tools, plus
+   * SessionStart after a native compaction. Matchers see Claude's tool names (Read, Bash, Edit…).
+   * Hook context is handed straight back to Claude, the only place it can reach this session.
+   */
+  private chatHooks(session: ChatHookSession, scope: {
+    active: (hook: HookInput, signal: AbortSignal) => boolean
+    context: (toolUseId: string, signal: AbortSignal) => Promise<ToolExecutionContext>
+  }): NonNullable<Options['hooks']> {
+    const drained = () => session.drainHookContext().join('\n\n') || undefined
+    return {
+      PreToolUse: [{ hooks: [async (hook, _toolUseId, { signal }) => {
+        if (hook.hook_event_name !== 'PreToolUse' || !scope.active(hook, signal)) return {}
+        const result = await session.runPreToolUse({ id: hook.tool_use_id, name: hook.tool_name, arguments: hook.tool_input ?? {} },
+          await scope.context(hook.tool_use_id, signal))
+        const additionalContext = drained()
+        // Graviton enforces only deny and rewrites. A rewrite stays behind the host approval
+        // prompt ('ask'); never 'allow', which would skip it.
+        const decision = result.permissionDecision === 'deny'
+          ? { permissionDecision: 'deny' as const, permissionDecisionReason: result.permissionDecisionReason || 'Tool blocked by hook' }
+          : result.updatedInput ? { permissionDecision: 'ask' as const, updatedInput: result.updatedInput } : {}
+        if (!additionalContext && !Object.keys(decision).length) return {}
+        return { hookSpecificOutput: { hookEventName: 'PreToolUse', ...decision, ...(additionalContext ? { additionalContext } : {}) } }
+      }] }],
+      PostToolUse: [{ hooks: [async (hook, _toolUseId, { signal }) => {
+        if (hook.hook_event_name !== 'PostToolUse' || !scope.active(hook, signal)) return {}
+        await session.runPostToolUse({ id: hook.tool_use_id, name: hook.tool_name, arguments: hook.tool_input ?? {} },
+          hook.tool_response, await scope.context(hook.tool_use_id, signal))
+        const additionalContext = drained()
+        return additionalContext ? { hookSpecificOutput: { hookEventName: 'PostToolUse', additionalContext } } : {}
+      }] }],
+      PostToolUseFailure: [{ hooks: [async (hook, _toolUseId, { signal }) => {
+        // Parity with the Graviton loop: no failure hook on cancellation.
+        if (hook.hook_event_name !== 'PostToolUseFailure' || hook.is_interrupt || !scope.active(hook, signal)) return {}
+        await session.runPostToolUseFailure({ id: hook.tool_use_id, name: hook.tool_name, arguments: hook.tool_input ?? {} },
+          hook.error, await scope.context(hook.tool_use_id, signal))
+        const additionalContext = drained()
+        return additionalContext ? { hookSpecificOutput: { hookEventName: 'PostToolUseFailure', additionalContext } } : {}
+      }] }],
+      // Startup context rides on the user message (orchestrator); only a compaction needs it here.
+      SessionStart: [{ hooks: [async (hook, _toolUseId, { signal }) => {
+        if (hook.hook_event_name !== 'SessionStart' || hook.source !== 'compact' || !scope.active(hook, signal)) return {}
+        await session.runSessionStart('compact')
+        const additionalContext = drained()
+        return additionalContext ? { hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext } } : {}
+      }] }],
+    }
+  }
+
   async run(input: {
     request: HeadlessMessageRequest; lineageId: string; userMessage: any; parentId: string | null
     sourceMessageId: string | null; fork: boolean; cwd: string; sink: MessageSink
     emit: (event: HeadlessStreamEvent) => void; signal?: AbortSignal
     /** This turn's images as data URLs; earlier images live in the native transcript. */
     images?: string[]
+    /** Graviton chat hooks, bridged onto the native tool and compaction lifecycle. */
+    hookSession?: ChatHookSession | null
   }): Promise<any> {
     const { request, lineageId, emit, sink, signal, cwd } = input
     if (!request.manualCompaction && /^\s*\//.test(request.content ?? '')) throw new Error('Native slash commands require an explicit Graviton command.')
@@ -159,6 +214,8 @@ export class ClaudeSessionService {
     let streamedText = ''
     let streamedReasoning = ''
     const toolOwners = new Map<string, { message: any; blocks: any[]; calls: any[] }>()
+    // Hook callbacks arrive on the control channel and can outrun the envelope that owns the tool_use.
+    const ownerWaiters = new Map<string, Array<() => void>>()
     const apiResponses = new Map<string, { message: any; blocks: any[]; calls: any[]; content: string }>()
     let lastUuid: string | null = null
     // Native entries of this turn (since the last compaction), for an interrupted-run checkpoint.
@@ -192,12 +249,29 @@ export class ClaudeSessionService {
         effectiveTokens: 0, contextLength: 0, thresholdPercent: 0,
         ...(summaryMessage ? { summaryMessage, parentMessageId: summaryMessage.id } : {}), ...(error ? { error } : {}) })
     }
+    const hookSession = input.hookSession ?? null
+    const ownerMessageId = async (toolUseId: string, hookSignal: AbortSignal): Promise<string> => {
+      if (!toolOwners.has(toolUseId) && !hookSignal.aborted) {
+        await new Promise<void>(resolve => {
+          const done = () => { clearTimeout(timer); hookSignal.removeEventListener('abort', done); resolve() }
+          const timer = setTimeout(done, OWNER_WAIT_MS)
+          hookSignal.addEventListener('abort', done, { once: true })
+          ownerWaiters.set(toolUseId, [...(ownerWaiters.get(toolUseId) ?? []), done])
+        })
+      }
+      return String(toolOwners.get(toolUseId)?.message.id ?? finalMessage?.id ?? parent ?? '')
+    }
     const hooks: NonNullable<Options['hooks']> = {
       PreCompact: [{ hooks: [async (hook, _toolId, context) => {
         if (context.signal.aborted || abortController.signal.aborted || hook.agent_id) return {}
         if (hook.hook_event_name === 'PreCompact' && hook.session_id === activeSession) {
           compactionActive = true
           compactionEvent('started')
+          if (hookSession) {
+            await hookSession.runPreCompact(hook.trigger)
+            // Native compaction takes no hook context; do not let it leak into a later tool result.
+            hookSession.drainHookContext()
+          }
         }
         return {}
       }] }],
@@ -216,6 +290,13 @@ export class ClaudeSessionService {
         }
         return {}
       }] }],
+      ...(hookSession ? this.chatHooks(hookSession, {
+        active: (hook, signal) => !hook.agent_id && !signal.aborted && !abortController.signal.aborted,
+        context: async (toolUseId, signal) => ({
+          conversationId: request.conversationId, messageId: await ownerMessageId(toolUseId, signal),
+          streamId: request.streamId ?? null, rootPath: cwd, provider: request.provider, modelName: request.modelName, signal,
+        }),
+      }) : {}),
     }
     // Chat mode only removes edit tools; ExitPlanMode is still handled if Claude enters plan mode itself.
     let mode: 'plan' | 'execute' = request.operationMode === 'plan' ? 'plan' : 'execute'
@@ -276,7 +357,8 @@ export class ClaudeSessionService {
       if (this.deps.broker.hasPending(request.streamId!, id)) emit(event)
       return await pending === 'deny' ? { behavior: 'deny', message: 'Denied by user' } : { behavior: 'allow', updatedInput: args }
     }
-    // The composer sends think:false for Off and a named effort for enabled levels.
+    // Thinking is never disabled: several Claude models reject it, so the composer offers no
+    // Off and a stale think:false falls back to the selected effort or the native default.
     // Omitted settings keep the native default for older/non-composer callers.
     const effort = request.reasoningConfig?.effort
     const selectedEffort = effort === 'low' || effort === 'medium' || effort === 'high' || effort === 'xhigh' ? effort : undefined
@@ -286,8 +368,7 @@ export class ClaudeSessionService {
       ...(mode === 'plan' ? { disallowedTools: CHAT_MODE_DISALLOWED_TOOLS } : {}),
       canUseTool, permissionPrompts: 'host', settingSources: [], strictMcpConfig: true, mcpServers: {},
       persistSession: true, hooks,
-      ...(request.think === false ? { thinking: { type: 'disabled' } as const }
-        : request.think === true || selectedEffort ? { thinking: { type: 'adaptive' } as const, ...(selectedEffort ? { effort: selectedEffort } : {}) } : {}),
+      ...(request.think === true || selectedEffort ? { thinking: { type: 'adaptive' } as const, ...(selectedEffort ? { effort: selectedEffort } : {}) } : {}),
       systemPrompt: { type: 'preset', preset: 'claude_code' },
       // Do not inherit plugin/MCP/hook execution or Graviton's own tool prompt.
       settings: { disableAllHooks: true, plansDirectory: CLAUDE_PLANS_DIRECTORY },
@@ -396,6 +477,8 @@ export class ClaudeSessionService {
           streamedText = ''; streamedReasoning = ''
           for (const call of calls) {
             toolOwners.set(call.id, response)
+            for (const wake of ownerWaiters.get(call.id) ?? []) wake()
+            ownerWaiters.delete(call.id)
             emit({ type: 'chunk', part: 'tool_call', toolCall: call })
             emit({ type: 'tool_execution', status: 'started', toolCallId: call.id, toolName: call.name })
           }

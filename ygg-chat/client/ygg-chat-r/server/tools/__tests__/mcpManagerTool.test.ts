@@ -40,14 +40,14 @@ describe('mcp_manager discovery and invoke', () => {
 
   it('searches across enabled servers and returns only matching model-visible schemas', async () => {
     manager.getConfigs.mockResolvedValue([{ name: 'demo_server', enabled: true }, { name: 'disabled', enabled: false }])
-    manager.getServerStatus.mockReturnValue({ tools: [
+    manager.getServerStatus.mockReturnValue({ status: 'connected', tools: [
       { ...definition, description: 'Echo messages' },
       { ...definition, name: 'unrelated' },
       { ...definition, name: 'private_echo', _meta: { ui: { visibility: ['app'] } } },
     ] })
     const result = await execute({ action: 'search', query: 'DEMO echo', limit: 1 })
     expect(result).toMatchObject({ success: true, totalCount: 1, tools: [{ name: 'echo', serverName: 'demo_server', inputSchema: definition.inputSchema }] })
-    expect(manager.startServer).toHaveBeenCalledOnce()
+    expect(manager.startServer).not.toHaveBeenCalled()
     expect(manager.callServerTool).not.toHaveBeenCalled()
   })
 
@@ -58,11 +58,16 @@ describe('mcp_manager discovery and invoke', () => {
     expect(manager.startServer).not.toHaveBeenCalled()
   })
 
-  it('reports partial search failures and validates the query before connecting', async () => {
+  it('validates the query and never connects servers during search', async () => {
     expect((await execute({ action: 'search', query: ' ' })).success).toBe(false)
+    manager.getConfigs.mockResolvedValue([{ name: 'demo_server', enabled: true }, { name: 'signed_out', enabled: true }])
+    manager.getServerStatus.mockImplementation((name: string) => name === 'demo_server'
+      ? { status: 'connected', tools: [definition] }
+      : { status: 'disconnected', tools: [{ ...definition, name: 'echo_stale' }] })
+    const result = await execute({ action: 'search', query: 'echo' })
+    expect(result).toMatchObject({ success: true, totalCount: 1, tools: [{ name: 'echo', serverName: 'demo_server' }] })
+    expect(result).not.toHaveProperty('serverErrors')
     expect(manager.startServer).not.toHaveBeenCalled()
-    manager.startServer.mockRejectedValue(new Error('offline'))
-    expect(await execute({ action: 'search', query: 'echo' })).toMatchObject({ success: true, totalCount: 0, serverErrors: [{ name: 'demo_server', error: 'offline' }] })
   })
 
   it('invokes by server and original tool name, including underscores in server names', async () => {
@@ -99,8 +104,13 @@ describe('mcp_manager discovery and invoke', () => {
     await expect(execute({ action: 'invoke', name: 'demo_server', tool: 'echo', args: { text: 'x' } })).rejects.toMatchObject({ [Symbol.for('ygg.chat.errorCode')]: 'mcp_unavailable' })
   })
 
-  it('blocks Plan mode and cancellation before connection/invocation', async () => {
-    await expect(execute({ action: 'invoke', name: 'demo_server', tool: 'echo' }, { operationMode: 'plan' })).rejects.toThrow('Agent Mode')
+  it('allows invocation in Chat (plan) mode', async () => {
+    const result = await execute({ action: 'invoke', name: 'demo_server', tool: 'echo', args: { text: 'hi' } }, { operationMode: 'plan' })
+    expect(result.success).toBe(true)
+    expect(manager.callServerTool).toHaveBeenCalledWith('demo_server', 'echo', { text: 'hi' })
+  })
+
+  it('blocks cancellation before connection/invocation', async () => {
     const controller = new AbortController()
     controller.abort()
     await expect(execute({ action: 'invoke', name: 'demo_server', tool: 'echo' }, { signal: controller.signal })).rejects.toThrow()
