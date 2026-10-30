@@ -624,7 +624,8 @@ const ChatMessageBody: React.FC<ChatMessageProps> = React.memo(
 
     const claudeTranscript = isClaudeTranscriptMessage(messageData)
     const canEditMessage = Boolean(onEdit) && !claudeTranscript
-    const canDeleteMessage = Boolean(onDelete) && !claudeTranscript
+    // Like Claude Code's rewind: a Claude branch is cut back at a user message. The server refuses cuts it cannot resume from.
+    const canDeleteMessage = Boolean(onDelete) && (!claudeTranscript || role === 'user')
     const canBranchMessage = role === 'user' || (role === 'assistant' && messageData?.parent_id == null)
 
     const getEditableText = () =>
@@ -1309,7 +1310,8 @@ const ChatMessageBody: React.FC<ChatMessageProps> = React.memo(
     }
 
     const renderHookActivityItem = (): MessageRenderItem | null => {
-      if (!hookRuns?.length || role !== 'assistant') return null
+      // User rows own the hooks that ran on the prompt (UserPromptSubmit, SessionStart).
+      if (!hookRuns?.length || (role !== 'assistant' && !isUserRow)) return null
       return {
         key: 'hook-activity',
         kind: 'activity',

@@ -30,6 +30,7 @@ import type { Conversation } from '../../features/conversations/conversationType
 // import { selectSelectedProject } from '../../features/projects/projectSelectors'
 import { Message } from '@/features/chats'
 import { ConversationId, MessageId } from '../../../../../shared/types'
+import { useHoverIntent } from '../../hooks/useHoverIntent'
 import { useIsMobile } from '../../hooks/useMediaQuery'
 import { useConversations, useProjects } from '../../hooks/useQueries'
 import { groupConversationsByProject } from './conversationProjectGroups'
@@ -372,6 +373,18 @@ export const Heimdall: React.FC<HeimdallProps> = ({
     fallbackPosition: { x: number; y: number }
   } | null>(null)
   const notePreviewCloseTimeoutRef = useRef<number | null>(null)
+  // Docked previews sit across the graph from their anchor, so the path to them
+  // crosses other nodes/pills. Hover intent holds swaps/closes while heading there.
+  const messagePreviewCardRef = useRef<HTMLDivElement | null>(null)
+  const notePreviewCardRef = useRef<HTMLDivElement | null>(null)
+  const messagePreviewIntent = useHoverIntent({
+    enabled: selectedNode !== null,
+    getTargetRect: () => messagePreviewCardRef.current?.getBoundingClientRect() ?? null,
+  })
+  const notePreviewIntent = useHoverIntent({
+    enabled: hoveredNote !== null,
+    getTargetRect: () => notePreviewCardRef.current?.getBoundingClientRect() ?? null,
+  })
   // Store message content in ref to avoid stale closures in debounced update
   const noteMessageContentRef = useRef<string>('')
   const customColorInputRef = useRef<HTMLInputElement | null>(null)
@@ -1000,15 +1013,16 @@ export const Heimdall: React.FC<HeimdallProps> = ({
   const scheduleCloseHoveredNote = useCallback(() => {
     clearNotePreviewCloseTimeout()
     notePreviewCloseTimeoutRef.current = window.setTimeout(() => {
-      setHoveredNote(null)
       notePreviewCloseTimeoutRef.current = null
+      notePreviewIntent.run(() => setHoveredNote(null))
     }, DOCKED_PREVIEW_CLOSE_DELAY_MS)
-  }, [clearNotePreviewCloseTimeout])
+  }, [clearNotePreviewCloseTimeout, notePreviewIntent])
 
   const handleNoteBadgeClick = useCallback(
     (event: React.MouseEvent<SVGGElement>, nodeId: string) => {
       event.stopPropagation()
       clearNotePreviewCloseTimeout()
+      notePreviewIntent.cancel()
       setHoveredNote(null)
       const containerRect = containerRef.current?.getBoundingClientRect()
       if (!containerRect) return
@@ -1018,7 +1032,7 @@ export const Heimdall: React.FC<HeimdallProps> = ({
         y: event.clientY - containerRect.top,
       })
     },
-    [handleOpenNoteDialog, clearNotePreviewCloseTimeout]
+    [handleOpenNoteDialog, clearNotePreviewCloseTimeout, notePreviewIntent]
   )
 
   const handleNoteBadgeHover = useCallback(
@@ -1026,7 +1040,7 @@ export const Heimdall: React.FC<HeimdallProps> = ({
       clearNotePreviewCloseTimeout()
       const containerRect = containerRef.current?.getBoundingClientRect()
       if (!containerRect) return
-      setHoveredNote({
+      const nextHoveredNote = {
         nodeId: node.id,
         note,
         sender: node.sender,
@@ -1034,18 +1048,22 @@ export const Heimdall: React.FC<HeimdallProps> = ({
           x: event.clientX - containerRect.left,
           y: event.clientY - containerRect.top,
         },
-      })
+      }
+      notePreviewIntent.run(() => setHoveredNote(nextHoveredNote))
     },
-    [clearNotePreviewCloseTimeout]
+    [clearNotePreviewCloseTimeout, notePreviewIntent]
   )
 
+  // Leaving a pill drops any swap still deferred for it, then starts the close timer.
   const handleNoteBadgeLeave = useCallback(() => {
+    notePreviewIntent.cancel()
     scheduleCloseHoveredNote()
-  }, [scheduleCloseHoveredNote])
+  }, [notePreviewIntent, scheduleCloseHoveredNote])
 
   const handleNotePreviewEnter = useCallback(() => {
     clearNotePreviewCloseTimeout()
-  }, [clearNotePreviewCloseTimeout])
+    notePreviewIntent.cancel()
+  }, [clearNotePreviewCloseTimeout, notePreviewIntent])
 
   const handleNotePreviewLeave = useCallback(() => {
     scheduleCloseHoveredNote()
@@ -1673,7 +1691,10 @@ export const Heimdall: React.FC<HeimdallProps> = ({
   useEffect(() => {
     setSubagentPanel(null)
     setHoveredNote(null)
-  }, [conversationId])
+    // A deferred swap must not reopen a preview from the previous conversation.
+    messagePreviewIntent.cancel()
+    notePreviewIntent.cancel()
+  }, [conversationId, messagePreviewIntent, notePreviewIntent])
 
   const nodeWidth = 250
   const nodeHeight = 80
@@ -2829,42 +2850,43 @@ export const Heimdall: React.FC<HeimdallProps> = ({
   const scheduleCloseMessagePreview = useCallback(() => {
     clearMessagePreviewCloseTimeout()
     messagePreviewCloseTimeoutRef.current = window.setTimeout(() => {
-      setSelectedNode(null)
       messagePreviewCloseTimeoutRef.current = null
+      messagePreviewIntent.run(() => setSelectedNode(null))
     }, DOCKED_PREVIEW_CLOSE_DELAY_MS)
-  }, [clearMessagePreviewCloseTimeout])
+  }, [clearMessagePreviewCloseTimeout, messagePreviewIntent])
 
   const handleNodeMouseEnter = useCallback(
     (e: React.MouseEvent<SVGElement>) => {
       clearMessagePreviewCloseTimeout()
       const nodeId = getNodeIdFromTarget(e.target)
       if (!nodeId) return
-      const pos = positions[nodeId]
-      if (pos?.node) {
-        setSelectedNode(pos.node)
-      }
-
+      const node = positions[nodeId]?.node
       const containerRect = containerRef.current?.getBoundingClientRect()
-      if (containerRect) {
-        setMousePosition({
-          x: e.clientX - containerRect.left,
-          y: e.clientY - containerRect.top,
-        })
-      }
+      const nextMousePosition = containerRect
+        ? { x: e.clientX - containerRect.left, y: e.clientY - containerRect.top }
+        : null
+
+      messagePreviewIntent.run(() => {
+        if (node) setSelectedNode(node)
+        if (nextMousePosition) setMousePosition(nextMousePosition)
+      })
     },
-    [clearMessagePreviewCloseTimeout, getNodeIdFromTarget, positions]
+    [clearMessagePreviewCloseTimeout, getNodeIdFromTarget, messagePreviewIntent, positions]
   )
 
   // Moving off the node starts the close timer; entering the docked card cancels it
   // (so it can be scrolled), and leaving the card restarts it. A new node-hover
-  // replaces the content via handleNodeMouseEnter.
+  // replaces the content via handleNodeMouseEnter, but while the pointer is heading
+  // to the card, swaps and closes wait until it changes direction or stalls.
   const handleNodeMouseLeave = useCallback(() => {
+    messagePreviewIntent.cancel()
     scheduleCloseMessagePreview()
-  }, [scheduleCloseMessagePreview])
+  }, [messagePreviewIntent, scheduleCloseMessagePreview])
 
   const handleMessagePreviewEnter = useCallback(() => {
     clearMessagePreviewCloseTimeout()
-  }, [clearMessagePreviewCloseTimeout])
+    messagePreviewIntent.cancel()
+  }, [clearMessagePreviewCloseTimeout, messagePreviewIntent])
 
   const handleMessagePreviewLeave = useCallback(() => {
     scheduleCloseMessagePreview()
@@ -4383,7 +4405,7 @@ export const Heimdall: React.FC<HeimdallProps> = ({
                         type='button'
                         onClick={() => handleSelectSearchResult(item)}
                         onMouseEnter={() => setSearchHoverIndex(idx)}
-                        className={`flex flex-col justify-start text-left rounded-xl bg-white/55 dark:bg-white/10 p-3 min-h-[320px] shadow-sm hover:bg-white/75 dark:hover:bg-white/15 transition-[background-color,color,opacity,transform] duration-150 ${
+                        className={`flex flex-col justify-start text-left rounded-xl bg-white/55 dark:bg-white/10 p-3 h-56 max-h-[45vh] sm:h-64 md:h-72 lg:h-80 xl:h-96 shadow-sm hover:bg-white/75 dark:hover:bg-white/15 transition-[background-color,color,opacity,transform] duration-150 ${
                           idx === searchHoverIndex ? 'ring-2 ring-amber-300/70 dark:ring-amber-400/50' : ''
                         }`}
                       >
@@ -4391,7 +4413,7 @@ export const Heimdall: React.FC<HeimdallProps> = ({
                           <span className='font-semibold'>{item.role}</span>
                           <span>#{idx + 1}</span>
                         </div>
-                        <div className='mt-2 text-sm text-stone-700 dark:text-stone-200 max-h-48 sm:max-h-52 md:max-h-60 lg:max-h-64 overflow-y-auto thin-scrollbar whitespace-pre-wrap'>
+                        <div className='mt-2 min-h-0 flex-1 text-sm text-stone-700 dark:text-stone-200 overflow-y-auto thin-scrollbar whitespace-pre-wrap'>
                           {renderHighlightedText(messageText)}
                         </div>
                       </button>
@@ -4766,6 +4788,7 @@ export const Heimdall: React.FC<HeimdallProps> = ({
               style={{ left: dockedPreview.left, top: dockedPreview.top }}
             >
               <div
+                ref={messagePreviewCardRef}
                 className='pointer-events-auto rounded-[20px] border border-stone-200/55 bg-white/75 p-4 shadow-[0_18px_36px_-22px_rgba(0,0,0,0.18)] backdrop-blur-2xl no-scrollbar dark:border-neutral-700/55 dark:bg-neutral-900/75 dark:shadow-[0_30px_60px_-12px_rgba(0,0,0,0.6)]'
                 data-heimdall-wheel-exempt='true'
                 onMouseEnter={handleMessagePreviewEnter}
@@ -4940,6 +4963,7 @@ export const Heimdall: React.FC<HeimdallProps> = ({
               style={{ left: dockedPreview.left, top: dockedPreview.top }}
             >
           <div
+            ref={notePreviewCardRef}
             className='pointer-events-auto rounded-[20px] border border-stone-200/55 bg-white/75 p-4 shadow-[0_18px_36px_-22px_rgba(0,0,0,0.18)] backdrop-blur-2xl no-scrollbar dark:border-neutral-700/55 dark:bg-neutral-900/75 dark:shadow-[0_30px_60px_-12px_rgba(0,0,0,0.6)]'
             data-heimdall-wheel-exempt='true'
             onMouseEnter={handleNotePreviewEnter}

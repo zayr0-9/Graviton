@@ -1,5 +1,6 @@
 import type { CSSProperties } from 'react'
 import type { ContentBlock, StreamEvent } from '@/features/chats/chatTypes'
+import type { ClaudeFilePatch } from '../../../../../shared/claudeProvider'
 
 // Configuration for collapsed content display
 export const COLLAPSED_CONTENT_WORD_LIMIT = 15
@@ -146,7 +147,7 @@ export interface ToolCallRenderGroup {
   id: string
   name?: string
   args?: Record<string, any> | null
-  results: Array<{ content: any; is_error?: boolean }>
+  results: Array<{ content: any; is_error?: boolean; patch?: ClaudeFilePatch }>
   anchorIndex: number
 }
 
@@ -392,14 +393,14 @@ export const buildToolCallGroupsFromStream = (events?: StreamEvent[]) => {
     } else if (event.type === 'tool_result' && event.toolResult) {
       const target = groupsById.get(event.toolResult.tool_use_id)
       if (target) {
-        target.results.push({ content: event.toolResult.content, is_error: event.toolResult.is_error })
+        target.results.push({ content: event.toolResult.content, is_error: event.toolResult.is_error, patch: event.toolResult.patch })
         mapByIndex.set(idx, target)
       } else {
         const orphanedGroup: ToolCallRenderGroup = {
           id: event.toolResult.tool_use_id,
           name: undefined,
           args: null,
-          results: [{ content: event.toolResult.content, is_error: event.toolResult.is_error }],
+          results: [{ content: event.toolResult.content, is_error: event.toolResult.is_error, patch: event.toolResult.patch }],
           anchorIndex: -1,
         }
         groupsById.set(event.toolResult.tool_use_id, orphanedGroup)
@@ -435,13 +436,13 @@ export const buildToolCallGroupsFromBlocks = (blocks?: ContentBlock[]) => {
       const id = block.tool_use_id || `tool-result-${idx}`
       const target = groupsById.get(id)
       if (target) {
-        target.results.push({ content: block.content, is_error: block.is_error })
+        target.results.push({ content: block.content, is_error: block.is_error, patch: block.patch })
       } else {
         const fallback: ToolCallRenderGroup = {
           id,
           name: 'Tool Result',
           args: null,
-          results: [{ content: block.content, is_error: block.is_error }],
+          results: [{ content: block.content, is_error: block.is_error, patch: block.patch }],
           anchorIndex: idx,
         }
         mapByIndex.set(idx, fallback)

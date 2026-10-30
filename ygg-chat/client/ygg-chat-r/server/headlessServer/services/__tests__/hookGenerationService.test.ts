@@ -85,4 +85,38 @@ describe('hook provider resolution', () => {
     await expect(service.generate(input)).rejects.toMatchObject({ status: 400 })
     expect(openAi).not.toHaveBeenCalled(); expect(claude).not.toHaveBeenCalled()
   })
+  describe('structured responses', () => {
+    const responseSchema = { type: 'object', properties: { note: { type: 'string' } }, required: ['note'], additionalProperties: false }
+    it('passes the schema to Claude and returns its native structured output', async () => {
+      const { service, claude } = make('claudecode')
+      claude.mockResolvedValueOnce({ text: '{"note":"x"}', modelName: 'native', structured: { note: 'x' } } as any)
+      expect(await service.generate({ ...body, responseSchema })).toMatchObject({ structured: { note: 'x' }, structuredMode: 'native', attempts: 1 })
+      expect((claude.mock.calls[0] as any)[0].jsonSchema).toEqual(responseSchema)
+    })
+    it('repairs one non-JSON OpenAI reply on the same provider', async () => {
+      const { service, openAi, claude } = make('openaichatgpt')
+      openAi.mockResolvedValueOnce({ text: 'Here is the note you asked for.', modelName: 'm' })
+        .mockResolvedValueOnce({ text: '```json\n{"note":"fixed"}\n```', modelName: 'm' })
+      expect(await service.generate({ ...body, responseSchema })).toMatchObject({ structured: { note: 'fixed' }, structuredMode: 'parsed', attempts: 2 })
+      expect((openAi.mock.calls[1] as any)[0].content).toContain('not a valid JSON object')
+      expect(claude).not.toHaveBeenCalled()
+    })
+    it('fails after one repair attempt without trying another provider', async () => {
+      const { service, openAi, claude } = make('openaichatgpt')
+      openAi.mockResolvedValue({ text: 'still prose', modelName: 'm' })
+      await expect(service.generate({ ...body, responseSchema })).rejects.toMatchObject({ status: 502, message: expect.stringContaining('did not return a JSON object') })
+      expect(openAi).toHaveBeenCalledTimes(2); expect(claude).not.toHaveBeenCalled()
+    })
+    it('keeps unstructured requests single-attempt', async () => {
+      const { service, openAi } = make('openaichatgpt')
+      openAi.mockResolvedValueOnce({ text: 'prose is fine', modelName: 'm' })
+      expect(await service.generate(body)).toMatchObject({ text: 'prose is fine', attempts: 1 })
+      expect(await service.generate(body)).not.toHaveProperty('structured')
+    })
+    it.each([[], { type: 'array' }, { type: 'object', description: 'x'.repeat(16001) }])('rejects an invalid schema before generation', async schema => {
+      const { service, openAi, claude } = make()
+      await expect(service.generate({ ...body, responseSchema: schema })).rejects.toMatchObject({ status: 400 })
+      expect(openAi).not.toHaveBeenCalled(); expect(claude).not.toHaveBeenCalled()
+    })
+  })
 })

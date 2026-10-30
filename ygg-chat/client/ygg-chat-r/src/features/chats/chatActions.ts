@@ -10,7 +10,7 @@ import { getPendingFullAccessNotification, isFullAccessEnabled } from '../../hel
 import { createAsyncThunk } from '@reduxjs/toolkit'
 import type { QueryClient } from '@tanstack/react-query'
 import { ConversationId, MessageId } from '../../../../../shared/types'
-import { normalizeChatErrorEnvelope, type ChatErrorEnvelope } from '../../../../../shared/chatErrors'
+import { buildChatErrorEnvelope, normalizeChatErrorEnvelope, type ChatErrorEnvelope } from '../../../../../shared/chatErrors'
 import {
   attachLocalChatErrorCode,
   buildChatErrorRecord,
@@ -24,6 +24,7 @@ import { ThunkExtraArgument } from '../../store/thunkExtra'
 import {
   API_BASE,
   buildLocalApiUrl,
+  classifyLocalApiFailure,
   cloudApi,
   getCachedLocalApiBase,
   getCachedLocalServerOrigin,
@@ -33,6 +34,7 @@ import {
   shouldUseLocalApi,
 } from '../../utils/api'
 import { convContextSet, systemPromptSet } from '../conversations/conversationSlice'
+import { uiActions } from '../ui/uiSlice'
 import type { Conversation } from '../conversations/conversationTypes'
 import { selectSelectedProject } from '../projects/projectSelectors'
 import { chatSliceActions } from './chatSlice'
@@ -1368,11 +1370,25 @@ export const fetchConversationMessages = createAsyncThunk<
   }
 })
 
+/** A Claude branch can only be cut back to a point it can resume from; say why a delete was refused. */
+function raiseClaudeDeleteRefusal(error: unknown, conversationId: ConversationId, dispatch: (action: unknown) => unknown): void {
+  const failure = classifyLocalApiFailure(error)
+  const payload = failure.kind === 'http' ? (failure.payload as { code?: unknown; error?: unknown } | undefined) : undefined
+  if (payload?.code !== 'claude_delete_refused') return
+  dispatch(uiActions.errorNoticeRaised({
+    source: 'message_delete',
+    conversationId,
+    envelope: buildChatErrorEnvelope('bad_request', {
+      userMessage: typeof payload.error === 'string' ? payload.error : 'Claude can only continue from a completed response.',
+    }),
+  }))
+}
+
 export const deleteMessage = createAsyncThunk<
   MessageId,
   { id: MessageId; conversationId: ConversationId; storageMode?: 'local' | 'cloud' },
   { extra: ThunkExtraArgument }
->('chat/deleteMessage', async ({ id, conversationId, storageMode }, { extra, rejectWithValue }) => {
+>('chat/deleteMessage', async ({ id, conversationId, storageMode }, { extra, dispatch, rejectWithValue }) => {
   try {
     // Use storageMode passed from caller (most reliable) or fallback to cache lookup
     const effectiveStorageMode = storageMode ?? getStorageModeFromCache(extra.queryClient, conversationId)
@@ -1399,6 +1415,7 @@ export const deleteMessage = createAsyncThunk<
     return id
   } catch (error) {
     console.error('[deleteMessage] Error:', error)
+    raiseClaudeDeleteRefusal(error, conversationId, dispatch)
     return rejectWithValue(error instanceof Error ? error.message : 'Delete failed')
   }
 })
@@ -2391,7 +2408,7 @@ export const deleteSelectedNodes = createAsyncThunk<
   { deleted: number },
   { ids: MessageId[]; conversationId: ConversationId; storageMode?: 'local' | 'cloud' },
   { extra: ThunkExtraArgument }
->('chat/deleteSelectedNodes', async ({ ids, conversationId, storageMode }, { extra, rejectWithValue }) => {
+>('chat/deleteSelectedNodes', async ({ ids, conversationId, storageMode }, { extra, dispatch, rejectWithValue }) => {
   try {
     // Use storageMode passed from caller (most reliable) or fallback to cache lookup
     const effectiveStorageMode = storageMode ?? getStorageModeFromCache(extra.queryClient, conversationId)
@@ -2406,6 +2423,7 @@ export const deleteSelectedNodes = createAsyncThunk<
     return response
   } catch (error) {
     console.error('[deleteSelectedNodes] Error:', error)
+    raiseClaudeDeleteRefusal(error, conversationId, dispatch)
     const message = error instanceof Error ? error.message : 'Failed to delete messages'
     return rejectWithValue(message)
   }

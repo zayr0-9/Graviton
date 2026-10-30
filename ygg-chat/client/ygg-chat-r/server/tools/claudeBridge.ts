@@ -4,7 +4,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { getServerDataDir } from '../serverHost.js'
-import { hasFullToolAccess } from '../toolAccessContext.js'
+import { hasToolAccessTo } from '../toolAccessContext.js'
 import { CLAUDE_SESSION_ID, ClaudeSessionStore, normalizeSessionName, type ClaudeHistory, type ClaudeSessionInfo } from './claudeSessionStore.js'
 import type { ClaudeBridgeSource } from '../../../../shared/watchEvents.js'
 
@@ -155,7 +155,7 @@ export class ClaudeBridge {
     const cwd = fs.realpathSync(directory)
     if (!fs.statSync(cwd).isDirectory()) throw new Error('Claude session directory no longer exists')
     const relative = path.relative(root, cwd)
-    if ((relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) && !hasFullToolAccess()) {
+    if ((relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) && !hasToolAccessTo(cwd)) {
       throw Object.assign(new Error('This Claude session is outside the current workspace. Enable Full access for this run or open its directory as the workspace.'), { code: 'WORKSPACE_ACCESS_REQUIRED', directory: cwd })
     }
     return cwd

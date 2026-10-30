@@ -24,10 +24,13 @@ function fixture(events: any[] = []) {
   const broker = new DecisionBroker()
   broker.initSession('stream', { autoApproveAll: false })
   const emit = vi.fn()
+  const hookRunStore = new Map<string, any>()
+  const hookRuns = { create: vi.fn((record: any) => { hookRunStore.set(record.id, record); return record }),
+    update: vi.fn((id: string, update: any) => { const next = { ...hookRunStore.get(id), ...update }; hookRunStore.set(id, next); return next }) }
   const input: any = { request: { conversationId: 'c', provider: 'Claude Code', modelName: 'claude-sonnet-5-5', content: 'hello', streamId: 'stream', operationMode: 'execute' },
     lineageId: 'l', userMessage: { id: 'u' }, parentId: 'u', sourceMessageId: null, fork: false, cwd: '/workspace', sink, emit }
-  const service = new ClaudeSessionService({ sessions: sessions as any, messages: { get: vi.fn(() => null), updateClaudeProjection: vi.fn((id, content, contentBlocks, meta) => ({ id, content, content_blocks: contentBlocks, meta })) } as any, broker, executable: async () => '/mock/claude', sdk: async () => sdk as any })
-  return { service, input, sdk, sessions, state, sink, rows, emit, broker }
+  const service = new ClaudeSessionService({ sessions: sessions as any, messages: { get: vi.fn(() => null), updateClaudeProjection: vi.fn((id, content, contentBlocks, meta) => ({ id, content, content_blocks: contentBlocks, meta })) } as any, broker, executable: async () => '/mock/claude', sdk: async () => sdk as any, hookRuns })
+  return { service, input, sdk, sessions, state, sink, rows, emit, broker, hookRunStore }
 }
 const assistant = (uuid = 'a', content: any[] = [{ type: 'text', text: 'answer' }]) => ({ type: 'assistant', uuid, session_id: 's', parent_tool_use_id: null, message: { content } })
 const success = { type: 'result', subtype: 'success', is_error: false, session_id: 's' }
@@ -38,7 +41,8 @@ describe('Claude native session backend', () => {
     const final = await f.service.run(f.input)
     expect(final.content).toBe('answer')
     expect(final.meta.claude.checkpoint).toBe(true)
-    expect(f.sdk.query.mock.calls[0][0].options).toMatchObject({ model: 'claude-sonnet-5-5', permissionMode: 'default', strictMcpConfig: true, persistSession: true })
+    expect(f.sdk.query.mock.calls[0][0].options).toMatchObject({ model: 'claude-sonnet-5-5', permissionMode: 'default', strictMcpConfig: true, persistSession: true,
+      settingSources: ['user', 'project', 'local'], includeHookEvents: true })
     expect(f.sessions.record).toHaveBeenLastCalledWith(final.id, 's', 'a', '/workspace', true)
     expect(f.sessions.session).toHaveBeenLastCalledWith('l', 's', 'ready')
   })
@@ -113,6 +117,22 @@ describe('Claude native session backend', () => {
     expect(final.content_blocks.map((block: any) => block.type)).toEqual(['thinking', 'text'])
     expect(f.sessions.record).toHaveBeenLastCalledWith('row0', 's', 'text', '/workspace', true)
   })
+  it('requests summarized thinking with and without an explicit thinking config', async () => {
+    for (const reasoningConfig of [{ effort: 'high' }, undefined]) {
+      const f = fixture([assistant(), success])
+      f.input.request.reasoningConfig = reasoningConfig
+      await f.service.run(f.input)
+      const options = f.sdk.query.mock.calls[0][0].options
+      if (reasoningConfig) expect(options).toMatchObject({ thinking: { type: 'adaptive', display: 'summarized' } })
+      else expect(options).toMatchObject({ extraArgs: { 'thinking-display': 'summarized' } })
+    }
+  })
+  it('drops signature-only (omitted) thinking blocks from the projection', async () => {
+    const f = fixture([{ ...assistant('thinking'), message: { id: 'api', content: [{ type: 'thinking', thinking: '', signature: 'sig' }] } },
+      { ...assistant('text'), message: { id: 'api', content: [{ type: 'text', text: 'answer' }] } }, success])
+    const final = await f.service.run(f.input)
+    expect(final.content_blocks.map((block: any) => block.type)).toEqual(['text'])
+  })
   it('merges partial Stop text into its existing response instead of making a second node', async () => {
     const f = fixture([{ type: 'stream_event', session_id: 's', parent_tool_use_id: null, event: { type: 'message_start', message: { id: 'api' } } },
       { ...assistant('thinking'), message: { id: 'api', content: [{ type: 'thinking', thinking: 'reason' }] } },
@@ -120,6 +140,24 @@ describe('Claude native session backend', () => {
     await expect(f.service.run(f.input)).rejects.toThrow('without a completed response')
     expect(f.sink.persistAssistantMessage).toHaveBeenCalledTimes(1)
     expect(f.emit.mock.calls.at(-1)?.[0]).toMatchObject({ message: { id: 'row0', content: 'unfinished', meta: { claude: { partial: true, checkpoint: false } } } })
+  })
+  it('reopens a live segment when a block starts after its API message was already persisted', async () => {
+    const frame = (event: any) => ({ type: 'stream_event', session_id: 's', parent_tool_use_id: null, event })
+    const f = fixture([frame({ type: 'message_start', message: { id: 'api' } }),
+      frame({ type: 'content_block_start', content_block: { type: 'thinking', thinking: '' } }),
+      { ...assistant('thinking'), message: { id: 'api', content: [{ type: 'thinking', thinking: 'reason' }] } },
+      frame({ type: 'content_block_start', content_block: { type: 'text', text: '' } }),
+      frame({ type: 'content_block_delta', delta: { type: 'text_delta', text: 'answer' } }),
+      { ...assistant('text'), message: { id: 'api', content: [{ type: 'text', text: 'answer' }] } }, success])
+    await f.service.run(f.input)
+    const events = f.emit.mock.calls.map(([event]) => event)
+    const starts = events.flatMap((event, index) => event.type === 'tool_loop' && event.status === 'turn_started' ? [index] : [])
+    expect(starts).toHaveLength(2)
+    expect(events[starts[1]]).toMatchObject({ turn: 1 })
+    const persisted = events.findIndex(event => event.type === 'assistant_message_persisted')
+    const delta = events.findIndex(event => event.type === 'chunk' && event.part === 'text')
+    expect(persisted).toBeLessThan(starts[1])
+    expect(starts[1]).toBeLessThan(delta)
   })
   it('merges text and tool use then enriches the same response with native results', async () => {
     const f = fixture([{ ...assistant('text'), message: { id: 'api', content: [{ type: 'text', text: 'Reading' }] } },
@@ -182,6 +220,29 @@ describe('Claude native session backend', () => {
     expect(f.sink.updateAssistantToolState).toHaveBeenCalledWith('row0', expect.objectContaining({ contentBlocks: expect.arrayContaining([expect.objectContaining({ type: 'tool_result', tool_use_id: 't', content: 'file text' })]) }))
     expect(f.rows[1].parentId).toBe('row0')
     expect(f.sessions.record).toHaveBeenLastCalledWith('row1', 's', 'final', '/workspace', true)
+  })
+  it('keeps native Edit hunks on the tool_result without the original file', async () => {
+    const hunk = { oldStart: 40, oldLines: 2, newStart: 40, newLines: 2, lines: [' keep', '-old', '+new'] }
+    const f = fixture([assistant('tool-a', [{ type: 'tool_use', id: 't', name: 'Edit', input: { file_path: '/w/a.ts', old_string: 'old', new_string: 'new' } }]),
+      { type: 'user', session_id: 's', parent_tool_use_id: null, message: { content: [{ type: 'tool_result', tool_use_id: 't', content: 'updated' }] },
+        tool_use_result: { filePath: '/w/a.ts', oldString: 'old', newString: 'new', originalFile: 'x'.repeat(5000), structuredPatch: [hunk], userModified: false, replaceAll: false } },
+      assistant('final'), success])
+    await f.service.run(f.input)
+    const patch = { filePath: '/w/a.ts', kind: 'edit', hunks: [hunk] }
+    expect(f.sink.updateAssistantToolState).toHaveBeenCalledWith('row0', expect.objectContaining({ contentBlocks: expect.arrayContaining([expect.objectContaining({ type: 'tool_result', tool_use_id: 't', patch })]) }))
+    expect(f.emit).toHaveBeenCalledWith(expect.objectContaining({ part: 'tool_result', toolResult: expect.objectContaining({ patch }) }))
+    expect(JSON.stringify(f.sink.updateAssistantToolState.mock.calls)).not.toContain('xxxxx')
+  })
+  it('does not attach a patch to non-file tools or failed edits', async () => {
+    const toolUseResult = { filePath: '/w/a.ts', structuredPatch: [{ oldStart: 1, oldLines: 1, newStart: 1, newLines: 1, lines: ['-a', '+b'] }] }
+    const f = fixture([assistant('tool-a', [{ type: 'tool_use', id: 'r', name: 'Read', input: {} }, { type: 'tool_use', id: 'e', name: 'Edit', input: {} }]),
+      { type: 'user', session_id: 's', parent_tool_use_id: null, message: { content: [{ type: 'tool_result', tool_use_id: 'r', content: 'text' }] }, tool_use_result: toolUseResult },
+      { type: 'user', session_id: 's', parent_tool_use_id: null, message: { content: [{ type: 'tool_result', tool_use_id: 'e', content: '<tool_use_error>no match</tool_use_error>', is_error: true }] }, tool_use_result: toolUseResult },
+      assistant('final'), success])
+    await f.service.run(f.input)
+    const results = f.emit.mock.calls.map(([event]) => event).filter(event => event.part === 'tool_result')
+    expect(results).toHaveLength(2)
+    expect(results.every(event => !('patch' in event.toolResult))).toBe(true)
   })
   it('preserves partial text and marks interrupted sessions uncertain', async () => {
     const f = fixture([{ type: 'stream_event', session_id: 's', parent_tool_use_id: null, event: { type: 'content_block_delta', delta: { type: 'text_delta', text: 'partial' } } }])
@@ -365,7 +426,7 @@ describe('Claude compaction projection', () => {
       expect(final).toEqual(f.rows[0])
       expect(f.sessions.record).not.toHaveBeenCalled()
     }
-    expect(f.sdk.query.mock.calls[0][0].options.settings).toEqual({ disableAllHooks: true, plansDirectory: path.join('.ygg', 'plans') })
+    expect(f.sdk.query.mock.calls[0][0].options.settings).toEqual({ plansDirectory: path.join('.ygg', 'plans') })
   })
   it('does not mistake a boundary without PostCompact text for a committed summary', async () => {
     const f = fixture([{ type: 'system', subtype: 'compact_boundary', session_id: 's' }, success])
@@ -660,6 +721,435 @@ describe('Graviton chat hooks on native Claude tools', () => {
   it('registers no tool hooks without a hook session', async () => {
     const f = fixture([assistant(), success])
     await f.service.run(f.input)
-    expect(Object.keys(f.sdk.query.mock.calls[0][0].options.hooks).sort()).toEqual(['PostCompact', 'PreCompact'])
+    expect(Object.keys(f.sdk.query.mock.calls[0][0].options.hooks).sort()).toEqual(['InstructionsLoaded', 'PostCompact', 'PreCompact'])
+  })
+})
+
+describe('Claude Code skills and hooks', () => {
+  const system = (subtype: string, fields: any) => ({ type: 'system', subtype, session_id: 's', uuid: `${subtype}-${fields.hook_id}`, ...fields })
+  const user = (content: any, extra: any = {}) => ({ type: 'user', uuid: `user-${Math.random()}`, session_id: 's', parent_tool_use_id: null, message: { role: 'user', content }, ...extra })
+
+  it('loads Claude Code settings, skills and hooks instead of isolating the session', async () => {
+    const f = fixture([assistant(), success])
+    await f.service.run(f.input)
+    const options = f.sdk.query.mock.calls[0][0].options
+    expect(options).toMatchObject({ settingSources: ['user', 'project', 'local'], includeHookEvents: true, strictMcpConfig: true, mcpServers: {} })
+    expect(options.settings).not.toHaveProperty('disableAllHooks')
+  })
+
+  it('records native hooks as hook runs on the row that owns them', async () => {
+    const f = fixture([
+      system('hook_started', { hook_id: 'start', hook_name: 'SessionStart:startup', hook_event: 'SessionStart' }),
+      system('hook_response', { hook_id: 'start', hook_name: 'SessionStart:startup', hook_event: 'SessionStart', stdout: 'ready\n', stderr: '', output: 'ready\n', exit_code: 0, outcome: 'success' }),
+      assistant('a-tool', [{ type: 'tool_use', id: 't1', name: 'Bash', input: { command: 'rm -rf build' } }]),
+      system('hook_started', { hook_id: 'pre', hook_name: 'PreToolUse:Bash', hook_event: 'PreToolUse' }),
+      system('hook_progress', { hook_id: 'pre', hook_name: 'PreToolUse:Bash', hook_event: 'PreToolUse', stdout: 'checking', stderr: '', output: 'checking' }),
+      system('hook_response', { hook_id: 'pre', hook_name: 'PreToolUse:Bash', hook_event: 'PreToolUse', stdout: '', stderr: 'no rm -rf\n', output: 'no rm -rf\n', exit_code: 2, outcome: 'error' }),
+      user([{ type: 'tool_result', tool_use_id: 't1', content: 'blocked', is_error: true }]),
+      system('hook_started', { hook_id: 'lint', hook_name: 'PostToolUse:Bash', hook_event: 'PostToolUse' }),
+      system('hook_response', { hook_id: 'lint', hook_name: 'PostToolUse:Bash', hook_event: 'PostToolUse', stdout: '{"systemMessage":"lint clean"}', stderr: '', output: '', exit_code: 0, outcome: 'success' }),
+      system('hook_started', { hook_id: 'crash', hook_name: 'Stop', hook_event: 'Stop' }),
+      system('hook_response', { hook_id: 'crash', hook_name: 'Stop', hook_event: 'Stop', stdout: '', stderr: 'token=abc123 failed', output: '', exit_code: 1, outcome: 'error' }),
+      system('hook_started', { hook_id: 'silent', hook_name: 'Notification', hook_event: 'Notification' }),
+      assistant(), success])
+    await f.service.run(f.input)
+    const run = (id: string) => f.hookRunStore.get(id)
+    expect(run('start')).toMatchObject({ event: 'SessionStart', label: 'SessionStart:startup', messageId: 'u', sourceFile: 'Claude Code',
+      status: 'succeeded', outcomeCode: 'completed', stdoutPreview: 'ready\n', conversationId: 'c', streamId: 'stream' })
+    // Exit 2 is Claude's deny: the hook worked, and its reason is the summary.
+    expect(run('pre')).toMatchObject({ messageId: 'row0', status: 'succeeded', outcomeCode: 'blocked', outcomeSummary: 'no rm -rf', errorSummary: null })
+    expect(run('lint')).toMatchObject({ messageId: 'row0', status: 'succeeded', outcomeSummary: 'lint clean' })
+    expect(run('crash')).toMatchObject({ status: 'failed', outcomeCode: 'exit_1' })
+    expect(run('crash').errorSummary).not.toContain('abc123')
+    expect(run('silent')).toMatchObject({ status: 'skipped', outcomeCode: 'no_response' })
+    const activity = f.emit.mock.calls.map(([event]) => event).filter(event => event.type === 'hook_activity')
+    expect(activity.find(event => event.runs[0].id === 'pre' && event.runs[0].status === 'running')).toMatchObject({ messageId: 'row0', event: 'PreToolUse', lineageId: 'l' })
+    expect(activity.filter(event => event.runs[0].id === 'pre').map(event => event.runs[0].stdoutPreview)).toContain('checking')
+    expect(activity.every(event => event.messageId === event.runs[0].messageId)).toBe(true)
+  })
+
+  it('marks native hooks that were still running when the run stopped', async () => {
+    const f = fixture()
+    const controller = new AbortController()
+    f.input.signal = controller.signal
+    f.sdk.query.mockImplementation(() => Object.assign((async function* () {
+      yield system('hook_started', { hook_id: 'slow', hook_name: 'UserPromptSubmit', hook_event: 'UserPromptSubmit' })
+      controller.abort()
+      yield assistant()
+    })(), { close: vi.fn() }) as any)
+    await expect(f.service.run(f.input)).rejects.toThrow()
+    expect(f.hookRunStore.get('slow')).toMatchObject({ messageId: 'u', status: 'failed', outcomeCode: 'interrupted' })
+  })
+
+  it('keeps the instructions a Skill call loaded on the row of that call', async () => {
+    const f = fixture([
+      // A synthetic message with no Skill call in flight is not a skill body.
+      user([{ type: 'text', text: 'queued notice' }], { isSynthetic: true }),
+      assistant('a-skill', [{ type: 'tool_use', id: 'k1', name: 'Skill', input: { skill: 'probe' } }]),
+      user([{ type: 'tool_result', tool_use_id: 'k1', content: 'Launching skill: probe' }], { tool_use_result: { success: true, commandName: 'probe' } }),
+      user([{ type: 'text', text: 'Base directory for this skill: /workspace/.claude/skills/probe\n\nSay PINEAPPLE.' }], { isSynthetic: true }),
+      assistant('a-final', [{ type: 'text', text: 'PINEAPPLE' }]), success])
+    await f.service.run(f.input)
+    const blocks = f.sink.updateAssistantToolState.mock.calls.at(-1)![1].contentBlocks
+    expect(blocks.map((block: any) => block.type)).toEqual(['tool_use', 'tool_result', 'context_injection'])
+    expect(blocks[2]).toMatchObject({ tool_use_id: 'k1', path: path.join('/workspace/.claude/skills/probe', 'SKILL.md'),
+      label: 'skill probe instructions', reason: 'skill', origin: 'claude' })
+    expect(blocks[2].text).toContain('Say PINEAPPLE.')
+    expect(f.rows.some(row => JSON.stringify(row.contentBlocks).includes('queued notice'))).toBe(false)
+  })
+
+  it('shows the instruction files Claude loads: startup on the first row, tool-triggered beside that result', async () => {
+    const root = await realpath(await mkdtemp(path.join(tmpdir(), 'claude-instructions-')))
+    await mkdir(path.join(root, 'src'), { recursive: true })
+    await writeFile(path.join(root, 'CLAUDE.md'), 'Project rule.<!-- hidden -->\n')
+    await writeFile(path.join(root, 'rule.md'), '---\npaths:\n  - "src/**"\n---\nPath rule.\n')
+    await writeFile(path.join(root, 'empty.md'), '<!-- only a comment -->\n')
+    const f = fixture()
+    f.input.cwd = root
+    const signal = new AbortController().signal
+    const load = (fields: any) => f.sdk.query.mock.calls[0][0].options.hooks.InstructionsLoaded[0].hooks[0](
+      { hook_event_name: 'InstructionsLoaded', session_id: 's', memory_type: 'Project', ...fields }, undefined, { signal })
+    f.sdk.query.mockImplementation(() => Object.assign((async function* () {
+      await load({ file_path: path.join(root, 'CLAUDE.md'), load_reason: 'session_start' })
+      await load({ file_path: path.join(root, 'empty.md'), load_reason: 'session_start' })
+      await load({ file_path: path.join(root, 'CLAUDE.md'), load_reason: 'session_start', agent_id: 'child' })
+      yield assistant('a-tool', [{ type: 'tool_use', id: 'r1', name: 'Read', input: { file_path: 'src/app.ts' } }])
+      await load({ file_path: path.join(root, 'rule.md'), load_reason: 'path_glob_match', trigger_file_path: path.join(root, 'src/app.ts') })
+      // Already shown this run.
+      await load({ file_path: path.join(root, 'CLAUDE.md'), load_reason: 'nested_traversal', trigger_file_path: path.join(root, 'src/app.ts') })
+      yield user([{ type: 'tool_result', tool_use_id: 'r1', content: 'code' }])
+      yield assistant(); yield success
+    })(), { close: vi.fn() }) as any)
+    await f.service.run(f.input)
+    const tool = f.sink.updateAssistantToolState.mock.calls.at(-1)![1].contentBlocks
+    expect(tool.map((block: any) => block.type)).toEqual(['tool_use', 'context_injection', 'tool_result', 'context_injection'])
+    // Startup load (no trigger) on the first row; the empty file and the child-agent load are not shown.
+    expect(tool[1]).toEqual({ type: 'context_injection', path: path.join(root, 'CLAUDE.md'), label: 'project instructions, checked into the codebase',
+      text: 'Project rule.', reason: 'session_start', origin: 'claude', index: 1 })
+    expect(tool[3]).toMatchObject({ tool_use_id: 'r1', path: path.join(root, 'rule.md'), text: 'Path rule.', reason: 'path_glob_match', origin: 'claude' })
+  })
+
+  it('does not show startup instructions again when a session resumes', async () => {
+    const root = await realpath(await mkdtemp(path.join(tmpdir(), 'claude-instructions-')))
+    await writeFile(path.join(root, 'CLAUDE.md'), 'Project rule.\n')
+    const f = fixture()
+    f.input.cwd = root
+    f.state.branch = { session_id: 's', state: 'ready' }
+    f.state.checkpoint = { session_id: 's', message_uuid: 'checkpoint', cwd: root, resumable: 1 }
+    f.input.sourceMessageId = 'tail'
+    f.sdk.getSessionMessages.mockResolvedValue([{ uuid: 'checkpoint' }])
+    f.sdk.query.mockImplementation(() => Object.assign((async function* () {
+      const hook = f.sdk.query.mock.calls[0][0].options.hooks.InstructionsLoaded[0].hooks[0]
+      await hook({ hook_event_name: 'InstructionsLoaded', session_id: 's', memory_type: 'Project', file_path: path.join(root, 'CLAUDE.md'), load_reason: 'session_start' },
+        undefined, { signal: new AbortController().signal })
+      yield assistant(); yield success
+    })(), { close: vi.fn() }) as any)
+    const final = await f.service.run(f.input)
+    expect(f.sdk.query.mock.calls[0][0].options.resume).toBe('s')
+    expect(final.content_blocks.some((block: any) => block.type === 'context_injection')).toBe(false)
+  })
+
+  it('passes a resolved native command through for Claude to expand', async () => {
+    const f = fixture([assistant(), success])
+    f.input.request.content = '/acme:deploy staging'
+    f.input.nativeCommand = true
+    await f.service.run(f.input)
+    const { value } = await f.sdk.query.mock.calls[0][0].prompt.next()
+    expect(value.message.content).toBe('/acme:deploy staging')
+  })
+
+  it('resolves only Claude skills and custom commands, never its built-ins', async () => {
+    const f = fixture()
+    const lookups: any[] = []
+    f.sdk.query.mockImplementation(({ options }: any) => {
+      const lookup = { options, close: vi.fn(), supportedCommands: vi.fn(async () => [
+        { name: 'acme:deploy', description: 'Deploys the app (plugin)', argumentHint: '<env>', aliases: ['ship'] },
+        { name: 'clear', description: 'Clear the conversation', argumentHint: '', builtin: true },
+        // A name a built-in carries runs the built-in, whatever else shares it.
+        { name: 'review', description: 'Project review', argumentHint: '' },
+        { name: 'review', description: 'Built-in review', argumentHint: '', builtin: true },
+      ]) }
+      lookups.push(lookup)
+      return lookup as any
+    })
+    expect(await f.service.nativeCommand('/workspace', '/acme:deploy staging now')).toEqual({ name: 'acme:deploy', args: 'staging now', description: 'Deploys the app (plugin)' })
+    expect(await f.service.nativeCommand('/workspace', '/ship')).toMatchObject({ name: 'acme:deploy', args: '' })
+    expect(await f.service.nativeCommand('/workspace', '/clear')).toBeNull()
+    expect(await f.service.nativeCommand('/workspace', '/review')).toBeNull()
+    expect(await f.service.nativeCommand('/workspace', '/missing')).toBeNull()
+    expect(await f.service.nativeCommand('/workspace', 'not a command')).toBeNull()
+    expect(lookups).toHaveLength(5)
+    expect(lookups.every(lookup => lookup.close.mock.calls.length === 1)).toBe(true)
+    expect(lookups[0].options).toMatchObject({ cwd: '/workspace', settingSources: ['user', 'project', 'local'], persistSession: false,
+      settings: { disableAllHooks: true }, pathToClaudeCodeExecutable: '/mock/claude' })
+  })
+
+  it('shows Graviton compaction hooks on the summary they ran for', async () => {
+    const runs: any[] = []
+    const runHook = vi.fn(async (req: any) => {
+      const record = { id: `${req.event}-run`, event: req.event, messageId: req.messageId ?? null, status: 'succeeded', updatedAt: new Date().toISOString() }
+      runs.push(record)
+      req.onActivity?.([record])
+      return { matched: true, hookCount: 1 }
+    })
+    const f = fixture()
+    const tracker = { create: vi.fn(), update: vi.fn((id: string, update: any) => ({ ...runs.find(run => run.id === id), ...update })) }
+    f.input.hookSession = createChatHookSession({ conversationRepo: { listMessageLineage: () => [] }, runHook, conversationId: 'c',
+      cwd: '/workspace', provider: 'Claude Code', model: 'claude-sonnet-5-5', operation: 'send', streamId: 'stream', emit: f.emit, runTracker: tracker as any })
+    f.sdk.query.mockImplementation(({ options }: any) => Object.assign((async function* () {
+      yield { type: 'system', subtype: 'init', session_id: 's' }
+      const signal = new AbortController().signal
+      await options.hooks.PreCompact[0].hooks[0]({ hook_event_name: 'PreCompact', session_id: 's', trigger: 'auto' }, undefined, { signal })
+      await options.hooks.PostCompact[0].hooks[0]({ hook_event_name: 'PostCompact', session_id: 's', trigger: 'auto', compact_summary: 'state' }, undefined, { signal })
+      yield { type: 'system', subtype: 'compact_boundary', session_id: 's' }
+      yield assistant(); yield success
+    })(), { close: vi.fn() }) as any)
+    await f.service.run(f.input)
+    expect(tracker.update).toHaveBeenCalledWith('PreCompact-run', { messageId: 'row0' })
+    expect(f.emit).toHaveBeenCalledWith(expect.objectContaining({ type: 'hook_activity', event: 'PreCompact', messageId: 'row0' }))
+  })
+})
+
+describe('Queued input on a live Claude session', () => {
+  // The run's mailbox as the orchestrator exposes it; entries stay queued until Claude starts them.
+  function mailbox() {
+    const entries: Array<{ requestId: string; content: string; images: string[]; status: string; offered?: boolean }> = []
+    let wake = () => {}
+    let cancel: (requestId: string) => Promise<boolean | null> = async () => null
+    const bridge = {
+      subscribe: vi.fn((next: () => void) => { wake = next; return () => { wake = () => {} } }),
+      prepareNext: vi.fn(async () => {
+        const entry = entries.find(row => row.status === 'queued' && !row.offered)
+        if (!entry) return null
+        entry.offered = true
+        return { requestId: entry.requestId, prompt: entry.content, images: entry.images }
+      }),
+      deliver: vi.fn((requestId: string, parentId: string | null) => {
+        entries.find(row => row.requestId === requestId)!.status = 'delivered'
+        return { id: `user-${requestId}`, parentId }
+      }),
+      release: vi.fn((requestId: string, outcome: any) => {
+        entries.find(row => row.requestId === requestId)!.status = 'cancelled' in outcome ? 'cancelled' : 'failed'
+      }),
+      tryClose: vi.fn(() => !entries.some(row => row.status === 'queued')),
+      bindCancel: vi.fn((next: typeof cancel) => { cancel = next }),
+    }
+    return { bridge, entries, cancel: (requestId: string) => cancel(requestId),
+      add(requestId: string, content = requestId, images: string[] = []) { entries.push({ requestId, content, images, status: 'queued' }); wake() } }
+  }
+  // A CLI double that reads the service's input stream as the real one does.
+  function scripted(f: ReturnType<typeof fixture>, script: (read: () => Promise<IteratorResult<any>>) => AsyncGenerator<any>, cancelAsyncMessage = vi.fn(async () => true)) {
+    f.sdk.query.mockImplementation(({ prompt }: any) => {
+      const input = prompt[Symbol.asyncIterator]()
+      return Object.assign(script(() => input.next()), { close: vi.fn(), cancelAsyncMessage }) as any
+    })
+    return cancelAsyncMessage
+  }
+  const toolUse = (uuid: string) => assistant(uuid, [{ type: 'tool_use', id: 't1', name: 'Bash', input: {} }])
+  const toolResult = { type: 'user', session_id: 's', parent_tool_use_id: null, message: { content: [{ type: 'tool_result', tool_use_id: 't1', content: 'one' }] } }
+  const lifecycle = (uuid: string, state: string) => ({ type: 'command_lifecycle', command_uuid: uuid, state, session_id: 's' })
+
+  it('sends a queued message at priority next and parents the rest of the turn on its user row', async () => {
+    const f = fixture(); const q = mailbox(); f.input.queuedInput = q.bridge
+    const sent: any[] = []
+    scripted(f, async function* (read) {
+      sent.push((await read()).value)
+      yield toolUse('a1')
+      q.add('r1', 'also PURPLE')
+      const queued = (await read()).value
+      sent.push(queued)
+      yield lifecycle(queued.uuid, 'queued')
+      yield toolResult
+      yield lifecycle(queued.uuid, 'started')
+      yield assistant('a2', [{ type: 'text', text: 'DONE PURPLE' }])
+      yield success
+      sent.push(await read())
+    })
+    const final = await f.service.run(f.input)
+    expect(sent[1]).toMatchObject({ type: 'user', priority: 'next', parent_tool_use_id: null, message: { role: 'user', content: 'also PURPLE' } })
+    expect(q.bridge.deliver).toHaveBeenCalledWith('r1', 'row0')
+    expect(f.rows[1].parentId).toBe('user-r1')
+    expect(final.content).toBe('DONE PURPLE')
+    expect(f.sessions.record).toHaveBeenLastCalledWith(final.id, 's', 'a2', '/workspace', true)
+    // Nothing left queued: input closes after the result.
+    expect(sent[2]).toEqual({ done: true, value: undefined })
+  })
+
+  it('keeps the session open after a result while Claude still holds a queued message', async () => {
+    const f = fixture(); const q = mailbox(); f.input.queuedInput = q.bridge
+    let results = 0
+    scripted(f, async function* (read) {
+      await read()
+      yield assistant('a1', [{ type: 'text', text: 'first' }])
+      q.add('r1')
+      const queued = (await read()).value
+      yield success; results++
+      yield lifecycle(queued.uuid, 'started')
+      yield assistant('a2', [{ type: 'text', text: 'second' }])
+      yield success; results++
+      expect((await read()).done).toBe(true)
+    })
+    const final = await f.service.run(f.input)
+    expect(results).toBe(2)
+    expect(q.bridge.deliver).toHaveBeenCalledWith('r1', 'row0')
+    expect(final).toMatchObject({ content: 'second' })
+    expect(f.rows[1].parentId).toBe('user-r1')
+    expect(f.sessions.record).toHaveBeenLastCalledWith(final.id, 's', 'a2', '/workspace', true)
+  })
+
+  it('withdraws a message Claude holds but has not started', async () => {
+    const f = fixture(); const q = mailbox(); f.input.queuedInput = q.bridge
+    let outcome: boolean | null | undefined
+    const cancelAsyncMessage = scripted(f, async function* (read) {
+      await read()
+      yield toolUse('a1')
+      q.add('r1')
+      const queued = (await read()).value
+      outcome = await q.cancel('r1')
+      expect(cancelAsyncMessage).toHaveBeenCalledWith(queued.uuid)
+      yield toolResult
+      yield assistant('a2'); yield success
+      expect((await read()).done).toBe(true)
+    })
+    await f.service.run(f.input)
+    expect(outcome).toBe(true)
+    expect(q.bridge.release).toHaveBeenCalledWith('r1', { cancelled: true })
+    expect(q.bridge.deliver).not.toHaveBeenCalled()
+  })
+
+  it('reports a message Claude already started as not cancellable, and an unoffered one as local', async () => {
+    const f = fixture(); const q = mailbox(); f.input.queuedInput = q.bridge
+    const outcomes: Array<boolean | null> = []
+    scripted(f, async function* (read) {
+      await read()
+      outcomes.push(await q.cancel('missing'))
+      yield toolUse('a1')
+      q.add('r1')
+      const queued = (await read()).value
+      yield toolResult
+      yield lifecycle(queued.uuid, 'started')
+      outcomes.push(await q.cancel('r1'))
+      yield assistant('a2'); yield success
+    }, vi.fn(async () => false))
+    await f.service.run(f.input)
+    expect(outcomes).toEqual([null, false])
+    expect(q.bridge.release).not.toHaveBeenCalled()
+  })
+
+  it('fails a queued message whose image Claude cannot read, without sending it', async () => {
+    const f = fixture(); const q = mailbox(); f.input.queuedInput = q.bridge
+    const sent: any[] = []
+    scripted(f, async function* (read) {
+      await read()
+      yield toolUse('a1')
+      q.add('r1', 'look', ['data:image/bmp;base64,AAAA'])
+      await new Promise(resolve => setTimeout(resolve, 0))
+      yield toolResult
+      yield assistant('a2'); yield success
+      sent.push(await read())
+    })
+    await f.service.run(f.input)
+    expect(q.bridge.release).toHaveBeenCalledWith('r1', { error: 'Claude accepts PNG, JPEG, GIF or WebP images only.' })
+    expect(sent).toEqual([{ done: true, value: undefined }])
+  })
+
+  it.skipIf(process.env.CLAUDE_PROVIDER_LIVE_TEST !== '1')('live service: folds, defers and withdraws queued messages on the real CLI', async () => {
+    const { mkdtemp, rm } = await import('node:fs/promises')
+    const os = await import('node:os')
+    const path = await import('node:path')
+    const native = await import('@anthropic-ai/claude-agent-sdk')
+    const cwd = await mkdtemp(path.join(os.tmpdir(), 'graviton-claude-queue-'))
+    const controller = new AbortController()
+    const timer = setTimeout(() => controller.abort(), 220_000)
+    const live = (content: string, onEvent: (event: any, q: ReturnType<typeof mailbox>) => void) => {
+      const f = fixture(); const q = mailbox()
+      f.broker.initSession('stream', { autoApproveAll: true })
+      Object.assign(f.input, { cwd, signal: controller.signal, queuedInput: q.bridge })
+      Object.assign(f.input.request, { modelName: 'claude-haiku-5-5', content })
+      f.sdk.query.mockImplementation((args: any) => native.query({ ...args, options: { ...args.options,
+        pathToClaudeCodeExecutable: process.env.CLAUDE_BRIDGE_BINARY || path.join(os.homedir(), '.local/bin/claude'), tools: ['Bash'] } }) as any)
+      f.input.emit = (event: any) => { f.emit(event); onEvent(event, q) }
+      return { f, q }
+    }
+    const twoTools = 'Use Bash to run `sleep 4 && echo one`. After it finishes, use Bash to run `sleep 4 && echo two`. Then reply with DONE and nothing else.'
+    const once = (fn: (q: ReturnType<typeof mailbox>) => void) => { let done = false; return (q: ReturnType<typeof mailbox>) => { if (!done) { done = true; fn(q) } } }
+    try {
+      // Mid-turn: Claude reads the message at its next tool boundary, in the same turn.
+      const addDuringTool = once(q => q.add('r1', 'Also include the word PURPLE in your final reply.'))
+      const fold = live(twoTools, (event, q) => { if (event.type === 'tool_execution' && event.status === 'started') addDuringTool(q) })
+      const folded = await fold.f.service.run(fold.f.input)
+      expect(fold.q.bridge.deliver).toHaveBeenCalledOnce()
+      expect(folded.content).toContain('PURPLE')
+      const user = fold.q.bridge.deliver.mock.results[0].value
+      expect(fold.f.rows.find(row => row.parentId === user.id)).toBeTruthy()
+      const [, session] = fold.f.sessions.record.mock.calls.at(-1)!
+      const transcript = await native.getSessionMessages(session, { dir: cwd })
+      expect(transcript.some(entry => entry.type === 'user' && JSON.stringify(entry.message).includes('PURPLE'))).toBe(true)
+
+      // No tool boundary left: the message runs as its own turn after the result.
+      const addDuringText = once(q => q.add('r2', 'Now reply with only the word PURPLE.'))
+      const defer = live('Write two sentences about lighthouses. Do not use tools.', (event, q) => {
+        if (event.type === 'chunk' && event.part === 'text') addDuringText(q)
+      })
+      const deferred = await defer.f.service.run(defer.f.input)
+      expect(defer.q.bridge.deliver).toHaveBeenCalledOnce()
+      expect(deferred.content).toContain('PURPLE')
+      expect(defer.f.rows.at(-1)!.parentId).toBe(defer.q.bridge.deliver.mock.results[0].value.id)
+
+      // Withdrawn while Claude holds it: Claude never reads it.
+      let withdrawal: Promise<boolean | null> | undefined
+      const addThenCancel = once(q => {
+        q.add('r3', 'Also include the word PURPLE in your final reply.')
+        withdrawal = (async () => {
+          while (!q.entries[0].offered) await new Promise(resolve => setTimeout(resolve, 20))
+          await new Promise(resolve => setTimeout(resolve, 300))
+          return q.cancel('r3')
+        })()
+      })
+      const cancel = live(twoTools, (event, q) => { if (event.type === 'tool_execution' && event.status === 'started') addThenCancel(q) })
+      const kept = await cancel.f.service.run(cancel.f.input)
+      expect(await withdrawal).toBe(true)
+      expect(cancel.q.bridge.release).toHaveBeenCalledWith('r3', { cancelled: true })
+      expect(cancel.q.bridge.deliver).not.toHaveBeenCalled()
+      expect(kept.content).not.toContain('PURPLE')
+    } finally { clearTimeout(timer); controller.abort(); await rm(cwd, { recursive: true, force: true }) }
+  }, 240_000)
+
+  it('reports a withdrawal as cancelled when the CLI frame arrives before the cancel answer', async () => {
+    const f = fixture(); const q = mailbox(); f.input.queuedInput = q.bridge
+    let outcome: Promise<boolean | null> | undefined
+    let answer!: (value: boolean) => void
+    scripted(f, async function* (read) {
+      await read()
+      yield toolUse('a1')
+      q.add('r1')
+      const queued = (await read()).value
+      outcome = q.cancel('r1')
+      yield lifecycle(queued.uuid, 'cancelled')
+      answer(true)
+      yield toolResult
+      yield assistant('a2'); yield success
+      expect((await read()).done).toBe(true)
+    }, vi.fn(() => new Promise<boolean>(resolve => { answer = resolve })))
+    await f.service.run(f.input)
+    expect(await outcome).toBe(true)
+    expect(q.bridge.release).toHaveBeenCalledOnce()
+    expect(q.bridge.release).toHaveBeenCalledWith('r1', { cancelled: true })
+  })
+
+  it('treats a native cancel of a held message as cancelled', async () => {
+    const f = fixture(); const q = mailbox(); f.input.queuedInput = q.bridge
+    scripted(f, async function* (read) {
+      await read()
+      yield toolUse('a1')
+      q.add('r1')
+      const queued = (await read()).value
+      yield lifecycle(queued.uuid, 'cancelled')
+      yield toolResult
+      yield assistant('a2'); yield success
+      expect((await read()).done).toBe(true)
+    })
+    await f.service.run(f.input)
+    expect(q.bridge.release).toHaveBeenCalledWith('r1', { cancelled: true })
   })
 })

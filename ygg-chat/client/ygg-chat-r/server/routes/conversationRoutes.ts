@@ -1,4 +1,5 @@
 import { deleteMessagesWithLineageRepair } from '../headlessServer/persistence/deleteMessages.js'
+import { planMessageDeletion } from '../headlessServer/persistence/claudeMessageDeletion.js'
 import { isClaudeTranscriptMessage } from '../../../../shared/claudeProvider.js'
 // server/routes/conversationRoutes.ts
 //
@@ -617,16 +618,12 @@ export function registerConversationRoutes(app: Express, deps: ConversationRoute
   app.delete('/api/local/messages/:id', (req, res) => {
     try {
       const { id } = req.params
-      if (isClaudeTranscriptMessage(statements.getMessageById.get(id))) {
-        res.status(409).json({ error: 'Claude transcript messages cannot be deleted individually. Delete the conversation instead.' })
-        return
-      }
-      deleteMessagesWithLineageRepair(db, [id])
+      deleteMessagesWithLineageRepair(db, planMessageDeletion(db, [id]))
       // console.log('[LocalServer] ✅ Message deleted:', id)
       res.json({ success: true })
     } catch (error) {
       console.error('[LocalServer] ❌ Error deleting message:', error)
-      res.status((error as { status?: number }).status ?? 500).json({ error: error instanceof Error ? error.message : 'Failed to delete message' })
+      res.status((error as { status?: number }).status ?? 500).json({ error: error instanceof Error ? error.message : 'Failed to delete message', code: (error as { code?: string }).code })
     }
   })
 
@@ -641,21 +638,17 @@ export function registerConversationRoutes(app: Express, deps: ConversationRoute
         return
       }
 
-      if (ids.some(id => isClaudeTranscriptMessage(statements.getMessageById.get(id)))) {
-        res.status(409).json({ error: 'Claude transcript messages cannot be deleted individually. Delete the conversation instead.' })
-        return
-      }
       // Delete each message in a transaction
       if (!db) {
         res.status(500).json({ error: 'Database not initialized' })
         return
       }
-      deleteMessagesWithLineageRepair(db, ids)
+      deleteMessagesWithLineageRepair(db, planMessageDeletion(db, ids))
       // console.log('[LocalServer] ✅ Bulk deleted', ids.length, 'messages')
       res.json({ deleted: ids.length })
     } catch (error) {
       console.error('[LocalServer] ❌ Error bulk deleting messages:', error)
-      res.status((error as { status?: number }).status ?? 500).json({ error: error instanceof Error ? error.message : 'Failed to bulk delete messages' })
+      res.status((error as { status?: number }).status ?? 500).json({ error: error instanceof Error ? error.message : 'Failed to bulk delete messages', code: (error as { code?: string }).code })
     }
   })
 }

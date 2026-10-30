@@ -2,6 +2,7 @@ import type { ContentBlock } from '@/features/chats/chatTypes'
 import { buildMcpAppEntryKey, getMcpAppHeight } from '../McpAppIframe/mcpAppSizing'
 import { isProcessOnlyBlockSet, isExcludedFromProcessRunGrouping } from './chatMessageShared'
 import { stripAttachedImagePathMetadata } from '../../features/chats/attachedImagePaths'
+import { CLAUDE_FILE_EDIT_TOOLS } from '../../../../../shared/claudeProvider'
 
 /**
  * Height estimate for one virtual row, derived from the blocks the row will draw.
@@ -130,6 +131,8 @@ const estimateSpecialToolCard = (
   if (name === 'internallink' || name === 'internal_link') return header + TOOL_BODY_INTERNAL_LINK
   if (name === 'plan_md' && String(input.action ?? '').toLowerCase() === 'display') return header + TOOL_BODY_PLAN_MD
   if (name === 'edit_file' || name === 'editfile' || name === 'multi_edit') return header + TOOL_BODY_EDIT_DIFF
+  // Claude's native file tools draw the same diff card; matched raw, as ToolCallGroupCard does.
+  if (CLAUDE_FILE_EDIT_TOOLS.has(String(block.name ?? ''))) return header + TOOL_BODY_EDIT_DIFF
   if (name.startsWith('mcp__')) {
     // Only MCP tools with a UI resource draw the always-open app card. The rest are ordinary
     // collapsible rows. Without the predicate, assume the app: that was the old behaviour.
@@ -227,7 +230,7 @@ export interface EstimateMessageRowInput {
   messageId?: string
   /** True when the MCP tool has a UI resource and so draws the always-open app card. */
   isMcpAppTool?: (toolName: string) => boolean
-  /** Collapsed Hook Activity card rendered after assistant content. */
+  /** Collapsed Hook Activity card: after assistant process content, or among a user row's cards. */
   hookRunCount?: number
 }
 
@@ -353,7 +356,7 @@ export const estimateMessageRowHeight = (input: EstimateMessageRowInput): number
 
   const imageNoticeHeight = isUserRow && input.hasAcceptedImages ? smallChromeRowHeight(rootFontSize) : 0
   const chromeHeight = baseChrome(isUserRow, artifactCount, showsActionsRow, isProcessOnly, rootFontSize) + imageNoticeHeight
-  if (!isUserRow && hookRunCount > 0) items.push([contextCard, 'activity'])
+  if (hookRunCount > 0) items.push([contextCard, isUserRow ? 'other' : 'activity'])
   if (items.length === 0) return chromeHeight
 
   // Long runs of process items collapse into a single "Agent steps" row. Build the list of

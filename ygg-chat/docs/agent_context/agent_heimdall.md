@@ -114,6 +114,7 @@ For selected-message copying/moving:
 - Heimdall stores note dialog state locally and reads/writes the current message from Redux.
 - Message and note-pill hover previews share opposite-side docking: an anchor in the left half of the panel docks its preview right, and an anchor in the right half docks left. The shared layout derives the anchor's on-screen position from the same transform as `visiblePositions`, preventing the card from covering the interactive node or note pill. Preview width is capped to the opposite half on narrow panels.
 - Leaving a node or note pill starts the shared `DOCKED_PREVIEW_CLOSE_DELAY_MS` timer; entering its docked card cancels it so the card can be reached and scrolled, and leaving the card restarts it. A new hover replaces the displayed content.
+- Because the card docks across the graph, the path to it crosses other nodes/pills. Each preview has a `useHoverIntent` controller (safe triangle, `src/hooks/useHoverIntent.ts`): node/pill-enter swaps and timer-driven closes go through `run()` and are deferred while the pointer moves toward the card, then applied when it turns away or stalls (~250ms). Leaving a node/pill or entering the card calls `cancel()`; conversation changes cancel both.
 - Preview positioning wrappers are pointer-transparent; only the visible preview cards capture input, cancel the pending close timer, and remain marked `data-heimdall-wheel-exempt='true'`.
 
 ### Search

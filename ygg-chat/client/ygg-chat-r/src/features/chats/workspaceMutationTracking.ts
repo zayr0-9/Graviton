@@ -1,7 +1,9 @@
 import type { MessageId } from '../../../../../shared/types'
 import type { Message } from './chatTypes'
+import type { ClaudeFilePatch } from '../../../../../shared/claudeProvider'
 
-export type WorkspaceMutationToolName = 'create_file' | 'edit_file' | 'delete_file' | 'multi_edit'
+// 'Edit' and 'Write' are Claude's native file tools.
+export type WorkspaceMutationToolName = 'create_file' | 'edit_file' | 'delete_file' | 'multi_edit' | 'Edit' | 'Write'
 export type WorkspaceMutationOperation = 'create' | 'edit' | 'delete'
 
 export interface BranchFileMutation {
@@ -38,6 +40,7 @@ type ParsedToolCall = {
 type ToolResultRecord = {
   content: unknown
   isError: boolean | null
+  patch?: ClaudeFilePatch
 }
 
 type PendingMutation = Omit<BranchFileMutation, 'key' | 'sequence'>
@@ -47,6 +50,8 @@ const TRACKED_WRITE_TOOL_NAMES = new Set<WorkspaceMutationToolName>([
   'edit_file',
   'delete_file',
   'multi_edit',
+  'Edit',
+  'Write',
 ])
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
@@ -167,6 +172,7 @@ const buildToolResultLookup = (messages: Message[]): Map<string, ToolResultRecor
       lookup.set(toolUseId, {
         content: block.content !== undefined ? block.content : existing?.content ?? null,
         isError: typeof block.is_error === 'boolean' ? block.is_error : existing?.isError ?? null,
+        patch: isRecord(block.patch) && typeof block.patch.filePath === 'string' ? block.patch as unknown as ClaudeFilePatch : existing?.patch,
       })
     }
 
@@ -234,6 +240,14 @@ const extractSingleToolMutation = (
 ): PendingMutation[] => {
   const { parsedContent, success } = resolveToolResultStatus(toolResult)
   if (!success) return []
+
+  if (toolCall.name === 'Edit' || toolCall.name === 'Write') {
+    const path = toolResult?.patch?.filePath ?? asNonEmptyString(toolCall.args.file_path)
+    if (!path) return []
+    // A Write without a patch (older rows) cannot say whether it created the file; edit is the safe label.
+    return [createPendingMutation(toolCall, toolResult?.patch?.kind === 'create' ? 'create' : 'edit', path,
+      toolCall.name === 'Edit' && toolCall.args.replace_all === true ? 'replace_all' : null)]
+  }
 
   const resultPath = isRecord(parsedContent) ? asNonEmptyString(parsedContent.path) : null
   const argPath = asNonEmptyString(toolCall.args.path)

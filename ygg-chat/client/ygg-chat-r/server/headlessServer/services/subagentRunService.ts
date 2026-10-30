@@ -1,4 +1,5 @@
 import { installChildRunSnapshot } from './childRunSnapshot.js'
+import { parseAdditionalCwds } from '../../toolAccessContext.js'
 import type {
   HeadlessStreamEvent,
   HeadlessSubagentStreamEvent,
@@ -163,6 +164,7 @@ export class SubagentRunService {
   private readonly refreshProviderTokens?: (provider: string) => Promise<void> | void
   private readonly providerTurnTimeoutMs: number
   private readonly runSessions?: RunSessionRegistry
+  private readonly statements?: any
   /** handle -> live detached attempt, shared by cancel(handle) and waitForTerminal(handle). */
   private readonly activeRuns = new Map<string, ActiveSubagentRun>()
   /** Retain bounded terminal mailboxes so status/wait can report undelivered instructions. */
@@ -177,6 +179,7 @@ export class SubagentRunService {
     this.refreshProviderTokens = deps.refreshProviderTokens
     this.providerTurnTimeoutMs = Math.max(5_000, deps.providerTurnTimeoutMs ?? DEFAULT_PROVIDER_TURN_TIMEOUT_MS)
     this.runSessions = deps.runSessions
+    this.statements = deps.statements
   }
 
   /**
@@ -840,6 +843,7 @@ export class SubagentRunService {
           streamId: subStreamId,
           rootPath: request.rootPath ?? null,
           fullAccess: request.fullAccess === true,
+          additionalRoots: request.additionalRoots ?? parseAdditionalCwds(this.statements?.getConversationById?.get(request.conversationId)?.additional_cwds),
           operationMode,
           toolTimeoutMs: request.toolTimeoutMs,
           bashTimeoutMs: request.bashTimeoutMs,

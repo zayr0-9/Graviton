@@ -20,11 +20,15 @@ import type { HeadlessStreamEvent } from '../../../../../shared/headlessApi.js'
 import type {
   HookEventName,
   HookProjectContext,
+  HookRunRecord,
   HookRunRequest,
   HookRunResult,
+  HookRunTracker,
   HookTurnContext,
   InstructionsLoadReason,
 } from '../../hooks/hookTypes.js'
+import { getHookRunTracker } from '../../hooks/hookRunTracker.js'
+import { toSafeHookRunRecord } from '../../hooks/hookDiagnostics.js'
 import type { HeadlessChatOperation } from '../../../../../shared/headlessApi.js'
 import { attachChatErrorCode } from '../providers/providerErrorFormatter.js'
 import type { ToolExecutionContext, ToolLoopHooks } from './toolLoopService.js'
@@ -293,6 +297,8 @@ export interface ChatHookSessionConfig {
   emit?: (event: HeadlessStreamEvent) => void
   /** Stamped onto emitted notices so the renderer can attribute them to a lineage. */
   lineageId?: string | null
+  /** Durable run store used to re-own pending runs; defaults to the server's configured tracker. */
+  runTracker?: HookRunTracker | null
 }
 
 export interface ChatHookSession {
@@ -318,6 +324,11 @@ export interface ChatHookSession {
   drainHookContext(): string[]
   /** Stop after a persisted response; native providers supply the actual turn's user anchor. */
   runStop(params: { assistantMessage: any; streamId: string | null; lastUserMessageId?: string | null; compactionPhase?: 'summarising' }): Promise<boolean>
+  /**
+   * Give runs recorded before their row existed (UserPromptSubmit, SessionStart, PreCompact,
+   * InstructionsLoaded) to `messageId` and show them there. Later updates follow them.
+   */
+  attachPendingHookRuns(messageId: string | number | null | undefined): void
   /** Adapter handed to ToolLoopService via input.hooks (Stop + per-turn fold). */
   toolLoopHooks(): ToolLoopHooks
 }
@@ -327,11 +338,44 @@ export function createChatHookSession(config: ChatHookSessionConfig): ChatHookSe
   const project = config.project ?? null
   const localApiBase = config.localApiBase ?? null
   let streamId = config.streamId
-  const emitHookActivity = (event: HookEventName, messageId: string | null) => (runs: import('../../hooks/hookTypes.js').HookRunRecord[]): void => {
+  // A run with no owning row yet waits here; once attached, its later updates follow the owner.
+  const pendingRuns = new Map<string, HookRunRecord>()
+  const attachedOwners = new Map<string, string>()
+  const emitRuns = (event: string, messageId: string, runs: HookRunRecord[]): void => {
     if (!config.emit || runs.length === 0) return
     try {
       config.emit({ type: 'hook_activity', event, messageId, runs, lineageId: config.lineageId ?? null })
     } catch { /* operational metadata must not break chat */ }
+  }
+  const emitHookActivity = (event: HookEventName, messageId: string | null) => (runs: HookRunRecord[]): void => {
+    const owned: HookRunRecord[] = []
+    for (const run of runs) {
+      const owner = messageId ?? attachedOwners.get(run.id) ?? null
+      if (owner) owned.push(run.messageId === owner ? run : { ...run, messageId: owner })
+      else pendingRuns.set(run.id, run)
+    }
+    if (owned.length) emitRuns(event, owned[0].messageId!, owned)
+  }
+
+  const attachPendingHookRuns = (messageId: string | number | null | undefined): void => {
+    if (messageId == null || messageId === '' || pendingRuns.size === 0) return
+    const owner = String(messageId)
+    const tracker = config.runTracker === undefined ? getHookRunTracker() : config.runTracker
+    const byEvent = new Map<string, HookRunRecord[]>()
+    for (const run of pendingRuns.values()) {
+      attachedOwners.set(run.id, owner)
+      let attached: HookRunRecord = { ...run, messageId: owner }
+      try {
+        const stored = tracker?.update(run.id, { messageId: owner })
+        if (stored) attached = toSafeHookRunRecord(stored)
+      } catch (error) {
+        // The live card still shows the run; only a reload loses it.
+        console.warn('[chatHookService] could not attach hook run to its message', error instanceof Error ? error.message : error)
+      }
+      byEvent.set(attached.event, [...(byEvent.get(attached.event) ?? []), attached])
+    }
+    pendingRuns.clear()
+    for (const [event, runs] of byEvent) emitRuns(event, owner, runs)
   }
 
   const emitNotice = (message: string): void => {
@@ -580,6 +624,7 @@ export function createChatHookSession(config: ChatHookSessionConfig): ChatHookSe
     runPreCompact,
     runInstructionsLoaded,
     runStop,
+    attachPendingHookRuns,
     drainHookContext,
     toolLoopHooks(): ToolLoopHooks {
       return { hookContext, foldSystemPrompt, runStop, runPreCompact: () => runPreCompact('auto'), runSessionStart }

@@ -62,6 +62,18 @@ export class MessageInputQueue {
     if (entry) { entry.view.status = 'delivering'; this.changed() }
     return entry
   }
+  /** Unclaimed entries, oldest first. */
+  queuedEntries(): Entry[] {
+    return [...this.entries.values()].filter(entry => entry.view.status === 'queued')
+  }
+  /** Claims one entry by id: Claude, not this mailbox, decides when each queued message starts. */
+  claimEntry(requestId: string): Entry | undefined {
+    const entry = this.entries.get(requestId)
+    if (!entry || entry.view.status !== 'queued') return undefined
+    entry.view.status = 'delivering'
+    this.changed()
+    return entry
+  }
   settle(requestId: string, result: { messageId: string } | { error: string }) {
     const entry = this.entries.get(requestId)
     if (!entry) return

@@ -7,6 +7,8 @@ paths:
   - "client/ygg-chat-r/src/components/Heimdall/**"
   - "client/ygg-chat-r/src/index.css"
   - "client/ygg-chat-r/src/components/motion.ts"
+  - "client/ygg-chat-r/src/hooks/useHoverIntent.ts"
+  - "client/ygg-chat-r/src/utils/hoverIntent.ts"
   - "client/ygg-chat-r/server/tools/themeManager.ts"
 ---
 
@@ -175,6 +177,7 @@ Graviton uses expressive but disciplined motion: movement should explain a spati
 
 - **Compact-to-expanded shell:** animate fixed outer wrapper and inner shell with `layout`; use `AnimatePresence mode='popLayout'`; reveal the detail height shell separately from its inner content.
 - **Anchored menu/portal:** set transform origin toward the trigger, use a modest directional offset, and keep backdrop opacity independent from surface movement.
+- **Hover surfaces away from their trigger (submenus, hover dropdowns, docked previews):** use `useHoverIntent` (`src/hooks/useHoverIntent.ts`, geometry/timing in `src/utils/hoverIntent.ts`) instead of a longer close delay. Pass `enabled` while open and `getTargetRect` from the surface ref; route trigger-enter swaps and delayed closes through `run()`, and call `cancel()` on surface enter or trigger leave. Heimdall's node/note previews are the reference usage.
 - **Hover-revealed action cluster:** combine a short opacity transition with a small vertical offset; avoid scaling the containing row.
 - **Resizable panes and graph canvases:** turn off dimension transitions during direct manipulation and leave requestAnimationFrame interaction loops imperative.
 

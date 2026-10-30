@@ -53,6 +53,27 @@ describe('isolated Claude hook print process', () => {
     await rejected
     expect(existsSync((f.launch.mock.calls[0] as any)[2].cwd)).toBe(false)
   })
+  it('requests schema-validated output and returns structured_output', async () => {
+    const f = fixture()
+    const jsonSchema = { type: 'object', properties: { note: { type: 'string' } }, required: ['note'] }
+    const pending = generateClaudeHook({ content: 'c', systemPrompt: '', model: 'haiku', signal: new AbortController().signal, jsonSchema }, { executable: async () => '/cli', launch: f.launch as any })
+    await vi.waitFor(() => expect(f.launch).toHaveBeenCalledOnce())
+    const args = (f.launch.mock.calls[0] as any)[1]
+    expect(JSON.parse(args[args.indexOf('--json-schema') + 1])).toEqual(jsonSchema)
+    f.child.stdout.write(JSON.stringify({ type: 'result', subtype: 'success', result: '', structured_output: { note: 'n' } }))
+    f.child.emit('close', 0)
+    await expect(pending).resolves.toEqual({ text: '{"note":"n"}', modelName: 'haiku', structured: { note: 'n' } })
+  })
+  it('rejects a schema request when the CLI omits structured_output', async () => {
+    const f = fixture()
+    const pending = generateClaudeHook({ content: 'c', systemPrompt: '', model: '', signal: new AbortController().signal, jsonSchema: { type: 'object' } }, { executable: async () => '/cli', launch: f.launch as any })
+    const rejected = expect(pending).rejects.toThrow(/invalid or empty/)
+    await vi.waitFor(() => expect(f.launch).toHaveBeenCalledOnce())
+    expect((f.launch.mock.calls[0] as any)[1]).toContain('--json-schema')
+    f.child.stdout.write(JSON.stringify({ type: 'result', subtype: 'success', result: '{"note":"prose"}' }))
+    f.child.emit('close', 0)
+    await rejected
+  })
   it('terminates on abort even if the child never reports close', async () => {
     const f = fixture()
     const controller = new AbortController()
@@ -67,6 +88,12 @@ describe('isolated Claude hook print process', () => {
   it('reports a missing CLI without leaking resolver details', async () => {
     await expect(generateClaudeHook({ content: 'test', systemPrompt: '', model: '', signal: new AbortController().signal }, { executable: async () => { throw new Error('private path') } })).rejects.toMatchObject({ status: 503 })
   })
+  it.skipIf(process.env.CLAUDE_HOOK_LIVE_TEST !== '1')('live: restricted CLI honors --json-schema', async () => {
+    const jsonSchema = { type: 'object', properties: { note: { type: 'string' } }, required: ['note'], additionalProperties: false }
+    const result = await generateClaudeHook({ content: 'Write a three-word note about testing.', systemPrompt: 'Respond with the requested note.', model: 'haiku', signal: AbortSignal.timeout(35000), jsonSchema })
+    expect(typeof result.structured?.note).toBe('string')
+    expect(JSON.parse(result.text)).toEqual(result.structured)
+  }, 40000)
   it.skipIf(process.env.CLAUDE_HOOK_LIVE_TEST !== '1')('live: signed-in CLI generates JSON without tools or persistent session', async () => {
     const result = await generateClaudeHook({ content: 'Return only {"note":"synthetic smoke"}. Do not use any tools.', systemPrompt: 'Return exactly the requested JSON.', model: 'haiku', signal: AbortSignal.timeout(35000) })
     expect(JSON.parse(result.text)).toEqual({ note: 'synthetic smoke' })

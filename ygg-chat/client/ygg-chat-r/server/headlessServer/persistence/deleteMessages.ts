@@ -92,6 +92,11 @@ export function deleteMessagesWithLineageRepair(db: Database.Database, ids: read
         forked_from_message_id = ?, status = ?, updated_at = ? WHERE id = ?`)
       const now = new Date().toISOString()
       for (const row of repairs) update.run(row.head_message_id, row.root_message_id, row.forked_from_message_id, row.status, now, row.id)
+      // An emptied Claude branch has no checkpoint to resume; its next prompt starts a fresh session.
+      if (hasTable(db, 'claude_branch_sessions')) {
+        const reset = db.prepare('DELETE FROM claude_branch_sessions WHERE lineage_id = ?')
+        for (const row of repairs) if (row.head_message_id == null) reset.run(row.id)
+      }
     }
   })()
 }

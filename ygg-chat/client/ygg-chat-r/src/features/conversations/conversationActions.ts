@@ -258,6 +258,30 @@ export const updateCwd = createAsyncThunk<
   }
 })
 
+// Extra working directories are host paths, stored on the local row only (cloud chats included).
+export const updateAdditionalCwds = createAsyncThunk<
+  Conversation,
+  { id: ConversationId; additionalCwds: string[] },
+  { extra: ThunkExtraArgument; state: RootState }
+>('conversations/updateAdditionalCwds', async ({ id, additionalCwds }, { rejectWithValue }) => {
+  try {
+    return (await gwApi.patch<Conversation>(`/conversations/${id}/additional-cwds`, { additionalCwds })) as Conversation
+  } catch (error) {
+    return rejectWithValue(error instanceof Error ? error.message : 'Failed to update additional directories') as any
+  }
+})
+
+/** Parses `additional_cwds`; NULL or malformed JSON means no extra directories. */
+export const parseAdditionalCwds = (value: unknown): string[] => {
+  if (typeof value !== 'string' || !value.trim()) return []
+  try {
+    const parsed = JSON.parse(value)
+    return Array.isArray(parsed) ? parsed.filter((root): root is string => typeof root === 'string' && root.trim().length > 0) : []
+  } catch {
+    return []
+  }
+}
+
 // Search conversations by title from the server (gateway merges local + cloud).
 export const searchConversations = createAsyncThunk<
   Conversation[],

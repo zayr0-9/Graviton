@@ -1,4 +1,4 @@
-import { hasFullToolAccess } from '../toolAccessContext.js'
+import { hasToolAccessTo } from '../toolAccessContext.js'
 import * as fs from 'fs'
 import * as path from 'path'
 import { getManagedToolRoots, isManagedToolPath } from '../utils/managedToolPaths.js'
@@ -33,7 +33,7 @@ function resolveWslLikeAbsolutePath(inputPath: string, cwd?: string): string {
 }
 
 function assertWithinWorkspace(inputPath: string, resolvedPath: string, cwd: string, usePosix: boolean): void {
-  if (hasFullToolAccess()) return
+  if (hasToolAccessTo(resolvedPath, usePosix)) return
   if (usePosix) {
     const workspace = resolveWslLikeAbsolutePath(cwd)
     const target = resolveWslLikeAbsolutePath(resolvedPath)
@@ -89,7 +89,7 @@ async function canonicalDestination(target: string): Promise<string> {
 
 async function checkedDestination(target: string, cwd?: string): Promise<string> {
   const canonical = await canonicalDestination(target)
-  if (!cwd || hasFullToolAccess()) return canonical
+  if (!cwd || hasToolAccessTo(canonical)) return canonical
   const nativeRoot = isWSLPath(cwd) ? await resolveToWindowsPath(cwd) : cwd
   const root = await fs.promises.realpath(nativeRoot)
   const within = (candidate: string, base: string) => {

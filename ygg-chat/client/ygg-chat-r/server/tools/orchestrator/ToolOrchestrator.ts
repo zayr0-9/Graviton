@@ -42,6 +42,7 @@ type ToolHandler = (
     signal?: AbortSignal
     deadlineMs?: number
     fullAccess?: boolean
+    additionalRoots?: string[]
     rootPath?: string
     operationMode?: 'plan' | 'execute'
     conversationId?: string | null
@@ -356,6 +357,7 @@ export class ToolOrchestrator {
       priority: options.priority ?? 'normal',
       rootPath: options.rootPath ?? null,
       fullAccess: options.fullAccess === true,
+      additionalRoots: options.additionalRoots ?? [],
       operationMode: options.operationMode ?? 'execute',
       timeoutMs: options.timeoutMs ?? this.config.defaultTimeoutMs,
       deadlineMs: options.deadlineMs,
@@ -485,13 +487,14 @@ export class ToolOrchestrator {
           deadlineMs: jobEndMs - (isShell ? SHELL_RUNTIME_MARGIN_MS : 0),
           rootPath: job.rootPath ?? undefined,
           fullAccess: job.fullAccess === true,
+          additionalRoots: job.additionalRoots ?? [],
           operationMode: job.operationMode,
           conversationId: job.conversationId,
           messageId: job.messageId,
           parentMessageId: job.parentMessageId,
           streamId: job.streamId,
           toolCallId: job.toolCallId,
-        })),
+        }), job.additionalRoots),
         abortPromise,
       ])
 

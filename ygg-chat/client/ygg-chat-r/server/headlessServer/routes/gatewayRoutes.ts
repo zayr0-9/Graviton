@@ -571,6 +571,14 @@ export function registerGatewayRoutes(app: Express, deps: RegisterGatewayRoutesD
     res.status(r.status).json(r.body)
   })
 
+  // Extra working directories are host paths, so they live only on the local row (cloud
+  // conversations included); the cloud API has no such field.
+  app.patch('/api/gw/conversations/:id/additional-cwds', async (req, res) => {
+    const value = pick(req.body, 'additionalCwds', 'additional_cwds') ?? null
+    const r = await localLeg(req, `/api/app/conversations/${req.params.id}`, jsonInit('PATCH', { additional_cwds: value }))
+    res.status(r.status).json(r.body)
+  })
+
   // Conversation sub-field updates (system-prompt / context / research-note / cwd / project).
   // Cloud uses per-field endpoints + camelCase; local uses one patch endpoint + snake_case.
   // Cloud path is authoritative; the local mirror row is refreshed best-effort.

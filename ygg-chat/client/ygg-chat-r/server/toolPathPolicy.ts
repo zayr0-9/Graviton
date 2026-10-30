@@ -6,7 +6,7 @@
 // sandboxed side of the boundary.
 
 import path from 'path'
-import { hasFullToolAccess } from './toolAccessContext.js'
+import { hasToolAccessTo } from './toolAccessContext.js'
 import { isManagedToolPath } from './utils/managedToolPaths.js'
 
 /**
@@ -54,7 +54,7 @@ export function validateAndResolvePath(
   const outsideWorkspace =
     relativeToRoot === '..' || relativeToRoot.startsWith(`..${pathModule.sep}`) || pathModule.isAbsolute(relativeToRoot)
 
-  if (outsideWorkspace && !hasFullToolAccess()) {
+  if (outsideWorkspace && !hasToolAccessTo(resolvedPath, usePosix)) {
     const rootIsManagedPath = isManagedToolPath(normalizedRoot, usePosix)
     const targetIsManagedPath = isManagedToolPath(resolvedPath, usePosix)
     if (!rootIsManagedPath && targetIsManagedPath) {

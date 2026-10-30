@@ -1,5 +1,7 @@
 import { portableSummaryText } from '../../../../../shared/summaryHandoff.js'
-import { claudeMessageMetadata } from '../../../../../shared/claudeProvider.js'
+import { CLAUDE_FILE_EDIT_TOOLS, CLAUDE_NATIVE_HOOK_SOURCE, claudeFilePatch, claudeMessageMetadata } from '../../../../../shared/claudeProvider.js'
+import { LABEL_AUTO_MEMORY, LABEL_LOCAL, LABEL_PROJECT, LABEL_USER_GLOBAL } from '../../../../../shared/contextInjection.js'
+import { parseFrontmatter, stripHtmlComments } from '../../context/frontmatter.js'
 import { randomUUID } from 'node:crypto'
 import { readFile, realpath } from 'node:fs/promises'
 import path from 'node:path'
@@ -12,6 +14,9 @@ import type { MessageSink } from './messageSink.js'
 import type { DecisionBroker, OperationModeUpgradeDecision, PermissionDecision } from './decisionBroker.js'
 import type { ChatHookSession } from './chatHookService.js'
 import type { ToolExecutionContext } from './toolLoopService.js'
+import type { HookEventName, HookRunRecord, HookRunStatus, HookRunTracker } from '../../hooks/hookTypes.js'
+import { getHookRunTracker } from '../../hooks/hookRunTracker.js'
+import { redactHookDiagnostic, toSafeHookRunRecord } from '../../hooks/hookDiagnostics.js'
 
 // Lazy import keeps the native CLI launcher out of renderer and ordinary provider startup.
 export type ClaudeSdk = Pick<typeof import('@anthropic-ai/claude-agent-sdk'), 'query' | 'forkSession' | 'getSessionMessages'>
@@ -20,7 +25,7 @@ const textOf = (value: any): string => typeof value === 'string' ? value : JSON.
 // Anthropic accepts only these formats, at most 5 MB each; the shared hydrator also admits bmp/avif.
 const CLAUDE_IMAGE_MIMES = new Set(['image/png', 'image/jpeg', 'image/gif', 'image/webp'])
 const MAX_CLAUDE_IMAGE_BYTES = 5 * 1024 * 1024
-function claudeImageBlock(url: string) {
+export function claudeImageBlock(url: string) {
   const match = /^data:(image\/[\w.+-]+);base64,([A-Za-z0-9+/=\r\n]+)$/.exec(url)
   if (!match || !CLAUDE_IMAGE_MIMES.has(match[1])) throw new Error('Claude accepts PNG, JPEG, GIF or WebP images only.')
   const data = match[2].replace(/[\r\n]/g, '')
@@ -35,6 +40,150 @@ const MAX_PLAN_BYTES = 1024 * 1024
 const OWNER_WAIT_MS = 2000
 // Chat mode matches Graviton's: a normal conversation with file edits removed, not native plan mode.
 export const CHAT_MODE_DISALLOWED_TOOLS = ['Edit', 'Write', 'MultiEdit', 'NotebookEdit', 'EnterPlanMode', 'ExitPlanMode']
+// Claude Code's own settings layers, as the CLI loads them: skills, hooks, plugins and CLAUDE.md.
+export const CLAUDE_SETTING_SOURCES: NonNullable<Options['settingSources']> = ['user', 'project', 'local']
+const COMMAND_LOOKUP_TIMEOUT_MS = 15_000
+// Hook events whose `hook_name` matcher is a tool name (`PreToolUse:Bash`).
+const NATIVE_TOOL_HOOK_EVENTS = new Set(['PreToolUse', 'PostToolUse', 'PostToolUseFailure', 'PermissionRequest', 'PermissionDenied'])
+const SKILL_BASE_DIRECTORY = /^Base directory for this skill: ([^\n]+)/
+const INSTRUCTION_LABELS: Record<string, string> = { User: LABEL_USER_GLOBAL, Project: LABEL_PROJECT, Local: LABEL_LOCAL, Managed: 'managed policy instructions' }
+// After a turn ends, Claude starts a held queued message at once; a longer silence means it never will.
+const QUEUED_START_TIMEOUT_MS = 30_000
+
+/**
+ * The run's Graviton mailbox (MessageInputQueue), as a running Claude session consumes it.
+ * Entries stay `queued`, and so cancellable, until Claude reports `command_lifecycle: started`:
+ * Claude folds them in at its next tool boundary, or runs them as a new turn after `result`.
+ */
+export interface ClaudeQueuedInput {
+  /** Calls `wake` when an entry is enqueued; returns the unsubscribe. */
+  subscribe(wake: () => void): () => void
+  /** The next entry not yet offered, as Claude prompt text and image data URLs; null when none. */
+  prepareNext(): Promise<{ requestId: string; prompt: string; images: string[] } | null>
+  /** Claude started the entry: persist its user row below `parentId` and return it. */
+  deliver(requestId: string, parentId: string | null): any
+  /** Claude will never run the entry. */
+  release(requestId: string, outcome: { cancelled: true } | { error: string }): void
+  /** True when nothing is queued; closes intake so a later send starts a successor run. */
+  tryClose(): boolean
+  /** Lets DELETE withdraw an entry: true cancelled, false Claude already has it, null not offered. */
+  bindCancel(cancel: (requestId: string) => Promise<boolean | null>): void
+}
+type QueryWithAsyncCancel = { cancelAsyncMessage?: (uuid: string) => Promise<boolean> }
+
+/** An instruction file Claude Code loaded, as the model reads it (no frontmatter or HTML comments). */
+async function readInstructionFile(file: string): Promise<string | null> {
+  try {
+    return stripHtmlComments(parseFrontmatter(await readFile(file, 'utf8')).body).trim() || null
+  } catch {
+    return null
+  }
+}
+
+type NativeHookMessage = {
+  hook_id: string; hook_name: string; hook_event: string
+  stdout?: string; stderr?: string; output?: string; exit_code?: number; outcome?: 'success' | 'error' | 'cancelled'
+}
+
+/** The line worth showing from a native hook's JSON stdout: its message, block or deny reason. */
+function nativeHookSummary(stdout: string | undefined): string | null {
+  const trimmed = stdout?.trim()
+  if (!trimmed?.startsWith('{')) return null
+  try {
+    const parsed = JSON.parse(trimmed)
+    const specific = parsed?.hookSpecificOutput ?? {}
+    const summary = [parsed?.systemMessage, parsed?.reason, parsed?.stopReason, specific.permissionDecisionReason]
+      .find(value => typeof value === 'string' && value.trim())
+    return summary ? summary.trim() : null
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Records the hooks Claude Code runs itself (from its settings and plugins) as Graviton hook
+ * runs, so they persist and draw on the transcript like Graviton's own. Graviton's SDK
+ * callback hooks never produce these events, so nothing is recorded twice.
+ */
+function nativeHookRecorder(config: {
+  tracker: HookRunTracker | null; conversationId: string; streamId: string | null; cwd: string; lineageId: string
+  emit: (event: HeadlessStreamEvent) => void
+  /** The row a hook belongs to: its tool call's row for tool events, else the current head. */
+  ownerOf: (event: string, matcher: string | null) => string | null
+}) {
+  const runs = new Map<string, { record: HookRunRecord; startedMs: number }>()
+  const store = (record: HookRunRecord, create: boolean): HookRunRecord => {
+    try {
+      const stored = create ? config.tracker?.create(record) : config.tracker?.update(record.id, record)
+      return stored ?? record
+    } catch (error) {
+      console.warn('[ClaudeSession] could not record native hook run', error instanceof Error ? error.message : error)
+      return record
+    }
+  }
+  const publish = (record: HookRunRecord) => {
+    if (!record.messageId) return
+    try {
+      config.emit({ type: 'hook_activity', event: record.event, messageId: record.messageId,
+        runs: [toSafeHookRunRecord(record)], lineageId: config.lineageId })
+    } catch { /* operational metadata must not break chat */ }
+  }
+  const update = (id: string, change: Partial<HookRunRecord>) => {
+    const run = runs.get(id)
+    if (!run) return
+    run.record = store({ ...run.record, ...change, updatedAt: new Date().toISOString() }, false)
+    publish(run.record)
+  }
+  return {
+    started(message: NativeHookMessage) {
+      if (runs.has(message.hook_id)) return
+      const now = new Date().toISOString()
+      const separator = message.hook_name.indexOf(':')
+      const matcher = separator >= 0 ? message.hook_name.slice(separator + 1) : null
+      const record = store({
+        id: message.hook_id, conversationId: config.conversationId, streamId: config.streamId,
+        event: message.hook_event as HookEventName, messageId: config.ownerOf(message.hook_event, matcher),
+        label: message.hook_name, configuredCommand: '', executedCommand: null, sourceFile: CLAUDE_NATIVE_HOOK_SOURCE,
+        // Claude reports no settings layer; the source marks it as Claude's.
+        scope: 'project', executionMode: 'sync', status: 'running', outcomeCode: null, outcomeSummary: null,
+        cwd: config.cwd, startedAt: now, completedAt: null, durationMs: null, errorSummary: null,
+        stdoutPreview: null, stderrPreview: null, logPath: null, logFallback: false, createdAt: now, updatedAt: now,
+      }, true)
+      runs.set(message.hook_id, { record, startedMs: Date.now() })
+      publish(record)
+    },
+    progress(message: NativeHookMessage) {
+      update(message.hook_id, { stdoutPreview: redactHookDiagnostic(message.stdout || null), stderrPreview: redactHookDiagnostic(message.stderr || null) })
+    },
+    finished(message: NativeHookMessage) {
+      if (!runs.has(message.hook_id)) this.started(message)
+      const stdout = message.stdout ?? ''
+      const stderr = message.stderr ?? ''
+      // Exit 2 is Claude's blocking answer (deny the tool, stop the prompt): the hook did its job.
+      const blocked = message.outcome === 'error' && message.exit_code === 2
+      const status: HookRunStatus = message.outcome === 'success' || blocked ? 'succeeded' : message.outcome === 'cancelled' ? 'skipped' : 'failed'
+      const failureText = stderr.trim() || message.output?.trim() || (message.exit_code != null ? `Hook exited with code ${message.exit_code}` : 'Hook failed')
+      update(message.hook_id, {
+        status, completedAt: new Date().toISOString(), durationMs: Date.now() - runs.get(message.hook_id)!.startedMs,
+        outcomeCode: blocked ? 'blocked' : message.outcome === 'cancelled' ? 'cancelled'
+          : message.outcome === 'error' ? (message.exit_code != null ? `exit_${message.exit_code}` : 'error') : 'completed',
+        outcomeSummary: redactHookDiagnostic(nativeHookSummary(stdout) ?? (blocked ? stderr.trim() || null : null) ?? (status === 'succeeded' ? 'completed' : null), 1_000),
+        errorSummary: status === 'failed' ? redactHookDiagnostic(failureText, 2_000) : null,
+        stdoutPreview: redactHookDiagnostic(stdout || null), stderrPreview: redactHookDiagnostic(stderr || null),
+      })
+      runs.delete(message.hook_id)
+    },
+    /** Hooks still open when the stream ended never answered. */
+    settle(interrupted: boolean) {
+      for (const id of [...runs.keys()]) {
+        update(id, { status: interrupted ? 'failed' : 'skipped', completedAt: new Date().toISOString(),
+          outcomeCode: interrupted ? 'interrupted' : 'no_response',
+          outcomeSummary: interrupted ? 'Run stopped before the hook finished' : 'Claude reported no result for this hook' })
+        runs.delete(id)
+      }
+    },
+  }
+}
 
 async function readPlanFile(plansDir: string, candidate: string): Promise<{ plan: string; planFilePath: string } | null> {
   try {
@@ -83,7 +232,42 @@ export function interruptedResumePoint(chain: Array<{ type: string; uuid: string
 }
 
 export class ClaudeSessionService {
-  constructor(private deps: { sessions: ClaudeSessionRepo; messages: MessageRepo; broker?: DecisionBroker; sdk?: () => Promise<ClaudeSdk>; executable?: () => Promise<string> }) {}
+  constructor(private deps: { sessions: ClaudeSessionRepo; messages: MessageRepo; broker?: DecisionBroker; sdk?: () => Promise<ClaudeSdk>; executable?: () => Promise<string>
+    /** Durable store for native hook runs; defaults to the server's configured tracker. */
+    hookRuns?: HookRunTracker | null }) {}
+
+  /**
+   * The Claude skill or custom command that `/name args` runs, or null when Claude has none by
+   * that name or it is one of Claude's built-ins (/clear, /model…), which would desync the
+   * branch. Asks a short-lived CLI that never gets a prompt, with hooks off so none run twice.
+   */
+  async nativeCommand(cwd: string, content: string): Promise<{ name: string; args: string; description: string } | null> {
+    const match = /^\s*\/([^\s/]+)(?:\s+([\s\S]*))?$/.exec(content)
+    if (!match) return null
+    const sdk = await (this.deps.sdk ?? loadSdk)()
+    const executable = await (this.deps.executable ?? resolveClaudeExecutable)()
+    let release!: () => void
+    const released = new Promise<void>(resolve => { release = resolve })
+    async function* idle(): AsyncGenerator<SDKUserMessage> { await released }
+    const lookup = sdk.query({ prompt: idle(), options: { cwd, settingSources: CLAUDE_SETTING_SOURCES, strictMcpConfig: true, mcpServers: {},
+      persistSession: false, pathToClaudeCodeExecutable: executable, env: claudeProcessEnvironment(), settings: { disableAllHooks: true } } })
+    let timer: ReturnType<typeof setTimeout> | undefined
+    try {
+      const commands = await Promise.race([lookup.supportedCommands(), new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error('Claude did not list its commands in time')), COMMAND_LOOKUP_TIMEOUT_MS)
+      })])
+      // A name a built-in carries runs the built-in; an alias applies only when no command has the name.
+      const named = commands.filter(command => command.name === match[1])
+      const command = named.length ? (named.some(row => row.builtin) ? null : named[0])
+        : commands.find(row => row.aliases?.includes(match[1])) ?? null
+      if (!command || command.builtin) return null
+      return { name: command.name, args: match[2]?.trim() ?? '', description: command.description?.trim() ?? '' }
+    } finally {
+      clearTimeout(timer)
+      release()
+      lookup.close()
+    }
+  }
 
   /** Host startup: no run survives a restart. Give each interrupted branch head a checkpoint
    * at its last safe native point so it can be continued (by fork). Call before admitting runs. */
@@ -164,14 +348,20 @@ export class ClaudeSessionService {
   async run(input: {
     request: HeadlessMessageRequest; lineageId: string; userMessage: any; parentId: string | null
     sourceMessageId: string | null; fork: boolean; cwd: string; sink: MessageSink
+    /** Extra conversation roots (`--add-dir`). Unlike cwd these may change between turns. */
+    additionalDirectories?: string[]
     emit: (event: HeadlessStreamEvent) => void; signal?: AbortSignal
     /** This turn's images as data URLs; earlier images live in the native transcript. */
     images?: string[]
     /** Graviton chat hooks, bridged onto the native tool and compaction lifecycle. */
     hookSession?: ChatHookSession | null
+    /** The prompt is a Claude skill or custom command `nativeCommand()` resolved; Claude expands it. */
+    nativeCommand?: boolean
+    /** Messages the user queues while this run is live. */
+    queuedInput?: ClaudeQueuedInput
   }): Promise<any> {
     const { request, lineageId, emit, sink, signal, cwd } = input
-    if (!request.manualCompaction && /^\s*\//.test(request.content ?? '')) throw new Error('Native slash commands require an explicit Graviton command.')
+    if (!request.manualCompaction && !input.nativeCommand && /^\s*\//.test(request.content ?? '')) throw new Error('Native slash commands require an explicit Graviton command.')
     // Validate before reserving so a rejected image never leaves the branch running.
     const imageBlocks = request.manualCompaction ? [] : (input.images ?? []).map(claudeImageBlock)
     const sdk = await (this.deps.sdk ?? loadSdk)()
@@ -243,6 +433,8 @@ export class ClaudeSessionService {
       compactionActive = false
       streamedText = ''; streamedReasoning = ''; currentApiId = null
       compactionEvent('completed', compactionSummary)
+      // Graviton's PreCompact (and an early SessionStart) ran before this row existed.
+      hookSession?.attachPendingHookRuns(compactionSummary.id)
     }
     const compactionEvent = (status: 'started' | 'completed' | 'failed', summaryMessage?: any, error?: string) => {
       emit({ type: 'context_compaction', status, turn, reportedTokens: 0, projectedTokens: 0,
@@ -261,7 +453,59 @@ export class ClaudeSessionService {
       }
       return String(toolOwners.get(toolUseId)?.message.id ?? finalMessage?.id ?? parent ?? '')
     }
+    const nativeHooks = nativeHookRecorder({
+      tracker: this.deps.hookRuns === undefined ? getHookRunTracker() : this.deps.hookRuns,
+      conversationId: request.conversationId, streamId: request.streamId ?? null, cwd, lineageId, emit,
+      ownerOf: (event, matcher) => {
+        // Native hook events carry no tool_use_id: the latest call to that tool owns them.
+        if (matcher && NATIVE_TOOL_HOOK_EVENTS.has(event)) {
+          for (const [id, owner] of [...toolOwners.entries()].reverse()) {
+            if (owner.calls.some(call => call.id === id && call.name === matcher)) return String(owner.message.id)
+          }
+        }
+        const head = finalMessage?.id ?? parent
+        return head == null ? null : String(head)
+      },
+    })
+    // A Skill call answers "Launching skill: X"; Claude then adds the skill's instructions as a
+    // synthetic user message. They are kept on the call's row as what the model read.
+    let pendingSkill: { owner: { message: any; blocks: any[]; calls: any[] }; toolUseId: string; name: string } | null = null
+    const attachSkillBody = (skill: NonNullable<typeof pendingSkill>, raw: string) => {
+      const text = raw.trim()
+      if (!text) return
+      const directory = SKILL_BASE_DIRECTORY.exec(text)?.[1]?.trim()
+      skill.owner.blocks.push({ type: 'context_injection', tool_use_id: skill.toolUseId, path: directory ? path.join(directory, 'SKILL.md') : '',
+        label: `skill ${skill.name} instructions`, text, reason: 'skill', origin: 'claude', index: skill.owner.blocks.length })
+      const updated = sink.updateAssistantToolState(skill.owner.message.id, { contentBlocks: skill.owner.blocks, toolCalls: skill.owner.calls })
+      if (updated) emit({ type: 'assistant_message_persisted', message: updated, lineageId })
+    }
+    // Instruction files Claude loaded itself (CLAUDE.md, rules, imports). The hook arrives on the
+    // control channel, so loads wait here for the ordered row they belong to: a file a tool read
+    // rides beside that tool's result, the rest on the next assistant row. Shown, never re-sent.
+    let pendingInstructions: Array<{ trigger: string | null; block: any }> = []
+    const shownInstructions = new Set<string>()
+    const takeInstructions = (match: (trigger: string | null) => boolean) => {
+      const taken = pendingInstructions.filter(entry => match(entry.trigger))
+      pendingInstructions = pendingInstructions.filter(entry => !match(entry.trigger))
+      return taken.map(entry => entry.block)
+    }
+    // A resumed or forked session reloads its startup files every turn; they showed when it started.
+    const resumedSession = Boolean(sessionId)
     const hooks: NonNullable<Options['hooks']> = {
+      InstructionsLoaded: [{ hooks: [async (hook, _toolId, context) => {
+        if (hook.hook_event_name !== 'InstructionsLoaded' || hook.agent_id || context.signal.aborted || abortController.signal.aborted) return {}
+        const trigger = hook.trigger_file_path ? path.resolve(cwd, hook.trigger_file_path) : null
+        if (resumedSession && !trigger && (hook.load_reason === 'session_start' || hook.load_reason === 'include')) return {}
+        const file = path.resolve(cwd, hook.file_path)
+        if (shownInstructions.has(file)) return {}
+        shownInstructions.add(file)
+        const text = await readInstructionFile(file)
+        if (!text) return {}
+        const label = path.basename(file) === 'MEMORY.md' && path.basename(path.dirname(file)) === 'memory'
+          ? LABEL_AUTO_MEMORY : INSTRUCTION_LABELS[hook.memory_type] ?? LABEL_PROJECT
+        pendingInstructions.push({ trigger, block: { type: 'context_injection', path: file, label, text, reason: hook.load_reason, origin: 'claude' } })
+        return {}
+      }] }],
       PreCompact: [{ hooks: [async (hook, _toolId, context) => {
         if (context.signal.aborted || abortController.signal.aborted || hook.agent_id) return {}
         if (hook.hook_event_name === 'PreCompact' && hook.session_id === activeSession) {
@@ -360,18 +604,24 @@ export class ClaudeSessionService {
     // Thinking is never disabled: several Claude models reject it, so the composer offers no
     // Off and a stale think:false falls back to the selected effort or the native default.
     // Omitted settings keep the native default for older/non-composer callers.
+    // Newer models default to display 'omitted' (signature-only, empty thinking text), so always
+    // ask for summaries; without a thinking config the CLI flag sets only the display mode.
     const effort = request.reasoningConfig?.effort
     const selectedEffort = effort === 'low' || effort === 'medium' || effort === 'high' || effort === 'xhigh' ? effort : undefined
     const options: Options = {
       cwd, model: request.modelName, ...(sessionId ? { resume: sessionId } : {}),
+      ...(input.additionalDirectories?.length ? { additionalDirectories: input.additionalDirectories } : {}),
       abortController, includePartialMessages: true, permissionMode,
       ...(mode === 'plan' ? { disallowedTools: CHAT_MODE_DISALLOWED_TOOLS } : {}),
-      canUseTool, permissionPrompts: 'host', settingSources: [], strictMcpConfig: true, mcpServers: {},
-      persistSession: true, hooks,
-      ...(request.think === true || selectedEffort ? { thinking: { type: 'adaptive' } as const, ...(selectedEffort ? { effort: selectedEffort } : {}) } : {}),
+      // Claude's own settings load (skills, hooks, plugins, CLAUDE.md) as in the CLI; MCP stays off.
+      canUseTool, permissionPrompts: 'host', settingSources: CLAUDE_SETTING_SOURCES, strictMcpConfig: true, mcpServers: {},
+      // Hook lifecycle events become Graviton hook runs (`nativeHooks`).
+      persistSession: true, hooks, includeHookEvents: true,
+      ...(request.think === true || selectedEffort
+        ? { thinking: { type: 'adaptive', display: 'summarized' } as const, ...(selectedEffort ? { effort: selectedEffort } : {}) }
+        : { extraArgs: { 'thinking-display': 'summarized' } }),
       systemPrompt: { type: 'preset', preset: 'claude_code' },
-      // Do not inherit plugin/MCP/hook execution or Graviton's own tool prompt.
-      settings: { disableAllHooks: true, plansDirectory: CLAUDE_PLANS_DIRECTORY },
+      settings: { plansDirectory: CLAUDE_PLANS_DIRECTORY },
     }
     // Use the host's installed CLI rather than resolving a bundled native executable relative to an esbuild bundle.
     options.pathToClaudeCodeExecutable = executable
@@ -379,17 +629,91 @@ export class ClaudeSessionService {
     const selectedFiles = (request.selectedFiles ?? []).map(file => `File: ${file.path}\n${file.contents}`).join('\n\n')
     const prompt = request.manualCompaction ? '/compact'
       : selectedFiles ? `${request.content}\n\nSelected file context:\n${selectedFiles}` : request.content
-    let finishInput!: () => void
-    const inputDone = new Promise<void>(resolve => { finishInput = resolve })
+    // Input stays open while queued messages may still reach Claude; closing it ends the session.
+    const outbox: SDKUserMessage[] = []
+    let inputClosed = false
+    let wakeInput = () => {}
+    const finishInput = () => { inputClosed = true; wakeInput() }
     const releaseInput = () => finishInput()
     abortController.signal.addEventListener('abort', releaseInput, { once: true })
     async function* prompts(): AsyncGenerator<SDKUserMessage> {
       const content = imageBlocks.length ? [...imageBlocks, { type: 'text' as const, text: prompt }] : prompt
       yield { type: 'user', message: { role: 'user', content }, parent_tool_use_id: null, uuid: promptUuid,
         session_id: sessionId ?? '' }
-      await inputDone
+      while (true) {
+        const next = outbox.shift()
+        if (next) { yield next; continue }
+        if (inputClosed) return
+        await new Promise<void>(resolve => { wakeInput = resolve })
+      }
     }
     let query: ReturnType<ClaudeSdk['query']> | undefined
+    const queued = input.queuedInput
+    // Native command uuid → Graviton request id, for entries Claude holds but has not started.
+    const offered = new Map<string, string>()
+    // Graviton request id → native command uuid, for every entry sent to Claude.
+    const sent = new Map<string, string>()
+    let pumping = false
+    let pumpAgain = false
+    // The last turn ended; the session closes once no queued message is left to start one.
+    let idle = false
+    let startTimer: ReturnType<typeof setTimeout> | undefined
+    const settleIdle = () => {
+      if (!idle || pumping || inputClosed || !queued) return
+      if (queued.tryClose()) { finishInput(); return }
+      clearTimeout(startTimer)
+      if (offered.size) startTimer = setTimeout(() => {
+        for (const requestId of offered.values()) queued.release(requestId, { error: 'Claude did not start this message. Send it again.' })
+        offered.clear()
+        finishInput()
+      }, QUEUED_START_TIMEOUT_MS)
+    }
+    const pump = async () => {
+      if (!queued || inputClosed) return
+      if (pumping) { pumpAgain = true; return }
+      pumping = true
+      try {
+        do {
+          pumpAgain = false
+          for (let next = await queued.prepareNext(); next && !inputClosed; next = await queued.prepareNext()) {
+            let content: SDKUserMessage['message']['content']
+            try {
+              const images = next.images.map(claudeImageBlock)
+              content = images.length ? [...images, { type: 'text' as const, text: next.prompt }] : next.prompt
+            } catch (error) {
+              queued.release(next.requestId, { error: error instanceof Error ? error.message : String(error) })
+              continue
+            }
+            const uuid = randomUUID()
+            offered.set(uuid, next.requestId)
+            sent.set(next.requestId, uuid)
+            // 'next' joins the running turn at its next tool boundary, or starts a turn after `result`.
+            outbox.push({ type: 'user', message: { role: 'user', content }, parent_tool_use_id: null, uuid,
+              session_id: activeSession ?? '', priority: 'next' })
+            wakeInput()
+          }
+        } while (pumpAgain && !inputClosed)
+      } catch (error) {
+        console.warn('[ClaudeSession] queued input stopped', error instanceof Error ? error.message : error)
+      } finally {
+        pumping = false
+      }
+      settleIdle()
+    }
+    queued?.bindCancel(async requestId => {
+      const uuid = sent.get(requestId)
+      if (!uuid) { queueMicrotask(settleIdle); return null }
+      if (!offered.has(uuid)) return false
+      const cancel = (query as unknown as QueryWithAsyncCancel | undefined)?.cancelAsyncMessage
+      if (typeof cancel !== 'function' || !await cancel.call(query, uuid)) return false
+      // The CLI's `cancelled` lifecycle frame can arrive before this answer and release it first.
+      if (offered.delete(uuid)) {
+        queued.release(requestId, { cancelled: true })
+        settleIdle()
+      }
+      return true
+    })
+    const unsubscribeQueue = queued?.subscribe(() => { void pump() })
     const persist = (content: string, blocks: any[], uuid?: string, partial = false) => {
       const row = sink.persistAssistantMessage({ conversationId: request.conversationId, parentId: parent,
         modelName: request.modelName, content, contentBlocks: blocks,
@@ -403,8 +727,24 @@ export class ClaudeSessionService {
     try {
       signal?.throwIfAborted()
       query = sdk.query({ prompt: prompts(), options })
+      void pump()
       for await (const event of query) {
         signal?.throwIfAborted()
+        if ((event as { type: string }).type === 'command_lifecycle') {
+          const { command_uuid: uuid, state } = event as unknown as { command_uuid: string; state: string }
+          const requestId = offered.get(uuid)
+          if (!requestId || state === 'queued') continue
+          offered.delete(uuid)
+          if (state === 'started') {
+            idle = false
+            clearTimeout(startTimer)
+            parent = queued!.deliver(requestId, parent).id
+          } else {
+            queued!.release(requestId, state === 'cancelled' ? { cancelled: true } : { error: `Claude did not run this message (${state}).` })
+            settleIdle()
+          }
+          continue
+        }
         if ('session_id' in event && event.session_id) {
           observedSession = true
           activeSession = event.session_id
@@ -422,6 +762,12 @@ export class ClaudeSessionService {
           }
         } else if (event.type === 'system' && event.subtype === 'compact_boundary') {
           commitCompaction()
+        } else if (event.type === 'system' && event.subtype === 'hook_started') {
+          nativeHooks.started(event)
+        } else if (event.type === 'system' && event.subtype === 'hook_progress') {
+          nativeHooks.progress(event)
+        } else if (event.type === 'system' && event.subtype === 'hook_response') {
+          nativeHooks.finished(event)
         } else if (event.type === 'stream_event') {
           const frame = event.event
           if (frame.type === 'message_start') {
@@ -432,6 +778,9 @@ export class ClaudeSessionService {
           if (frame.type === 'content_block_start' && (frame.content_block.type === 'text' || frame.content_block.type === 'thinking')) {
             // The SDK emits one assistant envelope per completed block, not necessarily per API message.
             streamedText = ''; streamedReasoning = ''
+            // The renderer hides live buffers once their API message has a persisted row, so an
+            // earlier block's envelope (e.g. thinking) would hold this block's deltas until it lands.
+            if (currentApiId && apiResponses.has(currentApiId)) emit({ type: 'tool_loop', status: 'turn_started', turn, maxTurns: 0 })
           }
           if (frame.type === 'content_block_delta') {
             if (frame.delta.type === 'text_delta') { streamedText += frame.delta.text; emit({ type: 'chunk', part: 'text', delta: frame.delta.text }) }
@@ -439,7 +788,12 @@ export class ClaudeSessionService {
           }
         } else if (event.type === 'assistant') {
           if (event.error) throw new Error(`Claude failed: ${event.error}`)
-          const blocks: any[] = event.message.content.map((block, index) => {
+          pendingSkill = null
+          // Omitted thinking is signature-only; the resume entry below keeps the raw block, so the
+          // projection can drop it rather than render an empty reasoning row.
+          const blocks: any[] = event.message.content
+            .filter(block => block.type !== 'thinking' || block.thinking.trim().length > 0)
+            .map((block, index) => {
             if (block.type === 'text') return { type: 'text', content: block.text, index }
             if (block.type === 'thinking') return { type: 'thinking', content: block.thinking, index }
             if (block.type === 'tool_use') {
@@ -454,6 +808,7 @@ export class ClaudeSessionService {
           })
           const content = event.message.content.filter(block => block.type === 'text').map(block => (block as any).text).join('')
           const calls = blocks.filter(block => block.type === 'tool_use').map(block => ({ id: block.id, name: block.name, arguments: block.input, status: 'executing' }))
+          for (const block of takeInstructions(trigger => trigger === null)) blocks.push({ ...block, index: blocks.length })
           const responseKey = event.message.id || event.uuid
           let response = apiResponses.get(responseKey)
           let row: any
@@ -484,29 +839,52 @@ export class ClaudeSessionService {
           }
         } else if (event.type === 'user') {
           const blocks = Array.isArray(event.message.content) ? event.message.content : []
+          if (event.isSynthetic && pendingSkill) {
+            attachSkillBody(pendingSkill, typeof event.message.content === 'string' ? event.message.content
+              : blocks.map(block => block.type === 'text' ? block.text : '').filter(Boolean).join('\n\n'))
+            pendingSkill = null
+            continue
+          }
           if (blocks.some(block => block.type === 'tool_result')) turnEntries.push(resumeEntry(event.uuid, 'user', blocks))
+          // tool_use_result belongs to the whole message, so it is only attributable when one result rides on it.
+          const soleResult = blocks.filter(block => block.type === 'tool_result').length === 1
           for (const result of blocks) {
             if (result.type !== 'tool_result') continue
             const owner = toolOwners.get(result.tool_use_id)
             const content = textOf(result.content)
+            const toolName = owner?.calls.find(call => call.id === result.tool_use_id)?.name
+            const patch = soleResult && !result.is_error && CLAUDE_FILE_EDIT_TOOLS.has(toolName ?? '') ? claudeFilePatch(event.tool_use_result) : undefined
             if (owner) {
-              owner.blocks.push({ type: 'tool_result', tool_use_id: result.tool_use_id, content, is_error: Boolean(result.is_error), index: owner.blocks.length })
+              owner.blocks.push({ type: 'tool_result', tool_use_id: result.tool_use_id, content, is_error: Boolean(result.is_error), ...(patch ? { patch } : {}), index: owner.blocks.length })
               const call = owner.calls.find(call => call.id === result.tool_use_id)
+              const read = (call?.arguments as any)?.file_path ?? (call?.arguments as any)?.notebook_path
+              if (typeof read === 'string') {
+                const target = path.resolve(cwd, read)
+                for (const block of takeInstructions(trigger => trigger === target)) {
+                  owner.blocks.push({ ...block, tool_use_id: result.tool_use_id, index: owner.blocks.length })
+                }
+              }
               if (call) { call.status = 'complete'; call.result = content }
               const updated = sink.updateAssistantToolState(owner.message.id, { contentBlocks: owner.blocks, toolCalls: owner.calls })
               if (updated) emit({ type: 'assistant_message_persisted', message: updated, lineageId })
               emit({ type: 'tool_execution', status: result.is_error ? 'failed' : 'completed', toolCallId: result.tool_use_id, toolName: call?.name ?? 'Claude tool' })
+              if (toolName === 'Skill' && !result.is_error) {
+                const resultName = soleResult ? (event.tool_use_result as any)?.commandName : undefined
+                pendingSkill = { owner, toolUseId: result.tool_use_id, name: String(resultName ?? (call?.arguments as any)?.skill ?? 'skill') }
+              }
             }
-            emit({ type: 'chunk', part: 'tool_result', toolResult: { tool_use_id: result.tool_use_id, content, is_error: Boolean(result.is_error) } })
+            emit({ type: 'chunk', part: 'tool_result', toolResult: { tool_use_id: result.tool_use_id, content, is_error: Boolean(result.is_error), ...(patch ? { patch } : {}) } })
           }
         } else if (event.type === 'system' && event.subtype === 'status' && event.compact_result === 'failed') {
           compactionActive = false
           compactionEvent('failed', undefined, event.compact_error ?? 'Claude compaction failed')
           if (request.manualCompaction) throw new Error(event.compact_error ?? 'Claude compaction failed')
         } else if (event.type === 'result') {
-          finishInput()
           if (event.is_error || event.subtype !== 'success') throw new Error(`Claude run failed: ${'errors' in event ? event.errors.join('; ') : event.subtype}`)
           completed = true
+          // A queued message keeps the session open: Claude runs it as the next turn.
+          if (!queued) finishInput()
+          else { idle = true; settleIdle() }
         }
       }
       if (hookFailure) throw hookFailure
@@ -520,6 +898,8 @@ export class ClaudeSessionService {
       this.deps.sessions.record(finalMessage.id, activeSession, lastUuid, cwd, true)
       const finalResponse = [...apiResponses.values()].find(response => response.message.id === finalMessage.id)
       const finalBlocks = finalResponse?.blocks ?? (typeof finalMessage.content_blocks === 'string' ? JSON.parse(finalMessage.content_blocks) : finalMessage.content_blocks ?? finalMessage.contentBlocks ?? [])
+      // Loads no later row or matching tool result claimed (a trigger path that did not match).
+      for (const block of takeInstructions(() => true)) finalBlocks.push({ ...block, index: finalBlocks.length })
       finalMessage = this.deps.messages.updateClaudeProjection(finalMessage.id, finalMessage.content, finalBlocks,
         { ...claudeMessageMetadata(finalMessage.meta), ...(this.deps.broker ? { toolAutoApprove: this.deps.broker.isAutoApproveAll(request.streamId!) } : {}), claude: { sessionId: activeSession, messageUuid: lastUuid, checkpoint: true } })
       emit({ type: 'assistant_message_persisted', message: finalMessage, lineageId })
@@ -551,9 +931,14 @@ export class ClaudeSessionService {
       throw error
     } finally {
       finishInput()
+      clearTimeout(startTimer)
+      unsubscribeQueue?.()
       abortController.signal.removeEventListener('abort', releaseInput)
       signal?.removeEventListener('abort', abort)
       query?.close()
+      nativeHooks.settle(abortController.signal.aborted)
+      // A Graviton SessionStart after a compaction can land after its boundary.
+      hookSession?.attachPendingHookRuns(compactionSummary?.id ?? finalMessage?.id ?? parent)
     }
   }
 }

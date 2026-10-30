@@ -217,6 +217,7 @@ const createOrchestratorToolExecutor = (toolOrchestrator: OrchestratorLike): Too
     deadlineMs: Date.now() + timeoutMs,
     rootPath: context.rootPath ?? null,
     fullAccess: context.fullAccess === true,
+    additionalRoots: context.additionalRoots ?? [],
     operationMode: context.operationMode ?? 'execute',
     conversationId: context.conversationId ?? null,
     messageId: context.messageId ?? null,
@@ -372,7 +373,7 @@ export function registerHeadlessServerRoutes(app: Express, deps: HeadlessServerR
       ...context, rootPath: context.rootPath ?? undefined,
       registerWait: (jobId, completion) => watchService.registerBridgeJob(jobId, completion, context,
         deps.statements.getConversationById?.get(context.conversationId)?.project_id ?? null, call.id),
-    }))
+    }), context.additionalRoots)
   }
   const watcherExecutor = createWatchExecutor(bridgeWaitExecutor, watchService,
     id => deps.statements.getConversationById?.get(id)?.project_id ?? null)

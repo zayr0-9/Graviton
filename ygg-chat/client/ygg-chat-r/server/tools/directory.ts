@@ -1,4 +1,4 @@
-import { hasFullToolAccess } from '../toolAccessContext.js'
+import { hasFullToolAccess, hasToolAccessTo } from '../toolAccessContext.js'
 import * as fs from 'fs'
 import * as path from 'path'
 import { fileURLToPath } from 'url'
@@ -96,7 +96,7 @@ function isSameOrSubPath(candidate: string, root: string): boolean {
 
 async function ensurePathWithinWorkspace(candidatePath: string): Promise<string> {
   const resolved = path.resolve(candidatePath)
-  if (hasFullToolAccess()) return resolved
+  if (hasToolAccessTo(resolved)) return resolved
   const normalized = normalizeForComparison(resolved)
   const workspaceRoot = await getWorkspaceRoot()
   const normalizedRoot = await getNormalizedWorkspaceRoot()

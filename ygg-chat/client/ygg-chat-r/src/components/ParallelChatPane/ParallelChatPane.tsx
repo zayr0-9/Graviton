@@ -177,7 +177,7 @@ export function ParallelChatPane({
   const [queueSubmitting, setQueueSubmitting] = useState(false)
   const queueSubmittingRef = useRef(false)
   const queue = useAppSelector(state => streamId ? state.chat.messageQueues?.[streamId] : undefined)
-  const canSend = hasDraft && !queueSubmitting && !(streamActive && isClaudeProvider(providers.currentProvider))
+  const canSend = hasDraft && !queueSubmitting
   useEffect(() => {
     if (streamActive && streamId) void dispatch(loadMessageQueue({ conversationId: target.conversationId, streamId }))
   }, [dispatch, streamActive, streamId, target.conversationId])
@@ -233,7 +233,7 @@ export function ParallelChatPane({
   const handleSend = useCallback(() => {
     const rawContent = inputControllerRef.current?.getValue() ?? ''
     const content = rawContent.trim()
-    if (!content || queueSubmittingRef.current || (streamActive && isClaudeProvider(providers.currentProvider))) return
+    if (!content || queueSubmittingRef.current) return
     if (streamActive && streamId) {
       queueSubmittingRef.current = true
       setQueueSubmitting(true)
@@ -402,7 +402,6 @@ export function ParallelChatPane({
         onSubmit={handleSend}
         onBlurPersist={() => undefined}
         fallbackFileSearchRoot={null}
-        filterSelectedMentionFiles={false}
         enableImageAttachments={false}
         enableFileMentions={false}
         imageDraftTarget={{ kind: 'composer' }}

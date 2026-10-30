@@ -179,6 +179,8 @@ export interface ConversationRecord {
   conversation_context: string | null
   research_note: string | null
   cwd?: string | null
+  /** JSON array of extra working directories (local column); NULL means none. */
+  additional_cwds?: string | null
   favorite?: number
   created_at: string
   updated_at: string

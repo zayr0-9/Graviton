@@ -9,8 +9,8 @@ export class HookGenerationError extends Error {
 }
 
 /** Ephemeral text generation only; never joins a chat/review session or exposes tools. */
-export async function generateClaudeHook(input: { content: string; systemPrompt: string; model: string; signal: AbortSignal },
-  deps: { executable?: () => Promise<string>; launch?: typeof spawn } = {}): Promise<{ text: string; modelName: string }> {
+export async function generateClaudeHook(input: { content: string; systemPrompt: string; model: string; signal: AbortSignal; jsonSchema?: Record<string, unknown> },
+  deps: { executable?: () => Promise<string>; launch?: typeof spawn } = {}): Promise<{ text: string; modelName: string; structured?: Record<string, unknown> }> {
   const executable = await (deps.executable ?? resolveClaudeExecutable)()
     .catch(() => { throw new HookGenerationError('Claude CLI is unavailable. Install Claude Code and sign in on the host.', 503) })
   input.signal.throwIfAborted()
@@ -23,7 +23,9 @@ export async function generateClaudeHook(input: { content: string; systemPrompt:
       '--restricted', '--tools', '', '--permission-mode', 'dontAsk', '--permission-prompts', 'none',
       '--strict-mcp-config', '--mcp-config', '{"mcpServers":{}}', '--setting-sources', '',
       '--disable-slash-commands', '--no-chrome', '--settings', '{"disableAllHooks":true,"autoMemoryEnabled":false,"enabledPlugins":{},"claudeMdExcludes":["**","**/.*/**"]}',
-      '--system-prompt-file', systemFile, ...(input.model ? ['--model', input.model] : [])]
+      '--system-prompt-file', systemFile, ...(input.model ? ['--model', input.model] : []),
+      // The CLI validates (and internally re-asks) against the schema, returning structured_output.
+      ...(input.jsonSchema ? ['--json-schema', JSON.stringify(input.jsonSchema)] : [])]
     return await new Promise((resolve, reject) => {
       let child: ChildProcessWithoutNullStreams
       let settled = false
@@ -31,7 +33,7 @@ export async function generateClaudeHook(input: { content: string; systemPrompt:
       let outputBytes = 0
       let killTimer: ReturnType<typeof setTimeout> | undefined
       let cleanupTimer: ReturnType<typeof setTimeout> | undefined
-      const finish = (error?: Error, result?: { text: string; modelName: string }) => {
+      const finish = (error?: Error, result?: { text: string; modelName: string; structured?: Record<string, unknown> }) => {
         if (settled) return
         settled = true
         input.signal.removeEventListener('abort', abort)
@@ -76,9 +78,17 @@ export async function generateClaudeHook(input: { content: string; systemPrompt:
         if (code !== 0) { finish(new HookGenerationError('Claude hook generation failed. Check Claude login, model access and account limits on the host.')); return }
         try {
           const result = JSON.parse(Buffer.concat(output).toString('utf8'))
-          if (result.type !== 'result' || result.subtype !== 'success' || result.is_error || typeof result.result !== 'string' || !result.result.trim()) throw new Error()
+          if (result.type !== 'result' || result.subtype !== 'success' || result.is_error) throw new Error()
           const models = result.modelUsage && typeof result.modelUsage === 'object' ? Object.keys(result.modelUsage) : []
-          finish(undefined, { text: result.result, modelName: models[0] || input.model || 'default' })
+          const modelName = models[0] || input.model || 'default'
+          if (input.jsonSchema) {
+            const structured = result.structured_output
+            if (!structured || typeof structured !== 'object' || Array.isArray(structured)) throw new Error()
+            finish(undefined, { text: JSON.stringify(structured), modelName, structured })
+            return
+          }
+          if (typeof result.result !== 'string' || !result.result.trim()) throw new Error()
+          finish(undefined, { text: result.result, modelName })
         } catch { finish(new HookGenerationError('Claude returned an invalid or empty hook response.')) }
       })
       input.signal.addEventListener('abort', abort, { once: true })

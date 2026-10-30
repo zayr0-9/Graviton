@@ -439,8 +439,11 @@ resume resolver thunks, and the manual-compaction `compactBranch` thunk.
   composer text. Pending entries at errors/turn limits are marked Not sent, with Restore text.
 - Queued image payloads are linked using the normal prepared-attachment path and attached
   to their own in-memory history row (Codex attachments/OpenRouter artifacts), not to the
-  latest mode notification. Queued images currently accept ChatGPT/OpenRouter only; other
-  provider routes reject clearly rather than silently discarding images. Parallel input
+  latest mode notification. Queued images accept ChatGPT, OpenRouter and Claude; other
+  provider routes reject clearly rather than silently discarding images.
+- Claude runs do not drain at Graviton boundaries. The live session takes entries at its own
+  tool boundaries or after `result`, and DELETE withdraws a held entry through the SDK. See
+  `../claude-provider-v1.md` § Queued input. Parallel input
   does not consume the primary composer's attachment drafts.
 - Validation: `messageInputQueue.test.ts`, `messageQueueRoutes.test.ts`, renderer
   `messageQueue.test.ts` and `enqueueUserMessage.test.ts`, plus existing tool-loop/hooks tests.

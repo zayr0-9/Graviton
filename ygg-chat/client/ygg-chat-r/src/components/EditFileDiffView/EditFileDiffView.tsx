@@ -5,6 +5,7 @@ import { getThemeModeColor, useCustomChatTheme, useHtmlDarkMode } from '../Theme
 import ReactMarkdown from 'react-markdown'
 import { SCROLLABLE_MARKDOWN_COMPONENTS } from '../MarkdownContent/MarkdownCodeBlock'
 import rehypeHighlight from 'rehype-highlight'
+import type { ClaudeFilePatchHunk } from '../../../../../shared/claudeProvider'
 
 export interface EditFileArgs {
   path?: string
@@ -40,6 +41,8 @@ interface EditFileDiffViewProps {
   result: EditFileResult | string
   className?: string
   editNumber?: number
+  /** Patch hunks with real file line numbers; when present they replace the args diff inline. */
+  hunks?: ClaudeFilePatchHunk[]
 }
 
 type ViewMode = 'unified' | 'split' | 'inline'
@@ -89,6 +92,46 @@ function getLanguageFromPath(filePath: string): string {
   return langMap[ext] || 'plaintext'
 }
 
+// Operations whose `content` is drawn as all-added lines rather than a search/replace pair.
+const WHOLE_CONTENT_OPERATIONS = new Set(['append', 'create', 'write'])
+
+type DiffLine = {
+  type: 'added' | 'removed' | 'unchanged' | 'gap'
+  content: string
+  oldLineNumber?: number
+  newLineNumber?: number
+}
+
+function diffLinesFromHunks(hunks: ClaudeFilePatchHunk[]): DiffLine[] {
+  const lines: DiffLine[] = []
+  hunks.forEach((hunk, index) => {
+    if (index > 0) lines.push({ type: 'gap', content: '⋯' })
+    let oldLineNumber = hunk.oldStart
+    let newLineNumber = hunk.newStart
+    for (const line of hunk.lines) {
+      const sign = line[0]
+      const content = line.slice(1)
+      if (sign === '+') lines.push({ type: 'added', content, newLineNumber: newLineNumber++ })
+      else if (sign === '-') lines.push({ type: 'removed', content, oldLineNumber: oldLineNumber++ })
+      // '\ No newline at end of file' annotates the previous line; it is not file content.
+      else if (sign !== '\\') lines.push({ type: 'unchanged', content, oldLineNumber: oldLineNumber++, newLineNumber: newLineNumber++ })
+    }
+  })
+  return lines
+}
+
+function countHunkChanges(hunks: ClaudeFilePatchHunk[]): { added: number; removed: number } {
+  let added = 0
+  let removed = 0
+  for (const hunk of hunks) {
+    for (const line of hunk.lines) {
+      if (line[0] === '+') added += 1
+      else if (line[0] === '-') removed += 1
+    }
+  }
+  return { added, removed }
+}
+
 function parseResult(result: EditFileResult | string): EditFileResult {
   if (typeof result === 'string') {
     try {
@@ -105,11 +148,8 @@ function getFilename(path: string): string {
   return path.split(/[/\\]/).pop() || path
 }
 
-interface InlineDiffLineProps {
-  type: 'added' | 'removed' | 'unchanged'
-  content: string
-  oldLineNumber?: number
-  newLineNumber?: number
+interface InlineDiffLineProps extends DiffLine {
+  showLineNumbers: boolean
 }
 
 const ADDED_TEXT_CLASS = 'text-[color:var(--edit-added,#28714b)] dark:text-[color:var(--edit-added,#9dc5a7)]'
@@ -118,20 +158,31 @@ const MUTED_TEXT_CLASS = 'text-[color:var(--edit-muted,#747670)] dark:text-[colo
 const DIFF_SURFACE_CLASS =
   'rounded-xl bg-[color:var(--edit-surface,rgba(80,85,75,0.035))] dark:bg-[color:var(--edit-surface,rgba(0,0,0,0.12))]'
 
-const InlineDiffLine: React.FC<InlineDiffLineProps> = ({ type, content, oldLineNumber, newLineNumber }) => {
+const InlineDiffLine: React.FC<InlineDiffLineProps> = ({ type, content, oldLineNumber, newLineNumber, showLineNumbers }) => {
+  if (type === 'gap') {
+    return (
+      <div className={`flex min-w-max px-3 font-mono text-[0.625em] leading-[1.85] select-none ${MUTED_TEXT_CLASS}`} aria-label='Unchanged lines omitted'>
+        {showLineNumbers && <span className='w-10 shrink-0' />}
+        <span className='w-[18px] shrink-0' />
+        <span>{content}</span>
+      </div>
+    )
+  }
   const textClass = type === 'added' ? ADDED_TEXT_CLASS : type === 'removed' ? REMOVED_TEXT_CLASS : MUTED_TEXT_CLASS
   const lineNumber = type === 'removed' ? oldLineNumber : newLineNumber
   const lineLabel = type === 'removed' ? `Original line ${oldLineNumber}` : `New line ${newLineNumber}`
 
   return (
     <div className={`flex min-w-max px-3 font-mono text-[0.625em] leading-[1.85] ${textClass}`}>
-      <span
-        className='w-10 shrink-0 pr-3.5 text-right text-[color:var(--edit-muted,#94968f)] dark:text-[color:var(--edit-muted,#767970)] select-none'
-        title={lineLabel}
-        aria-label={lineLabel}
-      >
-        {lineNumber}
-      </span>
+      {showLineNumbers && (
+        <span
+          className='w-10 shrink-0 pr-3.5 text-right text-[color:var(--edit-muted,#94968f)] dark:text-[color:var(--edit-muted,#767970)] select-none'
+          title={lineLabel}
+          aria-label={lineLabel}
+        >
+          {lineNumber}
+        </span>
+      )}
       <span className='w-[18px] shrink-0 select-none'>{type === 'added' ? '+' : type === 'removed' ? '−' : ' '}</span>
       <span className='flex-1 whitespace-pre'>{content || ' '}</span>
     </div>
@@ -142,18 +193,16 @@ interface InlineDiffViewProps {
   original: string
   replacement: string
   lineInfo?: EditFileLineInfo
+  hunks?: ClaudeFilePatchHunk[]
+  showLineNumbers: boolean
 }
 
-const InlineDiffView: React.FC<InlineDiffViewProps> = ({ original, replacement, lineInfo }) => {
+const InlineDiffView: React.FC<InlineDiffViewProps> = ({ original, replacement, lineInfo, hunks, showLineNumbers }) => {
   const diffLines = useMemo(() => {
+    if (hunks?.length) return diffLinesFromHunks(hunks)
     const changes = Diff.diffLines(original || '', replacement || '')
 
-    const lines: Array<{
-      type: 'added' | 'removed' | 'unchanged'
-      content: string
-      oldLineNumber?: number
-      newLineNumber?: number
-    }> = []
+    const lines: DiffLine[] = []
 
     let oldLineNumber = lineInfo?.oldStartLine ?? 1
     let newLineNumber = lineInfo?.newStartLine ?? 1
@@ -180,7 +229,7 @@ const InlineDiffView: React.FC<InlineDiffViewProps> = ({ original, replacement, 
     })
 
     return lines
-  }, [original, replacement, lineInfo])
+  }, [original, replacement, lineInfo, hunks])
 
   return (
     <div className={`${DIFF_SURFACE_CLASS} thin-scrollbar overflow-auto max-h-[300px] py-2`}>
@@ -191,13 +240,14 @@ const InlineDiffView: React.FC<InlineDiffViewProps> = ({ original, replacement, 
           content={line.content}
           oldLineNumber={line.oldLineNumber}
           newLineNumber={line.newLineNumber}
+          showLineNumbers={showLineNumbers}
         />
       ))}
     </div>
   )
 }
 
-const EditFileDiffViewComponent: React.FC<EditFileDiffViewProps> = ({ args, result, className = '', editNumber }) => {
+const EditFileDiffViewComponent: React.FC<EditFileDiffViewProps> = ({ args, result, className = '', editNumber, hunks }) => {
   const [viewMode, setViewMode] = useState<ViewMode>('inline')
   const [expanded, setExpanded] = useState(false)
 
@@ -206,8 +256,14 @@ const EditFileDiffViewComponent: React.FC<EditFileDiffViewProps> = ({ args, resu
 
   const isSuccess = parsedResult.success === true
   const hasChanges = (parsedResult.replacements ?? 0) > 0
-  const isAppendOperation = (args.operation ?? '').toLowerCase() === 'append'
+  const operation = (args.operation ?? '').toLowerCase()
+  const isAppendOperation = WHOLE_CONTENT_OPERATIONS.has(operation)
   const lineInfo = parsedResult.lineInfo
+  const hasHunks = Boolean(hunks?.length)
+  // A patch without the search/replace pair (a native overwrite) has nothing for unified/split to show.
+  const isInlineOnly = isAppendOperation || (hasHunks && args.searchPattern === undefined && args.replacement === undefined)
+  // Without a real anchor the snippet would be numbered from 1, which reads as file line numbers.
+  const showLineNumbers = hasHunks || Boolean(lineInfo) || operation === 'create'
   const { theme, enabled: customThemeEnabled } = useCustomChatTheme()
   const isDarkMode = useHtmlDarkMode()
   const themeStyle = customThemeEnabled ? {
@@ -225,26 +281,27 @@ const EditFileDiffViewComponent: React.FC<EditFileDiffViewProps> = ({ args, resu
     color: getThemeModeColor(theme.colors.toolJobsPrimaryText, isDarkMode),
   } as React.CSSProperties : undefined
   const changeCounts = useMemo(() => {
+    if (hunks?.length) return countHunkChanges(hunks)
     const changes = Diff.diffLines(isAppendOperation ? '' : args.searchPattern || '',
       isAppendOperation ? args.content || '' : args.replacement || '')
     return changes.reduce((counts, change) => ({
       added: counts.added + (change.added ? change.count ?? 0 : 0),
       removed: counts.removed + (change.removed ? change.count ?? 0 : 0),
     }), { added: 0, removed: 0 })
-  }, [isAppendOperation, args.searchPattern, args.content, args.replacement])
+  }, [hunks, isAppendOperation, args.searchPattern, args.content, args.replacement])
   const operationLabel = (args.operation || 'replace').replace(/_/g, ' ')
 
   const originalMarkdown = useMemo(() => {
-    if (!expanded || isAppendOperation || viewMode === 'inline') return ''
+    if (!expanded || isInlineOnly || viewMode === 'inline') return ''
     const language = getLanguageFromPath(args.path || '')
     return `\`\`\`${language}\n${args.searchPattern || ''}\n\`\`\``
-  }, [args.path, args.searchPattern, expanded, isAppendOperation, viewMode])
+  }, [args.path, args.searchPattern, expanded, isInlineOnly, viewMode])
 
   const replacementMarkdown = useMemo(() => {
-    if (!expanded || isAppendOperation || viewMode === 'inline') return ''
+    if (!expanded || isInlineOnly || viewMode === 'inline') return ''
     const language = getLanguageFromPath(args.path || '')
     return `\`\`\`${language}\n${args.replacement || ''}\n\`\`\``
-  }, [args.path, args.replacement, expanded, isAppendOperation, viewMode])
+  }, [args.path, args.replacement, expanded, isInlineOnly, viewMode])
 
   const codeBlockStyles =
     '[&_pre]:!m-0 [&_pre]:!p-2 [&_pre]:!bg-transparent [&_pre]:!border-0 [&_code]:!text-[0.625em] [&_code]:!leading-snug [&_code]:!font-mono [&_code]:!bg-transparent [&_.hljs]:!bg-transparent [&_pre_code]:!p-0' +
@@ -283,7 +340,7 @@ const EditFileDiffViewComponent: React.FC<EditFileDiffViewProps> = ({ args, resu
           </span>
           <ChevronDown className={`h-3.5 w-3.5 shrink-0 ${MUTED_TEXT_CLASS} ${expanded ? '' : '-rotate-90'}`} aria-hidden='true' />
         </button>
-        {!isAppendOperation && (
+        {!isInlineOnly && (
           <div className='t-resize edit-view-slot' data-open={expanded} inert={!expanded} aria-hidden={!expanded}>
             <div className='edit-view-controls flex items-center gap-0.5' role='group' aria-label='Diff view'>
               {([
@@ -309,11 +366,13 @@ const EditFileDiffViewComponent: React.FC<EditFileDiffViewProps> = ({ args, resu
       </div>
       {expanded && (
         <div className='mt-1 space-y-1'>
-          {isAppendOperation || viewMode === 'inline' ? (
+          {isInlineOnly || viewMode === 'inline' ? (
             <InlineDiffView
               original={isAppendOperation ? '' : args.searchPattern || ''}
               replacement={isAppendOperation ? args.content || '' : args.replacement || ''}
               lineInfo={lineInfo}
+              hunks={hunks}
+              showLineNumbers={showLineNumbers}
             />
           ) : viewMode === 'unified' ? (
             <div className='space-y-1'>

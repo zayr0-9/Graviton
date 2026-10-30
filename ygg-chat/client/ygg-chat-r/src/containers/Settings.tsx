@@ -39,11 +39,9 @@ import {
 import { loadDefaultToolAutoApprove, saveDefaultToolAutoApprove } from '../helpers/toolApprovalSettingsStorage'
 import {
   loadAutoCompactionEnabled,
-  loadShowAddedFilesPills,
   loadShowTokenUsageBar,
   loadShowTokenUsageHoverDetails,
   saveAutoCompactionEnabled,
-  saveShowAddedFilesPills,
   saveShowTokenUsageBar,
   saveShowTokenUsageHoverDetails,
 } from '../helpers/chatUiSettingsStorage'
@@ -422,7 +420,6 @@ const Settings: React.FC = () => {
     loadShowTokenUsageHoverDetails()
   )
   const [autoCompactionEnabled, setAutoCompactionEnabled] = useState<boolean>(() => loadAutoCompactionEnabled())
-  const [showAddedFilesPills, setShowAddedFilesPills] = useState<boolean>(() => loadShowAddedFilesPills())
   const [browserSettings, setBrowserSettings] = useState<BrowserSettings>(() => loadBrowserSettings())
   const [subagentSettings, setSubagentSettings] = useState<SubagentToolSettings>(() => loadSubagentToolSettings())
   const [subagentMaxTurnsInput, setSubagentMaxTurnsInput] = useState<string>(() =>
@@ -1877,16 +1874,6 @@ const Settings: React.FC = () => {
     })
   }
 
-  const handleAddedFilesPillsToggle = () => {
-    const nextValue = !showAddedFilesPills
-    saveShowAddedFilesPills(nextValue)
-    setShowAddedFilesPills(nextValue)
-    showStatus({
-      type: 'success',
-      text: nextValue ? 'Added file pills shown in Chat.' : 'Added file pills hidden in Chat.',
-    })
-  }
-
   const saveModePrompt = async (save: () => Promise<OperationModePromptSettings>) => {
     try { return await save() }
     catch (error) { showStatus({ type: 'error', text: error instanceof Error ? error.message : 'Could not save mode prompt' }); return null }
@@ -2581,23 +2568,6 @@ const Settings: React.FC = () => {
               >
                 <span
                   className={settingsToggleKnobClass(showTokenUsageHoverDetails)}
-                />
-              </button>
-            </div>
-
-            <div className='flex items-center justify-between pt-2 pt-2'>
-              <div>
-                <p className='text-base font-medium text-stone-900 dark:text-stone-100'>Show Added File Pills</p>
-                <p className='text-sm text-stone-500 dark:text-stone-400'>
-                  Display selected @ files as removable pills below the chat input.
-                </p>
-              </div>
-              <button
-                onClick={handleAddedFilesPillsToggle}
-                className={settingsToggleClass(showAddedFilesPills)}
-              >
-                <span
-                  className={settingsToggleKnobClass(showAddedFilesPills)}
                 />
               </button>
             </div>

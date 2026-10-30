@@ -253,7 +253,7 @@ export class WatchService {
       }
     }
     if (!['file_created', 'file_changed', 'log_match'].includes(args.kind)) throw new Error('Unknown watch kind')
-    const file = withToolAccess(context.fullAccess, () => validateAndResolvePath(text(args.path), context.rootPath ?? undefined))
+    const file = withToolAccess(context.fullAccess, () => validateAndResolvePath(text(args.path), context.rootPath ?? undefined), context.additionalRoots)
     let baseline: string | undefined
     let offset = 0
     let identity: string | undefined

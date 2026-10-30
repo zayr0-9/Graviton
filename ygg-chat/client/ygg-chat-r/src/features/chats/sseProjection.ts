@@ -186,6 +186,7 @@ function coerceToolResult(toolResult: any): any {
     tool_use_id: toolResult?.tool_use_id,
     content: toolResult?.content,
     is_error: !!toolResult?.is_error,
+    ...(toolResult?.patch ? { patch: toolResult.patch } : {}),
   }
 }
 

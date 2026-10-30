@@ -1,7 +1,9 @@
 import { deleteMessagesWithLineageRepair } from '../persistence/deleteMessages.js'
+import { planMessageDeletion } from '../persistence/claudeMessageDeletion.js'
 import { isClaudeTranscriptMessage } from '../../../../../shared/claudeProvider.js'
 import type Database from 'better-sqlite3'
 import type { Express } from 'express'
+import path from 'node:path'
 import { v4 as uuidv4 } from 'uuid'
 import { toSafeHookRunRecord } from '../../hooks/hookDiagnostics.js'
 import { HookRunRepo } from '../persistence/hookRunRepo.js'
@@ -163,6 +165,7 @@ type TopLevelMessageSearchCandidate = {
 }
 
 const TOP_LEVEL_MESSAGE_SEARCH_FTS_CANDIDATE_LIMIT = 220
+const MAX_ADDITIONAL_CWDS = 32
 const TOP_LEVEL_MESSAGE_SEARCH_FUZZY_CANDIDATE_LIMIT = 900
 
 const normalizeSearchText = (value: string) => value.toLowerCase().replace(/[^a-z0-9\s]/g, ' ').replace(/\s+/g, ' ').trim()
@@ -796,7 +799,7 @@ export function registerAppAutomationRoutes(app: Express, deps: AppAutomationRou
   app.patch('/api/app/conversations/:id', (req, res) => {
     try {
       const { id } = req.params
-      const { title, system_prompt, conversation_context, research_note, cwd, project_id, favorite } = req.body
+      const { title, system_prompt, conversation_context, research_note, cwd, additional_cwds, project_id, favorite } = req.body
 
       const existing = statements.getConversationById.get(id) as any
       if (!existing) {
@@ -827,6 +830,18 @@ export function registerAppAutomationRoutes(app: Express, deps: AppAutomationRou
         const normalizedCwd = typeof cwd === 'string' ? (cwd.trim() || null) : cwd || null
         updates.push('cwd = ?')
         values.push(normalizedCwd)
+      }
+      if (additional_cwds !== undefined) {
+        // NULL / [] both mean "no extra roots"; store NULL so readers see one shape for empty.
+        const roots = additional_cwds === null ? [] : additional_cwds
+        if (!Array.isArray(roots) || roots.length > MAX_ADDITIONAL_CWDS || roots.some(root =>
+          typeof root !== 'string' || !root.trim() || root.length > 4096 || root.includes('\0') || !(path.isAbsolute(root.trim()) || path.posix.isAbsolute(root.trim())))) {
+          res.status(400).json({ error: `additional_cwds must be an array of at most ${MAX_ADDITIONAL_CWDS} absolute directory paths` })
+          return
+        }
+        const normalizedRoots = [...new Set(roots.map((root: string) => root.trim()))]
+        updates.push('additional_cwds = ?')
+        values.push(normalizedRoots.length > 0 ? JSON.stringify(normalizedRoots) : null)
       }
       if (project_id !== undefined) {
         updates.push('project_id = ?')
@@ -1290,15 +1305,11 @@ export function registerAppAutomationRoutes(app: Express, deps: AppAutomationRou
   app.delete('/api/app/messages/:id', (req, res) => {
     try {
       const { id } = req.params
-      if (isClaudeTranscriptMessage(statements.getMessageById.get(id))) {
-        res.status(409).json({ error: 'Claude transcript messages cannot be deleted individually. Delete the conversation instead.' })
-        return
-      }
-      deleteMessagesWithLineageRepair(db, [id])
+      deleteMessagesWithLineageRepair(db, planMessageDeletion(db, [id]))
       res.json({ success: true })
     } catch (error) {
       console.error('[HeadlessServer] Error deleting app message:', error)
-      res.status((error as { status?: number }).status ?? 500).json({ error: error instanceof Error ? error.message : 'Failed to delete message' })
+      res.status((error as { status?: number }).status ?? 500).json({ error: error instanceof Error ? error.message : 'Failed to delete message', code: (error as { code?: string }).code })
     }
   })
 
@@ -1310,15 +1321,11 @@ export function registerAppAutomationRoutes(app: Express, deps: AppAutomationRou
         return
       }
 
-      if (ids.some(id => isClaudeTranscriptMessage(statements.getMessageById.get(id)))) {
-        res.status(409).json({ error: 'Claude transcript messages cannot be deleted individually. Delete the conversation instead.' })
-        return
-      }
-      deleteMessagesWithLineageRepair(db, ids)
+      deleteMessagesWithLineageRepair(db, planMessageDeletion(db, ids))
       res.json({ deleted: ids.length })
     } catch (error) {
       console.error('[HeadlessServer] Error bulk deleting app messages:', error)
-      res.status((error as { status?: number }).status ?? 500).json({ error: error instanceof Error ? error.message : 'Failed to bulk delete messages' })
+      res.status((error as { status?: number }).status ?? 500).json({ error: error instanceof Error ? error.message : 'Failed to bulk delete messages', code: (error as { code?: string }).code })
     }
   })
 }

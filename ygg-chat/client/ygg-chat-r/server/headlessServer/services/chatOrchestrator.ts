@@ -3,7 +3,7 @@ import { executionPathAfterHandoff, portableSummaryText } from '../../../../../s
 import { isCleanStartUserBranch } from '../../../../../shared/cleanStartBranch.js'
 import { CLAUDE_MODELS, claudeMessageMetadata, isClaudeProvider, isClaudeTranscriptMessage } from '../../../../../shared/claudeProvider.js'
 import { ClaudeSessionRepo, assertClaudeBranchSelection } from '../persistence/claudeSessionRepo.js'
-import { ClaudeSessionService } from './claudeSessionService.js'
+import { ClaudeSessionService, claudeImageBlock, type ClaudeQueuedInput } from './claudeSessionService.js'
 import { compactionInstruction } from '../../../../../shared/compaction.js'
 import { v4 as uuidv4 } from 'uuid'
 import type { HeadlessMessageRequest, HeadlessStreamEvent } from '../../../../../shared/headlessApi.js'
@@ -37,6 +37,7 @@ import { trimHistoryToLatestCompaction } from './compactionService.js'
 import type { HookRunRequest, HookRunResult } from '../../hooks/hookTypes.js'
 import { filterToolsForOperationMode, requiresAgentMode } from '../../../../../shared/operationModeToolPolicy.js'
 import { OperationModeControl, modeNotificationContent } from './operationModeControl.js'
+import { parseAdditionalCwds } from '../../toolAccessContext.js'
 import { FULL_ACCESS_NOTIFICATION_KIND, fullAccessNotificationContent, isRunSettingsNotification } from '../../../../../shared/accessNotifications.js'
 import { MessageInputQueue, queuedSubmissionFingerprint } from './messageInputQueue.js'
 import type { QueuedMessageSubmission, MessageQueueSnapshot } from '../../../../../shared/queuedMessages.js'
@@ -120,7 +121,7 @@ export function linkPreparedAttachmentsToMessage(
 }
 
 /** Tools that never prompt for permission (mirrors the renderer TOOL_PERMISSION_ALWAYS_BYPASS). */
-const CLAUDE_SLASH_COMMAND_ERROR = 'Use Graviton’s /compact command for Claude compaction. Other native slash commands are not supported.'
+const CLAUDE_SLASH_COMMAND_ERROR = 'Use Graviton’s /compact command for Claude compaction. Claude Code’s built-in native slash commands are not supported; skills and custom commands run by name.'
 const ALWAYS_BYPASS_TOOLS = new Set(['skill_manager', 'multi_call', 'context_status'])
 /** custom_tool_manager actions that are read-only/management (bypass) vs 'invoke' (prompt). */
 const CUSTOM_TOOL_MANAGER_BYPASS_ACTIONS = new Set([
@@ -441,7 +442,7 @@ export interface HeadlessChatOrchestrator {
   classifyOrdinarySend?(request: HeadlessMessageRequest): { lineageId: string | null; parentId: string | null; activeStreamId?: string }
   submitQueuedMessage?(conversationId: string, streamId: string, submission: QueuedMessageSubmission): { snapshot?: MessageQueueSnapshot; restart?: HeadlessMessageRequest; restartStreamId?: string }
   getMessageQueue?(conversationId: string, streamId: string): MessageQueueSnapshot
-  cancelQueuedMessage?(conversationId: string, streamId: string, requestId: string): MessageQueueSnapshot
+  cancelQueuedMessage?(conversationId: string, streamId: string, requestId: string): MessageQueueSnapshot | Promise<MessageQueueSnapshot>
   changeOperationMode?(input: { conversationId: string; mode: 'plan' | 'execute'; requestId: string; streamId?: string | null; parentId?: string | null; lineageId?: string | null }): any
   /**
    * Run one chat turn to completion.
@@ -465,6 +466,8 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
   private readonly inputRuns = new Map<string, {
     queue: MessageInputQueue; request: HeadlessMessageRequest; control: OperationModeControl
     head: string | null; successor?: string; restartRequestId?: string; restartFingerprint?: string; terminal?: 'completed' | 'failed'; signal?: AbortSignal
+    /** A live Claude session: `wake` hands it new entries, `claudeCancel` withdraws one it holds. */
+    wake?: () => void; claudeCancel?: (requestId: string) => Promise<boolean | null>
   }>()
 
   private readonly watchPins = new Map<string, { lineageId: string; count: number }>()
@@ -653,11 +656,20 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
     return run.queue.snapshot()
   }
 
-  cancelQueuedMessage(conversationId: string, streamId: string, requestId: string): MessageQueueSnapshot {
+  cancelQueuedMessage(conversationId: string, streamId: string, requestId: string): MessageQueueSnapshot | Promise<MessageQueueSnapshot> {
     this.getMessageQueue(conversationId, streamId)
     const run = this.inputRuns.get(streamId)!
-    if (!run.queue.cancel(requestId)) throw new Error('Message has already been delivered or is being processed')
-    return run.queue.snapshot()
+    const cancelLocally = () => {
+      if (!run.queue.cancel(requestId)) throw new Error('Message has already been delivered or is being processed')
+      return run.queue.snapshot()
+    }
+    // Claude may already hold the message; only Claude can withdraw it then.
+    if (!run.claudeCancel || run.queue.get(requestId)?.view.status !== 'queued') return cancelLocally()
+    return run.claudeCancel(requestId).then(cancelled => {
+      if (cancelled === null) return cancelLocally()
+      if (!cancelled) throw new Error('Claude has already started this message')
+      return run.queue.snapshot()
+    })
   }
 
   submitQueuedMessage(conversationId: string, streamId: string, submission: QueuedMessageSubmission): { snapshot?: MessageQueueSnapshot; restart?: HeadlessMessageRequest; restartStreamId?: string } {
@@ -665,7 +677,13 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
     const run = this.inputRuns.get(streamId)!
     if (!submission.requestId || !submission.content.trim()) throw new Error('Message content and request id are required')
     if (run.signal?.aborted) throw new Error('Run stopped; send a new message on the selected branch')
-    if (isClaudeProvider(run.request.provider)) throw new Error('Claude v1 does not support queued input. Wait for this turn to finish.')
+    if (isClaudeProvider(run.request.provider)) {
+      // Claude runs always use restricted access (see runMessage), so there is no policy to confirm.
+      submission = { ...submission, fullAccess: undefined, fullAccessNotificationId: undefined }
+      if (run.request.manualCompaction) throw new Error('Claude is compacting this session. Send your message after it finishes.')
+      if (/^\s*\//.test(submission.content)) throw new Error('Claude slash commands cannot be queued. Send it after this turn finishes.')
+      for (const attachment of submission.attachmentsBase64 ?? []) claudeImageBlock(attachment.dataUrl)
+    }
     const priorSubmission = run.queue.get(submission.requestId)
     if (priorSubmission) {
       run.queue.enqueue(submission, run.control.revision) // validates idempotent payload, including attachments
@@ -683,11 +701,13 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
         code: 'configuration_mismatch', fullAccess: run.request.fullAccess === true,
       })
     }
-    if (submission.attachmentsBase64?.length && !['openaichatgpt', 'openrouter'].includes(normalizeProviderRoute(run.request.provider))) {
-      throw new Error('Queued image attachments are supported for ChatGPT and OpenRouter; send text or wait for this run to finish')
+    if (submission.attachmentsBase64?.length && !isClaudeProvider(run.request.provider) &&
+      !['openaichatgpt', 'openrouter'].includes(normalizeProviderRoute(run.request.provider))) {
+      throw new Error('Queued image attachments are supported for ChatGPT, OpenRouter and Claude; send text or wait for this run to finish')
     }
     if (!run.queue.closed) {
       run.queue.enqueue(submission, run.control.revision)
+      run.wake?.()
       return { snapshot: run.queue.snapshot() }
     }
     if (run.terminal !== 'completed' || !run.head) throw new Error('Run stopped or failed; send a new message on the selected branch')
@@ -895,6 +915,80 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
     return prepared
   }
 
+  /**
+   * The run's mailbox as a Claude session consumes it. An entry is prepared (UserPromptSubmit,
+   * hook context, selected files) when offered to Claude, but becomes a user row only when
+   * Claude starts it, so the row sits where Claude actually read the message.
+   */
+  private claudeQueuedInput(input: {
+    request: HeadlessMessageRequest; lineageId: string; streamId: string; queue: MessageInputQueue
+    run: { wake?: () => void; claudeCancel?: (requestId: string) => Promise<boolean | null> }
+    hookSession: ChatHookSession | null; emit: (event: HeadlessStreamEvent) => void
+    /** The latest Graviton row, for UserPromptSubmit lineage. */
+    head: () => string | null
+    delivered: (row: any) => void
+  }): ClaudeQueuedInput {
+    const { request, lineageId, streamId, queue, run, hookSession, emit } = input
+    const offered = new Set<string>()
+    const prepared = new Map<string, { content: string; blocks: any[] }>()
+    const imagesOf = (submission: QueuedMessageSubmission) => (submission.attachmentsBase64 ?? [])
+      .map(attachment => attachment?.dataUrl).filter((url): url is string => typeof url === 'string' && url.startsWith('data:image/'))
+    return {
+      subscribe: wake => {
+        run.wake = wake
+        return () => { run.wake = undefined; run.claudeCancel = undefined }
+      },
+      prepareNext: async () => {
+        for (const entry of queue.queuedEntries()) {
+          const { requestId } = entry.submission
+          if (offered.has(requestId)) continue
+          offered.add(requestId)
+          try {
+            let content = entry.submission.content
+            if (hookSession) content = await hookSession.runUserPromptSubmit(content, input.head(), 'send')
+            const blocks = (hookSession?.drainHookContext() ?? [])
+              .map(text => toContextInjectionBlock({ path: '', label: LABEL_HOOK_CONTEXT, text, reason: 'hook' }))
+            // Withdrawn while its hooks ran.
+            if (queue.get(requestId)?.view.status !== 'queued') continue
+            prepared.set(requestId, { content, blocks })
+            const files = (entry.submission.selectedFiles ?? []).map(file => `File: ${file.path}\n${file.contents}`).join('\n\n')
+            const text = files ? `${content}\n\nSelected file context:\n${files}` : content
+            const rendered = blocks.length ? renderInjectionEntries(blocks) : ''
+            return { requestId, prompt: rendered ? `${rendered}\n\n${text}` : text, images: imagesOf(entry.submission) }
+          } catch (error) {
+            hookSession?.drainHookContext() // blocked submission context must not leak to the next one
+            queue.settle(requestId, { error: error instanceof Error ? error.message : String(error) })
+          }
+        }
+        return null
+      },
+      deliver: (requestId, parentId) => {
+        const entry = queue.claimEntry(requestId) ?? queue.get(requestId)!
+        const { content, blocks } = prepared.get(requestId) ?? { content: entry.submission.content, blocks: [] }
+        prepared.delete(requestId)
+        const submissionRequest = { ...request, operation: 'send' as const, content, manualCompaction: false,
+          selectedFiles: entry.submission.selectedFiles ?? [], attachmentsBase64: entry.submission.attachmentsBase64 ?? null }
+        const row = this.messageRepo.transaction(() => {
+          const message = this.createUserMessage(submissionRequest, parentId, content, blocks.length ? blocks : null)
+          this.lineageRepo.appendMessage(lineageId, message.id)
+          return { ...message, ...this.messageRepo.get(message.id) }
+        })
+        input.delivered(row)
+        hookSession?.attachPendingHookRuns(row.id)
+        emit({ type: 'queued_user_message_persisted', message: { ...row, artifacts: imagesOf(entry.submission) }, requestId, streamId, lineageId })
+        queue.settle(requestId, { messageId: row.id })
+        return row
+      },
+      release: (requestId, outcome) => {
+        prepared.delete(requestId)
+        if ('cancelled' in outcome) queue.cancel(requestId)
+        else queue.settle(requestId, { error: outcome.error })
+      },
+      tryClose: () => queue.tryClose(),
+      bindCancel: cancel => { run.claudeCancel = cancel },
+    }
+  }
+
   /** Omitted run policy inherits only the selected persisted ancestry. */
   resolveToolApproval(request: HeadlessMessageRequest): boolean | undefined {
     if (this.summaryHandoff(request) || this.startsFreshExecution(request)) return undefined
@@ -1087,6 +1181,7 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
     const inputRun = { queue: inputQueue, request, control: modeControl, head: request.parentId ?? null, signal } as {
       queue: MessageInputQueue; request: HeadlessMessageRequest; control: OperationModeControl
       head: string | null; successor?: string; terminal?: 'completed' | 'failed'; signal?: AbortSignal
+      wake?: () => void; claudeCancel?: (requestId: string) => Promise<boolean | null>
     }
     this.inputRuns.set(trackedStreamId, inputRun)
     // Bound retained terminal mailboxes; live runs are never evicted.
@@ -1288,8 +1383,24 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
         console.warn('[ChatOrchestrator] skill expansion failed', error instanceof Error ? error.message : error)
       }
     }
-    // Claude would run any other `/name` as a native command, which Graviton does not route.
-    if (claudeSlash && !userMessageBlocks.some(block => block.reason === 'skill')) throw new Error(CLAUDE_SLASH_COMMAND_ERROR)
+    // Any other `/name` goes to Claude only when it is one of its user, project or plugin skills
+    // and commands. Claude's built-ins (/clear, /model…) would desync the branch's checkpoints.
+    if (claudeSlash && !userMessageBlocks.some(block => block.reason === 'skill')) {
+      const native = contextRootPath
+        ? await this.claudeSessions.nativeCommand(contextRootPath, request.content).catch(error => {
+            console.warn('[ChatOrchestrator] Claude command lookup failed', error instanceof Error ? error.message : error)
+            return null
+          })
+        : null
+      if (!native) throw new Error(CLAUDE_SLASH_COMMAND_ERROR)
+      // Claude expands it itself and never streams the body; record what ran on the user row.
+      userMessageBlocks.push({
+        ...toContextInjectionBlock({ path: '', label: `skill /${native.name} invoked by the user, expanded by Claude Code`,
+          text: [native.description, native.args ? `Arguments: ${native.args}` : ''].filter(Boolean).join('\n\n') || 'Expanded by Claude Code.',
+          reason: 'skill' }),
+        origin: 'claude',
+      })
+    }
     if (hookSession) {
       // §11.5 rule 3: UserPromptSubmit / SessionStart output rides on the user message,
       // never on the system prompt.
@@ -1539,6 +1650,8 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
     }
     if (resolved.userMessage) {
       emit({ type: 'user_message_persisted', message: resolved.userMessage, lineageId })
+      // UserPromptSubmit / SessionStart ran before this row existed; show them on it.
+      hookSession?.attachPendingHookRuns(resolved.userMessage.id)
     }
     if (accessMessage) {
       emit({ type: 'user_message_persisted', message: accessMessage, lineageId })
@@ -1563,20 +1676,32 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
       // The native session never replays Graviton rows, so the user message's `/skill` body and
       // hook context go into this prompt (a repeat reuses the stored ones). Leading the prompt
       // also keeps `/skill` from parsing as a native command.
-      const injections = userMessageBlocks.length || resolved.userMessage || !turnUserId ? userMessageBlocks
+      const turnBlocks: any[] = userMessageBlocks.length || resolved.userMessage || !turnUserId ? userMessageBlocks
         : contextInjectionBlocksOf(this.conversationRepo.getMessageById(String(turnUserId)))
-      const content = injections.length ? `${renderInjectionEntries(injections)}\n\n${userContent}` : userContent
+      // Blocks Claude delivered itself are a record only; it already has their content.
+      const injections = turnBlocks.filter(block => block.origin !== 'claude')
+      const nativeCommand = turnBlocks.some(block => block.origin === 'claude')
+      const rendered = injections.length ? renderInjectionEntries(injections) : ''
+      // A native command must lead the prompt for Claude to expand it, so its context follows.
+      const content = !rendered ? userContent : nativeCommand ? `${userContent}\n\n${rendered}` : `${rendered}\n\n${userContent}`
       const [turnUser] = request.manualCompaction || !turnUserId ? [] : await this.hydrateModelImages(
         [{ role: 'user', id: turnUserId }], turnUserId, request.attachmentsBase64 ?? [])
+      // A manual /compact run ends at its summary; submitQueuedMessage refuses input for it.
+      let lastUserId: string | null = resolved.userMessage?.id ?? resolved.assistantParentId ?? null
+      const queuedInput = request.manualCompaction ? undefined : this.claudeQueuedInput({ request, lineageId, streamId: trackedStreamId,
+        queue: inputQueue, run: inputRun, hookSession, emit, head: () => lastPersistedAssistantId ?? lastUserId,
+        delivered: row => { lastUserId = row.id } })
+      if (queuedInput) emit({ type: 'message_queue_updated', snapshot: inputQueue.snapshot() })
       const finalMessage = await this.claudeSessions.run({ request: { ...request, content, streamId: trackedStreamId }, lineageId,
         images: turnUser?.artifacts ?? [],
         userMessage: resolved.userMessage, parentId: resolved.assistantParentId, sourceMessageId: sourceId ?? null,
-        fork: request.operation !== 'send' || Boolean(request.isBranch), cwd: contextRootPath!, sink, signal, hookSession,
+        fork: request.operation !== 'send' || Boolean(request.isBranch), cwd: contextRootPath!, sink, signal, hookSession, nativeCommand,
+        additionalDirectories: parseAdditionalCwds(conversation.additional_cwds), queuedInput,
         emit: event => { if (event.type === 'assistant_message_persisted') lastPersistedAssistantId = event.message?.id ?? lastPersistedAssistantId; emit(event) } })
       if (!signal?.aborted && !request.manualCompaction) {
         if (hookSession) {
           const blocked = await hookSession.runStop({ assistantMessage: finalMessage, streamId: trackedStreamId,
-            lastUserMessageId: resolved.userMessage?.id ?? resolved.assistantParentId })
+            lastUserMessageId: lastUserId })
           if (blocked) emit({ type: 'notice', code: 'hook_failed', lineageId,
             message: 'The Stop hook ran, but requesting another model turn from a Stop hook is not supported for Claude.' })
         }
@@ -1824,6 +1949,8 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
         streamId: trackedStreamId,
         rootPath: request.rootPath ?? conversation?.cwd ?? null,
         fullAccess: request.fullAccess === true,
+        // Read from the row, not the request: the persisted list is the only source of extra roots.
+        additionalRoots: parseAdditionalCwds(conversation?.additional_cwds),
         operationMode: resolvedOperationMode,
         modeControl,
         flushOperationMode: flushMode,

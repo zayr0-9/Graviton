@@ -44,6 +44,7 @@ export type BuiltInToolHandler = (
   args: any,
   options: {
     fullAccess?: boolean
+    additionalRoots?: string[]
     rootPath?: string
     operationMode?: 'plan' | 'execute'
     conversationId?: string | null

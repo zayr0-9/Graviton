@@ -52,6 +52,8 @@ export interface ToolExecutionContext {
   streamId?: string | null
   rootPath?: string | null
   fullAccess?: boolean
+  /** Extra conversation roots (conversations.additional_cwds) tools may use besides rootPath. */
+  additionalRoots?: string[]
   operationMode?: 'plan' | 'execute'
   provider?: string
   modelName?: string
@@ -222,6 +224,8 @@ export interface ToolLoopRunInput {
   streamId?: string | null
   rootPath?: string | null
   fullAccess?: boolean
+  /** Extra conversation roots (conversations.additional_cwds) tools may use besides rootPath. */
+  additionalRoots?: string[]
   operationMode?: 'plan' | 'execute'
   modeControl?: OperationModeControl
   flushOperationMode?: (parentId: string | null, history: any[]) => any[]
@@ -1772,6 +1776,7 @@ export class ToolLoopService {
             streamId: input.streamId ?? null,
             rootPath: input.rootPath ?? null,
             fullAccess: input.fullAccess === true,
+            additionalRoots: input.additionalRoots ?? [],
             operationMode: activeOperationMode,
             provider: input.provider,
             modelName: input.modelName,

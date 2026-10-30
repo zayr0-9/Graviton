@@ -13,6 +13,7 @@ import os from 'os'
 import path from 'path'
 import { fileURLToPath, pathToFileURL } from 'url'
 import { installRendererRecovery, type RendererRecovery } from './rendererRecovery.js'
+import { installMainProcessLog } from './mainProcessLog.js'
 import { normalizeShellPath } from './shellPath.js'
 import { createQuitConfirmationGuard } from './quitConfirmation.js'
 import '../server/envLoader.js'
@@ -347,6 +348,14 @@ function getClientErrorLogPath(): string {
     fs.mkdirSync(logsDir, { recursive: true })
   }
   return path.join(logsDir, CLIENT_ERROR_LOG_FILENAME)
+}
+
+// Persist main-process/server console output (e.g. [LineageForkDebug] diagnostics),
+// keeping the last 3 days and at most 32 MiB per day.
+try {
+  installMainProcessLog({ logsDir: path.join(app.getPath('userData'), 'logs') })
+} catch (error) {
+  console.warn('[Electron] Main process log unavailable:', error)
 }
 
 const TRUTHY_ENV_VALUES = new Set(['1', 'true', 'yes', 'on'])

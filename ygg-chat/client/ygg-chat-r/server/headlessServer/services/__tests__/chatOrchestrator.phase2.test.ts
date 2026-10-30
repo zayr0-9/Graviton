@@ -399,6 +399,80 @@ describe('source lineage membership validation', () => {
     expect(db.prepare('SELECT model FROM claude_branch_sessions WHERE lineage_id=?').get(calls[0].lineageId)).toEqual({ model: 'claude-opus-5-5' })
   })
 
+  it('hands queued input to a live Claude session and persists it where Claude starts it', async () => {
+    db.exec(CLAUDE_SESSION_SCHEMA)
+    const cancels: Array<boolean | null> = [null, false, true]
+    const claudeSessions = { run: vi.fn(async (input: any) => {
+      const queue = input.queuedInput
+      let woke = 0
+      queue.subscribe(() => { woke++ })
+      queue.bindCancel(async () => cancels.shift()!)
+      const persist = (parentId: string, content: string) => {
+        const message = input.sink.persistAssistantMessage({ conversationId: 'c1', parentId, modelName: input.request.modelName, content,
+          meta: { claude: { sessionId: 's' } } })
+        input.emit({ type: 'assistant_message_persisted', message, lineageId: input.lineageId })
+        return message
+      }
+      const toolTurn = persist(input.parentId, 'running a tool')
+      expect(() => orchestrator.submitQueuedMessage('c1', 'claude-q', { requestId: 'slash', content: '/review' })).toThrow('slash commands')
+      // Claude runs are always restricted, so a stale Full access flag is dropped rather than refused.
+      orchestrator.submitQueuedMessage('c1', 'claude-q', { requestId: 'q1', content: 'also check tests', fullAccess: true,
+        selectedFiles: [{ path: 'a.ts', contents: 'x' }] as any })
+      orchestrator.submitQueuedMessage('c1', 'claude-q', { requestId: 'q2', content: 'never mind' })
+      expect(woke).toBe(2)
+      expect(await queue.prepareNext()).toEqual({ requestId: 'q1', prompt: 'also check tests\n\nSelected file context:\nFile: a.ts\nx', images: [] })
+      // Not offered yet: cancelled locally. Already started: refused. Held by Claude: withdrawn by Claude.
+      expect((await orchestrator.cancelQueuedMessage('c1', 'claude-q', 'q2')).items.find(item => item.requestId === 'q2')?.status).toBe('cancelled')
+      await expect(orchestrator.cancelQueuedMessage('c1', 'claude-q', 'q1')).rejects.toThrow('already started')
+      expect(await queue.prepareNext()).toBeNull()
+      expect(orchestrator.getMessageQueue('c1', 'claude-q').items.find(item => item.requestId === 'q1')?.status).toBe('queued')
+      expect(queue.tryClose()).toBe(false)
+      const user = queue.deliver('q1', toolTurn.id)
+      expect(user).toMatchObject({ parent_id: toolTurn.id, role: 'user', content: 'also check tests' })
+      const final = persist(user.id, 'done')
+      db.prepare('INSERT INTO claude_message_checkpoints VALUES (?, ?, ?, ?, 1)').run(final.id, 's', 'uuid-final', testDirectory)
+      expect(queue.tryClose()).toBe(true)
+      return final
+    }) }
+    orchestrator = new ChatOrchestrator({ db, statements, providerRouter: providerRouter as any, claudeSessions: claudeSessions as any })
+    const events: any[] = []
+    await orchestrator.runMessage({ operation: 'send', conversationId: 'c1', provider: 'claudecode', modelName: 'claude-haiku-5-5',
+      content: 'hello', rootPath: testDirectory, streamId: 'claude-q' } as any, event => events.push(event))
+    const queued = events.filter(event => event.type === 'queued_user_message_persisted')
+    expect(queued).toHaveLength(1)
+    expect(queued[0]).toMatchObject({ requestId: 'q1', streamId: 'claude-q' })
+    expect(orchestrator.getMessageQueue('c1', 'claude-q').items.map(item => [item.requestId, item.status]))
+      .toEqual([['q1', 'delivered'], ['q2', 'cancelled']])
+    const complete = events.find(event => event.type === 'complete')
+    expect((db.prepare('SELECT head_message_id FROM lineages WHERE id=?').get(complete.lineageId) as any).head_message_id).toBe(complete.message.id)
+    expect(statements.getMessageById.get(complete.message.id).parent_id).toBe(queued[0].message.id)
+  })
+
+  it('refuses queued input during a Claude compaction run', async () => {
+    db.exec(CLAUDE_SESSION_SCHEMA)
+    let refusal: unknown
+    const claudeSessions = { run: vi.fn(async (input: any) => {
+      expect(input.queuedInput).toBeUndefined()
+      try { orchestrator.submitQueuedMessage('c1', 'claude-compact', { requestId: 'q', content: 'after' }) } catch (error) { refusal = error }
+      return input.sink.persistAssistantMessage({ conversationId: 'c1', parentId: input.parentId, modelName: input.request.modelName,
+        content: 'summary', meta: { kind: 'compaction_summary', claude: { sessionId: 's' } } })
+    }) }
+    orchestrator = new ChatOrchestrator({ db, statements, providerRouter: providerRouter as any, claudeSessions: claudeSessions as any })
+    const first: any[] = []
+    const base: any = { operation: 'send', conversationId: 'c1', provider: 'claudecode', modelName: 'claude-haiku-5-5', rootPath: testDirectory }
+    claudeSessions.run.mockImplementationOnce(async (input: any) => {
+      const message = input.sink.persistAssistantMessage({ conversationId: 'c1', parentId: input.parentId, modelName: input.request.modelName,
+        content: 'reply', meta: { claude: { sessionId: 's' } } })
+      db.prepare('INSERT INTO claude_message_checkpoints VALUES (?, ?, ?, ?, 1)').run(message.id, 's', 'uuid-1', testDirectory)
+      return message
+    })
+    await orchestrator.runMessage({ ...base, content: 'hello' }, event => first.push(event))
+    const head = first.find(event => event.type === 'complete')
+    await orchestrator.runMessage({ ...base, content: '/compact', manualCompaction: true, parentId: head.message.id,
+      lineageId: head.lineageId, streamId: 'claude-compact' }, () => {}).catch(() => {})
+    expect(String(refusal)).toContain('compacting')
+  })
+
   it('runs Claude Stop once after durable output with the real turn anchor for send, branch, edit and repeat', async () => {
     db.exec(CLAUDE_SESSION_SCHEMA)
     const events: any[] = []
@@ -491,11 +565,16 @@ describe('source lineage membership validation', () => {
       ? { matched: true, hookCount: 1, additionalContext: 'prompt hook context' }
       : { matched: false, hookCount: 0 })
     const claudeSessions = { run: vi.fn(async (input: any) => input.sink.persistAssistantMessage({ conversationId: 'c1',
-      parentId: input.parentId, modelName: input.request.modelName, content: 'hi' })) }
+      parentId: input.parentId, modelName: input.request.modelName, content: 'hi' })),
+      // Claude's own lookup: a plugin command is routed, built-ins such as /init are not.
+      nativeCommand: vi.fn(async (_cwd: string, content: string) => content.startsWith('/acme:deploy')
+        ? { name: 'acme:deploy', args: 'staging', description: 'Deploys the app (plugin)' } : null) }
     orchestrator = new ChatOrchestrator({ db, statements, providerRouter: providerRouter as any,
       decisionBroker: new DecisionBroker(), hookRunner, claudeSessions: claudeSessions as any })
     await orchestrator.runMessage({ operation: 'send', conversationId: 'c1', provider: 'claudecode', modelName: 'claude-sonnet-5-5',
       content: '/greet-native world', rootPath: testDirectory, hooksEnabled: true }, () => {})
+    // Graviton expanded this skill itself; Claude's lookup is never consulted.
+    expect(claudeSessions.nativeCommand).not.toHaveBeenCalled()
     const prompt: string = claudeSessions.run.mock.calls[0][0].request.content
     expect(prompt.startsWith('<system-reminder>')).toBe(true)
     expect(prompt).toContain('Say hello to world.')
@@ -520,6 +599,17 @@ describe('source lineage membership validation', () => {
     expect(events.some(event => event.type === 'error' && /native slash commands/.test(event.error ?? event.message ?? ''))).toBe(true)
     expect((db.prepare('SELECT COUNT(*) AS n FROM messages').get() as any).n).toBe(before)
     expect(claudeSessions.run).toHaveBeenCalledTimes(2)
+
+    // A Claude skill or custom command Graviton cannot expand leads the prompt so Claude expands it.
+    await orchestrator.runMessage({ operation: 'send', conversationId: 'c1', provider: 'claudecode', modelName: 'claude-sonnet-5-5',
+      content: '/acme:deploy staging', rootPath: testDirectory, hooksEnabled: true }, () => {})
+    const native = claudeSessions.run.mock.calls[2][0]
+    expect(native.nativeCommand).toBe(true)
+    expect(native.request.content.startsWith('/acme:deploy staging\n\n<system-reminder>')).toBe(true)
+    expect(native.request.content).toContain('prompt hook context')
+    expect(native.request.content).not.toContain('Deploys the app')
+    const nativeUser = statements.getMessageById.get(native.parentId)
+    expect(JSON.parse(nativeUser.content_blocks).map((block: any) => [block.reason, block.origin ?? null])).toEqual([['skill', 'claude'], ['hook', null]])
   })
 
   it.each([undefined, true, false])('initializes Claude approval from the accepted toolAutoApprove=%s setting', async toolAutoApprove => {

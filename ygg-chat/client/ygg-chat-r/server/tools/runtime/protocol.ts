@@ -4,6 +4,8 @@ export interface ToolExecutionOptions {
   /** Absolute epoch time at which shell execution must stop. */
   deadlineMs?: number
   fullAccess?: boolean
+  /** Extra conversation roots allowed besides rootPath (conversations.additional_cwds). */
+  additionalRoots?: string[]
   rootPath?: string
   operationMode?: 'plan' | 'execute'
   conversationId?: string | null

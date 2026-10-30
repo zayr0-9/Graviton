@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react'
 import { Activity, ChevronRight, CircleCheck, CircleDashed, CircleX, Clock3 } from 'lucide-react'
 import type { HookRunRecord } from '../../features/chats/chatTypes'
+import { isClaudeNativeHookRun } from '../../../../../shared/claudeProvider'
 import { localApi } from '../../utils/api'
 import { getThemeModeColor, useCustomChatTheme, useHtmlDarkMode } from '../ThemeManager/themeConfig'
 import { DISCLOSURE_LABEL_CLASS, QUIET_ROW_CLASS, QUIET_CHEVRON_CLASS, QUIET_MUTED_CLASS, TEXT_DETAIL_CLASS } from './chatMessageShared'
@@ -16,7 +17,8 @@ interface HookActivityCardProps {
   onRunsSettled?: () => void
 }
 const eventLabel = (event: string) => event === 'Stop' ? 'Reply finished' : event.replace(/([a-z])([A-Z])/g, '$1 $2')
-const scopeLabel = (scope: HookRunRecord['scope']) => scope === 'local_override' ? 'local override' : scope
+// Claude Code runs its own hooks (its settings and plugins) and reports no settings layer.
+const scopeLabel = (run: HookRunRecord) => isClaudeNativeHookRun(run) ? 'Claude Code' : run.scope === 'local_override' ? 'local override' : run.scope
 const durationLabel = (value: number | null) => value == null ? '' : value < 1000 ? `${value}ms` : `${(value / 1000).toFixed(1)}s`
 
 function mergeRuns(current: HookRunRecord[], incoming: HookRunRecord[]): HookRunRecord[] {
@@ -113,7 +115,7 @@ export const HookActivityCard: React.FC<HookActivityCardProps> = ({ initialRuns,
             <button type='button' onClick={() => setOpenId(detailOpen ? null : run.id)} className='flex w-full items-center gap-2 px-2.5 py-2 text-left' aria-expanded={detailOpen}>
               {statusIcon(run.status)}
               <span className='min-w-0 flex-1 truncate font-mono text-xs text-stone-800 dark:text-stone-100'>{run.label}</span>
-              <span className='text-[11px] text-stone-500'>{eventLabel(run.event)} · {scopeLabel(run.scope)}</span>
+              <span className='text-[11px] text-stone-500'>{eventLabel(run.event)} · {scopeLabel(run)}</span>
               <span className={`rounded-full px-2 py-0.5 text-[10px] ${failed ? 'bg-red-500/10 text-red-600 dark:text-red-300' : 'bg-black/5 text-stone-600 dark:bg-white/10 dark:text-stone-300'}`}>{run.status}</span>
               <span className='w-10 text-right text-[11px] text-stone-500'>{durationLabel(run.durationMs)}</span>
             </button>
@@ -123,7 +125,7 @@ export const HookActivityCard: React.FC<HookActivityCardProps> = ({ initialRuns,
               {run.stderrPreview && <Details label='stderr' value={run.stderrPreview} />}
               {run.stdoutPreview && <Details label='output' value={run.stdoutPreview} />}
               <dl className='grid grid-cols-[max-content_1fr] gap-x-3 gap-y-1 break-all font-mono text-[11px]'>
-                <dt>command</dt><dd>{run.configuredCommand}</dd>
+                {run.configuredCommand && <><dt>command</dt><dd>{run.configuredCommand}</dd></>}
                 {run.executedCommand && run.executedCommand !== run.configuredCommand && <><dt>executed</dt><dd>{run.executedCommand}</dd></>}
                 <dt>source</dt><dd>{run.sourceFile}</dd>
                 <dt>cwd</dt><dd>{run.cwd || '—'}</dd>

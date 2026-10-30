@@ -3,6 +3,7 @@ import { AppWindow, ExternalLink, Loader2, Maximize2, MessagesSquare, Play } fro
 import type { ToolDefinition } from '@/features/chats/toolDefinitions'
 import { truncateToolOutput as truncateToolOutputPreview } from '../../helpers/toolOutputTruncation'
 import { EditToolDiffView } from '../EditFileDiffView/EditToolDiffView'
+import { CLAUDE_FILE_EDIT_TOOLS } from '../../../../../shared/claudeProvider'
 import { PlanMdToolView } from '../PlanMdToolView'
 import { McpAppIframe } from '../McpAppIframe/McpAppIframe'
 import { SubagentToolName } from '../SubagentTranscript/SubagentTranscript'
@@ -425,11 +426,14 @@ export const ToolCallGroupCard: React.FC<ToolCallGroupCardProps> = ({
   }
 
   // Edit tools: the diff summary is the body.
+  // Claude's native names are matched raw: lowercased 'edit'/'write' are too generic to claim.
+  const isClaudeEditTool = CLAUDE_FILE_EDIT_TOOLS.has(rawName)
   const isEditLikeTool =
-    normalizedName === 'edit_file' || normalizedName === 'editfile' || normalizedName === 'multi_edit'
+    isClaudeEditTool || normalizedName === 'edit_file' || normalizedName === 'editfile' || normalizedName === 'multi_edit'
   if (isEditLikeTool && group.args) {
     const editResult = hasResults ? group.results[0].content : {}
-    const editTone: DisclosureTone = hasIncompleteResult ? tone : !hasResults
+    // Native results are prose, so their status is the is_error flag rather than a payload.
+    const editTone: DisclosureTone = hasIncompleteResult || isClaudeEditTool ? tone : !hasResults
       ? 'running'
       : formatToolResultSummary(editResult) === 'success'
         ? 'success'
@@ -440,7 +444,8 @@ export const ToolCallGroupCard: React.FC<ToolCallGroupCardProps> = ({
           <ToolName name={rawName || 'edit_file'} tone={editTone} />
         </div>
         <div className={DISCLOSURE_BODY_CLASS}>
-          <EditToolDiffView toolName={group.name} args={group.args} result={editResult} className='min-w-0' />
+          <EditToolDiffView toolName={group.name} args={group.args} result={editResult} className='min-w-0'
+            {...(isClaudeEditTool && hasResults ? { isError: Boolean(group.results[0].is_error), patch: group.results[0].patch } : {})} />
         </div>
       </div>
     )

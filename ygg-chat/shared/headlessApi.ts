@@ -151,6 +151,8 @@ export interface HeadlessSubagentStreamRequest {
   rootPath?: string | null
   /** User-selected workspace bypass; does not change approval or operation mode. */
   fullAccess?: boolean
+  /** Parent's extra conversation roots; server-populated, never read from the HTTP body. */
+  additionalRoots?: string[]
   userId?: string | null
   accessToken?: string | null
   accountId?: string | null

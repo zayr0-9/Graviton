@@ -12,6 +12,8 @@ export interface Conversation {
   research_note: string | null
   storage_mode?: StorageMode
   cwd?: string | null
+  /** JSON array of extra working directories (local column); NULL means none. */
+  additional_cwds?: string | null
   favorite?: number
 }
 

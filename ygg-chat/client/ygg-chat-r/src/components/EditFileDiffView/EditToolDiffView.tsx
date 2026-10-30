@@ -1,12 +1,16 @@
 import React, { useMemo, useState } from 'react'
 import { ChevronDown, ChevronUp } from 'lucide-react'
 import { EditFileDiffView, type EditFileArgs, type EditFileResult } from './EditFileDiffView'
+import type { ClaudeFilePatch, ClaudeFilePatchHunk } from '../../../../../shared/claudeProvider'
 
 interface EditToolDiffViewProps {
   toolName?: string | null
   args?: Record<string, unknown> | null
   result: unknown
   className?: string
+  /** Native Claude tools: the result is prose, so status comes from the tool_result flag. */
+  isError?: boolean
+  patch?: ClaudeFilePatch
 }
 
 interface EditToolViewItem {
@@ -14,6 +18,7 @@ interface EditToolViewItem {
   args: EditFileArgs
   result: EditFileResult | string
   index: number
+  hunks?: ClaudeFilePatchHunk[]
 }
 
 interface EditToolViewModel {
@@ -68,11 +73,58 @@ const buildEditResult = (rawResult: unknown): EditFileResult | string => {
   return isRecord(rawResult) ? (rawResult as EditFileResult) : {}
 }
 
+// Native errors arrive wrapped as `<tool_use_error>…</tool_use_error>`.
+const nativeErrorMessage = (rawResult: unknown): string | undefined => {
+  const text = typeof rawResult === 'string' ? rawResult : undefined
+  return text?.replace(/<\/?tool_use_error>/g, '').trim() || undefined
+}
+
+/** Claude's native Edit/Write, mapped onto edit_file's args so the same diff view draws them. */
+const buildNativeClaudeViewModel = (
+  toolName: string,
+  rawArgs: UnknownRecord,
+  rawResult: unknown,
+  isError: boolean | undefined,
+  patch: ClaudeFilePatch | undefined
+): EditToolViewModel | null => {
+  const path = toOptionalString(rawArgs.file_path) ?? patch?.filePath
+  const args: EditFileArgs = toolName === 'Edit'
+    ? {
+        path,
+        operation: rawArgs.replace_all === true ? 'replace_all' : 'replace',
+        searchPattern: toOptionalString(rawArgs.old_string),
+        replacement: toOptionalString(rawArgs.new_string),
+      }
+    : {
+        path,
+        // Old rows have no patch; their Write is drawn as the content it wrote.
+        operation: patch?.kind === 'update' ? 'overwrite' : patch?.kind === 'create' ? 'create' : 'write',
+        content: toOptionalString(rawArgs.content),
+      }
+  // An overwrite is only meaningful as its hunks; without them it falls back to the written content.
+  if (args.operation === 'overwrite' && !patch?.hunks.length) args.operation = 'write'
+  const result: EditFileResult = isError === undefined ? {} : isError
+    ? { success: false, message: nativeErrorMessage(rawResult) }
+    : { success: true }
+  return {
+    mode: 'single',
+    items: [{ key: path ?? 'edit-0', args, result, index: 0, hunks: patch?.hunks.length ? patch.hunks : undefined }],
+    success: result.success,
+    message: result.message,
+  }
+}
+
 const buildViewModel = (
   toolName: string | null | undefined,
   rawArgs: Record<string, unknown> | null | undefined,
-  rawResult: unknown
+  rawResult: unknown,
+  isError?: boolean,
+  patch?: ClaudeFilePatch
 ): EditToolViewModel | null => {
+  if ((toolName === 'Edit' || toolName === 'Write') && rawArgs && isRecord(rawArgs)) {
+    return buildNativeClaudeViewModel(toolName, rawArgs, rawResult, isError, patch)
+  }
+
   const normalizedToolName = normalizeToolName(toolName)
   const parsedResult = parseResultRecord(rawResult)
 
@@ -126,15 +178,15 @@ const buildViewModel = (
   }
 }
 
-const EditToolDiffViewComponent: React.FC<EditToolDiffViewProps> = ({ toolName, args, result, className = '' }) => {
-  const viewModel = useMemo(() => buildViewModel(toolName, args, result), [toolName, args, result])
+const EditToolDiffViewComponent: React.FC<EditToolDiffViewProps> = ({ toolName, args, result, className = '', isError, patch }) => {
+  const viewModel = useMemo(() => buildViewModel(toolName, args, result, isError, patch), [toolName, args, result, isError, patch])
   const [expanded, setExpanded] = useState(false)
 
   if (!viewModel || viewModel.items.length === 0) return null
 
   if (viewModel.mode === 'single') {
     const item = viewModel.items[0]
-    return <EditFileDiffView args={item.args} result={item.result} className={className} />
+    return <EditFileDiffView args={item.args} result={item.result} className={className} hunks={item.hunks} />
   }
 
   const summaryTone =

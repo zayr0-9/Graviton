@@ -520,10 +520,11 @@ export function registerChatRoutes(app: Express, deps: RegisterChatRoutesDeps): 
       res.json(orchestrator.getMessageQueue(String(req.params.id), String(req.params.streamId)))
     } catch (error) { res.status(409).json({ error: error instanceof Error ? error.message : String(error) }) }
   })
-  app.delete('/api/conversations/:id/streams/:streamId/queue/:requestId', (req, res) => {
+  app.delete('/api/conversations/:id/streams/:streamId/queue/:requestId', async (req, res) => {
     try {
       if (!orchestrator.cancelQueuedMessage) throw new Error('Message queue unavailable')
-      res.json(orchestrator.cancelQueuedMessage(String(req.params.id), String(req.params.streamId), String(req.params.requestId)))
+      // A Claude run answers asynchronously: only Claude can withdraw a message it already holds.
+      res.json(await orchestrator.cancelQueuedMessage(String(req.params.id), String(req.params.streamId), String(req.params.requestId)))
     } catch (error) { res.status(409).json({ error: error instanceof Error ? error.message : String(error) }) }
   })
   app.post('/api/conversations/:id/streams/:streamId/queue', (req, res) => {

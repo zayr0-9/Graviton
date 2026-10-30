@@ -4,6 +4,7 @@ import type { Server } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { registerAppAutomationRoutes } from '../appAutomationRoutes.js'
+import { CLAUDE_SESSION_SCHEMA } from '../../persistence/claudeSessionRepo.js'
 import { TOP_LEVEL_USER_MESSAGES_SQL } from '../../../topLevelUserMessages.js'
 
 let BetterSqlite3Ctor: (new (filename: string) => Database.Database) | null = null
@@ -349,20 +350,41 @@ describeIfSqlite('registerAppAutomationRoutes', () => {
     expect(created.map(message => message.created_at)).toEqual([...created.map(message => message.created_at)].sort())
   })
 
-  it('protects Claude native transcript projections from direct edits and single/bulk deletion while retaining notes', async () => {
+  it('protects Claude transcript content and deletes only back to a resumable cut', async () => {
     const created = await postJson(baseUrl, '/api/app/conversations', { title: 'Claude', user_id: 'claude-user' })
     const conversationId = ((await created.json()) as any).id
-    const root = await postJson(baseUrl, '/api/app/messages', { conversation_id: conversationId, role: 'user', content: 'original' })
-    const id = ((await root.json()) as any).id
-    db!.prepare('UPDATE messages SET meta = ? WHERE id = ?').run(JSON.stringify({ modelSelection: { provider: 'claudecode', model: 'm' } }), id)
+    db!.exec(CLAUDE_SESSION_SCHEMA)
+    const claudeMeta = JSON.stringify({ modelSelection: { provider: 'claudecode', model: 'm' } })
+    const add = async (role: string, content: string, parent_id: string | null) => {
+      const res = await postJson(baseUrl, '/api/app/messages', { conversation_id: conversationId, role, content, parent_id })
+      const id = ((await res.json()) as any).id
+      db!.prepare('UPDATE messages SET meta = ? WHERE id = ?').run(claudeMeta, id)
+      return id as string
+    }
+    const id = await add('user', 'original', null)
+    const answer = await add('assistant', 'done', id)
+    db!.prepare('INSERT INTO claude_message_checkpoints VALUES (?, ?, ?, ?, 1)').run(answer, 's', 'uuid', '/w')
+    const followUp = await add('user', 'next', answer)
+    const toolTurn = await add('assistant', 'working', followUp)
+    const queued = await add('user', 'mid-turn', toolTurn)
+
     const edit = await fetch(`${baseUrl}/api/app/messages/${id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ content: 'changed' }) })
     expect(edit.status).toBe(409)
     const note = await fetch(`${baseUrl}/api/app/messages/${id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ note: 'my note' }) })
     expect(note.status).toBe(200)
     expect((await note.json() as any).content).toBe('original')
-    expect((await fetch(`${baseUrl}/api/app/messages/${id}`, { method: 'DELETE' })).status).toBe(409)
-    expect((await postJson(baseUrl, '/api/app/messages/deleteMany', { ids: [id] })).status).toBe(409)
-    expect(db!.prepare('SELECT content FROM messages WHERE id = ?').get(id)).toMatchObject({ content: 'original' })
+
+    // A mid-turn message would leave the branch on a tool row Claude cannot resume from.
+    const refused = await fetch(`${baseUrl}/api/app/messages/${queued}`, { method: 'DELETE' })
+    expect(refused.status).toBe(409)
+    expect((await refused.json() as any).code).toBe('claude_delete_refused')
+    expect((await postJson(baseUrl, '/api/app/messages/deleteMany', { ids: [queued] })).status).toBe(409)
+
+    expect((await fetch(`${baseUrl}/api/app/messages/${followUp}`, { method: 'DELETE' })).status).toBe(200)
+    expect(db!.prepare('SELECT id FROM messages WHERE conversation_id = ?').all(conversationId).map((row: any) => row.id).sort())
+      .toEqual([id, answer].sort())
+    expect((await postJson(baseUrl, '/api/app/messages/deleteMany', { ids: [id, answer] })).status).toBe(200)
+    expect(db!.prepare('SELECT COUNT(*) AS n FROM messages WHERE conversation_id = ?').get(conversationId)).toEqual({ n: 0 })
   })
 
   it('rolls back the complete bulk copy when one message cannot be persisted', async () => {

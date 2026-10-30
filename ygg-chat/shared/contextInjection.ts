@@ -48,6 +48,8 @@ export interface ContextInjectionBlock extends ContextInjectionEntry {
   /** The tool call this block rides on; absent for blocks on a user row. */
   tool_use_id?: string
   index?: number
+  /** `claude`: Claude Code delivered this itself (Skill tool, native slash command). Shown, never re-sent to Claude. */
+  origin?: 'claude'
 }
 
 export interface ContextInjectionMessageMeta {

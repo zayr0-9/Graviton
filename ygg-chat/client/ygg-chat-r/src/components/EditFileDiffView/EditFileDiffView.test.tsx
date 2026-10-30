@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { EditFileDiffView, type EditFileArgs, type EditFileResult } from './EditFileDiffView'
 import { EditToolDiffView } from './EditToolDiffView'
+import type { ClaudeFilePatch } from '../../../../../shared/claudeProvider'
 
 const harness = vi.hoisted(() => ({
   expanded: false,
@@ -222,5 +223,82 @@ describe('inline file edit design', () => {
     expect(html).not.toContain('edit 1</div>')
     expect(html).not.toContain('edit 2</div>')
     expect(html).not.toContain('class="p-1"')
+  })
+})
+
+describe('native Claude Edit/Write', () => {
+  const editArgs = { file_path: '/w/src/a.ts', old_string: 'const value = 1', new_string: 'const value = 2' }
+  const editPatch = { filePath: '/w/src/a.ts', kind: 'edit' as const, hunks: [
+    { oldStart: 40, oldLines: 3, newStart: 40, newLines: 3, lines: [' const keep = true', '-const value = 1', '+const value = 2', ' done()', '\\ No newline at end of file'] },
+    { oldStart: 90, oldLines: 1, newStart: 90, newLines: 2, lines: [' tail()', '+extra()'] },
+  ] }
+  const renderNative = (name: string, args: Record<string, unknown>, props: { result?: unknown; isError?: boolean; patch?: ClaudeFilePatch } = {}) =>
+    renderToStaticMarkup(<EditToolDiffView toolName={name} args={args} result={props.result ?? 'ok'} isError={props.isError} patch={props.patch} />)
+
+  it('numbers Edit lines from the patch hunks and marks omitted ranges', () => {
+    harness.expanded = true
+    const html = renderNative('Edit', editArgs, { isError: false, patch: editPatch })
+    expect(html).toContain('Collapse edit for a.ts')
+    expect(html).toContain('>replace</span>')
+    expect(html).toContain('Original line 41')
+    expect(html).toContain('New line 41')
+    expect(html).toContain('New line 42')
+    expect(html).toContain('New line 91')
+    expect(html).toContain('aria-label="Unchanged lines omitted"')
+    expect(html).not.toContain('No newline at end of file')
+    expect(html).toContain('>+2</span>')
+    expect(html).toContain('>−1</span>')
+    // Edits still carry the search/replace pair, so the alternative views stay available.
+    expect(html).toContain('aria-label="Split view (side-by-side)"')
+    expect(html).not.toContain('whitespace-pre-wrap break-words')
+  })
+
+  it('omits invented line numbers when an older row has no patch', () => {
+    harness.expanded = true
+    const html = renderNative('Edit', { ...editArgs, replace_all: true }, { isError: false })
+    expect(html).toContain('>replace all</span>')
+    expect(html).toContain('const value = 2')
+    expect(html).not.toContain('New line')
+    expect(html).not.toContain('Original line')
+  })
+
+  it('shows the native error text without the wrapper tags', () => {
+    harness.expanded = true
+    const html = renderNative('Edit', editArgs, { isError: true, result: '<tool_use_error>String to replace not found</tool_use_error>' })
+    expect(html).toContain('String to replace not found')
+    expect(html).not.toContain('tool_use_error')
+  })
+
+  it('shows no error while the call is still running', () => {
+    harness.expanded = true
+    expect(renderNative('Edit', editArgs, { result: {} })).not.toContain('whitespace-pre-wrap break-words')
+  })
+
+  it('draws a created file as numbered added lines', () => {
+    harness.expanded = true
+    const html = renderNative('Write', { file_path: '/w/new.ts', content: 'a\nb\n' },
+      { isError: false, patch: { filePath: '/w/new.ts', kind: 'create', hunks: [] } })
+    expect(html).toContain('>create</span>')
+    expect(html).toContain('New line 2')
+    expect(html).toContain('>+2</span>')
+    expect(html).not.toContain('aria-label="Diff view"')
+  })
+
+  it('draws an overwrite only from its hunks', () => {
+    harness.expanded = true
+    const html = renderNative('Write', { file_path: '/w/a.ts', content: 'whole file body' },
+      { isError: false, patch: { filePath: '/w/a.ts', kind: 'update', hunks: [editPatch.hunks[0]] } })
+    expect(html).toContain('>overwrite</span>')
+    expect(html).toContain('New line 41')
+    expect(html).not.toContain('whole file body')
+    expect(html).not.toContain('aria-label="Diff view"')
+  })
+
+  it('falls back to the written content for an overwrite without hunks', () => {
+    harness.expanded = true
+    const html = renderNative('Write', { file_path: '/w/a.ts', content: 'body' }, { isError: false })
+    expect(html).toContain('>write</span>')
+    expect(html).toContain('body')
+    expect(html).not.toContain('New line')
   })
 })

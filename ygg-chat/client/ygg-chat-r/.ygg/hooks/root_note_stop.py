@@ -66,6 +66,28 @@ Do not include markdown fences.
 '''
 
 
+# Sent as responseSchema. Claude hosts enforce it natively (--json-schema); other
+# providers are parsed and repaired once by the host. Older hosts ignore it.
+NOTE_RESPONSE_SCHEMA = {
+    'type': 'object',
+    'properties': {
+        'updated': {'type': 'boolean'},
+        'note': {'type': 'string'},
+        'note_color': {'type': 'string', 'enum': [''] + NOTE_COLOR_PRESETS},
+        'reason': {'type': 'string'},
+    },
+    'required': ['updated', 'note', 'note_color', 'reason'],
+    'additionalProperties': False,
+}
+
+# One retry for transient or malformed generations, only while the Stop hook's
+# 60s budget can still fit another request (the request itself may take 45s).
+GENERATION_ATTEMPTS = 2
+RETRY_WITHIN_SECONDS = 12
+RETRYABLE_HTTP_STATUSES = (429, 502, 503)
+RETRYABLE_CODES = ('connection_error', 'invalid_response_json', 'invalid_response_shape', 'invalid_model_json')
+
+
 class HookFailure(RuntimeError):
     def __init__(self, code, stage, message, **details):
         super().__init__(message)
@@ -431,27 +453,54 @@ def main():
 
         stage = 'generate_note'
         sensitive = (model_input, SYSTEM_PROMPT, existing_note, anchor_message_content, latest_user_text, latest_assistant_text)
-        generation = _json_request(
-            f'{local_api_base}/headless/ygg-hooks/generate',
-            method='POST',
-            payload={
-                'systemPrompt': SYSTEM_PROMPT,
-                'content': model_input,
-            },
-            timeout=45,
-            stage=stage,
-            sensitive=sensitive,
-        )
 
+        def _generate_note_json():
+            global MODEL, PROVIDER
+            generation = _json_request(
+                f'{local_api_base}/headless/ygg-hooks/generate',
+                method='POST',
+                payload={
+                    'systemPrompt': SYSTEM_PROMPT,
+                    'content': model_input,
+                    'responseSchema': NOTE_RESPONSE_SCHEMA,
+                },
+                timeout=45,
+                stage='generate_note',
+                sensitive=sensitive,
+            )
+            if not isinstance(generation, dict) or not isinstance(generation.get('text'), str):
+                raise HookFailure('invalid_response_shape', 'parse_generation', 'Expected a generation object with a text string', responseType=type(generation).__name__)
+            PROVIDER = _safe_text(generation.get('provider')) or PROVIDER
+            MODEL = _safe_text(generation.get('modelName')) or MODEL
+            structured = generation.get('structured')
+            if isinstance(structured, dict):
+                return structured
+            model_text = _safe_text(generation.get('text'))
+            parsed = _parse_model_json(model_text)
+            if not isinstance(parsed, dict):
+                raise HookFailure('invalid_model_json', 'parse_generation', 'Model did not return a JSON object', textLength=len(model_text))
+            return parsed
+
+        def _is_retryable(exc):
+            if not isinstance(exc, HookFailure):
+                return False
+            if exc.code == 'http_error':
+                return exc.details.get('httpStatus') in RETRYABLE_HTTP_STATUSES
+            return exc.code in RETRYABLE_CODES
+
+        attempt = 0
+        while True:
+            attempt += 1
+            try:
+                model_json = _generate_note_json()
+                break
+            except HookFailure as exc:
+                exc.details['attempts'] = attempt
+                if attempt >= GENERATION_ATTEMPTS or not _is_retryable(exc) or time.monotonic() - started > RETRY_WITHIN_SECONDS:
+                    stage = exc.stage
+                    raise
+                time.sleep(2 if exc.details.get('httpStatus') == 429 else 0.5)
         stage = 'parse_generation'
-        if not isinstance(generation, dict) or not isinstance(generation.get('text'), str):
-            raise HookFailure('invalid_response_shape', stage, 'Expected a generation object with a text string', responseType=type(generation).__name__)
-        PROVIDER = _safe_text(generation.get('provider')) or PROVIDER
-        MODEL = _safe_text(generation.get('modelName')) or MODEL
-        model_text = _safe_text(generation.get('text'))
-        model_json = _parse_model_json(model_text)
-        if not isinstance(model_json, dict):
-            raise HookFailure('invalid_model_json', stage, 'Model did not return a JSON object', textLength=len(model_text))
 
         updated = bool(model_json.get('updated'))
         next_note = _safe_text(model_json.get('note')).strip()

@@ -194,6 +194,8 @@ A message is process-only when it has reasoning/tool/process signals but no subs
 
 If a following assistant message contains both process content and substantial final text, `Chat.tsx` may bridge its process blocks into the group and pass only non-process content to that final message row. This avoids showing the same tool/reasoning content twice.
 
+The leading case mirrors this. An assistant message with intro prose followed only by tool work (reasoning/text, then tool calls, no prose after them) keeps its prose row when the next message is process-only. Its process blocks render first in the following group (`leadingMessageId`), so one turn shows one "Agent steps" group. Such a message is never also bridged back into the previous group.
+
 ### Within-message grouping in `ChatMessage.tsx`
 
 `ChatMessage` groups process items from the first item within a message or stream. Process items include reasoning and tool cards; context and hooks are visible attachments rather than run boundaries. Text that looks like a short process annotation is allowed not to break the group. Interactive/visual surfaces remain outside grouped runs: all legacy `mcp__*` calls and `mcp_manager invoke` calls, `html_renderer`, and `plan_md` visualisation/clarification actions (`display`, `visualize`/`visualise`, and `clarify`). These tools also prevent their containing message from entering a cross-message process group. Group summaries show only the tool count and omit the duplicate run/reasoning counts.

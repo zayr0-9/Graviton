@@ -1,4 +1,5 @@
 import type { ChatErrorEnvelope, ChatNoticeCode } from '../../../../../shared/chatErrors'
+import type { ClaudeFilePatch } from '../../../../../shared/claudeProvider'
 import { BaseMessage, BaseModel, ConversationId, ImageConfig, MessageId, OpenAIServiceTier, ReasoningConfig } from '../../../../../shared/types'
 import type { PlanClarificationRequest } from './planToolTypes'
 
@@ -80,6 +81,8 @@ export interface ToolResultBlock {
   tool_use_id: string
   content: any
   is_error: boolean
+  /** Native Claude Edit/Write hunks with real file line numbers. */
+  patch?: ClaudeFilePatch
 }
 
 export interface ImageBlock {
@@ -129,6 +132,8 @@ export interface ContextInjectionBlock {
   label: string
   text: string
   reason: string
+  /** `claude`: Claude Code delivered this itself (Skill tool, native slash command). */
+  origin?: 'claude'
 }
 
 export type ContentBlock =
@@ -182,6 +187,7 @@ export interface StreamChunk {
     tool_use_id: string
     content: any
     is_error: boolean
+    patch?: ClaudeFilePatch
   }
   // free tier update data
   remaining?: number
@@ -207,6 +213,7 @@ export interface StreamEvent {
     tool_use_id: string
     content: any
     is_error: boolean
+    patch?: ClaudeFilePatch
   }
   // Image data for generated images
   url?: string

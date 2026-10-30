@@ -26,8 +26,8 @@ describe('Claude branch-note Stop command integration', () => {
   })
 
   it.each([
-    ['sync', 'openaichatgpt', false], ['async', 'claudecode', false], ['async', 'claudecode', true],
-  ] as const)('executes the Python note writer via the real generation route (%s, %s, legacy=%s)', async (executionMode, provider, legacy) => {
+    ['sync', 'openaichatgpt', false, false], ['async', 'claudecode', false, false], ['async', 'claudecode', true, false], ['sync', 'claudecode', false, true],
+  ] as const)('executes the Python note writer via the real generation route (%s, %s, legacy=%s, transient502=%s)', async (executionMode, provider, legacy, transient502) => {
     directory = mkdtempSync(path.join(os.tmpdir(), 'claude-stop-hook-'))
     storage.directory = path.join(directory, '.ygg')
     mkdirSync(path.join(storage.directory, 'hooks'), { recursive: true })
@@ -52,6 +52,12 @@ describe('Claude branch-note Stop command integration', () => {
     const claude = vi.fn(async (input: any) => { generations.push(input); return generated })
     const app = express()
     app.use(express.json())
+    let generateRequests = 0
+    app.post('/api/headless/ygg-hooks/generate', (_req, res, next) => {
+      generateRequests++
+      if (transient502 && generateRequests === 1) res.status(502).json({ success: false, error: 'The selected hook provider failed.' })
+      else next()
+    })
     registerYggHookGenerateRoute(app, new HookGenerationService({ preferences: () => ({ provider, openAiModel: 'gpt-6-luna', claudeModel: 'haiku' }),
       openAiStatus: () => 'ready', openAi, claude }))
     app.use(async (req, res) => {
@@ -80,6 +86,9 @@ describe('Claude branch-note Stop command integration', () => {
     expect(await session.runStop({ assistantMessage: messages.at(-1), streamId: 'claude-stream', lastUserMessageId: 'branch' })).toBe(false)
     await expect.poll(() => events.some(event => event.type === 'hook_activity' && event.runs.some((run: any) => run.status === 'succeeded')), { timeout: 15000 }).toBe(true)
     expect(generations).toHaveLength(1)
+    expect(generateRequests).toBe(transient502 ? 2 : 1)
+    if (provider === 'claudecode') expect(generations[0].jsonSchema).toMatchObject({ type: 'object', required: expect.arrayContaining(['note', 'note_color']),
+      properties: { note_color: { enum: ['', '#22c55e', '#ef4444', '#8b5cf6', '#3b82f6', '#f59e0b'] } } })
     expect(openAi).toHaveBeenCalledTimes(provider === 'openaichatgpt' ? 1 : 0)
     expect(claude).toHaveBeenCalledTimes(provider === 'claudecode' ? 1 : 0)
     expect(generations[0].content).toContain('Latest user message:\nfix branch issue')

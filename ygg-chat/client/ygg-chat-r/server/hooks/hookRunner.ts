@@ -6,6 +6,7 @@ import { runBashCommand } from '../tools/bash.js'
 import { isWindows, resolveToWindowsPath } from '../utils/wslBridge.js'
 import { ensureManagedHooksInitialized, getManagedHooksDirectory } from './hookStorage.js'
 import { appendHookTransition, redactHookDiagnostic, resolveHookLogTarget, toSafeHookRunRecord } from './hookDiagnostics.js'
+import { configureHookRunTracker, getHookRunTracker } from './hookRunTracker.js'
 import type {
   HookEventName,
   HookExecutionMode,
@@ -21,11 +22,8 @@ import type {
 const YGG_SETTINGS_FILES = ['settings.json', 'settings.local.json'] as const
 const DEFAULT_HOOK_TIMEOUT_MS = 30_000
 const DEFAULT_HOOK_MAX_OUTPUT_CHARS = 60_000
-let defaultHookRunTracker: import('./hookTypes.js').HookRunTracker | null = null
 
-export function configureHookRunTracker(tracker: import('./hookTypes.js').HookRunTracker | null): void {
-  defaultHookRunTracker = tracker
-}
+export { configureHookRunTracker }
 
 function isHookDebugLoggingEnabled(): boolean {
   return /^(1|true|yes|on)$/i.test(process.env.YGG_HOOK_DEBUG_LOGS || '')
@@ -778,6 +776,7 @@ async function executeCommandHook(handler: NormalizedHookHandler, req: HookRunRe
 }
 
 export async function runHookRequest(req: HookRunRequest): Promise<HookRunResult> {
+  const defaultHookRunTracker = getHookRunTracker()
   if (defaultHookRunTracker) req = { ...req, runTracker: defaultHookRunTracker }
   logHookRunner('run request start', {
     event: req.event,
