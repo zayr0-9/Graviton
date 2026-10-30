@@ -28,14 +28,19 @@ type Level = (typeof LEVELS)[number]
 export const DEFAULT_RETENTION_DAYS = 3
 export const DEFAULT_MAX_BYTES_PER_DAY = 32 * 1024 * 1024
 
-function dayKey(date: Date): string {
+export function dayKey(date: Date): string {
   const pad = (value: number) => String(value).padStart(2, '0')
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`
 }
 
+/** Local midnight of the oldest retained day: today plus the previous `retentionDays - 1` days. */
+export function retentionCutoff(now: Date, retentionDays: number): Date {
+  return new Date(now.getFullYear(), now.getMonth(), now.getDate() - (Math.max(1, retentionDays) - 1))
+}
+
 /** Deletes `main-*.log` files whose day is older than today minus `retentionDays - 1`. */
 export function pruneMainProcessLogs(logsDir: string, retentionDays: number, now: Date): string[] {
-  const cutoff = new Date(now.getFullYear(), now.getMonth(), now.getDate() - (retentionDays - 1))
+  const cutoff = retentionCutoff(now, retentionDays)
   const removed: string[] = []
   let entries: string[]
   try {

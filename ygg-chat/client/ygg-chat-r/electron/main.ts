@@ -14,6 +14,7 @@ import path from 'path'
 import { fileURLToPath, pathToFileURL } from 'url'
 import { installRendererRecovery, type RendererRecovery } from './rendererRecovery.js'
 import { installMainProcessLog } from './mainProcessLog.js'
+import { createClientErrorLog, type ClientErrorLog } from './clientErrorLog.js'
 import { normalizeShellPath } from './shellPath.js'
 import { createQuitConfirmationGuard } from './quitConfirmation.js'
 import '../server/envLoader.js'
@@ -339,16 +340,7 @@ function cleanupTerminalSessionsForSender(sender: Electron.WebContents): void {
 const PROTOCOL = 'yggchat'
 const UPDATE_FEED_BASE_URL =
   process.env.SUPABASE_UPDATE_FEED_BASE_URL || 'https://auth.yggchat.com/storage/v1/object/public/updates/updates'
-const CLIENT_ERROR_LOG_FILENAME = 'client-errors.ndjson'
 let autoUpdaterConfigured = false
-
-function getClientErrorLogPath(): string {
-  const logsDir = path.join(app.getPath('userData'), 'logs')
-  if (!fs.existsSync(logsDir)) {
-    fs.mkdirSync(logsDir, { recursive: true })
-  }
-  return path.join(logsDir, CLIENT_ERROR_LOG_FILENAME)
-}
 
 // Persist main-process/server console output (e.g. [LineageForkDebug] diagnostics),
 // keeping the last 3 days and at most 32 MiB per day.
@@ -356,6 +348,17 @@ try {
   installMainProcessLog({ logsDir: path.join(app.getPath('userData'), 'logs') })
 } catch (error) {
   console.warn('[Electron] Main process log unavailable:', error)
+}
+
+// Renderer telemetry/recovery records share the main log's 3-day retention.
+let clientErrorLog: ClientErrorLog | null = null
+function getClientErrorLog(): ClientErrorLog {
+  clientErrorLog ??= createClientErrorLog({ logsDir: path.join(app.getPath('userData'), 'logs') })
+  return clientErrorLog
+}
+
+function getClientErrorLogPath(): string {
+  return getClientErrorLog().filePath()
 }
 
 const TRUTHY_ENV_VALUES = new Set(['1', 'true', 'yes', 'on'])
@@ -667,7 +670,7 @@ function createWindow() {
   const recovery = installRendererRecovery(window, {
     entryUrl,
     isQuitting: () => isQuitting,
-    log: record => fs.appendFileSync(getClientErrorLogPath(), `${JSON.stringify(record)}\n`, 'utf-8'),
+    log: record => getClientErrorLog().append(`${JSON.stringify(record)}\n`),
     logPath: getClientErrorLogPath,
     versions: { app: app.getVersion(), electron: process.versions.electron,
       chrome: process.versions.chrome, platform: process.platform, arch: process.arch },
@@ -1735,9 +1738,9 @@ ipcMain.handle('logs:appendClientError', async (_event, content: string) => {
   }
 
   try {
-    const filePath = getClientErrorLogPath()
-    fs.appendFileSync(filePath, content, 'utf-8')
-    return { success: true, filePath }
+    const log = getClientErrorLog()
+    log.append(content)
+    return { success: true, filePath: log.filePath() }
   } catch (error) {
     console.error('[Electron IPC] Failed to append client error log:', error)
     return { success: false, error: String(error) }

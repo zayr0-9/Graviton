@@ -264,8 +264,12 @@ export interface StreamState {
   followSelectedTip?: boolean
   /** Snapshot replay hydrates rows before one guarded selection reconciliation. */
   bootstrapInstalling?: boolean
-  /** A persisted advance deferred by this exact pending navigation transaction. */
-  blockedSelectionRevision?: number
+  /**
+   * A persisted advance was deferred while selection was unsettled (pending/error).
+   * Survives superseding transactions and cancellation; consumed by the next settled
+   * same view, or discarded when a different view is chosen.
+   */
+  selectionBlocked?: boolean
   active: boolean
   // Explicit lifecycle status. `waiting_for_tool` is still an in-flight stream
   // and should stay visible/interruptible in branch-local UIs.

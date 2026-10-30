@@ -50,6 +50,9 @@ export class OperationModeControl {
 
   get hasPending(): boolean { return this.pending.length > 0 }
 
+  /** Claude runs announce changes themselves; once one is recorded, nothing is left to replay. */
+  settlePending(): void { this.pending = [] }
+
   assertCanDispatch(call: { name: string }): void {
     if (requiresAgentMode(call, this.mode)) {
       throw new Error(`Tool "${call.name}" skipped: the current mode is Chat. Switch to Agent Mode to run this tool.`)

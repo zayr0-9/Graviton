@@ -11,6 +11,8 @@ import type { HeadlessMessageRequest, HeadlessStreamEvent } from '../../../../..
 import { ClaudeSessionRepo } from '../persistence/claudeSessionRepo.js'
 import type { MessageRepo } from '../persistence/messageRepo.js'
 import type { MessageSink } from './messageSink.js'
+import { OperationModeControl } from './operationModeControl.js'
+import type { OperationMode } from '../../../../../shared/operationModeToolPolicy.js'
 import type { DecisionBroker, OperationModeUpgradeDecision, PermissionDecision } from './decisionBroker.js'
 import type { ChatHookSession } from './chatHookService.js'
 import type { ToolExecutionContext } from './toolLoopService.js'
@@ -38,8 +40,21 @@ const PLAN_WRITE_TOOLS = new Set(['Write', 'Edit', 'MultiEdit'])
 const MAX_PLAN_BYTES = 1024 * 1024
 // How long a tool hook waits for its tool_use envelope before recording against the current head.
 const OWNER_WAIT_MS = 2000
-// Chat mode matches Graviton's: a normal conversation with file edits removed, not native plan mode.
-export const CHAT_MODE_DISALLOWED_TOOLS = ['Edit', 'Write', 'MultiEdit', 'NotebookEdit', 'EnterPlanMode', 'ExitPlanMode']
+// Chat mode matches Graviton's: a normal conversation with file edits blocked, not native plan mode.
+// The tools stay in Claude's tool list (a PreToolUse hook denies them) so that switching modes keeps
+// the prompt cache: removing tools changes the prefix and re-bills the whole transcript.
+export const CHAT_MODE_BLOCKED_TOOLS = ['Edit', 'Write', 'MultiEdit', 'NotebookEdit', 'EnterPlanMode']
+// Rides on the user message, after the cached prefix, so it costs no cache either.
+export const CHAT_MODE_NOTE = '(Graviton Chat mode for this message: file edits are disabled, including through Bash. Answer, read and run read-only commands; the user can switch to Agent mode for changes.)'
+const CHAT_MODE_EDIT_DENIAL = 'File edits need Agent mode. Ask the user to switch to Agent mode in Graviton.'
+/** What Claude reads when the user switches mode during a run, as a queued message. */
+export function claudeModeSwitchNotice(mode: OperationMode): string {
+  return mode === 'plan'
+    ? '(Graviton switched to Chat mode: file edits are now disabled, including through Bash. Answer, read and run read-only commands; the user can switch back to Agent mode for changes.)'
+    : '(Graviton switched to Agent mode: file edits are enabled again.)'
+}
+/** A mode switch Claude read at this point of the run, recorded as a mode row. */
+export interface ClaudeModeSwitch { mode: OperationMode; previousMode: OperationMode; revision: number; content: string }
 // Claude Code's own settings layers, as the CLI loads them: skills, hooks, plugins and CLAUDE.md.
 export const CLAUDE_SETTING_SOURCES: NonNullable<Options['settingSources']> = ['user', 'project', 'local']
 const COMMAND_LOOKUP_TIMEOUT_MS = 15_000
@@ -60,8 +75,13 @@ export interface ClaudeQueuedInput {
   subscribe(wake: () => void): () => void
   /** The next entry not yet offered, as Claude prompt text and image data URLs; null when none. */
   prepareNext(): Promise<{ requestId: string; prompt: string; images: string[] } | null>
-  /** Claude started the entry: persist its user row below `parentId` and return it. */
-  deliver(requestId: string, parentId: string | null): any
+  /**
+   * Claude started the entry: persist its user row below `parentId` and return it. The row records
+   * `mode`; a `modeSwitch` the entry carried is persisted as a mode row above it.
+   */
+  deliver(requestId: string, parentId: string | null, mode: { mode: OperationMode; modeSwitch: ClaudeModeSwitch | null }): any
+  /** Claude read a standalone mode notice: persist its mode row below `parentId` and return it. */
+  recordModeSwitch(modeSwitch: ClaudeModeSwitch, parentId: string | null): any
   /** Claude will never run the entry. */
   release(requestId: string, outcome: { cancelled: true } | { error: string }): void
   /** True when nothing is queued; closes intake so a later send starts a successor run. */
@@ -359,6 +379,8 @@ export class ClaudeSessionService {
     nativeCommand?: boolean
     /** Messages the user queues while this run is live. */
     queuedInput?: ClaudeQueuedInput
+    /** The run's live Chat/Agent mode, shared with Graviton's mode route; a switch applies to the next tool call. */
+    modeControl?: OperationModeControl
   }): Promise<any> {
     const { request, lineageId, emit, sink, signal, cwd } = input
     if (!request.manualCompaction && !input.nativeCommand && /^\s*\//.test(request.content ?? '')) throw new Error('Native slash commands require an explicit Graviton command.')
@@ -542,8 +564,25 @@ export class ClaudeSessionService {
         }),
       }) : {}),
     }
-    // Chat mode only removes edit tools; ExitPlanMode is still handled if Claude enters plan mode itself.
-    let mode: 'plan' | 'execute' = request.operationMode === 'plan' ? 'plan' : 'execute'
+    // Chat mode only blocks edit tools; ExitPlanMode asks the user to switch to Agent mode.
+    // The mode can change mid-run (Graviton's mode route, or an accepted ExitPlanMode).
+    const control = input.modeControl ?? new OperationModeControl(request.operationMode === 'plan' ? 'plan' : 'execute')
+    // The mode Claude was last told (a queued message is on its way) and last read (it started one).
+    let toldMode = control.mode
+    let readMode = control.mode
+    // Main-agent tool calls still waiting for a result. A message queued now joins the turn at their
+    // boundary; with none running it would start a turn of its own after `result`.
+    const toolsInFlight = new Set<string>()
+    // A hook decision outranks Claude's allow rules, acceptEdits and the auto classifier, and reads
+    // the mode live, so a switch applies to the next tool call. Applies to child agents too.
+    // Hooks are not part of the prompt, so this costs no cache.
+    hooks.PreToolUse = [...(hooks.PreToolUse ?? []), { hooks: [async hook => {
+      if (control.mode !== 'plan' || hook.hook_event_name !== 'PreToolUse' || !CHAT_MODE_BLOCKED_TOOLS.includes(hook.tool_name)) return {}
+      const reason = hook.tool_name === 'EnterPlanMode'
+        ? 'Graviton Chat mode does not use native plan mode. Describe the plan in your reply.'
+        : CHAT_MODE_EDIT_DENIAL
+      return { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: reason } }
+    }] }]
     const permissionMode = request.claudePermissionMode === 'auto' ? 'auto' : 'default'
     const plansDir = path.join(cwd, CLAUDE_PLANS_DIRECTORY)
     let lastPlanPath: string | null = null
@@ -573,8 +612,8 @@ export class ClaudeSessionService {
         const id = context.toolUseID || randomUUID()
         const plan = await resolvePlan(args)
         if (plan) attachPlan(id, plan)
-        if (mode === 'execute') return { behavior: 'allow', updatedInput: args }
-        if (!this.deps.broker) return { behavior: 'deny', message: 'Switch to Agent mode in Graviton between turns.' }
+        if (control.mode === 'execute') return { behavior: 'allow', updatedInput: args }
+        if (!this.deps.broker) return { behavior: 'deny', message: 'Switch to Agent mode in Graviton.' }
         const event = { type: 'operation_mode_upgrade_required' as const, streamId: request.streamId!, toolCallId: id,
           toolName: name, toolInput: { ...args, ...(plan ?? {}) } }
         const pending = this.deps.broker.requestDecision<OperationModeUpgradeDecision>({ streamId: request.streamId!, toolCallId: id,
@@ -583,15 +622,19 @@ export class ClaudeSessionService {
         if (await pending !== 'switch_to_execute') {
           return { behavior: 'deny', message: 'The user chose to stay in Chat mode. Revise the plan or ask what to change.' }
         }
-        mode = 'execute'
+        // Through the shared control, so the queue's successor run and the composer see Agent mode too.
+        // Claude learns from this tool result; a notice goes only if a message on its way says otherwise.
+        control.change('execute', `upgrade:${id}`)
+        readMode = 'execute'
+        syncToldMode()
         return { behavior: 'allow', updatedInput: args, updatedPermissions: [{ type: 'setMode', mode: 'default', destination: 'session' }] }
       }
       // AskUserQuestion requires an answer protocol beyond permission; do not turn Approve into an invented answer.
       if (name === 'AskUserQuestion') return { behavior: 'deny', message: 'Ask the user in your text response instead.' }
       // Auto-approval answers permission requests; it must not let Chat mode edit files.
-      // The tools are also disallowed in options; this guards a CLI that still asks.
-      if (mode === 'plan' && CHAT_MODE_DISALLOWED_TOOLS.includes(name)) {
-        return { behavior: 'deny', message: 'File edits need Agent mode. Ask the user to switch to Agent mode in Graviton.' }
+      // The PreToolUse hook denies these first; this guards a CLI that still asks.
+      if (control.mode === 'plan' && CHAT_MODE_BLOCKED_TOOLS.includes(name)) {
+        return { behavior: 'deny', message: CHAT_MODE_EDIT_DENIAL }
       }
       if (!this.deps.broker) return { behavior: 'deny', message: 'Approval UI unavailable' }
       const id = context.toolUseID || randomUUID()
@@ -599,7 +642,9 @@ export class ClaudeSessionService {
       const pending = this.deps.broker.requestDecision<PermissionDecision>({ streamId: request.streamId!, toolCallId: id,
         kind: 'permission', signal: context.signal, prompt: event })
       if (this.deps.broker.hasPending(request.streamId!, id)) emit(event)
-      return await pending === 'deny' ? { behavior: 'deny', message: 'Denied by user' } : { behavior: 'allow', updatedInput: args }
+      if (await pending !== 'deny') return { behavior: 'allow', updatedInput: args }
+      // A switch to Chat mode denies edit prompts that were still waiting.
+      return { behavior: 'deny', message: control.mode === 'plan' && CHAT_MODE_BLOCKED_TOOLS.includes(name) ? CHAT_MODE_EDIT_DENIAL : 'Denied by user' }
     }
     // Thinking is never disabled: several Claude models reject it, so the composer offers no
     // Off and a stale think:false falls back to the selected effort or the native default.
@@ -612,7 +657,6 @@ export class ClaudeSessionService {
       cwd, model: request.modelName, ...(sessionId ? { resume: sessionId } : {}),
       ...(input.additionalDirectories?.length ? { additionalDirectories: input.additionalDirectories } : {}),
       abortController, includePartialMessages: true, permissionMode,
-      ...(mode === 'plan' ? { disallowedTools: CHAT_MODE_DISALLOWED_TOOLS } : {}),
       // Claude's own settings load (skills, hooks, plugins, CLAUDE.md) as in the CLI; MCP stays off.
       canUseTool, permissionPrompts: 'host', settingSources: CLAUDE_SETTING_SOURCES, strictMcpConfig: true, mcpServers: {},
       // Hook lifecycle events become Graviton hook runs (`nativeHooks`).
@@ -627,8 +671,10 @@ export class ClaudeSessionService {
     options.pathToClaudeCodeExecutable = executable
     options.env = claudeProcessEnvironment()
     const selectedFiles = (request.selectedFiles ?? []).map(file => `File: ${file.path}\n${file.contents}`).join('\n\n')
+    const userPrompt = selectedFiles ? `${request.content}\n\nSelected file context:\n${selectedFiles}` : request.content
+    // A native command's arguments are the rest of its text, so the note stays off commands.
     const prompt = request.manualCompaction ? '/compact'
-      : selectedFiles ? `${request.content}\n\nSelected file context:\n${selectedFiles}` : request.content
+      : control.mode === 'plan' && !input.nativeCommand ? `${userPrompt}\n\n${CHAT_MODE_NOTE}` : userPrompt
     // Input stays open while queued messages may still reach Claude; closing it ends the session.
     const outbox: SDKUserMessage[] = []
     let inputClosed = false
@@ -653,6 +699,17 @@ export class ClaudeSessionService {
     const offered = new Map<string, string>()
     // Graviton request id → native command uuid, for every entry sent to Claude.
     const sent = new Map<string, string>()
+    // Native command uuid → the mode that message tells Claude, in the order they were sent.
+    const offeredModes = new Map<string, { mode: OperationMode; revision: number }>()
+    const offerMode = (uuid: string, mode: OperationMode) => {
+      offeredModes.set(uuid, { mode, revision: control.revision })
+      toldMode = mode
+    }
+    // What Claude will know once it reads everything on its way; a gap from the live mode is re-announced.
+    const syncToldMode = () => {
+      toldMode = [...offeredModes.values()].at(-1)?.mode ?? readMode
+      if (toldMode !== control.mode) void pump()
+    }
     let pumping = false
     let pumpAgain = false
     // The last turn ended; the session closes once no queued message is left to start one.
@@ -676,10 +733,15 @@ export class ClaudeSessionService {
         do {
           pumpAgain = false
           for (let next = await queued.prepareNext(); next && !inputClosed; next = await queued.prepareNext()) {
+            // The message carries the mode Claude applies from here: a switch it has not been told
+            // about, or the note every Chat-mode message gets.
+            const mode = control.mode
+            const note = mode !== toldMode ? claudeModeSwitchNotice(mode) : mode === 'plan' ? CHAT_MODE_NOTE : ''
+            const text = note ? `${next.prompt}\n\n${note}` : next.prompt
             let content: SDKUserMessage['message']['content']
             try {
               const images = next.images.map(claudeImageBlock)
-              content = images.length ? [...images, { type: 'text' as const, text: next.prompt }] : next.prompt
+              content = images.length ? [...images, { type: 'text' as const, text }] : text
             } catch (error) {
               queued.release(next.requestId, { error: error instanceof Error ? error.message : String(error) })
               continue
@@ -687,9 +749,20 @@ export class ClaudeSessionService {
             const uuid = randomUUID()
             offered.set(uuid, next.requestId)
             sent.set(next.requestId, uuid)
+            offerMode(uuid, mode)
             // 'next' joins the running turn at its next tool boundary, or starts a turn after `result`.
             outbox.push({ type: 'user', message: { role: 'user', content }, parent_tool_use_id: null, uuid,
               session_id: activeSession ?? '', priority: 'next' })
+            wakeInput()
+          }
+          // A switch with no queued message to carry it goes alone, but only while a tool runs: it then
+          // joins that tool's boundary instead of starting a turn of its own after `result`. Otherwise
+          // it waits for the next tool, the next queued message, or (failing both) the final row's mode.
+          if (control.mode !== toldMode && toolsInFlight.size && !inputClosed) {
+            const uuid = randomUUID()
+            offerMode(uuid, control.mode)
+            outbox.push({ type: 'user', message: { role: 'user', content: claudeModeSwitchNotice(control.mode) }, parent_tool_use_id: null,
+              uuid, session_id: activeSession ?? '', priority: 'next' })
             wakeInput()
           }
         } while (pumpAgain && !inputClosed)
@@ -708,16 +781,22 @@ export class ClaudeSessionService {
       if (typeof cancel !== 'function' || !await cancel.call(query, uuid)) return false
       // The CLI's `cancelled` lifecycle frame can arrive before this answer and release it first.
       if (offered.delete(uuid)) {
+        offeredModes.delete(uuid)
         queued.release(requestId, { cancelled: true })
+        syncToldMode()
         settleIdle()
       }
       return true
     })
     const unsubscribeQueue = queued?.subscribe(() => { void pump() })
+    // Each response records the mode it ran in. A switch Claude never read as a message (no tool step
+    // left) still reaches the final row, where a mode row would displace the resumable checkpoint.
+    const runMeta = () => ({ ...(this.deps.broker ? { toolAutoApprove: this.deps.broker.isAutoApproveAll(request.streamId!) } : {}),
+      operationMode: control.mode })
     const persist = (content: string, blocks: any[], uuid?: string, partial = false) => {
       const row = sink.persistAssistantMessage({ conversationId: request.conversationId, parentId: parent,
         modelName: request.modelName, content, contentBlocks: blocks,
-        meta: { claude: { sessionId: activeSession, messageUuid: uuid ?? null, checkpoint: false, partial } } })
+        meta: { operationMode: control.mode, claude: { sessionId: activeSession, messageUuid: uuid ?? null, checkpoint: false, partial } } })
       parent = row.id
       finalMessage = row
       if (uuid && activeSession) this.deps.sessions.record(row.id, activeSession, uuid, cwd, false)
@@ -733,16 +812,24 @@ export class ClaudeSessionService {
         if ((event as { type: string }).type === 'command_lifecycle') {
           const { command_uuid: uuid, state } = event as unknown as { command_uuid: string; state: string }
           const requestId = offered.get(uuid)
-          if (!requestId || state === 'queued') continue
+          const told = offeredModes.get(uuid)
+          if ((!requestId && !told) || state === 'queued') continue
           offered.delete(uuid)
+          offeredModes.delete(uuid)
           if (state === 'started') {
             idle = false
             clearTimeout(startTimer)
-            parent = queued!.deliver(requestId, parent).id
-          } else {
+            // A switch is recorded where Claude read it, as a mode row above the message.
+            const modeSwitch = told && told.mode !== readMode
+              ? { mode: told.mode, previousMode: readMode, revision: told.revision, content: claudeModeSwitchNotice(told.mode) } : null
+            if (told) readMode = told.mode
+            if (requestId) parent = queued!.deliver(requestId, parent, { mode: told?.mode ?? control.mode, modeSwitch }).id
+            else if (modeSwitch) parent = queued!.recordModeSwitch(modeSwitch, parent).id
+          } else if (requestId) {
             queued!.release(requestId, state === 'cancelled' ? { cancelled: true } : { error: `Claude did not run this message (${state}).` })
             settleIdle()
           }
+          syncToldMode()
           continue
         }
         if ('session_id' in event && event.session_id) {
@@ -817,7 +904,7 @@ export class ClaudeSessionService {
             response.content += content
             response.calls.push(...calls)
             row = this.deps.messages.updateClaudeProjection(response.message.id, response.content, response.blocks,
-              { ...claudeMessageMetadata(response.message.meta), ...(this.deps.broker ? { toolAutoApprove: this.deps.broker.isAutoApproveAll(request.streamId!) } : {}), claude: { sessionId: activeSession, messageUuid: event.uuid, checkpoint: false } })
+              { ...claudeMessageMetadata(response.message.meta), ...runMeta(), claude: { sessionId: activeSession, messageUuid: event.uuid, checkpoint: false } })
             response.message = row
             finalMessage = row
             if (activeSession) this.deps.sessions.record(row.id, activeSession, event.uuid, cwd, false)
@@ -830,6 +917,9 @@ export class ClaudeSessionService {
           lastUuid = event.uuid
           turnEntries.push(resumeEntry(event.uuid, 'assistant', event.message.content))
           streamedText = ''; streamedReasoning = ''
+          for (const call of calls) toolsInFlight.add(call.id)
+          // A switch held for want of a tool step can go now.
+          if (calls.length && toldMode !== control.mode) void pump()
           for (const call of calls) {
             toolOwners.set(call.id, response)
             for (const wake of ownerWaiters.get(call.id) ?? []) wake()
@@ -850,6 +940,7 @@ export class ClaudeSessionService {
           const soleResult = blocks.filter(block => block.type === 'tool_result').length === 1
           for (const result of blocks) {
             if (result.type !== 'tool_result') continue
+            toolsInFlight.delete(result.tool_use_id)
             const owner = toolOwners.get(result.tool_use_id)
             const content = textOf(result.content)
             const toolName = owner?.calls.find(call => call.id === result.tool_use_id)?.name
@@ -882,6 +973,7 @@ export class ClaudeSessionService {
         } else if (event.type === 'result') {
           if (event.is_error || event.subtype !== 'success') throw new Error(`Claude run failed: ${'errors' in event ? event.errors.join('; ') : event.subtype}`)
           completed = true
+          toolsInFlight.clear()
           // A queued message keeps the session open: Claude runs it as the next turn.
           if (!queued) finishInput()
           else { idle = true; settleIdle() }
@@ -901,7 +993,7 @@ export class ClaudeSessionService {
       // Loads no later row or matching tool result claimed (a trigger path that did not match).
       for (const block of takeInstructions(() => true)) finalBlocks.push({ ...block, index: finalBlocks.length })
       finalMessage = this.deps.messages.updateClaudeProjection(finalMessage.id, finalMessage.content, finalBlocks,
-        { ...claudeMessageMetadata(finalMessage.meta), ...(this.deps.broker ? { toolAutoApprove: this.deps.broker.isAutoApproveAll(request.streamId!) } : {}), claude: { sessionId: activeSession, messageUuid: lastUuid, checkpoint: true } })
+        { ...claudeMessageMetadata(finalMessage.meta), ...runMeta(), claude: { sessionId: activeSession, messageUuid: lastUuid, checkpoint: true } })
       emit({ type: 'assistant_message_persisted', message: finalMessage, lineageId })
       this.deps.sessions.session(lineageId, activeSession, 'ready')
       return finalMessage
@@ -916,7 +1008,7 @@ export class ClaudeSessionService {
         if (response) {
           for (const block of blocks) response.blocks.push({ ...block, index: response.blocks.length })
           finalMessage = this.deps.messages.updateClaudeProjection(response.message.id, response.content + streamedText, response.blocks,
-            { ...claudeMessageMetadata(response.message.meta), ...(this.deps.broker ? { toolAutoApprove: this.deps.broker.isAutoApproveAll(request.streamId!) } : {}), claude: { sessionId: activeSession, checkpoint: false, partial: true } })
+            { ...claudeMessageMetadata(response.message.meta), ...runMeta(), claude: { sessionId: activeSession, checkpoint: false, partial: true } })
           emit({ type: 'assistant_message_persisted', message: finalMessage, lineageId })
         } else persist(streamedText, blocks, undefined, true)
       }

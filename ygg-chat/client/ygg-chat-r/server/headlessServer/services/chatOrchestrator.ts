@@ -3,8 +3,9 @@ import { executionPathAfterHandoff, portableSummaryText } from '../../../../../s
 import { isCleanStartUserBranch } from '../../../../../shared/cleanStartBranch.js'
 import { CLAUDE_MODELS, claudeMessageMetadata, isClaudeProvider, isClaudeTranscriptMessage } from '../../../../../shared/claudeProvider.js'
 import { ClaudeSessionRepo, assertClaudeBranchSelection } from '../persistence/claudeSessionRepo.js'
-import { ClaudeSessionService, claudeImageBlock, type ClaudeQueuedInput } from './claudeSessionService.js'
+import { CHAT_MODE_BLOCKED_TOOLS, ClaudeSessionService, claudeImageBlock, type ClaudeModeSwitch, type ClaudeQueuedInput } from './claudeSessionService.js'
 import { compactionInstruction } from '../../../../../shared/compaction.js'
+import type { AdmissionMismatchReason } from '../../../../../shared/runAdmission.js'
 import { v4 as uuidv4 } from 'uuid'
 import type { HeadlessMessageRequest, HeadlessStreamEvent } from '../../../../../shared/headlessApi.js'
 import { createModelThroughput, recordModelRequest } from '../../../../../shared/runStatistics.js'
@@ -614,15 +615,44 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
   /** Read-only admission classification. Never reconcile/create a lineage merely
    * to decide where a second client's stale-parent input belongs. */
   classifyOrdinarySend(request: HeadlessMessageRequest): { lineageId: string | null; parentId: string | null; activeStreamId?: string } {
-    const mismatch = () => { throw Object.assign(new Error('The selected parent is not the current branch head. Reload or explicitly branch.'), { code: 'lineage_mismatch' }) }
-    if (!this.conversationRepo.getById(request.conversationId)) return mismatch()
-    const parent = request.parentId ? this.conversationRepo.getMessageById(request.parentId) : null
-    if (request.parentId && (!parent || parent.conversation_id !== request.conversationId)) return mismatch()
-    const lineage = request.lineageId ? this.lineageRepo.get(request.lineageId)
+    let parent: any = null
+    let lineage: LineageRow | null | undefined = null
+    let detail: { pathMessageIds: string[] } | null | undefined = null
+    // One user-facing message, but each exit logs why so a rejection can be diagnosed.
+    const mismatch = (reason: AdmissionMismatchReason): never => {
+      console.error('[LineageForkDebug][Main] admission-mismatch', {
+        reason,
+        conversationId: request.conversationId,
+        operationId: request.operationId ?? null,
+        streamId: request.streamId ?? null,
+        provider: request.provider ?? null,
+        requestedParentId: request.parentId ?? null,
+        requestedLineageId: request.lineageId ?? null,
+        resolvedLineageId: lineage?.id ?? null,
+        resolvedLineageStatus: lineage?.status ?? null,
+        resolvedLineageHeadId: lineage?.head_message_id ?? null,
+        parentFound: Boolean(parent),
+        parentConversationId: parent?.conversation_id ?? null,
+        parentLineageId: parent?.lineage_id ?? null,
+        parentOnLineagePath: parent && detail ? detail.pathMessageIds.includes(parent.id) : null,
+        lineagePathTail: detail?.pathMessageIds.slice(-4) ?? null,
+        activeRuns: [...this.inputRuns].filter(([, run]) => !run.terminal && run.request.conversationId === request.conversationId)
+          .map(([streamId, run]) => ({ streamId, lineageId: run.queue.lineageId ?? null, head: run.head ?? null,
+            operation: run.request.operation, isBranch: Boolean(run.request.isBranch), aborted: Boolean(run.signal?.aborted) })),
+      })
+      throw Object.assign(new Error('The selected parent is not the current branch head. Reload or explicitly branch.'), { code: 'lineage_mismatch', reason })
+    }
+    if (!this.conversationRepo.getById(request.conversationId)) return mismatch('conversation_missing')
+    parent = request.parentId ? this.conversationRepo.getMessageById(request.parentId) : null
+    if (request.parentId && !parent) return mismatch('parent_missing')
+    if (parent && parent.conversation_id !== request.conversationId) return mismatch('parent_foreign_conversation')
+    lineage = request.lineageId ? this.lineageRepo.get(request.lineageId)
       : this.lineageRepo.resolve({ messageId: request.parentId })
-    if ((request.lineageId && !lineage) || (lineage && (lineage.conversation_id !== request.conversationId || lineage.status === 'archived'))) return mismatch()
-    const detail = lineage ? this.lineageRepo.getDetail(request.conversationId, lineage.id) : null
-    if (parent && lineage && !detail?.pathMessageIds.includes(parent.id)) return mismatch()
+    if (request.lineageId && !lineage) return mismatch('lineage_missing')
+    if (lineage && lineage.conversation_id !== request.conversationId) return mismatch('lineage_foreign_conversation')
+    if (lineage && lineage.status === 'archived') return mismatch('lineage_archived')
+    detail = lineage ? this.lineageRepo.getDetail(request.conversationId, lineage.id) : null
+    if (parent && lineage && !detail?.pathMessageIds.includes(parent.id)) return mismatch('parent_not_on_lineage')
     for (const [streamId, run] of this.inputRuns) {
       if (run.terminal || run.request.conversationId !== request.conversationId) continue
       if (run.signal?.aborted && (run.queue.lineageId === lineage?.id || run.request.parentId === request.parentId)) {
@@ -643,10 +673,12 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
         return { lineageId: run.queue.lineageId ?? lineage?.id ?? null, parentId: run.head, activeStreamId: streamId }
       }
     }
-    if (lineage && lineage.head_message_id !== request.parentId) return mismatch()
+    if (lineage && lineage.head_message_id !== request.parentId) return mismatch('parent_not_head')
     if (!parent) {
-      if (this.conversationRepo.listMessages(request.conversationId).length) return mismatch()
-    } else if (!lineage && this.conversationRepo.listMessages(request.conversationId).some((row: any) => row.parent_id === parent.id)) return mismatch()
+      if (this.conversationRepo.listMessages(request.conversationId).length) return mismatch('empty_parent_on_nonempty_conversation')
+    } else if (!lineage && this.conversationRepo.listMessages(request.conversationId).some((row: any) => row.parent_id === parent.id)) {
+      return mismatch('unowned_parent_has_children')
+    }
     return { lineageId: lineage?.id ?? null, parentId: request.parentId }
   }
 
@@ -732,12 +764,17 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
 
   changeOperationMode(input: { conversationId: string; mode: 'plan' | 'execute'; requestId: string; streamId?: string | null; parentId?: string | null; lineageId?: string | null }): any {
     if (input.streamId) {
-      if (isClaudeProvider(this.inputRuns.get(input.streamId)?.request.provider)) throw new Error('Change Claude mode between turns, not during an active run.')
+      const inputRun = this.inputRuns.get(input.streamId)
+      const claudeRun = isClaudeProvider(inputRun?.request.provider)
+      // Native /compact ends at its summary and takes no queued input to carry the switch.
+      if (claudeRun && inputRun?.request.manualCompaction) throw new Error('Change Claude mode after compaction finishes.')
       const run = this.modeRuns.get(input.streamId)
       if (!run || run.conversationId !== input.conversationId || run.control.closed) {
         throw new Error('Run is no longer active; reload the branch before switching modes')
       }
       const accepted = run.control.change(input.mode, input.requestId)
+      // The Claude session queues the switch for Claude to read; its edit guard already applies it.
+      if (claudeRun) inputRun?.wake?.()
       return { status: run.control.hasPending ? 'pending' : 'applied', ...accepted }
     }
     // Idle mode is composer state, not transcript content. The next send carries
@@ -745,10 +782,11 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
     throw new Error('Live mode changes require streamId; send the selected idle mode with the next message')
   }
 
-  private persistModeNotification(conversationId: string, parentId: string | null, mode: 'plan' | 'execute', previousMode: 'plan' | 'execute' | null, lineageId: string | null, revision: number): any {
+  private persistModeNotification(conversationId: string, parentId: string | null, mode: 'plan' | 'execute', previousMode: 'plan' | 'execute' | null, lineageId: string | null, revision: number,
+    content = modeNotificationContent(mode)): any {
     return this.messageRepo.transaction(() => {
       const message = this.messageRepo.createMessage({
-        conversationId, parentId, role: 'user', content: modeNotificationContent(mode),
+        conversationId, parentId, role: 'user', content,
         meta: { kind: 'operation_mode_change', mode, previousMode, revision },
       })
       if (lineageId) this.lineageRepo.appendMessage(lineageId, message.id)
@@ -927,8 +965,18 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
     /** The latest Graviton row, for UserPromptSubmit lineage. */
     head: () => string | null
     delivered: (row: any) => void
+    modeControl: OperationModeControl
   }): ClaudeQueuedInput {
     const { request, lineageId, streamId, queue, run, hookSession, emit } = input
+    // A mid-run switch, recorded where Claude read it. The run's later rows (and the next send)
+    // continue below it, so it never displaces a final response checkpoint.
+    const recordModeSwitch = (modeSwitch: ClaudeModeSwitch, parentId: string | null) => {
+      const row = this.persistModeNotification(request.conversationId, parentId, modeSwitch.mode, modeSwitch.previousMode,
+        lineageId, modeSwitch.revision, modeSwitch.content)
+      input.modeControl.settlePending()
+      emit({ type: 'operation_mode_changed', message: row, mode: modeSwitch.mode, revision: modeSwitch.revision, streamId })
+      return row
+    }
     const offered = new Set<string>()
     const prepared = new Map<string, { content: string; blocks: any[] }>()
     const imagesOf = (submission: QueuedMessageSubmission) => (submission.attachmentsBase64 ?? [])
@@ -962,14 +1010,16 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
         }
         return null
       },
-      deliver: (requestId, parentId) => {
+      deliver: (requestId, parentId, { mode, modeSwitch }) => {
         const entry = queue.claimEntry(requestId) ?? queue.get(requestId)!
         const { content, blocks } = prepared.get(requestId) ?? { content: entry.submission.content, blocks: [] }
         prepared.delete(requestId)
-        const submissionRequest = { ...request, operation: 'send' as const, content, manualCompaction: false,
+        // The user row records the mode Claude read it in, which may differ from the run's start.
+        const submissionRequest = { ...request, operation: 'send' as const, content, manualCompaction: false, operationMode: mode,
           selectedFiles: entry.submission.selectedFiles ?? [], attachmentsBase64: entry.submission.attachmentsBase64 ?? null }
+        const parent = modeSwitch ? recordModeSwitch(modeSwitch, parentId).id : parentId
         const row = this.messageRepo.transaction(() => {
-          const message = this.createUserMessage(submissionRequest, parentId, content, blocks.length ? blocks : null)
+          const message = this.createUserMessage(submissionRequest, parent, content, blocks.length ? blocks : null)
           this.lineageRepo.appendMessage(lineageId, message.id)
           return { ...message, ...this.messageRepo.get(message.id) }
         })
@@ -979,6 +1029,7 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
         queue.settle(requestId, { messageId: row.id })
         return row
       },
+      recordModeSwitch,
       release: (requestId, outcome) => {
         prepared.delete(requestId)
         if ('cancelled' in outcome) queue.cancel(requestId)
@@ -1172,7 +1223,11 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
     let modeReady = false
     const waitingTools = new Map<string, string>()
     const modeControl = new OperationModeControl(request.operationMode ?? 'execute', mode => {
-      const blocked = new Set([...waitingTools].filter(([, name]) => requiresAgentMode({ name }, mode)).map(([id]) => id))
+      // Claude names its own tools, and its Chat mode blocks only file edits.
+      const needsAgent = isClaudeProvider(request.provider)
+        ? (name: string) => mode === 'plan' && CHAT_MODE_BLOCKED_TOOLS.includes(name)
+        : (name: string) => requiresAgentMode({ name }, mode)
+      const blocked = new Set([...waitingTools].filter(([, name]) => needsAgent(name)).map(([id]) => id))
       const toolCallIds = this.decisionBroker?.reconcileOperationMode(trackedStreamId, mode, blocked) ?? []
       if (toolCallIds.length) emit({ type: 'operation_mode_decisions_cleared', streamId: trackedStreamId, toolCallIds })
     })
@@ -1479,7 +1534,19 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
     // head inside the persistence transaction: an explicit operation must not
     // turn this ordinary continuation into an unintended fork while it waited.
     if (request.operation === 'send' && !request.isBranch && !request.retrigger && sourceLineage && sourceLineage.head_message_id !== sourceMessageId) {
-      throw Object.assign(new Error('Branch advanced during setup. Reload before sending or explicitly branch.'), { code: 'lineage_mismatch' })
+      const reason: AdmissionMismatchReason = 'setup_head_advanced'
+      console.error('[LineageForkDebug][Main] admission-mismatch', {
+        reason,
+        conversationId: request.conversationId,
+        operationId: request.operationId ?? null,
+        streamId: request.streamId ?? null,
+        requestedParentId: request.parentId ?? null,
+        requestedLineageId: request.lineageId ?? null,
+        sourceMessageId: sourceMessageId ?? null,
+        resolvedLineageId: sourceLineage.id,
+        resolvedLineageHeadId: sourceLineage.head_message_id ?? null,
+      })
+      throw Object.assign(new Error('Branch advanced during setup. Reload before sending or explicitly branch.'), { code: 'lineage_mismatch', reason })
     }
 
     // Autonomous continuation must never silently fork from a stale tail.
@@ -1690,9 +1757,11 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
       let lastUserId: string | null = resolved.userMessage?.id ?? resolved.assistantParentId ?? null
       const queuedInput = request.manualCompaction ? undefined : this.claudeQueuedInput({ request, lineageId, streamId: trackedStreamId,
         queue: inputQueue, run: inputRun, hookSession, emit, head: () => lastPersistedAssistantId ?? lastUserId,
-        delivered: row => { lastUserId = row.id } })
+        delivered: row => { lastUserId = row.id }, modeControl })
       if (queuedInput) emit({ type: 'message_queue_updated', snapshot: inputQueue.snapshot() })
-      const finalMessage = await this.claudeSessions.run({ request: { ...request, content, streamId: trackedStreamId }, lineageId,
+      // Live mode switches reach this run through the same route as Graviton runs.
+      this.modeRuns.set(trackedStreamId, { conversationId: request.conversationId, control: modeControl })
+      const finalMessage = await this.claudeSessions.run({ request: { ...request, content, streamId: trackedStreamId }, lineageId, modeControl,
         images: turnUser?.artifacts ?? [],
         userMessage: resolved.userMessage, parentId: resolved.assistantParentId, sourceMessageId: sourceId ?? null,
         fork: request.operation !== 'send' || Boolean(request.isBranch), cwd: contextRootPath!, sink, signal, hookSession, nativeCommand,

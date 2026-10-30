@@ -1,5 +1,5 @@
 import Database from 'better-sqlite3'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { OperationReceiptRepo, OPERATION_RECEIPT_SCHEMA } from '../../persistence/operationReceiptRepo.js'
 import { RunAdmissionService } from '../runAdmissionService.js'
 import { RunSessionRegistry } from '../runSessionRegistry.js'
@@ -87,6 +87,32 @@ describe('read-only lineage admission', () => {
     host.inputRuns.clear()
     expect(() => host.classifyOrdinarySend({ ...request('a'), parentId: 'old', lineageId: 'l' })).toThrow('branch head')
     expect(host.classifyOrdinarySend({ ...request('a'), parentId: 'head', lineageId: 'l' }).activeStreamId).toBeUndefined()
+  })
+  it('logs a distinct reason for each rejection behind the shared message', () => {
+    const host = fixture()
+    host.inputRuns.clear()
+    const logged: any[] = []
+    const spy = vi.spyOn(console, 'error').mockImplementation((label, detail) => { logged.push({ label, detail }) })
+    const reasonOf = (input: Partial<HeadlessMessageRequest>) => {
+      try { host.classifyOrdinarySend({ ...request('r'), ...input }) } catch (error: any) { return error.reason }
+      return 'accepted'
+    }
+    try {
+      expect(reasonOf({ parentId: 'missing', lineageId: 'l' })).toBe('parent_missing')
+      expect(reasonOf({ parentId: 'foreign', lineageId: 'l' })).toBe('parent_foreign_conversation')
+      expect(reasonOf({ parentId: 'head', lineageId: 'gone' })).toBe('lineage_missing')
+      expect(reasonOf({ parentId: 'sibling', lineageId: 'l' })).toBe('parent_not_on_lineage')
+      expect(reasonOf({ parentId: 'old', lineageId: 'l' })).toBe('parent_not_head')
+      expect(reasonOf({ parentId: 'head', lineageId: 'l' })).toBe('accepted')
+      expect(logged).toHaveLength(5)
+      expect(logged.every(entry => entry.label === '[LineageForkDebug][Main] admission-mismatch')).toBe(true)
+      expect(logged[4].detail).toMatchObject({
+        reason: 'parent_not_head', requestedParentId: 'old', requestedLineageId: 'l',
+        resolvedLineageId: 'l', resolvedLineageHeadId: 'head', parentOnLineagePath: true,
+      })
+    } finally {
+      spy.mockRestore()
+    }
   })
 })
 

@@ -427,7 +427,7 @@ describe('source lineage membership validation', () => {
       expect(await queue.prepareNext()).toBeNull()
       expect(orchestrator.getMessageQueue('c1', 'claude-q').items.find(item => item.requestId === 'q1')?.status).toBe('queued')
       expect(queue.tryClose()).toBe(false)
-      const user = queue.deliver('q1', toolTurn.id)
+      const user = queue.deliver('q1', toolTurn.id, { mode: 'execute', modeSwitch: null })
       expect(user).toMatchObject({ parent_id: toolTurn.id, role: 'user', content: 'also check tests' })
       const final = persist(user.id, 'done')
       db.prepare('INSERT INTO claude_message_checkpoints VALUES (?, ?, ?, ?, 1)').run(final.id, 's', 'uuid-final', testDirectory)
@@ -446,6 +446,71 @@ describe('source lineage membership validation', () => {
     const complete = events.find(event => event.type === 'complete')
     expect((db.prepare('SELECT head_message_id FROM lineages WHERE id=?').get(complete.lineageId) as any).head_message_id).toBe(complete.message.id)
     expect(statements.getMessageById.get(complete.message.id).parent_id).toBe(queued[0].message.id)
+  })
+
+  it('switches a live Claude run between Chat and Agent mode and records each switch where Claude read it', async () => {
+    db.exec(CLAUDE_SESSION_SCHEMA)
+    const claudeSessions = { run: vi.fn(async (input: any) => {
+      const queue = input.queuedInput
+      let woke = 0
+      queue.subscribe(() => { woke++ })
+      queue.bindCancel(async () => null)
+      const persist = (parentId: string, content: string) => {
+        const message = input.sink.persistAssistantMessage({ conversationId: 'c1', parentId, modelName: input.request.modelName, content,
+          meta: { claude: { sessionId: 's' } } })
+        input.emit({ type: 'assistant_message_persisted', message, lineageId: input.lineageId })
+        return message
+      }
+      const toolTurn = persist(input.parentId, 'running a tool')
+      // The route flips the shared control at once (the session's edit guard reads it) and wakes the session.
+      const accepted = orchestrator.changeOperationMode({ conversationId: 'c1', mode: 'plan', requestId: 'm1', streamId: 'claude-mode' })
+      expect(accepted).toMatchObject({ status: 'pending', mode: 'plan', revision: 1 })
+      expect(input.modeControl.mode).toBe('plan')
+      expect(woke).toBe(1)
+      // Claude read the switch on its own at the tool boundary.
+      const modeRow = queue.recordModeSwitch({ mode: 'plan', previousMode: 'execute', revision: 1, content: 'switched to Chat' }, toolTurn.id)
+      expect(modeRow).toMatchObject({ parent_id: toolTurn.id, role: 'user', content: 'switched to Chat' })
+      expect(input.modeControl.hasPending).toBe(false)
+      // A later switch rides on a queued message: mode row first, then the user row recording its mode.
+      orchestrator.changeOperationMode({ conversationId: 'c1', mode: 'execute', requestId: 'm2', streamId: 'claude-mode' })
+      orchestrator.submitQueuedMessage('c1', 'claude-mode', { requestId: 'q1', content: 'now edit it' })
+      expect(await queue.prepareNext()).toMatchObject({ requestId: 'q1', prompt: 'now edit it' })
+      const user = queue.deliver('q1', modeRow.id, { mode: 'execute',
+        modeSwitch: { mode: 'execute', previousMode: 'plan', revision: 2, content: 'switched to Agent' } })
+      const agentRow = statements.getMessageById.get(user.parent_id)
+      expect(agentRow).toMatchObject({ parent_id: modeRow.id, role: 'user', content: 'switched to Agent' })
+      expect(JSON.parse(user.meta)).toMatchObject({ operationMode: 'execute' })
+      const final = persist(user.id, 'done')
+      db.prepare('INSERT INTO claude_message_checkpoints VALUES (?, ?, ?, ?, 1)').run(final.id, 's', 'uuid-final', testDirectory)
+      queue.tryClose()
+      return final
+    }) }
+    orchestrator = new ChatOrchestrator({ db, statements, providerRouter: providerRouter as any, claudeSessions: claudeSessions as any })
+    const events: any[] = []
+    await orchestrator.runMessage({ operation: 'send', conversationId: 'c1', provider: 'claudecode', modelName: 'claude-haiku-5-5',
+      content: 'hello', rootPath: testDirectory, streamId: 'claude-mode', operationMode: 'execute' } as any, event => events.push(event))
+    const changes = events.filter(event => event.type === 'operation_mode_changed')
+    expect(changes.map(event => [event.mode, event.revision, JSON.parse(event.message.meta).kind])).toEqual([
+      ['plan', 1, 'operation_mode_change'], ['execute', 2, 'operation_mode_change']])
+    expect(() => orchestrator.changeOperationMode({ conversationId: 'c1', mode: 'plan', requestId: 'm3', streamId: 'claude-mode' }))
+      .toThrow('no longer active')
+    // A message queued after the run ends starts its successor in the mode the run ended in.
+    const next = orchestrator.submitQueuedMessage('c1', 'claude-mode', { requestId: 'q2', content: 'after the run' })
+    expect(next.restart).toMatchObject({ operationMode: 'execute', content: 'after the run' })
+  })
+
+  it('refuses a live Claude mode switch during native compaction', async () => {
+    db.exec(CLAUDE_SESSION_SCHEMA)
+    let refusal: unknown
+    const claudeSessions = { run: vi.fn(async (input: any) => {
+      try { orchestrator.changeOperationMode({ conversationId: 'c1', mode: 'plan', requestId: 'm1', streamId: 'claude-compact-mode' }) } catch (error) { refusal = error }
+      return input.sink.persistAssistantMessage({ conversationId: 'c1', parentId: input.parentId, modelName: input.request.modelName,
+        content: 'summary', meta: { kind: 'compaction_summary', state: 'committed', claude: { sessionId: 's' } } })
+    }) }
+    orchestrator = new ChatOrchestrator({ db, statements, providerRouter: providerRouter as any, claudeSessions: claudeSessions as any })
+    await orchestrator.runMessage({ operation: 'send', conversationId: 'c1', provider: 'claudecode', modelName: 'claude-haiku-5-5',
+      content: '/compact', manualCompaction: true, rootPath: testDirectory, streamId: 'claude-compact-mode' } as any, () => {}).catch(() => {})
+    expect(String(refusal)).toContain('after compaction finishes')
   })
 
   it('refuses queued input during a Claude compaction run', async () => {

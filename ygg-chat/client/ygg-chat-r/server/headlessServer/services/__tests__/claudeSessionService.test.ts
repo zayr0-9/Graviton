@@ -2,7 +2,8 @@ import { describe, it, expect, vi } from 'vitest'
 import { mkdir, mkdtemp, realpath, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
-import { ClaudeSessionService, interruptedResumePoint, safeResumePoint } from '../claudeSessionService.js'
+import { CHAT_MODE_NOTE, ClaudeSessionService, claudeModeSwitchNotice, interruptedResumePoint, safeResumePoint } from '../claudeSessionService.js'
+import { OperationModeControl } from '../operationModeControl.js'
 import { assertClaudeBranchSelection } from '../../persistence/claudeSessionRepo.js'
 import { DecisionBroker } from '../decisionBroker.js'
 import { createChatHookSession } from '../chatHookService.js'
@@ -548,8 +549,20 @@ it.each(['execute', 'plan'])('honors stream auto-approval in %s without SDK perm
   await f.service.run(f.input)
   const options = f.sdk.query.mock.calls[0][0].options
   expect(options.permissionMode).toBe('default')
-  expect(options.disallowedTools).toEqual(operationMode === 'plan' ? ['Edit', 'Write', 'MultiEdit', 'NotebookEdit', 'EnterPlanMode', 'ExitPlanMode'] : undefined)
+  // The tool list is the same in both modes: removing tools would break Claude's prompt cache on a mode switch.
+  expect(options.disallowedTools).toBeUndefined()
   expect(options.allowDangerouslySkipPermissions).not.toBe(true)
+  const { value } = await f.sdk.query.mock.calls[0][0].prompt.next()
+  expect(value.message.content).toBe(operationMode === 'plan' ? `hello\n\n${CHAT_MODE_NOTE}` : 'hello')
+  // The hook outranks Claude's own allow rules, acceptEdits and auto mode, child agents included.
+  // Registered in both modes: a live switch can turn Chat mode on mid-run.
+  const guard = options.hooks.PreToolUse.at(-1).hooks[0]
+  for (const [tool_name, agent_id] of [['Write'], ['Edit', 'child'], ['NotebookEdit'], ['EnterPlanMode'], ['Bash'], ['TodoWrite'], ['ExitPlanMode']]) {
+    const output = await guard({ hook_event_name: 'PreToolUse', session_id: 's', tool_name, tool_input: {}, tool_use_id: tool_name, ...(agent_id ? { agent_id } : {}) },
+      tool_name, { signal: new AbortController().signal })
+    const blocked = operationMode === 'plan' && ['Write', 'Edit', 'NotebookEdit', 'EnterPlanMode'].includes(tool_name)
+    expect(output.hookSpecificOutput?.permissionDecision).toBe(blocked ? 'deny' : undefined)
+  }
   await expect(options.canUseTool('Read', { file_path: 'file' }, {
     signal: new AbortController().signal, toolUseID: 'auto-tool',
   })).resolves.toMatchObject({ behavior: 'allow', updatedInput: { file_path: 'file' } })
@@ -594,10 +607,12 @@ describe('ExitPlanMode escalation', () => {
       assistant('x', [{ type: 'tool_use', id: 'exit', name: 'ExitPlanMode', input: {} }]), success])
     f.input.cwd = cwd
     f.input.request.operationMode = 'plan'
+    const control = new OperationModeControl('plan')
+    f.input.modeControl = control
     await f.service.run(f.input)
     const options = f.sdk.query.mock.calls[0][0].options
     const exit = () => options.canUseTool('ExitPlanMode', {}, { signal: new AbortController().signal, toolUseID: 'exit' })
-    return { f, options, exit, planFile: await realpath(planFile) }
+    return { f, options, exit, control, planFile: await realpath(planFile) }
   }
 
   it('stores native plans in plan_md storage', async () => {
@@ -606,7 +621,7 @@ describe('ExitPlanMode escalation', () => {
   })
 
   it('asks to switch to Agent mode with the plan attached, then lifts the Chat-mode tool policy', async () => {
-    const { f, options, exit, planFile } = await planFixture()
+    const { f, options, exit, control, planFile } = await planFixture()
     const decision = exit()
     await vi.waitFor(() => expect(f.broker.hasPending('stream', 'exit')).toBe(true))
     const prompt = f.emit.mock.calls.map(([event]) => event).find(event => event.type === 'operation_mode_upgrade_required')
@@ -615,6 +630,11 @@ describe('ExitPlanMode escalation', () => {
     expect(persisted.contentBlocks.find((block: any) => block.id === 'exit').input).toMatchObject({ plan: expect.stringContaining('# Ship it'), planFilePath: planFile })
     expect(f.broker.resolve('stream', 'exit', 'switch_to_execute')).toBe(true)
     await expect(decision).resolves.toMatchObject({ behavior: 'allow', updatedPermissions: [{ type: 'setMode', mode: 'default', destination: 'session' }] })
+    // The run's shared control flips, so a queued successor run and the composer see Agent mode too.
+    expect(control.mode).toBe('execute')
+    // The Chat-mode guard reads the live mode, so edits unblock for the rest of this run.
+    await expect(options.hooks.PreToolUse.at(-1).hooks[0]({ hook_event_name: 'PreToolUse', session_id: 's', tool_name: 'Edit', tool_input: {}, tool_use_id: 'edit' },
+      'edit', { signal: new AbortController().signal })).resolves.toEqual({})
     const edit = options.canUseTool('Edit', { file_path: 'a' }, { signal: new AbortController().signal, toolUseID: 'edit' })
     await vi.waitFor(() => expect(f.broker.hasPending('stream', 'edit')).toBe(true))
     f.broker.resolve('stream', 'edit', 'allow_once')
@@ -718,10 +738,12 @@ describe('Graviton chat hooks on native Claude tools', () => {
     ])
   })
 
-  it('registers no tool hooks without a hook session', async () => {
+  it('registers no Graviton tool hooks without a hook session, only the Chat-mode guard', async () => {
     const f = fixture([assistant(), success])
     await f.service.run(f.input)
-    expect(Object.keys(f.sdk.query.mock.calls[0][0].options.hooks).sort()).toEqual(['InstructionsLoaded', 'PostCompact', 'PreCompact'])
+    const hooks = f.sdk.query.mock.calls[0][0].options.hooks
+    expect(Object.keys(hooks).sort()).toEqual(['InstructionsLoaded', 'PostCompact', 'PreCompact', 'PreToolUse'])
+    expect(hooks.PreToolUse).toHaveLength(1)
   })
 })
 
@@ -924,10 +946,11 @@ describe('Queued input on a live Claude session', () => {
         entry.offered = true
         return { requestId: entry.requestId, prompt: entry.content, images: entry.images }
       }),
-      deliver: vi.fn((requestId: string, parentId: string | null) => {
+      deliver: vi.fn((requestId: string, parentId: string | null, _mode?: any) => {
         entries.find(row => row.requestId === requestId)!.status = 'delivered'
         return { id: `user-${requestId}`, parentId }
       }),
+      recordModeSwitch: vi.fn((modeSwitch: any, parentId: string | null) => ({ id: `mode-${modeSwitch.mode}`, parentId })),
       release: vi.fn((requestId: string, outcome: any) => {
         entries.find(row => row.requestId === requestId)!.status = 'cancelled' in outcome ? 'cancelled' : 'failed'
       }),
@@ -935,7 +958,9 @@ describe('Queued input on a live Claude session', () => {
       bindCancel: vi.fn((next: typeof cancel) => { cancel = next }),
     }
     return { bridge, entries, cancel: (requestId: string) => cancel(requestId),
-      add(requestId: string, content = requestId, images: string[] = []) { entries.push({ requestId, content, images, status: 'queued' }); wake() } }
+      add(requestId: string, content = requestId, images: string[] = []) { entries.push({ requestId, content, images, status: 'queued' }); wake() },
+      // The mode route wakes the session after a live switch.
+      poke: () => wake() }
   }
   // A CLI double that reads the service's input stream as the real one does.
   function scripted(f: ReturnType<typeof fixture>, script: (read: () => Promise<IteratorResult<any>>) => AsyncGenerator<any>, cancelAsyncMessage = vi.fn(async () => true)) {
@@ -967,7 +992,7 @@ describe('Queued input on a live Claude session', () => {
     })
     const final = await f.service.run(f.input)
     expect(sent[1]).toMatchObject({ type: 'user', priority: 'next', parent_tool_use_id: null, message: { role: 'user', content: 'also PURPLE' } })
-    expect(q.bridge.deliver).toHaveBeenCalledWith('r1', 'row0')
+    expect(q.bridge.deliver).toHaveBeenCalledWith('r1', 'row0', { mode: 'execute', modeSwitch: null })
     expect(f.rows[1].parentId).toBe('user-r1')
     expect(final.content).toBe('DONE PURPLE')
     expect(f.sessions.record).toHaveBeenLastCalledWith(final.id, 's', 'a2', '/workspace', true)
@@ -991,7 +1016,7 @@ describe('Queued input on a live Claude session', () => {
     })
     const final = await f.service.run(f.input)
     expect(results).toBe(2)
-    expect(q.bridge.deliver).toHaveBeenCalledWith('r1', 'row0')
+    expect(q.bridge.deliver).toHaveBeenCalledWith('r1', 'row0', { mode: 'execute', modeSwitch: null })
     expect(final).toMatchObject({ content: 'second' })
     expect(f.rows[1].parentId).toBe('user-r1')
     expect(f.sessions.record).toHaveBeenLastCalledWith(final.id, 's', 'a2', '/workspace', true)
@@ -1151,5 +1176,104 @@ describe('Queued input on a live Claude session', () => {
     })
     await f.service.run(f.input)
     expect(q.bridge.release).toHaveBeenCalledWith('r1', { cancelled: true })
+  })
+
+  describe('live mode switches', () => {
+    const guardOf = (f: ReturnType<typeof fixture>) => (f.sdk.query.mock.calls as any[])[0][0].options.hooks.PreToolUse.at(-1).hooks[0]
+    const preToolUse = (tool_name: string) => [{ hook_event_name: 'PreToolUse', session_id: 's', tool_name, tool_input: {}, tool_use_id: tool_name },
+      tool_name, { signal: new AbortController().signal }]
+    const live = (mode: 'plan' | 'execute') => {
+      const f = fixture(); const q = mailbox(); const control = new OperationModeControl(mode)
+      f.input.request.operationMode = mode
+      Object.assign(f.input, { queuedInput: q.bridge, modeControl: control })
+      return { f, q, control }
+    }
+
+    it('applies a switch to the next tool call and tells Claude at the running tool\'s boundary', async () => {
+      const { f, q, control } = live('execute')
+      let notice: any
+      let write: any
+      scripted(f, async function* (read) {
+        await read()
+        yield toolUse('a1')
+        control.change('plan', 'switch'); q.poke()
+        notice = (await read()).value
+        write = await guardOf(f)(...preToolUse('Write'))
+        yield lifecycle(notice.uuid, 'queued')
+        yield toolResult
+        yield lifecycle(notice.uuid, 'started')
+        yield assistant('a2', [{ type: 'text', text: 'ok' }])
+        yield success
+        expect((await read()).done).toBe(true)
+      })
+      const final = await f.service.run(f.input)
+      expect(notice).toMatchObject({ priority: 'next', parent_tool_use_id: null, message: { role: 'user', content: claudeModeSwitchNotice('plan') } })
+      expect(write.hookSpecificOutput.permissionDecision).toBe('deny')
+      // Recorded where Claude read it; the rest of the turn continues below the mode row.
+      expect(q.bridge.recordModeSwitch).toHaveBeenCalledWith({ mode: 'plan', previousMode: 'execute', revision: 1, content: claudeModeSwitchNotice('plan') }, 'row0')
+      expect(f.rows[1].parentId).toBe('mode-plan')
+      expect(final.meta.operationMode).toBe('plan')
+    })
+
+    it('holds a switch while no tool runs and carries it on the next queued message', async () => {
+      const { f, q, control } = live('execute')
+      let queued: any
+      scripted(f, async function* (read) {
+        await read()
+        yield assistant('a1', [{ type: 'text', text: 'first' }])
+        control.change('plan', 'switch'); q.poke()
+        await new Promise(resolve => setTimeout(resolve, 0))
+        q.add('r1', 'next question')
+        queued = (await read()).value
+        yield success
+        yield lifecycle(queued.uuid, 'started')
+        yield assistant('a2', [{ type: 'text', text: 'second' }])
+        yield success
+        expect((await read()).done).toBe(true)
+      })
+      await f.service.run(f.input)
+      // Nothing went out alone (it would have started a turn of its own): the switch rode on the message.
+      expect(queued.message.content).toBe(`next question\n\n${claudeModeSwitchNotice('plan')}`)
+      expect(q.bridge.recordModeSwitch).not.toHaveBeenCalled()
+      expect(q.bridge.deliver).toHaveBeenCalledWith('r1', 'row0',
+        { mode: 'plan', modeSwitch: { mode: 'plan', previousMode: 'execute', revision: 1, content: claudeModeSwitchNotice('plan') } })
+    })
+
+    it('adds the Chat-mode note to queued messages in Chat mode', async () => {
+      const { f, q } = live('plan')
+      let queued: any
+      scripted(f, async function* (read) {
+        await read()
+        yield toolUse('a1')
+        q.add('r1', 'and this')
+        queued = (await read()).value
+        yield toolResult
+        yield lifecycle(queued.uuid, 'started')
+        yield assistant('a2'); yield success
+      })
+      await f.service.run(f.input)
+      expect(queued.message.content).toBe(`and this\n\n${CHAT_MODE_NOTE}`)
+      expect(q.bridge.deliver).toHaveBeenCalledWith('r1', 'row0', { mode: 'plan', modeSwitch: null })
+    })
+
+    it('records a switch Claude never read on the final response, not as a row after it', async () => {
+      const { f, q, control } = live('plan')
+      const sent: any[] = []
+      scripted(f, async function* (read) {
+        sent.push((await read()).value)
+        yield assistant('a1', [{ type: 'text', text: 'the answer' }])
+        control.change('execute', 'switch'); q.poke()
+        await new Promise(resolve => setTimeout(resolve, 0))
+        yield success
+        sent.push(await read())
+      })
+      const final = await f.service.run(f.input)
+      expect(sent[0].message.content).toBe(`hello\n\n${CHAT_MODE_NOTE}`)
+      expect(sent[1]).toEqual({ done: true, value: undefined })
+      expect(q.bridge.recordModeSwitch).not.toHaveBeenCalled()
+      expect(final.meta.operationMode).toBe('execute')
+      // Edits apply at once, though Claude learns only with the next message.
+      expect(await guardOf(f)(...preToolUse('Edit'))).toEqual({})
+    })
   })
 })

@@ -476,7 +476,8 @@ export function registerChatRoutes(app: Express, deps: RegisterChatRoutesDeps): 
       const receipt = deps.admissions.admit(buildHeadlessMessageRequest(req, 'send'), body.epoch)
       res.status(receipt.status === 'accepted' ? 200 : 409).json(receipt)
     } catch (error) {
-      res.status(409).json({ error: error instanceof Error ? error.message : String(error), code: (error as any)?.code, fullAccess: (error as any)?.fullAccess })
+      res.status(409).json({ error: error instanceof Error ? error.message : String(error), code: (error as any)?.code,
+        reason: (error as any)?.reason, fullAccess: (error as any)?.fullAccess })
     }
   })
 

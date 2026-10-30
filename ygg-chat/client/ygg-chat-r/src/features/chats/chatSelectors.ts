@@ -31,8 +31,9 @@ export const selectOperationMode = createSelector([selectChatState], chat => {
     const row = chat.conversation.messages.find(message => message.id === chat.conversation.currentPath[index])
     const meta = parseMessageMeta(row?.meta)
     if (meta?.kind === 'operation_mode_change' && (meta.mode === 'plan' || meta.mode === 'execute')) return meta.mode
-    // Claude turns record their mode on the user row instead of a notification row.
-    if (row?.role === 'user' && (meta?.operationMode === 'plan' || meta?.operationMode === 'execute')) return meta.operationMode
+    // Claude turns record their mode on the user row instead of a notification row, and each
+    // response records the mode it ran in (a mid-run switch may have changed it).
+    if ((row?.role === 'user' || row?.role === 'assistant') && (meta?.operationMode === 'plan' || meta?.operationMode === 'execute')) return meta.operationMode
   }
   return chat.operationMode
 })

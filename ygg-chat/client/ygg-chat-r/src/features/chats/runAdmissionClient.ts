@@ -42,7 +42,7 @@ export async function admitRun(conversationId: string, request: Record<string, u
   }
   const receipt = await response.json()
   if (receipt.code === 'epoch_mismatch') resetAdmissionEpoch()
-  if (!response.ok || receipt.status !== 'accepted') throw Object.assign(new Error(receipt.error || 'Command outcome is uncertain after host restart; reconcile before sending again.'), { code: receipt.code, fullAccess: receipt.fullAccess })
+  if (!response.ok || receipt.status !== 'accepted') throw Object.assign(new Error(receipt.error || 'Command outcome is uncertain after host restart; reconcile before sending again.'), { code: receipt.code, reason: receipt.reason, fullAccess: receipt.fullAccess })
   if (receipt.conversationId !== conversationId || receipt.operationId !== request.operationId || typeof receipt.streamId !== 'string') throw new Error('Invalid admission receipt')
   return receipt
 }

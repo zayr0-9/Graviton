@@ -103,4 +103,13 @@ describe('changeOperationMode thunk', () => {
     state.chat = { ...state.chat, conversation: { ...state.chat.conversation, messages: [claudeUser, assistant, notice] as any, currentPath: ['u', 'a', 'n'] } }
     expect(selectOperationMode({ ...state })).toBe('plan')
   })
+
+  it('restores the mode a Claude run ended in from its final response', () => {
+    const { state } = setup()
+    // Switched to Chat mid-run with no tool step left: only the final response records it.
+    const claudeUser = { id: 'u', role: 'user', conversation_id: 'c', parent_id: null, meta: JSON.stringify({ operationMode: 'execute' }) }
+    const final = { id: 'a', role: 'assistant', conversation_id: 'c', parent_id: 'u', meta: JSON.stringify({ operationMode: 'plan', claude: { checkpoint: true } }) }
+    state.chat = { ...state.chat, operationMode: 'execute', conversation: { ...state.chat.conversation, messages: [claudeUser, final] as any, currentPath: ['u', 'a'] } }
+    expect(selectOperationMode({ ...state })).toBe('plan')
+  })
 })

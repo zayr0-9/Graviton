@@ -152,6 +152,7 @@ import { selectChatErrorsForConversation } from '../features/chats/chatSelectors
 import { changeOperationMode, enqueueUserMessage, loadMessageQueue, cancelQueuedMessage, readServerLoopRejection } from '../features/chats/chatActions'
 import { QueuedMessages } from '../components/ChatMessage/QueuedMessages'
 import { OperationModeNotice } from '../components/ChatMessage/OperationModeNotice'
+import { claudeModeNoticesByMessageId } from '../features/chats/claudeModeNotices'
 import { FullAccessNotice } from '../components/ChatMessage/FullAccessNotice'
 import { isFullAccessNotification, isRunSettingsNotification } from '../../../../shared/accessNotifications'
 import { SummaryBranchMessage } from '../components/ChatMessage/SummaryBranchMessage'
@@ -1376,7 +1377,7 @@ function Chat() {
   }, [dispatch, currentConversationId, streamState.id, streamState.active])
   const isBranchEditing = useAppSelector(state => state.chat.composition.editingBranch)
   const handleOperationModeChange = useCallback((mode: 'plan' | 'execute') => {
-    if ((modeChange && !isBranchEditing) || (isClaudeSession && streamState.active && !isBranchEditing)) return
+    if (modeChange && !isBranchEditing) return
     void dispatch(changeOperationMode({
       mode, conversationId: currentConversationId,
       // Branch editing selects the new run's mode without interrupting the current run.
@@ -1384,7 +1385,7 @@ function Chat() {
       parentId: selectedPath[selectedPath.length - 1] ?? null,
       lineageId: modeLineageId,
     }))
-  }, [dispatch, currentConversationId, selectedPath, streamState.active, streamState.id, modeChange, modeLineageId, isBranchEditing, isClaudeSession])
+  }, [dispatch, currentConversationId, selectedPath, streamState.active, streamState.id, modeChange, modeLineageId, isBranchEditing])
   const handleToggleOperationMode = useCallback(() => {
     handleOperationModeChange(operationMode === 'plan' ? 'execute' : 'plan')
   }, [handleOperationModeChange, operationMode])
@@ -2278,6 +2279,8 @@ function Chat() {
   const renderableMessages = useMemo(() => {
     return displayMessages.filter(msg => msg && msg.id != null && !isHiddenCompactionMessage(msg))
   }, [displayMessages])
+  // Claude turns keep their mode on the user row; show it like the other providers' mode rows.
+  const claudeModeNotices = useMemo(() => claudeModeNoticesByMessageId(displayMessages.filter(Boolean)), [displayMessages])
 
   const conversationRuns = useConversationRunStatistics(conversationIdFromUrl == null ? null : String(conversationIdFromUrl))
   const runFooters = useMemo(() => deriveRunStatistics(conversationMessages, selectedPath, conversationRuns,
@@ -7041,6 +7044,7 @@ function Chat() {
                             </VirtualizedRowContainer>
                           )
                         }
+                        const claudeModeNotice = claudeModeNotices.get(String(msg.id))
                         if (isContextInjectionMessage(msg)) {
                           // Auto-loaded instruction files (AGENTS.md / CLAUDE.md, rules, MEMORY.md):
                           // a persisted user row the model reads in full. People get one collapsed line.
@@ -7123,6 +7127,7 @@ function Chat() {
                               onChatErrorAction={handlePersistedChatErrorAction}
                               onEditingStateChange={handleMessageEditingStateChange}
                             />
+                            {claudeModeNotice && <OperationModeNotice mode={claudeModeNotice.mode} initial={claudeModeNotice.initial} />}
                           </VirtualizedRowContainer>
                         )
                       })}
@@ -7959,7 +7964,7 @@ function Chat() {
                             aria-pressed={operationMode !== 'plan'}
                             aria-busy={Boolean(modeChange) && !isBranchEditing}
                             onClick={handleToggleOperationMode}
-                            disabled={(Boolean(modeChange) || (isClaudeSession && streamState.active)) && !isBranchEditing}
+                            disabled={Boolean(modeChange) && !isBranchEditing}
                             title={operationMode === 'plan'
                               ? isClaudeSession ? 'Chat mode: file edits disabled' : 'Plan mode enabled (tools will be blocked)'
                               : 'Execution mode enabled (tools may modify files)'}

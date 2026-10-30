@@ -666,7 +666,38 @@ export async function runServerChatLoop(
   if (useAdmission) {
     try { admission = await admitRun(conversationId, request, signal) }
     catch (error) {
-      const mismatch = error as { code?: string; fullAccess?: boolean; message?: string }
+      const mismatch = error as { code?: string; reason?: string; fullAccess?: boolean; message?: string }
+      if (mismatch.code === 'lineage_mismatch') {
+        // Pairs with the host's admission-mismatch log: what this renderer believed it was continuing.
+        const state = getState() as any
+        const conversation = state?.chat?.conversation
+        const selectedPath: string[] = Array.isArray(conversation?.currentPath) ? conversation.currentPath.map(String) : []
+        // Finished slots linger briefly before pruning; the run that moved the head is often one of them.
+        const conversationStreams = Object.entries(state?.chat?.streaming?.byId ?? {})
+          .filter(([id, stream]: [string, any]) => id !== streamId && String(stream?.conversationId) === String(conversationId))
+          .map(([id, stream]: [string, any]) => ({
+            streamId: id, active: Boolean(stream.active), streamType: stream.streamType ?? null,
+            lineageId: stream.lineage?.lineageId ?? null, lineageIdConfirmed: Boolean(stream.lineage?.lineageIdConfirmed),
+            triggerUserMessageId: stream.triggerUserMessageId ?? null, lastCompletedMessageId: stream.lastCompletedMessageId ?? null,
+            selectionRevision: stream.selectionRevision ?? null, selectionBlocked: Boolean(stream.selectionBlocked),
+          }))
+        console.error('[LineageForkDebug][Renderer] admission-rejected', {
+          reason: mismatch.reason ?? null,
+          conversationId,
+          streamId,
+          operationId: request.operationId ?? null,
+          requestedParentId: request.parentId ?? null,
+          requestedLineageId: request.lineageId ?? null,
+          isBranch: Boolean(request.isBranch),
+          selectedLineageId: conversation?.currentLineageId ?? null,
+          selectedPathTail: selectedPath.slice(-4),
+          selectedPathLength: selectedPath.length,
+          selection: state?.chat?.selection
+            ? { status: state.chat.selection.status, revision: state.chat.selection.revision, fallbackRevision: state.chat.selection.fallbackRevision }
+            : null,
+          conversationStreams,
+        })
+      }
       if (mismatch.code !== 'configuration_mismatch' || typeof mismatch.fullAccess !== 'boolean' ||
         !window.confirm(`This active run uses ${mismatch.fullAccess ? 'Full access' : 'restricted workspace access'}. Queue this input under that policy? Your current setting will not change.`)) {
         // The host explains its own rejections (e.g. Claude branch locks); unclassified, they read as a cut-off stream.

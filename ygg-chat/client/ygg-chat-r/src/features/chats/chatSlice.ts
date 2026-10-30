@@ -334,12 +334,20 @@ function setConversationIdentity(state: ChatState, nextConversationId: Conversat
   state.conversation.currentConversationId = nextConversationId
 }
 
+/**
+ * A stream owns the selected view while no view-changing selection has been committed
+ * since its intent was captured. `fallbackRevision` only moves when the resolved view
+ * changes, so cancellation, route re-entry and same-view refocus keep ownership.
+ */
+function streamOwnsSelectedView(state: ChatState, stream: StreamState): boolean {
+  return stream.selectionRevision != null && stream.selectionRevision >= (state.selection?.fallbackRevision ?? 0)
+}
+
 function streamCanAdvanceSelection(state: ChatState, streamId?: string | null, targetMessageId?: MessageId): boolean {
   if (state.selection?.status === 'pending' || state.selection?.status === 'error') {
     const stream = streamId ? state.streaming.byId[streamId] : null
-    if (state.selection.status === 'pending' && stream && targetMessageId &&
-        String(stream.conversationId) === String(state.conversation.currentConversationId)) {
-      stream.blockedSelectionRevision = state.selection.revision
+    if (stream && targetMessageId && String(stream.conversationId) === String(state.conversation.currentConversationId)) {
+      stream.selectionBlocked = true
     }
     return false
   }
@@ -350,13 +358,101 @@ function streamCanAdvanceSelection(state: ChatState, streamId?: string | null, t
   if (stream.followSelectedTip) return canFollowSelectedTip(state, stream, targetMessageId)
   if (stream.updatePath === false || String(stream.conversationId) !== String(state.conversation.currentConversationId)) return false
   if (stream.watchContinuation) return canFollowWatchContinuation(state, stream, targetMessageId)
-  if (stream.selectionRevision === (state.selection?.revision ?? 0)) return true
+  if (streamOwnsSelectedView(state, stream)) return true
   if (state.conversation.currentLineageId && stream.lineage.lineageIdConfirmed) {
     return state.conversation.currentLineageId === stream.lineage.lineageId
   }
   const tip = state.conversation.currentPath.at(-1)
   return tip != null && [stream.triggerUserMessageId, stream.currentBranchAnchorMessageId,
     stream.liveMessageId, stream.lastCompletedMessageId].some(id => id != null && String(id) === String(tip))
+}
+
+/**
+ * The initiating client's own run may persist its user row before the client attaches
+ * (fast admission, e.g. a Claude Explain fork), so that row arrives in a bootstrap or
+ * deferral while navigation is gated. Grant it the authority live `messageBranchCreated`
+ * has for the run's own user row: the deepest candidate descending from that row, even on
+ * a new fork lineage. Observers, parallel panes and watch continuations never qualify.
+ */
+function ownedRunSelectionTarget(state: ChatState, stream: StreamState, candidateIds: Iterable<MessageId>): MessageId | null {
+  if (stream.followSelectedTip || stream.watchContinuation || stream.updatePath === false ||
+      String(stream.conversationId) !== String(state.conversation.currentConversationId) ||
+      !streamOwnsSelectedView(state, stream)) return null
+  const trigger = stream.triggerUserMessageId
+  if (trigger == null) return null
+  const byId = new Map(state.conversation.messages.map(message => [String(message.id), message]))
+  let best: { id: MessageId; depth: number } | null = null
+  for (const candidate of candidateIds) {
+    // Complete same-conversation ancestry through the trigger, like canFollowSelectedTip.
+    const seen = new Set<string>()
+    let reachesTrigger = false
+    let id: string | null = String(candidate)
+    while (id != null && !seen.has(id)) {
+      seen.add(id)
+      const row = byId.get(id)
+      if (!row || String(row.conversation_id) !== String(stream.conversationId)) break
+      if (id === String(trigger)) reachesTrigger = true
+      id = row.parent_id == null ? null : String(row.parent_id)
+    }
+    if (id != null || !reachesTrigger) continue
+    if (!best || seen.size > best.depth) best = { id: byId.get(String(candidate))!.id, depth: seen.size }
+  }
+  return best?.id ?? null
+}
+
+/** Select an owned run's target without rewinding a path that already reaches it. */
+function selectOwnedRunTarget(state: ChatState, stream: StreamState, target: MessageId) {
+  if (state.conversation.currentPath.some(id => String(id) === String(target))) return
+  state.conversation.currentPath = buildPathToMessage(state.conversation.messages, target)
+  state.conversation.currentLineageId = stream.lineage.lineageIdConfirmed ? stream.lineage.lineageId ?? null : null
+}
+
+/**
+ * Selection settled on the view that was showing when advances were deferred. Extend
+ * the still-selected path along each deferred stream's own persisted descendants only;
+ * the deferral is consumed whether or not it finds a structurally valid anchor.
+ */
+function reconcileDeferredSelectionAdvances(state: ChatState) {
+  for (const stream of Object.values(state.streaming.byId)) {
+    if (!stream.selectionBlocked) continue
+    delete stream.selectionBlocked
+    if (String(stream.conversationId) !== String(state.conversation.currentConversationId) ||
+        (stream.updatePath === false && !stream.followSelectedTip) || stream.watchContinuation) continue
+    const recovery = { allowDescendants: true, allowEmpty: !stream.followSelectedTip && state.conversation.currentPath.length === 0 }
+    const candidates = [stream.finalMessageId, stream.lastCompletedMessageId, stream.currentBranchAnchorMessageId]
+      .filter((id): id is MessageId => id != null)
+    const owned = ownedRunSelectionTarget(state, stream, candidates)
+    const anchor = candidates
+      .filter(id => canFollowSelectedTip(state, { ...stream, followSelectedTip: true }, id, recovery))
+      .sort((a, b) => buildPathToMessage(state.conversation.messages, b).length - buildPathToMessage(state.conversation.messages, a).length)[0] ??
+      (owned != null && !state.conversation.currentPath.some(id => String(id) === String(owned)) ? owned : undefined)
+    if (!anchor) continue
+    state.conversation.currentPath = buildPathToMessage(state.conversation.messages, anchor)
+    // Only an unambiguous control tail can extend a final response;
+    // never choose between real user/assistant branches here.
+    const seen = new Set(state.conversation.currentPath)
+    let tip = anchor
+    while (true) {
+      const children = state.conversation.messages.filter(row => row.parent_id === tip)
+      if (children.length !== 1 || seen.has(children[0].id) || !isStreamContinuationTail(children[0])) break
+      tip = children[0].id
+      seen.add(tip)
+      state.conversation.currentPath.push(tip)
+    }
+    state.conversation.currentLineageId = stream.lineage.lineageIdConfirmed ? stream.lineage.lineageId ?? null : null
+    stream.currentBranchAnchorMessageId = tip
+    if (stream.finished) {
+      stream.finalMessageId = tip
+      stream.messageId = tip
+      stream.lastCompletedMessageId = tip
+      stream.persistedTurnMessageId = tip
+    }
+  }
+}
+
+/** A different view was chosen; deferred advances must never pull it back. */
+function discardDeferredSelectionAdvances(state: ChatState) {
+  for (const stream of Object.values(state.streaming.byId)) delete stream.selectionBlocked
 }
 
 const initialState: ChatState = makeInitialState()
@@ -544,8 +640,13 @@ export const chatSlice = createSlice({
       // Snapshot events are compact, not a complete turn journal. Catch up only
       // along descendants of the still-selected tip, never through a sibling.
       if (stream.watchContinuation || (!stream.followSelectedTip && stream.updatePath === false)) return
-      if (state.selection.status === 'pending') stream.blockedSelectionRevision = state.selection.revision
-      const allowEmpty = !stream.followSelectedTip && stream.selectionRevision === state.selection.revision
+      if (state.selection.status === 'pending' || state.selection.status === 'error') stream.selectionBlocked = true
+      else {
+        // The initiator's own fork can predate attach; adjacency would never reach it.
+        const owned = ownedRunSelectionTarget(state, stream, action.payload.messageIds)
+        if (owned != null) selectOwnedRunTarget(state, stream, owned)
+      }
+      const allowEmpty = !stream.followSelectedTip && streamOwnsSelectedView(state, stream)
       for (const id of action.payload.messageIds) {
         if (canFollowSelectedTip(state, { ...stream, followSelectedTip: true }, id,
           { allowDescendants: true, allowEmpty })) {
@@ -2003,6 +2104,7 @@ export const chatSlice = createSlice({
         state.composition.branchEditMessageId = undefined
         state.composition.branchEditModelSelection = undefined
         const conversationChanged = String(state.conversation.currentConversationId) !== String(payload.target.conversationId)
+        if (conversationChanged) discardDeferredSelectionAdvances(state)
         setConversationIdentity(state, payload.target.conversationId)
         state.selection = {
           fallbackRevision: conversationChanged ? (state.selection?.revision ?? 0) + 1 : state.selection?.fallbackRevision ?? 0,
@@ -2017,59 +2119,16 @@ export const chatSlice = createSlice({
         const sameView = state.conversation.currentLineageId === payload.lineageId &&
           state.conversation.currentPath.length === payload.path.length &&
           state.conversation.currentPath.every((id, index) => String(id) === String(payload.path[index]))
+        // Same-view focus is a new scroll intent, not a transfer away from an unmaterialized send.
         if (!sameView) state.selection.fallbackRevision = state.selection.revision
-        else {
-          // Same-view focus is a new scroll intent, not a transfer away from an unmaterialized send.
-          for (const stream of Object.values(state.streaming.byId)) {
-            if (stream.active && String(stream.conversationId) === String(payload.conversationId) &&
-                stream.selectionRevision != null && stream.selectionRevision >= state.selection.fallbackRevision) {
-              stream.selectionRevision = state.selection.revision
-            }
-          }
-        }
         state.conversation.currentLineageId = payload.lineageId
         state.conversation.currentPath = payload.path
         state.conversation.focusedChatMessageId = payload.focus
         state.selection.status = 'ready'
-        // Persistence can finish while an explicit same-view refocus is pending.
-        // Reconcile only its owning runs; a different view must never be pulled back.
-        if (sameView) {
-          for (const stream of Object.values(state.streaming.byId)) {
-            if (String(stream.conversationId) !== String(payload.conversationId) ||
-                (stream.updatePath === false && !stream.followSelectedTip) || stream.watchContinuation ||
-                stream.blockedSelectionRevision !== state.selection.revision) continue
-            delete stream.blockedSelectionRevision
-            const candidates = [stream.finalMessageId, stream.lastCompletedMessageId, stream.currentBranchAnchorMessageId]
-              .filter((id): id is MessageId => id != null)
-              .filter(id => canFollowSelectedTip(state, { ...stream, followSelectedTip: true }, id,
-                { allowDescendants: true, allowEmpty: !stream.followSelectedTip && payload.path.length === 0 }))
-              .sort((a, b) => buildPathToMessage(state.conversation.messages, b).length - buildPathToMessage(state.conversation.messages, a).length)
-            const anchor = candidates[0]
-            if (anchor && canFollowSelectedTip(state, { ...stream, followSelectedTip: true }, anchor,
-              { allowDescendants: true, allowEmpty: !stream.followSelectedTip && payload.path.length === 0 })) {
-              state.conversation.currentPath = buildPathToMessage(state.conversation.messages, anchor)
-              // Only an unambiguous control tail can extend a final response;
-              // never choose between real user/assistant branches here.
-              const seen = new Set(state.conversation.currentPath)
-              let tip = anchor
-              while (true) {
-                const children = state.conversation.messages.filter(row => row.parent_id === tip)
-                if (children.length !== 1 || seen.has(children[0].id) || !isStreamContinuationTail(children[0])) break
-                tip = children[0].id
-                seen.add(tip)
-                state.conversation.currentPath.push(tip)
-              }
-              state.conversation.currentLineageId = stream.lineage.lineageIdConfirmed ? stream.lineage.lineageId ?? null : null
-              stream.currentBranchAnchorMessageId = tip
-              if (stream.finished) {
-                stream.finalMessageId = tip
-                stream.messageId = tip
-                stream.lastCompletedMessageId = tip
-                stream.persistedTurnMessageId = tip
-              }
-            }
-          }
-        }
+        // Persistence can finish while navigation is unsettled. A different view must
+        // never be pulled back; the same view catches up its deferred advances.
+        if (sameView) reconcileDeferredSelectionAdvances(state)
+        else discardDeferredSelectionAdvances(state)
         state.selection.error = payload.error ?? null
         state.selection.scroll = payload.scrollMode === 'none' ? null : {
           requestId: payload.requestId, focus: payload.focus,
@@ -2087,8 +2146,11 @@ export const chatSlice = createSlice({
         state.selection.error = null
       })
       .addCase(chatSelectionCancelled, state => {
+        // Cancellation invalidates in-flight intents (new revision) but selects no other
+        // view: the retained path stays owned and catches up what the transaction deferred.
         const revision = (state.selection?.revision ?? 0) + 1
-        state.selection = { ...initialChatSelection(), revision, fallbackRevision: revision }
+        state.selection = { ...initialChatSelection(), revision, fallbackRevision: state.selection?.fallbackRevision ?? 0 }
+        reconcileDeferredSelectionAdvances(state)
       })
       .addCase(chatSelectionScrollHandled, (state, { payload }) => {
         if (state.selection.scroll?.requestId === payload) state.selection.scroll = null
