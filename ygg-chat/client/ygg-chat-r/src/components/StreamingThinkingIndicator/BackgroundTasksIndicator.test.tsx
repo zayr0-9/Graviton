@@ -15,7 +15,8 @@ describe('BackgroundTasksIndicator', () => {
     const html = renderToStaticMarkup(<BackgroundTasksIndicator conversationId='c' streamId='s' tasks={[server]} idle variant='tab' />)
     expect(html).toContain('Waiting on 1 background task')
     expect(html).toContain('Claude finished; 1 background task still running')
-    expect(html).toContain('rounded-t-xl')
+    // The composer surface draws the tab; the indicator itself has no surface of its own.
+    expect(html).not.toContain('rounded-t-xl')
     expect(html).not.toContain('Composing')
   })
 

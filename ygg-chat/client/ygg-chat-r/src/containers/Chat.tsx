@@ -193,6 +193,7 @@ import {
 import { generateStreamId, isStreamMessageAlreadyRendered } from '../features/chats/streamHelpers'
 import { recordSentMessage } from '../components/ChatPane/sentMessageHistory'
 import { getComposerSubmissionAvailability } from '../components/ChatPane/composerSubmission'
+import { ComposerSurface } from '../components/ChatPane/ComposerSurface'
 import {
   convContextSet,
   Conversation,
@@ -4033,6 +4034,14 @@ function Chat() {
     : operationMode === 'plan'
       ? 'outline-1 outline-blue-200/35 dark:outline-neutral-700/25'
       : 'outline-1 outline-neutral-200/35 dark:outline-neutral-700/25'
+  // The composer surface draws its outline as an SVG stroke so it can follow the tab; same colors as above.
+  const composerStrokeClasses = customThemeEnabled
+    ? operationMode === 'plan'
+      ? 'stroke-1 stroke-blue-200/70 dark:stroke-neutral-700/50'
+      : 'stroke-1 stroke-neutral-200/70 dark:stroke-neutral-700/50'
+    : operationMode === 'plan'
+      ? 'stroke-1 stroke-blue-200/35 dark:stroke-neutral-700/25'
+      : 'stroke-1 stroke-neutral-200/35 dark:stroke-neutral-700/25'
 
   const [showTokenUsageBar, setShowTokenUsageBar] = useState<boolean>(() => loadShowTokenUsageBar())
   const [showTokenUsageHoverDetails, setShowTokenUsageHoverDetails] = useState<boolean>(() =>
@@ -7260,24 +7269,18 @@ function Chat() {
                 }}>Retry</button>
               </div>
             )}
-            {showGenerationLoadingAnimation && showStreamingThinkingInputTab && (
-              <div className='absolute left-0 top-0 z-0 flex gap-1 -translate-y-[calc(100%-8px)]'>
-                {showThinkingIndicator && (
-                  <StreamingThinkingIndicator variant='tab' compacting={showCompactionStatus} compactionCompleted={Boolean(compactionCompleted)} />
-                )}
-                {backgroundTasksView && <BackgroundTasksIndicator variant='tab' {...backgroundTasksView} />}
-              </div>
-            )}
-
-            <div
-              aria-hidden='true'
-              className={`pointer-events-none absolute left-0 top-0 z-0 h-[9px] w-28 rounded-t-sm bg-neutral-100/40 backdrop-blur-xl dark:bg-neutral-900/40 ${
-                showGenerationLoadingAnimation && showStreamingThinkingInputTab ? 'block' : 'hidden'
-              }`}
-            />
-
-            <div
-              className={`slate-input-wrapper relative z-10 ${leftControlsBorderClasses} bg-neutral-100/40 dark:bg-neutral-900/40 backdrop-blur-xl rounded-3xl px-2 pt-3 pb-2 transition-all duration-300`}
+            <ComposerSurface
+              surfaceClassName='slate-input-wrapper bg-neutral-100/40 dark:bg-neutral-900/40 backdrop-blur-xl'
+              strokeClassName={composerStrokeClasses}
+              className='px-2 pt-3 pb-2'
+              tab={showGenerationLoadingAnimation && showStreamingThinkingInputTab && (showThinkingIndicator || backgroundTasksView) && (
+                <>
+                  {showThinkingIndicator && (
+                    <StreamingThinkingIndicator variant='tab' compacting={showCompactionStatus} compactionCompleted={Boolean(compactionCompleted)} />
+                  )}
+                  {backgroundTasksView && <BackgroundTasksIndicator variant='tab' {...backgroundTasksView} />}
+                </>
+              )}
             >
               {operationModeUpgradeRequest && (
                 <ToolPermissionDialog
@@ -7600,7 +7603,7 @@ function Chat() {
                   fontSizeOffset={fontSizeOffset}
                 />
               </div>
-            </div>
+            </ComposerSurface>
 
             {/* Controls row */}
             <div className='composer-controls-row relative z-10 mt-2 flex items-center justify-between gap-3'>
