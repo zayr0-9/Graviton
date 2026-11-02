@@ -1,5 +1,5 @@
 import { createHash } from 'crypto'
-import { buildToolNameMap, sanitizeToolResultContentForModel } from '../toolResultSanitizer.js'
+import { buildToolNameMap, messageToolCalls, sanitizeToolResultContentForModel } from '../toolResultSanitizer.js'
 import type { ProviderGenerateInput, ProviderToolDefinition } from '../openRouterProvider.js'
 import type { CodexMessage, CodexRequestDiagnostics, CodexRequestParts } from './types.js'
 
@@ -39,7 +39,7 @@ export function toCodexMessages(input: ProviderGenerateInput): CodexMessage[] {
     }
 
     if (msg.role === 'assistant') {
-      const toolCalls = parseToolCalls(msg.tool_calls)
+      const toolCalls = parseToolCalls(messageToolCalls(msg))
       const content = getMessageTextContent(msg)
       if (content.trim() || toolCalls.length > 0) {
         messages.push({ role: 'assistant', content, toolCalls })

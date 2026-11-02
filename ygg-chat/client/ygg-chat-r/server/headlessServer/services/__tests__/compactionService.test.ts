@@ -3,10 +3,11 @@ import { buildCompactionToolContextAppendix, buildCompactionWriteOpAppendix, fin
 
 describe('deterministic compaction finalisation', () => {
   it('pairs completed reads and child results by call id', () => {
-    const messages = [{ role: 'assistant', tool_calls: JSON.stringify([
-      { id: 'read', name: 'read_file', arguments: { path: '/workspace/chat.ts' } },
-      { id: 'child', name: 'subagent', arguments: { prompt: 'Trace history' } },
-    ]), content_blocks: [{ type: 'tool_result', tool_use_id: 'read', content: 'export const compact = true', is_error: false }] },
+    const messages = [{ role: 'assistant', content_blocks: [
+      { type: 'tool_use', id: 'read', name: 'read_file', input: { path: '/workspace/chat.ts' } },
+      { type: 'tool_use', id: 'child', name: 'subagent', input: { prompt: 'Trace history' } },
+      { type: 'tool_result', tool_use_id: 'read', content: 'export const compact = true', is_error: false },
+    ] },
     { role: 'tool', tool_call_id: 'child', content: 'Child found the context bug.' }]
     const appendix = buildCompactionToolContextAppendix(messages)
     expect(appendix).toContain('read_file success')
@@ -33,7 +34,7 @@ describe('deterministic compaction finalisation', () => {
     const raw = { type: 'responses_output_items', items: [{ type: 'reasoning', encrypted_content: 'opaque' }] }
     const update = finaliseCompactionContent({ content: 'Summary', content_blocks: [raw, { type: 'text', content: 'Summary' }],
       meta: JSON.stringify({ runStatistics: { streamId: 's' } }) }, [{ role: 'assistant',
-      tool_calls: [{ id: 'r', name: 'read_file', arguments: {} }], content_blocks: [{ type: 'tool_result', tool_use_id: 'r', content: 'evidence' }] }], { id: 'instruction' })
+      content_blocks: [{ type: 'tool_use', id: 'r', name: 'read_file', input: {} }, { type: 'tool_result', tool_use_id: 'r', content: 'evidence' }] }], { id: 'instruction' })
     expect(update.content).not.toContain('evidence')
     expect(update.contentBlocks.at(-1).content).toContain('read_file')
     expect(update.contentBlocks.at(-1).content).not.toContain('evidence')

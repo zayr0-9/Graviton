@@ -646,3 +646,28 @@ describe('compaction live presentation', () => {
     }
   })
 })
+
+describe('Claude background tasks', () => {
+  const server = { id: 'srv', kind: 'local_bash', description: 'dev server', toolUseId: 'b1' }
+
+  it('tracks the tasks keeping a finished turn open, and clears them when the run completes', () => {
+    let state = chatReducer(undefined, chatSliceActions.sendingStarted({ streamId: ctx.streamId, conversationId: ctx.conversationId }))
+    const apply = (event: ServerStreamEvent) => {
+      for (const action of projectServerEvent(event, ctx)) state = chatReducer(state, action)
+    }
+    apply({ type: 'background_tasks', streamId: ctx.streamId, turnActive: true, tasks: [server] })
+    expect(state.streaming.byId[ctx.streamId]).toMatchObject({ backgroundTasks: [server], backgroundTurnIdle: false })
+    apply({ type: 'background_tasks', streamId: ctx.streamId, turnActive: false, tasks: [server] })
+    expect(state.streaming.byId[ctx.streamId]).toMatchObject({ active: true, backgroundTurnIdle: true })
+    // An idle turn with nothing left running is not "waiting on" anything.
+    apply({ type: 'background_tasks', streamId: ctx.streamId, turnActive: false, tasks: [] })
+    expect(state.streaming.byId[ctx.streamId]).toMatchObject({ backgroundTasks: [], backgroundTurnIdle: false })
+    apply({ type: 'background_tasks', streamId: ctx.streamId, turnActive: false, tasks: [server] })
+    apply({ type: 'complete', message: { id: 'final', role: 'assistant', content: 'done' } })
+    expect(state.streaming.byId[ctx.streamId].backgroundTasks).toBeUndefined()
+    expect(state.streaming.byId[ctx.streamId].backgroundTurnIdle).toBeUndefined()
+    // A late frame after completion cannot resurrect the indicator.
+    apply({ type: 'background_tasks', streamId: ctx.streamId, turnActive: false, tasks: [server] })
+    expect(state.streaming.byId[ctx.streamId].backgroundTasks).toBeUndefined()
+  })
+})

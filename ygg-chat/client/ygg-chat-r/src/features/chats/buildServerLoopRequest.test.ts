@@ -151,6 +151,14 @@ describe('buildServerLoopRequest', () => {
     expect(buildServerLoopRequest('send', { ...base, claudeAutoMode: true, toolAutoApprove: false }).body.claudePermissionMode).toBeUndefined()
   })
 
+  it('sends ultracode only for Claude, on every operation', () => {
+    for (const op of ['send', 'edit', 'branch'] as const) {
+      expect(buildServerLoopRequest(op, { ...base, messageId: 'm', provider: 'Claude Code', claudeUltracode: true }).body.claudeUltracode).toBe(true)
+      expect(buildServerLoopRequest(op, { ...base, messageId: 'm', provider: 'Claude Code', claudeUltracode: false }).body).not.toHaveProperty('claudeUltracode')
+      expect(buildServerLoopRequest(op, { ...base, messageId: 'm', claudeUltracode: true }).body).not.toHaveProperty('claudeUltracode')
+    }
+  })
+
   it('forwards hooksEnabled verbatim and localApiBase (defaulting null)', () => {
     const on = buildServerLoopRequest('send', { ...base, hooksEnabled: true, localApiBase: 'http://x/api' }).body
     expect(on.hooksEnabled).toBe(true)

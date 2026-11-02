@@ -40,3 +40,21 @@ export function saveClaudeAutoMode(enabled: boolean): void {
     console.error('Failed to save Claude auto mode:', error)
   }
 }
+
+export const CLAUDE_ULTRACODE_STORAGE_KEY = 'chat:claudeUltracode'
+
+export function loadClaudeUltracode(): boolean {
+  try {
+    return typeof localStorage !== 'undefined' && localStorage.getItem(CLAUDE_ULTRACODE_STORAGE_KEY) === 'true'
+  } catch {
+    return false
+  }
+}
+
+export function saveClaudeUltracode(enabled: boolean): void {
+  try {
+    if (typeof localStorage !== 'undefined') localStorage.setItem(CLAUDE_ULTRACODE_STORAGE_KEY, String(enabled))
+  } catch (error) {
+    console.error('Failed to save Claude ultracode:', error)
+  }
+}

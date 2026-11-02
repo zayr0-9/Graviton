@@ -391,10 +391,11 @@ describeIfSqlite('ToolLoopService', () => {
 
     const messages = statements.getMessagesByConversationId.all('c1') as any[]
     const firstAssistant = messages.find((msg: any) => msg.role === 'assistant' && msg.content === '')
-    const firstCalls = JSON.parse(firstAssistant.tool_calls || '[]') as any[]
-    expect(firstCalls[0]?.status).toBe('complete')
+    // Calls live only in the blocks; the legacy tool_calls column is no longer written.
+    expect(JSON.parse(firstAssistant.tool_calls ?? 'null')).toBeNull()
 
     const firstBlocks = JSON.parse(firstAssistant.content_blocks || '[]') as any[]
+    expect(firstBlocks.some((block: any) => block.type === 'tool_use' && block.id === 'call-1')).toBe(true)
     const firstResults = firstBlocks.filter((block: any) => block.type === 'tool_result' && block.tool_use_id === 'call-1')
     expect(firstResults).toHaveLength(1)
     expect(firstResults[0]?.content).toBe('README body')

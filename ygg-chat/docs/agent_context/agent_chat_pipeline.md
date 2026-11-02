@@ -300,6 +300,7 @@ Both paths run through `CompactionService`:
 | `operation_mode_changed` | Adds row and applies `operationModeNotificationReceived` |
 | `operation_mode_decisions_cleared` | Clears indicated mode decisions |
 | `message_queue_updated` | `messageQueueUpdated` |
+| `background_tasks` (Claude only) | `streamBackgroundTasksUpdated` (ignored once the stream finished; cleared by `streamCompleted`) |
 | `queued_user_message_persisted` | Adds row and applies `queuedMessageInserted` |
 | `provider_routed`, `context_usage`, `tool_request` | `[]` (no-op) |
 

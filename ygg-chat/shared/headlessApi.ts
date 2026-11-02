@@ -90,6 +90,11 @@ export interface HeadlessMessageRequest {
    * toolAutoApprove is off; absent == 'default'.
    */
   claudePermissionMode?: 'auto'
+  /**
+   * Claude provider only. Runs the session with ultracode on: Claude may hand work to the
+   * Workflow tool, which runs agents as background tasks. Absent == off.
+   */
+  claudeUltracode?: boolean
   manualCompaction?: boolean
   autoCompactionEnabled?: boolean
   contextLength?: number
@@ -212,6 +217,22 @@ export type HeadlessSubagentStreamEvent =
       envelope?: ChatErrorEnvelope
     }
 
+export interface HeadlessBackgroundTask {
+  id: string
+  /** The SDK task_type: local_bash, local_agent, local_workflow, monitor, ... */
+  kind: string
+  description: string
+  /** The tool call that launched it; null for tasks a child agent launched. */
+  toolUseId: string | null
+}
+
+/** The end of a background shell or Monitor task's output (the CLI keeps the last 8 KiB). */
+export interface HeadlessBackgroundTaskOutput {
+  output: string
+  totalBytes: number
+  truncated: boolean
+}
+
 export type HeadlessStreamEvent =
   | { type: 'observer_resync_required'; streamId: string }
   | { type: 'event_reference'; streamId: string; reference: import('./snapshotPayload.js').SnapshotPayloadReference }
@@ -243,6 +264,12 @@ export type HeadlessStreamEvent =
    */
   | { type: 'context_injection_persisted'; message: any; lineageId?: string | null }
   | { type: 'provider_routed'; provider: string; modelName: string }
+  /**
+   * Claude runs only: the non-ambient background tasks keeping the session open (a backgrounded
+   * shell, a workflow, a child agent). Replace semantics. `turnActive: false` means Claude finished
+   * its turn and the run stays open only for this work; Stop ends the tasks with the run.
+   */
+  | { type: 'background_tasks'; streamId: string; lineageId?: string | null; turnActive: boolean; tasks: HeadlessBackgroundTask[] }
   | {
       type: 'hook_activity'
       event: string

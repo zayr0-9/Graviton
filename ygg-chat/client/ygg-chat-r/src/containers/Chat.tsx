@@ -48,6 +48,7 @@ import {
   ReasoningLevelControl,
   Select,
   SettingsPane,
+  BackgroundTasksIndicator,
   StreamingThinkingIndicator,
   ToolJobsModal,
   ToolPermissionDialog,
@@ -145,6 +146,7 @@ import type {
   ContentBlock,
   HookRunRecord,
   ImageDraftTarget,
+  StreamState,
   StreamUndoSummary,
   ToolCall,
 } from '../features/chats/chatTypes'
@@ -231,7 +233,6 @@ import {
   ProviderSettings,
   resolveProviderContextLength,
 } from '../helpers/providerSettingsStorage'
-import { isOrchestratorEnabled, toggleOrchestratorEnabled } from '../helpers/subagentToolSettings'
 import { useSyncExternalStore } from 'react'
 import { isFullAccessEnabled, setFullAccessEnabled, subscribeFullAccess } from '../helpers/fullAccessSettings'
 import { handleChatToggleShortcut, loadModelShortcutSlots } from '../helpers/chatKeyboardShortcuts'
@@ -379,6 +380,7 @@ type StreamingThinkingIndicatorPlacement = 'message' | 'input-tab'
 type PendingCwdAnnouncement = { cwd?: string; additionalCwds?: string[] }
 
 const EMPTY_PARSED_MESSAGE_DATA: ParsedMessageData = {}
+const NO_BACKGROUND_TASKS: NonNullable<StreamState['backgroundTasks']> = []
 const COMPOSER_SLASH_COMMANDS = [
   'status-openai',
   'compact',
@@ -992,7 +994,10 @@ const parseMessageDataForRender = (msg: Message): ParsedMessageData => {
     }
   }
 
-  return { toolCalls, contentBlocks }
+  // Legacy `tool_calls` repeats the blocks' `tool_use` entries; it describes a row only
+  // when the row has no `tool_use` blocks.
+  const hasToolUseBlocks = contentBlocks?.some(block => block?.type === 'tool_use') ?? false
+  return { toolCalls: hasToolUseBlocks ? undefined : toolCalls, contentBlocks }
 }
 
 
@@ -1264,6 +1269,8 @@ function Chat() {
       active: effectiveViewStream?.active ?? false,
       status: effectiveViewStream?.status ?? 'idle',
       compactionStatus: effectiveViewStream?.compactionStatus,
+      backgroundTasks: effectiveViewStream?.backgroundTasks ?? NO_BACKGROUND_TASKS,
+      backgroundTurnIdle: Boolean(effectiveViewStream?.backgroundTurnIdle),
       buffer: effectiveViewStream?.buffer ?? '',
       thinkingBuffer: effectiveViewStream?.thinkingBuffer ?? '',
       toolCalls: effectiveViewStream?.toolCalls ?? [],
@@ -1348,6 +1355,7 @@ function Chat() {
   )
   const toolAutoApprove = useAppSelector(state => resolveComposerToolApproval(state.chat))
   const claudeAutoMode = useAppSelector(state => state.chat.claudeAutoMode === true)
+  const claudeUltracode = useAppSelector(state => state.chat.claudeUltracode === true)
   // Claude cycles Ask -> Auto -> Allow all; Auto is the CLI classifier and only replaces Ask.
   const claudeApproval = toolAutoApprove ? 'allow_all' : claudeAutoMode ? 'auto' : 'ask'
   // D3: free-tier exhaustion is a chat bubble, not a blocking modal. `sseProjection` records the
@@ -1561,7 +1569,6 @@ function Chat() {
     useState<StreamingThinkingIndicatorPlacement>(getStoredStreamingThinkingIndicatorPlacement)
   // Tool jobs modal state
   const [jobsModalOpen, setJobsModalOpen] = useState(false)
-  const [orchestratorEnabled, setOrchestratorEnabledState] = useState(() => isOrchestratorEnabled())
   const fullAccessEnabled = useSyncExternalStore(subscribeFullAccess, isFullAccessEnabled)
   // OpenRouter cloud-sign-in required modal state
   const [openRouterLoginRequiredModalOpen, setOpenRouterLoginRequiredModalOpen] = useState(false)
@@ -2785,6 +2792,13 @@ function Chat() {
     streamState.status === 'aborting'
   const showGenerationLoadingAnimation =
     selection.status !== 'pending' && selection.status !== 'error' && (showCompactionStatus || streamLifecycleActive || hasRunningToolJobForCurrentBranch)
+  // A Claude run whose turn ended stays open only for its background tasks: name them instead of "Composing".
+  const backgroundTasksView = showGenerationLoadingAnimation && streamLifecycleActive && streamState.id && currentConversationId &&
+    streamState.backgroundTasks.length
+    ? { conversationId: String(currentConversationId), streamId: streamState.id, tasks: streamState.backgroundTasks,
+        idle: streamState.backgroundTurnIdle && !showCompactionStatus }
+    : null
+  const showThinkingIndicator = !backgroundTasksView?.idle
   const hasFinalTextStreaming = Boolean(streamState.buffer?.trim())
   const hasProcessStreamingContent =
     Boolean(streamState.thinkingBuffer) || streamState.toolCalls.length > 0 || streamState.events.length > 0
@@ -2839,7 +2853,9 @@ function Chat() {
   const showStreamingThinkingMessageRow = streamingThinkingIndicatorPlacement === 'message'
   const showStreamingThinkingInputTab = streamingThinkingIndicatorPlacement === 'input-tab'
   const showGenerationLoaderRow = showGenerationLoadingAnimation && showStreamingThinkingMessageRow
-  const showGenerationLoaderInVirtualList = showGenerationLoaderRow && !showLiveStreamingTail && !liveAgentGroupId
+  // Grouped live process work draws its own animated "Agent steps" status line; a second loader below it duplicates it.
+  const showsLiveAgentStepsStatus = groupToolReasoningRuns && !showCompactionStatus && showStreamingMessage && hasProcessStreamingContent
+  const showGenerationLoaderInVirtualList = showGenerationLoaderRow && !showLiveStreamingTail && !liveAgentGroupId && !showsLiveAgentStepsStatus
   // The in-flow bottom sentinel is the sole trailing spacer (paddingEnd is 0). Sized to mirror the
   // previous paddingEnd so scroll-to-bottom lands the last message in the same place. It must be
   // flexShrink:0 in the render, otherwise the flex column collapses it to 0 and there is no room to
@@ -6838,16 +6854,24 @@ function Chat() {
                               start={virtualRow.start}
                               measureElement={virtualizer.measureElement}
                             >
-                              <div className={`${showStreamingMessage ? 'pt-2' : 'pt-1'} px-0 sm:px-2`}>
-                                <StreamingThinkingIndicator
-                                  compacting={showCompactionStatus}
-                                  compactionCompleted={Boolean(compactionCompleted)}
-                                  style={
-                                    fontSizeOffset !== 0
-                                      ? { fontSize: `calc(0.75em + ${fontSizeOffset}px)` }
-                                      : undefined
-                                  }
-                                />
+                              <div className={`${showStreamingMessage ? 'pt-2' : 'pt-1'} flex flex-wrap items-center gap-1 px-0 sm:px-2`}>
+                                {showThinkingIndicator && (
+                                  <StreamingThinkingIndicator
+                                    compacting={showCompactionStatus}
+                                    compactionCompleted={Boolean(compactionCompleted)}
+                                    style={
+                                      fontSizeOffset !== 0
+                                        ? { fontSize: `calc(0.75em + ${fontSizeOffset}px)` }
+                                        : undefined
+                                    }
+                                  />
+                                )}
+                                {backgroundTasksView && (
+                                  <BackgroundTasksIndicator
+                                    {...backgroundTasksView}
+                                    style={fontSizeOffset !== 0 ? { fontSize: `calc(0.75em + ${fontSizeOffset}px)` } : undefined}
+                                  />
+                                )}
                               </div>
                             </VirtualizedRowContainer>
                           )
@@ -7237,8 +7261,11 @@ function Chat() {
               </div>
             )}
             {showGenerationLoadingAnimation && showStreamingThinkingInputTab && (
-              <div className='absolute left-0 top-0 z-0 flex -translate-y-[calc(100%-8px)]'>
-                <StreamingThinkingIndicator variant='tab' compacting={showCompactionStatus} compactionCompleted={Boolean(compactionCompleted)} />
+              <div className='absolute left-0 top-0 z-0 flex gap-1 -translate-y-[calc(100%-8px)]'>
+                {showThinkingIndicator && (
+                  <StreamingThinkingIndicator variant='tab' compacting={showCompactionStatus} compactionCompleted={Boolean(compactionCompleted)} />
+                )}
+                {backgroundTasksView && <BackgroundTasksIndicator variant='tab' {...backgroundTasksView} />}
               </div>
             )}
 
@@ -7729,6 +7756,7 @@ function Chat() {
                       isActive={
                         toolAutoApprove ||
                         (isClaudeSession && claudeAutoMode) ||
+                        (isClaudeSession && claudeUltracode) ||
                         operationMode === 'plan' ||
                         !!imageConfig.aspectRatio ||
                         !!imageConfig.imageSize ||
@@ -7881,17 +7909,20 @@ function Chat() {
                               />
                             </div>
                           )}
-                          <div className='action-cloud-row'>
-                            <span>Orchestrator</span>
+                          <div className='action-cloud-row action-cloud-row-fast'>
+                            <div className='flex min-w-0 flex-col'>
+                              <span>Ultracode</span>
+                              <span className='action-cloud-hint'>
+                                {isClaudeSession ? 'Claude may run background Workflows of agents' : 'Only sent for Claude Code'}
+                              </span>
+                            </div>
                             <ActionPopoverSwitch
-                              label='Orchestrator'
-                              disabled={isClaudeSession}
-                              checked={!isClaudeSession && orchestratorEnabled}
-                              onClick={async () => {
-                                try { setOrchestratorEnabledState(await toggleOrchestratorEnabled()) }
-                                catch (error) { window.alert(error instanceof Error ? error.message : 'Could not save subagent setting') }
-                              }}
-                              title={orchestratorEnabled ? 'Subagent can use tools (click to disable)' : 'Subagent cannot use tools (click to enable)'}
+                              label='Ultracode'
+                              disabled={!isClaudeSession}
+                              checked={isClaudeSession && claudeUltracode}
+                              onClick={() => dispatch(chatSliceActions.claudeUltracodeSet(!claudeUltracode))}
+                              title={!isClaudeSession ? 'Ultracode is a Claude Code setting'
+                                : claudeUltracode ? 'Ultracode on for new turns (click to turn off)' : 'Turn on ultracode for new turns'}
                             />
                           </div>
                           <div className='flex flex-col gap-1'>

@@ -127,6 +127,15 @@ const addParsedToolCall = (
 
 const parseTrackedToolCalls = (message: Message): ParsedToolCall[] => {
   const calls = new Map<string, ParsedToolCall>()
+  const toolUses = parseContentBlocks(message.content_blocks).filter(block => block.type === 'tool_use')
+
+  for (const block of toolUses) {
+    addParsedToolCall(calls, block.id, block.name, block.input, message.id, message.created_at)
+  }
+
+  // Legacy `tool_calls` repeats the blocks' tool calls; read it only for rows without `tool_use` blocks.
+  if (toolUses.length > 0) return [...calls.values()]
+
   const rawToolCalls = parseMaybeJson(message.tool_calls)
 
   const rawCallList: unknown[] = Array.isArray(rawToolCalls)
@@ -147,12 +156,6 @@ const parseTrackedToolCalls = (message: Message): ParsedToolCall[] => {
       message.id,
       message.created_at
     )
-  }
-
-  for (const block of parseContentBlocks(message.content_blocks)) {
-    if (block.type !== 'tool_use') continue
-
-    addParsedToolCall(calls, block.id, block.name, block.input, message.id, message.created_at)
   }
 
   return [...calls.values()]

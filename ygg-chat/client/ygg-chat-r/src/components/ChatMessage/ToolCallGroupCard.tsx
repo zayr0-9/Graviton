@@ -7,6 +7,7 @@ import { CLAUDE_FILE_EDIT_TOOLS } from '../../../../../shared/claudeProvider'
 import { PlanMdToolView } from '../PlanMdToolView'
 import { McpAppIframe } from '../McpAppIframe/McpAppIframe'
 import { SubagentToolName } from '../SubagentTranscript/SubagentTranscript'
+import { BackgroundTaskView, backgroundTaskTone } from './BackgroundTaskView'
 import { HtmlIframe } from './HtmlIframe'
 import {
   ACTION_PILL_CLASS,
@@ -420,6 +421,21 @@ export const ToolCallGroupCard: React.FC<ToolCallGroupCardProps> = ({
             result={{ displayed: true, exists: true, name: claudePlan.name, path: claudePlan.path, content: claudePlan.plan }}
             readOnly={readOnly}
           />
+        </div>
+      </div>
+    )
+  }
+
+  // A call that launched a background task (a Claude Workflow): the task's live status is the body.
+  const backgroundTask = group.results.find(result => result.task)?.task
+  if (backgroundTask) {
+    return (
+      <div className='min-w-0 max-w-full' style={wrapperStyle} data-chat-block='tool'>
+        <div className={STATIC_ROW_CLASS}>
+          <ToolName name={rawName || 'Task'} tone={backgroundTaskTone(backgroundTask)} />
+        </div>
+        <div className={DISCLOSURE_BODY_CLASS}>
+          <BackgroundTaskView task={backgroundTask} />
         </div>
       </div>
     )

@@ -2,6 +2,7 @@ import type Database from 'better-sqlite3'
 import { estimateTokenCount } from 'tokenx'
 import { extractOpenAIContextUsageFromBlocks } from '../../../shared/contextUsage.js'
 import { summarizeDurations, summarizeOutcomes } from './loggingAnalyticsMetrics.js'
+import { messageToolCalls } from './headlessServer/providers/toolResultSanitizer.js'
 
 type QueryLike = Record<string, unknown>
 
@@ -74,18 +75,6 @@ const dayKey = (value: unknown) => {
   const ms = parseTimestamp(value)
   if (ms === null) return 'unknown'
   return new Date(ms).toISOString().slice(0, 10)
-}
-const parseToolCalls = (input: unknown): any[] => {
-  if (Array.isArray(input)) return input
-  if (input && typeof input === 'object') return [input]
-  if (typeof input === 'string') {
-    try {
-      return parseToolCalls(JSON.parse(input))
-    } catch {
-      return []
-    }
-  }
-  return []
 }
 const extractToolName = (toolCall: unknown): string | null => {
   if (!toolCall || typeof toolCall !== 'object') return null
@@ -272,7 +261,7 @@ function buildDashboardSnapshot(db: Database.Database, query: QueryLike, now: nu
 
   const filteredMessages = messages.filter(row => !modelFilter || (row.model_name || 'unknown') === modelFilter)
   const requestedToolCalls = filteredMessages.flatMap(message =>
-    parseToolCalls(message.tool_calls)
+    messageToolCalls(message)
       .map(call => extractToolName(call))
       .filter((name): name is string => Boolean(name))
   )
@@ -297,7 +286,7 @@ function buildDashboardSnapshot(db: Database.Database, query: QueryLike, now: nu
 
   for (const message of filteredMessages) {
     const date = dayKey(message.created_at)
-    for (const toolCall of parseToolCalls(message.tool_calls)) {
+    for (const toolCall of messageToolCalls(message)) {
       const toolName = extractToolName(toolCall)
       if (!toolName) continue
       if (toolNameFilter && toolName !== toolNameFilter) continue
@@ -442,7 +431,7 @@ function buildDashboardSnapshot(db: Database.Database, query: QueryLike, now: nu
   }, {})
   const requestedToolsDailyMap = filteredMessages.reduce<Record<string, Record<string, number>>>((acc, message) => {
     const key = dayKey(message.created_at)
-    const toolNames = parseToolCalls(message.tool_calls).map(call => extractToolName(call)).filter((name): name is string => Boolean(name))
+    const toolNames = messageToolCalls(message).map(call => extractToolName(call)).filter((name): name is string => Boolean(name))
     if (!acc[key]) acc[key] = {}
     for (const toolName of toolNames) {
       if (!toolNameFilter || toolName === toolNameFilter) acc[key][toolName] = (acc[key][toolName] || 0) + 1
@@ -524,7 +513,7 @@ function buildDashboardSnapshot(db: Database.Database, query: QueryLike, now: nu
     .sort((a, b) => (b.total !== a.total ? b.total - a.total : b.requested !== a.requested ? b.requested - a.requested : a.toolName.localeCompare(b.toolName)))
 
   const availableModels = Array.from(new Set([...allProviderCosts.map(cost => cost.model_name || 'unknown'), ...messages.map(message => message.model_name || 'unknown'), ...allRuns.map(row => row.model_name || 'unknown'), ...allInvocations.map(row => row.model_name || 'unknown')])).sort()
-  const availableToolNames = Array.from(new Set([...messages.flatMap(message => parseToolCalls(message.tool_calls).map(call => extractToolName(call)).filter((name): name is string => Boolean(name))), ...allToolJobs.map(row => row.tool_name), ...allInvocations.map(row => row.tool_name)])).sort()
+  const availableToolNames = Array.from(new Set([...messages.flatMap(message => messageToolCalls(message).map(call => extractToolName(call)).filter((name): name is string => Boolean(name))), ...allToolJobs.map(row => row.tool_name), ...allInvocations.map(row => row.tool_name)])).sort()
   const burnRatePerDay = totalApiCredits / Math.max(1, rangeDays)
 
   return {

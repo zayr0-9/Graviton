@@ -2,7 +2,7 @@ import { describe, it, expect, vi } from 'vitest'
 import { mkdir, mkdtemp, realpath, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
-import { CHAT_MODE_NOTE, ClaudeSessionService, claudeModeSwitchNotice, interruptedResumePoint, safeResumePoint } from '../claudeSessionService.js'
+import { CHAT_MODE_NOTE, ClaudeSessionService, claudeModeSwitchNotice, interruptedResumePoint, safeResumePoint, type ClaudeTaskControl } from '../claudeSessionService.js'
 import { OperationModeControl } from '../operationModeControl.js'
 import { assertClaudeBranchSelection } from '../../persistence/claudeSessionRepo.js'
 import { DecisionBroker } from '../decisionBroker.js'
@@ -219,6 +219,8 @@ describe('Claude native session backend', () => {
       assistant('final'), success])
     await f.service.run(f.input)
     expect(f.sink.updateAssistantToolState).toHaveBeenCalledWith('row0', expect.objectContaining({ contentBlocks: expect.arrayContaining([expect.objectContaining({ type: 'tool_result', tool_use_id: 't', content: 'file text' })]) }))
+    // The blocks are the only stored copy: no legacy tool_calls, so no duplicated result.
+    for (const [, update] of f.sink.updateAssistantToolState.mock.calls) expect(update.toolCalls).toBeUndefined()
     expect(f.rows[1].parentId).toBe('row0')
     expect(f.sessions.record).toHaveBeenLastCalledWith('row1', 's', 'final', '/workspace', true)
   })
@@ -1276,4 +1278,257 @@ describe('Queued input on a live Claude session', () => {
       expect(await guardOf(f)(...preToolUse('Edit'))).toEqual({})
     })
   })
+})
+
+describe('Ultracode and background tasks', () => {
+  // A CLI double that reads the service's input stream as the real one does.
+  function scripted(f: ReturnType<typeof fixture>, script: (read: () => Promise<IteratorResult<any>>) => AsyncGenerator<any>) {
+    f.sdk.query.mockImplementation(({ prompt }: any) => {
+      const input = prompt[Symbol.asyncIterator]()
+      return Object.assign(script(() => input.next()), { close: vi.fn() }) as any
+    })
+  }
+  const system = (subtype: string, fields: Record<string, unknown> = {}) => ({ type: 'system', subtype, session_id: 's', ...fields })
+  const workflowCall = assistant('a1', [{ type: 'tool_use', id: 'w1', name: 'Workflow', input: { script: 'phase()' } }])
+  const launched = { type: 'user', session_id: 's', parent_tool_use_id: null,
+    message: { content: [{ type: 'tool_result', tool_use_id: 'w1', content: 'Workflow launched in background. Task ID: t1' }] } }
+  const live = (...ids: string[]) => system('background_tasks_changed', { tasks: ids.map(task_id => ({ task_id, task_type: 'local_workflow', description: task_id })) })
+  const started = system('task_started', { task_id: 't1', tool_use_id: 'w1', task_type: 'local_workflow', workflow_name: 'red-blue', description: 'Two agents' })
+  const progress = system('task_progress', { task_id: 't1', tool_use_id: 'w1', description: 'Colors: blue', usage: { total_tokens: 900, tool_uses: 0, duration_ms: 400 },
+    workflow_progress: [{ type: 'workflow_phase', index: 1, title: 'Colors' },
+      { type: 'workflow_agent', index: 1, label: 'red', phaseTitle: 'Colors', state: 'done' },
+      { type: 'workflow_agent', index: 2, label: 'blue', phaseTitle: 'Colors', state: 'start' }] })
+  const finished = [
+    system('task_updated', { task_id: 't1', patch: { status: 'completed' } }),
+    system('task_notification', { task_id: 't1', tool_use_id: 'w1', status: 'completed', summary: 'Workflow "Two agents" completed',
+      usage: { total_tokens: 1800, tool_uses: 0, duration_ms: 1500 } }),
+    live(),
+  ]
+  const settled = (promise: Promise<unknown>) => Promise.race([promise.then(() => 'settled'), new Promise(resolve => setTimeout(() => resolve('pending'), 30))])
+  // The run's mailbox; `add` queues a message the way the composer does.
+  const queue = () => {
+    const entries: Array<{ requestId: string; prompt: string; status: string; offered?: boolean }> = []
+    let wake = () => {}
+    const bridge = {
+      subscribe: (next: () => void) => { wake = next; return () => {} },
+      prepareNext: async () => {
+        const entry = entries.find(row => row.status === 'queued' && !row.offered)
+        if (!entry) return null
+        entry.offered = true
+        return { requestId: entry.requestId, prompt: entry.prompt, images: [] }
+      },
+      deliver: vi.fn((requestId: string, parentId: string | null, _mode?: any) => {
+        entries.find(row => row.requestId === requestId)!.status = 'delivered'
+        return { id: `user-${requestId}`, parentId }
+      }),
+      recordModeSwitch: vi.fn(), release: vi.fn(), bindCancel: vi.fn(),
+      tryClose: vi.fn(() => !entries.some(row => row.status === 'queued')),
+    }
+    return { bridge, add(requestId: string, prompt = requestId) { entries.push({ requestId, prompt, status: 'queued' }); wake() } }
+  }
+  const taskOn = (f: ReturnType<typeof fixture>, rowId: string) => {
+    const update = f.sink.updateAssistantToolState.mock.calls.filter(([id]: any[]) => id === rowId).at(-1)?.[1]
+    return update?.contentBlocks.find((block: any) => block.type === 'tool_result' && block.tool_use_id === 'w1')?.task
+  }
+
+  it('passes ultracode as a session flag setting only when the request asks for it', async () => {
+    for (const ultracode of [true, false]) {
+      const f = fixture([assistant(), success])
+      if (ultracode) f.input.request.claudeUltracode = true
+      await f.service.run(f.input)
+      expect(f.sdk.query.mock.calls[0][0].options.settings).toEqual({ plansDirectory: path.join('.ygg', 'plans'), ...(ultracode ? { ultracode: true } : {}) })
+    }
+  })
+
+  it('keeps the session open while a workflow runs, then persists the turn that answers its end', async () => {
+    const f = fixture()
+    let afterFirst: Promise<IteratorResult<any>> | undefined
+    scripted(f, async function* (read) {
+      await read()
+      yield workflowCall
+      yield live('t1')
+      yield started
+      yield launched
+      yield assistant('a2', [{ type: 'text', text: 'The workflow is running in the background.' }])
+      yield success
+      afterFirst = read()
+      // The result left a task running: the session stays open.
+      expect(await settled(afterFirst)).toBe('pending')
+      yield progress
+      for (const event of finished) yield event
+      // Claude answers the finished task with a turn of its own.
+      yield system('init', { permissionMode: 'default' })
+      yield assistant('a3', [{ type: 'text', text: 'RED BLUE' }])
+      yield success
+      expect((await afterFirst).done).toBe(true)
+    })
+    const final = await f.service.run(f.input)
+    expect(final.content).toBe('RED BLUE')
+    expect(f.rows.map(row => row.parentId)).toEqual(['u', 'row0', 'row1'])
+    expect(f.sessions.record).toHaveBeenLastCalledWith(final.id, 's', 'a3', '/workspace', true)
+    expect(taskOn(f, 'row0')).toEqual({ id: 't1', kind: 'local_workflow', status: 'completed', description: 'Two agents', workflowName: 'red-blue',
+      summary: 'Workflow "Two agents" completed', usage: { totalTokens: 1800, toolUses: 0, durationMs: 1500 },
+      agents: [{ label: 'red', phase: 'Colors', state: 'done' }, { label: 'blue', phase: 'Colors', state: 'start' }] })
+    expect(f.emit).toHaveBeenCalledWith(expect.objectContaining({ type: 'assistant_message_persisted', message: expect.objectContaining({ id: 'row0' }) }))
+  })
+
+  it('keeps the queue open while background work runs, so a message sent meanwhile reaches Claude', async () => {
+    const f = fixture(); const q = queue(); f.input.queuedInput = q.bridge
+    scripted(f, async function* (read) {
+      await read()
+      yield workflowCall
+      yield live('t1')
+      yield started
+      yield launched
+      yield success
+      // Not closed: the queue still takes the user's message, which starts a turn while the workflow runs.
+      expect(q.bridge.tryClose).not.toHaveBeenCalled()
+      q.add('r1', 'what is taking so long?')
+      const queued = (await read()).value
+      yield { type: 'command_lifecycle', command_uuid: queued.uuid, state: 'started', session_id: 's' }
+      yield assistant('a2', [{ type: 'text', text: 'Still running.' }])
+      yield success
+      for (const event of finished) yield event
+      yield system('init', { permissionMode: 'default' })
+      yield assistant('a3', [{ type: 'text', text: 'Done.' }])
+      yield success
+      expect((await read()).done).toBe(true)
+    })
+    const final = await f.service.run(f.input)
+    expect(final.content).toBe('Done.')
+    expect(q.bridge.deliver).toHaveBeenCalledWith('r1', 'row0', expect.anything())
+  })
+
+  it('shows only tasks the main agent launched; child agents\' tasks still keep the session open', async () => {
+    const f = fixture()
+    let afterFirst: Promise<IteratorResult<any>> | undefined
+    scripted(f, async function* (read) {
+      await read()
+      yield workflowCall
+      yield started
+      yield launched
+      yield success
+      afterFirst = read()
+      yield system('task_notification', { task_id: 't1', tool_use_id: 'w1', status: 'completed', summary: 'done' })
+      // A child agent's backgrounded Bash, on a call Graviton never saw.
+      yield live('child')
+      yield system('task_started', { task_id: 'child', tool_use_id: 'toolu_child', task_type: 'local_bash', description: 'sleep 25', owned_by_subagent: true })
+      yield system('init', { permissionMode: 'default' })
+      yield assistant('a2', [{ type: 'text', text: 'answered' }])
+      yield success
+      expect(await settled(afterFirst)).toBe('pending')
+      yield live()
+      expect((await afterFirst).done).toBe(true)
+    })
+    await f.service.run(f.input)
+    const tasks = f.sink.updateAssistantToolState.mock.calls.flatMap(([, update]: any[]) => update.contentBlocks)
+      .map((block: any) => block.task?.id).filter(Boolean)
+    expect(new Set(tasks)).toEqual(new Set(['t1']))
+  })
+
+  it('marks a task that was still running as stopped when the run ends early', async () => {
+    const f = fixture()
+    scripted(f, async function* (read) {
+      await read()
+      yield workflowCall
+      yield live('t1')
+      yield started
+      yield launched
+      throw new Error('CLI exited')
+    })
+    await expect(f.service.run(f.input)).rejects.toThrow('CLI exited')
+    expect(taskOn(f, 'row0')).toMatchObject({ id: 't1', status: 'stopped' })
+  })
+
+  it('publishes the tasks keeping a finished turn open, and stops or reads one on request', async () => {
+    const f = fixture()
+    const stopTask = vi.fn(async () => {})
+    const getTaskOutput = vi.fn(async () => ({ output: 'listening on :8090\n', total_bytes: 19, truncated: false }))
+    let control: ClaudeTaskControl | undefined
+    f.input.bindTasks = (bound: ClaudeTaskControl) => { control = bound; return () => { control = undefined } }
+    const server = { id: 'srv', kind: 'local_bash', description: 'Start the dev server' }
+    f.sdk.query.mockImplementation(({ prompt }: any) => {
+      const input = prompt[Symbol.asyncIterator]()
+      return Object.assign((async function* () {
+        await input.next()
+        yield assistant('a1', [{ type: 'tool_use', id: 'b1', name: 'Bash', input: { command: 'bun run dev', run_in_background: true } }])
+        // An ambient watcher is not activity, and the level can name a task before task_started does.
+        yield system('background_tasks_changed', { tasks: [{ task_id: 'srv', task_type: 'local_bash', description: server.description },
+          { task_id: 'watch', task_type: 'monitor', description: 'watch', ambient: true }] })
+        yield system('task_started', { task_id: 'srv', tool_use_id: 'b1', task_type: 'local_bash', description: server.description })
+        yield { type: 'user', session_id: 's', parent_tool_use_id: null,
+          message: { content: [{ type: 'tool_result', tool_use_id: 'b1', content: 'Command running in background with ID: srv' }] } }
+        yield assistant('a2', [{ type: 'text', text: 'The server is up.' }])
+        yield success
+        expect(await control!.output('srv')).toEqual({ output: 'listening on :8090\n', totalBytes: 19, truncated: false })
+        expect(await control!.stop('watch')).toBe(false)
+        expect(await control!.stop('srv')).toBe(true)
+        yield system('task_notification', { task_id: 'srv', tool_use_id: 'b1', status: 'stopped', summary: 'Stopped' })
+        yield system('background_tasks_changed', { tasks: [] })
+        yield system('init', { permissionMode: 'default' })
+        yield assistant('a3', [{ type: 'text', text: 'Stopped the server.' }])
+        yield success
+      })(), { close: vi.fn(), stopTask, getTaskOutput })
+    })
+    await f.service.run(f.input)
+    expect(stopTask).toHaveBeenCalledWith('srv')
+    expect(getTaskOutput).toHaveBeenCalledWith('srv')
+    expect(control).toBeUndefined()
+    expect(f.emit.mock.calls.map(([event]) => event).filter(event => event.type === 'background_tasks')).toEqual([
+      { type: 'background_tasks', streamId: 'stream', lineageId: 'l', turnActive: true, tasks: [{ ...server, toolUseId: null }] },
+      { type: 'background_tasks', streamId: 'stream', lineageId: 'l', turnActive: true, tasks: [{ ...server, toolUseId: 'b1' }] },
+      { type: 'background_tasks', streamId: 'stream', lineageId: 'l', turnActive: false, tasks: [{ ...server, toolUseId: 'b1' }] },
+      { type: 'background_tasks', streamId: 'stream', lineageId: 'l', turnActive: false, tasks: [] },
+    ])
+  })
+
+  it.skipIf(process.env.CLAUDE_PROVIDER_LIVE_TEST !== '1')('live service: an ultracode workflow keeps the session and queue open and shows its progress', async () => {
+    const { mkdtemp, rm } = await import('node:fs/promises')
+    const os = await import('node:os')
+    const native = await import('@anthropic-ai/claude-agent-sdk')
+    const cwd = await mkdtemp(path.join(os.tmpdir(), 'graviton-claude-workflow-'))
+    const controller = new AbortController()
+    const timer = setTimeout(() => controller.abort(), 280_000)
+    const f = fixture(); const q = queue()
+    f.broker.initSession('stream', { autoApproveAll: true })
+    Object.assign(f.input, { cwd, signal: controller.signal, queuedInput: q.bridge })
+    Object.assign(f.input.request, { modelName: process.env.CLAUDE_WORKFLOW_MODEL || 'claude-sonnet-5-5', claudeUltracode: true,
+      content: 'Use the Workflow tool to run a tiny workflow of exactly two agents in parallel. The first agent must use Bash to run ' +
+        '`sleep 20 && echo RED` and reply with its output; the second the same with `sleep 20 && echo BLUE`. ' +
+        'When the workflow finishes, reply with both words.' })
+    f.sdk.query.mockImplementation((args: any) => native.query({ ...args, options: { ...args.options,
+      pathToClaudeCodeExecutable: process.env.CLAUDE_BRIDGE_BINARY || path.join(os.homedir(), '.local/bin/claude') } }) as any)
+    // Every state the Workflow call's task passed through, as the transcript saw it.
+    const states: string[] = []
+    let queuedWhile: string | undefined
+    f.input.emit = (event: any) => {
+      f.emit(event)
+      if (event.type !== 'assistant_message_persisted') return
+      const blocks = typeof event.message.content_blocks === 'string' ? JSON.parse(event.message.content_blocks) : event.message.contentBlocks ?? event.message.content_blocks
+      const task = (blocks ?? []).find((block: any) => block.type === 'tool_result' && block.task)?.task
+      if (!task) return
+      if (states.at(-1) !== task.status) states.push(task.status)
+      // Sent once the workflow is under way; the open queue must deliver it before the workflow ends.
+      if (task.status === 'running' && !queuedWhile) { queuedWhile = 'running'; q.add('r1', 'While that runs, reply with the word PURPLE.') }
+    }
+    q.bridge.deliver.mockImplementation((requestId: string, parentId: string | null) => {
+      queuedWhile = states.at(-1)
+      return { id: `user-${requestId}`, parentId }
+    })
+    try {
+      const final = await f.service.run(f.input)
+      expect(states).toEqual(['running', 'completed'])
+      expect(q.bridge.deliver).toHaveBeenCalledOnce()
+      expect(queuedWhile).toBe('running')
+      expect(final.content).toMatch(/RED/)
+      expect(final.content).toMatch(/BLUE/)
+      const workflowRow = f.sink.updateAssistantToolState.mock.calls.map(([, update]: any[]) => update.contentBlocks)
+        .flat().filter((block: any) => block?.type === 'tool_result' && block.task).at(-1)
+      expect(workflowRow.task).toMatchObject({ kind: 'local_workflow', status: 'completed' })
+      expect(workflowRow.task.agents?.length).toBe(2)
+    } finally {
+      clearTimeout(timer)
+      await rm(cwd, { recursive: true, force: true })
+    }
+  }, 300_000)
 })

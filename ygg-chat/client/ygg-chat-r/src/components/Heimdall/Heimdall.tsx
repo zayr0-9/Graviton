@@ -130,6 +130,16 @@ const HEIMDALL_NODE_RADIUS = 22
 const HEIMDALL_NOTE_PILL_RADIUS = 14
 const HEIMDALL_COMPACT_NODE_HOVER_SCALE = 1.035
 
+// Browsers match :focus-visible for keyboard/programmatic-after-keyboard focus, not clicks.
+const isKeyboardFocus = (element: Element | null) => {
+  if (!element) return false
+  try {
+    return element.matches(':focus-visible')
+  } catch {
+    return true
+  }
+}
+
 const isValidHexColor = (value?: string | null): value is string =>
   typeof value === 'string' && /^#[0-9A-Fa-f]{6}$/.test(value)
 
@@ -385,8 +395,6 @@ export const Heimdall: React.FC<HeimdallProps> = ({
     enabled: hoveredNote !== null,
     getTargetRect: () => notePreviewCardRef.current?.getBoundingClientRect() ?? null,
   })
-  // Store message content in ref to avoid stale closures in debounced update
-  const noteMessageContentRef = useRef<string>('')
   const customColorInputRef = useRef<HTMLInputElement | null>(null)
   // Track dark mode for shadows
   const isDarkMode = useHtmlDarkMode()
@@ -933,13 +941,14 @@ export const Heimdall: React.FC<HeimdallProps> = ({
   const debounceTimeoutRef = useRef<NodeJS.Timeout | null>(null)
 
   const debouncedUpdateNote = useCallback(
-    (messageId: MessageId, content: string, note: string, note_color?: string | null) => {
+    (messageId: MessageId, note: string, note_color?: string | null) => {
       if (debounceTimeoutRef.current) {
         clearTimeout(debounceTimeoutRef.current)
       }
 
+      // Note-only body: works for every role, including Claude transcript rows and empty-content tool turns.
       debounceTimeoutRef.current = setTimeout(() => {
-        dispatch(updateMessage({ id: messageId, content, note, note_color }) as any)
+        dispatch(updateMessage({ id: messageId, note, note_color }) as any)
       }, 500) // 500ms debounce
     },
     [dispatch]
@@ -957,7 +966,6 @@ export const Heimdall: React.FC<HeimdallProps> = ({
       setNoteMessageId(messageId)
       setNoteText(message.note || '')
       setNoteColor(isValidHexColor(message.note_color) ? message.note_color : null)
-      noteMessageContentRef.current = message.content // Store content in ref
       setNoteDialogPos(position)
       setShowNoteDialog(true)
       setShowContextMenu(false)
@@ -971,7 +979,6 @@ export const Heimdall: React.FC<HeimdallProps> = ({
     setNoteMessageId(null)
     setNoteText('')
     setNoteColor(null)
-    noteMessageContentRef.current = '' // Clear ref on close
   }, [])
 
   const handleNoteTextChange = useCallback(
@@ -979,10 +986,7 @@ export const Heimdall: React.FC<HeimdallProps> = ({
       setNoteText(newNoteText)
 
       if (noteMessageId !== null) {
-        const messageContent = noteMessageContentRef.current
-        if (messageContent) {
-          debouncedUpdateNote(noteMessageId, messageContent, newNoteText, noteColor)
-        }
+        debouncedUpdateNote(noteMessageId, newNoteText, noteColor)
       }
     },
     [noteMessageId, noteColor, debouncedUpdateNote]
@@ -994,10 +998,7 @@ export const Heimdall: React.FC<HeimdallProps> = ({
       setNoteColor(sanitizedColor)
 
       if (noteMessageId !== null) {
-        const messageContent = noteMessageContentRef.current
-        if (messageContent) {
-          debouncedUpdateNote(noteMessageId, messageContent, noteText, sanitizedColor)
-        }
+        debouncedUpdateNote(noteMessageId, noteText, sanitizedColor)
       }
     },
     [noteMessageId, noteText, debouncedUpdateNote]
@@ -1936,7 +1937,11 @@ export const Heimdall: React.FC<HeimdallProps> = ({
   // Focus requests also work when Chat has just mounted a previously hidden tree.
   useEffect(() => {
     if (keyboardFocusRequest > 0) {
-      svgRef.current?.focus({ preventScroll: true })
+      const svg = svgRef.current
+      // A click can leave the SVG DOM-focused without focus mode; refocus so onFocus
+      // fires again under the hotkey's keyboard modality.
+      if (svg && document.activeElement === svg) svg.blur()
+      svg?.focus({ preventScroll: true })
       onKeyboardFocusHandled?.()
     }
   }, [keyboardFocusRequest, onKeyboardFocusHandled])
@@ -1949,7 +1954,7 @@ export const Heimdall: React.FC<HeimdallProps> = ({
   }, [keyboardCursor, graphHasFocus, positions, dimensions.width, dimensions.height])
 
   const keyboardScope = () => svgRef.current
-  const canUseKeyboardTree = () => !loading && !error && !keyboardOverlayOpen && keyboardCursor !== null
+  const canUseKeyboardTree = () => graphHasFocus && !loading && !error && !keyboardOverlayOpen && keyboardCursor !== null
   const moveKeyboardCursor = (direction: 'parent' | 'child' | 'previousSibling' | 'nextSibling') => {
     if (!keyboardCursor) return
     const nextNodeId = moveKeyboardNode(keyboardTree, keyboardCursor, direction, currentPathIds.map(String))
@@ -3653,19 +3658,19 @@ export const Heimdall: React.FC<HeimdallProps> = ({
                     return <p className='line-clamp-3'>{node.message}</p>
                   }
 
-                  // Check for tool calls
-                  if (msg?.tool_calls && msg.tool_calls.length > 0) {
-                    const toolNames = msg.tool_calls.map((tc: any) => tc.name).join(', ')
+                  // Check content_blocks for tool_use
+                  const toolUses = Array.isArray(msg?.content_blocks)
+                    ? msg.content_blocks.filter((block: any) => block.type === 'tool_use')
+                    : []
+                  if (toolUses.length > 0) {
+                    const toolNames = toolUses.map((tc: any) => tc.name).join(', ')
                     return <p className='line-clamp-3'>{toolNames || 'Tool Call'}</p>
                   }
 
-                  // Check content_blocks for tool_use
-                  if (msg?.content_blocks && Array.isArray(msg.content_blocks)) {
-                    const toolUses = msg.content_blocks.filter((block: any) => block.type === 'tool_use')
-                    if (toolUses.length > 0) {
-                      const toolNames = toolUses.map((tc: any) => tc.name).join(', ')
-                      return <p className='line-clamp-3'>{toolNames || 'Tool Call'}</p>
-                    }
+                  // Legacy rows without tool_use blocks
+                  if (msg?.tool_calls && msg.tool_calls.length > 0) {
+                    const toolNames = msg.tool_calls.map((tc: any) => tc.name).join(', ')
+                    return <p className='line-clamp-3'>{toolNames || 'Tool Call'}</p>
                   }
 
                   return <p className='line-clamp-3'>...</p>
@@ -4257,6 +4262,10 @@ export const Heimdall: React.FC<HeimdallProps> = ({
         aria-multiselectable='true'
         aria-activedescendant={keyboardCursor ? keyboardItemId(keyboardCursor) : undefined}
         onFocus={() => {
+          // Pointer clicks that skip handlePointerDown's preventDefault (note/subagent
+          // pills stop propagation) still focus the SVG. Only keyboard focus (the
+          // hotkey or Tab) enters focus mode.
+          if (!isKeyboardFocus(svgRef.current)) return
           keyboardCenterPendingRef.current = true
           setGraphHasFocus(true)
           setKeyboardNodeId(keyboardCursor)

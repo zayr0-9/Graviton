@@ -2,7 +2,7 @@ import { isClaudeProvider, isClaudeTranscriptMessage } from '../../../../../shar
 import { HOST_DATA_CHANGED } from '../../services/hostChangeEvents'
 import { getAdmissionEpoch, resetAdmissionEpoch } from './runAdmissionClient'
 import { getClientId, newClientId } from '../../helpers/clientId'
-import { isCleanStartBranchEdit, isSummaryBranchEdit, isProviderHandoffEdit, resolveBranchModelSelection, resolveEditBranchModelSelection, resolveClaudeBranchLock, resolveSummaryContinuation } from './branchModelSelection'
+import { isCleanStartBranchEdit, isSummaryBranchEdit, isProviderHandoffEdit, resolveBranchModelSelection, resolveEditBranchModelSelection, resolveComposerSummaryHandoff } from './branchModelSelection'
 import { resolveBranchFastMode } from './branchFastMode'
 import { resolveAnchoredToolApproval, resolveBranchToolApproval, resolveHandoffToolApproval } from './branchToolApproval'
 import { isCommittedCompaction } from '../../../../../shared/compaction'
@@ -260,7 +260,7 @@ const updateMessageInCache = (
   queryClient: QueryClient | null,
   conversationId: ConversationId,
   messageId: MessageId,
-  updatedContent: string,
+  updatedContent: string | undefined,
   updatedNote?: string,
   updatedNoteColor?: string | null,
   updatedContentBlocks?: any
@@ -276,8 +276,7 @@ const updateMessageInCache = (
       msg.id === messageId
         ? {
             ...msg,
-            content: updatedContent,
-            content_plain_text: updatedContent,
+            ...(updatedContent !== undefined && { content: updatedContent, content_plain_text: updatedContent }),
             ...(updatedNote !== undefined && { note: updatedNote }),
             ...(updatedNoteColor !== undefined && { note_color: updatedNoteColor }),
             ...(updatedContentBlocks && { content_blocks: updatedContentBlocks }),
@@ -1121,12 +1120,11 @@ export const sendMessage = createAsyncThunk<
         // ChatGPT auth: resolve fresh {accessToken, accountId} from the renderer (auto-
         // refreshing) so the server uses them directly. null for every other provider.
         const chatgptServerAuth = null as { accessToken?: string; accountId?: string } | null
-        // Import only a committed summary into a fresh Claude session, never the
-        // old provider's raw history or its restored launch-context tail.
+        // Crossing the Claude boundary at a summary tip imports only the committed summary
+        // into a fresh execution, never the old provider's raw history or launch-context tail.
         const selectedPath = providedBranchPath ?? modelSelectionState.conversation.currentPath
-        const summaryHandoff = !manualCompaction && !isBranch && isClaudeProvider(provider) &&
-          !resolveClaudeBranchLock(modelSelectionState, selectedPath)
-          ? resolveSummaryContinuation(modelSelectionState, selectedPath) : null
+        const summaryHandoff = !manualCompaction && !isBranch
+          ? resolveComposerSummaryHandoff(modelSelectionState, provider, selectedPath) : null
         const operation = summaryHandoff ? 'branch' : 'send'
         const { path, body } = buildServerLoopRequest(operation, {
           messageId: summaryHandoff ? String(summaryHandoff.id) : undefined,
@@ -1159,6 +1157,7 @@ export const sendMessage = createAsyncThunk<
             : isBranch ? resolveAnchoredToolApproval(modelSelectionState, parent, conversationId)
             : resolveBranchToolApproval(modelSelectionState, providedBranchPath ?? modelSelectionState.conversation.currentPath, conversationId, providedLineageId === undefined ? modelSelectionState.conversation.currentLineageId : providedLineageId),
           claudeAutoMode: modelSelectionState.claudeAutoMode,
+          claudeUltracode: modelSelectionState.claudeUltracode,
           hooksEnabled: isElectronMode,
           localApiBase: getCachedLocalApiBase(),
           contextDirectories: loadContextDirectorySettings(),
@@ -1274,50 +1273,32 @@ export const sendMessage = createAsyncThunk<
 
 export const updateMessage = createAsyncThunk<
   Message,
-  { id: MessageId; content: string; note?: string; note_color?: string | null; content_blocks?: any },
+  // Omit content for note-only saves: the server refuses any content write on Claude transcript rows.
+  { id: MessageId; content?: string; note?: string; note_color?: string | null; content_blocks?: any },
   { state: RootState; extra: ThunkExtraArgument }
 >(
   'chat/updateMessage',
   async ({ id, content, note, note_color, content_blocks }, { dispatch, getState, extra, rejectWithValue }) => {
-    const { auth } = extra
     try {
-      const currentState = getState() as RootState
-      const currentConversationId = currentState.chat.conversation.currentConversationId
-      const conversation = currentState.conversations.items.find(c => c.id === currentConversationId)
-      // Use React Query cache as fallback for storage mode detection (handles local conversations not yet in Redux)
-      const storageMode =
-        conversation?.storage_mode || getStorageModeFromCache(extra.queryClient, currentConversationId!)
-      const isLocalMode = shouldUseLocalApi(storageMode)
+      const currentConversationId = (getState() as RootState).chat.conversation.currentConversationId
 
-      // Storage-aware update via the gateway (routes local vs cloud + mirrors).
-      const body: any = { content, note }
-      if (note_color !== undefined && isLocalMode) body.note_color = note_color
+      const body: any = {}
+      if (content !== undefined) body.content = content
+      if (note !== undefined) body.note = note
+      if (note_color !== undefined) body.note_color = note_color
       if (content_blocks) body.content_blocks = content_blocks
+      // The gateway writes the local row itself; no renderer mirror write (it would null content_blocks on note saves).
       const updated = await gwApi.put<Message>(
         `/messages/${id}?conversationId=${encodeURIComponent(String(currentConversationId ?? ''))}`,
         body
       )
-      const appliedNoteColor = isLocalMode ? note_color : undefined
-      dispatch(chatSliceActions.messageUpdated({ id, content, note, note_color: appliedNoteColor, content_blocks }))
+      dispatch(chatSliceActions.messageUpdated({ id, content, note, note_color, content_blocks }))
 
       // Sync to React Query cache immediately
-      const state = getState()
-      const conversationId = state.chat.conversation.currentConversationId
+      const conversationId = getState().chat.conversation.currentConversationId
       if (conversationId) {
-        updateMessageInCache(extra.queryClient, conversationId, id, content, note, appliedNoteColor, content_blocks)
+        updateMessageInCache(extra.queryClient, conversationId, id, content, note, note_color, content_blocks)
       }
-
-      // Sync message update to local SQLite (fire-and-forget)
-      const selectedProject = selectSelectedProject(state)
-      dualSync.syncMessage(
-        {
-          ...updated,
-          content_blocks: content_blocks, // Explicitly include from request to ensure local sync
-          user_id: auth.userId,
-          project_id: selectedProject?.id || null,
-        },
-        'update'
-      )
 
       return updated
     } catch (error) {
@@ -1675,6 +1656,7 @@ export const editMessageWithBranching = createAsyncThunk<
             ?? (isProviderHandoffEdit(modelSelectionState, originalMessageId) ? modelSelectionState.toolAutoApprove
               : resolveAnchoredToolApproval(modelSelectionState, parentMessageId, conversationId)),
           claudeAutoMode: modelSelectionState.claudeAutoMode,
+          claudeUltracode: modelSelectionState.claudeUltracode,
           hooksEnabled: isElectronMode,
           localApiBase: getCachedLocalApiBase(),
           contextDirectories: loadContextDirectorySettings(),
@@ -1933,6 +1915,7 @@ export const sendMessageToBranch = createAsyncThunk<
           toolAutoApprove: isSummaryBranchEdit(modelSelectionState, parentId) ? modelSelectionState.toolAutoApprove
             : resolveAnchoredToolApproval(modelSelectionState, parentId, conversationId),
           claudeAutoMode: modelSelectionState.claudeAutoMode,
+          claudeUltracode: modelSelectionState.claudeUltracode,
           hooksEnabled: isElectronMode,
           localApiBase: getCachedLocalApiBase(),
           contextDirectories: loadContextDirectorySettings(),

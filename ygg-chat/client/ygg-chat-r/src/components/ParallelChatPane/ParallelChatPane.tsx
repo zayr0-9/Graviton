@@ -50,6 +50,7 @@ import {
   getStoredSendButtonLightColor,
 } from '../SettingsPane/SendButtonAnimationSettings'
 import { StreamingThinkingIndicator } from '../StreamingThinkingIndicator/StreamingThinkingIndicator'
+import { BackgroundTasksIndicator } from '../StreamingThinkingIndicator/BackgroundTasksIndicator'
 import { ToolPermissionDialog } from '../ToolPermissionDialog/ToolPermissionDialog'
 import {
   getThemeModeColor,
@@ -503,12 +504,18 @@ export function ParallelChatPane({
             onOpenSubagentTranscript={onOpenSubagentTranscript}
           />
         )}
-        {streamActive && effectiveStream && (effectiveStream.compactionStatus === 'started' ||
+        {streamActive && effectiveStream && !effectiveStream.backgroundTurnIdle && (effectiveStream.compactionStatus === 'started' ||
           (!effectiveStream.buffer && effectiveStream.events.length === 0)) && (
           <div className='px-0 pt-1 sm:px-2'>
             <StreamingThinkingIndicator compacting={effectiveStream.compactionStatus === 'started'} />
           </div>
         )}
+        {streamActive && streamId && effectiveStream?.backgroundTasks?.length ? (
+          <div className='px-0 pt-1 sm:px-2'>
+            <BackgroundTasksIndicator conversationId={String(target.conversationId)} streamId={streamId}
+              tasks={effectiveStream.backgroundTasks} idle={Boolean(effectiveStream.backgroundTurnIdle)} />
+          </div>
+        ) : null}
         {paneErrors.map(record => (
           <div key={record.id} className='px-2 pt-2'>
             <ChatErrorBubble

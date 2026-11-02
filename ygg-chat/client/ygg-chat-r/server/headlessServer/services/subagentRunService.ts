@@ -14,6 +14,7 @@ import {
 import { StreamingRunRepo } from '../persistence/streamingRunRepo.js'
 import type { ProviderToolCall, ProviderToolDefinition } from '../providers/openRouterProvider.js'
 import type { ProviderTokenStore } from '../providers/tokenStore.js'
+import { messageToolCalls } from '../providers/toolResultSanitizer.js'
 import type { RunSession, RunSessionRegistry } from './runSessionRegistry.js'
 import { ProviderRouter } from './providerRouter.js'
 import type { GenerateCompactionSummaryInput } from './compactionService.js'
@@ -572,20 +573,21 @@ export class SubagentRunService {
   }
 
   /**
-   * Repair any assistant turn whose tool_calls lack a matching tool_result — the
+   * Repair any assistant turn whose tool calls lack a matching tool_result — the
    * shape a crash leaves when the loop persisted an assistant with tool calls but
    * never merged their results. OpenAI Responses rejects a function_call with no
    * function_call_output (see codexRequestItems pairing), so for each dangling
    * call we synthesize an is_error tool_result block (NEVER re-execute the tool)
-   * and mark the call errored, via updateMessageToolState (content/thinking/
-   * sequence preserved). Returns the number of tool results synthesized.
+   * via updateMessageToolState (content/thinking/sequence preserved). Calls come
+   * from the `tool_use` blocks; a legacy `tool_calls` value is kept as stored.
+   * Returns the number of tool results synthesized.
    */
   private repairDanglingToolUse(runId: string): number {
     const messages = this.runRepo.getMessages(runId)
     let repaired = 0
     for (const message of messages) {
       if (message.role !== 'assistant') continue
-      const toolCalls = Array.isArray(message.tool_calls) ? message.tool_calls : []
+      const toolCalls = messageToolCalls(message)
       if (toolCalls.length === 0) continue
       const blocks = Array.isArray(message.content_blocks) ? [...message.content_blocks] : []
       const resultIds = new Set(
@@ -599,11 +601,8 @@ export class SubagentRunService {
       for (const call of dangling) {
         blocks.push({ type: 'tool_result', tool_use_id: call.id, content: INTERRUPTED_TOOL_RESULT, is_error: true })
       }
-      const danglingIds = new Set(dangling.map((call: any) => call.id))
-      const updatedToolCalls = toolCalls.map((call: any) =>
-        danglingIds.has(call?.id) ? { ...call, status: 'error', result: INTERRUPTED_TOOL_RESULT } : call
-      )
-      this.runRepo.updateMessageToolState(runId, message.id, { contentBlocks: blocks, toolCalls: updatedToolCalls })
+      const legacyToolCalls = Array.isArray(message.tool_calls) ? message.tool_calls : null
+      this.runRepo.updateMessageToolState(runId, message.id, { contentBlocks: blocks, toolCalls: legacyToolCalls })
       repaired += dangling.length
     }
     return repaired

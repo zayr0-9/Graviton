@@ -3,11 +3,11 @@ import { executionPathAfterHandoff, portableSummaryText } from '../../../../../s
 import { isCleanStartUserBranch } from '../../../../../shared/cleanStartBranch.js'
 import { CLAUDE_MODELS, claudeMessageMetadata, isClaudeProvider, isClaudeTranscriptMessage } from '../../../../../shared/claudeProvider.js'
 import { ClaudeSessionRepo, assertClaudeBranchSelection } from '../persistence/claudeSessionRepo.js'
-import { CHAT_MODE_BLOCKED_TOOLS, ClaudeSessionService, claudeImageBlock, type ClaudeModeSwitch, type ClaudeQueuedInput } from './claudeSessionService.js'
+import { CHAT_MODE_BLOCKED_TOOLS, ClaudeSessionService, claudeImageBlock, type ClaudeModeSwitch, type ClaudeQueuedInput, type ClaudeTaskControl } from './claudeSessionService.js'
 import { compactionInstruction } from '../../../../../shared/compaction.js'
 import type { AdmissionMismatchReason } from '../../../../../shared/runAdmission.js'
 import { v4 as uuidv4 } from 'uuid'
-import type { HeadlessMessageRequest, HeadlessStreamEvent } from '../../../../../shared/headlessApi.js'
+import type { HeadlessBackgroundTaskOutput, HeadlessMessageRequest, HeadlessStreamEvent } from '../../../../../shared/headlessApi.js'
 import { createModelThroughput, recordModelRequest } from '../../../../../shared/runStatistics.js'
 import { buildChatErrorEnvelope, type ChatErrorEnvelope } from '../../../../../shared/chatErrors.js'
 import { ConversationRepo } from '../persistence/conversationRepo.js'
@@ -444,6 +444,8 @@ export interface HeadlessChatOrchestrator {
   submitQueuedMessage?(conversationId: string, streamId: string, submission: QueuedMessageSubmission): { snapshot?: MessageQueueSnapshot; restart?: HeadlessMessageRequest; restartStreamId?: string }
   getMessageQueue?(conversationId: string, streamId: string): MessageQueueSnapshot
   cancelQueuedMessage?(conversationId: string, streamId: string, requestId: string): MessageQueueSnapshot | Promise<MessageQueueSnapshot>
+  stopBackgroundTask?(conversationId: string, streamId: string, taskId: string): Promise<void>
+  readBackgroundTaskOutput?(conversationId: string, streamId: string, taskId: string): Promise<HeadlessBackgroundTaskOutput>
   changeOperationMode?(input: { conversationId: string; mode: 'plan' | 'execute'; requestId: string; streamId?: string | null; parentId?: string | null; lineageId?: string | null }): any
   /**
    * Run one chat turn to completion.
@@ -469,6 +471,7 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
     head: string | null; successor?: string; restartRequestId?: string; restartFingerprint?: string; terminal?: 'completed' | 'failed'; signal?: AbortSignal
     /** A live Claude session: `wake` hands it new entries, `claudeCancel` withdraws one it holds. */
     wake?: () => void; claudeCancel?: (requestId: string) => Promise<boolean | null>
+    claudeTasks?: ClaudeTaskControl
   }>()
 
   private readonly watchPins = new Map<string, { lineageId: string; count: number }>()
@@ -702,6 +705,22 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
       if (!cancelled) throw new Error('Claude has already started this message')
       return run.queue.snapshot()
     })
+  }
+
+  private claudeTaskControl(conversationId: string, streamId: string): ClaudeTaskControl {
+    const run = this.inputRuns.get(streamId)
+    if (!run || run.request.conversationId !== conversationId || !run.claudeTasks) throw new Error('No live Claude run for this stream')
+    return run.claudeTasks
+  }
+
+  async stopBackgroundTask(conversationId: string, streamId: string, taskId: string): Promise<void> {
+    if (!await this.claudeTaskControl(conversationId, streamId).stop(taskId)) throw new Error('That background task is no longer running')
+  }
+
+  async readBackgroundTaskOutput(conversationId: string, streamId: string, taskId: string): Promise<HeadlessBackgroundTaskOutput> {
+    const output = await this.claudeTaskControl(conversationId, streamId).output(taskId)
+    if (!output) throw new Error('Output is unavailable for this task')
+    return output
   }
 
   submitQueuedMessage(conversationId: string, streamId: string, submission: QueuedMessageSubmission): { snapshot?: MessageQueueSnapshot; restart?: HeadlessMessageRequest; restartStreamId?: string } {
@@ -1236,7 +1255,7 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
     const inputRun = { queue: inputQueue, request, control: modeControl, head: request.parentId ?? null, signal } as {
       queue: MessageInputQueue; request: HeadlessMessageRequest; control: OperationModeControl
       head: string | null; successor?: string; terminal?: 'completed' | 'failed'; signal?: AbortSignal
-      wake?: () => void; claudeCancel?: (requestId: string) => Promise<boolean | null>
+      wake?: () => void; claudeCancel?: (requestId: string) => Promise<boolean | null>; claudeTasks?: ClaudeTaskControl
     }
     this.inputRuns.set(trackedStreamId, inputRun)
     // Bound retained terminal mailboxes; live runs are never evicted.
@@ -1766,6 +1785,7 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
         userMessage: resolved.userMessage, parentId: resolved.assistantParentId, sourceMessageId: sourceId ?? null,
         fork: request.operation !== 'send' || Boolean(request.isBranch), cwd: contextRootPath!, sink, signal, hookSession, nativeCommand,
         additionalDirectories: parseAdditionalCwds(conversation.additional_cwds), queuedInput,
+        bindTasks: control => { inputRun.claudeTasks = control; return () => { inputRun.claudeTasks = undefined } },
         emit: event => { if (event.type === 'assistant_message_persisted') lastPersistedAssistantId = event.message?.id ?? lastPersistedAssistantId; emit(event) } })
       if (!signal?.aborted && !request.manualCompaction) {
         if (hookSession) {

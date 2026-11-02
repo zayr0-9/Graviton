@@ -1,5 +1,6 @@
 import type { ChatErrorEnvelope, ChatNoticeCode } from '../../../../../shared/chatErrors'
-import type { ClaudeFilePatch } from '../../../../../shared/claudeProvider'
+import type { ClaudeBackgroundTask, ClaudeFilePatch } from '../../../../../shared/claudeProvider'
+import type { HeadlessBackgroundTask } from '../../../../../shared/headlessApi'
 import { BaseMessage, BaseModel, ConversationId, ImageConfig, MessageId, OpenAIServiceTier, ReasoningConfig } from '../../../../../shared/types'
 import type { PlanClarificationRequest } from './planToolTypes'
 
@@ -83,6 +84,8 @@ export interface ToolResultBlock {
   is_error: boolean
   /** Native Claude Edit/Write hunks with real file line numbers. */
   patch?: ClaudeFilePatch
+  /** The background task this call launched (a Claude Workflow, or a backgrounded Agent/Bash call). */
+  task?: ClaudeBackgroundTask
 }
 
 export interface ImageBlock {
@@ -275,6 +278,10 @@ export interface StreamState {
   // and should stay visible/interruptible in branch-local UIs.
   status: StreamLifecycleStatus
   compactionStatus?: 'started' | 'completed' | 'failed'
+  /** Claude runs: the background tasks keeping the session open (a backgrounded shell, workflow, child agent). */
+  backgroundTasks?: HeadlessBackgroundTask[]
+  /** Claude finished its turn; the run stays open only for `backgroundTasks`. */
+  backgroundTurnIdle?: boolean
   buffer: string
   // separate buffer for reasoning/thinking tokens while streaming
   thinkingBuffer: string
@@ -532,6 +539,8 @@ export interface ChatState {
   toolAutoApproveOverridden?: boolean
   /** Claude provider: use the CLI's auto mode when tool approval is set to ask. */
   claudeAutoMode?: boolean
+  /** Claude provider: run each turn with ultracode (standing Workflow orchestration). */
+  claudeUltracode?: boolean
   operationMode: OperationMode
   messageQueues: Record<string, import('../../../../../shared/queuedMessages').MessageQueueSnapshot>
   /** Unsent selections, keyed by conversation and selected branch tip. */

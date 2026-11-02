@@ -122,6 +122,39 @@ describe('agent run previews', () => {
     expect(blocks.find(block => block.type === 'text')).toMatchObject({ content: 'next turn' })
   })
 
+  it('folds Claude per-block re-persistence of one API message into a single entry', () => {
+    const store = setup()
+    start(store, 'a')
+    const persisted = (id: string, content: string, blocks: any[]) =>
+      store.dispatch(chat.streamChunkReceived({ streamId: 'a', chunk: { type: 'complete',
+        message: { ...message(id, 'assistant', content), content_blocks: blocks } } }))
+    const thinking = { type: 'thinking', index: 0, content: 'plan' }
+    const answer = { type: 'text', index: 1, content: 'answer' }
+    const call = { type: 'tool_use', index: 2, id: 'tool', name: 'Bash', input: {} }
+    store.dispatch(chat.streamChunkReceived({ streamId: 'a', chunk: { type: 'generation_started' } }))
+    store.dispatch(chat.streamChunkReceived({ streamId: 'a', chunk: { type: 'chunk', part: 'reasoning', delta: 'plan' } }))
+    persisted('r', '', [thinking])
+    // Mid-message boundary before the text block of the same API message.
+    store.dispatch(chat.streamChunkReceived({ streamId: 'a', chunk: { type: 'generation_started' } }))
+    text(store, 'a', 'answer')
+    persisted('r', 'answer', [thinking, answer])
+    persisted('r', 'answer', [thinking, answer, call])
+    store.dispatch(chat.streamChunkReceived({ streamId: 'a', chunk: { type: 'chunk', part: 'tool_call',
+      toolCall: { id: 'tool', name: 'Bash', arguments: {} } } }))
+    store.dispatch(chat.streamChunkReceived({ streamId: 'a', chunk: { type: 'chunk', part: 'tool_result',
+      toolResult: { tool_use_id: 'tool', content: 'ok', is_error: false } } }))
+    // Next API message.
+    store.dispatch(chat.streamChunkReceived({ streamId: 'a', chunk: { type: 'generation_started' } }))
+    text(store, 'a', 'final')
+    persisted('r2', 'final', [{ type: 'text', index: 0, content: 'final' }])
+    const run = store.getState().agentRunPreviews.byStreamId.a
+    expect(run.entries.map(entry => entry.message?.id)).toEqual(['r', 'r2'])
+    const blocks = buildAgentPreviewRows(run).flatMap(row => row.blocks)
+    expect(blocks.filter(block => block.type === 'text').map(block => block.content)).toEqual(['answer', 'final'])
+    expect(blocks.filter(block => block.type === 'tool_use')).toHaveLength(1)
+    expect(blocks.find(block => block.type === 'tool_result')).toMatchObject({ content: 'ok' })
+  })
+
   it('renders responses-only turns beside ordinary blocks without losing text', () => {
     const store = setup()
     start(store, 'a')

@@ -82,6 +82,8 @@ export interface BuildServerLoopRequestParams {
   toolAutoApprove?: boolean
   /** Claude auto mode preference; sent as claudePermissionMode only for Claude with toolAutoApprove off. */
   claudeAutoMode?: boolean
+  /** Claude ultracode preference; sent as claudeUltracode only for Claude. */
+  claudeUltracode?: boolean
   /**
    * Phase 3: opt into the server-owned loop's chat hooks (parity with the renderer's
    * always-on-in-electron hooks). The 3 shims pass isElectronMode. Forwarded verbatim.
@@ -195,6 +197,7 @@ export function buildServerLoopRequest(operation: ServerLoopOperation, params: B
     // Allow all wins: auto mode only replaces Ask, so classifier-uncertain calls still prompt.
     ...(params.claudeAutoMode && params.toolAutoApprove === false && isClaudeProvider(params.provider)
       ? { claudePermissionMode: 'auto' as const } : {}),
+    ...(params.claudeUltracode && isClaudeProvider(params.provider) ? { claudeUltracode: true } : {}),
     // Phase 3 hooks: forward verbatim. The server gates on `=== true`, so undefined = off.
     hooksEnabled: params.hooksEnabled,
     localApiBase: params.localApiBase ?? null,

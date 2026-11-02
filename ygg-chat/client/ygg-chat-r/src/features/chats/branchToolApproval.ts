@@ -1,7 +1,6 @@
 import { parseMessageMeta } from '../../../../../shared/contextInjection'
 import { executionPathAfterHandoff } from '../../../../../shared/summaryHandoff'
-import { isClaudeProvider } from '../../../../../shared/claudeProvider'
-import { branchModelKey, isProviderHandoffEdit, resolveComposerModelSelection, resolveClaudeBranchLock, resolveSummaryContinuation } from './branchModelSelection'
+import { branchModelKey, isProviderHandoffEdit, resolveComposerModelSelection, resolveComposerSummaryHandoff } from './branchModelSelection'
 import type { ChatState } from './chatTypes'
 
 /** Resolve the send's captured branch, never another pane's current selection. */
@@ -46,7 +45,7 @@ export function resolveAnchoredToolApproval(chat: ChatState, anchorId: unknown, 
 
 export function composerApprovalHandoff(chat: ChatState) {
   const provider = resolveComposerModelSelection(chat)?.provider ?? chat.providerState.currentProvider
-  return isClaudeProvider(provider) && !resolveClaudeBranchLock(chat) ? resolveSummaryContinuation(chat) : null
+  return resolveComposerSummaryHandoff(chat, provider)
 }
 
 export function resolveHandoffToolApproval(chat: ChatState, summaryId: unknown): boolean {

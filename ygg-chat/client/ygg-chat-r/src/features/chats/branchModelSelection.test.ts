@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { branchModelKey, isCleanStartBranchEdit, resolveBranchModelSelection, resolveComposerModelSelection, resolveComposerClaudeLock, resolveSummaryContinuation } from './branchModelSelection'
+import { branchModelKey, isCleanStartBranchEdit, resolveBranchModelSelection, resolveComposerModelSelection, resolveComposerClaudeLock, resolveComposerSummaryHandoff, resolveSummaryContinuation } from './branchModelSelection'
 import type { ChatState } from './chatTypes'
 
 const pairA = { provider: 'OpenAI (ChatGPT)', model: 'gpt-a' }
@@ -150,8 +150,44 @@ describe('summary handoff selection', () => {
     chat.conversation.currentPath.push('handoff')
     expect(resolveComposerClaudeLock(chat)).toBeNull()
     expect(resolveBranchModelSelection(chat)).toEqual(pairB)
+    // Back at the summary tip, the idle composer may hand off away from Claude again.
     chat.conversation.currentPath = ['root', 'summary']
+    expect(resolveComposerClaudeLock(chat)).toBeNull()
+  })
+
+  it('lets the idle composer leave Claude at a summary tip, and locks again after real work', () => {
+    const chat = state()
+    chat.providerState.providers.push({ name: 'Claude Code' } as any)
+    chat.conversation.messages = [
+      { id: 'root', conversation_id: 'c', parent_id: null, role: 'user', meta: { modelSelection: { provider: 'claudecode', model: 'claude-opus-5-5' } } },
+      { id: 'summary', conversation_id: 'c', parent_id: 'root', role: 'assistant', content: 'Portable state', meta: { kind: 'compaction_summary', state: 'committed' } },
+      { id: 'context', conversation_id: 'c', parent_id: 'summary', role: 'user', meta: { kind: 'context_injection' } },
+    ] as any
+    chat.conversation.currentPath = ['root', 'summary', 'context']
+    expect(resolveComposerClaudeLock(chat)).toBeNull()
+    expect(resolveBranchModelSelection(chat)?.provider).toBe('Claude Code')
+    expect(resolveComposerSummaryHandoff(chat, 'Claude Code')).toBeNull()
+    expect(resolveComposerSummaryHandoff(chat, pairB.provider)?.id).toBe('summary')
+    chat.branchModelDrafts = { [branchModelKey('c', 'lineage:a')]: pairB }
+    expect(resolveBranchModelSelection(chat)).toEqual(pairB)
+    chat.conversation.messages.push({ id: 'work', conversation_id: 'c', parent_id: 'context', role: 'user', content: 'work',
+      meta: { modelSelection: { provider: 'claudecode', model: 'claude-opus-5-5' } } } as any)
+    chat.conversation.currentPath.push('work')
     expect(resolveComposerClaudeLock(chat)?.provider).toBe('Claude Code')
+    expect(resolveBranchModelSelection(chat)?.provider).toBe('Claude Code')
+    expect(resolveComposerSummaryHandoff(chat, pairB.provider)).toBeNull()
+  })
+
+  it('keeps same-family continuation ordinary and still hands off non-Claude summaries to Claude', () => {
+    const chat = state()
+    chat.providerState.providers.push({ name: 'Claude Code' } as any)
+    chat.conversation.messages = [
+      { id: 'root', conversation_id: 'c', parent_id: null, role: 'user', meta: { modelSelection: pairB } },
+      { id: 'summary', conversation_id: 'c', parent_id: 'root', role: 'assistant', content: 'Portable state', meta: { kind: 'compaction_summary', state: 'committed' } },
+    ] as any
+    chat.conversation.currentPath = ['root', 'summary']
+    expect(resolveComposerSummaryHandoff(chat, pairB.provider)).toBeNull()
+    expect(resolveComposerSummaryHandoff(chat, 'Claude Code')?.id).toBe('summary')
   })
 })
 

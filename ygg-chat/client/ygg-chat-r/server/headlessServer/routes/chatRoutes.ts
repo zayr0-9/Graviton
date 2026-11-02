@@ -180,6 +180,7 @@ function buildHeadlessMessageRequest(req: Request, operation: HeadlessChatOperat
           ? body.tool_auto_approve
           : undefined,
     claudePermissionMode: (body.claudePermissionMode ?? body.claude_permission_mode) === 'auto' ? 'auto' : undefined,
+    claudeUltracode: (body.claudeUltracode ?? body.claude_ultracode) === true ? true : undefined,
     // Phase 3 hooks. Absent => undefined => the orchestrator's `=== true` gate leaves
     // hooks off, so the mobile LAN UI / any caller that omits it runs with no hooks.
     hooksEnabled:
@@ -526,6 +527,20 @@ export function registerChatRoutes(app: Express, deps: RegisterChatRoutesDeps): 
       if (!orchestrator.cancelQueuedMessage) throw new Error('Message queue unavailable')
       // A Claude run answers asynchronously: only Claude can withdraw a message it already holds.
       res.json(await orchestrator.cancelQueuedMessage(String(req.params.id), String(req.params.streamId), String(req.params.requestId)))
+    } catch (error) { res.status(409).json({ error: error instanceof Error ? error.message : String(error) }) }
+  })
+  // A Claude run's background tasks (a backgrounded shell, workflow or child agent).
+  app.post('/api/conversations/:id/streams/:streamId/tasks/:taskId/stop', async (req, res) => {
+    try {
+      if (!orchestrator.stopBackgroundTask) throw new Error('Background tasks unavailable')
+      await orchestrator.stopBackgroundTask(String(req.params.id), String(req.params.streamId), String(req.params.taskId))
+      res.json({ success: true })
+    } catch (error) { res.status(409).json({ error: error instanceof Error ? error.message : String(error) }) }
+  })
+  app.get('/api/conversations/:id/streams/:streamId/tasks/:taskId/output', async (req, res) => {
+    try {
+      if (!orchestrator.readBackgroundTaskOutput) throw new Error('Background tasks unavailable')
+      res.json(await orchestrator.readBackgroundTaskOutput(String(req.params.id), String(req.params.streamId), String(req.params.taskId)))
     } catch (error) { res.status(409).json({ error: error instanceof Error ? error.message : String(error) }) }
   })
   app.post('/api/conversations/:id/streams/:streamId/queue', (req, res) => {

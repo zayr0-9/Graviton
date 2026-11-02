@@ -5,7 +5,7 @@ const normalizeAuthorizationToken = (token?: string | null) => String(token || '
 import { getAuthManager } from '../../auth/runtime.js'
 import { attachChatErrorCode } from './providerErrorFormatter.js'
 import type { AppAuthTokenManager } from '../services/appAuthTokenManager.js'
-import { buildToolNameMap, sanitizeToolResultContentForModel } from './toolResultSanitizer.js'
+import { buildToolNameMap, messageToolCalls, sanitizeToolResultContentForModel } from './toolResultSanitizer.js'
 import { openStreamingWithPreFirstByteRetry } from './streamResilience.js'
 import type { ProviderTokenStore } from './tokenStore.js'
 
@@ -308,8 +308,9 @@ function sanitizeContentBlocksForModel(blocks: any, toolCalls?: any): any[] {
 }
 
 function normalizeHistoryMessage(message: any, toolNameById: Map<string, string>): any {
-  const contentBlocks = sanitizeContentBlocksForModel(message?.content_blocks, message?.tool_calls)
-  const toolCalls = parseToolCalls(message?.tool_calls)
+  // Railway still receives `tool_calls`; it is derived from the blocks like every other provider's history.
+  const toolCalls = messageToolCalls(message)
+  const contentBlocks = sanitizeContentBlocksForModel(message?.content_blocks, toolCalls)
   const artifacts = parseArtifacts(message?.artifacts)
 
   const normalized: any = {

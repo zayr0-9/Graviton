@@ -21,6 +21,17 @@ it('bootstraps compact current output beyond replay retention and then receives 
   expect(frames[0].event.snapshot.events.at(-1).delta).toBe('hello world')
 })
 
+it('keeps only the latest background task set, across turn resets', () => {
+  const projector = new RunSnapshotProjector()
+  const task = { id: 'srv', kind: 'local_bash', description: 'dev server', toolUseId: 'b1' }
+  projector.apply({ type: 'background_tasks', streamId: 's', turnActive: true, tasks: [task] })
+  projector.apply({ type: 'tool_loop', status: 'turn_started', turn: 2, maxTurns: 0 })
+  projector.apply({ type: 'background_tasks', streamId: 's', turnActive: false, tasks: [task] })
+  const snapshot = projector.snapshot({ epoch: 'e', streamId: 's', conversationId: 'c', stateSeq: 3, persisted: [], pendingDecisions: [] })
+  expect(snapshot.events.filter(event => event.type === 'background_tasks'))
+    .toEqual([{ type: 'background_tasks', streamId: 's', turnActive: false, tasks: [task] }])
+})
+
 it('uses pending decision authority rather than replayed prompts', () => {
   const projector = new RunSnapshotProjector()
   projector.apply({ type: 'permission_required', streamId: 's', toolCallId: 't', toolName: 'write_file', toolInput: {} })

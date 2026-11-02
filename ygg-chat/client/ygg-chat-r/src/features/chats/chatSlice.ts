@@ -5,8 +5,9 @@ import { branchModelKey, loadBranchModelDrafts, saveBranchModelDrafts, type Bran
 import { normalizeChatErrorEnvelope } from '../../../../../shared/chatErrors'
 import providersList from '../../../../../shared/providers.json'
 import { ConversationId, MessageId } from '../../../../../shared/types'
+import type { HeadlessBackgroundTask } from '../../../../../shared/headlessApi'
 import { isCommunityMode } from '../../config/runtimeMode'
-import { loadClaudeAutoMode, loadDefaultToolAutoApprove, saveClaudeAutoMode } from '../../helpers/toolApprovalSettingsStorage'
+import { loadClaudeAutoMode, loadClaudeUltracode, loadDefaultToolAutoApprove, saveClaudeAutoMode, saveClaudeUltracode } from '../../helpers/toolApprovalSettingsStorage'
 import { parseId } from '../../utils/helpers'
 import { isStreamContinuationTail } from './streamContinuationTail'
 import { canFollowSelectedTip } from './followSelectedTip'
@@ -279,6 +280,7 @@ const makeInitialState = (): ChatState => {
     planClarificationRequestsByStream: {},
     toolAutoApprove: loadDefaultToolAutoApprove(),
     claudeAutoMode: loadClaudeAutoMode(),
+    claudeUltracode: loadClaudeUltracode(),
     operationMode: 'plan',
     operationModeChanges: {},
     operationModeDrafts: {},
@@ -1096,6 +1098,8 @@ export const chatSlice = createSlice({
         stream.active = false
         stream.status = 'completed'
         stream.finished = true
+        stream.backgroundTasks = undefined
+        stream.backgroundTurnIdle = undefined
         stream.messageId = messageId
         stream.lastCompletedMessageId = messageId
         stream.persistedTurnMessageId = messageId
@@ -1160,6 +1164,16 @@ export const chatSlice = createSlice({
       if (state.streaming.lastCompletedId === streamId) {
         state.streaming.lastCompletedId = null
       }
+    },
+
+    streamBackgroundTasksUpdated: (
+      state,
+      action: PayloadAction<{ streamId: string; turnActive: boolean; tasks: HeadlessBackgroundTask[] }>
+    ) => {
+      const stream = state.streaming.byId[action.payload.streamId]
+      if (!stream || stream.finished) return
+      stream.backgroundTasks = action.payload.tasks
+      stream.backgroundTurnIdle = !action.payload.turnActive && action.payload.tasks.length > 0
     },
 
     streamCompactionUpdated: (
@@ -1405,12 +1419,12 @@ export const chatSlice = createSlice({
 
     messageUpdated: (
       state,
-      action: PayloadAction<{ id: MessageId; content: string; note?: string; note_color?: string | null; content_blocks?: any }>
+      action: PayloadAction<{ id: MessageId; content?: string; note?: string; note_color?: string | null; content_blocks?: any }>
     ) => {
       const { id, content, note, note_color, content_blocks } = action.payload
       const msg = state.conversation.messages.find(m => m.id === id)
       if (msg) {
-        msg.content = content
+        if (content !== undefined) msg.content = content
         if (note !== undefined) msg.note = note
         if (note_color !== undefined) msg.note_color = note_color
         if (content_blocks) msg.content_blocks = content_blocks
@@ -1844,6 +1858,11 @@ export const chatSlice = createSlice({
     claudeAutoModeSet: (state, action: PayloadAction<boolean>) => {
       state.claudeAutoMode = action.payload
       saveClaudeAutoMode(action.payload)
+    },
+
+    claudeUltracodeSet: (state, action: PayloadAction<boolean>) => {
+      state.claudeUltracode = action.payload
+      saveClaudeUltracode(action.payload)
     },
 
     branchToolApprovalSelected: (state, action: PayloadAction<{

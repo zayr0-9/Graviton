@@ -100,14 +100,14 @@ Important field meanings:
 - `content`: primary text content. Can be empty when structured blocks carry the useful payload.
 - `content_plain_text`: plain text copy/search field. Local SQLite also has older `plain_text_content` in some query results.
 - `thinking_block`: legacy single reasoning/thinking string. Newer streams prefer `content_blocks`.
-- `tool_calls`: assistant tool-call metadata (legacy flat list: `id`, `name`, `arguments`, `status`). May be stored as JSON text in SQLite or already parsed in cloud responses. The server-owned loop no longer mirrors each tool output into `tool_calls[].result`; the `tool_result` block in `content_blocks` is the only copy. Rows written before 2026-10-11 may still carry `result`, and readers treat it as a fallback only.
+- `tool_calls`: legacy flat list of assistant tool calls (`id`, `name`, `arguments`, `status`, sometimes `result`). **No longer written** for new rows (2026-10-30): the tool loop, the Claude backend and subagent repair store calls and results only as `tool_use` / `tool_result` blocks in `content_blocks`. The column stays for old rows, which hold JSON text, the string `'null'` or SQL NULL. Readers take calls from `tool_use` blocks and fall back to `tool_calls` only for rows without them (pre-block rows, older OpenAI rows whose blocks hold only `responses_output_items`, caller-supplied history); server code uses `messageToolCalls` in `server/headlessServer/providers/toolResultSanitizer.ts`. Copy/sync/automation routes still pass through a supplied value, and Railway-mirrored cloud rows keep whatever Railway returns.
 - `tool_call_id`: for `role: 'tool'` messages, links result to assistant tool use.
 - `content_blocks`: structured ordered blocks for text, reasoning, tools, tool results, images, responses output items, etc. May be JSON text or parsed arrays depending on source.
 - `note` / `note_color`: user-authored annotation metadata used by Chat and Heimdall.
 - `ex_agent_session_id` / `ex_agent_type`: external-agent/subagent/persistent-agent metadata.
 - `artifacts`, `pastedContext`, and some attachment-derived data are frontend/runtime additions, not canonical DB columns.
 
-`updateAssistantToolState` directly updates existing `content_blocks`/`tool_calls`;
+`updateAssistantToolState` directly updates existing `content_blocks` (and `tool_calls`, now always `'null'` from the loop);
 it does not insert or reparent a message. Durable identity lives separately in
 `lineages`/`fork_operations`; `messages.lineage_id` records creation ownership,
 while `parent_id` remains structural ancestry. Lineage-aware sinks advance heads

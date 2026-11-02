@@ -36,7 +36,7 @@ export class RunSnapshotProjector {
       this.priorAnchor = this.currentAnchor
       this.turn.reset()
     }
-    if (['provider_routed', 'tools_updated', 'context_usage', 'context_compaction', 'operation_mode_changed', 'tool_approval_changed'].includes(event.type)) {
+    if (['provider_routed', 'tools_updated', 'context_usage', 'context_compaction', 'operation_mode_changed', 'tool_approval_changed', 'background_tasks'].includes(event.type)) {
       this.latest.set(event.type, structuredClone(event)); return
     }
     this.turn.append(event)

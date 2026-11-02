@@ -23,7 +23,7 @@ export function resolveBranchModelSelection(
   conversationId = chat.conversation.currentConversationId,
   lineageId = chat.conversation.currentLineageId,
 ): BranchModelSelection | null {
-  const locked = resolveClaudeBranchLock(chat, path)
+  const locked = resolveSummaryContinuation(chat, path) ? null : resolveClaudeBranchLock(chat, path)
   const lineageDraft = lineageId ? chat.branchModelDrafts?.[branchModelKey(conversationId, `lineage:${lineageId}`)] : null
   if (lineageDraft && (!locked || isClaudeProvider(lineageDraft.provider)) &&
     chat.providerState.providers.some(item => item.name === lineageDraft.provider)) return lineageDraft
@@ -106,8 +106,15 @@ export function resolveComposerModelSelection(chat: ChatState): BranchModelSelec
     : resolveBranchModelSelection(chat)
 }
 
+/** A committed summary is a handoff boundary in both directions until real work follows it. */
 export function resolveComposerClaudeLock(chat: ChatState): BranchModelSelection | null {
-  return chat.composition?.editingBranch && isProviderHandoffEdit(chat) ? null : resolveClaudeBranchLock(chat)
+  if (chat.composition?.editingBranch) return isProviderHandoffEdit(chat) ? null : resolveClaudeBranchLock(chat)
+  return resolveSummaryContinuation(chat) ? null : resolveClaudeBranchLock(chat)
+}
+
+/** Crossing the Claude boundary from an idle summary tip needs a fresh execution: same-family sends just continue. */
+export function resolveComposerSummaryHandoff(chat: ChatState, provider: string | null | undefined, path = chat.conversation.currentPath) {
+  return isClaudeProvider(provider) !== Boolean(resolveClaudeBranchLock(chat, path)) ? resolveSummaryContinuation(chat, path) : null
 }
 
 export function isSummaryBranchEdit(chat: Pick<ChatState, 'conversation' | 'composition'>, messageId: unknown = chat.composition?.branchEditMessageId): boolean {

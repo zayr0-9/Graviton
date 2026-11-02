@@ -1,6 +1,7 @@
 import { isCommittedCompaction } from '../../../../../shared/compaction.js'
 import { excludeContextExcludedMessages } from '../../../../../shared/contextExclusion.js'
 import { COMPACTION_APPENDIX_MAX_CHARS, compactionToolStatus, projectCompactionTool } from './compactionToolPolicy.js'
+import { messageToolCalls } from '../providers/toolResultSanitizer.js'
 
 export const AUTO_COMPACTION_NOTE = '__auto_compaction_summary__'
 export const AUTO_COMPACTION_SUMMARY_RESUME_LINE = 'Following is summary of the session, you have to resume the work.'
@@ -171,12 +172,7 @@ const buildToolResultLookup = (messages: CompactionMessageLike[]): Map<string, T
 }
 
 const collectToolCallsForCompaction = (message: CompactionMessageLike): ParsedToolCall[] => {
-  const calls = [
-    ...parseToolCallsForCompaction(message.tool_calls),
-    ...parseToolCallsForCompaction(
-      parseContentBlocksForCompaction(message.content_blocks).filter(block => block.type === 'tool_use')
-    ),
-  ]
+  const calls = parseToolCallsForCompaction(messageToolCalls(message))
   const seenIds = new Set<string>()
   return calls.filter(call => {
     if (seenIds.has(call.id)) return false

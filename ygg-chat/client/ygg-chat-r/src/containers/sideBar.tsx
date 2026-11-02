@@ -39,6 +39,7 @@ import { getSearchResultHref } from '../helpers/searchResultNavigation'
 import EditProject from './EditProject'
 // import { searchActions, selectSearchLoading, selectSearchQuery, selectSearchResults } from '../features/search'
 import { useAppDispatch } from '../hooks/redux'
+import { useHoverIntent } from '../hooks/useHoverIntent'
 import { useIsMobile } from '../hooks/useMediaQuery'
 import { isNativeShell } from '../platform/clientCapabilities'
 import { useAuth } from '../hooks/useAuth'
@@ -915,6 +916,13 @@ const SideBar: React.FC<SideBarProps> = ({
   const [hoveredPreviewConversation, setHoveredPreviewConversation] = useState<Conversation | null>(null)
   const [hoverPreviewSearchQuery, setHoverPreviewSearchQuery] = useState('')
   const hoverPreviewCloseTimeoutRef = useRef<number | null>(null)
+  // Diagonal moves from a row to the preview panel cross neighbouring rows; hover
+  // intent holds those swaps (and the close) while the pointer heads to the panel.
+  const hoverPreviewPanelRef = useRef<HTMLElement | null>(null)
+  const conversationPreviewIntent = useHoverIntent({
+    enabled: hoveredPreviewConversation !== null,
+    getTargetRect: () => hoverPreviewPanelRef.current?.getBoundingClientRect() ?? null,
+  })
   const sidebarRef = useRef<HTMLElement | null>(null)
   const expandButtonRef = useRef<HTMLButtonElement | null>(null)
   const conversationSortButtonRef = useRef<HTMLButtonElement | null>(null)
@@ -960,16 +968,17 @@ const SideBar: React.FC<SideBarProps> = ({
   const scheduleHoverPreviewClose = useCallback(() => {
     clearHoverPreviewCloseTimeout()
     hoverPreviewCloseTimeoutRef.current = window.setTimeout(() => {
-      setHoveredPreviewConversation(null)
       hoverPreviewCloseTimeoutRef.current = null
+      conversationPreviewIntent.run(() => setHoveredPreviewConversation(null))
     }, SIDEBAR_PREVIEW_CLOSE_DELAY_MS)
-  }, [clearHoverPreviewCloseTimeout])
+  }, [clearHoverPreviewCloseTimeout, conversationPreviewIntent])
 
   const closeExpandPortal = useCallback(
     (restoreFocus = true) => {
       setIsExpandPortalOpen(false)
       setHoveredPreviewConversation(null)
       clearHoverPreviewCloseTimeout()
+      conversationPreviewIntent.cancel()
 
       if (restoreFocus && typeof window !== 'undefined') {
         window.requestAnimationFrame(() => {
@@ -977,7 +986,7 @@ const SideBar: React.FC<SideBarProps> = ({
         })
       }
     },
-    [clearHoverPreviewCloseTimeout]
+    [clearHoverPreviewCloseTimeout, conversationPreviewIntent]
   )
 
   const openExpandPortal = useCallback(() => {
@@ -1100,20 +1109,19 @@ const SideBar: React.FC<SideBarProps> = ({
   const handleConversationHoverStart = useCallback(
     (conversation: Conversation) => {
       if (!isExpandPortalOpen) return
-      if (conversation.storage_mode !== 'local') {
-        setHoveredPreviewConversation(null)
-        return
-      }
-
-      clearHoverPreviewCloseTimeout()
-      setHoveredPreviewConversation(conversation)
+      // Cloud rows have no preview, so hovering one closes it, but not while passing over it.
+      const nextConversation = conversation.storage_mode === 'local' ? conversation : null
+      if (nextConversation) clearHoverPreviewCloseTimeout()
+      conversationPreviewIntent.run(() => setHoveredPreviewConversation(nextConversation))
     },
-    [clearHoverPreviewCloseTimeout, isExpandPortalOpen]
+    [clearHoverPreviewCloseTimeout, conversationPreviewIntent, isExpandPortalOpen]
   )
 
+  // Leaving a row drops any swap still deferred for it, then starts the close timer.
   const handleConversationHoverEnd = useCallback(() => {
+    conversationPreviewIntent.cancel()
     scheduleHoverPreviewClose()
-  }, [scheduleHoverPreviewClose])
+  }, [conversationPreviewIntent, scheduleHoverPreviewClose])
 
   const handleSelect = (id: ConversationId) => {
     const conversation = favoriteConversations.find(c => c.id === id)
@@ -2092,6 +2100,7 @@ const SideBar: React.FC<SideBarProps> = ({
                 <AnimatePresence>
                   {shouldShowConversationPreviewPortal && (
                     <motion.section
+                      ref={hoverPreviewPanelRef}
                       role='dialog'
                       aria-modal='false'
                       aria-label='Top level user messages preview'
@@ -2103,6 +2112,7 @@ const SideBar: React.FC<SideBarProps> = ({
                       }}
                       onMouseEnter={() => {
                         clearHoverPreviewCloseTimeout()
+                        conversationPreviewIntent.cancel()
                       }}
                       onMouseLeave={() => {
                         scheduleHoverPreviewClose()

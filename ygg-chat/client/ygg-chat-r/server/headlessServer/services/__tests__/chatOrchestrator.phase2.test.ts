@@ -1587,8 +1587,9 @@ describeIfSqlite('ChatOrchestrator continuation semantics', () => {
     const firstAssistantBlocks = JSON.parse(firstAssistant.content_blocks || '[]') as any[]
     expect(firstAssistantBlocks.some(block => block.type === 'tool_result' && block.tool_use_id === 'call-1')).toBe(true)
 
-    const firstAssistantCalls = JSON.parse(firstAssistant.tool_calls || '[]') as any[]
-    expect(firstAssistantCalls[0]?.status).toBe('complete')
+    // Calls live only in the blocks; the legacy tool_calls column is no longer written.
+    expect(JSON.parse(firstAssistant.tool_calls ?? 'null')).toBeNull()
+    expect(firstAssistantBlocks.some(block => block.type === 'tool_use' && block.id === 'call-1')).toBe(true)
     expect(firstAssistantBlocks.find(block => block.type === 'tool_result' && block.tool_use_id === 'call-1')?.content).toContain('README file contents')
 
     const finalAssistant = assistantMessages[1]

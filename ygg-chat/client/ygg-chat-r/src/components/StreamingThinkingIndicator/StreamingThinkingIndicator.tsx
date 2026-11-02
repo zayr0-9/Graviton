@@ -4,7 +4,10 @@ import { useReducedMotion } from 'framer-motion'
 import { MESSAGE_BLOCK_INSET_CLASS } from '../ChatMessage/chatMessageShared'
 import { getThemeModeColor, useCustomChatTheme, useHtmlDarkMode } from '../ThemeManager/themeConfig'
 
-type StreamingThinkingIndicatorVariant = 'inline' | 'tab'
+export type StreamingThinkingIndicatorVariant = 'inline' | 'tab'
+
+/** The folder-tab surface that sits on the composer's top edge. */
+export const STREAMING_TAB_SURFACE_CLASS = 'relative rounded-t-xl border border-b-0 border-neutral-300/60 bg-neutral-100/40 px-2 pb-3.5 pt-1.5 backdrop-blur-xl before:absolute before:inset-x-0 before:-bottom-[5px] before:h-[6px] before:bg-neutral-100/40 after:absolute after:-left-px after:-bottom-[8px] after:h-[9px] after:w-4 after:border-l after:border-neutral-300/60 after:bg-neutral-100/40 dark:border-neutral-700/70 dark:bg-neutral-900/40 dark:before:bg-neutral-900/40 dark:after:border-neutral-700/70 dark:after:bg-neutral-900/40'
 
 type StreamingThinkingIndicatorProps = {
   variant?: StreamingThinkingIndicatorVariant
@@ -31,7 +34,7 @@ export const StreamingThinkingIndicator = React.memo(function StreamingThinkingI
 
   const variantClassName =
     variant === 'tab'
-      ? `relative rounded-t-xl border border-b-0 border-neutral-300/60 bg-neutral-100/40 px-2 pb-3.5 pt-1.5 backdrop-blur-xl before:absolute before:inset-x-0 before:-bottom-[5px] before:h-[6px] before:bg-neutral-100/40 after:absolute after:-left-px after:-bottom-[8px] after:h-[9px] after:w-4 after:border-l after:border-neutral-300/60 after:bg-neutral-100/40 dark:border-neutral-700/70 dark:bg-neutral-900/40 dark:before:bg-neutral-900/40 dark:after:border-neutral-700/70 dark:after:bg-neutral-900/40 ${animatedBorderClassName}`
+      ? `${STREAMING_TAB_SURFACE_CLASS} ${animatedBorderClassName}`
       : `rounded-md ${MESSAGE_BLOCK_INSET_CLASS} py-0.5`
 
   return (

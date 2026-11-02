@@ -1,6 +1,6 @@
 import type { CSSProperties } from 'react'
 import type { ContentBlock, StreamEvent } from '@/features/chats/chatTypes'
-import type { ClaudeFilePatch } from '../../../../../shared/claudeProvider'
+import { CLAUDE_WORKFLOW_TOOL, type ClaudeBackgroundTask, type ClaudeFilePatch } from '../../../../../shared/claudeProvider'
 
 // Configuration for collapsed content display
 export const COLLAPSED_CONTENT_WORD_LIMIT = 15
@@ -147,7 +147,7 @@ export interface ToolCallRenderGroup {
   id: string
   name?: string
   args?: Record<string, any> | null
-  results: Array<{ content: any; is_error?: boolean; patch?: ClaudeFilePatch }>
+  results: Array<{ content: any; is_error?: boolean; patch?: ClaudeFilePatch; task?: ClaudeBackgroundTask }>
   anchorIndex: number
 }
 
@@ -167,6 +167,8 @@ export const isExcludedFromProcessRunGrouping = (name?: string, args?: Record<st
   const normalizedName = String(name || '').trim().toLowerCase()
   if (normalizedName.startsWith('mcp__') || normalizedName === 'html_renderer') return true
   if (claudePlanFromToolCall(name, args)) return true
+  // A Claude workflow runs in the background; its live status stays in view.
+  if (name === CLAUDE_WORKFLOW_TOOL) return true
   if (normalizedName === 'mcp_manager' && args?.action === 'invoke') return true
 
   if (normalizedName === 'plan_md') {
@@ -436,13 +438,13 @@ export const buildToolCallGroupsFromBlocks = (blocks?: ContentBlock[]) => {
       const id = block.tool_use_id || `tool-result-${idx}`
       const target = groupsById.get(id)
       if (target) {
-        target.results.push({ content: block.content, is_error: block.is_error, patch: block.patch })
+        target.results.push({ content: block.content, is_error: block.is_error, patch: block.patch, task: block.task })
       } else {
         const fallback: ToolCallRenderGroup = {
           id,
           name: 'Tool Result',
           args: null,
-          results: [{ content: block.content, is_error: block.is_error, patch: block.patch }],
+          results: [{ content: block.content, is_error: block.is_error, patch: block.patch, task: block.task }],
           anchorIndex: idx,
         }
         mapByIndex.set(idx, fallback)

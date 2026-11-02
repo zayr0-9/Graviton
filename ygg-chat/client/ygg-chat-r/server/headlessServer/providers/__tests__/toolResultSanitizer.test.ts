@@ -1,5 +1,35 @@
 import { describe, expect, it } from 'vitest'
-import { sanitizeToolResultContentForModel } from '../toolResultSanitizer.js'
+import { buildToolNameMap, messageToolCalls, sanitizeToolResultContentForModel } from '../toolResultSanitizer.js'
+
+describe('messageToolCalls', () => {
+  it('reads tool_use blocks and ignores a legacy tool_calls copy that disagrees', () => {
+    const msg = {
+      role: 'assistant',
+      tool_calls: JSON.stringify([{ id: 'stale', name: 'read_file', arguments: {} }]),
+      content_blocks: JSON.stringify([
+        { type: 'text', content: 'Reading' },
+        { type: 'tool_use', id: 'call-1', name: 'view_image', input: { path: 'a.png' } },
+        { type: 'tool_result', tool_use_id: 'call-1', content: 'ok' },
+      ]),
+    }
+    expect(messageToolCalls(msg)).toEqual([{ id: 'call-1', name: 'view_image', arguments: { path: 'a.png' } }])
+    expect(buildToolNameMap([msg])).toEqual(new Map([['call-1', 'view_image']]))
+  })
+
+  it('falls back to legacy tool_calls for rows without tool_use blocks', () => {
+    const legacy = [{ id: 'call-1', name: 'read_file', arguments: { path: 'README.md' }, status: 'complete' }]
+    expect(messageToolCalls({ role: 'assistant', tool_calls: legacy })).toEqual(legacy)
+    expect(messageToolCalls({
+      role: 'assistant',
+      tool_calls: JSON.stringify(legacy),
+      content_blocks: [{ type: 'responses_output_items', items: [] }],
+    })).toEqual(legacy)
+  })
+
+  it('returns no calls when neither field has any', () => {
+    expect(messageToolCalls({ role: 'assistant', tool_calls: 'null', content_blocks: [{ type: 'text', content: 'hi' }] })).toEqual([])
+  })
+})
 
 describe('sanitizeToolResultContentForModel', () => {
   it('collapses html payloads to a short model-facing confirmation', () => {

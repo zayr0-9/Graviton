@@ -170,8 +170,11 @@ export function calculateBranchContextUsage(params: {
   )
   const messageTokens = contextMessages.reduce((total, message) => {
     if (!message) return total
+    // Legacy `tool_calls` repeats the blocks' tool calls; count it only for rows without `tool_use` blocks.
+    const hasToolUseBlocks = parseMaybeJsonArray(message.content_blocks)?.some(block => block?.type === 'tool_use')
+    const legacyToolCalls = hasToolUseBlocks ? 0 : safeEstimateTokenCount(message.tool_calls)
     return total + safeEstimateTokenCount(message.content) +
-      estimateContentBlocksForContext(message.content_blocks) + safeEstimateTokenCount(message.tool_calls)
+      estimateContentBlocksForContext(message.content_blocks) + legacyToolCalls
   }, 0)
   const estimatedContextTokens = promptAndContextTokens + messageTokens
   const resolved = resolveContextTokens({

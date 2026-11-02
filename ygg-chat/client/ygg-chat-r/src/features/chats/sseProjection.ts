@@ -364,6 +364,9 @@ export function projectServerEvent(event: ServerStreamEvent, ctx: ProjectionCont
       return [errorChunkAction(streamId, envelope, false)]
     }
 
+    case 'background_tasks':
+      return [chatSliceActions.streamBackgroundTasksUpdated({ streamId, turnActive: event.turnActive, tasks: event.tasks })]
+
     case 'hook_activity': {
       if (!event.messageId) return []
       return [chatSliceActions.hookActivityUpdated({ messageId: event.messageId as MessageId, runs: event.runs as any })]

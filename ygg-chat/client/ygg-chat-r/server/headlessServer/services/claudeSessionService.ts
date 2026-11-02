@@ -1,5 +1,5 @@
 import { portableSummaryText } from '../../../../../shared/summaryHandoff.js'
-import { CLAUDE_FILE_EDIT_TOOLS, CLAUDE_NATIVE_HOOK_SOURCE, claudeFilePatch, claudeMessageMetadata } from '../../../../../shared/claudeProvider.js'
+import { applyClaudeTaskEvent, CLAUDE_FILE_EDIT_TOOLS, CLAUDE_NATIVE_HOOK_SOURCE, claudeFilePatch, claudeMessageMetadata, type ClaudeBackgroundTask } from '../../../../../shared/claudeProvider.js'
 import { LABEL_AUTO_MEMORY, LABEL_LOCAL, LABEL_PROJECT, LABEL_USER_GLOBAL } from '../../../../../shared/contextInjection.js'
 import { parseFrontmatter, stripHtmlComments } from '../../context/frontmatter.js'
 import { randomUUID } from 'node:crypto'
@@ -7,7 +7,7 @@ import { readFile, realpath } from 'node:fs/promises'
 import path from 'node:path'
 import { claudeProcessEnvironment, resolveClaudeExecutable } from './claudeProcessConfig.js'
 import type { HookInput, Options, SDKUserMessage } from '@anthropic-ai/claude-agent-sdk'
-import type { HeadlessMessageRequest, HeadlessStreamEvent } from '../../../../../shared/headlessApi.js'
+import type { HeadlessBackgroundTask, HeadlessBackgroundTaskOutput, HeadlessMessageRequest, HeadlessStreamEvent } from '../../../../../shared/headlessApi.js'
 import { ClaudeSessionRepo } from '../persistence/claudeSessionRepo.js'
 import type { MessageRepo } from '../persistence/messageRepo.js'
 import type { MessageSink } from './messageSink.js'
@@ -64,6 +64,10 @@ const SKILL_BASE_DIRECTORY = /^Base directory for this skill: ([^\n]+)/
 const INSTRUCTION_LABELS: Record<string, string> = { User: LABEL_USER_GLOBAL, Project: LABEL_PROJECT, Local: LABEL_LOCAL, Managed: 'managed policy instructions' }
 // After a turn ends, Claude starts a held queued message at once; a longer silence means it never will.
 const QUEUED_START_TIMEOUT_MS = 30_000
+// A finished background task's notification starts a turn within milliseconds; past this, none is coming.
+const TASK_TURN_START_TIMEOUT_MS = 10_000
+// Workflow progress arrives per agent state change; its row is rewritten at most this often.
+const TASK_PROGRESS_FLUSH_MS = 1_000
 
 /**
  * The run's Graviton mailbox (MessageInputQueue), as a running Claude session consumes it.
@@ -90,6 +94,16 @@ export interface ClaudeQueuedInput {
   bindCancel(cancel: (requestId: string) => Promise<boolean | null>): void
 }
 type QueryWithAsyncCancel = { cancelAsyncMessage?: (uuid: string) => Promise<boolean> }
+// In the 0.3.309 runtime, not its .d.ts.
+type QueryWithTaskOutput = { getTaskOutput?: (taskId: string) => Promise<{ output?: string; total_bytes?: number; truncated?: boolean }> }
+
+/** The run's live background tasks, for the user to stop one or read its output. */
+export interface ClaudeTaskControl {
+  /** False when the task is not one of this run's live tasks. */
+  stop(taskId: string): Promise<boolean>
+  /** The end of a shell or Monitor task's output; null when this CLI cannot read it or the task is unknown. */
+  output(taskId: string): Promise<HeadlessBackgroundTaskOutput | null>
+}
 
 /** An instruction file Claude Code loaded, as the model reads it (no frontmatter or HTML comments). */
 async function readInstructionFile(file: string): Promise<string | null> {
@@ -381,6 +395,8 @@ export class ClaudeSessionService {
     queuedInput?: ClaudeQueuedInput
     /** The run's live Chat/Agent mode, shared with Graviton's mode route; a switch applies to the next tool call. */
     modeControl?: OperationModeControl
+    /** Receives the run's background-task control once Claude starts; returns the unbind. */
+    bindTasks?: (control: ClaudeTaskControl) => () => void
   }): Promise<any> {
     const { request, lineageId, emit, sink, signal, cwd } = input
     if (!request.manualCompaction && !input.nativeCommand && /^\s*\//.test(request.content ?? '')) throw new Error('Native slash commands require an explicit Graviton command.')
@@ -498,7 +514,7 @@ export class ClaudeSessionService {
       const directory = SKILL_BASE_DIRECTORY.exec(text)?.[1]?.trim()
       skill.owner.blocks.push({ type: 'context_injection', tool_use_id: skill.toolUseId, path: directory ? path.join(directory, 'SKILL.md') : '',
         label: `skill ${skill.name} instructions`, text, reason: 'skill', origin: 'claude', index: skill.owner.blocks.length })
-      const updated = sink.updateAssistantToolState(skill.owner.message.id, { contentBlocks: skill.owner.blocks, toolCalls: skill.owner.calls })
+      const updated = sink.updateAssistantToolState(skill.owner.message.id, { contentBlocks: skill.owner.blocks })
       if (updated) emit({ type: 'assistant_message_persisted', message: updated, lineageId })
     }
     // Instruction files Claude loaded itself (CLAUDE.md, rules, imports). The hook arrives on the
@@ -595,7 +611,7 @@ export class ClaudeSessionService {
       const call = owner.calls.find(call => call.id === toolUseId)
       if (block) block.input = { ...block.input, ...plan }
       if (call) call.arguments = { ...call.arguments, ...plan }
-      const updated = sink.updateAssistantToolState(owner.message.id, { contentBlocks: owner.blocks, toolCalls: owner.calls })
+      const updated = sink.updateAssistantToolState(owner.message.id, { contentBlocks: owner.blocks })
       if (updated) emit({ type: 'assistant_message_persisted', message: updated, lineageId })
       if (call) emit({ type: 'chunk', part: 'tool_call', toolCall: call })
     }
@@ -665,7 +681,8 @@ export class ClaudeSessionService {
         ? { thinking: { type: 'adaptive', display: 'summarized' } as const, ...(selectedEffort ? { effort: selectedEffort } : {}) }
         : { extraArgs: { 'thinking-display': 'summarized' } }),
       systemPrompt: { type: 'preset', preset: 'claude_code' },
-      settings: { plansDirectory: CLAUDE_PLANS_DIRECTORY },
+      // Ultracode is session-scoped flag settings, so every run (each resume) restates it.
+      settings: { plansDirectory: CLAUDE_PLANS_DIRECTORY, ...(request.claudeUltracode ? { ultracode: true } : {}) },
     }
     // Use the host's installed CLI rather than resolving a bundled native executable relative to an esbuild bundle.
     options.pathToClaudeCodeExecutable = executable
@@ -712,18 +729,91 @@ export class ClaudeSessionService {
     }
     let pumping = false
     let pumpAgain = false
-    // The last turn ended; the session closes once no queued message is left to start one.
+    // The last turn ended; the session closes once nothing is left to start another one.
     let idle = false
     let startTimer: ReturnType<typeof setTimeout> | undefined
+    // Non-ambient background tasks still running, child agents' included (the CLI's level signal).
+    let liveTasks = 0
+    let liveTaskList: HeadlessBackgroundTask[] = []
+    // Published only while tasks exist, and once more when the last one ends.
+    let publishedBackground = '[]'
+    const publishBackground = () => {
+      const signature = liveTaskList.length ? JSON.stringify([idle, liveTaskList]) : '[]'
+      if (signature === publishedBackground) return
+      publishedBackground = signature
+      emit({ type: 'background_tasks', streamId: request.streamId!, lineageId, turnActive: !idle, tasks: liveTaskList })
+    }
+    let initSeen = false
+    // Tasks the main agent launched → whether they ended. Claude answers each end with a turn of its own.
+    const unansweredTasks = new Map<string, boolean>()
     const settleIdle = () => {
-      if (!idle || pumping || inputClosed || !queued) return
-      if (queued.tryClose()) { finishInput(); return }
+      if (!idle || pumping || inputClosed) return
       clearTimeout(startTimer)
+      // Background work keeps the session, and so the queue, open: a message sent meanwhile reaches
+      // Claude at once instead of waiting for the run to end. The task's end starts the next turn.
+      if (liveTasks || [...unansweredTasks.values()].some(ended => !ended)) return
+      if (unansweredTasks.size) {
+        startTimer = setTimeout(() => { unansweredTasks.clear(); settleIdle() }, TASK_TURN_START_TIMEOUT_MS)
+        return
+      }
+      if (!queued) { finishInput(); return }
+      if (queued.tryClose()) { finishInput(); return }
       if (offered.size) startTimer = setTimeout(() => {
         for (const requestId of offered.values()) queued.release(requestId, { error: 'Claude did not start this message. Send it again.' })
         offered.clear()
         finishInput()
       }, QUEUED_START_TIMEOUT_MS)
+    }
+    // A new turn after `result`: a queued message, or Claude answering a finished background task.
+    const turnStarted = () => {
+      if (!idle) return
+      idle = false
+      clearTimeout(startTimer)
+      for (const [id, ended] of unansweredTasks) if (ended) unansweredTasks.delete(id)
+      publishBackground()
+    }
+    // Background tasks the main agent launched, shown on the tool_result of the call that launched
+    // them. Child agents' own tasks stay in Claude's transcript, like the rest of their detail.
+    const tasks = new Map<string, { toolUseId: string; task: ClaudeBackgroundTask }>()
+    const dirtyTasks = new Set<string>()
+    let taskFlush: ReturnType<typeof setTimeout> | undefined
+    const taskForCall = (toolUseId: string) => [...tasks.values()].find(entry => entry.toolUseId === toolUseId)?.task
+    const writeTasks = () => {
+      clearTimeout(taskFlush)
+      taskFlush = undefined
+      const owners = new Set<{ message: any; blocks: any[]; calls: any[] }>()
+      for (const id of dirtyTasks) {
+        const entry = tasks.get(id)!
+        const owner = toolOwners.get(entry.toolUseId)
+        // task_started can precede the call's tool_result; the result block picks the task up then.
+        const result = owner?.blocks.find(block => block.type === 'tool_result' && block.tool_use_id === entry.toolUseId)
+        if (!owner || !result) continue
+        result.task = entry.task
+        owners.add(owner)
+        dirtyTasks.delete(id)
+      }
+      for (const owner of owners) {
+        const updated = sink.updateAssistantToolState(owner.message.id, { contentBlocks: owner.blocks })
+        if (updated) emit({ type: 'assistant_message_persisted', message: updated, lineageId })
+      }
+    }
+    const trackTask = (event: { task_id: string; subtype: string; tool_use_id?: string; ambient?: boolean; skip_transcript?: boolean }) => {
+      const toolUseId = event.tool_use_id ?? tasks.get(event.task_id)?.toolUseId
+      if (!toolUseId || !toolOwners.has(toolUseId) || event.ambient || event.skip_transcript) return
+      const task = applyClaudeTaskEvent(tasks.get(event.task_id)?.task, event)
+      if (!task) return
+      tasks.set(event.task_id, { toolUseId, task })
+      // The level signal can name a task before its task_started does.
+      if (liveTaskList.some(entry => entry.id === event.task_id && entry.toolUseId !== toolUseId)) {
+        liveTaskList = liveTaskList.map(entry => entry.id === event.task_id ? { ...entry, toolUseId } : entry)
+        publishBackground()
+      }
+      if (event.subtype === 'task_started') unansweredTasks.set(event.task_id, false)
+      else if (task.status !== 'running' && unansweredTasks.has(event.task_id)) unansweredTasks.set(event.task_id, true)
+      dirtyTasks.add(event.task_id)
+      if (event.subtype !== 'task_progress') writeTasks()
+      else if (!taskFlush) taskFlush = setTimeout(writeTasks, TASK_PROGRESS_FLUSH_MS)
+      if (task.status !== 'running') settleIdle()
     }
     const pump = async () => {
       if (!queued || inputClosed) return
@@ -803,9 +893,24 @@ export class ClaudeSessionService {
       emit({ type: 'assistant_message_persisted', message: row, lineageId })
       return row
     }
+    let unbindTasks: (() => void) | undefined
     try {
       signal?.throwIfAborted()
       query = sdk.query({ prompt: prompts(), options })
+      unbindTasks = input.bindTasks?.({
+        stop: async taskId => {
+          if (!query || !liveTaskList.some(task => task.id === taskId)) return false
+          // The CLI answers with a task_notification (stopped) and a new level signal.
+          await query.stopTask(taskId)
+          return true
+        },
+        output: async taskId => {
+          const read = (query as unknown as QueryWithTaskOutput | undefined)?.getTaskOutput
+          if (typeof read !== 'function' || (!tasks.has(taskId) && !liveTaskList.some(task => task.id === taskId))) return null
+          const result = await read.call(query, taskId)
+          return { output: String(result?.output ?? ''), totalBytes: Number(result?.total_bytes) || 0, truncated: Boolean(result?.truncated) }
+        },
+      })
       void pump()
       for await (const event of query) {
         signal?.throwIfAborted()
@@ -817,8 +922,7 @@ export class ClaudeSessionService {
           offered.delete(uuid)
           offeredModes.delete(uuid)
           if (state === 'started') {
-            idle = false
-            clearTimeout(startTimer)
+            turnStarted()
             // A switch is recorded where Claude read it, as a mode row above the message.
             const modeSwitch = told && told.mode !== readMode
               ? { mode: told.mode, previousMode: readMode, revision: told.revision, content: claudeModeSwitchNotice(told.mode) } : null
@@ -842,6 +946,11 @@ export class ClaudeSessionService {
         }
         if ('parent_tool_use_id' in event && event.parent_tool_use_id) continue // child detail remains in Claude's native transcript
         if (event.type === 'system' && event.subtype === 'init') {
+          // A turn Claude starts on its own after `result` (a finished background task) opens with init.
+          const fresh = !initSeen
+          initSeen = true
+          turnStarted()
+          if (!fresh) continue
           // The CLI falls back to 'default' where auto mode is unavailable for the model or account.
           if (permissionMode === 'auto' && event.permissionMode !== 'auto') {
             emit({ type: 'notice', code: 'claude_auto_unavailable', lineageId,
@@ -855,9 +964,19 @@ export class ClaudeSessionService {
           nativeHooks.progress(event)
         } else if (event.type === 'system' && event.subtype === 'hook_response') {
           nativeHooks.finished(event)
+        } else if (event.type === 'system' && event.subtype === 'background_tasks_changed') {
+          liveTaskList = event.tasks.filter(task => !task.ambient).map(task => ({ id: task.task_id, kind: task.task_type,
+            description: task.description, toolUseId: tasks.get(task.task_id)?.toolUseId ?? null }))
+          liveTasks = liveTaskList.length
+          publishBackground()
+          settleIdle()
+        } else if (event.type === 'system' && (event.subtype === 'task_started' || event.subtype === 'task_progress' ||
+          event.subtype === 'task_updated' || event.subtype === 'task_notification')) {
+          trackTask(event)
         } else if (event.type === 'stream_event') {
           const frame = event.event
           if (frame.type === 'message_start') {
+            turnStarted()
             currentApiId = frame.message.id
             streamedText = ''; streamedReasoning = ''
             emit({ type: 'tool_loop', status: 'turn_started', turn: ++turn, maxTurns: 0 })
@@ -946,7 +1065,8 @@ export class ClaudeSessionService {
             const toolName = owner?.calls.find(call => call.id === result.tool_use_id)?.name
             const patch = soleResult && !result.is_error && CLAUDE_FILE_EDIT_TOOLS.has(toolName ?? '') ? claudeFilePatch(event.tool_use_result) : undefined
             if (owner) {
-              owner.blocks.push({ type: 'tool_result', tool_use_id: result.tool_use_id, content, is_error: Boolean(result.is_error), ...(patch ? { patch } : {}), index: owner.blocks.length })
+              const task = taskForCall(result.tool_use_id)
+              owner.blocks.push({ type: 'tool_result', tool_use_id: result.tool_use_id, content, is_error: Boolean(result.is_error), ...(patch ? { patch } : {}), ...(task ? { task } : {}), index: owner.blocks.length })
               const call = owner.calls.find(call => call.id === result.tool_use_id)
               const read = (call?.arguments as any)?.file_path ?? (call?.arguments as any)?.notebook_path
               if (typeof read === 'string') {
@@ -955,8 +1075,8 @@ export class ClaudeSessionService {
                   owner.blocks.push({ ...block, tool_use_id: result.tool_use_id, index: owner.blocks.length })
                 }
               }
-              if (call) { call.status = 'complete'; call.result = content }
-              const updated = sink.updateAssistantToolState(owner.message.id, { contentBlocks: owner.blocks, toolCalls: owner.calls })
+              if (call) call.status = 'complete'
+              const updated = sink.updateAssistantToolState(owner.message.id, { contentBlocks: owner.blocks })
               if (updated) emit({ type: 'assistant_message_persisted', message: updated, lineageId })
               emit({ type: 'tool_execution', status: result.is_error ? 'failed' : 'completed', toolCallId: result.tool_use_id, toolName: call?.name ?? 'Claude tool' })
               if (toolName === 'Skill' && !result.is_error) {
@@ -975,8 +1095,9 @@ export class ClaudeSessionService {
           completed = true
           toolsInFlight.clear()
           // A queued message keeps the session open: Claude runs it as the next turn.
-          if (!queued) finishInput()
-          else { idle = true; settleIdle() }
+          idle = true
+          publishBackground()
+          settleIdle()
         }
       }
       if (hookFailure) throw hookFailure
@@ -1022,6 +1143,16 @@ export class ClaudeSessionService {
       }
       throw error
     } finally {
+      unbindTasks?.()
+      liveTaskList = []
+      publishBackground()
+      // Stopping the session ends its background tasks too.
+      for (const [id, entry] of tasks) {
+        if (entry.task.status !== 'running') continue
+        entry.task = { ...entry.task, status: 'stopped' }
+        dirtyTasks.add(id)
+      }
+      writeTasks()
       finishInput()
       clearTimeout(startTimer)
       unsubscribeQueue?.()

@@ -166,8 +166,8 @@ describe('ordinary persisted compaction turns', () => {
   it('replays the appendix in both text-first and block-first adapters', async () => {
     const h = harness([{ content: 'Summary' }])
     const history = [...base.history, { id: 'read', role: 'assistant', content: '',
-      tool_calls: [{ id: 't', name: 'read_file', arguments: {} }],
-      content_blocks: [{ type: 'tool_result', tool_use_id: 't', content: 'preserved evidence' }] }]
+      content_blocks: [{ type: 'tool_use', id: 't', name: 'read_file', input: {} },
+        { type: 'tool_result', tool_use_id: 't', content: 'preserved evidence' }] }]
     await h.service.run({ ...base, history, manualCompaction: true }, () => {})
     const summary = h.sink.rows.find(isCommittedCompaction)
     const input = { modelName: 'test', history: [summary], userContent: '', tools: [] }

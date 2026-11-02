@@ -7,8 +7,11 @@ import { compactionInstruction } from '../../../../../../shared/compaction.js'
 const secret = 'FILE_OR_RESULT_BODY_MUST_NOT_SURVIVE'
 const text = (value: unknown) => JSON.stringify(value)
 const call = (name: string, args: Record<string, unknown>, result: unknown, id = name) => ({
-  role: 'assistant', tool_calls: [{ id, name, arguments: args }],
-  content_blocks: [{ type: 'tool_result', tool_use_id: id, content: result, is_error: false }],
+  role: 'assistant',
+  content_blocks: [
+    { type: 'tool_use', id, name, input: args },
+    { type: 'tool_result', tool_use_id: id, content: result, is_error: false },
+  ],
 })
 
 describe('centralized compaction policies', () => {

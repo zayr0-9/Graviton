@@ -142,6 +142,18 @@ const slice = createSlice({
       const existing = run.entries.find(entry => entry.message?.id === message.id)
       if (existing) {
         existing.message = message
+        // Claude persists one API message per completed block, opening a turn boundary before
+        // each later text/thinking block. When the stream says its live buffers now belong to
+        // this row (Chat's suppression signal), they must not stay a second message-less entry.
+        if (run.stream.persistedTurnMessageId === message.id && existing.key !== run.liveKey) {
+          const liveIndex = run.entries.findIndex(entry => entry.key === run.liveKey)
+          const live = run.entries[liveIndex]
+          if (live && !live.message) {
+            run.entries.splice(liveIndex, 1)
+            existing.stream = live.stream
+          }
+          if (!live || !live.message) run.liveKey = existing.key
+        }
         existing.persistedEvents = existing.stream?.events ?? run.stream.events
       } else if (message.role === 'assistant' || message.role === 'ex_agent') {
         // ToolLoopService emits first persistence before the next turn_started;
