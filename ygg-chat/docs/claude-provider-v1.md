@@ -1,6 +1,7 @@
 ---
 paths:
   - "shared/claudeProvider.ts"
+  - "shared/claudeTransfer.ts"
   - "client/ygg-chat-r/server/headlessServer/services/claude*.ts"
   - "client/ygg-chat-r/server/headlessServer/persistence/claudeSessionRepo.ts"
 ---
@@ -34,7 +35,7 @@ Native hooks stream as `hook_started` / `hook_progress` / `hook_response` (`incl
 ## Scope limits
 
 - Text and selected-file context only; pasted image attachments are rejected.
-- Queued user input and live Chat/Agent switches are supported (see Queued input and Live mode switches below), except during a manual `/compact` run.
+- Queued user input and live Chat/Agent switches are supported (see Queued input and Live mode switches below). A manual `/compact` run refuses queued input but accepts a mode switch.
 - `/compact` while idle resumes the selected native Claude session and invokes Claude’s own `/compact`. Graviton’s summarizer provider/model/prompt settings are not applied. Active-run manual compaction remains refused; native auto-compaction continues normally. A `/name` Graviton cannot expand is looked up in Claude's command list (a hook-less CLI that gets no prompt): user, project and plugin skills and custom commands lead the prompt for Claude to expand, and the user row records the command and its description (Claude does not stream the expanded body). Claude's built-ins are rejected.
 - No Graviton custom tools, REPL or subagent controls. Graviton Stop side-effect hooks run after a successful persisted response (sync/async commands and local API callbacks supported); other Graviton hook lifecycles and Stop-driven model continuation/context injection are not bridged. Failed/aborted runs and manual compaction skip Stop. Host-owned SDK compaction callbacks run beside Claude's own native hooks. Graviton runs recorded before their row exists (UserPromptSubmit, SessionStart, PreCompact) are attached to the user row or compaction summary once it is persisted.
 - Native child details remain in Claude's own transcript; parent tool activity/results are projected.
@@ -59,7 +60,7 @@ Limits: slash commands cannot be queued, because Claude would dispatch them as n
 
 ## Live mode switches
 
-The Chat/Agent control works while a Claude run streams, through the same `POST /api/conversations/:id/operation-mode` route and `OperationModeControl` as other providers. The orchestrator passes the run's control to `ClaudeSessionService`; a manual `/compact` run refuses the switch.
+The Chat/Agent control works while a Claude run streams, through the same `POST /api/conversations/:id/operation-mode` route and `OperationModeControl` as other providers. The orchestrator passes the run's control to `ClaudeSessionService`. During a manual `/compact` run the switch waits, like a queued message: the run has no turn to carry it, so the committed summary row records it in `meta.operationMode` (every summary records the mode it ended in). The composer restores that mode and the next send uses it. Graviton providers already accept a switch during manual compaction and persist the `operation_mode_change` row after the summary.
 
 - **Enforcement is immediate.** The `PreToolUse` guard and `canUseTool` read the live mode, so the next tool call follows it, child agents included. A call already past the guard finishes. Switching to Chat denies edit prompts still waiting for approval (`DecisionBroker.reconcileOperationMode`, with Claude's tool names).
 - **Claude is told through the queue.** Each queued message ends with the mode Claude should apply from there: a switch notice (`claudeModeSwitchNotice`) if Claude has not been told, otherwise `CHAT_MODE_NOTE` in Chat mode. A switch with no queued message to carry it goes as its own `priority: 'next'` message, but only while a main-agent tool runs, so Claude reads it at that tool's boundary. With no tool running it waits for the next tool or queued message: sent alone, it would start an extra turn after `result`. An accepted ExitPlanMode needs no notice, since its tool result tells Claude.
@@ -80,6 +81,12 @@ A `Workflow` call returns at once ("launched in background"), and the turn usual
 - **The composer shows what holds the run open.** The CLI's level signal (non-ambient tasks, child agents' and backgrounded shells included) is forwarded as a `background_tasks` SSE event (`turnActive`, `tasks`), published only while tasks exist and once more when the last ends. It is kept in the run snapshot, so a reconnecting client sees the current set. After `result` the renderer replaces "Composing" with "Waiting on N background tasks"; its popover stops one task (`POST /api/conversations/:id/streams/:streamId/tasks/:taskId/stop`, SDK `stopTask`) or tails a shell/Monitor task's last 8 KiB (`GET …/tasks/:taskId/output`, the runtime-only SDK `getTaskOutput`). A task can never outlive its run: a long-lived dev server started by Claude keeps the run open until it is stopped.
 
 `scripts/test-claude-workflow-live.mjs` (opt-in, `CLAUDE_PROVIDER_LIVE_TEST=1`, `CLAUDE_WORKFLOW_SCENARIO=open|closed|keyword|slow-open|slow-closed`) prints the raw SDK task events. The opt-in service test `live service: an ultracode workflow keeps the session and queue open and shows its progress` checks the service path.
+
+## Copied chats
+
+Heimdall's New Chat From Here, Copy and Move never carry a native session to the copy. A Claude branch can be transferred only up to a committed summary; selections ending elsewhere are refused (see `agent_context/agent_heimdall.md`). Copied rows get `meta.transfer` and lose `claude.checkpoint`, and no checkpoint or `claude_branch_sessions` row is copied, so no copy can resume or append to the source session.
+
+In the copy, every continuation from the copied summary is a summary handoff, whatever the provider: the composer sends it as a summary branch, and `runMessage` rewrites an ordinary `send` whose parent is a copied summary (directly or through trailing context rows) into the same branch (`copiedSummaryForSend`). It therefore always gets a new lineage, and a session left on the old lineage by an earlier run is never resumed. Claude starts a fresh session with the summary text; approval uses the host default, as other handoffs do. Messages copied from before the summary are display only: continuing from one is refused with "copied from another chat … continue from the copied summary instead", and Explain is disabled on them. Deletion may cut back to any copied row (`planMessageDeletion`), since none of them resumes a native session.
 
 ## Persistence
 

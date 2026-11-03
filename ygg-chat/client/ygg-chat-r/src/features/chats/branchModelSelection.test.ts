@@ -189,6 +189,21 @@ describe('summary handoff selection', () => {
     expect(resolveComposerSummaryHandoff(chat, pairB.provider)).toBeNull()
     expect(resolveComposerSummaryHandoff(chat, 'Claude Code')?.id).toBe('summary')
   })
+
+  it('hands off from a copied summary for every provider, since the copy has no native session', () => {
+    const chat = state()
+    chat.providerState.providers.push({ name: 'Claude Code' } as any)
+    const claude = { provider: 'claudecode', model: 'claude-opus-5-5' }
+    chat.conversation.messages = [
+      { id: 'root', conversation_id: 'c', parent_id: null, role: 'user', meta: { modelSelection: claude, transfer: { sourceMessageId: 'r' } } },
+      { id: 'summary', conversation_id: 'c', parent_id: 'root', role: 'assistant', content: 'Portable state',
+        meta: { kind: 'compaction_summary', state: 'committed', claude: { sessionId: 's' }, transfer: { sourceMessageId: 's1' } } },
+    ] as any
+    chat.conversation.currentPath = ['root', 'summary']
+    expect(resolveComposerSummaryHandoff(chat, 'Claude Code')?.id).toBe('summary')
+    expect(resolveComposerSummaryHandoff(chat, pairB.provider)?.id).toBe('summary')
+    expect(resolveComposerClaudeLock(chat)).toBeNull()
+  })
 })
 
 describe('composer summary handoff boundary', () => {

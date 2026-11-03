@@ -36,7 +36,12 @@ import {
   REASONING_EFFORT_OPTIONS,
   saveChatReasoningSettings,
 } from '../helpers/chatReasoningSettingsStorage'
-import { loadDefaultToolAutoApprove, saveDefaultToolAutoApprove } from '../helpers/toolApprovalSettingsStorage'
+import {
+  loadClaudeAutoMode,
+  loadDefaultToolAutoApprove,
+  saveClaudeAutoMode,
+  saveDefaultToolAutoApprove,
+} from '../helpers/toolApprovalSettingsStorage'
 import {
   loadAutoCompactionEnabled,
   loadShowTokenUsageBar,
@@ -398,6 +403,9 @@ const Settings: React.FC = () => {
   )
   const [bashTimeoutTouched, setBashTimeoutTouched] = useState(false)
   const [defaultToolAutoApprove, setDefaultToolAutoApprove] = useState(() => loadDefaultToolAutoApprove())
+  const [defaultClaudeAutoMode, setDefaultClaudeAutoMode] = useState(() => loadClaudeAutoMode())
+  // Mirrors the Chat cycle for Claude sessions: Allow all wins, Auto only replaces Ask.
+  const defaultClaudeToolApproval = defaultToolAutoApprove ? 'allow-all' : defaultClaudeAutoMode ? 'auto' : 'ask'
   const [chatReasoningSettings, setChatReasoningSettings] = useState<ChatReasoningSettings>(() =>
     loadChatReasoningSettings()
   )
@@ -1837,6 +1845,28 @@ const Settings: React.FC = () => {
     })
   }
 
+  const handleDefaultClaudeToolApprovalChange = async (value: string) => {
+    if (value === 'allow-all') {
+      await handleDefaultToolApprovalChange('allow-all')
+      return
+    }
+    // Ask and Auto both require the shared default to be Ask; Allow all would override Auto.
+    if (defaultToolAutoApprove) {
+      try { await saveDefaultToolAutoApprove(false) }
+      catch (error) { showStatus({ type: 'error', text: error instanceof Error ? error.message : 'Could not save settings' }); return }
+      setDefaultToolAutoApprove(false)
+      dispatch(chatSliceActions.toolAutoApproveDisabled())
+    }
+    const autoMode = value === 'auto'
+    saveClaudeAutoMode(autoMode)
+    setDefaultClaudeAutoMode(autoMode)
+    dispatch(chatSliceActions.claudeAutoModeSet(autoMode))
+    showStatus({
+      type: 'success',
+      text: `Claude Code default tool approval set to ${autoMode ? 'Auto' : 'Ask'}.`,
+    })
+  }
+
   const handleDefaultThinkingToggle = () => {
     const updated: ChatReasoningSettings = {
       ...chatReasoningSettings,
@@ -2723,24 +2753,46 @@ const Settings: React.FC = () => {
         <SettingsSection
           title='Tool Approval Defaults'
           description='Choose the tool approval mode restored on launch. The Chat toggle changes only the current session.'
-          features={['Ask', 'Allow all']}
+          features={['Ask', 'Allow all', 'Claude Code auto mode']}
         >
-          <div className='flex flex-col gap-2'>
-            <div>
-              <p className='text-base font-medium text-stone-900 dark:text-stone-100'>Default Tool Approval</p>
-              <p className='text-sm text-stone-500 dark:text-stone-400'>
-                Ask requests permission before running tools. Allow all runs tools without asking, including tools that modify files or run commands. Chat mode restrictions still apply.
-              </p>
+          <div className='flex flex-col gap-4'>
+            <div className='flex flex-col gap-2'>
+              <div>
+                <p className='text-base font-medium text-stone-900 dark:text-stone-100'>Default Tool Approval</p>
+                <p className='text-sm text-stone-500 dark:text-stone-400'>
+                  Ask requests permission before running tools. Allow all runs tools without asking, including tools that modify files or run commands. Chat mode restrictions still apply.
+                </p>
+              </div>
+              <Select
+                value={defaultToolAutoApprove ? 'allow-all' : 'ask'}
+                onChange={handleDefaultToolApprovalChange}
+                options={[
+                  { value: 'ask', label: 'Ask' },
+                  { value: 'allow-all', label: 'Allow all' },
+                ]}
+                className='max-w-xs'
+              />
             </div>
-            <Select
-              value={defaultToolAutoApprove ? 'allow-all' : 'ask'}
-              onChange={handleDefaultToolApprovalChange}
-              options={[
-                { value: 'ask', label: 'Ask' },
-                { value: 'allow-all', label: 'Allow all' },
-              ]}
-              className='max-w-xs'
-            />
+
+            <div className='flex flex-col gap-2 pt-2'>
+              <div>
+                <p className='text-base font-medium text-stone-900 dark:text-stone-100'>Claude Code Tool Approval</p>
+                <p className='text-sm text-stone-500 dark:text-stone-400'>
+                  Auto lets Claude&apos;s classifier approve routine actions and asks you when it is unsure. Allow all is
+                  shared with Default Tool Approval above, so choosing Ask or Auto here also sets that default to Ask.
+                </p>
+              </div>
+              <Select
+                value={defaultClaudeToolApproval}
+                onChange={handleDefaultClaudeToolApprovalChange}
+                options={[
+                  { value: 'ask', label: 'Ask' },
+                  { value: 'auto', label: 'Auto' },
+                  { value: 'allow-all', label: 'Allow all' },
+                ]}
+                className='max-w-xs'
+              />
+            </div>
           </div>
         </SettingsSection>
 

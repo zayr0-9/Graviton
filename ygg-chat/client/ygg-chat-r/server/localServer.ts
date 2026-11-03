@@ -78,7 +78,7 @@ import { registerAnalyticsRoutes } from './routes/analyticsRoutes.js'
 import { registerUserProjectRoutes } from './routes/userProjectRoutes.js'
 import { registerNoteSearchRoutes } from './routes/noteSearchRoutes.js'
 import { registerConversationRoutes } from './routes/conversationRoutes.js'
-import { TOP_LEVEL_USER_MESSAGES_SQL, TOP_LEVEL_USER_MESSAGE_SEARCH_SCHEMA_SQL } from './topLevelUserMessages.js'
+import { TOP_LEVEL_PREVIEW_MESSAGES_SQL, TOP_LEVEL_USER_MESSAGES_SQL, TOP_LEVEL_USER_MESSAGE_SEARCH_SCHEMA_SQL } from './topLevelUserMessages.js'
 import { NOTE_SEARCH_FTS_SQL, NOTE_SEARCH_TABLES_SQL, rebuildSearchIndexes } from './searchIndexSchema.js'
 import { skillRegistry } from './skills/skillLoader.js'
 import { registerSkillRoutes } from './skills/skillRoutes.js'
@@ -1271,6 +1271,7 @@ function initializeLocalDatabase(dbPath: string) {
     // Hook lineage walks follow parent_id: no payload columns, no sort.
     getMessageLineageByConversationId: db.prepare('SELECT id, parent_id FROM messages WHERE conversation_id = ?'),
     getTopLevelUserMessagesByConversationId: db.prepare(TOP_LEVEL_USER_MESSAGES_SQL),
+    getTopLevelPreviewMessagesByConversationId: db.prepare(TOP_LEVEL_PREVIEW_MESSAGES_SQL),
     getLastMessageByConversationId: db.prepare(
       'SELECT * FROM messages WHERE conversation_id = ? ORDER BY created_at DESC LIMIT 1'
     ),

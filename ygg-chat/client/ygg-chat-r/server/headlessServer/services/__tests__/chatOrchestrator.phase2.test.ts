@@ -6,6 +6,7 @@ import path from 'node:path'
 import { createHash } from 'node:crypto'
 import { createRequire } from 'node:module'
 import { CLAUDE_SESSION_SCHEMA } from '../../persistence/claudeSessionRepo.js'
+import { CLAUDE_TRANSFERRED_SOURCE_MESSAGE } from '../../../../../../shared/claudeTransfer.js'
 import { MessageRepo } from '../../persistence/messageRepo.js'
 import { LineageRepo } from '../../persistence/lineageRepo.js'
 import { normalizeHostExecutionPreferences } from '../../../../../../shared/hostExecutionPreferences.js'
@@ -499,18 +500,37 @@ describe('source lineage membership validation', () => {
     expect(next.restart).toMatchObject({ operationMode: 'execute', content: 'after the run' })
   })
 
-  it('refuses a live Claude mode switch during native compaction', async () => {
+  it('accepts a live Claude mode switch during native compaction', async () => {
     db.exec(CLAUDE_SESSION_SCHEMA)
-    let refusal: unknown
+    let accepted: unknown
     const claudeSessions = { run: vi.fn(async (input: any) => {
-      try { orchestrator.changeOperationMode({ conversationId: 'c1', mode: 'plan', requestId: 'm1', streamId: 'claude-compact-mode' }) } catch (error) { refusal = error }
+      accepted = orchestrator.changeOperationMode({ conversationId: 'c1', mode: 'plan', requestId: 'm1', streamId: 'claude-compact-mode' })
+      expect(input.modeControl.mode).toBe('plan')
       return input.sink.persistAssistantMessage({ conversationId: 'c1', parentId: input.parentId, modelName: input.request.modelName,
         content: 'summary', meta: { kind: 'compaction_summary', state: 'committed', claude: { sessionId: 's' } } })
     }) }
     orchestrator = new ChatOrchestrator({ db, statements, providerRouter: providerRouter as any, claudeSessions: claudeSessions as any })
     await orchestrator.runMessage({ operation: 'send', conversationId: 'c1', provider: 'claudecode', modelName: 'claude-haiku-5-5',
-      content: '/compact', manualCompaction: true, rootPath: testDirectory, streamId: 'claude-compact-mode' } as any, () => {}).catch(() => {})
-    expect(String(refusal)).toContain('after compaction finishes')
+      content: '/compact', manualCompaction: true, rootPath: testDirectory, streamId: 'claude-compact-mode', operationMode: 'execute' } as any, () => {})
+    expect(accepted).toMatchObject({ status: 'pending', mode: 'plan' })
+  })
+
+  it('queues a live mode switch during manual compaction and records it after the summary', async () => {
+    const events: any[] = []
+    vi.spyOn(providerRouter, 'generate').mockImplementation(async () => {
+      expect(orchestrator.changeOperationMode({ conversationId: 'c1', mode: 'plan', requestId: 'm1', streamId: 'manual-mode' }))
+        .toMatchObject({ status: 'pending', mode: 'plan' })
+      return { content: 'Committed summary' }
+    })
+    await orchestrator.runMessage({ operation: 'send', conversationId: 'c1', content: '/compact', provider: 'openaichatgpt',
+      modelName: 'test', streamId: 'manual-mode', manualCompaction: true, operationMode: 'execute' }, event => events.push(event))
+    const completedIndex = events.findIndex(event => event.type === 'context_compaction' && event.status === 'completed')
+    // The run may first announce its initial mode; the switch is the Chat row.
+    const changed = events.findIndex(event => event.type === 'operation_mode_changed' && event.mode === 'plan')
+    expect(completedIndex).toBeGreaterThanOrEqual(0)
+    expect(changed).toBeGreaterThan(completedIndex)
+    expect(events[changed]).toMatchObject({ streamId: 'manual-mode' })
+    expect(JSON.parse(events[changed].message.meta)).toMatchObject({ kind: 'operation_mode_change', mode: 'plan' })
   })
 
   it('refuses queued input during a Claude compaction run', async () => {
@@ -840,6 +860,52 @@ describe('source lineage membership validation', () => {
     const summary = events.find(event => event.type === 'complete').message
     expect(JSON.parse(summary.meta)).toMatchObject({ kind: 'compaction_summary', state: 'committed' })
     expect(() => orchestrator.validateExecutionSelection({ ...base, parentId: summary.id, content: 'followup' })).not.toThrow()
+  })
+
+  it('starts a fresh Claude session from a summary copied from another chat, and refuses other copied rows', async () => {
+    db.exec(CLAUDE_SESSION_SCHEMA)
+    const claudeSessions = { run: vi.fn(async (input: any) => input.sink.persistAssistantMessage({ conversationId: 'c1', parentId: input.parentId,
+      modelName: input.request.modelName, content: 'fresh answer', meta: { claude: { sessionId: 'fresh-native' } } })) }
+    orchestrator = new ChatOrchestrator({ db, statements, providerRouter: providerRouter as any, claudeSessions: claudeSessions as any })
+    vi.spyOn(orchestrator as any, 'loadHostSkills').mockResolvedValue([])
+    // What New Chat From Here writes: Claude metadata without checkpoints, no lineage, no native session.
+    const claude = { provider: 'claudecode', model: 'claude-opus-5-5' }
+    const answer = messageRepo.createMessage({ conversationId: 'c1', parentId: null, role: 'assistant', content: 'OLD RAW ANSWER',
+      meta: { modelSelection: claude, claude: { sessionId: 'source-native', messageUuid: 'u' }, transfer: { sourceMessageId: 'a', sourceConversationId: 'src' } } })
+    const summary = messageRepo.createMessage({ conversationId: 'c1', parentId: answer.id, role: 'assistant', content: 'Portable task state',
+      meta: { kind: 'compaction_summary', state: 'committed', claude: { sessionId: 'source-native' }, transfer: { sourceMessageId: 's', sourceConversationId: 'src' } } })
+    const base = { operation: 'send' as const, conversationId: 'c1', provider: 'claudecode', modelName: 'claude-opus-5-5', rootPath: testDirectory }
+
+    expect(() => orchestrator.validateExecutionSelection({ ...base, parentId: summary.id, content: 'continue here' })).not.toThrow()
+    // An earlier run on this lineage was cut back to the summary but left its session row behind.
+    const lineage = new LineageRepo({ db, statements }).createRoot({ conversationId: 'c1', rootMessageId: answer.id })
+    new LineageRepo({ db, statements }).appendMessage(lineage.id, summary.id)
+    db.prepare('INSERT INTO claude_branch_sessions VALUES (?, ?, ?, ?, ?, ?)').run(lineage.id, 'c1', 'claude-opus-5-5', testDirectory, 'stale-native', 'ready')
+    const events: any[] = []
+    await orchestrator.runMessage({ ...base, parentId: summary.id, lineageId: lineage.id, content: 'continue here' }, event => events.push(event))
+    expect(events.find(event => event.type === 'error')).toBeUndefined()
+    const call = claudeSessions.run.mock.calls[0][0]
+    expect(call.sourceMessageId).toBeNull()
+    expect(call.lineageId).not.toBe(lineage.id)
+    expect(call.request.content).toContain('Portable task state')
+    expect(call.request.content).toContain('continue here')
+    expect(call.request.content).not.toContain('OLD RAW ANSWER')
+    const user = events.find(event => event.type === 'user_message_persisted').message
+    expect(user.parent_id).toBe(summary.id)
+    expect(JSON.parse(user.meta).executionHandoff.summaryMessageId).toBe(summary.id)
+
+    // Context copied after the summary is skipped: the new turn hangs off the summary itself.
+    const trailer = messageRepo.createMessage({ conversationId: 'c1', parentId: summary.id, role: 'user', content: 'restored context',
+      meta: { kind: 'context_injection', transfer: { sourceMessageId: 'ctx' } } })
+    const trailerEvents: any[] = []
+    await orchestrator.runMessage({ ...base, parentId: trailer.id, content: 'from the trailer' }, event => trailerEvents.push(event))
+    expect(trailerEvents.find(event => event.type === 'error')).toBeUndefined()
+    expect(trailerEvents.find(event => event.type === 'user_message_persisted' && event.message.content === 'from the trailer').message.parent_id).toBe(summary.id)
+    expect(claudeSessions.run.mock.calls[1][0].sourceMessageId).toBeNull()
+
+    // A copied response has no checkpoint: say so instead of claiming the turn never finished.
+    expect(() => orchestrator.validateExecutionSelection({ ...base, operation: 'branch', messageId: answer.id, parentId: null, content: 'from the old answer' }))
+      .toThrow(CLAUDE_TRANSFERRED_SOURCE_MESSAGE)
   })
 
   it('hands off committed summaries in both directions and preserves source sessions and history', async () => {

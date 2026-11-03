@@ -5,7 +5,7 @@ import type { AddressInfo } from 'node:net'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { registerAppAutomationRoutes } from '../appAutomationRoutes.js'
 import { CLAUDE_SESSION_SCHEMA } from '../../persistence/claudeSessionRepo.js'
-import { TOP_LEVEL_USER_MESSAGES_SQL } from '../../../topLevelUserMessages.js'
+import { TOP_LEVEL_PREVIEW_MESSAGES_SQL, TOP_LEVEL_USER_MESSAGES_SQL } from '../../../topLevelUserMessages.js'
 
 let BetterSqlite3Ctor: (new (filename: string) => Database.Database) | null = null
 
@@ -158,6 +158,7 @@ function createStatements(db: Database.Database): any {
     getMessageById: db.prepare('SELECT * FROM messages WHERE id = ?'),
     getMessagesByConversationId: db.prepare('SELECT * FROM messages WHERE conversation_id = ? ORDER BY created_at ASC'),
     getTopLevelUserMessagesByConversationId: db.prepare(TOP_LEVEL_USER_MESSAGES_SQL),
+    getTopLevelPreviewMessagesByConversationId: db.prepare(TOP_LEVEL_PREVIEW_MESSAGES_SQL),
   }
 }
 
@@ -343,7 +344,8 @@ describeIfSqlite('registerAppAutomationRoutes', () => {
       byContent.get('branch-b')?.id,
       byContent.get('branch-a')?.id,
     ])
-    expect(JSON.parse(rootRecord.meta)).toEqual({ transfer: true })
+    // Provenance replaces any `transfer` the payload carried.
+    expect(JSON.parse(rootRecord.meta)).toEqual({ transfer: { sourceMessageId: 'root' } })
 
     const leafRecord = db!.prepare('SELECT * FROM messages WHERE id = ?').get(byContent.get('branch-a-leaf')?.id) as any
     expect(leafRecord.tool_call_id).toBe('tool-1')
@@ -385,6 +387,100 @@ describeIfSqlite('registerAppAutomationRoutes', () => {
       .toEqual([id, answer].sort())
     expect((await postJson(baseUrl, '/api/app/messages/deleteMany', { ids: [id, answer] })).status).toBe(200)
     expect(db!.prepare('SELECT COUNT(*) AS n FROM messages WHERE conversation_id = ?').get(conversationId)).toEqual({ n: 0 })
+  })
+
+  describe('Claude transfers', () => {
+    const claude = { provider: 'claudecode', model: 'claude-opus-5-5' }
+    let sourceId = ''
+    let targetId = ''
+    const payload = (ids: string[]) => ids.map(id => {
+      const row = db!.prepare('SELECT * FROM messages WHERE id = ?').get(id) as any
+      return { source_id: id, parent_source_id: ids.includes(row.parent_id) ? row.parent_id : null, role: row.role, content: row.content, meta: row.meta }
+    })
+    const targetRows = () => db!.prepare('SELECT * FROM messages WHERE conversation_id = ? ORDER BY created_at').all(targetId) as any[]
+
+    beforeEach(async () => {
+      db!.exec(CLAUDE_SESSION_SCHEMA)
+      sourceId = ((await (await postJson(baseUrl, '/api/app/conversations', { title: 'Source', user_id: 'claude-user' })).json()) as any).id
+      targetId = ((await (await postJson(baseUrl, '/api/app/conversations', { title: 'Target', user_id: 'claude-user' })).json()) as any).id
+      const insert = db!.prepare('INSERT INTO messages (id, conversation_id, parent_id, role, content, created_at, meta) VALUES (?, ?, ?, ?, ?, ?, ?)')
+      const rows: Array<[string, string | null, string, string, Record<string, unknown>]> = [
+        ['u0', null, 'user', 'start', { modelSelection: claude, toolAutoApprove: true }],
+        ['a0', 'u0', 'assistant', 'done', { modelSelection: claude, toolAutoApprove: true, claude: { sessionId: 's', messageUuid: 'm0', checkpoint: true } }],
+        ['i', 'a0', 'user', '/compact', { kind: 'compaction_instruction', sourceTipId: 'a0', modelSelection: claude }],
+        ['s', 'i', 'assistant', 'Portable state', { kind: 'compaction_summary', state: 'committed', claude: { sessionId: 's', checkpoint: false },
+          runStatistics: { kind: 'turn', streamId: 'stream-1' } }],
+        ['u1', 's', 'user', 'more', { modelSelection: claude }],
+        ['a1', 'u1', 'assistant', 'reply', { modelSelection: claude, claude: { sessionId: 's', messageUuid: 'm1', checkpoint: true } }],
+        // Another provider, handed off from the summary.
+        ['g1', 's', 'user', 'gpt', { modelSelection: { provider: 'openaichatgpt', model: 'gpt' }, executionHandoff: { summaryMessageId: 's' } }],
+      ]
+      rows.forEach(([id, parent, role, content, meta], index) =>
+        insert.run(id, sourceId, parent, role, content, `2026-11-02T10:0${index}:00Z`, JSON.stringify(meta)))
+      db!.prepare('INSERT INTO claude_message_checkpoints VALUES (?, ?, ?, ?, 1)').run('a0', 's', 'm0', '/w')
+    })
+
+    it('refuses a Claude selection that does not end at a summary and writes nothing', async () => {
+      const res = await postJson(baseUrl, `/api/app/conversations/${targetId}/messages/bulk`, { messages: payload(['s', 'u1', 'a1']) })
+      expect(res.status).toBe(409)
+      expect(((await res.json()) as any).code).toBe('claude_transfer_requires_summary')
+      // The selected tip alone does not show it is Claude; the server reads its ancestry.
+      const tipOnly = await postJson(baseUrl, `/api/app/conversations/${targetId}/messages/bulk`, {
+        messages: [{ source_id: 'a1', parent_source_id: null, role: 'assistant', content: 'reply', meta: null }],
+      })
+      expect(tipOnly.status).toBe(409)
+      expect(targetRows()).toEqual([])
+    })
+
+    it('copies up to the summary and drops native identity, approval and dangling references', async () => {
+      const res = await postJson(baseUrl, `/api/app/conversations/${targetId}/messages/bulk`, { messages: payload(['a0', 'i', 's']) })
+      expect(res.status).toBe(200)
+      const [answer, instruction, summary] = targetRows()
+      const meta = (row: any) => JSON.parse(row.meta)
+      expect(meta(answer)).toEqual({ modelSelection: claude, claude: { sessionId: 's', messageUuid: 'm0' },
+        transfer: { sourceMessageId: 'a0', sourceConversationId: sourceId } })
+      expect(meta(instruction).sourceTipId).toBe(answer.id)
+      expect(meta(summary)).toEqual({ kind: 'compaction_summary', state: 'committed', claude: { sessionId: 's' },
+        runStatistics: { kind: 'turn', streamId: 'copied:stream-1' }, transfer: { sourceMessageId: 's', sourceConversationId: sourceId } })
+      // No native checkpoint or session is copied.
+      expect(db!.prepare('SELECT COUNT(*) AS n FROM claude_message_checkpoints WHERE message_id IN (?, ?, ?)').get(answer.id, instruction.id, summary.id)).toEqual({ n: 0 })
+    })
+
+    it('drops a reference to a row outside the copy', async () => {
+      // Without its parent selected, the compaction instruction loses its source tip.
+      expect((await postJson(baseUrl, `/api/app/conversations/${targetId}/messages/bulk`, { messages: payload(['i', 's']) })).status).toBe(200)
+      expect(JSON.parse(targetRows()[0].meta).sourceTipId).toBeUndefined()
+    })
+
+    it('keeps a handoff branch pointing at its copied summary, and drops it without the summary', async () => {
+      expect((await postJson(baseUrl, `/api/app/conversations/${targetId}/messages/bulk`, { messages: payload(['s', 'g1']) })).status).toBe(200)
+      const [summary, handoff] = targetRows()
+      expect(JSON.parse(handoff.meta).executionHandoff).toEqual({ summaryMessageId: summary.id })
+      expect((await postJson(baseUrl, `/api/app/conversations/${targetId}/messages/bulk`, { messages: payload(['g1']) })).status).toBe(200)
+      expect(JSON.parse(targetRows()[2].meta).executionHandoff).toBeUndefined()
+    })
+
+    it('previews a delete without deleting, so Move can refuse before it copies', async () => {
+      // Moving only the summary would leave the source on its /compact instruction, which Claude cannot continue from.
+      const refused = await postJson(baseUrl, '/api/app/messages/deleteMany', { ids: ['s'], dryRun: true })
+      expect(refused.status).toBe(409)
+      expect(((await refused.json()) as any).code).toBe('claude_delete_refused')
+      // From the first prompt the cut lands on the root, which is allowed.
+      const allowed = await postJson(baseUrl, '/api/app/messages/deleteMany', { ids: ['u0'], dryRun: true })
+      expect(allowed.status).toBe(200)
+      expect(((await allowed.json()) as any).planned).toEqual(['u0'])
+      expect(db!.prepare('SELECT COUNT(*) AS n FROM messages WHERE conversation_id = ?').get(sourceId)).toEqual({ n: 7 })
+    })
+
+    it('lets a copied Claude branch be cut back to the copied summary', async () => {
+      expect((await postJson(baseUrl, `/api/app/conversations/${targetId}/messages/bulk`, { messages: payload(['s']) })).status).toBe(200)
+      const [summary] = targetRows()
+      const add = db!.prepare('INSERT INTO messages (id, conversation_id, parent_id, role, content, created_at, meta) VALUES (?, ?, ?, ?, ?, ?, ?)')
+      add.run('n1', targetId, summary.id, 'user', 'new', '2026-11-03T00:00:00Z', JSON.stringify({ modelSelection: claude }))
+      add.run('n2', targetId, 'n1', 'assistant', 'answer', '2026-11-03T00:01:00Z', JSON.stringify({ modelSelection: claude, claude: { sessionId: 'fresh', checkpoint: true } }))
+      expect((await fetch(`${baseUrl}/api/app/messages/n1`, { method: 'DELETE' })).status).toBe(200)
+      expect(targetRows().map(row => row.id)).toEqual([summary.id])
+    })
   })
 
   it('rolls back the complete bulk copy when one message cannot be persisted', async () => {

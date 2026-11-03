@@ -1,6 +1,7 @@
 import type Database from 'better-sqlite3'
 import { isRunSettingsNotification } from '../../../../../shared/accessNotifications.js'
 import { isClaudeTranscriptMessage } from '../../../../../shared/claudeProvider.js'
+import { isTransferredMessage } from '../../../../../shared/claudeTransfer.js'
 import { isContextInjectionMessage } from '../../../../../shared/contextInjection.js'
 
 interface Row { id: string; parent_id: string | null; role: string; meta: string | null }
@@ -57,7 +58,8 @@ export function planMessageDeletion(db: Database.Database, ids: readonly string[
       planned.add(parent.id)
     }
     const anchor = parentOf(top)
-    if (!anchor || resumable?.get(anchor.id) || rootScaffolding(anchor) || survivingChildren(anchor.id).length > 0) continue
+    // A copied row never resumes a native session (a copied summary hands off fresh), so it is always a valid cut.
+    if (!anchor || resumable?.get(anchor.id) || isTransferredMessage(anchor) || rootScaffolding(anchor) || survivingChildren(anchor.id).length > 0) continue
     throw Object.assign(new Error('Claude can only continue from a completed response. Delete from the user message after one instead.'),
       { status: 409, code: CLAUDE_DELETE_REFUSED })
   }

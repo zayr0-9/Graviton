@@ -2407,8 +2407,33 @@ export const deleteSelectedNodes = createAsyncThunk<
   } catch (error) {
     console.error('[deleteSelectedNodes] Error:', error)
     raiseClaudeDeleteRefusal(error, conversationId, dispatch)
-    const message = error instanceof Error ? error.message : 'Failed to delete messages'
-    return rejectWithValue(message)
+    const failure = classifyLocalApiFailure(error)
+    const serverError = (failure.payload as { error?: unknown } | undefined)?.error
+    return rejectWithValue(typeof serverError === 'string' && serverError.trim() ? serverError : failure.message || 'Failed to delete messages')
+  }
+})
+
+/** Ask the server which rows a delete would remove, without deleting. Rejects with the server's refusal. */
+export const previewMessageDeletion = createAsyncThunk<
+  { planned: string[] },
+  { ids: MessageId[]; conversationId: ConversationId; storageMode?: 'local' | 'cloud' },
+  { extra: ThunkExtraArgument; rejectValue: { message: string; code?: string } }
+>('chat/previewMessageDeletion', async ({ ids, conversationId, storageMode }, { extra, rejectWithValue }) => {
+  try {
+    const response = await gwApi.post<{ planned: string[] }>('/messages/deleteMany', {
+      ids,
+      conversationId,
+      storageMode: storageMode ?? getStorageModeFromCache(extra.queryClient, conversationId),
+      dryRun: true,
+    })
+    return { planned: (response.planned ?? []).map(String) }
+  } catch (error) {
+    const failure = classifyLocalApiFailure(error)
+    const payload = failure.payload as { error?: unknown; code?: unknown } | undefined
+    return rejectWithValue({
+      message: typeof payload?.error === 'string' && payload.error.trim() ? payload.error : failure.message,
+      code: typeof payload?.code === 'string' ? payload.code : undefined,
+    })
   }
 })
 
@@ -2963,8 +2988,10 @@ export const insertBulkMessages = createAsyncThunk<
     )
     return response.messages
   } catch (error) {
-    const message = error instanceof Error ? error.message : 'Failed to insert bulk messages'
-    return rejectWithValue(message)
+    // Show the server's reason (e.g. a refused Claude transfer), not the transport-prefixed message.
+    const failure = classifyLocalApiFailure(error)
+    const serverError = (failure.payload as { error?: unknown } | undefined)?.error
+    return rejectWithValue(typeof serverError === 'string' && serverError.trim() ? serverError : failure.message || 'Failed to insert bulk messages')
   }
 })
 

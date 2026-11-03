@@ -431,6 +431,23 @@ describe('Claude compaction projection', () => {
     }
     expect(f.sdk.query.mock.calls[0][0].options.settings).toEqual({ plansDirectory: path.join('.ygg', 'plans') })
   })
+  it('records a mode switch made during manual /compact on the summary', async () => {
+    const f = fixture()
+    const control = new OperationModeControl('execute')
+    Object.assign(f.input, { modeControl: control })
+    f.input.request.manualCompaction = true
+    f.sdk.query.mockImplementation(({ options }: any) => Object.assign((async function* () {
+      yield { type: 'system', subtype: 'init', session_id: 's' }
+      await options.hooks.PostCompact[0].hooks[0]({ hook_event_name: 'PostCompact', session_id: 's', trigger: 'manual', compact_summary: 'Portable task state' }, undefined, { signal: new AbortController().signal })
+      yield { type: 'system', subtype: 'compact_boundary', session_id: 's' }
+      control.change('plan', 'm1')
+      yield success
+    })(), { close: vi.fn() }) as any)
+    const final = await f.service.run(f.input)
+    expect(f.rows[0].meta).toMatchObject({ kind: 'compaction_summary', operationMode: 'execute' })
+    expect(final).toMatchObject({ id: 'row0', content: 'Portable task state', meta: { kind: 'compaction_summary', state: 'committed', operationMode: 'plan' } })
+    expect(control.hasPending).toBe(false)
+  })
   it('does not mistake a boundary without PostCompact text for a committed summary', async () => {
     const f = fixture([{ type: 'system', subtype: 'compact_boundary', session_id: 's' }, success])
     f.input.request.manualCompaction = true

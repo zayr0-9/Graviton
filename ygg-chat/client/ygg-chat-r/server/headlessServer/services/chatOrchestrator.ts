@@ -1,6 +1,7 @@
 import { assertConversationNotDeleting } from '../persistence/deleteMessages.js'
 import { executionPathAfterHandoff, portableSummaryText } from '../../../../../shared/summaryHandoff.js'
 import { isCleanStartUserBranch } from '../../../../../shared/cleanStartBranch.js'
+import { CLAUDE_TRANSFERRED_SOURCE_MESSAGE, isTransferredMessage, transferredSummaryAtTip } from '../../../../../shared/claudeTransfer.js'
 import { CLAUDE_MODELS, claudeMessageMetadata, isClaudeProvider, isClaudeTranscriptMessage } from '../../../../../shared/claudeProvider.js'
 import { ClaudeSessionRepo, assertClaudeBranchSelection } from '../persistence/claudeSessionRepo.js'
 import { CHAT_MODE_BLOCKED_TOOLS, ClaudeSessionService, claudeImageBlock, type ClaudeModeSwitch, type ClaudeQueuedInput, type ClaudeTaskControl } from './claudeSessionService.js'
@@ -532,7 +533,21 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
     return this.submitQueuedMessage(conversationId, target[0], submission)
   }
 
+  /** A summary copied from another chat (directly or through trailing context rows) that an ordinary send continues from. */
+  private copiedSummaryForSend(request: HeadlessMessageRequest): any | null {
+    if (request.operation !== 'send' || !request.parentId || request.isBranch || request.retrigger ||
+      request.manualCompaction || request.watcherCompletion) return null
+    const rowOf = (id: string) => {
+      const row = this.conversationRepo.getMessageById(id)
+      return row?.conversation_id === request.conversationId ? row : undefined
+    }
+    return transferredSummaryAtTip(rowOf(request.parentId), rowOf)
+  }
+
   private summaryHandoff(request: HeadlessMessageRequest): any | null {
+    // A copied summary has no native session in this chat: continuing from it is always a handoff.
+    const copied = this.copiedSummaryForSend(request)
+    if (copied) return copied
     if (request.operation === 'branch' && request.messageId) {
       const source = this.requireMessage(request.messageId, request.conversationId)
       return portableSummaryText(source) ? source : null
@@ -603,6 +618,7 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
       const nativeSummary = portableSummaryText(sourceRow) && claudeMessageMetadata(sourceRow?.meta)?.claude?.sessionId
       const summaryContinuation = nativeSummary && request.operation === 'send' && !request.isBranch && !request.retrigger
       if (source && !summaryContinuation && !this.claudeSessionRepo.checkpoint(source)?.resumable) {
+        if (isTransferredMessage(sourceRow)) throw Object.assign(new Error(CLAUDE_TRANSFERRED_SOURCE_MESSAGE), { code: 'configuration_mismatch' })
         throw Object.assign(new Error('This Claude turn stopped before any step completed, so there is nothing to continue from. Retry or edit the prompt, or fork from a completed response.'), { code: 'configuration_mismatch' })
       }
       const lineage = request.lineageId ? this.lineageRepo.get(request.lineageId) : this.lineageRepo.resolve({ messageId: sourceId })
@@ -785,8 +801,8 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
     if (input.streamId) {
       const inputRun = this.inputRuns.get(input.streamId)
       const claudeRun = isClaudeProvider(inputRun?.request.provider)
-      // Native /compact ends at its summary and takes no queued input to carry the switch.
-      if (claudeRun && inputRun?.request.manualCompaction) throw new Error('Change Claude mode after compaction finishes.')
+      // During compaction the switch waits like a queued message: a Graviton run records it
+      // after the summary, a Claude /compact run on the summary row (see ClaudeSessionService).
       const run = this.modeRuns.get(input.streamId)
       if (!run || run.conversationId !== input.conversationId || run.control.closed) {
         throw new Error('Run is no longer active; reload the branch before switching modes')
@@ -1209,6 +1225,10 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
     emit: (event: HeadlessStreamEvent) => void,
     signal?: AbortSignal
   ): Promise<void> {
+    // Continuing from a copied summary runs exactly as Branch from summary (what the desktop composer sends):
+    // a new lineage with no stored native session, so an earlier session on the same lineage is never resumed.
+    const copiedSummary = this.copiedSummaryForSend(request)
+    if (copiedSummary) request = { ...request, operation: 'branch', messageId: copiedSummary.id, parentId: copiedSummary.id }
     this.validateExecutionSelection(request)
     if (isClaudeProvider(request.provider)) request = { ...request, fullAccess: false, fullAccessNotificationId: undefined }
     if (request.manualCompaction) {

@@ -465,7 +465,7 @@ export class ClaudeSessionService {
         modelName: request.modelName, content: pending.summary,
         contentBlocks: [{ type: 'text', content: pending.summary, index: 0 }], statisticsKind: 'compaction_summary',
         meta: { kind: 'compaction_summary', state: 'committed', version: 1, trigger: pending.trigger,
-          compactionId: randomUUID(), claude: { sessionId: activeSession, checkpoint: false } } })
+          compactionId: randomUUID(), operationMode: control.mode, claude: { sessionId: activeSession, checkpoint: false } } })
       parent = compactionSummary.id
       finalMessage = null; lastUuid = null; turnEntries = []
       compactionActive = false
@@ -1105,6 +1105,15 @@ export class ClaudeSessionService {
       if (request.manualCompaction) {
         if (!completed || !activeSession || !compactionSummary) throw new Error('Claude ended without a committed compaction summary')
         this.deps.sessions.session(lineageId, activeSession, 'ready')
+        // A switch made while compacting has no turn to carry it; the summary records it, as a
+        // response row would, so the composer and the next send pick it up.
+        const summaryMeta = claudeMessageMetadata(compactionSummary.meta)
+        if (summaryMeta.operationMode !== control.mode) {
+          const blocks = typeof compactionSummary.content_blocks === 'string' ? JSON.parse(compactionSummary.content_blocks) : compactionSummary.content_blocks ?? []
+          compactionSummary = this.deps.messages.updateClaudeProjection(compactionSummary.id, compactionSummary.content, blocks,
+            { ...summaryMeta, operationMode: control.mode })
+          control.settlePending()
+        }
         return compactionSummary
       }
       if (!completed || !activeSession || !finalMessage || !lastUuid) throw new Error('Claude ended without a completed response')

@@ -9,6 +9,7 @@ const FILLET_RADIUS_REM = 0.625
 const STROKE_OUTSET = 0.5
 const TAB_TRANSITION = { duration: 0.22, ease: [0.22, 1, 0.36, 1] as const }
 const EMPTY_PATH = 'M0 0'
+const MASK_LAYOUT_STYLE = { maskSize: '100% 100%', WebkitMaskSize: '100% 100%', maskRepeat: 'no-repeat', WebkitMaskRepeat: 'no-repeat' } as const
 
 export type ComposerSurfaceGeometry = {
   width: number
@@ -61,6 +62,19 @@ export function composerSurfacePath(geometry: ComposerSurfaceGeometry, progress:
   ].join(' ')
 }
 
+/**
+ * The shape as a CSS mask for the glass layer. A mask, not `clip-path`: inside a rounded
+ * `overflow: hidden` ancestor (the chat pane) Chromium ignores `clip-path` for
+ * `backdrop-filter` and blurs the layer's whole bounding box.
+ */
+export function composerSurfaceMask(geometry: ComposerSurfaceGeometry, progress: number): string {
+  const width = geometry.width
+  const height = geometry.tabHeight + geometry.height
+  if (width <= 0 || height <= 0) return 'linear-gradient(transparent, transparent)'
+  const svg = `<svg xmlns='http://www.w3.org/2000/svg' width='${width}' height='${height}'><path d='${composerSurfacePath(geometry, progress)}'/></svg>`
+  return `url("data:image/svg+xml,${encodeURIComponent(svg)}")`
+}
+
 type ComposerSurfaceProps = {
   /** Shown in a tab joined to the top-left edge. Null/false hides the tab. */
   tab?: React.ReactNode
@@ -74,7 +88,7 @@ type ComposerSurfaceProps = {
 }
 
 /**
- * Composer glass surface. The body and its tab are one clipped layer with one outline,
+ * Composer glass surface. The body and its tab are one masked layer with one outline,
  * so overlapping translucent pieces cannot darken the join or blur differently.
  * The tab sits above the body (`bottom-full`) and never changes the body's measured height.
  */
@@ -91,7 +105,7 @@ export function ComposerSurface({ tab, surfaceClassName, strokeClassName, classN
   const geometry = useMotionValue<ComposerSurfaceGeometry>({ width: 0, height: 0, tabWidth: 0, tabHeight: 0, rem: 16 })
   const progress = useMotionValue(visible ? 1 : 0)
   // Computed transforms re-run whenever a value read through `.get()` changes.
-  const clipPath = useTransform(() => `path('${composerSurfacePath(geometry.get(), progress.get())}')`)
+  const maskImage = useTransform(() => composerSurfaceMask(geometry.get(), progress.get()))
   const strokePath = useTransform(() => composerSurfacePath(geometry.get(), progress.get(), STROKE_OUTSET))
   const layerTop = useTransform(geometry, g => -g.tabHeight)
   const layerHeight = useTransform(geometry, g => g.tabHeight + g.height)
@@ -132,7 +146,7 @@ export function ComposerSurface({ tab, surfaceClassName, strokeClassName, classN
       <motion.div
         aria-hidden='true'
         className={`pointer-events-none absolute inset-x-0 -z-10 ${surfaceClassName}`}
-        style={{ top: layerTop, height: layerHeight, clipPath }}
+        style={{ top: layerTop, height: layerHeight, maskImage, WebkitMaskImage: maskImage, ...MASK_LAYOUT_STYLE }}
       />
       <motion.svg
         aria-hidden='true'

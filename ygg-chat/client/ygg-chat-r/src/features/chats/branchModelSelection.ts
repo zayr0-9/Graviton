@@ -1,6 +1,7 @@
 import { executionPathAfterHandoff, portableSummaryText } from '../../../../../shared/summaryHandoff'
 import { isCleanStartUserBranch } from '../../../../../shared/cleanStartBranch'
 import { isClaudeProvider } from '../../../../../shared/claudeProvider'
+import { isTransferredMessage } from '../../../../../shared/claudeTransfer'
 import { isRunSettingsNotification } from '../../../../../shared/accessNotifications'
 import { isContextInjectionMessage, parseMessageMeta } from '../../../../../shared/contextInjection'
 import type { ChatState } from './chatTypes'
@@ -112,9 +113,12 @@ export function resolveComposerClaudeLock(chat: ChatState): BranchModelSelection
   return resolveSummaryContinuation(chat) ? null : resolveClaudeBranchLock(chat)
 }
 
-/** Crossing the Claude boundary from an idle summary tip needs a fresh execution: same-family sends just continue. */
+/** Crossing the Claude boundary from an idle summary tip needs a fresh execution: same-family sends just continue.
+ * A summary copied from another chat has no session here, so every send from it is a fresh execution. */
 export function resolveComposerSummaryHandoff(chat: ChatState, provider: string | null | undefined, path = chat.conversation.currentPath) {
-  return isClaudeProvider(provider) !== Boolean(resolveClaudeBranchLock(chat, path)) ? resolveSummaryContinuation(chat, path) : null
+  const summary = resolveSummaryContinuation(chat, path)
+  if (summary && isTransferredMessage(summary)) return summary
+  return isClaudeProvider(provider) !== Boolean(resolveClaudeBranchLock(chat, path)) ? summary : null
 }
 
 export function isSummaryBranchEdit(chat: Pick<ChatState, 'conversation' | 'composition'>, messageId: unknown = chat.composition?.branchEditMessageId): boolean {

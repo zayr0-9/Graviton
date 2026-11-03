@@ -2,6 +2,9 @@
 paths:
   - "client/ygg-chat-r/src/components/Heimdall/**"
   - "client/ygg-chat-r/src/features/chats/pathUtils.ts"
+  - "client/ygg-chat-r/src/features/chats/messageTransfer.ts"
+  - "client/ygg-chat-r/server/headlessServer/persistence/messageTransfer.ts"
+  - "shared/claudeTransfer.ts"
 ---
 
 # Agent Context: Heimdall Conversation Tree
@@ -105,6 +108,10 @@ For selected-message copying/moving:
 - Selected roots and siblings are emitted in source tree order (`children_ids` first, deterministic snapshot order as fallback), independent of click/selection order.
 - `insertBulkMessages` preserves selected branch structure for structured payloads while retaining legacy linear-chain fallback for old flat payloads.
 - Move refuses a partial subtree selection because deleting a selected ancestor would cascade-delete descendants that were not copied; copy remains available for such selections.
+- A transfer never carries a Claude native session. Every selected branch tip that continues on Claude must be a committed summary (or context/settings rows directly after one), with the summary selected; otherwise all three actions are refused with "Run /compact … then select up to the summary". `shared/claudeTransfer.ts` (`claudeTransferRefusal`) holds the rule: the scope chooser disables a refused scope and shows why, and the menu shows the reason when there is no chooser. The bulk route enforces the same rule from the source rows' persisted ancestry (409 `claude_transfer_requires_summary`).
+- The bulk route rewrites copied `meta` (`server/headlessServer/persistence/messageTransfer.ts`): it adds `transfer: { sourceMessageId, sourceConversationId }`, drops `toolAutoApprove` and `claude.checkpoint`/`partial`, renames `runStatistics.streamId` to `copied:<id>` (copies of one run stay grouped, so the intermediate-text filter still collapses them, but no real run's footer matches them), and remaps `executionHandoff.summaryMessageId` and `sourceTipId` to the new ids (dropping them when the target row was not copied). No checkpoint, branch-session or lineage rows are written; the first send creates the lineage.
+- Move runs through `moveSelection` (`src/features/chats/transferSelection.ts`). It first asks the server for a dry-run delete (`POST /messages/deleteMany` with `dryRun: true`, which returns `planned` ids or the refusal). If Claude would refuse the source cut, or the delete would also remove unselected rows (launch scaffolding), nothing is copied. If the real delete still fails after copying, the copies are deleted again and the error says "Nothing was moved". A failed refresh after a successful move is only logged, so a retry can't copy twice.
+- New Chat keeps the menu open until it succeeds. A failure (including the workspace folder not being set) deletes the half-created chat (`createChatFromSelection`) and shows the reason in the menu; the buttons are disabled while it runs. It no longer dispatches `fetchMessageTree` for the new chat; the chat route loads it after navigation. Transfer thunks reject with the server's own `error` text.
 
 ### Notes
 

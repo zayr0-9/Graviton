@@ -7,7 +7,7 @@ import providersList from '../../../../../shared/providers.json'
 import { ConversationId, MessageId } from '../../../../../shared/types'
 import type { HeadlessBackgroundTask } from '../../../../../shared/headlessApi'
 import { isCommunityMode } from '../../config/runtimeMode'
-import { loadClaudeAutoMode, loadClaudeUltracode, loadDefaultToolAutoApprove, saveClaudeAutoMode, saveClaudeUltracode } from '../../helpers/toolApprovalSettingsStorage'
+import { loadClaudeAutoMode, loadClaudeUltracode, loadDefaultToolAutoApprove, saveClaudeUltracode } from '../../helpers/toolApprovalSettingsStorage'
 import { parseId } from '../../utils/helpers'
 import { isStreamContinuationTail } from './streamContinuationTail'
 import { canFollowSelectedTip } from './followSelectedTip'
@@ -1855,9 +1855,9 @@ export const chatSlice = createSlice({
       state.toolAutoApprove = false
     },
 
+    // Session-only, like toolAutoApprove; the launch default is saved from Settings.
     claudeAutoModeSet: (state, action: PayloadAction<boolean>) => {
       state.claudeAutoMode = action.payload
-      saveClaudeAutoMode(action.payload)
     },
 
     claudeUltracodeSet: (state, action: PayloadAction<boolean>) => {

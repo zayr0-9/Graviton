@@ -1,5 +1,6 @@
-import { deleteMessagesWithLineageRepair } from '../persistence/deleteMessages.js'
+import { assertMessagesNotInActiveRun, deleteMessagesWithLineageRepair } from '../persistence/deleteMessages.js'
 import { planMessageDeletion } from '../persistence/claudeMessageDeletion.js'
+import { assertClaudeTransferable, loadTransferSourceRows, transferredMessageMeta } from '../persistence/messageTransfer.js'
 import { isClaudeTranscriptMessage } from '../../../../../shared/claudeProvider.js'
 import type Database from 'better-sqlite3'
 import type { Express } from 'express'
@@ -937,7 +938,7 @@ export function registerAppAutomationRoutes(app: Express, deps: AppAutomationRou
   app.get('/api/app/conversations/:id/messages/top-level-users', (req, res) => {
     try {
       const { id } = req.params
-      const topLevelUserMessages = statements.getTopLevelUserMessagesByConversationId.all(id)
+      const topLevelUserMessages = statements.getTopLevelPreviewMessagesByConversationId.all(id)
       res.json(topLevelUserMessages)
     } catch (error) {
       console.error('[HeadlessServer] Error fetching app top-level user messages:', error)
@@ -984,6 +985,15 @@ export function registerAppAutomationRoutes(app: Express, deps: AppAutomationRou
       const conversation = statements.getConversationById.get(conversationId) as any
       if (!conversation) {
         res.status(404).json({ error: 'Conversation not found' })
+        return
+      }
+
+      const sourceRows = loadTransferSourceRows(db, messages.flatMap(msg => (msg.source_id != null ? [String(msg.source_id)] : [])))
+      try {
+        assertClaudeTransferable(messages, sourceRows)
+      } catch (error) {
+        const refusal = error as Error & { status?: number; code?: string }
+        res.status(refusal.status ?? 409).json({ error: refusal.message, code: refusal.code })
         return
       }
 
@@ -1037,6 +1047,7 @@ export function registerAppAutomationRoutes(app: Express, deps: AppAutomationRou
               ? sourceIdToNewId.get(String(msg.parent_source_id)) || null
               : null
             : lastMessageId
+          const meta = transferredMessageMeta(msg.meta, sourceKey, sourceRows.get(sourceKey)?.conversation_id ?? null, sourceIdToNewId)
 
           statements.upsertMessage.run(
             messageId,
@@ -1064,7 +1075,7 @@ export function registerAppAutomationRoutes(app: Express, deps: AppAutomationRou
                 : JSON.stringify(msg.content_blocks)
               : null,
             new Date(transferStartedAt + createdMessages.length).toISOString(),
-            typeof msg.meta === 'string' ? msg.meta : msg.meta ? JSON.stringify(msg.meta) : null
+            meta
           )
 
           createdMessages.push({
@@ -1084,7 +1095,7 @@ export function registerAppAutomationRoutes(app: Express, deps: AppAutomationRou
             ex_agent_session_id: msg.ex_agent_session_id || null,
             ex_agent_type: msg.ex_agent_type || null,
             content_blocks: msg.content_blocks || null,
-            meta: msg.meta ?? null,
+            meta,
             created_at: new Date(transferStartedAt + createdMessages.length).toISOString(),
           })
 
@@ -1321,7 +1332,14 @@ export function registerAppAutomationRoutes(app: Express, deps: AppAutomationRou
         return
       }
 
-      deleteMessagesWithLineageRepair(db, planMessageDeletion(db, ids))
+      const planned = planMessageDeletion(db, ids)
+      // A dry run lets Move check the source delete before it copies anything.
+      if (req.body?.dryRun === true) {
+        assertMessagesNotInActiveRun(db, planned)
+        res.json({ planned })
+        return
+      }
+      deleteMessagesWithLineageRepair(db, planned)
       res.json({ deleted: ids.length })
     } catch (error) {
       console.error('[HeadlessServer] Error bulk deleting app messages:', error)

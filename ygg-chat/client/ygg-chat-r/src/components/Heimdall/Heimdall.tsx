@@ -18,13 +18,16 @@ import {
   deleteSelectedNodes,
   fetchMessageTree,
   insertBulkMessages,
+  previewMessageDeletion,
   // sendMessage,
   updateMessage,
 } from '../../features/chats/chatActions'
+import { createChatFromSelection, moveSelection } from '../../features/chats/transferSelection'
 import { chatSliceActions } from '../../features/chats/chatSlice'
 import { buildBranchPathForMessage } from '../../features/chats/pathUtils'
-import { buildMessageTransferPayload, hasUnselectedDescendants } from '../../features/chats/messageTransfer'
-import { createConversation, updateCwd } from '../../features/conversations/conversationActions'
+import { buildMessageTransferPayload, hasUnselectedDescendants, transferErrorMessage } from '../../features/chats/messageTransfer'
+import { claudeTransferRefusal } from '../../../../../shared/claudeTransfer'
+import { createConversation, deleteConversation, updateCwd } from '../../features/conversations/conversationActions'
 import { makeSelectConversationById } from '../../features/conversations/conversationSelectors'
 import type { Conversation } from '../../features/conversations/conversationTypes'
 // import { selectSelectedProject } from '../../features/projects/projectSelectors'
@@ -365,6 +368,9 @@ export const Heimdall: React.FC<HeimdallProps> = ({
   const [contextMenuPos, setContextMenuPos] = useState<{ x: number; y: number } | null>(null)
   const [contextNodeId, setContextNodeId] = useState<MessageId | null>(null)
   const [transferScopeAction, setTransferScopeAction] = useState<TransferAction | null>(null)
+  // Why the last transfer action was refused or failed, shown in the open menu.
+  const [transferNotice, setTransferNotice] = useState<string | null>(null)
+  const [isCreatingChat, setIsCreatingChat] = useState<boolean>(false)
   const transferActionButtonRef = useRef<HTMLButtonElement | null>(null)
   const [confirmDeleteSelection, setConfirmDeleteSelection] = useState<boolean>(true)
   const [pendingDeleteNodeIds, setPendingDeleteNodeIds] = useState<MessageId[]>([])
@@ -1338,6 +1344,7 @@ export const Heimdall: React.FC<HeimdallProps> = ({
       dispatch(chatSliceActions.nodesSelected(newSelectedNodes))
       setContextNodeId(nodeIdParsed)
       setTransferScopeAction(null)
+      setTransferNotice(null)
 
       const rect = containerRef.current?.getBoundingClientRect()
       if (rect && newSelectedNodes.length > 0) {
@@ -2223,6 +2230,7 @@ export const Heimdall: React.FC<HeimdallProps> = ({
       const selectedNodeIds = expandSelectionToHiddenBranchMessages(getNodesInSelectionRectangle())
       setContextNodeId(null)
       setTransferScopeAction(null)
+      setTransferNotice(null)
       // Replace selection with nodes from this drag (no branch filtering)
       dispatch(chatSliceActions.nodesSelected(selectedNodeIds))
       setIsSelecting(false)
@@ -2434,6 +2442,15 @@ export const Heimdall: React.FC<HeimdallProps> = ({
   )
   const activeBranchMoveBlocked = transferScopeAction === 'move' &&
     hasUnselectedDescendants(allMessages, transferScopes.activeBranchIds)
+  const transferRefusals = useMemo(
+    () => transferScopeAction
+      ? {
+          selection: claudeTransferRefusal(allMessages, transferScopes.selectionIds),
+          branch: claudeTransferRefusal(allMessages, transferScopes.activeBranchIds),
+        }
+      : { selection: null, branch: null },
+    [transferScopeAction, allMessages, transferScopes]
+  )
 
   const handleOpenConversationSelector = (mode: ConversationTransferMode, ids: MessageId[]): void => {
     if (ids.length === 0) {
@@ -2482,8 +2499,7 @@ export const Heimdall: React.FC<HeimdallProps> = ({
 
       setIsAddingToConversation(true)
       const targetStorageMode = (targetConversation.storage_mode || storageMode || 'cloud') as 'cloud' | 'local'
-
-      await (dispatch as any)(
+      const copy = (): Promise<Message[]> => (dispatch as any)(
         insertBulkMessages({
           conversationId: targetConversation.id,
           messages: messagesToCopy,
@@ -2492,11 +2508,21 @@ export const Heimdall: React.FC<HeimdallProps> = ({
       ).unwrap()
 
       if (conversationTransferMode === 'move' && conversationId) {
-        await (dispatch as any)(
-          deleteSelectedNodes({ ids: idsToTransfer, conversationId, storageMode })
-        ).unwrap()
+        await moveSelection(idsToTransfer, {
+          previewSourceDelete: async () =>
+            (await (dispatch as any)(previewMessageDeletion({ ids: idsToTransfer, conversationId, storageMode })).unwrap()).planned,
+          copy,
+          deleteSource: () => (dispatch as any)(deleteSelectedNodes({ ids: idsToTransfer, conversationId, storageMode })).unwrap(),
+          deleteCopies: ids => (dispatch as any)(
+            deleteSelectedNodes({ ids, conversationId: targetConversation.id, storageMode: targetStorageMode })
+          ).unwrap(),
+        })
+        // The move is done; a failed refresh must not invite a retry that copies again.
         await (dispatch as any)(fetchMessageTree({ conversationId, storageMode })).unwrap()
+          .catch((refreshError: unknown) => console.error('Failed to refresh after moving messages:', refreshError))
         queryClient.invalidateQueries({ queryKey: ['conversations', conversationId, 'messages'] })
+      } else {
+        await copy()
       }
 
       queryClient.invalidateQueries({ queryKey: ['conversations'] })
@@ -2509,27 +2535,28 @@ export const Heimdall: React.FC<HeimdallProps> = ({
       dispatch(chatSliceActions.nodesSelected([]))
     } catch (error) {
       console.error('Failed to transfer selection to existing chat:', error)
+      // A move may have copied and then removed the copies again; either way the target may have changed.
+      queryClient.invalidateQueries({ queryKey: ['conversations', targetConversation.id, 'messages'] })
       setConversationSelectorError(
-        error instanceof Error
-          ? error.message
-          : `Failed to ${conversationTransferMode === 'move' ? 'move' : 'copy'} messages to selected chat.`
+        transferErrorMessage(error, `Failed to ${conversationTransferMode === 'move' ? 'move' : 'copy'} messages to selected chat.`)
       )
     } finally {
       setIsAddingToConversation(false)
     }
   }
 
-  // Create new chat from selected nodes
+  // Create new chat from selected nodes. The menu stays open until it succeeds, so a failure can be shown there.
   const handleCreateNewChat = async (ids: MessageId[]): Promise<void> => {
-    setShowContextMenu(false)
+    if (isCreatingChat) return
+    const messagesToCopy = buildMessageTransferPayload(allMessages, ids)
+    if (messagesToCopy.length === 0) {
+      setShowContextMenu(false)
+      return
+    }
+    setIsCreatingChat(true)
+    setTransferNotice(null)
+    const modeOf = (conversation: Conversation) => (conversation.storage_mode || storageMode || 'cloud') as 'cloud' | 'local'
     try {
-      const messagesToCopy = buildMessageTransferPayload(allMessages, ids)
-
-      if (messagesToCopy.length === 0) {
-        setShowContextMenu(false)
-        return
-      }
-
       // Generate title from first message content
       const firstContent = messagesToCopy[0].content
       const title = firstContent.slice(0, 100) + (firstContent.length > 100 ? '...' : '')
@@ -2539,45 +2566,22 @@ export const Heimdall: React.FC<HeimdallProps> = ({
       const projectId = currentConversation?.project_id || null
       const systemPrompt = currentConversation?.system_prompt || null
       const conversationContext = currentConversation?.conversation_context || null
-      const sourceCwd = typeof currentConversation?.cwd === 'string' ? currentConversation.cwd : null
-      const newConversation = await (dispatch as any)(
-        createConversation({ title, projectId, systemPrompt, conversationContext, storageMode })
-      ).unwrap()
-
-      if (!newConversation?.id) {
-        console.error('Failed to create new conversation')
-        return
-      }
-
-      const inheritedCwd = sourceCwd?.trim()
-      if (inheritedCwd) {
-        const nextStorageMode = (newConversation.storage_mode || storageMode || 'cloud') as 'cloud' | 'local'
-        try {
-          await (dispatch as any)(
-            updateCwd({
-              id: newConversation.id,
-              cwd: inheritedCwd,
-              storageMode: nextStorageMode,
-            })
-          ).unwrap()
-        } catch (cwdError) {
-          console.error('Failed to copy cwd to new conversation:', cwdError)
-        }
-      }
-
-      const nextStorageMode = (newConversation.storage_mode || storageMode || 'cloud') as 'cloud' | 'local'
-
-      // Insert messages as a chain preserving their structure
-      await (dispatch as any)(
-        insertBulkMessages({
-          conversationId: newConversation.id,
-          messages: messagesToCopy,
-          storageMode: nextStorageMode, // Pass storage mode explicitly since new conversation isn't in cache yet
-        })
-      ).unwrap()
-
-      // Fetch messages and tree to populate the new conversation before navigation
-      await (dispatch as any)(fetchMessageTree({ conversationId: newConversation.id, storageMode: nextStorageMode })).unwrap()
+      // A copy without its workspace folder cannot continue file or Claude work, so failing to set it is fatal.
+      const inheritedCwd = typeof currentConversation?.cwd === 'string' ? currentConversation.cwd.trim() : ''
+      const newConversation = await createChatFromSelection<Conversation>({
+        create: () => (dispatch as any)(createConversation({ title, projectId, systemPrompt, conversationContext, storageMode })).unwrap(),
+        setCwd: inheritedCwd
+          ? conversation => (dispatch as any)(updateCwd({ id: conversation.id, cwd: inheritedCwd, storageMode: modeOf(conversation) })).unwrap()
+          : undefined,
+        // Pass storage mode explicitly since the new conversation isn't in the cache yet.
+        copy: conversation => (dispatch as any)(
+          insertBulkMessages({ conversationId: conversation.id, messages: messagesToCopy, storageMode: modeOf(conversation) })
+        ).unwrap(),
+        remove: async conversation => {
+          await (dispatch as any)(deleteConversation({ id: conversation.id, storageMode: modeOf(conversation) })).unwrap()
+          queryClient.invalidateQueries({ queryKey: ['conversations'] })
+        },
+      })
 
       // Invalidate React Query cache to update conversations list in sidebar/dropdowns
       queryClient.invalidateQueries({ queryKey: ['conversations'] })
@@ -2585,21 +2589,30 @@ export const Heimdall: React.FC<HeimdallProps> = ({
         queryClient.invalidateQueries({ queryKey: ['conversations', 'project', projectId] })
       }
 
-      // Navigate to the new chat with storageMode in state for immediate API routing
+      setShowContextMenu(false)
+      dispatch(chatSliceActions.nodesSelected([]))
+      // The chat route loads the new conversation itself; never replace this chat's tree from here.
       navigate(`/chat/${newConversation.project_id || 'unknown'}/${newConversation.id}`, {
         state: { storageMode: newConversation.storage_mode || storageMode },
       })
     } catch (error) {
+      // createChatFromSelection has already removed a half-made chat.
       console.error('Failed to create new chat from selection:', error)
+      setTransferNotice(transferErrorMessage(error, 'Failed to create the new chat.'))
+      setShowContextMenu(true)
     } finally {
-      setShowContextMenu(false)
-      // Clear selection after creating new chat
-      dispatch(chatSliceActions.nodesSelected([]))
+      setIsCreatingChat(false)
     }
   }
 
   const handleTransferScopeSelected = (action: TransferAction, ids: MessageId[]): void => {
     setTransferScopeAction(null)
+    // The server enforces the same rule; refusing here avoids creating a chat it would reject.
+    const refusal = claudeTransferRefusal(allMessages, ids)
+    if (refusal) {
+      setTransferNotice(refusal)
+      return
+    }
     if (action === 'new') {
       void handleCreateNewChat(ids)
     } else {
@@ -2608,6 +2621,8 @@ export const Heimdall: React.FC<HeimdallProps> = ({
   }
 
   const handleTransferAction = (action: TransferAction, button: HTMLButtonElement): void => {
+    if (isCreatingChat) return
+    setTransferNotice(null)
     if (transferScopes.activeBranchIds.length > 0) {
       transferActionButtonRef.current = button
       setTransferScopeAction(action)
@@ -2626,6 +2641,7 @@ export const Heimdall: React.FC<HeimdallProps> = ({
   useEffect(() => {
     setShowContextMenu(false)
     setTransferScopeAction(null)
+    setTransferNotice(null)
     setContextNodeId(null)
     setShowConversationSelector(false)
     setTransferMessageIds([])
@@ -4578,12 +4594,15 @@ export const Heimdall: React.FC<HeimdallProps> = ({
               selectionCount={transferScopes.selectionIds.length}
               branchCount={transferScopes.activeBranchIds.length}
               branchMoveBlocked={activeBranchMoveBlocked}
+              selectionBlockedReason={transferRefusals.selection}
+              branchBlockedReason={transferRefusals.branch}
               itemClassName={heimdallContextMenuItemClass}
               itemStyle={getHeimdallContextMenuItemStyle()}
               mutedStyle={heimdallContextMenuHeaderStyle}
               onBack={handleBackToMessageActions}
               onSelect={scope => {
-                if (scope === 'branch' && activeBranchMoveBlocked) return
+                if (scope === 'branch' && (activeBranchMoveBlocked || transferRefusals.branch)) return
+                if (scope === 'selection' && transferRefusals.selection) return
                 handleTransferScopeSelected(transferScopeAction, scope === 'branch' ? transferScopes.activeBranchIds : transferScopes.selectionIds)
               }}
             />
@@ -4674,8 +4693,10 @@ export const Heimdall: React.FC<HeimdallProps> = ({
           />
 
           <button
-            className={heimdallContextMenuItemClass}
+            className={`${heimdallContextMenuItemClass} disabled:cursor-not-allowed disabled:opacity-50`}
             style={getHeimdallContextMenuItemStyle()}
+            disabled={isCreatingChat}
+            aria-busy={isCreatingChat}
             onClick={e => handleTransferAction('new', e.currentTarget)}
           >
             <svg
@@ -4687,12 +4708,13 @@ export const Heimdall: React.FC<HeimdallProps> = ({
             >
               <path d='M12 4v16m8-8H4' />
             </svg>
-            <span>New Chat From Here</span>
+            <span>{isCreatingChat ? 'Creating chat…' : 'New Chat From Here'}</span>
           </button>
 
           <button
-            className={heimdallContextMenuItemClass}
+            className={`${heimdallContextMenuItemClass} disabled:cursor-not-allowed disabled:opacity-50`}
             style={getHeimdallContextMenuItemStyle()}
+            disabled={isCreatingChat}
             onClick={e => handleTransferAction('copy', e.currentTarget)}
           >
             <svg
@@ -4708,8 +4730,9 @@ export const Heimdall: React.FC<HeimdallProps> = ({
           </button>
 
           <button
-            className={heimdallContextMenuItemClass}
+            className={`${heimdallContextMenuItemClass} disabled:cursor-not-allowed disabled:opacity-50`}
             style={getHeimdallContextMenuItemStyle()}
+            disabled={isCreatingChat}
             onClick={e => handleTransferAction('move', e.currentTarget)}
           >
             <svg
@@ -4723,6 +4746,12 @@ export const Heimdall: React.FC<HeimdallProps> = ({
             </svg>
             <span>Move to Existing Chat</span>
           </button>
+
+          {transferNotice && (
+            <p role='alert' className='px-3 py-2 text-xs text-stone-500 dark:text-neutral-400' style={heimdallContextMenuHeaderStyle}>
+              {transferNotice}
+            </p>
+          )}
 
           <div
             className='h-px bg-stone-200 dark:bg-neutral-700 mx-2 my-1.5'

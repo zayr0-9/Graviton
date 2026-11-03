@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { composerSurfacePath } from './ComposerSurface'
+import { composerSurfaceMask, composerSurfacePath } from './ComposerSurface'
 
 const geometry = { width: 600, height: 120, tabWidth: 140, tabHeight: 26, rem: 16 }
 const commands = (path: string) => path.replace(/[^A-Z]/g, '')
@@ -32,5 +32,18 @@ describe('composerSurfacePath', () => {
 
   it('draws nothing before the body is measured', () => {
     expect(composerSurfacePath({ ...geometry, width: 0 }, 1)).toBe('M0 0')
+    expect(composerSurfaceMask({ ...geometry, width: 0 }, 1)).toBe('linear-gradient(transparent, transparent)')
+  })
+})
+
+describe('composerSurfaceMask', () => {
+  it('masks the glass with the same shape at the full layer size', () => {
+    const mask = composerSurfaceMask(geometry, 1)
+    expect(mask.startsWith('url("data:image/svg+xml,')).toBe(true)
+    const svg = decodeURIComponent(mask.slice('url("data:image/svg+xml,'.length, -2))
+    expect(svg).toContain("width='600' height='146'")
+    expect(svg).toContain(`d='${composerSurfacePath(geometry, 1)}'`)
+    // A double quote would end the CSS url() string early.
+    expect(mask.slice(5, -2)).not.toContain('"')
   })
 })

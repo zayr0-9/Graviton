@@ -480,8 +480,8 @@ export interface TopLevelUserMessagePreview {
 }
 
 /**
- * Fetch human top-level prompts for a conversation from local SQLite API.
- * Generated launch-context roots are transparent; returned IDs belong to the actual prompts.
+ * Fetch top-level user and assistant messages for a conversation from local SQLite API.
+ * Generated launch-context roots are transparent; returned IDs belong to the actual messages.
  * Used for sidebar hover preview in expanded sidebar modal.
  * Cache key: ['conversations', conversationId, 'top-level-user-messages']
  */

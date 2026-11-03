@@ -340,7 +340,7 @@ export function registerConversationRoutes(app: Express, deps: ConversationRoute
   app.get('/api/local/conversations/:id/messages/top-level-users', (req, res) => {
     try {
       const { id } = req.params
-      const topLevelUserMessages = statements.getTopLevelUserMessagesByConversationId.all(id)
+      const topLevelUserMessages = statements.getTopLevelPreviewMessagesByConversationId.all(id)
       res.json(topLevelUserMessages)
     } catch (error) {
       console.error('[LocalServer] ❌ Error fetching top-level user messages:', error)

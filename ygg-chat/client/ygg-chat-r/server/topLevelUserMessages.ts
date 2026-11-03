@@ -38,6 +38,10 @@ export const buildTopLevelUserMessagesCte = (scopePredicate: string = 'conversat
   human_top_level_user_message_ids AS (
     SELECT id FROM preview_candidates
     WHERE role = 'user' AND is_context_injection = 0
+  ),
+  top_level_preview_message_ids AS (
+    SELECT id FROM preview_candidates
+    WHERE role IN ('user', 'assistant') AND is_context_injection = 0
   )
 `
 
@@ -46,6 +50,18 @@ export const TOP_LEVEL_USER_MESSAGES_SQL = `
   SELECT m.id, m.conversation_id, m.content, m.plain_text_content, m.note, m.note_color, m.created_at, m.role, m.parent_id, m.children_ids
   FROM messages m
   JOIN human_top_level_user_message_ids candidate ON candidate.id = m.id
+  ORDER BY m.created_at ASC
+`
+
+/**
+ * Sidebar hover preview: same root boundary, but top-level assistant rows (and their
+ * notes) are included too. Search index and chat-history tools stay user-only.
+ */
+export const TOP_LEVEL_PREVIEW_MESSAGES_SQL = `
+  ${buildTopLevelUserMessagesCte()}
+  SELECT m.id, m.conversation_id, m.content, m.plain_text_content, m.note, m.note_color, m.created_at, m.role, m.parent_id, m.children_ids
+  FROM messages m
+  JOIN top_level_preview_message_ids candidate ON candidate.id = m.id
   ORDER BY m.created_at ASC
 `
 
