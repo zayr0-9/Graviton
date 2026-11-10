@@ -115,6 +115,8 @@ describe('MCP OAuth fixed redirect flow', () => {
     vi.spyOn(mcpOAuthSecretStore, 'save').mockResolvedValue()
 
     let openedAuthorizationUrl = ''
+    let manager: McpManager | undefined
+    const waitingForBrowser: Array<{ phase?: string; status?: string }> = []
     configureServerHost({
       bindHost: '127.0.0.1',
       preferredPort: 0,
@@ -139,8 +141,11 @@ describe('MCP OAuth fixed redirect flow', () => {
       openExternal: async url => {
         openedAuthorizationUrl = url
         const authorizationUrl = new URL(url)
-        const response = await fetch(`${redirectUri}?code=authorization-code&state=${authorizationUrl.searchParams.get('state')}`)
-        expect(response.status).toBe(200)
+        // The user answers later: the browser is open and the connection waits on them.
+        setTimeout(() => {
+          waitingForBrowser.push({ phase: manager?.getStartPhase('remote'), status: manager?.getServerStatus('remote')?.status })
+          void fetch(`${redirectUri}?code=authorization-code&state=${authorizationUrl.searchParams.get('state')}`)
+        }, 25)
       },
     })
 
@@ -160,12 +165,16 @@ describe('MCP OAuth fixed redirect flow', () => {
       return realFetch(input, init)
     })
 
-    const manager = new McpManager()
+    manager = new McpManager()
     managers.push(manager)
     await manager.initialize()
     const config = (await manager.getConfigs())[0]
 
     await expect(manager.startServer(config!)).rejects.toThrow('MCP HTTP request failed')
+    expect(waitingForBrowser).toEqual([{ phase: 'authorizing', status: 'connecting' }])
+    // The wait is over: the failure is reported as an error, not as a pending sign-in.
+    expect(manager.getStartPhase('remote')).toBeUndefined()
+    expect(manager.getServerStatus('remote')).toMatchObject({ status: 'error' })
 
     const authorizationUrl = new URL(openedAuthorizationUrl)
     expect(authorizationUrl.searchParams.get('redirect_uri')).toBe(redirectUri)

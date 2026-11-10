@@ -101,7 +101,9 @@ export function isValidSelectionPath(messages: readonly Message[], path: readonl
 export function resolveLocalChatSelection(
   target: ChatSelectionTarget,
   messages: readonly Message[],
-  current: ResolvedChatSelection
+  current: ResolvedChatSelection,
+  /** Branch tip this conversation last showed; preferred over the newest row when it still exists. */
+  rememberedTip?: MessageId | null
 ): ResolvedChatSelection | null {
   const rows = messages.filter(message => String(message.conversation_id) === String(target.conversationId))
   if (target.kind === 'lineage') return null
@@ -118,10 +120,13 @@ export function resolveLocalChatSelection(
   if (String(current.conversationId) === String(target.conversationId) && current.path.length && isValidSelectionPath(rows, current.path)) {
     return current
   }
-  const latest = [...rows].sort((a, b) => b.created_at.localeCompare(a.created_at))[0]
+  // With parallel forks the newest row can belong to any of them; reopening the branch the
+  // user left keeps a still-running fork on screen. The path still extends to its live leaf.
+  const anchor = (rememberedTip == null ? undefined : rows.find(message => String(message.id) === String(rememberedTip))) ??
+    [...rows].sort((a, b) => b.created_at.localeCompare(a.created_at))[0]
   return {
     conversationId: target.conversationId, lineageId: null,
-    path: latest ? buildBranchPathForMessage(rows, latest.id) : [], focus: null,
+    path: anchor ? buildBranchPathForMessage(rows, anchor.id) : [], focus: null,
   }
 }
 

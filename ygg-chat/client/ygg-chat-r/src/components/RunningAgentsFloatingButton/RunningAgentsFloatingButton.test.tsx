@@ -18,9 +18,11 @@ vi.mock('../ThemeManager/themeConfig', async importOriginal => {
   }
 })
 vi.mock('../ChatSelection/ChatSelectionProvider', () => ({ useChatNavigate: () => vi.fn() }))
+vi.mock('react-router-dom', () => ({ useLocation: () => ({ pathname: '/homepage' }) }))
 vi.mock('../../features/chats', () => ({
   selectCurrentConversationId: () => null,
   selectCurrentPath: () => [],
+  selectCurrentViewStream: () => null,
 }))
 vi.mock('../../hooks/redux', () => ({
   useAppDispatch: () => vi.fn(),
@@ -29,6 +31,7 @@ vi.mock('../../hooks/redux', () => ({
 vi.mock('../../hooks/useRunningAgentStreams', () => ({
   useRunningAgentStreams: () => ({ activeStreams: [], streamHistory: [], streamingRoot: { byId: {} } }),
   buildAgentForkGroups: () => ({ activeForks: [], historyForks: [] }),
+  excludeViewedAgentFork: (activeStreams: unknown[], streamHistory: unknown[]) => ({ activeStreams, streamHistory }),
 }))
 vi.mock('../../hooks/useQueries', () => ({ useConversationBranchDebugData: () => ({}) }))
 vi.mock('./useAgentsPillResize', () => ({

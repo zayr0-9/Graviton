@@ -28,6 +28,8 @@ export function createChatSelectionController(deps: {
       path: conversation.currentPath, focus: conversation.focusedChatMessageId,
     }
   }
+  const rememberedTip = (target: ChatSelectionTarget) =>
+    deps.getState().conversation.lastViewedTips?.[String(target.conversationId)] ?? null
   const request = (target: ChatSelectionTarget, source: string) => {
     pending?.abort.abort()
     pending = null
@@ -78,11 +80,11 @@ export function createChatSelectionController(deps: {
             focus: requestedFocus && path.includes(requestedFocus) ? requestedFocus : path.at(-1) ?? null,
           }
         } else {
-          result = resolveLocalChatSelection(target, deps.getState().conversation.messages, currentSelection())
+          result = resolveLocalChatSelection(target, deps.getState().conversation.messages, currentSelection(), rememberedTip(target))
           if (!result) {
             await refresh()
             if (!ownsRequest()) return
-            result = resolveLocalChatSelection(target, deps.getState().conversation.messages, currentSelection())
+            result = resolveLocalChatSelection(target, deps.getState().conversation.messages, currentSelection(), rememberedTip(target))
           }
         }
         if (!result) error = 'The requested message is no longer available. Showing this conversation instead.'
@@ -92,7 +94,7 @@ export function createChatSelectionController(deps: {
         error = 'The requested branch could not be opened. Showing this conversation instead. Try the link again to retry.'
       }
       if (!ownsRequest()) return
-      result ??= resolveLocalChatSelection({ ...target, kind: 'conversation' }, deps.getState().conversation.messages, currentSelection())
+      result ??= resolveLocalChatSelection({ ...target, kind: 'conversation' }, deps.getState().conversation.messages, currentSelection(), rememberedTip(target))
       if (!result) return
       deps.dispatch(chatSelectionCommitted({
         ...result, requestId, error,

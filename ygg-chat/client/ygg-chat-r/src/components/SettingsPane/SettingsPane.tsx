@@ -328,11 +328,18 @@ export const SettingsPane: React.FC<SettingsPaneProps> = ({ open, onClose }) => 
       }
       enabled: boolean
       status: 'disconnected' | 'connecting' | 'connected' | 'error'
+      /** While connecting: what the host is waiting on (keychain prompt, browser sign-in). */
+      phase?: 'credentials' | 'connecting' | 'authorizing'
+      phaseMessage?: string
       error?: string
       toolCount: number
     }>
   >([])
   const [mcpLoading, setMcpLoading] = useState(false)
+  // Starts this pane has asked for and not yet seen answered; repeat clicks are ignored.
+  const [mcpStarting, setMcpStarting] = useState<Record<string, boolean>>({})
+  const mcpStartingRef = useRef<Record<string, boolean>>({})
+  const mcpStatusByNameRef = useRef<Record<string, string>>({})
   const [mcpRefreshing, setMcpRefreshing] = useState(false)
   const [mcpAddMode, setMcpAddMode] = useState(false)
   const [newServerName, setNewServerName] = useState('')
@@ -354,7 +361,7 @@ export const SettingsPane: React.FC<SettingsPaneProps> = ({ open, onClose }) => 
   const [newServerOauthTokenAuthMethod, setNewServerOauthTokenAuthMethod] = useState<'client_secret_post' | 'none'>(
     'client_secret_post'
   )
-  const [mcpActionStatus, setMcpActionStatus] = useState<{ type: 'success' | 'error'; message: string } | null>(null)
+  const [mcpActionStatus, setMcpActionStatus] = useState<{ type: 'success' | 'error' | 'info'; message: string } | null>(null)
   const [editingMcpServerName, setEditingMcpServerName] = useState<string | null>(null)
   const [mcpEditSaving, setMcpEditSaving] = useState(false)
   const [editServerTransport, setEditServerTransport] = useState<'stdio' | 'http'>('stdio')
@@ -773,19 +780,28 @@ export const SettingsPane: React.FC<SettingsPaneProps> = ({ open, onClose }) => 
   }, [])
 
   // Fetch MCP servers
-  const fetchMcpServers = useCallback(async () => {
-    setMcpLoading(true)
+  const fetchMcpServers = useCallback(async (options: { silent?: boolean } = {}) => {
+    // A silent refresh keeps the list on screen; the spinner replaces it.
+    if (!options.silent) setMcpLoading(true)
     try {
       const data = await localApi.get<{ success?: boolean; servers?: typeof mcpServers }>('/mcp/servers')
       if (data.success && data.servers) {
+        // A connection that finished in the background still has tools to publish.
+        const finished = data.servers.filter(server =>
+          server.status === 'connected' && mcpStatusByNameRef.current[server.name] === 'connecting')
+        mcpStatusByNameRef.current = Object.fromEntries(data.servers.map(server => [server.name, server.status]))
         setMcpServers(data.servers)
+        if (finished.length) {
+          void localApi.post('/mcp/refresh-tools').then(() => dispatch(fetchMcpTools())).catch(() => {})
+          setMcpActionStatus(current => current?.type === 'info' ? null : current)
+        }
       }
     } catch (error) {
       console.error('Failed to fetch MCP servers:', error)
     } finally {
-      setMcpLoading(false)
+      if (!options.silent) setMcpLoading(false)
     }
-  }, [])
+  }, [dispatch])
 
   // Fetch MCP servers when section is expanded
   useEffect(() => {
@@ -794,15 +810,30 @@ export const SettingsPane: React.FC<SettingsPaneProps> = ({ open, onClose }) => 
     }
   }, [mcpExpanded, fetchMcpServers])
 
+  // A connection can wait on the user for minutes. Follow it instead of holding a request.
+  const mcpConnecting = mcpServers.some(server => server.status === 'connecting')
+  useEffect(() => {
+    if (!mcpExpanded || !mcpConnecting) return
+    const timer = setInterval(() => { void fetchMcpServers({ silent: true }) }, 2000)
+    return () => clearInterval(timer)
+  }, [mcpExpanded, mcpConnecting, fetchMcpServers])
+
   // Handle MCP server start/stop
   const handleToggleMcpServer = useCallback(
     async (serverName: string, currentStatus: string) => {
+      // Already connecting (possibly started by the model): another start only parks a request.
+      if (currentStatus === 'connecting' || mcpStartingRef.current[serverName]) return
       const action = currentStatus === 'connected' ? 'stop' : 'start'
+      mcpStartingRef.current = { ...mcpStartingRef.current, [serverName]: true }
+      setMcpStarting(mcpStartingRef.current)
       try {
-        const data = await localApi.post<{ success?: boolean; error?: string }>(
+        const data = await localApi.post<{ success?: boolean; error?: string; pending?: boolean; message?: string }>(
           `/mcp/servers/${encodeURIComponent(serverName)}/${action}`
         )
-        if (data.success) {
+        if (data.success && data.pending) {
+          setMcpActionStatus({ type: 'info', message: `${serverName}: ${data.message || 'Still connecting.'}` })
+          void fetchMcpServers({ silent: true })
+        } else if (data.success) {
           setMcpActionStatus({ type: 'success', message: `Server ${action}ed successfully` })
           fetchMcpServers()
           // Refresh MCP tools with orchestrator and Redux after server state change
@@ -822,6 +853,11 @@ export const SettingsPane: React.FC<SettingsPaneProps> = ({ open, onClose }) => 
         }
       } catch (error) {
         setMcpActionStatus({ type: 'error', message: `Failed to ${action} server` })
+        void fetchMcpServers({ silent: true })
+      } finally {
+        const { [serverName]: _done, ...rest } = mcpStartingRef.current
+        mcpStartingRef.current = rest
+        setMcpStarting(rest)
       }
     },
     [fetchMcpServers, dispatch]
@@ -3077,11 +3113,16 @@ ${block}`
                       className={`flex items-center gap-2 text-sm px-3 py-2 rounded-2xl ${
                         mcpActionStatus.type === 'success'
                           ? 'bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-400'
-                          : 'bg-red-100 dark:bg-red-900/30 text-red-700 dark:text-red-400'
+                          : mcpActionStatus.type === 'info'
+                            ? 'bg-yellow-100 dark:bg-yellow-900/30 text-yellow-700 dark:text-yellow-400'
+                            : 'bg-red-100 dark:bg-red-900/30 text-red-700 dark:text-red-400'
                       }`}
+                      role='status'
                     >
                       {mcpActionStatus.type === 'success' ? (
                         <CheckCircle size={16} strokeWidth={2.25} />
+                      ) : mcpActionStatus.type === 'info' ? (
+                        <LoaderCircle size={16} strokeWidth={2.25} className='animate-spin motion-reduce:animate-none' />
                       ) : (
                         <AlertCircle size={16} strokeWidth={2.25} />
                       )}
@@ -3458,7 +3499,9 @@ ${block}`
                                           : 'bg-neutral-200 dark:bg-neutral-700 text-neutral-500 dark:text-neutral-400'
                                   }`}
                                 >
-                                  {server.status}
+                                  {server.status === 'connecting' && server.phase === 'authorizing' ? 'waiting for sign-in'
+                                    : server.status === 'connecting' && server.phase === 'credentials' ? 'waiting for keychain'
+                                    : server.status}
                                 </span>
                                 {server.status === 'connected' && server.toolCount > 0 && (
                                   <span className='text-xs text-neutral-500 dark:text-neutral-400'>
@@ -3503,7 +3546,10 @@ ${block}`
                                   Local Celestial testing: explicit OAuth token audience binding is omitted. S256 remains enabled.
                                 </p>
                               )}
-                              {server.error && (
+                              {server.status === 'connecting' && server.phaseMessage && (
+                                <p className='text-xs text-yellow-700 dark:text-yellow-400 mt-0.5' role='status'>{server.phaseMessage}</p>
+                              )}
+                              {server.error && server.status !== 'connecting' && (
                                 <p className='text-xs text-red-500 dark:text-red-400 mt-0.5'>{server.error}</p>
                               )}
                             </div>
@@ -3511,12 +3557,18 @@ ${block}`
                               <button
                                 type='button'
                                 onClick={() => handleToggleMcpServer(server.name, server.status)}
-                                className={iconButtonClass}
-                                title={server.status === 'connected' ? 'Stop server' : 'Start server'}
+                                disabled={server.status === 'connecting' || Boolean(mcpStarting[server.name])}
+                                className={`${iconButtonClass} disabled:cursor-default disabled:opacity-70`}
+                                title={server.status === 'connected' ? 'Stop server'
+                                  : server.status === 'connecting' || mcpStarting[server.name] ? (server.phaseMessage || 'Connecting…')
+                                  : 'Start server'}
+                                aria-label={server.status === 'connected' ? `Stop ${server.name}`
+                                  : server.status === 'connecting' || mcpStarting[server.name] ? `${server.name} is connecting`
+                                  : `Start ${server.name}`}
                               >
                                 {server.status === 'connected' ? (
                                   <Square {...lucideIconProps} className='text-red-500' />
-                                ) : server.status === 'connecting' ? (
+                                ) : server.status === 'connecting' || mcpStarting[server.name] ? (
                                   <LoaderCircle {...lucideIconProps} className='animate-spin text-yellow-500' />
                                 ) : (
                                   <Play {...lucideIconProps} className='text-green-500' />

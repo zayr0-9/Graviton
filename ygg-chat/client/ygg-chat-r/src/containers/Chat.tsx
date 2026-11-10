@@ -16,7 +16,7 @@ import { resolveExplainAnchorId, resolveLiveExplainSource, updateLiveExplainSurf
 import 'boxicons' // Types
 import 'boxicons/css/boxicons.min.css'
 import { AnimatePresence, motion } from 'framer-motion'
-import { Settings } from 'lucide-react'
+import { Lock, LockOpen, Settings } from 'lucide-react'
 import { ConversationToolbar } from '../components/ChatPane/ConversationToolbar'
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useLocation, useParams } from 'react-router-dom'
@@ -7475,13 +7475,15 @@ function Chat() {
                   style={leftControlsTokenTintStyle}
                 >
                   <button
-                    className='relative z-10 flex h-9 w-9 items-center justify-center rounded-full bg-white/80 text-stone-700 backdrop-blur-xl transition-all duration-200 hover:-translate-y-0.5 hover:scale-105 hover:bg-white hover:text-stone-950 active:translate-y-0 active:scale-95 dark:bg-yBlack-900/80 dark:text-stone-200 dark:hover:bg-neutral-900 dark:hover:text-white'
+                    type='button'
+                    className='relative z-10 flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-white/80 text-stone-700 backdrop-blur-xl transition-[background-color,color,transform] duration-200 hover:-translate-y-0.5 hover:scale-105 hover:bg-white hover:text-stone-950 active:translate-y-0 active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400/70 dark:bg-yBlack-900/80 dark:text-stone-200 dark:hover:bg-neutral-900 dark:hover:text-white dark:focus-visible:ring-orange-400/70'
                     style={actionPopoverTriggerStyle}
                     onClick={() => {
                       setSpinSettings(true)
                       setSettingsOpen(true)
                     }}
-                    title='Chat Settings'
+                    title='Chat settings'
+                    aria-label='Chat settings'
                   >
                     <Settings
                       className={`h-5 w-5 ${spinSettings ? 'animate-[spin_0.6s_linear_1]' : ''}`}
@@ -7528,7 +7530,20 @@ function Chat() {
                         dropdownMinWidth={220}
                       />
                     )}
-                    {isClaudeSession && <span className='text-xs text-neutral-500 dark:text-neutral-400' title='Claude owns tools, context and compaction. Provider locks after the first send; the Claude model can still change between turns. Queued messages join the running turn at its next tool step.'>Claude session{claudeBranchLock ? ' · provider locked' : ''}</span>}
+                    {isClaudeSession && (
+                      <span
+                        className='flex min-w-0 shrink items-center gap-1 whitespace-nowrap text-xs text-neutral-500 dark:text-neutral-400'
+                        title={`Claude owns tools, context and compaction. ${claudeBranchLock ? 'Provider is locked for this branch' : 'Provider locks after the first send'}; the Claude model can still change between turns. Queued messages join the running turn at its next tool step.`}
+                      >
+                        <span className='min-w-0 truncate'>Claude session</span>
+                        {claudeBranchLock ? (
+                          <Lock className='h-3.5 w-3.5 shrink-0' strokeWidth={2.25} aria-hidden='true' />
+                        ) : (
+                          <LockOpen className='h-3.5 w-3.5 shrink-0' strokeWidth={2.25} aria-hidden='true' />
+                        )}
+                        <span className='sr-only'>{claudeBranchLock ? 'Provider locked' : 'Provider unlocked'}</span>
+                      </span>
+                    )}
                     <ModelSelectControl
                       provider={providers.currentProvider}
                       selectedModelName={selectedModel?.name || ''}

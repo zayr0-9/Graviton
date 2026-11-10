@@ -1,13 +1,15 @@
 import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { useLocation } from 'react-router-dom'
 import { useChatNavigate as useNavigate } from '../ChatSelection/ChatSelectionProvider'
 import { getChatSelectionHref } from '../../features/chats/chatSelection'
-import { selectCurrentConversationId, selectCurrentPath } from '../../features/chats'
+import { selectCurrentConversationId, selectCurrentPath, selectCurrentViewStream } from '../../features/chats'
 import type { Conversation } from '../../features/conversations/conversationTypes'
 import type { BranchDebugData, BranchDebugRow } from '../../features/chats/branchDebug'
 import { uiActions, type UiNotification } from '../../features/ui'
 import { useAppDispatch, useAppSelector } from '../../hooks/redux'
 import {
   buildAgentForkGroups,
+  excludeViewedAgentFork,
   getAgentActivityBadgeClasses,
   type AgentForkGroup,
   summarizeAgentStreamId,
@@ -373,7 +375,24 @@ export const RunningAgentsFloatingButton: React.FC<RunningAgentsFloatingButtonPr
 }) => {
   const navigate = useNavigate()
   const dispatch = useAppDispatch()
-  const { activeStreams, streamHistory, buildAgentStreamListItem, streamingRoot } = useRunningAgentStreams(notes, allConversations)
+  const {
+    activeStreams: allActiveStreams,
+    streamHistory: allStreamHistory,
+    buildAgentStreamListItem,
+    streamingRoot,
+  } = useRunningAgentStreams(notes, allConversations)
+  // The run open in Chat is already on screen there. Only while a chat route is showing it:
+  // the selection outlives Chat (e.g. on Settings), where the pill should list it again.
+  const onChatRoute = useLocation().pathname.startsWith('/chat/')
+  const viewedStreamId = useAppSelector(state =>
+    onChatRoute && state.chat.selection.status !== 'pending' && state.chat.selection.status !== 'error'
+      ? selectCurrentViewStream(state)?.id ?? null
+      : null
+  )
+  const { activeStreams, streamHistory } = useMemo(
+    () => excludeViewedAgentFork(allActiveStreams, allStreamHistory, viewedStreamId),
+    [allActiveStreams, allStreamHistory, viewedStreamId]
+  )
   const { activeForks, historyForks } = useMemo(
     () => buildAgentForkGroups(activeStreams, streamHistory),
     [activeStreams, streamHistory]
@@ -391,7 +410,7 @@ export const RunningAgentsFloatingButton: React.FC<RunningAgentsFloatingButtonPr
     try { return localStorage.getItem('chat:groupToolReasoningRuns') === 'true' } catch { return false }
   })
   const selectedItem = selectedRun
-    ? [...activeStreams, ...streamHistory].find(item => item.streamId === selectedRun.streamId) ?? selectedRun
+    ? [...allActiveStreams, ...allStreamHistory].find(item => item.streamId === selectedRun.streamId) ?? selectedRun
     : null
   const previewTriggerRef = useRef<HTMLElement | null>(null)
   const openPreview = (stream: AgentStreamListItem, wholeFork = false) => {
@@ -641,7 +660,7 @@ export const RunningAgentsFloatingButton: React.FC<RunningAgentsFloatingButtonPr
     }
     setInlineNotification(null)
     dispatch(uiActions.notificationDismissed(notification.id))
-    const preview = getAgentNotificationPreview(notification, [...activeStreams, ...streamHistory], streamId => {
+    const preview = getAgentNotificationPreview(notification, [...allActiveStreams, ...allStreamHistory], streamId => {
       const stream = streamingRoot.byId[streamId] ?? {
         ...createEmptyStreamState('branch'),
         conversationId: notification.conversationId,
@@ -683,7 +702,7 @@ export const RunningAgentsFloatingButton: React.FC<RunningAgentsFloatingButtonPr
         data={branchDebugQuery.data}
         conversationId={currentConversationId}
         currentPath={currentPath}
-        activeStreams={activeStreams}
+        activeStreams={allActiveStreams}
         onClose={() => setBranchDebugOpen(false)}
       />
       <div

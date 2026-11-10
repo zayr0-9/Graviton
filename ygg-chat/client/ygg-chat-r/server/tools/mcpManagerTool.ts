@@ -4,6 +4,7 @@
 import { BUILTIN_TOOL_DEFINITIONS } from '../../../../shared/builtinToolDefinitions.js'
 import Ajv from 'ajv'
 import { mcpManager, McpServerConfig, McpToolDefinition } from '../mcp/mcpManager.js'
+import { MCP_START_PHASE_MESSAGE, settleWithin, type McpStartPhase } from '../mcp/mcpStartPhase.js'
 import { toMcpExecutionResult } from '../mcp/mcpToolResult.js'
 import { attachChatErrorCode } from '../headlessServer/providers/providerErrorFormatter.js'
 
@@ -21,6 +22,8 @@ interface McpServerSummary {
   enabled: boolean
   autoStart?: boolean
   status: 'disconnected' | 'connecting' | 'connected' | 'error'
+  /** Set while connecting: what the connection is waiting on. */
+  phase?: McpStartPhase
   error?: string
   toolCount: number
   resourceCount: number
@@ -38,6 +41,9 @@ interface ToolSummary {
 interface McpManagerResult {
   success: boolean
   error?: string
+  /** The server is still connecting, usually because it waits on the user; retry later. */
+  pending?: boolean
+  phase?: McpStartPhase
   invokedToolName?: string
   invokedVia?: 'mcp_manager'
   displayContent?: Record<string, unknown>
@@ -54,6 +60,7 @@ const toServerSummary = (config: McpServerConfig, status?: ReturnType<typeof mcp
   enabled: config.enabled,
   autoStart: config.autoStart,
   status: status?.status || 'disconnected',
+  phase: status?.phase,
   error: status?.error,
   toolCount: status?.tools?.length || 0,
   resourceCount: status?.resources?.length || 0,
@@ -68,6 +75,26 @@ const toToolSummary = (tool: McpToolDefinition): ToolSummary => ({
   _meta: tool._meta,
 })
 
+/**
+ * A connection that needs the user (keychain prompt, browser sign-in) can take minutes.
+ * Report that to the model while the connection carries on, instead of running into the
+ * tool-job timeout with nothing to say. Kept below the default 60 s job timeout.
+ */
+const START_WAIT_BUDGET_MS = 45_000
+
+async function startOrReportPending(config: McpServerConfig, budgetMs: number): Promise<McpManagerResult | null> {
+  const outcome = await settleWithin(mcpManager.startServer(config), budgetMs)
+  if (outcome.settled) return null
+  const phase = mcpManager.getStartPhase(config.name) ?? 'connecting'
+  return {
+    success: false,
+    pending: true,
+    phase,
+    error: `MCP server "${config.name}" is not connected yet. ${MCP_START_PHASE_MESSAGE[phase]} ` +
+      'Graviton keeps trying in the background. Tell the user what it is waiting for, then retry this action once they confirm.',
+  }
+}
+
 const ajv = new Ajv({ allErrors: true, strict: false, allowUnionTypes: true })
 
 /**
@@ -75,7 +102,7 @@ const ajv = new Ajv({ allErrors: true, strict: false, allowUnionTypes: true })
  */
 export async function execute(
   args: McpManagerArgs,
-  options: { operationMode?: 'plan' | 'execute'; signal?: AbortSignal } = {}
+  options: { operationMode?: 'plan' | 'execute'; signal?: AbortSignal; startWaitBudgetMs?: number } = {}
 ): Promise<McpManagerResult> {
   const { action, name } = args
   options.signal?.throwIfAborted()
@@ -147,7 +174,8 @@ export async function execute(
     if (args.args !== undefined && (!args.args || typeof args.args !== 'object' || Array.isArray(args.args))) {
       return { success: false, error: 'The "invoke" action requires "args" to be an object' }
     }
-    await mcpManager.startServer(config)
+    const pending = await startOrReportPending(config, options.startWaitBudgetMs ?? START_WAIT_BUDGET_MS)
+    if (pending) return pending
     options.signal?.throwIfAborted()
     const definition = mcpManager.getServerStatus(name)?.tools.find(tool => tool.name === args.tool)
     const visibility = definition?._meta?.ui?.visibility
@@ -193,7 +221,8 @@ export async function execute(
     if (!config.enabled) {
       return { success: false, error: `MCP server "${name}" is disabled` }
     }
-    await mcpManager.startServer(config)
+    const pending = await startOrReportPending(config, options.startWaitBudgetMs ?? START_WAIT_BUDGET_MS)
+    if (pending) return pending
     const status = mcpManager.getServerStatus(name)
     const tools = status?.tools?.filter(tool => {
       const visibility = tool._meta?.ui?.visibility
