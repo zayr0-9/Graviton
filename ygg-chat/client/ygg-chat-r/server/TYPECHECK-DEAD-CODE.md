@@ -47,7 +47,6 @@ for why they were kept before removing.
 | `headlessServer/providers/openaiChatgptProvider.ts` | 1611 | `readCodexSseOutputLegacy_DISABLED` — named as deliberately retained |
 | `localServer.ts` | 7662 | `deleteNoteEmbedding` |
 | `localServer.ts` | 9406 | `normalizeContentBlocksForStorage` |
-| `proxyGateway.ts` | 1364 | `mapRecordToCredentials` |
 
 ### Unused private field
 

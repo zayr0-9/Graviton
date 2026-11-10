@@ -63,7 +63,6 @@ import { createToolsStatements, initializeToolsSchema, pruneOldTools, registerTo
 import { mcpManager, type McpToolDefinition, type McpToolsChangedEvent } from './mcp/mcpManager.js'
 import { toMcpExecutionResult } from './mcp/mcpToolResult.js'
 import { registerMcpRoutes } from './mcp/mcpRoutes.js'
-import { registerProxyRoutes } from './proxyGateway.js'
 import { registerOpenAiOAuthRoutes, startOpenAiOAuthCallbackServer, stopOpenAiOAuth } from './routes/managedOAuthRoutes.js'
 import { registerRunStateRoutes } from './routes/runStateRoutes.js'
 import { registerSyncStorageRoutes } from './routes/syncStorageRoutes.js'
@@ -1729,7 +1728,6 @@ function setupServer() {
     registerHeadlessServerRoutes(app, { db, statements, orchestrator: toolOrchestrator })
     registerClientChangeRoutes(app, db)
   }
-  registerProxyRoutes(app)
   registerLocalOperationsRoutes(app)
   registerSkillRoutes(app)
   registerMcpRoutes(app)

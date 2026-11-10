@@ -1,6 +1,5 @@
 // server/headlessServer/config/settingsStore.ts
-// One accessor for the host settings store used by gatewayFlags.ts and
-// electronAppAuth.ts.
+// One accessor for the host settings store used by electronAppAuth.ts.
 //
 // When the server factory configured host capabilities, the injected
 // KeyValueStore wins: the Electron adapter wraps the same Conf store the

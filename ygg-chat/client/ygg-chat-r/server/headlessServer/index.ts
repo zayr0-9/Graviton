@@ -32,7 +32,6 @@ import { registerLineageRoutes } from './routes/lineageRoutes.js'
 import { registerCloudProxyRoutes } from './routes/cloudProxyRoutes.js'
 import { createAppAuthTokenManager } from './services/appAuthTokenManager.js'
 import { createRailwayClient } from './services/railwayClient.js'
-import { createCloudMirrorService } from './services/cloudMirrorService.js'
 import { runHookRequest } from '../hooks/hookRunner.js'
 import { ChatOrchestrator } from './services/chatOrchestrator.js'
 import { DecisionBroker } from './services/decisionBroker.js'
@@ -46,7 +45,6 @@ import { createMultiCallDispatchExecutor } from './services/multiCallExecutor.js
 import { createReplDispatchExecutor } from './services/replExecutor.js'
 import { createContextStatusExecutor } from './services/contextStatusTool.js'
 import { ProviderRouter, normalizeProviderRoute } from './services/providerRouter.js'
-import { resolveGatewayFlags } from './config/gatewayFlags.js'
 import type { ToolExecutor } from './services/toolLoopService.js'
 
 type OrchestratorLike = typeof defaultToolOrchestrator
@@ -278,8 +276,9 @@ export function registerHeadlessServerRoutes(app: Express, deps: HeadlessServerR
 
   const executeToolViaOrchestrator = createOrchestratorToolExecutor(deps.orchestrator ?? defaultToolOrchestrator)
 
-  // Gateway flags are resolved once at startup. Chat and route-independent runs default on.
-  const gatewayFlags = resolveGatewayFlags()
+  // Runs outlive their SSE connection (detach/reattach). Always on; the old
+  // gateway.resumableRuns opt-out was removed with the cloud gateway flags.
+  const resumableRuns = true
   // App-session owner for the remaining Railway-backed gateway/cloud-proxy legs (removed in P2c/P5).
   const appAuth = createAppAuthTokenManager()
   const railway = createRailwayClient({ auth: appAuth })
@@ -329,7 +328,7 @@ export function registerHeadlessServerRoutes(app: Express, deps: HeadlessServerR
       return snapshot
     })
   })
-  if (gatewayFlags.resumableRuns) reaperStops.add(runSessions.startReaper())
+  if (resumableRuns) reaperStops.add(runSessions.startReaper())
 
   registerCrudRoutes(app, deps)
   registerProviderAuthRoutes(app, { tokenStore })
@@ -345,23 +344,11 @@ export function registerHeadlessServerRoutes(app: Express, deps: HeadlessServerR
   registerEphemeralGenerateRoutes(app, { tokenStore })
   registerLineageRoutes(app, deps)
 
-  // Phase 5 cloud gateway: storage-aware /api/gw/* CRUD + merge and /api/cloud/*
-  // authenticated pass-through. Mounted UNCONDITIONALLY — the renderer is now a thin
-  // client that routes all CRUD/reads/cloud through these paths (Phase 5 cutover), so
-  // they must always be available. They are additive routes (nothing else served
-  // /api/gw or /api/cloud), so mounting them changes no existing behavior. Both share
-  // one single-flight app-token manager (sole Supabase refresher) + one Railway client.
-  {
-    registerGatewayRoutes(app, {
-      railway,
-      mirror: createCloudMirrorService({ db: deps.db, statements: deps.statements }),
-      auth: appAuth,
-      db: deps.db,
-      statements: deps.statements,
-      enabled: true,
-    })
-    registerCloudProxyRoutes(app, { railway, enabled: true })
-  }
+  // /api/gw/*: the renderer's local data gateway (facade over /api/app/*).
+  registerGatewayRoutes(app, { db: deps.db, statements: deps.statements })
+  // /api/cloud/*: retired Railway pass-through. Still mounted until the last renderer
+  // caller is removed (fully-local plan P5); without an app session every call fails.
+  registerCloudProxyRoutes(app, { railway, enabled: true })
 
 
   const bridgeWaitExecutor: ToolExecutor = async (call, context) => {
@@ -390,7 +377,7 @@ export function registerHeadlessServerRoutes(app: Express, deps: HeadlessServerR
     // stream events to a session the existing GET /api/streams/:streamId route can
     // replay — this is what lets the transcript viewer watch a run live. Gated on
     // resumableRuns (same gate as that route); off => runs just don't stream live.
-    runSessions: gatewayFlags.resumableRuns ? runSessions : undefined,
+    runSessions: resumableRuns ? runSessions : undefined,
   })
   // Startup reconciler: any subagent run left 'running' by a previous process
   // crash is an orphan (this fresh process owns no live loop), so flip it to a
@@ -445,7 +432,7 @@ export function registerHeadlessServerRoutes(app: Express, deps: HeadlessServerR
   // Synchronously releases stale 'running' Claude branches, then checkpoints their heads.
   void chatOrchestrator.recoverInterruptedClaudeBranches().catch(error =>
     console.warn('[ClaudeSession] interrupted branch recovery failed', error instanceof Error ? error.message : error))
-  if (gatewayFlags.resumableRuns) {
+  if (resumableRuns) {
     watchService.configureContinuation({
       retain: context => chatOrchestrator.retainWatch(context),
       deliver: (event, originStreamId, content) => {
@@ -471,7 +458,7 @@ export function registerHeadlessServerRoutes(app: Express, deps: HeadlessServerR
     orchestrator: chatOrchestrator,
     decisionBroker,
     runSessions,
-    resumableRuns: gatewayFlags.resumableRuns,
+    resumableRuns,
   })
 }
 

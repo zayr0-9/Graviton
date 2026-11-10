@@ -2449,40 +2449,7 @@ export const updateConversationTitle = createAsyncThunk<
   }
 })
 
-/* Attachments: upload, link, fetch, delete */
-
-// Upload an image file as multipart/form-data to /api/attachments
-export const uploadAttachment = createAsyncThunk<
-  Attachment,
-  { file: File; messageId?: number | null },
-  { extra: ThunkExtraArgument }
->('chat/uploadAttachment', async ({ file, messageId }, { dispatch, rejectWithValue }) => {
-  try {
-    const form = new FormData()
-    form.append('file', file)
-    if (messageId != null) form.append('messageId', String(messageId))
-
-    // Routed through the storage-aware gateway (:3002/api/gw/attachments). The
-    // multipart body is forwarded to Railway verbatim; messageId rides the query
-    // string so the server can mirror/link the result without parsing the body.
-    const qs = messageId != null ? `?messageId=${encodeURIComponent(String(messageId))}` : ''
-    const attachment = await gwApi.post<Attachment>(`/attachments${qs}`, form)
-
-    if (attachment.message_id != null) {
-      dispatch(
-        chatSliceActions.attachmentUpsertedForMessage({
-          messageId: attachment.message_id,
-          attachment,
-        })
-      )
-    }
-
-    return attachment
-  } catch (error) {
-    const message = error instanceof Error ? error.message : 'Failed to upload attachment'
-    return rejectWithValue(message)
-  }
-})
+/* Attachments: link, fetch, delete (uploads use the local base64 prepare/save path) */
 
 // Link existing attachments to a message
 export const linkAttachmentsToMessage = createAsyncThunk<
