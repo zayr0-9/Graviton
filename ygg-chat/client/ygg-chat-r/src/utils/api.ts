@@ -158,21 +158,6 @@ function normalizeEndpoint(endpoint: string): string {
   return endpoint.startsWith('/') ? endpoint : `/${endpoint}`
 }
 
-const PUBLIC_API_ENDPOINT_PREFIXES = ['/app-store/community'] as const
-
-function assertPublicEndpointAllowed(endpoint: string, source: string): string {
-  const normalizedEndpoint = normalizeEndpoint(endpoint)
-  const allowed = PUBLIC_API_ENDPOINT_PREFIXES.some(
-    prefix => normalizedEndpoint === prefix || normalizedEndpoint.startsWith(`${prefix}/`)
-  )
-
-  if (!allowed) {
-    throw new Error(`[${source}] Endpoint is not whitelisted for public access (${normalizedEndpoint})`)
-  }
-
-  return normalizedEndpoint
-}
-
 function assertCloudBackendAllowed(endpoint: string, source: string): void {
   if (!isCommunityMode) return
   throw new Error(`[${source}] Cloud backend routes are disabled in community mode (${endpoint})`)
@@ -803,52 +788,6 @@ export const apiCall = async <T>(endpoint: string, accessToken: string | null, o
   return response.json()
 }
 
-// Public cloud API utility for explicitly whitelisted read-only endpoints.
-// This bypasses community-mode cloud blocking and does not perform auth refresh/redirect behavior.
-export const publicApiCall = async <T>(endpoint: string, options?: RequestInit): Promise<T> => {
-  const normalizedEndpoint = assertPublicEndpointAllowed(endpoint, 'publicApiCall')
-  const requestStart = Date.now()
-
-  const isFormData = options?.body && typeof FormData !== 'undefined' && options.body instanceof FormData
-  const { headers: optionsHeaders, ...restOptions } = options || {}
-  const method = String(restOptions.method || 'GET').toUpperCase()
-
-  let response: Response
-  try {
-    response = await fetch(`${API_BASE}${normalizedEndpoint}`, {
-      ...restOptions,
-      headers: {
-        ...(isFormData ? {} : { 'Content-Type': 'application/json' }),
-        ...optionsHeaders,
-      },
-    })
-  } catch (error) {
-    reportNetworkFailure({
-      source: 'publicApiCall',
-      endpoint: normalizedEndpoint,
-      method,
-      durationMs: Date.now() - requestStart,
-      message: getErrorMessage(error),
-    })
-    throw error
-  }
-
-  if (!response.ok) {
-    const errorText = await response.text()
-    reportNetworkFailure({
-      source: 'publicApiCall',
-      endpoint: normalizedEndpoint,
-      method,
-      status: response.status,
-      statusText: response.statusText,
-      durationMs: Date.now() - requestStart,
-      message: errorText || response.statusText || `HTTP ${response.status}`,
-    })
-    throw new Error(`HTTP ${response.status}: ${errorText || response.statusText}`)
-  }
-
-  return response.json()
-}
 
 // Convenience methods for common HTTP operations
 export const api = {
