@@ -1,8 +1,8 @@
 export type TitleBarHistory = ReadonlyMap<number, string>
 export type TitleBarHistoryAction = 'PUSH' | 'REPLACE' | 'POP'
 
-// In Electron, / redirects to /login, so it is not a useful arrow destination either.
-const EXCLUDED_PATHS = new Set(['/', '/login', '/logging'])
+// / only redirects to the homepage, so it is not a useful arrow destination either.
+const EXCLUDED_PATHS = new Set(['/', '/logging'])
 
 export const recordTitleBarLocation = (
   history: TitleBarHistory,

@@ -58,8 +58,7 @@ export type { ConversationMessagesTreeData } from '../features/chats/conversatio
  * @returns Query result with data, isLoading, isRefetching, and refetch function for manual refresh
  */
 export function useProjects(enabled: boolean = true) {
-  const { accessToken, userId } = useAuth()
-  void accessToken
+  const { userId } = useAuth()
   void userId
   const location = useLocation()
 
@@ -69,7 +68,6 @@ export function useProjects(enabled: boolean = true) {
   const query = useQuery({
     queryKey: ['projects', userId],
     queryFn: async (): Promise<ProjectWithLatestConversation[]> => {
-      void accessToken
       // Storage-aware via the gateway: merges local + cloud (deduped, sorted by
       // latest_conversation_updated_at), or local-only in community mode.
       return gwApi.get<ProjectWithLatestConversation[]>(`/projects?userId=${userId}`)
@@ -94,8 +92,7 @@ export function useProjects(enabled: boolean = true) {
  * Cache key: ['projects', projectId]
  */
 export function useProject(projectId: ProjectId | null, storageMode?: 'local' | 'cloud') {
-  const { accessToken, userId } = useAuth()
-  void accessToken
+  const { userId } = useAuth()
   void userId
 
   return useQuery({
@@ -210,8 +207,7 @@ export function useConversationsInfinite(enabled: boolean = true) {
  * @returns Query result with data, isLoading, isRefetching, and refetch function for manual refresh
  */
 export function useConversationsByProject(projectId: ProjectId | null, enabled: boolean = true) {
-  const { accessToken, userId } = useAuth()
-  void accessToken
+  const { userId } = useAuth()
   void userId
   // const location = useLocation()
 
@@ -254,8 +250,7 @@ export function useConversationsByProjectInfinite(
   options: { enabled?: boolean } = {}
 ) {
   const { enabled = true } = options
-  const { accessToken, userId } = useAuth()
-  void accessToken
+  const { userId } = useAuth()
   void userId
 
   return useInfiniteQuery({
@@ -385,8 +380,7 @@ export function useFavoritedConversations(limit: number | null = 8) {
  * Cache key: ['conversations', conversationId, 'data']
  */
 export function useConversationData(conversationId: ConversationId | null) {
-  const { accessToken, userId } = useAuth()
-  void accessToken
+  const { userId } = useAuth()
   void userId
 
   return useQuery({
@@ -534,8 +528,7 @@ export function useSubagentByToolCall(toolCallId: string | null, enabled: boolea
  * Returns: { messages: Message[], tree: ChatNode }
  */
 export function useConversationMessages(conversationId: ConversationId | null, storageMode?: 'local' | 'cloud') {
-  const { accessToken, userId } = useAuth()
-  void accessToken
+  const { userId } = useAuth()
   void userId
   const queryClient = useQueryClient()
 
@@ -545,7 +538,6 @@ export function useConversationMessages(conversationId: ConversationId | null, s
       if (!conversationId) throw new Error('Conversation ID is required')
       return fetchConversationMessagesTree(conversationId, {
         storageMode,
-        accessToken,
         queryClient,
         signal,
       })
@@ -657,8 +649,7 @@ const getStoredSelectedModel = (): Model | null => {
  * The selected field contains the currently selected model (persisted from localStorage or defaults to server default)
  */
 export function useModels(provider: string | null) {
-  const { accessToken, userId } = useAuth()
-  void accessToken
+  const { userId } = useAuth()
   void userId
   const queryClient = useQueryClient()
 
@@ -825,8 +816,7 @@ export interface ResearchNoteItem {
  * @returns Query result with data, isLoading, isRefetching, and refetch function
  */
 export function useResearchNotes() {
-  const { accessToken, userId } = useAuth()
-  void accessToken
+  const { userId } = useAuth()
   void userId
 
   return useQuery({
@@ -853,8 +843,7 @@ export function useResearchNotes() {
  */
 export function useMoveConversationToProject() {
   const queryClient = useQueryClient()
-  const { accessToken, userId } = useAuth()
-  void accessToken
+  const { userId } = useAuth()
   void userId
 
   return useMutation({
@@ -890,7 +879,7 @@ export function useMoveConversationToProject() {
 
       // Use cloud API for cloud conversations
       const { patchConversationProject } = await import('../utils/api')
-      return patchConversationProject(conversationId, destinationProjectId, accessToken)
+      return patchConversationProject(conversationId, destinationProjectId, null)
     },
     onSuccess: (_updatedConversation, { conversationId, sourceProjectId, destinationProjectId }) => {
       // Helper to update conversation in infinite pages
@@ -1583,8 +1572,7 @@ export interface UserSystemPromptCached {
  * @returns Query result with prompts, default prompt, and utility functions
  */
 export function useUserSystemPromptsQuery() {
-  const { accessToken, userId } = useAuth()
-  void accessToken
+  const { userId } = useAuth()
   void userId
   const queryClient = useQueryClient()
 

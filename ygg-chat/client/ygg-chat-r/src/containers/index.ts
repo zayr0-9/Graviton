@@ -1,7 +1,6 @@
 export { default as Chat } from './Chat'
 export { default as ConversationPage } from './ConversationPage'
 export { default as HomepageRedirect } from './HomepageRedirect'
-export { default as Login } from './ManagedLogin'
 export { default as LoggingPage } from './LoggingPage'
 export { default as RecentLineages } from './RecentLineages'
 export { default as RightBar } from './rightBar'

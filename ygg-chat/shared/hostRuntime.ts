@@ -2,9 +2,9 @@ import type { AuthSnapshot } from './auth.js'
 
 export const HOST_CLIENT_PROTOCOL = 1
 export interface HostAuthState {
-  app: AuthSnapshot
   codex: AuthSnapshot
-  user: { id: string; email?: string | null } | null
+  /** Always the single local user (fully-local plan D4). */
+  user: { id: string; email?: string | null }
   epoch?: string
 }
 export interface HostRuntimeInfo {

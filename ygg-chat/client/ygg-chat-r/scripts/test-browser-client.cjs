@@ -21,7 +21,7 @@ if (!process.versions.electron) {
     const host = express()
     host.use(express.json())
     const snapshot = slot => ({ slot, status: 'signed_out', version: 1, sessionId: null, userId: null, email: null, expiresAt: null })
-    const auth = { epoch: 'fixture-epoch', app: snapshot('app'), codex: snapshot('codex'), user: null }
+    const auth = { epoch: 'fixture-epoch', codex: snapshot('codex'), user: { id: 'a7c485cb-99e7-4cf2-82a9-6e23b55cdfc3', email: 'local@graviton' } }
     host.get('/api/host/runtime', (_req, res) => res.json({ protocol: 1, epoch: auth.epoch, hostId: 'fixture-host', auth, capabilities: { browserUi: true, sharedRuns: false } }))
     host.get('/api/host/execution-preferences', (_req, res) => res.json({ hostId: 'fixture-host', epoch: auth.epoch, revision: 0, values: {} }))
     host.get('/api/host/prompts', (_req, res) => res.json({ schema: 1, hostId: 'fixture-host', epoch: auth.epoch, revision: 0, prompts: [] }))
@@ -36,15 +36,16 @@ if (!process.versions.electron) {
     for (let i = 0; i < 2; i++) {
       const window = new BrowserWindow({ show: false, webPreferences: { contextIsolation: true, nodeIntegration: false, partition: `browser-fixture-${i}` } })
       windows.push(window)
-      await window.loadURL(`http://127.0.0.1:${server.address().port}/#/login`)
+      await window.loadURL(`http://127.0.0.1:${server.address().port}/#/`)
       for (let attempt = 0; attempt < 100; attempt++) {
-        const ready = await window.webContents.executeJavaScript("document.body.innerText.includes('Continue locally')")
+        const ready = await window.webContents.executeJavaScript("location.hash.startsWith('#/homepage') || location.hash.startsWith('#/chat/')")
         if (ready) break
         await new Promise(resolve => setTimeout(resolve, 100))
       }
-      const result = await window.webContents.executeJavaScript(`({ native: !!window.electronAPI, login: document.body.innerText.includes('Continue locally'), route: location.hash })`)
-      if (result.native || !result.login || result.route !== '#/login') throw new Error(`Browser bootstrap failed: ${JSON.stringify(result)}`)
-      console.log(`PASS production browser client ${i + 1}: no preload; host identity bootstrap; shared login mounted`)
+      const result = await window.webContents.executeJavaScript(`({ native: !!window.electronAPI, unreachable: document.body.innerText.includes('Could not reach the Graviton host'), route: location.hash })`)
+      // The fixture serves no project/conversation APIs, so the homepage redirect may continue to a chat route.
+      if (result.native || result.unreachable || !(result.route.startsWith('#/homepage') || result.route.startsWith('#/chat/'))) throw new Error(`Browser bootstrap failed: ${JSON.stringify(result)}`)
+      console.log(`PASS production browser client ${i + 1}: no preload; local host identity bootstrap; no login page`)
     }
     exitCode = 0
   }).catch(error => console.error(error)).finally(async () => {

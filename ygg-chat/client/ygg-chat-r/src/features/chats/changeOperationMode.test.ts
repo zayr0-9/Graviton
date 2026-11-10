@@ -13,7 +13,7 @@ function setup() {
   const initial = reducer(undefined, { type: 'init' })
   const state = { chat: { ...initial, conversation: { ...initial.conversation, currentConversationId: 'c' } } } as RootState
   const dispatch = (action: any) => { state.chat = reducer(state.chat, action); return action }
-  const run = (streamId?: string) => changeOperationMode({ mode: 'execute', conversationId: 'c', parentId: null, streamId })(dispatch, () => state, { auth: { accessToken: null, userId: null }, queryClient: null })
+  const run = (streamId?: string) => changeOperationMode({ mode: 'execute', conversationId: 'c', parentId: null, streamId })(dispatch, () => state, { auth: { userId: null }, queryClient: null })
   return { state, run }
 }
 afterEach(() => vi.unstubAllGlobals())
@@ -57,7 +57,7 @@ describe('changeOperationMode thunk', () => {
     const dispatch = (action: any) => { state.chat = reducer(state.chat, action); return action }
 
     await changeOperationMode({ mode: 'execute', conversationId: 'c', parentId: 'tip', streamId: null })(
-      dispatch, () => state, { auth: { accessToken: null, userId: null }, queryClient: null }
+      dispatch, () => state, { auth: { userId: null }, queryClient: null }
     )
 
     expect(fetchMock).not.toHaveBeenCalled()

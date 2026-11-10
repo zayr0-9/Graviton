@@ -14,7 +14,7 @@ export const performSearch = createAsyncThunk<
     const { auth } = extra
     const raw: any[] = await apiCall<any[]>(
       `/search?q=${encodeURIComponent(query)}&userId=${auth.userId}`,
-      auth.accessToken
+      null
     )
     const data: SearchResult[] = raw.map(r => ({
       conversationId: r.conversation_id ?? r.conversationId,
@@ -36,12 +36,11 @@ export const performProjectSearch = createAsyncThunk<
   SearchResult[],
   { query: string; projectId?: ProjectId },
   { rejectValue: string; extra: ThunkExtraArgument }
->('search/performProject', async ({ query, projectId }, { extra, rejectWithValue }) => {
+>('search/performProject', async ({ query, projectId }, { rejectWithValue }) => {
   try {
-    const { auth } = extra
     const raw: any[] = await apiCall<any[]>(
       `/search/project?q=${encodeURIComponent(query)}&projectId=${projectId}`,
-      auth.accessToken
+      null
     )
     const data: SearchResult[] = raw.map(r => ({
       conversationId: r.conversation_id ?? r.conversationId,

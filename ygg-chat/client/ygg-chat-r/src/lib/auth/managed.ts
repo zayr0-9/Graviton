@@ -4,7 +4,7 @@ import { hostAuthTransport } from './transport'
 import { uiActions } from '../../features/ui'
 import { buildChatErrorEnvelope } from '../../../../../shared/chatErrors'
 import { getPublicAuth, setPublicAuth, type PublicAuthState } from './publicState'
-import type { AuthProvider, AuthState, Credentials, AuthChangeCallback } from './types'
+import type { AuthProvider, AuthState, AuthChangeCallback } from './types'
 export class ManagedAuthProvider implements AuthProvider {
   private listeners = new Set<AuthChangeCallback>()
   private cleanup: (() => void) | undefined
@@ -15,14 +15,14 @@ export class ManagedAuthProvider implements AuthProvider {
     if (value.epoch && this.retiredEpochs.has(value.epoch)) return
     if (current?.epoch && value.epoch && current.epoch !== value.epoch) this.retiredEpochs.add(current.epoch)
     if (current && current.epoch === value.epoch &&
-      (value.app.version < current.app.version || value.codex.version < current.codex.version)) return
+      value.codex.version < current.codex.version) return
     const previous = current
     setPublicAuth(value)
-    for (const slot of ['app', 'codex'] as const) {
+    for (const slot of ['codex'] as const) {
       const snapshot = value[slot]
       if (previous?.[slot].status === snapshot.status && previous?.[slot].sessionId === snapshot.sessionId) continue
       const id = `auth:${slot}`
-      if (snapshot.status === 'reauth_required') store.dispatch(uiActions.errorNoticeRaised({ id, source: 'unknown', envelope: buildChatErrorEnvelope(slot === 'app' ? 'session_expired' : 'provider_signin_required', { provider: slot === 'app' ? 'openrouter' : 'openaichatgpt' }) }))
+      if (snapshot.status === 'reauth_required') store.dispatch(uiActions.errorNoticeRaised({ id, source: 'unknown', envelope: buildChatErrorEnvelope('provider_signin_required', { provider: 'openaichatgpt' }) }))
       else if (snapshot.status === 'configuration_error' || snapshot.status === 'temporarily_unavailable') store.dispatch(uiActions.errorNoticeRaised({ id, source: 'unknown', envelope: buildChatErrorEnvelope('provider_unavailable', { userMessage: snapshot.error || 'Authentication is temporarily unavailable.' }) }))
       else if (snapshot.status === 'ready' || snapshot.status === 'signed_out') store.dispatch(uiActions.errorNoticeDismissed(id))
     }
@@ -33,8 +33,8 @@ export class ManagedAuthProvider implements AuthProvider {
     const api = hostAuthTransport()
     if (!isBrowserClient) {
       const read = (key: string) => { try { return JSON.parse(localStorage.getItem(key) || 'null') } catch { return null } }
-      const raw = read('supabase-auth-token')
-      await window.electronAPI!.auth.migrate({ app: raw ? { session: raw.currentSession || raw.session || raw } : null, codex: read('openai_chatgpt_tokens') })
+      // Codex-only legacy handoff (Q19: delete next release). The old Graviton session token is dropped.
+      await window.electronAPI!.auth.migrate({ codex: read('openai_chatgpt_tokens') })
       localStorage.removeItem('supabase-auth-token')
       localStorage.removeItem('openai_chatgpt_tokens')
     }
@@ -46,12 +46,9 @@ export class ManagedAuthProvider implements AuthProvider {
   }
   async getSession(): Promise<AuthState> {
     const current = getPublicAuth()
-    return { user: current?.user as any ?? null, userId: current?.user?.id ?? null, session: null, accessToken: null, loading: false }
+    return { user: current?.user as any ?? null, userId: current?.user?.id ?? null, loading: false }
   }
-  async login(credentials: Credentials) { this.adopt(await hostAuthTransport().login(credentials)); return this.getSession() }
-  async logout() { await hostAuthTransport().logout(); await this.reloadSession() }
   async reloadSession() { this.adopt(await hostAuthTransport().status()) }
   async refreshToken() { this.adopt(await hostAuthTransport().check()); return this.getSession() }
   onAuthStateChange(callback: AuthChangeCallback) { this.listeners.add(callback); callback(getPublicAuth()?.user as any ?? null); return () => { this.listeners.delete(callback) } }
-  requiresNetworkAuth() { return false }
 }

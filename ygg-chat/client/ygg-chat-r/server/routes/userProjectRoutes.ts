@@ -149,22 +149,6 @@ export function registerUserProjectRoutes(app: Express, deps: UserProjectRoutesD
         return
       }
 
-      // Strict safety rule: only allow migration when there are NO existing non-default users.
-      // If any cloud user already exists locally, do not re-parent default-local data.
-      const existingNonDefaultUsers = db!
-        .prepare('SELECT COUNT(*) as count FROM users WHERE id != ?')
-        .get(fromUserId) as { count: number }
-
-      if ((existingNonDefaultUsers?.count || 0) > 0) {
-        res.json({
-          success: true,
-          merged: false,
-          reason: 'existing_cloud_user_present',
-          message: 'Migration skipped because a non-default user already exists locally',
-        })
-        return
-      }
-
       const mergeTx = db!.transaction(() => {
         const toUserExists = db!.prepare('SELECT id FROM users WHERE id = ?').get(toUserId)
         if (!toUserExists) {
@@ -182,6 +166,12 @@ export function registerUserProjectRoutes(app: Express, deps: UserProjectRoutesD
         const providerCostResult = db!
           .prepare('UPDATE provider_cost SET user_id = ? WHERE user_id = ?')
           .run(toUserId, fromUserId)
+        // The note search table denormalizes user_id; move it too, so deleting the source
+        // user below cannot cascade-delete the moved notes' search rows.
+        const hasNoteSearchDocs = db!
+          .prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'note_search_docs'")
+          .get()
+        if (hasNoteSearchDocs) db!.prepare('UPDATE note_search_docs SET user_id = ? WHERE user_id = ?').run(toUserId, fromUserId)
 
         const remainingRefs = db!
           .prepare(

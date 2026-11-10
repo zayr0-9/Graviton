@@ -52,7 +52,7 @@ Start here, then open the smallest relevant subsystem context file before editin
 
 ## Platform and Integration
 
-- `agent_auth.md` - canonical Supabase/Codex credential ownership, refresh, migration, login and public auth status.
+- `agent_auth.md` - single local identity (no accounts), ChatGPT (Codex) credential ownership, refresh, migration and public auth status.
 
 - `agent_electron_main_local_server.md` - Electron main/preload/local Express server responsibilities; hosts the `headlessServer` routes + cloud gateway; Claude Code + GlobalAgentLoop routes retired.
 - `agent_html_iframe_apps.md` - custom app iframe rendering, bridge permissions, HTML cache.

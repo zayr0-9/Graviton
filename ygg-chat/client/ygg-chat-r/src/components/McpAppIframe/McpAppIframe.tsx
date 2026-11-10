@@ -375,8 +375,8 @@ export const McpAppIframe: React.FC<McpAppIframeProps> = ({
           }
           try {
             const electronApi = (window as any).electronAPI
-            if (electronApi?.auth?.openExternal) {
-              await electronApi.auth.openExternal(url)
+            if (electronApi?.shell?.openExternal) {
+              await electronApi.shell.openExternal(url)
             } else {
               window.open(url, '_blank', 'noopener')
             }

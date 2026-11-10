@@ -7,12 +7,12 @@ import { getNativeClientFence, nativeClientHeader } from '../nativeClientFence.j
 const fixture = vi.hoisted(() => {
   const values = new Map<string, unknown>()
   const snapshot = { status: 'ready', version: 1, userId: 'user', sessionId: 'session' }
-  return { values, state: { app: snapshot, codex: snapshot, user: { id: 'user' } }, check: vi.fn(async () => {}), unsubscribe: vi.fn() }
+  return { values, state: { codex: snapshot, user: { id: 'user' } }, check: vi.fn(async () => {}), unsubscribe: vi.fn() }
 })
 vi.mock('../auth/runtime.js', () => ({
   publicAuthState: () => fixture.state,
   getAuthManager: () => ({ check: fixture.check, subscribe: () => fixture.unsubscribe }),
-  enableLocalLogin: vi.fn(), disconnectAuth: vi.fn(),
+  disconnectAuth: vi.fn(),
 }))
 vi.mock('../auth/codexUsage.js', () => ({ fetchOpenAIUsageStatus: async () => ({ type: 'unauthenticated' }) }))
 vi.mock('../headlessServer/config/settingsStore.js', () => ({ getSettingsStore: () => ({ get: (k: string) => fixture.values.get(k), set: (k: string, v: unknown) => fixture.values.set(k, v) }) }))
@@ -32,13 +32,14 @@ describe('host public identity', () => {
     expect(data).toMatchObject({ protocol: 1, auth: { user: { id: 'user' } } })
     expect(data.epoch).toBeTypeOf('string')
     expect((await fetch(`${origin}/api/host/runtime`, { headers: { origin: 'null', 'sec-fetch-site': 'cross-site' } })).status).toBe(200)
-    expect((await fetch(`${origin}/api/host/auth/logout`, { method: 'POST', headers: { origin: 'null', 'content-type': 'application/json' }, body: '{}' })).status).toBe(403)
-    expect((await fetch(`${origin}/api/host/auth/local`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' })).status).toBe(409)
-    expect((await fetch(`${origin}/api/host/auth/logout`, { method: 'POST', headers: { origin: 'https://unrelated.example', 'content-type': 'application/json' }, body: '{}' })).status).toBe(403)
-    expect((await fetch(`${origin}/api/host/auth/logout`, { method: 'POST', body: 'form' })).status).toBe(415)
+    expect((await fetch(`${origin}/api/host/auth/codex/disconnect`, { method: 'POST', headers: { origin: 'null', 'content-type': 'application/json' }, body: '{}' })).status).toBe(403)
+    expect((await fetch(`${origin}/api/host/auth/codex/disconnect`, { method: 'POST', headers: { origin: 'https://unrelated.example', 'content-type': 'application/json' }, body: '{}' })).status).toBe(403)
+    expect((await fetch(`${origin}/api/host/auth/codex/disconnect`, { method: 'POST', body: 'form' })).status).toBe(415)
+    // No account: local sign-in and logout routes are gone.
+    expect((await fetch(`${origin}/api/host/auth/local`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' })).status).toBe(404)
+    expect((await fetch(`${origin}/api/host/auth/logout`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' })).status).toBe(404)
     expect(JSON.stringify(data)).not.toMatch(/accessToken|refreshToken/)
     expect((await fetch(`${origin}/api/host/auth/migrate`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' })).status).toBe(404)
-    expect((await fetch(`${origin}/api/host/auth/local`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ password: 'not-accepted' }) })).status).toBe(400)
   })
 })
 
@@ -48,7 +49,7 @@ it('accepts fenced native cross-site fetches with absent/file/null Origin but re
     const headers: Record<string, string> = { 'sec-fetch-site': 'cross-site', [nativeClientHeader]: getNativeClientFence() }
     if (origin) headers.origin = origin
     expect((await fetch(`${url}/api/host/runtime`, { headers })).status).toBe(200)
-    expect((await fetch(`${url}/api/host/auth/local`, { method: 'POST', headers: { ...headers, 'content-type': 'application/json' }, body: '{}' })).status).toBe(409) // Reached handler, not policy denial.
+    expect((await fetch(`${url}/api/host/auth/check`, { method: 'POST', headers: { ...headers, 'content-type': 'application/json' }, body: '{}' })).status).toBe(200) // Reached handler, not policy denial.
   }
   for (const fence of [undefined, 'forged']) {
     const headers: Record<string, string> = { 'sec-fetch-site': 'cross-site' }

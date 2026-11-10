@@ -30,20 +30,12 @@ interface ElectronAPI {
     save: (revision: number, prompts: unknown, identity: { hostId: string; epoch: string }) => Promise<{ snapshot?: import('../../../shared/hostPrompts').HostPromptSnapshot; error?: string; conflict?: boolean }>
     importLegacy: (prompts: unknown) => Promise<import('../../../shared/hostPrompts').HostPromptSnapshot>
   }
+  /** Local identity + ChatGPT (Codex) connection status. */
   auth: {
-    onLoginError: (callback: (message: string) => void) => () => void
     status: () => Promise<any>
-    start: (provider: string, oob?: boolean) => Promise<{ url: string }>
-    code: (code: string) => Promise<any>
-    cancel: () => Promise<void>
     migrate: (values: unknown) => Promise<any>
     check: () => Promise<any>
     onChanged: (callback: (state: any) => void) => () => void
-    login: (credentials: any) => Promise<any>
-    logout: () => Promise<void>
-    openExternal: (url: string) => Promise<{ success: boolean; error?: string }>
-    openOAuthWindow: (url: string) => Promise<{ success: boolean; error?: string }>
-    onOAuthCallback: (callback: (url: string) => void) => () => void
   }
   storage: {
     get: (key: string) => Promise<any>
@@ -91,6 +83,7 @@ interface ElectronAPI {
   }
   shell: {
     openPath: (path: string) => Promise<{ success: boolean; error?: string }>
+    openExternal: (url: string) => Promise<{ success: boolean; error?: string }>
   }
   browser: {
     isGuestDevToolsEnabled: () => Promise<boolean>

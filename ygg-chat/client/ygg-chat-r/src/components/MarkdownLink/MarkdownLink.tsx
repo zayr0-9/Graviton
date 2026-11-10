@@ -85,11 +85,11 @@ export const MarkdownLink: React.FC<MarkdownLinkProps> = ({ href, children, ...p
       e.preventDefault()
       const externalHref = href.startsWith('//') ? `https:${href}` : href
 
-      if (window.electronAPI?.auth?.openExternal) {
+      if (window.electronAPI?.shell?.openExternal) {
         // Electron: use the OS default browser. Never fall back to window.open here,
         // because Chromium turns that into another Electron BrowserWindow.
         try {
-          const result = await window.electronAPI.auth.openExternal(externalHref)
+          const result = await window.electronAPI.shell.openExternal(externalHref)
           if (!result.success) {
             console.error('Failed to open external link:', result.error)
           }

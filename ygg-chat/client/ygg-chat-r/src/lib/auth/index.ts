@@ -1,6 +1,6 @@
 import type { AuthProvider } from './types'
 import { bootstrapHostRuntime } from '../../services/hostRuntimeBootstrap'
-export type { AuthChangeCallback, AuthProvider, AuthState, Credentials, Session, User } from './types'
+export type { AuthChangeCallback, AuthProvider, AuthState, User } from './types'
 let pending: Promise<AuthProvider> | null = null
 export function getAuthProvider(): Promise<AuthProvider> {
   if (!pending) pending = (async () => {

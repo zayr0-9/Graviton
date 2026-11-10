@@ -1,6 +1,5 @@
 import { isBrowserClient } from '../../platform/clientCapabilities'
 import type { PublicAuthState } from './publicState'
-import type { Credentials } from './types'
 
 async function request<T>(path: string, body?: unknown): Promise<T> {
   const response = await fetch(`/api/host/auth/${path}`, {
@@ -18,8 +17,6 @@ export function hostAuthTransport() {
   return {
     status: () => request<PublicAuthState>('status'),
     check: () => request<PublicAuthState>('check', {}),
-    login: (credentials: Credentials) => request<PublicAuthState>('local', credentials),
-    logout: () => request<PublicAuthState>('logout', {}),
     onChanged: (listener: (state: PublicAuthState) => void) => {
       const events = new EventSource('/api/host/auth/events')
       events.onmessage = event => {
@@ -27,11 +24,6 @@ export function hostAuthTransport() {
       }
       return () => events.close()
     },
-    onLoginError: (_listener: (message: string) => void) => () => {},
-    start: async (_provider: string, _oob?: boolean): Promise<{ url: string }> => { throw new Error('Complete cloud sign-in on the Electron host; this browser will update automatically.') },
-    code: async (_code: string) => { throw new Error('Enter the sign-in code on the Electron host.') },
-    cancel: async () => true,
-    openExternal: async (_url: string) => ({ success: false }),
   }
 }
 

@@ -227,10 +227,9 @@ window.addEventListener('graviton:foreign-host', () => {
   notice.style.cssText = 'position:fixed;inset:0 0 auto;z-index:10000;padding:16px;background:#fff3cd;color:#332701'
   document.body.append(notice)
 })
-window.addEventListener('graviton:host-account-changed', clearAccountCache)
 const stopChanges = startHostChangeClient(queryClient)
 window.addEventListener('pagehide', stopChanges, { once: true })
-import.meta.hot?.dispose(() => { stopChanges(); window.removeEventListener('graviton:host-account-changed', clearAccountCache) })
+import.meta.hot?.dispose(() => { stopChanges() })
 root.render(
   // StrictMode temporarily disabled to prevent double-mounting in development
   // which causes duplicate API requests and triggers rate limiting

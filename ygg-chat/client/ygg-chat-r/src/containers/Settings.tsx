@@ -2,7 +2,7 @@ import MatrixBackgroundSettings from '../components/MatrixBackgroundSettings'
 import { HOST_EXECUTION_CHANGED } from '../services/hostExecutionClient'
 import { buildSharedBrowserUrl } from '../helpers/remoteServerSettingsStorage'
 import React, { useEffect, useRef, useState } from 'react'
-import { ArrowLeft, ChevronDown, LogOut, Moon, RefreshCw, Star, Sun, Trash2, X } from 'lucide-react'
+import { ArrowLeft, ChevronDown, Moon, RefreshCw, Star, Sun, Trash2, X } from 'lucide-react'
 import ReactMarkdown from 'react-markdown'
 import { SCROLLABLE_MARKDOWN_COMPONENTS } from '../components/MarkdownContent/MarkdownCodeBlock'
 import { useNavigate } from 'react-router-dom'
@@ -302,7 +302,7 @@ interface LocalMergeResult {
 const Settings: React.FC = () => {
   const navigate = useNavigate()
   const dispatch = useAppDispatch()
-  const { accessToken, userId, signOut } = useAuth()
+  const { userId } = useAuth()
   const providers = useAppSelector(selectProviderState)
   const htmlRegistry = useHtmlIframeRegistry()
   const htmlEntries = htmlRegistry?.entries.filter(entry => entry.kind === 'html') ?? []
@@ -514,10 +514,6 @@ const Settings: React.FC = () => {
   const isAgentModePromptOverridden = operationModePromptSettings.agentModePromptOverride !== null
   const isSubagentModePromptOverridden = operationModePromptSettings.subagentModePromptOverride !== null
 
-  const handleLogout = async () => {
-    await signOut()
-  }
-
   const readBraveApiKeyFromSecureStore = async (): Promise<string | null> => {
     const braveSecretsApi = window.electronAPI?.secrets?.braveSearch
     if (!braveSecretsApi?.get) {
@@ -552,7 +548,7 @@ const Settings: React.FC = () => {
 
   useEffect(() => {
     fetchGoogleDriveStatus()
-  }, [accessToken])
+  }, [userId])
 
   useEffect(() => {
     if (import.meta.env.VITE_ENVIRONMENT !== 'electron') return
@@ -993,9 +989,9 @@ const Settings: React.FC = () => {
   }
 
   const openOpenaiAuthUrl = async (url: string) => {
-    if (window.electronAPI?.auth?.openExternal) {
+    if (window.electronAPI?.shell?.openExternal) {
       try {
-        await window.electronAPI.auth.openExternal(url)
+        await window.electronAPI.shell.openExternal(url)
         return
       } catch (error) {
         console.error('Failed to open browser:', error)
@@ -1410,8 +1406,8 @@ const Settings: React.FC = () => {
     }
 
     try {
-      if (window.electronAPI?.auth?.openExternal) {
-        const result = await window.electronAPI.auth.openExternal(effectiveRemoteMobileUrl)
+      if (window.electronAPI?.shell?.openExternal) {
+        const result = await window.electronAPI.shell.openExternal(effectiveRemoteMobileUrl)
         if (!result?.success) {
           window.open(effectiveRemoteMobileUrl, '_blank', 'noopener,noreferrer')
         }
@@ -2422,8 +2418,8 @@ const Settings: React.FC = () => {
         throw new Error(payload?.error || 'No Google authorization URL returned.')
       }
 
-      if (window.electronAPI?.auth?.openExternal) {
-        const result = await window.electronAPI.auth.openExternal(payload.authUrl)
+      if (window.electronAPI?.shell?.openExternal) {
+        const result = await window.electronAPI.shell.openExternal(payload.authUrl)
         if (!result?.success) {
           window.open(payload.authUrl, '_blank', 'noopener,noreferrer')
         }
@@ -2508,15 +2504,6 @@ const Settings: React.FC = () => {
               aria-label='Home'
             >
               <ArrowLeft size={18} strokeWidth={2.25} aria-hidden='true' />
-            </button>
-            <button
-              type='button'
-              onClick={handleLogout}
-              className={circularControlClass}
-              title='Logout'
-              aria-label='Logout'
-            >
-              <LogOut size={18} strokeWidth={2.25} aria-hidden='true' />
             </button>
           </div>
         </header>
@@ -4024,7 +4011,7 @@ const Settings: React.FC = () => {
                     if (!effectiveSharedBrowserUrl) return
                     if (!window.confirm('Experimental shared UI: reachable clients can access host files and tools. Use a trusted network only. Continue?')) return
                     try {
-                      const result = await window.electronAPI?.auth?.openExternal(effectiveSharedBrowserUrl)
+                      const result = await window.electronAPI?.shell?.openExternal(effectiveSharedBrowserUrl)
                       if (!result?.success) throw new Error('Could not open the shared browser UI.')
                     } catch (error) { showStatus({ type: 'error', text: error instanceof Error ? error.message : 'Could not open the shared browser UI.' }) }
                   }}>Open shared UI preview</Button>

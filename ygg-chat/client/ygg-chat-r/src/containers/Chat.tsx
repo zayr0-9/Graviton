@@ -5045,9 +5045,9 @@ function Chat() {
   )
   // Provider selection handler with OpenAI auth check
   const openOpenaiAuthUrl = useCallback(async (url: string) => {
-    if (window.electronAPI?.auth?.openExternal) {
+    if (window.electronAPI?.shell?.openExternal) {
       try {
-        await window.electronAPI.auth.openExternal(url)
+        await window.electronAPI.shell.openExternal(url)
         return
       } catch (error) {
         console.error('Failed to open browser:', error)

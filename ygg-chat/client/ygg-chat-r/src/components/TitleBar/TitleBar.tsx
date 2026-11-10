@@ -176,8 +176,8 @@ export const TitleBar = () => {
         throw new Error('Unable to resolve remote server URL')
       }
 
-      if (window.electronAPI?.auth?.openExternal) {
-        const result = await window.electronAPI.auth.openExternal(url)
+      if (window.electronAPI?.shell?.openExternal) {
+        const result = await window.electronAPI.shell.openExternal(url)
         if (!result?.success) {
           window.open(url, '_blank', 'noopener,noreferrer')
         }

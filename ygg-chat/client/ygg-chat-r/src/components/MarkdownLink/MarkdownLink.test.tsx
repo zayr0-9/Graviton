@@ -85,7 +85,7 @@ describe('Markdown links', () => {
 
   it('keeps web links on the external-browser bridge', async () => {
     const openExternal = vi.fn().mockResolvedValue({ success: true })
-    vi.stubGlobal('window', { electronAPI: { auth: { openExternal } } })
+    vi.stubGlobal('window', { electronAPI: { shell: { openExternal } } })
     expect(await clickLink('https://example.com')).toHaveBeenCalledOnce()
     expect(openExternal).toHaveBeenCalledOnce()
     expect(openExternal).toHaveBeenCalledWith('https://example.com')
@@ -115,7 +115,7 @@ describe('Markdown links', () => {
   ])('routes %s internally without opening a browser or OS protocol handler', async (url, route) => {
     const openExternal = vi.fn()
     const open = vi.fn()
-    vi.stubGlobal('window', { electronAPI: { auth: { openExternal } }, open })
+    vi.stubGlobal('window', { electronAPI: { shell: { openExternal } }, open })
     expect(await clickLink(url)).toHaveBeenCalledOnce()
     expect(navigate).toHaveBeenCalledOnce()
     expect(navigate).toHaveBeenCalledWith(route)

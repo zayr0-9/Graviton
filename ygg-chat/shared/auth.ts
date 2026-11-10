@@ -1,5 +1,6 @@
 /** Public auth projection. Never put OAuth credentials in this contract. */
-export type AuthSlot = 'app' | 'codex'
+/** Only ChatGPT (Codex) OAuth is managed; Graviton itself has no account (fully-local plan D5). */
+export type AuthSlot = 'codex'
 export type AuthStatus = 'signed_out' | 'ready' | 'refreshing' | 'temporarily_unavailable' | 'reauth_required' | 'configuration_error'
 export interface AuthSnapshot {
   slot: AuthSlot

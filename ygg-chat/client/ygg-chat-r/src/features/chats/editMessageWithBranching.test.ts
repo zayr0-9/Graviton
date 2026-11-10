@@ -64,14 +64,14 @@ const setup = (live: Message[], cached: Message[]) => {
   queryClient.setQueryData(['conversations', 'c1', 'messages'], { messages: cached, tree: null })
   const actions: any[] = []
   const dispatch: any = (action: any) => {
-    if (typeof action === 'function') return action(dispatch, () => ({ ...state }), { queryClient, auth: { accessToken: null, userId: 'user' } })
+    if (typeof action === 'function') return action(dispatch, () => ({ ...state }), { queryClient, auth: { userId: 'user' } })
     actions.push(action)
     state.chat = chatReducer(state.chat, action)
     return action
   }
   const fork = (id: string = 'u1') => editMessageWithBranching({
     conversationId: 'c1', originalMessageId: id, newContent: 'Forked prompt', modelOverride: 'test-model', streamId: 'branch-B', think: false,
-  })(dispatch, () => ({ ...state }), { queryClient, auth: { accessToken: null, userId: 'user' } })
+  })(dispatch, () => ({ ...state }), { queryClient, auth: { userId: 'user' } })
   return { state, actions, fork, queryClient, dispatch }
 }
 
@@ -328,7 +328,7 @@ it('forwards explicit Explain child intent through sendMessage without reparenti
   const h = setup([message('old'), message('head', 'old')], [])
   await sendMessage({ conversationId: 'c1', input: { content: 'Explain selected text' }, parent: 'old',
     isBranch: true, repeatNum: 1, think: false, streamId: 'explain' })(h.dispatch, () => h.state,
-    { queryClient: h.queryClient, auth: { accessToken: null, userId: 'user' } })
+    { queryClient: h.queryClient, auth: { userId: 'user' } })
   expect(vi.mocked(runServerChatLoop)).toHaveBeenCalledWith(expect.objectContaining({
     operation: 'send', request: expect.objectContaining({ parentId: 'old', isBranch: true, content: 'Explain selected text' }),
   }), expect.anything())

@@ -779,7 +779,7 @@ const SideBar: React.FC<SideBarProps> = ({
   activeConversationId = null,
 }) => {
   const dispatch = useAppDispatch()
-  const { userId, accessToken } = useAuth()
+  const { userId } = useAuth()
   const queryClient = useQueryClient()
   const navigate = useNavigate()
   const location = useLocation()
@@ -1310,7 +1310,7 @@ const SideBar: React.FC<SideBarProps> = ({
     setCopyingConversation(true)
     setCopyError(null)
     try {
-      const result = await cloneConversation(conversationToMove.id, accessToken)
+      const result = await cloneConversation(conversationToMove.id, null)
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: ['projects'] }),
         queryClient.invalidateQueries({ queryKey: ['conversations'] }),
@@ -1327,7 +1327,7 @@ const SideBar: React.FC<SideBarProps> = ({
       copyingConversationRef.current = false
       setCopyingConversation(false)
     }
-  }, [conversationToMove, accessToken, queryClient, navigate])
+  }, [conversationToMove, queryClient, navigate])
 
   const handleSelectDestinationProject = useCallback((project: { id: string; name: string }) => {
     setDestinationProject(project)

@@ -29,9 +29,6 @@ import { registerSubagentRoutes } from './routes/subagentRoutes.js'
 import { registerTestHarnessRoutes } from './routes/testHarnessRoutes.js'
 import { registerGatewayRoutes } from './routes/gatewayRoutes.js'
 import { registerLineageRoutes } from './routes/lineageRoutes.js'
-import { registerCloudProxyRoutes } from './routes/cloudProxyRoutes.js'
-import { createAppAuthTokenManager } from './services/appAuthTokenManager.js'
-import { createRailwayClient } from './services/railwayClient.js'
 import { runHookRequest } from '../hooks/hookRunner.js'
 import { ChatOrchestrator } from './services/chatOrchestrator.js'
 import { DecisionBroker } from './services/decisionBroker.js'
@@ -285,9 +282,6 @@ export function registerHeadlessServerRoutes(app: Express, deps: HeadlessServerR
   // Runs outlive their SSE connection (detach/reattach). Always on; the old
   // gateway.resumableRuns opt-out was removed with the cloud gateway flags.
   const resumableRuns = true
-  // App-session owner for the remaining Railway-backed gateway/cloud-proxy legs (removed in P2c/P5).
-  const appAuth = createAppAuthTokenManager()
-  const railway = createRailwayClient({ auth: appAuth })
   const providerRouter = new ProviderRouter({ tokenStore })
 
   // One shared pause/resume registry across the chat orchestrator (which pauses the
@@ -339,10 +333,7 @@ export function registerHeadlessServerRoutes(app: Express, deps: HeadlessServerR
   registerCrudRoutes(app, deps)
   registerProviderAuthRoutes(app, { tokenStore })
   registerMobileUiRoutes(app)
-  registerHostRuntimeRoutes(app, () => {
-    deps.db.prepare('INSERT OR IGNORE INTO users (id, username) VALUES (?, ?)')
-      .run('a7c485cb-99e7-4cf2-82a9-6e23b55cdfc3', 'community-user')
-  })
+  registerHostRuntimeRoutes(app)
   registerCustomToolsRoutes(app)
   registerCustomToolRpcRoutes(app)
   registerHostAppBridgeRoutes(app)
@@ -352,9 +343,6 @@ export function registerHeadlessServerRoutes(app: Express, deps: HeadlessServerR
 
   // /api/gw/*: the renderer's local data gateway (facade over /api/app/*).
   registerGatewayRoutes(app, { db: deps.db, statements: deps.statements })
-  // /api/cloud/*: retired Railway pass-through. Still mounted until the last renderer
-  // caller is removed (fully-local plan P5); without an app session every call fails.
-  registerCloudProxyRoutes(app, { railway, enabled: true })
 
 
   const bridgeWaitExecutor: ToolExecutor = async (call, context) => {

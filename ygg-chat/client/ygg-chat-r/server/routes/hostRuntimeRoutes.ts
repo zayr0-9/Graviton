@@ -6,12 +6,12 @@ import { hostEpoch } from '../hostEpoch.js'
 import { hostClientPolicy } from './hostClientPolicy.js'
 import type { Express } from 'express'
 import { HOST_CLIENT_PROTOCOL } from '../../../../shared/hostRuntime.js'
-import { disconnectAuth, enableLocalLogin, getAuthManager, publicAuthState } from '../auth/runtime.js'
+import { disconnectAuth, getAuthManager, publicAuthState } from '../auth/runtime.js'
 import { fetchOpenAIUsageStatus } from '../auth/codexUsage.js'
 import { getSettingsStore } from '../headlessServer/config/settingsStore.js'
 
-/** Public identity projection only. No credential migration or generic storage/RPC. */
-export function registerHostRuntimeRoutes(app: Express, ensureLocalUser: () => void = () => {}): void {
+/** Public identity projection only (always the local user). No credential migration or generic storage/RPC. */
+export function registerHostRuntimeRoutes(app: Express): void {
   app.use('/api/host', hostClientPolicy)
   const epoch = hostEpoch
   const store = getSettingsStore()
@@ -38,21 +38,10 @@ export function registerHostRuntimeRoutes(app: Express, ensureLocalUser: () => v
     catch (error) { res.status((error as any)?.status === 409 ? 409 : 400).json({ error: error instanceof Error ? error.message : 'Invalid prompts', snapshot: (error as any)?.snapshot }) }
   })
   app.get('/api/host/auth/status', (_req, res) => { res.setHeader('Cache-Control', 'no-store'); res.json(status()) })
-  app.post('/api/host/auth/local', (req, res) => {
-    if (req.body?.email || req.body?.password) { res.status(400).json({ error: 'Complete cloud sign-in on the Electron host.' }); return }
-    if (publicAuthState().app.userId) {
-      res.status(409).json({ error: 'The host is signed into a cloud account. Sign out on the host before switching to local mode.' })
-      return
-    }
-    ensureLocalUser()
-    enableLocalLogin()
-    res.json(status())
-  })
   app.post('/api/host/auth/check', async (_req, res) => {
     try { await getAuthManager().check(); res.json(status()) }
     catch { res.status(503).json({ error: 'Host identity is temporarily unavailable.' }) }
   })
-  app.post('/api/host/auth/logout', (_req, res) => { disconnectAuth('app'); res.json(status()) })
   app.post('/api/host/auth/codex/disconnect', (_req, res) => { disconnectAuth('codex'); res.json(status()) })
   app.get('/api/host/auth/codex/usage', async (_req, res) => { res.json(await fetchOpenAIUsageStatus()) })
   app.get('/api/host/auth/events', (req, res) => {

@@ -14,7 +14,7 @@ import ProtectedRoute from './components/ProtectedRoute'
 import { TitleBar } from './components/TitleBar/TitleBar'
 import { UpdateModal } from './components/UpdateModal/UpdateModal'
 import VideoBackground from './components/VideoBackground'
-import { Chat, ConversationPage, HomepageRedirect, LoggingPage, Login, RecentLineages, Settings } from './containers'
+import { Chat, ConversationPage, HomepageRedirect, LoggingPage, RecentLineages, Settings } from './containers'
 import RightBar from './containers/rightBar'
 import SideBar from './containers/sideBar'
 import { selectCcCwd, selectCurrentConversationId } from './features/chats'
@@ -32,9 +32,9 @@ import { isHostClient } from './platform/clientCapabilities'
 // Hash routing everywhere: Electron loads from file:// and the shared UI is served by the host.
 const Router = HashRouter
 
-const TOOL_VIEWER_HIDDEN_ROUTES = new Set(['/', '/login'])
+const TOOL_VIEWER_HIDDEN_ROUTES = new Set(['/'])
 
-const RIGHTBAR_HIDDEN_ROUTES = new Set(['/', '/login', '/settings', '/infrastructure', '/logging'])
+const RIGHTBAR_HIDDEN_ROUTES = new Set(['/', '/settings', '/infrastructure', '/logging'])
 
 const CHAT_ROUTE_PATTERN = /^\/chat\/[^/]+\/[^/]+(?:\/lineage\/[^/]+)?$/
 const RECENT_LINEAGES_ROUTE_PATTERN = /^\/projects\/[^/]+\/lineages\/recent$/
@@ -181,8 +181,6 @@ function AnimatedRoutes() {
   return (
     <AnimatePresence mode='popLayout'>
       <Routes location={location} key={getRouteAnimationKey(location.pathname)}>
-        {/* Public route */}
-        <Route path='/login' element={<Login />} />
         {/* Protected routes */}
         <Route
           path='/conversationPage'

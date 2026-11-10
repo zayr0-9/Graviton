@@ -3,7 +3,9 @@ import type { Credential, CredentialStore } from './authSessionManager.js'
 import type { KeyValueStore } from '../hostCapabilities.js'
 
 export const AUTH_STORE_KEY = 'managed_auth_v1'
-interface PersistedAuth { version: 1; app: Credential | null; codex: Credential | null; initialized: Partial<Record<AuthSlot, boolean>> }
+// `app` held the retired Graviton (Supabase) session; it is read once for the local-data
+// re-assignment and then cleared (fully-local plan Q5).
+interface PersistedAuth { version: 1; app?: unknown; codex: Credential | null; initialized: Partial<Record<AuthSlot | 'app', boolean>> }
 /** Whole-record writes use the injected settings persistence (Conf in Electron).
  * Read-back detects failed writes; it is not an fsync guarantee for other hosts.
  */
@@ -29,8 +31,19 @@ export class SettingsCredentialStore implements CredentialStore {
   }
   write(slot: AuthSlot, value: Credential | null): void {
     const current = this.settings.get(AUTH_STORE_KEY) as PersistedAuth | undefined
-    const next: PersistedAuth = { version: 1, app: current?.app ?? null, codex: current?.codex ?? null, [slot]: value, initialized: { ...current?.initialized, [slot]: true } }
+    const next: PersistedAuth = { version: 1, app: current?.app ?? null, codex: value, initialized: { ...current?.initialized, [slot]: true } }
     this.settings.set(AUTH_STORE_KEY, next)
     if (JSON.stringify(this.settings.get(AUTH_STORE_KEY)) !== JSON.stringify(next)) throw new Error('Credential persistence failed')
+  }
+  /** User id of the retired Graviton account session, if one is still stored. */
+  readLegacyAppUserId(): string | null {
+    const app = (this.settings.get(AUTH_STORE_KEY) as PersistedAuth | undefined)?.app as { userId?: unknown } | null | undefined
+    return typeof app?.userId === 'string' && app.userId ? app.userId : null
+  }
+  /** Drops the retired Graviton account session (its refresh token is useless now). */
+  clearLegacyApp(): void {
+    const current = this.settings.get(AUTH_STORE_KEY) as PersistedAuth | undefined
+    if (!current || current.app == null) return
+    this.settings.set(AUTH_STORE_KEY, { ...current, app: null })
   }
 }

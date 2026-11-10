@@ -5,7 +5,6 @@ import { useStore } from 'react-redux'
 import type { Store } from 'redux'
 import type { ConversationId } from '../../../../shared/types'
 import { useAppDispatch, useAppSelector } from './redux'
-import { useAuth } from './useAuth'
 import type { ConversationMessagesTreeData } from '../features/chats/conversationMessagesApi'
 import { coordinateConversationSnapshot } from '../features/chats/conversationSnapshotCoordinator'
 import { conversationQueryKeys } from '../features/chats/conversationQueryKeys'
@@ -18,7 +17,6 @@ export function useConversationSnapshotCoordinator(
   const dispatch = useAppDispatch()
   const reduxStore = useStore() as Store<RootState>
   const queryClient = useQueryClient()
-  const { accessToken } = useAuth()
   const currentConversationId = useAppSelector(state => state.chat.conversation.currentConversationId)
   const selectionRequestId = useAppSelector(state => state.chat.selection.requestId)
   const snapshotConversationId = useAppSelector(state => state.chat.conversation.snapshotConversationId)
@@ -92,7 +90,6 @@ export function useConversationSnapshotCoordinator(
         const result = await coordinateConversationSnapshot({
           conversationId,
           storageMode,
-          accessToken,
           queryClient,
           getState: reduxStore.getState,
           isCurrent: ownsRefresh,
@@ -131,7 +128,7 @@ export function useConversationSnapshotCoordinator(
     })()
     latestRefreshRef.current = { visit, revision, promise }
     return promise
-  }, [accessToken, conversationId, dispatch, queryClient, reduxStore, storageMode, visit])
+  }, [conversationId, dispatch, queryClient, reduxStore, storageMode, visit])
 
   useEffect(() => {
     if (typeof window === 'undefined') return

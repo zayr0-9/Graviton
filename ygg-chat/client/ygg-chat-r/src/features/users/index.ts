@@ -13,4 +13,4 @@ export {
   selectUserStatus,
 } from './usersSelectors'
 
-export { clearError, clearUser, loginUser, refreshUserCredits, setUser } from './usersActions'
+export { clearError, clearUser, setUser } from './usersActions'

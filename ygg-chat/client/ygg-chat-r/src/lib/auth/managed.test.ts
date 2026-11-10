@@ -4,7 +4,7 @@ vi.mock('../../features/ui', () => ({ uiActions: { errorNoticeRaised: (x: unknow
 import { ManagedAuthProvider } from './managed'
 const snapshot = (slot: string) => ({ slot, status: 'ready', sessionId: 's', version: 1, userId: 'u', email: 'u@example.com', expiresAt: 9999999999999 })
 beforeEach(() => {
-  const state = { app: snapshot('app'), codex: snapshot('codex'), user: { id: 'u' } }
+  const state = { codex: snapshot('codex'), user: { id: 'u' } }
   vi.stubGlobal('localStorage', { getItem: () => null, removeItem: vi.fn() })
   vi.stubGlobal('CustomEvent', class { constructor(public type: string, public detail: unknown) {} })
   vi.stubGlobal('window', { dispatchEvent: vi.fn(), addEventListener: vi.fn(), electronAPI: { auth: { migrate: vi.fn(async () => state), status: vi.fn(async () => state), onChanged: vi.fn(), check: vi.fn(async () => state) } } })
@@ -13,7 +13,8 @@ describe('token-free renderer auth facade', () => {
   it('projects identity without tokens and never reads generic Electron storage', async () => {
     const provider = new ManagedAuthProvider()
     await provider.initialize()
-    expect(await provider.getSession()).toMatchObject({ userId: 'u', session: null, accessToken: null })
-    expect(provider.requiresNetworkAuth()).toBe(false)
+    const session = await provider.getSession()
+    expect(session).toMatchObject({ userId: 'u', loading: false })
+    expect('accessToken' in session).toBe(false)
   })
 })

@@ -14,7 +14,6 @@ import { registerClientChangeRoutes } from './routes/clientChangeRoutes.js'
 import { installMessageRevisions } from './messageRevisionSchema.js'
 import { claudeBridge } from './tools/claudeBridge.js'
 import { stopAuth } from './auth/runtime.js'
-import { cancelAppLogin } from './auth/appLogin.js'
 import AdmZip from 'adm-zip'
 import Database from 'better-sqlite3'
 import cors from 'cors'
@@ -2144,7 +2143,6 @@ export async function stopLocalServer(): Promise<void> {
 
   // Stop the OAuth cleanup timer and close the callback server
   stopAuth()
-  cancelAppLogin()
   stopOpenAiOAuth()
 
   return new Promise(resolve => {

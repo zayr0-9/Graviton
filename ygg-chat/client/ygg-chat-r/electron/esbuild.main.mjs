@@ -1,15 +1,10 @@
 import * as esbuild from 'esbuild'
 import path from 'path'
-import { loadEnv } from 'vite'
 import { fileURLToPath } from 'url'
 import { runTasks } from '../scripts/build-tasks.mjs'
 import { nodeEsmBanner, assertNodeSyntax } from '../scripts/node-esm.mjs'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
-
-// Only public Supabase configuration is bundled; never service-role keys.
-const publicEnv = loadEnv(process.env.NODE_ENV || 'production', path.join(__dirname, '..'), 'VITE_SUPABASE_')
-const authDefines = Object.fromEntries(['VITE_SUPABASE_URL', 'VITE_SUPABASE_ANON_KEY'].map(key => [`process.env.${key}`, JSON.stringify(process.env[key] || publicEnv[key] || '')]))
 
 // Each build has a separate output. Limit concurrency to two esbuild jobs.
 const tasks = []
@@ -18,7 +13,6 @@ const tasks = []
 tasks.push(() => esbuild.build({
   entryPoints: [path.join(__dirname, 'main.ts')],
   bundle: true,
-  define: authDefines,
   platform: 'node',
   target: 'node20',
   outfile: path.join(__dirname, 'main.mjs'),

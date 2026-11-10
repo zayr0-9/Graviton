@@ -2,8 +2,7 @@ import { createNativeHostSessionInstaller } from './nativeHostSession.js'
 import { TerminalService } from '../server/terminal/terminalService.js'
 import { readHostExecutionPreferences, saveHostExecutionPreferences, importHostExecutionPreferences } from '../server/hostExecutionStore.js'
 import { getHostPromptStore } from '../server/hostPromptStore.js'
-import { getAuthManager, publicAuthState, disconnectAuth, importLegacyRenderer, enableLocalLogin } from '../server/auth/runtime.js'
-import { startAppLogin, completeAppCode, completeAppCallback, cancelAppLogin } from '../server/auth/appLogin.js'
+import { getAuthManager, publicAuthState, disconnectAuth, importLegacyRenderer } from '../server/auth/runtime.js'
 import Conf from 'conf'
 import { app, autoUpdater as nativeAutoUpdater, BrowserWindow, dialog, ipcMain, Menu, nativeImage, nativeTheme, powerMonitor, screen, shell, Tray, webContents } from 'electron'
 import autoUpdaterPkg from 'electron-updater'
@@ -335,8 +334,6 @@ function cleanupTerminalSessionsForSender(sender: Electron.WebContents): void {
   }
 }
 
-// Custom protocol for OAuth callbacks
-const PROTOCOL = 'yggchat'
 // Updates come from GitHub Releases (electron-builder bakes the github publish config into
 // resources/app-update.yml). macOS builds are unsigned, so Squirrel.Mac cannot install them:
 // on macOS we only check and point the user at the release page.
@@ -685,12 +682,6 @@ function createWindow() {
 
   installNativeHostSession(window.webContents.session)
 
-  // A login reservation belongs to the initiating document, not a dead frame.
-  mainWindow.webContents.on('did-start-navigation', (_event, _url, isInPlace, isMainFrame) => {
-    if (isMainFrame && !isInPlace) cancelAppLogin()
-  })
-  mainWindow.webContents.on('render-process-gone', () => cancelAppLogin())
-
   if (process.platform === 'win32' && isWin11) {
     mainWindow.setBackgroundMaterial('acrylic')
   }
@@ -982,22 +973,7 @@ function toggleFloatingWindow() {
   }
 }
 
-// Register protocol handler for OAuth callbacks
-if (process.defaultApp) {
-  if (process.argv.length >= 2) {
-    app.setAsDefaultProtocolClient(PROTOCOL, process.execPath, [path.resolve(process.argv[1])])
-  }
-} else {
-  app.setAsDefaultProtocolClient(PROTOCOL)
-}
-
-// Handle protocol on macOS
-app.on('open-url', (event, url) => {
-  event.preventDefault()
-  handleOAuthCallback(url)
-})
-
-// Handle protocol on Windows/Linux (via second instance)
+// One app instance: a second launch focuses the existing window.
 // In debug mode, allow multiple instances so `npm run electron` always opens its own fresh window.
 if (!isDebugMode) {
   const gotTheLock = app.requestSingleInstanceLock()
@@ -1005,43 +981,17 @@ if (!isDebugMode) {
   if (!gotTheLock) {
     app.quit()
   } else {
-    app.on('second-instance', (_event, commandLine) => {
+    app.on('second-instance', () => {
       // Someone tried to run a second instance, we should focus our window.
       if (mainWindow) {
         if (mainWindow.isMinimized()) mainWindow.restore()
         mainWindow.show()
         mainWindow.focus()
       }
-
-      // The commandLine is an array of strings in which the last element is the deep link url
-      // On Windows/Linux, the protocol URL will be in the command line arguments
-      const url = commandLine.find(arg => arg.startsWith(`${PROTOCOL}://`))
-      if (url) {
-        handleOAuthCallback(url)
-      }
     })
   }
 } else {
   console.log('[Electron] Debug mode enabled: single-instance lock disabled')
-}
-
-async function syncAuthenticatedProfile(user: any): Promise<void> {
-  if (!localServerPort) throw new Error('Local service is not ready')
-  const response = await fetch(`http://127.0.0.1:${localServerPort}/api/local/users/merge`, {
-    method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ fromUserId: 'a7c485cb-99e7-4cf2-82a9-6e23b55cdfc3', toUserId: user.id, toUsername: user.user_metadata?.name || user.email?.split('@')[0] || 'user', toCreatedAt: user.created_at }),
-  })
-  if (!response.ok) throw new Error('Signed in, but local profile synchronization failed. Retry signing in.')
-}
-// Handle OAuth callback from external browser
-function handleOAuthCallback(url: string) {
-  void completeAppCallback(url).then(async result => { await syncAuthenticatedProfile(result.user); mainWindow?.webContents.send('auth:changed', publicAuthState()) }).catch(() => mainWindow?.webContents.send('auth:login-error', 'Sign-in could not be completed. Please try again.'))
-  if (mainWindow && mainWindow.webContents) {
-
-    // Focus the window
-    if (mainWindow.isMinimized()) mainWindow.restore()
-    mainWindow.focus()
-  }
 }
 
 // App lifecycle
@@ -1222,27 +1172,8 @@ app.on('before-quit', event => {
 
 // IPC Handlers for Electron-specific features
 
-// Authentication (optional - for cloud sync)
-authHandle('auth:login', async (_event, _credentials) => {
-  // In Electron, we can store credentials securely using electron-store or keytar
-  // For now, return a simple success
-  // console.log('[Electron IPC] auth:login called')
-  if (_credentials?.email || _credentials?.password) throw new Error('Use Google or GitHub sign-in')
-  return enableLocalLogin()
-})
-
-authHandle('auth:logout', async () => {
-  // console.log('[Electron IPC] auth:logout called')
-  cancelAppLogin()
-  return disconnectAuth('app')
-})
-
-// Phase 4 Slice 2 — server as sole Supabase-token refresher.
-// The renderer delegates its token refresh here; the shared single-flight
-// AppAuthTokenManager (same instance the cloud gateway uses) rotates the Conf
-// `auth_session` at most once process-wide. Gated on the server `gateway.tokenOwner`
-// flag: when off we report ownerEnabled:false so the renderer keeps self-refreshing
-// (safe fallback / no half-rollout). Never throws — errors degrade to ownerEnabled:false.
+// IPC that only the trusted main window's main frame may call (ChatGPT connection status,
+// legacy token handoff, opening external URLs).
 function authHandle(channel: string, handler: (...args: any[]) => any): void {
   ipcMain.handle(channel, (event, ...args) => {
     if (!mainWindow || event.sender !== mainWindow.webContents || event.senderFrame !== event.sender.mainFrame) throw new Error('Untrusted auth caller')
@@ -1269,11 +1200,8 @@ promptHandle('prompts:import', (event, prompts: unknown) => {
   return getHostPromptStore().importLegacy(prompts)
 })
 authHandle('auth:status', () => publicAuthState())
-const loginOwner = (event: Electron.IpcMainInvokeEvent) => `${event.sender.id}:${event.senderFrame?.processId}:${event.senderFrame?.routingId}`
-authHandle('auth:start', (event, provider: string, oob: boolean) => ({ url: startAppLogin(provider, oob, loginOwner(event)) }))
-authHandle('auth:code', async (event, code: string) => { const result = await completeAppCode(code, loginOwner(event)); await syncAuthenticatedProfile(result.user); return publicAuthState() })
-authHandle('auth:cancel', event => { cancelAppLogin(loginOwner(event)); return true })
-authHandle('auth:migrate', (_event, values) => { importLegacyRenderer(values); return publicAuthState() })
+// Codex-only legacy localStorage handoff (Q19: delete next release).
+authHandle('auth:migrate', (_event, values) => { importLegacyRenderer({ codex: values?.codex }); return publicAuthState() })
 authHandle('auth:check', async () => { await getAuthManager().check(); return publicAuthState() })
 let authEventsAttached = false
 authHandle('auth:subscribe', () => {
@@ -1343,8 +1271,6 @@ ipcMain.handle('storage:set', async (_event, key: string, value: any) => {
 
 // Clear all storage (for logout/account switching)
 ipcMain.handle('storage:clear', async () => {
-  cancelAppLogin()
-  disconnectAuth('app')
   disconnectAuth('codex')
   // console.log('[Electron IPC] storage:clear called - clearing all stored data')
 
@@ -1461,9 +1387,8 @@ ipcMain.handle('autoUpdater:installNow', async () => {
   }
 })
 
-// Open OAuth URL in external browser
-authHandle('auth:openExternal', async (_event, url: string) => {
-  // console.log('[Electron IPC] Opening external URL for OAuth:', url)
+// Open a URL in the OS browser (links, ChatGPT sign-in). Main window only.
+authHandle('shell:openExternal', async (_event, url: string) => {
   try {
     await shell.openExternal(url)
     return { success: true }
@@ -2209,78 +2134,6 @@ ipcMain.handle('window:getState', async () => {
     isMaximized: Boolean(mainWindow?.isMaximized()),
     isFullScreen: Boolean(mainWindow?.isFullScreen()),
   }
-})
-
-// Open OAuth URL in a new BrowserWindow (for WSL/Linux compatibility)
-authHandle('auth:openOAuthWindow', async (_event, url: string) => {
-  // console.log('[Electron IPC] Opening OAuth window:', url)
-
-  return new Promise(resolve => {
-    // Create a modal window for OAuth
-    const oauthWindow = new BrowserWindow({
-      width: 500,
-      height: 700,
-      modal: true,
-      parent: mainWindow || undefined,
-      webPreferences: {
-        nodeIntegration: false,
-        contextIsolation: true,
-        sandbox: true,
-      },
-      title: 'Sign in',
-      autoHideMenuBar: true,
-    })
-
-    // Load the OAuth URL
-    oauthWindow.loadURL(url)
-
-    // Handle navigation to callback URL
-    const handleNavigation = (navigationUrl: string) => {
-      // console.log('[Electron OAuth] Navigation detected:', navigationUrl)
-
-      // Check if this is our callback URL
-      if (navigationUrl.startsWith(`${PROTOCOL}://`)) {
-        // console.log('[Electron OAuth] Callback URL detected, closing window')
-
-        // Close the OAuth window
-        oauthWindow.close()
-
-        // Send the callback to handleOAuthCallback function
-        handleOAuthCallback(navigationUrl)
-
-        resolve({ success: true })
-        return true
-      }
-      return false
-    }
-
-    // Listen for redirects (works for most OAuth providers)
-    oauthWindow.webContents.on('will-redirect', (event, navigationUrl) => {
-      if (handleNavigation(navigationUrl)) {
-        event.preventDefault()
-      }
-    })
-
-    // Listen for navigation (backup for providers that don't redirect)
-    oauthWindow.webContents.on('will-navigate', (event, navigationUrl) => {
-      if (handleNavigation(navigationUrl)) {
-        event.preventDefault()
-      }
-    })
-
-    // Handle window close
-    oauthWindow.on('closed', () => {
-      // console.log('[Electron OAuth] Window closed')
-      resolve({ success: true })
-    })
-
-    // Handle errors
-    oauthWindow.webContents.on('did-fail-load', (_event, errorCode, errorDescription) => {
-      console.error('[Electron OAuth] Failed to load:', errorCode, errorDescription)
-      oauthWindow.close()
-      resolve({ success: false, error: errorDescription })
-    })
-  })
 })
 
 // Local sync server status

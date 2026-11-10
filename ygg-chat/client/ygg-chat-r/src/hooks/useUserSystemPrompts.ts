@@ -62,7 +62,7 @@ export const useUserSystemPrompts = (options: UseUserSystemPromptsOptions = {}):
 
   const queryClient = useQueryClient()
   const pendingSaveId = useRef<string | null>(null)
-  const { accessToken, userId } = useAuth()
+  const { userId } = useAuth()
   const canSaveToCloud = Boolean(userId && isCloudSessionEnabled())
 
   // Use React Query for system prompts (cached globally)
@@ -169,7 +169,7 @@ export const useUserSystemPrompts = (options: UseUserSystemPromptsOptions = {}):
         return
       }
 
-      const updatedPrompt = { ...(await setDefaultUserSystemPrompt(matchingPrompt.id, accessToken)), storage_mode: 'cloud' as const }
+      const updatedPrompt = { ...(await setDefaultUserSystemPrompt(matchingPrompt.id, null)), storage_mode: 'cloud' as const }
 
       // Update React Query cache - set is_default to false for all other cloud prompts
       queryClient.setQueryData<UserSystemPromptCached[]>(['userSystemPrompts', userId], old => {
@@ -194,7 +194,7 @@ export const useUserSystemPrompts = (options: UseUserSystemPromptsOptions = {}):
     } finally {
       setMakingDefault(false)
     }
-  }, [matchingPrompt, accessToken, queryClient, userId, onError])
+  }, [matchingPrompt, queryClient, userId, onError])
 
   // Handle removing the default status from the matching prompt
   const handleRemoveDefault = useCallback(async () => {
@@ -222,7 +222,7 @@ export const useUserSystemPrompts = (options: UseUserSystemPromptsOptions = {}):
         return
       }
 
-      await clearDefaultUserSystemPrompt(accessToken)
+      await clearDefaultUserSystemPrompt(null)
 
       // Update React Query cache - set is_default to false for cloud prompts
       queryClient.setQueryData<UserSystemPromptCached[]>(['userSystemPrompts', userId], old => {
@@ -237,7 +237,7 @@ export const useUserSystemPrompts = (options: UseUserSystemPromptsOptions = {}):
     } finally {
       setRemovingDefault(false)
     }
-  }, [matchingPrompt, accessToken, queryClient, userId, onError])
+  }, [matchingPrompt, queryClient, userId, onError])
 
   // Handle saving current prompt as a new user system prompt
   const handleSaveAsPrompt = useCallback(async () => {
@@ -287,7 +287,7 @@ export const useUserSystemPrompts = (options: UseUserSystemPromptsOptions = {}):
                   name: savePromptName.trim(),
                   content: currentPromptContent.trim(),
                 },
-                accessToken
+                null
               )),
               storage_mode: 'cloud' as const,
             }
@@ -310,7 +310,7 @@ export const useUserSystemPrompts = (options: UseUserSystemPromptsOptions = {}):
     } finally {
       setSavingPrompt(false)
     }
-  }, [savePromptName, currentPromptContent, savePromptStorage, canSaveToCloud, accessToken, queryClient, userId, resetSaveUI, onError])
+  }, [savePromptName, currentPromptContent, savePromptStorage, canSaveToCloud, queryClient, userId, resetSaveUI, onError])
 
   return {
     // State

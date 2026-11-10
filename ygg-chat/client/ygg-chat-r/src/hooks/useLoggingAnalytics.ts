@@ -208,9 +208,9 @@ const buildQueryString = (filters: LoggingFilters): string => {
 }
 
 export const useCloudLoggingAnalytics = (filters: LoggingFilters, enabled: boolean = true) => {
-  const { accessToken, userId } = useAuth()
+  const { userId } = useAuth()
   const queryString = useMemo(() => buildQueryString(filters), [filters])
-  const cloudSession = isCloudSession({ accessToken, userId })
+  const cloudSession = isCloudSession({ accessToken: null, userId })
   const queryClient = useQueryClient()
   useEffect(() => () => {
     // Remove the previous account's in-memory analytics on identity change.
@@ -219,7 +219,7 @@ export const useCloudLoggingAnalytics = (filters: LoggingFilters, enabled: boole
 
   return useQuery({
     queryKey: ['logging-analytics', 'cloud', userId, queryString],
-    queryFn: () => api.get<LoggingDashboardResponse>(`/analytics/dashboard?${queryString}`, accessToken),
+    queryFn: () => api.get<LoggingDashboardResponse>(`/analytics/dashboard?${queryString}`, null),
     enabled: enabled && cloudSession,
     staleTime: 30 * 1000,
     refetchOnMount: true,

@@ -4,34 +4,37 @@ paths:
   - "client/ygg-chat-r/server/routes/managedOAuthRoutes.ts"
   - "client/ygg-chat-r/src/lib/auth/**"
   - "shared/auth.ts"
+  - "shared/localUser.ts"
 ---
 
-# Managed authentication (Electron)
+# Identity and managed authentication (Electron)
 
-## Ownership
+## No accounts
 
-`client/ygg-chat-r/server/auth/runtime.ts` constructs one process-wide `AuthSessionManager` over the injected settings store. Electron injects its own store instance through `buildElectronHostCapabilities(configStore)`. `app` (Supabase/Railway) and `codex` (ChatGPT) are independent credential slots. Canonical records live under `managed_auth_v1`; renderer receives only `shared/auth.ts` snapshots.
+Graviton is fully local: there is no Graviton account, sign-in, logout, Supabase or Railway session. Identity is always the single local user `LOCAL_USER_ID` from `shared/localUser.ts`. `server/auth/localIdentity.ts` seeds its `users` row at server start (`ensureLocalUser`; foreign keys are on), and `publicAuthState()` always projects `{ codex, user: { id: LOCAL_USER_ID } }` (`shared/hostRuntime.ts` `HostAuthState`). There is no `/login` route; `ProtectedRoute` waits for the host projection and offers Retry if the host is unreachable.
 
-Refresh adapters live in `server/auth/refreshAdapters.ts`. Refresh is single-flight per slot/session, commits before publication, uses adaptive expiry skew, bounded backoff and a 20-second timeout. Invalid grant becomes reconnect-required; temporary failure retains credentials. A persisted `refreshPending` marker makes interrupted rotations require reconnect after restart rather than blindly reusing an old rotating token. Settings persistence remains unencrypted, with existing file permissions; this is not a keychain implementation.
+Legacy data: older builds re-assigned local rows to a signed-in Supabase user id. On startup `initializeAuth` reads that id from the retired `managed_auth_v1.app` record, moves `projects`, `conversations`, `provider_cost` and `note_search_docs` rows back to the local user (`reassignLegacyAccountData`: plain UPDATEs, old users row kept so nothing cascades), then clears the record, so it runs once.
+
+## ChatGPT (Codex) credentials
+
+`server/auth/runtime.ts` constructs one process-wide `AuthSessionManager` over the injected settings store. The only credential slot is `codex` (`shared/auth.ts` `AuthSlot`). Canonical records live under `managed_auth_v1`; the renderer receives only token-free snapshots.
+
+`server/auth/refreshAdapters.ts` refreshes against `auth.openai.com`. Refresh is single-flight per slot/session, commits before publication, uses adaptive expiry skew, bounded backoff and a 20-second timeout. Invalid grant becomes reconnect-required; temporary failure retains credentials. A persisted `refreshPending` marker makes interrupted rotations require reconnect after restart. Settings persistence is unencrypted, with existing file permissions; this is not a keychain implementation.
+
+`server/routes/managedOAuthRoutes.ts` owns Codex PKCE callback/manual exchange and completion polling; no OAuth credentials appear in completion JSON or callback HTML. `server/auth/codexUsage.ts` uses the same owner as inference.
 
 ## Lifecycle and migration
 
-`headlessServer/index.ts` initializes auth after the provider table exists. `authMigration.ts` imports legacy Electron and SQLite OAuth records, deduplicates aliases, and requires reconnect for divergent credentials. The trusted desktop renderer makes one legacy localStorage handoff, erases source keys after acknowledgement, and starts owner scheduling. No normal renderer session reads/writes remain. Generic storage IPC rejects auth keys. Server shutdown stops owner work; Electron resume and renderer online checks recheck freshness.
-
-`server/auth/appLogin.ts` owns Google/GitHub deep-link/OOB flow state. Main validates callback tokens using Supabase's user endpoint and performs the existing local-user merge. `server/routes/managedOAuthRoutes.ts` owns Codex PKCE callback/manual exchange and completion polling; no OAuth credentials appear in completion JSON or callback HTML. `server/auth/codexUsage.ts` uses the same owner as inference.
-
-Main-process public Supabase URL/anon-key configuration is bundled by `electron/esbuild.main.mjs` from the build environment. Never bundle service-role keys.
+`headlessServer/index.ts` initializes auth after the provider table exists; owner scheduling starts unconditionally. `authMigration.ts` imports legacy Electron and SQLite ChatGPT records, deduplicates aliases, and requires reconnect for divergent credentials. The trusted desktop renderer makes a one-time codex-only localStorage handoff (`auth:migrate`); delete it in the next release. Generic storage IPC rejects auth keys. Server shutdown stops owner work; Electron resume and renderer online checks recheck freshness.
 
 ## Requests and recovery
 
-Main chat retains session references, not access-token snapshots. Each provider attempt resolves fresh credentials. Compaction and child dispatch inherit references; a replaced account cannot satisfy an old reference. Codex HTTP/WS auth rejection has a single pre-output retry. Partial output fences retry/fallback. Railway gateway retries once; typed failures propagate instead of returning stale credentials as fresh.
-
-`appAuthTokenManager.ts` is a Railway adapter, not another refresher. The `gateway.tokenOwner` and renderer token-owner flag are removed. Raw OAuth registration endpoints return 410; API-key providers still use `ProviderTokenStore`.
+Main chat retains session references, not access-token snapshots. Each provider attempt resolves fresh credentials. Compaction and child dispatch inherit references; a replaced account cannot satisfy an old reference. Codex HTTP/WS auth rejection has a single pre-output retry. Partial output fences retry/fallback. Raw OAuth registration endpoints return 410; API-key providers use `ProviderTokenStore`.
 
 ## Renderer
 
-`src/lib/auth/managed.ts` is an identity/status projection. `publicState.ts` deliberately has no Redux/store dependency so model/settings helpers do not introduce circular imports. `ManagedLogin.tsx` issues commands only. `chatgptAccount.ts` supplies public account status, usage IPC and model metadata. Global auth warnings use the existing error notice UI; app errors offer Sign in, Codex errors offer Reconnect. Reconnecting does not replay a failed run or its tools.
+`src/lib/auth/managed.ts` projects identity and the Codex status. `publicState.ts` has no Redux/store dependency to avoid circular imports. `AuthContext` exposes `{ user, userId, loading, reloadSession }` and seeds Redux `users.currentUser` with the constant local profile. Codex `reauth_required` raises a `provider_signin_required` notice (Reconnect → Settings). External links open through `electronAPI.shell.openExternal` (main window only).
 
-## Validation and remaining release checks
+## Validation
 
-Run `test:headless`, `test:renderer`, `test:server`, `typecheck:electron`, `typecheck:mobile`, `build:electron`, and `build:electron:main` from the client package. Migration/lifecycle tests use synthetic credentials only. Manually verify installed-app deep-link/OOB login, callback-port conflict/manual completion, sleep/wake, offline recovery, logout/account switch during a run, and cold restart. Never print tokens in diagnostics.
+Run `test:headless`, `test:renderer`, `test:server`, `typecheck:electron`, `typecheck:mobile`, `build:electron` and `build:electron:main` from the client package. Migration/lifecycle tests use synthetic credentials only. Manually verify ChatGPT sign-in/refresh, callback-port conflict/manual completion, sleep/wake, offline recovery and cold restart. Never print tokens in diagnostics.

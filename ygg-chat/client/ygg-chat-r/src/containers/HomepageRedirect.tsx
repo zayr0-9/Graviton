@@ -61,7 +61,7 @@ const HomepageRedirect: React.FC = () => {
   const dispatch = useAppDispatch()
   const navigate = useNavigate()
   const queryClient = useQueryClient()
-  const { userId, accessToken, loading: authLoading } = useAuth()
+  const { userId, loading: authLoading } = useAuth()
   const [error, setError] = useState<string | null>(null)
   const redirectInFlightRef = useRef(false)
 
@@ -169,7 +169,6 @@ const HomepageRedirect: React.FC = () => {
 
     void redirectToChat()
   }, [
-    accessToken,
     allProjects,
     authLoading,
     conversationsLoading,

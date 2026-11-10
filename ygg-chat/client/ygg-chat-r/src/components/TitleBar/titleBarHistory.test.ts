@@ -12,8 +12,8 @@ const chatB = '/chat/project/b'
 const chatC = '/chat/project/c/lineage/branch'
 
 describe('title bar history', () => {
-  it('skips login and logging in both directions', () => {
-    const history = visits([chatA, '/logging', '/login', chatB])
+  it('skips logging in both directions', () => {
+    const history = visits([chatA, '/logging', '/', chatB])
     expect(getTitleBarHistoryDelta(history, 3, -1)).toBe(-3)
     expect(getTitleBarHistoryDelta(history, 0, 1)).toBe(3)
     expect(getTitleBarHistoryDelta(history, 0, -1)).toBeNull()
@@ -27,14 +27,14 @@ describe('title bar history', () => {
   })
 
   it('has no destination when only excluded or unobserved entries exist', () => {
-    const history = visits(['/', '/login', '/logging', chatA])
+    const history = visits(['/', '/logging', '/', chatA])
     expect(getTitleBarHistoryDelta(history, 3, -1)).toBeNull()
     expect(getTitleBarHistoryDelta(history, 0, -1)).toBeNull()
     expect(getTitleBarHistoryDelta(new Map([[8, chatA]]), 8, -1)).toBeNull()
   })
 
   it('handles route casing and trailing slashes like React Router', () => {
-    const history = visits([chatA, '/LOGIN/', '/Logging/', '/', chatB])
+    const history = visits([chatA, '/LOGGING/', '/Logging/', '/', chatB])
     expect(getTitleBarHistoryDelta(history, 4, -1)).toBe(-4)
   })
 

@@ -20,7 +20,7 @@ function setup() {
   const state = { conversations: { ...reducer(undefined, { type: 'init' }), items: [original, other] } } as RootState
   const dispatch = (action: any) => { state.conversations = reducer(state.conversations, action); return action }
   const run = (storageMode?: 'local' | 'cloud') => updateConversationTitle({ id: 'c', title: 'Renamed', storageMode })(
-    dispatch, () => state, { auth: { accessToken: null, userId: null }, queryClient }
+    dispatch, () => state, { auth: { userId: null }, queryClient }
   )
   return { queryClient, state, run }
 }

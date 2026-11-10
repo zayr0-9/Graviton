@@ -26,7 +26,7 @@ export class AuthFailure extends Error {
     super(message)
   }
   get status(): number { return this.category === 'reauth_required' ? 401 : 503 }
-  get errorType(): string { return this.category === 'reauth_required' ? (this.slot === 'app' ? 'reauth_required' : 'provider_signin_required') : 'provider_unavailable' }
+  get errorType(): string { return this.category === 'reauth_required' ? 'provider_signin_required' : 'provider_unavailable' }
 }
 export type RefreshAdapter = (slot: AuthSlot, credential: Credential, signal: AbortSignal) => Promise<Omit<Credential, 'sessionId' | 'revision'>>
 
@@ -181,14 +181,14 @@ export class AuthSessionManager {
     void this.check()
   }
   async check(): Promise<void> {
-    await Promise.all((['app', 'codex'] as const).map(async slot => {
+    await Promise.all((['codex'] as const).map(async slot => {
       if (this.store.read(slot)) await this.resolve(slot).catch(() => undefined)
     }))
   }
   stop(): void {
     if (this.timer) clearInterval(this.timer)
     this.timer = undefined
-    for (const slot of ['app', 'codex'] as const) this.epochs.set(slot, (this.epochs.get(slot) ?? 0) + 1)
+    for (const slot of ['codex'] as const) this.epochs.set(slot, (this.epochs.get(slot) ?? 0) + 1)
     for (const controller of this.controllers) controller.abort()
   }
 }
