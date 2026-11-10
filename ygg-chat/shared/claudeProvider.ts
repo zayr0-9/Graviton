@@ -1,6 +1,6 @@
 /** Claude sessions are a separate execution backend, not an API tool-loop provider. */
 export const CLAUDE_PROVIDER = 'Claude Code'
-export const CLAUDE_MODELS = ['claude-sonnet-5-5', 'claude-opus-5-5', 'claude-haiku-5-5', 'claude-fable-5-1', 'claude-fable-5', 'claude-opus-4-8', 'claude-opus-4-7'] as const
+export const CLAUDE_MODELS = ['claude-sonnet-5-5', 'claude-opus-5-5', 'claude-haiku-5-5', 'claude-fable-5-2', 'claude-fable-5-1', 'claude-fable-5', 'claude-opus-4-8', 'claude-opus-4-7'] as const
 // Every supported Claude model has a 1M-token context window.
 export const CLAUDE_CONTEXT_LENGTH = 1_000_000
 export function isClaudeProvider(provider: unknown): boolean {
