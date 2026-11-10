@@ -27,10 +27,10 @@ describe('Claude durable session state', () => {
   })
   it('does not expose Graviton app credentials to native tools', () => {
     const env = claudeProcessEnvironment({ HOME: '/home/test', PATH: '/bin', ANTHROPIC_API_KEY: 'test-api',
-      OPENAI_CHATGPT_ACCESS_TOKEN: 'must-not-inherit', SUPABASE_SERVICE_ROLE_KEY: 'must-not-inherit',
+      OPENAI_CHATGPT_ACCESS_TOKEN: 'must-not-inherit', EXAMPLE_SERVICE_ROLE_KEY: 'must-not-inherit',
       ELECTRON_RUN_AS_NODE: '1', CLAUDECODE: '1', NODE_OPTIONS: '--inspect', AWS_SECRET_ACCESS_KEY: 'must-not-inherit', GOOGLE_APPLICATION_CREDENTIALS: '/private/key' })
     expect(env.ANTHROPIC_API_KEY).toBe('test-api')
-    for (const key of ['OPENAI_CHATGPT_ACCESS_TOKEN', 'SUPABASE_SERVICE_ROLE_KEY', 'ELECTRON_RUN_AS_NODE', 'CLAUDECODE', 'NODE_OPTIONS', 'AWS_SECRET_ACCESS_KEY', 'GOOGLE_APPLICATION_CREDENTIALS']) expect(env[key]).toBeUndefined()
+    for (const key of ['OPENAI_CHATGPT_ACCESS_TOKEN', 'EXAMPLE_SERVICE_ROLE_KEY', 'ELECTRON_RUN_AS_NODE', 'CLAUDECODE', 'NODE_OPTIONS', 'AWS_SECRET_ACCESS_KEY', 'GOOGLE_APPLICATION_CREDENTIALS']) expect(env[key]).toBeUndefined()
   })
   it.each(['Claude Code', 'claudecode', 'claude', 'anthropic(claudecli)'])('detects immutable transcript identity for %s on user and assistant metadata', provider => {
     expect(isClaudeTranscriptMessage({ meta: JSON.stringify({ modelSelection: { provider } }) })).toBe(true)

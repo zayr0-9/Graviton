@@ -141,7 +141,7 @@ The orchestration engine lives in `server/headlessServer/`:
 - `services/chatOrchestrator.ts`: main-turn orchestration and permission decisions.
 - `services/branchOrchestrator.ts`: branch history and durable lineage resolution.
 - `services/toolLoopService.ts`: shared provider/tool loop, hooks, and compaction.
-- `services/messageSink.ts`: persisted message delivery and cloud mirroring.
+- `services/messageSink.ts`: persisted message delivery (`TreeMessageSink`).
 
 Paths in this overview's runtime sections are relative to `client/ygg-chat-r/`.
 

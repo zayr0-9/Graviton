@@ -7,6 +7,11 @@ it can **read & write files**, **search code**, **run shell commands**, and **in
 
 > Core thesis: **LLMs work best with iterative workflows**
 
+Graviton is **fully local**. There is no account, sign-in, cloud sync or hosted backend: your
+conversations, projects and settings stay in a local SQLite database on your machine. The app only
+talks to the model providers you configure (ChatGPT, your own OpenRouter key, LM Studio, Z.ai,
+Bedrock, Claude Code), MCP servers you add, the app-store catalog, and GitHub Releases for updates.
+
 ---
 
 ## What you get
@@ -132,39 +137,37 @@ These are especially useful if you want to understand the internal design of the
 
 ## Getting Started (Development)
 
-## Build
+No `.env` file or account is needed. Clone the repo and run:
+
+```bash
+cd ygg-chat
+npm ci --include=optional
+npm run dev            # starts the Electron app with Vite hot reload
+```
+
+### Build
 
 ```bash
 cd ygg-chat/client/ygg-chat-r
-npm install --workspaces=false --include=optional
-npm run build:win
+npm run build:mac      # or build:win / build:linux
 ```
 
-Dependent on your platform you can use -
+Release builds are published to [GitHub Releases](https://github.com/zayr0-9/Graviton/releases),
+which the app also uses for auto-updates.
 
-`npm run build:win`
-`npm run build:linux`
-`npm run build:mac`
+### Standalone server (optional)
+
+```bash
+cd ygg-chat/client/ygg-chat-r
+npm run build:server
+YGG_DATA_DIR=/path/to/data npm run start:server
+npm run dev:standalone   # renderer against the standalone server
+```
 
 ### If you run into native module issues, try:
 
 ```bash
-npm --prefix client/ygg-chat-r run rebuild:client
-```
-
-```bash
-cd ygg-chat/client/ygg-chat-r
-npm install --workspaces=false --include=optional
-npm run dev
-```
-
-- Web UI: http://localhost:5173
-
-### Electron (desktop dev)
-
-```bash
-cd ygg-chat/client/ygg-chat-r
-npm run electron
+npm --prefix ygg-chat/client/ygg-chat-r run rebuild:client
 ```
 
 ### Why not MIT from day one?

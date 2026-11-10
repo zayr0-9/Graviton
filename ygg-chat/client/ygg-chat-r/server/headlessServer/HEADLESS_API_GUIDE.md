@@ -1,5 +1,10 @@
 # Ygg Headless Server API Guide (Inference)
 
+> **Historical — cloud parts removed.** Graviton is now fully local (2026-11): there is no Supabase/Railway
+> account or sync, cloud storage mode, hosted OpenRouter provider, Stripe billing or web product. Sections that
+> describe those are kept for history only. Current behaviour: `ygg-chat/docs/agent_context/AGENT.md`.
+
+
 This guide explains how to call the Electron headless server so external clients (web, mobile, CLI, other apps) can run inference.
 
 > Source of truth used for this guide:
@@ -46,7 +51,7 @@ These stream Server-Sent Events (`text/event-stream`) and persist messages in DB
 
 These return JSON and do not require an existing conversation.
 
-> Note: current implementation is OpenAI ChatGPT focused. For OpenRouter streaming in Electron integrations (including custom-tool UI `REQUEST_GENERATION`), use `/api/conversations/:id/messages` with `provider: "openrouter"`.
+> Note: current implementation is OpenAI ChatGPT focused. For OpenRouter streaming in Electron integrations (including custom-tool UI `REQUEST_GENERATION`), use `/api/conversations/:id/messages` with `provider: "openrouterbyok"` (the user's own OpenRouter key; the legacy name `openrouter` is an alias).
 
 ### C) Subagent orchestration (SSE)
 
@@ -61,7 +66,7 @@ Request body: `{ conversationId, parentMessageId, toolCallId?, streamId?, prompt
 systemPrompt?, provider, modelName, tools?: string[], maxTurns?, temperature?,
 operationMode?, autoApprove, rootPath?, userId?, accessToken?, accountId? }`. Tool
 definitions are resolved server-side by name (the `subagent` tool is always excluded).
-`provider: "openrouter"` is rejected — subagents run on the local providers only.
+Subagents use the same provider routes as the main loop; unknown provider names return `400`.
 The transcript is persisted to `subagent_runs` / `subagent_messages` (see
 `agent_subagents_orchestration.md`); closing the SSE connection aborts the run.
 
@@ -72,7 +77,7 @@ The transcript is persisted to `subagent_runs` / `subagent_messages` (see
 Supported providers in router:
 
 - `openaichatgpt` (default)
-- `openrouter`
+- `openrouterbyok` (`openrouter` is accepted as an alias)
 - `lmstudio`
 
 ### OpenAI auth requirements
@@ -294,11 +299,11 @@ OpenAI:
 - `GET /api/provider-auth/openai/token?userId=...` → `{ success, hasToken }`
 - `DELETE /api/provider-auth/openai/token?userId=...`
 
-OpenRouter:
+OpenRouter (your own key):
 
-- `POST /api/provider-auth/openrouter/token`
-- `GET /api/provider-auth/openrouter/token?userId=...`
-- `DELETE /api/provider-auth/openrouter/token?userId=...`
+- `POST /api/provider-auth/openrouter-byok/token`
+- `GET /api/provider-auth/openrouter-byok/token?userId=...`
+- `DELETE /api/provider-auth/openrouter-byok/token?userId=...`
 
 Models discovery:
 
@@ -366,6 +371,6 @@ If you want, I can also generate a second file with ready-to-run **TypeScript SD
 
 ## Managed OAuth migration
 
-Supabase app sessions and Codex connections are now server-owned. Raw OAuth registration at `/api/provider-auth/openai/token` and `/api/provider-auth/openrouter/token` (POST) returns 410. GET returns public status; DELETE disconnects the managed slot. Environment/per-request OAuth tokens no longer override managed inference credentials. API-key providers are unchanged.
+Supabase app sessions and Codex connections are now server-owned. Raw OAuth registration at `/api/provider-auth/openai/token` and `/api/provider-auth/openrouter-byok/token` (POST) returns 410. GET returns public status; DELETE disconnects the managed slot. Environment/per-request OAuth tokens no longer override managed inference credentials. API-key providers are unchanged.
 
 Use `/api/openai/auth/start`, browser/manual callback, then `/api/openai/auth/complete`. Completion returns `{success, snapshot, email}`, not access/refresh tokens; do not copy it into provider-token storage. The desktop owns app login through typed auth IPC. Reconnect-required runs end with an actionable error; sign-in never automatically replays tools.

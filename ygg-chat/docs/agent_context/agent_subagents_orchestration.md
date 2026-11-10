@@ -24,15 +24,14 @@ That same `ToolLoopService` now ALSO powers the main chat loop
 with two callers. They diverge only in what each INJECTS, never in the loop body:
 
 - **MessageSink** — subagents use `SubagentTranscriptSink` (transcript rows); the
-  main loop uses `TreeMessageSink` / `CloudMirrorSink` (the chat tree).
+  main loop uses `TreeMessageSink` (the chat tree).
 - **Tool executor** — subagents inject a `countingExecutor` whose gate is a
   STATIC auto-approve check (`assertToolAllowedWithoutAutoApprove`); the main loop
   injects `createChatPausingExecutor`, which PAUSES per tool call via the
   `DecisionBroker` and asks the renderer for a permission / clarify decision. The
   `ToolLoopService` itself has no pause/permission concept — it just awaits
   `executeTool(...)`; both differences live entirely in the injected executor.
-- **Optional `ToolLoopRunInput` fields** — main-loop-only behavior (`hooks`,
-  `relayFreeTierEvents`, and the cloud sink) is opt-in and left UNSET for
+- **Optional `ToolLoopRunInput` fields** — main-loop-only behavior (`hooks`) is opt-in and left UNSET for
   subagents. Both callers enable transient provider-error retry through
   `robustness`; subagents also enable empty-turn retry and silent-tool finalization.
   Validate both callers when changing shared loop behavior.
@@ -51,14 +50,14 @@ Use this when changing:
 
 - `client/ygg-chat-r/server/headlessServer/services/toolLoopService.ts`: the SHARED
   loop engine. `MessageSink` port + `ToolExecutor` port; opt-in `ToolLoopRunInput`
-  fields (`robustness`, `hooks`, `relayFreeTierEvents`, `signal`,
-  `railwaySessionId`, `allowCommentaryFallbackText`). No permission/pause logic here.
+  fields (`robustness`, `hooks`, `signal`,
+  `allowCommentaryFallbackText`). No permission/pause logic here.
 - `client/ygg-chat-r/server/headlessServer/services/subagentRunService.ts`: the subagent
   caller of the engine — `run`/`runForTool`, validation, run + `streaming_runs` lifecycle, tool
   resolution, provider auth re-sync (`refreshProviderTokens`), the `countingExecutor`
   (static read-only/auto-approve gate + tool-call counting), the transcript
   compactor, and terminal-state mapping. Sets `robustness:{ retryEmptyTurn,
-  finalizeOnSilentToolEnd }`; leaves `hooks`/`relayFreeTierEvents` unset.
+  finalizeOnSilentToolEnd }`; leaves `hooks` unset.
 - `client/ygg-chat-r/server/headlessServer/services/chatOrchestrator.ts`: the OTHER
   caller of the engine (main chat loop). `createChatPausingExecutor` is the
   main-loop counterpart to `countingExecutor` — same `ToolExecutor` port, but it
@@ -77,7 +76,7 @@ Use this when changing:
   delegate to the leaf `ToolOrchestrator` executor.
 - `client/ygg-chat-r/server/headlessServer/routes/subagentRoutes.ts`:
   `POST /api/headless/subagent/stream` (SSE + heartbeat + client-disconnect abort;
-  rejects `openrouter` before opening the stream).
+  provider defaults to `openaichatgpt`).
 - `client/ygg-chat-r/server/headlessServer/services/subagentTranscriptSink.ts`:
   `MessageSink` that writes subagent turns to the transcript instead of the chat tree.
 - `client/ygg-chat-r/server/headlessServer/persistence/subagentRunRepo.ts`: repo over
@@ -108,8 +107,7 @@ Use this when changing:
 ## Data Flow
 
 1. **Entry point** — `POST /api/headless/subagent/stream` (`subagentRoutes.ts`):
-   validates the body (`conversationId`/`parentMessageId`/`prompt`; rejects
-   `openrouter`), opens SSE + heartbeat, wires an `AbortController` to `res` close,
+   validates the body (`conversationId`/`parentMessageId`/`prompt`), opens SSE + heartbeat, wires an `AbortController` to `res` close,
    and calls `SubagentRunService.run(request, emit, signal)`.
 2. `SubagentRunService.run` refreshes provider auth, resolves the requested tool
    names to definitions (always excluding `subagent`; plan mode additionally applies
@@ -153,8 +151,8 @@ Both entry paths now share the server-side `SubagentRunService`:
   the requested child tool names plus the always-required `multi_call` tool; otherwise
   the server default child tool set is used. Direct server requests also have
   `multi_call` added during tool resolution, so every subagent can invoke it.
-  OpenRouter parents fall back to the local ChatGPT subagent provider, matching the
-  retained renderer client's local-only rule.
+  Subagent providers resolve through the same `ProviderRouter` as the main loop; the
+  legacy `openrouter` name means the user's own key (`openrouterbyok`).
 
 The old renderer dispatcher remains deleted. `subagentClient.executeSubagentCall`
 is retained for direct renderer/SSE use and tests, but the server-owned main loop
@@ -179,8 +177,8 @@ does not round-trip through the renderer or the unfinished `tool_request` bridge
 - **No nested subagents.** The engine always excludes `subagent` and
   `subagent_manager` from a subagent's tool set. The parent chat may use both in
   Plan Mode; child runs still cannot spawn nested agents.
-- **Local providers only.** `openrouter` subagents fall back to the default local
-  provider client-side and are rejected server-side (`subagentRoutes.ts`).
+- **Provider routes.** Subagents use the same provider routes as the main loop
+  (`openaichatgpt`, `openrouterbyok`, `lmstudio`, `zai`, `bedrock`); `openrouter` aliases to `openrouterbyok`.
 - **Cancellation depends on entry path.** Direct subagent SSE disconnect aborts
   its route controller. Blocking parent dispatch inherits the parent signal.
   Detached manager runs own their controller and survive parent cancellation;

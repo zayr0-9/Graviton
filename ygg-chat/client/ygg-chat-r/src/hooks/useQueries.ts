@@ -1326,7 +1326,7 @@ export function useSearchConversations(
       }
 
       // Non-electron fallback (not a shipping target): route through the gateway
-      // (:3002/api/gw/*) keyed by userId — no renderer token, no direct Railway.
+      // (:3002/api/gw/*) keyed by userId.
       if (!userId) {
         console.warn('[useSearchConversations] No userId available, skipping server search')
         return []

@@ -49,9 +49,8 @@ Retired in the same migration (paired subsystems):
 - `client/ygg-chat-r/electron/tools/claudeCode.ts` — the Claude Code tool + its
   routes/thunks/reducers. DELETED.
 - `client/ygg-chat-r/src/features/chats/dualSyncManager.ts` and
-  `client/ygg-chat-r/src/lib/sync/` — DELETED; replaced server-side by
-  `server/headlessServer/services/cloudMirrorService.ts` + the `CloudMirrorSink`
-  (see [`agent_headless_server.md`](agent_headless_server.md)).
+  `client/ygg-chat-r/src/lib/sync/` — DELETED (their server-side cloud-mirror replacement was later
+  removed too in the fully-local migration).
 
 ## Grep traps (do not be misled)
 

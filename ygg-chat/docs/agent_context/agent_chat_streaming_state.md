@@ -160,7 +160,7 @@ messages and transport disconnects do not finalize statistics.
   server-owned rows; main chat thunks no longer write duplicate lifecycle timestamps.
 - Main sinks stamp `meta.runStatistics` with stream ID, version, and model-response/error kind.
   Terminal metadata includes response count; cancelled runs retain separate assistant and
-  structural endpoints. Cloud tree reads enrich messages with locally recorded provenance.
+  structural endpoints. Tree reads enrich messages with locally recorded provenance.
 - Tool counts include all invocation rows for that run ID, including wrappers/nested attempts,
   but never separate subagent streams. Historical missing recording is not treated as zero.
 - Default tokens are a `tokenx` estimate of raw payload in the bounded run slice: user input,

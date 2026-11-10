@@ -13,7 +13,7 @@
  * rather than as a silent runtime no-op.
  *
  * FAILURE DATA IS NEVER DISCARDED. Every frame that carries a classified failure
- * (`error`, `reauth_required`, `generation_limit_reached`, a badged `complete`) or
+ * (`error`, a badged `complete`) or
  * an explained silence (`notice`, a failed `tool_execution`) projects something.
  * The two surfaces are:
  *   - an in-order `streamChunkReceived` (`type:'error'` / `type:'notice'`), which

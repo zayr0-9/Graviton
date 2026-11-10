@@ -1,5 +1,9 @@
 # Summary of General Project Context
 
+> **Historical — cloud parts removed.** Graviton is now fully local (2026-11): there is no Supabase/Railway
+> account or sync, cloud storage mode, hosted OpenRouter provider, Stripe billing or web product. Sections that
+> describe those are kept for history only. Current behaviour: `ygg-chat/docs/agent_context/AGENT.md`.
+
 `ygg-chat` is a full-stack AI chat product with web (React + Express + Supabase) and Electron runtimes, featuring agentic tooling and a persistent global background agent. It is organized as an npm workspace with three main parts:
 - `client/ygg-chat-r`: Frontend (React) and Electron code
 - `server`: Cloud/server API (Express)

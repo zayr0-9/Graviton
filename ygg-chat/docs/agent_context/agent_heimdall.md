@@ -142,7 +142,7 @@ For selected-message copying/moving:
 
 - Treat filtering as visual-only. Actions should use flat Redux messages so hidden messages in a selected path are not accidentally lost.
 - Do not dispatch `fetchMessageTree` for a non-current conversation from Heimdall unless you intend to replace Chat Redux state. Prefer React Query invalidation for other conversations.
-- Preserve ID comparisons by string when crossing local/cloud or UUID/legacy boundaries.
+- Preserve ID comparisons by string when crossing UUID/legacy boundaries.
 - Keep `data-heimdall-wheel-exempt='true'` on scrollable overlays so the graph wheel handler does not hijack modal/list scrolling.
 - Keep hover-preview positioning wrappers pointer-transparent and visible preview cards pointer-active; do not add invisible hit areas above graph nodes.
 - Keep node elements carrying `data-node-id`; context-menu and hover logic depend on `closest('[data-node-id]')`.
@@ -230,6 +230,6 @@ large streaming trees, note/action focus transitions, and screen-reader behavior
 
 The store's serializability check skips only trees registered by that validator; all other data remains checked. Its recursive frozen-value cache is disabled. Redux DevTools serialization substitutes a diagnostic tree ID marker rather than serializing the derived hierarchy; the actual application state is not truncated.
 
-Authoritative desktop snapshots request `includeTree=false`. App-local/gateway-local routes return all enriched message rows and `tree:null` without constructing a server tree. Default responses remain compatible. Cloud upstream still uses its existing enriched tree endpoint (outside this repository); only the local gateway's outgoing tree is omitted, so upstream serialization depth is not fixed here.
+Authoritative desktop snapshots request `includeTree=false`. App-local/gateway-local routes return all enriched message rows and `tree:null` without constructing a server tree. Default responses remain compatible.
 
 Regression coverage: `deepConversationTree.test.ts` uses 20,000-deep trees with real Redux middleware/QueryClient and graph helpers; the Electron selection smoke covers deep load/refetch/route return. Route tests verify flat enriched snapshots serialize at that depth. Never use recursive deep-equality/stringification to inspect stress-test trees.

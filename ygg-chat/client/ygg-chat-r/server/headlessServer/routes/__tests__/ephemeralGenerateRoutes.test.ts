@@ -8,10 +8,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { ProviderTokenStore } from '../../providers/tokenStore.js'
 import { registerEphemeralGenerateRoutes } from '../ephemeralGenerateRoutes.js'
 
-// Neutralize the Electron-session sync. It does `new Conf({ projectName: 'ygg-chat-r' })`,
-// which reads the DEVELOPER'S REAL signed-in config and, when that session is near
-// expiry, POSTs to Supabase to refresh it — then upserts the result into the very
-// token store these tests preload.
+// Neutralize the host auth runtime. It reads `new Conf({ projectName: 'ygg-chat-r' })`,
+// i.e. the DEVELOPER'S REAL settings, and could refresh a stored credential over the
+// network — then upsert the result into the very token store these tests preload.
 //
 // The `XDG_CONFIG_HOME` temp dir set in beforeEach was meant to isolate that, but
 // `conf` resolves its path through `env-paths`, which on macOS returns
@@ -52,7 +51,6 @@ describe('registerEphemeralGenerateRoutes', () => {
     delete process.env.OPENAI_CHATGPT_ACCOUNT_ID
     delete process.env.YGG_APP_ACCESS_TOKEN
     delete process.env.YGG_ACCESS_TOKEN
-    delete process.env.SUPABASE_ACCESS_TOKEN
     tokenStore = new ProviderTokenStore()
     const app = express()
     app.use(express.json())
@@ -71,7 +69,6 @@ describe('registerEphemeralGenerateRoutes', () => {
     delete process.env.OPENAI_CHATGPT_ACCOUNT_ID
     delete process.env.YGG_APP_ACCESS_TOKEN
     delete process.env.YGG_ACCESS_TOKEN
-    delete process.env.SUPABASE_ACCESS_TOKEN
     if (previousXdgConfigHome === undefined) delete process.env.XDG_CONFIG_HOME
     else process.env.XDG_CONFIG_HOME = previousXdgConfigHome
     if (tempConfigDir) await rm(tempConfigDir, { recursive: true, force: true })

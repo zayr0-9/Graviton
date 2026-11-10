@@ -1,5 +1,9 @@
 # General Project Context (Agent Overview)
 
+> **Historical — cloud parts removed.** Graviton is now fully local (2026-11): there is no Supabase/Railway
+> account or sync, cloud storage mode, hosted OpenRouter provider, Stripe billing or web product. Sections that
+> describe those are kept for history only. Current behaviour: `ygg-chat/docs/agent_context/AGENT.md`.
+
 This file is a high-level architecture map of `ygg-chat` for agents and developers. It explains runtime modes, where core logic lives, and which files to open first for common tasks.
 
 ## 1) What this project is

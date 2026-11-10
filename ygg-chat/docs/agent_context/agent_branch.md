@@ -227,7 +227,7 @@ The synthetic `root` is visual-only. Reducers such as `selectedNodePathSet` filt
 - Keep all messages in a branch under the same `conversation_id`.
 - Use `parent_id: null`, not an empty string, for roots.
 - Keep `children_ids` as JSON text in SQLite and arrays in normalized frontend state.
-- Compare IDs defensively with `String(id)` when crossing local/cloud/legacy boundaries.
+- Compare IDs defensively with `String(id)` when crossing legacy id boundaries.
 - Treat `children_ids` as sibling order for tree rendering, but use `parent_id` for ancestor walking.
 - Multiple root messages are valid in one conversation; Heimdall handles them with a synthetic root.
 - A lineage is a stable persisted identity; its visible path is a projection resolved from its current head through `parent_id`. Do not use a leaf message ID, stream ID, or tool-call ID as lineage identity.

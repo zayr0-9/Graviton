@@ -1,5 +1,9 @@
 # System Design for Stripe Subscriptions and Credits Ledger
 
+> **Historical — cloud parts removed.** Graviton is now fully local (2026-11): there is no Supabase/Railway
+> account or sync, cloud storage mode, hosted OpenRouter provider, Stripe billing or web product. Sections that
+> describe those are kept for history only. Current behaviour: `ygg-chat/docs/agent_context/AGENT.md`.
+
 The simplest, non-redundant design is to make Stripe the single source of truth for subscription periods and your own credits ledger the single source of truth for balance. Everything else becomes a thin cache or lookup. Here’s a minimal, clean architecture.
 
 ## Guiding Principles

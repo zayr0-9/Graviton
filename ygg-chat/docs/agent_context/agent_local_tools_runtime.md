@@ -64,7 +64,7 @@ Permission/clarify decisions are NOT renderer-owned pre-checks anymore. The loop
 3. The loop calls the base executor `executeToolViaOrchestrator` in-process (Electron main), which submits to `toolOrchestrator` and polls `getJob` until terminal. UI-triggered theme and iframe tool calls use `POST /api/jobs/execute-and-wait`; background jobs and the tool-jobs UI use the same job routes. The direct `/api/tools/execute` endpoint has been removed. Execute-and-wait jobs currently continue after caller disconnect and are still bounded by the existing job/wait timeouts.
 4. Composite `multi_call` calls are intercepted in-process; each nested call re-enters the chat permission/hook wrapper or the subagent approval gate before reaching the leaf executor. Ordinary calls go directly to `toolOrchestrator`, which dispatches to the registered built-in/custom/MCP implementation.
 5. Tool returns a structured success/error payload.
-6. Result is streamed to the renderer as SSE `tool_execution` / `chunk` (`tool_result`) events and persisted as a tool-result message via the loop's message sink (`TreeMessageSink`/`CloudMirrorSink`).
+6. Result is streamed to the renderer as SSE `tool_execution` / `chunk` (`tool_result`) events and persisted as a tool-result message via the loop's message sink (`TreeMessageSink`).
 
 ## Important Invariants
 
