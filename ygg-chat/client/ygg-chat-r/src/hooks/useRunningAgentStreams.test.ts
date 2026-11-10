@@ -4,6 +4,7 @@ import { createEmptyStreamState } from '../features/chats/streamHelpers'
 import {
   buildAgentConversationLookup,
   buildAgentForkGroups,
+  excludeViewedAgentFork,
   getAgentForkKey,
   limitFinishedAgentHistory,
   retainAgentParentPreview,
@@ -149,6 +150,36 @@ describe('fork-grouped agent presentation', () => {
     expect(result.activeForks[0].activeStreams).toHaveLength(1)
     expect(result.activeForks[0].completedStreams).toEqual([])
     expect(buildAgentForkGroups([], [])).toEqual({ activeForks: [], historyForks: [] })
+  })
+})
+
+describe('excludeViewedAgentFork', () => {
+  it('hides the whole fork of the run open in Chat, including its completed runs', () => {
+    const viewed = run('viewed')
+    const sibling = run('sibling', { lineageId: 'fork-b' })
+    const pastSameFork = completed('past-same')
+    const pastOtherFork = completed('past-other', { lineageId: 'fork-b' })
+    const result = excludeViewedAgentFork([viewed, sibling], [pastSameFork, pastOtherFork], 'viewed')
+    expect(result.activeStreams).toEqual([sibling])
+    expect(result.streamHistory).toEqual([pastOtherFork])
+    const groups = buildAgentForkGroups(result.activeStreams, result.streamHistory)
+    expect(groups.activeForks.map(fork => fork.lineageId)).toEqual(['fork-b'])
+    expect(groups.historyForks).toEqual([])
+  })
+
+  it('hides only the run itself while its fork is unconfirmed', () => {
+    const viewed = run('viewed', { lineageIdConfirmed: false })
+    const other = run('other', { lineageIdConfirmed: false })
+    expect(excludeViewedAgentFork([viewed, other], [], 'viewed').activeStreams).toEqual([other])
+  })
+
+  it('changes nothing when no run is viewed or the viewed run is no longer active', () => {
+    const active = [run('a')]
+    const history = [completed('b')]
+    expect(excludeViewedAgentFork(active, history, null)).toEqual({ activeStreams: active, streamHistory: history })
+    const unchanged = excludeViewedAgentFork(active, history, 'b')
+    expect(unchanged.activeStreams).toBe(active)
+    expect(unchanged.streamHistory).toBe(history)
   })
 })
 

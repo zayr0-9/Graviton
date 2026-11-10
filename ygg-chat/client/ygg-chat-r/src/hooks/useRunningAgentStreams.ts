@@ -61,6 +61,25 @@ export const getAgentForkKey = (stream: AgentStreamListItem): string =>
     ? JSON.stringify(['fork', stream.conversationId, stream.lineageId])
     : JSON.stringify(['run', stream.streamId])
 
+/**
+ * Drop the whole fork of the run Chat is currently showing, so the pill does not show
+ * the same live stream twice. Its completed runs go too, so the fork never reads as
+ * finished while it is still running on screen. Presentation only.
+ */
+export const excludeViewedAgentFork = (
+  activeStreams: AgentStreamListItem[],
+  streamHistory: AgentStreamListItem[],
+  viewedStreamId: string | null
+): { activeStreams: AgentStreamListItem[]; streamHistory: AgentStreamListItem[] } => {
+  const viewed = viewedStreamId == null ? undefined : activeStreams.find(stream => stream.streamId === viewedStreamId)
+  if (!viewed) return { activeStreams, streamHistory }
+  const viewedKey = getAgentForkKey(viewed)
+  return {
+    activeStreams: activeStreams.filter(stream => getAgentForkKey(stream) !== viewedKey),
+    streamHistory: streamHistory.filter(stream => getAgentForkKey(stream) !== viewedKey),
+  }
+}
+
 /** Reconcile late terminal metadata without losing snapshots of pruned runs. */
 export const refreshAgentStreamHistory = (
   history: AgentStreamListItem[],
