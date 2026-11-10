@@ -5,7 +5,7 @@ import { hostAuthTransport } from './transport'
 afterEach(() => vi.unstubAllGlobals())
 describe('browser identity transport', () => {
   it('uses the host origin without preload or credential migration', async () => {
-    const state = { app: {}, codex: {}, user: { id: 'host-user' } }
+    const state = { codex: {}, user: { id: 'host-user' } }
     const fetcher = vi.fn(async () => ({ ok: true, json: async () => state }))
     vi.stubGlobal('fetch', fetcher)
     vi.stubGlobal('window', {})

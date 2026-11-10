@@ -1,4 +1,3 @@
-import { assertConversationNotDeleting } from '../persistence/deleteMessages.js'
 import { executionPathAfterHandoff, portableSummaryText } from '../../../../../shared/summaryHandoff.js'
 import { isCleanStartUserBranch } from '../../../../../shared/cleanStartBranch.js'
 import { CLAUDE_TRANSFERRED_SOURCE_MESSAGE, isTransferredMessage, transferredSummaryAtTip } from '../../../../../shared/claudeTransfer.js'
@@ -583,7 +582,6 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
   }
 
   validateExecutionSelection(request: HeadlessMessageRequest): void {
-    assertConversationNotDeleting(this.db, request.conversationId)
     const sourceId = request.operation === 'send' ? request.parentId : request.messageId ?? request.parentId
     const path = sourceId ? this.conversationRepo.listPathToMessage(request.conversationId, sourceId) : []
     // A second pending send cannot switch a newly accepted Claude run before its first row exists.

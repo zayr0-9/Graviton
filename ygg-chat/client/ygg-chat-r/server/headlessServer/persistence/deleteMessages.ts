@@ -8,26 +8,6 @@ interface LineageRow {
 const hasTable = (db: Database.Database, name: string): boolean =>
   Boolean(db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(name))
 
-const deletionLocks = new WeakMap<Database.Database, Set<string>>()
-
-export function assertConversationNotDeleting(db: Database.Database, conversationId: string): void {
-  if (deletionLocks.get(db)?.has(conversationId)) {
-    throw Object.assign(new Error('Message deletion is in progress. Wait before sending again.'), { status: 409, code: 'run_unavailable' })
-  }
-}
-
-/** Cloud authority and its local mirror must settle before another run is admitted. */
-export async function withMessageDeletionLock<T>(db: Database.Database, ids: readonly string[], operation: () => Promise<T>): Promise<T> {
-  const conversations = db.prepare(`SELECT DISTINCT conversation_id FROM messages WHERE id IN (SELECT value FROM json_each(?))`)
-    .all(JSON.stringify(ids)) as Array<{ conversation_id: string }>
-  for (const row of conversations) assertConversationNotDeleting(db, row.conversation_id)
-  const locked = deletionLocks.get(db) ?? new Set<string>()
-  deletionLocks.set(db, locked)
-  for (const row of conversations) locked.add(row.conversation_id)
-  try { return await operation() }
-  finally { for (const row of conversations) locked.delete(row.conversation_id) }
-}
-
 function deletionRows(db: Database.Database, ids: readonly string[]): MessageRow[] {
   return db.prepare(`WITH RECURSIVE subtree(id) AS (
     SELECT id FROM messages WHERE id IN (SELECT value FROM json_each(?)) UNION

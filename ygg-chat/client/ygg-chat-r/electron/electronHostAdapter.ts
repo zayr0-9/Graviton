@@ -72,8 +72,7 @@ function buildConfigStore(): KeyValueStore {
 
 /**
  * Secrets live in the same Conf store under a dedicated prefix. No server
- * module consumes SecretStore yet (electronAppAuth reads its legacy keys
- * through the config store); this exists so capability wiring is complete.
+ * module consumes SecretStore yet; this exists so capability wiring is complete.
  */
 function buildSecretStore(): SecretStore {
   const store = createConfStore()

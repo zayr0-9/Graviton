@@ -224,7 +224,7 @@ describe('watcher reattachment wiring', () => {
     })
     const result = await resumeInFlightStreams({ conversationId: 'chat', streamId: 'successor' })(
       h.dispatch as any, () => ({ chat: h.get() }) as RootState,
-      { auth: { accessToken: null, userId: null }, queryClient: null } as any,
+      { auth: { userId: null }, queryClient: null } as any,
     )
     expect(result.type).toBe(resumeInFlightStreams.fulfilled.type)
     expect(runServerReattach).toHaveBeenCalledTimes(1)

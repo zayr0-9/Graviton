@@ -305,17 +305,6 @@ describe('source lineage membership validation', () => {
     if (testDirectory) rmSync(testDirectory, { recursive: true, force: true })
   })
 
-  it('fences real constructor admission during cloud deletion and releases it afterward', async () => {
-    const { withMessageDeletionLock } = await import('../../persistence/deleteMessages.js')
-    const source = messageRepo.createMessage({ conversationId: 'c1', parentId: null, role: 'user', content: 'source' })
-    await withMessageDeletionLock(db, [source.id], async () => {
-      expect(() => orchestrator.validateExecutionSelection({ operation: 'send', conversationId: 'c1',
-        provider: 'openaichatgpt', modelName: 'test', content: 'next', parentId: source.id } as any)).toThrow('deletion is in progress')
-    })
-    expect(() => orchestrator.validateExecutionSelection({ operation: 'send', conversationId: 'c1',
-      provider: 'openaichatgpt', modelName: 'test', content: 'next', parentId: source.id } as any)).not.toThrow()
-  })
-
   it('forks an explicit branch send from the lineage head instead of appending in place', async () => {
     db.exec(CLAUDE_SESSION_SCHEMA)
     const claudeSessions = { run: vi.fn(async (input: any) => {

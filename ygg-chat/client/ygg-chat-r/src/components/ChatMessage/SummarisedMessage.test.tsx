@@ -23,7 +23,7 @@ vi.mock('../../features/chats/chatActions', () => ({
   fetchMcpTools: vi.fn(),
 }))
 vi.mock('../../features/chats/chatSlice', () => ({ chatSliceActions: {} }))
-vi.mock('../../utils/api', () => ({ environment: 'local', localApi: {} }))
+vi.mock('../../utils/api', () => ({ localApi: {} }))
 vi.mock('../HtmlIframeRegistry/HtmlIframeRegistry', () => ({}))
 vi.mock('../ImageModal/ImageModal', () => ({}))
 vi.mock('./MessageActions', () => ({}))

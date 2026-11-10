@@ -105,7 +105,6 @@ export interface SendMessageRequest {
   executionMode?: 'server' | 'client'
   isBranch?: boolean
   attachmentsBase64?: any[]
-  storageMode?: StorageMode
   isElectron?: boolean
   imageConfig?: ImageConfig
   reasoningConfig?: ReasoningConfig

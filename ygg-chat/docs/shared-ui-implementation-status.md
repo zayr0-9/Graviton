@@ -1,5 +1,8 @@
 # Shared UI implementation status
 
+> **Fully-local update (2026-11-10).** App login, cloud sign-in, cloud prompts and cloud attachment/ID adoption were
+> removed with the fully-local migration. They are no longer acceptance items. The validation logs below are historical.
+
 This is an implementation checkpoint, **not completion of the full shared-client plan**.
 
 Plan: `.ygg/plans/graviton-shared-ui-multiclient-v1.md` at the Graviton repository root.

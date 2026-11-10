@@ -53,12 +53,12 @@ An installed app therefore upgrades itself once per migration and never re-runs 
   reapplying completed migrations on subsequent launches.
 - The migration added storage only; the column is now used without a further schema
   change. `PATCH /api/app/conversations/:id` validates and writes it (gateway route
-  `/api/gw/conversations/:id/additional-cwds`, local row only, cloud chats included).
+  `/api/gw/conversations/:id/additional-cwds`, local row only).
   Runs read it from the row, never from the request: Graviton tools allow paths inside
   any listed root (`hasToolAccessTo` in `server/toolAccessContext.ts`), and Claude
   sessions receive it as `additionalDirectories`. Relative paths still resolve against
   `cwd`. Instruction files (AGENTS.md / CLAUDE.md) still load from `cwd` only.
-- This is a local SQLite migration, not a migration of the external cloud database.
+- This is a local SQLite migration.
 
 ## Search index maintenance (v5)
 

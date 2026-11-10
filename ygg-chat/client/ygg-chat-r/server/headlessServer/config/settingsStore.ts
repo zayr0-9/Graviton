@@ -1,12 +1,12 @@
 // server/headlessServer/config/settingsStore.ts
-// One accessor for the host settings store used by electronAppAuth.ts.
+// One accessor for the host settings store (auth runtime, host prompt/execution stores).
 //
 // When the server factory configured host capabilities, the injected
 // KeyValueStore wins: the Electron adapter wraps the same Conf store the
 // desktop app writes (projectName 'ygg-chat-r'), and the standalone CLI wraps
 // a JSON file under YGG_DATA_DIR. The direct-Conf fallback keeps legacy
 // behavior for code paths and unit tests that run without a configured host.
-// Stored key formats (`auth_session`, `gateway.*`, `openai_chatgpt_tokens`)
+// Stored key formats (for example `managed_auth_v1`, `openai_chatgpt_tokens`)
 // are identical through either path.
 
 import Conf from 'conf'

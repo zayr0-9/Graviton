@@ -6,7 +6,7 @@ backend or `.env` file. All data is stored in local SQLite.
 
 ## Develop
 
-Install once from the workspace root (`ygg-chat/`) with `npm ci --include=optional`, then:
+Install once from the workspace root (`ygg-chat/`) with Node.js 22 and `npm ci --include=optional`, then:
 
 ```bash
 npm run dev              # Electron app with Vite hot reload

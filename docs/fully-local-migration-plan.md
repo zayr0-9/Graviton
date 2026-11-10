@@ -1,6 +1,6 @@
 # Graviton fully-local migration plan (v1)
 
-**Date:** 2026-11-09 · **Status:** not started · open questions answered 2026-11-10 (see [Decision log](#decision-log-open-questions)) · **Scope:** 858 locations in 347 files. The per-location checklist, grouped by phase, follows the Progress log.
+**Date:** 2026-11-09 · **Status:** P0–P8 implemented on `chore/fully-local` (2026-11-10); automated acceptance checks pass. Still open: manual no-account network check, Q17 contact changes, Q21 history scrub (separate go-ahead) · open questions answered 2026-11-10 (see [Decision log](#decision-log-open-questions)) · **Scope:** 858 locations in 347 files. The per-location checklist, grouped by phase, follows the Progress log.
 
 | Phase | Locations |
 |---|---|
@@ -542,6 +542,7 @@ Where an answer contradicts a checklist row, the answer wins. Tick the row and a
 - 2026-11-10 · P3 · (this commit) · No accounts (D4/D5/D6). Server: `shared/localUser.ts` (`LOCAL_USER_ID`), `server/auth/localIdentity.ts` seeds the users row at startup and, per Q5, re-assigns `projects`/`conversations`/`provider_cost`/`note_search_docs` owned by the retired Supabase user id (read from `managed_auth_v1.app`, which is then cleared); `AuthSlot` = `codex` only; Supabase refresh/config, `appLogin.ts`, `enableLocalLogin`, `acceptAppSession`, `/api/host/auth/local|logout`, app-slot migration removed; owner starts unconditionally; `publicAuthState` = `{ codex, user: local }` and `HostAuthState.user` is non-null. Also deleted now (needed the app session): `cloudProxyRoutes`, `railwayClient`, `appAuthTokenManager` (+tests) — renderer `cloudApi` callers now 404 until P5 removes them. `/api/local/users/merge`: safety rule dropped, `note_search_docs` moved. Electron: no `yggchat://` protocol/deep links (single-instance lock kept), app-login/logout/OAuth-window IPC and `syncAuthenticatedProfile` removed, `auth:migrate` codex-only, Supabase defines removed from `esbuild.main.mjs`, `auth:openExternal` → `shell:openExternal` across preload/typings/all callers. Renderer: `lib/supabase.ts`, `lib/auth/{allowlist,local}.ts`, `ManagedLogin.tsx` and `/login` deleted; `AuthContext`/`useAuth` = `{ user, userId, loading, reloadSession }` (no `accessToken`/`signIn`/`signOut`); `ProtectedRoute` retries instead of redirecting; users slice trimmed to `{ id, username, created_at, favorite_conversation_ids }`, login/credits thunks removed; thunk extra has no `accessToken`; Settings logout button removed. `agent_auth.md` rewritten. New tests: `localIdentity.test.ts`. Smoke updated: browser client now asserts no login page. Gate: tsc + 3 typechecks, server 281 (+3 new), headless 1010, renderer 1399, build:electron:parallel, build:server, browser-client/native-host-bootstrap/chat-selection smokes pass. Note: HomepageRedirect navigates to `/chat/undefined/undefined` when conversation creation returns no id (seen only with the smoke fixture); not changed.
 - 2026-11-10 · P5 · (this commit) · Local-only data layer. Renderer: `storageMode` removed from every thunk, hook, route state and prop (conversation/project/chat thunks, `conversationMessagesApi` now one `localApi /app/.../messages/tree` call, snapshot coordinator and hook (also the dead `accessToken` passthrough), `chatSelection`/`ChatSelectionProvider`, Chat, Heimdall, sideBar, ConversationPage, EditProject, HomepageRedirect, SettingsPane, `buildServerLoopRequest`, `HeadlessChatRequest`, chatRoutes normalize); renderer `Conversation` type no longer has `storage_mode` (kept optional on shared Project/Conversation records, Q31). Deleted `localMirror.ts`, `searchActions.ts` (+`searchSlice` extraReducers), `getStorageModeFromCache`, `syncConversationToLocal`, dead attachment thunks (link/delete/fetchById), the `userSystemPrompts` Redux slice and its types, cloud prompt/conversation API helpers and types, `apiCall`/`api`/`createStreamingRequest`/`cloudApi`/`API_BASE`/`FORCE_LOGOUT_EVENT`/`shouldUseLocalApi`/`assertCloudBackendAllowed`, Google Drive OAuth in Settings (D13). System prompts are host-store only (no Local/Cloud toggle or badge). Research notes come from new local `GET /api/gw/research-notes` (local rows only). Move-to-project always `localApi`. `attachmentUrl` drops `remoteOrigin` (`/uploads` → null). Logging dashboard (Q27): local SQLite only, no Billing or provider-reconciliation panels, 'Credits' → 'Cost', local hook enabled via `isHostClient`. Server: Q12 `POST /api/app/conversations/:id/clone` (`persistence/conversationClone.ts`: one transaction, new ids, parent-first insert, `children_ids` restored in source order, attachment links copied, meta rewritten like Heimdall transfer, no lineage rows (reconciled lazily), `storage_mode` 'local', Claude branches without a committed summary refused 409) and sidebar Copy points at it; `/api/sync/*` writers deleted (only `/api/local/attachments/*` remain in `syncStorageRoutes.ts`; `/api/sync/stats` untouched); `storage_mode` removed from fetch_chats output, the messages/tree `meta` (server, gateway, mobile UI) and lineage `listRecent`; every surviving project/conversation insert already writes 'local' (verified, no schema change). Tests: new clone route tests (3), research-notes route test, `/api/sync/*` 404 test; updated title-save, chat selection, snapshot coordinator, logging dashboard, project-groups and messages-tree tests; browser-workspace fixture now serves `/api/gw/research-notes`. Docs: chat container, Heimdall, Electron/local server context updated. Guard 1: 61 files (73 at P3); guard 2: 26 lines (unchanged; P8). Gate: tsc + 3 typechecks; server 288 passed/1 skipped, headless 1014 passed/6 skipped/22 todo, renderer 1398, tools 497 passed/2 skipped; build:electron:parallel, build:server; browser-client 2, chat-selection 10, browser-workspace 6 PASS. One headless run hit a timing failure in `watchService.test.ts` (unchanged file); it passed 3/3 on rerun and in the full rerun. Left for P4: `isCloudSession`/`runtimeMode` collapse and remaining `isCommunityMode` reads outside storage code.
 - 2026-11-10 · P4 · (this commit) · Runtime-mode collapse. Every `import.meta.env.VITE_ENVIRONMENT` read and every `environment` import from utils/api.ts now uses clientCapabilities (`isNativeShell` by default; `isHostClient` for stream-run tracking, which every host client uses); the `environment` export is deleted. `clientCapabilities.ts` derives only from `__BUILD_TARGET__`. `runtimeMode.ts` is reduced to `isElectronMode` + `LOCAL_AUTH_USER_ID` (re-exported from `shared/localUser.ts`); all `isCommunityMode`/`isCloudSession`/`syncRuntimeAuthMode`/`isElectronCommunityMode`/`isCloudBackendAllowed` consumers collapsed. Provider defaults: the Settings 'show provider selector' toggle is now honoured (community mode used to force it on, silently ignoring the toggle); a stored default provider that is no longer listed (e.g. hosted 'OpenRouter') is dropped to null and Chat falls back to OpenAI (ChatGPT); all listed providers are valid defaults (Q6). Removed the D1 shim and browser-client `VITE_API_URL` define from vite.config.ts; `ImportMetaEnv` keeps only optional `VITE_YGG_SERVER_ORIGIN` (Q15); `__BUILD_TARGET__` union drops 'local' (Q13). Renderer vitest and the agents-grid/chat-selection smokes now default to the electron target (no test changes needed beyond removing an obsolete `isCommunityMode` mock). CI: the 'Configure environment variables' step (Supabase/Stripe secrets, VITE_ENVIRONMENT, Railway URL) is deleted — nothing reads them. Kept: Settings 'Local Ownership Migration' tool + `/api/local/users/merge` as a local repair tool for rows owned by other legacy user ids. Exit checks: only `VITE_YGG_SERVER_ORIGIN` remains under src; no mode-flag references. Gate: tsc + 3 typechecks; server 288/1 skipped, headless 1014/6 skipped/22 todo, renderer 1398, tools 497/2 skipped; build:electron:parallel, build:server; smokes browser-client 2, chat-selection 10, browser-workspace 6, native-host-bootstrap 1, agents-grid pass.
+- 2026-11-10 · P8 · 1307496 + 57e74a6 + (this commit) · Dependencies: removed `@supabase/supabase-js`, `@stripe/stripe-js`, `@vercel/analytics`, `dexie`, `gsap`; both lockfiles regenerated with `--package-lock-only` (main `node_modules` untouched; electron 38.8.4, better-sqlite3 11.10.0, vite, vitest, node-pty, typescript pins unchanged). The client lockfile was stale (v0.3.20, no claude-agent-sdk), so its diff is larger. Clean-clone acceptance found `@types/ws` missing (it came in transitively through `@supabase/realtime-js`), so it is now an explicit devDependency. Deleted `reproduce_issue.sh`, `start_yggdrasil.bat`, `update_start_yggdrasil.bat`, scratch `ygg-chat/test_wsl*.js`, `src/helpers/storageHandler.ts`; kept `update-ygg.bat`. Supabase MCP entries removed (Q33). Removed the unused cloud deletion lock (`withMessageDeletionLock`/`assertConversationNotDeleting`, 2 tests); `SendMessage.storageMode` removed; unused Blog `font-display` removed; stale cloud comments and test mocks tidied. CI env step was already gone. Docs: rewrote the auto-loaded agent docs (AGENT.md scope/index, runtime modes, headless server, chat pipeline, Electron main, message storage, project overview, subagents and smaller mentions), all frontmatter `paths` resolve, added `agent_app_store.md`, historical banners on 10 legacy docs (Q20), readme + client README (no `.env`, `npm run dev` = Electron, Node 22), CHANGELOG `[Unreleased]` entries (no version bump; the user owns it). Guard 1: 31 files (12 code, all allowlisted/justified; 19 docs: retired-lists and bannered historical docs). Guard 2: 24 lines (D7 alias at providerRouter/iframeBridge/subagentClient/mobile App, plus tests of the alias and legacy display names). Gate: tsc + 3 typechecks; server 288/1 skipped, headless 1012/6 skipped/22 todo (−2 removed lock tests), renderer 1398, tools 497/2 skipped; build:electron:parallel, build:server, build.test 8/8; smokes browser-client 2, chat-selection 10, browser-workspace 6, native-host-bootstrap 1, agents-grid 6, browser-app-bridge 1 — all PASS. Clean clone (no `.env`, `env -i`, Node 22 as CI): `npm ci`, `build:electron`, `build:server`, `electron-builder --mac zip --publish never` pass; `app-update.yml` = `provider: github`, owner zayr0-9, repo Graviton; bundle grep shows only false positives (CHANGELOG text, cytoscape/recharts "stripe" props, boxicons glyph, `supabase-auth-token` cleanup key, secret-scanner patterns). Under Node 26 `better-sqlite3` 11.10.0 has no prebuild and is silently dropped as optional, so packaging fails; README now says Node 22. Open: manual no-account network check (Acceptance 2), Q17 contacts, Q21 history scrub.
 <!-- Per-location checklist follows (grouped by phase). -->
 
 ## Location checklist
@@ -1527,354 +1528,354 @@ _858 locations across 347 files. Generated from scout + verify + gap passes; tic
 
 ### P8 — Dependencies, tests, docs, final cleanup (205)
 
-- [ ] `.claude/settings.local.json`
-  - [ ] L20-23 `enabledMcpjsonServers: ["supabase"]` — **config-change** _(low)_: Remove 'supabase' from enabledMcpjsonServers when the .mcp.json entries go. The file is tracked even though it is named local.
-- [ ] `.github/workflows/desktop-release.yml`
-  - [ ] L73-81 `step 'Configure environment variables'` — **delete-code** _(high)_: Remove in stages: delete line 80 now (dead); line 77 after P6; line 79 after P2/P4 remove API_BASE cloud consumers; lines 75-76 after P7 switches appStore.ts manifest fetch off the supabase client and P3 drops esbuild authDefines; line 78 last, after the __IS_ELECTRON__ swap. Then delete the step. — ⚠ Lines 75-76 feed the kept app store browse through the Supabase public bucket (appStore.ts:168-176), and line 78 feeds about 40 renderer checks plus appStore's environment==='electron' gates. Deleting the step in one go ships builds with a broken app store and a broken Electron renderer. [verified-changed: Lines are correct, but deleting the whole step at once is wrong because the lines must go at different times. (1) Line 80, SUPABASE_UPDATE_FEED_BASE_URL, already does nothing. electron/main.ts:341-342]
-- [ ] `.mcp.json`
-  - [ ] L1-8 `mcpServers.supabase (project_ref=awvlmkkdnwmpgomsuneb)` — **config-change** _(low)_: Remove the supabase MCP server entry (dev-agent tooling pointing at the cloud project). Delete the file if it ends up empty.
-  - [ ] L3-6 `mcpServers.supabase (project_ref=awvlmkkdnwmpgomsuneb)` — **delete-file** _(low)_: Remove the supabase MCP server entry (or the whole file) from repo meta. It points dev agents at the deprecated Supabase project.
-- [ ] `readme.md`
-  - [ ] L1,141-169 `Getting Started / Build / 'npm run dev' + 'Web UI: http://localhost:5173'` — **update-docs** _(low)_: Remove the stray 'hello world' (line 1). Replace 'npm run dev'/'Web UI' with dev:electron + 'npm run electron' (or build:mac etc.). State that no .env or account is needed, all data is local, updates come from GitHub Releases, and optional LAN browser access uses dev/build:browser-client.
-  - [ ] L155-168 `Getting Started dev instructions` — **update-docs** _(low)_: Replace `npm run dev` / 'Web UI: http://localhost:5173' with `npm run dev:electron` + `npm run electron`; state no .env/account needed.
-- [ ] `start_yggdrasil.bat`
-  - [ ] L1-6 `web-mode launcher (npm run migrate; npm run dev; open localhost:5173)` — **delete-file** _(low)_: Delete. It starts the BUILD_TARGET=web Vite dev server and calls a nonexistent 'migrate' script. Not a desktop launcher.
-- [ ] `update_start_yggdrasil.bat`
-  - [ ] L1-10 `web-mode updater/launcher (build:server, build:client, migrate, dev)` — **delete-file** _(low)_: Delete. It builds the web client and a nonexistent root server and runs the web dev server. update-ygg.bat (build:win installer) stays.
-- [ ] `ygg-chat/.mcp.json`
-  - [ ] L1-8 `supabase MCP server (project awvlmkkdnwmpgomsuneb)` — **delete-file** _(low)_: Delete (dev tooling pointing at the Graviton Supabase project).
-  - [ ] L1-8 `mcpServers.supabase` — **config-change** _(low)_: Same as the root .mcp.json: remove the supabase MCP entry or delete the file.
-  - [ ] L3-6 `mcpServers.supabase` — **delete-file** _(low)_: Remove the supabase MCP server entry (or the whole file).
-- [ ] `ygg-chat/PERSISTENT_AGENT_CONTEXT.md`
-  - [ ] L34-51,65,83,130,419-449,1244-1249 `Railway/Supabase/dual-sync/storage_mode design for the retired global agent` — **delete-file** _(low)_: Delete. It is a Jan-2026 design for the retired global agent (agent_global_persistent_agent.md is already a tombstone), built on Railway/Supabase dual-sync and storage_mode. Alternatively, strip the cloud sections.
-- [ ] `ygg-chat/client/ygg-chat-r/CHANGELOG.md`
-  - [ ] L1-20 `new version section` — **update-docs** _(low)_: Add an entry for the release that goes fully local: sign-in, cloud storage, free tier/credits, the hosted OpenRouter provider and the web build are removed, and updates now come from GitHub Releases. Keep older entries (e.g. 18, 219, 257) as history. CI extracts release notes from this file.
-- [ ] `ygg-chat/client/ygg-chat-r/README.md`
-  - [ ] L1-54 `Vite React template boilerplate` — **rewrite** _(low)_: Replace the Vite template text with a short package guide: build targets (electron, browser-client, standalone), test commands (test:renderer/headless/server/tools via ELECTRON_RUN_AS_NODE), and no env required.
-- [ ] `ygg-chat/client/ygg-chat-r/custom-tools/CUSTOM_TOOLS_GUIDE.md`
-  - [ ] L365 `REQUEST_GENERATION bridge handler` — **update-docs** _(low)_: If P2/P4 changes REQUEST_GENERATION to drop remote ephemeral generation or the slash-model default to cloud 'openrouter', document the local provider/model it now uses. Same for CUSTOM_TOOLS_LEGACY_GUIDE.md:136 and html_frame_context.md:154.
-- [ ] `ygg-chat/client/ygg-chat-r/docs/SUBAGENT_IMPLEMENTATION_PLAN.md`
-  - [ ] L183,224-232,320,352 `/generate/ephemeral on cloud server (server/src/routes/supaChat.ts)` — **delete-file** _(low)_: Delete. It is an obsolete plan built on the remote /generate/ephemeral endpoint and the cloud supaChat.ts. The subagent tool is now server-local.
-- [ ] `ygg-chat/client/ygg-chat-r/electron/electronHostAdapter.ts`
-  - [ ] L73-77 `buildSecretStore comment` — **update-docs** _(low)_: Remove the stale 'electronAppAuth reads its legacy keys' wording.
-- [ ] `ygg-chat/client/ygg-chat-r/index.html`
+- [x] `.claude/settings.local.json`
+  - [x] L20-23 `enabledMcpjsonServers: ["supabase"]` — **config-change** _(low)_: Remove 'supabase' from enabledMcpjsonServers when the .mcp.json entries go. The file is tracked even though it is named local.
+- [x] `.github/workflows/desktop-release.yml`
+  - [x] L73-81 `step 'Configure environment variables'` — **delete-code** _(high)_: Remove in stages: delete line 80 now (dead); line 77 after P6; line 79 after P2/P4 remove API_BASE cloud consumers; lines 75-76 after P7 switches appStore.ts manifest fetch off the supabase client and P3 drops esbuild authDefines; line 78 last, after the __IS_ELECTRON__ swap. Then delete the step. — ⚠ Lines 75-76 feed the kept app store browse through the Supabase public bucket (appStore.ts:168-176), and line 78 feeds about 40 renderer checks plus appStore's environment==='electron' gates. Deleting the step in one go ships builds with a broken app store and a broken Electron renderer. [verified-changed: Lines are correct, but deleting the whole step at once is wrong because the lines must go at different times. (1) Line 80, SUPABASE_UPDATE_FEED_BASE_URL, already does nothing. electron/main.ts:341-342]
+- [x] `.mcp.json`
+  - [x] L1-8 `mcpServers.supabase (project_ref=awvlmkkdnwmpgomsuneb)` — **config-change** _(low)_: Remove the supabase MCP server entry (dev-agent tooling pointing at the cloud project). Delete the file if it ends up empty.
+  - [x] L3-6 `mcpServers.supabase (project_ref=awvlmkkdnwmpgomsuneb)` — **delete-file** _(low)_: Remove the supabase MCP server entry (or the whole file) from repo meta. It points dev agents at the deprecated Supabase project.
+- [x] `readme.md`
+  - [x] L1,141-169 `Getting Started / Build / 'npm run dev' + 'Web UI: http://localhost:5173'` — **update-docs** _(low)_: Remove the stray 'hello world' (line 1). Replace 'npm run dev'/'Web UI' with dev:electron + 'npm run electron' (or build:mac etc.). State that no .env or account is needed, all data is local, updates come from GitHub Releases, and optional LAN browser access uses dev/build:browser-client.
+  - [x] L155-168 `Getting Started dev instructions` — **update-docs** _(low)_: Replace `npm run dev` / 'Web UI: http://localhost:5173' with `npm run dev:electron` + `npm run electron`; state no .env/account needed.
+- [x] `start_yggdrasil.bat`
+  - [x] L1-6 `web-mode launcher (npm run migrate; npm run dev; open localhost:5173)` — **delete-file** _(low)_: Delete. It starts the BUILD_TARGET=web Vite dev server and calls a nonexistent 'migrate' script. Not a desktop launcher.
+- [x] `update_start_yggdrasil.bat`
+  - [x] L1-10 `web-mode updater/launcher (build:server, build:client, migrate, dev)` — **delete-file** _(low)_: Delete. It builds the web client and a nonexistent root server and runs the web dev server. update-ygg.bat (build:win installer) stays.
+- [x] `ygg-chat/.mcp.json`
+  - [x] L1-8 `supabase MCP server (project awvlmkkdnwmpgomsuneb)` — **delete-file** _(low)_: Delete (dev tooling pointing at the Graviton Supabase project).
+  - [x] L1-8 `mcpServers.supabase` — **config-change** _(low)_: Same as the root .mcp.json: remove the supabase MCP entry or delete the file.
+  - [x] L3-6 `mcpServers.supabase` — **delete-file** _(low)_: Remove the supabase MCP server entry (or the whole file).
+- [x] `ygg-chat/PERSISTENT_AGENT_CONTEXT.md`
+  - [x] L34-51,65,83,130,419-449,1244-1249 `Railway/Supabase/dual-sync/storage_mode design for the retired global agent` — **delete-file** _(low)_: Delete. It is a Jan-2026 design for the retired global agent (agent_global_persistent_agent.md is already a tombstone), built on Railway/Supabase dual-sync and storage_mode. Alternatively, strip the cloud sections. (Q20: kept with a historical banner instead)
+- [x] `ygg-chat/client/ygg-chat-r/CHANGELOG.md`
+  - [x] L1-20 `new version section` — **update-docs** _(low)_: Add an entry for the release that goes fully local: sign-in, cloud storage, free tier/credits, the hosted OpenRouter provider and the web build are removed, and updates now come from GitHub Releases. Keep older entries (e.g. 18, 219, 257) as history. CI extracts release notes from this file.
+- [x] `ygg-chat/client/ygg-chat-r/README.md`
+  - [x] L1-54 `Vite React template boilerplate` — **rewrite** _(low)_: Replace the Vite template text with a short package guide: build targets (electron, browser-client, standalone), test commands (test:renderer/headless/server/tools via ELECTRON_RUN_AS_NODE), and no env required.
+- [x] `ygg-chat/client/ygg-chat-r/custom-tools/CUSTOM_TOOLS_GUIDE.md`
+  - [x] L365 `REQUEST_GENERATION bridge handler` — **update-docs** _(low)_: If P2/P4 changes REQUEST_GENERATION to drop remote ephemeral generation or the slash-model default to cloud 'openrouter', document the local provider/model it now uses. Same for CUSTOM_TOOLS_LEGACY_GUIDE.md:136 and html_frame_context.md:154.
+- [x] `ygg-chat/client/ygg-chat-r/docs/SUBAGENT_IMPLEMENTATION_PLAN.md`
+  - [x] L183,224-232,320,352 `/generate/ephemeral on cloud server (server/src/routes/supaChat.ts)` — **delete-file** _(low)_: Delete. It is an obsolete plan built on the remote /generate/ephemeral endpoint and the cloud supaChat.ts. The subagent tool is now server-local. (Q20: kept with a historical banner instead)
+- [x] `ygg-chat/client/ygg-chat-r/electron/electronHostAdapter.ts`
+  - [x] L73-77 `buildSecretStore comment` — **update-docs** _(low)_: Remove the stale 'electronAppAuth reads its legacy keys' wording.
+- [x] `ygg-chat/client/ygg-chat-r/index.html`
   - [x] ~~L12-18 `Google Fonts links`~~ — **skip (resolved by Q16: keep fonts)**. Original note: Optional: Jaini/Baumans/Germania One classes have no TSX consumers and Space Grotesk none; drop those links (or self-host fonts for offline). No analytics/CSP present otherwise.
   - [x] ~~L18 `Google Fonts link Inter/Space Grotesk/JetBrains Mono`~~ — **skip (resolved by Q16: keep fonts)**. Original note: This link was added for the landing and blog fonts (font-inter, font-display). Remove Space Grotesk. JetBrains Mono is also loaded from src/index.css:2, so the link can go once landing/blog are deleted.
-- [ ] `ygg-chat/client/ygg-chat-r/login_context.md`
-  - [ ] `login context doc` — **delete-file** _(low)_: Describes the Supabase OAuth, yggchat://auth/callback and oauth:callback IPC flow being removed. Delete it, or reduce it to a note about Codex loopback OAuth.
-  - [ ] `login flow notes` — **update-docs** _(low)_: Documents isCloudSession/isCommunityMode, the Supabase login and the synthetic local session (lines 58-59, 122, 300). Delete it or rewrite it for the fixed local identity.
-  - [ ] L106,561 `appStore.tsx:473 login reference` — **update-docs** _(low)_: Remove the appStore.tsx upload-login references (the upload flow and /login are removed). Consider deleting this login-context doc entirely along with auth removal.
-- [ ] `ygg-chat/client/ygg-chat-r/migration_full_headless.md`
-  - [ ] `headless migration progress log (Phase 4 cloud provider via gateway, Phase 5 storage-aware CRUD gateway)` — **delete-file** _(low)_: Delete. It is a completed migration log dominated by the cloud gateway, Railway and dualSync, and its content is superseded by agent_headless_server.md. Alternatively, add a 'historical; cloud parts removed' banner.
-  - [ ] L56-64,112 `OpenRouterProvider free-tier relay notes` — **update-docs** _(low)_: Mark the free-tier relay and the openRouterProvider.freeTier test as removed, or delete those sections.
-  - [ ] L168,353 `gatewayRoutes /api/gw storage-aware merge docs` — **update-docs** _(low)_: Describe /api/gw as the local-only data facade. Remove the cloud merge, Railway, mirror and /api/cloud references.
-- [ ] `ygg-chat/client/ygg-chat-r/package-lock.json`
-  - [ ] L4413-4500,5938-5975 `@stripe/stripe-js, @supabase/* (auth/functions/postgrest/realtime/storage/supabase-js), @vercel/analytics` — **remove-dependency** _(low)_: Regenerate lockfile after removing the three deps from package.json (L62,63,70). Keep @vercel/oidc (L5976): transitive dep of 'ai' SDK, unrelated to Vercel hosting.
-- [ ] `ygg-chat/client/ygg-chat-r/package.json`
-  - [ ] L62,63,70 `dependencies @stripe/stripe-js, @supabase/supabase-js, @vercel/analytics` — **remove-dependency** _(medium)_: Remove the three deps (@stripe/stripe-js has no importers at all). Regenerate ygg-chat/client/ygg-chat-r/package-lock.json and ygg-chat/package-lock.json. — ⚠ supabase-js is still imported by lib/supabase.ts, AuthContext.tsx and (via lib/supabase) services/appStore.ts first-party listing; remove only after P3/P7 rewrites.
-  - [ ] L62,70 `@stripe/stripe-js, @vercel/analytics dependencies` — **remove-dependency** _(low)_: Remove @stripe/stripe-js (no import in tracked src) and @vercel/analytics after the App.tsx change. Update package-lock.json accordingly.
-  - [ ] L85,91 `dependencies dexie, gsap` — **remove-dependency** _(low)_: Optional: no importers in src/electron/server; remove alongside the cloud deps (leave conf-transitive pins like debounce-fn/json-schema-typed/uint8array-extras).
-- [ ] `ygg-chat/client/ygg-chat-r/scripts/chat-selection-browser-smoke.tsx`
-  - [ ] L30 `configureStore reducer users: () => ({ currentUser: { id: 'smoke-user' } })` — **update-test** _(low)_: The smoke store stubs state.users for ChatSelectionProvider. Update or remove the stub when ChatSelectionProvider stops reading state.users.currentUser (local user id). It also imports useConversationSnapshotCoordinator, which uses useAuth.
-- [ ] `ygg-chat/client/ygg-chat-r/scripts/test-agents-grid-electron.cjs`
-  - [ ] L27 `esbuild define` — **update-test** _(low)_: Drop __IS_WEB__ (and __IS_LOCAL__) from define; keep __BUILD_TARGET__.
-- [ ] `ygg-chat/client/ygg-chat-r/scripts/test-browser-app-bridge.cjs`
-  - [ ] L31 `esbuild define without __BUILD_TARGET__` — **update-test** _(low)_: Add __BUILD_TARGET__ to the define list (and drop __IS_WEB__/__IS_LOCAL__), matching test-agents-grid-electron.cjs, test-chat-selection-electron.cjs and test-matrix-wallpaper.cjs.
-- [ ] `ygg-chat/client/ygg-chat-r/scripts/test-browser-client.cjs`
-  - [ ] L24-29 `auth fixture {app, codex, user:null}` — **update-test** _(low)_: Drop app: snapshot('app'). Set user to {id: LOCAL_USER_ID}, since user:null (signed-out) can no longer occur.
-  - [ ] L24 `auth fixture {app, codex, user:null}` — **update-test** _(low)_: Make the fixture project the fixed local user, matching the new publicAuthState shape. With user:null the smoke test exercises a login state that no longer exists. Make the same shape change in test-browser-workspace.cjs:18.
-  - [ ] L39-47 `expects #/login with 'Continue locally'` — **update-test** _(medium)_: After P3 removes Login and App.tsx '/'->'/login' redirect, assert the shared UI mounts at '#/' (e.g. homepage marker) instead of the login page. — ⚠ Packaged browser-client smoke test; will fail once Login is removed.
-- [ ] `ygg-chat/client/ygg-chat-r/scripts/test-browser-workspace.cjs`
-  - [ ] L16-18 `auth fixture with app slot + hardcoded uid` — **update-test** _(low)_: Drop app: slot('app') from the fixture. Optionally import the shared LOCAL_USER_ID instead of the literal a7c485cb....
-  - [ ] L19-45 `/api/gw fixture routes` — **update-test** _(low)_: No change if /api/gw paths are kept local-only; update route list if renderer migrates to /api/app/*. storage_mode fixtures may be dropped.
-  - [ ] L40-52 `/api/gw/* and /api/cloud/users/:uid/research-notes fixtures` — **update-test** _(medium)_: Re-point fixture routes from /api/gw/* and /api/cloud/* to whatever local routes the renderer uses after P2/P5. — ⚠ Fixture must track renderer endpoint changes.
-- [ ] `ygg-chat/client/ygg-chat-r/scripts/test-chat-selection-electron.cjs`
-  - [ ] L27 `esbuild define __IS_WEB__` — **update-test** _(low)_: Remove `__IS_WEB__: 'false'` from the define map.
-  - [ ] L29 `useAuth esbuild stub` — **update-test** _(low)_: Change the stub 'export const useAuth = () => ({ accessToken: null })' to the new shape (userId: LOCAL_AUTH_USER_ID, loading: false).
-  - [ ] L31 `utils/api.ts esbuild stub exporting gwApi` — **update-test** _(low)_: Update stub if gwApi is renamed (e.g. dataApi).
-- [ ] `ygg-chat/client/ygg-chat-r/scripts/test-matrix-wallpaper.cjs`
-  - [ ] L47 `esbuild define` — **update-test** _(low)_: Drop __IS_WEB__/__IS_LOCAL__; keep __BUILD_TARGET__ '"electron"'.
-- [ ] `ygg-chat/client/ygg-chat-r/server/MIGRATIONS.md`
-  - [ ] L11-24,56,61 `schema-migration rules + v4 notes ('/api/gw ... cloud chats included', 'external cloud database')` — **update-docs** _(low)_: Keep rules 11-24, the canonical migration log (runner: SCHEMA_MIGRATIONS at server/localServer.ts:427). Only reword l.56/61 to drop cloud. If any column is dropped (not recommended), append the next version (13+) idempotently plus a log row.
-- [ ] `ygg-chat/client/ygg-chat-r/server/__tests__/hostRuntimeRoutes.test.ts`
-  - [ ] L9-16,35-41,51 `host public identity tests` — **update-test** _(low)_: Remove the app snapshot from the fixture and the enableLocalLogin mock. Replace the /api/host/auth/local and /logout policy probes with kept POST routes (/api/host/auth/check or /auth/codex/disconnect). Assert that auth.user is the fixed local id.
-- [ ] `ygg-chat/client/ygg-chat-r/server/__tests__/syncStorageRoutes.test.ts`
-  - [ ] `/api/sync/message tests` — **delete-file** _(low)_: Delete (or retarget to /api/local/attachments) when /api/sync/* routes are removed.
-- [ ] `ygg-chat/client/ygg-chat-r/server/headlessServer/HEADLESS_API_GUIDE.md`
-  - [ ] L19,49,64,75,297-301,369-371 `openrouter provider + /api/provider-auth/openrouter/token + Supabase app sessions` — **update-docs** _(low)_: Replace the 'openrouter' provider and openrouter streaming note with openrouterbyok. Remove the openrouter token endpoints if P2 deletes them and 'Supabase app sessions' (l.369). Update the provider list to openaichatgpt/zai/bedrock/openrouterbyok/lmstudio/claude.
-  - [ ] L49,64,75,299-300,369 `provider openrouter / Supabase app session docs` — **update-docs** _(low)_: Replace provider 'openrouter' references with openrouterbyok; remove Supabase app-session and /api/provider-auth/openrouter/token text.
-  - [ ] L49,64,299-305,369 `OpenRouter streaming note; provider-auth/openrouter routes; models listing` — **update-docs** _(low)_: Remove the cloud provider 'openrouter' notes and the /api/provider-auth/openrouter/token docs. Document openrouter-byok and the local-only /api/provider-auth/models.
-  - [ ] L49 `note recommending provider 'openrouter' for custom-tool REQUEST_GENERATION` — **update-docs** _(low)_: Replace this with: use provider 'openrouterbyok' (own key) or 'openaichatgpt' via /api/conversations/:id/messages.
-- [ ] `ygg-chat/client/ygg-chat-r/server/headlessServer/__parity__/__fixtures__/README.md`
-  - [ ] L4,9-25 `openrouter.send.json example with Railway SSE frames + free_generations_update` — **update-test** _(low)_: Change the example to a local provider (e.g. openrouterbyok or lmstudio). Remove 'Railway' wording and the free_generations_update frame. Check chatLoop.parity.test.ts for matching openrouter/free-tier usage.
-  - [ ] L4,14,22,25 `fixture format doc` — **update-docs** _(low)_: Drop Railway frames/free_generations_update example; use a local provider in the sample.
-  - [ ] L14,25 `openrouter fixture example; free_generations_update` — **update-docs** _(low)_: Change the example provider to openrouterbyok and remove the free_generations_update example frame.
-- [ ] `ygg-chat/client/ygg-chat-r/server/headlessServer/__parity__/chatLoop.parity.test.ts`
-  - [ ] L1-35 `parity todo skeleton` — **update-test** _(low)_: Remove 'openrouter' from PROVIDERS (or use openrouterbyok) and delete the two free_generations_update/generation_limit_reached todos and Railway wording.
-  - [ ] L22,30-31 `PROVIDERS list; free_generations_update / 403 todos` — **update-test** _(low)_: Replace 'openrouter' with 'openrouterbyok' in PROVIDERS. Delete the Railway free_generations_update and 403 generation_limit_reached it.todo entries.
-- [ ] `ygg-chat/client/ygg-chat-r/server/headlessServer/config/__tests__/gatewayFlags.test.ts`
-  - [ ] `gateway flag tests` — **delete-file** _(low)_: Delete with gatewayFlags.ts.
-  - [ ] `gatewayFlags tests` — **update-test** _(low)_: Delete the cases for chat, crud, cloudProxy and YGG_GATEWAY_MODE. Keep or delete the resumableRuns-only case to match the gatewayFlags.ts rewrite.
-- [ ] `ygg-chat/client/ygg-chat-r/server/headlessServer/config/gatewayFlags.ts`
-  - [ ] L24-30 `doc comment referencing electronAppAuth.ts:79-84` — **update-docs** _(low)_: Drop the stale electronAppAuth.ts reference, or delete it along with gatewayFlags if the cloud-layer area removes the file.
-- [ ] `ygg-chat/client/ygg-chat-r/server/headlessServer/config/settingsStore.ts`
-  - [ ] L1-12 `header comment (electronAppAuth.ts, auth_session)` — **update-docs** _(low)_: Remove the stale references to the deleted electronAppAuth.ts and the 'auth_session' key format. Mention managed_auth_v1 (Codex) instead.
-- [ ] `ygg-chat/client/ygg-chat-r/server/headlessServer/headless.md`
-  - [ ] L73,77,107 `providers/openRouterProvider.ts in historical plan` — **update-docs** _(low)_: Drop the openRouterProvider.ts and 'OpenRouter' cloud provider references, or mark the file as a historical plan.
-  - [ ] L77 `providers/openRouterProvider.ts listing` — **update-docs** _(low)_: Replace the entry with providers/providerTypes.ts.
-- [ ] `ygg-chat/client/ygg-chat-r/server/headlessServer/persistence/__tests__/deleteMessages.test.ts`
-  - [ ] L75-87 `'blocks admission throughout an awaited cloud deletion...' / Error('Cloud failed')` — **update-test** _(low)_: Reword the test name and the error text from cloud deletion to async deletion. Keep the withMessageDeletionLock behavior: gatewayRoutes still wraps local deletes (734,758). Update the matching comment at deleteMessages.ts:19.
-- [ ] `ygg-chat/client/ygg-chat-r/server/headlessServer/persistence/__tests__/messageRepo.idAdoption.test.ts`
-  - [ ] L1-40 `id adoption tests` — **update-test** _(low)_: Rename 'railway-1' fixtures/description to neutral wording, or delete if the id option is removed.
-- [ ] `ygg-chat/client/ygg-chat-r/server/headlessServer/persistence/deleteMessages.ts`
-  - [ ] L20 `withMessageDeletionLock` — **delete-code** _(low)_: Its only caller was the gatewayRoutes cloud delete path, so it is now unused. Delete it and the cases in persistence/__tests__/deleteMessages.test.ts 80-87. Keep assertMessagesNotInActiveRun and deleteMessagesWithLineageRepair.
-- [ ] `ygg-chat/client/ygg-chat-r/server/headlessServer/persistence/messageRepo.ts`
-  - [ ] L11-17 `createMessage id option (Railway id adoption)` — **keep-but-decouple** _(low)_: Keep optional caller-supplied `id` (harmless, generic upsert) but rewrite the comment to drop Railway wording; or remove if no other caller passes id.
-- [ ] `ygg-chat/client/ygg-chat-r/server/headlessServer/providers/__tests__/imageHistory.test.ts`
-  - [ ] L3,15 `OpenRouterProvider image projection case; railwayTurn fixture` — **update-test** _(low)_: Remove the OpenRouterProvider import and its test case. Rename railwayTurn to turnContext in the shared fixture. Keep the Codex and LM Studio image-history cases.
-  - [ ] L3,15,36-45 `OpenRouterProvider import; railwayTurn fixture; 'relays per-row artifacts to OpenRouter' case` — **update-test** _(medium)_: Remove the OpenRouterProvider import and the OpenRouter case (36-45). Rename railwayTurn to turnContext in the shared fixture at line 15. Keep the Codex, LM Studio and text-only cases. — ⚠ The fixture is typed `any`, so a missed rename silently stops testing Codex image attachments.
-- [ ] `ygg-chat/client/ygg-chat-r/server/headlessServer/providers/__tests__/openAIContextUsage.test.ts`
-  - [ ] L42 `providerName: 'OpenRouter' fixture` — **update-test** _(low)_: Optional: use 'OpenRouter BYOK'.
-- [ ] `ygg-chat/client/ygg-chat-r/server/headlessServer/providers/__tests__/openaiChatgptProvider.test.ts`
-  - [ ] L50,176,265,586 `railwayTurn fixtures (serviceTier, conversationId, allowCommentaryFallbackText)` — **update-test** _(medium)_: Rename railwayTurn to turnContext in all four fixtures. — ⚠ These use `as any`. If the rename is missed, the tests pass vacuously or fail on Codex session, serviceTier and commentary-fallback behaviour.
-- [ ] `ygg-chat/client/ygg-chat-r/server/headlessServer/providers/__tests__/providerErrorFormatter.test.ts`
-  - [ ] L94-99 `RailwayAppAuthError classification case` — **update-test** _(low)_: Remove the RailwayAppAuthError and provider 'openrouter' assertion. Keep the AbortError and ProviderEmptyResponseError assertions in the same `it`.
-- [ ] `ygg-chat/client/ygg-chat-r/server/headlessServer/routes/__tests__/appAutomationRoutes.messagesTree.test.ts`
-  - [ ] L14,125-145,227-234,257-263 `gateway tree parity tests` — **update-test** _(low)_: Register gateway with {db,statements} only; drop railway mock and `railway.passthrough` assertions; replace 'routes unknown conversation to cloud leg' with local empty/404 expectation.
-  - [ ] L14,223 `registerGatewayRoutes usage, meta.storage_mode` — **update-test** _(low)_: Update the registerGatewayRoutes call to the new deps (no railway/mirror/auth). The meta.storage_mode assertion can stay as long as the payload keeps meta.
-  - [ ] L129-148,257-262 `railway mock deps; 'gateway still routes an unknown conversation to the cloud leg'` — **update-test** _(low)_: Drop the railway, mirror, auth and enabled deps. Replace the unknown-conversation cloud-leg test with one expecting the in-process empty payload {messages:[],tree:null,meta}.
-- [ ] `ygg-chat/client/ygg-chat-r/server/headlessServer/routes/__tests__/cloudProxyRoutes.test.ts`
-  - [ ] `cloudProxyRoutes tests` — **delete-file** _(low)_: Delete this file along with cloudProxyRoutes.ts.
-- [ ] `ygg-chat/client/ygg-chat-r/server/headlessServer/routes/__tests__/ephemeralGenerateRoutes.test.ts`
-  - [ ] L53-55,72-74 `YGG_APP_ACCESS_TOKEN/YGG_ACCESS_TOKEN/SUPABASE_ACCESS_TOKEN cleanup` — **update-test** _(low)_: Remove cloud token env cleanup and any remote-path cases.
-  - [ ] L165-290 `provider 'openrouter' remote ephemeral cases` — **update-test** _(low)_: Delete the remote 'openrouter' cases (around 172, 232, 247, 274, 284). Add a case asserting that slash-prefixed models infer 'openrouterbyok'.
-  - [ ] L167-286 `openrouter ephemeral routing / managed-account cases` — **update-test** _(low)_: Delete the explicit-openrouter, managed-account and Railway-token cases. Change 'infers openrouter from non-openai prefixed model names' to expect openrouterbyok (it fails with 'OpenRouter API key missing' when no key is set). Drop the getAuthManager mock if it is unused.
-- [ ] `ygg-chat/client/ygg-chat-r/server/headlessServer/routes/__tests__/gatewayRoutes.attachments.test.ts`
-  - [ ] `gateway attachment route tests` — **update-test** _(low)_: Remove the railway/mirror/auth stubs and the cases covering cloud legs, ?storageMode=cloud and POST /api/gw/attachments. Keep the local GET /messages/:id/attachments read cases.
-  - [ ] L1-160 `gateway attachment tests` — **update-test** _(low)_: Remove railway mock/deps (63,80-87) and cloud cases (112-124 cloud routing/override, 135-145 Railway fallback, 146-end multipart Railway upload). Keep local read/link/delete; add 404 for unknown attachment id.
-  - [ ] L5,30-31,73-74,120-121 `storageMode override tests` — **update-test** _(low)_: Remove cloud-leg and ?storageMode=cloud override cases; assert local-only behavior.
-  - [ ] L63-165 `railway/auth deps; cloud-routing + ?storageMode=cloud + multipart upload cases` — **update-test** _(low)_: Register the routes with { db, statements } only. Delete the Railway-routing, storageMode=cloud override and POST multipart cases. Change the GET attachments/:id fallback to expect a 404. Keep the local read, link and delete cases.
-- [ ] `ygg-chat/client/ygg-chat-r/server/headlessServer/routes/__tests__/gatewayRoutes.merge.test.ts`
-  - [ ] `merge helper / toCloud* tests` — **update-test** _(low)_: Delete merge*/dedupById/toCloud* cases; keep sortByUpdatedDesc and toLocalConversationCreate/toLocalProjectCreate cases (storage_mode 'local' forcing). Delete file if nothing remains.
-  - [ ] `merge helper tests` — **delete-file** _(low)_: Delete this file: it imports mergeConversationLists, mergeProjects, mergeRecent, merge*Paginated and the toCloud* helpers, all removed. Move any sortByUpdatedDesc coverage into a local test.
-- [ ] `ygg-chat/client/ygg-chat-r/server/headlessServer/routes/__tests__/providerAuthRoutes.test.ts`
-  - [ ] L56-60,85-128 `openrouter token 410 test, remote OpenRouter models test` — **update-test** _(low)_: Delete the openrouter/token case and the remote ?userId model-fetch case. Keep the openai 410 test and the default model listing (adjusted for the removed 'openrouter' entry).
-  - [ ] L96 `mock of webdrasil /models/openrouter` — **update-test** _(low)_: Remove the remote OpenRouter model-list mock and its assertions, and the openrouter token-route cases. Keep the BYOK, zai and bedrock cases.
-- [ ] `ygg-chat/client/ygg-chat-r/server/headlessServer/routes/__tests__/subagentRoutes.test.ts`
-  - [ ] L145-155 `'rejects openrouter provider with 400'` — **update-test** _(low)_: Delete or rewrite to match the chosen legacy-'openrouter' normalization.
-- [ ] `ygg-chat/client/ygg-chat-r/server/headlessServer/services/__tests__/authMigration.test.ts`
-  - [ ] `OAuth credential migration tests` — **update-test** _(low)_: These cases are already codex-only. Re-run after the authMigration rewrite. Delete the file if authMigration.ts is deleted (open question).
-- [ ] `ygg-chat/client/ygg-chat-r/server/headlessServer/services/__tests__/authSessionManager.test.ts`
-  - [ ] L1-109 `AuthSessionManager tests using slot 'app'` — **update-test** _(low)_: Change every 'app' slot use (replace/resolve/snapshot/AuthFailure, lines 12-61+) to 'codex' so single-flight, rotation and reauth coverage survive narrowing AuthSlot.
-  - [ ] L18-102 `manager.resolve('app') cases` — **update-test** _(low)_: Switch every 'app' slot to 'codex' so the single-flight, rejection and epoch coverage stays once AuthSlot is narrowed.
-- [ ] `ygg-chat/client/ygg-chat-r/server/headlessServer/services/__tests__/chatOrchestrator.phase2.test.ts`
-  - [ ] L1350,1801-1802 `railwayTurn.attachmentsBase64 / conversationContext / projectContext assertions` — **update-test** _(low)_: Rename to turnContext. If conversationContext and projectContext are pruned from the turn (only the Railway provider read them), assert them on the composed system prompt or the input fields instead.
-- [ ] `ygg-chat/client/ygg-chat-r/server/headlessServer/services/__tests__/claudeSessionRepo.test.ts`
-  - [ ] L30,33 `SUPABASE_SERVICE_ROLE_KEY sample secret` — **keep-but-decouple** _(low)_: Optional: swap the sample secret name for a neutral one (e.g. YGG_APP_SECRET); test still validates env scrubbing.
-- [ ] `ygg-chat/client/ygg-chat-r/server/headlessServer/services/__tests__/claudeSessionService.test.ts`
-  - [ ] L334,341 `assertClaudeBranchSelection provider: 'openrouter'` — **update-test** _(low)_: Optional: replace the arbitrary non-Claude 'openrouter' with 'openrouterbyok' so the fixture does not name a deleted provider.
-- [ ] `ygg-chat/client/ygg-chat-r/server/headlessServer/services/__tests__/cloudMirrorService.test.ts`
-  - [ ] `cloudMirrorService tests` — **delete-file** _(low)_: Delete this file along with cloudMirrorService.ts.
-- [ ] `ygg-chat/client/ygg-chat-r/server/headlessServer/services/__tests__/cloudMirrorSink.test.ts`
-  - [ ] `CloudMirrorSink tests` — **delete-file** _(low)_: Delete; the TreeMessageSink-ignores-providerMessageId regression becomes moot once the field is removed.
-  - [ ] L20-45,47,60,71 `CloudMirrorSink tests + it.each([TreeMessageSink, CloudMirrorSink])` — **update-test** _(low)_: Delete the CloudMirrorSink describe block (20-45). In the it.each cases at 47, 60 and 71, keep only TreeMessageSink, which still covers response stamping and metadata. Consider renaming the file to treeMessageSink.test.ts.
-- [ ] `ygg-chat/client/ygg-chat-r/server/headlessServer/services/__tests__/normalTurnCompaction.test.ts`
-  - [ ] L69 `summaryRequest.railwayTurn.conversationId` — **update-test** _(low)_: Rename railwayTurn to turnContext. The same rename applies in subagentRunService.test.ts:253, toolLoopService.test.ts:408 and openaiChatgptProvider.test.ts 50/176/265/586.
-- [ ] `ygg-chat/client/ygg-chat-r/server/headlessServer/services/__tests__/providerRouter.test.ts`
-  - [ ] L27-65 `openrouter routing tests` — **update-test** _(low)_: Replace openrouter routing/context-length cases (33, 38-65 incl. railwayTurn) with openrouterbyok/lmstudio; assert chosen legacy 'openrouter' normalization.
-  - [ ] L32,38-50 `resolveContextLength('openrouter'); 'routes openrouter and lmstudio' case` — **update-test** _(low)_: Line 32 now normalizes to openaichatgpt and clamps, so change it to 'openrouterbyok'. Delete the openrouter generate assertion (40-48, which expects 'Sign in again') and keep the LM Studio half.
-  - [ ] L33,38-50 `openrouter routing test` — **update-test** _(low)_: Replace the 'openrouter' generate case ('Sign in again') with a check that legacy 'openrouter' normalizes to openrouterbyok. Keep the lmstudio and context-length cases.
-- [ ] `ygg-chat/client/ygg-chat-r/server/headlessServer/services/__tests__/railwayClient.test.ts`
-  - [ ] `railwayClient tests` — **delete-file** _(low)_: Delete this file along with railwayClient.ts.
-- [ ] `ygg-chat/client/ygg-chat-r/server/headlessServer/services/__tests__/refreshAdapters.test.ts`
-  - [ ] L30-33 `missing Supabase config test` — **update-test** _(low)_: Delete the 'reports missing main-process Supabase config' case (stubs VITE_SUPABASE_*/SUPABASE_*).
-  - [ ] L31-32 `app-slot Supabase config_error case` — **update-test** _(low)_: Delete the VITE_SUPABASE stubEnv / refreshCredential('app') configuration_error case. Keep the Codex refresh and expiryMs cases.
-- [ ] `ygg-chat/client/ygg-chat-r/server/headlessServer/services/__tests__/subagentModelNames.test.ts`
-  - [ ] L22 `normalizeSubagentModelName(..., 'OpenRouter')` — **update-test** _(low)_: Optional: use 'OpenRouter BYOK'. Slash models must still pass through unchanged.
-- [ ] `ygg-chat/client/ygg-chat-r/server/headlessServer/services/__tests__/subagentRunService.test.ts`
-  - [ ] L253 `call.input.railwayTurn?.serviceTier` — **update-test** _(low)_: Rename to call.input.turnContext?.serviceTier.
-- [ ] `ygg-chat/client/ygg-chat-r/server/headlessServer/services/__tests__/subagentToolExecutor.test.ts`
-  - [ ] L30,116-125 `OpenRouter parent fallback cases` — **update-test** _(low)_: Remove ['openrouter',...] tier case and 'falls OpenRouter parents back to the local subagent provider' test (or rewrite for legacy normalization).
-- [ ] `ygg-chat/client/ygg-chat-r/server/headlessServer/services/__tests__/toolLoopService.test.ts`
-  - [ ] L408 `providerRouter.calls[1].input.railwayTurn?.previousResponseId` — **update-test** _(low)_: Rename to turnContext?.previousResponseId.
-- [ ] `ygg-chat/client/ygg-chat-r/server/hostCapabilities.ts`
-  - [ ] L12-17 `KeyValueStore doc comment` — **update-docs** _(low)_: Replace the 'auth_session' example key with managed_auth_v1.
-- [ ] `ygg-chat/client/ygg-chat-r/server/localAnalyticsDashboard.ts`
-  - [ ] L9,15,192-194,543-544,612 `storage_mode projections, payments stub` — **keep-but-decouple** _(low)_: Optional: stop selecting/returning storage_mode and drop payments stub once renderer types drop them. Column stays.
-- [ ] `ygg-chat/client/ygg-chat-r/server/localServer.ts`
-  - [ ] L627,646,968,1157-1212 `storage_mode column DEFAULT 'cloud', getLocal* statements filtering storage_mode='local'` — **keep-but-decouple** _(medium)_: Keep columns/indexes (no migration). All kept insert paths (/api/app, /api/local conversations, userProjectRoutes) write 'local' explicitly; never insert relying on DEFAULT 'cloud'. — ⚠ Any new insert without storage_mode becomes 'cloud' and is hidden by storage_mode='local' list statements and /api/local/projects/:id 404s (userProjectRoutes 271,298).
-- [ ] `ygg-chat/client/ygg-chat-r/server/routes/noteSearchRoutes.ts`
-  - [ ] L45,295-342,653,787-1015,1137,1194-1324 `storage_mode in note search docs/results` — **keep-but-decouple** _(low)_: Read-only projection of retained column (also searchIndexSchema.ts triggers, fetchChats.ts 97-632, lineageRepo.ts 170-184, appAutomationRoutes meta.storage_mode, conversationRoutes 389-393). Leave; optional cosmetic removal later.
-- [ ] `ygg-chat/client/ygg-chat-r/server/routes/userProjectRoutes.ts`
-  - [ ] L271-276,298-302 `/api/local/projects/:id storage_mode!=='local' guards` — **keep-but-decouple** _(low)_: Keep (old cloud rows irrelevant) or delete guards for simplicity; no renderer path depends on rejecting cloud rows.
-- [ ] `ygg-chat/client/ygg-chat-r/server/tools/__tests__/dummyFilechatAction.ts.test`
-  - [ ] `legacy dummy copies using /sync/message and storage_mode` — **delete-file** _(low)_: Stale non-runnable snapshot of old chatActions (70 storage refs, /sync/message posts); delete with dummyfile.ts.test (old /api/sync server copy).
-  - [ ] L60,139,2031,3818,4883,5796,6143,6504,6579 `fixture text with VITE_* / webdrasil` — **keep-but-decouple** _(low)_: Do NOT edit: verbatim fixture read by editFile.test.ts (line 1346); exclude from cloud-removal grep audits.
-- [ ] `ygg-chat/client/ygg-chat-r/server/tools/__tests__/dummyfile.ts.test`
-  - [ ] L98-100,3119,3148 `fixture text with REMOTE_API_BASE webdrasil` — **keep-but-decouple** _(low)_: Do NOT edit: editFile.test.ts fixture (lines 373,1006); exclude from audits.
-- [ ] `ygg-chat/client/ygg-chat-r/src/components/ChatMessage/SummarisedMessage.test.tsx`
-  - [ ] L26 `vi.mock utils/api { environment: 'local' }` — **update-test** _(low)_: Remove `environment` from the utils/api mock. Mock platform/clientCapabilities instead if the component under test now reads isNativeShell.
-- [ ] `ygg-chat/client/ygg-chat-r/src/components/Heimdall/conversationProjectGroups.test.ts`
-  - [ ] L32-40 `local and cloud chats grouping case` — **update-test** _(low)_: Drop storage_mode fixtures/wording (grouping logic itself is storage-agnostic).
-- [ ] `ygg-chat/client/ygg-chat-r/src/components/SettingsPane/ToolsSettings.test.tsx`
-  - [ ] L30,34-35 `vi.stubEnv('VITE_ENVIRONMENT','electron')` — **update-test** _(low)_: Remove stubEnv/unstubAllEnvs once ToolsSettings no longer reads VITE_ENVIRONMENT.
-  - [ ] L30,34 `vi.stubEnv('VITE_ENVIRONMENT','electron')` — **update-test** _(low)_: Remove the VITE_ENVIRONMENT stubEnv/unstubAllEnvs. Mock clientCapabilities if any branch depends on native shell.
-- [ ] `ygg-chat/client/ygg-chat-r/src/components/SubagentTranscript/SubagentTranscript.test.tsx`
-  - [ ] L7 `vi.mock utils/api { environment: 'electron' }` — **update-test** _(low)_: Drop `environment: 'electron'` from the mock and mock clientCapabilities isNativeShell:true where needed.
-- [ ] `ygg-chat/client/ygg-chat-r/src/components/TitleBar/titleBarHistory.test.ts`
-  - [ ] L16,30 `visits with '/login'` — **update-test** _(low)_: Replace the '/login' entries with another excluded or removed path, or drop them.
-- [ ] `ygg-chat/client/ygg-chat-r/src/containers/LoggingDashboard.test.tsx`
-  - [ ] L15,18-22,38-60 `runtimeMode mock / cloud analytics tests` — **update-test** _(low)_: Drop the vi.mock of runtimeMode and useCloudLoggingAnalytics. Delete the 'suppresses stale cloud account data while signed out' test and the payments fixture, and mock only local analytics.
-  - [ ] L19-59 `useCloudLoggingAnalytics mock, 'Sign in to load cloud analytics' case` — **update-test** _(low)_: Remove cloud hook mock and signed-out cloud test; mock only local hook; drop payments fixture if type removed.
-- [ ] `ygg-chat/client/ygg-chat-r/src/containers/Settings.credentials.test.ts`
-  - [ ] L6-7,25-33 `credential native boundary test` — **update-test** _(low)_: If authHandle is renamed (or openExternal moves), update the `authHandle('secrets:${channel}'` string assertions to the new helper name. Keep the assertion that secrets IPC is main-frame-only.
-- [ ] `ygg-chat/client/ygg-chat-r/src/containers/sideBar.tsx`
-  - [ ] L783,1316,1333 `useAuth accessToken / cloneConversation(id, accessToken)` — **delete-code** _(low)_: Stop destructuring accessToken and call cloneConversation(id) after the utils/api signature drops its accessToken param.
-- [ ] `ygg-chat/client/ygg-chat-r/src/features/chats/agentRunPreviewReconnect.test.ts`
-  - [ ] L7 `vi.mock('../../utils/api') FORCE_LOGOUT_EVENT` — **update-test** _(low)_: Remove FORCE_LOGOUT_EVENT: 'force-logout' from the mock once api.ts drops the export (only consumer is AuthContext).
-- [ ] `ygg-chat/client/ygg-chat-r/src/features/chats/attachmentUrl.test.ts`
-  - [ ] L7 `remoteOrigin fixture` — **update-test** _(low)_: Drop remoteOrigin fixture and cloud/uploads expectations; assert relative/upload paths resolve to null.
-- [ ] `ygg-chat/client/ygg-chat-r/src/features/chats/branchModelSelection.test.ts`
-  - [ ] L6,9,41-42 `'OpenRouter' fixture` — **update-test** _(low)_: Optional: rename to 'OpenRouter BYOK'.
-- [ ] `ygg-chat/client/ygg-chat-r/src/features/chats/branchToolApproval.test.ts`
-  - [ ] L106,109 `'OpenRouter' fixture` — **update-test** _(low)_: Optional: rename to 'OpenRouter BYOK'.
-- [ ] `ygg-chat/client/ygg-chat-r/src/features/chats/buildServerLoopRequest.ts`
-  - [ ] L10,95-102,223 `doc comments referencing openrouter cloud route` — **update-docs** _(low)_: Update the comments: the provider list becomes lmstudio|zai|openrouterbyok|bedrock|openaichatgpt|claude, the temperature note applies to openrouterbyok, and the serviceTier note is Codex-only. There is no logic change.
-- [ ] `ygg-chat/client/ygg-chat-r/src/features/chats/changeOperationMode.test.ts`
-  - [ ] L16,60 `thunk extra { auth: { accessToken: null, userId: null }, queryClient }` — **update-test** _(low)_: If ThunkExtraArgument.auth (store/thunkExtra.ts) is removed or reduced to userId with the app session gone, update the hand-built extra args here.
-- [ ] `ygg-chat/client/ygg-chat-r/src/features/chats/chatActions.ts`
-  - [ ] L132 `commented API_BASE` — **delete-code** _(low)_: Delete dead comment referencing VITE_API_URL (also line 470 commented fetch).
-- [ ] `ygg-chat/client/ygg-chat-r/src/features/chats/chatSelection.test.ts`
-  - [ ] L17,23 `storageMode expectations` — **update-test** _(low)_: Remove storageMode from expected targets and the 'local' arg.
-- [ ] `ygg-chat/client/ygg-chat-r/src/features/chats/compactionCancellation.test.ts`
-  - [ ] L28,42,86 `thunk extra { auth: { accessToken, userId } }` — **update-test** _(low)_: Update the thunk extra-arg literals to match the new ThunkExtraArgument shape after accessToken removal.
-- [ ] `ygg-chat/client/ygg-chat-r/src/features/chats/editMessageWithBranching.test.ts`
-  - [ ] L339-346,388-395,421,430 `'OpenRouter'/'openrouter' as non-Claude provider fixture` — **update-test** _(low)_: Optional: replace 'OpenRouter'/'openrouter' with 'OpenRouter BYOK'/'openrouterbyok' so the fixtures do not name the deleted provider.
-- [ ] `ygg-chat/client/ygg-chat-r/src/features/chats/enqueueUserMessage.test.ts`
-  - [ ] L17 `thunk extra { auth: { accessToken, userId } }` — **update-test** _(low)_: Update the thunk extra-arg literal to match the new ThunkExtraArgument shape after accessToken removal.
-- [ ] `ygg-chat/client/ygg-chat-r/src/features/chats/localChatErrors.test.ts`
-  - [ ] L123,133,165,252-253,275 `session_expired expectations` — **update-test** _(low)_: Update expectations for 401/403 to the new local code; drop the {kind:'sign_in',label:'Sign in'} action assertion and session_expired from the code list at L275 if the code is removed from shared/chatErrors.
-- [ ] `ygg-chat/client/ygg-chat-r/src/features/chats/mainChatClient.test.ts`
-  - [ ] L20-25,303-330 `FORCE_LOGOUT_EVENT mock / 'runServerChatLoop reauthentication' suite` — **update-test** _(low)_: Drop FORCE_LOGOUT_EVENT from the utils/api mock and delete the reauthentication describe block once the reauth_required branch is removed.
-- [ ] `ygg-chat/client/ygg-chat-r/src/features/chats/runStatistics.test.ts`
-  - [ ] L127 `provider: 'openrouter' metric fixture` — **update-test** _(low)_: Optional: use 'openrouterbyok'.
-- [ ] `ygg-chat/client/ygg-chat-r/src/features/chats/runStatisticsMetadata.test.ts`
-  - [ ] `mergeLocalRunMetadata tests` — **delete-file** _(low)_: Delete this file along with shared/runStatisticsMetadata.ts.
-- [ ] `ygg-chat/client/ygg-chat-r/src/features/chats/sseProjection.test.ts`
-  - [ ] L476-490,592 `free_generations_update / generation_limit_reached tests` — **update-test** _(low)_: Delete the free-tier projection tests and remove generation_limit_reached from the terminal-event fixture at line 592. Delete any reauth_required tests as well.
-  - [ ] L476-486,592 `free-tier projection tests` — **update-test** _(low)_: Remove free_generations_update / generation_limit_reached cases and fixture entry.
-- [ ] `ygg-chat/client/ygg-chat-r/src/features/chats/updateConversationTitle.test.ts`
-  - [ ] L6,14,22,39-61 `gwApi.patch '?storageMode=' assertions` — **update-test** _(low)_: Expect gwApi.patch('/conversations/c',{title}) with no storageMode variants.
-- [ ] `ygg-chat/client/ygg-chat-r/src/features/chats/watchContinuationSelection.test.ts`
-  - [ ] L227 `thunk extra { auth: { accessToken, userId } }` — **update-test** _(low)_: Update the thunk extra-arg literal to match the new ThunkExtraArgument shape after accessToken removal.
-- [ ] `ygg-chat/client/ygg-chat-r/src/features/conversations/conversationTypes.ts`
-  - [ ] L1,13 `Conversation.storage_mode` — **keep-but-decouple** _(low)_: Keep as optional legacy field (DB column remains) or delete once all UI reads are removed.
-- [ ] `ygg-chat/client/ygg-chat-r/src/helpers/chatKeyboardShortcuts.test.ts`
-  - [ ] L28-29,38 `'OpenRouter' shortcut slot fixture` — **update-test** _(low)_: Optional: rename to 'OpenRouter BYOK'.
-- [ ] `ygg-chat/client/ygg-chat-r/src/helpers/providerSettingsHost.test.ts`
-  - [ ] L5 `vi.mock runtimeMode isCommunityMode:false` — **update-test** _(low)_: Remove the runtimeMode mock and update expectations to the local-only behaviour (selector always shown, community default fallback).
-- [ ] `ygg-chat/client/ygg-chat-r/src/helpers/providerSettingsStorage.test.ts`
-  - [ ] L45 `resolveProviderContextLength('OpenRouter')` — **update-test** _(low)_: Optional: use 'OpenRouter BYOK'.
-- [ ] `ygg-chat/client/ygg-chat-r/src/helpers/storageHandler.ts`
-  - [ ] `saveUserToStorage/loadUserFromStorage` — **delete-file** _(low)_: Its only consumer is usersActions.loginUser, which is being deleted. Delete the file.
-- [ ] `ygg-chat/client/ygg-chat-r/src/hooks/useConversationSnapshotCoordinator.test.ts`
-  - [ ] L70 `vi.mock useAuth accessToken:null` — **update-test** _(low)_: Update the mock to the new useAuth shape ({ userId }).
-  - [ ] L90-92 `render(conversationId, storageMode)` — **update-test** _(low)_: Drop storageMode arg from render helper.
-- [ ] `ygg-chat/client/ygg-chat-r/src/hooks/useConversationSnapshotCoordinator.ts`
-  - [ ] L21,95,134 `useAuth accessToken passthrough` — **delete-code** _(low)_: Stop reading accessToken from useAuth and stop passing it to the coordinator. Remove accessToken from conversationSnapshotCoordinator.ts (95,114,133) and the FetchConversationMessagesTreeOptions.
-- [ ] `ygg-chat/client/ygg-chat-r/src/hooks/useIdeContext.ts`
-  - [ ] L290,343 `commented VITE_ENVIRONMENT checks` — **delete-code** _(low)_: Delete commented-out `if (import.meta.env.VITE_ENVIRONMENT === 'electron')` lines.
-- [ ] `ygg-chat/client/ygg-chat-r/src/hooks/useModelSwitchConfirmation.test.ts`
-  - [ ] L24-25 `'OpenRouter' fixture` — **update-test** _(low)_: Optional: rename to 'OpenRouter BYOK'.
-- [ ] `ygg-chat/client/ygg-chat-r/src/hooks/useQueries.ts`
-  - [ ] L61-63,97-99,213-215,257-259,388-390,537-539,660-662,880-882,953-955,1099-1101,1183-1185,1913-1915 `const { accessToken, userId } = useAuth(); void accessToken` — **delete-code** _(low)_: Remove the dead accessToken destructuring and the void statements in each hook.
-- [ ] `ygg-chat/client/ygg-chat-r/src/lib/auth/managed.test.ts`
-  - [ ] L1-19 `token-free renderer auth facade` — **update-test** _(low)_: Drop the 'app' snapshot from the fixture. Assert that the codex-only adopt still yields the local userId and no longer reads or removes 'supabase-auth-token'.
-  - [ ] L5-11 `token-free renderer auth facade test` — **update-test** _(low)_: Remove app: snapshot('app') and the electronAPI.auth.migrate stub from the fixture. Assert that the fixed local userId is projected.
-  - [ ] L5-18 `token-free renderer auth facade test` — **update-test** _(low)_: Update the snapshot state (drop the app slot, user => LOCAL_AUTH_USER_ID). Assert that getSession returns the fixed local userId and that the codex slot is still adopted.
-- [ ] `ygg-chat/client/ygg-chat-r/src/lib/auth/transport.browser.test.ts`
-  - [ ] `browser host auth transport test` — **update-test** _(low)_: Re-check against the reduced transport (no login/logout/start). Keep the status and events assertions.
-  - [ ] L6-24 `browser identity transport` — **update-test** _(low)_: Fixture state includes app:{}, so update it to codex-only. Add an assertion that the transport has no login/start/code.
-- [ ] `ygg-chat/client/ygg-chat-r/src/store/thunkExtra.ts`
-  - [ ] L4-25 `ThunkExtraArgument.auth.accessToken/updateThunkExtraAuth` — **rewrite** _(medium)_: Remove auth.accessToken, which is always null with the managed facade, and set userId once to LOCAL_AUTH_USER_ID. Update searchActions.ts (17,44), which passes auth.accessToken. — ⚠ Many thunks read extra.auth.userId, so keep userId populated before the first dispatch.
-- [ ] `ygg-chat/client/ygg-chat-r/src/utils/api.ts`
-  - [ ] L698-878 `FORCE_LOGOUT_EVENT, sessionExpiredError, apiCall, api` — **delete-code** _(medium)_: apiCall routes non-CRUD endpoints to /api/cloud/*. Delete apiCall/api/sessionExpiredError/FORCE_LOGOUT_EVENT after callers are gone (PaymentPage, searchActions, usersActions.refreshUserCredits, useLoggingAnalytics cloud hook, patchConversationProject, cloneConversation). Update test mocks exporting FORCE_LOGOUT_EVENT. — ⚠ FORCE_LOGOUT_EVENT is imported by AuthContext and mocked in mainChatClient.test.ts/agentRunPreviewReconnect.test.ts; remove together with P3.
-- [ ] `ygg-chat/client/ygg-chat-r/src/utils/executeToolAndWait.test.ts`
-  - [ ] L4 `vi.mock ./api { environment:'electron' }` — **update-test** _(low)_: Drop `environment` from the mock.
-- [ ] `ygg-chat/client/ygg-chat-r/src/utils/helpers.ts`
-  - [ ] L5-8 `parseId doc comment 'Web mode (Supabase)'` — **update-docs** _(low)_: Rewrite comment: all ids are strings (UUID) in local SQLite; drop Web/Supabase wording.
-- [ ] `ygg-chat/client/ygg-chat-r/src/vite-env.d.ts`
-  - [ ] L4,6,12 `__BUILD_TARGET__/'web', __IS_WEB__, VITE_ENVIRONMENT 'web'` — **delete-code** _(low)_: After all 'web' checks are gone, remove 'web' from the __BUILD_TARGET__ and VITE_ENVIRONMENT unions and delete `declare const __IS_WEB__`.
-- [ ] `ygg-chat/client/ygg-chat-r/tailwind.config.js`
-  - [ ] L14-15 `fontFamily.display (Blog page fonts)` — **delete-code** _(low)_: Remove the 'Blog page fonts' display entry. font-display is not used outside landing/blog.
-- [ ] `ygg-chat/client/ygg-chat-r/vitest.renderer.config.ts`
-  - [ ] L24-30 `define __IS_WEB__/__IS_LOCAL__/__BUILD_TARGET__` — **update-test** _(low)_: Delete __IS_WEB__ (and __IS_LOCAL__ if target dropped); keep __BUILD_TARGET__/__IS_ELECTRON__ consistent with new clientCapabilities.
-  - [ ] L25-28 `define __IS_WEB__/__IS_LOCAL__/__BUILD_TARGET__ default 'local'` — **config-change** _(low)_: Drop __IS_WEB__/__IS_LOCAL__. Pick a kept default for __BUILD_TARGET__ (e.g. 'electron') or keep 'local' only if that target survives.
-  - [ ] L27 `__IS_WEB__ define` — **config-change** _(low)_: Delete the __IS_WEB__ define line once no source references it.
-- [ ] `ygg-chat/docs/agent_context/AGENT.md`
-  - [ ] L12-19,50,55,57 `Supported Runtime Scope + index entries for headless/auth/electron docs` — **update-docs** _(low)_: Rewrite the scope: fully local Electron plus LAN browser-client/standalone hosts, no web mode/cloud/Supabase/Railway/payments, no VITE_ENVIRONMENT branching (use __IS_ELECTRON__). Drop 'cloud gateway (/api/gw, /api/cloud)' from line 50/57 and 'Supabase' from line 55. Keep the lines 82-86 schema-migration rule.
-  - [ ] L16 `VITE_ENVIRONMENT==='web' rule` — **update-docs** _(low)_: Replace with: mode detection via platform/clientCapabilities (__BUILD_TARGET__); never read import.meta.env.VITE_*.
-- [ ] `ygg-chat/docs/agent_context/agent_auth.md`
-  - [ ] L1-37 `Managed authentication doc` — **update-docs** _(low)_: Rewrite it as Codex-only credential ownership. Remove the app (Supabase/Railway) slot, appLogin deep-link/OOB, the esbuild Supabase anon-key bundling note, appAuthTokenManager and the login manual checks. Document the fixed local user id.
-  - [ ] L21 `appLogin deep-link/OOB description` — **update-docs** _(low)_: Remove the Google/GitHub deep-link/OOB + Supabase user-endpoint validation + local-user merge paragraph. Keep the Codex PKCE/managedOAuthRoutes and codexUsage description.
-- [ ] `ygg-chat/docs/agent_context/agent_branch.md`
-  - [ ] L230 `local/cloud/legacy ID comparison note` — **update-docs** _(low)_: Reword to 'legacy numeric vs UUID ids' and drop 'cloud'.
-- [ ] `ygg-chat/docs/agent_context/agent_chat_container.md`
-  - [ ] L48,70-82,86,213,243,308 `conversationStorageMode / storageModeFromNav / useConversationStorageMode` — **update-docs** _(low)_: Remove the storage-mode inference section and the storageMode props/args once P5 drops them from Chat.tsx, updateCwd and the snapshot coordinator. Remove 'local and cloud conversations' from the validation list.
-- [ ] `ygg-chat/docs/agent_context/agent_chat_pipeline.md`
-  - [ ] L83,98,103-113,150-151,248-275,292-293,336-339,364 `cloudChatEnabled, CloudMirrorSink, cloud gateway/token layer, gwApi/cloudApi, free-tier SSE mapping` — **update-docs** _(low)_: Delete the 'Cloud gateway / token layer' and 'Provider routing, message sinks, cloud gateway' cloud parts, the isCloudRoute steps, the free_generations_update/generation_limit_reached rows, and the /stripe and /app-store allowlist. Describe TreeMessageSink as the only sink. Rename railwayTurn references to match P2.
-  - [ ] L255 `relayFreeTierEvents / openRouterProvider note` — **update-docs** _(low)_: Delete the relayFreeTierEvents/openRouterProvider sentence.
-- [ ] `ygg-chat/docs/agent_context/agent_chat_streaming_state.md`
-  - [ ] L144,163 `'web mode is not a target'; 'Cloud tree reads enrich messages'` — **update-docs** _(low)_: Drop the web-mode aside and the cloud-tree enrichment sentence.
-- [ ] `ygg-chat/docs/agent_context/agent_electron_main_local_server.md`
-  - [ ] L18,31,45,52-55,61,69,73-75,81,86,94-96,113 `gateway/cloudProxy routes, railwayClient/cloudMirror/appAuthTokenManager services, envLoader, login deep links` — **update-docs** _(low)_: Remove /api/cloud, Railway, Stripe and free-tier, gateway-flag vestigial notes, and login/OAuth deep links (keep the Codex 1455 callback). Update the envLoader line once .env loading is removed. Add the GitHub-provider autoUpdater note for main.ts.
-  - [ ] L37,53-55,73-75,86 `Electron main / server agent doc` — **update-docs** _(low)_: Remove login/OAuth deep-link, cloudProxy/railway/token-layer and 'Railway stays AUTHORITATIVE' statements. Document: auth IPC = codex status only, external links via shell:openExternal, updater feed = GitHub Releases (app-update.yml, no setFeedURL).
-  - [ ] L42,53 `appStoreRoutes / cloudProxyRoutes app-store description` — **update-docs** _(low)_: Describe appStoreRoutes as community list proxy (anonymous) + install/uninstall + restart, with no upload/validate-upload. Drop /app-store from the cloudProxyRoutes allowlist text.
-  - [ ] L45,69,74-76 `envLoader / VITE_ENVIRONMENT=standalone / cloud gateway notes` — **update-docs** _(low)_: Remove envLoader mention, VITE_ENVIRONMENT=standalone (BUILD_TARGET now), and Railway-authoritative/cloud gateway lines.
-- [ ] `ygg-chat/docs/agent_context/agent_global_persistent_agent.md`
-  - [ ] L53 `cloudMirrorService + CloudMirrorSink reference` — **update-docs** _(low)_: Drop the reference to the deleted cloud mirror.
-- [ ] `ygg-chat/docs/agent_context/agent_headless_server.md`
-  - [ ] `Cloud gateway/mirror/Railway/free-tier/gateway flags sections` — **update-docs** _(low)_: Remove cloud pass-through, Railway client, CloudMirrorSink, isCloudRoute, free-tier events, gatewayFlags sections; describe /api/gw as local-only facade, 4+byok providers, turnContext rename.
-  - [ ] L13-15,24-25,40-52,81-89,104-105,168-199,222-227,237-238,245-246,254-255,265 `cloud gateway, railwayClient, cloudMirrorService, CloudMirrorSink, appAuthTokenManager, gatewayFlags, isCloudRoute, free_generations_update/generation_limit_reached` — **update-docs** _(low)_: Remove the cloud gateway/pass-through sections, Railway client/token layer, CloudMirrorSink/Railway-id adoption, free-tier SSE events 16-17, the 'Railway stays authoritative' invariants and the openrouter provider from the 5-provider list. Rewrite the feature flags to resumableRuns only. Keep /api/gw only if it is renamed to a local CRUD surface.
-  - [ ] L25,51,178-180 `appAuthTokenManager / Supabase credential manager mentions` — **update-docs** _(low)_: Remove the appAuthTokenManager lines and change 'owns the process-wide Supabase/Codex credential manager' to Codex-only. Similar edits apply to agent_chat_pipeline.md:111, agent_electron_main_local_server.md:55,74 and migration_full_headless.md:125-194,352.
-  - [ ] L171,227 `CloudMirrorSink/relayFreeTierEvents/openRouterProvider free-tier docs` — **update-docs** _(low)_: Remove the cloud-route, free-tier and openRouterProvider references. Document providerTypes.ts and the turnContext rename. Apply the same to agent_chat_pipeline.md:255 and server/headlessServer/headless.md:77.
-- [ ] `ygg-chat/docs/agent_context/agent_heimdall.md`
-  - [ ] L41,145,234 `conversationStorageMode arg; local/cloud ID notes; gateway-local routes` — **update-docs** _(low)_: Remove conversationStorageMode from the coordinator call and 'local/cloud' wording. Rename 'gateway-local routes' if /api/gw is renamed.
-- [ ] `ygg-chat/docs/agent_context/agent_local_tools_runtime.md`
-  - [ ] `Data Flow step 6 (TreeMessageSink/CloudMirrorSink)` — **update-docs** _(low)_: Drop CloudMirrorSink mention.
-- [ ] `ygg-chat/docs/agent_context/agent_message_storage_shape.md`
-  - [ ] L8,19-56,146,197,219-226,257,284-302,318-319 `frontmatter cloudMirrorService.ts path, StorageMode 'cloud'|'local', CloudMirrorSink id adoption, community mode, mixed local/cloud` — **update-docs** _(low)_: Drop the cloudMirrorService.ts frontmatter path (file deleted) and all local⊕cloud/Railway-id adoption text. State that storage is SQLite-only and that the storage_mode column is unused but kept (no migration).
-- [ ] `ygg-chat/docs/agent_context/agent_project_overview.md`
-  - [ ] L31,43-47,53,58,67,94,106-108 `Cloud gateway / gateway flags / Local storage mode / Web mode bullets; legacy dev/build:web note` — **update-docs** _(low)_: Remove the cloud gateway, storage-mode and web-mode bullets and the 'Legacy dev/build:web scripts' note (scripts are being removed). Fix references to general_project_context.md and PERSISTENT_AGENT_CONTEXT.md if those are deleted.
-  - [ ] L34,43 `Railway cloud backend / Cloud gateway description` — **update-docs** _(low)_: Rewrite the Railway/cloud-gateway/cloud-mirror/free-tier paragraphs to describe a fully local app. Mention Railway only as the optional community app store backend.
-  - [ ] L43,94 `cloud proxy Stripe/app-store note; legacy dev/build:web note` — **update-docs** _(low)_: Drop the Stripe and web-build mentions. State that the app store talks to Railway directly from server/routes/appStoreRoutes.ts (anonymous browse/install), not via /api/cloud.
-  - [ ] L94 `legacy dev/build:web note` — **update-docs** _(low)_: Delete note once dev/build:web are removed.
-- [ ] `ygg-chat/docs/agent_context/agent_runtime_modes.md`
-  - [ ] L11,18,26-39,43-48,57-60,64-65,68-78,92-97 `Legacy Web Mode, Local Storage Mode, src/lib/auth/*, api.ts local/cloud, gatewayFlags chat/crud/cloudProxy, StorageMode` — **rewrite** _(low)_: Rewrite around Electron plus browser-client/standalone LAN hosts only. Remove web mode, storage_mode and cloud flags, and say gatewayFlags is resumableRuns only (or whatever P2 keeps). Note that runtime detection uses __IS_ELECTRON__/BUILD_TARGET defines, not VITE_ENVIRONMENT. Drop the general_project_context.md gotcha.
-- [ ] `ygg-chat/docs/agent_context/agent_subagents_orchestration.md`
-  - [ ] L27,35,54-55,61 `CloudMirrorSink, relayFreeTierEvents, railwaySessionId` — **update-docs** _(low)_: Remove CloudMirrorSink/relayFreeTierEvents mentions and rename railwaySessionId to the P2 replacement name.
-- [ ] `ygg-chat/docs/graviton_context.md`
-  - [ ] L144,285 `messageSink 'cloud mirroring'; legacy web-mode note` — **update-docs** _(low)_: Describe messageSink as local persistence only. Replace the legacy web-mode caveat with a fully local statement. Linked from readme.md.
-- [ ] `ygg-chat/docs/shared-ui-implementation-status.md`
-  - [ ] L11,67,94-95 `'Cloud sign-in directs users to Electron host'; 'cloud attachment/ID-adoption acceptance'; app login reservation; cloud prompt creation` — **update-docs** _(low)_: Add a note that app login, cloud prompts and cloud attachment/ID adoption were removed with the local-only change and are no longer acceptance items. Leave the historical validation logs as-is.
-- [ ] `ygg-chat/docs/stateContext.md`
-  - [ ] L62,265,282,419-421,584-600 `cloud APIs, storage_mode resolution, storageMode route state, 'local and cloud-backed data' section` — **update-docs** _(low)_: Remove the storage-mode-awareness section (584-600), the storageMode route-state notes and cloud API mentions, so the doc says TanStack Query reads only the local server. Linked from readme.md.
-- [ ] `ygg-chat/general_project_context.md`
-  - [ ] L1-213 `Web runtime + Supabase, root server/ (supaChat/stripe/openrouter worker), dual-sync, storage_mode, supabase-migrations` — **rewrite** _(low)_: Rewrite to a short local-only map, or delete and point to docs/agent_context/agent_project_overview.md. It describes a nonexistent root server/, Supabase web mode, Stripe and dual-sync throughout (l.8-41,73-74,116-146,204).
-- [ ] `ygg-chat/package-lock.json`
-  - [ ] L38-46,1262-1335,1981 `workspace entries client/ygg-chat-r/node_modules/@stripe|@supabase|@vercel/analytics` — **remove-dependency** _(low)_: Root workspace lockfile also pins the client's cloud deps; regenerate alongside the client lockfile. Keep node_modules/@vercel/oidc (L11431, from 'ai').
-- [ ] `ygg-chat/paymentplan.md`
-  - [ ] `Stripe subscriptions/credits ledger design doc` — **delete-file** _(low)_: Delete the Stripe/credits design doc. Payments are being removed.
-- [ ] `ygg-chat/shared/hostPrompts.ts`
-  - [ ] L10,33 `HostPrompt.storage_mode:'local'` — **keep-but-decouple** _(low)_: Keep: persisted host prompt schema (hostPromptStore + validateHostPrompts) emits it; dropping changes stored JSON. Optional later cleanup with hostPromptStore.test.ts.
-- [ ] `ygg-chat/shared/types.ts`
-  - [ ] L10,108,164,187 `StorageMode, SendMessage.storageMode, Project.storage_mode, ConversationRecord.storage_mode` — **keep-but-decouple** _(low)_: Delete line 108 request field. Keep storage_mode?: optional on Project/ConversationRecord (DB column stays) or narrow StorageMode to 'local'; no renderer logic may branch on it.
-- [ ] `ygg-chat/stream_block_context.md`
-  - [ ] L131 `useConversationMessages fetches from local/cloud APIs` — **update-docs** _(low)_: Change 'local/cloud APIs' to the local server.
-- [ ] `ygg-chat/summary_system_context.md`
-  - [ ] L108 `'derived from current user credits and prompt/completion pricing'` — **update-docs** _(low)_: Remove the credits-based derivation note. Compaction uses context limits only.
-- [ ] `ygg-chat/summary_test_subagent.md`
-  - [ ] `subagent-generated summary of general_project_context (web/Supabase/dual-sync)` — **delete-file** _(low)_: Delete. It is a stale test artifact describing web mode, cloud API on 3001 and dual-sync.
+- [x] `ygg-chat/client/ygg-chat-r/login_context.md`
+  - [x] `login context doc` — **delete-file** _(low)_: Describes the Supabase OAuth, yggchat://auth/callback and oauth:callback IPC flow being removed. Delete it, or reduce it to a note about Codex loopback OAuth. (Q20: kept with a historical banner instead)
+  - [x] `login flow notes` — **update-docs** _(low)_: Documents isCloudSession/isCommunityMode, the Supabase login and the synthetic local session (lines 58-59, 122, 300). Delete it or rewrite it for the fixed local identity. (Q20: kept with a historical banner instead)
+  - [x] L106,561 `appStore.tsx:473 login reference` — **update-docs** _(low)_: Remove the appStore.tsx upload-login references (the upload flow and /login are removed). Consider deleting this login-context doc entirely along with auth removal. (Q20: kept with a historical banner instead)
+- [x] `ygg-chat/client/ygg-chat-r/migration_full_headless.md`
+  - [x] `headless migration progress log (Phase 4 cloud provider via gateway, Phase 5 storage-aware CRUD gateway)` — **delete-file** _(low)_: Delete. It is a completed migration log dominated by the cloud gateway, Railway and dualSync, and its content is superseded by agent_headless_server.md. Alternatively, add a 'historical; cloud parts removed' banner. (Q20: kept with a historical banner instead)
+  - [x] L56-64,112 `OpenRouterProvider free-tier relay notes` — **update-docs** _(low)_: Mark the free-tier relay and the openRouterProvider.freeTier test as removed, or delete those sections. (Q20: kept with a historical banner instead)
+  - [x] L168,353 `gatewayRoutes /api/gw storage-aware merge docs` — **update-docs** _(low)_: Describe /api/gw as the local-only data facade. Remove the cloud merge, Railway, mirror and /api/cloud references. (Q20: kept with a historical banner instead)
+- [x] `ygg-chat/client/ygg-chat-r/package-lock.json`
+  - [x] L4413-4500,5938-5975 `@stripe/stripe-js, @supabase/* (auth/functions/postgrest/realtime/storage/supabase-js), @vercel/analytics` — **remove-dependency** _(low)_: Regenerate lockfile after removing the three deps from package.json (L62,63,70). Keep @vercel/oidc (L5976): transitive dep of 'ai' SDK, unrelated to Vercel hosting.
+- [x] `ygg-chat/client/ygg-chat-r/package.json`
+  - [x] L62,63,70 `dependencies @stripe/stripe-js, @supabase/supabase-js, @vercel/analytics` — **remove-dependency** _(medium)_: Remove the three deps (@stripe/stripe-js has no importers at all). Regenerate ygg-chat/client/ygg-chat-r/package-lock.json and ygg-chat/package-lock.json. — ⚠ supabase-js is still imported by lib/supabase.ts, AuthContext.tsx and (via lib/supabase) services/appStore.ts first-party listing; remove only after P3/P7 rewrites. (done in 1307496; @types/ws added in P8 because it came in transitively through @supabase/realtime-js)
+  - [x] L62,70 `@stripe/stripe-js, @vercel/analytics dependencies` — **remove-dependency** _(low)_: Remove @stripe/stripe-js (no import in tracked src) and @vercel/analytics after the App.tsx change. Update package-lock.json accordingly. (done in 1307496; @types/ws added in P8 because it came in transitively through @supabase/realtime-js)
+  - [x] L85,91 `dependencies dexie, gsap` — **remove-dependency** _(low)_: Optional: no importers in src/electron/server; remove alongside the cloud deps (leave conf-transitive pins like debounce-fn/json-schema-typed/uint8array-extras). (done in 1307496; @types/ws added in P8 because it came in transitively through @supabase/realtime-js)
+- [x] `ygg-chat/client/ygg-chat-r/scripts/chat-selection-browser-smoke.tsx`
+  - [x] L30 `configureStore reducer users: () => ({ currentUser: { id: 'smoke-user' } })` — **update-test** _(low)_: The smoke store stubs state.users for ChatSelectionProvider. Update or remove the stub when ChatSelectionProvider stops reading state.users.currentUser (local user id). It also imports useConversationSnapshotCoordinator, which uses useAuth. (kept: ChatSelectionProvider still reads state.users)
+- [x] `ygg-chat/client/ygg-chat-r/scripts/test-agents-grid-electron.cjs`
+  - [x] L27 `esbuild define` — **update-test** _(low)_: Drop __IS_WEB__ (and __IS_LOCAL__) from define; keep __BUILD_TARGET__.
+- [x] `ygg-chat/client/ygg-chat-r/scripts/test-browser-app-bridge.cjs`
+  - [x] L31 `esbuild define without __BUILD_TARGET__` — **update-test** _(low)_: Add __BUILD_TARGET__ to the define list (and drop __IS_WEB__/__IS_LOCAL__), matching test-agents-grid-electron.cjs, test-chat-selection-electron.cjs and test-matrix-wallpaper.cjs.
+- [x] `ygg-chat/client/ygg-chat-r/scripts/test-browser-client.cjs`
+  - [x] L24-29 `auth fixture {app, codex, user:null}` — **update-test** _(low)_: Drop app: snapshot('app'). Set user to {id: LOCAL_USER_ID}, since user:null (signed-out) can no longer occur.
+  - [x] L24 `auth fixture {app, codex, user:null}` — **update-test** _(low)_: Make the fixture project the fixed local user, matching the new publicAuthState shape. With user:null the smoke test exercises a login state that no longer exists. Make the same shape change in test-browser-workspace.cjs:18.
+  - [x] L39-47 `expects #/login with 'Continue locally'` — **update-test** _(medium)_: After P3 removes Login and App.tsx '/'->'/login' redirect, assert the shared UI mounts at '#/' (e.g. homepage marker) instead of the login page. — ⚠ Packaged browser-client smoke test; will fail once Login is removed.
+- [x] `ygg-chat/client/ygg-chat-r/scripts/test-browser-workspace.cjs`
+  - [x] L16-18 `auth fixture with app slot + hardcoded uid` — **update-test** _(low)_: Drop app: slot('app') from the fixture. Optionally import the shared LOCAL_USER_ID instead of the literal a7c485cb....
+  - [x] L19-45 `/api/gw fixture routes` — **update-test** _(low)_: No change if /api/gw paths are kept local-only; update route list if renderer migrates to /api/app/*. storage_mode fixtures may be dropped.
+  - [x] L40-52 `/api/gw/* and /api/cloud/users/:uid/research-notes fixtures` — **update-test** _(medium)_: Re-point fixture routes from /api/gw/* and /api/cloud/* to whatever local routes the renderer uses after P2/P5. — ⚠ Fixture must track renderer endpoint changes.
+- [x] `ygg-chat/client/ygg-chat-r/scripts/test-chat-selection-electron.cjs`
+  - [x] L27 `esbuild define __IS_WEB__` — **update-test** _(low)_: Remove `__IS_WEB__: 'false'` from the define map.
+  - [x] L29 `useAuth esbuild stub` — **update-test** _(low)_: Change the stub 'export const useAuth = () => ({ accessToken: null })' to the new shape (userId: LOCAL_AUTH_USER_ID, loading: false).
+  - [x] L31 `utils/api.ts esbuild stub exporting gwApi` — **update-test** _(low)_: Update stub if gwApi is renamed (e.g. dataApi).
+- [x] `ygg-chat/client/ygg-chat-r/scripts/test-matrix-wallpaper.cjs`
+  - [x] L47 `esbuild define` — **update-test** _(low)_: Drop __IS_WEB__/__IS_LOCAL__; keep __BUILD_TARGET__ '"electron"'.
+- [x] `ygg-chat/client/ygg-chat-r/server/MIGRATIONS.md`
+  - [x] L11-24,56,61 `schema-migration rules + v4 notes ('/api/gw ... cloud chats included', 'external cloud database')` — **update-docs** _(low)_: Keep rules 11-24, the canonical migration log (runner: SCHEMA_MIGRATIONS at server/localServer.ts:427). Only reword l.56/61 to drop cloud. If any column is dropped (not recommended), append the next version (13+) idempotently plus a log row.
+- [x] `ygg-chat/client/ygg-chat-r/server/__tests__/hostRuntimeRoutes.test.ts`
+  - [x] L9-16,35-41,51 `host public identity tests` — **update-test** _(low)_: Remove the app snapshot from the fixture and the enableLocalLogin mock. Replace the /api/host/auth/local and /logout policy probes with kept POST routes (/api/host/auth/check or /auth/codex/disconnect). Assert that auth.user is the fixed local id.
+- [x] `ygg-chat/client/ygg-chat-r/server/__tests__/syncStorageRoutes.test.ts`
+  - [x] `/api/sync/message tests` — **delete-file** _(low)_: Delete (or retarget to /api/local/attachments) when /api/sync/* routes are removed.
+- [x] `ygg-chat/client/ygg-chat-r/server/headlessServer/HEADLESS_API_GUIDE.md`
+  - [x] L19,49,64,75,297-301,369-371 `openrouter provider + /api/provider-auth/openrouter/token + Supabase app sessions` — **update-docs** _(low)_: Replace the 'openrouter' provider and openrouter streaming note with openrouterbyok. Remove the openrouter token endpoints if P2 deletes them and 'Supabase app sessions' (l.369). Update the provider list to openaichatgpt/zai/bedrock/openrouterbyok/lmstudio/claude.
+  - [x] L49,64,75,299-300,369 `provider openrouter / Supabase app session docs` — **update-docs** _(low)_: Replace provider 'openrouter' references with openrouterbyok; remove Supabase app-session and /api/provider-auth/openrouter/token text.
+  - [x] L49,64,299-305,369 `OpenRouter streaming note; provider-auth/openrouter routes; models listing` — **update-docs** _(low)_: Remove the cloud provider 'openrouter' notes and the /api/provider-auth/openrouter/token docs. Document openrouter-byok and the local-only /api/provider-auth/models.
+  - [x] L49 `note recommending provider 'openrouter' for custom-tool REQUEST_GENERATION` — **update-docs** _(low)_: Replace this with: use provider 'openrouterbyok' (own key) or 'openaichatgpt' via /api/conversations/:id/messages.
+- [x] `ygg-chat/client/ygg-chat-r/server/headlessServer/__parity__/__fixtures__/README.md`
+  - [x] L4,9-25 `openrouter.send.json example with Railway SSE frames + free_generations_update` — **update-test** _(low)_: Change the example to a local provider (e.g. openrouterbyok or lmstudio). Remove 'Railway' wording and the free_generations_update frame. Check chatLoop.parity.test.ts for matching openrouter/free-tier usage.
+  - [x] L4,14,22,25 `fixture format doc` — **update-docs** _(low)_: Drop Railway frames/free_generations_update example; use a local provider in the sample.
+  - [x] L14,25 `openrouter fixture example; free_generations_update` — **update-docs** _(low)_: Change the example provider to openrouterbyok and remove the free_generations_update example frame.
+- [x] `ygg-chat/client/ygg-chat-r/server/headlessServer/__parity__/chatLoop.parity.test.ts`
+  - [x] L1-35 `parity todo skeleton` — **update-test** _(low)_: Remove 'openrouter' from PROVIDERS (or use openrouterbyok) and delete the two free_generations_update/generation_limit_reached todos and Railway wording.
+  - [x] L22,30-31 `PROVIDERS list; free_generations_update / 403 todos` — **update-test** _(low)_: Replace 'openrouter' with 'openrouterbyok' in PROVIDERS. Delete the Railway free_generations_update and 403 generation_limit_reached it.todo entries.
+- [x] `ygg-chat/client/ygg-chat-r/server/headlessServer/config/__tests__/gatewayFlags.test.ts`
+  - [x] `gateway flag tests` — **delete-file** _(low)_: Delete with gatewayFlags.ts.
+  - [x] `gatewayFlags tests` — **update-test** _(low)_: Delete the cases for chat, crud, cloudProxy and YGG_GATEWAY_MODE. Keep or delete the resumableRuns-only case to match the gatewayFlags.ts rewrite.
+- [x] `ygg-chat/client/ygg-chat-r/server/headlessServer/config/gatewayFlags.ts`
+  - [x] L24-30 `doc comment referencing electronAppAuth.ts:79-84` — **update-docs** _(low)_: Drop the stale electronAppAuth.ts reference, or delete it along with gatewayFlags if the cloud-layer area removes the file.
+- [x] `ygg-chat/client/ygg-chat-r/server/headlessServer/config/settingsStore.ts`
+  - [x] L1-12 `header comment (electronAppAuth.ts, auth_session)` — **update-docs** _(low)_: Remove the stale references to the deleted electronAppAuth.ts and the 'auth_session' key format. Mention managed_auth_v1 (Codex) instead.
+- [x] `ygg-chat/client/ygg-chat-r/server/headlessServer/headless.md`
+  - [x] L73,77,107 `providers/openRouterProvider.ts in historical plan` — **update-docs** _(low)_: Drop the openRouterProvider.ts and 'OpenRouter' cloud provider references, or mark the file as a historical plan. (Q20: kept with a historical banner instead)
+  - [x] L77 `providers/openRouterProvider.ts listing` — **update-docs** _(low)_: Replace the entry with providers/providerTypes.ts. (Q20: kept with a historical banner instead)
+- [x] `ygg-chat/client/ygg-chat-r/server/headlessServer/persistence/__tests__/deleteMessages.test.ts`
+  - [x] L75-87 `'blocks admission throughout an awaited cloud deletion...' / Error('Cloud failed')` — **update-test** _(low)_: Reword the test name and the error text from cloud deletion to async deletion. Keep the withMessageDeletionLock behavior: gatewayRoutes still wraps local deletes (734,758). Update the matching comment at deleteMessages.ts:19.
+- [x] `ygg-chat/client/ygg-chat-r/server/headlessServer/persistence/__tests__/messageRepo.idAdoption.test.ts`
+  - [x] L1-40 `id adoption tests` — **update-test** _(low)_: Rename 'railway-1' fixtures/description to neutral wording, or delete if the id option is removed.
+- [x] `ygg-chat/client/ygg-chat-r/server/headlessServer/persistence/deleteMessages.ts`
+  - [x] L20 `withMessageDeletionLock` — **delete-code** _(low)_: Its only caller was the gatewayRoutes cloud delete path, so it is now unused. Delete it and the cases in persistence/__tests__/deleteMessages.test.ts 80-87. Keep assertMessagesNotInActiveRun and deleteMessagesWithLineageRepair.
+- [x] `ygg-chat/client/ygg-chat-r/server/headlessServer/persistence/messageRepo.ts`
+  - [x] L11-17 `createMessage id option (Railway id adoption)` — **keep-but-decouple** _(low)_: Keep optional caller-supplied `id` (harmless, generic upsert) but rewrite the comment to drop Railway wording; or remove if no other caller passes id.
+- [x] `ygg-chat/client/ygg-chat-r/server/headlessServer/providers/__tests__/imageHistory.test.ts`
+  - [x] L3,15 `OpenRouterProvider image projection case; railwayTurn fixture` — **update-test** _(low)_: Remove the OpenRouterProvider import and its test case. Rename railwayTurn to turnContext in the shared fixture. Keep the Codex and LM Studio image-history cases.
+  - [x] L3,15,36-45 `OpenRouterProvider import; railwayTurn fixture; 'relays per-row artifacts to OpenRouter' case` — **update-test** _(medium)_: Remove the OpenRouterProvider import and the OpenRouter case (36-45). Rename railwayTurn to turnContext in the shared fixture at line 15. Keep the Codex, LM Studio and text-only cases. — ⚠ The fixture is typed `any`, so a missed rename silently stops testing Codex image attachments.
+- [x] `ygg-chat/client/ygg-chat-r/server/headlessServer/providers/__tests__/openAIContextUsage.test.ts`
+  - [x] L42 `providerName: 'OpenRouter' fixture` — **update-test** _(low)_: Optional: use 'OpenRouter BYOK'. (optional, skipped: arbitrary/legacy provider name, still valid via the D7 alias)
+- [x] `ygg-chat/client/ygg-chat-r/server/headlessServer/providers/__tests__/openaiChatgptProvider.test.ts`
+  - [x] L50,176,265,586 `railwayTurn fixtures (serviceTier, conversationId, allowCommentaryFallbackText)` — **update-test** _(medium)_: Rename railwayTurn to turnContext in all four fixtures. — ⚠ These use `as any`. If the rename is missed, the tests pass vacuously or fail on Codex session, serviceTier and commentary-fallback behaviour.
+- [x] `ygg-chat/client/ygg-chat-r/server/headlessServer/providers/__tests__/providerErrorFormatter.test.ts`
+  - [x] L94-99 `RailwayAppAuthError classification case` — **update-test** _(low)_: Remove the RailwayAppAuthError and provider 'openrouter' assertion. Keep the AbortError and ProviderEmptyResponseError assertions in the same `it`.
+- [x] `ygg-chat/client/ygg-chat-r/server/headlessServer/routes/__tests__/appAutomationRoutes.messagesTree.test.ts`
+  - [x] L14,125-145,227-234,257-263 `gateway tree parity tests` — **update-test** _(low)_: Register gateway with {db,statements} only; drop railway mock and `railway.passthrough` assertions; replace 'routes unknown conversation to cloud leg' with local empty/404 expectation.
+  - [x] L14,223 `registerGatewayRoutes usage, meta.storage_mode` — **update-test** _(low)_: Update the registerGatewayRoutes call to the new deps (no railway/mirror/auth). The meta.storage_mode assertion can stay as long as the payload keeps meta.
+  - [x] L129-148,257-262 `railway mock deps; 'gateway still routes an unknown conversation to the cloud leg'` — **update-test** _(low)_: Drop the railway, mirror, auth and enabled deps. Replace the unknown-conversation cloud-leg test with one expecting the in-process empty payload {messages:[],tree:null,meta}.
+- [x] `ygg-chat/client/ygg-chat-r/server/headlessServer/routes/__tests__/cloudProxyRoutes.test.ts`
+  - [x] `cloudProxyRoutes tests` — **delete-file** _(low)_: Delete this file along with cloudProxyRoutes.ts.
+- [x] `ygg-chat/client/ygg-chat-r/server/headlessServer/routes/__tests__/ephemeralGenerateRoutes.test.ts`
+  - [x] L53-55,72-74 `YGG_APP_ACCESS_TOKEN/YGG_ACCESS_TOKEN/SUPABASE_ACCESS_TOKEN cleanup` — **update-test** _(low)_: Remove cloud token env cleanup and any remote-path cases.
+  - [x] L165-290 `provider 'openrouter' remote ephemeral cases` — **update-test** _(low)_: Delete the remote 'openrouter' cases (around 172, 232, 247, 274, 284). Add a case asserting that slash-prefixed models infer 'openrouterbyok'.
+  - [x] L167-286 `openrouter ephemeral routing / managed-account cases` — **update-test** _(low)_: Delete the explicit-openrouter, managed-account and Railway-token cases. Change 'infers openrouter from non-openai prefixed model names' to expect openrouterbyok (it fails with 'OpenRouter API key missing' when no key is set). Drop the getAuthManager mock if it is unused.
+- [x] `ygg-chat/client/ygg-chat-r/server/headlessServer/routes/__tests__/gatewayRoutes.attachments.test.ts`
+  - [x] `gateway attachment route tests` — **update-test** _(low)_: Remove the railway/mirror/auth stubs and the cases covering cloud legs, ?storageMode=cloud and POST /api/gw/attachments. Keep the local GET /messages/:id/attachments read cases.
+  - [x] L1-160 `gateway attachment tests` — **update-test** _(low)_: Remove railway mock/deps (63,80-87) and cloud cases (112-124 cloud routing/override, 135-145 Railway fallback, 146-end multipart Railway upload). Keep local read/link/delete; add 404 for unknown attachment id.
+  - [x] L5,30-31,73-74,120-121 `storageMode override tests` — **update-test** _(low)_: Remove cloud-leg and ?storageMode=cloud override cases; assert local-only behavior.
+  - [x] L63-165 `railway/auth deps; cloud-routing + ?storageMode=cloud + multipart upload cases` — **update-test** _(low)_: Register the routes with { db, statements } only. Delete the Railway-routing, storageMode=cloud override and POST multipart cases. Change the GET attachments/:id fallback to expect a 404. Keep the local read, link and delete cases.
+- [x] `ygg-chat/client/ygg-chat-r/server/headlessServer/routes/__tests__/gatewayRoutes.merge.test.ts`
+  - [x] `merge helper / toCloud* tests` — **update-test** _(low)_: Delete merge*/dedupById/toCloud* cases; keep sortByUpdatedDesc and toLocalConversationCreate/toLocalProjectCreate cases (storage_mode 'local' forcing). Delete file if nothing remains.
+  - [x] `merge helper tests` — **delete-file** _(low)_: Delete this file: it imports mergeConversationLists, mergeProjects, mergeRecent, merge*Paginated and the toCloud* helpers, all removed. Move any sortByUpdatedDesc coverage into a local test.
+- [x] `ygg-chat/client/ygg-chat-r/server/headlessServer/routes/__tests__/providerAuthRoutes.test.ts`
+  - [x] L56-60,85-128 `openrouter token 410 test, remote OpenRouter models test` — **update-test** _(low)_: Delete the openrouter/token case and the remote ?userId model-fetch case. Keep the openai 410 test and the default model listing (adjusted for the removed 'openrouter' entry).
+  - [x] L96 `mock of webdrasil /models/openrouter` — **update-test** _(low)_: Remove the remote OpenRouter model-list mock and its assertions, and the openrouter token-route cases. Keep the BYOK, zai and bedrock cases.
+- [x] `ygg-chat/client/ygg-chat-r/server/headlessServer/routes/__tests__/subagentRoutes.test.ts`
+  - [x] L145-155 `'rejects openrouter provider with 400'` — **update-test** _(low)_: Delete or rewrite to match the chosen legacy-'openrouter' normalization.
+- [x] `ygg-chat/client/ygg-chat-r/server/headlessServer/services/__tests__/authMigration.test.ts`
+  - [x] `OAuth credential migration tests` — **update-test** _(low)_: These cases are already codex-only. Re-run after the authMigration rewrite. Delete the file if authMigration.ts is deleted (open question).
+- [x] `ygg-chat/client/ygg-chat-r/server/headlessServer/services/__tests__/authSessionManager.test.ts`
+  - [x] L1-109 `AuthSessionManager tests using slot 'app'` — **update-test** _(low)_: Change every 'app' slot use (replace/resolve/snapshot/AuthFailure, lines 12-61+) to 'codex' so single-flight, rotation and reauth coverage survive narrowing AuthSlot.
+  - [x] L18-102 `manager.resolve('app') cases` — **update-test** _(low)_: Switch every 'app' slot to 'codex' so the single-flight, rejection and epoch coverage stays once AuthSlot is narrowed.
+- [x] `ygg-chat/client/ygg-chat-r/server/headlessServer/services/__tests__/chatOrchestrator.phase2.test.ts`
+  - [x] L1350,1801-1802 `railwayTurn.attachmentsBase64 / conversationContext / projectContext assertions` — **update-test** _(low)_: Rename to turnContext. If conversationContext and projectContext are pruned from the turn (only the Railway provider read them), assert them on the composed system prompt or the input fields instead.
+- [x] `ygg-chat/client/ygg-chat-r/server/headlessServer/services/__tests__/claudeSessionRepo.test.ts`
+  - [x] L30,33 `SUPABASE_SERVICE_ROLE_KEY sample secret` — **keep-but-decouple** _(low)_: Optional: swap the sample secret name for a neutral one (e.g. YGG_APP_SECRET); test still validates env scrubbing.
+- [x] `ygg-chat/client/ygg-chat-r/server/headlessServer/services/__tests__/claudeSessionService.test.ts`
+  - [x] L334,341 `assertClaudeBranchSelection provider: 'openrouter'` — **update-test** _(low)_: Optional: replace the arbitrary non-Claude 'openrouter' with 'openrouterbyok' so the fixture does not name a deleted provider. (optional, skipped: arbitrary/legacy provider name, still valid via the D7 alias)
+- [x] `ygg-chat/client/ygg-chat-r/server/headlessServer/services/__tests__/cloudMirrorService.test.ts`
+  - [x] `cloudMirrorService tests` — **delete-file** _(low)_: Delete this file along with cloudMirrorService.ts.
+- [x] `ygg-chat/client/ygg-chat-r/server/headlessServer/services/__tests__/cloudMirrorSink.test.ts`
+  - [x] `CloudMirrorSink tests` — **delete-file** _(low)_: Delete; the TreeMessageSink-ignores-providerMessageId regression becomes moot once the field is removed.
+  - [x] L20-45,47,60,71 `CloudMirrorSink tests + it.each([TreeMessageSink, CloudMirrorSink])` — **update-test** _(low)_: Delete the CloudMirrorSink describe block (20-45). In the it.each cases at 47, 60 and 71, keep only TreeMessageSink, which still covers response stamping and metadata. Consider renaming the file to treeMessageSink.test.ts.
+- [x] `ygg-chat/client/ygg-chat-r/server/headlessServer/services/__tests__/normalTurnCompaction.test.ts`
+  - [x] L69 `summaryRequest.railwayTurn.conversationId` — **update-test** _(low)_: Rename railwayTurn to turnContext. The same rename applies in subagentRunService.test.ts:253, toolLoopService.test.ts:408 and openaiChatgptProvider.test.ts 50/176/265/586.
+- [x] `ygg-chat/client/ygg-chat-r/server/headlessServer/services/__tests__/providerRouter.test.ts`
+  - [x] L27-65 `openrouter routing tests` — **update-test** _(low)_: Replace openrouter routing/context-length cases (33, 38-65 incl. railwayTurn) with openrouterbyok/lmstudio; assert chosen legacy 'openrouter' normalization.
+  - [x] L32,38-50 `resolveContextLength('openrouter'); 'routes openrouter and lmstudio' case` — **update-test** _(low)_: Line 32 now normalizes to openaichatgpt and clamps, so change it to 'openrouterbyok'. Delete the openrouter generate assertion (40-48, which expects 'Sign in again') and keep the LM Studio half.
+  - [x] L33,38-50 `openrouter routing test` — **update-test** _(low)_: Replace the 'openrouter' generate case ('Sign in again') with a check that legacy 'openrouter' normalizes to openrouterbyok. Keep the lmstudio and context-length cases.
+- [x] `ygg-chat/client/ygg-chat-r/server/headlessServer/services/__tests__/railwayClient.test.ts`
+  - [x] `railwayClient tests` — **delete-file** _(low)_: Delete this file along with railwayClient.ts.
+- [x] `ygg-chat/client/ygg-chat-r/server/headlessServer/services/__tests__/refreshAdapters.test.ts`
+  - [x] L30-33 `missing Supabase config test` — **update-test** _(low)_: Delete the 'reports missing main-process Supabase config' case (stubs VITE_SUPABASE_*/SUPABASE_*).
+  - [x] L31-32 `app-slot Supabase config_error case` — **update-test** _(low)_: Delete the VITE_SUPABASE stubEnv / refreshCredential('app') configuration_error case. Keep the Codex refresh and expiryMs cases.
+- [x] `ygg-chat/client/ygg-chat-r/server/headlessServer/services/__tests__/subagentModelNames.test.ts`
+  - [x] L22 `normalizeSubagentModelName(..., 'OpenRouter')` — **update-test** _(low)_: Optional: use 'OpenRouter BYOK'. Slash models must still pass through unchanged. (optional, skipped: arbitrary/legacy provider name, still valid via the D7 alias)
+- [x] `ygg-chat/client/ygg-chat-r/server/headlessServer/services/__tests__/subagentRunService.test.ts`
+  - [x] L253 `call.input.railwayTurn?.serviceTier` — **update-test** _(low)_: Rename to call.input.turnContext?.serviceTier.
+- [x] `ygg-chat/client/ygg-chat-r/server/headlessServer/services/__tests__/subagentToolExecutor.test.ts`
+  - [x] L30,116-125 `OpenRouter parent fallback cases` — **update-test** _(low)_: Remove ['openrouter',...] tier case and 'falls OpenRouter parents back to the local subagent provider' test (or rewrite for legacy normalization).
+- [x] `ygg-chat/client/ygg-chat-r/server/headlessServer/services/__tests__/toolLoopService.test.ts`
+  - [x] L408 `providerRouter.calls[1].input.railwayTurn?.previousResponseId` — **update-test** _(low)_: Rename to turnContext?.previousResponseId.
+- [x] `ygg-chat/client/ygg-chat-r/server/hostCapabilities.ts`
+  - [x] L12-17 `KeyValueStore doc comment` — **update-docs** _(low)_: Replace the 'auth_session' example key with managed_auth_v1.
+- [x] `ygg-chat/client/ygg-chat-r/server/localAnalyticsDashboard.ts`
+  - [x] L9,15,192-194,543-544,612 `storage_mode projections, payments stub` — **keep-but-decouple** _(low)_: Optional: stop selecting/returning storage_mode and drop payments stub once renderer types drop them. Column stays. (kept: legacy storage_mode column/projection (Q31); no logic branches on it)
+- [x] `ygg-chat/client/ygg-chat-r/server/localServer.ts`
+  - [x] L627,646,968,1157-1212 `storage_mode column DEFAULT 'cloud', getLocal* statements filtering storage_mode='local'` — **keep-but-decouple** _(medium)_: Keep columns/indexes (no migration). All kept insert paths (/api/app, /api/local conversations, userProjectRoutes) write 'local' explicitly; never insert relying on DEFAULT 'cloud'. — ⚠ Any new insert without storage_mode becomes 'cloud' and is hidden by storage_mode='local' list statements and /api/local/projects/:id 404s (userProjectRoutes 271,298). (kept: legacy storage_mode column/projection (Q31); no logic branches on it)
+- [x] `ygg-chat/client/ygg-chat-r/server/routes/noteSearchRoutes.ts`
+  - [x] L45,295-342,653,787-1015,1137,1194-1324 `storage_mode in note search docs/results` — **keep-but-decouple** _(low)_: Read-only projection of retained column (also searchIndexSchema.ts triggers, fetchChats.ts 97-632, lineageRepo.ts 170-184, appAutomationRoutes meta.storage_mode, conversationRoutes 389-393). Leave; optional cosmetic removal later. (kept: legacy storage_mode column/projection (Q31); no logic branches on it)
+- [x] `ygg-chat/client/ygg-chat-r/server/routes/userProjectRoutes.ts`
+  - [x] L271-276,298-302 `/api/local/projects/:id storage_mode!=='local' guards` — **keep-but-decouple** _(low)_: Keep (old cloud rows irrelevant) or delete guards for simplicity; no renderer path depends on rejecting cloud rows. (kept: legacy storage_mode column/projection (Q31); no logic branches on it)
+- [x] `ygg-chat/client/ygg-chat-r/server/tools/__tests__/dummyFilechatAction.ts.test`
+  - [x] `legacy dummy copies using /sync/message and storage_mode` — **delete-file** _(low)_: Stale non-runnable snapshot of old chatActions (70 storage refs, /sync/message posts); delete with dummyfile.ts.test (old /api/sync server copy). (skip: D16, fixture never edited)
+  - [x] L60,139,2031,3818,4883,5796,6143,6504,6579 `fixture text with VITE_* / webdrasil` — **keep-but-decouple** _(low)_: Do NOT edit: verbatim fixture read by editFile.test.ts (line 1346); exclude from cloud-removal grep audits. (skip: D16, fixture never edited)
+- [x] `ygg-chat/client/ygg-chat-r/server/tools/__tests__/dummyfile.ts.test`
+  - [x] L98-100,3119,3148 `fixture text with REMOTE_API_BASE webdrasil` — **keep-but-decouple** _(low)_: Do NOT edit: editFile.test.ts fixture (lines 373,1006); exclude from audits. (skip: D16, fixture never edited)
+- [x] `ygg-chat/client/ygg-chat-r/src/components/ChatMessage/SummarisedMessage.test.tsx`
+  - [x] L26 `vi.mock utils/api { environment: 'local' }` — **update-test** _(low)_: Remove `environment` from the utils/api mock. Mock platform/clientCapabilities instead if the component under test now reads isNativeShell.
+- [x] `ygg-chat/client/ygg-chat-r/src/components/Heimdall/conversationProjectGroups.test.ts`
+  - [x] L32-40 `local and cloud chats grouping case` — **update-test** _(low)_: Drop storage_mode fixtures/wording (grouping logic itself is storage-agnostic).
+- [x] `ygg-chat/client/ygg-chat-r/src/components/SettingsPane/ToolsSettings.test.tsx`
+  - [x] L30,34-35 `vi.stubEnv('VITE_ENVIRONMENT','electron')` — **update-test** _(low)_: Remove stubEnv/unstubAllEnvs once ToolsSettings no longer reads VITE_ENVIRONMENT.
+  - [x] L30,34 `vi.stubEnv('VITE_ENVIRONMENT','electron')` — **update-test** _(low)_: Remove the VITE_ENVIRONMENT stubEnv/unstubAllEnvs. Mock clientCapabilities if any branch depends on native shell.
+- [x] `ygg-chat/client/ygg-chat-r/src/components/SubagentTranscript/SubagentTranscript.test.tsx`
+  - [x] L7 `vi.mock utils/api { environment: 'electron' }` — **update-test** _(low)_: Drop `environment: 'electron'` from the mock and mock clientCapabilities isNativeShell:true where needed.
+- [x] `ygg-chat/client/ygg-chat-r/src/components/TitleBar/titleBarHistory.test.ts`
+  - [x] L16,30 `visits with '/login'` — **update-test** _(low)_: Replace the '/login' entries with another excluded or removed path, or drop them.
+- [x] `ygg-chat/client/ygg-chat-r/src/containers/LoggingDashboard.test.tsx`
+  - [x] L15,18-22,38-60 `runtimeMode mock / cloud analytics tests` — **update-test** _(low)_: Drop the vi.mock of runtimeMode and useCloudLoggingAnalytics. Delete the 'suppresses stale cloud account data while signed out' test and the payments fixture, and mock only local analytics.
+  - [x] L19-59 `useCloudLoggingAnalytics mock, 'Sign in to load cloud analytics' case` — **update-test** _(low)_: Remove cloud hook mock and signed-out cloud test; mock only local hook; drop payments fixture if type removed.
+- [x] `ygg-chat/client/ygg-chat-r/src/containers/Settings.credentials.test.ts`
+  - [x] L6-7,25-33 `credential native boundary test` — **update-test** _(low)_: If authHandle is renamed (or openExternal moves), update the `authHandle('secrets:${channel}'` string assertions to the new helper name. Keep the assertion that secrets IPC is main-frame-only.
+- [x] `ygg-chat/client/ygg-chat-r/src/containers/sideBar.tsx`
+  - [x] L783,1316,1333 `useAuth accessToken / cloneConversation(id, accessToken)` — **delete-code** _(low)_: Stop destructuring accessToken and call cloneConversation(id) after the utils/api signature drops its accessToken param.
+- [x] `ygg-chat/client/ygg-chat-r/src/features/chats/agentRunPreviewReconnect.test.ts`
+  - [x] L7 `vi.mock('../../utils/api') FORCE_LOGOUT_EVENT` — **update-test** _(low)_: Remove FORCE_LOGOUT_EVENT: 'force-logout' from the mock once api.ts drops the export (only consumer is AuthContext).
+- [x] `ygg-chat/client/ygg-chat-r/src/features/chats/attachmentUrl.test.ts`
+  - [x] L7 `remoteOrigin fixture` — **update-test** _(low)_: Drop remoteOrigin fixture and cloud/uploads expectations; assert relative/upload paths resolve to null.
+- [x] `ygg-chat/client/ygg-chat-r/src/features/chats/branchModelSelection.test.ts`
+  - [x] L6,9,41-42 `'OpenRouter' fixture` — **update-test** _(low)_: Optional: rename to 'OpenRouter BYOK'. (optional, skipped: arbitrary/legacy provider name, still valid via the D7 alias)
+- [x] `ygg-chat/client/ygg-chat-r/src/features/chats/branchToolApproval.test.ts`
+  - [x] L106,109 `'OpenRouter' fixture` — **update-test** _(low)_: Optional: rename to 'OpenRouter BYOK'. (optional, skipped: arbitrary/legacy provider name, still valid via the D7 alias)
+- [x] `ygg-chat/client/ygg-chat-r/src/features/chats/buildServerLoopRequest.ts`
+  - [x] L10,95-102,223 `doc comments referencing openrouter cloud route` — **update-docs** _(low)_: Update the comments: the provider list becomes lmstudio|zai|openrouterbyok|bedrock|openaichatgpt|claude, the temperature note applies to openrouterbyok, and the serviceTier note is Codex-only. There is no logic change.
+- [x] `ygg-chat/client/ygg-chat-r/src/features/chats/changeOperationMode.test.ts`
+  - [x] L16,60 `thunk extra { auth: { accessToken: null, userId: null }, queryClient }` — **update-test** _(low)_: If ThunkExtraArgument.auth (store/thunkExtra.ts) is removed or reduced to userId with the app session gone, update the hand-built extra args here.
+- [x] `ygg-chat/client/ygg-chat-r/src/features/chats/chatActions.ts`
+  - [x] L132 `commented API_BASE` — **delete-code** _(low)_: Delete dead comment referencing VITE_API_URL (also line 470 commented fetch).
+- [x] `ygg-chat/client/ygg-chat-r/src/features/chats/chatSelection.test.ts`
+  - [x] L17,23 `storageMode expectations` — **update-test** _(low)_: Remove storageMode from expected targets and the 'local' arg.
+- [x] `ygg-chat/client/ygg-chat-r/src/features/chats/compactionCancellation.test.ts`
+  - [x] L28,42,86 `thunk extra { auth: { accessToken, userId } }` — **update-test** _(low)_: Update the thunk extra-arg literals to match the new ThunkExtraArgument shape after accessToken removal.
+- [x] `ygg-chat/client/ygg-chat-r/src/features/chats/editMessageWithBranching.test.ts`
+  - [x] L339-346,388-395,421,430 `'OpenRouter'/'openrouter' as non-Claude provider fixture` — **update-test** _(low)_: Optional: replace 'OpenRouter'/'openrouter' with 'OpenRouter BYOK'/'openrouterbyok' so the fixtures do not name the deleted provider. (optional, skipped: arbitrary/legacy provider name, still valid via the D7 alias)
+- [x] `ygg-chat/client/ygg-chat-r/src/features/chats/enqueueUserMessage.test.ts`
+  - [x] L17 `thunk extra { auth: { accessToken, userId } }` — **update-test** _(low)_: Update the thunk extra-arg literal to match the new ThunkExtraArgument shape after accessToken removal.
+- [x] `ygg-chat/client/ygg-chat-r/src/features/chats/localChatErrors.test.ts`
+  - [x] L123,133,165,252-253,275 `session_expired expectations` — **update-test** _(low)_: Update expectations for 401/403 to the new local code; drop the {kind:'sign_in',label:'Sign in'} action assertion and session_expired from the code list at L275 if the code is removed from shared/chatErrors.
+- [x] `ygg-chat/client/ygg-chat-r/src/features/chats/mainChatClient.test.ts`
+  - [x] L20-25,303-330 `FORCE_LOGOUT_EVENT mock / 'runServerChatLoop reauthentication' suite` — **update-test** _(low)_: Drop FORCE_LOGOUT_EVENT from the utils/api mock and delete the reauthentication describe block once the reauth_required branch is removed.
+- [x] `ygg-chat/client/ygg-chat-r/src/features/chats/runStatistics.test.ts`
+  - [x] L127 `provider: 'openrouter' metric fixture` — **update-test** _(low)_: Optional: use 'openrouterbyok'. (optional, skipped: arbitrary/legacy provider name, still valid via the D7 alias)
+- [x] `ygg-chat/client/ygg-chat-r/src/features/chats/runStatisticsMetadata.test.ts`
+  - [x] `mergeLocalRunMetadata tests` — **delete-file** _(low)_: Delete this file along with shared/runStatisticsMetadata.ts.
+- [x] `ygg-chat/client/ygg-chat-r/src/features/chats/sseProjection.test.ts`
+  - [x] L476-490,592 `free_generations_update / generation_limit_reached tests` — **update-test** _(low)_: Delete the free-tier projection tests and remove generation_limit_reached from the terminal-event fixture at line 592. Delete any reauth_required tests as well.
+  - [x] L476-486,592 `free-tier projection tests` — **update-test** _(low)_: Remove free_generations_update / generation_limit_reached cases and fixture entry.
+- [x] `ygg-chat/client/ygg-chat-r/src/features/chats/updateConversationTitle.test.ts`
+  - [x] L6,14,22,39-61 `gwApi.patch '?storageMode=' assertions` — **update-test** _(low)_: Expect gwApi.patch('/conversations/c',{title}) with no storageMode variants.
+- [x] `ygg-chat/client/ygg-chat-r/src/features/chats/watchContinuationSelection.test.ts`
+  - [x] L227 `thunk extra { auth: { accessToken, userId } }` — **update-test** _(low)_: Update the thunk extra-arg literal to match the new ThunkExtraArgument shape after accessToken removal.
+- [x] `ygg-chat/client/ygg-chat-r/src/features/conversations/conversationTypes.ts`
+  - [x] L1,13 `Conversation.storage_mode` — **keep-but-decouple** _(low)_: Keep as optional legacy field (DB column remains) or delete once all UI reads are removed. (kept: legacy storage_mode column/projection (Q31); no logic branches on it)
+- [x] `ygg-chat/client/ygg-chat-r/src/helpers/chatKeyboardShortcuts.test.ts`
+  - [x] L28-29,38 `'OpenRouter' shortcut slot fixture` — **update-test** _(low)_: Optional: rename to 'OpenRouter BYOK'. (optional, skipped: arbitrary/legacy provider name, still valid via the D7 alias)
+- [x] `ygg-chat/client/ygg-chat-r/src/helpers/providerSettingsHost.test.ts`
+  - [x] L5 `vi.mock runtimeMode isCommunityMode:false` — **update-test** _(low)_: Remove the runtimeMode mock and update expectations to the local-only behaviour (selector always shown, community default fallback).
+- [x] `ygg-chat/client/ygg-chat-r/src/helpers/providerSettingsStorage.test.ts`
+  - [x] L45 `resolveProviderContextLength('OpenRouter')` — **update-test** _(low)_: Optional: use 'OpenRouter BYOK'. (optional, skipped: arbitrary/legacy provider name, still valid via the D7 alias)
+- [x] `ygg-chat/client/ygg-chat-r/src/helpers/storageHandler.ts`
+  - [x] `saveUserToStorage/loadUserFromStorage` — **delete-file** _(low)_: Its only consumer is usersActions.loginUser, which is being deleted. Delete the file.
+- [x] `ygg-chat/client/ygg-chat-r/src/hooks/useConversationSnapshotCoordinator.test.ts`
+  - [x] L70 `vi.mock useAuth accessToken:null` — **update-test** _(low)_: Update the mock to the new useAuth shape ({ userId }).
+  - [x] L90-92 `render(conversationId, storageMode)` — **update-test** _(low)_: Drop storageMode arg from render helper.
+- [x] `ygg-chat/client/ygg-chat-r/src/hooks/useConversationSnapshotCoordinator.ts`
+  - [x] L21,95,134 `useAuth accessToken passthrough` — **delete-code** _(low)_: Stop reading accessToken from useAuth and stop passing it to the coordinator. Remove accessToken from conversationSnapshotCoordinator.ts (95,114,133) and the FetchConversationMessagesTreeOptions.
+- [x] `ygg-chat/client/ygg-chat-r/src/hooks/useIdeContext.ts`
+  - [x] L290,343 `commented VITE_ENVIRONMENT checks` — **delete-code** _(low)_: Delete commented-out `if (import.meta.env.VITE_ENVIRONMENT === 'electron')` lines.
+- [x] `ygg-chat/client/ygg-chat-r/src/hooks/useModelSwitchConfirmation.test.ts`
+  - [x] L24-25 `'OpenRouter' fixture` — **update-test** _(low)_: Optional: rename to 'OpenRouter BYOK'. (optional, skipped: arbitrary/legacy provider name, still valid via the D7 alias)
+- [x] `ygg-chat/client/ygg-chat-r/src/hooks/useQueries.ts`
+  - [x] L61-63,97-99,213-215,257-259,388-390,537-539,660-662,880-882,953-955,1099-1101,1183-1185,1913-1915 `const { accessToken, userId } = useAuth(); void accessToken` — **delete-code** _(low)_: Remove the dead accessToken destructuring and the void statements in each hook.
+- [x] `ygg-chat/client/ygg-chat-r/src/lib/auth/managed.test.ts`
+  - [x] L1-19 `token-free renderer auth facade` — **update-test** _(low)_: Drop the 'app' snapshot from the fixture. Assert that the codex-only adopt still yields the local userId and no longer reads or removes 'supabase-auth-token'.
+  - [x] L5-11 `token-free renderer auth facade test` — **update-test** _(low)_: Remove app: snapshot('app') and the electronAPI.auth.migrate stub from the fixture. Assert that the fixed local userId is projected.
+  - [x] L5-18 `token-free renderer auth facade test` — **update-test** _(low)_: Update the snapshot state (drop the app slot, user => LOCAL_AUTH_USER_ID). Assert that getSession returns the fixed local userId and that the codex slot is still adopted.
+- [x] `ygg-chat/client/ygg-chat-r/src/lib/auth/transport.browser.test.ts`
+  - [x] `browser host auth transport test` — **update-test** _(low)_: Re-check against the reduced transport (no login/logout/start). Keep the status and events assertions.
+  - [x] L6-24 `browser identity transport` — **update-test** _(low)_: Fixture state includes app:{}, so update it to codex-only. Add an assertion that the transport has no login/start/code.
+- [x] `ygg-chat/client/ygg-chat-r/src/store/thunkExtra.ts`
+  - [x] L4-25 `ThunkExtraArgument.auth.accessToken/updateThunkExtraAuth` — **rewrite** _(medium)_: Remove auth.accessToken, which is always null with the managed facade, and set userId once to LOCAL_AUTH_USER_ID. Update searchActions.ts (17,44), which passes auth.accessToken. — ⚠ Many thunks read extra.auth.userId, so keep userId populated before the first dispatch.
+- [x] `ygg-chat/client/ygg-chat-r/src/utils/api.ts`
+  - [x] L698-878 `FORCE_LOGOUT_EVENT, sessionExpiredError, apiCall, api` — **delete-code** _(medium)_: apiCall routes non-CRUD endpoints to /api/cloud/*. Delete apiCall/api/sessionExpiredError/FORCE_LOGOUT_EVENT after callers are gone (PaymentPage, searchActions, usersActions.refreshUserCredits, useLoggingAnalytics cloud hook, patchConversationProject, cloneConversation). Update test mocks exporting FORCE_LOGOUT_EVENT. — ⚠ FORCE_LOGOUT_EVENT is imported by AuthContext and mocked in mainChatClient.test.ts/agentRunPreviewReconnect.test.ts; remove together with P3.
+- [x] `ygg-chat/client/ygg-chat-r/src/utils/executeToolAndWait.test.ts`
+  - [x] L4 `vi.mock ./api { environment:'electron' }` — **update-test** _(low)_: Drop `environment` from the mock.
+- [x] `ygg-chat/client/ygg-chat-r/src/utils/helpers.ts`
+  - [x] L5-8 `parseId doc comment 'Web mode (Supabase)'` — **update-docs** _(low)_: Rewrite comment: all ids are strings (UUID) in local SQLite; drop Web/Supabase wording.
+- [x] `ygg-chat/client/ygg-chat-r/src/vite-env.d.ts`
+  - [x] L4,6,12 `__BUILD_TARGET__/'web', __IS_WEB__, VITE_ENVIRONMENT 'web'` — **delete-code** _(low)_: After all 'web' checks are gone, remove 'web' from the __BUILD_TARGET__ and VITE_ENVIRONMENT unions and delete `declare const __IS_WEB__`.
+- [x] `ygg-chat/client/ygg-chat-r/tailwind.config.js`
+  - [x] L14-15 `fontFamily.display (Blog page fonts)` — **delete-code** _(low)_: Remove the 'Blog page fonts' display entry. font-display is not used outside landing/blog.
+- [x] `ygg-chat/client/ygg-chat-r/vitest.renderer.config.ts`
+  - [x] L24-30 `define __IS_WEB__/__IS_LOCAL__/__BUILD_TARGET__` — **update-test** _(low)_: Delete __IS_WEB__ (and __IS_LOCAL__ if target dropped); keep __BUILD_TARGET__/__IS_ELECTRON__ consistent with new clientCapabilities.
+  - [x] L25-28 `define __IS_WEB__/__IS_LOCAL__/__BUILD_TARGET__ default 'local'` — **config-change** _(low)_: Drop __IS_WEB__/__IS_LOCAL__. Pick a kept default for __BUILD_TARGET__ (e.g. 'electron') or keep 'local' only if that target survives.
+  - [x] L27 `__IS_WEB__ define` — **config-change** _(low)_: Delete the __IS_WEB__ define line once no source references it.
+- [x] `ygg-chat/docs/agent_context/AGENT.md`
+  - [x] L12-19,50,55,57 `Supported Runtime Scope + index entries for headless/auth/electron docs` — **update-docs** _(low)_: Rewrite the scope: fully local Electron plus LAN browser-client/standalone hosts, no web mode/cloud/Supabase/Railway/payments, no VITE_ENVIRONMENT branching (use __IS_ELECTRON__). Drop 'cloud gateway (/api/gw, /api/cloud)' from line 50/57 and 'Supabase' from line 55. Keep the lines 82-86 schema-migration rule.
+  - [x] L16 `VITE_ENVIRONMENT==='web' rule` — **update-docs** _(low)_: Replace with: mode detection via platform/clientCapabilities (__BUILD_TARGET__); never read import.meta.env.VITE_*.
+- [x] `ygg-chat/docs/agent_context/agent_auth.md`
+  - [x] L1-37 `Managed authentication doc` — **update-docs** _(low)_: Rewrite it as Codex-only credential ownership. Remove the app (Supabase/Railway) slot, appLogin deep-link/OOB, the esbuild Supabase anon-key bundling note, appAuthTokenManager and the login manual checks. Document the fixed local user id.
+  - [x] L21 `appLogin deep-link/OOB description` — **update-docs** _(low)_: Remove the Google/GitHub deep-link/OOB + Supabase user-endpoint validation + local-user merge paragraph. Keep the Codex PKCE/managedOAuthRoutes and codexUsage description.
+- [x] `ygg-chat/docs/agent_context/agent_branch.md`
+  - [x] L230 `local/cloud/legacy ID comparison note` — **update-docs** _(low)_: Reword to 'legacy numeric vs UUID ids' and drop 'cloud'.
+- [x] `ygg-chat/docs/agent_context/agent_chat_container.md`
+  - [x] L48,70-82,86,213,243,308 `conversationStorageMode / storageModeFromNav / useConversationStorageMode` — **update-docs** _(low)_: Remove the storage-mode inference section and the storageMode props/args once P5 drops them from Chat.tsx, updateCwd and the snapshot coordinator. Remove 'local and cloud conversations' from the validation list.
+- [x] `ygg-chat/docs/agent_context/agent_chat_pipeline.md`
+  - [x] L83,98,103-113,150-151,248-275,292-293,336-339,364 `cloudChatEnabled, CloudMirrorSink, cloud gateway/token layer, gwApi/cloudApi, free-tier SSE mapping` — **update-docs** _(low)_: Delete the 'Cloud gateway / token layer' and 'Provider routing, message sinks, cloud gateway' cloud parts, the isCloudRoute steps, the free_generations_update/generation_limit_reached rows, and the /stripe and /app-store allowlist. Describe TreeMessageSink as the only sink. Rename railwayTurn references to match P2.
+  - [x] L255 `relayFreeTierEvents / openRouterProvider note` — **update-docs** _(low)_: Delete the relayFreeTierEvents/openRouterProvider sentence.
+- [x] `ygg-chat/docs/agent_context/agent_chat_streaming_state.md`
+  - [x] L144,163 `'web mode is not a target'; 'Cloud tree reads enrich messages'` — **update-docs** _(low)_: Drop the web-mode aside and the cloud-tree enrichment sentence.
+- [x] `ygg-chat/docs/agent_context/agent_electron_main_local_server.md`
+  - [x] L18,31,45,52-55,61,69,73-75,81,86,94-96,113 `gateway/cloudProxy routes, railwayClient/cloudMirror/appAuthTokenManager services, envLoader, login deep links` — **update-docs** _(low)_: Remove /api/cloud, Railway, Stripe and free-tier, gateway-flag vestigial notes, and login/OAuth deep links (keep the Codex 1455 callback). Update the envLoader line once .env loading is removed. Add the GitHub-provider autoUpdater note for main.ts.
+  - [x] L37,53-55,73-75,86 `Electron main / server agent doc` — **update-docs** _(low)_: Remove login/OAuth deep-link, cloudProxy/railway/token-layer and 'Railway stays AUTHORITATIVE' statements. Document: auth IPC = codex status only, external links via shell:openExternal, updater feed = GitHub Releases (app-update.yml, no setFeedURL).
+  - [x] L42,53 `appStoreRoutes / cloudProxyRoutes app-store description` — **update-docs** _(low)_: Describe appStoreRoutes as community list proxy (anonymous) + install/uninstall + restart, with no upload/validate-upload. Drop /app-store from the cloudProxyRoutes allowlist text.
+  - [x] L45,69,74-76 `envLoader / VITE_ENVIRONMENT=standalone / cloud gateway notes` — **update-docs** _(low)_: Remove envLoader mention, VITE_ENVIRONMENT=standalone (BUILD_TARGET now), and Railway-authoritative/cloud gateway lines.
+- [x] `ygg-chat/docs/agent_context/agent_global_persistent_agent.md`
+  - [x] L53 `cloudMirrorService + CloudMirrorSink reference` — **update-docs** _(low)_: Drop the reference to the deleted cloud mirror.
+- [x] `ygg-chat/docs/agent_context/agent_headless_server.md`
+  - [x] `Cloud gateway/mirror/Railway/free-tier/gateway flags sections` — **update-docs** _(low)_: Remove cloud pass-through, Railway client, CloudMirrorSink, isCloudRoute, free-tier events, gatewayFlags sections; describe /api/gw as local-only facade, 4+byok providers, turnContext rename.
+  - [x] L13-15,24-25,40-52,81-89,104-105,168-199,222-227,237-238,245-246,254-255,265 `cloud gateway, railwayClient, cloudMirrorService, CloudMirrorSink, appAuthTokenManager, gatewayFlags, isCloudRoute, free_generations_update/generation_limit_reached` — **update-docs** _(low)_: Remove the cloud gateway/pass-through sections, Railway client/token layer, CloudMirrorSink/Railway-id adoption, free-tier SSE events 16-17, the 'Railway stays authoritative' invariants and the openrouter provider from the 5-provider list. Rewrite the feature flags to resumableRuns only. Keep /api/gw only if it is renamed to a local CRUD surface.
+  - [x] L25,51,178-180 `appAuthTokenManager / Supabase credential manager mentions` — **update-docs** _(low)_: Remove the appAuthTokenManager lines and change 'owns the process-wide Supabase/Codex credential manager' to Codex-only. Similar edits apply to agent_chat_pipeline.md:111, agent_electron_main_local_server.md:55,74 and migration_full_headless.md:125-194,352.
+  - [x] L171,227 `CloudMirrorSink/relayFreeTierEvents/openRouterProvider free-tier docs` — **update-docs** _(low)_: Remove the cloud-route, free-tier and openRouterProvider references. Document providerTypes.ts and the turnContext rename. Apply the same to agent_chat_pipeline.md:255 and server/headlessServer/headless.md:77.
+- [x] `ygg-chat/docs/agent_context/agent_heimdall.md`
+  - [x] L41,145,234 `conversationStorageMode arg; local/cloud ID notes; gateway-local routes` — **update-docs** _(low)_: Remove conversationStorageMode from the coordinator call and 'local/cloud' wording. Rename 'gateway-local routes' if /api/gw is renamed.
+- [x] `ygg-chat/docs/agent_context/agent_local_tools_runtime.md`
+  - [x] `Data Flow step 6 (TreeMessageSink/CloudMirrorSink)` — **update-docs** _(low)_: Drop CloudMirrorSink mention.
+- [x] `ygg-chat/docs/agent_context/agent_message_storage_shape.md`
+  - [x] L8,19-56,146,197,219-226,257,284-302,318-319 `frontmatter cloudMirrorService.ts path, StorageMode 'cloud'|'local', CloudMirrorSink id adoption, community mode, mixed local/cloud` — **update-docs** _(low)_: Drop the cloudMirrorService.ts frontmatter path (file deleted) and all local⊕cloud/Railway-id adoption text. State that storage is SQLite-only and that the storage_mode column is unused but kept (no migration).
+- [x] `ygg-chat/docs/agent_context/agent_project_overview.md`
+  - [x] L31,43-47,53,58,67,94,106-108 `Cloud gateway / gateway flags / Local storage mode / Web mode bullets; legacy dev/build:web note` — **update-docs** _(low)_: Remove the cloud gateway, storage-mode and web-mode bullets and the 'Legacy dev/build:web scripts' note (scripts are being removed). Fix references to general_project_context.md and PERSISTENT_AGENT_CONTEXT.md if those are deleted.
+  - [x] L34,43 `Railway cloud backend / Cloud gateway description` — **update-docs** _(low)_: Rewrite the Railway/cloud-gateway/cloud-mirror/free-tier paragraphs to describe a fully local app. Mention Railway only as the optional community app store backend.
+  - [x] L43,94 `cloud proxy Stripe/app-store note; legacy dev/build:web note` — **update-docs** _(low)_: Drop the Stripe and web-build mentions. State that the app store talks to Railway directly from server/routes/appStoreRoutes.ts (anonymous browse/install), not via /api/cloud.
+  - [x] L94 `legacy dev/build:web note` — **update-docs** _(low)_: Delete note once dev/build:web are removed.
+- [x] `ygg-chat/docs/agent_context/agent_runtime_modes.md`
+  - [x] L11,18,26-39,43-48,57-60,64-65,68-78,92-97 `Legacy Web Mode, Local Storage Mode, src/lib/auth/*, api.ts local/cloud, gatewayFlags chat/crud/cloudProxy, StorageMode` — **rewrite** _(low)_: Rewrite around Electron plus browser-client/standalone LAN hosts only. Remove web mode, storage_mode and cloud flags, and say gatewayFlags is resumableRuns only (or whatever P2 keeps). Note that runtime detection uses __IS_ELECTRON__/BUILD_TARGET defines, not VITE_ENVIRONMENT. Drop the general_project_context.md gotcha.
+- [x] `ygg-chat/docs/agent_context/agent_subagents_orchestration.md`
+  - [x] L27,35,54-55,61 `CloudMirrorSink, relayFreeTierEvents, railwaySessionId` — **update-docs** _(low)_: Remove CloudMirrorSink/relayFreeTierEvents mentions and rename railwaySessionId to the P2 replacement name.
+- [x] `ygg-chat/docs/graviton_context.md`
+  - [x] L144,285 `messageSink 'cloud mirroring'; legacy web-mode note` — **update-docs** _(low)_: Describe messageSink as local persistence only. Replace the legacy web-mode caveat with a fully local statement. Linked from readme.md.
+- [x] `ygg-chat/docs/shared-ui-implementation-status.md`
+  - [x] L11,67,94-95 `'Cloud sign-in directs users to Electron host'; 'cloud attachment/ID-adoption acceptance'; app login reservation; cloud prompt creation` — **update-docs** _(low)_: Add a note that app login, cloud prompts and cloud attachment/ID adoption were removed with the local-only change and are no longer acceptance items. Leave the historical validation logs as-is.
+- [x] `ygg-chat/docs/stateContext.md`
+  - [x] L62,265,282,419-421,584-600 `cloud APIs, storage_mode resolution, storageMode route state, 'local and cloud-backed data' section` — **update-docs** _(low)_: Remove the storage-mode-awareness section (584-600), the storageMode route-state notes and cloud API mentions, so the doc says TanStack Query reads only the local server. Linked from readme.md. (Q20: kept with a historical banner instead)
+- [x] `ygg-chat/general_project_context.md`
+  - [x] L1-213 `Web runtime + Supabase, root server/ (supaChat/stripe/openrouter worker), dual-sync, storage_mode, supabase-migrations` — **rewrite** _(low)_: Rewrite to a short local-only map, or delete and point to docs/agent_context/agent_project_overview.md. It describes a nonexistent root server/, Supabase web mode, Stripe and dual-sync throughout (l.8-41,73-74,116-146,204). (Q20: kept with a historical banner instead)
+- [x] `ygg-chat/package-lock.json`
+  - [x] L38-46,1262-1335,1981 `workspace entries client/ygg-chat-r/node_modules/@stripe|@supabase|@vercel/analytics` — **remove-dependency** _(low)_: Root workspace lockfile also pins the client's cloud deps; regenerate alongside the client lockfile. Keep node_modules/@vercel/oidc (L11431, from 'ai').
+- [x] `ygg-chat/paymentplan.md`
+  - [x] `Stripe subscriptions/credits ledger design doc` — **delete-file** _(low)_: Delete the Stripe/credits design doc. Payments are being removed. (Q20: kept with a historical banner instead)
+- [x] `ygg-chat/shared/hostPrompts.ts`
+  - [x] L10,33 `HostPrompt.storage_mode:'local'` — **keep-but-decouple** _(low)_: Keep: persisted host prompt schema (hostPromptStore + validateHostPrompts) emits it; dropping changes stored JSON. Optional later cleanup with hostPromptStore.test.ts. (kept: legacy storage_mode column/projection (Q31); no logic branches on it)
+- [x] `ygg-chat/shared/types.ts`
+  - [x] L10,108,164,187 `StorageMode, SendMessage.storageMode, Project.storage_mode, ConversationRecord.storage_mode` — **keep-but-decouple** _(low)_: Delete line 108 request field. Keep storage_mode?: optional on Project/ConversationRecord (DB column stays) or narrow StorageMode to 'local'; no renderer logic may branch on it. (SendMessage.storageMode deleted; StorageMode and optional storage_mode kept (Q31))
+- [x] `ygg-chat/stream_block_context.md`
+  - [x] L131 `useConversationMessages fetches from local/cloud APIs` — **update-docs** _(low)_: Change 'local/cloud APIs' to the local server.
+- [x] `ygg-chat/summary_system_context.md`
+  - [x] L108 `'derived from current user credits and prompt/completion pricing'` — **update-docs** _(low)_: Remove the credits-based derivation note. Compaction uses context limits only.
+- [x] `ygg-chat/summary_test_subagent.md`
+  - [x] `subagent-generated summary of general_project_context (web/Supabase/dual-sync)` — **delete-file** _(low)_: Delete. It is a stale test artifact describing web mode, cloud API on 3001 and dual-sync. (Q20: kept with a historical banner instead)
 
 ## Reviewed and intentionally unchanged
 

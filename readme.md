@@ -137,7 +137,8 @@ These are especially useful if you want to understand the internal design of the
 
 ## Getting Started (Development)
 
-No `.env` file or account is needed. Clone the repo and run:
+No `.env` file or account is needed. Use Node.js 22 (the version CI uses; the pinned
+`better-sqlite3` has no prebuilt binary for newer Node releases). Clone the repo and run:
 
 ```bash
 cd ygg-chat

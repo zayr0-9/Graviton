@@ -11,8 +11,6 @@ export default {
         sans: ['"DM Sans"', 'Inter', 'system-ui', 'sans-serif'],
         // optional: dedicated utility
         dm: ['"DM Sans"', 'sans-serif'],
-        // Blog page fonts
-        display: ['Space Grotesk', 'sans-serif'],
         mono: ['JetBrains Mono', 'monospace'],
       },
       colors: {

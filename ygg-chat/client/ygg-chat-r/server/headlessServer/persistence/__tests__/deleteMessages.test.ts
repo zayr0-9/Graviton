@@ -1,6 +1,6 @@
 import Database from 'better-sqlite3'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { deleteMessagesWithLineageRepair, withMessageDeletionLock } from '../deleteMessages.js'
+import { deleteMessagesWithLineageRepair } from '../deleteMessages.js'
 import { LineageRepo } from '../lineageRepo.js'
 import { ChatOrchestrator } from '../../services/chatOrchestrator.js'
 
@@ -70,25 +70,6 @@ describe('cascading message deletion', () => {
     db.prepare('INSERT INTO streaming_runs VALUES (?, ?, ?, ?)').run('u', 'fork', 'running', 'renderer')
     deleteMessagesWithLineageRepair(db, ['a'])
     expect(lineage('fork').head_message_id).toBe('u')
-  })
-
-  it('blocks admission throughout an awaited cloud deletion and releases the lock on failure', async () => {
-    const host = Object.create(ChatOrchestrator.prototype) as any
-    host.db = db
-    let release!: () => void
-    const waiting = new Promise<void>(resolve => { release = resolve })
-    const deleting = withMessageDeletionLock(db, ['a'], async () => {
-      await waiting
-      deleteMessagesWithLineageRepair(db, ['a'])
-    })
-    expect(() => host.validateExecutionSelection({ conversationId: 'c' })).toThrow('deletion is in progress')
-    release(); await deleting
-    expect(lineage('l').head_message_id).toBe('u')
-    await expect(withMessageDeletionLock(db, ['u'], async () => { throw new Error('Cloud failed') })).rejects.toThrow('Cloud failed')
-    // Admission now reaches normal execution validation rather than the deletion fence.
-    host.conversationRepo = { listPathToMessage: () => [] }
-    host.inputRuns = new Map()
-    expect(() => host.validateExecutionSelection({ conversationId: 'c', provider: 'test' })).not.toThrow()
   })
 
   it('rolls back messages, child links and lineage metadata if a repair fails', () => {
