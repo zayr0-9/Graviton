@@ -2,7 +2,7 @@ import { describe, it, expect, vi } from 'vitest'
 import { mkdir, mkdtemp, realpath, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
-import { CHAT_MODE_NOTE, ClaudeSessionService, claudeModeSwitchNotice, interruptedResumePoint, safeResumePoint, type ClaudeTaskControl } from '../claudeSessionService.js'
+import { CHAT_MODE_NOTE, ClaudeSessionService, claudeModeSwitchNotice, interruptedResumePoint, parseClaudeSlashCommand, safeResumePoint, type ClaudeTaskControl } from '../claudeSessionService.js'
 import { OperationModeControl } from '../operationModeControl.js'
 import { assertClaudeBranchSelection } from '../../persistence/claudeSessionRepo.js'
 import { DecisionBroker } from '../decisionBroker.js'
@@ -561,6 +561,24 @@ it('rejects resolved native slash commands before SDK invocation', async () => {
   expect(f.sdk.query).not.toHaveBeenCalled()
 })
 
+it('reads slash input with the Claude Code command-name grammar', () => {
+  expect(parseClaudeSlashCommand('/acme:deploy staging now')).toEqual({ name: 'acme:deploy', args: 'staging now' })
+  expect(parseClaudeSlashCommand('  /compact\n')).toEqual({ name: 'compact', args: '' })
+  // Claude Code sends these to the model as prose, so they are not commands.
+  expect(parseClaudeSlashCommand('/Users/me/plan.md\n\nport the tools')).toBeNull()
+  expect(parseClaudeSlashCommand('/plan.md review it')).toBeNull()
+  expect(parseClaudeSlashCommand('/')).toBeNull()
+  expect(parseClaudeSlashCommand('not a command')).toBeNull()
+})
+
+it('sends a prompt that starts with a path as an ordinary prompt', async () => {
+  const f = fixture([assistant(), success])
+  f.input.request.content = '/Users/me/plan.md\n\nport the tools'
+  await f.service.run(f.input)
+  const { value } = await f.sdk.query.mock.calls[0][0].prompt.next()
+  expect(value.message.content).toBe('/Users/me/plan.md\n\nport the tools')
+})
+
 it.each(['execute', 'plan'])('honors stream auto-approval in %s without SDK permission bypass', async operationMode => {
   const f = fixture([assistant(), success])
   f.input.request.operationMode = operationMode
@@ -919,6 +937,7 @@ describe('Claude Code skills and hooks', () => {
     expect(await f.service.nativeCommand('/workspace', '/review')).toBeNull()
     expect(await f.service.nativeCommand('/workspace', '/missing')).toBeNull()
     expect(await f.service.nativeCommand('/workspace', 'not a command')).toBeNull()
+    expect(await f.service.nativeCommand('/workspace', '/Users/me/plan.md port it')).toBeNull()
     expect(lookups).toHaveLength(5)
     expect(lookups.every(lookup => lookup.close.mock.calls.length === 1)).toBe(true)
     expect(lookups[0].options).toMatchObject({ cwd: '/workspace', settingSources: ['user', 'project', 'local'], persistSession: false,

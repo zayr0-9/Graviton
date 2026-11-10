@@ -27,6 +27,14 @@ describe('SummaryBranchMessage', () => {
     expect(html).not.toContain('Hidden summary')
   })
 
+  it('renders the branch-before-summary pill only when it has a handler', () => {
+    const html = renderToStaticMarkup(<SummaryBranchMessage {...props} onBranch={vi.fn()} onBranchBeforeSummary={vi.fn()} />)
+    expect(html).toContain('>branch before summary</button><button')
+    expect(html).toContain('>branch here</button>')
+    expect(renderToStaticMarkup(<SummaryBranchMessage {...props} onBranch={vi.fn()} />)).not.toContain('branch before summary')
+    expect(renderToStaticMarkup(<SummaryBranchMessage {...props} readOnly onBranchBeforeSummary={vi.fn()} />)).not.toContain('<button')
+  })
+
   it('omits the action for read-only or non-branchable summaries', () => {
     expect(renderToStaticMarkup(<SummaryBranchMessage {...props} readOnly onBranch={vi.fn()} />)).not.toContain('<button')
     expect(renderToStaticMarkup(<SummaryBranchMessage {...props} />)).not.toContain('<button')

@@ -4,7 +4,7 @@ import { isCleanStartUserBranch } from '../../../../../shared/cleanStartBranch.j
 import { CLAUDE_TRANSFERRED_SOURCE_MESSAGE, isTransferredMessage, transferredSummaryAtTip } from '../../../../../shared/claudeTransfer.js'
 import { CLAUDE_MODELS, claudeMessageMetadata, isClaudeProvider, isClaudeTranscriptMessage } from '../../../../../shared/claudeProvider.js'
 import { ClaudeSessionRepo, assertClaudeBranchSelection } from '../persistence/claudeSessionRepo.js'
-import { CHAT_MODE_BLOCKED_TOOLS, ClaudeSessionService, claudeImageBlock, type ClaudeModeSwitch, type ClaudeQueuedInput, type ClaudeTaskControl } from './claudeSessionService.js'
+import { CHAT_MODE_BLOCKED_TOOLS, ClaudeSessionService, claudeImageBlock, parseClaudeSlashCommand, type ClaudeModeSwitch, type ClaudeQueuedInput, type ClaudeTaskControl } from './claudeSessionService.js'
 import { compactionInstruction } from '../../../../../shared/compaction.js'
 import type { AdmissionMismatchReason } from '../../../../../shared/runAdmission.js'
 import { v4 as uuidv4 } from 'uuid'
@@ -23,7 +23,7 @@ import type { ProviderTokenStore } from '../providers/tokenStore.js'
 import { BranchOrchestrator, type ResolvedExecution } from './branchOrchestrator.js'
 import { buildHeadlessSystemPrompt } from './headlessSystemPrompt.js'
 import { ProviderRouter, normalizeProviderRoute } from './providerRouter.js'
-import { classifyChatError } from '../providers/providerErrorFormatter.js'
+import { attachChatErrorCode, classifyChatError } from '../providers/providerErrorFormatter.js'
 import { RailwayAppAuthError } from '../providers/openRouterProvider.js'
 import {
   ProviderErrorAssistantResponse,
@@ -122,8 +122,13 @@ export function linkPreparedAttachmentsToMessage(
   return linkedAttachments
 }
 
-/** Tools that never prompt for permission (mirrors the renderer TOOL_PERMISSION_ALWAYS_BYPASS). */
 const CLAUDE_SLASH_COMMAND_ERROR = 'Use Graviton’s /compact command for Claude compaction. Claude Code’s built-in native slash commands are not supported; skills and custom commands run by name.'
+/** Refuses `/name` input that is a Claude built-in or no command at all. Retrying cannot help, so it offers no Retry. */
+function claudeSlashCommandError(name?: string): Error {
+  const message = name ? `/${name} isn’t one of your Claude Code skills or custom commands. ${CLAUDE_SLASH_COMMAND_ERROR}` : CLAUDE_SLASH_COMMAND_ERROR
+  return attachChatErrorCode(new Error(message), 'bad_request', { userMessage: message, recoverability: 'user_action' })
+}
+/** Tools that never prompt for permission (mirrors the renderer TOOL_PERMISSION_ALWAYS_BYPASS). */
 const ALWAYS_BYPASS_TOOLS = new Set(['skill_manager', 'multi_call', 'context_status'])
 /** custom_tool_manager actions that are read-only/management (bypass) vs 'invoke' (prompt). */
 const CUSTOM_TOOL_MANAGER_BYPASS_ACTIONS = new Set([
@@ -602,7 +607,7 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
     assertClaudeBranchSelection(request, freshExecution ? [] : path)
     if (isClaudeProvider(request.provider)) {
       // Other `/name` input is checked after skill discovery, before the user row is written.
-      if (!request.manualCompaction && /^\s*\/compact\b/.test(request.content ?? '')) throw new Error(CLAUDE_SLASH_COMMAND_ERROR)
+      if (!request.manualCompaction && parseClaudeSlashCommand(request.content)?.name === 'compact') throw claudeSlashCommandError()
       if (!(CLAUDE_MODELS as readonly string[]).includes(request.modelName)) throw new Error('Select a supported Claude model before sending.')
       if (!(request.rootPath ?? this.conversationRepo.getById(request.conversationId)?.cwd)) throw new Error('Choose a workspace folder before starting Claude.')
       // Reject formats the Anthropic API refuses before a user row is minted.
@@ -748,7 +753,7 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
       // Claude runs always use restricted access (see runMessage), so there is no policy to confirm.
       submission = { ...submission, fullAccess: undefined, fullAccessNotificationId: undefined }
       if (run.request.manualCompaction) throw new Error('Claude is compacting this session. Send your message after it finishes.')
-      if (/^\s*\//.test(submission.content)) throw new Error('Claude slash commands cannot be queued. Send it after this turn finishes.')
+      if (parseClaudeSlashCommand(submission.content)) throw new Error('Claude slash commands cannot be queued. Send it after this turn finishes.')
       for (const attachment of submission.attachmentsBase64 ?? []) claudeImageBlock(attachment.dataUrl)
     }
     const priorSubmission = run.queue.get(submission.requestId)
@@ -1409,7 +1414,7 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
       resolveContextDirectorySettingsFromEnv()
     )
     let contextLoader: ConversationContextLoader | null = null
-    const claudeSlash = claudeRun && !request.manualCompaction && /^\s*\//.test(request.content ?? '')
+    const claudeSlash = claudeRun && !request.manualCompaction ? parseClaudeSlashCommand(request.content) : null
     if (contextRootPath && (!claudeRun || claudeSlash)) {
       contextLoader = createConversationContextLoader({
         conversationId: request.conversationId,
@@ -1486,7 +1491,7 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
             return null
           })
         : null
-      if (!native) throw new Error(CLAUDE_SLASH_COMMAND_ERROR)
+      if (!native) throw claudeSlashCommandError(claudeSlash.name)
       // Claude expands it itself and never streams the body; record what ran on the user row.
       userMessageBlocks.push({
         ...toContextInjectionBlock({ path: '', label: `skill /${native.name} invoked by the user, expanded by Claude Code`,

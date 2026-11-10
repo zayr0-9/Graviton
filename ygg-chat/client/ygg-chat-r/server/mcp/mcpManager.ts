@@ -18,6 +18,7 @@ import {
   CELESTIAL_TEST_CLIENT_ID,
 } from './oauthDiscovery.js'
 import { mcpOAuthSecretStore, type McpOAuthSecrets } from './mcpOAuthSecrets.js'
+import { describeHttpFailure } from './httpFailureDetails.js'
 import { tryGetHostCapabilities, tryGetServerConfig } from '../serverHost.js'
 import { withCredentialVaultLock } from '../credentialVaultLock.js'
 
@@ -726,7 +727,7 @@ class McpClient extends EventEmitter {
           response.status === 401 && this.lastOAuthError ? ` | OAuth flow failed: ${this.lastOAuthError}` : ''
 
         throw new Error(
-          `MCP HTTP request failed (${response.status} ${response.statusText})${payload ? `: ${payload.slice(0, 400)}` : ''}${oauthHint}${oauthFailureHint}`
+          `MCP HTTP request failed (${method}): ${describeHttpFailure(response, payload)}${oauthHint}${oauthFailureHint}`
         )
       }
 
@@ -1110,7 +1111,7 @@ class McpClient extends EventEmitter {
 
     const body = await response.text()
     if (!response.ok) {
-      throw new Error(`OAuth metadata request failed (HTTP ${response.status})`)
+      throw new Error(`OAuth metadata request failed for ${url}: ${describeHttpFailure(response, body, 'oauth')}`)
     }
 
     try {
@@ -1182,7 +1183,7 @@ class McpClient extends EventEmitter {
         ? ' The authorization server requires a pre-registered OAuth client; configure a public client ID or confidential client credentials.'
         : ''
       throw new Error(
-        `Dynamic client registration failed (${response.status} ${response.statusText}).${policyHint}${body ? ` Response: ${body.slice(0, 400)}` : ''}`
+        `Dynamic client registration failed: ${describeHttpFailure(response, body, 'oauth')}.${policyHint}`
       )
     }
 
@@ -1250,7 +1251,7 @@ class McpClient extends EventEmitter {
     const body = await response.text()
     if (!response.ok) {
       throw new Error(
-        `Token exchange failed (HTTP ${response.status})`
+        `Token exchange failed (authorization_code grant): ${describeHttpFailure(response, body, 'oauth')}`
       )
     }
 
@@ -1305,7 +1306,7 @@ class McpClient extends EventEmitter {
     const body = await response.text()
     if (!response.ok) {
       throw new Error(
-        `Refresh token request failed (HTTP ${response.status})`
+        `Refresh token request failed (refresh_token grant): ${describeHttpFailure(response, body, 'oauth')}`
       )
     }
 
@@ -1581,7 +1582,7 @@ class McpClient extends EventEmitter {
       if (!response.ok) {
         const body = await response.text().catch(() => '')
         console.warn(
-          `[MCP:${this.name}] HTTP notification failed (${response.status} ${response.statusText})${body ? `: ${body.slice(0, 300)}` : ''}`
+          `[MCP:${this.name}] HTTP notification failed (${method}): ${describeHttpFailure(response, body)}`
         )
       }
     } catch (error) {

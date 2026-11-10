@@ -1,5 +1,5 @@
 import { createSlice, PayloadAction } from '@reduxjs/toolkit'
-import { composerApprovalHandoff, loadBranchToolApprovalDrafts, resolveComposerToolApproval, saveBranchToolApprovalDrafts } from './branchToolApproval'
+import { composerApprovalHandoff, composerProvider, loadBranchToolApprovalDrafts, resolveComposerToolApproval, saveBranchToolApprovalDrafts } from './branchToolApproval'
 import { loadBranchFastModeDrafts, saveBranchFastModeDrafts } from './branchFastMode'
 import { branchModelKey, loadBranchModelDrafts, saveBranchModelDrafts, type BranchModelSelection } from './branchModelSelection'
 import { normalizeChatErrorEnvelope } from '../../../../../shared/chatErrors'
@@ -7,7 +7,7 @@ import providersList from '../../../../../shared/providers.json'
 import { ConversationId, MessageId } from '../../../../../shared/types'
 import type { HeadlessBackgroundTask } from '../../../../../shared/headlessApi'
 import { isCommunityMode } from '../../config/runtimeMode'
-import { loadClaudeAutoMode, loadClaudeUltracode, loadDefaultToolAutoApprove, saveClaudeUltracode } from '../../helpers/toolApprovalSettingsStorage'
+import { type ClaudeToolApproval, loadClaudeToolApprovalDefault, loadClaudeUltracode, loadDefaultToolAutoApprove, saveClaudeUltracode } from '../../helpers/toolApprovalSettingsStorage'
 import { parseId } from '../../utils/helpers'
 import { isStreamContinuationTail } from './streamContinuationTail'
 import { canFollowSelectedTip } from './followSelectedTip'
@@ -40,6 +40,7 @@ import { buildPathToConversationMessage } from './conversationTree'
 import { finalizeChatTree } from './immutableChatTree'
 import { canFollowWatchContinuation } from './watchContinuation'
 import toolDefinitions, { ToolDefinition } from './toolDefinitions'
+import { isClaudeProvider } from '../../../../../shared/claudeProvider'
 
 // Helper to deep clone tool definitions for mutable Redux state
 const cloneTools = (tools: ToolDefinition[]): ToolDefinition[] =>
@@ -94,6 +95,12 @@ const mergeArtifacts = (existing: string[] | undefined, incoming: string[]): str
 
 const webHiddenProviders = new Set(['OpenAI (ChatGPT)', 'LM Studio', 'Z.AI / GLM', 'Amazon Bedrock', 'OpenRouter BYOK', 'Claude Code'])
 const communityAllowedProviders = new Set(['LM Studio', 'OpenAI (ChatGPT)', 'OpenRouter', 'OpenRouter BYOK', 'Z.AI / GLM', 'Claude Code'])
+
+// Unset leaves claudeToolAutoApprove undefined so Claude follows the shared default.
+const claudeToolApprovalState = (value: ClaudeToolApproval | null) => ({
+  claudeAutoMode: value === 'auto',
+  claudeToolAutoApprove: value === null ? undefined : value === 'allow_all',
+})
 
 const getAvailableProviders = () => {
   const allProviders = Object.values(providersList.providers)
@@ -279,7 +286,7 @@ const makeInitialState = (): ChatState => {
     operationModeUpgradeRequestsByStream: {},
     planClarificationRequestsByStream: {},
     toolAutoApprove: loadDefaultToolAutoApprove(),
-    claudeAutoMode: loadClaudeAutoMode(),
+    ...claudeToolApprovalState(loadClaudeToolApprovalDefault()),
     claudeUltracode: loadClaudeUltracode(),
     operationMode: 'plan',
     operationModeChanges: {},
@@ -1860,6 +1867,10 @@ export const chatSlice = createSlice({
       state.claudeAutoMode = action.payload
     },
 
+    claudeToolApprovalDefaultApplied: (state, action: PayloadAction<ClaudeToolApproval>) => {
+      Object.assign(state, claudeToolApprovalState(action.payload))
+    },
+
     claudeUltracodeSet: (state, action: PayloadAction<boolean>) => {
       state.claudeUltracode = action.payload
       saveClaudeUltracode(action.payload)
@@ -1884,6 +1895,10 @@ export const chatSlice = createSlice({
       }
       const { currentConversationId, currentLineageId, currentPath } = state.conversation
       if (!currentConversationId) {
+        if (isClaudeProvider(composerProvider(state))) {
+          state.claudeToolAutoApprove = enabled
+          return
+        }
         state.toolAutoApproveOverridden = true
         state.toolAutoApprove = enabled
         return

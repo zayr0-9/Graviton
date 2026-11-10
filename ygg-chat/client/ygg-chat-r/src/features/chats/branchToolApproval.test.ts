@@ -4,7 +4,7 @@ vi.hoisted(() => {
     value: { getItem: () => null, setItem: () => undefined } })
 })
 import { branchModelKey } from './branchModelSelection'
-import { loadBranchToolApprovalDrafts, resolveAnchoredToolApproval, resolveBranchToolApproval, resolveComposerToolApproval, saveBranchToolApprovalDrafts } from './branchToolApproval'
+import { defaultToolApproval, loadBranchToolApprovalDrafts, resolveAnchoredToolApproval, resolveBranchToolApproval, resolveComposerToolApproval, saveBranchToolApprovalDrafts } from './branchToolApproval'
 import chatReducer, { chatSliceActions } from './chatSlice'
 import { projectServerEvent } from './sseProjection'
 
@@ -96,4 +96,18 @@ it('fresh summary handoffs use the host default until explicitly selected, witho
   expect(chat.branchToolApprovalDrafts[branchModelKey('c', 'lineage:a')]).toBe(true)
   const next = { ...chat, composition: { ...chat.composition, editingBranch: true, branchEditMessageId: 'summary' } }
   expect(resolveComposerToolApproval(next)).toBe(false)
+})
+
+it('lets Claude default to Auto while other providers default to Allow all', () => {
+  let chat = { ...state(), toolAutoApprove: true }
+  chat = chatReducer(chat as any, chatSliceActions.claudeToolApprovalDefaultApplied('auto')) as any
+  expect(chat.claudeAutoMode).toBe(true)
+  expect(defaultToolApproval(chat, 'Claude Code')).toBe(false)
+  expect(defaultToolApproval(chat, 'OpenRouter')).toBe(true)
+  // Unrecorded branches fall back per provider; recorded branch choices still win.
+  expect(resolveBranchToolApproval(chat, [], 'other', null, 'Claude Code')).toBe(false)
+  expect(resolveBranchToolApproval(chat, [], 'other', null, 'OpenRouter')).toBe(true)
+  expect(resolveBranchToolApproval(chat, ['root', 'a'], 'c', null, 'Claude Code')).toBe(true)
+  // An unset Claude default follows the shared one.
+  expect(defaultToolApproval({ ...chat, claudeToolAutoApprove: undefined }, 'Claude Code')).toBe(true)
 })

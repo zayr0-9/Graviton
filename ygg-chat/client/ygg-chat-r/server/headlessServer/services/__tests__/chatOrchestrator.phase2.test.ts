@@ -419,7 +419,8 @@ describe('source lineage membership validation', () => {
       // Claude runs are always restricted, so a stale Full access flag is dropped rather than refused.
       orchestrator.submitQueuedMessage('c1', 'claude-q', { requestId: 'q1', content: 'also check tests', fullAccess: true,
         selectedFiles: [{ path: 'a.ts', contents: 'x' }] as any })
-      orchestrator.submitQueuedMessage('c1', 'claude-q', { requestId: 'q2', content: 'never mind' })
+      // Starting with a path is prose to Claude Code, not a slash command.
+      orchestrator.submitQueuedMessage('c1', 'claude-q', { requestId: 'q2', content: '/Users/me/notes.md never mind' })
       expect(woke).toBe(2)
       expect(await queue.prepareNext()).toEqual({ requestId: 'q1', prompt: 'also check tests\n\nSelected file context:\nFile: a.ts\nx', images: [] })
       // Not offered yet: cancelled locally. Already started: refused. Held by Claude: withdrawn by Claude.
@@ -682,6 +683,11 @@ describe('source lineage membership validation', () => {
     await orchestrator.runMessage({ operation: 'send', conversationId: 'c1', provider: 'claudecode', modelName: 'claude-sonnet-5-5',
       content: '/init', rootPath: testDirectory, hooksEnabled: true }, event => events.push(event)).catch(() => {})
     expect(events.some(event => event.type === 'error' && /native slash commands/.test(event.error ?? event.message ?? ''))).toBe(true)
+    // Retrying the same text cannot succeed, so the refusal names the command and offers no Retry.
+    const refusal = events.find(event => event.type === 'error')
+    expect(refusal.envelope).toMatchObject({ code: 'bad_request', recoverability: 'user_action' })
+    expect(refusal.envelope.userMessage).toContain('/init')
+    expect(refusal.envelope.action).toBeUndefined()
     expect((db.prepare('SELECT COUNT(*) AS n FROM messages').get() as any).n).toBe(before)
     expect(claudeSessions.run).toHaveBeenCalledTimes(2)
 
@@ -695,6 +701,17 @@ describe('source lineage membership validation', () => {
     expect(native.request.content).not.toContain('Deploys the app')
     const nativeUser = statements.getMessageById.get(native.parentId)
     expect(JSON.parse(nativeUser.content_blocks).map((block: any) => [block.reason, block.origin ?? null])).toEqual([['skill', 'claude'], ['hook', null]])
+
+    // A message that starts with a path is prose to Claude Code: no command lookup and no refusal.
+    claudeSessions.nativeCommand.mockClear()
+    const pathPrompt = '/Users/me/plan.md\n\nport the tools'
+    await orchestrator.runMessage({ operation: 'send', conversationId: 'c1', provider: 'claudecode', modelName: 'claude-sonnet-5-5',
+      content: pathPrompt, rootPath: testDirectory, hooksEnabled: true }, () => {})
+    expect(claudeSessions.nativeCommand).not.toHaveBeenCalled()
+    const prose = claudeSessions.run.mock.calls[3][0]
+    expect(prose.nativeCommand).toBeFalsy()
+    expect(prose.request.content.endsWith(pathPrompt)).toBe(true)
+    expect(statements.getMessageById.get(prose.parentId).content).toBe(pathPrompt)
   })
 
   it.each([undefined, true, false])('initializes Claude approval from the accepted toolAutoApprove=%s setting', async toolAutoApprove => {

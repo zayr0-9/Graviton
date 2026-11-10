@@ -5,7 +5,7 @@ vi.hoisted(() => {
     value: { getItem: () => null, setItem: () => undefined, removeItem: () => undefined } })
 })
 import chatReducer, { chatSliceActions as chat } from './chatSlice'
-import previewReducer, { agentRunPreviewActions as preview, agentRunPreviewMiddleware } from './agentRunPreviewSlice'
+import previewReducer, { agentRunPreviewActions as preview, agentRunPreviewMiddleware, MAX_FINISHED_AGENT_FORKS } from './agentRunPreviewSlice'
 import { buildAgentPreviewRows } from '../../components/RunningAgentsFloatingButton/agentPreviewContent'
 import { buildForkPreviewRows, selectForkPreviewRuns } from '../../components/RunningAgentsFloatingButton/agentForkPreview'
 import type { Message } from './chatTypes'
@@ -203,6 +203,63 @@ describe('agent run previews', () => {
     expect(Object.values(store.getState().agentRunPreviews.latestByFork)).toContain('z')
     store.dispatch(chat.sendingCompleted({ streamId: 'a' }))
     expect(store.getState().agentRunPreviews.byStreamId.a).toBeDefined()
+  })
+
+  describe('finished fork cap', () => {
+    const runForks = (store: ReturnType<typeof setup>, count: number, finish: (index: number) => boolean) => {
+      for (let index = 0; index < count; index++) {
+        vi.setSystemTime(Date.UTC(2026, 10, 1, 0, 0, index))
+        start(store, `s${index}`, `fork-${index}`)
+        text(store, `s${index}`, `out ${index}`)
+        if (finish(index)) store.dispatch(chat.sendingCompleted({ streamId: `s${index}` }))
+      }
+    }
+    const retained = (store: ReturnType<typeof setup>) => Object.keys(store.getState().agentRunPreviews.byStreamId).sort()
+
+    it(`keeps only the newest ${MAX_FINISHED_AGENT_FORKS} finished forks and releases older transcripts`, () => {
+      vi.useFakeTimers()
+      try {
+        const store = setup()
+        runForks(store, 7, () => true)
+        expect(retained(store)).toEqual(['s2', 's3', 's4', 's5', 's6'])
+        expect(Object.values(store.getState().agentRunPreviews.latestByFork).sort()).toEqual(['s2', 's3', 's4', 's5', 's6'])
+        // Late events for an evicted run must not recreate it without a fresh start.
+        store.dispatch(chat.sendingCompleted({ streamId: 's0' }))
+        text(store, 's1', 'late')
+        expect(retained(store)).toEqual(['s2', 's3', 's4', 's5', 's6'])
+      } finally { vi.useRealTimers() }
+    })
+
+    it('never evicts a fork that still has an active run, and does not count it toward the cap', () => {
+      vi.useFakeTimers()
+      try {
+        const store = setup()
+        // s0 is the oldest but still running; s1..s6 finish.
+        runForks(store, 7, index => index !== 0)
+        expect(retained(store)).toEqual(['s0', 's2', 's3', 's4', 's5', 's6'])
+        // Once s0 finishes it is the oldest finished fork and is released.
+        store.dispatch(chat.sendingCompleted({ streamId: 's0' }))
+        expect(retained(store)).toEqual(['s2', 's3', 's4', 's5', 's6'])
+      } finally { vi.useRealTimers() }
+    })
+
+    it('keeps completed runs of the same fork together with the fork', () => {
+      vi.useFakeTimers()
+      try {
+        const store = setup()
+        runForks(store, 5, () => true)
+        vi.setSystemTime(Date.UTC(2026, 10, 2))
+        start(store, 'new-run', 'fork-0')
+        store.dispatch(chat.sendingCompleted({ streamId: 'new-run' }))
+        // Still five forks: a second run on fork-0 evicts nothing.
+        expect(retained(store)).toEqual(['new-run', 's0', 's1', 's2', 's3', 's4'])
+        vi.setSystemTime(Date.UTC(2026, 10, 3))
+        start(store, 's9', 'fork-9')
+        store.dispatch(chat.sendingCompleted({ streamId: 's9' }))
+        // fork-0 is ordered by its newest run, so its older s0 survives; fork-1 is released.
+        expect(retained(store)).toEqual(['new-run', 's0', 's2', 's3', 's4', 's9'])
+      } finally { vi.useRealTimers() }
+    })
   })
 
   it('keeps source-lineage runs separate until confirmation and preserves older payload', () => {

@@ -23,21 +23,28 @@ export async function saveDefaultToolAutoApprove(enabled: boolean): Promise<void
   }
 }
 
-export const CLAUDE_AUTO_MODE_STORAGE_KEY = 'chat:claudeAutoMode'
+export type ClaudeToolApproval = 'ask' | 'auto' | 'allow_all'
+export const CLAUDE_TOOL_APPROVAL_STORAGE_KEY = 'chat:claudeToolApprovalDefault'
+// Written by the old Chat auto toggle; read once as the Claude default until Settings saves one.
+const LEGACY_CLAUDE_AUTO_MODE_STORAGE_KEY = 'chat:claudeAutoMode'
 
-export function loadClaudeAutoMode(): boolean {
+/** Claude's own launch default; null follows the shared Default Tool Approval. */
+export function loadClaudeToolApprovalDefault(): ClaudeToolApproval | null {
   try {
-    return typeof localStorage !== 'undefined' && localStorage.getItem(CLAUDE_AUTO_MODE_STORAGE_KEY) === 'true'
+    if (typeof localStorage === 'undefined') return null
+    const stored = localStorage.getItem(CLAUDE_TOOL_APPROVAL_STORAGE_KEY)
+    if (stored === 'ask' || stored === 'auto' || stored === 'allow_all') return stored
+    return localStorage.getItem(LEGACY_CLAUDE_AUTO_MODE_STORAGE_KEY) === 'true' ? 'auto' : null
   } catch {
-    return false
+    return null
   }
 }
 
-export function saveClaudeAutoMode(enabled: boolean): void {
+export function saveClaudeToolApprovalDefault(value: ClaudeToolApproval): void {
   try {
-    if (typeof localStorage !== 'undefined') localStorage.setItem(CLAUDE_AUTO_MODE_STORAGE_KEY, String(enabled))
+    if (typeof localStorage !== 'undefined') localStorage.setItem(CLAUDE_TOOL_APPROVAL_STORAGE_KEY, value)
   } catch (error) {
-    console.error('Failed to save Claude auto mode:', error)
+    console.error('Failed to save Claude tool approval default:', error)
   }
 }
 

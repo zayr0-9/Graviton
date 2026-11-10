@@ -1,6 +1,7 @@
 import { buildLocalApiUrl } from '../utils/api'
 import { isHostClient } from '../platform/clientCapabilities'
 import { createEmptyStreamState } from '../features/chats/streamHelpers'
+import { MAX_FINISHED_AGENT_FORKS } from '../features/chats/agentRunPreviewSlice'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { Message, StreamEvent, StreamLifecycleStatus, StreamState } from '../features/chats/chatTypes'
 import type { Conversation } from '../features/conversations/conversationTypes'
@@ -76,6 +77,27 @@ export const refreshAgentStreamHistory = (
     return refreshed
   })
   return changed ? next : history
+}
+
+/**
+ * Keep completed runs of active forks, plus every run of the newest `maxFinishedForks`
+ * finished forks. Finished forks are ordered by their newest-started run, matching
+ * buildAgentForkGroups. `history` must be sorted newest-started first.
+ */
+export const limitFinishedAgentHistory = (
+  history: readonly AgentStreamListItem[],
+  activeStreams: readonly AgentStreamListItem[],
+  maxFinishedForks: number
+): AgentStreamListItem[] => {
+  const activeForks = new Set(activeStreams.map(getAgentForkKey))
+  const keptFinished = new Set<string>()
+  return history.filter(stream => {
+    const key = getAgentForkKey(stream)
+    if (activeForks.has(key) || keptFinished.has(key)) return true
+    if (keptFinished.size >= maxFinishedForks) return false
+    keptFinished.add(key)
+    return true
+  })
 }
 
 /** Presentation only: execution, cancellation and replay remain stream-scoped. */
@@ -443,8 +465,9 @@ export function useRunningAgentStreams(notes: ResearchNoteItem[] = [], allConver
     for (const run of Object.values(retainedPreviews)) {
       if (!run.stream.active) byId.set(run.streamId, buildAgentStreamListItem(run.streamId, run.stream, run.completedAt))
     }
-    return [...byId.values()].sort((a, b) => b.createdAt.localeCompare(a.createdAt))
-  }, [streamHistory, retainedPreviews, buildAgentStreamListItem])
+    const sorted = [...byId.values()].sort((a, b) => b.createdAt.localeCompare(a.createdAt) || a.streamId.localeCompare(b.streamId))
+    return limitFinishedAgentHistory(sorted, activeStreams, MAX_FINISHED_AGENT_FORKS)
+  }, [streamHistory, retainedPreviews, buildAgentStreamListItem, activeStreams])
 
   return {
     activeStreams,

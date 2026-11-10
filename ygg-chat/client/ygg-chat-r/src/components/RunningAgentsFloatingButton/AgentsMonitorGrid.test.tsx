@@ -144,6 +144,12 @@ describe('fork grid', () => {
   ])('scales card height for %i actual grid columns', (columns, height) => {
     expect(getAgentGridCardHeight(columns)).toBe(height)
   })
+  it('fills the measured grid viewport regardless of columns, with a minimum', () => {
+    expect(getAgentGridCardHeight(3, 900.6)).toBe('max(16rem, 900px)')
+    expect(getAgentGridCardHeight(1, 900.6)).toBe('max(16rem, 900px)')
+    expect(getAgentGridCardHeight(2, 0)).toBe('max(25rem, min(65dvh, 35rem))')
+    expect(getAgentGridCardHeight(2, null)).toBe('max(25rem, min(65dvh, 35rem))')
+  })
   it('offers a separate chat button beside status for active and completed forks', () => {
     const html = render([run('a')], [run('old', { lineageId: 'other-fork', status: 'completed' })])
     expect(html.match(/Open chat ↗/g)).toHaveLength(2)

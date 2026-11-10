@@ -9,7 +9,7 @@ import { isCleanStartBranchEdit, isProviderHandoffEdit, resolveComposerModelSele
 import { resolveBranchFastMode } from '../features/chats/branchFastMode'
 import { resolveComposerToolApproval } from '../features/chats/branchToolApproval'
 import { isCommittedCompaction } from '../../../../shared/compaction'
-import { isHiddenCompactionMessage } from '../features/chats/summaryPresentation'
+import { isHiddenCompactionMessage, resolveBranchBeforeSummaryAnchor } from '../features/chats/summaryPresentation'
 import { useQueryClient } from '@tanstack/react-query'
 import { defaultRangeExtractor, useVirtualizer } from '@tanstack/react-virtual'
 import { resolveExplainAnchorId, resolveLiveExplainSource, updateLiveExplainSurface, type LiveExplainSource, type LiveExplainSurface } from '../components/ChatMessage/liveExplainSelection'
@@ -5957,6 +5957,27 @@ function Chat() {
     ]
   )
 
+  // Summaries on this branch that have real history to fork from directly before them.
+  const branchBeforeSummaryAnchors = useMemo(() => {
+    const anchors = new Map<string, string | number>()
+    for (const message of renderableMessages) {
+      if (!isCommittedCompaction(message)) continue
+      const anchor = resolveBranchBeforeSummaryAnchor(message.id, conversationMessages)
+      if (anchor != null) anchors.set(String(message.id), anchor)
+    }
+    return anchors
+  }, [renderableMessages, conversationMessages])
+
+  // A new user child under the pre-summary message: the same explicit historical-parent send
+  // Explain selection uses, so it keeps the full uncompacted context.
+  const handleBranchBeforeSummary = useCallback(
+    (summaryId: string, content: string) => {
+      const anchor = branchBeforeSummaryAnchors.get(String(summaryId))
+      return anchor == null ? false : handleExplainFromSelection(String(anchor), content)
+    },
+    [branchBeforeSummaryAnchors, handleExplainFromSelection]
+  )
+
   const handleResend = useCallback(
     (id: string) => {
       // Find the message by id from displayed messages first, fallback to all conversation messages
@@ -7043,6 +7064,8 @@ function Chat() {
                               <SummaryBranchMessage id={String(msg.id)} content='' role={msg.role} width='w-full'
                                 onBranch={submitMessageAsBranch}
                                 branchSubmissionDisabled={selection.status === 'pending' || selection.status === 'error'}
+                                onBranchBeforeSummary={branchBeforeSummaryAnchors.has(String(msg.id)) ? handleBranchBeforeSummary : undefined}
+                                branchBeforeSummaryDisabled={selection.status === 'pending' || selection.status === 'error' || streamLifecycleActive || compactionActive}
                                 customTheme={customTheme}
                                 customThemeEnabled={customThemeEnabled}
                                 isDarkMode={isDarkMode}

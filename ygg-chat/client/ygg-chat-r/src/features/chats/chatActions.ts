@@ -4,7 +4,7 @@ import { getAdmissionEpoch, resetAdmissionEpoch } from './runAdmissionClient'
 import { getClientId, newClientId } from '../../helpers/clientId'
 import { isCleanStartBranchEdit, isSummaryBranchEdit, isProviderHandoffEdit, resolveBranchModelSelection, resolveEditBranchModelSelection, resolveComposerSummaryHandoff } from './branchModelSelection'
 import { resolveBranchFastMode } from './branchFastMode'
-import { resolveAnchoredToolApproval, resolveBranchToolApproval, resolveHandoffToolApproval } from './branchToolApproval'
+import { defaultToolApproval, resolveAnchoredToolApproval, resolveBranchToolApproval, resolveHandoffToolApproval } from './branchToolApproval'
 import { isCommittedCompaction } from '../../../../../shared/compaction'
 import { getPendingFullAccessNotification, isFullAccessEnabled } from '../../helpers/fullAccessSettings'
 import { createAsyncThunk } from '@reduxjs/toolkit'
@@ -1153,9 +1153,9 @@ export const sendMessage = createAsyncThunk<
           tools: filterToolsForOperationMode(getAllTools(), operationModeAtSend),
           streamId,
           currentLineageId: providedLineageId === undefined ? state.chat.conversation.currentLineageId : providedLineageId,
-          toolAutoApprove: summaryHandoff ? resolveHandoffToolApproval(modelSelectionState, summaryHandoff.id)
-            : isBranch ? resolveAnchoredToolApproval(modelSelectionState, parent, conversationId)
-            : resolveBranchToolApproval(modelSelectionState, providedBranchPath ?? modelSelectionState.conversation.currentPath, conversationId, providedLineageId === undefined ? modelSelectionState.conversation.currentLineageId : providedLineageId),
+          toolAutoApprove: summaryHandoff ? resolveHandoffToolApproval(modelSelectionState, summaryHandoff.id, serverProvider)
+            : isBranch ? resolveAnchoredToolApproval(modelSelectionState, parent, conversationId, serverProvider)
+            : resolveBranchToolApproval(modelSelectionState, providedBranchPath ?? modelSelectionState.conversation.currentPath, conversationId, providedLineageId === undefined ? modelSelectionState.conversation.currentLineageId : providedLineageId, serverProvider),
           claudeAutoMode: modelSelectionState.claudeAutoMode,
           claudeUltracode: modelSelectionState.claudeUltracode,
           hooksEnabled: isElectronMode,
@@ -1653,8 +1653,8 @@ export const editMessageWithBranching = createAsyncThunk<
           streamId,
           currentLineageId: providedLineageId === undefined ? state.chat.conversation.currentLineageId : providedLineageId,
           toolAutoApprove: (modelSelectionState.composition.editingBranch ? modelSelectionState.composition.branchEditModes?.toolAutoApprove : undefined)
-            ?? (isProviderHandoffEdit(modelSelectionState, originalMessageId) ? modelSelectionState.toolAutoApprove
-              : resolveAnchoredToolApproval(modelSelectionState, parentMessageId, conversationId)),
+            ?? (isProviderHandoffEdit(modelSelectionState, originalMessageId) ? defaultToolApproval(modelSelectionState, serverProvider)
+              : resolveAnchoredToolApproval(modelSelectionState, parentMessageId, conversationId, serverProvider)),
           claudeAutoMode: modelSelectionState.claudeAutoMode,
           claudeUltracode: modelSelectionState.claudeUltracode,
           hooksEnabled: isElectronMode,
@@ -1912,8 +1912,8 @@ export const sendMessageToBranch = createAsyncThunk<
           tools: filterToolsForOperationMode(getAllTools(), operationModeAtSend),
           streamId,
           currentLineageId: providedLineageId === undefined ? state.chat.conversation.currentLineageId : providedLineageId,
-          toolAutoApprove: isSummaryBranchEdit(modelSelectionState, parentId) ? modelSelectionState.toolAutoApprove
-            : resolveAnchoredToolApproval(modelSelectionState, parentId, conversationId),
+          toolAutoApprove: isSummaryBranchEdit(modelSelectionState, parentId) ? defaultToolApproval(modelSelectionState, serverProvider)
+            : resolveAnchoredToolApproval(modelSelectionState, parentId, conversationId, serverProvider),
           claudeAutoMode: modelSelectionState.claudeAutoMode,
           claudeUltracode: modelSelectionState.claudeUltracode,
           hooksEnabled: isElectronMode,

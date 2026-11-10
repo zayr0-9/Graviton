@@ -539,6 +539,8 @@ export interface ChatState {
   toolAutoApproveOverridden?: boolean
   /** Claude provider: use the CLI's auto mode when tool approval is set to ask. */
   claudeAutoMode?: boolean
+  /** Claude provider's default approval; undefined follows toolAutoApprove. */
+  claudeToolAutoApprove?: boolean
   /** Claude provider: run each turn with ultracode (standing Workflow orchestration). */
   claudeUltracode?: boolean
   operationMode: OperationMode

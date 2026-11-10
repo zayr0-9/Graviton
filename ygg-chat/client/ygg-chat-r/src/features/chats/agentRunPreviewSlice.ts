@@ -37,16 +37,36 @@ export const previewForkKey = (streamId: string, stream: StreamState): string =>
 
 const hasOutput = (stream: StreamState) => Boolean(stream.events.length || stream.buffer || stream.thinkingBuffer)
 
-/** Track the newest start for navigation without evicting older fork transcripts. */
+/** Finished forks retained in the pill; older finished forks are released entirely. */
+export const MAX_FINISHED_AGENT_FORKS = 5
+
+const startsAfter = (a: AgentRunPreview, b: AgentRunPreview) =>
+  a.stream.createdAt > b.stream.createdAt || (a.stream.createdAt === b.stream.createdAt && a.streamId > b.streamId)
+
+/**
+ * Track the newest start per fork for navigation, and release transcripts of finished
+ * forks beyond the newest MAX_FINISHED_AGENT_FORKS. A fork with any active run is never
+ * evicted, and its completed runs stay with it.
+ */
 function reconcileRetention(state: AgentRunPreviewState) {
   const latest: Record<string, string> = {}
+  const runsByFork = new Map<string, string[]>()
+  const activeForks = new Set<string>()
   for (const run of Object.values(state.byStreamId)) {
     const key = previewForkKey(run.streamId, run.stream)
     const previous = state.byStreamId[latest[key]]
-    if (!previous || run.stream.createdAt > previous.stream.createdAt ||
-        (run.stream.createdAt === previous.stream.createdAt && run.streamId > previous.streamId)) {
-      latest[key] = run.streamId
-    }
+    if (!previous || startsAfter(run, previous)) latest[key] = run.streamId
+    const runs = runsByFork.get(key)
+    if (runs) runs.push(run.streamId)
+    else runsByFork.set(key, [run.streamId])
+    if (run.stream.active) activeForks.add(key)
+  }
+  const finished = Object.keys(latest)
+    .filter(key => !activeForks.has(key))
+    .sort((a, b) => startsAfter(state.byStreamId[latest[a]], state.byStreamId[latest[b]]) ? -1 : 1)
+  for (const key of finished.slice(MAX_FINISHED_AGENT_FORKS)) {
+    for (const streamId of runsByFork.get(key) ?? []) delete state.byStreamId[streamId]
+    delete latest[key]
   }
   state.latestByFork = latest
 }

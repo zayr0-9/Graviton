@@ -13,17 +13,31 @@ interface AgentsMonitorGridProps {
   grouped: boolean
   onOpenFork: (stream: AgentStreamListItem) => void
   onOpenChat: (stream: AgentStreamListItem) => void
+  /** True while the pill is being drag-resized; card height is re-measured on release. */
+  resizing?: boolean
 }
 
-export function getAgentGridCardHeight(columns: number): string {
+const MIN_CARD_REM = 16
+const VIEWPORT_SETTLE_MS = 150
+
+/**
+ * Cards fill the grid's visible height so one row occupies the pill; further rows are
+ * reached by scrolling. Before the first measurement (or in SSR) use the static fallback.
+ */
+export function getAgentGridCardHeight(columns: number, viewportPx?: number | null): string {
+  if (viewportPx && viewportPx > 0) return `max(${MIN_CARD_REM}rem, ${Math.floor(viewportPx)}px)`
   const scale = columns >= 3 ? 1.5 : columns === 2 ? 1.25 : 1
   return `max(${20 * scale}rem, min(${52 * scale}dvh, ${28 * scale}rem))`
 }
 
 /** One live transcript per fork; expanding is optional, never required to monitor output. */
-export function AgentsMonitorGrid({ activeStreams, streamHistory, grouped, onOpenFork, onOpenChat }: AgentsMonitorGridProps) {
+export function AgentsMonitorGrid({ activeStreams, streamHistory, grouped, onOpenFork, onOpenChat, resizing = false }: AgentsMonitorGridProps) {
   const gridRef = useRef<HTMLDivElement>(null)
   const scrollRef = useRef<HTMLDivElement>(null)
+  const [viewportHeight, setViewportHeight] = useState<number | null>(null)
+  const resizingRef = useRef(resizing)
+  resizingRef.current = resizing
+  const measureViewportRef = useRef<() => void>(() => {})
   // View state only: transcript data stays in Redux, even while offscreen.
   const scrollStates = useRef(new Map<string, AgentPreviewScrollState>())
   const [columns, setColumns] = useState(1)
@@ -64,6 +78,33 @@ export function AgentsMonitorGrid({ activeStreams, streamHistory, grouped, onOpe
     }
   }, [forks.length])
 
+  // Observe the scroller, not the grid: the grid's height depends on card height.
+  // Never re-measure per frame during a pill drag; other resizes commit once settled.
+  useLayoutEffect(() => {
+    const scroller = scrollRef.current
+    if (!scroller) return
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const measure = () => {
+      const style = getComputedStyle(scroller)
+      const inner = scroller.clientHeight - (parseFloat(style.paddingTop) || 0) - (parseFloat(style.paddingBottom) || 0)
+      setViewportHeight(current => (current === inner ? current : inner))
+    }
+    measureViewportRef.current = measure
+    measure()
+    if (typeof ResizeObserver === 'undefined') return
+    const observer = new ResizeObserver(() => {
+      if (resizingRef.current) return
+      clearTimeout(timer)
+      timer = setTimeout(measure, VIEWPORT_SETTLE_MS)
+    })
+    observer.observe(scroller)
+    return () => { observer.disconnect(); clearTimeout(timer) }
+  }, [])
+
+  useLayoutEffect(() => {
+    if (!resizing) measureViewportRef.current()
+  }, [resizing])
+
   return (
     <section aria-label='Agent forks' className='flex h-full min-h-0 flex-1 flex-col overflow-hidden' style={textStyle}>
       <div ref={scrollRef} className='min-h-0 flex-1 overflow-y-auto overscroll-contain px-2 pb-2 thin-scrollbar'>
@@ -84,7 +125,7 @@ export function AgentsMonitorGrid({ activeStreams, streamHistory, grouped, onOpe
             const cardStyle = { backgroundColor: enabled ? getThemeModeColor(theme.colors[active ? 'agentsGridStreamingCardBg' : 'agentsGridIdleCardBg'], dark) : undefined }
             const name = stream.conversationTitle || `Conversation ${stream.conversationId || 'Unknown'}`
             return (
-              <section key={fork.key} aria-label={`${name} · ${fork.displayName}`} className={`flex min-w-0 flex-col overflow-hidden rounded-2xl ${active ? 'bg-orange-50 dark:bg-orange-900/20' : 'bg-black/[0.035] dark:bg-white/5'}`} style={{ ...cardStyle, height: getAgentGridCardHeight(columns) }}>
+              <section key={fork.key} aria-label={`${name} · ${fork.displayName}`} className={`flex min-w-0 flex-col overflow-hidden rounded-2xl ${active ? 'bg-orange-50 dark:bg-orange-900/20' : 'bg-black/[0.035] dark:bg-white/5'}`} style={{ ...cardStyle, height: getAgentGridCardHeight(columns, viewportHeight) }}>
                 <div className='flex w-full min-w-0 shrink-0 flex-col gap-1 px-3 py-2'>
                   <button type='button' onClick={() => onOpenFork(stream)} aria-label={`Preview ${name} · ${fork.displayName}`}
                     className='flex w-full min-w-0 items-center gap-2 rounded-lg text-left hover:bg-black/5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400 dark:hover:bg-white/5'>

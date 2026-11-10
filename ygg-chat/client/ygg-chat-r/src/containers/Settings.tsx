@@ -37,9 +37,10 @@ import {
   saveChatReasoningSettings,
 } from '../helpers/chatReasoningSettingsStorage'
 import {
-  loadClaudeAutoMode,
+  type ClaudeToolApproval,
+  loadClaudeToolApprovalDefault,
   loadDefaultToolAutoApprove,
-  saveClaudeAutoMode,
+  saveClaudeToolApprovalDefault,
   saveDefaultToolAutoApprove,
 } from '../helpers/toolApprovalSettingsStorage'
 import {
@@ -403,9 +404,10 @@ const Settings: React.FC = () => {
   )
   const [bashTimeoutTouched, setBashTimeoutTouched] = useState(false)
   const [defaultToolAutoApprove, setDefaultToolAutoApprove] = useState(() => loadDefaultToolAutoApprove())
-  const [defaultClaudeAutoMode, setDefaultClaudeAutoMode] = useState(() => loadClaudeAutoMode())
-  // Mirrors the Chat cycle for Claude sessions: Allow all wins, Auto only replaces Ask.
-  const defaultClaudeToolApproval = defaultToolAutoApprove ? 'allow-all' : defaultClaudeAutoMode ? 'auto' : 'ask'
+  const [claudeToolApprovalDefault, setClaudeToolApprovalDefault] = useState(() => loadClaudeToolApprovalDefault())
+  // Until Claude has its own saved choice it follows Default Tool Approval.
+  const effectiveClaudeToolApproval: ClaudeToolApproval =
+    claudeToolApprovalDefault ?? (defaultToolAutoApprove ? 'allow_all' : 'ask')
   const [chatReasoningSettings, setChatReasoningSettings] = useState<ChatReasoningSettings>(() =>
     loadChatReasoningSettings()
   )
@@ -1845,25 +1847,14 @@ const Settings: React.FC = () => {
     })
   }
 
-  const handleDefaultClaudeToolApprovalChange = async (value: string) => {
-    if (value === 'allow-all') {
-      await handleDefaultToolApprovalChange('allow-all')
-      return
-    }
-    // Ask and Auto both require the shared default to be Ask; Allow all would override Auto.
-    if (defaultToolAutoApprove) {
-      try { await saveDefaultToolAutoApprove(false) }
-      catch (error) { showStatus({ type: 'error', text: error instanceof Error ? error.message : 'Could not save settings' }); return }
-      setDefaultToolAutoApprove(false)
-      dispatch(chatSliceActions.toolAutoApproveDisabled())
-    }
-    const autoMode = value === 'auto'
-    saveClaudeAutoMode(autoMode)
-    setDefaultClaudeAutoMode(autoMode)
-    dispatch(chatSliceActions.claudeAutoModeSet(autoMode))
+  const handleClaudeToolApprovalDefaultChange = (value: string) => {
+    const approval: ClaudeToolApproval = value === 'auto' || value === 'allow_all' ? value : 'ask'
+    saveClaudeToolApprovalDefault(approval)
+    setClaudeToolApprovalDefault(approval)
+    dispatch(chatSliceActions.claudeToolApprovalDefaultApplied(approval))
     showStatus({
       type: 'success',
-      text: `Claude Code default tool approval set to ${autoMode ? 'Auto' : 'Ask'}.`,
+      text: `Claude Code tool approval set to ${approval === 'allow_all' ? 'Allow all' : approval === 'auto' ? 'Auto' : 'Ask'}.`,
     })
   }
 
@@ -2778,17 +2769,17 @@ const Settings: React.FC = () => {
               <div>
                 <p className='text-base font-medium text-stone-900 dark:text-stone-100'>Claude Code Tool Approval</p>
                 <p className='text-sm text-stone-500 dark:text-stone-400'>
-                  Auto lets Claude&apos;s classifier approve routine actions and asks you when it is unsure. Allow all is
-                  shared with Default Tool Approval above, so choosing Ask or Auto here also sets that default to Ask.
+                  Used for Claude Code sessions instead of Default Tool Approval. Auto lets Claude&apos;s classifier
+                  approve routine actions and asks you when it is unsure.
                 </p>
               </div>
               <Select
-                value={defaultClaudeToolApproval}
-                onChange={handleDefaultClaudeToolApprovalChange}
+                value={effectiveClaudeToolApproval}
+                onChange={handleClaudeToolApprovalDefaultChange}
                 options={[
                   { value: 'ask', label: 'Ask' },
                   { value: 'auto', label: 'Auto' },
-                  { value: 'allow-all', label: 'Allow all' },
+                  { value: 'allow_all', label: 'Allow all' },
                 ]}
                 className='max-w-xs'
               />

@@ -1,7 +1,17 @@
+import { isClaudeProvider } from '../../../../../shared/claudeProvider'
 import { parseMessageMeta } from '../../../../../shared/contextInjection'
 import { executionPathAfterHandoff } from '../../../../../shared/summaryHandoff'
 import { branchModelKey, isProviderHandoffEdit, resolveComposerModelSelection, resolveComposerSummaryHandoff } from './branchModelSelection'
 import type { ChatState } from './chatTypes'
+
+export function composerProvider(chat: ChatState): string {
+  return resolveComposerModelSelection(chat)?.provider ?? chat.providerState.currentProvider
+}
+
+/** Launch default for a branch with no draft or recorded choice; Claude has its own. */
+export function defaultToolApproval(chat: ChatState, provider: unknown = composerProvider(chat)): boolean {
+  return isClaudeProvider(provider) ? (chat.claudeToolAutoApprove ?? chat.toolAutoApprove) : chat.toolAutoApprove
+}
 
 /** Resolve the send's captured branch, never another pane's current selection. */
 export function resolveBranchToolApproval(
@@ -9,6 +19,7 @@ export function resolveBranchToolApproval(
   path = chat.conversation.currentPath,
   conversationId = chat.conversation.currentConversationId,
   lineageId = chat.conversation.currentLineageId,
+  provider?: unknown,
 ): boolean {
   const draft = lineageId ? chat.branchToolApprovalDrafts?.[branchModelKey(conversationId, `lineage:${lineageId}`)] : undefined
   if (typeof draft === 'boolean') return draft
@@ -23,40 +34,40 @@ export function resolveBranchToolApproval(
     const recorded = parseMessageMeta(row?.meta)?.toolAutoApprove
     if (typeof recorded === 'boolean') return recorded
   }
-  return chat.toolAutoApprove
+  return defaultToolApproval(chat, provider)
 }
 
 /** Fork/edit policies inherit from the cut, not later work or the source's live draft. */
-export function resolveAnchoredToolApproval(chat: ChatState, anchorId: unknown, conversationId: unknown): boolean {
+export function resolveAnchoredToolApproval(chat: ChatState, anchorId: unknown, conversationId: unknown, provider?: unknown): boolean {
   const rows = new Map(chat.conversation.messages.map(row => [String(row.id), row]))
   const path: string[] = []
   const seen = new Set<string>()
   let cursor = anchorId == null ? null : String(anchorId)
   while (cursor != null) {
-    if (seen.has(cursor)) return chat.toolAutoApprove
+    if (seen.has(cursor)) return defaultToolApproval(chat, provider)
     seen.add(cursor)
     const row = rows.get(cursor)
-    if (!row || String(row.conversation_id) !== String(conversationId)) return chat.toolAutoApprove
+    if (!row || String(row.conversation_id) !== String(conversationId)) return defaultToolApproval(chat, provider)
     path.unshift(cursor)
     cursor = row.parent_id == null ? null : String(row.parent_id)
   }
-  return resolveBranchToolApproval(chat, path, String(conversationId), null)
+  return resolveBranchToolApproval(chat, path, String(conversationId), null, provider)
 }
 
 export function composerApprovalHandoff(chat: ChatState) {
-  const provider = resolveComposerModelSelection(chat)?.provider ?? chat.providerState.currentProvider
-  return resolveComposerSummaryHandoff(chat, provider)
+  return resolveComposerSummaryHandoff(chat, composerProvider(chat))
 }
 
-export function resolveHandoffToolApproval(chat: ChatState, summaryId: unknown): boolean {
-  return chat.branchToolApprovalDrafts?.[branchModelKey(chat.conversation.currentConversationId, `handoff:${summaryId}`)] ?? chat.toolAutoApprove
+export function resolveHandoffToolApproval(chat: ChatState, summaryId: unknown, provider?: unknown): boolean {
+  return chat.branchToolApprovalDrafts?.[branchModelKey(chat.conversation.currentConversationId, `handoff:${summaryId}`)]
+    ?? defaultToolApproval(chat, provider)
 }
 
 export function resolveComposerToolApproval(chat: ChatState): boolean {
   if (chat.composition.editingBranch) {
     const explicit = chat.composition.branchEditModes?.toolAutoApprove
     if (typeof explicit === 'boolean') return explicit
-    if (isProviderHandoffEdit(chat)) return chat.toolAutoApprove
+    if (isProviderHandoffEdit(chat)) return defaultToolApproval(chat)
     const source = chat.conversation.messages.find(row => String(row.id) === String(chat.composition.branchEditMessageId))
     return resolveAnchoredToolApproval(chat, source?.parent_id, chat.conversation.currentConversationId)
   }

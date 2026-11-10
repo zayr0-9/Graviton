@@ -265,6 +265,19 @@ export function interruptedResumePoint(chain: Array<{ type: string; uuid: string
   return safeResumePoint(main.slice(start, end + 1).map(entry => resumeEntry(entry.uuid, entry.type, (entry.message as any)?.content)))
 }
 
+/** Claude Code's command-name grammar (CLI 2.1.314); any other `/word` input is sent to the model as prose. */
+const CLAUDE_COMMAND_NAME = /^[a-zA-Z0-9_][a-zA-Z0-9:_-]*$/
+
+/**
+ * The `/name args` command Claude Code would dispatch for this input, or null when it reads the
+ * input as an ordinary prompt. As in the CLI, the first word after `/` must be a command name, so
+ * a message that starts with a path (`/Users/me/plan.md …`) is prose, not a command.
+ */
+export function parseClaudeSlashCommand(content: string | null | undefined): { name: string; args: string } | null {
+  const match = /^\s*\/(\S*)\s*([\s\S]*)$/.exec(content ?? '')
+  return match && CLAUDE_COMMAND_NAME.test(match[1]) ? { name: match[1], args: match[2].trim() } : null
+}
+
 export class ClaudeSessionService {
   constructor(private deps: { sessions: ClaudeSessionRepo; messages: MessageRepo; broker?: DecisionBroker; sdk?: () => Promise<ClaudeSdk>; executable?: () => Promise<string>
     /** Durable store for native hook runs; defaults to the server's configured tracker. */
@@ -276,8 +289,8 @@ export class ClaudeSessionService {
    * branch. Asks a short-lived CLI that never gets a prompt, with hooks off so none run twice.
    */
   async nativeCommand(cwd: string, content: string): Promise<{ name: string; args: string; description: string } | null> {
-    const match = /^\s*\/([^\s/]+)(?:\s+([\s\S]*))?$/.exec(content)
-    if (!match) return null
+    const invocation = parseClaudeSlashCommand(content)
+    if (!invocation) return null
     const sdk = await (this.deps.sdk ?? loadSdk)()
     const executable = await (this.deps.executable ?? resolveClaudeExecutable)()
     let release!: () => void
@@ -291,11 +304,11 @@ export class ClaudeSessionService {
         timer = setTimeout(() => reject(new Error('Claude did not list its commands in time')), COMMAND_LOOKUP_TIMEOUT_MS)
       })])
       // A name a built-in carries runs the built-in; an alias applies only when no command has the name.
-      const named = commands.filter(command => command.name === match[1])
+      const named = commands.filter(command => command.name === invocation.name)
       const command = named.length ? (named.some(row => row.builtin) ? null : named[0])
-        : commands.find(row => row.aliases?.includes(match[1])) ?? null
+        : commands.find(row => row.aliases?.includes(invocation.name)) ?? null
       if (!command || command.builtin) return null
-      return { name: command.name, args: match[2]?.trim() ?? '', description: command.description?.trim() ?? '' }
+      return { name: command.name, args: invocation.args, description: command.description?.trim() ?? '' }
     } finally {
       clearTimeout(timer)
       release()
@@ -399,7 +412,7 @@ export class ClaudeSessionService {
     bindTasks?: (control: ClaudeTaskControl) => () => void
   }): Promise<any> {
     const { request, lineageId, emit, sink, signal, cwd } = input
-    if (!request.manualCompaction && !input.nativeCommand && /^\s*\//.test(request.content ?? '')) throw new Error('Native slash commands require an explicit Graviton command.')
+    if (!request.manualCompaction && !input.nativeCommand && parseClaudeSlashCommand(request.content)) throw new Error('Native slash commands require an explicit Graviton command.')
     // Validate before reserving so a rejected image never leaves the branch running.
     const imageBlocks = request.manualCompaction ? [] : (input.images ?? []).map(claudeImageBlock)
     const sdk = await (this.deps.sdk ?? loadSdk)()
