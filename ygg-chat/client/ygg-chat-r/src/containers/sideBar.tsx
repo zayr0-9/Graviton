@@ -775,9 +775,7 @@ const SideBar: React.FC<SideBarProps> = ({
   const location = useLocation()
   const { theme: customTheme, enabled: customThemeEnabled } = useCustomChatTheme()
   const isDarkMode = useHtmlDarkMode()
-  const isElectronMode =
-    import.meta.env.VITE_ENVIRONMENT === 'electron' ||
-    (typeof process !== 'undefined' && process.env?.VITE_ENVIRONMENT === 'electron')
+  const isElectronMode = isNativeShell
 
   const [conversationTab, setConversationTab] = useState<ConversationTab>('recent')
   const [showEditProjectModal, setShowEditProjectModal] = useState(false)

@@ -1,17 +1,13 @@
 /// <reference types="vite/client" />
 
 // Build-time constants defined in vite.config.ts
-declare const __BUILD_TARGET__: 'electron' | 'local' | 'standalone' | 'browser-client'
+declare const __BUILD_TARGET__: 'electron' | 'standalone' | 'browser-client'
 declare const __IS_ELECTRON__: boolean
 declare const __YGG_CODEX_DEV_LOGS__: boolean
 
 interface ImportMetaEnv {
-  readonly VITE_API_URL?: string
-  readonly VITE_ENVIRONMENT?: 'web' | 'local' | 'electron' | 'standalone' | 'browser-client'
+  /** Optional dev-only override of the Ygg server origin for browser targets (fully-local plan Q15). */
   readonly VITE_YGG_SERVER_ORIGIN?: string
-  readonly VITE_SUPABASE_URL?: string
-  readonly VITE_SUPABASE_ANON_KEY?: string
-  readonly VITE_STRIPE_PUBLISHABLE_KEY?: string
 }
 
 interface ImportMeta {

@@ -1,3 +1,4 @@
+import { isNativeShell } from '../platform/clientCapabilities'
 import MatrixBackgroundSettings from '../components/MatrixBackgroundSettings'
 import { HOST_EXECUTION_CHANGED } from '../services/hostExecutionClient'
 import { buildSharedBrowserUrl } from '../helpers/remoteServerSettingsStorage'
@@ -20,7 +21,7 @@ import {
   useCustomChatTheme,
   useHtmlDarkMode,
 } from '../components/ThemeManager/themeConfig'
-import { LOCAL_AUTH_USER_ID } from '../config/runtimeMode'
+import { LOCAL_USER_ID } from '../../../../shared/localUser'
 import { chatSliceActions, selectProviderState } from '../features/chats'
 import { fetchCustomTools, fetchTools, updateToolEnabled } from '../features/chats/chatActions'
 import {
@@ -344,18 +345,18 @@ const Settings: React.FC = () => {
   const [braveApiKeySaving, setBraveApiKeySaving] = useState(false)
   const [zaiApiKeyInput, setZaiApiKeyInput] = useState('')
   const [zaiApiKeyConfigured, setZaiApiKeyConfigured] = useState(false)
-  const [zaiApiKeyLoading, setZaiApiKeyLoading] = useState(import.meta.env.VITE_ENVIRONMENT === 'electron')
+  const [zaiApiKeyLoading, setZaiApiKeyLoading] = useState(isNativeShell)
   const [zaiApiKeySaving, setZaiApiKeySaving] = useState(false)
   const [openRouterByokApiKeyInput, setOpenRouterByokApiKeyInput] = useState('')
   const [openRouterByokApiKeyConfigured, setOpenRouterByokApiKeyConfigured] = useState(false)
-  const [openRouterByokApiKeyLoading, setOpenRouterByokApiKeyLoading] = useState(import.meta.env.VITE_ENVIRONMENT === 'electron')
+  const [openRouterByokApiKeyLoading, setOpenRouterByokApiKeyLoading] = useState(isNativeShell)
   const [openRouterByokApiKeySaving, setOpenRouterByokApiKeySaving] = useState(false)
   const [bedrockRegionInput, setBedrockRegionInput] = useState('us-east-1')
   const [bedrockAccessKeyIdInput, setBedrockAccessKeyIdInput] = useState('')
   const [bedrockSecretAccessKeyInput, setBedrockSecretAccessKeyInput] = useState('')
   const [bedrockSessionTokenInput, setBedrockSessionTokenInput] = useState('')
   const [bedrockCredentialsConfigured, setBedrockCredentialsConfigured] = useState(false)
-  const [bedrockCredentialsLoading, setBedrockCredentialsLoading] = useState(import.meta.env.VITE_ENVIRONMENT === 'electron')
+  const [bedrockCredentialsLoading, setBedrockCredentialsLoading] = useState(isNativeShell)
   const [bedrockCredentialsSaving, setBedrockCredentialsSaving] = useState(false)
   const [openRouterTemperatureInput, setOpenRouterTemperatureInput] = useState<string>(() => {
     const configured = loadProviderSettings().openRouterTemperature
@@ -521,7 +522,7 @@ const Settings: React.FC = () => {
   }
 
   useEffect(() => {
-    if (import.meta.env.VITE_ENVIRONMENT !== 'electron') return
+    if (!isNativeShell) return
 
     let active = true
 
@@ -542,7 +543,7 @@ const Settings: React.FC = () => {
   }, [])
 
   useEffect(() => {
-    if (import.meta.env.VITE_ENVIRONMENT !== 'electron') return
+    if (!isNativeShell) return
 
     let active = true
 
@@ -682,13 +683,13 @@ const Settings: React.FC = () => {
   }
 
   useEffect(() => {
-    if (import.meta.env.VITE_ENVIRONMENT !== 'electron') {
+    if (!isNativeShell) {
       setZaiApiKeyLoading(false)
       return
     }
 
     let active = true
-    const effectiveUserId = userId || LOCAL_AUTH_USER_ID
+    const effectiveUserId = userId || LOCAL_USER_ID
 
     localApi
       .get<{ success?: boolean; hasToken?: boolean }>(`/provider-auth/zai/token?userId=${encodeURIComponent(effectiveUserId)}`)
@@ -713,13 +714,13 @@ const Settings: React.FC = () => {
   }, [userId])
 
   useEffect(() => {
-    if (import.meta.env.VITE_ENVIRONMENT !== 'electron') {
+    if (!isNativeShell) {
       setOpenRouterByokApiKeyLoading(false)
       return
     }
 
     let active = true
-    const effectiveUserId = userId || LOCAL_AUTH_USER_ID
+    const effectiveUserId = userId || LOCAL_USER_ID
 
     localApi
       .get<{ success?: boolean; hasToken?: boolean }>(
@@ -746,13 +747,13 @@ const Settings: React.FC = () => {
   }, [userId])
 
   useEffect(() => {
-    if (import.meta.env.VITE_ENVIRONMENT !== 'electron') {
+    if (!isNativeShell) {
       setBedrockCredentialsLoading(false)
       return
     }
 
     let active = true
-    const effectiveUserId = userId || LOCAL_AUTH_USER_ID
+    const effectiveUserId = userId || LOCAL_USER_ID
 
     localApi
       .get<{ success?: boolean; hasToken?: boolean }>(
@@ -1132,7 +1133,7 @@ const Settings: React.FC = () => {
       return
     }
 
-    const effectiveUserId = userId || LOCAL_AUTH_USER_ID
+    const effectiveUserId = userId || LOCAL_USER_ID
     setZaiApiKeySaving(true)
     try {
       await localApi.post('/provider-auth/zai/token', {
@@ -1151,7 +1152,7 @@ const Settings: React.FC = () => {
   }
 
   const handleDeleteZaiApiKey = async () => {
-    const effectiveUserId = userId || LOCAL_AUTH_USER_ID
+    const effectiveUserId = userId || LOCAL_USER_ID
     setZaiApiKeySaving(true)
     try {
       await localApi.delete(`/provider-auth/zai/token?userId=${encodeURIComponent(effectiveUserId)}`)
@@ -1173,7 +1174,7 @@ const Settings: React.FC = () => {
       return
     }
 
-    const effectiveUserId = userId || LOCAL_AUTH_USER_ID
+    const effectiveUserId = userId || LOCAL_USER_ID
     setOpenRouterByokApiKeySaving(true)
     try {
       await localApi.post('/provider-auth/openrouter-byok/token', {
@@ -1192,7 +1193,7 @@ const Settings: React.FC = () => {
   }
 
   const handleDeleteOpenRouterByokApiKey = async () => {
-    const effectiveUserId = userId || LOCAL_AUTH_USER_ID
+    const effectiveUserId = userId || LOCAL_USER_ID
     setOpenRouterByokApiKeySaving(true)
     try {
       await localApi.delete(`/provider-auth/openrouter-byok/token?userId=${encodeURIComponent(effectiveUserId)}`)
@@ -1221,7 +1222,7 @@ const Settings: React.FC = () => {
       return
     }
 
-    const effectiveUserId = userId || LOCAL_AUTH_USER_ID
+    const effectiveUserId = userId || LOCAL_USER_ID
     setBedrockCredentialsSaving(true)
     try {
       await localApi.post('/provider-auth/bedrock/token', {
@@ -1251,7 +1252,7 @@ const Settings: React.FC = () => {
   }
 
   const handleDeleteBedrockCredentials = async () => {
-    const effectiveUserId = userId || LOCAL_AUTH_USER_ID
+    const effectiveUserId = userId || LOCAL_USER_ID
     setBedrockCredentialsSaving(true)
     try {
       await localApi.delete(`/provider-auth/bedrock/token?userId=${encodeURIComponent(effectiveUserId)}`)
@@ -1501,12 +1502,12 @@ const Settings: React.FC = () => {
   }
 
   const handleMemoryBackfill = async () => {
-    if (import.meta.env.VITE_ENVIRONMENT !== 'electron') {
+    if (!isNativeShell) {
       showStatus({ type: 'info', text: 'Memory indexing is only available in the Electron app.' })
       return
     }
 
-    const effectiveUserId = userId || LOCAL_AUTH_USER_ID
+    const effectiveUserId = userId || LOCAL_USER_ID
     if (!effectiveUserId) {
       showStatus({ type: 'error', text: 'No local user is available for memory indexing.' })
       return
@@ -1709,13 +1710,13 @@ const Settings: React.FC = () => {
 
   const formatLocalUserOptionLabel = (user: LocalUserSummary) => {
     const baseName = user.username?.trim() || 'unnamed-user'
-    const isDefaultLocal = user.id === LOCAL_AUTH_USER_ID
+    const isDefaultLocal = user.id === LOCAL_USER_ID
     const suffix = isDefaultLocal ? ' (default local)' : ''
     return `${baseName}${suffix} • ${user.conversation_count} conv • ${user.project_count} proj`
   }
 
   const fetchLocalUsers = async () => {
-    if (import.meta.env.VITE_ENVIRONMENT !== 'electron') return
+    if (!isNativeShell) return
 
     setLocalUsersLoading(true)
     try {
@@ -1797,7 +1798,7 @@ const Settings: React.FC = () => {
   }
 
   useEffect(() => {
-    if (import.meta.env.VITE_ENVIRONMENT !== 'electron') return
+    if (!isNativeShell) return
     fetchLocalUsers()
   }, [userId])
 
@@ -2604,7 +2605,7 @@ const Settings: React.FC = () => {
           </div>
         </SettingsSection>
 
-        {import.meta.env.VITE_ENVIRONMENT === 'electron' && (
+        {isNativeShell && (
           <SettingsSection
             title='Agent Mode Prompt'
             description='Used when the composer is in Agent Mode. A custom prompt changes the baseline instructions for all Agent Mode requests on this device.'
@@ -2727,7 +2728,7 @@ const Settings: React.FC = () => {
         </SettingsSection>
 
         {/* Provider Settings Section */}
-        {import.meta.env.VITE_ENVIRONMENT === 'electron' && (
+        {isNativeShell && (
           <SettingsSection
             title='Provider Settings'
             description='Configure how providers appear in the chat interface.'
@@ -3135,7 +3136,7 @@ const Settings: React.FC = () => {
           </SettingsSection>
         )}
 
-        {import.meta.env.VITE_ENVIRONMENT === 'electron' && (
+        {isNativeShell && (
           <SettingsSection
             title='Memory'
             description='Build note embeddings for local memory search using your LM Studio embedding model. This does not run automatically.'
@@ -3182,7 +3183,7 @@ const Settings: React.FC = () => {
           </SettingsSection>
         )}
 
-                {import.meta.env.VITE_ENVIRONMENT === 'electron' && (
+                {isNativeShell && (
           <SettingsSection
             title='Subagent'
             description={<>Configure default subagent behavior used by the <code>subagent</code> tool.</>}
@@ -3333,7 +3334,7 @@ const Settings: React.FC = () => {
           </SettingsSection>
         )}
 
-        {import.meta.env.VITE_ENVIRONMENT === 'electron' && (
+        {isNativeShell && (
           <SettingsSection
             title='Context files'
             description={
@@ -3473,7 +3474,7 @@ const Settings: React.FC = () => {
         )}
 
         {/* Tools Settings Section - Collapsible */}
-        {import.meta.env.VITE_ENVIRONMENT === 'electron' && (
+        {isNativeShell && (
           <SettingsSection
             title='Tools Configuration'
             description='Enable or disable AI tools. Changes apply to all new conversations.'
@@ -3762,7 +3763,7 @@ const Settings: React.FC = () => {
           </SettingsSection>
         )}
 
-                {import.meta.env.VITE_ENVIRONMENT === 'electron' && (
+                {isNativeShell && (
           <SettingsSection
             title='API Keys'
             description='Brave and MCP OAuth credentials share one secure OS credential vault.'
@@ -3829,7 +3830,7 @@ const Settings: React.FC = () => {
           </SettingsSection>
         )}
 
-        {import.meta.env.VITE_ENVIRONMENT === 'electron' && (
+        {isNativeShell && (
           <SettingsSection
             title='Built-in Browser'
             description='Control optional features for the Electron right-dock browser pane.'
@@ -3863,7 +3864,7 @@ const Settings: React.FC = () => {
           </SettingsSection>
         )}
 
-        {import.meta.env.VITE_ENVIRONMENT === 'electron' && (
+        {isNativeShell && (
           <SettingsSection
             title='Remote UI Access'
             description='Keep Graviton running. Open the shared UI URL on another device on your trusted network. This grants host access without device authentication.'
@@ -3958,7 +3959,7 @@ const Settings: React.FC = () => {
           </SettingsSection>
         )}
 
-        {import.meta.env.VITE_ENVIRONMENT === 'electron' && (
+        {isNativeShell && (
           <SettingsSection
             title='Local Ownership Migration'
             description='Manually move local project/conversation ownership from one user ID to another.'

@@ -2,7 +2,6 @@ import { beforeEach, expect, it, vi } from 'vitest'
 import { DEFAULT_HOST_PROVIDER_PREFERENCES } from '../../../../shared/hostProviderPreferences'
 const host = vi.hoisted(() => ({ provider: {} as any, revision: 4, save: vi.fn() }))
 vi.mock('../services/hostExecutionClient', () => ({ getHostExecutionPreferences: () => ({ provider: host.provider }), getHostExecutionRevision: () => host.revision, saveHostExecutionPreference: (...args: unknown[]) => host.save(...args) }))
-vi.mock('../config/runtimeMode', () => ({ isCommunityMode: false }))
 import { loadProviderSettings, saveProviderSettings } from './providerSettingsStorage'
 beforeEach(() => {
   host.provider = { ...DEFAULT_HOST_PROVIDER_PREFERENCES }; host.revision = 4; host.save.mockReset()

@@ -89,10 +89,6 @@ export default defineConfig(() => {
 
     // Define compile-time constants for conditional code
     define: {
-      // Bridge (fully-local plan D1): legacy direct VITE_ENVIRONMENT reads follow the build
-      // target, so no .env is needed. Removed once those reads use clientCapabilities (P4).
-      'import.meta.env.VITE_ENVIRONMENT': JSON.stringify(buildTarget),
-      ...(isBrowserClient ? { 'import.meta.env.VITE_API_URL': JSON.stringify('/api') } : {}),
       __BUILD_TARGET__: JSON.stringify(buildTarget),
       __IS_ELECTRON__: JSON.stringify(isElectron),
       __YGG_CODEX_DEV_LOGS__: JSON.stringify(/^(1|true|yes|on)$/i.test(process.env.YGG_CODEX_DEV_LOGS || '')),

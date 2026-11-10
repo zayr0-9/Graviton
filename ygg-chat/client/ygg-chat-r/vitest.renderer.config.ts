@@ -22,8 +22,8 @@ export default defineConfig({
     },
   },
   define: {
-    __BUILD_TARGET__: JSON.stringify(process.env.BUILD_TARGET || 'local'),
-    __IS_ELECTRON__: JSON.stringify(process.env.BUILD_TARGET === 'electron'),
+    __BUILD_TARGET__: JSON.stringify(process.env.BUILD_TARGET || 'electron'),
+    __IS_ELECTRON__: JSON.stringify((process.env.BUILD_TARGET || 'electron') === 'electron'),
     __YGG_CODEX_DEV_LOGS__: JSON.stringify(/^(1|true|yes|on)$/i.test(process.env.YGG_CODEX_DEV_LOGS || '')),
   },
 })

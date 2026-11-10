@@ -1,4 +1,5 @@
 import { ConversationId, MessageId } from '../../../../../shared/types'
+import { isHostClient } from '../../platform/clientCapabilities'
 import { localApi } from '../../utils/api'
 import { StreamLineage, StreamType } from './chatTypes'
 
@@ -6,10 +7,8 @@ type StreamRunSource = 'renderer' | 'headless' | 'subagent' | 'tool' | 'unknown'
 type StreamRunStatus = 'running' | 'completed' | 'aborted' | 'error'
 type StreamRunEndReason = 'completed' | 'aborted' | 'error' | 'context_compaction_failed' | 'pruned' | 'unknown'
 
-const isLocalRuntime = (): boolean =>
-  import.meta.env.VITE_ENVIRONMENT === 'electron' ||
-  import.meta.env.VITE_ENVIRONMENT === 'local' ||
-  (typeof __IS_ELECTRON__ !== 'undefined' && __IS_ELECTRON__)
+// Every host client (desktop and shared-UI browser) talks to the local server.
+const isLocalRuntime = (): boolean => isHostClient
 
 export interface CreateStreamingRunInput {
   streamId: string

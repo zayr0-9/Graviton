@@ -280,7 +280,6 @@ export function useIdeContext(): UseIdeContextReturn {
 
             case 'file_opened':
               const openedFile = message.data as FileInfo
-              // if (import.meta.env.VITE_ENVIRONMENT === 'electron') {
               //   console.log('[IDE DEBUG][WS file_opened]', {
               //     path: openedFile.path,
               //     relativePath: openedFile.relativePath,
@@ -333,7 +332,6 @@ export function useIdeContext(): UseIdeContextReturn {
 
             case 'file_contents_response':
               const fileContent = message.data
-              // if (import.meta.env.VITE_ENVIRONMENT === 'electron') {
               //   console.log('[IDE DEBUG][WS file_contents_response]', {
               //     requestId: message.requestId ?? fileContent?.requestId,
               //     path: fileContent?.path,

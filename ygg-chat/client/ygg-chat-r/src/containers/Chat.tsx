@@ -98,7 +98,6 @@ import {
   useCustomChatTheme,
   useHtmlDarkMode,
 } from '../components/ThemeManager/themeConfig'
-import { isCommunityMode } from '../config/runtimeMode'
 import { getCompactionPresentationScope, isCompactionVisibleFor, type CompactionOwner } from '../features/chats/compactionVisibility'
 import {
   abortGeneration,
@@ -257,7 +256,7 @@ import {
 import { useConversationSnapshotCoordinator } from '../hooks/useConversationSnapshotCoordinator'
 import { CHAT_INSERT_FILE_PATH_EVENT, type ChatInsertFilePathDetail } from '../helpers/chatInputBridge'
 import { dispatchOpenWorkspaceMutationDiffs } from '../helpers/workspaceMutationDiffBridge'
-import { environment, localApi } from '../utils/api'
+import { localApi } from '../utils/api'
 import { useChatSelection } from '../components/ChatSelection/ChatSelectionProvider'
 import { chatSelectionScrollHandled, isPendingViewStreamOwned, type PendingViewStream } from '../features/chats/chatSelection'
 import { executeToolAndWait } from '../utils/executeToolAndWait'
@@ -1649,7 +1648,7 @@ function Chat() {
         durationMs,
       },
       environment: {
-        mode: environment,
+        mode: typeof __BUILD_TARGET__ !== 'undefined' ? __BUILD_TARGET__ : 'unknown',
         electron: isElectronEnv,
         userAgent: typeof navigator !== 'undefined' ? navigator.userAgent : 'unknown',
         platform: typeof navigator !== 'undefined' ? navigator.platform : 'unknown',
@@ -4897,29 +4896,16 @@ function Chat() {
     chatReasoningSettings.defaultReasoningEffort,
   ])
 
-  // Set default provider based on settings or community constraints.
+  // Set the default provider when none (or a no-longer-listed one) is selected.
   useEffect(() => {
     const allowedProviders = providers.providers.map(p => p.name)
 
-    if (isCommunityMode) {
-      // Fresh installs default to OpenAI (ChatGPT) (fully-local plan Q6).
-      const preferredCommunityDefault = allowedProviders.includes('OpenAI (ChatGPT)')
-        ? 'OpenAI (ChatGPT)'
-        : allowedProviders[0] || null
-
-      if (!preferredCommunityDefault) return
-
-      if (!providers.currentProvider || !allowedProviders.includes(providers.currentProvider)) {
-        dispatch(chatSliceActions.providerSelected(preferredCommunityDefault))
-      }
-      return
-    }
-
-    if (!providers.currentProvider) {
+    if (!providers.currentProvider || !allowedProviders.includes(providers.currentProvider)) {
       // If provider selector is hidden and a default is configured, use it
-      if (!providerSettings.showProviderSelector && providerSettings.defaultProvider) {
+      if (!providerSettings.showProviderSelector && providerSettings.defaultProvider && allowedProviders.includes(providerSettings.defaultProvider)) {
         dispatch(chatSliceActions.providerSelected(providerSettings.defaultProvider))
       } else if (allowedProviders.includes('OpenAI (ChatGPT)')) {
+        // Fresh installs default to OpenAI (ChatGPT) (fully-local plan Q6).
         dispatch(chatSliceActions.providerSelected('OpenAI (ChatGPT)'))
       } else if (allowedProviders.length > 0) {
         dispatch(chatSliceActions.providerSelected(allowedProviders[0]))
@@ -4935,7 +4921,6 @@ function Chat() {
 
   // Auto-apply default provider when visibility is toggled off
   useEffect(() => {
-    if (isCommunityMode) return
     if (!providerSettings.showProviderSelector && providerSettings.defaultProvider) {
       dispatch(chatSliceActions.providerSelected(providerSettings.defaultProvider))
     }

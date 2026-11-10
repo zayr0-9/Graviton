@@ -30,8 +30,8 @@ import { getOpenAIChatGPTModels } from '../features/chats/chatgptAccount'
 import type { Conversation } from '../features/conversations/conversationTypes'
 import { loadLocalUserSystemPrompts, USER_SYSTEM_PROMPTS_STORAGE_CHANGE_EVENT } from '../helpers/userSystemPromptStorage'
 import { PROVIDER_SETTINGS_CHANGE_EVENT } from '../helpers/providerSettingsStorage'
-import { isHostClient } from '../platform/clientCapabilities'
-import { environment, gwApi, localApi } from '../utils/api'
+import { isHostClient, isNativeShell } from '../platform/clientCapabilities'
+import { gwApi, localApi } from '../utils/api'
 import { getFavoritedModels } from '../utils/favorites'
 import { useAuth } from './useAuth'
 
@@ -349,7 +349,7 @@ export function useFavoritedConversations(limit: number | null = 8) {
     queryKey: ['conversations', 'favorites', keyLimit],
     queryFn: async () => {
       if (!userId) throw new Error('User not authenticated')
-      if (environment !== 'electron') return []
+      if (!isNativeShell) return []
 
       const params = new URLSearchParams({ userId })
       if (hasLimit) {
@@ -1514,7 +1514,7 @@ export function useHtmlToolsCache(userId: string | null | undefined, enabled: bo
   return useQuery({
     queryKey: htmlToolsQueryKey(userId),
     queryFn: async () => {
-      if (!userId || environment !== 'electron') return []
+      if (!userId || !isNativeShell) return []
       return localApi.get<HtmlToolRecord[]>(`/local/tools?userId=${userId}`)
     },
     enabled: enabled && !!userId && isHostClient,

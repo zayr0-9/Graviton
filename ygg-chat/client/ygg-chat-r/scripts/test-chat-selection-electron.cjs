@@ -24,7 +24,7 @@ if (!process.versions.electron) {
     const bundle = await build({
       entryPoints: [path.join(__dirname, 'chat-selection-browser-smoke.tsx')],
       bundle: true, write: false, platform: 'browser', format: 'iife', jsx: 'automatic',
-      define: { 'process.env.NODE_ENV': '"development"', 'import.meta.env': '{}', __IS_ELECTRON__: 'false', __BUILD_TARGET__: '"local"' },
+      define: { 'process.env.NODE_ENV': '"development"', 'import.meta.env': '{}', __IS_ELECTRON__: 'true', __BUILD_TARGET__: '"electron"' },
       plugins: [{ name: 'isolated-transports', setup(builder) {
         builder.onLoad({ filter: /[/\\]useAuth\.ts$/ }, () => ({ contents: 'export const useAuth = () => ({ accessToken: null })' }))
         builder.onLoad({ filter: /[/\\]conversationMessagesApi\.ts$/ }, () => ({ contents: 'export const fetchConversationMessagesTree = (...args) => window.__fetchSnapshot(...args)' }))

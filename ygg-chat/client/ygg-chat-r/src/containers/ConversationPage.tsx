@@ -1,3 +1,4 @@
+import { isNativeShell } from '../platform/clientCapabilities'
 import { InfiniteData, useQueryClient } from '@tanstack/react-query'
 import 'boxicons'
 import 'boxicons/css/boxicons.min.css'
@@ -44,10 +45,7 @@ const ConversationPage: React.FC = () => {
   const projectIdParam = searchParams.get('projectId')
   const projectId = projectIdParam ? parseId(projectIdParam) : null
 
-  // Check if running in Electron
-  const isElectronMode =
-    import.meta.env.VITE_ENVIRONMENT === 'electron' ||
-    (typeof process !== 'undefined' && process.env?.VITE_ENVIRONMENT === 'electron')
+  const isElectronMode = isNativeShell
 
   // Use React Query with infinite scroll for data fetching
   // Fetch project-specific conversations OR all conversations (not both)

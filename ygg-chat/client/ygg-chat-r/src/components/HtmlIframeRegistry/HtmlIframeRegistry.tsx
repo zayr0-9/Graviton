@@ -19,7 +19,8 @@ import {
   useHtmlToolsCache,
   type HtmlToolRecord,
 } from '../../hooks/useQueries'
-import { buildCachedLocalApiUrl, environment, localApi } from '../../utils/api'
+import { buildCachedLocalApiUrl, localApi } from '../../utils/api'
+import { isNativeShell } from '../../platform/clientCapabilities'
 import { isolateBrowserAppHtml } from '../../utils/browserAppIsolation'
 import { isBrowserClient } from '../../platform/clientCapabilities'
 import { attachMessageBridge as attachSharedMessageBridge } from '../../utils/iframeBridge'
@@ -235,7 +236,7 @@ const saveSettingsToStorage = (settings: HtmlToolsSettings) => {
   }
 }
 
-const isElectronEnv = (typeof __IS_ELECTRON__ !== 'undefined' && __IS_ELECTRON__) || environment === 'electron'
+const isElectronEnv = isNativeShell
 
 const LOG_HTML_TOOLS = true
 
@@ -279,7 +280,7 @@ const buildHostContext = (toolDefinition?: ToolDefinition, fallbackToolName?: st
         ? { tool: { name: fallbackToolName } }
         : undefined,
     theme,
-    platform: environment === 'electron' ? 'desktop' : 'web',
+    platform: isNativeShell ? 'desktop' : 'web',
     locale,
     timeZone,
     userAgent: typeof navigator !== 'undefined' ? navigator.userAgent : undefined,

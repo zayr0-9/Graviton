@@ -5,14 +5,6 @@ import { getHostRuntime, verifyBrowserHost } from '../services/hostRuntimeBootst
 import { logClientError } from '../services/clientTelemetry'
 
 // Base configuration
-// Derived from the build target (no .env needed). Prefer the clientCapabilities flags in new code.
-export const environment: 'electron' | 'browser-client' | 'standalone' | 'local' = isNativeShell
-  ? 'electron'
-  : isBrowserClient
-    ? 'browser-client'
-    : isStandaloneClient
-      ? 'standalone'
-      : 'local'
 const DEFAULT_LOCAL_SERVER_ORIGIN = 'http://127.0.0.1:3002'
 // Explicit development override for the Ygg server origin (browser targets).
 const CONFIGURED_LOCAL_SERVER_ORIGIN = ((): string | null => {

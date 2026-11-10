@@ -1,7 +1,8 @@
 import { isolateBrowserAppHtml } from '../../utils/browserAppIsolation'
 import { isBrowserClient } from '../../platform/clientCapabilities'
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { localApi, environment } from '../../utils/api'
+import { localApi } from '../../utils/api'
+import { isNativeShell } from '../../platform/clientCapabilities'
 import {
   buildCspValue,
   buildIframeAllow,
@@ -75,7 +76,7 @@ const buildHostContext = (toolDefinition?: ToolDefinition, fallbackToolName?: st
         ? { tool: { name: fallbackToolName } }
         : undefined,
     theme,
-    platform: environment === 'electron' ? 'desktop' : 'web',
+    platform: isNativeShell ? 'desktop' : 'web',
     locale,
     timeZone,
     userAgent: typeof navigator !== 'undefined' ? navigator.userAgent : undefined,

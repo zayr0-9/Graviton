@@ -24,7 +24,7 @@ if (!process.versions.electron) {
     const bundle = await build({
       entryPoints: [path.join(__dirname, 'agents-grid-browser-smoke.tsx')],
       bundle: true, write: false, platform: 'browser', format: 'iife', jsx: 'automatic',
-      define: { 'process.env.NODE_ENV': '"development"', 'import.meta.env': '{}', __IS_ELECTRON__: 'false', __BUILD_TARGET__: '"local"' },
+      define: { 'process.env.NODE_ENV': '"development"', 'import.meta.env': '{}', __IS_ELECTRON__: 'true', __BUILD_TARGET__: '"electron"' },
       plugins: [{ name: 'isolated-grid', setup(builder) {
         // Keep real grid, row, preview, Redux and browser observers. Stub only
         // the heavyweight message presentation and unrelated app dependencies.

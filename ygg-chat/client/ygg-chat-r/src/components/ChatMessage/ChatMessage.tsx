@@ -29,7 +29,8 @@ import {
 } from '../../features/chats/attachedImagePaths'
 import { useAppDispatch } from '../../hooks/redux'
 import { useIsMobile } from '../../hooks/useMediaQuery'
-import { environment, localApi } from '../../utils/api'
+import { localApi } from '../../utils/api'
+import { isNativeShell } from '../../platform/clientCapabilities'
 import { ChatErrorBubble } from '../ChatErrorBubble/ChatErrorBubble'
 import { useHtmlIframeRegistry } from '../HtmlIframeRegistry/HtmlIframeRegistry'
 import { ImageModal } from '../ImageModal/ImageModal'
@@ -556,7 +557,7 @@ const ChatMessageBody: React.FC<ChatMessageProps> = React.memo(
 
     const handleLoadMcpApp = useCallback(
       async (serverName: string, reloadKey: string) => {
-        if (environment !== 'electron') return
+        if (!isNativeShell) return
         setMcpLoadState(prev => ({ ...prev, [reloadKey]: true }))
         try {
           await localApi.post(`/mcp/servers/${encodeURIComponent(serverName)}/start`)

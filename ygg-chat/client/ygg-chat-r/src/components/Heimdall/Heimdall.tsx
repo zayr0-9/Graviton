@@ -50,7 +50,8 @@ import { parseId } from '../../utils/helpers'
 import stripMarkdownToText from '../../utils/markdownStripper'
 import { getCompactionPlaceholder } from '../../features/chats/summaryPresentation'
 // import { MarkdownLink } from '../MarkdownLink/MarkdownLink'
-import { environment, localApi } from '../../utils/api'
+import { localApi } from '../../utils/api'
+import { isNativeShell } from '../../platform/clientCapabilities'
 import { DeleteConfirmModal } from '../DeleteConfirmModal/DeleteConfirmModal'
 import { buildHeimdallVisibleRoot, isHeimdallScaffoldingMessage, shouldPromoteHeimdallNode } from './heimdallNodeVisibility'
 import { getIntermediateAgentTextIds, hasHeimdallTextContent } from './heimdallAgentTextVisibility'
@@ -617,7 +618,7 @@ export const Heimdall: React.FC<HeimdallProps> = ({
   )
 
   useEffect(() => {
-    if (environment !== 'electron' || !conversationId) {
+    if (!isNativeShell || !conversationId) {
       setDedicatedSubagentMap({})
       return
     }
@@ -691,12 +692,12 @@ export const Heimdall: React.FC<HeimdallProps> = ({
       return {
         parentId,
         nodes: initialNodes,
-        loading: environment === 'electron' && !!conversationId && initialNodes.length === 0,
+        loading: isNativeShell && !!conversationId && initialNodes.length === 0,
         error: null,
       }
     })
 
-    if (environment !== 'electron' || !conversationId) {
+    if (!isNativeShell || !conversationId) {
       setSubagentModalData({
         parentId,
         nodes: initialNodes,

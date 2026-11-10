@@ -3,7 +3,7 @@
 
 import { getHostExecutionPreferences, getHostExecutionRevision, saveHostExecutionPreference } from '../services/hostExecutionClient'
 import { normalizeCompactionThreshold } from '../../../../shared/compaction'
-import { isCommunityMode } from '../config/runtimeMode'
+import providersList from '../../../../shared/providers.json'
 import { isNativeShell } from '../platform/clientCapabilities'
 
 const STORAGE_KEY = 'ygg_provider_settings'
@@ -56,8 +56,9 @@ const DEFAULT_SETTINGS: ProviderSettings = {
   openAiPromptCacheRetention: 'in_memory',
 }
 
-const COMMUNITY_ALLOWED_PROVIDERS = new Set(['LM Studio', 'OpenAI (ChatGPT)', 'OpenRouter BYOK', 'Z.AI / GLM'])
-const COMMUNITY_FALLBACK_PROVIDER = 'LM Studio'
+// Every listed provider is selectable (fully-local plan Q6). A stored default that is no longer
+// listed (e.g. the retired hosted 'OpenRouter') is dropped; Chat then falls back to ChatGPT.
+const KNOWN_PROVIDER_NAMES = new Set(Object.values(providersList.providers).map(provider => provider.name))
 
 function normalizeOpenRouterTemperature(value: unknown): number | null {
   if (value === null || value === undefined || value === '') return null
@@ -154,15 +155,13 @@ export function loadProviderSettings(): ProviderSettings {
     const parsed = host ? { ...host.provider, showProviderSelector: local.showProviderSelector } : local
 
     const resolvedDefaultProvider = parsed.defaultProvider ?? DEFAULT_SETTINGS.defaultProvider
-    const communityDefaultProvider =
-      resolvedDefaultProvider && COMMUNITY_ALLOWED_PROVIDERS.has(resolvedDefaultProvider)
-        ? resolvedDefaultProvider
-        : COMMUNITY_FALLBACK_PROVIDER
+    const defaultProvider =
+      resolvedDefaultProvider && KNOWN_PROVIDER_NAMES.has(resolvedDefaultProvider) ? resolvedDefaultProvider : null
 
     return {
       ...(host ? { [HOST_PROVIDER_BASE_REVISION]: getHostExecutionRevision('provider') } : {}),
-      showProviderSelector: isCommunityMode ? true : (parsed.showProviderSelector ?? DEFAULT_SETTINGS.showProviderSelector),
-      defaultProvider: isCommunityMode ? communityDefaultProvider : resolvedDefaultProvider,
+      showProviderSelector: parsed.showProviderSelector ?? DEFAULT_SETTINGS.showProviderSelector,
+      defaultProvider,
       openRouterTemperature: normalizeOpenRouterTemperature(parsed.openRouterTemperature),
       compactionProvider: parsed.compactionProvider ?? DEFAULT_SETTINGS.compactionProvider,
       compactionModel: parsed.compactionModel ?? DEFAULT_SETTINGS.compactionModel,
@@ -173,10 +172,7 @@ export function loadProviderSettings(): ProviderSettings {
       openAiPromptCacheRetention: normalizeOpenAiPromptCacheRetention(parsed.openAiPromptCacheRetention),
     }
   } catch {
-    return {
-      ...DEFAULT_SETTINGS,
-      defaultProvider: isCommunityMode ? COMMUNITY_FALLBACK_PROVIDER : DEFAULT_SETTINGS.defaultProvider,
-    }
+    return { ...DEFAULT_SETTINGS }
   }
 }
 

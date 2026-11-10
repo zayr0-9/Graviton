@@ -73,15 +73,6 @@ jobs:
             npm --prefix client/ygg-chat-r install --no-save --include=optional "${ROLLUP_PKG}@${ROLLUP_VERSION}"
           fi
 
-      - name: Configure environment variables
-        run: |
-          echo "VITE_SUPABASE_URL=${{ secrets.VITE_SUPABASE_URL }}" >> $GITHUB_ENV
-          echo "VITE_SUPABASE_ANON_KEY=${{ secrets.VITE_SUPABASE_ANON_KEY }}" >> $GITHUB_ENV
-          echo "VITE_STRIPE_PUBLISHABLE_KEY=${{ secrets.VITE_STRIPE_PUBLISHABLE_KEY }}" >> $GITHUB_ENV
-          echo "VITE_ENVIRONMENT=electron" >> $GITHUB_ENV
-          echo "VITE_API_URL=https://webdrasil-production.up.railway.app/api" >> $GITHUB_ENV
-        shell: bash
-
       - name: Validate tag matches app version
         shell: bash
         run: |
