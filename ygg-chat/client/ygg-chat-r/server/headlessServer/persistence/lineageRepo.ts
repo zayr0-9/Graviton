@@ -167,7 +167,7 @@ export class LineageRepo {
     const conversations = this.db.prepare(`SELECT id FROM conversations WHERE project_id = ? AND (? IS NULL OR user_id = ?)`
     ).all(projectId, userId ?? null, userId ?? null) as Array<{ id: string }>
     conversations.forEach(row => this.reconcileLegacyConversation(row.id))
-    const rows = this.db.prepare(`SELECT l.*, c.title AS conversation_title, c.storage_mode,
+    const rows = this.db.prepare(`SELECT l.*, c.title AS conversation_title,
         COALESCE(l.updated_at, c.updated_at, l.created_at) AS activity_at,
         (SELECT COUNT(*) FROM streaming_runs sr WHERE sr.lineage_id = l.id AND sr.status = 'running') +
         (SELECT COUNT(*) FROM subagent_runs ar WHERE ar.lineage_id = l.id AND ar.status = 'running') AS active_run_count
@@ -181,7 +181,7 @@ export class LineageRepo {
         content: String(message.plain_text_content ?? message.content ?? '').replace(/\s+/g, ' ').trim().slice(0, 120),
       }))
       return { conversationId: row.conversation_id, conversationTitle: row.conversation_title,
-        storageMode: row.storage_mode, lineageId: row.id, headMessageId: row.head_message_id,
+        lineageId: row.id, headMessageId: row.head_message_id,
         parentLineageId: row.parent_lineage_id, activityAt: row.activity_at, status: row.status,
         activeRunCount: Number(row.active_run_count ?? 0), pathPreview }
     })

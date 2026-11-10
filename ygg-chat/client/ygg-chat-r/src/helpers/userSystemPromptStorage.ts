@@ -3,7 +3,6 @@ import { newClientId } from './clientId'
 import { LOCAL_AUTH_USER_ID } from '../config/runtimeMode'
 import type { HostPrompt } from '../../../../shared/hostPrompts'
 
-export type UserSystemPromptStorageMode = 'cloud' | 'local'
 export type UserSystemPromptRecord = HostPrompt
 
 const LOCAL_OWNER_ID = LOCAL_AUTH_USER_ID || 'local'

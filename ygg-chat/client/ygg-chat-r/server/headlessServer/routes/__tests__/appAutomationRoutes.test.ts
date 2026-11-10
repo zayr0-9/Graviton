@@ -584,3 +584,93 @@ describeIfSqlite('message deletion lineage repair routes', () => {
     }
   })
 })
+
+describeIfSqlite('conversation clone route', () => {
+  let db: Database.Database
+  let server: Server
+  let url = ''
+
+  beforeEach(() => {
+    db = new BetterSqlite3Ctor!(':memory:')
+    createSchema(db)
+    db.exec(`
+      CREATE TABLE message_attachment_links (id TEXT PRIMARY KEY, message_id TEXT NOT NULL, attachment_id TEXT NOT NULL,
+        created_at TEXT, UNIQUE (message_id, attachment_id));
+      INSERT INTO users (id, username) VALUES ('u', 'user');
+      INSERT INTO projects (id, name, user_id, storage_mode, updated_at) VALUES ('p', 'Project', 'u', 'local', 'old');
+      INSERT INTO conversations (id, project_id, user_id, title, system_prompt, research_note, cwd, storage_mode, favorite, created_at, updated_at)
+        VALUES ('src', 'p', 'u', 'Source', 'be brief', 'notes', '/work', 'cloud', 1, 'c0', 'u0');
+      INSERT INTO messages (id, conversation_id, parent_id, role, content, note, created_at, meta)
+        VALUES ('root', 'src', NULL, 'user', 'hi', 'n1', '2026-01-01T00:00:01Z', '{"toolAutoApprove":true}');
+      INSERT INTO messages (id, conversation_id, parent_id, role, content, created_at) VALUES ('a1', 'src', 'root', 'assistant', 'first', '2026-01-01T00:00:03Z');
+      INSERT INTO messages (id, conversation_id, parent_id, role, content, created_at) VALUES ('a2', 'src', 'root', 'assistant', 'second', '2026-01-01T00:00:02Z');
+      INSERT INTO messages (id, conversation_id, parent_id, role, content, created_at) VALUES ('u2', 'src', 'a1', 'user', 'more', '2026-01-01T00:00:04Z');
+      UPDATE messages SET children_ids = '["a1","a2"]' WHERE id = 'root';
+      INSERT INTO message_attachment_links VALUES ('link', 'root', 'att', '2026-01-01T00:00:01Z');
+    `)
+    const app = express(); app.use(express.json())
+    registerAppAutomationRoutes(app, { db, statements: createStatements(db) })
+    server = app.listen(0)
+    url = `http://127.0.0.1:${(server.address() as AddressInfo).port}`
+  })
+
+  afterEach(async () => {
+    await new Promise<void>(resolve => server.close(() => resolve()))
+    db.close()
+  })
+
+  it('copies the conversation and its full tree under new ids as a local conversation', async () => {
+    const response = await postJson(url, '/api/app/conversations/src/clone', {})
+    expect(response.status).toBe(201)
+    const clone = (await response.json()) as any
+    expect(clone).toMatchObject({ title: 'Source (copy)', project_id: 'p' })
+    expect(clone.id).not.toBe('src')
+
+    const conversation = db.prepare('SELECT * FROM conversations WHERE id = ?').get(clone.id) as any
+    expect(conversation).toMatchObject({ user_id: 'u', project_id: 'p', system_prompt: 'be brief', research_note: 'notes',
+      cwd: '/work', storage_mode: 'local', favorite: 0 })
+
+    const rows = db.prepare('SELECT * FROM messages WHERE conversation_id = ?').all(clone.id) as any[]
+    expect(rows).toHaveLength(4)
+    const byContent = new Map(rows.map(row => [row.content, row]))
+    const [root, first, second, more] = ['hi', 'first', 'second', 'more'].map(content => byContent.get(content))
+    expect(rows.map(row => row.id)).not.toEqual(expect.arrayContaining(['root', 'a1', 'a2', 'u2']))
+    expect(root.parent_id).toBeNull()
+    expect(first.parent_id).toBe(root.id)
+    expect(second.parent_id).toBe(root.id)
+    expect(more.parent_id).toBe(first.id)
+    // Source sibling order survives even though insertion is parent-first.
+    expect(JSON.parse(root.children_ids)).toEqual([first.id, second.id])
+    expect(JSON.parse(first.children_ids)).toEqual([more.id])
+    expect(JSON.parse(more.children_ids)).toEqual([])
+    expect(root.note).toBe('n1')
+    expect(root.created_at).toBe('2026-01-01T00:00:01Z')
+    expect(JSON.parse(root.meta)).toEqual({ transfer: { sourceMessageId: 'root', sourceConversationId: 'src' } })
+    expect(db.prepare('SELECT attachment_id FROM message_attachment_links WHERE message_id = ?').all(root.id))
+      .toEqual([{ attachment_id: 'att' }])
+
+    // The source is untouched and the project is promoted.
+    expect(db.prepare('SELECT COUNT(*) AS n FROM messages WHERE conversation_id = ?').get('src')).toEqual({ n: 4 })
+    expect(JSON.parse((db.prepare('SELECT children_ids FROM messages WHERE id = ?').get('root') as any).children_ids)).toEqual(['a1', 'a2'])
+    expect((db.prepare('SELECT updated_at FROM projects WHERE id = ?').get('p') as any).updated_at).not.toBe('old')
+  })
+
+  it('copies an empty conversation and 404s for an unknown one', async () => {
+    db.exec(`INSERT INTO conversations (id, user_id, title) VALUES ('empty', 'u', NULL)`)
+    const empty = await postJson(url, '/api/app/conversations/empty/clone', {})
+    expect(empty.status).toBe(201)
+    const clone = (await empty.json()) as any
+    expect(clone).toMatchObject({ title: 'Untitled (copy)', project_id: null })
+    expect(db.prepare('SELECT COUNT(*) AS n FROM messages WHERE conversation_id = ?').get(clone.id)).toEqual({ n: 0 })
+
+    expect((await postJson(url, '/api/app/conversations/missing/clone', {})).status).toBe(404)
+  })
+
+  it('refuses a Claude branch that does not end at a committed summary', async () => {
+    db.prepare('UPDATE messages SET meta = ?').run(JSON.stringify({ modelSelection: { provider: 'claudecode', model: 'm' } }))
+    const response = await postJson(url, '/api/app/conversations/src/clone', {})
+    expect(response.status).toBe(409)
+    expect(((await response.json()) as any).code).toBe('claude_transfer_requires_summary')
+    expect(db.prepare('SELECT COUNT(*) AS n FROM conversations').get()).toEqual({ n: 1 })
+  })
+})

@@ -61,7 +61,6 @@ export interface MobileMessageTreeNode {
 export interface MobileMessageTreePayload {
   messages: MobileMessage[]
   tree: MobileMessageTreeNode | null
-  meta?: { storage_mode?: 'local' | 'cloud' }
 }
 
 export interface ToolCallLike {

@@ -67,7 +67,6 @@ vi.mock('./redux', () => ({
   useAppDispatch: () => dispatch,
   useAppSelector: (selector: (state: any) => unknown) => selector(reduxStore.getState()),
 }))
-vi.mock('./useAuth', () => ({ useAuth: () => ({ accessToken: null }) }))
 vi.mock('../features/chats/conversationMessagesApi', () => ({ fetchConversationMessagesTree: vi.fn() }))
 
 import { useConversationSnapshotCoordinator } from './useConversationSnapshotCoordinator'
@@ -87,9 +86,9 @@ const selection = createChatSelectionController({
   createRequestId: () => `request-${++requestNumber}`,
 })
 
-function render(conversationId = 'c', storageMode: 'local' | 'cloud' = 'local') {
+function render(conversationId = 'c') {
   hooks.cursor = 0
-  const result = useConversationSnapshotCoordinator(conversationId, storageMode)
+  const result = useConversationSnapshotCoordinator(conversationId)
   hooks.effects.splice(0).forEach(effect => effect())
   return result
 }
@@ -430,14 +429,15 @@ describe('replacement and route commit boundaries', () => {
     await vi.waitFor(() => expect(render().error).not.toBeNull())
     // React effects capture this render, while the hook effect has already started
     // another request by the time Chat consumes it.
-    const staleRender = render('c', 'cloud')
+    const staleRender = render('c')
     expect(staleRender.error).not.toBeNull()
+    void staleRender.refresh()
     expect(staleRender.isCurrentError()).toBe(false)
     await resolveSelection(staleRender)
     expect(chat.selection.status).toBe('pending')
     next.resolve(empty)
-    await vi.waitFor(() => expect(render('c', 'cloud').acceptedConversationId).toBe('c'))
-    await resolveSelection(render('c', 'cloud'))
+    await vi.waitFor(() => expect(render('c').acceptedConversationId).toBe('c'))
+    await resolveSelection(render('c'))
     expect(chat.selection.status).toBe('ready')
   })
 

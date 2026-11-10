@@ -21,7 +21,6 @@ vi.mock('../../utils/api', () => ({
   // Mirrors the real builder: getLocalApiBase() returns `<origin>/api`, so the
   // mock MUST add /api too or it hides double-prefix bugs at the call sites.
   buildLocalApiUrl: async (p: string) => `http://local/api${p}`,
-  FORCE_LOGOUT_EVENT: 'force-logout',
 }))
 vi.mock('../../platform/clientCapabilities', () => ({ isHostClient: false, isNativeShell: false, isBrowserClient: false, isStandaloneClient: false }))
 // Force resumable behavior on (decoupled from localStorage/env).

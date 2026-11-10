@@ -28,19 +28,12 @@ import {
 import { fetchLmStudioModels } from '../features/chats/LMStudio'
 import { getOpenAIChatGPTModels } from '../features/chats/chatgptAccount'
 import type { Conversation } from '../features/conversations/conversationTypes'
-import { isCloudSessionEnabled, isCommunityMode } from '../config/runtimeMode'
-import {
-  loadLocalUserSystemPrompts,
-  USER_SYSTEM_PROMPTS_STORAGE_CHANGE_EVENT,
-  type UserSystemPromptStorageMode,
-} from '../helpers/userSystemPromptStorage'
+import { loadLocalUserSystemPrompts, USER_SYSTEM_PROMPTS_STORAGE_CHANGE_EVENT } from '../helpers/userSystemPromptStorage'
 import { PROVIDER_SETTINGS_CHANGE_EVENT } from '../helpers/providerSettingsStorage'
 import { isHostClient } from '../platform/clientCapabilities'
-import { cloudApi, environment, gwApi, localApi } from '../utils/api'
+import { environment, gwApi, localApi } from '../utils/api'
 import { getFavoritedModels } from '../utils/favorites'
 import { useAuth } from './useAuth'
-
-const isElectronCommunityMode = () => isHostClient && isCommunityMode
 
 export type { ConversationMessagesTreeData } from '../features/chats/conversationMessagesApi'
 
@@ -91,7 +84,7 @@ export function useProjects(enabled: boolean = true) {
  * Fetch a single project by ID
  * Cache key: ['projects', projectId]
  */
-export function useProject(projectId: ProjectId | null, storageMode?: 'local' | 'cloud') {
+export function useProject(projectId: ProjectId | null) {
   const { userId } = useAuth()
   void userId
 
@@ -99,9 +92,7 @@ export function useProject(projectId: ProjectId | null, storageMode?: 'local' | 
     queryKey: ['projects', projectId],
     queryFn: async () => {
       if (!projectId) throw new Error('Project ID is required')
-      // The gateway routes by the entity's storage mode; pass the caller's hint when known.
-      const qs = storageMode ? `?storageMode=${storageMode}` : ''
-      return gwApi.get<Project>(`/projects/${projectId}${qs}`)
+      return gwApi.get<Project>(`/projects/${projectId}`)
     },
     enabled: !!projectId && !!userId,
     staleTime: 10000,
@@ -286,7 +277,6 @@ export interface RecentLineageMessagePreview {
 export interface RecentLineage {
   conversationId: string
   conversationTitle: string | null
-  storageMode: 'local' | 'cloud' | null
   lineageId: string
   headMessageId: string | null
   parentLineageId: string | null
@@ -408,61 +398,6 @@ export function useConversationData(conversationId: ConversationId | null) {
   })
 }
 
-/**
- * Hook to determine the storage mode for a conversation with high reliability.
- * Checks multiple cache sources and falls back to fetching if necessary.
- *
- * Priority:
- * 1. Check 'conversations' cache (all conversations)
- * 2. Check 'conversations', 'project', projectId cache
- * 3. Check 'conversations', 'recent' cache
- * 4. Fetch from local server (if Electron) - authoritative source for local
- * 5. Default to 'cloud'
- */
-export function useConversationStorageMode(conversationId: ConversationId | null) {
-  const queryClient = useQueryClient()
-
-  return useQuery({
-    queryKey: ['conversations', conversationId, 'storage_mode'],
-    queryFn: async () => {
-      if (!conversationId) return isElectronCommunityMode() ? 'local' : 'cloud'
-
-      if (isElectronCommunityMode()) {
-        return 'local' as const
-      }
-
-      // 1. Check all cached conversation lists
-      const allConversationQueries = queryClient.getQueriesData<Conversation[]>({ queryKey: ['conversations'] })
-      for (const [_, data] of allConversationQueries) {
-        if (Array.isArray(data)) {
-          const match = data.find(c => String(c.id) === String(conversationId))
-          if (match?.storage_mode) {
-            return match.storage_mode
-          }
-        }
-      }
-
-      // 2. If in Electron, try fetching from local server first (fastest for local)
-      if (isHostClient) {
-        try {
-          const localConv = await localApi.get<Conversation>(`/app/conversations/${conversationId}`)
-          if (localConv) {
-            return localConv.storage_mode || 'local'
-          }
-        } catch (err) {
-          // Not found locally, proceed to cloud check
-        }
-      }
-
-      // 3. Default to cloud (or could fetch from cloud to be sure, but 'cloud' is safe default)
-      return 'cloud' as const
-    },
-    enabled: !!conversationId,
-    staleTime: Infinity, // Storage mode never changes for a conversation ID
-    gcTime: 30 * 60 * 1000, // Keep in cache for 30 minutes
-  })
-}
-
 export interface TopLevelUserMessagePreview {
   id: string
   conversation_id: string
@@ -527,20 +462,14 @@ export function useSubagentByToolCall(toolCallId: string | null, enabled: boolea
  *
  * Returns: { messages: Message[], tree: ChatNode }
  */
-export function useConversationMessages(conversationId: ConversationId | null, storageMode?: 'local' | 'cloud') {
+export function useConversationMessages(conversationId: ConversationId | null) {
   const { userId } = useAuth()
-  void userId
-  const queryClient = useQueryClient()
 
   const query = useQuery<ConversationMessagesTreeData>({
     queryKey: conversationId ? conversationQueryKeys.messages(conversationId) : ['conversations', null, 'messages'],
     queryFn: ({ signal }) => {
       if (!conversationId) throw new Error('Conversation ID is required')
-      return fetchConversationMessagesTree(conversationId, {
-        storageMode,
-        queryClient,
-        signal,
-      })
+      return fetchConversationMessagesTree(conversationId, { signal })
     },
     enabled: !!conversationId && !!userId,
     staleTime: 30000, // 30 seconds - messages only change on user actions (send/edit/branch)
@@ -549,19 +478,6 @@ export function useConversationMessages(conversationId: ConversationId | null, s
     refetchOnReconnect: false, // Don't refetch on network reconnect
     refetchOnWindowFocus: false, // Don't refetch when user switches tabs
   })
-
-  // Sync storage_mode to cache when data is fetched
-  useEffect(() => {
-    if (query.data?.meta?.storage_mode && conversationId) {
-      // console.log('[useConversationMessages] Updating storage_mode in cache:', query.data.meta.storage_mode)
-
-      // Update the conversation in the list cache
-      queryClient.setQueryData<Conversation[]>(['conversations'], old => {
-        if (!old) return old
-        return old.map(c => (c.id === conversationId ? { ...c, storage_mode: query.data.meta.storage_mode! } : c))
-      })
-    }
-  }, [query.data, conversationId, queryClient])
 
   return query
 }
@@ -823,7 +739,7 @@ export function useResearchNotes() {
     queryKey: ['research-notes', userId],
     queryFn: async () => {
       if (!userId) throw new Error('User not authenticated')
-      return cloudApi.get<ResearchNoteItem[]>(`/users/${userId}/research-notes`)
+      return gwApi.get<ResearchNoteItem[]>(`/research-notes?userId=${encodeURIComponent(userId)}`)
     },
     enabled: !!userId && !!userId,
     staleTime: 5 * 60 * 1000, // 5 minutes - research notes don't change often
@@ -856,30 +772,7 @@ export function useMoveConversationToProject() {
       sourceProjectId: ProjectId | null
       destinationProjectId: ProjectId | null
     }) => {
-      // Determine storage mode from cached conversation data
-      let storageMode: 'local' | 'cloud' = 'cloud'
-
-      // Search all cached conversation lists to find the storage mode
-      const allConversationQueries = queryClient.getQueriesData<Conversation[]>({ queryKey: ['conversations'] })
-      for (const [_, data] of allConversationQueries) {
-        if (Array.isArray(data)) {
-          const match = data.find(c => String(c.id) === String(conversationId))
-          if (match?.storage_mode) {
-            storageMode = match.storage_mode
-            break
-          }
-        }
-      }
-
-      // Route to appropriate API based on storage mode
-      if (storageMode === 'local' && isHostClient) {
-        // Use local API for local conversations
-        return localApi.patch<any>(`/conversations/${conversationId}/project`, { projectId: destinationProjectId })
-      }
-
-      // Use cloud API for cloud conversations
-      const { patchConversationProject } = await import('../utils/api')
-      return patchConversationProject(conversationId, destinationProjectId, null)
+      return localApi.patch<any>(`/conversations/${conversationId}/project`, { projectId: destinationProjectId })
     },
     onSuccess: (_updatedConversation, { conversationId, sourceProjectId, destinationProjectId }) => {
       // Helper to update conversation in infinite pages
@@ -1234,7 +1127,6 @@ export function useFilteredModels(provider: string | null) {
 export interface TopLevelUserMessageSearchHit {
   conversation_id: ConversationId
   project_id: ProjectId | null
-  storage_mode: 'cloud' | 'local'
   conversation_title: string | null
   message_id: string
   message_created_at: string
@@ -1288,41 +1180,8 @@ export function useSearchTopLevelUserMessages(
         }
       }
 
-      // Non-electron fallback (not a shipping target). Routed through the
-      // storage-aware gateway (:3002/api/gw/*) keyed by userId so the renderer
-      // never talks to Railway directly; the server owns the cloud token and the
-      // local+cloud merge. Degraded to conversation-title matches, as before.
-      if (!userId) {
-        console.warn('[useSearchTopLevelUserMessages] No userId available, skipping server search')
-        return []
-      }
-
-      const params = new URLSearchParams({ q: query, limit: '20', userId })
-      if (projectId) params.set('projectId', projectId)
-
-      try {
-        const conversations = await gwApi.get<Conversation[]>(`/conversations/search?${params.toString()}`)
-        const nowIso = new Date().toISOString()
-
-        return (conversations || []).map(conversation => ({
-          conversation_id: conversation.id,
-          project_id: conversation.project_id || null,
-          storage_mode: conversation.storage_mode === 'local' ? 'local' : 'cloud',
-          conversation_title: conversation.title || null,
-          message_id: String(conversation.id),
-          message_created_at: conversation.updated_at || conversation.created_at || nowIso,
-          conversation_updated_at: conversation.updated_at || conversation.created_at || null,
-          content: conversation.title
-            ? `Title match: ${conversation.title}`
-            : 'Conversation title match (message-level search unavailable on this backend)',
-          note: null,
-          match_type: 'fallback',
-          score: 0,
-        }))
-      } catch (error) {
-        console.error('Top-level user message server fallback search failed:', error)
-        return []
-      }
+      // Every supported client is served by the Graviton host.
+      return []
     },
     [projectId, userId]
   )
@@ -1559,7 +1418,6 @@ export interface UserSystemPromptCached {
   is_default: boolean
   created_at: string
   updated_at: string
-  storage_mode?: UserSystemPromptStorageMode
 }
 
 /**
@@ -1578,17 +1436,8 @@ export function useUserSystemPromptsQuery() {
 
   const query = useQuery({
     queryKey: ['userSystemPrompts', userId],
-    queryFn: async () => {
-      const localPrompts = loadLocalUserSystemPrompts()
-
-      if (!userId || isElectronCommunityMode() || !isCloudSessionEnabled()) {
-        return localPrompts
-      }
-
-      const response = await cloudApi.get<UserSystemPromptCached[]>('/system-prompts')
-      const cloudPrompts = (response || []).map(prompt => ({ ...prompt, storage_mode: 'cloud' as const }))
-      return [...localPrompts, ...cloudPrompts]
-    },
+    // Prompts live in the host prompt store (mirrored into local storage).
+    queryFn: async () => loadLocalUserSystemPrompts(),
     enabled: true,
     staleTime: 5 * 60 * 1000, // 5 minutes - prompts don't change often
     refetchOnMount: false,
@@ -1626,9 +1475,9 @@ export const getUserSystemPromptsFromCache = (
   queryClient: QueryClient | null,
   userId: string | null
 ): UserSystemPromptCached[] => {
-  const cached = queryClient && userId ? queryClient.getQueryData<UserSystemPromptCached[]>(['userSystemPrompts', userId]) || [] : []
-  const localPrompts = loadLocalUserSystemPrompts()
-  return [...cached.filter(prompt => prompt.storage_mode !== 'local' && !prompt.id.startsWith('local-')), ...localPrompts]
+  void queryClient
+  void userId
+  return loadLocalUserSystemPrompts()
 }
 
 /**

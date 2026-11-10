@@ -58,7 +58,7 @@ const setup = (live: Message[], cached: Message[]) => {
     chat,
     ideContext: { selectedFilesForChat: [], workspace: null },
     projects: { selectedProject: null },
-    conversations: { items: [{ id: 'c1', storage_mode: 'local' }], systemPrompt: null, convContext: null },
+    conversations: { items: [{ id: 'c1' }], systemPrompt: null, convContext: null },
   } as unknown as RootState
   const queryClient = new QueryClient()
   queryClient.setQueryData(['conversations', 'c1', 'messages'], { messages: cached, tree: null })

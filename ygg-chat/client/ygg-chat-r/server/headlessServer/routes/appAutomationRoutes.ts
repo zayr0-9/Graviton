@@ -1,6 +1,7 @@
 import { assertMessagesNotInActiveRun, deleteMessagesWithLineageRepair } from '../persistence/deleteMessages.js'
 import { planMessageDeletion } from '../persistence/claudeMessageDeletion.js'
 import { assertClaudeTransferable, loadTransferSourceRows, transferredMessageMeta } from '../persistence/messageTransfer.js'
+import { cloneConversation, ConversationCloneError } from '../persistence/conversationClone.js'
 import { isClaudeTranscriptMessage } from '../../../../../shared/claudeProvider.js'
 import type Database from 'better-sqlite3'
 import type { Express } from 'express'
@@ -101,11 +102,9 @@ export function buildConversationMessagesTreePayload(
   statements: any,
   conversationId: string,
   includeTree = true
-): { messages: any[]; tree: ChatNode | null; meta: { storage_mode: string } } {
+): { messages: any[]; tree: ChatNode | null } {
   const messages = statements.getMessagesByConversationId.all(conversationId) as any[]
-  const conversation = statements.getConversationById.get(conversationId) as { storage_mode?: string } | undefined
-  const storage_mode = conversation?.storage_mode || 'local'
-  if (messages.length === 0) return { messages: [], tree: null, meta: { storage_mode } }
+  if (messages.length === 0) return { messages: [], tree: null }
 
   // Same rows and per-message order as statements.getAttachmentsByMessageId, in one query.
   const attachmentsByMessage = new Map<string, any[]>()
@@ -147,14 +146,13 @@ export function buildConversationMessagesTreePayload(
     }
   })
 
-  return { messages: normalizedMessages, tree: includeTree ? buildMessageTree(normalizedMessages) : null, meta: { storage_mode } }
+  return { messages: normalizedMessages, tree: includeTree ? buildMessageTree(normalizedMessages) : null }
 }
 
 type TopLevelMessageSearchCandidate = {
   message_id: string
   conversation_id: string
   project_id: string | null
-  storage_mode: 'cloud' | 'local'
   conversation_title: string | null
   conversation_updated_at: string | null
   message_created_at: string
@@ -307,7 +305,6 @@ function searchTopLevelUserMessages(db: Database.Database, params: {
           m.id AS message_id,
           m.conversation_id AS conversation_id,
           c.project_id AS project_id,
-          c.storage_mode AS storage_mode,
           c.title AS conversation_title,
           c.updated_at AS conversation_updated_at,
           m.created_at AS message_created_at,
@@ -338,7 +335,6 @@ function searchTopLevelUserMessages(db: Database.Database, params: {
         message_id: String(row.message_id),
         conversation_id: String(row.conversation_id),
         project_id: row.project_id || null,
-        storage_mode: row.storage_mode === 'cloud' ? 'cloud' : 'local',
         conversation_title: row.conversation_title || null,
         conversation_updated_at: row.conversation_updated_at || null,
         message_created_at: row.message_created_at,
@@ -378,7 +374,6 @@ function searchTopLevelUserMessages(db: Database.Database, params: {
           m.id AS message_id,
           m.conversation_id AS conversation_id,
           c.project_id AS project_id,
-          c.storage_mode AS storage_mode,
           c.title AS conversation_title,
           c.updated_at AS conversation_updated_at,
           m.created_at AS message_created_at,
@@ -408,7 +403,6 @@ function searchTopLevelUserMessages(db: Database.Database, params: {
         message_id: messageId,
         conversation_id: String(row.conversation_id),
         project_id: row.project_id || null,
-        storage_mode: row.storage_mode === 'cloud' ? 'cloud' : 'local',
         conversation_title: row.conversation_title || null,
         conversation_updated_at: row.conversation_updated_at || null,
         message_created_at: row.message_created_at,
@@ -437,7 +431,6 @@ function searchTopLevelUserMessages(db: Database.Database, params: {
       return {
         conversation_id: candidate.conversation_id,
         project_id: candidate.project_id,
-        storage_mode: candidate.storage_mode,
         conversation_title: candidate.conversation_title,
         message_id: candidate.message_id,
         message_created_at: candidate.message_created_at,
@@ -952,6 +945,20 @@ export function registerAppAutomationRoutes(app: Express, deps: AppAutomationRou
     } catch (error) {
       console.error('[HeadlessServer] Error fetching app message tree:', error)
       res.status(500).json({ error: 'Failed to fetch message tree' })
+    }
+  })
+
+  // Copy a conversation and its full message tree under new ids (sidebar "Copy conversation").
+  app.post('/api/app/conversations/:id/clone', (req, res) => {
+    try {
+      res.status(201).json(cloneConversation(db, req.params.id))
+    } catch (error) {
+      if (error instanceof ConversationCloneError) {
+        res.status(error.status).json({ error: error.message, ...(error.code ? { code: error.code } : {}) })
+        return
+      }
+      console.error('[HeadlessServer] Error cloning conversation:', error)
+      res.status(500).json({ error: 'Failed to copy conversation' })
     }
   })
 

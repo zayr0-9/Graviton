@@ -50,7 +50,6 @@ export interface HeadlessMessageRequest {
   projectContext?: string | null
   think?: boolean
   temperature?: number
-  storageMode?: 'local' | 'cloud'
   selectedFiles?: any[]
   attachmentsBase64?: any[] | null
   retrigger?: boolean

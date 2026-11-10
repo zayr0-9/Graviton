@@ -127,7 +127,6 @@ function buildHeadlessMessageRequest(req: Request, operation: HeadlessChatOperat
     projectContext: body.projectContext ?? body.project_context ?? null,
     think: typeof body.think === 'boolean' ? body.think : undefined,
     temperature: typeof body.temperature === 'number' ? body.temperature : undefined,
-    storageMode: body.storageMode ?? body.storage_mode ?? 'local',
     selectedFiles: body.selectedFiles ?? body.selected_files ?? [],
     attachmentsBase64: body.attachmentsBase64 ?? body.attachments_base64 ?? null,
     retrigger: typeof body.retrigger === 'boolean' ? body.retrigger : undefined,

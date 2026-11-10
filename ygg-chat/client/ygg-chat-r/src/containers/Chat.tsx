@@ -137,7 +137,6 @@ import {
   selectSendingState,
   selectStreamUndoRoot,
   sendMessage,
-  syncConversationToLocal,
   updateConversationTitle,
   updateMessage,
 } from '../features/chats'
@@ -251,7 +250,6 @@ import { useRunningJobs } from '../hooks/useToolJobs'
 import {
   ResearchNoteItem,
   useConversationsByProject,
-  useConversationStorageMode,
   useModels,
   useSelectedModel,
   useSelectModel,
@@ -1095,10 +1093,7 @@ function Chat() {
   const conversationIdFromUrl = conversationIdParam ? parseId(conversationIdParam) : null
   const projectIdFromUrl = projectIdParam === 'null' ? null : projectIdParam || null
 
-  // Get storageMode from navigation state (passed from Heimdall when creating new chat)
-  // This is CRITICAL for immediate routing to local server before cache is populated
   const location = useLocation()
-  const storageModeFromNav = location.state?.storageMode as 'local' | 'cloud' | undefined
 
   // Provider settings from localStorage
   const [providerSettings, setProviderSettings] = useState<ProviderSettings>(() => loadProviderSettings())
@@ -1343,8 +1338,6 @@ function Chat() {
   // Claude cycles Ask -> Auto -> Allow all; Auto is the CLI classifier and only replaces Ask.
   const claudeApproval = toolAutoApprove ? 'allow_all' : claudeAutoMode ? 'auto' : 'ask'
 
-  // React Query for message fetching - MOVED BELOW after projectConversations is available
-  // to enable passing storage_mode from cached conversations
   const selectedPath = useAppSelector(selectCurrentPath)
   const modeChange = useAppSelector(state => {
     const change = state.chat.operationModeChanges?.[String(currentConversationId)]
@@ -3613,37 +3606,6 @@ function Chat() {
     return null
   }, [currentConversationId, projectConversations, currentConversation, idsMatch])
 
-  // Fetch storage mode using the robust hook
-  const { data: storageModeFromHook } = useConversationStorageMode(conversationIdFromUrl)
-
-  // Compute storage_mode from projectConversations (already loaded from ConversationPage)
-  // This avoids unreliable cache lookups inside queryFn
-  const conversationStorageMode = useMemo(() => {
-    // Priority 1: Navigation state (immediate availability for new chats)
-    if (storageModeFromNav) {
-      return storageModeFromNav
-    }
-
-    // Priority 2: Hook result (robust check checking all caches + local fetch)
-    if (storageModeFromHook) {
-      return storageModeFromHook
-    }
-
-    if (!conversationIdFromUrl) {
-      return undefined
-    }
-
-    // Priority 3: Check project conversations cache
-    const conv = projectConversations.find(c => String(c.id) === String(conversationIdFromUrl))
-    if (conv?.storage_mode) {
-    }
-
-    // Priority 4: Check all conversations cache (fallback)
-    const allConvs = queryClient.getQueryData<Conversation[]>(['conversations'])
-    const match = allConvs?.find(c => String(c.id) === String(conversationIdFromUrl))
-    return match?.storage_mode
-  }, [conversationIdFromUrl, projectConversations, storageModeFromNav, storageModeFromHook, queryClient])
-
   // Persisted snapshots only enter Redux through the generation-gated coordinator.
   // Cached query data is never projected directly, so Settings -> Back cannot clobber
   // the same-conversation live SSE projection before the route-entry fetch completes.
@@ -3655,7 +3617,7 @@ function Chat() {
     isCurrentError: isCurrentSnapshotError,
     isFetching: isSnapshotFetching,
     refresh: refreshConversationSnapshot,
-  } = useConversationSnapshotCoordinator(conversationIdFromUrl, conversationStorageMode)
+  } = useConversationSnapshotCoordinator(conversationIdFromUrl)
 
   const handleHookRunsUpdated = useCallback(
     (messageId: string, runs: HookRunRecord[]) => {
@@ -3750,9 +3712,8 @@ function Chat() {
     await dispatch(updateConversationTitle({
       id: currentConversationId,
       title,
-      storageMode: conversationStorageMode,
     })).unwrap()
-  }, [currentConversationId, conversationStorageMode, dispatch])
+  }, [currentConversationId, dispatch])
 
   // Clear only on an actual A -> B switch. A Chat -> Settings -> Back remount retains
   // the live same-conversation Redux/tree/path state while the coordinator refetches.
@@ -3778,7 +3739,7 @@ function Chat() {
   }, [conversationIdFromUrl, dispatch, queryClient, snapshotConversationId])
 
   // Run post-acceptance side effects. Messages/tree were already installed atomically by
-  // the coordinator; this effect only mirrors and hydrates attachments.
+  // the coordinator; this effect only hydrates attachments.
   useEffect(() => {
     if (
       !conversationIdFromUrl ||
@@ -3789,18 +3750,6 @@ function Chat() {
 
     const fetchedMessages = conversationData.messages
     if (fetchedMessages.length === 0) return
-
-    // Sync to local database in Electron mode
-    // This handles syncing messages fetched from the server to the local SQLite DB
-    if (import.meta.env.VITE_ENVIRONMENT === 'electron') {
-      ;(dispatch as any)(
-        syncConversationToLocal({
-          conversationId: String(conversationIdFromUrl),
-          messages: fetchedMessages,
-          storageMode: conversationStorageMode,
-        })
-      )
-    }
 
     // Process attachments from React Query response
     // This converts attachment URLs to base64 artifacts for display in ChatMessage
@@ -3837,7 +3786,7 @@ function Chat() {
         })
       }
     })
-  }, [acceptedConversationId, conversationData, conversationIdFromUrl, conversationStorageMode, dispatch, isConversationDataFetched])
+  }, [acceptedConversationId, conversationData, conversationIdFromUrl, dispatch, isConversationDataFetched])
 
   // Sync React Query conversations to Redux to ensure system_prompt and conversation_context are available
   // This fixes the issue where refreshing the page doesn't load context and system prompt from query cache
@@ -4408,7 +4357,6 @@ function Chat() {
                 updateCwd({
                   id: currentConversationId,
                   cwd: projectCwd,
-                  storageMode: 'local',
                 })
               )
             }
@@ -4472,7 +4420,6 @@ function Chat() {
         updateCwd({
           id: targetConversationId,
           cwd: targetCwd || null, // Convert empty string to null
-          storageMode: 'local', // cwd is Electron-only feature
         })
       )
         .unwrap()
@@ -6005,7 +5952,6 @@ function Chat() {
       // console.log('[Chat] performDelete called:', {
       //   messageId,
       //   currentConversationId,
-      //   conversationStorageMode,
       // })
       dispatch(chatSliceActions.messageDeleted(messageId))
 
@@ -6015,7 +5961,7 @@ function Chat() {
 
       try {
         await dispatch(
-          deleteMessage({ id: messageId, conversationId: currentConversationId, storageMode: conversationStorageMode })
+          deleteMessage({ id: messageId, conversationId: currentConversationId })
         ).unwrap()
       } catch (error) {
         console.error('[Chat] Failed to delete message:', error)
@@ -6023,7 +5969,7 @@ function Chat() {
         await refreshConversationSnapshot()
       }
     },
-    [dispatch, currentConversationId, conversationStorageMode, refreshConversationSnapshot]
+    [dispatch, currentConversationId, refreshConversationSnapshot]
   )
 
   const handleRequestDelete = useCallback(
@@ -8159,7 +8105,6 @@ function Chat() {
             onNodeSelect={handleNodeSelect}
             onOpenParallel={handleOpenParallel}
             visibleMessageId={visibleMessageId}
-            storageMode={conversationStorageMode}
           />
         </div>
       )}
@@ -8215,7 +8160,6 @@ function Chat() {
                     onNodeSelect={handleNodeSelect}
                     onOpenParallel={handleOpenParallel}
                     visibleMessageId={visibleMessageId}
-                    storageMode={conversationStorageMode}
                   />
                 </div>
 

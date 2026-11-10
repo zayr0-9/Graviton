@@ -187,7 +187,7 @@ describeIfSqlite('messages/tree read', () => {
         ] },
       ],
     })
-    expect(body.meta).toEqual({ storage_mode: 'local' })
+    expect(body.meta).toBeUndefined()
   })
 
   it('attaches every hook run per message, newest first, with no 500-row cap', async () => {
@@ -210,7 +210,7 @@ describeIfSqlite('messages/tree read', () => {
     const app = await get('/api/app/conversations/c-empty/messages/tree')
     const gw = await get('/api/gw/conversations/c-empty/messages/tree')
     expect(app.status).toBe(200)
-    expect(app.body).toEqual({ messages: [], tree: null, meta: { storage_mode: 'local' } })
+    expect(app.body).toEqual({ messages: [], tree: null })
     expect(gw.body).toEqual(app.body)
   })
 

@@ -20,7 +20,7 @@ import {
   useCustomChatTheme,
   useHtmlDarkMode,
 } from '../components/ThemeManager/themeConfig'
-import { isCommunityMode, LOCAL_AUTH_USER_ID } from '../config/runtimeMode'
+import { LOCAL_AUTH_USER_ID } from '../config/runtimeMode'
 import { chatSliceActions, selectProviderState } from '../features/chats'
 import { fetchCustomTools, fetchTools, updateToolEnabled } from '../features/chats/chatActions'
 import {
@@ -171,7 +171,7 @@ import {
 import { useAppDispatch, useAppSelector } from '../hooks/redux'
 import { useAuth } from '../hooks/useAuth'
 import { useModels } from '../hooks/useQueries'
-import { cloudApi, getLocalServerLanOrigin, getLocalServerOrigin, localApi } from '../utils/api'
+import { getLocalServerLanOrigin, getLocalServerOrigin, localApi } from '../utils/api'
 
 const MAX_UPLOAD_SIZE_BYTES = 8 * 1024 * 1024 // 8MB
 const LOCAL_FONT_ACCEPT = '.woff2,.ttf,.otf'
@@ -275,12 +275,6 @@ const formatSize = (size?: number | null) => {
   return `${(kilo / 1024).toFixed(1)} MB`
 }
 
-interface GoogleDriveStatus {
-  connected: boolean
-  connectedAt: string | null
-  lastUsedAt: string | null
-}
-
 interface LocalUserSummary {
   id: string
   username: string | null
@@ -329,9 +323,6 @@ const Settings: React.FC = () => {
   const [backgroundColors, setBackgroundColors] = useState<BackgroundColorSettings>(() => loadBackgroundColors())
   const effectiveBackgroundColors = customThemeEnabled ? customTheme.colors.appBackgroundColor : backgroundColors
   const [uploading, setUploading] = useState(false)
-  const [googleConnecting, setGoogleConnecting] = useState(false)
-  const [googleDisconnecting, setGoogleDisconnecting] = useState(false)
-  const [googleDriveStatus, setGoogleDriveStatus] = useState<GoogleDriveStatus | null>(null)
   const [statusMessage, setStatusMessage] = useState<StatusMessage | null>(null)
   const [remoteBaseUrlInput, setRemoteBaseUrlInput] = useState<string>(
     () => loadRemoteServerSettings().remoteBaseUrl ?? ''
@@ -528,27 +519,6 @@ const Settings: React.FC = () => {
     const value = typeof result.value === 'string' ? result.value.trim() : ''
     return value || null
   }
-
-  // Fetch Google Drive connection status
-  const fetchGoogleDriveStatus = async () => {
-    if (isCommunityMode) {
-      setGoogleDriveStatus(null)
-      return
-    }
-    if (!userId) return
-    try {
-      // Routed through the local cloud proxy (:3002/api/cloud/*): the server owns
-      // the Supabase token, so the renderer no longer injects a Bearer here.
-      const status = await cloudApi.get<GoogleDriveStatus>('/oauth/google-drive/status')
-      setGoogleDriveStatus(status)
-    } catch (error) {
-      console.error('Failed to fetch Google Drive status:', error)
-    }
-  }
-
-  useEffect(() => {
-    fetchGoogleDriveStatus()
-  }, [userId])
 
   useEffect(() => {
     if (import.meta.env.VITE_ENVIRONMENT !== 'electron') return
@@ -2394,71 +2364,6 @@ const Settings: React.FC = () => {
     const nextColors = { ...backgroundColors, [variant]: value }
     persistBackgroundColors(nextColors)
     setBackgroundColors(loadBackgroundColors())
-  }
-
-  const handleGoogleDriveConnect = async () => {
-    if (isCommunityMode) {
-      showStatus({ type: 'info', text: 'Google Drive is disabled in community mode.' })
-      return
-    }
-
-    if (!userId) {
-      showStatus({ type: 'error', text: 'Sign in required to connect Google Drive.' })
-      return
-    }
-
-    setGoogleConnecting(true)
-    try {
-      // Routed through the local cloud proxy (:3002/api/cloud/*). Railway still
-      // mints the authUrl (with its own redirect_uri), so the OAuth consent flow
-      // is unchanged — only the request transport moves off direct Railway.
-      const payload = await cloudApi.post<{ authUrl?: string; error?: string }>('/oauth/google-drive/start')
-
-      if (!payload?.authUrl) {
-        throw new Error(payload?.error || 'No Google authorization URL returned.')
-      }
-
-      if (window.electronAPI?.shell?.openExternal) {
-        const result = await window.electronAPI.shell.openExternal(payload.authUrl)
-        if (!result?.success) {
-          window.open(payload.authUrl, '_blank', 'noopener,noreferrer')
-        }
-      } else {
-        window.open(payload.authUrl, '_blank', 'noopener,noreferrer')
-      }
-
-      showStatus({
-        type: 'info',
-        text: 'Google Drive sign-in opened in your browser. Refresh this page after signing in.',
-      })
-    } catch (error) {
-      const message = error instanceof Error ? error.message : 'Unable to open Google Drive sign-in.'
-      showStatus({ type: 'error', text: message })
-    } finally {
-      setGoogleConnecting(false)
-    }
-  }
-
-  const handleGoogleDriveDisconnect = async () => {
-    if (isCommunityMode) {
-      showStatus({ type: 'info', text: 'Google Drive is disabled in community mode.' })
-      return
-    }
-    if (!userId) return
-
-    setGoogleDisconnecting(true)
-    try {
-      // Routed through the local cloud proxy (:3002/api/cloud/*); server-owned token.
-      await cloudApi.delete('/oauth/google-drive/disconnect')
-
-      setGoogleDriveStatus({ connected: false, connectedAt: null, lastUsedAt: null })
-      showStatus({ type: 'success', text: 'Google Drive disconnected.' })
-    } catch (error) {
-      const message = error instanceof Error ? error.message : 'Unable to disconnect Google Drive.'
-      showStatus({ type: 'error', text: message })
-    } finally {
-      setGoogleDisconnecting(false)
-    }
   }
 
   const renderStatus = () => {
@@ -4420,77 +4325,7 @@ const Settings: React.FC = () => {
           </div>
         </SettingsSection>
 
-        {false && (
-          <section className={settingsSectionClass}>
-            <div className='flex flex-col gap-1'>
-              <h2 className='text-xl font-semibold text-stone-900 dark:text-stone-100 mb-2'>Services</h2>
-              <p className='text-sm text-stone-500 dark:text-stone-200'>
-                Connect third-party services so tools can access them through the proxy.
-              </p>
-            </div>
-            <div className='mt-4 flex flex-col gap-4 md:flex-row md:items-center md:justify-between'>
-              <div className='flex items-center gap-3'>
-                <div>
-                  <div className='flex items-center gap-2'>
-                    <p className='text-base font-semibold text-stone-900 dark:text-stone-100'>Google Drive</p>
-                    {googleDriveStatus?.connected && (
-                      <span className='rounded-full bg-emerald-100 px-2 py-0.5 text-xs font-medium text-emerald-700 dark:bg-emerald-900/50 dark:text-emerald-300'>
-                        Connected
-                      </span>
-                    )}
-                  </div>
-                  <p className='text-sm text-stone-500 dark:text-stone-400'>
-                    {googleDriveStatus?.connected
-                      ? `Connected ${googleDriveStatus.connectedAt ? new Date(googleDriveStatus.connectedAt).toLocaleDateString() : ''}`
-                      : 'Sign in once to enable Drive-powered tools.'}
-                  </p>
-                </div>
-              </div>
-              <div className='flex gap-2'>
-                {googleDriveStatus?.connected ? (
-                  <>
-                    <Button
-                      variant='outline2'
-                      size='large'
-                      onClick={handleGoogleDriveConnect}
-                      disabled={googleConnecting}
-                      className='group'
-                    >
-                      <p className='transition-transform duration-100 group-active:scale-95'>
-                        {googleConnecting ? 'Opening…' : 'Reconnect'}
-                      </p>
-                    </Button>
-                    <Button
-                      variant='outline2'
-                      size='large'
-                      onClick={handleGoogleDriveDisconnect}
-                      disabled={googleDisconnecting}
-                      className='group text-rose-600 hover:text-rose-700 dark:text-rose-400'
-                    >
-                      <p className='transition-transform duration-100 group-active:scale-95'>
-                        {googleDisconnecting ? 'Disconnecting…' : 'Disconnect'}
-                      </p>
-                    </Button>
-                  </>
-                ) : (
-                  <Button
-                    variant='outline2'
-                    size='large'
-                    onClick={handleGoogleDriveConnect}
-                    disabled={googleConnecting}
-                    className='group'
-                  >
-                    <p className='transition-transform duration-100 group-active:scale-95'>
-                      {googleConnecting ? 'Opening…' : 'Connect Google Drive'}
-                    </p>
-                  </Button>
-                )}
-              </div>
-            </div>
-          </section>
-        )}
-
-{openaiLoginModalOpen && (
+        {openaiLoginModalOpen && (
           <div
             className='fixed inset-0 z-[100] flex items-center justify-center bg-black/50 px-4'
             onClick={closeOpenaiLoginModal}

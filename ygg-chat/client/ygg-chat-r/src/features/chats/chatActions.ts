@@ -17,21 +17,16 @@ import {
   classifyLocalChatError,
   getLocalAttachedChatErrorCode,
 } from './localChatErrors'
-import { isCommunityMode } from '../../config/runtimeMode'
-import { localMirror as dualSync } from '../../lib/localMirror'
 import type { RootState } from '../../store/store'
 import { ThunkExtraArgument } from '../../store/thunkExtra'
 import {
-  API_BASE,
   buildLocalApiUrl,
   classifyLocalApiFailure,
-  cloudApi,
   getCachedLocalApiBase,
   getCachedLocalServerOrigin,
   gwApi,
   isLocalServerRuntime,
   localApi,
-  shouldUseLocalApi,
 } from '../../utils/api'
 import { convContextSet, systemPromptSet } from '../conversations/conversationSlice'
 import { uiActions } from '../ui/uiSlice'
@@ -100,9 +95,6 @@ import {
 // TODO: Import when conversations feature is available
 // import { conversationActions } from '../conversations'
 
-// Remote API base for syncing from cloud (Railway)
-const getRemoteApiBase = (): string | null =>
-  isCommunityMode ? null : import.meta.env.VITE_API_URL || 'https://webdrasil-production.up.railway.app/api'
 // Tools that should not prompt for user permission before execution.
 // Server-executed tools (e.g., brave_search) are already excluded upstream.
 
@@ -127,35 +119,6 @@ typescriptconst myAsyncThunk = createAsyncThunk(
   }
 )
 */
-
-// API base URL - configure based on environment
-// const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:3001/api'
-
-/**
- * Get storage_mode from React Query cache for a conversation
- * Searches all cached conversation queries (main list, project lists, etc.)
- * This is more reliable than Redux state which may not have storage_mode populated
- */
-const getStorageModeFromCache = (
-  queryClient: QueryClient | null,
-  conversationId: ConversationId
-): 'local' | 'cloud' => {
-  if (!queryClient) return 'cloud'
-
-  // Search ALL cached conversation lists
-  const allConversationQueries = queryClient.getQueriesData<Conversation[]>({ queryKey: ['conversations'] })
-
-  for (const [, data] of allConversationQueries) {
-    if (Array.isArray(data)) {
-      const match = data.find(c => String(c.id) === String(conversationId))
-      if (match?.storage_mode) {
-        return match.storage_mode
-      }
-    }
-  }
-
-  return 'cloud' // Default to cloud if not found
-}
 
 const buildTreeFromMessages = buildConversationTree
 
@@ -465,25 +428,6 @@ const syncConversationTitleAcrossCaches = (
 
 
 
-// Utility function for API calls
-// const apiCall = async <T>(endpoint: string, options?: RequestInit): Promise<T> => {
-//   const response = await fetch(`${API_BASE}${endpoint}`, {
-//     headers: {
-//       'Content-Type': 'application/json',
-//       ...options?.headers,
-//     },
-//     ...options,
-//   })
-
-//   if (!response.ok) {
-//     const errorText = await response.text()
-//     throw new Error(`HTTP ${response.status}: ${errorText || response.statusText}`)
-//   }
-
-//   return response.json()
-// }
-// Helper: detect environment
-
 // Helper: convert Blob to data URL
 export const blobToDataURL = (blob: Blob): Promise<string> =>
   new Promise(resolve => {
@@ -504,7 +448,6 @@ export const resolveAttachmentUrl = (
     attachmentId,
     localOrigin: getCachedLocalServerOrigin(),
     localApiBase: getCachedLocalApiBase(),
-    remoteOrigin: API_BASE.replace(/\/?api\/?$/, ''),
   })
 
 // Helper: Parse content_blocks from string or array format
@@ -1098,8 +1041,6 @@ export const sendMessage = createAsyncThunk<
       const selectedFilesForChat = preSendSelectedFilesForChat
 
       const conversationMeta = state.conversations.items.find(c => c.id === conversationId)
-      // Use React Query cache as fallback for storage mode detection (handles local conversations not yet in Redux)
-      const storageMode = conversationMeta?.storage_mode || getStorageModeFromCache(extra.queryClient, conversationId)
       // Keep cwd for tool execution context only (do not inject cwd into system prompt)
       const payloadCwd = typeof cwd === 'string' ? cwd.trim() : (cwd ?? null)
       const effectiveToolRootPath = payloadCwd || conversationMeta?.cwd || state.ideContext.workspace?.rootPath || null
@@ -1146,7 +1087,6 @@ export const sendMessage = createAsyncThunk<
           fullAccessNotificationId: getPendingFullAccessNotification(String(conversationId)),
           conversationContext: conversationContextSource,
           projectContext,
-          storageMode,
           attachmentsBase64,
           selectedFiles: selectedFilesForChat,
           tools: filterToolsForOperationMode(getAllTools(), operationModeAtSend),
@@ -1364,32 +1304,15 @@ function raiseClaudeDeleteRefusal(error: unknown, conversationId: ConversationId
 
 export const deleteMessage = createAsyncThunk<
   MessageId,
-  { id: MessageId; conversationId: ConversationId; storageMode?: 'local' | 'cloud' },
+  { id: MessageId; conversationId: ConversationId },
   { extra: ThunkExtraArgument }
->('chat/deleteMessage', async ({ id, conversationId, storageMode }, { extra, dispatch, rejectWithValue }) => {
+>('chat/deleteMessage', async ({ id, conversationId }, { extra, dispatch, rejectWithValue }) => {
   try {
-    // Use storageMode passed from caller (most reliable) or fallback to cache lookup
-    const effectiveStorageMode = storageMode ?? getStorageModeFromCache(extra.queryClient, conversationId)
-    const isLocalMode = shouldUseLocalApi(effectiveStorageMode)
-
-    // console.log('[deleteMessage] Routing decision:', {
-    //   passedStorageMode: storageMode,
-    //   effectiveStorageMode,
-    //   isLocalMode,
-    //   environment,
-    //   conversationId,
-    //   messageId: id,
-    // })
-
-    // Storage-aware delete via the gateway (routes local vs cloud).
     await gwApi.delete(`/messages/${id}?conversationId=${encodeURIComponent(String(conversationId))}`)
     // Sync React Query cache immediately
     removeMessagesFromCache(extra.queryClient, conversationId, [id])
-    // Sync message deletion to local SQLite (fire-and-forget)
-    dualSync.syncMessage({ id }, 'delete')
     // Chat routes reconcile the authoritative post-delete snapshot through the
     // generation-gated coordinator. Do not dispatch a legacy raw snapshot here.
-    void isLocalMode
     return id
   } catch (error) {
     console.error('[deleteMessage] Error:', error)
@@ -1608,8 +1531,6 @@ export const editMessageWithBranching = createAsyncThunk<
       const selectedFilesForChat = preSendSelectedFilesForChat
 
       const conversationMeta = state.conversations.items.find(c => c.id === conversationId)
-      // Use React Query cache as fallback for storage mode detection (handles local conversations not yet in Redux)
-      const storageMode = conversationMeta?.storage_mode || getStorageModeFromCache(extra.queryClient, conversationId)
       // Keep cwd for tool execution context only (do not inject cwd into system prompt)
       const payloadCwd = typeof cwd === 'string' ? cwd.trim() : (cwd ?? null)
       const effectiveToolRootPath = payloadCwd || conversationMeta?.cwd || state.ideContext.workspace?.rootPath || null
@@ -1642,7 +1563,6 @@ export const editMessageWithBranching = createAsyncThunk<
           fullAccessNotificationId: getPendingFullAccessNotification(String(conversationId)),
           conversationContext: conversationContextSource,
           projectContext,
-          storageMode,
           attachmentsBase64,
           selectedFiles: selectedFilesForChat,
           tools: filterToolsForOperationMode(getAllTools(), operationModeAtSend),
@@ -1864,8 +1784,6 @@ export const sendMessageToBranch = createAsyncThunk<
       const selectedFilesForChat = preSendSelectedFilesForChat
 
       const conversationMeta = state.conversations.items.find(c => c.id === conversationId)
-      // Use React Query cache as fallback for storage mode detection (handles local conversations not yet in Redux)
-      const storageMode = conversationMeta?.storage_mode || getStorageModeFromCache(extra.queryClient, conversationId)
       // Keep cwd for tool execution context only (do not inject cwd into system prompt)
       const operationModeAtSend = requestedOperationMode ?? selectOperationMode(state)
       const payloadCwd = typeof cwd === 'string' ? cwd.trim() : (cwd ?? null)
@@ -1899,7 +1817,6 @@ export const sendMessageToBranch = createAsyncThunk<
           fullAccessNotificationId: getPendingFullAccessNotification(String(conversationId)),
           conversationContext: conversationContextSource,
           projectContext,
-          storageMode,
           attachmentsBase64,
           selectedFiles: selectedFilesForChat,
           tools: filterToolsForOperationMode(getAllTools(), operationModeAtSend),
@@ -2003,105 +1920,13 @@ export const sendMessageToBranch = createAsyncThunk<
   }
 )
 
-// Sync a conversation and its messages to local SQLite (Electron only)
-export const syncConversationToLocal = createAsyncThunk<
-  void,
-  { conversationId: ConversationId; messages: Message[]; storageMode?: 'local' | 'cloud' },
-  { state: RootState; extra: ThunkExtraArgument }
->('chat/syncConversationToLocal', async ({ conversationId, messages, storageMode }, { extra, getState }) => {
-  // Only run when this renderer targets the local Ygg server
-  if (!isLocalServerRuntime()) return
-  const remoteApiBase = getRemoteApiBase()
-  if (!remoteApiBase) return
-
-  // Skip syncing for local-only conversations - they don't exist in cloud
-  if (storageMode === 'local') {
-    return
-  }
-
-  const { auth } = extra
-  const state = getState() as RootState
-
-  try {
-    const exists = await dualSync.checkConversationExists(conversationId)
-    // Determine project ID from state or conversation data
-    let projectId: string | null = selectSelectedProject(state)?.id || null
-
-    if (!exists) {
-      // Fetch conversation from REMOTE source of truth (Cloud), not local API
-      let conversation: Conversation | null = null
-      try {
-        // Fetch the source-of-truth conversation through the gateway (:3002), not Railway directly.
-        conversation = await gwApi.get<Conversation>(`/conversations/${conversationId}`)
-      } catch (e) {
-        console.warn('Failed to fetch remote conversation for sync', e)
-      }
-
-      if (conversation) {
-        projectId = conversation.project_id || projectId
-
-        // Ensure project exists locally before syncing conversation
-        if (projectId) {
-          const projectExists = await dualSync.checkProjectExists(projectId)
-          if (!projectExists) {
-            // Try cache first
-            const projectsCache = extra.queryClient?.getQueryData<any[]>(['projects', auth.userId])
-            let project = projectsCache?.find(p => String(p.id) === String(projectId))
-
-            // If not in cache, fetch from REMOTE API
-            if (!project) {
-              try {
-                project = await gwApi.get<any>(`/projects/${projectId}`)
-              } catch (e) {
-                console.warn(`Failed to fetch project ${projectId} for sync`, e)
-              }
-            }
-
-            if (project) {
-              dualSync.syncProject({
-                id: project.id,
-                name: project.name,
-                user_id: auth.userId,
-                context: project.context,
-                system_prompt: project.system_prompt,
-                created_at: project.created_at,
-                updated_at: project.updated_at,
-              })
-            }
-          }
-        }
-
-        dualSync.syncConversation(conversation)
-      }
-    }
-
-    if (messages && messages.length > 0) {
-      const operations = messages.map(msg => ({
-        type: 'message',
-        action: 'create',
-        data: {
-          ...msg,
-          user_id: auth.userId,
-          project_id: projectId, // Pass project_id context for potential stub creation
-        },
-      }))
-      dualSync.syncBatch(operations)
-    }
-  } catch (error) {
-    console.warn('Failed to sync conversation to local', error)
-  }
-})
-
 // Fetch Heimdall message tree and messages combined (optimization: single endpoint)
 export const fetchMessageTree = createAsyncThunk<
   any,
-  ConversationId | { conversationId: ConversationId; storageMode?: 'local' | 'cloud' },
+  ConversationId | { conversationId: ConversationId },
   { state: RootState; extra: ThunkExtraArgument }
 >('chat/fetchMessageTree', async (payload, { dispatch, rejectWithValue, getState }) => {
-
-  // Handle both old (just conversationId) and new (object with storageMode) signatures
   const conversationId = typeof payload === 'object' ? payload.conversationId : payload
-  const explicitStorageMode = typeof payload === 'object' ? payload.storageMode : undefined
 
   // Gating: avoid duplicate in-flight fetches and throttle rapid refetches
   const state = getState() as RootState
@@ -2124,17 +1949,6 @@ export const fetchMessageTree = createAsyncThunk<
   try {
     let response: { messages: Message[]; tree: any }
 
-    // Use explicit storageMode if provided, otherwise check state
-    const conversation = state.conversations.items.find(c => c.id === conversationId)
-    const storageMode = explicitStorageMode || conversation?.storage_mode || 'cloud'
-
-    // console.log(`[fetchMessageTree] ConversationId: ${conversationId}`)
-    // console.log(`[fetchMessageTree] Found in state: ${!!conversation}`)
-    // console.log(`[fetchMessageTree] Storage Mode: ${storageMode}`)
-    // console.log(`[fetchMessageTree] Environment: ${environment}`)
-
-    // Storage-aware fetch via the gateway (routes local vs cloud server-side).
-    void storageMode
     response = await gwApi.get<{ messages: Message[]; tree: any }>(
       `/conversations/${conversationId}/messages/tree?includeTree=false`
     )
@@ -2345,31 +2159,17 @@ export const initializeUserAndConversation = createAsyncThunk<
   const { auth } = extra
   dispatch(chatSliceActions.initializationStarted())
   try {
-    if (isCommunityMode && isLocalServerRuntime()) {
-      if (!auth.userId) {
-        throw new Error('User not authenticated')
-      }
-
-      const conversation = await gwApi.post<{ id: ConversationId }>('/conversations', {
-        userId: auth.userId,
-        title: 'New Conversation',
-        storageMode: 'local',
-      })
-
-      dispatch(
-        chatSliceActions.initializationCompleted({ userId: String(auth.userId), conversationId: conversation.id })
-      )
-      return { userId: auth.userId, conversationId: conversation.id }
+    if (!auth.userId) {
+      throw new Error('The local identity is not available yet')
     }
 
-    // Create test user (Railway-authoritative, via the cloud proxy)
-    const user = await cloudApi.post<{ id: number }>('/users', { username: 'test-user' })
+    const conversation = await gwApi.post<{ id: ConversationId }>('/conversations', {
+      userId: auth.userId,
+      title: 'New Conversation',
+    })
 
-    // Create new conversation through the storage-aware gateway
-    const conversation = await gwApi.post<{ id: ConversationId }>(`/conversations`, { userId: user.id })
-
-    dispatch(chatSliceActions.initializationCompleted({ userId: String(user.id), conversationId: conversation.id }))
-    return { userId: user.id, conversationId: conversation.id }
+    dispatch(chatSliceActions.initializationCompleted({ userId: String(auth.userId), conversationId: conversation.id }))
+    return { userId: auth.userId, conversationId: conversation.id }
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Failed to initialize'
     dispatch(chatSliceActions.initializationError(message))
@@ -2380,18 +2180,11 @@ export const initializeUserAndConversation = createAsyncThunk<
 // Delete multiple messages by their IDs
 export const deleteSelectedNodes = createAsyncThunk<
   { deleted: number },
-  { ids: MessageId[]; conversationId: ConversationId; storageMode?: 'local' | 'cloud' },
+  { ids: MessageId[]; conversationId: ConversationId },
   { extra: ThunkExtraArgument }
->('chat/deleteSelectedNodes', async ({ ids, conversationId, storageMode }, { extra, dispatch, rejectWithValue }) => {
+>('chat/deleteSelectedNodes', async ({ ids, conversationId }, { extra, dispatch, rejectWithValue }) => {
   try {
-    // Use storageMode passed from caller (most reliable) or fallback to cache lookup
-    const effectiveStorageMode = storageMode ?? getStorageModeFromCache(extra.queryClient, conversationId)
-    // Storage-aware bulk delete via the gateway (routes local vs cloud server-side).
-    const response = await gwApi.post<{ deleted: number }>('/messages/deleteMany', {
-      ids,
-      conversationId,
-      storageMode: effectiveStorageMode,
-    })
+    const response = await gwApi.post<{ deleted: number }>('/messages/deleteMany', { ids, conversationId })
     // Sync React Query cache immediately
     removeMessagesFromCache(extra.queryClient, conversationId, ids)
     return response
@@ -2407,16 +2200,11 @@ export const deleteSelectedNodes = createAsyncThunk<
 /** Ask the server which rows a delete would remove, without deleting. Rejects with the server's refusal. */
 export const previewMessageDeletion = createAsyncThunk<
   { planned: string[] },
-  { ids: MessageId[]; conversationId: ConversationId; storageMode?: 'local' | 'cloud' },
-  { extra: ThunkExtraArgument; rejectValue: { message: string; code?: string } }
->('chat/previewMessageDeletion', async ({ ids, conversationId, storageMode }, { extra, rejectWithValue }) => {
+  { ids: MessageId[]; conversationId: ConversationId },
+  { rejectValue: { message: string; code?: string } }
+>('chat/previewMessageDeletion', async ({ ids, conversationId }, { rejectWithValue }) => {
   try {
-    const response = await gwApi.post<{ planned: string[] }>('/messages/deleteMany', {
-      ids,
-      conversationId,
-      storageMode: storageMode ?? getStorageModeFromCache(extra.queryClient, conversationId),
-      dryRun: true,
-    })
+    const response = await gwApi.post<{ planned: string[] }>('/messages/deleteMany', { ids, conversationId, dryRun: true })
     return { planned: (response.planned ?? []).map(String) }
   } catch (error) {
     const failure = classifyLocalApiFailure(error)
@@ -2431,16 +2219,11 @@ export const previewMessageDeletion = createAsyncThunk<
 // Update a conversation title (Chat feature convenience)
 export const updateConversationTitle = createAsyncThunk<
   Conversation,
-  { id: ConversationId; title: string; storageMode?: 'cloud' | 'local' },
+  { id: ConversationId; title: string },
   { extra: ThunkExtraArgument; state: RootState }
->('chat/updateConversationTitle', async ({ id, title, storageMode }, { extra, getState, rejectWithValue }) => {
+>('chat/updateConversationTitle', async ({ id, title }, { extra, rejectWithValue }) => {
   try {
-    // Storage-aware title update via the gateway. Pass the authoritative storageMode
-    // hint (Chat.tsx already supplies it) so a cloud conversation is never misrouted
-    // to the local leg by a stale/ambiguous local mirror row.
-    const mode = storageMode || getState().conversations.items.find(c => c.id === id)?.storage_mode
-    const qs = mode ? `?storageMode=${mode}` : ''
-    const updated = await gwApi.patch<Conversation>(`/conversations/${id}${qs}`, { title })
+    const updated = await gwApi.patch<Conversation>(`/conversations/${id}`, { title })
     syncConversationTitleAcrossCaches(extra.queryClient, updated)
     return updated
   } catch (error) {
@@ -2449,24 +2232,7 @@ export const updateConversationTitle = createAsyncThunk<
   }
 })
 
-/* Attachments: link, fetch, delete (uploads use the local base64 prepare/save path) */
-
-// Link existing attachments to a message
-export const linkAttachmentsToMessage = createAsyncThunk<
-  Attachment[],
-  { messageId: MessageId; attachmentIds: string[] },
-  { extra: ThunkExtraArgument }
->('chat/linkAttachmentsToMessage', async ({ messageId, attachmentIds }, { dispatch, rejectWithValue }) => {
-  try {
-    const attachments = await gwApi.post<Attachment[]>(`/messages/${messageId}/attachments`, { attachmentIds })
-
-    dispatch(chatSliceActions.attachmentsSetForMessage({ messageId, attachments }))
-    return attachments
-  } catch (error) {
-    const message = error instanceof Error ? error.message : 'Failed to link attachments'
-    return rejectWithValue(message)
-  }
-})
+/* Attachments: fetch (uploads use the local base64 prepare/save/link path) */
 
 // Fetch attachments for a message
 export const fetchAttachmentsByMessage = createAsyncThunk<
@@ -2503,44 +2269,6 @@ export const fetchAttachmentsByMessage = createAsyncThunk<
     return rejectWithValue(message)
   }
 })
-
-// Delete all attachments for a message
-export const deleteAttachmentsByMessage = createAsyncThunk<
-  { deleted: number },
-  { messageId: MessageId },
-  { extra: ThunkExtraArgument }
->('chat/deleteAttachmentsByMessage', async ({ messageId }, { dispatch, rejectWithValue }) => {
-  try {
-    const result = await gwApi.delete<{ deleted: number }>(`/messages/${messageId}/attachments`)
-    dispatch(chatSliceActions.attachmentsClearedForMessage(messageId))
-    return result
-  } catch (error) {
-    const message = error instanceof Error ? error.message : 'Failed to delete attachments'
-    return rejectWithValue(message)
-  }
-})
-
-// Fetch a single attachment by ID
-export const fetchAttachmentById = createAsyncThunk<Attachment, { id: MessageId }, { extra: ThunkExtraArgument }>(
-  'chat/fetchAttachmentById',
-  async ({ id }, { dispatch, rejectWithValue }) => {
-    try {
-      const attachment = await gwApi.get<Attachment>(`/attachments/${id}`)
-      if (attachment.message_id != null) {
-        dispatch(
-          chatSliceActions.attachmentUpsertedForMessage({
-            messageId: attachment.message_id,
-            attachment,
-          })
-        )
-      }
-      return attachment
-    } catch (error) {
-      const message = error instanceof Error ? error.message : 'Failed to fetch attachment'
-      return rejectWithValue(message)
-    }
-  }
-)
 
 // Abort a running generation
 
@@ -2934,16 +2662,11 @@ export const insertBulkMessages = createAsyncThunk<
       content_blocks?: any
       meta?: string | Record<string, unknown> | null
     }>
-    storageMode?: 'local' | 'cloud' // Optional: explicitly set storage mode (useful for newly created conversations)
   },
   { extra: ThunkExtraArgument }
->('chat/insertBulkMessages', async ({ conversationId, messages, storageMode }, { rejectWithValue }) => {
+>('chat/insertBulkMessages', async ({ conversationId, messages }, { rejectWithValue }) => {
   try {
-    // Storage-aware bulk insert via the gateway (routes local vs cloud; mirrors cloud writes).
-    const response = await gwApi.post<{ messages: Message[] }>(
-      `/conversations/${conversationId}/messages/bulk`,
-      { messages, storageMode }
-    )
+    const response = await gwApi.post<{ messages: Message[] }>(`/conversations/${conversationId}/messages/bulk`, { messages })
     return response.messages
   } catch (error) {
     // Show the server's reason (e.g. a refused Claude transfer), not the transport-prefixed message.
@@ -2952,23 +2675,6 @@ export const insertBulkMessages = createAsyncThunk<
     return rejectWithValue(typeof serverError === 'string' && serverError.trim() ? serverError : failure.message || 'Failed to insert bulk messages')
   }
 })
-
-// export const fetchMessageTree = createAsyncThunk(
-//   'chat/fetchMessageTree',
-//   async (conversationId: number, { dispatch, rejectWithValue }) => {
-//     dispatch(chatActions.messageTreeLoadingStarted())
-
-//     try {
-//       const treeData = await apiCall<any>(`/conversations/${conversationId}/messages/tree`)
-//       dispatch(chatActions.messageTreeLoaded({ conversationId, treeData }))
-//       return treeData
-//     } catch (error) {
-//       const message = error instanceof Error ? error.message : 'Failed to fetch message tree'
-//       dispatch(chatActions.messageTreeError(message))
-//       return rejectWithValue(message)
-//     }
-//   }
-// )
 
 interface DecisionResumeOutcome {
   ok: boolean
@@ -3326,27 +3032,6 @@ export const respondToToolPermissionAndEnableAll = createAsyncThunk<
   else dispatch(chatSliceActions.toolPermissionResponded())
 })
 
-/**
- * Fetch all user system prompts for the current user
- */
-export const fetchUserSystemPrompts = createAsyncThunk<
-  void,
-  { accessToken: string | null },
-  { state: RootState; extra: ThunkExtraArgument }
->('chat/fetchUserSystemPrompts', async ({ accessToken }, { dispatch, rejectWithValue }) => {
-  dispatch(chatSliceActions.userSystemPromptsLoadingStarted())
-
-  try {
-    void accessToken
-    const prompts = await cloudApi.get<any[]>('/system-prompts')
-    dispatch(chatSliceActions.userSystemPromptsLoaded(prompts))
-    return
-  } catch (error) {
-    const message = error instanceof Error ? error.message : 'Failed to fetch user system prompts'
-    dispatch(chatSliceActions.userSystemPromptsError(message))
-    return rejectWithValue(message)
-  }
-})
 // LM Studio models loader hook wiring TODO: integrate fetchLmStudioModels into useModels when provider = 'lmstudio'
 // Type shim for LM Studio branch to track parent across tool turns
 

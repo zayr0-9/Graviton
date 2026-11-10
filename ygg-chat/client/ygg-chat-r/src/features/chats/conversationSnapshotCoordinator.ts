@@ -91,8 +91,6 @@ function activeProtections(state: RootState, conversationId: string): Conversati
 
 export interface CoordinateConversationSnapshotOptions {
   conversationId: ConversationId
-  storageMode?: 'local' | 'cloud'
-  accessToken?: string | null
   queryClient: QueryClient
   getState: () => RootState
   dispatch: (action: ReturnType<typeof chatSliceActions.conversationSnapshotApplied>) => unknown
@@ -110,8 +108,6 @@ export interface CoordinateConversationSnapshotResult {
 /** Fetches outside TanStack Query so rejected generations can never poison its cache. */
 export async function coordinateConversationSnapshot({
   conversationId,
-  storageMode,
-  accessToken,
   queryClient,
   getState,
   dispatch,
@@ -129,9 +125,6 @@ export async function coordinateConversationSnapshot({
   try {
     const fetched = await fetchSnapshot(conversationId, {
       includeTree: false,
-      storageMode,
-      accessToken,
-      queryClient,
       signal: controller.signal,
     })
     if (!isCurrent() || controller.signal.aborted || requestGenerations.get(normalizedId) !== generation) {

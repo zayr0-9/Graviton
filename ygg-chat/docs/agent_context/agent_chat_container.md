@@ -20,7 +20,7 @@ Documents `client/ygg-chat-r/src/containers/Chat.tsx`, the main chat screen/cont
 
 Use this when changing:
 - the main chat page layout or split-pane behaviour;
-- conversation route handling or storage-mode resolution;
+- conversation route handling;
 - React Query-to-Redux message/tree synchronization;
 - message rendering/virtualization or auto-scroll behaviour;
 - composer send/branch/retrigger/attachment/IDE-context flows;
@@ -45,7 +45,6 @@ Use this when changing:
 
 `Chat.tsx` is intentionally an orchestration component. It owns:
 - URL conversation/project parsing and navigation.
-- Storage-mode inference for local/cloud message APIs.
 - Fetching message/tree data via React Query and mirroring it into Redux.
 - The virtualized scrollable message list.
 - Current branch/focused-message path coordination.
@@ -67,28 +66,20 @@ const conversationIdFromUrl = conversationIdParam ? parseId(conversationIdParam)
 const projectIdFromUrl = projectIdParam === 'null' ? null : projectIdParam || null
 ```
 
-It also reads `location.state?.storageMode`. This is important immediately after creating a local conversation because React Query caches may not yet know the new conversation's storage mode.
-
 `currentConversationId` in Redux is set from the URL. If no URL conversation exists, Chat dispatches `initializeUserAndConversation()`.
 
-## Storage Mode Resolution
+## Storage
 
-Chat computes `conversationStorageMode` with this priority:
-1. navigation state `storageModeFromNav`;
-2. `useConversationStorageMode(conversationIdFromUrl)`;
-3. project conversation cache;
-4. flat `['conversations']` cache fallback.
-
-Use this value for message fetches and mutations tied to the current conversation. For mutations targeting another conversation, use that target conversation's `storage_mode` instead.
+All conversations are local. There is no storage mode to resolve: message fetches and mutations always use the local host (`/api/app/*` or the local `/api/gw/*` facade). The legacy `storage_mode` column stays in SQLite and list queries keep filtering on `'local'`.
 
 ## Message and Tree Loading Flow
 
-1. `useConversationSnapshotCoordinator(conversationIdFromUrl, conversationStorageMode)` starts an authoritative persisted fetch on every Chat route entry.
+1. `useConversationSnapshotCoordinator(conversationIdFromUrl)` starts an authoritative persisted fetch on every Chat route entry.
 2. A same-conversation remount (for example Settings → Back) retains Redux messages, Heimdall, path, and live stream state. Only an actual A → B switch clears visible state.
 3. The coordinator generation-gates requests, reconciles fetched rows with active-stream/terminal-lease-protected Redux rows, and treats other fetched omissions as authoritative deletions.
 4. It rebuilds Heimdall with `buildConversationTree()` and dispatches one `conversationSnapshotApplied` action so messages/tree/path change atomically.
 5. Only accepted snapshots are written to the exact React Query key; raw or superseded responses never enter the cache.
-6. In Electron, Chat runs post-acceptance local mirroring and attachment hydration.
+6. Chat runs post-acceptance attachment hydration.
 7. Project conversations from React Query are mirrored into Redux via `conversationsLoaded(projectConversations)` so current conversation metadata is available to selectors and prompts.
 
 ## Rendering Pipeline
@@ -209,8 +200,7 @@ Chat passes Heimdall:
 - `loading` / `error` from Redux;
 - `onNodeSelect={handleNodeSelect}`;
 - `conversationId={currentConversationId}`;
-- `visibleMessageId` from message-list visibility tracking;
-- `storageMode={conversationStorageMode}`.
+- `visibleMessageId` from message-list visibility tracking.
 
 Mobile layout may render Heimdall differently/conditionally, but most desktop tree work should be validated on non-mobile first.
 
@@ -240,7 +230,7 @@ Functional invariants:
 
 - `ccCwd` is kept in Redux conversation state but loaded/persisted from the local conversation row in Electron.
 - Chat clears cwd immediately on conversation change, then loads local conversation cwd; if absent, it may fall back to project cwd.
-- Manual cwd changes are debounced through `updateCwd({ storageMode: 'local' })`.
+- Manual cwd changes are debounced through `updateCwd({ id, cwd })`.
 - IDE extension workspace roots can populate cwd when connected or manually selected.
 - User sends may append a fenced `cwd_changed` footer if a manual cwd change is pending.
 
@@ -268,7 +258,6 @@ When adding new persistent UI settings, prefer helper modules in `src/helpers/*S
 - Preserve virtualizer stable keys and measurement refs when changing message rows.
 - Use string ID comparison when matching messages/conversations across caches and APIs.
 - Do not auto-scroll during streaming after user scroll intent.
-- Keep target conversation storage mode separate from source/current storage mode for cross-conversation operations.
 
 ## Common Change Recipes
 
@@ -305,7 +294,7 @@ When adding new persistent UI settings, prefer helper modules in `src/helpers/*S
 
 - Build: `npm --prefix client/ygg-chat-r run build:electron` (Electron-only — the chat thunks throw outside Electron, so a web build cannot exercise the chat loop).
 - Manual checks:
-  - load existing local and cloud conversations;
+  - load existing conversations;
   - switch routes quickly and verify no stale messages appear;
   - send normal message, retrigger, branch, edit, delete, and explain-selection;
   - stream a long answer, scroll midway, and verify viewport does not get dragged;

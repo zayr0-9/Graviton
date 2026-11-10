@@ -186,6 +186,22 @@ export function registerGatewayRoutes(app: Express, deps: RegisterGatewayRoutesD
     return forward(res, `/api/app/conversations/search?${qs.toString()}`)
   })
 
+  // Conversations with a non-empty research note (the notes list in the low bar / right bar).
+  app.get('/api/gw/research-notes', (req, res) => {
+    try {
+      const rows = deps.db
+        .prepare(
+          `SELECT id, title, research_note, updated_at, project_id FROM conversations
+           WHERE user_id = ? AND storage_mode = 'local' AND research_note IS NOT NULL AND TRIM(research_note) != ''
+           ORDER BY updated_at DESC`
+        )
+        .all(userIdOf(req))
+      res.json(rows)
+    } catch (error) {
+      res.status(500).json({ error: 'Failed to load research notes', detail: String(error) })
+    }
+  })
+
   // ---- Conversations: single entity ----
 
   app.get('/api/gw/conversations/:id', (req, res) => forward(res, `/api/app/conversations/${req.params.id}`))

@@ -14,13 +14,13 @@ describe('chat selection targets', () => {
     { kind: 'message', conversationId: 'c', messageId: 'm/# %' },
     { kind: 'lineage', conversationId: 'c', lineageId: 'l/#%', messageId: 'm&x=#' },
   ])('round trips encoded $kind targets', target => {
-    expect(parseChatSelectionHref(getChatSelectionHref(target))).toEqual({ ...target, projectId: target.projectId || 'unknown', storageMode: undefined })
+    expect(parseChatSelectionHref(getChatSelectionHref(target))).toEqual({ ...target, projectId: target.projectId || 'unknown' })
   })
   it.each(['/settings', '#section', '/chat/p/%XX', '/chat/p/c/lineage/%XX', 'https://example.com/chat/p/c'])('does not reinterpret %s', href => {
     expect(parseChatSelectionHref(href)).toBeNull()
   })
-  it('preserves storage mode and gives lineage precedence over legacy hash', () => {
-    expect(parseChatSelectionHref('/chat/p/c/lineage/l?focus=m#other', 'local')).toMatchObject({ kind: 'lineage', lineageId: 'l', messageId: 'm', storageMode: 'local' })
+  it('gives lineage precedence over legacy hash', () => {
+    expect(parseChatSelectionHref('/chat/p/c/lineage/l?focus=m#other')).toMatchObject({ kind: 'lineage', lineageId: 'l', messageId: 'm' })
   })
   it('preserves a valid explicit on-path hint and exact identity', () => {
     expect(resolveLocalChatSelection({ kind: 'message', conversationId: 'c', messageId: 'root', path: ['root', 'b'] }, rows, current)).toEqual({ ...current, focus: 'root' })

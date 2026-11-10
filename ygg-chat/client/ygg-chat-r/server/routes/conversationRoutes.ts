@@ -386,11 +386,8 @@ export function registerConversationRoutes(app: Express, deps: ConversationRoute
       //   )
       // }
 
-      // Get storage_mode from conversation
-      const conversation = statements.getConversationById.get(id) as { storage_mode: string } | undefined
-      const storage_mode = conversation?.storage_mode || 'local'
 
-      res.json({ messages: normalizedMessages, tree: treeData, meta: { storage_mode } })
+      res.json({ messages: normalizedMessages, tree: treeData })
     } catch (error) {
       console.error('[LocalServer] ❌ Error fetching message tree:', error)
       res.status(500).json({ error: 'Failed to fetch message tree' })

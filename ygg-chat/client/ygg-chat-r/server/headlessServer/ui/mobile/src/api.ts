@@ -180,7 +180,6 @@ export const mobileApi = {
     return {
       messages: Array.isArray(payload?.messages) ? payload.messages : [],
       tree: payload?.tree || null,
-      meta: payload?.meta,
     }
   },
 

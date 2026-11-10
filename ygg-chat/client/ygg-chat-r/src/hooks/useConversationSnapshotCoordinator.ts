@@ -10,10 +10,7 @@ import { coordinateConversationSnapshot } from '../features/chats/conversationSn
 import { conversationQueryKeys } from '../features/chats/conversationQueryKeys'
 import type { RootState } from '../store/store'
 
-export function useConversationSnapshotCoordinator(
-  conversationId: ConversationId | null,
-  storageMode?: 'local' | 'cloud'
-) {
+export function useConversationSnapshotCoordinator(conversationId: ConversationId | null) {
   const dispatch = useAppDispatch()
   const reduxStore = useStore() as Store<RootState>
   const queryClient = useQueryClient()
@@ -89,7 +86,6 @@ export function useConversationSnapshotCoordinator(
       try {
         const result = await coordinateConversationSnapshot({
           conversationId,
-          storageMode,
           queryClient,
           getState: reduxStore.getState,
           isCurrent: ownsRefresh,
@@ -128,7 +124,7 @@ export function useConversationSnapshotCoordinator(
     })()
     latestRefreshRef.current = { visit, revision, promise }
     return promise
-  }, [conversationId, dispatch, queryClient, reduxStore, storageMode, visit])
+  }, [conversationId, dispatch, queryClient, reduxStore, visit])
 
   useEffect(() => {
     if (typeof window === 'undefined') return

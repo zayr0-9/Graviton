@@ -668,13 +668,6 @@ const ProjectAccordionItem: React.FC<ProjectAccordionItemProps> = memo(
                     <div className='text-[13px] md:text-[13px] lg:text-[14px] xl:text-[14px] 2xl:text-[15px] font-medium text-neutral-900 dark:text-stone-200 truncate min-w-0 flex-1'>
                       {project.name}
                     </div>
-                    {project.storage_mode !== 'local' && (
-                      <i
-                        className='bx bx-cloud text-[14px] text-blue-500 shrink-0'
-                        aria-label='Cloud project'
-                        title='Cloud project'
-                      ></i>
-                    )}
                   </div>
                   {projectLastActivityDateLabel && (
                     <div className='mt-1 text-[11px] text-neutral-500 dark:text-neutral-400'>
@@ -758,9 +751,6 @@ const ProjectAccordionItem: React.FC<ProjectAccordionItemProps> = memo(
             <div className='bg-neutral-900 dark:bg-neutral-700 text-white dark:text-neutral-100 px-3 py-2 rounded-lg shadow-lg text-sm whitespace-nowrap max-w-xs'>
               <div className='font-medium flex items-center gap-1'>
                 <span>{project.name}</span>
-                {project.storage_mode !== 'local' && (
-                  <i className='bx bx-cloud text-[14px] text-blue-300' title='Cloud project'></i>
-                )}
               </div>
             </div>
           </div>
@@ -820,15 +810,7 @@ const SideBar: React.FC<SideBarProps> = ({
   const { data: fetchedProjects = [], isLoading: projectsLoading, error: projectsError } = useProjects()
   const projectData = projects.length > 0 ? projects : fetchedProjects
 
-  const visibleProjects = useMemo(() => {
-
-    let localProjectsShown = 0
-    return projectData.filter(project => {
-      if (project.storage_mode !== 'local') return true
-      localProjectsShown += 1
-      return localProjectsShown <= LOCAL_MODE_RECENT_PROJECTS_LIMIT
-    })
-  }, [projectData])
+  const visibleProjects = useMemo(() => projectData.slice(0, LOCAL_MODE_RECENT_PROJECTS_LIMIT), [projectData])
 
   // Default expand only the latest visible project. Keep user-expanded projects if still visible.
   useEffect(() => {
@@ -1095,9 +1077,7 @@ const SideBar: React.FC<SideBarProps> = ({
     if (!match) return
 
     closeExpandPortal(false)
-    navigate(getSearchResultHref(match), {
-      state: match.storage_mode ? { storageMode: match.storage_mode } : undefined,
-    })
+    navigate(getSearchResultHref(match))
 
     setSearchQuery('')
     clearSearch()
@@ -1106,10 +1086,8 @@ const SideBar: React.FC<SideBarProps> = ({
   const handleConversationHoverStart = useCallback(
     (conversation: Conversation) => {
       if (!isExpandPortalOpen) return
-      // Cloud rows have no preview, so hovering one closes it, but not while passing over it.
-      const nextConversation = conversation.storage_mode === 'local' ? conversation : null
-      if (nextConversation) clearHoverPreviewCloseTimeout()
-      conversationPreviewIntent.run(() => setHoveredPreviewConversation(nextConversation))
+      clearHoverPreviewCloseTimeout()
+      conversationPreviewIntent.run(() => setHoveredPreviewConversation(conversation))
     },
     [clearHoverPreviewCloseTimeout, conversationPreviewIntent, isExpandPortalOpen]
   )
@@ -1129,9 +1107,7 @@ const SideBar: React.FC<SideBarProps> = ({
   const handleProjectConversationSelect = useCallback(
     (conversation: Conversation) => {
       closeExpandPortal(false)
-      navigate(`/chat/${conversation.project_id || 'unknown'}/${conversation.id}`, {
-        state: conversation.storage_mode ? { storageMode: conversation.storage_mode } : undefined,
-      })
+      navigate(`/chat/${conversation.project_id || 'unknown'}/${conversation.id}`)
     },
     [closeExpandPortal, dispatch, navigate]
   )
@@ -1145,9 +1121,7 @@ const SideBar: React.FC<SideBarProps> = ({
 
       closeExpandPortal(false)
       setHoverPreviewSearchQuery('')
-      navigate(`/chat/${targetConversation.project_id || 'unknown'}/${targetConversation.id}#${encodedMessageId}`, {
-        state: targetConversation.storage_mode ? { storageMode: targetConversation.storage_mode } : undefined,
-      })
+      navigate(`/chat/${targetConversation.project_id || 'unknown'}/${targetConversation.id}#${encodedMessageId}`)
     },
     [closeExpandPortal, dispatch, hoveredPreviewConversation, navigate]
   )
@@ -1186,7 +1160,7 @@ const SideBar: React.FC<SideBarProps> = ({
       if (!shouldDelete) return
 
       try {
-        await dispatch(deleteProject({ id: project.id, storageMode: project.storage_mode })).unwrap()
+        await dispatch(deleteProject({ id: project.id })).unwrap()
 
         setExpandedProjectIds(prev => prev.filter(id => String(id) !== String(project.id)))
 
@@ -1224,9 +1198,7 @@ const SideBar: React.FC<SideBarProps> = ({
       const previousHistoryEntry = typeof window !== 'undefined' ? window.history.state?.idx : null
 
       try {
-        await dispatch(
-          deleteConversation({ id: conversation.id, storageMode: conversation.storage_mode || 'cloud' })
-        ).unwrap()
+        await dispatch(deleteConversation({ id: conversation.id })).unwrap()
 
         queryClient.setQueryData<Conversation[]>(['conversations', 'project', conversation.project_id], previous =>
           previous ? previous.filter(item => String(item.id) !== String(conversation.id)) : previous
@@ -1266,12 +1238,7 @@ const SideBar: React.FC<SideBarProps> = ({
             })
 
             if (fallbackConversation?.id && fallbackConversation.project_id) {
-              navigate(`/chat/${fallbackConversation.project_id}/${fallbackConversation.id}`, {
-                replace: true,
-                state: fallbackConversation.storage_mode
-                  ? { storageMode: fallbackConversation.storage_mode }
-                  : undefined,
-              })
+              navigate(`/chat/${fallbackConversation.project_id}/${fallbackConversation.id}`, { replace: true })
             } else {
               navigate('/homepage', { replace: true })
             }
@@ -1310,16 +1277,14 @@ const SideBar: React.FC<SideBarProps> = ({
     setCopyingConversation(true)
     setCopyError(null)
     try {
-      const result = await cloneConversation(conversationToMove.id, null)
+      const result = await cloneConversation(conversationToMove.id)
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: ['projects'] }),
         queryClient.invalidateQueries({ queryKey: ['conversations'] }),
       ])
       setShowMoveModal(false)
       setConversationToMove(null)
-      navigate(`/chat/${result.project_id || conversationToMove.project_id || 'unknown'}/${result.id}`, {
-        state: conversationToMove.storage_mode ? { storageMode: conversationToMove.storage_mode } : undefined,
-      })
+      navigate(`/chat/${result.project_id || conversationToMove.project_id || 'unknown'}/${result.id}`)
     } catch (error) {
       console.error('Failed to copy conversation:', error)
       setCopyError('Could not copy the conversation. Try again.')
@@ -1391,7 +1356,6 @@ const SideBar: React.FC<SideBarProps> = ({
           createConversation({
             projectId: project.id,
             title: `${project.name} Conversation`,
-            storageMode: project.storage_mode || 'cloud',
             cwd: project.cwd || null,
           })
         ).unwrap()
@@ -1495,13 +1459,9 @@ const SideBar: React.FC<SideBarProps> = ({
         queryClient.invalidateQueries({ queryKey: ['projects'], refetchType: 'none' })
 
         closeExpandPortal(false)
-        const inheritedCwd = createdConversation.storage_mode === 'local' ? createdConversation.cwd || project.cwd || '' : ''
+        const inheritedCwd = createdConversation.cwd || project.cwd || ''
         dispatch(chatSliceActions.ccCwdSet(inheritedCwd))
-        navigate(`/chat/${createdConversation.project_id || project.id}/${createdConversation.id}`, {
-          state: {
-            storageMode: createdConversation.storage_mode || project.storage_mode || 'cloud',
-          },
-        })
+        navigate(`/chat/${createdConversation.project_id || project.id}/${createdConversation.id}`)
       } catch (createError) {
         console.error('Failed to create conversation from sidebar:', createError)
       }
@@ -1932,7 +1892,7 @@ const SideBar: React.FC<SideBarProps> = ({
   const showExpandedPortal = isExpandPortalOpen
   const hoveredPreviewConversationId = hoveredPreviewConversation?.id ?? null
   const shouldShowConversationPreviewPortal =
-    showExpandedPortal && hoveredPreviewConversation?.storage_mode === 'local' && !!hoveredPreviewConversationId
+    showExpandedPortal && !!hoveredPreviewConversationId
   const isMobile = useIsMobile()
   const horizontalRail = !isNativeShell && isMobile
   const sidebarToggleAriaLabel = showExpandedPortal ? 'Close sidebar panel' : 'Open sidebar panel'
@@ -2382,19 +2342,10 @@ const SideBar: React.FC<SideBarProps> = ({
             )}
             {conversationAction === 'move' && (
               <>
-                <h4 className='text-sm font-semibold mb-2 dark:text-neutral-200'>
-                  Move to Project
-                  <span className='ml-2 text-xs font-normal text-neutral-500 dark:text-neutral-400'>
-                    ({conversationToMove.storage_mode === 'local' ? 'Local' : 'Cloud'} projects only)
-                  </span>
-                </h4>
+                <h4 className='text-sm font-semibold mb-2 dark:text-neutral-200'>Move to Project</h4>
                 <div className='max-h-[400px] overflow-y-auto space-y-3 thin-scrollbar'>
                   {projectData
-                    .filter(project => {
-                      const convMode = conversationToMove.storage_mode || 'cloud'
-                      const projMode = project.storage_mode || 'cloud'
-                      return project.id !== conversationToMove.project_id && projMode === convMode
-                    })
+                    .filter(project => project.id !== conversationToMove.project_id)
                     .map(project => (
                       <button
                         key={project.id}
@@ -2405,14 +2356,8 @@ const SideBar: React.FC<SideBarProps> = ({
                         <i className='bx bx-chevron-right text-lg text-neutral-400' aria-hidden='true'></i>
                       </button>
                     ))}
-                  {projectData.filter(project => {
-                    const convMode = conversationToMove.storage_mode || 'cloud'
-                    const projMode = project.storage_mode || 'cloud'
-                    return project.id !== conversationToMove.project_id && projMode === convMode
-                  }).length === 0 && (
-                    <p className='text-sm text-neutral-500 dark:text-neutral-400 text-center py-4'>
-                      No other {conversationToMove.storage_mode === 'local' ? 'local' : 'cloud'} projects available.
-                    </p>
+                  {projectData.filter(project => project.id !== conversationToMove.project_id).length === 0 && (
+                    <p className='text-sm text-neutral-500 dark:text-neutral-400 text-center py-4'>No other projects available.</p>
                   )}
                 </div>
               </>

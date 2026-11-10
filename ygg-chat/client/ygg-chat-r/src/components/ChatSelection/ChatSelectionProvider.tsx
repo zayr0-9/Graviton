@@ -46,7 +46,6 @@ export function ChatSelectionProvider({ children }: { children: ReactNode }) {
       ...options,
       state: {
         ...options.state,
-        ...(target.storageMode ? { storageMode: target.storageMode } : {}),
         chatSelectionRequestId: requestId,
       },
     })
@@ -55,7 +54,7 @@ export function ChatSelectionProvider({ children }: { children: ReactNode }) {
   const navigate = useCallback((to: To | number, options?: NavigateOptions) => {
     if (typeof to === 'number') { routerNavigate(to); return }
     const href = typeof to === 'string' ? to : `${to.pathname ?? ''}${to.search ?? ''}${to.hash ?? ''}`
-    const target = parseChatSelectionHref(href, options?.state?.storageMode)
+    const target = parseChatSelectionHref(href)
     if (target) select(target, options)
     else routerNavigate(to, options)
   }, [routerNavigate, select])
@@ -65,7 +64,7 @@ export function ChatSelectionProvider({ children }: { children: ReactNode }) {
   useLayoutEffect(() => {
     const href = `${location.pathname}${location.search}${location.hash}`
     if (!routeGate.consume(location.key, href, location.state?.chatSelectionRequestId)) return
-    const target = parseChatSelectionHref(href, location.state?.storageMode)
+    const target = parseChatSelectionHref(href)
     if (target) controller.request(target, 'route')
     else controller.cancel()
   }, [controller, location, routeGate])

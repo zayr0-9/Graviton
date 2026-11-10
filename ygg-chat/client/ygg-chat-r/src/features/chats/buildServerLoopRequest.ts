@@ -61,7 +61,6 @@ export interface BuildServerLoopRequestParams {
   fullAccessNotificationId?: string
   conversationContext?: string | null
   projectContext?: string | null
-  storageMode?: string
   attachmentsBase64?: unknown[] | null
   selectedFiles?: unknown[]
   tools?: ServerLoopToolInput[]
@@ -187,7 +186,6 @@ export function buildServerLoopRequest(operation: ServerLoopOperation, params: B
     cwd: params.rootPath ?? null,
     conversationContext: params.conversationContext ?? null,
     projectContext: params.projectContext ?? null,
-    storageMode: params.storageMode ?? 'local',
     selectedFiles: params.selectedFiles ?? [],
     attachmentsBase64: params.attachmentsBase64 ?? null,
     streamId: params.streamId,

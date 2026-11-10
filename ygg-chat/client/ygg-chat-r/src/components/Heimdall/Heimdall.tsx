@@ -266,7 +266,6 @@ interface HeimdallProps {
   onOpenParallel?: (conversationId: ConversationId, messageId: MessageId, path: string[]) => void
   conversationId?: ConversationId | null
   visibleMessageId?: MessageId | null
-  storageMode?: 'local' | 'cloud'
 }
 
 export const Heimdall: React.FC<HeimdallProps> = ({
@@ -281,7 +280,6 @@ export const Heimdall: React.FC<HeimdallProps> = ({
   onOpenParallel,
   conversationId,
   visibleMessageId = null,
-  storageMode,
 }) => {
   const dispatch = useDispatch()
   const navigate = useNavigate()
@@ -2331,19 +2329,18 @@ export const Heimdall: React.FC<HeimdallProps> = ({
           return
         }
 
-        // Dispatch the delete action with conversationId and storageMode
-        await (dispatch as any)(deleteSelectedNodes({ ids: idsToDelete, conversationId, storageMode })).unwrap()
+        await (dispatch as any)(deleteSelectedNodes({ ids: idsToDelete, conversationId })).unwrap()
 
         // Clear selection after successful delete
         dispatch(chatSliceActions.nodesSelected([]))
 
         // Refresh the message tree (now fetches both tree and messages in one call)
-        await (dispatch as any)(fetchMessageTree({ conversationId, storageMode }))
+        await (dispatch as any)(fetchMessageTree({ conversationId }))
       } catch (error) {
         console.error('Failed to delete nodes:', error)
       }
     },
-    [dispatch, conversationId, storageMode]
+    [dispatch, conversationId]
   )
 
   const closeDeleteNodesModal = useCallback(() => {
@@ -2498,27 +2495,25 @@ export const Heimdall: React.FC<HeimdallProps> = ({
       }
 
       setIsAddingToConversation(true)
-      const targetStorageMode = (targetConversation.storage_mode || storageMode || 'cloud') as 'cloud' | 'local'
       const copy = (): Promise<Message[]> => (dispatch as any)(
         insertBulkMessages({
           conversationId: targetConversation.id,
           messages: messagesToCopy,
-          storageMode: targetStorageMode,
         })
       ).unwrap()
 
       if (conversationTransferMode === 'move' && conversationId) {
         await moveSelection(idsToTransfer, {
           previewSourceDelete: async () =>
-            (await (dispatch as any)(previewMessageDeletion({ ids: idsToTransfer, conversationId, storageMode })).unwrap()).planned,
+            (await (dispatch as any)(previewMessageDeletion({ ids: idsToTransfer, conversationId })).unwrap()).planned,
           copy,
-          deleteSource: () => (dispatch as any)(deleteSelectedNodes({ ids: idsToTransfer, conversationId, storageMode })).unwrap(),
+          deleteSource: () => (dispatch as any)(deleteSelectedNodes({ ids: idsToTransfer, conversationId })).unwrap(),
           deleteCopies: ids => (dispatch as any)(
-            deleteSelectedNodes({ ids, conversationId: targetConversation.id, storageMode: targetStorageMode })
+            deleteSelectedNodes({ ids, conversationId: targetConversation.id })
           ).unwrap(),
         })
         // The move is done; a failed refresh must not invite a retry that copies again.
-        await (dispatch as any)(fetchMessageTree({ conversationId, storageMode })).unwrap()
+        await (dispatch as any)(fetchMessageTree({ conversationId })).unwrap()
           .catch((refreshError: unknown) => console.error('Failed to refresh after moving messages:', refreshError))
         queryClient.invalidateQueries({ queryKey: ['conversations', conversationId, 'messages'] })
       } else {
@@ -2555,7 +2550,6 @@ export const Heimdall: React.FC<HeimdallProps> = ({
     }
     setIsCreatingChat(true)
     setTransferNotice(null)
-    const modeOf = (conversation: Conversation) => (conversation.storage_mode || storageMode || 'cloud') as 'cloud' | 'local'
     try {
       // Generate title from first message content
       const firstContent = messagesToCopy[0].content
@@ -2569,16 +2563,15 @@ export const Heimdall: React.FC<HeimdallProps> = ({
       // A copy without its workspace folder cannot continue file or Claude work, so failing to set it is fatal.
       const inheritedCwd = typeof currentConversation?.cwd === 'string' ? currentConversation.cwd.trim() : ''
       const newConversation = await createChatFromSelection<Conversation>({
-        create: () => (dispatch as any)(createConversation({ title, projectId, systemPrompt, conversationContext, storageMode })).unwrap(),
+        create: () => (dispatch as any)(createConversation({ title, projectId, systemPrompt, conversationContext })).unwrap(),
         setCwd: inheritedCwd
-          ? conversation => (dispatch as any)(updateCwd({ id: conversation.id, cwd: inheritedCwd, storageMode: modeOf(conversation) })).unwrap()
+          ? conversation => (dispatch as any)(updateCwd({ id: conversation.id, cwd: inheritedCwd })).unwrap()
           : undefined,
-        // Pass storage mode explicitly since the new conversation isn't in the cache yet.
         copy: conversation => (dispatch as any)(
-          insertBulkMessages({ conversationId: conversation.id, messages: messagesToCopy, storageMode: modeOf(conversation) })
+          insertBulkMessages({ conversationId: conversation.id, messages: messagesToCopy })
         ).unwrap(),
         remove: async conversation => {
-          await (dispatch as any)(deleteConversation({ id: conversation.id, storageMode: modeOf(conversation) })).unwrap()
+          await (dispatch as any)(deleteConversation({ id: conversation.id })).unwrap()
           queryClient.invalidateQueries({ queryKey: ['conversations'] })
         },
       })
@@ -2592,9 +2585,7 @@ export const Heimdall: React.FC<HeimdallProps> = ({
       setShowContextMenu(false)
       dispatch(chatSliceActions.nodesSelected([]))
       // The chat route loads the new conversation itself; never replace this chat's tree from here.
-      navigate(`/chat/${newConversation.project_id || 'unknown'}/${newConversation.id}`, {
-        state: { storageMode: newConversation.storage_mode || storageMode },
-      })
+      navigate(`/chat/${newConversation.project_id || 'unknown'}/${newConversation.id}`)
     } catch (error) {
       // createChatFromSelection has already removed a half-made chat.
       console.error('Failed to create new chat from selection:', error)
@@ -2645,7 +2636,7 @@ export const Heimdall: React.FC<HeimdallProps> = ({
     setContextNodeId(null)
     setShowConversationSelector(false)
     setTransferMessageIds([])
-  }, [conversationId, currentConversationId, storageMode])
+  }, [conversationId, currentConversationId])
 
   // Close context menu on outside click
   useEffect(() => {
@@ -4542,11 +4533,6 @@ export const Heimdall: React.FC<HeimdallProps> = ({
                                   <div className='truncate text-sm font-medium text-stone-800 dark:text-stone-100'>{title}</div>
                                   <div className='mt-0.5 flex items-center gap-2 text-[11px] text-stone-500 dark:text-stone-400'>
                                     {updatedLabel && <span>{updatedLabel}</span>}
-                                    {conversation.storage_mode && (
-                                      <span className='rounded-full bg-stone-100 px-1.5 py-0.5 uppercase dark:bg-neutral-800'>
-                                        {conversation.storage_mode}
-                                      </span>
-                                    )}
                                   </div>
                                 </div>
                               </div>

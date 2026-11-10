@@ -556,7 +556,6 @@ export interface ChatState {
     streamId?: string | null
   }>
   errorNotices: ChatErrorNoticesState
-  userSystemPrompts: UserSystemPromptsState
 }
 
 /**
@@ -727,20 +726,3 @@ export interface ToolDefinition {
 // Alias for backwards compatibility
 export type tools = ToolDefinition
 
-// User System Prompt types
-export interface UserSystemPrompt {
-  id: string
-  owner_id: string
-  name: string
-  content: string
-  description?: string | null
-  is_default: boolean
-  created_at: string
-  updated_at: string
-}
-
-export interface UserSystemPromptsState {
-  prompts: UserSystemPrompt[]
-  loading: boolean
-  error: string | null
-}

@@ -38,7 +38,7 @@ Use this when changing:
 
 ## Data Flow
 
-1. `Chat.tsx` calls `useConversationSnapshotCoordinator(conversationIdFromUrl, conversationStorageMode)`.
+1. `Chat.tsx` calls `useConversationSnapshotCoordinator(conversationIdFromUrl)`.
 2. The coordinator generation-gates the persisted fetch, reconciles active-stream and terminal-lease-protected rows, and rebuilds the tree with `buildConversationTree`.
 3. Only an accepted snapshot updates the exact Query cache and dispatches `conversationSnapshotApplied`, applying flat messages, tree, and path atomically.
 4. `Chat.tsx` renders `<Heimdall />` when `heimdallVisible && !isMobile`.
@@ -155,9 +155,8 @@ For selected-message copying/moving:
 1. Add local state if the action needs a modal/pending status.
 2. Reuse or extract the existing selected-message ordering/copy helper if message payloads are needed.
 3. Close `showContextMenu` before opening larger UI.
-4. Use target conversation storage mode for mutations, not necessarily the current/source storage mode.
-5. Clear `selectedNodes` only after successful destructive/copy operation unless UX requires otherwise.
-6. Invalidate the narrowest React Query keys for affected conversations.
+4. Clear `selectedNodes` only after successful destructive/copy operation unless UX requires otherwise.
+5. Invalidate the narrowest React Query keys for affected conversations.
 
 ### Change tree selection semantics
 

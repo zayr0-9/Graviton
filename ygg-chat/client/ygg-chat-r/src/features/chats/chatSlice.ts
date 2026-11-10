@@ -31,7 +31,6 @@ import {
   StreamUndoSummary,
   ToolCallPermissionRequest,
   OperationModeUpgradeRequest,
-  UserSystemPrompt,
 } from './chatTypes'
 import { createEmptyStreamState, DEFAULT_STREAM_ID } from './streamHelpers'
 import { chatSelectionRequested, chatSelectionCommitted, chatSelectionFailed, chatSelectionResumed, chatSelectionCancelled, chatSelectionScrollHandled, initialChatSelection } from './chatSelection'
@@ -288,11 +287,6 @@ const makeInitialState = (): ChatState => {
     // is unreachable the moment it carries an error.
     errorNotices: {
       byConversationId: {},
-    },
-    userSystemPrompts: {
-      prompts: [],
-      loading: false,
-      error: null,
     },
   }
 }
@@ -2069,33 +2063,6 @@ export const chatSlice = createSlice({
 
     chatErrorsClearedForConversation: (state, action: PayloadAction<ConversationId>) => {
       delete state.errorNotices.byConversationId[String(action.payload)]
-    },
-
-    /* User System Prompts reducers */
-    userSystemPromptsLoadingStarted: state => {
-      state.userSystemPrompts.loading = true
-      state.userSystemPrompts.error = null
-    },
-    userSystemPromptsLoaded: (state, action: PayloadAction<UserSystemPrompt[]>) => {
-      state.userSystemPrompts.prompts = action.payload
-      state.userSystemPrompts.loading = false
-      state.userSystemPrompts.error = null
-    },
-    userSystemPromptsError: (state, action: PayloadAction<string>) => {
-      state.userSystemPrompts.loading = false
-      state.userSystemPrompts.error = action.payload
-    },
-    userSystemPromptAdded: (state, action: PayloadAction<UserSystemPrompt>) => {
-      state.userSystemPrompts.prompts.push(action.payload)
-    },
-    userSystemPromptUpdated: (state, action: PayloadAction<UserSystemPrompt>) => {
-      const index = state.userSystemPrompts.prompts.findIndex(p => p.id === action.payload.id)
-      if (index >= 0) {
-        state.userSystemPrompts.prompts[index] = action.payload
-      }
-    },
-    userSystemPromptDeleted: (state, action: PayloadAction<string>) => {
-      state.userSystemPrompts.prompts = state.userSystemPrompts.prompts.filter(p => p.id !== action.payload)
     },
 
     stateReset: () => makeInitialState(),

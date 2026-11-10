@@ -49,7 +49,7 @@ if (!process.versions.electron) {
     host.get('/api/jobs/stats', (_req, res) => res.json({ success: true, stats: { pending: 0, running: 0, completed: 0, failed: 0 } }))
     host.get('/api/conversations/c1/live-runs', (_req, res) => res.json({ runs: run ? [{ streamId: run.streamId, conversationId: 'c1', status: 'running', seq, createdAt: now, parentId: null, lineageId: null }] : [] }))
     host.get('/api/app/conversations', (_req, res) => res.json([conversation]))
-    host.get(`/api/cloud/users/${uid}/research-notes`, (_req, res) => res.json([]))
+    host.get('/api/gw/research-notes', (_req, res) => res.json([]))
     host.get('/api/jobs', (_req, res) => res.json({ success: true, jobs: [] }))
     host.post('/api/conversations/c1/admissions', (req, res) => {
       const body = req.body
