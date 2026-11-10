@@ -1124,8 +1124,9 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
         // Claude runs never persist mode-notification rows (they would displace the
         // resumable checkpoint), so the turn's mode is recorded on its user row.
         ...(isClaudeProvider(request.provider) ? { operationMode: request.operationMode === 'plan' ? 'plan' : 'execute' } : {}),
-        // Native plan mode too, so Chat shows the Plan mode notice where it starts and ends.
-        ...(isClaudeProvider(request.provider) && request.claudePlanMode === true && !request.manualCompaction ? { claudePlanMode: true } : {}),
+        // Native plan mode too: Chat shows the Plan mode notice where it starts and ends, and the
+        // composer restores it per branch. Absent on a Claude row means off.
+        ...(isClaudeProvider(request.provider) && request.claudePlanMode === true ? { claudePlanMode: true } : {}),
       },
     })
 

@@ -2,7 +2,7 @@ import { describe, it, expect, vi } from 'vitest'
 import { mkdir, mkdtemp, realpath, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
-import { CHAT_MODE_NOTE, ClaudeSessionService, PLAN_MODE_NOTE, isClaudePlanFile, claudeModeSwitchNotice, interruptedResumePoint, parseClaudeSlashCommand, safeResumePoint, type ClaudeTaskControl } from '../claudeSessionService.js'
+import { CHAT_MODE_NOTE, ClaudeSessionService, PLAN_MODE_NOTE, claudeAnswersFromClarify, claudeQuestionsForClarify, isClaudePlanFile, claudeModeSwitchNotice, interruptedResumePoint, parseClaudeSlashCommand, safeResumePoint, type ClaudeTaskControl } from '../claudeSessionService.js'
 import { OperationModeControl } from '../operationModeControl.js'
 import { assertClaudeBranchSelection } from '../../persistence/claudeSessionRepo.js'
 import { DecisionBroker } from '../decisionBroker.js'
@@ -646,7 +646,7 @@ it.each(['execute', 'plan'])('honors stream auto-approval in %s without SDK perm
     signal: new AbortController().signal, toolUseID: 'auto-tool',
   })).resolves.toMatchObject({ behavior: 'allow', updatedInput: { file_path: 'file' } })
   expect(f.emit.mock.calls.some(([event]) => event.type === 'permission_required')).toBe(false)
-  for (const name of ['AskUserQuestion', ...(operationMode === 'plan' ? ['Write', 'Edit', 'MultiEdit', 'NotebookEdit'] : [])]) {
+  for (const name of operationMode === 'plan' ? ['Write', 'Edit', 'MultiEdit', 'NotebookEdit'] : []) {
     await expect(options.canUseTool(name, {}, { signal: new AbortController().signal, toolUseID: name })).resolves.toMatchObject({ behavior: 'deny' })
   }
   // Chat mode is a conversation without file edits, not native plan mode: other tools follow the approval gate.
@@ -745,6 +745,53 @@ describe('ExitPlanMode escalation', () => {
   })
 })
 
+describe('AskUserQuestion', () => {
+  const ask = {
+    questions: [
+      { question: 'Which library?', header: 'Library', multiSelect: false,
+        options: [{ label: 'date-fns', description: 'Small and modular' }, { label: 'Luxon', description: 'Time zones' }] },
+      { question: 'Which features?', header: 'Features', multiSelect: true, options: [{ label: 'Parsing', description: '' }, { label: 'Formatting', description: 'Locale aware' }] },
+    ],
+  }
+
+  it.each(['plan', 'execute'] as const)('asks the user through the clarification panel in %s mode, even with Allow all, and returns the answers', async operationMode => {
+    const f = fixture([assistant(), success])
+    f.input.request.operationMode = operationMode
+    f.input.request.claudePlanMode = operationMode === 'plan'
+    f.broker.initSession('stream', { autoApproveAll: true })
+    await f.service.run(f.input)
+    const decision = f.sdk.query.mock.calls[0][0].options.canUseTool('AskUserQuestion', ask, { signal: new AbortController().signal, toolUseID: 'ask' })
+    await vi.waitFor(() => expect(f.broker.hasPending('stream', 'ask')).toBe(true))
+    const prompt = f.emit.mock.calls.map(([event]) => event).find(event => event.type === 'clarify_required')
+    expect(prompt).toMatchObject({ toolCallId: 'ask', toolName: 'AskUserQuestion', questions: [
+      { id: 'Which library?', question: 'Which library?', description: 'Library', options: [{ label: 'date-fns', description: 'Small and modular' }, { label: 'Luxon' }] },
+      { id: 'Which features?', description: expect.stringContaining('Several may apply') },
+    ] })
+    expect(f.broker.resolve('stream', 'ask', { answers: [
+      { questionId: 'Which library?', question: 'Which library?', selectedOptionLabel: 'date-fns', manual: false, answer: 'Small and modular' },
+      { questionId: 'Which features?', question: 'Which features?', selectedOptionLabel: 'Write my own answer', manual: true, answer: 'Parsing and formatting' },
+    ] })).toBe(true)
+    await expect(decision).resolves.toEqual({ behavior: 'allow', updatedInput: { ...ask,
+      answers: { 'Which library?': 'date-fns', 'Which features?': 'Parsing and formatting' } } })
+  })
+
+  it('tells Claude when the user dismisses the questions', async () => {
+    const f = fixture([assistant(), success])
+    await f.service.run(f.input)
+    const decision = f.sdk.query.mock.calls[0][0].options.canUseTool('AskUserQuestion', ask, { signal: new AbortController().signal, toolUseID: 'ask' })
+    await vi.waitFor(() => expect(f.broker.hasPending('stream', 'ask')).toBe(true))
+    f.broker.resolve('stream', 'ask', { cancelled: true })
+    await expect(decision).resolves.toMatchObject({ behavior: 'deny', message: expect.stringContaining('dismissed') })
+  })
+
+  it('maps malformed input and answers defensively', () => {
+    expect(claudeQuestionsForClarify({ questions: [{ question: ' ' }, { question: 'Go?', options: [{ label: '' }, { label: 'Yes' }] }] }))
+      .toEqual([{ id: 'Go?', question: 'Go?', options: [{ id: 'option-2', label: 'Yes' }] }])
+    expect(claudeQuestionsForClarify({})).toEqual([])
+    expect(claudeAnswersFromClarify([{ question: 'Go?', manual: true, answer: '  ' }, null, { questionId: 'Q', answer: 'A' }])).toEqual({ Q: 'A' })
+  })
+})
+
 describe('native plan mode', () => {
   const nativePlanFixture = async (operationMode: 'plan' | 'execute') => {
     const cwd = await mkdtemp(path.join(tmpdir(), 'claude-native-plan-'))
@@ -806,6 +853,25 @@ describe('native plan mode', () => {
     await expect(decision).resolves.toMatchObject({ behavior: 'allow', updatedPermissions: [{ type: 'setMode', mode: 'default', destination: 'session' }] })
     expect(control.mode).toBe('execute')
     await expect(guard('Edit', { file_path: 'src/app.ts' })).resolves.toEqual({})
+  })
+
+  it('records plan mode on each response row, and off once the plan is approved', async () => {
+    const f = fixture()
+    f.input.request.claudePlanMode = true
+    f.sdk.query.mockImplementation(({ options }: any) => Object.assign((async function* () {
+      yield { type: 'system', subtype: 'init', session_id: 's' }
+      yield assistant('p')
+      const decision = options.canUseTool('ExitPlanMode', { plan: '# Plan' }, { signal: new AbortController().signal, toolUseID: 'exit' })
+      await vi.waitFor(() => expect(f.broker.hasPending('stream', 'exit')).toBe(true))
+      f.broker.resolve('stream', 'exit', 'switch_to_execute')
+      await decision
+      yield assistant('q')
+      yield success
+    })(), { close: vi.fn() }) as any)
+    const final = await f.service.run(f.input)
+    // The composer reads these back to restore plan mode per branch.
+    expect(f.rows[0].meta).toMatchObject({ claudePlanMode: true })
+    expect(final.meta).toMatchObject({ claudePlanMode: false })
   })
 
   it('switches Chat mode to Agent mode when the user approves the plan', async () => {

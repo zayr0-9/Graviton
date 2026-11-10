@@ -4,6 +4,7 @@ import { getAdmissionEpoch, resetAdmissionEpoch } from './runAdmissionClient'
 import { getClientId, newClientId } from '../../helpers/clientId'
 import { isCleanStartBranchEdit, isSummaryBranchEdit, isProviderHandoffEdit, resolveBranchModelSelection, resolveEditBranchModelSelection, resolveComposerSummaryHandoff } from './branchModelSelection'
 import { resolveBranchFastMode } from './branchFastMode'
+import { resolveBranchPlanMode } from './branchPlanMode'
 import { defaultToolApproval, resolveAnchoredToolApproval, resolveBranchToolApproval, resolveHandoffToolApproval } from './branchToolApproval'
 import { isCommittedCompaction } from '../../../../../shared/compaction'
 import { getPendingFullAccessNotification, isFullAccessEnabled } from '../../helpers/fullAccessSettings'
@@ -1097,7 +1098,7 @@ export const sendMessage = createAsyncThunk<
             : resolveBranchToolApproval(modelSelectionState, providedBranchPath ?? modelSelectionState.conversation.currentPath, conversationId, providedLineageId === undefined ? modelSelectionState.conversation.currentLineageId : providedLineageId, serverProvider),
           claudeAutoMode: modelSelectionState.claudeAutoMode,
           claudeUltracode: modelSelectionState.claudeUltracode,
-          claudePlanMode: modelSelectionState.claudePlanMode,
+          claudePlanMode: resolveBranchPlanMode(modelSelectionState, providedBranchPath ?? modelSelectionState.conversation.currentPath, conversationId),
           hooksEnabled: isElectronMode,
           localApiBase: getCachedLocalApiBase(),
           contextDirectories: loadContextDirectorySettings(),
@@ -1574,7 +1575,8 @@ export const editMessageWithBranching = createAsyncThunk<
               : resolveAnchoredToolApproval(modelSelectionState, parentMessageId, conversationId, serverProvider)),
           claudeAutoMode: modelSelectionState.claudeAutoMode,
           claudeUltracode: modelSelectionState.claudeUltracode,
-          claudePlanMode: modelSelectionState.claudePlanMode,
+          claudePlanMode: (modelSelectionState.composition.editingBranch ? modelSelectionState.composition.branchEditModes?.claudePlanMode : undefined)
+            ?? resolveBranchPlanMode(modelSelectionState, providedBranchPath ?? modelSelectionState.conversation.currentPath, conversationId),
           hooksEnabled: isElectronMode,
           localApiBase: getCachedLocalApiBase(),
           contextDirectories: loadContextDirectorySettings(),
@@ -1828,7 +1830,7 @@ export const sendMessageToBranch = createAsyncThunk<
             : resolveAnchoredToolApproval(modelSelectionState, parentId, conversationId, serverProvider),
           claudeAutoMode: modelSelectionState.claudeAutoMode,
           claudeUltracode: modelSelectionState.claudeUltracode,
-          claudePlanMode: modelSelectionState.claudePlanMode,
+          claudePlanMode: resolveBranchPlanMode(modelSelectionState, providedBranchPath ?? modelSelectionState.conversation.currentPath, conversationId),
           hooksEnabled: isElectronMode,
           localApiBase: getCachedLocalApiBase(),
           contextDirectories: loadContextDirectorySettings(),
@@ -2964,11 +2966,9 @@ export const respondToOperationModeUpgrade = createAsyncThunk<
       decision: approved ? 'switch_to_execute' : 'deny',
     })
     if (!settleDecisionResume(dispatch, getState(), req.streamId, outcome).closeDialog) return
-    if (approved && outcome.ok) {
-      dispatch(chatSliceActions.operationModeSet('execute'))
-      // An approved Claude plan ends plan mode, as it does for the running session.
-      if (req.toolCall?.name === 'ExitPlanMode') dispatch(chatSliceActions.claudePlanModeSet(false))
-    }
+    // An approved Claude plan also ends plan mode. The rows Claude writes from here record it,
+    // so the branch's Plan toggle reads off without a renderer-side reset.
+    if (approved && outcome.ok) dispatch(chatSliceActions.operationModeSet('execute'))
   }
   if (req?.streamId) dispatch(chatSliceActions.operationModeUpgradeRespondedForStream(req.streamId))
   else dispatch(chatSliceActions.operationModeUpgradeResponded())

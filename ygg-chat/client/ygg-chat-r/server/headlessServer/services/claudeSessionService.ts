@@ -16,7 +16,7 @@ import type { MessageRepo } from '../persistence/messageRepo.js'
 import type { MessageSink } from './messageSink.js'
 import { OperationModeControl } from './operationModeControl.js'
 import type { OperationMode } from '../../../../../shared/operationModeToolPolicy.js'
-import type { DecisionBroker, OperationModeUpgradeDecision, PermissionDecision } from './decisionBroker.js'
+import type { ClarifyDecision, DecisionBroker, OperationModeUpgradeDecision, PermissionDecision } from './decisionBroker.js'
 import type { ChatHookSession } from './chatHookService.js'
 import type { ToolExecutionContext } from './toolLoopService.js'
 import type { HookEventName, HookRunRecord, HookRunStatus, HookRunTracker } from '../../hooks/hookTypes.js'
@@ -239,6 +239,40 @@ async function readPlanFile(plansDir: string, candidate: string): Promise<{ plan
   } catch {
     return null
   }
+}
+
+/**
+ * Claude's AskUserQuestion input as the clarification panel's questions. The question text is the
+ * id, so the answers map straight back to Claude's `answers` keys. The panel always offers its own
+ * "Write my own answer", which stands in for the "Other" choice Claude expects the host to add.
+ * It picks one option, so a multi-select question says that several can be written in.
+ */
+export function claudeQuestionsForClarify(args: Record<string, unknown>): Array<{
+  id: string; question: string; description?: string; options: Array<{ id: string; label: string; description?: string }>
+}> {
+  const questions = Array.isArray(args.questions) ? args.questions : []
+  return questions.flatMap((raw: any) => {
+    const question = typeof raw?.question === 'string' ? raw.question.trim() : ''
+    if (!question) return []
+    const header = typeof raw.header === 'string' && raw.header.trim() ? raw.header.trim() : ''
+    const options = (Array.isArray(raw.options) ? raw.options : []).flatMap((option: any, index: number) => {
+      const label = typeof option?.label === 'string' ? option.label.trim() : ''
+      return label ? [{ id: `option-${index + 1}`, label, ...(typeof option.description === 'string' && option.description.trim() ? { description: option.description.trim() } : {}) }] : []
+    })
+    const notes = [header, raw.multiSelect === true ? 'Several may apply: pick the closest, or write your own answer listing them.' : ''].filter(Boolean)
+    return [{ id: question, question, ...(notes.length ? { description: notes.join(' · ') } : {}), options }]
+  })
+}
+
+/** The panel's answers as AskUserQuestion `answers`: question text → chosen label or the user's own text. */
+export function claudeAnswersFromClarify(answers: unknown): Record<string, string> {
+  const result: Record<string, string> = {}
+  for (const answer of Array.isArray(answers) ? answers : []) {
+    const question = typeof answer?.question === 'string' ? answer.question : typeof answer?.questionId === 'string' ? answer.questionId : ''
+    const text = answer?.manual === true ? answer.answer : answer?.selectedOptionLabel ?? answer?.answer
+    if (question && typeof text === 'string' && text.trim()) result[question] = text.trim()
+  }
+  return result
 }
 
 /**
@@ -636,7 +670,7 @@ export class ClaudeSessionService {
         modelName: request.modelName, content: pending.summary,
         contentBlocks: [{ type: 'text', content: pending.summary, index: 0 }], statisticsKind: 'compaction_summary',
         meta: { kind: 'compaction_summary', state: 'committed', version: 1, trigger: pending.trigger,
-          compactionId: randomUUID(), operationMode: control.mode, claude: { sessionId: activeSession, checkpoint: false } } })
+          compactionId: randomUUID(), operationMode: control.mode, claudePlanMode: planState.active, claude: { sessionId: activeSession, checkpoint: false } } })
       parent = compactionSummary.id
       finalMessage = null; lastUuid = null; turnEntries = []
       compactionActive = false
@@ -835,8 +869,21 @@ export class ClaudeSessionService {
         }
         return { behavior: 'allow', updatedInput: args, updatedPermissions: [{ type: 'setMode', mode: 'default', destination: 'session' }] }
       }
-      // AskUserQuestion requires an answer protocol beyond permission; do not turn Approve into an invented answer.
-      if (name === 'AskUserQuestion') return { behavior: 'deny', message: 'Ask the user in your text response instead.' }
+      // AskUserQuestion is a question, not a permission: it goes to the user in every mode, even
+      // with Allow all, and the answers go back to Claude as `updatedInput.answers`.
+      if (name === 'AskUserQuestion') {
+        if (!this.deps.broker) return { behavior: 'deny', message: 'Ask the user in your text response instead.' }
+        const id = context.toolUseID || randomUUID()
+        const questions = claudeQuestionsForClarify(args)
+        if (!questions.length) return { behavior: 'deny', message: 'No questions to ask. Ask the user in your text response instead.' }
+        const event = { type: 'clarify_required' as const, streamId: request.streamId!, toolCallId: id, toolName: name, questions }
+        const pending = this.deps.broker.requestDecision<ClarifyDecision>({ streamId: request.streamId!, toolCallId: id,
+          kind: 'clarify', signal: context.signal, prompt: event })
+        if (this.deps.broker.hasPending(request.streamId!, id)) emit(event)
+        const decision = await pending
+        if (decision.cancelled) return { behavior: 'deny', message: 'The user dismissed the questions without answering. Continue without them or ask in your text response.' }
+        return { behavior: 'allow', updatedInput: { ...args, answers: claudeAnswersFromClarify(decision.answers) } }
+      }
       // Auto-approval answers permission requests; it must not let Chat mode edit files.
       // The PreToolUse hook denies these first; this guards a CLI that still asks.
       // Only edit tools await the check, so every other call reaches the broker in this tick.
@@ -1102,12 +1149,13 @@ export class ClaudeSessionService {
     const unsubscribeQueue = queued?.subscribe(() => { void pump() })
     // Each response records the mode it ran in. A switch Claude never read as a message (no tool step
     // left) still reaches the final row, where a mode row would displace the resumable checkpoint.
+    // Plan mode too, so the composer restores it per branch and an approved plan reads as off.
     const runMeta = () => ({ ...(this.deps.broker ? { toolAutoApprove: this.deps.broker.isAutoApproveAll(request.streamId!) } : {}),
-      operationMode: control.mode })
+      operationMode: control.mode, claudePlanMode: planState.active })
     const persist = (content: string, blocks: any[], uuid?: string, partial = false) => {
       const row = sink.persistAssistantMessage({ conversationId: request.conversationId, parentId: parent,
         modelName: request.modelName, content, contentBlocks: blocks,
-        meta: { operationMode: control.mode, claude: { sessionId: activeSession, messageUuid: uuid ?? null, checkpoint: false, partial } } })
+        meta: { operationMode: control.mode, claudePlanMode: planState.active, claude: { sessionId: activeSession, messageUuid: uuid ?? null, checkpoint: false, partial } } })
       parent = row.id
       finalMessage = row
       if (uuid && activeSession) this.deps.sessions.record(row.id, activeSession, uuid, cwd, false)
@@ -1401,10 +1449,10 @@ export class ClaudeSessionService {
         // A switch made while compacting has no turn to carry it; the summary records it, as a
         // response row would, so the composer and the next send pick it up.
         const summaryMeta = claudeMessageMetadata(compactionSummary.meta)
-        if (summaryMeta.operationMode !== control.mode) {
+        if (summaryMeta.operationMode !== control.mode || summaryMeta.claudePlanMode !== planState.active) {
           const blocks = typeof compactionSummary.content_blocks === 'string' ? JSON.parse(compactionSummary.content_blocks) : compactionSummary.content_blocks ?? []
           compactionSummary = this.deps.messages.updateClaudeProjection(compactionSummary.id, compactionSummary.content, blocks,
-            { ...summaryMeta, operationMode: control.mode })
+            { ...summaryMeta, operationMode: control.mode, claudePlanMode: planState.active })
           control.settlePending()
         }
         return compactionSummary

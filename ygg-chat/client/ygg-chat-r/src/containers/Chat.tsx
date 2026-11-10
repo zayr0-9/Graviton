@@ -7,6 +7,7 @@ import { ModelSwitchDialog } from '../components/ModelSelectControl/ModelSwitchD
 import { isClaudeProvider, isClaudeTranscriptMessage } from '../../../../shared/claudeProvider'
 import { isCleanStartBranchEdit, isProviderHandoffEdit, resolveComposerModelSelection, resolveComposerClaudeLock, resolveSummaryContinuation } from '../features/chats/branchModelSelection'
 import { resolveBranchFastMode } from '../features/chats/branchFastMode'
+import { resolveBranchPlanMode } from '../features/chats/branchPlanMode'
 import { resolveComposerToolApproval } from '../features/chats/branchToolApproval'
 import { isCommittedCompaction } from '../../../../shared/compaction'
 import { isHiddenCompactionMessage, resolveBranchBeforeSummaryAnchor } from '../features/chats/summaryPresentation'
@@ -1335,7 +1336,11 @@ function Chat() {
   const toolAutoApprove = useAppSelector(state => resolveComposerToolApproval(state.chat))
   const claudeAutoMode = useAppSelector(state => state.chat.claudeAutoMode === true)
   const claudeUltracode = useAppSelector(state => state.chat.claudeUltracode === true)
-  const claudePlanMode = useAppSelector(state => state.chat.claudePlanMode === true)
+  // Per branch: follows the selected branch as the user navigates (resolveBranchPlanMode).
+  const claudePlanMode = useAppSelector(state =>
+    (state.chat.composition.editingBranch ? state.chat.composition.branchEditModes?.claudePlanMode : undefined)
+      ?? resolveBranchPlanMode(state.chat)
+  )
   // Claude cycles Ask -> Auto -> Allow all; Auto is the CLI classifier and only replaces Ask.
   const claudeApproval = toolAutoApprove ? 'allow_all' : claudeAutoMode ? 'auto' : 'ask'
 
@@ -5247,11 +5252,11 @@ function Chat() {
       const planCommand = isClaudeSession ? parsePlanCommand(trimmedInputValue) : null
       if (planCommand) {
         if (!planCommand.task) {
-          dispatch(chatSliceActions.claudePlanModeSet(!claudePlanMode))
+          dispatch(chatSliceActions.claudePlanModeSelected(!claudePlanMode))
           clearLocalInput()
           return
         }
-        dispatch(chatSliceActions.claudePlanModeSet(true))
+        dispatch(chatSliceActions.claudePlanModeSelected(true))
         updateLocalInput(planCommand.task)
         preparedSendRef.current(value)
         return
@@ -7851,7 +7856,7 @@ function Chat() {
                               label='Plan mode'
                               disabled={!isClaudeSession}
                               checked={isClaudeSession && claudePlanMode}
-                              onClick={() => dispatch(chatSliceActions.claudePlanModeSet(!claudePlanMode))}
+                              onClick={() => dispatch(chatSliceActions.claudePlanModeSelected(!claudePlanMode))}
                               title={!isClaudeSession ? 'Plan mode is a Claude Code setting'
                                 : claudePlanMode ? 'Plan mode on for new turns (click to turn off, or type /plan)' : 'Turn on plan mode for new turns (or type /plan)'}
                             />
