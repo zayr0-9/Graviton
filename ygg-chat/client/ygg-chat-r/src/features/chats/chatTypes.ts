@@ -272,6 +272,12 @@ export interface StreamState {
    * same view, or discarded when a different view is chosen.
    */
   selectionBlocked?: boolean
+  /**
+   * Selection request during which this run last persisted a row while navigation was
+   * unsettled. Lets that request's commit bring the view up to a run that has already
+   * finished, without replaying finished runs into views selected afterwards.
+   */
+  advancedDuringSelection?: string
   active: boolean
   // Explicit lifecycle status. `waiting_for_tool` is still an in-flight stream
   // and should stay visible/interruptible in branch-local UIs.
@@ -459,6 +465,11 @@ export interface ConversationState {
   snapshotConversationId: ConversationId | null
   focusedChatMessageId: MessageId | null
   currentPath: MessageId[] // Array of message IDs forming current branch
+  /**
+   * Renderer-session memory of the branch tip last shown per conversation. Returning to a
+   * chat reopens that branch instead of whichever fork holds the newest row.
+   */
+  lastViewedTips?: Record<string, MessageId>
   messages: Message[] // Linear messages in current path order
   bookmarked: MessageId[] //each index contains id of a message selected
   excludedMessages: MessageId[] //id of each message which are NOT to be sent for chat,
