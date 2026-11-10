@@ -413,6 +413,7 @@ describe('Claude compaction projection', () => {
     f.input.request.manualCompaction = trigger === 'manual'
     f.sdk.query.mockImplementation(({ options }: any) => Object.assign((async function* () {
       yield { type: 'system', subtype: 'init', session_id: 's' }
+      yield { type: 'system', subtype: 'status', status: 'compacting', session_id: 's' }
       await options.hooks.PreCompact[0].hooks[0]({ hook_event_name: 'PreCompact', session_id: 's', trigger }, undefined, { signal: new AbortController().signal })
       await options.hooks.PostCompact[0].hooks[0]({ hook_event_name: 'PostCompact', session_id: 's', trigger, compact_summary: 'Portable task state' }, undefined, { signal: new AbortController().signal })
       yield { type: 'system', subtype: 'compact_boundary', session_id: 's' }
@@ -421,6 +422,8 @@ describe('Claude compaction projection', () => {
     })(), { close: vi.fn() }) as any)
     const final = await f.service.run(f.input)
     expect(f.rows[0]).toMatchObject({ content: 'Portable task state', parentId: 'u', statisticsKind: 'compaction_summary', meta: { kind: 'compaction_summary', state: 'committed', trigger } })
+    const statuses = f.emit.mock.calls.map(([event]) => event).filter(event => event.type === 'context_compaction').map(event => event.status)
+    expect(statuses).toEqual(['started', 'completed'])
     expect(f.emit).toHaveBeenCalledWith(expect.objectContaining({ type: 'context_compaction', status: 'completed', parentMessageId: 'row0', summaryMessage: f.rows[0] }))
     if (trigger === 'auto') {
       expect(f.rows[1].parentId).toBe('row0')
@@ -469,6 +472,45 @@ describe('Claude compaction projection', () => {
     await f.service.run(f.input)
     expect(f.rows).toHaveLength(1)
     expect(f.rows[0].content).toBe('answer')
+  })
+  it('does not show a background agent compaction as the main chat compacting', async () => {
+    // CLI 2.1.318 sends a subagent's PreCompact with the parent's session and no agent_id, and
+    // emits neither a status event nor PostCompact for it on the main stream.
+    const f = fixture()
+    f.sdk.query.mockImplementation(({ options }: any) => Object.assign((async function* () {
+      yield { type: 'system', subtype: 'init', session_id: 's' }
+      await options.hooks.PreCompact[0].hooks[0]({ hook_event_name: 'PreCompact', session_id: 's', trigger: 'auto' }, undefined, { signal: new AbortController().signal })
+      yield assistant(); yield success
+    })(), { close: vi.fn() }) as any)
+    await f.service.run(f.input)
+    expect(f.emit.mock.calls.some(([event]) => event.type === 'context_compaction')).toBe(false)
+    expect(f.rows.map(row => row.content)).toEqual(['answer'])
+  })
+  it('starts the main compaction once across repeated status heartbeats', async () => {
+    const f = fixture()
+    f.sdk.query.mockImplementation(({ options }: any) => Object.assign((async function* () {
+      yield { type: 'system', subtype: 'init', session_id: 's' }
+      yield { type: 'system', subtype: 'status', status: 'compacting', session_id: 's' }
+      yield { type: 'system', subtype: 'status', status: 'compacting', session_id: 's' }
+      await options.hooks.PostCompact[0].hooks[0]({ hook_event_name: 'PostCompact', session_id: 's', trigger: 'auto', compact_summary: 'state' }, undefined, { signal: new AbortController().signal })
+      yield { type: 'system', subtype: 'compact_boundary', session_id: 's' }
+      yield assistant(); yield success
+    })(), { close: vi.fn() }) as any)
+    await f.service.run(f.input)
+    const statuses = f.emit.mock.calls.map(([event]) => event).filter(event => event.type === 'context_compaction').map(event => event.status)
+    expect(statuses).toEqual(['started', 'completed'])
+  })
+  it('clears a main compaction indicator the turn ended without settling', async () => {
+    const f = fixture()
+    f.sdk.query.mockImplementation(() => Object.assign((async function* () {
+      yield { type: 'system', subtype: 'init', session_id: 's' }
+      yield { type: 'system', subtype: 'status', status: 'compacting', session_id: 's' }
+      yield assistant(); yield success
+    })(), { close: vi.fn() }) as any)
+    await f.service.run(f.input)
+    const events = f.emit.mock.calls.map(([event]) => event).filter(event => event.type === 'context_compaction')
+    expect(events.map(event => event.status)).toEqual(['started', 'failed'])
+    expect(events[1].error).toBe('Claude compaction did not complete')
   })
 })
 

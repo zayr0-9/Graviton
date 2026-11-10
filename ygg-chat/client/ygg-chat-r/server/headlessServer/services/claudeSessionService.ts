@@ -557,11 +557,12 @@ export class ClaudeSessionService {
         pendingInstructions.push({ trigger, block: { type: 'context_injection', path: file, label, text, reason: hook.load_reason, origin: 'claude' } })
         return {}
       }] }],
+      // Not a main-thread signal: the CLI (2.1.318) sends a background agent's PreCompact with the
+      // parent's session_id and transcript_path and no agent_id. The indicator follows the
+      // main-only `status: compacting` stream event instead. PostCompact is main-only.
       PreCompact: [{ hooks: [async (hook, _toolId, context) => {
         if (context.signal.aborted || abortController.signal.aborted || hook.agent_id) return {}
         if (hook.hook_event_name === 'PreCompact' && hook.session_id === activeSession) {
-          compactionActive = true
-          compactionEvent('started')
           if (hookSession) {
             await hookSession.runPreCompact(hook.trigger)
             // Native compaction takes no hook context; do not let it leak into a later tool result.
@@ -1103,8 +1104,20 @@ export class ClaudeSessionService {
           compactionActive = false
           compactionEvent('failed', undefined, event.compact_error ?? 'Claude compaction failed')
           if (request.manualCompaction) throw new Error(event.compact_error ?? 'Claude compaction failed')
+        } else if (event.type === 'system' && event.subtype === 'status' && event.status === 'compacting') {
+          // Main thread only: the CLI gives subagent contexts no compaction-event sink. It also
+          // repeats every 30s during a long compaction, so only the first one starts it.
+          if (!compactionActive) {
+            compactionActive = true
+            compactionEvent('started')
+          }
         } else if (event.type === 'result') {
           if (event.is_error || event.subtype !== 'success') throw new Error(`Claude run failed: ${'errors' in event ? event.errors.join('; ') : event.subtype}`)
+          // A main compaction always ends at its boundary or a failed status within the turn.
+          if (compactionActive) {
+            compactionActive = false
+            compactionEvent('failed', undefined, 'Claude compaction did not complete')
+          }
           completed = true
           toolsInFlight.clear()
           // A queued message keeps the session open: Claude runs it as the next turn.
