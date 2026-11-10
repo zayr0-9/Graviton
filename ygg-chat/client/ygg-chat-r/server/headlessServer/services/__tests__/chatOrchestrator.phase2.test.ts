@@ -439,6 +439,42 @@ describe('source lineage membership validation', () => {
     expect(statements.getMessageById.get(complete.message.id).parent_id).toBe(queued[0].message.id)
   })
 
+  it('records Claude plan mode on user rows and starts a successor in the plan state the run ended in', async () => {
+    db.exec(CLAUDE_SESSION_SCHEMA)
+    const claudeSessions = { run: vi.fn(async (input: any) => {
+      expect(input.planControl).toEqual({ active: true })
+      const queue = input.queuedInput
+      queue.subscribe(() => {})
+      queue.bindCancel(async () => null)
+      const persist = (parentId: string, content: string) => {
+        const message = input.sink.persistAssistantMessage({ conversationId: 'c1', parentId, modelName: input.request.modelName, content,
+          meta: { claude: { sessionId: 's' } } })
+        input.emit({ type: 'assistant_message_persisted', message, lineageId: input.lineageId })
+        return message
+      }
+      const planTurn = persist(input.parentId, 'planning')
+      orchestrator.submitQueuedMessage('c1', 'claude-plan', { requestId: 'q1', content: 'also cover tests' })
+      await queue.prepareNext()
+      const queuedUser = queue.deliver('q1', planTurn.id, { mode: 'execute', planMode: true, modeSwitch: null })
+      expect(JSON.parse(queuedUser.meta)).toMatchObject({ claudePlanMode: true })
+      // The user approved the plan through ExitPlanMode.
+      input.planControl.active = false
+      const final = persist(queuedUser.id, 'done')
+      db.prepare('INSERT INTO claude_message_checkpoints VALUES (?, ?, ?, ?, 1)').run(final.id, 's', 'uuid-final', testDirectory)
+      queue.tryClose()
+      return final
+    }) }
+    orchestrator = new ChatOrchestrator({ db, statements, providerRouter: providerRouter as any, claudeSessions: claudeSessions as any })
+    const events: any[] = []
+    await orchestrator.runMessage({ operation: 'send', conversationId: 'c1', provider: 'claudecode', modelName: 'claude-haiku-5-5',
+      content: 'plan it', rootPath: testDirectory, streamId: 'claude-plan', operationMode: 'execute', claudePlanMode: true } as any, event => events.push(event))
+    const user = events.find(event => event.type === 'user_message_persisted').message
+    expect(JSON.parse(user.meta)).toMatchObject({ operationMode: 'execute', claudePlanMode: true })
+    const next = orchestrator.submitQueuedMessage('c1', 'claude-plan', { requestId: 'q2', content: 'go' })
+    expect(next.restart).toMatchObject({ content: 'go', operationMode: 'execute' })
+    expect(next.restart!.claudePlanMode).toBeUndefined()
+  })
+
   it('switches a live Claude run between Chat and Agent mode and records each switch where Claude read it', async () => {
     db.exec(CLAUDE_SESSION_SCHEMA)
     const claudeSessions = { run: vi.fn(async (input: any) => {

@@ -194,8 +194,12 @@ describe('warm Claude sessions', () => {
     expect(cli.setModel).toHaveBeenCalledWith('claude-opus-5-5')
     expect(cli.applyFlagSettings).toHaveBeenCalledWith({ effortLevel: 'high', ultracode: true })
     expect(f.state()).toEqual({ session_id: 's', state: 'ready' })
+    // Plan mode is per turn too: the reused CLI is told before the prompt.
+    const third = await f.service.run(f.next(second, { request: { think: true, claudePlanMode: true } }))
+    expect(f.sdk.query).toHaveBeenCalledTimes(1)
+    expect(cli.setPermissionMode).toHaveBeenLastCalledWith('plan')
     // Turning thinking on or off is fixed at launch: that send gets a new CLI.
-    await f.service.run(f.next(second))
+    await f.service.run(f.next(third))
     expect(f.sdk.query).toHaveBeenCalledTimes(2)
   })
 

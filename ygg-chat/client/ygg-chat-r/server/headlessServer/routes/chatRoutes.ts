@@ -180,6 +180,7 @@ function buildHeadlessMessageRequest(req: Request, operation: HeadlessChatOperat
           : undefined,
     claudePermissionMode: (body.claudePermissionMode ?? body.claude_permission_mode) === 'auto' ? 'auto' : undefined,
     claudeUltracode: (body.claudeUltracode ?? body.claude_ultracode) === true ? true : undefined,
+    claudePlanMode: (body.claudePlanMode ?? body.claude_plan_mode) === true ? true : undefined,
     // Phase 3 hooks. Absent => undefined => the orchestrator's `=== true` gate leaves
     // hooks off, so the mobile LAN UI / any caller that omits it runs with no hooks.
     hooksEnabled:

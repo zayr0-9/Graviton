@@ -6,7 +6,7 @@ import WebSocket from 'ws'
 const JWT_CLAIM_PATH = 'https://api.openai.com/auth'
 import type { ProviderTokenStore } from './tokenStore.js'
 import { CodexResponsesProvider, toCodexMessages } from './codex/index.js'
-import { normalizeOpenAIContextUsage, openAIContextUsageBlock } from '../../../../../shared/contextUsage.js'
+import { normalizeOpenAIContextUsage, contextUsageBlock } from '../../../../../shared/contextUsage.js'
 import { buildToolNameMap, sanitizeToolResultContentForModel } from './toolResultSanitizer.js'
 import { attachPartialOutput } from './providerTypes.js'
 import type {
@@ -2145,7 +2145,7 @@ export class OpenAiChatgptProvider implements HeadlessProvider {
     const normalizedReasoning = canonicalReasoningText([parsed.reasoningContent || ''])
     const responseOutputItems = stripDuplicateReasoningTextFromResponseItems(parsed.outputItems || [], normalizedReasoning)
     const contentBlocks: any[] = []
-    if (contextUsage) contentBlocks.push(openAIContextUsageBlock(contextUsage))
+    if (contextUsage) contentBlocks.push(contextUsageBlock(contextUsage))
     if (normalizedReasoning) contentBlocks.push({ type: 'thinking', content: normalizedReasoning })
     if (parsed.content) contentBlocks.push({ type: 'text', content: parsed.content })
 

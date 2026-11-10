@@ -83,6 +83,8 @@ export interface BuildServerLoopRequestParams {
   claudeAutoMode?: boolean
   /** Claude ultracode preference; sent as claudeUltracode only for Claude. */
   claudeUltracode?: boolean
+  /** Claude native plan mode; sent as claudePlanMode only for Claude. */
+  claudePlanMode?: boolean
   /**
    * Phase 3: opt into the server-owned loop's chat hooks (parity with the renderer's
    * always-on-in-electron hooks). The 3 shims pass isElectronMode. Forwarded verbatim.
@@ -196,6 +198,7 @@ export function buildServerLoopRequest(operation: ServerLoopOperation, params: B
     ...(params.claudeAutoMode && params.toolAutoApprove === false && isClaudeProvider(params.provider)
       ? { claudePermissionMode: 'auto' as const } : {}),
     ...(params.claudeUltracode && isClaudeProvider(params.provider) ? { claudeUltracode: true } : {}),
+    ...(params.claudePlanMode && isClaudeProvider(params.provider) ? { claudePlanMode: true } : {}),
     // Phase 3 hooks: forward verbatim. The server gates on `=== true`, so undefined = off.
     hooksEnabled: params.hooksEnabled,
     localApiBase: params.localApiBase ?? null,

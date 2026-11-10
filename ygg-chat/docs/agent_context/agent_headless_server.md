@@ -233,7 +233,8 @@ Manual harness: `http://localhost:<local-server-port>/headless/openai-test` when
   timeout. Timeout aborts the child provider attempt, not the run-wide signal, so a silent
   attempt with no visible output may still use the configured transient retry policy.
 - Usage snapshots replace one another across full-replay tool continuations; they are not cumulative.
-- Assistant messages carry the snapshot in `context_usage` and in a structured content block so local persistence and renderer reloads retain it without changing other-provider behavior.
+- Assistant messages carry the snapshot in `context_usage` and in a structured `context_usage` content block (legacy rows: `openai_context_usage`) so local persistence and renderer reloads retain it without changing other-provider behavior.
+- Claude Code runs report usage too, through `ClaudeSessionService` rather than `ToolLoopService`: one `context_usage` event and block per run (see `../claude-provider-v1.md` § Context usage). The type is the provider-neutral `ContextUsage` (`shared/contextUsage.ts`).
 
 ## Related Docs
 

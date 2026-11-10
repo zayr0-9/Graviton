@@ -345,12 +345,13 @@ resume resolver thunks, and the manual-compaction `compactBranch` thunk.
 
 - OpenAI/Codex `response.completed.response.usage` is normalized at the shared provider
   boundary (`OpenAiChatgptProvider`) and attached to assistant messages as `context_usage`
-  plus an `openai_context_usage` content block. Each completed provider/tool turn **replaces**
+  plus a `context_usage` content block (older rows: `openai_context_usage`; readers accept both). Each completed provider/tool turn **replaces**
   the previous snapshot rather than summing.
 - This usage now flows through the **server** loop; the renderer receives `context_usage` as
   an SSE event (currently projected as a no-op — usage is read from the persisted message).
-- Authoritative provider usage applies only to the OpenAI provider; other providers retain
-  Graviton's `tokenx` estimation. Auto-compaction retains the 85% model-context threshold,
+- Authoritative provider usage applies to the OpenAI provider and Claude Code (one snapshot per
+  run, from `ClaudeSessionService`; see `../claude-provider-v1.md` § Context usage). Other
+  providers retain Graviton's `tokenx` estimation. Auto-compaction retains the 85% model-context threshold,
   now evaluated inside `ToolLoopService` (see Compaction above).
 
 ## Live operation-mode changes

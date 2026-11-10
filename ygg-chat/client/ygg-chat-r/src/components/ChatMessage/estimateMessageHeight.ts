@@ -349,7 +349,7 @@ export const estimateMessageRowHeight = (input: EstimateMessageRowInput): number
           break
         }
         // tool_result folds into its tool_use group. reasoning_details, provider bookkeeping
-        // such as openai_context_usage, and any unknown type draw nothing.
+        // such as context_usage, and any unknown type draw nothing.
         default:
           break
       }

@@ -1,6 +1,6 @@
 import type Database from 'better-sqlite3'
 import { estimateTokenCount } from 'tokenx'
-import { extractOpenAIContextUsageFromBlocks } from '../../../shared/contextUsage.js'
+import { extractContextUsageFromBlocks } from '../../../shared/contextUsage.js'
 import { summarizeDurations, summarizeOutcomes } from './loggingAnalyticsMetrics.js'
 import { messageToolCalls } from './headlessServer/providers/toolResultSanitizer.js'
 
@@ -368,7 +368,7 @@ function buildDashboardSnapshot(db: Database.Database, query: QueryLike, now: nu
   let reportedReasoningTokens = 0
   let reportedTotalTokens = 0
   for (const message of filteredMessages.filter(row => row.role === 'assistant')) {
-    const usage = extractOpenAIContextUsageFromBlocks(message.content_blocks)
+    const usage = extractContextUsageFromBlocks(message.content_blocks)
     if (!usage) continue
     if (usage.responseId && seenResponses.has(usage.responseId)) { duplicateSamples++; continue }
     if (usage.responseId) seenResponses.add(usage.responseId)
@@ -531,7 +531,7 @@ function buildDashboardSnapshot(db: Database.Database, query: QueryLike, now: nu
       cachedInputTokens, reasoningTokens: reportedReasoningTokens, totalTokens: reportedTotalTokens,
       cachedInputPct: inputTokens > 0 ? cachedInputTokens / inputTokens * 100 : null,
       assistantMessages: assistantMessageCount,
-      messagesWithUsage: filteredMessages.filter(row => row.role === 'assistant' && extractOpenAIContextUsageFromBlocks(row.content_blocks)).length },
+      messagesWithUsage: filteredMessages.filter(row => row.role === 'assistant' && extractContextUsageFromBlocks(row.content_blocks)).length },
     filters: {
       applied: { projectId, conversationId, model: modelFilter, providerRunStatus: null, runStatus: runStatusFilter, toolName: toolNameFilter, toolStatus: toolStatusFilter },
       available: {

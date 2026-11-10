@@ -275,6 +275,7 @@ const makeInitialState = (): ChatState => {
     toolAutoApprove: loadDefaultToolAutoApprove(),
     ...claudeToolApprovalState(loadClaudeToolApprovalDefault()),
     claudeUltracode: loadClaudeUltracode(),
+    claudePlanMode: false,
     operationMode: 'plan',
     operationModeChanges: {},
     operationModeDrafts: {},
@@ -1927,6 +1928,11 @@ export const chatSlice = createSlice({
     claudeUltracodeSet: (state, action: PayloadAction<boolean>) => {
       state.claudeUltracode = action.payload
       saveClaudeUltracode(action.payload)
+    },
+
+    // Not persisted: plan mode is a request for the work at hand, not a standing preference.
+    claudePlanModeSet: (state, action: PayloadAction<boolean>) => {
+      state.claudePlanMode = action.payload
     },
 
     branchToolApprovalSelected: (state, action: PayloadAction<{

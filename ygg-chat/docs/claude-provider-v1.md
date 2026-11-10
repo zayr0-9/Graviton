@@ -155,6 +155,15 @@ The Chat/Agent control works while a Claude run streams, through the same `POST 
 
 Edge: a notice pushed in the instant a tool finishes can miss that boundary and start its own turn after `result`; Claude then replies to it. Switching never changes the tool list or the cached prefix (see Tools and permissions).
 
+## Native plan mode
+
+The user can run Claude Code's own plan mode on request: the composer popover's **Plan mode** switch (below Ultracode), or `/plan` (alone it toggles; `/plan <task>` turns it on and sends the task; `parsePlanCommand`). It is a session-only renderer state (`chat.claudePlanMode`, not persisted), sent as `claudePlanMode: true` on Claude requests. It works on top of Chat or Agent mode. Claude cannot enter it on its own: EnterPlanMode stays denied in Chat mode and while plan mode is on.
+
+- **Session.** `permissionMode: 'plan'` on a cold launch, `setPermissionMode('plan')` on a warm CLI. It wins over auto mode. The CLI tells Claude through its plan-mode system reminder, so the tool list and cached prefix do not change. The user message ends with `PLAN_MODE_NOTE` instead of `CHAT_MODE_NOTE`.
+- **Edits.** The PreToolUse guard and the `canUseTool` backstop allow `Write`/`Edit`/`MultiEdit` only on a `.md` file under `.ygg/plans/` (`isClaudePlanFile`: no `..` escape, no symlink leading out). Every other file edit is denied in plan mode, in Agent mode too. Bash follows the normal approval gate.
+- **Approval.** ExitPlanMode always asks the user, even in Agent mode, through the existing `operation_mode_upgrade_required` dialog with the plan attached (**Approve Plan** / **Keep Planning**). Approving turns plan mode off for the rest of the run (`planControl`, shared with the orchestrator so a queued successor run starts without it), switches Chat to Agent, and returns `setMode: 'default'`. The renderer turns its toggle off when it approves. Keep Planning leaves the CLI in plan mode.
+- **Card.** User rows record `meta.claudePlanMode: true`, and `claudeModeNotices.ts` shows a **Plan mode** notice where it starts and the Chat/Agent notice for the turn after it ends.
+
 ## Ultracode and background tasks
 
 The composer popover's **Ultracode** switch (Claude only; it replaced the composer Orchestrator switch, which stays in Settings for Graviton's own subagents) is a renderer preference (`chat:claudeUltracode`). Each Claude request then carries `claudeUltracode: true`, and the session passes `ultracode: true` in its flag `settings`. Ultracode is session-scoped, so every run restates it. Claude may then hand work to its `Workflow` tool. Typing the word "ultracode" in a prompt has the same effect for one turn, through Claude's own keyword trigger. Workflows need an account with Workflows enabled and a model that supports them; Claude owns that check.
@@ -174,6 +183,17 @@ A `Workflow` call returns at once ("launched in background"), and the turn usual
 Heimdall's New Chat From Here, Copy and Move never carry a native session to the copy. A Claude branch can be transferred only up to a committed summary; selections ending elsewhere are refused (see `agent_context/agent_heimdall.md`). Copied rows get `meta.transfer` and lose `claude.checkpoint`, and no checkpoint or `claude_branch_sessions` row is copied, so no copy can resume or append to the source session.
 
 In the copy, every continuation from the copied summary is a summary handoff, whatever the provider: the composer sends it as a summary branch, and `runMessage` rewrites an ordinary `send` whose parent is a copied summary (directly or through trailing context rows) into the same branch (`copiedSummaryForSend`). It therefore always gets a new lineage, and a session left on the old lineage by an earlier run is never resumed. Claude starts a fresh session with the summary text; approval uses the host default, as other handoffs do. Messages copied from before the summary are display only: continuing from one is refused with "copied from another chat … continue from the copied summary instead", and Explain is disabled on them. Deletion may cut back to any copied row (`planMessageDeletion`), since none of them resumes a native session.
+
+## Context usage
+
+Each run stores one context snapshot (`ContextUsage`, `provider: 'claude'`, `shared/contextUsage.ts`) as a `context_usage` block on its final response row, and emits it as a `context_usage` SSE event. The composer meter reads it like OpenAI usage (`contextUsageProviderFor`).
+
+- **Context size** is the last main-agent API call: `input_tokens + cache_read_input_tokens + cache_creation_input_tokens + output_tokens`. `ClaudeSessionService` takes it from the `message_start` / `message_delta` stream frames and the assistant envelopes of that `message.id`, merging by maximum, since envelopes repeat the usage with output counted mid-stream. Child-agent frames (`parent_tool_use_id`) are skipped: they have their own context. `inputTokens` includes the cached part, as OpenAI's does; `cachedInputTokens` is cache reads and `cacheCreationInputTokens` cache writes.
+- **Window** is `result.modelUsage[model].contextWindow` for the main model, so the meter shows the real window (for example a 200K model) instead of the catalog's 1M.
+- **Session totals** (`session`) are summed over `result.modelUsage`, with `costUsd` from `total_cost_usd`. The SDK keeps them per `query()`: a warm CLI carries them across runs, a resumed or forked session continues from its transcript's totals. Cost is the CLI's estimate, not a bill.
+- A compaction clears the snapshot until the next call, and `contextUsageAfterCompaction` drops usage from before a committed summary, so the meter falls back to the estimate until the next run completes.
+- Per run, not per row: intermediate rows of a run carry no usage. Run statistics and the analytics dashboard, which add up per-row usage, see one sample per Claude run (its last call), not the run's full spend.
+- `query.getContextUsage()` (the `/context` category breakdown) is not called.
 
 ## Persistence
 

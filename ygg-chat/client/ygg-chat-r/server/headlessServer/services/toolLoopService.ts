@@ -40,10 +40,10 @@ import type { BranchContextStatus } from './contextStatusTool.js'
 import { assertToolAllowedForOperationMode, filterToolsForOperationMode, requiresAgentMode } from '../../../../../shared/operationModeToolPolicy.js'
 import type { OperationModeControl } from './operationModeControl.js'
 import {
-  extractOpenAIContextUsageFromBlocks,
+  extractContextUsageFromBlocks,
   openAIModelContextLength,
   resolveOpenAIContinuationCompaction,
-  type OpenAIContextUsage,
+  type ContextUsage,
 } from '../../../../../shared/contextUsage.js'
 
 export interface ToolExecutionContext {
@@ -566,10 +566,10 @@ function projectedReplayTokens(input: ToolLoopRunInput, history: any[]): number 
   )
 }
 
-function usageFromMessage(message: any): OpenAIContextUsage | null {
+function usageFromMessage(message: any): ContextUsage | null {
   const direct = message?.context_usage
-  if (direct && typeof direct === 'object' && direct.provider === 'openai') return direct as OpenAIContextUsage
-  return extractOpenAIContextUsageFromBlocks(message?.content_blocks)
+  if (direct && typeof direct === 'object' && direct.provider === 'openai') return direct as ContextUsage
+  return extractContextUsageFromBlocks(message?.content_blocks)
 }
 
 function getToolResultPersistedContent(result: any): any {
@@ -1274,7 +1274,7 @@ export class ToolLoopService {
     let anyToolsExecuted = false
     let activeOperationMode = input.operationMode ?? 'execute'
     const phaseState: { current: { instruction: any; source: any[]; resume: boolean; details: any } | null } = { current: null }
-    let latestUsage: OpenAIContextUsage | null | undefined
+    let latestUsage: ContextUsage | null | undefined
     let manualPending = input.manualCompaction === true
     const persistControl = (content: string, meta: Record<string, unknown>) => {
       if (!this.sink.persistControlMessage) throw attachChatErrorCode(new Error('Compaction persistence is not configured'), 'compaction_failed')

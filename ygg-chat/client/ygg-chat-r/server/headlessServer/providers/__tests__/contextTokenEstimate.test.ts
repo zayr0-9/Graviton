@@ -3,7 +3,7 @@ import {
   calculateBranchContextUsage,
   safeEstimateTokenCount,
   estimateContentBlocksForContext,
-  openAIContextUsageHistory,
+  contextUsageHistory,
 } from '../../../../src/features/chats/contextTokenEstimate.js'
 
 describe('estimateContentBlocksForContext image payload redaction', () => {
@@ -37,7 +37,7 @@ describe('estimateContentBlocksForContext image payload redaction', () => {
   })
 })
 
-describe('openAIContextUsageHistory', () => {
+describe('contextUsageHistory', () => {
   it('keeps ordered branch snapshots while ignoring duplicate provider response IDs', () => {
     const usage = (responseId: string, usedTokens: number, cachedInputTokens: number) => ({
       provider: 'openai' as const,
@@ -57,7 +57,7 @@ describe('openAIContextUsageHistory', () => {
       { role: 'assistant', content_blocks: [{ type: 'openai_context_usage', usage: usage('resp-2', 200, 80) }] },
     ] as any
 
-    expect(openAIContextUsageHistory(messages)).toEqual([usage('resp-1', 120, 40), usage('resp-2', 200, 80)])
+    expect(contextUsageHistory(messages)).toEqual([usage('resp-1', 120, 40), usage('resp-2', 200, 80)])
   })
 })
 
@@ -98,6 +98,6 @@ describe('calculateBranchContextUsage shared meter', () => {
     ] })
     expect(meter.totalContextTokens).toBe(safeEstimateTokenCount(summary.content))
     expect(meter.source).toBe('estimated')
-    expect(meter.openAIUsageHistory).toEqual([])
+    expect(meter.usageHistory).toEqual([])
   })
 })

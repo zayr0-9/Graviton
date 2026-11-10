@@ -1,9 +1,12 @@
 import { contextUsageAfterCompaction } from '../../../shared/compaction'
 import { estimateTokenCount } from 'tokenx'
 import {
-  effectiveOpenAIContextTokens,
-  extractOpenAIContextUsageFromBlocks,
-  type OpenAIContextUsage,
+  contextUsageProviderFor,
+  effectiveContextTokens,
+  extractContextUsageFromBlocks,
+  normalizeStoredContextUsage,
+  type ContextUsage,
+  type ContextUsageProvider,
 } from '../../../shared/contextUsage.js'
 
 /** Minimal message shape shared by the renderer meter and server tool loop. */
@@ -12,7 +15,7 @@ export interface ContextMeterMessage {
   content?: unknown
   content_blocks?: unknown
   tool_calls?: unknown
-  context_usage?: OpenAIContextUsage | string | null
+  context_usage?: ContextUsage | string | null
   note?: string | null
 }
 
@@ -103,16 +106,21 @@ export function estimateContentBlocksForContext(blocks: unknown): number {
   return safeEstimateTokenCount(sanitized.value)
 }
 
-export function latestOpenAIContextUsage(messages: Array<ContextMeterMessage | null | undefined>): OpenAIContextUsage | null {
+/** The snapshot an assistant row carries, in its `context_usage` field or a usage block. */
+function messageContextUsage(message: ContextMeterMessage): ContextUsage | null {
+  return normalizeStoredContextUsage(message.context_usage) ?? extractContextUsageFromBlocks(message.content_blocks)
+}
+
+/** The newest reported snapshot, from `provider` only when given. */
+export function latestContextUsage(
+  messages: Array<ContextMeterMessage | null | undefined>,
+  provider?: ContextUsageProvider
+): ContextUsage | null {
   for (let index = messages.length - 1; index >= 0; index--) {
     const message = messages[index]
     if (!message || message.role !== 'assistant') continue
-    const direct = message.context_usage
-    if (direct && typeof direct === 'object' && !Array.isArray(direct) && direct.provider === 'openai') {
-      return direct as OpenAIContextUsage
-    }
-    const fromBlocks = extractOpenAIContextUsageFromBlocks(message.content_blocks)
-    if (fromBlocks) return fromBlocks
+    const usage = messageContextUsage(message)
+    if (usage && (!provider || usage.provider === provider)) return usage
   }
   return null
 }
@@ -121,33 +129,32 @@ export function resolveContextTokens(params: {
   providerName: unknown
   estimatedTokens: number
   messages: Array<ContextMeterMessage | null | undefined>
-}): { effectiveTokens: number; reportedUsage: OpenAIContextUsage | null; source: 'reported' | 'estimated' } {
-  const providerName = typeof params.providerName === 'string' ? params.providerName.trim().toLowerCase().replace(/\s+/g, '') : ''
-  const isOpenAI = providerName === 'openai' || providerName === 'openaichatgpt' || providerName === 'openai(chatgpt)'
-  if (!isOpenAI) {
+}): { effectiveTokens: number; reportedUsage: ContextUsage | null; source: 'reported' | 'estimated' } {
+  const provider = contextUsageProviderFor(params.providerName)
+  if (!provider) {
     return { effectiveTokens: Math.max(0, params.estimatedTokens), reportedUsage: null, source: 'estimated' }
   }
 
-  const reportedUsage = latestOpenAIContextUsage(params.messages)
+  const reportedUsage = latestContextUsage(params.messages, provider)
   return {
-    effectiveTokens: effectiveOpenAIContextTokens(reportedUsage, params.estimatedTokens),
+    effectiveTokens: effectiveContextTokens(reportedUsage, params.estimatedTokens),
     reportedUsage,
     source: reportedUsage ? 'reported' : 'estimated',
   }
 }
 
-export function openAIContextUsageHistory(messages: Array<ContextMeterMessage | null | undefined>): OpenAIContextUsage[] {
-  const history: OpenAIContextUsage[] = []
+/** Reported snapshots in branch order, without repeats; from `provider` only when given. */
+export function contextUsageHistory(
+  messages: Array<ContextMeterMessage | null | undefined>,
+  provider?: ContextUsageProvider
+): ContextUsage[] {
+  const history: ContextUsage[] = []
   const seenSnapshots = new Set<string>()
 
   for (const message of messages) {
     if (!message || message.role !== 'assistant') continue
-    const direct = message.context_usage
-    const usage =
-      direct && typeof direct === 'object' && !Array.isArray(direct) && direct.provider === 'openai'
-        ? (direct as OpenAIContextUsage)
-        : extractOpenAIContextUsageFromBlocks(message.content_blocks)
-    if (!usage) continue
+    const usage = messageContextUsage(message)
+    if (!usage || (provider && usage.provider !== provider)) continue
 
     const snapshotKey = usage.responseId || `${usage.recordedAt}:${usage.usedTokens}:${usage.cachedInputTokens}`
     if (seenSnapshots.has(snapshotKey)) continue
@@ -188,7 +195,7 @@ export function calculateBranchContextUsage(params: {
     estimatedContextTokens,
     totalContextTokens: resolved.effectiveTokens,
     reportedUsage: resolved.reportedUsage,
-    openAIUsageHistory: openAIContextUsageHistory(contextMessages),
+    usageHistory: contextUsageHistory(contextMessages, contextUsageProviderFor(params.providerName) ?? undefined),
     source: resolved.source,
   }
 }

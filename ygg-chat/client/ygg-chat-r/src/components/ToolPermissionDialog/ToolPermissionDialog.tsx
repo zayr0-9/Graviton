@@ -148,7 +148,7 @@ export const ToolPermissionDialog: React.FC<ToolPermissionDialogProps> = ({
       {variant === 'operation-mode-upgrade' && (
         <p className='px-1 text-[11px]' style={{ color: badgeTextColor }}>
           {isClaudePlanExit
-            ? 'Claude finished planning. Switch to Agent Mode to let it implement the plan.'
+            ? 'Claude finished planning. Approve the plan to leave plan mode and let it implement it in Agent Mode.'
             : 'This tool requires Agent Mode because it can modify files, system state, or app state.'}
         </p>
       )}
@@ -182,7 +182,7 @@ export const ToolPermissionDialog: React.FC<ToolPermissionDialogProps> = ({
             color: denyButtonTextColor,
           }}
         >
-          {variant === 'operation-mode-upgrade' ? 'Stay in Plan Mode' : 'Deny'}
+          {isClaudePlanExit ? 'Keep Planning' : variant === 'operation-mode-upgrade' ? 'Stay in Plan Mode' : 'Deny'}
         </button>
         <button
           type='button'
@@ -194,7 +194,7 @@ export const ToolPermissionDialog: React.FC<ToolPermissionDialogProps> = ({
             color: allowButtonTextColor,
           }}
         >
-          {variant === 'operation-mode-upgrade' ? 'Switch to Agent Mode' : 'Allow Once'}
+          {isClaudePlanExit ? 'Approve Plan' : variant === 'operation-mode-upgrade' ? 'Switch to Agent Mode' : 'Allow Once'}
         </button>
         {variant === 'permission' && onAllowAll && (
           <button

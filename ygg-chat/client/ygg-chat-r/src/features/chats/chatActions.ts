@@ -1097,6 +1097,7 @@ export const sendMessage = createAsyncThunk<
             : resolveBranchToolApproval(modelSelectionState, providedBranchPath ?? modelSelectionState.conversation.currentPath, conversationId, providedLineageId === undefined ? modelSelectionState.conversation.currentLineageId : providedLineageId, serverProvider),
           claudeAutoMode: modelSelectionState.claudeAutoMode,
           claudeUltracode: modelSelectionState.claudeUltracode,
+          claudePlanMode: modelSelectionState.claudePlanMode,
           hooksEnabled: isElectronMode,
           localApiBase: getCachedLocalApiBase(),
           contextDirectories: loadContextDirectorySettings(),
@@ -1573,6 +1574,7 @@ export const editMessageWithBranching = createAsyncThunk<
               : resolveAnchoredToolApproval(modelSelectionState, parentMessageId, conversationId, serverProvider)),
           claudeAutoMode: modelSelectionState.claudeAutoMode,
           claudeUltracode: modelSelectionState.claudeUltracode,
+          claudePlanMode: modelSelectionState.claudePlanMode,
           hooksEnabled: isElectronMode,
           localApiBase: getCachedLocalApiBase(),
           contextDirectories: loadContextDirectorySettings(),
@@ -1826,6 +1828,7 @@ export const sendMessageToBranch = createAsyncThunk<
             : resolveAnchoredToolApproval(modelSelectionState, parentId, conversationId, serverProvider),
           claudeAutoMode: modelSelectionState.claudeAutoMode,
           claudeUltracode: modelSelectionState.claudeUltracode,
+          claudePlanMode: modelSelectionState.claudePlanMode,
           hooksEnabled: isElectronMode,
           localApiBase: getCachedLocalApiBase(),
           contextDirectories: loadContextDirectorySettings(),
@@ -2961,7 +2964,11 @@ export const respondToOperationModeUpgrade = createAsyncThunk<
       decision: approved ? 'switch_to_execute' : 'deny',
     })
     if (!settleDecisionResume(dispatch, getState(), req.streamId, outcome).closeDialog) return
-    if (approved && outcome.ok) dispatch(chatSliceActions.operationModeSet('execute'))
+    if (approved && outcome.ok) {
+      dispatch(chatSliceActions.operationModeSet('execute'))
+      // An approved Claude plan ends plan mode, as it does for the running session.
+      if (req.toolCall?.name === 'ExitPlanMode') dispatch(chatSliceActions.claudePlanModeSet(false))
+    }
   }
   if (req?.streamId) dispatch(chatSliceActions.operationModeUpgradeRespondedForStream(req.streamId))
   else dispatch(chatSliceActions.operationModeUpgradeResponded())

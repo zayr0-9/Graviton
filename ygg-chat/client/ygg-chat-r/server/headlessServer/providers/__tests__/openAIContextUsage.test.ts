@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
-  effectiveOpenAIContextTokens,
-  extractOpenAIContextUsageFromBlocks,
+  effectiveContextTokens,
+  extractContextUsageFromBlocks,
   normalizeOpenAIContextUsage,
   resolveOpenAIContinuationCompaction,
   shouldCompactAtPercent,
@@ -73,13 +73,13 @@ describe('OpenAI context usage', () => {
   it('uses total tokens as a fallback and supports persisted usage blocks', () => {
     const usage = normalizeOpenAIContextUsage({ totalTokens: 90 }, { recordedAt: '2026-01-01T00:00:00.000Z' })
     expect(usage?.usedTokens).toBe(90)
-    expect(extractOpenAIContextUsageFromBlocks([{ type: 'openai_context_usage', usage }])?.usedTokens).toBe(90)
+    expect(extractContextUsageFromBlocks([{ type: 'openai_context_usage', usage }])?.usedTokens).toBe(90)
   })
 
   it('prefers provider-reported usage and falls back to the local estimate when it is unavailable', () => {
     const usage = normalizeOpenAIContextUsage({ input_tokens: 70, output_tokens: 10 })
-    expect(effectiveOpenAIContextTokens(usage, 90)).toBe(80)
-    expect(effectiveOpenAIContextTokens(null, 90)).toBe(90)
+    expect(effectiveContextTokens(usage, 90)).toBe(80)
+    expect(effectiveContextTokens(null, 90)).toBe(90)
     expect(shouldCompactAtPercent(84_999, 100_000)).toBe(false)
     expect(shouldCompactAtPercent(85_000, 100_000)).toBe(true)
   })

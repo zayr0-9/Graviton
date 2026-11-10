@@ -553,6 +553,11 @@ export interface ChatState {
   claudeToolAutoApprove?: boolean
   /** Claude provider: run each turn with ultracode (standing Workflow orchestration). */
   claudeUltracode?: boolean
+  /**
+   * Claude provider: run new turns in Claude Code's native plan mode (Plan toggle or /plan).
+   * Session only; it turns off when the user approves Claude's plan.
+   */
+  claudePlanMode?: boolean
   operationMode: OperationMode
   messageQueues: Record<string, import('../../../../../shared/queuedMessages').MessageQueueSnapshot>
   /** Unsent selections, keyed by conversation and selected branch tip. */

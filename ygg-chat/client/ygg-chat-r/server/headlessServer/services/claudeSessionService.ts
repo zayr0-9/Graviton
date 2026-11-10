@@ -1,6 +1,7 @@
 import { portableSummaryText } from '../../../../../shared/summaryHandoff.js'
 import { applyClaudeTaskEvent, CLAUDE_FILE_EDIT_TOOLS, CLAUDE_NATIVE_HOOK_SOURCE, claudeFilePatch, claudeMessageMetadata, type ClaudeBackgroundTask } from '../../../../../shared/claudeProvider.js'
 import { LABEL_AUTO_MEMORY, LABEL_LOCAL, LABEL_PROJECT, LABEL_USER_GLOBAL } from '../../../../../shared/contextInjection.js'
+import { claudeContextUsage, contextUsageBlock, type ContextUsage } from '../../../../../shared/contextUsage.js'
 import { parseFrontmatter, stripHtmlComments } from '../../context/frontmatter.js'
 import { randomUUID } from 'node:crypto'
 import { readFile, realpath } from 'node:fs/promises'
@@ -49,6 +50,10 @@ export const CHAT_MODE_BLOCKED_TOOLS = ['Edit', 'Write', 'MultiEdit', 'NotebookE
 // Rides on the user message, after the cached prefix, so it costs no cache either.
 export const CHAT_MODE_NOTE = '(Graviton Chat mode for this message: file edits are disabled, including through Bash. Answer, read and run read-only commands; the user can switch to Agent mode for changes.)'
 const CHAT_MODE_EDIT_DENIAL = 'File edits need Agent mode. Ask the user to switch to Agent mode in Graviton.'
+// Native plan mode (the composer's Plan toggle or /plan) replaces CHAT_MODE_NOTE on the message.
+export const PLAN_MODE_NOTE = '(Graviton Plan mode for this message: explore read-only, write your plan to the plan file, then call ExitPlanMode so the user can approve it. Do not edit other files, including through Bash.)'
+const PLAN_MODE_EDIT_DENIAL = 'Plan mode: only the plan file under .ygg/plans may be written. Call ExitPlanMode when the plan is ready for the user to approve.'
+const ENTER_PLAN_MODE_DENIAL = 'Graviton turns on plan mode only at the user\'s request (the Plan toggle or /plan). Describe the plan in your reply, or ask the user to turn on Plan mode.'
 /** What Claude reads when the user switches mode during a run, as a queued message. */
 export function claudeModeSwitchNotice(mode: OperationMode): string {
   return mode === 'plan'
@@ -85,9 +90,10 @@ export interface ClaudeQueuedInput {
   prepareNext(): Promise<{ requestId: string; prompt: string; images: string[] } | null>
   /**
    * Claude started the entry: persist its user row below `parentId` and return it. The row records
-   * `mode`; a `modeSwitch` the entry carried is persisted as a mode row above it.
+   * `mode` and whether native plan mode was on; a `modeSwitch` the entry carried is persisted as a
+   * mode row above it.
    */
-  deliver(requestId: string, parentId: string | null, mode: { mode: OperationMode; modeSwitch: ClaudeModeSwitch | null }): any
+  deliver(requestId: string, parentId: string | null, mode: { mode: OperationMode; planMode: boolean; modeSwitch: ClaudeModeSwitch | null }): any
   /** Claude read a standalone mode notice: persist its mode row below `parentId` and return it. */
   recordModeSwitch(modeSwitch: ClaudeModeSwitch, parentId: string | null): any
   /** Claude will never run the entry. */
@@ -233,6 +239,33 @@ async function readPlanFile(plansDir: string, candidate: string): Promise<{ plan
   } catch {
     return null
   }
+}
+
+/**
+ * True when `filePath` names a markdown file inside the plans directory, so plan mode may write it.
+ * Symlinks are resolved on whatever part of the path already exists, so a link cannot lead out.
+ */
+export async function isClaudePlanFile(plansDir: string, cwd: string, filePath: unknown): Promise<boolean> {
+  if (typeof filePath !== 'string' || !filePath.trim()) return false
+  const target = path.resolve(cwd, filePath)
+  const inside = (root: string, candidate: string) => {
+    const relative = path.relative(root, candidate)
+    return !!relative && !relative.startsWith('..') && !path.isAbsolute(relative)
+  }
+  if (!target.endsWith('.md') || !inside(plansDir, target)) return false
+  const real = (candidate: string): Promise<string | null> => realpath(candidate).catch(() => null)
+  const root = await real(plansDir)
+  if (!root) return true // No plans directory yet, so no link inside it to follow.
+  const existing = await real(target)
+  if (existing) return inside(root, existing)
+  // A new file: its nearest existing ancestor must still be the plans directory or inside it.
+  let ancestor = path.dirname(target)
+  while (inside(plansDir, ancestor)) {
+    const resolved = await real(ancestor)
+    if (resolved) return resolved === root || inside(root, resolved)
+    ancestor = path.dirname(ancestor)
+  }
+  return true
 }
 
 type ResumeEntry = { uuid: string | null; toolUseIds: string[]; toolResultIds: string[]; hasText: boolean }
@@ -441,6 +474,8 @@ export class ClaudeSessionService {
     queuedInput?: ClaudeQueuedInput
     /** The run's live Chat/Agent mode, shared with Graviton's mode route; a switch applies to the next tool call. */
     modeControl?: OperationModeControl
+    /** Native plan mode, shared with the orchestrator; ExitPlanMode approval turns it off. */
+    planControl?: { active: boolean }
     /** Receives the run's background-task control once Claude starts; returns the unbind. */
     bindTasks?: (control: ClaudeTaskControl) => () => void
   }): Promise<any> {
@@ -463,7 +498,8 @@ export class ClaudeSessionService {
     const effort = request.reasoningConfig?.effort
     const selectedEffort = effort === 'low' || effort === 'medium' || effort === 'high' || effort === 'xhigh' ? effort : undefined
     const adaptiveThinking = request.think === true || Boolean(selectedEffort)
-    const permissionMode = request.claudePermissionMode === 'auto' ? 'auto' : 'default'
+    // Native plan mode is the user's choice (Plan toggle or /plan) and wins over auto mode.
+    const permissionMode = request.claudePlanMode === true ? 'plan' : request.claudePermissionMode === 'auto' ? 'auto' : 'default'
     const liveSettings: ClaudeWarmSettings = { model: request.modelName, effort: selectedEffort ?? null, ultracode: request.claudeUltracode === true }
     const launchKey = this.warm.enabled ? await claudeLaunchKey({ cwd, additionalDirectories: input.additionalDirectories, adaptiveThinking, mcp,
       plansDirectory: CLAUDE_PLANS_DIRECTORY, executable, hookShape: input.hookSession ? 'graviton-hooks' : 'native-only' }) : ''
@@ -524,7 +560,8 @@ export class ClaudeSessionService {
         promise.then(resolve, reject).finally(() => { clearTimeout(timer); signal?.removeEventListener('abort', stop) })
       })
       try {
-        // Always: an accepted ExitPlanMode moves the live session to 'default'.
+        // Always: plan mode comes and goes per turn, and an accepted ExitPlanMode moves the live
+        // session to 'default'.
         await live(reused.query.setPermissionMode(permissionMode))
         if (reused.settings.model !== request.modelName) await live(reused.query.setModel(request.modelName))
         // Both keys, explicitly: null returns effort to the model default, false turns ultracode off.
@@ -569,6 +606,20 @@ export class ClaudeSessionService {
     // Native entries of this turn (since the last compaction), for an interrupted-run checkpoint.
     let turnEntries: ResumeEntry[] = []
     let currentApiId: string | null = null
+    // Usage of the latest main-agent API call. Its stream frames and assistant envelopes each carry
+    // a copy, output tokens growing as it streams, so copies of one call merge by maximum.
+    // Cast, not an annotation: TS would otherwise narrow it to null, unaware the closure below assigns it.
+    let callUsage = null as { id: string; model?: string; usage: Record<string, number> } | null
+    const noteCallUsage = (id: string | null | undefined, model: string | undefined, usage: unknown) => {
+      if (!id || !usage || typeof usage !== 'object') return
+      if (callUsage?.id !== id) callUsage = { id, usage: {} }
+      if (model) callUsage.model = model
+      for (const [key, value] of Object.entries(usage as Record<string, unknown>)) {
+        if (typeof value === 'number' && Number.isFinite(value)) callUsage.usage[key] = Math.max(callUsage.usage[key] ?? 0, value)
+      }
+    }
+    // The run's context snapshot, taken at each `result`; the final response row keeps the last one.
+    let runUsage: ContextUsage | null = null
     const abortController = new AbortController()
     const abort = () => abortController.abort(signal?.reason)
     signal?.addEventListener('abort', abort, { once: true })
@@ -590,6 +641,8 @@ export class ClaudeSessionService {
       finalMessage = null; lastUuid = null; turnEntries = []
       compactionActive = false
       streamedText = ''; streamedReasoning = ''; currentApiId = null
+      // The context was just rebuilt; the next call reports its new size.
+      callUsage = null; runUsage = null
       compactionEvent('completed', compactionSummary)
       // Graviton's PreCompact (and an early SessionStart) ran before this row existed.
       hookSession?.attachPendingHookRuns(compactionSummary.id)
@@ -713,14 +766,24 @@ export class ClaudeSessionService {
     // A hook decision outranks Claude's allow rules, acceptEdits and the auto classifier, and reads
     // the mode live, so a switch applies to the next tool call. Applies to child agents too.
     // Hooks are not part of the prompt, so this costs no cache.
+    const plansDir = path.join(cwd, CLAUDE_PLANS_DIRECTORY)
+    // Native plan mode, on until the user approves the plan through ExitPlanMode. Shared with the
+    // orchestrator, so a queued successor run starts in the state this run ended in.
+    const planState = input.planControl ?? { active: request.claudePlanMode === true }
+    // Why an edit tool may not run now, or null. In plan mode only the plan file may be written,
+    // whatever Graviton's mode; otherwise Chat mode blocks every edit tool.
+    const editDenial = async (name: string, args: Record<string, unknown> | undefined): Promise<string | null> => {
+      if (!CHAT_MODE_BLOCKED_TOOLS.includes(name)) return null
+      if (name === 'EnterPlanMode') return control.mode === 'plan' || planState.active ? ENTER_PLAN_MODE_DENIAL : null
+      if (planState.active) return PLAN_WRITE_TOOLS.has(name) && await isClaudePlanFile(plansDir, cwd, args?.file_path) ? null : PLAN_MODE_EDIT_DENIAL
+      return control.mode === 'plan' ? CHAT_MODE_EDIT_DENIAL : null
+    }
     hooks.PreToolUse = [...(hooks.PreToolUse ?? []), { hooks: [async hook => {
-      if (control.mode !== 'plan' || hook.hook_event_name !== 'PreToolUse' || !CHAT_MODE_BLOCKED_TOOLS.includes(hook.tool_name)) return {}
-      const reason = hook.tool_name === 'EnterPlanMode'
-        ? 'Graviton Chat mode does not use native plan mode. Describe the plan in your reply.'
-        : CHAT_MODE_EDIT_DENIAL
+      if (hook.hook_event_name !== 'PreToolUse') return {}
+      const reason = await editDenial(hook.tool_name, hook.tool_input as Record<string, unknown> | undefined)
+      if (!reason) return {}
       return { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: reason } }
     }] }]
-    const plansDir = path.join(cwd, CLAUDE_PLANS_DIRECTORY)
     let lastPlanPath: string | null = null
     // The permission callback can race the assistant envelope that persists the tool_use block.
     const pendingPlans = new Map<string, { plan: string; planFilePath?: string }>()
@@ -748,7 +811,8 @@ export class ClaudeSessionService {
         const id = context.toolUseID || randomUUID()
         const plan = await resolvePlan(args)
         if (plan) attachPlan(id, plan)
-        if (control.mode === 'execute') return { behavior: 'allow', updatedInput: args }
+        // Outside plan mode, Agent mode has nothing to approve. A plan always goes to the user.
+        if (control.mode === 'execute' && !planState.active) return { behavior: 'allow', updatedInput: args }
         if (!this.deps.broker) return { behavior: 'deny', message: 'Switch to Agent mode in Graviton.' }
         const event = { type: 'operation_mode_upgrade_required' as const, streamId: request.streamId!, toolCallId: id,
           toolName: name, toolInput: { ...args, ...(plan ?? {}) } }
@@ -756,22 +820,28 @@ export class ClaudeSessionService {
           kind: 'operation_mode_upgrade', signal: context.signal, prompt: event })
         if (this.deps.broker.hasPending(request.streamId!, id)) emit(event)
         if (await pending !== 'switch_to_execute') {
-          return { behavior: 'deny', message: 'The user chose to stay in Chat mode. Revise the plan or ask what to change.' }
+          return { behavior: 'deny', message: planState.active
+            ? 'The user did not approve the plan yet and wants to keep planning. Revise the plan or ask what to change.'
+            : 'The user chose to stay in Chat mode. Revise the plan or ask what to change.' }
         }
+        // An approved plan leaves plan mode; the renderer turns its Plan toggle off with it.
+        planState.active = false
         // Through the shared control, so the queue's successor run and the composer see Agent mode too.
         // Claude learns from this tool result; a notice goes only if a message on its way says otherwise.
-        control.change('execute', `upgrade:${id}`)
-        readMode = 'execute'
-        syncToldMode()
+        if (control.mode !== 'execute') {
+          control.change('execute', `upgrade:${id}`)
+          readMode = 'execute'
+          syncToldMode()
+        }
         return { behavior: 'allow', updatedInput: args, updatedPermissions: [{ type: 'setMode', mode: 'default', destination: 'session' }] }
       }
       // AskUserQuestion requires an answer protocol beyond permission; do not turn Approve into an invented answer.
       if (name === 'AskUserQuestion') return { behavior: 'deny', message: 'Ask the user in your text response instead.' }
       // Auto-approval answers permission requests; it must not let Chat mode edit files.
       // The PreToolUse hook denies these first; this guards a CLI that still asks.
-      if (control.mode === 'plan' && CHAT_MODE_BLOCKED_TOOLS.includes(name)) {
-        return { behavior: 'deny', message: CHAT_MODE_EDIT_DENIAL }
-      }
+      // Only edit tools await the check, so every other call reaches the broker in this tick.
+      const denial = CHAT_MODE_BLOCKED_TOOLS.includes(name) ? await editDenial(name, args) : null
+      if (denial) return { behavior: 'deny', message: denial }
       if (!this.deps.broker) return { behavior: 'deny', message: 'Approval UI unavailable' }
       const id = context.toolUseID || randomUUID()
       const event = { type: 'permission_required' as const, streamId: request.streamId!, toolCallId: id, toolName: name, toolInput: args }
@@ -780,7 +850,7 @@ export class ClaudeSessionService {
       if (this.deps.broker.hasPending(request.streamId!, id)) emit(event)
       if (await pending !== 'deny') return { behavior: 'allow', updatedInput: args }
       // A switch to Chat mode denies edit prompts that were still waiting.
-      return { behavior: 'deny', message: control.mode === 'plan' && CHAT_MODE_BLOCKED_TOOLS.includes(name) ? CHAT_MODE_EDIT_DENIAL : 'Denied by user' }
+      return { behavior: 'deny', message: (await editDenial(name, args)) ?? 'Denied by user' }
     }
     const options: Options = {
       cwd, model: request.modelName, ...(sessionId ? { resume: sessionId } : {}),
@@ -809,8 +879,9 @@ export class ClaudeSessionService {
     const selectedFiles = (request.selectedFiles ?? []).map(file => `File: ${file.path}\n${file.contents}`).join('\n\n')
     const userPrompt = selectedFiles ? `${request.content}\n\nSelected file context:\n${selectedFiles}` : request.content
     // A native command's arguments are the rest of its text, so the note stays off commands.
+    const note = planState.active ? PLAN_MODE_NOTE : control.mode === 'plan' ? CHAT_MODE_NOTE : ''
     const prompt = request.manualCompaction ? '/compact'
-      : control.mode === 'plan' && !input.nativeCommand ? `${userPrompt}\n\n${CHAT_MODE_NOTE}` : userPrompt
+      : note && !input.nativeCommand ? `${userPrompt}\n\n${note}` : userPrompt
     // The run's input ends once nothing is left to start another turn. A cold CLI then exits; a
     // warm one stays open, idle after `result`, for the branch's next send.
     let proc: ClaudeWarmProcess | undefined = warm ?? undefined
@@ -978,7 +1049,7 @@ export class ClaudeSessionService {
             // The message carries the mode Claude applies from here: a switch it has not been told
             // about, or the note every Chat-mode message gets.
             const mode = control.mode
-            const note = mode !== toldMode ? claudeModeSwitchNotice(mode) : mode === 'plan' ? CHAT_MODE_NOTE : ''
+            const note = mode !== toldMode ? claudeModeSwitchNotice(mode) : planState.active ? PLAN_MODE_NOTE : mode === 'plan' ? CHAT_MODE_NOTE : ''
             const text = note ? `${next.prompt}\n\n${note}` : next.prompt
             let content: SDKUserMessage['message']['content']
             try {
@@ -1112,7 +1183,7 @@ export class ClaudeSessionService {
             const modeSwitch = told && told.mode !== readMode
               ? { mode: told.mode, previousMode: readMode, revision: told.revision, content: claudeModeSwitchNotice(told.mode) } : null
             if (told) readMode = told.mode
-            if (requestId) parent = queued!.deliver(requestId, parent, { mode: told?.mode ?? control.mode, modeSwitch }).id
+            if (requestId) parent = queued!.deliver(requestId, parent, { mode: told?.mode ?? control.mode, planMode: planState.active, modeSwitch }).id
             else if (modeSwitch) parent = queued!.recordModeSwitch(modeSwitch, parent).id
           } else if (requestId) {
             queued!.release(requestId, state === 'cancelled' ? { cancelled: true } : { error: `Claude did not run this message (${state}).` })
@@ -1175,9 +1246,11 @@ export class ClaudeSessionService {
           if (frame.type === 'message_start') {
             turnStarted()
             currentApiId = frame.message.id
+            noteCallUsage(frame.message.id, frame.message.model, frame.message.usage)
             streamedText = ''; streamedReasoning = ''
             emit({ type: 'tool_loop', status: 'turn_started', turn: ++turn, maxTurns: 0 })
           }
+          if (frame.type === 'message_delta') noteCallUsage(currentApiId, undefined, frame.usage)
           if (frame.type === 'content_block_start' && (frame.content_block.type === 'text' || frame.content_block.type === 'thinking')) {
             // The SDK emits one assistant envelope per completed block, not necessarily per API message.
             streamedText = ''; streamedReasoning = ''
@@ -1212,6 +1285,7 @@ export class ClaudeSessionService {
           const content = event.message.content.filter(block => block.type === 'text').map(block => (block as any).text).join('')
           const calls = blocks.filter(block => block.type === 'tool_use').map(block => ({ id: block.id, name: block.name, arguments: block.input, status: 'executing' }))
           for (const block of takeInstructions(trigger => trigger === null)) blocks.push({ ...block, index: blocks.length })
+          noteCallUsage(event.message.id, event.message.model, event.message.usage)
           const responseKey = event.message.id || event.uuid
           let response = apiResponses.get(responseKey)
           let row: any
@@ -1303,6 +1377,13 @@ export class ClaudeSessionService {
           }
           completed = true
           toolsInFlight.clear()
+          // Context size is the last main-agent call; window and session totals come from the result.
+          const usage = callUsage && claudeContextUsage({ usage: callUsage.usage, model: callUsage.model, responseId: callUsage.id,
+            modelUsage: event.modelUsage, totalCostUsd: event.total_cost_usd })
+          if (usage) {
+            runUsage = usage
+            emit({ type: 'context_usage', usage })
+          }
           // A queued message keeps the session open: Claude runs it as the next turn.
           idle = true
           publishBackground()
@@ -1334,6 +1415,7 @@ export class ClaudeSessionService {
       const finalBlocks = finalResponse?.blocks ?? (typeof finalMessage.content_blocks === 'string' ? JSON.parse(finalMessage.content_blocks) : finalMessage.content_blocks ?? finalMessage.contentBlocks ?? [])
       // Loads no later row or matching tool result claimed (a trigger path that did not match).
       for (const block of takeInstructions(() => true)) finalBlocks.push({ ...block, index: finalBlocks.length })
+      if (runUsage) finalBlocks.push(contextUsageBlock(runUsage))
       finalMessage = this.deps.messages.updateClaudeProjection(finalMessage.id, finalMessage.content, finalBlocks,
         { ...claudeMessageMetadata(finalMessage.meta), ...runMeta(), claude: { sessionId: activeSession, messageUuid: lastUuid, checkpoint: true } })
       emit({ type: 'assistant_message_persisted', message: finalMessage, lineageId })
