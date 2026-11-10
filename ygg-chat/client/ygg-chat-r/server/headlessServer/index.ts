@@ -29,6 +29,8 @@ import { registerSubagentRoutes } from './routes/subagentRoutes.js'
 import { registerTestHarnessRoutes } from './routes/testHarnessRoutes.js'
 import { registerGatewayRoutes } from './routes/gatewayRoutes.js'
 import { registerLineageRoutes } from './routes/lineageRoutes.js'
+import { registerClaudeMcpRoutes } from './routes/claudeMcpRoutes.js'
+import { ClaudeMcpControlService } from './services/claudeMcpControl.js'
 import { runHookRequest } from '../hooks/hookRunner.js'
 import { ChatOrchestrator } from './services/chatOrchestrator.js'
 import { DecisionBroker } from './services/decisionBroker.js'
@@ -340,6 +342,9 @@ export function registerHeadlessServerRoutes(app: Express, deps: HeadlessServerR
   registerCapabilityRoutes(app, { getDefaultTools: resolveDefaultInferenceTools })
   registerEphemeralGenerateRoutes(app, { tokenStore })
   registerLineageRoutes(app, deps)
+  const claudeMcpControl = new ClaudeMcpControlService({ preferences: () => readHostExecutionPreferences().values.claudeMcp })
+  activeClaudeMcpControls.add(claudeMcpControl)
+  registerClaudeMcpRoutes(app, { control: claudeMcpControl })
 
   // /api/gw/*: the renderer's local data gateway (facade over /api/app/*).
   registerGatewayRoutes(app, { db: deps.db, statements: deps.statements })
@@ -422,6 +427,7 @@ export function registerHeadlessServerRoutes(app: Express, deps: HeadlessServerR
     decisionBroker,
     // Phase 3: in-process chat hooks (fires only when a request sets hooksEnabled).
     hookRunner: runHookRequest,
+    claudeNativeMcp: () => readHostExecutionPreferences().values.claudeMcp,
   })
   // Synchronously releases stale 'running' Claude branches, then checkpoints their heads.
   void chatOrchestrator.recoverInterruptedClaudeBranches().catch(error =>
@@ -457,11 +463,15 @@ export function registerHeadlessServerRoutes(app: Express, deps: HeadlessServerR
 }
 
 const activeRegistries = new Set<RunSessionRegistry>()
+const activeClaudeMcpControls = new Set<ClaudeMcpControlService>()
 const reaperStops = new Set<() => void>()
 export function stopHeadlessSessions(): void {
   for (const stop of reaperStops) stop()
   reaperStops.clear()
   for (const registry of activeRegistries) registry.disposeAll()
   activeRegistries.clear()
+  // Sign-ins keep a Claude CLI (and its OAuth callback listener) open; close them with the host.
+  for (const control of activeClaudeMcpControls) control.dispose()
+  activeClaudeMcpControls.clear()
   disposeSnapshotScratch()
 }

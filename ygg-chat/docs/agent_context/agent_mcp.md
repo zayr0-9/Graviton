@@ -15,6 +15,8 @@ Last reviewed: 2026-07-17
 
 Documents local Electron MCP server configuration, transport behavior, remote OAuth, credential persistence, and management routes.
 
+These are Graviton's own MCP servers. The **Claude Code MCP servers** subsection at the end of the same Settings section (`ClaudeMcpSettings.tsx`) controls Claude Code's own servers in Claude chats; it never touches `McpManager`. See `../claude-provider-v1.md` § Claude Code MCP servers.
+
 ## Key Files
 
 - `client/ygg-chat-r/server/mcp/mcpManager.ts`: stdio/Streamable HTTP clients, capability discovery, OAuth flow, persistence, and lifecycle.

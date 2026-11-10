@@ -63,7 +63,7 @@ export type ChatErrorCode =
  * persisted as message content — they exist so a multi-second silence has a
  * visible cause ("Reconnecting…", "Retrying 2 of 3").
  */
-export type ChatNoticeCode = 'retrying' | 'reconnecting' | 'compacting' | 'quota_warning' | 'claude_auto_unavailable' | ChatErrorCode
+export type ChatNoticeCode = 'retrying' | 'reconnecting' | 'compacting' | 'quota_warning' | 'claude_auto_unavailable' | 'claude_mcp_unavailable' | ChatErrorCode
 
 /**
  * What the user can do about it. Drives the ONE button on the error bubble.

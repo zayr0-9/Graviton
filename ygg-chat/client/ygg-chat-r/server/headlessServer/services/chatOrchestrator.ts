@@ -4,6 +4,7 @@ import { CLAUDE_TRANSFERRED_SOURCE_MESSAGE, isTransferredMessage, transferredSum
 import { CLAUDE_MODELS, claudeMessageMetadata, isClaudeProvider, isClaudeTranscriptMessage } from '../../../../../shared/claudeProvider.js'
 import { ClaudeSessionRepo, assertClaudeBranchSelection } from '../persistence/claudeSessionRepo.js'
 import { CHAT_MODE_BLOCKED_TOOLS, ClaudeSessionService, claudeImageBlock, parseClaudeSlashCommand, type ClaudeModeSwitch, type ClaudeQueuedInput, type ClaudeTaskControl } from './claudeSessionService.js'
+import type { HostClaudeMcpPreferences } from '../../../../../shared/claudeNativeMcp.js'
 import { compactionInstruction } from '../../../../../shared/compaction.js'
 import type { AdmissionMismatchReason } from '../../../../../shared/runAdmission.js'
 import { v4 as uuidv4 } from 'uuid'
@@ -80,6 +81,8 @@ interface ChatOrchestratorDeps {
    *  (parity with the renderer). Absent for subagents/tests => NO hooks. */
   hookRunner?: (req: HookRunRequest) => Promise<HookRunResult>
   claudeSessions?: ClaudeSessionService
+  /** Host setting for Claude Code's own MCP servers; absent (tests, subagents) keeps Claude's MCP off. */
+  claudeNativeMcp?: () => HostClaudeMcpPreferences
 }
 
 export function linkPreparedAttachmentsToMessage(
@@ -863,7 +866,8 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
     this.decisionBroker = deps.decisionBroker
     this.hookRunner = deps.hookRunner
     this.claudeSessionRepo = new ClaudeSessionRepo(deps.db)
-    this.claudeSessions = deps.claudeSessions ?? new ClaudeSessionService({ sessions: this.claudeSessionRepo, messages: this.messageRepo, broker: deps.decisionBroker })
+    this.claudeSessions = deps.claudeSessions ?? new ClaudeSessionService({ sessions: this.claudeSessionRepo, messages: this.messageRepo, broker: deps.decisionBroker,
+      nativeMcp: deps.claudeNativeMcp })
     this.toolLoopService =
       deps.toolLoopService ??
       new ToolLoopService({

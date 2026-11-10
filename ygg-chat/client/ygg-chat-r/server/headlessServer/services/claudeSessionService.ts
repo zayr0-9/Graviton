@@ -6,6 +6,7 @@ import { randomUUID } from 'node:crypto'
 import { readFile, realpath } from 'node:fs/promises'
 import path from 'node:path'
 import { claudeProcessEnvironment, resolveClaudeExecutable } from './claudeProcessConfig.js'
+import { claudeMcpLaunchOptions, type HostClaudeMcpPreferences } from '../../../../../shared/claudeNativeMcp.js'
 import type { HookInput, Options, SDKUserMessage } from '@anthropic-ai/claude-agent-sdk'
 import type { HeadlessBackgroundTask, HeadlessBackgroundTaskOutput, HeadlessMessageRequest, HeadlessStreamEvent } from '../../../../../shared/headlessApi.js'
 import { ClaudeSessionRepo } from '../persistence/claudeSessionRepo.js'
@@ -281,7 +282,20 @@ export function parseClaudeSlashCommand(content: string | null | undefined): { n
 export class ClaudeSessionService {
   constructor(private deps: { sessions: ClaudeSessionRepo; messages: MessageRepo; broker?: DecisionBroker; sdk?: () => Promise<ClaudeSdk>; executable?: () => Promise<string>
     /** Durable store for native hook runs; defaults to the server's configured tracker. */
-    hookRuns?: HookRunTracker | null }) {}
+    hookRuns?: HookRunTracker | null
+    /** Host setting for Claude Code's own MCP servers, read at each run start; absent keeps MCP off. */
+    nativeMcp?: () => HostClaudeMcpPreferences | null | undefined }) {}
+
+  /** MCP servers the last fresh init of a native-MCP run reported (CLI #78820 detection). */
+  private lastNativeMcpServerCount = 0
+
+  private nativeMcpPreferences(): HostClaudeMcpPreferences | null {
+    try { return this.deps.nativeMcp?.() ?? null }
+    catch (error) {
+      console.warn('[ClaudeSession] Claude MCP settings unreadable; MCP stays off for this run', error instanceof Error ? error.message : error)
+      return null
+    }
+  }
 
   /**
    * The Claude skill or custom command that `/name args` runs, or null when Claude has none by
@@ -683,12 +697,17 @@ export class ClaudeSessionService {
     // ask for summaries; without a thinking config the CLI flag sets only the display mode.
     const effort = request.reasoningConfig?.effort
     const selectedEffort = effort === 'low' || effort === 'medium' || effort === 'high' || effort === 'xhigh' ? effort : undefined
+    const nativeMcp = this.nativeMcpPreferences()
+    const mcp = claudeMcpLaunchOptions(nativeMcp)
     const options: Options = {
       cwd, model: request.modelName, ...(sessionId ? { resume: sessionId } : {}),
       ...(input.additionalDirectories?.length ? { additionalDirectories: input.additionalDirectories } : {}),
       abortController, includePartialMessages: true, permissionMode,
-      // Claude's own settings load (skills, hooks, plugins, CLAUDE.md) as in the CLI; MCP stays off.
-      canUseTool, permissionPrompts: 'host', settingSources: CLAUDE_SETTING_SOURCES, strictMcpConfig: true, mcpServers: {},
+      // Claude's own settings load (skills, hooks, plugins, CLAUDE.md) as in the CLI. MCP is off
+      // unless Settings turns on Claude's own servers; hidden servers lose their tools by deny rule.
+      canUseTool, permissionPrompts: 'host', settingSources: CLAUDE_SETTING_SOURCES,
+      strictMcpConfig: mcp.strictMcpConfig, ...(mcp.mcpServers ? { mcpServers: mcp.mcpServers } : {}),
+      ...(mcp.disallowedTools ? { disallowedTools: mcp.disallowedTools } : {}),
       // Hook lifecycle events become Graviton hook runs (`nativeHooks`).
       persistSession: true, hooks, includeHookEvents: true,
       // A one-line status for each running agent, about every 30s (task_progress `summary`). The CLI
@@ -699,7 +718,7 @@ export class ClaudeSessionService {
         : { extraArgs: { 'thinking-display': 'summarized' } }),
       systemPrompt: { type: 'preset', preset: 'claude_code' },
       // Ultracode is session-scoped flag settings, so every run (each resume) restates it.
-      settings: { plansDirectory: CLAUDE_PLANS_DIRECTORY, ...(request.claudeUltracode ? { ultracode: true } : {}) },
+      settings: { plansDirectory: CLAUDE_PLANS_DIRECTORY, ...(request.claudeUltracode ? { ultracode: true } : {}), ...mcp.settings },
     }
     // Use the host's installed CLI rather than resolving a bundled native executable relative to an esbuild bundle.
     options.pathToClaudeCodeExecutable = executable
@@ -997,6 +1016,16 @@ export class ClaudeSessionService {
           if (permissionMode === 'auto' && event.permissionMode !== 'auto') {
             emit({ type: 'notice', code: 'claude_auto_unavailable', lineageId,
               message: 'Claude auto mode is unavailable for this model or account; tool calls will ask for approval.' })
+          }
+          if (nativeMcp?.enabled) {
+            // CLI #78820: a resume that first delivers a pending background-task notification boots
+            // with no MCP servers. An empty list after earlier runs listed some is that, not a choice.
+            const count = Array.isArray(event.mcp_servers) ? event.mcp_servers.length : 0
+            if (count === 0 && sessionId && this.lastNativeMcpServerCount > 0) {
+              emit({ type: 'notice', code: 'claude_mcp_unavailable', lineageId,
+                message: 'Claude started this turn without its MCP servers (a known Claude Code issue when resuming with background work). Send again to retry with them.' })
+            }
+            if (count > 0) this.lastNativeMcpServerCount = count
           }
         } else if (event.type === 'system' && event.subtype === 'compact_boundary') {
           commitCompaction()
