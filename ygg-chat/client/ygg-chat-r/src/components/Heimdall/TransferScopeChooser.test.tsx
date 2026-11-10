@@ -41,6 +41,24 @@ describe('TransferScopeChooser', () => {
     expect(html).toContain('Moving this branch would delete messages on other branches. Use copy instead.')
   })
 
+  it('disables a refused scope and shows its reason', () => {
+    const html = render({ action: 'new', branchBlockedReason: 'Run /compact first.' })
+    expect(html.match(/disabled=""/g)).toHaveLength(1)
+    expect(html).toContain('aria-describedby="heimdall-branch-move-warning"')
+    expect(html).toContain('Run /compact first.')
+  })
+
+  it('names the selection when only it is refused, and states a shared reason once', () => {
+    const selectionOnly = render({ selectionBlockedReason: 'Run /compact first.' })
+    expect(selectionOnly.match(/disabled=""/g)).toHaveLength(1)
+    expect(selectionOnly).toContain('Selected messages: Run /compact first.')
+    const both = render({ selectionBlockedReason: 'Run /compact first.', branchBlockedReason: 'Run /compact first.' })
+    expect(both.match(/disabled=""/g)).toHaveLength(2)
+    expect(both.match(/Run \/compact first\./g)).toHaveLength(1)
+    // Every reason a disabled choice points at is rendered.
+    for (const [, id] of both.matchAll(/aria-describedby="([^"]+)"/g)) expect(both).toContain(`id="${id}"`)
+  })
+
   it('inherits custom theme colors for choices and explanatory text', () => {
     const html = render({ itemStyle: { color: '#123456' }, mutedStyle: { color: '#789abc' } })
     expect(html).toContain('color:#123456')

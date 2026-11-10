@@ -4,7 +4,9 @@
  * to ensure consistent IPC handler support across all contexts.
  */
 
-import { buildLocalApiUrl, createStreamingRequest, environment, localApi } from './api'
+import { createHostAppClient, getHostAppContext } from '../platform/hostAppClient'
+import { isBrowserClient } from '../platform/clientCapabilities'
+import { buildLocalApiUrl, localApi } from './api'
 import { executeToolAndWait } from './executeToolAndWait'
 
 type StreamState = {
@@ -21,9 +23,10 @@ type BridgeContext = {
   getIframe: () => HTMLIFrameElement | null
   getUserId: () => string | null
   getToolContext?: () => ToolContext | null
+  registerCleanup?: (cleanup: () => void) => void
 }
 
-type GenerationProvider = 'openrouter' | 'openaichatgpt' | 'lmstudio' | 'zai' | 'bedrock'
+type GenerationProvider = 'openrouterbyok' | 'openaichatgpt' | 'lmstudio' | 'zai' | 'bedrock'
 
 type GenerationStreamResult = {
   text: string
@@ -32,7 +35,8 @@ type GenerationStreamResult = {
 
 function normalizeGenerationProvider(provider: string): GenerationProvider | null {
   const normalized = provider.trim().toLowerCase()
-  if (normalized === 'openrouter') return 'openrouter'
+  // 'openrouter' was the retired hosted route; it now means the user's own OpenRouter key.
+  if (normalized === 'openrouter' || normalized.replace(/\s+/g, '') === 'openrouterbyok') return 'openrouterbyok'
   if (normalized === 'lmstudio') return 'lmstudio'
   if (normalized === 'zai' || normalized === 'z.ai' || normalized === 'glm') return 'zai'
   if (
@@ -49,16 +53,48 @@ function normalizeGenerationProvider(provider: string): GenerationProvider | nul
   return null
 }
 
-function resolveGenerationProvider(modelName: string, provider?: string): GenerationProvider {
-  const explicit = typeof provider === 'string' ? normalizeGenerationProvider(provider) : null
-  if (explicit) return explicit
+const DEFAULT_GENERATION_MODELS: Record<GenerationProvider, string> = {
+  openaichatgpt: 'gpt-5.6-sol',
+  openrouterbyok: 'openai/gpt-5-mini',
+  lmstudio: 'local-model',
+  zai: 'glm-5.1',
+  bedrock: 'anthropic.claude-3-5-sonnet-20241022-v2:0',
+}
 
-  if (modelName.includes('/')) return 'openrouter'
+function inferProviderFromModel(modelName: string): GenerationProvider {
   if (/^(gpt-|o1|o3|o4)/i.test(modelName)) return 'openaichatgpt'
   if (/lmstudio|local-model/i.test(modelName)) return 'lmstudio'
   if (/^(glm-|zai|z\.ai)/i.test(modelName)) return 'zai'
   if (/^(bedrock|aws|awsbedrock|aws-bedrock|amazonbedrock|amazon-bedrock)\//i.test(modelName) || /^anthropic\.claude-/i.test(modelName)) return 'bedrock'
-  return 'openrouter'
+  // Any other vendor/model slug is an OpenRouter model served with the user's own key.
+  return 'openrouterbyok'
+}
+
+/** The provider and model the user currently has selected in the composer, when usable here. */
+function readCurrentSelection(): { provider: GenerationProvider | null; model: string | null } {
+  try {
+    const provider = normalizeGenerationProvider(localStorage.getItem('currentProvider') || '')
+    const raw = localStorage.getItem('selectedModel')
+    const parsed = raw ? JSON.parse(raw) : null
+    const model = parsed && typeof parsed.name === 'string' && parsed.name.trim() ? parsed.name.trim() : null
+    return { provider, model }
+  } catch {
+    return { provider: null, model: null }
+  }
+}
+
+/**
+ * Custom-tool generation defaults to the user's current provider and model (fully-local plan
+ * Q8), falling back to ChatGPT. An explicit provider and/or model from the tool wins.
+ */
+function resolveGeneration(model: unknown, provider: unknown): { provider: GenerationProvider; modelName: string } {
+  const requestedModel = typeof model === 'string' && model.trim() ? model.trim() : null
+  const explicit = typeof provider === 'string' ? normalizeGenerationProvider(provider) : null
+  if (requestedModel) return { provider: explicit ?? inferProviderFromModel(requestedModel), modelName: requestedModel }
+  const current = readCurrentSelection()
+  const resolved = explicit ?? current.provider ?? 'openaichatgpt'
+  const modelName = resolved === current.provider && current.model ? current.model : DEFAULT_GENERATION_MODELS[resolved]
+  return { provider: resolved, modelName }
 }
 
 /**
@@ -70,7 +106,10 @@ export function createMessageHandler(
   flushPendingEvents: (streamId: string) => void
 ) {
   const electronAPI = (window as any).electronAPI
-  const isElectron = environment === 'electron'
+  const appClient = createHostAppClient(() => ({ ...getHostAppContext(), ...context.getToolContext?.() }))
+  const fileHashes = new Map<string, string>()
+  const appStreams = new Map<string, AbortController>()
+  context.registerCleanup?.(() => { appClient.dispose(); for (const controller of appStreams.values()) controller.abort(); appStreams.clear() })
 
   return async (event: MessageEvent) => {
     const iframe = context.getIframe()
@@ -84,7 +123,12 @@ export function createMessageHandler(
     let response: any = { success: false, error: 'Unknown request type' }
 
     try {
-      switch (type) {
+      const appMethods: Record<string, string> = { FS_READ_FILE: 'fs.readFile', FS_STAT: 'fs.stat', FS_WRITE_FILE: 'fs.writeFile', FS_MKDIR: 'fs.mkdir', SHELL_EXEC: 'exec.run', HTTP_REQUEST: 'http.request', CUSTOM_TOOL_EXECUTE: 'customTool.invoke', EXECUTE_TOOL: 'tools.invoke' }
+      if (isBrowserClient && appMethods[type]) {
+        const params = { ...options, ...(type === 'FS_WRITE_FILE' ? { expectedHash: options?.expectedHash ?? fileHashes.get(options?.filePath) } : {}) }
+        response = await appClient.call(appMethods[type], params, requestId)
+        if (response?.hash && options?.filePath) fileHashes.set(options.filePath, response.hash)
+      } else switch (type) {
         case 'DIALOG_OPEN_FILE':
           if (electronAPI?.dialog?.openFile) {
             response = await electronAPI.dialog.openFile(options)
@@ -110,7 +154,27 @@ export function createMessageHandler(
           break
 
         case 'FS_READ_FILE_STREAM':
-          if (electronAPI?.fs?.readFileStream) {
+          if (isBrowserClient) {
+            const read = await appClient.call('fs.readFile', { filePath: options?.filePath }, requestId)
+            if (!read.success) { response = read; break }
+            const streamId = `${requestId}:file`
+            const controller = new AbortController()
+            appStreams.set(streamId, controller); streamState.targets.add(streamId)
+            response = { success: true, streamId }
+            // Post after the acknowledgement. Only this parent owns the stream;
+            // no global stream IDs or filesystem roots are exposed to the iframe.
+            setTimeout(async () => {
+              const content = String(read.content ?? '')
+              try {
+                for (let offset = 0; offset < content.length; offset += 65536) {
+                  if (controller.signal.aborted) break
+                  iframe.contentWindow?.postMessage({ type: 'FS_READ_FILE_STREAM_CHUNK', streamId, chunk: content.slice(offset, offset + 65536) }, '*')
+                  await new Promise(resolve => setTimeout(resolve, 0))
+                }
+                iframe.contentWindow?.postMessage({ type: controller.signal.aborted ? 'FS_READ_FILE_STREAM_ABORTED' : 'FS_READ_FILE_STREAM_END', streamId }, '*')
+              } finally { appStreams.delete(streamId); streamState.targets.delete(streamId) }
+            }, 0)
+          } else if (electronAPI?.fs?.readFileStream) {
             streamState.awaitingResponse += 1
             try {
               response = await electronAPI.fs.readFileStream(options?.filePath, {
@@ -143,7 +207,11 @@ export function createMessageHandler(
           break
 
         case 'FS_ABORT':
-          if (electronAPI?.fs?.abortReadFileStream) {
+          if (!streamState.targets.has(options?.streamId)) { response = { success: false, error: 'Stream is not owned by this app' }; break }
+          if (isBrowserClient) {
+            appStreams.get(options?.streamId)?.abort()
+            response = { success: true }
+          } else if (electronAPI?.fs?.abortReadFileStream) {
             response = await electronAPI.fs.abortReadFileStream(options?.streamId)
           } else {
             response = { success: false, error: 'Stream abort not available (not in Electron)' }
@@ -246,7 +314,18 @@ export function createMessageHandler(
             break
           }
 
-          const allowedNamespaces = ['fs', 'dialog', 'shell', 'exec', 'http', 'storage', 'platformInfo']
+          const allowedNamespaces = ['fs', 'dialog', 'shell', 'exec', 'http', 'platformInfo']
+          if (isBrowserClient) {
+            const supported: Record<string, string> = { 'fs.readFile': 'fs.readFile', 'fs.stat': 'fs.stat', 'fs.writeFile': 'fs.writeFile', 'fs.mkdir': 'fs.mkdir', 'exec.run': 'exec.run', 'http.request': 'http.request' }
+            const hostMethod = supported[`${namespace}.${method}`]
+            if (!hostMethod) { response = { success: false, error: 'Unsupported app RPC method' }; break }
+            const values = Array.isArray(args) ? args : []
+            const params = namespace === 'fs' ? { filePath: values[0], dirPath: values[0], content: values[1], expectedHash: fileHashes.get(values[0]) }
+              : namespace === 'exec' ? { command: values[0], ...values[1] } : values[0] ?? {}
+            response = await appClient.call(hostMethod, params, requestId)
+            if (response?.hash && params.filePath) fileHashes.set(params.filePath, response.hash)
+            break
+          }
           if (!allowedNamespaces.includes(namespace)) {
             response = { success: false, error: `Namespace not allowed: ${namespace}` }
             break
@@ -284,15 +363,12 @@ export function createMessageHandler(
             provider,
             userId,
             accountId,
-            maxTokens,
             temperature,
             systemPrompt,
             attachmentsBase64,
             tools,
             cwd,
             rootPath,
-            response_format,
-            responseFormat,
           } = options || {}
 
           if (!prompt) {
@@ -300,9 +376,7 @@ export function createMessageHandler(
             break
           }
 
-          const modelName = typeof model === 'string' && model.trim() ? model.trim() : 'anthropic/claude-sonnet-4'
-          const resolvedProvider = resolveGenerationProvider(modelName, provider)
-          const effectiveResponseFormat = response_format ?? responseFormat
+          const { provider: resolvedProvider, modelName } = resolveGeneration(model, provider)
 
           const postChunk = (delta: string, fullText: string) => {
             iframe.contentWindow?.postMessage(
@@ -340,73 +414,6 @@ export function createMessageHandler(
               },
               '*'
             )
-          }
-
-          const streamCloudEphemeral = async (): Promise<GenerationStreamResult> => {
-            const streamResponse = await createStreamingRequest('/generate/ephemeral', null, {
-              method: 'POST',
-              body: JSON.stringify({
-                prompt,
-                model: modelName,
-                maxTokens: maxTokens || 4096,
-                temperature: temperature ?? 0.7,
-                systemPrompt,
-                attachmentsBase64,
-                response_format: effectiveResponseFormat,
-              }),
-            })
-
-            if (!streamResponse.ok) {
-              const errorText = await streamResponse.text()
-              throw new Error(`HTTP ${streamResponse.status}: ${errorText}`)
-            }
-
-            const reader = streamResponse.body?.getReader()
-            if (!reader) {
-              throw new Error('No response body')
-            }
-
-            const decoder = new TextDecoder()
-            let fullText = ''
-            const images: Array<{ url: string; mimeType: string }> = []
-            let sseBuffer = ''
-
-            while (true) {
-              const { done, value } = await reader.read()
-              if (done) break
-
-              sseBuffer += decoder.decode(value, { stream: true })
-              const lines = sseBuffer.split('\n')
-              sseBuffer = lines.pop() || ''
-
-              for (const line of lines) {
-                const trimmed = line.trim()
-                if (!trimmed.startsWith('data:')) continue
-                const data = trimmed.slice(5).trim()
-                if (!data || data === '[DONE]') continue
-
-                try {
-                  const parsed = JSON.parse(data)
-                  if (typeof parsed?.text === 'string' && parsed.text) {
-                    fullText += parsed.text
-                    postChunk(parsed.text, fullText)
-                  }
-                  if (typeof parsed?.reasoning === 'string' && parsed.reasoning) {
-                    postReasoning(parsed.reasoning)
-                  }
-                  if (typeof parsed?.image === 'string' && parsed.image) {
-                    const image = { url: parsed.image, mimeType: parsed?.mimeType || 'image/png' }
-                    images.push(image)
-                    postImage(image, images)
-                  }
-                } catch {
-                  fullText += data
-                  postChunk(data, fullText)
-                }
-              }
-            }
-
-            return { text: fullText, images }
           }
 
           const streamLocalHeadless = async (): Promise<GenerationStreamResult> => {
@@ -540,7 +547,7 @@ export function createMessageHandler(
           }
 
           try {
-            const generated = isElectron ? await streamLocalHeadless() : await streamCloudEphemeral()
+            const generated = await streamLocalHeadless()
             response = { success: true, text: generated.text, images: generated.images, provider: resolvedProvider }
           } catch (err) {
             response = { success: false, error: String(err), provider: resolvedProvider }
@@ -781,7 +788,8 @@ export function attachMessageBridge(
     awaitingResponse: 0,
   }
 
-  const context: BridgeContext = { getIframe, getUserId, getToolContext }
+  const appCleanupFns: Array<() => void> = []
+  const context: BridgeContext = { getIframe, getUserId, getToolContext, registerCleanup: cleanup => appCleanupFns.push(cleanup) }
   const flushPendingEvents = createFlushPendingEvents(getIframe, streamState)
   const streamCleanupFns = setupStreamForwarding(getIframe, streamState)
   const handleMessage = createMessageHandler(context, streamState, flushPendingEvents)
@@ -791,6 +799,7 @@ export function attachMessageBridge(
   return () => {
     window.removeEventListener('message', handleMessage)
     streamCleanupFns.forEach(cleanup => cleanup?.())
+    appCleanupFns.forEach(cleanup => cleanup())
     streamState.targets.clear()
     streamState.pendingEvents.clear()
   }

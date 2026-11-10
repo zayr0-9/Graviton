@@ -9,57 +9,57 @@ function setup() {
   const store: CredentialStore = { read: slot => data.get(slot) ?? null, isInitialized: slot => initialized.has(slot), write: (slot, value) => { initialized.add(slot); if (value) data.set(slot, value); else data.delete(slot) } }
   const refresh = vi.fn(async (_slot: AuthSlot, value: Credential) => ({ ...value, accessToken: 'new', refreshToken: 'rotated', expiresAt: now + 3_600_000 }))
   const manager = new AuthSessionManager(store, refresh, () => now)
-  manager.replace('app', { userId: 'user', accessToken: 'old', refreshToken: 'refresh', expiresAt: now - 1 })
+  manager.replace('codex', { userId: 'user', accessToken: 'old', refreshToken: 'refresh', expiresAt: now - 1 })
   return { manager, refresh, store, data, advance: (ms: number) => { now += ms } }
 }
 describe('single-owner authentication lifecycle', () => {
   it('coalesces refresh and persists the rotation before returning', async () => {
     const { manager, refresh, store } = setup()
-    const values = await Promise.all(Array.from({ length: 20 }, () => manager.resolve('app')))
+    const values = await Promise.all(Array.from({ length: 20 }, () => manager.resolve('codex')))
     expect(refresh).toHaveBeenCalledTimes(1)
     expect(values.every(value => value.accessToken === 'new')).toBe(true)
-    expect(store.read('app')?.refreshToken).toBe('rotated')
-    expect(manager.snapshot('app').status).toBe('ready')
+    expect(store.read('codex')?.refreshToken).toBe('rotated')
+    expect(manager.snapshot('codex').status).toBe('ready')
   })
   it('uses a newer revision instead of rotating again for simultaneous rejected requests', async () => {
     const { manager, refresh } = setup()
-    await manager.resolve('app')
-    await manager.resolve('app', { rejectedRevision: 0 })
+    await manager.resolve('codex')
+    await manager.resolve('codex', { rejectedRevision: 0 })
     expect(refresh).toHaveBeenCalledTimes(1)
   })
   it('does not erase credentials or return an expired token on temporary failure', async () => {
     const { manager, refresh, store } = setup()
     refresh.mockRejectedValue(new Error('offline'))
-    await expect(manager.resolve('app')).rejects.toMatchObject({ category: 'temporarily_unavailable' })
-    expect(store.read('app')?.refreshToken).toBe('refresh')
-    await expect(manager.resolve('app')).rejects.toMatchObject({ category: 'temporarily_unavailable' })
+    await expect(manager.resolve('codex')).rejects.toMatchObject({ category: 'temporarily_unavailable' })
+    expect(store.read('codex')?.refreshToken).toBe('refresh')
+    await expect(manager.resolve('codex')).rejects.toMatchObject({ category: 'temporarily_unavailable' })
     expect(refresh).toHaveBeenCalledTimes(1)
   })
   it('fences a refresh that completes after logout', async () => {
     const { manager, refresh, store } = setup()
     let finish!: (value: any) => void
     refresh.mockImplementation(() => new Promise(resolve => { finish = resolve }))
-    const pending = manager.resolve('app')
+    const pending = manager.resolve('codex')
     await Promise.resolve()
-    manager.replace('app', null)
+    manager.replace('codex', null)
     finish({ userId: 'user', accessToken: 'late', refreshToken: 'late', expiresAt: 9_000_000 })
     await expect(pending).rejects.toMatchObject({ category: 'reauth_required' })
-    expect(store.read('app')).toBeNull()
-    expect(manager.snapshot('app').status).toBe('signed_out')
+    expect(store.read('codex')).toBeNull()
+    expect(manager.snapshot('codex').status).toBe('signed_out')
   })
   it('never adopts a different account on refresh', async () => {
     const { manager, refresh, store } = setup()
-    refresh.mockResolvedValue({ ...store.read('app')!, userId: 'other', expiresAt: 9_000_000 })
-    await expect(manager.resolve('app')).rejects.toMatchObject({ category: 'reauth_required' })
-    expect(store.read('app')?.userId).toBe('user')
+    refresh.mockResolvedValue({ ...store.read('codex')!, userId: 'other', expiresAt: 9_000_000 })
+    await expect(manager.resolve('codex')).rejects.toMatchObject({ category: 'reauth_required' })
+    expect(store.read('codex')?.userId).toBe('user')
   })
   it('stops retrying terminal invalid grants and publishes token-free status', async () => {
     const { manager, refresh } = setup()
     const events: unknown[] = []
     manager.subscribe(value => events.push(value))
-    refresh.mockRejectedValue(new AuthFailure('app', 'reauth_required', 'Reconnect'))
-    await expect(manager.resolve('app')).rejects.toThrow('Reconnect')
-    await expect(manager.resolve('app')).rejects.toThrow('Reconnect')
+    refresh.mockRejectedValue(new AuthFailure('codex', 'reauth_required', 'Reconnect'))
+    await expect(manager.resolve('codex')).rejects.toThrow('Reconnect')
+    await expect(manager.resolve('codex')).rejects.toThrow('Reconnect')
     expect(refresh).toHaveBeenCalledTimes(1)
     expect(JSON.stringify(events)).not.toContain('accessToken')
     expect(JSON.stringify(events)).not.toContain('refreshToken')
@@ -67,31 +67,31 @@ describe('single-owner authentication lifecycle', () => {
   it('does not report a failed durable commit as a successful refresh', async () => {
     const { manager, store } = setup()
     store.write = () => { throw new Error('disk full') }
-    await expect(manager.resolve('app')).rejects.toMatchObject({ category: 'configuration_error' })
+    await expect(manager.resolve('codex')).rejects.toMatchObject({ category: 'configuration_error' })
   })
   it('rejects old run references after account replacement', async () => {
     const { manager } = setup()
-    const sessionId = manager.snapshot('app').sessionId!
-    manager.replace('app', { userId: 'other', accessToken: 'other', refreshToken: 'other', expiresAt: 9_000_000 })
-    await expect(manager.resolve('app', { sessionId })).rejects.toMatchObject({ category: 'reauth_required' })
+    const sessionId = manager.snapshot('codex').sessionId!
+    manager.replace('codex', { userId: 'other', accessToken: 'other', refreshToken: 'other', expiresAt: 9_000_000 })
+    await expect(manager.resolve('codex', { sessionId })).rejects.toMatchObject({ category: 'reauth_required' })
   })
 })
 
 describe('auth completion interleavings', () => {
   it('does not deliver credentials if a completion subscriber logs out', async () => {
     const { manager } = setup()
-    manager.subscribe(snapshot => { if (snapshot.status === 'ready') manager.replace('app', null) })
-    await expect(manager.resolve('app')).rejects.toMatchObject({ category: 'reauth_required' })
+    manager.subscribe(snapshot => { if (snapshot.status === 'ready') manager.replace('codex', null) })
+    await expect(manager.resolve('codex')).rejects.toMatchObject({ category: 'reauth_required' })
   })
   it('does not return a pre-logout token when logout persistence fails during a temporary refresh failure', async () => {
     const { manager, refresh, store } = setup()
-    store.write('app', { ...store.read('app')!, acquiredAt: 0, expiresAt: 1_100_000 })
+    store.write('codex', { ...store.read('codex')!, acquiredAt: 0, expiresAt: 1_100_000 })
     let fail!: (error: Error) => void
     refresh.mockImplementation(() => new Promise((_resolve, reject) => { fail = reject }))
-    const pending = manager.resolve('app')
+    const pending = manager.resolve('codex')
     await Promise.resolve()
     store.write = () => { throw new Error('disk full') }
-    expect(() => manager.replace('app', null)).toThrow('Could not save')
+    expect(() => manager.replace('codex', null)).toThrow('Could not save')
     fail(new Error('offline'))
     await expect(pending).rejects.toMatchObject({ category: 'temporarily_unavailable' })
   })
@@ -99,11 +99,11 @@ describe('auth completion interleavings', () => {
     const { manager, refresh, store } = setup()
     let finish!: (value: any) => void
     refresh.mockImplementation(() => new Promise(resolve => { finish = resolve }))
-    const pending = manager.resolve('app')
+    const pending = manager.resolve('codex')
     await Promise.resolve()
     manager.stop()
-    finish({ ...store.read('app')!, accessToken: 'late', expiresAt: 9_000_000 })
+    finish({ ...store.read('codex')!, accessToken: 'late', expiresAt: 9_000_000 })
     await expect(pending).rejects.toBeDefined()
-    expect(store.read('app')?.accessToken).toBe('old')
+    expect(store.read('codex')?.accessToken).toBe('old')
   })
 })

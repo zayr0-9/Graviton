@@ -1,11 +1,18 @@
+import { selectHostFolder } from '../platform/hostPathPicker'
+import { newClientId } from '../helpers/clientId'
+import { isBrowserClient, isHostClient, isNativeShell } from '../platform/clientCapabilities'
+import { ConversationOpeningOverlay } from '../components/ChatPane/ConversationOpeningOverlay'
 import { useModelSwitchConfirmation } from '../hooks/useModelSwitchConfirmation'
 import { ModelSwitchDialog } from '../components/ModelSelectControl/ModelSwitchDialog'
-import { resolveBranchModelSelection } from '../features/chats/branchModelSelection'
+import { isClaudeProvider, isClaudeTranscriptMessage } from '../../../../shared/claudeProvider'
+import { isCleanStartBranchEdit, isProviderHandoffEdit, resolveComposerModelSelection, resolveComposerClaudeLock, resolveSummaryContinuation } from '../features/chats/branchModelSelection'
 import { resolveBranchFastMode } from '../features/chats/branchFastMode'
+import { resolveComposerToolApproval } from '../features/chats/branchToolApproval'
 import { isCommittedCompaction } from '../../../../shared/compaction'
-import { isHiddenCompactionMessage } from '../features/chats/summaryPresentation'
+import { isHiddenCompactionMessage, resolveBranchBeforeSummaryAnchor } from '../features/chats/summaryPresentation'
 import { useQueryClient } from '@tanstack/react-query'
-import { useVirtualizer } from '@tanstack/react-virtual'
+import { defaultRangeExtractor, useVirtualizer } from '@tanstack/react-virtual'
+import { resolveExplainAnchorId, resolveLiveExplainSource, updateLiveExplainSurface, type LiveExplainSource, type LiveExplainSurface } from '../components/ChatMessage/liveExplainSelection'
 import 'boxicons' // Types
 import 'boxicons/css/boxicons.min.css'
 import { AnimatePresence, motion } from 'framer-motion'
@@ -41,13 +48,14 @@ import {
   ReasoningLevelControl,
   Select,
   SettingsPane,
+  BackgroundTasksIndicator,
   StreamingThinkingIndicator,
   ToolJobsModal,
   ToolPermissionDialog,
 } from '../components'
 import { ChatErrorBubble } from '../components/ChatErrorBubble/ChatErrorBubble'
 import { ActionPopoverButton, ActionPopoverDisclosure, ActionPopoverSwitch } from '../components/ActionPopover/ActionPopoverControls'
-import { ClipboardCheck, CodeXml, MessageSquare, ShieldHalf } from 'lucide-react'
+import { ClipboardCheck, CodeXml, MessageSquare, Plus, ShieldCheck, ShieldHalf, ShieldQuestion, X } from 'lucide-react'
 import { useConversationRunStatistics } from '../hooks/useConversationRunStatistics'
 import { deriveRunStatistics, placeRunFooters, interleaveRunFooters, type RunStatisticsFooterData } from '../features/chats/runStatistics'
 import { RunStatisticsFooter } from '../components/ChatMessage/RunStatisticsFooter'
@@ -90,7 +98,6 @@ import {
   useCustomChatTheme,
   useHtmlDarkMode,
 } from '../components/ThemeManager/themeConfig'
-import { isCommunityMode } from '../config/runtimeMode'
 import { getCompactionPresentationScope, isCompactionVisibleFor, type CompactionOwner } from '../features/chats/compactionVisibility'
 import {
   abortGeneration,
@@ -129,7 +136,6 @@ import {
   selectSendingState,
   selectStreamUndoRoot,
   sendMessage,
-  syncConversationToLocal,
   updateConversationTitle,
   updateMessage,
 } from '../features/chats'
@@ -138,6 +144,7 @@ import type {
   ContentBlock,
   HookRunRecord,
   ImageDraftTarget,
+  StreamState,
   StreamUndoSummary,
   ToolCall,
 } from '../features/chats/chatTypes'
@@ -145,9 +152,10 @@ import { selectChatErrorsForConversation } from '../features/chats/chatSelectors
 import { changeOperationMode, enqueueUserMessage, loadMessageQueue, cancelQueuedMessage, readServerLoopRejection } from '../features/chats/chatActions'
 import { QueuedMessages } from '../components/ChatMessage/QueuedMessages'
 import { OperationModeNotice } from '../components/ChatMessage/OperationModeNotice'
+import { claudeModeNoticesByMessageId } from '../features/chats/claudeModeNotices'
 import { FullAccessNotice } from '../components/ChatMessage/FullAccessNotice'
 import { isFullAccessNotification, isRunSettingsNotification } from '../../../../shared/accessNotifications'
-import { SummarisedMessage } from '../components/ChatMessage/SummarisedMessage'
+import { SummaryBranchMessage } from '../components/ChatMessage/SummaryBranchMessage'
 import {
   buildChatErrorRecord,
   classifyLocalChatError,
@@ -183,6 +191,7 @@ import {
 import { generateStreamId, isStreamMessageAlreadyRendered } from '../features/chats/streamHelpers'
 import { recordSentMessage } from '../components/ChatPane/sentMessageHistory'
 import { getComposerSubmissionAvailability } from '../components/ChatPane/composerSubmission'
+import { ComposerSurface } from '../components/ChatPane/ComposerSurface'
 import {
   convContextSet,
   Conversation,
@@ -191,8 +200,8 @@ import {
   systemPromptSet,
   updateResearchNote,
 } from '../features/conversations'
-import { updateCwd } from '../features/conversations/conversationActions'
-import { removeSelectedFileForChat, selectExtension, updateIdeContext } from '../features/ideContext'
+import { parseAdditionalCwds, updateAdditionalCwds, updateCwd } from '../features/conversations/conversationActions'
+import { selectExtension, updateIdeContext } from '../features/ideContext'
 import {
   selectCurrentSelection,
   selectExtensions,
@@ -208,15 +217,12 @@ import {
   loadChatReasoningSettings,
 } from '../helpers/chatReasoningSettingsStorage'
 import {
-  CHAT_UI_ADDED_FILES_PILLS_VISIBILITY_CHANGE_EVENT,
-  CHAT_UI_ADDED_FILES_PILLS_VISIBILITY_KEY,
   CHAT_UI_AUTO_COMPACTION_ENABLED_CHANGE_EVENT,
   CHAT_UI_AUTO_COMPACTION_ENABLED_KEY,
   CHAT_UI_TOKEN_USAGE_HOVER_DETAILS_VISIBILITY_CHANGE_EVENT,
   CHAT_UI_TOKEN_USAGE_HOVER_DETAILS_VISIBILITY_KEY,
   CHAT_UI_TOKEN_USAGE_VISIBILITY_CHANGE_EVENT,
   loadAutoCompactionEnabled,
-  loadShowAddedFilesPills,
   loadShowTokenUsageBar,
   loadShowTokenUsageHoverDetails,
 } from '../helpers/chatUiSettingsStorage'
@@ -226,7 +232,6 @@ import {
   ProviderSettings,
   resolveProviderContextLength,
 } from '../helpers/providerSettingsStorage'
-import { isOrchestratorEnabled, toggleOrchestratorEnabled } from '../helpers/subagentToolSettings'
 import { useSyncExternalStore } from 'react'
 import { isFullAccessEnabled, setFullAccessEnabled, subscribeFullAccess } from '../helpers/fullAccessSettings'
 import { handleChatToggleShortcut, loadModelShortcutSlots } from '../helpers/chatKeyboardShortcuts'
@@ -244,12 +249,10 @@ import { useRunningJobs } from '../hooks/useToolJobs'
 import {
   ResearchNoteItem,
   useConversationsByProject,
-  useConversationStorageMode,
   useModels,
   useSelectedModel,
   useSelectModel,
 } from '../hooks/useQueries'
-import { useSubscriptionStatus } from '../hooks/useSubscriptionStatus'
 import { useConversationSnapshotCoordinator } from '../hooks/useConversationSnapshotCoordinator'
 import { CHAT_INSERT_FILE_PATH_EVENT, type ChatInsertFilePathDetail } from '../helpers/chatInputBridge'
 import { dispatchOpenWorkspaceMutationDiffs } from '../helpers/workspaceMutationDiffBridge'
@@ -282,6 +285,7 @@ type MessageRenderRow =
       messages: Message[]
       toolCount: number
       reasoningCount: number
+      leadingMessageId?: MessageId
       bridgedMessageId?: MessageId
     }
 
@@ -368,7 +372,12 @@ type AddedIdeContext = {
 
 type StreamingThinkingIndicatorPlacement = 'message' | 'input-tab'
 
+// Identifies exactly the workspace announcement a send carried, so a later change is never
+// consumed by an older send finishing.
+type PendingCwdAnnouncement = { cwd?: string; additionalCwds?: string[] }
+
 const EMPTY_PARSED_MESSAGE_DATA: ParsedMessageData = {}
+const NO_BACKGROUND_TASKS: NonNullable<StreamState['backgroundTasks']> = []
 const COMPOSER_SLASH_COMMANDS = [
   'status-openai',
   'compact',
@@ -388,7 +397,6 @@ const BENCH_MAX_EVENTS = 1200
 const BENCH_SCROLL_ACTIVE_WINDOW_MS = 140
 const THEME_DEMO_INTERVAL_MS = 500
 const STREAMING_THINKING_INDICATOR_PLACEMENT_STORAGE_KEY = 'chat:streamingThinkingIndicatorPlacement'
-const EXPANDED_FILE_PREVIEW_EXIT_MS = 150
 
 const getStoredStreamingThinkingIndicatorPlacement = (): StreamingThinkingIndicatorPlacement => {
   try {
@@ -919,6 +927,12 @@ const parseMessageDataForRender = (msg: Message): ParsedMessageData => {
         parsedBlocks = Array.isArray(parsed) ? parsed : [parsed]
       }
 
+      // Claude rows persisted before thinking summaries were requested hold signature-only
+      // (empty) thinking blocks; they carry nothing to show.
+      parsedBlocks = parsedBlocks.filter(
+        block => block?.type !== 'thinking' || (typeof block.content === 'string' && block.content.trim().length > 0)
+      )
+
       if (parsedBlocks.length > 0) {
         const hasMissingIndexes = parsedBlocks.some(block => typeof block.index !== 'number')
         const isSortedByIndex = parsedBlocks.every((block, index, arr) => {
@@ -977,7 +991,10 @@ const parseMessageDataForRender = (msg: Message): ParsedMessageData => {
     }
   }
 
-  return { toolCalls, contentBlocks }
+  // Legacy `tool_calls` repeats the blocks' `tool_use` entries; it describes a row only
+  // when the row has no `tool_use` blocks.
+  const hasToolUseBlocks = contentBlocks?.some(block => block?.type === 'tool_use') ?? false
+  return { toolCalls: hasToolUseBlocks ? undefined : toolCalls, contentBlocks }
 }
 
 
@@ -1036,22 +1053,6 @@ function Chat() {
     }
   }, [focusLocalInput, updateLocalInput])
 
-  // Subscription status for free/paid detection
-  const { isFreeUser } = useSubscriptionStatus(userId)
-
-  const modelSelectFooter = isFreeUser ? (
-    <div className='space-y-2'>
-      {/* <div className='text-sm text-neutral-700 dark:text-neutral-200'>Subscribe now for access to all 400+ models</div> */}
-      <Button
-        variant='outline2'
-        size='small'
-        className='w-full text-[13px]  text-neutral-500 dark:text-neutral-200'
-        onClick={() => navigate('/payment')}
-      >
-        Subscribe now for access to all 400+ models
-      </Button>
-    </div>
-  ) : null
 
 
   // Working directory input for local agent flows
@@ -1062,6 +1063,10 @@ function Chat() {
   const cwdLoadSeqRef = useRef(0)
   const pendingManualExtensionSyncRef = useRef(false)
   const pendingCwdAnnouncementByConversationRef = useRef(new Map<string, string>())
+  // Extra roots tools may use besides ccCwd. Persisted per conversation (local row only).
+  const [additionalCwds, setAdditionalCwds] = useState<string[]>([])
+  const [additionalCwdsSaving, setAdditionalCwdsSaving] = useState(false)
+  const pendingAdditionalCwdsAnnouncementByConversationRef = useRef(new Map<string, string[]>())
 
   // Image generation configuration (aspect ratio and size for Gemini image models)
   const [imageConfig, setImageConfig] = useState<ImageConfig>({})
@@ -1087,10 +1092,7 @@ function Chat() {
   const conversationIdFromUrl = conversationIdParam ? parseId(conversationIdParam) : null
   const projectIdFromUrl = projectIdParam === 'null' ? null : projectIdParam || null
 
-  // Get storageMode from navigation state (passed from Heimdall when creating new chat)
-  // This is CRITICAL for immediate routing to local server before cache is populated
   const location = useLocation()
-  const storageModeFromNav = location.state?.storageMode as 'local' | 'cloud' | undefined
 
   // Provider settings from localStorage
   const [providerSettings, setProviderSettings] = useState<ProviderSettings>(() => loadProviderSettings())
@@ -1100,7 +1102,18 @@ function Chat() {
   // Redux selectors
   const currentUser = useAppSelector(selectCurrentUser)
   const providers = useAppSelector(selectProviderState)
-  const branchModelSelection = useAppSelector(state => resolveBranchModelSelection(state.chat))
+  const branchModelSelection = useAppSelector(state => resolveComposerModelSelection(state.chat), (a, b) => a?.provider === b?.provider && a?.model === b?.model)
+  const claudeBranchLock = useAppSelector(state => resolveComposerClaudeLock(state.chat), (a, b) => a?.provider === b?.provider && a?.model === b?.model)
+  const hasSelectedHistory = useAppSelector(state => state.chat.conversation.currentPath.length > 0 &&
+    !resolveSummaryContinuation(state.chat) &&
+    !(state.chat.composition.editingBranch && isProviderHandoffEdit(state.chat)))
+  // Newest activity on a branch whose prompt cache a model switch could invalidate; null when nothing is cached.
+  const modelSwitchLastActivityAt = useAppSelector(state => {
+    const tip = state.chat.conversation.currentPath.at(-1)
+    if (!hasSelectedHistory || tip == null) return null
+    return state.chat.conversation.messages.find(row => String(row.id) === String(tip))?.created_at
+  })
+  const isClaudeSession = isClaudeProvider(branchModelSelection?.provider ?? providers.currentProvider)
   const toolDefinitions = useAppSelector(state => state.chat.tools)
   // MCP tools with a UI resource draw the always-open app card (ToolCallGroupCard). The row
   // estimator needs the same distinction, or every plain MCP call is guessed 600px too tall.
@@ -1124,6 +1137,9 @@ function Chat() {
   // const canSendFromRedux = useAppSelector(selectCanSend)
   const sendingState = useAppSelector(selectSendingState)
   const currentConversationId = useAppSelector(selectCurrentConversationId)
+  // Async saves compare against this so a late response never lands in another conversation.
+  const latestConversationIdRef = useRef(currentConversationId)
+  latestConversationIdRef.current = currentConversationId
   // Undismissed tier-2 failures for this conversation. Memoized + stable-empty, so a
   // conversation with no errors never produces a new array reference.
   const chatErrorRecords = useAppSelector(state => selectChatErrorsForConversation(state, currentConversationId))
@@ -1231,6 +1247,8 @@ function Chat() {
       active: effectiveViewStream?.active ?? false,
       status: effectiveViewStream?.status ?? 'idle',
       compactionStatus: effectiveViewStream?.compactionStatus,
+      backgroundTasks: effectiveViewStream?.backgroundTasks ?? NO_BACKGROUND_TASKS,
+      backgroundTurnIdle: Boolean(effectiveViewStream?.backgroundTurnIdle),
       buffer: effectiveViewStream?.buffer ?? '',
       thinkingBuffer: effectiveViewStream?.thinkingBuffer ?? '',
       toolCalls: effectiveViewStream?.toolCalls ?? [],
@@ -1313,13 +1331,12 @@ function Chat() {
       ? (state.chat.planClarificationRequestsByStream[streamState.id] ?? null)
       : null
   )
-  const toolAutoApprove = useAppSelector(state => state.chat.toolAutoApprove)
-  // D3: free-tier exhaustion is a chat bubble, not a blocking modal. `sseProjection` records the
-  // `free_tier_exhausted` bubble directly on `generation_limit_reached` and never raises
-  // `freeTier.showLimitModal`, so the flag is dead and the modal is not rendered from here.
+  const toolAutoApprove = useAppSelector(state => resolveComposerToolApproval(state.chat))
+  const claudeAutoMode = useAppSelector(state => state.chat.claudeAutoMode === true)
+  const claudeUltracode = useAppSelector(state => state.chat.claudeUltracode === true)
+  // Claude cycles Ask -> Auto -> Allow all; Auto is the CLI classifier and only replaces Ask.
+  const claudeApproval = toolAutoApprove ? 'allow_all' : claudeAutoMode ? 'auto' : 'ask'
 
-  // React Query for message fetching - MOVED BELOW after projectConversations is available
-  // to enable passing storage_mode from cached conversations
   const selectedPath = useAppSelector(selectCurrentPath)
   const modeChange = useAppSelector(state => {
     const change = state.chat.operationModeChanges?.[String(currentConversationId)]
@@ -1514,18 +1531,9 @@ function Chat() {
   )
   const optimisticBranchMessage = useAppSelector(state => state.chat.composition.optimisticBranchMessage)
 
-  // File chip expanded modal state
-  const [expandedFilePath, setExpandedFilePath] = useState<string | null>(null)
-  // Temporary closing state to animate back to hover size before hiding
-  const [closingFilePath, setClosingFilePath] = useState<string | null>(null)
-  // Temporary opening state to blur content while expanding
-  const [openingFilePath, setOpeningFilePath] = useState<string | null>(null)
-  // Anchor position for fixed expanded panel (viewport coords)
-  const [expandedAnchor, setExpandedAnchor] = useState<{ left: number; top: number } | null>(null)
   // Dynamic input area height for adaptive streaming/message padding
   const [inputAreaHeight, setInputAreaHeight] = useState(170)
   const [containerHeight, setContainerHeight] = useState(1100)
-  // Credits refresh loading state
   // Todo list collapsed state
   const [todoListCollapsed, setTodoListCollapsed] = useState(false)
   const [workspaceMutationsCollapsed, setWorkspaceMutationsCollapsed] = useState(false)
@@ -1533,10 +1541,8 @@ function Chat() {
     useState<StreamingThinkingIndicatorPlacement>(getStoredStreamingThinkingIndicatorPlacement)
   // Tool jobs modal state
   const [jobsModalOpen, setJobsModalOpen] = useState(false)
-  const [orchestratorEnabled, setOrchestratorEnabledState] = useState(() => isOrchestratorEnabled())
   const fullAccessEnabled = useSyncExternalStore(subscribeFullAccess, isFullAccessEnabled)
   // OpenRouter cloud-sign-in required modal state
-  const [openRouterLoginRequiredModalOpen, setOpenRouterLoginRequiredModalOpen] = useState(false)
   // OpenAI ChatGPT login modal state
   const [openaiLoginModalOpen, setOpenaiLoginModalOpen] = useState(false)
   const [openaiAuthFlow, setOpenaiAuthFlow] = useState<{ url: string; verifier: string; state: string } | null>(null)
@@ -1573,12 +1579,7 @@ function Chat() {
   const themeDemoThemeIndexRef = useRef(0)
 
   const composerSlashCommands = COMPOSER_SLASH_COMMANDS
-  const isElectronEnv = useMemo(
-    () =>
-      import.meta.env.VITE_ENVIRONMENT === 'electron' ||
-      (typeof window !== 'undefined' && (window as any).__IS_ELECTRON__),
-    []
-  )
+  const isElectronEnv = isNativeShell
 
   const appendBenchEvent = useCallback((kind: string, details?: Record<string, unknown>) => {
     const ts = typeof performance !== 'undefined' ? performance.now() : Date.now()
@@ -1647,7 +1648,7 @@ function Chat() {
         durationMs,
       },
       environment: {
-        mode: import.meta.env.VITE_ENVIRONMENT,
+        mode: typeof __BUILD_TARGET__ !== 'undefined' ? __BUILD_TARGET__ : 'unknown',
         electron: isElectronEnv,
         userAgent: typeof navigator !== 'undefined' ? navigator.userAgent : 'unknown',
         platform: typeof navigator !== 'undefined' ? navigator.platform : 'unknown',
@@ -1957,6 +1958,7 @@ function Chat() {
 
     return { handled: true, clearInput: true }
   }, [
+    isClaudeSession,
     compactingConversationId,
     currentConversationId,
     dispatch,
@@ -2041,31 +2043,6 @@ function Chat() {
   //     sample,
   //   })
   // }, [isElectronEnv, mentionableFilesForDebug, workspace?.name, workspace?.rootPath, ideContext.allFiles])
-
-  const handleCloseExpandedPreview = useCallback(() => {
-    if (!expandedFilePath) return
-    const path = expandedFilePath
-    setExpandedFilePath(null)
-    setClosingFilePath(path)
-    window.setTimeout(() => setClosingFilePath(null), EXPANDED_FILE_PREVIEW_EXIT_MS)
-  }, [expandedFilePath])
-
-  const escapeRegExp = (str: string) => str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-
-  const handleRemoveFileSelection = useCallback(
-    (file: { path: string; relativePath: string; name?: string }) => {
-      // Remove from selected files in Redux
-      dispatch(removeSelectedFileForChat(file.path))
-
-      // Also remove the textual @mention from the local input value
-      const mentionName = file.name || file.path.split('/').pop() || file.relativePath.split('/').pop() || ''
-      if (mentionName) {
-        const mentionRegex = new RegExp(`@${escapeRegExp(mentionName)}(\\b|$)\\s*`, 'g')
-        updateLocalInput(prev => prev.replace(mentionRegex, ''))
-      }
-    },
-    [dispatch, updateLocalInput]
-  )
 
   const replaceFileMentionsWithPath = useCallback(
     // Renamed for clarity; revert if preferred.
@@ -2275,6 +2252,8 @@ function Chat() {
   const renderableMessages = useMemo(() => {
     return displayMessages.filter(msg => msg && msg.id != null && !isHiddenCompactionMessage(msg))
   }, [displayMessages])
+  // Claude turns keep their mode on the user row; show it like the other providers' mode rows.
+  const claudeModeNotices = useMemo(() => claudeModeNoticesByMessageId(displayMessages.filter(Boolean)), [displayMessages])
 
   const conversationRuns = useConversationRunStatistics(conversationIdFromUrl == null ? null : String(conversationIdFromUrl))
   const runFooters = useMemo(() => deriveRunStatistics(conversationMessages, selectedPath, conversationRuns,
@@ -2452,6 +2431,25 @@ function Chat() {
       return true
     }
 
+    // Intro prose that only hands off to tools (reasoning/text, then tool calls, no prose after).
+    // The prose keeps its row; its process blocks open the following run so the turn reads as one group.
+    const leadsIntoProcessRun = (messageIndex: number): boolean => {
+      const msg = renderableMessages[messageIndex]
+      if (!msg || (msg.role !== 'assistant' && msg.role !== 'ex_agent') || isCommittedCompaction(msg)) return false
+      if (runFootersByAnchor.has(String(msg.id))) return false
+      const next = renderableMessages[messageIndex + 1]
+      if (!next || !isProcessOnlyAssistantStep(next)) return false
+
+      const parsed = parsedMessageDataById.get(msg.id) ?? EMPTY_PARSED_MESSAGE_DATA
+      const blocks = parsed.contentBlocks
+      if (!blocks?.length || hasResponsesOutputItems(parsed) || hasExcludedGroupingTool(parsed)) return false
+      const firstTool = blocks.findIndex(block => block.type === 'tool_use' || block.type === 'tool_result')
+      if (firstTool < 0) return false
+      const isProse = (block: ContentBlock) => block.type === 'text' && block.content.trim().length > 0
+      return blocks.slice(0, firstTool).some(isProse) && blocks.every((block, blockIndex) =>
+        isProcessContentBlock(block) || block.type === 'context_injection' || (block.type === 'text' && (blockIndex < firstTool || !isProse(block))))
+    }
+
     if (!groupToolReasoningRuns) {
       const plainRows = renderableMessages.map(msg => ({
         kind: 'message' as const,
@@ -2506,9 +2504,12 @@ function Chat() {
       if (runMessages.length >= CROSS_MESSAGE_PROCESS_GROUP_MIN_MESSAGES) {
         const memberMessageIds = runMessages.map(message => message.id)
 
+        const leadingMessage = index > 0 && leadsIntoProcessRun(index - 1) ? renderableMessages[index - 1] : undefined
+        const leadingMessageId = leadingMessage?.id
+
         let toolCount = 0
         let reasoningCount = 0
-        for (const message of runMessages) {
+        for (const message of leadingMessage ? [leadingMessage, ...runMessages] : runMessages) {
           const parsed = parsedMessageDataById.get(message.id) ?? EMPTY_PARSED_MESSAGE_DATA
           toolCount += countToolSignals(parsed)
           reasoningCount += countReasoningSignals(message, parsed)
@@ -2516,7 +2517,8 @@ function Chat() {
 
         let bridgedMessageId: MessageId | undefined
         const trailingCandidate = renderableMessages[cursor]
-        if (!runFootersByAnchor.has(String(runMessages[runMessages.length - 1]?.id)) &&
+        // A message that opens the next run is not also bridged back into this one.
+        if (!runFootersByAnchor.has(String(runMessages[runMessages.length - 1]?.id)) && !leadsIntoProcessRun(cursor) &&
             trailingCandidate && (trailingCandidate.role === 'assistant' || trailingCandidate.role === 'ex_agent')) {
           const trailingParsed = parsedMessageDataById.get(trailingCandidate.id) ?? EMPTY_PARSED_MESSAGE_DATA
           const trailingHasProcessSignal = hasProcessSignal(trailingCandidate, trailingParsed)
@@ -2541,6 +2543,7 @@ function Chat() {
             toolCount,
             reasoningCount,
             messageIds: memberMessageIds,
+            leadingMessageId,
             bridgedMessageId,
           })
         }
@@ -2555,6 +2558,7 @@ function Chat() {
           messages: runMessages,
           toolCount,
           reasoningCount,
+          leadingMessageId,
           bridgedMessageId,
         })
       } else {
@@ -2591,8 +2595,11 @@ function Chat() {
     return rows
   }, [renderableMessages, renderableMessagesSignature, groupToolReasoningRuns, parsedMessageDataById, runBoundarySignature, runFootersByAnchor])
 
+  // Rows whose process blocks are drawn inside an adjacent group (leading intro or trailing answer).
   const bridgedProcessMessageIds = useMemo(() => new Set(messageRenderRows.flatMap(row =>
-    row.kind === 'process_group' && row.bridgedMessageId ? [String(row.bridgedMessageId)] : [])), [messageRenderRows])
+    row.kind === 'process_group'
+      ? [row.leadingMessageId, row.bridgedMessageId].filter(id => id != null).map(String)
+      : [])), [messageRenderRows])
 
   const messageById = useMemo(() => {
     const map = new Map<string, Message>()
@@ -2663,8 +2670,11 @@ function Chat() {
   const virtualizerPaddingEnd = 0
 
   // Determine if optimistic/streaming messages should be shown (all modes for instant feedback)
-  const showOptimisticMessage = !!optimisticMessage
-  const showOptimisticBranchMessage = !!optimisticBranchMessage
+  // The optimistic slots are global; never render another chat's pending bubble here.
+  const showOptimisticMessage = !!optimisticMessage &&
+    String(optimisticMessage.conversation_id) === String(currentConversationId)
+  const showOptimisticBranchMessage = !!optimisticBranchMessage &&
+    String(optimisticBranchMessage.conversation_id) === String(currentConversationId)
   const compactionActive = isCurrentBranchCompacting ||
     (currentViewStream?.active === true && currentViewStream.compactionStatus === 'started')
   // Summary/mode rows can extend the same branch during completion. They must not
@@ -2748,6 +2758,13 @@ function Chat() {
     streamState.status === 'aborting'
   const showGenerationLoadingAnimation =
     selection.status !== 'pending' && selection.status !== 'error' && (showCompactionStatus || streamLifecycleActive || hasRunningToolJobForCurrentBranch)
+  // A Claude run whose turn ended stays open only for its background tasks: name them instead of "Composing".
+  const backgroundTasksView = showGenerationLoadingAnimation && streamLifecycleActive && streamState.id && currentConversationId &&
+    streamState.backgroundTasks.length
+    ? { conversationId: String(currentConversationId), streamId: streamState.id, tasks: streamState.backgroundTasks,
+        idle: streamState.backgroundTurnIdle && !showCompactionStatus }
+    : null
+  const showThinkingIndicator = !backgroundTasksView?.idle
   const hasFinalTextStreaming = Boolean(streamState.buffer?.trim())
   const hasProcessStreamingContent =
     Boolean(streamState.thinkingBuffer) || streamState.toolCalls.length > 0 || streamState.events.length > 0
@@ -2769,18 +2786,42 @@ function Chat() {
     anchor: streamState.lastCompletedMessageId ?? streamState.branchAnchorMessageId,
     boundaryAfter: trailingAgentRow?.kind === 'process_group' && runFootersByAnchor.has(String(trailingAgentRow.memberMessageIds[trailingAgentRow.memberMessageIds.length - 1])),
   }) ? String(trailingAgentRow.id) : null
+  const [liveExplainSurface, setLiveExplainSurface] = useState<LiveExplainSurface | null>(null)
+  const liveExplainSourceRef = useRef<LiveExplainSource | null>(null)
+  const handleLiveExplainOpenChange = useCallback((surface: LiveExplainSurface, open: boolean) => {
+    if (open) {
+      liveExplainSourceRef.current = {
+        streamId: streamState.id,
+        messageId: streamState.liveMessageId ?? streamState.persistedTurnMessageId,
+        previousCompletedId: streamState.lastCompletedMessageId,
+      }
+    }
+    setLiveExplainSurface(current => updateLiveExplainSurface(current, surface, open))
+  }, [streamState.id, streamState.liveMessageId, streamState.persistedTurnMessageId, streamState.lastCompletedMessageId])
+  const liveExplainOpenChangeRef = useRef(handleLiveExplainOpenChange)
+  liveExplainOpenChangeRef.current = handleLiveExplainOpenChange
+  const handleTailExplainOpenChange = useCallback((open: boolean) => liveExplainOpenChangeRef.current('tail', open), [])
+  const handleVirtualExplainOpenChange = useCallback((open: boolean) => liveExplainOpenChangeRef.current('virtual', open), [])
+  if (liveExplainSurface && liveExplainSourceRef.current) {
+    liveExplainSourceRef.current = resolveLiveExplainSource(liveExplainSourceRef.current, streamState, conversationMessages)
+  }
+  const liveExplainSourceReady = liveExplainSourceRef.current?.messageId != null && conversationMessages.some(
+    message => String(message.id) === String(liveExplainSourceRef.current?.messageId)
+  )
   const visibleLiveEvents = liveAgentGroupId ? liveAgentEvents.outside : streamState.events
   const showStandaloneStreamingMessage = showStreamingMessage && (!liveAgentGroupId || visibleLiveEvents.length > 0)
-  const showLiveStreamingTail = showStandaloneStreamingMessage && hasFinalTextStreaming
+  const showLiveStreamingTail = showStandaloneStreamingMessage && hasFinalTextStreaming && liveExplainSurface !== 'virtual'
   // Once the final answer is streaming, the live tail is rendered OUTSIDE TanStack Virtual as an
   // in-flow sibling (see the message list render) so its token-by-token growth never enters
   // virtualizer geometry or the ResizeObserver, and can never drag scrollTop. Only the
   // process-only phase (thinking/tools, no text yet) is kept as a measured virtual row.
-  const showStreamingMessageInVirtualList = showStandaloneStreamingMessage && !showLiveStreamingTail
+  const showStreamingMessageInVirtualList = (showStandaloneStreamingMessage && !showLiveStreamingTail) || liveExplainSurface === 'virtual'
   const showStreamingThinkingMessageRow = streamingThinkingIndicatorPlacement === 'message'
   const showStreamingThinkingInputTab = streamingThinkingIndicatorPlacement === 'input-tab'
   const showGenerationLoaderRow = showGenerationLoadingAnimation && showStreamingThinkingMessageRow
-  const showGenerationLoaderInVirtualList = showGenerationLoaderRow && !showLiveStreamingTail && !liveAgentGroupId
+  // Grouped live process work draws its own animated "Agent steps" status line; a second loader below it duplicates it.
+  const showsLiveAgentStepsStatus = groupToolReasoningRuns && !showCompactionStatus && showStreamingMessage && hasProcessStreamingContent
+  const showGenerationLoaderInVirtualList = showGenerationLoaderRow && !showLiveStreamingTail && !liveAgentGroupId && !showsLiveAgentStepsStatus
   // The in-flow bottom sentinel is the sole trailing spacer (paddingEnd is 0). Sized to mirror the
   // previous paddingEnd so scroll-to-bottom lands the last message in the same place. It must be
   // flexShrink:0 in the render, otherwise the flex column collapses it to 0 and there is no room to
@@ -3104,7 +3145,11 @@ function Chat() {
         // Summaries draw only an h-8 notice with py-1, regardless of payload size.
         if (isCommittedCompaction(message) || isWatcherCompletionMessage(message) || isImageAttachmentInfoMessage(message)) return smallChromeRowHeight(rootFontSize)
         if (isRunSettingsNotification(message)) return 32
-        const blocks = (parsedMessageDataById.get(message.id) ?? EMPTY_PARSED_MESSAGE_DATA).contentBlocks
+        const parsedBlocks = (parsedMessageDataById.get(message.id) ?? EMPTY_PARSED_MESSAGE_DATA).contentBlocks
+        // Bridged rows draw only their prose; their process blocks belong to the adjacent group.
+        const blocks = bridgedProcessMessageIds.has(String(message.id))
+          ? parsedBlocks?.filter(block => !isProcessContentBlock(block) && block.type !== 'context_injection')
+          : parsedBlocks
         // Mirrors `hasContent && canBranchMessage` in ChatMessage, which gates the actions row.
         const hasText = typeof message.content === 'string' && message.content.trim().length > 0
         const hasBlockContent =
@@ -3169,6 +3214,7 @@ function Chat() {
       fontSizeOffset,
       groupToolReasoningRuns,
       isMcpAppTool,
+      bridgedProcessMessageIds,
     ]
   )
 
@@ -3179,6 +3225,11 @@ function Chat() {
     getScrollElement: () => messagesContainerRef.current,
     estimateSize: estimateVirtualRowSize,
     overscan: 16, // Buffer rows above/below viewport
+    rangeExtractor: range => {
+      const indices = defaultRangeExtractor(range)
+      const explainIndex = liveExplainSurface === 'virtual' ? virtualRows.findIndex(row => row.kind === 'streaming_message') : -1
+      return explainIndex >= 0 && !indices.includes(explainIndex) ? [...indices, explainIndex].sort((a, b) => a - b) : indices
+    },
     // No paddingEnd: trailing scroll room comes from the in-flow bottom sentinel instead, so the
     // out-of-flow live tail sits flush under the last persisted message.
     paddingEnd: virtualizerPaddingEnd,
@@ -3434,37 +3485,43 @@ function Chat() {
     return `\n\n\`\`\`cwd_changed\n${displayCwd}\n\`\`\``
   }, [])
 
+  const formatAdditionalCwdsChangedFooter = useCallback((roots: string[]) => {
+    const display = roots.length > 0 ? roots.map(root => root.replace(/```/g, '\`\`\`')).join('\n') : '(none)'
+    return `\n\n\`\`\`additional_cwds_changed\n${display}\n\`\`\``
+  }, [])
+
   const withPendingCwdAnnouncement = useCallback(
     (conversationId: ConversationId | null, baseContent: string) => {
       if (!conversationId) {
-        return { content: baseContent, pendingCwdValue: null as string | null }
+        return { content: baseContent, pendingCwdValue: null as PendingCwdAnnouncement | null }
       }
 
       const key = String(conversationId)
-      const hasPending = pendingCwdAnnouncementByConversationRef.current.has(key)
-      if (!hasPending) {
-        return { content: baseContent, pendingCwdValue: null as string | null }
+      const cwd = pendingCwdAnnouncementByConversationRef.current.get(key)
+      const additional = pendingAdditionalCwdsAnnouncementByConversationRef.current.get(key)
+      if (cwd === undefined && additional === undefined) {
+        return { content: baseContent, pendingCwdValue: null as PendingCwdAnnouncement | null }
       }
 
-      const pendingCwdValue = pendingCwdAnnouncementByConversationRef.current.get(key) ?? ''
       return {
-        content: `${baseContent}${formatCwdChangedFooter(pendingCwdValue)}`,
-        pendingCwdValue,
+        content: `${baseContent}${cwd !== undefined ? formatCwdChangedFooter(cwd) : ''}${
+          additional !== undefined ? formatAdditionalCwdsChangedFooter(additional) : ''}`,
+        pendingCwdValue: { cwd, additionalCwds: additional } as PendingCwdAnnouncement | null,
       }
     },
-    [formatCwdChangedFooter]
+    [formatCwdChangedFooter, formatAdditionalCwdsChangedFooter]
   )
 
   const clearPendingCwdAnnouncement = useCallback(
-    (conversationId: ConversationId | null, pendingCwdValue: string | null) => {
+    (conversationId: ConversationId | null, pendingCwdValue: PendingCwdAnnouncement | null) => {
       if (!conversationId || pendingCwdValue == null) return
       const key = String(conversationId)
-      const hasPending = pendingCwdAnnouncementByConversationRef.current.has(key)
-      if (!hasPending) return
-
-      const currentPending = pendingCwdAnnouncementByConversationRef.current.get(key) ?? ''
-      if (currentPending === pendingCwdValue) {
+      if (pendingCwdValue.cwd !== undefined && pendingCwdAnnouncementByConversationRef.current.get(key) === pendingCwdValue.cwd) {
         pendingCwdAnnouncementByConversationRef.current.delete(key)
+      }
+      if (pendingCwdValue.additionalCwds !== undefined &&
+          pendingAdditionalCwdsAnnouncementByConversationRef.current.get(key) === pendingCwdValue.additionalCwds) {
+        pendingAdditionalCwdsAnnouncementByConversationRef.current.delete(key)
       }
     },
     []
@@ -3482,11 +3539,12 @@ function Chat() {
   )
 
   const handleSelectProjectFolder = useCallback(async () => {
-    const result = await window.electronAPI?.dialog?.selectFolder()
+    const result = await selectHostFolder(ccCwd)
+    if (result.error) window.alert(result.error)
     if (result?.success && result.path) {
       setCcCwdFromUser(result.path)
     }
-  }, [setCcCwdFromUser])
+  }, [setCcCwdFromUser, ccCwd])
 
   const setCcCwdFromSystem = useCallback(
     (nextValue: string) => {
@@ -3494,6 +3552,43 @@ function Chat() {
       dispatch(chatSliceActions.ccCwdSet(nextValue))
     },
     [dispatch]
+  )
+
+  // Saved immediately (no debounce): each add/remove is a single deliberate action.
+  const saveAdditionalCwds = useCallback(
+    async (next: string[]) => {
+      if (!currentConversationId) return
+      const conversationId = currentConversationId
+      setAdditionalCwdsSaving(true)
+      try {
+        const updated = await dispatch(updateAdditionalCwds({ id: conversationId, additionalCwds: next })).unwrap()
+        if (String(conversationId) !== String(latestConversationIdRef.current)) return
+        const saved = parseAdditionalCwds(updated?.additional_cwds)
+        setAdditionalCwds(saved)
+        pendingAdditionalCwdsAnnouncementByConversationRef.current.set(String(conversationId), saved)
+      } catch (error) {
+        window.alert(error instanceof Error ? error.message : String(error || 'Failed to update additional directories'))
+      } finally {
+        setAdditionalCwdsSaving(false)
+      }
+    },
+    [currentConversationId, dispatch]
+  )
+
+  const handleAddAdditionalCwd = useCallback(async () => {
+    const result = await selectHostFolder(ccCwd)
+    if (result.error) window.alert(result.error)
+    if (!result?.success || !result.path) return
+    const picked = result.path.trim()
+    if (!picked || picked === ccCwd.trim() || additionalCwds.includes(picked)) return
+    await saveAdditionalCwds([...additionalCwds, picked])
+  }, [additionalCwds, ccCwd, saveAdditionalCwds])
+
+  const handleRemoveAdditionalCwd = useCallback(
+    (root: string) => {
+      void saveAdditionalCwds(additionalCwds.filter(existing => existing !== root))
+    },
+    [additionalCwds, saveAdditionalCwds]
   )
 
   // Fetch conversations for the current project using React Query
@@ -3510,37 +3605,6 @@ function Chat() {
     return null
   }, [currentConversationId, projectConversations, currentConversation, idsMatch])
 
-  // Fetch storage mode using the robust hook
-  const { data: storageModeFromHook } = useConversationStorageMode(conversationIdFromUrl)
-
-  // Compute storage_mode from projectConversations (already loaded from ConversationPage)
-  // This avoids unreliable cache lookups inside queryFn
-  const conversationStorageMode = useMemo(() => {
-    // Priority 1: Navigation state (immediate availability for new chats)
-    if (storageModeFromNav) {
-      return storageModeFromNav
-    }
-
-    // Priority 2: Hook result (robust check checking all caches + local fetch)
-    if (storageModeFromHook) {
-      return storageModeFromHook
-    }
-
-    if (!conversationIdFromUrl) {
-      return undefined
-    }
-
-    // Priority 3: Check project conversations cache
-    const conv = projectConversations.find(c => String(c.id) === String(conversationIdFromUrl))
-    if (conv?.storage_mode) {
-    }
-
-    // Priority 4: Check all conversations cache (fallback)
-    const allConvs = queryClient.getQueryData<Conversation[]>(['conversations'])
-    const match = allConvs?.find(c => String(c.id) === String(conversationIdFromUrl))
-    return match?.storage_mode
-  }, [conversationIdFromUrl, projectConversations, storageModeFromNav, storageModeFromHook, queryClient])
-
   // Persisted snapshots only enter Redux through the generation-gated coordinator.
   // Cached query data is never projected directly, so Settings -> Back cannot clobber
   // the same-conversation live SSE projection before the route-entry fetch completes.
@@ -3552,7 +3616,7 @@ function Chat() {
     isCurrentError: isCurrentSnapshotError,
     isFetching: isSnapshotFetching,
     refresh: refreshConversationSnapshot,
-  } = useConversationSnapshotCoordinator(conversationIdFromUrl, conversationStorageMode)
+  } = useConversationSnapshotCoordinator(conversationIdFromUrl)
 
   const handleHookRunsUpdated = useCallback(
     (messageId: string, runs: HookRunRecord[]) => {
@@ -3572,7 +3636,10 @@ function Chat() {
   // per stream; only orphaned localStorage markers reattach to the main-process run.
   useEffect(() => {
     if (!conversationIdFromUrl) return
-    void dispatch(resumeInFlightStreams({ conversationId: String(conversationIdFromUrl) }))
+    const discover = () => { void dispatch(resumeInFlightStreams({ conversationId: String(conversationIdFromUrl) })) }
+    discover()
+    const timer = setInterval(discover, 3000)
+    return () => clearInterval(timer)
   }, [conversationIdFromUrl, dispatch])
 
   // Use useMemo to ensure stable reference for empty object fallback
@@ -3644,9 +3711,8 @@ function Chat() {
     await dispatch(updateConversationTitle({
       id: currentConversationId,
       title,
-      storageMode: conversationStorageMode,
     })).unwrap()
-  }, [currentConversationId, conversationStorageMode, dispatch])
+  }, [currentConversationId, dispatch])
 
   // Clear only on an actual A -> B switch. A Chat -> Settings -> Back remount retains
   // the live same-conversation Redux/tree/path state while the coordinator refetches.
@@ -3672,7 +3738,7 @@ function Chat() {
   }, [conversationIdFromUrl, dispatch, queryClient, snapshotConversationId])
 
   // Run post-acceptance side effects. Messages/tree were already installed atomically by
-  // the coordinator; this effect only mirrors and hydrates attachments.
+  // the coordinator; this effect only hydrates attachments.
   useEffect(() => {
     if (
       !conversationIdFromUrl ||
@@ -3683,18 +3749,6 @@ function Chat() {
 
     const fetchedMessages = conversationData.messages
     if (fetchedMessages.length === 0) return
-
-    // Sync to local database in Electron mode
-    // This handles syncing messages fetched from the server to the local SQLite DB
-    if (import.meta.env.VITE_ENVIRONMENT === 'electron') {
-      ;(dispatch as any)(
-        syncConversationToLocal({
-          conversationId: String(conversationIdFromUrl),
-          messages: fetchedMessages,
-          storageMode: conversationStorageMode,
-        })
-      )
-    }
 
     // Process attachments from React Query response
     // This converts attachment URLs to base64 artifacts for display in ChatMessage
@@ -3731,7 +3785,7 @@ function Chat() {
         })
       }
     })
-  }, [acceptedConversationId, conversationData, conversationIdFromUrl, conversationStorageMode, dispatch, isConversationDataFetched])
+  }, [acceptedConversationId, conversationData, conversationIdFromUrl, dispatch, isConversationDataFetched])
 
   // Sync React Query conversations to Redux to ensure system_prompt and conversation_context are available
   // This fixes the issue where refreshing the page doesn't load context and system prompt from query cache
@@ -3901,13 +3955,20 @@ function Chat() {
     : operationMode === 'plan'
       ? 'outline-1 outline-blue-200/35 dark:outline-neutral-700/25'
       : 'outline-1 outline-neutral-200/35 dark:outline-neutral-700/25'
+  // The composer surface draws its outline as an SVG stroke so it can follow the tab; same colors as above.
+  const composerStrokeClasses = customThemeEnabled
+    ? operationMode === 'plan'
+      ? 'stroke-1 stroke-blue-200/70 dark:stroke-neutral-700/50'
+      : 'stroke-1 stroke-neutral-200/70 dark:stroke-neutral-700/50'
+    : operationMode === 'plan'
+      ? 'stroke-1 stroke-blue-200/35 dark:stroke-neutral-700/25'
+      : 'stroke-1 stroke-neutral-200/35 dark:stroke-neutral-700/25'
 
   const [showTokenUsageBar, setShowTokenUsageBar] = useState<boolean>(() => loadShowTokenUsageBar())
   const [showTokenUsageHoverDetails, setShowTokenUsageHoverDetails] = useState<boolean>(() =>
     loadShowTokenUsageHoverDetails()
   )
   const [autoCompactionEnabled, setAutoCompactionEnabled] = useState<boolean>(() => loadAutoCompactionEnabled())
-  const [showAddedFilesPills, setShowAddedFilesPills] = useState<boolean>(() => loadShowAddedFilesPills())
   const [expandedProcessMessageRuns, setExpandedProcessMessageRuns] = useState<Set<string>>(() => new Set())
   const transientProcessGroupKey = `live:${streamState.id}`
   useEffect(() => {
@@ -4022,13 +4083,6 @@ function Chat() {
       }
     }
 
-    const handleAddedFilesPillsVisibilityEvent = (e: Event) => {
-      const detail = (e as CustomEvent<boolean>).detail
-      if (typeof detail === 'boolean') {
-        setShowAddedFilesPills(detail)
-      }
-    }
-
     const handleStorageEvent = (e: StorageEvent) => {
       if (e.key === 'chat:showTokenUsageBar' && e.newValue !== null) {
         setShowTokenUsageBar(e.newValue === 'true')
@@ -4040,10 +4094,6 @@ function Chat() {
 
       if (e.key === CHAT_UI_AUTO_COMPACTION_ENABLED_KEY && e.newValue !== null) {
         setAutoCompactionEnabled(e.newValue === 'true')
-      }
-
-      if (e.key === CHAT_UI_ADDED_FILES_PILLS_VISIBILITY_KEY && e.newValue !== null) {
-        setShowAddedFilesPills(e.newValue === 'true')
       }
     }
 
@@ -4059,10 +4109,6 @@ function Chat() {
       CHAT_UI_AUTO_COMPACTION_ENABLED_CHANGE_EVENT,
       handleAutoCompactionEnabledEvent as EventListener
     )
-    window.addEventListener(
-      CHAT_UI_ADDED_FILES_PILLS_VISIBILITY_CHANGE_EVENT,
-      handleAddedFilesPillsVisibilityEvent as EventListener
-    )
     window.addEventListener('storage', handleStorageEvent)
 
     return () => {
@@ -4077,10 +4123,6 @@ function Chat() {
       window.removeEventListener(
         CHAT_UI_AUTO_COMPACTION_ENABLED_CHANGE_EVENT,
         handleAutoCompactionEnabledEvent as EventListener
-      )
-      window.removeEventListener(
-        CHAT_UI_ADDED_FILES_PILLS_VISIBILITY_CHANGE_EVENT,
-        handleAddedFilesPillsVisibilityEvent as EventListener
       )
       window.removeEventListener('storage', handleStorageEvent)
     }
@@ -4286,6 +4328,7 @@ function Chat() {
     isCwdDirtyRef.current = false
     pendingManualExtensionSyncRef.current = false
     persistedCcCwdRef.current = ''
+    setAdditionalCwds([])
 
     if (!currentConversationId) {
       setCcCwdFromSystem('')
@@ -4300,6 +4343,7 @@ function Chat() {
         const localConversation = await localApi.get<Conversation>(`/app/conversations/${currentConversationId}`)
         if (cwdLoadSeqRef.current !== loadSeq) return
         let loadedCwd = typeof localConversation?.cwd === 'string' ? localConversation.cwd : ''
+        setAdditionalCwds(parseAdditionalCwds(localConversation?.additional_cwds))
 
         if (!loadedCwd.trim() && projectIdFromUrl) {
           try {
@@ -4312,7 +4356,6 @@ function Chat() {
                 updateCwd({
                   id: currentConversationId,
                   cwd: projectCwd,
-                  storageMode: 'local',
                 })
               )
             }
@@ -4376,7 +4419,6 @@ function Chat() {
         updateCwd({
           id: targetConversationId,
           cwd: targetCwd || null, // Convert empty string to null
-          storageMode: 'local', // cwd is Electron-only feature
         })
       )
         .unwrap()
@@ -4854,33 +4896,17 @@ function Chat() {
     chatReasoningSettings.defaultReasoningEffort,
   ])
 
-  // Set default provider based on settings or community constraints.
+  // Set the default provider when none (or a no-longer-listed one) is selected.
   useEffect(() => {
     const allowedProviders = providers.providers.map(p => p.name)
 
-    if (isCommunityMode) {
-      const preferredCommunityDefault = allowedProviders.includes('LM Studio')
-        ? 'LM Studio'
-        : allowedProviders[0] || null
-
-      if (!preferredCommunityDefault) return
-
-      if (
-        !providers.currentProvider ||
-        !allowedProviders.includes(providers.currentProvider) ||
-        providers.currentProvider === 'OpenRouter'
-      ) {
-        dispatch(chatSliceActions.providerSelected(preferredCommunityDefault))
-      }
-      return
-    }
-
-    if (!providers.currentProvider) {
+    if (!providers.currentProvider || !allowedProviders.includes(providers.currentProvider)) {
       // If provider selector is hidden and a default is configured, use it
-      if (!providerSettings.showProviderSelector && providerSettings.defaultProvider) {
+      if (!providerSettings.showProviderSelector && providerSettings.defaultProvider && allowedProviders.includes(providerSettings.defaultProvider)) {
         dispatch(chatSliceActions.providerSelected(providerSettings.defaultProvider))
-      } else if (allowedProviders.includes('OpenRouter')) {
-        dispatch(chatSliceActions.providerSelected('OpenRouter'))
+      } else if (allowedProviders.includes('OpenAI (ChatGPT)')) {
+        // Fresh installs default to OpenAI (ChatGPT) (fully-local plan Q6).
+        dispatch(chatSliceActions.providerSelected('OpenAI (ChatGPT)'))
       } else if (allowedProviders.length > 0) {
         dispatch(chatSliceActions.providerSelected(allowedProviders[0]))
       }
@@ -4895,7 +4921,6 @@ function Chat() {
 
   // Auto-apply default provider when visibility is toggled off
   useEffect(() => {
-    if (isCommunityMode) return
     if (!providerSettings.showProviderSelector && providerSettings.defaultProvider) {
       dispatch(chatSliceActions.providerSelected(providerSettings.defaultProvider))
     }
@@ -4906,27 +4931,29 @@ function Chat() {
     if (!conversationIdFromUrl) dispatch(initializeUserAndConversation())
   }, [conversationIdFromUrl, dispatch])
 
-  const modelSwitchScope = JSON.stringify([currentConversationId, modeLineageId, selection.revision])
+  const modelSwitchScope = JSON.stringify([currentConversationId, modeLineageId, selection.revision, activeBranchEditingMessageId])
   const openaiSelectionScopeRef = useRef<string | null>(null)
   const { pending: pendingModelSwitch, request: requestModelSwitch, cancel: cancelModelSwitch, confirm: confirmModelSwitch } =
     useModelSwitchConfirmation(modelSwitchScope, branchModelSelection ? {
       provider: providers.currentProvider, model: selectedModel?.name ?? branchModelSelection.model,
-    } : null)
+    } : null, modelSwitchLastActivityAt)
 
   // Handle model selection
   const handleModelSelect = useCallback(
     (modelName: string) => {
+      // A Claude branch fixes its provider, not its model.
+      if (claudeBranchLock && !isClaudeProvider(providers.currentProvider)) return
       const model = models.find(m => m.name === modelName)
       if (model) {
         requestModelSwitch({ provider: providers.currentProvider, model: model.name }, () => {
           dispatch(chatSliceActions.branchModelSelected({ provider: providers.currentProvider, model: model.name }))
-          selectModelMutation.mutate({ provider: providers.currentProvider, model })
+          if (!isBranchEditing) selectModelMutation.mutate({ provider: providers.currentProvider, model })
         })
       } else {
         console.warn('Selected model not found:', modelName)
       }
     },
-    [models, selectModelMutation, providers.currentProvider, requestModelSwitch, dispatch]
+    [models, selectModelMutation, providers.currentProvider, requestModelSwitch, dispatch, claudeBranchLock, isBranchEditing]
   )
 
   const handleExtensionSelection = useCallback(
@@ -4950,9 +4977,9 @@ function Chat() {
   )
   // Provider selection handler with OpenAI auth check
   const openOpenaiAuthUrl = useCallback(async (url: string) => {
-    if (window.electronAPI?.auth?.openExternal) {
+    if (window.electronAPI?.shell?.openExternal) {
       try {
-        await window.electronAPI.auth.openExternal(url)
+        await window.electronAPI.shell.openExternal(url)
         return
       } catch (error) {
         console.error('Failed to open browser:', error)
@@ -4966,11 +4993,7 @@ function Chat() {
 
   const handleProviderSelect = useCallback(
     async (providerName: string) => {
-      if (providerName === providers.currentProvider) return
-      if (providerName === 'OpenRouter' && isCommunityMode) {
-        setOpenRouterLoginRequiredModalOpen(true)
-        return
-      }
+      if (providerName === providers.currentProvider || claudeBranchLock || (hasSelectedHistory && isClaudeProvider(providerName))) return
 
       // Check if OpenAI ChatGPT provider is selected and user is not authenticated
       if (providerName === 'OpenAI (ChatGPT)' && !isOpenAIAuthenticated()) {
@@ -4998,10 +5021,10 @@ function Chat() {
       }
       requestModelSwitch({ provider: providerName, model: null }, () => {
         dispatch(chatSliceActions.branchModelSelected({ provider: providerName, model: null }))
-        dispatch(chatSliceActions.providerSelected(providerName))
+        if (!isBranchEditing) dispatch(chatSliceActions.providerSelected(providerName))
       })
     },
-    [dispatch, openOpenaiAuthUrl, requestModelSwitch, providers.currentProvider, modelSwitchScope]
+    [dispatch, openOpenaiAuthUrl, requestModelSwitch, providers.currentProvider, modelSwitchScope, claudeBranchLock, hasSelectedHistory, isBranchEditing]
   )
 
   useEffect(() => {
@@ -5024,7 +5047,7 @@ function Chat() {
 
       const slot = Number(event.code.slice(-1))
       const assignment = loadModelShortcutSlots()[slot]
-      if (!assignment) return
+      if (!assignment || (claudeBranchLock ? !isClaudeProvider(assignment.provider) : hasSelectedHistory && isClaudeProvider(assignment.provider))) return
 
       const providerExists = providers.providers.some(provider => provider.name === assignment.provider)
       if (!providerExists) {
@@ -5032,11 +5055,6 @@ function Chat() {
         return
       }
 
-      if (assignment.provider === 'OpenRouter' && isCommunityMode) {
-        event.preventDefault()
-        setOpenRouterLoginRequiredModalOpen(true)
-        return
-      }
 
       if (assignment.provider === 'OpenAI (ChatGPT)' && !isOpenAIAuthenticated()) {
         event.preventDefault()
@@ -5047,8 +5065,8 @@ function Chat() {
       event.preventDefault()
       requestModelSwitch({ provider: assignment.provider, model: assignment.model.name }, () => {
         dispatch(chatSliceActions.branchModelSelected({ provider: assignment.provider, model: assignment.model.name }))
-        dispatch(chatSliceActions.providerSelected(assignment.provider))
-        selectModelMutation.mutate({ provider: assignment.provider, model: assignment.model })
+        if (!isBranchEditing) dispatch(chatSliceActions.providerSelected(assignment.provider))
+        if (!isBranchEditing) selectModelMutation.mutate({ provider: assignment.provider, model: assignment.model })
       })
     }
 
@@ -5067,7 +5085,7 @@ function Chat() {
       window.removeEventListener('keydown', handleChatToggleKeyDown, true)
       window.removeEventListener('keydown', handleChatKeyboardShortcut)
     }
-  }, [dispatch, handleProviderSelect, handleToggleOperationMode, handleToggleFastServiceTier, isOpenAIChatGPTProvider, navigate, providers.providers, selectModelMutation, requestModelSwitch])
+  }, [dispatch, handleProviderSelect, handleToggleOperationMode, handleToggleFastServiceTier, isOpenAIChatGPTProvider, navigate, providers.providers, selectModelMutation, requestModelSwitch, claudeBranchLock, hasSelectedHistory, isBranchEditing])
 
   const handleComposerSlashCommandSelect = useCallback(
     (command: string): ComposerSlashCommandResult | void => {
@@ -5091,7 +5109,7 @@ function Chat() {
     [runComposerCommand]
   )
 
-  const { canSend: canSendImmediately, canQueue: canQueueLocal } = getComposerSubmissionAvailability({
+  const { canSend: canSendImmediately, canQueue: canQueueAvailable } = getComposerSubmissionAvailability({
     ready: selection.status !== 'pending' && selection.status !== 'error',
     hasInput: hasLocalInput,
     isRetrigger: !hasLocalInput && displayMessages.length > 0 && displayMessages[displayMessages.length - 1]?.role === 'user' &&
@@ -5102,6 +5120,8 @@ function Chat() {
     modeChanging: !!modeChange,
     queueSubmitting,
   })
+  // A Claude /compact run ends at its summary, so the host refuses input queued behind it.
+  const canQueueLocal = canQueueAvailable && !(isClaudeSession && isCurrentBranchCompacting)
   const canSendLocal = canSendImmediately || canQueueLocal
 
   /**
@@ -5228,7 +5248,7 @@ function Chat() {
           appendIdeContextToMessage(replaceFileMentionsWithPath(localInputValue)))
         const retry = queueRetryRef.current
         const queuedSubmission = retry?.streamId === streamState.id && retry.content === content
-          ? retry : { streamId: streamState.id, content, requestId: crypto.randomUUID() }
+          ? retry : { streamId: streamState.id, content, requestId: newClientId() }
         queueRetryRef.current = queuedSubmission
         recordSentMessage(localInputValue)
         clearLocalInput()
@@ -5472,17 +5492,6 @@ function Chat() {
           if (started) dismissChatError(record)
           return
         }
-        case 'sign_in': {
-          // D2: an expired session never force-redirects. The user chose to go here.
-          dismissChatError(record)
-          navigate('/login?required=cloud')
-          return
-        }
-        case 'upgrade': {
-          dismissChatError(record)
-          navigate('/payment')
-          return
-        }
         case 'switch_mode': {
           // The only mode switch an error can ask for: the run needed write access.
           handleOperationModeChange('execute')
@@ -5603,7 +5612,9 @@ function Chat() {
         role: 'user' as const,
         content: contentWithCwdAnnouncement,
         content_plain_text: contentWithCwdAnnouncement,
-        parent_id: originalMessage.parent_id,
+        parent_id: isCommittedCompaction(originalMessage) ? originalMessage.id :
+          isCleanStartBranchEdit({ conversation: { currentConversationId, messages: conversationMessages } }, parsedId) &&
+          (isClaudeSession || isClaudeTranscriptMessage(originalMessage)) ? null : originalMessage.parent_id,
         children_ids: [],
         created_at: new Date().toISOString(),
         model_name: selectedModel?.name || '',
@@ -5669,6 +5680,7 @@ function Chat() {
       replaceFileMentionsWithPath,
       appendIdeContextToMessage,
       conversationMessages,
+      isClaudeSession,
       refreshConversationSnapshot,
       withPendingCwdAnnouncement,
       clearPendingCwdAnnouncement,
@@ -5713,13 +5725,20 @@ function Chat() {
 
   const handleExplainFromSelection = useCallback(
     (id: string, newContent: string) => {
-      if (!currentConversationId || selection.status === 'pending' || selection.status === 'error') return false
+      if (!currentConversationId || selection.status === 'pending' || selection.status === 'error' || streamLifecycleActive || compactionActive) return false
 
       // Explain selection should always create a new user child under the selected message,
       // even when that message already has children.
       const processed = replaceFileMentionsWithPath(newContent)
       const contentWithIdeContext = appendIdeContextToMessage(processed)
-      const parsedId = parseId(id)
+      // The live row has a UI-only id; branch only from a confirmed persisted response.
+      const selectedId = id === 'streaming'
+        ? liveExplainSourceRef.current?.messageId
+        : id
+      // Claude can only fork at the completed checkpoint that ends the selected turn.
+      const sourceId = selectedId == null ? null : resolveExplainAnchorId(selectedId, conversationMessages, selectedPath)
+      if (sourceId == null) return false
+      const parsedId = parseId(String(sourceId))
       const originalMessage = conversationMessages.find(m => m.id === parsedId)
       const { content: contentWithCwdAnnouncement, pendingCwdValue } = withPendingCwdAnnouncement(
         currentConversationId,
@@ -5755,6 +5774,9 @@ function Chat() {
         sendMessage({
           conversationId: currentConversationId,
           input: { content: contentWithCwdAnnouncement },
+          // Keep normal-send UI/settings, but explicitly authorize a child at this
+          // selected historical message rather than ordinary head continuation.
+          isBranch: true,
           parent: parsedId,
           repeatNum: 1,
           think: think,
@@ -5791,6 +5813,8 @@ function Chat() {
       return true
     },
     [
+      streamLifecycleActive,
+      compactionActive,
       selection.revision,
       selection.fallbackRevision,
       modeLineageId,
@@ -5813,6 +5837,27 @@ function Chat() {
       clearPendingCwdAnnouncement,
       recordLocalChatError,
     ]
+  )
+
+  // Summaries on this branch that have real history to fork from directly before them.
+  const branchBeforeSummaryAnchors = useMemo(() => {
+    const anchors = new Map<string, string | number>()
+    for (const message of renderableMessages) {
+      if (!isCommittedCompaction(message)) continue
+      const anchor = resolveBranchBeforeSummaryAnchor(message.id, conversationMessages)
+      if (anchor != null) anchors.set(String(message.id), anchor)
+    }
+    return anchors
+  }, [renderableMessages, conversationMessages])
+
+  // A new user child under the pre-summary message: the same explicit historical-parent send
+  // Explain selection uses, so it keeps the full uncompacted context.
+  const handleBranchBeforeSummary = useCallback(
+    (summaryId: string, content: string) => {
+      const anchor = branchBeforeSummaryAnchors.get(String(summaryId))
+      return anchor == null ? false : handleExplainFromSelection(String(anchor), content)
+    },
+    [branchBeforeSummaryAnchors, handleExplainFromSelection]
   )
 
   const handleResend = useCallback(
@@ -5892,7 +5937,6 @@ function Chat() {
       // console.log('[Chat] performDelete called:', {
       //   messageId,
       //   currentConversationId,
-      //   conversationStorageMode,
       // })
       dispatch(chatSliceActions.messageDeleted(messageId))
 
@@ -5902,7 +5946,7 @@ function Chat() {
 
       try {
         await dispatch(
-          deleteMessage({ id: messageId, conversationId: currentConversationId, storageMode: conversationStorageMode })
+          deleteMessage({ id: messageId, conversationId: currentConversationId })
         ).unwrap()
       } catch (error) {
         console.error('[Chat] Failed to delete message:', error)
@@ -5910,7 +5954,7 @@ function Chat() {
         await refreshConversationSnapshot()
       }
     },
-    [dispatch, currentConversationId, conversationStorageMode, refreshConversationSnapshot]
+    [dispatch, currentConversationId, refreshConversationSnapshot]
   )
 
   const handleRequestDelete = useCallback(
@@ -5933,15 +5977,6 @@ function Chat() {
     if (dontAskAgain) setconfirmDel(false)
     if (pendingDeleteId) void performDelete(pendingDeleteId)
     closeDeleteModal()
-  }
-
-  const closeOpenRouterLoginRequiredModal = () => {
-    setOpenRouterLoginRequiredModalOpen(false)
-  }
-
-  const confirmOpenRouterLoginRequired = () => {
-    setOpenRouterLoginRequiredModalOpen(false)
-    navigate('/login?required=cloud')
   }
 
   // OpenAI ChatGPT login modal handlers
@@ -6000,7 +6035,7 @@ function Chat() {
       // Successfully authenticated, select the provider
       requestModelSwitch({ provider: 'OpenAI (ChatGPT)', model: null }, () => {
         dispatch(chatSliceActions.branchModelSelected({ provider: 'OpenAI (ChatGPT)', model: null }))
-        dispatch(chatSliceActions.providerSelected('OpenAI (ChatGPT)'))
+        if (!isBranchEditing) dispatch(chatSliceActions.providerSelected('OpenAI (ChatGPT)'))
       }, openaiSelectionScopeRef.current ?? modelSwitchScope)
       closeOpenaiLoginModal()
       return 'success'
@@ -6357,9 +6392,6 @@ function Chat() {
   // and reducers update currentPath appropriately. This avoids race conditions and
   // incorrect parent linking that could break currentPath after branching.
 
-  // Get current credits from user state (in USD cents)
-  const current_credits = currentUser?.cached_current_credits ?? 0
-
   // Calculate context usage from displayed messages (current branch).
   // Includes project/conversation prompts + message content + nested content_blocks/tool_calls.
   const tokenUsage = useMemo(() => calculateBranchContextUsage({
@@ -6380,42 +6412,12 @@ function Chat() {
     providers.currentProvider,
   ])
 
-  // Calculate total context budget (single combined budget for easier interpretation).
+  // Context budget is the model context window (no Graviton credits: users pay their providers).
   const tokenLimits = useMemo(() => {
-    const usdValue = current_credits / 100 // Convert credits to USD
-
-    // Model context limit.
     const totalContextLimit =
       resolveProviderContextLength(providers.currentProvider, selectedModel?.contextLength, providerSettings) || 128_000
-
-    // Cost is per 1K tokens: cost = (tokens / 1000) * costPer1K
-    // So: tokens = (usd * 1000) / costPer1K
-    const promptCostPer1K = selectedModel?.promptCost ?? 0
-    const completionCostPer1K = selectedModel?.completionCost ?? 0
-
-    // Calculate credit-based limits.
-    let creditInputLimit = Infinity
-    let creditOutputLimit = Infinity
-
-    if (promptCostPer1K > 0) {
-      creditInputLimit = Math.floor((usdValue * 1000) / promptCostPer1K)
-    }
-    if (completionCostPer1K > 0) {
-      creditOutputLimit = Math.floor((usdValue * 1000) / completionCostPer1K)
-    }
-
-    // Single budget: constrained by model context and available credit limits.
-    const totalBudget = Math.max(0, Math.min(totalContextLimit, creditInputLimit, creditOutputLimit))
-
-    return { totalBudget, totalContextLimit }
-  }, [
-    selectedModel?.promptCost,
-    selectedModel?.completionCost,
-    selectedModel?.contextLength,
-    providers.currentProvider,
-    providerSettings.openAiChatGptMaxContextTokens,
-    current_credits,
-  ])
+    return { totalBudget: totalContextLimit, totalContextLimit }
+  }, [selectedModel?.contextLength, providers.currentProvider, providerSettings.openAiChatGptMaxContextTokens])
 
   // Calculate progress percentages.
   const totalContextProgress =
@@ -6465,7 +6467,7 @@ function Chat() {
       exit={{ opacity: 0, x: -10 }}
       transition={{ duration: 0.3, ease: 'easeOut' }}
       ref={containerRef}
-      className='flex h-full overflow-hidden bg-transparent dark:bg-transparent'
+      className='chat-layout flex h-full min-h-0 min-w-0 overflow-hidden bg-transparent dark:bg-transparent'
     >
       <div
         data-chat-pane-surface='true'
@@ -6489,6 +6491,7 @@ function Chat() {
           className={`relative mx-4 flex flex-col thin-scrollbar rounded-lg bg-transparent dark:bg-transparent flex-1 min-h-0 min-w-0 overflow-hidden transition-[padding-bottom] duration-200 ${!heimdallVisible ? 'px-0 sm:px-0 ' : ''}`}
           style={{ paddingBottom: `0px`, backgroundColor: chatSurfaceBackgroundColor }}
         >
+          <ConversationOpeningOverlay visible={isBrowserClient && selection.status === 'pending'} />
           {/* Conversation title and actions */}
           {currentConversationId && (
             <div
@@ -6637,7 +6640,7 @@ function Chat() {
                         }
 
                         if (renderRow.kind === 'streaming_message') {
-                          if (!hasStreamingMessageContent) return null
+                          if (!hasStreamingMessageContent && liveExplainSurface !== 'virtual') return null
 
                           // R4: no error bubble here. A failed stream is drawn by the message
                           // list only — see the `chat_error` row below (tier 2) or the persisted
@@ -6654,6 +6657,7 @@ function Chat() {
                               start={virtualRow.start}
                               measureElement={virtualizer.measureElement}
                             >
+                              <div hidden={!showStreamingMessage}>
                               <ChatMessage
                                 id='streaming'
                                 role='assistant'
@@ -6671,10 +6675,17 @@ function Chat() {
                                 isDarkMode={isDarkMode}
                                 modelName={selectedModel?.name || undefined}
                                 className=''
+                                onAddToNote={handleAddToNote}
+                                onAddToChat={handleAddToChat}
+                                onExplainFromSelection={handleExplainFromSelection}
+                                branchSubmissionDisabled={selection.status === 'pending' || selection.status === 'error'}
+                                explainSubmissionDisabled={streamLifecycleActive || compactionActive || !liveExplainSourceReady}
+                                onExplainInputOpenChange={handleVirtualExplainOpenChange}
                                 onOpenToolHtmlModal={openToolHtmlModal}
                                 onOpenSubagentTranscript={openSubagentTranscript}
                                 onChatErrorAction={handlePersistedChatErrorAction}
                               />
+                              </div>
                             </VirtualizedRowContainer>
                           )
                         }
@@ -6712,16 +6723,24 @@ function Chat() {
                               start={virtualRow.start}
                               measureElement={virtualizer.measureElement}
                             >
-                              <div className={`${showStreamingMessage ? 'pt-2' : 'pt-1'} px-0 sm:px-2`}>
-                                <StreamingThinkingIndicator
-                                  compacting={showCompactionStatus}
-                                  compactionCompleted={Boolean(compactionCompleted)}
-                                  style={
-                                    fontSizeOffset !== 0
-                                      ? { fontSize: `calc(0.75em + ${fontSizeOffset}px)` }
-                                      : undefined
-                                  }
-                                />
+                              <div className={`${showStreamingMessage ? 'pt-2' : 'pt-1'} flex flex-wrap items-center gap-1 px-0 sm:px-2`}>
+                                {showThinkingIndicator && (
+                                  <StreamingThinkingIndicator
+                                    compacting={showCompactionStatus}
+                                    compactionCompleted={Boolean(compactionCompleted)}
+                                    style={
+                                      fontSizeOffset !== 0
+                                        ? { fontSize: `calc(0.75em + ${fontSizeOffset}px)` }
+                                        : undefined
+                                    }
+                                  />
+                                )}
+                                {backgroundTasksView && (
+                                  <BackgroundTasksIndicator
+                                    {...backgroundTasksView}
+                                    style={fontSizeOffset !== 0 ? { fontSize: `calc(0.75em + ${fontSizeOffset}px)` } : undefined}
+                                  />
+                                )}
                               </div>
                             </VirtualizedRowContainer>
                           )
@@ -6734,7 +6753,54 @@ function Chat() {
                           const liveHere = liveAgentGroupId === runId
                           const isExpanded = expandedProcessMessageRuns.has(runId) || (liveHere && expandedProcessMessageRuns.has(transientProcessGroupKey))
                           const liveEvents = liveHere && showStreamingMessage ? liveAgentEvents.process : []
-                          const activityMessages = row.bridgedMessageId ? [...row.messages, ...(messageById.has(String(row.bridgedMessageId)) ? [messageById.get(String(row.bridgedMessageId))!] : [])] : row.messages
+                          const leadingMessage = row.leadingMessageId != null ? messageById.get(String(row.leadingMessageId)) : undefined
+                          const bridgedMessage = row.bridgedMessageId != null ? messageById.get(String(row.bridgedMessageId)) : undefined
+                          const activityMessages = [...(leadingMessage ? [leadingMessage] : []), ...row.messages, ...(bridgedMessage ? [bridgedMessage] : [])]
+                          // Only the process blocks of an adjacent prose row; its text stays in its own row.
+                          const renderBridgedProcess = (sourceMessage: Message | undefined) => {
+                            if (!sourceMessage) return null
+                            const bridgedParsed =
+                              parsedMessageDataById.get(sourceMessage.id) ?? EMPTY_PARSED_MESSAGE_DATA
+                            const bridgedProcessBlocks = Array.isArray(bridgedParsed.contentBlocks)
+                              ? bridgedParsed.contentBlocks.filter(block => isProcessContentBlock(block))
+                              : []
+
+                            const hasThinking =
+                              typeof sourceMessage.thinking_block === 'string' &&
+                              sourceMessage.thinking_block.trim().length > 0
+                            const hasToolCalls =
+                              Array.isArray(bridgedParsed.toolCalls) && bridgedParsed.toolCalls.length > 0
+                            const hasProcessBlocks = bridgedProcessBlocks.length > 0
+
+                            if (!hasThinking && !hasToolCalls && !hasProcessBlocks) {
+                              return null
+                            }
+
+                            return (
+                              <ChatMessage
+                                key={`bridged-process-${sourceMessage.id}`}
+                                id={`${sourceMessage.id}-process`}
+                                role={sourceMessage.role}
+                                content=''
+                                contentBlocks={bridgedProcessBlocks}
+                                timestamp={sourceMessage.created_at}
+                                width='w-full'
+                                modelName={sourceMessage.model_name}
+                                artifacts={sourceMessage.artifacts}
+                                fontSizeOffset={fontSizeOffset}
+                                groupToolReasoningRuns={false}
+                                truncateToolOutput={truncateToolOutput}
+                                customTheme={customTheme}
+                                customThemeEnabled={customThemeEnabled}
+                                isDarkMode={isDarkMode}
+                                onOpenToolHtmlModal={openToolHtmlModal}
+                                onOpenSubagentTranscript={openSubagentTranscript}
+                                onChatErrorAction={handlePersistedChatErrorAction}
+                                onHookRunsUpdated={handleHookRunsUpdated}
+                                onHookRunsSettled={handleHookRunsSettled}
+                              />
+                            )
+                          }
                           const groupedBlocks = activityMessages.flatMap(message => parsedMessageDataById.get(message.id)?.contentBlocks ?? [])
                           const groupedHooks = activityMessages.flatMap(message => message.hook_runs ?? [])
                           const progress = getAgentProgress(groupedBlocks, liveEvents, groupedHooks, liveHere)
@@ -6764,6 +6830,7 @@ function Chat() {
                                   summary={summary} activity={hasActivity ? activity : undefined} status={progress.status} active={progress.active}
                                   style={fontSizeOffset !== 0 ? { fontSize: `calc(1em + ${fontSizeOffset}px)` } : undefined}
                                   history={<div>
+                                    {renderBridgedProcess(leadingMessage)}
                                     {row.messages.map(groupedMessage => {
                                       const { contentBlocks } =
                                         parsedMessageDataById.get(groupedMessage.id) ?? EMPTY_PARSED_MESSAGE_DATA
@@ -6793,53 +6860,7 @@ function Chat() {
                                       )
                                     })}
 
-                                    {(() => {
-                                      if (row.bridgedMessageId == null) return null
-                                      const bridgedMessage = messageById.get(String(row.bridgedMessageId))
-                                      if (!bridgedMessage) return null
-
-                                      const bridgedParsed =
-                                        parsedMessageDataById.get(bridgedMessage.id) ?? EMPTY_PARSED_MESSAGE_DATA
-                                      const bridgedProcessBlocks = Array.isArray(bridgedParsed.contentBlocks)
-                                        ? bridgedParsed.contentBlocks.filter(block => isProcessContentBlock(block))
-                                        : []
-
-                                      const hasThinking =
-                                        typeof bridgedMessage.thinking_block === 'string' &&
-                                        bridgedMessage.thinking_block.trim().length > 0
-                                      const hasToolCalls =
-                                        Array.isArray(bridgedParsed.toolCalls) && bridgedParsed.toolCalls.length > 0
-                                      const hasProcessBlocks = bridgedProcessBlocks.length > 0
-
-                                      if (!hasThinking && !hasToolCalls && !hasProcessBlocks) {
-                                        return null
-                                      }
-
-                                      return (
-                                        <ChatMessage
-                                          key={`bridged-process-${bridgedMessage.id}`}
-                                          id={`${bridgedMessage.id}-process`}
-                                          role={bridgedMessage.role}
-                                          content=''
-                                          contentBlocks={bridgedProcessBlocks}
-                                          timestamp={bridgedMessage.created_at}
-                                          width='w-full'
-                                          modelName={bridgedMessage.model_name}
-                                          artifacts={bridgedMessage.artifacts}
-                                          fontSizeOffset={fontSizeOffset}
-                                          groupToolReasoningRuns={false}
-                                          truncateToolOutput={truncateToolOutput}
-                                          customTheme={customTheme}
-                                          customThemeEnabled={customThemeEnabled}
-                                          isDarkMode={isDarkMode}
-                                          onOpenToolHtmlModal={openToolHtmlModal}
-                                          onOpenSubagentTranscript={openSubagentTranscript}
-                                          onChatErrorAction={handlePersistedChatErrorAction}
-                                          onHookRunsUpdated={handleHookRunsUpdated}
-                                          onHookRunsSettled={handleHookRunsSettled}
-                                        />
-                                      )
-                                    })()}
+                                    {renderBridgedProcess(bridgedMessage)}
                                     {liveEvents.length > 0 && <ChatMessage id={`streaming-${runId}`} role='assistant' content='' streamEvents={liveEvents}
                                       width='w-full' fontSizeOffset={fontSizeOffset} groupToolReasoningRuns={false} truncateToolOutput={truncateToolOutput}
                                       customTheme={customTheme} customThemeEnabled={customThemeEnabled} isDarkMode={isDarkMode}
@@ -6879,7 +6900,11 @@ function Chat() {
                               measureElement={virtualizer.measureElement}
                               className='z-0'
                             >
-                              <SummarisedMessage
+                              <SummaryBranchMessage id={String(msg.id)} content='' role={msg.role} width='w-full'
+                                onBranch={submitMessageAsBranch}
+                                branchSubmissionDisabled={selection.status === 'pending' || selection.status === 'error'}
+                                onBranchBeforeSummary={branchBeforeSummaryAnchors.has(String(msg.id)) ? handleBranchBeforeSummary : undefined}
+                                branchBeforeSummaryDisabled={selection.status === 'pending' || selection.status === 'error' || streamLifecycleActive || compactionActive}
                                 customTheme={customTheme}
                                 customThemeEnabled={customThemeEnabled}
                                 isDarkMode={isDarkMode}
@@ -6914,6 +6939,7 @@ function Chat() {
                             </VirtualizedRowContainer>
                           )
                         }
+                        const claudeModeNotice = claudeModeNotices.get(String(msg.id))
                         if (isContextInjectionMessage(msg)) {
                           // Auto-loaded instruction files (AGENTS.md / CLAUDE.md, rules, MEMORY.md):
                           // a persisted user row the model reads in full. People get one collapsed line.
@@ -6982,7 +7008,7 @@ function Chat() {
                               onUndoStreamEdits={
                                 msg.role === 'user' ? undoHandlerByMessageId.get(String(msg.id)) : undefined
                               }
-                              onEdit={handleMessageEdit}
+                              onEdit={isClaudeSession ? undefined : handleMessageEdit}
                               onBranch={handleMessageBranch}
                               onDelete={handleRequestDelete}
                               onResend={handleResend}
@@ -6990,11 +7016,13 @@ function Chat() {
                               onAddToChat={handleAddToChat}
                               onExplainFromSelection={handleExplainFromSelection}
                               branchSubmissionDisabled={selection.status === 'pending' || selection.status === 'error'}
+                              explainSubmissionDisabled={streamLifecycleActive || compactionActive || resolveExplainAnchorId(msg.id, conversationMessages, selectedPath) == null}
                               onOpenToolHtmlModal={openToolHtmlModal}
                               onOpenSubagentTranscript={openSubagentTranscript}
                               onChatErrorAction={handlePersistedChatErrorAction}
                               onEditingStateChange={handleMessageEditingStateChange}
                             />
+                            {claudeModeNotice && <OperationModeNotice mode={claudeModeNotice.mode} initial={claudeModeNotice.initial} />}
                           </VirtualizedRowContainer>
                         )
                       })}
@@ -7009,8 +7037,8 @@ function Chat() {
                 geometry or the ResizeObserver, so it can never drag scrollTop. `flexShrink: 0` keeps
                 the flex column from collapsing it (mirrors the totalSize div). Auto-follow targets
                 liveStreamingContentRef via getBoundingClientRect, which is layout-agnostic. */}
-            {showLiveStreamingTail && (
-              <div style={{ flexShrink: 0 }} data-live-streaming-tail='true'>
+            {(showLiveStreamingTail || liveExplainSurface === 'tail') && (
+              <div hidden={!showLiveStreamingTail} style={{ flexShrink: 0 }} data-live-streaming-tail='true'>
                 <div ref={liveStreamingContentRef}>
                   <ChatMessage
                     id='streaming'
@@ -7029,6 +7057,12 @@ function Chat() {
                     isDarkMode={isDarkMode}
                     modelName={selectedModel?.name || undefined}
                     className=''
+                    onAddToNote={handleAddToNote}
+                    onAddToChat={handleAddToChat}
+                    onExplainFromSelection={handleExplainFromSelection}
+                    branchSubmissionDisabled={selection.status === 'pending' || selection.status === 'error'}
+                    explainSubmissionDisabled={streamLifecycleActive || compactionActive || !liveExplainSourceReady}
+                    onExplainInputOpenChange={handleTailExplainOpenChange}
                     onOpenToolHtmlModal={openToolHtmlModal}
                     onOpenSubagentTranscript={openSubagentTranscript}
                     onChatErrorAction={handlePersistedChatErrorAction}
@@ -7083,7 +7117,7 @@ function Chat() {
 
           {/* Textarea (bottom, grows upward because wrapper is bottom-pinned) */}
           <div className='relative isolate'>
-            {selection.status === 'pending' && (
+            {!isBrowserClient && selection.status === 'pending' && (
               <div role='status' className='px-3 py-1 text-xs opacity-70'>Opening conversation…</div>
             )}
             {selection.error && (
@@ -7097,21 +7131,18 @@ function Chat() {
                 }}>Retry</button>
               </div>
             )}
-            {showGenerationLoadingAnimation && showStreamingThinkingInputTab && (
-              <div className='absolute left-0 top-0 z-0 flex -translate-y-[calc(100%-8px)]'>
-                <StreamingThinkingIndicator variant='tab' compacting={showCompactionStatus} compactionCompleted={Boolean(compactionCompleted)} />
-              </div>
-            )}
-
-            <div
-              aria-hidden='true'
-              className={`pointer-events-none absolute left-0 top-0 z-0 h-[9px] w-28 rounded-t-sm bg-neutral-100/40 backdrop-blur-xl dark:bg-neutral-900/40 ${
-                showGenerationLoadingAnimation && showStreamingThinkingInputTab ? 'block' : 'hidden'
-              }`}
-            />
-
-            <div
-              className={`slate-input-wrapper relative z-10 ${leftControlsBorderClasses} bg-neutral-100/40 dark:bg-neutral-900/40 backdrop-blur-xl rounded-3xl px-2 pt-3 pb-2 transition-all duration-300`}
+            <ComposerSurface
+              surfaceClassName='slate-input-wrapper bg-neutral-100/40 dark:bg-neutral-900/40 backdrop-blur-xl'
+              strokeClassName={composerStrokeClasses}
+              className='px-2 pt-3 pb-2'
+              tab={showGenerationLoadingAnimation && showStreamingThinkingInputTab && (showThinkingIndicator || backgroundTasksView) && (
+                <>
+                  {showThinkingIndicator && (
+                    <StreamingThinkingIndicator variant='tab' compacting={showCompactionStatus} compactionCompleted={Boolean(compactionCompleted)} />
+                  )}
+                  {backgroundTasksView && <BackgroundTasksIndicator variant='tab' {...backgroundTasksView} />}
+                </>
+              )}
             >
               {operationModeUpgradeRequest && (
                 <ToolPermissionDialog
@@ -7430,91 +7461,11 @@ function Chat() {
                   onClearIdeContexts={clearIdeContexts}
                   selectedIdeContextItems={addedIdeContextItems}
                   fallbackFileSearchRoot={ccCwd}
-                  filterSelectedMentionFiles={showAddedFilesPills}
                   imageDraftTarget={{ kind: 'composer' }}
                   fontSizeOffset={fontSizeOffset}
                 />
               </div>
-              {/* Selected file chips moved from InputTextArea */}
-              {showAddedFilesPills && selectedFilesForChat && selectedFilesForChat.length > 0 && (
-                <div className='m-2 flex flex-wrap gap-2'>
-                  {selectedFilesForChat.map(file => {
-                    const displayName =
-                      file.name || file.relativePath.split('/').pop() || file.path.split('/').pop() || file.relativePath
-                    const directoryLabel =
-                      file.relativeDirectoryPath ||
-                      (file.relativePath.includes('/') ? file.relativePath.split('/').slice(0, -1).join('/') : '')
-                    const isExpanded = expandedFilePath === file.path
-                    const isClosing = closingFilePath === file.path
-                    const isOpening = openingFilePath === file.path
-                    return (
-                      <div
-                        key={file.path}
-                        className='relative group inline-flex max-w-full items-center gap-2 rounded-full bg-neutral-100/70 px-2.5 py-1 text-neutral-800 transition-all duration-150 hover:border-neutral-400 hover:bg-neutral-200/70 dark:border-neutral-700 dark:bg-neutral-900/70 dark:text-neutral-100 dark:hover:border-neutral-500 dark:hover:bg-neutral-800/80'
-                        title={file.relativePath || file.path}
-                        onClick={e => {
-                          if (!isExpanded) {
-                            const rect = (e.currentTarget as HTMLElement).getBoundingClientRect()
-                            setExpandedAnchor({ left: rect.left, top: rect.top })
-                            setOpeningFilePath(file.path)
-                            setExpandedFilePath(file.path)
-                            // Clear opening state after transition completes
-                            window.setTimeout(() => setOpeningFilePath(null), 130)
-                          }
-                        }}
-                      >
-                        <span className='inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-blue-500/15 text-[11px] text-blue-700 dark:bg-blue-400/15 dark:text-blue-300'>
-                          📄
-                        </span>
-                        <span className='flex min-w-0 flex-col max-w-[110px] sm:max-w-[170px] md:max-w-[250px]'>
-                          <span className='truncate text-[12px] font-medium leading-tight'>{displayName}</span>
-                          {directoryLabel ? (
-                            <span className='truncate font-mono text-[10px] leading-tight text-neutral-600/90 dark:text-neutral-400/90'>
-                              {directoryLabel}
-                            </span>
-                          ) : null}
-                        </span>
-                        <button
-                          type='button'
-                          className='inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-full text-[11px] text-neutral-500 transition-colors hover:bg-neutral-300/80 hover:text-neutral-900 dark:text-neutral-400 dark:hover:bg-neutral-700 dark:hover:text-neutral-100'
-                          aria-label={`Remove ${displayName}`}
-                          onClick={e => {
-                            e.stopPropagation()
-                            handleRemoveFileSelection(file)
-                          }}
-                        >
-                          ✕
-                        </button>
-
-                        {/* Hover tooltip that can expand into anchored modal */}
-                        <div
-                          className={`absolute bottom-full left-0 mb-2 origin-bottom-left rounded-lg shadow-sm p-3 transform transition-all duration-100 ease-out ${
-                            isExpanded
-                              ? 'hidden'
-                              : 'z-50 dark:bg-neutral-900 bg-neutral-100 opacity-0 invisible scale-95 pointer-events-none w-64 sm:w-72 md:w-80 group-hover:opacity-100 group-hover:visible group-hover:scale-100'
-                          }`}
-                        >
-                          <div className='text-xs text-blue-600 dark:text-blue-300 font-medium mb-1 truncate'>
-                            {file.name || file.relativePath.split('/').pop() || file.path.split('/').pop()}
-                          </div>
-                          {directoryLabel ? (
-                            <div className='text-[10px] text-neutral-600 dark:text-neutral-400 mb-2 truncate'>
-                              {directoryLabel}
-                            </div>
-                          ) : null}
-                          <div
-                            className={`text-xs font-mono whitespace-pre-wrap break-words text-stone-800 dark:text-stone-300 ${isExpanded ? 'overflow-auto max-h-[60vh]' : isClosing ? 'overflow-hidden' : 'overflow-hidden line-clamp-6'} ${isOpening || isClosing ? 'opacity-50 ' : 'opacity-100 visible'} transition-opacity duration-50 overscroll-contain select-text`}
-                          >
-                            {file.contents}
-                          </div>
-                        </div>
-                      </div>
-                    )
-                  })}
-                </div>
-              )}
-
-            </div>
+            </ComposerSurface>
 
             {/* Controls row */}
             <div className='composer-controls-row relative z-10 mt-2 flex items-center justify-between gap-3'>
@@ -7540,7 +7491,7 @@ function Chat() {
                     />
                   </button>
                   <div className='composer-controls-left-selectors relative z-10 flex min-w-0 shrink items-center gap-1 flex-nowrap overflow-hidden'>
-                    {import.meta.env.VITE_ENVIRONMENT === 'electron' && extensions.length > 0 && (
+                    {isHostClient && extensions.length > 0 && (
                       <Select
                         value={selectedExtensionId || ''}
                         onChange={handleExtensionSelection}
@@ -7563,19 +7514,21 @@ function Chat() {
                     )}
 
                     {/* Provider selector - visibility controlled by user settings */}
-                    {import.meta.env.VITE_ENVIRONMENT === 'electron' && providerSettings.showProviderSelector && (
+                    {isHostClient && providerSettings.showProviderSelector && (
                       <Select
                         value={providers.currentProvider || ''}
                         onChange={handleProviderSelect}
                         options={providers.providers.map(p => p.name)}
                         placeholder='Select a provider...'
-                        disabled={providers.providers.length === 0}
+                        disabled={Boolean(claudeBranchLock) || providers.providers.length === 0}
+                        disabledOptions={hasSelectedHistory && !claudeBranchLock ? ['Claude Code'] : []}
                         className='w-[94px] min-w-[42px] max-w-[180px] shrink transition-[width,transform] duration-150 hover:w-[180px] focus-within:w-[180px] data-[open=true]:w-[180px] active:scale-97 [&>button]:!rounded-full [&_.bx-chevron-down]:!text-[14px] 2xl:[&_.bx-chevron-down]:!text-[15px] 3xl:[&_.bx-chevron-down]:!text-xl 4xl:[&_.bx-chevron-down]:!text-2xl'
                         searchBarVisible={true}
                         size='large'
                         dropdownMinWidth={220}
                       />
                     )}
+                    {isClaudeSession && <span className='text-xs text-neutral-500 dark:text-neutral-400' title='Claude owns tools, context and compaction. Provider locks after the first send; the Claude model can still change between turns. Queued messages join the running turn at its next tool step.'>Claude session{claudeBranchLock ? ' · provider locked' : ''}</span>}
                     <ModelSelectControl
                       provider={providers.currentProvider}
                       selectedModelName={selectedModel?.name || ''}
@@ -7584,7 +7537,6 @@ function Chat() {
                       blur='low'
                       className='w-[120px] min-w-[42px] max-w-[170px] shrink transition-[width,transform] duration-150 hover:w-[170px] focus-within:w-[170px] data-[open=true]:w-[170px] active:scale-99 [&>button]:!rounded-full'
                       showFilters={true}
-                      footerContent={modelSelectFooter}
                     />
                   </div>
                   {/*
@@ -7632,10 +7584,6 @@ function Chat() {
                               <span className='text-neutral-700 dark:text-neutral-300'>Model window:</span>
                               <span>{tokenLimits.totalContextLimit.toLocaleString()}</span>
                             </div>
-                            <div className='mt-1 flex items-center gap-2 text-xs'>
-                              <span className='text-neutral-900 dark:text-neutral-200'>Credits:</span>
-                              <span>{(current_credits * 100).toFixed(3)}</span>
-                            </div>
                           </>
                         )}
                         {/* Tooltip Arrow */}
@@ -7663,10 +7611,12 @@ function Chat() {
                   )}
                   {(isImageGenerationModel ||
                     think ||
-                    (import.meta.env.VITE_ENVIRONMENT === 'electron' && conversationIdFromUrl)) && (
+                    (isHostClient && conversationIdFromUrl)) && (
                     <ActionPopover
                       isActive={
                         toolAutoApprove ||
+                        (isClaudeSession && claudeAutoMode) ||
+                        (isClaudeSession && claudeUltracode) ||
                         operationMode === 'plan' ||
                         !!imageConfig.aspectRatio ||
                         !!imageConfig.imageSize ||
@@ -7675,7 +7625,7 @@ function Chat() {
                       }
                       footer={
                         <div className='action-cloud-fields'>
-                          {import.meta.env.VITE_ENVIRONMENT === 'electron' && conversationIdFromUrl && (
+                          {isHostClient && conversationIdFromUrl && (
                             <div className='action-cloud-directory'>
                               <label htmlFor='action-cloud-cwd'>Working directory</label>
                               <div className='action-cloud-path' style={actionPopoverInputBorderColor ? { outline: `1px solid ${actionPopoverInputBorderColor}` } : undefined}>
@@ -7709,7 +7659,38 @@ function Chat() {
                                     />
                                   </svg>
                                 </button>
+                                {ccCwd.trim() && (
+                                  <button
+                                    type='button'
+                                    onClick={() => { void handleAddAdditionalCwd() }}
+                                    disabled={additionalCwdsSaving}
+                                    className='action-cloud-folder'
+                                    aria-label='Add another working directory'
+                                    title='Add another folder the AI may work in'
+                                  >
+                                    <Plus size={16} strokeWidth={2.25} aria-hidden='true' />
+                                  </button>
+                                )}
                               </div>
+                              {additionalCwds.length > 0 && (
+                                <ul className='action-cloud-roots' aria-label='Additional working directories'>
+                                  {additionalCwds.map(root => (
+                                    <li key={root} className='action-cloud-root' title={root}>
+                                      <span className='action-cloud-root-name'>{getWorkspaceFileBaseName(root)}</span>
+                                      <span className='action-cloud-root-path'>{root}</span>
+                                      <button
+                                        type='button'
+                                        onClick={() => handleRemoveAdditionalCwd(root)}
+                                        disabled={additionalCwdsSaving}
+                                        aria-label={`Remove ${root}`}
+                                        title='Remove this directory'
+                                      >
+                                        <X size={12} strokeWidth={2.5} aria-hidden='true' />
+                                      </button>
+                                    </li>
+                                  ))}
+                                </ul>
+                              )}
                             </div>
                           )}
 
@@ -7788,16 +7769,20 @@ function Chat() {
                               />
                             </div>
                           )}
-                          <div className='action-cloud-row'>
-                            <span>Orchestrator</span>
+                          <div className='action-cloud-row action-cloud-row-fast'>
+                            <div className='flex min-w-0 flex-col'>
+                              <span>Ultracode</span>
+                              <span className='action-cloud-hint'>
+                                {isClaudeSession ? 'Claude may run background Workflows of agents' : 'Only sent for Claude Code'}
+                              </span>
+                            </div>
                             <ActionPopoverSwitch
-                              label='Orchestrator'
-                              checked={orchestratorEnabled}
-                              onClick={() => {
-                                const newState = toggleOrchestratorEnabled()
-                                setOrchestratorEnabledState(newState)
-                              }}
-                              title={orchestratorEnabled ? 'Subagent can use tools (click to disable)' : 'Subagent cannot use tools (click to enable)'}
+                              label='Ultracode'
+                              disabled={!isClaudeSession}
+                              checked={isClaudeSession && claudeUltracode}
+                              onClick={() => dispatch(chatSliceActions.claudeUltracodeSet(!claudeUltracode))}
+                              title={!isClaudeSession ? 'Ultracode is a Claude Code setting'
+                                : claudeUltracode ? 'Ultracode on for new turns (click to turn off)' : 'Turn on ultracode for new turns'}
                             />
                           </div>
                           <div className='flex flex-col gap-1'>
@@ -7805,7 +7790,8 @@ function Chat() {
                               <span>Full access</span>
                               <ActionPopoverSwitch
                                 label='Full access'
-                                checked={fullAccessEnabled}
+                                disabled={isClaudeSession}
+                                checked={!isClaudeSession && fullAccessEnabled}
                                 onClick={() => setFullAccessEnabled(!fullAccessEnabled, currentConversationId)}
                                 title='Allow tools outside the working directory on new runs'
                               />
@@ -7821,7 +7807,7 @@ function Chat() {
                         </div>
                       }
                     >
-                      {import.meta.env.VITE_ENVIRONMENT === 'electron' && conversationIdFromUrl && (
+                      {isHostClient && conversationIdFromUrl && (
                         <>
                           <ActionPopoverButton
                             label={jobsModalOpen ? 'Viewing' : 'Jobs'}
@@ -7830,18 +7816,38 @@ function Chat() {
                             aria-haspopup='dialog'
                             aria-expanded={jobsModalOpen}
                             onClick={() => setJobsModalOpen(true)}
-                            title={isElectronEnv ? 'View tool jobs' : 'Tool jobs are available in the desktop app'}
-                            disabled={!isElectronEnv}
+                            title={isHostClient ? 'View tool jobs' : 'Connect to the Graviton host to view tool jobs'}
+                            disabled={!isHostClient}
                           />
-                          <ActionPopoverButton
-                            label={toolAutoApprove ? 'Allow all' : 'Ask'}
-                            icon={<ShieldHalf size={16} />}
-                            active={toolAutoApprove}
-                            aria-pressed={toolAutoApprove}
-                            onClick={() => dispatch(chatSliceActions.toolAutoApproveToggled())}
-                            title={toolAutoApprove ? 'Auto-approving tools (click to disable)' : 'Asking for permission (click to auto-approve)'}
-                            aria-label={toolAutoApprove ? 'Disable auto-approve' : 'Enable auto-approve'}
-                          />
+                          {isClaudeSession ? (
+                            <ActionPopoverButton
+                              label={claudeApproval === 'allow_all' ? 'Allow all' : claudeApproval === 'auto' ? 'Auto' : 'Ask'}
+                              icon={claudeApproval === 'allow_all' ? <ShieldHalf size={16} />
+                                : claudeApproval === 'auto' ? <ShieldCheck size={16} /> : <ShieldQuestion size={16} />}
+                              active={claudeApproval !== 'ask'}
+                              onClick={() => {
+                                if (claudeApproval === 'ask') dispatch(chatSliceActions.claudeAutoModeSet(true))
+                                else {
+                                  if (claudeApproval === 'auto') dispatch(chatSliceActions.claudeAutoModeSet(false))
+                                  dispatch(chatSliceActions.toolAutoApproveToggled())
+                                }
+                              }}
+                              title={claudeApproval === 'allow_all' ? 'Approving every Claude tool call (click to ask)'
+                                : claudeApproval === 'auto' ? "Claude's classifier approves routine actions and asks you when unsure (click to allow all)"
+                                : 'Asking for permission (click for auto mode)'}
+                              aria-label={`Tool approval: ${claudeApproval === 'allow_all' ? 'allow all' : claudeApproval}. Click to change.`}
+                            />
+                          ) : (
+                            <ActionPopoverButton
+                              label={toolAutoApprove ? 'Allow all' : 'Ask'}
+                              icon={<ShieldHalf size={16} />}
+                              active={toolAutoApprove}
+                              aria-pressed={toolAutoApprove}
+                              onClick={() => dispatch(chatSliceActions.toolAutoApproveToggled())}
+                              title={toolAutoApprove ? 'Auto-approving tools (click to disable)' : 'Asking for permission (click to auto-approve)'}
+                              aria-label={toolAutoApprove ? 'Disable auto-approve' : 'Enable auto-approve'}
+                            />
+                          )}
                           <ActionPopoverButton
                             label={modeChange && !isBranchEditing ? 'Switching…' : operationMode === 'plan' ? 'Chat' : 'Agent'}
                             icon={operationMode === 'plan' ? <MessageSquare size={16} /> : <CodeXml size={16} />}
@@ -7850,7 +7856,9 @@ function Chat() {
                             aria-busy={Boolean(modeChange) && !isBranchEditing}
                             onClick={handleToggleOperationMode}
                             disabled={Boolean(modeChange) && !isBranchEditing}
-                            title={operationMode === 'plan' ? 'Plan mode enabled (tools will be blocked)' : 'Execution mode enabled (tools may modify files)'}
+                            title={operationMode === 'plan'
+                              ? isClaudeSession ? 'Chat mode: file edits disabled' : 'Plan mode enabled (tools will be blocked)'
+                              : 'Execution mode enabled (tools may modify files)'}
                             aria-label={operationMode === 'plan' ? 'Switch to execution mode' : 'Switch to plan mode'}
                           />
                         </>
@@ -7859,7 +7867,8 @@ function Chat() {
                   )}
                   <ReasoningLevelControl
                     supported={Boolean(selectedModel?.thinking)}
-                    level={think ? reasoningConfig.effort : 'off'}
+                    level={think || isClaudeSession ? reasoningConfig.effort : 'off'}
+                    allowOff={!isClaudeSession}
                     onLevelChange={level => {
                       if (level === 'off') {
                         setThink(false)
@@ -8081,7 +8090,6 @@ function Chat() {
             onNodeSelect={handleNodeSelect}
             onOpenParallel={handleOpenParallel}
             visibleMessageId={visibleMessageId}
-            storageMode={conversationStorageMode}
           />
         </div>
       )}
@@ -8137,7 +8145,6 @@ function Chat() {
                     onNodeSelect={handleNodeSelect}
                     onOpenParallel={handleOpenParallel}
                     visibleMessageId={visibleMessageId}
-                    storageMode={conversationStorageMode}
                   />
                 </div>
 
@@ -8172,51 +8179,6 @@ function Chat() {
         onConfirm={confirmDeleteModal}
       />
 
-      {/* Fixed expanded panel rendered at root to sit above backdrop and allow scroll */}
-      {(expandedFilePath || closingFilePath) &&
-        (() => {
-          const activePath = expandedFilePath || closingFilePath
-          const file = selectedFilesForChat.find(f => f.path === activePath)
-          if (!file) return null
-          const isClosing = !!closingFilePath && closingFilePath === file.path
-          const name = file.name || file.relativePath.split('/').pop() || file.path.split('/').pop()
-          const left = expandedAnchor?.left ?? 16
-          const top = (expandedAnchor?.top ?? 16) - 8
-          return (
-            <div
-              className='fixed z-[99999] -translate-y-full overflow-y-auto rounded-lg bg-neutral-100 p-3 shadow-sm transition-[opacity,transform] duration-[150ms] [transition-timing-function:cubic-bezier(0.22,1,0.36,1)] pointer-events-auto dark:bg-neutral-900'
-              style={{ left, top, maxWidth: '30vw', width: 'clamp(90vw, 90vw, 56rem)' }}
-              onMouseDown={e => e.stopPropagation()}
-              onMouseUp={e => e.stopPropagation()}
-              onClick={e => e.stopPropagation()}
-              onWheel={e => e.stopPropagation()}
-              onTouchStart={e => e.stopPropagation()}
-              onTouchMove={e => e.stopPropagation()}
-              onTouchEnd={e => e.stopPropagation()}
-            >
-              <div className='flex items-center justify-between mb-2 gap-3'>
-                <div className='text-xs text-blue-600 dark:text-blue-300 font-medium truncate'>{name}</div>
-                <button
-                  className='text-xs px-2 text-neutral-800 dark:text-neutral-300 py-1 rounded-xl border border-neutral-200 dark:border-neutral-600 hover:bg-neutral-200 dark:hover:bg-neutral-800'
-                  onClick={handleCloseExpandedPreview}
-                >
-                  Close
-                </button>
-              </div>
-              <div
-                className={`text-xs font-mono whitespace-pre-wrap break-words text-stone-800 dark:text-stone-200 ${isClosing ? 'opacity-50' : 'opacity-100'} transition-opacity duration-100 overflow-auto thin-scrollbar max-h-[60vh] overscroll-contain select-text`}
-              >
-                {file.contents}
-              </div>
-            </div>
-          )
-        })()}
-
-      {/* Transparent backdrop to allow click-out close. Keep during closing to finish animation */}
-      {(expandedFilePath || closingFilePath) && (
-        <div className='fixed inset-0 z-[99998] bg-transparent' onClick={handleCloseExpandedPreview} />
-      )}
-
       {/* D3: the free-tier limit modal is intentionally NOT rendered here any more. Exhaustion
           arrives as a `free_tier_exhausted` chat bubble recorded by `sseProjection`, so a failed
           send never blocks the app. */}
@@ -8225,39 +8187,6 @@ function Chat() {
         toolCallId={subagentTranscriptToolCallId}
         onClose={() => setSubagentTranscriptToolCallId(null)}
       />
-
-      {/* OpenRouter login required modal */}
-      {openRouterLoginRequiredModalOpen && (
-        <div
-          className='fixed inset-0 z-[100] flex items-center justify-center'
-          onClick={closeOpenRouterLoginRequiredModal}
-          style={{ backgroundColor: authModalBackdropColor }}
-        >
-          <div
-            className='rounded-lg shadow-xl p-6 w-[90%] max-w-md'
-            onClick={e => e.stopPropagation()}
-            style={{ backgroundColor: authModalSurfaceBackgroundColor }}
-          >
-            <h3 className='text-[20px] font-semibold mb-3' style={{ color: authModalTitleTextColor }}>
-              Sign in required for Yggdrasil models
-            </h3>
-            <p className='text-[14px] mb-6' style={{ color: authModalBodyTextColor }}>
-              you need to sign in with github or google account to access Yggdrasil models, logging in will merge your
-              local and yggdrasil account, you wont lose any info
-            </p>
-            <div className='flex justify-end'>
-              <Button
-                variant='outline2'
-                className='bg-emerald-600 hover:bg-emerald-700 border-emerald-700 text-white active:scale-90'
-                onClick={confirmOpenRouterLoginRequired}
-                style={authModalPrimaryButtonStyle}
-              >
-                Ok
-              </Button>
-            </div>
-          </div>
-        </div>
-      )}
 
       {/* OpenAI ChatGPT Login Modal */}
       {openaiLoginModalOpen && (
@@ -8308,7 +8237,7 @@ function Chat() {
                     onClick={() => {
                       requestModelSwitch({ provider: 'OpenAI (ChatGPT)', model: null }, () => {
                         dispatch(chatSliceActions.branchModelSelected({ provider: 'OpenAI (ChatGPT)', model: null }))
-                        dispatch(chatSliceActions.providerSelected('OpenAI (ChatGPT)'))
+                        if (!isBranchEditing) dispatch(chatSliceActions.providerSelected('OpenAI (ChatGPT)'))
                       }, openaiSelectionScopeRef.current ?? modelSwitchScope)
                       closeOpenaiLoginModal()
                     }}

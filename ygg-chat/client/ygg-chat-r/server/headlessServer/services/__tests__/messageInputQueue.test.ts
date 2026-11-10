@@ -187,10 +187,23 @@ describe('queue intake completion race', () => {
     queue.claim(); queue.settle('q', { messageId: 'delivered' }); queue.tryClose()
     run.terminal = 'completed'
     expect(orchestrator.submitQueuedMessage('c', 's', submission).snapshot.items[0].messageId).toBe('delivered')
-    const next = { requestId: 'next', content: 'after completion', fullAccess: true, fullAccessNotificationId: 'toggle-1' }
+    expect(() => orchestrator.submitQueuedMessage('c', 's', { requestId: 'elevated', content: 'no', fullAccess: true })).toThrow('access policy')
+    const next = { requestId: 'next', content: 'after completion', fullAccess: false, fullAccessNotificationId: 'toggle-1' }
     const result = orchestrator.submitQueuedMessage('c', 's', next)
     expect(result.restart).toMatchObject({ operation: 'send', parentId: 'final', lineageId: 'l', content: 'after completion', operationMode: 'plan',
-      fullAccess: true, fullAccessNotificationId: 'toggle-1' })
+      fullAccess: false, fullAccessNotificationId: 'toggle-1' })
+    expect(() => orchestrator.submitQueuedMessage('c', 's', { ...next, attachmentsBase64: [{ dataUrl: 'changed' }] })).toThrow('already used')
     expect(orchestrator.submitQueuedMessage('c', 's', next)).toEqual({ restartStreamId: result.restart.streamId })
   })
+})
+
+it('accounts for UTF-8 and releases settled attachment bytes while retaining fingerprints', () => {
+  const queue = makeQueue()
+  expect(() => queue.enqueue({ requestId: 'utf8', content: '界'.repeat(9 * 1024 * 1024) }, 0)).toThrow('size limit')
+  const submission = { requestId: 'a', content: 'image', attachmentsBase64: [{ dataUrl: 'x'.repeat(13 * 1024 * 1024) }] }
+  queue.enqueue(submission, 0)
+  queue.claim(); queue.settle('a', { messageId: 'saved' })
+  expect(() => queue.enqueue({ ...submission, requestId: 'b' }, 0)).not.toThrow()
+  expect(queue.enqueue(submission, 0).messageId).toBe('saved')
+  expect(() => queue.enqueue({ ...submission, fullAccess: true }, 0)).toThrow('already used')
 })

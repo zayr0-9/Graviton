@@ -50,7 +50,6 @@ export interface HeadlessMessageRequest {
   projectContext?: string | null
   think?: boolean
   temperature?: number
-  storageMode?: 'local' | 'cloud'
   selectedFiles?: any[]
   attachmentsBase64?: any[] | null
   retrigger?: boolean
@@ -76,6 +75,7 @@ export interface HeadlessMessageRequest {
   /** Idempotency/audit identity for a fork operation; distinct from streamId. */
   operationId?: string | null
   toolTimeoutMs?: number
+  bashTimeoutMs?: number
   /**
    * Interactive tool-permission policy for the server-owned loop.
    * OPTIONAL and undefined-by-default: absence == auto-approve. The loop pauses
@@ -83,6 +83,17 @@ export interface HeadlessMessageRequest {
    * (the mobile LAN UI never sends it, so it always auto-approves).
    */
   toolAutoApprove?: boolean
+  /**
+   * Claude provider only. 'auto' runs the CLI in auto mode (a classifier approves
+   * routine calls; uncertain ones still reach the approval gate). Sent only when
+   * toolAutoApprove is off; absent == 'default'.
+   */
+  claudePermissionMode?: 'auto'
+  /**
+   * Claude provider only. Runs the session with ultracode on: Claude may hand work to the
+   * Workflow tool, which runs agents as background tasks. Absent == off.
+   */
+  claudeUltracode?: boolean
   manualCompaction?: boolean
   autoCompactionEnabled?: boolean
   contextLength?: number
@@ -91,6 +102,7 @@ export interface HeadlessMessageRequest {
   compactionModelName?: string | null
   compactionSystemPrompt?: string | null
   /** Reasoning effort forwarded to child subagents spawned by this chat run. */
+  subagentDefaults?: import('./hostSubagentPreferences.js').HostSubagentPreferences
   subagentReasoningEffort?: 'low' | 'medium' | 'high' | 'xhigh'
   /**
    * Phase 3 opt-in: run the 5 lifecycle chat hooks in the server loop (parity with
@@ -138,15 +150,18 @@ export interface HeadlessSubagentStreamRequest {
   /** OpenAI ChatGPT reasoning effort for this child run. */
   reasoningEffort?: 'low' | 'medium' | 'high' | 'xhigh'
   operationMode?: 'plan' | 'execute'
-  /** Parent's toolAutoApprove && inheritAutoApprove. When false, only read-only tools run. */
+  /** Inherited from the parent's toolAutoApprove. When false, only read-only tools run. */
   autoApprove: boolean
   rootPath?: string | null
   /** User-selected workspace bypass; does not change approval or operation mode. */
   fullAccess?: boolean
+  /** Parent's extra conversation roots; server-populated, never read from the HTTP body. */
+  additionalRoots?: string[]
   userId?: string | null
   accessToken?: string | null
   accountId?: string | null
   toolTimeoutMs?: number
+  bashTimeoutMs?: number
   autoCompactionEnabled?: boolean
   contextLength?: number
   compactionThresholdPercent?: number
@@ -201,7 +216,35 @@ export type HeadlessSubagentStreamEvent =
       envelope?: ChatErrorEnvelope
     }
 
+export interface HeadlessBackgroundTask {
+  id: string
+  /** The SDK task_type: local_bash, local_agent, local_workflow, monitor, ... */
+  kind: string
+  description: string
+  /** The tool call that launched it; null for tasks a child agent launched. */
+  toolUseId: string | null
+  /** Latest progress, from the CLI's task_progress events (see `ClaudeBackgroundTask`). */
+  activity?: string
+  progress?: string
+  lastTool?: string
+  usage?: { totalTokens: number; toolUses: number; durationMs: number }
+}
+
+/** The end of a background shell or Monitor task's output (the CLI keeps the last 8 KiB). */
+export interface HeadlessBackgroundTaskOutput {
+  output: string
+  totalBytes: number
+  truncated: boolean
+}
+
 export type HeadlessStreamEvent =
+  | { type: 'observer_resync_required'; streamId: string }
+  | { type: 'event_reference'; streamId: string; reference: import('./snapshotPayload.js').SnapshotPayloadReference }
+  | { type: 'snapshot_reference'; streamId: string; reference: import('./snapshotPayload.js').SnapshotPayloadReference }
+  | { type: 'child_bootstrap'; snapshot: import('./runProtocol.js').ChildRunBootstrap }
+  | { type: 'bootstrap'; snapshot: import('./runProtocol.js').MainRunBootstrap }
+  | { type: 'tool_approval_changed'; conversationId: string; lineageId: string; streamId: string; enabled: boolean; message: any }
+  | { type: 'decision_settled'; streamId: string; toolCallId: string; outcome: 'resolved' | 'aborted'; revision: number }
   | { type: 'compaction_control_persisted'; message: any; lineageId?: string | null }
   | { type: 'message_queue_updated'; snapshot: import('./queuedMessages.js').MessageQueueSnapshot }
   | { type: 'queued_user_message_persisted'; message: any; requestId: string; streamId: string; lineageId: string | null }
@@ -225,6 +268,12 @@ export type HeadlessStreamEvent =
    */
   | { type: 'context_injection_persisted'; message: any; lineageId?: string | null }
   | { type: 'provider_routed'; provider: string; modelName: string }
+  /**
+   * Claude runs only: the non-ambient background tasks keeping the session open (a backgrounded
+   * shell, a workflow, a child agent). Replace semantics. `turnActive: false` means Claude finished
+   * its turn and the run stays open only for this work; Stop ends the tasks with the run.
+   */
+  | { type: 'background_tasks'; streamId: string; lineageId?: string | null; turnActive: boolean; tasks: HeadlessBackgroundTask[] }
   | {
       type: 'hook_activity'
       event: string
@@ -354,10 +403,6 @@ export type HeadlessStreamEvent =
       toolName: string
       toolInput: any
     }
-  // Relayed from Railway (cloud/free-tier inference) by the gateway proxy (Phase 4).
-  | { type: 'free_generations_update'; remaining: number; isFreeTier?: boolean }
-  | { type: 'generation_limit_reached'; message?: string }
-  | { type: 'reauth_required'; message?: string; envelope?: ChatErrorEnvelope }
   // Non-terminal, user-facing status. A run keeps going after one of these; they
   // exist so a multi-second silence (a provider retry, a resubscribe, an in-loop
   // compaction) has a visible cause instead of looking like a stall. Never

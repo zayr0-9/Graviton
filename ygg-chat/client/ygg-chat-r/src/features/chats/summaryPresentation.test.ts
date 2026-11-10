@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { getCompactionPlaceholder, getTreeMessageText, isHiddenCompactionMessage, SUMMARY_PLACEHOLDER } from './summaryPresentation'
+import { getCompactionPlaceholder, getTreeMessageText, isHiddenCompactionMessage, resolveBranchBeforeSummaryAnchor, SUMMARY_PLACEHOLDER } from './summaryPresentation'
 import { buildConversationTree, buildPathToConversationMessage } from './conversationTree'
 import type { Message } from './chatTypes'
 
@@ -42,5 +42,44 @@ describe('hidden compaction transcript rows', () => {
     expect(rows.filter(row => !isHiddenCompactionMessage(row)).map(row => row.id)).toEqual(['summary', 'resume', 'ordinary'])
     expect(rows.map(row => row.id)).toEqual(['request', 'partial', 'summary', 'resume', 'ordinary'])
     expect(isHiddenCompactionMessage(null)).toBe(false)
+  })
+})
+
+describe('branch before summary anchor', () => {
+  const summaryMeta = { kind: 'compaction_summary', state: 'committed' }
+  const claude = (extra: Record<string, unknown> = {}) => ({ claude: { ...extra }, modelSelection: { provider: 'Claude Code' } })
+
+  it('skips the compaction request and returns the last real message', () => {
+    const rows = [
+      { id: 'u1', parent_id: null, role: 'user' },
+      { id: 'a1', parent_id: 'u1', role: 'assistant' },
+      { id: 'req', parent_id: 'a1', role: 'user', meta: { kind: 'compaction_instruction' } },
+      { id: 'sum', parent_id: 'req', role: 'assistant', meta: JSON.stringify(summaryMeta) },
+    ]
+    expect(resolveBranchBeforeSummaryAnchor('sum', rows)).toBe('a1')
+  })
+
+  it('walks a Claude summary back to the nearest resumable checkpoint', () => {
+    const rows = [
+      { id: 'u1', parent_id: null, role: 'user', meta: claude() },
+      { id: 'a1', parent_id: 'u1', role: 'assistant', meta: claude({ checkpoint: true }) },
+      { id: 'cmd', parent_id: 'a1', role: 'user', meta: claude() },
+      { id: 'mid', parent_id: 'cmd', role: 'assistant', meta: claude() },
+      { id: 'sum', parent_id: 'mid', role: 'assistant', meta: { ...summaryMeta, ...claude() } },
+    ]
+    expect(resolveBranchBeforeSummaryAnchor('sum', rows)).toBe('a1')
+  })
+
+  it.each([
+    ['no checkpoint', [{ id: 'u1', parent_id: null, role: 'user', meta: claude() }], { ...summaryMeta, ...claude() }],
+    ['an earlier summary', [{ id: 'u1', parent_id: null, role: 'assistant', meta: summaryMeta }], summaryMeta],
+    ['copied history', [{ id: 'u1', parent_id: null, role: 'assistant', meta: { transfer: { sourceMessageId: 'x' } } }], summaryMeta],
+  ])('returns null for %s', (_label, history, meta) => {
+    expect(resolveBranchBeforeSummaryAnchor('sum', [...history, { id: 'sum', parent_id: 'u1', role: 'assistant', meta }])).toBeNull()
+  })
+
+  it('returns null for a non-summary row or missing ancestry', () => {
+    expect(resolveBranchBeforeSummaryAnchor('a1', [{ id: 'a1', parent_id: null, role: 'assistant' }])).toBeNull()
+    expect(resolveBranchBeforeSummaryAnchor('sum', [{ id: 'sum', parent_id: 'gone', role: 'assistant', meta: summaryMeta }])).toBeNull()
   })
 })

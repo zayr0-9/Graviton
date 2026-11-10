@@ -126,7 +126,6 @@ describeIfSqlite('messages/tree read', () => {
   let server: Server
   let baseUrl: string
   let fetchImpl: ReturnType<typeof vi.fn>
-  let railway: { passthrough: ReturnType<typeof vi.fn> }
 
   beforeEach(() => {
     db = new BetterSqlite3Ctor!(':memory:')
@@ -134,19 +133,10 @@ describeIfSqlite('messages/tree read', () => {
     seed(db)
     statements = createStatements(db)
     fetchImpl = vi.fn(async () => { throw new Error('loopback fetch must not be used for the local tree') })
-    railway = { passthrough: vi.fn(async () => ({ ok: false, status: 404, body: { error: 'cloud: not found' } })) }
     const app = express()
     app.use(express.json())
     registerAppAutomationRoutes(app, { db, statements })
-    registerGatewayRoutes(app, {
-      railway: railway as any,
-      mirror: { mirror: vi.fn(async () => {}) } as any,
-      auth: { getFreshAppToken: vi.fn(async () => ({ accessToken: 'tok' })) } as any,
-      db,
-      statements,
-      enabled: true,
-      fetchImpl: fetchImpl as any,
-    })
+    registerGatewayRoutes(app, { db, statements, fetchImpl: fetchImpl as any })
     server = app.listen(0)
     baseUrl = `http://127.0.0.1:${(server.address() as AddressInfo).port}`
   })
@@ -197,7 +187,7 @@ describeIfSqlite('messages/tree read', () => {
         ] },
       ],
     })
-    expect(body.meta).toEqual({ storage_mode: 'local' })
+    expect(body.meta).toBeUndefined()
   })
 
   it('attaches every hook run per message, newest first, with no 500-row cap', async () => {
@@ -220,7 +210,7 @@ describeIfSqlite('messages/tree read', () => {
     const app = await get('/api/app/conversations/c-empty/messages/tree')
     const gw = await get('/api/gw/conversations/c-empty/messages/tree')
     expect(app.status).toBe(200)
-    expect(app.body).toEqual({ messages: [], tree: null, meta: { storage_mode: 'local' } })
+    expect(app.body).toEqual({ messages: [], tree: null })
     expect(gw.body).toEqual(app.body)
   })
 
@@ -230,7 +220,6 @@ describeIfSqlite('messages/tree read', () => {
     expect(gw.status).toBe(200)
     expect(gw.body).toEqual(app.body)
     expect(fetchImpl).not.toHaveBeenCalled()
-    expect(railway.passthrough).not.toHaveBeenCalled()
   })
 
   it('flat snapshots retain all enrichment and serialize a 20,000-deep conversation', async () => {
@@ -254,12 +243,10 @@ describeIfSqlite('messages/tree read', () => {
     }
   })
 
-  it('gateway still routes an unknown conversation to the cloud leg', async () => {
+  it('gateway serves an unknown conversation locally, exactly like the app route', async () => {
+    const app = await get('/api/app/conversations/not-local/messages/tree')
     const gw = await get('/api/gw/conversations/not-local/messages/tree')
-    expect(gw.status).toBe(404)
-    expect(gw.body).toEqual({ error: 'cloud: not found' })
-    expect(railway.passthrough).toHaveBeenCalledTimes(1)
-    expect(railway.passthrough.mock.calls[0][0]).toMatchObject({ method: 'GET', path: '/conversations/not-local/messages/tree' })
+    expect(gw).toEqual(app)
     expect(fetchImpl).not.toHaveBeenCalled()
   })
 })

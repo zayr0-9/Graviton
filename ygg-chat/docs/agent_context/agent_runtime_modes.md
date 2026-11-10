@@ -1,106 +1,109 @@
 ---
 paths:
   - "docs/agent_context/agent_runtime_modes.md"
+  - "client/ygg-chat-r/src/config/runtimeMode.ts"
+  - "client/ygg-chat-r/src/platform/clientCapabilities.ts"
+  - "client/ygg-chat-r/src/helpers/serverLoopSettings.ts"
 ---
 
 # Agent Context: Runtime Modes
 
-Last reviewed: 2026-08-01
+Last reviewed: 2026-11-10
 
 ## Purpose
 
-Explains how the app behaves across web, Electron, local storage, and headless runtime modes.
+Explains how the app behaves across its delivery surfaces (Electron, the shared browser
+client, the standalone host) and the local headless server. Graviton is **fully local**:
+there is no hosted backend, account, cloud storage mode or plain web product.
 
 ## When to Open This File
 
 Use this when changing:
 - API routing or base URL selection;
-- `storage_mode` behaviour;
 - Electron-only features;
 - local/headless server endpoints;
-- gateway feature flags or the server-owned chat loop;
-- code gated by `BUILD_TARGET` or runtime detection.
+- the server-owned chat loop or resumable runs;
+- code gated by `__BUILD_TARGET__` or runtime detection.
 
 ## Key Files
 
-- `client/ygg-chat-r/src/config/runtimeMode.ts`: runtime/build target helpers.
-- `client/ygg-chat-r/src/utils/api.ts`: local/cloud API clients. The renderer targets the resolved local server origin (preferred default `http://127.0.0.1:3002`, with fallback ports and foreign-instance checks); `gwApi` (`/api/gw/*`) and `cloudApi` (`/api/cloud/*`) are thin wrappers over `localApi`.
-- `client/ygg-chat-r/src/lib/auth/*`: auth providers per runtime.
-- `client/ygg-chat-r/src/lib/localMirror.ts`: renderer-side local mirror. Drop-in replacement for the removed `dualSyncManager`/`lib/sync/*`; cloud mirroring now lives server-side in `server/headlessServer/services/cloudMirrorService.ts`.
-- `client/ygg-chat-r/src/helpers/serverLoopSettings.ts`: renderer resumable-run settings (see Feature Flags).
+- `client/ygg-chat-r/src/platform/clientCapabilities.ts`: delivery surface from the build
+  target only (`__BUILD_TARGET__` = `electron` | `browser-client` | `standalone`, defined by
+  `vite.config.ts` and the test/smoke configs). `isNativeShell`, `isBrowserClient`,
+  `isStandaloneClient`, `isHostClient`. No `.env` is needed.
+- `client/ygg-chat-r/src/config/runtimeMode.ts`: `isElectronMode` and `LOCAL_AUTH_USER_ID`
+  (the single local identity from `shared/localUser.ts`).
+- `client/ygg-chat-r/src/utils/api.ts`: the renderer targets the resolved local server origin
+  (preferred `http://127.0.0.1:3002`, with fallback ports and foreign-instance checks);
+  `gwApi` (`/api/gw/*`) is a thin wrapper over `localApi`.
+- `client/ygg-chat-r/src/lib/auth/*`: public local-auth state (no sign-in); see `agent_auth.md`.
+- `client/ygg-chat-r/src/helpers/serverLoopSettings.ts`: renderer resumable-run setting.
 - `client/ygg-chat-r/electron/main.ts`: starts the Electron shell and shared server through `createYggServer`.
 - `client/ygg-chat-r/electron/electronHostAdapter.ts`: desktop config and privileged host capabilities.
 - `client/ygg-chat-r/server/createYggServer.ts`: host-neutral composition/lifecycle root.
 - `client/ygg-chat-r/server/standaloneEntry.ts`: existing Node host with `YGG_*` environment configuration.
-- `client/ygg-chat-r/server/auth/runtime.ts`: unconditional canonical auth-session ownership.
-- `client/ygg-chat-r/server/localServer.ts`: local API surface on Electron.
+- `client/ygg-chat-r/server/localServer.ts`: local API surface.
 - `client/ygg-chat-r/server/headlessServer/index.ts`: headless server composition.
-- `client/ygg-chat-r/server/headlessServer/config/gatewayFlags.ts`: gateway feature-flag resolution (see Feature Flags).
-- `shared/types.ts`: `StorageMode` and core entity contracts.
 
 ## Runtime Context
 
-### Legacy Web Mode
+### Electron (native shell)
 
-Web build/runtime branches remain in source, but are not a supported app target in
-this repository. Do not add web fallbacks or require web builds for desktop changes.
-The existing standalone Node server is a host for the shared backend, not evidence
-that arbitrary web-mode behavior must be preserved.
+- Renderer runs the React app; the main process owns window lifecycle and starts the local Express server.
+- Electron-specific capabilities belong in `electron/`. Shared backend/tool code belongs in
+  `server/` and must not import Electron; the host adapter supplies privileged capabilities.
+- `npm run dev` runs the Electron app.
 
-### Electron Mode
+### Browser client and standalone host
 
-- Renderer runs the same React app.
-- Electron main process owns window lifecycle and starts the local Express server.
-- Renderer can call local API endpoints and drive the server-owned chat loop through server routes.
-- Electron-specific capabilities belong in `electron/`. Shared backend/tool code belongs in `server/` and must not import Electron; the host adapter supplies privileged capabilities.
+- `build:browser-client` serves the same React tree from the Electron host for trusted-network
+  devices (`isBrowserClient`). `npm run dev:standalone` runs the renderer against the standalone
+  Node host (`isStandaloneClient`). Both are host clients of the same local server; neither is a
+  hosted web product.
 
-### Local Storage Mode
+### Persistence
 
-- Entities marked `storage_mode: 'local'` should remain local-only.
-- Local persistence uses SQLite behind the Electron/local server.
+- All data lives in local SQLite behind the local server. There is no storage mode to resolve;
+  new rows write `storage_mode = 'local'` (the legacy column/type remain for old databases).
 
-### Headless Mode
+### Headless server
 
-- The local headless Express server (`127.0.0.1:3002`) runs inside the Electron main process and OWNS the main chat agent loop for all 5 providers (openrouter, lmstudio, openaichatgpt, zai, bedrock) after the headless thin-client migration. The renderer is a thin SSE client — no loop control, tool execution, or permission/hook/compaction orchestration. See `agent_headless_server.md`.
-- Headless APIs under `server/headlessServer` expose server-side chat orchestration, providers, tool execution, and the `/api/gw/*` (storage-aware CRUD) and `/api/cloud/*` (authenticated Railway pass-through) gateway surfaces.
-- Mobile LAN UI is served from the headless server and lives under `server/headlessServer/ui/mobile`.
+- The local headless Express server (`127.0.0.1:3002`) runs inside the Electron main process and
+  OWNS the main chat agent loop for every provider route (`openaichatgpt`, `openrouterbyok`,
+  `lmstudio`, `zai`, `bedrock`; Claude Code uses its own session backend). The renderer is a thin
+  SSE client. See `agent_headless_server.md`.
+- `/api/gw/*` is a local data facade over `/api/app/*`. There is no `/api/cloud/*` proxy.
+- Mobile LAN UI is served from the headless server under `server/headlessServer/ui/mobile`.
 
-## Feature Flags
+## Resumable runs
 
-### Server: gateway flags (`server/headlessServer/config/gatewayFlags.ts`)
+- Server: detach/reattach is always on (`resumableRuns = true` in `headlessServer/index.ts`;
+  the old `gateway.*` feature flags and `YGG_GATEWAY_MODE` were removed). A bare disconnect
+  DETACHES; the client resubscribes by `streamId`; Stop uses `POST /api/streams/:id/abort`.
+  App quit still kills every run (in-memory sessions).
+- Renderer: `isResumableRunsEnabled()` is always true for host clients; otherwise an explicit
+  `localStorage['ygg.resumableRuns']` value wins, defaulting to `isElectronMode`.
+  See `agent_chat_streaming_state.md`.
 
-`resolveGatewayFlags()` returns `GatewayFlags { chat, crud, cloudProxy, resumableRuns }`:
+### Removed flags
 
-- `chat` — DEFAULT ON (Phase 6 cutover). Gates the server-owned cloud (openrouter) path: `CloudMirrorSink` Railway-message-id adoption + free-tier SSE relay. Consumed via `cloudChatEnabled: gatewayFlags.chat` (index.ts:321) into `ChatOrchestrator`. An explicit Conf key `gateway.chat === false` is the escape hatch that forces it off.
-- `crud`, `cloudProxy` — DEFAULT OFF and VESTIGIAL. The Phase 5 gateway routes mount unconditionally (`registerGatewayRoutes`/`registerCloudProxyRoutes` with hardcoded `enabled: true` in index.ts); these flags are computed but never read at the mount site. Plumbing kept.
-- `resumableRuns` — DEFAULT ON; explicit Conf `false` opts out. Decouples a chat run's lifetime from its SSE socket: a bare disconnect DETACHES (the run keeps running) instead of aborting; the client resubscribes by `streamId`; explicit cancellation uses `POST /api/streams/:id/abort`, while detached-run reaping, replacement, and process shutdown can also stop runs. Consumed by `runSseOrchestrator` + the reaper (`runSessionRegistry`). See `agent_headless_server.md` §Detach/Reattach. App-quit still kills every run (in-memory sessions).
-
-Master override: env `YGG_GATEWAY_MODE` truthy (`/^(1|true|yes|on)$/i`) turns all four flags on and short-circuits any Conf read. Otherwise each flag reads its own Conf key (store `{ projectName: 'ygg-chat-r' }`), wrapped in try/catch so a bad/missing store keeps `chat` on and never breaks startup.
-
-### Renderer flags (`src/helpers/serverLoopSettings.ts`)
-
-Only the resumable-run setting remains. Authentication ownership is unconditional
-in `server/auth/`; `gateway.tokenOwner`, `isServerTokenOwnerEnabled`,
-`setServerTokenOwnerEnabled`, and their env/localStorage toggles have been removed.
-See `agent_auth.md` for the canonical auth-session flow.
-- `isResumableRunsEnabled()` / `setResumableRunsEnabled()` — DEFAULT ON in Electron; env `VITE_RESUMABLE_RUNS` or an explicit `localStorage['ygg.resumableRuns']` value overrides it. When on, the renderer resubscribes to a dropped run by `streamId`, routes Stop through `POST /api/streams/:id/abort`, and re-attaches to in-flight runs after a reload (`resumeInFlightStreams`). Coupled to the server `gateway.resumableRuns` flag — with the server flag off, the `/api/streams/*` routes `501` and resubscribe degrades to a harmless no-op. See `agent_chat_streaming_state.md`.
-
-### Removed renderer flags
-
-The former renderer loop-enable flags `isServerOwnedChatLoopEnabled()` and `isCloudServerLoopEnabled()` (and their env/localStorage overrides) were DELETED at the Phase 6 cutover. The 3 chat thunks in `src/features/chats/chatActions.ts` route through the server-owned loop in a local-server runtime (Electron or the existing standalone target; plain web throws); there is no renderer-side loop toggle.
+`isServerOwnedChatLoopEnabled()`, `isCloudServerLoopEnabled()`, `gateway.tokenOwner`,
+`gateway.chat/crud/cloudProxy/resumableRuns`, `VITE_ENVIRONMENT`-based runtime detection and the
+cloud storage mode are gone. The 3 chat thunks in `src/features/chats/chatActions.ts` always
+route through the server-owned loop on a host client.
 
 ## Gotchas and Constraints
 
-- Do not call Electron/local APIs from pure web flows without runtime checks.
-- Do not sync `storage_mode: 'local'` data to cloud.
+- Do not add web fallbacks, cloud legs or `.env`-driven runtime switches.
 - Keep shared type changes backward-compatible across renderer, Electron, and headless server.
-- `general_project_context.md` references a root `server/`; verify it exists before editing server paths.
+- Outbound network is limited to user-configured model providers, MCP servers, the app-store
+  catalog (`agent_app_store.md`) and GitHub Releases for updates.
 
 ## Testing and Validation
 
 - Runtime helper/API changes: `npm --prefix client/ygg-chat-r run build:electron`.
 - Host-neutral server/config changes: `npm --prefix client/ygg-chat-r run test:server` and `npm --prefix client/ygg-chat-r run typecheck:server`.
-- Headless changes (incl. gateway flags): `npm --prefix client/ygg-chat-r run test:headless`.
+- Headless changes: `npm --prefix client/ygg-chat-r run test:headless`.
 - Electron tool/server changes: `npm --prefix client/ygg-chat-r run test:tools` when relevant.
 
 ## Related Docs
@@ -108,4 +111,4 @@ The former renderer loop-enable flags `isServerOwnedChatLoopEnabled()` and `isCl
 - `agent_project_overview.md`
 - `agent_electron_main_local_server.md`
 - `agent_headless_server.md`
-- `agent_global_persistent_agent.md` (RETIRED tombstone — the renderer-owned global agent loop no longer exists)
+- `agent_auth.md`

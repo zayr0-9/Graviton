@@ -1,4 +1,4 @@
-import { hasFullToolAccess } from '../toolAccessContext.js'
+import { hasToolAccessTo } from '../toolAccessContext.js'
 import fs from 'fs/promises'
 import path from 'path'
 import { isManagedToolPath } from '../utils/managedToolPaths.js'
@@ -49,7 +49,7 @@ export async function deleteFile(filePath: string, operationMode?: 'plan' | 'exe
         const normalizedCwd = cwd.replace(/\/$/, '')
         const normalizedPath = resolvedPath.replace(/\/$/, '')
         const outsideWorkspace = !normalizedPath.startsWith(normalizedCwd + '/') && normalizedPath !== normalizedCwd
-        if (outsideWorkspace && !hasFullToolAccess() && !isManagedPathException(normalizedCwd, normalizedPath, true)) {
+        if (outsideWorkspace && !hasToolAccessTo(normalizedPath, true) && !isManagedPathException(normalizedCwd, normalizedPath, true)) {
           throw new Error(
             `Access denied: Path '${filePath}' is outside the workspace '${cwd}'. File operations are restricted to the workspace directory.`
           )
@@ -59,7 +59,7 @@ export async function deleteFile(filePath: string, operationMode?: 'plan' | 'exe
         const normalizedCwd = path.resolve(cwd)
         const normalizedPath = path.resolve(resolvedPath)
         const outsideWorkspace = !normalizedPath.startsWith(normalizedCwd + path.sep) && normalizedPath !== normalizedCwd
-        if (outsideWorkspace && !hasFullToolAccess() && !isManagedPathException(normalizedCwd, normalizedPath, false)) {
+        if (outsideWorkspace && !hasToolAccessTo(normalizedPath) && !isManagedPathException(normalizedCwd, normalizedPath, false)) {
           throw new Error(
             `Access denied: Path '${filePath}' is outside the workspace '${cwd}'. File operations are restricted to the workspace directory.`
           )
@@ -132,7 +132,7 @@ export async function safeDeleteFile(
       const normalizedCwd = cwd.replace(/\/$/, '')
       const normalizedPath = resolvedPath.replace(/\/$/, '')
       const outsideWorkspace = !normalizedPath.startsWith(normalizedCwd + '/') && normalizedPath !== normalizedCwd
-      if (outsideWorkspace && !hasFullToolAccess() && !isManagedPathException(normalizedCwd, normalizedPath, true)) {
+      if (outsideWorkspace && !hasToolAccessTo(normalizedPath, true) && !isManagedPathException(normalizedCwd, normalizedPath, true)) {
         throw new Error(
           `Access denied: Path '${filePath}' is outside the workspace '${cwd}'. File operations are restricted to the workspace directory.`
         )
@@ -142,7 +142,7 @@ export async function safeDeleteFile(
       const normalizedCwd = path.resolve(cwd)
       const normalizedPath = path.resolve(resolvedPath)
       const outsideWorkspace = !normalizedPath.startsWith(normalizedCwd + path.sep) && normalizedPath !== normalizedCwd
-      if (outsideWorkspace && !hasFullToolAccess() && !isManagedPathException(normalizedCwd, normalizedPath, false)) {
+      if (outsideWorkspace && !hasToolAccessTo(normalizedPath) && !isManagedPathException(normalizedCwd, normalizedPath, false)) {
         throw new Error(
           `Access denied: Path '${filePath}' is outside the workspace '${cwd}'. File operations are restricted to the workspace directory.`
         )

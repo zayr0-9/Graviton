@@ -126,16 +126,8 @@ export const TextArea: React.FC<TextAreaProps> = ({
   const imageDrafts = useSelector((s: RootState) => s.chat.composition.imageDrafts)
   const currentImageDraftTarget = useSelector((s: RootState) => s.chat.composition.imageDraftTarget)
   const mentionableFiles = useSelector(selectMentionableFiles)
-  const selectedFilesForChat = useSelector((s: RootState) => s.ideContext.selectedFilesForChat)
   const extensionConnected = useSelector((s: RootState) => s.ideContext.extensionConnected)
   const chatCwd = useSelector(selectCcCwd)
-  // Local copy of mentionable files to prevent re-selecting the same file locally
-  const [localMentionableFiles, setLocalMentionableFiles] = useState(mentionableFiles)
-  // Merge in new files from the selector while preserving local removals and excluding already selected files
-  useEffect(() => {
-    const selectedPaths = new Set(selectedFilesForChat.map(f => f.path))
-    setLocalMentionableFiles(mentionableFiles.filter(f => !selectedPaths.has(f.path)))
-  }, [mentionableFiles, selectedFilesForChat])
   const imageDraftTargetMatches =
     currentImageDraftTarget?.kind === imageDraftTarget.kind &&
     (imageDraftTarget.kind === 'composer' ||
@@ -148,7 +140,6 @@ export const TextArea: React.FC<TextAreaProps> = ({
     (typeof chatCwd === 'string' && chatCwd.trim()) ||
     null
   const shouldUseLocalFileFallback =
-    import.meta.env.VITE_ENVIRONMENT !== 'web' &&
     !!effectiveFallbackFileSearchRoot &&
     (!extensionConnected || mentionableFiles.length === 0)
   const { requestFileContent } = useIdeContext()
@@ -181,15 +172,11 @@ export const TextArea: React.FC<TextAreaProps> = ({
     true,
     100
   )
-  const selectedMentionedPaths = useMemo(
-    () => new Set(selectedFilesForChat.map(file => file.path)),
-    [selectedFilesForChat]
-  )
   const fallbackMentionableFiles = useMemo(() => {
     const source = activeMentionTerm ? fallbackFileSearchData?.files || [] : fallbackDirectoryData?.files || []
-    const options = source.map(toMentionableOption).filter(file => !selectedMentionedPaths.has(file.path))
+    const options = source.map(toMentionableOption)
     return activeMentionTerm ? rankFileMatches(options, activeMentionTerm) : options
-  }, [activeMentionTerm, fallbackDirectoryData?.files, fallbackFileSearchData?.files, selectedMentionedPaths])
+  }, [activeMentionTerm, fallbackDirectoryData?.files, fallbackFileSearchData?.files])
   const isFallbackMentionLoading = shouldUseLocalFileFallback
     ? activeMentionTerm
       ? isFallbackSearchLoading || isFallbackSearchFetching
@@ -326,9 +313,6 @@ export const TextArea: React.FC<TextAreaProps> = ({
       }, 0)
 
       if (file.kind === 'file') {
-        setLocalMentionableFiles(prev => prev.filter(f => f.path !== file.path))
-        setFilteredFiles(prev => prev.filter(f => f.path !== file.path))
-
         if (shouldUseLocalFileFallback) {
           void (async () => {
             try {
@@ -473,7 +457,7 @@ export const TextArea: React.FC<TextAreaProps> = ({
       return
     }
 
-    const filtered = rankFileMatches(localMentionableFiles, activeMention.term)
+    const filtered = rankFileMatches(mentionableFiles, activeMention.term)
     setFilteredFiles(filtered)
     setSelectedFileIndex(0)
     setShowFileList(filtered.length > 0)
@@ -481,7 +465,7 @@ export const TextArea: React.FC<TextAreaProps> = ({
     activeMention,
     fallbackMentionableFiles,
     isFallbackMentionLoading,
-    localMentionableFiles,
+    mentionableFiles,
     shouldUseLocalFileFallback,
   ])
 

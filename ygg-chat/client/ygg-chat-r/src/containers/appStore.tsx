@@ -1,6 +1,4 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { useNavigate } from 'react-router-dom'
-import { isCommunityMode } from '../config/runtimeMode'
 import { reloadCustomTools } from '../features/chats/chatActions'
 import { useAppDispatch } from '../hooks/redux'
 import {
@@ -16,8 +14,12 @@ import {
   uninstallAppFromStore,
   validateCommunityAppUpload,
 } from '../services/appStore'
-import { environment } from '../utils/api'
+import { isNativeShell } from '../platform/clientCapabilities'
 import { getThemeModeColor, useCustomChatTheme, useHtmlDarkMode } from '../components/ThemeManager/themeConfig'
+
+// TODO(app-store-upload): publishing required a Graviton account. The upload panel stays
+// hidden (and the host route answers 501) until a new mechanism exists (fully-local plan Q11).
+const COMMUNITY_UPLOAD_ENABLED = false as boolean
 
 type AppStoreModalProps = {
   open: boolean
@@ -126,11 +128,9 @@ const collectInstalledToolIndex = (tools: Array<{ name?: string; sourcePath?: st
 }
 
 export const AppStoreModal: React.FC<AppStoreModalProps> = ({ open, onClose }) => {
-  const isElectron = environment === 'electron'
+  const isElectron = isNativeShell
   const { theme: customTheme, enabled: customThemeEnabled } = useCustomChatTheme()
   const isDarkMode = useHtmlDarkMode()
-  const navigate = useNavigate()
-  const uploadRequiresCloudLogin = isCommunityMode
   const dispatch = useAppDispatch()
   const [storeTab, setStoreTab] = useState<StoreTab>('first-party')
   const [firstPartyApps, setFirstPartyApps] = useState<AppStoreApp[]>([])
@@ -472,10 +472,6 @@ export const AppStoreModal: React.FC<AppStoreModalProps> = ({ open, onClose }) =
     }
   }, [])
 
-  const handleUploadLoginRequired = useCallback(() => {
-    navigate('/login?required=cloud')
-  }, [navigate])
-
   const handleUploadFileChange = useCallback(
     async (event: React.ChangeEvent<HTMLInputElement>) => {
       const file = event.target.files?.[0] || null
@@ -520,12 +516,11 @@ export const AppStoreModal: React.FC<AppStoreModalProps> = ({ open, onClose }) =
   )
 
   const handleUploadSubmit = useCallback(async () => {
-    if (uploadRequiresCloudLogin) {
+    if (!COMMUNITY_UPLOAD_ENABLED) {
       setUploadStatus({
         type: 'error',
-        message: 'You must be signed in to upload apps.',
+        message: 'Publishing to the community store is not available yet.',
       })
-      handleUploadLoginRequired()
       return
     }
 
@@ -550,7 +545,7 @@ export const AppStoreModal: React.FC<AppStoreModalProps> = ({ open, onClose }) =
         message: err instanceof Error ? err.message : 'Upload failed',
       })
     }
-  }, [handleUploadLoginRequired, reloadCommunityApps, resetUploadState, uploadFile, uploadValidation, uploadRequiresCloudLogin])
+  }, [reloadCommunityApps, resetUploadState, uploadFile, uploadValidation])
 
   useEffect(() => {
     if (!open) {
@@ -823,7 +818,7 @@ export const AppStoreModal: React.FC<AppStoreModalProps> = ({ open, onClose }) =
                 </div>
               )}
 
-              {storeTab === 'community' && (
+              {COMMUNITY_UPLOAD_ENABLED && storeTab === 'community' && (
                 <div
                   className='rounded-2xl border border-neutral-200/70 dark:border-neutral-700 bg-white/70 dark:bg-neutral-900/60 p-4 space-y-3'
                   style={
@@ -918,7 +913,7 @@ export const AppStoreModal: React.FC<AppStoreModalProps> = ({ open, onClose }) =
                   <div className='flex items-center gap-2 flex-wrap'>
                     <button
                       onClick={handleUploadSubmit}
-                      disabled={!isElectron || uploadRequiresCloudLogin || !uploadValidation || uploadStatus?.type === 'uploading'}
+                      disabled={!isElectron || !uploadValidation || uploadStatus?.type === 'uploading'}
                       className='px-4 py-2 text-xs bg-blue-500 text-white rounded-lg hover:bg-blue-600 disabled:opacity-50 disabled:cursor-not-allowed transition-colors'
                       style={
                         themedAppStoreStyles
@@ -932,15 +927,6 @@ export const AppStoreModal: React.FC<AppStoreModalProps> = ({ open, onClose }) =
                     >
                       {uploadStatus?.type === 'uploading' ? 'Uploading...' : 'Upload to Community'}
                     </button>
-                    {uploadRequiresCloudLogin && (
-                      <button
-                        type='button'
-                        onClick={handleUploadLoginRequired}
-                        className='text-[11px] text-amber-700 dark:text-amber-200 hover:underline text-left'
-                      >
-                        you need to sign in to upload apps to the store
-                      </button>
-                    )}
                     {uploadFile && (
                       <button
                         onClick={() => {

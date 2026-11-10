@@ -124,18 +124,23 @@ describe('RunSession', () => {
     expect(session.terminalAt).not.toBeNull()
   })
 
-  it('last attach wins — the prior subscriber is ended', () => {
+  it('attaching a second viewer preserves both subscribers', () => {
     const session = new RunSession('s1', 'c1')
     const a = recorder()
     const b = recorder()
     session.attach(a.sub)
     session.attach(b.sub)
-    expect(a.state.ended).toBe(true)
+    expect(a.state.ended).toBe(false)
     expect(session.hasSubscriber()).toBe(true)
 
     session.publish(ev({ type: 'chunk', delta: 'x' }))
     expect(b.frames.length).toBe(1)
-    expect(a.frames.length).toBe(0)
+    expect(a.frames.length).toBe(1)
+    session.detach(a.sub)
+    session.publish(ev({ type: 'chunk', delta: 'y' }))
+    expect(a.frames.length).toBe(1)
+    expect(b.frames.length).toBe(2)
+    expect(session.signal.aborted).toBe(false)
   })
 })
 
@@ -177,7 +182,7 @@ describe('RunSessionRegistry', () => {
   })
 
   it('reaper evicts a terminal session only after the linger window', () => {
-    const reg = new RunSessionRegistry({ policy: { terminalLingerMs: 1_000, idleDetachedMs: 1_000 } })
+    const reg = new RunSessionRegistry({ policy: { terminalLingerMs: 1_000 } })
     const s = reg.create('s1', null)
     s.publish(ev({ type: 'complete', message: { id: 'a1' } }))
     const terminalAt = s.terminalAt as number
@@ -188,8 +193,8 @@ describe('RunSessionRegistry', () => {
     expect(reg.size()).toBe(0)
   })
 
-  it('reaper cancels + evicts a still-running session abandoned past the idle bound', () => {
-    const reg = new RunSessionRegistry({ policy: { terminalLingerMs: 1_000, idleDetachedMs: 1_000 } })
+  it('reaper never cancels a running session with no viewers', () => {
+    const reg = new RunSessionRegistry({ policy: { terminalLingerMs: 1_000 } })
     const s = reg.create('s1', null)
     const r = recorder()
     s.attach(r.sub)
@@ -200,14 +205,14 @@ describe('RunSessionRegistry', () => {
     expect(reg.reap(detachedAt + 999)).toEqual([]) // still within grace
     expect(reg.size()).toBe(1)
 
-    const evicted = reg.reap(detachedAt + 1_001)
-    expect(evicted).toEqual(['s1'])
-    expect(s.signal.aborted).toBe(true) // the abandoned run was cancelled
-    expect(reg.size()).toBe(0)
+    const evicted = reg.reap(Number.MAX_SAFE_INTEGER)
+    expect(evicted).toEqual([])
+    expect(s.signal.aborted).toBe(false)
+    expect(reg.size()).toBe(1)
   })
 
   it('reaper does NOT evict a running session that still has a subscriber', () => {
-    const reg = new RunSessionRegistry({ policy: { terminalLingerMs: 1, idleDetachedMs: 1 } })
+    const reg = new RunSessionRegistry({ policy: { terminalLingerMs: 1 } })
     const s = reg.create('s1', null)
     const r = recorder()
     s.attach(r.sub)
@@ -217,4 +222,61 @@ describe('RunSessionRegistry', () => {
     expect(reg.size()).toBe(1)
     expect(s.signal.aborted).toBe(false)
   })
+})
+
+describe('multi-client failure isolation', () => {
+  it('does not terminate for recoverable errors or a failed viewer', () => {
+    const session = new RunSession('s', 'c')
+    const healthy = recorder()
+    session.attach(healthy.sub)
+    session.attach({ send: () => { throw new Error('closed') }, end: () => {} })
+    session.publish(ev({ type: 'error', error: 'retrying', terminal: false }))
+    expect(session.status).toBe('running')
+    expect(healthy.state.ended).toBe(false)
+    session.publish(ev({ type: 'complete', message: { id: 'm' } }))
+    session.publish(ev({ type: 'chunk', delta: 'late' }))
+    expect(healthy.frames).toHaveLength(2)
+    expect(healthy.state.ended).toBe(true)
+  })
+  it('rejects truncated zero and future cursors', () => {
+    const session = new RunSession('s', 'c', 1)
+    session.publish(ev({ type: 'started' }))
+    session.publish(ev({ type: 'chunk', delta: 'x' }))
+    expect(session.attach(recorder().sub, 0).status).toBe('truncated')
+    expect(session.attach(recorder().sub, 99).status).toBe('truncated')
+  })
+})
+
+it('does not reap a cancelled run before its terminal frame is published', () => {
+  const registry = new RunSessionRegistry({ policy: { terminalLingerMs: 1 } })
+  const session = registry.create('cancel-unwind', 'c')
+  session.cancel()
+  expect(session.terminalAt).toBeNull()
+  expect(registry.reap(Date.now() + 60000)).toEqual([])
+  session.publish(ev({ type: 'error', error: 'cancelled' }))
+  expect(registry.reap(session.terminalAt! + 2)).toEqual(['cancel-unwind'])
+})
+
+it('isolates snapshot projector failures from execution and healthy observers', () => {
+  const session = new RunSession('projection-error', 'c')
+  session.setProjector(() => { throw new Error('bad payload') })
+  const viewer = recorder()
+  session.attach(viewer.sub)
+  expect(() => session.publish(ev({ type: 'chunk', part: 'text', delta: 'still running' }))).not.toThrow()
+  expect(session.status).toBe('running')
+  expect(viewer.frames).toHaveLength(1)
+  expect(() => session.attachSnapshot(recorder().sub)).toThrow('unavailable')
+})
+
+it('leases a large individual event without a large first socket write', () => {
+  const session = new RunSession('large', 'c')
+  const frames: any[] = []
+  session.attach({ send: frame => frames.push(frame), end: () => {} })
+  session.publish({ type: 'chunk', part: 'text', delta: 'x'.repeat(400000) })
+  expect(frames[0].event.type).toBe('event_reference')
+  expect(JSON.stringify(frames[0]).length).toBeLessThan(1000)
+  const reference = frames[0].event.reference
+  const content = Buffer.concat(Array.from({ length: reference.parts }, (_, part) => session.snapshotPayloads.readPart(reference.id, part)!)).toString('utf8')
+  expect(JSON.parse(content).delta).toHaveLength(400000)
+  session.dispose()
 })

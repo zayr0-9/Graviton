@@ -1,4 +1,6 @@
 import type { ChatErrorEnvelope, ChatNoticeCode } from '../../../../../shared/chatErrors'
+import type { ClaudeBackgroundTask, ClaudeFilePatch } from '../../../../../shared/claudeProvider'
+import type { HeadlessBackgroundTask } from '../../../../../shared/headlessApi'
 import { BaseMessage, BaseModel, ConversationId, ImageConfig, MessageId, OpenAIServiceTier, ReasoningConfig } from '../../../../../shared/types'
 import type { PlanClarificationRequest } from './planToolTypes'
 
@@ -80,6 +82,10 @@ export interface ToolResultBlock {
   tool_use_id: string
   content: any
   is_error: boolean
+  /** Native Claude Edit/Write hunks with real file line numbers. */
+  patch?: ClaudeFilePatch
+  /** The background task this call launched (a Claude Workflow, or a backgrounded Agent/Bash call). */
+  task?: ClaudeBackgroundTask
 }
 
 export interface ImageBlock {
@@ -129,6 +135,8 @@ export interface ContextInjectionBlock {
   label: string
   text: string
   reason: string
+  /** `claude`: Claude Code delivered this itself (Skill tool, native slash command). */
+  origin?: 'claude'
 }
 
 export type ContentBlock =
@@ -160,7 +168,6 @@ export interface StreamChunk {
     | 'reset'
     | 'generation_started'
     | 'tool_call'
-    | 'free_generations_update'
     | 'permission_request'
   content?: string
   // delta is used for token-level updates from the server
@@ -182,6 +189,7 @@ export interface StreamChunk {
     tool_use_id: string
     content: any
     is_error: boolean
+    patch?: ClaudeFilePatch
   }
   // free tier update data
   remaining?: number
@@ -207,6 +215,7 @@ export interface StreamEvent {
     tool_use_id: string
     content: any
     is_error: boolean
+    patch?: ClaudeFilePatch
   }
   // Image data for generated images
   url?: string
@@ -253,11 +262,25 @@ export interface StreamState {
   updatePath?: boolean
   /** Follow only the selected continuation chain; never claim navigation ownership. */
   watchContinuation?: WatchContinuationOwner
+  /** Discovery observer may extend its selected tip without claiming navigation. */
+  followSelectedTip?: boolean
+  /** Snapshot replay hydrates rows before one guarded selection reconciliation. */
+  bootstrapInstalling?: boolean
+  /**
+   * A persisted advance was deferred while selection was unsettled (pending/error).
+   * Survives superseding transactions and cancellation; consumed by the next settled
+   * same view, or discarded when a different view is chosen.
+   */
+  selectionBlocked?: boolean
   active: boolean
   // Explicit lifecycle status. `waiting_for_tool` is still an in-flight stream
   // and should stay visible/interruptible in branch-local UIs.
   status: StreamLifecycleStatus
   compactionStatus?: 'started' | 'completed' | 'failed'
+  /** Claude runs: the background tasks keeping the session open (a backgrounded shell, workflow, child agent). */
+  backgroundTasks?: HeadlessBackgroundTask[]
+  /** Claude finished its turn; the run stays open only for `backgroundTasks`. */
+  backgroundTurnIdle?: boolean
   buffer: string
   // separate buffer for reasoning/thinking tokens while streaming
   thinkingBuffer: string
@@ -319,6 +342,8 @@ export interface SendingStartedPayload {
   updatePath?: boolean
   /** Follow only the selected continuation chain; never claim navigation ownership. */
   watchContinuation?: WatchContinuationOwner
+  /** Discovery observer may extend its selected tip without claiming navigation. */
+  followSelectedTip?: boolean
   /** Reattachment must not consume unrelated composer drafts. */
   preserveDrafts?: boolean
   streamId: string
@@ -420,7 +445,9 @@ export interface CompositionState {
   imagePreparationError: string | null
   imagePreparationGeneration: number
   editingBranch: boolean // true when user is editing a branch; controls UI like hiding image drafts
-  branchEditModes?: { operationMode?: OperationMode; fastMode?: boolean }
+  branchEditModes?: { operationMode?: OperationMode; fastMode?: boolean; toolAutoApprove?: boolean }
+  branchEditMessageId?: MessageId
+  branchEditModelSelection?: { provider: string; model: string | null }
   optimisticMessage: Message | null // temp message for instant UI feedback in web mode only
   optimisticBranchMessage: Message | null // temp branched message for instant UI feedback in web mode only
 }
@@ -508,25 +535,27 @@ export interface ChatState {
   operationModeUpgradeRequestsByStream: Record<string, OperationModeUpgradeRequest>
   planClarificationRequestsByStream: Record<string, PlanClarificationRequest>
   toolAutoApprove: boolean
+  toolAutoApproveOverridden?: boolean
+  /** Claude provider: use the CLI's auto mode when tool approval is set to ask. */
+  claudeAutoMode?: boolean
+  /** Claude provider's default approval; undefined follows toolAutoApprove. */
+  claudeToolAutoApprove?: boolean
+  /** Claude provider: run each turn with ultracode (standing Workflow orchestration). */
+  claudeUltracode?: boolean
   operationMode: OperationMode
   messageQueues: Record<string, import('../../../../../shared/queuedMessages').MessageQueueSnapshot>
   /** Unsent selections, keyed by conversation and selected branch tip. */
   operationModeDrafts: Record<string, OperationMode>
   branchModelDrafts?: Record<string, import('./branchModelSelection').BranchModelSelection>
   branchFastModeDrafts?: Record<string, boolean>
+  branchToolApprovalDrafts?: Record<string, boolean>
   operationModeChanges: Record<string, {
     mode: OperationMode
     status: 'requesting' | 'pending'
     requestId: string
     streamId?: string | null
   }>
-  freeTier: {
-    freeGenerationsRemaining: number | null
-    showLimitModal: boolean
-    isFreeTierUser: boolean
-  }
   errorNotices: ChatErrorNoticesState
-  userSystemPrompts: UserSystemPromptsState
 }
 
 /**
@@ -567,6 +596,8 @@ export interface LineageSelectionPayload {
 
 export interface SendMessagePayload {
   conversationId: ConversationId
+  /** Explicit child creation at a historical parent (Explain selection), not continuation. */
+  isBranch?: boolean
   selectionRevision?: number
   /** Immutable branch context captured by a transcript pane before dispatch. */
   lineageId?: LineageId | null
@@ -695,20 +726,3 @@ export interface ToolDefinition {
 // Alias for backwards compatibility
 export type tools = ToolDefinition
 
-// User System Prompt types
-export interface UserSystemPrompt {
-  id: string
-  owner_id: string
-  name: string
-  content: string
-  description?: string | null
-  is_default: boolean
-  created_at: string
-  updated_at: string
-}
-
-export interface UserSystemPromptsState {
-  prompts: UserSystemPrompt[]
-  loading: boolean
-  error: string | null
-}

@@ -1,26 +1,21 @@
 import type { QueryClient } from '@tanstack/react-query'
 
-// Store extra argument type for thunks - provides auth context and queryClient to all Redux actions
+// Store extra argument type for thunks - provides the local identity and queryClient to all Redux actions
 export interface ThunkExtraArgument {
   auth: {
-    accessToken: string | null
     userId: string | null
   }
   queryClient: QueryClient | null
 }
 
-// This will be populated by the store middleware with current auth state and queryClient
 export let thunkExtraArg: ThunkExtraArgument = {
   auth: {
-    accessToken: null,
     userId: null,
   },
   queryClient: null,
 }
 
-// Function to update the thunk extra argument with current auth state
-export const updateThunkExtraAuth = (accessToken: string | null, userId: string | null) => {
-  thunkExtraArg.auth.accessToken = accessToken
+export const updateThunkExtraAuth = (userId: string | null) => {
   thunkExtraArg.auth.userId = userId
 }
 

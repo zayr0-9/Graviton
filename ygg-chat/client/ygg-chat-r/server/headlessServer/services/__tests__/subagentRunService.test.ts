@@ -194,6 +194,8 @@ class FakeRunSessionRegistry {
     const record = this.sessions.get(streamId)
     if (!record) return undefined
     return {
+      setProjector: (_project: unknown) => {},
+      setChildSnapshotProvider: (_provider: unknown) => {},
       publish: (event: any) => {
         record.published.push(event)
         if (event.type === 'complete' || event.type === 'error') record.terminal = true
@@ -248,7 +250,7 @@ describe('SubagentRunService', () => {
     const service = buildService({ providerRouter, runRepo: new FakeRunRepo(), streamingRunRepo: new FakeStreamingRunRepo(), toolExecutor })
     await service.run(baseRequest({ provider, serviceTier }), () => {}, new AbortController().signal)
     expect(providerRouter.calls).toHaveLength(2)
-    for (const call of providerRouter.calls) expect(call.input.railwayTurn?.serviceTier).toBe(expected)
+    for (const call of providerRouter.calls) expect(call.input.turnContext?.serviceTier).toBe(expected)
     expect(toolExecutor.mock.calls[0][1].serviceTier).toBe(expected)
   })
 
@@ -672,6 +674,8 @@ describe('SubagentRunService', () => {
     const completed = runRepo.createRun(baseRequest())
     runRepo.updateRun(completed.id, { status: 'completed', finalResponse: 'done' })
     await expect(service.waitForTerminal(completed.handle)).resolves.toMatchObject({ status: 'completed' })
+    await expect(service.waitForTerminal(completed.handle, undefined, completed.attempt + 1)).rejects.toThrow('attempt changed')
+    await expect(service.waitForTerminal(completed.handle, undefined, completed.attempt)).resolves.toMatchObject({ status: 'completed' })
 
     const orphan = runRepo.createRun(baseRequest())
     await expect(service.waitForTerminal(orphan.handle)).rejects.toThrow('no active runtime')

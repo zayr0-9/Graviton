@@ -3,8 +3,8 @@ import { toCodexRequestParts, buildCodexRequestDiagnostics } from './codexReques
 import { parseCodexSseResponse } from './codexSse.js'
 import { openStreamingWithPreFirstByteRetry } from '../streamResilience.js'
 import { parseCodexWebSocketResponse } from './codexWebsocket.js'
-import { attachPartialOutput } from '../openRouterProvider.js'
-import type { ProviderPartialOutput } from '../openRouterProvider.js'
+import { attachPartialOutput } from '../providerTypes.js'
+import type { ProviderPartialOutput } from '../providerTypes.js'
 import type { CodexGenerateInput, CodexGenerateResult, CodexProviderOptions, CodexResponsesTransport } from './types.js'
 import { CODEX_BASE_URL, CODEX_ORIGINATOR } from './types.js'
 
@@ -96,7 +96,7 @@ export class CodexResponsesProvider {
         ...(this.options.reasoningSummary === null ? {} : { summary: this.options.reasoningSummary || 'auto' }),
         ...(responsesLite ? { context: 'all_turns' } : {}),
       },
-      ...(input.providerInput.railwayTurn?.serviceTier === 'priority' ? { service_tier: 'priority' } : {}),
+      ...(input.providerInput.turnContext?.serviceTier === 'priority' ? { service_tier: 'priority' } : {}),
       store: false,
       stream: true,
       include: ['reasoning.encrypted_content', 'web_search_call.action.sources'],

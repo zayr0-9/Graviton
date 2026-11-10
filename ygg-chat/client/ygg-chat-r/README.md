@@ -1,54 +1,39 @@
-# React + TypeScript + Vite
+# ygg-chat-r
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+The Graviton desktop app: React renderer (`src/`), Electron shell (`electron/`) and the local
+Express + headless agent server (`server/`). Graviton is fully local: there is no account, cloud
+backend or `.env` file. All data is stored in local SQLite.
 
-Currently, two official plugins are available:
+## Develop
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Babel](https://babeljs.io/) for Fast Refresh
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/) for Fast Refresh
+Install once from the workspace root (`ygg-chat/`) with Node.js 22 and `npm ci --include=optional`, then:
 
-## Expanding the ESLint configuration
-
-If you are developing a production application, we recommend updating the configuration to enable type-aware lint rules:
-
-```js
-export default tseslint.config({
-  extends: [
-    // Remove ...tseslint.configs.recommended and replace with this
-    ...tseslint.configs.recommendedTypeChecked,
-    // Alternatively, use this for stricter rules
-    ...tseslint.configs.strictTypeChecked,
-    // Optionally, add this for stylistic rules
-    ...tseslint.configs.stylisticTypeChecked,
-  ],
-  languageOptions: {
-    // other options...
-    parserOptions: {
-      project: ['./tsconfig.node.json', './tsconfig.app.json'],
-      tsconfigRootDir: import.meta.dirname,
-    },
-  },
-})
+```bash
+npm run dev              # Electron app with Vite hot reload
+npm run dev:standalone   # renderer against the standalone Node server (npm run build:server first)
 ```
 
-You can also install [eslint-plugin-react-x](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-x) and [eslint-plugin-react-dom](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-dom) for React-specific lint rules:
+The runtime mode comes from the build target (`BUILD_TARGET` → `__BUILD_TARGET__`:
+`electron`, `browser-client` or `standalone`). See `src/platform/clientCapabilities.ts`.
 
-```js
-// eslint.config.js
-import reactX from 'eslint-plugin-react-x'
-import reactDom from 'eslint-plugin-react-dom'
+## Build
 
-export default tseslint.config({
-  plugins: {
-    // Add the react-x and react-dom plugins
-    'react-x': reactX,
-    'react-dom': reactDom,
-  },
-  rules: {
-    // other rules...
-    // Enable its recommended typescript rules
-    ...reactX.configs['recommended-typescript'].rules,
-    ...reactDom.configs.recommended.rules,
-  },
-})
+```bash
+npm run build:electron   # renderer + Electron main/preload
+npm run build:mac        # or build:win / build:linux (packages with electron-builder)
+npm run build:server     # standalone server bundle in dist-server/
 ```
+
+Updates are published to and read from GitHub Releases (`electron-builder.json` → `publish`).
+
+## Test
+
+Native modules are built for Electron, so run the suites under Electron's Node:
+
+```bash
+ELECTRON_RUN_AS_NODE=1 ../../node_modules/.bin/electron ./node_modules/vitest/vitest.mjs run --config vitest.server.config.ts
+# also: vitest.headless.config.ts, vitest.renderer.config.ts, vitest.tools.config.ts
+npx tsc -b && npm run typecheck:electron && npm run typecheck:server && npm run typecheck:mobile
+```
+
+Agent-facing architecture docs live in `../../docs/agent_context/` (start with `AGENT.md`).

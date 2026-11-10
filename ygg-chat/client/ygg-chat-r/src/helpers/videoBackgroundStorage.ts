@@ -1,3 +1,6 @@
+import { newClientId } from './clientId'
+import { isNativeShell } from '../platform/clientCapabilities'
+import { SOLID_BACKGROUND_COLORS } from './opaqueAppBackground'
 import { clearVideoBlobs, deleteVideoBlob, getVideoBlob, storeVideoBlob } from './videoBackgroundDb'
 
 export interface CustomVideoEntry {
@@ -11,17 +14,14 @@ export interface CustomVideoEntry {
   textColorMode?: 'light' | 'dark' | 'auto'
 }
 
-export type BackgroundMode = 'video' | 'color'
+export type BackgroundMode = 'video' | 'color' | 'matrix'
 
 export interface BackgroundColorSettings {
   light: string
   dark: string
 }
 
-const LINUX_DEFAULT_BACKGROUND_COLORS: BackgroundColorSettings = {
-  light: '#F5F5F4',
-  dark: '#0C0A09',
-}
+const LINUX_DEFAULT_BACKGROUND_COLORS: BackgroundColorSettings = SOLID_BACKGROUND_COLORS
 
 const TRANSPARENT_DEFAULT_BACKGROUND_COLORS: BackgroundColorSettings = {
   light: 'transparent',
@@ -36,7 +36,7 @@ const isElectronLinux = (): boolean => {
   return window.electronAPI?.platform === 'linux'
 }
 
-export const DEFAULT_BACKGROUND_COLORS: BackgroundColorSettings = isElectronLinux()
+export const DEFAULT_BACKGROUND_COLORS: BackgroundColorSettings = !isNativeShell || isElectronLinux()
   ? LINUX_DEFAULT_BACKGROUND_COLORS
   : TRANSPARENT_DEFAULT_BACKGROUND_COLORS
 
@@ -85,7 +85,7 @@ const readBackgroundPreference = (): { mode: BackgroundMode; colors: BackgroundC
 
   const stored = safeParse(window.localStorage.getItem(BACKGROUND_PREFERENCE_KEY)) as StoredBackgroundPreference | null
   const normalized: StoredBackgroundPreference = typeof stored === 'object' && stored !== null ? stored : {}
-  const mode = normalized.mode === 'video' ? 'video' : 'color'
+  const mode = normalized.mode === 'video' || normalized.mode === 'matrix' ? normalized.mode : 'color'
 
   const colors = normalizeColorSettings({
     light: normalized.colors?.light ?? DEFAULT_BACKGROUND_COLORS.light,
@@ -125,12 +125,7 @@ export const persistBackgroundColors = (colors: BackgroundColorSettings) => {
 
 export const normalizeHexColor = normalizeColorString
 
-const generateId = (): string => {
-  if (typeof window !== 'undefined' && window.crypto?.randomUUID) {
-    return window.crypto.randomUUID()
-  }
-  return `${Date.now()}-${Math.random().toString(36).slice(2, 12)}`
-}
+const generateId = newClientId
 
 const safeParse = (value: string | null) => {
   if (!value) return null

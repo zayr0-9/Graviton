@@ -1,6 +1,16 @@
+import { registerHostAppBridgeRoutes } from '../routes/hostAppBridgeRoutes.js'
+import { join } from 'node:path'
+import { getServerTempDir } from '../serverHost.js'
+import { configureSnapshotScratch, disposeSnapshotScratch } from './services/snapshotPayloadStore.js'
+import { DecisionReceiptRepo } from './persistence/decisionReceiptRepo.js'
+import { applyHostProviderEnvironment, readHostExecutionPreferences } from '../hostExecutionStore.js'
+import { RunSnapshotProjector } from './services/runSnapshotProjector.js'
+import { OperationReceiptRepo } from './persistence/operationReceiptRepo.js'
+import { RunAdmissionService } from './services/runAdmissionService.js'
+import { hostEpoch } from '../hostEpoch.js'
+import { reconcileHeadlessRuns } from './persistence/reconcileHeadlessRuns.js'
 import type Database from 'better-sqlite3'
 import type { Express } from 'express'
-import { customToolRegistry } from '../tools/customToolLoader.js'
 import { toolOrchestrator as defaultToolOrchestrator } from '../tools/orchestrator/index.js'
 import { isBuiltInToolAvailable } from '../serverHost.js'
 import { BUILTIN_TOOL_DEFINITIONS } from '../../../../shared/builtinToolDefinitions.js'
@@ -11,6 +21,7 @@ import { registerChatRoutes, launchQueuedSuccessor } from './routes/chatRoutes.j
 import { registerCrudRoutes } from './routes/crudRoutes.js'
 import { registerProviderAuthRoutes } from './routes/providerAuthRoutes.js'
 import { registerMobileUiRoutes } from './routes/mobileUiRoutes.js'
+import { registerHostRuntimeRoutes } from '../routes/hostRuntimeRoutes.js'
 import { registerCustomToolsRoutes } from './routes/customToolsRoutes.js'
 import { registerCustomToolRpcRoutes } from './routes/customToolRpcRoutes.js'
 import { registerEphemeralGenerateRoutes } from './routes/ephemeralGenerateRoutes.js'
@@ -18,10 +29,6 @@ import { registerSubagentRoutes } from './routes/subagentRoutes.js'
 import { registerTestHarnessRoutes } from './routes/testHarnessRoutes.js'
 import { registerGatewayRoutes } from './routes/gatewayRoutes.js'
 import { registerLineageRoutes } from './routes/lineageRoutes.js'
-import { registerCloudProxyRoutes } from './routes/cloudProxyRoutes.js'
-import { createAppAuthTokenManager } from './services/appAuthTokenManager.js'
-import { createRailwayClient } from './services/railwayClient.js'
-import { createCloudMirrorService } from './services/cloudMirrorService.js'
 import { runHookRequest } from '../hooks/hookRunner.js'
 import { ChatOrchestrator } from './services/chatOrchestrator.js'
 import { DecisionBroker } from './services/decisionBroker.js'
@@ -34,8 +41,7 @@ import { createWatchExecutor, watchService } from './services/watchService.js'
 import { createMultiCallDispatchExecutor } from './services/multiCallExecutor.js'
 import { createReplDispatchExecutor } from './services/replExecutor.js'
 import { createContextStatusExecutor } from './services/contextStatusTool.js'
-import { ProviderRouter, normalizeProviderRoute } from './services/providerRouter.js'
-import { resolveGatewayFlags } from './config/gatewayFlags.js'
+import { ProviderRouter, isKnownProviderName, normalizeProviderRoute } from './services/providerRouter.js'
 import type { ToolExecutor } from './services/toolLoopService.js'
 
 type OrchestratorLike = typeof defaultToolOrchestrator
@@ -121,21 +127,8 @@ const dedupeToolsByName = (tools: InferenceToolDefinition[]): InferenceToolDefin
 const resolveDefaultInferenceTools = (): InferenceToolDefinition[] => {
   const tools: InferenceToolDefinition[] = getBuiltInInferenceTools()
 
-  try {
-    const customTools = customToolRegistry
-      .getDefinitions()
-      .filter(def => def.enabled)
-      .map(def => ({
-        name: def.name,
-        description: def.description,
-        inputSchema: def.inputSchema,
-      }))
-    tools.push(...customTools)
-  } catch {
-    // Ignore custom tool discovery failures in request-path fallback.
-  }
-
-  // MCP tools are available only through mcp_manager list_tools/invoke.
+  // Custom/MCP tools are discovered and invoked only through their managers.
+  // Never preload installed tools' descriptions or schemas into model context.
 
   return dedupeToolsByName(tools)
 }
@@ -205,6 +198,8 @@ const createOrchestratorToolExecutor = (toolOrchestrator: OrchestratorLike): Too
         })()
       : toolCall.arguments ?? {}
 
+  if ((toolCall.name === 'bash' || toolCall.name === 'powershell') && parsedArguments.timeoutMs === undefined && context.bashTimeoutMs !== undefined)
+    parsedArguments.timeoutMs = Math.min(180000, Math.max(1000, context.bashTimeoutMs))
   const signal = context.signal
   if (signal?.aborted) {
     const abortError = new Error('Tool execution aborted')
@@ -217,6 +212,7 @@ const createOrchestratorToolExecutor = (toolOrchestrator: OrchestratorLike): Too
     deadlineMs: Date.now() + timeoutMs,
     rootPath: context.rootPath ?? null,
     fullAccess: context.fullAccess === true,
+    additionalRoots: context.additionalRoots ?? [],
     operationMode: context.operationMode ?? 'execute',
     conversationId: context.conversationId ?? null,
     messageId: context.messageId ?? null,
@@ -262,10 +258,16 @@ const createOrchestratorToolExecutor = (toolOrchestrator: OrchestratorLike): Too
 }
 
 export function registerHeadlessServerRoutes(app: Express, deps: HeadlessServerRouteDeps): void {
+  // Request guard: unknown provider names are rejected with 400 (fully-local plan Q7), and
   // OAuth credential overrides are not a supported local API authentication mode.
   app.use(['/api/conversations', '/api/headless/subagent', '/api/headless/ephemeral', '/api/headless/provider/openai'], (req, res, next) => {
-    const provider = normalizeProviderRoute(String(req.body?.provider || 'openaichatgpt'))
-    if ((provider === 'openaichatgpt' || provider === 'openrouter') &&
+    const requested = req.body?.provider
+    if (typeof requested === 'string' && requested.trim() && !isKnownProviderName(requested)) {
+      res.status(400).json({ error: `unknown provider "${requested}"`, code: 'unknown_provider' })
+      return
+    }
+    const provider = normalizeProviderRoute(String(requested || 'openaichatgpt'))
+    if (provider === 'openaichatgpt' &&
         (req.body?.accessToken || req.body?.access_token || req.body?.refreshToken || req.body?.refresh_token || req.headers['chatgpt-account-id'])) {
       res.status(400).json({ error: 'OAuth credentials are server-owned. Connect the account in Settings instead of supplying tokens.' })
       return
@@ -277,51 +279,70 @@ export function registerHeadlessServerRoutes(app: Express, deps: HeadlessServerR
 
   const executeToolViaOrchestrator = createOrchestratorToolExecutor(deps.orchestrator ?? defaultToolOrchestrator)
 
-  // Gateway flags are resolved once at startup. Chat and route-independent runs default on.
-  const gatewayFlags = resolveGatewayFlags()
-  // One process-wide app-session owner for every Railway-backed path, including
-  // OpenRouter streaming (which previously bypassed this shared refresh policy).
-  const appAuth = createAppAuthTokenManager()
-  const railway = createRailwayClient({ auth: appAuth })
-  const providerRouter = new ProviderRouter({ tokenStore, appAuth })
+  // Runs outlive their SSE connection (detach/reattach). Always on; the old
+  // gateway.resumableRuns opt-out was removed with the cloud gateway flags.
+  const resumableRuns = true
+  const providerRouter = new ProviderRouter({ tokenStore })
 
   // One shared pause/resume registry across the chat orchestrator (which pauses the
   // loop) and the POST /api/resume route (which resolves the paused decision).
-  const decisionBroker = new DecisionBroker()
+  applyHostProviderEnvironment()
+  reconcileHeadlessRuns(deps.db, hostEpoch)
+  const decisionBroker = new DecisionBroker(new DecisionReceiptRepo(deps.db))
 
   // Detach/reattach registry (gateway.resumableRuns, default ON). A chat run's lifetime
   // is owned by its RunSession rather than the SSE socket, so route changes and renderer
   // reloads detach instead of aborting. Explicit false retains the legacy
   // disconnect==abort path and leaves the reaper stopped.
+  const operationReceipts = new OperationReceiptRepo(deps.db)
+  configureSnapshotScratch(join(getServerTempDir(), 'snapshots'))
   const runSessions = new RunSessionRegistry()
-  if (gatewayFlags.resumableRuns) runSessions.startReaper()
+  activeRegistries.add(runSessions)
+  const readSnapshotMessage = deps.db.prepare('SELECT * FROM messages WHERE id=? AND conversation_id=?')
+  runSessions.setMainSessionFactory(session => {
+    const projector = new RunSnapshotProjector(session.snapshotPayloads)
+    session.setProjector(event => projector.apply(event))
+    session.setEventObserver(event => {
+      if (event.type === 'message_queue_updated') {
+        for (const item of event.snapshot.items) {
+          if (item.status === 'delivered' || item.status === 'failed' || item.status === 'cancelled')
+            operationReceipts.settleQueue(item.requestId, item.status === 'delivered' ? 'completed' : item.status)
+        }
+      }
+      if (event.type === 'complete' || (event.type === 'error' && event.terminal !== false)) {
+        operationReceipts.finishStream(session.streamId, session.signal.aborted ? 'cancelled'
+          : event.type === 'complete' && !event.providerError ? 'completed' : 'failed')
+      }
+    })
+    session.setSnapshotProvider(() => {
+      // better-sqlite3 reads and capture are synchronous: no mutation can interleave
+      // between these exact rows, the decision map and sequence S.
+      const referencedIds = projector.referencedMessageIds()
+      const rows = referencedIds.map(id => readSnapshotMessage.get(id, session.conversationId)).filter(Boolean) as any[]
+      const present = new Set(rows.map(row => row.id))
+      const snapshot = projector.snapshot({ epoch: hostEpoch, streamId: session.streamId,
+        conversationId: session.conversationId!, stateSeq: session.latestSeq, effectiveConfiguration: session.effectiveConfiguration,
+        persisted: rows.map(row => ({ id: row.id, revision: row.revision, row })),
+        deletedMessageIds: referencedIds.filter(id => !present.has(id)),
+        pendingDecisions: decisionBroker.snapshot(session.streamId).pending })
+      return snapshot
+    })
+  })
+  if (resumableRuns) reaperStops.add(runSessions.startReaper())
 
   registerCrudRoutes(app, deps)
   registerProviderAuthRoutes(app, { tokenStore })
   registerMobileUiRoutes(app)
+  registerHostRuntimeRoutes(app)
   registerCustomToolsRoutes(app)
   registerCustomToolRpcRoutes(app)
+  registerHostAppBridgeRoutes(app)
   registerCapabilityRoutes(app, { getDefaultTools: resolveDefaultInferenceTools })
   registerEphemeralGenerateRoutes(app, { tokenStore })
   registerLineageRoutes(app, deps)
 
-  // Phase 5 cloud gateway: storage-aware /api/gw/* CRUD + merge and /api/cloud/*
-  // authenticated pass-through. Mounted UNCONDITIONALLY — the renderer is now a thin
-  // client that routes all CRUD/reads/cloud through these paths (Phase 5 cutover), so
-  // they must always be available. They are additive routes (nothing else served
-  // /api/gw or /api/cloud), so mounting them changes no existing behavior. Both share
-  // one single-flight app-token manager (sole Supabase refresher) + one Railway client.
-  {
-    registerGatewayRoutes(app, {
-      railway,
-      mirror: createCloudMirrorService({ db: deps.db, statements: deps.statements }),
-      auth: appAuth,
-      db: deps.db,
-      statements: deps.statements,
-      enabled: true,
-    })
-    registerCloudProxyRoutes(app, { railway, enabled: true })
-  }
+  // /api/gw/*: the renderer's local data gateway (facade over /api/app/*).
+  registerGatewayRoutes(app, { db: deps.db, statements: deps.statements })
 
 
   const bridgeWaitExecutor: ToolExecutor = async (call, context) => {
@@ -332,7 +353,7 @@ export function registerHeadlessServerRoutes(app: Express, deps: HeadlessServerR
       ...context, rootPath: context.rootPath ?? undefined,
       registerWait: (jobId, completion) => watchService.registerBridgeJob(jobId, completion, context,
         deps.statements.getConversationById?.get(context.conversationId)?.project_id ?? null, call.id),
-    }))
+    }), context.additionalRoots)
   }
   const watcherExecutor = createWatchExecutor(bridgeWaitExecutor, watchService,
     id => deps.statements.getConversationById?.get(id)?.project_id ?? null)
@@ -350,7 +371,7 @@ export function registerHeadlessServerRoutes(app: Express, deps: HeadlessServerR
     // stream events to a session the existing GET /api/streams/:streamId route can
     // replay — this is what lets the transcript viewer watch a run live. Gated on
     // resumableRuns (same gate as that route); off => runs just don't stream live.
-    runSessions: gatewayFlags.resumableRuns ? runSessions : undefined,
+    runSessions: resumableRuns ? runSessions : undefined,
   })
   // Startup reconciler: any subagent run left 'running' by a previous process
   // crash is an orphan (this fresh process owns no live loop), so flip it to a
@@ -373,6 +394,9 @@ export function registerHeadlessServerRoutes(app: Express, deps: HeadlessServerR
   const chatToolExecutor = createSubagentManagerExecutor({
     leafExecutor: subagentDispatchExecutor,
     runner: subagentRunService,
+    registerWait: (runId, attempt, completion, context, toolCallId) => watchService.registerSubagentRun(
+      runId, attempt, completion, context,
+      deps.statements.getConversationById?.get(context.conversationId)?.project_id ?? null, toolCallId),
   })
 
   registerSubagentRoutes(app, {
@@ -398,10 +422,11 @@ export function registerHeadlessServerRoutes(app: Express, deps: HeadlessServerR
     decisionBroker,
     // Phase 3: in-process chat hooks (fires only when a request sets hooksEnabled).
     hookRunner: runHookRequest,
-    // Phase 4: cloud (openrouter) free-tier relay + Railway id adoption. Default OFF.
-    cloudChatEnabled: gatewayFlags.chat,
   })
-  if (gatewayFlags.resumableRuns) {
+  // Synchronously releases stale 'running' Claude branches, then checkpoints their heads.
+  void chatOrchestrator.recoverInterruptedClaudeBranches().catch(error =>
+    console.warn('[ClaudeSession] interrupted branch recovery failed', error instanceof Error ? error.message : error))
+  if (resumableRuns) {
     watchService.configureContinuation({
       retain: context => chatOrchestrator.retainWatch(context),
       deliver: (event, originStreamId, content) => {
@@ -422,9 +447,21 @@ export function registerHeadlessServerRoutes(app: Express, deps: HeadlessServerR
     })
   }
   registerChatRoutes(app, {
+    admissions: new RunAdmissionService({ epoch: hostEpoch, receipts: operationReceipts,
+      orchestrator: chatOrchestrator, sessions: runSessions, executionDefaults: () => readHostExecutionPreferences().values }),
     orchestrator: chatOrchestrator,
     decisionBroker,
     runSessions,
-    resumableRuns: gatewayFlags.resumableRuns,
+    resumableRuns,
   })
+}
+
+const activeRegistries = new Set<RunSessionRegistry>()
+const reaperStops = new Set<() => void>()
+export function stopHeadlessSessions(): void {
+  for (const stop of reaperStops) stop()
+  reaperStops.clear()
+  for (const registry of activeRegistries) registry.disposeAll()
+  activeRegistries.clear()
+  disposeSnapshotScratch()
 }

@@ -19,20 +19,20 @@ export interface LegacyOAuthRows {
 }
 interface MigrationState { complete: boolean; rendererCleaned: boolean; needsReconnect: AuthSlot[] }
 
-function candidate(slot: AuthSlot, raw: any): Credential | null {
-  const accessToken = slot === 'app' ? raw?.session?.access_token ?? raw?.accessToken : raw?.accessToken
+function candidate(_slot: AuthSlot, raw: any): Credential | null {
+  const accessToken = raw?.accessToken
   if (typeof accessToken !== 'string' || !accessToken || accessToken === 'electron-local-token' || accessToken === 'local-mode-token') return null
   const metadata = jwtMetadata(accessToken)
-  const claimedId = slot === 'app' ? metadata.sub : metadata['https://api.openai.com/auth']?.chatgpt_account_id
-  const suppliedId = slot === 'app' ? raw?.session?.user?.id ?? raw?.user?.id ?? raw?.userId : raw?.accountId
+  const claimedId = metadata['https://api.openai.com/auth']?.chatgpt_account_id
+  const suppliedId = raw?.accountId
   // JWT claims are hints for grouping legacy records, not proof of authentication.
   if (claimedId && suppliedId && claimedId !== suppliedId) return null
   const userId = claimedId || suppliedId
-  const refreshToken = slot === 'app' ? raw?.session?.refresh_token ?? raw?.refreshToken : raw?.refreshToken
+  const refreshToken = raw?.refreshToken
   if (typeof userId !== 'string' || !userId || typeof refreshToken !== 'string' || !refreshToken) return null
   return { sessionId: randomUUID(), revision: 0, userId, accessToken, refreshToken,
     email: raw?.email ?? raw?.user?.email ?? raw?.session?.user?.email ?? null,
-    expiresAt: expiryMs(slot === 'app' ? raw?.session?.expires_at ?? raw?.expiresAt : raw?.expiresAt) ?? expiryMs(metadata.exp) }
+    expiresAt: expiryMs(raw?.expiresAt) ?? expiryMs(metadata.exp) }
 }
 
 /**
@@ -42,14 +42,14 @@ function candidate(slot: AuthSlot, raw: any): Credential | null {
  */
 export function migrateOAuthCredentials(settings: KeyValueStore, store: CredentialStore, rows: LegacyOAuthRows): MigrationState {
   const previous = settings.get(AUTH_MIGRATION_KEY) as MigrationState | undefined
-  const legacyRows = rows.list().filter(row => row.provider === 'openrouter' || row.provider === 'openaichatgpt')
+  const legacyRows = rows.list().filter(row => row.provider === 'openaichatgpt')
   const needsReconnect: AuthSlot[] = [...(previous?.needsReconnect ?? [])]
   if (!previous?.complete) {
-    for (const slot of ['app', 'codex'] as const) {
+    for (const slot of ['codex'] as const) {
       if (store.isInitialized(slot)) continue
-      const raw = settings.get(slot === 'app' ? 'auth_session' : 'openai_chatgpt_tokens')
+      const raw = settings.get('openai_chatgpt_tokens')
       const primary = candidate(slot, raw)
-      const records = [primary, ...legacyRows.filter(row => row.provider === (slot === 'app' ? 'openrouter' : 'openaichatgpt')).map(row => candidate(slot, row))]
+      const records = [primary, ...legacyRows.map(row => candidate(slot, row))]
         .filter((value): value is Credential => value !== null)
       const active = primary ? records.filter(value => value.userId === primary.userId) : records
       const distinct = new Map(active.map(value => [JSON.stringify([value.userId, value.accessToken, value.refreshToken]), value]))
@@ -68,11 +68,11 @@ export function migrateOAuthCredentials(settings: KeyValueStore, store: Credenti
 }
 
 /** One-time startup handoff. Must be exposed only to the trusted desktop renderer. */
-export function importRendererLegacyCredentials(settings: KeyValueStore, store: CredentialStore, values: { app?: unknown; codex?: unknown }): void {
+export function importRendererLegacyCredentials(settings: KeyValueStore, store: CredentialStore, values: { codex?: unknown }): void {
   const state = settings.get(AUTH_MIGRATION_KEY) as MigrationState | undefined
   if (!state?.complete) throw new Error('Main-process auth migration must complete first')
   if (state.rendererCleaned) return
-  for (const slot of ['app', 'codex'] as const) {
+  for (const slot of ['codex'] as const) {
     if (state.needsReconnect.includes(slot)) continue
     const value = candidate(slot, values[slot])
     const canonical = store.read(slot)

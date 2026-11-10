@@ -45,7 +45,7 @@ Custom tools may include `appPermissions` metadata, but the current iframe bridg
 
 ## Important Invariants
 
-- Renderer-selected schemas use `custom_tool_manager`, not undeclared names. Server defaults may include enabled custom tools directly when requests omit `tools`.
+- Renderer-selected schemas use `custom_tool_manager`, not undeclared names. Server defaults also exclude custom schemas when requests omit `tools`; use `custom_tool_manager` search → get → invoke for progressive disclosure.
 - Preserve `appPermissions` metadata, but do not treat it as an implemented iframe authorization boundary.
 - Invalid tool definitions should fail safely and report useful errors.
 - Managed paths must not allow arbitrary overwrite outside expected custom-tool directories.

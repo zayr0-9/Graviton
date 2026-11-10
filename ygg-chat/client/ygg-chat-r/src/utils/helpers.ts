@@ -4,7 +4,7 @@ import { MessageId } from '../../../../shared/types'
 /**
  * Parse ID based on environment mode
  * - Local mode (SQLite): Converts to integer
- * - Web mode (Supabase): Keeps as string (UUID)
+ * - UUID strings are kept as strings
  *
  * @param id - The ID to parse (string or number)
  * @returns Parsed ID appropriate for the current environment

@@ -4,7 +4,7 @@ import { SubagentRunView } from './SubagentTranscript'
 
 vi.mock('boxicons', () => ({}))
 vi.mock('../../hooks/useQueries', () => ({ useSubagentByToolCall: vi.fn() }))
-vi.mock('../../utils/api', () => ({ environment: 'electron', buildLocalApiUrl: vi.fn() }))
+vi.mock('../../utils/api', () => ({ buildLocalApiUrl: vi.fn() }))
 vi.mock('../ThemeManager/themeConfig', () => ({
   getThemeModeColor: (_theme: unknown, _mode: unknown, _key: unknown, fallback: string) => fallback,
   useCustomChatTheme: () => ({}),

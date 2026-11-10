@@ -1,23 +1,19 @@
+import { HOST_DATA_CHANGED, type HostDataChange } from '../services/hostChangeEvents'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import { useStore } from 'react-redux'
 import type { Store } from 'redux'
 import type { ConversationId } from '../../../../shared/types'
 import { useAppDispatch, useAppSelector } from './redux'
-import { useAuth } from './useAuth'
 import type { ConversationMessagesTreeData } from '../features/chats/conversationMessagesApi'
 import { coordinateConversationSnapshot } from '../features/chats/conversationSnapshotCoordinator'
 import { conversationQueryKeys } from '../features/chats/conversationQueryKeys'
 import type { RootState } from '../store/store'
 
-export function useConversationSnapshotCoordinator(
-  conversationId: ConversationId | null,
-  storageMode?: 'local' | 'cloud'
-) {
+export function useConversationSnapshotCoordinator(conversationId: ConversationId | null) {
   const dispatch = useAppDispatch()
   const reduxStore = useStore() as Store<RootState>
   const queryClient = useQueryClient()
-  const { accessToken } = useAuth()
   const currentConversationId = useAppSelector(state => state.chat.conversation.currentConversationId)
   const selectionRequestId = useAppSelector(state => state.chat.selection.requestId)
   const snapshotConversationId = useAppSelector(state => state.chat.conversation.snapshotConversationId)
@@ -90,8 +86,6 @@ export function useConversationSnapshotCoordinator(
       try {
         const result = await coordinateConversationSnapshot({
           conversationId,
-          storageMode,
-          accessToken,
           queryClient,
           getState: reduxStore.getState,
           isCurrent: ownsRefresh,
@@ -130,7 +124,36 @@ export function useConversationSnapshotCoordinator(
     })()
     latestRefreshRef.current = { visit, revision, promise }
     return promise
-  }, [accessToken, conversationId, dispatch, queryClient, reduxStore, storageMode, visit])
+  }, [conversationId, dispatch, queryClient, reduxStore, visit])
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+    let timer: ReturnType<typeof setTimeout> | undefined
+    let running = false
+    let dirty = false
+    let disposed = false
+    const flush = async () => {
+      if (running || disposed) return
+      running = true
+      do { dirty = false; await refresh() } while (dirty && !disposed)
+      running = false
+    }
+    const changed = (event: Event) => {
+      const detail = (event as CustomEvent<HostDataChange>).detail
+      if (!detail?.reset && !detail?.conversationIds.includes(String(conversationId))) return
+      if (!detail.reset && detail.changes?.length) {
+        const relevant = detail.changes.filter(change => change.conversation_id === String(conversationId))
+        const rows = new Map(reduxStore.getState().chat.conversation.messages.map(row => [String(row.id), row]))
+        const messages = relevant.filter(change => change.domain === 'messages')
+        if (messages.length && messages.every(change => !change.deleted && typeof change.revision === 'number' &&
+          (rows.get(change.entity_id)?.revision ?? -1) >= change.revision)) return
+      }
+      dirty = true
+      if (!timer) timer = setTimeout(() => { timer = undefined; void flush() }, 150)
+    }
+    window.addEventListener(HOST_DATA_CHANGED, changed)
+    return () => { disposed = true; if (timer) clearTimeout(timer); window.removeEventListener(HOST_DATA_CHANGED, changed) }
+  }, [conversationId, refresh, reduxStore])
 
   // Route entry always requests an authoritative persisted snapshot. Cached data is
   // display-only until this generation is accepted by the coordinator.

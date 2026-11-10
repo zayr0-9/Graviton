@@ -1,24 +1,28 @@
+import { isClaudeProvider } from '../../../../../shared/claudeProvider.js'
 import { HyperRouterBedrockProvider } from '../providers/hyperRouterBedrockProvider.js'
+import { HyperRouterOpenRouterProvider } from '../providers/hyperRouterOpenRouterProvider.js'
 import { HyperRouterZaiProvider } from '../providers/hyperRouterZaiProvider.js'
 import { LmStudioProvider } from '../providers/lmStudioProvider.js'
 import {
   OpenAiChatgptProvider,
   resolveOpenAIChatGPTContextLength,
 } from '../providers/openaiChatgptProvider.js'
-import {
-  OpenRouterProvider,
-  type HeadlessProvider,
-  type ProviderGenerateInput,
-  type ProviderGenerateOutput,
-  type ProviderStreamEventHandler,
-} from '../providers/openRouterProvider.js'
+import type {
+  HeadlessProvider,
+  ProviderGenerateInput,
+  ProviderGenerateOutput,
+  ProviderStreamEventHandler,
+} from '../providers/providerTypes.js'
 import type { ProviderTokenStore } from '../providers/tokenStore.js'
-import type { AppAuthTokenManager } from './appAuthTokenManager.js'
 
-export type ProviderRoute = 'openrouter' | 'openaichatgpt' | 'lmstudio' | 'zai' | 'bedrock'
+export type ProviderRoute = 'openrouterbyok' | 'openaichatgpt' | 'lmstudio' | 'zai' | 'bedrock'
 
-export function normalizeProviderRoute(providerName: string): ProviderRoute {
-  const normalized = providerName.trim().toLowerCase().replace(/\s+/g, '')
+/**
+ * Strict lookup: the route for a known provider name or alias, else null.
+ * Unknown names are rejected at the API boundary (fully-local plan Q7).
+ */
+export function resolveProviderRoute(providerName: string): ProviderRoute | null {
+  const normalized = String(providerName ?? '').trim().toLowerCase().replace(/\s+/g, '')
   if (normalized === 'openaichatgpt' || normalized === 'openai(chatgpt)' || normalized === 'openai') {
     return 'openaichatgpt'
   }
@@ -34,14 +38,43 @@ export function normalizeProviderRoute(providerName: string): ProviderRoute {
   ) {
     return 'bedrock'
   }
-  if (normalized === 'openrouter') return 'openrouter'
-  // MVP default path is OpenAI ChatGPT.
-  return 'openaichatgpt'
+  // 'openrouter' was the retired Graviton-hosted (Railway) route; saved settings and old
+  // conversations that still name it use the user's own OpenRouter key instead.
+  if (
+    normalized === 'openrouterbyok' ||
+    normalized === 'openrouter-byok' ||
+    normalized === 'openrouter(byok)' ||
+    normalized === 'openrouter'
+  ) {
+    return 'openrouterbyok'
+  }
+  return null
+}
+
+/**
+ * Lenient lookup for classification and defaults (unknown → 'openaichatgpt'). Generation
+ * never relies on this fallback: ProviderRouter.generate and the HTTP guard reject unknown names.
+ */
+export function normalizeProviderRoute(providerName: string): ProviderRoute {
+  return resolveProviderRoute(providerName) ?? 'openaichatgpt'
+}
+
+export class UnknownProviderError extends Error {
+  readonly status = 400
+  readonly code = 'unknown_provider'
+  constructor(providerName: string) {
+    super(`unknown provider "${providerName}"`)
+    this.name = 'UnknownProviderError'
+  }
+}
+
+/** True for every provider Graviton can run, including the Claude Code session backend. */
+export function isKnownProviderName(providerName: string): boolean {
+  return isClaudeProvider(providerName) || resolveProviderRoute(providerName) !== null
 }
 
 interface ProviderRouterDeps {
   tokenStore?: ProviderTokenStore
-  appAuth?: AppAuthTokenManager
 }
 
 export class ProviderRouter {
@@ -49,11 +82,11 @@ export class ProviderRouter {
 
   constructor(deps: ProviderRouterDeps = {}) {
     this.providers = {
-      openrouter: new OpenRouterProvider({ tokenStore: deps.tokenStore, appAuth: deps.appAuth }),
       openaichatgpt: new OpenAiChatgptProvider({ tokenStore: deps.tokenStore }),
       lmstudio: new LmStudioProvider(),
       zai: new HyperRouterZaiProvider({ tokenStore: deps.tokenStore }),
       bedrock: new HyperRouterBedrockProvider({ tokenStore: deps.tokenStore }),
+      openrouterbyok: new HyperRouterOpenRouterProvider({ tokenStore: deps.tokenStore }),
     }
   }
 
@@ -69,7 +102,9 @@ export class ProviderRouter {
     input: ProviderGenerateInput,
     emit?: ProviderStreamEventHandler
   ): Promise<ProviderGenerateOutput> {
-    const route = normalizeProviderRoute(providerName)
+    if (isClaudeProvider(providerName)) throw new Error('Claude Code uses the session backend and is unavailable in Graviton subagents or compaction.')
+    const route = resolveProviderRoute(providerName)
+    if (!route) throw new UnknownProviderError(providerName)
     const provider = this.providers[route]
     return provider.generate(input, emit)
   }

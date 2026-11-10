@@ -6,7 +6,7 @@ vi.mock('../../../auth/runtime.js', () => ({ getAuthManager: () => ({
   resolve: async () => { throw new Error('Sign in again to continue.') },
 }) }))
 import { OpenAiChatgptProvider } from '../../providers/openaiChatgptProvider.js'
-import { ProviderRouter, normalizeProviderRoute } from '../providerRouter.js'
+import { ProviderRouter, UnknownProviderError, isKnownProviderName, normalizeProviderRoute, resolveProviderRoute } from '../providerRouter.js'
 
 describe('provider routing', () => {
   afterEach(() => {
@@ -22,6 +22,20 @@ describe('provider routing', () => {
     expect(normalizeProviderRoute('aws-bedrock')).toBe('bedrock')
     expect(normalizeProviderRoute('amazon bedrock')).toBe('bedrock')
     expect(normalizeProviderRoute('unknown-provider')).toBe('openaichatgpt')
+    // The retired hosted route is an alias for the user's own OpenRouter key.
+    expect(normalizeProviderRoute('openrouter')).toBe('openrouterbyok')
+    expect(normalizeProviderRoute('OpenRouter BYOK')).toBe('openrouterbyok')
+  })
+
+  it('resolves known names strictly and rejects unknown providers (Q7)', async () => {
+    expect(resolveProviderRoute('OpenAI (ChatGPT)')).toBe('openaichatgpt')
+    expect(resolveProviderRoute('Amazon Bedrock')).toBe('bedrock')
+    expect(resolveProviderRoute('gemini')).toBeNull()
+    expect(isKnownProviderName('Claude Code')).toBe(true)
+    expect(isKnownProviderName('gemini')).toBe(false)
+    await expect(new ProviderRouter().generate('gemini', { modelName: 'x', history: [], userContent: 'hi' })).rejects.toBeInstanceOf(
+      UnknownProviderError
+    )
   })
 
   it('applies the global context override only to ChatGPT routes', () => {
@@ -30,24 +44,26 @@ describe('provider routing', () => {
 
     expect(router.resolveContextLength('OpenAI (ChatGPT)', 96_000)).toBe(96_000)
     expect(router.resolveContextLength('openaichatgpt', undefined)).toBe(123_000)
-    expect(router.resolveContextLength('openrouter', 200_000)).toBe(200_000)
+    expect(router.resolveContextLength('openrouterbyok', 200_000)).toBe(200_000)
     expect(router.resolveContextLength('lmstudio', 32_000)).toBe(32_000)
     delete process.env.YGG_OPENAI_CHATGPT_MAX_CONTEXT_TOKENS
   })
 
-  it('routes openrouter and lmstudio through provider implementations', async () => {
+  it('routes legacy openrouter to BYOK and lmstudio through provider implementations', async () => {
     const router = new ProviderRouter()
+    vi.stubEnv('OPENROUTER_API_KEY', '')
 
     await expect(
       router.generate('openrouter', {
         modelName: 'openrouter/auto',
         history: [],
         userContent: 'hi',
-        railwayTurn: {
+        turnContext: {
           conversationId: 'c1',
         },
       })
-    ).rejects.toThrow('Sign in again to continue.')
+    ).rejects.toThrow('OpenRouter API key missing')
+    vi.unstubAllEnvs()
 
     vi.spyOn(globalThis, 'fetch').mockResolvedValue({
       ok: false,

@@ -1,5 +1,8 @@
-import { getAuthManager, publicAuthState, disconnectAuth, importLegacyRenderer, enableLocalLogin } from '../server/auth/runtime.js'
-import { startAppLogin, completeAppCode, completeAppCallback, cancelAppLogin } from '../server/auth/appLogin.js'
+import { createNativeHostSessionInstaller } from './nativeHostSession.js'
+import { TerminalService } from '../server/terminal/terminalService.js'
+import { readHostExecutionPreferences, saveHostExecutionPreferences, importHostExecutionPreferences } from '../server/hostExecutionStore.js'
+import { getHostPromptStore } from '../server/hostPromptStore.js'
+import { getAuthManager, publicAuthState, disconnectAuth, importLegacyRenderer } from '../server/auth/runtime.js'
 import Conf from 'conf'
 import { app, autoUpdater as nativeAutoUpdater, BrowserWindow, dialog, ipcMain, Menu, nativeImage, nativeTheme, powerMonitor, screen, shell, Tray, webContents } from 'electron'
 import autoUpdaterPkg from 'electron-updater'
@@ -7,10 +10,12 @@ import fs from 'fs'
 import http from 'http'
 import os from 'os'
 import path from 'path'
-import { fileURLToPath } from 'url'
+import { fileURLToPath, pathToFileURL } from 'url'
+import { installRendererRecovery, type RendererRecovery } from './rendererRecovery.js'
+import { installMainProcessLog } from './mainProcessLog.js'
+import { createClientErrorLog, type ClientErrorLog } from './clientErrorLog.js'
 import { normalizeShellPath } from './shellPath.js'
 import { createQuitConfirmationGuard } from './quitConfirmation.js'
-import '../server/envLoader.js'
 import {
   consolidateSecureSecrets,
   deleteBraveApiKey,
@@ -24,7 +29,7 @@ import { buildElectronHostCapabilities, buildElectronServerConfig } from './elec
 import { createYggServer, type YggServerHandle } from '../server/createYggServer.js'
 import { ensureManagedCustomToolsInitialized } from '../server/tools/customToolLoader.js'
 import { ensureManagedThemesInitialized } from '../server/tools/themeManager.js'
-import { detectPathType, getWSLCommandArgs, isWindows } from '../server/utils/wslBridge.js'
+import { clampTerminalDimension, resolveTerminalLaunch } from '../server/terminal/terminalLaunch.js'
 import { OpenAiChatgptProvider } from '../server/headlessServer/providers/openaiChatgptProvider.js'
 import { fetchOpenAIUsageStatus } from '../server/auth/codexUsage.js'
 
@@ -34,6 +39,7 @@ const { autoUpdater } = autoUpdaterPkg
 // ESM: Get __dirname from import.meta.url
 const __dirname = fileURLToPath(new URL('.', import.meta.url))
 let mainWindow: BrowserWindow | null = null
+let mainRecovery: RendererRecovery | null = null
 let floatingWindow: BrowserWindow | null = null
 let tray: Tray | null = null
 let isQuitting = false
@@ -63,6 +69,8 @@ let localServerPort: number | null = null
 let localServerUrl: string | null = null
 let localServerLanUrl: string | null = null
 let localServerError: string | null = null
+const installNativeHostSession = createNativeHostSessionInstaller(() => localServerUrl,
+  id => id === mainWindow?.webContents.id || id === floatingWindow?.webContents.id)
 
 const LOCAL_SERVER_PREFERRED_PORT = 3002
 const LOCAL_SERVER_FALLBACK_PORTS = Array.from({ length: 13 }, (_, index) => LOCAL_SERVER_PREFERRED_PORT + 1 + index)
@@ -268,7 +276,6 @@ const activeReadStreams = new Map<
 
 type TerminalSessionRecord = {
   sessionId: string
-  pty: import('node-pty').IPty
   sender: Electron.WebContents
   cwd: string
   shell: string
@@ -277,6 +284,14 @@ type TerminalSessionRecord = {
 }
 
 const activeTerminalSessions = new Map<string, TerminalSessionRecord>()
+const terminalOwners = new Set<number>()
+const nativeTerminals = new TerminalService((...args) => getNodePtyModule().spawn(...args), 0)
+nativeTerminals.subscribe((owner, type, payload) => {
+  const session = activeTerminalSessions.get(payload.sessionId)
+  if (!session || owner !== String(session.sender.id)) return
+  sendTerminalEvent(session.sender, `terminal:${type}`, payload)
+  if (type === 'exit') activeTerminalSessions.delete(payload.sessionId)
+})
 
 function getNodePtyModule(): typeof import('node-pty') {
   return require('node-pty') as typeof import('node-pty')
@@ -286,75 +301,6 @@ function makeTerminalSessionId(): string {
   return `terminal_${Date.now()}_${Math.random().toString(16).slice(2)}`
 }
 
-function clampTerminalDimension(value: number | undefined, fallback: number, min: number, max: number): number {
-  if (!Number.isFinite(value)) return fallback
-  return Math.min(max, Math.max(min, Math.floor(value as number)))
-}
-
-function normalizeTerminalCwd(inputCwd?: string): string {
-  const trimmed = inputCwd?.trim()
-  if (!trimmed) {
-    return process.cwd()
-  }
-
-  if (!isWindows()) {
-    return path.isAbsolute(trimmed) ? trimmed : path.resolve(trimmed)
-  }
-
-  const pathType = detectPathType(trimmed)
-  if (pathType === 'linux') {
-    return trimmed
-  }
-  if (pathType === 'windows') {
-    return path.win32.normalize(trimmed)
-  }
-  return path.win32.resolve(trimmed)
-}
-
-async function resolveTerminalLaunch(inputCwd?: string): Promise<{
-  file: string
-  args: string[]
-  spawnCwd: string
-  displayCwd: string
-  shellLabel: string
-}> {
-  const normalizedCwd = normalizeTerminalCwd(inputCwd)
-
-  if (!isWindows()) {
-    const shellPath = process.env.SHELL?.trim() || '/bin/bash'
-    return {
-      file: shellPath,
-      args: ['-i'],
-      spawnCwd: normalizedCwd,
-      displayCwd: normalizedCwd,
-      shellLabel: path.posix.basename(shellPath) || shellPath,
-    }
-  }
-
-  if (detectPathType(normalizedCwd) === 'linux') {
-    const [file, args] = await getWSLCommandArgs('bash', ['-i'], normalizedCwd)
-    return {
-      file,
-      args,
-      spawnCwd: process.cwd(),
-      displayCwd: normalizedCwd,
-      shellLabel: 'wsl bash',
-    }
-  }
-
-  const configuredShell = process.env.YGG_TERMINAL_SHELL?.trim()
-  const shellPath = configuredShell || 'powershell.exe'
-  const shellBaseName = path.win32.basename(shellPath).toLowerCase()
-  const args = shellBaseName === 'powershell.exe' || shellBaseName === 'pwsh.exe' ? ['-NoLogo'] : []
-
-  return {
-    file: shellPath,
-    args,
-    spawnCwd: normalizedCwd,
-    displayCwd: normalizedCwd,
-    shellLabel: path.win32.basename(shellPath) || shellPath,
-  }
-}
 
 function sendTerminalEvent(sender: Electron.WebContents, channel: string, payload: Record<string, any>): void {
   if (!sender.isDestroyed()) {
@@ -367,7 +313,7 @@ function destroyTerminalSession(sessionId: string): boolean {
   if (!session) return false
   activeTerminalSessions.delete(sessionId)
   try {
-    session.pty.kill()
+    nativeTerminals.kill(String(session.sender.id), sessionId)
   } catch (error) {
     console.warn('[Electron Terminal] Failed to kill session:', error)
   }
@@ -388,19 +334,31 @@ function cleanupTerminalSessionsForSender(sender: Electron.WebContents): void {
   }
 }
 
-// Custom protocol for OAuth callbacks
-const PROTOCOL = 'yggchat'
-const UPDATE_FEED_BASE_URL =
-  process.env.SUPABASE_UPDATE_FEED_BASE_URL || 'https://auth.yggchat.com/storage/v1/object/public/updates/updates'
-const CLIENT_ERROR_LOG_FILENAME = 'client-errors.ndjson'
+// Updates come from GitHub Releases (electron-builder bakes the github publish config into
+// resources/app-update.yml). macOS builds are unsigned, so Squirrel.Mac cannot install them:
+// on macOS we only check and point the user at the release page.
+const UPDATE_RELEASES_URL = 'https://github.com/zayr0-9/Graviton/releases'
+const MANUAL_UPDATE_INSTALL = process.platform === 'darwin'
 let autoUpdaterConfigured = false
+let latestUpdateReleaseUrl = UPDATE_RELEASES_URL
+
+// Persist main-process/server console output (e.g. [LineageForkDebug] diagnostics),
+// keeping the last 3 days and at most 32 MiB per day.
+try {
+  installMainProcessLog({ logsDir: path.join(app.getPath('userData'), 'logs') })
+} catch (error) {
+  console.warn('[Electron] Main process log unavailable:', error)
+}
+
+// Renderer telemetry/recovery records share the main log's 3-day retention.
+let clientErrorLog: ClientErrorLog | null = null
+function getClientErrorLog(): ClientErrorLog {
+  clientErrorLog ??= createClientErrorLog({ logsDir: path.join(app.getPath('userData'), 'logs') })
+  return clientErrorLog
+}
 
 function getClientErrorLogPath(): string {
-  const logsDir = path.join(app.getPath('userData'), 'logs')
-  if (!fs.existsSync(logsDir)) {
-    fs.mkdirSync(logsDir, { recursive: true })
-  }
-  return path.join(logsDir, CLIENT_ERROR_LOG_FILENAME)
+  return getClientErrorLog().filePath()
 }
 
 const TRUTHY_ENV_VALUES = new Set(['1', 'true', 'yes', 'on'])
@@ -585,7 +543,7 @@ function isGuestBrowserDevToolsEnabled(): boolean {
 
 function syncLmStudioBaseUrlFromStore(): void {
   try {
-    const providerSettings = getFromStore('ygg_provider_settings')
+    const providerSettings = getFromStore('host_execution_preferences_v1')?.values?.provider ?? getFromStore('ygg_provider_settings')
     const rawValue = typeof providerSettings?.lmStudioBaseUrl === 'string' ? providerSettings.lmStudioBaseUrl.trim() : ''
     if (rawValue) {
       const normalized = rawValue.replace(/\/+$/, '').replace(/\/v1$/i, '')
@@ -601,7 +559,7 @@ function syncLmStudioBaseUrlFromStore(): void {
 
 function syncOpenAiChatGptMaxContextFromStore(): void {
   try {
-    const providerSettings = getFromStore('ygg_provider_settings')
+    const providerSettings = getFromStore('host_execution_preferences_v1')?.values?.provider ?? getFromStore('ygg_provider_settings')
     const rawValue = providerSettings?.openAiChatGptMaxContextTokens
     if (typeof rawValue === 'number' && Number.isFinite(rawValue) && rawValue > 0) {
       process.env.YGG_OPENAI_CHATGPT_MAX_CONTEXT_TOKENS = String(Math.floor(rawValue))
@@ -616,7 +574,7 @@ function syncOpenAiChatGptMaxContextFromStore(): void {
 
 function getOpenAiPromptCacheRetentionFromStore(): 'in_memory' | '24h' {
   try {
-    const providerSettings = getFromStore('ygg_provider_settings')
+    const providerSettings = getFromStore('host_execution_preferences_v1')?.values?.provider ?? getFromStore('ygg_provider_settings')
     return providerSettings?.openAiPromptCacheRetention === '24h' ? '24h' : 'in_memory'
   } catch {
     return 'in_memory'
@@ -705,6 +663,25 @@ function createWindow() {
     show: false, // Don't show until ready
   })
 
+  const window = mainWindow
+  const entryUrl = app.isPackaged
+    ? pathToFileURL(path.join(__dirname, '../dist-electron/index.html')).href
+    : 'http://localhost:5173/'
+  const recovery = installRendererRecovery(window, {
+    entryUrl,
+    isQuitting: () => isQuitting,
+    log: record => getClientErrorLog().append(`${JSON.stringify(record)}\n`),
+    logPath: getClientErrorLogPath,
+    versions: { app: app.getVersion(), electron: process.versions.electron,
+      chrome: process.versions.chrome, platform: process.platform, arch: process.arch },
+    showDialog: options => dialog.showMessageBox(window, options),
+    changed: () => updateTrayMenu(),
+  })
+  mainRecovery = recovery
+  updateTrayMenu()
+
+  installNativeHostSession(window.webContents.session)
+
   if (process.platform === 'win32' && isWin11) {
     mainWindow.setBackgroundMaterial('acrylic')
   }
@@ -760,38 +737,9 @@ function createWindow() {
     mainWindow.removeMenu() // defensive (older Electron versions)
   }
 
-  if (isDev) {
-    // Development: Load from Vite dev server
-    mainWindow.loadURL('http://localhost:5173')
-  } else {
-    // Production: Load from built files
-    const indexPath = path.join(__dirname, '../dist-electron/index.html')
-    console.log('[Electron] Production mode - loading from:', indexPath)
-
-    // Add error listeners BEFORE loading
-    mainWindow.webContents.on('did-fail-load', (_event, errorCode, errorDescription, validatedURL) => {
-      console.error('[Electron] Failed to load:', { errorCode, errorDescription, validatedURL })
-    })
-
-    mainWindow.webContents.on('did-finish-load', () => {
-      console.log('[Electron] Page finished loading')
-    })
-
-    // mainWindow.webContents.on('console-message', (_event, level, message, line, sourceId) => {
-    //   // console.log('[Renderer Console]', { level, message, line, sourceId })
-    // })
-
-    mainWindow.loadFile(indexPath)
-
-    // DEBUG: Force DevTools to open after a delay
-    if (!app.isPackaged) {
-      // if (true) {
-      setTimeout(() => {
-        console.log('[Electron] Force opening DevTools...')
-        mainWindow?.webContents.openDevTools({ mode: 'detach' })
-      }, 3000)
-    }
-  }
+  // The controller handles both navigation errors and rejected load promises.
+  // It reloads this same window/session without restarting the embedded server.
+  void recovery.load()
 
   if (shouldOpenDetachedDevTools) {
     // Open detached devtools as soon as possible, then retry once after load for reliability.
@@ -811,8 +759,13 @@ function createWindow() {
     }
   })
 
-  mainWindow.on('closed', () => {
-    mainWindow = null
+  window.on('closed', () => {
+    recovery.dispose()
+    if (mainWindow === window) {
+      mainWindow = null
+      mainRecovery = null
+      updateTrayMenu()
+    }
   })
 
   // Custom context menu with spell check
@@ -876,6 +829,11 @@ function createTray() {
     }
   })
 
+  updateTrayMenu()
+}
+
+function updateTrayMenu() {
+  if (!tray) return
   const contextMenu = Menu.buildFromTemplate([
     {
       label: 'Open',
@@ -887,6 +845,11 @@ function createTray() {
           createWindow()
         }
       },
+    },
+    {
+      label: 'Recover UI…',
+      enabled: mainRecovery?.needsRecovery() ?? false,
+      click: () => mainRecovery?.recover(),
     },
     {
       label: 'Quit',
@@ -929,6 +892,8 @@ function createFloatingWindow() {
       spellcheck: true,
     },
   })
+
+  installNativeHostSession(floatingWindow.webContents.session)
 
   // Set floating level for better visibility over fullscreen apps
   floatingWindow.setAlwaysOnTop(true, 'floating', 1)
@@ -1008,22 +973,7 @@ function toggleFloatingWindow() {
   }
 }
 
-// Register protocol handler for OAuth callbacks
-if (process.defaultApp) {
-  if (process.argv.length >= 2) {
-    app.setAsDefaultProtocolClient(PROTOCOL, process.execPath, [path.resolve(process.argv[1])])
-  }
-} else {
-  app.setAsDefaultProtocolClient(PROTOCOL)
-}
-
-// Handle protocol on macOS
-app.on('open-url', (event, url) => {
-  event.preventDefault()
-  handleOAuthCallback(url)
-})
-
-// Handle protocol on Windows/Linux (via second instance)
+// One app instance: a second launch focuses the existing window.
 // In debug mode, allow multiple instances so `npm run electron` always opens its own fresh window.
 if (!isDebugMode) {
   const gotTheLock = app.requestSingleInstanceLock()
@@ -1031,19 +981,12 @@ if (!isDebugMode) {
   if (!gotTheLock) {
     app.quit()
   } else {
-    app.on('second-instance', (_event, commandLine) => {
+    app.on('second-instance', () => {
       // Someone tried to run a second instance, we should focus our window.
       if (mainWindow) {
         if (mainWindow.isMinimized()) mainWindow.restore()
         mainWindow.show()
         mainWindow.focus()
-      }
-
-      // The commandLine is an array of strings in which the last element is the deep link url
-      // On Windows/Linux, the protocol URL will be in the command line arguments
-      const url = commandLine.find(arg => arg.startsWith(`${PROTOCOL}://`))
-      if (url) {
-        handleOAuthCallback(url)
       }
     })
   }
@@ -1051,27 +994,11 @@ if (!isDebugMode) {
   console.log('[Electron] Debug mode enabled: single-instance lock disabled')
 }
 
-async function syncAuthenticatedProfile(user: any): Promise<void> {
-  if (!localServerPort) throw new Error('Local service is not ready')
-  const response = await fetch(`http://127.0.0.1:${localServerPort}/api/local/users/merge`, {
-    method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ fromUserId: 'a7c485cb-99e7-4cf2-82a9-6e23b55cdfc3', toUserId: user.id, toUsername: user.user_metadata?.name || user.email?.split('@')[0] || 'user', toCreatedAt: user.created_at }),
-  })
-  if (!response.ok) throw new Error('Signed in, but local profile synchronization failed. Retry signing in.')
-}
-// Handle OAuth callback from external browser
-function handleOAuthCallback(url: string) {
-  void completeAppCallback(url).then(async result => { await syncAuthenticatedProfile(result.user); mainWindow?.webContents.send('auth:changed', publicAuthState()) }).catch(() => mainWindow?.webContents.send('auth:login-error', 'Sign-in could not be completed. Please try again.'))
-  if (mainWindow && mainWindow.webContents) {
-
-    // Focus the window
-    if (mainWindow.isMinimized()) mainWindow.restore()
-    mainWindow.focus()
-  }
-}
-
 // App lifecycle
 app.whenReady().then(async () => {
+  app.on('session-created', installNativeHostSession)
+  if (!app.isPackaged) process.env.YGG_CLIENT_DEV_ORIGIN = 'http://localhost:5173'
+  else delete process.env.YGG_CLIENT_DEV_ORIGIN
   try {
     await initializeStore()
     syncLmStudioBaseUrlFromStore()
@@ -1219,6 +1146,7 @@ app.on('before-quit', event => {
   }
 
   isQuitting = true
+  nativeTerminals.shutdown()
   for (const sessionId of Array.from(activeTerminalSessions.keys())) {
     destroyTerminalSession(sessionId)
   }
@@ -1244,38 +1172,36 @@ app.on('before-quit', event => {
 
 // IPC Handlers for Electron-specific features
 
-// Authentication (optional - for cloud sync)
-authHandle('auth:login', async (_event, _credentials) => {
-  // In Electron, we can store credentials securely using electron-store or keytar
-  // For now, return a simple success
-  // console.log('[Electron IPC] auth:login called')
-  if (_credentials?.email || _credentials?.password) throw new Error('Use Google or GitHub sign-in')
-  return enableLocalLogin()
-})
-
-authHandle('auth:logout', async () => {
-  // console.log('[Electron IPC] auth:logout called')
-  cancelAppLogin()
-  return disconnectAuth('app')
-})
-
-// Phase 4 Slice 2 — server as sole Supabase-token refresher.
-// The renderer delegates its token refresh here; the shared single-flight
-// AppAuthTokenManager (same instance the cloud gateway uses) rotates the Conf
-// `auth_session` at most once process-wide. Gated on the server `gateway.tokenOwner`
-// flag: when off we report ownerEnabled:false so the renderer keeps self-refreshing
-// (safe fallback / no half-rollout). Never throws — errors degrade to ownerEnabled:false.
+// IPC that only the trusted main window's main frame may call (ChatGPT connection status,
+// legacy token handoff, opening external URLs).
 function authHandle(channel: string, handler: (...args: any[]) => any): void {
   ipcMain.handle(channel, (event, ...args) => {
     if (!mainWindow || event.sender !== mainWindow.webContents || event.senderFrame !== event.sender.mainFrame) throw new Error('Untrusted auth caller')
     return handler(event, ...args)
   })
 }
+function promptHandle(channel: string, handler: (...args: any[]) => any): void {
+  ipcMain.handle(channel, (event, ...args) => {
+    const trusted = [mainWindow, floatingWindow].some(window => window && !window.isDestroyed() && window.webContents === event.sender)
+    if (!trusted || event.senderFrame !== event.sender.mainFrame) throw new Error('Untrusted prompt caller')
+    return handler(event, ...args)
+  })
+}
+promptHandle('execution-preferences:read', () => readHostExecutionPreferences())
+promptHandle('execution-preferences:save', (_event, request) => saveHostExecutionPreferences(request))
+promptHandle('execution-preferences:import', (event, raw) => event.sender === mainWindow?.webContents ? importHostExecutionPreferences(raw) : readHostExecutionPreferences())
+promptHandle('prompts:read', () => getHostPromptStore().snapshot())
+promptHandle('prompts:save', (_event, revision: number, prompts: unknown, identity: { hostId: string; epoch: string }) => {
+  try { return { snapshot: getHostPromptStore().save(revision, prompts, identity) } }
+  catch (error) { return { error: error instanceof Error ? error.message : 'Could not save prompts', conflict: (error as any)?.status === 409 } }
+})
+promptHandle('prompts:import', (event, prompts: unknown) => {
+  if (event.sender !== mainWindow?.webContents) return getHostPromptStore().snapshot()
+  return getHostPromptStore().importLegacy(prompts)
+})
 authHandle('auth:status', () => publicAuthState())
-authHandle('auth:start', (_event, provider: string, oob: boolean) => ({ url: startAppLogin(provider, oob) }))
-authHandle('auth:code', async (_event, code: string) => { const result = await completeAppCode(code); await syncAuthenticatedProfile(result.user); return publicAuthState() })
-authHandle('auth:cancel', () => { cancelAppLogin(); return true })
-authHandle('auth:migrate', (_event, values) => { importLegacyRenderer(values); return publicAuthState() })
+// Codex-only legacy localStorage handoff (Q19: delete next release).
+authHandle('auth:migrate', (_event, values) => { importLegacyRenderer({ codex: values?.codex }); return publicAuthState() })
 authHandle('auth:check', async () => { await getAuthManager().check(); return publicAuthState() })
 let authEventsAttached = false
 authHandle('auth:subscribe', () => {
@@ -1345,8 +1271,6 @@ ipcMain.handle('storage:set', async (_event, key: string, value: any) => {
 
 // Clear all storage (for logout/account switching)
 ipcMain.handle('storage:clear', async () => {
-  cancelAppLogin()
-  disconnectAuth('app')
   disconnectAuth('codex')
   // console.log('[Electron IPC] storage:clear called - clearing all stored data')
 
@@ -1441,6 +1365,16 @@ ipcMain.handle('autoUpdater:check', async () => {
   }
 })
 
+ipcMain.handle('autoUpdater:openReleasePage', async () => {
+  try {
+    await shell.openExternal(latestUpdateReleaseUrl)
+    return { success: true }
+  } catch (error) {
+    console.error('[Electron] Failed to open release page:', error)
+    return { success: false, error: String(error) }
+  }
+})
+
 ipcMain.handle('autoUpdater:installNow', async () => {
   // console.log('[Electron] User requested immediate update install')
   try {
@@ -1453,9 +1387,8 @@ ipcMain.handle('autoUpdater:installNow', async () => {
   }
 })
 
-// Open OAuth URL in external browser
-authHandle('auth:openExternal', async (_event, url: string) => {
-  // console.log('[Electron IPC] Opening external URL for OAuth:', url)
+// Open a URL in the OS browser (links, ChatGPT sign-in). Main window only.
+authHandle('shell:openExternal', async (_event, url: string) => {
   try {
     await shell.openExternal(url)
     return { success: true }
@@ -1689,10 +1622,10 @@ ipcMain.handle(
 )
 
 // Abort an active file stream
-ipcMain.handle('fs:abortReadFileStream', async (_event, streamId: string) => {
+ipcMain.handle('fs:abortReadFileStream', async (event, streamId: string) => {
   // console.log('[Electron IPC] Aborting file stream:', streamId)
   const meta = activeReadStreams.get(streamId)
-  if (!meta) {
+  if (!meta || meta.sender.id !== event.sender.id) {
     return { success: false, error: 'Stream not found' }
   }
 
@@ -1743,9 +1676,9 @@ ipcMain.handle('logs:appendClientError', async (_event, content: string) => {
   }
 
   try {
-    const filePath = getClientErrorLogPath()
-    fs.appendFileSync(filePath, content, 'utf-8')
-    return { success: true, filePath }
+    const log = getClientErrorLog()
+    log.append(content)
+    return { success: true, filePath: log.filePath() }
   } catch (error) {
     console.error('[Electron IPC] Failed to append client error log:', error)
     return { success: false, error: String(error) }
@@ -1776,70 +1709,28 @@ ipcMain.handle(
     }
   ) => {
     try {
-      const launch = await resolveTerminalLaunch(options?.cwd)
-      const { spawn } = getNodePtyModule()
-      const cols = clampTerminalDimension(options?.cols, 120, 20, 400)
-      const rows = clampTerminalDimension(options?.rows, 32, 5, 200)
-      const sessionId = makeTerminalSessionId()
-      const pty = spawn(launch.file, launch.args, {
-        name: 'xterm-256color',
-        cols,
-        rows,
-        cwd: launch.spawnCwd,
-        env: {
-          ...process.env,
-          TERM: 'xterm-256color',
-          COLORTERM: 'truecolor',
-        },
-        ...(process.platform === 'win32' ? { useConpty: true } : {}),
-      })
+      const created = await nativeTerminals.create(String(event.sender.id), makeTerminalSessionId(), options ?? {})
+      const { sessionId, cols, rows, cwd, shell } = created
 
       const session: TerminalSessionRecord = {
         sessionId,
-        pty,
         sender: event.sender,
-        cwd: launch.displayCwd,
-        shell: launch.shellLabel,
+        cwd,
+        shell,
         cols,
         rows,
       }
       activeTerminalSessions.set(sessionId, session)
 
-      event.sender.once('destroyed', () => {
-        cleanupTerminalSessionsForSender(event.sender)
-      })
-
-      pty.onData(data => {
-        const activeSession = activeTerminalSessions.get(sessionId)
-        if (!activeSession) return
-        sendTerminalEvent(activeSession.sender, 'terminal:data', {
-          sessionId,
-          data,
-        })
-      })
-
-      pty.onExit(({ exitCode, signal }) => {
-        const activeSession = activeTerminalSessions.get(sessionId)
-        if (!activeSession) return
-        activeTerminalSessions.delete(sessionId)
-        sendTerminalEvent(activeSession.sender, 'terminal:exit', {
-          sessionId,
-          exitCode,
-          signal,
-          cwd: activeSession.cwd,
-          shell: activeSession.shell,
-        })
-      })
-
-      return {
-        success: true,
-        sessionId,
-        cwd: launch.displayCwd,
-        shell: launch.shellLabel,
-        cols,
-        rows,
-        title: options?.title || 'Terminal',
+      if (!terminalOwners.has(event.sender.id)) {
+        terminalOwners.add(event.sender.id)
+        event.sender.once('destroyed', () => { cleanupTerminalSessionsForSender(event.sender); terminalOwners.delete(event.sender.id) })
+        event.sender.on('did-start-navigation', (_event, _url, _inPlace, isMainFrame) => { if (isMainFrame) cleanupTerminalSessionsForSender(event.sender) })
+        event.sender.on('render-process-gone', () => cleanupTerminalSessionsForSender(event.sender))
       }
+
+      if (event.sender.isDestroyed()) { destroyTerminalSession(sessionId); return { success: false, error: 'Terminal view closed' } }
+      return created
     } catch (error) {
       console.error('[Electron Terminal] Failed to create terminal session:', error)
       return { success: false, error: error instanceof Error ? error.message : String(error) }
@@ -1854,7 +1745,7 @@ ipcMain.handle('terminal:write', async (event, sessionId: string, data: string) 
   }
 
   try {
-    session.pty.write(typeof data === 'string' ? data : String(data ?? ''))
+    nativeTerminals.write(String(event.sender.id), sessionId, typeof data === 'string' ? data : String(data ?? ''))
     return { success: true }
   } catch (error) {
     console.error('[Electron Terminal] Failed to write to terminal session:', error)
@@ -1873,7 +1764,7 @@ ipcMain.handle('terminal:resize', async (event, sessionId: string, cols: number,
     const nextRows = clampTerminalDimension(rows, session.rows || 32, 5, 200)
     session.cols = nextCols
     session.rows = nextRows
-    session.pty.resize(nextCols, nextRows)
+    nativeTerminals.resize(String(event.sender.id), sessionId, nextCols, nextRows)
     return { success: true }
   } catch (error) {
     console.error('[Electron Terminal] Failed to resize terminal session:', error)
@@ -2245,78 +2136,6 @@ ipcMain.handle('window:getState', async () => {
   }
 })
 
-// Open OAuth URL in a new BrowserWindow (for WSL/Linux compatibility)
-authHandle('auth:openOAuthWindow', async (_event, url: string) => {
-  // console.log('[Electron IPC] Opening OAuth window:', url)
-
-  return new Promise(resolve => {
-    // Create a modal window for OAuth
-    const oauthWindow = new BrowserWindow({
-      width: 500,
-      height: 700,
-      modal: true,
-      parent: mainWindow || undefined,
-      webPreferences: {
-        nodeIntegration: false,
-        contextIsolation: true,
-        sandbox: true,
-      },
-      title: 'Sign in',
-      autoHideMenuBar: true,
-    })
-
-    // Load the OAuth URL
-    oauthWindow.loadURL(url)
-
-    // Handle navigation to callback URL
-    const handleNavigation = (navigationUrl: string) => {
-      // console.log('[Electron OAuth] Navigation detected:', navigationUrl)
-
-      // Check if this is our callback URL
-      if (navigationUrl.startsWith(`${PROTOCOL}://`)) {
-        // console.log('[Electron OAuth] Callback URL detected, closing window')
-
-        // Close the OAuth window
-        oauthWindow.close()
-
-        // Send the callback to handleOAuthCallback function
-        handleOAuthCallback(navigationUrl)
-
-        resolve({ success: true })
-        return true
-      }
-      return false
-    }
-
-    // Listen for redirects (works for most OAuth providers)
-    oauthWindow.webContents.on('will-redirect', (event, navigationUrl) => {
-      if (handleNavigation(navigationUrl)) {
-        event.preventDefault()
-      }
-    })
-
-    // Listen for navigation (backup for providers that don't redirect)
-    oauthWindow.webContents.on('will-navigate', (event, navigationUrl) => {
-      if (handleNavigation(navigationUrl)) {
-        event.preventDefault()
-      }
-    })
-
-    // Handle window close
-    oauthWindow.on('closed', () => {
-      // console.log('[Electron OAuth] Window closed')
-      resolve({ success: true })
-    })
-
-    // Handle errors
-    oauthWindow.webContents.on('did-fail-load', (_event, errorCode, errorDescription) => {
-      console.error('[Electron OAuth] Failed to load:', errorCode, errorDescription)
-      oauthWindow.close()
-      resolve({ success: false, error: errorDescription })
-    })
-  })
-})
-
 // Local sync server status
 //
 // `localServerRunning` is a LIVE answer: it is true only when this process's own
@@ -2335,6 +2154,8 @@ ipcMain.handle('sync:status', async () => {
     localServerPort,
     localServerUrl,
     localServerLanUrl,
+    localServerBindHost: LOCAL_SERVER_HOST,
+    localServerExposure: LOCAL_SERVER_ALLOW_REMOTE ? 'trusted-network-unprotected' : 'loopback',
     localServerError: health.ok ? null : (health.error ?? localServerError),
     localServerForeign: health.foreign,
   }
@@ -2386,24 +2207,9 @@ function configureAutoUpdater() {
     return
   }
 
-  if (!UPDATE_FEED_BASE_URL) {
-    console.warn('[Electron] Auto-updater skipped: SUPABASE_UPDATE_FEED_BASE_URL missing')
-    return
-  }
-
-  const platformDir = process.platform === 'win32' ? 'windows' : process.platform === 'darwin' ? 'mac' : 'linux'
-
-  const normalizedBase = UPDATE_FEED_BASE_URL.replace(/\/+$/, '')
-  const feedUrl = `${normalizedBase}/${platformDir}`
-
-  try {
-    autoUpdater.setFeedURL({
-      provider: 'generic',
-      url: feedUrl,
-    })
-  } catch (error) {
-    console.error('[Electron] Failed to set feed URL:', error)
-    return
+  if (MANUAL_UPDATE_INSTALL) {
+    autoUpdater.autoDownload = false
+    autoUpdater.autoInstallOnAppQuit = false
   }
 
   autoUpdaterConfigured = true
@@ -2415,7 +2221,12 @@ function configureAutoUpdater() {
 
   autoUpdater.on('update-available', info => {
     // console.log('[Electron] Update available:', info?.version)
-    mainWindow?.webContents.send('autoUpdater:update-available', info)
+    latestUpdateReleaseUrl = info?.version ? `${UPDATE_RELEASES_URL}/tag/v${info.version}` : UPDATE_RELEASES_URL
+    mainWindow?.webContents.send('autoUpdater:update-available', {
+      ...info,
+      manualInstall: MANUAL_UPDATE_INSTALL,
+      releaseUrl: latestUpdateReleaseUrl,
+    })
   })
 
   autoUpdater.on('update-not-available', info => {
@@ -2439,8 +2250,8 @@ function configureAutoUpdater() {
   })
 
   setTimeout(() => {
-    autoUpdater
-      .checkForUpdatesAndNotify()
+    const check = MANUAL_UPDATE_INSTALL ? autoUpdater.checkForUpdates() : autoUpdater.checkForUpdatesAndNotify()
+    check
       .then(result => {
         if (!result?.downloadPromise) {
           console.log('[Electron] No update download triggered')
@@ -2570,7 +2381,7 @@ ipcMain.handle('openai:chatgpt:stream-start', async (event, payload: any) => {
           accountId: tokens.accountId,
           tools: Array.isArray(payload.tools) ? payload.tools.map((tool: any) => ({ name: tool.name, description: tool.description, inputSchema: tool.inputSchema || tool.parameters })) : [],
           signal: state.controller.signal,
-          railwayTurn: {
+          turnContext: {
             conversationId: String(payload.conversationId || ''),
             parentId: payload.parentId ?? null,
             think: payload.think,

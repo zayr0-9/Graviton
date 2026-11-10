@@ -22,9 +22,6 @@
 //   YGG_TOOL_RUNTIME_FALLBACK    default off. On = a sandbox failure re-runs the
 //                                tool in-process (NOT recommended)
 
-// Load .env candidates before any module captures environment values.
-import './envLoader.js'
-
 import fs from 'fs'
 import os from 'os'
 import path from 'path'

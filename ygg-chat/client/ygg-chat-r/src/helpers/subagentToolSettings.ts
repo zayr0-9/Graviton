@@ -1,6 +1,8 @@
 // Subagent Tool Settings Storage
 // Persists subagent configuration to localStorage
 
+import { getHostExecutionPreferences, getHostExecutionRevision, saveHostExecutionPreference } from '../services/hostExecutionClient'
+const BASE_REVISION = Symbol('subagent-base-revision')
 const STORAGE_KEY = 'ygg_subagent_tool_settings'
 export const SUBAGENT_TOOL_SETTINGS_CHANGE_EVENT = 'ygg-subagent-tool-settings-change'
 
@@ -8,6 +10,7 @@ export const SUBAGENT_REASONING_EFFORT_OPTIONS = ['low', 'medium', 'high', 'xhig
 export type SubagentReasoningEffort = (typeof SUBAGENT_REASONING_EFFORT_OPTIONS)[number]
 
 export interface SubagentToolSettings {
+  [BASE_REVISION]?: number
   enabledTools: string[] // Tool names enabled for subagent when orchestratorMode=false
   orchestratorEnabled: boolean // Whether subagent can use tools (orchestrator mode)
   defaultProvider: string | null // Provider used by subagents; null follows the current chat provider
@@ -59,6 +62,8 @@ const DEFAULT_SETTINGS: SubagentToolSettings = {
  * Load subagent tool settings from localStorage
  */
 export function loadSubagentToolSettings(): SubagentToolSettings {
+  const host = getHostExecutionPreferences()
+  if (host) return { ...host.subagent, enabledTools: [...host.subagent.enabledTools], [BASE_REVISION]: getHostExecutionRevision('subagent') }
   try {
     const stored = localStorage.getItem(STORAGE_KEY)
     if (!stored) return { ...DEFAULT_SETTINGS }
@@ -86,7 +91,15 @@ export function loadSubagentToolSettings(): SubagentToolSettings {
 /**
  * Save subagent tool settings to localStorage
  */
-export function saveSubagentToolSettings(settings: SubagentToolSettings): void {
+export async function saveSubagentToolSettings(settings: SubagentToolSettings): Promise<void> {
+  if (getHostExecutionPreferences()) {
+    const { [BASE_REVISION]: revision, ...subagent } = settings
+    if (!Number.isSafeInteger(revision)) throw new Error('Reload subagent settings before saving')
+    await saveHostExecutionPreference({ subagent }, revision)
+    settings[BASE_REVISION] = getHostExecutionRevision('subagent')
+    window.dispatchEvent(new CustomEvent(SUBAGENT_TOOL_SETTINGS_CHANGE_EVENT, { detail: settings }))
+    return
+  }
   try {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(settings))
     if (typeof window !== 'undefined') {
@@ -134,10 +147,10 @@ export function setOrchestratorEnabled(enabled: boolean): void {
 /**
  * Toggle orchestrator mode
  */
-export function toggleOrchestratorEnabled(): boolean {
+export async function toggleOrchestratorEnabled(): Promise<boolean> {
   const settings = loadSubagentToolSettings()
   settings.orchestratorEnabled = !settings.orchestratorEnabled
-  saveSubagentToolSettings(settings)
+  await saveSubagentToolSettings(settings)
   return settings.orchestratorEnabled
 }
 

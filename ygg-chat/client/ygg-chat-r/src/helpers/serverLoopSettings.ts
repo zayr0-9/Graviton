@@ -6,11 +6,11 @@
  * `isServerOwnedChatLoopEnabled()` / `isCloudServerLoopEnabled()` gates (and their
  * localStorage/env overrides) have been removed along with the legacy client loop.
  *
- * What remains here is the independent token-owner slice (Phase 4 Slice 2), whose
- * flag is still consumed by the renderer's auth-refresh delegation.
+ * What remains here is the renderer resumable-runs setting.
  */
 
 import { isElectronMode } from '../config/runtimeMode'
+import { isHostClient } from '../platform/clientCapabilities'
 
 // Authentication ownership is unconditional and lives in server/auth.
 
@@ -22,25 +22,13 @@ import { isElectronMode } from '../config/runtimeMode'
  *    no longer cancels the run server-side);
  *  - re-attaches to in-flight runs after a reload.
  *
- * Coupled to the SERVER flag (gateway.resumableRuns): with the server flag off, the
- * detach/reattach routes 501 and a disconnect still aborts, so turning on only this
- * renderer flag degrades to a harmless no-op (resubscribe fails => treated as ended).
+ * The server side is always on (detach/reattach routes are always mounted).
  */
 const RESUMABLE_RUNS_STORAGE_KEY = 'ygg.resumableRuns'
 
-function readResumableRunsEnvOverride(): boolean | null {
-  try {
-    const raw = (import.meta as any)?.env?.VITE_RESUMABLE_RUNS
-    if (raw === undefined || raw === null || raw === '') return null
-    return raw === 'true' || raw === '1' || raw === true
-  } catch {
-    return null
-  }
-}
-
 export function isResumableRunsEnabled(): boolean {
-  const envOverride = readResumableRunsEnvOverride()
-  if (envOverride !== null) return envOverride
+  // Shared-host Stop must cancel on the server, never merely close its viewer.
+  if (isHostClient) return true
   try {
     if (typeof localStorage !== 'undefined') {
       const stored = localStorage.getItem(RESUMABLE_RUNS_STORAGE_KEY)

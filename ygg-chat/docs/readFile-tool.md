@@ -23,7 +23,7 @@ Internal `workspaceRoot`, `signal` and `deadlineMs` are runtime-only, not model-
 
 ## Results and pagination
 
-File properties are in `metadata`. Line bounds, `ranges`, `totalLines`, `nextLine`, `partialLastLine`, and `nextRangeIndex` are top-level fields. `totalLines` is unknown until EOF; empty files and the empty line following a trailing newline follow String.split line-count semantics.
+File properties are in `metadata`; `metadata.lastModified` is an ISO 8601 timestamp string, not a JavaScript `Date`, so in-process results remain plain JSON (including REPL captures). File content is unchanged by this metadata representation. Line bounds, `ranges`, `totalLines`, `nextLine`, `partialLastLine`, and `nextRangeIndex` are top-level fields. `totalLines` is unknown until EOF; empty files and the empty line following a trailing newline follow String.split line-count semantics.
 
 Full reads preserve text including its trailing terminator. Line selections preserve original internal LF/CRLF endings and omit the terminator after the final selected line. Disjoint-range separators are formatting, not source text.
 

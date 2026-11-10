@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { createEmptyStreamState } from '../../features/chats/streamHelpers'
 import type { AgentRunPreview } from '../../features/chats/agentRunPreviewSlice'
-import { buildForkPreviewRows, selectForkPreviewRuns } from './agentForkPreview'
+import { buildForkPreviewRows, createAgentPreviewRunsSelector, selectForkPreviewRuns } from './agentForkPreview'
 
 const run = (streamId: string, createdAt: string, conversationId = 'chat', confirmed = true): AgentRunPreview => {
   const stream = { ...createEmptyStreamState('branch'), createdAt, conversationId,
@@ -27,5 +27,41 @@ describe('fork transcript', () => {
     const b = run('b', '2026-10-10', 'chat', false)
     expect(selectForkPreviewRuns({ a, b }, 'a')).toEqual([a])
     expect(selectForkPreviewRuns({ a }, 'missing')).toEqual([])
+  })
+})
+
+describe('isolated preview subscriptions', () => {
+  it.each([false, true])('retains selected runs across unrelated stream updates (wholeFork=%s)', wholeFork => {
+    const a = run('a', '2026-10-10')
+    const b = run('b', '2026-10-11', 'other')
+    const select = createAgentPreviewRunsSelector('a', wholeFork)
+    const first = select({ agentRunPreviews: { byStreamId: { a, b } } })
+    const next = select({ agentRunPreviews: { byStreamId: { a, b: { ...b, turn: 1 } } } })
+    expect(next).toBe(first)
+    const updated = { ...a, turn: 2 }
+    expect(select({ agentRunPreviews: { byStreamId: { a: updated, b } } })).toEqual([updated])
+    expect(select({ agentRunPreviews: { byStreamId: { b } } })).toEqual([])
+  })
+
+  it('updates membership, ordering and confirmed identity without borrowing siblings', () => {
+    const a = run('a', '2026-10-11')
+    const b = run('b', '2026-10-10')
+    const sibling = run('sibling', '2026-10-09')
+    sibling.stream.lineage.lineageId = 'other-fork'
+    const select = createAgentPreviewRunsSelector('a', true)
+    const first = select({ agentRunPreviews: { byStreamId: { a } } })
+    expect(first).toEqual([a])
+    expect(select({ agentRunPreviews: { byStreamId: { a, b, sibling } } })).toEqual([b, a])
+    const unresolved = { ...a, stream: { ...a.stream, lineage: { lineageIdConfirmed: false } } }
+    expect(select({ agentRunPreviews: { byStreamId: { a: unresolved, b, sibling } } })).toEqual([unresolved])
+  })
+
+  it('shares the sorted fork lookup between selectors without sharing subscription state', () => {
+    const a = run('a', '2026-10-11')
+    const b = run('b', '2026-10-10')
+    const state = { agentRunPreviews: { byStreamId: { a, b } } }
+    expect(createAgentPreviewRunsSelector('a', true)(state)).toBe(createAgentPreviewRunsSelector('b', true)(state))
+    const missing = createAgentPreviewRunsSelector('missing', true)
+    expect(missing(state)).toBe(missing({ agentRunPreviews: { byStreamId: {} } }))
   })
 })

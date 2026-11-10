@@ -21,6 +21,7 @@ export interface AgentRunPreview {
   liveKey: string
   /** A replay starting mid-run cannot reconstruct earlier turns after a reload. */
   partial: boolean
+  bootstrapInstalling?: boolean
 }
 
 export interface AgentRunPreviewState {
@@ -36,16 +37,36 @@ export const previewForkKey = (streamId: string, stream: StreamState): string =>
 
 const hasOutput = (stream: StreamState) => Boolean(stream.events.length || stream.buffer || stream.thinkingBuffer)
 
-/** Track the newest start for navigation without evicting older fork transcripts. */
+/** Finished forks retained in the pill; older finished forks are released entirely. */
+export const MAX_FINISHED_AGENT_FORKS = 5
+
+const startsAfter = (a: AgentRunPreview, b: AgentRunPreview) =>
+  a.stream.createdAt > b.stream.createdAt || (a.stream.createdAt === b.stream.createdAt && a.streamId > b.streamId)
+
+/**
+ * Track the newest start per fork for navigation, and release transcripts of finished
+ * forks beyond the newest MAX_FINISHED_AGENT_FORKS. A fork with any active run is never
+ * evicted, and its completed runs stay with it.
+ */
 function reconcileRetention(state: AgentRunPreviewState) {
   const latest: Record<string, string> = {}
+  const runsByFork = new Map<string, string[]>()
+  const activeForks = new Set<string>()
   for (const run of Object.values(state.byStreamId)) {
     const key = previewForkKey(run.streamId, run.stream)
     const previous = state.byStreamId[latest[key]]
-    if (!previous || run.stream.createdAt > previous.stream.createdAt ||
-        (run.stream.createdAt === previous.stream.createdAt && run.streamId > previous.streamId)) {
-      latest[key] = run.streamId
-    }
+    if (!previous || startsAfter(run, previous)) latest[key] = run.streamId
+    const runs = runsByFork.get(key)
+    if (runs) runs.push(run.streamId)
+    else runsByFork.set(key, [run.streamId])
+    if (run.stream.active) activeForks.add(key)
+  }
+  const finished = Object.keys(latest)
+    .filter(key => !activeForks.has(key))
+    .sort((a, b) => startsAfter(state.byStreamId[latest[a]], state.byStreamId[latest[b]]) ? -1 : 1)
+  for (const key of finished.slice(MAX_FINISHED_AGENT_FORKS)) {
+    for (const streamId of runsByFork.get(key) ?? []) delete state.byStreamId[streamId]
+    delete latest[key]
   }
   state.latestByFork = latest
 }
@@ -69,13 +90,17 @@ const slice = createSlice({
           entries: [], turn: 0, liveKey: `${streamId}:turn:0`, partial: true,
         }
       }
+      if (run.bootstrapInstalling) {
+        if (stream.active) return
+        run.bootstrapInstalling = false
+      }
       const identityChanged = previewForkKey(streamId, run.stream) !== previewForkKey(streamId, stream)
       const ended = run.stream.active && !stream.active
       if (boundary && run.entries.some(entry => entry.key === run.liveKey)) {
         run.turn += 1
         run.liveKey = `${streamId}:turn:${run.turn}`
       }
-      run.stream = stream
+      run.stream = { ...stream, createdAt: run.stream.createdAt }
       run.projectId = projectId ?? run.projectId
       run.conversationTitle = conversationTitle ?? run.conversationTitle
       if (!stream.active) run.completedAt ??= now
@@ -86,13 +111,69 @@ const slice = createSlice({
       }
       if (start || identityChanged || ended) reconcileRetention(state)
     },
-    messageReceived: (state, action: PayloadAction<{ streamId: string; message: Message }>) => {
+    bootstrapReceived: (state, action: PayloadAction<{ streamId: string; messages: Message[]; parentId?: string | null }>) => {
       const run = state.byStreamId[action.payload.streamId]
       if (!run) return
+      run.bootstrapInstalling = true
+      // Snapshot rows are the run's durable journal; compact events carry only the
+      // previous anchor/current turn. The starting parent belongs to an earlier run.
+      const messages = action.payload.messages.filter(message => message.id !== action.payload.parentId)
+      const byId = new Map(messages.map(message => [message.id, message]))
+      const ordered: Message[] = []
+      const visited = new Set<string>()
+      for (const message of messages) {
+        const chain: Message[] = []
+        let current: Message | undefined = message
+        while (current && !visited.has(current.id)) {
+          visited.add(current.id)
+          chain.push(current)
+          current = current.parent_id ? byId.get(current.parent_id) : undefined
+        }
+        ordered.push(...chain.reverse())
+      }
+      const previous = new Map(run.entries.filter(entry => entry.message).map(entry => [entry.message!.id, entry]))
+      run.entries = ordered.map(message => ({ key: previous.get(message.id)?.key ?? message.id, message }))
+      // Never replay new snapshot output into the old live entry.
+      run.turn += 1
+      run.liveKey = `${run.streamId}:turn:${run.turn}`
+      if (messages.some(message => message.role === 'user')) run.partial = false
+    },
+    bootstrapFinished: (state, action: PayloadAction<{ streamId: string; stream: StreamState }>) => {
+      const run = state.byStreamId[action.payload.streamId]
+      if (!run) return
+      run.bootstrapInstalling = false
+      run.stream = { ...action.payload.stream, createdAt: run.stream.createdAt }
+      const stream = run.stream
+      if (!stream.active) run.completedAt ??= new Date().toISOString()
+      if (hasOutput(stream)) {
+        const persisted = run.entries.find(entry => entry.message?.id === stream.persistedTurnMessageId)
+        if (persisted) {
+          persisted.stream = stream
+          persisted.persistedEvents = stream.events
+          run.liveKey = persisted.key
+        } else run.entries.push({ key: run.liveKey, stream })
+      }
+      reconcileRetention(state)
+    },
+    messageReceived: (state, action: PayloadAction<{ streamId: string; message: Message }>) => {
+      const run = state.byStreamId[action.payload.streamId]
+      if (!run || run.bootstrapInstalling) return
       const message = action.payload.message
       const existing = run.entries.find(entry => entry.message?.id === message.id)
       if (existing) {
         existing.message = message
+        // Claude persists one API message per completed block, opening a turn boundary before
+        // each later text/thinking block. When the stream says its live buffers now belong to
+        // this row (Chat's suppression signal), they must not stay a second message-less entry.
+        if (run.stream.persistedTurnMessageId === message.id && existing.key !== run.liveKey) {
+          const liveIndex = run.entries.findIndex(entry => entry.key === run.liveKey)
+          const live = run.entries[liveIndex]
+          if (live && !live.message) {
+            run.entries.splice(liveIndex, 1)
+            existing.stream = live.stream
+          }
+          if (!live || !live.message) run.liveKey = existing.key
+        }
         existing.persistedEvents = existing.stream?.events ?? run.stream.events
       } else if (message.role === 'assistant' || message.role === 'ex_agent') {
         // ToolLoopService emits first persistence before the next turn_started;
@@ -125,7 +206,7 @@ interface PreviewRoot {
 
 const previewTrackedActions = new Set([
   'chat/sendingStarted', 'chat/streamChunkReceived', 'chat/streamLineageUpdated',
-  'chat/streamCompleted', 'chat/sendingCompleted', 'chat/streamingAborted', 'chat/streamCompactionUpdated',
+  'chat/streamBootstrapReconciled', 'chat/streamCompleted', 'chat/sendingCompleted', 'chat/streamingAborted', 'chat/streamCompactionUpdated',
 ])
 
 /** Synchronous capture survives component unmounts and batched turn-reset actions. */
@@ -141,6 +222,10 @@ export const agentRunPreviewMiddleware: Middleware = api => next => action => {
   for (const streamId of ids) {
     const stream = state.chat.streaming.byId[streamId]
     if (!stream) continue
+    if (candidate.type === 'chat/streamBootstrapReconciled') {
+      api.dispatch(agentRunPreviewActions.bootstrapFinished({ streamId, stream }))
+      continue
+    }
     const conversation = state.conversations.items.find(item => String(item.id) === String(stream.conversationId))
     api.dispatch(agentRunPreviewActions.synchronized({
       streamId, stream, start: candidate.type === 'chat/sendingStarted',

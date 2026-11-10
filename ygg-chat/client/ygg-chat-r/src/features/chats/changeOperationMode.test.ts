@@ -13,7 +13,7 @@ function setup() {
   const initial = reducer(undefined, { type: 'init' })
   const state = { chat: { ...initial, conversation: { ...initial.conversation, currentConversationId: 'c' } } } as RootState
   const dispatch = (action: any) => { state.chat = reducer(state.chat, action); return action }
-  const run = (streamId?: string) => changeOperationMode({ mode: 'execute', conversationId: 'c', parentId: null, streamId })(dispatch, () => state, { auth: { accessToken: null, userId: null }, queryClient: null })
+  const run = (streamId?: string) => changeOperationMode({ mode: 'execute', conversationId: 'c', parentId: null, streamId })(dispatch, () => state, { auth: { userId: null }, queryClient: null })
   return { state, run }
 }
 afterEach(() => vi.unstubAllGlobals())
@@ -57,7 +57,7 @@ describe('changeOperationMode thunk', () => {
     const dispatch = (action: any) => { state.chat = reducer(state.chat, action); return action }
 
     await changeOperationMode({ mode: 'execute', conversationId: 'c', parentId: 'tip', streamId: null })(
-      dispatch, () => state, { auth: { accessToken: null, userId: null }, queryClient: null }
+      dispatch, () => state, { auth: { userId: null }, queryClient: null }
     )
 
     expect(fetchMock).not.toHaveBeenCalled()
@@ -91,5 +91,25 @@ describe('changeOperationMode thunk', () => {
     expect(result.type).toBe(changeOperationMode.rejected.type)
     expect(state.chat.operationMode).toBe('plan')
     expect(state.chat.operationModeChanges.c).toBeUndefined()
+  })
+
+  it('restores a Claude branch mode from its user row and lets later notifications win', () => {
+    const { state } = setup()
+    const claudeUser = { id: 'u', role: 'user', conversation_id: 'c', parent_id: null, meta: JSON.stringify({ operationMode: 'execute' }) }
+    const assistant = { id: 'a', role: 'assistant', conversation_id: 'c', parent_id: 'u', meta: null }
+    state.chat = { ...state.chat, operationMode: 'plan', conversation: { ...state.chat.conversation, messages: [claudeUser, assistant] as any, currentPath: ['u', 'a'] } }
+    expect(selectOperationMode({ ...state })).toBe('execute')
+    const notice = { id: 'n', role: 'user', conversation_id: 'c', parent_id: 'a', meta: JSON.stringify({ kind: 'operation_mode_change', mode: 'plan' }) }
+    state.chat = { ...state.chat, conversation: { ...state.chat.conversation, messages: [claudeUser, assistant, notice] as any, currentPath: ['u', 'a', 'n'] } }
+    expect(selectOperationMode({ ...state })).toBe('plan')
+  })
+
+  it('restores the mode a Claude run ended in from its final response', () => {
+    const { state } = setup()
+    // Switched to Chat mid-run with no tool step left: only the final response records it.
+    const claudeUser = { id: 'u', role: 'user', conversation_id: 'c', parent_id: null, meta: JSON.stringify({ operationMode: 'execute' }) }
+    const final = { id: 'a', role: 'assistant', conversation_id: 'c', parent_id: 'u', meta: JSON.stringify({ operationMode: 'plan', claude: { checkpoint: true } }) }
+    state.chat = { ...state.chat, operationMode: 'execute', conversation: { ...state.chat.conversation, messages: [claudeUser, final] as any, currentPath: ['u', 'a'] } }
+    expect(selectOperationMode({ ...state })).toBe('plan')
   })
 })

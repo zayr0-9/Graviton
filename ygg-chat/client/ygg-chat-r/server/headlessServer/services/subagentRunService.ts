@@ -1,3 +1,5 @@
+import { installChildRunSnapshot } from './childRunSnapshot.js'
+import { parseAdditionalCwds } from '../../toolAccessContext.js'
 import type {
   HeadlessStreamEvent,
   HeadlessSubagentStreamEvent,
@@ -10,8 +12,9 @@ import {
   type SubagentRunStatus,
 } from '../persistence/subagentRunRepo.js'
 import { StreamingRunRepo } from '../persistence/streamingRunRepo.js'
-import type { ProviderToolCall, ProviderToolDefinition } from '../providers/openRouterProvider.js'
+import type { ProviderToolCall, ProviderToolDefinition } from '../providers/providerTypes.js'
 import type { ProviderTokenStore } from '../providers/tokenStore.js'
+import { messageToolCalls } from '../providers/toolResultSanitizer.js'
 import type { RunSession, RunSessionRegistry } from './runSessionRegistry.js'
 import { ProviderRouter } from './providerRouter.js'
 import type { GenerateCompactionSummaryInput } from './compactionService.js'
@@ -162,6 +165,7 @@ export class SubagentRunService {
   private readonly refreshProviderTokens?: (provider: string) => Promise<void> | void
   private readonly providerTurnTimeoutMs: number
   private readonly runSessions?: RunSessionRegistry
+  private readonly statements?: any
   /** handle -> live detached attempt, shared by cancel(handle) and waitForTerminal(handle). */
   private readonly activeRuns = new Map<string, ActiveSubagentRun>()
   /** Retain bounded terminal mailboxes so status/wait can report undelivered instructions. */
@@ -176,6 +180,7 @@ export class SubagentRunService {
     this.refreshProviderTokens = deps.refreshProviderTokens
     this.providerTurnTimeoutMs = Math.max(5_000, deps.providerTurnTimeoutMs ?? DEFAULT_PROVIDER_TURN_TIMEOUT_MS)
     this.runSessions = deps.runSessions
+    this.statements = deps.statements
   }
 
   /**
@@ -256,9 +261,12 @@ export class SubagentRunService {
    * polling. Aborting the supplied signal releases only this waiter; it never
    * aborts the detached child (cancel(handle) owns that behavior).
    */
-  async waitForTerminal(handle: string, signal?: AbortSignal): Promise<SubagentRunRow | null> {
+  async waitForTerminal(handle: string, signal?: AbortSignal, expectedAttempt?: number): Promise<SubagentRunRow | null> {
     for (;;) {
       const run = this.runRepo.getRunByHandle(handle)
+      if (run && expectedAttempt !== undefined && run.attempt !== expectedAttempt) {
+        throw new Error('Subagent attempt changed before completion delivery; inspect status manually.')
+      }
       if (!run || run.status !== 'running') return run
 
       const active = this.activeRuns.get(handle)
@@ -523,7 +531,8 @@ export class SubagentRunService {
 
     // Session keyed by the child streamId so GET /api/streams/:streamId can replay
     // this run live to the transcript viewer (created before the first publish).
-    this.runSessions?.create(subStreamId, request.conversationId)
+    const childSession = this.runSessions?.create(subStreamId, request.conversationId)
+    if (childSession) installChildRunSnapshot(childSession, runId, () => this.runRepo.getRunWithMessages(runId))
 
     const startedEvent: HeadlessSubagentStreamEvent = {
       type: 'started',
@@ -564,20 +573,21 @@ export class SubagentRunService {
   }
 
   /**
-   * Repair any assistant turn whose tool_calls lack a matching tool_result — the
+   * Repair any assistant turn whose tool calls lack a matching tool_result — the
    * shape a crash leaves when the loop persisted an assistant with tool calls but
    * never merged their results. OpenAI Responses rejects a function_call with no
    * function_call_output (see codexRequestItems pairing), so for each dangling
    * call we synthesize an is_error tool_result block (NEVER re-execute the tool)
-   * and mark the call errored, via updateMessageToolState (content/thinking/
-   * sequence preserved). Returns the number of tool results synthesized.
+   * via updateMessageToolState (content/thinking/sequence preserved). Calls come
+   * from the `tool_use` blocks; a legacy `tool_calls` value is kept as stored.
+   * Returns the number of tool results synthesized.
    */
   private repairDanglingToolUse(runId: string): number {
     const messages = this.runRepo.getMessages(runId)
     let repaired = 0
     for (const message of messages) {
       if (message.role !== 'assistant') continue
-      const toolCalls = Array.isArray(message.tool_calls) ? message.tool_calls : []
+      const toolCalls = messageToolCalls(message)
       if (toolCalls.length === 0) continue
       const blocks = Array.isArray(message.content_blocks) ? [...message.content_blocks] : []
       const resultIds = new Set(
@@ -591,11 +601,8 @@ export class SubagentRunService {
       for (const call of dangling) {
         blocks.push({ type: 'tool_result', tool_use_id: call.id, content: INTERRUPTED_TOOL_RESULT, is_error: true })
       }
-      const danglingIds = new Set(dangling.map((call: any) => call.id))
-      const updatedToolCalls = toolCalls.map((call: any) =>
-        danglingIds.has(call?.id) ? { ...call, status: 'error', result: INTERRUPTED_TOOL_RESULT } : call
-      )
-      this.runRepo.updateMessageToolState(runId, message.id, { contentBlocks: blocks, toolCalls: updatedToolCalls })
+      const legacyToolCalls = Array.isArray(message.tool_calls) ? message.tool_calls : null
+      this.runRepo.updateMessageToolState(runId, message.id, { contentBlocks: blocks, toolCalls: legacyToolCalls })
       repaired += dangling.length
     }
     return repaired
@@ -660,7 +667,8 @@ export class SubagentRunService {
 
     // Fresh session for the resumed attempt's NEW streamId. The renderer re-targets
     // by re-reading the run's latest streamId (see the by-tool-call route).
-    this.runSessions?.create(subStreamId, request.conversationId)
+    const childSession = this.runSessions?.create(subStreamId, request.conversationId)
+    if (childSession) installChildRunSnapshot(childSession, runId, () => this.runRepo.getRunWithMessages(runId))
 
     const startedEvent: HeadlessSubagentStreamEvent = {
       type: 'started',
@@ -718,6 +726,8 @@ export class SubagentRunService {
     controllable = false
   ): Promise<void> {
     const { runId, subStreamId, userMessage, provider, modelName, operationMode, maxTurns, tools } = prepared
+    const childSignal = this.runSessions?.get(subStreamId)?.signal
+    if (childSignal) signal = AbortSignal.any([signal, childSignal])
 
     // On resume we continue the persisted transcript instead of starting a fresh
     // single user turn, and the remaining turn budget excludes turns already spent.
@@ -832,11 +842,13 @@ export class SubagentRunService {
           streamId: subStreamId,
           rootPath: request.rootPath ?? null,
           fullAccess: request.fullAccess === true,
+          additionalRoots: request.additionalRoots ?? parseAdditionalCwds(this.statements?.getConversationById?.get(request.conversationId)?.additional_cwds),
           operationMode,
           toolTimeoutMs: request.toolTimeoutMs,
+          bashTimeoutMs: request.bashTimeoutMs,
           maxTurns: effectiveMaxTurns,
           signal,
-          railwaySessionId: `subagent:${runId}`,
+          providerSessionId: `subagent:${runId}`,
           allowCommentaryFallbackText: true,
           autoCompactionEnabled: request.autoCompactionEnabled ?? true,
           contextLength: request.contextLength,

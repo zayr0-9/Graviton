@@ -75,7 +75,7 @@ export function registerLspRoutes(app: Express): void {
       return
     }
 
-    res.json(lspManager.resolveFile(filePath, preferredServerId))
+    res.json(lspManager.resolveFile(filePath, preferredServerId, getQueryString(req.query.clientId) || 'legacy'))
   })
 
   app.post('/api/lsp/restart', async (req: Request, res: Response) => {
@@ -88,7 +88,7 @@ export function registerLspRoutes(app: Express): void {
         return
       }
 
-      const session = await lspManager.restartSession(serverId, workspacePath)
+      const session = await lspManager.restartSession(serverId, workspacePath, getQueryString(req.body?.clientId) || 'legacy')
       res.json({ restarted: true, session })
     } catch (error) {
       res.status(500).json({ error: error instanceof Error ? error.message : String(error) })
@@ -105,7 +105,7 @@ export function registerLspRoutes(app: Express): void {
         return
       }
 
-      const stopped = await lspManager.shutdownSession(serverId, workspacePath)
+      const stopped = await lspManager.shutdownSession(serverId, workspacePath, getQueryString(req.body?.clientId) || 'legacy')
       res.json({ stopped })
     } catch (error) {
       res.status(500).json({ error: error instanceof Error ? error.message : String(error) })

@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
+import { WatchService } from '../watchService.js'
 import type { HeadlessSubagentStreamRequest } from '../../../../../../shared/headlessApi.js'
 import type { SubagentRunRow, SubagentRunStatus } from '../../persistence/subagentRunRepo.js'
 import {
@@ -26,7 +27,7 @@ describe('createSubagentDispatchExecutor', () => {
   it.each([
     ['openaichatgpt', 'priority', 'priority'],
     ['openaichatgpt', undefined, undefined],
-    ['openrouter', 'priority', 'priority'],
+    ['openrouter', 'priority', undefined],
     ['lmstudio', 'priority', undefined],
   ])('inherits service tier only for Codex children (%s, %s)', async (provider, serviceTier, expected) => {
     const runForTool = vi.fn(async (_request: HeadlessSubagentStreamRequest) => 'done')
@@ -62,7 +63,6 @@ describe('createSubagentDispatchExecutor', () => {
           temperature: 0.2,
           orchestratorMode: true,
           tools: ['read_file', 'ripgrep', 'subagent'],
-          inheritAutoApprove: true,
         },
       },
       context({ operationMode: 'plan', subagentSystemPrompt: 'Custom Subagent baseline' })
@@ -95,7 +95,7 @@ describe('createSubagentDispatchExecutor', () => {
     )
   })
 
-  it('uses server defaults when orchestrator mode is off and honors inherited approval denial', async () => {
+  it('uses server defaults when orchestrator mode is off and inherits parent approval denial', async () => {
     const runForTool = vi.fn(async () => 'done')
     const execute = createSubagentDispatchExecutor({ leafExecutor: vi.fn(), subagentRunner: { runForTool } })
 
@@ -103,9 +103,9 @@ describe('createSubagentDispatchExecutor', () => {
       {
         id: 'sub-2',
         name: 'subagent',
-        arguments: { prompt: 'Scout', orchestratorMode: false, tools: ['bash'], inheritAutoApprove: false },
+        arguments: { prompt: 'Scout', orchestratorMode: false, tools: ['bash'] },
       },
-      context()
+      context({ autoApprove: false })
     )
 
     const request = runForTool.mock.calls[0][0]
@@ -113,16 +113,16 @@ describe('createSubagentDispatchExecutor', () => {
     expect(request.autoApprove).toBe(false)
   })
 
-  it('falls OpenRouter parents back to the local subagent provider', async () => {
+  it('runs legacy OpenRouter parents on the BYOK provider with the parent model', async () => {
     const runForTool = vi.fn(async () => 'done')
     const execute = createSubagentDispatchExecutor({ leafExecutor: vi.fn(), subagentRunner: { runForTool } })
 
     await execute(
       { id: 'sub-3', name: 'subagent', arguments: { prompt: 'Scout' } },
-      context({ provider: 'openrouter', modelName: 'cloud-model' })
+      context({ provider: 'openrouter', modelName: 'anthropic/claude-sonnet-4' })
     )
 
-    expect(runForTool.mock.calls[0][0]).toMatchObject({ provider: 'openaichatgpt', modelName: 'gpt-5.6-sol' })
+    expect(runForTool.mock.calls[0][0]).toMatchObject({ provider: 'openrouterbyok', modelName: 'anthropic/claude-sonnet-4' })
   })
 
   it('rejects missing prompts before starting a child run', async () => {
@@ -278,6 +278,98 @@ class FakeManagerRunner implements SubagentManagerRunner {
 const spawnCall = (args: Record<string, any>) => ({ id: `mgr-${Math.random()}`, name: 'subagent_manager', arguments: args })
 
 describe('createSubagentManagerExecutor', () => {
+  it('registers nonblocking, deduplicated exact-attempt delivery with original spawn provenance', async () => {
+    const runner = new FakeManagerRunner()
+    const notify = vi.fn()
+    const service = new WatchService(notify)
+    const deliver = vi.fn(event => ({ ...event, delivery: 'queued' }))
+    const release = vi.fn()
+    service.configureContinuation({ retain: () => release, deliver })
+    const execute = createSubagentManagerExecutor({ leafExecutor: vi.fn(), runner,
+      registerWait: (id, attempt, completion, ctx, callId) => service.registerSubagentRun(id, attempt, completion, ctx, null, callId) })
+    try {
+      const spawn = spawnCall({ action: 'spawn', prompt: 'Review' })
+      const spawned = await execute(spawn, context({ messageId: 'launch-message' }))
+      const waitCall = spawnCall({ action: 'wait', handle: spawned.handle })
+      const controller = new AbortController()
+      const registered = await execute(waitCall, context({ messageId: 'wait-message', signal: controller.signal }))
+      expect(registered).toMatchObject({ action: 'wait', found: true, autoResume: true, state: 'waiting', attempt: 0 })
+      expect(registered.handle).toBe(spawned.handle)
+      expect(registered.watchHandle).toContain('subagent:')
+      expect(runner.waitCalls[0].signal).toBeUndefined()
+      expect(deliver).not.toHaveBeenCalled()
+      expect(await execute(waitCall, context())).toMatchObject({ duplicate: true, handle: registered.handle })
+      expect(await execute(waitCall, context({ lineageId: 'sibling' }))).toMatchObject({ found: false })
+      expect(runner.waitCalls).toHaveLength(2)
+      controller.abort()
+      runner.setStatus(spawned.handle, 'completed')
+      await new Promise(resolve => setTimeout(resolve, 0))
+      expect(deliver).toHaveBeenCalledTimes(1)
+      expect(deliver.mock.calls[0][0]).toMatchObject({ kind: 'subagent', registrationToolCallId: waitCall.id,
+        source: { action: 'spawn', toolCallId: spawn.id, messageId: 'launch-message' } })
+      expect(deliver.mock.calls[0][2]).toContain(`tool call ${spawn.id}`)
+      expect(deliver.mock.calls[0][2]).toContain('finished result')
+      expect(JSON.stringify(notify.mock.calls)).not.toContain('finished result')
+      expect(release).toHaveBeenCalledTimes(1)
+      expect(await execute(waitCall, context())).toMatchObject({ duplicate: true, state: 'triggered' })
+      expect(deliver).toHaveBeenCalledTimes(1)
+    } finally { service.shutdown() }
+  })
+
+  it('registers finished runs too, bounds results, and suppresses aborted/shutdown deliveries', async () => {
+    const runner = new FakeManagerRunner()
+    const service = new WatchService()
+    const deliver = vi.fn(event => ({ ...event, delivery: 'queued' }))
+    service.configureContinuation({ retain: () => () => {}, deliver })
+    const execute = createSubagentManagerExecutor({ leafExecutor: vi.fn(), runner,
+      registerWait: (id, attempt, completion, ctx, callId) => service.registerSubagentRun(id, attempt, completion, ctx, null, callId) })
+    try {
+      const spawned = await execute(spawnCall({ action: 'spawn', prompt: 'Review' }), context())
+      runner.setStatus(spawned.handle, 'completed')
+      runner.runs.get(spawned.handle)!.final_response = 'x'.repeat(13000)
+      await execute(spawnCall({ action: 'wait', handle: spawned.handle }), context())
+      await new Promise(resolve => setTimeout(resolve, 0))
+      expect(deliver.mock.calls[0][2]).toContain('Result truncated')
+      expect(deliver.mock.calls[0][2].length).toBeLessThan(13000)
+      const aborted = await execute(spawnCall({ action: 'spawn', prompt: 'Cancel' }), context())
+      await execute(spawnCall({ action: 'wait', handle: aborted.handle }), context())
+      runner.setStatus(aborted.handle, 'aborted')
+      await new Promise(resolve => setTimeout(resolve, 0))
+      expect(deliver).toHaveBeenCalledTimes(1)
+      const pending = await execute(spawnCall({ action: 'spawn', prompt: 'Shutdown' }), context())
+      await execute(spawnCall({ action: 'wait', handle: pending.handle }), context())
+      service.shutdown()
+      runner.setStatus(pending.handle, 'completed')
+      await new Promise(resolve => setTimeout(resolve, 0))
+      expect(deliver).toHaveBeenCalledTimes(1)
+    } finally { service.shutdown() }
+  })
+
+  it('keeps resumed attempts distinct and rejects a stale result rather than delivering a newer attempt', async () => {
+    const runner = new FakeManagerRunner()
+    const service = new WatchService()
+    const deliver = vi.fn(event => ({ ...event, delivery: 'queued' }))
+    service.configureContinuation({ retain: () => () => {}, deliver })
+    const execute = createSubagentManagerExecutor({ leafExecutor: vi.fn(), runner,
+      registerWait: (id, attempt, completion, ctx, callId) => service.registerSubagentRun(id, attempt, completion, ctx, null, callId) })
+    try {
+      const spawned = await execute(spawnCall({ action: 'spawn', prompt: 'Review' }), context())
+      const first = await execute(spawnCall({ action: 'wait', handle: spawned.handle }), context())
+      runner.setStatus(spawned.handle, 'error')
+      runner.runs.get(spawned.handle)!.attempt = 1
+      await execute(spawnCall({ action: 'resume', handle: spawned.handle }), context())
+      await new Promise(resolve => setTimeout(resolve, 0))
+      expect(deliver.mock.calls[0][0].state).toBe('error')
+      expect(deliver.mock.calls[0][2]).toContain('no result from a different attempt was delivered')
+      const second = await execute(spawnCall({ action: 'wait', handle: spawned.handle }), context())
+      expect(second.handle).toBe(first.handle)
+      expect(second.watchHandle).not.toBe(first.watchHandle)
+      runner.setStatus(spawned.handle, 'completed')
+      await new Promise(resolve => setTimeout(resolve, 0))
+      expect(deliver.mock.calls[1][2]).toContain('attempt 1, status completed')
+    } finally { service.shutdown() }
+  })
+
   it.each([false, true])('inherits priority when spawning a manager run (blocking: %s)', async blocking => {
     const runner = new FakeManagerRunner()
     const spawn = vi.spyOn(runner, blocking ? 'spawnBlocking' : 'spawnDetached')
@@ -551,4 +643,13 @@ describe('createSubagentManagerExecutor', () => {
     expect(list.count).toBe(0)
     expect(list.subagents).toEqual([])
   })
+})
+
+it('does not send a parent ChatGPT model to a configured LM Studio child', async () => {
+  const runForTool = vi.fn(async (_request: HeadlessSubagentStreamRequest) => 'done')
+  const execute = createSubagentDispatchExecutor({ leafExecutor: vi.fn(), subagentRunner: { runForTool } })
+  await execute({ id: 'configured-child', name: 'subagent', arguments: { prompt: 'Scout' } }, context({
+    subagentDefaults: { defaultProvider: 'LM Studio', defaultModel: null, enabledTools: ['read_file'], orchestratorEnabled: true, maxTurns: 42, reasoningEffort: 'medium' },
+  }))
+  expect(runForTool.mock.calls[0][0]).toMatchObject({ provider: 'lmstudio', modelName: process.env.LMSTUDIO_MODEL || 'local-model', maxTurns: 42, tools: ['read_file'] })
 })

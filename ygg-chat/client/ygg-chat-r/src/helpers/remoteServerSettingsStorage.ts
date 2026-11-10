@@ -49,3 +49,13 @@ export const saveRemoteServerSettings = (settings: RemoteServerSettings): Remote
 
   return normalized
 }
+
+export const buildSharedBrowserUrl = (baseUrl: string | null | undefined): string | null => {
+  const normalized = normalizeRemoteBaseUrl(baseUrl)
+  if (!normalized) return null
+  try {
+    const url = new URL(normalized)
+    if (url.username || url.password || url.hostname === '0.0.0.0' || url.hostname === '[::]') return null
+    return `${url.origin}/`
+  } catch { return null }
+}

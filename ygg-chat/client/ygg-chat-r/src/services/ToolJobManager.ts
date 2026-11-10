@@ -9,6 +9,7 @@
  *
  * This service is independent of React lifecycle and maintains its own state.
  */
+import { getClientId } from '../helpers/clientId'
 import type { WatchCompletionEvent } from '../../../../shared/watchEvents'
 import { buildCachedLocalWebSocketUrl, buildLocalApiUrl, refreshLocalServerStatus } from '../utils/api'
 
@@ -192,7 +193,7 @@ class ToolJobManager {
         // Best-effort cache refresh; requests still fallback if discovery fails.
       })
       if (!this.desiredConnected || generation !== this.connectionGeneration) return
-      const wsUrl = buildCachedLocalWebSocketUrl('/ide-context?type=frontend&id=job-manager')
+      const wsUrl = buildCachedLocalWebSocketUrl(`/ide-context?type=frontend&id=jobs:${getClientId()}`)
       const ws = new WebSocket(wsUrl)
       this.ws = ws
 
@@ -540,8 +541,8 @@ class ToolJobManager {
 // Export singleton instance
 export const toolJobManager = ToolJobManager.getInstance()
 
-// Auto-initialize when imported (but don't block) - skip in web mode (electron only)
-if (typeof window !== 'undefined' && import.meta.env.VITE_ENVIRONMENT !== 'web') {
+// Auto-initialize when imported (but don't block).
+if (typeof window !== 'undefined') {
   // Delay initialization slightly to let the app settle
   setTimeout(() => {
     toolJobManager.initialize().catch(console.error)

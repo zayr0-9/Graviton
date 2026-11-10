@@ -61,7 +61,7 @@ const HomepageRedirect: React.FC = () => {
   const dispatch = useAppDispatch()
   const navigate = useNavigate()
   const queryClient = useQueryClient()
-  const { userId, accessToken, loading: authLoading } = useAuth()
+  const { userId, loading: authLoading } = useAuth()
   const [error, setError] = useState<string | null>(null)
   const redirectInFlightRef = useRef(false)
 
@@ -96,10 +96,7 @@ const HomepageRedirect: React.FC = () => {
           }
 
           dispatch(chatSliceActions.conversationSet(latestConversation.id))
-          navigate(`/chat/${latestConversation.project_id}/${latestConversation.id}`, {
-            replace: true,
-            state: latestConversation.storage_mode ? { storageMode: latestConversation.storage_mode } : undefined,
-          })
+          navigate(`/chat/${latestConversation.project_id}/${latestConversation.id}`, { replace: true })
           return
         }
 
@@ -123,14 +120,12 @@ const HomepageRedirect: React.FC = () => {
 
         dispatch(setSelectedProject(targetProject))
 
-        const targetStorageMode = targetProject.storage_mode || 'cloud'
         const conversation = await dispatch(
           createConversation({
             title: DEFAULT_CONVERSATION_TITLE,
             projectId: String(targetProject.id),
             systemPrompt: null,
             conversationContext: null,
-            storageMode: targetStorageMode,
           })
         ).unwrap()
 
@@ -156,10 +151,7 @@ const HomepageRedirect: React.FC = () => {
         queryClient.invalidateQueries({ queryKey: ['conversations', 'recent'] })
         queryClient.invalidateQueries({ queryKey: ['conversations', 'project', targetProject.id] })
 
-        navigate(`/chat/${targetProject.id}/${conversation.id}`, {
-          replace: true,
-          state: { storageMode: conversation.storage_mode || targetStorageMode },
-        })
+        navigate(`/chat/${targetProject.id}/${conversation.id}`, { replace: true })
       } catch (bootstrapError) {
         console.error('[HomepageRedirect] Failed to bootstrap startup chat:', bootstrapError)
         setError(bootstrapError instanceof Error ? bootstrapError.message : 'Failed to open chat')
@@ -169,7 +161,6 @@ const HomepageRedirect: React.FC = () => {
 
     void redirectToChat()
   }, [
-    accessToken,
     allProjects,
     authLoading,
     conversationsLoading,

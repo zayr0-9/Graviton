@@ -57,3 +57,7 @@ npm --prefix client/ygg-chat-r run test:tools -- \
   server/tools/__tests__/skillInstaller.test.ts \
   server/tools/__tests__/skillLoader.test.ts
 ```
+
+## Progressive discovery
+
+`skill_manager` supports `action: "search"` with a required `query`, optional `limit` (default 20, maximum 100) and `offset` (default 0). All query words must match names, descriptions or when-to-use metadata, case-insensitively. Results include visible summaries, `totalCount` and `nextOffset`; activate only the selected skill to load instructions. Startup and nested skill indexes emit a generic search hint, not installed skill names/descriptions. Explicit slash invocation, path-triggered activation and configured agent skill preloads are unchanged.

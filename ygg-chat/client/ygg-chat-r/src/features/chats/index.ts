@@ -35,7 +35,6 @@ export {
   abortCompaction,
   sendMessage,
   sendMessageToBranch,
-  syncConversationToLocal,
   updateMessage,
   fetchConversationStreamUndo,
   restoreStreamFileEdits,

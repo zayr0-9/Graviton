@@ -134,7 +134,7 @@ handle uniqueness, by-tool-call, by-lineage(+status) with branch isolation, reop
 **`shared/builtinToolDefinitions.ts`** — new `subagent_manager` model-visible tool
 (after `subagent`): `action` enum `spawn|list|status|cancel|resume` + spawn args
 (`prompt`, `blocking`, `systemPrompt`, `orchestratorMode`, `tools`,
-`inheritAutoApprove`, `temperature`), `status` (list filter), `handle`.
+`temperature`), `status` (list filter), `handle`.
 
 **`electron/headlessServer/services/subagentToolExecutor.ts`**
 - New `SubagentManagerRunner` interface (spawnDetached / spawnBlocking / cancel /

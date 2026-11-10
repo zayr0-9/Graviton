@@ -2,7 +2,7 @@ import { promises as fs } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { describe, expect, it } from 'vitest'
-import { hasFullToolAccess, withToolAccess } from '../../toolAccessContext.js'
+import { hasFullToolAccess, hasToolAccessTo, parseAdditionalCwds, withToolAccess } from '../../toolAccessContext.js'
 import { validateAndResolvePath } from '../../toolPathPolicy.js'
 import { readTextFile } from '../readFile.js'
 import { createTextFile } from '../createFile.js'
@@ -46,5 +46,42 @@ describe('full access', () => {
     } finally {
       await fs.rm(root, { recursive: true, force: true })
     }
+  })
+
+  it('allows only the listed additional roots, by lexical and canonical path', async () => {
+    const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'extra-roots-')))
+    const cwd = path.join(root, 'workspace')
+    const extra = path.join(root, 'extra')
+    const other = path.join(root, 'other')
+    const extraLink = path.join(root, 'extra-link')
+    await Promise.all([cwd, extra, other].map(dir => fs.mkdir(dir)))
+    await fs.symlink(extra, extraLink)
+    await fs.writeFile(path.join(extra, 'shared.txt'), 'shared')
+    await fs.writeFile(path.join(other, 'secret.txt'), 'secret')
+    try {
+      await withToolAccess(false, async () => {
+        expect(hasFullToolAccess()).toBe(false)
+        expect(validateAndResolvePath(path.join(extra, 'a.txt'), cwd)).toBe(path.join(extra, 'a.txt'))
+        expect(() => validateAndResolvePath('../other/a.txt', cwd)).toThrow(/within workspace/)
+        // A root given through a symlink still matches realpath'd targets.
+        expect(hasToolAccessTo(path.join(extra, 'shared.txt'))).toBe(true)
+        expect((await readTextFile(path.join(extraLink, 'shared.txt'), { cwd })).content).toBe('shared')
+        expect((await createTextFile(path.join(extraLink, 'new.txt'), 'new', { cwd })).success).toBe(true)
+        expect((await editFile(path.join(extra, 'new.txt'), 'replace', { cwd, searchPattern: 'new', replacement: 'edited' })).success).toBe(true)
+        await deleteFile(path.join(extra, 'new.txt'), 'execute', cwd)
+        await expect(readTextFile(path.join(other, 'secret.txt'), { cwd })).rejects.toThrow(/outside/)
+        // A sibling whose name merely starts with the root is not inside it.
+        expect(hasToolAccessTo(`${extra}-sibling/x`)).toBe(false)
+      }, [extraLink])
+      expect(hasToolAccessTo(path.join(extra, 'shared.txt'))).toBe(false)
+    } finally {
+      await fs.rm(root, { recursive: true, force: true })
+    }
+  })
+
+  it('parses the persisted column defensively', () => {
+    expect(parseAdditionalCwds(null)).toEqual([])
+    expect(parseAdditionalCwds('not json')).toEqual([])
+    expect(parseAdditionalCwds(JSON.stringify(['/a', 'relative', '/a', 7, ' /b ']))).toEqual(['/a', '/b'])
   })
 })

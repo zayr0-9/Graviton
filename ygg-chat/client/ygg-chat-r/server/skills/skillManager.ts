@@ -7,14 +7,17 @@
 //     has a root path; bodies are rendered through the §5.5 substitution pipeline;
 //   - the host-installed registry (`<dataDir>/skills`, Settings UI installs) as fallback.
 
+import { BUILTIN_TOOL_DEFINITIONS } from '../../../../shared/builtinToolDefinitions.js'
 import fs from 'fs/promises'
 import path from 'path'
 import { getConversationContext } from '../context/contextSessionRegistry.js'
 import type { DiscoveredSkill } from '../context/skillsDiscovery.js'
 import { skillRegistry, SkillSummary } from './skillLoader.js'
 
-interface SkillManagerArgs {
-  action: 'list' | 'activate' | 'load_resource'
+import { searchDiscovery, validateDiscoverySearch, type DiscoverySearchArgs } from '../tools/discoverySearch.js'
+
+interface SkillManagerArgs extends DiscoverySearchArgs {
+  action: 'search' | 'list' | 'activate' | 'load_resource'
   name?: string // For 'activate' and 'load_resource'
   resourcePath?: string // For 'load_resource' (e.g., "references/FORMS.md")
   /** Raw argument string for 'activate' ($ARGUMENTS, $0, $1, named arguments). */
@@ -33,6 +36,7 @@ interface SkillManagerResult {
   // For 'list' action
   skills?: Array<SkillSummary & { scope?: string; argumentHint?: string }>
   totalCount?: number
+  nextOffset?: number
 
   // For 'activate' action
   skill?: {
@@ -83,7 +87,7 @@ function summarizeDiscovered(skill: DiscoveredSkill): SkillSummary & { scope?: s
   return {
     name: skill.name,
     displayName: skill.frontmatter.name !== skill.name ? skill.frontmatter.name : undefined,
-    description: skill.frontmatter.description,
+    description: [skill.frontmatter.description, skill.frontmatter.whenToUse].filter(Boolean).join(' '),
     enabled: true,
     scope: skill.scope,
     argumentHint: skill.frontmatter.argumentHint,
@@ -101,7 +105,11 @@ export async function execute(args: SkillManagerArgs, options: SkillManagerExecu
   // Ensure registry is initialized
   await skillRegistry.initialize()
 
-  if (action === 'list') {
+  if (action === 'list' || action === 'search') {
+    if (action === 'search') {
+      const error = validateDiscoverySearch(args)
+      if (error) return { success: false, error }
+    }
     const listed = new Map<string, SkillSummary & { scope?: string; argumentHint?: string }>()
     if (loader) {
       for (const skill of await loader.getSkills()) {
@@ -114,6 +122,11 @@ export async function execute(args: SkillManagerArgs, options: SkillManagerExecu
       if (!listed.has(summary.name)) listed.set(summary.name, { ...summary, scope: 'personal' })
     }
     const skills = Array.from(listed.values())
+    if (action === 'search') {
+      const { items, ...page } = searchDiscovery(skills, args,
+        skill => `${skill.name} ${skill.displayName ?? ''} ${skill.description}`)
+      return { success: true, skills: items, ...page }
+    }
     return { success: true, skills, totalCount: skills.length }
   }
 
@@ -208,38 +221,4 @@ export async function execute(args: SkillManagerArgs, options: SkillManagerExecu
  * Get the tool definition for skill_manager
  * This should be added to your toolDefinitions
  */
-export const skillManagerDefinition = {
-  name: 'skill_manager',
-  description: `Discover and activate specialized skills that provide detailed instructions for specific tasks.
-
-Use this tool to:
-1. List available skills with action: "list"
-2. Activate a skill to load its instructions with action: "activate" and name: "skill-name" (optional "arguments" string)
-3. Load additional resources (scripts, references, assets) with action: "load_resource"
-
-Skills are context injections - they provide detailed instructions that you should follow.
-After activating a skill, incorporate its instructions into your approach for the current task.`,
-  inputSchema: {
-    type: 'object' as const,
-    properties: {
-      action: {
-        type: 'string',
-        enum: ['list', 'activate', 'load_resource'],
-        description: 'The action to perform',
-      },
-      name: {
-        type: 'string',
-        description: 'Skill name (required for activate and load_resource)',
-      },
-      resourcePath: {
-        type: 'string',
-        description: 'Path to resource file within the skill (e.g., "references/FORMS.md")',
-      },
-      arguments: {
-        type: 'string',
-        description: 'Optional argument string for activate; substituted into the skill body ($ARGUMENTS, $0, $1, named arguments).',
-      },
-    },
-    required: ['action'],
-  },
-}
+export const skillManagerDefinition = BUILTIN_TOOL_DEFINITIONS.find(tool => tool.name === 'skill_manager')!

@@ -121,33 +121,11 @@ export const ExpandedModelView: React.FC<ExpandedModelViewProps> = ({
     return String(length)
   }
 
-  // Base costs for relative pricing (in credits per 1M tokens)
-  const BASE_PROMPT_COST = 1.25
-  // const BASE_COMPLETION_COST = 10.0
-
-  // Format pricing as I/O multipliers relative to base cost
+  // Input price in USD per 1M tokens (costs are stored per token). Users pay their provider directly.
   const formatPricing = (promptCost: number, completionCost: number): string | null => {
     if (!promptCost && !completionCost) return null
-
-    // Convert to per-1M-tokens cost (costs are stored as per-token)
-    const promptPer1M = promptCost * 1000000
-    // const completionPer1M = completionCost * 1000000
-
-    // Calculate multipliers relative to base
-    const inputMultiplier = promptPer1M / BASE_PROMPT_COST
-    // const outputMultiplier = completionPer1M / BASE_COMPLETION_COST
-
-    // Format multipliers (show 1 decimal if needed, otherwise whole number)
-    const formatMultiplier = (m: number): string => {
-      if (m === 0) return '0'
-      if (m < 0.1) return m.toFixed(2)
-      if (m < 1) return m.toFixed(1)
-      if (m >= 100) return Math.round(m).toString()
-      return m % 1 === 0 ? m.toString() : m.toFixed(1)
-    }
-
-    return `${formatMultiplier(inputMultiplier)}`
-    // return `${formatMultiplier(inputMultiplier)}/${formatMultiplier(outputMultiplier)}`
+    const promptPer1M = promptCost * 1_000_000
+    return `$${promptPer1M < 1 ? promptPer1M.toFixed(2) : promptPer1M.toFixed(1)}`
   }
 
   const handleModelSelect = (modelName: string) => {
@@ -317,7 +295,7 @@ export const ExpandedModelView: React.FC<ExpandedModelViewProps> = ({
                           <div className='w-16 text-center'>
                             {formatPricing(model.promptCost, model.completionCost) ? (
                               <span className='text-xs px-1.5 py-0.5 rounded bg-emerald-100 dark:bg-emerald-900/30 text-emerald-700 dark:text-emerald-400'>
-                                {formatPricing(model.promptCost, model.completionCost)}x
+                                {formatPricing(model.promptCost, model.completionCost)}
                               </span>
                             ) : (
                               <span className='text-neutral-300 dark:text-neutral-600'>-</span>

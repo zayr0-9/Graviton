@@ -1,11 +1,12 @@
+import { isHostClient } from '../platform/clientCapabilities'
+import { selectHostFolder } from '../platform/hostPathPicker'
 import { useQueryClient } from '@tanstack/react-query'
-import { Cloud, Eraser, FolderOpen, HardDrive, Plus, Save, Sparkles, Star, X } from 'lucide-react'
+import { Eraser, FolderOpen, Plus, Save, Sparkles, Star, X } from 'lucide-react'
 import React, { useEffect, useState } from 'react'
-import { Project, ProjectWithLatestConversation, StorageMode } from '../../../../shared/types'
+import { Project, ProjectWithLatestConversation } from '../../../../shared/types'
 import { Button, TextField } from '../components'
 import { InputTextArea } from '../components/InputTextArea/InputTextArea'
 import { getThemeModeColor, useCustomChatTheme, useHtmlDarkMode } from '../components/ThemeManager/themeConfig'
-import { isCommunityMode } from '../config/runtimeMode'
 import { createProject, CreateProjectPayload, updateProject, UpdateProjectPayload } from '../features/projects'
 import { useAppDispatch } from '../hooks/redux'
 import { useAuth } from '../hooks/useAuth'
@@ -113,11 +114,8 @@ const EditProject: React.FC<EditProjectProps> = ({ isOpen, onClose, editingProje
   const [newProjectContext, setNewProjectContext] = useState('')
   const [newProjectSystemPrompt, setNewProjectSystemPrompt] = useState('')
   const [projectCwd, setProjectCwd] = useState('')
-  const [storageMode, setStorageMode] = useState<StorageMode>(isCommunityMode ? 'local' : 'cloud')
 
-  const isElectronMode =
-    import.meta.env.VITE_ENVIRONMENT === 'electron' ||
-    (typeof process !== 'undefined' && process.env?.VITE_ENVIRONMENT === 'electron')
+  const isElectronMode = isHostClient
 
   const isEditing = Boolean(editingProject)
   const canSubmit = newProjectName.trim().length > 0
@@ -131,9 +129,6 @@ const EditProject: React.FC<EditProjectProps> = ({ isOpen, onClose, editingProje
     setShowSavePromptInput,
     savePromptName,
     setSavePromptName,
-    savePromptStorage,
-    setSavePromptStorage,
-    canSaveToCloud,
     savingPrompt,
     saveError,
     isExistingPrompt,
@@ -157,7 +152,6 @@ const EditProject: React.FC<EditProjectProps> = ({ isOpen, onClose, editingProje
       setNewProjectContext(editingProject.context || '')
       setNewProjectSystemPrompt(editingProject.system_prompt || '')
       setProjectCwd(editingProject.cwd || '')
-      setStorageMode(isCommunityMode ? 'local' : editingProject.storage_mode || 'cloud')
       setSelectedPromptId(null)
     } else if (isOpen) {
       resetForm()
@@ -173,7 +167,6 @@ const EditProject: React.FC<EditProjectProps> = ({ isOpen, onClose, editingProje
       context: newProjectContext.trim() || undefined,
       system_prompt: newProjectSystemPrompt.trim() || undefined,
       cwd: normalizedProjectCwd || null,
-      storageMode: isCommunityMode ? 'local' : storageMode,
     }
 
     try {
@@ -198,7 +191,6 @@ const EditProject: React.FC<EditProjectProps> = ({ isOpen, onClose, editingProje
       context: newProjectContext.trim() || undefined,
       system_prompt: newProjectSystemPrompt.trim() || undefined,
       cwd: normalizedProjectCwd || null,
-      storage_mode: isCommunityMode ? 'local' : storageMode,
     }
 
     try {
@@ -245,7 +237,6 @@ const EditProject: React.FC<EditProjectProps> = ({ isOpen, onClose, editingProje
     setNewProjectContext('')
     setNewProjectSystemPrompt('')
     setProjectCwd('')
-    setStorageMode(isCommunityMode ? 'local' : 'cloud')
     setSelectedPromptId(null)
     resetSaveUI()
   }
@@ -256,7 +247,8 @@ const EditProject: React.FC<EditProjectProps> = ({ isOpen, onClose, editingProje
   }
 
   const handleSelectProjectCwd = async () => {
-    const result = await window.electronAPI?.dialog?.selectFolder()
+    const result = await selectHostFolder(projectCwd)
+    if (result.error) window.alert(result.error)
     if (result?.success && result.path) {
       setProjectCwd(result.path)
     }
@@ -270,7 +262,6 @@ const EditProject: React.FC<EditProjectProps> = ({ isOpen, onClose, editingProje
   const panelMutedStyle = themedStyles?.panelMuted
   const mutedTextStyle = themedStyles?.mutedText
   const titleTextStyle = themedStyles?.titleText
-  const bodyTextStyle = themedStyles?.bodyText
   const primaryTextStyle = themedStyles?.primaryText
 
   if (!isOpen) return null
@@ -363,12 +354,6 @@ const EditProject: React.FC<EditProjectProps> = ({ isOpen, onClose, editingProje
                         >
                           <span className='max-w-44 truncate'>{prompt.name}</span>
                           {prompt.is_default && <Star size={14} strokeWidth={2.25} fill='currentColor' />}
-                          <span
-                            className='rounded-full bg-black/10 px-1.5 py-0.5 text-[10px] uppercase tracking-[0.08em] opacity-70 dark:bg-white/10'
-                            style={themedStyles?.panelMuted}
-                          >
-                            {prompt.storage_mode === 'local' ? 'Local' : 'Cloud'}
-                          </span>
                         </button>
                       )
                     })}
@@ -445,25 +430,6 @@ const EditProject: React.FC<EditProjectProps> = ({ isOpen, onClose, editingProje
                             if (e.key === 'Escape') resetSaveUI()
                           }}
                         />
-                        <div className='flex shrink-0 items-center gap-1 rounded-full bg-white/55 p-1 dark:bg-white/5' style={panelMutedStyle}>
-                          {(['local', 'cloud'] as const).map(storage => (
-                            <button
-                              key={storage}
-                              type='button'
-                              onClick={() => setSavePromptStorage(storage)}
-                              disabled={storage === 'cloud' && !canSaveToCloud}
-                              className={`rounded-full px-3 py-1.5 text-xs font-medium transition disabled:cursor-not-allowed disabled:opacity-40 ${
-                                savePromptStorage === storage
-                                  ? 'bg-white text-blue-700 shadow-sm dark:bg-yBlack-900/80 dark:text-orange-100'
-                                  : 'text-stone-500 hover:text-stone-800 dark:text-stone-400 dark:hover:text-stone-100'
-                              }`}
-                              style={savePromptStorage === storage ? themedStyles?.activePillButton : themedStyles?.mutedText}
-                              title={storage === 'local' ? 'Save only on this device' : 'Save to cloud account'}
-                            >
-                              {storage === 'local' ? 'Local' : 'Cloud'}
-                            </button>
-                          ))}
-                        </div>
                         <Button
                           type='button'
                           variant='outline2'
@@ -488,11 +454,6 @@ const EditProject: React.FC<EditProjectProps> = ({ isOpen, onClose, editingProje
                           <X size={16} strokeWidth={2.25} />
                         </button>
                       </div>
-                      <p className='mt-2 text-xs text-stone-500 dark:text-stone-400' style={mutedTextStyle}>
-                        {savePromptStorage === 'local'
-                          ? 'Local prompts stay on this device.'
-                          : 'Cloud prompts sync with your account.'}
-                      </p>
                       {saveError && <p className='mt-2 text-sm text-red-500 dark:text-red-400'>{saveError}</p>}
                     </div>
                   )}
@@ -560,49 +521,6 @@ const EditProject: React.FC<EditProjectProps> = ({ isOpen, onClose, editingProje
               </section>
             )}
 
-            {isElectronMode && (
-              <section className={sectionCardClass} style={sectionStyle}>
-                <label className={fieldLabelClass} style={titleTextStyle}>Storage location</label>
-                <div className='grid gap-3 sm:grid-cols-2'>
-                  {!isCommunityMode && (
-                    <button
-                      type='button'
-                      onClick={() => setStorageMode('cloud')}
-                      className={`rounded-[1.5rem] p-4 text-left transition-all duration-200 hover:-translate-y-0.5 active:translate-y-0 active:scale-[0.99] ${
-                        storageMode === 'cloud'
-                          ? 'bg-blue-50/80 text-blue-800 dark:bg-orange-500/15 dark:text-orange-100'
-                          : 'bg-white/45 text-stone-700 hover:bg-white dark:bg-white/5 dark:text-stone-300 dark:hover:bg-white/10'
-                      }`}
-                      style={storageMode === 'cloud' ? themedStyles?.activePillButton : panelStyle}
-                      aria-pressed={storageMode === 'cloud'}
-                    >
-                      <span className='mb-3 flex h-10 w-10 items-center justify-center rounded-full bg-white/45 dark:bg-black/10' style={panelMutedStyle}>
-                        <Cloud size={18} strokeWidth={2.25} />
-                      </span>
-                      <span className='block font-medium'>Cloud</span>
-                      <span className='mt-1 block text-sm leading-5 opacity-75' style={bodyTextStyle}>Synced anywhere. No agent support.</span>
-                    </button>
-                  )}
-                  <button
-                    type='button'
-                    onClick={() => setStorageMode('local')}
-                    className={`rounded-[1.5rem] p-4 text-left transition-all duration-200 hover:-translate-y-0.5 active:translate-y-0 active:scale-[0.99] ${
-                      storageMode === 'local'
-                        ? 'bg-blue-50/80 text-blue-800 dark:bg-orange-500/15 dark:text-orange-100'
-                        : 'bg-white/45 text-stone-700 hover:bg-white dark:bg-white/5 dark:text-stone-300 dark:hover:bg-white/10'
-                    }`}
-                    style={storageMode === 'local' ? themedStyles?.activePillButton : panelStyle}
-                    aria-pressed={storageMode === 'local'}
-                  >
-                    <span className='mb-3 flex h-10 w-10 items-center justify-center rounded-full bg-white/45 dark:bg-black/10' style={panelMutedStyle}>
-                      <HardDrive size={18} strokeWidth={2.25} />
-                    </span>
-                    <span className='block font-medium'>Local only</span>
-                    <span className='mt-1 block text-sm leading-5 opacity-75' style={bodyTextStyle}>Stored on this device. Supports agent.</span>
-                  </button>
-                </div>
-              </section>
-            )}
           </div>
         </div>
 

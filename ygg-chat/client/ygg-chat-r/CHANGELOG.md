@@ -10,9 +10,18 @@ Historical gaps have been reconstructed from Git tags, app-version changes, and 
 
 ### Added
 
+- Added an experimental attached-browser build of the shared Electron UI, with shared host identity/settings, multi-observer run recovery, queue/decision controls, independent host terminals and a phone workspace panel. This trusted-network preview has no device authentication; physical-device acceptance and legacy-mobile retirement remain pending.
 - Added draggable dividers for resizing agent-monitor grid cards within each row.
+- Added a server route that copies a whole conversation locally in one transaction (sidebar Copy).
 
 ### Changed
+
+- **Graviton is now fully local.** There is no Graviton account, sign-in, cloud sync or hosted backend. All data stays in local SQLite under one local identity, and existing rows from a signed-in profile are moved to it on first start.
+- Building from source no longer needs a `.env` file. The runtime mode comes from the build target, and `npm run dev` starts the Electron app.
+- Auto-updates now come from GitHub Releases on `zayr0-9/Graviton`.
+- OpenRouter now always uses your own API key. Saved `OpenRouter` selections keep working through an alias, and unknown provider names are rejected with a clear error.
+- The app store stays available without an account: browse and install are anonymous. Publishing to the community store is hidden for now.
+- The usage dashboard shows local cost data only.
 
 - Refreshed searchable select dropdowns and the sign-in screen with theme-aware styling.
 - Matched the floating agent monitor's accent to the theme's streaming color.
@@ -23,6 +32,11 @@ Historical gaps have been reconstructed from Git tags, app-version changes, and 
 - Restored focus to select controls after selection or dismissal and prevented keyboard selection of disabled options.
 - Kept Heimdall selection and visibility highlights readable when zoomed out.
 - Rendered compaction summaries consistently in agent previews.
+
+### Removed
+
+- Removed the cloud layer: Supabase sign-in and sessions, the Railway gateway and cloud proxy, cloud mirroring and storage modes, the hosted OpenRouter free tier, Stripe payments, the web, landing and payment pages, Vercel analytics and Google Drive sign-in.
+- Removed the `@supabase/supabase-js`, `@stripe/stripe-js`, `@vercel/analytics`, `dexie` and `gsap` dependencies.
 
 ## [0.3.19]
 

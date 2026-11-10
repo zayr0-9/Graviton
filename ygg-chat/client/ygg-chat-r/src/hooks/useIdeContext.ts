@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef } from 'react'
+import { getClientId } from '../helpers/clientId'
 import {
   addOpenFile,
   addSelectedFileForChat,
@@ -127,9 +128,7 @@ export function useIdeContext(): UseIdeContextReturn {
           })
         )
       } else {
-        if (import.meta.env.VITE_ENVIRONMENT !== 'web') {
-          console.warn('⚠️ Cannot request file content: WebSocket not connected')
-        }
+        console.warn('⚠️ Cannot request file content: WebSocket not connected')
         resolve(null)
       }
     })
@@ -153,26 +152,10 @@ export function useIdeContext(): UseIdeContextReturn {
       return
     }
 
-    // Disable IDE context in web environment
-    if (import.meta.env.VITE_ENVIRONMENT === 'web') {
-      return
-    }
-
     try {
       isConnecting = true
-      // Dynamically construct WebSocket URL from the same API base URL
-      const apiBase = import.meta.env.VITE_API_URL || 'http://localhost:3001/api'
-      const wsProtocol = apiBase.startsWith('https') ? 'wss' : 'ws'
-      const wsHost = apiBase.replace(/^https?:\/\//, '').replace(/\/api$/, '')
-      let websocketUrl = `${wsProtocol}://${wsHost}/ide-context?type=frontend&id=ygg-chat`
-
-      // In Electron, discover the local sync server endpoint via IPC.
-      if (import.meta.env.VITE_ENVIRONMENT === 'electron') {
-        await refreshLocalServerStatus().catch(() => {
-          // Best-effort refresh; URL builder has a safe fallback.
-        })
-        websocketUrl = await buildLocalWebSocketUrl('/ide-context?type=frontend&id=ygg-chat')
-      }
+      await refreshLocalServerStatus().catch(() => undefined)
+      const websocketUrl = await buildLocalWebSocketUrl(`/ide-context?type=frontend&id=ui:${getClientId()}`)
 
       globalWebSocket = new WebSocket(websocketUrl)
 
@@ -297,7 +280,6 @@ export function useIdeContext(): UseIdeContextReturn {
 
             case 'file_opened':
               const openedFile = message.data as FileInfo
-              // if (import.meta.env.VITE_ENVIRONMENT === 'electron') {
               //   console.log('[IDE DEBUG][WS file_opened]', {
               //     path: openedFile.path,
               //     relativePath: openedFile.relativePath,
@@ -350,7 +332,6 @@ export function useIdeContext(): UseIdeContextReturn {
 
             case 'file_contents_response':
               const fileContent = message.data
-              // if (import.meta.env.VITE_ENVIRONMENT === 'electron') {
               //   console.log('[IDE DEBUG][WS file_contents_response]', {
               //     requestId: message.requestId ?? fileContent?.requestId,
               //     path: fileContent?.path,

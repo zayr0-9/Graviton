@@ -1,13 +1,15 @@
 import { createSlice, PayloadAction } from '@reduxjs/toolkit'
+import { composerApprovalHandoff, composerProvider, loadBranchToolApprovalDrafts, resolveComposerToolApproval, saveBranchToolApprovalDrafts } from './branchToolApproval'
 import { loadBranchFastModeDrafts, saveBranchFastModeDrafts } from './branchFastMode'
 import { branchModelKey, loadBranchModelDrafts, saveBranchModelDrafts, type BranchModelSelection } from './branchModelSelection'
 import { normalizeChatErrorEnvelope } from '../../../../../shared/chatErrors'
 import providersList from '../../../../../shared/providers.json'
 import { ConversationId, MessageId } from '../../../../../shared/types'
-import { isCommunityMode } from '../../config/runtimeMode'
-import { loadDefaultToolAutoApprove } from '../../helpers/toolApprovalSettingsStorage'
+import type { HeadlessBackgroundTask } from '../../../../../shared/headlessApi'
+import { type ClaudeToolApproval, loadClaudeToolApprovalDefault, loadClaudeUltracode, loadDefaultToolAutoApprove, saveClaudeUltracode } from '../../helpers/toolApprovalSettingsStorage'
 import { parseId } from '../../utils/helpers'
-import { isRunSettingsNotification } from '../../../../../shared/accessNotifications'
+import { isStreamContinuationTail } from './streamContinuationTail'
+import { canFollowSelectedTip } from './followSelectedTip'
 
 import {
   Attachment,
@@ -29,7 +31,6 @@ import {
   StreamUndoSummary,
   ToolCallPermissionRequest,
   OperationModeUpgradeRequest,
-  UserSystemPrompt,
 } from './chatTypes'
 import { createEmptyStreamState, DEFAULT_STREAM_ID } from './streamHelpers'
 import { chatSelectionRequested, chatSelectionCommitted, chatSelectionFailed, chatSelectionResumed, chatSelectionCancelled, chatSelectionScrollHandled, initialChatSelection } from './chatSelection'
@@ -37,6 +38,7 @@ import { buildPathToConversationMessage } from './conversationTree'
 import { finalizeChatTree } from './immutableChatTree'
 import { canFollowWatchContinuation } from './watchContinuation'
 import toolDefinitions, { ToolDefinition } from './toolDefinitions'
+import { isClaudeProvider } from '../../../../../shared/claudeProvider'
 
 // Helper to deep clone tool definitions for mutable Redux state
 const cloneTools = (tools: ToolDefinition[]): ToolDefinition[] =>
@@ -49,8 +51,6 @@ const cloneTools = (tools: ToolDefinition[]): ToolDefinition[] =>
     },
   }))
 
-const isElectronEnvironment =
-  (typeof __IS_ELECTRON__ !== 'undefined' && __IS_ELECTRON__) || import.meta.env.VITE_ENVIRONMENT === 'electron'
 
 type ImageDraftsAppendedPayload = ImageDraft[] | { drafts: ImageDraft[]; target?: ImageDraftTarget | null }
 type ImageDraftRemovedPayload = number | { index: number; target?: ImageDraftTarget | null }
@@ -89,19 +89,15 @@ const mergeArtifacts = (existing: string[] | undefined, incoming: string[]): str
   return merged
 }
 
-const webHiddenProviders = new Set(['OpenAI (ChatGPT)', 'LM Studio', 'Z.AI / GLM', 'Amazon Bedrock'])
-const communityAllowedProviders = new Set(['LM Studio', 'OpenAI (ChatGPT)', 'OpenRouter', 'Z.AI / GLM'])
 
-const getAvailableProviders = () => {
-  const allProviders = Object.values(providersList.providers)
-  if (isElectronEnvironment) {
-    if (isCommunityMode) {
-      return allProviders.filter(provider => communityAllowedProviders.has(provider.name))
-    }
-    return allProviders
-  }
-  return allProviders.filter(provider => !webHiddenProviders.has(provider.name))
-}
+// Unset leaves claudeToolAutoApprove undefined so Claude follows the shared default.
+const claudeToolApprovalState = (value: ClaudeToolApproval | null) => ({
+  claudeAutoMode: value === 'auto',
+  claudeToolAutoApprove: value === null ? undefined : value === 'allow_all',
+})
+
+// Every listed provider is local or the user's own account, so all are selectable (Q6).
+const getAvailableProviders = () => Object.values(providersList.providers)
 
 const getInitialProvider = (providers: Array<{ name: string }>) => {
   const stored = localStorage.getItem('currentProvider')
@@ -276,28 +272,21 @@ const makeInitialState = (): ChatState => {
     operationModeUpgradeRequestsByStream: {},
     planClarificationRequestsByStream: {},
     toolAutoApprove: loadDefaultToolAutoApprove(),
+    ...claudeToolApprovalState(loadClaudeToolApprovalDefault()),
+    claudeUltracode: loadClaudeUltracode(),
     operationMode: 'plan',
     operationModeChanges: {},
     operationModeDrafts: {},
     branchModelDrafts: loadBranchModelDrafts(),
     branchFastModeDrafts: loadBranchFastModeDrafts(),
+    branchToolApprovalDrafts: loadBranchToolApprovalDrafts(),
     messageQueues: {},
-    freeTier: {
-      freeGenerationsRemaining: null,
-      showLimitModal: false,
-      isFreeTierUser: false,
-    },
     // Tier-2 failures that have no persisted assistant message to live on. Deliberately
     // NOT inside `streaming.byId`: that slot is pruned 30s after a run ends, and
     // `selectCurrentViewStreamFor` filters on `active` first, so an errored stream slot
     // is unreachable the moment it carries an error.
     errorNotices: {
       byConversationId: {},
-    },
-    userSystemPrompts: {
-      prompts: [],
-      loading: false,
-      error: null,
     },
   }
 }
@@ -314,6 +303,10 @@ function setConversationIdentity(state: ChatState, nextConversationId: Conversat
     state.heimdall.subagentMap = {}
   }
   if (changed) {
+    state.composition.editingBranch = false
+    state.composition.branchEditModes = undefined
+    state.composition.branchEditMessageId = undefined
+    state.composition.branchEditModelSelection = undefined
     state.composition.imageDrafts = []
     state.composition.imageDraftTarget = null
     state.composition.imagePreparationPending = 0
@@ -326,20 +319,125 @@ function setConversationIdentity(state: ChatState, nextConversationId: Conversat
   state.conversation.currentConversationId = nextConversationId
 }
 
+/**
+ * A stream owns the selected view while no view-changing selection has been committed
+ * since its intent was captured. `fallbackRevision` only moves when the resolved view
+ * changes, so cancellation, route re-entry and same-view refocus keep ownership.
+ */
+function streamOwnsSelectedView(state: ChatState, stream: StreamState): boolean {
+  return stream.selectionRevision != null && stream.selectionRevision >= (state.selection?.fallbackRevision ?? 0)
+}
+
 function streamCanAdvanceSelection(state: ChatState, streamId?: string | null, targetMessageId?: MessageId): boolean {
-  if (state.selection?.status === 'pending' || state.selection?.status === 'error') return false
+  if (state.selection?.status === 'pending' || state.selection?.status === 'error') {
+    const stream = streamId ? state.streaming.byId[streamId] : null
+    if (stream && targetMessageId && String(stream.conversationId) === String(state.conversation.currentConversationId)) {
+      stream.selectionBlocked = true
+    }
+    return false
+  }
   if (!streamId) return true // Non-stream mutation/repair callers retain their structural policy.
   const stream = state.streaming.byId[streamId]
   if (!stream) return true // Legacy projected actions may precede a reconstructed slot.
+  if (stream.bootstrapInstalling && !stream.watchContinuation) return false
+  if (stream.followSelectedTip) return canFollowSelectedTip(state, stream, targetMessageId)
   if (stream.updatePath === false || String(stream.conversationId) !== String(state.conversation.currentConversationId)) return false
   if (stream.watchContinuation) return canFollowWatchContinuation(state, stream, targetMessageId)
-  if (stream.selectionRevision === (state.selection?.revision ?? 0)) return true
+  if (streamOwnsSelectedView(state, stream)) return true
   if (state.conversation.currentLineageId && stream.lineage.lineageIdConfirmed) {
     return state.conversation.currentLineageId === stream.lineage.lineageId
   }
   const tip = state.conversation.currentPath.at(-1)
   return tip != null && [stream.triggerUserMessageId, stream.currentBranchAnchorMessageId,
     stream.liveMessageId, stream.lastCompletedMessageId].some(id => id != null && String(id) === String(tip))
+}
+
+/**
+ * The initiating client's own run may persist its user row before the client attaches
+ * (fast admission, e.g. a Claude Explain fork), so that row arrives in a bootstrap or
+ * deferral while navigation is gated. Grant it the authority live `messageBranchCreated`
+ * has for the run's own user row: the deepest candidate descending from that row, even on
+ * a new fork lineage. Observers, parallel panes and watch continuations never qualify.
+ */
+function ownedRunSelectionTarget(state: ChatState, stream: StreamState, candidateIds: Iterable<MessageId>): MessageId | null {
+  if (stream.followSelectedTip || stream.watchContinuation || stream.updatePath === false ||
+      String(stream.conversationId) !== String(state.conversation.currentConversationId) ||
+      !streamOwnsSelectedView(state, stream)) return null
+  const trigger = stream.triggerUserMessageId
+  if (trigger == null) return null
+  const byId = new Map(state.conversation.messages.map(message => [String(message.id), message]))
+  let best: { id: MessageId; depth: number } | null = null
+  for (const candidate of candidateIds) {
+    // Complete same-conversation ancestry through the trigger, like canFollowSelectedTip.
+    const seen = new Set<string>()
+    let reachesTrigger = false
+    let id: string | null = String(candidate)
+    while (id != null && !seen.has(id)) {
+      seen.add(id)
+      const row = byId.get(id)
+      if (!row || String(row.conversation_id) !== String(stream.conversationId)) break
+      if (id === String(trigger)) reachesTrigger = true
+      id = row.parent_id == null ? null : String(row.parent_id)
+    }
+    if (id != null || !reachesTrigger) continue
+    if (!best || seen.size > best.depth) best = { id: byId.get(String(candidate))!.id, depth: seen.size }
+  }
+  return best?.id ?? null
+}
+
+/** Select an owned run's target without rewinding a path that already reaches it. */
+function selectOwnedRunTarget(state: ChatState, stream: StreamState, target: MessageId) {
+  if (state.conversation.currentPath.some(id => String(id) === String(target))) return
+  state.conversation.currentPath = buildPathToMessage(state.conversation.messages, target)
+  state.conversation.currentLineageId = stream.lineage.lineageIdConfirmed ? stream.lineage.lineageId ?? null : null
+}
+
+/**
+ * Selection settled on the view that was showing when advances were deferred. Extend
+ * the still-selected path along each deferred stream's own persisted descendants only;
+ * the deferral is consumed whether or not it finds a structurally valid anchor.
+ */
+function reconcileDeferredSelectionAdvances(state: ChatState) {
+  for (const stream of Object.values(state.streaming.byId)) {
+    if (!stream.selectionBlocked) continue
+    delete stream.selectionBlocked
+    if (String(stream.conversationId) !== String(state.conversation.currentConversationId) ||
+        (stream.updatePath === false && !stream.followSelectedTip) || stream.watchContinuation) continue
+    const recovery = { allowDescendants: true, allowEmpty: !stream.followSelectedTip && state.conversation.currentPath.length === 0 }
+    const candidates = [stream.finalMessageId, stream.lastCompletedMessageId, stream.currentBranchAnchorMessageId]
+      .filter((id): id is MessageId => id != null)
+    const owned = ownedRunSelectionTarget(state, stream, candidates)
+    const anchor = candidates
+      .filter(id => canFollowSelectedTip(state, { ...stream, followSelectedTip: true }, id, recovery))
+      .sort((a, b) => buildPathToMessage(state.conversation.messages, b).length - buildPathToMessage(state.conversation.messages, a).length)[0] ??
+      (owned != null && !state.conversation.currentPath.some(id => String(id) === String(owned)) ? owned : undefined)
+    if (!anchor) continue
+    state.conversation.currentPath = buildPathToMessage(state.conversation.messages, anchor)
+    // Only an unambiguous control tail can extend a final response;
+    // never choose between real user/assistant branches here.
+    const seen = new Set(state.conversation.currentPath)
+    let tip = anchor
+    while (true) {
+      const children = state.conversation.messages.filter(row => row.parent_id === tip)
+      if (children.length !== 1 || seen.has(children[0].id) || !isStreamContinuationTail(children[0])) break
+      tip = children[0].id
+      seen.add(tip)
+      state.conversation.currentPath.push(tip)
+    }
+    state.conversation.currentLineageId = stream.lineage.lineageIdConfirmed ? stream.lineage.lineageId ?? null : null
+    stream.currentBranchAnchorMessageId = tip
+    if (stream.finished) {
+      stream.finalMessageId = tip
+      stream.messageId = tip
+      stream.lastCompletedMessageId = tip
+      stream.persistedTurnMessageId = tip
+    }
+  }
+}
+
+/** A different view was chosen; deferred advances must never pull it back. */
+function discardDeferredSelectionAdvances(state: ChatState) {
+  for (const stream of Object.values(state.streaming.byId)) delete stream.selectionBlocked
 }
 
 const initialState: ChatState = makeInitialState()
@@ -349,6 +447,10 @@ export const chatSlice = createSlice({
   initialState,
   reducers: {
     branchModelSelected: (state, action: PayloadAction<BranchModelSelection>) => {
+      if (state.composition.editingBranch) {
+        state.composition.branchEditModelSelection = action.payload
+        return
+      }
       const { currentConversationId, currentPath, currentLineageId } = state.conversation
       if (!currentConversationId) return
       state.branchModelDrafts ??= {}
@@ -465,6 +567,11 @@ export const chatSlice = createSlice({
     editingBranchSet: (state, action: PayloadAction<boolean>) => {
       state.composition.editingBranch = action.payload
       state.composition.branchEditModes = undefined
+      state.composition.branchEditMessageId = undefined
+      state.composition.branchEditModelSelection = undefined
+    },
+    branchEditMessageSelected: (state, action: PayloadAction<MessageId>) => {
+      state.composition.branchEditMessageId = action.payload
     },
     branchEditOperationModeSelected: (state, action: PayloadAction<OperationMode>) => {
       if (!state.composition.editingBranch) return
@@ -500,6 +607,52 @@ export const chatSlice = createSlice({
       state.composition.compactingLineageId = null
     },
 
+    streamBootstrapReset: (state, action: PayloadAction<{ streamId: string; conversationId: string }>) => {
+      const { streamId, conversationId } = action.payload
+      const previous = state.streaming.byId[streamId]
+      state.streaming.byId[streamId] = { ...createEmptyStreamState(previous?.streamType ?? 'branch'),
+        active: true, status: 'active', conversationId, bootstrapInstalling: true,
+        selectionRevision: previous?.selectionRevision ?? -1,
+        updatePath: previous?.updatePath ?? false, watchContinuation: previous?.watchContinuation,
+        followSelectedTip: previous?.followSelectedTip }
+      if (!state.streaming.activeIds.includes(streamId)) state.streaming.activeIds.push(streamId)
+    },
+
+    streamBootstrapReconciled: (state, action: PayloadAction<{ streamId: string; messageIds: string[] }>) => {
+      const stream = state.streaming.byId[action.payload.streamId]
+      if (!stream) return
+      stream.bootstrapInstalling = false
+      // Snapshot events are compact, not a complete turn journal. Catch up only
+      // along descendants of the still-selected tip, never through a sibling.
+      if (stream.watchContinuation || (!stream.followSelectedTip && stream.updatePath === false)) return
+      if (state.selection.status === 'pending' || state.selection.status === 'error') stream.selectionBlocked = true
+      else {
+        // The initiator's own fork can predate attach; adjacency would never reach it.
+        const owned = ownedRunSelectionTarget(state, stream, action.payload.messageIds)
+        if (owned != null) selectOwnedRunTarget(state, stream, owned)
+      }
+      const allowEmpty = !stream.followSelectedTip && streamOwnsSelectedView(state, stream)
+      for (const id of action.payload.messageIds) {
+        if (canFollowSelectedTip(state, { ...stream, followSelectedTip: true }, id,
+          { allowDescendants: true, allowEmpty })) {
+          state.conversation.currentPath = buildPathToMessage(state.conversation.messages, id)
+        }
+      }
+      // Completion was replayed while navigation was gated. Preserve its durable
+      // continuation tail for snapshot protection and the next-send anchor too.
+      const path = state.conversation.currentPath
+      const at = stream.finalMessageId ? path.indexOf(stream.finalMessageId) : -1
+      if (stream.finished && at >= 0 && path.slice(at + 1).every(id =>
+        isStreamContinuationTail(state.conversation.messages.find(message => message.id === id)))) {
+        const head = path.at(-1)!
+        stream.messageId = head
+        stream.lastCompletedMessageId = head
+        stream.persistedTurnMessageId = head
+        stream.finalMessageId = head
+        stream.currentBranchAnchorMessageId = head
+      }
+    },
+
     sendingStarted: (state, action: PayloadAction<SendingStartedPayload | undefined>) => {
       const streamId = action.payload?.streamId ?? DEFAULT_STREAM_ID
       const streamType = action.payload?.streamType ?? 'primary'
@@ -515,6 +668,7 @@ export const chatSlice = createSlice({
         selectionRevision: action.payload?.selectionRevision ?? state.selection?.revision ?? 0,
         updatePath: action.payload?.updatePath,
         watchContinuation: action.payload?.watchContinuation,
+        followSelectedTip: action.payload?.followSelectedTip,
       }
 
       // Add to active list (dedupe)
@@ -908,13 +1062,13 @@ export const chatSlice = createSlice({
       const hasStreamId = 'streamId' in action.payload
       const streamId = hasStreamId ? (action.payload as StreamCompletedPayload).streamId : DEFAULT_STREAM_ID
       let messageId = action.payload.messageId
-      // A mode notification may be the durable tail after a natural final answer.
-      // Keep that selected tail rather than rewinding to the returned assistant id.
+      // Restored context, compaction controls and settings notices can follow the
+      // final assistant row. Keep that durable head as the next-send parent.
       const selectedPath = state.conversation.currentPath
       const finalIndex = selectedPath.indexOf(messageId)
       if (finalIndex >= 0 && selectedPath.slice(finalIndex + 1).every(id => {
         const row = state.conversation.messages.find(message => message.id === id)
-        return isRunSettingsNotification(row)
+        return isStreamContinuationTail(row)
       })) {
         messageId = selectedPath[selectedPath.length - 1] ?? messageId
       }
@@ -927,6 +1081,8 @@ export const chatSlice = createSlice({
         stream.active = false
         stream.status = 'completed'
         stream.finished = true
+        stream.backgroundTasks = undefined
+        stream.backgroundTurnIdle = undefined
         stream.messageId = messageId
         stream.lastCompletedMessageId = messageId
         stream.persistedTurnMessageId = messageId
@@ -942,7 +1098,7 @@ export const chatSlice = createSlice({
         state.streaming.lastCompletedId = streamId
 
         // CRITICAL: Only update currentPath if explicitly requested AND conditions are met
-        if (updatePath && streamCanAdvanceSelection(state, streamId, messageId)) {
+        if ((updatePath || stream.followSelectedTip) && streamCanAdvanceSelection(state, streamId, messageId)) {
           const shouldUpdatePath =
             state.conversation.currentPath.length === 0 ||
             isOnCurrentBranch(state.conversation.currentPath, state.conversation.messages, messageId)
@@ -991,6 +1147,16 @@ export const chatSlice = createSlice({
       if (state.streaming.lastCompletedId === streamId) {
         state.streaming.lastCompletedId = null
       }
+    },
+
+    streamBackgroundTasksUpdated: (
+      state,
+      action: PayloadAction<{ streamId: string; turnActive: boolean; tasks: HeadlessBackgroundTask[] }>
+    ) => {
+      const stream = state.streaming.byId[action.payload.streamId]
+      if (!stream || stream.finished) return
+      stream.backgroundTasks = action.payload.tasks
+      stream.backgroundTurnIdle = !action.payload.turnActive && action.payload.tasks.length > 0
     },
 
     streamCompactionUpdated: (
@@ -1153,12 +1319,20 @@ export const chatSlice = createSlice({
     lineageSelected: (state, action: PayloadAction<LineageSelectionPayload>) => {
       const { conversationId, lineageId, path, focus } = action.payload
       setConversationIdentity(state, conversationId)
+      state.composition.editingBranch = false
+      state.composition.branchEditModes = undefined
+      state.composition.branchEditMessageId = undefined
+      state.composition.branchEditModelSelection = undefined
       state.conversation.currentLineageId = lineageId
       state.conversation.currentPath = path
       state.conversation.focusedChatMessageId = focus
     },
 
     conversationCleared: state => {
+      state.composition.editingBranch = false
+      state.composition.branchEditModes = undefined
+      state.composition.branchEditMessageId = undefined
+      state.composition.branchEditModelSelection = undefined
       state.composition.imageDrafts = []
       state.composition.imageDraftTarget = null
       state.composition.imagePreparationPending = 0
@@ -1190,6 +1364,7 @@ export const chatSlice = createSlice({
       const existing = state.conversation.messages.findIndex(x => x.id === m.id)
       if (existing >= 0) {
         const previous = state.conversation.messages[existing]
+        if (typeof previous.revision === 'number' && typeof m.revision === 'number' && previous.revision > m.revision) return
         const byRunId = new Map((previous.hook_runs || []).map(run => [run.id, run]))
         for (const run of m.hook_runs || []) {
           const prior = byRunId.get(run.id)
@@ -1227,12 +1402,12 @@ export const chatSlice = createSlice({
 
     messageUpdated: (
       state,
-      action: PayloadAction<{ id: MessageId; content: string; note?: string; note_color?: string | null; content_blocks?: any }>
+      action: PayloadAction<{ id: MessageId; content?: string; note?: string; note_color?: string | null; content_blocks?: any }>
     ) => {
       const { id, content, note, note_color, content_blocks } = action.payload
       const msg = state.conversation.messages.find(m => m.id === id)
       if (msg) {
-        msg.content = content
+        if (content !== undefined) msg.content = content
         if (note !== undefined) msg.note = note
         if (note_color !== undefined) msg.note_color = note_color
         if (content_blocks) msg.content_blocks = content_blocks
@@ -1241,7 +1416,26 @@ export const chatSlice = createSlice({
 
     messageDeleted: (state, action: PayloadAction<MessageId>) => {
       const id = action.payload
-      state.conversation.messages = state.conversation.messages.filter(m => m.id !== id)
+      const deleted = new Set<MessageId>([id])
+      const children = new Map<MessageId, MessageId[]>()
+      for (const message of state.conversation.messages) {
+        if (message.parent_id == null) continue
+        const siblings = children.get(message.parent_id) ?? []
+        siblings.push(message.id)
+        children.set(message.parent_id, siblings)
+      }
+      const pending = [id]
+      while (pending.length) {
+        for (const child of children.get(pending.pop()!) ?? []) {
+          if (!deleted.has(child)) { deleted.add(child); pending.push(child) }
+        }
+      }
+      state.conversation.messages = state.conversation.messages.filter(m => !deleted.has(m.id))
+      for (const message of state.conversation.messages) message.children_ids = message.children_ids.filter(child => !deleted.has(child))
+      const position = state.conversation.currentPath.findIndex(value => deleted.has(value))
+      if (position >= 0) state.conversation.currentPath = state.conversation.currentPath.slice(0, position)
+      if (!state.conversation.messages.length) state.conversation.currentLineageId = null
+      if (state.conversation.focusedChatMessageId != null && deleted.has(state.conversation.focusedChatMessageId)) state.conversation.focusedChatMessageId = null
     },
 
     messagesLoaded: (state, action: PayloadAction<Message[]>) => {
@@ -1377,16 +1571,19 @@ export const chatSlice = createSlice({
       const preservesModeTail = existingIndex >= 0 && existingIndex < state.conversation.currentPath.length - 1 &&
         state.conversation.currentPath.slice(existingIndex + 1).every(id => {
           const row = state.conversation.messages.find(message => message.id === id)
-          return isRunSettingsNotification(row)
+          return isStreamContinuationTail(row)
         })
+      // User rows alone are not navigation authority for passive observers:
+      // streamCanAdvanceSelection below still requires selected-tip adjacency.
       const shouldSwitch = !preservesModeTail && (
         newMessage.role === 'user' || state.conversation.currentPath.length === 0 || currentTip === newMessage.parent_id ||
         Boolean(action.payload.streamId && state.streaming.byId[action.payload.streamId]?.watchContinuation)
       )
 
-      if (shouldSwitch && action.payload.updatePath !== false && streamCanAdvanceSelection(state, action.payload.streamId, newMessage.id)) {
-        const stream = action.payload.streamId ? state.streaming.byId[action.payload.streamId] : null
-        state.conversation.currentLineageId = stream?.lineage.lineageIdConfirmed ? stream.lineage.lineageId ?? null : null
+      const stream = action.payload.streamId ? state.streaming.byId[action.payload.streamId] : null
+      if (shouldSwitch && (action.payload.updatePath !== false || stream?.followSelectedTip) && streamCanAdvanceSelection(state, action.payload.streamId, newMessage.id)) {
+        if (!stream?.followSelectedTip || state.conversation.currentLineageId == null)
+          state.conversation.currentLineageId = stream?.lineage.lineageIdConfirmed ? stream.lineage.lineageId ?? null : null
         state.conversation.currentPath = buildPathToMessage(newMessage.id)
       }
     },
@@ -1605,6 +1802,16 @@ export const chatSlice = createSlice({
       if (state.planClarificationRequest?.streamId === action.payload) state.planClarificationRequest = null
     },
 
+    decisionSettled: (state, action: PayloadAction<{ streamId: string; toolCallId: string }>) => {
+      const { streamId, toolCallId } = action.payload
+      if (state.toolPermissionRequestsByStream[streamId]?.toolCallId === toolCallId) delete state.toolPermissionRequestsByStream[streamId]
+      if (state.operationModeUpgradeRequestsByStream[streamId]?.toolCallId === toolCallId) delete state.operationModeUpgradeRequestsByStream[streamId]
+      if (state.planClarificationRequestsByStream[streamId]?.toolCallId === toolCallId) delete state.planClarificationRequestsByStream[streamId]
+      if (state.toolCallPermissionRequest?.streamId === streamId && state.toolCallPermissionRequest.toolCallId === toolCallId) state.toolCallPermissionRequest = null
+      if (state.operationModeUpgradeRequest?.streamId === streamId && state.operationModeUpgradeRequest.toolCallId === toolCallId) state.operationModeUpgradeRequest = null
+      if (state.planClarificationRequest?.streamId === streamId && state.planClarificationRequest.toolCallId === toolCallId) state.planClarificationRequest = null
+    },
+
     decisionRequestsClearedForStream: (state, action: PayloadAction<string>) => {
       const streamId = action.payload
       for (const [key, change] of Object.entries(state.operationModeChanges ?? {})) {
@@ -1618,16 +1825,65 @@ export const chatSlice = createSlice({
       if (state.planClarificationRequest?.streamId === streamId) state.planClarificationRequest = null
     },
 
+    hostToolApprovalDefaultReceived: (state, action: PayloadAction<boolean>) => {
+      if (!state.toolAutoApproveOverridden) state.toolAutoApprove = action.payload
+    },
     toolAutoApproveEnabled: state => {
+      state.toolAutoApproveOverridden = true
       state.toolAutoApprove = true
     },
 
     toolAutoApproveDisabled: state => {
+      state.toolAutoApproveOverridden = true
       state.toolAutoApprove = false
     },
 
+    // Session-only, like toolAutoApprove; the launch default is saved from Settings.
+    claudeAutoModeSet: (state, action: PayloadAction<boolean>) => {
+      state.claudeAutoMode = action.payload
+    },
+
+    claudeToolApprovalDefaultApplied: (state, action: PayloadAction<ClaudeToolApproval>) => {
+      Object.assign(state, claudeToolApprovalState(action.payload))
+    },
+
+    claudeUltracodeSet: (state, action: PayloadAction<boolean>) => {
+      state.claudeUltracode = action.payload
+      saveClaudeUltracode(action.payload)
+    },
+
+    branchToolApprovalSelected: (state, action: PayloadAction<{
+      enabled: boolean; conversationId: ConversationId; lineageId?: LineageId | null; parentId?: MessageId | null
+    }>) => {
+      const { enabled, conversationId, lineageId, parentId } = action.payload
+      state.branchToolApprovalDrafts ??= {}
+      const anchor = lineageId ? `lineage:${lineageId}` : parentId
+      state.branchToolApprovalDrafts[branchModelKey(conversationId, anchor)] = enabled
+      saveBranchToolApprovalDrafts(state.branchToolApprovalDrafts)
+    },
+
     toolAutoApproveToggled: state => {
-      state.toolAutoApprove = !state.toolAutoApprove
+      const enabled = !resolveComposerToolApproval(state)
+      if (state.composition.editingBranch) {
+        state.composition.branchEditModes ??= {}
+        state.composition.branchEditModes.toolAutoApprove = enabled
+        return
+      }
+      const { currentConversationId, currentLineageId, currentPath } = state.conversation
+      if (!currentConversationId) {
+        if (isClaudeProvider(composerProvider(state))) {
+          state.claudeToolAutoApprove = enabled
+          return
+        }
+        state.toolAutoApproveOverridden = true
+        state.toolAutoApprove = enabled
+        return
+      }
+      state.branchToolApprovalDrafts ??= {}
+      const handoff = composerApprovalHandoff(state)
+      const anchor = handoff ? `handoff:${handoff.id}` : currentLineageId ? `lineage:${currentLineageId}` : currentPath.at(-1)
+      state.branchToolApprovalDrafts[branchModelKey(currentConversationId, anchor)] = enabled
+      saveBranchToolApprovalDrafts(state.branchToolApprovalDrafts)
     },
 
     operationModeDecisionsCleared: (state, action: PayloadAction<{ streamId: string; toolCallIds: string[] }>) => {
@@ -1657,7 +1913,7 @@ export const chatSlice = createSlice({
       if (parent && !parent.children_ids.includes(message.id)) parent.children_ids.push(message.id)
       const tip = state.conversation.currentPath.at(-1)
       const nextPath = buildPathToMessage(state.conversation.messages, message.id)
-      if (action.payload.updatePath !== false && streamCanAdvanceSelection(state, streamId, message.id) && (!tip || nextPath.includes(tip))) {
+      if ((action.payload.updatePath !== false || state.streaming.byId[streamId]?.followSelectedTip) && streamCanAdvanceSelection(state, streamId, message.id) && (!tip || nextPath.includes(tip))) {
         state.conversation.currentPath = nextPath
       }
       const stream = state.streaming.byId[streamId]
@@ -1717,7 +1973,7 @@ export const chatSlice = createSlice({
       const path = state.conversation.currentPath
       const tip = path[path.length - 1] ?? null
       // A notification on a background branch must not steal the selected path.
-      if (updatePath !== false && streamCanAdvanceSelection(state, streamId, message.id) && (tip === message.parent_id || path.length === 0)) {
+      if ((updatePath !== false || (streamId && state.streaming.byId[streamId]?.followSelectedTip)) && streamCanAdvanceSelection(state, streamId, message.id) && (tip === message.parent_id || path.length === 0)) {
         state.conversation.currentPath = buildPathToMessage(state.conversation.messages, message.id)
         state.operationMode = mode
       } else if (matchesPending) {
@@ -1737,18 +1993,6 @@ export const chatSlice = createSlice({
 
     operationModeToggled: state => {
       state.operationMode = state.operationMode === 'plan' ? 'execute' : 'plan'
-    },
-
-    /* Free tier reducers */
-    freeGenerationsUpdated: (state, action: PayloadAction<{ remaining: number; isFreeTier: boolean }>) => {
-      state.freeTier.freeGenerationsRemaining = action.payload.remaining
-      state.freeTier.isFreeTierUser = action.payload.isFreeTier
-    },
-    freeTierLimitModalShown: state => {
-      state.freeTier.showLimitModal = true
-    },
-    freeTierLimitModalHidden: state => {
-      state.freeTier.showLimitModal = false
     },
 
     /* Chat error notice reducers (tier 2: failures with no persisted message to live on) */
@@ -1810,35 +2054,15 @@ export const chatSlice = createSlice({
       else state.errorNotices.byConversationId[key] = remaining
     },
 
-    chatErrorsClearedForConversation: (state, action: PayloadAction<ConversationId>) => {
-      delete state.errorNotices.byConversationId[String(action.payload)]
+    chatReattachErrorCleared: (state, action: PayloadAction<{ conversationId: ConversationId; streamId: string }>) => {
+      const key = String(action.payload.conversationId)
+      const bucket = state.errorNotices.byConversationId[key]
+      if (bucket) state.errorNotices.byConversationId[key] = bucket.filter(record =>
+        record.streamId !== action.payload.streamId || record.envelope.code !== 'run_expired')
     },
 
-    /* User System Prompts reducers */
-    userSystemPromptsLoadingStarted: state => {
-      state.userSystemPrompts.loading = true
-      state.userSystemPrompts.error = null
-    },
-    userSystemPromptsLoaded: (state, action: PayloadAction<UserSystemPrompt[]>) => {
-      state.userSystemPrompts.prompts = action.payload
-      state.userSystemPrompts.loading = false
-      state.userSystemPrompts.error = null
-    },
-    userSystemPromptsError: (state, action: PayloadAction<string>) => {
-      state.userSystemPrompts.loading = false
-      state.userSystemPrompts.error = action.payload
-    },
-    userSystemPromptAdded: (state, action: PayloadAction<UserSystemPrompt>) => {
-      state.userSystemPrompts.prompts.push(action.payload)
-    },
-    userSystemPromptUpdated: (state, action: PayloadAction<UserSystemPrompt>) => {
-      const index = state.userSystemPrompts.prompts.findIndex(p => p.id === action.payload.id)
-      if (index >= 0) {
-        state.userSystemPrompts.prompts[index] = action.payload
-      }
-    },
-    userSystemPromptDeleted: (state, action: PayloadAction<string>) => {
-      state.userSystemPrompts.prompts = state.userSystemPrompts.prompts.filter(p => p.id !== action.payload)
+    chatErrorsClearedForConversation: (state, action: PayloadAction<ConversationId>) => {
+      delete state.errorNotices.byConversationId[String(action.payload)]
     },
 
     stateReset: () => makeInitialState(),
@@ -1846,7 +2070,12 @@ export const chatSlice = createSlice({
   extraReducers: builder => {
     builder
       .addCase(chatSelectionRequested, (state, { payload }) => {
+        state.composition.editingBranch = false
+        state.composition.branchEditModes = undefined
+        state.composition.branchEditMessageId = undefined
+        state.composition.branchEditModelSelection = undefined
         const conversationChanged = String(state.conversation.currentConversationId) !== String(payload.target.conversationId)
+        if (conversationChanged) discardDeferredSelectionAdvances(state)
         setConversationIdentity(state, payload.target.conversationId)
         state.selection = {
           fallbackRevision: conversationChanged ? (state.selection?.revision ?? 0) + 1 : state.selection?.fallbackRevision ?? 0,
@@ -1861,20 +2090,16 @@ export const chatSlice = createSlice({
         const sameView = state.conversation.currentLineageId === payload.lineageId &&
           state.conversation.currentPath.length === payload.path.length &&
           state.conversation.currentPath.every((id, index) => String(id) === String(payload.path[index]))
+        // Same-view focus is a new scroll intent, not a transfer away from an unmaterialized send.
         if (!sameView) state.selection.fallbackRevision = state.selection.revision
-        else {
-          // Same-view focus is a new scroll intent, not a transfer away from an unmaterialized send.
-          for (const stream of Object.values(state.streaming.byId)) {
-            if (stream.active && String(stream.conversationId) === String(payload.conversationId) &&
-                stream.selectionRevision != null && stream.selectionRevision >= state.selection.fallbackRevision) {
-              stream.selectionRevision = state.selection.revision
-            }
-          }
-        }
         state.conversation.currentLineageId = payload.lineageId
         state.conversation.currentPath = payload.path
         state.conversation.focusedChatMessageId = payload.focus
         state.selection.status = 'ready'
+        // Persistence can finish while navigation is unsettled. A different view must
+        // never be pulled back; the same view catches up its deferred advances.
+        if (sameView) reconcileDeferredSelectionAdvances(state)
+        else discardDeferredSelectionAdvances(state)
         state.selection.error = payload.error ?? null
         state.selection.scroll = payload.scrollMode === 'none' ? null : {
           requestId: payload.requestId, focus: payload.focus,
@@ -1892,8 +2117,11 @@ export const chatSlice = createSlice({
         state.selection.error = null
       })
       .addCase(chatSelectionCancelled, state => {
+        // Cancellation invalidates in-flight intents (new revision) but selects no other
+        // view: the retained path stays owned and catches up what the transaction deferred.
         const revision = (state.selection?.revision ?? 0) + 1
-        state.selection = { ...initialChatSelection(), revision, fallbackRevision: revision }
+        state.selection = { ...initialChatSelection(), revision, fallbackRevision: state.selection?.fallbackRevision ?? 0 }
+        reconcileDeferredSelectionAdvances(state)
       })
       .addCase(chatSelectionScrollHandled, (state, { payload }) => {
         if (state.selection.scroll?.requestId === payload) state.selection.scroll = null

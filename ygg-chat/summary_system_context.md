@@ -99,13 +99,11 @@ Token counting uses `estimateTokenCount`.
 
 ### Budget logic
 
-The code computes two limits:
+The code uses the model context limit:
 
-1. **model context limit**
-   - `selectedModel.contextLength || 128_000`
+- `selectedModel.contextLength || 128_000`
 
-2. **credit-constrained budget**
-   - derived from current user credits and prompt/completion pricing
+(Graviton is fully local, so there is no credit-constrained budget.)
 
 Then it computes:
 - `modelContextProgress`

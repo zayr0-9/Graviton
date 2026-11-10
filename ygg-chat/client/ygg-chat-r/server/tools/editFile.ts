@@ -52,7 +52,7 @@ export interface FileValidationResult {
   reason?: string
   expectedHash?: string
   actualHash?: string
-  expectedModified?: Date
+  expectedModified?: FileMetadata['lastModified']
   actualModified?: Date
 }
 

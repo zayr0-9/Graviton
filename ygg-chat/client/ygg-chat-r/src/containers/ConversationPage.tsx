@@ -1,12 +1,11 @@
+import { isNativeShell } from '../platform/clientCapabilities'
 import { InfiniteData, useQueryClient } from '@tanstack/react-query'
 import 'boxicons'
 import 'boxicons/css/boxicons.min.css'
 import React, { useEffect, useMemo, useRef, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { useChatNavigate as useNavigate } from '../components/ChatSelection/ChatSelectionProvider'
-import type { StorageMode } from '../../../../shared/types'
 import { Button } from '../components'
-import { isCommunityMode } from '../config/runtimeMode'
 import { LowBar } from '../components/LowBar/LowBar'
 import { Select } from '../components/Select/Select'
 import { TextField } from '../components/TextField/TextField'
@@ -36,7 +35,6 @@ import {
 } from '../hooks/useQueries'
 import { localApi } from '../utils/api'
 import { parseId } from '../utils/helpers'
-import { DownloadAppModal } from './downloadApp'
 import EditProject from './EditProject'
 
 const ConversationPage: React.FC = () => {
@@ -47,10 +45,7 @@ const ConversationPage: React.FC = () => {
   const projectIdParam = searchParams.get('projectId')
   const projectId = projectIdParam ? parseId(projectIdParam) : null
 
-  // Check if running in Electron
-  const isElectronMode =
-    import.meta.env.VITE_ENVIRONMENT === 'electron' ||
-    (typeof process !== 'undefined' && process.env?.VITE_ENVIRONMENT === 'electron')
+  const isElectronMode = isNativeShell
 
   // Use React Query with infinite scroll for data fetching
   // Fetch project-specific conversations OR all conversations (not both)
@@ -185,9 +180,7 @@ const ConversationPage: React.FC = () => {
   }, [searchQuery, search, clearSearch])
   const [showNewConversationModal, setShowNewConversationModal] = useState(false)
   const [newConvTitle, setNewConvTitle] = useState('')
-  const [storageMode, setStorageMode] = useState<StorageMode>(isCommunityMode ? 'local' : 'cloud')
   // Download app modal state
-  const [showDownloadModal, setShowDownloadModal] = useState(false)
   // Move project modal state
   const [showMoveModal, setShowMoveModal] = useState(false)
   const [conversationToMove, setConversationToMove] = useState<Conversation | null>(null)
@@ -378,29 +371,19 @@ const ConversationPage: React.FC = () => {
   }
 
   const handleNewConversation = async () => {
-    // If a project is selected, skip modal and use project's storage mode
+    // If a project is selected, skip the modal and use its default title
     if (selectedProject) {
-      const projectStorageMode = isCommunityMode ? 'local' : (selectedProject.storage_mode || 'cloud')
-      const defaultTitle = `${selectedProject.name} Conversation`
-      await createNewConversation(projectStorageMode, defaultTitle)
+      await createNewConversation(`${selectedProject.name} Conversation`)
       return
     }
 
-    // No project selected: in Electron mode, show modal to choose storage
-    if (isElectronMode) {
-      setNewConvTitle('New Conversation')
-      setStorageMode(isCommunityMode ? 'local' : 'cloud')
-      setShowNewConversationModal(true)
-    } else {
-      // Web mode: create cloud conversation directly
-      await createNewConversation(isCommunityMode ? 'local' : 'cloud')
-    }
+    setNewConvTitle('New Conversation')
+    setShowNewConversationModal(true)
   }
 
-  const createNewConversation = async (mode: StorageMode, title?: string) => {
+  const createNewConversation = async (title?: string) => {
     const payload = {
       title: title || (selectedProject ? `${selectedProject.name} Conversation` : undefined),
-      storageMode: isCommunityMode ? 'local' : mode,
     }
     const result = await dispatch(createConversation(payload)).unwrap()
 
@@ -453,7 +436,7 @@ const ConversationPage: React.FC = () => {
   }
 
   const handleConfirmNewConversation = async () => {
-    await createNewConversation(storageMode, newConvTitle)
+    await createNewConversation(newConvTitle)
     setShowNewConversationModal(false)
     setNewConvTitle('')
   }
@@ -507,7 +490,6 @@ const ConversationPage: React.FC = () => {
                 </Button>
               )} */}
             </div>
-            {/* Download App Button - only visible in Electron when VITE_ENVIRONMENT is 'web' */}
 
             {/* {selectedProject?.context && (
               <p className='text-sm text-gray-600 ygg-line-clamp-6 dark:text-gray-300 ml-12'>
@@ -522,22 +504,6 @@ const ConversationPage: React.FC = () => {
               Chats
             </h2>
             <div className='flex items-center gap-2 my-1 p-0 lg:p-1 '>
-              {import.meta.env.VITE_ENVIRONMENT === 'web' && (
-                <Button
-                  variant='acrylic'
-                  size='medium'
-                  onClick={() => setShowDownloadModal(true)}
-                  rounded='full'
-                  title='Download App'
-                  aria-label='Download App'
-                  className='mr-2'
-                >
-                  <i
-                    className='bx bx-download text-lg sm:text-lg 2xl:text-2xl mx-0.5 my-1.5 transition-all hover:scale-96 duration-200'
-                    aria-hidden='true'
-                  ></i>
-                </Button>
-              )}
               <Button
                 variant='acrylic'
                 size='large'
@@ -670,16 +636,6 @@ const ConversationPage: React.FC = () => {
                           <span className='font-semibold dark:text-neutral-300 transition-transform duration-100 group-active:scale-99 text-[14px] sm:text-[13px] md:text-[13px] lg:text-[14px] xl:text-[16px] 2xl:text-[18px] 3xl:text-[20px] 4xl:text-[22px] truncate'>
                             {String(index + 1).padStart(2, '0')}. {conv.title || `Conversation ${conv.id}`}
                           </span>
-                          {conv.storage_mode === 'local' && (
-                            <span className='inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-300 shrink-0'>
-                              Local
-                            </span>
-                          )}
-                          {isElectronMode && conv.storage_mode === 'cloud' && (
-                            <span className='inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-blue-100 text-blue-800 dark:bg-blue-900/30 dark:text-blue-300 shrink-0'>
-                              Cloud
-                            </span>
-                          )}
                         </div>
                         <div className='flex items-center gap-1 relative'>
                           {isElectronMode && (
@@ -791,44 +747,6 @@ const ConversationPage: React.FC = () => {
               />
             </div>
 
-            <div className='mb-6'>
-              <label className='block text-sm font-medium mb-2 dark:text-neutral-300'>Storage Location</label>
-              <div className='space-y-2'>
-                {!isCommunityMode && (
-                  <label className='flex items-center p-3 rounded-xl border border-gray-300 dark:border-neutral-700 cursor-pointer hover:bg-neutral-50 dark:hover:bg-neutral-800'>
-                    <input
-                      type='radio'
-                      value='cloud'
-                      checked={storageMode === 'cloud'}
-                      onChange={e => setStorageMode(e.target.value as StorageMode)}
-                      className='mr-3'
-                    />
-                    <div>
-                      <div className='font-medium dark:text-neutral-100'>Cloud</div>
-                      <div className='text-xs text-neutral-600 dark:text-neutral-400'>
-                        Synced to cloud (accessible anywhere)
-                      </div>
-                    </div>
-                  </label>
-                )}
-                <label className='flex items-center p-3 rounded-xl border border-gray-300 dark:border-neutral-700 cursor-pointer hover:bg-neutral-50 dark:hover:bg-neutral-800'>
-                  <input
-                    type='radio'
-                    value='local'
-                    checked={storageMode === 'local'}
-                    onChange={e => setStorageMode(e.target.value as StorageMode)}
-                    className='mr-3'
-                  />
-                  <div>
-                    <div className='font-medium dark:text-neutral-100'>Local Only</div>
-                    <div className='text-xs text-neutral-600 dark:text-neutral-400'>
-                      Stored on this device only (not synced)
-                    </div>
-                  </div>
-                </label>
-              </div>
-            </div>
-
             <div className='flex gap-3 justify-end'>
               <Button
                 variant='acrylic'
@@ -900,19 +818,10 @@ const ConversationPage: React.FC = () => {
               ".
             </p>
 
-            <h4 className='text-sm font-semibold mb-2 dark:text-neutral-200'>
-              Move to Project
-              <span className='ml-2 text-xs font-normal text-neutral-500 dark:text-neutral-400'>
-                ({conversationToMove.storage_mode === 'local' ? 'Local' : 'Cloud'} projects only)
-              </span>
-            </h4>
+            <h4 className='text-sm font-semibold mb-2 dark:text-neutral-200'>Move to Project</h4>
             <div className='max-h-[400px] overflow-y-auto space-y-3 thin-scrollbar'>
               {allProjects
-                .filter(p => {
-                  const convMode = conversationToMove.storage_mode || 'cloud'
-                  const projMode = p.storage_mode || 'cloud'
-                  return p.id !== conversationToMove.project_id && projMode === convMode
-                })
+                .filter(p => p.id !== conversationToMove.project_id)
                 .map(project => (
                   <button
                     key={project.id}
@@ -923,14 +832,8 @@ const ConversationPage: React.FC = () => {
                     <i className='bx bx-chevron-right text-lg text-neutral-400' aria-hidden='true'></i>
                   </button>
                 ))}
-              {allProjects.filter(p => {
-                const convMode = conversationToMove.storage_mode || 'cloud'
-                const projMode = p.storage_mode || 'cloud'
-                return p.id !== conversationToMove.project_id && projMode === convMode
-              }).length === 0 && (
-                <p className='text-sm text-neutral-500 dark:text-neutral-400 text-center py-4'>
-                  No other {conversationToMove.storage_mode === 'local' ? 'local' : 'cloud'} projects available.
-                </p>
+              {allProjects.filter(p => p.id !== conversationToMove.project_id).length === 0 && (
+                <p className='text-sm text-neutral-500 dark:text-neutral-400 text-center py-4'>No other projects available.</p>
               )}
             </div>
             <div className='flex gap-3 justify-end mt-4'>
@@ -1002,7 +905,6 @@ const ConversationPage: React.FC = () => {
       <LowBar conversationId={null} mode='list' notes={researchNotes} isLoadingNotes={notesLoading} />
 
       {/* Download App Modal */}
-      <DownloadAppModal isOpen={showDownloadModal} onClose={() => setShowDownloadModal(false)} />
     </div>
   )
 }

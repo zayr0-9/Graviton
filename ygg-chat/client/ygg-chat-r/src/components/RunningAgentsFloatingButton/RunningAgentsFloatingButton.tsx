@@ -891,6 +891,7 @@ export const RunningAgentsFloatingButton: React.FC<RunningAgentsFloatingButtonPr
                   <AgentsMonitorGrid
                     activeStreams={activeStreams}
                     streamHistory={streamHistory}
+                    resizing={pillResize.dragging}
                     grouped={groupPreviewSteps}
                     onOpenFork={stream => openPreview(stream, true)}
                     onOpenChat={navigateToStream}

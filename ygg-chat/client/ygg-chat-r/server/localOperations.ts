@@ -1,4 +1,5 @@
 ﻿// Local file operations for Electron mode
+import { editorContentHash, saveEditorFile } from './editorFileStore.js'
 import { Express } from 'express'
 import fs from 'fs'
 import path from 'path'
@@ -783,6 +784,7 @@ export function registerLocalOperationsRoutes(app: Express) {
         path: filePath,
         size: stats.size,
         content,
+        contentHash: editorContentHash(content),
       })
     } catch (error: any) {
       if (error.code === 'ENOENT') {
@@ -820,15 +822,22 @@ export function registerLocalOperationsRoutes(app: Express) {
 
     try {
       const { resolvedPath } = await resolveFilePath(filePath)
-      await fs.promises.writeFile(resolvedPath, content, 'utf8')
+      if (Buffer.byteLength(content, 'utf8') > MAX_EDITOR_FILE_SIZE_BYTES) {
+        res.status(413).json({ error: 'File exceeds the editor size limit' }); return
+      }
+      const contentHash = await saveEditorFile(resolvedPath, content, req.body?.expectedHash)
       const updatedStats = await fs.promises.stat(resolvedPath)
 
       res.json({
         path: filePath,
         size: updatedStats.size,
         saved: true,
+        contentHash,
       })
     } catch (error: any) {
+      if (error.status === 409 || error.status === 428) {
+        res.status(error.status).json({ error: error.message, code: 'file_revision_conflict' }); return
+      }
       if (error.code === 'ENOENT') {
         res.status(404).json({ error: 'File not found' })
         return

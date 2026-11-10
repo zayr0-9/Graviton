@@ -1,7 +1,9 @@
 import type { MessageId } from '../../../../../shared/types'
 import type { Message } from './chatTypes'
+import type { ClaudeFilePatch } from '../../../../../shared/claudeProvider'
 
-export type WorkspaceMutationToolName = 'create_file' | 'edit_file' | 'delete_file' | 'multi_edit'
+// 'Edit' and 'Write' are Claude's native file tools.
+export type WorkspaceMutationToolName = 'create_file' | 'edit_file' | 'delete_file' | 'multi_edit' | 'Edit' | 'Write'
 export type WorkspaceMutationOperation = 'create' | 'edit' | 'delete'
 
 export interface BranchFileMutation {
@@ -38,6 +40,7 @@ type ParsedToolCall = {
 type ToolResultRecord = {
   content: unknown
   isError: boolean | null
+  patch?: ClaudeFilePatch
 }
 
 type PendingMutation = Omit<BranchFileMutation, 'key' | 'sequence'>
@@ -47,6 +50,8 @@ const TRACKED_WRITE_TOOL_NAMES = new Set<WorkspaceMutationToolName>([
   'edit_file',
   'delete_file',
   'multi_edit',
+  'Edit',
+  'Write',
 ])
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
@@ -122,6 +127,15 @@ const addParsedToolCall = (
 
 const parseTrackedToolCalls = (message: Message): ParsedToolCall[] => {
   const calls = new Map<string, ParsedToolCall>()
+  const toolUses = parseContentBlocks(message.content_blocks).filter(block => block.type === 'tool_use')
+
+  for (const block of toolUses) {
+    addParsedToolCall(calls, block.id, block.name, block.input, message.id, message.created_at)
+  }
+
+  // Legacy `tool_calls` repeats the blocks' tool calls; read it only for rows without `tool_use` blocks.
+  if (toolUses.length > 0) return [...calls.values()]
+
   const rawToolCalls = parseMaybeJson(message.tool_calls)
 
   const rawCallList: unknown[] = Array.isArray(rawToolCalls)
@@ -144,12 +158,6 @@ const parseTrackedToolCalls = (message: Message): ParsedToolCall[] => {
     )
   }
 
-  for (const block of parseContentBlocks(message.content_blocks)) {
-    if (block.type !== 'tool_use') continue
-
-    addParsedToolCall(calls, block.id, block.name, block.input, message.id, message.created_at)
-  }
-
   return [...calls.values()]
 }
 
@@ -167,6 +175,7 @@ const buildToolResultLookup = (messages: Message[]): Map<string, ToolResultRecor
       lookup.set(toolUseId, {
         content: block.content !== undefined ? block.content : existing?.content ?? null,
         isError: typeof block.is_error === 'boolean' ? block.is_error : existing?.isError ?? null,
+        patch: isRecord(block.patch) && typeof block.patch.filePath === 'string' ? block.patch as unknown as ClaudeFilePatch : existing?.patch,
       })
     }
 
@@ -234,6 +243,14 @@ const extractSingleToolMutation = (
 ): PendingMutation[] => {
   const { parsedContent, success } = resolveToolResultStatus(toolResult)
   if (!success) return []
+
+  if (toolCall.name === 'Edit' || toolCall.name === 'Write') {
+    const path = toolResult?.patch?.filePath ?? asNonEmptyString(toolCall.args.file_path)
+    if (!path) return []
+    // A Write without a patch (older rows) cannot say whether it created the file; edit is the safe label.
+    return [createPendingMutation(toolCall, toolResult?.patch?.kind === 'create' ? 'create' : 'edit', path,
+      toolCall.name === 'Edit' && toolCall.args.replace_all === true ? 'replace_all' : null)]
+  }
 
   const resultPath = isRecord(parsedContent) ? asNonEmptyString(parsedContent.path) : null
   const argPath = asNonEmptyString(toolCall.args.path)

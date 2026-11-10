@@ -4,9 +4,9 @@ import type {
   ProviderGenerateInput,
   ProviderGenerateOutput,
   ProviderStreamEventHandler,
-} from './openRouterProvider.js'
+} from './providerTypes.js'
 import type { ProviderTokenRecord, ProviderTokenStore } from './tokenStore.js'
-import { buildContentBlocks, normalizeBearer, toHyperMessages, toHyperTools, toProviderToolCalls } from './hyperRouterAdapter.js'
+import { generateWithHyperProvider, normalizeBearer } from './hyperRouterAdapter.js'
 
 interface HyperRouterBedrockProviderDeps {
   tokenStore?: ProviderTokenStore
@@ -130,23 +130,6 @@ export class HyperRouterBedrockProvider implements HeadlessProvider {
       ...(credentials.baseURL ? { baseURL: credentials.baseURL } : {}),
     })
 
-    const result = await provider.generate({
-      model: input.modelName || process.env.AWS_BEDROCK_MODEL || DEFAULT_BEDROCK_MODEL,
-      messages: toHyperMessages(input) as any,
-      tools: toHyperTools(input),
-      previousSessionMetadata: null,
-    })
-
-    const content = result.message?.content ?? ''
-    const reasoning = result.message?.reasoningContent || undefined
-    const toolCalls = toProviderToolCalls(result.toolCalls ?? result.message?.toolCalls)
-
-    return {
-      content,
-      reasoning,
-      toolCalls,
-      contentBlocks: buildContentBlocks(content, reasoning, toolCalls),
-      raw: result,
-    }
+    return generateWithHyperProvider(provider, input.modelName || process.env.AWS_BEDROCK_MODEL || DEFAULT_BEDROCK_MODEL, input)
   }
 }

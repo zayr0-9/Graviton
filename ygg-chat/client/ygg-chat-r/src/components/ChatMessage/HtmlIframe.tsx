@@ -1,3 +1,5 @@
+import { isolateBrowserAppHtml } from '../../utils/browserAppIsolation'
+import { isBrowserClient } from '../../platform/clientCapabilities'
 import React, { useEffect, useMemo, useRef } from 'react'
 import { useAuth } from '../../hooks/useAuth'
 import { getToolByName } from '../../features/chats/toolDefinitions'
@@ -38,21 +40,21 @@ export const HtmlIframe: React.FC<HtmlIframeProps> = ({ html, fullHeight = false
     if (!trimmed) return null
     const tool = getToolByName(trimmed)
     if (!tool?.isCustom || !tool.ui?.entry) return null
-    return buildCachedLocalApiUrl(`/headless/custom-tools/ui/${encodeURIComponent(trimmed)}/`)
+    return buildCachedLocalApiUrl(`/headless/custom-tools/ui/${encodeURIComponent(trimmed)}/${isBrowserClient ? '?browserApp=1' : ''}`)
   }, [toolName])
 
   return (
     <iframe
       ref={iframeRef}
       src={resolvedSrc || undefined}
-      srcDoc={resolvedSrc ? undefined : html}
+      srcDoc={resolvedSrc ? undefined : isBrowserClient ? isolateBrowserAppHtml(html) : html}
       className={fullHeight ? 'w-full h-full bg-white' : 'w-full min-h-[800px] rounded-lg bg-white'}
       style={{ border: 'none' }}
       title='HTML Preview'
       allow='fullscreen; accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share'
       allowFullScreen
       referrerPolicy='strict-origin-when-cross-origin'
-      sandbox='allow-scripts allow-same-origin allow-forms allow-popups allow-presentation'
+      sandbox={isBrowserClient ? 'allow-scripts allow-presentation' : 'allow-scripts allow-same-origin allow-forms allow-popups allow-presentation'}
     />
   )
 }

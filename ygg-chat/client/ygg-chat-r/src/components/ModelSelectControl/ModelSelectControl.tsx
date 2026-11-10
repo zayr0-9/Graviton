@@ -1,6 +1,6 @@
 import React, { useMemo, useState } from 'react'
 
-import { useFilteredModels, useModels } from '../../hooks/useQueries'
+import { useFilteredModels } from '../../hooks/useQueries'
 import { ExpandedModelView } from '../ExpandedModelView/ExpandedModelView'
 import { ModelFilterUI } from '../ModelFilterUI/ModelFilterUI'
 import { Select } from '../Select/Select'
@@ -15,6 +15,7 @@ type ModelSelectControlProps = {
   blur?: 'low' | 'high'
   showFilters?: boolean
   footerContent?: React.ReactNode
+  disabled?: boolean
 }
 
 export const ModelSelectControl: React.FC<ModelSelectControlProps> = ({
@@ -27,29 +28,15 @@ export const ModelSelectControl: React.FC<ModelSelectControlProps> = ({
   blur = 'low',
   showFilters = false,
   footerContent,
+  disabled = false,
 }) => {
-  const { data: modelsData } = useModels(provider)
   const { filteredModels, filters, sortOptions, applyFilters, clearFilters, applySorting, refreshFavorites } =
     useFilteredModels(provider)
 
   // State for expanded model view modal
   const [expandedViewOpen, setExpandedViewOpen] = useState(false)
 
-  const models = modelsData?.models || []
-  const userIsFreeTier = modelsData?.userIsFreeTier ?? false
-
-  const disabledModelOptions = useMemo(() => {
-    if (!userIsFreeTier) return []
-    return models.filter(m => !m.isFreeTier).map(m => m.name)
-  }, [userIsFreeTier, models])
-
-  const sortedFilteredModels = useMemo(() => {
-    if (!userIsFreeTier) return filteredModels
-
-    const freeModels = filteredModels.filter(m => m.isFreeTier)
-    const paidModels = filteredModels.filter(m => !m.isFreeTier)
-    return [...freeModels, ...paidModels]
-  }, [filteredModels, userIsFreeTier])
+  const sortedFilteredModels = filteredModels
 
   const modelData = useMemo(
     () => Object.fromEntries(sortedFilteredModels.map(m => [m.name, m])),
@@ -65,8 +52,7 @@ export const ModelSelectControl: React.FC<ModelSelectControlProps> = ({
         options={sortedFilteredModels.map(m => m.name)}
         placeholder={placeholder}
         blur={blur}
-        disabled={sortedFilteredModels.length === 0}
-        disabledOptions={disabledModelOptions}
+        disabled={disabled || sortedFilteredModels.length === 0}
         className={className}
         searchBarVisible={true}
         modelData={modelData}
@@ -96,8 +82,7 @@ export const ModelSelectControl: React.FC<ModelSelectControlProps> = ({
         models={sortedFilteredModels}
         provider={provider}
         selectedModelName={selectedModelName}
-        onSelect={onChange}
-        disabledOptions={disabledModelOptions}
+        onSelect={model => { if (!disabled) onChange(model) }}
       />
     </>
   )

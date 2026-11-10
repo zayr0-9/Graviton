@@ -1,17 +1,17 @@
 # Chat-loop parity fixtures
 
 Recorded SSE streams used by `../chatLoop.parity.test.ts` to dual-run the server
-engine against the current renderer path deterministically (Railway/provider
+engine against the current renderer path deterministically (provider
 responses are non-deterministic, so we record once and replay).
 
 ## Format
 
-One JSON file per `<provider>.<operation>.json`, e.g. `openrouter.send.json`:
+One JSON file per `<provider>.<operation>.json`, e.g. `openrouterbyok.send.json`:
 
 ```jsonc
 {
   "request": {                 // the HeadlessMessageRequest inputs
-    "provider": "openrouter",
+    "provider": "openrouterbyok",
     "operation": "send",
     "modelName": "…",
     "content": "…",
@@ -19,10 +19,9 @@ One JSON file per `<provider>.<operation>.json`, e.g. `openrouter.send.json`:
     "parentId": null,
     "tools": []
   },
-  "providerEvents": [          // raw provider/Railway SSE frames, in arrival order
+  "providerEvents": [          // raw provider SSE frames, in arrival order
     { "type": "chunk", "part": "text", "delta": "Hello" },
     { "type": "tool_call", "toolCall": { "id": "t1", "name": "read_file", "arguments": "{…}" } },
-    { "type": "free_generations_update", "remaining": 41, "isFreeTier": true },
     { "type": "complete", "message": { /* … */ } }
   ],
   "golden": {                  // expected, captured from the current renderer path

@@ -1,13 +1,12 @@
 import React, { createContext, useContext, useState } from 'react'
-import { ArrowLeft, RefreshCw, SlidersHorizontal, Activity, Database, Cloud, ChevronDown } from 'lucide-react'
+import { ArrowLeft, RefreshCw, SlidersHorizontal, Activity, Database, ChevronDown } from 'lucide-react'
 import { useReducedMotion } from 'framer-motion'
 import { BarChart as RechartsBarChart, Bar as RechartsBar, LineChart as RechartsLineChart, Line as RechartsLine,
   XAxis as RechartsXAxis, YAxis as RechartsYAxis, CartesianGrid as RechartsCartesianGrid,
   ResponsiveContainer as RechartsResponsiveContainer, Tooltip as RechartsTooltip, Legend as RechartsLegend } from 'recharts'
 import { useNavigate } from 'react-router-dom'
 import { useCustomChatTheme, useHtmlDarkMode, getThemeModeColor, type CustomChatTheme } from '../components/ThemeManager/themeConfig'
-import { isCommunityMode } from '../config/runtimeMode'
-import { useCloudLoggingAnalytics, useLocalLoggingAnalytics, type LoggingFilters,
+import { useLocalLoggingAnalytics, type LoggingFilters,
   type LoggingDashboardResponse, type OutcomeMetrics } from '../hooks/useLoggingAnalytics'
 import { formatMetric, formatPercent, formatDuration, rankTools, shortenLabel, toolJobRows,
   uniqueToolCount, usageHeadline, activityTimeline } from '../utils/loggingAnalytics'
@@ -53,14 +52,10 @@ export default function LoggingDashboard() {
     secondary: color('toolJobsProgressRunning') || '#0891b2', failed: color('toolJobsProgressFailed') || '#e11d48',
     completed: color('toolJobsProgressCompleted') || '#16a34a', running: color('toolJobsProgressRunning') || '#2563eb',
     mutedChart: color('toolJobsMutedText') || (dark ? '#a3a3a3' : '#737373') }
-  const [source, setSource] = useState<'cloud' | 'local'>(isCommunityMode ? 'local' : 'cloud')
   const [filters, setFilters] = useState<LoggingFilters>(initialFilters)
   const [section, setSection] = useState<(typeof sections)[number]>('Overview')
-  const cloud = useCloudLoggingAnalytics(filters, !isCommunityMode && source === 'cloud')
-  const local = useLocalLoggingAnalytics(filters, source === 'local')
-  const query = source === 'local' ? local : cloud
-  // Disabled cloud queries must not reveal cached account data after sign-out.
-  const data = source === 'cloud' && !query.isEnabled ? undefined : query.data
+  const query = useLocalLoggingAnalytics(filters)
+  const data = query.data
   const available = data?.filters.available
   const fetching = query.isFetching
   const hasFilters = Object.entries(filters).some(([key, value]) => key !== 'rangeDays' && Boolean(value))
@@ -88,7 +83,7 @@ export default function LoggingDashboard() {
           </div>
           <div className='flex items-center gap-3'>
             <div className='text-right'>
-              <Badge>{source === 'local' ? <Database size={13} /> : <Cloud size={13} />} {source === 'local' ? 'Local SQLite' : 'Cloud analytics'}</Badge>
+              <Badge><Database size={13} /> Local SQLite</Badge>
               <Muted className='mt-1 text-xs'>
                 {updatedAt > 0 ? `Updated ${new Date(updatedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}` : 'Not loaded yet'}
               </Muted>
@@ -103,9 +98,6 @@ export default function LoggingDashboard() {
           <div className='grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-6'>
             <Filter label='Period' value={String(filters.rangeDays)} onChange={value => setFilters(prev => ({ ...prev, rangeDays: Number(value) }))}
               options={ranges.map(value => ({ value: String(value), label: `Last ${value} days` }))} all={false} />
-            <Filter label='Source' value={source} all={false} disabled={isCommunityMode}
-              options={isCommunityMode ? [{ value: 'local', label: 'Local SQLite' }] : [{ value: 'cloud', label: 'Cloud' }, { value: 'local', label: 'Local SQLite' }]}
-              onChange={value => { setSource(value as 'cloud' | 'local'); setFilters(prev => ({ ...initialFilters, rangeDays: prev.rangeDays })) }} />
             <Filter label='Project' value={filters.projectId} onChange={value => setFilter('projectId', value)}
               options={available?.projects.map(row => ({ value: row.id, label: row.name }))} />
             <Filter label='Conversation' value={filters.conversationId} onChange={value => setFilter('conversationId', value)}
@@ -122,16 +114,15 @@ export default function LoggingDashboard() {
               <SlidersHorizontal size={16} /> Execution filters <ChevronDown size={14} />
             </summary>
             <div className='mt-3 grid gap-3 sm:grid-cols-3'>
-              <Filter label={source === 'local' ? 'Chat run status' : 'Provider run status'}
-                value={source === 'local' ? filters.runStatus : filters.providerRunStatus}
-                disabled={source === 'local' && data?.localRuns?.available !== true}
-                onChange={value => setFilter(source === 'local' ? 'runStatus' : 'providerRunStatus', value)}
-                options={optionRows(source === 'local' ? available?.runStatuses : available?.providerRunStatuses)} />
+              <Filter label='Chat run status' value={filters.runStatus}
+                disabled={data?.localRuns?.available !== true}
+                onChange={value => setFilter('runStatus', value)}
+                options={optionRows(available?.runStatuses)} />
               <Filter label='Tool name' value={filters.toolName} onChange={value => setFilter('toolName', value)} options={optionRows(available?.toolNames)} />
               <Filter label='Execution / job status' value={filters.toolStatus} onChange={value => setFilter('toolStatus', value)} options={optionRows(available?.toolJobStatuses)} />
             </div>
             <Muted className='mt-3 text-xs leading-relaxed'>Run status filters chat runs only. Tool status filters tracked executions and background jobs, not requested calls.
-              {source === 'local' && ' Background jobs have no model ownership and do not follow the model filter.'}</Muted>
+              {' Background jobs have no model ownership and do not follow the model filter.'}</Muted>
           </details>
         </Panel>
 
@@ -147,15 +138,15 @@ export default function LoggingDashboard() {
         {error && <div role='alert' className='flex flex-wrap items-center justify-between gap-3 rounded-2xl bg-rose-50 p-4 text-sm text-rose-800 dark:bg-rose-950/30 dark:text-rose-200'
           style={{ backgroundColor: tone.error, color: tone.errorText }}><span>{error}</span>
           <button type='button' className={`rounded-full px-4 py-2 ${focusClass}`} onClick={() => void query.refetch()} disabled={fetching || !query.isEnabled}>Retry</button></div>}
-        {!data && !fetching && !error && <Panel><Empty message={source === 'cloud' ? 'Sign in to load cloud analytics, or select Local SQLite.' : 'Analytics are not available yet.'} /></Panel>}
+        {!data && !fetching && !error && <Panel><Empty message='Analytics are not available yet.' /></Panel>}
         {data && <>
           {data.summary.messagesTotal === 0 && (data.costRecords ?? data.models.topByCredits.length) === 0 &&
             (data.localRuns?.total || 0) === 0 && (data.executions?.root.total || 0) === 0 && data.tools.jobs.total === 0 &&
             <Panel><Empty message='No activity matches this period and scope. Try another period or clear the filters.' /></Panel>}
-          {section === 'Overview' && <Overview data={data} local={source === 'local'} />}
+          {section === 'Overview' && <Overview data={data} />}
           {section === 'Models & tokens' && <Models data={data} />}
           {section === 'Runs & tools' && <RunsAndTools data={data} />}
-          {section === 'Data quality' && <Quality data={data} local={source === 'local'} />}
+          {section === 'Data quality' && <Quality data={data} />}
         </>}
       </div>
     </main>
@@ -222,19 +213,19 @@ function DataTable({ headers, rows, empty = 'No records match this scope.' }: { 
   </div>
 }
 
-function Overview({ data, local }: { data: LoggingDashboardResponse; local: boolean }) {
+function Overview({ data }: { data: LoggingDashboardResponse }) {
   const tokens = usageHeadline(data)
   const costAvailable = data.availability?.costs !== false
   return <div className='space-y-5'>
     <Metrics items={[
-      { label: 'Recorded credits', value: formatMetric(costAvailable ? data.summary.netCreditsConsumed : null), detail: 'Cost records · not a balance statement' },
+      { label: 'Recorded cost', value: formatMetric(costAvailable ? data.summary.netCreditsConsumed : null), detail: 'Provider-reported cost records' },
       { label: tokens.label, value: formatMetric(tokens.value, 0), detail: tokens.detail },
       { label: 'Messages', value: formatMetric(data.summary.messagesTotal, 0), detail: `${formatMetric(data.summary.activeDays, 0)} active days` },
       { label: 'Completed chat runs', value: formatMetric(data.localRuns?.available ? data.localRuns.statusCounts.completed || 0 : null, 0), detail: 'Persisted main + subagent + tool streams' },
     ]} />
     <div className='grid gap-5 xl:grid-cols-2'>
-      <Panel title='Spend over time' subtitle='Recorded credits per UTC day. Missing days have no recorded cost samples.'>
-        <Chart rows={data.spend.daily} x='date' series={[{ key: local ? 'apiCredits' : 'netCreditsConsumed', label: 'Credits', color: 'accent' }]} kind='line' />
+      <Panel title='Spend over time' subtitle='Recorded cost per UTC day. Missing days have no recorded cost samples.'>
+        <Chart rows={data.spend.daily} x='date' series={[{ key: 'apiCredits', label: 'Cost', color: 'accent' }]} kind='line' />
       </Panel>
       <Panel title='Conversation activity' subtitle='Stored messages per UTC day in the selected project, conversation, and model scope.'>
         <Chart rows={activityTimeline(data)} x='date' series={[{ key: 'messages', label: 'Messages', color: 'secondary' }]} kind='bar' />
@@ -245,11 +236,10 @@ function Overview({ data, local }: { data: LoggingDashboardResponse; local: bool
         { label: 'Active conversations', value: formatMetric(data.summary.activeConversations, 0), detail: `${formatMetric(data.summary.conversationsCreated, 0)} created in range` },
         { label: 'Active projects', value: formatMetric(data.summary.activeProjects, 0), detail: `${formatMetric(data.summary.projectsCreated, 0)} created in range` },
         { label: 'Unique tools', value: formatMetric(uniqueToolCount(data), 0), detail: 'Requests, invocations, and background jobs' },
-        { label: 'Credits / cost record', value: formatMetric(costAvailable && data.costRecords ? data.summary.netCreditsConsumed / data.costRecords : null), detail: `${formatMetric(data.costRecords, 0)} records · not a generation count` },
+        { label: 'Cost / cost record', value: formatMetric(costAvailable && data.costRecords ? data.summary.netCreditsConsumed / data.costRecords : null), detail: `${formatMetric(data.costRecords, 0)} records · not a generation count` },
       ]} />
       <div className='mt-5 flex flex-wrap gap-2'>{Object.entries(data.activity.messagesByRole).map(([role, count]) => <Badge key={role}>{role}: {formatMetric(count, 0)}</Badge>)}</div>
     </Panel>
-    {local ? <Muted className='px-2 text-xs'>Local analytics do not supply your subscription, current balance, billing refunds, or provider reconciliation.</Muted> : <Billing data={data} />}
   </div>
 }
 function Models({ data }: { data: LoggingDashboardResponse }) {
@@ -264,9 +254,9 @@ function Models({ data }: { data: LoggingDashboardResponse }) {
       { label: 'Reasoning breakdown', value: formatMetric(available ? totals?.reasoningTokens : null, 0), detail: 'Not assumed additive to output' },
     ]} />
     <div className='grid gap-5 xl:grid-cols-2'>
-      <Panel title='Model spend' subtitle='Highest recorded credit usage; rankings use all models before limiting chart display.'>
+      <Panel title='Model spend' subtitle='Highest recorded cost; rankings use all models before limiting chart display.'>
         <Chart rows={models.slice().sort((a, b) => Number(b.totalActualCredits || 0) - Number(a.totalActualCredits || 0)).slice(0, 8)} x='model'
-          series={[{ key: 'totalActualCredits', label: 'Credits', color: 'accent' }]} kind='bar' horizontal />
+          series={[{ key: 'totalActualCredits', label: 'Cost', color: 'accent' }]} kind='bar' horizontal />
       </Panel>
       <Panel title='Recorded token mix' subtitle='Input and output components from provider-cost records. Reasoning is listed separately below.'>
         <Chart rows={data.models.tokenMixByModel.slice(0, 8)} x='model' kind='bar' horizontal
@@ -274,7 +264,7 @@ function Models({ data }: { data: LoggingDashboardResponse }) {
       </Panel>
     </div>
     <Panel title='Model breakdown' subtitle='Records are cost entries, not a count of chat runs.'>
-      <DataTable headers={['Model', 'Cost records', 'Credits', 'Avg credits', 'Input', 'Output', 'Reasoning']}
+      <DataTable headers={['Model', 'Cost records', 'Cost', 'Avg cost', 'Input', 'Output', 'Reasoning']}
         rows={models.map(row => { const mix = data.models.tokenMixByModel.find(item => item.model === row.model)
           return [String(row.model || 'unknown'), formatMetric(Number(row.runs || 0), 0), formatMetric(Number(row.totalActualCredits || 0)),
             formatMetric(Number(row.avgActualCredits || 0)), formatMetric(mix ? Number(mix.prompt) : null, 0),
@@ -356,7 +346,7 @@ function RunsAndTools({ data }: { data: LoggingDashboardResponse }) {
         <div className='mt-4'><DataTable headers={['Batch tool', 'Batches', 'Expanded calls', 'Calls avoided']}
           rows={batching.byBatchTool.map(row => [row.toolName, formatMetric(row.batches, 0), formatMetric(row.expandedCalls, 0), formatMetric(row.savedCalls, 0)])}
           empty='No multi_call or multi_edit batches in this scope.' /></div>
-      </> : <Empty message='This analytics source does not supply batching data. Local and cloud populations are never mixed.' />}
+      </> : <Empty message='Batching data is unavailable.' />}
     </Panel>
     <Panel title='Background jobs' subtitle='Separate asynchronous job tracking, not all tool executions. Model and chat-run-status filters do not apply to these jobs.'>
       {data.tools.jobs.available ? <>
@@ -373,7 +363,7 @@ function RunsAndTools({ data }: { data: LoggingDashboardResponse }) {
     </Panel>
   </div>
 }
-function Quality({ data, local }: { data: LoggingDashboardResponse; local: boolean }) {
+function Quality({ data }: { data: LoggingDashboardResponse }) {
   const quality = data.dataQuality
   return <div className='space-y-5'>
     <Panel title='Coverage, not certainty' subtitle='Analytics describe persisted samples. Missing records are not successful zero usage.'>
@@ -386,47 +376,19 @@ function Quality({ data, local }: { data: LoggingDashboardResponse; local: boole
       ]} />
     </Panel>
     <Panel title='Source availability' subtitle='Optional missing historical tables are explicit; other query failures surface as errors.'>
-      <DataTable headers={['Source', 'Availability']} rows={local ? [
+      <DataTable headers={['Source', 'Availability']} rows={[
         ['Provider cost records', data.availability?.costs === true ? 'Available' : 'Unavailable / not reported'],
         ['Persisted chat runs', data.localRuns?.available ? 'Available' : 'Unavailable'],
         ['Durable tool invocations', data.executions?.available ? 'Available' : 'Unavailable'],
         ['Background jobs', data.tools.jobs.available ? 'Available' : 'Unavailable'],
-        ['Subscription, balance & reconciliation', 'Not supplied by local analytics'],
-      ] : [['Cloud analytics', 'Available'], ['Durable local execution metadata', 'Not included in cloud totals']]} />
+      ]} />
       <Muted className='mt-4 text-sm leading-relaxed'>Cost-record numeric zeros can represent omitted usage, not measured free execution.
         Historical run and tool metadata may be incomplete. Reasoning counts may already be part of output tokens.
         Entity activity counts use stored messages; creation counts use entity creation dates.</Muted>
     </Panel>
     <ReportedUsage data={data} />
-    {!local && <Panel title='Provider reconciliation' subtitle='Billing-provider records, distinct from local chat streams.'>
-      <Metrics items={[
-        { label: 'Provider records', value: formatMetric(data.providerRuns.quality.total, 0) },
-        { label: 'Reconciled', value: formatPercent(data.providerRuns.quality.total ? data.providerRuns.quality.reconciledPct : null) },
-        { label: 'Message link coverage', value: formatPercent(data.providerRuns.quality.total ? data.providerRuns.quality.withMessageLinkPct : null) },
-        { label: 'P90 reconciliation lag', value: data.providerRuns.quality.total ? `${formatMetric(data.providerRuns.reconcileLagMinutes.p90)} min` : '—' },
-      ]} />
-    </Panel>}
   </div>
 }
-function Billing({ data }: { data: LoggingDashboardResponse }) {
-  const plan = data.payments.currentPlan
-  return <div className='grid gap-5 xl:grid-cols-2'>
-    <Panel title='Subscription & balance' subtitle='Current account information, independent of selected activity filters.'>
-      <DataTable headers={['Metric', 'Value']} rows={[
-        ['Plan', plan?.planName || plan?.planCode || '—'], ['Status', plan?.subscriptionStatus || '—'],
-        ['Credits balance', formatMetric(data.payments.currentCreditsBalance)], ['Credits / day', formatMetric(data.spend.burnRate.creditsPerDay)],
-        ['Projected days remaining', formatMetric(data.spend.burnRate.projectedDaysRemaining)],
-      ]} />
-    </Panel>
-    <Panel title='Allocations & top-ups' subtitle='Recorded billing history returned by the selected analytics source.'>
-      <DataTable headers={['Type', 'Date', 'Credits']} rows={[
-        ...data.payments.history.monthlyAllocation.map(row => ['Allocation', String(row.created_at || '').slice(0, 10), formatMetric(Number(row.credits || 0))]),
-        ...data.payments.history.topups.map(row => ['Top-up', String(row.created_at || '').slice(0, 10), formatMetric(Number(row.credits || 0))]),
-      ]} />
-    </Panel>
-  </div>
-}
-
 type Series = { key: string; label: string; color: 'accent' | 'secondary' | 'failed' }
 function Chart({ rows, x, series, kind, horizontal = false, unit }: { rows: Array<Record<string, unknown>>;
   x: string; series: Series[]; kind: 'bar' | 'line'; horizontal?: boolean; unit?: 'percent' | 'duration' }) {

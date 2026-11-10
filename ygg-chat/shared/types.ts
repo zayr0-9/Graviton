@@ -2,7 +2,7 @@ import type { OpenAIContextUsage } from './contextUsage'
 
 // This file contains types shared between client and server
 
-// UUID-based ID types for Supabase compatibility
+// UUID-based ID types
 export type MessageId = string
 export type ConversationId = string
 export type ProjectId = string
@@ -39,16 +39,18 @@ export interface SelectedFileContent {
 }
 
 export interface BaseMessage {
+  /** Host SQLite revision; absent for unmirrored cloud/optimistic rows. */
+  revision?: number | null
   id: MessageId
   conversation_id: ConversationId
   role: 'user' | 'assistant' | 'system' | 'ex_agent' | 'tool'
   thinking_block?: string
-  // tool_calls can be string (SQLite) or parsed object/array (Supabase)
+  // tool_calls can be a JSON string (SQLite) or a parsed object/array
   // Frontend handles both formats transparently
   tool_calls?: string | any
   // tool_call_id links tool messages back to the assistant's tool_use block
   tool_call_id?: string | null
-  // content_blocks can be string (SQLite) or parsed object/array (Supabase)
+  // content_blocks can be a JSON string (SQLite) or a parsed object/array
   // Structured content with thinking, tool_use, tool_result, text blocks
   content_blocks?: string | any
   /** Latest OpenAI/Codex provider-reported context snapshot for this assistant turn. */
@@ -103,7 +105,6 @@ export interface SendMessageRequest {
   executionMode?: 'server' | 'client'
   isBranch?: boolean
   attachmentsBase64?: any[]
-  storageMode?: StorageMode
   isElectron?: boolean
   imageConfig?: ImageConfig
   reasoningConfig?: ReasoningConfig
@@ -149,7 +150,6 @@ export interface BaseModel {
   topProviderContextLength: number | null
 
   // Free tier eligibility (for UI to disable selection for free users)
-  isFreeTier?: boolean
 }
 
 export interface Project {
@@ -177,6 +177,8 @@ export interface ConversationRecord {
   conversation_context: string | null
   research_note: string | null
   cwd?: string | null
+  /** JSON array of extra working directories (local column); NULL means none. */
+  additional_cwds?: string | null
   favorite?: number
   created_at: string
   updated_at: string

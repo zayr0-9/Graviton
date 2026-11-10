@@ -1,4 +1,4 @@
-import { hasFullToolAccess } from '../toolAccessContext.js'
+import { hasFullToolAccess, hasToolAccessTo } from '../toolAccessContext.js'
 import { StringDecoder } from 'string_decoder'
 import * as crypto from 'crypto'
 import * as fs from 'fs'
@@ -28,7 +28,7 @@ export interface FileMetadata {
   lineEnding: '\n' | '\r\n' | 'mixed'
   hasBOM: boolean
   encoding: BufferEncoding
-  lastModified: Date
+  lastModified: string // ISO timestamp; keep tool results plain JSON for in-process consumers
   inode?: number // Unix inode number for change detection
 }
 
@@ -108,6 +108,7 @@ function resolveWslLikeAbsolutePath(inputPath: string, cwd?: string): string {
 }
 
 function assertWithinWorkspace(inputPath: string, resolvedPath: string, cwd: string, usePosix: boolean): void {
+  if (hasToolAccessTo(resolvedPath, usePosix)) return
   if (usePosix) {
     const workspace = resolveWslLikeAbsolutePath(cwd)
     const target = resolveWslLikeAbsolutePath(resolvedPath)
@@ -351,7 +352,7 @@ export async function readTextFile(inputPath: string, options: ReadFileOptions =
       const rel = path.relative(root, target)
       return rel !== '..' && !rel.startsWith(`..${path.sep}`) && !path.isAbsolute(rel)
     }
-    let allowed = within(abs, canonicalScope)
+    let allowed = within(abs, canonicalScope) || hasToolAccessTo(abs)
     if (!allowed) {
       // Canonicalize the exception roots too (e.g. /var -> /private/var on macOS).
       const managedRoots: string[] = []
@@ -377,7 +378,7 @@ export async function readTextFile(inputPath: string, options: ReadFileOptions =
     const probe = await readPrefix(fd, 4096, options)
     if (isLikelyBinary(probe)) throw new Error('Binary file detected; reading binary is not supported by this tool')
     const metadata: FileMetadata = {
-      lineEnding: '\n', hasBOM: hasBOM(probe), encoding: 'utf8', lastModified: stats.mtime, inode: stats.ino,
+      lineEnding: '\n', hasBOM: hasBOM(probe), encoding: 'utf8', lastModified: stats.mtime.toISOString(), inode: stats.ino,
     }
     const needsLines = options.ranges !== undefined || options.startLine !== undefined || options.endLine !== undefined
     if (!needsLines) {

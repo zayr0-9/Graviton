@@ -6,8 +6,12 @@ yarn-debug.log*
 yarn-error.log*
 
 # Build outputs
+# tsc -b output of vite.config.ts; Vite resolves .js before .ts, so it must never be committed
+vite.config.js
+vite.config.d.ts
 dist/
 dist-electron/
+dist-browser/
 build/
 *.tsbuildinfo
 

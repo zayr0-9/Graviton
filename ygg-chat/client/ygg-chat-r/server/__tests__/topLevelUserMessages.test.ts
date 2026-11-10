@@ -7,6 +7,7 @@ import { INSTRUCTION_SET_PREAMBLE } from '../../../../shared/contextInjection.js
 import { registerAppAutomationRoutes } from '../headlessServer/routes/appAutomationRoutes.js'
 import { registerConversationRoutes } from '../routes/conversationRoutes.js'
 import {
+  TOP_LEVEL_PREVIEW_MESSAGES_SQL,
   TOP_LEVEL_USER_MESSAGES_SQL,
   TOP_LEVEL_USER_MESSAGE_SEARCH_REBUILD_SQL,
   TOP_LEVEL_USER_MESSAGE_SEARCH_SCHEMA_SQL,
@@ -316,12 +317,25 @@ describe('shared human top-level message selector', () => {
     }
   })
 
+  it('previews top-level assistant rows without adding them to the user-only selector', () => {
+    addMessage('user-root')
+    addMessage('assistant-root', null, { role: 'assistant' })
+    addMessage('system-root', null, { role: 'system' })
+    addMessage('reminder', null, { meta: injectionMeta })
+    addMessage('assistant-after-reminder', 'reminder', { role: 'assistant' })
+    addMessage('nested-assistant', 'user-root', { role: 'assistant' })
+    const previewIds = db.prepare(TOP_LEVEL_PREVIEW_MESSAGES_SQL).all('conversation-1').map((row: any) => row.id)
+    expect(previewIds).toEqual(['assistant-after-reminder', 'assistant-root', 'user-root'])
+    expect(selectedIds()).toEqual(['user-root'])
+  })
+
   it('serves the same real prompt IDs and compact payload from app and legacy endpoints', async () => {
     addMessage('reminder', null, { meta: injectionMeta, content: reminder })
     addMessage('prompt-a', 'reminder')
     addMessage('prompt-b', 'reminder')
     const app = express()
-    const deps = { db, statements: { getTopLevelUserMessagesByConversationId: db.prepare(TOP_LEVEL_USER_MESSAGES_SQL) } }
+    addMessage('assistant-root', null, { role: 'assistant' })
+    const deps = { db, statements: { getTopLevelPreviewMessagesByConversationId: db.prepare(TOP_LEVEL_PREVIEW_MESSAGES_SQL) } }
     registerAppAutomationRoutes(app, deps)
     registerConversationRoutes(app, deps)
     await new Promise<void>((resolve, reject) => {
@@ -332,7 +346,7 @@ describe('shared human top-level message selector', () => {
     for (const prefix of ['app', 'local']) {
       const response = await fetch(`http://127.0.0.1:${port}/api/${prefix}/conversations/conversation-1/messages/top-level-users`)
       expect(response.status).toBe(200)
-      expect(await response.json()).toEqual(selectMessages())
+      expect(await response.json()).toEqual(db.prepare(TOP_LEVEL_PREVIEW_MESSAGES_SQL).all('conversation-1'))
     }
   })
 })

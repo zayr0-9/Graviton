@@ -8,7 +8,7 @@ import type { ProviderTokenStore } from './tokenStore.js'
 import { CodexResponsesProvider, toCodexMessages } from './codex/index.js'
 import { normalizeOpenAIContextUsage, openAIContextUsageBlock } from '../../../../../shared/contextUsage.js'
 import { buildToolNameMap, sanitizeToolResultContentForModel } from './toolResultSanitizer.js'
-import { attachPartialOutput } from './openRouterProvider.js'
+import { attachPartialOutput } from './providerTypes.js'
 import type {
   HeadlessProvider,
   ProviderGenerateInput,
@@ -17,7 +17,7 @@ import type {
   ProviderStreamEventHandler,
   ProviderToolCall,
   ProviderToolDefinition,
-} from './openRouterProvider.js'
+} from './providerTypes.js'
 
 interface OpenAiChatgptProviderDeps {
   tokenStore?: ProviderTokenStore
@@ -656,7 +656,7 @@ function getGeneratedImagesDirectoryHint(): { dir: string | null; pattern: strin
 }
 
 function hasImageGenerationIntent(input: ProviderGenerateInput): boolean {
-  const imageConfig = input.railwayTurn?.imageConfig
+  const imageConfig = input.turnContext?.imageConfig
   if (imageConfig && typeof imageConfig === 'object' && Object.keys(imageConfig).length > 0) return true
 
   const model = normalizeOpenAIChatGPTModel(input.modelName).toLowerCase()
@@ -949,7 +949,7 @@ function isCodexDevLoggingEnabled(): boolean {
 }
 
 function createOpenAiChatgptTraceId(input: ProviderGenerateInput): string {
-  const base = input.railwayTurn?.conversationId?.trim() || input.userId || 'ygg-chat'
+  const base = input.turnContext?.conversationId?.trim() || input.userId || 'ygg-chat'
   return `${base}:${Date.now().toString(36)}:${Math.random().toString(36).slice(2, 8)}`
 }
 
@@ -2068,7 +2068,7 @@ export class OpenAiChatgptProvider implements HeadlessProvider {
       requestedModel: input.modelName,
       normalizedModel: normalizeOpenAIChatGPTModel(input.modelName),
       userId: input.userId,
-      conversationId: input.railwayTurn?.conversationId,
+      conversationId: input.turnContext?.conversationId,
       hasAccessTokenInput: Boolean(input.accessToken),
       hasAccountIdInput: Boolean(input.accountId),
       historyItems: Array.isArray(input.history) ? input.history.length : 0,
@@ -2080,15 +2080,15 @@ export class OpenAiChatgptProvider implements HeadlessProvider {
     const auth = await this.resolveAuth(input)
     const model = normalizeOpenAIChatGPTModel(input.modelName)
     const contextLength = resolveOpenAIChatGPTContextLength(input.contextLength)
-    const sessionId = input.railwayTurn?.conversationId?.trim() || traceId
-    const requestId = (input.railwayTurn as any)?.runId?.trim?.() || sessionId
+    const sessionId = input.turnContext?.conversationId?.trim() || traceId
+    const requestId = (input.turnContext as any)?.runId?.trim?.() || sessionId
     const messages = toCodexMessages(input)
     // BEHAVIOUR CHANGE: this read was `input.reasoningConfig?.effort`, but
     // ProviderGenerateInput has no such field — callers set reasoningConfig on
-    // railwayTurn (toolLoopService.ts sets it there from ChatOrchestrator /
+    // turnContext (toolLoopService.ts sets it there from ChatOrchestrator /
     // SubagentRunService). The old read was therefore always undefined and the
     // Codex provider never received a reasoning effort.
-    const reasoningEffort = input.railwayTurn?.reasoningConfig?.effort
+    const reasoningEffort = input.turnContext?.reasoningConfig?.effort
     const codexProvider = new CodexResponsesProvider({
       auth,
       reasoningEffort:
@@ -2106,7 +2106,7 @@ export class OpenAiChatgptProvider implements HeadlessProvider {
         runId: requestId,
         signal: input.signal,
         emit,
-        allowCommentaryFallbackText: input.railwayTurn?.allowCommentaryFallbackText === true,
+        allowCommentaryFallbackText: input.turnContext?.allowCommentaryFallbackText === true,
       })
       .catch((error: unknown) => {
         // The transport already attached content/reasoning/toolCalls; only the block

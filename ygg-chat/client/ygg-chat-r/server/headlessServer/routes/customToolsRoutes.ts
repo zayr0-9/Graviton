@@ -1,3 +1,4 @@
+import { isNativeClientFence, nativeClientHeader } from '../../nativeClientFence.js'
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import type { Express, Request, Response } from 'express'
@@ -89,6 +90,7 @@ async function serveUiFile(req: Request, res: Response, tool: CustomToolDefiniti
     const rawHtml = await fs.readFile(filePath, 'utf-8')
     const html = rawHtml.replace(/\{\{CONFIG\}\}/g, JSON.stringify(buildUiConfig(req, tool)))
     res.setHeader('Content-Type', contentType)
+    if (!isNativeClientFence(req.get(nativeClientHeader))) res.setHeader('Content-Security-Policy', "connect-src 'none'; form-action 'none'; worker-src 'none'")
     res.setHeader('Cache-Control', 'no-store')
     res.status(200).send(html)
     return

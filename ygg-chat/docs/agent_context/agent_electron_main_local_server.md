@@ -1,6 +1,7 @@
 ---
 paths:
   - "client/ygg-chat-r/electron/main.ts"
+  - "client/ygg-chat-r/electron/rendererRecovery.ts"
   - "client/ygg-chat-r/electron/preload.ts"
   - "client/ygg-chat-r/electron/electronHostAdapter.ts"
   - "client/ygg-chat-r/server/createYggServer.ts"
@@ -10,11 +11,11 @@ paths:
 
 # Agent Context: Electron Main and Local Server
 
-Last reviewed: 2026-08-21
+Last reviewed: 2026-11-10
 
 ## Purpose
 
-Documents Electron main/preload responsibilities and the embedded local Express server used by the desktop app. Since the headless main-agent-loop migration, that same Express app (on `127.0.0.1:3002`) also co-mounts the server-owned chat engine and the cloud gateway — the renderer is now a thin client that talks ONLY to `:3002`.
+Documents Electron main/preload responsibilities and the embedded local Express server used by the desktop app. Since the headless main-agent-loop migration, that same Express app (on `127.0.0.1:3002`) also co-mounts the server-owned chat engine and the local data gateway — the renderer is now a thin client that talks ONLY to `:3002`. Graviton is fully local: no hosted backend, account or `.env` is involved.
 
 Since the Phase 1 server/client separation, the server graph is runtime-neutral. Both hosts start it through one factory: `createYggServer(config, capabilities)`. Electron is one host. A standalone Node process is the other host (`npm run build:server` then `npm run start:server`).
 
@@ -27,7 +28,7 @@ Use this when changing:
 - preload APIs;
 - app startup/shutdown;
 - local API routes (`/api/app/*` SQLite CRUD);
-- local server registration for tools, hooks, MCP, skills, headless chat engine, cloud gateway;
+- local server registration for tools, hooks, MCP, skills, headless chat engine, local data gateway;
 - OAuth callbacks in local runtime;
 - the server-owned chat loop / gateway ownership boundary (see "Local server ⊕ headless server" below).
 
@@ -37,47 +38,43 @@ Use this when changing:
 - `client/ygg-chat-r/electron/electronHostAdapter.ts`: the Electron host adapter. It supplies paths (`userData`, `temp`, resources), the Conf-backed config/secret stores, `restart`, `openExternal`, the `utilityProcess` tool sandbox, and the BrowserWindow-backed `browse_web` engine. Only Electron-side files import `electron`.
 - `client/ygg-chat-r/server/` (root modules): the runtime-neutral server composition — `serverConfig.ts` (validated `YggServerConfig`), `hostCapabilities.ts` (capability contracts), `serverHost.ts` (injected host context + host-gated tool names), `createYggServer.ts` (factory + lifecycle handle), `builtinToolRegistry.ts` (all 25 movable built-in tool registrations; `browse_web` registers only when the host supplies a browser engine), `toolSandboxPolicy.ts` (the 14-tool out-of-process whitelist), `corsPolicy.ts`, `nodeStores.ts`, and `standaloneEntry.ts` (the standalone CLI). Nothing under `server/` may import `electron`; `npm run build:server` fails the build on any such import. The server graph also must not depend on Electron's ambient types (`typecheck:server` runs without them; see `headlessServer/providers/webStreamTypes.ts` for the shared stream-result shape).
 - `client/ygg-chat-r/electron/preload.ts`: renderer preload bridge.
-- `client/ygg-chat-r/server/localServer.ts`: the single embedded Express app (prefers port 3002, falls back to other local ports). Since the decomposition it is a ~2,300-line composition shell: module state, SQLite init + schema migrations + prepared statements, tool sandbox wiring, the IDE-context WebSocket server, `setupServer()` (which only registers route modules), and the start/stop lifecycle. `setupServer()` calls `registerHeadlessServerRoutes(app, { db, statements, orchestrator })`, mounting the headless chat engine + cloud gateway onto the SAME app/port. (Claude Code + GlobalAgentLoop routes and `agent_*` prepared statements have been REMOVED — see "Removed / retired".)
-- `client/ygg-chat-r/server/routes/`: the local-API route modules extracted from `localServer.ts`, one register function each, code moved verbatim: `managedOAuthRoutes.ts` (OpenAI ChatGPT OAuth + the port-1455 callback server), `runStateRoutes.ts` (`/api/streaming/runs*`, `/api/subagents/*`), `syncStorageRoutes.ts` (`/api/sync/*`, `/api/local/attachments/*`), `hookRoutes.ts`, `undoRoutes.ts`, `toolExecutionRoutes.ts` (`/api/custom-tools*` management only; tool execution uses `/api/jobs*`), `appStoreRoutes.ts` (`/api/app-store/*`, `/api/app/restart`), `jobRoutes.ts` (`/api/jobs*`), `analyticsRoutes.ts` (`/api/sync/stats`, `/api/local/analytics/dashboard`), `userProjectRoutes.ts` (`/api/local/users*`, `/api/local/projects*`, conversation-meta patches), `noteSearchRoutes.ts` (`/api/local/conversations/search*`; returns `searchNotes`/`searchTopLevelUserMessages` for the tool registry), and `conversationRoutes.ts` (`/api/local/conversations*`, `/api/local/messages/*` — registered after the search routes so `/search*` wins over `/:id`).
+- `client/ygg-chat-r/server/localServer.ts`: the single embedded Express app (prefers port 3002, falls back to other local ports). Since the decomposition it is a ~2,300-line composition shell: module state, SQLite init + schema migrations + prepared statements, tool sandbox wiring, the IDE-context WebSocket server, `setupServer()` (which only registers route modules), and the start/stop lifecycle. `setupServer()` calls `registerHeadlessServerRoutes(app, { db, statements, orchestrator })`, mounting the headless chat engine + local data gateway onto the SAME app/port. (Claude Code + GlobalAgentLoop routes and `agent_*` prepared statements have been REMOVED — see "Removed / retired".)
+- `client/ygg-chat-r/server/routes/`: the local-API route modules extracted from `localServer.ts`, one register function each, code moved verbatim: `managedOAuthRoutes.ts` (OpenAI ChatGPT OAuth + the port-1455 callback server), `runStateRoutes.ts` (`/api/streaming/runs*`, `/api/subagents/*`), `syncStorageRoutes.ts` (`/api/local/attachments/*`; the cloud-mirror `/api/sync/*` writers are removed), `hookRoutes.ts`, `undoRoutes.ts`, `toolExecutionRoutes.ts` (`/api/custom-tools*` management only; tool execution uses `/api/jobs*`), `appStoreRoutes.ts` (`/api/app-store/*` anonymous browse/install, upload returns 501; `/api/app/restart`; see `agent_app_store.md`), `jobRoutes.ts` (`/api/jobs*`), `analyticsRoutes.ts` (`/api/sync/stats`, `/api/local/analytics/dashboard`), `userProjectRoutes.ts` (`/api/local/users*`, `/api/local/projects*`, conversation-meta patches), `noteSearchRoutes.ts` (`/api/local/conversations/search*`; returns `searchNotes`/`searchTopLevelUserMessages` for the tool registry), and `conversationRoutes.ts` (`/api/local/conversations*`, `/api/local/messages/*` — registered after the search routes so `/search*` wins over `/:id`).
 - `client/ygg-chat-r/server/localOperations.ts`: local storage/operation helpers.
 - `client/ygg-chat-r/server/localToolsRoutes.ts`: HTML tools route/table integration (registered via `registerToolsRoutes`).
-- `client/ygg-chat-r/server/envLoader.ts`: environment loading.
-- `client/ygg-chat-r/server/proxyGateway.ts`: proxy/gateway support.
-- `client/ygg-chat-r/server/headlessServer/index.ts`: `registerHeadlessServerRoutes` — wires the chat engine (`ChatOrchestrator`, `DecisionBroker`, `CompactionService`), subagents, and both gateway surfaces.
+- `client/ygg-chat-r/server/headlessServer/index.ts`: `registerHeadlessServerRoutes` — wires the chat engine (`ChatOrchestrator`, `DecisionBroker`, `CompactionService`), subagents, and the local data gateway.
 
 ### Headless chat engine + gateway (mounted onto the same `:3002` app)
 
 - `client/ygg-chat-r/server/headlessServer/routes/chatRoutes.ts`: server-owned MAIN chat loop. `POST /api/conversations/:id/messages`, `.../repeat`, `.../:messageId/branch`, `.../:messageId/edit-branch` (SSE) → `ChatOrchestrator.runMessage`; plus `POST /api/resume` (pause/resume decisions) and `POST /api/conversations/:id/compact` (manual compaction).
-- `client/ygg-chat-r/server/headlessServer/routes/gatewayRoutes.ts`: `/api/gw/*` — storage-aware CRUD/merge for conversations/projects/messages/attachments (collapses the old renderer `shouldUseLocalApi` dual-fetch/merge + dual-write). Local leg is an in-process loopback to `/api/app/*` (except the messages/tree read, which calls the shared builder directly); cloud leg goes through `railwayClient`.
-- `client/ygg-chat-r/server/headlessServer/routes/cloudProxyRoutes.ts`: `/api/cloud/*` — authenticated pass-through to Railway (allowlist: `/models`, `/users`, `/user/account`, `/generate/ephemeral`, `/system-prompts`, `/stripe`, `/app-store`, `/oauth`; anything else → 403).
-- `client/ygg-chat-r/server/headlessServer/config/gatewayFlags.ts`: returns `{ chat, crud, cloudProxy, resumableRuns }`. `chat`/`resumableRuns` default on; `crud`/`cloudProxy` are vestigial because routes mount with `enabled: true`. `YGG_GATEWAY_MODE` enables all four. Authentication ownership is unconditional and independent of these flags.
-- Supporting services: `headlessServer/services/{chatOrchestrator,decisionBroker,chatHookService,compactionService,messageSink,railwayClient,cloudMirrorService,appAuthTokenManager}.ts`. Deeper detail lives in `agent_headless_server.md`.
+- `client/ygg-chat-r/server/headlessServer/routes/gatewayRoutes.ts`: `/api/gw/*` — local facade for conversations/projects/messages/attachments. Every route is an in-process loopback to `/api/app/*` (except the messages/tree read, which calls the shared builder directly). There is no cloud leg and no `/api/cloud/*` proxy.
+- Supporting services: `headlessServer/services/{chatOrchestrator,decisionBroker,chatHookService,compactionService,messageSink,runSessionRegistry}.ts`. Deeper detail lives in `agent_headless_server.md`.
 
 ## Runtime Context
 
 - Electron main process owns native capabilities.
 - Renderer should access native/local features through preload/local API, not direct Node APIs.
-- Local server listens on `127.0.0.1:3002` in Electron local mode (fallback ports if taken). `:3002` now hosts three surfaces on one app: local `/api/app/*` CRUD, the cloud gateway (`/api/gw/*`, `/api/cloud/*`), and the server-owned chat SSE routes.
-- The MAIN chat agent loop is NO LONGER renderer-owned. It runs server-side (`ChatOrchestrator` → `ToolLoopService`); the renderer's chat thunks POST the SSE routes and project the events onto existing Redux state. Tool execution, permission/hook/compaction orchestration all live server-side. The chat thunks require a local-server runtime — Electron or the standalone browser target (`isLocalServerRuntime()` in `src/utils/api.ts`); they throw in plain web mode.
+- Local server listens on `127.0.0.1:3002` in Electron local mode (fallback ports if taken). `:3002` hosts three surfaces on one app: local `/api/app/*` CRUD, the local data gateway (`/api/gw/*`), and the server-owned chat SSE routes.
+- The MAIN chat agent loop is NO LONGER renderer-owned. It runs server-side (`ChatOrchestrator` → `ToolLoopService`); the renderer's chat thunks POST the SSE routes and project the events onto existing Redux state. Tool execution, permission/hook/compaction orchestration all live server-side. The chat thunks require a local-server runtime — Electron or the standalone browser target (`isLocalServerRuntime()` in `src/utils/api.ts`); there is no plain web mode.
 
 ### Standalone server (Phase 1)
 
 - Build: `npm run build:server` → `dist-server/ygg-server.mjs` plus the Node-ABI sandbox bundle and copied assets (prompts, mobile UI, theme templates). One-time per Node version: `npm run install:server-native` installs a Node-ABI `better-sqlite3` under `dist-server/` (kept separate from the Electron-ABI build in `node_modules`).
 - Run: `YGG_DATA_DIR=<dir> npm run start:server`. Environment contract documented at the top of `server/standaloneEntry.ts` (`YGG_HOST`, `YGG_PORT`, `YGG_DB_PATH`, `YGG_TEMP_DIR`, `YGG_RESOURCES_DIR`, `YGG_PROMPTS_DIR`, `YGG_OAUTH_CALLBACK_ENABLED`, `YGG_CORS_ALLOWED_ORIGINS`, `YGG_ALLOW_NON_LOOPBACK_BIND`, `YGG_TOOLS_RUNTIME`, `YGG_TOOL_RUNTIME_FALLBACK`).
 - Security defaults differ from desktop on purpose: loopback bind only (non-loopback refused without the explicit override), loopback/allowlist CORS instead of permissive, OAuth callback listener OFF, tool runtime `utility` with the in-process fallback DISABLED (a sandbox failure fails the tool call), and `browse_web` absent from the advertised tool list (no browser engine capability — follow-on F1 in the Phase 1 plan).
-- Browser dev target: `npm run dev:standalone` (Vite proxies `/api`, `/lsp`, `/ide-context` to the standalone server; `VITE_ENVIRONMENT=standalone` makes the renderer use same-origin/configured Ygg routes).
+- Browser dev target: `npm run dev:standalone` (Vite proxies `/api`, `/lsp`, `/ide-context` to the standalone server; `BUILD_TARGET=standalone` makes the renderer use same-origin/configured Ygg routes).
 
 ### Local server ⊕ headless server (ownership boundary)
 
-- `localServer.ts` still owns: the Express app + port lifecycle, local SQLite `/api/app/*` CRUD, OAuth callback server (1455) + login/OAuth deep-links, and registration of tools/skills/MCP/LSP/proxy/local-ops routes.
-- `headlessServer/*` (mounted via `registerHeadlessServerRoutes`) owns: the server-owned chat loop + pause/resume decisions, subagent runs, hooks-in-loop, compaction, and BOTH gateway surfaces (`/api/gw/*` storage-aware CRUD/merge, `/api/cloud/*` Railway pass-through) plus the token layer (`appAuthTokenManager`, `railwayClient`, `cloudMirrorService`).
-- Railway stays AUTHORITATIVE for cloud DB / free-tier metering / Stripe / `/users`; the local server proxies, it does not own them.
+- `localServer.ts` still owns: the Express app + port lifecycle, local SQLite `/api/app/*` CRUD, OAuth callback server (1455) + ChatGPT OAuth deep-links, and registration of tools/skills/MCP/LSP/proxy/local-ops routes.
+- `headlessServer/*` (mounted via `registerHeadlessServerRoutes`) owns: the server-owned chat loop + pause/resume decisions, subagent runs, hooks-in-loop, compaction, and the local data gateway (`/api/gw/*`).
+- Local SQLite is the only data store.
 
 ### Removed / retired
 
 - Claude Code: `electron/tools/claudeCode.ts` + its `localServer.ts` routes — GONE.
 - GlobalAgentLoop (GAL): its `localServer.ts` routes and the `agent_settings` / `agent_sessions` / `agent_tasks` tables + prepared statements — GONE (no live CREATE/INSERT/prepared statements remain).
-- `dualSyncManager` / `lib/sync/*` — replaced server-side by `cloudMirrorService` + `CloudMirrorSink` (no live module remains; only inert comment/docstring mentions, e.g. in `services/cloudMirrorService.ts` and `routes/gatewayRoutes.ts`).
+- Cloud layer (fully-local migration, 2026-11): `dualSyncManager`/`lib/sync/*`, `cloudMirrorService`/`CloudMirrorSink`, `railwayClient`, `appAuthTokenManager`, `/api/cloud/*` (`cloudProxyRoutes`), `gatewayFlags`, `envLoader.ts`, `proxyGateway.ts`, app login and the cloud-mirror `/api/sync/*` writers — all GONE.
 - Note for greppers: two inert test fixtures (`server/tools/__tests__/dummyfile.ts.test`, `dummyFilechatAction.ts.test`, odd `.ts.test` extension) are verbatim snapshots of the OLD pre-migration source. They are read as plain text by `editFile.test.ts`, never imported/compiled — a grep for the retired names WILL hit them, but they are fixtures, not live code.
 
 ## Important Invariants
@@ -91,8 +88,7 @@ Use this when changing:
 - Local server route changes can affect renderer, tools, mobile UI, and iframe apps.
 - Startup/shutdown changes must clean up server, windows, and long-running processes (local server, OAuth callback server on 1455).
 - On macOS, `main.ts` confirms user-initiated quits (including Cmd+Q and tray Quit) before setting `isQuitting` or tearing down terminals/server/tray. Cancel is the default and Escape action. `electron/quitConfirmation.ts` prevents duplicate/reentrant dialogs; updater restarts and startup-failure exits bypass confirmation. Regression tests: `server/__tests__/quitConfirmation.test.ts`.
-- Both gateway surfaces mount UNCONDITIONALLY (`enabled: true`) — the renderer is a thin client and has no local-vs-cloud CRUD fallback; do not gate them on `gateway.crud`/`gateway.cloudProxy` (those flags are vestigial).
-- `gateway.chat === false` disables OpenRouter Railway-id adoption and free-tier event relay, not the server-owned chat loop.
+- The data gateway mounts unconditionally — the renderer is a thin client with no CRUD fallback.
 - Authentication refresh is unconditionally owned by `server/auth`; renderer auth commands/status do not expose OAuth credentials.
 
 ## Extension Points
@@ -109,7 +105,7 @@ Use this when changing:
 - Build standalone server: `npm --prefix client/ygg-chat-r run build:server` (also the electron-import leak check).
 - Server graph unit tests: `npm --prefix client/ygg-chat-r run test:server`.
 - Tool/local route changes: `npm --prefix client/ygg-chat-r run test:tools`.
-- Headless chat engine + gateway (chatRoutes/gatewayRoutes/cloudProxyRoutes/gatewayFlags/services): `npm --prefix client/ygg-chat-r run test:headless`.
+- Headless chat engine + gateway (chatRoutes/gatewayRoutes/services): `npm --prefix client/ygg-chat-r run test:headless`.
 
 ## Related Docs
 
@@ -117,3 +113,40 @@ Use this when changing:
 - `agent_local_tools_runtime.md`
 - `agent_headless_server.md`
 - `agent_hooks_system.md`
+
+## Attached browser workspace foundation (2026-10-19)
+
+Browser clients use the same React source, built separately into `dist-browser`; Electron keeps `loadFile` and its preload. `server/routes/browserUiRoutes.ts` serves only that configured public tree. Bootstrap/status metadata is token-free; browser identity uses typed auth HTTP while native migration stays IPC-only.
+
+`server/terminal/terminalLaunch.ts` shares native/WSL launch resolution with Electron. `terminalService.ts`/`routes/terminalRoutes.ts` currently own separate browser PTYs with bounded output and a 60-second lease; `stopLocalServer` shuts them down. Native terminal IPC/WebContents ownership remains unchanged. LSP sessions are client/server/workspace scoped. `editorFileStore.ts` serializes hash-precondition saves; conflicts preserve local edits. These changes do not yet satisfy the full workspace/mobile migration; see `../shared-ui-implementation-status.md`.
+
+## Shared-client local integration
+
+Native terminal IPC is now a thin sender-scoped adapter over `server/terminal/terminalService.ts`; native sessions use push events and no browser reconnect lease. Browser sessions remain independent with bounded polling/output and a lease. Native renderer navigation/crash/destruction cleans its terminals.
+
+`nativeClientFence.ts` distinguishes opaque browser apps from Electron requests: main injects a per-process header only to the exact owned listener through native session webRequest. It is not returned by public bootstrap or preload, and is not network-device authentication. Opaque-origin mutations across `/api` require that native fence; attached browser commands use same-origin requests through typed bridges. Browser custom HTML gets restrictive connection CSP by default, native requests preserve prior behavior. `YGG_BROWSER_ALLOWED_ORIGINS` configures explicit root-path proxy authorities; it does not protect against reachable trusted-network peers.
+
+### Native host bootstrap regression
+
+`hostClientPolicy` accepts cross-site file-loaded HTTP requests only with the main-injected native session fence (legacy opaque GET compatibility remains separate). Chromium can omit `Origin` on `loadFile` fetch while sending `Sec-Fetch-Site: cross-site`; testing only `Origin: null` misses this case. Run `node scripts/test-native-host-bootstrap.cjs` for real Chromium bootstrap → renderer admission → host preference PATCH against production policies, with isolated user data and no provider execution. A bootstrap 404 instead indicates an older running host/UI mismatch; fully quit old copies and verify the installed archive contains `/api/host/runtime` and `dist-browser` before testing.
+
+`electron/nativeHostSession.ts` installs the native fence idempotently on the main/floating window sessions before load; `session-created` is secondary. This explicitly covers a default session created before the lifecycle listener. The native fixture calls the production installer twice after window creation to cover this path.
+
+
+### Main-window renderer recovery
+
+`electron/rendererRecovery.ts` installs a per-window main-process controller before the first app load. Unexpected `render-process-gone` events append sanitized `renderer_recovery` records to the existing `userData/logs/client-errors.ndjson`: incident/time, reason/exit code, versions and window identifiers, never raw URLs, messages or drafts. Recovery navigation failures and document-load success are correlated; document load does not prove React or stream reattachment succeeded. Logging failure cannot suppress recovery.
+
+Visible failed windows show an **asynchronous native dialog** with Reload UI / Later and diagnostic details. Previously shown windows hidden in the tray are not forcibly focused; failures before first display show the window so startup does not stay invisible. Minimized windows prompt on restore; the native tray **Recover UI…** action restores them explicitly and remains enabled until recovery. Reload uses the same window/session and exact trusted app entry plus its saved hash, not a renderer-supplied arbitrary URL. There is no automatic retry, quit/relaunch, profile reset, or server/run cancellation. Existing Chat route-entry recovery reattaches surviving server runs. Unsaved UI-only state and renderer-owned terminals are not guaranteed to survive; existing terminal/login cleanup remains.
+
+Clean exits, deliberate shutdown and destroyed windows do not prompt. Main-frame failed loads are recoverable; subframe failures and aborted navigations are ignored. Unit coverage: `server/__tests__/rendererRecovery.test.ts`. Real isolated crash/reload fixture: `node scripts/test-renderer-recovery-electron.cjs`; this injects dialog choices, crashes only a fresh fixture renderer and never touches the running app/profile. Native dialog/tray presentation still requires manual acceptance. The underlying native crash cause is a separate investigation.
+
+Recovery validation (2026-10-23): 35 recovery + 7 quit unit tests passed; full matching-Electron-ABI server suite 38 files / 265 passed, 1 skipped; Electron main/mobile typecheck, bundle and emitted syntax passed. Isolated real renderer crash smoke passed hide-to-tray/no-focus, explicit Later/reload, repeated crash/load failure and file-entry-with-spaces/hash cases. Its HTTP state/heartbeat is synthetic, not actual Chat/agent reattachment, and it injects dialog responses rather than exercising production main/tray/native sheets. Existing native selection fixture passed all ten checks. Claude Opus 5.5 reviews found no confirmed blocker; recommended startup/minimized-window handling, tray-exception isolation, session-end fencing, abort logging, Windows file normalization and asynchronous Later→recover handling were implemented and regression-tested. Final Opus 5.5 pass (`7a28821e-9120-41b7-966a-76f5613dd19e`, session `070bdcdf-e838-413e-8a8a-4c16c3b2f640`) confirmed the asynchronous restore fix and no remaining blockers in this narrow scope. Manual acceptance still includes actual native sheet/tray, Later→minimize/hide→Recover UI on macOS and Windows shutdown. Debug mode has no tray; after Later use DevTools reload. No underlying native crash fix, live-profile mutation, package, commit or push is claimed.
+
+### Persistent main-process log
+
+`electron/mainProcessLog.ts` (installed at module load in `main.ts`) tees main-process `console.*` output, including the embedded server's diagnostics such as `[LineageForkDebug][Main] membership-mismatch`, into `userData/logs/main-YYYY-MM-DD.log`, one file per local day. The original console still prints. Files older than 3 days (today plus the two previous days) are deleted at startup and at day rollover. Each day is capped at 32 MiB: after one `[log-cap]` marker, further output that day is dropped. Write errors are swallowed and never crash main. Utility-process and renderer output are not included; renderer errors stay in `client-errors.ndjson`. Tests: `server/__tests__/mainProcessLog.test.ts`.
+
+`client-errors.ndjson` uses the same window through `electron/clientErrorLog.ts`: renderer telemetry (`logs:appendClientError`) and recovery records append through one main-process writer. That writer drops records older than today plus the two previous local days, at startup and on the first append of each new day. Records without a readable `ts` are dropped too. The prune is an atomic rewrite (temp file + rename). There is no per-day byte cap on this file. Both logs share `retentionCutoff` so their windows cannot drift. Tests: `server/__tests__/clientErrorLog.test.ts`.
+
+Ordinary-send admission rejections (`lineage_mismatch`, "The selected parent is not the current branch head") log `[LineageForkDebug][Main] admission-mismatch` in the main log with a `reason` (`AdmissionMismatchReason` in `shared/runAdmission.ts`) and the resolved lineage/head/path state. The reason is returned in the 409. The renderer then logs `[LineageForkDebug][Renderer] admission-rejected` to `client-errors.ndjson` with its selected lineage/path, selection revisions and the conversation's stream slots.

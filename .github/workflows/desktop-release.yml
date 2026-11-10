@@ -16,7 +16,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        os: [ubuntu-latest, macos-latest, windows-latest]
         node-version: [22.x]
     permissions:
       contents: read
@@ -54,6 +54,9 @@ jobs:
                 ROLLUP_PKG="@rollup/rollup-darwin-x64"
               fi
               ;;
+            windows-latest)
+              ROLLUP_PKG="@rollup/rollup-win32-x64-msvc"
+              ;;
             *)
               echo "Unsupported OS for rollup preflight: ${{ matrix.os }}"
               exit 1
@@ -69,16 +72,6 @@ jobs:
             echo "Rollup native package missing; installing fallback"
             npm --prefix client/ygg-chat-r install --no-save --include=optional "${ROLLUP_PKG}@${ROLLUP_VERSION}"
           fi
-
-      - name: Configure environment variables
-        run: |
-          echo "VITE_SUPABASE_URL=${{ secrets.VITE_SUPABASE_URL }}" >> $GITHUB_ENV
-          echo "VITE_SUPABASE_ANON_KEY=${{ secrets.VITE_SUPABASE_ANON_KEY }}" >> $GITHUB_ENV
-          echo "VITE_STRIPE_PUBLISHABLE_KEY=${{ secrets.VITE_STRIPE_PUBLISHABLE_KEY }}" >> $GITHUB_ENV
-          echo "VITE_ENVIRONMENT=electron" >> $GITHUB_ENV
-          echo "VITE_API_URL=https://webdrasil-production.up.railway.app/api" >> $GITHUB_ENV
-          echo "SUPABASE_UPDATE_FEED_BASE_URL=${{ secrets.SUPABASE_UPDATE_FEED_BASE_URL }}" >> $GITHUB_ENV
-        shell: bash
 
       - name: Validate tag matches app version
         shell: bash
@@ -143,11 +136,13 @@ jobs:
           set -euo pipefail
           cd ygg-chat
           npm run build:electron
-          if [ "${{ matrix.os }}" = "ubuntu-latest" ]; then
-            npm run package:electron -- --linux
-          else
-            npm run package:electron -- --mac
-          fi
+          # The github provider in electron-builder.json is only baked into app-update.yml here;
+          # publish_release below is the single uploader, so never let electron-builder publish.
+          case "${{ matrix.os }}" in
+            ubuntu-latest) npm run package:electron -- --linux --publish never ;;
+            macos-latest) npm run package:electron -- --mac --publish never ;;
+            windows-latest) npm run package:electron -- --win --publish never ;;
+          esac
         shell: bash
 
       - name: Inject release notes into update manifest
@@ -185,115 +180,22 @@ jobs:
             echo "Injected release notes into ${manifest}"
           done
 
-      - name: Upload update artifacts to Supabase
-        env:
-          SUPABASE_URL: ${{ secrets.VITE_SUPABASE_URL }}
-          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
-          SUPABASE_BUCKET: ${{ secrets.SUPABASE_BUCKET }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          cd ygg-chat/client/ygg-chat-r/release
-
-          # Validation
-          echo "=== Supabase Upload Configuration ==="
-
-          if [ -z "${SUPABASE_URL:-}" ]; then
-            echo "ERROR: SUPABASE_URL is not set"
-            exit 1
-          fi
-
-          if [ -z "${SUPABASE_SERVICE_ROLE_KEY:-}" ]; then
-            echo "ERROR: SUPABASE_SERVICE_ROLE_KEY is not set"
-            exit 1
-          fi
-
-          if [ -z "${SUPABASE_BUCKET:-}" ]; then
-            echo "ERROR: SUPABASE_BUCKET is not set"
-            exit 1
-          fi
-
-          if [[ ! "${SUPABASE_URL}" =~ ^https?:// ]]; then
-            echo "ERROR: SUPABASE_URL must include protocol (https://)"
-            echo "Current value: ${SUPABASE_URL}"
-            exit 1
-          fi
-
-          echo "SUPABASE_URL: ${SUPABASE_URL}"
-          echo "SUPABASE_BUCKET: ${SUPABASE_BUCKET}"
-          echo "Platform: ${{ matrix.os }}"
-          echo ""
-
-          # Platform detection
-          case "${{ matrix.os }}" in
-            ubuntu-latest) platform_dir="linux" ;;
-            macos-latest) platform_dir="mac" ;;
-            *) echo "Unsupported platform: ${{ matrix.os }}" && exit 1 ;;
-          esac
-
-          target_prefix="updates/${platform_dir}"
-
-          echo "=== Files to Upload ==="
-          ls -lh
-          echo ""
-
-          # Upload with detailed logging
-          echo "=== Starting Upload Process ==="
-          upload_count=0
-          failure_count=0
-
-          for artifact in *; do
-            if [ -d "${artifact}" ]; then
-              echo "Skipping directory: ${artifact}"
-              continue
-            fi
-
-            file_size=$(stat -c%s "${artifact}" 2>/dev/null || stat -f%z "${artifact}" 2>/dev/null || echo "unknown")
-            upload_url="${SUPABASE_URL}/storage/v1/object/${SUPABASE_BUCKET}/${target_prefix}/${artifact}?upsert=true"
-
-            echo ""
-            echo "Uploading: ${artifact}"
-            echo "  Size: ${file_size} bytes"
-            echo "  Target: ${target_prefix}/${artifact}"
-
-            http_code=$(curl -s -w "%{http_code}" -o /tmp/upload_response.txt \
-              -X PUT "${upload_url}" \
-              -H "Authorization: Bearer ${SUPABASE_SERVICE_ROLE_KEY}" \
-              -H "Content-Type: application/octet-stream" \
-              --data-binary @"${artifact}")
-
-            response_body=$(cat /tmp/upload_response.txt 2>/dev/null || echo "")
-
-            if [ "${http_code}" -ge 200 ] && [ "${http_code}" -lt 300 ]; then
-              echo "  Status: ${http_code} - SUCCESS"
-              upload_count=$((upload_count + 1))
-            else
-              echo "  Status: ${http_code} - FAILED"
-              echo "  Response: ${response_body}"
-              failure_count=$((failure_count + 1))
-            fi
-          done
-
-          echo ""
-          echo "=== Upload Summary ==="
-          echo "Successful: ${upload_count}"
-          echo "Failed: ${failure_count}"
-
-          if [ ${failure_count} -gt 0 ]; then
-            echo "ERROR: ${failure_count} file(s) failed to upload"
-            exit 1
-          fi
-
-          echo "All files uploaded successfully"
-
       - name: Upload release artifacts
         uses: actions/upload-artifact@v4
         with:
           name: release-${{ matrix.os }}
-          path: ygg-chat/client/ygg-chat-r/release
+          if-no-files-found: error
+          # Only the files the GitHub-Releases update feed needs (no unpacked dirs or builder debug files).
+          path: |
+            ygg-chat/client/ygg-chat-r/release/*.dmg
+            ygg-chat/client/ygg-chat-r/release/*.zip
+            ygg-chat/client/ygg-chat-r/release/*.deb
+            ygg-chat/client/ygg-chat-r/release/*.exe
+            ygg-chat/client/ygg-chat-r/release/*.blockmap
+            ygg-chat/client/ygg-chat-r/release/latest*.yml
 
   publish_release:
-    name: Publish GitHub Release + changelog
+    name: Publish GitHub Release
     runs-on: ubuntu-latest
     needs: build
     permissions:
@@ -369,45 +271,17 @@ jobs:
           merge-multiple: true
           path: ygg-chat/client/ygg-chat-r/release-merged
 
-      - name: Upload changelog to Supabase
-        env:
-          SUPABASE_URL: ${{ secrets.VITE_SUPABASE_URL }}
-          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
-          SUPABASE_BUCKET: ${{ secrets.SUPABASE_BUCKET }}
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          if [ -z "${SUPABASE_URL:-}" ] || [ -z "${SUPABASE_SERVICE_ROLE_KEY:-}" ] || [ -z "${SUPABASE_BUCKET:-}" ]; then
-            echo "ERROR: Supabase secrets are missing"
-            exit 1
-          fi
-
-          VERSION_TAG="${GITHUB_REF_NAME}"
-          VERSION_PATH="updates/changelog/${VERSION_TAG}.md"
-          LATEST_PATH="updates/changelog/latest.md"
-
-          for target_path in "${VERSION_PATH}" "${LATEST_PATH}"; do
-            upload_url="${SUPABASE_URL}/storage/v1/object/${SUPABASE_BUCKET}/${target_path}?upsert=true"
-
-            http_code=$(curl -s -w "%{http_code}" -o /tmp/changelog_upload_response.txt \
-              -X PUT "${upload_url}" \
-              -H "Authorization: Bearer ${SUPABASE_SERVICE_ROLE_KEY}" \
-              -H "Content-Type: text/markdown; charset=utf-8" \
-              --data-binary @"${RELEASE_NOTES_FILE}")
-
-            if [ "${http_code}" -lt 200 ] || [ "${http_code}" -ge 300 ]; then
-              echo "ERROR: Failed uploading ${target_path} (HTTP ${http_code})"
-              cat /tmp/changelog_upload_response.txt || true
-              exit 1
-            fi
-          done
-
       - name: Create GitHub Release
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v1
         with:
-          files: ygg-chat/client/ygg-chat-r/release-merged/*
+          files: |
+            ygg-chat/client/ygg-chat-r/release-merged/*.dmg
+            ygg-chat/client/ygg-chat-r/release-merged/*.zip
+            ygg-chat/client/ygg-chat-r/release-merged/*.deb
+            ygg-chat/client/ygg-chat-r/release-merged/*.exe
+            ygg-chat/client/ygg-chat-r/release-merged/*.blockmap
+            ygg-chat/client/ygg-chat-r/release-merged/latest*.yml
           body_path: ${{ env.RELEASE_NOTES_FILE }}
           draft: false
           prerelease: false

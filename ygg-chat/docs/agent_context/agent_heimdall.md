@@ -2,6 +2,9 @@
 paths:
   - "client/ygg-chat-r/src/components/Heimdall/**"
   - "client/ygg-chat-r/src/features/chats/pathUtils.ts"
+  - "client/ygg-chat-r/src/features/chats/messageTransfer.ts"
+  - "client/ygg-chat-r/server/headlessServer/persistence/messageTransfer.ts"
+  - "shared/claudeTransfer.ts"
 ---
 
 # Agent Context: Heimdall Conversation Tree
@@ -35,7 +38,7 @@ Use this when changing:
 
 ## Data Flow
 
-1. `Chat.tsx` calls `useConversationSnapshotCoordinator(conversationIdFromUrl, conversationStorageMode)`.
+1. `Chat.tsx` calls `useConversationSnapshotCoordinator(conversationIdFromUrl)`.
 2. The coordinator generation-gates the persisted fetch, reconciles active-stream and terminal-lease-protected rows, and rebuilds the tree with `buildConversationTree`.
 3. Only an accepted snapshot updates the exact Query cache and dispatches `conversationSnapshotApplied`, applying flat messages, tree, and path atomically.
 4. `Chat.tsx` renders `<Heimdall />` when `heimdallVisible && !isMobile`.
@@ -105,6 +108,10 @@ For selected-message copying/moving:
 - Selected roots and siblings are emitted in source tree order (`children_ids` first, deterministic snapshot order as fallback), independent of click/selection order.
 - `insertBulkMessages` preserves selected branch structure for structured payloads while retaining legacy linear-chain fallback for old flat payloads.
 - Move refuses a partial subtree selection because deleting a selected ancestor would cascade-delete descendants that were not copied; copy remains available for such selections.
+- A transfer never carries a Claude native session. Every selected branch tip that continues on Claude must be a committed summary (or context/settings rows directly after one), with the summary selected; otherwise all three actions are refused with "Run /compact … then select up to the summary". `shared/claudeTransfer.ts` (`claudeTransferRefusal`) holds the rule: the scope chooser disables a refused scope and shows why, and the menu shows the reason when there is no chooser. The bulk route enforces the same rule from the source rows' persisted ancestry (409 `claude_transfer_requires_summary`).
+- The bulk route rewrites copied `meta` (`server/headlessServer/persistence/messageTransfer.ts`): it adds `transfer: { sourceMessageId, sourceConversationId }`, drops `toolAutoApprove` and `claude.checkpoint`/`partial`, renames `runStatistics.streamId` to `copied:<id>` (copies of one run stay grouped, so the intermediate-text filter still collapses them, but no real run's footer matches them), and remaps `executionHandoff.summaryMessageId` and `sourceTipId` to the new ids (dropping them when the target row was not copied). No checkpoint, branch-session or lineage rows are written; the first send creates the lineage.
+- Move runs through `moveSelection` (`src/features/chats/transferSelection.ts`). It first asks the server for a dry-run delete (`POST /messages/deleteMany` with `dryRun: true`, which returns `planned` ids or the refusal). If Claude would refuse the source cut, or the delete would also remove unselected rows (launch scaffolding), nothing is copied. If the real delete still fails after copying, the copies are deleted again and the error says "Nothing was moved". A failed refresh after a successful move is only logged, so a retry can't copy twice.
+- New Chat keeps the menu open until it succeeds. A failure (including the workspace folder not being set) deletes the half-created chat (`createChatFromSelection`) and shows the reason in the menu; the buttons are disabled while it runs. It no longer dispatches `fetchMessageTree` for the new chat; the chat route loads it after navigation. Transfer thunks reject with the server's own `error` text.
 
 ### Notes
 
@@ -114,6 +121,7 @@ For selected-message copying/moving:
 - Heimdall stores note dialog state locally and reads/writes the current message from Redux.
 - Message and note-pill hover previews share opposite-side docking: an anchor in the left half of the panel docks its preview right, and an anchor in the right half docks left. The shared layout derives the anchor's on-screen position from the same transform as `visiblePositions`, preventing the card from covering the interactive node or note pill. Preview width is capped to the opposite half on narrow panels.
 - Leaving a node or note pill starts the shared `DOCKED_PREVIEW_CLOSE_DELAY_MS` timer; entering its docked card cancels it so the card can be reached and scrolled, and leaving the card restarts it. A new hover replaces the displayed content.
+- Because the card docks across the graph, the path to it crosses other nodes/pills. Each preview has a `useHoverIntent` controller (safe triangle, `src/hooks/useHoverIntent.ts`): node/pill-enter swaps and timer-driven closes go through `run()` and are deferred while the pointer moves toward the card, then applied when it turns away or stalls (~250ms). Leaving a node/pill or entering the card calls `cancel()`; conversation changes cancel both.
 - Preview positioning wrappers are pointer-transparent; only the visible preview cards capture input, cancel the pending close timer, and remain marked `data-heimdall-wheel-exempt='true'`.
 
 ### Search
@@ -134,7 +142,7 @@ For selected-message copying/moving:
 
 - Treat filtering as visual-only. Actions should use flat Redux messages so hidden messages in a selected path are not accidentally lost.
 - Do not dispatch `fetchMessageTree` for a non-current conversation from Heimdall unless you intend to replace Chat Redux state. Prefer React Query invalidation for other conversations.
-- Preserve ID comparisons by string when crossing local/cloud or UUID/legacy boundaries.
+- Preserve ID comparisons by string when crossing UUID/legacy boundaries.
 - Keep `data-heimdall-wheel-exempt='true'` on scrollable overlays so the graph wheel handler does not hijack modal/list scrolling.
 - Keep hover-preview positioning wrappers pointer-transparent and visible preview cards pointer-active; do not add invisible hit areas above graph nodes.
 - Keep node elements carrying `data-node-id`; context-menu and hover logic depend on `closest('[data-node-id]')`.
@@ -147,9 +155,8 @@ For selected-message copying/moving:
 1. Add local state if the action needs a modal/pending status.
 2. Reuse or extract the existing selected-message ordering/copy helper if message payloads are needed.
 3. Close `showContextMenu` before opening larger UI.
-4. Use target conversation storage mode for mutations, not necessarily the current/source storage mode.
-5. Clear `selectedNodes` only after successful destructive/copy operation unless UX requires otherwise.
-6. Invalidate the narrowest React Query keys for affected conversations.
+4. Clear `selectedNodes` only after successful destructive/copy operation unless UX requires otherwise.
+5. Invalidate the narrowest React Query keys for affected conversations.
 
 ### Change tree selection semantics
 
@@ -223,6 +230,6 @@ large streaming trees, note/action focus transitions, and screen-reader behavior
 
 The store's serializability check skips only trees registered by that validator; all other data remains checked. Its recursive frozen-value cache is disabled. Redux DevTools serialization substitutes a diagnostic tree ID marker rather than serializing the derived hierarchy; the actual application state is not truncated.
 
-Authoritative desktop snapshots request `includeTree=false`. App-local/gateway-local routes return all enriched message rows and `tree:null` without constructing a server tree. Default responses remain compatible. Cloud upstream still uses its existing enriched tree endpoint (outside this repository); only the local gateway's outgoing tree is omitted, so upstream serialization depth is not fixed here.
+Authoritative desktop snapshots request `includeTree=false`. App-local/gateway-local routes return all enriched message rows and `tree:null` without constructing a server tree. Default responses remain compatible.
 
 Regression coverage: `deepConversationTree.test.ts` uses 20,000-deep trees with real Redux middleware/QueryClient and graph helpers; the Electron selection smoke covers deep load/refetch/route return. Route tests verify flat enriched snapshots serialize at that depth. Never use recursive deep-equality/stringification to inspect stress-test trees.

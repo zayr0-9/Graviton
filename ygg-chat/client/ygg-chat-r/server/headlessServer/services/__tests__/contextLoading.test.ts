@@ -265,8 +265,10 @@ describe('skills (§5)', () => {
     expect(deploys.find(skill => skill.scope === 'project')?.shadowed).toBe(true)
     expect(skills.find(skill => skill.name === 'ops:restart')?.scope).toBe('command')
     const index = renderSkillIndex(skills)!
-    expect(index).toContain('- deploy: Personal deploy')
-    expect(index).toContain('- ops:restart: Restart $ARGUMENTS now')
+    expect(index).toContain('action "search"')
+    expect(index).not.toContain('Personal deploy')
+    expect(index).not.toContain('Restart $ARGUMENTS now')
+    expect(index).not.toContain('- deploy:')
     expect(index).not.toContain('secret')
     const secret = skills.find(skill => skill.bareName === 'secret')!
     expect(secret.frontmatter.hasModelOverride).toBe(true)

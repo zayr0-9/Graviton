@@ -32,7 +32,6 @@ export type ChatInputControllerProps = {
   onClearIdeContexts?: () => void
   selectedIdeContextItems?: Array<{ id: string; label: string }>
   fallbackFileSearchRoot?: string | null
-  filterSelectedMentionFiles?: boolean
   imageDraftTarget?: ImageDraftTarget
   enableImageAttachments?: boolean
   enableFileMentions?: boolean
@@ -59,7 +58,6 @@ export const ChatInputController = React.memo(
         onClearIdeContexts,
         selectedIdeContextItems,
         fallbackFileSearchRoot,
-        filterSelectedMentionFiles = true,
         imageDraftTarget = { kind: 'composer' },
         enableImageAttachments = true,
         enableFileMentions = true,
@@ -270,7 +268,6 @@ export const ChatInputController = React.memo(
             onClearIdeContexts={onClearIdeContexts}
             selectedIdeContextItems={selectedIdeContextItems}
             fallbackFileSearchRoot={fallbackFileSearchRoot}
-            filterSelectedMentionFiles={filterSelectedMentionFiles}
             enableImageAttachments={enableImageAttachments}
             enableFileMentions={enableFileMentions}
             imageDraftTarget={imageDraftTarget}

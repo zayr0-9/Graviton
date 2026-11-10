@@ -5,17 +5,20 @@ paths:
 
 # Agent Context Index
 
-Last reviewed: 2026-08-01
+Last reviewed: 2026-11-10
 
 This directory contains subsystem-specific context files for agents working in `ygg-chat`.
 
 ## Supported Runtime Scope
 
-- This repository targets the **local Electron application only**.
-- Do not preserve, add, test, or plan web-mode behavior in this repository unless the user explicitly requests it.
-- Do not add web fallbacks or branch new implementation logic on `VITE_ENVIRONMENT === 'web'`; web support lives in a separate repository.
-- Treat Electron main/preload, the renderer, the local Express server, local SQLite persistence, and local/headless tool execution as the supported runtime surface.
-- Existing web-mode code may remain for now when unrelated, but it is not a compatibility constraint for new changes and should not drive architecture or validation decisions.
+- Graviton is **fully local**: the Electron app, its local Express/headless server, local
+  SQLite persistence and local/headless tool execution are the whole runtime. There is no
+  hosted backend, account, billing, analytics or cloud storage mode.
+- Runtime mode comes from the build target (`__BUILD_TARGET__`: `electron`,
+  `browser-client`, `standalone`; see `src/platform/clientCapabilities.ts`). No `.env` is needed.
+- There is no plain web product. Do not add web fallbacks, cloud legs or `VITE_ENVIRONMENT` branches.
+- Only outbound network: model providers the user configures, MCP servers, the app-store
+  catalog (`agent_app_store.md`) and GitHub Releases for updates.
 
 Start here, then open the smallest relevant subsystem context file before editing code. These docs are intentionally operational: they point to entry files, runtime constraints, data flow, invariants, and validation commands.
 
@@ -47,15 +50,16 @@ Start here, then open the smallest relevant subsystem context file before editin
 ## Agent Runtime
 
 - `agent_global_persistent_agent.md` - **RETIRED** tombstone: the renderer-owned global agent loop was deleted in the headless migration; the agent loop is now server-owned.
-- `agent_headless_server.md` - the local `:3002` server that now **owns the main chat agent loop** for all providers (pause/resume, in-loop hooks, compaction), plus the cloud gateway (`/api/gw/*`, `/api/cloud/*`), token layer, subagents, and mobile UI.
+- `agent_headless_server.md` - the local `:3002` server that now **owns the main chat agent loop** for all providers (pause/resume, in-loop hooks, compaction), plus the local data gateway (`/api/gw/*`), subagents, and mobile UI.
 - `agent_subagents_orchestration.md` - the `subagent` tool: renderer thin client + the shared server-side engine (the same `ToolLoopService` that now runs the main chat loop — subagents auto-approve, the main loop pauses), transcript persistence, SSE route.
 
 ## Platform and Integration
 
-- `agent_auth.md` - canonical Supabase/Codex credential ownership, refresh, migration, login and public auth status.
+- `agent_auth.md` - single local identity (no accounts), ChatGPT (Codex) credential ownership, refresh, migration and public auth status.
 
-- `agent_electron_main_local_server.md` - Electron main/preload/local Express server responsibilities; hosts the `headlessServer` routes + cloud gateway; Claude Code + GlobalAgentLoop routes retired.
+- `agent_electron_main_local_server.md` - Electron main/preload/local Express server responsibilities; hosts the `headlessServer` routes + local data gateway; Claude Code + GlobalAgentLoop routes retired.
 - `agent_html_iframe_apps.md` - custom app iframe rendering, bridge permissions, HTML cache.
+- `agent_app_store.md` - app store: anonymous browse/install, catalog sources, hidden upload.
 - `agent_hooks_system.md` - Ygg hook lifecycle and hook runner; for the main chat loop, hooks now run **in-process inside the server loop** (`chatHookService`), sync/async execution, model feedback.
 - `agent_floating_agent_button_design.md` - floating agent/app button animation, shell layout, inline stream-completion notifications, and reusable compact-to-expanded design pattern.
 

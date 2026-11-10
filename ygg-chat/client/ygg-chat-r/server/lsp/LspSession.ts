@@ -120,6 +120,7 @@ export class LspSession {
 
   private attachSocketListeners(socket: WebSocket, clientId: string | null): void {
     socket.on('message', data => {
+      if (this.attachedSocket !== socket) return
       this.markActivity()
       const jsonPayload = toUtf8String(data)
       if (!jsonPayload.trim()) return
@@ -192,6 +193,7 @@ export class LspSession {
       })
 
       child.once('error', error => {
+        if (this.childProcess !== child) return
         this.lastError = error instanceof Error ? error.message : String(error)
         this.status = 'error'
         this.childProcess = null
@@ -203,6 +205,7 @@ export class LspSession {
       })
 
       child.once('exit', (code, signal) => {
+        if (this.childProcess !== child) return
         this.lastError = code === 0 || code === null ? this.lastError : `LSP process exited with code ${code}${signal ? ` (${signal})` : ''}`
         this.status = this.lastError ? 'error' : 'stopped'
         this.childProcess = null
@@ -225,6 +228,7 @@ export class LspSession {
 
   async attachSocket(options: LspSessionAttachOptions): Promise<void> {
     await this.start()
+    if (options.socket.readyState !== WebSocket.OPEN) throw new Error('LSP client disconnected during startup')
 
     if (this.attachedSocket && this.attachedSocket !== options.socket) {
       this.closeAttachedSocket(1012, 'Replaced by a newer LSP client connection')

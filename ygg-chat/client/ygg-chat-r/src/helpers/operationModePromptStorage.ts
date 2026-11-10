@@ -1,3 +1,6 @@
+import { getHostExecutionPreferences, getHostExecutionRevision, saveHostExecutionPreference } from '../services/hostExecutionClient'
+import { newClientId } from './clientId'
+const BASE_REVISION = Symbol('mode-prompts-base-revision')
 import defaultOperationModesMarkdown from '../features/chats/prompts/default_operation_modes.md?raw'
 import defaultSubagentModePromptMarkdown from '../features/chats/prompts/default_subagent_mode.md?raw'
 
@@ -23,6 +26,7 @@ export interface OperationModePrompt {
 }
 
 export interface OperationModePromptSettings {
+  [BASE_REVISION]?: number
   selectedChatPromptId: string
   chatPrompts: OperationModePrompt[]
   agentModePromptOverride: string | null
@@ -47,12 +51,7 @@ const defaultSubagentPrompt: OperationModePrompt = {
   prompt: defaultSubagentModePromptMarkdown.trim(),
 }
 
-const makeId = (): string => {
-  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
-    return crypto.randomUUID()
-  }
-  return `chat-prompt-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`
-}
+const makeId = newClientId
 
 const normalizePrompt = (prompt: Partial<OperationModePrompt> | null | undefined): OperationModePrompt | null => {
   if (!prompt || typeof prompt !== 'object') return null
@@ -114,6 +113,8 @@ export function getDefaultSubagentModePrompt(): OperationModePrompt {
 }
 
 export function loadOperationModePromptSettings(): OperationModePromptSettings {
+  const host = getHostExecutionPreferences()
+  if (host) return { ...structuredClone(host.modePrompts), [BASE_REVISION]: getHostExecutionRevision('modePrompts') }
   try {
     if (typeof localStorage === 'undefined') {
       return normalizeSettings(null)
@@ -126,8 +127,16 @@ export function loadOperationModePromptSettings(): OperationModePromptSettings {
   }
 }
 
-export function saveOperationModePromptSettings(settings: Partial<OperationModePromptSettings>): OperationModePromptSettings {
+export async function saveOperationModePromptSettings(settings: Partial<OperationModePromptSettings>): Promise<OperationModePromptSettings> {
   const normalized = normalizeSettings(settings)
+  if (getHostExecutionPreferences()) {
+    const revision = settings[BASE_REVISION]
+    if (!Number.isSafeInteger(revision)) throw new Error('Reload mode prompts before saving')
+    await saveHostExecutionPreference({ modePrompts: normalized }, revision)
+    normalized[BASE_REVISION] = getHostExecutionRevision('modePrompts')
+    window.dispatchEvent(new CustomEvent(OPERATION_MODE_PROMPT_SETTINGS_CHANGE_EVENT, { detail: normalized }))
+    return normalized
+  }
   try {
     if (typeof localStorage !== 'undefined') {
       localStorage.setItem(STORAGE_KEY, JSON.stringify(normalized))
@@ -159,28 +168,28 @@ export function getSubagentModePrompt(): OperationModePrompt {
   return override ? { ...defaultSubagentPrompt, prompt: override } : getDefaultSubagentModePrompt()
 }
 
-export function saveAgentModePromptOverride(prompt: string): OperationModePromptSettings {
-  const settings = loadOperationModePromptSettings()
+export async function saveAgentModePromptOverride(prompt: string, base?: OperationModePromptSettings): Promise<OperationModePromptSettings> {
+  const settings = base ?? loadOperationModePromptSettings()
   return saveOperationModePromptSettings({ ...settings, agentModePromptOverride: prompt })
 }
 
-export function resetAgentModePromptOverride(): OperationModePromptSettings {
+export async function resetAgentModePromptOverride(): Promise<OperationModePromptSettings> {
   const settings = loadOperationModePromptSettings()
   return saveOperationModePromptSettings({ ...settings, agentModePromptOverride: null })
 }
 
-export function saveSubagentModePromptOverride(prompt: string): OperationModePromptSettings {
-  const settings = loadOperationModePromptSettings()
+export async function saveSubagentModePromptOverride(prompt: string, base?: OperationModePromptSettings): Promise<OperationModePromptSettings> {
+  const settings = base ?? loadOperationModePromptSettings()
   return saveOperationModePromptSettings({ ...settings, subagentModePromptOverride: prompt })
 }
 
-export function resetSubagentModePromptOverride(): OperationModePromptSettings {
+export async function resetSubagentModePromptOverride(): Promise<OperationModePromptSettings> {
   const settings = loadOperationModePromptSettings()
   return saveOperationModePromptSettings({ ...settings, subagentModePromptOverride: null })
 }
 
-export function addChatModePrompt(name: string, prompt: string): OperationModePromptSettings {
-  const settings = loadOperationModePromptSettings()
+export async function addChatModePrompt(name: string, prompt: string, base?: OperationModePromptSettings): Promise<OperationModePromptSettings> {
+  const settings = base ?? loadOperationModePromptSettings()
   const now = new Date().toISOString()
   const nextPrompt: OperationModePrompt = {
     id: makeId(),
@@ -196,9 +205,9 @@ export function addChatModePrompt(name: string, prompt: string): OperationModePr
   })
 }
 
-export function updateChatModePrompt(id: string, patch: Partial<Pick<OperationModePrompt, 'name' | 'prompt'>>): OperationModePromptSettings {
+export async function updateChatModePrompt(id: string, patch: Partial<Pick<OperationModePrompt, 'name' | 'prompt'>>, base?: OperationModePromptSettings): Promise<OperationModePromptSettings> {
   if (id === DEFAULT_CHAT_MODE_PROMPT_ID) return loadOperationModePromptSettings()
-  const settings = loadOperationModePromptSettings()
+  const settings = base ?? loadOperationModePromptSettings()
   const chatPrompts = settings.chatPrompts.map(prompt =>
     prompt.id === id
       ? {
@@ -212,17 +221,17 @@ export function updateChatModePrompt(id: string, patch: Partial<Pick<OperationMo
   return saveOperationModePromptSettings({ ...settings, chatPrompts })
 }
 
-export function deleteChatModePrompt(id: string): OperationModePromptSettings {
+export async function deleteChatModePrompt(id: string): Promise<OperationModePromptSettings> {
   if (id === DEFAULT_CHAT_MODE_PROMPT_ID) return loadOperationModePromptSettings()
   const settings = loadOperationModePromptSettings()
   const chatPrompts = settings.chatPrompts.filter(prompt => prompt.id !== id)
   const selectedChatPromptId =
     settings.selectedChatPromptId === id ? DEFAULT_CHAT_MODE_PROMPT_ID : settings.selectedChatPromptId
-  return saveOperationModePromptSettings({ selectedChatPromptId, chatPrompts })
+  return saveOperationModePromptSettings({ ...settings, selectedChatPromptId, chatPrompts })
 }
 
-export function selectChatModePrompt(id: string): OperationModePromptSettings {
-  const settings = loadOperationModePromptSettings()
+export async function selectChatModePrompt(id: string, base?: OperationModePromptSettings): Promise<OperationModePromptSettings> {
+  const settings = base ?? loadOperationModePromptSettings()
   const selectedChatPromptId =
     id === DEFAULT_CHAT_MODE_PROMPT_ID || settings.chatPrompts.some(prompt => prompt.id === id)
       ? id
@@ -230,7 +239,7 @@ export function selectChatModePrompt(id: string): OperationModePromptSettings {
   return saveOperationModePromptSettings({ ...settings, selectedChatPromptId })
 }
 
-export function resetChatModePromptSelectionToDefault(): OperationModePromptSettings {
+export async function resetChatModePromptSelectionToDefault(): Promise<OperationModePromptSettings> {
   const settings = loadOperationModePromptSettings()
   return saveOperationModePromptSettings({ ...settings, selectedChatPromptId: DEFAULT_CHAT_MODE_PROMPT_ID })
 }

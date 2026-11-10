@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 vi.mock('../../utils/api', async original => ({ ...await original<typeof import('../../utils/api')>(),
   buildLocalApiUrl: async (path: string) => `http://localhost/api${path}`,
 }))
+vi.mock('./runAdmissionClient', () => ({ getAdmissionEpoch: async () => 'epoch' }))
 import { enqueueUserMessage } from './chatActions'
 import reducer from './chatSlice'
 import type { RootState } from '../../store/store'
@@ -13,7 +14,7 @@ afterEach(() => { vi.unstubAllGlobals(); setFullAccessEnabled(false) })
 const setup = () => {
   const state = { chat: reducer(undefined, { type: 'init' }) } as RootState
   const dispatch = (action: any) => { state.chat = reducer(state.chat, action); return action }
-  const run = () => enqueueUserMessage({ conversationId: 'c', streamId: 's', content: 'next instruction', requestId: 'q', includeGlobalComposerContext: false })(dispatch, () => state, { auth: { accessToken: null, userId: null }, queryClient: null })
+  const run = () => enqueueUserMessage({ conversationId: 'c', streamId: 's', content: 'next instruction', requestId: 'q', includeGlobalComposerContext: false })(dispatch, () => state, { auth: { userId: null }, queryClient: null })
   return { run, state }
 }
 describe('enqueueUserMessage', () => {

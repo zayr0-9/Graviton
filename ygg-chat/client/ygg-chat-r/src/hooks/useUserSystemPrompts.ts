@@ -1,13 +1,11 @@
+import { newClientId } from '../helpers/clientId'
 import { useQueryClient } from '@tanstack/react-query'
-import { useCallback, useEffect, useMemo, useState } from 'react'
-import { isCloudSessionEnabled } from '../config/runtimeMode'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   clearDefaultLocalUserSystemPrompt,
   createLocalUserSystemPrompt,
   setDefaultLocalUserSystemPrompt,
-  type UserSystemPromptStorageMode,
 } from '../helpers/userSystemPromptStorage'
-import { clearDefaultUserSystemPrompt, createUserSystemPrompt, setDefaultUserSystemPrompt } from '../utils/api'
 import { useAuth } from './useAuth'
 import { UserSystemPromptCached, useUserSystemPromptsQuery } from './useQueries'
 
@@ -31,8 +29,6 @@ export interface UseUserSystemPromptsReturn {
   selectedPromptId: string | null
   showSavePromptInput: boolean
   savePromptName: string
-  savePromptStorage: UserSystemPromptStorageMode
-  canSaveToCloud: boolean
   savingPrompt: boolean
   saveError: string | null
   isExistingPrompt: boolean
@@ -44,7 +40,6 @@ export interface UseUserSystemPromptsReturn {
   setSelectedPromptId: (id: string | null) => void
   setShowSavePromptInput: (show: boolean) => void
   setSavePromptName: (name: string) => void
-  setSavePromptStorage: (storage: UserSystemPromptStorageMode) => void
   handleSelectPrompt: (prompt: UserSystemPromptCached) => void
   handleSaveAsPrompt: () => Promise<void>
   handleMakeDefault: () => Promise<void>
@@ -53,15 +48,12 @@ export interface UseUserSystemPromptsReturn {
   clearError: () => void
 }
 
-const isLocalPrompt = (prompt: UserSystemPromptCached | null | undefined) =>
-  prompt?.storage_mode === 'local' || prompt?.id.startsWith('local-')
-
 export const useUserSystemPrompts = (options: UseUserSystemPromptsOptions = {}): UseUserSystemPromptsReturn => {
   const { onPromptSelect, onError, currentPromptContent = '', isOpen = true } = options
 
   const queryClient = useQueryClient()
-  const { accessToken, userId } = useAuth()
-  const canSaveToCloud = Boolean(userId && isCloudSessionEnabled())
+  const pendingSaveId = useRef<string | null>(null)
+  const { userId } = useAuth()
 
   // Use React Query for system prompts (cached globally)
   const { prompts, isLoading, refetch } = useUserSystemPromptsQuery()
@@ -70,26 +62,10 @@ export const useUserSystemPrompts = (options: UseUserSystemPromptsOptions = {}):
   const [selectedPromptId, setSelectedPromptId] = useState<string | null>(null)
   const [showSavePromptInput, setShowSavePromptInput] = useState(false)
   const [savePromptName, setSavePromptName] = useState('')
-  const [savePromptStorage, setSavePromptStorageState] = useState<UserSystemPromptStorageMode>(() =>
-    canSaveToCloud ? 'cloud' : 'local'
-  )
   const [savingPrompt, setSavingPrompt] = useState(false)
   const [saveError, setSaveError] = useState<string | null>(null)
   const [makingDefault, setMakingDefault] = useState(false)
   const [removingDefault, setRemovingDefault] = useState(false)
-
-  const setSavePromptStorage = useCallback(
-    (storage: UserSystemPromptStorageMode) => {
-      setSavePromptStorageState(storage === 'cloud' && !canSaveToCloud ? 'local' : storage)
-    },
-    [canSaveToCloud]
-  )
-
-  useEffect(() => {
-    if (!canSaveToCloud && savePromptStorage === 'cloud') {
-      setSavePromptStorageState('local')
-    }
-  }, [canSaveToCloud, savePromptStorage])
 
   // Find the prompt that matches current content (if any)
   const matchingPrompt = useMemo(() => {
@@ -119,6 +95,7 @@ export const useUserSystemPrompts = (options: UseUserSystemPromptsOptions = {}):
 
   // Reset save UI state
   const resetSaveUI = useCallback(() => {
+    pendingSaveId.current = null
     setShowSavePromptInput(false)
     setSavePromptName('')
     setSaveError(null)
@@ -147,41 +124,13 @@ export const useUserSystemPrompts = (options: UseUserSystemPromptsOptions = {}):
     setSaveError(null)
 
     try {
-      if (isLocalPrompt(matchingPrompt)) {
-        const updatedPrompt = setDefaultLocalUserSystemPrompt(matchingPrompt.id)
-        if (!updatedPrompt) throw new Error('Local prompt not found')
+      const updatedPrompt = await setDefaultLocalUserSystemPrompt(matchingPrompt.id)
+      if (!updatedPrompt) throw new Error('Prompt not found')
 
-        queryClient.setQueryData<UserSystemPromptCached[]>(['userSystemPrompts', userId], old => {
-          if (!old) return [updatedPrompt]
-          return old.map(p => (isLocalPrompt(p) ? { ...p, is_default: p.id === updatedPrompt.id } : p))
-        })
-        setSelectedPromptId(updatedPrompt.id)
-        return
-      }
-
-      if (!userId) {
-        const errorMsg = 'Authentication required'
-        setSaveError(errorMsg)
-        onError?.(errorMsg)
-        return
-      }
-
-      const updatedPrompt = { ...(await setDefaultUserSystemPrompt(matchingPrompt.id, accessToken)), storage_mode: 'cloud' as const }
-
-      // Update React Query cache - set is_default to false for all other cloud prompts
       queryClient.setQueryData<UserSystemPromptCached[]>(['userSystemPrompts', userId], old => {
         if (!old) return [updatedPrompt]
-        return old.map(p =>
-          isLocalPrompt(p)
-            ? p
-            : {
-                ...p,
-                is_default: p.id === updatedPrompt.id,
-              }
-        )
+        return old.map(p => ({ ...p, is_default: p.id === updatedPrompt.id }))
       })
-
-      // Select the prompt
       setSelectedPromptId(updatedPrompt.id)
     } catch (error) {
       const errorMsg = 'Failed to set default prompt. Please try again.'
@@ -191,7 +140,7 @@ export const useUserSystemPrompts = (options: UseUserSystemPromptsOptions = {}):
     } finally {
       setMakingDefault(false)
     }
-  }, [matchingPrompt, accessToken, queryClient, userId, onError])
+  }, [matchingPrompt, queryClient, userId, onError])
 
   // Handle removing the default status from the matching prompt
   const handleRemoveDefault = useCallback(async () => {
@@ -203,28 +152,10 @@ export const useUserSystemPrompts = (options: UseUserSystemPromptsOptions = {}):
     setSaveError(null)
 
     try {
-      if (isLocalPrompt(matchingPrompt)) {
-        clearDefaultLocalUserSystemPrompt()
-        queryClient.setQueryData<UserSystemPromptCached[]>(['userSystemPrompts', userId], old => {
-          if (!old) return old
-          return old.map(p => (isLocalPrompt(p) ? { ...p, is_default: false } : p))
-        })
-        return
-      }
-
-      if (!userId) {
-        const errorMsg = 'Authentication required'
-        setSaveError(errorMsg)
-        onError?.(errorMsg)
-        return
-      }
-
-      await clearDefaultUserSystemPrompt(accessToken)
-
-      // Update React Query cache - set is_default to false for cloud prompts
+      await clearDefaultLocalUserSystemPrompt()
       queryClient.setQueryData<UserSystemPromptCached[]>(['userSystemPrompts', userId], old => {
         if (!old) return old
-        return old.map(p => (isLocalPrompt(p) ? p : { ...p, is_default: false }))
+        return old.map(p => ({ ...p, is_default: false }))
       })
     } catch (error) {
       const errorMsg = 'Failed to remove default status. Please try again.'
@@ -234,7 +165,7 @@ export const useUserSystemPrompts = (options: UseUserSystemPromptsOptions = {}):
     } finally {
       setRemovingDefault(false)
     }
-  }, [matchingPrompt, accessToken, queryClient, userId, onError])
+  }, [matchingPrompt, queryClient, userId, onError])
 
   // Handle saving current prompt as a new user system prompt
   const handleSaveAsPrompt = useCallback(async () => {
@@ -260,33 +191,15 @@ export const useUserSystemPrompts = (options: UseUserSystemPromptsOptions = {}):
       return
     }
 
-    if (savePromptStorage === 'cloud' && !accessToken) {
-      const errorMsg = 'Authentication required for cloud prompts. Choose Local to save on this device.'
-      setSaveError(errorMsg)
-      onError?.(errorMsg)
-      return
-    }
-
     setSavingPrompt(true)
     setSaveError(null)
 
     try {
-      const newPrompt =
-        savePromptStorage === 'local'
-          ? createLocalUserSystemPrompt({
-              name: savePromptName.trim(),
-              content: currentPromptContent.trim(),
-            })
-          : {
-              ...(await createUserSystemPrompt(
-                {
-                  name: savePromptName.trim(),
-                  content: currentPromptContent.trim(),
-                },
-                accessToken
-              )),
-              storage_mode: 'cloud' as const,
-            }
+      const newPrompt = await createLocalUserSystemPrompt({
+        id: pendingSaveId.current ?? (pendingSaveId.current = `local-${newClientId()}`),
+        name: savePromptName.trim(),
+        content: currentPromptContent.trim(),
+      })
 
       // Update React Query cache with the new prompt
       queryClient.setQueryData<UserSystemPromptCached[]>(['userSystemPrompts', userId], old => {
@@ -299,14 +212,14 @@ export const useUserSystemPrompts = (options: UseUserSystemPromptsOptions = {}):
       // Select the newly created prompt
       setSelectedPromptId(newPrompt.id)
     } catch (error) {
-      const errorMsg = 'Failed to save prompt. Please try again.'
+      const errorMsg = error instanceof Error ? error.message : 'Failed to save prompt. Please try again.'
       console.error('Failed to save system prompt:', error)
       setSaveError(errorMsg)
       onError?.(errorMsg)
     } finally {
       setSavingPrompt(false)
     }
-  }, [savePromptName, currentPromptContent, savePromptStorage, accessToken, queryClient, userId, resetSaveUI, onError])
+  }, [savePromptName, currentPromptContent, queryClient, userId, resetSaveUI, onError])
 
   return {
     // State
@@ -315,8 +228,6 @@ export const useUserSystemPrompts = (options: UseUserSystemPromptsOptions = {}):
     selectedPromptId,
     showSavePromptInput,
     savePromptName,
-    savePromptStorage,
-    canSaveToCloud,
     savingPrompt,
     saveError,
     isExistingPrompt,
@@ -328,7 +239,6 @@ export const useUserSystemPrompts = (options: UseUserSystemPromptsOptions = {}):
     setSelectedPromptId,
     setShowSavePromptInput,
     setSavePromptName,
-    setSavePromptStorage,
     handleSelectPrompt,
     handleSaveAsPrompt,
     handleMakeDefault,

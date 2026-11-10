@@ -4,6 +4,9 @@ import { Button } from '../Button/button'
 interface UpdateInfo {
   version: string
   releaseNotes?: string | Array<{ note?: string }>
+  /** macOS: builds are unsigned, so the update is downloaded manually from GitHub. */
+  manualInstall?: boolean
+  releaseUrl?: string
 }
 
 interface DownloadProgress {
@@ -20,6 +23,16 @@ export const UpdateModal: React.FC = () => {
   const [isDownloading, setIsDownloading] = useState(false)
   const [isReady, setIsReady] = useState(false)
   const [isInstalling, setIsInstalling] = useState(false)
+  const [isManual, setIsManual] = useState(false)
+
+  const handleOpenReleasePage = useCallback(async () => {
+    try {
+      await window.electronAPI?.autoUpdater?.openReleasePage?.()
+    } catch (error) {
+      console.error('Failed to open release page:', error)
+    }
+    setIsOpen(false)
+  }, [])
 
   const handleInstallNow = useCallback(async () => {
     if (!window.electronAPI?.autoUpdater) return
@@ -47,7 +60,9 @@ export const UpdateModal: React.FC = () => {
     cleanups.push(
       window.electronAPI.autoUpdater.onUpdateAvailable(info => {
         setUpdateInfo(info)
-        setIsDownloading(true)
+        const manual = info?.manualInstall === true
+        setIsManual(manual)
+        setIsDownloading(!manual)
         setIsOpen(true)
       })
     )
@@ -122,14 +137,14 @@ export const UpdateModal: React.FC = () => {
 
           {/* Title */}
           <h2 className='text-2xl font-semibold text-neutral-900 dark:text-neutral-100 mb-2'>
-            {isDownloading ? 'Downloading Update...' : 'Update Ready!'}
+            {isManual ? 'Update Available' : isDownloading ? 'Downloading Update...' : 'Update Ready!'}
           </h2>
 
           {/* Version info */}
           {updateInfo && (
             <p className='text-neutral-600 dark:text-neutral-400 mb-4'>
               Version <span className='font-semibold text-green-600 dark:text-green-400'>{updateInfo.version}</span>{' '}
-              {isDownloading ? 'is downloading' : 'is ready to install'}
+              {isManual ? 'is available' : isDownloading ? 'is downloading' : 'is ready to install'}
             </p>
           )}
 
@@ -163,6 +178,33 @@ export const UpdateModal: React.FC = () => {
                 <span>{downloadProgress.percent.toFixed(0)}%</span>
               </div>
             </div>
+          )}
+
+          {isManual && (
+            <>
+              <p className='text-sm text-neutral-500 dark:text-neutral-400 mb-6'>
+                Download the new version from GitHub Releases and replace the app to update.
+              </p>
+              <div className='flex flex-col sm:flex-row items-center gap-2 w-full'>
+                <Button
+                  variant='outline2'
+                  size='medium'
+                  onClick={handleLater}
+                  className='w-full sm:w-auto text-neutral-600 dark:text-neutral-300 hover:bg-neutral-100 dark:hover:bg-neutral-800/50 border-neutral-200 dark:border-neutral-700'
+                >
+                  Later
+                </Button>
+                <Button
+                  variant='outline2'
+                  size='medium'
+                  onClick={handleOpenReleasePage}
+                  className='w-full sm:w-auto border-0 bg-green-600 hover:bg-green-700 text-white'
+                >
+                  <i className='bx bx-link-external mr-2'></i>
+                  Download from GitHub
+                </Button>
+              </div>
+            </>
           )}
 
           {/* Description for ready state */}

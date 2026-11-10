@@ -24,6 +24,7 @@ export function configureServerHost(config: YggServerConfig, capabilities: YggHo
 }
 
 export function resetServerHost(): void {
+  internalOrigin = null
   activeConfig = null
   activeCapabilities = null
   hostGatedToolNames = new Set()
@@ -84,4 +85,11 @@ export function getServerTempDir(): string {
 
 export function getServerResourcesDir(): string {
   return getServerConfig().resourcesDir
+}
+
+let internalOrigin: string | null = null
+export function setServerInternalOrigin(origin: string | null): void { internalOrigin = origin }
+export function getServerInternalOrigin(): string {
+  if (!internalOrigin) throw new Error('Graviton host is not listening yet')
+  return internalOrigin
 }

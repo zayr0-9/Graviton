@@ -8,6 +8,7 @@ export interface QueuedMessageSubmission {
   fullAccessNotificationId?: string
   watcherCompletion?: WatcherCompletionProvenance
   attachmentsBase64?: HeadlessMessageRequest['attachmentsBase64']
+  selectedFiles?: HeadlessMessageRequest['selectedFiles']
 }
 
 export interface QueuedMessageView {

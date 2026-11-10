@@ -401,7 +401,7 @@ export const Select: React.FC<SelectProps> = ({
                           if (!optDisabled) handleSelect(opt.value)
                         }}
                         className={`select-cloud-option flex min-w-0 flex-1 items-center gap-2 rounded-[18px] px-3 py-2.5 text-left text-sm ${isSelected ? 'font-medium' : 'font-normal'} ${optDisabled ? 'cursor-not-allowed' : ''}`}
-                        title={optDisabled ? 'Upgrade to access this model' : undefined}
+                        title={optDisabled ? 'Unavailable' : undefined}
                       >
                         <span className='min-w-0 flex-1 line-clamp-3 break-words'>{opt.label}</span>
                         {optDisabled ? <LockKeyhole size={14} aria-hidden='true' className='shrink-0' /> : isSelected && <Check size={16} strokeWidth={2.25} aria-hidden='true' className='shrink-0' />}

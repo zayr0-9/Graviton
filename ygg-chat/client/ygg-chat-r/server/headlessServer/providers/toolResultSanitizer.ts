@@ -73,11 +73,30 @@ function parseToolCalls(value: any): any[] {
   return []
 }
 
+function parseBlocks(value: any): any[] {
+  const parsed = typeof value === 'string' ? parseJson(value) : value
+  return Array.isArray(parsed) ? parsed : []
+}
+
+/**
+ * The tool calls a persisted message made. `content_blocks` is canonical: its `tool_use`
+ * blocks carry id, name and input. The legacy `tool_calls` column (no longer written) is
+ * read only for rows without `tool_use` blocks: pre-block rows, older OpenAI rows whose
+ * blocks hold only `responses_output_items`, and caller-supplied history. Legacy entries
+ * are returned as stored, so callers keep their own field normalisation.
+ */
+export function messageToolCalls(msg: any): any[] {
+  const toolUses = parseBlocks(msg?.content_blocks)
+    .filter(block => block?.type === 'tool_use' && typeof block.id === 'string' && block.id)
+  if (toolUses.length === 0) return parseToolCalls(msg?.tool_calls)
+  return toolUses.map(block => ({ id: block.id, name: typeof block.name === 'string' ? block.name : '', arguments: block.input ?? {} }))
+}
+
 export function buildToolNameMap(history: any[]): Map<string, string> {
   const map = new Map<string, string>()
   for (const msg of history || []) {
     if (!msg || msg.role !== 'assistant') continue
-    const toolCalls = parseToolCalls(msg.tool_calls)
+    const toolCalls = messageToolCalls(msg)
     for (const tc of toolCalls) {
       const id = tc?.id
       const name = getToolCallName(tc)
@@ -158,6 +177,10 @@ export function sanitizeToolResultContentForModel(content: any, toolName?: strin
   const htmlPayload = extractHtmlPayload(content)
   if (htmlPayload?.html) {
     const resolvedName = toolName ?? htmlPayload.toolName ?? null
+    const resolved = typeof content === 'string' ? parseJson(content) : content
+    if (normalizedToolName === 'html_renderer' && typeof resolved?.documentId === 'string') {
+      return JSON.stringify({ success: true, displayed: true, documentId: resolved.documentId })
+    }
     return `displaying ${resolvedName || 'custom tool'} ui now`
   }
   return content

@@ -144,6 +144,12 @@ describe('fork grid', () => {
   ])('scales card height for %i actual grid columns', (columns, height) => {
     expect(getAgentGridCardHeight(columns)).toBe(height)
   })
+  it('fills the measured grid viewport regardless of columns, with a minimum', () => {
+    expect(getAgentGridCardHeight(3, 900.6)).toBe('max(16rem, 900px)')
+    expect(getAgentGridCardHeight(1, 900.6)).toBe('max(16rem, 900px)')
+    expect(getAgentGridCardHeight(2, 0)).toBe('max(25rem, min(65dvh, 35rem))')
+    expect(getAgentGridCardHeight(2, null)).toBe('max(25rem, min(65dvh, 35rem))')
+  })
   it('offers a separate chat button beside status for active and completed forks', () => {
     const html = render([run('a')], [run('old', { lineageId: 'other-fork', status: 'completed' })])
     expect(html.match(/Open chat ↗/g)).toHaveLength(2)
@@ -271,4 +277,19 @@ describe('fork grid', () => {
     expect(html).toContain('Transcript a')
   })
   it('has an empty state', () => { expect(render([])).toContain('No captured agent forks yet.') })
+})
+
+describe('deferred grid transcripts', () => {
+  it('does not construct offscreen transcripts before the first visibility measurement', () => {
+    vi.stubGlobal('IntersectionObserver', class {})
+    try {
+      const html = render(Array.from({ length: 100 }, (_, index) => run(`run-${index}`, { lineageId: `fork-${index}` })))
+      expect(html.match(/aria-label="Preview /g)).toHaveLength(100)
+      expect(html).not.toContain('Transcript run-')
+      expect(html.match(/data-agent-grid-row=/g)).toHaveLength(100)
+      expect(html).toContain('height:max(20rem, min(52dvh, 28rem))')
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
 })

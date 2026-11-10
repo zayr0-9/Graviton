@@ -1,3 +1,7 @@
+import { buildLocalApiUrl } from '../utils/api'
+import { isHostClient } from '../platform/clientCapabilities'
+import { createEmptyStreamState } from '../features/chats/streamHelpers'
+import { MAX_FINISHED_AGENT_FORKS } from '../features/chats/agentRunPreviewSlice'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { Message, StreamEvent, StreamLifecycleStatus, StreamState } from '../features/chats/chatTypes'
 import type { Conversation } from '../features/conversations/conversationTypes'
@@ -73,6 +77,27 @@ export const refreshAgentStreamHistory = (
     return refreshed
   })
   return changed ? next : history
+}
+
+/**
+ * Keep completed runs of active forks, plus every run of the newest `maxFinishedForks`
+ * finished forks. Finished forks are ordered by their newest-started run, matching
+ * buildAgentForkGroups. `history` must be sorted newest-started first.
+ */
+export const limitFinishedAgentHistory = (
+  history: readonly AgentStreamListItem[],
+  activeStreams: readonly AgentStreamListItem[],
+  maxFinishedForks: number
+): AgentStreamListItem[] => {
+  const activeForks = new Set(activeStreams.map(getAgentForkKey))
+  const keptFinished = new Set<string>()
+  return history.filter(stream => {
+    const key = getAgentForkKey(stream)
+    if (activeForks.has(key) || keptFinished.has(key)) return true
+    if (keptFinished.size >= maxFinishedForks) return false
+    keptFinished.add(key)
+    return true
+  })
 }
 
 /** Presentation only: execution, cancellation and replay remain stream-scoped. */
@@ -271,6 +296,21 @@ export function useRunningAgentStreams(notes: ResearchNoteItem[] = [], allConver
   const messages = useAppSelector(state => state.chat.conversation.messages)
   const retainedPreviews = useAppSelector(state => state.agentRunPreviews.byStreamId)
   const [streamHistory, setStreamHistory] = useState<AgentStreamListItem[]>([])
+  const [hostRuns, setHostRuns] = useState<Array<{ streamId: string; conversationId: string; lineageId: string | null; parentId: string | null; createdAt: string }>>([])
+  useEffect(() => {
+    if (!isHostClient) return
+    const controller = new AbortController()
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const poll = async () => {
+      try {
+        const response = await fetch(await buildLocalApiUrl('/host/runs'), { signal: controller.signal, cache: 'no-store' })
+        if (response.ok) { const data = await response.json(); if (!controller.signal.aborted) setHostRuns(data.runs ?? []) }
+      } catch { /* Retain last summaries while disconnected; no execution side effects. */ }
+      finally { if (!controller.signal.aborted) timer = setTimeout(poll, 2000) }
+    }
+    void poll()
+    return () => { controller.abort(); if (timer) clearTimeout(timer) }
+  }, [])
   const previousActiveStreamIdsRef = useRef<Set<string>>(new Set())
   const parentPreviewByStreamIdRef = useRef<Map<string, AgentParentPreview>>(new Map())
 
@@ -365,10 +405,16 @@ export function useRunningAgentStreams(notes: ResearchNoteItem[] = [], allConver
       streams.push({ streamId, stream })
     }
 
+    for (const run of hostRuns) {
+      if (streams.some(entry => entry.streamId === run.streamId)) continue
+      streams.push({ streamId: run.streamId, stream: { ...createEmptyStreamState('branch', {
+        lineageId: run.lineageId ?? undefined, lineageIdConfirmed: Boolean(run.lineageId), rootMessageId: run.parentId ?? undefined,
+      }), conversationId: run.conversationId, active: true, status: 'active', createdAt: run.createdAt } })
+    }
     return streams
       .sort((a, b) => b.stream.createdAt.localeCompare(a.stream.createdAt))
       .map((entry, index) => buildAgentStreamListItem(entry.streamId, entry.stream, null, index))
-  }, [buildAgentStreamListItem, streamingRoot.activeIds, streamingRoot.byId])
+  }, [buildAgentStreamListItem, streamingRoot.activeIds, streamingRoot.byId, hostRuns])
 
   useEffect(() => {
     for (const stream of activeStreams) {
@@ -412,15 +458,16 @@ export function useRunningAgentStreams(notes: ResearchNoteItem[] = [], allConver
     })
 
     previousActiveStreamIdsRef.current = currentActiveIds
-  }, [buildAgentStreamListItem, streamingRoot.activeIds, streamingRoot.byId])
+  }, [buildAgentStreamListItem, streamingRoot.activeIds, streamingRoot.byId, hostRuns])
 
   const visibleHistory = useMemo(() => {
     const byId = new Map(streamHistory.map(item => [item.streamId, item]))
     for (const run of Object.values(retainedPreviews)) {
       if (!run.stream.active) byId.set(run.streamId, buildAgentStreamListItem(run.streamId, run.stream, run.completedAt))
     }
-    return [...byId.values()].sort((a, b) => b.createdAt.localeCompare(a.createdAt))
-  }, [streamHistory, retainedPreviews, buildAgentStreamListItem])
+    const sorted = [...byId.values()].sort((a, b) => b.createdAt.localeCompare(a.createdAt) || a.streamId.localeCompare(b.streamId))
+    return limitFinishedAgentHistory(sorted, activeStreams, MAX_FINISHED_AGENT_FORKS)
+  }, [streamHistory, retainedPreviews, buildAgentStreamListItem, activeStreams])
 
   return {
     activeStreams,

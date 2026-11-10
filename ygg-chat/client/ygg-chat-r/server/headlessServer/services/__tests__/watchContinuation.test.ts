@@ -26,7 +26,7 @@ function harness() {
 }
 
 describe('watcher branch continuation', () => {
-  it('queues a completed Claude review into the latest same-lineage run without polling', async () => {
+  it.each(['claude_bridge', 'subagent'])('queues a completed %s result into the latest same-lineage run without polling', async kind => {
     const h = harness(); h.add('origin', 'completed'); h.setHead('new-head')
     const latest = h.add('latest')
     const sibling = h.add('sibling', undefined, 'fork')
@@ -43,16 +43,20 @@ describe('watcher branch continuation', () => {
       },
     })
     try {
-      const source = { action: 'send', toolCallId: 'launch-call', messageId: 'launch-message' }
-      const completion = Promise.resolve({ sessionId: 'session', job: { id: 'job', status: 'completed', source }, content: 'Review evidence' })
-      service.registerBridgeJob('job', completion, h.context, null, 'wait-call')
+      const source = { action: kind === 'subagent' ? 'spawn' : 'send', toolCallId: 'launch-call', messageId: 'launch-message' }
+      const completion = Promise.resolve({ sessionId: 'session', handle: '123456', attempt: 0,
+        job: { id: 'job', status: 'completed', source }, content: 'Review evidence' })
+      const register = () => kind === 'subagent'
+        ? service.registerSubagentRun('job', 0, completion, h.context, null, 'wait-call')
+        : service.registerBridgeJob('job', completion, h.context, null, 'wait-call')
+      register()
       await Promise.resolve()
       const queued = latest.queue.claim()?.submission
       expect(queued.content).toContain('Review evidence')
       expect(queued.watcherCompletion).toMatchObject({ originMessageId: 'tool-parent', source, registrationToolCallId: 'wait-call' })
       expect(queued.content).toContain('tool call launch-call')
       expect(sibling.queue.snapshot().items).toHaveLength(0)
-      service.registerBridgeJob('job', completion, h.context, null)
+      register()
       await Promise.resolve()
       expect(latest.queue.snapshot().items).toHaveLength(1)
       expect(h.orchestrator.watchPins.size).toBe(0)
@@ -105,16 +109,17 @@ describe('watcher branch continuation', () => {
     expect(successor.queue.snapshot().items).toHaveLength(1)
   })
 
-  it('reaps an unattended successor rather than leaking a permission waiter', () => {
+  it('keeps an unattended successor alive until explicit cancellation', () => {
     const sessions = new RunSessionRegistry()
     const request = { conversationId: 'chat', streamId: 'unattended', operation: 'send' as const, content: 'completion', provider: 'openaichatgpt', modelName: 'test' }
     const runMessage = vi.fn(() => new Promise<void>(() => {}))
     launchQueuedSuccessor({ runMessage }, sessions, request)
     const session = sessions.get('unattended')!
-    expect(session.detachedAt).not.toBeNull()
     sessions.reap(Date.now() + 600000)
+    expect(session.signal.aborted).toBe(false)
+    expect(sessions.get('unattended')).toBe(session)
+    sessions.cancel('unattended')
     expect(session.signal.aborted).toBe(true)
-    expect(sessions.get('unattended')).toBeUndefined()
   })
 
   it('retains origin/latest mailboxes while watching and releases the pin once', () => {

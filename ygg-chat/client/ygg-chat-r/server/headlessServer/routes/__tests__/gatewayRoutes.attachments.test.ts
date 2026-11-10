@@ -1,10 +1,7 @@
 /**
- * Integration coverage for the storage-aware attachment routes on /api/gw/*.
- * Boots the real gateway against an in-memory better-sqlite3 + a mock Railway
- * client/mirror, and asserts the local-vs-cloud routing (by the message's parent
- * conversation storage_mode + the ?storageMode= override), the delete leg, and
- * the multipart upload passthrough (raw body forwarded to Railway, then mirrored
- * + linked locally).
+ * Integration coverage for the local attachment routes on /api/gw/*. Boots the real
+ * gateway against an in-memory better-sqlite3 and asserts reads, links, deletes and
+ * that no hosted backend is involved (legacy ?storageMode= hints are ignored).
  */
 import type Database from 'better-sqlite3'
 import express from 'express'
@@ -60,8 +57,7 @@ describeIfSqlite('gateway attachment routes', () => {
   let db: Database.Database | undefined
   let server: Server | undefined
   let baseUrl = ''
-  let railway: { passthrough: ReturnType<typeof vi.fn> }
-  let mirror: { mirror: ReturnType<typeof vi.fn> }
+  let fetchSpy: ReturnType<typeof vi.spyOn>
 
   beforeEach(() => {
     const database = new BetterSqlite3Ctor!(':memory:')
@@ -69,7 +65,7 @@ describeIfSqlite('gateway attachment routes', () => {
     createSchema(database)
     const statements = createStatements(database)
 
-    // Seed: a local conversation + message with one linked attachment; a cloud conversation + message.
+    // Seed: a local conversation + message with one linked attachment, and a legacy cloud-mode row.
     database.prepare('INSERT INTO conversations (id, storage_mode) VALUES (?, ?)').run('c-local', 'local')
     database.prepare('INSERT INTO conversations (id, storage_mode) VALUES (?, ?)').run('c-cloud', 'cloud')
     database.prepare('INSERT INTO messages (id, conversation_id) VALUES (?, ?)').run('m-local', 'c-local')
@@ -77,22 +73,12 @@ describeIfSqlite('gateway attachment routes', () => {
     statements.insertAttachment.run('att-local', 'm-local', 'image', 'image/png', 'local', null, '2024-01-01T00:00:00Z')
     statements.linkAttachment.run('m-local:att-local', 'm-local', 'att-local', '2024-01-01T00:00:00Z')
 
-    railway = { passthrough: vi.fn(async () => ({ ok: true, status: 200, body: [{ id: 'att-cloud' }], contentType: 'application/json' })) }
-    mirror = { mirror: vi.fn(async () => {}) }
-    const auth = { getFreshAppToken: vi.fn(async () => ({ userId: 'u1', accessToken: 'tok' })) }
-
     const app = express()
     app.use(express.json())
-    registerGatewayRoutes(app, {
-      railway: railway as any,
-      mirror: mirror as any,
-      auth: auth as any,
-      db: database,
-      statements,
-      enabled: true,
-    })
+    registerGatewayRoutes(app, { db: database, statements })
     server = app.listen(0)
     baseUrl = `http://127.0.0.1:${(server.address() as AddressInfo).port}`
+    fetchSpy = vi.spyOn(globalThis, 'fetch')
   })
 
   afterEach(async () => {
@@ -101,26 +87,21 @@ describeIfSqlite('gateway attachment routes', () => {
     vi.restoreAllMocks()
   })
 
-  it('GET messages/:id/attachments reads local SQLite for a local-conversation message (no Railway)', async () => {
+  const outboundOtherThanTest = () => fetchSpy.mock.calls.map(call => String(call[0])).filter(url => !url.startsWith(baseUrl))
+
+  it('GET messages/:id/attachments reads local SQLite', async () => {
     const res = await fetch(`${baseUrl}/api/gw/messages/m-local/attachments`)
     expect(res.status).toBe(200)
     const body = (await res.json()) as any[]
     expect(body.map(a => a.id)).toEqual(['att-local'])
-    expect(railway.passthrough).not.toHaveBeenCalled()
+    expect(outboundOtherThanTest()).toEqual([])
   })
 
-  it('GET messages/:id/attachments routes to Railway for a cloud-conversation message', async () => {
-    const res = await fetch(`${baseUrl}/api/gw/messages/m-cloud/attachments`)
-    expect(res.status).toBe(200)
-    expect(await res.json()).toEqual([{ id: 'att-cloud' }])
-    expect(railway.passthrough).toHaveBeenCalledTimes(1)
-    expect(railway.passthrough.mock.calls[0][0]).toMatchObject({ method: 'GET', path: '/messages/m-cloud/attachments' })
-  })
-
-  it('honors the ?storageMode=cloud override even for a local-conversation message', async () => {
-    await fetch(`${baseUrl}/api/gw/messages/m-local/attachments?storageMode=cloud`)
-    expect(railway.passthrough).toHaveBeenCalledTimes(1)
-    expect(railway.passthrough.mock.calls[0][0]).toMatchObject({ path: '/messages/m-local/attachments' })
+  it('serves legacy cloud-mode rows and ?storageMode=cloud hints from local SQLite too', async () => {
+    expect(await (await fetch(`${baseUrl}/api/gw/messages/m-cloud/attachments`)).json()).toEqual([])
+    const hinted = (await (await fetch(`${baseUrl}/api/gw/messages/m-local/attachments?storageMode=cloud`)).json()) as any[]
+    expect(hinted.map(a => a.id)).toEqual(['att-local'])
+    expect(outboundOtherThanTest()).toEqual([])
   })
 
   it('DELETE messages/:id/attachments removes local links and reports the count', async () => {
@@ -129,43 +110,19 @@ describeIfSqlite('gateway attachment routes', () => {
     // Link is gone; a follow-up read returns empty.
     const after = await (await fetch(`${baseUrl}/api/gw/messages/m-local/attachments`)).json()
     expect(after).toEqual([])
-    expect(railway.passthrough).not.toHaveBeenCalled()
+    expect(outboundOtherThanTest()).toEqual([])
   })
 
-  it('GET attachments/:id returns the local row when present, else Railway', async () => {
+  it('GET attachments/:id returns the local row, or 404 when it does not exist', async () => {
     const local = await (await fetch(`${baseUrl}/api/gw/attachments/att-local`)).json()
     expect(local).toMatchObject({ id: 'att-local' })
-    expect(railway.passthrough).not.toHaveBeenCalled()
-
-    railway.passthrough.mockResolvedValueOnce({ ok: true, status: 200, body: { id: 'att-remote' }, contentType: 'application/json' })
-    const remote = await (await fetch(`${baseUrl}/api/gw/attachments/att-remote`)).json()
-    expect(remote).toEqual({ id: 'att-remote' })
-    expect(railway.passthrough).toHaveBeenCalledTimes(1)
+    const missing = await fetch(`${baseUrl}/api/gw/attachments/att-remote`)
+    expect(missing.status).toBe(404)
+    expect(outboundOtherThanTest()).toEqual([])
   })
 
-  it('POST attachments forwards the raw multipart body to Railway and mirrors + links the result', async () => {
-    railway.passthrough.mockResolvedValueOnce({
-      ok: true,
-      status: 201,
-      body: { id: 'att-uploaded', message_id: 'm-cloud', kind: 'image', mime_type: 'image/png' },
-      contentType: 'application/json',
-    })
-    const res = await fetch(`${baseUrl}/api/gw/attachments?messageId=m-cloud`, {
-      method: 'POST',
-      headers: { 'content-type': 'multipart/form-data; boundary=xyz' },
-      body: '--xyz\r\nContent-Disposition: form-data; name="file"\r\n\r\nbytes\r\n--xyz--',
-    })
-    expect(res.status).toBe(201)
-    expect(await res.json()).toMatchObject({ id: 'att-uploaded' })
-
-    const call = railway.passthrough.mock.calls[0][0]
-    expect(call).toMatchObject({ method: 'POST', path: '/attachments' })
-    expect(call.headers['Content-Type']).toBe('multipart/form-data; boundary=xyz')
-    expect(Buffer.isBuffer(call.body)).toBe(true)
-
-    expect(mirror.mirror).toHaveBeenCalledWith('attachment', expect.objectContaining({ id: 'att-uploaded', message_id: 'm-cloud' }))
-    // A local link row now associates the uploaded attachment with the message.
-    const linked = db!.prepare('SELECT * FROM message_attachment_links WHERE message_id = ? AND attachment_id = ?').get('m-cloud', 'att-uploaded')
-    expect(linked).toBeTruthy()
+  it('has no multipart upload route (uploads were Railway-only)', async () => {
+    const res = await fetch(`${baseUrl}/api/gw/attachments?messageId=m-local`, { method: 'POST', body: 'x' })
+    expect(res.status).toBe(404)
   })
 })

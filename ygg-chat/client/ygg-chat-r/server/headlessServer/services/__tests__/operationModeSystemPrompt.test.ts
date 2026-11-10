@@ -26,7 +26,7 @@ describe('buildOperationModeSystemPrompt', () => {
     expect(prompt).toContain('Agent Prompt: Chat and Agent modes')
     expect(prompt).toContain('## Plan Response Style')
     expect(prompt).toContain('Use short, concise plans')
-    expect(prompt).toContain('call `wait` once rather than polling')
+    expect(prompt).toContain('Call `wait` once to register automatic completion delivery')
     expect(prompt).toContain('Chat mode (plan)')
   })
 
@@ -44,9 +44,28 @@ describe('buildOperationModeSystemPrompt', () => {
     const prompt = buildOperationModeSystemPrompt({ operationMode: 'execute', includeCustomToolsPrompt: false })
 
     expect(prompt).toContain('Agent Prompt: Chat and Agent modes')
-    expect(prompt).toContain('call `wait` once rather than polling')
+    expect(prompt).toContain('Call `wait` once to register automatic completion delivery')
     expect(prompt).toContain('## Plan Response Style (only while Chat mode is active)')
     expect(prompt).toBe(buildOperationModeSystemPrompt({ operationMode: 'plan', includeCustomToolsPrompt: false }))
+  })
+})
+
+describe('web research delegation guidance', () => {
+  it('requires automatic delegation for online lookups in both modes', () => {
+    for (const operationMode of ['plan', 'execute'] as const) {
+      const prompt = buildOperationModeSystemPrompt({ operationMode, includeCustomToolsPrompt: false })
+
+      expect(prompt).toContain('### Web search and online research')
+      expect(prompt).toContain('always delegate the online research to a subagent before using web/search tools')
+      expect(prompt).toContain('the user does not need to request subagents explicitly')
+      expect(prompt).toContain('even to a single quick lookup')
+      expect(prompt).toContain('takes precedence over guidance to handle small tasks directly')
+      expect(prompt).toContain('Keep raw search results and page contents out of the main conversation')
+      expect(prompt).toContain('source URLs, supporting evidence')
+      expect(prompt).toContain('delegates follow-up browsing')
+      expect(prompt).toContain('explain the limitation instead of silently bypassing delegation')
+      expect(prompt).toContain('they must not attempt nested delegation')
+    }
   })
 })
 
@@ -228,7 +247,7 @@ describe('operation mode prompt overrides', () => {
     expect(chat).toContain('applies only while Agent mode is active')
   })
 
-  it('treats blank overrides as resets without disturbing Chat prompt settings', () => {
+  it('treats blank overrides as resets without disturbing Chat prompt settings', async () => {
     storage.set(
       'ygg_operation_mode_prompt_settings',
       JSON.stringify({
@@ -237,7 +256,7 @@ describe('operation mode prompt overrides', () => {
       })
     )
 
-    const saved = saveAgentModePromptOverride('   ')
+    const saved = await saveAgentModePromptOverride('   ')
 
     expect(saved.agentModePromptOverride).toBeNull()
     expect(saved.selectedChatPromptId).toBe('custom-chat')

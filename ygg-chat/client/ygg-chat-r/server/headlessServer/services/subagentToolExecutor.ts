@@ -1,7 +1,9 @@
+import { normalizeProviderRoute } from './providerRouter.js'
+import { DEFAULT_OPENROUTER_BYOK_MODEL } from '../providers/hyperRouterOpenRouterProvider.js'
 import { randomUUID } from 'node:crypto'
 import type { HeadlessSubagentStreamRequest } from '../../../../../shared/headlessApi.js'
 import type { MessageQueueSnapshot, QueuedMessageView } from '../../../../../shared/queuedMessages.js'
-import type { ProviderToolCall } from '../providers/openRouterProvider.js'
+import type { ProviderToolCall } from '../providers/providerTypes.js'
 import type { SubagentRunRow, SubagentRunStatus } from '../persistence/subagentRunRepo.js'
 import type { ToolExecutionContext, ToolExecutor } from './toolLoopService.js'
 import { getHeadlessSubagentModePrompt } from './headlessSystemPrompt.js'
@@ -47,7 +49,7 @@ export interface SubagentManagerRunner {
   getMessageQueue(handle: string): MessageQueueSnapshot | null
   cancel(handle: string): boolean
   isActive(handle: string): boolean
-  waitForTerminal(handle: string, signal?: AbortSignal): Promise<SubagentRunRow | null>
+  waitForTerminal(handle: string, signal?: AbortSignal, expectedAttempt?: number): Promise<SubagentRunRow | null>
   getRunByHandle(handle: string): SubagentRunRow | null
   listByLineage(lineageId: string, status?: SubagentRunStatus): SubagentRunRow[]
 }
@@ -129,9 +131,15 @@ async function buildSubagentRequest(toolCall: ProviderToolCall, context: ToolExe
   const prompt = typeof args.prompt === 'string' ? args.prompt.trim() : ''
   if (!prompt) throw new Error('Subagent requires a prompt')
 
-  const inheritedProvider = context.provider || 'openaichatgpt'
-  const provider = inheritedProvider === 'openrouter' ? 'openaichatgpt' : inheritedProvider
-  const modelName = inheritedProvider === 'openrouter' ? DEFAULT_SUBAGENT_MODEL : context.modelName || DEFAULT_SUBAGENT_MODEL
+  const defaults = context.subagentDefaults
+  const provider = normalizeProviderRoute(defaults?.defaultProvider || context.provider || 'openaichatgpt')
+  const parentProvider = normalizeProviderRoute(context.provider || 'openaichatgpt')
+  const providerDefault = provider === 'lmstudio' ? process.env.LMSTUDIO_MODEL || 'local-model'
+    : provider === 'zai' ? process.env.ZAI_MODEL || 'glm-5.1'
+    : provider === 'bedrock' ? process.env.AWS_BEDROCK_MODEL || 'anthropic.claude-3-5-sonnet-20241022-v2:0'
+    : provider === 'openrouterbyok' ? DEFAULT_OPENROUTER_BYOK_MODEL
+    : DEFAULT_SUBAGENT_MODEL
+  const modelName = defaults?.defaultModel || (parentProvider === provider ? context.modelName : null) || providerDefault
 
   // Docs §6: an `agent_type` selects a `<configDir>/agents/<name>.md` definition.
   const agentTypeRaw =
@@ -156,7 +164,7 @@ async function buildSubagentRequest(toolCall: ProviderToolCall, context: ToolExe
       ]
     : undefined
   // The definition's allow-list wins over the model's ad-hoc list (it is the author's contract).
-  const tools = definition.tools ?? requestedTools
+  const tools = definition.tools ?? requestedTools ?? (defaults ? (defaults.orchestratorEnabled ? defaults.enabledTools : []) : undefined)
   const requestedSystemPrompt = typeof args.systemPrompt === 'string' ? args.systemPrompt.trim() : ''
   const inheritedSystemPrompt =
     typeof context.subagentSystemPrompt === 'string' && context.subagentSystemPrompt.trim()
@@ -167,7 +175,7 @@ async function buildSubagentRequest(toolCall: ProviderToolCall, context: ToolExe
   return {
     agentType: agent?.name ?? null,
     disallowedTools: definition.disallowedTools.length > 0 ? definition.disallowedTools : undefined,
-    maxTurns: definition.maxTurns,
+    maxTurns: definition.maxTurns ?? defaults?.maxTurns,
     contextDirectories: context.contextDirectories ?? loader?.settings ?? null,
     conversationId: context.conversationId,
     parentMessageId: context.messageId,
@@ -179,21 +187,23 @@ async function buildSubagentRequest(toolCall: ProviderToolCall, context: ToolExe
     prompt,
     systemPrompt: systemPrompt || null,
     provider,
-    authSessionId: context.authSessions?.[provider === 'openrouter' ? 'app' : 'codex'],
+    authSessionId: provider === 'openaichatgpt' ? context.authSessions?.codex : undefined,
     modelName,
     tools,
     temperature: typeof args.temperature === 'number' ? args.temperature : undefined,
     reasoningEffort: context.subagentReasoningEffort,
     serviceTier: provider === 'openaichatgpt' ? context.serviceTier : undefined,
     operationMode: context.operationMode ?? 'execute',
-    autoApprove: args.inheritAutoApprove !== false && context.autoApprove !== false,
+    autoApprove: context.autoApprove !== false,
     rootPath: context.rootPath ?? null,
     fullAccess: context.fullAccess === true,
+    additionalRoots: context.additionalRoots ?? [],
     userId: null,
     toolTimeoutMs: context.timeoutMs,
+    bashTimeoutMs: context.bashTimeoutMs,
     autoCompactionEnabled: context.autoCompactionEnabled,
     compactionThresholdPercent: context.compactionThresholdPercent,
-    contextLength: provider === context.provider ? context.contextLength : undefined,
+    contextLength: provider === parentProvider ? context.contextLength : undefined,
   }
 }
 
@@ -207,8 +217,7 @@ async function buildSubagentRequest(toolCall: ProviderToolCall, context: ToolExe
  * persisted.
  */
 function buildResumeRequest(run: SubagentRunRow, context: ToolExecutionContext): HeadlessSubagentStreamRequest {
-  const inheritedProvider = run.provider || context.provider || 'openaichatgpt'
-  const provider = inheritedProvider === 'openrouter' ? 'openaichatgpt' : inheritedProvider
+  const provider = run.provider || context.provider || 'openaichatgpt'
   return {
     conversationId: run.conversation_id,
     parentMessageId: run.parent_message_id,
@@ -226,8 +235,10 @@ function buildResumeRequest(run: SubagentRunRow, context: ToolExecutionContext):
     autoApprove: context.autoApprove !== false,
     rootPath: context.rootPath ?? null,
     fullAccess: context.fullAccess === true,
+    additionalRoots: context.additionalRoots ?? [],
     userId: null,
     toolTimeoutMs: context.timeoutMs,
+    bashTimeoutMs: context.bashTimeoutMs,
     autoCompactionEnabled: context.autoCompactionEnabled,
     compactionThresholdPercent: context.compactionThresholdPercent,
     contextLength: provider === context.provider ? context.contextLength : undefined,
@@ -392,16 +403,39 @@ function managerStatus(
   } }
 }
 
+type RegisterSubagentWait = (runId: string, attempt: number, completion: Promise<Record<string, any>>,
+  context: ToolExecutionContext, toolCallId: string) => Record<string, any>
+
 async function managerWait(
   runner: SubagentManagerRunner,
   context: ToolExecutionContext,
-  args: Record<string, any>
+  args: Record<string, any>,
+  registerWait?: RegisterSubagentWait,
+  toolCallId?: string
 ): Promise<Record<string, any>> {
   const handle = normalizeHandle(args.handle)
   if (!handle) throw new Error('subagent_manager wait: a handle is required.')
   const run = runner.getRunByHandle(handle)
   if (!run || !ownsRun(run, context)) return notOwnedResult('wait', handle)
 
+  if (registerWait) {
+    // Subscribe without the foreground signal: ending the parent turn must not lose delivery.
+    const attempt = run.attempt
+    const completion = runner.waitForTerminal(handle, undefined, attempt).then(terminal => {
+      if (!terminal || !ownsRun(terminal, context) || terminal.id !== run.id || terminal.attempt !== attempt) {
+        throw new Error('Subagent attempt unavailable for completion delivery')
+      }
+      const text = terminal.final_response || terminal.error || ''
+      return { handle, attempt: terminal.attempt, content: text.slice(0, 12000), truncated: text.length > 12000,
+        job: { id: terminal.id, status: terminal.status, error: terminal.error,
+          source: terminal.tool_call_id ? { action: 'spawn', toolCallId: terminal.tool_call_id, messageId: terminal.parent_message_id } : undefined } }
+    })
+    // Registration can fail closed at capacity; still consume a later lifecycle rejection.
+    void completion.catch(() => {})
+    const registration = registerWait(run.id, attempt, completion, context, toolCallId!)
+    return { action: 'wait', found: true, ...registration, handle, watchHandle: registration.handle, runId: run.id, attempt,
+      message: 'Completion watch registered. Do other work or end this turn; the result will be inserted into this branch automatically when autoResume is true. Do not poll.' }
+  }
   const terminal = await runner.waitForTerminal(handle, context.signal)
   if (!terminal || !ownsRun(terminal, context)) return notOwnedResult('wait', handle)
   return { action: 'wait', found: true, subagent: {
@@ -517,6 +551,8 @@ async function managerResume(
 export function createSubagentManagerExecutor(deps: {
   leafExecutor: ToolExecutor
   runner: SubagentManagerRunner
+  /** Trusted main-chat watcher registration; omitted for legacy blocking callers. */
+  registerWait?: RegisterSubagentWait
 }): ToolExecutor {
   return async (toolCall, context) => {
     if (toolCall.name !== 'subagent_manager') return deps.leafExecutor(toolCall, context)
@@ -531,7 +567,7 @@ export function createSubagentManagerExecutor(deps: {
       case 'status':
         return managerStatus(deps.runner, context, args)
       case 'wait':
-        return managerWait(deps.runner, context, args)
+        return managerWait(deps.runner, context, args, deps.registerWait, toolCall.id)
       case 'send':
         return managerSend(deps.runner, context, args)
       case 'cancel':

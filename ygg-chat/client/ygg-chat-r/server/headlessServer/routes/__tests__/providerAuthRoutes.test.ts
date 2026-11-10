@@ -53,9 +53,9 @@ describe('registerProviderAuthRoutes', () => {
     expect(tokenStore.getLatest('openaichatgpt')).toBeNull()
   })
 
-  it('rejects raw app OAuth credential registration without creating a mirror', async () => {
+  it('has no hosted (Railway) OpenRouter token route', async () => {
     const response = await postJson(baseUrl, '/api/provider-auth/openrouter/token', { userId: 'u2', accessToken: 'secret' })
-    expect(response.status).toBe(410)
+    expect(response.status).toBe(404)
     expect(tokenStore.getLatest('openrouter')).toBeNull()
   })
 
@@ -84,49 +84,6 @@ describe('registerProviderAuthRoutes', () => {
     expect(tokenStore.get('bedrock', 'u-bedrock')).toBeNull()
   })
 
-  it('fetches live openrouter model listing from remote when token is stored', async () => {
-    tokenStore.upsert({
-      provider: 'openrouter',
-      userId: 'u-live',
-      accessToken: 'Bearer live-token',
-    })
-
-    global.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
-      const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url
-      if (url === 'https://webdrasil-production.up.railway.app/api/models/openrouter') {
-        expect(init?.headers).toMatchObject({
-          Authorization: 'Bearer live-token',
-        })
-        return new Response(
-          JSON.stringify({
-            models: [
-              'openai/gpt-5-mini',
-              { name: 'anthropic/claude-3.7-sonnet' },
-              { id: 'google/gemini-2.5-pro' },
-            ],
-          }),
-          {
-            status: 200,
-            headers: { 'content-type': 'application/json' },
-          }
-        )
-      }
-      return originalFetch(input, init)
-    }) as typeof fetch
-
-    const res = await fetch(`${baseUrl}/api/provider-auth/models?userId=u-live`)
-    expect(res.status).toBe(200)
-    const payload = (await res.json()) as any
-
-    expect(payload.success).toBe(true)
-    const openrouterProvider = payload.providers.find((provider: any) => provider.name === 'openrouter')
-    expect(openrouterProvider?.models).toEqual([
-      'openai/gpt-5-mini',
-      'anthropic/claude-3.7-sonnet',
-      'google/gemini-2.5-pro',
-    ])
-  })
-
   it('returns provider model listing', async () => {
     const res = await fetch(`${baseUrl}/api/provider-auth/models`)
     expect(res.status).toBe(200)
@@ -135,7 +92,8 @@ describe('registerProviderAuthRoutes', () => {
     expect(payload.success).toBe(true)
     const providerNames = payload.providers.map((provider: any) => provider.name)
     expect(providerNames).toContain('openaichatgpt')
-    expect(providerNames).toContain('openrouter')
+    expect(providerNames).toContain('openrouterbyok')
+    expect(providerNames).not.toContain('openrouter')
     expect(providerNames).toContain('lmstudio')
     expect(providerNames).toContain('zai')
     expect(providerNames).toContain('bedrock')

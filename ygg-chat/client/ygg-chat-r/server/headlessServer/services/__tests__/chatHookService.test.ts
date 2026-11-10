@@ -231,6 +231,13 @@ describe('ChatHookSession dispatch + parity', () => {
     expect(await stop.session.toolLoopHooks().runStop({ assistantMessage: { id: 'a1', parent_id: 'u1' }, streamId: 's1' })).toBe(false)
   })
 
+  it('native Stop preserves the immediate parent but carries an explicit user-turn anchor', async () => {
+    const { session, calls } = makeSession(async () => noop)
+    await session.runStop({ assistantMessage: { id: 'a2', parent_id: 'a1', content: 'final' }, streamId: 'native', lastUserMessageId: 'u1' })
+    expect(calls[0]).toMatchObject({ event: 'Stop', messageId: 'a2', parentId: 'a1',
+      turn: { lastUserMessageId: 'u1', lastAssistantMessageId: 'a2' }, lastAssistantMessage: 'final' })
+  })
+
   it('swallows a runHook rejection (parity with the renderer chatHookClient swallow)', async () => {
     const { session } = makeSession(async () => {
       throw new Error('discovery failed')
@@ -280,5 +287,41 @@ describe('ChatHookSession dispatch + parity', () => {
     await expect(
       session.runPreToolUse({ id: 't1', name: 'bash', arguments: {} }, { conversationId: 'c1', messageId: 'a1' } as any)
     ).resolves.toEqual({ matched: false, hookCount: 0, errors: ['db gone'] })
+  })
+})
+
+describe('ChatHookSession pending hook runs', () => {
+  it('holds runs that have no row yet, then shows and stores them on the row given', async () => {
+    const emit = vi.fn()
+    const stored = new Map<string, any>()
+    const runTracker = { create: vi.fn(), update: vi.fn((id: string, update: any) => ({ ...stored.get(id), ...update })) }
+    let reportLater: ((runs: any[]) => void) | null = null
+    const session = createChatHookSession({
+      conversationRepo: repo, conversationId: 'c1', cwd: '/root', provider: 'Claude Code', model: 'm', operation: 'send', streamId: 's1',
+      emit, runTracker,
+      runHook: async req => {
+        const run = { id: `${req.event}-1`, event: req.event, messageId: req.messageId ?? null, status: 'running', updatedAt: '2026-10-29T00:00:00.000Z' }
+        stored.set(run.id, run)
+        req.onActivity?.([run as any])
+        reportLater = runs => req.onActivity?.(runs)
+        return { matched: true, hookCount: 1 }
+      },
+    })
+    await session.runSessionStart('startup')
+    expect(emit).not.toHaveBeenCalled()
+
+    session.attachPendingHookRuns('u2')
+    expect(runTracker.update).toHaveBeenCalledWith('SessionStart-1', { messageId: 'u2' })
+    expect(emit).toHaveBeenLastCalledWith(expect.objectContaining({ type: 'hook_activity', event: 'SessionStart', messageId: 'u2',
+      runs: [expect.objectContaining({ id: 'SessionStart-1', messageId: 'u2' })] }))
+
+    // An async run's later update follows the row it was given.
+    reportLater!([{ ...stored.get('SessionStart-1'), status: 'succeeded' }])
+    expect(emit).toHaveBeenLastCalledWith(expect.objectContaining({ messageId: 'u2', runs: [expect.objectContaining({ status: 'succeeded', messageId: 'u2' })] }))
+
+    // Nothing pending: a second attach is a no-op.
+    emit.mockClear()
+    session.attachPendingHookRuns('u3')
+    expect(emit).not.toHaveBeenCalled()
   })
 })

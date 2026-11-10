@@ -29,14 +29,14 @@ describe('groupConversationsByProject', () => {
     expect(chats.map(chat => chat.id)).toEqual(['b1', 'a1', 'b2'])
   })
 
-  it('keeps identically named projects separate, including local and cloud chats', () => {
-    const local = { ...conversation('local', 'a'), storage_mode: 'local' as const }
-    const cloud = { ...conversation('cloud', 'b'), storage_mode: 'cloud' as const }
-    const groups = groupConversationsByProject([local, cloud], [{ id: 'a', name: 'Same' }, { id: 'b', name: 'Same' }])
+  it('keeps identically named projects separate', () => {
+    const first = conversation('first', 'a')
+    const second = conversation('second', 'b')
+    const groups = groupConversationsByProject([first, second], [{ id: 'a', name: 'Same' }, { id: 'b', name: 'Same' }])
 
     expect(groups.map(group => group.projectId)).toEqual(['a', 'b'])
     expect(groups.map(group => group.name)).toEqual(['Same', 'Same'])
-    expect(groups.flatMap(group => group.conversations)).toEqual([local, cloud])
+    expect(groups.flatMap(group => group.conversations)).toEqual([first, second])
   })
 
   it('places null and missing project IDs together under No project at the end', () => {

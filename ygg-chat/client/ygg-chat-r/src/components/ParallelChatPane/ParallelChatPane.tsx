@@ -1,3 +1,6 @@
+import { isClaudeProvider } from '../../../../../shared/claudeProvider'
+import { resolveComposerToolApproval } from '../../features/chats/branchToolApproval'
+import { newClientId } from '../../helpers/clientId'
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useConversationRunStatistics } from '../../hooks/useConversationRunStatistics'
 import { deriveRunStatistics, placeRunFooters } from '../../features/chats/runStatistics'
@@ -47,6 +50,7 @@ import {
   getStoredSendButtonLightColor,
 } from '../SettingsPane/SendButtonAnimationSettings'
 import { StreamingThinkingIndicator } from '../StreamingThinkingIndicator/StreamingThinkingIndicator'
+import { BackgroundTasksIndicator } from '../StreamingThinkingIndicator/BackgroundTasksIndicator'
 import { ToolPermissionDialog } from '../ToolPermissionDialog/ToolPermissionDialog'
 import {
   getThemeModeColor,
@@ -113,7 +117,6 @@ export function ParallelChatPane({
   const streaming = useAppSelector(state => state.chat.streaming)
   const providerState = useAppSelector(state => state.chat.providerState)
   const operationMode = useAppSelector(state => state.chat.operationMode)
-  const toolAutoApprove = useAppSelector(state => state.chat.toolAutoApprove)
   const errors = useAppSelector(state => selectChatErrorsForConversation(state, target.conversationId))
 
   const { theme: customTheme, enabled: customThemeEnabled } = useCustomChatTheme()
@@ -121,6 +124,11 @@ export function ParallelChatPane({
 
   const [path, setPath] = useState<MessageId[]>(target.path)
   const [lineageId, setLineageId] = useState<LineageId | null>(target.lineageId ?? null)
+  const toolAutoApprove = useAppSelector(state => resolveComposerToolApproval({
+    ...state.chat,
+    conversation: { ...state.chat.conversation, currentConversationId: target.conversationId, currentPath: path, currentLineageId: lineageId },
+    composition: { ...state.chat.composition, editingBranch: false },
+  }))
   const branchSelection = useAppSelector(state => resolveBranchModelSelection(state.chat, path, target.conversationId, lineageId))
   const providers = { ...providerState, currentProvider: branchSelection?.provider ?? providerState.currentProvider }
   const selectedModel = useSelectedModel(providers.currentProvider, branchSelection?.model)
@@ -233,7 +241,7 @@ export function ParallelChatPane({
       recordSentMessage(rawContent)
       inputControllerRef.current?.clear()
       void dispatch(enqueueUserMessage({ conversationId: target.conversationId, streamId, content,
-        requestId: crypto.randomUUID(), includeGlobalComposerContext: false, updatePath: false })).unwrap()
+        requestId: newClientId(), includeGlobalComposerContext: false, updatePath: false })).unwrap()
         .catch(error => {
           console.error('Failed to queue parallel message:', error)
         })
@@ -287,7 +295,7 @@ export function ParallelChatPane({
       .finally(() => {
         if (targetGenerationRef.current === sendGeneration) setPendingStreamId(null)
       })
-  }, [dispatch, lineageId, messages, operationMode, path, reasoningConfig, streamActive, streamId, target.conversationId, target.messageId, think])
+  }, [dispatch, lineageId, messages, operationMode, path, reasoningConfig, streamActive, streamId, target.conversationId, target.messageId, think, providers.currentProvider])
 
   const scrollToBottom = useCallback((behavior: ScrollBehavior = 'smooth') => {
     userScrolledRef.current = false
@@ -338,7 +346,8 @@ export function ParallelChatPane({
       controlsRight={
         <ReasoningLevelControl
           supported={Boolean(selectedModel?.thinking)}
-          level={think ? reasoningConfig.effort : 'off'}
+          level={think || isClaudeProvider(providers.currentProvider) ? reasoningConfig.effort : 'off'}
+          allowOff={!isClaudeProvider(providers.currentProvider)}
           onLevelChange={level => {
             if (level === 'off') {
               setThink(false)
@@ -394,7 +403,6 @@ export function ParallelChatPane({
         onSubmit={handleSend}
         onBlurPersist={() => undefined}
         fallbackFileSearchRoot={null}
-        filterSelectedMentionFiles={false}
         enableImageAttachments={false}
         enableFileMentions={false}
         imageDraftTarget={{ kind: 'composer' }}
@@ -496,12 +504,18 @@ export function ParallelChatPane({
             onOpenSubagentTranscript={onOpenSubagentTranscript}
           />
         )}
-        {streamActive && effectiveStream && (effectiveStream.compactionStatus === 'started' ||
+        {streamActive && effectiveStream && !effectiveStream.backgroundTurnIdle && (effectiveStream.compactionStatus === 'started' ||
           (!effectiveStream.buffer && effectiveStream.events.length === 0)) && (
           <div className='px-0 pt-1 sm:px-2'>
             <StreamingThinkingIndicator compacting={effectiveStream.compactionStatus === 'started'} />
           </div>
         )}
+        {streamActive && streamId && effectiveStream?.backgroundTasks?.length ? (
+          <div className='px-0 pt-1 sm:px-2'>
+            <BackgroundTasksIndicator conversationId={String(target.conversationId)} streamId={streamId}
+              tasks={effectiveStream.backgroundTasks} idle={Boolean(effectiveStream.backgroundTurnIdle)} />
+          </div>
+        ) : null}
         {paneErrors.map(record => (
           <div key={record.id} className='px-2 pt-2'>
             <ChatErrorBubble

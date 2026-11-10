@@ -1,0 +1,21 @@
+import { afterEach, expect, it, vi } from 'vitest'
+const catalog = vi.hoisted(() => ({ custom: vi.fn(), mcp: vi.fn() }))
+vi.mock('../utils/api', () => ({ buildLocalApiUrl: async (path: string) => path }))
+vi.mock('../features/chats/toolDefinitions', () => ({ getAllTools: () => [], setCustomTools: catalog.custom, setMcpTools: catalog.mcp }))
+import { startHostCatalogRefresh } from './hostCatalogClient'
+afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals(); vi.clearAllMocks() })
+it('observes catalogs with GET only, emits changed sets once, and stops polling', async () => {
+  vi.useFakeTimers()
+  vi.stubGlobal('window', { dispatchEvent: vi.fn() }); vi.stubGlobal('CustomEvent', class { constructor(public type: string, public options: unknown) {} })
+  const fetcher = vi.fn(async (url: string) => new Response(JSON.stringify(url === '/skills' ? { success: true, skills: [] } : { success: true, tools: [] })))
+  vi.stubGlobal('fetch', fetcher)
+  const projected = vi.fn(); const stop = startHostCatalogRefresh(projected)
+  await vi.advanceTimersByTimeAsync(5000)
+  expect(fetcher).toHaveBeenCalledTimes(3)
+  expect(fetcher.mock.calls.every(([, options]: any) => !options.method || options.method === 'GET')).toBe(true)
+  expect(catalog.custom).toHaveBeenCalledTimes(1); expect(catalog.mcp).toHaveBeenCalledTimes(1)
+  await vi.advanceTimersByTimeAsync(5000)
+  expect(catalog.custom).toHaveBeenCalledTimes(1)
+  stop(); await vi.advanceTimersByTimeAsync(10000)
+  expect(fetcher).toHaveBeenCalledTimes(6)
+})

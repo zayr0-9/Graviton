@@ -1,33 +1,35 @@
-import { resolveBranchModelSelection } from './branchModelSelection'
+import { isClaudeProvider, isClaudeTranscriptMessage } from '../../../../../shared/claudeProvider'
+import { HOST_DATA_CHANGED } from '../../services/hostChangeEvents'
+import { getAdmissionEpoch, resetAdmissionEpoch } from './runAdmissionClient'
+import { getClientId, newClientId } from '../../helpers/clientId'
+import { isCleanStartBranchEdit, isSummaryBranchEdit, isProviderHandoffEdit, resolveBranchModelSelection, resolveEditBranchModelSelection, resolveComposerSummaryHandoff } from './branchModelSelection'
 import { resolveBranchFastMode } from './branchFastMode'
+import { defaultToolApproval, resolveAnchoredToolApproval, resolveBranchToolApproval, resolveHandoffToolApproval } from './branchToolApproval'
 import { isCommittedCompaction } from '../../../../../shared/compaction'
 import { getPendingFullAccessNotification, isFullAccessEnabled } from '../../helpers/fullAccessSettings'
 import { createAsyncThunk } from '@reduxjs/toolkit'
 import type { QueryClient } from '@tanstack/react-query'
 import { ConversationId, MessageId } from '../../../../../shared/types'
-import { normalizeChatErrorEnvelope, type ChatErrorEnvelope } from '../../../../../shared/chatErrors'
+import { buildChatErrorEnvelope, normalizeChatErrorEnvelope, type ChatErrorEnvelope } from '../../../../../shared/chatErrors'
 import {
   attachLocalChatErrorCode,
   buildChatErrorRecord,
   classifyLocalChatError,
   getLocalAttachedChatErrorCode,
 } from './localChatErrors'
-import { isCommunityMode } from '../../config/runtimeMode'
-import { localMirror as dualSync } from '../../lib/localMirror'
 import type { RootState } from '../../store/store'
 import { ThunkExtraArgument } from '../../store/thunkExtra'
 import {
-  API_BASE,
   buildLocalApiUrl,
-  cloudApi,
+  classifyLocalApiFailure,
   getCachedLocalApiBase,
   getCachedLocalServerOrigin,
   gwApi,
   isLocalServerRuntime,
   localApi,
-  shouldUseLocalApi,
 } from '../../utils/api'
 import { convContextSet, systemPromptSet } from '../conversations/conversationSlice'
+import { uiActions } from '../ui/uiSlice'
 import type { Conversation } from '../conversations/conversationTypes'
 import { selectSelectedProject } from '../projects/projectSelectors'
 import { chatSliceActions } from './chatSlice'
@@ -93,9 +95,6 @@ import {
 // TODO: Import when conversations feature is available
 // import { conversationActions } from '../conversations'
 
-// Remote API base for syncing from cloud (Railway)
-const getRemoteApiBase = (): string | null =>
-  isCommunityMode ? null : import.meta.env.VITE_API_URL || 'https://webdrasil-production.up.railway.app/api'
 // Tools that should not prompt for user permission before execution.
 // Server-executed tools (e.g., brave_search) are already excluded upstream.
 
@@ -120,35 +119,6 @@ typescriptconst myAsyncThunk = createAsyncThunk(
   }
 )
 */
-
-// API base URL - configure based on environment
-// const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:3001/api'
-
-/**
- * Get storage_mode from React Query cache for a conversation
- * Searches all cached conversation queries (main list, project lists, etc.)
- * This is more reliable than Redux state which may not have storage_mode populated
- */
-const getStorageModeFromCache = (
-  queryClient: QueryClient | null,
-  conversationId: ConversationId
-): 'local' | 'cloud' => {
-  if (!queryClient) return 'cloud'
-
-  // Search ALL cached conversation lists
-  const allConversationQueries = queryClient.getQueriesData<Conversation[]>({ queryKey: ['conversations'] })
-
-  for (const [, data] of allConversationQueries) {
-    if (Array.isArray(data)) {
-      const match = data.find(c => String(c.id) === String(conversationId))
-      if (match?.storage_mode) {
-        return match.storage_mode
-      }
-    }
-  }
-
-  return 'cloud' // Default to cloud if not found
-}
 
 const buildTreeFromMessages = buildConversationTree
 
@@ -253,7 +223,7 @@ const updateMessageInCache = (
   queryClient: QueryClient | null,
   conversationId: ConversationId,
   messageId: MessageId,
-  updatedContent: string,
+  updatedContent: string | undefined,
   updatedNote?: string,
   updatedNoteColor?: string | null,
   updatedContentBlocks?: any
@@ -269,8 +239,7 @@ const updateMessageInCache = (
       msg.id === messageId
         ? {
             ...msg,
-            content: updatedContent,
-            content_plain_text: updatedContent,
+            ...(updatedContent !== undefined && { content: updatedContent, content_plain_text: updatedContent }),
             ...(updatedNote !== undefined && { note: updatedNote }),
             ...(updatedNoteColor !== undefined && { note_color: updatedNoteColor }),
             ...(updatedContentBlocks && { content_blocks: updatedContentBlocks }),
@@ -459,25 +428,6 @@ const syncConversationTitleAcrossCaches = (
 
 
 
-// Utility function for API calls
-// const apiCall = async <T>(endpoint: string, options?: RequestInit): Promise<T> => {
-//   const response = await fetch(`${API_BASE}${endpoint}`, {
-//     headers: {
-//       'Content-Type': 'application/json',
-//       ...options?.headers,
-//     },
-//     ...options,
-//   })
-
-//   if (!response.ok) {
-//     const errorText = await response.text()
-//     throw new Error(`HTTP ${response.status}: ${errorText || response.statusText}`)
-//   }
-
-//   return response.json()
-// }
-// Helper: detect environment
-
 // Helper: convert Blob to data URL
 export const blobToDataURL = (blob: Blob): Promise<string> =>
   new Promise(resolve => {
@@ -498,7 +448,6 @@ export const resolveAttachmentUrl = (
     attachmentId,
     localOrigin: getCachedLocalServerOrigin(),
     localApiBase: getCachedLocalApiBase(),
-    remoteOrigin: API_BASE.replace(/\/?api\/?$/, ''),
   })
 
 // Helper: Parse content_blocks from string or array format
@@ -522,7 +471,7 @@ export const resolveAttachmentUrl = (
 
 
 const resolveOpenRouterTemperature = (providerSlug: string): number | undefined => {
-  if (providerSlug !== 'openrouter') return undefined
+  if (providerSlug !== 'openrouterbyok') return undefined
   const configured = loadProviderSettings().openRouterTemperature
   return typeof configured === 'number' ? configured : undefined
 }
@@ -950,11 +899,11 @@ export const sendMessage = createAsyncThunk<
       conversationId,
       input,
       manualCompaction,
+      isBranch,
       parent,
       think,
       imageConfig,
       reasoningConfig,
-      serviceTier,
       cwd,
       operationMode: requestedOperationMode,
       streamId: providedStreamId,
@@ -1092,8 +1041,6 @@ export const sendMessage = createAsyncThunk<
       const selectedFilesForChat = preSendSelectedFilesForChat
 
       const conversationMeta = state.conversations.items.find(c => c.id === conversationId)
-      // Use React Query cache as fallback for storage mode detection (handles local conversations not yet in Redux)
-      const storageMode = conversationMeta?.storage_mode || getStorageModeFromCache(extra.queryClient, conversationId)
       // Keep cwd for tool execution context only (do not inject cwd into system prompt)
       const payloadCwd = typeof cwd === 'string' ? cwd.trim() : (cwd ?? null)
       const effectiveToolRootPath = payloadCwd || conversationMeta?.cwd || state.ideContext.workspace?.rootPath || null
@@ -1113,14 +1060,22 @@ export const sendMessage = createAsyncThunk<
         // ChatGPT auth: resolve fresh {accessToken, accountId} from the renderer (auto-
         // refreshing) so the server uses them directly. null for every other provider.
         const chatgptServerAuth = null as { accessToken?: string; accountId?: string } | null
-        const { path, body } = buildServerLoopRequest('send', {
+        // Crossing the Claude boundary at a summary tip imports only the committed summary
+        // into a fresh execution, never the old provider's raw history or launch-context tail.
+        const selectedPath = providedBranchPath ?? modelSelectionState.conversation.currentPath
+        const summaryHandoff = !manualCompaction && !isBranch
+          ? resolveComposerSummaryHandoff(modelSelectionState, provider, selectedPath) : null
+        const operation = summaryHandoff ? 'branch' : 'send'
+        const { path, body } = buildServerLoopRequest(operation, {
+          messageId: summaryHandoff ? String(summaryHandoff.id) : undefined,
           manualCompaction,
+          isBranch,
           conversationId: String(conversationId),
           content: input.content.trim(),
           provider: serverProvider,
           modelName,
           userId: auth.userId,
-          parentId: parent ?? null,
+          parentId: summaryHandoff?.id ?? parent ?? null,
           operationMode: operationModeAtSend,
           ...buildOperationModePromptRequestParams(operationModeAtSend),
           think,
@@ -1132,23 +1087,24 @@ export const sendMessage = createAsyncThunk<
           fullAccessNotificationId: getPendingFullAccessNotification(String(conversationId)),
           conversationContext: conversationContextSource,
           projectContext,
-          storageMode,
           attachmentsBase64,
           selectedFiles: selectedFilesForChat,
           tools: filterToolsForOperationMode(getAllTools(), operationModeAtSend),
           streamId,
           currentLineageId: providedLineageId === undefined ? state.chat.conversation.currentLineageId : providedLineageId,
-          toolAutoApprove: state.chat.toolAutoApprove,
+          toolAutoApprove: summaryHandoff ? resolveHandoffToolApproval(modelSelectionState, summaryHandoff.id, serverProvider)
+            : isBranch ? resolveAnchoredToolApproval(modelSelectionState, parent, conversationId, serverProvider)
+            : resolveBranchToolApproval(modelSelectionState, providedBranchPath ?? modelSelectionState.conversation.currentPath, conversationId, providedLineageId === undefined ? modelSelectionState.conversation.currentLineageId : providedLineageId, serverProvider),
+          claudeAutoMode: modelSelectionState.claudeAutoMode,
+          claudeUltracode: modelSelectionState.claudeUltracode,
           hooksEnabled: isElectronMode,
           localApiBase: getCachedLocalApiBase(),
           contextDirectories: loadContextDirectorySettings(),
           autoMemoryEnabled: loadLongTermMemoryContextEnabled(),
-          // Forward priority for Codex and OpenRouter only; other providers omit it.
+          // Forward priority for Codex only; other providers omit it.
           temperature: openRouterTemperature,
           serviceTier:
-            providerSlug === 'openaichatgpt' || providerSlug === 'openai(chatgpt)'
-              ? fastMode ? 'priority' : undefined
-              : providerSlug === 'openrouter' ? serviceTier : undefined,
+            (providerSlug === 'openaichatgpt' || providerSlug === 'openai(chatgpt)') && fastMode ? 'priority' : undefined,
           // ChatGPT: forward fresh renderer tokens so the server resolves auth directly
           // (null for every other provider => omitted from the body).
           accessToken: chatgptServerAuth?.accessToken,
@@ -1159,7 +1115,8 @@ export const sendMessage = createAsyncThunk<
         })
         const result = await runServerChatLoop(
           {
-            operation: 'send',
+            operation,
+            optimisticBubble: 'message',
             conversationId: String(conversationId),
             streamId,
             path,
@@ -1182,6 +1139,12 @@ export const sendMessage = createAsyncThunk<
             },
           }
         )
+        if (result.queuedStreamId) {
+          addInflightStream({ streamId: result.queuedStreamId, conversationId: String(conversationId),
+            streamType, parentMessageId: result.queuedParentId ?? null, updatePath,
+            clientId: getClientId(), selectionRevision: getState().chat.streaming.byId[streamId]?.selectionRevision })
+          void dispatch(resumeInFlightStreams({ conversationId: String(conversationId), streamId: result.queuedStreamId }))
+        }
         if (result.messageId) {
           void markStreamUndoFinalMessage(streamId, String(result.messageId))
             .then(summary => {
@@ -1247,50 +1210,32 @@ export const sendMessage = createAsyncThunk<
 
 export const updateMessage = createAsyncThunk<
   Message,
-  { id: MessageId; content: string; note?: string; note_color?: string | null; content_blocks?: any },
+  // Omit content for note-only saves: the server refuses any content write on Claude transcript rows.
+  { id: MessageId; content?: string; note?: string; note_color?: string | null; content_blocks?: any },
   { state: RootState; extra: ThunkExtraArgument }
 >(
   'chat/updateMessage',
   async ({ id, content, note, note_color, content_blocks }, { dispatch, getState, extra, rejectWithValue }) => {
-    const { auth } = extra
     try {
-      const currentState = getState() as RootState
-      const currentConversationId = currentState.chat.conversation.currentConversationId
-      const conversation = currentState.conversations.items.find(c => c.id === currentConversationId)
-      // Use React Query cache as fallback for storage mode detection (handles local conversations not yet in Redux)
-      const storageMode =
-        conversation?.storage_mode || getStorageModeFromCache(extra.queryClient, currentConversationId!)
-      const isLocalMode = shouldUseLocalApi(storageMode)
+      const currentConversationId = (getState() as RootState).chat.conversation.currentConversationId
 
-      // Storage-aware update via the gateway (routes local vs cloud + mirrors).
-      const body: any = { content, note }
-      if (note_color !== undefined && isLocalMode) body.note_color = note_color
+      const body: any = {}
+      if (content !== undefined) body.content = content
+      if (note !== undefined) body.note = note
+      if (note_color !== undefined) body.note_color = note_color
       if (content_blocks) body.content_blocks = content_blocks
+      // The gateway writes the local row itself; no renderer mirror write (it would null content_blocks on note saves).
       const updated = await gwApi.put<Message>(
         `/messages/${id}?conversationId=${encodeURIComponent(String(currentConversationId ?? ''))}`,
         body
       )
-      const appliedNoteColor = isLocalMode ? note_color : undefined
-      dispatch(chatSliceActions.messageUpdated({ id, content, note, note_color: appliedNoteColor, content_blocks }))
+      dispatch(chatSliceActions.messageUpdated({ id, content, note, note_color, content_blocks }))
 
       // Sync to React Query cache immediately
-      const state = getState()
-      const conversationId = state.chat.conversation.currentConversationId
+      const conversationId = getState().chat.conversation.currentConversationId
       if (conversationId) {
-        updateMessageInCache(extra.queryClient, conversationId, id, content, note, appliedNoteColor, content_blocks)
+        updateMessageInCache(extra.queryClient, conversationId, id, content, note, note_color, content_blocks)
       }
-
-      // Sync message update to local SQLite (fire-and-forget)
-      const selectedProject = selectSelectedProject(state)
-      dualSync.syncMessage(
-        {
-          ...updated,
-          content_blocks: content_blocks, // Explicitly include from request to ensure local sync
-          user_id: auth.userId,
-          project_id: selectedProject?.id || null,
-        },
-        'update'
-      )
 
       return updated
     } catch (error) {
@@ -1343,37 +1288,35 @@ export const fetchConversationMessages = createAsyncThunk<
   }
 })
 
+/** A Claude branch can only be cut back to a point it can resume from; say why a delete was refused. */
+function raiseClaudeDeleteRefusal(error: unknown, conversationId: ConversationId, dispatch: (action: unknown) => unknown): void {
+  const failure = classifyLocalApiFailure(error)
+  const payload = failure.kind === 'http' ? (failure.payload as { code?: unknown; error?: unknown } | undefined) : undefined
+  if (payload?.code !== 'claude_delete_refused') return
+  dispatch(uiActions.errorNoticeRaised({
+    source: 'message_delete',
+    conversationId,
+    envelope: buildChatErrorEnvelope('bad_request', {
+      userMessage: typeof payload.error === 'string' ? payload.error : 'Claude can only continue from a completed response.',
+    }),
+  }))
+}
+
 export const deleteMessage = createAsyncThunk<
   MessageId,
-  { id: MessageId; conversationId: ConversationId; storageMode?: 'local' | 'cloud' },
+  { id: MessageId; conversationId: ConversationId },
   { extra: ThunkExtraArgument }
->('chat/deleteMessage', async ({ id, conversationId, storageMode }, { extra, rejectWithValue }) => {
+>('chat/deleteMessage', async ({ id, conversationId }, { extra, dispatch, rejectWithValue }) => {
   try {
-    // Use storageMode passed from caller (most reliable) or fallback to cache lookup
-    const effectiveStorageMode = storageMode ?? getStorageModeFromCache(extra.queryClient, conversationId)
-    const isLocalMode = shouldUseLocalApi(effectiveStorageMode)
-
-    // console.log('[deleteMessage] Routing decision:', {
-    //   passedStorageMode: storageMode,
-    //   effectiveStorageMode,
-    //   isLocalMode,
-    //   environment,
-    //   conversationId,
-    //   messageId: id,
-    // })
-
-    // Storage-aware delete via the gateway (routes local vs cloud).
     await gwApi.delete(`/messages/${id}?conversationId=${encodeURIComponent(String(conversationId))}`)
     // Sync React Query cache immediately
     removeMessagesFromCache(extra.queryClient, conversationId, [id])
-    // Sync message deletion to local SQLite (fire-and-forget)
-    dualSync.syncMessage({ id }, 'delete')
     // Chat routes reconcile the authoritative post-delete snapshot through the
     // generation-gated coordinator. Do not dispatch a legacy raw snapshot here.
-    void isLocalMode
     return id
   } catch (error) {
     console.error('[deleteMessage] Error:', error)
+    raiseClaudeDeleteRefusal(error, conversationId, dispatch)
     return rejectWithValue(error instanceof Error ? error.message : 'Delete failed')
   }
 })
@@ -1392,7 +1335,6 @@ export const editMessageWithBranching = createAsyncThunk<
       newContent,
       modelOverride,
       think,
-      serviceTier,
       cwd,
       operationMode: requestedOperationMode,
       streamId: providedStreamId,
@@ -1435,7 +1377,12 @@ export const editMessageWithBranching = createAsyncThunk<
       ? state.chat.conversation.messages.filter(m => String(m.conversation_id) === String(conversationId))
       : cachedMessages
     const originalMessage = currentMessages.find(m => String(m.id) === String(originalMessageId))
-    const parentMessageId = originalMessage?.parent_id
+    const branchSelection = resolveEditBranchModelSelection(modelSelectionState, originalMessageId)
+    const provider = branchSelection?.provider ?? modelSelectionState.providerState.currentProvider
+    const summaryBranch = isSummaryBranchEdit(modelSelectionState, originalMessageId)
+    const freshExecution = isCleanStartBranchEdit(modelSelectionState, originalMessageId) &&
+      (isClaudeProvider(provider) || isClaudeTranscriptMessage(originalMessage))
+    const parentMessageId = summaryBranch ? originalMessageId : freshExecution ? null : originalMessage?.parent_id
 
     const editLineageId =
       (providedLineageId === undefined ? preSendState.chat.conversation.currentLineageId : providedLineageId) ?? null
@@ -1489,11 +1436,9 @@ export const editMessageWithBranching = createAsyncThunk<
 
 
       // Read selected model from React Query cache
-      const branchSelection = resolveBranchModelSelection(modelSelectionState)
       // Capture the edit-session choice before ChatMessage closes the editor.
       const fastMode = (modelSelectionState.composition.editingBranch ? modelSelectionState.composition.branchEditModes?.fastMode : undefined)
         ?? resolveBranchFastMode(modelSelectionState, providedBranchPath ?? modelSelectionState.conversation.currentPath, conversationId, providedLineageId === undefined ? modelSelectionState.conversation.currentLineageId : providedLineageId)
-      const provider = branchSelection?.provider ?? modelSelectionState.providerState.currentProvider
       const modelsData = extra.queryClient?.getQueryData<{
         models: Model[]
         default: Model
@@ -1586,8 +1531,6 @@ export const editMessageWithBranching = createAsyncThunk<
       const selectedFilesForChat = preSendSelectedFilesForChat
 
       const conversationMeta = state.conversations.items.find(c => c.id === conversationId)
-      // Use React Query cache as fallback for storage mode detection (handles local conversations not yet in Redux)
-      const storageMode = conversationMeta?.storage_mode || getStorageModeFromCache(extra.queryClient, conversationId)
       // Keep cwd for tool execution context only (do not inject cwd into system prompt)
       const payloadCwd = typeof cwd === 'string' ? cwd.trim() : (cwd ?? null)
       const effectiveToolRootPath = payloadCwd || conversationMeta?.cwd || state.ideContext.workspace?.rootPath || null
@@ -1603,7 +1546,7 @@ export const editMessageWithBranching = createAsyncThunk<
         // ChatGPT auth: resolve fresh {accessToken, accountId} from the renderer (auto-
         // refreshing) so the server uses them directly. null for every other provider.
         const chatgptServerAuth = null as { accessToken?: string; accountId?: string } | null
-        const { path, body } = buildServerLoopRequest('edit', {
+        const { path, body } = buildServerLoopRequest(summaryBranch ? 'branch' : 'edit', {
           conversationId: String(conversationId),
           content: newContent,
           provider: serverProvider,
@@ -1620,23 +1563,24 @@ export const editMessageWithBranching = createAsyncThunk<
           fullAccessNotificationId: getPendingFullAccessNotification(String(conversationId)),
           conversationContext: conversationContextSource,
           projectContext,
-          storageMode,
           attachmentsBase64,
           selectedFiles: selectedFilesForChat,
           tools: filterToolsForOperationMode(getAllTools(), operationModeAtSend),
           streamId,
           currentLineageId: providedLineageId === undefined ? state.chat.conversation.currentLineageId : providedLineageId,
-          toolAutoApprove: state.chat.toolAutoApprove,
+          toolAutoApprove: (modelSelectionState.composition.editingBranch ? modelSelectionState.composition.branchEditModes?.toolAutoApprove : undefined)
+            ?? (isProviderHandoffEdit(modelSelectionState, originalMessageId) ? defaultToolApproval(modelSelectionState, serverProvider)
+              : resolveAnchoredToolApproval(modelSelectionState, parentMessageId, conversationId, serverProvider)),
+          claudeAutoMode: modelSelectionState.claudeAutoMode,
+          claudeUltracode: modelSelectionState.claudeUltracode,
           hooksEnabled: isElectronMode,
           localApiBase: getCachedLocalApiBase(),
           contextDirectories: loadContextDirectorySettings(),
           autoMemoryEnabled: loadLongTermMemoryContextEnabled(),
-          // Forward priority for Codex and OpenRouter only; other providers omit it.
+          // Forward priority for Codex only; other providers omit it.
           temperature: openRouterTemperature,
           serviceTier:
-            providerSlug === 'openaichatgpt' || providerSlug === 'openai(chatgpt)'
-              ? fastMode ? 'priority' : undefined
-              : providerSlug === 'openrouter' ? serviceTier : undefined,
+            (providerSlug === 'openaichatgpt' || providerSlug === 'openai(chatgpt)') && fastMode ? 'priority' : undefined,
           // ChatGPT: forward fresh renderer tokens so the server resolves auth directly
           // (null for every other provider => omitted from the body).
           accessToken: chatgptServerAuth?.accessToken,
@@ -1648,7 +1592,8 @@ export const editMessageWithBranching = createAsyncThunk<
         serverLoopStarted = true
         const result = await runServerChatLoop(
           {
-            operation: 'edit',
+            operation: summaryBranch ? 'branch' : 'edit',
+            optimisticBubble: 'branch',
             conversationId: String(conversationId),
             streamId,
             path,
@@ -1741,7 +1686,6 @@ export const sendMessageToBranch = createAsyncThunk<
       content,
       modelOverride,
       think,
-      serviceTier,
       cwd,
       operationMode: requestedOperationMode,
       streamId: providedStreamId,
@@ -1840,8 +1784,6 @@ export const sendMessageToBranch = createAsyncThunk<
       const selectedFilesForChat = preSendSelectedFilesForChat
 
       const conversationMeta = state.conversations.items.find(c => c.id === conversationId)
-      // Use React Query cache as fallback for storage mode detection (handles local conversations not yet in Redux)
-      const storageMode = conversationMeta?.storage_mode || getStorageModeFromCache(extra.queryClient, conversationId)
       // Keep cwd for tool execution context only (do not inject cwd into system prompt)
       const operationModeAtSend = requestedOperationMode ?? selectOperationMode(state)
       const payloadCwd = typeof cwd === 'string' ? cwd.trim() : (cwd ?? null)
@@ -1875,23 +1817,23 @@ export const sendMessageToBranch = createAsyncThunk<
           fullAccessNotificationId: getPendingFullAccessNotification(String(conversationId)),
           conversationContext: conversationContextSource,
           projectContext,
-          storageMode,
           attachmentsBase64,
           selectedFiles: selectedFilesForChat,
           tools: filterToolsForOperationMode(getAllTools(), operationModeAtSend),
           streamId,
           currentLineageId: providedLineageId === undefined ? state.chat.conversation.currentLineageId : providedLineageId,
-          toolAutoApprove: state.chat.toolAutoApprove,
+          toolAutoApprove: isSummaryBranchEdit(modelSelectionState, parentId) ? defaultToolApproval(modelSelectionState, serverProvider)
+            : resolveAnchoredToolApproval(modelSelectionState, parentId, conversationId, serverProvider),
+          claudeAutoMode: modelSelectionState.claudeAutoMode,
+          claudeUltracode: modelSelectionState.claudeUltracode,
           hooksEnabled: isElectronMode,
           localApiBase: getCachedLocalApiBase(),
           contextDirectories: loadContextDirectorySettings(),
           autoMemoryEnabled: loadLongTermMemoryContextEnabled(),
-          // Forward priority for Codex and OpenRouter only; other providers omit it.
+          // Forward priority for Codex only; other providers omit it.
           temperature: openRouterTemperature,
           serviceTier:
-            providerSlug === 'openaichatgpt' || providerSlug === 'openai(chatgpt)'
-              ? fastMode ? 'priority' : undefined
-              : providerSlug === 'openrouter' ? serviceTier : undefined,
+            (providerSlug === 'openaichatgpt' || providerSlug === 'openai(chatgpt)') && fastMode ? 'priority' : undefined,
           // ChatGPT: forward fresh renderer tokens so the server resolves auth directly
           // (null for every other provider => omitted from the body).
           accessToken: chatgptServerAuth?.accessToken,
@@ -1978,105 +1920,13 @@ export const sendMessageToBranch = createAsyncThunk<
   }
 )
 
-// Sync a conversation and its messages to local SQLite (Electron only)
-export const syncConversationToLocal = createAsyncThunk<
-  void,
-  { conversationId: ConversationId; messages: Message[]; storageMode?: 'local' | 'cloud' },
-  { state: RootState; extra: ThunkExtraArgument }
->('chat/syncConversationToLocal', async ({ conversationId, messages, storageMode }, { extra, getState }) => {
-  // Only run when this renderer targets the local Ygg server
-  if (!isLocalServerRuntime()) return
-  const remoteApiBase = getRemoteApiBase()
-  if (!remoteApiBase) return
-
-  // Skip syncing for local-only conversations - they don't exist in cloud
-  if (storageMode === 'local') {
-    return
-  }
-
-  const { auth } = extra
-  const state = getState() as RootState
-
-  try {
-    const exists = await dualSync.checkConversationExists(conversationId)
-    // Determine project ID from state or conversation data
-    let projectId: string | null = selectSelectedProject(state)?.id || null
-
-    if (!exists) {
-      // Fetch conversation from REMOTE source of truth (Cloud), not local API
-      let conversation: Conversation | null = null
-      try {
-        // Fetch the source-of-truth conversation through the gateway (:3002), not Railway directly.
-        conversation = await gwApi.get<Conversation>(`/conversations/${conversationId}`)
-      } catch (e) {
-        console.warn('Failed to fetch remote conversation for sync', e)
-      }
-
-      if (conversation) {
-        projectId = conversation.project_id || projectId
-
-        // Ensure project exists locally before syncing conversation
-        if (projectId) {
-          const projectExists = await dualSync.checkProjectExists(projectId)
-          if (!projectExists) {
-            // Try cache first
-            const projectsCache = extra.queryClient?.getQueryData<any[]>(['projects', auth.userId])
-            let project = projectsCache?.find(p => String(p.id) === String(projectId))
-
-            // If not in cache, fetch from REMOTE API
-            if (!project) {
-              try {
-                project = await gwApi.get<any>(`/projects/${projectId}`)
-              } catch (e) {
-                console.warn(`Failed to fetch project ${projectId} for sync`, e)
-              }
-            }
-
-            if (project) {
-              dualSync.syncProject({
-                id: project.id,
-                name: project.name,
-                user_id: auth.userId,
-                context: project.context,
-                system_prompt: project.system_prompt,
-                created_at: project.created_at,
-                updated_at: project.updated_at,
-              })
-            }
-          }
-        }
-
-        dualSync.syncConversation(conversation)
-      }
-    }
-
-    if (messages && messages.length > 0) {
-      const operations = messages.map(msg => ({
-        type: 'message',
-        action: 'create',
-        data: {
-          ...msg,
-          user_id: auth.userId,
-          project_id: projectId, // Pass project_id context for potential stub creation
-        },
-      }))
-      dualSync.syncBatch(operations)
-    }
-  } catch (error) {
-    console.warn('Failed to sync conversation to local', error)
-  }
-})
-
 // Fetch Heimdall message tree and messages combined (optimization: single endpoint)
 export const fetchMessageTree = createAsyncThunk<
   any,
-  ConversationId | { conversationId: ConversationId; storageMode?: 'local' | 'cloud' },
+  ConversationId | { conversationId: ConversationId },
   { state: RootState; extra: ThunkExtraArgument }
 >('chat/fetchMessageTree', async (payload, { dispatch, rejectWithValue, getState }) => {
-
-  // Handle both old (just conversationId) and new (object with storageMode) signatures
   const conversationId = typeof payload === 'object' ? payload.conversationId : payload
-  const explicitStorageMode = typeof payload === 'object' ? payload.storageMode : undefined
 
   // Gating: avoid duplicate in-flight fetches and throttle rapid refetches
   const state = getState() as RootState
@@ -2099,17 +1949,6 @@ export const fetchMessageTree = createAsyncThunk<
   try {
     let response: { messages: Message[]; tree: any }
 
-    // Use explicit storageMode if provided, otherwise check state
-    const conversation = state.conversations.items.find(c => c.id === conversationId)
-    const storageMode = explicitStorageMode || conversation?.storage_mode || 'cloud'
-
-    // console.log(`[fetchMessageTree] ConversationId: ${conversationId}`)
-    // console.log(`[fetchMessageTree] Found in state: ${!!conversation}`)
-    // console.log(`[fetchMessageTree] Storage Mode: ${storageMode}`)
-    // console.log(`[fetchMessageTree] Environment: ${environment}`)
-
-    // Storage-aware fetch via the gateway (routes local vs cloud server-side).
-    void storageMode
     response = await gwApi.get<{ messages: Message[]; tree: any }>(
       `/conversations/${conversationId}/messages/tree?includeTree=false`
     )
@@ -2320,31 +2159,17 @@ export const initializeUserAndConversation = createAsyncThunk<
   const { auth } = extra
   dispatch(chatSliceActions.initializationStarted())
   try {
-    if (isCommunityMode && isLocalServerRuntime()) {
-      if (!auth.userId) {
-        throw new Error('User not authenticated')
-      }
-
-      const conversation = await gwApi.post<{ id: ConversationId }>('/conversations', {
-        userId: auth.userId,
-        title: 'New Conversation',
-        storageMode: 'local',
-      })
-
-      dispatch(
-        chatSliceActions.initializationCompleted({ userId: String(auth.userId), conversationId: conversation.id })
-      )
-      return { userId: auth.userId, conversationId: conversation.id }
+    if (!auth.userId) {
+      throw new Error('The local identity is not available yet')
     }
 
-    // Create test user (Railway-authoritative, via the cloud proxy)
-    const user = await cloudApi.post<{ id: number }>('/users', { username: 'test-user' })
+    const conversation = await gwApi.post<{ id: ConversationId }>('/conversations', {
+      userId: auth.userId,
+      title: 'New Conversation',
+    })
 
-    // Create new conversation through the storage-aware gateway
-    const conversation = await gwApi.post<{ id: ConversationId }>(`/conversations`, { userId: user.id })
-
-    dispatch(chatSliceActions.initializationCompleted({ userId: String(user.id), conversationId: conversation.id }))
-    return { userId: user.id, conversationId: conversation.id }
+    dispatch(chatSliceActions.initializationCompleted({ userId: String(auth.userId), conversationId: conversation.id }))
+    return { userId: auth.userId, conversationId: conversation.id }
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Failed to initialize'
     dispatch(chatSliceActions.initializationError(message))
@@ -2355,41 +2180,50 @@ export const initializeUserAndConversation = createAsyncThunk<
 // Delete multiple messages by their IDs
 export const deleteSelectedNodes = createAsyncThunk<
   { deleted: number },
-  { ids: MessageId[]; conversationId: ConversationId; storageMode?: 'local' | 'cloud' },
+  { ids: MessageId[]; conversationId: ConversationId },
   { extra: ThunkExtraArgument }
->('chat/deleteSelectedNodes', async ({ ids, conversationId, storageMode }, { extra, rejectWithValue }) => {
+>('chat/deleteSelectedNodes', async ({ ids, conversationId }, { extra, dispatch, rejectWithValue }) => {
   try {
-    // Use storageMode passed from caller (most reliable) or fallback to cache lookup
-    const effectiveStorageMode = storageMode ?? getStorageModeFromCache(extra.queryClient, conversationId)
-    // Storage-aware bulk delete via the gateway (routes local vs cloud server-side).
-    const response = await gwApi.post<{ deleted: number }>('/messages/deleteMany', {
-      ids,
-      conversationId,
-      storageMode: effectiveStorageMode,
-    })
+    const response = await gwApi.post<{ deleted: number }>('/messages/deleteMany', { ids, conversationId })
     // Sync React Query cache immediately
     removeMessagesFromCache(extra.queryClient, conversationId, ids)
     return response
   } catch (error) {
     console.error('[deleteSelectedNodes] Error:', error)
-    const message = error instanceof Error ? error.message : 'Failed to delete messages'
-    return rejectWithValue(message)
+    raiseClaudeDeleteRefusal(error, conversationId, dispatch)
+    const failure = classifyLocalApiFailure(error)
+    const serverError = (failure.payload as { error?: unknown } | undefined)?.error
+    return rejectWithValue(typeof serverError === 'string' && serverError.trim() ? serverError : failure.message || 'Failed to delete messages')
+  }
+})
+
+/** Ask the server which rows a delete would remove, without deleting. Rejects with the server's refusal. */
+export const previewMessageDeletion = createAsyncThunk<
+  { planned: string[] },
+  { ids: MessageId[]; conversationId: ConversationId },
+  { rejectValue: { message: string; code?: string } }
+>('chat/previewMessageDeletion', async ({ ids, conversationId }, { rejectWithValue }) => {
+  try {
+    const response = await gwApi.post<{ planned: string[] }>('/messages/deleteMany', { ids, conversationId, dryRun: true })
+    return { planned: (response.planned ?? []).map(String) }
+  } catch (error) {
+    const failure = classifyLocalApiFailure(error)
+    const payload = failure.payload as { error?: unknown; code?: unknown } | undefined
+    return rejectWithValue({
+      message: typeof payload?.error === 'string' && payload.error.trim() ? payload.error : failure.message,
+      code: typeof payload?.code === 'string' ? payload.code : undefined,
+    })
   }
 })
 
 // Update a conversation title (Chat feature convenience)
 export const updateConversationTitle = createAsyncThunk<
   Conversation,
-  { id: ConversationId; title: string; storageMode?: 'cloud' | 'local' },
+  { id: ConversationId; title: string },
   { extra: ThunkExtraArgument; state: RootState }
->('chat/updateConversationTitle', async ({ id, title, storageMode }, { extra, getState, rejectWithValue }) => {
+>('chat/updateConversationTitle', async ({ id, title }, { extra, rejectWithValue }) => {
   try {
-    // Storage-aware title update via the gateway. Pass the authoritative storageMode
-    // hint (Chat.tsx already supplies it) so a cloud conversation is never misrouted
-    // to the local leg by a stale/ambiguous local mirror row.
-    const mode = storageMode || getState().conversations.items.find(c => c.id === id)?.storage_mode
-    const qs = mode ? `?storageMode=${mode}` : ''
-    const updated = await gwApi.patch<Conversation>(`/conversations/${id}${qs}`, { title })
+    const updated = await gwApi.patch<Conversation>(`/conversations/${id}`, { title })
     syncConversationTitleAcrossCaches(extra.queryClient, updated)
     return updated
   } catch (error) {
@@ -2398,57 +2232,7 @@ export const updateConversationTitle = createAsyncThunk<
   }
 })
 
-/* Attachments: upload, link, fetch, delete */
-
-// Upload an image file as multipart/form-data to /api/attachments
-export const uploadAttachment = createAsyncThunk<
-  Attachment,
-  { file: File; messageId?: number | null },
-  { extra: ThunkExtraArgument }
->('chat/uploadAttachment', async ({ file, messageId }, { dispatch, rejectWithValue }) => {
-  try {
-    const form = new FormData()
-    form.append('file', file)
-    if (messageId != null) form.append('messageId', String(messageId))
-
-    // Routed through the storage-aware gateway (:3002/api/gw/attachments). The
-    // multipart body is forwarded to Railway verbatim; messageId rides the query
-    // string so the server can mirror/link the result without parsing the body.
-    const qs = messageId != null ? `?messageId=${encodeURIComponent(String(messageId))}` : ''
-    const attachment = await gwApi.post<Attachment>(`/attachments${qs}`, form)
-
-    if (attachment.message_id != null) {
-      dispatch(
-        chatSliceActions.attachmentUpsertedForMessage({
-          messageId: attachment.message_id,
-          attachment,
-        })
-      )
-    }
-
-    return attachment
-  } catch (error) {
-    const message = error instanceof Error ? error.message : 'Failed to upload attachment'
-    return rejectWithValue(message)
-  }
-})
-
-// Link existing attachments to a message
-export const linkAttachmentsToMessage = createAsyncThunk<
-  Attachment[],
-  { messageId: MessageId; attachmentIds: string[] },
-  { extra: ThunkExtraArgument }
->('chat/linkAttachmentsToMessage', async ({ messageId, attachmentIds }, { dispatch, rejectWithValue }) => {
-  try {
-    const attachments = await gwApi.post<Attachment[]>(`/messages/${messageId}/attachments`, { attachmentIds })
-
-    dispatch(chatSliceActions.attachmentsSetForMessage({ messageId, attachments }))
-    return attachments
-  } catch (error) {
-    const message = error instanceof Error ? error.message : 'Failed to link attachments'
-    return rejectWithValue(message)
-  }
-})
+/* Attachments: fetch (uploads use the local base64 prepare/save/link path) */
 
 // Fetch attachments for a message
 export const fetchAttachmentsByMessage = createAsyncThunk<
@@ -2485,44 +2269,6 @@ export const fetchAttachmentsByMessage = createAsyncThunk<
     return rejectWithValue(message)
   }
 })
-
-// Delete all attachments for a message
-export const deleteAttachmentsByMessage = createAsyncThunk<
-  { deleted: number },
-  { messageId: MessageId },
-  { extra: ThunkExtraArgument }
->('chat/deleteAttachmentsByMessage', async ({ messageId }, { dispatch, rejectWithValue }) => {
-  try {
-    const result = await gwApi.delete<{ deleted: number }>(`/messages/${messageId}/attachments`)
-    dispatch(chatSliceActions.attachmentsClearedForMessage(messageId))
-    return result
-  } catch (error) {
-    const message = error instanceof Error ? error.message : 'Failed to delete attachments'
-    return rejectWithValue(message)
-  }
-})
-
-// Fetch a single attachment by ID
-export const fetchAttachmentById = createAsyncThunk<Attachment, { id: MessageId }, { extra: ThunkExtraArgument }>(
-  'chat/fetchAttachmentById',
-  async ({ id }, { dispatch, rejectWithValue }) => {
-    try {
-      const attachment = await gwApi.get<Attachment>(`/attachments/${id}`)
-      if (attachment.message_id != null) {
-        dispatch(
-          chatSliceActions.attachmentUpsertedForMessage({
-            messageId: attachment.message_id,
-            attachment,
-          })
-        )
-      }
-      return attachment
-    } catch (error) {
-      const message = error instanceof Error ? error.message : 'Failed to fetch attachment'
-      return rejectWithValue(message)
-    }
-  }
-)
 
 // Abort a running generation
 
@@ -2599,11 +2345,23 @@ export const resumeInFlightStreams = createAsyncThunk<
   { state: RootState }
 >('chat/resumeInFlightStreams', async ({ conversationId, streamId }, { dispatch, getState }) => {
   if (!isResumableRunsEnabled()) return
+  // Host discovery, not this document's storage, owns liveness. Child transcripts
+  // keep their separate reader contract; this endpoint lists main runs only.
+  try {
+    const response = await fetch(await buildLocalApiUrl(`/conversations/${encodeURIComponent(conversationId)}/live-runs`))
+    if (response.ok) {
+      const { runs } = await response.json()
+      for (const run of runs ?? []) if ((!streamId || run.streamId === streamId) && !hasGenerationReader(run.streamId)) {
+        const existing = listInflightStreams(conversationId).find(record => record.streamId === run.streamId)
+        if (!existing) addInflightStream({ streamId: run.streamId, conversationId, streamType: 'branch', parentMessageId: null, updatePath: false, followSelectedTip: true })
+      }
+    }
+  } catch { /* Existing markers can still reconnect during a transient discovery failure. */ }
   const records = listInflightStreams(String(conversationId)).filter(record => !streamId || record.streamId === streamId)
-  for (const rec of records) {
+  await Promise.all(records.map(async rec => {
     // Route remounts must not replace the module-level reader that survived the Chat
     // unmount. RunSession attach is last-writer-wins, so ownership is checked per stream.
-    if (hasGenerationReader(rec.streamId)) continue
+    if (hasGenerationReader(rec.streamId)) return
 
     const controller = new AbortController()
     const unregister = registerGenerationAbortController(rec.streamId, controller)
@@ -2614,9 +2372,10 @@ export const resumeInFlightStreams = createAsyncThunk<
       dispatch(
         chatSliceActions.sendingStarted({
           streamId: rec.streamId,
-          selectionRevision: -1, // Reattach does not claim the currently selected view.
+          selectionRevision: rec.clientId === getClientId() ? rec.selectionRevision ?? -1 : -1, // Reload does not claim the view.
           updatePath: rec.updatePath ?? rec.streamType !== 'branch',
           watchContinuation: rec.watchContinuation,
+          followSelectedTip: rec.followSelectedTip || (rec.updatePath !== false && !rec.watchContinuation),
           preserveDrafts: true,
           streamType: rec.streamType,
           conversationId: rec.conversationId,
@@ -2629,7 +2388,8 @@ export const resumeInFlightStreams = createAsyncThunk<
           streamId: rec.streamId,
           conversationId: rec.conversationId,
           operation: rec.streamType === 'branch' ? 'branch' : 'send',
-          fromSeq: rec.lastSeq ?? 0,
+          // A rebuilt reducer has no resident projection. A persisted cursor is not state.
+          fromSeq: 0,
           signal: controller.signal,
         },
         {
@@ -2659,6 +2419,14 @@ export const resumeInFlightStreams = createAsyncThunk<
       // reattach/replay failed — including a terminal error frame, which nothing on this
       // path throws, so the envelope is the only way it is ever surfaced. Absent means
       // "healthy, still running" and stays silent.
+      if (result.recovered) {
+        dispatch(chatSliceActions.chatReattachErrorCleared({ conversationId: rec.conversationId, streamId: rec.streamId }))
+        // Ask the existing visit-fenced snapshot coordinator to load saved output.
+        // Do not replay a terminal row or change selection from an old stream.
+        if (typeof window !== 'undefined') window.dispatchEvent(new CustomEvent(HOST_DATA_CHANGED, {
+          detail: { conversationIds: [rec.conversationId], reset: false },
+        }))
+      }
       const reattachFailure = reattachEnvelopeOf(result)
       if (reattachFailure) {
         recordLocalChatError(dispatch, null, {
@@ -2669,7 +2437,7 @@ export const resumeInFlightStreams = createAsyncThunk<
           envelope: reattachFailure,
         })
       }
-      void dispatch(loadMessageQueue({ conversationId: rec.conversationId, streamId: rec.streamId }))
+      if (!result.gone) void dispatch(loadMessageQueue({ conversationId: rec.conversationId, streamId: rec.streamId }))
       if (result.gone) dispatch(chatSliceActions.streamingAborted({ streamId: rec.streamId }))
       if (result.gone || result.terminal) removeInflightStream(rec.streamId)
     } catch (error) {
@@ -2689,7 +2457,7 @@ export const resumeInFlightStreams = createAsyncThunk<
       dispatch(chatSliceActions.sendingCompleted({ streamId: rec.streamId }))
       unregister()
     }
-  }
+  }))
 })
 
 // Fetch available tools - now returns local tool definitions
@@ -2709,10 +2477,9 @@ export const updateToolEnabled = createAsyncThunk<
   { toolName: string; enabled: boolean },
   { state: RootState }
 >('chat/updateToolEnabled', async ({ toolName, enabled }, { dispatch }) => {
-  // Update toolDefinitions module (source of truth for merged tools)
+  // Publish the host acknowledgement before changing this renderer's definitions.
+  await updateToolEnabledState(toolName, enabled)
   updateToolEnabledInDefinitions(toolName, enabled)
-  // Persist to localStorage so state survives app restarts
-  updateToolEnabledState(toolName, enabled)
   // Update Redux state for UI reactivity
   dispatch(chatSliceActions.toolEnabledUpdated({ toolName, enabled }))
 
@@ -2895,42 +2662,23 @@ export const insertBulkMessages = createAsyncThunk<
       content_blocks?: any
       meta?: string | Record<string, unknown> | null
     }>
-    storageMode?: 'local' | 'cloud' // Optional: explicitly set storage mode (useful for newly created conversations)
   },
   { extra: ThunkExtraArgument }
->('chat/insertBulkMessages', async ({ conversationId, messages, storageMode }, { rejectWithValue }) => {
+>('chat/insertBulkMessages', async ({ conversationId, messages }, { rejectWithValue }) => {
   try {
-    // Storage-aware bulk insert via the gateway (routes local vs cloud; mirrors cloud writes).
-    const response = await gwApi.post<{ messages: Message[] }>(
-      `/conversations/${conversationId}/messages/bulk`,
-      { messages, storageMode }
-    )
+    const response = await gwApi.post<{ messages: Message[] }>(`/conversations/${conversationId}/messages/bulk`, { messages })
     return response.messages
   } catch (error) {
-    const message = error instanceof Error ? error.message : 'Failed to insert bulk messages'
-    return rejectWithValue(message)
+    // Show the server's reason (e.g. a refused Claude transfer), not the transport-prefixed message.
+    const failure = classifyLocalApiFailure(error)
+    const serverError = (failure.payload as { error?: unknown } | undefined)?.error
+    return rejectWithValue(typeof serverError === 'string' && serverError.trim() ? serverError : failure.message || 'Failed to insert bulk messages')
   }
 })
 
-// export const fetchMessageTree = createAsyncThunk(
-//   'chat/fetchMessageTree',
-//   async (conversationId: number, { dispatch, rejectWithValue }) => {
-//     dispatch(chatActions.messageTreeLoadingStarted())
-
-//     try {
-//       const treeData = await apiCall<any>(`/conversations/${conversationId}/messages/tree`)
-//       dispatch(chatActions.messageTreeLoaded({ conversationId, treeData }))
-//       return treeData
-//     } catch (error) {
-//       const message = error instanceof Error ? error.message : 'Failed to fetch message tree'
-//       dispatch(chatActions.messageTreeError(message))
-//       return rejectWithValue(message)
-//     }
-//   }
-// )
-
 interface DecisionResumeOutcome {
   ok: boolean
+  settled?: boolean
   status?: number
   envelope?: ChatErrorEnvelope
 }
@@ -2969,6 +2717,9 @@ const postDecisionResume = async (
     // Prefer it — it knows things this side cannot, e.g. that a 501 broker-not-configured
     // is fatal rather than retryable.
     const payload = await res.json().catch(() => null)
+    if (res.status === 409 && payload?.settlement?.streamId === body.streamId &&
+      payload.settlement.toolCallId === body.toolCallId &&
+      ['resolved', 'aborted'].includes(payload.settlement.outcome)) return { ok: false, settled: true, status }
     const carried = payload && typeof payload === 'object' ? (payload as { envelope?: unknown }).envelope : null
     const envelope =
       carried && typeof carried === 'object'
@@ -3014,7 +2765,7 @@ const settleDecisionResume = (
   streamId: string,
   outcome: DecisionResumeOutcome
 ): { closeDialog: boolean } => {
-  if (outcome.ok) return { closeDialog: true }
+  if (outcome.ok || outcome.settled) return { closeDialog: true }
 
   const stream = state.chat.streaming.byId?.[streamId]
   const conversationId = state.chat.conversation.currentConversationId
@@ -3062,9 +2813,11 @@ export const enqueueUserMessage = createAsyncThunk<void, {
   const draftOwner = getState()
   const drafts = params.includeGlobalComposerContext === false ? [] : getDraftsForTarget(draftOwner, { kind: 'composer' })
   const attachments = drafts.map(draft => ({ ...draft }))
+  const selectedFiles = params.includeGlobalComposerContext === false ? [] : structuredClone(draftOwner.ideContext.selectedFilesForChat || [])
   const attachmentsBase64 = await prepareLocalAttachmentsForModel(attachments.length ? attachments : null, 'queued message attachments')
   const url = await buildLocalApiUrl(`/conversations/${encodeURIComponent(params.conversationId)}/streams/${encodeURIComponent(params.streamId)}/queue`)
-  const body = JSON.stringify({ requestId: params.requestId, content: params.content, attachmentsBase64,
+  const epoch = await getAdmissionEpoch()
+  let body = JSON.stringify({ epoch, requestId: params.requestId, content: params.content, attachmentsBase64, selectedFiles,
     fullAccess: isFullAccessEnabled(),
     fullAccessNotificationId: getPendingFullAccessNotification(params.conversationId) })
   // A lost HTTP acknowledgement is safe to retry with the SAME immutable id/payload.
@@ -3074,8 +2827,22 @@ export const enqueueUserMessage = createAsyncThunk<void, {
   } catch {
     response = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body })
   }
-  const result = await response.json()
-  if (!response.ok) throw new Error(result.error || 'Could not queue message')
+  let result = await response.json()
+  if (!response.ok && result.code === 'configuration_mismatch' && typeof result.fullAccess === 'boolean' &&
+    window.confirm(`This run uses ${result.fullAccess ? 'Full access' : 'restricted workspace access'}. Queue this input under that existing policy? Your current setting will not change.`)) {
+    // A rejected ID is a durable tombstone. The explicit acknowledgement is a
+    // new intent with its own identity; never mutate/reuse the rejected payload.
+    body = JSON.stringify({ ...JSON.parse(body), requestId: newClientId(), fullAccess: result.fullAccess })
+    response = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body })
+    result = await response.json()
+  }
+  if (!response.ok) {
+    if (result.code === 'epoch_mismatch') resetAdmissionEpoch()
+    throw new Error(result.error || 'Could not queue message')
+  }
+  if (result.receipt?.outcome === 'failed' || result.receipt?.outcome === 'cancelled') {
+    throw new Error(`This queued message was ${result.receipt.outcome}. Your draft has been preserved.`)
+  }
   if (result.snapshot) dispatch(chatSliceActions.messageQueueUpdated(result.snapshot))
   // Do not erase images added while attachment preparation/the POST was pending.
   consumeImageDrafts(dispatch, getState, { kind: 'composer' }, drafts, draftOwner)
@@ -3194,8 +2961,8 @@ export const respondToOperationModeUpgrade = createAsyncThunk<
       decision: approved ? 'switch_to_execute' : 'deny',
     })
     if (!settleDecisionResume(dispatch, getState(), req.streamId, outcome).closeDialog) return
+    if (approved && outcome.ok) dispatch(chatSliceActions.operationModeSet('execute'))
   }
-  if (approved) dispatch(chatSliceActions.operationModeSet('execute'))
   if (req?.streamId) dispatch(chatSliceActions.operationModeUpgradeRespondedForStream(req.streamId))
   else dispatch(chatSliceActions.operationModeUpgradeResponded())
 })
@@ -3244,6 +3011,8 @@ export const respondToToolPermissionAndEnableAll = createAsyncThunk<
   const req = streamId ? (chat.toolPermissionRequestsByStream[streamId] ?? null) : chat.toolCallPermissionRequest
   if (!req?.streamId || !req?.toolCallId) return
 
+  // Capture the answering run, not the selected branch after the HTTP await.
+  const owner = chat.streaming.byId[req.streamId]
   const outcome = await postDecisionResume({
     streamId: req.streamId,
     toolCallId: req.toolCallId,
@@ -3251,37 +3020,18 @@ export const respondToToolPermissionAndEnableAll = createAsyncThunk<
   })
   if (!settleDecisionResume(dispatch, getState(), req.streamId, outcome).closeDialog) return
 
-  // Change the renderer default only after the server atomically promoted the current
-  // stream and released its pending permission waiters. A failed resume must not make
-  // unrelated future branches appear auto-approved while this run remains parked.
-  dispatch(chatSliceActions.toolAutoApproveEnabled())
+  // The SSE policy update is canonical. Also retain the captured owner's draft if
+  // the HTTP acknowledgement beats its event; never change the renderer-wide default.
+  if (outcome.ok && owner?.conversationId && owner.lineage.lineageId) {
+    dispatch(chatSliceActions.branchToolApprovalSelected({ enabled: true,
+      conversationId: owner.conversationId, lineageId: owner.lineage.lineageId }))
+  }
 
   // Clear only the branch/run prompt that was answered.
   if (req?.streamId) dispatch(chatSliceActions.toolPermissionRespondedForStream(req.streamId))
   else dispatch(chatSliceActions.toolPermissionResponded())
 })
 
-/**
- * Fetch all user system prompts for the current user
- */
-export const fetchUserSystemPrompts = createAsyncThunk<
-  void,
-  { accessToken: string | null },
-  { state: RootState; extra: ThunkExtraArgument }
->('chat/fetchUserSystemPrompts', async ({ accessToken }, { dispatch, rejectWithValue }) => {
-  dispatch(chatSliceActions.userSystemPromptsLoadingStarted())
-
-  try {
-    void accessToken
-    const prompts = await cloudApi.get<any[]>('/system-prompts')
-    dispatch(chatSliceActions.userSystemPromptsLoaded(prompts))
-    return
-  } catch (error) {
-    const message = error instanceof Error ? error.message : 'Failed to fetch user system prompts'
-    dispatch(chatSliceActions.userSystemPromptsError(message))
-    return rejectWithValue(message)
-  }
-})
 // LM Studio models loader hook wiring TODO: integrate fetchLmStudioModels into useModels when provider = 'lmstudio'
 // Type shim for LM Studio branch to track parent across tool turns
 

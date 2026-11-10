@@ -1,5 +1,9 @@
 # Full Headless Main-Agent-Loop Migration — Progress Log
 
+> **Historical — cloud parts removed.** Graviton is now fully local (2026-11): there is no Supabase/Railway
+> account or sync, cloud storage mode, hosted OpenRouter provider, Stripe billing or web product. Sections that
+> describe those are kept for history only. Current behaviour: `ygg-chat/docs/agent_context/AGENT.md`.
+
 Tracks the refactor that moves Graviton's main chat agent loop out of the React
 renderer and into the server-owned headless engine (`electron/headlessServer/`),
 turning the renderer into a thin client that talks only to `127.0.0.1:3002`.

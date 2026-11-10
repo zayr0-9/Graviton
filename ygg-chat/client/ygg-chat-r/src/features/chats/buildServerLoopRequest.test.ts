@@ -37,6 +37,17 @@ describe('buildServerLoopRequest', () => {
     expect(buildServerLoopRequest(op, { ...params, fullAccess: true }).body.fullAccessNotificationId).toBe('toggle-1')
   })
 
+  it.each(['send', 'branch', 'edit'] as const)('forwards Claude slider settings for %s', op => {
+    const params = { ...base, provider: 'Claude Code', modelName: 'claude-sonnet-5-5', messageId: 'm1' }
+    for (const effort of ['low', 'medium', 'high', 'xhigh']) {
+      const { body } = buildServerLoopRequest(op, { ...params, think: true, reasoningConfig: { effort } })
+      expect(body).toMatchObject({ think: true, reasoningConfig: { effort } })
+    }
+    const { body } = buildServerLoopRequest(op, { ...params, think: false })
+    expect(body.think).toBe(false)
+    expect(body.reasoningConfig).toBeUndefined()
+  })
+
   it('builds the send route + core body fields', () => {
     const { path, body } = buildServerLoopRequest('send', { ...base, parentId: 'p1' })
     expect(path).toBe('/conversations/conv-1/messages')
@@ -132,6 +143,22 @@ describe('buildServerLoopRequest', () => {
     expect(buildServerLoopRequest('send', { ...base }).body.toolAutoApprove).toBeUndefined()
   })
 
+  it('sends Claude auto mode only for Claude when tool approval is set to ask', () => {
+    const claude = { ...base, provider: 'Claude Code', claudeAutoMode: true }
+    expect(buildServerLoopRequest('send', { ...claude, toolAutoApprove: false }).body.claudePermissionMode).toBe('auto')
+    expect(buildServerLoopRequest('send', { ...claude, toolAutoApprove: true }).body.claudePermissionMode).toBeUndefined()
+    expect(buildServerLoopRequest('send', { ...claude, claudeAutoMode: false, toolAutoApprove: false }).body.claudePermissionMode).toBeUndefined()
+    expect(buildServerLoopRequest('send', { ...base, claudeAutoMode: true, toolAutoApprove: false }).body.claudePermissionMode).toBeUndefined()
+  })
+
+  it('sends ultracode only for Claude, on every operation', () => {
+    for (const op of ['send', 'edit', 'branch'] as const) {
+      expect(buildServerLoopRequest(op, { ...base, messageId: 'm', provider: 'Claude Code', claudeUltracode: true }).body.claudeUltracode).toBe(true)
+      expect(buildServerLoopRequest(op, { ...base, messageId: 'm', provider: 'Claude Code', claudeUltracode: false }).body).not.toHaveProperty('claudeUltracode')
+      expect(buildServerLoopRequest(op, { ...base, messageId: 'm', claudeUltracode: true }).body).not.toHaveProperty('claudeUltracode')
+    }
+  })
+
   it('forwards hooksEnabled verbatim and localApiBase (defaulting null)', () => {
     const on = buildServerLoopRequest('send', { ...base, hooksEnabled: true, localApiBase: 'http://x/api' }).body
     expect(on.hooksEnabled).toBe(true)
@@ -196,4 +223,14 @@ describe('buildServerLoopRequest', () => {
     const { body } = buildServerLoopRequest('send', { ...base, subagentReasoningEffort: 'xhigh' })
     expect(body.subagentReasoningEffort).toBe('xhigh')
   })
+})
+
+it('marks Explain as explicit child creation without changing ordinary sends or settings', () => {
+  const params = { ...base, parentId: 'historical', reasoningConfig: { effort: 'high' }, imageConfig: { size: 'large' } }
+  const ordinary = buildServerLoopRequest('send', params)
+  const explain = buildServerLoopRequest('send', { ...params, operationId: 'explain', isBranch: true })
+  expect(ordinary.body).not.toHaveProperty('isBranch')
+  expect(explain.path).toBe(ordinary.path)
+  expect(explain.body).toMatchObject({ parentId: 'historical', isBranch: true,
+    reasoningConfig: params.reasoningConfig, imageConfig: params.imageConfig })
 })

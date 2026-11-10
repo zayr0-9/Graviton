@@ -27,8 +27,4 @@ describe('provider refresh adapters', () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response('{}', { status: 429 })))
     await expect(refreshCredential('codex', current, new AbortController().signal)).rejects.toMatchObject({ category: 'temporarily_unavailable' })
   })
-  it('reports missing main-process Supabase config rather than returning stale credentials', async () => {
-    for (const key of ['VITE_SUPABASE_URL', 'SUPABASE_URL', 'VITE_SUPABASE_ANON_KEY', 'SUPABASE_ANON_KEY']) vi.stubEnv(key, '')
-    await expect(refreshCredential('app', current, new AbortController().signal)).rejects.toMatchObject({ category: 'configuration_error' })
-  })
 })

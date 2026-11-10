@@ -520,6 +520,24 @@ describe('MCP Celestial TEST OAuth compatibility', () => {
     expect(fixture.getSavedSecrets()).toEqual({})
   })
 
+  it('reports grant type and Cloudflare challenge details when the token endpoint is blocked', async () => {
+    const fixture = await setup({ mcpUrl: localUrl, challengeScope: localScopes.join(' '), oauth: localOAuth,
+      tokenHandler: async () => new Response(
+        '<!DOCTYPE html><html><head><title>Just a moment...</title></head><body>challenge</body></html>',
+        { status: 403, headers: { 'content-type': 'text/html; charset=UTF-8', 'cf-ray': 'a57d92e17adf48ac-LHR', 'cf-mitigated': 'challenge' } }
+      ),
+    })
+    const failure = await fixture.manager.callTool('mcp__remote__echo', {}).then(() => undefined, error => error as Error)
+    expect(failure?.message).toMatch(/Token exchange failed \(authorization_code grant\): HTTP 403/)
+    expect(failure?.message).toContain('content-type: text/html; charset=UTF-8')
+    expect(failure?.message).toContain('cf-ray: a57d92e17adf48ac-LHR')
+    expect(failure?.message).toContain('cf-mitigated: challenge')
+    expect(failure?.message).toContain('body: HTML page "Just a moment..."')
+    expect(failure?.message).not.toContain(AUTHORIZATION_CODE)
+    expect(failure?.message).not.toContain('<body>')
+    expect(fixture.tokenRequests).toHaveLength(1)
+  })
+
   it('rejects invalid cached configuration before sending a bearer or refreshing', async () => {
     const fixture = await setup({ mcpUrl: localUrl, oauth: { ...localOAuth, clientId: 'wrong' },
       savedSecrets: { accessToken: ACCESS_TOKEN, refreshToken: REFRESH_TOKEN } })

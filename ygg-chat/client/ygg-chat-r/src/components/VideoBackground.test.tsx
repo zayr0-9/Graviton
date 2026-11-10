@@ -2,14 +2,17 @@ import { renderToStaticMarkup } from 'react-dom/server'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 const state = vi.hoisted(() => ({
+  native: true,
   enabled: true,
   colors: { light: '#123456', dark: '#654321' },
   backgroundColors: { light: '#fefefe', dark: '#121212' },
-  mode: 'color' as 'color' | 'video',
+  mode: 'color' as 'color' | 'video' | 'matrix',
   activeVideo: null as { id: string; mimeType: string } | null,
   activeVideoUrl: null as string | null,
   baseColors: { light: 'transparent', dark: 'transparent' },
 }))
+
+vi.mock('../platform/clientCapabilities', () => ({ get isNativeShell() { return state.native } }))
 
 vi.mock('./ThemeManager/themeConfig', () => ({
   useCustomChatTheme: () => ({ enabled: state.enabled, theme: { colors: { appBackgroundColor: state.colors } } }),
@@ -37,10 +40,13 @@ vi.mock('react', async importOriginal => {
   }
 })
 
+vi.mock('./MatrixBackground', () => ({ default: () => <div data-matrix-wallpaper='true' /> }))
+
 import VideoBackground from './VideoBackground'
 
 afterEach(() => {
   vi.unstubAllGlobals()
+  state.native = true
   state.enabled = true
   state.colors = { light: '#123456', dark: '#654321' }
   state.mode = 'color'
@@ -51,6 +57,7 @@ afterEach(() => {
 })
 
 const renderBackground = (dark = false) => {
+  vi.stubGlobal('CSS', { supports: () => true })
   vi.stubGlobal('document', { documentElement: { classList: { contains: () => dark } } })
   return renderToStaticMarkup(<VideoBackground />)
 }
@@ -105,5 +112,44 @@ describe('custom-theme background tint', () => {
     expect(html).not.toContain('<video')
     expect(html).toContain('background-color:transparent')
     expect(html).toContain('radial-gradient')
+  })
+})
+
+describe('live Matrix background', () => {
+  it('selects the live renderer only in the desktop shell', () => {
+    state.mode = 'matrix'
+    expect(renderBackground()).toContain('data-matrix-wallpaper')
+    state.native = false
+    const html = renderBackground()
+    expect(html).not.toContain('data-matrix-wallpaper')
+    expect(html).not.toContain('<iframe')
+    expect(html).toContain('background-color:rgb(from #123456 r g b / 1)')
+  })
+})
+
+describe('forced solid browser background', () => {
+  it.each([false, true])('uses the actual custom theme color, not a translucent tint (dark=%s)', dark => {
+    state.native = false
+    const html = renderBackground(dark)
+    expect(html).toContain(`background-color:rgb(from ${dark ? '#654321' : '#123456'} r g b / 1)`)
+    expect(html).not.toContain('gradient')
+  })
+  it.each(['transparent', 'rgba(10, 20, 30, 0.1)', '#12345600'])('cannot enable transparency with theme color %s', color => {
+    state.native = false
+    state.colors.dark = color
+    const html = renderBackground(true)
+    expect(html).toContain(color === 'transparent' ? 'background-color:#0C0A09' : `background-color:rgb(from ${color} r g b / 1)`)
+  })
+  it('ignores saved video mode and transparent background preferences in browser delivery', () => {
+    state.native = false
+    state.enabled = false
+    state.backgroundColors.dark = 'transparent'
+    state.mode = 'video'
+    state.activeVideo = { id: 'wallpaper', mimeType: 'video/mp4' }
+    state.activeVideoUrl = 'blob:wallpaper'
+    const html = renderBackground(true)
+    expect(html).not.toContain('<video')
+    expect(html).toContain('background-color:#0C0A09')
+    state.backgroundColors.dark = '#121212'
   })
 })

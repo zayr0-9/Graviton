@@ -5,8 +5,10 @@
 import Ajv, { type ErrorObject } from 'ajv'
 import { customToolRegistry, CustomToolDefinition, ToolExecutionOptions, ToolResult } from './customToolLoader'
 
-interface CustomToolManagerArgs {
-  action: 'list' | 'get' | 'invoke' | 'enable' | 'disable' | 'add' | 'remove' | 'reload' | 'settings'
+import { searchDiscovery, validateDiscoverySearch, type DiscoverySearchArgs } from './discoverySearch.js'
+
+interface CustomToolManagerArgs extends DiscoverySearchArgs {
+  action: 'search' | 'list' | 'get' | 'invoke' | 'enable' | 'disable' | 'add' | 'remove' | 'reload' | 'settings'
   names?: string[] // For 'get' action - tool names to retrieve full definitions
   name?: string // For enable/disable/remove/invoke
   args?: Record<string, any> // For invoke
@@ -41,6 +43,7 @@ interface CustomToolManagerResult {
   // For 'list' action
   tools?: ToolSummary[]
   totalCount?: number
+  nextOffset?: number
   // For 'get' action
   definitions?: CustomToolDefinition[]
   notFound?: string[]
@@ -165,6 +168,20 @@ export async function execute(args: CustomToolManagerArgs, options: ToolExecutio
 
   // Ensure registry is initialized
   await customToolRegistry.initialize()
+
+  if (action === 'search') {
+    const error = validateDiscoverySearch(args)
+    if (error) return { success: false, error }
+    const { items, ...page } = searchDiscovery(customToolRegistry.getStatuses(), args,
+      status => `${status.name} ${status.description}`)
+    return { success: true, ...page, tools: items.map(status => ({
+      name: status.name,
+      description: getBriefDescription(status.description),
+      enabled: status.enabled,
+      loaded: status.loaded,
+      directoryName: status.directoryName,
+    })) }
+  }
 
   if (action === 'list') {
     const statuses = customToolRegistry.getStatuses()
@@ -388,6 +405,6 @@ export async function execute(args: CustomToolManagerArgs, options: ToolExecutio
   return {
     success: false,
     error:
-      'Unknown action. Valid actions: "list", "get", "invoke", "enable", "disable", "add", "remove", "reload", "settings".',
+      'Unknown action. Valid actions: "search", "list", "get", "invoke", "enable", "disable", "add", "remove", "reload", "settings".',
   }
 }

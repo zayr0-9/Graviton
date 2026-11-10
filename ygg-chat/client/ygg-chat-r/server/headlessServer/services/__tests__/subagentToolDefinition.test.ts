@@ -14,7 +14,7 @@ describe('subagent tool definition', () => {
 
     expect(manager?.inputSchema.properties.action.enum).toContain('wait')
     expect(manager?.inputSchema.properties.handle.description).toContain('wait')
-    expect(manager?.description).toContain('instead of repeatedly polling')
+    expect(manager?.description).toContain('do not poll')
   })
 
   it('exposes safe-boundary send and optional resume instructions', () => {
@@ -33,6 +33,6 @@ describe('subagent tool definition', () => {
     // Retained arguments the thin client maps to the request contract.
     expect(subagent?.inputSchema.properties).toHaveProperty('prompt')
     expect(subagent?.inputSchema.properties).toHaveProperty('tools')
-    expect(subagent?.inputSchema.properties).toHaveProperty('inheritAutoApprove')
+    expect(subagent?.inputSchema.properties).not.toHaveProperty('inheritAutoApprove')
   })
 })

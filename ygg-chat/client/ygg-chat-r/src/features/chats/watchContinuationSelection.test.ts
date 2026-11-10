@@ -212,7 +212,7 @@ describe('watcher reattachment wiring', () => {
     const h = setup(undefined, null)
     updateInflightStreamCursor('successor', 42)
     vi.mocked(runServerReattach).mockImplementationOnce(async (request, deps) => {
-      expect(request.fromSeq).toBe(42)
+      expect(request.fromSeq).toBe(0) // Rebuilt state must bootstrap, not reuse a persisted cursor.
       expect(h.get().streaming.byId.successor.watchContinuation).toEqual({ lineageId: 'branch', parentMessageId: 'tail' })
       for (const event of [userEvent(), answerEvent(), completeEvent()]) {
         for (const action of projectServerEvent(event, { streamId: request.streamId, conversationId: request.conversationId })) {
@@ -224,7 +224,7 @@ describe('watcher reattachment wiring', () => {
     })
     const result = await resumeInFlightStreams({ conversationId: 'chat', streamId: 'successor' })(
       h.dispatch as any, () => ({ chat: h.get() }) as RootState,
-      { auth: { accessToken: null, userId: null }, queryClient: null } as any,
+      { auth: { userId: null }, queryClient: null } as any,
     )
     expect(result.type).toBe(resumeInFlightStreams.fulfilled.type)
     expect(runServerReattach).toHaveBeenCalledTimes(1)
@@ -233,4 +233,32 @@ describe('watcher reattachment wiring', () => {
     expect(listInflightStreams()).toEqual([])
     expect(h.get().composition.input.content).toBe('unsent draft')
   })
+})
+
+it('retires an old successful reattach without disturbing a different live stream or draft', async () => {
+  const { resumeInFlightStreams } = await import('./chatActions')
+  const { runServerReattach } = await import('./mainChatClient')
+  const { buildChatErrorRecord } = await import('./localChatErrors')
+  const { buildChatErrorEnvelope } = await import('../../../../../shared/chatErrors')
+  const h = setup(undefined, null)
+  h.dispatch(actions.sendingStarted({ streamId: 'live', conversationId: 'chat', preserveDrafts: true }))
+  const notice = (streamId: string, code: 'run_expired' | 'provider_timeout') => buildChatErrorRecord(buildChatErrorEnvelope(code), {
+    conversationId: 'chat', streamId, parentMessageId: 'tail',
+  })
+  h.dispatch(actions.chatErrorRecorded(notice('successor', 'run_expired')))
+  h.dispatch(actions.chatErrorRecorded(notice('live', 'provider_timeout')))
+  vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify({ runs: [] }))))
+  vi.mocked(runServerReattach).mockResolvedValueOnce({ gone: true, terminal: false, recovered: 'completed',
+    messageId: null, userMessage: null, providerError: false })
+  try {
+    await resumeInFlightStreams({ conversationId: 'chat', streamId: 'successor' })(h.dispatch as any,
+      () => ({ chat: h.get() }) as RootState, {} as any)
+    expect(listInflightStreams()).toEqual([])
+    expect(h.get().streaming.byId.live.active).toBe(true)
+    expect(h.get().streaming.byId.successor).toMatchObject({ active: false, status: 'completed', error: null })
+    expect(h.get().conversation.currentPath).toEqual(['root', 'tail'])
+    expect(h.get().composition.input.content).toBe('unsent draft')
+    expect(h.get().errorNotices.byConversationId.chat.map(notice => notice.streamId)).toEqual(['live'])
+    expect(fetch).toHaveBeenCalledTimes(1) // discovery only, no expired queue fetch
+  } finally { vi.unstubAllGlobals() }
 })

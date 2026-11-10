@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 const post = vi.hoisted(() => vi.fn())
-vi.mock('./api', () => ({ localApi: { post }, environment: 'electron' }))
+vi.mock('./api', () => ({ localApi: { post } }))
 
 import { executeToolAndWait } from './executeToolAndWait'
 import { createMessageHandler } from './iframeBridge'

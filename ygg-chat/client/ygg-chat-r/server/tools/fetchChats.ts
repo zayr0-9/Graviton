@@ -94,7 +94,6 @@ interface BranchReadItem extends BaseMessageItem {
 interface MessageSearchItem {
   conversation_id: string
   project_id: string | null
-  storage_mode: 'cloud' | 'local'
   conversation_title: string | null
   message_id: string
   message_created_at: string
@@ -108,7 +107,6 @@ interface MessageSearchItem {
 interface NoteSearchItem {
   conversation_id: string
   project_id: string | null
-  storage_mode: 'cloud' | 'local'
   conversation_title: string | null
   message_id: string
   message_created_at: string
@@ -537,7 +535,6 @@ async function executePage(
           return {
             conversation_id: scopedConversationId,
             project_id: normalizeNullableText(conversation?.project_id),
-            storage_mode: safeText(conversation?.storage_mode) === 'cloud' ? 'cloud' : 'local',
             conversation_title: normalizeNullableText(conversation?.title),
             message_id: safeText(msg?.id),
             message_created_at: safeText(msg?.created_at),
@@ -581,7 +578,6 @@ async function executePage(
       ? options.searchTopLevelMessages({ userId, projectId, query, limit }).map((result): MessageSearchItem => ({
           conversation_id: safeText(result?.conversation_id),
           project_id: normalizeNullableText(result?.project_id),
-          storage_mode: safeText(result?.storage_mode) === 'cloud' ? 'cloud' : 'local',
           conversation_title: normalizeNullableText(result?.conversation_title),
           message_id: safeText(result?.message_id),
           message_created_at: safeText(result?.message_created_at),
@@ -629,7 +625,6 @@ async function executePage(
       ? options.searchNotes({ userId, projectId, query, limit }).map((result): NoteSearchItem => ({
           conversation_id: safeText(result?.conversation_id),
           project_id: normalizeNullableText(result?.project_id),
-          storage_mode: safeText(result?.storage_mode) === 'cloud' ? 'cloud' : 'local',
           conversation_title: normalizeNullableText(result?.conversation_title),
           message_id: safeText(result?.message_id),
           message_created_at: safeText(result?.message_created_at),

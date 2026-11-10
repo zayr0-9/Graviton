@@ -48,6 +48,8 @@ export interface ContextInjectionBlock extends ContextInjectionEntry {
   /** The tool call this block rides on; absent for blocks on a user row. */
   tool_use_id?: string
   index?: number
+  /** `claude`: Claude Code delivered this itself (Skill tool, native slash command). Shown, never re-sent to Claude. */
+  origin?: 'claude'
 }
 
 export interface ContextInjectionMessageMeta {
@@ -128,6 +130,11 @@ function parseBlocks(value: unknown): unknown[] | null {
     }
   }
   return null
+}
+
+/** The `context_injection` blocks a persisted row carries (string or array `content_blocks`). */
+export function contextInjectionBlocksOf(message: { content_blocks?: unknown } | null | undefined): ContextInjectionBlock[] {
+  return (parseBlocks(message?.content_blocks) ?? []).filter(isContextInjectionBlock)
 }
 
 /** Cheap pre-scan: a serialised block set without the marker cannot hold an injection block. */

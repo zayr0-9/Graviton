@@ -1,3 +1,4 @@
+import { HOST_SKILLS_CHANGED } from '../../services/hostCatalogClient'
 import { useActivityStepLabels, saveActivityStepLabels } from '../../helpers/activityStepLabelsSettings'
 import { useQueryClient } from '@tanstack/react-query'
 import mammoth from 'mammoth'
@@ -66,6 +67,7 @@ import { SendButtonAnimationSettings } from './SendButtonAnimationSettings'
 import { FastModeAnimationSettings } from './FastModeAnimationSettings'
 import { useSettingsSectionThemeColors } from './settingsSectionTheme'
 import { ToolsSettings } from './ToolsSettings'
+import { HookGenerationSettings } from './HookGenerationSettings'
 import { KeyboardShortcutsModal } from './KeyboardShortcutsModal'
 
 type SettingsPaneProps = {
@@ -265,7 +267,6 @@ export const SettingsPane: React.FC<SettingsPaneProps> = ({ open, onClose }) => 
     ? getThemeModeColor(customTheme.colors.settingsPaneBodyBg, isDarkMode)
     : undefined
   const savedCustomThemesColors = useSettingsSectionThemeColors()
-  const isWebMode = import.meta.env.VITE_ENVIRONMENT === 'web'
 
   const [attachmentTarget, setAttachmentTarget] = useState<'system' | 'context'>('system')
   const attachmentInputRef = useRef<HTMLInputElement>(null)
@@ -475,9 +476,6 @@ export const SettingsPane: React.FC<SettingsPaneProps> = ({ open, onClose }) => 
     setShowSavePromptInput,
     savePromptName,
     setSavePromptName,
-    savePromptStorage,
-    setSavePromptStorage,
-    canSaveToCloud,
     savingPrompt,
     saveError,
     isExistingPrompt,
@@ -651,16 +649,17 @@ export const SettingsPane: React.FC<SettingsPaneProps> = ({ open, onClose }) => 
   }, [])
 
   useEffect(() => {
-    if (hooksExpanded && !isWebMode) {
+    if (hooksExpanded) {
       fetchManagedHooks()
     }
-  }, [hooksExpanded, fetchManagedHooks, isWebMode])
+  }, [hooksExpanded, fetchManagedHooks])
 
-  // Fetch skills when section is expanded
+  // An already-open section observes host changes without installation/reload effects.
   useEffect(() => {
-    if (skillsExpanded) {
-      fetchInstalledSkills()
-    }
+    const refresh = (event: Event) => { if (skillsExpanded) setInstalledSkills((event as CustomEvent).detail) }
+    window.addEventListener(HOST_SKILLS_CHANGED, refresh)
+    if (skillsExpanded) void fetchInstalledSkills()
+    return () => window.removeEventListener(HOST_SKILLS_CHANGED, refresh)
   }, [skillsExpanded, fetchInstalledSkills])
 
   // Fetch saved themes when custom theme library section is opened
@@ -1537,9 +1536,6 @@ ${block}`
                                   <Star size={16} strokeWidth={2.25} fill='currentColor' />
                                 </span>
                               )}
-                              <span className='rounded-full bg-black/10 px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-[0.08em] opacity-70 dark:bg-white/10'>
-                                {prompt.storage_mode === 'local' ? 'Local' : 'Cloud'}
-                              </span>
                             </button>
                           ))}
                         </div>
@@ -1624,26 +1620,6 @@ ${block}`
                                       if (e.key === 'Escape') resetSaveUI()
                                     }}
                                   />
-                                  <div className='flex items-center gap-1 rounded-2xl bg-neutral-100 p-1 dark:bg-neutral-800'>
-                                    {(['local', 'cloud'] as const).map(storage => (
-                                      <button
-                                        key={storage}
-                                        type='button'
-                                        onClick={() => setSavePromptStorage(storage)}
-                                        disabled={storage === 'cloud' && !canSaveToCloud}
-                                        className={`rounded-full px-2 py-1 text-xs font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-40 ${
-                                          savePromptStorage === storage
-                                            ? 'bg-blue-50 text-blue-700 dark:bg-orange-500/15 dark:text-orange-100'
-                                            : 'text-neutral-500 hover:text-neutral-800 dark:text-neutral-400 dark:hover:text-neutral-100'
-                                        }`}
-                                        title={
-                                          storage === 'local' ? 'Save only on this device' : 'Save to cloud account'
-                                        }
-                                      >
-                                        {storage === 'local' ? 'Local' : 'Cloud'}
-                                      </button>
-                                    ))}
-                                  </div>
                                   <button
                                     type='button'
                                     onClick={handleSaveAsPrompt}
@@ -1656,11 +1632,6 @@ ${block}`
                                     <X size={18} strokeWidth={2.25} />
                                   </button>
                                 </div>
-                                <p className='text-xs text-neutral-500 dark:text-neutral-400'>
-                                  {savePromptStorage === 'local'
-                                    ? 'Local prompts stay on this device.'
-                                    : 'Cloud prompts sync with your account.'}
-                                </p>
                                 {saveError && <p className='text-sm text-red-500 dark:text-red-400'>{saveError}</p>}
                               </div>
                             )}
@@ -2639,7 +2610,7 @@ ${block}`
               </div>
             </div>
 
-            {!isWebMode && (
+            {(
               <div
                 className='overflow-hidden rounded-2xl bg-neutral-50/70 dark:bg-neutral-900/10'
                 style={settingsSectionCardStyle}
@@ -2685,6 +2656,7 @@ ${block}`
                 >
                   <div className='min-h-0 overflow-hidden'>
                     <div className='space-y-4 px-3 pb-3 pt-1'>
+                    {hooksExpanded && <HookGenerationSettings />}
                     <div className='flex items-center justify-between gap-3'>
                       <p className='text-sm text-neutral-600 dark:text-neutral-400'>
                         Enable or disable individual managed hooks from your .ygg settings files.

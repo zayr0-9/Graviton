@@ -1,15 +1,11 @@
-import { isCommunityMode } from '../config/runtimeMode'
-import { supabase } from '../lib/supabase'
-import { buildLocalApiUrl, environment, localApi, publicApiCall } from '../utils/api'
+import { isHostClient, isNativeShell } from '../platform/clientCapabilities'
+import { buildLocalApiUrl, localApi } from '../utils/api'
 
-const APP_STORE_BUCKET = 'updates'
+// First-party catalog: plain anonymous fetches from the public bucket (no SDK, no env).
+// TODO(app-store-catalog): move the catalog to GitHub (fully-local plan Q10).
+const APP_STORE_PUBLIC_BASE = 'https://auth.yggchat.com/storage/v1/object/public/updates'
 const APP_STORE_ROOT = 'apps'
-
-const assertCloudAppStoreWriteEnabled = () => {
-  if (isCommunityMode) {
-    throw new Error('Cloud app store publishing is disabled in community mode.')
-  }
-}
+const appStorePublicUrl = (path: string) => `${APP_STORE_PUBLIC_BASE}/${path}`
 
 export interface AppStoreDescription {
   name?: string
@@ -166,13 +162,7 @@ const parseManifest = (data: unknown): AppStoreManifestEntry[] | null => {
 }
 
 export async function fetchAppStoreApps(): Promise<AppStoreApp[]> {
-  if (!supabase) {
-    throw new Error('Supabase client not configured. Set VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY.')
-  }
-
-  const storage = supabase.storage.from(APP_STORE_BUCKET)
-  const manifestPath = `${APP_STORE_ROOT}/manifest.json`
-  const manifestUrl = storage.getPublicUrl(manifestPath).data.publicUrl
+  const manifestUrl = appStorePublicUrl(`${APP_STORE_ROOT}/manifest.json`)
   let manifestEntries: AppStoreManifestEntry[] | null = null
 
   try {
@@ -214,7 +204,7 @@ export async function fetchAppStoreApps(): Promise<AppStoreApp[]> {
       }
 
       const descriptionPath = `${APP_STORE_ROOT}/${appId}/description.json`
-      const descriptionUrl = manifestDescriptionUrl || storage.getPublicUrl(descriptionPath).data.publicUrl
+      const descriptionUrl = manifestDescriptionUrl || appStorePublicUrl(descriptionPath)
       if (descriptionUrl) {
         try {
           const response = await fetch(descriptionUrl, { cache: 'no-store' })
@@ -248,7 +238,7 @@ export async function fetchAppStoreApps(): Promise<AppStoreApp[]> {
 
       if (!zipUrl && zipName) {
         const zipPath = `${APP_STORE_ROOT}/${appId}/${zipName}`
-        zipUrl = storage.getPublicUrl(zipPath).data.publicUrl
+        zipUrl = appStorePublicUrl(zipPath)
       }
 
       const displayName = description.title || description.name || appId
@@ -270,12 +260,9 @@ export async function fetchAppStoreApps(): Promise<AppStoreApp[]> {
 }
 
 export async function fetchPublicAppStoreApps(): Promise<AppStoreApp[]> {
-  const response =
-    environment === 'electron'
-      ? await localApi.get<{ success: boolean; apps?: PublicAppApiRecord[] }>('/app-store/community')
-      : await publicApiCall<{ success: boolean; apps?: PublicAppApiRecord[] }>('/app-store/community', {
-          method: 'GET',
-        })
+  // The local host proxies the community list anonymously (browser clients included).
+  if (!isHostClient) throw new Error('The community app store is available through the Graviton host only.')
+  const response = await localApi.get<{ success: boolean; apps?: PublicAppApiRecord[] }>('/app-store/community')
 
   const records = response.apps || []
 
@@ -301,7 +288,7 @@ export async function fetchPublicAppStoreApps(): Promise<AppStoreApp[]> {
 }
 
 export async function validateCommunityAppUpload(file: File): Promise<CommunityAppUploadValidation> {
-  if (environment !== 'electron') {
+  if (!isNativeShell) {
     throw new Error('Community app uploads are only available in the desktop app.')
   }
 
@@ -324,10 +311,10 @@ export async function validateCommunityAppUpload(file: File): Promise<CommunityA
   return data
 }
 
+// TODO(app-store-upload): publishing needed a Graviton account; the host route answers 501
+// and the upload UI is hidden until a new mechanism exists (fully-local plan Q11).
 export async function uploadCommunityApp(file: File): Promise<AppStoreApp> {
-  assertCloudAppStoreWriteEnabled()
-
-  if (environment !== 'electron') {
+  if (!isNativeShell) {
     throw new Error('Community app uploads are only available in the desktop app.')
   }
 
@@ -375,7 +362,7 @@ export async function installAppFromStore(payload: {
   zipUrl?: string | null
   mode?: 'install' | 'update'
 }): Promise<AppStoreInstallResult> {
-  if (environment !== 'electron') {
+  if (!isNativeShell) {
     throw new Error('App installs are only available in the desktop app.')
   }
 
@@ -387,7 +374,7 @@ export async function installAppFromStore(payload: {
 }
 
 export async function uninstallAppFromStore(payload: { appId: string }): Promise<AppStoreUninstallResult> {
-  if (environment !== 'electron') {
+  if (!isNativeShell) {
     throw new Error('App uninstalls are only available in the desktop app.')
   }
 
@@ -395,7 +382,7 @@ export async function uninstallAppFromStore(payload: { appId: string }): Promise
 }
 
 export async function fetchInstalledCustomTools(): Promise<CustomToolDefinition[]> {
-  if (environment !== 'electron') {
+  if (!isNativeShell) {
     return []
   }
 
@@ -404,7 +391,7 @@ export async function fetchInstalledCustomTools(): Promise<CustomToolDefinition[
 }
 
 export async function restartDesktopApp(): Promise<{ success: boolean; error?: string }> {
-  if (environment !== 'electron') {
+  if (!isNativeShell) {
     return { success: false, error: 'Restart is only available in the desktop app.' }
   }
 

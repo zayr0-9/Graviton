@@ -7,7 +7,7 @@
  * forwards its locals.
  *
  * Notes / invariants (see Phase 1 spec):
- * - MUST send provider ('lmstudio'|'zai'|'openrouter'|'openaichatgpt') and modelName,
+ * - MUST send provider ('lmstudio'|'zai'|'openrouterbyok'|'bedrock'|'openaichatgpt'|'claude') and modelName,
  *   or the server silently defaults to openaichatgpt / gpt-5.6-sol.
  * - `content` is the RAW first-turn user text; the server owns the multi-turn loop.
  * - supplemental systemPrompt is intentionally OMITTED: the server assembles the final
@@ -16,6 +16,8 @@
  * - attachmentsBase64 is turn-1 only (sent once on the initial request).
  */
 
+import { newClientId } from '../../helpers/clientId'
+import { isClaudeProvider } from '../../../../../shared/claudeProvider'
 import type { ContextDirectorySettings } from '../../../../../shared/contextDirectories'
 
 export type ServerLoopOperation = 'send' | 'edit' | 'branch'
@@ -26,6 +28,7 @@ export interface ServerLoopToolInput {
   inputSchema?: Record<string, any>
   enabled?: boolean
   isMcp?: boolean
+  isCustom?: boolean
 }
 
 export interface BuildServerLoopRequestParams {
@@ -58,7 +61,6 @@ export interface BuildServerLoopRequestParams {
   fullAccessNotificationId?: string
   conversationContext?: string | null
   projectContext?: string | null
-  storageMode?: string
   attachmentsBase64?: unknown[] | null
   selectedFiles?: unknown[]
   tools?: ServerLoopToolInput[]
@@ -77,6 +79,10 @@ export interface BuildServerLoopRequestParams {
    * server default (auto-approve). The 3 shims pass state.chat.toolAutoApprove (a boolean).
    */
   toolAutoApprove?: boolean
+  /** Claude auto mode preference; sent as claudePermissionMode only for Claude with toolAutoApprove off. */
+  claudeAutoMode?: boolean
+  /** Claude ultracode preference; sent as claudeUltracode only for Claude. */
+  claudeUltracode?: boolean
   /**
    * Phase 3: opt into the server-owned loop's chat hooks (parity with the renderer's
    * always-on-in-electron hooks). The 3 shims pass isElectronMode. Forwarded verbatim.
@@ -85,13 +91,13 @@ export interface BuildServerLoopRequestParams {
   /** Passed to hook scripts as lookup.localApiBase; the shims pass getCachedLocalApiBase(). */
   localApiBase?: string | null
   /**
-   * Phase 4 (openrouter/cloud route): the resolved OpenRouter sampling temperature.
+   * The resolved OpenRouter sampling temperature (OpenRouter BYOK).
    * Undefined for lmstudio/zai (resolveOpenRouterTemperature returns undefined), so
    * it is omitted from those bodies — keeping the local-provider request unchanged.
    */
   temperature?: number
   /**
-   * Optional priority service tier for Codex and the OpenRouter/cloud route.
+   * Optional priority service tier for Codex and OpenRouter BYOK.
    * Other provider shims omit it, so their request bodies remain unchanged.
    */
   serviceTier?: 'priority'
@@ -109,6 +115,8 @@ export interface BuildServerLoopRequestParams {
    * per-model default window instead of the selected model's). Forwarded only-when-set:
    * autoCompactionEnabled is sent even when false (that is how the user disables it).
    */
+  /** Existing server contract: explicitly create a child instead of ordinary head admission. */
+  isBranch?: boolean
   manualCompaction?: boolean
   autoCompactionEnabled?: boolean
   /** The SELECTED model's context window; sizes the compaction trigger (server falls back per-model). */
@@ -132,7 +140,7 @@ function shapeTools(tools?: ServerLoopToolInput[]): Array<{ name: string; descri
   // the server does NOT substitute defaults and auto-run tools the user disabled.
   if (!Array.isArray(tools)) return undefined
   return tools
-    .filter(t => t.enabled !== false && !t.isMcp && !t.name.startsWith('mcp__'))
+    .filter(t => t.enabled !== false && !t.isCustom && !t.isMcp && !t.name.startsWith('mcp__'))
     .map(t => ({
       name: t.name,
       description: t.description,
@@ -140,14 +148,7 @@ function shapeTools(tools?: ServerLoopToolInput[]): Array<{ name: string; descri
     }))
 }
 
-function generateOperationId(): string {
-  if (typeof globalThis.crypto !== 'undefined' && typeof globalThis.crypto.randomUUID === 'function') {
-    return globalThis.crypto.randomUUID()
-  }
-  // Older Electron/test runtimes may not expose randomUUID. Keep the fallback local,
-  // dependency-free, and collision-resistant enough for a renderer operation identity.
-  return `op-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}-${Math.random().toString(36).slice(2)}`
-}
+const generateOperationId = newClientId
 
 export function buildServerLoopRequest(operation: ServerLoopOperation, params: BuildServerLoopRequestParams): ServerLoopRequest {
   const { conversationId } = params
@@ -166,6 +167,7 @@ export function buildServerLoopRequest(operation: ServerLoopOperation, params: B
   const tools = shapeTools(params.tools)
 
   const body: Record<string, unknown> = {
+    ...(params.isBranch === true ? { isBranch: true } : {}),
     content: params.content,
     provider: params.provider,
     modelName: params.modelName,
@@ -184,13 +186,16 @@ export function buildServerLoopRequest(operation: ServerLoopOperation, params: B
     cwd: params.rootPath ?? null,
     conversationContext: params.conversationContext ?? null,
     projectContext: params.projectContext ?? null,
-    storageMode: params.storageMode ?? 'local',
     selectedFiles: params.selectedFiles ?? [],
     attachmentsBase64: params.attachmentsBase64 ?? null,
     streamId: params.streamId,
     operationId: params.operationId ?? generateOperationId(),
     // Forward verbatim (no undefined -> false coercion): drives the server's pause gate.
     toolAutoApprove: params.toolAutoApprove,
+    // Allow all wins: auto mode only replaces Ask, so classifier-uncertain calls still prompt.
+    ...(params.claudeAutoMode && params.toolAutoApprove === false && isClaudeProvider(params.provider)
+      ? { claudePermissionMode: 'auto' as const } : {}),
+    ...(params.claudeUltracode && isClaudeProvider(params.provider) ? { claudeUltracode: true } : {}),
     // Phase 3 hooks: forward verbatim. The server gates on `=== true`, so undefined = off.
     hooksEnabled: params.hooksEnabled,
     localApiBase: params.localApiBase ?? null,
@@ -213,7 +218,7 @@ export function buildServerLoopRequest(operation: ServerLoopOperation, params: B
   // all-disabled set is respected; omit only when tools were not provided.
   if (tools !== undefined) body.tools = tools
 
-  // Phase 4 openrouter parity: forward these only when set, so no undefined keys
+  // Forward these only when set, so no undefined keys
   // reach the body and the lmstudio/zai request stays byte-for-byte unchanged.
   if (typeof params.temperature === 'number') body.temperature = params.temperature
   if (params.serviceTier !== undefined) body.serviceTier = params.serviceTier

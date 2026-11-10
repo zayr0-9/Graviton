@@ -1,3 +1,6 @@
+import { deleteMessagesWithLineageRepair } from '../headlessServer/persistence/deleteMessages.js'
+import { planMessageDeletion } from '../headlessServer/persistence/claudeMessageDeletion.js'
+import { isClaudeTranscriptMessage } from '../../../../shared/claudeProvider.js'
 // server/routes/conversationRoutes.ts
 //
 // Local conversation + message CRUD APIs, extracted verbatim from
@@ -337,7 +340,7 @@ export function registerConversationRoutes(app: Express, deps: ConversationRoute
   app.get('/api/local/conversations/:id/messages/top-level-users', (req, res) => {
     try {
       const { id } = req.params
-      const topLevelUserMessages = statements.getTopLevelUserMessagesByConversationId.all(id)
+      const topLevelUserMessages = statements.getTopLevelPreviewMessagesByConversationId.all(id)
       res.json(topLevelUserMessages)
     } catch (error) {
       console.error('[LocalServer] ❌ Error fetching top-level user messages:', error)
@@ -383,11 +386,8 @@ export function registerConversationRoutes(app: Express, deps: ConversationRoute
       //   )
       // }
 
-      // Get storage_mode from conversation
-      const conversation = statements.getConversationById.get(id) as { storage_mode: string } | undefined
-      const storage_mode = conversation?.storage_mode || 'local'
 
-      res.json({ messages: normalizedMessages, tree: treeData, meta: { storage_mode } })
+      res.json({ messages: normalizedMessages, tree: treeData })
     } catch (error) {
       console.error('[LocalServer] ❌ Error fetching message tree:', error)
       res.status(500).json({ error: 'Failed to fetch message tree' })
@@ -590,6 +590,10 @@ export function registerConversationRoutes(app: Express, deps: ConversationRoute
         return
       }
 
+      if ((content !== undefined || content_blocks !== undefined) && isClaudeTranscriptMessage(existing)) {
+        res.status(409).json({ error: 'Claude owns this transcript. Create an edit branch instead of changing saved messages.' })
+        return
+      }
       // Update message
       statements.updateMessage.run(
         finalContent ?? existing.content,
@@ -611,13 +615,12 @@ export function registerConversationRoutes(app: Express, deps: ConversationRoute
   app.delete('/api/local/messages/:id', (req, res) => {
     try {
       const { id } = req.params
-      // console.log('[LocalServer] 🗑️ DELETE /api/local/messages/:id - messageId:', id)
-      statements.deleteMessage.run(id)
+      deleteMessagesWithLineageRepair(db, planMessageDeletion(db, [id]))
       // console.log('[LocalServer] ✅ Message deleted:', id)
       res.json({ success: true })
     } catch (error) {
       console.error('[LocalServer] ❌ Error deleting message:', error)
-      res.status(500).json({ error: 'Failed to delete message' })
+      res.status((error as { status?: number }).status ?? 500).json({ error: error instanceof Error ? error.message : 'Failed to delete message', code: (error as { code?: string }).code })
     }
   })
 
@@ -627,8 +630,8 @@ export function registerConversationRoutes(app: Express, deps: ConversationRoute
       const { ids } = req.body
       // console.log('[LocalServer] 🗑️ POST /api/local/messages/deleteMany - ids:', ids)
 
-      if (!Array.isArray(ids) || ids.length === 0) {
-        res.status(400).json({ error: 'ids must be a non-empty array' })
+      if (!Array.isArray(ids) || ids.length === 0 || ids.some(id => typeof id !== 'string')) {
+        res.status(400).json({ error: 'ids must be a non-empty array of message IDs' })
         return
       }
 
@@ -637,18 +640,12 @@ export function registerConversationRoutes(app: Express, deps: ConversationRoute
         res.status(500).json({ error: 'Database not initialized' })
         return
       }
-      const deleteTransaction = db.transaction((messageIds: string[]) => {
-        for (const id of messageIds) {
-          statements.deleteMessage.run(id)
-        }
-      })
-
-      deleteTransaction(ids)
+      deleteMessagesWithLineageRepair(db, planMessageDeletion(db, ids))
       // console.log('[LocalServer] ✅ Bulk deleted', ids.length, 'messages')
       res.json({ deleted: ids.length })
     } catch (error) {
       console.error('[LocalServer] ❌ Error bulk deleting messages:', error)
-      res.status(500).json({ error: 'Failed to bulk delete messages' })
+      res.status((error as { status?: number }).status ?? 500).json({ error: error instanceof Error ? error.message : 'Failed to bulk delete messages', code: (error as { code?: string }).code })
     }
   })
 }

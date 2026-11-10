@@ -1,19 +1,13 @@
 /// <reference types="vite/client" />
 
 // Build-time constants defined in vite.config.ts
-declare const __BUILD_TARGET__: 'web' | 'electron' | 'local' | 'standalone'
+declare const __BUILD_TARGET__: 'electron' | 'standalone' | 'browser-client'
 declare const __IS_ELECTRON__: boolean
-declare const __IS_WEB__: boolean
-declare const __IS_LOCAL__: boolean
 declare const __YGG_CODEX_DEV_LOGS__: boolean
 
 interface ImportMetaEnv {
-  readonly VITE_API_URL?: string
-  readonly VITE_ENVIRONMENT?: 'web' | 'local' | 'electron' | 'standalone'
+  /** Optional dev-only override of the Ygg server origin for browser targets (fully-local plan Q15). */
   readonly VITE_YGG_SERVER_ORIGIN?: string
-  readonly VITE_SUPABASE_URL?: string
-  readonly VITE_SUPABASE_ANON_KEY?: string
-  readonly VITE_STRIPE_PUBLISHABLE_KEY?: string
 }
 
 interface ImportMeta {
@@ -22,20 +16,22 @@ interface ImportMeta {
 
 // Electron API types (available when running in Electron)
 interface ElectronAPI {
+  executionPreferences: {
+    read: () => Promise<import('../../../shared/hostExecutionPreferences').HostExecutionSnapshot>
+    save: (request: unknown) => Promise<import('../../../shared/hostExecutionPreferences').HostExecutionSnapshot>
+    importLegacy: (raw: unknown) => Promise<import('../../../shared/hostExecutionPreferences').HostExecutionSnapshot>
+  }
+  prompts: {
+    read: () => Promise<import('../../../shared/hostPrompts').HostPromptSnapshot>
+    save: (revision: number, prompts: unknown, identity: { hostId: string; epoch: string }) => Promise<{ snapshot?: import('../../../shared/hostPrompts').HostPromptSnapshot; error?: string; conflict?: boolean }>
+    importLegacy: (prompts: unknown) => Promise<import('../../../shared/hostPrompts').HostPromptSnapshot>
+  }
+  /** Local identity + ChatGPT (Codex) connection status. */
   auth: {
-    onLoginError: (callback: (message: string) => void) => () => void
     status: () => Promise<any>
-    start: (provider: string, oob?: boolean) => Promise<{ url: string }>
-    code: (code: string) => Promise<any>
-    cancel: () => Promise<void>
     migrate: (values: unknown) => Promise<any>
     check: () => Promise<any>
     onChanged: (callback: (state: any) => void) => () => void
-    login: (credentials: any) => Promise<any>
-    logout: () => Promise<void>
-    openExternal: (url: string) => Promise<{ success: boolean; error?: string }>
-    openOAuthWindow: (url: string) => Promise<{ success: boolean; error?: string }>
-    onOAuthCallback: (callback: (url: string) => void) => () => void
   }
   storage: {
     get: (key: string) => Promise<any>
@@ -76,11 +72,14 @@ interface ElectronAPI {
       localServerPort: number | null
       localServerUrl: string | null
       localServerLanUrl?: string | null
+      localServerBindHost?: string
+      localServerExposure?: string
       localServerError?: string | null
     }>
   }
   shell: {
     openPath: (path: string) => Promise<{ success: boolean; error?: string }>
+    openExternal: (url: string) => Promise<{ success: boolean; error?: string }>
   }
   browser: {
     isGuestDevToolsEnabled: () => Promise<boolean>
@@ -132,8 +131,12 @@ interface ElectronAPI {
   autoUpdater: {
     check: () => Promise<{ success: boolean; error?: string }>
     installNow: () => Promise<{ success: boolean; error?: string }>
+    /** Opens the GitHub release page (macOS, where unsigned updates cannot be installed in place). */
+    openReleasePage?: () => Promise<{ success: boolean; error?: string }>
     onChecking: (callback: () => void) => () => void
-    onUpdateAvailable: (callback: (info: { version: string }) => void) => () => void
+    onUpdateAvailable: (
+      callback: (info: { version: string; manualInstall?: boolean; releaseUrl?: string }) => void
+    ) => () => void
     onUpdateNotAvailable: (callback: (info: any) => void) => () => void
     onDownloadProgress: (
       callback: (progress: { percent: number; bytesPerSecond: number; transferred: number; total: number }) => void

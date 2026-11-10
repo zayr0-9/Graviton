@@ -1,7 +1,6 @@
 // searchSlice.ts
 import { createSlice, PayloadAction } from '@reduxjs/toolkit'
-import { performProjectSearch, performSearch } from './searchActions'
-import { SearchHistoryItem, SearchState } from './searchTypes'
+import { SearchState } from './searchTypes'
 
 const initialState: SearchState = {
   query: '',
@@ -28,60 +27,9 @@ export const searchSlice = createSlice({
       state.focusedConversationId = action.payload?.conversationId ?? null
       state.focusedMessageId = action.payload?.messageId ?? null
     },
-  },
-  extraReducers: builder => {
-    builder
-      .addCase(performSearch.pending, state => {
-        state.loading = true
-        state.error = null
-      })
-      .addCase(performSearch.fulfilled, (state, action) => {
-        state.loading = false
-        state.results = action.payload
-        state.error = null
-
-        // Add to history
-        if (state.query.trim()) {
-          const historyItem: SearchHistoryItem = {
-            id: Date.now().toString(),
-            query: state.query,
-            timestamp: Date.now(),
-          }
-          // Keep latest 20 items, unique by query
-          state.history = [historyItem, ...state.history.filter(h => h.query !== historyItem.query)].slice(0, 20)
-        }
-      })
-      .addCase(performSearch.rejected, (state, action) => {
-        state.loading = false
-        state.error = action.payload || 'Search failed'
-      })
-      .addCase(performProjectSearch.pending, state => {
-        state.loading = true
-        state.error = null
-      })
-      .addCase(performProjectSearch.fulfilled, (state, action) => {
-        state.loading = false
-        state.results = action.payload
-        state.error = null
-
-        // Add to history
-        if (state.query.trim()) {
-          const historyItem: SearchHistoryItem = {
-            id: Date.now().toString(),
-            query: state.query,
-            timestamp: Date.now(),
-          }
-          // Keep latest 20 items, unique by query
-          state.history = [historyItem, ...state.history.filter(h => h.query !== historyItem.query)].slice(0, 20)
-        }
-      })
-      .addCase(performProjectSearch.rejected, (state, action) => {
-        state.loading = false
-        state.error = action.payload || 'Search failed'
-      })
-  },
+  }
 })
 
-export const searchActions = { ...searchSlice.actions, performSearch, performProjectSearch }
+export const searchActions = { ...searchSlice.actions }
 
 export default searchSlice.reducer

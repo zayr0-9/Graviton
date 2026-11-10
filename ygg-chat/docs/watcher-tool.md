@@ -123,6 +123,10 @@ Main-chat `claude_bridge wait` uses a host-only `registerBridgeJob` entrypoint o
 
 The internal notification kind is `claude_bridge`. A bounded exact-job reply is supplied separately to the branch continuation queue, never embedded in broadcast/replayed events or watch status. Queued rows use existing `watcher_completion` provenance, extended with the original bridge launch `source` and a distinct wait `registrationToolCallId`. The model-visible completion text explicitly references the launch tool call; `originMessageId` continues to identify the wait-registration assistant message for routing provenance. Bridge waits have no watcher deadline and ignore `waitMs`; only the independent CLI job runtime limit applies. Cancelled jobs, cancelled watches and shutdown do not submit messages. `autoResume:false` explicitly means visible-only. See [Claude bridge](claude-bridge-tool.md).
 
+## Subagent completion
+
+Main-chat `subagent_manager wait` uses host-only `registerSubagentRun` with the owned run ID and attempt. It returns immediately with the original six-digit `handle` and separate `watchHandle` (usable with watcher status/cancel), uses the same safe-boundary queue, branch pins, deduplication tombstones and notification transport, and has no watcher deadline. Results are capped at 12,000 characters; use `subagent_manager status` for the full result. Notifications contain only routing/provenance metadata. Queued messages reference the original persisted spawn tool call and carry the separate wait-registration call ID. Cancelled children/watches and shutdown suppress delivery; failed attempts deliver a labelled error. Resumed attempts have distinct registrations. A concurrent attempt change fails closed rather than substituting a new attempt's result. Watches remain memory-only.
+
 ## Condition semantics and limitations
 
 - Polling conditions run asynchronously in the server, never through arbitrary

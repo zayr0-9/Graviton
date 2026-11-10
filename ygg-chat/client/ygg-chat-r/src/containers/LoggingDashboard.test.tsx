@@ -12,13 +12,11 @@ vi.mock('recharts', async importOriginal => {
 })
 vi.mock('react-router-dom', () => ({ useNavigate: () => vi.fn() }))
 vi.mock('framer-motion', () => ({ useReducedMotion: () => true }))
-vi.mock('../config/runtimeMode', () => ({ isCommunityMode: false }))
 vi.mock('../components/ThemeManager/themeConfig', () => ({ useCustomChatTheme: () => ({ enabled: false, theme: { colors: {} } }),
   useHtmlDarkMode: () => false, getThemeModeColor: () => undefined }))
 vi.mock('../hooks/useLoggingAnalytics', () => ({
-  useCloudLoggingAnalytics: () => ({ data: state.data, isEnabled: state.enabled, isFetching: false, error: null,
+  useLocalLoggingAnalytics: () => ({ data: state.data, isEnabled: state.enabled, isFetching: false, error: null,
     dataUpdatedAt: 0, refetch: vi.fn() }),
-  useLocalLoggingAnalytics: () => ({ data: undefined, isEnabled: false, isFetching: false, error: null, dataUpdatedAt: 0, refetch: vi.fn() }),
 }))
 
 beforeEach(() => { state.data = undefined; state.enabled = false })
@@ -35,12 +33,12 @@ describe('logging dashboard chrome', () => {
     expect(html).not.toContain('shadow-')
     expect(html).not.toContain('transition-all')
   })
-  it('suppresses stale cloud account data while signed out', () => {
-    state.data = { filters: { available: { projects: [{ id: 'private-project', name: 'Private account project' }], conversations: [], models: [] } } }
+  it('reads only the local SQLite source and has no cloud or billing surface', () => {
     const html = renderToStaticMarkup(createElement(LoggingDashboard))
-    expect(html).not.toContain('Private account project')
-    expect(html).not.toContain('private-project')
-    expect(html).toContain('Sign in to load cloud analytics')
+    expect(html).toContain('Local SQLite')
+    expect(html).not.toContain('Cloud')
+    expect(html).not.toContain('Subscription')
+    expect(html).toContain('Analytics are not available yet.')
   })
 })
 
@@ -51,12 +49,11 @@ describe('logging dashboard charts', () => {
       rangeDays: 30,
       filters: { available: { projects: [], conversations: [], models: [] } },
       summary: { netCreditsConsumed: 2, messagesTotal: 5, activeDays: 1 },
-      spend: { daily: [{ date: '2026-10-01', netCreditsConsumed: 2 }],
+      spend: { daily: [{ date: '2026-10-01', apiCredits: 2 }],
         burnRate: { creditsPerDay: 2, projectedDaysRemaining: null } },
       models: { topByCredits: [], tokenMixByModel: [] },
       activity: { messagesPerDay: [{ date: '2026-10-01', count: 5 }], messagesByRole: { assistant: 5 } },
       tools: { requested: { byName: {} }, jobs: { total: 0, byTool: [] } },
-      payments: { currentPlan: null, currentCreditsBalance: null, history: { monthlyAllocation: [], topups: [] } },
     }
     const html = renderToStaticMarkup(createElement(LoggingDashboard))
     expect(html).toContain('recharts-line-dots')

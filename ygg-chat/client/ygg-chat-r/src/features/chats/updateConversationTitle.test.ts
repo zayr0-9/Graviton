@@ -11,7 +11,7 @@ import reducer from '../conversations/conversationSlice'
 import type { Conversation } from '../conversations/conversationTypes'
 import type { RootState } from '../../store/store'
 
-const original = { id: 'c', title: 'Original', storage_mode: 'local', project_id: 'p' } as Conversation
+const original = { id: 'c', title: 'Original', project_id: 'p' } as Conversation
 const other = { id: 'other', title: 'Other' } as Conversation
 const clients: QueryClient[] = []
 function setup() {
@@ -19,8 +19,8 @@ function setup() {
   clients.push(queryClient)
   const state = { conversations: { ...reducer(undefined, { type: 'init' }), items: [original, other] } } as RootState
   const dispatch = (action: any) => { state.conversations = reducer(state.conversations, action); return action }
-  const run = (storageMode?: 'local' | 'cloud') => updateConversationTitle({ id: 'c', title: 'Renamed', storageMode })(
-    dispatch, () => state, { auth: { accessToken: null, userId: null }, queryClient }
+  const run = () => updateConversationTitle({ id: 'c', title: 'Renamed' })(
+    dispatch, () => state, { auth: { userId: null }, queryClient }
   )
   return { queryClient, state, run }
 }
@@ -30,16 +30,16 @@ afterEach(() => {
 })
 
 describe('explicit conversation title save', () => {
-  it('persists using the authoritative mode and syncs Redux and all supported flat/infinite caches', async () => {
+  it('persists the title and syncs Redux and all supported flat/infinite caches', async () => {
     const { queryClient, state, run } = setup()
     const flatKeys = [['conversations'], ['conversations', 'recent', 10], ['conversations', 'project', 'p']]
     const infiniteKeys = [['conversations', 'infinite'], ['conversations', 'project', 'p', 'infinite']]
     flatKeys.forEach(key => queryClient.setQueryData(key, [original, other]))
     infiniteKeys.forEach(key => queryClient.setQueryData(key, { pages: [{ conversations: [original, other], nextCursor: 'next' }], pageParams: [null] }))
     vi.mocked(gwApi.patch).mockResolvedValue({ ...original, title: 'Renamed' })
-    await run('cloud').unwrap()
+    await run().unwrap()
     expect(gwApi.patch).toHaveBeenCalledOnce()
-    expect(gwApi.patch).toHaveBeenCalledWith('/conversations/c?storageMode=cloud', { title: 'Renamed' })
+    expect(gwApi.patch).toHaveBeenCalledWith('/conversations/c', { title: 'Renamed' })
     expect(state.conversations.items[0].title).toBe('Renamed')
     flatKeys.forEach(key => expect(queryClient.getQueryData(key)).toEqual([{ ...original, title: 'Renamed' }, other]))
     infiniteKeys.forEach(key => expect(queryClient.getQueryData(key)).toEqual({ pages: [{ conversations: [{ ...original, title: 'Renamed' }, other], nextCursor: 'next' }], pageParams: [null] }))
@@ -49,15 +49,9 @@ describe('explicit conversation title save', () => {
     const { queryClient, state, run } = setup()
     queryClient.setQueryData(['conversations'], [original])
     vi.mocked(gwApi.patch).mockRejectedValue(new Error('Offline'))
-    await expect(run('local').unwrap()).rejects.toBe('Offline')
+    await expect(run().unwrap()).rejects.toBe('Offline')
     expect(state.conversations.items[0].title).toBe('Original')
     expect(queryClient.getQueryData(['conversations'])).toEqual([original])
   })
 
-  it('uses the stored mode when a caller does not supply one', async () => {
-    const { run } = setup()
-    vi.mocked(gwApi.patch).mockResolvedValue({ ...original, title: 'Renamed' })
-    await run().unwrap()
-    expect(gwApi.patch).toHaveBeenCalledWith('/conversations/c?storageMode=local', { title: 'Renamed' })
-  })
 })

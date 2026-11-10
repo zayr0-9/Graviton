@@ -1,5 +1,9 @@
+import { isNativeShell } from '../platform/clientCapabilities'
+import MatrixBackgroundSettings from '../components/MatrixBackgroundSettings'
+import { HOST_EXECUTION_CHANGED } from '../services/hostExecutionClient'
+import { buildSharedBrowserUrl } from '../helpers/remoteServerSettingsStorage'
 import React, { useEffect, useRef, useState } from 'react'
-import { ArrowLeft, ChevronDown, LogOut, Moon, RefreshCw, Star, Sun, Trash2, X } from 'lucide-react'
+import { ArrowLeft, ChevronDown, Moon, RefreshCw, Star, Sun, Trash2, X } from 'lucide-react'
 import ReactMarkdown from 'react-markdown'
 import { SCROLLABLE_MARKDOWN_COMPONENTS } from '../components/MarkdownContent/MarkdownCodeBlock'
 import { useNavigate } from 'react-router-dom'
@@ -17,7 +21,7 @@ import {
   useCustomChatTheme,
   useHtmlDarkMode,
 } from '../components/ThemeManager/themeConfig'
-import { isCommunityMode, LOCAL_AUTH_USER_ID } from '../config/runtimeMode'
+import { LOCAL_USER_ID } from '../../../../shared/localUser'
 import { chatSliceActions, selectProviderState } from '../features/chats'
 import { fetchCustomTools, fetchTools, updateToolEnabled } from '../features/chats/chatActions'
 import {
@@ -33,14 +37,18 @@ import {
   REASONING_EFFORT_OPTIONS,
   saveChatReasoningSettings,
 } from '../helpers/chatReasoningSettingsStorage'
-import { loadDefaultToolAutoApprove, saveDefaultToolAutoApprove } from '../helpers/toolApprovalSettingsStorage'
+import {
+  type ClaudeToolApproval,
+  loadClaudeToolApprovalDefault,
+  loadDefaultToolAutoApprove,
+  saveClaudeToolApprovalDefault,
+  saveDefaultToolAutoApprove,
+} from '../helpers/toolApprovalSettingsStorage'
 import {
   loadAutoCompactionEnabled,
-  loadShowAddedFilesPills,
   loadShowTokenUsageBar,
   loadShowTokenUsageHoverDetails,
   saveAutoCompactionEnabled,
-  saveShowAddedFilesPills,
   saveShowTokenUsageBar,
   saveShowTokenUsageHoverDetails,
 } from '../helpers/chatUiSettingsStorage'
@@ -164,7 +172,7 @@ import {
 import { useAppDispatch, useAppSelector } from '../hooks/redux'
 import { useAuth } from '../hooks/useAuth'
 import { useModels } from '../hooks/useQueries'
-import { cloudApi, getLocalServerLanOrigin, getLocalServerOrigin, localApi } from '../utils/api'
+import { getLocalServerLanOrigin, getLocalServerOrigin, localApi } from '../utils/api'
 
 const MAX_UPLOAD_SIZE_BYTES = 8 * 1024 * 1024 // 8MB
 const LOCAL_FONT_ACCEPT = '.woff2,.ttf,.otf'
@@ -268,12 +276,6 @@ const formatSize = (size?: number | null) => {
   return `${(kilo / 1024).toFixed(1)} MB`
 }
 
-interface GoogleDriveStatus {
-  connected: boolean
-  connectedAt: string | null
-  lastUsedAt: string | null
-}
-
 interface LocalUserSummary {
   id: string
   username: string | null
@@ -295,7 +297,7 @@ interface LocalMergeResult {
 const Settings: React.FC = () => {
   const navigate = useNavigate()
   const dispatch = useAppDispatch()
-  const { accessToken, userId, signOut } = useAuth()
+  const { userId } = useAuth()
   const providers = useAppSelector(selectProviderState)
   const htmlRegistry = useHtmlIframeRegistry()
   const htmlEntries = htmlRegistry?.entries.filter(entry => entry.kind === 'html') ?? []
@@ -322,14 +324,12 @@ const Settings: React.FC = () => {
   const [backgroundColors, setBackgroundColors] = useState<BackgroundColorSettings>(() => loadBackgroundColors())
   const effectiveBackgroundColors = customThemeEnabled ? customTheme.colors.appBackgroundColor : backgroundColors
   const [uploading, setUploading] = useState(false)
-  const [googleConnecting, setGoogleConnecting] = useState(false)
-  const [googleDisconnecting, setGoogleDisconnecting] = useState(false)
-  const [googleDriveStatus, setGoogleDriveStatus] = useState<GoogleDriveStatus | null>(null)
   const [statusMessage, setStatusMessage] = useState<StatusMessage | null>(null)
   const [remoteBaseUrlInput, setRemoteBaseUrlInput] = useState<string>(
     () => loadRemoteServerSettings().remoteBaseUrl ?? ''
   )
   const [detectedLocalServerOrigin, setDetectedLocalServerOrigin] = useState<string>('')
+  const [hostExposureStatus, setHostExposureStatus] = useState('')
   const [localUsers, setLocalUsers] = useState<LocalUserSummary[]>([])
   const [localUsersLoading, setLocalUsersLoading] = useState(false)
   const [migratingOwnership, setMigratingOwnership] = useState(false)
@@ -345,14 +345,18 @@ const Settings: React.FC = () => {
   const [braveApiKeySaving, setBraveApiKeySaving] = useState(false)
   const [zaiApiKeyInput, setZaiApiKeyInput] = useState('')
   const [zaiApiKeyConfigured, setZaiApiKeyConfigured] = useState(false)
-  const [zaiApiKeyLoading, setZaiApiKeyLoading] = useState(import.meta.env.VITE_ENVIRONMENT === 'electron')
+  const [zaiApiKeyLoading, setZaiApiKeyLoading] = useState(isNativeShell)
   const [zaiApiKeySaving, setZaiApiKeySaving] = useState(false)
+  const [openRouterByokApiKeyInput, setOpenRouterByokApiKeyInput] = useState('')
+  const [openRouterByokApiKeyConfigured, setOpenRouterByokApiKeyConfigured] = useState(false)
+  const [openRouterByokApiKeyLoading, setOpenRouterByokApiKeyLoading] = useState(isNativeShell)
+  const [openRouterByokApiKeySaving, setOpenRouterByokApiKeySaving] = useState(false)
   const [bedrockRegionInput, setBedrockRegionInput] = useState('us-east-1')
   const [bedrockAccessKeyIdInput, setBedrockAccessKeyIdInput] = useState('')
   const [bedrockSecretAccessKeyInput, setBedrockSecretAccessKeyInput] = useState('')
   const [bedrockSessionTokenInput, setBedrockSessionTokenInput] = useState('')
   const [bedrockCredentialsConfigured, setBedrockCredentialsConfigured] = useState(false)
-  const [bedrockCredentialsLoading, setBedrockCredentialsLoading] = useState(import.meta.env.VITE_ENVIRONMENT === 'electron')
+  const [bedrockCredentialsLoading, setBedrockCredentialsLoading] = useState(isNativeShell)
   const [bedrockCredentialsSaving, setBedrockCredentialsSaving] = useState(false)
   const [openRouterTemperatureInput, setOpenRouterTemperatureInput] = useState<string>(() => {
     const configured = loadProviderSettings().openRouterTemperature
@@ -392,6 +396,10 @@ const Settings: React.FC = () => {
   )
   const [bashTimeoutTouched, setBashTimeoutTouched] = useState(false)
   const [defaultToolAutoApprove, setDefaultToolAutoApprove] = useState(() => loadDefaultToolAutoApprove())
+  const [claudeToolApprovalDefault, setClaudeToolApprovalDefault] = useState(() => loadClaudeToolApprovalDefault())
+  // Until Claude has its own saved choice it follows Default Tool Approval.
+  const effectiveClaudeToolApproval: ClaudeToolApproval =
+    claudeToolApprovalDefault ?? (defaultToolAutoApprove ? 'allow_all' : 'ask')
   const [chatReasoningSettings, setChatReasoningSettings] = useState<ChatReasoningSettings>(() =>
     loadChatReasoningSettings()
   )
@@ -414,7 +422,6 @@ const Settings: React.FC = () => {
     loadShowTokenUsageHoverDetails()
   )
   const [autoCompactionEnabled, setAutoCompactionEnabled] = useState<boolean>(() => loadAutoCompactionEnabled())
-  const [showAddedFilesPills, setShowAddedFilesPills] = useState<boolean>(() => loadShowAddedFilesPills())
   const [browserSettings, setBrowserSettings] = useState<BrowserSettings>(() => loadBrowserSettings())
   const [subagentSettings, setSubagentSettings] = useState<SubagentToolSettings>(() => loadSubagentToolSettings())
   const [subagentMaxTurnsInput, setSubagentMaxTurnsInput] = useState<string>(() =>
@@ -432,8 +439,10 @@ const Settings: React.FC = () => {
     ? validateContextDirectoryName(customContextDirectoryInput) ??
       (contextDirectories.readDirs.includes(customContextDirectoryInput.trim()) ? 'Directory is already in the list.' : null)
     : null
-  const applyContextDirectories = (next: ContextDirectorySettings, preset: ContextDirectoryPreset) => {
-    const saved = saveContextDirectorySettings(next)
+  const applyContextDirectories = async (next: ContextDirectorySettings, preset: ContextDirectoryPreset) => {
+    let saved: ContextDirectorySettings
+    try { saved = await saveContextDirectorySettings(next) }
+    catch (error) { showStatus({ type: 'error', text: error instanceof Error ? error.message : 'Could not save settings' }); return }
     setContextDirectories(saved)
     setContextDirectoryPreset(preset)
   }
@@ -468,10 +477,11 @@ const Settings: React.FC = () => {
   const normalizedRemoteBaseUrlInput = normalizeRemoteBaseUrl(remoteBaseUrlInput)
   const effectiveRemoteMobileUrl =
     buildRemoteMobileUrl(normalizedRemoteBaseUrlInput) || buildRemoteMobileUrl(detectedLocalServerOrigin)
-  const remoteQrCodeImageUrl = effectiveRemoteMobileUrl
-    ? `https://api.qrserver.com/v1/create-qr-code/?size=220x220&data=${encodeURIComponent(effectiveRemoteMobileUrl)}`
+  const effectiveSharedBrowserUrl = buildSharedBrowserUrl(normalizedRemoteBaseUrlInput || detectedLocalServerOrigin)
+  const remoteQrCodeImageUrl = effectiveSharedBrowserUrl
+    ? `https://api.qrserver.com/v1/create-qr-code/?size=220x220&data=${encodeURIComponent(effectiveSharedBrowserUrl)}`
     : null
-  const subagentProviderForModels = subagentSettings.defaultProvider || providers.currentProvider || 'OpenRouter'
+  const subagentProviderForModels = subagentSettings.defaultProvider || providers.currentProvider || 'OpenAI (ChatGPT)'
   const { data: subagentModelsData } = useModels(subagentProviderForModels)
   const selectedSubagentModel = subagentModelsData?.models?.find(
     model =>
@@ -496,10 +506,6 @@ const Settings: React.FC = () => {
   const isAgentModePromptOverridden = operationModePromptSettings.agentModePromptOverride !== null
   const isSubagentModePromptOverridden = operationModePromptSettings.subagentModePromptOverride !== null
 
-  const handleLogout = async () => {
-    await signOut()
-  }
-
   const readBraveApiKeyFromSecureStore = async (): Promise<string | null> => {
     const braveSecretsApi = window.electronAPI?.secrets?.braveSearch
     if (!braveSecretsApi?.get) {
@@ -515,29 +521,8 @@ const Settings: React.FC = () => {
     return value || null
   }
 
-  // Fetch Google Drive connection status
-  const fetchGoogleDriveStatus = async () => {
-    if (isCommunityMode) {
-      setGoogleDriveStatus(null)
-      return
-    }
-    if (!userId) return
-    try {
-      // Routed through the local cloud proxy (:3002/api/cloud/*): the server owns
-      // the Supabase token, so the renderer no longer injects a Bearer here.
-      const status = await cloudApi.get<GoogleDriveStatus>('/oauth/google-drive/status')
-      setGoogleDriveStatus(status)
-    } catch (error) {
-      console.error('Failed to fetch Google Drive status:', error)
-    }
-  }
-
   useEffect(() => {
-    fetchGoogleDriveStatus()
-  }, [accessToken])
-
-  useEffect(() => {
-    if (import.meta.env.VITE_ENVIRONMENT !== 'electron') return
+    if (!isNativeShell) return
 
     let active = true
 
@@ -558,10 +543,13 @@ const Settings: React.FC = () => {
   }, [])
 
   useEffect(() => {
-    if (import.meta.env.VITE_ENVIRONMENT !== 'electron') return
+    if (!isNativeShell) return
 
     let active = true
 
+    void window.electronAPI?.sync?.status().then(status => {
+      if (active) setHostExposureStatus(`Bound ${status.localServerBindHost || 'unknown'}:${status.localServerPort ?? 'not listening'} · ${status.localServerExposure || 'unknown exposure'} · no device authentication`)
+    }).catch(() => {})
     Promise.all([getLocalServerLanOrigin(), getLocalServerOrigin()])
       .then(([lanOrigin, fallbackOrigin]) => {
         if (!active) return
@@ -569,11 +557,7 @@ const Settings: React.FC = () => {
         const preferredOrigin = lanOrigin || fallbackOrigin
         setDetectedLocalServerOrigin(preferredOrigin)
 
-        const saved = loadRemoteServerSettings()
-        if (!saved.remoteBaseUrl && lanOrigin) {
-          const autoSaved = saveRemoteServerSettings({ remoteBaseUrl: lanOrigin })
-          setRemoteBaseUrlInput(autoSaved.remoteBaseUrl ?? '')
-        }
+        // Keep auto-detected IP/port live, not persisted as a stale override.
       })
       .catch(error => {
         console.error('Failed to resolve local server origin for remote access settings:', error)
@@ -636,6 +620,31 @@ const Settings: React.FC = () => {
       window.removeEventListener(BROWSER_SETTINGS_CHANGE_EVENT, handleBrowserSettingsChange as EventListener)
   }, [])
 
+  useEffect(() => {
+    const refresh = () => {
+      // Keep the complete form domain and its original CAS base together while
+      // any text is dirty. Remote changes never silently rebase unsaved edits.
+      const providerDirty = openRouterTemperatureTouched || openAiChatGptMaxContextTouched || lmStudioBaseUrlTouched || compactionSystemPromptTouched
+      const timeoutDirty = toolCallTimeoutTouched || bashTimeoutTouched || streamIdleTimeoutTouched
+      const modeDirty = chatModePromptNameInput !== selectedChatModePrompt.name || chatModePromptInput !== selectedChatModePrompt.prompt ||
+        agentModePromptInput !== (operationModePromptSettings.agentModePromptOverride || defaultAgentModePrompt.prompt) ||
+        subagentModePromptInput !== (operationModePromptSettings.subagentModePromptOverride || defaultSubagentModePrompt.prompt)
+      if (!providerDirty) setProviderSettings(loadProviderSettings())
+      if (!timeoutDirty) setToolExecutionSettings(loadToolExecutionSettings())
+      if (!subagentMaxTurnsTouched) setSubagentSettings(loadSubagentToolSettings())
+      if (!modeDirty) setOperationModePromptSettings(loadOperationModePromptSettings())
+      setDefaultToolAutoApprove(loadDefaultToolAutoApprove())
+      setAutoCompactionEnabled(loadAutoCompactionEnabled())
+      setPlanModeResponseSettings(loadPlanModeResponseSettings())
+      if (providerDirty || timeoutDirty || subagentMaxTurnsTouched || modeDirty)
+        showStatus({ type: 'error', text: 'Host settings changed. Unsaved text is retained. If saving conflicts, reopen Settings to load the latest values before editing again.' })
+    }
+    window.addEventListener(HOST_EXECUTION_CHANGED, refresh)
+    return () => window.removeEventListener(HOST_EXECUTION_CHANGED, refresh)
+  }, [openRouterTemperatureTouched, openAiChatGptMaxContextTouched, lmStudioBaseUrlTouched, compactionSystemPromptTouched,
+    toolCallTimeoutTouched, bashTimeoutTouched, streamIdleTimeoutTouched, subagentMaxTurnsTouched,
+    chatModePromptNameInput, chatModePromptInput, agentModePromptInput, subagentModePromptInput, operationModePromptSettings])
+
   const handleLoadBraveApiKey = async () => {
     setBraveApiKeyLoading(true)
     try {
@@ -674,13 +683,13 @@ const Settings: React.FC = () => {
   }
 
   useEffect(() => {
-    if (import.meta.env.VITE_ENVIRONMENT !== 'electron') {
+    if (!isNativeShell) {
       setZaiApiKeyLoading(false)
       return
     }
 
     let active = true
-    const effectiveUserId = userId || LOCAL_AUTH_USER_ID
+    const effectiveUserId = userId || LOCAL_USER_ID
 
     localApi
       .get<{ success?: boolean; hasToken?: boolean }>(`/provider-auth/zai/token?userId=${encodeURIComponent(effectiveUserId)}`)
@@ -705,13 +714,46 @@ const Settings: React.FC = () => {
   }, [userId])
 
   useEffect(() => {
-    if (import.meta.env.VITE_ENVIRONMENT !== 'electron') {
+    if (!isNativeShell) {
+      setOpenRouterByokApiKeyLoading(false)
+      return
+    }
+
+    let active = true
+    const effectiveUserId = userId || LOCAL_USER_ID
+
+    localApi
+      .get<{ success?: boolean; hasToken?: boolean }>(
+        `/provider-auth/openrouter-byok/token?userId=${encodeURIComponent(effectiveUserId)}`
+      )
+      .then(status => {
+        if (!active) return
+        setOpenRouterByokApiKeyConfigured(Boolean(status?.hasToken))
+        setOpenRouterByokApiKeyInput('')
+      })
+      .catch(error => {
+        if (active) {
+          console.error('Failed to load OpenRouter API key status:', error)
+          setOpenRouterByokApiKeyConfigured(false)
+        }
+      })
+      .finally(() => {
+        if (active) setOpenRouterByokApiKeyLoading(false)
+      })
+
+    return () => {
+      active = false
+    }
+  }, [userId])
+
+  useEffect(() => {
+    if (!isNativeShell) {
       setBedrockCredentialsLoading(false)
       return
     }
 
     let active = true
-    const effectiveUserId = userId || LOCAL_AUTH_USER_ID
+    const effectiveUserId = userId || LOCAL_USER_ID
 
     localApi
       .get<{ success?: boolean; hasToken?: boolean }>(
@@ -858,12 +900,13 @@ const Settings: React.FC = () => {
     }
   }, [])
 
-  const handleProviderVisibilityToggle = () => {
+  const handleProviderVisibilityToggle = async () => {
     const updated = {
       ...providerSettings,
       showProviderSelector: !providerSettings.showProviderSelector,
     }
-    saveProviderSettings(updated)
+    try { await saveProviderSettings(updated) }
+    catch (error) { showStatus({ type: 'error', text: error instanceof Error ? error.message : 'Could not save provider settings' }); return }
     setProviderSettings(updated)
     showStatus({
       type: 'success',
@@ -871,12 +914,13 @@ const Settings: React.FC = () => {
     })
   }
 
-  const handleDefaultProviderChange = (providerName: string) => {
+  const handleDefaultProviderChange = async (providerName: string) => {
     const updated = {
       ...providerSettings,
       defaultProvider: providerName || null,
     }
-    saveProviderSettings(updated)
+    try { await saveProviderSettings(updated) }
+    catch (error) { showStatus({ type: 'error', text: error instanceof Error ? error.message : 'Could not save provider settings' }); return }
     setProviderSettings(updated)
     showStatus({
       type: 'success',
@@ -890,7 +934,7 @@ const Settings: React.FC = () => {
     setCompactionSystemPromptTouched(true)
   }
 
-  const commitCompactionSystemPromptChange = (value: string) => {
+  const commitCompactionSystemPromptChange = async (value: string) => {
     const normalized = value.trim()
     const fallback = loadProviderSettings().compactionSystemPrompt
     const nextPrompt = normalized || fallback
@@ -899,7 +943,8 @@ const Settings: React.FC = () => {
       ...providerSettings,
       compactionSystemPrompt: nextPrompt,
     }
-    saveProviderSettings(updated)
+    try { await saveProviderSettings(updated) }
+    catch (error) { showStatus({ type: 'error', text: error instanceof Error ? error.message : 'Could not save provider settings' }); return }
     setProviderSettings(updated)
     setCompactionSystemPromptTouched(false)
     setCompactionSystemPromptInput(nextPrompt)
@@ -915,9 +960,9 @@ const Settings: React.FC = () => {
   }
 
   const openOpenaiAuthUrl = async (url: string) => {
-    if (window.electronAPI?.auth?.openExternal) {
+    if (window.electronAPI?.shell?.openExternal) {
       try {
-        await window.electronAPI.auth.openExternal(url)
+        await window.electronAPI.shell.openExternal(url)
         return
       } catch (error) {
         console.error('Failed to open browser:', error)
@@ -1066,7 +1111,7 @@ const Settings: React.FC = () => {
 
     setOpenaiAccountEmail(null)
     if (providers.currentProvider === 'OpenAI (ChatGPT)') {
-      dispatch(chatSliceActions.providerSelected('OpenRouter'))
+      dispatch(chatSliceActions.providerSelected('LM Studio'))
     }
 
     if (failedHeadlessTokenDeletes.length > 0) {
@@ -1088,7 +1133,7 @@ const Settings: React.FC = () => {
       return
     }
 
-    const effectiveUserId = userId || LOCAL_AUTH_USER_ID
+    const effectiveUserId = userId || LOCAL_USER_ID
     setZaiApiKeySaving(true)
     try {
       await localApi.post('/provider-auth/zai/token', {
@@ -1107,7 +1152,7 @@ const Settings: React.FC = () => {
   }
 
   const handleDeleteZaiApiKey = async () => {
-    const effectiveUserId = userId || LOCAL_AUTH_USER_ID
+    const effectiveUserId = userId || LOCAL_USER_ID
     setZaiApiKeySaving(true)
     try {
       await localApi.delete(`/provider-auth/zai/token?userId=${encodeURIComponent(effectiveUserId)}`)
@@ -1119,6 +1164,47 @@ const Settings: React.FC = () => {
       showStatus({ type: 'error', text: error instanceof Error ? error.message : 'Failed to delete Z.AI API key.' })
     } finally {
       setZaiApiKeySaving(false)
+    }
+  }
+
+  const handleSaveOpenRouterByokApiKey = async () => {
+    const normalized = openRouterByokApiKeyInput.trim()
+    if (!normalized) {
+      showStatus({ type: 'error', text: 'Enter an OpenRouter API key before saving.' })
+      return
+    }
+
+    const effectiveUserId = userId || LOCAL_USER_ID
+    setOpenRouterByokApiKeySaving(true)
+    try {
+      await localApi.post('/provider-auth/openrouter-byok/token', {
+        userId: effectiveUserId,
+        accessToken: normalized,
+      })
+      setOpenRouterByokApiKeyInput('')
+      setOpenRouterByokApiKeyConfigured(true)
+      showStatus({ type: 'success', text: 'OpenRouter API key saved locally.' })
+    } catch (error) {
+      console.error('Failed to save OpenRouter API key:', error)
+      showStatus({ type: 'error', text: error instanceof Error ? error.message : 'Failed to save OpenRouter API key.' })
+    } finally {
+      setOpenRouterByokApiKeySaving(false)
+    }
+  }
+
+  const handleDeleteOpenRouterByokApiKey = async () => {
+    const effectiveUserId = userId || LOCAL_USER_ID
+    setOpenRouterByokApiKeySaving(true)
+    try {
+      await localApi.delete(`/provider-auth/openrouter-byok/token?userId=${encodeURIComponent(effectiveUserId)}`)
+      setOpenRouterByokApiKeyInput('')
+      setOpenRouterByokApiKeyConfigured(false)
+      showStatus({ type: 'success', text: 'OpenRouter API key removed.' })
+    } catch (error) {
+      console.error('Failed to delete OpenRouter API key:', error)
+      showStatus({ type: 'error', text: error instanceof Error ? error.message : 'Failed to delete OpenRouter API key.' })
+    } finally {
+      setOpenRouterByokApiKeySaving(false)
     }
   }
 
@@ -1136,7 +1222,7 @@ const Settings: React.FC = () => {
       return
     }
 
-    const effectiveUserId = userId || LOCAL_AUTH_USER_ID
+    const effectiveUserId = userId || LOCAL_USER_ID
     setBedrockCredentialsSaving(true)
     try {
       await localApi.post('/provider-auth/bedrock/token', {
@@ -1166,7 +1252,7 @@ const Settings: React.FC = () => {
   }
 
   const handleDeleteBedrockCredentials = async () => {
-    const effectiveUserId = userId || LOCAL_AUTH_USER_ID
+    const effectiveUserId = userId || LOCAL_USER_ID
     setBedrockCredentialsSaving(true)
     try {
       await localApi.delete(`/provider-auth/bedrock/token?userId=${encodeURIComponent(effectiveUserId)}`)
@@ -1291,8 +1377,8 @@ const Settings: React.FC = () => {
     }
 
     try {
-      if (window.electronAPI?.auth?.openExternal) {
-        const result = await window.electronAPI.auth.openExternal(effectiveRemoteMobileUrl)
+      if (window.electronAPI?.shell?.openExternal) {
+        const result = await window.electronAPI.shell.openExternal(effectiveRemoteMobileUrl)
         if (!result?.success) {
           window.open(effectiveRemoteMobileUrl, '_blank', 'noopener,noreferrer')
         }
@@ -1305,18 +1391,18 @@ const Settings: React.FC = () => {
     }
   }
 
-  const handleCopyRemoteMobileUi = async () => {
-    if (!effectiveRemoteMobileUrl) {
-      showStatus({ type: 'error', text: 'No remote mobile URL to copy.' })
+  const handleCopySharedBrowserUi = async () => {
+    if (!effectiveSharedBrowserUrl) {
+      showStatus({ type: 'error', text: 'No shared UI URL to copy.' })
       return
     }
 
     try {
-      await navigator.clipboard.writeText(effectiveRemoteMobileUrl)
-      showStatus({ type: 'success', text: 'Remote mobile URL copied to clipboard.' })
+      await navigator.clipboard.writeText(effectiveSharedBrowserUrl)
+      showStatus({ type: 'success', text: 'Shared UI URL copied to clipboard.' })
     } catch (error) {
-      console.error('Failed to copy remote mobile URL:', error)
-      showStatus({ type: 'error', text: 'Failed to copy remote mobile URL. Copy it manually from the field.' })
+      console.error('Failed to copy shared UI URL:', error)
+      showStatus({ type: 'error', text: 'Failed to copy shared UI URL. Copy it manually from the field.' })
     }
   }
 
@@ -1325,14 +1411,15 @@ const Settings: React.FC = () => {
     setOpenRouterTemperatureTouched(true)
   }
 
-  const commitOpenRouterTemperatureChange = (value: string) => {
+  const commitOpenRouterTemperatureChange = async (value: string) => {
     const trimmed = value.trim()
     if (!trimmed) {
       const updated = {
         ...providerSettings,
         openRouterTemperature: null,
       }
-      saveProviderSettings(updated)
+      try { await saveProviderSettings(updated) }
+    catch (error) { showStatus({ type: 'error', text: error instanceof Error ? error.message : 'Could not save provider settings' }); return }
       setProviderSettings(updated)
       setOpenRouterTemperatureTouched(false)
       setOpenRouterTemperatureInput('')
@@ -1356,7 +1443,8 @@ const Settings: React.FC = () => {
       ...providerSettings,
       openRouterTemperature: normalized,
     }
-    saveProviderSettings(updated)
+    try { await saveProviderSettings(updated) }
+    catch (error) { showStatus({ type: 'error', text: error instanceof Error ? error.message : 'Could not save provider settings' }); return }
     setProviderSettings(updated)
     setOpenRouterTemperatureTouched(false)
     setOpenRouterTemperatureInput(String(normalized))
@@ -1377,7 +1465,7 @@ const Settings: React.FC = () => {
     setOpenAiChatGptMaxContextTouched(true)
   }
 
-  const commitOpenAiChatGptMaxContextChange = (value: string) => {
+  const commitOpenAiChatGptMaxContextChange = async (value: string) => {
     const parsed = Number(value)
     if (!Number.isFinite(parsed) || parsed <= 0) {
       setOpenAiChatGptMaxContextTouched(false)
@@ -1391,7 +1479,8 @@ const Settings: React.FC = () => {
       ...providerSettings,
       openAiChatGptMaxContextTokens: normalized,
     }
-    saveProviderSettings(updated)
+    try { await saveProviderSettings(updated) }
+    catch (error) { showStatus({ type: 'error', text: error instanceof Error ? error.message : 'Could not save provider settings' }); return }
     setProviderSettings(updated)
     setOpenAiChatGptMaxContextTouched(false)
     setOpenAiChatGptMaxContextInput(String(normalized))
@@ -1413,12 +1502,12 @@ const Settings: React.FC = () => {
   }
 
   const handleMemoryBackfill = async () => {
-    if (import.meta.env.VITE_ENVIRONMENT !== 'electron') {
+    if (!isNativeShell) {
       showStatus({ type: 'info', text: 'Memory indexing is only available in the Electron app.' })
       return
     }
 
-    const effectiveUserId = userId || LOCAL_AUTH_USER_ID
+    const effectiveUserId = userId || LOCAL_USER_ID
     if (!effectiveUserId) {
       showStatus({ type: 'error', text: 'No local user is available for memory indexing.' })
       return
@@ -1462,14 +1551,15 @@ const Settings: React.FC = () => {
     }
   }
 
-  const commitLmStudioBaseUrlChange = (value: string) => {
+  const commitLmStudioBaseUrlChange = async (value: string) => {
     const trimmed = value.trim()
     if (!trimmed) {
       const updated = {
         ...providerSettings,
         lmStudioBaseUrl: null,
       }
-      saveProviderSettings(updated)
+      try { await saveProviderSettings(updated) }
+    catch (error) { showStatus({ type: 'error', text: error instanceof Error ? error.message : 'Could not save provider settings' }); return }
       setProviderSettings(updated)
       setLmStudioBaseUrlTouched(false)
       setLmStudioBaseUrlInput('')
@@ -1492,20 +1582,23 @@ const Settings: React.FC = () => {
       ...providerSettings,
       lmStudioBaseUrl: normalized,
     }
-    saveProviderSettings(updated)
+    try { await saveProviderSettings(updated) }
+    catch (error) { showStatus({ type: 'error', text: error instanceof Error ? error.message : 'Could not save provider settings' }); return }
     setProviderSettings(updated)
     setLmStudioBaseUrlTouched(false)
     setLmStudioBaseUrlInput(normalized)
     showStatus({ type: 'success', text: `LM Studio server URL saved: ${normalized}` })
   }
 
-  const persistSubagentSettings = (nextSettings: SubagentToolSettings, successText: string) => {
-    saveSubagentToolSettings(nextSettings)
+  const persistSubagentSettings = async (nextSettings: SubagentToolSettings, successText: string) => {
+    try { await saveSubagentToolSettings(nextSettings) }
+    catch (error) { showStatus({ type: 'error', text: error instanceof Error ? error.message : 'Could not save subagent settings' }); return false }
     setSubagentSettings(nextSettings)
     showStatus({ type: 'success', text: successText })
+    return true
   }
 
-  const commitSubagentMaxTurnsChange = (value: string) => {
+  const commitSubagentMaxTurnsChange = async (value: string) => {
     const parsed = Number(value)
     if (!Number.isFinite(parsed) || parsed <= 0) {
       setSubagentMaxTurnsTouched(false)
@@ -1515,13 +1608,14 @@ const Settings: React.FC = () => {
     }
 
     const maxTurns = Math.floor(parsed)
-    persistSubagentSettings(
+    const saved = await persistSubagentSettings(
       {
         ...subagentSettings,
         maxTurns,
       },
       `Subagent max turns updated to ${maxTurns}.`
     )
+    if (!saved) return
     setSubagentMaxTurnsTouched(false)
     setSubagentMaxTurnsInput(String(maxTurns))
   }
@@ -1616,13 +1710,13 @@ const Settings: React.FC = () => {
 
   const formatLocalUserOptionLabel = (user: LocalUserSummary) => {
     const baseName = user.username?.trim() || 'unnamed-user'
-    const isDefaultLocal = user.id === LOCAL_AUTH_USER_ID
+    const isDefaultLocal = user.id === LOCAL_USER_ID
     const suffix = isDefaultLocal ? ' (default local)' : ''
     return `${baseName}${suffix} • ${user.conversation_count} conv • ${user.project_count} proj`
   }
 
   const fetchLocalUsers = async () => {
-    if (import.meta.env.VITE_ENVIRONMENT !== 'electron') return
+    if (!isNativeShell) return
 
     setLocalUsersLoading(true)
     try {
@@ -1704,18 +1798,30 @@ const Settings: React.FC = () => {
   }
 
   useEffect(() => {
-    if (import.meta.env.VITE_ENVIRONMENT !== 'electron') return
+    if (!isNativeShell) return
     fetchLocalUsers()
   }, [userId])
 
-  const handleDefaultToolApprovalChange = (value: string) => {
+  const handleDefaultToolApprovalChange = async (value: string) => {
     const enabled = value === 'allow-all'
-    saveDefaultToolAutoApprove(enabled)
+    try { await saveDefaultToolAutoApprove(enabled) }
+    catch (error) { showStatus({ type: 'error', text: error instanceof Error ? error.message : 'Could not save settings' }); return }
     setDefaultToolAutoApprove(enabled)
     dispatch(enabled ? chatSliceActions.toolAutoApproveEnabled() : chatSliceActions.toolAutoApproveDisabled())
     showStatus({
       type: 'success',
       text: `Default tool approval set to ${enabled ? 'Allow all' : 'Ask'}.`,
+    })
+  }
+
+  const handleClaudeToolApprovalDefaultChange = (value: string) => {
+    const approval: ClaudeToolApproval = value === 'auto' || value === 'allow_all' ? value : 'ask'
+    saveClaudeToolApprovalDefault(approval)
+    setClaudeToolApprovalDefault(approval)
+    dispatch(chatSliceActions.claudeToolApprovalDefaultApplied(approval))
+    showStatus({
+      type: 'success',
+      text: `Claude Code tool approval set to ${approval === 'allow_all' ? 'Allow all' : approval === 'auto' ? 'Auto' : 'Ask'}.`,
     })
   }
 
@@ -1756,79 +1862,83 @@ const Settings: React.FC = () => {
     })
   }
 
-  const handleAddedFilesPillsToggle = () => {
-    const nextValue = !showAddedFilesPills
-    saveShowAddedFilesPills(nextValue)
-    setShowAddedFilesPills(nextValue)
-    showStatus({
-      type: 'success',
-      text: nextValue ? 'Added file pills shown in Chat.' : 'Added file pills hidden in Chat.',
-    })
+  const saveModePrompt = async (save: () => Promise<OperationModePromptSettings>) => {
+    try { return await save() }
+    catch (error) { showStatus({ type: 'error', text: error instanceof Error ? error.message : 'Could not save mode prompt' }); return null }
   }
-
-  const handleChatModePromptSelect = (promptId: string) => {
-    const saved = selectChatModePrompt(promptId)
+  const handleChatModePromptSelect = async (promptId: string) => {
+    const saved = await saveModePrompt(() => selectChatModePrompt(promptId, operationModePromptSettings))
+    if (!saved) return
     setOperationModePromptSettings(saved)
     showStatus({ type: 'success', text: 'Chat Mode prompt selected.' })
   }
 
-  const handlePlanModeVerbosityChange = (value: string) => {
+  const handlePlanModeVerbosityChange = async (value: string) => {
     const verbosity = PLAN_MODE_VERBOSITY_OPTIONS.includes(value as PlanModeResponseSettings['verbosity'])
       ? (value as PlanModeResponseSettings['verbosity'])
       : 'concise'
-    const saved = savePlanModeResponseSettings({ ...planModeResponseSettings, verbosity })
+    let saved: PlanModeResponseSettings
+    try { saved = await savePlanModeResponseSettings({ ...planModeResponseSettings, verbosity }) }
+    catch (error) { showStatus({ type: 'error', text: error instanceof Error ? error.message : 'Could not save settings' }); return }
     setPlanModeResponseSettings(saved)
     showStatus({ type: 'success', text: `Plan verbosity set to ${verbosity}.` })
   }
 
-  const handleSaveNewChatModePrompt = () => {
-    const saved = addChatModePrompt(chatModePromptNameInput, chatModePromptInput)
+  const handleSaveNewChatModePrompt = async () => {
+    const saved = await saveModePrompt(() => addChatModePrompt(chatModePromptNameInput, chatModePromptInput, operationModePromptSettings))
+    if (!saved) return
     setOperationModePromptSettings(saved)
     showStatus({ type: 'success', text: 'Chat Mode prompt saved.' })
   }
 
-  const handleUpdateChatModePrompt = () => {
+  const handleUpdateChatModePrompt = async () => {
     if (isDefaultChatModePromptSelected) {
       handleSaveNewChatModePrompt()
       return
     }
-    const saved = updateChatModePrompt(selectedChatModePrompt.id, {
+    const saved = await saveModePrompt(() => updateChatModePrompt(selectedChatModePrompt.id, {
       name: chatModePromptNameInput,
       prompt: chatModePromptInput,
-    })
+    }, operationModePromptSettings))
+    if (!saved) return
     setOperationModePromptSettings(saved)
     showStatus({ type: 'success', text: 'Chat Mode prompt updated.' })
   }
 
-  const handleDeleteChatModePrompt = (promptId: string = selectedChatModePrompt.id) => {
+  const handleDeleteChatModePrompt = async (promptId: string = selectedChatModePrompt.id) => {
     if (promptId === DEFAULT_CHAT_MODE_PROMPT_ID) return
     const confirmed = window.confirm('Delete this saved Chat Mode prompt?')
     if (!confirmed) return
-    const saved = deleteChatModePrompt(promptId)
+    const saved = await saveModePrompt(() => deleteChatModePrompt(promptId))
+    if (!saved) return
     setOperationModePromptSettings(saved)
     showStatus({ type: 'success', text: 'Chat Mode prompt deleted.' })
   }
 
-  const handleResetChatModePromptToDefault = () => {
-    const saved = resetChatModePromptSelectionToDefault()
+  const handleResetChatModePromptToDefault = async () => {
+    const saved = await saveModePrompt(() => resetChatModePromptSelectionToDefault())
+    if (!saved) return
     setOperationModePromptSettings(saved)
     showStatus({ type: 'success', text: 'Chat Mode prompt reset to default.' })
   }
 
-  const handleSaveAgentModePrompt = () => {
-    const saved = saveAgentModePromptOverride(agentModePromptInput)
+  const handleSaveAgentModePrompt = async () => {
+    const saved = await saveModePrompt(() => saveAgentModePromptOverride(agentModePromptInput, operationModePromptSettings))
+    if (!saved) return
     setOperationModePromptSettings(saved)
     showStatus({ type: 'success', text: saved.agentModePromptOverride ? 'Agent Mode prompt saved.' : 'Agent Mode prompt reset to default.' })
   }
 
-  const handleResetAgentModePrompt = () => {
-    const saved = resetAgentModePromptOverride()
+  const handleResetAgentModePrompt = async () => {
+    const saved = await saveModePrompt(() => resetAgentModePromptOverride())
+    if (!saved) return
     setOperationModePromptSettings(saved)
     showStatus({ type: 'success', text: 'Agent Mode prompt reset to default.' })
   }
 
-  const handleSaveSubagentModePrompt = () => {
-    const saved = saveSubagentModePromptOverride(subagentModePromptInput)
+  const handleSaveSubagentModePrompt = async () => {
+    const saved = await saveModePrompt(() => saveSubagentModePromptOverride(subagentModePromptInput, operationModePromptSettings))
+    if (!saved) return
     setOperationModePromptSettings(saved)
     showStatus({
       type: 'success',
@@ -1836,15 +1946,17 @@ const Settings: React.FC = () => {
     })
   }
 
-  const handleResetSubagentModePrompt = () => {
-    const saved = resetSubagentModePromptOverride()
+  const handleResetSubagentModePrompt = async () => {
+    const saved = await saveModePrompt(() => resetSubagentModePromptOverride())
+    if (!saved) return
     setOperationModePromptSettings(saved)
     showStatus({ type: 'success', text: 'Subagent system prompt reset to default.' })
   }
 
-  const handleAutoCompactionToggle = () => {
+  const handleAutoCompactionToggle = async () => {
     const nextValue = !autoCompactionEnabled
-    saveAutoCompactionEnabled(nextValue)
+    try { await saveAutoCompactionEnabled(nextValue) }
+    catch (error) { showStatus({ type: 'error', text: error instanceof Error ? error.message : 'Could not save compaction default' }); return }
     setAutoCompactionEnabled(nextValue)
     showStatus({
       type: 'success',
@@ -2048,7 +2160,7 @@ const Settings: React.FC = () => {
     setSubagentMaxTurnsTouched(true)
   }
 
-  const commitToolCallTimeoutChange = (value: string) => {
+  const commitToolCallTimeoutChange = async (value: string) => {
     const parsed = Number(value)
     if (!Number.isFinite(parsed) || parsed <= 0) {
       setToolCallTimeoutTouched(false)
@@ -2062,7 +2174,8 @@ const Settings: React.FC = () => {
       ...toolExecutionSettings,
       toolCallTimeoutMs: clamped,
     }
-    saveToolExecutionSettings(nextSettings)
+    try { await saveToolExecutionSettings(nextSettings) }
+    catch (error) { showStatus({ type: 'error', text: error instanceof Error ? error.message : 'Could not save tool settings' }); return }
     setToolExecutionSettings(nextSettings)
     setToolCallTimeoutTouched(false)
     setToolCallTimeoutInput(String(clamped))
@@ -2078,7 +2191,7 @@ const Settings: React.FC = () => {
     showStatus({ type: 'success', text: 'Default tool call timeout updated.' })
   }
 
-  const commitStreamIdleTimeoutChange = (value: string) => {
+  const commitStreamIdleTimeoutChange = async (value: string) => {
     const parsed = Number(value)
     if (!Number.isFinite(parsed) || parsed <= 0) {
       setStreamIdleTimeoutTouched(false)
@@ -2095,7 +2208,8 @@ const Settings: React.FC = () => {
       ...toolExecutionSettings,
       streamIdleTimeoutMs: clamped,
     }
-    saveToolExecutionSettings(nextSettings)
+    try { await saveToolExecutionSettings(nextSettings) }
+    catch (error) { showStatus({ type: 'error', text: error instanceof Error ? error.message : 'Could not save tool settings' }); return }
     setToolExecutionSettings(nextSettings)
     setStreamIdleTimeoutTouched(false)
     setStreamIdleTimeoutInput(String(clamped))
@@ -2111,7 +2225,7 @@ const Settings: React.FC = () => {
     showStatus({ type: 'success', text: 'Chat stream idle timeout updated.' })
   }
 
-  const commitBashTimeoutChange = (value: string) => {
+  const commitBashTimeoutChange = async (value: string) => {
     const parsed = Number(value)
     if (!Number.isFinite(parsed) || parsed <= 0) {
       setBashTimeoutTouched(false)
@@ -2125,7 +2239,8 @@ const Settings: React.FC = () => {
       ...toolExecutionSettings,
       bashTimeoutMs: clamped,
     }
-    saveToolExecutionSettings(nextSettings)
+    try { await saveToolExecutionSettings(nextSettings) }
+    catch (error) { showStatus({ type: 'error', text: error instanceof Error ? error.message : 'Could not save tool settings' }); return }
     setToolExecutionSettings(nextSettings)
     setBashTimeoutTouched(false)
     setBashTimeoutInput(String(clamped))
@@ -2226,7 +2341,7 @@ const Settings: React.FC = () => {
     setBackgroundMode(mode)
     showStatus({
       type: 'success',
-      text: mode === 'color' ? 'Solid color background enabled.' : 'Video wallpaper enabled.',
+      text: mode === 'color' ? 'Solid color background enabled.' : mode === 'matrix' ? 'Live Matrix wallpaper enabled.' : 'Video wallpaper enabled.',
     })
   }
 
@@ -2250,71 +2365,6 @@ const Settings: React.FC = () => {
     const nextColors = { ...backgroundColors, [variant]: value }
     persistBackgroundColors(nextColors)
     setBackgroundColors(loadBackgroundColors())
-  }
-
-  const handleGoogleDriveConnect = async () => {
-    if (isCommunityMode) {
-      showStatus({ type: 'info', text: 'Google Drive is disabled in community mode.' })
-      return
-    }
-
-    if (!userId) {
-      showStatus({ type: 'error', text: 'Sign in required to connect Google Drive.' })
-      return
-    }
-
-    setGoogleConnecting(true)
-    try {
-      // Routed through the local cloud proxy (:3002/api/cloud/*). Railway still
-      // mints the authUrl (with its own redirect_uri), so the OAuth consent flow
-      // is unchanged — only the request transport moves off direct Railway.
-      const payload = await cloudApi.post<{ authUrl?: string; error?: string }>('/oauth/google-drive/start')
-
-      if (!payload?.authUrl) {
-        throw new Error(payload?.error || 'No Google authorization URL returned.')
-      }
-
-      if (window.electronAPI?.auth?.openExternal) {
-        const result = await window.electronAPI.auth.openExternal(payload.authUrl)
-        if (!result?.success) {
-          window.open(payload.authUrl, '_blank', 'noopener,noreferrer')
-        }
-      } else {
-        window.open(payload.authUrl, '_blank', 'noopener,noreferrer')
-      }
-
-      showStatus({
-        type: 'info',
-        text: 'Google Drive sign-in opened in your browser. Refresh this page after signing in.',
-      })
-    } catch (error) {
-      const message = error instanceof Error ? error.message : 'Unable to open Google Drive sign-in.'
-      showStatus({ type: 'error', text: message })
-    } finally {
-      setGoogleConnecting(false)
-    }
-  }
-
-  const handleGoogleDriveDisconnect = async () => {
-    if (isCommunityMode) {
-      showStatus({ type: 'info', text: 'Google Drive is disabled in community mode.' })
-      return
-    }
-    if (!userId) return
-
-    setGoogleDisconnecting(true)
-    try {
-      // Routed through the local cloud proxy (:3002/api/cloud/*); server-owned token.
-      await cloudApi.delete('/oauth/google-drive/disconnect')
-
-      setGoogleDriveStatus({ connected: false, connectedAt: null, lastUsedAt: null })
-      showStatus({ type: 'success', text: 'Google Drive disconnected.' })
-    } catch (error) {
-      const message = error instanceof Error ? error.message : 'Unable to disconnect Google Drive.'
-      showStatus({ type: 'error', text: message })
-    } finally {
-      setGoogleDisconnecting(false)
-    }
   }
 
   const renderStatus = () => {
@@ -2360,15 +2410,6 @@ const Settings: React.FC = () => {
               aria-label='Home'
             >
               <ArrowLeft size={18} strokeWidth={2.25} aria-hidden='true' />
-            </button>
-            <button
-              type='button'
-              onClick={handleLogout}
-              className={circularControlClass}
-              title='Logout'
-              aria-label='Logout'
-            >
-              <LogOut size={18} strokeWidth={2.25} aria-hidden='true' />
             </button>
           </div>
         </header>
@@ -2441,23 +2482,6 @@ const Settings: React.FC = () => {
               >
                 <span
                   className={settingsToggleKnobClass(showTokenUsageHoverDetails)}
-                />
-              </button>
-            </div>
-
-            <div className='flex items-center justify-between pt-2 pt-2'>
-              <div>
-                <p className='text-base font-medium text-stone-900 dark:text-stone-100'>Show Added File Pills</p>
-                <p className='text-sm text-stone-500 dark:text-stone-400'>
-                  Display selected @ files as removable pills below the chat input.
-                </p>
-              </div>
-              <button
-                onClick={handleAddedFilesPillsToggle}
-                className={settingsToggleClass(showAddedFilesPills)}
-              >
-                <span
-                  className={settingsToggleKnobClass(showAddedFilesPills)}
                 />
               </button>
             </div>
@@ -2581,7 +2605,7 @@ const Settings: React.FC = () => {
           </div>
         </SettingsSection>
 
-        {import.meta.env.VITE_ENVIRONMENT === 'electron' && (
+        {isNativeShell && (
           <SettingsSection
             title='Agent Mode Prompt'
             description='Used when the composer is in Agent Mode. A custom prompt changes the baseline instructions for all Agent Mode requests on this device.'
@@ -2613,24 +2637,46 @@ const Settings: React.FC = () => {
         <SettingsSection
           title='Tool Approval Defaults'
           description='Choose the tool approval mode restored on launch. The Chat toggle changes only the current session.'
-          features={['Ask', 'Allow all']}
+          features={['Ask', 'Allow all', 'Claude Code auto mode']}
         >
-          <div className='flex flex-col gap-2'>
-            <div>
-              <p className='text-base font-medium text-stone-900 dark:text-stone-100'>Default Tool Approval</p>
-              <p className='text-sm text-stone-500 dark:text-stone-400'>
-                Ask requests permission before running tools. Allow all runs tools without asking, including tools that modify files or run commands. Chat mode restrictions still apply.
-              </p>
+          <div className='flex flex-col gap-4'>
+            <div className='flex flex-col gap-2'>
+              <div>
+                <p className='text-base font-medium text-stone-900 dark:text-stone-100'>Default Tool Approval</p>
+                <p className='text-sm text-stone-500 dark:text-stone-400'>
+                  Ask requests permission before running tools. Allow all runs tools without asking, including tools that modify files or run commands. Chat mode restrictions still apply.
+                </p>
+              </div>
+              <Select
+                value={defaultToolAutoApprove ? 'allow-all' : 'ask'}
+                onChange={handleDefaultToolApprovalChange}
+                options={[
+                  { value: 'ask', label: 'Ask' },
+                  { value: 'allow-all', label: 'Allow all' },
+                ]}
+                className='max-w-xs'
+              />
             </div>
-            <Select
-              value={defaultToolAutoApprove ? 'allow-all' : 'ask'}
-              onChange={handleDefaultToolApprovalChange}
-              options={[
-                { value: 'ask', label: 'Ask' },
-                { value: 'allow-all', label: 'Allow all' },
-              ]}
-              className='max-w-xs'
-            />
+
+            <div className='flex flex-col gap-2 pt-2'>
+              <div>
+                <p className='text-base font-medium text-stone-900 dark:text-stone-100'>Claude Code Tool Approval</p>
+                <p className='text-sm text-stone-500 dark:text-stone-400'>
+                  Used for Claude Code sessions instead of Default Tool Approval. Auto lets Claude&apos;s classifier
+                  approve routine actions and asks you when it is unsure.
+                </p>
+              </div>
+              <Select
+                value={effectiveClaudeToolApproval}
+                onChange={handleClaudeToolApprovalDefaultChange}
+                options={[
+                  { value: 'ask', label: 'Ask' },
+                  { value: 'auto', label: 'Auto' },
+                  { value: 'allow_all', label: 'Allow all' },
+                ]}
+                className='max-w-xs'
+              />
+            </div>
           </div>
         </SettingsSection>
 
@@ -2682,11 +2728,11 @@ const Settings: React.FC = () => {
         </SettingsSection>
 
         {/* Provider Settings Section */}
-        {import.meta.env.VITE_ENVIRONMENT === 'electron' && (
+        {isNativeShell && (
           <SettingsSection
             title='Provider Settings'
             description='Configure how providers appear in the chat interface.'
-            features={['Provider selector', 'Default provider', 'ChatGPT max context', 'Auto-compaction provider', 'LM Studio URL', 'Provider credentials', 'ChatGPT OAuth']}
+            features={['Provider selector', 'Default provider', 'ChatGPT max context', 'Auto-compaction provider', 'LM Studio URL', 'Provider credentials', 'OpenRouter BYOK key', 'ChatGPT OAuth']}
           >
             <div className='flex flex-col gap-4'>
               {/* Visibility Toggle */}
@@ -2814,11 +2860,12 @@ const Settings: React.FC = () => {
                 <label className='text-base font-medium text-stone-900 dark:text-stone-100' htmlFor='compaction-threshold'>Auto-compaction threshold (%)</label>
                 <input id='compaction-threshold' type='number' min={1} max={95} step={1}
                   value={providerSettings.compactionThresholdPercent}
-                  onChange={event => {
+                  onChange={async event => {
                     const value = Number(event.target.value)
                     if (!Number.isFinite(value)) return
                     const updated = { ...providerSettings, compactionThresholdPercent: Math.max(1, Math.min(95, Math.round(value))) }
-                    saveProviderSettings(updated)
+                    try { await saveProviderSettings(updated) }
+    catch (error) { showStatus({ type: 'error', text: error instanceof Error ? error.message : 'Could not save provider settings' }); return }
                     setProviderSettings(updated)
                   }} className={`w-48 ${settingsInputClass}`} />
                 <div className='flex flex-col gap-2 pt-2'>
@@ -2956,6 +3003,54 @@ const Settings: React.FC = () => {
 
               <div className='flex flex-col gap-2 pt-2 pt-2'>
                 <div>
+                  <p className='text-base font-medium text-stone-900 dark:text-stone-100'>OpenRouter API Key (BYOK)</p>
+                  <p className='text-sm text-stone-500 dark:text-stone-400'>
+                    Store your own OpenRouter key locally for the OpenRouter BYOK provider. Requests go directly to OpenRouter and bill your OpenRouter account. You can also set OPENROUTER_API_KEY.
+                  </p>
+                </div>
+                <div className='flex flex-wrap items-center gap-2'>
+                  <span
+                    className={`text-xs px-2 py-1 rounded-full border ${
+                      openRouterByokApiKeyConfigured
+                        ? 'bg-emerald-50 border-emerald-200 text-emerald-700 dark:bg-emerald-900/30 dark:border-emerald-700 dark:text-emerald-300'
+                        : 'bg-stone-100 border-stone-200 text-stone-600 dark:bg-stone-800 dark:border-stone-700 dark:text-stone-300'
+                    }`}
+                  >
+                    {openRouterByokApiKeyLoading ? 'Checking…' : openRouterByokApiKeyConfigured ? 'Key saved' : 'No key'}
+                  </span>
+                  <input
+                    type='password'
+                    value={openRouterByokApiKeyInput}
+                    placeholder={openRouterByokApiKeyConfigured ? 'Enter new key to replace' : 'Enter OpenRouter API key (sk-or-…)'}
+                    onChange={e => setOpenRouterByokApiKeyInput(e.target.value)}
+                    onKeyDown={e => {
+                      if (e.key === 'Enter') {
+                        void handleSaveOpenRouterByokApiKey()
+                      }
+                    }}
+                    className={`w-full max-w-md ${settingsInputClass}`}
+                  />
+                  <Button
+                    variant='outline2'
+                    size='small'
+                    onClick={handleSaveOpenRouterByokApiKey}
+                    disabled={openRouterByokApiKeySaving || !openRouterByokApiKeyInput.trim()}
+                  >
+                    {openRouterByokApiKeyConfigured ? 'Replace key' : 'Save key'}
+                  </Button>
+                  <Button
+                    variant='outline2'
+                    size='small'
+                    onClick={handleDeleteOpenRouterByokApiKey}
+                    disabled={openRouterByokApiKeySaving || !openRouterByokApiKeyConfigured}
+                  >
+                    Clear key
+                  </Button>
+                </div>
+              </div>
+
+              <div className='flex flex-col gap-2 pt-2 pt-2'>
+                <div>
                   <p className='text-base font-medium text-stone-900 dark:text-stone-100'>Amazon Bedrock Credentials</p>
                   <p className='text-sm text-stone-500 dark:text-stone-400'>
                     Store AWS Bedrock credentials locally for the Amazon Bedrock headless provider. You can also use AWS_REGION, AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, and optional AWS_SESSION_TOKEN environment variables.
@@ -3041,7 +3136,7 @@ const Settings: React.FC = () => {
           </SettingsSection>
         )}
 
-        {import.meta.env.VITE_ENVIRONMENT === 'electron' && (
+        {isNativeShell && (
           <SettingsSection
             title='Memory'
             description='Build note embeddings for local memory search using your LM Studio embedding model. This does not run automatically.'
@@ -3088,7 +3183,7 @@ const Settings: React.FC = () => {
           </SettingsSection>
         )}
 
-                {import.meta.env.VITE_ENVIRONMENT === 'electron' && (
+                {isNativeShell && (
           <SettingsSection
             title='Subagent'
             description={<>Configure default subagent behavior used by the <code>subagent</code> tool.</>}
@@ -3239,7 +3334,7 @@ const Settings: React.FC = () => {
           </SettingsSection>
         )}
 
-        {import.meta.env.VITE_ENVIRONMENT === 'electron' && (
+        {isNativeShell && (
           <SettingsSection
             title='Context files'
             description={
@@ -3379,7 +3474,7 @@ const Settings: React.FC = () => {
         )}
 
         {/* Tools Settings Section - Collapsible */}
-        {import.meta.env.VITE_ENVIRONMENT === 'electron' && (
+        {isNativeShell && (
           <SettingsSection
             title='Tools Configuration'
             description='Enable or disable AI tools. Changes apply to all new conversations.'
@@ -3668,7 +3763,7 @@ const Settings: React.FC = () => {
           </SettingsSection>
         )}
 
-                {import.meta.env.VITE_ENVIRONMENT === 'electron' && (
+                {isNativeShell && (
           <SettingsSection
             title='API Keys'
             description='Brave and MCP OAuth credentials share one secure OS credential vault.'
@@ -3735,7 +3830,7 @@ const Settings: React.FC = () => {
           </SettingsSection>
         )}
 
-        {import.meta.env.VITE_ENVIRONMENT === 'electron' && (
+        {isNativeShell && (
           <SettingsSection
             title='Built-in Browser'
             description='Control optional features for the Electron right-dock browser pane.'
@@ -3769,10 +3864,10 @@ const Settings: React.FC = () => {
           </SettingsSection>
         )}
 
-        {import.meta.env.VITE_ENVIRONMENT === 'electron' && (
+        {isNativeShell && (
           <SettingsSection
-            title='Remote Mobile Access'
-            description='Configure a LAN URL for your phone/tablet (same Wi-Fi), then open or scan the QR code.'
+            title='Remote UI Access'
+            description='Keep Graviton running. Open the shared UI URL on another device on your trusted network. This grants host access without device authentication.'
             features={['Remote server URL', 'Mobile URL actions', 'QR code', 'Detected local origin']}
           >
             <div className='grid gap-5 lg:grid-cols-[minmax(0,1fr)_240px]'>
@@ -3788,6 +3883,7 @@ const Settings: React.FC = () => {
                   />
                   <p className='text-xs text-stone-500 dark:text-stone-400'>
                     Leave blank to use detected local origin: {detectedLocalServerOrigin || 'resolving...'}
+                    {hostExposureStatus && <span className='block mt-1'>{hostExposureStatus}</span>}
                   </p>
                 </div>
 
@@ -3815,21 +3911,30 @@ const Settings: React.FC = () => {
                     onClick={handleOpenRemoteMobileUi}
                     disabled={!effectiveRemoteMobileUrl}
                   >
-                    Open Mobile UI
+                    Open legacy mobile UI
                   </Button>
+                  <Button variant='outline2' size='small' disabled={!effectiveSharedBrowserUrl} onClick={async () => {
+                    if (!effectiveSharedBrowserUrl) return
+                    if (!window.confirm('Experimental shared UI: reachable clients can access host files and tools. Use a trusted network only. Continue?')) return
+                    try {
+                      const result = await window.electronAPI?.shell?.openExternal(effectiveSharedBrowserUrl)
+                      if (!result?.success) throw new Error('Could not open the shared browser UI.')
+                    } catch (error) { showStatus({ type: 'error', text: error instanceof Error ? error.message : 'Could not open the shared browser UI.' }) }
+                  }}>Open shared UI preview</Button>
                   <Button
                     variant='outline2'
                     size='small'
-                    onClick={handleCopyRemoteMobileUi}
-                    disabled={!effectiveRemoteMobileUrl}
+                    onClick={handleCopySharedBrowserUi}
+                    disabled={!effectiveSharedBrowserUrl}
                   >
-                    Copy URL
+                    Copy shared UI URL
                   </Button>
                 </div>
 
                 <div className='rounded-[1.75rem] bg-white/45 px-3 py-2 text-xs text-stone-600 dark:bg-stone-800/40 dark:text-stone-300 break-all'>
-                  <p className='font-medium mb-1 text-stone-700 dark:text-stone-200'>Effective mobile URL</p>
-                  <p>{effectiveRemoteMobileUrl || 'Unavailable'}</p>
+                  <p className='font-medium mb-1 text-stone-700 dark:text-stone-200'>Shared UI URL</p>
+                  <p>{effectiveSharedBrowserUrl || 'Unavailable'}</p>
+                  <p className='mt-1'>Legacy mobile: {effectiveRemoteMobileUrl || 'Unavailable'}</p>
                 </div>
               </div>
 
@@ -3838,7 +3943,7 @@ const Settings: React.FC = () => {
                 {remoteQrCodeImageUrl ? (
                   <img
                     src={remoteQrCodeImageUrl}
-                    alt='QR code for remote mobile URL'
+                    alt='QR code for shared UI URL'
                     className='h-[220px] w-[220px] rounded-[1.75rem] bg-white p-3 dark:border-stone-700'
                   />
                 ) : (
@@ -3854,7 +3959,7 @@ const Settings: React.FC = () => {
           </SettingsSection>
         )}
 
-        {import.meta.env.VITE_ENVIRONMENT === 'electron' && (
+        {isNativeShell && (
           <SettingsSection
             title='Local Ownership Migration'
             description='Manually move local project/conversation ownership from one user ID to another.'
@@ -3991,6 +4096,8 @@ const Settings: React.FC = () => {
             </div>
           </div>
         </SettingsSection>
+
+        <MatrixBackgroundSettings mode={backgroundMode} onModeChange={handleBackgroundModeChange} />
 
         <SettingsSection
           title='Custom Upload'
@@ -4137,7 +4244,7 @@ const Settings: React.FC = () => {
               </div>
             ) : (
               videos.map(video => {
-                const isActive = video.id === activeVideoId
+                const isActive = backgroundMode === 'video' && video.id === activeVideoId
                 return (
                   <div
                     key={video.id}
@@ -4219,77 +4326,7 @@ const Settings: React.FC = () => {
           </div>
         </SettingsSection>
 
-        {false && (
-          <section className={settingsSectionClass}>
-            <div className='flex flex-col gap-1'>
-              <h2 className='text-xl font-semibold text-stone-900 dark:text-stone-100 mb-2'>Services</h2>
-              <p className='text-sm text-stone-500 dark:text-stone-200'>
-                Connect third-party services so tools can access them through the proxy.
-              </p>
-            </div>
-            <div className='mt-4 flex flex-col gap-4 md:flex-row md:items-center md:justify-between'>
-              <div className='flex items-center gap-3'>
-                <div>
-                  <div className='flex items-center gap-2'>
-                    <p className='text-base font-semibold text-stone-900 dark:text-stone-100'>Google Drive</p>
-                    {googleDriveStatus?.connected && (
-                      <span className='rounded-full bg-emerald-100 px-2 py-0.5 text-xs font-medium text-emerald-700 dark:bg-emerald-900/50 dark:text-emerald-300'>
-                        Connected
-                      </span>
-                    )}
-                  </div>
-                  <p className='text-sm text-stone-500 dark:text-stone-400'>
-                    {googleDriveStatus?.connected
-                      ? `Connected ${googleDriveStatus.connectedAt ? new Date(googleDriveStatus.connectedAt).toLocaleDateString() : ''}`
-                      : 'Sign in once to enable Drive-powered tools.'}
-                  </p>
-                </div>
-              </div>
-              <div className='flex gap-2'>
-                {googleDriveStatus?.connected ? (
-                  <>
-                    <Button
-                      variant='outline2'
-                      size='large'
-                      onClick={handleGoogleDriveConnect}
-                      disabled={googleConnecting}
-                      className='group'
-                    >
-                      <p className='transition-transform duration-100 group-active:scale-95'>
-                        {googleConnecting ? 'Opening…' : 'Reconnect'}
-                      </p>
-                    </Button>
-                    <Button
-                      variant='outline2'
-                      size='large'
-                      onClick={handleGoogleDriveDisconnect}
-                      disabled={googleDisconnecting}
-                      className='group text-rose-600 hover:text-rose-700 dark:text-rose-400'
-                    >
-                      <p className='transition-transform duration-100 group-active:scale-95'>
-                        {googleDisconnecting ? 'Disconnecting…' : 'Disconnect'}
-                      </p>
-                    </Button>
-                  </>
-                ) : (
-                  <Button
-                    variant='outline2'
-                    size='large'
-                    onClick={handleGoogleDriveConnect}
-                    disabled={googleConnecting}
-                    className='group'
-                  >
-                    <p className='transition-transform duration-100 group-active:scale-95'>
-                      {googleConnecting ? 'Opening…' : 'Connect Google Drive'}
-                    </p>
-                  </Button>
-                )}
-              </div>
-            </div>
-          </section>
-        )}
-
-{openaiLoginModalOpen && (
+        {openaiLoginModalOpen && (
           <div
             className='fixed inset-0 z-[100] flex items-center justify-center bg-black/50 px-4'
             onClick={closeOpenaiLoginModal}

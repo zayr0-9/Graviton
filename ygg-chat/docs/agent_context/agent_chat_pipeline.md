@@ -22,8 +22,9 @@ The renderer is a **thin client** that POSTs the existing SSE routes on the loca
 headless Express server (`http://127.0.0.1:3002`, inside the Electron main process) and
 projects the returned server SSE events onto the pre-existing Redux `streamChunk`
 vocabulary. The server owns the entire loop — provider dispatch, tool execution,
-permission/clarify pausing, hooks, and in-loop compaction — for **all 5 providers**
-(`openrouter`, `lmstudio`, `openaichatgpt`, `zai`, `bedrock`).
+permission/clarify pausing, hooks, and in-loop compaction — for every provider route
+(`openaichatgpt`, `openrouterbyok`, `lmstudio`, `zai`, `bedrock`; Claude Code uses its own
+session backend). Graviton is fully local: there is no hosted backend or account.
 
 This is the **same engine** that already served subagents; the new main-loop behavior is
 gated on optional `ToolLoopRunInput` fields so the subagent path stays identical.
@@ -46,11 +47,9 @@ Use this when changing:
 - The renderer uses the resolved local origin through `buildLocalApiUrl` in
   `src/utils/api.ts`; `http://127.0.0.1:3002` is preferred, not a fixed runtime port.
   It owns no provider/tool loop or permission/hook/active-loop compaction execution.
-- **Detach/reattach (`gateway.resumableRuns` / `isResumableRunsEnabled()`, default
-  ON in Electron).** A client disconnect or Chat route unmount DETACHES rather than
+- **Detach/reattach (always on for host clients; `isResumableRunsEnabled()`).** A client disconnect or Chat route unmount DETACHES rather than
   aborts: the run keeps running server-side and the renderer retains its module-level
   reader or resubscribes by `streamId`; Stop cancels via `POST /api/streams/:id/abort`.
-  Explicit `false` on both settings restores the legacy disconnect-abort path.
   See `agent_headless_server.md` §Detach/Reattach and `agent_chat_streaming_state.md`.
 - Supplemental `systemPrompt` is deliberately **omitted** from the request body. The
   renderer forwards one combined Chat/Agent baseline, the subagent baseline, and Plan verbosity;
@@ -80,7 +79,7 @@ Use this when changing:
   process-wide `DecisionBroker` (`:246`), the base `ToolExecutor`
   `executeToolViaOrchestrator` (`:173`), and `ChatOrchestrator` (built at `:311` with
   `toolExecutor`, `defaultToolsProvider: resolveDefaultInferenceTools`, `compactBranch`,
-  `decisionBroker`, `hookRunner: runHookRequest`, `cloudChatEnabled: gatewayFlags.chat`).
+  `decisionBroker`, `hookRunner: runHookRequest`).
 - `routes/chatRoutes.ts` — 4 SSE POST routes → `runSseOrchestrator` → `orchestrator.runMessage`
   (`:219-233`), plus `POST /api/resume` (`:146`) and `POST /api/conversations/:id/compact`
   (`:174`).
@@ -95,22 +94,15 @@ Use this when changing:
 - `services/decisionBroker.ts` — pause/resume registry (`:58`); key `${streamId}::${toolCallId}`.
 - `services/chatHookService.ts` — `createChatHookSession` (`:210`): the eight in-process hook lifecycle events.
 - `services/compactionService.ts` — `compactBranch` (`:559`) + `generateCompactionSummary`.
-- `services/messageSink.ts` — `TreeMessageSink` (`:49`) / `CloudMirrorSink` (`:85`).
-- `services/providerRouter.ts` — `normalizeProviderRoute` (all 5 routes; unknown → `openaichatgpt`).
+- `services/messageSink.ts` — `TreeMessageSink` (the only main-chat sink).
+- `services/providerRouter.ts` — `resolveProviderRoute` (strict; unknown names → 400) and
+  lenient `normalizeProviderRoute`; legacy `openrouter` aliases to `openrouterbyok`.
 - `shared/headlessApi.ts` — the canonical `HeadlessStreamEvent` union imported by the renderer
   projection through `HeadlessStreamFrame`. This path is relative to `ygg-chat/`.
 
-### Cloud gateway / token layer
-- `routes/gatewayRoutes.ts` (`/api/gw/*`) — storage-aware CRUD/merge for
-  conversations/projects/messages/attachments; collapses the old renderer dual-fetch/merge.
-- `routes/cloudProxyRoutes.ts` (`/api/cloud/*`) — authenticated pass-through to Railway
-  (allowlist: `/models`, `/users`, `/system-prompts`, `/stripe`, `/app-store`, `/oauth`).
-- `services/railwayClient.ts` — injects the server-held Supabase JWT + relays SSE.
-- `services/cloudMirrorService.ts` + `CloudMirrorSink` — server-side replacement for the
-  renderer's old `dualSyncManager`.
-- `services/appAuthTokenManager.ts` — Railway adapter to canonical `server/auth`
-  credential ownership; no separate refresh lock or token-owner rollout flag.
-- `config/gatewayFlags.ts` — `resolveGatewayFlags()`.
+### Local data gateway
+- `routes/gatewayRoutes.ts` (`/api/gw/*`) — local facade over `/api/app/*` for
+  conversations/projects/messages/attachments/research notes (camelCase → snake_case).
 
 ## Data Flow (send / edit-branch / branch)
 
@@ -131,8 +123,7 @@ All 3 thunks share the same shape:
      baselines, and Plan verbosity. Supplemental `systemPrompt` remains omitted.
 2. **HTTP → loop**: `chatRoutes.ts runSseOrchestrator` opens the SSE stream and, by
    default, attaches it to a `RunSession` whose `AbortController` outlives the socket.
-   `res.on('close')` only detaches. Explicit `gateway.resumableRuns=false` uses the
-   legacy response-owned controller and disconnect-abort behavior.
+   `res.on('close')` only detaches.
 3. **`ChatOrchestrator.runMessage`** (`chatOrchestrator.ts:288`):
    - Load conversation, `touch` conversation + project.
    - Build `hookSession` iff `hookRunner && request.hooksEnabled === true && decisionBroker`.
@@ -147,9 +138,8 @@ All 3 thunks share the same shape:
    - `history = listPathToMessage(...)`;
      `resolvedTools = filterToolsForOperationMode(request.tools ?? defaultToolsProvider(), mode)`;
      `systemPrompt = buildHeadlessSystemPrompt(...)`.
-   - `isCloudRoute = cloudChatEnabled && normalizeProviderRoute(provider) === 'openrouter'`.
-   - Build a per-run `ToolLoopService` with sink = `CloudMirrorSink` (cloud route) else
-     `TreeMessageSink`, and `executeTool = createChatPausingExecutor(...)`.
+   - Build a per-run `ToolLoopService` with sink = `TreeMessageSink` and
+     `executeTool = createChatPausingExecutor(...)`.
    - `loop.run(input, emit)`.
    - Terminal: `streamingRunRepo.finish('completed')` + emit `complete`;
      `ProviderErrorAssistantResponse` → `finish('error', 'provider_error')` +
@@ -245,33 +235,13 @@ Both paths run through `CompactionService`:
   `compactionService.compactBranch` persists a `role:'system'`,
   `note:'__auto_compaction_summary__'` message before returning its server-assigned ID.
 
-## Provider routing, message sinks, cloud gateway
+## Provider routing, message sink, data gateway
 
-- **Provider routing**: `normalizeProviderRoute` (`providerRouter.ts`) resolves all 5 routes.
-- **Message-id authority / sinks** (`messageSink.ts`):
-  - `CloudMirrorSink` iff `isCloudRoute` (`gateway.chat` on **and** provider route is
-    `openrouter`): adopts Railway's authoritative message id
-    (`id: draft.providerMessageId ?? undefined`, `messageSink.ts:94`) and sets
-    `relayFreeTierEvents: true` so `openRouterProvider` emits `free_generations_update` /
-    `generation_limit_reached` (else dropped).
-  - `TreeMessageSink` for every other provider and whenever `gateway.chat` is off —
-    local-authoritative, mints local uuids.
-- **Cloud gateway**: renderer CRUD/attachments go through `gwApi`/`cloudApi`/`localApi`
-  (all `:3002`). `/api/gw/*` merges local ⊕ cloud server-side (replacing the old
-  `shouldUseLocalApi` dual-fetch/merge). `/api/cloud/*` is an allowlisted authenticated
-  pass-through to Railway, which stays **authoritative** for free-tier metering, Stripe,
-  cloud DB, and `/users`.
-
-## Feature flags
-
-`config/gatewayFlags.ts resolveGatewayFlags()` → `{ chat, crud, cloudProxy, resumableRuns }`.
-- `chat` — **DEFAULT ON** post-cutover (Conf `gateway.chat !== false`; explicit `false` is the
-  escape hatch). Feeds `cloudChatEnabled` into `ChatOrchestrator`.
-- `resumableRuns` — default ON; explicit false restores disconnect-abort behavior.
-- Authentication ownership is unconditional in `server/auth`; token-owner flags are removed.
-- `crud` / `cloudProxy` — **vestigial** (default-false; the routes mount with hardcoded
-  `enabled: true`, so the flags are computed but not read at the mount site).
-- Master override env `YGG_GATEWAY_MODE` (truthy) turns all four on.
+- **Provider routing**: `resolveProviderRoute` (`providerRouter.ts`); unknown names are
+  rejected with 400 `unknown provider "x"`; legacy `openrouter` → `openrouterbyok`.
+- **Message ids**: `TreeMessageSink` is local-authoritative and mints local uuids.
+- **Data gateway**: renderer CRUD/attachments go through `gwApi`/`localApi` (both the local
+  host). `/api/gw/*` is a local facade; there is no cloud leg or `/api/cloud/*` proxy.
 
 ## SSE event → Redux projection (`sseProjection.ts`)
 
@@ -289,17 +259,15 @@ Both paths run through `CompactionService`:
 | `error` | Terminal frames clear decisions; non-cancel failures without a persisted error ID record a durable error. Nonterminal failures emit an error chunk; terminal chunks come from the thunk catch. Cancellation creates no error bubble. |
 | `permission_required` | `toolPermissionRequested{ toolCall, streamId, toolCallId }` |
 | `clarify_required` | `planClarificationRequested{ id, questions, streamId, toolCallId }` |
-| `free_generations_update` | `freeGenerationsUpdated{ remaining, isFreeTier }` |
-| `generation_limit_reached` | `chatErrorRecorded` with `free_tier_exhausted`; no blocking modal |
 | `context_compaction` | Updates status; failure emits nonterminal error; completion emits notice, adds/branches summary and updates anchors when supplied |
 | `tool_execution` | Failed execution emits nonterminal error chunk; other statuses no-op |
 | `notice` | In-order notice chunk |
-| `reauth_required` | Durable `session_expired` error/sign-in action |
 | `hook_activity` | `hookActivityUpdated` when a message ID is present |
 | `context_injection_persisted` | Adds context row without replacing stream trigger |
 | `operation_mode_changed` | Adds row and applies `operationModeNotificationReceived` |
 | `operation_mode_decisions_cleared` | Clears indicated mode decisions |
 | `message_queue_updated` | `messageQueueUpdated` |
+| `background_tasks` (Claude only) | `streamBackgroundTasksUpdated` (ignored once the stream finished; cleared by `streamCompleted`) |
 | `queued_user_message_persisted` | Adds row and applies `queuedMessageInserted` |
 | `provider_routed`, `context_usage`, `tool_request` | `[]` (no-op) |
 
@@ -332,9 +300,8 @@ These were part of the old renderer-owned world and are **gone**:
 - GlobalAgentLoop: `services/GlobalAgentLoop.ts`, `GlobalAgentBootstrap.tsx`,
   `hooks/useGlobalAgentCache.ts`, `hooks/useGlobalAgentMessages.ts`,
   `helpers/agentSettingsStorage.ts`, and the `agent_*` DB tables.
-- `dualSyncManager.ts` + `lib/sync/*` — replaced by server-side `CloudMirrorService`/
-  `CloudMirrorSink`. (A `dualSync` alias name survives only as a local import of the KEPT
-  `src/lib/localMirror.ts`.)
+- `dualSyncManager.ts`, `lib/sync/*`, `lib/localMirror.ts`, the cloud mirror, `/api/cloud/*`,
+  the hosted OpenRouter provider and its free-tier/reauth SSE frames (fully-local migration).
 - Renderer flags `isServerOwnedChatLoopEnabled` / `isCloudServerLoopEnabled` and the
   renderer's `executeToolWithPermissionCheck` + `pending*Resolve` promises.
 
@@ -343,7 +310,7 @@ Note: two odd-extension test fixtures (`server/tools/__tests__/dummyfile.ts.test
 plain text by `editFile.test.ts`; they are never imported/compiled. A grep for any deleted
 name above will hit these fixtures — they are not live code.
 
-KEPT despite older plan notes: `streamRunTracking.ts`, `src/lib/localMirror.ts`, the 4
+KEPT despite older plan notes: `streamRunTracking.ts`, the 4
 resume resolver thunks, and the manual-compaction `compactBranch` thunk.
 
 ## Extension Points
@@ -360,7 +327,7 @@ resume resolver thunks, and the manual-compaction `compactBranch` thunk.
 - Type/build: `npm --prefix client/ygg-chat-r run build:electron`.
 - Server engine: `npm --prefix client/ygg-chat-r run test:headless` (covers
   `chatOrchestrator.phase2 / .hooks / .clarify`, `decisionBroker`, `chatHookService`,
-  `branchOrchestrator`, `gatewayFlags`).
+  `branchOrchestrator`).
 - Renderer projection/request: `sseProjection.test.ts`, `buildServerLoopRequest.test.ts`.
 - Manually verify send, tool call, denial, allow-all, plan clarify, branch, edit-branch,
   stop, and abort if UI behavior changes.
@@ -438,9 +405,12 @@ resume resolver thunks, and the manual-compaction `compactBranch` thunk.
   renderer reattaches to that successor. Stopped/failed/stale branches reject with recoverable
   composer text. Pending entries at errors/turn limits are marked Not sent, with Restore text.
 - Queued image payloads are linked using the normal prepared-attachment path and attached
-  to their own in-memory history row (Codex attachments/OpenRouter artifacts), not to the
-  latest mode notification. Queued images currently accept ChatGPT/OpenRouter only; other
-  provider routes reject clearly rather than silently discarding images. Parallel input
+  to their own in-memory history row (Codex attachments), not to the
+  latest mode notification. Queued images accept ChatGPT and Claude; other
+  provider routes reject clearly rather than silently discarding images.
+- Claude runs do not drain at Graviton boundaries. The live session takes entries at its own
+  tool boundaries or after `result`, and DELETE withdraws a held entry through the SDK. See
+  `../claude-provider-v1.md` § Queued input. Parallel input
   does not consume the primary composer's attachment drafts.
 - Validation: `messageInputQueue.test.ts`, `messageQueueRoutes.test.ts`, renderer
   `messageQueue.test.ts` and `enqueueUserMessage.test.ts`, plus existing tool-loop/hooks tests.
@@ -464,3 +434,11 @@ Compaction now uses the normal `ToolLoopService` provider/tool path. Safe-bounda
 ### Queue intake during compaction
 
 Compaction blocks delivery, not queue admission. Primary composer eligibility separates immediate sends from active-stream queueing; both automatic and manual compaction accept follow-ups. `ToolLoopService` holds them through summary commit and context/session restoration, then drains FIFO and continues the same run. An idle manual compaction still ends at its summary when nothing is queued. Queued user rows and completion-race successors explicitly clear `manualCompaction` so follow-ups are ordinary messages, not another compaction request. `compactBranch` resolves the committed summary along the final answer's ancestry when queued input extends its run.
+
+## Pending explicit-operation queue isolation
+
+`classifyOrdinarySend` may use a pending ordinary send's source lineage/anchor as a reservation while context/hooks load. A send marked `isBranch` or `retrigger` must not use this fallback, including empty-anchor reservation: it may fork during setup. Once `queue.lineageId` is assigned, that real lineage remains authoritative and normal queueing resumes. Abort-in-progress rejection is unchanged. Regression: `runAdmissionService.test.ts` covers both flags, ordinary pending ownership and assigned queues.
+
+## Claude Code backend exception
+
+Claude v1 uses shared host admission, lineage/persistence and SSE UI, but not Graviton's model/tool loop. `services/claudeSessionService.ts` owns the SDK execution bridge; native session checkpoints rather than reconstructed Graviton history drive continuation/forks. Provider and workspace are locked (the Claude model may change between turns); existing other-provider histories cannot switch to Claude. Native approvals route through DecisionBroker with the same branch-scoped Ask / Allow all policy. Live mode changes use the shared route and `OperationModeControl`; the Claude session enforces them at the next tool call and tells Claude through its input queue, so Graviton's boundary flush does not apply (see § Live mode switches there). Admission must not force `toolAutoApprove:false` for Claude. Allow all is persisted on the originating branch before waits are released, projected through `tool_approval_changed`, and carried into subsequent runs. See `../claude-provider-v1.md`.

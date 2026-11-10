@@ -1,5 +1,5 @@
 import { createSelector } from '@reduxjs/toolkit'
-import { resolveBranchModelSelection } from './branchModelSelection'
+import { resolveComposerModelSelection } from './branchModelSelection'
 import { ConversationId, MessageId } from '../../../../../shared/types'
 import { RootState } from '../../store/store'
 import type { ChatErrorRecord } from './chatTypes'
@@ -10,7 +10,7 @@ const selectChatState = (state: RootState) => state.chat
 
 // Top-level selectors
 export const conversationContext = createSelector([selectChatState], chat => chat.conversation.context)
-export const selectBranchModelSelection = createSelector([selectChatState], chat => resolveBranchModelSelection(chat))
+export const selectBranchModelSelection = createSelector([selectChatState], chat => resolveComposerModelSelection(chat))
 export const selectProviderState = createSelector([selectChatState, selectBranchModelSelection], (chat, selection) =>
   selection ? { ...chat.providerState, currentProvider: selection.provider } : chat.providerState
 )
@@ -31,6 +31,9 @@ export const selectOperationMode = createSelector([selectChatState], chat => {
     const row = chat.conversation.messages.find(message => message.id === chat.conversation.currentPath[index])
     const meta = parseMessageMeta(row?.meta)
     if (meta?.kind === 'operation_mode_change' && (meta.mode === 'plan' || meta.mode === 'execute')) return meta.mode
+    // Claude turns record their mode on the user row instead of a notification row, and each
+    // response records the mode it ran in (a mid-run switch may have changed it).
+    if ((row?.role === 'user' || row?.role === 'assistant') && (meta?.operationMode === 'plan' || meta?.operationMode === 'execute')) return meta.operationMode
   }
   return chat.operationMode
 })

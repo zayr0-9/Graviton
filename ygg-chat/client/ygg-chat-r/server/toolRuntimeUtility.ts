@@ -1,5 +1,5 @@
 import path from 'path'
-import { hasFullToolAccess, withToolAccess } from './toolAccessContext.js'
+import { hasToolAccessTo, withToolAccess } from './toolAccessContext.js'
 import { SHELL_CLEANUP_GRACE_MS } from './tools/shellExecutionPolicy.js'
 import { runBashCommand } from './tools/bash.js'
 import { runPowerShellCommand } from './tools/powershell.js'
@@ -71,7 +71,7 @@ function validateAndResolvePath(
   const outsideWorkspace =
     relativeToRoot === '..' || relativeToRoot.startsWith(`..${pathModule.sep}`) || pathModule.isAbsolute(relativeToRoot)
 
-  if (outsideWorkspace && !hasFullToolAccess()) {
+  if (outsideWorkspace && !hasToolAccessTo(resolvedPath, usePosix)) {
     const rootIsManagedPath = isManagedToolPath(normalizedRoot, usePosix)
     const targetIsManagedPath = isManagedToolPath(resolvedPath, usePosix)
     if (!rootIsManagedPath && targetIsManagedPath) {
@@ -111,9 +111,9 @@ async function ensureCustomToolsInitialized(): Promise<void> {
 }
 
 function initializeBuiltInToolRegistry(): void {
-  builtInTools.set('html_renderer', async (args, { rootPath }) => {
-    const { html, path: filePath, cwd, allowUnsafe } = args
-    return await htmlRenderer.run({ html, path: filePath, cwd: cwd ?? rootPath, allowUnsafe })
+  builtInTools.set('html_renderer', async (args, context) => {
+    const cwd = args.action === 'export' ? args.cwd : args.cwd ?? context.rootPath
+    return await htmlRenderer.run({ ...args, cwd }, context)
   })
 
   builtInTools.set('read_file', async (args, { rootPath, signal, deadlineMs }) => {
@@ -543,7 +543,7 @@ async function handleRequest(message: UtilityRuntimeRequest): Promise<void> {
 
   try {
     if (handler) {
-      const result = await withToolAccess(message.options?.fullAccess, () => handler(message.args, { ...message.options, signal: controller.signal }))
+      const result = await withToolAccess(message.options?.fullAccess, () => handler(message.args, { ...message.options, signal: controller.signal }), message.options?.additionalRoots)
       const durationMs = Date.now() - startedAtMs
       postMessage({
         type: 'tool_result',
@@ -572,7 +572,7 @@ async function handleRequest(message: UtilityRuntimeRequest): Promise<void> {
         messageId: message.options?.messageId,
         streamId: message.options?.streamId,
         cwd: message.options?.rootPath,
-      }))
+      }), message.options?.additionalRoots)
       const durationMs = Date.now() - startedAtMs
       postMessage({
         type: 'tool_result',

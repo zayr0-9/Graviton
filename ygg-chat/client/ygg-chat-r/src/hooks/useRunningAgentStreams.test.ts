@@ -5,6 +5,7 @@ import {
   buildAgentConversationLookup,
   buildAgentForkGroups,
   getAgentForkKey,
+  limitFinishedAgentHistory,
   retainAgentParentPreview,
   refreshAgentStreamHistory,
   type AgentStreamListItem,
@@ -173,5 +174,22 @@ describe('refreshAgentStreamHistory', () => {
     expect(refreshAgentStreamHistory(history, {
       past: { ...createEmptyStreamState('primary'), active: true },
     }, () => run('past'))).toBe(history)
+  })
+})
+
+describe('limitFinishedAgentHistory', () => {
+  // Newest first, one run per fork: fork-0 newest … fork-6 oldest.
+  const history = Array.from({ length: 7 }, (_, index) =>
+    completed(`s${index}`, { lineageId: `fork-${index}`, createdAt: `2026-01-01T10:0${9 - index}:00.000Z` }))
+  const ids = (items: AgentStreamListItem[]) => items.map(item => item.streamId)
+
+  it('keeps every run of the newest finished forks only', () => {
+    const extra = completed('s1-old', { lineageId: 'fork-1', createdAt: '2026-01-01T09:00:00.000Z' })
+    expect(ids(limitFinishedAgentHistory([...history, extra], [], 5))).toEqual(['s0', 's1', 's2', 's3', 's4', 's1-old'])
+  })
+
+  it('keeps completed runs of active forks without counting them toward the cap', () => {
+    const active = run('live', { lineageId: 'fork-6' })
+    expect(ids(limitFinishedAgentHistory(history, [active], 5))).toEqual(['s0', 's1', 's2', 's3', 's4', 's6'])
   })
 })

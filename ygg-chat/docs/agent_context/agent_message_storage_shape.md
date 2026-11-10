@@ -5,34 +5,33 @@ paths:
   - "client/ygg-chat-r/server/headlessServer/persistence/messageRepo.ts"
   - "client/ygg-chat-r/server/headlessServer/persistence/conversationRepo.ts"
   - "client/ygg-chat-r/server/headlessServer/services/messageSink.ts"
-  - "client/ygg-chat-r/server/headlessServer/services/cloudMirrorService.ts"
   - "client/ygg-chat-r/src/features/chats/chatTypes.ts"
   - "client/ygg-chat-r/src/features/chats/sseProjection.ts"
 ---
 
 # Agent Context: Message Storage Shape
 
-Last reviewed: 2026-08-01
+Last reviewed: 2026-11-10
 
 ## Purpose
 
-Documents how messages are stored per conversation, how the tree/branch shape is represented, and how local/cloud payloads are normalized for the renderer.
+Documents how messages are stored per conversation, how the tree/branch shape is represented, and how payloads are normalized for the renderer.
 
-Migration note: after the headless thin-client migration, message WRITES for the main chat loop are server-owned. The renderer no longer persists chat messages or dual-writes to cloud+local; the headless server (`127.0.0.1:3002`, in the Electron main process) persists user/assistant/tool rows into local SQLite via `MessageRepo`, and — for the openrouter/Railway path — mirrors Railway-authoritative rows in place. The old renderer `dualSyncManager` + `src/lib/sync/*` are RETIRED (see Persistence Authority). Schema, tree shape, and normalization rules below are unchanged by the migration.
+Migration note: after the headless thin-client migration, message WRITES for the main chat loop are server-owned. The renderer no longer persists chat messages; the headless server (`127.0.0.1:3002`, in the Electron main process) persists user/assistant/tool rows into local SQLite via `MessageRepo`. Graviton is fully local: SQLite is the only store (see Persistence Authority). Schema, tree shape, and normalization rules below are unchanged by the migration.
 
 ## When to Open This File
 
 Use this when changing:
 - message table/schema fields;
 - `parent_id` / `children_ids` branch behaviour;
-- message normalization/parsing between SQLite, cloud API, Redux, and React Query;
+- message normalization/parsing between SQLite, Redux, and React Query;
 - bulk insertion, deletion, cloning, sync, or tree-building;
 - message content block/tool call storage;
-- server-side message persistence, id authority, or the local⊕cloud mirror.
+- server-side message persistence or id authority.
 
 ## Key Files
 
-- `shared/types.ts`: shared `BaseMessage`, `MessageId`, `ConversationId`, `StorageMode`.
+- `shared/types.ts`: shared `BaseMessage`, `MessageId`, `ConversationId` (`StorageMode` is legacy; see below).
 - `client/ygg-chat-r/src/features/chats/chatTypes.ts`: frontend `Message` extends shared `BaseMessage` and content block unions.
 - `client/ygg-chat-r/src/features/chats/chatActions.ts`: thin-client chat thunks + renderer-issued CRUD (bulk insert, delete). No longer runs the loop or persists streamed chat messages; the server owns that now.
 - `client/ygg-chat-r/src/features/chats/chatSlice.ts`: Redux message list, branch/current path updates, optimistic messages.
@@ -41,19 +40,17 @@ Use this when changing:
 - `client/ygg-chat-r/src/features/chats/sseProjection.ts`: projects server SSE `*_persisted` / `complete` rows into Redux (`normalizeServerMessage`).
 - `client/ygg-chat-r/server/localServer.ts`: SQLite schema (`CREATE TABLE messages`), prepared statements (`upsertMessage` = INSERT ... ON CONFLICT(id) DO UPDATE), and the `messages_children_insert` trigger that maintains `children_ids`.
 - `client/ygg-chat-r/server/headlessServer/routes/appAutomationRoutes.ts`: live `/api/app` message endpoints (`/messages`, `/messages/tree` with `buildMessageTree`, `/messages/bulk`).
-- `client/ygg-chat-r/server/headlessServer/routes/gatewayRoutes.ts`: storage-aware `/api/gw` reads/writes that merge local (`/api/app/*` loopback) with Railway cloud; the renderer's CRUD entry point (message tree/list, bulk, message mutations, attachments).
+- `client/ygg-chat-r/server/headlessServer/routes/gatewayRoutes.ts`: storage-aware `/api/gw` local facade over `/api/app/*`; the renderer's CRUD entry point (message tree/list, bulk, message mutations, attachments).
 - `client/ygg-chat-r/server/headlessServer/persistence/messageRepo.ts`: server message writes (`createMessage`, `updateAssistantToolState`) + JS-side `children_ids` maintenance.
 - `client/ygg-chat-r/server/headlessServer/persistence/conversationRepo.ts`: read helpers (`listMessages`, `listMessageLineage`, `listPathToMessage`, `findNearestUserAncestor`, `touch`).
-- `client/ygg-chat-r/server/headlessServer/services/messageSink.ts`: `TreeMessageSink` (local-authoritative) vs `CloudMirrorSink` (adopts Railway id) — the loop's persistence port.
-- `client/ygg-chat-r/server/headlessServer/services/chatOrchestrator.ts`: persists the user message (via `BranchOrchestrator` → `createUserMessage`) and selects the sink per route.
-- `client/ygg-chat-r/server/headlessServer/services/cloudMirrorService.ts`: server-side CRUD mirror of Railway entities into SQLite (replaces the renderer's `dualSyncManager` for CRUD).
+- `client/ygg-chat-r/server/headlessServer/services/messageSink.ts`: `TreeMessageSink` (local-authoritative) — the loop's persistence port.
+- `client/ygg-chat-r/server/headlessServer/services/chatOrchestrator.ts`: persists the user message (via `BranchOrchestrator` → `createUserMessage`) and builds the `TreeMessageSink`.
 
-## IDs and Storage Modes
+## IDs
 
 - `MessageId`, `ConversationId`, and `ProjectId` are typed as `string` in `shared/types.ts`.
-- Code often uses string comparisons (`String(a) === String(b)`) to tolerate older numeric IDs and mixed local/cloud sources.
-- `StorageMode` is `'cloud' | 'local'`.
-- In Electron, local and cloud conversations can coexist. Always route message mutations using the target conversation's `storage_mode` where possible.
+- Code often uses string comparisons (`String(a) === String(b)`) to tolerate older numeric IDs and legacy rows.
+- There is no storage mode to route on. The legacy `StorageMode` type and `storage_mode` columns remain for old databases; new rows write `'local'`. Do not branch on them.
 
 ## Canonical Frontend Message Shape
 
@@ -100,14 +97,14 @@ Important field meanings:
 - `content`: primary text content. Can be empty when structured blocks carry the useful payload.
 - `content_plain_text`: plain text copy/search field. Local SQLite also has older `plain_text_content` in some query results.
 - `thinking_block`: legacy single reasoning/thinking string. Newer streams prefer `content_blocks`.
-- `tool_calls`: assistant tool-call metadata (legacy flat list: `id`, `name`, `arguments`, `status`). May be stored as JSON text in SQLite or already parsed in cloud responses. The server-owned loop no longer mirrors each tool output into `tool_calls[].result`; the `tool_result` block in `content_blocks` is the only copy. Rows written before 2026-10-11 may still carry `result`, and readers treat it as a fallback only.
+- `tool_calls`: legacy flat list of assistant tool calls (`id`, `name`, `arguments`, `status`, sometimes `result`). **No longer written** for new rows (2026-10-30): the tool loop, the Claude backend and subagent repair store calls and results only as `tool_use` / `tool_result` blocks in `content_blocks`. The column stays for old rows, which hold JSON text, the string `'null'` or SQL NULL. Readers take calls from `tool_use` blocks and fall back to `tool_calls` only for rows without them (pre-block rows, older OpenAI rows whose blocks hold only `responses_output_items`, caller-supplied history); server code uses `messageToolCalls` in `server/headlessServer/providers/toolResultSanitizer.ts`. Copy/sync/automation routes still pass through a supplied value, and Railway-mirrored cloud rows keep whatever Railway returns.
 - `tool_call_id`: for `role: 'tool'` messages, links result to assistant tool use.
 - `content_blocks`: structured ordered blocks for text, reasoning, tools, tool results, images, responses output items, etc. May be JSON text or parsed arrays depending on source.
 - `note` / `note_color`: user-authored annotation metadata used by Chat and Heimdall.
 - `ex_agent_session_id` / `ex_agent_type`: external-agent/subagent/persistent-agent metadata.
 - `artifacts`, `pastedContext`, and some attachment-derived data are frontend/runtime additions, not canonical DB columns.
 
-`updateAssistantToolState` directly updates existing `content_blocks`/`tool_calls`;
+`updateAssistantToolState` directly updates existing `content_blocks` (and `tool_calls`, now always `'null'` from the loop);
 it does not insert or reparent a message. Durable identity lives separately in
 `lineages`/`fork_operations`; `messages.lineage_id` records creation ownership,
 while `parent_id` remains structural ancestry. Lineage-aware sinks advance heads
@@ -143,7 +140,7 @@ CREATE TABLE IF NOT EXISTS messages (
 )
 ```
 
-Writes go through the `upsertMessage` prepared statement (`localServer.ts`), which is `INSERT ... ON CONFLICT(id) DO UPDATE`: re-persisting an existing id (e.g. re-adopting a Railway id) updates the row in place rather than inserting a duplicate.
+Writes go through the `upsertMessage` prepared statement (`localServer.ts`), which is `INSERT ... ON CONFLICT(id) DO UPDATE`: re-persisting an existing id (e.g. re-importing an existing row) updates the row in place rather than inserting a duplicate.
 
 Local indexes and helpers include:
 - `idx_messages_parent_id` for parent traversal.
@@ -194,7 +191,7 @@ The live `/messages/tree` endpoint (`buildConversationMessagesTreePayload` in `a
 
 The builder runs three queries regardless of conversation size: the messages, every attachment linked to any of them, and every hook run for them (`HookRunRepo.listForConversationMessages`, uncapped). Do not reintroduce a per-message query or a row cap here; the renderer refetches this payload on every stream end. Regression coverage: `routes/__tests__/appAutomationRoutes.messagesTree.test.ts`.
 
-Frontend code must still be defensive because payloads may come from cloud, local SQLite, SSE chunks, optimistic messages, or older cached state. Existing renderers often accept both string and object forms for `tool_calls` and `content_blocks`. Server SSE rows projected into Redux go through `normalizeServerMessage` (`sseProjection.ts`), which parses the same JSON-string fields.
+Frontend code must still be defensive because payloads may come from local SQLite, SSE chunks, optimistic messages, or older cached state. Existing renderers often accept both string and object forms for `tool_calls` and `content_blocks`. Server SSE rows projected into Redux go through `normalizeServerMessage` (`sseProjection.ts`), which parses the same JSON-string fields.
 
 ## Content Blocks
 
@@ -210,20 +207,16 @@ Additional provider-specific blocks can appear in practice, for example `respons
 
 ## Fetching Messages for a Conversation
 
-`Chat.tsx` uses `useConversationSnapshotCoordinator`, which calls `fetchConversationMessagesTree`, reconciles protected rows, and applies accepted messages/tree/path atomically. The general `useConversationMessages(conversationId, storageMode)` hook remains in `src/hooks/useQueries.ts`. It returns:
+`Chat.tsx` uses `useConversationSnapshotCoordinator`, which calls `fetchConversationMessagesTree`, reconciles protected rows, and applies accepted messages/tree/path atomically. The general `useConversationMessages(conversationId)` hook remains in `src/hooks/useQueries.ts`. It returns:
 
 ```ts
 {
   messages: Message[]
   tree: ChatNode | null
-  meta?: { storage_mode: 'local' | 'cloud' }
 }
 ```
 
-Routing rules:
-- Electron community mode fetches local `/app/conversations/:id/messages/tree` directly.
-- Electron mixed mode checks passed `storageMode`, React Query caches, and local fallback.
-- Other fetch surfaces (e.g. `useConversationData`) now go through the storage-aware gateway `gwApi` (`/api/gw/conversations/:id/messages` + `/messages/tree`), which merges local ⊕ cloud server-side; the renderer no longer branches on `shouldUseLocalApi` for those.
+Routing: every fetch goes to the local host — `fetchConversationMessagesTree` or the `gwApi` facade (`/api/gw/conversations/:id/messages` + `/messages/tree`). There is no storage-mode branch.
 
 `Chat.tsx` no longer mirrors raw query output directly. `conversationSnapshotCoordinator.ts` is the only persisted-snapshot bridge: it generation-gates the request, reconciles explicit active/terminal protections against authoritative fetched deletions, rebuilds the canonical tree, writes the accepted exact-key cache snapshot, and dispatches `conversationSnapshotApplied` atomically.
 
@@ -254,7 +247,7 @@ Chat message writes for the main loop are **server-owned** (headless server on `
 
 - `Chat.tsx` dispatches `sendMessage`, which POSTs `POST /conversations/:id/messages` (SSE) with `parentId` from the current/post-compaction path.
 - `ChatOrchestrator.runMessage` → `BranchOrchestrator.resolve` → `createUserMessage` persists the USER message (`MessageRepo.createMessage`, role `'user'`, locally minted id) under the resolved parent.
-- The tool loop then persists ASSISTANT/TOOL turns via the selected `MessageSink` (`TreeMessageSink` or `CloudMirrorSink`) as it streams.
+- The tool loop then persists ASSISTANT/TOOL turns via `TreeMessageSink` as it streams.
 - Each persisted row is emitted as `user_message_persisted` / `assistant_message_persisted` / terminal `complete`; the renderer's `sseProjection.ts` turns those into `messageAdded` + `messageBranchCreated` + stream events and rebuilds `currentPath` from the server-assigned ids.
 
 ### Edit or branch
@@ -278,19 +271,15 @@ Chat message writes for the main loop are **server-owned** (headless server on `
 - After delete, callers should invalidate/refetch `['conversations', conversationId, 'messages']` and refresh Heimdall data.
 - If manually editing children lists, remove deleted IDs from parent `children_ids`.
 
-## Persistence Authority (id ownership + dual-write)
+## Persistence Authority (id ownership)
 
-The renderer's reactive `dualSyncManager` and `src/lib/sync/*` are RETIRED (deleted). Their responsibilities moved into the headless server:
-- **Streaming id adoption** is now the `CloudMirrorSink` (`messageSink.ts`).
-- **CRUD mirroring** of Railway entities into SQLite is now `CloudMirrorService` (`cloudMirrorService.ts`), invoked from the `/api/gw` gateway on cloud writes.
-- `src/lib/localMirror.ts` is a small KEPT drop-in that preserves the old `dualSync` method surface for the few remaining renderer-side user/conversation sync calls (imported as `localMirror as dualSync`); it is NOT the deleted manager.
+Local SQLite is the only store. The retired renderer `dualSyncManager`/`src/lib/sync/*`/`lib/localMirror.ts`
+and the server cloud mirror (`cloudMirrorService`, `CloudMirrorSink`) were deleted in the fully-local migration.
 
-Assistant/tool turns are written through a `MessageSink` selected per run in `ChatOrchestrator.runMessage`:
-
-- `isCloudRoute = gatewayFlags.chat && normalizeProviderRoute(provider) === 'openrouter'`.
-- **`CloudMirrorSink`** (openrouter/Railway path) is the id authority: it passes `id: draft.providerMessageId` into `MessageRepo.createMessage`, so the local SQLite row ADOPTS Railway's authoritative message id (server-side dual-write — Railway is authoritative, SQLite mirrors in place via the `ON CONFLICT(id) DO UPDATE` upsert). `providerMessageId` is sourced from the provider's `output.raw.id` (`toolLoopService.ts`); when the provider surfaced no id (streamed-only frame), it is `null` and `MessageRepo` mints a uuid — identical to `TreeMessageSink`.
-- **`TreeMessageSink`** (native providers: lmstudio, openaichatgpt, zai, bedrock; and whenever `gateway.chat` is off) is local-authoritative: it ignores `providerMessageId` and always mints a fresh uuid.
-- USER messages are always minted locally (`createUserMessage` never passes an `id`), even on the cloud route; only assistant turns adopt Railway ids.
+- Assistant/tool turns are written through `TreeMessageSink` (`messageSink.ts`), built per run in
+  `ChatOrchestrator.runMessage`. It is local-authoritative: it ignores `providerMessageId` and always mints a fresh uuid.
+- USER messages are always minted locally (`createUserMessage` never passes an `id`).
+- `MessageRepo.createMessage` still accepts a caller-supplied `id` (adopted in place via the upsert) for imports.
 
 ## Important Invariants
 
@@ -298,10 +287,9 @@ Assistant/tool turns are written through a `MessageSink` selected per run in `Ch
 - Use `parent_id: null` for top-level messages. Avoid empty string parent IDs.
 - Treat `children_ids` as ordered JSON data in SQLite and as arrays in normalized frontend state.
 - Parse JSON fields defensively; code may receive already parsed arrays/objects.
-- Server persistence uses `upsertMessage` (`INSERT ... ON CONFLICT(id) DO UPDATE`): supplying an existing id updates in place. `CloudMirrorSink` relies on this to keep a Railway-id row unique; `TreeMessageSink`/`createUserMessage` mint uuids so they never collide.
-- Only the openrouter/Railway path adopts foreign (Railway) message ids; native providers stay local-authoritative. Do not pass `providerMessageId` on native routes.
+- Server persistence uses `upsertMessage` (`INSERT ... ON CONFLICT(id) DO UPDATE`): supplying an existing id updates in place. `TreeMessageSink`/`createUserMessage` mint uuids so they never collide.
+- Do not adopt provider message ids as row ids.
 - When mutating a conversation other than the currently viewed one, prefer React Query invalidation over dispatching Redux `messagesLoaded`/`heimdallDataLoaded` for the target.
-- Use target conversation storage mode for writes in mixed Electron mode.
 - Preserve notes, content blocks, tool linkage, agent fields, and generic `meta` when copying or cloning messages unless explicitly dropping them.
 - Bulk branch copies must be transactional and retain source parent/child and sibling ordering; never flatten a selected forest into one chain.
 
@@ -315,8 +303,7 @@ Assistant/tool turns are written through a `MessageSink` selected per run in `Ch
   - edit a message and verify sibling branches;
   - copy selected Heimdall nodes into a new conversation;
   - delete a branch and verify no stale child IDs remain in UI;
-  - test local and cloud storage routing in Electron;
-  - on the openrouter route, confirm the persisted assistant row's id matches Railway's returned message id (CloudMirrorSink adoption); on a native provider, confirm a locally-minted uuid.
+  - confirm a persisted assistant row has a locally-minted uuid.
 
 ## Related Docs
 
@@ -334,3 +321,9 @@ OpenAI assistant messages may include nullable `context_usage`, a normalized pro
 ## Committed assistant compaction boundaries
 
 New compaction instruction/resume rows are ordinary user rows tagged in `meta`. New summaries are ordinary assistant rows with `meta.kind = compaction_summary`, `state = committed` and an instruction/compaction ID. The repository updates content, plain text, text blocks and metadata atomically, preserving IDs, ancestry, raw provider output and run statistics. Only committed summaries trim inference history; legacy system/note markers remain readable. `subagent_messages.meta` is nullable JSON (migration v6), persisted and reloaded by the transcript sink.
+
+## Shared-client revision foundation (2026-10-19)
+
+`messages.revision` is a host-owned integer (migration 7, default zero). `server/messageRevisionSchema.ts` owns increments in a SQLite trigger for actual non-revision-column changes, covering direct routes, mirrors, children lists and lineage attachment. JavaScript must not increment/reset it. New columns require a migration updating trigger coverage. Sinks reread after lineage mutation before emitting rows. `BaseMessage.revision` remains optional for remote/optimistic rows without a known local revision.
+
+Migration 8's `client_changes` transactional metadata outbox observes messages/conversations/projects, including background writers; rollback rolls back its events. Browser/desktop change consumers feed the existing snapshot coordinator and preserve selection/drafts. This is a migration foundation, not yet complete snapshot/deletion/conflict coverage; see `../shared-ui-implementation-status.md`.

@@ -4,7 +4,6 @@ import { resolveAttachmentUrlFromOrigins } from './attachmentUrl'
 const origins = {
   localOrigin: 'http://127.0.0.1:4567',
   localApiBase: 'http://127.0.0.1:4567/api',
-  remoteOrigin: 'https://cloud.example.com',
 }
 
 describe('resolveAttachmentUrlFromOrigins', () => {
@@ -38,7 +37,7 @@ describe('resolveAttachmentUrlFromOrigins', () => {
     ).toBe('http://127.0.0.1:4567/api/local/attachments/att-data/file')
   })
 
-  it('resolves local API paths against the Ygg origin instead of the cloud origin', () => {
+  it('resolves local API paths against the Ygg origin', () => {
     expect(
       resolveAttachmentUrlFromOrigins({
         ...origins,
@@ -47,13 +46,9 @@ describe('resolveAttachmentUrlFromOrigins', () => {
     ).toBe('http://127.0.0.1:4567/api/local/attachments/att-3/file')
   })
 
-  it('keeps cloud upload paths on the remote origin', () => {
-    expect(
-      resolveAttachmentUrlFromOrigins({
-        ...origins,
-        filePath: 'data/uploads/photo.png',
-      })
-    ).toBe('https://cloud.example.com/uploads/photo.png')
+  it('has no URL for the retired hosted uploads store', () => {
+    expect(resolveAttachmentUrlFromOrigins({ ...origins, filePath: 'data/uploads/photo.png' })).toBeNull()
+    expect(resolveAttachmentUrlFromOrigins({ ...origins, urlOrPath: '/uploads/photo.png' })).toBeNull()
   })
 
   it('does not expose absolute filesystem paths without an attachment id', () => {
@@ -64,4 +59,10 @@ describe('resolveAttachmentUrlFromOrigins', () => {
       })
     ).toBeNull()
   })
+})
+
+it('rewrites recognized legacy loopback attachment URLs but preserves external URLs', () => {
+  expect(resolveAttachmentUrlFromOrigins({ ...origins, urlOrPath: 'http://localhost:3002/api/local/attachments/a/file' })).toBe(`${origins.localOrigin}/api/local/attachments/a/file`)
+  expect(resolveAttachmentUrlFromOrigins({ ...origins, urlOrPath: 'https://external.example/api/local/attachments/a/file' })).toBe('https://external.example/api/local/attachments/a/file')
+  expect(resolveAttachmentUrlFromOrigins({ ...origins, urlOrPath: 'http://localhost:1234/model' })).toBe('http://localhost:1234/model')
 })

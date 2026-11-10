@@ -48,6 +48,7 @@ function truncate(value: string, maxLength = MAX_DETAIL_LENGTH): string {
  */
 const ATTACHED_CODE_KEY = Symbol.for('ygg.chat.errorCode')
 const ATTACHED_OVERRIDES_KEY = Symbol.for('ygg.chat.errorOverrides')
+const ADMISSION_REJECTION_CODES = new Set(['configuration_mismatch', 'lineage_mismatch', 'run_unavailable'])
 
 export type ChatErrorPhase = 'provider' | 'tool' | 'hook' | 'compaction' | 'lifecycle' | 'transport'
 
@@ -496,28 +497,6 @@ function isOpenAiProvider(provider: string): boolean {
   return normalized === 'openai' || normalized === 'openaichatgpt' || normalized === 'chatgpt'
 }
 
-/**
- * Providers whose credential is the USER'S own (OAuth token, API key, local server)
- * rather than the app's Railway session. A 401 on these means "reconnect this
- * provider", not "your app session expired".
- */
-function isByokOrLocalProvider(provider: string | undefined): boolean {
-  const normalized = normalizeProvider(provider)
-  return (
-    normalized === 'openai' ||
-    normalized === 'openaichatgpt' ||
-    normalized === 'chatgpt' ||
-    normalized === 'lmstudio' ||
-    normalized === 'zai' ||
-    normalized === 'zaiglm' ||
-    normalized === 'glm' ||
-    normalized === 'bedrock' ||
-    normalized === 'awsbedrock' ||
-    normalized === 'amazonbedrock' ||
-    normalized === 'anthropic'
-  )
-}
-
 /** The transient-error status/keyword set, shared by the formatter and the retry classifier. */
 function matchesTransientPattern(status: number | undefined, lowerMessage: string): boolean {
   return Boolean(
@@ -550,13 +529,11 @@ export function isTransientProviderError(error: unknown): boolean {
 // classifyChatError
 // ──────────────────────────────────────────────────────────────────────────────
 
-function authCode(provider: string | undefined, haystack: string): ChatErrorCode {
+// Every provider is the user's own (OAuth, API key or local server), so a 401/403
+// means "reconnect this provider", never a Graviton account session.
+function authCode(haystack: string): ChatErrorCode {
   if (hasMissingCredentialWording(haystack)) return 'credentials_missing'
-  return isByokOrLocalProvider(provider) ? 'provider_signin_required' : 'session_expired'
-}
-
-function quotaCode(haystack: string): ChatErrorCode {
-  return hasFreeTierWording(haystack) ? 'free_tier_exhausted' : 'provider_quota_exceeded'
+  return 'provider_signin_required'
 }
 
 /** (b) Recognised typed error classes. Matched by shape/name — importing the
@@ -565,9 +542,8 @@ function codeFromTypedError(error: unknown, facts: ErrorFacts, context: ChatErro
   const name = facts.name
   if (name === 'AbortError') return 'cancelled'
   if (name === 'TimeoutError') return context.phase === 'tool' ? 'tool_timeout' : 'provider_timeout'
-  if (name === 'RailwayAppAuthError') return 'session_expired'
   if (name === 'ProviderEmptyResponseError') return 'provider_empty_response'
-  if (facts.errorType === 'reauth_required') return 'session_expired'
+  if (facts.errorType === 'reauth_required') return 'provider_signin_required'
   if (error instanceof RangeError && hasContextLengthWording(facts.haystack)) return 'context_length_exceeded'
   return undefined
 }
@@ -576,7 +552,6 @@ function codeFromTypedError(error: unknown, facts: ErrorFacts, context: ChatErro
 function codeFromStatus(status: number | undefined, facts: ErrorFacts, context: ChatErrorClassificationContext): ChatErrorCode | undefined {
   if (typeof status !== 'number') return undefined
   const haystack = facts.haystack
-  const provider = context.provider
 
   if (status === 400) {
     if (hasContextLengthWording(haystack)) return 'context_length_exceeded'
@@ -584,12 +559,13 @@ function codeFromStatus(status: number | undefined, facts: ErrorFacts, context: 
     if (hasModelWording(haystack)) return 'model_not_found'
     return 'bad_request'
   }
-  if (status === 401) return authCode(provider, haystack)
-  if (status === 402) return hasFreeTierWording(haystack) ? 'free_tier_exhausted' : 'subscription_inactive'
+  if (status === 401) return authCode(haystack)
+  // Billing/credits on the user's own provider account (Q26).
+  if (status === 402) return 'provider_quota_exceeded'
   if (status === 403) {
-    if (hasQuotaWording(haystack) || hasFreeTierWording(haystack)) return quotaCode(haystack)
+    if (hasQuotaWording(haystack) || hasFreeTierWording(haystack)) return 'provider_quota_exceeded'
     if (hasContentFilterWording(haystack)) return 'content_filtered'
-    return authCode(provider, haystack)
+    return authCode(haystack)
   }
   if (status === 404) return hasModelWording(haystack) || haystack.includes('model') ? 'model_not_found' : 'bad_request'
   if (status === 408) return context.phase === 'tool' ? 'tool_timeout' : 'provider_timeout'
@@ -598,7 +574,7 @@ function codeFromStatus(status: number | undefined, facts: ErrorFacts, context: 
   if (status === 429) {
     // Real billing exhaustion also arrives as 429; anything else is a rate limit
     // that will clear on its own (and carries Retry-After / resets_at).
-    if (hasFreeTierWording(haystack)) return 'free_tier_exhausted'
+    if (hasFreeTierWording(haystack)) return 'provider_quota_exceeded'
     if (
       haystack.includes('insufficient_quota') ||
       haystack.includes('out of credit') ||
@@ -624,21 +600,18 @@ function codeFromErrorType(errorType: string | undefined, facts: ErrorFacts, con
   switch (type) {
     case 'reauth_required':
     case 'session_expired':
-      return 'session_expired'
     case 'invalid_api_key':
     case 'authentication_error':
     case 'unauthorized':
-      return authCode(context.provider, facts.haystack)
+      return authCode(facts.haystack)
     case 'insufficient_quota':
     case 'billing_error':
     case 'credit_exhausted':
-      return 'provider_quota_exceeded'
     case 'free_tier_exhausted':
     case 'free_generations_exhausted':
-      return 'free_tier_exhausted'
     case 'subscription_inactive':
     case 'payment_required':
-      return 'subscription_inactive'
+      return 'provider_quota_exceeded'
     case 'usage_limit_reached':
     case 'rate_limit_error':
     case 'rate_limit_exceeded':
@@ -699,10 +672,10 @@ function codeFromMessage(facts: ErrorFacts, context: ChatErrorClassificationCont
   if (hasContextLengthWording(haystack)) return 'context_length_exceeded'
   if (hasContentFilterWording(haystack)) return 'content_filtered'
   if (hasMissingCredentialWording(haystack)) return 'credentials_missing'
-  if (hasFreeTierWording(haystack) && hasQuotaWording(haystack)) return 'free_tier_exhausted'
+  if (hasFreeTierWording(haystack) && hasQuotaWording(haystack)) return 'provider_quota_exceeded'
   if (haystack.includes('too many requests') || haystack.includes('rate limit')) return 'rate_limited'
-  if (hasQuotaWording(haystack)) return quotaCode(haystack)
-  if (hasAuthWording(haystack)) return authCode(context.provider, haystack)
+  if (hasQuotaWording(haystack)) return 'provider_quota_exceeded'
+  if (hasAuthWording(haystack)) return authCode(haystack)
   if (hasModelWording(haystack)) return 'model_not_found'
   // `ETIMEDOUT` is a timeout first and a connectivity code second, so it is tested
   // before the connectivity list it also appears in.
@@ -755,6 +728,13 @@ export function classifyChatError(error: unknown, context: ChatErrorClassificati
   const attached = getAttachedChatErrorCode(error)
   if (attached) {
     return buildChatErrorEnvelope(attached, { ...base, ...withoutCode(getAttachedChatErrorOverrides(error)) })
+  }
+
+  // Admission rejections (branch locks, lineage conflicts) are thrown with prose written
+  // for the user; falling through would mislabel them as an interrupted stream.
+  if (error instanceof Error && ADMISSION_REJECTION_CODES.has((error as any).code)) {
+    return buildChatErrorEnvelope('server_rejected_request', { ...base, userMessage: error.message,
+      recoverability: 'user_action', action: { kind: 'reload_conversation', label: 'Reload conversation' } })
   }
 
   const code =

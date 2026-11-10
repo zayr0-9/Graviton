@@ -1,3 +1,4 @@
+import { CLAUDE_CONTEXT_LENGTH, CLAUDE_MODELS, isClaudeProvider } from '../../../../shared/claudeProvider'
 // React Query hooks for data fetching with automatic caching and deduplication
 import { QueryClient, useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useCallback, useEffect, useMemo, useState } from 'react'
@@ -27,18 +28,12 @@ import {
 import { fetchLmStudioModels } from '../features/chats/LMStudio'
 import { getOpenAIChatGPTModels } from '../features/chats/chatgptAccount'
 import type { Conversation } from '../features/conversations/conversationTypes'
-import { isCloudSessionEnabled, isCommunityMode } from '../config/runtimeMode'
-import {
-  loadLocalUserSystemPrompts,
-  USER_SYSTEM_PROMPTS_STORAGE_CHANGE_EVENT,
-  type UserSystemPromptStorageMode,
-} from '../helpers/userSystemPromptStorage'
+import { loadLocalUserSystemPrompts, USER_SYSTEM_PROMPTS_STORAGE_CHANGE_EVENT } from '../helpers/userSystemPromptStorage'
 import { PROVIDER_SETTINGS_CHANGE_EVENT } from '../helpers/providerSettingsStorage'
-import { cloudApi, environment, gwApi, localApi } from '../utils/api'
+import { isHostClient, isNativeShell } from '../platform/clientCapabilities'
+import { gwApi, localApi } from '../utils/api'
 import { getFavoritedModels } from '../utils/favorites'
 import { useAuth } from './useAuth'
-
-const isElectronCommunityMode = () => environment === 'electron' && isCommunityMode
 
 export type { ConversationMessagesTreeData } from '../features/chats/conversationMessagesApi'
 
@@ -56,8 +51,7 @@ export type { ConversationMessagesTreeData } from '../features/chats/conversatio
  * @returns Query result with data, isLoading, isRefetching, and refetch function for manual refresh
  */
 export function useProjects(enabled: boolean = true) {
-  const { accessToken, userId } = useAuth()
-  void accessToken
+  const { userId } = useAuth()
   void userId
   const location = useLocation()
 
@@ -67,7 +61,6 @@ export function useProjects(enabled: boolean = true) {
   const query = useQuery({
     queryKey: ['projects', userId],
     queryFn: async (): Promise<ProjectWithLatestConversation[]> => {
-      void accessToken
       // Storage-aware via the gateway: merges local + cloud (deduped, sorted by
       // latest_conversation_updated_at), or local-only in community mode.
       return gwApi.get<ProjectWithLatestConversation[]>(`/projects?userId=${userId}`)
@@ -91,18 +84,15 @@ export function useProjects(enabled: boolean = true) {
  * Fetch a single project by ID
  * Cache key: ['projects', projectId]
  */
-export function useProject(projectId: ProjectId | null, storageMode?: 'local' | 'cloud') {
-  const { accessToken, userId } = useAuth()
-  void accessToken
+export function useProject(projectId: ProjectId | null) {
+  const { userId } = useAuth()
   void userId
 
   return useQuery({
     queryKey: ['projects', projectId],
     queryFn: async () => {
       if (!projectId) throw new Error('Project ID is required')
-      // The gateway routes by the entity's storage mode; pass the caller's hint when known.
-      const qs = storageMode ? `?storageMode=${storageMode}` : ''
-      return gwApi.get<Project>(`/projects/${projectId}${qs}`)
+      return gwApi.get<Project>(`/projects/${projectId}`)
     },
     enabled: !!projectId && !!userId,
     staleTime: 10000,
@@ -208,8 +198,7 @@ export function useConversationsInfinite(enabled: boolean = true) {
  * @returns Query result with data, isLoading, isRefetching, and refetch function for manual refresh
  */
 export function useConversationsByProject(projectId: ProjectId | null, enabled: boolean = true) {
-  const { accessToken, userId } = useAuth()
-  void accessToken
+  const { userId } = useAuth()
   void userId
   // const location = useLocation()
 
@@ -252,8 +241,7 @@ export function useConversationsByProjectInfinite(
   options: { enabled?: boolean } = {}
 ) {
   const { enabled = true } = options
-  const { accessToken, userId } = useAuth()
-  void accessToken
+  const { userId } = useAuth()
   void userId
 
   return useInfiniteQuery({
@@ -289,7 +277,6 @@ export interface RecentLineageMessagePreview {
 export interface RecentLineage {
   conversationId: string
   conversationTitle: string | null
-  storageMode: 'local' | 'cloud' | null
   lineageId: string
   headMessageId: string | null
   parentLineageId: string | null
@@ -314,7 +301,7 @@ export function useRecentLineages(projectId: ProjectId | string | null, limit: n
         `/projects/${encodeURIComponent(String(projectId))}/recent-lineages?limit=${safeLimit}`
       )
     },
-    enabled: !!projectId && environment === 'electron',
+    enabled: !!projectId && isHostClient,
     staleTime: 30 * 1000,
     refetchOnMount: 'always',
     refetchOnReconnect: false,
@@ -362,7 +349,7 @@ export function useFavoritedConversations(limit: number | null = 8) {
     queryKey: ['conversations', 'favorites', keyLimit],
     queryFn: async () => {
       if (!userId) throw new Error('User not authenticated')
-      if (environment !== 'electron') return []
+      if (!isNativeShell) return []
 
       const params = new URLSearchParams({ userId })
       if (hasLimit) {
@@ -370,7 +357,7 @@ export function useFavoritedConversations(limit: number | null = 8) {
       }
       return localApi.get<Conversation[]>(`/app/conversations/favorites?${params}`)
     },
-    enabled: !!userId && environment === 'electron',
+    enabled: !!userId && isHostClient,
     staleTime: 5 * 60 * 1000,
     refetchOnMount: false,
     refetchOnReconnect: false,
@@ -383,8 +370,7 @@ export function useFavoritedConversations(limit: number | null = 8) {
  * Cache key: ['conversations', conversationId, 'data']
  */
 export function useConversationData(conversationId: ConversationId | null) {
-  const { accessToken, userId } = useAuth()
-  void accessToken
+  const { userId } = useAuth()
   void userId
 
   return useQuery({
@@ -412,61 +398,6 @@ export function useConversationData(conversationId: ConversationId | null) {
   })
 }
 
-/**
- * Hook to determine the storage mode for a conversation with high reliability.
- * Checks multiple cache sources and falls back to fetching if necessary.
- *
- * Priority:
- * 1. Check 'conversations' cache (all conversations)
- * 2. Check 'conversations', 'project', projectId cache
- * 3. Check 'conversations', 'recent' cache
- * 4. Fetch from local server (if Electron) - authoritative source for local
- * 5. Default to 'cloud'
- */
-export function useConversationStorageMode(conversationId: ConversationId | null) {
-  const queryClient = useQueryClient()
-
-  return useQuery({
-    queryKey: ['conversations', conversationId, 'storage_mode'],
-    queryFn: async () => {
-      if (!conversationId) return isElectronCommunityMode() ? 'local' : 'cloud'
-
-      if (isElectronCommunityMode()) {
-        return 'local' as const
-      }
-
-      // 1. Check all cached conversation lists
-      const allConversationQueries = queryClient.getQueriesData<Conversation[]>({ queryKey: ['conversations'] })
-      for (const [_, data] of allConversationQueries) {
-        if (Array.isArray(data)) {
-          const match = data.find(c => String(c.id) === String(conversationId))
-          if (match?.storage_mode) {
-            return match.storage_mode
-          }
-        }
-      }
-
-      // 2. If in Electron, try fetching from local server first (fastest for local)
-      if (environment === 'electron') {
-        try {
-          const localConv = await localApi.get<Conversation>(`/app/conversations/${conversationId}`)
-          if (localConv) {
-            return localConv.storage_mode || 'local'
-          }
-        } catch (err) {
-          // Not found locally, proceed to cloud check
-        }
-      }
-
-      // 3. Default to cloud (or could fetch from cloud to be sure, but 'cloud' is safe default)
-      return 'cloud' as const
-    },
-    enabled: !!conversationId,
-    staleTime: Infinity, // Storage mode never changes for a conversation ID
-    gcTime: 30 * 60 * 1000, // Keep in cache for 30 minutes
-  })
-}
-
 export interface TopLevelUserMessagePreview {
   id: string
   conversation_id: string
@@ -478,8 +409,8 @@ export interface TopLevelUserMessagePreview {
 }
 
 /**
- * Fetch human top-level prompts for a conversation from local SQLite API.
- * Generated launch-context roots are transparent; returned IDs belong to the actual prompts.
+ * Fetch top-level user and assistant messages for a conversation from local SQLite API.
+ * Generated launch-context roots are transparent; returned IDs belong to the actual messages.
  * Used for sidebar hover preview in expanded sidebar modal.
  * Cache key: ['conversations', conversationId, 'top-level-user-messages']
  */
@@ -490,7 +421,7 @@ export function useLocalTopLevelUserMessages(conversationId: ConversationId | nu
       if (!conversationId) throw new Error('Conversation ID is required')
       return localApi.get<TopLevelUserMessagePreview[]>(`/app/conversations/${conversationId}/messages/top-level-users`)
     },
-    enabled: enabled && !!conversationId && environment === 'electron',
+    enabled: enabled && !!conversationId && isHostClient,
     staleTime: 60 * 1000,
     refetchOnMount: false,
     refetchOnReconnect: false,
@@ -509,13 +440,13 @@ export function useLocalTopLevelUserMessages(conversationId: ConversationId | nu
 export function useSubagentByToolCall(toolCallId: string | null, enabled: boolean = true) {
   return useQuery({
     queryKey: ['subagents', 'by-tool-call', toolCallId],
-    queryFn: async () => {
+    queryFn: async ({ signal }) => {
       if (!toolCallId) throw new Error('toolCallId is required')
       return localApi.get<{ runs: SubagentRunRow[]; streamId?: string | null }>(
-        `/subagents/by-tool-call/${toolCallId}`
+        `/subagents/by-tool-call/${toolCallId}`, { signal }
       )
     },
-    enabled: enabled && !!toolCallId && environment === 'electron',
+    enabled: enabled && !!toolCallId && isHostClient,
     staleTime: 30 * 1000,
     refetchOnWindowFocus: false,
   })
@@ -531,22 +462,14 @@ export function useSubagentByToolCall(toolCallId: string | null, enabled: boolea
  *
  * Returns: { messages: Message[], tree: ChatNode }
  */
-export function useConversationMessages(conversationId: ConversationId | null, storageMode?: 'local' | 'cloud') {
-  const { accessToken, userId } = useAuth()
-  void accessToken
-  void userId
-  const queryClient = useQueryClient()
+export function useConversationMessages(conversationId: ConversationId | null) {
+  const { userId } = useAuth()
 
   const query = useQuery<ConversationMessagesTreeData>({
     queryKey: conversationId ? conversationQueryKeys.messages(conversationId) : ['conversations', null, 'messages'],
     queryFn: ({ signal }) => {
       if (!conversationId) throw new Error('Conversation ID is required')
-      return fetchConversationMessagesTree(conversationId, {
-        storageMode,
-        accessToken,
-        queryClient,
-        signal,
-      })
+      return fetchConversationMessagesTree(conversationId, { signal })
     },
     enabled: !!conversationId && !!userId,
     staleTime: 30000, // 30 seconds - messages only change on user actions (send/edit/branch)
@@ -555,19 +478,6 @@ export function useConversationMessages(conversationId: ConversationId | null, s
     refetchOnReconnect: false, // Don't refetch on network reconnect
     refetchOnWindowFocus: false, // Don't refetch when user switches tabs
   })
-
-  // Sync storage_mode to cache when data is fetched
-  useEffect(() => {
-    if (query.data?.meta?.storage_mode && conversationId) {
-      // console.log('[useConversationMessages] Updating storage_mode in cache:', query.data.meta.storage_mode)
-
-      // Update the conversation in the list cache
-      queryClient.setQueryData<Conversation[]>(['conversations'], old => {
-        if (!old) return old
-        return old.map(c => (c.id === conversationId ? { ...c, storage_mode: query.data.meta.storage_mode! } : c))
-      })
-    }
-  }, [query.data, conversationId, queryClient])
 
   return query
 }
@@ -655,8 +565,7 @@ const getStoredSelectedModel = (): Model | null => {
  * The selected field contains the currently selected model (persisted from localStorage or defaults to server default)
  */
 export function useModels(provider: string | null) {
-  const { accessToken, userId } = useAuth()
-  void accessToken
+  const { userId } = useAuth()
   void userId
   const queryClient = useQueryClient()
 
@@ -685,6 +594,12 @@ export function useModels(provider: string | null) {
       const normalizedProvider = provider.toLowerCase()
       const normalizedSlug = normalizedProvider.replace(/\s+/g, '')
 
+      if (isClaudeProvider(provider)) {
+        const models = CLAUDE_MODELS.map(name => ({ ...stringToModel(name), contextLength: CLAUDE_CONTEXT_LENGTH,
+          inputTokenLimit: CLAUDE_CONTEXT_LENGTH, outputTokenLimit: 32000, thinking: true }))
+        return { models, default: models[0], selected: models.find(model => model.name === getStoredSelectedModel()?.name) ?? models[0] }
+      }
+
       if (normalizedSlug === 'lmstudio') {
         const models = await fetchLmStudioModels()
         const defaultModel = models[0] || stringToModel('lmstudio')
@@ -698,7 +613,23 @@ export function useModels(provider: string | null) {
           models,
           default: defaultModel,
           selected: selectedModel,
-          userIsFreeTier: false,
+        }
+      }
+
+      if (normalizedSlug === 'openrouterbyok') {
+        const response = await localApi.get<{ success?: boolean; models?: Model[]; error?: string }>(
+          '/provider-auth/openrouter-byok/models'
+        )
+        const models = Array.isArray(response?.models) ? response.models : []
+        if (models.length === 0) throw new Error(response?.error || 'No OpenRouter models available.')
+        const defaultModel = models.find(m => m.name === 'openai/gpt-5-mini') || models[0]
+        const storedSelection = getStoredSelectedModel()
+        const selectedModel = storedSelection ? models.find(m => m.name === storedSelection.name) || defaultModel : defaultModel
+
+        return {
+          models,
+          default: defaultModel,
+          selected: selectedModel,
         }
       }
 
@@ -720,7 +651,6 @@ export function useModels(provider: string | null) {
           models,
           default: defaultModel,
           selected: selectedModel,
-          userIsFreeTier: false,
         }
       }
 
@@ -753,7 +683,6 @@ export function useModels(provider: string | null) {
           models,
           default: defaultModel,
           selected: selectedModel,
-          userIsFreeTier: false,
         }
       }
 
@@ -769,283 +698,16 @@ export function useModels(provider: string | null) {
           models,
           default: defaultModel,
           selected: selectedModel,
-          userIsFreeTier: false,
         }
       }
 
-      if (isElectronCommunityMode()) {
-        throw new Error(`Provider "${provider}" is not available in community mode.`)
-      }
-
-      let endpoint = '/models' // Default to Ollama
-
-      // Map provider to appropriate endpoint
-      switch (normalizedProvider) {
-        case 'google':
-        case 'gemini':
-          endpoint = '/models/gemini'
-          break
-        case 'anthropic':
-          endpoint = '/models/anthropic'
-          break
-        case 'openai':
-          endpoint = '/models/openai'
-          break
-        case 'openrouter':
-          endpoint = '/models/openrouter'
-          break
-        default:
-          endpoint = '/models' // Ollama
-      }
-
-      const response = await cloudApi.get<{ models: string[] | Model[]; default: string | Model; userIsFreeTier?: boolean }>(
-        endpoint
-      )
-
-      // Handle both string[] and Model[] responses
-      const isStringArray = Array.isArray(response.models) && typeof response.models[0] === 'string'
-
-      const models = isStringArray ? (response.models as string[]).map(stringToModel) : (response.models as Model[])
-      let defaultModel =
-        typeof response.default === 'string' ? stringToModel(response.default as string) : (response.default as Model)
-
-      // For OpenRouter, prefer openai/gpt-5-mini if it exists
-      if (normalizedProvider === 'openrouter') {
-        const gpt5Mini = models.find(m => m.name === 'openai/gpt-5-mini')
-        if (gpt5Mini) {
-          defaultModel = gpt5Mini
-        }
-      }
-
-      // Determine selected model: use localStorage if valid, otherwise use server default
-      const storedSelection = getStoredSelectedModel()
-      let selectedModel = defaultModel
-
-      // If stored selection exists and matches a model in the list, use the full model data from the list
-      if (storedSelection) {
-        const matchedModel = models.find(m => m.name === storedSelection.name)
-        if (matchedModel) {
-          selectedModel = matchedModel
-        }
-      }
-
-      return {
-        models,
-        default: defaultModel,
-        selected: selectedModel, // Always populated - either from localStorage (if valid) or from server default
-        userIsFreeTier: response.userIsFreeTier ?? false, // User's tier status for disabling non-free models
-      }
+      throw new Error(`Unknown provider "${provider}".`)
     },
     enabled: !!provider && !!userId,
     staleTime: 5 * 60 * 1000, // 5 minutes - models don't change frequently
     refetchOnMount: false, // Don't refetch on component mount if cache exists
     refetchOnReconnect: false,
     refetchOnWindowFocus: false, // Don't refetch when user switches tabs
-  })
-}
-
-/**
- * Fetch recently used models based on message history
- * Cache key: ['models', 'recent']
- *
- * Returns: BaseModel[] (model names with metadata)
- */
-export function useRecentModels(limit: number = 5) {
-  const { accessToken, userId } = useAuth()
-  void accessToken
-  void userId
-
-  return useQuery({
-    queryKey: ['models', 'recent'],
-    queryFn: async () => {
-      if (isElectronCommunityMode()) {
-        return []
-      }
-
-      const query = new URLSearchParams({ limit: String(limit) }).toString()
-      const response = await cloudApi.get<{ models: string[] }>(`/models/recent?${query}`)
-      const models = Array.isArray(response?.models) ? response.models : []
-
-      // Map plain names to BaseModel shape with sensible defaults
-      const normalized: BaseModel[] = models.map(name => ({
-        id: name,
-        name,
-        version: '',
-        displayName: name,
-        description: '',
-        contextLength: 0,
-        maxCompletionTokens: 0,
-        inputTokenLimit: 0,
-        outputTokenLimit: 0,
-        promptCost: 0,
-        completionCost: 0,
-        requestCost: 0,
-        thinking: false,
-        supportsImages: false,
-        supportsWebSearch: false,
-        supportsStructuredOutputs: false,
-        inputModalities: ['text'],
-        outputModalities: ['text'],
-        defaultTemperature: null,
-        defaultTopP: null,
-        defaultFrequencyPenalty: null,
-        topProviderContextLength: null,
-      }))
-
-      return normalized
-    },
-    enabled: !!userId && !isElectronCommunityMode(),
-    staleTime: 2 * 60 * 1000, // 2 minutes - recent models are more dynamic
-    refetchOnMount: false,
-    refetchOnReconnect: false,
-    refetchOnWindowFocus: false,
-  })
-}
-
-/**
- * ZDR (Zero Data Retention) endpoint model shape from OpenRouter
- */
-export interface ZdrModel {
-  id: string
-  displayName: string
-  providerName: string
-  contextLength: number
-  supportsImplicitCaching: boolean
-  pricing: Record<string, unknown>
-  supportedParameters: string[]
-  raw: Record<string, unknown>
-}
-
-/**
- * Fetch ZDR-capable models from OpenRouter
- * Cache key: ['models', 'openrouter', 'zdr']
- *
- * These are Zero Data Retention endpoints for privacy-focused usage
- * Returns: { endpoints: ZdrModel[] }
- */
-export function useZdrModels() {
-  const { accessToken, userId } = useAuth()
-  void accessToken
-  void userId
-
-  return useQuery({
-    queryKey: ['models', 'openrouter', 'zdr'],
-    queryFn: async () => {
-      const response = await cloudApi.get<{ endpoints: ZdrModel[] }>('/models/openrouter/zdr')
-      return response.endpoints || []
-    },
-    enabled: !!userId && !isElectronCommunityMode(),
-    staleTime: 5 * 60 * 1000, // 5 minutes - ZDR endpoints don't change frequently
-    refetchOnMount: false,
-    refetchOnReconnect: false,
-    refetchOnWindowFocus: false,
-  })
-}
-
-/**
- * Mutation hook for toggling "Secret Mode" (ZDR models)
- * When enabled, replaces the OpenRouter models cache with ZDR models
- * When disabled, restores normal OpenRouter models
- *
- * Usage:
- * const toggleSecretMode = useToggleSecretMode()
- * toggleSecretMode.mutate({ enabled: true }) // Switch to ZDR models
- * toggleSecretMode.mutate({ enabled: false }) // Switch back to normal models
- */
-export function useToggleSecretMode() {
-  const queryClient = useQueryClient()
-
-  return useMutation({
-    mutationFn: async ({ enabled }: { enabled: boolean }) => {
-      if (enabled) {
-        // Fetch ZDR models
-        const response = await cloudApi.get<{ endpoints: ZdrModel[] }>('/models/openrouter/zdr')
-        const zdrEndpoints = response.endpoints || []
-
-        // Deduplicate endpoints by model id (same model can have multiple ZDR providers)
-        // Keep the first occurrence (usually the primary provider)
-        const seenIds = new Set<string>()
-        const uniqueEndpoints = zdrEndpoints.filter(endpoint => {
-          if (seenIds.has(endpoint.id)) {
-            return false
-          }
-          seenIds.add(endpoint.id)
-          return true
-        })
-
-        // Convert ZDR endpoints to Model format for compatibility
-        const models: Model[] = uniqueEndpoints.map(endpoint => ({
-          id: endpoint.id,
-          name: endpoint.id,
-          version: '',
-          displayName: endpoint.displayName,
-          description: `${endpoint.providerName} - ZDR`,
-          contextLength: endpoint.contextLength,
-          maxCompletionTokens: 0,
-          inputTokenLimit: endpoint.contextLength,
-          outputTokenLimit: 0,
-          promptCost: 0,
-          completionCost: 0,
-          requestCost: 0,
-          thinking: false,
-          supportsImages: false,
-          supportsWebSearch: false,
-          supportsStructuredOutputs: false,
-          inputModalities: ['text'],
-          outputModalities: ['text'],
-          defaultTemperature: null,
-          defaultTopP: null,
-          defaultFrequencyPenalty: null,
-          topProviderContextLength: endpoint.contextLength,
-          isZdr: true, // Mark as ZDR model
-        }))
-
-        return { models, enabled: true }
-      } else {
-        // Fetch normal OpenRouter models through the cloud proxy (server-owned token).
-        const response = await cloudApi.get<{ models: Model[]; default: Model; userIsFreeTier?: boolean }>(
-          '/models/openrouter'
-        )
-        return { models: response.models, default: response.default, enabled: false }
-      }
-    },
-    onSuccess: (data, { enabled }) => {
-      const provider = 'OpenRouter'
-
-      if (enabled) {
-        // Replace OpenRouter models cache with ZDR models
-        queryClient.setQueryData(['models', provider], (oldData: any) => {
-          if (!oldData) return oldData
-          const defaultModel = data.models[0] || oldData.default
-          return {
-            ...oldData,
-            models: data.models,
-            default: defaultModel,
-            selected: defaultModel,
-            isSecretMode: true,
-          }
-        })
-      } else {
-        // Restore normal OpenRouter models
-        const storedSelection = getStoredSelectedModel()
-        const defaultModel = (data as any).default || data.models[0]
-        let selectedModel = defaultModel
-
-        if (storedSelection) {
-          const matchedModel = data.models.find(m => m.name === storedSelection.name)
-          if (matchedModel) {
-            selectedModel = matchedModel
-          }
-        }
-
-        queryClient.setQueryData(['models', provider], {
-          models: data.models,
-          default: defaultModel,
-          selected: selectedModel,
-          isSecretMode: false,
-        })
-      }
-    },
   })
 }
 
@@ -1070,77 +732,20 @@ export interface ResearchNoteItem {
  * @returns Query result with data, isLoading, isRefetching, and refetch function
  */
 export function useResearchNotes() {
-  const { accessToken, userId } = useAuth()
-  void accessToken
+  const { userId } = useAuth()
   void userId
 
   return useQuery({
     queryKey: ['research-notes', userId],
     queryFn: async () => {
       if (!userId) throw new Error('User not authenticated')
-      return cloudApi.get<ResearchNoteItem[]>(`/users/${userId}/research-notes`)
+      return gwApi.get<ResearchNoteItem[]>(`/research-notes?userId=${encodeURIComponent(userId)}`)
     },
     enabled: !!userId && !!userId,
     staleTime: 5 * 60 * 1000, // 5 minutes - research notes don't change often
     refetchOnMount: false, // Don't refetch if data exists
     refetchOnReconnect: false,
     refetchOnWindowFocus: false, // Don't refetch when user switches tabs
-  })
-}
-
-/**
- * Mutation hook for refreshing models (force refetch)
- * Invalidates the models cache for the current provider
- */
-export function useRefreshModels() {
-  const queryClient = useQueryClient()
-
-  return useMutation({
-    mutationFn: async (provider: string) => {
-      const normalizedProvider = provider.toLowerCase()
-      const normalizedSlug = normalizedProvider.replace(/\s+/g, '')
-      let endpoint = '/models'
-
-      if (normalizedSlug === 'lmstudio') {
-        const models = await fetchLmStudioModels()
-        const defaultModel = models[0] || stringToModel('lmstudio')
-        return { models, default: defaultModel }
-      }
-
-      switch (normalizedProvider) {
-        case 'google':
-        case 'gemini':
-          endpoint = '/models/gemini'
-          break
-        case 'anthropic':
-          endpoint = '/models/anthropic'
-          break
-        case 'openai':
-          endpoint = '/models/openai'
-          break
-        case 'openrouter':
-          endpoint = '/models/openrouter'
-          break
-        case 'lmstudio':
-          endpoint = '/models/lmstudio'
-          break
-      }
-
-      const response = await cloudApi.get<{ models: string[] | Model[]; default: string | Model }>(endpoint)
-      const isStringArray = Array.isArray(response.models) && typeof response.models[0] === 'string'
-
-      return {
-        models: isStringArray ? (response.models as string[]).map(stringToModel) : (response.models as Model[]),
-        default:
-          typeof response.default === 'string'
-            ? stringToModel(response.default as string)
-            : (response.default as Model),
-      }
-    },
-    onSuccess: (data, provider) => {
-      // Update the cache with fresh data
-      queryClient.setQueryData(['models', provider], data)
-    },
   })
 }
 
@@ -1154,8 +759,7 @@ export function useRefreshModels() {
  */
 export function useMoveConversationToProject() {
   const queryClient = useQueryClient()
-  const { accessToken, userId } = useAuth()
-  void accessToken
+  const { userId } = useAuth()
   void userId
 
   return useMutation({
@@ -1168,30 +772,7 @@ export function useMoveConversationToProject() {
       sourceProjectId: ProjectId | null
       destinationProjectId: ProjectId | null
     }) => {
-      // Determine storage mode from cached conversation data
-      let storageMode: 'local' | 'cloud' = 'cloud'
-
-      // Search all cached conversation lists to find the storage mode
-      const allConversationQueries = queryClient.getQueriesData<Conversation[]>({ queryKey: ['conversations'] })
-      for (const [_, data] of allConversationQueries) {
-        if (Array.isArray(data)) {
-          const match = data.find(c => String(c.id) === String(conversationId))
-          if (match?.storage_mode) {
-            storageMode = match.storage_mode
-            break
-          }
-        }
-      }
-
-      // Route to appropriate API based on storage mode
-      if (storageMode === 'local' && environment === 'electron') {
-        // Use local API for local conversations
-        return localApi.patch<any>(`/conversations/${conversationId}/project`, { projectId: destinationProjectId })
-      }
-
-      // Use cloud API for cloud conversations
-      const { patchConversationProject } = await import('../utils/api')
-      return patchConversationProject(conversationId, destinationProjectId, accessToken)
+      return localApi.patch<any>(`/conversations/${conversationId}/project`, { projectId: destinationProjectId })
     },
     onSuccess: (_updatedConversation, { conversationId, sourceProjectId, destinationProjectId }) => {
       // Helper to update conversation in infinite pages
@@ -1304,7 +885,7 @@ export function useMoveConversationToProject() {
  *
  * Usage:
  * const selectModelMutation = useSelectModel()
- * selectModelMutation.mutate({ provider: 'openrouter', model: selectedModel })
+ * selectModelMutation.mutate({ provider: 'OpenAI (ChatGPT)', model: selectedModel })
  */
 export function useSelectModel() {
   const queryClient = useQueryClient()
@@ -1546,7 +1127,6 @@ export function useFilteredModels(provider: string | null) {
 export interface TopLevelUserMessageSearchHit {
   conversation_id: ConversationId
   project_id: ProjectId | null
-  storage_mode: 'cloud' | 'local'
   conversation_title: string | null
   message_id: string
   message_created_at: string
@@ -1578,7 +1158,7 @@ export function useSearchTopLevelUserMessages(
     async (query: string): Promise<TopLevelUserMessageSearchHit[]> => {
       if (!query.trim()) return []
 
-      if (environment === 'electron') {
+      if (isHostClient) {
         if (!userId) {
           console.warn('[useSearchTopLevelUserMessages] No userId available, skipping local search')
           return []
@@ -1600,41 +1180,8 @@ export function useSearchTopLevelUserMessages(
         }
       }
 
-      // Non-electron fallback (not a shipping target). Routed through the
-      // storage-aware gateway (:3002/api/gw/*) keyed by userId so the renderer
-      // never talks to Railway directly; the server owns the cloud token and the
-      // local+cloud merge. Degraded to conversation-title matches, as before.
-      if (!userId) {
-        console.warn('[useSearchTopLevelUserMessages] No userId available, skipping server search')
-        return []
-      }
-
-      const params = new URLSearchParams({ q: query, limit: '20', userId })
-      if (projectId) params.set('projectId', projectId)
-
-      try {
-        const conversations = await gwApi.get<Conversation[]>(`/conversations/search?${params.toString()}`)
-        const nowIso = new Date().toISOString()
-
-        return (conversations || []).map(conversation => ({
-          conversation_id: conversation.id,
-          project_id: conversation.project_id || null,
-          storage_mode: conversation.storage_mode === 'local' ? 'local' : 'cloud',
-          conversation_title: conversation.title || null,
-          message_id: String(conversation.id),
-          message_created_at: conversation.updated_at || conversation.created_at || nowIso,
-          conversation_updated_at: conversation.updated_at || conversation.created_at || null,
-          content: conversation.title
-            ? `Title match: ${conversation.title}`
-            : 'Conversation title match (message-level search unavailable on this backend)',
-          note: null,
-          match_type: 'fallback',
-          score: 0,
-        }))
-      } catch (error) {
-        console.error('Top-level user message server fallback search failed:', error)
-        return []
-      }
+      // Every supported client is served by the Graviton host.
+      return []
     },
     [projectId, userId]
   )
@@ -1758,7 +1305,7 @@ export function useSearchConversations(
     async (query: string): Promise<Conversation[]> => {
       if (!query.trim()) return []
 
-      if (environment === 'electron') {
+      if (isHostClient) {
         if (!userId) {
           console.warn('[useSearchConversations] No userId available, skipping local search')
           return []
@@ -1779,7 +1326,7 @@ export function useSearchConversations(
       }
 
       // Non-electron fallback (not a shipping target): route through the gateway
-      // (:3002/api/gw/*) keyed by userId — no renderer token, no direct Railway.
+      // (:3002/api/gw/*) keyed by userId.
       if (!userId) {
         console.warn('[useSearchConversations] No userId available, skipping server search')
         return []
@@ -1871,7 +1418,6 @@ export interface UserSystemPromptCached {
   is_default: boolean
   created_at: string
   updated_at: string
-  storage_mode?: UserSystemPromptStorageMode
 }
 
 /**
@@ -1884,24 +1430,14 @@ export interface UserSystemPromptCached {
  * @returns Query result with prompts, default prompt, and utility functions
  */
 export function useUserSystemPromptsQuery() {
-  const { accessToken, userId } = useAuth()
-  void accessToken
+  const { userId } = useAuth()
   void userId
   const queryClient = useQueryClient()
 
   const query = useQuery({
     queryKey: ['userSystemPrompts', userId],
-    queryFn: async () => {
-      const localPrompts = loadLocalUserSystemPrompts()
-
-      if (!userId || isElectronCommunityMode() || !isCloudSessionEnabled()) {
-        return localPrompts
-      }
-
-      const response = await cloudApi.get<UserSystemPromptCached[]>('/system-prompts')
-      const cloudPrompts = (response || []).map(prompt => ({ ...prompt, storage_mode: 'cloud' as const }))
-      return [...localPrompts, ...cloudPrompts]
-    },
+    // Prompts live in the host prompt store (mirrored into local storage).
+    queryFn: async () => loadLocalUserSystemPrompts(),
     enabled: true,
     staleTime: 5 * 60 * 1000, // 5 minutes - prompts don't change often
     refetchOnMount: false,
@@ -1939,10 +1475,9 @@ export const getUserSystemPromptsFromCache = (
   queryClient: QueryClient | null,
   userId: string | null
 ): UserSystemPromptCached[] => {
-  const cached = queryClient && userId ? queryClient.getQueryData<UserSystemPromptCached[]>(['userSystemPrompts', userId]) || [] : []
-  const localPrompts = loadLocalUserSystemPrompts()
-  const cachedIds = new Set(cached.map(prompt => prompt.id))
-  return [...cached, ...localPrompts.filter(prompt => !cachedIds.has(prompt.id))]
+  void queryClient
+  void userId
+  return loadLocalUserSystemPrompts()
 }
 
 /**
@@ -1979,10 +1514,10 @@ export function useHtmlToolsCache(userId: string | null | undefined, enabled: bo
   return useQuery({
     queryKey: htmlToolsQueryKey(userId),
     queryFn: async () => {
-      if (!userId || environment !== 'electron') return []
+      if (!userId || !isNativeShell) return []
       return localApi.get<HtmlToolRecord[]>(`/local/tools?userId=${userId}`)
     },
-    enabled: enabled && !!userId && environment === 'electron',
+    enabled: enabled && !!userId && isHostClient,
     staleTime: Infinity,
     gcTime: Infinity,
     refetchOnMount: false,
@@ -2023,7 +1558,7 @@ export function useDirectoryFiles(directoryPath: string | null | undefined) {
       const params = new URLSearchParams({ path: directoryPath })
       return localApi.get<DirectoryListingResponse>(`/local/files?${params}`)
     },
-    enabled: !!directoryPath && directoryPath.trim().length > 0 && environment !== 'web',
+    enabled: !!directoryPath && directoryPath.trim().length > 0,
     staleTime: 30 * 1000, // 30 seconds - files can change frequently
     refetchOnMount: false,
     refetchOnReconnect: false,
@@ -2064,7 +1599,7 @@ export function useDirectoryFileSearch(
 
       return localApi.get<DirectoryFileSearchResponse>(`/local/files/search?${params}`)
     },
-    enabled: !!directoryPath && directoryPath.trim().length > 0 && normalizedQuery.length > 0 && environment !== 'web',
+    enabled: !!directoryPath && directoryPath.trim().length > 0 && normalizedQuery.length > 0,
     staleTime: 30 * 1000,
     refetchOnMount: false,
     refetchOnReconnect: false,
@@ -2097,7 +1632,7 @@ export function useGitOverview(directoryPath: string | null | undefined, enabled
       const params = new URLSearchParams({ path: directoryPath })
       return localApi.get<LocalGitOverviewResponse>(`/local/git/overview?${params}`)
     },
-    enabled: enabled && !!directoryPath && directoryPath.trim().length > 0 && environment === 'electron',
+    enabled: enabled && !!directoryPath && directoryPath.trim().length > 0 && isHostClient,
     staleTime: 10 * 1000,
     refetchOnMount: 'always',
     refetchOnReconnect: false,
@@ -2131,7 +1666,7 @@ export function useGitDiff(
       !!directoryPath &&
       directoryPath.trim().length > 0 &&
       normalizedRelativePath.length > 0 &&
-      environment === 'electron',
+      isHostClient,
     staleTime: 5 * 1000,
     refetchOnMount: 'always',
     refetchOnReconnect: false,

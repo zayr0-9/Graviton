@@ -5,6 +5,7 @@
  * writes to. Stored per user in localStorage like the other chat preferences and sent on
  * every chat request as `contextDirectories`.
  */
+import { getHostExecutionPreferences, saveHostExecutionPreference } from '../services/hostExecutionClient'
 import {
   CONTEXT_DIRECTORY_PRESETS,
   DEFAULT_CONTEXT_DIRECTORY_SETTINGS,
@@ -22,6 +23,8 @@ export const CONTEXT_DIRECTORIES_KEY = 'chat:contextDirectories'
 export const CONTEXT_DIRECTORIES_CHANGE_EVENT = 'chat:contextDirectoriesChange'
 
 export const loadContextDirectorySettings = (): ContextDirectorySettings => {
+  const host = getHostExecutionPreferences()
+  if (host) return structuredClone(host.contextDirectories)
   try {
     const stored = localStorage.getItem(CONTEXT_DIRECTORIES_KEY)
     if (!stored) return { ...DEFAULT_CONTEXT_DIRECTORY_SETTINGS, readDirs: [...DEFAULT_CONTEXT_DIRECTORY_SETTINGS.readDirs] }
@@ -31,8 +34,9 @@ export const loadContextDirectorySettings = (): ContextDirectorySettings => {
   }
 }
 
-export const saveContextDirectorySettings = (settings: ContextDirectorySettings): ContextDirectorySettings => {
+export const saveContextDirectorySettings = async (settings: ContextDirectorySettings): Promise<ContextDirectorySettings> => {
   const normalized = normalizeContextDirectorySettings(settings)
+  if (getHostExecutionPreferences()) { await saveHostExecutionPreference({ contextDirectories: normalized }); return normalized }
   try {
     localStorage.setItem(CONTEXT_DIRECTORIES_KEY, JSON.stringify(normalized))
     window.dispatchEvent(new CustomEvent<ContextDirectorySettings>(CONTEXT_DIRECTORIES_CHANGE_EVENT, { detail: normalized }))

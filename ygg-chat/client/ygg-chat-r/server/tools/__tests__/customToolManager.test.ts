@@ -146,6 +146,18 @@ describe('customToolManager non-invoke actions', () => {
     mockCustomToolRegistry.initialize.mockResolvedValue(undefined)
   })
 
+  it('searches full descriptions without returning every definition', async () => {
+    mockCustomToolRegistry.getStatuses.mockReturnValue([
+      { name: 'alpha', description: 'First sentence. ' + 'x'.repeat(150) + ' database', enabled: true },
+      { name: 'beta', description: 'Database search', enabled: true },
+      { name: 'other', description: 'Unrelated', enabled: true },
+    ])
+    expect(await execute({ action: 'search', query: 'DATABASE', limit: 1 })).toMatchObject({ success: true, totalCount: 2, nextOffset: 1, tools: [{ name: 'alpha' }] })
+    expect(await execute({ action: 'search', query: 'database', limit: 1, offset: 1 })).toMatchObject({ totalCount: 2, tools: [{ name: 'beta' }] })
+    expect((await execute({ action: 'search', query: '' })).success).toBe(false)
+    expect((await execute({ action: 'search', query: 'database', limit: 101 })).success).toBe(false)
+  })
+
   it('keeps list action behavior unchanged', async () => {
     mockCustomToolRegistry.getStatuses.mockReturnValue([
       {

@@ -55,11 +55,6 @@ const parseSseChunk = (chunk: string, onEvent: (event: HeadlessSseEvent) => void
   }
 }
 
-const readRuntimeAppSession = async (): Promise<{ accessToken: string | null; userId: string | null }> => {
-  const result = await jsonFetch<{ snapshot?: { userId?: string | null } }>('/api/provider-auth/openrouter/token', { method: 'GET' })
-  return { accessToken: null, userId: result.snapshot?.userId ?? null }
-}
-
 export const mobileApi = {
   async listUsers(): Promise<LocalUserProfile[]> {
     const payload = await jsonFetch<LocalUserProfile[]>('/api/local/users', { method: 'GET' })
@@ -185,7 +180,6 @@ export const mobileApi = {
     return {
       messages: Array.isArray(payload?.messages) ? payload.messages : [],
       tree: payload?.tree || null,
-      meta: payload?.meta,
     }
   },
 
@@ -243,8 +237,8 @@ export const mobileApi = {
     }
   },
 
-  async getLocalFileContent(filePath: string): Promise<{ path: string; content: string; size: number }> {
-    const payload = await jsonFetch<{ path?: string; content?: string; size?: number }>(
+  async getLocalFileContent(filePath: string): Promise<{ path: string; content: string; size: number; contentHash?: string }> {
+    const payload = await jsonFetch<{ path?: string; content?: string; size?: number; contentHash?: string }>(
       `/api/local/file-content?path=${encodeURIComponent(filePath)}`,
       { method: 'GET' }
     )
@@ -252,16 +246,18 @@ export const mobileApi = {
     return {
       path: typeof payload?.path === 'string' ? payload.path : filePath,
       content: typeof payload?.content === 'string' ? payload.content : '',
+      contentHash: payload.contentHash,
       size: typeof payload?.size === 'number' ? payload.size : 0,
     }
   },
 
-  async saveLocalFileContent(filePath: string, content: string): Promise<{ path: string; size: number; saved: boolean }> {
-    const payload = await jsonFetch<{ path?: string; size?: number; saved?: boolean }>('/api/local/file-content', {
+  async saveLocalFileContent(filePath: string, content: string, expectedHash?: string): Promise<{ path: string; size: number; saved: boolean; contentHash?: string }> {
+    const payload = await jsonFetch<{ path?: string; size?: number; saved?: boolean; contentHash?: string }>('/api/local/file-content', {
       method: 'POST',
       body: JSON.stringify({
         path: filePath,
         content,
+        expectedHash,
       }),
     })
 
@@ -269,6 +265,7 @@ export const mobileApi = {
       path: typeof payload?.path === 'string' ? payload.path : filePath,
       size: typeof payload?.size === 'number' ? payload.size : content.length,
       saved: Boolean(payload?.saved),
+      contentHash: payload.contentHash,
     }
   },
 
@@ -290,7 +287,7 @@ export const mobileApi = {
               Boolean(
                 provider &&
                   (provider.name === 'openaichatgpt' ||
-                    provider.name === 'openrouter' ||
+                    provider.name === 'openrouterbyok' ||
                     provider.name === 'lmstudio' ||
                     provider.name === 'zai' ||
                     provider.name === 'bedrock')
@@ -335,7 +332,7 @@ export const mobileApi = {
     })
   },
 
-  async getProviderTokenStatus(provider: 'openai' | 'openrouter' | 'zai' | 'bedrock', userId: string): Promise<{ hasToken: boolean }> {
+  async getProviderTokenStatus(provider: 'openai' | 'openrouter-byok' | 'zai' | 'bedrock', userId: string): Promise<{ hasToken: boolean }> {
     const payload = await jsonFetch<{ success: boolean; hasToken?: boolean }>(
       `/api/provider-auth/${provider}/token?userId=${encodeURIComponent(userId)}`,
       { method: 'GET' }
@@ -348,7 +345,7 @@ export const mobileApi = {
   },
 
   async getOpenRouterTokenStatus(userId: string): Promise<{ hasToken: boolean }> {
-    return this.getProviderTokenStatus('openrouter', userId)
+    return this.getProviderTokenStatus('openrouter-byok', userId)
   },
 
   async getZaiTokenStatus(userId: string): Promise<{ hasToken: boolean }> {
@@ -359,16 +356,7 @@ export const mobileApi = {
     return this.getProviderTokenStatus('bedrock', userId)
   },
 
-  async getRuntimeAppAuth(): Promise<{ hasToken: boolean; accessToken: string | null; userId: string | null }> {
-    const session = await readRuntimeAppSession()
-    return {
-      hasToken: Boolean(session.accessToken),
-      accessToken: session.accessToken,
-      userId: session.userId,
-    }
-  },
-
-  async clearProviderToken(provider: 'openai' | 'openrouter' | 'zai' | 'bedrock', userId: string): Promise<void> {
+  async clearProviderToken(provider: 'openai' | 'openrouter-byok' | 'zai' | 'bedrock', userId: string): Promise<void> {
     await jsonFetch(`/api/provider-auth/${provider}/token?userId=${encodeURIComponent(userId)}`, {
       method: 'DELETE',
     })
@@ -379,7 +367,7 @@ export const mobileApi = {
   },
 
   async clearOpenRouterToken(userId: string): Promise<void> {
-    await this.clearProviderToken('openrouter', userId)
+    await this.clearProviderToken('openrouter-byok', userId)
   },
 
   async clearZaiToken(userId: string): Promise<void> {
@@ -465,7 +453,7 @@ export const mobileApi = {
     userId: string
     accessToken: string
   }): Promise<void> {
-    await jsonFetch('/api/provider-auth/openrouter/token', {
+    await jsonFetch('/api/provider-auth/openrouter-byok/token', {
       method: 'POST',
       body: JSON.stringify({
         userId: params.userId,

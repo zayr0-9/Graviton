@@ -41,6 +41,15 @@
 .action-cloud-path:focus-within { outline: 2px solid #6097ff; outline-offset: 2px; }
 .action-cloud-path input { width: 100%; min-width: 0; padding: 8px 12px; border: 0; outline: none; background: transparent; font-size: 13px; text-overflow: ellipsis; }
 .action-cloud-folder { display: grid; place-items: center; width: 28px; height: 28px; flex-shrink: 0; border-radius: 50%; background: var(--cloud-button); }
+.action-cloud-folder + .action-cloud-folder { margin-left: 4px; }
+.action-cloud-folder:disabled { opacity: 0.5; cursor: progress; }
+.action-cloud-roots { display: flex; flex-direction: column; gap: 4px; margin-top: 6px; max-height: 132px; overflow-y: auto; }
+.action-cloud-root { display: flex; align-items: center; gap: 8px; min-width: 0; height: 28px; padding: 0 4px 0 12px; border-radius: 999px; background: var(--cloud-field); font-size: 12px; }
+.action-cloud-root-name { flex-shrink: 0; max-width: 45%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 500; }
+.action-cloud-root-path { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--cloud-muted); font-size: 11px; }
+.action-cloud-root > button { display: grid; place-items: center; width: 20px; height: 20px; flex-shrink: 0; border-radius: 50%; color: var(--cloud-muted); transition: background-color var(--ygg-motion-duration-fast) ease-in-out; }
+.action-cloud-root > button:hover { background: var(--cloud-button); }
+.action-cloud-root > button:disabled { opacity: 0.5; }
 .action-cloud-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 34px; font-size: 14px; }
 .action-cloud-row-fast { min-height: 48px; }
 .action-cloud-hint { font-size: 11px; color: var(--cloud-muted); }

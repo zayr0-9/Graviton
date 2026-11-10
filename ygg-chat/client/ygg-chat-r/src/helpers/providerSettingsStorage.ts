@@ -1,8 +1,10 @@
 // Provider Settings Storage
 // Simple localStorage-based persistence for provider visibility and default selection
 
+import { getHostExecutionPreferences, getHostExecutionRevision, saveHostExecutionPreference } from '../services/hostExecutionClient'
 import { normalizeCompactionThreshold } from '../../../../shared/compaction'
-import { isCommunityMode } from '../config/runtimeMode'
+import providersList from '../../../../shared/providers.json'
+import { isNativeShell } from '../platform/clientCapabilities'
 
 const STORAGE_KEY = 'ygg_provider_settings'
 export const PROVIDER_SETTINGS_CHANGE_EVENT = 'ygg-provider-settings-change'
@@ -13,11 +15,13 @@ export const MIN_OPENAI_CHATGPT_MAX_CONTEXT_TOKENS = 1_000
 export const MAX_OPENAI_CHATGPT_MAX_CONTEXT_TOKENS = 2_000_000
 export const DEFAULT_COMPACTION_SYSTEM_PROMPT =
   'You compact chat history. Return detailed markdown that preserves goals, hard requirements, key facts, decisions, pending tasks, and unresolved questions. Do not include tool protocol chatter, but include general context around changes made instead. Include full absolute paths of files touched/edited, and brief summary of what changed.'
-export const DEFAULT_LMSTUDIO_BASE_URL = import.meta.env.VITE_LMSTUDIO_BASE || 'http://172.31.32.1:1234'
+export const DEFAULT_LMSTUDIO_BASE_URL = 'http://localhost:1234'
 
 export type OpenAIPromptCacheRetention = 'in_memory' | '24h'
 
+const HOST_PROVIDER_BASE_REVISION = Symbol('host-provider-base-revision')
 export interface ProviderSettings {
+  [HOST_PROVIDER_BASE_REVISION]?: number
   /** Whether the provider selector is visible in the chat UI */
   showProviderSelector: boolean
   /** Default provider to use when selector is hidden (provider name string) */
@@ -52,8 +56,9 @@ const DEFAULT_SETTINGS: ProviderSettings = {
   openAiPromptCacheRetention: 'in_memory',
 }
 
-const COMMUNITY_ALLOWED_PROVIDERS = new Set(['LM Studio', 'OpenAI (ChatGPT)', 'Z.AI / GLM'])
-const COMMUNITY_FALLBACK_PROVIDER = 'LM Studio'
+// Every listed provider is selectable (fully-local plan Q6). A stored default that is no longer
+// listed (e.g. the retired hosted 'OpenRouter') is dropped; Chat then falls back to ChatGPT.
+const KNOWN_PROVIDER_NAMES = new Set(Object.values(providersList.providers).map(provider => provider.name))
 
 function normalizeOpenRouterTemperature(value: unknown): number | null {
   if (value === null || value === undefined || value === '') return null
@@ -129,7 +134,7 @@ export function resolveLmStudioBaseUrl(): string {
 
 function syncProviderSettingsToElectronStore(settings: ProviderSettings): void {
   if (typeof window === 'undefined') return
-  if (import.meta.env.VITE_ENVIRONMENT !== 'electron') return
+  if (!isNativeShell) return
 
   const storageApi = window.electronAPI?.storage
   if (!storageApi?.set) return
@@ -145,17 +150,18 @@ function syncProviderSettingsToElectronStore(settings: ProviderSettings): void {
 export function loadProviderSettings(): ProviderSettings {
   try {
     const stored = localStorage.getItem(STORAGE_KEY)
-    const parsed = stored ? (JSON.parse(stored) as Partial<ProviderSettings>) : DEFAULT_SETTINGS
+    const local = stored ? (JSON.parse(stored) as Partial<ProviderSettings>) : DEFAULT_SETTINGS
+    const host = getHostExecutionPreferences()
+    const parsed = host ? { ...host.provider, showProviderSelector: local.showProviderSelector } : local
 
     const resolvedDefaultProvider = parsed.defaultProvider ?? DEFAULT_SETTINGS.defaultProvider
-    const communityDefaultProvider =
-      resolvedDefaultProvider && COMMUNITY_ALLOWED_PROVIDERS.has(resolvedDefaultProvider)
-        ? resolvedDefaultProvider
-        : COMMUNITY_FALLBACK_PROVIDER
+    const defaultProvider =
+      resolvedDefaultProvider && KNOWN_PROVIDER_NAMES.has(resolvedDefaultProvider) ? resolvedDefaultProvider : null
 
     return {
-      showProviderSelector: isCommunityMode ? true : (parsed.showProviderSelector ?? DEFAULT_SETTINGS.showProviderSelector),
-      defaultProvider: isCommunityMode ? communityDefaultProvider : resolvedDefaultProvider,
+      ...(host ? { [HOST_PROVIDER_BASE_REVISION]: getHostExecutionRevision('provider') } : {}),
+      showProviderSelector: parsed.showProviderSelector ?? DEFAULT_SETTINGS.showProviderSelector,
+      defaultProvider,
       openRouterTemperature: normalizeOpenRouterTemperature(parsed.openRouterTemperature),
       compactionProvider: parsed.compactionProvider ?? DEFAULT_SETTINGS.compactionProvider,
       compactionModel: parsed.compactionModel ?? DEFAULT_SETTINGS.compactionModel,
@@ -166,17 +172,14 @@ export function loadProviderSettings(): ProviderSettings {
       openAiPromptCacheRetention: normalizeOpenAiPromptCacheRetention(parsed.openAiPromptCacheRetention),
     }
   } catch {
-    return {
-      ...DEFAULT_SETTINGS,
-      defaultProvider: isCommunityMode ? COMMUNITY_FALLBACK_PROVIDER : DEFAULT_SETTINGS.defaultProvider,
-    }
+    return { ...DEFAULT_SETTINGS }
   }
 }
 
 /**
  * Save provider settings to localStorage and emit change event
  */
-export function saveProviderSettings(settings: ProviderSettings): void {
+export async function saveProviderSettings(settings: ProviderSettings): Promise<void> {
   const normalized: ProviderSettings = {
     ...settings,
     openRouterTemperature: normalizeOpenRouterTemperature(settings.openRouterTemperature),
@@ -187,6 +190,18 @@ export function saveProviderSettings(settings: ProviderSettings): void {
     openAiPromptCacheRetention: normalizeOpenAiPromptCacheRetention(settings.openAiPromptCacheRetention),
   }
 
+  if (getHostExecutionPreferences()) {
+    const { showProviderSelector, [HOST_PROVIDER_BASE_REVISION]: revision, ...provider } = normalized
+    if (!Number.isSafeInteger(revision)) throw new Error('Reload provider settings before saving; the edit base is missing.')
+    const current = getHostExecutionPreferences()!.provider
+    if ((Object.keys(current) as Array<keyof typeof current>).some(key => provider[key] !== current[key]))
+      await saveHostExecutionPreference({ provider }, revision)
+    normalized[HOST_PROVIDER_BASE_REVISION] = getHostExecutionRevision('provider')
+    settings[HOST_PROVIDER_BASE_REVISION] = getHostExecutionRevision('provider')
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({ showProviderSelector }))
+    window.dispatchEvent(new CustomEvent(PROVIDER_SETTINGS_CHANGE_EVENT, { detail: normalized }))
+    return
+  }
   try {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(normalized))
     window.dispatchEvent(new CustomEvent(PROVIDER_SETTINGS_CHANGE_EVENT, { detail: normalized }))
@@ -199,12 +214,12 @@ export function saveProviderSettings(settings: ProviderSettings): void {
 /**
  * Update a single setting and persist
  */
-export function updateProviderSetting<K extends keyof ProviderSettings>(
+export async function updateProviderSetting<K extends keyof ProviderSettings>(
   key: K,
   value: ProviderSettings[K]
-): ProviderSettings {
+): Promise<ProviderSettings> {
   const current = loadProviderSettings()
   const updated = { ...current, [key]: value }
-  saveProviderSettings(updated)
+  await saveProviderSettings(updated)
   return updated
 }

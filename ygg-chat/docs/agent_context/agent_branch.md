@@ -227,7 +227,7 @@ The synthetic `root` is visual-only. Reducers such as `selectedNodePathSet` filt
 - Keep all messages in a branch under the same `conversation_id`.
 - Use `parent_id: null`, not an empty string, for roots.
 - Keep `children_ids` as JSON text in SQLite and arrays in normalized frontend state.
-- Compare IDs defensively with `String(id)` when crossing local/cloud/legacy boundaries.
+- Compare IDs defensively with `String(id)` when crossing legacy id boundaries.
 - Treat `children_ids` as sibling order for tree rendering, but use `parent_id` for ancestor walking.
 - Multiple root messages are valid in one conversation; Heimdall handles them with a synthetic root.
 - A lineage is a stable persisted identity; its visible path is a projection resolved from its current head through `parent_id`. Do not use a leaf message ID, stream ID, or tool-call ID as lineage identity.
@@ -282,3 +282,15 @@ Manual checks (all now driven through the headless server on `:3002`):
 - `agent_chat_container.md`
 - `agent_heimdall.md`
 - `agent_headless_server.md`
+
+## Claude first-prompt clean-start exception
+
+Branch/edit on the first real user prompt may select either Claude Code or a Graviton provider. `shared/cleanStartBranch.ts` requires complete ancestry containing only known launch context/settings notices before that prompt, not just a top visible Heimdall node. `ChatOrchestrator.startsFreshExecution` validates this from persisted rows for edit-branch involving Claude, creates a new root (or fresh target-provider context root), and passes no native source checkpoint. The fork operation retains source lineage/message audit identity; original rows and native sessions are unchanged. Mid-history edits, child branches and repeat keep inherited identity/checkpoint rules. Renderer provider/model drafts live only in the edit composition, are captured before async submission/editor close, and are discarded on cancel or explicit navigation; normal and parallel sends still resolve their actual selected ancestry.
+
+## Committed-summary execution handoff
+
+`shared/summaryHandoff.ts` identifies nonempty committed summary text. Explicit `branch` at that row (or edit/retry of the first prompt after it) creates a new execution lineage, records `meta.executionHandoff.summaryMessageId` on the accepted user row, and seeds a fresh Claude session or freshly injected Graviton replay with the summary only. Structural ancestry stays intact for navigation/audit. Provider identity validation/renderer locking use `executionPathAfterHandoff` so old source identities cannot lock later handoff branches. Immediately after a non-Claude summary, the normal composer also allows choosing Claude through only restored context/settings/resume notices; its send becomes the existing explicit summary-branch request, preserving the source lineage and copying only summary text. Real post-summary user/assistant activity closes this window. Same-provider sends remain ordinary continuations. The summary notice also exposes a separate branch-request editor; it never edits/exposes the stored summary itself.
+
+## Branch tool approval
+
+`branchToolApproval.ts` resolves lineage/tip drafts and nearest `meta.toolAutoApprove` for the captured selected branch. Composer changes are persisted branch drafts, with editor choices composition-local. `allow_always` persists the server-resolved lineage head before releasing broker waits and emits `tool_approval_changed`; it never promotes another selected/background branch or the host default. Response sinks stamp the current broker policy. New-run admission honors explicit values, otherwise inherits persisted execution ancestry before host defaults. Historical forks/edits resolve at their cut; fresh summary/clean-start handoffs reset to host defaults unless explicitly selected. No schema migration is needed for the existing JSON metadata contract.

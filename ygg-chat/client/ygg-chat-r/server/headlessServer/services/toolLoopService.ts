@@ -11,7 +11,7 @@ import {
   type ProviderPartialOutput,
   type ProviderToolCall,
   type ProviderToolDefinition,
-} from '../providers/openRouterProvider.js'
+} from '../providers/providerTypes.js'
 import { ProviderRouter, normalizeProviderRoute } from './providerRouter.js'
 import { persistWithFallback, type ToolResultPersistencePolicy } from './toolResultPersistenceService.js'
 import { sanitizeToolResultContentForModel } from '../providers/toolResultSanitizer.js'
@@ -52,6 +52,8 @@ export interface ToolExecutionContext {
   streamId?: string | null
   rootPath?: string | null
   fullAccess?: boolean
+  /** Extra conversation roots (conversations.additional_cwds) tools may use besides rootPath. */
+  additionalRoots?: string[]
   operationMode?: 'plan' | 'execute'
   provider?: string
   modelName?: string
@@ -61,11 +63,13 @@ export interface ToolExecutionContext {
   contextLength?: number
   /** Parent request's service tier, inherited by Codex subagents. */
   serviceTier?: 'priority'
+  subagentDefaults?: import('../../../../../shared/hostSubagentPreferences.js').HostSubagentPreferences
   subagentReasoningEffort?: 'low' | 'medium' | 'high' | 'xhigh'
   /** Renderer-selected baseline inherited by server-owned child subagents. */
   subagentSystemPrompt?: string | null
-  authSessions?: { app: string; codex: string }
+  authSessions?: { codex: string }
   timeoutMs?: number
+  bashTimeoutMs?: number
   signal?: AbortSignal
   /** Policy-aware executor used by composite tools for each nested call. */
   nestedExecutor?: ToolExecutor
@@ -220,6 +224,8 @@ export interface ToolLoopRunInput {
   streamId?: string | null
   rootPath?: string | null
   fullAccess?: boolean
+  /** Extra conversation roots (conversations.additional_cwds) tools may use besides rootPath. */
+  additionalRoots?: string[]
   operationMode?: 'plan' | 'execute'
   modeControl?: OperationModeControl
   flushOperationMode?: (parentId: string | null, history: any[]) => any[]
@@ -230,13 +236,15 @@ export interface ToolLoopRunInput {
   /** Server-owned prompt to switch the current Plan-mode run to Agent mode. */
   requestOperationModeUpgrade?: (toolCall: ProviderToolCall) => Promise<boolean>
   toolTimeoutMs?: number
+  bashTimeoutMs?: number
   /** Parent tool-approval policy, forwarded to server-owned subagent calls. */
   toolAutoApprove?: boolean
   /** Reasoning effort to apply to child subagent calls. */
+  subagentDefaults?: import('../../../../../shared/hostSubagentPreferences.js').HostSubagentPreferences
   subagentReasoningEffort?: 'low' | 'medium' | 'high' | 'xhigh'
   /** Renderer-selected baseline inherited by server-owned child subagents. */
   subagentSystemPrompt?: string | null
-  authSessions?: { app: string; codex: string }
+  authSessions?: { codex: string }
   autoCompactionEnabled?: boolean
   contextLength?: number
   /** Project/conversation meter prompts. Direct/subagent calls use their runtime prompts. */
@@ -251,17 +259,10 @@ export interface ToolLoopRunInput {
   maxTurns?: number
   /** Abort signal; checked between turns and before each tool, and forwarded to the provider. */
   signal?: AbortSignal
-  /** Overrides the codex session / prompt-cache key (railwayTurn.conversationId). */
-  railwaySessionId?: string | null
+  /** Overrides the codex session / prompt-cache key (turnContext.conversationId). */
+  providerSessionId?: string | null
   /** Forwarded to openaichatgpt so commentary text can back-fill an empty final answer. */
   allowCommentaryFallbackText?: boolean
-  /**
-   * Phase 4: relay Railway free-tier SSE frames (free_generations_update /
-   * generation_limit_reached) up through the OpenRouter provider. Set only by the
-   * server-owned cloud chat path. Absent (subagents/tests/native providers) => the
-   * provider drops the frames exactly as before.
-   */
-  relayFreeTierEvents?: boolean
   /** Opt-in robustness behaviors; all default off so main-chat behavior is unchanged. */
   robustness?: ToolLoopRobustnessOptions
   /**
@@ -860,7 +861,6 @@ export class ToolLoopService {
         parentId: params.parentId,
         content: partial.content,
         modelName: params.input.modelName,
-        toolCalls: toolCalls.length ? toolCalls : null,
         contentBlocks,
         thinkingBlock: partial.reasoning || null,
         meta: params.assistantMeta,
@@ -931,10 +931,10 @@ export class ToolLoopService {
       think: input.think,
       temperature: input.temperature,
       signal: input.signal,
-      railwayTurn:
-        providerRoute === 'openrouter' || providerRoute === 'openaichatgpt'
+      turnContext:
+        providerRoute === 'openaichatgpt'
           ? {
-              conversationId: input.railwaySessionId || input.conversationId,
+              conversationId: input.providerSessionId || input.conversationId,
               parentId: params.parentId,
               operation: input.operation,
               conversationContext: input.conversationContext ?? null,
@@ -945,8 +945,6 @@ export class ToolLoopService {
               retrigger: turn === 1 && !params.disableTools ? input.retrigger : false,
               executionMode: input.executionMode,
               isBranch: input.isBranch,
-              storageMode: 'local',
-              relayFreeTierEvents: input.relayFreeTierEvents ?? false,
               isElectron: input.isElectron ?? true,
               imageConfig: input.imageConfig,
               reasoningConfig: input.reasoningConfig,
@@ -1232,8 +1230,6 @@ export class ToolLoopService {
       contentBlocks,
       contextUsage: output.contextUsage,
       thinkingBlock: output.reasoning ?? null,
-      // Phase 4: adopt Railway's id on the cloud path (see the main-turn persist site).
-      providerMessageId: output.raw && typeof output.raw.id === 'string' ? output.raw.id : null,
     })
     emit({ type: 'assistant_message_persisted', message: assistantMessage })
 
@@ -1255,9 +1251,8 @@ export class ToolLoopService {
 
   async run(input: ToolLoopRunInput, emit: (event: HeadlessStreamEvent) => void): Promise<ToolLoopRunResult> {
     const route = normalizeProviderRoute(input.provider)
-    const slot = route === 'openrouter' ? 'app' : route === 'openaichatgpt' ? 'codex' : null
-    const authSessions = input.authSessions ?? { app: getAuthManager().snapshot('app').sessionId ?? 'signed-out', codex: getAuthManager().snapshot('codex').sessionId ?? 'signed-out' }
-    input = { ...input, authSessions, ...(slot ? { authSessionId: input.authSessionId ?? authSessions[slot] } : {}) }
+    const authSessions = input.authSessions ?? { codex: getAuthManager().snapshot('codex').sessionId ?? 'signed-out' }
+    input = { ...input, authSessions, ...(route === 'openaichatgpt' ? { authSessionId: input.authSessionId ?? authSessions.codex } : {}) }
     const maxTurns = Math.max(1, Math.min(input.maxTurns ?? this.maxTurns, this.maxTurns))
     const robustness = input.robustness
     let currentParentId = input.assistantParentId
@@ -1444,14 +1439,9 @@ export class ToolLoopService {
         parentId: currentParentId,
         content: output.content || '',
         modelName: input.modelName,
-        toolCalls: assistantToolCalls,
         contentBlocks: persistedAssistantContentBlocks,
         contextUsage: output.contextUsage,
         thinkingBlock: output.reasoning ?? null,
-        // Phase 4: Railway's authoritative message id (when the provider surfaced a
-        // complete frame). Only CloudMirrorSink adopts it; TreeMessageSink ignores it,
-        // and it is null for native providers / streamed-only frames => mint parity.
-        providerMessageId: output.raw && typeof output.raw.id === 'string' ? output.raw.id : null,
         meta: assistantMeta,
       })
 
@@ -1768,6 +1758,7 @@ export class ToolLoopService {
             streamId: input.streamId ?? null,
             rootPath: input.rootPath ?? null,
             fullAccess: input.fullAccess === true,
+            additionalRoots: input.additionalRoots ?? [],
             operationMode: activeOperationMode,
             provider: input.provider,
             modelName: input.modelName,
@@ -1777,9 +1768,11 @@ export class ToolLoopService {
             contextLength: input.contextLength,
             serviceTier: input.serviceTier,
             subagentReasoningEffort: input.subagentReasoningEffort,
+            subagentDefaults: input.subagentDefaults,
             subagentSystemPrompt: input.subagentSystemPrompt ?? null,
             authSessions: input.authSessions,
             timeoutMs: input.toolTimeoutMs,
+            bashTimeoutMs: input.bashTimeoutMs,
             signal: input.signal,
             parentToolInvocationId: invocation?.id ?? null,
             lineageId: input.lineageId ?? null,
@@ -1932,18 +1925,13 @@ export class ToolLoopService {
         const updatedBlocks = [...existingBlocks, ...toolResultBlocks]
         const anyToolErrors = toolResultBlocks.some(block => block.is_error)
 
-        // `tool_calls` is the legacy flat list. The result itself lives only in the
-        // `tool_result` block above; mirroring it here as `result` stored every tool
-        // output twice in the row, and again in every SSE frame and history entry that
-        // carries the row. Readers prefer the block and treat `tool_calls[].result`
-        // as a fallback for rows written before this change.
-        const updatedToolCalls = assistantToolCalls.map(call => ({ ...call, status: 'complete' }))
-
+        // Calls and results live only in `content_blocks` (`tool_use` / `tool_result`).
+        // The legacy `tool_calls` column is no longer written; readers fall back to it
+        // only for rows that have no blocks.
         const persistResult = await persistWithFallback({
           attemptPersist: async () => {
             const updated = this.sink.updateAssistantToolState(assistantMessage.id, {
               contentBlocks: updatedBlocks,
-              toolCalls: updatedToolCalls,
             })
             if (!updated) {
               throw new Error(`Assistant message missing during tool result persist: ${assistantMessage.id}`)
@@ -1958,12 +1946,11 @@ export class ToolLoopService {
         })
 
         // Serialise the fallback row only when the persist actually failed; building it
-        // eagerly stringified both arrays on every turn and then threw them away.
+        // eagerly stringified the blocks on every turn and then threw them away.
         const assistantForContinuation =
           persistResult.result ?? {
             ...assistantMessage,
             content_blocks: JSON.stringify(updatedBlocks),
-            tool_calls: JSON.stringify(updatedToolCalls),
           }
         lastAssistantMessage = assistantForContinuation
         // openaiChatgpt and lmStudio build their tool outputs from the assistant row's

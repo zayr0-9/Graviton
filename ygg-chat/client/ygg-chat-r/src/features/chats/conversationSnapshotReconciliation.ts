@@ -8,6 +8,7 @@ export interface ReconcileConversationSnapshotInput {
   fetchedMessages: Message[]
   liveMessages: Message[]
   protections?: ConversationSnapshotProtection[]
+  deletedMessageIds?: Iterable<string>
 }
 
 const idOf = (message: Pick<Message, 'id'>): string => String(message.id)
@@ -23,7 +24,11 @@ export function reconcileConversationSnapshot({
   fetchedMessages,
   liveMessages,
   protections = [],
+  deletedMessageIds = [],
 }: ReconcileConversationSnapshotInput): Message[] {
+  const deleted = new Set(deletedMessageIds)
+  fetchedMessages = fetchedMessages.filter(message => !deleted.has(String(message.id)))
+  liveMessages = liveMessages.filter(message => !deleted.has(String(message.id)))
   const liveById = new Map(liveMessages.map(message => [idOf(message), message]))
   const fetchedById = new Map(fetchedMessages.map(message => [idOf(message), message]))
   const protectedIds = new Set<string>()
@@ -47,6 +52,10 @@ export function reconcileConversationSnapshot({
 
   const reconciled = fetchedMessages.map(message => {
     const live = liveById.get(idOf(message))
+    if (live && typeof live.revision === 'number' && typeof message.revision === 'number') {
+      if (live.revision > message.revision) return live
+      if (message.revision > live.revision) return message
+    }
     if (!live || !protectedIds.has(idOf(message))) return message
     // Durable fields/attachment metadata come from the fetched row; volatile live
     // projection fields win only while explicitly protected.

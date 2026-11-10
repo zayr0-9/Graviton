@@ -1285,3 +1285,76 @@ html {
     transform: scaleX(1);
   }
 }
+
+/* Native transparency is intentional; browser delivery always has a solid canvas.
+ * Apply to every document layer so negative-z backgrounds cannot expose white. */
+html[data-solid-app-background='true'] {
+  --browser-default-background: #F5F5F4;
+}
+html[data-solid-app-background='true'].dark {
+  --browser-default-background: #0C0A09;
+}
+html[data-solid-app-background='true'],
+html[data-solid-app-background='true'] body,
+html[data-solid-app-background='true'] #root {
+  background-color: var(--browser-app-background, var(--browser-default-background)) !important;
+}
+
+/* Web controls remain available on narrow screens; native compact controls stay unchanged. */
+@media (max-width: 860px) {
+  html[data-solid-app-background='true'] .composer-controls-row {
+    flex-wrap: wrap;
+  }
+
+  html[data-solid-app-background='true'] .composer-controls-left {
+    flex: 1 1 100%;
+    width: 100%;
+    max-width: 100%;
+  }
+
+  html[data-solid-app-background='true'] .composer-controls-left > button {
+    flex-shrink: 0;
+  }
+
+  html[data-solid-app-background='true'] .composer-controls-left-selectors {
+    display: flex;
+    flex: 1 1 0%;
+    overflow: visible;
+  }
+
+  html[data-solid-app-background='true'] .composer-controls-left-selectors > div {
+    flex: 1 1 0%;
+    width: 0;
+    min-width: 0;
+    max-width: none;
+  }
+
+  html[data-solid-app-background='true'] .fm-controls {
+    margin-left: auto;
+    max-width: 100%;
+    flex-wrap: wrap;
+    height: auto;
+    min-height: 2.5rem;
+  }
+}
+
+@media (max-width: 767px) {
+  /* Phones prioritize selectors; tablet pointer layouts retain the usage hover target. */
+  html[data-solid-app-background='true'] .composer-controls-left > .peer {
+    display: none;
+  }
+
+  html[data-solid-app-background='true'] .app-content {
+    flex-direction: column;
+  }
+
+  html[data-solid-app-background='true'] .app-main {
+    min-height: 0;
+    width: 100%;
+  }
+
+  html[data-solid-app-background='true'] .chat-layout {
+    width: 100%;
+    max-width: 100%;
+  }
+}

@@ -1,3 +1,4 @@
+import { newClientId } from '../../helpers/clientId'
 import { StreamLineage, StreamState, StreamType } from './chatTypes'
 
 /**
@@ -47,7 +48,7 @@ export const generateStreamId = (
     toolCallId?: string
   }
 ): string => {
-  const uuid = crypto.randomUUID()
+  const uuid = newClientId()
   const shortUuid = uuid.slice(0, 8)
 
   switch (type) {

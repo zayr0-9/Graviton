@@ -302,26 +302,11 @@ export function findSkill(skills: readonly DiscoveredSkill[], name: string): Dis
   return skills.find(skill => skill.bareName === wanted && !skill.shadowed) ?? null
 }
 
-/** §5.3 startup index. Excludes `disable-model-invocation: true`; caps each description. */
+/** Startup discovery hint only. Skill names/descriptions are disclosed by manager search/list. */
 export function renderSkillIndex(skills: readonly DiscoveredSkill[], toolName = 'skill_manager'): string | null {
   const visible = skills.filter(skill => !skill.frontmatter.disableModelInvocation && !skill.shadowed)
   if (visible.length === 0) return null
-  const lines = visible
-    .slice()
-    .sort((a, b) => a.name.localeCompare(b.name))
-    .map(skill => {
-      const description = [skill.frontmatter.description, skill.frontmatter.whenToUse]
-        .filter(Boolean)
-        .join(' ')
-        .replace(/\s+/g, ' ')
-        .trim()
-        .slice(0, SKILL_DESCRIPTION_CAP)
-      return `- ${skill.name}: ${description}`
-    })
-  return [
-    `The following skills are available for use with the ${toolName} tool (action "activate", name "<skill>"):`,
-    ...lines,
-  ].join('\n')
+  return `Use ${toolName} with action "search" and a task-relevant query to discover skills, then "activate" by name to load instructions. Skill descriptions and instructions are not preloaded.`
 }
 
 /** Shell-style argument split: `"hello world"` is one argument. */

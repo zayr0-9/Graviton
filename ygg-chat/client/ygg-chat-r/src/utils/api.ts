@@ -1,12 +1,10 @@
 // utils/api.ts
-import { ConversationId, StorageMode } from '../../../../shared/types'
-import { isCommunityMode } from '../config/runtimeMode'
-import { attachLocalChatErrorCode } from '../features/chats/localChatErrors'
+import { ConversationId } from '../../../../shared/types'
+import { isHostClient, isBrowserClient, isNativeShell, isStandaloneClient } from '../platform/clientCapabilities'
+import { getHostRuntime, verifyBrowserHost } from '../services/hostRuntimeBootstrap'
 import { logClientError } from '../services/clientTelemetry'
 
 // Base configuration
-export const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:3001/api'
-export const environment = import.meta.env.VITE_ENVIRONMENT || 'local'
 const DEFAULT_LOCAL_SERVER_ORIGIN = 'http://127.0.0.1:3002'
 // Explicit development override for the Ygg server origin (browser targets).
 const CONFIGURED_LOCAL_SERVER_ORIGIN = ((): string | null => {
@@ -149,25 +147,6 @@ function normalizeEndpoint(endpoint: string): string {
   return endpoint.startsWith('/') ? endpoint : `/${endpoint}`
 }
 
-const PUBLIC_API_ENDPOINT_PREFIXES = ['/app-store/community'] as const
-
-function assertPublicEndpointAllowed(endpoint: string, source: string): string {
-  const normalizedEndpoint = normalizeEndpoint(endpoint)
-  const allowed = PUBLIC_API_ENDPOINT_PREFIXES.some(
-    prefix => normalizedEndpoint === prefix || normalizedEndpoint.startsWith(`${prefix}/`)
-  )
-
-  if (!allowed) {
-    throw new Error(`[${source}] Endpoint is not whitelisted for public access (${normalizedEndpoint})`)
-  }
-
-  return normalizedEndpoint
-}
-
-function assertCloudBackendAllowed(endpoint: string, source: string): void {
-  if (!isCommunityMode) return
-  throw new Error(`[${source}] Cloud backend routes are disabled in community mode (${endpoint})`)
-}
 
 function normalizeOrigin(origin: string | null | undefined): string | null {
   if (!origin || typeof origin !== 'string') return null
@@ -177,7 +156,7 @@ function normalizeOrigin(origin: string | null | undefined): string | null {
 }
 
 function isElectronRuntimeWithSyncIpc(): boolean {
-  if (environment !== 'electron') return false
+  if (!isNativeShell) return false
   if (typeof window === 'undefined') return false
   return typeof window.electronAPI?.sync?.status === 'function'
 }
@@ -189,7 +168,7 @@ function isElectronRuntimeWithSyncIpc(): boolean {
  * on Electron specifically.
  */
 export function isLocalServerRuntime(): boolean {
-  return environment === 'electron' || environment === 'standalone'
+  return isHostClient
 }
 
 /**
@@ -198,8 +177,9 @@ export function isLocalServerRuntime(): boolean {
  * standalone browser target -> loopback default (local development).
  */
 function resolveBrowserFallbackOrigin(): string {
+  if (isBrowserClient && typeof window !== 'undefined') return window.location.origin
   if (CONFIGURED_LOCAL_SERVER_ORIGIN) return CONFIGURED_LOCAL_SERVER_ORIGIN
-  if (environment === 'standalone' && typeof window !== 'undefined') {
+  if (isStandaloneClient && typeof window !== 'undefined') {
     const sameOrigin = normalizeOrigin(window.location.origin)
     if (sameOrigin) return sameOrigin
   }
@@ -318,6 +298,7 @@ export function getCachedLocalServerOrigin(): string {
  * is the hook a caller uses to refuse or warn instead of writing blind.
  */
 export function isLocalServerOriginVerified(): boolean {
+  if (isBrowserClient) return Boolean(getHostRuntime())
   if (lastLocalServerStatusProbeFailed) return false
   return Boolean(cachedLocalServerStatus?.localServerRunning && normalizeOrigin(cachedLocalServerStatus?.localServerUrl))
 }
@@ -341,6 +322,7 @@ export function getCachedLocalApiBase(): string {
 }
 
 export async function buildLocalApiUrl(endpoint: string): Promise<string> {
+  if (isBrowserClient) await verifyBrowserHost()
   return `${await getLocalApiBase()}${normalizeEndpoint(endpoint)}`
 }
 
@@ -355,15 +337,6 @@ export async function buildLocalWebSocketUrl(pathname: string): Promise<string> 
 
 export function buildCachedLocalWebSocketUrl(pathname: string): string {
   return `${getCachedLocalServerOrigin().replace(/^http/i, 'ws')}${normalizeEndpoint(pathname)}`
-}
-
-// Helper to determine if we should use local API. Both the Electron desktop
-// app and the standalone browser target talk to the local Ygg server.
-export function shouldUseLocalApi(storageMode?: StorageMode, env?: string): boolean {
-  const runtimeEnv = env || environment
-  const localServerCapable = runtimeEnv === 'electron' || runtimeEnv === 'standalone'
-  if (isCommunityMode && localServerCapable) return true
-  return storageMode === 'local' && localServerCapable
 }
 
 // ---------------------------------------------------------------------------
@@ -655,13 +628,8 @@ export const localApi = {
 }
 
 /**
- * Phase 5 thin-client gateways. Both hit the LOCAL server (:3002) — the renderer
- * never talks to Railway directly anymore:
- *  - gwApi (/api/gw/*): storage-aware CRUD/reads. The server owns the local-vs-cloud
- *    branch + dual-fetch/merge + dual-write; the renderer just calls one path.
- *  - cloudApi (/api/cloud/*): authenticated pass-through to Railway-authoritative
- *    resources. The server injects the Bearer, so callers pass no token.
- * Both reuse localApi's transport, error handling, and network-failure reporting.
+ * gwApi (/api/gw/*): the local data gateway (a facade over the host's /api/app/* routes).
+ * Reuses localApi's transport, error handling, and network-failure reporting.
  */
 function makeLocalGateway(prefix: string) {
   const p = (endpoint: string) => `${prefix}${normalizeEndpoint(endpoint)}`
@@ -675,468 +643,17 @@ function makeLocalGateway(prefix: string) {
 }
 
 export const gwApi = makeLocalGateway('/gw')
-export const cloudApi = makeLocalGateway('/cloud')
 
-if (typeof window !== 'undefined' && environment === 'electron') {
+if (typeof window !== 'undefined' && isNativeShell) {
   void refreshLocalServerStatus().catch(() => {
     // Endpoint discovery is best-effort and can be retried by callers.
   })
 }
 
-/**
- * Ensures the access token is valid before making a request.
- * Automatically refreshes the token if it expires in < 5 minutes.
- *
- * @returns The current valid access token or null
- */
-
-// Custom event name for force logout - AuthContext should listen for this.
-// Still exported and still listened for (AuthContext clears its React state on it), but
-// NOTHING in this file dispatches it any more — see `sessionExpiredError` below.
-export const FORCE_LOGOUT_EVENT = 'force-logout'
-
-/**
- * D2 — an expired session renders a chat bubble with a Sign in button. Nothing may yank
- * the user to /login mid-generation.
- *
- * Both 401 handlers below used to call a `redirectToLogin()` helper that (a) dispatched
- * `FORCE_LOGOUT_EVENT`, which clears `AuthContext` state and makes `ProtectedRoute`
- * immediately `<Navigate to='/login'>`, and (b) assigned `location.href` / `location.hash`
- * directly. Ordinary CRUD issued from the chat screen runs through `apiCall` while a reply
- * is streaming (cloneConversation, patchConversationProject, model fetches…), and the
- * auto-compaction path runs through `createStreamingRequest`, so a 401 on any of them threw
- * the user out of the app mid-reply — precisely what the SSE path was already fixed not to
- * do (`mainChatClient`, `reauth_required`).
- *
- * The classified throw replaces it. `chatErrorCode` and `status` are both read by
- * `classifyLocalChatError`, so whatever catches this lands on `session_expired` and renders
- * the bubble; the user chooses when to leave. `Error.message` here is raw technical text and
- * ends up in `envelope.detail` only — `envelope.userMessage` is the only string a user reads.
- *
- * Genuine sign-out is untouched: it goes through `AuthContext.signOut` → `provider.logout()`,
- * which never involved this helper. No caller in this file needs the hard redirect; if one
- * ever does, it must be that caller's own explicit decision, not a side effect of a 401.
- */
-const sessionExpiredError = (source: string): Error => {
-  const error = new Error(`Unauthorized (${source})`)
-  ;(error as Error & { status?: number }).status = 401
-  return attachLocalChatErrorCode(error, 'session_expired')
-}
-
-// Core API utility function - now accepts accessToken as parameter
-export const apiCall = async <T>(endpoint: string, accessToken: string | null, options?: RequestInit): Promise<T> => {
-  assertCloudBackendAllowed(endpoint, 'apiCall')
-
-  // OAuth is injected by the local gateway, never by the renderer.
-  void accessToken
-  const tokenToUse = null
-  const requestStart = Date.now()
-
-  const isFormData = options?.body && typeof FormData !== 'undefined' && options.body instanceof FormData
-
-  // Destructure to separate headers from other options
-  const { headers: optionsHeaders, ...restOptions } = options || {}
-  const method = String(restOptions.method || 'GET').toUpperCase()
-
-  const makeRequest = async (token: string | null) => {
-    return fetch(await buildLocalApiUrl(`${/^(\/conversations|\/projects|\/messages|\/attachments)(\/|\?|$)/.test(endpoint) ? '/gw' : '/cloud'}${endpoint}`), {
-      ...restOptions, // Spread everything EXCEPT headers
-      headers: {
-        ...(isFormData ? {} : { 'Content-Type': 'application/json' }),
-        ...optionsHeaders, // Spread headers from options
-        ...(token && (environment === 'web' || environment === 'electron') ? { Authorization: `Bearer ${token}` } : {}), // Add Authorization header with JWT in web/electron mode
-      },
-    })
-  }
-
-  const executeRequest = async (token: string | null): Promise<Response> => {
-    try {
-      return await makeRequest(token)
-    } catch (error) {
-      reportNetworkFailure({
-        source: 'apiCall',
-        endpoint,
-        method,
-        durationMs: Date.now() - requestStart,
-        message: getErrorMessage(error),
-      })
-      throw error
-    }
-  }
-
-  let response = await executeRequest(tokenToUse)
-
-  // Handle 401 Unauthorized: Try to refresh token and retry once.
-  // The reason is accumulated rather than thrown inline: the old shape wrapped its own
-  // throws in the same try/catch, so the catch re-swallowed them and every branch collapsed
-  // to one indistinguishable message. Nothing here navigates (D2) — see sessionExpiredError.
-  if (response.status === 401) {
-    throw sessionExpiredError(endpoint)
-  }
-
-  if (!response.ok) {
-    const errorText = await response.text()
-    reportNetworkFailure({
-      source: 'apiCall',
-      endpoint,
-      method,
-      status: response.status,
-      statusText: response.statusText,
-      durationMs: Date.now() - requestStart,
-      message: errorText || response.statusText || `HTTP ${response.status}`,
-    })
-    throw new Error(`HTTP ${response.status}: ${errorText || response.statusText}`)
-  }
-
-  return response.json()
-}
-
-// Public cloud API utility for explicitly whitelisted read-only endpoints.
-// This bypasses community-mode cloud blocking and does not perform auth refresh/redirect behavior.
-export const publicApiCall = async <T>(endpoint: string, options?: RequestInit): Promise<T> => {
-  const normalizedEndpoint = assertPublicEndpointAllowed(endpoint, 'publicApiCall')
-  const requestStart = Date.now()
-
-  const isFormData = options?.body && typeof FormData !== 'undefined' && options.body instanceof FormData
-  const { headers: optionsHeaders, ...restOptions } = options || {}
-  const method = String(restOptions.method || 'GET').toUpperCase()
-
-  let response: Response
-  try {
-    response = await fetch(`${API_BASE}${normalizedEndpoint}`, {
-      ...restOptions,
-      headers: {
-        ...(isFormData ? {} : { 'Content-Type': 'application/json' }),
-        ...optionsHeaders,
-      },
-    })
-  } catch (error) {
-    reportNetworkFailure({
-      source: 'publicApiCall',
-      endpoint: normalizedEndpoint,
-      method,
-      durationMs: Date.now() - requestStart,
-      message: getErrorMessage(error),
-    })
-    throw error
-  }
-
-  if (!response.ok) {
-    const errorText = await response.text()
-    reportNetworkFailure({
-      source: 'publicApiCall',
-      endpoint: normalizedEndpoint,
-      method,
-      status: response.status,
-      statusText: response.statusText,
-      durationMs: Date.now() - requestStart,
-      message: errorText || response.statusText || `HTTP ${response.status}`,
-    })
-    throw new Error(`HTTP ${response.status}: ${errorText || response.statusText}`)
-  }
-
-  return response.json()
-}
-
-// Convenience methods for common HTTP operations
-export const api = {
-  get: <T>(endpoint: string, accessToken: string | null, options?: RequestInit) => {
-    // Log all conversation endpoint calls to track duplicate requests
-    if (endpoint.includes('/conversations') && !endpoint.includes('/messages')) {
-    }
-    return apiCall<T>(endpoint, accessToken, { ...options, method: 'GET' })
-  },
-
-  post: <T>(endpoint: string, accessToken: string | null, data?: any, options?: RequestInit) =>
-    apiCall<T>(endpoint, accessToken, {
-      ...options,
-      method: 'POST',
-      body: data ? JSON.stringify(data) : undefined,
-    }),
-
-  patch: <T>(endpoint: string, accessToken: string | null, data?: any, options?: RequestInit) =>
-    apiCall<T>(endpoint, accessToken, {
-      ...options,
-      method: 'PATCH',
-      body: data ? JSON.stringify(data) : undefined,
-    }),
-
-  put: <T>(endpoint: string, accessToken: string | null, data?: any, options?: RequestInit) =>
-    apiCall<T>(endpoint, accessToken, {
-      ...options,
-      method: 'PUT',
-      body: data ? JSON.stringify(data) : undefined,
-    }),
-
-  delete: <T>(endpoint: string, accessToken: string | null, options?: RequestInit) =>
-    apiCall<T>(endpoint, accessToken, { ...options, method: 'DELETE' }),
-}
-
-// Helper for streaming requests
-// Note: Streaming requests always go to cloud server for LLM generation
-// The storageMode parameter in the request body tells the server whether to save to cloud DB or not
-export const createStreamingRequest = async (
-  endpoint: string,
-  accessToken: string | null,
-  options?: RequestInit
-): Promise<Response> => {
-  assertCloudBackendAllowed(endpoint, 'createStreamingRequest')
-
-  // OAuth is injected by the local gateway, never by the renderer.
-  void accessToken
-  const tokenToUse = null
-  const requestStart = Date.now()
-
-  const isFormData = options?.body && typeof FormData !== 'undefined' && options.body instanceof FormData
-
-  // Destructure to separate headers from other options
-  const { headers: optionsHeaders, ...restOptions } = options || {}
-  const method = String(restOptions.method || 'POST').toUpperCase()
-
-  const makeStreamRequest = async (token: string | null) => {
-    const headers = {
-      ...(isFormData ? {} : { 'Content-Type': 'application/json' }),
-      ...optionsHeaders, // Spread the headers from options
-      ...(token && (environment === 'web' || environment === 'electron') ? { Authorization: `Bearer ${token}` } : {}),
-    }
-
-    return fetch(await buildLocalApiUrl(`${/^(\/conversations|\/projects|\/messages|\/attachments)(\/|\?|$)/.test(endpoint) ? '/gw' : '/cloud'}${endpoint}`), {
-      ...restOptions, // Spread everything EXCEPT headers
-      headers, // Set headers separately
-    })
-  }
-
-  const executeStreamRequest = async (token: string | null): Promise<Response> => {
-    try {
-      return await makeStreamRequest(token)
-    } catch (error) {
-      reportNetworkFailure({
-        source: 'createStreamingRequest',
-        endpoint,
-        method,
-        durationMs: Date.now() - requestStart,
-        message: getErrorMessage(error),
-      })
-      throw error
-    }
-  }
-
-  let response = await executeStreamRequest(tokenToUse)
-
-  // Handle 401 Unauthorized: Try to refresh token and retry once.
-  // This is the path auto-compaction takes (`chatActions` → '/generate/ephemeral'), which
-  // runs INSIDE the send flow at ≥85% context — a forced redirect here fired at exactly the
-  // moment D2 was written to prevent. It classifies now; the caller renders the bubble.
-  if (response.status === 401) {
-    throw sessionExpiredError(endpoint)
-  }
-
-  if (!response.ok) {
-    reportNetworkFailure({
-      source: 'createStreamingRequest',
-      endpoint,
-      method,
-      status: response.status,
-      statusText: response.statusText,
-      durationMs: Date.now() - requestStart,
-      message: response.statusText || `HTTP ${response.status}`,
-    })
-  }
-
-  return response
-}
-
-// Specific helpers for conversation system prompt endpoints
-export type SystemPromptGetResponse = { systemPrompt: string | null }
 export type SystemPromptPatchResponse = { id: ConversationId; system_prompt: string | null }
-export type ConversationPatchResponse = {
-  id: ConversationId
-  system_prompt?: string | null
-  conversation_context?: string | null
-}
-export type ConversationContextGetResponse = { context: string | null }
 
-export const getConversationSystemPrompt = (conversationId: ConversationId, accessToken: string | null) =>
-  api.get<SystemPromptGetResponse>(`/conversations/${conversationId}/system-prompt`, accessToken)
-
-export const getConversationContext = (conversationId: ConversationId, accessToken: string | null) =>
-  api.get<ConversationContextGetResponse>(`/conversations/${conversationId}/context`, accessToken)
-
-export const patchConversationSystemPrompt = (
-  conversationId: ConversationId,
-  systemPrompt: string | null,
-  accessToken: string | null
-) =>
-  api.patch<SystemPromptPatchResponse>(`/conversations/${conversationId}/system-prompt`, accessToken, { systemPrompt })
-
-export const patchConversationContext = (
-  conversationId: ConversationId,
-  context: string | null,
-  accessToken: string | null
-) => api.patch<ConversationPatchResponse>(`/conversations/${conversationId}/context`, accessToken, { context })
-
-export const patchConversationResearchNote = (
-  conversationId: ConversationId,
-  researchNote: string | null,
-  accessToken: string | null
-) =>
-  api.patch<ConversationPatchResponse>(`/conversations/${conversationId}/research-note`, accessToken, { researchNote })
-
-export const patchConversationCwd = (conversationId: ConversationId, cwd: string | null, accessToken: string | null) =>
-  api.patch<ConversationPatchResponse>(`/conversations/${conversationId}/cwd`, accessToken, { cwd })
-
-export const patchConversationProject = (
-  conversationId: ConversationId,
-  projectId: string | null,
-  accessToken: string | null
-) => api.patch<ConversationPatchResponse>(`/conversations/${conversationId}/project`, accessToken, { projectId })
-
-export const cloneConversation = (conversationId: ConversationId, accessToken: string | null) =>
-  api.post<{ id: ConversationId; title: string; project_id: ConversationId | null }>(
-    `/conversations/${conversationId}/clone`,
-    accessToken
+/** Copies a conversation and its full message tree on the host (new ids, local storage). */
+export const cloneConversation = (conversationId: ConversationId) =>
+  localApi.post<{ id: ConversationId; title: string; project_id: ConversationId | null }>(
+    `/app/conversations/${encodeURIComponent(String(conversationId))}/clone`
   )
-
-// User System Prompts API
-export interface UserSystemPrompt {
-  id: string
-  owner_id: string
-  name: string
-  content: string
-  description?: string | null
-  is_default: boolean
-  created_at: string
-  updated_at: string
-}
-
-export interface CreateUserSystemPromptPayload {
-  name: string
-  content: string
-  description?: string | null
-  isDefault?: boolean
-}
-
-export interface UpdateUserSystemPromptPayload {
-  name?: string
-  content?: string
-  description?: string | null
-  isDefault?: boolean
-}
-
-// Phase 5: system prompts are Railway-authoritative — routed through the /api/cloud/*
-// pass-through (server injects the Bearer). The accessToken param is retained but
-// unused so existing call sites need no change.
-export const getUserSystemPrompts = (_accessToken?: string | null) =>
-  cloudApi.get<UserSystemPrompt[]>('/system-prompts')
-
-export const getUserSystemPromptById = (id: string, _accessToken?: string | null) =>
-  cloudApi.get<UserSystemPrompt>(`/system-prompts/${id}`)
-
-export const getDefaultUserSystemPrompt = (_accessToken?: string | null) =>
-  cloudApi.get<UserSystemPrompt | null>('/system-prompts/default')
-
-export const createUserSystemPrompt = (data: CreateUserSystemPromptPayload, _accessToken?: string | null) =>
-  cloudApi.post<UserSystemPrompt>('/system-prompts', data)
-
-export const updateUserSystemPrompt = (id: string, data: UpdateUserSystemPromptPayload, _accessToken?: string | null) =>
-  cloudApi.put<UserSystemPrompt>(`/system-prompts/${id}`, data)
-
-export const setDefaultUserSystemPrompt = (id: string, _accessToken?: string | null) =>
-  cloudApi.patch<UserSystemPrompt>(`/system-prompts/${id}/default`)
-
-export const deleteUserSystemPrompt = (id: string, _accessToken?: string | null) =>
-  cloudApi.delete<{ message: string; id: string }>(`/system-prompts/${id}`)
-
-export const clearDefaultUserSystemPrompt = (_accessToken?: string | null) =>
-  cloudApi.delete<{ message: string }>('/system-prompts/default')
-
-// Stripe Payment API functions
-export interface SubscriptionStatus {
-  tier: 'high' | 'mid' | 'low' | null
-  status: 'active' | 'canceled' | 'past_due' | null
-  currentPeriodEnd: string | null
-  creditsBalance: number
-  stripeCustomerId: string | null
-  stripeSubscriptionId: string | null
-  planCode: string | null
-  planName: string | null
-  monthlyCredits: number
-  cancelAtPeriodEnd: boolean
-}
-
-export interface TierInfo {
-  name: string
-  price: number
-  priceId: string
-  credits: number
-  features: string[]
-}
-
-export interface PricingInfo {
-  tiers: {
-    high: TierInfo
-    mid: TierInfo
-    low: TierInfo
-  }
-}
-
-export interface CheckoutSessionResponse {
-  sessionId: string
-  url: string
-}
-
-export interface CreditTransaction {
-  userId: number
-  amount: number
-  reason: string
-  balanceAfter: number
-  createdAt: string
-}
-
-/**
- * Create a Stripe Checkout Session for subscription
- */
-export const createCheckoutSession = async (
-  userId: number,
-  tier: 'high' | 'mid' | 'low',
-  email?: string
-): Promise<CheckoutSessionResponse> => {
-  assertCloudBackendAllowed('/stripe/create-checkout-session', 'createCheckoutSession')
-  // Railway-authoritative via the /api/cloud/* pass-through (server injects the Bearer).
-  return cloudApi.post<CheckoutSessionResponse>('/stripe/create-checkout-session', { userId, tier, email })
-}
-
-/**
- * Get user's subscription status and credit balance
- */
-export const getSubscriptionStatus = async (userId: number): Promise<SubscriptionStatus> => {
-  assertCloudBackendAllowed('/stripe/subscription-status', 'getSubscriptionStatus')
-  return cloudApi.get<SubscriptionStatus>(`/stripe/subscription-status?userId=${userId}`)
-}
-
-/**
- * Cancel user's subscription (at period end)
- */
-export const cancelSubscription = async (userId: number): Promise<{ success: boolean; message: string }> => {
-  assertCloudBackendAllowed('/stripe/cancel-subscription', 'cancelSubscription')
-  return cloudApi.post<{ success: boolean; message: string }>('/stripe/cancel-subscription', { userId })
-}
-
-/**
- * Get user's credit transaction history
- */
-export const getCreditHistory = async (
-  userId: number,
-  limit: number = 100
-): Promise<{ history: CreditTransaction[] }> => {
-  assertCloudBackendAllowed('/stripe/credit-history', 'getCreditHistory')
-  return cloudApi.get<{ history: CreditTransaction[] }>(`/stripe/credit-history?userId=${userId}&limit=${limit}`)
-}
-
-/**
- * Get pricing information for all subscription tiers
- */
-export const getPricingInfo = async (): Promise<PricingInfo> => {
-  assertCloudBackendAllowed('/stripe/pricing-info', 'getPricingInfo')
-  return cloudApi.get<PricingInfo>('/stripe/pricing-info')
-}

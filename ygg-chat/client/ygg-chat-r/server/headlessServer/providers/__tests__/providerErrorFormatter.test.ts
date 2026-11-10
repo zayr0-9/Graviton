@@ -91,13 +91,6 @@ describe('classifyChatError precedence', () => {
     const aborted = Object.assign(new Error('The operation was aborted.'), { name: 'AbortError', status: 500 })
     expect(classifyChatError(aborted).code).toBe('cancelled')
 
-    const railway = Object.assign(new Error('Your Yggdrasil session has expired.'), {
-      name: 'RailwayAppAuthError',
-      status: 401,
-      errorType: 'reauth_required',
-    })
-    expect(classifyChatError(railway, { provider: 'openrouter' }).code).toBe('session_expired')
-
     const empty = Object.assign(new Error('Provider returned an empty response after retry'), {
       name: 'ProviderEmptyResponseError',
     })
@@ -107,7 +100,7 @@ describe('classifyChatError precedence', () => {
   it('(c) status beats provider errorType', () => {
     // errorType alone would say provider_unavailable; the 401 status wins.
     const error = Object.assign(new Error('nope'), { status: 401, errorType: 'service_unavailable' })
-    expect(classifyChatError(error, { provider: 'openrouter' }).code).toBe('session_expired')
+    expect(classifyChatError(error, { provider: 'openrouterbyok' }).code).toBe('provider_signin_required')
   })
 
   it('(d) errorType beats message heuristics when there is no status', () => {
@@ -136,7 +129,7 @@ describe('classifyChatError precedence', () => {
   })
 
   it('has NO provider gate — every provider classifies', () => {
-    for (const provider of ['openaichatgpt', 'openrouter', 'lmstudio', 'zai', 'bedrock']) {
+    for (const provider of ['openaichatgpt', 'openrouterbyok', 'lmstudio', 'zai', 'bedrock']) {
       const envelope = classifyChatError(httpError(503, 'upstream down'), { provider })
       expect(envelope.code).toBe('provider_unavailable')
       expect(envelope.provider).toBe(provider)
@@ -145,9 +138,9 @@ describe('classifyChatError precedence', () => {
 })
 
 describe('classifyChatError status mapping', () => {
-  it('401 -> session_expired for the app session, provider_signin_required for BYOK/local', () => {
-    expect(classifyChatError(httpError(401), { provider: 'openrouter' }).code).toBe('session_expired')
-    expect(classifyChatError(httpError(401)).code).toBe('session_expired')
+  it('401 -> provider_signin_required for every provider (no Graviton account session)', () => {
+    expect(classifyChatError(httpError(401), { provider: 'openrouterbyok' }).code).toBe('provider_signin_required')
+    expect(classifyChatError(httpError(401)).code).toBe('provider_signin_required')
     expect(classifyChatError(httpError(401), { provider: 'openaichatgpt' }).code).toBe('provider_signin_required')
     expect(classifyChatError(httpError(401), { provider: 'lmstudio' }).code).toBe('provider_signin_required')
     expect(classifyChatError(httpError(401), { provider: 'zai' }).code).toBe('provider_signin_required')
@@ -160,13 +153,13 @@ describe('classifyChatError status mapping', () => {
     )
   })
 
-  it('402 -> subscription_inactive', () => {
-    expect(classifyChatError(httpError(402, 'Payment required')).code).toBe('subscription_inactive')
+  it('402 -> provider_quota_exceeded (billing on the user\'s own provider account)', () => {
+    expect(classifyChatError(httpError(402, 'Payment required')).code).toBe('provider_quota_exceeded')
   })
 
-  it('403 + quota wording -> free_tier_exhausted or provider_quota_exceeded', () => {
+  it('403 + quota wording -> provider_quota_exceeded', () => {
     expect(classifyChatError(httpError(403, 'You have used all of your free generations')).code).toBe(
-      'free_tier_exhausted'
+      'provider_quota_exceeded'
     )
     expect(classifyChatError(httpError(403, 'Your credit balance is too low')).code).toBe('provider_quota_exceeded')
   })
@@ -332,7 +325,7 @@ describe('formatProviderErrorForAssistant (unchanged legacy bubble)', () => {
   })
 
   it('keeps its OpenAI-only + retry-exhausted gate', () => {
-    expect(formatProviderErrorForAssistant(usageLimitError, { provider: 'openrouter' })).toBeNull()
+    expect(formatProviderErrorForAssistant(usageLimitError, { provider: 'openrouterbyok' })).toBeNull()
     expect(formatProviderErrorForAssistant(new Error('Invalid tool schema'), { provider: 'openaichatgpt' })).toBeNull()
   })
 
@@ -383,13 +376,13 @@ describe('classifyChatError: network loss mid-stream', () => {
 
   for (const [label, error] of connectivityCases) {
     it(`${label} is a connectivity failure, not an internal one`, () => {
-      expect(classifyChatError(error, { provider: 'openrouter', phase: 'provider' }).code).toBe('provider_unavailable')
+      expect(classifyChatError(error, { provider: 'openrouterbyok', phase: 'provider' }).code).toBe('provider_unavailable')
     })
   }
 
   it('a dropped connection whose text mentions credit is NOT reported as a quota problem', () => {
     const envelope = classifyChatError(new Error('socket hang up while checking credit balance'), {
-      provider: 'openrouter',
+      provider: 'openrouterbyok',
       phase: 'provider',
     })
     expect(envelope.code).toBe('provider_unavailable')
@@ -404,7 +397,7 @@ describe('classifyChatError: network loss mid-stream', () => {
 
   it('a REAL quota error still classifies as quota (status is authoritative)', () => {
     const quota = Object.assign(new Error('You exceeded your current quota'), { status: 429 })
-    expect(classifyChatError(quota, { provider: 'openrouter', phase: 'provider' }).code).toBe('provider_quota_exceeded')
+    expect(classifyChatError(quota, { provider: 'openrouterbyok', phase: 'provider' }).code).toBe('provider_quota_exceeded')
   })
 
   it('a real quota error with no status still classifies from wording when transport is fine', () => {
@@ -419,5 +412,15 @@ describe('classifyChatError: network loss mid-stream', () => {
 
   it('every connectivity case is transient, so the loop will retry it', () => {
     for (const [, error] of connectivityCases) expect(isTransientProviderError(error)).toBe(true)
+  })
+})
+
+describe('classifyChatError: admission rejections', () => {
+  it('shows the host’s own explanation instead of a cut-off stream', () => {
+    const error = Object.assign(new Error('This Claude session is still running. Wait for it to finish or fork a completed response.'), { code: 'configuration_mismatch' })
+    const envelope = classifyChatError(error, { phase: 'lifecycle' })
+    expect(envelope.code).toBe('server_rejected_request')
+    expect(envelope.userMessage).toBe(error.message)
+    expect(envelope.recoverability).toBe('user_action')
   })
 })

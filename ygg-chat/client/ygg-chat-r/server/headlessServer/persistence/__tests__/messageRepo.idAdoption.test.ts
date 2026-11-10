@@ -2,9 +2,9 @@ import { describe, expect, it, vi } from 'vitest'
 import { MessageRepo } from '../messageRepo.js'
 
 /**
- * Phase 4 — MessageRepo id adoption. DB-free: fake `statements`/`db` so we can assert
- * the id passed to upsertMessage without native better-sqlite3. Covers the cloud path
- * (adopt Railway's id) and the mint parity (no id => a fresh uuid).
+ * MessageRepo id adoption. DB-free: fake `statements`/`db` so we can assert the id
+ * passed to upsertMessage without native better-sqlite3. Covers adopting a caller-supplied
+ * id and the mint parity (no id => a fresh uuid).
  */
 function makeRepo() {
   const runSpy = vi.fn()
@@ -25,11 +25,11 @@ const draft = {
 }
 
 describe('MessageRepo id adoption', () => {
-  it('adopts a caller-supplied id as the message id (Railway authority on the cloud path)', () => {
+  it('adopts a caller-supplied id as the message id', () => {
     const { repo, runSpy } = makeRepo()
-    repo.createMessage({ id: 'railway-1', ...draft })
+    repo.createMessage({ id: 'caller-1', ...draft })
     // upsertMessage.run receives the message id as its FIRST positional argument.
-    expect(runSpy.mock.calls[0][0]).toBe('railway-1')
+    expect(runSpy.mock.calls[0][0]).toBe('caller-1')
   })
 
   it('mints a fresh uuid when no id is supplied (default / native-provider parity)', () => {

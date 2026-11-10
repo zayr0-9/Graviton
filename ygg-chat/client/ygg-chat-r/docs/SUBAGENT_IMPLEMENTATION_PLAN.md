@@ -1,5 +1,9 @@
 # Subagent Tool Implementation Plan
 
+> **Historical — cloud parts removed.** Graviton is now fully local (2026-11): there is no Supabase/Railway
+> account or sync, cloud storage mode, hosted OpenRouter provider, Stripe billing or web product. Sections that
+> describe those are kept for history only. Current behaviour: `ygg-chat/docs/agent_context/AGENT.md`.
+
 ## Overview
 
 Enhance the `subagent` tool to support agentic behavior with tool calling capabilities, message persistence, and configurable tool access modes.

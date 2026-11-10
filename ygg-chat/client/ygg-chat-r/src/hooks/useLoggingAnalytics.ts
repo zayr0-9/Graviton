@@ -1,8 +1,7 @@
-import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { useEffect, useMemo } from 'react'
-import { useAuth } from './useAuth'
-import { isCloudSession } from '../config/runtimeMode'
-import { api, environment, localApi } from '../utils/api'
+import { useQuery } from '@tanstack/react-query'
+import { useMemo } from 'react'
+import { isHostClient } from '../platform/clientCapabilities'
+import { localApi } from '../utils/api'
 
 export interface LoggingFilters {
   rangeDays: number
@@ -41,7 +40,6 @@ export interface LoggingDashboardResponse {
     cachedInputPct: number | null; assistantMessages: number; messagesWithUsage: number
   }
   rangeDays: number
-  source?: 'cloud' | 'local'
   filters: {
     applied: Record<string, unknown>
     available: {
@@ -50,12 +48,11 @@ export interface LoggingDashboardResponse {
       toolNames: string[]
       toolJobStatuses?: string[]
       runStatuses?: string[]
-      projects: Array<{ id: string; name: string; storage_mode?: 'cloud' | 'local' | null }>
+      projects: Array<{ id: string; name: string }>
       conversations: Array<{
         id: string
         title: string | null
         project_id: string | null
-        storage_mode?: 'cloud' | 'local' | null
       }>
     }
   }
@@ -171,20 +168,6 @@ export interface LoggingDashboardResponse {
       }>
     }
   }
-  payments: {
-    currentPlan: {
-      subscriptionStatus: string
-      currentPeriodEnd: string | null
-      cancelAtPeriodEnd: boolean | null
-      planCode: string | null
-      planName: string | null
-    } | null
-    history: {
-      monthlyAllocation: Array<Record<string, unknown>>
-      topups: Array<Record<string, unknown>>
-    }
-    currentCreditsBalance: number | null
-  }
   dataQuality: {
     assistantMessagesWithCostPct: number
     assistantMessagesTotal: number
@@ -207,34 +190,13 @@ const buildQueryString = (filters: LoggingFilters): string => {
   return params.toString()
 }
 
-export const useCloudLoggingAnalytics = (filters: LoggingFilters, enabled: boolean = true) => {
-  const { accessToken, userId } = useAuth()
-  const queryString = useMemo(() => buildQueryString(filters), [filters])
-  const cloudSession = isCloudSession({ accessToken, userId })
-  const queryClient = useQueryClient()
-  useEffect(() => () => {
-    // Remove the previous account's in-memory analytics on identity change.
-    queryClient.removeQueries({ queryKey: ['logging-analytics', 'cloud', userId] })
-  }, [queryClient, userId])
-
-  return useQuery({
-    queryKey: ['logging-analytics', 'cloud', userId, queryString],
-    queryFn: () => api.get<LoggingDashboardResponse>(`/analytics/dashboard?${queryString}`, accessToken),
-    enabled: enabled && cloudSession,
-    staleTime: 30 * 1000,
-    refetchOnMount: true,
-    refetchOnReconnect: false,
-    refetchOnWindowFocus: false,
-  })
-}
-
 export const useLocalLoggingAnalytics = (filters: LoggingFilters, enabled: boolean = true) => {
   const queryString = useMemo(() => buildQueryString(filters), [filters])
 
   return useQuery({
     queryKey: ['logging-analytics', 'local', queryString],
     queryFn: () => localApi.get<LoggingDashboardResponse>(`/local/analytics/dashboard?${queryString}`),
-    enabled: enabled && environment === 'electron',
+    enabled: enabled && isHostClient,
     staleTime: 15 * 1000,
     refetchOnMount: true,
     refetchOnReconnect: false,

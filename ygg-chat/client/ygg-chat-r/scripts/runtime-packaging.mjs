@@ -77,6 +77,17 @@ let previousExclusions = []
 // keep working. Only the packaged copy is filtered, not development installs.
 export default async function beforePack(context) {
   const { appDir, config } = context.packager.info
+  for (const directory of ['dist-electron', 'dist-browser']) {
+    const index = path.join(appDir, directory, 'index.html')
+    if (!fs.existsSync(index)) throw new Error(`Missing ${directory}; build both shared UI targets before packaging`)
+    const html = fs.readFileSync(index, 'utf8')
+    for (const match of html.matchAll(/(?:src|href)="([^"]+)"/g)) {
+      const asset = match[1]
+      if (/^(?:https?:|data:|#)/.test(asset)) continue
+      const target = path.join(appDir, directory, asset.replace(/^\.\//, '').replace(/^\//, ''))
+      if (!fs.existsSync(target)) throw new Error(`Missing packaged UI asset: ${directory}/${asset}`)
+    }
+  }
   const names = collectRuntimePackages(appDir)
   const arch = ['ia32', 'x64', 'armv7l', 'arm64', 'universal'][context.arch]
   const platform = context.electronPlatformName === 'win32' ? 'windows' : context.electronPlatformName

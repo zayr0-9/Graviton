@@ -1,10 +1,12 @@
 import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it, vi } from 'vitest'
 import { ToolCallGroupCard, type ToolCallGroupCardProps } from './ToolCallGroupCard'
-import { TOOL_NAME_BASE_CLASS } from './chatMessageShared'
+import { TOOL_NAME_BASE_CLASS, TOOL_NAME_ERROR_CLASS } from './chatMessageShared'
 
 vi.mock('../EditFileDiffView/EditToolDiffView', () => ({
-  EditToolDiffView: () => <div data-test-diff-view />,
+  EditToolDiffView: ({ isError, patch }: { isError?: boolean; patch?: { filePath: string } }) => (
+    <div data-test-diff-view data-is-error={String(isError)} data-patch={patch?.filePath ?? ''} />
+  ),
 }))
 vi.mock('../PlanMdToolView', () => ({
   PlanMdToolView: ({ readOnly }: { readOnly?: boolean }) => <div data-test-plan-view data-read-only={readOnly} />,
@@ -100,6 +102,21 @@ describe('read-only run preview tools', () => {
   it.each(['edit_file', 'multi_edit'])('reuses %s diff presentation', name => {
     expect(renderCard([{ content: { success: true } }], name, { path: 'file.ts' }, { readOnly: true }))
       .toContain('data-test-diff-view')
+  })
+  it.each(['Edit', 'Write'])('draws native Claude %s calls as a diff with the result flag and patch', name => {
+    const patch = { filePath: '/w/a.ts', kind: 'edit' as const, hunks: [] }
+    const html = renderCard([{ content: 'The file has been updated.', is_error: false, patch }], name, { file_path: '/w/a.ts' })
+    expect(html).toContain('data-test-diff-view')
+    expect(html).toContain('data-is-error="false"')
+    expect(html).toContain('data-patch="/w/a.ts"')
+  })
+  it('marks a failed native edit from is_error, not from its prose result', () => {
+    const html = renderCard([{ content: '<tool_use_error>String not found</tool_use_error>', is_error: true }], 'Edit', { file_path: 'a.ts' })
+    expect(html).toContain('data-is-error="true"')
+    expect(html).toContain(TOOL_NAME_ERROR_CLASS)
+  })
+  it('leaves lowercase edit-like names on the generic row', () => {
+    expect(renderCard([{ content: 'ok' }], 'edit', { file_path: 'a.ts' })).not.toContain('data-test-diff-view')
   })
   it('shares structured batch rendering without transcript actions', () => {
     const args = { calls: [{ tool: 'subagent', args: { prompt: 'inspect' } }, { tool: 'read_file', args: { path: 'missing' } }] }

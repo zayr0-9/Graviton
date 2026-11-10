@@ -1,4 +1,5 @@
 import { localApi } from '../../utils/api'
+import { isNativeShell } from '../../platform/clientCapabilities'
 
 const isHookDebugLoggingEnabled = (): boolean => {
   try {
@@ -68,16 +69,14 @@ export interface ChatHookResult {
 }
 
 export async function runChatHook(request: ChatHookRequest): Promise<ChatHookResult> {
-  const isElectronMode =
-    import.meta.env.VITE_ENVIRONMENT === 'electron' ||
-    (typeof __IS_ELECTRON__ !== 'undefined' && __IS_ELECTRON__)
+  const isElectronMode = isNativeShell
 
   const isStopEvent = request.event === 'Stop'
 
   if (!isElectronMode) {
     if (isStopEvent) {
       console.warn('[chatHookClient][Stop] skipped: not in Electron mode', {
-        viteEnvironment: import.meta.env.VITE_ENVIRONMENT,
+        buildTarget: typeof __BUILD_TARGET__ !== 'undefined' ? __BUILD_TARGET__ : null,
         isElectronGlobal: typeof __IS_ELECTRON__ !== 'undefined' ? __IS_ELECTRON__ : null,
       })
     }

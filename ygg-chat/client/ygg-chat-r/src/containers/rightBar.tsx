@@ -1,3 +1,7 @@
+import { OPEN_HOST_FILE } from '../helpers/hostFileNavigation'
+import { getTerminalClient } from '../platform/terminalClient'
+import { isBrowserClient } from '../platform/clientCapabilities'
+import { getClientId } from '../helpers/clientId'
 import { useQueryClient } from '@tanstack/react-query'
 import { Crosshair, Eraser, RotateCcw, X } from 'lucide-react'
 import React, { Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react'
@@ -54,6 +58,7 @@ const monacoDockFallback = (
 )
 
 interface RightBarProps {
+  fullscreenWorkspace?: boolean
   conversationId: ConversationId | null
   notes?: ResearchNoteItem[]
   isLoadingNotes?: boolean
@@ -67,6 +72,7 @@ type FileEditorState = {
   relativePath: string
   content: string
   savedContent: string
+  contentHash?: string
   loading: boolean
   saving: boolean
   error: string | null
@@ -202,6 +208,7 @@ const DOCKED_CHAT_MIN_WIDTH_PX = 580
 const RIGHT_BAR_EXPANDED_CONTENT_DEFER_MS = 260
 
 const RightBar: React.FC<RightBarProps> = ({
+  fullscreenWorkspace = false,
   conversationId,
   className = '',
   ccCwd = '',
@@ -210,7 +217,7 @@ const RightBar: React.FC<RightBarProps> = ({
   const dispatch = useDispatch()
   const queryClient = useQueryClient()
   const { userId } = useAuth()
-  const isWeb = import.meta.env.VITE_ENVIRONMENT === 'web'
+  const terminalClient = getTerminalClient()
 
   // File browser state
   const [currentPath, setCurrentPath] = useState<string>(ccCwd)
@@ -219,7 +226,8 @@ const RightBar: React.FC<RightBarProps> = ({
   const [debouncedFileSearchQuery, setDebouncedFileSearchQuery] = useState('')
   const [followGitignore, setFollowGitignore] = useState(true)
   const initialTerminalDockState = useMemo(() => loadTerminalDockState(), [])
-  const isCollapsed = useSelector((state: RootState) => state.ui.rightBarCollapsed)
+  const storedCollapsed = useSelector((state: RootState) => state.ui.rightBarCollapsed)
+  const isCollapsed = !fullscreenWorkspace && storedCollapsed
   const rightBarWidth = useSelector((state: RootState) => state.ui.rightBarWidth)
   const [isExpandedContentReady, setIsExpandedContentReady] = useState(() => !isCollapsed)
   const shouldRenderExpandedContent = !isCollapsed && isExpandedContentReady
@@ -346,7 +354,7 @@ const RightBar: React.FC<RightBarProps> = ({
   }, [openFileEditors])
 
   useEffect(() => {
-    if (isWeb || !isLspStatusPanelOpen || !activeFileEditor?.path) {
+    if (!isLspStatusPanelOpen || !activeFileEditor?.path) {
       if (!isLspStatusPanelOpen) {
         setLspStatusLoading(false)
         setLspStatusError(null)
@@ -362,7 +370,7 @@ const RightBar: React.FC<RightBarProps> = ({
 
       try {
         const [resolveResponse, sessionsResponse] = await Promise.all([
-          localApi.get<LspResolveState>(`/lsp/resolve?path=${encodeURIComponent(activeFileEditor.path)}`, {
+          localApi.get<LspResolveState>(`/lsp/resolve?path=${encodeURIComponent(activeFileEditor.path)}&clientId=${encodeURIComponent(getClientId())}`, {
             cache: 'no-store',
           }),
           localApi.get<{ sessions?: LspSessionState[] }>('/lsp/sessions', {
@@ -392,7 +400,7 @@ const RightBar: React.FC<RightBarProps> = ({
       cancelled = true
       window.clearInterval(intervalId)
     }
-  }, [activeFileEditor?.path, isLspStatusPanelOpen, isWeb, lspStatusRefreshNonce])
+  }, [activeFileEditor?.path, isLspStatusPanelOpen, lspStatusRefreshNonce])
 
   useEffect(() => {
     // Subscribe once Monaco is loaded (by the first opened file); never load it just for this.
@@ -446,12 +454,13 @@ const RightBar: React.FC<RightBarProps> = ({
     )
   }, [parentContainerWidth])
   const resolvedRightBarWidth = useMemo(
-    () =>
+    () => fullscreenWorkspace ? (parentContainerWidth || window.innerWidth) :
       Math.min(maxResizableSidebarWidth, Math.max(RIGHT_BAR_MIN_WIDTH_PX, rightBarWidth || RIGHT_BAR_DEFAULT_WIDTH_PX)),
-    [maxResizableSidebarWidth, rightBarWidth]
+    [fullscreenWorkspace, parentContainerWidth, maxResizableSidebarWidth, rightBarWidth]
   )
   const dockedSidebarPanelWidth = resolvedRightBarWidth
   const maxDockOverlayWidth = useMemo(() => {
+    if (fullscreenWorkspace) return parentContainerWidth || window.innerWidth
     if (parentContainerWidth == null || parentContainerWidth <= 0) return 0
 
     return Math.max(
@@ -461,7 +470,7 @@ const RightBar: React.FC<RightBarProps> = ({
         Math.round(parentContainerWidth * DOCKED_TOTAL_WIDTH_RATIO) - resolvedRightBarWidth - DOCKED_LAYOUT_GAP_PX
       )
     )
-  }, [parentContainerWidth, resolvedRightBarWidth])
+  }, [fullscreenWorkspace, parentContainerWidth, resolvedRightBarWidth])
   const minDockOverlayWidth = useMemo(
     () => Math.min(DOCKED_EDITOR_MIN_WIDTH_PX, maxDockOverlayWidth),
     [maxDockOverlayWidth]
@@ -473,9 +482,10 @@ const RightBar: React.FC<RightBarProps> = ({
   const shouldMountDockOverlay = shouldRenderExpandedContent && hasDockTabs && maxDockOverlayWidth > 0
   const dockOverlayWidthPx = useMemo(() => {
     if (!shouldMountDockOverlay) return 0
+    if (fullscreenWorkspace) return maxDockOverlayWidth
     const baseWidth = dockedLayoutWidth == null ? defaultDockOverlayWidth : dockedLayoutWidth
     return Math.max(minDockOverlayWidth, Math.min(maxDockOverlayWidth, Math.round(baseWidth)))
-  }, [defaultDockOverlayWidth, dockedLayoutWidth, maxDockOverlayWidth, minDockOverlayWidth, shouldMountDockOverlay])
+  }, [fullscreenWorkspace, defaultDockOverlayWidth, dockedLayoutWidth, maxDockOverlayWidth, minDockOverlayWidth, shouldMountDockOverlay])
   const isDockOverlayVisible = isEditorDockOpen && dockOverlayWidthPx > 0
   const asideWidthPx = useMemo(
     () => (isCollapsed ? RIGHT_BAR_COLLAPSED_WIDTH_PX : resolvedRightBarWidth),
@@ -646,7 +656,7 @@ const RightBar: React.FC<RightBarProps> = ({
   const [activeTab, setActiveTab] = useState<'git' | 'note' | 'terminal'>('note')
   const [gitRepositoryPath, setGitRepositoryPath] = useState<string | null>(null)
   const gitBasePath = gitRepositoryPath || currentPath || ccCwd || null
-  const isGitTabAvailable = !isWeb
+  const isGitTabAvailable = true
   const [selectedGitDiff, setSelectedGitDiff] = useState<{
     relativePath: string
     staged: boolean
@@ -1012,9 +1022,9 @@ const RightBar: React.FC<RightBarProps> = ({
   }, [])
 
   useEffect(() => {
-    if (isWeb || !window.electronAPI?.terminal) return
+    if (!terminalClient) return
 
-    const unsubscribeData = window.electronAPI.terminal.onData(payload => {
+    const unsubscribeData = terminalClient.onData(payload => {
       if (!payload?.sessionId || typeof payload.data !== 'string') return
       setOpenTerminalTabs(current =>
         current.map(tab =>
@@ -1030,7 +1040,7 @@ const RightBar: React.FC<RightBarProps> = ({
       )
     })
 
-    const unsubscribeExit = window.electronAPI.terminal.onExit(payload => {
+    const unsubscribeExit = terminalClient.onExit(payload => {
       if (!payload?.sessionId) return
       setOpenTerminalTabs(current =>
         current.map(tab =>
@@ -1052,7 +1062,7 @@ const RightBar: React.FC<RightBarProps> = ({
       unsubscribeData()
       unsubscribeExit()
     }
-  }, [appendTerminalHistory, isWeb])
+  }, [appendTerminalHistory])
 
   useEffect(() => {
     const persistedSessions = openTerminalTabs.map(tab => ({
@@ -1164,7 +1174,7 @@ const RightBar: React.FC<RightBarProps> = ({
 
   const openFileEditor = useCallback(
     async (filePath: string, options?: { relativePath?: string | null }) => {
-      if (isWeb || !filePath) return
+      if (!filePath) return
 
       const relativePath = deriveEditorRelativePath(filePath, options?.relativePath)
       const existingEditor = openFileEditors.find(editor => editor.path === filePath)
@@ -1206,7 +1216,7 @@ const RightBar: React.FC<RightBarProps> = ({
 
       try {
         const params = new URLSearchParams({ path: filePath })
-        const result = await localApi.get<{ path?: string; content?: string; size?: number }>(
+        const result = await localApi.get<{ path?: string; content?: string; size?: number; contentHash?: string }>(
           `/local/file-content?${params}`
         )
         if (fileEditorRequestIdRef.current[filePath] !== requestId) return
@@ -1215,6 +1225,7 @@ const RightBar: React.FC<RightBarProps> = ({
           ...editor,
           content,
           savedContent: content,
+          contentHash: result.contentHash,
           loading: false,
           saving: false,
           error: null,
@@ -1235,7 +1246,7 @@ const RightBar: React.FC<RightBarProps> = ({
         }))
       }
     },
-    [deriveEditorRelativePath, dispatch, isWeb, openFileEditors, updateOpenFileEditor]
+    [deriveEditorRelativePath, dispatch, openFileEditors, updateOpenFileEditor]
   )
 
   const handleFileEditorChange = useCallback(
@@ -1272,7 +1283,6 @@ const RightBar: React.FC<RightBarProps> = ({
 
   useEffect(() => {
     const handleOpenWorkspaceMutationDiffs = (event: CustomEvent<OpenWorkspaceMutationDiffsDetail>) => {
-      if (isWeb) return
 
       const filePaths = Array.isArray(event.detail?.filePaths)
         ? event.detail.filePaths.map(path => String(path || '').trim()).filter(Boolean)
@@ -1301,11 +1311,11 @@ const RightBar: React.FC<RightBarProps> = ({
     return () => {
       window.removeEventListener(OPEN_WORKSPACE_MUTATION_DIFFS_EVENT, handleOpenWorkspaceMutationDiffs as EventListener)
     }
-  }, [dispatch, isWeb])
+  }, [dispatch])
 
   useEffect(() => {
     if (!pendingWorkspaceMutationDiffRequest) return
-    if (isWeb || isCollapsed || activeTab !== 'git') return
+    if (isCollapsed || activeTab !== 'git') return
 
     let cancelled = false
     const request = pendingWorkspaceMutationDiffRequest
@@ -1360,7 +1370,7 @@ const RightBar: React.FC<RightBarProps> = ({
     return () => {
       cancelled = true
     }
-  }, [activeTab, isCollapsed, isWeb, pendingWorkspaceMutationDiffRequest])
+  }, [activeTab, isCollapsed, pendingWorkspaceMutationDiffRequest])
 
   const getTerminalLaunchCwd = useCallback(() => (currentPath || ccCwd || '').trim(), [ccCwd, currentPath])
 
@@ -1374,13 +1384,26 @@ const RightBar: React.FC<RightBarProps> = ({
     []
   )
 
+  useEffect(() => {
+    const open = (event: Event) => {
+      const filePath = (event as CustomEvent<{ path?: string }>).detail?.path
+      if (typeof filePath === 'string') void openFileEditor(filePath)
+    }
+    window.addEventListener(OPEN_HOST_FILE, open)
+    return () => window.removeEventListener(OPEN_HOST_FILE, open)
+  }, [openFileEditor])
+
   const updateBrowserDock = useCallback((browserId: string, updates: Partial<BrowserDockState>) => {
     setOpenBrowserTabs(current => current.map(tab => (tab.id === browserId ? { ...tab, ...updates } : tab)))
   }, [])
 
   const openBrowserDock = useCallback(
     (initialUrl: string = DEFAULT_BROWSER_HOME_URL) => {
-      if (isWeb) return
+      if (isBrowserClient) {
+        const url = new URL(initialUrl)
+        if (url.protocol === 'https:' || url.protocol === 'http:') window.open(url.href, '_blank', 'noopener,noreferrer')
+        return
+      }
 
       const browserId = createBrowserStateId()
       const nextTab: BrowserDockState = {
@@ -1398,7 +1421,7 @@ const RightBar: React.FC<RightBarProps> = ({
       dispatch(uiActions.rightBarExpanded())
       setActiveDockTabId(getBrowserDockTabId(browserId))
     },
-    [createBrowserStateId, dispatch, getBrowserDisplayLabel, isWeb]
+    [createBrowserStateId, dispatch, getBrowserDisplayLabel]
   )
 
   const launchTerminalDock = useCallback(
@@ -1411,7 +1434,7 @@ const RightBar: React.FC<RightBarProps> = ({
         title?: string
       }
     ) => {
-      if (isWeb || !window.electronAPI?.terminal) return
+      if (!terminalClient) return
 
       const cwd = (targetCwd || currentPath || ccCwd || '').trim()
       const terminalId = options?.terminalId || createTerminalStateId()
@@ -1479,14 +1502,14 @@ const RightBar: React.FC<RightBarProps> = ({
 
       if (existingTab?.sessionId) {
         try {
-          await window.electronAPI.terminal.kill(existingTab.sessionId)
+          await terminalClient.kill(existingTab.sessionId)
         } catch {
           // Ignore stale-session kill failures during restart.
         }
       }
 
       try {
-        const result = await window.electronAPI.terminal.create({
+        const result = await terminalClient.create({
           cwd,
           cols: 120,
           rows: 32,
@@ -1495,7 +1518,7 @@ const RightBar: React.FC<RightBarProps> = ({
 
         if (terminalLaunchRequestIdRef.current[terminalId] !== requestId) {
           if (result?.sessionId) {
-            void window.electronAPI.terminal.kill(result.sessionId)
+            void terminalClient.kill(result.sessionId)
           }
           return
         }
@@ -1540,11 +1563,11 @@ const RightBar: React.FC<RightBarProps> = ({
         )
       }
     },
-    [ccCwd, createTerminalStateId, currentPath, dispatch, getFileName, isWeb, openTerminalTabs]
+    [ccCwd, createTerminalStateId, currentPath, dispatch, getFileName, openTerminalTabs]
   )
 
   useEffect(() => {
-    if (isWeb || !terminalPreferences.restoreSessionsOnLaunch || !window.electronAPI?.terminal) return
+    if (!terminalPreferences.restoreSessionsOnLaunch || !terminalClient) return
 
     for (const tab of openTerminalTabs) {
       if (!initialTerminalDockState.sessions.some(session => session.id === tab.id)) continue
@@ -1560,26 +1583,36 @@ const RightBar: React.FC<RightBarProps> = ({
   }, [
     activeDockTabId,
     initialTerminalDockState.sessions,
-    isWeb,
     launchTerminalDock,
     openTerminalTabs,
     terminalPreferences,
   ])
 
+  const reportTerminalDeliveryFailure = useCallback((sessionId: string, error: unknown) => {
+    const message = error instanceof Error ? error.message : 'Terminal input delivery is uncertain. Close and reopen this terminal.'
+    setOpenTerminalTabs(current => current.map(tab => tab.sessionId === sessionId ? { ...tab, status: 'error', error: message } : tab))
+  }, [])
+
   const handleTerminalInput = useCallback(
     (data: string) => {
-      if (isWeb || !activeTerminalDock?.sessionId || !window.electronAPI?.terminal) return
-      void window.electronAPI.terminal.write(activeTerminalDock.sessionId, data)
+      if (!activeTerminalDock?.sessionId || !terminalClient) return
+      const sessionId = activeTerminalDock.sessionId
+      void terminalClient.write(sessionId, data).then(result => {
+        if (!result?.success) reportTerminalDeliveryFailure(sessionId, new Error(result?.error || 'Terminal write failed'))
+      }).catch(error => reportTerminalDeliveryFailure(sessionId, error))
     },
-    [activeTerminalDock?.sessionId, isWeb]
+    [activeTerminalDock?.sessionId]
   )
 
   const handleTerminalResize = useCallback(
     (cols: number, rows: number) => {
-      if (isWeb || !activeTerminalDock?.sessionId || !window.electronAPI?.terminal) return
-      void window.electronAPI.terminal.resize(activeTerminalDock.sessionId, cols, rows)
+      if (!activeTerminalDock?.sessionId || !terminalClient) return
+      const sessionId = activeTerminalDock.sessionId
+      void terminalClient.resize(sessionId, cols, rows).then(result => {
+        if (!result?.success) reportTerminalDeliveryFailure(sessionId, new Error(result?.error || 'Terminal resize failed'))
+      }).catch(error => reportTerminalDeliveryFailure(sessionId, error))
     },
-    [activeTerminalDock?.sessionId, isWeb]
+    [activeTerminalDock?.sessionId]
   )
 
   const clearTerminalDockBuffer = useCallback((terminalId: string) => {
@@ -1672,8 +1705,8 @@ const RightBar: React.FC<RightBarProps> = ({
     (terminalId: string) => {
       terminalLaunchRequestIdRef.current[terminalId] = (terminalLaunchRequestIdRef.current[terminalId] || 0) + 1
       const target = openTerminalTabs.find(tab => tab.id === terminalId)
-      if (target?.sessionId && window.electronAPI?.terminal) {
-        void window.electronAPI.terminal.kill(target.sessionId)
+      if (target?.sessionId && terminalClient) {
+        void terminalClient.kill(target.sessionId)
       }
 
       const removedTabId = getTerminalDockTabId(terminalId)
@@ -1732,8 +1765,8 @@ const RightBar: React.FC<RightBarProps> = ({
       terminalLaunchRequestIdRef.current[terminalId] += 1
     })
     openTerminalTabs.forEach(tab => {
-      if (tab.sessionId && window.electronAPI?.terminal) {
-        void window.electronAPI.terminal.kill(tab.sessionId)
+      if (tab.sessionId && terminalClient) {
+        void terminalClient.kill(tab.sessionId)
       }
     })
     fileEditorRequestIdRef.current = {}
@@ -1748,7 +1781,6 @@ const RightBar: React.FC<RightBarProps> = ({
 
   const saveFileEditor = useCallback(async () => {
     if (
-      isWeb ||
       !activeFileEditor ||
       activeFileEditor.loading ||
       activeFileEditor.saving ||
@@ -1760,9 +1792,10 @@ const RightBar: React.FC<RightBarProps> = ({
     updateOpenFileEditor(activeFileEditor.path, editor => ({ ...editor, saving: true, error: null }))
 
     try {
-      const result = await localApi.post<{ path?: string; size?: number; saved?: boolean }>('/local/file-content', {
+      const result = await localApi.post<{ path?: string; size?: number; saved?: boolean; contentHash?: string }>('/local/file-content', {
         path: activeFileEditor.path,
         content: activeFileEditor.content,
+        expectedHash: activeFileEditor.contentHash,
       })
 
       if (result?.saved === false) {
@@ -1771,7 +1804,8 @@ const RightBar: React.FC<RightBarProps> = ({
 
       updateOpenFileEditor(activeFileEditor.path, editor => ({
         ...editor,
-        savedContent: editor.content,
+        savedContent: activeFileEditor.content,
+        contentHash: result.contentHash,
         saving: false,
         error: null,
       }))
@@ -1785,14 +1819,14 @@ const RightBar: React.FC<RightBarProps> = ({
         error: error instanceof Error ? error.message : 'Failed to save file',
       }))
     }
-  }, [activeFileEditor, isWeb, updateOpenFileEditor])
+  }, [activeFileEditor, updateOpenFileEditor])
 
   const refreshLspStatusPanel = useCallback(() => {
     setLspStatusRefreshNonce(prev => prev + 1)
   }, [])
 
   const restartActiveLspSession = useCallback(async () => {
-    if (isWeb || !lspResolveState?.serverId || !lspResolveState.workspacePath) return
+    if (!lspResolveState?.serverId || !lspResolveState.workspacePath) return
 
     setLspStatusLoading(true)
     setLspStatusError(null)
@@ -1800,16 +1834,17 @@ const RightBar: React.FC<RightBarProps> = ({
       await localApi.post('/lsp/restart', {
         serverId: lspResolveState.serverId,
         workspacePath: lspResolveState.workspacePath,
+        clientId: getClientId(),
       })
       refreshLspStatusPanel()
     } catch (error) {
       setLspStatusError(error instanceof Error ? error.message : 'Failed to restart LSP session.')
       setLspStatusLoading(false)
     }
-  }, [isWeb, lspResolveState?.serverId, lspResolveState?.workspacePath, refreshLspStatusPanel])
+  }, [lspResolveState?.serverId, lspResolveState?.workspacePath, refreshLspStatusPanel])
 
   const shutdownActiveLspSession = useCallback(async () => {
-    if (isWeb || !lspResolveState?.serverId || !lspResolveState.workspacePath) return
+    if (!lspResolveState?.serverId || !lspResolveState.workspacePath) return
 
     setLspStatusLoading(true)
     setLspStatusError(null)
@@ -1817,13 +1852,14 @@ const RightBar: React.FC<RightBarProps> = ({
       await localApi.post('/lsp/shutdown', {
         serverId: lspResolveState.serverId,
         workspacePath: lspResolveState.workspacePath,
+        clientId: getClientId(),
       })
       refreshLspStatusPanel()
     } catch (error) {
       setLspStatusError(error instanceof Error ? error.message : 'Failed to stop LSP session.')
       setLspStatusLoading(false)
     }
-  }, [isWeb, lspResolveState?.serverId, lspResolveState?.workspacePath, refreshLspStatusPanel])
+  }, [lspResolveState?.serverId, lspResolveState?.workspacePath, refreshLspStatusPanel])
 
   const activeLspStatusTone = !lspResolveState?.available
     ? 'border-amber-300 bg-amber-50 text-amber-700 dark:border-amber-900/60 dark:bg-amber-950/40 dark:text-amber-200'
@@ -2196,7 +2232,7 @@ const RightBar: React.FC<RightBarProps> = ({
       <span className='leading-none rounded-[18px] py-2 px-3.5 bg-neutral-50 font-semibold text-[22px] text-neutral-600 dark:text-neutral-200 acrylic-ultra-light-nb-3'>
         Dock
       </span>
-      <Button variant='outline2' size='small' onClick={() => openBrowserDock()} disabled={isWeb}>
+      <Button variant='outline2' size='small' onClick={() => openBrowserDock()}>
         New browser
       </Button>
     </div>
@@ -2205,7 +2241,7 @@ const RightBar: React.FC<RightBarProps> = ({
   return (
     <aside
       ref={asideRef}
-      className={`relative z-10 ${isWeb ? 'h-[100vh]' : 'h-full'} flex flex-col ${isEditorDockOpen ? 'overflow-visible' : 'overflow-hidden'} bg-transparent dark:bg-transparent flex-shrink-0 ${isResizingSidebar ? 'transition-none' : 'transition-[width,flex-basis] duration-[260ms] [transition-timing-function:cubic-bezier(0.22,1,0.36,1)]'} ${className}`}
+      className={`relative z-10 h-full flex flex-col ${isEditorDockOpen ? 'overflow-visible' : 'overflow-hidden'} bg-transparent dark:bg-transparent flex-shrink-0 ${isResizingSidebar ? 'transition-none' : 'transition-[width,flex-basis] duration-[260ms] [transition-timing-function:cubic-bezier(0.22,1,0.36,1)]'} ${className}`}
       style={{
         width: `${asideWidthPx}px`,
         maxWidth: '100%',
@@ -2278,7 +2314,7 @@ const RightBar: React.FC<RightBarProps> = ({
                       Dock
                     </span>
                   ) : null}
-                  <Button variant='outline2' size='small' onClick={() => openBrowserDock()} disabled={isWeb}>
+                  <Button variant='outline2' size='small' onClick={() => openBrowserDock()}>
                     New browser
                   </Button>
                 </div>
@@ -2305,7 +2341,8 @@ const RightBar: React.FC<RightBarProps> = ({
             }`}
             style={{
               width: `${dockOverlayWidthPx}px`,
-              right: `calc(100% + ${DOCKED_LAYOUT_GAP_PX}px)`,
+              right: fullscreenWorkspace ? 0 : `calc(100% + ${DOCKED_LAYOUT_GAP_PX}px)`,
+              backgroundColor: fullscreenWorkspace ? (isDarkMode ? '#171717' : '#fff') : undefined,
             }}
             aria-hidden={!isDockOverlayVisible}
           >
@@ -2478,7 +2515,7 @@ const RightBar: React.FC<RightBarProps> = ({
                     <i className='bx bx-folder-plus text-sm leading-none text-neutral-600 dark:text-neutral-100' />
                   </button>
                 )}
-                {!isWeb && (currentPath || ccCwd) && (
+                {(currentPath || ccCwd) && (
                   <button
                     onClick={() => {
                       openNewTerminalDock(currentPath || ccCwd)
@@ -2590,7 +2627,7 @@ const RightBar: React.FC<RightBarProps> = ({
                         )}
                       </div>
                     </div>
-                    {!file.isDirectory && !isWeb && (
+                    {!file.isDirectory && (
                       <button
                         onClick={e => {
                           e.stopPropagation()
@@ -2627,7 +2664,7 @@ const RightBar: React.FC<RightBarProps> = ({
           {/* Tab buttons - only show when expanded */}
           {shouldRenderExpandedContent && (
             <div className='flex min-w-0 gap-2 overflow-hidden px-3 py-2 flex-shrink-0'>
-              {!isWeb && (
+              {(
                 <button
                   onClick={() => setActiveTab('git')}
                   className={`flex-1 px-2 py-2 text-sm font-medium rounded-xl transition-[background-color,color,transform] duration-150 ${
@@ -2649,7 +2686,7 @@ const RightBar: React.FC<RightBarProps> = ({
               >
                 Note
               </button>
-              {!isWeb && (
+              {(
                 <button
                   onClick={() => setActiveTab('terminal')}
                   className={`flex-1 px-2 py-2 text-sm font-medium rounded-xl transition-[background-color,color,transform] duration-150 ${
@@ -2696,7 +2733,7 @@ const RightBar: React.FC<RightBarProps> = ({
                 >
                   <i className='bx bx-note text-lg' aria-hidden='true'></i>
                 </Button>
-                {!isWeb && (currentPath || ccCwd) && (
+                {(currentPath || ccCwd) && (
                   <Button
                     variant='outline2'
                     size='circle'
@@ -3003,7 +3040,7 @@ const RightBar: React.FC<RightBarProps> = ({
                                           >
                                             <i className='bx bx-git-compare text-[12px]' aria-hidden='true' />
                                           </button>
-                                          {!file.isDeleted && !isWeb && (
+                                          {!file.isDeleted && (
                                             <button
                                               type='button'
                                               onClick={() =>
@@ -3098,7 +3135,7 @@ const RightBar: React.FC<RightBarProps> = ({
                           >
                             <i className='bx bx-git-compare text-sm' aria-hidden='true' />
                           </button>
-                          {!selectedGitStatusFile.isDeleted && !isWeb && (
+                          {!selectedGitStatusFile.isDeleted && (
                             <button
                               type='button'
                               onClick={() =>
@@ -3277,7 +3314,7 @@ const RightBar: React.FC<RightBarProps> = ({
                     <button
                       type='button'
                       onClick={() => openNewTerminalDock()}
-                      disabled={isWeb || !(currentPath || ccCwd)}
+                      disabled={!(currentPath || ccCwd)}
                       className='text-[11px] font-medium text-neutral-500 transition-colors hover:text-neutral-800 disabled:opacity-50 dark:text-neutral-400 dark:hover:text-neutral-200'
                     >
                       New
@@ -3288,7 +3325,7 @@ const RightBar: React.FC<RightBarProps> = ({
                     {/* <button
                       type='button'
                       onClick={() => openNewTerminalDock(currentPath || ccCwd)}
-                      disabled={isWeb || !(currentPath || ccCwd)}
+                      disabled={!(currentPath || ccCwd)}
                       className='text-[11px] font-medium text-neutral-500 transition-colors hover:text-neutral-800 disabled:opacity-50 dark:text-neutral-400 dark:hover:text-neutral-200'
                     >
                       Current path

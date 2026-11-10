@@ -62,6 +62,7 @@ export interface YggServerConfig {
    * (default_operation_modes.md, default_subagent_mode.md).
    * Optional: when unset, the legacy source-tree candidates are used.
    */
+  browserUiDir?: string
   promptsDir?: string
   cors: YggServerCorsConfig
   oauth: YggServerOAuthConfig
@@ -84,6 +85,7 @@ export interface YggServerConfigInput {
   tempDir: string
   dbPath?: string
   resourcesDir: string
+  browserUiDir?: string
   promptsDir?: string
   cors?: Partial<YggServerCorsConfig>
   oauth?: Partial<YggServerOAuthConfig>
@@ -170,6 +172,7 @@ export function resolveYggServerConfig(input: YggServerConfigInput): YggServerCo
     dbPath,
     resourcesDir,
     promptsDir,
+    browserUiDir: input.browserUiDir ? path.resolve(input.browserUiDir) : undefined,
     cors: { mode: corsMode, allowedOrigins },
     oauth: { enabled: oauthEnabled, callbackHost: oauthCallbackHost, callbackPort: oauthCallbackPort },
     toolRuntime: { mode: toolRuntimeMode, allowInProcessFallback },

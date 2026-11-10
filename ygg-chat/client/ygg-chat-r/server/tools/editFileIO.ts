@@ -1,4 +1,4 @@
-import { hasFullToolAccess } from '../toolAccessContext.js'
+import { hasToolAccessTo } from '../toolAccessContext.js'
 import * as fs from 'fs'
 import * as path from 'path'
 import { randomUUID } from 'crypto'
@@ -10,7 +10,7 @@ const MAX_EDIT_BYTES = 32 * 1024 * 1024
 const pendingEdits = new Map<string, Promise<void>>()
 
 function assertScope(target: string, workspace: string, posix = false): void {
-  if (hasFullToolAccess()) return
+  if (hasToolAccessTo(target, posix)) return
   const paths = posix ? path.posix : path
   const relative = paths.relative(workspace, target)
   if (relative !== '..' && !relative.startsWith(`..${paths.sep}`) && !paths.isAbsolute(relative)) return

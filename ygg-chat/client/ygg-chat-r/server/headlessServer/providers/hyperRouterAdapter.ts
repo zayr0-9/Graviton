@@ -1,5 +1,14 @@
 import { randomUUID } from 'crypto'
-import type { ProviderGenerateInput, ProviderToolCall } from './openRouterProvider.js'
+import type {
+  AnyToolDefinition,
+  AssistantBlock,
+  JsonValue,
+  Message,
+  ModelProvider,
+  ModelResponse,
+  ToolResultBlock,
+} from '@hyper-labs/hyper-router'
+import type { ProviderGenerateInput, ProviderGenerateOutput, ProviderToolCall } from './providerTypes.js'
 
 export type ContentBlock = {
   type?: string
@@ -8,17 +17,8 @@ export type ContentBlock = {
   name?: string
   input?: any
   tool_use_id?: string
+  is_error?: boolean
   index?: number
-}
-
-export type HyperMessage = {
-  role: 'system' | 'user' | 'assistant' | 'tool'
-  content: string
-  reasoningContent?: string
-  name?: string
-  date: Date
-  toolCallId?: string
-  toolCalls?: Array<{ id?: string; toolName: string; args: unknown }>
 }
 
 export function parseJson<T>(value: any, fallback: T): T {
@@ -48,87 +48,121 @@ export function textFromBlocks(blocks: ContentBlock[]): string {
     .join('')
 }
 
-export function reasoningFromBlocks(blocks: ContentBlock[]): string | undefined {
-  const reasoning = blocks
-    .filter(block => block?.type === 'thinking' && typeof block.content === 'string')
-    .map(block => block.content)
-    .join('')
-  return reasoning || undefined
-}
-
-export function toolCallsFromBlocks(blocks: ContentBlock[]): Array<{ id?: string; toolName: string; args: unknown }> {
-  return blocks
-    .filter(block => block?.type === 'tool_use' && typeof block.name === 'string')
-    .map(block => ({
-      ...(typeof block.id === 'string' && block.id ? { id: block.id } : {}),
-      toolName: String(block.name),
-      args: block.input ?? {},
-    }))
-}
-
-export function toolResultMessagesFromBlocks(blocks: ContentBlock[], createdAt: Date): HyperMessage[] {
-  return blocks
-    .filter(block => block?.type === 'tool_result' && typeof block.tool_use_id === 'string')
-    .map(block => ({
-      role: 'tool' as const,
-      content: typeof block.content === 'string' ? block.content : JSON.stringify(block.content ?? null),
-      toolCallId: String(block.tool_use_id),
-      date: createdAt,
-    }))
-}
-
 export function messageDate(message: any): Date {
   const raw = message?.created_at ?? message?.createdAt ?? message?.date
   const parsed = typeof raw === 'string' || typeof raw === 'number' ? new Date(raw) : null
   return parsed && Number.isFinite(parsed.getTime()) ? parsed : new Date()
 }
 
-export function toHyperMessages(input: ProviderGenerateInput): HyperMessage[] {
+/** Canonical blocks reject `undefined`, functions and other non-JSON values. */
+function toJsonValue(value: unknown): JsonValue {
+  if (value === undefined) return {}
+  try {
+    return JSON.parse(JSON.stringify(value)) as JsonValue
+  } catch {
+    return {}
+  }
+}
+
+function toolResultText(content: unknown): string {
+  return typeof content === 'string' ? content : JSON.stringify(content ?? null)
+}
+
+/** Tool call ids are required by every canonical codec; legacy rows may lack one. */
+function toolUseIds(blocks: ContentBlock[], messageIndex: number): Map<ContentBlock, string> {
+  const ids = new Map<ContentBlock, string>()
+  blocks.forEach((block, blockIndex) => {
+    if (block?.type !== 'tool_use' || typeof block.name !== 'string') return
+    ids.set(block, typeof block.id === 'string' && block.id ? block.id : `call_${messageIndex}_${blockIndex}`)
+  })
+  return ids
+}
+
+function assistantBlocks(blocks: ContentBlock[], ids: Map<ContentBlock, string>, fallbackText: string): AssistantBlock[] {
+  const content: AssistantBlock[] = []
+  for (const block of blocks) {
+    if (block?.type === 'thinking' && typeof block.content === 'string' && block.content) {
+      content.push({ type: 'reasoning', text: block.content })
+    } else if (block?.type === 'text' && typeof block.content === 'string' && block.content) {
+      content.push({ type: 'text', text: block.content })
+    } else if (ids.has(block)) {
+      content.push({
+        type: 'tool_call',
+        execution: 'local',
+        call: { id: ids.get(block)!, toolName: String(block.name), args: toJsonValue(block.input ?? {}) },
+      })
+    }
+  }
+  if (!content.some(block => block.type === 'text') && fallbackText) content.unshift({ type: 'text', text: fallbackText })
+  return content
+}
+
+/**
+ * Tool results live in the assistant row's `content_blocks` (see toolLoopService's
+ * markToolFailureForModel); `role:'tool'` history rows are ignored. Failures are
+ * already spelled out in the text, so the text is the model-visible presentation.
+ */
+function toolResultBlocks(blocks: ContentBlock[], toolNames: Map<string, string>): ToolResultBlock[] {
+  return blocks
+    .filter(block => block?.type === 'tool_result' && typeof block.tool_use_id === 'string' && block.tool_use_id)
+    .map(block => {
+      const text = toolResultText(block.content)
+      return {
+        type: 'tool_result' as const,
+        toolCallId: String(block.tool_use_id),
+        toolName: toolNames.get(String(block.tool_use_id)) ?? 'unknown_tool',
+        execution: 'local' as const,
+        result: block.is_error
+          ? { ok: false, error: text, content: [{ type: 'text' as const, text }] }
+          : { ok: true, output: text, content: [{ type: 'text' as const, text }] },
+      }
+    })
+}
+
+export function toHyperMessages(input: ProviderGenerateInput, options: { replayReasoning?: boolean } = {}): Message[] {
   if (input.history?.some(message => message?.role === 'user' && message.artifacts?.length)) {
     throw new Error('Image attachments are not supported by this provider adapter. Use ChatGPT, OpenRouter, or a vision-capable LM Studio model.')
   }
-  const messages: HyperMessage[] = []
+  const messages: Message[] = []
 
   if (input.systemPrompt?.trim()) {
-    messages.push({ role: 'system', content: input.systemPrompt.trim(), date: new Date() })
+    messages.push({ role: 'system', content: [{ type: 'text', text: input.systemPrompt.trim() }], date: new Date() })
   }
 
-  for (const msg of input.history || []) {
-    if (!msg || msg.role === 'ex_agent') continue
+  const history = (input.history || []).filter(msg => msg && msg.role !== 'ex_agent')
+  const parsed = history.map(msg => parseContentBlocks(msg.content_blocks))
+  const callIds = parsed.map((blocks, index) => toolUseIds(blocks, index))
+  const toolNames = new Map<string, string>()
+  callIds.forEach(ids => ids.forEach((id, block) => toolNames.set(id, String(block.name))))
+
+  history.forEach((msg, index) => {
     const date = messageDate(msg)
-    const blocks = parseContentBlocks(msg.content_blocks)
-    const blockText = textFromBlocks(blocks)
+    const blocks = parsed[index]
+    const fallbackText = typeof msg.content === 'string' ? msg.content : ''
 
     if (msg.role === 'assistant') {
-      const toolCalls = toolCallsFromBlocks(blocks)
-      const reasoning = reasoningFromBlocks(blocks)
-      messages.push({
-        role: 'assistant',
-        content: blockText || (typeof msg.content === 'string' ? msg.content : ''),
-        date,
-        ...(reasoning ? { reasoningContent: reasoning } : {}),
-        ...(toolCalls.length ? { toolCalls } : {}),
-      })
-      messages.push(...toolResultMessagesFromBlocks(blocks, date))
-      continue
+      const replayed = options.replayReasoning === false ? blocks.filter(block => block?.type !== 'thinking') : blocks
+      const content = assistantBlocks(replayed, callIds[index], fallbackText)
+      if (content.length) messages.push({ role: 'assistant', content, date })
+      const results = toolResultBlocks(blocks, toolNames)
+      if (results.length) messages.push({ role: 'tool', content: results, date })
+      return
     }
 
     if (msg.role === 'user' || msg.role === 'system') {
-      const content = blockText || (typeof msg.content === 'string' ? msg.content : '')
-      if (content.trim()) {
-        messages.push({ role: msg.role, content, date })
-      }
+      const text = textFromBlocks(blocks) || fallbackText
+      if (text.trim()) messages.push({ role: msg.role, content: [{ type: 'text', text }], date })
     }
-  }
+  })
 
   if (input.userContent?.trim()) {
-    messages.push({ role: 'user', content: input.userContent, date: new Date() })
+    messages.push({ role: 'user', content: [{ type: 'text', text: input.userContent }], date: new Date() })
   }
 
   return messages
 }
 
-export function toHyperTools(input: ProviderGenerateInput): any[] {
+export function toHyperTools(input: ProviderGenerateInput): AnyToolDefinition[] {
   return (input.tools || [])
     .filter(tool => tool?.name)
     .map(tool => ({
@@ -141,17 +175,6 @@ export function toHyperTools(input: ProviderGenerateInput): any[] {
     }))
 }
 
-export function toProviderToolCalls(toolCalls: Array<{ id?: string; toolName: string; args: unknown }> | undefined): ProviderToolCall[] {
-  return (toolCalls || [])
-    .filter(call => call?.toolName)
-    .map(call => ({
-      id: call.id || randomUUID(),
-      name: call.toolName,
-      arguments: call.args ?? {},
-      status: 'pending' as const,
-    }))
-}
-
 export function buildContentBlocks(content: string, reasoning: string | undefined, toolCalls: ProviderToolCall[]): any[] {
   const blocks: any[] = []
   if (reasoning) blocks.push({ type: 'thinking', content: reasoning })
@@ -160,6 +183,56 @@ export function buildContentBlocks(content: string, reasoning: string | undefine
     blocks.push({ type: 'tool_use', id: call.id, name: call.name, input: call.arguments })
   }
   return blocks
+}
+
+/** Flatten canonical assistant messages into Graviton's provider output; hosted/opaque blocks are dropped. */
+export function fromHyperResponse(response: ModelResponse): ProviderGenerateOutput {
+  let content = ''
+  let reasoning = ''
+  const toolCalls: ProviderToolCall[] = []
+  for (const message of response.messages) {
+    for (const block of message.content) {
+      if (block.type === 'text') content += block.text
+      else if (block.type === 'reasoning') reasoning += block.text
+      else if (block.type === 'tool_call' && block.execution === 'local') {
+        toolCalls.push({
+          id: block.call.id || randomUUID(),
+          name: block.call.toolName,
+          arguments: block.call.args ?? {},
+          status: 'pending',
+        })
+      }
+    }
+  }
+  return {
+    content,
+    reasoning: reasoning || undefined,
+    toolCalls,
+    contentBlocks: buildContentBlocks(content, reasoning || undefined, toolCalls),
+    raw: response,
+  }
+}
+
+/**
+ * Graviton is the transcript owner and replays full history every turn, so each call
+ * claims ownership for the target provider. Stored rows carry no provider-native
+ * content, so the claim never conflicts with foreign replay data.
+ */
+export async function generateWithHyperProvider(
+  provider: ModelProvider,
+  model: string,
+  input: ProviderGenerateInput,
+  options: { tools?: AnyToolDefinition[]; replayReasoning?: boolean } = {}
+): Promise<ProviderGenerateOutput> {
+  const response = await provider.generate({
+    model,
+    messages: toHyperMessages(input, { replayReasoning: options.replayReasoning }),
+    tools: options.tools ?? toHyperTools(input),
+    historyOwnership: { kind: 'provider', identity: provider.historyIdentity(model) },
+    previousSessionMetadata: null,
+    signal: input.signal,
+  })
+  return fromHyperResponse(response)
 }
 
 export function normalizeBearer(token: string | null | undefined): string {

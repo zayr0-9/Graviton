@@ -584,3 +584,11 @@ Symptom: hook errors but flow continues
 ============================================================================
 END
 ============================================================================
+
+## Hook text generation provider
+
+In the chat Settings pane, expand Hooks and choose **Auto**, **OpenAI / ChatGPT**, or **Claude Code**, then save. This host-wide choice is separate from the conversation provider. Each backend retains its own model: OpenAI defaults to `gpt-6-luna`; an empty Claude model uses the CLI default (aliases such as `haiku` or `sonnet` may also be entered).
+
+Auto uses the host's configured OpenAI connection; when signed out or reconnect is required before generation, it chooses Claude instead. Explicit choices never switch providers. Rate limits, timeouts, unavailable models and other generation failures do not retry with a different provider. Claude needs an installed, signed-in Claude Code CLI; its own account/environment determines billing. No OpenAI subscription is needed to select Claude.
+
+Hooks using `POST /api/headless/ygg-hooks/generate` send `content` and optional `systemPrompt`; saved host settings override legacy provider/model hints. The result includes `text`, `provider` and `modelName`. Existing installed note scripts keep working without overwriting their customizations. The isolated Claude print process exposes no tools or MCP servers and does not persist or resume the chat session. At most two generations run concurrently; the server deadline is 40 seconds, below the note script's 45-second HTTP timeout. The script still only writes notes on branched paths.

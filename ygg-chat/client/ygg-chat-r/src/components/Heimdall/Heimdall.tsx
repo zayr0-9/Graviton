@@ -1,4 +1,7 @@
 import { filterChatTree, layoutChatTree, walkChatTree } from './heimdallTreeTraversal'
+import type { HiddenTreeBoundary } from './heimdallTreeTraversal'
+import { buildCompactionDividers } from './heimdallCompactionDividers'
+import { isCommittedCompaction } from '../../../../../shared/compaction'
 import { useQueryClient } from '@tanstack/react-query'
 import { isContextInjectionMessage } from '../../../../../shared/contextInjection'
 import 'boxicons/css/boxicons.min.css'
@@ -15,18 +18,22 @@ import {
   deleteSelectedNodes,
   fetchMessageTree,
   insertBulkMessages,
+  previewMessageDeletion,
   // sendMessage,
   updateMessage,
 } from '../../features/chats/chatActions'
+import { createChatFromSelection, moveSelection } from '../../features/chats/transferSelection'
 import { chatSliceActions } from '../../features/chats/chatSlice'
 import { buildBranchPathForMessage } from '../../features/chats/pathUtils'
-import { buildMessageTransferPayload, hasUnselectedDescendants } from '../../features/chats/messageTransfer'
-import { createConversation, updateCwd } from '../../features/conversations/conversationActions'
+import { buildMessageTransferPayload, hasUnselectedDescendants, transferErrorMessage } from '../../features/chats/messageTransfer'
+import { claudeTransferRefusal } from '../../../../../shared/claudeTransfer'
+import { createConversation, deleteConversation, updateCwd } from '../../features/conversations/conversationActions'
 import { makeSelectConversationById } from '../../features/conversations/conversationSelectors'
 import type { Conversation } from '../../features/conversations/conversationTypes'
 // import { selectSelectedProject } from '../../features/projects/projectSelectors'
 import { Message } from '@/features/chats'
 import { ConversationId, MessageId } from '../../../../../shared/types'
+import { useHoverIntent } from '../../hooks/useHoverIntent'
 import { useIsMobile } from '../../hooks/useMediaQuery'
 import { useConversations, useProjects } from '../../hooks/useQueries'
 import { groupConversationsByProject } from './conversationProjectGroups'
@@ -43,9 +50,11 @@ import { parseId } from '../../utils/helpers'
 import stripMarkdownToText from '../../utils/markdownStripper'
 import { getCompactionPlaceholder } from '../../features/chats/summaryPresentation'
 // import { MarkdownLink } from '../MarkdownLink/MarkdownLink'
-import { environment, localApi } from '../../utils/api'
+import { localApi } from '../../utils/api'
+import { isNativeShell } from '../../platform/clientCapabilities'
 import { DeleteConfirmModal } from '../DeleteConfirmModal/DeleteConfirmModal'
 import { buildHeimdallVisibleRoot, isHeimdallScaffoldingMessage, shouldPromoteHeimdallNode } from './heimdallNodeVisibility'
+import { getIntermediateAgentTextIds, hasHeimdallTextContent } from './heimdallAgentTextVisibility'
 import { TextArea } from '../TextArea/TextArea'
 import { TextField } from '../TextField/TextField'
 import {
@@ -124,6 +133,16 @@ const HEIMDALL_NODE_VISIBLE_STROKE_WIDTH = 2.25
 const HEIMDALL_NODE_RADIUS = 22
 const HEIMDALL_NOTE_PILL_RADIUS = 14
 const HEIMDALL_COMPACT_NODE_HOVER_SCALE = 1.035
+
+// Browsers match :focus-visible for keyboard/programmatic-after-keyboard focus, not clicks.
+const isKeyboardFocus = (element: Element | null) => {
+  if (!element) return false
+  try {
+    return element.matches(':focus-visible')
+  } catch {
+    return true
+  }
+}
 
 const isValidHexColor = (value?: string | null): value is string =>
   typeof value === 'string' && /^#[0-9A-Fa-f]{6}$/.test(value)
@@ -248,7 +267,6 @@ interface HeimdallProps {
   onOpenParallel?: (conversationId: ConversationId, messageId: MessageId, path: string[]) => void
   conversationId?: ConversationId | null
   visibleMessageId?: MessageId | null
-  storageMode?: 'local' | 'cloud'
 }
 
 export const Heimdall: React.FC<HeimdallProps> = ({
@@ -263,7 +281,6 @@ export const Heimdall: React.FC<HeimdallProps> = ({
   onOpenParallel,
   conversationId,
   visibleMessageId = null,
-  storageMode,
 }) => {
   const dispatch = useDispatch()
   const navigate = useNavigate()
@@ -350,6 +367,9 @@ export const Heimdall: React.FC<HeimdallProps> = ({
   const [contextMenuPos, setContextMenuPos] = useState<{ x: number; y: number } | null>(null)
   const [contextNodeId, setContextNodeId] = useState<MessageId | null>(null)
   const [transferScopeAction, setTransferScopeAction] = useState<TransferAction | null>(null)
+  // Why the last transfer action was refused or failed, shown in the open menu.
+  const [transferNotice, setTransferNotice] = useState<string | null>(null)
+  const [isCreatingChat, setIsCreatingChat] = useState<boolean>(false)
   const transferActionButtonRef = useRef<HTMLButtonElement | null>(null)
   const [confirmDeleteSelection, setConfirmDeleteSelection] = useState<boolean>(true)
   const [pendingDeleteNodeIds, setPendingDeleteNodeIds] = useState<MessageId[]>([])
@@ -368,8 +388,18 @@ export const Heimdall: React.FC<HeimdallProps> = ({
     fallbackPosition: { x: number; y: number }
   } | null>(null)
   const notePreviewCloseTimeoutRef = useRef<number | null>(null)
-  // Store message content in ref to avoid stale closures in debounced update
-  const noteMessageContentRef = useRef<string>('')
+  // Docked previews sit across the graph from their anchor, so the path to them
+  // crosses other nodes/pills. Hover intent holds swaps/closes while heading there.
+  const messagePreviewCardRef = useRef<HTMLDivElement | null>(null)
+  const notePreviewCardRef = useRef<HTMLDivElement | null>(null)
+  const messagePreviewIntent = useHoverIntent({
+    enabled: selectedNode !== null,
+    getTargetRect: () => messagePreviewCardRef.current?.getBoundingClientRect() ?? null,
+  })
+  const notePreviewIntent = useHoverIntent({
+    enabled: hoveredNote !== null,
+    getTargetRect: () => notePreviewCardRef.current?.getBoundingClientRect() ?? null,
+  })
   const customColorInputRef = useRef<HTMLInputElement | null>(null)
   // Track dark mode for shadows
   const isDarkMode = useHtmlDarkMode()
@@ -588,7 +618,7 @@ export const Heimdall: React.FC<HeimdallProps> = ({
   )
 
   useEffect(() => {
-    if (environment !== 'electron' || !conversationId) {
+    if (!isNativeShell || !conversationId) {
       setDedicatedSubagentMap({})
       return
     }
@@ -662,12 +692,12 @@ export const Heimdall: React.FC<HeimdallProps> = ({
       return {
         parentId,
         nodes: initialNodes,
-        loading: environment === 'electron' && !!conversationId && initialNodes.length === 0,
+        loading: isNativeShell && !!conversationId && initialNodes.length === 0,
         error: null,
       }
     })
 
-    if (environment !== 'electron' || !conversationId) {
+    if (!isNativeShell || !conversationId) {
       setSubagentModalData({
         parentId,
         nodes: initialNodes,
@@ -916,13 +946,14 @@ export const Heimdall: React.FC<HeimdallProps> = ({
   const debounceTimeoutRef = useRef<NodeJS.Timeout | null>(null)
 
   const debouncedUpdateNote = useCallback(
-    (messageId: MessageId, content: string, note: string, note_color?: string | null) => {
+    (messageId: MessageId, note: string, note_color?: string | null) => {
       if (debounceTimeoutRef.current) {
         clearTimeout(debounceTimeoutRef.current)
       }
 
+      // Note-only body: works for every role, including Claude transcript rows and empty-content tool turns.
       debounceTimeoutRef.current = setTimeout(() => {
-        dispatch(updateMessage({ id: messageId, content, note, note_color }) as any)
+        dispatch(updateMessage({ id: messageId, note, note_color }) as any)
       }, 500) // 500ms debounce
     },
     [dispatch]
@@ -940,7 +971,6 @@ export const Heimdall: React.FC<HeimdallProps> = ({
       setNoteMessageId(messageId)
       setNoteText(message.note || '')
       setNoteColor(isValidHexColor(message.note_color) ? message.note_color : null)
-      noteMessageContentRef.current = message.content // Store content in ref
       setNoteDialogPos(position)
       setShowNoteDialog(true)
       setShowContextMenu(false)
@@ -954,7 +984,6 @@ export const Heimdall: React.FC<HeimdallProps> = ({
     setNoteMessageId(null)
     setNoteText('')
     setNoteColor(null)
-    noteMessageContentRef.current = '' // Clear ref on close
   }, [])
 
   const handleNoteTextChange = useCallback(
@@ -962,10 +991,7 @@ export const Heimdall: React.FC<HeimdallProps> = ({
       setNoteText(newNoteText)
 
       if (noteMessageId !== null) {
-        const messageContent = noteMessageContentRef.current
-        if (messageContent) {
-          debouncedUpdateNote(noteMessageId, messageContent, newNoteText, noteColor)
-        }
+        debouncedUpdateNote(noteMessageId, newNoteText, noteColor)
       }
     },
     [noteMessageId, noteColor, debouncedUpdateNote]
@@ -977,10 +1003,7 @@ export const Heimdall: React.FC<HeimdallProps> = ({
       setNoteColor(sanitizedColor)
 
       if (noteMessageId !== null) {
-        const messageContent = noteMessageContentRef.current
-        if (messageContent) {
-          debouncedUpdateNote(noteMessageId, messageContent, noteText, sanitizedColor)
-        }
+        debouncedUpdateNote(noteMessageId, noteText, sanitizedColor)
       }
     },
     [noteMessageId, noteText, debouncedUpdateNote]
@@ -996,15 +1019,16 @@ export const Heimdall: React.FC<HeimdallProps> = ({
   const scheduleCloseHoveredNote = useCallback(() => {
     clearNotePreviewCloseTimeout()
     notePreviewCloseTimeoutRef.current = window.setTimeout(() => {
-      setHoveredNote(null)
       notePreviewCloseTimeoutRef.current = null
+      notePreviewIntent.run(() => setHoveredNote(null))
     }, DOCKED_PREVIEW_CLOSE_DELAY_MS)
-  }, [clearNotePreviewCloseTimeout])
+  }, [clearNotePreviewCloseTimeout, notePreviewIntent])
 
   const handleNoteBadgeClick = useCallback(
     (event: React.MouseEvent<SVGGElement>, nodeId: string) => {
       event.stopPropagation()
       clearNotePreviewCloseTimeout()
+      notePreviewIntent.cancel()
       setHoveredNote(null)
       const containerRect = containerRef.current?.getBoundingClientRect()
       if (!containerRect) return
@@ -1014,7 +1038,7 @@ export const Heimdall: React.FC<HeimdallProps> = ({
         y: event.clientY - containerRect.top,
       })
     },
-    [handleOpenNoteDialog, clearNotePreviewCloseTimeout]
+    [handleOpenNoteDialog, clearNotePreviewCloseTimeout, notePreviewIntent]
   )
 
   const handleNoteBadgeHover = useCallback(
@@ -1022,7 +1046,7 @@ export const Heimdall: React.FC<HeimdallProps> = ({
       clearNotePreviewCloseTimeout()
       const containerRect = containerRef.current?.getBoundingClientRect()
       if (!containerRect) return
-      setHoveredNote({
+      const nextHoveredNote = {
         nodeId: node.id,
         note,
         sender: node.sender,
@@ -1030,18 +1054,22 @@ export const Heimdall: React.FC<HeimdallProps> = ({
           x: event.clientX - containerRect.left,
           y: event.clientY - containerRect.top,
         },
-      })
+      }
+      notePreviewIntent.run(() => setHoveredNote(nextHoveredNote))
     },
-    [clearNotePreviewCloseTimeout]
+    [clearNotePreviewCloseTimeout, notePreviewIntent]
   )
 
+  // Leaving a pill drops any swap still deferred for it, then starts the close timer.
   const handleNoteBadgeLeave = useCallback(() => {
+    notePreviewIntent.cancel()
     scheduleCloseHoveredNote()
-  }, [scheduleCloseHoveredNote])
+  }, [notePreviewIntent, scheduleCloseHoveredNote])
 
   const handleNotePreviewEnter = useCallback(() => {
     clearNotePreviewCloseTimeout()
-  }, [clearNotePreviewCloseTimeout])
+    notePreviewIntent.cancel()
+  }, [clearNotePreviewCloseTimeout, notePreviewIntent])
 
   const handleNotePreviewLeave = useCallback(() => {
     scheduleCloseHoveredNote()
@@ -1315,6 +1343,7 @@ export const Heimdall: React.FC<HeimdallProps> = ({
       dispatch(chatSliceActions.nodesSelected(newSelectedNodes))
       setContextNodeId(nodeIdParsed)
       setTransferScopeAction(null)
+      setTransferNotice(null)
 
       const rect = containerRef.current?.getBoundingClientRect()
       if (rect && newSelectedNodes.length > 0) {
@@ -1669,7 +1698,10 @@ export const Heimdall: React.FC<HeimdallProps> = ({
   useEffect(() => {
     setSubagentPanel(null)
     setHoveredNote(null)
-  }, [conversationId])
+    // A deferred swap must not reopen a preview from the previous conversation.
+    messagePreviewIntent.cancel()
+    notePreviewIntent.cancel()
+  }, [conversationId, messagePreviewIntent, notePreviewIntent])
 
   const nodeWidth = 250
   const nodeHeight = 80
@@ -1711,7 +1743,7 @@ export const Heimdall: React.FC<HeimdallProps> = ({
   }, [chatData])
 
   // Filtering is visual-only; canonical messages and paths remain unchanged.
-  const filterEmptyNodes = (root: ChatNode, hasSiblings = false): ChatNode[] => filterChatTree(root, (node, hasSiblings) => {
+  const filterEmptyNodes = (root: ChatNode, boundaries: HiddenTreeBoundary[], intermediateTextIds: ReadonlySet<string>): ChatNode[] => filterChatTree(root, (node, hasSiblings) => {
     // Look up full message to check for structured content (blocks, tools, etc.)
     const fullMsg = messageById.get(String(node.id))
 
@@ -1719,36 +1751,33 @@ export const Heimdall: React.FC<HeimdallProps> = ({
     // descendants stay on the branch. Selection still expands to hidden nodes.
     const isHiddenContextInjection = fullMsg ? isContextInjectionMessage(fullMsg) : false
 
-    const hasContent =
-      !isHiddenContextInjection &&
-      ((node.message && node.message.trim().length > 0) ||
-      (fullMsg &&
-        ((fullMsg.content && fullMsg.content.trim().length > 0) ||
-          (Array.isArray(fullMsg.content_blocks) &&
-            fullMsg.content_blocks.some((b: any) => b.type === 'text' && b.text && b.text.trim().length > 0)))))
+    const hasContent = !filterEmptyMessages || !isHiddenContextInjection &&
+      (Boolean(node.message?.trim()) || Boolean(fullMsg && hasHeimdallTextContent(fullMsg)))
 
-    return { promote: isHeimdallScaffoldingMessage(fullMsg, filterEmptyMessages) || shouldPromoteHeimdallNode({
+    return { promote: intermediateTextIds.has(String(node.id)) || isHeimdallScaffoldingMessage(fullMsg, filterEmptyMessages) || shouldPromoteHeimdallNode({
       isContextInjection: false,
       isOperationModeChange: false,
       isEmpty: !hasContent,
       hasSiblings,
       filterEmptyMessages,
-    }), message: getCompactionPlaceholder(fullMsg) ?? node.message }
-  }, hasSiblings)
+    }), message: getCompactionPlaceholder(fullMsg) ?? node.message, hiddenBoundary: isCommittedCompaction(fullMsg) }
+  }, false, boundaries)
 
   // Use provided data or fallback to last known (prevents flash on refresh). Do NOT show a fake empty node.
-  const currentChatData = useMemo(() => {
+  const { currentChatData, compactionBoundaries } = useMemo(() => {
     const rawData = chatData ?? lastDataRef.current ?? null
-    if (!rawData) return null
+    const compactionBoundaries: HiddenTreeBoundary[] = []
+    if (!rawData) return { currentChatData: null, compactionBoundaries }
 
     if (filterEmptyMessages || messageById.size > 0) {
-      const result = filterEmptyNodes(rawData, false) // Root node has no siblings
+      const intermediateTextIds = filterEmptyMessages ? getIntermediateAgentTextIds(rawData, messageById) : new Set<string>()
+      const result = filterEmptyNodes(rawData, compactionBoundaries, intermediateTextIds)
 
       // Multiple promoted branches need a synthetic root, not the hidden message.
-      return buildHeimdallVisibleRoot(result)
+      return { currentChatData: buildHeimdallVisibleRoot(result), compactionBoundaries }
     }
 
-    return rawData
+    return { currentChatData: rawData, compactionBoundaries }
   }, [chatData, messageById, filterEmptyMessages])
 
   // Use the complete filtered tree, never viewport-culling results, for action visibility.
@@ -1818,13 +1847,15 @@ export const Heimdall: React.FC<HeimdallProps> = ({
   // Calculate tree layout in two linear passes. The previous implementation
   // recalculated subtree widths recursively for each sibling and ancestor, which
   // becomes very expensive on large/deep image-heavy trees.
+  const compactionGapBefore = useMemo(() => new Set(compactionBoundaries.flatMap(boundary => boundary.childIds)),
+    [compactionBoundaries])
   const calculateTreeLayout = (node: ChatNode): Record<string, Position> =>
-    layoutChatTree(node, horizontalSpacing, verticalSpacing)
+    layoutChatTree(node, horizontalSpacing, verticalSpacing, compactionGapBefore)
 
   // Memoize layout so it only recomputes when inputs actually change (e.g., data or spacings)
   const positions = useMemo(
     () => (currentChatData ? calculateTreeLayout(currentChatData) : {}),
-    [currentChatData, horizontalSpacing, verticalSpacing]
+    [currentChatData, horizontalSpacing, verticalSpacing, compactionGapBefore]
   )
   const positionEntries = useMemo(() => Object.entries(positions), [positions])
   const positionValues = useMemo(() => positionEntries.map(([, pos]) => pos), [positionEntries])
@@ -1833,13 +1864,17 @@ export const Heimdall: React.FC<HeimdallProps> = ({
   const currentPathSet = useMemo(() => new Set(currentPathIds ?? []), [currentPathIds])
   const selectedNodeSet = useMemo(() => new Set((selectedNodes ?? []).map(id => String(id))), [selectedNodes])
 
+  const compactionDividers = useMemo(() => buildCompactionDividers(compactionBoundaries, positions, {
+    compactMode, focusedNodeId, nodeWidth, nodeHeight, circleRadius, verticalSpacing,
+  }), [compactionBoundaries, positions, compactMode, focusedNodeId, verticalSpacing])
+
   // Calculate SVG bounds (memoized)
   const bounds = useMemo(() => {
     const values = positionValues
     if (values.length === 0) {
       return { minX: 0, maxX: 0, minY: 0, maxY: 0 }
     }
-    return values.reduce<Bounds>(
+    const result = values.reduce<Bounds>(
       (acc, pos) => {
         const isExpanded = !compactMode || pos.node.id === focusedNodeId
         const halfWidth = isExpanded ? nodeWidth / 2 : circleRadius
@@ -1854,7 +1889,14 @@ export const Heimdall: React.FC<HeimdallProps> = ({
       },
       { minX: Infinity, maxX: -Infinity, minY: Infinity, maxY: -Infinity }
     )
-  }, [positionValues, compactMode, focusedNodeId])
+    for (const divider of compactionDividers) {
+      result.minX = Math.min(result.minX, divider.x1)
+      result.maxX = Math.max(result.maxX, divider.x2)
+      result.minY = Math.min(result.minY, divider.y)
+      result.maxY = Math.max(result.maxY, divider.y)
+    }
+    return result
+  }, [positionValues, compactMode, focusedNodeId, compactionDividers])
 
   // Initialize offsets once (when we have real data) so the tree doesn't jump when nodes change
   useEffect(() => {
@@ -1901,7 +1943,11 @@ export const Heimdall: React.FC<HeimdallProps> = ({
   // Focus requests also work when Chat has just mounted a previously hidden tree.
   useEffect(() => {
     if (keyboardFocusRequest > 0) {
-      svgRef.current?.focus({ preventScroll: true })
+      const svg = svgRef.current
+      // A click can leave the SVG DOM-focused without focus mode; refocus so onFocus
+      // fires again under the hotkey's keyboard modality.
+      if (svg && document.activeElement === svg) svg.blur()
+      svg?.focus({ preventScroll: true })
       onKeyboardFocusHandled?.()
     }
   }, [keyboardFocusRequest, onKeyboardFocusHandled])
@@ -1914,7 +1960,7 @@ export const Heimdall: React.FC<HeimdallProps> = ({
   }, [keyboardCursor, graphHasFocus, positions, dimensions.width, dimensions.height])
 
   const keyboardScope = () => svgRef.current
-  const canUseKeyboardTree = () => !loading && !error && !keyboardOverlayOpen && keyboardCursor !== null
+  const canUseKeyboardTree = () => graphHasFocus && !loading && !error && !keyboardOverlayOpen && keyboardCursor !== null
   const moveKeyboardCursor = (direction: 'parent' | 'child' | 'previousSibling' | 'nextSibling') => {
     if (!keyboardCursor) return
     const nextNodeId = moveKeyboardNode(keyboardTree, keyboardCursor, direction, currentPathIds.map(String))
@@ -2183,6 +2229,7 @@ export const Heimdall: React.FC<HeimdallProps> = ({
       const selectedNodeIds = expandSelectionToHiddenBranchMessages(getNodesInSelectionRectangle())
       setContextNodeId(null)
       setTransferScopeAction(null)
+      setTransferNotice(null)
       // Replace selection with nodes from this drag (no branch filtering)
       dispatch(chatSliceActions.nodesSelected(selectedNodeIds))
       setIsSelecting(false)
@@ -2283,19 +2330,18 @@ export const Heimdall: React.FC<HeimdallProps> = ({
           return
         }
 
-        // Dispatch the delete action with conversationId and storageMode
-        await (dispatch as any)(deleteSelectedNodes({ ids: idsToDelete, conversationId, storageMode })).unwrap()
+        await (dispatch as any)(deleteSelectedNodes({ ids: idsToDelete, conversationId })).unwrap()
 
         // Clear selection after successful delete
         dispatch(chatSliceActions.nodesSelected([]))
 
         // Refresh the message tree (now fetches both tree and messages in one call)
-        await (dispatch as any)(fetchMessageTree({ conversationId, storageMode }))
+        await (dispatch as any)(fetchMessageTree({ conversationId }))
       } catch (error) {
         console.error('Failed to delete nodes:', error)
       }
     },
-    [dispatch, conversationId, storageMode]
+    [dispatch, conversationId]
   )
 
   const closeDeleteNodesModal = useCallback(() => {
@@ -2394,6 +2440,15 @@ export const Heimdall: React.FC<HeimdallProps> = ({
   )
   const activeBranchMoveBlocked = transferScopeAction === 'move' &&
     hasUnselectedDescendants(allMessages, transferScopes.activeBranchIds)
+  const transferRefusals = useMemo(
+    () => transferScopeAction
+      ? {
+          selection: claudeTransferRefusal(allMessages, transferScopes.selectionIds),
+          branch: claudeTransferRefusal(allMessages, transferScopes.activeBranchIds),
+        }
+      : { selection: null, branch: null },
+    [transferScopeAction, allMessages, transferScopes]
+  )
 
   const handleOpenConversationSelector = (mode: ConversationTransferMode, ids: MessageId[]): void => {
     if (ids.length === 0) {
@@ -2441,22 +2496,29 @@ export const Heimdall: React.FC<HeimdallProps> = ({
       }
 
       setIsAddingToConversation(true)
-      const targetStorageMode = (targetConversation.storage_mode || storageMode || 'cloud') as 'cloud' | 'local'
-
-      await (dispatch as any)(
+      const copy = (): Promise<Message[]> => (dispatch as any)(
         insertBulkMessages({
           conversationId: targetConversation.id,
           messages: messagesToCopy,
-          storageMode: targetStorageMode,
         })
       ).unwrap()
 
       if (conversationTransferMode === 'move' && conversationId) {
-        await (dispatch as any)(
-          deleteSelectedNodes({ ids: idsToTransfer, conversationId, storageMode })
-        ).unwrap()
-        await (dispatch as any)(fetchMessageTree({ conversationId, storageMode })).unwrap()
+        await moveSelection(idsToTransfer, {
+          previewSourceDelete: async () =>
+            (await (dispatch as any)(previewMessageDeletion({ ids: idsToTransfer, conversationId })).unwrap()).planned,
+          copy,
+          deleteSource: () => (dispatch as any)(deleteSelectedNodes({ ids: idsToTransfer, conversationId })).unwrap(),
+          deleteCopies: ids => (dispatch as any)(
+            deleteSelectedNodes({ ids, conversationId: targetConversation.id })
+          ).unwrap(),
+        })
+        // The move is done; a failed refresh must not invite a retry that copies again.
+        await (dispatch as any)(fetchMessageTree({ conversationId })).unwrap()
+          .catch((refreshError: unknown) => console.error('Failed to refresh after moving messages:', refreshError))
         queryClient.invalidateQueries({ queryKey: ['conversations', conversationId, 'messages'] })
+      } else {
+        await copy()
       }
 
       queryClient.invalidateQueries({ queryKey: ['conversations'] })
@@ -2469,27 +2531,27 @@ export const Heimdall: React.FC<HeimdallProps> = ({
       dispatch(chatSliceActions.nodesSelected([]))
     } catch (error) {
       console.error('Failed to transfer selection to existing chat:', error)
+      // A move may have copied and then removed the copies again; either way the target may have changed.
+      queryClient.invalidateQueries({ queryKey: ['conversations', targetConversation.id, 'messages'] })
       setConversationSelectorError(
-        error instanceof Error
-          ? error.message
-          : `Failed to ${conversationTransferMode === 'move' ? 'move' : 'copy'} messages to selected chat.`
+        transferErrorMessage(error, `Failed to ${conversationTransferMode === 'move' ? 'move' : 'copy'} messages to selected chat.`)
       )
     } finally {
       setIsAddingToConversation(false)
     }
   }
 
-  // Create new chat from selected nodes
+  // Create new chat from selected nodes. The menu stays open until it succeeds, so a failure can be shown there.
   const handleCreateNewChat = async (ids: MessageId[]): Promise<void> => {
-    setShowContextMenu(false)
+    if (isCreatingChat) return
+    const messagesToCopy = buildMessageTransferPayload(allMessages, ids)
+    if (messagesToCopy.length === 0) {
+      setShowContextMenu(false)
+      return
+    }
+    setIsCreatingChat(true)
+    setTransferNotice(null)
     try {
-      const messagesToCopy = buildMessageTransferPayload(allMessages, ids)
-
-      if (messagesToCopy.length === 0) {
-        setShowContextMenu(false)
-        return
-      }
-
       // Generate title from first message content
       const firstContent = messagesToCopy[0].content
       const title = firstContent.slice(0, 100) + (firstContent.length > 100 ? '...' : '')
@@ -2499,45 +2561,21 @@ export const Heimdall: React.FC<HeimdallProps> = ({
       const projectId = currentConversation?.project_id || null
       const systemPrompt = currentConversation?.system_prompt || null
       const conversationContext = currentConversation?.conversation_context || null
-      const sourceCwd = typeof currentConversation?.cwd === 'string' ? currentConversation.cwd : null
-      const newConversation = await (dispatch as any)(
-        createConversation({ title, projectId, systemPrompt, conversationContext, storageMode })
-      ).unwrap()
-
-      if (!newConversation?.id) {
-        console.error('Failed to create new conversation')
-        return
-      }
-
-      const inheritedCwd = sourceCwd?.trim()
-      if (inheritedCwd) {
-        const nextStorageMode = (newConversation.storage_mode || storageMode || 'cloud') as 'cloud' | 'local'
-        try {
-          await (dispatch as any)(
-            updateCwd({
-              id: newConversation.id,
-              cwd: inheritedCwd,
-              storageMode: nextStorageMode,
-            })
-          ).unwrap()
-        } catch (cwdError) {
-          console.error('Failed to copy cwd to new conversation:', cwdError)
-        }
-      }
-
-      const nextStorageMode = (newConversation.storage_mode || storageMode || 'cloud') as 'cloud' | 'local'
-
-      // Insert messages as a chain preserving their structure
-      await (dispatch as any)(
-        insertBulkMessages({
-          conversationId: newConversation.id,
-          messages: messagesToCopy,
-          storageMode: nextStorageMode, // Pass storage mode explicitly since new conversation isn't in cache yet
-        })
-      ).unwrap()
-
-      // Fetch messages and tree to populate the new conversation before navigation
-      await (dispatch as any)(fetchMessageTree({ conversationId: newConversation.id, storageMode: nextStorageMode })).unwrap()
+      // A copy without its workspace folder cannot continue file or Claude work, so failing to set it is fatal.
+      const inheritedCwd = typeof currentConversation?.cwd === 'string' ? currentConversation.cwd.trim() : ''
+      const newConversation = await createChatFromSelection<Conversation>({
+        create: () => (dispatch as any)(createConversation({ title, projectId, systemPrompt, conversationContext })).unwrap(),
+        setCwd: inheritedCwd
+          ? conversation => (dispatch as any)(updateCwd({ id: conversation.id, cwd: inheritedCwd })).unwrap()
+          : undefined,
+        copy: conversation => (dispatch as any)(
+          insertBulkMessages({ conversationId: conversation.id, messages: messagesToCopy })
+        ).unwrap(),
+        remove: async conversation => {
+          await (dispatch as any)(deleteConversation({ id: conversation.id })).unwrap()
+          queryClient.invalidateQueries({ queryKey: ['conversations'] })
+        },
+      })
 
       // Invalidate React Query cache to update conversations list in sidebar/dropdowns
       queryClient.invalidateQueries({ queryKey: ['conversations'] })
@@ -2545,21 +2583,28 @@ export const Heimdall: React.FC<HeimdallProps> = ({
         queryClient.invalidateQueries({ queryKey: ['conversations', 'project', projectId] })
       }
 
-      // Navigate to the new chat with storageMode in state for immediate API routing
-      navigate(`/chat/${newConversation.project_id || 'unknown'}/${newConversation.id}`, {
-        state: { storageMode: newConversation.storage_mode || storageMode },
-      })
-    } catch (error) {
-      console.error('Failed to create new chat from selection:', error)
-    } finally {
       setShowContextMenu(false)
-      // Clear selection after creating new chat
       dispatch(chatSliceActions.nodesSelected([]))
+      // The chat route loads the new conversation itself; never replace this chat's tree from here.
+      navigate(`/chat/${newConversation.project_id || 'unknown'}/${newConversation.id}`)
+    } catch (error) {
+      // createChatFromSelection has already removed a half-made chat.
+      console.error('Failed to create new chat from selection:', error)
+      setTransferNotice(transferErrorMessage(error, 'Failed to create the new chat.'))
+      setShowContextMenu(true)
+    } finally {
+      setIsCreatingChat(false)
     }
   }
 
   const handleTransferScopeSelected = (action: TransferAction, ids: MessageId[]): void => {
     setTransferScopeAction(null)
+    // The server enforces the same rule; refusing here avoids creating a chat it would reject.
+    const refusal = claudeTransferRefusal(allMessages, ids)
+    if (refusal) {
+      setTransferNotice(refusal)
+      return
+    }
     if (action === 'new') {
       void handleCreateNewChat(ids)
     } else {
@@ -2568,6 +2613,8 @@ export const Heimdall: React.FC<HeimdallProps> = ({
   }
 
   const handleTransferAction = (action: TransferAction, button: HTMLButtonElement): void => {
+    if (isCreatingChat) return
+    setTransferNotice(null)
     if (transferScopes.activeBranchIds.length > 0) {
       transferActionButtonRef.current = button
       setTransferScopeAction(action)
@@ -2586,10 +2633,11 @@ export const Heimdall: React.FC<HeimdallProps> = ({
   useEffect(() => {
     setShowContextMenu(false)
     setTransferScopeAction(null)
+    setTransferNotice(null)
     setContextNodeId(null)
     setShowConversationSelector(false)
     setTransferMessageIds([])
-  }, [conversationId, currentConversationId, storageMode])
+  }, [conversationId, currentConversationId])
 
   // Close context menu on outside click
   useEffect(() => {
@@ -2815,46 +2863,51 @@ export const Heimdall: React.FC<HeimdallProps> = ({
   const scheduleCloseMessagePreview = useCallback(() => {
     clearMessagePreviewCloseTimeout()
     messagePreviewCloseTimeoutRef.current = window.setTimeout(() => {
-      setSelectedNode(null)
       messagePreviewCloseTimeoutRef.current = null
+      messagePreviewIntent.run(() => setSelectedNode(null))
     }, DOCKED_PREVIEW_CLOSE_DELAY_MS)
-  }, [clearMessagePreviewCloseTimeout])
+  }, [clearMessagePreviewCloseTimeout, messagePreviewIntent])
 
   const handleNodeMouseEnter = useCallback(
     (e: React.MouseEvent<SVGElement>) => {
       clearMessagePreviewCloseTimeout()
       const nodeId = getNodeIdFromTarget(e.target)
       if (!nodeId) return
-      const pos = positions[nodeId]
-      if (pos?.node) {
-        setSelectedNode(pos.node)
-      }
-
+      const node = positions[nodeId]?.node
       const containerRect = containerRef.current?.getBoundingClientRect()
-      if (containerRect) {
-        setMousePosition({
-          x: e.clientX - containerRect.left,
-          y: e.clientY - containerRect.top,
-        })
-      }
+      const nextMousePosition = containerRect
+        ? { x: e.clientX - containerRect.left, y: e.clientY - containerRect.top }
+        : null
+
+      messagePreviewIntent.run(() => {
+        if (node) setSelectedNode(node)
+        if (nextMousePosition) setMousePosition(nextMousePosition)
+      })
     },
-    [clearMessagePreviewCloseTimeout, getNodeIdFromTarget, positions]
+    [clearMessagePreviewCloseTimeout, getNodeIdFromTarget, messagePreviewIntent, positions]
   )
 
   // Moving off the node starts the close timer; entering the docked card cancels it
   // (so it can be scrolled), and leaving the card restarts it. A new node-hover
-  // replaces the content via handleNodeMouseEnter.
+  // replaces the content via handleNodeMouseEnter, but while the pointer is heading
+  // to the card, swaps and closes wait until it changes direction or stalls.
   const handleNodeMouseLeave = useCallback(() => {
+    messagePreviewIntent.cancel()
     scheduleCloseMessagePreview()
-  }, [scheduleCloseMessagePreview])
+  }, [messagePreviewIntent, scheduleCloseMessagePreview])
 
   const handleMessagePreviewEnter = useCallback(() => {
     clearMessagePreviewCloseTimeout()
-  }, [clearMessagePreviewCloseTimeout])
+    messagePreviewIntent.cancel()
+  }, [clearMessagePreviewCloseTimeout, messagePreviewIntent])
 
   const handleMessagePreviewLeave = useCallback(() => {
     scheduleCloseMessagePreview()
   }, [scheduleCloseMessagePreview])
+
+  const compactionDividerStroke = customThemeEnabled
+    ? getThemeModeColor(customTheme.colors.toolJobsMutedText, isDarkMode)
+    : undefined
 
   const renderConnections = (): JSX.Element[] => {
     const connections: JSX.Element[] = []
@@ -3016,6 +3069,27 @@ export const Heimdall: React.FC<HeimdallProps> = ({
         drawConnection(parentPos, pos, node)
       }
     })
+
+    // Check marker extents independently: both neighbouring cards may be culled.
+    for (const divider of compactionDividers) {
+      if (!segmentIntersectsViewport(toScreenPoint(divider.x1, divider.y), toScreenPoint(divider.x2, divider.y))) continue
+      connections.push(
+        <line
+          key={divider.key}
+          data-compaction-divider='true'
+          role='img'
+          aria-label='Context compacted'
+          x1={divider.x1}
+          x2={divider.x2}
+          y1={divider.y}
+          y2={divider.y}
+          className='stroke-stone-400/70 dark:stroke-stone-400/60'
+          style={{ stroke: compactionDividerStroke, pointerEvents: 'none' }}
+          strokeWidth={1.5}
+          strokeLinecap='round'
+        />
+      )
+    }
 
     return connections
   }
@@ -3592,19 +3666,19 @@ export const Heimdall: React.FC<HeimdallProps> = ({
                     return <p className='line-clamp-3'>{node.message}</p>
                   }
 
-                  // Check for tool calls
-                  if (msg?.tool_calls && msg.tool_calls.length > 0) {
-                    const toolNames = msg.tool_calls.map((tc: any) => tc.name).join(', ')
+                  // Check content_blocks for tool_use
+                  const toolUses = Array.isArray(msg?.content_blocks)
+                    ? msg.content_blocks.filter((block: any) => block.type === 'tool_use')
+                    : []
+                  if (toolUses.length > 0) {
+                    const toolNames = toolUses.map((tc: any) => tc.name).join(', ')
                     return <p className='line-clamp-3'>{toolNames || 'Tool Call'}</p>
                   }
 
-                  // Check content_blocks for tool_use
-                  if (msg?.content_blocks && Array.isArray(msg.content_blocks)) {
-                    const toolUses = msg.content_blocks.filter((block: any) => block.type === 'tool_use')
-                    if (toolUses.length > 0) {
-                      const toolNames = toolUses.map((tc: any) => tc.name).join(', ')
-                      return <p className='line-clamp-3'>{toolNames || 'Tool Call'}</p>
-                    }
+                  // Legacy rows without tool_use blocks
+                  if (msg?.tool_calls && msg.tool_calls.length > 0) {
+                    const toolNames = msg.tool_calls.map((tc: any) => tc.name).join(', ')
+                    return <p className='line-clamp-3'>{toolNames || 'Tool Call'}</p>
                   }
 
                   return <p className='line-clamp-3'>...</p>
@@ -3910,6 +3984,8 @@ export const Heimdall: React.FC<HeimdallProps> = ({
   const connectionElements = useMemo(
     () => renderConnections(),
     [
+      compactionDividers,
+      compactionDividerStroke,
       visiblePositionValues,
       positions,
       parentByChildId,
@@ -4127,8 +4203,8 @@ export const Heimdall: React.FC<HeimdallProps> = ({
           onClick={toggleFilterEmptyMessages}
           className={`${heimdallControlButtonClass} ${filterEmptyMessages ? heimdallControlButtonActiveClass : ''}`}
           style={getHeimdallControlButtonStyle(filterEmptyMessages)}
-          title={filterEmptyMessages ? 'Show Empty Messages' : 'Hide Empty Messages'}
-          aria-label={filterEmptyMessages ? 'Show filtered messages' : 'Hide empty and mode-change messages'}
+          title={filterEmptyMessages ? 'Show filtered messages' : 'Hide empty messages and intermediate agent text'}
+          aria-label={filterEmptyMessages ? 'Show filtered messages' : 'Hide empty, mode-change and intermediate agent messages'}
           aria-pressed={filterEmptyMessages}
         >
           <ListFilter size={18} strokeWidth={2.25} />
@@ -4194,6 +4270,10 @@ export const Heimdall: React.FC<HeimdallProps> = ({
         aria-multiselectable='true'
         aria-activedescendant={keyboardCursor ? keyboardItemId(keyboardCursor) : undefined}
         onFocus={() => {
+          // Pointer clicks that skip handlePointerDown's preventDefault (note/subagent
+          // pills stop propagation) still focus the SVG. Only keyboard focus (the
+          // hotkey or Tab) enters focus mode.
+          if (!isKeyboardFocus(svgRef.current)) return
           keyboardCenterPendingRef.current = true
           setGraphHasFocus(true)
           setKeyboardNodeId(keyboardCursor)
@@ -4342,7 +4422,7 @@ export const Heimdall: React.FC<HeimdallProps> = ({
                         type='button'
                         onClick={() => handleSelectSearchResult(item)}
                         onMouseEnter={() => setSearchHoverIndex(idx)}
-                        className={`flex flex-col justify-start text-left rounded-xl bg-white/55 dark:bg-white/10 p-3 min-h-[320px] shadow-sm hover:bg-white/75 dark:hover:bg-white/15 transition-[background-color,color,opacity,transform] duration-150 ${
+                        className={`flex flex-col justify-start text-left rounded-xl bg-white/55 dark:bg-white/10 p-3 h-56 max-h-[45vh] sm:h-64 md:h-72 lg:h-80 xl:h-96 shadow-sm hover:bg-white/75 dark:hover:bg-white/15 transition-[background-color,color,opacity,transform] duration-150 ${
                           idx === searchHoverIndex ? 'ring-2 ring-amber-300/70 dark:ring-amber-400/50' : ''
                         }`}
                       >
@@ -4350,7 +4430,7 @@ export const Heimdall: React.FC<HeimdallProps> = ({
                           <span className='font-semibold'>{item.role}</span>
                           <span>#{idx + 1}</span>
                         </div>
-                        <div className='mt-2 text-sm text-stone-700 dark:text-stone-200 max-h-48 sm:max-h-52 md:max-h-60 lg:max-h-64 overflow-y-auto thin-scrollbar whitespace-pre-wrap'>
+                        <div className='mt-2 min-h-0 flex-1 text-sm text-stone-700 dark:text-stone-200 overflow-y-auto thin-scrollbar whitespace-pre-wrap'>
                           {renderHighlightedText(messageText)}
                         </div>
                       </button>
@@ -4454,11 +4534,6 @@ export const Heimdall: React.FC<HeimdallProps> = ({
                                   <div className='truncate text-sm font-medium text-stone-800 dark:text-stone-100'>{title}</div>
                                   <div className='mt-0.5 flex items-center gap-2 text-[11px] text-stone-500 dark:text-stone-400'>
                                     {updatedLabel && <span>{updatedLabel}</span>}
-                                    {conversation.storage_mode && (
-                                      <span className='rounded-full bg-stone-100 px-1.5 py-0.5 uppercase dark:bg-neutral-800'>
-                                        {conversation.storage_mode}
-                                      </span>
-                                    )}
                                   </div>
                                 </div>
                               </div>
@@ -4506,12 +4581,15 @@ export const Heimdall: React.FC<HeimdallProps> = ({
               selectionCount={transferScopes.selectionIds.length}
               branchCount={transferScopes.activeBranchIds.length}
               branchMoveBlocked={activeBranchMoveBlocked}
+              selectionBlockedReason={transferRefusals.selection}
+              branchBlockedReason={transferRefusals.branch}
               itemClassName={heimdallContextMenuItemClass}
               itemStyle={getHeimdallContextMenuItemStyle()}
               mutedStyle={heimdallContextMenuHeaderStyle}
               onBack={handleBackToMessageActions}
               onSelect={scope => {
-                if (scope === 'branch' && activeBranchMoveBlocked) return
+                if (scope === 'branch' && (activeBranchMoveBlocked || transferRefusals.branch)) return
+                if (scope === 'selection' && transferRefusals.selection) return
                 handleTransferScopeSelected(transferScopeAction, scope === 'branch' ? transferScopes.activeBranchIds : transferScopes.selectionIds)
               }}
             />
@@ -4602,8 +4680,10 @@ export const Heimdall: React.FC<HeimdallProps> = ({
           />
 
           <button
-            className={heimdallContextMenuItemClass}
+            className={`${heimdallContextMenuItemClass} disabled:cursor-not-allowed disabled:opacity-50`}
             style={getHeimdallContextMenuItemStyle()}
+            disabled={isCreatingChat}
+            aria-busy={isCreatingChat}
             onClick={e => handleTransferAction('new', e.currentTarget)}
           >
             <svg
@@ -4615,12 +4695,13 @@ export const Heimdall: React.FC<HeimdallProps> = ({
             >
               <path d='M12 4v16m8-8H4' />
             </svg>
-            <span>New Chat From Here</span>
+            <span>{isCreatingChat ? 'Creating chat…' : 'New Chat From Here'}</span>
           </button>
 
           <button
-            className={heimdallContextMenuItemClass}
+            className={`${heimdallContextMenuItemClass} disabled:cursor-not-allowed disabled:opacity-50`}
             style={getHeimdallContextMenuItemStyle()}
+            disabled={isCreatingChat}
             onClick={e => handleTransferAction('copy', e.currentTarget)}
           >
             <svg
@@ -4636,8 +4717,9 @@ export const Heimdall: React.FC<HeimdallProps> = ({
           </button>
 
           <button
-            className={heimdallContextMenuItemClass}
+            className={`${heimdallContextMenuItemClass} disabled:cursor-not-allowed disabled:opacity-50`}
             style={getHeimdallContextMenuItemStyle()}
+            disabled={isCreatingChat}
             onClick={e => handleTransferAction('move', e.currentTarget)}
           >
             <svg
@@ -4651,6 +4733,12 @@ export const Heimdall: React.FC<HeimdallProps> = ({
             </svg>
             <span>Move to Existing Chat</span>
           </button>
+
+          {transferNotice && (
+            <p role='alert' className='px-3 py-2 text-xs text-stone-500 dark:text-neutral-400' style={heimdallContextMenuHeaderStyle}>
+              {transferNotice}
+            </p>
+          )}
 
           <div
             className='h-px bg-stone-200 dark:bg-neutral-700 mx-2 my-1.5'
@@ -4725,6 +4813,7 @@ export const Heimdall: React.FC<HeimdallProps> = ({
               style={{ left: dockedPreview.left, top: dockedPreview.top }}
             >
               <div
+                ref={messagePreviewCardRef}
                 className='pointer-events-auto rounded-[20px] border border-stone-200/55 bg-white/75 p-4 shadow-[0_18px_36px_-22px_rgba(0,0,0,0.18)] backdrop-blur-2xl no-scrollbar dark:border-neutral-700/55 dark:bg-neutral-900/75 dark:shadow-[0_30px_60px_-12px_rgba(0,0,0,0.6)]'
                 data-heimdall-wheel-exempt='true'
                 onMouseEnter={handleMessagePreviewEnter}
@@ -4899,6 +4988,7 @@ export const Heimdall: React.FC<HeimdallProps> = ({
               style={{ left: dockedPreview.left, top: dockedPreview.top }}
             >
           <div
+            ref={notePreviewCardRef}
             className='pointer-events-auto rounded-[20px] border border-stone-200/55 bg-white/75 p-4 shadow-[0_18px_36px_-22px_rgba(0,0,0,0.18)] backdrop-blur-2xl no-scrollbar dark:border-neutral-700/55 dark:bg-neutral-900/75 dark:shadow-[0_30px_60px_-12px_rgba(0,0,0,0.6)]'
             data-heimdall-wheel-exempt='true'
             onMouseEnter={handleNotePreviewEnter}

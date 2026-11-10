@@ -13,7 +13,7 @@
  * rather than as a silent runtime no-op.
  *
  * FAILURE DATA IS NEVER DISCARDED. Every frame that carries a classified failure
- * (`error`, `reauth_required`, `generation_limit_reached`, a badged `complete`) or
+ * (`error`, a badged `complete`) or
  * an explained silence (`notice`, a failed `tool_execution`) projects something.
  * The two surfaces are:
  *   - an in-order `streamChunkReceived` (`type:'error'` / `type:'notice'`), which
@@ -186,6 +186,7 @@ function coerceToolResult(toolResult: any): any {
     tool_use_id: toolResult?.tool_use_id,
     content: toolResult?.content,
     is_error: !!toolResult?.is_error,
+    ...(toolResult?.patch ? { patch: toolResult.patch } : {}),
   }
 }
 
@@ -302,10 +303,10 @@ export function projectServerEvent(event: ServerStreamEvent, ctx: ProjectionCont
 
     case 'compaction_control_persisted':
     case 'context_injection_persisted': {
-      // A mid-run context row (post-compaction re-injection). Add it to the tree only;
-      // it is not a branch anchor and must not move the stream's trigger message.
+      // Context/control rows advance the durable head, but are not a new user
+      // trigger. Use the guarded continuation path, preserving pane ownership.
       const message = normalizeServerMessage(event.message)
-      return message ? [chatSliceActions.messageAdded(message)] : []
+      return message ? [chatSliceActions.messageAdded(message), chatSliceActions.queuedMessageInserted({ message, streamId })] : []
     }
 
     case 'user_message_persisted': {
@@ -362,6 +363,9 @@ export function projectServerEvent(event: ServerStreamEvent, ctx: ProjectionCont
       // Non-terminal: the loop feeds the failure back to the model and continues.
       return [errorChunkAction(streamId, envelope, false)]
     }
+
+    case 'background_tasks':
+      return [chatSliceActions.streamBackgroundTasksUpdated({ streamId, turnActive: event.turnActive, tasks: event.tasks })]
 
     case 'hook_activity': {
       if (!event.messageId) return []
@@ -490,6 +494,15 @@ export function projectServerEvent(event: ServerStreamEvent, ctx: ProjectionCont
       return actions
     }
 
+    case 'tool_approval_changed':
+      return [
+        chatSliceActions.messageAdded(normalizeServerMessage(event.message)),
+        chatSliceActions.branchToolApprovalSelected({ enabled: event.enabled, conversationId: event.conversationId, lineageId: event.lineageId }),
+      ]
+
+    case 'decision_settled':
+      return [chatSliceActions.decisionSettled({ streamId: event.streamId, toolCallId: event.toolCallId })]
+
     case 'permission_required': {
       // Carry streamId + toolCallId so the resolver thunk can POST /resume (Phase 2).
       return [
@@ -520,34 +533,6 @@ export function projectServerEvent(event: ServerStreamEvent, ctx: ProjectionCont
           toolCallId: event.toolCallId,
         } as any),
       ]
-    }
-
-    case 'free_generations_update': {
-      return [
-        chatSliceActions.freeGenerationsUpdated({ remaining: event.remaining, isFreeTier: event.isFreeTier ?? true }),
-      ]
-    }
-
-    case 'generation_limit_reached': {
-      // D3: exhaustion is a chat bubble, not a blocking modal. The modal stole the
-      // whole window for a message that belongs next to the send that hit the limit.
-      return [recordAction(buildChatErrorEnvelope('free_tier_exhausted', { detail: event.message }), ctx)]
-    }
-
-    case 'reauth_required': {
-      // D2: a bubble with "Sign in", never a forced redirect. The code and action are
-      // asserted here rather than taken from the wire, so no server can turn an
-      // expired session into an unrecognised envelope with no affordance.
-      const supplied = event.envelope
-      const envelope = buildChatErrorEnvelope('session_expired', {
-        userMessage: supplied?.userMessage,
-        detail: supplied?.detail ?? event.message,
-        // Honour a server-supplied label, but only on the sign_in action itself.
-        action: supplied?.action?.kind === 'sign_in' ? supplied.action : undefined,
-        provider: supplied?.provider,
-        status: supplied?.status,
-      })
-      return [recordAction(envelope, ctx)]
     }
 
     case 'context_compaction': {

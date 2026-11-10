@@ -1,9 +1,13 @@
 import json
+import re
 import sys
-from urllib import request, error
+import time
+import traceback
+from urllib import request, error, parse
 
-MODEL = 'gpt-6-luna'
-PROVIDER = 'openai'
+# The host's Hooks settings choose the generation provider/model.
+MODEL = 'unresolved'
+PROVIDER = 'host-selected'
 
 # Semantic note-pill color scheme. Each color maps to one category; the
 # note model assigns it strictly from the nature of the summary. This is a
@@ -62,19 +66,143 @@ Do not include markdown fences.
 '''
 
 
-def _json_request(url, method='GET', payload=None, timeout=20):
+# Sent as responseSchema. Claude hosts enforce it natively (--json-schema); other
+# providers are parsed and repaired once by the host. Older hosts ignore it.
+NOTE_RESPONSE_SCHEMA = {
+    'type': 'object',
+    'properties': {
+        'updated': {'type': 'boolean'},
+        'note': {'type': 'string'},
+        'note_color': {'type': 'string', 'enum': [''] + NOTE_COLOR_PRESETS},
+        'reason': {'type': 'string'},
+    },
+    'required': ['updated', 'note', 'note_color', 'reason'],
+    'additionalProperties': False,
+}
+
+# One retry for transient or malformed generations, only while the Stop hook's
+# 60s budget can still fit another request (the request itself may take 45s).
+GENERATION_ATTEMPTS = 2
+RETRY_WITHIN_SECONDS = 12
+RETRYABLE_HTTP_STATUSES = (429, 502, 503)
+RETRYABLE_CODES = ('connection_error', 'invalid_response_json', 'invalid_response_shape', 'invalid_model_json')
+
+
+class HookFailure(RuntimeError):
+    def __init__(self, code, stage, message, **details):
+        super().__init__(message)
+        self.code = code
+        self.stage = stage
+        self.details = details
+
+
+def _safe_error_detail(value, sensitive=()):
+    """Bound error messages, never log response bodies or request contents."""
+    text = value if isinstance(value, str) else ''
+    for private_text in sorted(set(sensitive), key=len, reverse=True):
+        if private_text:
+            text = text.replace(private_text, '[content omitted]')
+    text = re.sub(r'(?i)\bBearer\s+[^\s,;"\']+', 'Bearer [redacted]', text)
+    text = re.sub(
+        r'''(?ix)(["']?(?:authorization|proxy-authorization|cookie|set-cookie|api[_-]?key|access[_-]?token|refresh[_-]?token|token|password|passwd|secret|client[_-]?secret)["']?\s*[:=]\s*)(?:"[^"\r\n]*"|'[^'\r\n]*'|[^\r\n,;}]+)''',
+        r'\1[redacted]', text,
+    )
+    text = re.sub(r'https?://[^\s<>"\']+', '[url omitted]', text)
+    text = re.sub(r'\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b', '[redacted]', text)
+    text = re.sub(r'\bsk-[A-Za-z0-9_-]+\b', '[redacted]', text)
+    return ' '.join(text.split())[:400]
+
+
+def _http_error_detail(http_error, sensitive):
+    # Only extract known error fields from bounded JSON; HTML and arbitrary bodies
+    # can contain private content and are deliberately excluded.
+    try:
+        with http_error:
+            body = http_error.read(4097)
+        if len(body) > 4096:
+            return None
+        parsed = json.loads(body)
+        if not isinstance(parsed, dict):
+            return None
+        detail = parsed.get('error') or parsed.get('message')
+        if isinstance(detail, dict):
+            detail = detail.get('message')
+        return _safe_error_detail(detail, sensitive) or None
+    except Exception:
+        return None
+
+
+def _json_request(url, method='GET', payload=None, timeout=20, stage='callback', sensitive=()):
     data = None
     headers = {'Content-Type': 'application/json'}
     if payload is not None:
         data = json.dumps(payload).encode('utf-8')
     req = request.Request(url, data=data, headers=headers, method=method)
+    started = time.monotonic()
+    # No origin, credentials, query string, or fragment in diagnostics.
+    details = {'method': method, 'path': parse.urlsplit(url).path, 'timeoutSeconds': timeout}
+
+    def failure(code, message):
+        return HookFailure(code, stage, message, elapsedMs=round((time.monotonic() - started) * 1000), **details)
+
     try:
         with request.urlopen(req, timeout=timeout) as resp:
+            details['httpStatus'] = resp.status
             body = resp.read().decode('utf-8')
             return json.loads(body) if body else {}
-    except error.HTTPError as http_error:
-        status = getattr(http_error, 'code', '?')
-        raise RuntimeError(f'callback request failed with HTTP status {status}') from http_error
+    except error.HTTPError as exc:
+        details['httpStatus'] = exc.code
+        detail = _http_error_detail(exc, sensitive)
+        if detail:
+            details['serverError'] = detail
+        raise failure('http_error', f'HTTP {exc.code}') from exc
+    except (TimeoutError, error.URLError) as exc:
+        reason = exc.reason if isinstance(exc, error.URLError) else exc
+        timed_out = isinstance(reason, TimeoutError)
+        details['reasonType'] = type(reason).__name__
+        if isinstance(reason, OSError):
+            details['errno'] = reason.errno
+            details['reason'] = _safe_error_detail(reason.strerror, sensitive)
+        raise failure(
+            'request_timeout' if timed_out else 'connection_error',
+            'Request timed out' if timed_out else 'Connection failed',
+        ) from exc
+    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+        if isinstance(exc, json.JSONDecodeError):
+            details.update(jsonLine=exc.lineno, jsonColumn=exc.colno)
+        raise failure('invalid_response_json', 'Response was not valid UTF-8 JSON') from exc
+    except OSError as exc:
+        details.update(errno=exc.errno, reason=_safe_error_detail(exc.strerror, sensitive))
+        raise failure('connection_error', 'Response could not be read') from exc
+
+
+def _emit_failure(exc, stage, started):
+    code = exc.code if isinstance(exc, HookFailure) else 'unexpected_error'
+    stage = exc.stage if isinstance(exc, HookFailure) else stage
+    details = dict(exc.details) if isinstance(exc, HookFailure) else {}
+    # Frame metadata only: traceback text includes source lines and can expose data.
+    frames = traceback.extract_tb(exc.__traceback__)
+    if frames:
+        frame = frames[-1]
+        details['location'] = f'{frame.name}:{frame.lineno}'
+    chain = []
+    current = exc
+    seen = set()
+    while current is not None and id(current) not in seen and len(chain) < 4:
+        seen.add(id(current))
+        chain.append(type(current).__name__)
+        current = current.__cause__
+    details['exceptionTypes'] = chain
+    details['totalElapsedMs'] = round((time.monotonic() - started) * 1000)
+    details.update(stage=stage, provider=PROVIDER, model=MODEL)
+    cause = str(exc) if isinstance(exc, HookFailure) else type(exc).__name__
+    summary = f'root_note_stop: {stage}: {cause}'
+    if details.get('serverError'):
+        summary += ': ' + details['serverError']
+    # Existing runner persists stdout as a stable outcome and uses stderr for its
+    # error summary. Keep the latter short, with the structured evidence in stdout.
+    print(json.dumps({'outcomeCode': code, 'outcomeSummary': summary, 'diagnostic': details}))
+    print(summary, file=sys.stderr)
 
 
 def _safe_text(value):
@@ -126,12 +254,17 @@ def _emit_outcome(outcome_code, outcome_summary, additional_context=''):
         'outcomeCode': outcome_code,
         'outcomeSummary': outcome_summary,
     }
+    if PROVIDER != 'host-selected':
+        result['diagnostic'] = {'provider': PROVIDER, 'model': MODEL}
     if additional_context:
         result['additionalContext'] = f'[root_note_stop] {additional_context}'
     print(json.dumps(result))
 
 
 def main():
+    global MODEL, PROVIDER
+    started = time.monotonic()
+    stage = 'read_input'
     try:
         payload = json.load(sys.stdin)
     except Exception:
@@ -163,8 +296,11 @@ def main():
         last_assistant_message_id = _safe_text(turn.get('last_assistant_message_id'))
         last_assistant_text = _safe_text(payload.get('last_assistant_message'))
 
-        messages = _json_request(f'{local_api_base}/app/conversations/{conversation_id}/messages')
-        if not isinstance(messages, list) or not messages:
+        stage = 'fetch_messages'
+        messages = _json_request(f'{local_api_base}/app/conversations/{conversation_id}/messages', stage=stage)
+        if not isinstance(messages, list):
+            raise HookFailure('invalid_response_shape', stage, 'Expected a messages array', responseType=type(messages).__name__)
+        if not messages:
             _emit_outcome('messages_unavailable', 'Conversation messages were unavailable.')
             return
 
@@ -179,7 +315,7 @@ def main():
                 return existing
             hydrate_error = None
             try:
-                fetched = _json_request(f'{local_api_base}/app/messages/{message_id}')
+                fetched = _json_request(f'{local_api_base}/app/messages/{message_id}', stage='hydrate_message')
             except Exception as exc:
                 hydrate_error = exc
                 fetched = None
@@ -187,7 +323,7 @@ def main():
                 message_by_id[str(fetched.get('id'))] = fetched
                 return fetched
             if hydrate_error is not None:
-                raise RuntimeError('message hydration callback failed') from hydrate_error
+                raise hydrate_error
             return None
 
         def _root_from(message_id):
@@ -204,6 +340,7 @@ def main():
                 current = _hydrate_message(parent_id)
             return None
 
+        stage = 'resolve_root'
         conversation_root_message = (
             _root_from(current_message_id)
             or _root_from(last_user_message_id)
@@ -278,6 +415,7 @@ def main():
             # linear sends; this hook should only do work after branching.
             return None
 
+        stage = 'resolve_branch_anchor'
         path_anchor_id = last_user_message_id or current_parent_id or current_message_id or last_assistant_message_id
         note_anchor_message = _branch_anchor_from(path_anchor_id)
         note_anchor_message_source = 'nearest_branch_scan' if note_anchor_message is not None else 'none'
@@ -290,6 +428,7 @@ def main():
         anchor_message_content = _safe_text(note_anchor_message.get('content'))
         existing_note = _safe_text(note_anchor_message.get('note'))
 
+        stage = 'load_latest_turn'
         last_user_message = _hydrate_message(last_user_message_id) if last_user_message_id else None
         last_assistant_message = _hydrate_message(last_assistant_message_id) if last_assistant_message_id else None
 
@@ -312,22 +451,56 @@ def main():
             'Update the branch note only if needed. Keep it brief.'
         )
 
-        generation = _json_request(
-            f'{local_api_base}/headless/ygg-hooks/generate',
-            method='POST',
-            payload={
-                'provider': PROVIDER,
-                'modelName': MODEL,
-                'systemPrompt': SYSTEM_PROMPT,
-                'content': model_input,
-            },
-            timeout=45,
-        )
+        stage = 'generate_note'
+        sensitive = (model_input, SYSTEM_PROMPT, existing_note, anchor_message_content, latest_user_text, latest_assistant_text)
 
-        model_text = _safe_text(generation.get('text'))
-        model_json = _parse_model_json(model_text)
-        if not isinstance(model_json, dict):
-            raise RuntimeError('root_note_stop: model did not return valid JSON')
+        def _generate_note_json():
+            global MODEL, PROVIDER
+            generation = _json_request(
+                f'{local_api_base}/headless/ygg-hooks/generate',
+                method='POST',
+                payload={
+                    'systemPrompt': SYSTEM_PROMPT,
+                    'content': model_input,
+                    'responseSchema': NOTE_RESPONSE_SCHEMA,
+                },
+                timeout=45,
+                stage='generate_note',
+                sensitive=sensitive,
+            )
+            if not isinstance(generation, dict) or not isinstance(generation.get('text'), str):
+                raise HookFailure('invalid_response_shape', 'parse_generation', 'Expected a generation object with a text string', responseType=type(generation).__name__)
+            PROVIDER = _safe_text(generation.get('provider')) or PROVIDER
+            MODEL = _safe_text(generation.get('modelName')) or MODEL
+            structured = generation.get('structured')
+            if isinstance(structured, dict):
+                return structured
+            model_text = _safe_text(generation.get('text'))
+            parsed = _parse_model_json(model_text)
+            if not isinstance(parsed, dict):
+                raise HookFailure('invalid_model_json', 'parse_generation', 'Model did not return a JSON object', textLength=len(model_text))
+            return parsed
+
+        def _is_retryable(exc):
+            if not isinstance(exc, HookFailure):
+                return False
+            if exc.code == 'http_error':
+                return exc.details.get('httpStatus') in RETRYABLE_HTTP_STATUSES
+            return exc.code in RETRYABLE_CODES
+
+        attempt = 0
+        while True:
+            attempt += 1
+            try:
+                model_json = _generate_note_json()
+                break
+            except HookFailure as exc:
+                exc.details['attempts'] = attempt
+                if attempt >= GENERATION_ATTEMPTS or not _is_retryable(exc) or time.monotonic() - started > RETRY_WITHIN_SECONDS:
+                    stage = exc.stage
+                    raise
+                time.sleep(2 if exc.details.get('httpStatus') == 429 else 0.5)
+        stage = 'parse_generation'
 
         updated = bool(model_json.get('updated'))
         next_note = _safe_text(model_json.get('note')).strip()
@@ -353,11 +526,14 @@ def main():
         if next_note_color is not None:
             put_payload['note_color'] = next_note_color
 
+        stage = 'save_note'
         _json_request(
             f'{local_api_base}/app/messages/{note_anchor_message_id}',
             method='PUT',
             payload=put_payload,
             timeout=20,
+            stage=stage,
+            sensitive=(*sensitive, next_note),
         )
 
         _emit_outcome(
@@ -365,8 +541,8 @@ def main():
             'The branch note was updated.',
             f'anchor={note_anchor_message_id} len={len(next_note)}',
         )
-    except Exception:
-        print('root_note_stop: callback, generation, parsing, or update failed', file=sys.stderr)
+    except Exception as exc:
+        _emit_failure(exc, stage, started)
         raise SystemExit(1)
 
 

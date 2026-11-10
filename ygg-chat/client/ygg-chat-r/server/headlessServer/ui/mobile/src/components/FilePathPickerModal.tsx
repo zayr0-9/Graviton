@@ -22,6 +22,7 @@ type PersistedFilePickerState = {
 
 type EditorFileState = {
   content: string
+  contentHash?: string
   loading: boolean
   error: string | null
   dirty: boolean
@@ -279,6 +280,7 @@ export const FilePathPickerModal: React.FC<FilePathPickerModalProps> = ({ open, 
         [filePath]: {
           ...(prev[filePath] || createEditorFileState()),
           content: payload.content,
+          contentHash: payload.contentHash,
           loading: false,
           error: null,
           dirty: false,
@@ -328,13 +330,14 @@ export const FilePathPickerModal: React.FC<FilePathPickerModalProps> = ({ open, 
     }))
 
     try {
-      await mobileApi.saveLocalFileContent(editorPath, fileState.content)
+      const saved = await mobileApi.saveLocalFileContent(editorPath, fileState.content, fileState.contentHash)
       setEditorFiles(prev => ({
         ...prev,
         [editorPath]: {
           ...(prev[editorPath] || createEditorFileState()),
           saving: false,
-          dirty: false,
+          contentHash: saved.contentHash,
+          dirty: prev[editorPath]?.content !== fileState.content,
           loaded: true,
           error: null,
         },

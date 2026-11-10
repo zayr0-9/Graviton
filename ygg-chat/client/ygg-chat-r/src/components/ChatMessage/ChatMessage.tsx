@@ -1,9 +1,12 @@
+import { SummarisedMessage } from './SummarisedMessage'
+import { SummaryBranchMessage } from './SummaryBranchMessage'
 import { isCommittedCompaction } from '../../../../../shared/compaction'
 import type { ContentBlock, HookRunRecord, StreamEvent } from '@/features/chats/chatTypes'
 import type { ChatErrorActionKind, ChatErrorEnvelope } from '../../../../../shared/chatErrors'
 import type { MessageId } from '../../../../../shared/types'
 import type { RootState } from '@/store/store'
 import 'katex/dist/katex.min.css'
+import { isClaudeTranscriptMessage } from '../../../../../shared/claudeProvider'
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { createSelector } from '@reduxjs/toolkit'
 import { createPortal } from 'react-dom'
@@ -26,7 +29,8 @@ import {
 } from '../../features/chats/attachedImagePaths'
 import { useAppDispatch } from '../../hooks/redux'
 import { useIsMobile } from '../../hooks/useMediaQuery'
-import { environment, localApi } from '../../utils/api'
+import { localApi } from '../../utils/api'
+import { isNativeShell } from '../../platform/clientCapabilities'
 import { ChatErrorBubble } from '../ChatErrorBubble/ChatErrorBubble'
 import { useHtmlIframeRegistry } from '../HtmlIframeRegistry/HtmlIframeRegistry'
 import { ImageModal } from '../ImageModal/ImageModal'
@@ -51,7 +55,6 @@ import { partitionAgentItems, isProcessRunSeparatorText, getAgentProgress } from
 import { MessageActions } from './MessageActions'
 import { submitMessageDraft } from './messageSubmission'
 import { DisclosurePanel, DisclosureRow } from './messagePrimitives'
-import { SummarisedMessage } from './SummarisedMessage'
 import { getCompactionPlaceholder, isHiddenCompactionMessage } from '../../features/chats/summaryPresentation'
 import { CompactMessageNotice } from './CompactMessageNotice'
 import { ImageAttachmentNotice, isImageAttachmentInfoMessage } from './ImageAttachmentNotice'
@@ -101,7 +104,7 @@ type ChatMessageWidth =
   | 'w-full'
   | 'w-3/5'
 
-interface ChatMessageProps {
+export interface ChatMessageProps {
   id: string
   role: MessageRole
   /**
@@ -116,6 +119,8 @@ interface ChatMessageProps {
   onEdit?: (id: string, newContent: string, newContentBlocks?: ContentBlock[]) => void
   onBranch?: (id: string, newContent: string, newContentBlocks?: ContentBlock[]) => boolean
   branchSubmissionDisabled?: boolean
+  explainSubmissionDisabled?: boolean
+  onExplainInputOpenChange?: (open: boolean) => void
   onDelete?: (id: string) => void
   onCopy?: (content: string) => void
   onResend?: (id: string) => void
@@ -432,6 +437,8 @@ const ChatMessageBody: React.FC<ChatMessageProps> = React.memo(
     onAddToChat,
     onExplainFromSelection,
     branchSubmissionDisabled = false,
+    explainSubmissionDisabled = false,
+    onExplainInputOpenChange,
     onOpenToolHtmlModal,
     onOpenSubagentTranscript,
     isEditing = false,
@@ -520,6 +527,10 @@ const ChatMessageBody: React.FC<ChatMessageProps> = React.memo(
     ) =>
       customThemeEnabled ? getThemeModeColor(customTheme.colors[key], isDarkMode) : undefined
     const [showExplainInput, setShowExplainInput] = useState(false)
+    useEffect(() => {
+      onExplainInputOpenChange?.(showExplainInput)
+      return () => onExplainInputOpenChange?.(false)
+    }, [showExplainInput, onExplainInputOpenChange])
     const [explainInputClosing, setExplainInputClosing] = useState(false)
     const [explainInputValue, setExplainInputValue] = useState('')
     const explainInputPosition = useRef<{ x: number; y: number } | null>(null)
@@ -546,7 +557,7 @@ const ChatMessageBody: React.FC<ChatMessageProps> = React.memo(
 
     const handleLoadMcpApp = useCallback(
       async (serverName: string, reloadKey: string) => {
-        if (environment !== 'electron') return
+        if (!isNativeShell) return
         setMcpLoadState(prev => ({ ...prev, [reloadKey]: true }))
         try {
           await localApi.post(`/mcp/servers/${encodeURIComponent(serverName)}/start`)
@@ -612,6 +623,10 @@ const ChatMessageBody: React.FC<ChatMessageProps> = React.memo(
       return normalized.trim().length > 0 ? normalized : ''
     }, [hasExcludedBlocks, modelOutputBlocks, role, visibleContent])
 
+    const claudeTranscript = isClaudeTranscriptMessage(messageData)
+    const canEditMessage = Boolean(onEdit) && !claudeTranscript
+    // Like Claude Code's rewind: a Claude branch is cut back at a user message. The server refuses cuts it cannot resume from.
+    const canDeleteMessage = Boolean(onDelete) && (!claudeTranscript || role === 'user')
     const canBranchMessage = role === 'user' || (role === 'assistant' && messageData?.parent_id == null)
 
     const getEditableText = () =>
@@ -620,6 +635,7 @@ const ChatMessageBody: React.FC<ChatMessageProps> = React.memo(
         : visibleContent
 
     const handleEdit = () => {
+      if (!canEditMessage) return
       dispatch(chatSliceActions.editingBranchSet(false))
       setEditingState(true)
       setEditContent(getEditableText())
@@ -629,6 +645,7 @@ const ChatMessageBody: React.FC<ChatMessageProps> = React.memo(
 
     const handleBranch = () => {
       dispatch(chatSliceActions.editingBranchSet(true))
+      dispatch(chatSliceActions.branchEditMessageSelected(id))
       setEditingState(true)
       setEditContent(getEditableText())
       setEditMode('branch')
@@ -761,6 +778,7 @@ const ChatMessageBody: React.FC<ChatMessageProps> = React.memo(
     }
 
     const handleDelete = () => {
+      if (!canDeleteMessage) return
       if (onDelete) onDelete(id)
     }
 
@@ -794,7 +812,7 @@ const ChatMessageBody: React.FC<ChatMessageProps> = React.memo(
     const handleSendExplainInput = () => {
       if (onExplainFromSelection && selectedText && explainInputValue.trim()) {
         const branchContent = `${explainInputValue.trim()}\n\nSelected text:\n\`\`\`\n${selectedText}\n\`\`\``
-        submitMessageDraft(branchSubmissionDisabled, () => onExplainFromSelection(id, branchContent), () => {
+        submitMessageDraft(branchSubmissionDisabled || explainSubmissionDisabled, () => onExplainFromSelection(id, branchContent), () => {
           setExplainInputClosing(true)
         })
       }
@@ -1293,7 +1311,8 @@ const ChatMessageBody: React.FC<ChatMessageProps> = React.memo(
     }
 
     const renderHookActivityItem = (): MessageRenderItem | null => {
-      if (!hookRuns?.length || role !== 'assistant') return null
+      // User rows own the hooks that ran on the prompt (UserPromptSubmit, SessionStart).
+      if (!hookRuns?.length || (role !== 'assistant' && !isUserRow)) return null
       return {
         key: 'hook-activity',
         kind: 'activity',
@@ -1879,9 +1898,9 @@ const ChatMessageBody: React.FC<ChatMessageProps> = React.memo(
               )}
               <div ref={moreButtonRef} className='relative shrink-0'>
                 <MessageActions
-                  onEdit={isUserRow ? handleEdit : undefined}
+                  onEdit={isUserRow && canEditMessage ? handleEdit : undefined}
                   onBranch={handleBranch}
-                  onDelete={isUserRow ? handleDelete : undefined}
+                  onDelete={isUserRow && canDeleteMessage ? handleDelete : undefined}
                   onCopy={handleCopy}
                   onSave={handleSave}
                   onSaveBranch={handleSaveBranch}
@@ -1974,7 +1993,7 @@ const ChatMessageBody: React.FC<ChatMessageProps> = React.memo(
             >
               <MessageActions
                 onEdit={
-                  !hasSelection
+                  !hasSelection && canEditMessage
                     ? () => {
                         closeFloatingActions()
                         handleEdit()
@@ -1990,7 +2009,7 @@ const ChatMessageBody: React.FC<ChatMessageProps> = React.memo(
                     : undefined
                 }
                 onDelete={
-                  !hasSelection
+                  !hasSelection && canDeleteMessage
                     ? () => {
                         closeFloatingActions()
                         handleDelete()
@@ -2164,8 +2183,8 @@ const ChatMessageBody: React.FC<ChatMessageProps> = React.memo(
                 <button
                   type='button'
                   onClick={handleSendExplainInput}
-                  disabled={branchSubmissionDisabled || !explainInputValue.trim()}
-                  aria-description={branchSubmissionDisabled ? 'Load the conversation before sending.' : undefined}
+                  disabled={branchSubmissionDisabled || explainSubmissionDisabled || !explainInputValue.trim()}
+                  aria-description={branchSubmissionDisabled ? 'Load the conversation before sending.' : explainSubmissionDisabled ? 'Wait for the selected response to finish and be saved before sending.' : undefined}
                   title='Send'
                   aria-label='Send'
                   className={`${EXPLAIN_BUTTON_CLASS} bg-blue-50 text-blue-700 dark:bg-orange-500/15 dark:text-orange-100`}
@@ -2209,17 +2228,9 @@ const ChatMessage: React.FC<ChatMessageProps> = React.memo(props => {
       className={`${props.width} ${props.className ?? ''}`} customTheme={props.customTheme}
       customThemeEnabled={props.customThemeEnabled} isDarkMode={props.isDarkMode} />
   }
-  if (isCommittedCompaction(message)) {
-    return (
-      <SummarisedMessage
-        id={`message-${props.id}`}
-        className={`${props.width} ${props.className ?? ''}`}
-        customTheme={props.customTheme}
-        customThemeEnabled={props.customThemeEnabled}
-        isDarkMode={props.isDarkMode}
-      />
-    )
-  }
+  if (isCommittedCompaction(message)) return props.onBranch && !props.readOnly ? <SummaryBranchMessage {...props} /> :
+    <SummarisedMessage id={`message-${props.id}`} className={`${props.width} ${props.className ?? ''}`}
+      customTheme={props.customTheme} customThemeEnabled={props.customThemeEnabled} isDarkMode={props.isDarkMode} />
   // Internal requests and unfinished summaries stay durable, but never occupy visible rows.
   if (isHiddenCompactionMessage(message)) return null
   const compactionPlaceholder = getCompactionPlaceholder(message)

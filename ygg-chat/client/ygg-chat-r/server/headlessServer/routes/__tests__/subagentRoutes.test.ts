@@ -142,16 +142,6 @@ describe('registerSubagentRoutes', () => {
     expect(seenRequests).toHaveLength(0)
   })
 
-  it('rejects openrouter provider with 400', async () => {
-    const res = await fetch(`${baseUrl}/api/headless/subagent/stream`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ ...validBody(), provider: 'openrouter' }),
-    })
-    expect(res.status).toBe(400)
-    expect(seenRequests).toHaveLength(0)
-  })
-
   it('returns 404 when the target does not exist', async () => {
     const res = await fetch(`${baseUrl}/api/headless/subagent/stream`, {
       method: 'POST',

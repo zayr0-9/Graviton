@@ -110,7 +110,7 @@ Custom component renderers:
 - fenced `mermaid` blocks are detected by the `pre` renderer and rendered through the shared `MermaidDiagram`; completion-aware preprocessing temporarily marks an unmatched Mermaid fence as `mermaid-pending`, so live streams show ordinary source and do not invoke Mermaid until the matching closing fence arrives. Mermaid is lazy-loaded, uses strict security, follows light/dark mode, and falls back to source text on syntax errors. Each completed diagram can open a diagram-only fullscreen viewer with drag panning, cursor-centered wheel/trackpad zoom, zoom controls, fit-to-view, and 100% reset;
 - `pre: PreRenderer` wraps other fenced code blocks in a flat `not-prose` surface with a copy pill;
 - `code: CodeRenderer` applies custom inline-code colors and leaves block code to Highlight.js/pre styling;
-- `a: MarkdownLink` renders links through the app's link component. The shared `markdownUrlTransform` preserves `file:` URLs only for anchor `href` attributes and otherwise retains ReactMarkdown's default URL sanitization. File clicks prevent document navigation and use the existing Electron `shell.openPath` bridge to open the OS default application; empty/stripped URLs cannot navigate either.
+- `a: MarkdownLink` renders links through the app's link component. The shared `markdownUrlTransform` preserves `file:` URLs only for anchor `href` attributes and maps hostless `graviton:///chat/:projectId/:conversationId` and `graviton:///conversationPage?projectId=...` links to internal routes, preserving query strings and message hashes. Unsupported/malformed `graviton:` links are blocked; valid links use the existing chat-selection navigation facade, never an OS protocol handler. Other URLs retain ReactMarkdown's default sanitization. File clicks prevent document navigation and use the existing Electron `shell.openPath` bridge to open the OS default application; empty/stripped URLs cannot navigate either.
 
 `renderMarkdownNode` receives a class name from `chatMessageShared.ts`:
 - `SHARED_TEXT_MARKDOWN_CLASS`: current structured/streamed text block rendering;
@@ -193,6 +193,8 @@ A message is process-only when it has reasoning/tool/process signals but no subs
 - reasoning inside `responses_output_items`.
 
 If a following assistant message contains both process content and substantial final text, `Chat.tsx` may bridge its process blocks into the group and pass only non-process content to that final message row. This avoids showing the same tool/reasoning content twice.
+
+The leading case mirrors this. An assistant message with intro prose followed only by tool work (reasoning/text, then tool calls, no prose after them) keeps its prose row when the next message is process-only. Its process blocks render first in the following group (`leadingMessageId`), so one turn shows one "Agent steps" group. Such a message is never also bridged back into the previous group.
 
 ### Within-message grouping in `ChatMessage.tsx`
 

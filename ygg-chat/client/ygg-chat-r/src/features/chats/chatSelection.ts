@@ -6,7 +6,6 @@ import { buildBranchPathForMessage } from './pathUtils'
 interface ChatDestination {
   conversationId: ConversationId
   projectId?: string | null
-  storageMode?: 'local' | 'cloud'
 }
 
 export type ChatSelectionTarget = ChatDestination & (
@@ -67,13 +66,13 @@ export function getChatSelectionHref(target: ChatSelectionTarget): string {
 }
 
 /** Only absolute in-app chat routes are selections; Markdown section anchors are not. */
-export function parseChatSelectionHref(href: string, storageMode?: 'local' | 'cloud'): ChatSelectionTarget | null {
+export function parseChatSelectionHref(href: string): ChatSelectionTarget | null {
   const match = /^\/chat\/([^/?#]+)\/([^/?#]+)(?:\/lineage\/([^/?#]+))?\/?(\?[^#]*)?(#.*)?$/.exec(href)
   if (!match) return null
   const projectId = decode(match[1])
   const conversationId = decode(match[2])
   if (!projectId || !conversationId) return null
-  const base = { projectId, conversationId, storageMode }
+  const base = { projectId, conversationId }
   if (match[3]) {
     const lineageId = decode(match[3])
     if (!lineageId) return null

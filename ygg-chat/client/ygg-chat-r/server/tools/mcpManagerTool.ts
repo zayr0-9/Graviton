@@ -1,13 +1,16 @@
 // server/tools/mcpManagerTool.ts
 // Built-in tool for managing MCP servers on-demand
 
+import { BUILTIN_TOOL_DEFINITIONS } from '../../../../shared/builtinToolDefinitions.js'
 import Ajv from 'ajv'
 import { mcpManager, McpServerConfig, McpToolDefinition } from '../mcp/mcpManager.js'
 import { toMcpExecutionResult } from '../mcp/mcpToolResult.js'
 import { attachChatErrorCode } from '../headlessServer/providers/providerErrorFormatter.js'
 
-interface McpManagerArgs {
-  action: 'list' | 'get' | 'stop' | 'list_tools' | 'invoke'
+import { searchDiscovery, validateDiscoverySearch, type DiscoverySearchArgs } from './discoverySearch.js'
+
+interface McpManagerArgs extends DiscoverySearchArgs {
+  action: 'search' | 'list' | 'get' | 'stop' | 'list_tools' | 'invoke'
   name?: string
   tool?: string
   args?: Record<string, unknown>
@@ -41,8 +44,9 @@ interface McpManagerResult {
   persistedContent?: Record<string, unknown>
   servers?: McpServerSummary[]
   server?: McpServerSummary
-  tools?: ToolSummary[]
+  tools?: Array<ToolSummary & { serverName?: string }>
   totalCount?: number
+  nextOffset?: number
 }
 
 const toServerSummary = (config: McpServerConfig, status?: ReturnType<typeof mcpManager.getServerStatus>): McpServerSummary => ({
@@ -75,9 +79,6 @@ export async function execute(
 ): Promise<McpManagerResult> {
   const { action, name } = args
   options.signal?.throwIfAborted()
-  if (action === 'invoke' && options.operationMode === 'plan') {
-    throw new Error('MCP tool invocation requires Agent Mode. Switch to Agent Mode to invoke MCP tools.')
-  }
 
   await mcpManager.initialize()
 
@@ -87,6 +88,33 @@ export async function execute(
     const servers = configs.map(config => toServerSummary(config, statusList.find(s => s.name === config.name)))
     servers.sort((a, b) => a.name.localeCompare(b.name))
     return { success: true, servers, totalCount: servers.length }
+  }
+
+  if (action === 'search') {
+    const error = validateDiscoverySearch(args)
+    if (error) return { success: false, error }
+    const configs = await mcpManager.getConfigs()
+    if (name && !configs.some(config => config.name === name)) {
+      return { success: false, error: `MCP server "${name}" not found` }
+    }
+    if (name && !configs.find(config => config.name === name)?.enabled) {
+      return { success: false, error: `MCP server "${name}" is disabled` }
+    }
+    // Search only already-connected servers. Connecting here would fan out MCP
+    // initialization (and interactive OAuth) to every configured server.
+    const tools: Array<ToolSummary & { serverName: string }> = []
+    for (const config of configs.filter(config => config.enabled && (!name || config.name === name))) {
+      const status = mcpManager.getServerStatus(config.name)
+      if (status?.status !== 'connected') continue
+      for (const tool of status.tools ?? []) {
+        const visibility = tool._meta?.ui?.visibility
+        if (Array.isArray(visibility) && !visibility.includes('model')) continue
+        tools.push({ ...toToolSummary(tool), serverName: config.name })
+      }
+    }
+    const { items, ...page } = searchDiscovery(tools, args,
+      tool => `${tool.serverName} ${tool.name} ${tool.description ?? ''}`)
+    return { success: true, tools: items, ...page }
   }
 
   if (!name) {
@@ -177,31 +205,4 @@ export async function execute(
   return { success: false, error: `Unknown action: ${action}` }
 }
 
-export const mcpManagerDefinition = {
-  name: 'mcp_manager',
-  description:
-    'Discover and invoke MCP tools on demand without changing model tool definitions. Use "list" for servers, "get" for status, "list_tools" for tool names and schemas, "invoke" with name (server), tool and args to execute, and "stop" to disconnect.',
-  inputSchema: {
-    type: 'object' as const,
-    properties: {
-      action: {
-        type: 'string',
-        enum: ['list', 'get', 'stop', 'list_tools', 'invoke'],
-        description: 'Action to perform',
-      },
-      name: {
-        type: 'string',
-        description: 'MCP server name (required for get, stop, list_tools and invoke)',
-      },
-      tool: {
-        type: 'string',
-        description: 'For invoke: original tool name returned by list_tools.',
-      },
-      args: {
-        type: 'object',
-        description: 'For invoke: arguments matching the tool inputSchema returned by list_tools.',
-      },
-    },
-    required: ['action'],
-  },
-}
+export const mcpManagerDefinition = BUILTIN_TOOL_DEFINITIONS.find(tool => tool.name === 'mcp_manager')!

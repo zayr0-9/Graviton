@@ -167,6 +167,14 @@ export function buildMessageTransferPayload(
   })
 }
 
+/** Transfer thunks reject with the server's reason as a plain string; never replace it with a generic message. */
+export function transferErrorMessage(error: unknown, fallback: string): string {
+  if (typeof error === 'string' && error.trim()) return error
+  const message = (error as { message?: unknown } | null)?.message
+  if (typeof message === 'string' && message.trim()) return message
+  return fallback
+}
+
 /** Moving a selected ancestor would cascade-delete any unselected descendants. */
 export function hasUnselectedDescendants(messages: Message[], selectedIds: Array<Message['id']>): boolean {
   const selectedSet = new Set(selectedIds.map(String))

@@ -4,8 +4,8 @@ import type {
   ProviderGenerateOutput,
   ProviderStreamEventHandler,
   ProviderToolCall,
-} from './openRouterProvider.js'
-import { buildToolNameMap, sanitizeToolResultContentForModel } from './toolResultSanitizer.js'
+} from './providerTypes.js'
+import { buildToolNameMap, messageToolCalls, sanitizeToolResultContentForModel } from './toolResultSanitizer.js'
 
 interface LmStudioMessage {
   role: 'system' | 'user' | 'assistant' | 'tool'
@@ -121,7 +121,7 @@ function transformHistoryToMessages(history: any[], userContent: string, systemP
 
     if (msg.role === 'assistant') {
       const content = asText(msg.content)
-      const toolCalls = parseToolCalls(msg.tool_calls)
+      const toolCalls = parseToolCalls(messageToolCalls(msg))
         .map((call: any) => {
           const id = typeof call?.id === 'string' ? call.id : ''
           const name = typeof call?.name === 'string' ? call.name : typeof call?.function?.name === 'string' ? call.function.name : ''

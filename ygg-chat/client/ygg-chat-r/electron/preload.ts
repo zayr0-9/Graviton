@@ -6,16 +6,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
   dev: {
     codexDevLogsEnabled: /^(1|true|yes|on)$/i.test(process.env.YGG_CODEX_DEV_LOGS || ''),
   },
+  // Identity is always the local user; these report/refresh the ChatGPT (Codex) connection.
   auth: {
-    onLoginError: (callback: (message: string) => void) => {
-      const listener = (_event: unknown, message: string) => callback(message)
-      ipcRenderer.on('auth:login-error', listener)
-      return () => { ipcRenderer.removeListener('auth:login-error', listener) }
-    },
     status: () => ipcRenderer.invoke('auth:status'),
-    start: (provider: string, oob = false) => ipcRenderer.invoke('auth:start', provider, oob),
-    code: (code: string) => ipcRenderer.invoke('auth:code', code),
-    cancel: () => ipcRenderer.invoke('auth:cancel'),
     migrate: (values: unknown) => ipcRenderer.invoke('auth:migrate', values),
     check: () => ipcRenderer.invoke('auth:check'),
     onChanged: (callback: (state: any) => void) => {
@@ -24,19 +17,16 @@ contextBridge.exposeInMainWorld('electronAPI', {
       void ipcRenderer.invoke('auth:subscribe').then(callback)
       return () => { ipcRenderer.removeListener('auth:changed', listener) }
     },
-    login: (credentials: any) => ipcRenderer.invoke('auth:login', credentials),
-    logout: () => ipcRenderer.invoke('auth:logout'),
-
-    openExternal: (url: string) => ipcRenderer.invoke('auth:openExternal', url),
-    openOAuthWindow: (url: string) => ipcRenderer.invoke('auth:openOAuthWindow', url),
-    onOAuthCallback: (callback: (url: string) => void) => {
-      const listener = (_event: any, url: string) => callback(url)
-      ipcRenderer.on('oauth:callback', listener)
-      // Return cleanup function
-      return () => {
-        ipcRenderer.removeListener('oauth:callback', listener)
-      }
-    },
+  },
+  executionPreferences: {
+    read: () => ipcRenderer.invoke('execution-preferences:read'),
+    save: (request: unknown) => ipcRenderer.invoke('execution-preferences:save', request),
+    importLegacy: (raw: unknown) => ipcRenderer.invoke('execution-preferences:import', raw),
+  },
+  prompts: {
+    read: () => ipcRenderer.invoke('prompts:read'),
+    save: (revision: number, prompts: unknown, identity: { hostId: string; epoch: string }) => ipcRenderer.invoke('prompts:save', revision, prompts, identity),
+    importLegacy: (prompts: unknown) => ipcRenderer.invoke('prompts:import', prompts),
   },
   storage: {
     get: (key: string) => ipcRenderer.invoke('storage:get', key),
@@ -83,6 +73,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   },
   shell: {
     openPath: (path: string) => ipcRenderer.invoke('shell:openPath', path),
+    openExternal: (url: string) => ipcRenderer.invoke('shell:openExternal', url),
   },
   browser: {
     isGuestDevToolsEnabled: () => ipcRenderer.invoke('browser:isGuestDevToolsEnabled'),
@@ -202,6 +193,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   autoUpdater: {
     check: () => ipcRenderer.invoke('autoUpdater:check'),
     installNow: () => ipcRenderer.invoke('autoUpdater:installNow'),
+    openReleasePage: () => ipcRenderer.invoke('autoUpdater:openReleasePage'),
     onChecking: (callback: () => void) => {
       const listener = () => callback()
       ipcRenderer.on('autoUpdater:checking', listener)

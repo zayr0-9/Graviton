@@ -1,3 +1,4 @@
+import { HOST_DATA_CHANGED, type HostDataChange } from '../../services/hostChangeEvents'
 import type { QueryClient } from '@tanstack/react-query'
 import type { ConversationId, MessageId } from '../../../../../shared/types'
 import type { RootState } from '../../store/store'
@@ -15,6 +16,17 @@ export interface TerminalSnapshotLease {
   messageIds: string[]
 }
 
+const deletedMessages = new Map<string, Set<string>>()
+if (typeof window !== 'undefined') window.addEventListener(HOST_DATA_CHANGED, ((event: CustomEvent<HostDataChange>) => {
+  if (event.detail.reset) deletedMessages.clear()
+  for (const change of event.detail.changes ?? []) {
+    if (change.domain !== 'messages' || !change.conversation_id) continue
+    let ids = deletedMessages.get(change.conversation_id)
+    if (!ids) { ids = new Set(); deletedMessages.set(change.conversation_id, ids) }
+    if (change.deleted) ids.add(change.entity_id)
+    else ids.delete(change.entity_id)
+  }
+}) as EventListener)
 const requestGenerations = new Map<string, number>()
 const requestControllers = new Map<string, AbortController>()
 const terminalLeases = new Map<string, TerminalSnapshotLease>()
@@ -49,6 +61,7 @@ export function getTerminalSnapshotLeases(conversationId: ConversationId | strin
 
 export function clearConversationSnapshotCoordinatorForTests(): void {
   requestGenerations.clear()
+  deletedMessages.clear()
   for (const controller of requestControllers.values()) controller.abort()
   requestControllers.clear()
   terminalLeases.clear()
@@ -78,8 +91,6 @@ function activeProtections(state: RootState, conversationId: string): Conversati
 
 export interface CoordinateConversationSnapshotOptions {
   conversationId: ConversationId
-  storageMode?: 'local' | 'cloud'
-  accessToken?: string | null
   queryClient: QueryClient
   getState: () => RootState
   dispatch: (action: ReturnType<typeof chatSliceActions.conversationSnapshotApplied>) => unknown
@@ -97,8 +108,6 @@ export interface CoordinateConversationSnapshotResult {
 /** Fetches outside TanStack Query so rejected generations can never poison its cache. */
 export async function coordinateConversationSnapshot({
   conversationId,
-  storageMode,
-  accessToken,
   queryClient,
   getState,
   dispatch,
@@ -116,9 +125,6 @@ export async function coordinateConversationSnapshot({
   try {
     const fetched = await fetchSnapshot(conversationId, {
       includeTree: false,
-      storageMode,
-      accessToken,
-      queryClient,
       signal: controller.signal,
     })
     if (!isCurrent() || controller.signal.aborted || requestGenerations.get(normalizedId) !== generation) {
@@ -139,6 +145,7 @@ export async function coordinateConversationSnapshot({
       fetchedMessages: fetched.messages ?? [],
       liveMessages: state.chat.conversation.messages,
       protections,
+      deletedMessageIds: deletedMessages.get(normalizedId),
     })
     const data: ConversationMessagesTreeData = {
       ...fetched,

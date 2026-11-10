@@ -329,3 +329,84 @@ it('recovery to a deleted target falls back without restoring an old startup own
   expect(h.get().conversation.currentPath).not.toContain('a')
   expect(isPendingViewStreamOwned(owner, 'c', h.get().selection, h.get().streaming.byId.run)).toBe(false)
 })
+
+it.each([false, true])('catches up a completion blocked by same-view pending selection (differentView=%s)', async differentView => {
+  const response = deferred<LineageSelectionDetail>()
+  const h = setup(vi.fn().mockResolvedValueOnce({ pathMessageIds: ['root', 'a'] }).mockImplementationOnce(() => response.promise))
+  const target = { kind: 'lineage' as const, conversationId: 'c', lineageId: 'l' }
+  h.controller.request(target, 'route')
+  h.snapshot()
+  await h.controller.resolve('c', vi.fn())
+  h.dispatch(actions.sendingStarted({ streamId: 'run', conversationId: 'c', updatePath: true,
+    lineage: { lineageId: 'l', lineageIdConfirmed: true } }))
+  h.controller.request(target, 'refocus')
+  const pending = h.controller.resolve('c', vi.fn())
+  const final = { ...rows[0], id: 'final', role: 'assistant', parent_id: 'a' }
+  for (const action of projectServerEvent({ type: 'complete', message: final, lineageId: 'l' } as any,
+    { streamId: 'run', conversationId: 'c' })) h.dispatch(action)
+  expect(h.get().conversation.currentPath).toEqual(['root', 'a'])
+  response.resolve({ pathMessageIds: ['root', differentView ? 'b' : 'a'] })
+  await pending
+  expect(h.get().conversation.currentPath).toEqual(differentView ? ['root', 'b'] : ['root', 'a', 'final'])
+})
+
+it('removes cascaded descendants and repairs the visible next-send parent immediately', () => {
+  const h = setup()
+  h.dispatch(actions.conversationSet('c'))
+  for (const row of rows) h.dispatch(actions.messageAdded(row))
+  h.dispatch(actions.messageAdded({ ...rows[0], id: 'child', parent_id: 'a' }))
+  h.dispatch(actions.conversationPathSet(['root', 'a', 'child']))
+  h.dispatch(actions.messageDeleted('a'))
+  expect(h.get().conversation.currentPath).toEqual(['root'])
+  expect(h.get().conversation.messages.map(row => row.id)).toEqual(['root', 'b'])
+})
+
+it.each([false, true])('recovers persisted anchors and unique control tails after same-view pending selection (active=%s)', async active => {
+  const response = deferred<LineageSelectionDetail>()
+  const h = setup(vi.fn().mockResolvedValueOnce({ pathMessageIds: ['root', 'a'] }).mockImplementationOnce(() => response.promise))
+  const target = { kind: 'lineage' as const, conversationId: 'c', lineageId: 'l' }
+  h.controller.request(target, 'route'); h.snapshot(); await h.controller.resolve('c', vi.fn())
+  h.dispatch(actions.sendingStarted({ streamId: 'run', conversationId: 'c', updatePath: false, followSelectedTip: true,
+    selectionRevision: -1, lineage: { lineageId: 'l', lineageIdConfirmed: true } }))
+  h.controller.request(target, 'refocus')
+  const pending = h.controller.resolve('c', vi.fn())
+  const emit = (event: any) => {
+    for (const action of projectServerEvent(event, { streamId: 'run', conversationId: 'c' })) h.dispatch(action)
+  }
+  const final = { ...rows[0], id: 'final', role: 'assistant', parent_id: 'a' }
+  emit({ type: 'assistant_message_persisted', message: final })
+  emit({ type: 'context_injection_persisted', message: { ...rows[0], id: 'context', parent_id: 'final', meta: { kind: 'context_injection' } } })
+  if (!active) emit({ type: 'complete', message: final })
+  response.resolve({ pathMessageIds: ['root', 'a'] }); await pending
+  expect(h.get().conversation.currentPath).toEqual(['root', 'a', 'final', 'context'])
+  if (active) emit({ type: 'complete', message: final })
+  expect(h.get().conversation.currentPath.at(-1)).toBe('context')
+  expect(h.get().streaming.byId.run.finalMessageId).toBe('context')
+})
+
+it('does not replay an old finished observer on a later same-view ancestor refocus', async () => {
+  const h = setup()
+  const target = { kind: 'lineage' as const, conversationId: 'c', lineageId: 'l' }
+  h.controller.request(target, 'route'); h.snapshot(); await h.controller.resolve('c', vi.fn())
+  h.dispatch(actions.sendingStarted({ streamId: 'old', conversationId: 'c', updatePath: false, followSelectedTip: true }))
+  const final = { ...rows[0], id: 'final', parent_id: 'a', role: 'assistant' }
+  for (const action of projectServerEvent({ type: 'complete', message: final } as any, { streamId: 'old', conversationId: 'c' })) h.dispatch(action)
+  h.controller.request(target, 'ancestor'); await h.controller.resolve('c', vi.fn())
+  h.controller.request(target, 'refocus'); await h.controller.resolve('c', vi.fn())
+  expect(h.get().conversation.currentPath).toEqual(['root', 'a'])
+})
+
+it('recovers the newest queued user anchor rather than rewinding an active observer', async () => {
+  const response = deferred<LineageSelectionDetail>()
+  const h = setup(vi.fn().mockResolvedValueOnce({ pathMessageIds: ['root', 'a'] }).mockImplementationOnce(() => response.promise))
+  const target = { kind: 'lineage' as const, conversationId: 'c', lineageId: 'l' }
+  h.controller.request(target, 'route'); h.snapshot(); await h.controller.resolve('c', vi.fn())
+  h.dispatch(actions.sendingStarted({ streamId: 'run', conversationId: 'c', updatePath: false, followSelectedTip: true }))
+  h.controller.request(target, 'refocus'); const pending = h.controller.resolve('c', vi.fn())
+  const emit = (event: any) => { for (const action of projectServerEvent(event, { streamId: 'run', conversationId: 'c' })) h.dispatch(action) }
+  emit({ type: 'assistant_message_persisted', message: { ...rows[0], id: 'answer', parent_id: 'a', role: 'assistant' } })
+  emit({ type: 'queued_user_message_persisted', message: { ...rows[0], id: 'queued', parent_id: 'answer' } })
+  response.resolve({ pathMessageIds: ['root', 'a'] }); await pending
+  expect(h.get().conversation.currentPath.at(-1)).toBe('queued')
+  expect(h.get().streaming.byId.run.currentBranchAnchorMessageId).toBe('queued')
+})

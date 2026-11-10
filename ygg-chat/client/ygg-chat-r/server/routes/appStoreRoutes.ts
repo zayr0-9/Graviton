@@ -1,12 +1,11 @@
 // server/routes/appStoreRoutes.ts
 //
-// App-store APIs (/api/app-store/*: community proxy, zip upload
-// validation, install, uninstall) and /api/app/restart, extracted
+// App-store APIs (/api/app-store/*: anonymous community listing proxy, zip
+// validation, install, uninstall; upload is disabled) and /api/app/restart, extracted
 // verbatim from localServer.ts setupServer(). Includes the zip
 // staging/validation helper cluster used only by these routes.
 // Restart requires the host restart capability; standalone returns 501.
 
-import { getAuthManager } from '../auth/runtime.js'
 import AdmZip from 'adm-zip'
 import express, { type Express } from 'express'
 import fs from 'fs'
@@ -273,44 +272,12 @@ export function registerAppStoreRoutes(app: Express): void {
     }
   })
 
-  // POST /api/app-store/community/upload - Proxy community upload to remote server
-  app.post(
-    '/api/app-store/community/upload',
-    express.raw({ type: 'application/zip', limit: '500mb' }),
-    async (req, res) => {
-      try {
-        if (!req.body || (req.body as Buffer).length === 0) {
-          res.status(400).json({ success: false, error: 'Zip payload is required.' })
-          return
-        }
-
-        const authHeader = `Bearer ${(await getAuthManager().resolve('app')).accessToken}`
-        if (!authHeader) {
-          res.status(401).json({ success: false, error: 'Authorization header is required.' })
-          return
-        }
-
-        const zipBuffer = req.body instanceof Buffer ? req.body : Buffer.from(req.body)
-        const filenameHeader = req.headers['x-app-store-filename']
-
-        const response = await fetch(buildRemoteApiUrl('/app-store/community/upload'), {
-          method: 'POST',
-          headers: {
-            Authorization: authHeader,
-            'Content-Type': 'application/zip',
-            ...(filenameHeader ? { 'x-app-store-filename': String(filenameHeader) } : {}),
-          },
-          body: zipBuffer,
-        })
-
-        const data = await response.json()
-        res.status(response.status).json(data)
-      } catch (error) {
-        console.error('[LocalServer] Failed to upload community app:', error)
-        res.status(500).json({ success: false, error: 'Failed to upload community app' })
-      }
-    }
-  )
+  // POST /api/app-store/community/upload — disabled. Publishing required a Graviton account
+  // (the hosted app session), which the fully local app does not have.
+  // TODO(app-store-upload): restore with a new publishing mechanism (fully-local plan Q11).
+  app.post('/api/app-store/community/upload', (_req, res) => {
+    res.status(501).json({ success: false, error: 'Publishing to the community store is not available in this build.' })
+  })
 
   // POST /api/app-store/validate-upload - Validate community app zip before upload
   app.post(

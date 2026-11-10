@@ -1,5 +1,8 @@
+import { isolateBrowserAppHtml } from '../../utils/browserAppIsolation'
+import { isBrowserClient } from '../../platform/clientCapabilities'
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { localApi, environment } from '../../utils/api'
+import { localApi } from '../../utils/api'
+import { isNativeShell } from '../../platform/clientCapabilities'
 import {
   buildCspValue,
   buildIframeAllow,
@@ -73,7 +76,7 @@ const buildHostContext = (toolDefinition?: ToolDefinition, fallbackToolName?: st
         ? { tool: { name: fallbackToolName } }
         : undefined,
     theme,
-    platform: environment === 'electron' ? 'desktop' : 'web',
+    platform: isNativeShell ? 'desktop' : 'web',
     locale,
     timeZone,
     userAgent: typeof navigator !== 'undefined' ? navigator.userAgent : undefined,
@@ -373,8 +376,8 @@ export const McpAppIframe: React.FC<McpAppIframeProps> = ({
           }
           try {
             const electronApi = (window as any).electronAPI
-            if (electronApi?.auth?.openExternal) {
-              await electronApi.auth.openExternal(url)
+            if (electronApi?.shell?.openExternal) {
+              await electronApi.shell.openExternal(url)
             } else {
               window.open(url, '_blank', 'noopener')
             }
@@ -469,14 +472,14 @@ export const McpAppIframe: React.FC<McpAppIframeProps> = ({
   return (
     <iframe
       ref={iframeRef}
-      srcDoc={html}
+      srcDoc={isBrowserClient ? isolateBrowserAppHtml(html) : html}
       className={className ?? 'w-full rounded-lg bg-white'}
       style={{ border: 'none', height }}
       title='MCP App'
       allow={allowAttr}
       allowFullScreen
       referrerPolicy='strict-origin-when-cross-origin'
-      sandbox='allow-scripts allow-same-origin'
+      sandbox={isBrowserClient ? 'allow-scripts' : 'allow-scripts allow-same-origin'}
     />
   )
 }

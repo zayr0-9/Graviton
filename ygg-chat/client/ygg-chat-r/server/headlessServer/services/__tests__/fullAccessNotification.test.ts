@@ -16,7 +16,8 @@ function fixture() {
   orchestrator.requireMessage = vi.fn(() => ({ id: 'original', parent_id: 'ancestor' }))
   orchestrator.persistContextInjectionMessage = vi.fn((_request, parentId) => ({ id: 'context', parent_id: parentId }))
   orchestrator.createUserMessage = vi.fn((_request, parentId, content) => ({ id: 'input', parent_id: parentId, content }))
-  orchestrator.conversationRepo = { findNearestUserAncestor: vi.fn(() => ({ id: 'original', content: 'original input' })) }
+  orchestrator.conversationRepo = { findNearestUserAncestor: vi.fn(() => ({ id: 'original', content: 'original input' })),
+    getMessageById: vi.fn(() => ({ id: 'ancestor', conversation_id: 'c1', role: 'assistant', content: 'answer' })) }
   const request: HeadlessMessageRequest = { operation: 'send', conversationId: 'c1', parentId: 'ancestor',
     messageId: 'original', content: 'new input', provider: 'lmstudio', modelName: 'test',
     fullAccess: true, fullAccessNotificationId: 'toggle-1' }

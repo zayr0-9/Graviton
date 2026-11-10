@@ -66,20 +66,21 @@ describe('ordinary persisted compaction turns', () => {
     const summaryRequest = h.calls[1].input
     expect(summaryRequest.systemPrompt).toBe(base.systemPrompt)
     expect(summaryRequest.tools).toEqual(base.tools)
-    expect(summaryRequest.railwayTurn.conversationId).toBe('c')
+    expect(summaryRequest.turnContext.conversationId).toBe('c')
     expect(summaryRequest.history[0]).toEqual(base.history[0])
     expect(summaryRequest.history.at(-1).meta.kind).toBe('compaction_instruction')
     expect(summaryRequest.history.some((row: any) => row.content_blocks?.some?.((b: any) => b.type === 'tool_result'))).toBe(true)
     const summary = h.sink.rows.find(isCommittedCompaction)
     expect(summary.role).toBe('assistant')
-    expect(summary.content).toContain('README contents')
+    expect(summary.content).toContain('README')
+    expect(summary.content).not.toContain('README contents')
     expect(h.calls[2].input.history[0].id).toBe(summary.id)
     expect(h.calls[2].input.history.at(-1).meta.kind).toBe('compaction_resume')
     expect(events.filter(event => event.type === 'context_compaction' && event.status === 'completed')).toHaveLength(1)
     expect(events.some(event => event.type === 'complete')).toBe(false)
   })
 
-  it.each(['lmstudio', 'zai', 'bedrock', 'openrouter'])('triggers for %s with the configured percentage', async provider => {
+  it.each(['lmstudio', 'zai', 'bedrock', 'openrouterbyok'])('triggers for %s with the configured percentage', async provider => {
     const h = harness([{ content: 'Short summary' }, { content: 'Done' }])
     await h.service.run({ ...base, provider, compactionThresholdPercent: 40,
       history: [{ id: 'root', role: 'user', content: 'x'.repeat(20000) }] }, () => {})
@@ -105,7 +106,7 @@ describe('ordinary persisted compaction turns', () => {
     await h.service.run({ ...base, manualCompaction: true }, () => {})
     expect(h.sink.rows.filter(isCommittedCompaction)).toHaveLength(1)
     expect(h.sink.rows.find(isCommittedCompaction).content).toContain('during')
-    expect(h.sink.rows.find(isCommittedCompaction).content).toContain('README contents')
+    expect(h.sink.rows.find(isCommittedCompaction).content).not.toContain('README contents')
   })
 
   it('holds queued input until summary commits, then answers it after an otherwise completed task', async () => {
@@ -165,13 +166,15 @@ describe('ordinary persisted compaction turns', () => {
   it('replays the appendix in both text-first and block-first adapters', async () => {
     const h = harness([{ content: 'Summary' }])
     const history = [...base.history, { id: 'read', role: 'assistant', content: '',
-      tool_calls: [{ id: 't', name: 'read_file', arguments: {} }],
-      content_blocks: [{ type: 'tool_result', tool_use_id: 't', content: 'preserved evidence' }] }]
+      content_blocks: [{ type: 'tool_use', id: 't', name: 'read_file', input: {} },
+        { type: 'tool_result', tool_use_id: 't', content: 'preserved evidence' }] }]
     await h.service.run({ ...base, history, manualCompaction: true }, () => {})
     const summary = h.sink.rows.find(isCommittedCompaction)
     const input = { modelName: 'test', history: [summary], userContent: '', tools: [] }
-    expect(JSON.stringify(toCodexMessages(input))).toContain('preserved evidence')
-    expect(JSON.stringify(toHyperMessages(input))).toContain('preserved evidence')
+    expect(JSON.stringify(toCodexMessages(input))).toContain('read_file')
+    expect(JSON.stringify(toHyperMessages(input))).toContain('read_file')
+    expect(JSON.stringify(toCodexMessages(input))).not.toContain('preserved evidence')
+    expect(JSON.stringify(toHyperMessages(input))).not.toContain('preserved evidence')
   })
 
   it('recognises only committed boundaries and drops old request usage from the live meter', () => {

@@ -11,8 +11,8 @@ import type { ToolExecutionOptions } from './tools/runtime/protocol.js'
 
 /**
  * Key/value settings store. The Electron adapter wraps `Conf` with
- * projectName 'ygg-chat-r' so existing stored key formats (`auth_session`,
- * `gateway.*`, `openai_chatgpt_tokens`) keep working. Keys may be dotted
+ * projectName 'ygg-chat-r' so existing stored key formats (`managed_auth_v1`,
+ * `openai_chatgpt_tokens`) keep working. Keys may be dotted
  * paths into nested objects, matching Conf semantics.
  */
 export interface KeyValueStore {

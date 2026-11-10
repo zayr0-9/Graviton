@@ -4,7 +4,6 @@ export interface AttachmentUrlInput {
   attachmentId?: string | null
   localOrigin: string
   localApiBase: string
-  remoteOrigin: string
 }
 
 const isAbsoluteFilesystemPath = (value: string): boolean =>
@@ -23,8 +22,8 @@ const resolveLocalRoute = (value: string, localOrigin: string): string | null =>
 
 /**
  * Resolve attachment metadata to a renderer-accessible URL without exposing a
- * server filesystem path. Local attachment routes always use the resolved Ygg
- * origin; cloud/upload paths continue to use the configured remote origin.
+ * server filesystem path. Everything resolves against the local Ygg host; the
+ * retired hosted `/uploads` store has no local equivalent, so those paths are null.
  */
 export function resolveAttachmentUrlFromOrigins({
   urlOrPath,
@@ -32,7 +31,6 @@ export function resolveAttachmentUrlFromOrigins({
   attachmentId,
   localOrigin,
   localApiBase,
-  remoteOrigin,
 }: AttachmentUrlInput): string | null {
   if (attachmentId && filePath) {
     const normalizedPath = filePath.replace(/\\/g, '/')
@@ -42,21 +40,28 @@ export function resolveAttachmentUrlFromOrigins({
   }
 
   if (urlOrPath) {
-    if (/^https?:\/\//i.test(urlOrPath)) return urlOrPath
+    if (/^https?:\/\//i.test(urlOrPath)) {
+      try {
+        const legacy = new URL(urlOrPath)
+        // Rewrite only recognized host-local attachment routes, never arbitrary
+        // external URLs or provider localhost endpoints.
+        if (['localhost', '127.0.0.1', '[::1]'].includes(legacy.hostname) && /^\/api\/local\/attachments\/[^/]+\/file$/.test(legacy.pathname))
+          return `${localOrigin}${legacy.pathname}${legacy.search}`
+      } catch { return null }
+      return urlOrPath
+    }
     const localRoute = resolveLocalRoute(urlOrPath, localOrigin)
     if (localRoute) return localRoute
-    if (urlOrPath.startsWith('/')) return `${remoteOrigin}${urlOrPath}`
+    if (urlOrPath.startsWith('/uploads')) return null
+    if (urlOrPath.startsWith('/')) return `${localOrigin}${urlOrPath}`
   }
 
   if (!filePath) return null
   const normalizedPath = filePath.replace(/\\/g, '/')
-  if (normalizedPath.startsWith('data/uploads/')) {
-    const filename = normalizedPath.split('/').pop() || ''
-    return filename ? `${remoteOrigin}/uploads/${filename}` : null
-  }
+  if (normalizedPath.startsWith('data/uploads/') || normalizedPath.startsWith('/uploads')) return null
   const localRoute = resolveLocalRoute(normalizedPath, localOrigin)
   if (localRoute) return localRoute
   if (isAbsoluteFilesystemPath(normalizedPath) && !isServerRelativePath(normalizedPath)) return null
-  if (normalizedPath.startsWith('/')) return `${remoteOrigin}${normalizedPath}`
-  return `${remoteOrigin}/${normalizedPath}`
+  if (normalizedPath.startsWith('/')) return `${localOrigin}${normalizedPath}`
+  return `${localOrigin}/${normalizedPath}`
 }

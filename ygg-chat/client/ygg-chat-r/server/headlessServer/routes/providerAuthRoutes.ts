@@ -2,12 +2,12 @@ import { getAuthManager, disconnectAuth } from '../../auth/runtime.js'
 import type { Express } from 'express'
 const JWT_CLAIM_PATH = 'https://api.openai.com/auth'
 import type { ProviderTokenStore } from '../providers/tokenStore.js'
+import { fetchOpenRouterByokModels, OPENROUTER_BYOK_PROVIDER_KEY } from '../providers/hyperRouterOpenRouterProvider.js'
 
 interface RegisterProviderAuthRoutesDeps {
   tokenStore: ProviderTokenStore
 }
 
-const DEFAULT_REMOTE_API_BASE = 'https://webdrasil-production.up.railway.app/api'
 const DEFAULT_OPENROUTER_MODELS = [
   'openai/gpt-4o-mini',
   'openai/gpt-4.1-mini',
@@ -21,48 +21,6 @@ const DEFAULT_BEDROCK_MODELS = [
   'anthropic.claude-3-sonnet-20240229-v1:0',
   'anthropic.claude-3-haiku-20240307-v1:0',
 ]
-
-function getRemoteApiBase(): string {
-  const raw = process.env.YGG_API_URL || process.env.VITE_API_URL || DEFAULT_REMOTE_API_BASE
-  return String(raw).replace(/\/+$/, '')
-}
-
-function normalizeAuthorizationToken(token: string | null | undefined): string {
-  return String(token || '').replace(/^Bearer\s+/i, '').trim()
-}
-
-function extractModelNames(payload: any): string[] {
-  const models = Array.isArray(payload?.models) ? payload.models : []
-  const names = models
-    .map((model: any) => {
-      if (typeof model === 'string') return model.trim()
-      if (model && typeof model.name === 'string') return model.name.trim()
-      if (model && typeof model.id === 'string') return model.id.trim()
-      return ''
-    })
-    .filter((modelName: string): modelName is string => Boolean(modelName))
-
-  return Array.from(new Set(names))
-}
-
-async function fetchOpenRouterModelsFromRemote(accessToken: string): Promise<string[]> {
-  const normalizedToken = normalizeAuthorizationToken(accessToken)
-  if (!normalizedToken) return []
-
-  const response = await fetch(`${getRemoteApiBase()}/models/openrouter`, {
-    headers: {
-      Authorization: `Bearer ${normalizedToken}`,
-      'Content-Type': 'application/json',
-    },
-  })
-
-  if (!response.ok) {
-    throw new Error(`Remote OpenRouter models fetch failed: HTTP ${response.status}`)
-  }
-
-  const payload = await response.json().catch(() => ({}))
-  return extractModelNames(payload)
-}
 
 function decodeJwtPayload(token: string): any | null {
   try {
@@ -124,9 +82,9 @@ export function registerProviderAuthRoutes(app: Express, deps: RegisterProviderA
     }
   }
 
-  const registerTokenRoutes = (providerSlug: 'openai' | 'openrouter' | 'zai' | 'bedrock', providerKey: string, opts?: { deriveAccountId?: boolean }) => {
+  const registerTokenRoutes = (providerSlug: 'openai' | 'openrouter-byok' | 'zai' | 'bedrock', providerKey: string, opts?: { deriveAccountId?: boolean }) => {
     app.post(`/api/provider-auth/${providerSlug}/token`, (req, res) => {
-      if (providerSlug === 'openai' || providerSlug === 'openrouter') { res.status(410).json({ error: 'OAuth tokens are server-owned. Use the login flow.' }); return }
+      if (providerSlug === 'openai') { res.status(410).json({ error: 'OAuth tokens are server-owned. Use the login flow.' }); return }
       const payload = normalizePayload(req.body)
 
       if (!payload.userId || !payload.accessToken) {
@@ -159,7 +117,7 @@ export function registerProviderAuthRoutes(app: Express, deps: RegisterProviderA
     })
 
     app.get(`/api/provider-auth/${providerSlug}/token`, (req, res) => {
-      if (providerSlug === 'openai' || providerSlug === 'openrouter') { const snapshot = getAuthManager().snapshot(providerSlug === 'openai' ? 'codex' : 'app'); res.json({ success: true, hasToken: snapshot.status === 'ready' || snapshot.status === 'refreshing', snapshot }); return }
+      if (providerSlug === 'openai') { const snapshot = getAuthManager().snapshot('codex'); res.json({ success: true, hasToken: snapshot.status === 'ready' || snapshot.status === 'refreshing', snapshot }); return }
       const userId = String(req.query.userId ?? req.query.user_id ?? '')
       if (!userId) {
         res.status(400).json({ success: false, error: 'userId query param is required' })
@@ -171,7 +129,7 @@ export function registerProviderAuthRoutes(app: Express, deps: RegisterProviderA
     })
 
     app.delete(`/api/provider-auth/${providerSlug}/token`, (req, res) => {
-      if (providerSlug === 'openai' || providerSlug === 'openrouter') { disconnectAuth(providerSlug === 'openai' ? 'codex' : 'app'); res.json({ success: true }); return }
+      if (providerSlug === 'openai') { disconnectAuth('codex'); res.json({ success: true }); return }
       const userId = String(req.query.userId ?? req.query.user_id ?? '')
       if (!userId) {
         res.status(400).json({ success: false, error: 'userId query param is required' })
@@ -184,28 +142,19 @@ export function registerProviderAuthRoutes(app: Express, deps: RegisterProviderA
   }
 
   registerTokenRoutes('openai', 'openaichatgpt', { deriveAccountId: true })
-  registerTokenRoutes('openrouter', 'openrouter')
   registerTokenRoutes('zai', 'zai')
   registerTokenRoutes('bedrock', 'bedrock')
+  registerTokenRoutes('openrouter-byok', OPENROUTER_BYOK_PROVIDER_KEY)
 
-  app.get('/api/provider-auth/models', async (req, res) => {
-    const userId = String(req.query.userId ?? req.query.user_id ?? '').trim()
-    let openRouterModels = [...DEFAULT_OPENROUTER_MODELS]
-
-    if (userId) {
-      const storedAccessToken = await getAuthManager().resolve('app').then(record => record.accessToken).catch(() => null)
-
-      if (storedAccessToken) {
-        try {
-          const remoteModels = await fetchOpenRouterModelsFromRemote(storedAccessToken)
-          if (remoteModels.length > 0) {
-            openRouterModels = remoteModels
-          }
-        } catch (error) {
-          console.warn('[providerAuthRoutes] Falling back to default OpenRouter models:', error)
-        }
-      }
+  app.get('/api/provider-auth/openrouter-byok/models', async (_req, res) => {
+    try {
+      res.json({ success: true, models: await fetchOpenRouterByokModels() })
+    } catch (error) {
+      res.status(502).json({ success: false, error: error instanceof Error ? error.message : 'Failed to load OpenRouter models' })
     }
+  })
+
+  app.get('/api/provider-auth/models', async (_req, res) => {
 
     res.json({
       success: true,
@@ -222,8 +171,9 @@ export function registerProviderAuthRoutes(app: Express, deps: RegisterProviderA
           ],
         },
         {
-          name: 'openrouter',
-          models: openRouterModels,
+          // The user's own OpenRouter key; the live list is /api/provider-auth/openrouter-byok/models.
+          name: 'openrouterbyok',
+          models: DEFAULT_OPENROUTER_MODELS,
         },
         {
           name: 'lmstudio',

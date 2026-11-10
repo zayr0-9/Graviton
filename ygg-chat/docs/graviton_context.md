@@ -141,7 +141,7 @@ The orchestration engine lives in `server/headlessServer/`:
 - `services/chatOrchestrator.ts`: main-turn orchestration and permission decisions.
 - `services/branchOrchestrator.ts`: branch history and durable lineage resolution.
 - `services/toolLoopService.ts`: shared provider/tool loop, hooks, and compaction.
-- `services/messageSink.ts`: persisted message delivery and cloud mirroring.
+- `services/messageSink.ts`: persisted message delivery (`TreeMessageSink`).
 
 Paths in this overview's runtime sections are relative to `client/ygg-chat-r/`.
 
@@ -282,7 +282,7 @@ If a concise set of files is needed to understand the system, the most represent
 `createYggServer` is the host-neutral composition root. Electron supplies config
 and privileged capabilities through `electron/electronHostAdapter.ts`; the existing
 `server/standaloneEntry.ts` reuses the server without Electron. Desktop remains the
-supported app target; this does not make legacy web-mode behavior a requirement.
+supported app target. Graviton is fully local: there is no web mode, hosted backend or account.
 The local port defaults to 3002 but can fall back; use the resolved server origin.
 The old renderer-owned `GlobalAgentLoop` has been removed.
 

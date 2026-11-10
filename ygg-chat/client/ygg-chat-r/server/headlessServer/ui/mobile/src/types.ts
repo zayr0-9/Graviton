@@ -61,7 +61,6 @@ export interface MobileMessageTreeNode {
 export interface MobileMessageTreePayload {
   messages: MobileMessage[]
   tree: MobileMessageTreeNode | null
-  meta?: { storage_mode?: 'local' | 'cloud' }
 }
 
 export interface ToolCallLike {
@@ -123,7 +122,7 @@ export type MobileLocalFileEntry = LocalFileEntry
 export type MobileLocalFileListingResponse = LocalFileListingResponse
 export type MobileLocalFileSearchResponse = LocalFileSearchResponse
 
-export type MobileProviderName = 'openaichatgpt' | 'openrouter' | 'lmstudio' | 'zai' | 'bedrock'
+export type MobileProviderName = 'openaichatgpt' | 'openrouterbyok' | 'lmstudio' | 'zai' | 'bedrock'
 export type MobileOperationMode = 'plan' | 'execute'
 export type MobileReasoningEffort = 'low' | 'medium' | 'high' | 'xhigh'
 

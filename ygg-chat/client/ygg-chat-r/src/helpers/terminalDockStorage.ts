@@ -1,3 +1,6 @@
+import { isBrowserClient } from '../platform/clientCapabilities'
+const dockStorage = () => isBrowserClient ? sessionStorage : localStorage
+
 export const TERMINAL_DOCK_STORAGE_KEY = 'ygg_terminal_dock_state'
 export const TERMINAL_DOCK_CHANGE_EVENT = 'ygg-terminal-dock-change'
 
@@ -100,7 +103,7 @@ async function syncTerminalDockStateToElectronStore(state: TerminalDockPersisted
 
 export function loadTerminalDockState(): TerminalDockPersistedState {
   try {
-    const raw = localStorage.getItem(TERMINAL_DOCK_STORAGE_KEY)
+    const raw = dockStorage().getItem(TERMINAL_DOCK_STORAGE_KEY)
     const parsed = raw ? JSON.parse(raw) : DEFAULT_STATE
     const normalized = normalizeState(parsed)
     void syncTerminalDockStateToElectronStore(normalized)
@@ -114,7 +117,7 @@ export function saveTerminalDockState(state: TerminalDockPersistedState): Termin
   const normalized = normalizeState(state)
 
   try {
-    localStorage.setItem(TERMINAL_DOCK_STORAGE_KEY, JSON.stringify(normalized))
+    dockStorage().setItem(TERMINAL_DOCK_STORAGE_KEY, JSON.stringify(normalized))
     void syncTerminalDockStateToElectronStore(normalized)
     if (typeof window !== 'undefined') {
       window.dispatchEvent(new CustomEvent<TerminalDockPersistedState>(TERMINAL_DOCK_CHANGE_EVENT, { detail: normalized }))

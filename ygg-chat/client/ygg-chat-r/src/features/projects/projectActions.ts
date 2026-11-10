@@ -1,14 +1,12 @@
 import { createAsyncThunk } from '@reduxjs/toolkit'
-import { Project, StorageMode } from '../../../../../shared/types'
-import { isCommunityMode } from '../../config/runtimeMode'
-import { gwApi, environment } from '../../utils/api'
+import { Project } from '../../../../../shared/types'
+import { gwApi } from '../../utils/api'
 import { ThunkExtraArgument } from '../../store/thunkExtra'
 import { RootState } from '../../store/store'
 
-// Phase 5: thin client. All project CRUD/reads go through the /api/gw/* gateway,
-// which owns the local-vs-cloud branch, the merge, and the cloud→SQLite mirror.
+// Thin client: all project CRUD/reads go through the local /api/gw/* gateway.
 
-// Fetch all projects (gateway merges local + cloud, cloud-first, latest-activity desc)
+// Fetch all projects (latest activity first)
 export const fetchProjects = createAsyncThunk<Project[], void, { extra: ThunkExtraArgument }>(
   'projects/fetchProjects',
   async (_, { extra }) => {
@@ -17,10 +15,10 @@ export const fetchProjects = createAsyncThunk<Project[], void, { extra: ThunkExt
   }
 )
 
-// Fetch project by ID (gateway routes by the entity's storage mode)
+// Fetch project by ID
 export const fetchProjectById = createAsyncThunk<
   Project,
-  { id: number | string; storageMode?: StorageMode },
+  { id: number | string },
   { extra: ThunkExtraArgument; state: RootState }
 >('projects/fetchProjectById', async ({ id: projectId }) => {
   return await gwApi.get<Project>(`/projects/${projectId}`)
@@ -33,25 +31,19 @@ export interface CreateProjectPayload {
   context?: string
   system_prompt?: string
   cwd?: string | null
-  storageMode?: StorageMode
 }
 
 export const createProject = createAsyncThunk<Project, CreateProjectPayload, { extra: ThunkExtraArgument; state: RootState }>(
   'projects/createProject',
   async (payload, { extra }) => {
     const { auth } = extra
-    const { storageMode, conversation_id: _conversationId, ...restPayload } = payload
-    const isCommunity = environment === 'electron' && isCommunityMode
-    const effectiveStorageMode = isCommunity ? 'local' : storageMode || 'cloud'
-
-    // Canonical body; the gateway normalizes per storage leg + mirrors cloud creates.
+    const { conversation_id: _conversationId, ...restPayload } = payload
     return await gwApi.post<Project>('/projects', {
       userId: auth.userId,
       name: restPayload.name,
       context: restPayload.context || null,
       system_prompt: restPayload.system_prompt || null,
       cwd: restPayload.cwd || null,
-      storageMode: effectiveStorageMode,
     })
   }
 )
@@ -63,14 +55,12 @@ export interface UpdateProjectPayload {
   context?: string
   system_prompt?: string
   cwd?: string | null
-  storage_mode?: StorageMode
 }
 
 export const updateProject = createAsyncThunk<Project, UpdateProjectPayload, { extra: ThunkExtraArgument; state: RootState }>(
   'projects/updateProject',
   async (payload) => {
-    const { id, storage_mode: _storageMode, ...updateData } = payload
-    // Canonical body; gateway forwards to local (with cwd) or cloud (cwd stripped).
+    const { id, ...updateData } = payload
     return await gwApi.patch<Project>(`/projects/${id}`, {
       name: updateData.name,
       context: updateData.context ?? null,
@@ -80,10 +70,10 @@ export const updateProject = createAsyncThunk<Project, UpdateProjectPayload, { e
   }
 )
 
-// Delete project (gateway routes by storage mode; cloud deletes propagate to SQLite)
+// Delete project
 export const deleteProject = createAsyncThunk<
   number | string,
-  { id: number | string; storageMode?: StorageMode },
+  { id: number | string },
   { extra: ThunkExtraArgument; state: RootState }
 >('projects/deleteProject', async ({ id: projectId }) => {
   await gwApi.delete(`/projects/${projectId}`)

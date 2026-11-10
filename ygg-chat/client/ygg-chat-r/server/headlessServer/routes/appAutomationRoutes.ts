@@ -1,5 +1,11 @@
+import { assertMessagesNotInActiveRun, deleteMessagesWithLineageRepair } from '../persistence/deleteMessages.js'
+import { planMessageDeletion } from '../persistence/claudeMessageDeletion.js'
+import { assertClaudeTransferable, loadTransferSourceRows, transferredMessageMeta } from '../persistence/messageTransfer.js'
+import { cloneConversation, ConversationCloneError } from '../persistence/conversationClone.js'
+import { isClaudeTranscriptMessage } from '../../../../../shared/claudeProvider.js'
 import type Database from 'better-sqlite3'
 import type { Express } from 'express'
+import path from 'node:path'
 import { v4 as uuidv4 } from 'uuid'
 import { toSafeHookRunRecord } from '../../hooks/hookDiagnostics.js'
 import { HookRunRepo } from '../persistence/hookRunRepo.js'
@@ -96,11 +102,9 @@ export function buildConversationMessagesTreePayload(
   statements: any,
   conversationId: string,
   includeTree = true
-): { messages: any[]; tree: ChatNode | null; meta: { storage_mode: string } } {
+): { messages: any[]; tree: ChatNode | null } {
   const messages = statements.getMessagesByConversationId.all(conversationId) as any[]
-  const conversation = statements.getConversationById.get(conversationId) as { storage_mode?: string } | undefined
-  const storage_mode = conversation?.storage_mode || 'local'
-  if (messages.length === 0) return { messages: [], tree: null, meta: { storage_mode } }
+  if (messages.length === 0) return { messages: [], tree: null }
 
   // Same rows and per-message order as statements.getAttachmentsByMessageId, in one query.
   const attachmentsByMessage = new Map<string, any[]>()
@@ -142,14 +146,13 @@ export function buildConversationMessagesTreePayload(
     }
   })
 
-  return { messages: normalizedMessages, tree: includeTree ? buildMessageTree(normalizedMessages) : null, meta: { storage_mode } }
+  return { messages: normalizedMessages, tree: includeTree ? buildMessageTree(normalizedMessages) : null }
 }
 
 type TopLevelMessageSearchCandidate = {
   message_id: string
   conversation_id: string
   project_id: string | null
-  storage_mode: 'cloud' | 'local'
   conversation_title: string | null
   conversation_updated_at: string | null
   message_created_at: string
@@ -161,6 +164,7 @@ type TopLevelMessageSearchCandidate = {
 }
 
 const TOP_LEVEL_MESSAGE_SEARCH_FTS_CANDIDATE_LIMIT = 220
+const MAX_ADDITIONAL_CWDS = 32
 const TOP_LEVEL_MESSAGE_SEARCH_FUZZY_CANDIDATE_LIMIT = 900
 
 const normalizeSearchText = (value: string) => value.toLowerCase().replace(/[^a-z0-9\s]/g, ' ').replace(/\s+/g, ' ').trim()
@@ -301,7 +305,6 @@ function searchTopLevelUserMessages(db: Database.Database, params: {
           m.id AS message_id,
           m.conversation_id AS conversation_id,
           c.project_id AS project_id,
-          c.storage_mode AS storage_mode,
           c.title AS conversation_title,
           c.updated_at AS conversation_updated_at,
           m.created_at AS message_created_at,
@@ -332,7 +335,6 @@ function searchTopLevelUserMessages(db: Database.Database, params: {
         message_id: String(row.message_id),
         conversation_id: String(row.conversation_id),
         project_id: row.project_id || null,
-        storage_mode: row.storage_mode === 'cloud' ? 'cloud' : 'local',
         conversation_title: row.conversation_title || null,
         conversation_updated_at: row.conversation_updated_at || null,
         message_created_at: row.message_created_at,
@@ -372,7 +374,6 @@ function searchTopLevelUserMessages(db: Database.Database, params: {
           m.id AS message_id,
           m.conversation_id AS conversation_id,
           c.project_id AS project_id,
-          c.storage_mode AS storage_mode,
           c.title AS conversation_title,
           c.updated_at AS conversation_updated_at,
           m.created_at AS message_created_at,
@@ -402,7 +403,6 @@ function searchTopLevelUserMessages(db: Database.Database, params: {
         message_id: messageId,
         conversation_id: String(row.conversation_id),
         project_id: row.project_id || null,
-        storage_mode: row.storage_mode === 'cloud' ? 'cloud' : 'local',
         conversation_title: row.conversation_title || null,
         conversation_updated_at: row.conversation_updated_at || null,
         message_created_at: row.message_created_at,
@@ -431,7 +431,6 @@ function searchTopLevelUserMessages(db: Database.Database, params: {
       return {
         conversation_id: candidate.conversation_id,
         project_id: candidate.project_id,
-        storage_mode: candidate.storage_mode,
         conversation_title: candidate.conversation_title,
         message_id: candidate.message_id,
         message_created_at: candidate.message_created_at,
@@ -794,7 +793,7 @@ export function registerAppAutomationRoutes(app: Express, deps: AppAutomationRou
   app.patch('/api/app/conversations/:id', (req, res) => {
     try {
       const { id } = req.params
-      const { title, system_prompt, conversation_context, research_note, cwd, project_id, favorite } = req.body
+      const { title, system_prompt, conversation_context, research_note, cwd, additional_cwds, project_id, favorite } = req.body
 
       const existing = statements.getConversationById.get(id) as any
       if (!existing) {
@@ -825,6 +824,18 @@ export function registerAppAutomationRoutes(app: Express, deps: AppAutomationRou
         const normalizedCwd = typeof cwd === 'string' ? (cwd.trim() || null) : cwd || null
         updates.push('cwd = ?')
         values.push(normalizedCwd)
+      }
+      if (additional_cwds !== undefined) {
+        // NULL / [] both mean "no extra roots"; store NULL so readers see one shape for empty.
+        const roots = additional_cwds === null ? [] : additional_cwds
+        if (!Array.isArray(roots) || roots.length > MAX_ADDITIONAL_CWDS || roots.some(root =>
+          typeof root !== 'string' || !root.trim() || root.length > 4096 || root.includes('\0') || !(path.isAbsolute(root.trim()) || path.posix.isAbsolute(root.trim())))) {
+          res.status(400).json({ error: `additional_cwds must be an array of at most ${MAX_ADDITIONAL_CWDS} absolute directory paths` })
+          return
+        }
+        const normalizedRoots = [...new Set(roots.map((root: string) => root.trim()))]
+        updates.push('additional_cwds = ?')
+        values.push(normalizedRoots.length > 0 ? JSON.stringify(normalizedRoots) : null)
       }
       if (project_id !== undefined) {
         updates.push('project_id = ?')
@@ -920,7 +931,7 @@ export function registerAppAutomationRoutes(app: Express, deps: AppAutomationRou
   app.get('/api/app/conversations/:id/messages/top-level-users', (req, res) => {
     try {
       const { id } = req.params
-      const topLevelUserMessages = statements.getTopLevelUserMessagesByConversationId.all(id)
+      const topLevelUserMessages = statements.getTopLevelPreviewMessagesByConversationId.all(id)
       res.json(topLevelUserMessages)
     } catch (error) {
       console.error('[HeadlessServer] Error fetching app top-level user messages:', error)
@@ -934,6 +945,20 @@ export function registerAppAutomationRoutes(app: Express, deps: AppAutomationRou
     } catch (error) {
       console.error('[HeadlessServer] Error fetching app message tree:', error)
       res.status(500).json({ error: 'Failed to fetch message tree' })
+    }
+  })
+
+  // Copy a conversation and its full message tree under new ids (sidebar "Copy conversation").
+  app.post('/api/app/conversations/:id/clone', (req, res) => {
+    try {
+      res.status(201).json(cloneConversation(db, req.params.id))
+    } catch (error) {
+      if (error instanceof ConversationCloneError) {
+        res.status(error.status).json({ error: error.message, ...(error.code ? { code: error.code } : {}) })
+        return
+      }
+      console.error('[HeadlessServer] Error cloning conversation:', error)
+      res.status(500).json({ error: 'Failed to copy conversation' })
     }
   })
 
@@ -967,6 +992,15 @@ export function registerAppAutomationRoutes(app: Express, deps: AppAutomationRou
       const conversation = statements.getConversationById.get(conversationId) as any
       if (!conversation) {
         res.status(404).json({ error: 'Conversation not found' })
+        return
+      }
+
+      const sourceRows = loadTransferSourceRows(db, messages.flatMap(msg => (msg.source_id != null ? [String(msg.source_id)] : [])))
+      try {
+        assertClaudeTransferable(messages, sourceRows)
+      } catch (error) {
+        const refusal = error as Error & { status?: number; code?: string }
+        res.status(refusal.status ?? 409).json({ error: refusal.message, code: refusal.code })
         return
       }
 
@@ -1020,6 +1054,7 @@ export function registerAppAutomationRoutes(app: Express, deps: AppAutomationRou
               ? sourceIdToNewId.get(String(msg.parent_source_id)) || null
               : null
             : lastMessageId
+          const meta = transferredMessageMeta(msg.meta, sourceKey, sourceRows.get(sourceKey)?.conversation_id ?? null, sourceIdToNewId)
 
           statements.upsertMessage.run(
             messageId,
@@ -1047,7 +1082,7 @@ export function registerAppAutomationRoutes(app: Express, deps: AppAutomationRou
                 : JSON.stringify(msg.content_blocks)
               : null,
             new Date(transferStartedAt + createdMessages.length).toISOString(),
-            typeof msg.meta === 'string' ? msg.meta : msg.meta ? JSON.stringify(msg.meta) : null
+            meta
           )
 
           createdMessages.push({
@@ -1067,7 +1102,7 @@ export function registerAppAutomationRoutes(app: Express, deps: AppAutomationRou
             ex_agent_session_id: msg.ex_agent_session_id || null,
             ex_agent_type: msg.ex_agent_type || null,
             content_blocks: msg.content_blocks || null,
-            meta: msg.meta ?? null,
+            meta,
             created_at: new Date(transferStartedAt + createdMessages.length).toISOString(),
           })
 
@@ -1203,6 +1238,10 @@ export function registerAppAutomationRoutes(app: Express, deps: AppAutomationRou
         return
       }
 
+      if ((content !== undefined || content_blocks !== undefined) && isClaudeTranscriptMessage(existing)) {
+        res.status(409).json({ error: 'Claude owns this transcript. Create an edit branch instead of changing saved messages.' })
+        return
+      }
       let finalContent = content
       if (!finalContent && content_blocks) {
         const textBlocks = Array.isArray(content_blocks) ? content_blocks.filter((b: any) => b.type === 'text') : []
@@ -1284,33 +1323,34 @@ export function registerAppAutomationRoutes(app: Express, deps: AppAutomationRou
   app.delete('/api/app/messages/:id', (req, res) => {
     try {
       const { id } = req.params
-      statements.deleteMessage.run(id)
+      deleteMessagesWithLineageRepair(db, planMessageDeletion(db, [id]))
       res.json({ success: true })
     } catch (error) {
       console.error('[HeadlessServer] Error deleting app message:', error)
-      res.status(500).json({ error: 'Failed to delete message' })
+      res.status((error as { status?: number }).status ?? 500).json({ error: error instanceof Error ? error.message : 'Failed to delete message', code: (error as { code?: string }).code })
     }
   })
 
   app.post('/api/app/messages/deleteMany', (req, res) => {
     try {
       const { ids } = req.body || {}
-      if (!Array.isArray(ids) || ids.length === 0) {
-        res.status(400).json({ error: 'ids must be a non-empty array' })
+      if (!Array.isArray(ids) || ids.length === 0 || ids.some(id => typeof id !== 'string')) {
+        res.status(400).json({ error: 'ids must be a non-empty array of message IDs' })
         return
       }
 
-      const deleteTransaction = db.transaction((messageIds: string[]) => {
-        for (const id of messageIds) {
-          statements.deleteMessage.run(id)
-        }
-      })
-
-      deleteTransaction(ids)
+      const planned = planMessageDeletion(db, ids)
+      // A dry run lets Move check the source delete before it copies anything.
+      if (req.body?.dryRun === true) {
+        assertMessagesNotInActiveRun(db, planned)
+        res.json({ planned })
+        return
+      }
+      deleteMessagesWithLineageRepair(db, planned)
       res.json({ deleted: ids.length })
     } catch (error) {
       console.error('[HeadlessServer] Error bulk deleting app messages:', error)
-      res.status(500).json({ error: 'Failed to bulk delete messages' })
+      res.status((error as { status?: number }).status ?? 500).json({ error: error instanceof Error ? error.message : 'Failed to bulk delete messages', code: (error as { code?: string }).code })
     }
   })
 }

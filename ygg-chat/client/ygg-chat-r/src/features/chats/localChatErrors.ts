@@ -141,7 +141,7 @@ function statusOf(error: unknown): number | undefined {
 /** Map a bare HTTP status onto a code. Shared by the ctx.status and the
  * status-embedded-in-the-message paths so they can never disagree. */
 function codeForStatus(status: number): ChatErrorCode | undefined {
-  if (status === 401 || status === 403) return 'session_expired'
+  // The local host has no account session: a 401/403 is the host refusing the request.
   if (status === 410) return 'run_expired'
   if (status === 429) return 'rate_limited'
   if (status >= 400 && status < 500) return 'server_rejected_request'
@@ -180,7 +180,7 @@ export function classifyLocalChatError(error: unknown, ctx: LocalChatErrorContex
 
   // 3 — statuses that mean one thing on every transport.
   if (status === 410) return envelope('run_expired')
-  if (status === 401 || status === 403) return envelope('session_expired')
+  if (status === 401 || status === 403) return envelope('server_rejected_request')
 
   const message = messageOf(error)
   const name = nameOf(error)

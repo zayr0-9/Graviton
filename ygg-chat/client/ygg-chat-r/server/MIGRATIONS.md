@@ -51,10 +51,14 @@ An installed app therefore upgrades itself once per migration and never re-runs 
   migration checks `PRAGMA table_info(conversations)` before adding the column,
   so it is safe if the column already exists. `PRAGMA user_version` prevents
   reapplying completed migrations on subsequent launches.
-- This migration adds storage only. API serialization/validation, UI selection,
-  multi-root context loading, and tool-path authorization are separate follow-up
-  work. The existing single-root execution behavior is unchanged. This is a local
-  SQLite migration, not a migration of the external cloud database.
+- The migration added storage only; the column is now used without a further schema
+  change. `PATCH /api/app/conversations/:id` validates and writes it (gateway route
+  `/api/gw/conversations/:id/additional-cwds`, local row only).
+  Runs read it from the row, never from the request: Graviton tools allow paths inside
+  any listed root (`hasToolAccessTo` in `server/toolAccessContext.ts`), and Claude
+  sessions receive it as `additionalDirectories`. Relative paths still resolve against
+  `cwd`. Instruction files (AGENTS.md / CLAUDE.md) still load from `cwd` only.
+- This is a local SQLite migration.
 
 ## Search index maintenance (v5)
 
@@ -87,3 +91,41 @@ sqlite3 /path/to/local-sync.db 'PRAGMA user_version; PRAGMA table_info(conversat
 
 Start the server once against a copy of a pre-migration database. The log prints
 `[LocalServer] Applied schema migration v<N> (<name>)` once, and never again on the next start.
+
+## Message revisions (v7)
+
+| Version | Name | Change | Why | Added |
+| --- | --- | --- | --- | --- |
+| 7 | `message_revisions` | Adds `messages.revision INTEGER NOT NULL DEFAULT 0` and `messages_revision_update`. | Version host-owned rows for multi-client reconciliation, including direct SQL/background/mirror writers. | 2026-10-19 |
+
+Inserts begin at zero. SQLite increments on actual non-revision column changes, including children lists and lineage attachment; no-op updates do not increment. JavaScript writers must not increment or reset revisions. Multiple real mutations in one transaction can advance a row more than once. Unknown cloud revisions remain absent until mirrored locally. The trigger excludes revision-only updates so recursive triggers are safe. New message columns require an append-only migration replacing this trigger to include them.
+
+## Client change outbox (v8)
+
+| Version | Name | Change | Why | Added |
+| --- | --- | --- | --- | --- |
+| 8 | `client_change_outbox` | Adds bounded `client_changes` metadata outbox and INSERT/UPDATE/DELETE triggers for messages, conversations and projects. | Cross-client invalidation observes committed SQL writes including background/mirror writers; rolled-back writes publish nothing. | 2026-10-19 |
+
+The feed retains 10,000 records; old/future cursors and different process epochs require a baseline refresh. Message updates publish only when the host revision changes. Tokens and transcript bodies are excluded. Settings/catalog changes are not covered by this outbox.
+
+## Command acceptance receipts (v9)
+
+| Version | Name | Change | Why | Added |
+| --- | --- | --- | --- | --- |
+| 9 | `operation_receipts` | Adds operation ID, SHA-256 request fingerprint, host epoch and compact admission receipt. | Admission retries cannot repeat accepted work after in-memory mailbox eviction or process restart. | 2026-10-19 |
+
+Accepted commands from earlier epochs become interrupted/uncertain, never automatically resumed. Unknown old-epoch commands are rejected. Tombstones retain no prompts, attachments, provider tokens or tool output; they are not expired into executable new commands.
+
+## Decision settlement receipts (v10)
+
+| Version | Name | Change | Why | Added |
+| --- | --- | --- | --- | --- |
+| 10 | `decision_receipts` | Adds `(stream_id, tool_call_id, kind)` keyed settlement fingerprints and metadata. | Identical lost-acknowledgement answers remain recognizable after restart; conflicting answers never reopen execution. No raw answers or tool inputs are stored. | 2026-10-19 |
+
+| 11 | `decision_receipt_kinds` | Idempotently upgrades early prototype two-column receipt keys to kind-scoped keys, preserving old records as `any`. | A test database that already stamped v10 must not lose receipts or fail interactive decisions. | 2026-10-19 |
+
+## Claude session backend (v12)
+
+| Version | Name | Change | Why | Added |
+| --- | --- | --- | --- | --- |
+| 12 | `claude_branch_sessions` | Adds `claude_branch_sessions` and `claude_message_checkpoints`, cascading with local conversations/messages/lineages. | Persist locked model/workspace, native session ownership and exact-message historical fork checkpoints. No transcript rewrites. | 2026-10-25 |

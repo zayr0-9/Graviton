@@ -1,0 +1,18 @@
+import { afterEach, expect, it, vi } from 'vitest'
+vi.mock('../platform/clientCapabilities', () => ({ isBrowserClient: true }))
+afterEach(() => { vi.unstubAllGlobals(); vi.restoreAllMocks() })
+it('blocks a foreign host at the old address without adopting its identity', async () => {
+  vi.resetModules()
+  vi.stubGlobal('window', { dispatchEvent: vi.fn() })
+  vi.stubGlobal('CustomEvent', class { constructor(public type: string) {} })
+  const fetcher = vi.fn().mockResolvedValueOnce({ ok: true, json: async () => ({ protocol: 1, hostId: 'first', epoch: 'one' }) })
+    .mockResolvedValueOnce({ ok: true, json: async () => ({ protocol: 1, hostId: 'other', epoch: 'two' }) })
+  vi.stubGlobal('fetch', fetcher)
+  const { bootstrapHostRuntime, verifyBrowserHost, getHostRuntime } = await import('./hostRuntimeBootstrap')
+  await bootstrapHostRuntime()
+  vi.spyOn(Date, 'now').mockReturnValue(Date.now() + 5000)
+  await expect(verifyBrowserHost()).rejects.toThrow('Another Graviton host')
+  await expect(verifyBrowserHost()).rejects.toThrow('Another Graviton host')
+  expect(getHostRuntime()?.hostId).toBe('first')
+  expect(fetcher).toHaveBeenCalledTimes(2)
+})

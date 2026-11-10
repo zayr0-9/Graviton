@@ -1,3 +1,5 @@
+import { newClientId } from './clientId'
+
 // Session-only opt-in: restarting/reloading the renderer restores restricted access.
 let fullAccess = false
 const listeners = new Set<() => void>()
@@ -14,7 +16,7 @@ export const setFullAccessEnabled = (enabled: boolean, conversationId?: string |
   fullAccess = enabled === true
   if (!fullAccess) pendingNotifications.clear()
   else if (!wasEnabled && conversationId != null) {
-    pendingNotifications.set(String(conversationId), crypto.randomUUID())
+    pendingNotifications.set(String(conversationId), newClientId())
   }
   listeners.forEach(listener => listener())
 }

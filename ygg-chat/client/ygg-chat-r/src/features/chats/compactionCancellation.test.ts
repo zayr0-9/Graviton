@@ -25,7 +25,7 @@ describe('compaction cancellation', () => {
       state.chat = reducer(state.chat, action); return action
     }
     const result = await compactBranch({ conversationId: 'c', parentMessageId: 'before', messages: [] })(
-      dispatch, () => state, { auth: { accessToken: null, userId: null }, queryClient: null })
+      dispatch, () => state, { auth: { userId: null }, queryClient: null })
     expect(result.payload).toMatchObject({ message: { id: 'summary' } })
   })
 
@@ -39,7 +39,7 @@ describe('compaction cancellation', () => {
       state.chat = reducer(state.chat, action); return action
     }
     const pending = compactBranch({ conversationId: 'c', parentMessageId: 'a', messages: [] })(dispatch, () => state,
-      { auth: { accessToken: null, userId: null }, queryClient: null })
+      { auth: { userId: null }, queryClient: null })
     pending.abort()
     await pending
     expect(child.abort).toHaveBeenCalledOnce()
@@ -83,7 +83,7 @@ describe('compaction branch ownership', () => {
       return action
     }
     const result = await compactBranch({ conversationId: 'a', parentMessageId: 'moved-tip', messages: [] })(
-      dispatch, () => state, { auth: { accessToken: null, userId: null }, queryClient: null })
+      dispatch, () => state, { auth: { userId: null }, queryClient: null })
     return { result, send }
   }
 

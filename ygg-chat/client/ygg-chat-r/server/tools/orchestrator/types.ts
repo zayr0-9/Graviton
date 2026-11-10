@@ -23,6 +23,8 @@ export interface JobOptions {
   /** Root path for tool execution */
   /** Live invocation only; restored jobs default to restricted access. */
   fullAccess?: boolean
+  /** Extra conversation roots allowed besides rootPath. Live invocation only, like fullAccess. */
+  additionalRoots?: string[]
   rootPath?: string | null
   /** Operation mode (plan/execute) */
   operationMode?: 'plan' | 'execute'
@@ -54,6 +56,7 @@ export interface Job {
   /** Root path for execution */
   /** Not persisted: elevated access never survives a server restart. */
   fullAccess?: boolean
+  additionalRoots?: string[]
   rootPath: string | null
   /** Operation mode */
   operationMode: 'plan' | 'execute'

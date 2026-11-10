@@ -1,5 +1,6 @@
 import type { CSSProperties } from 'react'
 import type { ContentBlock, StreamEvent } from '@/features/chats/chatTypes'
+import { CLAUDE_WORKFLOW_TOOL, type ClaudeBackgroundTask, type ClaudeFilePatch } from '../../../../../shared/claudeProvider'
 
 // Configuration for collapsed content display
 export const COLLAPSED_CONTENT_WORD_LIMIT = 15
@@ -146,14 +147,28 @@ export interface ToolCallRenderGroup {
   id: string
   name?: string
   args?: Record<string, any> | null
-  results: Array<{ content: any; is_error?: boolean }>
+  results: Array<{ content: any; is_error?: boolean; patch?: ClaudeFilePatch; task?: ClaudeBackgroundTask }>
   anchorIndex: number
+}
+
+/** Claude's ExitPlanMode call carries the plan the server attached when escalating to Agent mode. */
+export const claudePlanFromToolCall = (
+  name?: string,
+  args?: Record<string, any> | null
+): { name: string; plan: string; path?: string } | null => {
+  if (name !== 'ExitPlanMode' || typeof args?.plan !== 'string' || !args.plan.trim()) return null
+  const path = typeof args.planFilePath === 'string' ? args.planFilePath : undefined
+  const fileName = path?.split(/[\\/]/).pop()?.replace(/\.md$/i, '')
+  return { name: fileName || 'Plan', plan: args.plan, ...(path ? { path } : {}) }
 }
 
 /** Interactive/visual tool surfaces must remain visible instead of being folded into Agent steps. */
 export const isExcludedFromProcessRunGrouping = (name?: string, args?: Record<string, any> | null): boolean => {
   const normalizedName = String(name || '').trim().toLowerCase()
   if (normalizedName.startsWith('mcp__') || normalizedName === 'html_renderer') return true
+  if (claudePlanFromToolCall(name, args)) return true
+  // A Claude workflow runs in the background; its live status stays in view.
+  if (name === CLAUDE_WORKFLOW_TOOL) return true
   if (normalizedName === 'mcp_manager' && args?.action === 'invoke') return true
 
   if (normalizedName === 'plan_md') {
@@ -380,14 +395,14 @@ export const buildToolCallGroupsFromStream = (events?: StreamEvent[]) => {
     } else if (event.type === 'tool_result' && event.toolResult) {
       const target = groupsById.get(event.toolResult.tool_use_id)
       if (target) {
-        target.results.push({ content: event.toolResult.content, is_error: event.toolResult.is_error })
+        target.results.push({ content: event.toolResult.content, is_error: event.toolResult.is_error, patch: event.toolResult.patch })
         mapByIndex.set(idx, target)
       } else {
         const orphanedGroup: ToolCallRenderGroup = {
           id: event.toolResult.tool_use_id,
           name: undefined,
           args: null,
-          results: [{ content: event.toolResult.content, is_error: event.toolResult.is_error }],
+          results: [{ content: event.toolResult.content, is_error: event.toolResult.is_error, patch: event.toolResult.patch }],
           anchorIndex: -1,
         }
         groupsById.set(event.toolResult.tool_use_id, orphanedGroup)
@@ -423,13 +438,13 @@ export const buildToolCallGroupsFromBlocks = (blocks?: ContentBlock[]) => {
       const id = block.tool_use_id || `tool-result-${idx}`
       const target = groupsById.get(id)
       if (target) {
-        target.results.push({ content: block.content, is_error: block.is_error })
+        target.results.push({ content: block.content, is_error: block.is_error, patch: block.patch, task: block.task })
       } else {
         const fallback: ToolCallRenderGroup = {
           id,
           name: 'Tool Result',
           args: null,
-          results: [{ content: block.content, is_error: block.is_error }],
+          results: [{ content: block.content, is_error: block.is_error, patch: block.patch, task: block.task }],
           anchorIndex: idx,
         }
         mapByIndex.set(idx, fallback)

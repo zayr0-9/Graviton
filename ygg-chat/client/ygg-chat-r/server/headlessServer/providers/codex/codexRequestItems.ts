@@ -1,6 +1,6 @@
 import { createHash } from 'crypto'
-import { buildToolNameMap, sanitizeToolResultContentForModel } from '../toolResultSanitizer.js'
-import type { ProviderGenerateInput, ProviderToolDefinition } from '../openRouterProvider.js'
+import { buildToolNameMap, messageToolCalls, sanitizeToolResultContentForModel } from '../toolResultSanitizer.js'
+import type { ProviderGenerateInput, ProviderToolDefinition } from '../providerTypes.js'
 import type { CodexMessage, CodexRequestDiagnostics, CodexRequestParts } from './types.js'
 
 type CodexInputMessage = CodexMessage
@@ -39,7 +39,7 @@ export function toCodexMessages(input: ProviderGenerateInput): CodexMessage[] {
     }
 
     if (msg.role === 'assistant') {
-      const toolCalls = parseToolCalls(msg.tool_calls)
+      const toolCalls = parseToolCalls(messageToolCalls(msg))
       const content = getMessageTextContent(msg)
       if (content.trim() || toolCalls.length > 0) {
         messages.push({ role: 'assistant', content, toolCalls })
@@ -77,7 +77,7 @@ export function toCodexMessages(input: ProviderGenerateInput): CodexMessage[] {
     messages.push({ role: 'user', content: input.userContent.trim() })
   }
 
-  return appendImageAttachmentsToLatestUserMessage(messages, input.railwayTurn?.attachmentsBase64 ?? null)
+  return appendImageAttachmentsToLatestUserMessage(messages, input.turnContext?.attachmentsBase64 ?? null)
 }
 
 export function toCodexRequestParts(messages: CodexInputMessage[], tools: ProviderToolDefinition[]): CodexRequestParts {

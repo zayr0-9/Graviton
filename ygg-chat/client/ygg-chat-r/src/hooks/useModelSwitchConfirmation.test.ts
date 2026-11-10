@@ -19,7 +19,7 @@ vi.mock('react', () => ({
     hooks.cells[index] = dependencies
   },
 }))
-import { needsModelSwitchConfirmation, useModelSwitchConfirmation } from './useModelSwitchConfirmation'
+import { isPromptCacheAtStake, MODEL_SWITCH_CACHE_TTL_MS, needsModelSwitchConfirmation, useModelSwitchConfirmation } from './useModelSwitchConfirmation'
 import type { BranchModelSelection } from '../features/chats/branchModelSelection'
 const original = { provider: 'OpenRouter', model: 'model-a' }
 const next = { provider: 'OpenRouter', model: 'model-b' }
@@ -78,6 +78,27 @@ describe('model switch confirmation', () => {
     render().request(next, apply)
     render('branch-a', { provider: 'LM Studio', model: 'local' }).confirm()
     expect(apply).not.toHaveBeenCalled()
+  })
+  it('skips the dialog when the branch has no cacheable history', () => {
+    const apply = vi.fn()
+    hooks.cursor = 0
+    useModelSwitchConfirmation('branch-a', original, null).request(next, apply)
+    expect(apply).toHaveBeenCalledOnce()
+    expect(render().pending).toBeNull()
+  })
+  it('skips the dialog once the last message is older than the cache TTL', () => {
+    const now = Date.parse('2026-10-29T12:00:00Z')
+    expect(isPromptCacheAtStake('2026-10-29T11:55:00Z', now)).toBe(true)
+    expect(isPromptCacheAtStake('2026-10-29T11:49:00Z', now)).toBe(false)
+    // SQLite CURRENT_TIMESTAMP has no zone marker and is UTC.
+    expect(isPromptCacheAtStake('2026-10-29 11:55:00', now)).toBe(true)
+    expect(isPromptCacheAtStake('2026-10-29 11:49:00', now)).toBe(false)
+    expect(isPromptCacheAtStake(null, now)).toBe(false)
+    expect(isPromptCacheAtStake('not a date', now)).toBe(true)
+    const apply = vi.fn()
+    hooks.cursor = 0
+    useModelSwitchConfirmation('branch-a', original, new Date(Date.now() - MODEL_SWITCH_CACHE_TTL_MS - 1000).toISOString()).request(next, apply)
+    expect(apply).toHaveBeenCalledOnce()
   })
   it('allows initial selection without a dialog', () => {
     const apply = vi.fn()

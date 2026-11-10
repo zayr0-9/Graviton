@@ -69,7 +69,7 @@ interface MobileHeaderProps {
 
 const PROVIDER_LABELS: Record<MobileProviderName, string> = {
   openaichatgpt: 'OpenAI ChatGPT',
-  openrouter: 'OpenRouter',
+  openrouterbyok: 'OpenRouter (your key)',
   lmstudio: 'LM Studio',
   zai: 'Z.AI / GLM',
   bedrock: 'AWS Bedrock',
@@ -159,7 +159,7 @@ export const MobileHeader: React.FC<MobileHeaderProps> = ({
         className: openAiAuthenticated ? 'connected' : 'disconnected',
       }
     }
-    if (providerName === 'openrouter') {
+    if (providerName === 'openrouterbyok') {
       return {
         label: `OpenRouter ${openRouterAuthenticated ? 'connected' : 'not connected'}`,
         className: openRouterAuthenticated ? 'connected' : 'disconnected',
@@ -372,8 +372,8 @@ export const MobileHeader: React.FC<MobileHeaderProps> = ({
                         Sign out OpenAI
                       </Button>
                     )
-                  ) : providerName === 'openrouter' ? (
-                    <span className='mobile-conversation-cwd-hint'>OpenRouter uses your stored app token.</span>
+                  ) : providerName === 'openrouterbyok' ? (
+                    <span className='mobile-conversation-cwd-hint'>Set your OpenRouter API key in the desktop app's Settings.</span>
                   ) : providerName === 'zai' ? (
                     zaiAuthenticated ? (
                       <>

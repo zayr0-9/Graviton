@@ -128,7 +128,7 @@ These cannot match persisted block cards.
 
 ### React Query -> Redux sync
 
-`useConversationMessages()` fetches messages from local/cloud APIs in `useQueries.ts`.
+`useConversationMessages()` fetches messages from the local server in `useQueries.ts`.
 
 `Chat.tsx` syncs query results into Redux:
 

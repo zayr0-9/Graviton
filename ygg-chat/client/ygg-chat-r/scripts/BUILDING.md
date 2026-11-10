@@ -4,6 +4,15 @@
 release targets, signing settings, updater metadata and native rebuild remain
 unchanged. Windows/Linux/CI packaging use the same dependency filter.
 
+## Update feed (GitHub Releases)
+
+`electron-builder.json` publishes with `provider: github` (`zayr0-9/Graviton`), which
+electron-builder bakes into `resources/app-update.yml`. `electron/main.ts` does not call
+`setFeedURL`. CI packages with `--publish never`; the `publish_release` job is the single
+uploader and must attach every `latest*.yml`, `*.blockmap`, `*.zip`/`*.dmg` (macOS),
+`*.deb` (Linux) and `*.exe` (Windows). The repo must be public. macOS builds are
+unsigned, so on macOS the app only checks for updates and links to the release page.
+
 ## Build scheduling and checks
 
 `build:electron:parallel` runs the renderer and Electron/main build branches

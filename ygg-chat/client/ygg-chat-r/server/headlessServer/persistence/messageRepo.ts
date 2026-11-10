@@ -9,8 +9,8 @@ interface MessageRepoDeps {
 
 export interface CreateMessageInput {
   /**
-   * Caller-supplied id to adopt (e.g. a Railway-authoritative message id on the
-   * cloud path). Omitted on every default path, where a fresh uuid is minted.
+   * Caller-supplied id to adopt (for example when re-importing an existing row).
+   * Omitted on every default path, where a fresh uuid is minted.
    * upsertMessage is INSERT ... ON CONFLICT(id) DO UPDATE, so re-adopting an
    * existing id updates in place.
    */
@@ -40,6 +40,10 @@ export class MessageRepo {
   constructor(deps: MessageRepoDeps) {
     this.db = deps.db
     this.statements = deps.statements
+  }
+
+  get(messageId: string): any | null {
+    return this.statements.getMessageById.get(messageId) ?? null
   }
 
   transaction<T>(operation: () => T): T {
@@ -97,6 +101,25 @@ export class MessageRepo {
 
     const createdMessage = this.statements.getMessageById.get(messageId) as any
     return input.contextUsage ? { ...createdMessage, context_usage: input.contextUsage } : createdMessage
+  }
+
+  /** Merge host execution metadata without rewriting transcript content or identity. */
+  updateToolApproval(messageId: string, enabled: boolean): any {
+    return this.transaction(() => {
+      const row = this.get(messageId)
+      if (!row) throw new Error('Approval branch message is unavailable')
+      const meta = typeof row.meta === 'string' ? JSON.parse(row.meta || '{}') : row.meta ?? {}
+      this.db.prepare('UPDATE messages SET meta = ? WHERE id = ?')
+        .run(JSON.stringify({ ...meta, toolAutoApprove: enabled }), messageId)
+      return this.get(messageId)
+    })
+  }
+
+  /** Update one Claude API response as its streamed blocks arrive. Identity/ancestry never change. */
+  updateClaudeProjection(messageId: string, content: string, contentBlocks: any[], meta: Record<string, unknown>): any {
+    this.db.prepare('UPDATE messages SET content = ?, plain_text_content = ?, content_blocks = ?, meta = ? WHERE id = ?')
+      .run(content, content, JSON.stringify(contentBlocks), JSON.stringify(meta), messageId)
+    return this.get(messageId)
   }
 
   finaliseCompaction(messageId: string, update: { content: string; contentBlocks: any[]; meta: Record<string, unknown> }): any {

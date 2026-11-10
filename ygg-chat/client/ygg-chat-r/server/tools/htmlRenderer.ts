@@ -3,8 +3,12 @@ import { promises as fs } from 'fs'
 import os from 'os'
 import path from 'path'
 import { isWindows, resolveToWindowsPath } from '../utils/wslBridge.js'
+import { readHtmlDocument, saveHtmlDocument, exportHtmlDocument } from './htmlDocumentStore.js'
+import type { ToolExecutionOptions } from './runtime/protocol.js'
 
 interface HtmlRendererInput {
+  action?: 'render' | 'export'
+  documentId?: string
   html?: string
   path?: string
   cwd?: string
@@ -36,8 +40,31 @@ function sanitizeHtml(html: string, allowUnsafe = false): string {
   return html
 }
 
-export async function run(params: HtmlRendererInput) {
-  const { html, path: filePath, cwd, allowUnsafe = false } = params
+export async function run(params: HtmlRendererInput, context: ToolExecutionOptions = {}) {
+  const { html, path: filePath, cwd, allowUnsafe = false, action = 'render', documentId } = params
+  if (action !== 'render' && action !== 'export') {
+    return { success: false, error: 'action must be render or export' }
+  }
+  if (action === 'export') {
+    if (!documentId || html !== undefined || filePath !== undefined || cwd !== undefined || params.allowUnsafe !== undefined) {
+      return { success: false, error: 'Export requires documentId only; do not provide html, path, cwd, or allowUnsafe' }
+    }
+    try {
+      return { success: true, action, documentId, ...await exportHtmlDocument(documentId, context) }
+    } catch (error) {
+      return { success: false, error: `Unable to export HTML document: ${error instanceof Error ? error.message : String(error)}` }
+    }
+  }
+  if (documentId !== undefined) {
+    if (html !== undefined || filePath !== undefined) {
+      return { success: false, error: 'Provide documentId, html, or path, not multiple sources' }
+    }
+    try {
+      return { success: true, documentId, html: await readHtmlDocument(documentId, context) }
+    } catch (error) {
+      return { success: false, error: `Unable to read HTML document: ${error instanceof Error ? error.message : String(error)}` }
+    }
+  }
   if (html !== undefined && filePath !== undefined) {
     return { success: false, error: 'Provide either html or path, not both' }
   }
@@ -66,9 +93,11 @@ export async function run(params: HtmlRendererInput) {
 
   const sanitized = sanitizeHtml(sourceHtml, allowUnsafe)
 
-  return {
-    success: true,
-    html: sanitized,
+  try {
+    const documentId = await saveHtmlDocument(sanitized, context)
+    return { success: true, html: sanitized, documentId }
+  } catch (error) {
+    return { success: false, error: `Unable to store HTML document: ${error instanceof Error ? error.message : String(error)}` }
   }
 }
 

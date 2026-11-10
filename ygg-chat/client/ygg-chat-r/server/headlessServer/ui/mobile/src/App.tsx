@@ -91,7 +91,9 @@ const normalizeCwd = (value: string | null | undefined): string | null => {
 }
 
 const normalizeProviderName = (value: string | null | undefined): MobileProviderName => {
-  if (value === 'openrouter' || value === 'lmstudio' || value === 'openaichatgpt' || value === 'zai') return value
+  // 'openrouter' (retired hosted route) now means the user's own OpenRouter key.
+  if (value === 'openrouter' || value === 'openrouterbyok') return 'openrouterbyok'
+  if (value === 'lmstudio' || value === 'openaichatgpt' || value === 'zai') return value
   return DEFAULT_PROVIDER
 }
 
@@ -450,11 +452,11 @@ export const App: React.FC = () => {
     return models.length > 0 ? models : [modelName]
   }, [providerModels, selectedProvider, modelName])
 
-  const selectedProviderRequiresAuth = selectedProvider === 'openaichatgpt' || selectedProvider === 'openrouter' || selectedProvider === 'zai'
+  const selectedProviderRequiresAuth = selectedProvider === 'openaichatgpt' || selectedProvider === 'openrouterbyok' || selectedProvider === 'zai'
   const selectedProviderAuthenticated =
     selectedProvider === 'openaichatgpt'
       ? openAiConnected
-      : selectedProvider === 'openrouter'
+      : selectedProvider === 'openrouterbyok'
         ? openRouterConnected
         : selectedProvider === 'zai'
           ? zaiConnected
@@ -1398,7 +1400,7 @@ export const App: React.FC = () => {
       setStatusText('OpenAI not connected. Use Sign in OpenAI first.')
       return
     }
-    if (selectedProvider === 'openrouter' && !openRouterConnected) {
+    if (selectedProvider === 'openrouterbyok' && !openRouterConnected) {
       setStatusText('OpenRouter not connected.')
       return
     }
@@ -1479,7 +1481,7 @@ export const App: React.FC = () => {
     <main className='mobile-app-shell'>
       <MobileHeader
         providerName={selectedProvider}
-        providerOptions={providerModels.length > 0 ? providerModels.map(provider => provider.name) : ['openaichatgpt', 'openrouter', 'lmstudio', 'zai']}
+        providerOptions={providerModels.length > 0 ? providerModels.map(provider => provider.name) : ['openaichatgpt', 'openrouterbyok', 'lmstudio', 'zai']}
         modelName={modelName}
         modelOptions={availableModelOptions}
         statusText={statusText}

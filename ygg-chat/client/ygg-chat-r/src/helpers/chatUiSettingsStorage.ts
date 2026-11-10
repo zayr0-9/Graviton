@@ -1,3 +1,4 @@
+import { getHostExecutionPreferences, saveHostExecutionPreference } from '../services/hostExecutionClient'
 export const CHAT_UI_TOKEN_USAGE_VISIBILITY_KEY = 'chat:showTokenUsageBar'
 export const CHAT_UI_TOKEN_USAGE_VISIBILITY_CHANGE_EVENT = 'chatUi:tokenUsageVisibilityChange'
 export const CHAT_UI_TOKEN_USAGE_HOVER_DETAILS_VISIBILITY_KEY = 'chat:showTokenUsageHoverDetails'
@@ -5,8 +6,6 @@ export const CHAT_UI_TOKEN_USAGE_HOVER_DETAILS_VISIBILITY_CHANGE_EVENT =
   'chatUi:tokenUsageHoverDetailsVisibilityChange'
 export const CHAT_UI_AUTO_COMPACTION_ENABLED_KEY = 'chat:autoCompactionEnabled'
 export const CHAT_UI_AUTO_COMPACTION_ENABLED_CHANGE_EVENT = 'chatUi:autoCompactionEnabledChange'
-export const CHAT_UI_ADDED_FILES_PILLS_VISIBILITY_KEY = 'chat:showAddedFilesPills'
-export const CHAT_UI_ADDED_FILES_PILLS_VISIBILITY_CHANGE_EVENT = 'chatUi:addedFilesPillsVisibilityChange'
 
 export const loadShowTokenUsageBar = (): boolean => {
   try {
@@ -47,6 +46,8 @@ export const saveShowTokenUsageHoverDetails = (show: boolean): void => {
 }
 
 export const loadAutoCompactionEnabled = (): boolean => {
+  const host = getHostExecutionPreferences()
+  if (host) return host.autoCompactionEnabled
   try {
     const stored = localStorage.getItem(CHAT_UI_AUTO_COMPACTION_ENABLED_KEY)
     return stored !== null ? stored === 'true' : true
@@ -55,28 +56,15 @@ export const loadAutoCompactionEnabled = (): boolean => {
   }
 }
 
-export const saveAutoCompactionEnabled = (enabled: boolean): void => {
+export const saveAutoCompactionEnabled = async (enabled: boolean): Promise<void> => {
+  if (getHostExecutionPreferences()) {
+    await saveHostExecutionPreference({ autoCompactionEnabled: enabled })
+    window.dispatchEvent(new CustomEvent<boolean>(CHAT_UI_AUTO_COMPACTION_ENABLED_CHANGE_EVENT, { detail: enabled }))
+    return
+  }
   try {
     localStorage.setItem(CHAT_UI_AUTO_COMPACTION_ENABLED_KEY, String(enabled))
     window.dispatchEvent(new CustomEvent<boolean>(CHAT_UI_AUTO_COMPACTION_ENABLED_CHANGE_EVENT, { detail: enabled }))
-  } catch {
-    // no-op
-  }
-}
-
-export const loadShowAddedFilesPills = (): boolean => {
-  try {
-    const stored = localStorage.getItem(CHAT_UI_ADDED_FILES_PILLS_VISIBILITY_KEY)
-    return stored !== null ? stored === 'true' : true
-  } catch {
-    return true
-  }
-}
-
-export const saveShowAddedFilesPills = (show: boolean): void => {
-  try {
-    localStorage.setItem(CHAT_UI_ADDED_FILES_PILLS_VISIBILITY_KEY, String(show))
-    window.dispatchEvent(new CustomEvent<boolean>(CHAT_UI_ADDED_FILES_PILLS_VISIBILITY_CHANGE_EVENT, { detail: show }))
   } catch {
     // no-op
   }

@@ -27,12 +27,10 @@ const section = (html: string, label: string) =>
 
 describe('ToolsSettings source groups', () => {
   beforeEach(() => {
-    vi.stubEnv('VITE_ENVIRONMENT', 'electron')
     vi.stubGlobal('localStorage', { getItem: () => null })
   })
   afterEach(() => {
     vi.unstubAllGlobals()
-    vi.unstubAllEnvs()
   })
 
   it('separates built-in, custom and MCP tools, prioritizing MCP metadata', () => {

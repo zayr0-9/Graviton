@@ -68,12 +68,18 @@ describe('calculateBranchContextUsage shared meter', () => {
     usedTokens, recordedAt: '2026-10-06T00:00:00.000Z',
   })
 
-  it('preserves the existing meter estimate including prompts, blocks and calls', () => {
-    const message = { role: 'assistant', content: 'hello', content_blocks: [{ type: 'text', content: 'hello' }], tool_calls: [{ name: 'glob' }] }
+  it('estimates prompts and blocks without counting legacy tool_calls twice', () => {
+    const message = { role: 'assistant', content: 'hello', content_blocks: [{ type: 'tool_use', id: 'c1', name: 'glob', input: {} }], tool_calls: [{ id: 'c1', name: 'glob' }] }
     const meter = calculateBranchContextUsage({ providerName: 'lmstudio', messages: [null, message], prompts: ['project', 'conversation'] })
     const promptTokens = safeEstimateTokenCount('project') + safeEstimateTokenCount('conversation')
-    const messageTokens = safeEstimateTokenCount(message.content) + estimateContentBlocksForContext(message.content_blocks) + safeEstimateTokenCount(message.tool_calls)
+    const messageTokens = safeEstimateTokenCount(message.content) + estimateContentBlocksForContext(message.content_blocks)
     expect(meter).toMatchObject({ promptAndContextTokens: promptTokens, messageTokens, totalContextTokens: promptTokens + messageTokens, source: 'estimated' })
+  })
+
+  it('still counts tool_calls on legacy rows that have no blocks', () => {
+    const message = { role: 'assistant', content: 'hello', tool_calls: [{ id: 'c1', name: 'glob' }] }
+    const meter = calculateBranchContextUsage({ providerName: 'lmstudio', messages: [message] })
+    expect(meter.messageTokens).toBe(safeEstimateTokenCount(message.content) + safeEstimateTokenCount(message.tool_calls))
   })
 
   it('uses the latest reported snapshot rather than summing turns', () => {
