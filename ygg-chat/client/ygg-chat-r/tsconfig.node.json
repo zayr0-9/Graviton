@@ -8,6 +8,8 @@
     "allowSyntheticDefaultImports": true,
     "strict": true,
     "noEmit": false, // Cannot disable emit when composite is true
+    "emitDeclarationOnly": true, // Never write vite.config.js next to vite.config.ts (Vite would load it first)
+    "declarationDir": "./node_modules/.tmp/tsconfig.node",
     "tsBuildInfoFile": "./node_modules/.tmp/tsconfig.node.tsbuildinfo" // Store build info
   },
   "include": ["vite.config.ts"]

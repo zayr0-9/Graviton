@@ -1,14 +1,21 @@
 // utils/api.ts
 import { ConversationId, StorageMode } from '../../../../shared/types'
 import { isCommunityMode } from '../config/runtimeMode'
-import { isHostClient, isBrowserClient } from '../platform/clientCapabilities'
+import { isHostClient, isBrowserClient, isNativeShell, isStandaloneClient } from '../platform/clientCapabilities'
 import { getHostRuntime, verifyBrowserHost } from '../services/hostRuntimeBootstrap'
 import { attachLocalChatErrorCode } from '../features/chats/localChatErrors'
 import { logClientError } from '../services/clientTelemetry'
 
 // Base configuration
 export const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:3001/api'
-export const environment = import.meta.env.VITE_ENVIRONMENT || 'local'
+// Derived from the build target (no .env needed). Prefer the clientCapabilities flags in new code.
+export const environment: 'electron' | 'browser-client' | 'standalone' | 'local' = isNativeShell
+  ? 'electron'
+  : isBrowserClient
+    ? 'browser-client'
+    : isStandaloneClient
+      ? 'standalone'
+      : 'local'
 const DEFAULT_LOCAL_SERVER_ORIGIN = 'http://127.0.0.1:3002'
 // Explicit development override for the Ygg server origin (browser targets).
 const CONFIGURED_LOCAL_SERVER_ORIGIN = ((): string | null => {
@@ -179,7 +186,7 @@ function normalizeOrigin(origin: string | null | undefined): string | null {
 }
 
 function isElectronRuntimeWithSyncIpc(): boolean {
-  if (environment !== 'electron') return false
+  if (!isNativeShell) return false
   if (typeof window === 'undefined') return false
   return typeof window.electronAPI?.sync?.status === 'function'
 }
@@ -202,7 +209,7 @@ export function isLocalServerRuntime(): boolean {
 function resolveBrowserFallbackOrigin(): string {
   if (isBrowserClient && typeof window !== 'undefined') return window.location.origin
   if (CONFIGURED_LOCAL_SERVER_ORIGIN) return CONFIGURED_LOCAL_SERVER_ORIGIN
-  if (environment === 'standalone' && typeof window !== 'undefined') {
+  if (isStandaloneClient && typeof window !== 'undefined') {
     const sameOrigin = normalizeOrigin(window.location.origin)
     if (sameOrigin) return sameOrigin
   }
@@ -682,7 +689,7 @@ function makeLocalGateway(prefix: string) {
 export const gwApi = makeLocalGateway('/gw')
 export const cloudApi = makeLocalGateway('/cloud')
 
-if (typeof window !== 'undefined' && environment === 'electron') {
+if (typeof window !== 'undefined' && isNativeShell) {
   void refreshLocalServerStatus().catch(() => {
     // Endpoint discovery is best-effort and can be retried by callers.
   })
@@ -749,7 +756,7 @@ export const apiCall = async <T>(endpoint: string, accessToken: string | null, o
       headers: {
         ...(isFormData ? {} : { 'Content-Type': 'application/json' }),
         ...optionsHeaders, // Spread headers from options
-        ...(token && (environment === 'web' || environment === 'electron') ? { Authorization: `Bearer ${token}` } : {}), // Add Authorization header with JWT in web/electron mode
+        ...(token && environment === 'electron' ? { Authorization: `Bearer ${token}` } : {}), // Add Authorization header with JWT in web/electron mode
       },
     })
   }
@@ -902,7 +909,7 @@ export const createStreamingRequest = async (
     const headers = {
       ...(isFormData ? {} : { 'Content-Type': 'application/json' }),
       ...optionsHeaders, // Spread the headers from options
-      ...(token && (environment === 'web' || environment === 'electron') ? { Authorization: `Bearer ${token}` } : {}),
+      ...(token && environment === 'electron' ? { Authorization: `Bearer ${token}` } : {}),
     }
 
     return fetch(await buildLocalApiUrl(`${/^(\/conversations|\/projects|\/messages|\/attachments)(\/|\?|$)/.test(endpoint) ? '/gw' : '/cloud'}${endpoint}`), {

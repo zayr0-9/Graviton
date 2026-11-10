@@ -1,6 +1,6 @@
 import { selectHostFolder } from '../platform/hostPathPicker'
 import { newClientId } from '../helpers/clientId'
-import { isBrowserClient, isHostClient } from '../platform/clientCapabilities'
+import { isBrowserClient, isHostClient, isNativeShell } from '../platform/clientCapabilities'
 import { ConversationOpeningOverlay } from '../components/ChatPane/ConversationOpeningOverlay'
 import { useModelSwitchConfirmation } from '../hooks/useModelSwitchConfirmation'
 import { ModelSwitchDialog } from '../components/ModelSelectControl/ModelSwitchDialog'
@@ -260,7 +260,7 @@ import { useSubscriptionStatus } from '../hooks/useSubscriptionStatus'
 import { useConversationSnapshotCoordinator } from '../hooks/useConversationSnapshotCoordinator'
 import { CHAT_INSERT_FILE_PATH_EVENT, type ChatInsertFilePathDetail } from '../helpers/chatInputBridge'
 import { dispatchOpenWorkspaceMutationDiffs } from '../helpers/workspaceMutationDiffBridge'
-import { localApi } from '../utils/api'
+import { environment, localApi } from '../utils/api'
 import { useChatSelection } from '../components/ChatSelection/ChatSelectionProvider'
 import { chatSelectionScrollHandled, isPendingViewStreamOwned, type PendingViewStream } from '../features/chats/chatSelection'
 import { executeToolAndWait } from '../utils/executeToolAndWait'
@@ -1609,12 +1609,7 @@ function Chat() {
   const themeDemoThemeIndexRef = useRef(0)
 
   const composerSlashCommands = COMPOSER_SLASH_COMMANDS
-  const isElectronEnv = useMemo(
-    () =>
-      import.meta.env.VITE_ENVIRONMENT === 'electron' ||
-      (typeof window !== 'undefined' && (window as any).__IS_ELECTRON__),
-    []
-  )
+  const isElectronEnv = isNativeShell
 
   const appendBenchEvent = useCallback((kind: string, details?: Record<string, unknown>) => {
     const ts = typeof performance !== 'undefined' ? performance.now() : Date.now()
@@ -1683,7 +1678,7 @@ function Chat() {
         durationMs,
       },
       environment: {
-        mode: import.meta.env.VITE_ENVIRONMENT,
+        mode: environment,
         electron: isElectronEnv,
         userAgent: typeof navigator !== 'undefined' ? navigator.userAgent : 'unknown',
         platform: typeof navigator !== 'undefined' ? navigator.platform : 'unknown',

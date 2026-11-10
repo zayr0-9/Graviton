@@ -4,6 +4,7 @@
 import { getHostExecutionPreferences, getHostExecutionRevision, saveHostExecutionPreference } from '../services/hostExecutionClient'
 import { normalizeCompactionThreshold } from '../../../../shared/compaction'
 import { isCommunityMode } from '../config/runtimeMode'
+import { isNativeShell } from '../platform/clientCapabilities'
 
 const STORAGE_KEY = 'ygg_provider_settings'
 export const PROVIDER_SETTINGS_CHANGE_EVENT = 'ygg-provider-settings-change'
@@ -14,7 +15,7 @@ export const MIN_OPENAI_CHATGPT_MAX_CONTEXT_TOKENS = 1_000
 export const MAX_OPENAI_CHATGPT_MAX_CONTEXT_TOKENS = 2_000_000
 export const DEFAULT_COMPACTION_SYSTEM_PROMPT =
   'You compact chat history. Return detailed markdown that preserves goals, hard requirements, key facts, decisions, pending tasks, and unresolved questions. Do not include tool protocol chatter, but include general context around changes made instead. Include full absolute paths of files touched/edited, and brief summary of what changed.'
-export const DEFAULT_LMSTUDIO_BASE_URL = import.meta.env.VITE_LMSTUDIO_BASE || 'http://172.31.32.1:1234'
+export const DEFAULT_LMSTUDIO_BASE_URL = 'http://localhost:1234'
 
 export type OpenAIPromptCacheRetention = 'in_memory' | '24h'
 
@@ -132,7 +133,7 @@ export function resolveLmStudioBaseUrl(): string {
 
 function syncProviderSettingsToElectronStore(settings: ProviderSettings): void {
   if (typeof window === 'undefined') return
-  if (import.meta.env.VITE_ENVIRONMENT !== 'electron') return
+  if (!isNativeShell) return
 
   const storageApi = window.electronAPI?.storage
   if (!storageApi?.set) return

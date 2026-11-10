@@ -33,9 +33,12 @@ function isStaticallyReachable(id: string, graph: Rollup.ManualChunkMeta): boole
 
 // https://vite.dev/config/
 export default defineConfig(() => {
-  const buildTarget = process.env.BUILD_TARGET || 'local'
+  // Desktop is the default. 'browser-client' and 'standalone' are the shared-UI host targets.
+  const buildTarget = process.env.BUILD_TARGET || 'electron'
+  if (!['electron', 'browser-client', 'standalone'].includes(buildTarget)) {
+    throw new Error(`Unknown BUILD_TARGET "${buildTarget}" (expected electron, browser-client or standalone)`)
+  }
   const isElectron = buildTarget === 'electron'
-  const isWeb = buildTarget === 'web'
   const isBrowserClient = buildTarget === 'browser-client'
   const isStandalone = buildTarget === 'standalone' || isBrowserClient
   // Standalone browser target: the dev proxy forwards /api and the WebSocket
@@ -86,14 +89,14 @@ export default defineConfig(() => {
 
     // Define compile-time constants for conditional code
     define: {
-      ...(isBrowserClient ? {
-        'import.meta.env.VITE_ENVIRONMENT': JSON.stringify('browser-client'),
-        'import.meta.env.VITE_API_URL': JSON.stringify('/api'),
-      } : {}),
+      // Bridge (fully-local plan D1): legacy direct VITE_ENVIRONMENT reads follow the build
+      // target, so no .env is needed. Removed once those reads use clientCapabilities (P4).
+      'import.meta.env.VITE_ENVIRONMENT': JSON.stringify(buildTarget),
+      ...(isBrowserClient ? { 'import.meta.env.VITE_API_URL': JSON.stringify('/api') } : {}),
       __BUILD_TARGET__: JSON.stringify(buildTarget),
       __IS_ELECTRON__: JSON.stringify(isElectron),
-      __IS_WEB__: JSON.stringify(isWeb),
-      __IS_LOCAL__: JSON.stringify(buildTarget === 'local'),
+      __IS_WEB__: JSON.stringify(false),
+      __IS_LOCAL__: JSON.stringify(false),
       __YGG_CODEX_DEV_LOGS__: JSON.stringify(/^(1|true|yes|on)$/i.test(process.env.YGG_CODEX_DEV_LOGS || '')),
     },
 

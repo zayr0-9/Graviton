@@ -5,7 +5,7 @@ vi.hoisted(() => {
     value: { getItem: () => null, setItem: () => {}, removeItem: () => {} } })
 })
 vi.mock('../../utils/api', () => ({ buildLocalApiUrl: async (p: string) => `http://local/api${p}`, FORCE_LOGOUT_EVENT: 'force-logout' }))
-vi.mock('../../platform/clientCapabilities', () => ({ isHostClient: false }))
+vi.mock('../../platform/clientCapabilities', () => ({ isHostClient: false, isNativeShell: false, isBrowserClient: false, isStandaloneClient: false }))
 vi.mock('../../helpers/serverLoopSettings', () => ({ isResumableRunsEnabled: () => true }))
 import chatReducer, { chatSliceActions as chat } from './chatSlice'
 import previewReducer, { agentRunPreviewActions as preview, agentRunPreviewMiddleware } from './agentRunPreviewSlice'

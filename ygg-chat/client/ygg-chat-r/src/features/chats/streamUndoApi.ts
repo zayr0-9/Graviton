@@ -1,7 +1,8 @@
-import { environment, localApi } from '../../utils/api'
+import { isNativeShell } from '../../platform/clientCapabilities'
+import { localApi } from '../../utils/api'
 import type { StreamUndoSummary } from './chatTypes'
 
-const isElectron = () => environment === 'electron'
+const isElectron = () => isNativeShell
 
 export async function fetchConversationUndoSummaries(conversationId: string): Promise<StreamUndoSummary[]> {
   if (!isElectron() || !conversationId) return []

@@ -1,3 +1,5 @@
+import { isNativeShell } from '../platform/clientCapabilities'
+
 type ClientTelemetryEvent = Record<string, unknown>
 
 type TelemetryState = {
@@ -22,7 +24,7 @@ const MAX_OBJECT_KEYS = 40
 const MAX_DEPTH = 4
 
 function isElectronRuntime(): boolean {
-  return typeof window !== 'undefined' && import.meta.env.VITE_ENVIRONMENT === 'electron'
+  return typeof window !== 'undefined' && isNativeShell
 }
 
 function hasClientLogAppender(): boolean {

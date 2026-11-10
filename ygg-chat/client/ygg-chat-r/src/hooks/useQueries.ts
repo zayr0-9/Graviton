@@ -2048,7 +2048,7 @@ export function useDirectoryFiles(directoryPath: string | null | undefined) {
       const params = new URLSearchParams({ path: directoryPath })
       return localApi.get<DirectoryListingResponse>(`/local/files?${params}`)
     },
-    enabled: !!directoryPath && directoryPath.trim().length > 0 && environment !== 'web',
+    enabled: !!directoryPath && directoryPath.trim().length > 0,
     staleTime: 30 * 1000, // 30 seconds - files can change frequently
     refetchOnMount: false,
     refetchOnReconnect: false,
@@ -2089,7 +2089,7 @@ export function useDirectoryFileSearch(
 
       return localApi.get<DirectoryFileSearchResponse>(`/local/files/search?${params}`)
     },
-    enabled: !!directoryPath && directoryPath.trim().length > 0 && normalizedQuery.length > 0 && environment !== 'web',
+    enabled: !!directoryPath && directoryPath.trim().length > 0 && normalizedQuery.length > 0,
     staleTime: 30 * 1000,
     refetchOnMount: false,
     refetchOnReconnect: false,

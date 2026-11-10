@@ -29,21 +29,9 @@ import { isHostClient } from '../platform/clientCapabilities'
  */
 const RESUMABLE_RUNS_STORAGE_KEY = 'ygg.resumableRuns'
 
-function readResumableRunsEnvOverride(): boolean | null {
-  try {
-    const raw = (import.meta as any)?.env?.VITE_RESUMABLE_RUNS
-    if (raw === undefined || raw === null || raw === '') return null
-    return raw === 'true' || raw === '1' || raw === true
-  } catch {
-    return null
-  }
-}
-
 export function isResumableRunsEnabled(): boolean {
   // Shared-host Stop must cancel on the server, never merely close its viewer.
   if (isHostClient) return true
-  const envOverride = readResumableRunsEnvOverride()
-  if (envOverride !== null) return envOverride
   try {
     if (typeof localStorage !== 'undefined') {
       const stored = localStorage.getItem(RESUMABLE_RUNS_STORAGE_KEY)

@@ -1,4 +1,4 @@
-import { isHostClient } from '../platform/clientCapabilities'
+import { isHostClient, isNativeShell } from '../platform/clientCapabilities'
 
 type RuntimeAuthSnapshot = {
   accessToken: string | null
@@ -8,8 +8,7 @@ type RuntimeAuthSnapshot = {
 export const LOCAL_AUTH_USER_ID = 'a7c485cb-99e7-4cf2-82a9-6e23b55cdfc3'
 const LOCAL_AUTH_TOKENS = new Set(['electron-local-token', 'local-mode-token'])
 
-export const isElectronMode =
-  (typeof __IS_ELECTRON__ !== 'undefined' && __IS_ELECTRON__) || import.meta.env.VITE_ENVIRONMENT === 'electron'
+export const isElectronMode = isNativeShell
 
 const isLikelyJwt = (token: string | null | undefined): boolean => {
   if (!token || typeof token !== 'string') return false

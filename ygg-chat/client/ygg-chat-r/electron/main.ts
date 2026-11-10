@@ -17,7 +17,6 @@ import { installMainProcessLog } from './mainProcessLog.js'
 import { createClientErrorLog, type ClientErrorLog } from './clientErrorLog.js'
 import { normalizeShellPath } from './shellPath.js'
 import { createQuitConfirmationGuard } from './quitConfirmation.js'
-import '../server/envLoader.js'
 import {
   consolidateSecureSecrets,
   deleteBraveApiKey,

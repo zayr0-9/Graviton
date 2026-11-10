@@ -23,7 +23,7 @@ vi.mock('../../utils/api', () => ({
   buildLocalApiUrl: async (p: string) => `http://local/api${p}`,
   FORCE_LOGOUT_EVENT: 'force-logout',
 }))
-vi.mock('../../platform/clientCapabilities', () => ({ isHostClient: false }))
+vi.mock('../../platform/clientCapabilities', () => ({ isHostClient: false, isNativeShell: false, isBrowserClient: false, isStandaloneClient: false }))
 // Force resumable behavior on (decoupled from localStorage/env).
 vi.mock('../../helpers/serverLoopSettings', () => ({ isResumableRunsEnabled: () => true }))
 // Keep watchdog tests fast and prove mainChatClient reads the persisted setting.
