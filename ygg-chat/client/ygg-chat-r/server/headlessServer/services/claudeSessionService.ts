@@ -691,6 +691,9 @@ export class ClaudeSessionService {
       canUseTool, permissionPrompts: 'host', settingSources: CLAUDE_SETTING_SOURCES, strictMcpConfig: true, mcpServers: {},
       // Hook lifecycle events become Graviton hook runs (`nativeHooks`).
       persistSession: true, hooks, includeHookEvents: true,
+      // A one-line status for each running agent, about every 30s (task_progress `summary`). The CLI
+      // forks the agent's conversation for it, reusing its model and prompt cache.
+      agentProgressSummaries: true,
       ...(request.think === true || selectedEffort
         ? { thinking: { type: 'adaptive', display: 'summarized' } as const, ...(selectedEffort ? { effort: selectedEffort } : {}) }
         : { extraArgs: { 'thinking-display': 'summarized' } }),
@@ -749,13 +752,38 @@ export class ClaudeSessionService {
     // Non-ambient background tasks still running, child agents' included (the CLI's level signal).
     let liveTasks = 0
     let liveTaskList: HeadlessBackgroundTask[] = []
+    // Latest progress of every running non-ambient task, child agents' included, for the composer's
+    // task list. Separate from `tasks`, which holds only the main agent's tasks for their call rows.
+    const liveProgress = new Map<string, ClaudeBackgroundTask>()
+    let backgroundFlush: ReturnType<typeof setTimeout> | undefined
+    const withProgress = (entry: HeadlessBackgroundTask): HeadlessBackgroundTask => {
+      const task = liveProgress.get(entry.id)
+      if (!task) return entry
+      return { ...entry, ...(task.activity ? { activity: task.activity } : {}), ...(task.progress ? { progress: task.progress } : {}),
+        ...(task.lastTool ? { lastTool: task.lastTool } : {}), ...(task.usage ? { usage: task.usage } : {}) }
+    }
     // Published only while tasks exist, and once more when the last one ends.
     let publishedBackground = '[]'
     const publishBackground = () => {
-      const signature = liveTaskList.length ? JSON.stringify([idle, liveTaskList]) : '[]'
+      clearTimeout(backgroundFlush)
+      backgroundFlush = undefined
+      const list = liveTaskList.map(withProgress)
+      const signature = list.length ? JSON.stringify([idle, list]) : '[]'
       if (signature === publishedBackground) return
       publishedBackground = signature
-      emit({ type: 'background_tasks', streamId: request.streamId!, lineageId, turnActive: !idle, tasks: liveTaskList })
+      emit({ type: 'background_tasks', streamId: request.streamId!, lineageId, turnActive: !idle, tasks: list })
+    }
+    const trackProgress = (event: { task_id: string; subtype: string; ambient?: boolean; skip_transcript?: boolean }) => {
+      if (event.ambient || event.skip_transcript) return
+      const task = applyClaudeTaskEvent(liveProgress.get(event.task_id), event)
+      if (!task) return
+      // The level signal drops an ended task from the list.
+      if (task.status !== 'running') { liveProgress.delete(event.task_id); return }
+      liveProgress.set(event.task_id, task)
+      // Progress arrives per tool call: at most one publish a second, like the call-row writes.
+      if (event.subtype === 'task_progress' && !backgroundFlush && liveTaskList.some(entry => entry.id === event.task_id)) {
+        backgroundFlush = setTimeout(publishBackground, TASK_PROGRESS_FLUSH_MS)
+      }
     }
     let initSeen = false
     // Tasks the main agent launched → whether they ended. Claude answers each end with a turn of its own.
@@ -986,6 +1014,7 @@ export class ClaudeSessionService {
           settleIdle()
         } else if (event.type === 'system' && (event.subtype === 'task_started' || event.subtype === 'task_progress' ||
           event.subtype === 'task_updated' || event.subtype === 'task_notification')) {
+          trackProgress(event)
           trackTask(event)
         } else if (event.type === 'stream_event') {
           const frame = event.event
@@ -1180,6 +1209,7 @@ export class ClaudeSessionService {
     } finally {
       unbindTasks?.()
       liveTaskList = []
+      liveProgress.clear()
       publishBackground()
       // Stopping the session ends its background tasks too.
       for (const [id, entry] of tasks) {

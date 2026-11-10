@@ -1560,6 +1560,43 @@ describe('Ultracode and background tasks', () => {
     ])
   })
 
+  it("adds each running agent's progress to the published task list, a child agent's included", async () => {
+    const f = fixture()
+    const usage = { total_tokens: 340_000, tool_uses: 12, duration_ms: 252_000 }
+    scripted(f, async function* (read) {
+      await read()
+      yield assistant('a1', [{ type: 'tool_use', id: 'ag1', name: 'Agent', input: { description: 'Implement P5', run_in_background: true } }])
+      yield system('background_tasks_changed', { tasks: [{ task_id: 'ag', task_type: 'local_agent', description: 'Implement P5' },
+        { task_id: 'kid', task_type: 'local_agent', description: 'Review diff' }] })
+      yield system('task_started', { task_id: 'ag', tool_use_id: 'ag1', task_type: 'local_agent', description: 'Implement P5' })
+      yield { type: 'user', session_id: 's', parent_tool_use_id: null,
+        message: { content: [{ type: 'tool_result', tool_use_id: 'ag1', content: 'Async agent launched successfully.' }] } }
+      yield assistant('a2', [{ type: 'text', text: 'Running in the background.' }])
+      yield success
+      yield system('task_progress', { task_id: 'ag', tool_use_id: 'ag1', description: 'Implement P5', summary: 'Running vitest suites', last_tool_name: 'Bash', usage })
+      // A task a child agent launched: its call was never projected, but it is in the composer's list.
+      yield system('task_progress', { task_id: 'kid', tool_use_id: 'child-call', description: 'Review diff', last_tool_name: 'Read',
+        usage: { total_tokens: 900, tool_uses: 1, duration_ms: 2_000 } })
+      // Progress publishes are coalesced to one a second.
+      await new Promise(resolve => setTimeout(resolve, 1_100))
+      yield system('task_notification', { task_id: 'ag', tool_use_id: 'ag1', status: 'completed', summary: 'P5 done', usage })
+      yield system('background_tasks_changed', { tasks: [] })
+      yield system('init', { permissionMode: 'default' })
+      yield assistant('a3', [{ type: 'text', text: 'P5 is done.' }])
+      yield success
+    })
+    await f.service.run(f.input)
+    expect(f.sdk.query.mock.calls[0][0].options.agentProgressSummaries).toBe(true)
+    const published = f.emit.mock.calls.map(([event]) => event).filter(event => event.type === 'background_tasks')
+    const withProgress = published.filter(event => event.tasks.some((task: any) => task.progress))
+    expect(withProgress).toHaveLength(1)
+    expect(withProgress[0]).toMatchObject({ turnActive: false, tasks: [
+      { id: 'ag', toolUseId: 'ag1', progress: 'Running vitest suites', lastTool: 'Bash', usage: { totalTokens: 340_000, toolUses: 12, durationMs: 252_000 } },
+      { id: 'kid', toolUseId: null, lastTool: 'Read', usage: { totalTokens: 900, toolUses: 1, durationMs: 2_000 } },
+    ] })
+    expect(published.at(-1)).toMatchObject({ tasks: [] })
+  })
+
   it.skipIf(process.env.CLAUDE_PROVIDER_LIVE_TEST !== '1')('live service: an ultracode workflow keeps the session and queue open and shows its progress', async () => {
     const { mkdtemp, rm } = await import('node:fs/promises')
     const os = await import('node:os')

@@ -81,6 +81,14 @@ export interface ClaudeBackgroundTask {
   workflowName?: string
   /** What the task is doing now (a workflow's "phase: agent"); dropped once it ends. */
   activity?: string
+  /**
+   * The CLI's one-line status (task_progress `summary`): a model-written progress summary for an
+   * agent (the `agentProgressSummaries` option, about every 30s), an MCP server's status for an
+   * MCP task. Kept until the next one; dropped once the task ends.
+   */
+  progress?: string
+  /** The tool the task used last (task_progress `last_tool_name`); dropped once it ends. */
+  lastTool?: string
   /** The CLI's completion summary. */
   summary?: string
   agents?: ClaudeTaskAgent[]
@@ -114,8 +122,11 @@ function mergeWorkflowAgents(agents: ClaudeTaskAgent[] | undefined, progress: un
 const withoutActivity = (task: ClaudeBackgroundTask): ClaudeBackgroundTask => {
   const next = { ...task }
   delete next.activity
+  delete next.progress
+  delete next.lastTool
   return next
 }
+const text = (value: unknown) => (typeof value === 'string' && value.trim() ? value.trim() : undefined)
 
 /** Folds one SDK task_* system event into a task's state; null for any other event. */
 export function applyClaudeTaskEvent(task: ClaudeBackgroundTask | undefined, event: any): ClaudeBackgroundTask | null {
@@ -129,7 +140,10 @@ export function applyClaudeTaskEvent(task: ClaudeBackgroundTask | undefined, eve
     case 'task_progress': {
       if (base.status !== 'running') return base
       const agents = mergeWorkflowAgents(base.agents, event.workflow_progress)
+      const progress = text(event.summary)
+      const lastTool = text(event.last_tool_name)
       return { ...base, ...(typeof event.description === 'string' ? { activity: event.description } : {}),
+        ...(progress ? { progress } : {}), ...(lastTool ? { lastTool } : {}),
         ...(agents ? { agents } : {}), ...(taskUsage(event.usage) ? { usage: taskUsage(event.usage) } : {}) }
     }
     case 'task_updated': {

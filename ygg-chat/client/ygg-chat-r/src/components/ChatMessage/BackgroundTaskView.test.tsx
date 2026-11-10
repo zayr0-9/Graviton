@@ -31,6 +31,20 @@ describe('Claude background task state', () => {
     expect(killed.agents).toBeUndefined()
   })
 
+  it("keeps an agent's progress summary and last tool until it ends", () => {
+    const started = system('task_started', { task_type: 'local_agent', description: 'Implement P5' })
+    const summarised = system('task_progress', { description: 'Implement P5', summary: ' Running vitest suites ', last_tool_name: 'Bash',
+      usage: { total_tokens: 340_000, tool_uses: 12, duration_ms: 252_000 } })
+    // Summaries come about every 30s; the progress events between them carry none.
+    const between = system('task_progress', { description: 'Implement P5', last_tool_name: 'Read', usage: { total_tokens: 341_000, tool_uses: 13, duration_ms: 253_000 } })
+    const running = fold([started, summarised, between])
+    expect(running).toMatchObject({ status: 'running', progress: 'Running vitest suites', lastTool: 'Read', usage: { totalTokens: 341_000, toolUses: 13 } })
+    const done = fold([started, summarised, between, system('task_notification', { status: 'completed', summary: 'Done' })])
+    expect(done).not.toHaveProperty('progress')
+    expect(done).not.toHaveProperty('lastTool')
+    expect(done.summary).toBe('Done')
+  })
+
   it('returns null for events that are not task events', () => {
     expect(applyClaudeTaskEvent(undefined, { type: 'system', subtype: 'init' })).toBeNull()
     expect(applyClaudeTaskEvent(undefined, { type: 'system', subtype: 'background_tasks_changed', tasks: [] })).toBeNull()
@@ -48,6 +62,12 @@ describe('Claude background task card', () => {
       expect(html).toContain(text)
     }
     expect(backgroundTaskTone(task)).toBe('running')
+  })
+
+  it("shows a running agent's progress summary and last tool", () => {
+    const html = renderToStaticMarkup(<BackgroundTaskView task={{ id: 't2', kind: 'local_agent', status: 'running', description: 'Implement P5',
+      progress: 'Running vitest suites', lastTool: 'Bash', usage: { totalTokens: 340_000, toolUses: 12, durationMs: 252_000 } }} />)
+    for (const text of ['Implement P5', 'Running vitest suites', 'Last tool: Bash', '340K tokens', '12 tool uses', '4m 12s']) expect(html).toContain(text)
   })
 
   it('shows the summary once ended; agents that never finished read as stopped', () => {

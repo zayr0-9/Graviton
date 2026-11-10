@@ -223,6 +223,11 @@ export interface HeadlessBackgroundTask {
   description: string
   /** The tool call that launched it; null for tasks a child agent launched. */
   toolUseId: string | null
+  /** Latest progress, from the CLI's task_progress events (see `ClaudeBackgroundTask`). */
+  activity?: string
+  progress?: string
+  lastTool?: string
+  usage?: { totalTokens: number; toolUses: number; durationMs: number }
 }
 
 /** The end of a background shell or Monitor task's output (the CLI keeps the last 8 KiB). */

@@ -1,5 +1,6 @@
 import React from 'react'
 import type { ClaudeBackgroundTask } from '../../../../../shared/claudeProvider'
+import { formatTaskDuration, formatTaskTokens } from '../../features/chats/backgroundTasks'
 import { MONO_DETAIL_CLASS, MONO_KEY_CLASS } from './chatMessageShared'
 import { Badge, SurfaceCard, type BadgeTone, type DisclosureTone } from './messagePrimitives'
 
@@ -20,11 +21,6 @@ const agentState = (state: string, taskRunning: boolean): { label: string; tone:
   return { label: state, tone: /fail|error/i.test(state) ? 'error' : 'neutral' }
 }
 
-const formatTokens = (tokens: number) => (tokens >= 1000 ? `${(tokens / 1000).toFixed(tokens >= 10_000 ? 0 : 1)}K` : String(tokens))
-const formatDuration = (ms: number) => {
-  const seconds = Math.round(ms / 1000)
-  return seconds >= 60 ? `${Math.floor(seconds / 60)}m ${seconds % 60}s` : `${seconds}s`
-}
 
 /** Live status of a background task Claude launched: agents, current step, then the result summary. */
 export const BackgroundTaskView: React.FC<{ task: ClaudeBackgroundTask }> = ({ task }) => {
@@ -50,11 +46,15 @@ export const BackgroundTaskView: React.FC<{ task: ClaudeBackgroundTask }> = ({ t
           })}
         </ul>
       )}
-      {running && task.activity && <div className={`${MONO_DETAIL_CLASS} truncate`} title={task.activity}>{task.activity}</div>}
+      {running && task.progress && <div className={`${MONO_DETAIL_CLASS} truncate`} title={task.progress}>{task.progress}</div>}
+      {running && task.activity && task.activity !== task.progress && (
+        <div className={`${MONO_DETAIL_CLASS} truncate`} title={task.activity}>{task.activity}</div>
+      )}
+      {running && task.lastTool && <div className={`${MONO_DETAIL_CLASS} ${MONO_KEY_CLASS}`}>Last tool: {task.lastTool}</div>}
       {!running && task.summary && <div className={MONO_DETAIL_CLASS}>{task.summary}</div>}
       {usage && usage.totalTokens > 0 && (
         <div className={`${MONO_DETAIL_CLASS} ${MONO_KEY_CLASS}`}>
-          {formatTokens(usage.totalTokens)} tokens · {usage.toolUses} tool use{usage.toolUses === 1 ? '' : 's'} · {formatDuration(usage.durationMs)}
+          {formatTaskTokens(usage.totalTokens)} tokens · {usage.toolUses} tool use{usage.toolUses === 1 ? '' : 's'} · {formatTaskDuration(usage.durationMs)}
         </div>
       )}
     </SurfaceCard>

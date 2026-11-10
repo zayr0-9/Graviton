@@ -34,3 +34,29 @@ const KIND_LABELS: Record<string, string> = {
 export const backgroundTaskKindLabel = (kind: string) => KIND_LABELS[kind] ?? (isMonitor(kind) ? 'Monitor' : 'Task')
 
 export const backgroundTasksSummary = (count: number) => `${count} background task${count === 1 ? '' : 's'}`
+
+export const formatTaskTokens = (tokens: number) => (tokens >= 1000 ? `${(tokens / 1000).toFixed(tokens >= 10_000 ? 0 : 1)}K` : String(tokens))
+export const formatTaskDuration = (ms: number) => {
+  const seconds = Math.round(ms / 1000)
+  return seconds >= 60 ? `${Math.floor(seconds / 60)}m ${seconds % 60}s` : `${seconds}s`
+}
+
+/**
+ * What a running task is doing now: the model-written progress summary when there is one, else
+ * its current step. An agent's step often repeats its description, which the row already shows.
+ */
+export const backgroundTaskStatusLine = (task: { description?: string; activity?: string; progress?: string }) =>
+  task.progress ?? (task.activity && task.activity !== task.description ? task.activity : undefined)
+
+/** "Bash · 12 tool uses · 340K tokens · 4m 12s", from what the task has reported so far. */
+export const backgroundTaskMetrics = (task: Pick<HeadlessBackgroundTask, 'lastTool' | 'usage'>) => {
+  const parts: string[] = []
+  if (task.lastTool) parts.push(task.lastTool)
+  const usage = task.usage
+  if (usage) {
+    parts.push(`${usage.toolUses} tool use${usage.toolUses === 1 ? '' : 's'}`)
+    if (usage.totalTokens > 0) parts.push(`${formatTaskTokens(usage.totalTokens)} tokens`)
+    if (usage.durationMs > 0) parts.push(formatTaskDuration(usage.durationMs))
+  }
+  return parts.join(' · ')
+}

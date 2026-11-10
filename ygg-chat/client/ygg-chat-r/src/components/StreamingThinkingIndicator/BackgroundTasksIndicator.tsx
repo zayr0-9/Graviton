@@ -4,6 +4,8 @@ import type { HeadlessBackgroundTask, HeadlessBackgroundTaskOutput } from '../..
 import {
   backgroundTaskHasOutput,
   backgroundTaskKindLabel,
+  backgroundTaskMetrics,
+  backgroundTaskStatusLine,
   backgroundTasksSummary,
   fetchBackgroundTaskOutput,
   stopBackgroundTask,
@@ -106,6 +108,8 @@ function BackgroundTaskRow({ task, conversationId, streamId }: { task: HeadlessB
   const [showOutput, setShowOutput] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const output = useTaskOutput(showOutput, { conversationId, streamId, taskId: task.id })
+  const statusLine = backgroundTaskStatusLine(task)
+  const metrics = backgroundTaskMetrics(task)
 
   const stop = async () => {
     setStopping(true)
@@ -147,6 +151,12 @@ function BackgroundTaskRow({ task, conversationId, streamId }: { task: HeadlessB
           {stopping ? 'Stopping…' : 'Stop'}
         </button>
       </div>
+      {(statusLine || metrics) && (
+        <div className='mt-0.5 min-w-0 text-[11px] leading-snug text-neutral-500 dark:text-neutral-400'>
+          {statusLine && <p className='truncate' title={statusLine}>{statusLine}</p>}
+          {metrics && <p className='truncate tabular-nums'>{metrics}</p>}
+        </div>
+      )}
       {error && <p role='alert' className='mt-1 text-[11px] text-red-600 dark:text-red-400'>{error}</p>}
       {showOutput && (
         <pre className='mt-1.5 max-h-48 overflow-auto whitespace-pre-wrap break-all rounded-md bg-neutral-200/60 p-2 font-mono text-[11px] leading-snug text-neutral-700 dark:bg-neutral-950/70 dark:text-neutral-300'>

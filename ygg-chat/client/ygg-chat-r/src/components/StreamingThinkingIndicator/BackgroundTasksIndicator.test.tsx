@@ -7,6 +7,7 @@ vi.mock('../ThemeManager/themeConfig', () => ({
   getThemeModeColor: (pair: { light: string }) => pair.light,
 }))
 import { BackgroundTasksIndicator } from './BackgroundTasksIndicator'
+import { backgroundTaskMetrics, backgroundTaskStatusLine } from '../../features/chats/backgroundTasks'
 
 const server = { id: 'srv', kind: 'local_bash', description: 'dev server on :8090', toolUseId: 'b1' }
 
@@ -29,5 +30,22 @@ describe('BackgroundTasksIndicator', () => {
 
   it('renders nothing without tasks', () => {
     expect(renderToStaticMarkup(<BackgroundTasksIndicator conversationId='c' streamId='s' tasks={[]} idle />)).toBe('')
+  })
+})
+
+describe('background task row lines', () => {
+  const agent = { id: 'a', kind: 'local_agent', description: 'Implement P5', toolUseId: 't' }
+
+  it('prefers the progress summary, and skips a step that only repeats the description', () => {
+    expect(backgroundTaskStatusLine({ ...agent, activity: 'Implement P5', progress: 'Running vitest suites' })).toBe('Running vitest suites')
+    expect(backgroundTaskStatusLine({ ...agent, activity: 'Implement P5' })).toBeUndefined()
+    expect(backgroundTaskStatusLine({ ...agent, activity: 'Colors: blue' })).toBe('Colors: blue')
+  })
+
+  it('joins the last tool and usage', () => {
+    expect(backgroundTaskMetrics({ lastTool: 'Bash', usage: { totalTokens: 340_000, toolUses: 12, durationMs: 252_000 } }))
+      .toBe('Bash · 12 tool uses · 340K tokens · 4m 12s')
+    expect(backgroundTaskMetrics({ usage: { totalTokens: 0, toolUses: 1, durationMs: 0 } })).toBe('1 tool use')
+    expect(backgroundTaskMetrics({})).toBe('')
   })
 })
